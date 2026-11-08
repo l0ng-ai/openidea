@@ -8,6 +8,7 @@ mod translate;
 mod tests;
 
 use super::Shim;
+use crate::acp::AUTH_REQUIRED;
 use crate::provider::ProviderSpec;
 use ide_jsonrpc::{Framing, Handler, Peer, RpcError, codes};
 use parking_lot::Mutex;
@@ -27,8 +28,6 @@ const OUTPUT_EVERY: Duration = Duration::from_millis(200);
 const EARLY_CANCEL: Duration = Duration::from_secs(1);
 /// How long the client's connection outlives codex.
 const EXIT_GRACE: Duration = Duration::from_millis(100);
-/// ACP's error code for a request that needs the user to sign in.
-const AUTH_REQUIRED: i64 = -32000;
 
 pub(crate) fn connect(
     spec: &ProviderSpec,
@@ -204,7 +203,7 @@ fn from_codex(e: RpcError) -> ResponseError {
                 code,
                 codes::PARSE_ERROR | codes::INVALID_REQUEST | codes::METHOD_NOT_FOUND | codes::INVALID_PARAMS
             );
-            let code = if !protocol && message.to_lowercase().contains("auth") { AUTH_REQUIRED } else { code };
+            let code = if !protocol && crate::acp::auth_required(code, &message) { AUTH_REQUIRED } else { code };
             ResponseError { code, message, data }
         }
         RpcError::Closed => error(codes::INTERNAL_ERROR, "Codex exited"),
@@ -264,7 +263,7 @@ impl CodexShim {
             "agentCapabilities": {
                 "loadSession": true,
                 "promptCapabilities": { "image": true, "audio": false, "embeddedContext": true },
-                "mcpCapabilities": { "http": false, "sse": false },
+                "mcpCapabilities": { "http": false, "sse": false, "stdio": true },
                 "sessionCapabilities": { "fork": {}, "close": {} },
                 "_meta": { "openidea": { "rollback": true, "steer": true } },
             },
@@ -318,7 +317,11 @@ impl CodexShim {
 
     async fn new_session(&self, params: &Value) -> Result<Value, ResponseError> {
         let models = self.models().await;
-        let result = self.call("thread/start", json!({ "cwd": params.get("cwd") })).await?;
+        let mut request = json!({ "cwd": params.get("cwd") });
+        if let Some(config) = translate::mcp_config(params) {
+            request["config"] = config;
+        }
+        let result = self.call("thread/start", request).await?;
         let (id, options) = self.open_thread(&result, &models, None);
         if id.is_empty() {
             return Err(error(codes::INTERNAL_ERROR, "codex started no thread"));
@@ -330,7 +333,11 @@ impl CodexShim {
     async fn load_session(&self, params: &Value) -> Result<Value, ResponseError> {
         let id = str_param(params, "sessionId")?;
         let models = self.models().await;
-        let result = self.call("thread/resume", json!({ "threadId": id, "cwd": params.get("cwd") })).await?;
+        let mut request = json!({ "threadId": id, "cwd": params.get("cwd") });
+        if let Some(config) = translate::mcp_config(params) {
+            request["config"] = config;
+        }
+        let result = self.call("thread/resume", request).await?;
         let (_, options) = self.open_thread(&result, &models, None);
         let cwd = self.state.lock().threads.get(id).and_then(|t| t.cwd.clone());
         let thread = result.get("thread").unwrap_or(&Value::Null);
@@ -345,6 +352,9 @@ impl CodexShim {
         let models = self.models().await;
         let settings = self.state.lock().threads.get(source).and_then(|t| t.settings.clone());
         let mut request = json!({ "threadId": source, "cwd": params.get("cwd") });
+        if let Some(config) = translate::mcp_config(params) {
+            request["config"] = config;
+        }
         if let Some(s) = &settings {
             request["model"] = json!(s.model_slug(&models));
             request["approvalPolicy"] = json!(s.mode.approval_policy());
@@ -822,7 +832,7 @@ impl CodexShim {
         match method {
             "item/commandExecution/requestApproval" => {
                 let choices = translate::decisions(params, true);
-                let title = translate::command_approval_title(params, item.as_ref(), cwd);
+                let title = translate::command_approval_title(params, item.as_ref());
                 let call = tool_call_of(
                     &item_id,
                     &title,
@@ -871,31 +881,55 @@ impl CodexShim {
                 Ok(self.ask(&thread, call, &choices, json!({ "permissions": {}, "scope": "turn" })))
             }
             "item/tool/requestUserInput" => {
-                let mut answers = serde_json::Map::new();
-                for q in params.get("questions").and_then(Value::as_array).into_iter().flatten() {
-                    let Some(qid) = q.get("id").and_then(Value::as_str) else { continue };
-                    let choices: Vec<Choice> = q
-                        .get("options")
-                        .and_then(Value::as_array)
-                        .into_iter()
-                        .flatten()
-                        .enumerate()
-                        .filter_map(|(i, o)| {
-                            let label = o.get("label")?.as_str()?;
-                            Some(Choice {
-                                option: json!({ "optionId": i.to_string(), "name": label, "kind": "allow_once" }),
-                                answer: json!({ "answers": [label] }),
+                let questions = params.get("questions").and_then(Value::as_array).cloned().unwrap_or_default();
+                // One permission request carrying all the questions, so the client shows
+                // them as a card (as it does for Claude's `AskUserQuestion`).
+                let asked: Vec<Value> = questions
+                    .iter()
+                    .filter_map(|q| {
+                        let id = q.get("id").and_then(Value::as_str)?;
+                        let question = q.get("question").and_then(Value::as_str)?;
+                        let options: Vec<Value> = q
+                            .get("options")
+                            .and_then(Value::as_array)
+                            .into_iter()
+                            .flatten()
+                            .filter_map(|o| {
+                                let label = o.get("label").and_then(Value::as_str)?;
+                                Some(json!({
+                                    "label": label,
+                                    "description": o.get("description").and_then(Value::as_str).unwrap_or_default(),
+                                }))
                             })
-                        })
-                        .collect();
-                    if choices.is_empty() {
-                        continue;
-                    }
-                    let title = q.get("question").and_then(Value::as_str).unwrap_or("Codex has a question");
-                    let call = tool_call_of(&item_id, title, "other", None, None);
-                    let answer = self.ask(&thread, call, &choices, Value::Null);
-                    if !answer.is_null() {
-                        answers.insert(qid.to_owned(), answer);
+                            .collect();
+                        Some(json!({
+                            "answerKey": id,
+                            "header": q.get("header").and_then(Value::as_str).unwrap_or_default(),
+                            "question": question,
+                            "multiSelect": q.get("multiSelect").and_then(Value::as_bool).unwrap_or(false),
+                            "options": options,
+                        }))
+                    })
+                    .collect();
+                if asked.is_empty() {
+                    return Ok(json!({ "answers": {} }));
+                }
+                let title = asked[0].get("question").and_then(Value::as_str).unwrap_or("Codex has a question");
+                let mut call = tool_call_of(&item_id, title, "other", None, None);
+                call["_meta"] = json!({ "questions": asked });
+                let options = [json!({ "optionId": "submit", "name": "Submit", "kind": "allow_once" })];
+                let picked: serde_json::Map<String, Value> = self
+                    .ask_option(&thread, call, &options)
+                    .and_then(|reply| serde_json::from_str(&reply).ok())
+                    .unwrap_or_default();
+                let mut answers = serde_json::Map::new();
+                for q in &questions {
+                    let Some(qid) = q.get("id").and_then(Value::as_str) else { continue };
+                    if let Some(labels) = picked
+                        .get(qid)
+                        .filter(|labels| labels.as_array().is_some_and(|labels| labels.iter().all(Value::is_string)))
+                    {
+                        answers.insert(qid.to_owned(), json!({ "answers": labels }));
                     }
                 }
                 Ok(json!({ "answers": answers }))
@@ -925,6 +959,25 @@ impl CodexShim {
                 Ok(self.ask(&thread, call, &choices, json!({ "action": "decline" })))
             }
             _ => Err((codes::METHOD_NOT_FOUND, format!("unsupported request {method}"))),
+        }
+    }
+
+    /// Asks the client; returns the selected option id (`None` when cancelled).
+    fn ask_option(&self, session: &str, tool_call: Value, options: &[Value]) -> Option<String> {
+        let client = self.client.get().cloned()?;
+        let params = json!({ "sessionId": session, "toolCall": tool_call, "options": options });
+        let outcome: Result<Value, RpcError> =
+            self.runtime.block_on(client.request("session/request_permission", params, None));
+        match outcome {
+            Ok(outcome) => outcome
+                .pointer("/outcome/outcome")
+                .and_then(Value::as_str)
+                .filter(|outcome| *outcome == "selected")
+                .and_then(|_| outcome.pointer("/outcome/optionId").and_then(Value::as_str).map(str::to_owned)),
+            Err(e) => {
+                tracing::debug!("codex: question request failed: {e}");
+                None
+            }
         }
     }
 

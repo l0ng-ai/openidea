@@ -29,6 +29,7 @@ const KIND_LABELS: Record<string, string> = {
   kotlinc: "Kotlin Single File",
   cc: "C/C++ Single File",
   native: "Native Executable",
+  "cmake-application": "CMake Application",
   ruby: "Ruby",
   php: "PHP",
   perl: "Perl",
@@ -109,6 +110,8 @@ export function configIcon(config: Pick<RunConfig, "kind" | "isTest">): string {
       return "file-binary";
     case "spring-boot":
       return "spring-boot";
+    case "tomcat":
+      return "tomcat";
     case "npm":
     case "bun":
       return "file-npm";
@@ -134,6 +137,7 @@ export function configIcon(config: Pick<RunConfig, "kind" | "isTest">): string {
     case "rustc":
       return "file-rust";
     case "cc":
+    case "cmake-application":
       return "file-cpp";
     case "shell":
       return "file-shell";
@@ -263,6 +267,12 @@ export function duplicateConfig(config: RunConfig, configs: readonly RunConfig[]
 /** Field errors: `name`, `command`, `env`, `cwd`, `compound`, `beforeLaunch` or a type param key. */
 export type ConfigErrors = Partial<Record<string, string>>;
 
+export function moduleTaskError(config: RunConfig, target: string): string | null {
+  if (config.module == null) return "Select a module for the Build Module task";
+  if (config.module !== target) return "The Build Module task uses a different module; remove it and add it again";
+  return null;
+}
+
 export function validateConfig(config: RunConfig, all: readonly RunConfig[] = []): ConfigErrors {
   const errors: ConfigErrors = {};
   if (!config.name.trim()) errors.name = "Name is required";
@@ -277,9 +287,21 @@ export function validateConfig(config: RunConfig, all: readonly RunConfig[] = []
   } else if (!config.command.trim() && !useRunConfigTypes.getState().types.get(config.kind)?.debugOnly)
     errors.command = "Command is required";
   for (const t of config.beforeLaunch ?? []) {
-    if (t.kind === "run" && (t.target === config.id || !all.some((c) => c.id === t.target)))
+    if (
+      (t.kind === "run" || (t.kind === "build" && t.target)) &&
+      (t.target === config.id || !all.some((c) => c.id === t.target))
+    )
       errors.beforeLaunch = "A before launch task runs a missing configuration or this one";
-    else if (t.kind !== "build" && t.kind !== "dotnetBuild" && t.kind !== "run" && !(t.target ?? "").trim())
+    else if (t.kind === "buildModule") {
+      const error = moduleTaskError(config, t.target ?? "");
+      if (error) errors.beforeLaunch = error;
+    } else if (
+      t.kind !== "build" &&
+      t.kind !== "buildArtifacts" &&
+      t.kind !== "dotnetBuild" &&
+      t.kind !== "run" &&
+      !(t.target ?? "").trim()
+    )
       errors.beforeLaunch = "A before launch task is incomplete";
   }
   for (const key of Object.keys(config.env)) {

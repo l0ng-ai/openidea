@@ -61,7 +61,7 @@ async function openHistory(page: Page) {
     { task, entries },
   );
   const stream = page.locator("[class*='_stream_']:visible");
-  await expect(stream.locator(":scope > *")).toHaveCount(entries.length);
+  await expect(stream.locator(":scope > *")).toHaveCount(80 * 3);
   await page.evaluate(() => document.fonts.ready);
   return stream;
 }
@@ -111,3 +111,24 @@ for (const selected of [false, true]) {
     }
   });
 }
+
+test("opens a folded process with the keyboard and jumps back to the latest reply", async ({ page }) => {
+  const stream = await openHistory(page);
+  await stream.evaluate((el) => {
+    el.scrollTop = 0;
+  });
+  const jump = page.getByRole("button", { name: "Jump to Latest" });
+  await expect(jump).toBeVisible();
+  const fold = stream.locator("[class*='_processRun_']").first();
+  const summary = fold.locator(":scope > summary");
+  await summary.focus();
+  await page.keyboard.press("Enter");
+  await expect(fold).toHaveAttribute("open", "");
+  await expect(fold.getByText("read src/module-0.ts", { exact: true })).toBeVisible();
+  await page.keyboard.press("Space");
+  await expect(fold).not.toHaveAttribute("open", "");
+  await jump.focus();
+  await page.keyboard.press("Enter");
+  await expect(jump).toBeHidden();
+  await expect.poll(() => stream.evaluate((el) => el.scrollHeight - el.clientHeight - el.scrollTop)).toBeLessThan(40);
+});

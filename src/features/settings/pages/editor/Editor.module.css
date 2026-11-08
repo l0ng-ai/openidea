@@ -153,18 +153,56 @@
   gap: 8px;
   margin-bottom: 10px;
 }
+/* Landing links of the Color Scheme root page (JetBrains-style sub-page list). */
+.schemeLinks {
+  display: flex;
+  flex-direction: column;
+  align-items: flex-start;
+  gap: 2px;
+  margin-top: 4px;
+}
+.schemeLink {
+  border: 0;
+  background: none;
+  padding: 2px 4px;
+  border-radius: var(--radius-small);
+  color: var(--accent);
+  font: inherit;
+  cursor: pointer;
+}
+.schemeLink:hover {
+  background: var(--bg-hover);
+  text-decoration: underline;
+}
 .schemeBody {
   display: grid;
-  grid-template-columns: minmax(220px, 300px) minmax(0, 1fr);
-  gap: 16px;
-  min-height: 300px;
+  grid-template-columns: minmax(180px, 1fr) minmax(220px, 260px);
+  gap: 14px;
+  min-height: 320px;
 }
 .attrTree {
-  max-height: 340px;
+  max-height: 360px;
   overflow: auto;
   border-radius: var(--radius-small);
   box-shadow: inset 0 0 0 1px var(--border-strong);
   padding: 2px 0;
+}
+.treeLabel {
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+/* Overridden attributes and their ancestor groups show in accent, up to the root. */
+.attrModified {
+  color: var(--accent);
+}
+.attrPanel {
+  box-shadow: inset 0 0 0 1px var(--border-strong);
+  border-radius: var(--radius-small);
+  padding: 10px;
+  align-self: start;
+  overflow: auto;
+  max-height: 360px;
 }
 .attrEditor {
   display: flex;
@@ -180,8 +218,16 @@
 .attrRow > :first-child {
   min-width: 110px;
 }
+/* Effect style select on its own row, right-aligned with the colour hex fields. */
+.effectSelect {
+  align-self: flex-end;
+  min-width: 0;
+  width: 150px;
+  margin-top: 8px;
+}
 .swatchInput {
-  width: 90px;
+  flex: 1 1 90px;
+  min-width: 90px;
 }
 .colorBox {
   position: relative;

@@ -17,12 +17,27 @@
  */
 import { useCallback, useEffect, useRef, useState, useSyncExternalStore } from "react";
 import { tx } from "@/platform/i18n";
+import { useProject } from "@/platform/project";
 import { subscribeTheme, themeKey } from "@/platform/themeWatch";
 import { EmptyState, Spinner } from "@/ui";
+import { editorService } from "@/workbench/contributions";
+import { ToolWindowCornerActions, useOwnToolWindowHeader } from "@/workbench/toolwindows/ToolWindows";
 import { pluginsBackend, type FileFilter } from "../backend";
 import { errorText, usePlugins } from "../store";
-import { FRAME_TAG, frameTheme, frameThemeMessage } from "./frame";
+import { FRAME_TAG, HEADERLESS_CORNER_INSET, frameTheme, frameThemeMessage } from "./frame";
+import { syncContentTabSession } from "./contentEditor";
+import {
+  PLUGIN_CONTENT_EDITOR_KIND,
+  contentTabData,
+  contentTabKey,
+  handleContentTabReplyText,
+  registerContentTabSender,
+} from "./contentTab";
+import { PLUGIN_LOG_EDITOR_KIND } from "./logEditor";
+import { logTabData } from "./logTab";
+import { webPtyBackend } from "./ptyBackend";
 import { onViewMessage } from "./viewStore";
+import { ptyBridge } from "./ptyBridge";
 import styles from "./PluginView.module.css";
 
 /** One change of a document, in UTF-16 offsets of the text it applies to. */
@@ -127,15 +142,21 @@ export interface WebViewProps {
   pluginId: string;
   view: string;
   label: string;
+  /** `none` hides the tool window's header row once the frame is ready and overlays corner actions. */
+  header?: "default" | "none";
   /** The custom editor's document; none in a tool window. */
   document?: FrameDocument | null;
   /** The backend document, for messages to the plugin's code. */
   doc?: number | null;
 }
 
-export function WebView({ pluginId, view, label, document = null, doc = null }: WebViewProps) {
+export function WebView({ pluginId, view, label, header = "default", document = null, doc = null }: WebViewProps) {
   const plugin = usePlugins((s) => s.plugins.find((p) => p.id === pluginId));
   const page = usePageUrl(pluginId, view, plugin);
+  const [loadedPage, setLoadedPage] = useState<PageState | null>(null);
+  const ownHeader = !document && header === "none";
+  const headless = ownHeader && page !== null && "url" in page && loadedPage === page;
+  useOwnToolWindowHeader(headless);
   const hasCode = plugin?.hasCode ?? false;
   const clipboard = plugin?.capabilities.some((c) => c.id === "clipboard" && c.granted) ?? false;
   const frame = useRef<HTMLIFrameElement>(null);
@@ -143,7 +164,14 @@ export function WebView({ pluginId, view, label, document = null, doc = null }: 
   const post = useCallback((message: object, transfer: Transferable[] = []) => {
     frame.current?.contentWindow?.postMessage({ tag: FRAME_TAG, ...message }, "*", transfer);
   }, []);
-  const postTheme = useCallback(() => post(frameThemeMessage(frameTheme())), [post]);
+  const postTheme = useCallback(() => {
+    const t = frameTheme();
+    if (ownHeader) {
+      t.vars["--openidea-corner-inset-width"] = `${HEADERLESS_CORNER_INSET.width}px`;
+      t.vars["--openidea-corner-inset-height"] = `${HEADERLESS_CORNER_INSET.height}px`;
+    }
+    post(frameThemeMessage(t));
+  }, [ownHeader, post]);
   const theme = useSyncExternalStore(subscribeTheme, themeKey, () => "");
   useEffect(postTheme, [theme, postTheme]);
 
@@ -152,6 +180,78 @@ export function WebView({ pluginId, view, label, document = null, doc = null }: 
 
   useEffect(() => {
     let dialog = false;
+    const handleLogTabMessage = (rawText: string): boolean => {
+      let parsed: unknown;
+      try {
+        parsed = JSON.parse(rawText);
+      } catch {
+        return false;
+      }
+      if (!parsed || typeof parsed !== "object" || !("op" in parsed) || parsed.op !== "open-log-tab") return false;
+      try {
+        const data = logTabData(pluginId, view, parsed, rawText.length);
+        void editorService().openInput({
+          kind: PLUGIN_LOG_EDITOR_KIND,
+          key: `pluginLog:${JSON.stringify([pluginId, view, data.key ?? data.title])}`,
+          data,
+        });
+      } catch (err) {
+        post({ text: JSON.stringify({ op: "log-error", error: errorText(err) }) });
+      }
+      return true;
+    };
+    const handleContentTabMessage = (rawText: string): boolean => {
+      if (handleContentTabReplyText(pluginId, rawText)) return true;
+      let parsed: unknown;
+      try {
+        parsed = JSON.parse(rawText);
+      } catch {
+        return false;
+      }
+      if (!parsed || typeof parsed !== "object" || !("op" in parsed) || parsed.op !== "open-content-tab") return false;
+      try {
+        const data = contentTabData(pluginId, view, parsed, rawText.length);
+        const key = contentTabKey(pluginId, view, data.key);
+        syncContentTabSession(key, data);
+        void editorService().openInput({
+          kind: PLUGIN_CONTENT_EDITOR_KIND,
+          key,
+          data,
+        });
+      } catch (err) {
+        post({ text: JSON.stringify({ op: "content-tab-error", error: errorText(err) }) });
+      }
+      return true;
+    };
+    const offContentSender = registerContentTabSender(pluginId, view, (message) => post(message));
+    const createPtys = () =>
+      ptyBridge(pluginId, webPtyBackend(pluginId, view), (message) => post({ text: JSON.stringify(message) }));
+    let ptys = createPtys();
+    const resetPtys = () => {
+      ptys.close();
+      ptys = createPtys();
+    };
+    const offProject = useProject.subscribe((state, previous) => {
+      if (state.project !== previous.project) resetPtys();
+    });
+    const pluginKey = (plugins: ReturnType<typeof usePlugins.getState>["plugins"]) => {
+      const p = plugins.find((p) => p.id === pluginId);
+      return p && JSON.stringify([p.path, p.version, p.enabled, p.status, p.capabilities]);
+    };
+    const offPlugins = usePlugins.subscribe((state, previous) => {
+      if (pluginKey(state.plugins) !== pluginKey(previous.plugins)) resetPtys();
+    });
+    const onUnload = () => ptys.close();
+    window.addEventListener("pagehide", onUnload);
+    const currentFrame = frame.current;
+    // A navigation keeps the iframe's WindowProxy, but must drop its old sessions.
+    let loaded = false;
+    const onLoad = () => {
+      if (loaded) resetPtys();
+      loaded = true;
+    };
+    currentFrame?.addEventListener("load", onLoad);
+
     const run = async (op: string, args: Record<string, unknown>): Promise<[unknown, Transferable[]?]> => {
       switch (op) {
         case "document.get": {
@@ -218,10 +318,15 @@ export function WebView({ pluginId, view, label, document = null, doc = null }: 
           ([value, transfer]) => post({ reply: id, value }, transfer),
           (err: unknown) => post({ reply: id, error: errorText(err) }),
         );
-      } else if (typeof m.text === "string" && hasCode) {
-        pluginsBackend()
-          .viewEvent(pluginId, view, { kind: "message", text: m.text }, doc)
-          .catch((err: unknown) => console.warn(`plugin ${pluginId}: ${errorText(err)}`));
+      } else if (typeof m.text === "string") {
+        if (handleLogTabMessage(m.text)) return;
+        if (handleContentTabMessage(m.text)) return;
+        if (ptys.handle(m.text)) return;
+        if (hasCode) {
+          pluginsBackend()
+            .viewEvent(pluginId, view, { kind: "message", text: m.text }, doc)
+            .catch((err: unknown) => console.warn(`plugin ${pluginId}: ${errorText(err)}`));
+        }
       }
     };
     window.addEventListener("message", onMessage);
@@ -229,8 +334,14 @@ export function WebView({ pluginId, view, label, document = null, doc = null }: 
     return () => {
       window.removeEventListener("message", onMessage);
       off();
+      offContentSender();
+      ptys.close();
+      offPlugins();
+      offProject();
+      window.removeEventListener("pagehide", onUnload);
+      currentFrame?.removeEventListener("load", onLoad);
     };
-  }, [pluginId, view, document, doc, hasCode, post]);
+  }, [pluginId, view, document, doc, hasCode, post, page]);
 
   if (!page)
     return (
@@ -245,7 +356,7 @@ export function WebView({ pluginId, view, label, document = null, doc = null }: 
       </EmptyState>
     );
   // No `allow-same-origin`: an opaque origin without access to the IDE. `onLoad` sends the theme.
-  return (
+  const iframe = (
     <iframe
       ref={frame}
       className={styles.frame}
@@ -253,7 +364,17 @@ export function WebView({ pluginId, view, label, document = null, doc = null }: 
       sandbox="allow-scripts"
       allow={clipboard ? "clipboard-read; clipboard-write" : undefined}
       src={page.url}
-      onLoad={postTheme}
+      onLoad={() => {
+        postTheme();
+        setLoadedPage(page);
+      }}
     />
+  );
+  if (!ownHeader) return iframe;
+  return (
+    <div className={styles.webWrap}>
+      {headless && <ToolWindowCornerActions className={styles.cornerActions} />}
+      {iframe}
+    </div>
   );
 }

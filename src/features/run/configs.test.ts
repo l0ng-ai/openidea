@@ -50,6 +50,16 @@ describe("config merge / override", () => {
     ]);
   });
 
+  it("keeps saved CMake names when generated context changes", () => {
+    const id = "cmake:build:Debug:hello";
+    const saved = cfg({ id, kind: "cmake-application", name: "My hello (build)", detected: false });
+    for (const name of ["hello", "hello [Debug · build/]"]) {
+      const generated = cfg({ id, kind: "cmake-application", name });
+      const merged = mergeConfigs([generated], [saved]);
+      expect(merged).toEqual([saved]);
+    }
+  });
+
   it("editing a detected config creates a user copy with the same id", () => {
     const edited = upsertConfig(detected, { ...detected[0]!, args: ["run", "dev", "--port", "3001"] });
     expect(edited[0]).toMatchObject({ id: "npm:dev", detected: false, args: ["run", "dev", "--port", "3001"] });
@@ -188,13 +198,32 @@ describe("context configuration", () => {
   it("runs a JS test file through the closest test script", () => {
     const c = contextConfig("web/src/cart.test.ts", configs)!;
     expect(c).toMatchObject({
-      args: ["run", "test", "--", "src/cart.test.ts"],
+      args: ["run", "test", "src/cart.test.ts"],
       cwd: "web",
       isTest: true,
       name: "cart.test.ts",
     });
     expect(c.id).toBe("context:npm:web:test:web/src/cart.test.ts");
-    expect(contextConfig("src/a.spec.js", configs)!.args).toEqual(["run", "test", "--", "src/a.spec.js"]);
+    expect(contextConfig("src/a.spec.js", configs)!.args).toEqual(["run", "test", "src/a.spec.js"]);
+  });
+
+  it.each([
+    ["npm", ["--"]],
+    ["pnpm", []],
+    ["/opt/bin/pnpm", []],
+    ["C:\\tools\\pnpm.CMD", []],
+    ["yarn", ["--"]],
+    ["bun", ["--"]],
+  ])("forwards test files through %s", (command, separator) => {
+    const base = cfg({ id: "js:test", kind: "npm", command, args: ["run", "test"], isTest: true });
+    expect(contextConfig("tests/cart.test.ts", [base])!.args).toEqual([
+      "run",
+      "test",
+      ...separator,
+      "tests/cart.test.ts",
+    ]);
+    const explicit = { ...base, args: ["run", "test", "--", "--reporter=verbose"] };
+    expect(contextConfig("tests/cart.test.ts", [explicit])!.args).toEqual([...explicit.args, "tests/cart.test.ts"]);
   });
 
   it("narrows rspec and rake test runs to the file", () => {

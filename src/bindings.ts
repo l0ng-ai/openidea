@@ -8,6 +8,17 @@ import { invoke as __TAURI_INVOKE, Channel } from "@tauri-apps/api/core";
 /** Commands */
 export const commands = {
 	appInfo: () => __TAURI_INVOKE<AppInfo>("app_info"),
+	mcpUiReady: (ready: boolean) => typedError<null, IdeError>(__TAURI_INVOKE("mcp_ui_ready", { ready })),
+	mcpRespond: (id: number, allow: boolean, error: string | null) => typedError<null, IdeError>(__TAURI_INVOKE("mcp_respond", { id, allow, error })),
+	mcpServerStatus: () => typedError<McpServerStatus, IdeError>(__TAURI_INVOKE("mcp_server_status")),
+	mcpSetOpenEditors: (paths: IpcPath[]) => typedError<null, IdeError>(__TAURI_INVOKE("mcp_set_open_editors", { paths })),
+	mcpSetFocusedEditor: (editor: {
+	path: IpcPath,
+	/**  Zero-based lines and UTF-16 columns, end exclusive. */
+	selection: Range,
+	selectedText: string,
+} | null, focused: boolean) => typedError<null, IdeError>(__TAURI_INVOKE("mcp_set_focused_editor", { editor, focused })),
+	mcpReportProblems: (reset: boolean, files: FileProblems[]) => typedError<null, IdeError>(__TAURI_INVOKE("mcp_report_problems", { reset, files })),
 	/**  Devices `adb` knows about, online ones first. */
 	androidDevices: () => typedError<AndroidDevice[], IdeError>(__TAURI_INVOKE("android_devices")),
 	/**
@@ -31,6 +42,7 @@ export const commands = {
 	projectTrustAddLocation: (path: string) => typedError<null, IdeError>(__TAURI_INVOKE("project_trust_add_location", { path })),
 	projectTrustRemoveLocation: (path: string) => typedError<null, IdeError>(__TAURI_INVOKE("project_trust_remove_location", { path })),
 	workspaceCreate: (path: string, name: string, projects: string[]) => typedError<IpcPath, IdeError>(__TAURI_INVOKE("workspace_create", { path, name, projects })),
+	workspaceDiscoverProjects: (request: RequestId, folders: string[]) => typedError<ProjectDiscovery, IdeError>(__TAURI_INVOKE("workspace_discover_projects", { request, folders })),
 	workspaceAttach: (path: string) => typedError<IpcPath, IdeError>(__TAURI_INVOKE("workspace_attach", { path })),
 	workspaceUpdate: (name: string, projects: string[]) => typedError<ProjectInfo_Serialize, IdeError>(__TAURI_INVOKE("workspace_update", { name, projects })),
 	windowGroupCurrent: () => typedError<WindowTab[], IdeError>(__TAURI_INVOKE("window_group_current")),
@@ -81,6 +93,8 @@ export const commands = {
 	settingsExport: (path: string, storage: { [key in string]: string }) => typedError<null, IdeError>(__TAURI_INVOKE("settings_export", { path, storage })),
 	/**  Import Settings…: replaces the global settings with the file's; every window re-reads them. */
 	settingsImport: (path: string) => typedError<SettingsImport_Serialize, IdeError>(__TAURI_INVOKE("settings_import", { path })),
+	/**  Import Settings… with a JetBrains `settings.zip`: reads it; the frontend maps and applies it. */
+	settingsReadJetbrains: (path: string) => typedError<JetBrainsSettings, IdeError>(__TAURI_INVOKE("settings_read_jetbrains", { path })),
 	/**
 	 *  File › Rename Project…: the project's display name (title bar, recent
 	 *  projects); an empty `name` restores the folder name. Stored in the project's settings.
@@ -161,6 +175,7 @@ export const commands = {
 	agentRespond: (task: string, permission: number, option: string | null) => typedError<null, IdeError>(__TAURI_INVOKE("agent_respond", { task, permission, option })),
 	agentArchive: (task: string) => typedError<null, IdeError>(__TAURI_INVOKE("agent_archive", { task })),
 	agentUnarchive: (task: string) => typedError<null, IdeError>(__TAURI_INVOKE("agent_unarchive", { task })),
+	agentRename: (task: string, title: string) => typedError<null, IdeError>(__TAURI_INVOKE("agent_rename", { task, title })),
 	agentDelete: (task: string, removeWorktree: boolean) => typedError<null, IdeError>(__TAURI_INVOKE("agent_delete", { task, removeWorktree })),
 	agentChanges: (task: string) => typedError<AgentChange[], IdeError>(__TAURI_INVOKE("agent_changes", { task })),
 	/**  Content of `path` when the task started (left side of its diff). */
@@ -675,7 +690,8 @@ export const commands = {
 	runGradleJvmArgsScript: (jvmArgs: string[]) => typedError<string, IdeError>(__TAURI_INVOKE("run_gradle_jvm_args_script", { jvmArgs })),
 	/**  Writes one of the IDE's Gradle init scripts where the build runs; returns its path. */
 	runGradleInitScript: (name: string, text: string) => typedError<string, IdeError>(__TAURI_INVOKE("run_gradle_init_script", { name, text })),
-	runTomcatHome: (home: string) => typedError<TomcatHome, IdeError>(__TAURI_INVOKE("run_tomcat_home", { home })),
+	runTomcatHome: (home: string) => typedError<TomcatHome_Serialize, IdeError>(__TAURI_INVOKE("run_tomcat_home", { home })),
+	runTomcatInstallations: () => typedError<TomcatInstallation_Serialize[], IdeError>(__TAURI_INVOKE("run_tomcat_installations")),
 	runTomcatArtifacts: () => typedError<WebArtifact[], IdeError>(__TAURI_INVOKE("run_tomcat_artifacts")),
 	runTomcatBuild: (config: RunConfig_Deserialize) => typedError<({
 	/**  Stable id, e.g. `npm:dev`, `cargo:run:app`, or a uuid for user-defined. */
@@ -753,7 +769,7 @@ export const commands = {
 	 *  with `cancel_request(request)`. Diagnostics of `clear` (the files of the previous build)
 	 *  are cleared first; the new messages are published as `build` diagnostics.
 	 */
-	buildRun: (kind: BuildKind, file: string | null, request: RequestId, clear: string[], onEvent: Channel<BuildEvent>) => typedError<BuildResult, IdeError>(__TAURI_INVOKE("build_run", { kind, file, request, clear, onEvent })),
+	buildRun: (kind: BuildKind, file: string | null, cmake: string | null, request: RequestId, clear: string[], onEvent: Channel<BuildEvent>) => typedError<BuildResult, IdeError>(__TAURI_INVOKE("build_run", { kind, file, cmake, request, clear, onEvent })),
 	/**
 	 *  Cancellable with `cancel_request(request)`.
 	 *  Builds the workspace (when `build`), then resolves the runtime (or test)
@@ -814,6 +830,26 @@ export const commands = {
 	jdkDownload: (vendor: string, version: number, location: string | null, request: RequestId, onEvent: Channel<InstallEvent>) => typedError<Sdk, IdeError>(__TAURI_INVOKE("jdk_download", { vendor, version, location, request, onEvent })),
 	/**  Installed interpreters / toolchains of `kind`; project-local ones first. */
 	sdkDetect: (kind: SdkKind) => typedError<Sdk[], IdeError>(__TAURI_INVOKE("sdk_detect", { kind })),
+	/**  An existing Python executable or virtualenv folder as an SDK; `None` if Python cannot run. */
+	sdkPythonInterpreter: (path: string) => typedError<{
+	/**
+	 *  Executable (`python`, `node`, `pnpm`) or directory (Rust toolchain bin
+	 *  dir, GOROOT, TypeScript `lib` dir) that the setting stores.
+	 */
+	path: IpcPath,
+	/**  Display name, e.g. `Python 3.12 (.venv)` or `stable-aarch64-apple-darwin`. */
+	name: string,
+	version: string | null,
+	/**
+	 *  Where it was found: `venv` | `system` | `pyenv` | `conda` | `uv` | `nvm` |
+	 *  `rustup` | `bundled` | `workspace` | `path` …
+	 */
+	source: string,
+	/**  Environment / toolchain root (virtualenv dir, rustup toolchain dir, GOROOT). */
+	home: IpcPath | null,
+	/**  Rust standard library sources, Go default GOPATH. */
+	extra: IpcPath | null,
+} | null, IdeError>(__TAURI_INVOKE("sdk_python_interpreter", { path })),
 	/**  The interpreter the project uses: the configured one, else its virtualenv. */
 	sdkPythonEffective: (near: string | null) => typedError<string | null, IdeError>(__TAURI_INVOKE("sdk_python_effective", { near })),
 	/**  The PHP interpreter chosen in Settings › Languages & Frameworks › PHP; `None`: the `php` on `PATH`. */
@@ -834,7 +870,7 @@ export const commands = {
 	 *  SDK / library source folders shown under "External Libraries" in the Project view,
 	 *  with the Maven / Gradle dependency jars of the build model.
 	 */
-	sdkProjectLibraries: () => typedError<LibraryGroup[], IdeError>(__TAURI_INVOKE("sdk_project_libraries")),
+	sdkProjectLibraries: (request: RequestId, onGroups: Channel<LibraryGroup[]>) => typedError<LibraryGroup[], IdeError>(__TAURI_INVOKE("sdk_project_libraries", { request, onGroups })),
 	/**  Looks up `names` (bare command names): `node_modules/.bin` above `near`, then the search path. */
 	sdkLocateTools: (names: string[], near: string | null) => typedError<LocatedTools, IdeError>(__TAURI_INVOKE("sdk_locate_tools", { names, near })),
 	/**  Creates a Python environment with `tool` (`venv` / `uv` / `poetry`); output streams through `on_output`. */
@@ -896,6 +932,8 @@ export const commands = {
 	windowFlashTaskbar: (flash: boolean) => typedError<null, IdeError>(__TAURI_INVOKE("window_flash_taskbar", { flash })),
 	/**  Height of the web title bar in native logical pixels (CSS height × IDE zoom). */
 	windowSetTitlebarHeight: (height: number | null) => typedError<null, IdeError>(__TAURI_INVOKE("window_set_titlebar_height", { height })),
+	/**  Whether this window is in native full screen (on macOS, also a tab of a fullscreen group). */
+	windowIsFullscreen: () => __TAURI_INVOKE<boolean>("window_is_fullscreen"),
 	/**
 	 *  Starts dragging `window` while the primary mouse button is still down; returns whether a drag began.
 	 * 
@@ -935,12 +973,15 @@ export const commands = {
 	/**  A window vetoed the quit (user cancelled its unsaved-changes prompt). */
 	appCancelQuit: () => __TAURI_INVOKE<void>("app_cancel_quit"),
 	/**
-	 *  Sets the menu's labels / shortcut text and rebuilds it when they changed.
-	 *  Focusing another project window re-pushes the same shared menu; an identical
-	 *  config must not call `set_menu`, which redraws the macOS menu bar.
+	 *  Sets the menu's labels / shortcut text and updates the menu when the visible
+	 *  items changed. Shortcuts for actions that are not on the menu must not call
+	 *  `set_menu`, which redraws the macOS menu bar.
 	 */
 	menuConfigure: (config: MenuConfig) => __TAURI_INVOKE<void>("menu_configure", { config }),
-	/**  Rebuilds the menu (e.g. after the recent-projects list changed). */
+	/**
+	 *  Updates the menu after the recent-projects list changed. Only the Open Recent
+	 *  submenu is rewritten when the rest of the menu is unchanged.
+	 */
 	menuRefresh: () => __TAURI_INVOKE<void>("menu_refresh"),
 	/**  The menu bar for a title bar drawn by the frontend (Windows). */
 	menuModel: () => __TAURI_INVOKE<MenuNode[]>("menu_model"),
@@ -950,6 +991,10 @@ export const commands = {
 	 */
 	menuSetDisabled: (ids: string[]) => __TAURI_INVOKE<void>("menu_set_disabled", { ids }),
 	appLogLocation: () => typedError<LogLocation, IdeError>(__TAURI_INVOKE("app_log_location")),
+	/**  Installs the `openidea` command for this user. */
+	appCliInstall: () => typedError<CliInstallation, IdeError>(__TAURI_INVOKE("app_cli_install")),
+	/**  Removes the installed `openidea` command; returns the links removed. */
+	appCliUninstall: () => typedError<IpcPath[], IdeError>(__TAURI_INVOKE("app_cli_uninstall")),
 	appBuildInfo: () => __TAURI_INVOKE<BuildInfo>("app_build_info"),
 	appCheckUpdate: (source: UpdateSource) => typedError<UpdateCheck, IdeError>(__TAURI_INVOKE("app_check_update", { source })),
 	/**
@@ -1041,6 +1086,8 @@ export const commands = {
 	pluginUnlink: (id: string) => typedError<null, IdeError>(__TAURI_INVOKE("plugin_unlink", { id })),
 	/**  Validated assets of a plugin whose id starts with `prefix` (icon theme mapping and SVGs). */
 	pluginAssets: (pluginId: string, prefix: string) => typedError<([string, string])[], IdeError>(__TAURI_INVOKE("plugin_assets", { pluginId, prefix })),
+	/**  The UI language (BCP 47) that plugin code reads with `ui.locale()`. */
+	pluginSetUiLocale: (tag: string) => typedError<null, IdeError>(__TAURI_INVOKE("plugin_set_ui_locale", { tag })),
 	/**  An activation event from the UI: `kind` is `language`, `file` (project-relative path) or `view`. */
 	pluginActivationEvent: (kind: string, value: string) => typedError<null, IdeError>(__TAURI_INVOKE("plugin_activation_event", { kind, value })),
 	/**
@@ -1056,7 +1103,7 @@ export const commands = {
 	path: string,
 	language: string,
 	selections: Range[],
-} | null, paths: string[] | null) => typedError<string | null, IdeError>(__TAURI_INVOKE("plugin_run_command", { pluginId, commandId, arg, editor, paths })),
+} | null, paths: string[] | null, settingsScope: "global" | "project" | null) => typedError<string | null, IdeError>(__TAURI_INVOKE("plugin_run_command", { pluginId, commandId, arg, editor, paths, settingsScope })),
 	/**  Workbench events from this window (only the kinds of `plugin_event_kinds`). */
 	pluginPostEvents: (events: WorkbenchEvent[]) => __TAURI_INVOKE<void>("plugin_post_events", { events }),
 	/**  Kinds of workbench events plugins want (re-fetch on `subscriptionsChanged`). */
@@ -1072,6 +1119,16 @@ export const commands = {
 	 *  (pick), `[text]` (input), anything (confirm: OK), or `None` when dismissed.
 	 */
 	pluginAnswerPrompt: (promptId: string, answer: string[] | null) => __TAURI_INVOKE<boolean>("plugin_answer_prompt", { promptId, answer }),
+	/**
+	 *  A window's answer to a plugin's `commitRequested`; false when the call no
+	 *  longer waits.
+	 */
+	pluginAnswerCommit: (requestId: string, answer: CommitAnswer) => __TAURI_INVOKE<boolean>("plugin_answer_commit", { requestId, answer }),
+	/**
+	 *  Runs plugins' before-commit checks on what `selection` commits, until
+	 *  `request` is cancelled.
+	 */
+	pluginCommitChecks: (selection: CommitSelection, checks: PluginCommitCheckRef[], request: RequestId) => typedError<PluginCommitCheckResult[], IdeError>(__TAURI_INVOKE("plugin_commit_checks", { selection, checks, request })),
 	/**
 	 *  Content of a plugin view (`doc`: the document of a custom editor; `editor`: for
 	 *  a tool window, the window's active editor, as commands get it).
@@ -1100,6 +1157,12 @@ export const commands = {
 	pluginServiceLog: (request: RequestId, pluginId: string, view: string, key: string, tab: string, on: string[], onLine: Channel<PluginOutputLine>) => typedError<number | null, IdeError>(__TAURI_INVOKE("plugin_service_log", { request, pluginId, view, key, tab, on, onLine })),
 	/**  The page of a plugin's web view or custom editor (`web = …`). */
 	pluginWebPage: (pluginId: string, view: string) => typedError<WebPage, IdeError>(__TAURI_INVOKE("plugin_web_page", { pluginId, view })),
+	pluginWebPtySpawn: (pluginId: string, view: string, command: WebPtyCommand, onOutput: Channel<string>) => typedError<TerminalInfo, IdeError>(__TAURI_INVOKE("plugin_web_pty_spawn", { pluginId, view, command, onOutput })),
+	/**
+	 *  Starts the program of a log tab the plugin's code opened in this window,
+	 *  with the toggles in `on`.
+	 */
+	pluginLogTabSpawn: (pluginId: string, key: string, on: string[], cols: number, rows: number, onOutput: Channel<string>) => typedError<TerminalInfo, IdeError>(__TAURI_INVOKE("plugin_log_tab_spawn", { pluginId, key, on, cols, rows, onOutput })),
 	/**
 	 *  Writes what a web view saves (`openidea.saveFile`) to the path the user
 	 *  chose in the save dialog, on this machine.
@@ -1120,6 +1183,7 @@ export const commands = {
 	targets: Location[],
 } | null, IdeError>(__TAURI_INVOKE("plugin_navigation_goto", { doc, pos })),
 	pluginNavigationMarkers: (paths: string[]) => typedError<FileMarkers[], IdeError>(__TAURI_INVOKE("plugin_navigation_markers", { paths })),
+	pluginEndpoints: (pluginId: string) => typedError<PluginEndpoint[], IdeError>(__TAURI_INVOKE("plugin_endpoints", { pluginId })),
 	/**  The marketplace's plugins: read again when `refresh` or when none was read yet, else the last index read. */
 	pluginMarket: (refresh: boolean) => typedError<MarketPlugin[], IdeError>(__TAURI_INVOKE("plugin_market", { refresh })),
 	pluginMarketUrl: () => __TAURI_INVOKE<string | null>("plugin_market_url"),
@@ -1300,8 +1364,9 @@ export const commands = {
 	/**  Browse before connecting, using the desktop's SSH configuration even in a remote window. */
 	remoteBootstrapList: (ssh: string, path: string) => typedError<RemoteEntry[], IdeError>(__TAURI_INVOKE("remote_bootstrap_list", { ssh, path })),
 	/**
-	 *  File › Remote Development: opens `path` on `target` (an SSH host or a WSL distribution)
-	 *  in this window (installs / starts the server as needed).
+	 *  File › Remote Development: opens `path` on `target` (an SSH host, a WSL distribution, or a
+	 *  dev container, whose project folder is the container's own) in this window (installs /
+	 *  starts the server as needed).
 	 */
 	remoteConnect: (target: RemoteTarget, path: string, onProgress: Channel<RemoteProgress>) => typedError<RemoteProject_Serialize, IdeError>(__TAURI_INVOKE("remote_connect", { target, path, onProgress })),
 	/**  The remote session of this window (a settings window: its parent's), if any. */
@@ -1347,7 +1412,7 @@ export const commands = {
 	dbDdl: (id: string, schema: string, table: string) => typedError<string, IdeError>(__TAURI_INVOKE("db_ddl", { id, schema, table })),
 	dbSchemaObjects: (id: string, schema: string) => typedError<DbSchemaObjects, IdeError>(__TAURI_INVOKE("db_schema_objects", { id, schema })),
 	dbObjectDdl: (id: string, schema: string, kind: DbObjectKind, name: string) => typedError<string, IdeError>(__TAURI_INVOKE("db_object_ddl", { id, schema, kind, name })),
-	dbExplain: (request: RequestId, id: string, statement: string) => typedError<DbPlanNode[], IdeError>(__TAURI_INVOKE("db_explain", { request, id, statement })),
+	dbExplain: (request: RequestId, id: string, statement: string, schema: string | null) => typedError<DbPlanNode[], IdeError>(__TAURI_INVOKE("db_explain", { request, id, statement, schema })),
 	dbHistory: (id: string) => typedError<DbHistoryEntry[], IdeError>(__TAURI_INVOKE("db_history", { id })),
 	dbRemoveHistory: (id: string, texts: string[] | null) => typedError<null, IdeError>(__TAURI_INVOKE("db_remove_history", { id, texts })),
 	dbCompletion: (id: string) => typedError<DbCompletion, IdeError>(__TAURI_INVOKE("db_completion", { id })),
@@ -1360,7 +1425,7 @@ export const commands = {
 	dbSetManualCommit: (id: string, manual: boolean) => typedError<null, IdeError>(__TAURI_INVOKE("db_set_manual_commit", { id, manual })),
 	dbFinishTransaction: (id: string, commit: boolean) => typedError<null, IdeError>(__TAURI_INVOKE("db_finish_transaction", { id, commit })),
 	dbStatements: (id: string, text: string, from: number, to: number) => typedError<SqlStatement[], IdeError>(__TAURI_INVOKE("db_statements", { id, text, from, to })),
-	dbExecute: (request: RequestId, id: string, statements: SqlStatement[], skip: number, maxRows: number) => typedError<DbStatementOutcome[], IdeError>(__TAURI_INVOKE("db_execute", { request, id, statements, skip, maxRows })),
+	dbExecute: (request: RequestId, id: string, statements: SqlStatement[], skip: number, maxRows: number, schema: string | null) => typedError<DbStatementOutcome[], IdeError>(__TAURI_INVOKE("db_execute", { request, id, statements, skip, maxRows, schema })),
 	dbTablePage: (request: RequestId, id: string, schema: string, table: string, filter: string | null, sort: DbSortKey[], offset: number, limit: number) => typedError<DbTablePage, IdeError>(__TAURI_INVOKE("db_table_page", { request, id, schema, table, filter, sort, offset, limit })),
 	dbApplyEdits: (id: string, schema: string, table: string, edits: DbRowEdit[]) => typedError<number | null, IdeError>(__TAURI_INVOKE("db_apply_edits", { id, schema, table, edits })),
 	dbConsolePath: (id: string) => typedError<IpcPath, IdeError>(__TAURI_INVOKE("db_console_path", { id })),
@@ -1431,10 +1496,13 @@ export type AgentCommand = {
 	description: string,
 	/**  What to type after the command, when it takes input. */
 	hint: string | null,
+	source?: AgentCommandSource,
 };
 
 /**  Why the executable cannot be changed in built-in agent settings. */
 export type AgentCommandReadOnlyReason = "packageRunner" | "registry" | "customAgent";
+
+export type AgentCommandSource = "command" | "skill";
 
 /**  A setting chosen for a new task, by [`AgentConfigOption::id`]. */
 export type AgentConfigChoice = {
@@ -1606,6 +1674,8 @@ export type AgentProvider = {
 	env: { [key in string]: string },
 	/**  Settings (models, modes…) the agent offered last time it ran; empty before its first session. */
 	config: AgentConfigOption[],
+	/**  Thinking-level options by model value; absent models have not reported their levels. */
+	thoughtLevels?: { [key in string]: AgentConfigOption[] },
 	/**  Slash commands it offered last time. */
 	commands: AgentCommand[],
 	source: AgentSource,
@@ -1613,6 +1683,8 @@ export type AgentProvider = {
 
 /**  A question the agent asks with `AskUserQuestion`, answered by picking options or typing. */
 export type AgentQuestion = {
+	/**  Stable answer identity when the provider supplies question ids. */
+	answerKey?: string | null,
 	header?: string,
 	question: string,
 	multiSelect?: boolean,
@@ -1853,11 +1925,28 @@ export type ApplyOutcome = {
 	conflicts: string[],
 };
 
+/**  Packaging artifact definition (Project Structure › Artifacts). */
+export type ArtifactConfig = {
+	name?: string,
+	kind?: ArtifactKind,
+	/**  Module relative path (`"."` for root module). */
+	module?: string,
+	/**  Output directory (relative to project root or absolute). */
+	outputDirectory?: string,
+	/**  Main class for executable JAR artifacts. */
+	mainClass?: string,
+	/**  Project library names included in the packaged artifact (`WEB-INF/lib` or JAR manifest). */
+	includeLibraries?: string[],
+};
+
 /**  `groupId:artifactId` of a dependency. */
 export type ArtifactKey = {
 	groupId: string,
 	artifactId: string,
 };
+
+/**  Packaging type of a Project Structure artifact. */
+export type ArtifactKind = "jar" | "war" | "warExploded";
 
 /**  What an askpass prompt asks for. */
 export type AskpassKind = 
@@ -1887,6 +1976,7 @@ export type AttachableProcess = {
 export type AutoImportSettings = {
 	addUnambiguous?: boolean,
 	optimizeOnTheFly?: boolean,
+	importsOnPaste?: ImportsOnPaste,
 };
 
 /**  When local changes are uploaded to the default deployment server. */
@@ -1899,7 +1989,8 @@ export type AutoUpload = "never" |
 /**  A step run before a configuration launches; a failing step aborts the launch. */
 export type BeforeLaunchTask = {
 	/**
-	 *  `run` (another configuration, `target` = its id) | `build` | `tool` (external tool id) |
+	 *  `run` (another configuration id) | `build` (project, or `target` = CMake build id) |
+	 *  `tool` (external tool id) |
 	 *  `command` (a shell command line) | `toolWindow` (tool window id).
 	 */
 	kind: string,
@@ -2212,6 +2303,11 @@ export type ClearCachesResult = {
 	rssAfterBytes: number | null,
 };
 
+export type CliInstallation = {
+	path: IpcPath,
+	pathDirectory: IpcPath | null,
+};
+
 export type CloseContext = {
 	/**  Quit is in progress (exit was already confirmed). */
 	quitting: boolean,
@@ -2320,6 +2416,15 @@ export type CommandForm = {
 
 export type Commit = Commit_Serialize | Commit_Deserialize;
 
+/**  A window's answer to a [`CommitRequest`]. */
+export type CommitAnswer = 
+/**  The window's project has no repository. */
+{ kind: "noRepository" } | { kind: "selection"; selection: CommitSelection } | 
+/**  The message was replaced. */
+{ kind: "done" } | 
+/**  The draft is no longer at the revision. */
+{ kind: "stale" };
+
 /**  Commit Options (IDEA's commit options popup). */
 export type CommitOptions = {
 	amend: boolean,
@@ -2338,6 +2443,41 @@ export type CommitOptions = {
 	stage?: IpcPath[],
 	/**  Staged files left out of the commit; they stay staged afterwards. */
 	exclude?: IpcPath[],
+};
+
+/**  A problem a plugin's before-commit check reported (WIT `commit-checker.commit-problem`). */
+export type CommitProblem = {
+	message: string,
+	/**  Absolute path of the file it is in, if any (IPC form). */
+	path: string | null,
+	range: Range | null,
+};
+
+/**  What a plugin asks of a window's Commit view. */
+export type CommitRequest = 
+/**
+ *  What Commit would commit now ([`CommitAnswer::Selection`]); unsaved
+ *  editors of the included files are saved first.
+ */
+{ kind: "selection" } | 
+/**  Replace the message if the draft is still at `revision`. */
+{ kind: "setMessage"; revision: number; message: string };
+
+/**
+ *  What a window's Commit view would commit: per repository, the options
+ *  `vcs_commit` would get.
+ */
+export type CommitSelection = {
+	/**  Changes whenever the message, the included changes or Amend do. */
+	revision: number,
+	message: string,
+	amend: boolean,
+	repositories: CommitSelectionRepo[],
+};
+
+export type CommitSelectionRepo = {
+	root: IpcPath,
+	options: CommitOptions,
 };
 
 /**  Version Control › Commit: commit checks and commit-message inspections. */
@@ -2361,6 +2501,8 @@ export type CommitSettings = {
 	bodyLimit?: number,
 	showRightMargin?: boolean,
 	wrapAtMargin?: boolean,
+	/**  Plugin before-commit checks turned off (`<plugin id>/<check id>`); the rest run. */
+	disabledPluginChecks?: string[],
 };
 
 export type Commit_Deserialize = {
@@ -3041,6 +3183,9 @@ export type DeletedTag = {
 	target: string,
 };
 
+/**  Dependency scope for a module dependency or project library (IDEA's Modules › Dependencies). */
+export type DependencyScope = "compile" | "test" | "runtime" | "provided";
+
 export type DependencyUpdate = {
 	latest: string,
 	replacement: string,
@@ -3170,6 +3315,12 @@ export type DirectoryHistory = {
 	entries: HistoryEntry[],
 	/**  Files with history that no longer exist on disk. */
 	deleted: IpcPath[],
+};
+
+export type DiscoveredProject = {
+	path: IpcPath,
+	root: IpcPath,
+	relative_path: string,
 };
 
 /**  Checking out remote `origin/x` while local `x` has commits `origin/x` lacks. */
@@ -3611,7 +3762,7 @@ export type ErrorKind = "notFound" | "alreadyExists" | "permissionDenied" | "inv
 "unavailable" | "io" | "protocol" | "internal";
 
 /**  Kinds of workbench events a plugin can subscribe to (`on-event:<kind>`). */
-export type EventKind = "file-opened" | "file-saved" | "editor-focused" | "action-performed" | "vcs-changed" | "scheduled";
+export type EventKind = "file-opened" | "file-saved" | "files-changed" | "editor-focused" | "action-performed" | "vcs-changed" | "scheduled";
 
 /**  An exception breakpoint filter offered by an adapter (`exceptionBreakpointFilters`). */
 export type ExceptionFilter = {
@@ -3689,7 +3840,22 @@ export type ExternalTool = {
 	openConsole?: boolean,
 };
 
-export type FieldValue = { kind: "text"; value: string } | { kind: "multiline"; value: string } | { kind: "checkbox"; value: boolean } | { kind: "choice"; value: {
+/**  Framework facet attached to a module (Project Structure › Facets). */
+export type FacetConfig = {
+	/**  `"web"` | `"spring"` | `"jpa"`. */
+	kind?: string,
+	/**  Module relative path (`"."` for root module). */
+	module?: string,
+	/**  Deployment descriptor path (e.g. `src/main/webapp/WEB-INF/web.xml`, `src/main/resources/META-INF/persistence.xml`). */
+	descriptor?: string,
+	/**  Web resource root directory for Web facets (e.g. `src/main/webapp`). */
+	webRoot?: string,
+};
+
+export type FieldValue = { kind: "label"; value: string } | { kind: "readonlyText"; value: {
+	text: string,
+	multiline: boolean,
+} } | { kind: "text"; value: string } | { kind: "multiline"; value: string } | { kind: "checkbox"; value: boolean } | { kind: "choice"; value: {
 	options: string[],
 	selected: string,
 } };
@@ -3811,6 +3977,11 @@ export type FileProbe = {
 	tooLarge: boolean,
 };
 
+export type FileProblems = {
+	path: IpcPath,
+	items: Diagnostic[],
+};
+
 /**  A path written in a document: an HTML URL attribute, a CSS `url()` / `@import`. */
 export type FileReference = {
 	range: Range,
@@ -3870,6 +4041,20 @@ export type FileTypeAssociation = {
 	removedPatterns?: string[],
 	/**  Interpreters run by a `#!` first line, e.g. `node` for `#!/usr/bin/env node`. */
 	hashbangs?: string[],
+};
+
+/**  Debounced worktree changes. Paths use the same absolute form as `file-saved`. */
+export type FilesChanged = {
+	created: string[],
+	modified: string[],
+	removed: string[],
+};
+
+export type FocusedEditor = {
+	path: IpcPath,
+	/**  Zero-based lines and UTF-16 columns, end exclusive. */
+	selection: Range,
+	selectedText: string,
 };
 
 export type FoldKind = "region" | "comment" | "imports";
@@ -4379,9 +4564,11 @@ export type IdeError = {
 	data?: ErrorData | null,
 };
 
-export type IdeEvent = 
+export type IdeEvent = { type: "mcpRequest"; id: number; request: McpUiRequest } | { type: "mcpRequestClosed"; id: number } | 
 /**  Project window membership or selection changed. */
-{ type: "windowGroupsChanged" } | { type: "projectTrustChanged"; root: IpcPath; trusted: boolean } | 
+{ type: "windowGroupsChanged" } | 
+/**  A window entered or left full screen, itself or as a member of a full-screen window group. */
+{ type: "windowFullscreenChanged" } | { type: "projectTrustChanged"; root: IpcPath; trusted: boolean } | 
 /**  Files or directories changed on disk (after debouncing, ignore rules applied). */
 { type: "fsChanged"; created: IpcPath[]; modified: IpcPath[]; removed: IpcPath[] } | 
 /**  Excluded or ignored folders whose contents changed; they stay out of `FsChanged`. */
@@ -4477,6 +4664,8 @@ export type ImportedRunConfig_Serialize = {
 	/**  Keys of the source entry with no equivalent here (`preLaunchTask`, `justMyCode`…). */
 	ignored: string[],
 };
+
+export type ImportsOnPaste = "ask" | "always" | "never";
 
 export type IndentConfig = IndentConfig_Serialize | IndentConfig_Deserialize;
 
@@ -4794,6 +4983,8 @@ export type JavaSettings = {
 	 *  Java version it targets.
 	 */
 	jdk?: string,
+	/**  Project Java language level (`8`, `11`, `17`, `21`, `25`); empty = SDK default. */
+	languageLevel?: string,
 	/**
 	 *  JDK home the Java language server (jdtls) runs on, apart from the project
 	 *  JDK (IDEA's "JDK for importer"); empty = the project JDK when new enough,
@@ -4825,6 +5016,16 @@ export type JdkReleases = {
 export type JdkVendor = {
 	id: string,
 	name: string,
+};
+
+/**
+ *  A JetBrains IDE's File › Manage IDE Settings › Export Settings… archive: every
+ *  entry name, and the text of the entries OpenIDEA maps (the frontend does the mapping).
+ */
+export type JetBrainsSettings = {
+	entries: string[],
+	/**  Entry name → text, for `colors/*.icls` and the `options/*.xml` files OpenIDEA reads. */
+	files: { [key in string]: string },
 };
 
 export type JvmFilePresentation = {
@@ -5399,6 +5600,8 @@ export type MavenProject = {
 
 /**  Build Tools › Maven. */
 export type MavenSettings = {
+	/**  JDK home used to run Maven; empty = Project JDK, else the POM's Java version. */
+	runnerJre?: string,
 	/**  Project-relative root POMs removed from the Maven project model. */
 	unlinkedProjects?: string[],
 	/**  Project-relative POMs outside the root reactor added as independent top-level projects. */
@@ -5425,6 +5628,30 @@ export type MavenSettings = {
 	 */
 	threads?: string,
 };
+
+/**  Tools › MCP Server: agents use the IDE's built-in tools. */
+export type McpServerSettings = {
+	/**  Serve the tools on 127.0.0.1 while the IDE runs. */
+	enabled?: boolean,
+};
+
+/**  What Settings › Tools › MCP Server shows. */
+export type McpServerStatus = {
+	running: boolean,
+	/**  Why it isn't running though turned on. */
+	error: string | null,
+	port: number | null,
+	/**  The window's local project, which the URL and command below are for. */
+	project: IpcPath | null,
+	/**  `http://127.0.0.1:<port>/mcp?project=<root>`. */
+	url: string | null,
+	/**  Bearer token of `url` (changes with every run). */
+	token: string | null,
+	/**  The stdio bridge: this executable and its arguments. */
+	stdioCommand: string[],
+};
+
+export type McpUiRequest = { type: "confirm"; client: string; tool: string; subject: string; project: string; detail: string | null } | { type: "openFile"; path: IpcPath; line: number | null; column: number | null };
 
 export type MemoryCategory = 
 /**  The backend and its WebView processes. */
@@ -5507,6 +5734,29 @@ export type MethodStat = {
 	frame: number,
 	selfWeight: number | null,
 	total: number | null,
+};
+
+/**  Dependency entry of a module (Project Structure › Modules › Dependencies). */
+export type ModuleDependency = {
+	/**  `"library"` (references a `ProjectLibrary` by name or path) or `"module"` (references another module). */
+	kind?: string,
+	target?: string,
+	scope?: DependencyScope,
+	exported?: boolean,
+};
+
+/**  Per-module Project Structure overrides (SDK, language level, output paths, dependencies). */
+export type ModuleStructureSettings = {
+	/**  Module SDK home override; empty = inherit Project SDK. */
+	jdk?: string,
+	/**  Module language level override; empty = inherit Project language level. */
+	languageLevel?: string,
+	/**  Module compiler output directory override; empty = inherit Project compiler output. */
+	compilerOutput?: string,
+	/**  Module test compiler output directory override; empty = default. */
+	testCompilerOutput?: string,
+	/**  Additional module dependencies. */
+	dependencies?: ModuleDependency[],
 };
 
 export type NavigationFiles = {
@@ -5596,6 +5846,13 @@ export type NotebookSnapshot = {
 	nbformatMinor: number,
 	metadata: unknown,
 	cells: NotebookCell[],
+};
+
+/**  A notification button that runs one of the publishing plugin's commands. */
+export type NotificationAction = {
+	label: string,
+	command: string,
+	argument: string | null,
 };
 
 export type NotificationGroupSettings = {
@@ -5771,6 +6028,23 @@ export type PickItem = {
 	description: string | null,
 };
 
+/**  A plugin's before-commit check to run (`[[contributes.commitChecks]]`). */
+export type PluginCommitCheckRef = {
+	pluginId: string,
+	check: string,
+};
+
+/**  What a plugin's before-commit check found. */
+export type PluginCommitCheckResult = {
+	pluginId: string,
+	check: string,
+	/**  The check's declared title. */
+	title: string,
+	problems: CommitProblem[],
+	/**  The check could not run (the plugin failed, timed out or lacks `vcs.read`). */
+	error: string | null,
+};
+
 /**  A plugin's context key for `when` clauses (`value` is JSON text). */
 export type PluginContextKey = {
 	pluginId: string,
@@ -5785,6 +6059,19 @@ export type PluginEditor = {
 	selections: Range[],
 };
 
+/**  A route as the UI gets it. */
+export type PluginEndpoint = {
+	/**  `None` accepts any method. */
+	method: string | null,
+	/**  Path parameters in braces: `/photos/{id}`. */
+	path: string,
+	framework: string,
+	/**  Display name, e.g. `PhotosController#show`. */
+	handler: string | null,
+	/**  Where the route is declared. */
+	location: Location,
+};
+
 /**  Backend → UI notifications (Tauri event `ide://plugin`). */
 export type PluginEvent = 
 /**  Plugins, their status or their contributions changed: re-fetch `plugin_list`. */
@@ -5792,10 +6079,17 @@ export type PluginEvent =
 /**  Cached document associations were disposed (reload, disable or failure). */
 { type: "documentIndexesChanged" } | 
 /**
+ *  The routes `plugin_id` reports for the project `root` may have changed:
+ *  ask `plugin_endpoints` again.
+ */
+{ type: "endpointsChanged"; pluginId: string; root: IpcPath } | 
+/**
  *  The marketplace offers newer versions of installed plugins (announced
  *  once per set of versions).
  */
-{ type: "updatesAvailable"; updates: PluginUpdate[] } | { type: "notification"; pluginId: string; level: NotificationLevel; title: string; body: string } | 
+{ type: "updatesAvailable"; updates: PluginUpdate[] } | { type: "notification"; pluginId: string; level: NotificationLevel; title: string; body: string; 
+/**  Buttons running the plugin's own commands (`ui.notify`). */
+actions: NotificationAction[] } | 
 /**  A plugin's status bar item was set (`item`) or removed. */
 { type: "statusItemChanged"; pluginId: string; id: string; item: StatusItem | null } | 
 /**
@@ -5822,6 +6116,11 @@ export type PluginEvent =
 /**  Open a terminal running `program` (already approved and verified). */
 { type: "openTerminal"; pluginId: string; title: string; program: IpcPath; args: string[]; cwd: IpcPath } | { type: "openLocation"; pluginId: string; path: IpcPath; line: number; column: number } | 
 /**
+ *  Open (or focus) the log tab `key` following `log` (`views.open-log-tab`);
+ *  it starts the program with `plugin_log_tab_spawn`.
+ */
+{ type: "openLogTab"; pluginId: string; key: string; title: string; log: ServiceLog } | 
+/**
  *  Plugin languages, or the servers they may start, changed: re-fetch
  *  `languages` (the host re-detects open documents: [`crate::Host::plugin_languages_changed`]).
  */
@@ -5830,6 +6129,8 @@ export type PluginEvent =
 { type: "copyToClipboard"; pluginId: string; text: string } | 
 /**  Open `url` (`http(s)://`) in the system browser. */
 { type: "openUrl"; pluginId: string; url: string } | 
+/**  A window command/event requests the normal File > Open flow. */
+{ type: "openProject"; pluginId: string; path: string; newWindow: boolean } | 
 /**
  *  A command waits for the user's answer: show `prompt`, then report it with
  *  `plugin_answer_prompt(prompt_id, …)`.
@@ -5838,7 +6139,12 @@ export type PluginEvent =
 /**  The call that asked gave up (cancelled, or its plugin stopped): close the prompt. */
 { type: "promptClosed"; promptId: string } | 
 /**  Bring the tool window of the plugin's view `view` to the front. */
-{ type: "revealView"; pluginId: string; view: string };
+{ type: "revealView"; pluginId: string; view: string } | 
+/**
+ *  A command needs the window's Commit view: answer with
+ *  `plugin_answer_commit(request_id, …)`. Closed like a prompt (`PromptClosed`).
+ */
+{ type: "commitRequested"; pluginId: string; requestId: string; request: CommitRequest };
 
 /**  A plugin's own icon (`icon`, `icon-dark` of its manifest): sanitised SVG markup. */
 export type PluginIcon = {
@@ -6151,6 +6457,13 @@ export type ProfilerInstall = {
 	cwd: IpcPath | null,
 };
 
+export type ProjectDiscovery = {
+	/**  Selected projects and folders with no discovered projects retain the direct-add behaviour. */
+	direct: IpcPath[],
+	projects: DiscoveredProject[],
+	truncated: boolean,
+};
+
 export type ProjectFileSet = 
 /**  "Project Files": everything not excluded. */
 "all" | 
@@ -6181,6 +6494,18 @@ export type ProjectInfo_Serialize = {
 	unity?: UnityProjectInfo | null,
 };
 
+/**  A project-level library (Project Structure › Libraries). */
+export type ProjectLibrary = {
+	name?: string,
+	/**  Class archives (`.jar`) or class directories. */
+	classes?: string[],
+	/**  Source archives (`-sources.jar`, `.zip`) or source directories. */
+	sources?: string[],
+	/**  Documentation archives (`-javadoc.jar`) or directories. */
+	javadocs?: string[],
+	scope?: DependencyScope,
+};
+
 export type ProjectRoots = {
 	/**  Effective roots, sorted by path. */
 	roots: SourceFolder[],
@@ -6202,10 +6527,23 @@ export type ProjectStructureSettings = {
 	contentRoots?: string[],
 	/**  "Exclude files": `;`-separated name patterns (`*.log;tmp*`) excluded at any depth. */
 	excludeFiles?: string,
+	/**  Project compiler output directory (relative to project root or absolute; empty = default). */
+	compilerOutput?: string,
+	/**  Per-module SDK, language level, output paths and dependency overrides, keyed by module relative path (`"."` for root). */
+	modules?: { [key in string]: ModuleStructureSettings },
+	/**  Project-level libraries (`JAR`s / class folders / source archives). */
+	libraries?: ProjectLibrary[],
+	/**  Module framework facets (`web`, `spring`, `jpa`). */
+	facets?: FacetConfig[],
+	/**  Packaging artifacts (`jar`, `war`, `warExploded`). */
+	artifacts?: ArtifactConfig[],
 };
 
-/**  What a plugin asks the user (`ui.pick`, `ui.pick-many`, `ui.input`, `ui.confirm`). */
-export type Prompt = { kind: "quickPick"; title: string; items: PickItem[]; multiple: boolean } | { kind: "input"; prompt: string; value: string | null } | { kind: "confirm"; title: string; message: string };
+/**
+ *  What a plugin asks the user (`ui.pick`, `ui.pick-many`, `ui.input`,
+ *  `ui.input-multiline`, `ui.confirm`).
+ */
+export type Prompt = { kind: "quickPick"; title: string; items: PickItem[]; multiple: boolean } | { kind: "input"; prompt: string; value: string | null; multiline: boolean } | { kind: "confirm"; title: string; message: string } | { kind: "pickDirectory"; title: string; initial: string | null };
 
 export type ProxyKind = "http" | "socks";
 
@@ -6373,7 +6711,9 @@ export type ReferencesIncomplete =
 /**  More project files mention the name than were checked. */
 "tooManyFiles" | 
 /**  Files that mention the name were too large or unreadable to check. */
-"filesSkipped";
+"filesSkipped" | 
+/**  A native query failed; indexed anchors are still available. */
+"serverFailed";
 
 /**  A registry agent this machine can run (or has installed). */
 export type RegistryAgent = {
@@ -6437,7 +6777,7 @@ export type RemoteEntry = {
 	permissions: string,
 };
 
-/**  A project folder on an SSH host or in a WSL distribution. */
+/**  A project folder on an SSH host, in a WSL distribution or in a dev container. */
 export type RemoteLaunch = {
 	target: RemoteTarget,
 	path: string,
@@ -6512,16 +6852,25 @@ export type RemoteSession = {
 };
 
 /**  Where [`remote_connect`] is (`fraction`: 0..1 of a download / upload). */
-export type RemoteStage = "connecting" | "checking" | "downloading" | "uploading" | "starting" | "opening";
+export type RemoteStage = "connecting" | 
+/**  `devcontainer up`: building or starting the container. */
+"container" | "checking" | "downloading" | "uploading" | "starting" | "opening";
 
 /**  Where a remote project lives and how the server there is reached. */
 export type RemoteTarget = 
 /**  The host of SSH configuration `config`. */
 { kind: "ssh"; config: string } | 
 /**  A WSL distribution on this machine. */
-{ kind: "wsl"; distro: string };
+{ kind: "wsl"; distro: string } | 
+/**
+ *  The dev container of local folder `folder`, built and started with the Dev Containers CLI;
+ *  `config` is its `devcontainer.json`, relative to the folder (empty = the default one).
+ */
+{ kind: "devContainer"; folder: string; config: string };
 
 export type Renamed = {
+	/**  Indexed names always require preview, including a single-file rename. */
+	preview?: boolean,
 	edit: WorkspaceEdit,
 	incomplete: ReferencesIncomplete | null,
 };
@@ -6989,7 +7338,7 @@ export type ServicePane = { kind: "message"; value: string } |
 /**  A program the IDE runs (with the plugin's `process:` grant), followed in a log. */
 { kind: "log"; value: ServiceLog };
 
-/**  A tab of the Services pane of a plugin's node (`service-provider.detail`). */
+/**  A tab of the Services pane of a plugin's node (`detail-provider.detail`). */
 export type ServiceTab = {
 	id: string,
 	label: string,
@@ -7088,6 +7437,8 @@ export type Settings_Deserialize = {
 	cmake?: CMakeSettings_Deserialize,
 	/**  Tools › Agents › Chat. */
 	agents?: AgentSettings,
+	/**  Tools › MCP Server (global only). */
+	mcpServer?: McpServerSettings,
 	/**  Plugin settings (`[contributes.settings]`): plugin id → its values by key. */
 	plugins?: { [key in string]: { [key in string]: unknown } },
 };
@@ -7148,6 +7499,8 @@ export type Settings_Serialize = {
 	cmake: CMakeSettings_Serialize,
 	/**  Tools › Agents › Chat. */
 	agents: AgentSettings,
+	/**  Tools › MCP Server (global only). */
+	mcpServer: McpServerSettings,
 	/**  Plugin settings (`[contributes.settings]`): plugin id → its values by key. */
 	plugins: { [key in string]: { [key in string]: unknown } },
 };
@@ -7237,6 +7590,7 @@ export type SmartKeysSettings = {
 	tabOutOfPair?: boolean,
 	/**  Reformat on paste: `none` | `indentBlock` | `indentEachLine`. */
 	reformatOnPaste?: string,
+	escapeOnPaste?: boolean,
 	smartIndent?: boolean,
 	/**  Enter › Insert documentation comment stub: Enter after `/**` closes the comment. */
 	insertDocStub?: boolean,
@@ -7519,7 +7873,7 @@ export type SyntaxErrors = {
 };
 
 /**  Highlight classes sent to the UI, which maps each onto a Lezer tag. */
-export type SyntaxHighlightKind = "keyword" | "string" | "stringSpecial" | "escape" | "regexp" | "atom" | "number" | "constant" | "comment" | "docComment" | "function" | "functionCall" | "builtin" | "type" | "namespace" | "variable" | "selfVariable" | "property" | "attribute" | "macro" | "label" | "tag" | "operator" | "punctuation";
+export type SyntaxHighlightKind = "keyword" | "string" | "stringSpecial" | "escape" | "regexp" | "atom" | "number" | "constant" | "comment" | "docComment" | "function" | "functionCall" | "builtin" | "type" | "namespace" | "variable" | "selfVariable" | "property" | "attribute" | "macro" | "label" | "tag" | "operator" | "punctuation" | "parameter";
 
 /**  Highlighted ranges of a whole document, packed like LSP semantic tokens. */
 export type SyntaxHighlights = {
@@ -7544,6 +7898,12 @@ export type SyntaxNode = {
 	missing: boolean,
 	/**  The node or a descendant is an error / missing node. */
 	hasError: boolean,
+};
+
+/**  A sortable table's order: the column and the direction. */
+export type TableSort = {
+	column: number,
+	descending: boolean,
 };
 
 /**  A long-running background task shown in the status bar. */
@@ -7674,8 +8034,46 @@ export type ThreadInfo = {
 	name: string,
 };
 
-export type TomcatHome = {
+export type TomcatHome = TomcatHome_Serialize | TomcatHome_Deserialize;
+
+export type TomcatHome_Deserialize = {
 	version: string,
+	libraries?: string[],
+	tomee?: boolean,
+	httpPort?: number | null,
+	httpsPort?: number | null,
+	ajpPort?: number | null,
+	shutdownPort?: number | null,
+};
+
+export type TomcatHome_Serialize = {
+	version: string,
+	libraries: string[],
+	tomee: boolean,
+	httpPort?: number | null,
+	httpsPort?: number | null,
+	ajpPort?: number | null,
+	shutdownPort?: number | null,
+};
+
+export type TomcatInstallation = TomcatInstallation_Serialize | TomcatInstallation_Deserialize;
+
+export type TomcatInstallation_Deserialize = {
+	path: string,
+	version: string,
+	libraries?: string[],
+	name?: string | null,
+	base?: string | null,
+	tomee?: boolean,
+};
+
+export type TomcatInstallation_Serialize = {
+	path: string,
+	version: string,
+	libraries: string[],
+	name?: string | null,
+	base?: string | null,
+	tomee: boolean,
 };
 
 /**  UI-facing state of one tool. */
@@ -7715,7 +8113,9 @@ export type ToolInfo = {
 
 export type ToolKind = "languageServer" | "debugger" | 
 /**  Loaded into another tool's process, e.g. a jdtls agent. */
-"plugin" | "formatter";
+"plugin" | "formatter" | 
+/**  A command the IDE itself runs, e.g. the Dev Containers CLI. */
+"cli";
 
 export type ToolSettings = {
 	/**  Executable to launch instead of the managed / `PATH` one; empty = auto-detect. */
@@ -7905,7 +8305,7 @@ export type ViewButton = {
 };
 
 /**  A user action in a view. */
-export type ViewEvent = { kind: "button"; id: string } | { kind: "activate"; key: string } | { kind: "select"; key: string } | { kind: "expand"; key: string } | { kind: "collapse"; key: string } | { kind: "field"; key: string; value: string } | { kind: "cell"; row: number; column: number; value: string } | { kind: "insertRow"; before: number } | { kind: "deleteRows"; rows: number[] } | { kind: "message"; text: string };
+export type ViewEvent = { kind: "button"; id: string } | { kind: "activate"; key: string } | { kind: "select"; key: string } | { kind: "expand"; key: string } | { kind: "collapse"; key: string } | { kind: "field"; key: string; value: string } | { kind: "cell"; row: number; column: number; value: string } | { kind: "insertRow"; before: number } | { kind: "deleteRows"; rows: number[] } | { kind: "message"; text: string } | { kind: "sort"; column: number; descending: boolean } | { kind: "tableSelect"; row: number } | { kind: "tableActivate"; row: number };
 
 export type ViewField = {
 	key: string,
@@ -7926,6 +8326,10 @@ export type ViewTable = {
 	firstRow: number,
 	rows: string[][],
 	editable: boolean,
+	/**  The plugin opted its headers in to click-to-sort (a `table` body through `other`). */
+	sortable: boolean,
+	/**  The sort the plugin orders by (none: no arrow yet). */
+	sort: TableSort | null,
 };
 
 export type ViewTreeItem = {
@@ -7992,6 +8396,15 @@ export type WebPage = {
 	path: string,
 };
 
+/**  A web frame's API 1.3 PTY request. The frame never supplies an executable path or cwd. */
+export type WebPtyCommand = {
+	program: string,
+	args: string[],
+	env: { [key in string]: string },
+	cols: number,
+	rows: number,
+};
+
 export type WebReference = {
 	kind: WebReferenceKind,
 	/**  Without sigil: `card`, `main`, `--accent`. */
@@ -8017,7 +8430,7 @@ export type WindowTab = {
 };
 
 /**  A workbench event delivered to plugins. */
-export type WorkbenchEvent = { kind: "fileOpened"; value: string } | { kind: "fileSaved"; value: string } | { kind: "editorFocused"; value: string | null } | { kind: "actionPerformed"; value: ActionPerformed } | { kind: "vcsChanged"; value: string } | { kind: "scheduled" };
+export type WorkbenchEvent = { kind: "fileOpened"; value: string } | { kind: "fileSaved"; value: string } | { kind: "filesChanged"; value: FilesChanged } | { kind: "editorFocused"; value: string | null } | { kind: "actionPerformed"; value: ActionPerformed } | { kind: "vcsChanged"; value: string } | { kind: "scheduled" };
 
 export type WorkingTreeChange = {
 	path: string,

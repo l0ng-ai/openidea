@@ -507,18 +507,29 @@ impl LspManager {
         if self.shutting_down.load(Ordering::Acquire) || !self.execution_allowed.load(Ordering::Acquire) {
             return;
         }
+        // `begin_start` only claims Idle servers, so a claimed server is never a
+        // live one. Its root is the process's working directory: starting with
+        // one deleted from disk fails (`os error 267` on Windows). Such a
+        // server can never serve again, so drop it instead of leaving a
+        // permanently "Crashed" entry behind (e.g. the root vanishing during
+        // the crash-restart backoff, or an open-file request arriving later).
         let Some(generation) = server.begin_start() else { return };
         let Some(me) = self.me.upgrade() else { return };
+        if !server.root.is_dir() {
+            tracing::info!("{}: workspace root {} is gone, dropping", server.name, server.root.display());
+            server.begin_stop(&self.sink, true);
+            self.forget(std::slice::from_ref(server));
+            return;
+        }
         let server = server.clone();
         self.runtime.spawn(async move { me.run_instance(server, generation).await });
     }
 
     async fn run_instance(self: Arc<Self>, server: Arc<Server>, generation: u64) {
-        server.set_status(&self.sink, ide_core::event::ServerStatus::Starting, None);
+        let Some(cancel) = server.starting_status(generation, &self.sink) else { return };
         let handler = Arc::new(handler::ClientHandler::new(self.me.clone(), server.clone(), generation));
         let me = self.clone();
         let tail = server.clone();
-        let cancel = server.start_token();
         // The settings hook may touch the filesystem (e.g. scanning for JDKs); TCP
         // servers may take a while to start listening.
         let launched = tokio::task::spawn_blocking(move || {
@@ -529,7 +540,7 @@ impl LspManager {
             if !me.execution_allowed.load(Ordering::Acquire) || cancel.is_cancelled() {
                 return Err(LaunchError::Config("Project is in Restricted Mode".into()));
             }
-            tail.set_effective_config(cfg.clone());
+            tail.set_effective_config(generation, cfg.clone());
             let prepare = me.prepare_hook.read().clone();
             if !cancel.is_cancelled()
                 && me.launcher.available(&cfg, &tail.root)
@@ -538,7 +549,7 @@ impl LspManager {
                 prepare(&cfg, &tail.root, &cancel);
                 cfg = me.configured(&tail);
             }
-            tail.set_effective_config(cfg.clone());
+            tail.set_effective_config(generation, cfg.clone());
             let root = tail.root.clone();
             if let Some(message) = &cfg.launch_error {
                 // A missing binary still asks to be installed first.
@@ -548,14 +559,23 @@ impl LspManager {
             if !me.execution_allowed.load(Ordering::Acquire) || cancel.is_cancelled() {
                 return Err(LaunchError::Config("Project is in Restricted Mode".into()));
             }
-            me.launcher.launch_resolved(&cfg, &root, handler, Box::new(move |line| tail.push_stderr(line)), &cancel)
+            me.launcher.launch_resolved(
+                &cfg,
+                &root,
+                handler,
+                Box::new(move |line| tail.push_stderr(generation, line)),
+                &cancel,
+            )
         })
         .await
         .unwrap_or_else(|e| Err(LaunchError::Failed(e.to_string())));
 
         let peer = match launched {
             Ok((peer, binary)) => {
-                *server.resolved_binary.write() = binary;
+                if !server.set_resolved_binary(generation, binary) {
+                    peer.kill();
+                    return;
+                }
                 peer
             }
             Err(LaunchError::Missing) => {
@@ -637,7 +657,10 @@ impl LspManager {
         };
         let run =
             Running { generation, peer: peer.clone(), caps: Arc::new(RwLock::new(caps)), watchers: Default::default() };
-        server.set_initializing(Some(run.clone()));
+        if !server.set_initializing(run.clone()) {
+            peer.kill();
+            return;
+        }
         if let Err(e) = peer.notify("initialized", json!({})) {
             tracing::warn!("{}: {e}", server.name);
         }
@@ -658,7 +681,6 @@ impl LspManager {
             let mut docs = self.docs.lock();
             if !server.mark_ready(generation, run.clone()) {
                 drop(docs);
-                server.set_initializing(None);
                 peer.kill();
                 return;
             }
@@ -694,71 +716,20 @@ impl LspManager {
     }
 
     async fn on_instance_closed(self: Arc<Self>, server: Arc<Server>, generation: u64, code: Option<i32>) {
-        use ide_core::event::ServerStatus;
-        let intentional = match server.on_closed(generation) {
-            Some(intentional) => intentional || self.shutting_down.load(Ordering::Acquire),
-            None => return, // superseded instance
-        };
-        self.clear_server_state(&server);
-        self.file_watch_roots_changed();
-        if intentional {
-            server.announce_down();
+        if self.shutting_down.load(Ordering::Acquire) {
             return;
         }
-        let tail = server.stderr_tail(5);
-        let cfg = server.effective_config();
-        let mut message = match (code, &cfg.connect) {
-            (Some(c), _) => format!("{} exited with code {c}", server.name),
-            (None, Some(addr)) => format!("{}: the connection to the server ({addr}) closed", server.name),
-            (None, None) => format!("{} terminated unexpectedly", server.name),
-        };
-        if !tail.is_empty() {
-            message.push_str(":\n");
-            message.push_str(&tail);
+        let Some(delay) = server.on_closed(generation, &self.sink, code) else { return };
+        self.file_watch_roots_changed();
+        if !server.root.is_dir() {
+            self.forget(std::slice::from_ref(&server));
+            return;
         }
-        match server.record_crash() {
-            Some(delay) => {
-                server.set_status(&self.sink, ServerStatus::Crashed, Some(format!("{message}\nRestarting…")));
-                // Woken after the crash is reported: a request that finds no instance
-                // reads this status to say why. The restart sets `Starting` again.
-                server.announce_down();
-                tokio::time::sleep(delay).await;
-                if server.is_idle_gen(generation) {
-                    self.ensure_started(&server);
-                }
+        if let Some(delay) = delay {
+            tokio::time::sleep(delay).await;
+            if server.is_idle_gen(generation) {
+                self.ensure_started(&server);
             }
-            None => {
-                server.give_up(generation);
-                server.set_status(
-                    &self.sink,
-                    ServerStatus::Crashed,
-                    Some(format!("{message}\nCrashed repeatedly; restart it manually.")),
-                );
-                // Requests still waiting for a start read this status for their error.
-                server.announce_down();
-            }
-        }
-    }
-
-    /// Ends progress tasks and withdraws diagnostics of a dead instance.
-    fn clear_server_state(&self, server: &Server) {
-        for (id, title) in server.take_progress() {
-            self.sink.emit(ide_core::IdeEvent::Task {
-                id,
-                title,
-                message: None,
-                fraction: None,
-                done: true,
-                cancellable: false,
-            });
-        }
-        server.progress_ended();
-        for path in server.take_diagnostic_paths() {
-            self.sink.emit(ide_core::IdeEvent::Diagnostics {
-                path: path.into(),
-                source: server.name.clone(),
-                items: Vec::new(),
-            });
         }
     }
 
@@ -1365,14 +1336,8 @@ impl LspManager {
             let mut first = Vec::new();
             if method == "textDocument/implementation" {
                 let (locs, complete) = self.java_source_implementations(snap, t, pos, cancel).await;
-                // A type declared in the sources has no implementations in the dependencies:
-                // none found there is the whole answer, without a type hierarchy over every jar.
-                if complete {
-                    if !locs.is_empty() {
-                        return Ok(locs);
-                    }
-                    out.value = Some(Vec::new());
-                    continue;
+                if complete && !locs.is_empty() {
+                    return Ok(locs);
                 }
                 if let Some(partial) = partial
                     && !locs.is_empty()
@@ -1430,9 +1395,9 @@ impl LspManager {
         self.references_streaming(doc, pos, include_declaration, project_wide, true, cancel, None).await
     }
 
-    /// [`Self::references`]. Java: without `libraries`, only the workspace's sources are
-    /// searched (`libraries_skipped` when `project_wide`); with it and `project_wide`, those
-    /// found there arrive on `partial` before the dependencies and the JDK are searched.
+    /// [`Self::references`]. Java, `project_wide`: without `libraries`, only the
+    /// workspace's sources are searched (`libraries_skipped`); with it, those found
+    /// there arrive on `partial` before the dependencies and the JDK are searched.
     #[allow(clippy::too_many_arguments)]
     pub async fn references_streaming(
         &self,
@@ -1461,7 +1426,20 @@ impl LspManager {
         };
         let native =
             self.native_references(doc, pos, include_declaration, project_wide, libraries, cancel.clone(), partial);
-        let (configuration, result) = futures::join!(configuration, native);
+        futures::pin_mut!(configuration, native);
+        let (configuration, result) = match futures::future::select(configuration, native).await {
+            futures::future::Either::Left((configuration, native)) => (configuration, native.await),
+            futures::future::Either::Right((result, configuration)) => {
+                // The configuration index is rebuilt after Java changes, which takes seconds in a
+                // project with many dependencies: the usages found meanwhile are shown first.
+                if let (Some(partial), Ok(found)) = (partial, &result)
+                    && !found.locations.is_empty()
+                {
+                    partial(found.clone());
+                }
+                (configuration.await, result)
+            }
+        };
         let configuration = configuration?;
         let mut result = result?;
         if let Some(configuration) = configuration {
@@ -1585,10 +1563,7 @@ impl LspManager {
                     };
                     scope::Widened { first: all, second: Some(found), incomplete: sources.incomplete }
                 } else {
-                    // Bulk probes (usage counts, Safe Delete) ask about the sources' own symbols,
-                    // which no dependency uses: searching every jar and the JDK only adds seconds
-                    // per symbol and delays the searches the user asks for.
-                    let first = query(!libraries).await?;
+                    let first = query(false).await?;
                     let empty = first.is_empty();
                     scope::Widened::only(first, empty, &t.server)
                 };
@@ -2084,7 +2059,7 @@ impl LspManager {
         if cancel.is_cancelled() {
             return Err(IdeError::cancelled());
         }
-        Ok(Renamed { edit: out.finish(WorkspaceEdit::default())?, incomplete })
+        Ok(Renamed { preview: false, edit: out.finish(WorkspaceEdit::default())?, incomplete })
     }
 
     /// The servers that can rename at `pos`, the first one when none can (a
@@ -2121,7 +2096,7 @@ impl LspManager {
             let edit = query().await?;
             let empty = edit.files.is_empty();
             let w = scope::Widened::only((), empty, &t.server);
-            return Ok(Renamed { edit, incomplete: w.incomplete });
+            return Ok(Renamed { preview: false, edit, incomplete: w.incomplete });
         }
         let files = |e: &WorkspaceEdit| {
             e.files
@@ -2147,7 +2122,7 @@ impl LspManager {
         let files =
             more.into_iter().map(|(path, edits)| ide_core::FileEdit::Edit { path: path.into(), edits, version: None });
         convert::merge_workspace_edit(&mut edit, WorkspaceEdit { files: files.collect(), ..Default::default() });
-        Ok(Renamed { edit, incomplete: w.incomplete })
+        Ok(Renamed { preview: false, edit, incomplete: w.incomplete })
     }
 
     // ---- file operations (`workspace/willRenameFiles`, `workspace/didRenameFiles`) ----
@@ -2216,6 +2191,10 @@ impl LspManager {
                 },
             );
         for file in candidate {
+            // A move may have already removed the sampled entry on disk.
+            if !file.is_file() {
+                continue;
+            }
             let language = self.languages.detect(&file, None);
             if !languages.contains(&language) {
                 continue;
@@ -2286,6 +2265,9 @@ impl LspManager {
 
     /// Tells running servers that files or folders moved (`moves`: from → to, after the move).
     pub fn did_rename_files(&self, moves: &[(PathBuf, PathBuf)]) {
+        if !moves.is_empty() {
+            self.configuration_cache.lock().invalidate_paths();
+        }
         let moves: Vec<(PathBuf, PathBuf, bool)> =
             moves.iter().map(|(f, t)| (f.clone(), t.clone(), t.is_dir())).collect();
         let servers: Vec<Arc<Server>> = self.servers.lock().clone();
@@ -2306,6 +2288,13 @@ impl LspManager {
     /// into `.venv` or a `go.mod` rewritten by `go get` is picked up without a restart. Other
     /// servers hear of their languages' files under their root; without it jdtls's incremental
     /// build never sees them, so a launch runs stale classes.
+    ///
+    /// Creates and changes for documents synced on a server's current instance are left out.
+    /// Their text reaches the server through `didOpen`/`didChange`, including clean-buffer
+    /// reloads. A server that re-reads the file on the watched change (csharp-ls) would apply
+    /// the reload and then the `didChange` computed against the pre-reload copy, so it would
+    /// keep analysing content that diverges from both the disk and the editor (#1780).
+    /// Deletions still reach it: document sync does not describe workspace membership.
     pub fn watched_files_changed(
         &self,
         created: &[PathBuf],
@@ -2314,20 +2303,47 @@ impl LspManager {
         excluded_dirs: &[PathBuf],
     ) {
         use file_watch::Change;
+        if !created.is_empty() || !removed.is_empty() || !excluded_dirs.is_empty() {
+            self.configuration_cache.lock().invalidate_paths();
+        }
         let servers: Vec<Arc<Server>> = self.servers.lock().clone();
+        let open: HashMap<(ide_core::ServerId, u64), HashSet<PathBuf>> = {
+            let docs = self.docs.lock();
+            let mut open: HashMap<_, HashSet<_>> = HashMap::new();
+            for d in docs.values() {
+                for a in &d.servers {
+                    if let Some(generation) = a.opened_gen {
+                        open.entry((a.server.id, generation))
+                            .or_default()
+                            .extend([d.path.clone(), d.canonical.clone()]);
+                    }
+                }
+            }
+            open
+        };
+        let canonical: HashMap<_, _> =
+            created.iter().chain(modified).filter_map(|p| dunce::canonicalize(p).ok().map(|c| (p, c))).collect();
         for s in servers {
             let Some(run) = s.running() else { continue };
+            let open = open.get(&(s.id, run.generation)).filter(|_| run.caps.read().sync != SyncKind::None);
+            let send = |p: &PathBuf, change: Change| {
+                change == Change::Deleted
+                    || !open
+                        .is_some_and(|paths| paths.contains(p) || canonical.get(p).is_some_and(|c| paths.contains(c)))
+            };
             let all = [(created, Change::Created), (modified, Change::Changed), (removed, Change::Deleted)]
                 .into_iter()
                 .flat_map(|(paths, change)| paths.iter().map(move |p| (p, change)));
             let watchers = run.watchers.read();
             let changes: Vec<(&PathBuf, Change)> = if watchers.is_empty() {
                 let languages = s.languages();
-                all.filter(|(p, _)| p.starts_with(&s.root) && languages.contains(&self.languages.detect(p, None)))
-                    .collect()
+                all.filter(|(p, change)| {
+                    p.starts_with(&s.root) && languages.contains(&self.languages.detect(p, None)) && send(p, *change)
+                })
+                .collect()
             } else {
                 all.chain(excluded_dirs.iter().map(|p| (p, Change::Created)))
-                    .filter(|(p, change)| watchers.wants(&s.root, p, *change))
+                    .filter(|(p, change)| watchers.wants(&s.root, p, *change) && send(p, *change))
                     .collect()
             };
             drop(watchers);
@@ -2901,7 +2917,7 @@ impl LspManager {
                 && without_settings(&next) == without_settings(&current)
                 && !jdtls::source_paths_removed(&current, &next)
             {
-                s.set_effective_config(next);
+                s.set_effective_config(run.generation, next);
                 let params = json!({ "settings": handler::all_settings(&s.effective_config()) });
                 if let Err(e) = run.peer.notify("workspace/didChangeConfiguration", params) {
                     tracing::debug!("{}: didChangeConfiguration: {e}", s.name);
@@ -3040,11 +3056,10 @@ impl LspManager {
             let conv = self.conv(encoding);
             for (path, items) in server.diagnostics_by_path() {
                 let items = items.into_iter().map(|d| convert::diagnostic(&conv, &path, d, &server.name)).collect();
-                self.sink.emit(ide_core::IdeEvent::Diagnostics {
-                    path: path.into(),
-                    source: server.name.clone(),
-                    items,
-                });
+                server.emit(
+                    &self.sink,
+                    ide_core::IdeEvent::Diagnostics { path: path.into(), source: server.name.clone(), items },
+                );
             }
         }
     }
@@ -3072,6 +3087,13 @@ impl LspManager {
             .find(|s| s.id == server)
             .cloned()
             .ok_or_else(|| IdeError::not_found(format!("unknown language server {server}")))?;
+        if !s.root.is_dir() {
+            return Err(IdeError::unavailable(format!(
+                "the workspace root of {} is gone: {}",
+                s.name,
+                s.root.display()
+            )));
+        }
         self.stop_instance(&s, false).await;
         s.reset_for_restart();
         self.ensure_started(&s);
@@ -3085,20 +3107,14 @@ impl LspManager {
 
     /// Gracefully stops the current instance (`shutdown` + `exit`, then kill).
     async fn stop_instance(&self, server: &Arc<Server>, final_stop: bool) {
-        let Some(run) = server.begin_stop() else {
-            if final_stop {
-                server.set_status(&self.sink, ide_core::event::ServerStatus::Stopped, None);
-            }
-            return;
-        };
+        let Some(run) = server.begin_stop(&self.sink, final_stop) else { return };
         let peer = run.peer.clone();
         // A server we connected to without starting it (an open Godot editor) is not
         // ours to shut down: only the connection closes.
         if peer.pid().is_none() && server.effective_config().connect.is_some() {
             peer.kill();
-            server.end_stop(run.generation);
-            self.clear_server_state(server);
-            server.set_status(&self.sink, ide_core::event::ServerStatus::Stopped, None);
+            server.end_stop(run.generation, &self.sink);
+            self.file_watch_roots_changed();
             return;
         }
         let graceful = async {
@@ -3112,9 +3128,8 @@ impl LspManager {
             let _ = tokio::time::timeout(Duration::from_secs(2), peer.closed()).await;
         }
         peer.kill();
-        server.end_stop(run.generation);
-        self.clear_server_state(server);
-        server.set_status(&self.sink, ide_core::event::ServerStatus::Stopped, None);
+        server.end_stop(run.generation, &self.sink);
+        self.file_watch_roots_changed();
     }
 
     pub async fn shutdown_all(&self) {

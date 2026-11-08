@@ -1,8 +1,9 @@
 /**
  * Build menu (Build Project ⌘F9, Build Module ⇧⌘F9, Rebuild Project, Build
  * Artifacts) and the Build tool window. The backend picks the build system of
- * the project or module: Maven, Gradle, Cargo, Go or TypeScript.
+ * the project or module: Maven, Gradle, Cargo, Go, TypeScript or CMake.
  */
+import { getContext } from "@/platform/context";
 import { registerActions } from "@/platform/actions";
 import { useProject } from "@/platform/project";
 import {
@@ -20,6 +21,7 @@ const WHEN = `projectOpen && !${BUILD_RUNNING}`;
 /** The module to build: the invoker's path (project view) or the active editor's file. */
 function moduleTarget(arg: unknown): string | null {
   if (typeof arg === "string" && arg) return arg;
+  if (typeof arg === "object" && arg !== null && "target" in arg && typeof arg.target === "string") return arg.target;
   return maybeEditorService()?.activePath() ?? null;
 }
 
@@ -57,11 +59,17 @@ export function activate(): () => void {
         category: "Build",
         icon: "build-project",
         when: WHEN,
-        keywords: ["compile", "make", "mvn", "gradle", "cargo", "tsc", "go build"],
+        keywords: ["compile", "make", "mvn", "gradle", "cargo", "tsc", "go build", "cmake"],
         // Awaitable: Run's "Build" before launch task waits for the result.
         run: async ({ arg }) => {
           const activate = !(typeof arg === "object" && arg !== null && "activate" in arg && arg.activate === false);
-          await startBuild("build", null, activate);
+          const cmake =
+            arg == null
+              ? getContext()["run.cmakeBuild"]
+              : typeof arg === "object" && arg !== null && "cmake" in arg
+                ? arg.cmake
+                : null;
+          await startBuild("build", null, activate, typeof cmake === "string" ? cmake : null);
         },
       },
       {
@@ -72,8 +80,10 @@ export function activate(): () => void {
         when: WHEN,
         keywords: ["recompile", "compile file", "make module"],
         run: ({ arg }) => {
-          const target = moduleTarget(arg);
-          void startBuild("build", target);
+          const options = typeof arg === "object" && arg !== null ? arg : {};
+          const activate = !("activate" in options && options.activate === false);
+          const build = startBuild("build", moduleTarget(arg), activate);
+          if ("wait" in options && options.wait === true) return build.then(() => undefined);
         },
       },
       {
@@ -84,7 +94,10 @@ export function activate(): () => void {
         icon: "build-rebuild",
         when: WHEN,
         keywords: ["clean", "compile"],
-        run: () => void startBuild("rebuild"),
+        run: () => {
+          const cmake = getContext()["run.cmakeBuild"];
+          void startBuild("rebuild", null, true, typeof cmake === "string" ? cmake : null);
+        },
       },
       {
         id: "build.buildArtifacts",
@@ -93,7 +106,12 @@ export function activate(): () => void {
         category: "Build",
         when: WHEN,
         keywords: ["package", "assemble", "jar", "release"],
-        run: () => void startBuild("artifacts"),
+        run: ({ arg }) => {
+          const options = typeof arg === "object" && arg !== null ? arg : {};
+          const activate = !("activate" in options && options.activate === false);
+          const build = startBuild("artifacts", null, activate);
+          if ("wait" in options && options.wait === true) return build.then(() => undefined);
+        },
       },
       {
         id: "build.stop",

@@ -15,7 +15,7 @@ function item(r: EndpointEntry, indices: number[], score: number): SymbolItem {
     name: display,
     display,
     symbolKind: "method",
-    container: `${r.controller}.${r.methodName}`,
+    container: r.handler ?? [r.controller, r.methodName].filter(Boolean).join("."),
     path: r.path,
     rel: r.rel,
     line: r.line,
@@ -47,9 +47,9 @@ export function matchRoutes(
 
   const hits: { item: SymbolItem; score: number }[] = [];
   for (const r of routes) {
-    if (method && r.method !== method) continue;
+    if (method && r.method !== "*" && r.method !== method) continue;
     const target = strip(r.url).toLowerCase();
-    const qualified = `${r.controller}.${r.methodName}`.toLowerCase();
+    const qualified = (r.handler ?? [r.controller, r.methodName].filter(Boolean).join(".")).toLowerCase();
     let score = 0;
     let indices: number[] = [];
     if (wantPath) {

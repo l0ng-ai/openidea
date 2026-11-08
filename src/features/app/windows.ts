@@ -242,11 +242,11 @@ export async function consumeLaunch(): Promise<void> {
 async function openCliDiff(diff: { left: string; right: string }): Promise<void> {
   const s = useProject.getState();
   if (!s.project && !s.lightEdit) await openLightEdit(diff.right).catch(() => {});
-  const [{ openDiff }, { compareFilesData }] = await Promise.all([
+  const [{ openVcsDiff }, { compareFilesData }] = await Promise.all([
     import("@/features/vcs/diffInput"),
     import("@/features/vcs/compareData"),
   ]);
-  await openDiff(compareFilesData(diff.left, diff.right));
+  await openVcsDiff(compareFilesData(diff.left, diff.right));
 }
 
 /** Closes the project tabs on `side` of the `arg` tab (default: the current one), keeping that tab. */
@@ -445,7 +445,15 @@ export function windowActions(): Action[] {
       category: t("app.category.file"),
       hidden: true,
       run: async (c) => {
-        if (typeof c.arg === "string") await openProjectWithPolicy(c.arg);
+        if (typeof c.arg === "string") return openProjectWithPolicy(c.arg);
+        const arg = c.arg as { path?: unknown; newWindow?: unknown } | null;
+        if (!arg || typeof arg.path !== "string" || typeof arg.newWindow !== "boolean") return;
+        try {
+          const outcome = await call(commands.windowOpenProject(arg.path, arg.newWindow, []));
+          if (outcome.kind === "current") await openHere(arg.path);
+        } catch (error) {
+          openFailed(arg.path, error);
+        }
       },
     },
     {

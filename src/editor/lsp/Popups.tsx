@@ -43,6 +43,7 @@ import { describeSummary } from "./workspaceEdit";
 import { useUsagesStatus } from "./navigation";
 import styles from "./Popups.module.css";
 import { tx } from "@/platform/i18n";
+import { executeAction } from "@/platform/actions";
 
 export function BulbIcon({ fix }: { fix?: boolean }) {
   return <Icon name={fix ? "bulb-fix" : "bulb"} size={16} className={styles.bulb} />;
@@ -221,7 +222,11 @@ function ListPopup({ popup }: { popup: Extract<LspPopup, { kind: "list" }> }) {
                   {popup.numbered && <span className={styles.mnemonic}>{n > 0 && n <= 9 ? n : ""}</span>}
                   <ItemIcon item={item} />
                   <HighlightedText className={styles.label} text={item.label} indices={match} tone="accent" />
-                  {item.preview && <span className={styles.preview}>{item.preview}</span>}
+                  {item.preview && (
+                    <span className={styles.preview} title={item.preview}>
+                      {item.preview}
+                    </span>
+                  )}
                   <span className={styles.spacer} />
                   {item.detail && <span className={styles.detail}>{item.detail}</span>}
                   {item.shortcut && <span className={styles.shortcut}>{item.shortcut}</span>}
@@ -662,6 +667,45 @@ function ReformatDialog({ popup }: { popup: Extract<LspPopup, { kind: "reformat"
   );
 }
 
+function ImportsOnPasteDialog({ popup }: { popup: Extract<LspPopup, { kind: "importsOnPaste" }> }) {
+  const [selected, setSelected] = useState(() => popup.imports.map((_item, i) => i));
+  return (
+    <Dialog
+      open
+      title={tx("Add Imports on Paste")}
+      onClose={closePopup}
+      width={460}
+      buttons={[
+        {
+          label: "Add Imports",
+          role: "default",
+          disabled: !selected.length,
+          onClick: () => void executeAction("code.applyPastedImports", selected),
+        },
+        { label: "Cancel", role: "cancel" },
+      ]}
+    >
+      <div className={styles.pasteImports}>
+        <div>
+          <T>Select imports to add to the pasted code:</T>
+        </div>
+        <div className={styles.pasteImportList}>
+          {popup.imports.map((label, i) => (
+            <Checkbox
+              key={i}
+              label={label}
+              checked={selected.includes(i)}
+              onChange={(checked) =>
+                setSelected((current) => (checked ? [...current, i] : current.filter((n) => n !== i)))
+              }
+            />
+          ))}
+        </div>
+      </div>
+    </Dialog>
+  );
+}
+
 /** Status bar text while ⌘⇧F7 usages are highlighted ("3 usages of 'x' found…"). */
 export function UsagesStatus() {
   const text = useUsagesStatus((s) => s.text);
@@ -679,6 +723,8 @@ export function LspPopups() {
   const seq = useLspPopup((s) => s.seq);
   if (!popup) return null;
   switch (popup.kind) {
+    case "importsOnPaste":
+      return <ImportsOnPasteDialog key={seq} popup={popup} />;
     case "list":
       return <ListPopup key={seq} popup={popup} />;
     case "rename":

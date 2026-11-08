@@ -1,6 +1,14 @@
 import { readFileSync } from "node:fs";
 import { beforeAll, describe, expect, it } from "vitest";
-import { _setSchemeSource, schemeAfterThemeChange, schemeCss, schemeTokens } from "./colorScheme";
+import {
+  ATTRIBUTES,
+  CLEAR_COLOR,
+  _setSchemeSource,
+  resolvedAttribute,
+  schemeAfterThemeChange,
+  schemeCss,
+  schemeTokens,
+} from "./colorScheme";
 import { fontWeightVars, validateEditorExtras } from "./editorSettings";
 import type { Settings } from "./ipc";
 import { useProject } from "./project";
@@ -37,6 +45,51 @@ describe("color schemes", () => {
     expect(imported).toMatch(/\.cm-editor\[data-language="PHP"\] \{\n {2}--syn-variable: #48d8ee !important;/);
   });
 
+  it("offers a Go scheme page and scopes its overrides to Go editors", () => {
+    expect(ATTRIBUTES.find((a) => a.id === "go.constant")?.path).toEqual(["Go"]);
+    const css = schemeCss("dark", { dark: { "go.constant": { foreground: "#224466" } } });
+    expect(css).toContain('.cm-editor[data-language="Go"]');
+    expect(css).toContain("--syn-constant: #224466 !important");
+  });
+
+  it("resolves scheme attribute state and editor defaults", () => {
+    expect(resolvedAttribute("light", "lineComment")).toMatchObject({
+      foreground: "#8c8c8c",
+      italic: true,
+    });
+    expect(resolvedAttribute("dark", "lineComment")).toMatchObject({
+      foreground: "#7a7e85",
+      italic: false,
+    });
+    expect(resolvedAttribute("dark", "mdHeading")).toMatchObject({ bold: true });
+
+    const customs = {
+      "custom-test": {
+        name: "Test",
+        parent: "dark" as const,
+        attributes: {
+          todo: { foreground: "#139839", background: "#101010", bold: true, italic: false, effect: "wave" as const },
+        },
+      },
+    };
+    expect(resolvedAttribute("custom-test", "todo", customs)).toMatchObject({
+      foreground: "#139839",
+      background: "#101010",
+      bold: true,
+      italic: false,
+      effect: "wave",
+    });
+  });
+
+  it("resolves package references from the editor foreground and emits their overrides", () => {
+    for (const theme of ["light", "dark", "dark-hc"] as const) {
+      expect(resolvedAttribute(theme, "packageReference").foreground).toBe(schemeTokens(theme).get("--fg-editor"));
+    }
+    const css = schemeCss("dark", { dark: { packageReference: { foreground: "#446688", italic: true } } });
+    expect(css).toContain("--syn-namespace: #446688 !important");
+    expect(css).toContain("--syn-namespace-italic: italic !important");
+  });
+
   it("emits scheme and override declarations", () => {
     const root = document.documentElement;
     root.dataset.theme = "light";
@@ -49,6 +102,8 @@ describe("color schemes", () => {
     expect(over).toContain("--syn-keyword-bold: var(--fw-code-bold, 700) !important");
     const regular = schemeCss("theme-default", { light: { keyword: { bold: false } } }, root);
     expect(regular).toContain("--syn-keyword-bold: var(--fw-code, 400) !important");
+    const cleared = schemeCss("theme-default", { light: { keyword: { background: CLEAR_COLOR } } }, root);
+    expect(cleared).toContain("--syn-keyword-bg: transparent !important");
     const upright = schemeCss("theme-default", { light: { staticSymbol: { italic: false } } }, root);
     expect(upright).toContain("--syn-static-italic: normal !important");
     const pythonItalic = schemeCss("theme-default", { light: { pyStaticSymbol: { italic: true } } }, root);

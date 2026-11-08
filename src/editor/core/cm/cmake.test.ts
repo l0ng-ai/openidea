@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 import { EditorState } from "@codemirror/state";
-import { ensureSyntaxTree, syntaxTree } from "@codemirror/language";
+import { completedSyntaxTree } from "@/test/syntax";
 import { highlightTree, tagHighlighter, tags as t } from "@lezer/highlight";
 import { findLanguageDescription, loadSupport } from "./languages";
 
@@ -24,9 +24,8 @@ async function state(source: string) {
 }
 
 function tokens(state: EditorState) {
-  ensureSyntaxTree(state, state.doc.length, 1000);
   const out: { text: string; style: string }[] = [];
-  highlightTree(syntaxTree(state), highlighter, (from, to, style) =>
+  highlightTree(completedSyntaxTree(state), highlighter, (from, to, style) =>
     out.push({ text: state.doc.sliceString(from, to), style }),
   );
   return out;

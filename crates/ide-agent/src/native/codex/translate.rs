@@ -733,18 +733,19 @@ pub(super) fn answer_of(choices: &[Choice], outcome: &Value, decline: Value) -> 
 }
 
 /// The ACP title of a command approval.
-pub(super) fn command_approval_title(params: &Value, item: Option<&Value>, cwd: Option<&str>) -> String {
+pub(super) fn command_approval_title(params: &Value, item: Option<&Value>) -> String {
     if let Some(host) = params.pointer("/networkApprovalContext/host").and_then(Value::as_str) {
         return format!("Allow network access to {host}");
     }
-    let from_item = item.and_then(|i| tool_call(i, false, cwd, None)).and_then(|c| str_of(&c, "title"));
-    let title = from_item.or_else(|| {
-        let synthetic = json!({ "id": "", "type": "commandExecution", "command": params.get("command"),
-            "commandActions": params.get("commandActions").cloned().unwrap_or(json!([])) });
-        tool_call(&synthetic, false, cwd, None).and_then(|c| str_of(&c, "title"))
-    });
-    match title.filter(|t| !t.is_empty()) {
-        Some(t) => format!("Run {t}"),
+    // Approval payloads can describe a different command from the item's earlier summary.
+    let item = item.filter(|i| i.get("id") == params.get("itemId"));
+    let command = params
+        .get("command")
+        .and_then(Value::as_str)
+        .filter(|c| !c.is_empty())
+        .or_else(|| item.and_then(|i| i.get("command")).and_then(Value::as_str).filter(|c| !c.is_empty()));
+    match command {
+        Some(command) => format!("Run {}", crate::shell_script(command).unwrap_or_else(|| command.to_owned())),
         None => "Run a command".to_owned(),
     }
 }
@@ -834,4 +835,32 @@ pub(super) fn tail(text: &str) -> String {
 
 fn str_of(v: &Value, key: &str) -> Option<String> {
     v.get(key).and_then(Value::as_str).map(str::to_owned)
+}
+
+/// Session-scoped MCP configuration, carried in thread/start, resume and fork.
+pub(super) fn mcp_config(params: &Value) -> Option<Value> {
+    let mut servers = serde_json::Map::new();
+    for server in params.get("mcpServers")?.as_array()? {
+        if server.get("type").and_then(Value::as_str).is_some_and(|t| t != "stdio") {
+            continue;
+        }
+        let (Some(name), Some(command)) =
+            (server.get("name").and_then(Value::as_str), server.get("command").and_then(Value::as_str))
+        else {
+            continue;
+        };
+        let env: serde_json::Map<String, Value> = server
+            .get("env")
+            .and_then(Value::as_array)
+            .into_iter()
+            .flatten()
+            .filter_map(|v| Some((v.get("name")?.as_str()?.to_owned(), v.get("value")?.clone())))
+            .collect();
+        servers.insert(
+            name.into(),
+            json!({"command":command,
+            "args":server.get("args").cloned().unwrap_or_else(||json!([])),"env":env}),
+        );
+    }
+    (!servers.is_empty()).then(|| json!({"mcp_servers":servers}))
 }

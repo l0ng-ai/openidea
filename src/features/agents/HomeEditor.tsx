@@ -15,7 +15,17 @@ import { canSend, emptyDraft } from "./composerModel";
 import { ConfigPickers } from "./ConfigPickers";
 import { providerIcon } from "./model";
 import { ADD_AGENT, providerOptions as agentOptions } from "./providerOptions";
-import { HOME, NO_COMMANDS, refreshProviders, startTask, updateDraft, useAgentCommands, useAgents } from "./store";
+import {
+  HOME,
+  NO_COMMANDS,
+  draftConfig,
+  refreshProviders,
+  setDraftOption,
+  startTask,
+  updateDraft,
+  useAgentCommands,
+  useAgents,
+} from "./store";
 import styles from "./Home.module.css";
 
 export function HomeEditor({ docked = false }: { docked?: boolean; input?: EditorInput }) {
@@ -85,7 +95,7 @@ export function HomeEditor({ docked = false }: { docked?: boolean; input?: Edito
       .catch((e: unknown) => setError(e instanceof Error ? e.message : String(e)))
       .finally(() => setStarting(false));
   };
-  const setOption = (id: string, value: string) => updateDraft({ config: { ...draft.config, [id]: value } });
+  const config = draftConfig(provider, draft);
 
   return (
     <div className={clsx(styles.home, docked && styles.docked)}>
@@ -95,45 +105,7 @@ export function HomeEditor({ docked = false }: { docked?: boolean; input?: Edito
             <T>What should the agent do?</T>
           </h1>
         )}
-        <Composer
-          id={HOME}
-          autoFocus
-          placeholder={
-            docked
-              ? "Describe a task…"
-              : "Describe a task for the agent. @ references a file or folder, / runs a command"
-          }
-          root={root}
-          projectRoot={root}
-          commands={agentCommands}
-          history={history}
-          config={provider?.config ?? []}
-          onConfig={setOption}
-          onSubmit={start}
-          disabled={!canStart}
-          toolbar={
-            <>
-              <Select
-                variant="ghost"
-                aria-label="Agent"
-                value={provider?.id ?? null}
-                options={providerOptions}
-                onChange={(id) =>
-                  id === ADD_AGENT ? void executeAction("agents.addAgent") : updateDraft({ provider: id, config: {} })
-                }
-              />
-              <ConfigPickers config={provider?.config ?? []} values={draft.config} onChange={setOption} />
-            </>
-          }
-          actions={
-            <SubmitButton
-              label={starting ? "Starting…" : "Start"}
-              pending={starting}
-              disabled={!canStart}
-              onClick={start}
-            />
-          }
-        />
+        {/* Above the box, like the running session's state line. */}
         <div className={styles.where}>
           {members.length > 1 ? (
             <Select
@@ -202,6 +174,45 @@ export function HomeEditor({ docked = false }: { docked?: boolean; input?: Edito
             </>
           )}
         </div>
+        <Composer
+          id={HOME}
+          autoFocus
+          placeholder={
+            docked
+              ? "Describe a task…"
+              : "Describe a task for the agent. @ references a file or folder, / runs a command"
+          }
+          root={root}
+          projectRoot={root}
+          commands={agentCommands}
+          history={history}
+          config={config}
+          onConfig={setDraftOption}
+          onSubmit={start}
+          disabled={!canStart}
+          toolbar={
+            <>
+              <Select
+                variant="ghost"
+                aria-label="Agent"
+                value={provider?.id ?? null}
+                options={providerOptions}
+                onChange={(id) =>
+                  id === ADD_AGENT ? void executeAction("agents.addAgent") : updateDraft({ provider: id, config: {} })
+                }
+              />
+              <ConfigPickers config={config} onChange={setDraftOption} />
+            </>
+          }
+          actions={
+            <SubmitButton
+              label={starting ? "Starting…" : "Start"}
+              pending={starting}
+              disabled={!canStart}
+              onClick={start}
+            />
+          }
+        />
         {probe && (!docked || probe.error) && (
           <p className={probe.error ? styles.warning : styles.note}>
             {probe.error

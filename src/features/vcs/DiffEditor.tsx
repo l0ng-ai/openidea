@@ -51,6 +51,9 @@ import {
 import {
   chainNeighbour,
   diffTitle,
+  detectLineEnding,
+  liveSideText,
+  lineEndingBadge,
   isIndex,
   isWorktree,
   loadSide,
@@ -215,6 +218,7 @@ export function DiffEditor({
   input,
   toolbarActions,
   onNeighbour,
+  onJumpToSource,
 }: {
   input: EditorInput;
   toolbarActions?: ReactNode;
@@ -224,6 +228,8 @@ export function DiffEditor({
    * own content, as a modal dialog hides the editor area.
    */
   onNeighbour?: (data: DiffData) => void;
+  /** Called as Jump to Source opens the file in an editor: a modal host closes, or the editor stays hidden behind it. */
+  onJumpToSource?: () => void;
 }) {
   const data = input.data as DiffData;
   const { path, left, right } = data;
@@ -327,7 +333,7 @@ export function DiffEditor({
     };
   }, [path]);
 
-  const updateChunkInfo = useCallback(() => {
+  const updateChunkInfo = useCallback((docChanged = false) => {
     const v = viewsRef.current?.b;
     if (!v) return;
     const chunks = getChunks(v.state)?.chunks ?? [];
@@ -335,6 +341,7 @@ export function DiffEditor({
     const current = chunks.findIndex((c) => c.fromB <= head && head <= Math.max(c.fromB, c.endB));
     const { moves, whitespaceOnly } = getDiffInsights(chunks);
     setChunkInfo((p) =>
+      !docChanged &&
       p.count === chunks.length &&
       p.current === current &&
       p.moves === moves.length &&
@@ -377,13 +384,33 @@ export function DiffEditor({
     prev?.destroy();
     host.textContent = "";
     const listener = EditorView.updateListener.of((u) => {
-      if (u.selectionSet || u.docChanged) updateChunkInfo();
+      if (u.selectionSet || u.docChanged) updateChunkInfo(u.docChanged);
     });
     const findWatch = (s: Side) => EditorView.updateListener.of((u) => findWatchers.current[s].forEach((fn) => fn(u)));
     const focusTracker = (side: "a" | "b") =>
       EditorView.domEventHandlers({
         focus: () => {
           focusedSide.current = side;
+        },
+        mousedown: (event, view) => {
+          if (
+            view.hasFocus ||
+            event.button !== 0 ||
+            event.detail !== 1 ||
+            event.shiftKey ||
+            event.altKey ||
+            event.metaKey ||
+            event.ctrlKey ||
+            !view.contentDOM.contains(event.target as Node)
+          )
+            return false;
+          const pos = view.posAtCoords({ x: event.clientX, y: event.clientY });
+          if (pos === null) return false;
+          // WebKit may scroll to the old DOM selection on focus. Place the caret first so
+          // the default mouse handler measures the same position before and after focusing.
+          view.dispatch({ selection: { anchor: pos }, userEvent: "select.pointer" });
+          view.focus();
+          return false;
         },
       });
     const collapseUnchanged = opts.collapse ? { margin: 3, minSize: 6 } : undefined;
@@ -535,7 +562,7 @@ export function DiffEditor({
     viewerRef.current = built;
     setViewer(built);
     setViewsGen((g) => g + 1);
-    requestAnimationFrame(updateChunkInfo);
+    requestAnimationFrame(() => updateChunkInfo());
   }, [
     contribs,
     attached,
@@ -649,7 +676,29 @@ export function DiffEditor({
       }
       pendingFile.current = 0;
       setNavHint(null);
-      (dir === 1 ? goToNextChunk : goToPreviousChunk)({ state: v.state, dispatch: (tr) => v.dispatch(tr) });
+      (dir === 1 ? goToNextChunk : goToPreviousChunk)({
+        state: v.state,
+        dispatch: (tr) => {
+          v.dispatch({ selection: tr.selection, userEvent: "select.byChunk" });
+          const scroller = views.merge && !views.panes ? views.merge.dom : v.scrollDOM;
+          v.requestMeasure({
+            key: step,
+            read: () => {
+              const documentTop = v.documentTop - scroller.getBoundingClientRect().top + scroller.scrollTop;
+              const lineTop = v.lineBlockAt(v.state.selection.main.head).top;
+              return documentTop + lineTop - scroller.clientHeight / 3;
+            },
+            write: (top) => {
+              const options: ScrollToOptions = {
+                top: Math.max(0, top),
+                behavior: window.matchMedia("(prefers-reduced-motion: reduce)").matches ? "instant" : "smooth",
+              };
+              if (views.panes) views.panes.scrollTo(onA ? "a" : "b", options);
+              else scroller.scrollTo(options);
+            },
+          });
+        },
+      });
       if (v !== views.b) {
         // Mirror the caret into the right pane so the counter follows.
         const chunks = getChunks(v.state)?.chunks ?? [];
@@ -689,8 +738,10 @@ export function DiffEditor({
     const own = onA ? fileA : fileB;
     const file = own ?? fileB ?? fileA ?? worktreeSource;
     if (!file) return;
-    const open = (line: number, col: number) =>
+    const open = (line: number, col: number) => {
+      onJumpToSource?.();
       void editorService().openFile(file, { selection: { line, col }, focus: true });
+    };
     if (!v) return open(0, 0);
     const head = v.state.selection.main.head;
     const at = v.state.doc.lineAt(head);
@@ -704,7 +755,7 @@ export function DiffEditor({
       const line = mapLine(Chunk.build(from, to), at.number - 1, from, to);
       open(line, to.line(line + 1).text === at.text ? head - at.from : 0);
     });
-  }, [left, right, path, worktreeSource]);
+  }, [left, right, path, worktreeSource, onJumpToSource]);
 
   const currentChunk = (): { chunk: Chunk; index: number } | undefined => {
     const v = viewsRef.current?.b;
@@ -964,8 +1015,18 @@ export function DiffEditor({
     [],
   );
 
-  const identical =
-    ready && chunkInfo.count === 0 && (attached?.a?.text() ?? statics?.a) === (attached?.b?.text() ?? statics?.b);
+  const textA = attached?.a?.text() ?? statics?.a ?? "";
+  const textB = attached?.b?.text() ?? statics?.b ?? "";
+  const eolA = attached?.a?.lineEnding() ?? detectLineEnding(textA);
+  const eolB = attached?.b?.lineEnding() ?? detectLineEnding(textB);
+  const rawA = attached?.a ? liveSideText(textA, eolA) : textA;
+  const rawB = attached?.b ? liveSideText(textB, eolB) : textB;
+  const badgeA = lineEndingBadge(rawA);
+  const badgeB = lineEndingBadge(rawB);
+  const sameText = rawA.replace(/\r\n?/g, "\n") === rawB.replace(/\r\n?/g, "\n");
+  const eolOnly = ready && !binary && rawA !== rawB && sameText;
+  const eolDiffers = ready && !binary && (badgeA !== badgeB || eolOnly);
+  const identical = ready && chunkInfo.count === 0 && rawA === rawB;
   // Staging applies to local changes against HEAD / the index only.
   const canStage = editableB && isWorktree(right) && left.type === "rev" && !!useVcs.getState().root;
   const hasSource = !!source;
@@ -1085,9 +1146,11 @@ export function DiffEditor({
             : chunkInfo.count === 0
               ? identical
                 ? tx("Contents are identical")
-                : chunkInfo.whitespaceOnly
-                  ? tx("Whitespace-only changes")
-                  : tx("No differences")
+                : eolOnly
+                  ? tx("Contents differ only in line separators")
+                  : chunkInfo.whitespaceOnly
+                    ? tx("Whitespace-only changes")
+                    : tx("No differences")
               : chunkInfo.current >= 0
                 ? tx`${chunkInfo.current + 1} of ${chunkInfo.count} differences`
                 : chunkInfo.count === 1
@@ -1114,6 +1177,7 @@ export function DiffEditor({
         <div className={styles.labels}>
           <span className={styles.label} title={sideLabel(left)}>
             {sideLabel(left)}
+            {eolDiffers && eolA && <span className={styles.badge}>{badgeA}</span>}
             {editableA && (
               <span className={styles.badge}>
                 <T>editable</T>
@@ -1122,6 +1186,7 @@ export function DiffEditor({
           </span>
           <span className={styles.label} title={sideLabel(right)}>
             {sideLabel(right)}
+            {eolDiffers && eolB && <span className={styles.badge}>{badgeB}</span>}
             {editableB && (
               <span className={styles.badge}>{left.type === "rev" ? tx("working copy") : tx("editable")}</span>
             )}
@@ -1130,7 +1195,9 @@ export function DiffEditor({
       ) : (
         <div className={styles.labels}>
           <span className={styles.label}>
-            {sideLabel(left)} → {sideLabel(right)}
+            {sideLabel(left)}
+            {eolDiffers && eolA && <span className={styles.badge}>{badgeA}</span>} → {sideLabel(right)}
+            {eolDiffers && eolB && <span className={styles.badge}>{badgeB}</span>}
           </span>
         </div>
       )}

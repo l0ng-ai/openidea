@@ -1,10 +1,23 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
-import { render, waitFor } from "@testing-library/react";
+import { act, fireEvent, render, screen, waitFor } from "@testing-library/react";
+import userEvent from "@testing-library/user-event";
 import type { PluginInfo, ViewEvent } from "@/bindings";
 import { addFileIconProvider, fileIconName, registerExternalIcons } from "@/ui";
-import { addContributedFileTemplate, fileTemplates, isBuiltinFileTemplate } from "@/features/templates/files/store";
+import { provideEditorService, type EditorInput, type EditorService } from "@/workbench/contributions";
+import { useProject } from "@/platform/project";
+import { isToolWindowVisible, resetToolWindowLayout, showToolWindow } from "@/workbench/toolwindows/store";
+import { ToolWindowLayout } from "@/workbench/toolwindows/ToolWindows";
+import {
+  addContributedFileTemplate,
+  fileTemplates,
+  isBuiltinFileTemplate,
+  mergeFileTemplates,
+} from "@/features/templates/files/store";
 import { createMemoryPluginsBackend, setPluginsBackend, webSchemeUrl } from "../backend";
+import { defineViewUiPoints } from "../uiPoints";
+import { clearUiContributions, syncUiContributions } from "../projection";
 import { usePlugins } from "../store";
+import * as ptyModule from "../views/ptyBridge";
 import { FRAME_TAG, frameDocument } from "../views/frame";
 import {
   WebView,
@@ -146,7 +159,7 @@ describe("WebView", () => {
       viewEvent: vi.fn(async (_p: string, _v: string, e: ViewEvent) => void events.push(e)),
     });
     usePlugins.setState({
-      plugins: [{ id: "acme.draw", hasCode, capabilities: [] } as unknown as PluginInfo],
+      plugins: [{ id: "acme.draw", hasCode, enabled: true, capabilities: [] } as unknown as PluginInfo],
     });
     const doc = memoryDocument("hello world");
     const view = render(<WebView pluginId="acme.draw" view="draw" label="Draw" document={doc} doc={7} />);
@@ -244,6 +257,333 @@ describe("WebView", () => {
       view.unmount();
     }
   });
+
+  it("opens a streaming log editor tab only when process:<program> capability is granted", async () => {
+    const opened: EditorInput[] = [];
+    provideEditorService({
+      openFile: async () => {},
+      openVirtual: () => {},
+      openInput: async (input: EditorInput) => void opened.push(input),
+      openDiff: () => {},
+      openMerge: () => {},
+      closeFile: () => {},
+      activeFile: () => null,
+    } as unknown as EditorService);
+
+    const { view, events } = setup(true);
+    const { send } = await frameOf(view.container);
+    const payload = {
+      op: "open-log-tab",
+      title: "App Logs",
+      key: "shared",
+      program: "tail",
+      args: ["-f", "app.log"],
+      toggles: [{ id: "verbose", label: "Verbose", args: ["-v"] }],
+    };
+
+    // Denied when process:tail is not granted.
+    send({ text: JSON.stringify(payload) });
+    await new Promise((r) => setTimeout(r, 0));
+    expect(opened).toHaveLength(0);
+    expect(events).toHaveLength(0);
+
+    // Granted when process:tail is granted.
+    usePlugins.setState({
+      plugins: [
+        {
+          id: "acme.draw",
+          enabled: true,
+          hasCode: true,
+          capabilities: [{ id: "process:tail", granted: true }],
+        } as unknown as PluginInfo,
+      ],
+    });
+    send({ text: JSON.stringify(payload) });
+    await waitFor(() => expect(opened).toHaveLength(1));
+    expect(opened[0]).toMatchObject({
+      kind: "pluginLog",
+      key: `pluginLog:${JSON.stringify(["acme.draw", "draw", "shared"])}`,
+      data: {
+        view: "draw",
+        pluginId: "acme.draw",
+        title: "App Logs",
+        program: "tail",
+        args: ["-f", "app.log"],
+        toggles: [{ id: "verbose", label: "Verbose", args: ["-v"] }],
+      },
+    });
+    view.unmount();
+  });
+
+  it("closes frame PTYs on plugin changes, navigation, window teardown and unmount", async () => {
+    const original = ptyModule.ptyBridge;
+    const closes: ReturnType<typeof vi.fn>[] = [];
+    const spy = vi.spyOn(ptyModule, "ptyBridge").mockImplementation((...args) => {
+      const bridge = original(...args);
+      const close = vi.fn(bridge.close);
+      closes.push(close);
+      return { ...bridge, close };
+    });
+    try {
+      const { view } = setup(true);
+      const { frame, send, posted } = await frameOf(view.container);
+      for (const change of [
+        (p: PluginInfo) => ({ ...p, enabled: false }),
+        (p: PluginInfo) => ({ ...p, enabled: true, capabilities: [] }),
+        (p: PluginInfo) => ({ ...p, version: "2.0.0" }),
+      ]) {
+        const close = closes.at(-1)!;
+        act(() => usePlugins.setState((s) => ({ plugins: s.plugins.map(change) })));
+        expect(close).toHaveBeenCalled();
+      }
+      const close = closes.at(-1)!;
+      act(() => {
+        frame.dispatchEvent(new Event("load"));
+        frame.dispatchEvent(new Event("load"));
+      });
+      expect(close).toHaveBeenCalled();
+      const windowClose = closes.at(-1)!;
+      act(() => window.dispatchEvent(new Event("pagehide")));
+      expect(windowClose).toHaveBeenCalled();
+      // Another window cannot request a PTY through this frame's listener.
+      window.dispatchEvent(
+        new MessageEvent("message", {
+          source: window,
+          data: { tag: FRAME_TAG, text: JSON.stringify({ op: "pty-spawn", sessionId: "s", program: "sh" }) },
+        }),
+      );
+      await new Promise((r) => setTimeout(r, 0));
+      expect(posted.filter((m) => m.text)).toEqual([]);
+      send({ text: "message" });
+      view.unmount();
+      expect(closes.every((close) => close.mock.calls.length > 0)).toBe(true);
+    } finally {
+      spy.mockRestore();
+    }
+  });
+
+  it("refuses pty-spawn messages when process:<program> capability is not granted", async () => {
+    const { view, events } = setup(true);
+    const { posted, send } = await frameOf(view.container);
+    send({ text: JSON.stringify({ op: "pty-spawn", sessionId: "s1", program: "sh", args: ["-i"] }) });
+    await waitFor(() =>
+      expect(
+        posted.some(
+          (m) =>
+            typeof m.text === "string" &&
+            m.text.includes('"op":"pty-error"') &&
+            m.text.includes("process:sh capability not granted"),
+        ),
+      ).toBe(true),
+    );
+    expect(events).toEqual([]);
+    view.unmount();
+  });
+
+  it("opens a generic plugin content editor tab and reports invalid requests via content-tab-error", async () => {
+    const opened: EditorInput[] = [];
+    provideEditorService({
+      openFile: async () => {},
+      openVirtual: () => {},
+      openInput: async (input: EditorInput) => void opened.push(input),
+      openDiff: () => {},
+      openMerge: () => {},
+      closeFile: () => {},
+      activeFile: () => null,
+    } as unknown as EditorService);
+
+    const { view, events } = setup(true);
+    usePlugins.setState({
+      plugins: [{ id: "acme.draw", enabled: true, hasCode: true, capabilities: [] } as unknown as PluginInfo],
+    });
+    const { posted, send } = await frameOf(view.container);
+
+    // Invalid payload sends content-tab-error back to the frame.
+    send({ text: JSON.stringify({ op: "open-content-tab", title: "", content: "x" }) });
+    await waitFor(() =>
+      expect(posted.some((m) => typeof m.text === "string" && m.text.includes('"op":"content-tab-error"'))).toBe(true),
+    );
+    expect(opened).toHaveLength(0);
+
+    // Valid payload opens a pluginContent editor tab.
+    send({
+      text: JSON.stringify({
+        op: "open-content-tab",
+        key: "cfg",
+        title: "service.toml",
+        fileName: "service.toml",
+        language: "toml",
+        content: 'name = "demo"\n',
+        actions: [{ id: "save", label: "Apply", icon: "green-checkmark", primary: true, save: true }],
+      }),
+    });
+    await waitFor(() => expect(opened).toHaveLength(1));
+    expect(opened[0]).toMatchObject({
+      kind: "pluginContent",
+      key: `pluginContent:${JSON.stringify(["acme.draw", "draw", "cfg"])}`,
+      data: {
+        pluginId: "acme.draw",
+        view: "draw",
+        key: "cfg",
+        title: "service.toml",
+        fileName: "service.toml",
+        language: "toml",
+        content: 'name = "demo"\n',
+        readOnly: false,
+      },
+    });
+    expect(events).toHaveLength(0);
+    view.unmount();
+  });
+
+  it("keeps the standard tool-window header unless header = 'none', preserves it while loading or on error, and renders keyboard-operable corner actions with inset vars when ready", async () => {
+    resetToolWindowLayout();
+    const prevProject = useProject.getState().project;
+    useProject.setState({ project: { root: "/proj", name: "proj", trusted: true } as never });
+    const undefine = defineViewUiPoints();
+    try {
+      let resolveUrl!: (url: string) => void;
+      let rejectUrl!: (err: Error) => void;
+      let mode: "pending" | "ready" | "error" = "ready";
+      setPluginsBackend({
+        ...createMemoryPluginsBackend([]),
+        webPageUrl: () =>
+          mode === "ready"
+            ? Promise.resolve("about:blank")
+            : mode === "error"
+              ? Promise.reject(new Error("page missing"))
+              : new Promise<string>((res, rej) => {
+                  resolveUrl = res;
+                  rejectUrl = rej;
+                }),
+      });
+      const plugin = { id: "acme.kube", version: "1.0.0", hasCode: false, capabilities: [] } as unknown as PluginInfo;
+      usePlugins.setState({ plugins: [plugin] });
+
+      // 1. Default web view (without header = "none"): keeps the standard <header>.
+      syncUiContributions(
+        [
+          {
+            pluginId: "acme.kube",
+            point: "views",
+            key: "normal",
+            decl: { id: "normal", title: "Normal View", location: "bottom", web: "web/index.html" },
+          },
+        ],
+        [plugin],
+      );
+      showToolWindow("plugin.acme.kube.normal");
+      const first = render(<ToolWindowLayout editor={null} />);
+      const normal = await frameOf(first.container);
+      fireEvent.load(normal.frame);
+      expect(
+        normal.posted.some((m) => (m.theme as { vars: Record<string, string> })?.vars["--openidea-corner-inset-width"]),
+      ).toBe(false);
+      expect(first.container.querySelector('[data-toolwindow="plugin.acme.kube.normal"] header')).not.toBeNull();
+      expect(screen.getByText("Normal View")).toBeInTheDocument();
+      first.unmount();
+      clearUiContributions();
+
+      // 2. Loading state with header = "none": keeps the standard <header> (title + Options + Hide) until ready.
+      mode = "pending";
+      syncUiContributions(
+        [
+          {
+            pluginId: "acme.kube",
+            point: "views",
+            key: "cluster",
+            decl: {
+              id: "cluster",
+              title: "Cluster Explorer",
+              location: "bottom",
+              web: "web/index.html",
+              header: "none",
+            },
+          },
+        ],
+        [plugin],
+      );
+      showToolWindow("plugin.acme.kube.cluster");
+      const second = render(<ToolWindowLayout editor={null} />);
+      expect(second.container.querySelector('[data-toolwindow="plugin.acme.kube.cluster"] header')).not.toBeNull();
+      expect(screen.getByText("Cluster Explorer")).toBeInTheDocument();
+      expect(screen.getByRole("button", { name: "Options" })).toBeInTheDocument();
+      expect(screen.getByRole("button", { name: "Hide" })).toBeInTheDocument();
+
+      // A resolved URL is still loading until the iframe has loaded.
+      act(() => resolveUrl("https://plugin.invalid/revision-1"));
+      const { frame, posted } = await frameOf(second.container);
+      expect(second.container.querySelector('[data-toolwindow="plugin.acme.kube.cluster"] header')).not.toBeNull();
+      fireEvent.load(frame);
+      await waitFor(() =>
+        expect(second.container.querySelector('[data-toolwindow="plugin.acme.kube.cluster"] header')).toBeNull(),
+      );
+      expect(second.container.querySelector("iframe")).toBe(frame);
+      await waitFor(() =>
+        expect(
+          posted.some(
+            (m) =>
+              (m.theme as { vars?: Record<string, string> } | undefined)?.vars?.["--openidea-corner-inset-width"] ===
+                "64px" &&
+              (m.theme as { vars?: Record<string, string> } | undefined)?.vars?.["--openidea-corner-inset-height"] ===
+                "34px",
+          ),
+        ).toBe(true),
+      );
+
+      act(() => usePlugins.setState({ plugins: [{ ...plugin, version: "1.0.1" }] }));
+      act(() => resolveUrl("https://plugin.invalid/revision-2"));
+      await waitFor(() => expect(frame).toHaveAttribute("src", "https://plugin.invalid/revision-2"));
+      expect(second.container.querySelector('[data-toolwindow="plugin.acme.kube.cluster"] header')).not.toBeNull();
+      expect(second.container.querySelector("iframe")).toBe(frame);
+      fireEvent.load(frame);
+      expect(second.container.querySelector('[data-toolwindow="plugin.acme.kube.cluster"] header')).toBeNull();
+
+      act(() => usePlugins.setState({ plugins: [{ ...plugin, version: "1.0.2" }] }));
+      act(() => rejectUrl(new Error("page missing")));
+      await waitFor(() => expect(screen.getByText("page missing")).toBeInTheDocument());
+      expect(second.container.querySelector('[data-toolwindow="plugin.acme.kube.cluster"] header')).not.toBeNull();
+      act(() => usePlugins.setState({ plugins: [{ ...plugin, version: "1.0.3" }] }));
+      act(() => resolveUrl("https://plugin.invalid/revision-2"));
+      const recovered = await frameOf(second.container);
+      expect(second.container.querySelector('[data-toolwindow="plugin.acme.kube.cluster"] header')).not.toBeNull();
+      fireEvent.load(recovered.frame);
+      expect(second.container.querySelector('[data-toolwindow="plugin.acme.kube.cluster"] header')).toBeNull();
+
+      const user = userEvent.setup();
+      const optionsBtn = screen.getByRole("button", { name: "Options" });
+      optionsBtn.focus();
+      expect(document.activeElement).toBe(optionsBtn);
+      await user.keyboard("{Enter}");
+      expect(optionsBtn).toHaveAttribute("aria-expanded", "true");
+      await user.keyboard("{Escape}");
+      expect(optionsBtn).toHaveAttribute("aria-expanded", "false");
+
+      const hideBtn = screen.getByRole("button", { name: "Hide" });
+      await user.tab();
+      expect(document.activeElement).toBe(hideBtn);
+      await user.keyboard(" ");
+      expect(isToolWindowVisible("plugin.acme.kube.cluster")).toBe(false);
+      second.unmount();
+
+      // 4. Error state with header = "none": keeps the standard <header> so the user still has title, Options, and Hide.
+      mode = "pending";
+      act(() => usePlugins.setState({ plugins: [{ ...plugin, version: "1.0.1" }] }));
+      showToolWindow("plugin.acme.kube.cluster");
+      const third = render(<ToolWindowLayout editor={null} />);
+      act(() => rejectUrl(new Error("page missing")));
+      await waitFor(() => expect(screen.getByText("page missing")).toBeInTheDocument());
+      expect(third.container.querySelector('[data-toolwindow="plugin.acme.kube.cluster"] header')).not.toBeNull();
+      expect(screen.getByText("Cluster Explorer")).toBeInTheDocument();
+      expect(screen.getByRole("button", { name: "Hide" })).toBeInTheDocument();
+      third.unmount();
+    } finally {
+      clearUiContributions();
+      undefine();
+      useProject.setState({ project: prevProject });
+      resetToolWindowLayout();
+    }
+  });
 });
 
 describe("contributed file icons and templates", () => {
@@ -259,6 +599,74 @@ describe("contributed file icons and templates", () => {
       unregister();
     }
     expect(fileIconName("a.excalidraw")).toBe(builtin);
+  });
+
+  it("projects filename and variable declarations through contributions and withdraws them", () => {
+    const undefine = defineViewUiPoints();
+    try {
+      syncUiContributions(
+        [
+          {
+            pluginId: "fixture",
+            point: "fileTemplates",
+            key: "ignore",
+            decl: {
+              id: "ignore",
+              name: "Ignore",
+              extension: "",
+              fileName: ".dockerignore",
+              body: "$OUTPUT$",
+              variables: [{ name: "OUTPUT", prompt: "Output folder" }],
+            },
+          },
+        ],
+        [{ id: "fixture" } as PluginInfo],
+      );
+      expect(fileTemplates().find((t) => t.id === "plugin.fixture.ignore")).toMatchObject({
+        fileName: ".dockerignore",
+        extension: "",
+        inferPackage: true,
+        variables: [{ name: "OUTPUT", prompt: "Output folder" }],
+        kinds: [{ body: "$OUTPUT$" }],
+      });
+      clearUiContributions();
+      expect(fileTemplates().some((t) => t.id === "plugin.fixture.ignore")).toBe(false);
+    } finally {
+      clearUiContributions();
+      undefine();
+    }
+  });
+
+  it("inherits new declaration fields without losing a legacy template customization", () => {
+    const legacy = {
+      id: "plugin.fixture.repository",
+      name: "Custom Repository",
+      icon: "file-text",
+      extension: "java",
+      nameStyle: "asis" as const,
+      kinds: [{ id: "file", label: "File", body: "// custom $ENTITY$ $PACKAGE$" }],
+    };
+    const remove = addContributedFileTemplate({
+      ...legacy,
+      name: "Repository",
+      fileName: "Repository.java",
+      inferPackage: true,
+      variables: [{ name: "ENTITY", prompt: "Entity class" }],
+      kinds: [{ id: "file", label: "File", body: "$END$" }],
+    });
+    try {
+      expect(
+        mergeFileTemplates({ templates: { [legacy.id]: legacy }, deleted: [] }).find((t) => t.id === legacy.id),
+      ).toMatchObject({
+        name: "Custom Repository",
+        fileName: "Repository.java",
+        inferPackage: true,
+        variables: [{ name: "ENTITY", prompt: "Entity class" }],
+        kinds: legacy.kinds,
+      });
+    } finally {
+      remove();
+    }
   });
 
   it("adds a plugin's template to the New menu like a built-in", () => {

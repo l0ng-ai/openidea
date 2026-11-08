@@ -3,6 +3,7 @@
  * contract between features (which register actions) and keymaps.
  */
 export const intellijMacos: Record<string, string[]> = {
+  "editor.addOrRemoveCaret": ["Alt+Shift+Button1"],
   // Navigate
   "navigate.searchEverywhere": ["Shift Shift"],
   "navigate.gotoClass": ["Meta+O"],
@@ -15,8 +16,8 @@ export const intellijMacos: Record<string, string[]> = {
   "navigate.switcherBack": ["Ctrl+Shift+Tab"],
   "navigate.recentFiles": ["Meta+E"],
   "navigate.recentLocations": ["Meta+Shift+E"],
-  "navigate.back": ["Meta+[", "Meta+Alt+Left", "Button4"],
-  "navigate.forward": ["Meta+]", "Meta+Alt+Right", "Button5"],
+  "navigate.back": ["Meta+[", "Meta+Alt+Left", "Button4", "SwipeRight"],
+  "navigate.forward": ["Meta+]", "Meta+Alt+Right", "Button5", "SwipeLeft"],
   "navigate.gotoLine": ["Meta+L"],
   "navigate.declaration": ["Meta+B"],
   "navigate.implementation": ["Meta+Alt+B", "Meta+Alt+Button1"],
@@ -176,6 +177,7 @@ export const intellijMacos: Record<string, string[]> = {
   // File / editor tabs
   "file.save": ["Meta+S"],
   "file.settings": ["Meta+,"],
+  "file.projectStructure": ["Meta+;"],
   "file.openProject": ["Meta+Shift+Alt+O"],
   "file.newScratchFile": ["Meta+Shift+N"],
   "editor.closeTab": ["Meta+W"],
@@ -194,7 +196,8 @@ export const intellijMacos: Record<string, string[]> = {
   "window.previous": ["Meta+Alt+Shift+`"],
   "file.reloadFromDisk": ["Meta+Alt+Y"],
   // Before the project view's ⇧⌘C (Copy Absolute Path), which wins there.
-  "editor.copyPath": ["Meta+Shift+C"],
+  "editor.copyPath": [],
+  "editor.copyPathReference": ["Meta+Shift+C"],
 
   // Project view (when: projectViewFocus)
   "project.newFile": ["Meta+N"],
@@ -407,4 +410,6 @@ export const intellijMacos: Record<string, string[]> = {
   "find.openInWindow": ["Alt+F7"],
   "find.field.newLine": ["Meta+Shift+Enter"],
   "find.field.recentSearches": ["Alt+Down"],
+  "editor.pasteHistory.paste": ["Enter"],
+  "editor.pasteHistory.remove": ["Delete", "Backspace"],
 };

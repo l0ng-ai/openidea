@@ -2,6 +2,7 @@ import { parseArgs, formatArgs } from "@/platform/commandLine";
 /** Run configuration → DAP launch configuration, per adapter. */
 import { workflowSettings } from "@/platform/workflowSettings";
 import type { LaunchConfig, RunConfig } from "@/platform/ipc";
+import { hostOs } from "@/platform/remote";
 
 function isAbsolute(p: string) {
   return p.startsWith("/") || /^[A-Za-z]:[\\/]/.test(p);
@@ -60,13 +61,18 @@ function cargoLaunch(rc: RunConfig, cwd: string, adapter: string): LaunchConfig 
 
 const PYTHON_NAME = /^python[\d.]*(\.exe)?$/;
 
+/** `python` on Windows (`python3` is at most a Store alias there, and venvs have no `python3.exe`), `python3` elsewhere. */
+function systemPython(): string {
+  return hostOs() === "windows" ? "python" : "python3";
+}
+
 function pythonFor(rc: RunConfig, cwd: string): string {
   const cmd = rc.command;
   const name = cmd.split("/").pop() ?? cmd;
   if (PYTHON_NAME.test(name)) return resolveCommand(cmd, cwd);
   // A venv tool such as `.venv/bin/pytest`: use the interpreter next to it.
   if (cmd.includes("/")) return resolveCommand(cmd.slice(0, cmd.lastIndexOf("/") + 1) + "python", cwd);
-  return "python3";
+  return systemPython();
 }
 
 /** Project managers whose `run` executes in the project's environment (`uv run python …`). */
@@ -91,7 +97,7 @@ function debugpyLaunch(rc: RunConfig, cwd: string): LaunchConfig {
     // environment; the adapter and its launcher need a plain interpreter.
     const python = PYTHON_NAME.test(args[1]) ? args[1] : "python";
     extra.python = [resolveCommand(rc.command, cwd), "run", python];
-    extra.debugLauncherPython = "python3";
+    extra.debugLauncherPython = systemPython();
     tool = PYTHON_NAME.test(args[1]) ? null : args[1];
     args = args.slice(2);
   }
@@ -219,7 +225,7 @@ function delveLaunch(rc: RunConfig, cwd: string, root: string): LaunchConfig {
       dlvCwd: module,
       ...(p.scope === "file" ? { __goFiles: target.split("|").map((f) => join(module, f.trim())) } : {}),
       __goToolArgs: toolArgs,
-      __goUseTags: p.useTags === "true",
+      __goUseTags: p.useTags !== "false",
       ...(p.outputDir ? { output: join(root, `${p.outputDir}/go-debug`) } : {}),
     });
     return out;
@@ -276,6 +282,8 @@ function delveLaunch(rc: RunConfig, cwd: string, root: string): LaunchConfig {
   out.extraJson = JSON.stringify({
     mode: test ? "test" : "debug",
     ...(flags.length ? { buildFlags: formatArgs(flags) } : {}),
+    __goToolArgs: flags,
+    __goUseTags: rc.params?.useTags !== "false",
   });
   return out;
 }

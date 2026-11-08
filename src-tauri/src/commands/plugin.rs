@@ -12,6 +12,7 @@ use ide_host::plugins::{
     PluginEditor, PluginEvent, PluginHost, PluginInfo, PluginStatusItem, PluginsSnapshot, WorkbenchEvent,
 };
 use ide_plugin::{Invocation, Limits};
+use ide_workspace::settings::SettingsScope;
 use parking_lot::Mutex;
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
@@ -23,6 +24,7 @@ use tauri::{AppHandle, Manager, State, Window};
 
 /// How long `plugin_list` waits for the startup load before answering with what it has.
 const INITIAL_LOAD_WAIT: Duration = Duration::from_secs(5);
+
 /// `on-startup-finished` fires this long after the installed plugins are loaded.
 const STARTUP_FINISHED_DELAY: Duration = Duration::from_millis(1500);
 /// How often the marketplace index is read again (revocations).
@@ -259,6 +261,14 @@ pub async fn plugin_assets(
     blocking(move || host.assets(&plugin_id, &prefix)).await
 }
 
+/// The UI language (BCP 47) that plugin code reads with `ui.locale()`.
+#[tauri::command]
+#[specta::specta]
+pub async fn plugin_set_ui_locale(state: State<'_, AppState>, tag: String) -> IdeResult<()> {
+    state.plugins.set_ui_locale(&tag);
+    Ok(())
+}
+
 /// An activation event from the UI: `kind` is `language`, `file` (project-relative path) or `view`.
 #[tauri::command]
 #[specta::specta]
@@ -318,6 +328,7 @@ pub async fn plugin_reload(state: State<'_, AppState>, id: String) -> IdeResult<
 /// Runs a plugin command in the context of this window's project and focused editor.
 #[tauri::command]
 #[specta::specta]
+#[allow(clippy::too_many_arguments)]
 pub async fn plugin_run_command(
     window: Window,
     state: State<'_, AppState>,
@@ -326,6 +337,7 @@ pub async fn plugin_run_command(
     arg: Option<String>,
     editor: Option<PluginEditor>,
     paths: Option<Vec<PathBuf>>,
+    settings_scope: Option<SettingsScope>,
 ) -> IdeResult<Option<String>> {
     let host = state.plugins.clone();
     let project = state.project(window.label()).ok();
@@ -334,6 +346,7 @@ pub async fn plugin_run_command(
         workspace_root: project.as_ref().map(|p| p.root.clone()),
         editor: editor.map(PluginEditor::context),
         selected_paths: paths.unwrap_or_default(),
+        global_settings: matches!(settings_scope, Some(SettingsScope::Global)),
     };
     blocking(move || host.run_command(&plugin_id, &command_id, arg.as_deref(), invocation)).await
 }
@@ -391,6 +404,33 @@ pub fn plugin_cancel_task(state: State<'_, AppState>, task_id: String) -> bool {
 #[specta::specta]
 pub fn plugin_answer_prompt(state: State<'_, AppState>, prompt_id: String, answer: Option<Vec<String>>) -> bool {
     state.plugins.answer_prompt(&prompt_id, answer)
+}
+
+/// A window's answer to a plugin's `commitRequested`; false when the call no
+/// longer waits.
+#[tauri::command]
+#[specta::specta]
+pub fn plugin_answer_commit(
+    state: State<'_, AppState>,
+    request_id: String,
+    answer: ide_host::plugins::CommitAnswer,
+) -> bool {
+    state.plugins.answer_commit(&request_id, answer)
+}
+
+/// Runs plugins' before-commit checks on what `selection` commits, until
+/// `request` is cancelled.
+#[tauri::command]
+#[specta::specta]
+pub async fn plugin_commit_checks(
+    window: Window,
+    state: State<'_, AppState>,
+    selection: ide_host::plugins::CommitSelection,
+    checks: Vec<ide_host::plugins::PluginCommitCheckRef>,
+    request: ide_core::RequestId,
+) -> IdeResult<Vec<ide_host::plugins::PluginCommitCheckResult>> {
+    let plugins = state.plugins.clone();
+    ide_host::plugins::commit::commit_checks(&state.host, plugins, window.label(), selection, checks, request).await
 }
 
 /// Gutter markers of plugin `line-markers` providers for an open document.
@@ -494,6 +534,70 @@ pub fn plugin_web_page(
     view: String,
 ) -> IdeResult<ide_host::plugins::web::WebPage> {
     state.plugins.web_page(&plugin_id, &view)
+}
+
+#[tauri::command]
+#[specta::specta]
+pub async fn plugin_web_pty_spawn(
+    window: Window,
+    state: State<'_, AppState>,
+    plugin_id: String,
+    view: String,
+    command: ide_host::plugins::web::WebPtyCommand,
+    on_output: Channel<String>,
+) -> IdeResult<ide_terminal::TerminalInfo> {
+    let plugins = state.plugins.clone();
+    let host = state.host.clone();
+    let window = window.label().to_owned();
+    tauri::async_runtime::spawn_blocking(move || {
+        plugins.spawn_web_pty(
+            &host,
+            &plugin_id,
+            &view,
+            &window,
+            command,
+            Arc::new(move |chunk| {
+                let _ = on_output.send(chunk);
+            }),
+        )
+    })
+    .await
+    .map_err(|e| IdeError::internal(e.to_string()))?
+}
+
+/// Starts the program of a log tab the plugin's code opened in this window,
+/// with the toggles in `on`.
+#[tauri::command]
+#[specta::specta]
+#[allow(clippy::too_many_arguments)]
+pub async fn plugin_log_tab_spawn(
+    window: Window,
+    state: State<'_, AppState>,
+    plugin_id: String,
+    key: String,
+    on: Vec<String>,
+    cols: u16,
+    rows: u16,
+    on_output: Channel<String>,
+) -> IdeResult<ide_terminal::TerminalInfo> {
+    let plugins = state.plugins.clone();
+    let host = state.host.clone();
+    let window = window.label().to_owned();
+    tauri::async_runtime::spawn_blocking(move || {
+        plugins.spawn_log_tab_pty(
+            &host,
+            &plugin_id,
+            &key,
+            &window,
+            &on,
+            (cols, rows),
+            Arc::new(move |chunk| {
+                let _ = on_output.send(chunk);
+            }),
+        )
+    })
+    .await
+    .map_err(|e| IdeError::internal(e.to_string()))?
 }
 
 /// Largest file a web view saves or opens (`openidea.saveFile` / `openFile`).
@@ -750,6 +854,16 @@ pub async fn plugin_navigation_goto(
 ) -> IdeResult<Option<ide_plugin::indexing::NavigationResult>> {
     ide_host::plugins::index_ops::plugin_navigation_goto(&state.host, state.plugins.clone(), window.label(), doc, pos)
         .await
+}
+
+#[tauri::command]
+#[specta::specta]
+pub async fn plugin_endpoints(
+    window: Window,
+    state: State<'_, AppState>,
+    plugin_id: String,
+) -> IdeResult<Vec<ide_host::plugins::endpoints::PluginEndpoint>> {
+    ide_host::plugins::index_ops::plugin_endpoints(&state.host, state.plugins.clone(), window.label(), plugin_id).await
 }
 
 #[tauri::command]

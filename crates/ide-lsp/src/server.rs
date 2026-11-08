@@ -52,6 +52,8 @@ pub enum Phase {
 struct State {
     generation: u64,
     conn: Conn,
+    events: VecDeque<IdeEvent>,
+    publishing: bool,
 }
 
 /// A file opened on the server by the client itself (not by the user) for the
@@ -136,7 +138,7 @@ impl Server {
             effective: Mutex::new(None),
             resolved_binary: RwLock::new(None),
             languages: Mutex::new(vec![language]),
-            state: Mutex::new(State { generation: 0, conn: Conn::Idle }),
+            state: Mutex::new(State { generation: 0, conn: Conn::Idle, events: VecDeque::new(), publishing: false }),
             initializing: Mutex::new(None),
             start_cancel: Mutex::new(CancellationToken::new()),
             phase: watch::channel(Phase::Down).0,
@@ -175,8 +177,20 @@ impl Server {
         config
     }
 
-    pub fn set_effective_config(&self, config: LanguageServerConfig) {
-        *self.effective.lock() = Some(config);
+    pub fn set_effective_config(&self, generation: u64, config: LanguageServerConfig) {
+        let st = self.state.lock();
+        if st.generation == generation && matches!(st.conn, Conn::Starting | Conn::Ready(_)) {
+            *self.effective.lock() = Some(config);
+        }
+    }
+
+    pub fn set_resolved_binary(&self, generation: u64, binary: Option<PathBuf>) -> bool {
+        let st = self.state.lock();
+        if st.generation != generation || !matches!(st.conn, Conn::Starting) {
+            return false;
+        }
+        *self.resolved_binary.write() = binary;
+        true
     }
 
     pub fn add_language(&self, language: &LanguageId) {
@@ -217,15 +231,15 @@ impl Server {
         status: ServerStatus,
         message: Option<String>,
     ) -> bool {
-        {
-            let mut st = self.state.lock();
-            if st.generation != generation || !matches!(st.conn, Conn::Starting) {
-                return false;
-            }
-            st.conn = conn;
+        let mut st = self.state.lock();
+        if st.generation != generation || !matches!(st.conn, Conn::Starting) {
+            return false;
         }
-        self.set_status(sink, status, message);
-        self.announce_down();
+        st.conn = conn;
+        self.queue_status(&mut st, status, message);
+        self.phase.send_replace(Phase::Down);
+        drop(st);
+        self.publish(sink);
         true
     }
 
@@ -236,8 +250,7 @@ impl Server {
             return false;
         }
         st.conn = Conn::Ready(run);
-        drop(st);
-        self.set_initializing(None);
+        *self.initializing.lock() = None;
         true
     }
 
@@ -247,12 +260,6 @@ impl Server {
         if st.generation == generation && matches!(st.conn, Conn::Ready(_)) {
             self.phase.send_replace(Phase::Ready);
         }
-    }
-
-    /// Wakes requests waiting for a start that ended without an instance, after
-    /// its status is published.
-    pub fn announce_down(&self) {
-        self.phase.send_replace(Phase::Down);
     }
 
     pub fn running(&self) -> Option<Running> {
@@ -272,8 +279,13 @@ impl Server {
         self.instance().filter(|r| r.generation == generation)
     }
 
-    pub fn set_initializing(&self, run: Option<Running>) {
-        *self.initializing.lock() = run;
+    pub fn set_initializing(&self, run: Running) -> bool {
+        let st = self.state.lock();
+        if st.generation != run.generation || !matches!(st.conn, Conn::Starting) {
+            return false;
+        }
+        *self.initializing.lock() = Some(run);
+        true
     }
 
     /// The running instance if it is still generation `generation`.
@@ -290,7 +302,7 @@ impl Server {
 
     /// Ready → Stopping, returning the instance to shut down. An in-flight
     /// start is abandoned instead.
-    pub fn begin_stop(&self) -> Option<Running> {
+    pub fn begin_stop(&self, sink: &SharedSink, final_stop: bool) -> Option<Running> {
         let mut st = self.state.lock();
         match std::mem::replace(&mut st.conn, Conn::Idle) {
             Conn::Ready(run) => {
@@ -301,11 +313,20 @@ impl Server {
             Conn::Starting => {
                 st.generation += 1; // invalidates the in-flight start
                 self.start_cancel.lock().cancel();
+                self.queue_cleanup(&mut st);
+                self.queue_status(&mut st, ServerStatus::Stopped, None);
                 self.phase.send_replace(Phase::Down);
+                drop(st);
+                self.publish(sink);
                 None
             }
             other => {
                 st.conn = other;
+                if final_stop {
+                    self.queue_status(&mut st, ServerStatus::Stopped, None);
+                }
+                drop(st);
+                self.publish(sink);
                 None
             }
         }
@@ -316,40 +337,55 @@ impl Server {
         self.start_cancel.lock().clone()
     }
 
-    pub fn end_stop(&self, generation: u64) {
+    pub fn end_stop(&self, generation: u64, sink: &SharedSink) {
         let mut st = self.state.lock();
-        if st.generation == generation && matches!(st.conn, Conn::Stopping) {
-            st.conn = Conn::Idle;
+        if st.generation != generation || !matches!(st.conn, Conn::Stopping) {
+            return;
         }
+        self.queue_cleanup(&mut st);
+        self.queue_status(&mut st, ServerStatus::Stopped, None);
+        st.conn = Conn::Idle;
+        self.phase.send_replace(Phase::Down);
+        drop(st);
+        self.publish(sink);
     }
 
-    /// Instance `generation`'s connection closed. `None` if superseded, else whether
-    /// the close was intentional. Waiters are woken by [`Self::announce_down`] once
-    /// the crash is reported, not here: they read the status to say why.
-    pub fn on_closed(&self, generation: u64) -> Option<bool> {
+    /// Retires a crashed instance before another generation can start. Intentional
+    /// closes belong to `end_stop`; a late supervisor must not clear its successor.
+    pub fn on_closed(&self, generation: u64, sink: &SharedSink, code: Option<i32>) -> Option<Option<Duration>> {
         let mut st = self.state.lock();
-        if st.generation != generation {
+        if st.generation != generation || !matches!(st.conn, Conn::Ready(_) | Conn::Starting) {
             return None;
         }
-        match &st.conn {
-            Conn::Ready(_) | Conn::Starting => {
-                st.conn = Conn::Idle;
-                Some(false)
-            }
-            _ => Some(true),
+        let tail = self.stderr_tail(5);
+        let cfg = self.effective_config();
+        let mut message = match (code, &cfg.connect) {
+            (Some(c), _) => format!("{} exited with code {c}", self.name),
+            (None, Some(addr)) => format!("{}: the connection to the server ({addr}) closed", self.name),
+            (None, None) => format!("{} terminated unexpectedly", self.name),
+        };
+        if !tail.is_empty() {
+            message.push_str(":\n");
+            message.push_str(&tail);
         }
+        let delay = self.record_crash();
+        message.push_str(if delay.is_some() {
+            "\nRestarting…"
+        } else {
+            "\nCrashed repeatedly; restart it manually."
+        });
+        self.queue_cleanup(&mut st);
+        self.queue_status(&mut st, ServerStatus::Crashed, Some(message));
+        st.conn = if delay.is_some() { Conn::Idle } else { Conn::Failed };
+        self.phase.send_replace(Phase::Down);
+        drop(st);
+        self.publish(sink);
+        Some(delay)
     }
 
     pub fn is_idle_gen(&self, generation: u64) -> bool {
         let st = self.state.lock();
         st.generation == generation && matches!(st.conn, Conn::Idle)
-    }
-
-    pub fn give_up(&self, generation: u64) {
-        let mut st = self.state.lock();
-        if st.generation == generation && matches!(st.conn, Conn::Idle) {
-            st.conn = Conn::Failed;
-        }
     }
 
     /// Records a crash; returns the backoff before restarting, or `None` once
@@ -367,8 +403,8 @@ impl Server {
     }
 
     pub fn reset_for_restart(&self) {
-        *self.crashes.lock() = 0;
         let mut st = self.state.lock();
+        *self.crashes.lock() = 0;
         if matches!(st.conn, Conn::Missing | Conn::Failed) {
             st.conn = Conn::Idle;
         }
@@ -384,24 +420,83 @@ impl Server {
         self.status.lock().1.clone()
     }
 
-    pub fn set_status(&self, sink: &SharedSink, status: ServerStatus, message: Option<String>) {
-        {
-            let mut cur = self.status.lock();
-            if cur.0 == status && cur.1 == message {
-                return;
-            }
-            *cur = (status, message.clone());
+    fn queue_status(&self, st: &mut State, status: ServerStatus, message: Option<String>) {
+        let mut cur = self.status.lock();
+        if cur.0 == status && cur.1 == message {
+            return;
         }
-        sink.emit(IdeEvent::LanguageServer { server: self.id, name: self.name.clone(), status, message });
+        *cur = (status, message.clone());
+        st.events.push_back(IdeEvent::LanguageServer { server: self.id, name: self.name.clone(), status, message });
+    }
+
+    fn queue_cleanup(&self, st: &mut State) {
+        *self.initializing.lock() = None;
+        for (id, title) in self.take_progress() {
+            st.events.push_back(IdeEvent::Task {
+                id,
+                title,
+                message: None,
+                fraction: None,
+                done: true,
+                cancellable: false,
+            });
+        }
+        self.progress_ended();
+        for path in self.take_diagnostic_paths() {
+            st.events.push_back(IdeEvent::Diagnostics {
+                path: path.into(),
+                source: self.name.clone(),
+                items: Vec::new(),
+            });
+        }
+    }
+
+    pub fn emit(&self, sink: &SharedSink, event: IdeEvent) {
+        self.state.lock().events.push_back(event);
+        self.publish(sink);
+    }
+
+    /// One drainer preserves event order, including when a sink reenters
+    /// the server. No state or manager lock is held across an external callback.
+    fn publish(&self, sink: &SharedSink) {
+        let mut st = self.state.lock();
+        if st.publishing {
+            return;
+        }
+        st.publishing = true;
+        loop {
+            let Some(event) = st.events.pop_front() else {
+                st.publishing = false;
+                return;
+            };
+            drop(st);
+            sink.emit(event);
+            st = self.state.lock();
+        }
+    }
+
+    pub fn starting_status(&self, generation: u64, sink: &SharedSink) -> Option<CancellationToken> {
+        let mut st = self.state.lock();
+        if st.generation != generation || !matches!(st.conn, Conn::Starting) {
+            return None;
+        }
+        self.queue_status(&mut st, ServerStatus::Starting, None);
+        let cancel = self.start_cancel.lock().clone();
+        drop(st);
+        self.publish(sink);
+        Some(cancel)
     }
 
     /// Ready ⇄ Busy depending on active `$/progress` tokens.
     pub fn refresh_busy_status(&self, sink: &SharedSink) {
-        if self.running().is_none() {
+        let mut st = self.state.lock();
+        if !matches!(st.conn, Conn::Ready(_)) {
             return;
         }
         let busy = self.is_busy();
-        self.set_status(sink, if busy { ServerStatus::Busy } else { ServerStatus::Ready }, None);
+        self.queue_status(&mut st, if busy { ServerStatus::Busy } else { ServerStatus::Ready }, None);
+        drop(st);
+        self.publish(sink);
     }
 
     /// Whether the server reports work in progress (indexing, analysis).
@@ -522,7 +617,11 @@ impl Server {
 
     // ---- bookkeeping ----
 
-    pub fn push_stderr(&self, line: String) {
+    pub fn push_stderr(&self, generation: u64, line: String) {
+        let st = self.state.lock();
+        if st.generation != generation {
+            return;
+        }
         let mut buf = self.stderr.lock();
         if buf.len() == STDERR_LINES {
             buf.pop_front();
@@ -679,6 +778,49 @@ fn is_error_headline(line: &str) -> bool {
 mod tests {
     use super::*;
 
+    #[tokio::test]
+    async fn retirement_events_preserve_successor_diagnostics_on_the_same_path() {
+        for stopping in [false, true] {
+            let s = Arc::new(server());
+            let path = PathBuf::from("/p/a.vue");
+            let generation = s.begin_start().unwrap();
+            s.set_diagnostics(path.clone(), vec![lsp::Diagnostic::default()]);
+            s.progress.lock().insert(
+                "old".into(),
+                Progress { task: TaskId::next(), title: "Old work".into(), message: None, cancel: None },
+            );
+            let seen = Arc::new(Mutex::new(Vec::new()));
+            let manager = Arc::new(Mutex::new(std::sync::Weak::<crate::LspManager>::new()));
+            let sink: SharedSink = {
+                let (s, path, seen, manager) = (s.clone(), path.clone(), seen.clone(), manager.clone());
+                Arc::new(move |event: IdeEvent| match event {
+                    IdeEvent::Diagnostics { items, .. } => seen.lock().push(items.len()),
+                    IdeEvent::Task { done: true, .. } => {
+                        s.begin_start().unwrap();
+                        let shown = s.set_diagnostics(path.clone(), vec![lsp::Diagnostic::default()]);
+                        let mgr = manager.lock().upgrade().unwrap();
+                        mgr.emit_diagnostics(&s, path.clone(), shown, crate::text::Encoding::Utf16);
+                    }
+                    _ => {}
+                })
+            };
+            let mgr = crate::LspManager::new(
+                PathBuf::from("/p"),
+                Arc::new(ide_language::LanguageRegistry::from_configs(vec![])),
+                sink.clone(),
+            );
+            *manager.lock() = Arc::downgrade(&mgr);
+            if stopping {
+                s.state.lock().conn = Conn::Stopping;
+                s.end_stop(generation, &sink);
+            } else {
+                assert!(s.on_closed(generation, &sink, None).is_some());
+            }
+            assert_eq!(s.diagnostics_for(&path).len(), 1);
+            assert_eq!(*seen.lock(), vec![0, 1], "the UI must retain the replacement's diagnostics");
+        }
+    }
+
     fn server() -> Server {
         let cfg: LanguageServerConfig = toml::from_str("name = \"s\"\ncommand = \"s\"").unwrap();
         Server::new(cfg, PathBuf::from("/p"), LanguageId::new("vue"))
@@ -745,10 +887,141 @@ mod tests {
     fn a_superseded_start_is_not_announced() {
         let s = server();
         let generation = s.begin_start().unwrap();
-        s.begin_stop(); // abandons the start and invalidates its generation
         let sink: SharedSink = Arc::new(|_: IdeEvent| {});
+        s.begin_stop(&sink, false); // abandons the start and invalidates its generation
         assert!(!s.fail_start(generation, Conn::Failed, &sink, ServerStatus::Crashed, Some("boom".into())));
         assert_eq!(s.status(), ServerStatus::Stopped);
+    }
+
+    #[test]
+    fn failure_publication_can_restart_without_overwriting_the_new_phase() {
+        for conn in [Conn::Missing, Conn::Failed] {
+            let s = Arc::new(server());
+            let generation = s.begin_start().unwrap();
+            let seen = Arc::new(Mutex::new(Vec::new()));
+            let sink: SharedSink = {
+                let (s, seen) = (s.clone(), seen.clone());
+                Arc::new(move |event: IdeEvent| {
+                    if let IdeEvent::LanguageServer { status, .. } = event {
+                        seen.lock().push(status);
+                        if status == ServerStatus::Crashed {
+                            s.reset_for_restart();
+                            let next = s.begin_start().unwrap();
+                            let sink: SharedSink = Arc::new(|_: IdeEvent| {});
+                            assert!(s.starting_status(next, &sink).is_some());
+                        }
+                    }
+                })
+            };
+            assert!(s.fail_start(generation, conn, &sink, ServerStatus::Crashed, Some("boom".into())));
+            assert_eq!(*s.phase.borrow(), Phase::Starting);
+            assert_eq!(s.status(), ServerStatus::Starting);
+            assert_eq!(*seen.lock(), vec![ServerStatus::Crashed, ServerStatus::Starting]);
+        }
+    }
+
+    #[test]
+    fn retirement_callbacks_cannot_clear_successor_state() {
+        for stopping in [false, true] {
+            let s = Arc::new(server());
+            let generation = s.begin_start().unwrap();
+            s.set_diagnostics(PathBuf::from("old"), vec![lsp::Diagnostic::default()]);
+            *s.loading.lock() = Some(true);
+            if stopping {
+                s.state.lock().conn = Conn::Stopping;
+            }
+            let sink: SharedSink = {
+                let s = s.clone();
+                Arc::new(move |event: IdeEvent| {
+                    if matches!(event, IdeEvent::Diagnostics { .. }) {
+                        let next = s.begin_start().unwrap();
+                        s.set_diagnostics(PathBuf::from("new"), vec![lsp::Diagnostic::default()]);
+                        *s.loading.lock() = Some(true);
+                        let sink: SharedSink = Arc::new(|_: IdeEvent| {});
+                        assert!(s.starting_status(next, &sink).is_some());
+                    }
+                })
+            };
+            if stopping {
+                s.end_stop(generation, &sink);
+            } else {
+                assert_eq!(s.on_closed(generation, &sink, None), Some(Some(Duration::from_millis(500))));
+            }
+            assert_eq!(*s.phase.borrow(), Phase::Starting);
+            assert_eq!(s.status(), ServerStatus::Starting);
+            assert!(s.diagnostics_for(Path::new("old")).is_empty());
+            assert_eq!(s.diagnostics_for(Path::new("new")).len(), 1);
+            assert!(s.is_loading());
+            assert_eq!(s.on_closed(generation, &sink, None), None);
+            s.end_stop(generation, &sink);
+            assert_eq!(*s.phase.borrow(), Phase::Starting);
+            assert_eq!(s.diagnostics_for(Path::new("new")).len(), 1);
+        }
+    }
+
+    #[test]
+    fn a_start_keeps_its_cancel_token_when_publication_restarts_it() {
+        let s = Arc::new(server());
+        let generation = s.begin_start().unwrap();
+        let sink: SharedSink = {
+            let s = s.clone();
+            Arc::new(move |event: IdeEvent| {
+                if matches!(event, IdeEvent::LanguageServer { status: ServerStatus::Starting, .. })
+                    && s.state.lock().generation == generation
+                {
+                    let sink: SharedSink = Arc::new(|_: IdeEvent| {});
+                    s.begin_stop(&sink, false);
+                    let next = s.begin_start().unwrap();
+                    assert!(s.starting_status(next, &sink).is_some());
+                }
+            })
+        };
+        let cancel = s.starting_status(generation, &sink).unwrap();
+        assert!(cancel.is_cancelled());
+        assert!(!s.start_token().is_cancelled());
+        assert!(s.starting_status(generation, &sink).is_none());
+        assert_eq!(*s.phase.borrow(), Phase::Starting);
+        assert_eq!(s.status(), ServerStatus::Starting);
+    }
+
+    #[test]
+    fn abandoned_start_cannot_replace_successor_launch_metadata() {
+        let s = server();
+        let old = s.begin_start().unwrap();
+        let sink: SharedSink = Arc::new(|_: IdeEvent| {});
+        s.begin_stop(&sink, false);
+        let next = s.begin_start().unwrap();
+        let mut config = s.config.clone();
+        config.command = "successor".into();
+        s.set_effective_config(next, config.clone());
+        assert!(s.set_resolved_binary(next, Some(PathBuf::from("successor"))));
+        s.push_stderr(next, "successor output".into());
+        config.command = "abandoned".into();
+        s.set_effective_config(old, config);
+        assert!(!s.set_resolved_binary(old, Some(PathBuf::from("abandoned"))));
+        s.push_stderr(old, "abandoned output".into());
+        assert_eq!(s.effective_config().command, "successor");
+        assert_eq!(*s.resolved_binary.read(), Some(PathBuf::from("successor")));
+        assert_eq!(s.stderr_tail(5), "successor output");
+    }
+
+    #[test]
+    fn intentional_close_is_retired_only_by_the_stop_owner() {
+        let s = server();
+        let generation = s.begin_start().unwrap();
+        s.state.lock().conn = Conn::Stopping;
+        s.set_diagnostics(PathBuf::from("old"), vec![lsp::Diagnostic::default()]);
+        let sink: SharedSink = Arc::new(|_: IdeEvent| {});
+        assert_eq!(s.on_closed(generation, &sink, None), None);
+        assert_eq!(s.diagnostics_for(Path::new("old")).len(), 1);
+        assert!(s.begin_start().is_none());
+        s.end_stop(generation, &sink);
+        assert!(s.diagnostics_for(Path::new("old")).is_empty());
+        let next = s.begin_start().unwrap();
+        assert!(s.starting_status(next, &sink).is_some());
+        assert_eq!(s.on_closed(generation, &sink, None), None);
+        assert_eq!(*s.phase.borrow(), Phase::Starting);
+        assert_eq!(*s.crashes.lock(), 0);
     }
 
     #[test]

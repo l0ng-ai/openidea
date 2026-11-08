@@ -2,7 +2,8 @@ import type { ReactNode } from "react";
 import clsx from "clsx";
 import { Icon, type IconName } from "./icons";
 import { IconButton } from "./Button";
-import { T } from "./T";
+import { Given } from "./T";
+import { useTx } from "@/platform/i18n";
 import { selectableText } from "./selectableText";
 import styles from "./Feedback.module.css";
 
@@ -37,22 +38,42 @@ export function Spinner({
   size = 14,
   className,
   label = "Loading",
+  variant = "ring",
 }: {
   size?: number;
   className?: string;
   label?: string;
+  variant?: "ring" | "spokes";
 }) {
   return (
     <svg
-      className={clsx(styles.spinner, className)}
+      className={clsx(styles.spinner, variant === "spokes" && styles.spokes, className)}
       width={size}
       height={size}
-      viewBox="0 0 24 24"
+      viewBox={variant === "spokes" ? "0 0 16 16" : "0 0 24 24"}
       role="status"
       aria-label={label}
     >
-      <circle cx="12" cy="12" r="9" fill="none" stroke="currentColor" strokeOpacity="0.2" strokeWidth="2.4" />
-      <path d="M21 12a9 9 0 0 0-9-9" fill="none" stroke="currentColor" strokeWidth="2.4" strokeLinecap="round" />
+      {variant === "spokes" ? (
+        Array.from({ length: 8 }, (_, index) => (
+          <rect
+            key={index}
+            x="7"
+            y="1"
+            width="2"
+            height="4"
+            rx="1"
+            fill="currentColor"
+            opacity={1 - index * 0.1}
+            transform={`rotate(${-index * 45} 8 8)`}
+          />
+        ))
+      ) : (
+        <>
+          <circle cx="12" cy="12" r="9" fill="none" stroke="currentColor" strokeOpacity="0.2" strokeWidth="2.4" />
+          <path d="M21 12a9 9 0 0 0-9-9" fill="none" stroke="currentColor" strokeWidth="2.4" strokeLinecap="round" />
+        </>
+      )}
     </svg>
   );
 }
@@ -89,7 +110,7 @@ export interface EmptyStateProps {
 export function EmptyState({ title, children, actions, className }: EmptyStateProps) {
   return (
     <div className={clsx(styles.empty, className)}>
-      {title && <div className={styles.emptyTitle}>{typeof title === "string" ? <T>{title}</T> : title}</div>}
+      {title && <div className={styles.emptyTitle}>{typeof title === "string" ? <Given>{title}</Given> : title}</div>}
       {children && <div className={styles.emptyBody}>{children}</div>}
       {actions && <div className={styles.emptyActions}>{actions}</div>}
     </div>
@@ -125,6 +146,7 @@ export function Toast({
   onPointerEnter,
   onPointerLeave,
 }: ToastProps) {
+  const tx = useTx();
   return (
     <div
       className={clsx(styles.toast, className)}
@@ -137,16 +159,16 @@ export function Toast({
       <div className={styles.toastMain}>
         <div className={styles.toastHead}>
           <span className={clsx(styles.toastTitle, selectableText)}>
-            {typeof title === "string" ? <T>{title}</T> : title}
+            {typeof title === "string" ? <Given>{title}</Given> : title}
           </span>
           {meta && <span className={styles.toastMeta}>{meta}</span>}
         </div>
-        {body && <div className={styles.toastBody}>{typeof body === "string" ? <T>{body}</T> : body}</div>}
+        {body && <div className={styles.toastBody}>{typeof body === "string" ? <Given>{body}</Given> : body}</div>}
         {actions && actions.length > 0 && (
           <div className={styles.toastActions}>
             {actions.map((a) => (
               <button key={a.label} type="button" className={styles.link} onClick={a.run}>
-                <T>{a.label}</T>
+                <Given>{a.label}</Given>
               </button>
             ))}
           </div>
@@ -155,7 +177,7 @@ export function Toast({
       {onClose && (
         <IconButton
           icon="close"
-          title="Dismiss"
+          title={tx("Dismiss")}
           size="small"
           iconSize={12}
           className={styles.toastClose}

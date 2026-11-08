@@ -15,16 +15,21 @@ use std::sync::Arc;
 use std::time::{Duration, Instant};
 
 type Events = Arc<Mutex<Vec<(Option<String>, PluginEvent)>>>;
+type EventReadGate = (std::sync::mpsc::Sender<()>, std::sync::mpsc::Receiver<()>);
 
 /// What plugins see of the test project: real `Documents`, as in the IDE.
 struct TestWorkspace {
     root: PathBuf,
+    other_roots: Mutex<Vec<PathBuf>>,
     documents: Arc<ide_workspace::Documents>,
     trusted: bool,
+    project_queries_left: Mutex<Option<usize>>,
+    event_read_gate: Mutex<Option<EventReadGate>>,
     /// (producer, path) → published diagnostics.
     diagnostics: Mutex<std::collections::BTreeMap<(String, PathBuf), Vec<ide_core::Diagnostic>>>,
     /// plugin → its settings as the user set them.
     settings: Mutex<std::collections::BTreeMap<String, serde_json::Map<String, serde_json::Value>>>,
+    global_settings: Mutex<std::collections::BTreeMap<String, serde_json::Map<String, serde_json::Value>>>,
 }
 
 impl TestWorkspace {
@@ -35,10 +40,14 @@ impl TestWorkspace {
         );
         Arc::new(Self {
             root: root.to_path_buf(),
+            other_roots: Mutex::default(),
             documents: Arc::new(documents),
             trusted: true,
+            project_queries_left: Mutex::new(None),
+            event_read_gate: Mutex::new(None),
             diagnostics: Mutex::default(),
             settings: Mutex::default(),
+            global_settings: Mutex::default(),
         })
     }
 
@@ -67,10 +76,20 @@ impl TestWorkspace {
 
 impl PluginWorkspace for TestWorkspace {
     fn projects(&self) -> Vec<PathBuf> {
-        vec![self.root.clone()]
+        std::iter::once(self.root.clone()).chain(self.other_roots.lock().iter().cloned()).collect()
     }
     fn buffer_text(&self, path: &Path) -> Option<String> {
+        if path.ends_with("event-barrier.txt") {
+            let gate = self.event_read_gate.lock().take();
+            if let Some((entered, release)) = gate {
+                entered.send(()).unwrap();
+                release.recv_timeout(Duration::from_secs(10)).expect("release blocked event read");
+            }
+        }
         self.documents.text_of(path)
+    }
+    fn buffer_dirty(&self, path: &Path) -> bool {
+        self.documents.by_path(path).is_some_and(|doc| self.documents.is_dirty(doc).unwrap_or(false))
     }
     fn document(&self, path: &Path) -> Option<(u64, String)> {
         let snap = self.documents.snapshot(self.documents.by_path(path)?).ok()?;
@@ -88,6 +107,12 @@ impl PluginWorkspace for TestWorkspace {
         self.trusted
     }
     fn project_of(&self, _window: &str) -> Option<PathBuf> {
+        if let Some(left) = self.project_queries_left.lock().as_mut() {
+            if *left == 0 {
+                return None;
+            }
+            *left -= 1;
+        }
         Some(self.root.clone())
     }
     fn publish_diagnostics(
@@ -102,8 +127,9 @@ impl PluginWorkspace for TestWorkspace {
         self.diagnostics.lock().insert((source.to_owned(), path.to_path_buf()), items);
         Ok(())
     }
-    fn plugin_settings(&self, plugin: &str, _root: Option<&Path>) -> serde_json::Map<String, serde_json::Value> {
-        self.settings.lock().get(plugin).cloned().unwrap_or_default()
+    fn plugin_settings(&self, plugin: &str, root: Option<&Path>) -> serde_json::Map<String, serde_json::Value> {
+        let layer = if root.is_some() { &self.settings } else { &self.global_settings };
+        layer.lock().get(plugin).cloned().unwrap_or_default()
     }
 }
 
@@ -122,6 +148,33 @@ fn theme_template() -> PathBuf {
 
 fn misbehave_pkg() -> PathBuf {
     repo().join("crates/ide-plugin/tests/fixtures/misbehave")
+}
+
+/// `misbehave` with `fs.read:<granted>` added to its capabilities.
+fn misbehave_granted(dir: &Path, granted: &Path) -> PathBuf {
+    let pkg = dir.join("misbehave-granted");
+    copy_dir(&misbehave_pkg(), &pkg);
+    let manifest = pkg.join("plugin.toml");
+    let text = std::fs::read_to_string(&manifest).unwrap();
+    let path = granted.to_string_lossy().replace('\\', "/");
+    let required = format!("required = [\"project.read\", \"fs.read:{path}\"]");
+    let text = text.replace("required = [\"project.read\"]", &required);
+    std::fs::write(&manifest, text).unwrap();
+    pkg
+}
+
+/// `misbehave` requiring `capability` too, which is new in API 1.3.
+fn misbehave_with(dir: &Path, name: &str, capability: &str) -> PathBuf {
+    let pkg = dir.join(name);
+    copy_dir(&misbehave_pkg(), &pkg);
+    let manifest = pkg.join("plugin.toml");
+    let text = std::fs::read_to_string(&manifest).unwrap();
+    let required = format!("required = [\"project.read\", \"{capability}\"]");
+    let text = text
+        .replace("required = [\"project.read\"]", &required)
+        .replace("engines.openidea = \"^1.0\"", "engines.openidea = \"^1.3\"");
+    std::fs::write(&manifest, text).unwrap();
+    pkg
 }
 
 /// Whether `f` holds within 5 s. A call a slow runner keeps waiting behind
@@ -236,6 +289,7 @@ impl Fixture {
             workspace_root: Some(self.project.clone()),
             editor: None,
             selected_paths: Vec::new(),
+            global_settings: false,
         }
     }
 
@@ -361,12 +415,740 @@ fn read_file_is_confined_to_the_project() {
     let err = f.run("misbehave", "read", Some("src/../../secret.txt")).unwrap_err();
     assert!(err.contains("outside the project root"), "{err}");
     assert!(f.run("misbehave", "read", Some("/etc/hosts")).is_err());
+    // A missing path inside the project is `not-found`, like the mock reports.
+    let err = f.run("misbehave", "read", Some("src/missing.txt")).unwrap_err();
+    assert!(err.contains("not found"), "{err}");
     // Without a project there is nothing to read.
     let inv = Invocation::default();
     let err = f.host.run_command("misbehave", "read", Some("src/notes.txt"), inv).unwrap_err().message;
     assert!(err.contains("no project is open"), "{err}");
     assert_eq!(f.run("misbehave", "root", None).unwrap().unwrap(), to_ipc(&f.project));
     assert_eq!(f.status("misbehave"), PluginStatus::Active);
+}
+
+/// `fs.read` reaches the granted paths and nothing else, through the real
+/// component: the same checks the runtime makes, against a real file system.
+#[test]
+fn fs_read_reaches_only_the_granted_paths() {
+    let f = fixture(Limits::default());
+    let shared = f._tmp.path().join("shared");
+    std::fs::create_dir_all(&shared).unwrap();
+    let notes = shared.join("notes.txt");
+    std::fs::write(&notes, "outside the project\n").unwrap();
+    // A sibling whose name starts with the grant's: not covered by it.
+    let sibling = f._tmp.path().join("shared-other");
+    std::fs::create_dir_all(&sibling).unwrap();
+    let other = sibling.join("notes.txt");
+    std::fs::write(&other, "not the same directory\n").unwrap();
+    let secret = f._tmp.path().join("secret.txt");
+    f.install(&misbehave_granted(f._tmp.path(), &shared));
+
+    assert_eq!(f.run("misbehave", "fsread", Some(notes.to_str().unwrap())).unwrap().unwrap(), "outside the project\n");
+    let err = f.run("misbehave", "fsread", Some(secret.to_str().unwrap())).unwrap_err();
+    assert!(err.contains("fs.read:"), "the refusal names what to grant: {err}");
+    let err = f.run("misbehave", "fsread", Some(other.to_str().unwrap())).unwrap_err();
+    assert!(err.contains("fs.read:"), "a name prefix grants nothing: {err}");
+    let err = f.run("misbehave", "fsread", Some("notes.txt")).unwrap_err();
+    assert!(err.contains("absolute"), "{err}");
+    let err = f.run("misbehave", "fsread", Some(shared.to_str().unwrap())).unwrap_err();
+    assert!(err.contains("not a file"), "{err}");
+    let missing = shared.join("gone.txt");
+    let err = f.run("misbehave", "fsread", Some(missing.to_str().unwrap())).unwrap_err();
+    assert!(err.contains("no such file"), "{err}");
+    // A refusal is the plugin's to handle, like any other error it gets.
+    let info = f.host.info_of("misbehave").unwrap();
+    assert_eq!((info.status, info.stats.crashes, info.stats.errors), (PluginStatus::Active, 0, 0), "{info:?}");
+}
+
+/// `fs.read-dir` lists a granted directory, sorted, and refuses the rest.
+#[test]
+fn fs_read_dir_lists_a_granted_directory() {
+    let f = fixture(Limits::default());
+    let shared = f._tmp.path().join("shared");
+    std::fs::create_dir_all(shared.join("zeta")).unwrap();
+    std::fs::write(shared.join("beta.txt"), "b").unwrap();
+    std::fs::write(shared.join("alpha.txt"), "a").unwrap();
+    f.install(&misbehave_granted(f._tmp.path(), &shared));
+
+    let listing = f.run("misbehave", "read-dir", Some(shared.to_str().unwrap())).unwrap().unwrap();
+    let lines: Vec<&str> = listing.lines().collect();
+    assert_eq!(lines, vec!["file alpha.txt", "file beta.txt", "dir zeta"], "{listing}");
+
+    // A file is not a directory, and a path outside the grant is refused.
+    let file = shared.join("alpha.txt");
+    let err = f.run("misbehave", "read-dir", Some(file.to_str().unwrap())).unwrap_err();
+    assert!(err.contains("not a directory"), "{err}");
+    let err = f.run("misbehave", "read-dir", Some(f._tmp.path().to_str().unwrap())).unwrap_err();
+    assert!(err.contains("fs.read:"), "{err}");
+}
+
+/// `project.write` creates and replaces files under the project root, and never
+/// leaves it, through the real component.
+#[test]
+fn project_write_stays_inside_the_project() {
+    let f = fixture(Limits::default());
+    f.install(&misbehave_with(f._tmp.path(), "misbehave-project-writer", "project.write"));
+
+    // A Run configuration: neither the file nor `.openidea/` exists yet.
+    assert_eq!(f.run("misbehave", "projwrite", Some(".openidea/run.toml")).unwrap(), None);
+    let conf = f.project.join(".openidea").join("run.toml");
+    assert_eq!(std::fs::read_to_string(&conf).unwrap(), "written inside the project\n");
+    // What it wrote reads back through the project.
+    assert_eq!(
+        f.run("misbehave", "read", Some(".openidea/run.toml")).unwrap().as_deref(),
+        Some("written inside the project\n")
+    );
+    // An absolute path inside the root lands in the same place.
+    let fresh = f.project.join("build").join("patch.txt");
+    assert_eq!(f.run("misbehave", "projwrite", Some(fresh.to_str().unwrap())).unwrap(), None);
+    assert_eq!(std::fs::read_to_string(&fresh).unwrap(), "written inside the project\n");
+    // Replacing an existing file rewrites it whole.
+    assert_eq!(f.run("misbehave", "projwrite", Some("src/notes.txt")).unwrap(), None);
+    assert_eq!(std::fs::read_to_string(f.project.join("src/notes.txt")).unwrap(), "written inside the project\n");
+    // Unsaved changes in an editor are not overwritten.
+    f.workspace.open("src/notes.txt", &[]);
+    f.workspace.type_text("src/notes.txt", "typed ");
+    let err = f.run("misbehave", "projwrite", Some("src/notes.txt")).unwrap_err();
+    assert!(err.contains("unsaved changes"), "{err}");
+    // Leaving the root is refused, and nothing is written.
+    let err = f.run("misbehave", "projwrite", Some("../escape.txt")).unwrap_err();
+    assert!(err.contains("outside the project root"), "{err}");
+    let info = f.host.info_of("misbehave").unwrap();
+    assert_eq!((info.status, info.stats.crashes, info.stats.errors), (PluginStatus::Active, 0, 0), "{info:?}");
+}
+
+/// `fs.write` replaces files the grant covers and nothing else, through the
+/// real component.
+#[test]
+fn fs_write_reaches_only_the_granted_paths() {
+    let f = fixture(Limits::default());
+    let shared = f._tmp.path().join("shared");
+    std::fs::create_dir_all(&shared).unwrap();
+    let notes = shared.join("notes.txt");
+    std::fs::write(&notes, "old\n").unwrap();
+    let bommed = shared.join("bom.txt");
+    std::fs::write(&bommed, b"\xef\xbb\xbfold").unwrap();
+    let sibling = f._tmp.path().join("shared-other");
+    std::fs::create_dir_all(&sibling).unwrap();
+    let other = sibling.join("notes.txt");
+    std::fs::write(&other, "not the same directory\n").unwrap();
+    let secret = f._tmp.path().join("secret.txt");
+    std::fs::write(&secret, "keep me\n").unwrap();
+    let grant = format!("fs.write:{}", shared.to_string_lossy().replace('\\', "/"));
+    f.install(&misbehave_with(f._tmp.path(), "misbehave-writable", &grant));
+
+    // An existing file is replaced…
+    assert_eq!(f.run("misbehave", "fswrite", Some(notes.to_str().unwrap())).unwrap(), None);
+    assert_eq!(std::fs::read_to_string(&notes).unwrap(), "written by the plugin\n");
+    // …a new one is created…
+    let fresh = shared.join("fresh.txt");
+    assert_eq!(f.run("misbehave", "fswrite", Some(fresh.to_str().unwrap())).unwrap(), None);
+    assert_eq!(std::fs::read_to_string(&fresh).unwrap(), "written by the plugin\n");
+    // …and a file's encoding and BOM survive the write.
+    assert_eq!(f.run("misbehave", "fswrite", Some(bommed.to_str().unwrap())).unwrap(), None);
+    let bytes = std::fs::read(&bommed).unwrap();
+    assert!(bytes.starts_with(b"\xef\xbb\xbf"), "the BOM stays: {bytes:?}");
+    assert_eq!(String::from_utf8(bytes[3..].to_vec()).unwrap(), "written by the plugin\n");
+
+    // Outside the grant nothing changes.
+    let err = f.run("misbehave", "fswrite", Some(secret.to_str().unwrap())).unwrap_err();
+    assert!(err.contains("fs.write:"), "the refusal names what to grant: {err}");
+    assert_eq!(std::fs::read_to_string(&secret).unwrap(), "keep me\n");
+    let err = f.run("misbehave", "fswrite", Some(other.to_str().unwrap())).unwrap_err();
+    assert!(err.contains("fs.write:"), "a name prefix grants nothing: {err}");
+    let err = f.run("misbehave", "fswrite", Some("notes.txt")).unwrap_err();
+    assert!(err.contains("absolute"), "{err}");
+    let missing_parent = shared.join("conf").join("web.xml");
+    let err = f.run("misbehave", "fswrite", Some(missing_parent.to_str().unwrap())).unwrap_err();
+    assert!(err.contains("directory does not exist"), "{err}");
+    // Writing a directory fails rather than replacing it.
+    assert!(f.run("misbehave", "fswrite", Some(shared.to_str().unwrap())).is_err(), "a directory is not a file");
+    assert!(shared.is_dir(), "the directory is still there");
+
+    // `fs.write` does not carry `fs.read`.
+    let err = f.run("misbehave", "fsread", Some(notes.to_str().unwrap())).unwrap_err();
+    assert!(err.contains("fs.read:"), "write does not imply read: {err}");
+    // A refusal is the plugin's to handle, like any other error it gets.
+    let info = f.host.info_of("misbehave").unwrap();
+    assert_eq!((info.status, info.stats.crashes, info.stats.errors), (PluginStatus::Active, 0, 0), "{info:?}");
+}
+
+/// A program kept running behind a handle: the plugin writes its stdin, closes
+/// it, and waits for the exit status and what the program printed. A one-off run
+/// passes the environment it names.
+#[test]
+fn a_plugin_keeps_a_process_running_behind_a_handle() {
+    let f = fixture(Limits::default());
+    f.install(&misbehave_pkg());
+    f.host.set_capability("misbehave", "process:git", false).unwrap();
+    assert!(f.run("misbehave", "envrun", Some("legacy")).unwrap_err().contains("process:git"));
+    for command in ["envrun", "envstart", "child"] {
+        let err = f.run("misbehave", command, None).unwrap_err();
+        assert!(err.contains("process:git"), "{command}: {err}");
+    }
+    // The fixture declares `process:git` as optional: it needs a program that
+    // reads stdin and reports its environment. Machines running these tests have
+    // git; without one, there is nothing to run and nothing to check.
+    if f.host.set_capability("misbehave", "process:git", true).is_err() {
+        return;
+    }
+
+    let out = f.run("misbehave", "child", None).expect("the handle works").expect("a result");
+    let (hash, status) = out.split_once(' ').unwrap_or_else(|| panic!("{out}"));
+    assert_eq!(hash.len(), 40, "a sha1 of what was written: {out}");
+    assert!(hash.chars().all(|c| c.is_ascii_hexdigit()), "{out}");
+    assert_eq!(status, "Some(0)", "it ended by itself: {out}");
+
+    assert!(f.run("misbehave", "envrun", Some("legacy")).unwrap().unwrap().starts_with("git version"));
+    let ident = f.run("misbehave", "envrun", None).expect("a run with extra environment").expect("a result");
+    assert_eq!(ident.trim(), "added by the plugin");
+    assert_eq!(f.run("misbehave", "envstart", None).unwrap().unwrap().trim(), "added by the plugin");
+    for command in ["envdeny-run", "envdeny-start"] {
+        let inherited = std::env::vars().find(|(key, _)| key != "PATH" && !key.contains('=')).unwrap().0;
+        for key in ["PATH", inherited.as_str(), "", "BAD=KEY", "BAD\0KEY"] {
+            let err = f.run("misbehave", command, Some(key)).unwrap_err();
+            assert!(err.contains("environment variable"), "{command} {key:?}: {err}");
+        }
+    }
+    // Dropping a resource returns the slot; the limit is simultaneous handles.
+    for _ in 0..10 {
+        f.run("misbehave", "childkeep", None).unwrap();
+        assert_eq!(f.run("misbehave", "childpoll", None).unwrap().as_deref(), Some("None"));
+        f.run("misbehave", "childdrop", None).unwrap();
+    }
+    for _ in 0..8 {
+        f.run("misbehave", "childkeep", None).unwrap();
+    }
+    assert!(f.run("misbehave", "childkeep", None).unwrap_err().contains("at most 8"));
+    f.run("misbehave", "childdrop", None).unwrap();
+    f.run("misbehave", "childkeep", None).unwrap();
+    f.host.forget_client("main");
+    assert!(f.run("misbehave", "childpoll", None).unwrap_err().contains("no process"));
+    assert!(f.run("misbehave", "childkeep", None).is_err(), "late starts are cancelled");
+    f.host.reopen_client("main");
+    f.run("misbehave", "childdrop", None).unwrap();
+
+    let info = f.host.info_of("misbehave").unwrap();
+    assert_eq!((info.status, info.stats.crashes, info.stats.errors), (PluginStatus::Active, 0, 0), "{info:?}");
+}
+
+#[cfg(unix)]
+#[test]
+fn plugin_processes_end_with_their_owner() {
+    for mode in ["disable", "unload", "shutdown", "reclaim", "trap", "window"] {
+        let f = fixture(Limits { idle_timeout: Some(Duration::from_millis(50)), ..Limits::default() });
+        f.install(&misbehave_pkg());
+        f.host.set_capability("misbehave", "process:git", true).unwrap();
+        let marker = format!("--path={}/process-{mode}", f.project.display());
+        let alive = || {
+            let ps = std::process::Command::new("ps").args(["-axo", "command="]).output().unwrap();
+            assert!(ps.status.success());
+            String::from_utf8_lossy(&ps.stdout).lines().any(|line| line.contains(&marker))
+        };
+        f.run("misbehave", "childkeep", marker.strip_prefix("--path=")).unwrap();
+        assert!(alive(), "{mode}: the process started");
+        match mode {
+            "disable" => f.host.set_enabled("misbehave", false).unwrap(),
+            "unload" => f.host.uninstall("misbehave").unwrap(),
+            "shutdown" => f.host.shutdown(),
+            "reclaim" => {
+                std::thread::sleep(Duration::from_millis(75));
+                f.host.tick();
+                assert_eq!(f.host.instances(), 0);
+            }
+            "trap" => {
+                assert!(f.run("misbehave", "panic", None).is_err());
+            }
+            "window" => f.host.forget_client("main"),
+            _ => unreachable!(),
+        }
+        let deadline = Instant::now() + Duration::from_secs(5);
+        while alive() && Instant::now() < deadline {
+            std::thread::sleep(Duration::from_millis(10));
+        }
+        assert!(!alive(), "{mode}: the process must end with its owner");
+    }
+}
+
+/// A task that keeps reporting progress is still working: each report renews
+/// the background budget, so the call outlives the 400 ms it began with. A task
+/// that goes quiet is still cut off (see `tasks_that_stop_reporting_are_cut_off`).
+#[test]
+fn a_reporting_task_outlives_its_background_budget() {
+    let f = fixture(Limits {
+        timeout: Duration::from_millis(1_000),
+        background: Duration::from_millis(2_000),
+        ..Limits::default()
+    });
+    f.install(&misbehave_pkg());
+    if f.host.set_capability("misbehave", "process:git", true).is_err() {
+        return;
+    }
+
+    // Twenty-five waits of 100 ms: 2.5 s of wall time, more than the
+    // budget, spent inside the host rather than the plugin.
+    let started = std::time::Instant::now();
+    let out = f.run("misbehave", "patient", None).expect("a patient task").expect("a result");
+    let took = started.elapsed();
+    assert_eq!(out, "still here");
+    assert!(took >= Duration::from_millis(2_500), "it really ran the waits: {took:?}");
+
+    let info = f.host.info_of("misbehave").unwrap();
+    assert_eq!((info.status, info.stats.crashes, info.stats.errors), (PluginStatus::Active, 0, 0), "{info:?}");
+}
+
+#[test]
+fn private_directory_is_owned_persistent_and_removed_on_uninstall() {
+    let f = fixture(Limits {
+        timeout: Duration::from_secs(30),
+        idle_timeout: Some(Duration::from_millis(100)),
+        ..Limits::default()
+    });
+    let pkg = sample("private-dir");
+    f.host.install_from_dir(&pkg, &Consent::default()).unwrap();
+    let run = |cmd: &str, arg: Option<&str>| f.host.run_command("test.private-dir", cmd, arg, Invocation::default());
+    let dir = PathBuf::from(run("directory", None).unwrap().unwrap());
+    assert!(!dir.starts_with(f.installed("test.private-dir")));
+    assert_eq!(run("roundtrip", None).unwrap().as_deref(), Some("fake private data\n"));
+    assert_eq!(run("large-cache", None).unwrap().as_deref(), Some("83886080"));
+    let file = dir.join("fake-secret.txt");
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        assert_eq!(std::fs::metadata(&dir).unwrap().permissions().mode() & 0o777, 0o700);
+        for name in ["fake-secret.txt", "cache.bin"] {
+            assert_eq!(std::fs::metadata(dir.join(name)).unwrap().permissions().mode() & 0o777, 0o600);
+        }
+    }
+    for path in [f._tmp.path().join("secret.txt"), dir.parent().unwrap().join("adjacent.txt")] {
+        std::fs::write(&path, "other content").unwrap();
+        for cmd in ["read", "write"] {
+            assert_eq!(run(cmd, path.to_str()).unwrap_err().kind, ErrorKind::PermissionDenied);
+        }
+        assert_eq!(std::fs::read_to_string(&path).unwrap(), "other content");
+    }
+    let other_pkg = f._tmp.path().join("other-plugin");
+    copy_dir(&pkg, &other_pkg);
+    let manifest = other_pkg.join("plugin.toml");
+    let text = std::fs::read_to_string(&manifest).unwrap().replace("test.private-dir", "test.private-dir-other");
+    std::fs::write(manifest, text).unwrap();
+    f.host.install_from_dir(&other_pkg, &Consent::default()).unwrap();
+    f.host.run_command("test.private-dir-other", "roundtrip", None, Invocation::default()).unwrap();
+    let other_dir = PathBuf::from(
+        f.host.run_command("test.private-dir-other", "directory", None, Invocation::default()).unwrap().unwrap(),
+    );
+    for cmd in ["read", "write"] {
+        assert_eq!(run(cmd, other_dir.join("fake-secret.txt").to_str()).unwrap_err().kind, ErrorKind::PermissionDenied);
+    }
+    for path in [
+        dir.join("../adjacent.txt"),
+        dir.join("../../test.private-dir-other/files/fake-secret.txt"),
+        dir.join("../../test.private-dir-other/files/new.txt"),
+    ] {
+        assert_eq!(run("write", path.to_str()).unwrap_err().kind, ErrorKind::PermissionDenied);
+        if path.exists() {
+            assert_eq!(run("read", path.to_str()).unwrap_err().kind, ErrorKind::PermissionDenied);
+        }
+    }
+    assert!(!other_dir.join("new.txt").exists());
+    assert_eq!(std::fs::read_to_string(dir.parent().unwrap().join("adjacent.txt")).unwrap(), "other content");
+    assert_eq!(std::fs::read_to_string(other_dir.join("fake-secret.txt")).unwrap(), "fake private data\n");
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::symlink;
+        symlink(other_dir.join("fake-secret.txt"), dir.join("escape.txt")).unwrap();
+        symlink(&other_dir, dir.join("escape-dir")).unwrap();
+        for path in [dir.join("escape.txt"), dir.join("escape-dir/fake-secret.txt")] {
+            for cmd in ["read", "write"] {
+                assert_eq!(run(cmd, path.to_str()).unwrap_err().kind, ErrorKind::PermissionDenied);
+            }
+        }
+        assert_eq!(
+            run("write", dir.join("escape-dir/new.txt").to_str()).unwrap_err().kind,
+            ErrorKind::PermissionDenied
+        );
+    }
+    // The same real file opens and saves through Documents, preserving privacy.
+    f.workspace.documents.open(&file).unwrap();
+    let doc = f.workspace.documents.by_path(&file).unwrap();
+    f.workspace
+        .documents
+        .apply_edits(doc, &[ide_core::TextEdit { range: ide_core::Range::default(), new_text: "edited ".into() }])
+        .unwrap();
+    assert!(run("write", None).unwrap_err().message.contains("unsaved changes"));
+    assert_eq!(run("read", None).unwrap().as_deref(), Some("edited fake private data\n"));
+    f.workspace.documents.save(doc).unwrap();
+    assert_eq!(std::fs::read_to_string(&file).unwrap(), "edited fake private data\n");
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        assert_eq!(std::fs::metadata(&file).unwrap().permissions().mode() & 0o777, 0o600);
+    }
+    // Reload and idle reclaim never remove content.
+    f.host.reload("test.private-dir").unwrap();
+    assert_eq!(run("directory", None).unwrap().as_deref(), dir.to_str());
+    std::thread::sleep(Duration::from_millis(150));
+    f.host.tick();
+    assert_eq!(f.status("test.private-dir"), PluginStatus::Inactive);
+    assert!(file.exists());
+    f.host.uninstall("test.private-dir").unwrap();
+    assert!(!dir.exists());
+    assert!(other_dir.join("fake-secret.txt").exists());
+    f.host.install_from_dir(&pkg, &Consent::default()).unwrap();
+    assert!(run("read", None).unwrap_err().message.contains("no such file"));
+}
+
+#[test]
+fn private_directory_is_available_to_providers_without_a_project() {
+    let f = fixture(Limits::default());
+    f.host.install_from_dir(&sample("private-dir"), &Consent::default()).unwrap();
+    f.host.set_workspace(None);
+    f.host.run_command("test.private-dir", "roundtrip", None, Invocation::default()).unwrap();
+    let doc = ide_plugin::ProviderDocument {
+        path: f._tmp.path().join("outside.txt"),
+        language: "private-fixture".into(),
+        version: 1,
+        text: String::new(),
+    };
+    assert!(eventually(|| f
+        .host
+        .provide_completion(&doc, ide_core::Pos::new(0, 0), None)
+        .iter()
+        .any(|(_, item)| item.label == "fake private data\n")));
+}
+
+#[test]
+fn private_directory_survives_host_restart_and_inactive_uninstall() {
+    let f = fixture(Limits::default());
+    f.host.install_from_dir(&sample("private-dir"), &Consent::default()).unwrap();
+    f.run("test.private-dir", "roundtrip", None).unwrap();
+    let dir = PathBuf::from(f.run("test.private-dir", "directory", None).unwrap().unwrap());
+    f.host.shutdown();
+    let host =
+        PluginHost::new(f.plugins_dir.clone(), Arc::new(|_: Option<&str>, _: PluginEvent| {}), Limits::default())
+            .unwrap();
+    host.load_all();
+    host.startup_finished();
+    assert_eq!(
+        host.run_command("test.private-dir", "read", None, Invocation::default()).unwrap().as_deref(),
+        Some("fake private data\n")
+    );
+    host.shutdown();
+    host.uninstall("test.private-dir").unwrap();
+    assert!(!dir.exists());
+}
+
+#[test]
+fn private_uninstall_cleanup_failure_is_retryable() {
+    for fail_data in [true, false] {
+        let f = fixture(Limits::default());
+        let id = "test.private-dir";
+        f.host.install_from_dir(&sample("private-dir"), &Consent::default()).unwrap();
+        f.run(id, "roundtrip", None).unwrap();
+        let dir = PathBuf::from(f.run(id, "directory", None).unwrap().unwrap());
+        let target = if fail_data { dir.parent().unwrap().to_path_buf() } else { f.plugins_dir.join(id) };
+        let backup = target.with_extension("blocked-backup");
+        // A regular file deterministically makes remove_dir_all fail, even as root.
+        std::fs::rename(&target, &backup).unwrap();
+        std::fs::write(&target, "controlled cleanup failure").unwrap();
+        assert!(f.host.uninstall(id).is_err());
+        assert!(f.host.info_of(id).is_ok(), "failed uninstall must retain its target");
+        assert_eq!(f.status(id), PluginStatus::Failed);
+        assert!(f.command_titles(id).is_empty());
+        std::fs::remove_file(&target).unwrap();
+        std::fs::rename(&backup, &target).unwrap();
+        if fail_data {
+            assert!(f.installed(id).join("plugin.toml").exists());
+            f.host.shutdown();
+            let host = PluginHost::new(
+                f.plugins_dir.clone(),
+                Arc::new(|_: Option<&str>, _: PluginEvent| {}),
+                Limits::default(),
+            )
+            .unwrap();
+            host.load_all();
+            host.uninstall(id).unwrap();
+        } else {
+            f.host.uninstall(id).unwrap();
+        }
+        assert!(!dir.exists());
+        assert!(!f.plugins_dir.join(id).exists());
+    }
+}
+
+#[test]
+fn private_uninstall_recovers_after_package_metadata_is_removed() {
+    for remove_entire_package in [false, true] {
+        let f = fixture(Limits::default());
+        let id = "test.private-dir";
+        f.install(&sample("private-dir"));
+        f.run(id, "roundtrip", None).unwrap();
+        let package = f.installed(id);
+        let root = f.plugins_dir.join(id);
+        let backup = root.with_extension("blocked-backup");
+        std::fs::rename(&root, &backup).unwrap();
+        std::fs::write(&root, "controlled package cleanup failure").unwrap();
+        assert!(f.host.uninstall(id).is_err());
+        std::fs::remove_file(&root).unwrap();
+        std::fs::rename(&backup, &root).unwrap();
+        // Reproduce the metadata loss a partial recursive deletion can leave behind.
+        if remove_entire_package {
+            std::fs::remove_dir_all(&root).unwrap();
+        } else {
+            std::fs::remove_file(root.join("active")).unwrap();
+            std::fs::remove_file(package.join("plugin.toml")).unwrap();
+        }
+        if remove_entire_package {
+            // An interrupted cleanup (and older records) has no saved failure yet.
+            let record = f.plugins_dir.join(".uninstall").join(format!("{id}.json"));
+            let mut value: serde_json::Value = serde_json::from_slice(&std::fs::read(&record).unwrap()).unwrap();
+            value.as_object_mut().unwrap().remove("error");
+            std::fs::write(record, serde_json::to_vec(&value).unwrap()).unwrap();
+        }
+        f.host.shutdown();
+        let host =
+            PluginHost::new(f.plugins_dir.clone(), Arc::new(|_: Option<&str>, _: PluginEvent| {}), Limits::default())
+                .unwrap();
+        host.load_all();
+        assert!(host.info_of(id).is_ok(), "partial package cleanup must retain a restartable uninstall target");
+        assert!(host.info_of(id).unwrap().error.is_some());
+        assert_eq!(host.info_of(id).unwrap().status, PluginStatus::Failed);
+        assert!(host.reload(id).is_err());
+        assert!(host.set_enabled(id, true).is_err());
+        assert_eq!(
+            host.install_from_dir(&sample("private-dir"), &Consent::all()).unwrap_err().kind,
+            ErrorKind::Unavailable
+        );
+        host.uninstall(id).unwrap();
+        assert!(host.info_of(id).is_err());
+        assert!(!root.exists());
+        assert!(!f.plugins_dir.join(".uninstall").join(format!("{id}.json")).exists());
+        host.install_from_dir(&sample("private-dir"), &Consent::all()).unwrap();
+        host.uninstall(id).unwrap();
+        assert!(!root.exists());
+    }
+}
+
+#[test]
+fn private_uninstall_cleans_up_a_package_with_a_damaged_manifest() {
+    let f = fixture(Limits::default());
+    let id = "test.private-dir";
+    f.install(&sample("private-dir"));
+    f.run(id, "roundtrip", None).unwrap();
+    let dir = PathBuf::from(f.run(id, "directory", None).unwrap().unwrap());
+    let package = f.installed(id);
+    f.host.shutdown();
+    std::fs::write(package.join("plugin.toml"), "broken = [").unwrap();
+    let host =
+        PluginHost::new(f.plugins_dir.clone(), Arc::new(|_: Option<&str>, _: PluginEvent| {}), Limits::default())
+            .unwrap();
+    host.load_all();
+    assert_eq!(host.info_of(id).unwrap().status, PluginStatus::Failed);
+    host.uninstall(id).unwrap();
+    assert!(!dir.exists());
+    assert!(!f.plugins_dir.join(id).exists());
+
+    let broken = f.plugins_dir.join("Broken Package");
+    std::fs::create_dir(&broken).unwrap();
+    std::fs::write(broken.join("plugin.toml"), "broken = [").unwrap();
+    let other = f.plugins_dir.join("invalid-broken-package");
+    std::fs::create_dir(&other).unwrap();
+    std::fs::write(other.join("keep.txt"), "untouched").unwrap();
+    host.load_all();
+    host.uninstall("Broken Package").unwrap();
+    assert!(!broken.exists());
+    assert_eq!(std::fs::read_to_string(other.join("keep.txt")).unwrap(), "untouched");
+}
+
+#[test]
+fn private_uninstall_cannot_be_restarted_through_lifecycle_actions() {
+    let f = fixture(Limits::default());
+    let id = "test.private-dir";
+    f.install(&sample("private-dir"));
+    f.run(id, "roundtrip", None).unwrap();
+    let dir = PathBuf::from(f.run(id, "directory", None).unwrap().unwrap());
+    let target = dir.parent().unwrap();
+    let backup = target.with_extension("blocked-backup");
+    std::fs::rename(target, &backup).unwrap();
+    std::fs::write(target, "controlled cleanup failure").unwrap();
+    assert!(f.host.uninstall(id).is_err());
+    let error = f.host.info_of(id).unwrap().error.unwrap();
+    for restart in [false, true] {
+        let recovered;
+        let host = if restart {
+            f.host.shutdown();
+            recovered = PluginHost::new(
+                f.plugins_dir.clone(),
+                Arc::new(|_: Option<&str>, _: PluginEvent| {}),
+                Limits::default(),
+            )
+            .unwrap();
+            recovered.load_all();
+            &recovered
+        } else {
+            &f.host
+        };
+        assert_eq!(host.info_of(id).unwrap().error.as_deref(), Some(error.as_str()));
+        assert!(host.set_enabled(id, true).is_err());
+        assert!(host.set_enabled(id, false).is_err());
+        assert!(host.reload(id).is_err());
+        assert!(host.grant(id, &Consent::default()).is_err());
+        assert!(host.set_capability(id, "project.read", true).is_err());
+        assert!(host.install_from_dir(&sample("private-dir"), &Consent::default()).is_err());
+        assert!(host.roll_back_update(id).is_err());
+        host.startup_finished();
+        assert_eq!(host.info_of(id).unwrap().status, PluginStatus::Failed);
+        assert!(host.run_command(id, "roundtrip", None, Invocation::default()).is_err());
+        if restart {
+            std::fs::remove_file(target).unwrap();
+            std::fs::rename(&backup, target).unwrap();
+            host.uninstall(id).unwrap();
+            assert!(!dir.exists());
+        }
+    }
+}
+
+#[test]
+fn private_uninstall_retains_failed_secret_cleanup_for_retry() {
+    struct FailingSecrets;
+    impl SecretStore for FailingSecrets {
+        fn get(&self, _: &str, _: &str) -> Option<String> {
+            None
+        }
+        fn set(&self, _: &str, _: &str, _: Option<&str>) -> Result<(), String> {
+            Err("keychain locked".into())
+        }
+    }
+    let f = fixture(Limits::default());
+    let id = "test.private-dir";
+    let pkg = f._tmp.path().join("private-with-secret");
+    copy_dir(&sample("private-dir"), &pkg);
+    let manifest = pkg.join("plugin.toml");
+    let text = std::fs::read_to_string(&manifest).unwrap().replace("required = []", "required = [\"secrets\"]");
+    std::fs::write(
+        manifest,
+        format!("{text}\n[[contributes.secrets]]\nname = \"cleanup-test\"\nlabel = \"Cleanup test\"\n"),
+    )
+    .unwrap();
+    f.install(&pkg);
+    f.host.set_secret_store(Arc::new(FailingSecrets));
+    assert!(f.host.uninstall(id).is_err());
+    assert!(f.host.info_of(id).unwrap().error.unwrap().contains("keychain locked"));
+    assert!(f.installed(id).join("plugin.toml").exists());
+    f.host.shutdown();
+    let host =
+        PluginHost::new(f.plugins_dir.clone(), Arc::new(|_: Option<&str>, _: PluginEvent| {}), Limits::default())
+            .unwrap();
+    host.load_all();
+    assert!(host.info_of(id).unwrap().error.unwrap().contains("keychain locked"));
+    host.uninstall(id).unwrap();
+    assert!(host.info_of(id).is_err());
+}
+
+#[cfg(unix)]
+#[test]
+fn private_uninstall_does_not_follow_cleanup_symlinks() {
+    use std::os::unix::fs::symlink;
+    for relative in [".data", ".data/test.private-dir", "test.private-dir"] {
+        let f = fixture(Limits::default());
+        let id = "test.private-dir";
+        f.install(&sample("private-dir"));
+        f.run(id, "roundtrip", None).unwrap();
+        let target = f.plugins_dir.join(relative);
+        let backup = target.with_extension("blocked-backup");
+        std::fs::rename(&target, &backup).unwrap();
+        let outside = f._tmp.path().join("outside");
+        copy_dir(&backup, &outside);
+        std::fs::write(outside.join("keep.txt"), "untouched").unwrap();
+        symlink(&outside, &target).unwrap();
+        assert!(f.host.uninstall(id).is_err(), "{relative}");
+        assert_eq!(std::fs::read_to_string(outside.join("keep.txt")).unwrap(), "untouched");
+        std::fs::remove_file(&target).unwrap();
+        std::fs::rename(&backup, &target).unwrap();
+        f.host.uninstall(id).unwrap();
+        assert!(f.host.info_of(id).is_err());
+        assert_eq!(std::fs::read_to_string(outside.join("keep.txt")).unwrap(), "untouched");
+    }
+    let f = fixture(Limits::default());
+    let id = "test.private-dir";
+    f.install(&sample("private-dir"));
+    let outside = f._tmp.path().join("outside");
+    std::fs::create_dir(&outside).unwrap();
+    std::fs::write(outside.join("keep.txt"), "untouched").unwrap();
+    let nested = f.plugins_dir.join(".data").join(id).join("nested");
+    std::fs::create_dir_all(nested.parent().unwrap()).unwrap();
+    symlink(&outside, nested).unwrap();
+    f.host.uninstall(id).unwrap();
+    assert_eq!(std::fs::read_to_string(outside.join("keep.txt")).unwrap(), "untouched");
+    for file in ["secrets.json", "secrets.tmp"] {
+        let f = fixture(Limits::default());
+        f.install(&sample("private-dir"));
+        let outside = f._tmp.path().join("outside-secret");
+        std::fs::write(&outside, "untouched").unwrap();
+        let target = f.plugins_dir.join(".data").join(id).join(file);
+        std::fs::create_dir_all(target.parent().unwrap()).unwrap();
+        symlink(&outside, &target).unwrap();
+        assert!(f.host.uninstall(id).is_err());
+        assert_eq!(std::fs::read_to_string(&outside).unwrap(), "untouched");
+        std::fs::remove_file(target).unwrap();
+        f.host.uninstall(id).unwrap();
+        assert_eq!(std::fs::read_to_string(&outside).unwrap(), "untouched");
+    }
+}
+
+#[test]
+fn private_uninstall_blocks_inactive_reactivation_during_cleanup() {
+    struct BlockingSecrets {
+        entered: std::sync::Barrier,
+        release: std::sync::Barrier,
+    }
+    impl SecretStore for BlockingSecrets {
+        fn get(&self, _: &str, _: &str) -> Option<String> {
+            None
+        }
+        fn set(&self, _: &str, _: &str, _: Option<&str>) -> Result<(), String> {
+            self.entered.wait();
+            self.release.wait();
+            Ok(())
+        }
+    }
+    let f = fixture(Limits::default());
+    let pkg = f._tmp.path().join("private-with-secret");
+    copy_dir(&sample("private-dir"), &pkg);
+    let manifest = pkg.join("plugin.toml");
+    let text = std::fs::read_to_string(&manifest).unwrap().replace("required = []", "required = [\"secrets\"]");
+    std::fs::write(
+        manifest,
+        format!("{text}\n[[contributes.secrets]]\nname = \"cleanup-test\"\nlabel = \"Cleanup test\"\n"),
+    )
+    .unwrap();
+    f.install(&pkg);
+    assert_eq!(f.status("test.private-dir"), PluginStatus::Inactive);
+    let store = Arc::new(BlockingSecrets { entered: std::sync::Barrier::new(2), release: std::sync::Barrier::new(2) });
+    f.host.set_secret_store(store.clone());
+    let result = std::thread::scope(|scope| {
+        let uninstall = scope.spawn(|| f.host.uninstall("test.private-dir"));
+        store.entered.wait();
+        let result = f.run("test.private-dir", "roundtrip", None);
+        store.release.wait();
+        uninstall.join().unwrap().unwrap();
+        result
+    });
+    assert!(result.is_err(), "plugin must remain stopped during uninstall");
+}
+
+#[cfg(unix)]
+#[test]
+fn private_paths_work_with_open_location_and_approved_process_arguments() {
+    let f = fixture(Limits::default());
+    f.host.install_from_dir(&sample("private-dir"), &Consent::default()).unwrap();
+    f.run("test.private-dir", "roundtrip", None).unwrap();
+    let path = PathBuf::from(f.run("test.private-dir", "open", None).unwrap().unwrap());
+    assert!(f.take_events().iter().any(|(client, event)| client.as_deref() == Some("main")
+        && matches!(event, PluginEvent::OpenLocation { path: opened, line: 0, column: 0, .. } if opened.0 == path)));
+    assert!(f.run("test.private-dir", "process", None).unwrap_err().contains("process:cat"));
+    f.host.set_capability("test.private-dir", "process:cat", true).unwrap();
+    assert_eq!(f.run("test.private-dir", "process", None).unwrap().as_deref(), Some("fake private data\n"));
 }
 
 /// A missing capability is an error the plugin can handle, not a trap.
@@ -645,7 +1427,7 @@ fn idle_instances_are_reclaimed_and_schedules_reactivate() {
     assert_eq!(f.host.instances(), 0);
     let info = f.host.info_of("misbehave").unwrap();
     assert_eq!((info.status, info.stats.reclaims), (PluginStatus::Inactive, 1));
-    assert_eq!(f.command_titles("misbehave").len(), 10, "contributions stay");
+    assert_eq!(f.command_titles("misbehave").len(), 24, "contributions stay");
     assert_eq!(f.run("misbehave", "echo", Some("y")).unwrap().as_deref(), Some("y"));
     assert_eq!(f.host.info_of("misbehave").unwrap().stats.activations, 2);
 
@@ -910,6 +1692,25 @@ fn untrusted_or_unconfirmed_project_plugins_never_run() {
     assert!(f.host.reload("misbehave").is_err());
     assert!(f.host.set_enabled("misbehave", true).is_err());
     assert!(f.run("misbehave", "echo", None).is_err());
+    let doc = ide_plugin::ProviderDocument {
+        path: f.project.join("a.txt"),
+        language: "text".into(),
+        version: 1,
+        text: "prompts".into(),
+    };
+    let action = ide_plugin::CodeAction {
+        title: "Ask input".into(),
+        kind: None,
+        preferred: false,
+        edits: Vec::new(),
+        operations: Vec::new(),
+        open: None,
+        data: Some("input".into()),
+        file_action: false,
+    };
+    let error = f.host.resolve_code_action("misbehave", &doc, action, f.inv()).unwrap_err();
+    assert!(error.message.contains("Restricted Mode"), "{}", error.message);
+    assert!(f.take_events().iter().all(|(_, e)| !matches!(e, PluginEvent::PromptRequested { .. })));
     f.host.sync_project(&f.project);
     assert!(f.host.list(Some(&f.project)).plugins.is_empty());
 }
@@ -1528,13 +2329,50 @@ fn official_key_promoter() {
     assert_eq!(tips.len(), 1, "{tips:?}");
     assert_eq!(tips[0].0.as_deref(), Some("main"), "shown in the window the actions came from");
     assert!(tips[0].1.contains("Ctrl+D") && tips[0].2.contains("3 times"), "{tips:?}");
-    let stored = std::fs::read_to_string(f.plugins_dir.join(".data/openidea.key-promoter/storage.json")).unwrap();
-    assert!(stored.contains("\"count:code.duplicate\":\"3\""), "{stored}");
+    let stored = stored(&f, "openidea.key-promoter");
+    assert!(stored.contains(&("count:code.duplicate".into(), "3".into())), "{stored:?}");
 
     // Uninstalling removes its data.
     f.host.uninstall("openidea.key-promoter").unwrap();
     assert!(!f.plugins_dir.join(".data/openidea.key-promoter").exists());
     assert!(f.host.event_kinds().is_empty());
+}
+
+#[test]
+fn storage_keeps_multimegabyte_indexes_after_idle_reclaim_and_removes_them_on_uninstall() {
+    let f = fixture(Limits { idle_timeout: Some(Duration::from_millis(100)), ..Limits::default() });
+    let pkg = Path::new(env!("CARGO_MANIFEST_DIR")).join("../ide-plugin/tests/fixtures/storage");
+    f.install(&pkg);
+    f.run("test.storage", "save", None).unwrap();
+    assert_eq!(f.host.instances(), 1);
+    std::thread::sleep(Duration::from_millis(150));
+    f.host.tick();
+    assert_eq!(f.host.instances(), 0);
+    assert_eq!(f.host.info_of("test.storage").unwrap().stats.reclaims, 1);
+    assert_eq!(f.run("test.storage", "load", None).unwrap().as_deref(), Some("4194304"));
+    assert_eq!(f.host.info_of("test.storage").unwrap().stats.activations, 2);
+    let storage_dir = f.plugins_dir.join(".data/test.storage");
+    assert_eq!(std::fs::read_dir(storage_dir.join("storage")).unwrap().count(), 1, "one file per key");
+    f.host.uninstall("test.storage").unwrap();
+    assert!(!storage_dir.exists());
+    f.install(&pkg);
+    assert!(f.run("test.storage", "load", None).unwrap_err().contains("missing index"));
+}
+
+/// A plugin's stored entries (key, value), read from its files.
+fn stored(f: &Fixture, plugin: &str) -> Vec<(String, String)> {
+    let dir = f.plugins_dir.join(".data").join(plugin).join("storage");
+    let mut entries: Vec<_> = std::fs::read_dir(dir)
+        .unwrap()
+        .map(|e| {
+            let bytes = std::fs::read(e.unwrap().path()).unwrap();
+            let len = usize::from(u16::from_le_bytes([bytes[0], bytes[1]]));
+            let key = String::from_utf8(bytes[2..2 + len].to_vec()).unwrap();
+            (key, String::from_utf8(bytes[2 + len..].to_vec()).unwrap())
+        })
+        .collect();
+    entries.sort();
+    entries
 }
 
 fn git(dir: &Path, args: &[&str]) {
@@ -1601,8 +2439,8 @@ fn official_git_toolbox_fetches_on_schedule_after_idle_reclaim() {
         )
     );
     assert!(events.iter().any(|(_, e)| matches!(e, PluginEvent::TaskEnded { .. })));
-    let stored = std::fs::read_to_string(f.plugins_dir.join(".data/openidea.git-toolbox/storage.json")).unwrap();
-    assert!(stored.contains("last-fetch:"), "{stored}");
+    let stored = stored(&f, "openidea.git-toolbox");
+    assert!(stored.iter().any(|(key, _)| key.starts_with("last-fetch:")), "{stored:?}");
 }
 
 /// Restricted Mode: git does not run in an untrusted project (no fetch).
@@ -1612,11 +2450,15 @@ fn git_toolbox_does_not_fetch_untrusted_projects() {
     git(&f.project, &["init", "-b", "main"]);
     f.install(&official("git-toolbox"));
     let untrusted = Arc::new(TestWorkspace {
+        project_queries_left: Mutex::new(None),
         root: f.project.clone(),
+        other_roots: Mutex::default(),
         documents: f.workspace.documents.clone(),
         trusted: false,
+        event_read_gate: Mutex::default(),
         diagnostics: Mutex::default(),
         settings: Mutex::default(),
+        global_settings: Mutex::default(),
     });
     f.host.set_workspace(Some(untrusted));
     let err = f.run("openidea.git-toolbox", "fetch", None).unwrap_err();
@@ -1941,6 +2783,35 @@ fn official_csv_editor_edits_the_shared_document() {
 }
 
 #[test]
+fn context_menu_entries_can_name_a_submenu() {
+    fn with_menu(version: &'static str, extra: &'static str) -> impl Fn(&str) -> String {
+        move |m: &str| {
+            let m = m.replace("engines.openidea = \"^1.0\"", &format!("engines.openidea = \"{version}\""));
+            format!("{m}\n[[contributes.menus]]\ncommand = \"word-count\"\n{extra}\n")
+        }
+    }
+    let f = fixture(Limits::default());
+    let dir = tempfile::tempdir().unwrap();
+    let ok = hello_variant(dir.path(), with_menu("^1.3", "menu = \"editor.context\"\nsubmenu = \"Words\""));
+    assert_eq!(f.install(&ok).status, PluginStatus::Inactive);
+    let submenus: Vec<_> =
+        f.host.ui_items("menus").into_iter().filter_map(|i| i.decl["submenu"].as_str().map(str::to_owned)).collect();
+    assert_eq!(submenus, ["Words"]);
+    f.host.uninstall("hello").unwrap();
+
+    for (version, extra, message) in [
+        ("^1.3", "menu = \"tools\"\nsubmenu = \"Words\"", "only for context menus"),
+        ("^1.3", "menu = \"editor.context\"\nsubmenu = \" \"", "titles are"),
+        ("^1.2", "menu = \"editor.context\"\nsubmenu = \"Words\"", "1.3"),
+    ] {
+        let dir = tempfile::tempdir().unwrap();
+        let pkg = hello_variant(dir.path(), with_menu(version, extra));
+        let err = f.host.install_from_dir(&pkg, &Consent::all()).unwrap_err();
+        assert!(err.message.contains(message), "{extra}: {}", err.message);
+    }
+}
+
+#[test]
 fn view_item_menus_name_a_declared_view() {
     /// The menu is new in API 1.2.
     fn api_1_2(m: &str) -> String {
@@ -2003,6 +2874,86 @@ fn view_item_menus_name_a_declared_view() {
     assert!(err.message.contains("new in plugin API 1.2"), "{}", err.message);
 }
 
+#[test]
+fn conditional_and_grouped_views_need_api_1_3() {
+    for field in ["group = \"spring\"", "when = \"workspaceContains:pom.xml || plugin.hello.ready\""] {
+        let f = fixture(Limits::default());
+        let tmp = tempfile::tempdir().unwrap();
+        let old =
+            hello_variant(tmp.path(), |m| m.replace("location = \"right\"", &format!("location = \"right\"\n{field}")));
+        let err = f.host.install_from_dir(&old, &Consent::all()).unwrap_err();
+        assert!(err.message.contains("new in plugin API 1.3"), "{err:?}");
+    }
+    let f = fixture(Limits::default());
+    let tmp = tempfile::tempdir().unwrap();
+    let pkg = hello_variant(tmp.path(), |m| {
+        m.replace("engines.openidea = \"^1.0\"", "engines.openidea = \"^1.3\"").replace(
+            "location = \"right\"",
+            "location = \"right\"\ngroup = \"spring\"\nwhen = \"workspaceContains:pom.xml || plugin.hello.ready\"",
+        )
+    });
+    let info = f.install(&pkg);
+    assert_eq!(info.status, PluginStatus::Inactive, "declaring views must not activate code");
+    let view = f.host.ui_items("views").remove(0);
+    assert_eq!(view.decl["group"], "spring");
+    assert_eq!(view.decl["when"], "workspaceContains:pom.xml || plugin.hello.ready");
+    f.host.set_enabled("hello", false).unwrap();
+    assert!(f.host.ui_items("views").is_empty());
+}
+
+#[test]
+fn grouped_views_fixture_renders_and_scopes_context_and_reveal() {
+    let f = fixture(Limits::default());
+    let info = f.install(&sample("grouped-views"));
+    assert_eq!(info.status, PluginStatus::Inactive, "views stay lazy");
+    assert!(info.error.is_none(), "{:?}", info.error);
+    let views = f.host.ui_items("views");
+    assert_eq!(views.len(), 3);
+    assert_eq!(views[0].decl["group"], "demo");
+    assert_eq!(views[1].decl["when"], "workspaceContains:grouped-views.txt");
+    f.take_events();
+    f.run("grouped-views", "show", None).unwrap();
+    assert!(f.take_events().iter().any(|(client, event)| matches!(
+        event,
+        PluginEvent::ContextChanged { plugin_id, key, value }
+            if client.as_deref() == Some("main") && plugin_id == "grouped-views"
+                && key == "ready" && value.as_deref() == Some("true")
+    )));
+    assert!(f.host.context_keys(Some("other")).is_empty());
+    for view in ["overview", "files", "legacy"] {
+        let rendered = f.host.render_view("grouped-views", view, None, f.inv()).unwrap();
+        assert!(matches!(rendered.body, ide_plugin::ViewBody::Message(_)));
+        f.run("grouped-views", "reveal", Some(view)).unwrap();
+        assert!(f.take_events().iter().any(|(client, event)| matches!(
+            event,
+            PluginEvent::RevealView { plugin_id, view: target }
+                if client.as_deref() == Some("main") && plugin_id == "grouped-views" && target == view
+        )));
+    }
+    assert!(f.run("grouped-views", "reveal", Some("plugin.hello.greetings")).is_err());
+    f.host.set_enabled("grouped-views", false).unwrap();
+    assert!(f.host.ui_items("views").is_empty());
+    assert!(f.host.context_keys(Some("main")).is_empty());
+}
+
+#[test]
+fn view_conditions_and_group_ids_are_validated() {
+    for (field, message) in [
+        ("group = \"\"", "invalid view group"),
+        ("group = \"../other\"", "invalid view group"),
+        ("when = \"ready && (\"", "when"),
+    ] {
+        let f = fixture(Limits::default());
+        let tmp = tempfile::tempdir().unwrap();
+        let pkg = hello_variant(tmp.path(), |m| {
+            m.replace("engines.openidea = \"^1.0\"", "engines.openidea = \"^1.3\"")
+                .replace("location = \"right\"", &format!("location = \"right\"\n{field}"))
+        });
+        let err = f.host.install_from_dir(&pkg, &Consent::all()).unwrap_err();
+        assert!(err.message.contains(message), "{field}: {err:?}");
+    }
+}
+
 /// The sample plugin makes a tool window with a tree view.
 /// Its menus, shortcut and status bar item are declarations, listed before
 /// any code runs; the tree is rendered by the code, which loads on first show.
@@ -2045,6 +2996,45 @@ fn sample_plugin_tool_window_with_a_tree() {
     }
 }
 
+/// The tables fixture sorts its own rows: a `table` body sent through `other`
+/// opts the headers in, and a header click leaves as an `other` view-event
+/// (kind `sort`) the plugin decodes and answers with the rows in the asked
+/// order (plugins/README.md §10: released types stay, `other` carries new
+/// cases).
+#[test]
+fn sortable_plugin_table_round_trips_sort_events() {
+    let f = fixture(Limits::default());
+    let info = f.install(&sample("tables"));
+    assert_eq!(info.status, PluginStatus::Inactive, "{:?}", info.error);
+
+    let table = |f: &Fixture| match f.host.render_view("tables", "tables", None, f.inv()).unwrap().body {
+        ide_plugin::ViewBody::Table(t) => t,
+        other => panic!("{other:?}"),
+    };
+    // No sort yet: headers are clickable, rows in the plugin's own order.
+    let t = table(&f);
+    assert_eq!((t.columns.clone(), t.total_rows), (vec!["ext".to_owned(), "files".into()], 4));
+    assert_eq!((t.sortable, t.sort), (true, None), "a `table` through `other` opts the headers in");
+    assert_eq!(t.rows.iter().map(|r| r[0].clone()).collect::<Vec<_>>(), ["rs", "md", "java", "toml"]);
+
+    f.take_events();
+    let sort = |f: &Fixture, descending| {
+        f.host.view_event("tables", "tables", ide_plugin::ViewEvent::Sort { column: 1, descending }, f.inv()).unwrap();
+        assert!(f.take_events().into_iter().any(
+            |(_, e)| matches!(e, PluginEvent::ViewChanged { ref plugin_id, ref view } if plugin_id == "tables" && view == "tables")
+        ));
+        table(f)
+    };
+
+    // The plugin reports the sort it ordered by, with the rows to match.
+    let t = sort(&f, false);
+    assert_eq!(t.sort, Some(ide_plugin::TableSort { column: 1, descending: false }));
+    assert_eq!(t.rows.iter().map(|r| r[1].clone()).collect::<Vec<_>>(), ["3", "9", "12", "20"]);
+    let t = sort(&f, true);
+    assert_eq!(t.sort, Some(ide_plugin::TableSort { column: 1, descending: true }));
+    assert_eq!(t.rows.iter().map(|r| r[1].clone()).collect::<Vec<_>>(), ["20", "12", "9", "3"]);
+}
+
 /// Regex Tester: an `html` body its script talks to; the plugin answers in
 /// view messages, in UTF-16 offsets.
 #[test]
@@ -2071,6 +3061,24 @@ fn official_regex_tester_answers_its_page() {
     let reply: serde_json::Value = serde_json::from_str(&reply).unwrap();
     assert_eq!((reply["seq"].clone(), reply["count"].clone()), (serde_json::json!(3), serde_json::json!(2)));
     assert_eq!(reply["matches"][0]["groups"][0], serde_json::json!([2, 4]));
+}
+
+#[test]
+fn settings_actions_choose_their_layer_without_losing_the_project() {
+    let f = fixture(Limits::default());
+    f.install(&sample("settings-pages"));
+    for (global, name) in [(false, "Project"), (true, "Global")] {
+        let values = serde_json::json!({ "profiles": [{ "name": name, "provider": "local", "baseUrl": "http://localhost", "model": "test", "enabled": true, "temperature": 0.7, "limit": 100 }] });
+        let layer = if global { &f.workspace.global_settings } else { &f.workspace.settings };
+        layer.lock().insert("settings-pages".into(), values.as_object().unwrap().clone());
+    }
+    for (global_settings, name) in [(false, "Project"), (true, "Global"), (false, "Project")] {
+        let inv = Invocation { global_settings, ..f.inv() };
+        let result = f.host.run_command("settings-pages", "test", None, inv).unwrap().unwrap();
+        let result: serde_json::Value = serde_json::from_str(&result).unwrap();
+        assert_eq!(result["profiles"][0]["name"], name);
+        assert_eq!(result["hasProject"], true);
+    }
 }
 
 /// A tree filled from a pinned program's output, and a terminal for the
@@ -2270,8 +3278,13 @@ fn commands_ask_the_user_and_reveal_their_views() {
 
     let (result, prompt) = run_and_answer(&f, "input", Some("Main"), Some(&["Other"]), none);
     assert_eq!(result.unwrap().as_deref(), Some("Other"));
-    assert_eq!(prompt, Prompt::Input { prompt: "Name".into(), value: Some("Main".into()) });
+    assert_eq!(prompt, Prompt::Input { prompt: "Name".into(), value: Some("Main".into()), multiline: false });
     assert_eq!(run_and_answer(&f, "input", None, None, none).0.unwrap().as_deref(), Some("none"));
+
+    let (result, prompt) = run_and_answer(&f, "input-multiline", Some("one\ntwo"), Some(&["a\nb"]), none);
+    assert_eq!(result.unwrap().as_deref(), Some("a\nb"));
+    assert_eq!(prompt, Prompt::Input { prompt: "Name".into(), value: Some("one\ntwo".into()), multiline: true });
+    assert_eq!(run_and_answer(&f, "input-multiline", None, None, none).0.unwrap().as_deref(), Some("none"));
 
     let (result, prompt) = run_and_answer(&f, "confirm", None, Some(&[]), none);
     assert_eq!(result.unwrap().as_deref(), Some("true"));
@@ -2291,7 +3304,7 @@ fn commands_ask_the_user_and_reveal_their_views() {
     // Without a window there is nothing to attach the dialog to.
     f.take_events();
     let no_window = Invocation { client: None, ..f.inv() };
-    for cmd in ["pick", "input", "confirm"] {
+    for cmd in ["pick", "input", "input-multiline", "confirm"] {
         let err = f.host.run_command("jobs", cmd, None, no_window.clone()).unwrap_err().message;
         assert!(err.contains("from a command the user invoked"), "{cmd}: {err}");
     }
@@ -2377,6 +3390,46 @@ web = "panel/index.html"
     let assets = f.host.assets("panel-icon", "viewIcon/panel").unwrap();
     assert_eq!(assets.len(), 1);
     assert!(assets[0].1.contains("<rect"));
+}
+
+#[test]
+fn a_package_ships_translations_in_locales() {
+    let f = fixture(Limits::default());
+    let tmp = tempfile::tempdir().unwrap();
+    let package = |id: &str, catalogs: &[(&str, &str)]| {
+        let pkg = tmp.path().join(id);
+        std::fs::create_dir_all(pkg.join("locales")).unwrap();
+        for (name, text) in catalogs {
+            std::fs::write(pkg.join("locales").join(name), text).unwrap();
+        }
+        std::fs::write(
+            pkg.join("plugin.toml"),
+            format!(
+                "id = \"{id}\"\nname = \"Words\"\nversion = \"1.0.0\"\nengines.openidea = \"^1.0\"\n\n\
+                 [[contributes.commands]]\nid = \"count\"\ntitle = \"Count Words\"\n"
+            ),
+        )
+        .unwrap();
+        pkg
+    };
+
+    for bad in ["{", "[]", r#"{"Count Words": 1}"#] {
+        let pkg = package("bad-catalog", &[("fr.json", bad)]);
+        assert!(f.host.install_from_dir(&pkg, &Consent::all()).is_err(), "{bad}");
+    }
+
+    let pkg = package("words", &[("fr.json", r#"{"Count Words": "Compter les mots"}"#), ("zh-CN.json", "{}")]);
+    let info = f.install(&pkg);
+    assert!(info.error.is_none(), "{:?}", info.error);
+    let item = f.host.ui_items("locales").into_iter().find(|i| i.plugin_id == "words").expect("the catalogs");
+    assert_eq!(item.decl["tags"], serde_json::json!(["fr", "zh-CN"]));
+    let assets = f.host.assets("words", "locale/fr").unwrap();
+    assert_eq!(assets.len(), 1);
+    assert!(assets[0].1.contains("Compter les mots"));
+
+    let other = f.install(&package("other", &[]));
+    assert!(other.error.is_none(), "{:?}", other.error);
+    assert!(f.host.assets("other", "locale/").unwrap().is_empty());
 }
 
 /// A plugin with web views and no code: its pages and their files are
@@ -2476,6 +3529,81 @@ path = "templates/new.draw"
     f.host.set_enabled("web-demo", false).unwrap();
     assert!(file(&format!("{rev}/web/index.html")).is_err());
     assert!(f.host.web_page("web-demo", "draw").is_err());
+}
+
+#[test]
+fn file_templates_fixture_installs_without_write_capabilities() {
+    let f = fixture(Limits::default());
+    let info = f.install(&sample("file-templates"));
+    assert!(info.capabilities.is_empty());
+    let templates = f.host.ui_items("fileTemplates");
+    assert_eq!(templates.len(), 4);
+    let template = |id: &str| templates.iter().find(|t| t.decl["id"] == id).unwrap();
+    assert_eq!(template("dockerignore").decl["fileName"], ".dockerignore");
+    assert_eq!(template("attributes").decl["variables"].as_array().unwrap().len(), 2);
+    assert!(template("repository").decl["body"].as_str().unwrap().contains("$PACKAGE$"));
+    assert!(f.installed("file-templates").join("templates/repository.txt").is_file());
+    assert_eq!(f.run("file-templates", "ping", None).unwrap().as_deref(), Some("File templates ready"));
+    f.host.set_enabled("file-templates", false).unwrap();
+    assert!(f.host.ui_items("fileTemplates").is_empty());
+}
+
+#[test]
+fn file_templates_api_13_names_and_variables() {
+    let f = fixture(Limits::default());
+    let tmp = tempfile::tempdir().unwrap();
+    let pkg = tmp.path().join("template-demo");
+    std::fs::create_dir_all(&pkg).unwrap();
+    std::fs::write(pkg.join("body.txt"), "$ENTITY$ $PACKAGE$\n").unwrap();
+    let install = |api: &str, fields: &str| {
+        std::fs::write(
+            pkg.join("plugin.toml"),
+            format!(
+                r#"id = "template-demo"
+name = "Templates"
+version = "1.0.0"
+engines.openidea = "{api}"
+[[contributes.fileTemplates]]
+id = "template"
+name = "Template"
+path = "body.txt"
+{fields}
+"#
+            ),
+        )
+        .unwrap();
+        f.host.install_from_dir(&pkg, &Consent::all())
+    };
+    for fields in [r#"fileName = ".dockerignore""#, "extension = \"java\"\nvariables = []"] {
+        let err = install("^1.2", fields).unwrap_err().message;
+        assert!(err.contains("1.3"), "{err}");
+    }
+    for name in ["", ".", "..", "../escape", "a/b", r"a\b", "/absolute", "C:evil", "a?", " a", "a.", "NUL.txt", "COM1"]
+    {
+        let fields = format!("fileName = {}", serde_json::to_string(name).unwrap());
+        assert!(install("^1.3", &fields).is_err(), "accepted {name:?}");
+    }
+    for vars in [
+        r#"[{ name = "", prompt = "Entity" }]"#,
+        r#"[{ name = "1bad", prompt = "Entity" }]"#,
+        r#"[{ name = "bad-name", prompt = "Entity" }]"#,
+        r#"[{ name = "PACKAGE", prompt = "Entity" }]"#,
+        r#"[{ name = "ENTITY", prompt = "" }]"#,
+        r#"[{ name = "ENTITY", prompt = "Entity" }, { name = "ENTITY", prompt = "Again" }]"#,
+    ] {
+        assert!(install("^1.3", &format!("extension = \"java\"\nvariables = {vars}")).is_err(), "accepted {vars}");
+    }
+    install(
+        "^1.3",
+        r#"fileName = ".dockerignore"
+variables = [{ name = "ENTITY", prompt = "Entity class" }]"#,
+    )
+    .unwrap();
+    let items = f.host.ui_items("fileTemplates");
+    assert_eq!(items[0].decl["fileName"], ".dockerignore");
+    assert_eq!(items[0].decl["extension"], "");
+    assert_eq!(items[0].decl["variables"][0]["prompt"], "Entity class");
+    assert_eq!(items[0].decl["body"], "$ENTITY$ $PACKAGE$\n");
 }
 
 /// A view needs a page or code to render it; a page's directory can't be the package itself.
@@ -2793,10 +3921,34 @@ fn completion_quick_fixes_problems_and_event_kinds_of_api_1() {
     let actions = f.host.provide_code_actions(&doc("lazy"), ide_core::Range::default());
     let (plugin, action) = actions.into_iter().next().expect("offered");
     assert!(action.edits.is_empty() && action.data.as_deref() == Some("fix"));
-    let resolved = f.host.resolve_code_action(&plugin, &doc("lazy"), action.clone()).unwrap();
+    let resolved = f.host.resolve_code_action(&plugin, &doc("lazy"), action.clone(), f.inv()).unwrap();
     assert_eq!(resolved.edits[0].1[0].new_text, "fixed ");
     let foreign = ide_plugin::CodeAction { data: Some("other".into()), ..action };
-    assert!(f.host.resolve_code_action(&plugin, &doc("lazy"), foreign).is_err());
+    assert!(f.host.resolve_code_action(&plugin, &doc("lazy"), foreign, f.inv()).is_err());
+
+    // File operations come from the `file-actions` export, next to the providers' own.
+    let mut actions = f.host.provide_code_actions(&doc("files"), ide_core::Range::default()).into_iter();
+    let (_, action) = actions.next().expect("offered");
+    let (plugin, later) = actions.next().expect("a lazy one too");
+    let dir = f.project.clone();
+    assert_eq!(action.title, "Reorganise");
+    assert_eq!(
+        action.operations,
+        vec![
+            ide_plugin::FileOperation::Create { path: dir.join("created.txt"), text: "hello".into(), overwrite: false },
+            ide_plugin::FileOperation::Rename { from: dir.join("old.txt"), to: dir.join("renamed.txt") },
+            ide_plugin::FileOperation::Delete { path: dir.join("gone.txt") },
+        ]
+    );
+    assert_eq!(action.open, Some(dir.join("created.txt")));
+    // Listed with `data` only: `resolve` on the same export computes its operations.
+    assert!(later.file_action && later.operations.is_empty() && later.data.is_some());
+    let resolved = f.host.resolve_code_action(&plugin, &doc("files"), later, f.inv()).unwrap();
+    assert_eq!(
+        resolved.operations,
+        vec![ide_plugin::FileOperation::Create { path: dir.join("later.txt"), text: "later".into(), overwrite: false }]
+    );
+    assert!(f.host.provide_code_actions(&doc("rich"), ide_core::Range::default()).is_empty());
 
     // A kind this IDE doesn't know is refused, not a trap.
     let err = f.host.run_command("misbehave", "subscribe", Some("file-deleted"), f.inv()).unwrap_err();
@@ -2809,6 +3961,185 @@ fn completion_quick_fixes_problems_and_event_kinds_of_api_1() {
     f.host.run_command("misbehave", "diagnose", Some(&path.to_string_lossy()), f.inv()).unwrap();
     let d = f.workspace.diagnostics.lock().get(&("misbehave".into(), path)).cloned().unwrap();
     assert_eq!((d[0].unnecessary, d[0].deprecated, d[0].source.as_deref()), (true, false, Some("lint")));
+}
+
+fn interactive_actions_fixture() -> (Fixture, ide_plugin::ProviderDocument) {
+    let f = fixture(Limits { timeout: Duration::from_millis(500), ..Limits::default() });
+    let pkg = f._tmp.path().join("interactive-actions");
+    copy_dir(&misbehave_pkg(), &pkg);
+    let manifest = std::fs::read_to_string(pkg.join("plugin.toml"))
+        .unwrap()
+        .replace("required = [\"project.read\"]", "required = [\"project.read\", \"clipboard\"]");
+    std::fs::write(pkg.join("plugin.toml"), format!(
+        "{manifest}\n[[contributes.providers]]\nkinds = [\"completion\", \"code-actions\"]\nlanguages = [\"text\"]\n"
+    )).unwrap();
+    f.install(&pkg);
+    f.host.run_command("misbehave", "echo", None, f.inv()).unwrap();
+    let doc = ide_plugin::ProviderDocument {
+        path: f.project.join("a.txt"),
+        language: "text".into(),
+        version: 1,
+        text: "prompts".into(),
+    };
+    (f, doc)
+}
+
+fn action_prompt(f: &Fixture) -> (String, ide_plugin::Prompt) {
+    let deadline = Instant::now() + Duration::from_secs(10);
+    loop {
+        if let Some((client, id, prompt)) = f.take_events().into_iter().find_map(|(client, event)| match event {
+            PluginEvent::PromptRequested { prompt_id, prompt, .. } => Some((client, prompt_id, prompt)),
+            _ => None,
+        }) {
+            assert_eq!(client.as_deref(), Some("editor-window"));
+            return (id, prompt);
+        }
+        assert!(Instant::now() < deadline, "code-action resolution never asked");
+        std::thread::sleep(Duration::from_millis(10));
+    }
+}
+
+fn action_invocation() -> Invocation {
+    Invocation { client: Some("editor-window".into()), ..Default::default() }
+}
+
+#[test]
+fn code_action_resolution_prompts_in_the_editor_window_under_the_command_budget() {
+    use ide_plugin::Prompt;
+    let (f, doc) = interactive_actions_fixture();
+    let actions = f.host.provide_code_actions(&doc, ide_core::Range::default());
+    assert_eq!(actions.len(), 10);
+    for (kind, answer, expected) in [
+        ("pick", vec!["b"], "b"),
+        ("pick-many", vec!["a", "b"], "a,b"),
+        ("input", vec!["Service😀"], "Service😀"),
+        ("confirm", vec![], "confirmed"),
+    ] {
+        let action = actions.iter().find(|(_, a)| a.data.as_deref() == Some(kind)).unwrap().1.clone();
+        std::thread::scope(|scope| {
+            let running = scope.spawn(|| f.host.resolve_code_action("misbehave", &doc, action, action_invocation()));
+            let (id, prompt) = action_prompt(&f);
+            assert!(match kind {
+                "pick" => matches!(prompt, Prompt::QuickPick { multiple: false, .. }),
+                "pick-many" => matches!(prompt, Prompt::QuickPick { multiple: true, .. }),
+                "input" => matches!(prompt, Prompt::Input { multiline: false, .. }),
+                _ => matches!(prompt, Prompt::Confirm { .. }),
+            });
+            // More than the command budget; waiting for the user is excluded.
+            std::thread::sleep(Duration::from_millis(650));
+            assert!(f.host.answer_prompt(&id, Some(answer.iter().map(|s| (*s).into()).collect())));
+            let resolved = running.join().unwrap().unwrap();
+            assert_eq!(resolved.edits[0].1[0].new_text, expected);
+        });
+    }
+    for kind in ["input-multiline", "reveal", "open-url", "clipboard", "pick-directory", "open-project"] {
+        let action = actions.iter().find(|(_, a)| a.data.as_deref() == Some(kind)).unwrap().1.clone();
+        let err = std::thread::scope(|scope| {
+            let running = scope.spawn(|| f.host.resolve_code_action("misbehave", &doc, action, action_invocation()));
+            let mut prompted = false;
+            while !running.is_finished() {
+                for (_, event) in f.take_events() {
+                    if let PluginEvent::PromptRequested { prompt_id, .. } = event {
+                        prompted = true;
+                        f.host.answer_prompt(&prompt_id, None);
+                    }
+                }
+                std::thread::sleep(Duration::from_millis(10));
+            }
+            let result = running.join().unwrap();
+            assert!(!prompted, "{kind} must remain restricted to commands and events");
+            result.unwrap_err()
+        });
+        assert_eq!(err.kind, ErrorKind::InvalidInput, "{kind}: {}", err.message);
+    }
+    let doc = ide_plugin::ProviderDocument { text: "prompt-provider".into(), ..doc };
+    assert!(eventually(|| !f.host.provide_completion(&doc, ide_core::Pos::new(0, 0), None).is_empty()));
+    assert!(f.take_events().iter().all(|(_, e)| !matches!(e, PluginEvent::PromptRequested { .. })));
+}
+
+#[test]
+fn code_action_prompts_dismiss_cancel_and_close_without_edits_or_hanging() {
+    for (how, kind) in [
+        ("dismiss", "pick"),
+        ("dismiss", "pick-many"),
+        ("dismiss", "input"),
+        ("dismiss", "confirm"),
+        ("disable", "pick"),
+        ("close", "pick"),
+        ("close-reopen", "pick"),
+        ("no-window", "pick"),
+    ] {
+        let (f, doc) = interactive_actions_fixture();
+        let action = f
+            .host
+            .provide_code_actions(&doc, ide_core::Range::default())
+            .into_iter()
+            .find(|(_, action)| action.data.as_deref() == Some(kind))
+            .unwrap()
+            .1;
+        if how == "no-window" {
+            assert!(f.host.resolve_code_action("misbehave", &doc, action, Invocation::default()).is_err());
+            assert!(f.take_events().iter().all(|(_, e)| !matches!(e, PluginEvent::PromptRequested { .. })));
+            continue;
+        }
+        std::thread::scope(|scope| {
+            let running = scope.spawn(|| f.host.resolve_code_action("misbehave", &doc, action, action_invocation()));
+            let (id, _) = action_prompt(&f);
+            let started = Instant::now();
+            match how {
+                "dismiss" => {
+                    assert!(f.host.answer_prompt(&id, None));
+                }
+                "disable" => {
+                    f.host.set_enabled("misbehave", false).unwrap();
+                }
+                "close" => f.host.forget_client("editor-window"),
+                "close-reopen" => {
+                    f.host.forget_client("editor-window");
+                    f.host.reopen_client("editor-window");
+                }
+                _ => unreachable!(),
+            }
+            assert!(running.join().unwrap().is_err());
+            assert!(started.elapsed() < Duration::from_secs(5));
+            assert!(!f.host.answer_prompt(&id, Some(vec!["late".into()])));
+        });
+        assert!(!f.project.join("a.txt").exists(), "resolution must only return edits");
+        if how == "close-reopen" {
+            let action = f.host.provide_code_actions(&doc, ide_core::Range::default()).remove(0).1;
+            std::thread::scope(|scope| {
+                let running =
+                    scope.spawn(|| f.host.resolve_code_action("misbehave", &doc, action, action_invocation()));
+                let (id, _) = action_prompt(&f);
+                assert!(f.host.answer_prompt(&id, Some(vec!["b".into()])));
+                assert_eq!(running.join().unwrap().unwrap().edits[0].1[0].new_text, "b");
+            });
+        }
+    }
+}
+
+#[test]
+fn file_action_resolution_can_ask_before_returning_resource_operations() {
+    let (f, doc) = interactive_actions_fixture();
+    let doc = ide_plugin::ProviderDocument { text: "prompt-files".into(), ..doc };
+    let action = f.host.provide_code_actions(&doc, ide_core::Range::default()).remove(0).1;
+    assert!(action.file_action && action.operations.is_empty());
+    std::thread::scope(|scope| {
+        let running = scope.spawn(|| f.host.resolve_code_action("misbehave", &doc, action, action_invocation()));
+        let (id, _) = action_prompt(&f);
+        assert!(f.host.answer_prompt(&id, Some(vec!["Service".into()])));
+        let resolved = running.join().unwrap().unwrap();
+        assert_eq!(
+            resolved.operations,
+            vec![ide_plugin::FileOperation::Create {
+                path: f.project.join("Service.txt"),
+                text: "Service".into(),
+                overwrite: false,
+            }]
+        );
+        assert_eq!(resolved.open, Some(f.project.join("Service.txt")));
+        assert!(!f.project.join("Service.txt").exists(), "resolution does not apply the edit");
+    });
 }
 
 /// `hello` as a services view, which needs API 1.3.
@@ -2869,7 +4200,80 @@ fn services_views_have_a_detail_pane() {
     let f = fixture(Limits::default());
     f.install(&sample("hello"));
     let err = f.host.service_detail("hello", "greetings", "x", f.inv()).unwrap_err();
-    assert!(err.message.contains("declares no services view"), "a right view has no pane: {err:?}");
+    assert!(err.message.contains("declares no detail view"), "a right view has no pane: {err:?}");
+}
+
+#[test]
+fn detail_views_work_in_every_location_and_require_api_1_3_code() {
+    for location in ["left", "right", "bottom", "services"] {
+        let f = fixture(Limits::default());
+        let tmp = tempfile::tempdir().unwrap();
+        let pkg = hello_variant(tmp.path(), |t| {
+            t.replace("engines.openidea = \"^1.0\"", "engines.openidea = \"^1.3\"")
+                .replace("location = \"right\"", &format!("location = {location:?}\ndetail = true"))
+        });
+        assert!(f.install(&pkg).error.is_none());
+        assert_eq!(f.host.ui_items("views")[0].decl["detail"], true);
+        let tabs = f.host.service_detail("hello", "greetings", "item:😀", f.inv()).unwrap();
+        assert_eq!(tabs[1].body, ide_plugin::ServicePane::Text("greetings: item:😀".into()));
+        assert!(f.host.service_detail("hello", "missing", "x", f.inv()).is_err());
+    }
+    for (api, web, message) in
+        [("^1.0", false, "new in plugin API 1.3"), ("^1.3", true, "`detail` needs a tree or list")]
+    {
+        let f = fixture(Limits::default());
+        let tmp = tempfile::tempdir().unwrap();
+        let pkg = hello_variant(tmp.path(), |t| {
+            t.replace("engines.openidea = \"^1.0\"", &format!("engines.openidea = {api:?}")).replace(
+                "location = \"right\"",
+                if web {
+                    "location = \"right\"\ndetail = true\nweb = \"web/index.html\""
+                } else {
+                    "location = \"right\"\ndetail = true"
+                },
+            )
+        });
+        if web {
+            std::fs::create_dir_all(pkg.join("web")).unwrap();
+            std::fs::write(pkg.join("web/index.html"), "<p>x</p>").unwrap();
+        }
+        let error = f.host.install_from_dir(&pkg, &Consent::all()).unwrap_err();
+        assert!(error.message.contains(message), "{error:?}");
+    }
+}
+
+#[test]
+fn detail_fixture_tracks_selection_and_refresh_for_tree_list_and_services() {
+    let f = fixture(Limits::default());
+    assert!(f.install(&sample("detail-views")).error.is_none());
+    for view in ["tree", "list", "services"] {
+        assert!(matches!(
+            f.host.render_view("test.detail-views", view, None, f.inv()).unwrap().body,
+            ide_plugin::ViewBody::Tree(_) | ide_plugin::ViewBody::List(_)
+        ));
+        f.host
+            .view_event("test.detail-views", view, ide_plugin::ViewEvent::Select { key: "beta".into() }, f.inv())
+            .unwrap();
+        let tabs = f.host.service_detail("test.detail-views", view, "beta", f.inv()).unwrap();
+        let ide_plugin::ServicePane::Text(text) = &tabs[0].body else { panic!("text detail") };
+        assert!(text.starts_with(&format!("{view}: beta")));
+        f.host
+            .view_event("test.detail-views", view, ide_plugin::ViewEvent::Button { id: "refresh".into() }, f.inv())
+            .unwrap();
+        let refreshed = f.host.service_detail("test.detail-views", view, "beta", f.inv()).unwrap();
+        assert_ne!(tabs, refreshed);
+    }
+    let selections = [("tree", "alpha"), ("list", "beta"), ("services", "alpha")];
+    for (view, key) in selections {
+        f.host
+            .view_event("test.detail-views", view, ide_plugin::ViewEvent::Select { key: key.into() }, f.inv())
+            .unwrap();
+    }
+    for (view, key) in selections {
+        let tabs = f.host.service_detail("test.detail-views", view, key, f.inv()).unwrap();
+        let ide_plugin::ServicePane::Text(text) = &tabs[0].body else { panic!("text detail") };
+        assert!(text.starts_with(&format!("{view}: {key}")));
+    }
 }
 
 /// `hello` as a services view that may run `sh`, granted or not.
@@ -2949,6 +4353,30 @@ fn service_logs_need_the_grant_and_a_log_tab() {
     cancelled.cancel();
     assert_eq!(stream(&f, &script, &[], &cancelled, |_| {}).unwrap_err().kind, ErrorKind::Cancelled);
     assert!(!marker.exists(), "a cancelled request starts nothing");
+}
+
+#[cfg(unix)]
+#[test]
+fn ordinary_detail_views_reuse_log_grants_and_streaming() {
+    let f = fixture(Limits::default());
+    let tmp = tempfile::tempdir().unwrap();
+    let pkg = hello_variant(tmp.path(), |t| {
+        services_variant(t).replace("location = \"services\"", "location = \"right\"\ndetail = true").replace(
+            "required = [\"editor.read\", \"editor.write\"]",
+            "required = [\"editor.read\", \"editor.write\"]\noptional = [\"process:sh\"]",
+        )
+    });
+    f.install(&pkg);
+    f.host.set_capability("hello", "process:sh", false).unwrap();
+    assert_eq!(
+        stream(&f, "echo allowed", &[], &Default::default(), |_| {}).unwrap_err().kind,
+        ErrorKind::PermissionDenied
+    );
+    f.host.set_capability("hello", "process:sh", true).unwrap();
+    f.host.set_program_path(Arc::new(|| Some(PathBuf::from("/bin").into_os_string())));
+    let lines = Mutex::new(Vec::new());
+    assert_eq!(stream(&f, "echo allowed", &[], &Default::default(), |l| lines.lock().push(l.text)).unwrap(), Some(0));
+    assert_eq!(lines.into_inner(), ["allowed"]);
 }
 
 #[cfg(unix)]
@@ -3174,4 +4602,946 @@ fn invalid_plugin_icons_refuse_the_package() {
         let err = f.host.preview_install(&pkg).map(|_| ()).unwrap_err().message;
         assert!(err.contains(expected), "{id}: {err}");
     }
+}
+
+#[test]
+fn endpoint_exports_refresh_matching_files_and_follow_plugin_lifecycle() {
+    let f = fixture(Limits { idle_timeout: Some(Duration::from_millis(50)), ..Limits::default() });
+    let routes = f.project.join("routes.txt");
+    std::fs::write(&routes, "/users/{id}\n").unwrap();
+    f.install(&sample("endpoints"));
+    let id = "test.endpoints";
+    let paths = || f.host.endpoints(id, &f.project).unwrap().iter().map(|e| e.path.clone()).collect::<Vec<_>>();
+    let first = f.host.endpoints(id, &f.project).unwrap();
+    assert_eq!(first[0].path, "/users/{id}");
+    assert!(first[0].method.is_none(), "any method is preserved");
+    assert_eq!(first[0].location.path, ide_core::IpcPath::from(to_ipc(&routes)));
+    std::thread::sleep(Duration::from_millis(70));
+    f.host.tick();
+    assert_eq!(f.host.instances(), 0);
+    assert_eq!(paths(), ["/users/{id}"]);
+    assert_eq!(f.host.instances(), 0, "a cached list doesn't wake the plugin");
+    let changed = |f: &Fixture| {
+        f.take_events()
+            .iter()
+            .any(|(_, e)| matches!(e, PluginEvent::EndpointsChanged { plugin_id, .. } if plugin_id == id))
+    };
+    std::fs::write(&routes, "/updated\n").unwrap();
+    f.take_events();
+    f.host.invalidate_endpoints(&f.project, &[f.project.join("unrelated.txt")]);
+    assert!(!changed(&f));
+    assert_eq!(paths(), ["/users/{id}"]);
+    f.host.invalidate_endpoints(&f.project, std::slice::from_ref(&routes));
+    assert!(changed(&f), "windows are told to ask again");
+    assert_eq!(paths(), ["/updated"]);
+    std::fs::write(&routes, "not-a-path\n").unwrap();
+    f.host.invalidate_endpoints(&f.project, std::slice::from_ref(&routes));
+    assert_eq!(paths(), ["/updated"], "an invalid list doesn't replace the last valid one");
+    f.host.set_enabled(id, false).unwrap();
+    assert!(paths().is_empty());
+    std::fs::write(&routes, "/enabled\n").unwrap();
+    f.host.set_enabled(id, true).unwrap();
+    assert_eq!(paths(), ["/enabled"]);
+    f.take_events();
+    assert!(f.run(id, "crash", None).is_err());
+    assert!(changed(&f), "a crash withdraws the routes");
+    f.host.uninstall(id).unwrap();
+    assert!(f.host.endpoints(id, &f.project).is_err());
+}
+
+struct EndpointWorkspace {
+    reads: std::sync::atomic::AtomicUsize,
+    inner: Arc<TestWorkspace>,
+    roots: Mutex<Vec<PathBuf>>,
+    entered: Mutex<Option<std::sync::mpsc::Sender<()>>>,
+    release: Mutex<std::sync::mpsc::Receiver<()>>,
+}
+impl PluginWorkspace for EndpointWorkspace {
+    fn projects(&self) -> Vec<PathBuf> {
+        self.roots.lock().clone()
+    }
+    fn buffer_text(&self, path: &Path) -> Option<String> {
+        if self.reads.fetch_add(1, std::sync::atomic::Ordering::Relaxed) > 0
+            && let Some(entered) = self.entered.lock().take()
+        {
+            entered.send(()).unwrap();
+            self.release.lock().recv().unwrap();
+        }
+        self.inner.buffer_text(path)
+    }
+    fn document(&self, path: &Path) -> Option<(u64, String)> {
+        self.inner.document(path)
+    }
+    fn trusted(&self, root: &Path) -> bool {
+        self.roots.lock().iter().any(|r| r == root)
+    }
+    fn project_of(&self, _: &str) -> Option<PathBuf> {
+        self.roots.lock().first().cloned()
+    }
+    fn apply_edits(&self, path: &Path, version: u64, edits: &[ide_core::TextEdit]) -> Result<u64, HostError> {
+        self.inner.apply_edits(path, version, edits)
+    }
+    fn publish_diagnostics(
+        &self,
+        source: &str,
+        path: &Path,
+        items: Vec<ide_core::Diagnostic>,
+    ) -> Result<(), HostError> {
+        self.inner.publish_diagnostics(source, path, items)
+    }
+}
+
+#[test]
+fn late_endpoint_results_cannot_restore_a_disabled_plugin_or_closed_project() {
+    for close_project in [false, true] {
+        let f = fixture(Limits::default());
+        std::fs::write(f.project.join("routes.txt"), "/late\n").unwrap();
+        f.install(&sample("endpoints"));
+        let (entered_tx, entered_rx) = std::sync::mpsc::channel();
+        let (release_tx, release_rx) = std::sync::mpsc::channel();
+        let workspace = Arc::new(EndpointWorkspace {
+            reads: std::sync::atomic::AtomicUsize::new(0),
+            inner: f.workspace.clone(),
+            roots: Mutex::new(vec![f.project.clone()]),
+            entered: Mutex::new(Some(entered_tx)),
+            release: Mutex::new(release_rx),
+        });
+        f.host.set_workspace(Some(workspace.clone()));
+        let late = std::thread::scope(|scope| {
+            // The plugin reads the file, then the host's check reads it again and waits here.
+            let query = scope.spawn(|| f.host.endpoints("test.endpoints", &f.project).unwrap());
+            entered_rx.recv_timeout(Duration::from_secs(5)).unwrap();
+            if close_project {
+                workspace.roots.lock().clear();
+            } else {
+                f.host.set_enabled("test.endpoints", false).unwrap();
+            }
+            release_tx.send(()).unwrap();
+            query.join().unwrap()
+        });
+        assert!(late.is_empty());
+        assert!(f.host.endpoints("test.endpoints", &f.project).unwrap().is_empty());
+    }
+}
+
+#[test]
+fn endpoint_results_are_isolated_per_root_and_withdraw_closed_roots() {
+    let f = fixture(Limits::default());
+    let other = f.project.parent().unwrap().join("other");
+    std::fs::create_dir(&other).unwrap();
+    std::fs::write(f.project.join("routes.txt"), "/first\n").unwrap();
+    std::fs::write(other.join("routes.txt"), "/second\n").unwrap();
+    let (_, release_rx) = std::sync::mpsc::channel();
+    let workspace = Arc::new(EndpointWorkspace {
+        reads: std::sync::atomic::AtomicUsize::new(0),
+        inner: f.workspace.clone(),
+        roots: Mutex::new(vec![f.project.clone(), other.clone()]),
+        entered: Mutex::new(None),
+        release: Mutex::new(release_rx),
+    });
+    f.host.set_workspace(Some(workspace.clone()));
+    f.install(&sample("endpoints"));
+    for (root, route) in [(&f.project, "/first"), (&other, "/second")] {
+        let list = f.host.endpoints("test.endpoints", root).unwrap();
+        assert_eq!(list.iter().map(|e| e.path.as_str()).collect::<Vec<_>>(), [route]);
+    }
+    workspace.roots.lock().retain(|r| r != &other);
+    assert!(f.host.endpoints("test.endpoints", &other).unwrap().is_empty(), "a closed project has no routes");
+    assert_eq!(f.host.endpoints("test.endpoints", &f.project).unwrap()[0].path, "/first");
+}
+
+#[test]
+fn notification_actions_keep_commands_and_window_scope() {
+    let f = fixture(Limits::default());
+    f.install(&sample("jobs"));
+    f.take_events();
+    f.host
+        .run_command("jobs", "notify-actions", None, Invocation { client: Some("second".into()), ..f.inv() })
+        .unwrap();
+    let notifications = f
+        .take_events()
+        .into_iter()
+        .filter_map(|(client, event)| match event {
+            PluginEvent::Notification { plugin_id, actions, .. } => Some((client, plugin_id, actions)),
+            _ => None,
+        })
+        .collect::<Vec<_>>();
+    assert_eq!(notifications.len(), 1);
+    assert_eq!(notifications[0].0.as_deref(), Some("second"));
+    assert_eq!(notifications[0].1, "jobs");
+    assert_eq!(notifications[0].2.len(), 3);
+    assert_eq!(notifications[0].2[0].command, "context");
+    assert_eq!(notifications[0].2[0].argument.as_deref(), Some("notification-action=1\nvalue"));
+    for invalid in ["four", "unknown"] {
+        let error = f.run("jobs", "notify-actions", Some(invalid)).unwrap_err();
+        assert!(error.contains(if invalid == "four" { "at most 3" } else { "declares no command" }), "{error}");
+        assert!(f.take_events().iter().all(|(_, e)| !matches!(e, PluginEvent::Notification { .. })));
+    }
+    assert_eq!(f.status("jobs"), PluginStatus::Active, "a refused notification leaves the plugin running");
+}
+
+#[test]
+fn directory_prompts_and_project_requests_use_the_calling_window_without_a_capability() {
+    use ide_plugin::Prompt;
+    let f = fixture(Limits { timeout: Duration::from_millis(500), ..Limits::default() });
+    f.install(&sample("jobs"));
+    f.host.set_capability("jobs", "project.read", false).unwrap();
+    let (result, prompt) =
+        run_and_answer(&f, "pick-directory", Some("C:/work"), Some(&["C:/work/repo"]), Duration::from_millis(700));
+    assert_eq!(result.unwrap().as_deref(), Some("C:/work/repo"));
+    assert_eq!(prompt, Prompt::PickDirectory { title: "Clone target".into(), initial: Some("C:/work".into()) });
+    assert_eq!(run_and_answer(&f, "pick-directory", None, None, Duration::ZERO).0.unwrap().as_deref(), Some("none"));
+    assert!(run_and_answer(&f, "pick-directory", None, Some(&["relative"]), Duration::ZERO).0.is_err());
+    assert!(f.run("jobs", "pick-directory", Some("relative")).is_err());
+    for (cmd, new_window) in [("open-project", false), ("open-project-new", true)] {
+        f.take_events();
+        let inv = Invocation { client: Some("second".into()), ..f.inv() };
+        f.host.run_command("jobs", cmd, Some("C:/work/repo"), inv).unwrap();
+        let requests = f
+            .take_events()
+            .into_iter()
+            .filter_map(|(client, event)| match event {
+                PluginEvent::OpenProject { plugin_id, path, new_window } => Some((client, plugin_id, path, new_window)),
+                _ => None,
+            })
+            .collect::<Vec<_>>();
+        assert_eq!(requests, vec![(Some("second".into()), "jobs".into(), "C:/work/repo".into(), new_window)]);
+        let error = f.host.run_command("jobs", cmd, Some("/work/repo"), Invocation::default()).unwrap_err();
+        assert_eq!(error.kind, ErrorKind::InvalidInput, "{error:?}");
+    }
+    assert!(f.host.run_command("jobs", "pick-directory", None, Invocation::default()).is_err());
+    for path in ["relative", "/bad\npath", ""] {
+        f.take_events();
+        assert!(f.run("jobs", "open-project", Some(path)).is_err());
+        assert!(!f.take_events().iter().any(|(_, event)| matches!(event, PluginEvent::OpenProject { .. })));
+    }
+}
+
+#[test]
+fn plugin_readonly_fields_and_table_row_extensions_round_trip() {
+    let f = fixture(Limits::default());
+    f.install(&sample("tables"));
+    let view = f.host.render_view("tables", "fields", None, f.inv()).unwrap();
+    let ide_plugin::ViewBody::Form(fields) = view.body else { panic!("form") };
+    assert_eq!(fields[0].value, ide_plugin::FieldValue::Label("Merge request #42".into()));
+    assert_eq!(fields[1].value, ide_plugin::FieldValue::ReadonlyText { text: "Ada Lovelace".into(), multiline: false });
+    assert_eq!(
+        fields[2].value,
+        ide_plugin::FieldValue::ReadonlyText { text: "Ready for review\nAll checks passed".into(), multiline: true }
+    );
+    assert!(matches!(fields[3].value, ide_plugin::FieldValue::Text(_)));
+    for (event, status) in [
+        (ide_plugin::ViewEvent::TableSelect { row: 2 }, "select:2"),
+        (ide_plugin::ViewEvent::TableActivate { row: 2 }, "activate:2"),
+    ] {
+        f.take_events();
+        f.host.view_event("tables", "tables", event, f.inv()).unwrap();
+        assert!(f.take_events().iter().any(|(_, e)| matches!(e, PluginEvent::ViewChanged { plugin_id, view } if plugin_id == "tables" && view == "tables")));
+        assert_eq!(f.host.render_view("tables", "tables", None, f.inv()).unwrap().status.as_deref(), Some(status));
+    }
+}
+
+#[test]
+fn path_filtered_events_do_not_wake_idle_plugins_and_recheck_queued_filters() {
+    let f = fixture(Limits { idle_timeout: Some(Duration::from_millis(100)), ..Limits::default() });
+    f.install(&sample("path-events"));
+    f.run("test.path-events", "count", None).unwrap();
+    let matched = to_ipc(&f.project.join("config/app.yaml"));
+    let other = to_ipc(&f.project.join("src/main.rs"));
+    let deliver = |events| {
+        f.host.post_events(Some("main"), events);
+        f.host.flush_events_at(Instant::now() + Duration::from_secs(3));
+        assert!(f.host.wait_events(Duration::from_secs(10)));
+    };
+    std::thread::sleep(Duration::from_millis(150));
+    f.host.tick();
+    assert_eq!(f.status("test.path-events"), PluginStatus::Inactive);
+    let activations = f.host.info_of("test.path-events").unwrap().stats.activations;
+    deliver(vec![WorkbenchEvent::FileOpened(other.clone()), WorkbenchEvent::FileSaved(other.clone())]);
+    assert_eq!(f.host.info_of("test.path-events").unwrap().stats.activations, activations);
+    deliver(vec![WorkbenchEvent::FileOpened(matched.clone()), WorkbenchEvent::FileSaved(matched.clone())]);
+    assert_eq!(f.run("test.path-events", "count", None).unwrap().as_deref(), Some("2"));
+    assert!(f.run("test.path-events", "filter", Some("../*")).is_err());
+    deliver(vec![WorkbenchEvent::FileOpened(matched.clone())]);
+    assert_eq!(
+        f.run("test.path-events", "count", None).unwrap().as_deref(),
+        Some("3"),
+        "invalid filter preserves previous one"
+    );
+
+    f.host.post_events(Some("main"), vec![WorkbenchEvent::FileOpened(matched.clone())]);
+    f.run("test.path-events", "filter", None).unwrap();
+    f.host.flush_events_at(Instant::now() + Duration::from_secs(3));
+    assert!(f.host.wait_events(Duration::from_secs(10)));
+    assert_eq!(
+        f.run("test.path-events", "count", None).unwrap().as_deref(),
+        Some("3"),
+        "queued event uses current filter"
+    );
+    deliver(vec![WorkbenchEvent::FileOpened(matched.clone())]);
+    assert_eq!(f.run("test.path-events", "count", None).unwrap().as_deref(), Some("3"));
+    f.run("test.path-events", "all", None).unwrap();
+    deliver(vec![WorkbenchEvent::FileOpened(other.clone())]);
+    assert_eq!(f.run("test.path-events", "count", None).unwrap().as_deref(), Some("4"));
+    f.host.post_events(Some("main"), vec![WorkbenchEvent::FileOpened(other.clone())]);
+    f.run("test.path-events", "off", None).unwrap();
+    f.host.flush_events_at(Instant::now() + Duration::from_secs(3));
+    assert!(f.host.wait_events(Duration::from_secs(10)));
+    deliver(vec![WorkbenchEvent::FileOpened(other)]);
+    assert_eq!(f.run("test.path-events", "count", None).unwrap().as_deref(), Some("4"));
+
+    f.host.set_enabled("test.path-events", false).unwrap();
+    assert!(!f.host.event_kinds().contains(&WorkbenchEvent::FileOpened(String::new()).kind()));
+}
+
+#[test]
+fn project_lookup_works_in_commands_and_provider_calls_without_an_invocation_project() {
+    let f = fixture(Limits::default());
+    f.install(&sample("path-events"));
+    let path = f.project.join("src/notes.txt");
+    assert_eq!(f.run("test.path-events", "project", Some(&to_ipc(&path))).unwrap(), Some(to_ipc(&f.project)));
+    assert_eq!(f.run("test.path-events", "project", Some("src/notes.txt")).unwrap(), None);
+    assert_eq!(
+        f.run("test.path-events", "project", Some(&to_ipc(&f.project.with_extension("other").join("a")))).unwrap(),
+        None
+    );
+    let doc = ide_plugin::ProviderDocument { path, language: "text".into(), version: 1, text: "one".into() };
+    let hovers = f.host.provide_hover(&doc, ide_core::Pos::new(0, 0));
+    assert_eq!(hovers.len(), 1);
+    assert_eq!(hovers[0].markdown, to_ipc(&f.project));
+    let nested = f.project.join("nested");
+    std::fs::create_dir(&nested).unwrap();
+    f.workspace.other_roots.lock().push(nested.clone());
+    assert_eq!(
+        f.run("test.path-events", "project", Some(&to_ipc(&nested.join("new.txt")))).unwrap(),
+        Some(to_ipc(&nested))
+    );
+    #[cfg(unix)]
+    {
+        std::os::unix::fs::symlink(&nested, f.project.join("alias")).unwrap();
+        assert_eq!(
+            f.run("test.path-events", "project", Some(&to_ipc(&f.project.join("alias/new.txt")))).unwrap(),
+            Some(to_ipc(&nested))
+        );
+        std::os::unix::fs::symlink(f._tmp.path(), f.project.join("outside")).unwrap();
+        assert_eq!(
+            f.run("test.path-events", "project", Some(&to_ipc(&f.project.join("outside/new.txt")))).unwrap(),
+            None
+        );
+    }
+    f.host.set_capability("test.path-events", "project.read", false).unwrap();
+    assert!(f.run("test.path-events", "project", Some(&to_ipc(&doc.path))).unwrap_err().contains("project.read"));
+    f.host.set_capability("test.path-events", "events", false).unwrap();
+    assert!(f.run("test.path-events", "filter", Some("*")).unwrap_err().contains("events"));
+}
+
+#[test]
+fn view_messages_accept_multi_megabyte_snapshots_and_cap_at_8_mib() {
+    let f = fixture(Limits::default());
+    f.install(&sample("jobs"));
+    f.take_events();
+    let two_mib = "x".repeat(2 << 20);
+    f.host.view_event("jobs", "jobs", ide_plugin::ViewEvent::Message { text: two_mib.clone() }, f.inv()).unwrap();
+    let echoed = f
+        .take_events()
+        .into_iter()
+        .find_map(|(_, e)| match e {
+            PluginEvent::ViewMessage { view, message, .. } if view == "jobs" => Some(message),
+            _ => None,
+        })
+        .expect("2 MiB view message round-trips");
+    assert_eq!(echoed.len(), 2 << 20);
+
+    let too_large = "x".repeat((8 << 20) + 1);
+    let err =
+        f.host.view_event("jobs", "jobs", ide_plugin::ViewEvent::Message { text: too_large }, f.inv()).unwrap_err();
+    assert!(err.message.contains("limited to"), "{}", err.message);
+}
+
+#[test]
+fn web_content_fixture_installs_and_bridges_view_messages() {
+    let f = fixture(Limits::default());
+    let info = f.host.install_from_dir(&sample("web-content"), &Consent::default()).unwrap();
+    assert_eq!(info.status, PluginStatus::Inactive, "{:?}", info.error);
+    assert_eq!(f.run("web-content", "ping", None).unwrap().as_deref(), Some("Web content ready"));
+    f.take_events();
+    assert_eq!(f.run("web-content", "open", None).unwrap(), None);
+    assert!(
+        f.take_events().iter().any(|(_, event)| matches!(event, PluginEvent::ViewMessage { plugin_id, view, message }
+                if plugin_id == "web-content" && view == "inspector" && message == "open"))
+    );
+}
+
+#[test]
+fn web_log_tabs_use_the_web_pty_permission_boundary() {
+    use ide_host::plugins::web::WebPtyCommand;
+    let f = fixture(Limits::default());
+    let info = f.host.install_from_dir(&sample("web-log"), &Consent::default()).unwrap();
+    assert!(info.capabilities.iter().any(|c| c.id == "process:bash" && !c.granted));
+    assert_eq!(f.run("web-log", "ping", None).unwrap().as_deref(), Some("Web log ready"));
+    for command in ["open", "denied"] {
+        f.take_events();
+        assert_eq!(f.run("web-log", command, None).unwrap(), None);
+        assert!(
+            f.take_events()
+                .iter()
+                .any(|(_, event)| matches!(event, PluginEvent::ViewMessage { plugin_id, view, message }
+                if plugin_id == "web-log" && view == "logs" && message == command))
+        );
+    }
+    let command = |program: &str| WebPtyCommand {
+        program: program.into(),
+        args: vec!["--noprofile".into(), "--norc".into()],
+        env: Default::default(),
+        cols: 240,
+        rows: 40,
+    };
+    for program in ["bash", "sh", "/bin/bash"] {
+        assert_eq!(
+            f.host.web_pty_options("web-log", "logs", "main", command(program)).unwrap_err().kind,
+            ErrorKind::PermissionDenied
+        );
+    }
+    #[cfg(unix)]
+    {
+        f.host.set_capability("web-log", "process:bash", true).unwrap();
+        let options = f.host.web_pty_options("web-log", "logs", "main", command("bash")).unwrap();
+        assert_eq!(options.shell.as_deref(), f.host.program_for("web-log", "bash").unwrap().to_str());
+        assert_eq!(options.cwd.0, f.project);
+        assert!(options.env.is_empty());
+        assert!(!options.shell_integration);
+        assert!(f.host.web_pty_options("web-log", "logs", "main", command("sh")).is_err());
+        f.host.set_capability("web-log", "process:bash", false).unwrap();
+        assert!(f.host.web_pty_options("web-log", "logs", "main", command("bash")).is_err());
+    }
+}
+
+/// `views.open-log-tab` from the plugin's code: the host remembers what the tab
+/// may run, and the tab starts it by key, through the same PTY checks.
+#[test]
+fn log_tabs_opened_by_code_run_only_what_the_host_approved() {
+    let f = fixture(Limits::default());
+    f.host.install_from_dir(&sample("web-log"), &Consent::default()).unwrap();
+    let err = f.run("web-log", "code", None).unwrap_err();
+    assert!(err.contains("process:bash"), "{err}");
+    let options = |key: &str, window: &str, on: &[&str]| {
+        let on: Vec<String> = on.iter().map(|s| s.to_string()).collect();
+        f.host.log_tab_pty_options("web-log", key, window, &on, (240, 40))
+    };
+    assert_eq!(options("code", "main", &[]).unwrap_err().kind, ErrorKind::NotFound);
+    #[cfg(unix)]
+    {
+        f.host.set_capability("web-log", "process:bash", true).unwrap();
+        f.take_events();
+        assert_eq!(f.run("web-log", "code", None).unwrap(), None);
+        let events = f.take_events();
+        let (client, log) = events
+            .iter()
+            .find_map(|(client, event)| match event {
+                PluginEvent::OpenLogTab { plugin_id, key, title, log }
+                    if plugin_id == "web-log" && key == "code" && title == "Probe logs (code)" =>
+                {
+                    Some((client.clone(), log.clone()))
+                }
+                _ => None,
+            })
+            .expect("an OpenLogTab event");
+        assert_eq!(client.as_deref(), Some("main"));
+        assert_eq!((log.program.as_str(), log.toggles[0].id.as_str()), ("bash", "verbose"));
+
+        let got = options("code", "main", &[]).unwrap();
+        assert_eq!(got.shell.as_deref(), f.host.program_for("web-log", "bash").unwrap().to_str());
+        assert_eq!(got.args, log.args);
+        assert_eq!(got.cwd.0, f.project);
+        assert!(got.env.is_empty() && !got.shell_integration);
+        // Toggles append their arguments; unknown ones add nothing.
+        let verbose = options("code", "main", &["verbose", "bogus"]).unwrap();
+        assert_eq!(verbose.args.last().map(String::as_str), Some("--verbose"));
+        assert_eq!(verbose.args.len(), log.args.len() + 1);
+        // Only the window it was opened in, and only that key.
+        assert_eq!(options("code", "other", &[]).unwrap_err().kind, ErrorKind::NotFound);
+        assert_eq!(options("probe", "main", &[]).unwrap_err().kind, ErrorKind::NotFound);
+        // A revoked grant stops it starting, and forgets the tab.
+        f.host.set_capability("web-log", "process:bash", false).unwrap();
+        assert!(options("code", "main", &[]).is_err());
+        f.host.set_capability("web-log", "process:bash", true).unwrap();
+        assert_eq!(options("code", "main", &[]).unwrap_err().kind, ErrorKind::NotFound);
+    }
+}
+
+#[test]
+fn web_ptys_require_a_current_exact_program_grant_and_project() {
+    use ide_host::plugins::web::WebPtyCommand;
+    let f = fixture(Limits::default());
+    let info = f.host.install_from_dir(&sample("web-pty"), &Consent::default()).unwrap();
+    assert!(info.capabilities.iter().any(|c| c.id == "process:git" && !c.granted));
+    let command = || WebPtyCommand {
+        program: "git".into(),
+        args: vec!["--version".into()],
+        env: Default::default(),
+        cols: 80,
+        rows: 24,
+    };
+    let options = |cmd| f.host.web_pty_options("web-pty", "terminal", "main", cmd);
+    assert_eq!(options(command()).unwrap_err().kind, ErrorKind::PermissionDenied);
+    f.host.set_capability("web-pty", "process:git", true).unwrap();
+    let approved = f.host.program_for("web-pty", "git").unwrap();
+    let got = options(command()).unwrap();
+    assert_eq!(got.shell.as_deref(), approved.to_str());
+    assert!(approved.is_absolute());
+    assert_eq!(got.cwd.0, f.project);
+    assert!(!got.shell_integration);
+    assert_eq!(f.run("web-pty", "ping", None).unwrap().as_deref(), Some("Web PTY ready"));
+    for program in ["sh", "bash", "git-other", "./git", "/tmp/git"] {
+        let cmd = WebPtyCommand { program: program.into(), ..command() };
+        assert!(options(cmd).is_err(), "{program}");
+    }
+    for cmd in [
+        WebPtyCommand { cols: 0, ..command() },
+        WebPtyCommand { rows: 501, ..command() },
+        WebPtyCommand { args: vec!["x".repeat(4097)], ..command() },
+        WebPtyCommand { args: vec!["x".into(); 257], ..command() },
+        WebPtyCommand { args: vec!["\0".into()], ..command() },
+        WebPtyCommand { env: [("PATH".into(), "/tmp".into())].into(), ..command() },
+        WebPtyCommand { env: [("a=b".into(), "x".into())].into(), ..command() },
+        WebPtyCommand { env: [("a".into(), "x".repeat(4097))].into(), ..command() },
+    ] {
+        assert!(options(cmd).is_err());
+    }
+    let got = options(WebPtyCommand { env: [("OPENIDEA_WEB_PTY_TEST_NEW".into(), "yes".into())].into(), ..command() })
+        .unwrap();
+    assert_eq!(got.env["OPENIDEA_WEB_PTY_TEST_NEW"], "yes");
+    assert!(f.host.web_pty_options("web-pty", "missing", "main", command()).is_err());
+    f.host.set_workspace(None);
+    assert!(options(command()).is_err());
+    let mut untrusted = TestWorkspace::new(&f.project);
+    Arc::get_mut(&mut untrusted).unwrap().trusted = false;
+    f.host.set_workspace(Some(untrusted));
+    assert_eq!(options(command()).unwrap_err().kind, ErrorKind::PermissionDenied);
+    f.host.set_workspace(Some(f.workspace.clone()));
+    std::fs::rename(&f.project, f.project.with_extension("moved")).unwrap();
+    assert!(options(command()).unwrap_err().message.contains("no longer exists"));
+    std::fs::rename(f.project.with_extension("moved"), &f.project).unwrap();
+    f.host.set_capability("web-pty", "process:git", false).unwrap();
+    assert_eq!(options(command()).unwrap_err().kind, ErrorKind::PermissionDenied);
+    f.host.set_enabled("web-pty", false).unwrap();
+    assert!(options(command()).is_err());
+    f.host.uninstall("web-pty").unwrap();
+    assert!(options(command()).is_err());
+}
+
+#[cfg(unix)]
+#[test]
+fn web_ptys_keep_the_approved_file_and_require_api_1_3() {
+    use ide_host::plugins::web::WebPtyCommand;
+    use std::os::unix::fs::PermissionsExt;
+    let f = fixture(Limits::default());
+    let bin = f.plugins_dir.parent().unwrap().join("bin");
+    std::fs::create_dir_all(&bin).unwrap();
+    let executable = bin.join("git");
+    std::fs::write(&executable, "#!/bin/sh\nexit 0\n").unwrap();
+    std::fs::set_permissions(&executable, std::fs::Permissions::from_mode(0o755)).unwrap();
+    let path = bin.clone();
+    f.host.set_program_path(Arc::new(move || Some(path.clone().into_os_string())));
+    f.install(&sample("web-pty"));
+    let command = || WebPtyCommand { program: "git".into(), args: vec![], env: Default::default(), cols: 80, rows: 24 };
+    f.host.set_program_path(Arc::new(|| Some("/unapproved-path".into())));
+    assert_eq!(
+        f.host.web_pty_options("web-pty", "terminal", "main", command()).unwrap().shell.unwrap(),
+        executable.canonicalize().unwrap().to_string_lossy()
+    );
+    std::fs::write(&executable, "#!/bin/sh\nexit 42\n").unwrap();
+    assert!(f.host.web_pty_options("web-pty", "terminal", "main", command()).unwrap_err().message.contains("changed"));
+    std::fs::remove_file(&executable).unwrap();
+    assert!(f.host.web_pty_options("web-pty", "terminal", "main", command()).is_err());
+
+    let old = tempfile::tempdir().unwrap();
+    let pkg = old.path().join("old");
+    copy_dir(&sample("web-pty"), &pkg);
+    let manifest = pkg.join("plugin.toml");
+    let text = std::fs::read_to_string(&manifest).unwrap().replace("^1.3", "^1.2");
+    std::fs::write(manifest, text).unwrap();
+    let f = fixture(Limits::default());
+    f.install(&pkg);
+    assert!(f.host.web_pty_options("web-pty", "terminal", "main", command()).unwrap_err().message.contains("1.3"));
+}
+
+#[tokio::test]
+async fn web_ptys_are_capped_across_windows_and_end_with_the_plugin() {
+    use ide_host::{Host, HostConfig, plugins::web::WebPtyCommand};
+    let f = fixture(Limits::default());
+    f.install(&sample("web-pty"));
+    let root = tempfile::tempdir().unwrap();
+    let host = Arc::new(Host::new(HostConfig {
+        config_dir: root.path().join("config"),
+        data_dir: root.path().join("data"),
+        local_data_dir: root.path().join("local"),
+        languages: Arc::new(ide_language::LanguageRegistry::load(None).unwrap()),
+        syntax: Arc::default(),
+        sink_for: Box::new(|_| Arc::new(ide_core::NullSink)),
+        owner: |w| w,
+        runtime: tokio::runtime::Handle::current(),
+        project_environment: false,
+    }));
+    let spawn = |window: &str| {
+        f.host.spawn_web_pty(
+            &host,
+            "web-pty",
+            "terminal",
+            window,
+            WebPtyCommand {
+                program: "git".into(),
+                args: vec!["hash-object".into(), "--stdin".into()],
+                env: Default::default(),
+                cols: 80,
+                rows: 24,
+            },
+            Arc::new(|_| {}),
+        )
+    };
+    *f.workspace.project_queries_left.lock() = Some(1);
+    assert!(spawn("main").is_err(), "project closed while spawning");
+    assert!(host.terminals.list().is_empty());
+    *f.workspace.project_queries_left.lock() = None;
+    let mut ids = Vec::new();
+    for i in 0..8 {
+        ids.push(spawn(&format!("window-{i}")).unwrap().id);
+    }
+    assert!(spawn("ninth-window").unwrap_err().message.contains("8 PTYs"));
+    host.terminals.kill(ids[0]).unwrap();
+    let replacement = spawn("another-window").unwrap();
+    f.host.reload("web-pty").unwrap();
+    assert!(!host.terminals.contains(replacement.id));
+    assert!(ids.into_iter().all(|id| !host.terminals.contains(id)));
+    let id = spawn("main").unwrap().id;
+    f.host.set_capability("web-pty", "process:git", false).unwrap();
+    assert!(!host.terminals.contains(id));
+    assert!(spawn("main").is_err());
+    f.host.set_capability("web-pty", "process:git", true).unwrap();
+    let id = spawn("main").unwrap().id;
+    f.host.set_enabled("web-pty", false).unwrap();
+    assert!(!host.terminals.contains(id));
+    f.host.set_enabled("web-pty", true).unwrap();
+    let id = spawn("main").unwrap().id;
+    f.host.forget_client("main");
+    assert!(!host.terminals.contains(id));
+    assert!(spawn("main").is_err());
+    f.host.reopen_client("main");
+    let id = spawn("main").unwrap().id;
+    f.host.uninstall("web-pty").unwrap();
+    assert!(!host.terminals.contains(id));
+}
+
+#[test]
+fn marker_icons_ship_sanitized_light_and_dark_assets() {
+    let f = fixture(Limits::default());
+    let tmp = tempfile::tempdir().unwrap();
+    let pkg = tmp.path().join("plugin");
+    std::fs::create_dir_all(pkg.join("icons")).unwrap();
+    let manifest = |engine: &str, icon: &str, dark: &str| {
+        format!(
+            r#"
+id = "marker-icons"
+name = "Marker Icons"
+version = "1.0.0"
+engines.openidea = "{engine}"
+[[contributes.markerIcons]]
+id = "resource"
+icon = "{icon}"
+iconDark = "{dark}"
+"#
+        )
+    };
+    let clean = r#"<svg viewBox="0 0 16 16"><rect width="16" height="16"/></svg>"#;
+    std::fs::write(pkg.join("icons/resource.svg"), clean).unwrap();
+    std::fs::write(pkg.join("icons/resource_dark.svg"), clean.replace("rect", "circle")).unwrap();
+    for (engine, icon, dark) in [
+        ("^1.0", "icons/resource.svg", "icons/resource_dark.svg"),
+        ("^1.3", "../outside.svg", "icons/resource_dark.svg"),
+        ("^1.3", "icons/missing.svg", "icons/resource_dark.svg"),
+        ("^1.3", "icons/resource.svg", "icons/missing.svg"),
+    ] {
+        std::fs::write(pkg.join("plugin.toml"), manifest(engine, icon, dark)).unwrap();
+        assert!(f.host.install_from_dir(&pkg, &Consent::all()).is_err());
+    }
+    std::fs::write(pkg.join("plugin.toml"), manifest("^1.3", "icons/resource.svg", "icons/resource_dark.svg")).unwrap();
+    #[cfg(unix)]
+    {
+        let outside = tmp.path().join("outside.svg");
+        std::fs::write(&outside, clean).unwrap();
+        std::fs::remove_file(pkg.join("icons/resource_dark.svg")).unwrap();
+        std::os::unix::fs::symlink(outside, pkg.join("icons/resource_dark.svg")).unwrap();
+        assert!(f.host.install_from_dir(&pkg, &Consent::all()).is_err());
+        std::fs::remove_file(pkg.join("icons/resource_dark.svg")).unwrap();
+    }
+    let mut unsafe_svgs = vec![
+        "<svg><script>alert(1)</script></svg>".to_owned(),
+        "<svg onload=\"alert(1)\"/>".to_owned(),
+        "<svg><foreignObject/></svg>".to_owned(),
+        "<svg><rect style=\"fill:url(https://evil/x)\"/></svg>".to_owned(),
+        "<svg><rect style=\"background-image:image-set('https://evil/x' 1x)\"/></svg>".to_owned(),
+        format!("<svg>{}</svg>", " ".repeat(64 << 10)),
+    ];
+    for attr in ["href", "xlink:href"] {
+        for scheme in ["http://evil/x", "data:image/svg+xml,x", "javascript:alert(1)"] {
+            unsafe_svgs.push(format!("<svg><use {attr}=\"{scheme}\"/></svg>"));
+        }
+    }
+    for path in ["icons/resource.svg", "icons/resource_dark.svg"] {
+        for svg in &unsafe_svgs {
+            std::fs::write(pkg.join(path), svg).unwrap();
+            assert!(f.host.install_from_dir(&pkg, &Consent::all()).is_err(), "accepted {path}: {svg}");
+        }
+        std::fs::write(pkg.join(path), clean).unwrap();
+    }
+    std::fs::write(pkg.join("icons/resource_dark.svg"), clean.replace("rect", "circle")).unwrap();
+    let info = f.install(&pkg);
+    assert!(info.error.is_none(), "{:?}", info.error);
+    let assets = f.host.assets("marker-icons", "markerIcon/resource/").unwrap();
+    assert_eq!(assets.len(), 2);
+    assert!(assets.iter().any(|(id, svg)| id.ends_with("/light") && svg.contains("<rect")));
+    assert!(assets.iter().any(|(id, svg)| id.ends_with("/dark") && svg.contains("<circle")));
+    let revision = f.host.ui_items("markerIcons")[0].decl["revision"].clone();
+    std::fs::write(pkg.join("icons/resource.svg"), clean.replace("width=\"16\"", "width=\"14\"")).unwrap();
+    let updated = f.install(&pkg);
+    assert!(updated.error.is_none(), "{:?}", updated.error);
+    assert_ne!(f.host.ui_items("markerIcons")[0].decl["revision"], revision);
+    let assets = f.host.assets("marker-icons", "markerIcon/resource/").unwrap();
+    assert!(assets.iter().any(|(id, svg)| id.ends_with("/light") && svg.contains("width=\"14\"")));
+    std::fs::remove_dir_all(pkg).unwrap();
+    assert_eq!(f.host.assets("marker-icons", "markerIcon/resource/").unwrap(), assets);
+    f.host.set_enabled("marker-icons", false).unwrap();
+    assert!(f.host.assets("marker-icons", "markerIcon/resource/").is_err());
+}
+
+#[test]
+fn marker_providers_preserve_names_and_package_paths() {
+    let f = fixture(Limits::default());
+    let tmp = tempfile::tempdir().unwrap();
+    let pkg = tmp.path().join("plugin");
+    copy_dir(&misbehave_pkg(), &pkg);
+    let manifest = std::fs::read_to_string(pkg.join("plugin.toml")).unwrap();
+    std::fs::write(
+        pkg.join("plugin.toml"),
+        format!("{manifest}\n[[contributes.providers]]\nkinds = [\"line-markers\"]\nlanguages = [\"text\"]\n"),
+    )
+    .unwrap();
+    f.install(&pkg);
+    let doc = ide_plugin::ProviderDocument {
+        path: f.project.join("markers.txt"),
+        language: "text".into(),
+        version: 1,
+        text: "marker-icons\nordinary\ncustom\nlegacy".into(),
+    };
+    assert!(eventually(|| f.host.provide_line_markers(&doc).len() == 4));
+    let markers = f.host.provide_line_markers(&doc);
+    assert_eq!(
+        markers.iter().map(|(_, m)| m.icon.as_deref().unwrap()).collect::<Vec<_>>(),
+        ["run", "database", "icons/very-long-resource-marker-icon.svg", "overriding"]
+    );
+}
+
+/// The released WIT variant stays unchanged: SDK decodes other(files-changed).
+#[test]
+fn files_changed_wakes_idle_once_and_keeps_every_delta() {
+    let f = fixture(Limits::default());
+    f.install(&sample("files-events"));
+    assert!(f.host.event_kinds().contains(&EventKind::FilesChanged));
+    assert_eq!(f.host.instances(), 0);
+    for i in 0..600 {
+        f.host.post_events(
+            Some("main"),
+            vec![WorkbenchEvent::FilesChanged(ide_plugin::FilesChanged {
+                created: vec![to_ipc(&f.project.join(format!("新建😀-{i}.rs")))],
+                modified: vec![to_ipc(&f.project.join("shared.rs"))],
+                removed: vec![to_ipc(&f.project.join("gone.rs"))],
+            })],
+        );
+    }
+    // Already debounced by the watcher; no two-second idle delay.
+    f.host.flush_events();
+    assert!(f.host.wait_events(Duration::from_secs(10)));
+    let batches: Vec<ide_plugin::FilesChanged> =
+        serde_json::from_str(&f.run("files-events", "events", None).unwrap().unwrap()).unwrap();
+    assert_eq!(batches.len(), 1);
+    assert_eq!(batches[0].created.len(), 600);
+    assert_eq!(batches[0].modified, [to_ipc(&f.project.join("shared.rs"))]);
+    assert_eq!(batches[0].removed, [to_ipc(&f.project.join("gone.rs"))]);
+    for i in 0..3 {
+        f.host.post_events(
+            Some("main"),
+            vec![WorkbenchEvent::FilesChanged(ide_plugin::FilesChanged {
+                modified: vec![to_ipc(&f.project.join(format!("delta-{i}.rs")))],
+                ..Default::default()
+            })],
+        );
+        f.host.flush_events();
+    }
+    assert!(f.host.wait_events(Duration::from_secs(10)));
+    let batches: Vec<ide_plugin::FilesChanged> =
+        serde_json::from_str(&f.run("files-events", "events", None).unwrap().unwrap()).unwrap();
+    let mut later: Vec<_> = batches[1..].iter().flat_map(|b| b.modified.iter().cloned()).collect();
+    later.sort();
+    assert_eq!(
+        later,
+        (0..3).map(|i| to_ipc(&f.project.join(format!("delta-{i}.rs")))).collect::<Vec<_>>(),
+        "later deltas must not cancel earlier batches"
+    );
+}
+
+#[test]
+fn files_changed_requires_events_capability() {
+    let f = fixture(Limits::default());
+    let dir = f._tmp.path().join("without-events");
+    copy_dir(&sample("files-events"), &dir);
+    let manifest = dir.join("plugin.toml");
+    std::fs::write(
+        &manifest,
+        std::fs::read_to_string(&manifest).unwrap().replace("[\"events\", \"storage\"]", "[\"storage\"]"),
+    )
+    .unwrap();
+    f.install(&dir);
+    assert!(!f.host.event_kinds().contains(&EventKind::FilesChanged));
+    f.host.post_events(Some("main"), vec![WorkbenchEvent::FilesChanged(ide_plugin::FilesChanged::default())]);
+    f.host.flush_events();
+    assert_eq!(f.host.instances(), 0, "an ungranted plugin must not wake");
+}
+
+#[test]
+fn files_changed_does_not_cancel_a_batch_blocked_in_a_host_call() {
+    let f = fixture(Limits::default());
+    f.install(&sample("files-events"));
+    std::fs::write(f.project.join("event-barrier.txt"), "ready").unwrap();
+    let (entered, waiting) = std::sync::mpsc::channel();
+    let (release, released) = std::sync::mpsc::channel();
+    *f.workspace.event_read_gate.lock() = Some((entered, released));
+    f.host.post_events(
+        Some("main"),
+        vec![WorkbenchEvent::FilesChanged(ide_plugin::FilesChanged {
+            created: vec![to_ipc(&f.project.join("__block__.txt"))],
+            ..Default::default()
+        })],
+    );
+    f.host.flush_events();
+    waiting.recv_timeout(Duration::from_secs(10)).expect("first event reaches its host call");
+    f.host.post_events(
+        Some("main"),
+        vec![WorkbenchEvent::FilesChanged(ide_plugin::FilesChanged {
+            removed: vec![to_ipc(&f.project.join("gone.txt"))],
+            ..Default::default()
+        })],
+    );
+    f.host.flush_events();
+    release.send(()).unwrap();
+    assert!(f.host.wait_events(Duration::from_secs(10)));
+    let batches: Vec<ide_plugin::FilesChanged> =
+        serde_json::from_str(&f.run("files-events", "events", None).unwrap().unwrap()).unwrap();
+    assert_eq!(batches.len(), 2, "a later filesystem delta cannot discard an earlier one");
+    assert_eq!(batches[0].created, [to_ipc(&f.project.join("__block__.txt"))]);
+    assert_eq!(batches[1].removed, [to_ipc(&f.project.join("gone.txt"))]);
+}
+
+#[test]
+fn files_changed_rechecks_filters_when_an_actor_batch_starts() {
+    for filter in ["", "other/**"] {
+        let f = fixture(Limits::default());
+        f.install(&sample("files-events"));
+        f.run("files-events", "filter-after-event", Some(filter)).unwrap();
+        std::fs::write(f.project.join("event-barrier.txt"), "ready").unwrap();
+        let (entered, waiting) = std::sync::mpsc::channel();
+        let (release, released) = std::sync::mpsc::channel();
+        *f.workspace.event_read_gate.lock() = Some((entered, released));
+        f.host.post_events(
+            Some("main"),
+            vec![WorkbenchEvent::FilesChanged(ide_plugin::FilesChanged {
+                created: vec![to_ipc(&f.project.join("__block__.txt"))],
+                ..Default::default()
+            })],
+        );
+        f.host.flush_events();
+        waiting.recv_timeout(Duration::from_secs(10)).expect("first batch blocks before replacing its filter");
+        f.host.post_events(
+            Some("main"),
+            vec![WorkbenchEvent::FilesChanged(ide_plugin::FilesChanged {
+                modified: vec![to_ipc(&f.project.join("queued.txt"))],
+                ..Default::default()
+            })],
+        );
+        f.host.flush_events();
+        release.send(()).unwrap();
+        assert!(f.host.wait_events(Duration::from_secs(10)));
+        let batches: Vec<ide_plugin::FilesChanged> =
+            serde_json::from_str(&f.run("files-events", "events", None).unwrap().unwrap()).unwrap();
+        assert_eq!(batches.len(), 1, "filter {filter:?} must suppress the batch waiting in the actor");
+    }
+}
+
+#[test]
+fn files_changed_filters_each_category_before_waking_idle_plugins() {
+    let f = fixture(Limits { idle_timeout: Some(Duration::ZERO), ..Limits::default() });
+    f.install(&sample("files-events"));
+    f.run("files-events", "filter", Some("config/*.yaml")).unwrap();
+    assert!(eventually(|| {
+        f.host.tick();
+        f.host.instances() == 0
+    }));
+    let path = |relative: &str| to_ipc(&f.project.join(relative));
+    f.host.post_events(
+        Some("main"),
+        vec![WorkbenchEvent::FilesChanged(ide_plugin::FilesChanged {
+            created: vec![path("src/unrelated.rs")],
+            modified: vec![path("notes.txt")],
+            removed: vec![path("elsewhere/a.yaml")],
+        })],
+    );
+    f.host.flush_events();
+    assert_eq!(f.host.instances(), 0, "unmatched batches do not wake an idle plugin");
+    f.host.post_events(
+        Some("main"),
+        vec![WorkbenchEvent::FilesChanged(ide_plugin::FilesChanged {
+            created: vec![path("config/new.yaml"), path("src/unrelated.rs")],
+            modified: vec![path("config/changed.yaml"), path("notes.txt")],
+            removed: vec![path("config/gone.yaml"), path("elsewhere/a.yaml")],
+        })],
+    );
+    f.host.flush_events();
+    assert!(f.host.wait_events(Duration::from_secs(10)));
+    let received: Vec<ide_plugin::FilesChanged> =
+        serde_json::from_str(&f.run("files-events", "events", None).unwrap().unwrap()).unwrap();
+    assert_eq!(
+        received,
+        [ide_plugin::FilesChanged {
+            created: vec![path("config/new.yaml")],
+            modified: vec![path("config/changed.yaml")],
+            removed: vec![path("config/gone.yaml")],
+        }]
+    );
+}
+
+#[test]
+fn view_header_none_needs_api_1_3_and_an_ungrouped_web_view() {
+    let f = fixture(Limits::default());
+    let tmp = tempfile::tempdir().unwrap();
+    let pkg = tmp.path().join("headerless");
+    std::fs::create_dir_all(pkg.join("web")).unwrap();
+    std::fs::write(pkg.join("web/index.html"), "<!doctype html><p>hi</p>").unwrap();
+    let manifest = |engine: &str, view_fields: &str| {
+        format!(
+            "id = \"headerless\"\nname = \"Headerless\"\nversion = \"1.0.0\"\nengines.openidea = \"{engine}\"\n[[contributes.views]]\nid = \"panel\"\ntitle = \"Panel\"\nlocation = \"bottom\"\n{view_fields}\n"
+        )
+    };
+    for (engine, fields, expected) in [
+        ("^1.2", "web = \"web/index.html\"\nheader = \"none\"", "new in plugin API 1.3"),
+        ("^1.3", "web = \"web/index.html\"\nheader = \"custom\"", "default or none"),
+        ("^1.3", "header = \"none\"", "give a web page"),
+        ("^1.3", "web = \"web/index.html\"\ngroup = \"g\"\nheader = \"none\"", "ungrouped"),
+    ] {
+        std::fs::write(pkg.join("plugin.toml"), manifest(engine, fields)).unwrap();
+        let err = f.host.install_from_dir(&pkg, &Consent::all()).unwrap_err().message;
+        assert!(err.contains(expected), "{fields}: {err}");
+    }
+    std::fs::write(pkg.join("plugin.toml"), manifest("^1.3", "web = \"web/index.html\"\nheader = \"none\"")).unwrap();
+    let info = f.install(&pkg);
+    assert_eq!(info.status, PluginStatus::Static, "{:?}", info.error);
+    assert_eq!(f.host.ui_items("views")[0].decl["header"], "none");
 }

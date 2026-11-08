@@ -69,6 +69,38 @@ pub(crate) fn connect(
     Ok(super::serve(shim, client))
 }
 
+/// Discover commands without a prompt, ACP session, or pending session file.
+pub(crate) async fn commands(spec: ProviderSpec, cwd: PathBuf) -> Result<Vec<Value>, String> {
+    tokio::time::timeout(Duration::from_secs(5), async move {
+        let spec = tokio::task::spawn_blocking(move || (spec.resolve_for_launch(&cwd), cwd));
+        let (spec, cwd) = spec.await.map_err(|e| e.to_string())?;
+        let mut args = spec.args;
+        args.extend(Start::New { id: uuid::Uuid::new_v4().to_string() }.args());
+        let launch = Launch { program: spec.command, args, cwd, env: spec.env };
+        let mut io = cli::Process.launch(&launch, Arc::new(|_| {})).map_err(|e| e.to_string())?;
+        let _stop = io.kill.clone().drop_guard();
+        let request = json!({ "type": "control_request", "request_id": "commands",
+            "request": { "subtype": "initialize", "perTaskStopAffordance": true } });
+        io.stdin.write_all(format!("{request}\n").as_bytes()).await.map_err(|e| e.to_string())?;
+        io.stdin.flush().await.map_err(|e| e.to_string())?;
+        let mut lines = BufReader::new(io.stdout).lines();
+        while let Some(line) = lines.next_line().await.map_err(|e| e.to_string())? {
+            let Ok(msg) = serde_json::from_str::<Value>(&line) else { continue };
+            if msg["type"] == "control_response" && msg["response"]["request_id"] == "commands" {
+                let response = &msg["response"];
+                return if response["subtype"] == "success" {
+                    Ok(Settings::from_cli(&response["response"], &Value::Null).commands)
+                } else {
+                    Err("Claude Code did not initialize".into())
+                };
+            }
+        }
+        Err("Claude Code exited".into())
+    })
+    .await
+    .map_err(|_| "Claude Code command discovery timed out".to_owned())?
+}
+
 struct Config {
     pub program: String,
     /// Extra arguments (a custom agent's), before the session's own.
@@ -98,6 +130,7 @@ pub(super) struct Shim {
 struct Session {
     id: String,
     cwd: PathBuf,
+    mcp_config: Option<tempfile::TempPath>,
     shim: Weak<Shim>,
     st: Mutex<State>,
     /// Serializes (re)starting the process.
@@ -264,9 +297,24 @@ impl Shim {
         Ok(history::chain(&entries, at.as_deref()).into_iter().cloned().collect())
     }
 
-    fn add_session(self: &Arc<Self>, id: &str, cwd: PathBuf, start: Start, pending: bool) -> Arc<Session> {
+    fn add_session(
+        self: &Arc<Self>,
+        id: &str,
+        cwd: PathBuf,
+        start: Start,
+        pending: bool,
+        mcp_config: Option<String>,
+    ) -> Arc<Session> {
+        let mcp_config = mcp_config.and_then(|json| match write_mcp_config(&json) {
+            Ok(path) => Some(path),
+            Err(e) => {
+                tracing::warn!("Claude Code session {id}: cannot write its MCP configuration: {e}");
+                None
+            }
+        });
         let session = Arc::new(Session {
             id: id.to_owned(),
+            mcp_config,
             shim: Arc::downgrade(self),
             st: Mutex::new(State {
                 proc: None,
@@ -312,6 +360,7 @@ impl Shim {
                         "loadSession": true,
                         "promptCapabilities": { "image": true, "embeddedContext": true },
                         "sessionCapabilities": { "fork": {} },
+                        "mcpCapabilities": { "stdio": true, "http": true, "sse": true },
                         "_meta": { "openidea": { "rollback": true, "steer": true, "backgroundTasks": true } },
                     },
                     "agentInfo": { "name": "claude", "title": "Claude Code", "version": self.version() },
@@ -320,7 +369,13 @@ impl Shim {
             }
             "session/new" => {
                 let id = new_uuid(false);
-                let session = self.add_session(&id, self.cwd_of(&params), Start::New { id: id.clone() }, false);
+                let session = self.add_session(
+                    &id,
+                    self.cwd_of(&params),
+                    Start::New { id: id.clone() },
+                    false,
+                    mcp_config(&params),
+                );
                 rt.block_on(session.ensure()).map_err(|e| self.start_error(&session, e))?;
                 session.announce_commands();
                 Ok(json!({ "sessionId": id, "configOptions": session.st.lock().settings.options() }))
@@ -336,7 +391,7 @@ impl Shim {
                     None => return Err(invalid(format!("no Claude Code session {id} in {}", cwd.display()))),
                 };
                 let chain = self.base_chain(&cwd, &start).map_err(internal)?;
-                let session = self.add_session(id, cwd, start, pending);
+                let session = self.add_session(id, cwd, start, pending, mcp_config(&params));
                 rt.block_on(session.ensure()).map_err(|e| self.start_error(&session, e))?;
                 if method == "session/load" {
                     session.replay(&chain);
@@ -362,7 +417,7 @@ impl Shim {
                     (start, st.settings.clone())
                 };
                 self.save_pending(&id, Some(&start));
-                let session = self.add_session(&id, source.cwd.clone(), start, true);
+                let session = self.add_session(&id, source.cwd.clone(), start, true, mcp_config(&params));
                 session.st.lock().settings = settings;
                 let options = session.st.lock().settings.options();
                 Ok(json!({ "sessionId": id, "configOptions": options }))
@@ -556,6 +611,9 @@ impl Session {
             old.end();
         }
         let mut args = shim.config.args.clone();
+        if let Some(config) = &self.mcp_config {
+            args.extend(["--mcp-config".to_owned(), config.to_string_lossy().into_owned()]);
+        }
         args.extend(start.args());
         let launch =
             Launch { program: shim.config.program.clone(), args, cwd: self.cwd.clone(), env: shim.config.env.clone() };
@@ -1344,4 +1402,39 @@ fn start_from_json(v: &Value) -> Option<Start> {
         return Some(Start::Resume { id, at: s("at") });
     }
     Some(Start::Fork { from: s("fork")?, id: s("id")?, at: s("at") })
+}
+
+/// Writes `json` to a new file only this user can read (removed when the path is dropped).
+fn write_mcp_config(json: &str) -> std::io::Result<tempfile::TempPath> {
+    let mut file = tempfile::Builder::new().prefix("openidea-mcp-").suffix(".json").tempfile()?;
+    std::io::Write::write_all(&mut file, json.as_bytes())?;
+    Ok(file.into_temp_path())
+}
+
+/// ACP `mcpServers` as Claude Code's `--mcp-config` JSON (`None` when there are none).
+fn mcp_config(params: &Value) -> Option<String> {
+    let servers = params.get("mcpServers")?.as_array()?;
+    let pairs = |v: Option<&Value>| -> serde_json::Map<String, Value> {
+        v.and_then(Value::as_array)
+            .into_iter()
+            .flatten()
+            .filter_map(|p| Some((p.get("name")?.as_str()?.to_owned(), p.get("value")?.clone())))
+            .collect()
+    };
+    let mut out = serde_json::Map::new();
+    for server in servers {
+        let Some(name) = server.get("name").and_then(Value::as_str) else { continue };
+        let entry = match server.get("type").and_then(Value::as_str) {
+            Some(kind @ ("http" | "sse")) => {
+                json!({ "type": kind, "url": server.get("url"), "headers": pairs(server.get("headers")) })
+            }
+            _ => json!({
+                "command": server.get("command"),
+                "args": server.get("args").cloned().unwrap_or_else(|| json!([])),
+                "env": pairs(server.get("env")),
+            }),
+        };
+        out.insert(name.to_owned(), entry);
+    }
+    (!out.is_empty()).then(|| json!({ "mcpServers": out }).to_string())
 }

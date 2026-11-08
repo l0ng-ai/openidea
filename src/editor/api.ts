@@ -30,6 +30,7 @@ import {
 } from "@codemirror/state";
 import { GutterMarker, ViewPlugin, type EditorView } from "@codemirror/view";
 import type { LanguageDescription } from "@codemirror/language";
+import type { LineEnding } from "@/platform/ipc";
 import { create } from "zustand";
 import { maybeEditorService } from "@/workbench/contributions";
 
@@ -627,7 +628,8 @@ export function isLibraryPath(path: string): boolean {
  * A live view of an open document for a CodeMirror view that is not an editor
  * tab (e.g. the editable side of a diff). Edits sync both ways with the
  * document shared by all editors of the file, go to the backend, and are saved
- * by Save All; the view keeps its own undo history, like a split pane.
+ * by Save All. With `sharedHistory`, typing uses the text tab's history;
+ * otherwise the view keeps its own history, like a split pane.
  */
 export interface DocumentAttachment {
   path: string;
@@ -635,9 +637,15 @@ export interface DocumentAttachment {
   doc: number;
   /** Current document text; build the view's state from it. */
   text(): string;
+  /** The document's line ending (detected on load, as the status bar shows). */
+  lineEnding(): LineEnding;
   /** The document's language mode name (backend-assigned, as the editor tabs use). */
   uiMode(): string | null;
   readOnly: boolean;
+  /** Last view state, kept current while unmounted; use it when remounting this attachment. */
+  editorState(): EditorState | null;
+  /** Dispatch typing through the document history when `sharedHistory` was requested. */
+  dispatchTransactions(transactions: readonly Transaction[], view: EditorView): void;
   /** Add to the view (one view at a time). */
   extension: Extension;
   save(options?: { exact?: boolean }): Promise<void>;
@@ -663,16 +671,22 @@ export interface DocumentAttachment {
   release(): void;
 }
 
-let documentAttacher: ((path: string) => Promise<DocumentAttachment>) | null = null;
+export interface DocumentAttachmentOptions {
+  /** Record typing in the text tab's history when one exists. Use `dispatchTransactions` on the view. */
+  sharedHistory?: boolean;
+}
+
+let documentAttacher: ((path: string, options?: DocumentAttachmentOptions) => Promise<DocumentAttachment>) | null =
+  null;
 
 /** Opens (or joins) the document of `path` for a non-tab view. */
-export function attachDocument(path: string): Promise<DocumentAttachment> {
+export function attachDocument(path: string, options?: DocumentAttachmentOptions): Promise<DocumentAttachment> {
   if (!documentAttacher) return Promise.reject(new Error("editor not started"));
-  return documentAttacher(path);
+  return documentAttacher(path, options);
 }
 
 /** Called by editor/core only. */
-export function _provideDocumentAttacher(attacher: ((path: string) => Promise<DocumentAttachment>) | null) {
+export function _provideDocumentAttacher(attacher: typeof documentAttacher) {
   documentAttacher = attacher;
 }
 
@@ -698,21 +712,22 @@ export function _languageMode(name: string): LanguageDescription | undefined {
   return languageModes.get(name);
 }
 
-// --- read-only code previews ------------------------------------------------------
+// --- code previews ------------------------------------------------------
 
-let codePreviewProvider: ((path: string) => Promise<Extension>) | null = null;
+let codePreviewProvider: ((path: string, editable?: boolean) => Promise<Extension>) | null = null;
 
 /**
- * Extensions for a read-only CodeMirror view showing `path` like an editor tab
+ * Extensions for a CodeMirror view showing `path` like an editor tab
  * (editor font and colours, line numbers, syntax highlighting): previews
- * outside editor tabs such as Find in Files. Empty before editor/core starts.
+ * outside editor tabs such as Find in Files. Read-only unless `editable` is true.
+ * Empty before editor/core starts.
  */
-export function codePreviewExtensions(path: string): Promise<Extension> {
-  return codePreviewProvider ? codePreviewProvider(path) : Promise.resolve([]);
+export function codePreviewExtensions(path: string, editable = false): Promise<Extension> {
+  return codePreviewProvider ? codePreviewProvider(path, editable) : Promise.resolve([]);
 }
 
 /** @internal editor/core only. */
-export function _provideCodePreview(provider: ((path: string) => Promise<Extension>) | null) {
+export function _provideCodePreview(provider: typeof codePreviewProvider) {
   codePreviewProvider = provider;
 }
 
