@@ -63,4 +63,48 @@ describe("terminal copy capture", () => {
       dispose();
     }
   });
+
+  it.each([true, false])("sends Shift+Enter as Esc+Return with override shortcuts %s", (override) => {
+    mock.settings.terminal.overrideIdeShortcuts = override;
+    useKeymap.setState({ preset: "intellij-windows", overrides: {} });
+    const removeKeys = installTerminalKeys();
+    const removeDispatcher = installKeyboardDispatcher();
+    const textarea = document.createElement("textarea");
+    document.body.append(textarea);
+    const xterm = vi.fn();
+    textarea.addEventListener("keydown", xterm);
+    const press = (init: KeyboardEventInit, keyCode?: number) => {
+      const event = new KeyboardEvent("keydown", {
+        key: "Enter",
+        code: "Enter",
+        bubbles: true,
+        cancelable: true,
+        ...init,
+      });
+      if (keyCode !== undefined) Object.defineProperty(event, "keyCode", { value: keyCode });
+      textarea.dispatchEvent(event);
+      return event;
+    };
+    try {
+      expect(press({ shiftKey: true }).defaultPrevented).toBe(true);
+      expect(mock.session.send).toHaveBeenCalledExactlyOnceWith("\x1b\r");
+      expect(xterm).not.toHaveBeenCalled();
+      mock.session.send.mockClear();
+      // Plain Enter, other modifiers and an input method's Enter stay with xterm.
+      for (const init of [
+        {},
+        { altKey: true },
+        { ctrlKey: true, shiftKey: true },
+        { shiftKey: true, isComposing: true },
+      ])
+        press(init);
+      press({ shiftKey: true }, 229);
+      expect(mock.session.send).not.toHaveBeenCalled();
+      expect(xterm).toHaveBeenCalledTimes(5);
+    } finally {
+      textarea.remove();
+      removeDispatcher();
+      removeKeys();
+    }
+  });
 });
