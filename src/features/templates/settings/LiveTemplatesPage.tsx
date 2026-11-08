@@ -112,7 +112,9 @@ export function LiveTemplatesPage() {
                     <span className={clsx(styles.itemLabel, isModifiedBuiltin(t.id) && styles.modified)}>
                       {t.abbrev}
                     </span>
-                    <span className={styles.itemDetail}>{t.description}</span>
+                    <span className={styles.itemDetail} title={t.description}>
+                      {t.description}
+                    </span>
                   </div>
                 ))}
               </div>

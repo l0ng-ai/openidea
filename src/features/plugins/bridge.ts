@@ -53,7 +53,14 @@ export function syncProjection(): () => void {
     const s = usePlugins.getState();
     syncUiContributions(localizeContributions(s.ui, usePluginCatalogs.getState().catalogs), s.plugins);
     // Their problems are listed by name in Settings › Inspections.
-    useProducerNames.setState({ names: new Map(s.plugins.map((p) => [`plugin:${p.id}`, p.name])) });
+    useProducerNames.setState({
+      names: new Map(
+        s.plugins.flatMap((p): [string, string][] => [
+          [`plugin:${p.id}`, p.name],
+          [`plugin-provider:${p.id}`, p.name],
+        ]),
+      ),
+    });
   };
   const loadCatalogs = () => void loadPluginCatalogs(usePlugins.getState().ui, useI18n.getState().locale);
   apply();

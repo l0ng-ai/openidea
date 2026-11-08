@@ -29,6 +29,7 @@ pub mod history;
 pub mod http;
 pub mod java;
 pub mod lsp;
+pub mod mcp;
 pub mod nav;
 pub mod notebook;
 pub mod perf;
@@ -65,6 +66,12 @@ pub(crate) fn sender<T: tauri::ipc::IpcResponse + Send + Sync + 'static>(
 pub fn builder() -> tauri_specta::Builder<tauri::Wry> {
     tauri_specta::Builder::<tauri::Wry>::new().commands(collect_commands![
         app::app_info,
+        mcp::mcp_ui_ready,
+        mcp::mcp_respond,
+        mcp::mcp_server_status,
+        mcp::mcp_set_open_editors,
+        mcp::mcp_set_focused_editor,
+        mcp::mcp_report_problems,
         android::android_devices,
         android::android_logcat,
         app::recent_projects,
@@ -87,7 +94,6 @@ pub fn builder() -> tauri_specta::Builder<tauri::Wry> {
         window_group::window_group_close,
         window_group::window_group_close_tabs,
         window_group::window_group_cancel_close,
-        window_group::window_group_before_close,
         window_group::window_group_reorder,
         window_group::window_group_restore,
         app::light_edit_open,
@@ -127,6 +133,7 @@ pub fn builder() -> tauri_specta::Builder<tauri::Wry> {
         agent::agent_respond,
         agent::agent_archive,
         agent::agent_unarchive,
+        agent::agent_rename,
         agent::agent_delete,
         agent::agent_changes,
         agent::agent_base_text,
@@ -362,6 +369,7 @@ pub fn builder() -> tauri_specta::Builder<tauri::Wry> {
         run::run_gradle_jvm_args_script,
         run::run_gradle_init_script,
         run::run_tomcat_home,
+        run::run_tomcat_installations,
         run::run_tomcat_artifacts,
         run::run_tomcat_build,
         run::run_application_build,
@@ -409,6 +417,7 @@ pub fn builder() -> tauri_specta::Builder<tauri::Wry> {
         tools::jdk_download_location,
         tools::jdk_download,
         sdk::sdk_detect,
+        sdk::sdk_python_interpreter,
         sdk::sdk_python_effective,
         sdk::sdk_php_effective,
         sdk::sdk_php_xdebug,
@@ -443,6 +452,8 @@ pub fn builder() -> tauri_specta::Builder<tauri::Wry> {
         window::menu_model,
         window::menu_set_disabled,
         window::app_log_location,
+        window::app_cli_install,
+        window::app_cli_uninstall,
         window::app_build_info,
         window::app_check_update,
         window::app_startup_update_check,
@@ -498,6 +509,8 @@ pub fn builder() -> tauri_specta::Builder<tauri::Wry> {
         plugin::plugin_service_detail,
         plugin::plugin_service_log,
         plugin::plugin_web_page,
+        plugin::plugin_web_pty_spawn,
+        plugin::plugin_log_tab_spawn,
         plugin::plugin_web_save_file,
         plugin::plugin_web_read_file,
         plugin::plugin_line_markers,

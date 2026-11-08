@@ -29,7 +29,8 @@ interface events {
     /// Delivers `kind` events from now on, for the rest of the session (also
     /// across idle reclaim: an event activates the plugin again). Declare
     /// `activation = ["on-event:<kind>"]` to get them before first use.
-    /// Kinds: `file-opened`, `file-saved`, `editor-focused` (the focused editor
+    /// Kinds: `file-opened`, `file-saved`, `files-changed` (batched disk changes
+    /// as `other`, with created/modified/removed path lists in JSON), `editor-focused` (the focused editor
     /// changed), `vcs-changed` (a repository's state changed: commit,
     /// checkout, fetch…), `action-performed` (an IDE action ran) and
     /// `scheduled` (the `on-schedule` period elapsed); later IDEs add more,
@@ -38,13 +39,15 @@ interface events {
     subscribe: func(kind: string) -> result<_, error>;
     /// Replaces this kind's subscription with project-relative globs (OR).
     /// Empty globs pause delivery; `subscribe` restores unfiltered delivery.
-    /// Kinds: file-opened, file-saved. Requires `events`.
+    /// Kinds: file-opened, file-saved, files-changed. Requires `events`.
     subscribe-paths: func(kind: string, globs: list<string>) -> result<_, error>;
     unsubscribe: func(kind: string);
 }
 
 /// Long-running work with a progress indicator. While a task is open, the
-/// call that began it may run for the background budget (60 s) instead of 5 s.
+/// call that began it may run for the background budget (60 s) instead of 5 s,
+/// and each `report` or `is-cancelled` renews that budget: work that keeps
+/// saying it is alive is not cut off, while work that goes quiet is.
 interface tasks {
     resource task {
         /// `done` of `total` units (`none`: indeterminate), with a short status.

@@ -168,6 +168,14 @@ export interface EditorDocumentLifecycle {
   redo?(input: EditorInput): Promise<void>;
 }
 
+/** Bumped by `notifyTabTitlesChanged`; tab labels whose `title(input)` changed re-render. */
+export const useEditorTabTitles = create<{ revision: number }>(() => ({ revision: 0 }));
+
+/** An editor kind's tab title may have changed outside the tab state (e.g. a renamed agent task). */
+export function notifyTabTitlesChanged() {
+  useEditorTabTitles.setState((s) => ({ revision: s.revision + 1 }));
+}
+
 /** Bumped by `notifyEditorDocumentChanged`; selectors reading `isDirty` re-run on it. */
 export const useEditorDocuments = create<{ revision: number }>(() => ({ revision: 0 }));
 export const useStandaloneEditor = create<{ title: string | null }>(() => ({ title: null }));
@@ -897,11 +905,15 @@ export interface SettingsPageContribution {
  * edits not applied yet. Edits are written on Apply / OK and dropped on Cancel.
  */
 export interface SettingsForm {
+  /** Applies pending edits; false prevents an action from running after a failed save. */
+  apply(): Promise<boolean>;
   scope: "global" | "project";
   /** Value of a dotted key (map entries too, e.g. `languageServers.ruff.args`). */
   useValue(key: string): unknown;
   /** Stages a value; `null` removes the key on Apply. */
   set(key: string, value: unknown): void;
+  /** Stages a literal map entry with independent page/Reset ownership. */
+  setMapEntry(key: string, path: string[], value: unknown): void;
   /** Values stored outside settings JSON; the writer runs on Apply / OK and returns the saved value. */
   useExternal<T>(
     key: string,
@@ -1430,6 +1442,8 @@ export function localChangedPaths(
 // running a whole command line; anything else runs as a shell command.
 
 export interface RunAnythingItem {
+  /** Optional section within the provider; the shared `recent` id merges command histories. */
+  group?: { id: string; label: string };
   /** Stable within the provider. */
   key: string;
   label: string;
@@ -1563,6 +1577,8 @@ export interface DebugServiceSession {
   /** The debuggee's HTTP port announced on its console (not the JDWP attach port), if known. */
   httpPort?: number;
   rerun: (() => void) | null;
+  /** Rerun without opening the Debug tool window (the Services panel debugs in place). */
+  rerunInPlace?: (() => void) | null;
   stop: (options?: { stopProcess?: boolean }) => Promise<void>;
   show: () => void;
 }
@@ -1660,4 +1676,26 @@ export function registerCloneSource(source: CloneSourceContribution): () => void
 /** Registered clone sources in order. */
 export function cloneSourceList(sources = useCloneSources.getState().sources): CloneSourceContribution[] {
   return [...sources.values()].sort((a, b) => (a.order ?? 100) - (b.order ?? 100) || a.id.localeCompare(b.id));
+}
+
+// File templates contributed by plugins, consumed by the templates feature.
+export const useContributedFileTemplates = create<{ templates: import("@/platform/fileTemplates").FileTemplate[] }>(
+  () => ({ templates: [] }),
+);
+
+export function addContributedFileTemplate(t: import("@/platform/fileTemplates").FileTemplate): () => void {
+  useContributedFileTemplates.setState((s) => ({ templates: [...s.templates.filter((x) => x.id !== t.id), t] }));
+  return () => useContributedFileTemplates.setState((s) => ({ templates: s.templates.filter((x) => x !== t) }));
+}
+
+/** Flush contributed document indexes before workspace usages or refactoring. */
+const documentIndexSync = new Set<(path: string) => Promise<void>>();
+export function registerDocumentIndexSync(sync: (path: string) => Promise<void>): () => void {
+  documentIndexSync.add(sync);
+  return () => {
+    documentIndexSync.delete(sync);
+  };
+}
+export async function synchronizeDocumentIndexes(path: string): Promise<void> {
+  await Promise.all([...documentIndexSync].map((sync) => sync(path)));
 }

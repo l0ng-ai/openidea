@@ -27,20 +27,39 @@ export interface ComposerDraft {
 
 export const emptyDraft = (): ComposerDraft => ({ text: "", files: [], images: [] });
 
+export type MessageToken = { kind: "text" | "file" | "command"; value: string };
+
+/**
+ * A message's text split into plain runs, `@file` references and `/command` skills. A
+ * command is a `/word` at the start or after whitespace; a reference likewise after `@`.
+ */
+export function messageTokens(text: string): MessageToken[] {
+  const out: MessageToken[] = [];
+  let last = 0;
+  for (const match of text.matchAll(/(^|\s)([@/][^\s@]+)/g)) {
+    const token = match[2]!;
+    const start = match.index! + match[1]!.length;
+    const command = /^\/[A-Za-z][\w:.-]*$/.test(token);
+    if (token.startsWith("/") && !command) continue;
+    if (start > last) out.push({ kind: "text", value: text.slice(last, start) });
+    out.push({ kind: command ? "command" : "file", value: token });
+    last = start + token.length;
+  }
+  if (last < text.length) out.push({ kind: "text", value: text.slice(last) });
+  return out;
+}
+
 export type Completion =
   | { kind: "file"; query: string; from: number; to: number }
   | { kind: "command"; query: string; from: number; to: number };
 
-/** The `@file` or leading `/command` being typed at `caret`, if any. */
+/** The `@file` or `/command` being typed at `caret`, if any; both may follow other text. */
 export function completionAt(text: string, caret: number): Completion | null {
   const before = text.slice(0, caret);
   const word = /(^|\s)([@/])([^\s@]*)$/.exec(before);
   if (!word) return null;
   const from = caret - word[3]!.length - 1;
-  // Commands only as the message's first word.
-  if (word[2] === "/")
-    return before.slice(0, from).trim() === "" ? { kind: "command", query: word[3]!, from, to: caret } : null;
-  return { kind: "file", query: word[3]!, from, to: caret };
+  return { kind: word[2] === "/" ? "command" : "file", query: word[3]!, from, to: caret };
 }
 
 /** Replaces the completion with `insert` plus a space; returns the text and the caret after it. */

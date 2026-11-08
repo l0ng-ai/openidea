@@ -24,3 +24,16 @@ it("preserves external agent errors", async () => {
   const { result } = renderHook(() => useAgentErrorText("Agent says: authentication failed"));
   expect(result.current).toBe("Agent says: authentication failed");
 });
+
+it("translates only the guidance when the agent adds its own explanation", async () => {
+  await setLocale("zh");
+  const details = "Authentication failed: token expired.\nRun `account repair` in a terminal.";
+  const { result } = renderHook(() =>
+    useAgentErrorText(
+      `Google Antigravity needs you to sign in. Run \`'/registry/antigravity' auth login\` in a terminal.\n\n${details}`,
+    ),
+  );
+  expect(result.current).toBe(
+    `Google Antigravity 需要你登录。在终端中运行 \`'/registry/antigravity' auth login\`。\n\n${details}`,
+  );
+});

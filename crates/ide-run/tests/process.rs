@@ -572,7 +572,7 @@ fn cmake_configure_discovers_builds_and_runs_a_multifile_target() {
     assert!(h.root.path().join("build/.cmake/api/v1/query/client-openidea/codemodel-v2").exists());
     let root = h.root.path().canonicalize().unwrap();
     let configs = ide_run::detect(&root);
-    let target = configs.iter().find(|c| c.kind == "native").expect("File API executable");
+    let target = configs.iter().find(|c| c.kind == "cmake-application").expect("File API executable");
     assert_eq!(target.debug_adapter.as_deref(), Some("lldb-dap"));
     let sources = &target.extras.params["cmakeSources"];
     assert!(sources.lines().any(|s| s.ends_with("/main.cpp")));
@@ -629,6 +629,50 @@ fn go_build_runs_with_separate_arguments_environment_and_working_directory() {
     let (id, out) = start(&h, &c);
     assert_ne!(wait_exit(&h, id, Duration::from_secs(60)), Some(0));
     assert!(text(&out, stdout).is_empty(), "a failed build must never run an older binary");
+}
+
+#[test]
+fn go_build_only_supports_multiple_packages_and_explicit_output() {
+    let h = harness();
+    let Some(go) = ide_run::which::find_executable("go", &std::env::var_os("PATH").unwrap_or_default()) else {
+        return;
+    };
+    std::fs::write(h.root.path().join("go.mod"), "module example.com/buildall\ngo 1.22\n").unwrap();
+    for name in ["one", "two"] {
+        let dir = h.root.path().join("cmd").join(name);
+        std::fs::create_dir_all(&dir).unwrap();
+        std::fs::write(dir.join("main.go"), "package main\nfunc main() {}\n").unwrap();
+    }
+    let mut config = cfg("go-build-only", &go.to_string_lossy(), &["build", "./..."]);
+    config.kind = "go".into();
+    config.extras.params = BTreeMap::from([
+        ("goKind".into(), "build".into()),
+        ("scope".into(), "package".into()),
+        ("target".into(), "./...".into()),
+        ("runAfterBuild".into(), "false".into()),
+        ("outputDir".into(), "compiled output".into()),
+    ]);
+    let (id, output) = start(&h, &config);
+    assert_eq!(wait_exit(&h, id, Duration::from_secs(60)), Some(0), "{}", text(&output, stderr));
+    for name in ["one", "two"] {
+        assert!(
+            h.root.path().join("compiled output").join(format!("{name}{}", std::env::consts::EXE_SUFFIX)).is_file()
+        );
+    }
+    std::fs::create_dir_all(h.root.path().join("explicit output")).unwrap();
+    config.args = vec!["build".into(), "-o=explicit output/".into(), "./...".into()];
+    let plan = ide_run::go::plan(h.root.path(), &config).unwrap().unwrap();
+    assert_eq!(plan.build.args, config.args);
+    assert!(plan.run.is_none());
+    let (id, output) = start(&h, &config);
+    assert_eq!(wait_exit(&h, id, Duration::from_secs(60)), Some(0), "{}", text(&output, stderr));
+    for name in ["one", "two"] {
+        assert!(
+            h.root.path().join("explicit output").join(format!("{name}{}", std::env::consts::EXE_SUFFIX)).is_file()
+        );
+    }
+    config.args = vec!["build".into(), "-o".into(), "one-binary".into(), "./cmd/one".into()];
+    assert_eq!(ide_run::go::plan(h.root.path(), &config).unwrap().unwrap().build.args, config.args);
 }
 
 #[test]

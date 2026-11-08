@@ -86,20 +86,36 @@ describe("rerunFailedConfig", () => {
     expect(c.args).toEqual(["test", "--", "--nocapture", "old", "a", "--exact"]);
   });
 
-  it("jest/vitest via npm: files + -t pattern", () => {
-    const c = rerunFailedConfig(cfg("npm", "pnpm", ["run", "test"]), [
+  it.each([
+    ["npm", ["--"]],
+    ["pnpm", []],
+    ["/opt/bin/pnpm", []],
+    ["C:\\tools\\pnpm.CMD", []],
+    ["yarn", ["--"]],
+    ["bun", ["--"]],
+    ["npx", []],
+  ])("jest/vitest via %s: files + -t pattern", (command, separator) => {
+    const c = rerunFailedConfig(cfg("npm", command, ["run", "test"]), [
       ["src/a.test.ts", "math", "adds (1+1)"],
       ["src/b.test.ts"],
     ])!;
     expect(c.args).toEqual([
       "run",
       "test",
-      "--",
+      ...separator,
       "src/a.test.ts",
       "src/b.test.ts",
       "-t",
       "^(?:math adds \\(1\\+1\\))$",
     ]);
+  });
+
+  it.each([
+    ["run", "test", "-t", "old"],
+    ["run", "test", "--", "--testNamePattern=old"],
+  ])("replaces an existing pnpm test filter in %j", (...args) => {
+    const c = rerunFailedConfig(cfg("npm", "pnpm", args), [["src/a.test.ts", "new"]])!;
+    expect(c.args).toEqual(["run", "test", ...(args.includes("--") ? ["--"] : []), "src/a.test.ts", "-t", "^(?:new)$"]);
   });
 
   it("pytest: node ids replace explicit paths", () => {
@@ -325,4 +341,12 @@ describe("exact Go test and benchmark selections", () => {
     const [config] = testsConfigs(base, [["example.com/p"]], "selected");
     expect(config!.args).toEqual(["test", "-race", "-bench", ".", "example.com/p"]);
   });
+});
+
+it("keeps inherited Go build tags enabled when deriving a typed package rerun", () => {
+  const config = {
+    ...cfg("go", "go", ["test", "./..."]),
+    params: { goKind: "test", scope: "package", target: "./..." },
+  };
+  expect(rerunFailedConfig(config, [["example.com/p", "TestChosen"]])!.params?.useTags).toBe("true");
 });

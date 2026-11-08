@@ -74,6 +74,7 @@ interface file-actions {
     code-actions: func(doc: document, selection: range) -> list<file-action>;
     /// The operations and edits of an action listed with `data` and nothing
     /// to apply, once the user picks it (the command budget applies, not the
-    /// editor's 50 ms).
+    /// editor's 50 ms). The same four prompts as `providers.resolve-code-action`
+    /// work here, in the editor's window and excluding the wait from the budget.
     resolve: func(doc: document, action: file-action) -> result<file-action, error>;
 }

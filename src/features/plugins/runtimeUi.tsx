@@ -25,19 +25,16 @@ import { useProject } from "@/platform/project";
 import { ipcPath } from "@/platform/paths";
 import { shortcutLabel } from "@/platform/keymap";
 import { BarButton } from "@/ui/BarButton";
-import {
-  notifications,
-  maybeCommitService,
-  maybeEditorService,
-  registerStatusItem,
-  toolWindowService,
-} from "@/workbench/contributions";
+import { notifications, maybeCommitService, maybeEditorService, registerStatusItem } from "@/workbench/contributions";
 import { pickItems, promptInput } from "@/workbench/inputDialogs";
 import { confirm } from "@/workbench/messages";
 import { removeTask, upsertTask, useTasks } from "@/workbench/tasks";
 import { pluginsBackend } from "./backend";
 import { usePluginT } from "./pluginText";
-import { bumpView, deliverViewMessage, pluginToolWindowId } from "./views/viewStore";
+import { PLUGIN_LOG_EDITOR_KIND } from "./views/logEditor";
+import type { PluginLogEditorData } from "./views/logTab";
+import { bumpView, deliverViewMessage } from "./views/viewStore";
+import { revealWindowView } from "./views/viewWindows";
 import { runPluginCommand, usePlugins } from "./store";
 
 // --- status bar items ---------------------------------------------------------
@@ -425,6 +422,22 @@ export function handleRuntimeEvent(e: PluginEvent): boolean {
       // The program was approved (`process:`) and verified by the host.
       void executeAction("terminal.runCommand", { program: e.program, args: e.args, name: e.title, cwd: e.cwd });
       return true;
+    case "openLogTab":
+      void maybeEditorService()?.openInput({
+        kind: PLUGIN_LOG_EDITOR_KIND,
+        key: `pluginLog:${JSON.stringify([e.pluginId, "", e.key])}`,
+        data: {
+          pluginId: e.pluginId,
+          view: "",
+          key: e.key,
+          title: e.title,
+          program: e.log.program,
+          args: e.log.args,
+          toggles: e.log.toggles,
+          origin: "code",
+        } satisfies PluginLogEditorData,
+      });
+      return true;
     case "openLocation":
       void maybeEditorService()?.openFile(e.path, { selection: { line: e.line, col: e.column }, focus: true });
       return true;
@@ -448,7 +461,7 @@ export function handleRuntimeEvent(e: PluginEvent): boolean {
       void answerCommit(e.requestId, e.request);
       return true;
     case "revealView":
-      toolWindowService().show(pluginToolWindowId(e.pluginId, e.view), true);
+      revealWindowView(e.pluginId, e.view);
       return true;
     default:
       return false;

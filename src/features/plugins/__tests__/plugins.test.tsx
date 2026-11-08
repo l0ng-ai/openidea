@@ -135,6 +135,15 @@ afterEach(() => {
 });
 
 describe("plugin actions", () => {
+  it("names manual and provider inspection producers after their plugin", async () => {
+    const { useProducerNames } = await import("@/platform/inspections");
+    usePlugins.setState({ plugins: [plugin({ id: "a", name: "Alpha" })] });
+    const stop = syncProjection();
+    expect(useProducerNames.getState().names.get("plugin:a")).toBe("Alpha");
+    expect(useProducerNames.getState().names.get("plugin-provider:a")).toBe("Alpha");
+    stop();
+  });
+
   it("projects command contributions to plugin.<plugin>.<command> actions", () => {
     const cmd = (pluginId: string, id: string, extra: Record<string, unknown> = {}) => ({
       pluginId,
@@ -714,6 +723,44 @@ describe("PluginsPage", () => {
     expect(notes.at(-1)).toMatchObject({ title: "Uninstalled Hello" });
   });
 
+  it("keeps failed cleanup visible and lets Uninstall retry", async () => {
+    const list = backend.list;
+    const uninstall = backend.uninstall;
+    let failed = false;
+    vi.spyOn(backend, "list").mockImplementation(async () => {
+      const snapshot = await list();
+      if (failed) {
+        snapshot.plugins = snapshot.plugins.map((p) =>
+          p.id === "hello" ? { ...p, status: "failed", error: "Private data is locked" } : p,
+        );
+      }
+      return snapshot;
+    });
+    const remove = vi.spyOn(backend, "uninstall").mockImplementation(async (id) => {
+      if (!failed) {
+        failed = true;
+        throw new Error("Private data is locked");
+      }
+      await uninstall(id);
+    });
+    const user = userEvent.setup();
+    render(<PluginsPage />);
+    await screen.findByRole("heading", { level: 2 });
+    await user.click(screen.getByRole("button", { name: "Uninstall…" }));
+    await user.click(screen.getByRole("button", { name: "Confirm uninstall Hello" }));
+    await screen.findByText("Private data is locked");
+    expect(notes.at(-1)).toMatchObject({
+      level: "error",
+      title: "Could not uninstall Hello",
+      body: "Private data is locked",
+    });
+    expect(screen.getByRole("heading", { level: 2 })).toHaveTextContent("Hello");
+    await user.click(screen.getByRole("button", { name: "Confirm uninstall Hello" }));
+    await waitFor(() => expect(screen.getByRole("heading", { level: 2 })).not.toHaveTextContent("Hello"));
+    expect(remove).toHaveBeenCalledTimes(2);
+    expect(notes.at(-1)).toMatchObject({ title: "Uninstalled Hello" });
+  });
+
   it("shows What's New from the change notes", async () => {
     const user = userEvent.setup();
     setPluginsBackend(
@@ -779,6 +826,7 @@ describe("plugin line markers", () => {
     const doc = EditorState.create({ doc: "a\nbb\nccc" }).doc;
     const marker = (line: number, icon: string | null) => ({ pluginId: "m", line, icon, tooltip: "t", target: null });
     expect(placeMarkers(doc, [marker(1, "run"), marker(7, null)]).map((m) => m.pos)).toEqual([2]);
+    expect(markerIcon("database")).toBe("database");
     expect(markerIcon("run")).toBe("gutter-run");
     expect(markerIcon("implemented")).toBe("gutter-implemented");
     expect(markerIcon(null)).toBe("gutter-implementing");

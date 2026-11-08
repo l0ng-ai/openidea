@@ -99,6 +99,10 @@ const UNTRANSLATED = new Set<string>([
   "GitHub",
   "PHPStan",
   "Xdebug",
+  "Chrome",
+  "Safari",
+  "Firefox",
+  "JaCoCo",
   // Docker run target placeholder values
   "compose.yaml",
   "python:3.12",
@@ -195,6 +199,7 @@ const UNTRANSLATED = new Set<string>([
   "Fixup",
   "Fixup…",
   "IDE",
+  "localhost",
   "mod tests",
   "Windows (\\r\\n)",
   // Terms, keywords and acronyms kept in English
@@ -534,6 +539,8 @@ function scanTypeScript(): Scan {
         for (const text of texts) {
           literals.add(shape(text));
           literals.add(shape(text.trim()));
+          // Color scheme trees display the individual segments of grouped attribute names.
+          for (const part of text.split(" › ")) literals.add(shape(part));
         }
         const sink = checked ? sinkOf(node, exact, template) : undefined;
         if (sink) {

@@ -420,6 +420,7 @@ function StripeButton({
         e.preventDefault();
         showContextMenu(e, stripeButtonMenu(tw, showName));
       }}
+      data-tooltip-stripe={side}
       {...tooltipAttrs(titleOf(tw), shortcut, true)}
     >
       <span className={styles.stripeIcon}>
@@ -463,6 +464,7 @@ function StripeMore({ windows }: { windows: ToolWindowContribution[] }) {
         aria-haspopup="menu"
         aria-expanded={open}
         onClick={() => setOpen((v) => !v)}
+        data-tooltip-stripe="left"
         {...tooltipAttrs("More Tool Windows")}
       >
         <Icon name="more-horizontal" size={20} />
@@ -618,30 +620,24 @@ export function ToolWindowHeader({
   );
 }
 
-function HeaderRow({
-  tw,
-  title,
-  actions,
-  children,
-}: {
-  tw: ToolWindowContribution;
-  title: boolean;
-  actions: boolean;
-  children?: ReactNode;
-}) {
+/**
+ * The Options (`⋮` Move To / Maximize / Hide) and Hide (`—`) buttons of a tool
+ * window that uses `useOwnToolWindowHeader` without a full `ToolWindowHeader`.
+ */
+export function ToolWindowCornerActions({ className }: { className?: string }) {
+  const tw = useContext(ToolWindowFrame)?.tw;
+  if (!tw) return null;
+  return <ToolWindowActionsBar tw={tw} className={className} />;
+}
+
+function ToolWindowActionsBar({ tw, className }: { tw: ToolWindowContribution; className?: string }) {
   const maximized = useToolWindowLayout((s) => s.maximized === tw.anchor);
   const [moreOpen, setMoreOpen] = useState(false);
-  const [titleOpen, setTitleOpen] = useState(false);
   const moreRef = useRef<HTMLButtonElement>(null);
-  const titleRef = useRef<HTMLButtonElement>(null);
   const Actions = tw.headerActions;
-  const showTitle = title && !(tw.headerContent && tw.tabsReplaceTitle);
 
   const useHeaderMenu = typeof tw.headerMenu === "function" ? tw.headerMenu : staticHeaderMenu(tw.headerMenu);
   const own = useHeaderMenu(tw.id);
-  const useTitleMenu = tw.titleMenu ?? noTitleMenu;
-  const titleMenu = useTitleMenu(tw.id);
-  const titleItems = titleMenu?.items ?? own;
   const more: MenuItem[] = [
     ...own,
     ...(own.length ? [{ kind: "separator" } as MenuItem] : []),
@@ -654,6 +650,62 @@ function HeaderRow({
     { kind: "separator" },
     { label: "Hide", icon: "hide", shortcut: shortcutLabel("toolwindow.hideActive"), run: () => hideToolWindow(tw.id) },
   ];
+
+  return (
+    <>
+      <div className={clsx(styles.headerActions, className)}>
+        {Actions && <Actions id={tw.id} />}
+        <IconButton
+          ref={moreRef}
+          icon="more"
+          title="Options"
+          size="small"
+          iconSize={16}
+          aria-haspopup="menu"
+          aria-expanded={moreOpen}
+          onClick={() => setMoreOpen((v) => !v)}
+        />
+        <IconButton
+          icon="minus"
+          title="Hide"
+          shortcut={shortcutLabel("toolwindow.hideActive")}
+          size="small"
+          iconSize={16}
+          onClick={() => hideToolWindow(tw.id)}
+        />
+      </div>
+      <Menu
+        open={moreOpen}
+        onClose={() => setMoreOpen(false)}
+        anchor={moreRef}
+        items={more}
+        placement="bottom-end"
+        aria-label={tx`${titleOf(tw)} options`}
+      />
+    </>
+  );
+}
+
+function HeaderRow({
+  tw,
+  title,
+  actions,
+  children,
+}: {
+  tw: ToolWindowContribution;
+  title: boolean;
+  actions: boolean;
+  children?: ReactNode;
+}) {
+  const [titleOpen, setTitleOpen] = useState(false);
+  const titleRef = useRef<HTMLButtonElement>(null);
+  const showTitle = title && !(tw.headerContent && tw.tabsReplaceTitle);
+
+  const useHeaderMenu = typeof tw.headerMenu === "function" ? tw.headerMenu : staticHeaderMenu(tw.headerMenu);
+  const own = useHeaderMenu(tw.id);
+  const useTitleMenu = tw.titleMenu ?? noTitleMenu;
+  const titleMenu = useTitleMenu(tw.id);
+  const titleItems = titleMenu?.items ?? own;
 
   return (
     <header
@@ -694,39 +746,7 @@ function HeaderRow({
       )}
       {children && <div className={clsx(styles.headerContent, !showTitle && styles.headerContentOnly)}>{children}</div>}
       <div className={styles.headerSpacer} />
-      {actions && (
-        <>
-          <div className={styles.headerActions}>
-            {Actions && <Actions id={tw.id} />}
-            <IconButton
-              ref={moreRef}
-              icon="more"
-              title="Options"
-              size="small"
-              iconSize={16}
-              aria-haspopup="menu"
-              aria-expanded={moreOpen}
-              onClick={() => setMoreOpen((v) => !v)}
-            />
-            <IconButton
-              icon="minus"
-              title="Hide"
-              shortcut={shortcutLabel("toolwindow.hideActive")}
-              size="small"
-              iconSize={16}
-              onClick={() => hideToolWindow(tw.id)}
-            />
-          </div>
-          <Menu
-            open={moreOpen}
-            onClose={() => setMoreOpen(false)}
-            anchor={moreRef}
-            items={more}
-            placement="bottom-end"
-            aria-label={tx`${titleOf(tw)} options`}
-          />
-        </>
-      )}
+      {actions && <ToolWindowActionsBar tw={tw} />}
     </header>
   );
 }

@@ -96,9 +96,11 @@ function PopupInner({
       shift({ padding: 6 }),
       sizeMw({
         padding: 6,
-        apply({ rects, elements, availableHeight }) {
+        apply({ rects, elements, availableHeight, availableWidth }) {
           elements.floating.style.maxHeight = `${Math.max(120, availableHeight)}px`;
-          if (matchWidth) elements.floating.style.minWidth = `${rects.reference.width}px`;
+          const width = Math.max(0, availableWidth);
+          elements.floating.style.maxWidth = `${width}px`;
+          if (matchWidth) elements.floating.style.minWidth = `${Math.min(rects.reference.width, width)}px`;
         },
       }),
     ],

@@ -37,6 +37,7 @@ import {
   type RepoRow,
 } from "./repoBranches";
 import { currentRepo, focusRepo, loadBranches, repoName, useVcs } from "./store";
+import { BranchSync } from "./BranchSync";
 import styles from "./BranchWidget.module.css";
 import { tx } from "@/platform/i18n";
 
@@ -116,12 +117,7 @@ export function BranchWidget() {
           <span className={styles.operation}>{branch.operation}</span>
         )}
         {/* Like IDEA's widget: icons only; counts are in the tooltip. */}
-        {branch.behind > 0 && (
-          <Icon name="vcs-incoming" size={12} className={clsx(styles.sync, styles.incoming)} label="Incoming commits" />
-        )}
-        {branch.ahead > 0 && (
-          <Icon name="vcs-outgoing" size={12} className={clsx(styles.sync, styles.outgoing)} label="Outgoing commits" />
-        )}
+        <BranchSync behind={branch.behind} ahead={branch.ahead} showCounts={false} />
         <Icon name="chevron-down" size={14} className={styles.chevron} />
       </BarButton>
       {open && <BranchesPopup anchor={ref} onClose={() => useBranchesPopup.setState({ open: false })} />}
@@ -898,19 +894,7 @@ function BranchRowView({ row }: { row: BranchRow | Extract<RepoRow, { type: "act
           <T>current</T>
         </span>
       )}
-      {/* Like IDEA: incoming (↙) before outgoing (↗). */}
-      {b.behind > 0 && (
-        <span className={clsx(styles.syncSmall, styles.incoming)} title={tx`${b.behind} incoming commits`}>
-          <Icon name="vcs-incoming" size={12} />
-          {b.behind}
-        </span>
-      )}
-      {b.ahead > 0 && (
-        <span className={clsx(styles.syncSmall, styles.outgoing)} title={tx`${b.ahead} outgoing commits`}>
-          <Icon name="vcs-outgoing" size={12} />
-          {b.ahead}
-        </span>
-      )}
+      <BranchSync behind={b.behind} ahead={b.ahead} />
       {!b.remote && b.upstream && <span className={styles.upstream}>{b.upstream}</span>}
       <Icon name="chevron-right" size={10} className={styles.chevron} />
     </span>

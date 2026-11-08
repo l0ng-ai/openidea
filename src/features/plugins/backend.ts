@@ -62,6 +62,7 @@ export interface PluginsBackend {
     arg: string | null,
     editor: PluginEditor | null,
     paths: string[],
+    settingsScope?: "global" | "project",
   ): Promise<string | null>;
   /** Workbench events plugins subscribed to (see `eventKinds`). */
   postEvents(events: WorkbenchEvent[]): Promise<void>;
@@ -100,7 +101,7 @@ export interface PluginsBackend {
   /** Content of a plugin view (`doc`: the document of a custom editor). */
   renderView(pluginId: string, view: string, viewport: Viewport | null, doc: number | null): Promise<View>;
   viewEvent(pluginId: string, view: string, event: ViewEvent, doc: number | null): Promise<void>;
-  /** The Services pane of node `key` of a plugin's services view. */
+  /** The detail tabs of item `key` in a Services or `detail = true` view. */
   serviceDetail(pluginId: string, view: string, key: string): Promise<ServiceTab[]>;
   /** The HTTP routes a plugin reports for this window's project (`[[contributes.endpoints]]`). */
   endpoints(pluginId: string): Promise<PluginEndpoint[]>;
@@ -184,8 +185,8 @@ export const tauriPluginsBackend: PluginsBackend = {
     await call(commands.pluginUninstall(id));
   },
   reload: (id) => call(commands.pluginReload(id)),
-  runCommand: (pluginId, commandId, arg, editor, paths) =>
-    call(commands.pluginRunCommand(pluginId, commandId, arg, editor, paths)),
+  runCommand: (pluginId, commandId, arg, editor, paths, settingsScope) =>
+    call(commands.pluginRunCommand(pluginId, commandId, arg, editor, paths, settingsScope ?? null)),
   postEvents: async (events) => {
     await commands.pluginPostEvents(events);
   },

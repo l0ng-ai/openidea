@@ -4,7 +4,7 @@
  */
 import { registerEditorContribution } from "@/editor/api";
 import { executeAction, getAction, registerActions } from "@/platform/actions";
-import { getContext, setContext } from "@/platform/context";
+import { getContext, setContext, useContextKeys } from "@/platform/context";
 import { call, commands, onIdeEvent, type RunConfig } from "@/platform/ipc";
 import { useProject } from "@/platform/project";
 import { onWorkflowSettingsChange } from "@/platform/workflowSettings";
@@ -44,6 +44,7 @@ import { RunWidget } from "./RunWidget";
 import { runConfigsRunAnything } from "./runAnything";
 import { cleanupRemovedProject, recordRun, runServiceProvider } from "./services";
 import { liveServiceSession, serviceSessions } from "./serviceSessions";
+import { cmakeBuildId } from "./cmake";
 import { runBeforeLaunch } from "./beforeLaunch";
 import { compoundChildren } from "./configs";
 import { containerDebuggable, remoteDebugBlocked } from "./remote";
@@ -71,6 +72,7 @@ import {
   resetRuns,
   runningSessions,
   saveUserConfigs,
+  dropStaleContextConfigs,
   selectConfig,
   selectedConfig,
   startRun,
@@ -107,15 +109,15 @@ async function runSelected() {
   await startRun(config);
 }
 
-async function debugConfig(config: RunConfig, chain: readonly string[] = []) {
+async function debugConfig(config: RunConfig, chain: readonly string[] = [], show?: boolean) {
   if (config.kind === "compound") {
-    if (!(await prepareLaunch(config, chain))) return;
+    if (!(await prepareLaunch(config, chain, show))) return;
     const children = compoundChildren(config, useRun.getState().configs);
-    await Promise.all(children.map((c) => debugConfig(c, [...chain, config.id])));
+    await Promise.all(children.map((c) => debugConfig(c, [...chain, config.id], show)));
     return;
   }
   if (remoteDebugBlocked(config)) return;
-  if (!(await prepareLaunch(config, chain))) return;
+  if (!(await prepareLaunch(config, chain, show))) return;
   recordRun(config.id);
   // Python on a Docker / Compose target: debugpy in the container, the debugger attaches.
   if (containerDebuggable(config) && getAction("debug.attach")) {
@@ -124,28 +126,28 @@ async function debugConfig(config: RunConfig, chain: readonly string[] = []) {
   }
   // Remote JVM Debug, Go Remote…: the debugger attaches, nothing is launched here.
   if (isDebugOnly(config) && getAction("debug.startConfig")) {
-    await executeAction("debug.startConfig", config);
+    await executeAction("debug.startConfig", show === false ? { config, show: false } : config);
     return;
   }
   // A single compiled file (rustc / clang): build with debug info, then debug the binary.
   const compiled = await compiledDebugPlan(config);
   if (compiled?.debug) {
-    await launchProduced(compiled, true);
+    await launchProduced(compiled, true, show);
     return;
   }
   // "Build and run using: Gradle": the JavaExec JVM gets the agent, the debugger attaches to it.
   const delegated = getAction("debug.attach") ? await gradleDelegation(config) : null;
   if (delegated) {
-    await debugWithAgent(delegated);
+    await debugWithAgent(delegated, show);
     return;
   }
   // Maven / Gradle: the build tool starts the JVM with a debug agent, the debugger attaches.
   if (jdwpLaunch(config) && getAction("debug.attach")) {
-    await debugWithAgent(config);
+    await debugWithAgent(config, show);
     return;
   }
   if (getAction("debug.startConfig")) {
-    await executeAction("debug.startConfig", config);
+    await executeAction("debug.startConfig", show === false ? { config, show: false } : config);
     return;
   }
   notifications().notify({
@@ -155,7 +157,7 @@ async function debugConfig(config: RunConfig, chain: readonly string[] = []) {
     body: tx`Running '${config.name}' without the debugger.`,
     key: "run-no-debugger",
   });
-  await startRun(config, undefined, undefined, { prepared: true });
+  await startRun(config, undefined, undefined, { prepared: true, show });
 }
 
 async function debugSelected() {
@@ -537,7 +539,8 @@ export function activate(): () => void {
         run: async ({ arg }) => {
           await ensureConfigs();
           const config = configFromArg(arg);
-          if (config) await debugConfig(config);
+          const show = arg && typeof arg === "object" && "show" in arg ? (arg as { show?: boolean }).show : undefined;
+          if (config) await debugConfig(config, [], show);
         },
       },
       {
@@ -634,7 +637,10 @@ export function activate(): () => void {
     onIdeEvent("runExited", (e) => onRunExited(e.run, e.code)),
     // Lets other title items follow the selected configuration (e.g. Build shows only for compiled ones).
     useRun.subscribe((s) => {
-      setContext("run.selectedKind", s.configs.find((c) => c.id === s.selectedId)?.kind ?? "");
+      const selected = s.configs.find((c) => c.id === s.selectedId);
+      setContext("run.selectedKind", selected?.kind ?? "");
+      const cmake = selected ?? s.configs.find((c) => c.kind === "cmake" && c.args[0] === "--build");
+      setContext("run.cmakeBuild", cmakeBuildId(cmake, s.configs));
       setContext("run.updatableRunning", updatableSessions().length > 0);
     }),
     useProject.subscribe((s, prev) => {
@@ -653,9 +659,14 @@ export function activate(): () => void {
   disposers.push(
     onIdeEvent("fsChanged", (e) => {
       const paths = [...e.created, ...e.modified, ...e.removed];
+      // A file that moved or was deleted leaves its context configuration behind.
+      dropStaleContextConfigs(e.removed);
       if (paths.some((p) => /(?:^|\/)go\.(?:mod|work)$/.test(p))) invalidateGoModules();
       if (paths.some((p) => p.endsWith("/__init__.py"))) invalidatePythonPackages();
       if (paths.some((p) => CONFIG_FILES.test(p))) scheduleReload();
+    }),
+    useContextKeys.subscribe((s, prev) => {
+      if (prev["build.running"] && !s["build.running"]) scheduleReload();
     }),
     onIdeEvent("runExited", (e) => {
       if (useRun.getState().sessions.some((s) => s.runId === e.run && s.config.kind === "cmake")) scheduleReload();

@@ -396,23 +396,142 @@ pub async fn lsp_references(
     libraries: bool,
     on_partial: super::Channel<References>,
 ) -> IdeResult<References> {
-    let lsp = host.project(window)?.lsp.clone();
+    let project = host.project(window)?;
+    let lsp = project.lsp.clone();
     let cancel = host.begin_request(request);
-    let result = lsp
-        .references_streaming(
-            doc,
-            pos,
-            include_declaration,
-            project_wide,
-            libraries,
-            cancel,
-            Some(&|refs| {
-                let _ = on_partial.send(refs);
-            }),
-        )
-        .await;
+    let result = async {
+        let symbol = indexed_symbol(host, window, doc, pos).await?;
+        if let Some(symbol) = &symbol {
+            let project = project.clone();
+            let snapshot = symbol.clone();
+            let cancellation = cancel.clone();
+            blocking(move || validate_indexed_symbol(&project, &snapshot, Some(&cancellation))).await?;
+            let _ = on_partial.send(merge_indexed_references(References::default(), symbol));
+        }
+        let result = lsp
+            .references_streaming(
+                doc,
+                pos,
+                include_declaration,
+                project_wide,
+                libraries,
+                cancel.clone(),
+                Some(&|refs| {
+                    let refs =
+                        symbol.as_ref().map_or_else(|| refs.clone(), |s| merge_indexed_references(refs.clone(), s));
+                    let _ = on_partial.send(refs);
+                }),
+            )
+            .await;
+        if cancel.is_cancelled() {
+            return Err(ide_core::IdeError::cancelled());
+        }
+        match symbol {
+            None => result,
+            Some(symbol) => {
+                let server = match result {
+                    Ok(server) => server,
+                    Err(e) => References { incomplete: indexed_lsp_error(e)?, ..Default::default() },
+                };
+                blocking(move || {
+                    validate_indexed_symbol(&project, &symbol, Some(&cancel))?;
+                    Ok(merge_indexed_references(server, &symbol))
+                })
+                .await
+            }
+        }
+    }
+    .await;
     host.end_request(request);
     result
+}
+
+/// Native servers can decline names owned by indexers. A failed native query
+/// keeps the graph usable but must not look like a complete merged result.
+fn indexed_lsp_error(error: ide_core::IdeError) -> IdeResult<Option<ReferencesIncomplete>> {
+    match error.kind {
+        ErrorKind::NotFound | ErrorKind::Unavailable => Ok(None),
+        ErrorKind::Protocol => Ok(Some(ReferencesIncomplete::ServerFailed)),
+        _ => Err(error),
+    }
+}
+
+async fn indexed_symbol(
+    host: &Host,
+    window: &str,
+    doc: DocId,
+    pos: Pos,
+) -> IdeResult<Option<crate::plugins::navigation::IndexedSymbol>> {
+    let Some(plugins) = crate::plugins::editor_plugin_host() else { return Ok(None) };
+    let project = host.project(window)?;
+    let client = window.to_owned();
+    blocking(move || {
+        let Ok((path, _)) = project.documents.identity(doc) else { return Ok(None) };
+        let path = ide_plugin::resolve_real(&path);
+        Ok(plugins.indexed_symbol_at(&project.root, &path, pos, Some(&client)))
+    })
+    .await
+}
+
+fn validate_indexed_symbol(
+    project: &crate::Project,
+    symbol: &crate::plugins::navigation::IndexedSymbol,
+    cancel: Option<&ide_core::CancellationToken>,
+) -> IdeResult<()> {
+    for file in &symbol.files {
+        if cancel.is_some_and(|cancel| cancel.is_cancelled()) {
+            return Err(ide_core::IdeError::cancelled());
+        }
+        let stale = || {
+            ide_core::IdeError::new(ErrorKind::OutOfSync, "indexed document changed; wait for indexing and try again")
+        };
+        if ide_plugin::resolve_in_root(&project.root, &file.path.to_string_lossy()).ok().as_ref() != Some(&file.path) {
+            return Err(stale());
+        }
+        let text = if let Some(doc) = project.documents.by_path(&file.path) {
+            let snapshot = project.documents.text_snapshot(doc)?;
+            if snapshot.large || file.version.is_some_and(|v| v != snapshot.version) {
+                return Err(stale());
+            }
+            snapshot.text
+        } else {
+            let loaded = project
+                .documents
+                .load_file_bounded(&file.path, crate::plugins::navigation::MAX_DOCUMENT_BYTES)
+                .map_err(|_| stale())?;
+            if loaded.binary || loaded.large {
+                return Err(stale());
+            }
+            loaded.text
+        };
+        if text.len() > crate::plugins::navigation::MAX_DOCUMENT_BYTES
+            || crate::plugins::navigation::snapshot_hash(&text) != file.hash
+        {
+            return Err(stale());
+        }
+        let text = ide_text::Document::new(&text);
+        for range in &file.ranges {
+            if [range.start, range.end].into_iter().any(|pos| text.offset_to_pos(text.pos_to_offset(pos)) != pos) {
+                return Err(ide_core::IdeError::invalid("indexed name is not on a UTF-16 character boundary"));
+            }
+        }
+    }
+    Ok(())
+}
+
+fn merge_indexed_references(mut server: References, symbol: &crate::plugins::navigation::IndexedSymbol) -> References {
+    let key =
+        |location: &Location| (dunce::simplified(&location.path).to_path_buf(), location.range, location.uri.clone());
+    let mut seen: std::collections::HashSet<_> = server.locations.iter().map(key).collect();
+    for file in &symbol.files {
+        for range in &file.ranges {
+            let location = Location::file(file.path.clone(), *range);
+            if seen.insert(key(&location)) {
+                server.locations.push(location);
+            }
+        }
+    }
+    server
 }
 
 pub async fn lsp_document_highlights(host: &Host, window: &str, doc: DocId, pos: Pos) -> IdeResult<Vec<Highlight>> {
@@ -561,7 +680,8 @@ async fn resolve_action(host: &Host, window: &str, doc: DocId, action: CodeActio
         file_action: r.file,
     };
     let plugin = r.plugin.clone();
-    let resolved = blocking(move || plugins.resolve_code_action(&plugin, &d, pending)).await?;
+    let invocation = ide_plugin::Invocation { client: Some(window.to_owned()), ..Default::default() };
+    let resolved = blocking(move || plugins.resolve_code_action(&plugin, &d, pending, invocation)).await?;
     let root = host.project(window)?.root.clone();
     Ok(plugin_code_action(&r.plugin, &root, ide_plugin::CodeAction { data: None, ..resolved }))
 }
@@ -586,7 +706,7 @@ pub async fn lsp_code_action_query(
     Ok(result)
 }
 
-/// Resolves a code action's edit without applying it (intention preview).
+/// Resolves a code action's edit without applying it.
 pub async fn lsp_resolve_code_action(
     host: &Host,
     window: &str,
@@ -666,6 +786,14 @@ async fn is_client_follow_up(
 }
 
 pub async fn lsp_prepare_rename(host: &Host, window: &str, doc: DocId, pos: Pos) -> IdeResult<Option<Range>> {
+    if let Some(symbol) = indexed_symbol(host, window, doc, pos).await? {
+        let project = host.project(window)?;
+        return blocking(move || {
+            validate_indexed_symbol(&project, &symbol, None)?;
+            Ok(Some(symbol.range))
+        })
+        .await;
+    }
     host.project(window)?.lsp.prepare_rename(doc, pos).await
 }
 
@@ -732,20 +860,133 @@ pub async fn lsp_rename(
     let documents = project.documents.clone();
     let version = blocking(move || documents.version(doc)).await?;
     let cancel = host.begin_request(request);
-    let result = project.lsp.rename(doc, pos, new_name, cancel).await;
-    host.end_request(request);
-    let mut renamed = result?;
-    blocking(move || {
-        if project.documents.version(doc)? != version {
-            return Err(ide_core::IdeError::new(
-                ide_core::error::ErrorKind::OutOfSync,
-                "document changed while computing rename; request it again",
-            ));
+    let result = async {
+        let symbol = indexed_symbol(host, window, doc, pos).await?;
+        let mut native_owned = false;
+        let result = async {
+            if let Some(symbol) = &symbol {
+                let range = tokio::select! {
+                    _ = cancel.cancelled() => return Err(ide_core::IdeError::cancelled()),
+                    range = project.lsp.prepare_rename(doc, pos) => range?,
+                };
+                if range != Some(symbol.range) {
+                    return Ok(Renamed::default());
+                }
+                native_owned = true;
+            }
+            project.lsp.rename(doc, pos, new_name.clone(), cancel.clone()).await
         }
-        project.documents.prepare_workspace_edit(&mut renamed.edit)?;
-        Ok(renamed)
-    })
-    .await
+        .await;
+        if cancel.is_cancelled() {
+            return Err(ide_core::IdeError::cancelled());
+        }
+        let mut renamed = match result {
+            Ok(renamed) => renamed,
+            Err(e) if symbol.is_some() && !native_owned => {
+                Renamed { incomplete: indexed_lsp_error(e)?, ..Default::default() }
+            }
+            Err(e) => return Err(e),
+        };
+        if native_owned
+            && !renamed.edit.files.iter().any(|file| match file {
+                ide_core::FileEdit::Edit { edits, .. } => !edits.is_empty(),
+                _ => true,
+            })
+        {
+            return Err(ide_core::IdeError::invalid("Native server declined rename"));
+        }
+        blocking(move || {
+            if project.documents.version(doc)? != version {
+                return Err(ide_core::IdeError::new(
+                    ErrorKind::OutOfSync,
+                    "document changed while computing rename; request it again",
+                ));
+            }
+            if let Some(symbol) = &symbol {
+                merge_indexed_rename(&mut renamed, symbol, &new_name, &project.documents);
+            }
+            project.documents.prepare_workspace_edit(&mut renamed.edit)?;
+            if let Some(symbol) = &symbol {
+                validate_indexed_symbol(&project, symbol, Some(&cancel))?;
+            }
+            if cancel.is_cancelled() {
+                return Err(ide_core::IdeError::cancelled());
+            }
+            Ok(renamed)
+        })
+        .await
+    }
+    .await;
+    host.end_request(request);
+    result
+}
+
+fn merge_indexed_rename(
+    renamed: &mut Renamed,
+    symbol: &crate::plugins::navigation::IndexedSymbol,
+    new_name: &str,
+    documents: &ide_workspace::Documents,
+) {
+    use ide_core::FileEdit;
+    renamed.preview = true;
+    let server = std::mem::take(&mut renamed.edit.files);
+    let mut additions: Vec<Vec<FileEdit>> = vec![vec![]; server.len() + 1];
+    for file in &symbol.files {
+        let mut path = dunce::simplified(&file.path).to_path_buf();
+        let mut at = server.len();
+        for (index, operation) in server.iter().enumerate() {
+            match operation {
+                FileEdit::Edit { path: target, .. } if dunce::simplified(target) == path.as_path() => {
+                    at = index;
+                    break;
+                }
+                FileEdit::Rename { from, to } => {
+                    if let Ok(suffix) = path.strip_prefix(dunce::simplified(from)) {
+                        path = dunce::simplified(to).join(suffix);
+                    }
+                }
+                _ => {}
+            }
+        }
+        let covered: Vec<_> = server[at..]
+            .iter()
+            .take_while(|operation| matches!(operation, FileEdit::Edit { .. }))
+            .filter_map(|operation| match operation {
+                FileEdit::Edit { path: target, edits, .. } if dunce::simplified(target) == path.as_path() => {
+                    Some(edits)
+                }
+                _ => None,
+            })
+            .flatten()
+            .collect();
+        let edits: Vec<_> = file
+            .ranges
+            .iter()
+            .filter(|range| {
+                !covered.iter().any(|native| {
+                    native.range == **range || (native.range.start < range.end && range.start < native.range.end)
+                })
+            })
+            .map(|range| TextEdit { range: *range, new_text: new_name.to_owned() })
+            .collect();
+        if edits.is_empty() {
+            continue;
+        }
+        additions[at].push(FileEdit::Edit {
+            path: path.into(),
+            version: documents
+                .by_path(&file.path)
+                .and_then(|id| documents.version(id).ok())
+                .and_then(|v| i32::try_from(v).ok()),
+            edits,
+        });
+    }
+    for (index, operation) in server.into_iter().enumerate() {
+        renamed.edit.files.push(operation);
+        renamed.edit.files.append(&mut additions[index]);
+    }
+    renamed.edit.files.append(additions.last_mut().expect("one trailing batch"));
+    renamed.edit.deduplicate();
 }
 
 pub async fn lsp_format(
@@ -1101,6 +1342,194 @@ pub(crate) fn register(d: &mut Dispatcher) {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn indexed_names_survive_native_refusal_without_hiding_cancellation_or_staleness() {
+        use ide_core::IdeError;
+        for kind in [ErrorKind::NotFound, ErrorKind::Unavailable] {
+            assert_eq!(indexed_lsp_error(IdeError::new(kind, "no native provider")).unwrap(), None);
+        }
+        assert_eq!(
+            indexed_lsp_error(IdeError::new(ErrorKind::Protocol, "not a native identifier")).unwrap(),
+            Some(ReferencesIncomplete::ServerFailed)
+        );
+        for kind in [ErrorKind::Cancelled, ErrorKind::OutOfSync, ErrorKind::InvalidInput] {
+            assert_eq!(indexed_lsp_error(IdeError::new(kind, "must propagate")).unwrap_err().kind, kind);
+        }
+    }
+
+    #[test]
+    fn indexed_results_merge_with_lsp_locations_edits_and_incompleteness() {
+        use crate::plugins::navigation::{IndexedAnchors, IndexedSymbol};
+        use ide_core::{FileEdit, LanguageId};
+        let tmp = tempfile::tempdir().unwrap();
+        let root = tmp.path().canonicalize().unwrap();
+        let shared = root.join("shared.idx");
+        let native = root.join("native.txt");
+        std::fs::write(&shared, "old old").unwrap();
+        std::fs::write(&native, "old").unwrap();
+        let range = Range::new(Pos::new(0, 0), Pos::new(0, 3));
+        let other = Range::new(Pos::new(0, 4), Pos::new(0, 7));
+        let symbol = IndexedSymbol {
+            range,
+            files: vec![IndexedAnchors {
+                path: shared.clone(),
+                version: None,
+                hash: blake3::hash(b"old old"),
+                ranges: vec![range, other],
+            }],
+        };
+        // Native file URIs have ordinary Windows paths; index snapshots retain
+        // canonical verbatim paths. Both identify the same file and edit batch.
+        let server_shared = dunce::simplified(&shared).to_path_buf();
+        let server_native = dunce::simplified(&native).to_path_buf();
+        #[cfg(windows)]
+        assert_ne!(shared, server_shared);
+        let location = Location::file(server_shared.clone(), range);
+        let native_location = Location::file(server_native.clone(), range);
+        let merged = merge_indexed_references(
+            References {
+                locations: vec![location.clone(), native_location.clone()],
+                incomplete: Some(ReferencesIncomplete::Indexing),
+                libraries_skipped: true,
+                ..Default::default()
+            },
+            &symbol,
+        );
+        assert_eq!(merged.locations, vec![location, native_location, Location::file(shared.clone(), other)]);
+        assert_eq!(merged.incomplete, Some(ReferencesIncomplete::Indexing));
+        assert!(merged.libraries_skipped);
+        let edit = |path, range| FileEdit::Edit {
+            path,
+            version: None,
+            edits: vec![TextEdit { range, new_text: "new".into() }],
+        };
+        let mut renamed = Renamed {
+            edit: WorkspaceEdit {
+                files: vec![edit(server_shared.clone().into(), range), edit(server_native.into(), range)],
+                ..Default::default()
+            },
+            incomplete: Some(ReferencesIncomplete::FilesSkipped),
+            ..Default::default()
+        };
+        let docs = ide_workspace::Documents::new(
+            std::sync::Arc::new(ide_core::NullSink),
+            Box::new(|_: &Path, _: Option<&str>| LanguageId::plain_text()),
+        );
+        merge_indexed_rename(&mut renamed, &symbol, "new", &docs);
+        assert!(renamed.preview);
+        assert_eq!(renamed.incomplete, Some(ReferencesIncomplete::FilesSkipped));
+        assert_eq!(renamed.edit.files.len(), 2);
+        docs.prepare_workspace_edit(&mut renamed.edit).unwrap();
+        docs.apply_workspace_edit(&renamed.edit).unwrap();
+        assert_eq!(std::fs::read_to_string(&shared).unwrap(), "new new");
+        assert_eq!(std::fs::read_to_string(&native).unwrap(), "new");
+
+        // Native rewrites preserve syntax (for example a shorthand property key).
+        std::fs::write(&shared, "old old").unwrap();
+        let mut rewritten = Renamed {
+            edit: WorkspaceEdit {
+                files: vec![FileEdit::Edit {
+                    path: shared.clone().into(),
+                    version: None,
+                    edits: vec![TextEdit { range, new_text: "old: new".into() }],
+                }],
+                ..Default::default()
+            },
+            ..Default::default()
+        };
+        merge_indexed_rename(&mut rewritten, &symbol, "new", &docs);
+        docs.prepare_workspace_edit(&mut rewritten.edit).unwrap();
+        docs.apply_workspace_edit(&rewritten.edit).unwrap();
+        assert_eq!(std::fs::read_to_string(&shared).unwrap(), "old: new new");
+        std::fs::write(&shared, "new new").unwrap();
+
+        // A class rename may move its file before editing the new path. Indexed
+        // anchors still describe the original file and must join that text batch.
+        let moved = root.join("moved.idx");
+        let server_moved = dunce::simplified(&moved).to_path_buf();
+        let mut renamed = Renamed {
+            edit: WorkspaceEdit {
+                files: vec![
+                    FileEdit::Rename { from: server_shared.into(), to: server_moved.clone().into() },
+                    FileEdit::Edit {
+                        path: server_moved.into(),
+                        version: None,
+                        edits: vec![TextEdit { range, new_text: "moved".into() }],
+                    },
+                ],
+                ..Default::default()
+            },
+            ..Default::default()
+        };
+        merge_indexed_rename(&mut renamed, &symbol, "moved", &docs);
+        docs.prepare_workspace_edit(&mut renamed.edit).unwrap();
+        docs.apply_workspace_edit(&renamed.edit).unwrap();
+        assert!(!shared.exists());
+        assert_eq!(std::fs::read_to_string(&moved).unwrap(), "moved moved");
+    }
+
+    #[test]
+    fn indexed_edits_yield_to_native_intersections_but_keep_boundary_insertions() {
+        use crate::plugins::navigation::{IndexedAnchors, IndexedSymbol};
+        use ide_core::{FileEdit, LanguageId};
+        let tmp = tempfile::tempdir().unwrap();
+        let path = tmp.path().join("shared.idx");
+        std::fs::write(&path, "old old").unwrap();
+        let range = Range::new(Pos::new(0, 0), Pos::new(0, 3));
+        let symbol = IndexedSymbol {
+            range,
+            files: vec![IndexedAnchors {
+                path: path.clone(),
+                version: None,
+                hash: blake3::hash(b"old old"),
+                ranges: vec![range],
+            }],
+        };
+        let docs = ide_workspace::Documents::new(
+            std::sync::Arc::new(ide_core::NullSink),
+            Box::new(|_: &Path, _: Option<&str>| LanguageId::plain_text()),
+        );
+        for (start, end, expected) in [
+            (0, 3, "native old"),
+            (0, 4, "nativeold"),
+            (1, 4, "onativeold"),
+            (1, 2, "onatived old"),
+            (1, 1, "onativeld old"),
+            (0, 0, "nativeindexed old"),
+            (3, 3, "indexednative old"),
+            (3, 4, "indexednativeold"),
+            (4, 7, "indexed native"),
+        ] {
+            let native =
+                TextEdit { range: Range::new(Pos::new(0, start), Pos::new(0, end)), new_text: "native".into() };
+            let mut renamed = Renamed {
+                edit: WorkspaceEdit {
+                    files: vec![FileEdit::Edit {
+                        path: path.clone().into(),
+                        version: None,
+                        edits: vec![native.clone()],
+                    }],
+                    ..Default::default()
+                },
+                ..Default::default()
+            };
+            merge_indexed_rename(&mut renamed, &symbol, "indexed", &docs);
+            let edits: Vec<_> = renamed
+                .edit
+                .files
+                .iter()
+                .flat_map(|file| match file {
+                    FileEdit::Edit { edits, .. } => edits.clone(),
+                    _ => vec![],
+                })
+                .collect();
+            assert!(edits.contains(&native));
+            let mut text = ide_text::Document::new("old old");
+            text.apply_edits(&edits).unwrap();
+            assert_eq!(text.text(), expected, "native range {start}..{end}");
+        }
+    }
 
     #[test]
     fn a_plugin_action_with_data_and_no_edits_is_resolved_by_its_plugin() {

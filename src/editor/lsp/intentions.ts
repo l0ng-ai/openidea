@@ -21,7 +21,7 @@ import { debounce, docOf, isUnavailable, lspRequest, reportLspError } from "./ls
 import { offsetsToRange } from "./positions";
 import { showHint } from "./hint";
 import { formatLines } from "./format";
-import { pythonMemberIntentions } from "./pythonMembers";
+import { languageSemantics } from "./semantic";
 import { caretAnchor, openPopup, type ListPopupItem, type ListPreview } from "./popupStore";
 import { editPreviewLines } from "./workspaceEdit";
 import { featureBackoff } from "./availability";
@@ -281,7 +281,9 @@ export async function applyKindSilently(view: EditorView, kind: string): Promise
   if (!doc || doc.readOnly) return false;
   let actions: CodeAction[];
   try {
-    actions = (await fetchActions(view, [kind], true)).filter((a) => a.kind?.startsWith(kind) && !a.disabledReason);
+    actions = (await fetchActions(view, [kind], true)).filter(
+      (a) => a.kind?.startsWith(kind) && !a.disabledReason && !isLazyPluginAction(a),
+    );
   } catch {
     return false;
   }
@@ -323,6 +325,10 @@ function actionItems(
   }));
 }
 
+function isLazyPluginAction(action: CodeAction): boolean {
+  return action.server === 0 && !action.edit && !action.command;
+}
+
 /** The action with its edit (resolved once per popup; servers may compute edits lazily). */
 function resolveOnce(
   doc: number,
@@ -350,6 +356,10 @@ export async function intentionPreview(
 ): Promise<ListPreview | null> {
   const ctx = docOf(view);
   if (!ctx) return null;
+  // Lazy plugin actions can ask the user; resolve only after invocation.
+  if (isLazyPluginAction(action)) {
+    return { kind: "text", text: "Preview isn't available for this action" };
+  }
   const doc = view.state.doc;
   const full = await resolveOnce(ctx.doc, action, cache);
   if (signal.aborted || view.state.doc !== doc) return null;
@@ -684,5 +694,10 @@ class FloatingBulb {
 const floatingBulb = ViewPlugin.fromClass(FloatingBulb);
 
 export function intentionsExtension(): Extension {
-  return [bulbField, bulbPlugin, floatingBulb, intentionProviders.of(pythonMemberIntentions)];
+  return [
+    bulbField,
+    bulbPlugin,
+    floatingBulb,
+    intentionProviders.of((view) => languageSemantics(docOf(view)?.language)?.intentions?.(view) ?? []),
+  ];
 }

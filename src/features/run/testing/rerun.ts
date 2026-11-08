@@ -5,6 +5,7 @@
 import { phpunitArgs, phpunitFilter } from "./phpunit";
 import type { RunConfig } from "@/platform/ipc";
 import { formatArgs } from "../configs";
+import { appendScriptArgs } from "../scriptArgs";
 import { djangoTestsOf } from "../djangoTypes";
 import { goTestParts, withoutGoSelection } from "../goArguments";
 import { frameworkFor } from "./index";
@@ -71,11 +72,10 @@ function jsArgs(config: RunConfig, paths: string[][]): string[] | null {
   const names = unique(paths.filter((p) => p.length > 1).map((p) => p.slice(1).join(" ")));
   if (!files.length) return null;
   const { before, after } = splitDashDash(base);
-  const rest = dropFlag(after ?? [], ["-t", "--testNamePattern"]);
+  const flags = ["-t", "--testNamePattern"];
+  const args = after === null ? dropFlag(before, flags) : [...before, "--", ...dropFlag(after, flags)];
   const filter = names.length ? ["-t", `^(?:${names.map(escapeRegExp).join("|")})$`] : [];
-  // npm/pnpm/yarn/bun pass everything after `--` to the script; deno/npx take them directly.
-  const needsDashDash = after !== null || /(^|\/)(npm|pnpm|yarn|bun)$/.test(config.command);
-  return needsDashDash ? [...before, "--", ...rest, ...files, ...filter] : [...before, ...files, ...filter];
+  return appendScriptArgs(config.command, args, [...files, ...filter]);
 }
 
 function pytestArgs(base: string[], paths: string[][]): string[] | null {
@@ -225,7 +225,7 @@ export function testsConfig(config: RunConfig, paths: string[][], name: string):
                   toolArgs: formatArgs(dropFlag(goTestParts(args).flags, ["-run", "-test.run"])),
                   programArgs: formatArgs(goTestParts(args).program.slice(1)),
                 }
-              : { module: config.params.module ?? "", useTags: config.params.useTags ?? "false" },
+              : { module: config.params.module ?? "", useTags: config.params.useTags ?? "true" },
         }
       : {}),
   };

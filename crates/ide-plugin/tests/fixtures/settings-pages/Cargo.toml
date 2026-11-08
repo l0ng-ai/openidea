@@ -1,0 +1,21 @@
+[package]
+name = "openidea-test-settings-pages"
+version = "0.1.0"
+edition = "2024"
+publish = false
+
+[workspace]
+
+[lib]
+crate-type = ["cdylib", "rlib"]
+
+[dependencies]
+serde_json = "1"
+openidea-plugin = { path = "../../../../../sdk/rust/openidea-plugin" }
+
+[profile.release]
+opt-level = "s"
+lto = true
+strip = true
+codegen-units = 1
+panic = "abort"
