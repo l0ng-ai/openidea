@@ -38,6 +38,7 @@ import {
 import { useOverlays } from "./ui/popoverStore";
 import { REMOTE_TYPES } from "./remote";
 import { forgetInstances } from "./memory/instancesState";
+import { forgetHeapCapture } from "./heap/heapState";
 import { forgetMemory } from "./memory/memoryState";
 
 /** Whether a breakpoint popover, debugger dialog or chooser is open. */
@@ -115,6 +116,7 @@ export function activate(): () => void {
         if (id in s.sessions) continue;
         forgetMemory(Number(id));
         forgetInstances(Number(id));
+        forgetHeapCapture(Number(id));
       }
     }),
     useProject.subscribe((s, prev) => {
