@@ -39,6 +39,8 @@ struct Script {
     continued_after_stop: bool,
     /// Close the connection when a `pause` request arrives (the adapter dies).
     hang_up_on_pause: bool,
+    /// Answer `continue` with this body and keep the program running, instead of letting it exit.
+    continue_reply: Option<Value>,
 }
 
 impl Default for Script {
@@ -55,6 +57,7 @@ impl Default for Script {
             hold_set_breakpoints: 0,
             continued_after_stop: false,
             hang_up_on_pause: false,
+            continue_reply: None,
         }
     }
 }
@@ -239,6 +242,7 @@ async fn fake_adapter<S: AsyncRead + AsyncWrite + Unpin + Send + 'static>(stream
                     {"label": ""},
                 ]})
             ),
+            "continue" if script.continue_reply.is_some() => ok!(msg, script.continue_reply.clone().unwrap()),
             "continue" => {
                 ok!(msg, json!({"allThreadsContinued": true}));
                 send!(json!({"type": "event", "event": "exited", "body": {"exitCode": 3}}));
@@ -1647,6 +1651,48 @@ async fn resume_clears_suspended_without_continued_event() {
     assert!(!session.suspended.get());
 }
 
+/// After the fake adapter's stop of every thread ends, threads 7 then 8 stop alone, as a
+/// breakpoint does on fwcd and java-debug (`SUSPEND_EVENT_THREAD`).
+async fn threads_stopped(script: Script) -> (Harness, Arc<Session>, DebugSessionId) {
+    let h = harness(script);
+    let id = h.start(config()).await.unwrap();
+    h.wait_event(|e| matches!(e, DebugEvent::Stopped { .. })).await;
+    let session = h.manager.session(id).unwrap();
+    session.suspended.continued(Some(1), true);
+    session.suspended.stopped(Some(7), false);
+    session.suspended.stopped(Some(8), false);
+    (h, session, id)
+}
+
+#[tokio::test]
+async fn resume_of_one_thread_keeps_the_others_suspended() {
+    let only_it = Script { continue_reply: Some(json!({"allThreadsContinued": false})), ..Script::default() };
+    let (h, session, id) = threads_stopped(only_it).await;
+    h.manager.resume(id, 7).await.unwrap();
+    assert!(session.suspended.get());
+    h.manager.resume(id, 8).await.unwrap();
+    assert!(!session.suspended.get());
+}
+
+#[tokio::test]
+async fn resume_reply_without_the_flag_continues_every_thread() {
+    let (h, session, id) = threads_stopped(Script { continue_reply: Some(json!({})), ..Script::default() }).await;
+    h.manager.resume(id, 7).await.unwrap();
+    assert!(!session.suspended.get());
+}
+
+#[tokio::test]
+async fn step_of_one_thread_keeps_the_others_suspended() {
+    let (h, session, id) = threads_stopped(Script::default()).await;
+    let ticket = session.suspended.ticket();
+    h.manager.step(id, 8, StepKind::Into).await.unwrap();
+    assert!(session.suspended.get());
+    // Thread 8 was the latest stop: what was read on it is stale.
+    assert_eq!(session.suspended.ticket(), ticket + 1);
+    h.manager.step_in_target(id, 7, 1).await.unwrap();
+    assert!(!session.suspended.get());
+}
+
 #[tokio::test]
 async fn continued_event_clears_suspended() {
     let h = harness(Script { continued_after_stop: true, ..Script::default() });
@@ -1803,7 +1849,7 @@ async fn background_scan_skips_an_old_jdk_while_suspended() {
     assert!(!scans.lock().is_empty() && scans.lock().iter().all(|&suspended| suspended));
     assert_eq!(session.jvm_pid.load(Ordering::Acquire), 0);
 
-    session.suspended.continued();
+    session.suspended.continued(None, true);
     tokio::time::timeout(Duration::from_secs(2), task).await.unwrap().unwrap();
     assert_eq!(scans.lock().last(), Some(&false));
     assert_eq!(session.jvm_pid.load(Ordering::Acquire), 4242);
@@ -1830,7 +1876,7 @@ async fn background_scan_keeps_a_known_pid_and_stops_with_the_session() {
     let id = h.start(remote_attach("java-debug", project.path())).await.unwrap();
     h.wait_event(|e| matches!(e, DebugEvent::Stopped { .. })).await;
     let session = h.manager.session(id).unwrap();
-    session.suspended.continued();
+    session.suspended.continued(None, true);
     session.jvm_pid.store(7, Ordering::Release);
     let watch = |find| {
         jvm_memory::watch_for_attached_jvm(&session, 5005, find, Duration::from_millis(5), Duration::from_secs(5))

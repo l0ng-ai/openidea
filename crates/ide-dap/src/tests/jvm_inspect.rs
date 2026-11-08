@@ -77,7 +77,7 @@ async fn object_from_previous_stop_is_stale() {
     };
     assert_eq!((generation, instances, truncated), (1, vec![object(7)], false));
 
-    h.manager.session(id).unwrap().suspended.stopped();
+    h.manager.session(id).unwrap().suspended.stopped(None, true);
     let stale = JvmObjectRef { generation, id: 7 };
     assert_eq!(
         h.manager.jvm_memory_fields(id, stale).await.unwrap(),
@@ -90,6 +90,40 @@ async fn object_from_previous_stop_is_stale() {
     assert_eq!(fake.calls(), 1, "a stale object never reaches the inspector");
     let current = JvmObjectRef { generation: 2, id: 7 };
     assert_eq!(h.manager.jvm_memory_fields(id, current).await.unwrap(), JvmFieldsResult::Ready { fields: Vec::new() });
+}
+
+#[tokio::test]
+async fn instances_stay_readable_while_another_thread_is_stopped() {
+    let h = harness(Script::default());
+    let fake = Arc::new(FakeInspector::default());
+    fake.instances.lock().push(object(7));
+    let id = stopped_with(&h, java_config("launch"), &fake).await;
+    let session = h.manager.session(id).unwrap();
+    // Threads 20, 21, then 22 stop alone (SUSPEND_EVENT_THREAD).
+    session.suspended.continued(Some(1), true);
+    for thread in [20, 21, 22] {
+        session.suspended.stopped(Some(thread), false);
+    }
+    let instances = || h.manager.jvm_memory_instances(id, "A".into(), 10);
+    let result = instances().await.unwrap();
+    let JvmInstancesResult::Ready { generation, .. } = result else { panic!("{result:?}") };
+    let read_on_22 = JvmObjectRef { generation, id: 7 };
+
+    // An earlier thread resumes: the stop on 22 goes on, and so does what was read on it.
+    session.suspended.continued(Some(20), false);
+    assert_eq!(
+        h.manager.jvm_memory_fields(id, read_on_22).await.unwrap(),
+        JvmFieldsResult::Ready { fields: Vec::new() }
+    );
+
+    // The latest one resumes: 21 is still stopped, but what was read on 22 is stale.
+    session.suspended.continued(Some(22), false);
+    assert_eq!(
+        h.manager.jvm_memory_fields(id, read_on_22).await.unwrap(),
+        JvmFieldsResult::Unavailable { reason: JvmInspectUnavailable::Stale }
+    );
+    let result = instances().await.unwrap();
+    assert!(matches!(result, JvmInstancesResult::Ready { .. }), "{result:?}");
 }
 
 /// Starts `instances` on a held fake inspector; returns once the inspector was entered.
@@ -111,7 +145,7 @@ async fn stop_during_request_is_stale() {
     fake.instances.lock().push(object(7));
     let id = stopped_with(&h, java_config("launch"), &fake).await;
     let request = held_request(&h, id, &fake).await;
-    h.manager.session(id).unwrap().suspended.stopped();
+    h.manager.session(id).unwrap().suspended.stopped(None, true);
     fake.release.notify_one();
     assert_eq!(
         request.await.unwrap().unwrap(),
@@ -125,7 +159,7 @@ async fn resume_during_request_is_stale() {
     let fake = Arc::new(FakeInspector { hold: true, ..FakeInspector::default() });
     let id = stopped_with(&h, java_config("launch"), &fake).await;
     let request = held_request(&h, id, &fake).await;
-    h.manager.session(id).unwrap().suspended.continued();
+    h.manager.session(id).unwrap().suspended.continued(None, true);
     fake.release.notify_one();
     assert_eq!(
         request.await.unwrap().unwrap(),

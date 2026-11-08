@@ -323,7 +323,7 @@ fn only_a_known_jdk_17_or_later_is_safe_while_suspended() {
 async fn suspended_scan(fake: FakeProbe) -> (JvmMemoryResult, Arc<FakeProbe>, i64) {
     let state = tokio::sync::Mutex::new(JvmMemoryState::default());
     let suspended = Suspension::default();
-    suspended.stopped();
+    suspended.stopped(None, true);
     let jvm_pid = AtomicI64::new(0);
     let fake = Arc::new(fake);
     let probe: Arc<dyn AttachProbe> = fake.clone();
@@ -478,7 +478,7 @@ async fn queued_request_reads_suspension_under_the_lock() {
     ));
     assert!(tokio::time::timeout(Duration::from_millis(50), &mut queued).await.is_err());
     // The program hits a breakpoint while the request waits behind another one.
-    suspended.stopped();
+    suspended.stopped(None, true);
     drop(running);
     assert_eq!(
         queued.await.unwrap(),
@@ -538,7 +538,7 @@ fn inspected(bare: &BareSession, fake: FakeInspector) -> Arc<FakeInspector> {
 async fn suspended_jdk11_falls_back_to_debugger_counts() {
     let pid = std::process::id();
     let bare = bare_session("launch");
-    bare.session.suspended.stopped();
+    bare.session.suspended.stopped(None, true);
     let fake = inspected(&bare, FakeInspector::default());
     fake.counts.lock().extend([class("A", 3), class("B", 0)]);
     let target = JvmTarget::Launched(pid as i32);
@@ -565,7 +565,7 @@ async fn suspended_jdk11_falls_back_to_debugger_counts() {
 #[tokio::test]
 async fn reasons_found_before_asking_the_jvm_fall_back_too() {
     let bare = bare_session("launch");
-    bare.session.suspended.stopped();
+    bare.session.suspended.stopped(None, true);
     let fake = inspected(&bare, FakeInspector::default());
     fake.counts.lock().push(class("A", 3));
     let result = table(&bare, jdk11(1), JvmTarget::Unavailable(JvmMemoryUnavailable::UnsupportedPlatform)).await;
@@ -589,7 +589,7 @@ async fn running_without_listener_offers_counting_when_paused() {
 #[tokio::test]
 async fn other_reasons_do_not_fall_back() {
     let bare = bare_session("attach");
-    bare.session.suspended.stopped();
+    bare.session.suspended.stopped(None, true);
     let fake = inspected(&bare, FakeInspector::default());
     for reason in [JvmMemoryUnavailable::ProgramExited, JvmMemoryUnavailable::TimedOut] {
         let result = table(&bare, jdk11(1), JvmTarget::Unavailable(reason)).await;
@@ -601,7 +601,7 @@ async fn other_reasons_do_not_fall_back() {
 #[tokio::test]
 async fn failed_debugger_count_reports_the_histogram_reason() {
     let bare = bare_session("launch");
-    bare.session.suspended.stopped();
+    bare.session.suspended.stopped(None, true);
     inspected(&bare, FakeInspector::failing(ide_jvm_inspect::InspectError::TimedOut));
     let reason = JvmMemoryUnavailable::UnsafeWhileSuspended { java_major: 11 };
     let result = table(&bare, jdk11(1), JvmTarget::Unavailable(reason)).await;
@@ -612,7 +612,7 @@ async fn failed_debugger_count_reports_the_histogram_reason() {
 async fn unsupported_count_turns_the_backend_off() {
     use ide_core::event::{DebugEvent, JvmBackendState};
     let bare = bare_session("launch");
-    bare.session.suspended.stopped();
+    bare.session.suspended.stopped(None, true);
     inspected(&bare, FakeInspector::failing(ide_jvm_inspect::InspectError::Unsupported("x".into())));
     let reason = JvmMemoryUnavailable::UnsupportedPlatform;
     let result = table(&bare, jdk11(1), JvmTarget::Unavailable(reason)).await;

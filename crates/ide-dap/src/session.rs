@@ -13,7 +13,7 @@ use std::path::{Path, PathBuf};
 use std::process::Stdio;
 use std::sync::Arc;
 use std::sync::Weak;
-use std::sync::atomic::{AtomicBool, AtomicI64, AtomicU64, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicI64, Ordering};
 use std::time::Duration;
 use tokio::io::{AsyncRead, AsyncReadExt};
 use tokio::process::Child;
@@ -89,39 +89,85 @@ pub(crate) struct Session {
     pub jvm_memory: tokio::sync::Mutex<crate::JvmMemoryState>,
 }
 
-/// Whether the program is suspended: from a `stopped` event until `continued` or a successful
-/// resume/step request. Never cleared elsewhere, since a stale "suspended" only makes a later
-/// check refuse.
+/// Which threads of the program are suspended: each from its `stopped` event until a
+/// `continued` event or a successful resume/step request for it. Never cleared elsewhere, since
+/// a stale "suspended" only makes a later check refuse. fwcd and java-debug stop a breakpoint's
+/// thread alone, so a thread can run while another stays stopped.
 ///
-/// Packs a count of `stopped` events with the flag (`count << 1 | suspended`), so a resume
-/// reply clears the flag with one compare-exchange that fails when a stop arrived after the
-/// request was sent: a separate counter and flag would leave a window between the check and
-/// the clear in which that stop is lost.
+/// A resume reply ends only the stops taken before the request was sent: a thread's next
+/// `stopped` event can overtake the reply. The check and the removal happen under one lock, so
+/// no stop can land between them and be lost.
 #[derive(Default)]
-pub(crate) struct Suspension(AtomicU64);
+pub(crate) struct Suspension(Mutex<Stops>);
+
+#[derive(Default)]
+struct Stops {
+    /// Counts stops, and moves back to an earlier stopped thread: an object read under one
+    /// ticket is stale under another.
+    ticket: u64,
+    /// Threads stopped alone by their event, oldest first, with the ticket of that stop.
+    threads: Vec<(i64, u64)>,
+    /// The ticket of a stop of every thread (`allThreadsStopped`, or no thread id): any resume
+    /// ends it.
+    all: Option<u64>,
+}
+
+impl Stops {
+    fn latest(&self) -> Option<u64> {
+        self.threads.last().map(|&(_, ticket)| ticket).max(self.all)
+    }
+
+    /// Ends the stops taken by ticket `upto` of `thread`, or of every thread.
+    fn release(&mut self, thread: Option<i64>, every: bool, upto: u64) {
+        let latest = self.latest();
+        if every || thread.is_none() || self.all.is_some_and(|t| t <= upto) {
+            self.all = self.all.filter(|&t| t > upto);
+            self.threads.retain(|&(_, t)| t > upto);
+        } else {
+            self.threads.retain(|&(id, t)| Some(id) != thread || t > upto);
+        }
+        // Back on an earlier thread's stop, as the JDWP link moves to it with a new generation.
+        let now = self.latest();
+        if now.is_some() && now != latest {
+            self.ticket += 1;
+        }
+    }
+}
 
 impl Suspension {
+    /// Whether some thread is stopped.
     pub fn get(&self) -> bool {
-        self.0.load(Ordering::Acquire) & 1 == 1
+        let stops = self.0.lock();
+        stops.all.is_some() || !stops.threads.is_empty()
     }
 
-    pub fn stopped(&self) {
-        let _ = self.0.fetch_update(Ordering::AcqRel, Ordering::Acquire, |v| Some(v.wrapping_add(2) | 1));
+    /// A `stopped` event; `all`: its `allThreadsStopped`.
+    pub fn stopped(&self, thread: Option<i64>, all: bool) {
+        let mut stops = self.0.lock();
+        stops.ticket += 1;
+        let ticket = stops.ticket;
+        match thread.filter(|_| !all) {
+            Some(thread) => {
+                stops.threads.retain(|&(id, _)| id != thread);
+                stops.threads.push((thread, ticket));
+            }
+            None => stops.all = Some(ticket),
+        }
     }
 
-    pub fn continued(&self) {
-        self.0.fetch_and(!1, Ordering::AcqRel);
+    /// A `continued` event; `all`: its `allThreadsContinued`.
+    pub fn continued(&self, thread: Option<i64>, all: bool) {
+        self.0.lock().release(thread, all, u64::MAX);
     }
 
     /// Take before sending a resume-like request and pass to [`Self::resumed`].
     pub fn ticket(&self) -> u64 {
-        self.0.load(Ordering::Acquire) >> 1
+        self.0.lock().ticket
     }
 
-    /// Clears the flag after a successful resume-like request, unless the program stopped
-    /// again since `ticket` (its `stopped` event can overtake the reply).
-    pub fn resumed(&self, ticket: u64) {
-        let _ = self.0.compare_exchange(ticket << 1 | 1, ticket << 1, Ordering::AcqRel, Ordering::Acquire);
+    /// After a successful resume-like request for `thread`; `all`: every thread ran.
+    pub fn resumed(&self, ticket: u64, thread: i64, all: bool) {
+        self.0.lock().release(Some(thread), all, ticket);
     }
 }
 
@@ -534,20 +580,24 @@ async fn on_event(mgr: &Arc<DebugManager>, s: &Arc<Session>, event: &str, mut bo
             s.emit(DebugEvent::Initialized);
         }
         "stopped" => {
-            s.suspended.stopped();
+            let all = body.get("allThreadsStopped").and_then(Value::as_bool).unwrap_or(false);
+            s.suspended.stopped(int("threadId"), all);
             mgr.restore_breakpoints(s).await;
             s.emit(DebugEvent::Stopped {
                 thread_id: int("threadId").unwrap_or(0),
                 reason: str_("reason").unwrap_or_else(|| "pause".into()),
                 description: str_("description").or_else(|| str_("text")),
-                all_threads_stopped: body.get("allThreadsStopped").and_then(Value::as_bool).unwrap_or(false),
+                all_threads_stopped: all,
             });
         }
         "continued" => {
-            s.suspended.continued();
+            let all = body.get("allThreadsContinued").and_then(Value::as_bool);
+            // DAP: an event without the flag continues its thread alone. The UI keeps treating
+            // it as all threads; the suspension, which holds only threads that stopped, need not.
+            s.suspended.continued(int("threadId"), all.unwrap_or(false));
             s.emit(DebugEvent::Continued {
                 thread_id: int("threadId").unwrap_or(0),
-                all_threads_continued: body.get("allThreadsContinued").and_then(Value::as_bool).unwrap_or(true),
+                all_threads_continued: all.unwrap_or(true),
             });
         }
         "output" => {
@@ -891,55 +941,138 @@ mod tests {
     fn a_resume_reply_clears_the_stop_it_was_sent_for() {
         let s = Suspension::default();
         assert!(!s.get());
-        s.stopped();
+        s.stopped(Some(1), true);
         let ticket = s.ticket();
-        s.resumed(ticket);
+        s.resumed(ticket, 1, true);
         assert!(!s.get());
     }
 
     #[test]
     fn a_stop_after_the_resume_request_keeps_the_session_suspended() {
         let s = Suspension::default();
-        s.stopped();
+        s.stopped(Some(1), true);
         let ticket = s.ticket();
         // The next breakpoint's `stopped` event overtakes the reply to `continue`.
-        s.continued();
-        s.stopped();
-        s.resumed(ticket);
+        s.continued(Some(1), true);
+        s.stopped(Some(1), true);
+        s.resumed(ticket, 1, true);
         assert!(s.get());
         // A reply for the new stop still clears it.
-        s.resumed(s.ticket());
+        s.resumed(s.ticket(), 1, true);
         assert!(!s.get());
     }
 
     #[test]
     fn a_reply_after_a_continued_event_changes_nothing() {
         let s = Suspension::default();
-        s.stopped();
+        s.stopped(Some(1), true);
         let ticket = s.ticket();
-        s.continued();
-        s.resumed(ticket);
+        s.continued(Some(1), true);
+        s.resumed(ticket, 1, true);
         assert!(!s.get());
-        s.stopped();
+        s.stopped(Some(1), true);
         assert!(s.get());
     }
 
     #[test]
     fn concurrent_stops_are_never_lost() {
         let s = std::sync::Arc::new(Suspension::default());
-        s.stopped();
+        s.stopped(Some(1), true);
         let ticket = s.ticket();
         let stopping = {
             let s = s.clone();
-            std::thread::spawn(move || (0..10_000).for_each(|_| s.stopped()))
+            std::thread::spawn(move || (0..10_000).for_each(|_| s.stopped(Some(1), true)))
         };
         for _ in 0..10_000 {
-            s.resumed(ticket);
+            s.resumed(ticket, 1, true);
         }
         stopping.join().unwrap();
         // However they interleave, a resume for the old ticket never clears a later stop.
         assert!(s.get());
         assert_eq!(s.ticket(), ticket + 10_000);
+    }
+
+    /// fwcd and java-debug stop a breakpoint's thread alone (`SUSPEND_EVENT_THREAD`): 7, then 8.
+    fn two_threads_stopped() -> Suspension {
+        let s = Suspension::default();
+        s.stopped(Some(7), false);
+        s.stopped(Some(8), false);
+        s
+    }
+
+    #[test]
+    fn continuing_the_latest_stopped_thread_keeps_the_other_as_a_new_stop() {
+        let s = two_threads_stopped();
+        let ticket = s.ticket();
+        s.continued(Some(8), false);
+        assert!(s.get());
+        // Objects read on thread 8's stop are stale.
+        assert_eq!(s.ticket(), ticket + 1);
+        s.continued(Some(7), false);
+        assert!(!s.get());
+    }
+
+    #[test]
+    fn continuing_an_earlier_stopped_thread_keeps_the_latest_stop() {
+        let s = two_threads_stopped();
+        let ticket = s.ticket();
+        s.continued(Some(7), false);
+        assert!(s.get());
+        assert_eq!(s.ticket(), ticket);
+    }
+
+    #[test]
+    fn continuing_all_threads_ends_every_stop() {
+        let s = two_threads_stopped();
+        s.continued(Some(7), true);
+        assert!(!s.get());
+        let s = two_threads_stopped();
+        s.continued(None, false);
+        assert!(!s.get());
+    }
+
+    #[test]
+    fn continuing_a_thread_that_did_not_stop_changes_nothing() {
+        let s = two_threads_stopped();
+        let ticket = s.ticket();
+        s.continued(Some(5), false);
+        assert!(s.get());
+        assert_eq!(s.ticket(), ticket);
+    }
+
+    #[test]
+    fn a_step_reply_resumes_its_thread_alone() {
+        let s = two_threads_stopped();
+        let ticket = s.ticket();
+        s.resumed(ticket, 8, false);
+        assert!(s.get());
+        assert_eq!(s.ticket(), ticket + 1);
+        s.resumed(s.ticket(), 7, true);
+        assert!(!s.get());
+    }
+
+    #[test]
+    fn a_thread_stopping_again_before_its_resume_reply_stays_stopped() {
+        let s = two_threads_stopped();
+        let ticket = s.ticket();
+        // Thread 7's step ends, and its `stopped` event overtakes the reply to `next`.
+        s.stopped(Some(7), false);
+        s.resumed(ticket, 7, false);
+        s.continued(Some(8), false);
+        assert!(s.get());
+    }
+
+    #[test]
+    fn a_stop_of_every_thread_ends_with_any_resume() {
+        let s = Suspension::default();
+        s.stopped(Some(7), false);
+        s.stopped(Some(8), true);
+        s.continued(Some(8), false);
+        assert!(!s.get());
+        // A stop without a thread.
+        s.stopped(None, false);
+        s.resumed(s.ticket(), 5, false);
+        assert!(!s.get());
     }
 
     #[test]
