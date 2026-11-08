@@ -27,6 +27,20 @@ use std::sync::Arc;
 use std::sync::atomic::{AtomicU8, Ordering};
 use tokio::sync::oneshot;
 
+/// ACP's error code for a request that needs the user to sign in.
+pub(crate) const AUTH_REQUIRED: i64 = -32000;
+
+pub(crate) fn auth_required(code: i64, message: &str) -> bool {
+    if code == AUTH_REQUIRED {
+        return true;
+    }
+    let lower = message.to_lowercase();
+    let words: Vec<&str> = lower.split(|c: char| !c.is_alphanumeric()).filter(|w| !w.is_empty()).collect();
+    words.iter().any(|w| matches!(*w, "auth" | "authentication" | "unauthorized" | "unauthenticated"))
+        || words.windows(3).any(|w| w == ["not", "logged", "in"])
+        || words.windows(2).any(|w| w == ["sign", "in"] || w == ["log", "in"])
+}
+
 /// The capabilities this client offers, in v1 form.
 fn client_capabilities() -> Value {
     json!({
