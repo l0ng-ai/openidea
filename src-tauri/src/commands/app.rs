@@ -14,6 +14,7 @@ use tauri::{Manager, State, Window};
 pub struct AppInfo {
     pub version: String,
     pub platform: String,
+    pub windows_build_number: Option<u32>,
     pub config_dir: ide_core::IpcPath,
     /// Linux on a Wayland display: GTK draws the frameless windows' shadow and resize edges.
     pub wayland: bool,
@@ -28,6 +29,7 @@ pub fn app_info(state: State<'_, AppState>) -> AppInfo {
     AppInfo {
         version: env!("CARGO_PKG_VERSION").into(),
         platform: std::env::consts::OS.into(),
+        windows_build_number: ide_core::platform::windows_build_number(),
         config_dir: state.config_dir.clone().into(),
         #[cfg(target_os = "linux")]
         wayland: crate::linux_window_state::is_wayland(),
