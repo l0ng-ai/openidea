@@ -43,6 +43,10 @@ export function seamlessSelection(): Extension {
       ".cm-selectionLayer:not(.cm-openidea-selectionLayer)": {
         display: "none",
       },
+      // drawSelection hides the native selection inside the lines only. WebKit also fills the gaps left of
+      // selected lines (the text inset) with the content's own ::selection colour, which showed as small
+      // blocks next to the gutter.
+      ".cm-content::selection": { backgroundColor: "transparent" },
     }),
   ];
 }
