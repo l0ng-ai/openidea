@@ -1,5 +1,5 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import type { Settings, UpdateCheck, UpdateProgress } from "@/bindings";
+import type { Settings, UpdateCheck, UpdateInfo, UpdateProgress } from "@/bindings";
 import type { NotificationService } from "@/workbench/contributions";
 
 vi.mock("@tauri-apps/api/core", () => ({
@@ -25,10 +25,14 @@ const appInstallUpdate = vi.fn((_source: string, _request: number, ch: Channel) 
   return install.promise;
 });
 const appCheckUpdate = vi.fn(() => check.promise);
+const appStartupUpdateCheck = vi.fn(async (): Promise<UpdateInfo | null> => null);
 const appRestart = vi.fn(async () => null);
 const cancelRequest = vi.fn(async () => null);
 const appBuildInfo = vi.fn(async () => ({ version: "0.1.21" }));
-const settingsSet = vi.fn(async () => ({ status: "ok", data: { general: {}, appearance: {} } }));
+const settingsSet = vi.fn(async () => ({
+  status: "ok",
+  data: { general: {}, appearance: {} },
+}));
 
 vi.mock("@/platform/ipc", async (orig) => {
   const actual = await orig<typeof import("@/platform/ipc")>();
@@ -39,6 +43,7 @@ vi.mock("@/platform/ipc", async (orig) => {
       ...actual.commands,
       appInstallUpdate,
       appCheckUpdate,
+      appStartupUpdateCheck,
       appRestart,
       cancelRequest,
       appBuildInfo,
@@ -49,6 +54,7 @@ vi.mock("@/platform/ipc", async (orig) => {
 
 const {
   checkForUpdates,
+  checkForUpdatesOnStartup,
   installUpdate,
   notifyUpdate,
   progressText,
@@ -75,7 +81,10 @@ beforeEach(() => {
   channel = null;
   install = deferred();
   check = deferred();
-  provideNotificationService({ notify: (n) => void notes.push(n), expire: (k) => void expired.push(k) });
+  provideNotificationService({
+    notify: (n) => void notes.push(n),
+    expire: (k) => void expired.push(k),
+  });
   useTasks.setState({ tasks: [] });
   useProject.setState({ project: null, lightEdit: false, settings: null });
 });
@@ -85,29 +94,57 @@ afterEach(() => vi.clearAllMocks());
 describe("Install and Restart", () => {
   it("runs as a background task with download progress, then restarts", async () => {
     const done = installUpdate("0.1.22");
-    expect(notes.at(-1)).toMatchObject({ title: "Downloading OpenIDEA 0.1.22", key: UPDATE_KEY, sticky: true });
+    expect(notes.at(-1)).toMatchObject({
+      title: "Downloading OpenIDEA 0.1.22",
+      key: UPDATE_KEY,
+      sticky: true,
+    });
     expect(notes.at(-1)!.actions![0]!.label).toBe("Cancel");
-    expect(task(INSTALL_TASK_ID)).toMatchObject({ title: "Downloading OpenIDEA 0.1.22", fraction: null, done: false });
+    expect(task(INSTALL_TASK_ID)).toMatchObject({
+      title: "Downloading OpenIDEA 0.1.22",
+      fraction: null,
+      done: false,
+    });
     expect(task(INSTALL_TASK_ID)?.cancel).toBeTypeOf("function");
 
-    channel!.onmessage({ type: "downloading", downloaded: 21 * 1024 * 1024, total: 84 * 1024 * 1024 });
-    expect(task(INSTALL_TASK_ID)).toMatchObject({ fraction: 0.25, message: "21.0 MB of 84.0 MB" });
+    channel!.onmessage({
+      type: "downloading",
+      downloaded: 21 * 1024 * 1024,
+      total: 84 * 1024 * 1024,
+    });
+    expect(task(INSTALL_TASK_ID)).toMatchObject({
+      fraction: 0.25,
+      message: "21.0 MB of 84.0 MB",
+    });
     channel!.onmessage({ type: "installing" });
     expect(notes.at(-1)!.actions).toBeUndefined();
-    expect(task(INSTALL_TASK_ID)).toMatchObject({ fraction: null, message: "Installing…", cancel: undefined });
+    expect(task(INSTALL_TASK_ID)).toMatchObject({
+      fraction: null,
+      message: "Installing…",
+      cancel: undefined,
+    });
 
     install.resolve(ok(null));
     await done;
     expect(task(INSTALL_TASK_ID)?.done).toBe(true);
     expect(appRestart).toHaveBeenCalledTimes(1);
     const installed = notes.at(-1)!;
-    expect(installed).toMatchObject({ title: "OpenIDEA 0.1.22 is installed", key: UPDATE_KEY, sticky: true });
+    expect(installed).toMatchObject({
+      title: "OpenIDEA 0.1.22 is installed",
+      key: UPDATE_KEY,
+      sticky: true,
+    });
     installed.actions![0]!.run();
     expect(appRestart).toHaveBeenCalledTimes(2);
   });
 
   it("joins the running install on repeated clicks (balloon, log entry, a second check)", async () => {
-    notifyUpdate({ version: "0.1.22", currentVersion: "0.1.21", notes: null, date: null });
+    notifyUpdate({
+      version: "0.1.22",
+      currentVersion: "0.1.21",
+      notes: null,
+      date: null,
+    });
     const action = notes[0]!.actions![0]!;
     action.run();
     action.run();
@@ -117,7 +154,15 @@ describe("Install and Restart", () => {
     // A check while installing doesn't offer the install again.
     const checked = checkForUpdates();
     check.resolve(
-      ok({ enabled: true, update: { version: "0.1.22", currentVersion: "0.1.21", notes: null, date: null } }),
+      ok({
+        enabled: true,
+        update: {
+          version: "0.1.22",
+          currentVersion: "0.1.21",
+          notes: null,
+          date: null,
+        },
+      }),
     );
     await checked;
     expect(notes.map((n) => n.title)).toEqual(["OpenIDEA 0.1.22 is available", "Downloading OpenIDEA 0.1.22"]);
@@ -130,7 +175,10 @@ describe("Install and Restart", () => {
 
   it("reports a failure with Retry, and a cancellation", async () => {
     const failed = installUpdate("0.1.22");
-    install.resolve({ status: "error", error: { kind: "unavailable", message: "connection reset" } });
+    install.resolve({
+      status: "error",
+      error: { kind: "unavailable", message: "connection reset" },
+    });
     await failed;
     expect(appRestart).not.toHaveBeenCalled();
     expect(task(INSTALL_TASK_ID)?.done).toBe(true);
@@ -146,9 +194,16 @@ describe("Install and Restart", () => {
     const cancelled = installUpdate("0.1.22");
     task(INSTALL_TASK_ID)!.cancel!();
     expect(cancelRequest).toHaveBeenCalledWith(appInstallUpdate.mock.calls.at(-1)![1]);
-    install.resolve({ status: "error", error: { kind: "cancelled", message: "cancelled" } });
+    install.resolve({
+      status: "error",
+      error: { kind: "cancelled", message: "cancelled" },
+    });
     await cancelled;
-    expect(notes.at(-1)).toMatchObject({ level: "info", title: "Update cancelled", key: UPDATE_KEY });
+    expect(notes.at(-1)).toMatchObject({
+      level: "info",
+      title: "Update cancelled",
+      key: UPDATE_KEY,
+    });
     expect(appRestart).not.toHaveBeenCalled();
   });
 
@@ -157,7 +212,12 @@ describe("Install and Restart", () => {
     ["a failed", "unavailable", "cnb", "GitHub", "github"],
     ["a cancelled (likely slow)", "cancelled", "cnb", "GitHub", "github"],
   ])("offers %s download from %s again from the other source", async (_case, kind, from, label, to) => {
-    useProject.setState({ settings: { general: { updateSource: from }, appearance: {} } as unknown as Settings });
+    useProject.setState({
+      settings: {
+        general: { updateSource: from },
+        appearance: {},
+      } as unknown as Settings,
+    });
     const first = installUpdate("0.1.22");
     install.resolve({ status: "error", error: { kind, message: kind } });
     await first;
@@ -179,21 +239,37 @@ describe("Check for Updates", () => {
     const first = checkForUpdates();
     void checkForUpdates();
     expect(appCheckUpdate).toHaveBeenCalledTimes(1);
-    expect(task(CHECK_TASK_ID)).toMatchObject({ title: "Checking for updates…", done: false });
+    expect(task(CHECK_TASK_ID)).toMatchObject({
+      title: "Checking for updates…",
+      done: false,
+    });
     check.resolve(ok({ enabled: true, update: null }));
     await first;
     expect(task(CHECK_TASK_ID)?.done).toBe(true);
-    expect(notes.at(-1)).toMatchObject({ title: "OpenIDEA 0.1.21 is up to date" });
+    expect(notes.at(-1)).toMatchObject({
+      title: "OpenIDEA 0.1.21 is up to date",
+    });
   });
 
   it.each([
     [ok({ enabled: false, update: null }), "Automatic updates are not configured"],
     [
-      ok({ enabled: true, update: { version: "0.1.22", currentVersion: "0.1.21", notes: null, date: null } }),
+      ok({
+        enabled: true,
+        update: {
+          version: "0.1.22",
+          currentVersion: "0.1.21",
+          notes: null,
+          date: null,
+        },
+      }),
       "OpenIDEA 0.1.22 is available",
     ],
     [
-      { status: "error", error: { kind: "unavailable", message: "offline" } } as Result<UpdateCheck>,
+      {
+        status: "error",
+        error: { kind: "unavailable", message: "offline" },
+      } as Result<UpdateCheck>,
       "Update check failed",
     ],
   ])("always ends in a notification (%#)", async (result, title) => {
@@ -206,14 +282,29 @@ describe("Check for Updates", () => {
 
   it("shows the check in a balloon where there is no status bar (the welcome screen)", async () => {
     const done = checkForUpdates();
-    expect(notes[0]).toMatchObject({ level: "info", title: "Checking for updates…", key: UPDATE_KEY });
+    expect(notes[0]).toMatchObject({
+      level: "info",
+      title: "Checking for updates…",
+      key: UPDATE_KEY,
+    });
     check.resolve(ok({ enabled: true, update: null }));
     await done;
-    expect(notes.at(-1)).toMatchObject({ title: "OpenIDEA 0.1.21 is up to date", key: UPDATE_KEY });
+    expect(notes.at(-1)).toMatchObject({
+      title: "OpenIDEA 0.1.21 is up to date",
+      key: UPDATE_KEY,
+    });
   });
 
   it("leaves the check to the status bar in a project window", async () => {
-    useProject.setState({ project: { root: "/p", name: "p", trusted: true, isGit: false, settings: {} } as never });
+    useProject.setState({
+      project: {
+        root: "/p",
+        name: "p",
+        trusted: true,
+        isGit: false,
+        settings: {},
+      } as never,
+    });
     const done = checkForUpdates();
     expect(notes).toHaveLength(0);
     check.resolve(ok({ enabled: true, update: null }));
@@ -222,9 +313,50 @@ describe("Check for Updates", () => {
   });
 });
 
+describe("checkForUpdatesOnStartup", () => {
+  const DAY = 24 * 60 * 60 * 1000;
+  const update = (currentVersion: string): UpdateInfo => ({
+    version: "0.1.41",
+    currentVersion,
+    notes: null,
+    date: null,
+  });
+  const startupCheck = async (currentVersion: string) => {
+    notes = [];
+    appStartupUpdateCheck.mockResolvedValueOnce(update(currentVersion));
+    await checkForUpdatesOnStartup();
+    return notes.length;
+  };
+
+  beforeEach(() => {
+    localStorage.clear();
+    vi.useFakeTimers({ toFake: ["Date"], now: 10 * DAY });
+  });
+  afterEach(() => vi.useRealTimers());
+
+  it("asks a stable build every time", async () => {
+    expect(await startupCheck("0.1.40")).toBe(1);
+    expect(await startupCheck("0.1.40")).toBe(1);
+  });
+
+  it("asks a nightly build at most once a day", async () => {
+    const nightly = "0.1.41-nightly.202611081417";
+    expect(await startupCheck(nightly)).toBe(1);
+    vi.setSystemTime(11 * DAY - 1);
+    expect(await startupCheck(nightly)).toBe(0);
+    vi.setSystemTime(11 * DAY);
+    expect(await startupCheck(nightly)).toBe(1);
+  });
+});
+
 describe("updateSource", () => {
   const withSettings = (updateSource: string | undefined, locale: string | undefined) =>
-    useProject.setState({ settings: { general: { updateSource }, appearance: { locale } } as unknown as Settings });
+    useProject.setState({
+      settings: {
+        general: { updateSource },
+        appearance: { locale },
+      } as unknown as Settings,
+    });
 
   it.each([
     ["auto", "zh", "cnb"],
@@ -254,7 +386,13 @@ describe("updateSource", () => {
 
 describe("progressText", () => {
   it("formats known and unknown lengths", () => {
-    expect(progressText({ type: "downloading", downloaded: 1024 * 1024, total: null })).toEqual({
+    expect(
+      progressText({
+        type: "downloading",
+        downloaded: 1024 * 1024,
+        total: null,
+      }),
+    ).toEqual({
       message: "1.0 MB",
       fraction: null,
     });

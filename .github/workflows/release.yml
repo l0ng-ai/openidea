@@ -1,7 +1,7 @@
 name: Release
 on:
   push:
-    tags: ["v*"]
+    tags: ["v*", "!v*-nightly.*"]
   workflow_dispatch:
     inputs:
       tag:
@@ -26,7 +26,6 @@ jobs:
     runs-on: ubuntu-latest
     outputs:
       release_id: ${{ steps.release.outputs.id }}
-      official_plugin_keys: ${{ steps.plugin-keys.outputs.keys }}
     steps:
       - uses: actions/checkout@v5
         with: { ref: "${{ env.TAG }}" }
@@ -47,20 +46,6 @@ jobs:
             echo "::error::plugin API $(api wit) ships without a snapshot ($snapshot is $(api "$snapshot")): copy wit/*.wit to $snapshot/"
             exit 1
           fi
-      # The official plugins' public key (from PLUGIN_SIGNING_KEY, the seed
-      # `openidea-plugin keygen` writes), built into the app: their packages
-      # must carry its signature whatever the marketplace index lists. Without
-      # the secret the app takes the index's word, as development builds do.
-      - id: plugin-keys
-        env:
-          SIGNING_KEY: ${{ secrets.PLUGIN_SIGNING_KEY }}
-        run: |
-          if [ -n "$SIGNING_KEY" ]; then
-            seed="$(printf %s "$SIGNING_KEY" | base64 -d | od -An -tx1 | tr -d ' \n')"
-            key="$(printf '302e020100300506032b657004220420%s' "$seed" | xxd -r -p |
-              openssl pkey -inform DER -pubout -outform DER | tail -c 32 | base64)"
-            echo "keys=$key" >> "$GITHUB_OUTPUT"
-          fi
       - id: release
         uses: actions/github-script@v8
         with:
@@ -74,161 +59,24 @@ jobs:
               core.setOutput("id", existing.id);
               return;
             }
+            // Nightly builds are prereleases: the notes span stable release to stable release.
+            const previous = releases.find((r) => !r.draft && !r.prerelease);
+            const { data: notes } = await github.rest.repos.generateReleaseNotes({
+              owner, repo, tag_name: tag, previous_tag_name: previous?.tag_name,
+            });
             const { data } = await github.rest.repos.createRelease({
               owner, repo, tag_name: tag, name: `OpenIDEA ${tag}`,
-              draft: true, prerelease: tag.includes("-"), generate_release_notes: true,
+              draft: true, prerelease: tag.includes("-"), body: notes.body,
             });
             core.setOutput("id", data.id);
 
-  build:
+  binaries:
     needs: create-release
-    name: Build (${{ matrix.name }})
-    env:
-      OPENIDEA_OFFICIAL_PLUGIN_KEYS: ${{ needs.create-release.outputs.official_plugin_keys }}
-    strategy:
-      fail-fast: false
-      matrix:
-        include:
-          - name: macOS arm64
-            os: macos-latest
-            target: aarch64-apple-darwin
-          - name: macOS x64
-            os: macos-latest
-            target: x86_64-apple-darwin
-          - name: Linux x64
-            os: ubuntu-22.04
-            target: x86_64-unknown-linux-gnu
-          - name: Linux arm64
-            os: ubuntu-22.04-arm
-            target: aarch64-unknown-linux-gnu
-          - name: Windows arm64
-            os: windows-11-arm
-            target: aarch64-pc-windows-msvc
-          - name: Windows x64
-            os: windows-latest
-            target: x86_64-pc-windows-msvc
-    runs-on: ${{ matrix.os }}
-    steps:
-      - uses: actions/checkout@v5
-        with: { ref: "${{ env.TAG }}" }
-      - uses: pnpm/action-setup@v5
-        with: { version: 11 }
-      - uses: actions/setup-node@v5
-        with: { node-version: 22, cache: pnpm }
-      - uses: dtolnay/rust-toolchain@stable
-        with: { targets: "${{ matrix.target }}" }
-      - uses: Swatinem/rust-cache@v2
-        with: { key: "${{ matrix.target }}" }
-      - name: Linux deps
-        if: runner.os == 'Linux'
-        run: |
-          sudo apt-get update
-          sudo apt-get install -y libwebkit2gtk-4.1-dev libayatana-appindicator3-dev librsvg2-dev libxdo-dev libssl-dev patchelf
-      - run: pnpm install --frozen-lockfile
-      # Signing is optional: only secrets that are set get exported, so forks and
-      # unconfigured repos produce unsigned builds instead of failing.
-      - name: Signing env
-        shell: bash
-        env:
-          APPLE_CERTIFICATE: ${{ secrets.APPLE_CERTIFICATE }}
-          APPLE_CERTIFICATE_PASSWORD: ${{ secrets.APPLE_CERTIFICATE_PASSWORD }}
-          APPLE_SIGNING_IDENTITY: ${{ secrets.APPLE_SIGNING_IDENTITY }}
-          APPLE_ID: ${{ secrets.APPLE_ID }}
-          APPLE_PASSWORD: ${{ secrets.APPLE_PASSWORD }}
-          APPLE_TEAM_ID: ${{ secrets.APPLE_TEAM_ID }}
-          TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
-          TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY_PASSWORD }}
-        run: |
-          for v in APPLE_CERTIFICATE APPLE_CERTIFICATE_PASSWORD APPLE_SIGNING_IDENTITY APPLE_ID \
-                   APPLE_PASSWORD APPLE_TEAM_ID TAURI_SIGNING_PRIVATE_KEY TAURI_SIGNING_PRIVATE_KEY_PASSWORD; do
-            [ -n "${!v}" ] && { echo "$v<<__EOF__"; echo "${!v}"; echo "__EOF__"; } >> "$GITHUB_ENV"
-          done
-          true
-      - uses: tauri-apps/tauri-action@v0
-        env:
-          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-        with:
-          releaseId: ${{ needs.create-release.outputs.release_id }}
-          tagName: ${{ env.TAG }}
-          args: --target ${{ matrix.target }}
-          # The parallel builds would race on one latest.json; `updater-manifest` writes it once.
-          uploadUpdaterJson: false
-      # tauri-action notarizes the .app but not the DMG around it; notarize and
-      # staple the DMG too, then replace the uploaded asset.
-      - name: Notarize DMG
-        if: runner.os == 'macOS' && env.APPLE_ID != ''
-        env:
-          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-        run: |
-          for dmg in target/${{ matrix.target }}/release/bundle/dmg/*.dmg; do
-            xcrun notarytool submit "$dmg" --apple-id "$APPLE_ID" --password "$APPLE_PASSWORD" \
-              --team-id "$APPLE_TEAM_ID" --wait
-            xcrun stapler staple "$dmg"
-            gh release upload "$TAG" "$dmg" --clobber
-          done
-      # Portable Windows builds (#1857): on Windows Tauri embeds the
-      # frontend in the exe and WebView2 is a system component, so zipping
-      # the raw exe gives an unpack-and-run alternative to the installers.
-      - name: Portable zip
-        if: runner.os == 'Windows'
-        shell: pwsh
-        env:
-          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-        run: |
-          $target = "${{ matrix.target }}"
-          $arch = if ($target -like "x86_64*") { "x64" } else { "arm64" }
-          $version = $env:TAG -replace '^v', ''
-          $asset = "OpenIDEA_${version}_windows_${arch}_portable.zip"
-          $dir = "target/$target/release"
-          $files = @("$dir/openidea.exe")
-          if (Test-Path "$dir/WebView2Loader.dll") {
-            $files += "$dir/WebView2Loader.dll"
-          }
-          Compress-Archive -Path $files -DestinationPath $asset -Force
-          $hash = (Get-FileHash $asset -Algorithm SHA256).Hash.ToLower()
-          "$hash  $asset" | Out-File -Encoding ascii "$asset.sha256"
-          gh release upload $env:TAG $asset "$asset.sha256" --clobber
-
-  # The remote development server, per host platform it can run on. The desktop
-  # app downloads the one for the host (ide-tools `server`) and installs it over SSH.
-  # Linux builds are static (musl), so they run whatever the host's glibc.
-  server:
-    needs: create-release
-    name: Server (${{ matrix.os }}-${{ matrix.arch }})
-    strategy:
-      fail-fast: false
-      matrix:
-        include:
-          - { runner: ubuntu-22.04, target: x86_64-unknown-linux-musl, os: linux, arch: x86_64 }
-          - { runner: ubuntu-24.04-arm, target: aarch64-unknown-linux-musl, os: linux, arch: aarch64 }
-          - { runner: macos-latest, target: aarch64-apple-darwin, os: macos, arch: aarch64 }
-          - { runner: macos-latest, target: x86_64-apple-darwin, os: macos, arch: x86_64 }
-    runs-on: ${{ matrix.runner }}
-    steps:
-      - uses: actions/checkout@v5
-        with: { ref: "${{ env.TAG }}" }
-      - uses: dtolnay/rust-toolchain@stable
-        with: { targets: "${{ matrix.target }}" }
-      - uses: Swatinem/rust-cache@v2
-        with: { key: "server-${{ matrix.target }}" }
-      - name: musl toolchain
-        if: runner.os == 'Linux'
-        run: sudo apt-get update && sudo apt-get install -y musl-tools
-      - name: Build
-        run: |
-          # musl-tools only ships `musl-gcc`; cc-rs would look for `<arch>-linux-musl-gcc`.
-          if [ "$RUNNER_OS" = Linux ]; then export CC_${TARGET//-/_}=musl-gcc; fi
-          cargo build --release --locked -p ide-host --bin openidea-server --target "$TARGET"
-        env:
-          TARGET: ${{ matrix.target }}
-      - name: Upload
-        env:
-          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-          ASSET: openidea-server-${{ matrix.os }}-${{ matrix.arch }}.gz
-        run: |
-          gzip -9 -c target/${{ matrix.target }}/release/openidea-server > "$ASSET"
-          if command -v sha256sum >/dev/null; then sha256sum "$ASSET"; else shasum -a 256 "$ASSET"; fi > "$ASSET.sha256"
-          gh release upload "$TAG" "$ASSET" "$ASSET.sha256" --clobber
+    uses: ./.github/workflows/release-build.yml
+    with:
+      tag: ${{ github.event.inputs.tag || github.ref_name }}
+      release_id: ${{ needs.create-release.outputs.release_id }}
+    secrets: inherit
 
   # The official plugins, signed, and the marketplace index released apps read
   # (releases/latest/download/plugins-index.json). They are not in the
@@ -303,70 +151,8 @@ jobs:
           gh release upload "$TAG" "$out"/*.oiplugin "$out/plugins-index.json" \
             "$out/openidea-plugin-linux-x86_64.gz" --clobber
 
-  # The updater manifest (latest.json), built once from the signed bundles every build uploaded.
-  # Fails when a platform is missing, so a release never ships a manifest without it.
-  updater-manifest:
-    needs: [create-release, build]
-    runs-on: ubuntu-latest
-    steps:
-      - uses: actions/github-script@v8
-        env:
-          RELEASE_ID: ${{ needs.create-release.outputs.release_id }}
-        with:
-          script: |
-            const { owner, repo } = context.repo;
-            const release_id = Number(process.env.RELEASE_ID);
-            const tag = process.env.TAG;
-            const assets = await github.paginate(github.rest.repos.listReleaseAssets, { owner, repo, release_id });
-            const sigs = assets.filter((a) => a.name.endsWith(".sig"));
-            if (sigs.length === 0) {
-              core.notice("no signed bundles (TAURI_SIGNING_PRIVATE_KEY unset): skipping latest.json");
-              return;
-            }
-            // Bundle suffix → updater platform keys, as tauri-action names them.
-            const kinds = [
-              [/_aarch64\.AppImage$/, ["linux-aarch64", "linux-aarch64-appimage"]],
-              [/_arm64\.deb$/, ["linux-aarch64-deb"]],
-              [/\.aarch64\.rpm$/, ["linux-aarch64-rpm"]],
-              [/_amd64\.AppImage$/, ["linux-x86_64", "linux-x86_64-appimage"]],
-              [/_amd64\.deb$/, ["linux-x86_64-deb"]],
-              [/\.x86_64\.rpm$/, ["linux-x86_64-rpm"]],
-              [/_aarch64\.app\.tar\.gz$/, ["darwin-aarch64", "darwin-aarch64-app"]],
-              [/_x64\.app\.tar\.gz$/, ["darwin-x86_64", "darwin-x86_64-app"]],
-              [/_arm64_en-US\.msi$/, ["windows-aarch64", "windows-aarch64-msi"]],
-              [/_arm64-setup\.exe$/, ["windows-aarch64-nsis"]],
-              [/_x64_en-US\.msi$/, ["windows-x86_64", "windows-x86_64-msi"]],
-              [/_x64-setup\.exe$/, ["windows-x86_64-nsis"]],
-            ];
-            const platforms = {};
-            for (const sig of sigs) {
-              const bundle = sig.name.slice(0, -".sig".length);
-              const kind = kinds.find(([re]) => re.test(bundle));
-              if (!kind) continue;
-              const { data } = await github.rest.repos.getReleaseAsset({
-                owner, repo, asset_id: sig.id, headers: { accept: "application/octet-stream" },
-              });
-              const signature = Buffer.from(data).toString("utf8").trim();
-              const url = `https://github.com/${owner}/${repo}/releases/download/${tag}/${encodeURIComponent(bundle)}`;
-              for (const key of kind[1]) platforms[key] = { signature, url };
-            }
-            const missing = kinds.flatMap(([, keys]) => keys).filter((k) => !platforms[k]);
-            if (missing.length) {
-              core.setFailed(`latest.json would miss ${missing.join(", ")}`);
-              return;
-            }
-            const manifest = { version: tag.replace(/^v/, ""), notes: "", pub_date: new Date().toISOString(), platforms };
-            const old = assets.find((a) => a.name === "latest.json");
-            if (old) await github.rest.repos.deleteReleaseAsset({ owner, repo, asset_id: old.id });
-            await github.rest.repos.uploadReleaseAsset({
-              owner, repo, release_id, name: "latest.json",
-              data: JSON.stringify(manifest, null, 2),
-              headers: { "content-type": "application/json" },
-            });
-            core.info(`latest.json: ${Object.keys(platforms).sort().join(", ")}`);
-
   publish:
-    needs: [create-release, build, server, plugins, updater-manifest]
+    needs: [create-release, binaries, plugins]
     runs-on: ubuntu-latest
     steps:
       - uses: actions/github-script@v8

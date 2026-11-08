@@ -39,7 +39,10 @@ export function updateSource(): UpdateSource {
   return resolveLocale(settings?.appearance?.locale) === "zh" ? "cnb" : "github";
 }
 
-const SOURCE_NAMES: Record<UpdateSource, string> = { github: "GitHub", cnb: "CNB" };
+const SOURCE_NAMES: Record<UpdateSource, string> = {
+  github: "GitHub",
+  cnb: "CNB",
+};
 
 /** Makes `source` the update source; the retry it precedes uses it even if saving fails. */
 async function chooseSource(source: UpdateSource) {
@@ -79,7 +82,14 @@ async function runCheck() {
   // The check only reads: cancelling drops its answer (the request finishes on its own).
   let abandon = () => {};
   const abandoned = new Promise<"cancelled">((resolve) => (abandon = () => resolve("cancelled")));
-  upsertTask({ id: CHECK_TASK_ID, title, message: null, fraction: null, done: false, cancel: () => abandon() });
+  upsertTask({
+    id: CHECK_TASK_ID,
+    title,
+    message: null,
+    fraction: null,
+    done: false,
+    cancel: () => abandon(),
+  });
   // No status bar (the welcome screen): the balloon is the only place the check can show.
   const { project, lightEdit } = useProject.getState();
   if (!installing && !project && !lightEdit)
@@ -110,17 +120,41 @@ async function runCheck() {
       notifyUpdate(r.update);
     }
   } catch (e) {
-    notifications().notify({ level: "error", title: t("app.update.failed"), body: errorText(e), key: UPDATE_KEY });
+    notifications().notify({
+      level: "error",
+      title: t("app.update.failed"),
+      body: errorText(e),
+      key: UPDATE_KEY,
+    });
   } finally {
-    upsertTask({ id: CHECK_TASK_ID, title, message: null, fraction: 1, done: true });
+    upsertTask({
+      id: CHECK_TASK_ID,
+      title,
+      message: null,
+      fraction: 1,
+      done: true,
+    });
   }
+}
+
+const NIGHTLY_PROMPT_KEY = "openidea.update.nightlyPromptedAt";
+const NIGHTLY_PROMPT_INTERVAL_MS = 24 * 60 * 60 * 1000;
+
+/** Nightly builds come out more often than anyone wants to be asked: at most one prompt a day. */
+function nightlyPromptDue(now = Date.now()): boolean {
+  const last = Number(localStorage.getItem(NIGHTLY_PROMPT_KEY));
+  if (now - last < NIGHTLY_PROMPT_INTERVAL_MS) return false;
+  localStorage.setItem(NIGHTLY_PROMPT_KEY, String(now));
+  return true;
 }
 
 /** Silent check once per app start; only an available update is shown. */
 export async function checkForUpdatesOnStartup(): Promise<void> {
   if (!isTauri()) return;
   const update = await commands.appStartupUpdateCheck(updateSource()).catch(() => null);
-  if (update) notifyUpdate(update);
+  if (!update) return;
+  if (update.currentVersion.includes("-nightly.") && !nightlyPromptDue()) return;
+  notifyUpdate(update);
 }
 
 export function notifyUpdate(update: UpdateInfo) {
@@ -130,7 +164,12 @@ export function notifyUpdate(update: UpdateInfo) {
     body: update.notes ?? undefined,
     sticky: true,
     key: UPDATE_KEY,
-    actions: [{ label: t("app.update.install"), run: () => void installUpdate(update.version) }],
+    actions: [
+      {
+        label: t("app.update.install"),
+        run: () => void installUpdate(update.version),
+      },
+    ],
   });
 }
 
@@ -139,16 +178,25 @@ function megabytes(bytes: number) {
 }
 
 /** Download progress as the task's message and fraction. */
-export function progressText(p: UpdateProgress): { message: string; fraction: number | null } {
+export function progressText(p: UpdateProgress): {
+  message: string;
+  fraction: number | null;
+} {
   if (p.type === "installing") return { message: t("app.update.installingMessage"), fraction: null };
   const done = p.downloaded ?? 0;
   if (p.total) {
     return {
-      message: t("app.update.progress", { done: megabytes(done), total: megabytes(p.total) }),
+      message: t("app.update.progress", {
+        done: megabytes(done),
+        total: megabytes(p.total),
+      }),
       fraction: Math.min(1, done / p.total),
     };
   }
-  return { message: t("app.update.progressUnknown", { done: megabytes(done) }), fraction: null };
+  return {
+    message: t("app.update.progressUnknown", { done: megabytes(done) }),
+    fraction: null,
+  };
 }
 
 /** Downloads and installs `version`, then restarts. A second call while one runs joins it. */
@@ -190,7 +238,14 @@ async function runInstall(version: string, source: UpdateSource) {
       uncancellable: p.type === "installing" ? t("app.update.installUncancellable") : undefined,
     });
   };
-  upsertTask({ id: INSTALL_TASK_ID, title, message: null, fraction: null, done: false, cancel });
+  upsertTask({
+    id: INSTALL_TASK_ID,
+    title,
+    message: null,
+    fraction: null,
+    done: false,
+    cancel,
+  });
   // Replaces the notification whose action is now spent.
   balloon([{ label: t("app.update.cancel"), run: cancel }]);
   try {
@@ -210,14 +265,23 @@ async function runInstall(version: string, source: UpdateSource) {
         body: errorText(e),
         key: UPDATE_KEY,
         actions: [
-          { label: t("app.update.retry"), run: () => void installUpdate(version, source) },
+          {
+            label: t("app.update.retry"),
+            run: () => void installUpdate(version, source),
+          },
           otherSourceAction(version, source),
         ],
       });
     }
     return;
   } finally {
-    upsertTask({ id: INSTALL_TASK_ID, title, message: null, fraction: 1, done: true });
+    upsertTask({
+      id: INSTALL_TASK_ID,
+      title,
+      message: null,
+      fraction: 1,
+      done: true,
+    });
   }
   const restart = () => void commands.appRestart();
   // Stays if a window cancels the restart (unsaved changes): the update applies on the next start.

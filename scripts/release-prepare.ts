@@ -75,7 +75,7 @@ export function syncApiSnapshot(root: string): { from: string; to: string; copie
   return { from, to, copied: true };
 }
 
-function edit(path: string, change: (text: string) => string) {
+export function edit(path: string, change: (text: string) => string) {
   const before = readFileSync(path, "utf8");
   const after = change(before);
   if (after === before) throw new Error(`${path}: nothing changed`);
