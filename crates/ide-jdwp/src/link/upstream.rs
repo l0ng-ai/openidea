@@ -79,7 +79,7 @@ fn is_resume(packet: &[u8]) -> bool {
 
 /// ClassType.InvokeMethod, ClassType.NewInstance, InterfaceType.InvokeMethod,
 /// ObjectReference.InvokeMethod.
-fn is_invoke(command: (u8, u8)) -> bool {
+pub(super) fn is_invoke(command: (u8, u8)) -> bool {
     matches!(command, (3, 3) | (3, 4) | (5, 1) | (9, 6))
 }
 
@@ -123,10 +123,22 @@ async fn forward(shared: &Shared, packet: &[u8]) -> io::Result<()> {
     // Still under the writer lock, so no command of the link's own can slip in between the
     // write and the state change.
     match command {
-        Some((1, 9) | (11, 3)) => shared.update(|core| core.end_stop()),
+        Some((1, 9) | (11, 3)) => {
+            // Only once the resume is on its way: the ids stay valid for the whole stop.
+            let disposals = shared.update(|core| {
+                core.end_stop();
+                core.disposals()
+            });
+            for packet in &disposals {
+                jvm.write_all(packet).await?;
+            }
+            if !disposals.is_empty() {
+                jvm.flush().await?;
+            }
+        }
         // VirtualMachine.Dispose, VirtualMachine.Exit: the session is over, but the adapter
         // still gets the JVM's answer.
-        Some((1, 6) | (1, 10)) => shared.update(|core| core.closed = true),
+        Some((1, 6) | (1, 10)) => shared.update(|core| core.close()),
         _ => {}
     }
     Ok(())

@@ -31,7 +31,7 @@ pub(super) async fn run(
             match shared.update(|core| core.route_reply(h.id)) {
                 Route::Own(own) => {
                     let body = read_body(&mut jvm, body_len).await?;
-                    shared.update(|core| core.own_reply(own, &h, &body));
+                    shared.update(|core| core.own_reply(own, &h, body));
                     shared.own_answered.notify_waiters();
                     continue;
                 }

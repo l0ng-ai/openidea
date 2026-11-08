@@ -4423,6 +4423,7 @@ name = "ide-jdwp"
 version = "0.1.38"
 dependencies = [
  "proptest",
+ "tempfile",
  "thiserror 2.0.21",
  "tokio",
  "tracing",

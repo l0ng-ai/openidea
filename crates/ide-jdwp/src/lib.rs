@@ -10,4 +10,4 @@ pub use codec::{
     primitive_text,
 };
 pub use ids::{IdSizes, ReplyIds, Stop, dispose_body, object_ids, stop_of};
-pub use link::{JdwpLink, LinkOptions, LinkState, OWN_IDS};
+pub use link::{JdwpLink, LinkError, LinkOptions, LinkState, OWN_IDS};

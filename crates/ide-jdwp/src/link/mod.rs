@@ -1,9 +1,7 @@
 //! Transparent relay between a debug adapter and a JVM that tracks when the VM is stopped and
 //! can later inject its own commands (ids in [`OWN_IDS`]) without the adapter seeing them.
 
-use crate::codec::{Header, Reader};
-use crate::ids::{IdSizes, stop_of};
-use std::collections::{HashMap, HashSet};
+use state::{Core, OwnCommand, Route};
 use std::sync::{Arc, Mutex, PoisonError};
 use std::time::Duration;
 use std::{future::Future, io};
@@ -12,9 +10,16 @@ use tokio::net::{TcpListener, TcpStream};
 use tokio::sync::watch;
 use tokio::task::JoinHandle;
 
+mod command;
 mod downstream;
+mod ledger;
+mod state;
 mod upstream;
 
+pub use command::LinkError;
+
+#[cfg(test)]
+mod command_tests;
 #[cfg(test)]
 mod tests;
 
@@ -77,141 +82,11 @@ struct Shared {
     jvm: tokio::sync::Mutex<Option<JvmWriter>>,
     /// Signalled after each reply to one of the link's own commands.
     own_answered: tokio::sync::Notify,
-}
-
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-enum OwnCommand {
-    IdSizes,
-}
-
-#[derive(Default)]
-struct Core {
-    hold: bool,
-    connected: bool,
-    handshaken: bool,
-    released: bool,
-    stopped: bool,
-    thread: Option<u64>,
-    generation: u64,
-    degraded: Option<String>,
-    closed: bool,
-    sizes: Option<IdSizes>,
-    /// Body of the current stop's event when it arrived before `sizes`.
-    unread_stop: Option<Vec<u8>>,
-    /// Ids of adapter invokes the JVM has not answered yet.
-    invokes: HashSet<u32>,
-    /// The link's commands the JVM has not answered yet. An entry leaves only when its reply
-    /// arrives: a caller that stops waiting must leave it here, or the late reply could be
-    /// taken for the adapter's.
-    own: HashMap<u32, OwnCommand>,
-    /// Adapter commands with an id in [`OWN_IDS`] the JVM has not answered yet, per id.
-    adapter_reserved: HashMap<u32, u32>,
-    next_own: u32,
-}
-
-/// Who gets a reply from the JVM.
-enum Route {
-    Own(OwnCommand),
-    Adapter,
-    /// In [`OWN_IDS`] but nobody is waiting for it.
-    Nobody,
-}
-
-impl Core {
-    fn state(&self) -> LinkState {
-        if self.closed {
-            LinkState::Closed
-        } else if let Some(reason) = &self.degraded {
-            LinkState::Degraded(reason.clone())
-        } else if !self.connected {
-            LinkState::Connecting
-        } else if !self.handshaken {
-            LinkState::Handshaking
-        } else if self.stopped {
-            LinkState::Suspended { generation: self.generation, thread: self.thread }
-        } else if self.hold && !self.released {
-            LinkState::Held
-        } else {
-            LinkState::Ready
-        }
-    }
-
-    /// Call under the JVM writer lock, so the id is pending before an adapter command with the
-    /// same id can be written.
-    fn register_own(&mut self, command: OwnCommand) -> u32 {
-        loop {
-            let id = self.next_own;
-            self.next_own = if id + 1 >= OWN_IDS.end { OWN_IDS.start } else { id + 1 };
-            if !self.own.contains_key(&id) && !self.adapter_reserved.contains_key(&id) {
-                self.own.insert(id, command);
-                return id;
-            }
-        }
-    }
-
-    /// Two pending commands never share a reserved id (see `upstream::forward`), so a reply's
-    /// id alone names its owner.
-    fn route_reply(&mut self, id: u32) -> Route {
-        if let Some(own) = self.own.remove(&id) {
-            return Route::Own(own);
-        }
-        if OWN_IDS.contains(&id) {
-            let Some(pending) = self.adapter_reserved.get_mut(&id) else {
-                return Route::Nobody;
-            };
-            *pending -= 1;
-            if *pending == 0 {
-                self.adapter_reserved.remove(&id);
-            }
-        }
-        self.invokes.remove(&id);
-        Route::Adapter
-    }
-
-    fn own_reply(&mut self, command: OwnCommand, header: &Header, body: &[u8]) {
-        match command {
-            OwnCommand::IdSizes if header.error() == 0 => match IdSizes::parse(body) {
-                Ok(sizes) => {
-                    self.sizes = Some(sizes);
-                    if let Some(event) = self.unread_stop.take() {
-                        self.thread = stop_of(&event, &sizes).and_then(|stop| stop.thread);
-                    }
-                }
-                Err(e) => tracing::warn!("JDWP link: malformed IDSizes reply: {e}"),
-            },
-            OwnCommand::IdSizes => tracing::warn!("JDWP link: IDSizes failed with error {}", header.error()),
-        }
-    }
-
-    /// A `Composite` event: any event whose policy suspends something starts a new stop.
-    fn event(&mut self, body: &[u8]) {
-        match self.sizes {
-            Some(sizes) => {
-                if let Some(stop) = stop_of(body, &sizes).filter(|stop| stop.suspend_policy != 0) {
-                    self.begin_stop(stop.thread, None);
-                }
-            }
-            None => {
-                let mut r = Reader::new(body);
-                if r.u8().is_ok_and(|policy| policy != 0) && r.count().is_ok_and(|n| n > 0) {
-                    self.begin_stop(None, Some(body.to_vec()));
-                }
-            }
-        }
-    }
-
-    fn begin_stop(&mut self, thread: Option<u64>, unread: Option<Vec<u8>>) {
-        self.generation += 1;
-        self.stopped = true;
-        self.thread = thread;
-        self.unread_stop = unread;
-    }
-
-    fn end_stop(&mut self) {
-        self.stopped = false;
-        self.thread = None;
-        self.unread_stop = None;
-    }
+    /// One injected command at a time (see `state::Turn`).
+    turn: Arc<tokio::sync::Mutex<()>>,
+    /// The current stop's generation; `None` while running or closed. Unlike `state`, not
+    /// hidden by `Degraded`.
+    stops: watch::Sender<Option<u64>>,
 }
 
 impl Shared {
@@ -223,6 +98,8 @@ impl Shared {
             state,
             jvm: tokio::sync::Mutex::new(None),
             own_answered: tokio::sync::Notify::new(),
+            turn: Arc::default(),
+            stops: watch::Sender::new(None),
         }
     }
 
@@ -230,19 +107,13 @@ impl Shared {
     fn update<R>(&self, f: impl FnOnce(&mut Core) -> R) -> R {
         let mut core = self.core.lock().unwrap_or_else(PoisonError::into_inner);
         let out = f(&mut core);
-        let next = core.state();
-        self.state.send_if_modified(|state| {
-            let changed = *state != next;
-            if changed {
-                *state = next;
-            }
-            changed
-        });
+        publish(&self.state, core.state());
+        publish(&self.stops, (core.stopped && !core.closed).then_some(core.generation));
         out
     }
 
     async fn close(&self) {
-        self.update(|core| core.closed = true);
+        self.update(Core::close);
         self.jvm.lock().await.take();
     }
 }
@@ -337,6 +208,16 @@ where
     if let Err(e) = result {
         tracing::debug!("JDWP link closed: {e}");
     }
+}
+
+fn publish<T: PartialEq>(sender: &watch::Sender<T>, next: T) {
+    sender.send_if_modified(|value| {
+        let changed = *value != next;
+        if changed {
+            *value = next;
+        }
+        changed
+    });
 }
 
 fn check_handshake(bytes: &[u8; 14]) -> io::Result<()> {

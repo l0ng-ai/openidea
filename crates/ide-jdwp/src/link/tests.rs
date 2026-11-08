@@ -6,18 +6,18 @@ use std::time::Duration;
 use tokio::io::{AsyncRead, AsyncReadExt, AsyncWriteExt, DuplexStream};
 use tokio::net::{TcpListener, TcpStream};
 
-const WAIT: Duration = Duration::from_secs(5);
+pub(super) const WAIT: Duration = Duration::from_secs(5);
 const HANDSHAKE: &[u8; 14] = b"JDWP-Handshake";
 const HELD: LinkOptions = LinkOptions { hold_resumes: true };
-const OPEN: LinkOptions = LinkOptions { hold_resumes: false };
+pub(super) const OPEN: LinkOptions = LinkOptions { hold_resumes: false };
 
-fn command(id: u32, set: u8, cmd: u8, body: &[u8]) -> Vec<u8> {
+pub(super) fn command(id: u32, set: u8, cmd: u8, body: &[u8]) -> Vec<u8> {
     let mut out = Header::command_bytes(id, set, cmd, body.len()).to_vec();
     out.extend_from_slice(body);
     out
 }
 
-fn reply(id: u32, error: u16, body: &[u8]) -> Vec<u8> {
+pub(super) fn reply(id: u32, error: u16, body: &[u8]) -> Vec<u8> {
     let mut out = command(id, 0, 0, body);
     out[8] = FLAG_REPLY;
     out[9..11].copy_from_slice(&error.to_be_bytes());
@@ -25,7 +25,7 @@ fn reply(id: u32, error: u16, body: &[u8]) -> Vec<u8> {
 }
 
 /// Composite event with one event of `kind`; `thread` is written with 8 bytes.
-fn event(policy: u8, kind: u8, thread: u64) -> Vec<u8> {
+pub(super) fn event(policy: u8, kind: u8, thread: u64) -> Vec<u8> {
     let mut w = Writer::new();
     w.u8(policy);
     w.i32(1);
@@ -43,11 +43,11 @@ fn id_sizes_body() -> Vec<u8> {
     w.into_vec()
 }
 
-async fn within<T>(what: &str, f: impl Future<Output = T>) -> T {
+pub(super) async fn within<T>(what: &str, f: impl Future<Output = T>) -> T {
     tokio::time::timeout(WAIT, f).await.unwrap_or_else(|_| panic!("timed out: {what}"))
 }
 
-async fn read_packet(stream: &mut (impl AsyncRead + Unpin)) -> Vec<u8> {
+pub(super) async fn read_packet(stream: &mut (impl AsyncRead + Unpin)) -> Vec<u8> {
     within("packet", async {
         let mut header = [0; HEADER_LEN];
         stream.read_exact(&mut header).await.expect("packet header");
@@ -60,25 +60,25 @@ async fn read_packet(stream: &mut (impl AsyncRead + Unpin)) -> Vec<u8> {
     .await
 }
 
-async fn assert_eof(stream: &mut (impl AsyncRead + Unpin), side: &str) {
+pub(super) async fn assert_eof(stream: &mut (impl AsyncRead + Unpin), side: &str) {
     let mut byte = [0; 1];
     let read = within(side, stream.read(&mut byte)).await;
     assert!(matches!(read, Ok(0) | Err(_)), "{side} still open: {read:?}");
 }
 
-async fn wait_state(link: &JdwpLink, want: LinkState) {
+pub(super) async fn wait_state(link: &JdwpLink, want: LinkState) {
     let mut rx = link.subscribe();
     let seen = tokio::time::timeout(WAIT, rx.wait_for(|s| *s == want)).await;
     assert!(matches!(seen, Ok(Ok(_))), "state {:?}, wanted {want:?}", link.state());
 }
 
-struct Pair {
-    link: JdwpLink,
-    adapter: DuplexStream,
-    jvm: DuplexStream,
+pub(super) struct Pair {
+    pub(super) link: JdwpLink,
+    pub(super) adapter: DuplexStream,
+    pub(super) jvm: DuplexStream,
 }
 
-fn pair(options: LinkOptions) -> Pair {
+pub(super) fn pair(options: LinkOptions) -> Pair {
     let (adapter, link_adapter) = tokio::io::duplex(64 * 1024);
     let (link_jvm, jvm) = tokio::io::duplex(64 * 1024);
     let link = JdwpLink::spawn_over(link_adapter, link_jvm, options);
@@ -102,7 +102,7 @@ async fn handshake(p: &mut Pair) -> u32 {
 }
 
 /// Handshake and answer the link's `IDSizes` with 8-byte ids.
-async fn connected(options: LinkOptions) -> Pair {
+pub(super) async fn connected(options: LinkOptions) -> Pair {
     let mut p = pair(options);
     let own = handshake(&mut p).await;
     p.jvm.write_all(&reply(own, 0, &id_sizes_body())).await.unwrap();
@@ -110,20 +110,20 @@ async fn connected(options: LinkOptions) -> Pair {
 }
 
 /// A packet the JVM sends after the bytes under test; the adapter must see it next.
-async fn jvm_marker(p: &mut Pair) {
+pub(super) async fn jvm_marker(p: &mut Pair) {
     let marker = event(0, 8, 0x55);
     p.jvm.write_all(&marker).await.unwrap();
     assert_eq!(read_packet(&mut p.adapter).await, marker);
 }
 
 /// A packet the adapter sends after the bytes under test; the JVM must see it next.
-async fn adapter_marker(p: &mut Pair) {
+pub(super) async fn adapter_marker(p: &mut Pair) {
     let marker = command(0x99, 1, 1, &[]);
     p.adapter.write_all(&marker).await.unwrap();
     assert_eq!(read_packet(&mut p.jvm).await, marker);
 }
 
-async fn stop(p: &mut Pair, policy: u8, thread: u64) {
+pub(super) async fn stop(p: &mut Pair, policy: u8, thread: u64) {
     let bp = event(policy, 2, thread);
     p.jvm.write_all(&bp).await.unwrap();
     assert_eq!(read_packet(&mut p.adapter).await, bp);
