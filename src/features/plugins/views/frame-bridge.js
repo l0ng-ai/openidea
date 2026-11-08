@@ -84,7 +84,8 @@
     const m = e.data;
     if (e.source !== window.parent || !m || m.tag !== TAG) return;
     if (m.theme) applyTheme(m.theme);
-    else if (typeof m.fontZoomDelta === "number") stepFrameFontZoom(m.fontZoomDelta);
+    else if (m.fontZoomDelta === -1 || m.fontZoomDelta === 0 || m.fontZoomDelta === 1)
+      stepFrameFontZoom(m.fontZoomDelta);
     else if (typeof m.reply === "number") {
       const p = pending.get(m.reply);
       pending.delete(m.reply);

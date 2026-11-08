@@ -1,3 +1,4 @@
+import { registerFontZoomSurface } from "@/workbench/contributions";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { act, cleanup, render, screen } from "@testing-library/react";
 import { EditorState } from "@codemirror/state";
@@ -114,7 +115,7 @@ describe("editor font size actions", () => {
     expect(view.dom.style.getPropertyValue("--openidea-editor-font-size")).toContain("+ 2px");
   });
 
-  it("routes font size actions to hovered or focused terminal tabs and plugin webviews", async () => {
+  it("routes font size actions by focus even when another surface is hovered", async () => {
     const md = open(mdCtx);
     activate(md);
     // Works even when editorFocus is false (e.g. a tool window has focus).
@@ -126,9 +127,7 @@ describe("editor font size actions", () => {
     termHost.appendChild(termInput);
     document.body.appendChild(termHost);
     const termZooms: number[] = [];
-    termHost.addEventListener("openidea:terminal-font-zoom", (e) => {
-      termZooms.push((e as CustomEvent<number>).detail);
-    });
+    const releaseTerminal = registerFontZoomSurface(termHost, (delta) => termZooms.push(delta));
 
     const iframe = document.createElement("iframe");
     iframe.setAttribute("data-plugin-webview", "dengliu.kubernetes");
@@ -139,6 +138,10 @@ describe("editor font size actions", () => {
       configurable: true,
     });
 
+    const releaseFrame = registerFontZoomSurface(iframe, (delta) =>
+      iframe.contentWindow?.postMessage({ tag: "openidea-view", fontZoomDelta: delta }, "*"),
+    );
+
     try {
       termInput.focus();
       await executeAction("editor.increaseFontSize");
@@ -146,22 +149,28 @@ describe("editor font size actions", () => {
       expect(termZooms).toEqual([1, -1]);
       expect(zoom(md)).toBe(0);
 
-      // Hovering over the plugin webview wins over terminal focus.
+      // The pointer must not redirect a keyboard action away from terminal focus.
       const qsa = vi.spyOn(document, "querySelectorAll").mockImplementation(((sel: string) => {
         if (sel === ":hover") return [iframe] as unknown as NodeListOf<Element>;
         return Document.prototype.querySelectorAll.call(document, sel);
       }) as typeof document.querySelectorAll);
       await executeAction("editor.increaseFontSize");
+      expect(posted).toEqual([]);
+      expect(termZooms).toEqual([1, -1, 1]);
+      iframe.focus();
+      await executeAction("editor.increaseFontSize");
       expect(posted).toEqual([{ tag: "openidea-view", fontZoomDelta: 1 }]);
       qsa.mockRestore();
 
       await executeAction("editor.resetFontSize");
-      expect(termZooms).toEqual([1, -1, 0]);
+      expect(termZooms).toEqual([1, -1, 1, 0]);
       expect(posted).toEqual([
         { tag: "openidea-view", fontZoomDelta: 1 },
         { tag: "openidea-view", fontZoomDelta: 0 },
       ]);
     } finally {
+      releaseTerminal();
+      releaseFrame();
       termHost.remove();
       iframe.remove();
     }

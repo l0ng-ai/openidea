@@ -20,7 +20,7 @@ import { tx } from "@/platform/i18n";
 import { useProject } from "@/platform/project";
 import { subscribeTheme, themeKey } from "@/platform/themeWatch";
 import { EmptyState, Spinner } from "@/ui";
-import { editorService } from "@/workbench/contributions";
+import { editorService, registerFontZoomSurface } from "@/workbench/contributions";
 import { ToolWindowCornerActions, useOwnToolWindowHeader } from "@/workbench/toolwindows/ToolWindows";
 import { pluginsBackend, type FileFilter } from "../backend";
 import { errorText, usePlugins } from "../store";
@@ -164,6 +164,10 @@ export function WebView({ pluginId, view, label, header = "default", document = 
   const post = useCallback((message: object, transfer: Transferable[] = []) => {
     frame.current?.contentWindow?.postMessage({ tag: FRAME_TAG, ...message }, "*", transfer);
   }, []);
+  useEffect(() => {
+    const host = frame.current;
+    if (host) return registerFontZoomSurface(host, (delta) => post({ fontZoomDelta: delta }));
+  }, [page, post]);
   const postTheme = useCallback(() => {
     const t = frameTheme();
     if (ownHeader) {

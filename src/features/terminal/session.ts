@@ -9,7 +9,7 @@ import { SearchAddon, type ISearchOptions } from "@xterm/addon-search";
 import "@xterm/xterm/css/xterm.css";
 import { Channel } from "@tauri-apps/api/core";
 import { call, commands, isTauri, type TerminalId } from "@/platform/ipc";
-import { editorService, notifications } from "@/workbench/contributions";
+import { editorService, notifications, registerFontZoomSurface } from "@/workbench/contributions";
 import { fitScheduler, settledResize } from "./fit";
 import { installTerminalDrop } from "./drop";
 import { installTerminalPaste, pasteTerminalClipboard } from "./paste";
@@ -310,12 +310,8 @@ export class TerminalSession {
       { dispose: installTerminalDrop(this.host, (text) => this.paste(text)) },
     );
     this.host.addEventListener("mousedown", this.onMiddleClick);
-    this.host.addEventListener("openidea:terminal-font-zoom", this.onFontZoom as EventListener);
+    this.disposables.push({ dispose: registerFontZoomSurface(this.host, (delta) => this.stepFontSize(delta)) });
   }
-
-  private onFontZoom = (e: CustomEvent<number>) => {
-    if (typeof e.detail === "number") this.stepFontSize(e.detail);
-  };
 
   private onMiddleClick = (e: MouseEvent) => {
     if (e.button !== 1 || !workflowSettings().terminal.pasteOnMiddleClick) return;
@@ -762,7 +758,6 @@ export class TerminalSession {
     this.pendingInput = "";
     this.resizeObserver?.disconnect();
     this.host.removeEventListener("mousedown", this.onMiddleClick);
-    this.host.removeEventListener("openidea:terminal-font-zoom", this.onFontZoom as EventListener);
     if (this.ptyId !== null) void commands.termKill(this.ptyId);
     this.ptyId = null;
     this.disposables.forEach((d) => d.dispose());
