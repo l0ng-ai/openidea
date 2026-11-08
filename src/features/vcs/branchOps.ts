@@ -11,7 +11,6 @@ import { confirmDialog, promptText } from "./dialogs";
 import { cleanUpBranchNameOnTyping } from "@/platform/gitRefName";
 import { errorMessage, runOp, runRemote, saveAll } from "./ops";
 import { conflictedFiles, currentRepo, refreshNow, repoName, useVcs } from "./store";
-import { isCurrentWorktree } from "./worktrees";
 import { tx } from "@/platform/i18n";
 
 const recentKey = () => `openidea.vcs.recentBranches:${useVcs.getState().root ?? ""}`;
@@ -283,16 +282,14 @@ export async function renameBranch(name: string) {
 /**
  * A branch checked out in another worktree cannot be deleted: `git branch -d` refuses.
  * Offers to delete such a worktree first (its folder goes with it); false when the user
- * backed out. The main worktree cannot be removed, and a worktree of this window's roots
- * is the open project: those keep git's own message on the branch deletion.
+ * backed out. The main worktree cannot be removed, so it keeps git's own message on the
+ * branch deletion; a window may have several worktrees open as roots (a parent folder),
+ * and deleting one of those is the user's call, made in the dialog.
  */
 async function deleteHoldingWorktree(repo: string | null, name: string): Promise<boolean> {
   let holding: Worktree | undefined;
   try {
-    const roots = useVcs.getState().roots;
-    holding = (await call(commands.vcsWorktrees(repo))).find(
-      (w) => w.branch === name && !w.main && !roots.some((root) => isCurrentWorktree(w.path, root)),
-    );
+    holding = (await call(commands.vcsWorktrees(repo))).find((w) => w.branch === name && !w.main);
   } catch {
     return true; // no worktree list: let the branch deletion speak for itself
   }

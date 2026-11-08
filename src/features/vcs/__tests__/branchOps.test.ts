@@ -134,11 +134,20 @@ it("keeps the branch when the worktree question is turned down", async () => {
   expect(mocks.deleteBranch).not.toHaveBeenCalled();
 });
 
-it("never offers to delete this window's worktrees or the main one", async () => {
-  useVcs.setState({ roots: ["/p/front-feature-wt"] });
+it("offers to delete a holding worktree even when the window has it open as a root", async () => {
+  // A project opened on the parent folder has both worktrees as its roots.
+  useVcs.setState({ roots: ["/p/front", "/p/front-feature-wt"] });
   mocks.worktrees.mockResolvedValue(
-    ok([worktree("/p/front", "feature/wt", true), worktree("/p/front-feature-wt", "feature/wt")]),
+    ok([worktree("/p/front", "main", true), worktree("/p/front-feature-wt", "feature/wt")]),
   );
+  mocks.confirm.mockResolvedValue(true);
+  await deleteBranch("feature/wt");
+  expect(mocks.removeWorktree).toHaveBeenCalledWith("/p/front", "/p/front-feature-wt", false);
+  expect(mocks.deleteBranch).toHaveBeenCalledWith("/p/front", "feature/wt");
+});
+
+it("keeps the branch checked out in the main worktree: git's own error stands", async () => {
+  mocks.worktrees.mockResolvedValue(ok([worktree("/p/front", "feature/wt", true)]));
   await deleteBranch("feature/wt");
   expect(mocks.confirm).not.toHaveBeenCalled();
   expect(mocks.removeWorktree).not.toHaveBeenCalled();
