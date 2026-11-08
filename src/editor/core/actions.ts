@@ -779,6 +779,14 @@ export function registerEditorActions(): () => void {
     text("code.autoIndentLines", "Auto-Indent Lines", (v) => !v.state.readOnly && indentSelection(v), {
       keywords: ["reindent", "fix indentation"],
     }),
+    {
+      id: "editor.addOrRemoveCaret",
+      title: "Add or Remove Caret",
+      category: "Editor Actions",
+      when: "textEditorActive",
+      // The mouse selection style handles the pointer position and dragging.
+      run: () => {},
+    },
     text("editor.cloneCaretAbove", "Clone Caret Above", (v) => cloneCaretAbove(v), { category: "Editor Actions" }),
     text("editor.cloneCaretBelow", "Clone Caret Below", (v) => cloneCaretBelow(v), { category: "Editor Actions" }),
     text("editor.matchBrace", "Move Caret to Matching Brace", (v) => cursorMatchBrace(v), {

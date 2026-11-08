@@ -4,6 +4,7 @@
  * no binding so switching presets doesn't leak IntelliJ shortcuts.
  */
 export const vscodeMacos: Record<string, string[]> = {
+  "editor.addOrRemoveCaret": ["Alt+Shift+Button1"],
   // Navigate
   "navigate.searchEverywhere": ["Shift Shift"],
   "navigate.gotoClass": [],
