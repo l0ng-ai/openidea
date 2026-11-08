@@ -227,6 +227,30 @@ fn reports_dominators_progress_and_stops_on_cancel() {
     assert!(matches!(result, Err(HeapError::TooLarge)));
 }
 
+#[test]
+fn cancel_during_idom_phase() {
+    // Long enough that the last phase alone passes a check interval.
+    const NODES: u32 = (CHECK_EVERY + CHECK_EVERY / 2) as u32;
+    let edges: Vec<_> = (1..NODES).map(|v| (v - 1, v)).collect();
+    let (start, out) = csr(NODES as usize, &edges);
+    let span = u64::from(NODES);
+    let cancel = CancellationToken::new();
+    let calls = RefCell::new(Vec::new());
+    let cancel_past_semidominators = |_, done, _| {
+        calls.borrow_mut().push(done);
+        if done > 2 * span {
+            cancel.cancel();
+        }
+        Ok(())
+    };
+    let result = dominators(&start, &out, 0, &Store::Ram, &cancel_past_semidominators, &cancel);
+    assert!(matches!(result, Err(HeapError::Cancelled)));
+    let calls = calls.into_inner();
+    assert!(calls.contains(&(2 * span)), "the semidominator phase finished: {calls:?}");
+    let last = *calls.last().unwrap();
+    assert!(last > 2 * span && last < 3 * span, "stopped inside the idom phase: {calls:?}");
+}
+
 proptest! {
     #[test]
     fn matches_dataflow_on_random_graphs(n in 2usize..64, edges in vec((0u32..64, 0u32..64), 0..192)) {
@@ -238,7 +262,7 @@ proptest! {
 }
 
 #[test]
-fn matches_chk_on_a_million_nodes() {
+fn matches_chk_on_a_large_random_graph() {
     const NODES: u32 = 200_000;
     const EXTRA_EDGES: u32 = 100_000;
     let mut rng = XorShift::new(0x5EED_D0D0);
@@ -255,7 +279,47 @@ fn matches_chk_on_a_million_nodes() {
     let mismatches = d.idom.iter().zip(&expected).filter(|(a, b)| a != b).count();
     assert_eq!(mismatches, 0);
     assert_eq!(d.reachable, NODES);
-    eprintln!("semi-NCA on {NODES} nodes: {elapsed:?}");
+    eprintln!("dominators of {NODES} random nodes: {elapsed:?}");
+}
+
+/// A doubly linked list whose items an array list also holds: super-root 0 → list 1 → node 0,
+/// 0 → array list 2 → element array 3 → every item; node j → item j, next, prev.
+fn shared_list_and_array(k: u32) -> (usize, Vec<(u32, u32)>) {
+    let node = |j: u32| 4 + 2 * j;
+    let item = |j: u32| 5 + 2 * j;
+    let mut edges = vec![(0, 1), (0, 2), (2, 3), (1, node(0))];
+    for j in 0..k {
+        edges.push((node(j), item(j)));
+        if j + 1 < k {
+            edges.push((node(j), node(j + 1)));
+        }
+        if j > 0 {
+            edges.push((node(j), node(j - 1)));
+        }
+        edges.push((3, item(j)));
+    }
+    ((4 + 2 * k) as usize, edges)
+}
+
+#[test]
+fn shared_list_and_array_is_near_linear() {
+    let (n, edges) = shared_list_and_array(29);
+    assert_eq!(run(n, &edges, 0).idom.to_vec(), dataflow_idom(n, &edges, 0));
+    let (n, edges) = shared_list_and_array(3_000);
+    assert_eq!(run(n, &edges, 0).idom.to_vec(), chk_idom(n, &edges, 0));
+
+    const K: u32 = 200_000;
+    let (n, edges) = shared_list_and_array(K);
+    let (start, out) = csr(n, &edges);
+    let started = Instant::now();
+    let (d, steps) = compute(&start, &out, 0, &Store::Ram, &no_progress, &CancellationToken::new()).unwrap();
+    let elapsed = started.elapsed();
+    let item = |j: u32| (5 + 2 * j) as usize;
+    assert!((0..K).all(|j| d.idom[item(j)] == 0), "every item is held by both collections");
+    let m = edges.len() as u64;
+    let bound = (n as u64 + m) * u64::from(n.ilog2());
+    eprintln!("shared list k={K}: {steps} steps (n={n}, m={m}, bound {bound}), {elapsed:?}");
+    assert!(steps <= bound, "{steps} steps for n={n}, m={m}");
 }
 
 #[test]
@@ -267,9 +331,11 @@ fn deep_chain_has_linear_dominators() {
             const NODES: u32 = 1_000_000;
             let mut edges: Vec<_> = (1..NODES).map(|v| (v - 1, v)).collect();
             edges.push((0, NODES - 1));
+            // Makes `eval` compress the whole chain at once.
+            edges.push((NODES - 1, 1));
             let started = Instant::now();
             let d = run(NODES as usize, &edges, 0);
-            eprintln!("semi-NCA on a {NODES}-node chain: {:?}", started.elapsed());
+            eprintln!("dominators of a {NODES}-node chain: {:?}", started.elapsed());
             assert_eq!(d.reachable, NODES);
             assert_eq!(d.idom[0], 0);
             assert_eq!(d.idom[NODES as usize - 1], 0);
