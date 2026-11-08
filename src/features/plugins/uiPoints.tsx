@@ -63,6 +63,14 @@ import {
   type CustomEditorDecl,
 } from "./views/customEditor";
 import { layoutActions, layoutWrapper } from "./views/editorLayout";
+import { registerContentActions } from "./views/contentActions";
+import {
+  PluginContentEditor,
+  pluginContentEditorDocument,
+  pluginContentEditorIcon,
+  pluginContentEditorTitle,
+} from "./views/contentEditor";
+import { PLUGIN_CONTENT_EDITOR_KIND } from "./views/contentTab";
 import { PLUGIN_LOG_EDITOR_KIND, PluginLogEditor, pluginLogEditorTitle } from "./views/logEditor";
 import { PluginView } from "./views/PluginView";
 import { pluginServiceProvider } from "./views/serviceProvider";
@@ -368,6 +376,7 @@ interface ViewDecl {
   icon?: string | null;
   location: ToolWindowAnchor | "services";
   detail?: boolean;
+  header?: "default" | "none" | null;
   web?: string;
   group?: string | null;
   when?: string | null;
@@ -476,7 +485,12 @@ function projectView(pluginId: string, decl: ViewDecl, index: number): () => voi
       initialIcon,
       () =>
         decl.web ? (
-          <WebView pluginId={pluginId} view={decl.id} label={decl.title} />
+          <WebView
+            pluginId={pluginId}
+            view={decl.id}
+            label={decl.title}
+            header={decl.header === "none" ? "none" : "default"}
+          />
         ) : (
           <PluginView pluginId={pluginId} view={decl.id} detail={decl.detail} label={decl.title} itemMenu={itemMenu} />
         ),
@@ -610,6 +624,7 @@ const openWith = new Map<string, { pluginId: string; decl: CustomEditorDecl; mat
 export function startViewUi(openInput: (input: ReturnType<typeof customEditorInput>) => void): () => void {
   const disposers = [
     registerLogActions(),
+    registerContentActions(),
     registerEditorKind({
       kind: CUSTOM_EDITOR_KIND,
       component: CustomEditor,
@@ -624,6 +639,14 @@ export function startViewUi(openInput: (input: ReturnType<typeof customEditorInp
       keepAlive: true,
       title: pluginLogEditorTitle,
       icon: () => "file-log",
+    }),
+    registerEditorKind({
+      kind: PLUGIN_CONTENT_EDITOR_KIND,
+      component: PluginContentEditor,
+      keepAlive: true,
+      title: pluginContentEditorTitle,
+      icon: pluginContentEditorIcon,
+      document: pluginContentEditorDocument,
     }),
     registerMenuGroup({
       id: "plugins",

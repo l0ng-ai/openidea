@@ -387,5 +387,14 @@
   "Uninstall incomplete; retry Uninstall to finish cleanup.": "Uninstall incomplete; retry Uninstall to finish cleanup.",
   "refusing symlink in plugin cleanup path": "refusing symlink in plugin cleanup path",
   "invalid plugin cleanup path": "invalid plugin cleanup path",
-  "cannot delete secret {0}: {1}": "cannot delete secret {0}: {1}"
+  "cannot delete secret {0}: {1}": "cannot delete secret {0}: {1}",
+  "Invalid content editor configuration": "Invalid content editor configuration",
+  "No save action is configured for this tab": "No save action is configured for this tab",
+  "Content editor action timed out": "Content editor action timed out",
+  "Find in Editor": "Find in Editor",
+  "Run Content Editor Action": "Run Content Editor Action",
+  "Modified": "Modified",
+  "Before": "Before",
+  "After": "After",
+  "The plugin did not save the content": "The plugin did not save the content"
 }

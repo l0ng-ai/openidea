@@ -6741,5 +6741,13 @@
   "Uninstall incomplete; retry Uninstall to finish cleanup.": "卸载未完成；请重试卸载以完成清理。",
   "refusing symlink in plugin cleanup path": "拒绝清理路径中包含符号链接的插件",
   "invalid plugin cleanup path": "插件清理路径无效",
-  "cannot delete secret {0}: {1}": "无法删除密钥 {0}：{1}"
+  "cannot delete secret {0}: {1}": "无法删除密钥 {0}：{1}",
+  "Invalid content editor configuration": "无效的内容编辑器配置",
+  "No save action is configured for this tab": "此标签页未配置保存操作",
+  "Content editor action timed out": "内容编辑器操作超时",
+  "Find in Editor": "在编辑器中查找",
+  "Run Content Editor Action": "运行内容编辑器操作",
+  "Before": "更改前",
+  "After": "更改后",
+  "The plugin did not save the content": "插件未保存内容"
 }

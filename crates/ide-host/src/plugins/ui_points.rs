@@ -407,6 +407,9 @@ struct ViewDecl {
     /// Show the selected tree/list item's detail-provider tabs beside it.
     #[serde(default, skip_serializing_if = "std::ops::Not::not")]
     detail: bool,
+    /// `default` or `none` (tool-window web views that render their own header row).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    header: Option<String>,
     /// A web page of the package (`web/index.html`) instead of content the code renders.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     web: Option<String>,
@@ -450,6 +453,18 @@ pub(super) fn view(pkg: &Package, decl: toml::Value) -> Result<UiDecl, String> {
         pkg.manifest.needs_api(&format!("view {:?}: `detail`", d.id), 3)?;
         if d.web.is_some() {
             return Err(format!("view {:?}: `detail` needs a tree or list rendered by the plugin (no `web`)", d.id));
+        }
+    }
+    if let Some(header) = &d.header {
+        pkg.manifest.needs_api("contributes.views.header", 3)?;
+        if header != "default" && header != "none" {
+            return Err(format!("view {:?}: `header` is default or none", d.id));
+        }
+        if header == "none" && (d.web.is_none() || d.group.is_some()) {
+            return Err(format!(
+                "view {:?}: `header = \"none\"` is only for ungrouped tool-window web views (`web`)",
+                d.id
+            ));
         }
     }
     if d.icon.as_ref().is_some_and(|i| i.len() > 64) {

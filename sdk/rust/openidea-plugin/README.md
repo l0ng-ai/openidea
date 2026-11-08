@@ -58,3 +58,9 @@ tab streams output from a granted process, with plugin-defined argument toggles.
 It uses the same backend authorization and bounded PTY transport. See the
 [protocol and lifecycle](../../../plugins/README.md#streaming-log-editor-tabs-api-13)
 and the [built fixture](../../../crates/ide-plugin/tests/fixtures/web-log).
+
+API 1.3 also adds `open-content-tab` to the web bridge: a plugin-backed editor
+tab with custom toolbar actions (`content-tab-action` / `content-tab-reply`),
+native diff viewer integration, and full `EditorDocumentLifecycle` support. See
+the [protocol and lifecycle](../../../plugins/README.md#plugin-backed-content-editor-tabs-api-13)
+and the [built fixture](../../../crates/ide-plugin/tests/fixtures/web-content).

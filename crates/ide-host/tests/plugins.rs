@@ -4936,6 +4936,20 @@ fn view_messages_accept_multi_megabyte_snapshots_and_cap_at_8_mib() {
 }
 
 #[test]
+fn web_content_fixture_installs_and_bridges_view_messages() {
+    let f = fixture(Limits::default());
+    let info = f.host.install_from_dir(&sample("web-content"), &Consent::default()).unwrap();
+    assert_eq!(info.status, PluginStatus::Inactive, "{:?}", info.error);
+    assert_eq!(f.run("web-content", "ping", None).unwrap().as_deref(), Some("Web content ready"));
+    f.take_events();
+    assert_eq!(f.run("web-content", "open", None).unwrap(), None);
+    assert!(
+        f.take_events().iter().any(|(_, event)| matches!(event, PluginEvent::ViewMessage { plugin_id, view, message }
+                if plugin_id == "web-content" && view == "inspector" && message == "open"))
+    );
+}
+
+#[test]
 fn web_log_tabs_use_the_web_pty_permission_boundary() {
     use ide_host::plugins::web::WebPtyCommand;
     let f = fixture(Limits::default());
@@ -5426,4 +5440,32 @@ fn files_changed_filters_each_category_before_waking_idle_plugins() {
             removed: vec![path("config/gone.yaml")],
         }]
     );
+}
+
+#[test]
+fn view_header_none_needs_api_1_3_and_an_ungrouped_web_view() {
+    let f = fixture(Limits::default());
+    let tmp = tempfile::tempdir().unwrap();
+    let pkg = tmp.path().join("headerless");
+    std::fs::create_dir_all(pkg.join("web")).unwrap();
+    std::fs::write(pkg.join("web/index.html"), "<!doctype html><p>hi</p>").unwrap();
+    let manifest = |engine: &str, view_fields: &str| {
+        format!(
+            "id = \"headerless\"\nname = \"Headerless\"\nversion = \"1.0.0\"\nengines.openidea = \"{engine}\"\n[[contributes.views]]\nid = \"panel\"\ntitle = \"Panel\"\nlocation = \"bottom\"\n{view_fields}\n"
+        )
+    };
+    for (engine, fields, expected) in [
+        ("^1.2", "web = \"web/index.html\"\nheader = \"none\"", "new in plugin API 1.3"),
+        ("^1.3", "web = \"web/index.html\"\nheader = \"custom\"", "default or none"),
+        ("^1.3", "header = \"none\"", "give a web page"),
+        ("^1.3", "web = \"web/index.html\"\ngroup = \"g\"\nheader = \"none\"", "ungrouped"),
+    ] {
+        std::fs::write(pkg.join("plugin.toml"), manifest(engine, fields)).unwrap();
+        let err = f.host.install_from_dir(&pkg, &Consent::all()).unwrap_err().message;
+        assert!(err.contains(expected), "{fields}: {err}");
+    }
+    std::fs::write(pkg.join("plugin.toml"), manifest("^1.3", "web = \"web/index.html\"\nheader = \"none\"")).unwrap();
+    let info = f.install(&pkg);
+    assert_eq!(info.status, PluginStatus::Static, "{:?}", info.error);
+    assert_eq!(f.host.ui_items("views")[0].decl["header"], "none");
 }
