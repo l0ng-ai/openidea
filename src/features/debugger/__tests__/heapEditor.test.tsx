@@ -302,6 +302,17 @@ describe("HeapSnapshotEditor", () => {
     expect(screen.getByText("com.example.Node")).toBeInTheDocument();
   });
 
+  it("shows the whole object text on hover, where a narrow column cuts it off", async () => {
+    keep(SNAPSHOT);
+    const name = "java.util.concurrent.ConcurrentHashMap";
+    ipc.debugHeapDominators.mockReturnValue(ok(page([obj(16, name), obj(17, "java.lang.String", { preview: "hi" })])));
+    show();
+    fireEvent.click(screen.getByRole("tab", { name: "Dominators" }));
+    const map = (await screen.findByText(`${name}@0x10`)).parentElement!;
+    expect(map).toHaveAttribute("data-tooltip", `${name}@0x10`);
+    expect(screen.getByText('"hi"').parentElement).toHaveAttribute("data-tooltip", 'java.lang.String@0x11 "hi"');
+  });
+
   it("compares with another open snapshot", async () => {
     keep(SNAPSHOT);
     keep(captured(8, "12:31:00"));

@@ -1,5 +1,5 @@
 /** The shortest chain of references that keeps the selected object alive, from the object up to its GC root. */
-import { List, T } from "@/ui";
+import { List, T, tooltipAttrs } from "@/ui";
 import { formatMessage, useTx } from "@/platform/i18n";
 import { call, commands, type HeapObjectRow, type HeapPathStep, type HeapRootPath } from "@/platform/ipc";
 import { formatCount } from "../memory/rows";
@@ -9,6 +9,9 @@ import { ObjectText } from "./editor/ObjectText";
 import styles from "./HeapSnapshotEditor.module.css";
 
 type PathRow = { step: HeapPathStep } | { omitted: number };
+
+/** Two lines: the object, and the reference that holds it. */
+const STEP_HEIGHT = 38;
 
 /** The steps, with a row for the ones a long path leaves out where they would be. */
 function pathRows(path: HeapRootPath): PathRow[] {
@@ -44,19 +47,24 @@ export function HeapPath({ snapshot, object }: { snapshot: number; object: HeapO
           aria-label={tx("Path to GC Root")}
           items={pathRows(path.data)}
           getKey={(row, i) => ("step" in row ? `${i}:${row.step.object.object}` : `${i}:omitted`)}
-          renderItem={(row) =>
-            "step" in row ? (
+          renderItem={(row) => {
+            if (!("step" in row))
+              return (
+                <div className={styles.omitted}>
+                  {formatMessage(tx("Path truncated: {count} steps not shown"), { count: formatCount(row.omitted) })}
+                </div>
+              );
+            const edge = edgeText(row.step.via);
+            return (
               <div className={styles.step}>
                 <ObjectText object={row.step.object} />
-                <span className={styles.edge}>{edgeText(row.step.via)}</span>
+                <span className={styles.edge} {...tooltipAttrs(edge, undefined, true)}>
+                  {edge}
+                </span>
               </div>
-            ) : (
-              <div className={styles.omitted}>
-                {formatMessage(tx("Path truncated: {count} steps not shown"), { count: formatCount(row.omitted) })}
-              </div>
-            )
-          }
-          rowHeight={22}
+            );
+          }}
+          rowHeight={STEP_HEIGHT}
         />
       )}
     </section>

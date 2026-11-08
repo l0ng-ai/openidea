@@ -273,17 +273,25 @@
   gap: 8px;
   min-width: 0;
   max-width: 100%;
+  overflow: hidden;
   font-family: var(--font-mono);
 }
-.objectName {
-  flex: none;
-  color: var(--fg-strong);
-}
+.objectName,
 .preview,
 .stringPreview {
   min-width: 0;
   overflow: hidden;
   text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.objectName {
+  flex: 0 1 auto;
+  color: var(--fg-strong);
+}
+/* The preview gives way before the name. */
+.preview,
+.stringPreview {
+  flex: 0 3 auto;
 }
 .preview {
   color: var(--fg-muted);
@@ -292,20 +300,29 @@
   color: var(--syn-string);
 }
 
+/* Two lines per step, so a long name and its reference never share one: the object, then what holds it. */
 .step {
   display: flex;
-  align-items: baseline;
-  gap: 12px;
+  flex-direction: column;
+  justify-content: center;
   min-width: 0;
+  height: 100%;
   padding: 0 12px;
   white-space: nowrap;
 }
 .edge {
-  flex: none;
+  min-width: 0;
+  padding-left: 16px;
+  overflow: hidden;
+  text-overflow: ellipsis;
   color: var(--fg-muted);
   font-family: var(--font-mono);
+  font-size: var(--fs-small);
 }
 .omitted {
+  display: flex;
+  align-items: center;
+  height: 100%;
   padding: 0 12px;
   color: var(--fg-subtle);
   font-style: italic;
