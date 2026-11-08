@@ -1,4 +1,12 @@
 {
+  "Native server declined rename": "语言服务器拒绝重命名",
+  "document is too large or is not a regular file": "文档过大或不是普通文件",
+  "document is too large": "文档过大",
+  "decoded document is too large": "解码后的文档过大",
+  "May be incomplete: the language server could not check this name": "结果可能不完整：语言服务器无法检查此名称",
+  "indexed document changed; wait for indexing and try again": "索引文档已更改，请等待索引完成后重试",
+  "indexed name is not on a UTF-16 character boundary": "索引名称未位于 UTF-16 字符边界上",
+  "Plugin indexes are still updating; try again shortly": "插件索引仍在更新，请稍后重试",
   "CMake Configure": "CMake 配置",
   "CMake Build": "CMake 构建",
   "CTest": "CTest 测试",
@@ -18,6 +26,7 @@
   "commit or roll back before clearing the selected database": "清除所选数据库前，请先提交或回滚事务",
   "connect_timeout must be greater than zero": "connect_timeout 必须大于零",
   "database connection is closed": "数据库连接已关闭",
+  "Observe editor, filesystem and version control events": "监听编辑器、文件系统和版本控制事件",
   "Run `{command}` in a terminal.": "在终端中运行 `{command}`。",
   "Run `{command}` in a terminal and sign in.": "在终端中运行 `{command}` 并登录。",
   "{name} needs you to sign in. {hint}": "{name} 需要你登录。{hint}",
@@ -6728,5 +6737,9 @@
   "Retract Message": "撤回消息",
   "Retract": "撤回",
   "Couldn't retract the message": "无法撤回消息",
-  "The agent is still stopping. Try again once it has stopped.": "智能体仍在停止中。请在停止后重试。"
+  "The agent is still stopping. Try again once it has stopped.": "智能体仍在停止中。请在停止后重试。",
+  "Uninstall incomplete; retry Uninstall to finish cleanup.": "卸载未完成；请重试卸载以完成清理。",
+  "refusing symlink in plugin cleanup path": "拒绝清理路径中包含符号链接的插件",
+  "invalid plugin cleanup path": "插件清理路径无效",
+  "cannot delete secret {0}: {1}": "无法删除密钥 {0}：{1}"
 }

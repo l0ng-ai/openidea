@@ -193,7 +193,7 @@ pub trait HostApi: Send + Sync {
     ) -> Result<ProcessOutput, HostError>;
     /// Delivers every event of `kind`, dropping its path filter.
     fn subscribe(&self, kind: EventKind);
-    /// Delivers `kind` (`file-opened`, `file-saved`) only for paths matching `globs`.
+    /// Delivers `kind` (`file-opened`, `file-saved`, `files-changed`) only for matching paths.
     fn subscribe_paths(&self, kind: &str, globs: Vec<String>) -> Result<(), HostError>;
     fn unsubscribe(&self, kind: &str);
     /// Starts `cmd` and returns the handle to it without waiting.
@@ -652,6 +652,10 @@ fn event_to_wit(e: WorkbenchEvent) -> wit_events::Event {
     match e {
         WorkbenchEvent::FileOpened(p) => wit_events::Event::FileOpened(p),
         WorkbenchEvent::FileSaved(p) => wit_events::Event::FileSaved(p),
+        WorkbenchEvent::FilesChanged(batch) => wit_events::Event::Other(wit_types::Extension {
+            kind: "files-changed".into(),
+            data: serde_json::to_string(&batch).expect("file paths serialize"),
+        }),
         WorkbenchEvent::EditorFocused(p) => wit_events::Event::EditorFocused(p),
         WorkbenchEvent::VcsChanged(p) => wit_events::Event::VcsChanged(p),
         WorkbenchEvent::Scheduled => wit_events::Event::Scheduled,

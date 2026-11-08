@@ -15,6 +15,7 @@ use std::sync::Arc;
 use std::time::{Duration, Instant};
 
 type Events = Arc<Mutex<Vec<(Option<String>, PluginEvent)>>>;
+type EventReadGate = (std::sync::mpsc::Sender<()>, std::sync::mpsc::Receiver<()>);
 
 /// What plugins see of the test project: real `Documents`, as in the IDE.
 struct TestWorkspace {
@@ -23,6 +24,7 @@ struct TestWorkspace {
     documents: Arc<ide_workspace::Documents>,
     trusted: bool,
     project_queries_left: Mutex<Option<usize>>,
+    event_read_gate: Mutex<Option<EventReadGate>>,
     /// (producer, path) → published diagnostics.
     diagnostics: Mutex<std::collections::BTreeMap<(String, PathBuf), Vec<ide_core::Diagnostic>>>,
     /// plugin → its settings as the user set them.
@@ -41,6 +43,7 @@ impl TestWorkspace {
             documents: Arc::new(documents),
             trusted: true,
             project_queries_left: Mutex::new(None),
+            event_read_gate: Mutex::new(None),
             diagnostics: Mutex::default(),
             settings: Mutex::default(),
         })
@@ -74,6 +77,13 @@ impl PluginWorkspace for TestWorkspace {
         std::iter::once(self.root.clone()).chain(self.other_roots.lock().iter().cloned()).collect()
     }
     fn buffer_text(&self, path: &Path) -> Option<String> {
+        if path.ends_with("event-barrier.txt") {
+            let gate = self.event_read_gate.lock().take();
+            if let Some((entered, release)) = gate {
+                entered.send(()).unwrap();
+                release.recv_timeout(Duration::from_secs(10)).expect("release blocked event read");
+            }
+        }
         self.documents.text_of(path)
     }
     fn buffer_dirty(&self, path: &Path) -> bool {
@@ -884,17 +894,192 @@ fn private_uninstall_recovers_after_package_metadata_is_removed() {
             std::fs::remove_file(root.join("active")).unwrap();
             std::fs::remove_file(package.join("plugin.toml")).unwrap();
         }
+        if remove_entire_package {
+            // An interrupted cleanup (and older records) has no saved failure yet.
+            let record = f.plugins_dir.join(".uninstall").join(format!("{id}.json"));
+            let mut value: serde_json::Value = serde_json::from_slice(&std::fs::read(&record).unwrap()).unwrap();
+            value.as_object_mut().unwrap().remove("error");
+            std::fs::write(record, serde_json::to_vec(&value).unwrap()).unwrap();
+        }
         f.host.shutdown();
         let host =
             PluginHost::new(f.plugins_dir.clone(), Arc::new(|_: Option<&str>, _: PluginEvent| {}), Limits::default())
                 .unwrap();
         host.load_all();
         assert!(host.info_of(id).is_ok(), "partial package cleanup must retain a restartable uninstall target");
+        assert!(host.info_of(id).unwrap().error.is_some());
         assert_eq!(host.info_of(id).unwrap().status, PluginStatus::Failed);
         host.uninstall(id).unwrap();
         assert!(host.info_of(id).is_err());
         assert!(!root.exists());
         assert!(!f.plugins_dir.join(".uninstall").join(format!("{id}.json")).exists());
+    }
+}
+
+#[test]
+fn private_uninstall_cleans_up_a_package_with_a_damaged_manifest() {
+    let f = fixture(Limits::default());
+    let id = "test.private-dir";
+    f.install(&sample("private-dir"));
+    f.run(id, "roundtrip", None).unwrap();
+    let dir = PathBuf::from(f.run(id, "directory", None).unwrap().unwrap());
+    let package = f.installed(id);
+    f.host.shutdown();
+    std::fs::write(package.join("plugin.toml"), "broken = [").unwrap();
+    let host =
+        PluginHost::new(f.plugins_dir.clone(), Arc::new(|_: Option<&str>, _: PluginEvent| {}), Limits::default())
+            .unwrap();
+    host.load_all();
+    assert_eq!(host.info_of(id).unwrap().status, PluginStatus::Failed);
+    host.uninstall(id).unwrap();
+    assert!(!dir.exists());
+    assert!(!f.plugins_dir.join(id).exists());
+
+    let broken = f.plugins_dir.join("Broken Package");
+    std::fs::create_dir(&broken).unwrap();
+    std::fs::write(broken.join("plugin.toml"), "broken = [").unwrap();
+    let other = f.plugins_dir.join("invalid-broken-package");
+    std::fs::create_dir(&other).unwrap();
+    std::fs::write(other.join("keep.txt"), "untouched").unwrap();
+    host.load_all();
+    host.uninstall("Broken Package").unwrap();
+    assert!(!broken.exists());
+    assert_eq!(std::fs::read_to_string(other.join("keep.txt")).unwrap(), "untouched");
+}
+
+#[test]
+fn private_uninstall_cannot_be_restarted_through_lifecycle_actions() {
+    let f = fixture(Limits::default());
+    let id = "test.private-dir";
+    f.install(&sample("private-dir"));
+    f.run(id, "roundtrip", None).unwrap();
+    let dir = PathBuf::from(f.run(id, "directory", None).unwrap().unwrap());
+    let target = dir.parent().unwrap();
+    let backup = target.with_extension("blocked-backup");
+    std::fs::rename(target, &backup).unwrap();
+    std::fs::write(target, "controlled cleanup failure").unwrap();
+    assert!(f.host.uninstall(id).is_err());
+    let error = f.host.info_of(id).unwrap().error.unwrap();
+    for restart in [false, true] {
+        let recovered;
+        let host = if restart {
+            f.host.shutdown();
+            recovered = PluginHost::new(
+                f.plugins_dir.clone(),
+                Arc::new(|_: Option<&str>, _: PluginEvent| {}),
+                Limits::default(),
+            )
+            .unwrap();
+            recovered.load_all();
+            &recovered
+        } else {
+            &f.host
+        };
+        assert_eq!(host.info_of(id).unwrap().error.as_deref(), Some(error.as_str()));
+        assert!(host.set_enabled(id, true).is_err());
+        assert!(host.set_enabled(id, false).is_err());
+        assert!(host.reload(id).is_err());
+        assert!(host.grant(id, &Consent::default()).is_err());
+        assert!(host.set_capability(id, "project.read", true).is_err());
+        assert!(host.install_from_dir(&sample("private-dir"), &Consent::default()).is_err());
+        assert!(host.roll_back_update(id).is_err());
+        host.startup_finished();
+        assert_eq!(host.info_of(id).unwrap().status, PluginStatus::Failed);
+        assert!(host.run_command(id, "roundtrip", None, Invocation::default()).is_err());
+        if restart {
+            std::fs::remove_file(target).unwrap();
+            std::fs::rename(&backup, target).unwrap();
+            host.uninstall(id).unwrap();
+            assert!(!dir.exists());
+        }
+    }
+}
+
+#[test]
+fn private_uninstall_retains_failed_secret_cleanup_for_retry() {
+    struct FailingSecrets;
+    impl SecretStore for FailingSecrets {
+        fn get(&self, _: &str, _: &str) -> Option<String> {
+            None
+        }
+        fn set(&self, _: &str, _: &str, _: Option<&str>) -> Result<(), String> {
+            Err("keychain locked".into())
+        }
+    }
+    let f = fixture(Limits::default());
+    let id = "test.private-dir";
+    let pkg = f._tmp.path().join("private-with-secret");
+    copy_dir(&sample("private-dir"), &pkg);
+    let manifest = pkg.join("plugin.toml");
+    let text = std::fs::read_to_string(&manifest).unwrap().replace("required = []", "required = [\"secrets\"]");
+    std::fs::write(
+        manifest,
+        format!("{text}\n[[contributes.secrets]]\nname = \"cleanup-test\"\nlabel = \"Cleanup test\"\n"),
+    )
+    .unwrap();
+    f.install(&pkg);
+    f.host.set_secret_store(Arc::new(FailingSecrets));
+    assert!(f.host.uninstall(id).is_err());
+    assert!(f.host.info_of(id).unwrap().error.unwrap().contains("keychain locked"));
+    assert!(f.installed(id).join("plugin.toml").exists());
+    f.host.shutdown();
+    let host =
+        PluginHost::new(f.plugins_dir.clone(), Arc::new(|_: Option<&str>, _: PluginEvent| {}), Limits::default())
+            .unwrap();
+    host.load_all();
+    assert!(host.info_of(id).unwrap().error.unwrap().contains("keychain locked"));
+    host.uninstall(id).unwrap();
+    assert!(host.info_of(id).is_err());
+}
+
+#[cfg(unix)]
+#[test]
+fn private_uninstall_does_not_follow_cleanup_symlinks() {
+    use std::os::unix::fs::symlink;
+    for relative in [".data", ".data/test.private-dir", "test.private-dir"] {
+        let f = fixture(Limits::default());
+        let id = "test.private-dir";
+        f.install(&sample("private-dir"));
+        f.run(id, "roundtrip", None).unwrap();
+        let target = f.plugins_dir.join(relative);
+        let backup = target.with_extension("blocked-backup");
+        std::fs::rename(&target, &backup).unwrap();
+        let outside = f._tmp.path().join("outside");
+        copy_dir(&backup, &outside);
+        std::fs::write(outside.join("keep.txt"), "untouched").unwrap();
+        symlink(&outside, &target).unwrap();
+        assert!(f.host.uninstall(id).is_err(), "{relative}");
+        assert_eq!(std::fs::read_to_string(outside.join("keep.txt")).unwrap(), "untouched");
+        std::fs::remove_file(&target).unwrap();
+        std::fs::rename(&backup, &target).unwrap();
+        f.host.uninstall(id).unwrap();
+        assert!(f.host.info_of(id).is_err());
+        assert_eq!(std::fs::read_to_string(outside.join("keep.txt")).unwrap(), "untouched");
+    }
+    let f = fixture(Limits::default());
+    let id = "test.private-dir";
+    f.install(&sample("private-dir"));
+    let outside = f._tmp.path().join("outside");
+    std::fs::create_dir(&outside).unwrap();
+    std::fs::write(outside.join("keep.txt"), "untouched").unwrap();
+    let nested = f.plugins_dir.join(".data").join(id).join("nested");
+    std::fs::create_dir_all(nested.parent().unwrap()).unwrap();
+    symlink(&outside, nested).unwrap();
+    f.host.uninstall(id).unwrap();
+    assert_eq!(std::fs::read_to_string(outside.join("keep.txt")).unwrap(), "untouched");
+    for file in ["secrets.json", "secrets.tmp"] {
+        let f = fixture(Limits::default());
+        f.install(&sample("private-dir"));
+        let outside = f._tmp.path().join("outside-secret");
+        std::fs::write(&outside, "untouched").unwrap();
+        let target = f.plugins_dir.join(".data").join(id).join(file);
+        std::fs::create_dir_all(target.parent().unwrap()).unwrap();
+        symlink(&outside, &target).unwrap();
+        assert!(f.host.uninstall(id).is_err());
+        assert_eq!(std::fs::read_to_string(&outside).unwrap(), "untouched");
+        std::fs::remove_file(target).unwrap();
+        f.host.uninstall(id).unwrap();
+        assert_eq!(std::fs::read_to_string(&outside).unwrap(), "untouched");
     }
 }
 
@@ -2257,6 +2442,7 @@ fn git_toolbox_does_not_fetch_untrusted_projects() {
         other_roots: Mutex::default(),
         documents: f.workspace.documents.clone(),
         trusted: false,
+        event_read_gate: Mutex::default(),
         diagnostics: Mutex::default(),
         settings: Mutex::default(),
     });
@@ -5053,5 +5239,182 @@ fn marker_providers_preserve_names_and_package_paths() {
     assert_eq!(
         markers.iter().map(|(_, m)| m.icon.as_deref().unwrap()).collect::<Vec<_>>(),
         ["run", "database", "icons/very-long-resource-marker-icon.svg", "overriding"]
+    );
+}
+
+/// The released WIT variant stays unchanged: SDK decodes other(files-changed).
+#[test]
+fn files_changed_wakes_idle_once_and_keeps_every_delta() {
+    let f = fixture(Limits::default());
+    f.install(&sample("files-events"));
+    assert!(f.host.event_kinds().contains(&EventKind::FilesChanged));
+    assert_eq!(f.host.instances(), 0);
+    for i in 0..600 {
+        f.host.post_events(
+            Some("main"),
+            vec![WorkbenchEvent::FilesChanged(ide_plugin::FilesChanged {
+                created: vec![to_ipc(&f.project.join(format!("新建😀-{i}.rs")))],
+                modified: vec![to_ipc(&f.project.join("shared.rs"))],
+                removed: vec![to_ipc(&f.project.join("gone.rs"))],
+            })],
+        );
+    }
+    // Already debounced by the watcher; no two-second idle delay.
+    f.host.flush_events();
+    assert!(f.host.wait_events(Duration::from_secs(10)));
+    let batches: Vec<ide_plugin::FilesChanged> =
+        serde_json::from_str(&f.run("files-events", "events", None).unwrap().unwrap()).unwrap();
+    assert_eq!(batches.len(), 1);
+    assert_eq!(batches[0].created.len(), 600);
+    assert_eq!(batches[0].modified, [to_ipc(&f.project.join("shared.rs"))]);
+    assert_eq!(batches[0].removed, [to_ipc(&f.project.join("gone.rs"))]);
+    for i in 0..3 {
+        f.host.post_events(
+            Some("main"),
+            vec![WorkbenchEvent::FilesChanged(ide_plugin::FilesChanged {
+                modified: vec![to_ipc(&f.project.join(format!("delta-{i}.rs")))],
+                ..Default::default()
+            })],
+        );
+        f.host.flush_events();
+    }
+    assert!(f.host.wait_events(Duration::from_secs(10)));
+    let batches: Vec<ide_plugin::FilesChanged> =
+        serde_json::from_str(&f.run("files-events", "events", None).unwrap().unwrap()).unwrap();
+    let mut later: Vec<_> = batches[1..].iter().flat_map(|b| b.modified.iter().cloned()).collect();
+    later.sort();
+    assert_eq!(
+        later,
+        (0..3).map(|i| to_ipc(&f.project.join(format!("delta-{i}.rs")))).collect::<Vec<_>>(),
+        "later deltas must not cancel earlier batches"
+    );
+}
+
+#[test]
+fn files_changed_requires_events_capability() {
+    let f = fixture(Limits::default());
+    let dir = f._tmp.path().join("without-events");
+    copy_dir(&sample("files-events"), &dir);
+    let manifest = dir.join("plugin.toml");
+    std::fs::write(
+        &manifest,
+        std::fs::read_to_string(&manifest).unwrap().replace("[\"events\", \"storage\"]", "[\"storage\"]"),
+    )
+    .unwrap();
+    f.install(&dir);
+    assert!(!f.host.event_kinds().contains(&EventKind::FilesChanged));
+    f.host.post_events(Some("main"), vec![WorkbenchEvent::FilesChanged(ide_plugin::FilesChanged::default())]);
+    f.host.flush_events();
+    assert_eq!(f.host.instances(), 0, "an ungranted plugin must not wake");
+}
+
+#[test]
+fn files_changed_does_not_cancel_a_batch_blocked_in_a_host_call() {
+    let f = fixture(Limits::default());
+    f.install(&sample("files-events"));
+    std::fs::write(f.project.join("event-barrier.txt"), "ready").unwrap();
+    let (entered, waiting) = std::sync::mpsc::channel();
+    let (release, released) = std::sync::mpsc::channel();
+    *f.workspace.event_read_gate.lock() = Some((entered, released));
+    f.host.post_events(
+        Some("main"),
+        vec![WorkbenchEvent::FilesChanged(ide_plugin::FilesChanged {
+            created: vec![to_ipc(&f.project.join("__block__.txt"))],
+            ..Default::default()
+        })],
+    );
+    f.host.flush_events();
+    waiting.recv_timeout(Duration::from_secs(10)).expect("first event reaches its host call");
+    f.host.post_events(
+        Some("main"),
+        vec![WorkbenchEvent::FilesChanged(ide_plugin::FilesChanged {
+            removed: vec![to_ipc(&f.project.join("gone.txt"))],
+            ..Default::default()
+        })],
+    );
+    f.host.flush_events();
+    release.send(()).unwrap();
+    assert!(f.host.wait_events(Duration::from_secs(10)));
+    let batches: Vec<ide_plugin::FilesChanged> =
+        serde_json::from_str(&f.run("files-events", "events", None).unwrap().unwrap()).unwrap();
+    assert_eq!(batches.len(), 2, "a later filesystem delta cannot discard an earlier one");
+    assert_eq!(batches[0].created, [to_ipc(&f.project.join("__block__.txt"))]);
+    assert_eq!(batches[1].removed, [to_ipc(&f.project.join("gone.txt"))]);
+}
+
+#[test]
+fn files_changed_rechecks_filters_when_an_actor_batch_starts() {
+    for filter in ["", "other/**"] {
+        let f = fixture(Limits::default());
+        f.install(&sample("files-events"));
+        f.run("files-events", "filter-after-event", Some(filter)).unwrap();
+        std::fs::write(f.project.join("event-barrier.txt"), "ready").unwrap();
+        let (entered, waiting) = std::sync::mpsc::channel();
+        let (release, released) = std::sync::mpsc::channel();
+        *f.workspace.event_read_gate.lock() = Some((entered, released));
+        f.host.post_events(
+            Some("main"),
+            vec![WorkbenchEvent::FilesChanged(ide_plugin::FilesChanged {
+                created: vec![to_ipc(&f.project.join("__block__.txt"))],
+                ..Default::default()
+            })],
+        );
+        f.host.flush_events();
+        waiting.recv_timeout(Duration::from_secs(10)).expect("first batch blocks before replacing its filter");
+        f.host.post_events(
+            Some("main"),
+            vec![WorkbenchEvent::FilesChanged(ide_plugin::FilesChanged {
+                modified: vec![to_ipc(&f.project.join("queued.txt"))],
+                ..Default::default()
+            })],
+        );
+        f.host.flush_events();
+        release.send(()).unwrap();
+        assert!(f.host.wait_events(Duration::from_secs(10)));
+        let batches: Vec<ide_plugin::FilesChanged> =
+            serde_json::from_str(&f.run("files-events", "events", None).unwrap().unwrap()).unwrap();
+        assert_eq!(batches.len(), 1, "filter {filter:?} must suppress the batch waiting in the actor");
+    }
+}
+
+#[test]
+fn files_changed_filters_each_category_before_waking_idle_plugins() {
+    let f = fixture(Limits { idle_timeout: Some(Duration::ZERO), ..Limits::default() });
+    f.install(&sample("files-events"));
+    f.run("files-events", "filter", Some("config/*.yaml")).unwrap();
+    assert!(eventually(|| {
+        f.host.tick();
+        f.host.instances() == 0
+    }));
+    let path = |relative: &str| to_ipc(&f.project.join(relative));
+    f.host.post_events(
+        Some("main"),
+        vec![WorkbenchEvent::FilesChanged(ide_plugin::FilesChanged {
+            created: vec![path("src/unrelated.rs")],
+            modified: vec![path("notes.txt")],
+            removed: vec![path("elsewhere/a.yaml")],
+        })],
+    );
+    f.host.flush_events();
+    assert_eq!(f.host.instances(), 0, "unmatched batches do not wake an idle plugin");
+    f.host.post_events(
+        Some("main"),
+        vec![WorkbenchEvent::FilesChanged(ide_plugin::FilesChanged {
+            created: vec![path("config/new.yaml"), path("src/unrelated.rs")],
+            modified: vec![path("config/changed.yaml"), path("notes.txt")],
+            removed: vec![path("config/gone.yaml"), path("elsewhere/a.yaml")],
+        })],
+    );
+    f.host.flush_events();
+    assert!(f.host.wait_events(Duration::from_secs(10)));
+    let received: Vec<ide_plugin::FilesChanged> =
+        serde_json::from_str(&f.run("files-events", "events", None).unwrap().unwrap()).unwrap();
+    assert_eq!(
+        received,
+        [ide_plugin::FilesChanged {
+            created: vec![path("config/new.yaml")],
+            modified: vec![path("config/changed.yaml")],
+            removed: vec![path("config/gone.yaml")],
+        }]
     );
 }

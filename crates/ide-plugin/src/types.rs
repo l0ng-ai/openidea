@@ -98,6 +98,7 @@ pub enum Prompt {
 pub enum EventKind {
     FileOpened,
     FileSaved,
+    FilesChanged,
     EditorFocused,
     ActionPerformed,
     VcsChanged,
@@ -105,9 +106,10 @@ pub enum EventKind {
 }
 
 impl EventKind {
-    pub const ALL: [Self; 6] = [
+    pub const ALL: [Self; 7] = [
         Self::FileOpened,
         Self::FileSaved,
+        Self::FilesChanged,
         Self::EditorFocused,
         Self::ActionPerformed,
         Self::VcsChanged,
@@ -118,6 +120,7 @@ impl EventKind {
         match self {
             Self::FileOpened => "file-opened",
             Self::FileSaved => "file-saved",
+            Self::FilesChanged => "files-changed",
             Self::EditorFocused => "editor-focused",
             Self::ActionPerformed => "action-performed",
             Self::VcsChanged => "vcs-changed",
@@ -175,12 +178,21 @@ pub struct ActionPerformed {
     pub shortcut: Option<String>,
 }
 
+/// Debounced worktree changes. Paths use the same absolute form as `file-saved`.
+#[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize, Type)]
+pub struct FilesChanged {
+    pub created: Vec<String>,
+    pub modified: Vec<String>,
+    pub removed: Vec<String>,
+}
+
 /// A workbench event delivered to plugins.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, Type)]
 #[serde(rename_all = "camelCase", tag = "kind", content = "value")]
 pub enum WorkbenchEvent {
     FileOpened(String),
     FileSaved(String),
+    FilesChanged(FilesChanged),
     EditorFocused(Option<String>),
     ActionPerformed(ActionPerformed),
     VcsChanged(String),
@@ -192,6 +204,7 @@ impl WorkbenchEvent {
         match self {
             Self::FileOpened(_) => EventKind::FileOpened,
             Self::FileSaved(_) => EventKind::FileSaved,
+            Self::FilesChanged(_) => EventKind::FilesChanged,
             Self::EditorFocused(_) => EventKind::EditorFocused,
             Self::ActionPerformed(_) => EventKind::ActionPerformed,
             Self::VcsChanged(_) => EventKind::VcsChanged,

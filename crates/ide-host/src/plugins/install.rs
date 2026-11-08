@@ -31,10 +31,12 @@ pub(super) struct PendingUninstall {
     pub version: String,
     pub dir: PathBuf,
     pub secrets: Vec<String>,
+    #[serde(default)]
+    pub error: Option<String>,
 }
 
 impl PendingUninstall {
-    fn validate(&self, root: &Path) -> io::Result<()> {
+    fn validate(&self) -> io::Result<()> {
         use std::path::Component;
         let normal = |path: &Path| {
             path.components()
@@ -45,13 +47,46 @@ impl PendingUninstall {
             || !normal(Path::new(&self.id))
             || !(1..=2).contains(&self.dir.components().count())
             || !normal(&self.dir)
-            || (self.dir.components().next().unwrap().as_os_str() != self.id.as_str()
-                && super::placeholder_manifest(&root.join(&self.dir)).id != self.id)
+            || self.dir.components().next().unwrap().as_os_str() != self.id.as_str()
         {
             return Err(io::Error::other("invalid pending plugin uninstall"));
         }
         Ok(())
     }
+}
+
+pub(super) fn check_not_symlink(path: &Path) -> io::Result<()> {
+    match std::fs::symlink_metadata(path) {
+        Ok(meta) => {
+            #[cfg(windows)]
+            let reparse = {
+                use std::os::windows::fs::MetadataExt;
+                meta.file_attributes() & windows_sys::Win32::Storage::FileSystem::FILE_ATTRIBUTE_REPARSE_POINT != 0
+            };
+            #[cfg(not(windows))]
+            let reparse = false;
+            if meta.file_type().is_symlink() || reparse {
+                Err(io::Error::other("refusing symlink in plugin cleanup path"))
+            } else {
+                Ok(())
+            }
+        }
+        Err(e) if e.kind() == io::ErrorKind::NotFound => Ok(()),
+        Err(e) => Err(e),
+    }
+}
+
+pub(super) fn check_cleanup_parent(root: &Path, path: &Path) -> io::Result<()> {
+    let relative = path.strip_prefix(root).map_err(io::Error::other)?;
+    let mut parent = root.to_path_buf();
+    for part in relative.parent().unwrap_or(Path::new("")).components() {
+        if !matches!(part, std::path::Component::Normal(_)) {
+            return Err(io::Error::other("invalid plugin cleanup path"));
+        }
+        parent.push(part);
+        check_not_symlink(&parent)?;
+    }
+    Ok(())
 }
 
 fn uninstall_file(root: &Path, id: &str) -> PathBuf {
@@ -60,18 +95,21 @@ fn uninstall_file(root: &Path, id: &str) -> PathBuf {
 
 pub(super) fn remember_uninstall(root: &Path, pending: &PendingUninstall) -> io::Result<()> {
     use std::io::Write;
-    pending.validate(root)?;
+    pending.validate()?;
     let file = uninstall_file(root, &pending.id);
+    check_not_symlink(file.parent().unwrap())?;
     std::fs::create_dir_all(file.parent().unwrap())?;
-    let tmp = file.with_extension("tmp");
-    let mut out = std::fs::File::create(&tmp)?;
+    check_not_symlink(&file)?;
+    let mut out = tempfile::NamedTempFile::new_in(file.parent().unwrap())?;
     out.write_all(&serde_json::to_vec(pending)?)?;
-    out.sync_all()?;
-    drop(out);
-    std::fs::rename(tmp, file)
+    out.as_file().sync_all()?;
+    out.persist(file).map(|_| ()).map_err(|e| e.error)
 }
 
 pub(super) fn pending_uninstalls(root: &Path) -> Vec<PendingUninstall> {
+    if check_not_symlink(&root.join(".uninstall")).is_err() {
+        return Vec::new();
+    }
     let Ok(entries) = std::fs::read_dir(root.join(".uninstall")) else { return Vec::new() };
     entries
         .flatten()
@@ -81,8 +119,9 @@ pub(super) fn pending_uninstalls(root: &Path) -> Vec<PendingUninstall> {
                 return None;
             }
             let read = || -> io::Result<PendingUninstall> {
+                check_not_symlink(&path)?;
                 let pending: PendingUninstall = serde_json::from_slice(&std::fs::read(&path)?)?;
-                pending.validate(root)?;
+                pending.validate()?;
                 if path != uninstall_file(root, &pending.id) {
                     return Err(io::Error::other("pending uninstall id does not match its file"));
                 }
@@ -100,6 +139,7 @@ pub(super) fn pending_uninstalls(root: &Path) -> Vec<PendingUninstall> {
 }
 
 pub(super) fn forget_uninstall(root: &Path, id: &str) -> io::Result<()> {
+    check_not_symlink(&root.join(".uninstall"))?;
     match std::fs::remove_file(uninstall_file(root, id)) {
         Err(e) if e.kind() == io::ErrorKind::NotFound => Ok(()),
         result => result,
@@ -310,6 +350,7 @@ mod tests {
             version: "1.0.0".into(),
             dir: PathBuf::from("p/1.0.0"),
             secrets: vec!["key".into()],
+            error: None,
         };
         remember_uninstall(tmp.path(), &pending).unwrap();
         assert_eq!(pending_uninstalls(tmp.path())[0].secrets, ["key"]);
@@ -318,8 +359,72 @@ mod tests {
             std::fs::write(uninstall_file(tmp.path(), "p"), serde_json::to_vec(&pending).unwrap()).unwrap();
             assert!(pending_uninstalls(tmp.path()).is_empty(), "{path}");
         }
+        pending.id = "invalid-1-0-0".into();
+        pending.dir = "other/1.0.0".into();
+        assert!(remember_uninstall(tmp.path(), &pending).is_err());
         forget_uninstall(tmp.path(), "p").unwrap();
         assert!(pending_uninstalls(tmp.path()).is_empty());
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn pending_uninstall_records_do_not_follow_symlinks() {
+        use std::os::unix::fs::symlink;
+        let tmp = tempfile::tempdir().unwrap();
+        let outside = tempfile::tempdir().unwrap();
+        let pending = PendingUninstall {
+            id: "p".into(),
+            name: "Plugin".into(),
+            version: "1.0.0".into(),
+            dir: "p/1.0.0".into(),
+            secrets: Vec::new(),
+            error: None,
+        };
+        let record = outside.path().join("p.json");
+        std::fs::write(&record, "untouched").unwrap();
+        let parent = tmp.path().join(".uninstall");
+        symlink(outside.path(), &parent).unwrap();
+        assert!(remember_uninstall(tmp.path(), &pending).is_err());
+        assert!(forget_uninstall(tmp.path(), "p").is_err());
+        assert!(pending_uninstalls(tmp.path()).is_empty());
+        std::fs::remove_file(&parent).unwrap();
+        std::fs::create_dir(&parent).unwrap();
+        symlink(&record, uninstall_file(tmp.path(), "p")).unwrap();
+        assert!(remember_uninstall(tmp.path(), &pending).is_err());
+        assert!(pending_uninstalls(tmp.path()).is_empty());
+        forget_uninstall(tmp.path(), "p").unwrap();
+        symlink(&record, parent.join("p.tmp")).unwrap();
+        remember_uninstall(tmp.path(), &pending).unwrap();
+        assert_eq!(pending_uninstalls(tmp.path()).len(), 1);
+        assert_eq!(std::fs::read_to_string(&record).unwrap(), "untouched");
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn pending_uninstall_records_do_not_follow_junctions() {
+        let tmp = tempfile::tempdir().unwrap();
+        let outside = tempfile::tempdir().unwrap();
+        let record = outside.path().join("p.json");
+        std::fs::write(&record, "untouched").unwrap();
+        let status = std::process::Command::new("cmd")
+            .args(["/C", "mklink", "/J"])
+            .arg(tmp.path().join(".uninstall"))
+            .arg(outside.path())
+            .status()
+            .unwrap();
+        assert!(status.success());
+        let pending = PendingUninstall {
+            id: "p".into(),
+            name: "Plugin".into(),
+            version: "1.0.0".into(),
+            dir: "p/1.0.0".into(),
+            secrets: Vec::new(),
+            error: None,
+        };
+        assert!(remember_uninstall(tmp.path(), &pending).is_err());
+        assert!(forget_uninstall(tmp.path(), "p").is_err());
+        assert!(pending_uninstalls(tmp.path()).is_empty());
+        assert_eq!(std::fs::read_to_string(record).unwrap(), "untouched");
     }
 
     #[test]
