@@ -66,3 +66,9 @@
 .error {
   color: var(--danger);
 }
+.candidate {
+  display: flex;
+  flex-direction: column;
+  gap: 3px;
+  overflow-wrap: anywhere;
+}
