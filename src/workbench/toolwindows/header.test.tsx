@@ -2,7 +2,7 @@ import { fireEvent, render, screen } from "@testing-library/react";
 import { afterEach, beforeEach, expect, it, vi } from "vitest";
 import { Tabs } from "@/ui";
 import { registerToolWindow } from "../contributions";
-import { isToolWindowVisible, resetToolWindowLayout, showToolWindow } from "./store";
+import { isToolWindowVisible, resetToolWindowLayout, showToolWindow, useToolWindowLayout } from "./store";
 import { ToolWindowLayout } from "./ToolWindows";
 
 const Empty = () => null;
@@ -69,4 +69,19 @@ it("middle click on a header content tab closes the tab, not the window", () => 
   fireEvent.mouseDown(screen.getByRole("tab", { name: "File" }), { button: 1 });
   expect(closeContentTab).toHaveBeenCalledWith("file");
   expect(isToolWindowVisible("problems")).toBe(true);
+});
+
+it("header double click hides the editor and restores its previous size", () => {
+  showToolWindow("run");
+  render(<ToolWindowLayout editor={<input aria-label="Editor" />} />);
+  const editor = screen.getByRole("textbox", { name: "Editor" });
+  const sizes = useToolWindowLayout.getState().sizes;
+  editor.focus();
+  fireEvent.doubleClick(header("run"));
+  expect(editor).not.toBeVisible();
+  expect(editor).not.toHaveFocus();
+  expect(useToolWindowLayout.getState().focusRequest?.id).toBe("run");
+  fireEvent.doubleClick(header("run"));
+  expect(editor).toBeVisible();
+  expect(useToolWindowLayout.getState().sizes).toEqual(sizes);
 });

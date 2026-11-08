@@ -304,7 +304,7 @@ pub fn sync_maven(
     let mut model = maven::load_with_linked(
         root,
         maven::default_local_repo(),
-        &options.profiles,
+        &options.maven_settings.profiles(&options.profiles),
         &options.maven_settings.linked_projects,
     );
     maven::UnlinkedProjects::from_model(&model, &options.maven_settings).filter(&mut model);

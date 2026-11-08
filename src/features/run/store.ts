@@ -57,7 +57,7 @@ import { loadRunTemplates } from "./runTemplates";
 import { recordRun } from "./services";
 import { startedPort } from "@/platform/serverPort";
 import { tomcatBrowserUrl } from "./tomcat";
-import { gradleDelegation, gradleTestLaunch } from "./gradleRun";
+import { gradleBootLaunch, gradleDelegation, gradleTestLaunch } from "./gradleRun";
 import { openUrl } from "./navigate";
 import { tx } from "@/platform/i18n";
 
@@ -877,7 +877,7 @@ export async function startRun(
     if ((options.launch || launch.isTest) && launch.emulateTerminal) launch = { ...launch, emulateTerminal: false };
     if (launch.emulateTerminal) rt.terminal = new TerminalOutput();
     patchSession(sessionId, { terminal: !!launch.emulateTerminal });
-    const started = launch.isTest ? await gradleTestLaunch(withTestReporting(launch)) : launch;
+    const started = launch.isTest ? await gradleTestLaunch(withTestReporting(launch)) : await gradleBootLaunch(launch);
     if (runtimes.get(sessionId)?.generation !== generation) return getSession(sessionId) ?? null;
     const processStarted = performance.now();
     const info = await startWithRemedies(started, () => call(commands.runStart(started, channel)));

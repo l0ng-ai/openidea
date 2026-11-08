@@ -11,6 +11,7 @@ import { useProject } from "@/platform/project";
 import { applicationConfig, jvmModuleDir, jvmTestConfig } from "./application";
 import { buildRows } from "./ConfigChooser";
 import { jdwpLaunch } from "./javaDebug";
+import { DELEGATED_DEBUG } from "./gradleRun";
 import { firstTopLevelType, jvmMainCandidates, scanJvmTargets } from "./jvmTargets";
 import { adoptTemporary, MAX_TEMPORARY, saveTemporary, testReportEvents, useRun } from "./store";
 import { detectRunTargets, targetConfig } from "./targets";
@@ -324,6 +325,8 @@ describe("java command lines", () => {
     expect(joinJavaArgs(["a", "b c", 'q"'])).toBe('a "b c" "q\\""');
     expect(jdwpListeningPort("Listening for transport dt_socket at address: 50123")).toBe(50123);
     expect(jdwpListeningPort("Listening for transport dt_socket at address: 127.0.0.1:5005")).toBe(5005);
+    expect(jdwpListeningPort("[Test worker] Listening for transport dt_socket at address: 50124")).toBe(50124);
+    expect(jdwpListeningPort("    Listening for transport dt_socket at address: 50125\r")).toBe(50125);
     expect(jdwpListeningPort("[INFO] Listening")).toBeNull();
   });
 });
@@ -340,7 +343,10 @@ describe("debugging build tool configurations", () => {
     expect(merged.args[1]).toMatch(/^-Dspring-boot\.run\.jvmArguments=-Xmx1g -agentlib:jdwp=/);
     const test = jdwpLaunch(cfg({ id: "t", kind: "maven", args: ["test", "-Dtest=A#b"], isTest: true }))!;
     expect(test.args.some((a) => a.startsWith("-Dmaven.surefire.debug=-agentlib:jdwp="))).toBe(true);
-    expect(jdwpLaunch(cfg({ id: "g", kind: "gradle", args: ["bootRun"] }))!.args).toEqual(["bootRun", "--debug-jvm"]);
+    expect(jdwpLaunch(cfg({ id: "g", kind: "gradle", args: ["bootRun"] }))!.args).toContain(DELEGATED_DEBUG);
+    const gradleTest = jdwpLaunch(cfg({ id: "gt", kind: "gradle", args: ["test"], isTest: true }))!;
+    expect(gradleTest.args).toContain(DELEGATED_DEBUG);
+    expect(gradleTest.args).not.toContain("--debug-jvm");
     expect(jdwpLaunch(cfg({ id: "p", kind: "maven", args: ["package"] }))).toBeNull();
     expect(jdwpLaunch(cfg({ id: "n", kind: "npm", args: ["test"] }))).toBeNull();
   });

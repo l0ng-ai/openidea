@@ -455,7 +455,11 @@ export function mavenArgs(
   if (options.offline && !has("-o") && !has("--offline")) args.push("-o");
   if (options.skipTests && !has("-DskipTests")) args.push("-DskipTests");
   const profiles = profilesArg(model.profiles, options.profiles);
-  if (profiles && !args.some((a) => a.startsWith("-P"))) args.push(`-P${profiles}`);
+  if (
+    profiles &&
+    !args.some((a) => a.startsWith("-P") || a === "--activate-profiles" || a.startsWith("--activate-profiles="))
+  )
+    args.push(`-P${profiles}`);
   return args;
 }
 
