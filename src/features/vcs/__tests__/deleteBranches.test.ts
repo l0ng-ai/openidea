@@ -8,7 +8,16 @@ const mocks = vi.hoisted(() => ({
   focus: vi.fn(),
   notify: vi.fn(),
   range: vi.fn(),
+  deleteBranch: vi.fn(),
+  branches: vi.fn(),
 }));
+vi.mock("@/platform/ipc", async (original) => {
+  const real = await original<typeof import("@/platform/ipc")>();
+  return {
+    ...real,
+    commands: { ...real.commands, vcsDeleteBranch: mocks.deleteBranch, vcsBranches: mocks.branches },
+  };
+});
 vi.mock("../dialogs", async (original) => ({
   ...(await original<typeof import("../dialogs")>()),
   confirmDialog: mocks.confirm,
@@ -60,24 +69,41 @@ beforeEach(() => {
   useVcs.setState({ root: "/p", repo: "/p/a", branches: [], branchesLoaded: true });
   useBranchesPane.setState({ selected: [] });
   mocks.confirm.mockResolvedValue(true);
+  mocks.branches.mockResolvedValue({ status: "ok", data: [] });
   mocks.focus.mockImplementation(async (repo: string) => {
     useVcs.setState({ repo });
   });
 });
 
-it("restores the original repository after deleting across repositories", async () => {
-  const repos: (string | null)[] = [];
-  mocks.local.mockImplementation(async () => {
-    repos.push(useVcs.getState().repo);
-  });
+it("deletes across repositories without changing focus", async () => {
   await deleteBranches([target("one", "/p/b"), target("two", "/p/a"), target("three", "/p/b")]);
-  expect(repos).toEqual(["/p/b", "/p/a", "/p/b"]);
+  expect(mocks.focus).not.toHaveBeenCalled();
   expect(useVcs.getState().repo).toBe("/p/a");
 });
 
-it("restores focus when deletion throws", async () => {
+it("keeps deletion targets when an in-flight refresh overwrites focus between deletions", async () => {
+  mocks.local.mockImplementation(async (_title, run) => {
+    const result = await run();
+    useVcs.setState({ repo: "/p/b" });
+    return result;
+  });
+  mocks.focus.mockImplementation(async () => {
+    // A refresh started in B finishes after the attempt to focus A.
+    useVcs.setState({ repo: "/p/b" });
+  });
+  mocks.deleteBranch.mockResolvedValue({ status: "ok", data: null });
+  await deleteBranches([target("one", "/p/b"), target("two", "/p/a")]);
+  expect(mocks.deleteBranch.mock.calls).toEqual([
+    ["/p/b", "one"],
+    ["/p/a", "two"],
+  ]);
+  expect(mocks.focus).not.toHaveBeenCalled();
+});
+
+it("leaves focus untouched when deletion throws", async () => {
   mocks.local.mockRejectedValue(new Error("failed"));
   await expect(deleteBranches([target("one", "/p/b")])).rejects.toThrow("failed");
+  expect(mocks.focus).not.toHaveBeenCalled();
   expect(useVcs.getState().repo).toBe("/p/a");
 });
 
@@ -119,18 +145,15 @@ it.each([1, 2])("cancelling %s remote branches leaves the whole mixed selection 
 });
 
 it("confirms once for remote branches across repositories and deletes in the right repository", async () => {
-  const repos: (string | null)[] = [];
-  mocks.remote.mockImplementation(async () => {
-    repos.push(useVcs.getState().repo);
-    return true;
-  });
+  mocks.remote.mockResolvedValue(true);
   await deleteBranches([
     target("origin/one", "/p/a", { remote: true }),
     target("origin/two", "/p/b", { remote: true }),
   ]);
   expect(mocks.confirm).toHaveBeenCalledTimes(1);
   expect(mocks.remote.mock.calls.map(([op]) => op.branch)).toEqual(["origin/one", "origin/two"]);
-  expect(repos).toEqual(["/p/a", "/p/b"]);
+  expect(mocks.remote.mock.calls.map(([, , repos]) => repos)).toEqual([["/p/a"], ["/p/b"]]);
+  expect(mocks.focus).not.toHaveBeenCalled();
   expect(useVcs.getState().repo).toBe("/p/a");
 });
 
@@ -145,7 +168,7 @@ it("the Delete action uses the whole pane selection without an explicit argument
   }
 });
 
-it("Delete Tracked Branch keeps the repository captured before focus was restored", async () => {
+it("Delete Tracked Branch keeps the repository captured without changing focus", async () => {
   mocks.local.mockResolvedValue({ name: "one", tip: "abc", upstream: "origin/one", unmerged: false });
   await deleteBranches([target("one", "/p/b")]);
   expect(useVcs.getState().repo).toBe("/p/a");
@@ -156,7 +179,7 @@ it("Delete Tracked Branch keeps the repository captured before focus was restore
   );
 });
 
-it("View Commits keeps the deleted branch's repository after focus was restored", async () => {
+it("View Commits keeps the deleted branch's repository without changing focus", async () => {
   mocks.local.mockResolvedValue({ name: "one", tip: "abc", upstream: null, unmerged: true });
   await deleteBranches([target("one", "/p/b")]);
   const notification = mocks.notify.mock.calls[0]![0];
@@ -164,8 +187,9 @@ it("View Commits keeps the deleted branch's repository after focus was restored"
   expect(mocks.range).toHaveBeenCalledWith("Commits of one", "HEAD", "abc", "/p/b");
 });
 
-it("restores the primary repository when it was focused implicitly", async () => {
+it("keeps the primary repository focused implicitly", async () => {
   useVcs.setState({ repo: null, roots: ["/p/a", "/p/b"] });
   await deleteBranches([target("one", "/p/b")]);
-  expect(useVcs.getState().repo).toBe("/p/a");
+  expect(useVcs.getState().repo).toBeNull();
+  expect(mocks.focus).not.toHaveBeenCalled();
 });
