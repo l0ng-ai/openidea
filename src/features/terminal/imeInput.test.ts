@@ -1,3 +1,4 @@
+import { Terminal } from "@xterm/xterm";
 import { beforeEach, describe, expect, it } from "vitest";
 import { ownTerminalInput } from "./imeInput";
 
@@ -49,6 +50,10 @@ function input(target: EventTarget, init: { inputType: string; data?: string; is
   });
   target.dispatchEvent(e);
   return e;
+}
+
+function composition(target: EventTarget, type: string, data: string) {
+  target.dispatchEvent(new CompositionEvent(type, { data, bubbles: true }));
 }
 
 describe("ownTerminalInput", () => {
@@ -134,6 +139,42 @@ describe("ownTerminalInput", () => {
     expect(reached).toEqual(["compositionstart", "keydown", "insertCompositionText"]);
   });
 
+  it("keeps the input-source switch from ending a composition early", () => {
+    // CapsLock with macOS Pinyin: xterm would send the composition on this keydown and again on
+    // compositionend.
+    const { textarea, reached } = setup();
+    composition(textarea, "compositionstart", "");
+    keydown(textarea, { key: "CapsLock", keyCode: 20, isComposing: true });
+    keydown(textarea, { key: "Unidentified", keyCode: 0, isComposing: true });
+    expect(reached).toEqual(["compositionstart", "keydown"]);
+  });
+
+  it.each([
+    ["aw d", "awd"],
+    ["claude co de", "claudecode"],
+    ["xi'an", "xi'an"],
+  ])("commits the letters typed for %j without the IME's syllable spaces", (shown, typed) => {
+    const { textarea } = setup();
+    textarea.value = "ls ";
+    composition(textarea, "compositionstart", "");
+    composition(textarea, "compositionupdate", shown);
+    textarea.value = `ls ${shown}`;
+    composition(textarea, "compositionend", shown);
+    expect(textarea.value).toBe(`ls ${typed}`);
+  });
+
+  it.each([
+    ["ni hao", "你好"],
+    ["helloworld", "hello world"],
+  ])("keeps a candidate chosen for %j as committed", (shown, chosen) => {
+    const { textarea } = setup();
+    composition(textarea, "compositionstart", "");
+    composition(textarea, "compositionupdate", shown);
+    textarea.value = chosen;
+    composition(textarea, "compositionend", chosen);
+    expect(textarea.value).toBe(chosen);
+  });
+
   it("stops an IME keydown and its keypress before xterm sees them", () => {
     const { textarea, reached } = setup();
     keydown(textarea, { key: "1", keyCode: 229 });
@@ -155,5 +196,95 @@ describe("ownTerminalInput", () => {
     keydown(textarea, { key: "1", keyCode: 229 });
     input(textarea, { inputType: "insertText", data: "1" });
     expect(sent).toEqual([]);
+  });
+});
+
+describe("ownTerminalInput with xterm", () => {
+  type Step =
+    | ["keydown" | "keyup", string, number, boolean?]
+    | ["compositionstart" | "compositionupdate" | "compositionend", string]
+    | ["input", string, string | null, string];
+
+  /** Replays a WKWebView event trace on xterm's textarea, setting the value the IME left. */
+  async function replay(steps: Step[]) {
+    const host = document.createElement("div");
+    document.body.append(host);
+    const term = new Terminal();
+    term.open(host);
+    const textarea = term.textarea!;
+    const sent: string[] = [];
+    term.onData((d) => sent.push(d));
+    ownTerminalInput({ host, textarea, send: (d) => sent.push(d) });
+    const task = () => new Promise((resolve) => setTimeout(resolve, 0));
+    for (const step of steps) {
+      if (step[0] === "keydown") {
+        const e = keydown(textarea, { key: step[1], keyCode: step[2], isComposing: step[3] });
+        // A browser fires no keypress for a keydown xterm cancelled.
+        if (!step[3] && !e.defaultPrevented && step[1].length === 1) keypress(textarea, step[1]);
+      } else if (step[0] === "keyup") {
+        keyup(textarea, step[2]);
+      } else if (step[0] === "input") {
+        textarea.value = step[3];
+        input(textarea, { inputType: step[1], data: step[2] ?? undefined, isComposing: step[1] !== "insertText" });
+      } else {
+        composition(textarea, step[0], step[1]);
+      }
+      await task();
+    }
+    await task();
+    term.dispose();
+    return sent;
+  }
+
+  function composeThenSwitch(before: string, shown: string[]): Step[] {
+    const steps: Step[] = [["compositionstart", ""]];
+    for (const text of shown) {
+      steps.push(
+        ["compositionupdate", text],
+        ["input", "insertCompositionText", text, before + text],
+        ["keydown", text.at(-1)!, 229, true],
+        ["keyup", text.at(-1)!, text.toUpperCase().charCodeAt(text.length - 1), true],
+      );
+    }
+    const committed = shown.at(-1)!;
+    steps.push(
+      ["keydown", "CapsLock", 20, true],
+      ["keydown", "Unidentified", 0, true],
+      ["input", "deleteCompositionText", null, before],
+      ["input", "insertFromComposition", committed, before + committed],
+      ["compositionend", committed],
+      ["keyup", "CapsLock", 20],
+    );
+    return steps;
+  }
+
+  it("sends what was typed once when macOS Pinyin switches to English mid-composition", async () => {
+    // Safari trace: `awd` in Pinyin, CapsLock, `cl` in English, CapsLock, `claudecode` in Pinyin,
+    // CapsLock. Before: "aw d" and "claude code" were each sent twice.
+    const sent = await replay([
+      ...composeThenSwitch("", ["a", "a w", "aw d"]),
+      ["keydown", "c", 67],
+      ["input", "insertText", "c", "awdc"],
+      ["keyup", "c", 67],
+      ["keydown", "l", 76],
+      ["input", "insertText", "l", "awdcl"],
+      ["keyup", "l", 76],
+      ["keydown", "CapsLock", 20],
+      ["keydown", "Unidentified", 0],
+      ["keyup", "CapsLock", 20],
+      ...composeThenSwitch("awdcl", [
+        "c",
+        "c l",
+        "c la",
+        "cl au",
+        "claud",
+        "claude",
+        "claude c",
+        "claude co",
+        "claude co d",
+        "claude code",
+      ]),
+    ]);
+    expect(sent).toEqual(["awd", "c", "l", "claudecode"]);
   });
 });
