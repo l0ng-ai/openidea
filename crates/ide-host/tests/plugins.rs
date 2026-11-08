@@ -838,6 +838,305 @@ fn private_directory_survives_host_restart_and_inactive_uninstall() {
     assert!(!dir.exists());
 }
 
+#[test]
+fn private_uninstall_cleanup_failure_is_retryable() {
+    for fail_data in [true, false] {
+        let f = fixture(Limits::default());
+        let id = "test.private-dir";
+        f.host.install_from_dir(&sample("private-dir"), &Consent::default()).unwrap();
+        f.run(id, "roundtrip", None).unwrap();
+        let dir = PathBuf::from(f.run(id, "directory", None).unwrap().unwrap());
+        let target = if fail_data { dir.parent().unwrap().to_path_buf() } else { f.plugins_dir.join(id) };
+        let backup = target.with_extension("blocked-backup");
+        // A regular file deterministically makes remove_dir_all fail, even as root.
+        std::fs::rename(&target, &backup).unwrap();
+        std::fs::write(&target, "controlled cleanup failure").unwrap();
+        assert!(f.host.uninstall(id).is_err());
+        assert!(f.host.info_of(id).is_ok(), "failed uninstall must retain its target");
+        assert_eq!(f.status(id), PluginStatus::Failed);
+        assert!(f.command_titles(id).is_empty());
+        std::fs::remove_file(&target).unwrap();
+        std::fs::rename(&backup, &target).unwrap();
+        if fail_data {
+            assert!(f.installed(id).join("plugin.toml").exists());
+            f.host.shutdown();
+            let host = PluginHost::new(
+                f.plugins_dir.clone(),
+                Arc::new(|_: Option<&str>, _: PluginEvent| {}),
+                Limits::default(),
+            )
+            .unwrap();
+            host.load_all();
+            host.uninstall(id).unwrap();
+        } else {
+            f.host.uninstall(id).unwrap();
+        }
+        assert!(!dir.exists());
+        assert!(!f.plugins_dir.join(id).exists());
+    }
+}
+
+#[test]
+fn private_uninstall_recovers_after_package_metadata_is_removed() {
+    for remove_entire_package in [false, true] {
+        let f = fixture(Limits::default());
+        let id = "test.private-dir";
+        f.install(&sample("private-dir"));
+        f.run(id, "roundtrip", None).unwrap();
+        let package = f.installed(id);
+        let root = f.plugins_dir.join(id);
+        let backup = root.with_extension("blocked-backup");
+        std::fs::rename(&root, &backup).unwrap();
+        std::fs::write(&root, "controlled package cleanup failure").unwrap();
+        assert!(f.host.uninstall(id).is_err());
+        std::fs::remove_file(&root).unwrap();
+        std::fs::rename(&backup, &root).unwrap();
+        // Reproduce the metadata loss a partial recursive deletion can leave behind.
+        if remove_entire_package {
+            std::fs::remove_dir_all(&root).unwrap();
+        } else {
+            std::fs::remove_file(root.join("active")).unwrap();
+            std::fs::remove_file(package.join("plugin.toml")).unwrap();
+        }
+        if remove_entire_package {
+            // An interrupted cleanup (and older records) has no saved failure yet.
+            let record = f.plugins_dir.join(".uninstall").join(format!("{id}.json"));
+            let mut value: serde_json::Value = serde_json::from_slice(&std::fs::read(&record).unwrap()).unwrap();
+            value.as_object_mut().unwrap().remove("error");
+            std::fs::write(record, serde_json::to_vec(&value).unwrap()).unwrap();
+        }
+        f.host.shutdown();
+        let host =
+            PluginHost::new(f.plugins_dir.clone(), Arc::new(|_: Option<&str>, _: PluginEvent| {}), Limits::default())
+                .unwrap();
+        host.load_all();
+        assert!(host.info_of(id).is_ok(), "partial package cleanup must retain a restartable uninstall target");
+        assert!(host.info_of(id).unwrap().error.is_some());
+        assert_eq!(host.info_of(id).unwrap().status, PluginStatus::Failed);
+        assert!(host.reload(id).is_err());
+        assert!(host.set_enabled(id, true).is_err());
+        assert_eq!(
+            host.install_from_dir(&sample("private-dir"), &Consent::all()).unwrap_err().kind,
+            ErrorKind::Unavailable
+        );
+        host.uninstall(id).unwrap();
+        assert!(host.info_of(id).is_err());
+        assert!(!root.exists());
+        assert!(!f.plugins_dir.join(".uninstall").join(format!("{id}.json")).exists());
+        host.install_from_dir(&sample("private-dir"), &Consent::all()).unwrap();
+        host.uninstall(id).unwrap();
+        assert!(!root.exists());
+    }
+}
+
+#[test]
+fn private_uninstall_cleans_up_a_package_with_a_damaged_manifest() {
+    let f = fixture(Limits::default());
+    let id = "test.private-dir";
+    f.install(&sample("private-dir"));
+    f.run(id, "roundtrip", None).unwrap();
+    let dir = PathBuf::from(f.run(id, "directory", None).unwrap().unwrap());
+    let package = f.installed(id);
+    f.host.shutdown();
+    std::fs::write(package.join("plugin.toml"), "broken = [").unwrap();
+    let host =
+        PluginHost::new(f.plugins_dir.clone(), Arc::new(|_: Option<&str>, _: PluginEvent| {}), Limits::default())
+            .unwrap();
+    host.load_all();
+    assert_eq!(host.info_of(id).unwrap().status, PluginStatus::Failed);
+    host.uninstall(id).unwrap();
+    assert!(!dir.exists());
+    assert!(!f.plugins_dir.join(id).exists());
+
+    let broken = f.plugins_dir.join("Broken Package");
+    std::fs::create_dir(&broken).unwrap();
+    std::fs::write(broken.join("plugin.toml"), "broken = [").unwrap();
+    let other = f.plugins_dir.join("invalid-broken-package");
+    std::fs::create_dir(&other).unwrap();
+    std::fs::write(other.join("keep.txt"), "untouched").unwrap();
+    host.load_all();
+    host.uninstall("Broken Package").unwrap();
+    assert!(!broken.exists());
+    assert_eq!(std::fs::read_to_string(other.join("keep.txt")).unwrap(), "untouched");
+}
+
+#[test]
+fn private_uninstall_cannot_be_restarted_through_lifecycle_actions() {
+    let f = fixture(Limits::default());
+    let id = "test.private-dir";
+    f.install(&sample("private-dir"));
+    f.run(id, "roundtrip", None).unwrap();
+    let dir = PathBuf::from(f.run(id, "directory", None).unwrap().unwrap());
+    let target = dir.parent().unwrap();
+    let backup = target.with_extension("blocked-backup");
+    std::fs::rename(target, &backup).unwrap();
+    std::fs::write(target, "controlled cleanup failure").unwrap();
+    assert!(f.host.uninstall(id).is_err());
+    let error = f.host.info_of(id).unwrap().error.unwrap();
+    for restart in [false, true] {
+        let recovered;
+        let host = if restart {
+            f.host.shutdown();
+            recovered = PluginHost::new(
+                f.plugins_dir.clone(),
+                Arc::new(|_: Option<&str>, _: PluginEvent| {}),
+                Limits::default(),
+            )
+            .unwrap();
+            recovered.load_all();
+            &recovered
+        } else {
+            &f.host
+        };
+        assert_eq!(host.info_of(id).unwrap().error.as_deref(), Some(error.as_str()));
+        assert!(host.set_enabled(id, true).is_err());
+        assert!(host.set_enabled(id, false).is_err());
+        assert!(host.reload(id).is_err());
+        assert!(host.grant(id, &Consent::default()).is_err());
+        assert!(host.set_capability(id, "project.read", true).is_err());
+        assert!(host.install_from_dir(&sample("private-dir"), &Consent::default()).is_err());
+        assert!(host.roll_back_update(id).is_err());
+        host.startup_finished();
+        assert_eq!(host.info_of(id).unwrap().status, PluginStatus::Failed);
+        assert!(host.run_command(id, "roundtrip", None, Invocation::default()).is_err());
+        if restart {
+            std::fs::remove_file(target).unwrap();
+            std::fs::rename(&backup, target).unwrap();
+            host.uninstall(id).unwrap();
+            assert!(!dir.exists());
+        }
+    }
+}
+
+#[test]
+fn private_uninstall_retains_failed_secret_cleanup_for_retry() {
+    struct FailingSecrets;
+    impl SecretStore for FailingSecrets {
+        fn get(&self, _: &str, _: &str) -> Option<String> {
+            None
+        }
+        fn set(&self, _: &str, _: &str, _: Option<&str>) -> Result<(), String> {
+            Err("keychain locked".into())
+        }
+    }
+    let f = fixture(Limits::default());
+    let id = "test.private-dir";
+    let pkg = f._tmp.path().join("private-with-secret");
+    copy_dir(&sample("private-dir"), &pkg);
+    let manifest = pkg.join("plugin.toml");
+    let text = std::fs::read_to_string(&manifest).unwrap().replace("required = []", "required = [\"secrets\"]");
+    std::fs::write(
+        manifest,
+        format!("{text}\n[[contributes.secrets]]\nname = \"cleanup-test\"\nlabel = \"Cleanup test\"\n"),
+    )
+    .unwrap();
+    f.install(&pkg);
+    f.host.set_secret_store(Arc::new(FailingSecrets));
+    assert!(f.host.uninstall(id).is_err());
+    assert!(f.host.info_of(id).unwrap().error.unwrap().contains("keychain locked"));
+    assert!(f.installed(id).join("plugin.toml").exists());
+    f.host.shutdown();
+    let host =
+        PluginHost::new(f.plugins_dir.clone(), Arc::new(|_: Option<&str>, _: PluginEvent| {}), Limits::default())
+            .unwrap();
+    host.load_all();
+    assert!(host.info_of(id).unwrap().error.unwrap().contains("keychain locked"));
+    host.uninstall(id).unwrap();
+    assert!(host.info_of(id).is_err());
+}
+
+#[cfg(unix)]
+#[test]
+fn private_uninstall_does_not_follow_cleanup_symlinks() {
+    use std::os::unix::fs::symlink;
+    for relative in [".data", ".data/test.private-dir", "test.private-dir"] {
+        let f = fixture(Limits::default());
+        let id = "test.private-dir";
+        f.install(&sample("private-dir"));
+        f.run(id, "roundtrip", None).unwrap();
+        let target = f.plugins_dir.join(relative);
+        let backup = target.with_extension("blocked-backup");
+        std::fs::rename(&target, &backup).unwrap();
+        let outside = f._tmp.path().join("outside");
+        copy_dir(&backup, &outside);
+        std::fs::write(outside.join("keep.txt"), "untouched").unwrap();
+        symlink(&outside, &target).unwrap();
+        assert!(f.host.uninstall(id).is_err(), "{relative}");
+        assert_eq!(std::fs::read_to_string(outside.join("keep.txt")).unwrap(), "untouched");
+        std::fs::remove_file(&target).unwrap();
+        std::fs::rename(&backup, &target).unwrap();
+        f.host.uninstall(id).unwrap();
+        assert!(f.host.info_of(id).is_err());
+        assert_eq!(std::fs::read_to_string(outside.join("keep.txt")).unwrap(), "untouched");
+    }
+    let f = fixture(Limits::default());
+    let id = "test.private-dir";
+    f.install(&sample("private-dir"));
+    let outside = f._tmp.path().join("outside");
+    std::fs::create_dir(&outside).unwrap();
+    std::fs::write(outside.join("keep.txt"), "untouched").unwrap();
+    let nested = f.plugins_dir.join(".data").join(id).join("nested");
+    std::fs::create_dir_all(nested.parent().unwrap()).unwrap();
+    symlink(&outside, nested).unwrap();
+    f.host.uninstall(id).unwrap();
+    assert_eq!(std::fs::read_to_string(outside.join("keep.txt")).unwrap(), "untouched");
+    for file in ["secrets.json", "secrets.tmp"] {
+        let f = fixture(Limits::default());
+        f.install(&sample("private-dir"));
+        let outside = f._tmp.path().join("outside-secret");
+        std::fs::write(&outside, "untouched").unwrap();
+        let target = f.plugins_dir.join(".data").join(id).join(file);
+        std::fs::create_dir_all(target.parent().unwrap()).unwrap();
+        symlink(&outside, &target).unwrap();
+        assert!(f.host.uninstall(id).is_err());
+        assert_eq!(std::fs::read_to_string(&outside).unwrap(), "untouched");
+        std::fs::remove_file(target).unwrap();
+        f.host.uninstall(id).unwrap();
+        assert_eq!(std::fs::read_to_string(&outside).unwrap(), "untouched");
+    }
+}
+
+#[test]
+fn private_uninstall_blocks_inactive_reactivation_during_cleanup() {
+    struct BlockingSecrets {
+        entered: std::sync::Barrier,
+        release: std::sync::Barrier,
+    }
+    impl SecretStore for BlockingSecrets {
+        fn get(&self, _: &str, _: &str) -> Option<String> {
+            None
+        }
+        fn set(&self, _: &str, _: &str, _: Option<&str>) -> Result<(), String> {
+            self.entered.wait();
+            self.release.wait();
+            Ok(())
+        }
+    }
+    let f = fixture(Limits::default());
+    let pkg = f._tmp.path().join("private-with-secret");
+    copy_dir(&sample("private-dir"), &pkg);
+    let manifest = pkg.join("plugin.toml");
+    let text = std::fs::read_to_string(&manifest).unwrap().replace("required = []", "required = [\"secrets\"]");
+    std::fs::write(
+        manifest,
+        format!("{text}\n[[contributes.secrets]]\nname = \"cleanup-test\"\nlabel = \"Cleanup test\"\n"),
+    )
+    .unwrap();
+    f.install(&pkg);
+    assert_eq!(f.status("test.private-dir"), PluginStatus::Inactive);
+    let store = Arc::new(BlockingSecrets { entered: std::sync::Barrier::new(2), release: std::sync::Barrier::new(2) });
+    f.host.set_secret_store(store.clone());
+    let result = std::thread::scope(|scope| {
+        let uninstall = scope.spawn(|| f.host.uninstall("test.private-dir"));
+        store.entered.wait();
+        let result = f.run("test.private-dir", "roundtrip", None);
+        store.release.wait();
+        uninstall.join().unwrap().unwrap();
+        result
+    });
+    assert!(result.is_err(), "plugin must remain stopped during uninstall");
+}
+
 #[cfg(unix)]
 #[test]
 fn private_paths_work_with_open_location_and_approved_process_arguments() {
