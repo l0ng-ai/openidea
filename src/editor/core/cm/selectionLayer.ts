@@ -38,6 +38,30 @@ export function widenToRightEdge(
   );
 }
 
+/**
+ * Grows a selection's outer rectangles to whole line boxes. CodeMirror sizes the first and last row of a
+ * selection to the text's glyph box (`glyph` px tall, the shortest rectangle), so a gap of the line's
+ * leading showed above and below it; IDEA fills the full line height. `lineHeight` is the editor's line
+ * height in the same units.
+ */
+export function growToLineBoxes(
+  markers: readonly RectangleMarker[],
+  className: string,
+  lineHeight: number,
+): RectangleMarker[] {
+  if (!markers.length) return [];
+  const glyph = Math.min(...markers.map((m) => m.height));
+  const leading = Math.max(0, Math.min(lineHeight / 2, (lineHeight - glyph) / 2));
+  if (leading < 0.25) return [...markers];
+  const top = Math.min(...markers.map((m) => m.top));
+  const bottom = Math.max(...markers.map((m) => m.top + m.height));
+  return markers.map((m) => {
+    const up = Math.abs(m.top - top) < 0.5 ? leading : 0;
+    const down = Math.abs(m.top + m.height - bottom) < 0.5 ? leading : 0;
+    return up || down ? new RectangleMarker(className, m.left, m.top - up, m.width, m.height + up + down) : m;
+  });
+}
+
 const CLASS = "cm-selectionBackground";
 
 /** Where CodeMirror ends a selection past the line end, in layer coordinates, and the lines' right padding (screen px). */
@@ -59,7 +83,12 @@ const snappedSelectionLayer = layer({
     const out: RectangleMarker[] = [];
     for (const r of view.state.selection.ranges) {
       if (r.empty) continue;
-      const markers = snapMarkers(RectangleMarker.forRange(view, CLASS, r), CLASS, dpr);
+      const lines = growToLineBoxes(
+        RectangleMarker.forRange(view, CLASS, r),
+        CLASS,
+        view.defaultLineHeight * view.scaleY,
+      );
+      const markers = snapMarkers(lines, CLASS, dpr);
       out.push(...(edge ? widenToRightEdge(markers, CLASS, edge.rightSide, edge.pad) : markers));
     }
     return out;

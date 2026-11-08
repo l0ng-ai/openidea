@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 import { RectangleMarker } from "@codemirror/view";
-import { snapMarkers, widenToRightEdge } from "./selectionLayer";
+import { growToLineBoxes, snapMarkers, widenToRightEdge } from "./selectionLayer";
 
 describe("snapMarkers", () => {
   it("makes stacked selection rectangles share their edge exactly", () => {
@@ -41,5 +41,28 @@ describe("widenToRightEdge", () => {
       [2, 54, 40, 18],
       [80, 0, 60, 18],
     ]);
+  });
+});
+
+describe("growToLineBoxes", () => {
+  const C = "cm-selectionBackground";
+  const box = (m: RectangleMarker) => [m.left, m.top, m.width, m.height];
+
+  it("grows the first and last rows of a selection to full line height", () => {
+    // 20px lines with 16px glyph boxes: CodeMirror leaves 2px above the first row and below the last.
+    const markers = [
+      new RectangleMarker(C, 40, 2, 100, 16), // first row
+      new RectangleMarker(C, 2, 18, 500, 24), // rows in between (already full height)
+      new RectangleMarker(C, 2, 42, 30, 16), // last row
+    ];
+    expect(growToLineBoxes(markers, C, 20).map(box)).toEqual([
+      [40, 0, 100, 18],
+      [2, 18, 500, 24],
+      [2, 42, 30, 18],
+    ]);
+  });
+
+  it("grows a single-row selection both ways", () => {
+    expect(growToLineBoxes([new RectangleMarker(C, 40, 22, 60, 16)], C, 20).map(box)).toEqual([[40, 20, 60, 20]]);
   });
 });
