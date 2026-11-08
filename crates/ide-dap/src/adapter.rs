@@ -101,6 +101,7 @@ fn builtin(adapter: &str) -> Option<DebuggerConfig> {
         "lldb-dap" => {
             cfg("lldb-dap", &[], "stdio", "Install LLVM's lldb-dap (brew install llvm; on macOS `xcrun -f lldb-dap`)")
         }
+        "rdbg" => cfg("rdbg", &["-O", "--port", PORT_PLACEHOLDER, "-c"], "tcp", "gem install debug"),
         // A jdtls bundle: the session is started through jdtls and reached via `debugServer`.
         "java-debug" => cfg(
             "com.microsoft.java.debug.plugin.jar",

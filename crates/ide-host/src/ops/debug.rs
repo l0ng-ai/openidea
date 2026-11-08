@@ -75,8 +75,20 @@ pub async fn debug_start(host: &Host, window: &str, config: LaunchConfig) -> Ide
         config.extra_json = Some(extra.to_string());
     }
     let root = config.cwd.clone().map(PathBuf::from).unwrap_or_default();
+    let mut ruby_tools = Vec::new();
+    if config.adapter == "rdbg" {
+        let project_root = host.project(window).map(|p| p.root.clone()).unwrap_or_else(|_| root.clone());
+        let (dir, settings) = (root.clone(), settings.clone());
+        (config, ruby_tools) = host
+            .blocking(move || {
+                let tools = ide_sdk::ruby::debug_environment(&project_root, &dir, &settings, &mut config.env);
+                Ok((config, tools))
+            })
+            .await?;
+    }
     let custom = |command: &str| {
-        let path = ide_sdk::apply::tool_command(&root, &settings, command)?;
+        let path = ide_sdk::apply::tool_command(&root, &settings, command)
+            .or_else(|| ruby_tools.into_iter().find(|(name, _)| *name == command).map(|(_, path)| path))?;
         Some(path.to_string_lossy().into_owned())
     };
     host.require_trust(window)?;

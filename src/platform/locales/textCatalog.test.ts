@@ -89,6 +89,7 @@ const UNTRANSLATED = new Set<string>([
   "dotnet test",
   "netcoredbg (.NET)",
   "php-debug (PHP)",
+  "rdbg (Ruby)",
   // Product names
   "Cargo",
   "CMake",

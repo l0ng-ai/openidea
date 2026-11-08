@@ -305,6 +305,51 @@ pub struct DebugManager {
     stopping: Mutex<HashMap<DebugSessionId, Arc<Session>>>,
 }
 
+/// rdbg (Ruby's debug gem) starts the debuggee itself and ignores `launch`'s program,
+/// arguments and environment: they go on its command line after `--` and into its process.
+/// In a Bundler project it runs from the bundle, which must have `debug`: the debuggee then
+/// loads that version, and the gems rdbg needs (irb is not a default gem from Ruby 3.5).
+fn rdbg_command_line(spec: &mut AdapterSpec, config: &LaunchConfig, cwd: &Path) -> IdeResult<()> {
+    if spec.command == "rdbg"
+        && let Some(gemfile) = bundler_gemfile(cwd, &config.env)
+    {
+        if !bundles_debug(&gemfile) {
+            return Err(IdeError::unavailable(format!(
+                "the bundle of {} has no `debug` gem. Add `gem \"debug\"` to the Gemfile and run `bundle install`",
+                gemfile.display()
+            )));
+        }
+        spec.args.splice(0..0, ["exec".to_owned(), "rdbg".to_owned()]);
+        spec.command = "bundle".into();
+    }
+    spec.env.extend(config.env.iter().map(|(k, v)| (k.clone(), v.clone())));
+    spec.args.push("--".into());
+    spec.args.extend(config.program.iter().cloned());
+    spec.args.extend(config.args.iter().cloned());
+    Ok(())
+}
+
+/// The Gemfile Bundler uses in `dir`: `BUNDLE_GEMFILE`, else the closest `Gemfile` / `gems.rb` from `dir` up.
+fn bundler_gemfile(dir: &Path, env: &BTreeMap<String, String>) -> Option<PathBuf> {
+    match env.get("BUNDLE_GEMFILE").filter(|g| !g.is_empty()) {
+        Some(gemfile) => Some(dir.join(gemfile)),
+        None => dir.ancestors().flat_map(|d| [d.join("Gemfile"), d.join("gems.rb")]).find(|g| g.is_file()),
+    }
+}
+
+/// Whether the lockfile of `gemfile` lists the `debug` gem.
+fn bundles_debug(gemfile: &Path) -> bool {
+    let lockfile = if gemfile.file_name().is_some_and(|n| n == "gems.rb") {
+        gemfile.with_file_name("gems.locked")
+    } else {
+        let mut name = gemfile.as_os_str().to_owned();
+        name.push(".lock");
+        PathBuf::from(name)
+    };
+    // The bundle's gems are the lines indented by four spaces: `    debug (1.9.2)`.
+    std::fs::read_to_string(lockfile).is_ok_and(|text| text.lines().any(|l| l.starts_with("    debug (")))
+}
+
 /// Whether the debugged project depends on the Flutter SDK, so it must go
 /// through `flutter debug_adapter` instead of the plain Dart one.
 ///
@@ -650,6 +695,9 @@ impl DebugManager {
                 .and_then(|v| v.as_str().map(str::to_owned))
         {
             spec.env.push(("JAVA_HOME".into(), home));
+        }
+        if config.adapter == "rdbg" {
+            rdbg_command_line(&mut spec, &config, &cwd)?;
         }
         if let Some(command) = custom_command(&spec.command) {
             spec.command = command;

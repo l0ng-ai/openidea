@@ -1391,6 +1391,71 @@ fn flutter_projects_are_found_from_the_program_or_the_working_directory() {
     std::fs::remove_dir_all(&root).unwrap();
 }
 
+#[test]
+fn rdbg_runs_the_debuggee_after_its_options_with_the_configuration_environment() {
+    let dir = tempfile::tempdir().unwrap();
+    let rdbg = adapter::find_config(&LanguageRegistry::from_configs(Vec::new()), "rdbg").unwrap();
+    let config = LaunchConfig {
+        adapter: "rdbg".into(),
+        program: Some("ruby".into()),
+        args: ["-Ilib", "app.rb", "--verbose"].map(String::from).to_vec(),
+        env: BTreeMap::from([("RAILS_ENV".into(), "test".into())]),
+        extra_json: None,
+        ..config()
+    };
+    let mut spec = adapter::resolve(&rdbg, dir.path().into());
+    rdbg_command_line(&mut spec, &config, dir.path()).unwrap();
+    assert_eq!(spec.command, "rdbg");
+    assert_eq!(spec.args, ["-O", "--port", "${port}", "-c", "--", "ruby", "-Ilib", "app.rb", "--verbose"]);
+    assert!(spec.env.contains(&("RAILS_ENV".into(), "test".into())));
+}
+
+#[test]
+fn rdbg_runs_from_a_bundle_that_has_debug_and_refuses_one_without() {
+    let dir = tempfile::tempdir().unwrap();
+    let app = dir.path().join("app");
+    std::fs::create_dir_all(app.join("lib")).unwrap();
+    std::fs::write(app.join("Gemfile"), "source \"https://rubygems.org\"\n").unwrap();
+    // A dependency of another gem is not a gem of the bundle.
+    std::fs::write(app.join("Gemfile.lock"), "GEM\n  specs:\n    irb (1.14.0)\n      debug (>= 1)\n").unwrap();
+    let rdbg = adapter::find_config(&LanguageRegistry::from_configs(Vec::new()), "rdbg").unwrap();
+    let config = LaunchConfig {
+        adapter: "rdbg".into(),
+        program: Some("bundle".into()),
+        args: ["exec", "rspec"].map(String::from).to_vec(),
+        extra_json: None,
+        ..config()
+    };
+    let mut spec = adapter::resolve(&rdbg, app.clone());
+    let err = rdbg_command_line(&mut spec, &config, &app).unwrap_err();
+    assert!(err.message.contains("gem \"debug\""), "{}", err.message);
+
+    std::fs::write(app.join("Gemfile.lock"), "GEM\n  specs:\n    debug (1.9.2)\n      irb (~> 1.10)\n").unwrap();
+    // From a subdirectory too: Bundler finds the Gemfile above it.
+    for cwd in [app.clone(), app.join("lib")] {
+        let mut spec = adapter::resolve(&rdbg, cwd.clone());
+        rdbg_command_line(&mut spec, &config, &cwd).unwrap();
+        assert_eq!(spec.command, "bundle");
+        assert_eq!(spec.args, ["exec", "rdbg", "-O", "--port", "${port}", "-c", "--", "bundle", "exec", "rspec"]);
+    }
+}
+
+#[test]
+fn bundler_gemfile_and_lockfile_follow_bundle_gemfile_and_gems_rb() {
+    let dir = tempfile::tempdir().unwrap();
+    let root = dir.path();
+    std::fs::create_dir_all(root.join("gems")).unwrap();
+    let none = BTreeMap::new();
+    assert_eq!(bundler_gemfile(root, &none), None);
+    std::fs::write(root.join("gems/gems.rb"), "").unwrap();
+    std::fs::write(root.join("gems/gems.locked"), "GEM\n  specs:\n    debug (1.9.2)\n").unwrap();
+    let gems_rb = bundler_gemfile(&root.join("gems"), &none).unwrap();
+    assert_eq!(gems_rb, root.join("gems/gems.rb"));
+    assert!(bundles_debug(&gems_rb));
+    let env = BTreeMap::from([("BUNDLE_GEMFILE".into(), "gems/gems.rb".into())]);
+    assert_eq!(bundler_gemfile(root, &env), Some(gems_rb));
+}
+
 #[cfg(unix)]
 #[tokio::test]
 async fn stop_waits_for_the_launched_program_to_exit() {

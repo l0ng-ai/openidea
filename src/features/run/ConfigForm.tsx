@@ -64,6 +64,7 @@ const ADAPTERS: ReadonlyArray<{ id: string; label: string }> = [
   { id: "codelldb", label: "CodeLLDB (Rust, C, C++)" },
   { id: "lldb-dap", label: "lldb-dap (C, C++, Swift)" },
   { id: "php-debug", label: "php-debug (PHP)" },
+  { id: "rdbg", label: "rdbg (Ruby)" },
 ];
 
 /** Options "Modify options" adds to the form: value fields (shown once added) and flags (chips). */
