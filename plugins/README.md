@@ -1157,6 +1157,53 @@ Its `Log Probe: Open Stream` and `Log Probe: Try Undeclared Program` commands
 also ask the sandboxed page to open a tab, exercising the Wasm-to-page bridge.
 This extends the web bridge without changing released WIT signatures.
 
+### Plugin-backed content editor tabs (API 1.3)
+
+A web view can open an editor tab on content the plugin supplies, with
+plugin-defined toolbar actions that call back into the plugin. Declare
+`engines.openidea = "^1.3"` when using this protocol:
+
+```js
+openidea.postMessage(JSON.stringify({
+  op: "open-content-tab",
+  key: "service-config",
+  title: "service.toml",
+  fileName: "service.toml",
+  language: "toml",
+  content: "name = \"demo\"\nreplicas = 2\n",
+  readOnly: false,
+  actions: [
+    { id: "reload", label: "Reload", icon: "rerun" },
+    { id: "diff", label: "Diff", icon: "diff" },
+    { id: "save", label: "Apply", icon: "green-checkmark", primary: true, save: true },
+  ],
+}));
+```
+
+`title` (1–256 characters) and `content` (at most 1 Mi UTF-16 code units, no NUL)
+are required. `key` (1–128 characters) defaults to `title` and is scoped to the
+calling plugin and view; `fileName` (1–256 characters, no path separators) and
+`language` (1–64 characters) select syntax highlighting and the tab's file icon.
+`readOnly` defaults to `false`. `actions` lists up to 16 toolbar buttons with
+unique `id`s (1–64 characters), `label`s (1–128 characters), an optional built-in
+`icon` name, `primary`, and `save` (at most one action may set `save: true`).
+Invalid requests send `content-tab-error { error }` through `openidea.onMessage`.
+
+Clicking an action (or saving via ⌘S / the close-with-changes prompt) sends
+`content-tab-action { requestId, key, action, content }` to the web view and, when
+the plugin has code, as a `ViewEvent::Message`. The plugin replies with
+`content-tab-reply { requestId, content?, saved?, readOnly?, status?, error?, diff? }`:
+
+- `content` replaces unchanged editor text and updates the clean baseline (unless `saved: false`); later edits stay in the editor;
+- `saved: true` marks the submitted content clean; edits made while the action is pending remain dirty;
+- `saved: false` rejects a pending Save and keeps the tab open and dirty;
+- `status` / `error` update the toolbar status (and `error` rejects a pending Save so the tab stays open and dirty);
+- `diff: { left, right, leftLabel?, rightLabel?, title? }` opens the IDE's diff viewer.
+
+The tab participates in the standard `EditorDocumentLifecycle` (dirty indicator,
+Save / Don't Save / Cancel prompt on close, Undo / Redo, and read-only toggle).
+`crates/ide-plugin/tests/fixtures/web-content` is a built fixture exercising this flow.
+
 ### Translations
 
 A package translates its own text with `locales/<tag>.json`, one file per language

@@ -25,6 +25,14 @@ import { ToolWindowCornerActions, useOwnToolWindowHeader } from "@/workbench/too
 import { pluginsBackend, type FileFilter } from "../backend";
 import { errorText, usePlugins } from "../store";
 import { FRAME_TAG, HEADERLESS_CORNER_INSET, frameTheme, frameThemeMessage } from "./frame";
+import { syncContentTabSession } from "./contentEditor";
+import {
+  PLUGIN_CONTENT_EDITOR_KIND,
+  contentTabData,
+  contentTabKey,
+  handleContentTabReplyText,
+  registerContentTabSender,
+} from "./contentTab";
 import { PLUGIN_LOG_EDITOR_KIND } from "./logEditor";
 import { logTabData } from "./logTab";
 import { webPtyBackend } from "./ptyBackend";
@@ -192,6 +200,30 @@ export function WebView({ pluginId, view, label, header = "default", document = 
       }
       return true;
     };
+    const handleContentTabMessage = (rawText: string): boolean => {
+      if (handleContentTabReplyText(pluginId, rawText)) return true;
+      let parsed: unknown;
+      try {
+        parsed = JSON.parse(rawText);
+      } catch {
+        return false;
+      }
+      if (!parsed || typeof parsed !== "object" || !("op" in parsed) || parsed.op !== "open-content-tab") return false;
+      try {
+        const data = contentTabData(pluginId, view, parsed, rawText.length);
+        const key = contentTabKey(pluginId, view, data.key);
+        syncContentTabSession(key, data);
+        void editorService().openInput({
+          kind: PLUGIN_CONTENT_EDITOR_KIND,
+          key,
+          data,
+        });
+      } catch (err) {
+        post({ text: JSON.stringify({ op: "content-tab-error", error: errorText(err) }) });
+      }
+      return true;
+    };
+    const offContentSender = registerContentTabSender(pluginId, view, (message) => post(message));
     const createPtys = () =>
       ptyBridge(pluginId, webPtyBackend(pluginId, view), (message) => post({ text: JSON.stringify(message) }));
     let ptys = createPtys();
@@ -288,6 +320,7 @@ export function WebView({ pluginId, view, label, header = "default", document = 
         );
       } else if (typeof m.text === "string") {
         if (handleLogTabMessage(m.text)) return;
+        if (handleContentTabMessage(m.text)) return;
         if (ptys.handle(m.text)) return;
         if (hasCode) {
           pluginsBackend()
@@ -301,6 +334,7 @@ export function WebView({ pluginId, view, label, header = "default", document = 
     return () => {
       window.removeEventListener("message", onMessage);
       off();
+      offContentSender();
       ptys.close();
       offPlugins();
       offProject();

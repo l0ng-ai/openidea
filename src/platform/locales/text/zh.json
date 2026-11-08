@@ -6737,5 +6737,13 @@
   "Retract Message": "撤回消息",
   "Retract": "撤回",
   "Couldn't retract the message": "无法撤回消息",
-  "The agent is still stopping. Try again once it has stopped.": "智能体仍在停止中。请在停止后重试。"
+  "The agent is still stopping. Try again once it has stopped.": "智能体仍在停止中。请在停止后重试。",
+  "Invalid content editor configuration": "无效的内容编辑器配置",
+  "No save action is configured for this tab": "此标签页未配置保存操作",
+  "Content editor action timed out": "内容编辑器操作超时",
+  "Find in Editor": "在编辑器中查找",
+  "Run Content Editor Action": "运行内容编辑器操作",
+  "Before": "更改前",
+  "After": "更改后",
+  "The plugin did not save the content": "插件未保存内容"
 }
