@@ -35,6 +35,8 @@ struct FakeAgent {
     /// Without `loadSession` (a session lives only as long as its process).
     no_load: bool,
     auth_on_new: bool,
+    /// Hold the late mode reply until the prompt's permission request is already waiting.
+    hold_late_mode: bool,
     empty_config: AtomicBool,
     /// Config options `session/new` reports after the model one (per-model efforts, say).
     extra_options: Mutex<Vec<Value>>,
@@ -128,6 +130,13 @@ impl Handler for FakeAgent {
         {
             return Err((codes::INTERNAL_ERROR, "Authentication required".into()));
         }
+        if self.hold_late_mode
+            && method == "session/set_config_option"
+            && params.get("value").and_then(Value::as_str) == Some("full-access")
+        {
+            // Let the prompt's permission request reach the task before the mode changes.
+            std::thread::sleep(Duration::from_millis(100));
+        }
         let session = params.get("sessionId").and_then(Value::as_str).unwrap_or("s1").to_owned();
         match method {
             "initialize" => {
@@ -198,6 +207,29 @@ impl Handler for FakeAgent {
                              "options": [{"value": "low", "name": "Low"}, {"value": "high", "name": "High"}]}]}),
                     );
                     self.say(&session, "ok");
+                    return Ok(json!({"stopReason": "end_turn"}));
+                }
+                if text == "late full access" {
+                    // The mode option appears only now; the user's choice is applied late.
+                    self.update(
+                        &session,
+                        json!({"sessionUpdate": "config_option_update", "configOptions": [
+                            {"id": "mode", "category": "mode", "type": "select", "currentValue": "ask",
+                             "options": [{"value": "ask", "name": "Ask"}, {"value": "full-access", "name": "Full Access"}]}
+                        ]}),
+                    );
+                    let peer = self.latest();
+                    let answer: Value = tokio::runtime::Handle::current()
+                        .block_on(peer.request(
+                            "session/request_permission",
+                            json!({"sessionId": session, "toolCall": {"toolCallId": "late", "title": "Run cargo test"},
+                                "options": [{"optionId": "yes", "name": "Allow", "kind": "allow_once"},
+                                            {"optionId": "no", "name": "Reject", "kind": "reject_once"}]}),
+                            None,
+                        ))
+                        .unwrap();
+                    let chosen = answer.pointer("/outcome/optionId").and_then(Value::as_str).unwrap_or("none");
+                    self.say(&session, &format!("late chose {chosen}"));
                     return Ok(json!({"stopReason": "end_turn"}));
                 }
                 if text == "ask" {
@@ -1438,12 +1470,12 @@ async fn cursor_approval_switch_resolves_pending_and_survives_restart() {
     mgr.prompt(&task.id, text("late option"), false).await.unwrap();
     wait_for(&mgr, &task.id, AgentStatus::Ready).await;
     let t = mgr.task(&task.id).unwrap();
-    assert!(config::bypass_approvals("cursor", &t.state.lock().task.config));
+    assert!(config::bypass_approvals(&t.state.lock().task.config));
     t.kill();
     mgr.prompt(&task.id, text("Fix again"), false).await.unwrap();
     wait_for(&mgr, &task.id, AgentStatus::Ready).await;
     assert!(!agent.calls.lock().iter().any(|c| c.contains("bypass")));
-    assert!(config::bypass_approvals("cursor", &mgr.shared.known_config("cursor")));
+    assert!(config::bypass_approvals(&mgr.shared.known_config("cursor")));
     mgr.set_config(&task.id, config::CURSOR_APPROVAL, "ask".into()).await.unwrap();
     mgr.prompt(&task.id, text("Fix once more"), false).await.unwrap();
     wait_for(&mgr, &task.id, AgentStatus::NeedsInput).await;
@@ -1531,6 +1563,133 @@ async fn cursor_approval_choice_applies_before_first_prompt() {
         .await
         .unwrap();
     wait_for(&mgr, &task.id, AgentStatus::Ready).await;
+    mgr.shutdown();
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn a_full_access_mode_approves_tool_requests() {
+    let tmp = tempfile::tempdir().unwrap();
+    let agent = Arc::new(FakeAgent::default());
+    *agent.extra_options.lock() = vec![json!({
+        "id": "mode", "category": "mode", "type": "select", "currentValue": "ask",
+        "options": [{"value": "ask", "name": "Ask"}, {"value": "full-access", "name": "Full Access"}]
+    })];
+    let mgr = manager(tmp.path(), agent.clone());
+    let task = mgr
+        .create(NewAgentTask {
+            project_root: None,
+            prompt: text("Fix"),
+            provider: "claude".into(),
+            config: vec![AgentConfigChoice { id: "mode".into(), value: "full-access".into() }],
+            isolation: Isolation::Local,
+            base: None,
+        })
+        .await
+        .unwrap();
+    wait_for(&mgr, &task.id, AgentStatus::Ready).await;
+    assert!(agent.calls.lock().iter().any(|c| c.ends_with("\"full-access\"")));
+    assert!(
+        mgr.entries(&task.id, None)
+            .unwrap()
+            .iter()
+            .any(|entry| matches!(entry, AgentEntry::Permission { chosen: Some(name), .. } if name == "Allow"))
+    );
+
+    // Choosing Full Access while the request is already waiting also approves it.
+    let waiting = mgr
+        .create(NewAgentTask {
+            project_root: None,
+            prompt: text("Fix"),
+            provider: "claude".into(),
+            config: Vec::new(),
+            isolation: Isolation::Local,
+            base: None,
+        })
+        .await
+        .unwrap();
+    wait_for(&mgr, &waiting.id, AgentStatus::NeedsInput).await;
+    mgr.set_config(&waiting.id, "mode", "full-access".into()).await.unwrap();
+    wait_for(&mgr, &waiting.id, AgentStatus::Ready).await;
+    assert!(
+        mgr.entries(&waiting.id, None)
+            .unwrap()
+            .iter()
+            .any(|entry| matches!(entry, AgentEntry::Permission { chosen: Some(name), .. } if name == "Allow"))
+    );
+    mgr.shutdown();
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn a_late_full_access_option_approves_a_pending_request() {
+    let tmp = tempfile::tempdir().unwrap();
+    let agent = Arc::new(FakeAgent { hold_late_mode: true, ..Default::default() });
+    let mgr = manager(tmp.path(), agent.clone());
+    let task = mgr
+        .create(NewAgentTask {
+            project_root: None,
+            prompt: text("late full access"),
+            provider: "claude".into(),
+            config: vec![AgentConfigChoice { id: "mode".into(), value: "full-access".into() }],
+            isolation: Isolation::Local,
+            base: None,
+        })
+        .await
+        .unwrap();
+    let deadline = std::time::Instant::now() + Duration::from_secs(10);
+    loop {
+        let task = mgr.task(&task.id).unwrap();
+        let (status, busy) = {
+            let s = task.state.lock();
+            (s.task.status, s.busy)
+        };
+        if status == AgentStatus::Ready && !busy {
+            break;
+        }
+        if std::time::Instant::now() > deadline {
+            let _ = mgr.cancel(&task.id, None);
+            mgr.shutdown();
+            panic!("late Full Access did not approve the pending request");
+        }
+        tokio::time::sleep(Duration::from_millis(10)).await;
+    }
+    assert!(agent.calls.lock().iter().any(|c| c.ends_with("\"full-access\"")));
+    assert!(
+        mgr.entries(&task.id, None)
+            .unwrap()
+            .iter()
+            .any(|entry| matches!(entry, AgentEntry::Permission { chosen: Some(name), .. } if name == "Allow"))
+    );
+    mgr.shutdown();
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn an_allow_all_permissions_option_approves_tool_requests() {
+    let tmp = tempfile::tempdir().unwrap();
+    let agent = Arc::new(FakeAgent::default());
+    *agent.extra_options.lock() = vec![json!({
+        "id": "allow_all", "name": "Allow All", "category": "permissions", "type": "select", "currentValue": "off",
+        "options": [{"value": "off", "name": "Ask"}, {"value": "on", "name": "Full Access"}]
+    })];
+    let mgr = manager(tmp.path(), agent.clone());
+    let task = mgr
+        .create(NewAgentTask {
+            project_root: None,
+            prompt: text("Fix"),
+            provider: "claude".into(),
+            config: vec![AgentConfigChoice { id: "allow_all".into(), value: "on".into() }],
+            isolation: Isolation::Local,
+            base: None,
+        })
+        .await
+        .unwrap();
+    wait_for(&mgr, &task.id, AgentStatus::Ready).await;
+    assert!(agent.calls.lock().iter().any(|c| c.ends_with("\"on\"")));
+    assert!(
+        mgr.entries(&task.id, None)
+            .unwrap()
+            .iter()
+            .any(|entry| matches!(entry, AgentEntry::Permission { chosen: Some(name), .. } if name == "Allow"))
+    );
     mgr.shutdown();
 }
 
