@@ -43,7 +43,7 @@ pub(super) async fn run(
                     skip_body(&mut jvm, body_len).await?;
                     continue;
                 }
-                Route::Adapter => {}
+                Route::Adapter => shared.update(|core| core.adapter_reply(h.id, h.error())),
             }
         } else if h.command() == (64, 100) && len <= MAX_EVENT {
             let mut packet = vec![0; len];

@@ -120,6 +120,11 @@ async fn forward(shared: &Shared, packet: &[u8]) -> io::Result<()> {
             }
             Some(match command {
                 Some(resume @ ((1, 9) | (11, 3))) => core.resume(resume, &packet[HEADER_LEN..]),
+                // VirtualMachine.Suspend, ThreadReference.Suspend
+                Some(suspend @ ((1, 8) | (11, 2))) => {
+                    core.suspend(h.id, suspend, &packet[HEADER_LEN..]);
+                    false
+                }
                 _ => false,
             })
         });

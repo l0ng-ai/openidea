@@ -14,6 +14,7 @@ mod command;
 mod downstream;
 mod ledger;
 mod state;
+mod suspends;
 mod upstream;
 mod writer;
 
@@ -22,6 +23,8 @@ use writer::JvmWriter;
 
 #[cfg(test)]
 mod command_tests;
+#[cfg(test)]
+mod suspend_tests;
 #[cfg(test)]
 mod tests;
 #[cfg(test)]

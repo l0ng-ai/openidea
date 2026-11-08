@@ -1,6 +1,7 @@
 //! The link's state machine, kept under `Shared::core`.
 
 use super::ledger::{DISPOSE_CHUNK, Ledger};
+use super::suspends::Suspends;
 use super::{LinkError, LinkState, OWN_IDS};
 use crate::codec::{Header, Reader};
 use crate::ids::{IdSizes, ReplyIds, dispose_body, object_ids, stop_of};
@@ -35,13 +36,21 @@ pub(super) struct Core {
     pub(super) connected: bool,
     pub(super) handshaken: bool,
     pub(super) released: bool,
+    /// A suspending event started a stop, and some thread is still suspended.
     pub(super) stopped: bool,
     /// The thread the link's commands run on: the last of `event_threads`; `None` while running
     /// or for a stop whose thread is unknown.
     pub(super) thread: Option<u64>,
-    /// Threads an event stopped and the adapter has not resumed, oldest first. fwcd suspends
-    /// only the event's thread and resumes each thread alone, so earlier ones can stay stopped.
+    /// Threads an event stopped that are still suspended, oldest first. fwcd suspends only the
+    /// event's thread and resumes each thread alone, so earlier ones can stay stopped.
     pub(super) event_threads: Vec<u64>,
+    pub(super) suspends: Suspends,
+    /// A suspending event whose thread the link could not read: any resume ends it, as it
+    /// cannot be told apart from the others.
+    pub(super) unattributed: bool,
+    /// Adapter `VirtualMachine.Suspend` (`None`) and `ThreadReference.Suspend` commands
+    /// counted on their way to the JVM and not answered yet, by packet id.
+    pub(super) suspending: HashMap<u32, Option<u64>>,
     pub(super) generation: u64,
     pub(super) degraded: Option<String>,
     pub(super) closed: bool,
@@ -124,9 +133,14 @@ impl Core {
             OwnCommand::IdSizes if header.error() == 0 => match IdSizes::parse(&body) {
                 Ok(sizes) => {
                     self.sizes = Some(sizes);
-                    if let Some(event) = self.unread_stop.take() {
-                        self.thread = stop_of(&event, &sizes).and_then(|stop| stop.thread);
+                    if let Some(event) = self.unread_stop.take()
+                        && let Some(stop) = stop_of(&event, &sizes)
+                    {
+                        self.thread = stop.thread;
                         self.event_threads.extend(self.thread);
+                        if self.count_event(stop.suspend_policy, stop.thread) {
+                            self.unattributed = false;
+                        }
                     }
                 }
                 Err(e) => tracing::warn!("JDWP link: malformed IDSizes reply: {e}"),
@@ -219,16 +233,57 @@ impl Core {
         match self.sizes {
             Some(sizes) => {
                 if let Some(stop) = stop_of(body, &sizes).filter(|stop| stop.suspend_policy != 0) {
+                    self.count_event(stop.suspend_policy, stop.thread);
                     self.begin_stop(stop.thread, None);
                 }
             }
             None => {
                 let mut r = Reader::new(body);
                 if r.u8().is_ok_and(|policy| policy != 0) && r.count().is_ok_and(|n| n > 0) {
+                    self.unattributed = true;
                     self.begin_stop(None, Some(body.to_vec()));
                 }
             }
         }
+    }
+
+    /// Counts a suspending event of `thread`; returns whether it could (the thread is known).
+    fn count_event(&mut self, policy: u8, thread: Option<u64>) -> bool {
+        let Some(thread) = thread else {
+            self.unattributed = true;
+            return false;
+        };
+        self.suspends.ran(thread);
+        if policy == SUSPEND_EVENT_THREAD {
+            self.suspends.suspend(thread);
+        } else {
+            self.suspends.suspend_all();
+        }
+        true
+    }
+
+    /// The adapter's `VirtualMachine.Suspend` (1/8) or `ThreadReference.Suspend` (11/2) with
+    /// packet `id`. Counted before the write, like a resume, so a resume written right after it
+    /// sees it; a refusal takes it back ([`Self::adapter_reply`]).
+    pub(super) fn suspend(&mut self, id: u32, command: (u8, u8), body: &[u8]) {
+        if command == (1, 8) {
+            self.suspends.suspend_all();
+            self.suspending.insert(id, None);
+        } else if let Some(thread) = self.sizes.and_then(|sizes| Reader::new(body).id(sizes.object).ok()) {
+            self.suspends.suspend(thread);
+            self.suspending.insert(id, Some(thread));
+        }
+    }
+
+    /// The JVM answered the adapter's packet `id` with `error`. A stop that a refused suspend
+    /// alone kept going ends here; its ids go out with the next resume.
+    pub(super) fn adapter_reply(&mut self, id: u32, error: u16) {
+        match self.suspending.remove(&id) {
+            Some(None) if error != 0 => self.suspends.unsuspend_all(),
+            Some(Some(thread)) if error != 0 => self.suspends.resume(thread),
+            _ => return,
+        }
+        self.settle();
     }
 
     fn begin_stop(&mut self, thread: Option<u64>, unread: Option<Vec<u8>>) {
@@ -251,13 +306,19 @@ impl Core {
     /// stop again, and that stop must not be taken for the one the resume ends. Returns whether
     /// the ids read so far may be released after it: not while the link's stop goes on.
     pub(super) fn resume(&mut self, command: (u8, u8), body: &[u8]) -> bool {
-        if command != (11, 3) {
-            self.end_stop();
-            return true;
-        }
         let before = (self.stopped, self.generation);
-        let thread = self.sizes.and_then(|sizes| Reader::new(body).id(sizes.object).ok());
-        self.resume_thread(thread);
+        self.unattributed = false;
+        self.unread_stop = None;
+        if command == (11, 3) {
+            match self.sizes.and_then(|sizes| Reader::new(body).id(sizes.object).ok()) {
+                Some(thread) => self.suspends.resume(thread),
+                // Which count went down is unknown: the link takes every thread for running.
+                None => self.suspends.clear(),
+            }
+        } else {
+            self.suspends.resume_all();
+        }
+        self.settle();
         !self.stopped || (self.stopped, self.generation) != before
     }
 
@@ -268,22 +329,26 @@ impl Core {
         self.unread_stop = None;
     }
 
-    /// `thread` is `None` when its id could not be read. Resuming the thread the link runs on
-    /// moves it to the latest thread still stopped, as a new stop.
-    fn resume_thread(&mut self, thread: Option<u64>) {
-        let (Some(thread), Some(current)) = (thread, self.thread) else {
-            return self.end_stop();
-        };
-        self.event_threads.retain(|&t| t != thread);
-        if thread != current {
+    /// After a count went down: ends the stop once no thread is suspended. A thread the link
+    /// runs on that runs again moves the stop to the latest event thread still suspended, as a
+    /// new stop; with none left the VM-wide suspension keeps the stop, without a thread.
+    fn settle(&mut self) {
+        if !self.stopped {
             return;
         }
-        match self.event_threads.last() {
-            Some(&next) => {
+        if !self.unattributed && !self.suspends.any() {
+            return self.end_stop();
+        }
+        let suspends = &self.suspends;
+        self.event_threads.retain(|&t| suspends.count(t) > 0);
+        if self.thread.is_some_and(|t| suspends.count(t) == 0) {
+            self.thread = self.event_threads.last().copied();
+            if self.thread.is_some() {
                 self.generation += 1;
-                self.thread = Some(next);
             }
-            None => self.end_stop(),
         }
     }
 }
+
+/// `SuspendPolicy.EVENT_THREAD`; `ALL` is 2.
+const SUSPEND_EVENT_THREAD: u8 = 1;
