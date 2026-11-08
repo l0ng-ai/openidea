@@ -1,6 +1,14 @@
 import { readFileSync } from "node:fs";
 import { beforeAll, describe, expect, it } from "vitest";
-import { _setSchemeSource, customSchemes, effectiveScheme, listSchemes, SCHEMES, schemeCss } from "./colorScheme";
+import {
+  _setSchemeSource,
+  CLEAR_COLOR,
+  customSchemes,
+  effectiveScheme,
+  listSchemes,
+  SCHEMES,
+  schemeCss,
+} from "./colorScheme";
 import { deleteScheme, exportIcls, importScheme, parseIcls } from "./icls";
 import { validateSettings } from "@/features/settings/model/schema";
 import { colorSchemeItems } from "@/workbench/quickSwitch";
@@ -75,6 +83,53 @@ describe(".icls schemes", () => {
     const before = structuredClone(customs);
     expect(() => parseIcls(xml)).toThrow("Invalid .icls color scheme");
     expect(customs).toEqual(before);
+  });
+
+  it.each([
+    ["0", undefined],
+    ["1", "underline"],
+    ["2", "wave"],
+    ["3", "strikeout"],
+    ["4", "underline"],
+    ["5", "underline"],
+    ["6", undefined],
+  ] as const)("imports IntelliJ effect type %s as %s", (code, effect) => {
+    const { scheme } = parseIcls(`<scheme name="Effects"><attributes>
+      <option name="DEFAULT_KEYWORD"><value><option name="EFFECT_COLOR" value="aa1122"/><option name="EFFECT_TYPE" value="${code}"/></value></option>
+    </attributes></scheme>`);
+    expect(scheme.attributes.keyword?.effect).toBe(effect);
+  });
+
+  it("imports no effect without an effect colour, which IntelliJ does not draw", () => {
+    const { scheme } = parseIcls(`<scheme name="Effects"><attributes>
+      <option name="DEFAULT_KEYWORD"><value><option name="FOREGROUND" value="112233"/><option name="EFFECT_TYPE" value="3"/></value></option>
+    </attributes></scheme>`);
+    expect(scheme.attributes.keyword).toEqual({ foreground: "#112233", bold: false, italic: false });
+  });
+
+  it("exports effects with IntelliJ's codes and a colour IntelliJ draws them in", () => {
+    const { id, customs } = importScheme({}, parseIcls(fixture("forest")).scheme);
+    const xml = exportIcls(id, customs, {
+      keyword: { effect: "underline" },
+      number: { effect: "strikeout", effectColor: "#aa1122" },
+    });
+    const effect = (name: string) => {
+      const value = new DOMParser().parseFromString(xml, "application/xml").querySelector(`option[name="${name}"]`);
+      const option = (key: string) => value?.querySelector(`option[name="${key}"]`)?.getAttribute("value");
+      return [option("EFFECT_TYPE"), option("EFFECT_COLOR")];
+    };
+    expect(effect("DEFAULT_KEYWORD")).toEqual(["1", "aadd88"]);
+    expect(effect("ERRORS_ATTRIBUTES")).toEqual(["2", "ff6655"]);
+    expect(effect("DEFAULT_NUMBER")).toEqual(["3", "aa1122"]);
+    const attrs = parseIcls(xml).scheme.attributes;
+    expect(attrs.keyword).toMatchObject({ effect: "underline", effectColor: "#aadd88" });
+    expect(attrs.error).toEqual({ effect: "wave", effectColor: "#ff6655" });
+  });
+
+  it("exports no effect whose colour was cleared", () => {
+    const { id, customs } = importScheme({}, parseIcls(fixture("forest")).scheme);
+    const xml = exportIcls(id, customs, { error: { effectColor: CLEAR_COLOR } });
+    expect(parseIcls(xml).scheme.attributes.error).toBeUndefined();
   });
 
   it("imports PyCharm dot keys after shared defaults without inherited font effects", () => {
