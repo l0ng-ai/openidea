@@ -1119,7 +1119,7 @@ openidea.postMessage(JSON.stringify({
   key: "server-output",
   title: "Server logs",
   program: "my-server",
-  baseArgs: ["logs"],
+  args: ["logs"],
   toggles: [{ id: "verbose", label: "Verbose", args: ["--verbose"] }],
 }));
 ```
@@ -1130,9 +1130,9 @@ session caps and lifecycle rules are the same as for web frame PTYs. The tab
 uses the backend PTY API, never a shell fallback. It supplies no environment
 overrides; the environment is inherited. A shell requires its own explicit grant.
 
-`program` is required. `baseArgs` and `toggles` default to empty arrays; `title`
+`program` is required. `args` and `toggles` default to empty arrays; `title`
 defaults to the program. Each toggle has a unique `id`, a plugin-localized
-`label`, and `args` appended after `baseArgs` in declaration order. Changing a
+`label`, and `args` appended after the top-level `args` in declaration order. Changing a
 toggle terminates the previous process and replaces the stream. `key` defaults
 to the title and is scoped to the calling plugin and view; reopening the same
 key focuses its existing tab. Titles are at most 256 characters, keys 128,

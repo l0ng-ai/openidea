@@ -395,7 +395,7 @@ function PluginLogEditorBody({ input, data }: { input: EditorInput; data: Plugin
         op: "pty-spawn",
         sessionId: "log",
         program: data.program,
-        args: [...data.baseArgs, ...data.toggles.filter((t) => on.has(t.id)).flatMap((t) => t.args)],
+        args: [...data.args, ...data.toggles.filter((t) => on.has(t.id)).flatMap((t) => t.args)],
         cols: 240,
         rows: 40,
       }),

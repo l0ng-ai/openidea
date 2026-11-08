@@ -59,11 +59,13 @@ world plugin-indexing {
     export document-indexer;
 }
 
+/// A plugin with semantic tokens (`semantic-tokens` under `[[contributes.providers]]`).
 world plugin-semantic-tokens {
     include plugin;
     export semantic-tokens-provider;
 }
 
+/// A plugin adding to hovers (`hover` under `[[contributes.providers]]`).
 world plugin-hover {
     include plugin;
     export hover-provider;
@@ -115,10 +117,12 @@ world indexing {
     export document-indexer;
 }
 
+/// Only the `semantic-tokens-provider` export, generated next to `plugin` like `syntax`.
 world semantic-tokens {
     export semantic-tokens-provider;
 }
 
+/// Only the `hover-provider` export, generated next to `plugin` like `syntax`.
 world hover {
     export hover-provider;
 }
@@ -149,6 +153,7 @@ world plugin-endpoints {
     export endpoints-provider;
 }
 
+/// Only the `endpoints-provider` export, generated next to `plugin` like `syntax`.
 world endpoints {
     export endpoints-provider;
 }

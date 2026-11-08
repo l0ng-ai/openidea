@@ -311,7 +311,7 @@ mod imp {
     }
 
     pub fn project_symbols(p: &ProjectRes, query: &str, limit: u32) -> Result<Vec<SymbolInfo>, Error> {
-        wit::workspace::symbols(p, query, limit)
+        p.symbols(query, limit)
             .map(|symbols| {
                 symbols
                     .into_iter()
