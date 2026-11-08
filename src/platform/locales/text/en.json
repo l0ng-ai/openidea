@@ -519,5 +519,11 @@
   "Stop the compile a Reload Changed Classes action is waiting on": "Stop the compile a Reload Changed Classes action is waiting on",
   "Hot Swap cancelled": "Hot Swap cancelled",
   "Compiling changed classes…": "Compiling changed classes…",
-  "A cancelled build may have left classes out of the reload. Restart the debug session to apply all changes.": "A cancelled build may have left classes out of the reload. Restart the debug session to apply all changes."
+  "A cancelled build may have left classes out of the reload. Restart the debug session to apply all changes.": "A cancelled build may have left classes out of the reload. Restart the debug session to apply all changes.",
+  "Toolchains file": "Toolchains file",
+  "Passed as -t; selects the JDKs Maven compiles with.": "Passed as -t; selects the JDKs Maven compiles with.",
+  "Select Maven toolchains.xml": "Select Maven toolchains.xml",
+  "dev,integration": "dev,integration",
+  "Comma-separated profiles (-P), combined with Maven tool window choices; !id excludes a profile. A run configuration’s own -P replaces these profiles.": "Comma-separated profiles (-P), combined with Maven tool window choices; !id excludes a profile. A run configuration’s own -P replaces these profiles.",
+  "Active profiles": "Active profiles"
 }

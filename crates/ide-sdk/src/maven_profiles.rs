@@ -12,15 +12,15 @@ use std::path::{Path, PathBuf};
 const PREFIX: &str = "jdtls-maven-settings-";
 
 /// Points jdtls at a user `settings.xml` activating `profiles` (`-P` entries of the
-/// last Maven sync), written to `dir`. Through `settings`, so a running server
+/// last Maven sync), combined with Settings profiles and written to `dir`. Through `settings`, so a running server
 /// re-imports its Maven projects instead of restarting. `!id` entries can't be
 /// expressed in `settings.xml` and are left to the POMs' own activation.
 pub fn configure_jdtls(cfg: &mut LanguageServerConfig, root: &Path, s: &Settings, profiles: &[String], dir: &Path) {
     if cfg.name != "jdtls" {
         return;
     }
-    let active: Vec<&str> =
-        profiles.iter().map(|p| p.trim()).filter(|p| !p.is_empty() && !p.starts_with('!')).collect();
+    let profiles = s.languages.java.maven.profiles(profiles);
+    let active: Vec<&str> = profiles.iter().map(String::as_str).filter(|p| !p.starts_with(['!', '-'])).collect();
     let Some(file) = (!active.is_empty()).then(|| write_settings(root, s, &active, dir)).flatten() else {
         remove_generated(dir, None);
         return;
@@ -190,6 +190,30 @@ mod tests {
         }
         assert_eq!(with_active_profiles("<settings/>", &ids), None);
         assert!(with_active_profiles("<settings></settings>", &["a&b"]).unwrap().contains("a&amp;b"));
+    }
+
+    #[test]
+    fn jdtls_combines_settings_profiles_and_checkbox_choices() {
+        let tmp = tempfile::tempdir().unwrap();
+        let mut s = Settings::default();
+        s.languages.java.maven.user_settings = "config files/settings.xml".into();
+        s.languages.java.maven.active_profiles = " a, c, !d, a ".into();
+        std::fs::create_dir_all(tmp.path().join("config files")).unwrap();
+        std::fs::write(tmp.path().join("config files/settings.xml"), "<settings><mirrors/></settings>").unwrap();
+        let mut cfg = jdtls();
+        configure_jdtls(&mut cfg, tmp.path(), &s, &["b".into(), "!c".into(), "d".into()], &tmp.path().join("cache"));
+        let text = std::fs::read_to_string(user_settings(&cfg).unwrap()).unwrap();
+        assert!(text.contains("<mirrors/>"));
+        assert_eq!(text.matches("<activeProfile>a</activeProfile>").count(), 1);
+        assert!(text.contains("<activeProfile>b</activeProfile>"));
+        assert!(!text.contains("<activeProfile>c</activeProfile>"));
+        assert!(!text.contains("<activeProfile>d</activeProfile>"));
+
+        let mut cfg = jdtls();
+        configure_jdtls(&mut cfg, tmp.path(), &s, &[], &tmp.path().join("cache"));
+        let text = std::fs::read_to_string(user_settings(&cfg).unwrap()).unwrap();
+        assert!(text.contains("<activeProfile>a</activeProfile>"));
+        assert!(text.contains("<activeProfile>c</activeProfile>"));
     }
 
     #[test]

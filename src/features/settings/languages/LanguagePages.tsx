@@ -494,6 +494,7 @@ export function GradlePage() {
 export function MavenPage() {
   const [daemon, setDaemon] = useSetting<boolean>("languages.java.maven.daemon");
   const [threads, setThreads] = useSetting<string>("languages.java.maven.threads");
+  const [activeProfiles, setActiveProfiles] = useSetting<string>("languages.java.maven.activeProfiles");
   const id = useId();
   return (
     <div className={styles.page}>
@@ -528,12 +529,35 @@ export function MavenPage() {
           hint="Passed as -s (mirrors, servers, proxies)."
         />
         <PathInput
+          k="languages.java.maven.toolchains"
+          label="Toolchains file"
+          placeholder="~/.m2/toolchains.xml"
+          title="Select Maven toolchains.xml"
+          file
+          hint="Passed as -t; selects the JDKs Maven compiles with."
+        />
+        <PathInput
           k="languages.java.maven.localRepository"
           label="Local repository"
           placeholder="From settings.xml, else ~/.m2/repository"
           title="Select Local Repository"
           hint="Passed as -Dmaven.repo.local."
         />
+        <Row
+          label="Active profiles"
+          htmlFor={`${id}-profiles`}
+          hint="Comma-separated profiles (-P), combined with Maven tool window choices; !id excludes a profile. A run configuration’s own -P replaces these profiles."
+        >
+          <Input
+            id={`${id}-profiles`}
+            mono
+            className={styles.pathInput}
+            value={activeProfiles}
+            placeholder="dev,integration"
+            onChange={(e) => setActiveProfiles(e.target.value)}
+            aria-label="Active profiles"
+          />
+        </Row>
         <Row
           label="Thread count"
           htmlFor={id}
