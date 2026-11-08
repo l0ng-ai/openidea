@@ -607,19 +607,14 @@ function Stream({ task, entries, subagent, onOpenSubagent, finding, findFocus, o
   const rows = useMemo(() => (entries ? conversationRows(entries, start) : []), [entries, start]);
   const authorHeaders = useMemo(() => {
     const headers = new Set<number>();
-    const work = (row: ConversationRow) =>
-      row.kind === "process" || row.entry.type === "thought" || row.entry.type === "tool";
+    const byAgent = (row: ConversationRow) =>
+      row.kind === "process" ||
+      (row.entry.type !== "user" &&
+        row.entry.type !== "subagent" &&
+        !(row.entry.type === "message" && row.entry.incoming));
     rows.forEach((row, i) => {
-      if (row.kind === "entry" && row.entry.type === "user") return;
       const previous = rows[i - 1];
-      if (
-        !previous ||
-        (previous.kind === "entry" && previous.entry.type === "user") ||
-        (work(row) && !work(previous)) ||
-        (row.kind === "entry" && row.entry.type === "agent" && !work(previous))
-      ) {
-        headers.add(row.index);
-      }
+      if (byAgent(row) && (!previous || !byAgent(previous))) headers.add(row.index);
     });
     return headers;
   }, [rows]);
@@ -1012,8 +1007,8 @@ const Entry = memo(function Entry({
             />
           </div>
           <div className={styles.messageFooter}>
-            <ReplyActions text={entry.text} task={task} reply={reply} turnCount={turnCount} />
             <MessageTime sentMs={time?.sentMs ?? null} doneMs={time?.doneMs ?? null} at="done" />
+            <ReplyActions text={entry.text} task={task} reply={reply} turnCount={turnCount} />
           </div>
         </div>
       );
