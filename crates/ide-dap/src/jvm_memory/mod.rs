@@ -128,6 +128,7 @@ impl JvmMemoryState {
 }
 
 pub(crate) async fn session_classes(session: Arc<Session>) -> IdeResult<JvmMemoryResult> {
+    until_located(&session).await;
     let launched = histogram_pid(&session);
     // Detached, so a caller that gives up cannot release the lock while the JVM is still
     // answering and let a second histogram request run next to it.
@@ -138,6 +139,20 @@ pub(crate) async fn session_classes(session: Arc<Session>) -> IdeResult<JvmMemor
     })
     .await
     .map_err(|e| ide_core::IdeError::internal(format!("JVM memory snapshot failed: {e}")))?
+}
+
+/// Bounds the wait of [`until_located`]; `configure` has its own timeouts, this only guards them.
+const LOCATE_WAIT: Duration = Duration::from_secs(30);
+
+/// Until `configure` has recorded where `session`'s JVM is. The Memory view asks as soon as the
+/// session appears; looked up earlier, an attached JVM is reported as missing.
+async fn until_located(session: &Session) {
+    let mut located = session.jvm_located.subscribe();
+    tokio::select! {
+        _ = located.wait_for(|v| *v) => {}
+        () = session.ended.cancelled() => {}
+        () = tokio::time::sleep(LOCATE_WAIT) => {}
+    }
 }
 
 /// `launched`: [`histogram_pid`] of `session`.

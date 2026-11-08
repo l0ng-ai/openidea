@@ -55,6 +55,8 @@ struct Script {
     stop_during_threads: bool,
     /// Name of the first stack frame (`main` when unset).
     frame_name: Option<&'static str>,
+    /// Answer `initialize` only after this long (a slow adapter keeps the session connecting).
+    delay_initialize: Option<Duration>,
 }
 
 impl Default for Script {
@@ -79,6 +81,7 @@ impl Default for Script {
             invalidated_after_stop: false,
             stop_during_threads: false,
             frame_name: None,
+            delay_initialize: None,
         }
     }
 }
@@ -138,23 +141,28 @@ async fn fake_adapter<S: AsyncRead + AsyncWrite + Unpin + Send + 'static>(stream
             break;
         }
         match msg["command"].as_str().unwrap_or_default() {
-            "initialize" => ok!(
-                msg,
-                json!({
-                    "supportsConfigurationDoneRequest": true,
-                    "supportsCompletionsRequest": true,
-                    "supportsTerminateRequest": script.supports_terminate,
-                    "supportsSetVariable": true,
-                    "supportsFunctionBreakpoints": true,
-                    "supportsDataBreakpoints": true,
-                    "supportsStepInTargetsRequest": true,
-                    "supportsRestartFrame": true,
-                    "exceptionBreakpointFilters": [
-                        {"filter": "raised", "label": "Raised"},
-                        {"filter": "uncaught", "label": "Uncaught", "default": true, "description": "Uncaught exceptions"},
-                    ],
-                })
-            ),
+            "initialize" => {
+                if let Some(delay) = script.delay_initialize {
+                    tokio::time::sleep(delay).await;
+                }
+                ok!(
+                    msg,
+                    json!({
+                        "supportsConfigurationDoneRequest": true,
+                        "supportsCompletionsRequest": true,
+                        "supportsTerminateRequest": script.supports_terminate,
+                        "supportsSetVariable": true,
+                        "supportsFunctionBreakpoints": true,
+                        "supportsDataBreakpoints": true,
+                        "supportsStepInTargetsRequest": true,
+                        "supportsRestartFrame": true,
+                        "exceptionBreakpointFilters": [
+                            {"filter": "raised", "label": "Raised"},
+                            {"filter": "uncaught", "label": "Uncaught", "default": true, "description": "Uncaught exceptions"},
+                        ],
+                    })
+                )
+            }
             "launch" | "attach" => {
                 pending_launch = msg["seq"].as_i64();
                 if let Some(args) = &script.run_in_terminal {
@@ -1861,6 +1869,45 @@ async fn remote_host_is_not_scanned() {
         }
     );
     assert_eq!(session.jvm_pid.load(Ordering::Acquire), 0);
+}
+
+/// The Memory view asks as soon as the session appears, while its JVM is still being looked up:
+/// answering then would claim there is no JVM to ask.
+#[cfg(unix)]
+#[tokio::test]
+async fn memory_asked_while_an_attach_connects_waits_for_its_jvm() {
+    let h = harness(Script { delay_initialize: Some(Duration::from_millis(300)), ..Script::default() });
+    let project = tempfile::tempdir().unwrap();
+    let (manager, owner) = (h.manager.clone(), h.owner.clone());
+    let config = remote_attach("java-debug", project.path());
+    let start = tokio::spawn(async move { manager.start(config, owner).await });
+    h.wait_event(|e| matches!(e, DebugEvent::Started { .. })).await;
+    let id = DebugSessionId(*event_sessions(&h.events).first().unwrap());
+    let session = h.manager.session(id).unwrap();
+    assert!(session.attach_target.get().is_none(), "asked too late to cover the connecting session");
+
+    h.manager.jvm_memory_classes(id).await.unwrap();
+    assert!(session.attach_target.get().is_some(), "answered before the attach was looked at");
+    start.await.unwrap().unwrap();
+}
+
+/// A JVM clears its JDWP listener address once a debugger connects, so only a scan made before
+/// the `attach` request can tell it by its port.
+#[cfg(unix)]
+#[tokio::test]
+async fn local_attach_finds_its_jvm_before_the_debugger_connects() {
+    let h = harness(Script::default());
+    let log = h.log.clone();
+    h.manager.set_jvm_finder(Arc::new(move |port, _| {
+        std::thread::sleep(Duration::from_millis(50));
+        let attached = log.lock().iter().any(|m| m["command"] == "attach");
+        (port == 5005 && !attached).then_some(4242)
+    }));
+    let mut cfg = java_config("attach");
+    cfg.extra_json = Some(json!({"hostName": "127.0.0.1", "port": 5005}).to_string());
+    let id = h.start(cfg).await.unwrap();
+    let session = h.manager.session(id).unwrap();
+    assert_eq!(session.jvm_pid.load(Ordering::Acquire), 4242);
 }
 
 #[cfg(unix)]

@@ -60,11 +60,18 @@ pub(crate) fn find_local_jvm(port: u16, suspended: bool) -> Option<u32> {
     ide_jvm_attach::find_jvm_by_jdwp_port(port, ATTACH_SCAN_TRY, ATTACH_SCAN_TRY, may_query)
 }
 
-/// Looks for the JVM behind a local attach in the background, so a JVM that never opens an
-/// attach socket does not hold the attach up.
-pub(crate) fn find_attached_jvm(session: &Arc<Session>, port: u16, finder: JvmFinder) {
+/// Looks for the JVM behind a local attach: one try now, the rest in the background, so a JVM
+/// that never opens an attach socket holds the attach up by one try at most. Call it before the
+/// debugger connects: the JVM clears its JDWP listener address then, and a scan can no longer
+/// tell it by its port.
+pub(crate) async fn find_attached_jvm(session: &Arc<Session>, port: u16, finder: JvmFinder) {
     let _ = session.jdwp_port.set(port);
     let find = move |suspended: bool| finder(port, suspended);
+    let first = find.clone();
+    if let Ok(Some(pid)) = tokio::task::spawn_blocking(move || first(false)).await {
+        let _ = session.jvm_pid.compare_exchange(0, i64::from(pid), Ordering::AcqRel, Ordering::Acquire);
+        return;
+    }
     drop(watch_for_attached_jvm(session, port, find, ATTACH_SCAN_INTERVAL, ATTACH_SCAN_WINDOW));
 }
 

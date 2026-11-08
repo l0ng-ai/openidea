@@ -88,6 +88,9 @@ pub(crate) struct Session {
     /// was given them: Kotlin then replaces them with the link's. Unlike `jdwp_port`, also set
     /// for a remote JVM.
     pub attach_target: std::sync::OnceLock<(String, u16)>,
+    /// Set once `configure` has recorded where the program's JVM is (the fields above, the
+    /// Kotlin link), just before the `launch`/`attach` request goes out.
+    pub jvm_located: watch::Sender<bool>,
     pub kotlin_mirror: Mutex<Option<crate::kotlin::SourceMirror>>,
     pub jvm_memory: tokio::sync::Mutex<crate::JvmMemoryState>,
     /// Used only by a kotlin-lsp session: see [`Session::kotlin_lsp_quirks`].
@@ -228,6 +231,7 @@ impl Session {
             inspect_lock: tokio::sync::Mutex::default(),
             ended: ide_core::CancellationToken::new(),
             attach_target: std::sync::OnceLock::new(),
+            jvm_located: watch::channel(false).0,
             kotlin_mirror: Mutex::new(None),
             jvm_memory: tokio::sync::Mutex::default(),
             quirks: kotlin_lsp::Quirks::default(),

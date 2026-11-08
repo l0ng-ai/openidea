@@ -940,7 +940,8 @@ impl DebugManager {
             if jdwp::is_listen_relay(port) {
                 s.listen_relay.store(true, Ordering::Release);
             } else {
-                jvm_memory::find_attached_jvm(s, port, self.jvm_finder.lock().clone());
+                let finder = self.jvm_finder.lock().clone();
+                jvm_memory::find_attached_jvm(s, port, finder).await;
             }
         }
         if kotlin::is_kotlin(&s.adapter) {
@@ -962,6 +963,7 @@ impl DebugManager {
             arguments["hostName"] = json!("127.0.0.1");
             arguments["port"] = json!(port);
         }
+        s.jvm_located.send_replace(true);
         // Many adapters answer `launch` only after `configurationDone`, so don't wait for it yet.
         let launch = s.conn.send_request(request, arguments)?;
         let mut launch = Box::pin(async move { launch.await.unwrap_or(Err(DapError::Closed)) });
