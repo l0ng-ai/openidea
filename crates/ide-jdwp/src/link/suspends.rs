@@ -60,8 +60,10 @@ impl Suspends {
         self.floor();
     }
 
-    /// An event from `thread`: it was running, so counts that say otherwise are stale and
-    /// counting starts again from this event. The thread suspensions others hold stay.
+    /// An event from `thread` outside an adapter invoke: it was running, so counts that say
+    /// otherwise are stale and counting starts again from this event. The thread suspensions
+    /// others hold stay. During an invoke the JVM runs suspended threads and suspends them again
+    /// afterwards, so such an event says nothing about the counts.
     pub(super) fn ran(&mut self, thread: u64) {
         if self.count(thread) > 0 {
             self.all = 0;

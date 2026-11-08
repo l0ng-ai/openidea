@@ -53,6 +53,32 @@ async fn kotlin_lsp_thread_resume_under_vm_suspend_keeps_the_stop() {
     assert_eq!(p.link.generation(), 1);
 }
 
+/// The JVM runs the invoking thread for an adapter invoke (kotlin-lsp's `toString` for
+/// "Collecting data…"), so it can raise an event on a thread the link counts as suspended: a
+/// breakpoint in the invoked code, a class prepare, a caught exception.
+#[tokio::test]
+async fn an_event_during_an_adapter_invoke_keeps_the_stop() {
+    let mut p = connected(OPEN).await;
+    stop(&mut p, 1, THREAD).await;
+    wait_state(&p.link, STOPPED).await;
+    forward(&mut p, &vm_suspend(70)).await;
+    forward(&mut p, &thread_resume(71, THREAD)).await;
+    read_object(&mut p, 0x11).await;
+    forward(&mut p, &command(72, 9, 6, &[0; 24])).await;
+    stop(&mut p, 1, THREAD).await;
+    forward(&mut p, &thread_resume(73, THREAD)).await;
+    let answer = reply(72, 0, &[b'I', 0, 0, 0, 1, 0, 0, 0, 0, 0, 0, 0, 0, 0]);
+    p.jvm.write_all(&answer).await.unwrap();
+    assert_eq!(read_packet(&mut p.adapter).await, answer);
+    // no disposal went out with the event's resume
+    adapter_marker(&mut p).await;
+    assert_eq!(p.link.state(), STOPPED);
+    read_object(&mut p, 0x22).await;
+    assert_eq!(entries(&resume(&mut p).await), vec![vec![(0x11, 1), (0x22, 1)]]);
+    wait_state(&p.link, LinkState::Ready).await;
+    assert_eq!(p.link.generation(), 1);
+}
+
 #[tokio::test]
 async fn each_vm_suspend_needs_its_vm_resume() {
     let mut p = connected(OPEN).await;

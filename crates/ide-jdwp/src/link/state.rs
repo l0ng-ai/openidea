@@ -228,13 +228,17 @@ impl Core {
         self.ledger.clear();
     }
 
-    /// A `Composite` event: any event whose policy suspends something starts a new stop.
+    /// A `Composite` event: any event whose policy suspends something starts a new stop, except
+    /// one raised while an adapter invoke runs in the current stop: the JVM runs threads for the
+    /// invoke and suspends them again once it returns, so that stop goes on.
     pub(super) fn event(&mut self, body: &[u8]) {
         match self.sizes {
             Some(sizes) => {
                 if let Some(stop) = stop_of(body, &sizes).filter(|stop| stop.suspend_policy != 0) {
                     self.count_event(stop.suspend_policy, stop.thread);
-                    self.begin_stop(stop.thread, None);
+                    if !(self.stopped && self.invoking()) {
+                        self.begin_stop(stop.thread, None);
+                    }
                 }
             }
             None => {
@@ -247,13 +251,20 @@ impl Core {
         }
     }
 
+    fn invoking(&self) -> bool {
+        !self.invokes.is_empty()
+    }
+
     /// Counts a suspending event of `thread`; returns whether it could (the thread is known).
     fn count_event(&mut self, policy: u8, thread: Option<u64>) -> bool {
         let Some(thread) = thread else {
             self.unattributed = true;
             return false;
         };
-        self.suspends.ran(thread);
+        // During an invoke the thread runs while the counts still hold its suspensions.
+        if !self.invoking() {
+            self.suspends.ran(thread);
+        }
         if policy == SUSPEND_EVENT_THREAD {
             self.suspends.suspend(thread);
         } else {
