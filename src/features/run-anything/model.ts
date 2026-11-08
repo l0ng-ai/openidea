@@ -65,11 +65,11 @@ export function buildRows(
   runLine: (line: string) => void,
 ): Row[] {
   const groups = new Map<string, { label: string; items: RunAnythingItem[]; commands: Set<string> }>();
-  const addItems = (key: string, label: string, items: RunAnythingItem[]) => {
+  const addItems = (key: string, label: string, items: RunAnythingItem[], deduplicate = false) => {
     const group = groups.get(key) ?? { label, items: [], commands: new Set<string>() };
     for (const item of items) {
       const command = (item.completion ?? item.label).trim();
-      if (group.commands.has(command)) continue;
+      if (deduplicate && group.commands.has(command)) continue;
       group.commands.add(command);
       group.items.push(item);
     }
@@ -93,7 +93,7 @@ export function buildRows(
     for (const item of items) {
       const group = item.group;
       const key = group?.id === "recent" ? "recent" : group ? `${p.id}:${group.id}` : p.id;
-      addItems(key, group?.label ?? p.group, [item]);
+      addItems(key, group?.label ?? p.group, [item], group?.id === "recent");
     }
   }
   const rows: Row[] = [];

@@ -73,6 +73,23 @@ describe("run anything", () => {
 });
 
 describe("provider command sections", () => {
+  it("preserves same-label results, order and the limit for providers without item groups", () => {
+    const items = Array.from({ length: 10 }, (_, i) => ({
+      key: String(i),
+      label: "Run",
+      detail: `configuration ${i}`,
+      completion: "run ",
+      run: () => {},
+    }));
+    const providers = ["first", "second"].map((id) => ({ id, group: id, items: () => items }));
+    const rows = buildRows("", ["run"], providers, () => {});
+    expect(rows.filter((r) => r.kind === "section").map((r) => r.key)).toEqual(["s:recent", "s:first", "s:second"]);
+    for (const id of ["first", "second"]) {
+      const results = rows.filter((r) => r.kind === "item" && r.group === id);
+      expect(results.map((r) => r.kind === "item" && r.item)).toEqual(items.slice(0, 8));
+    }
+  });
+
   it("merges build-tool recents with shared history without duplicate commands", () => {
     const provider: RunAnythingProvider = {
       id: "build-tools",

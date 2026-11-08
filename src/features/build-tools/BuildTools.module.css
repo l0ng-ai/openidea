@@ -79,12 +79,12 @@
   text-overflow: ellipsis;
   color: var(--fg);
 }
+.skippedGoal {
+  color: var(--fg-muted);
+  text-decoration: line-through;
+}
 .selectedLabel {
   color: var(--fg-strong);
-}
-.skippedGoal {
-  color: var(--fg-subtle);
-  text-decoration: line-through;
 }
 .detail {
   flex: 0 100 auto;

@@ -29,7 +29,7 @@ function ExecutePopup({ tool }: { tool: BuildTool }) {
   const model = useBuild((s) => s.model);
   const current = useBuild((s) => s.current[tool]);
   const [line, setLine] = useState("");
-  const [active, setActive] = useState(-1);
+  const [selection, setSelection] = useState<{ rows: CompletionRow[]; index: number } | null>(null);
   const history = useMemo(() => readHistory(tool), [tool]);
   const maven = model?.maven;
   const gradle = model?.gradle;
@@ -84,6 +84,8 @@ function ExecutePopup({ tool }: { tool: BuildTool }) {
     });
   }, [completions, tool]);
   const firstCompletion = rows.findIndex((row) => !isSection(row));
+  const active = selection?.rows === rows ? selection.index : -1;
+  const setActive = (index: number) => setSelection({ rows, index });
 
   const close = () => useBuild.setState({ executeOpen: null });
 
@@ -101,10 +103,10 @@ function ExecutePopup({ tool }: { tool: BuildTool }) {
 
   const onKeyDown = (e: KeyboardEvent) => {
     if (e.key === "ArrowDown" || e.key === "ArrowUp" || e.key === "PageDown" || e.key === "PageUp") {
-      const next = listNavigate(e.key, { items: rows, active: Math.max(active, 0), wrap: true, isSection });
+      const next = listNavigate(e.key, { items: rows, active, wrap: true, isSection });
       if (next !== null) {
         e.preventDefault();
-        setActive(active < 0 && e.key === "ArrowDown" ? firstCompletion : next);
+        setActive(next < 0 ? firstCompletion : next);
       }
       return;
     }
