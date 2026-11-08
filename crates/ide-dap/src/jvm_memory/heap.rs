@@ -74,7 +74,9 @@ pub(crate) async fn session_heap_dump(
         async move {
             let target = session_target(&session, launched);
             let probe = |suspended| -> Arc<dyn AttachProbe> { Arc::new(JdkProbe { suspended }) };
-            heap_dump_with(&session.jvm_memory, || capture_suspended(&session), probe, target, dir, cancel).await
+            let stopped = session.clone();
+            let suspended = move || capture_suspended(&stopped);
+            heap_dump_with(&session.jvm_memory, suspended, probe, target, dir, cancel).await
         }
     };
     detached(capture, dir, cancel).await
@@ -110,10 +112,11 @@ pub(super) async fn detached(
 }
 
 /// Holds `state`'s lock throughout, as a class-table request does; `suspended` and then `probe`
-/// are read once it is held. Anything but `Ready` deletes `dir`.
+/// are read once it is held, and `suspended` again by [`take_heap_dump`]. Anything but `Ready`
+/// deletes `dir`.
 pub(super) async fn heap_dump_with(
     state: &tokio::sync::Mutex<JvmMemoryState>,
-    suspended: impl FnOnce() -> bool,
+    suspended: impl Fn() -> bool + Send + Sync + 'static,
     probe: impl FnOnce(bool) -> Arc<dyn AttachProbe>,
     target: JvmTarget<'_>,
     dir: PathBuf,
@@ -121,7 +124,7 @@ pub(super) async fn heap_dump_with(
 ) -> IdeResult<JvmHeapOutcome> {
     // The capture's histogram never becomes the Memory view's baseline, so the state is unused.
     let _turn = state.lock().await;
-    let outcome = capture(suspended(), probe, target, dir.clone(), cancel).await;
+    let outcome = capture(suspended, probe, target, dir.clone(), cancel).await;
     if !matches!(outcome, Ok(JvmHeapOutcome::Ready(_))) {
         discard_later(dir).await;
     }
@@ -129,7 +132,7 @@ pub(super) async fn heap_dump_with(
 }
 
 async fn capture(
-    suspended: bool,
+    suspended_now: impl Fn() -> bool + Send + Sync + 'static,
     probe: impl FnOnce(bool) -> Arc<dyn AttachProbe>,
     target: JvmTarget<'_>,
     dir: PathBuf,
@@ -138,13 +141,14 @@ async fn capture(
     if cancel.is_cancelled() {
         return Ok(JvmHeapOutcome::Cancelled);
     }
+    let suspended = suspended_now();
     let lookup = match lookup(target) {
         Ok(lookup) => lookup,
         Err(reason) => return Ok(memory(reason)),
     };
     let probe = probe(suspended);
     let (found, outcome) = tokio::task::spawn_blocking(move || match resolve_jvm(lookup, &*probe, suspended) {
-        Ok((tree, found)) => (found, take_heap_dump(&*probe, &tree, suspended, &dir, &cancel)),
+        Ok((tree, found)) => (found, take_heap_dump(&*probe, &tree, suspended, &suspended_now, &dir, &cancel)),
         Err(reason) => (None, Ok(memory(reason))),
     })
     .await
@@ -153,16 +157,18 @@ async fn capture(
     outcome
 }
 
-/// `tree` starts with the session's reported pid, followed by its descendants. Anything but
-/// `Ready` deletes `dir`.
+/// `tree` starts with the session's reported pid, followed by its descendants. `suspended` is
+/// the stop read when the capture began; `suspended_now` reads it again. Anything but `Ready`
+/// deletes `dir`.
 pub(crate) fn take_heap_dump(
     probe: &dyn AttachProbe,
     tree: &[i32],
     suspended: bool,
+    suspended_now: &dyn Fn() -> bool,
     dir: &Path,
     cancel: &CancellationToken,
 ) -> IdeResult<JvmHeapOutcome> {
-    let outcome = dump(probe, tree, suspended, dir, cancel);
+    let outcome = dump(probe, tree, suspended, suspended_now, dir, cancel);
     if !matches!(outcome, Ok(JvmHeapOutcome::Ready(_))) {
         discard(dir);
     }
@@ -173,6 +179,7 @@ fn dump(
     probe: &dyn AttachProbe,
     tree: &[i32],
     suspended: bool,
+    suspended_now: &dyn Fn() -> bool,
     dir: &Path,
     cancel: &CancellationToken,
 ) -> IdeResult<JvmHeapOutcome> {
@@ -187,9 +194,14 @@ fn dump(
 
     let version = probe.version(jvm);
     let java_major = version.as_ref().map_or(0, |v| v.major);
-    if suspended && !safe_while_suspended(version.as_ref()) {
-        return Ok(memory(U::UnsafeWhileSuspended { java_major }));
+    let safe = safe_while_suspended(version.as_ref());
+    let unsafe_stop = || Ok(memory(U::UnsafeWhileSuspended { java_major }));
+    if suspended && !safe {
+        return unsafe_stop();
     }
+    // The program may stop during the histogram, and a stopped JDK below 17 hangs on the next
+    // request until it resumes.
+    let stopped_since = || !safe && suspended_now();
 
     let text = match probe.histogram(jvm) {
         Ok(text) => text,
@@ -209,6 +221,9 @@ fn dump(
         return Ok(JvmHeapOutcome::Unavailable(H::NotEnoughDiskSpace { needed, available }));
     }
 
+    if stopped_since() {
+        return unsafe_stop();
+    }
     // Without flags the index assumes the default object layout.
     let vm_flags = probe.vm_flags(jvm).unwrap_or_else(|e| {
         tracing::debug!("VM.flags of JVM {jvm}: {e}");
@@ -216,6 +231,9 @@ fn dump(
     });
     if cancel.is_cancelled() {
         return Ok(JvmHeapOutcome::Cancelled);
+    }
+    if stopped_since() {
+        return unsafe_stop();
     }
 
     let path = dir.join(DUMP_FILE);

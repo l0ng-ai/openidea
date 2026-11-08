@@ -32,10 +32,48 @@ struct FakeProbe {
     commands: parking_lot::Mutex<Vec<&'static str>>,
     dumps: parking_lot::Mutex<VecDeque<Result<HeapDumpReply, AttachError>>>,
     dump_paths: parking_lot::Mutex<Vec<PathBuf>>,
-    dump_delay: Duration,
+    /// Each heap dump waits for this gate to open.
+    dump_gate: Option<Arc<Gate>>,
     /// A `Created` reply writes this many bytes to the dump path first.
     dump_bytes: usize,
     free: Option<u64>,
+    /// Answering this command stops the program: runs the hook.
+    stops_on: Option<(&'static str, StopHook)>,
+}
+
+type StopHook = Box<dyn Fn() + Send + Sync>;
+
+/// Holds a blocking call until the test opens it.
+#[derive(Default)]
+struct Gate {
+    entered: tokio::sync::Notify,
+    open: parking_lot::Mutex<bool>,
+    opened: parking_lot::Condvar,
+}
+
+impl Gate {
+    fn pass(&self) {
+        self.entered.notify_one();
+        let mut open = self.open.lock();
+        while !*open {
+            self.opened.wait(&mut open);
+        }
+    }
+
+    fn release(&self) {
+        *self.open.lock() = true;
+        self.opened.notify_all();
+    }
+}
+
+/// Opens the gate when dropped: a failed assertion must not leave a blocking thread waiting,
+/// since the runtime's shutdown waits for it.
+struct OpenOnDrop(Arc<Gate>);
+
+impl Drop for OpenOnDrop {
+    fn drop(&mut self) {
+        self.0.release();
+    }
 }
 
 impl FakeProbe {
@@ -55,14 +93,24 @@ impl FakeProbe {
             commands: parking_lot::Mutex::new(Vec::new()),
             dumps: parking_lot::Mutex::new(VecDeque::new()),
             dump_paths: parking_lot::Mutex::new(Vec::new()),
-            dump_delay: Duration::ZERO,
+            dump_gate: None,
             dump_bytes: 64,
             free: None,
+            stops_on: None,
+        }
+    }
+
+    fn record(&self, command: &'static str) {
+        self.commands.lock().push(command);
+        if let Some((on, stop)) = &self.stops_on
+            && *on == command
+        {
+            stop();
         }
     }
 
     fn enter(&self, command: &'static str) {
-        self.commands.lock().push(command);
+        self.record(command);
         let now = self.in_flight.fetch_add(1, Ordering::SeqCst) + 1;
         self.max_in_flight.fetch_max(now, Ordering::SeqCst);
     }
@@ -99,13 +147,15 @@ impl AttachProbe for FakeProbe {
         self.alive
     }
     fn vm_flags(&self, _pid: u32) -> Result<String, AttachError> {
-        self.commands.lock().push("vm_flags");
+        self.record("vm_flags");
         Ok(FLAGS.into())
     }
-    fn heap_dump(&self, _pid: u32, path: &Path, timeout: Duration) -> Result<HeapDumpReply, AttachError> {
+    fn heap_dump(&self, _pid: u32, path: &Path, _timeout: Duration) -> Result<HeapDumpReply, AttachError> {
         self.enter("heap_dump");
         self.dump_paths.lock().push(path.to_owned());
-        std::thread::sleep(self.dump_delay.min(timeout));
+        if let Some(gate) = &self.dump_gate {
+            gate.pass();
+        }
         let reply = self.dumps.lock().pop_front().expect("unexpected heap dump request");
         if matches!(reply, Ok(HeapDumpReply::Created { .. })) && self.dump_bytes > 0 {
             // Fails like the JVM's write once the directory is gone.
@@ -769,7 +819,7 @@ fn entry(name: &str, instances: u64, bytes: u64) -> ide_heap::HistogramEntry {
 fn suspended_jdk11_refuses_without_sending() {
     let (_root, dir) = snapshot_dir("snap");
     let probe = dumping(11, vec![created()]);
-    let outcome = take_heap_dump(&probe, &[12], true, &dir, &CancellationToken::new()).unwrap();
+    let outcome = take_heap_dump(&probe, &[12], true, &|| true, &dir, &CancellationToken::new()).unwrap();
     assert_eq!(outcome, memory(JvmMemoryUnavailable::UnsafeWhileSuspended { java_major: 11 }));
     assert!(probe.commands.lock().is_empty());
     assert!(!dir.exists());
@@ -779,7 +829,7 @@ fn suspended_jdk11_refuses_without_sending() {
 fn suspended_jdk17_dumps() {
     let (_root, dir) = snapshot_dir("snap");
     let probe = dumping(17, vec![created()]);
-    let dump = ready(take_heap_dump(&probe, &[10, 12], true, &dir, &CancellationToken::new()));
+    let dump = ready(take_heap_dump(&probe, &[10, 12], true, &|| true, &dir, &CancellationToken::new()));
     assert_eq!(*probe.commands.lock(), ["histogram", "vm_flags", "heap_dump"]);
     assert_eq!(*probe.dump_paths.lock(), [dir.join("dump.hprof")]);
     let expected = JvmHeapDump {
@@ -800,7 +850,7 @@ fn suspended_jdk17_dumps() {
 fn running_jdk8_dumps() {
     let (_root, dir) = snapshot_dir("snap");
     let probe = dumping(8, vec![created()]);
-    let dump = ready(take_heap_dump(&probe, &[12], false, &dir, &CancellationToken::new()));
+    let dump = ready(take_heap_dump(&probe, &[12], false, &|| false, &dir, &CancellationToken::new()));
     assert_eq!((dump.java_major, dump.taken_while_suspended), (8, false));
     assert_eq!(*probe.commands.lock(), ["histogram", "vm_flags", "heap_dump"]);
 }
@@ -813,7 +863,7 @@ fn not_enough_disk_space_refuses_before_dump() {
     let histogram = format!("   1:      10000000     {gib}  [B\nTotal      10000000     {gib}\n");
     probe.histograms = parking_lot::Mutex::new(vec![Ok(histogram)].into());
     probe.free = Some(512 << 20);
-    let outcome = take_heap_dump(&probe, &[12], false, &dir, &CancellationToken::new()).unwrap();
+    let outcome = take_heap_dump(&probe, &[12], false, &|| false, &dir, &CancellationToken::new()).unwrap();
     let needed = gib + 1_060_000_000 + gib;
     assert_eq!(
         outcome,
@@ -828,7 +878,7 @@ fn refused_dump_reports_message() {
     let (_root, dir) = snapshot_dir("snap");
     let message = "Unable to create /tmp/snap/dump.hprof: File exists";
     let probe = dumping(21, vec![Ok(HeapDumpReply::Refused { message: message.into() })]);
-    let outcome = take_heap_dump(&probe, &[12], false, &dir, &CancellationToken::new()).unwrap();
+    let outcome = take_heap_dump(&probe, &[12], false, &|| false, &dir, &CancellationToken::new()).unwrap();
     assert_eq!(outcome, dump_failed(message));
     assert!(!dir.exists());
 }
@@ -838,7 +888,7 @@ fn refused_dump_without_a_reason_says_so() {
     for body in ["", "Dumping heap to /tmp/snap/dump.hprof ..."] {
         let (_root, dir) = snapshot_dir("snap");
         let probe = dumping(21, vec![Ok(HeapDumpReply::Refused { message: body.into() })]);
-        let outcome = take_heap_dump(&probe, &[12], false, &dir, &CancellationToken::new()).unwrap();
+        let outcome = take_heap_dump(&probe, &[12], false, &|| false, &dir, &CancellationToken::new()).unwrap();
         let JvmHeapOutcome::Unavailable(JvmHeapUnavailable::DumpFailed { message }) = outcome else {
             panic!("{body:?}: {outcome:?}")
         };
@@ -851,7 +901,7 @@ fn refused_dump_without_a_reason_says_so() {
 fn timed_out_dump_removes_snapshot_dir() {
     let (_root, dir) = snapshot_dir("snap");
     let probe = dumping(21, vec![Err(AttachError::Timeout)]);
-    let outcome = take_heap_dump(&probe, &[12], false, &dir, &CancellationToken::new()).unwrap();
+    let outcome = take_heap_dump(&probe, &[12], false, &|| false, &dir, &CancellationToken::new()).unwrap();
     assert_eq!(outcome, JvmHeapOutcome::Unavailable(JvmHeapUnavailable::DumpTimedOut { seconds: 30 }));
     assert!(!dir.exists());
 }
@@ -860,7 +910,7 @@ fn timed_out_dump_removes_snapshot_dir() {
 fn capture_dir_with_space_is_quoted() {
     let (_root, dir) = snapshot_dir("a b");
     let probe = dumping(21, vec![created()]);
-    ready(take_heap_dump(&probe, &[12], false, &dir, &CancellationToken::new()));
+    ready(take_heap_dump(&probe, &[12], false, &|| false, &dir, &CancellationToken::new()));
     let path = probe.dump_paths.lock()[0].clone();
     assert!(path.to_str().unwrap().contains("a b"), "{path:?}");
     let command = ide_jvm_attach::heap_dump_command(&path).unwrap();
@@ -872,7 +922,7 @@ fn created_without_a_file_fails() {
     let (_root, dir) = snapshot_dir("snap");
     let mut probe = dumping(21, vec![created()]);
     probe.dump_bytes = 0;
-    let outcome = take_heap_dump(&probe, &[12], false, &dir, &CancellationToken::new()).unwrap();
+    let outcome = take_heap_dump(&probe, &[12], false, &|| false, &dir, &CancellationToken::new()).unwrap();
     assert!(matches!(outcome, JvmHeapOutcome::Unavailable(JvmHeapUnavailable::DumpFailed { .. })), "{outcome:?}");
     assert!(!dir.exists());
 }
@@ -889,14 +939,69 @@ fn dump_errors_map_like_the_class_table() {
         let (_root, dir) = snapshot_dir("snap");
         let mut probe = dumping(21, vec![reply]);
         probe.alive = alive;
-        assert_eq!(take_heap_dump(&probe, &[12], false, &dir, &CancellationToken::new()).unwrap(), expected);
+        assert_eq!(take_heap_dump(&probe, &[12], false, &|| false, &dir, &CancellationToken::new()).unwrap(), expected);
         assert!(!dir.exists());
     }
 
     let (_root, dir) = snapshot_dir("snap");
     let probe = dumping(21, vec![Err(AttachError::Protocol("bad".into()))]);
-    assert!(take_heap_dump(&probe, &[12], false, &dir, &CancellationToken::new()).is_err());
+    assert!(take_heap_dump(&probe, &[12], false, &|| false, &dir, &CancellationToken::new()).is_err());
     assert!(!dir.exists());
+}
+
+/// JDK `major`, running when the capture starts, stopped by the time it answers `command`.
+fn stopping_after(major: u32, command: &'static str) -> (FakeProbe, Arc<AtomicBool>) {
+    let stopped = Arc::new(AtomicBool::new(false));
+    let mut probe = dumping(major, vec![created()]);
+    let flag = stopped.clone();
+    probe.stops_on = Some((command, Box::new(move || flag.store(true, Ordering::SeqCst))));
+    (probe, stopped)
+}
+
+#[test]
+fn jdk11_stopped_during_the_histogram_gets_no_further_request() {
+    for (command, sent) in [("histogram", &["histogram"][..]), ("vm_flags", &["histogram", "vm_flags"][..])] {
+        let (_root, dir) = snapshot_dir("snap");
+        let (probe, stopped) = stopping_after(11, command);
+        let suspended_now = || stopped.load(Ordering::SeqCst);
+        let outcome = take_heap_dump(&probe, &[12], false, &suspended_now, &dir, &CancellationToken::new()).unwrap();
+        assert_eq!(outcome, memory(JvmMemoryUnavailable::UnsafeWhileSuspended { java_major: 11 }), "{command}");
+        assert_eq!(*probe.commands.lock(), sent, "{command}");
+        assert!(!dir.exists(), "{command}");
+    }
+}
+
+#[tokio::test]
+async fn session_stopped_during_the_histogram_is_read_again_before_the_dump() {
+    let bare = bare_session("attach");
+    let mut probe = dumping(11, vec![created()]);
+    let stopping = bare.session.clone();
+    probe.stops_on = Some(("histogram", Box::new(move || stopping.suspended.stopped(Some(1), true))));
+    let fake = Arc::new(probe);
+    let probe: Arc<dyn AttachProbe> = fake.clone();
+    let pid = AtomicI64::new(12);
+    let target = JvmTarget::Attached { pid: &pid, jdwp_port: None };
+    let (_root, dir) = snapshot_dir("snap");
+    let session = bare.session.clone();
+    let suspended = move || capture_suspended(&session);
+    let s = &bare.session;
+    let outcome = heap_dump_with(&s.jvm_memory, suspended, |_| probe, target, dir.clone(), CancellationToken::new())
+        .await
+        .unwrap();
+    assert_eq!(outcome, memory(JvmMemoryUnavailable::UnsafeWhileSuspended { java_major: 11 }));
+    assert_eq!(*fake.commands.lock(), ["histogram"]);
+    assert!(!dir.exists());
+    assert!(s.jvm_memory.try_lock().is_ok(), "the lock is released");
+}
+
+#[test]
+fn jdk17_stopped_during_the_histogram_still_dumps() {
+    let (_root, dir) = snapshot_dir("snap");
+    let (probe, stopped) = stopping_after(17, "histogram");
+    let suspended_now = || stopped.load(Ordering::SeqCst);
+    let dump = ready(take_heap_dump(&probe, &[12], false, &suspended_now, &dir, &CancellationToken::new()));
+    assert!(!dump.taken_while_suspended, "the stop read when the capture began");
+    assert_eq!(*probe.commands.lock(), ["histogram", "vm_flags", "heap_dump"]);
 }
 
 #[test]
@@ -905,7 +1010,7 @@ fn cancelled_capture_sends_no_dump() {
     let probe = dumping(21, vec![created()]);
     let cancel = CancellationToken::new();
     cancel.cancel();
-    assert_eq!(take_heap_dump(&probe, &[12], false, &dir, &cancel).unwrap(), JvmHeapOutcome::Cancelled);
+    assert_eq!(take_heap_dump(&probe, &[12], false, &|| false, &dir, &cancel).unwrap(), JvmHeapOutcome::Cancelled);
     assert!(!probe.commands.lock().contains(&"heap_dump"));
     assert!(!dir.exists());
 }
@@ -913,9 +1018,11 @@ fn cancelled_capture_sends_no_dump() {
 #[tokio::test]
 async fn cancelled_capture_releases_lock() {
     let state = Arc::new(tokio::sync::Mutex::new(JvmMemoryState::default()));
+    let gate = Arc::new(Gate::default());
+    let opener = OpenOnDrop(gate.clone());
     let mut fake = dumping(21, vec![created()]);
     fake.histograms.lock().push_back(Ok(HISTOGRAM.into()));
-    fake.dump_delay = Duration::from_millis(300);
+    fake.dump_gate = Some(gate.clone());
     let fake = Arc::new(fake);
     let jvm_pid = Arc::new(AtomicI64::new(12));
     let (_root, dir) = snapshot_dir("snap");
@@ -928,24 +1035,27 @@ async fn cancelled_capture_releases_lock() {
             heap_dump_with(&state, || false, |_| -> Arc<dyn AttachProbe> { fake }, target, dir, cancel).await
         }
     };
-    let started = std::time::Instant::now();
-    tokio::spawn({
-        let cancel = cancel.clone();
-        async move {
-            tokio::time::sleep(Duration::from_millis(50)).await;
-            cancel.cancel();
-        }
-    });
-    assert_eq!(detached(capture, dir.clone(), cancel).await.unwrap(), JvmHeapOutcome::Cancelled);
-    assert!(started.elapsed() < Duration::from_millis(250), "{:?}", started.elapsed());
+    let caller = tokio::spawn(detached(capture, dir.clone(), cancel.clone()));
+    gate.entered.notified().await;
+    cancel.cancel();
+    assert_eq!(caller.await.unwrap().unwrap(), JvmHeapOutcome::Cancelled);
+    assert_eq!(fake.in_flight.load(Ordering::SeqCst), 1, "the JVM is still writing the dump");
     assert!(!dir.exists());
 
-    let running = Suspension::default();
-    let probe: Arc<dyn AttachProbe> = fake.clone();
-    let target = JvmTarget::Attached { pid: &jvm_pid, jdwp_port: None };
-    let table = snapshot(&state, &running, |_| probe, target, None).await.unwrap();
+    let mut table = tokio::spawn({
+        let (state, fake, jvm_pid) = (state.clone(), fake.clone(), jvm_pid.clone());
+        async move {
+            let target = JvmTarget::Attached { pid: &jvm_pid, jdwp_port: None };
+            let probe: Arc<dyn AttachProbe> = fake;
+            snapshot(&state, &Suspension::default(), |_| probe, target, None).await
+        }
+    });
+    // While the gate is shut the dump holds the session's turn, so the class table cannot finish.
+    let early = tokio::time::timeout(Duration::from_millis(100), &mut table).await;
+    assert!(early.is_err(), "the class table ran beside the dump: {early:?}");
+    drop(opener);
+    let table = table.await.unwrap().unwrap();
     assert!(matches!(table, JvmMemoryResult::Ready { .. }), "{table:?}");
-    assert!(started.elapsed() >= Duration::from_millis(300), "{:?}", started.elapsed());
     assert_eq!(fake.max_in_flight.load(Ordering::SeqCst), 1);
     assert_eq!(*fake.commands.lock(), ["histogram", "vm_flags", "heap_dump", "histogram"]);
     assert!(!dir.exists(), "the dump that finished after the cancel is deleted");
@@ -1041,7 +1151,8 @@ async fn jdk11_is_refused_while_the_link_is_suspended_before_dap_stops() {
     let pid = AtomicI64::new(12);
     let target = JvmTarget::Attached { pid: &pid, jdwp_port: None };
     let (_root, dir) = snapshot_dir("snap");
-    let suspended = || capture_suspended(s);
+    let session = bare.session.clone();
+    let suspended = move || capture_suspended(&session);
     let outcome =
         heap_dump_with(&s.jvm_memory, suspended, probe, target, dir.clone(), CancellationToken::new()).await.unwrap();
     assert_eq!(outcome, memory(JvmMemoryUnavailable::UnsafeWhileSuspended { java_major: 11 }));
