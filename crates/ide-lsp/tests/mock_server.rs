@@ -1822,6 +1822,59 @@ async fn java_launch_serializes_the_classpath_with_the_build_lock() {
 }
 
 #[tokio::test(flavor = "multi_thread")]
+async fn java_launch_scopes_build_status_and_does_not_wait_for_unrelated_errors() {
+    use ide_lsp::jdtls::JavaBuildStatus;
+
+    let h = harness_for("java", "java", &[("jdtls", incremental_caps())], &[]);
+    h.open("Main.java", "class Main {}");
+    h.wait_status("jdtls", ServerStatus::Ready).await;
+    let state = h.launcher.state("jdtls");
+    state.respond("java/buildWorkspace", json!(2));
+    let web = h.root.join("web");
+    let classpath = json!({"classpaths": [web.join("target/classes"), h.root.join("service/target/classes")]});
+    for (path, test, expected, classpaths_available) in [
+        ("other/src/main/java/Other.java", false, JavaBuildStatus::Succeeded, true),
+        ("other/src/main/java/Other.java", false, JavaBuildStatus::Succeeded, true),
+        ("web/src/test/java/MainTest.java", false, JavaBuildStatus::Succeeded, true),
+        ("web/src/test/java/MainTest.java", true, JavaBuildStatus::WithErrors, true),
+        ("service/src/test/java/ServiceTest.java", true, JavaBuildStatus::Succeeded, true),
+        ("service/src/main/java/Service.java", false, JavaBuildStatus::WithErrors, true),
+        ("web/src/main/java/Main.java", false, JavaBuildStatus::WithErrors, true),
+        ("other/src/main/java/Other.java", false, JavaBuildStatus::WithErrors, false),
+    ] {
+        state.respond("workspace/executeCommand", classpath.clone());
+        if !classpaths_available {
+            state.errors.lock().insert("workspace/executeCommand".into(), (-32603, "classpath unavailable".into()));
+        }
+        let file = h.root.join(path);
+        std::fs::create_dir_all(file.parent().unwrap()).unwrap();
+        std::fs::write(&file, "broken").unwrap();
+        let diag = json!({"range": {"start":{"line":0,"character":0},"end":{"line":0,"character":1}},
+            "severity": 1, "message": path});
+        state
+            .peer()
+            .notify("textDocument/publishDiagnostics", json!({"uri": uri_of(&file), "diagnostics": [diag]}))
+            .unwrap();
+        eventually(|| diagnostics_for(&h, &file) == 1).await;
+        let info = tokio::time::timeout(
+            Duration::from_secs(1),
+            h.mgr.java_launch(&web, test, true, false, &Default::default()),
+        )
+        .await
+        .expect("an already-published error must not incur the diagnostics wait")
+        .unwrap();
+        assert_eq!(info.build, Some(expected), "{path}, test={test}, classpath={classpaths_available}");
+        assert_eq!(info.error_count, u32::from(expected == JavaBuildStatus::WithErrors));
+        state
+            .peer()
+            .notify("textDocument/publishDiagnostics", json!({"uri": uri_of(&file), "diagnostics": []}))
+            .unwrap();
+        eventually(|| diagnostics_for(&h, &file) == 2).await;
+        h.events.lock().clear();
+    }
+}
+
+#[tokio::test(flavor = "multi_thread")]
 async fn open_java_files_are_checked_again_after_a_project_update() {
     let h = harness_for("java", "java", &[("jdtls", incremental_caps())], &[]);
     let (_, a) = h.open("A.java", "class A {}");

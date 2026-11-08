@@ -1,5 +1,6 @@
 .session {
-  --session-content-width: calc(var(--agent-conversation-width) - var(--space-4) * 6);
+  --session-content-width: var(--agent-conversation-width);
+  --session-card-width: 80%;
   flex: 1;
   min-height: 0;
   min-width: 0;
@@ -11,6 +12,7 @@
 }
 
 .conversation {
+  container-type: inline-size;
   display: flex;
   flex-direction: column;
   min-width: 0;
@@ -111,24 +113,18 @@
   min-width: 0;
   width: min(100%, var(--session-content-width));
   max-width: 100%;
-  margin-inline: 0;
+  margin-inline: auto;
   box-sizing: border-box;
 }
-/* Messages and folded process rows share the tool-window gutter. */
+.conversationRow {
+  min-width: 0;
+}
+/* Keep turns distinct and the work within a turn close to its author. */
 .stream > * + * {
-  margin-top: var(--space-3);
+  margin-top: var(--space-4);
 }
-.stream > * + .process {
+.stream > [data-process] + [data-process] {
   margin-top: var(--space-2);
-}
-.stream > .process + * {
-  margin-top: var(--space-2);
-}
-.stream > * + .agentMessage[data-continuation] {
-  margin-top: var(--space-2);
-}
-.stream > .process + .process {
-  margin-top: 2px;
 }
 .stream:focus {
   outline: none;
@@ -136,21 +132,19 @@
 /* Scrolled up: one click back to the latest message, floating over the stream's end. */
 .jumpToLatest {
   position: absolute;
-  left: 50%;
-  bottom: var(--space-3);
-  transform: translateX(-50%);
+  right: var(--space-3);
+  bottom: var(--space-2);
   z-index: 2;
   display: inline-flex;
   align-items: center;
   justify-content: center;
-  width: 32px;
-  height: 32px;
+  width: var(--h-control-small);
+  height: var(--h-control-small);
   padding: 0;
-  border: 1px solid var(--border-popup);
-  border-radius: 50%;
-  background: var(--bg-popup);
-  color: var(--fg);
-  box-shadow: var(--shadow-popup);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-toolbar-button);
+  background: var(--bg-app);
+  color: var(--fg-muted);
   cursor: pointer;
 }
 .jumpToLatest:hover {
@@ -182,11 +176,19 @@
 .messageHead > .role {
   margin-bottom: 0;
 }
-/* User prompts stay in the same column as replies and tool calls. */
+/* User cards and their footers share a right edge. */
 .userMessage {
   display: flex;
   flex-direction: column;
-  align-items: stretch;
+  align-items: flex-end;
+}
+.userMessage > .user {
+  width: fit-content;
+  max-width: min(var(--session-card-width), 720px);
+}
+.userMessage > .messageHead,
+.userMessage > .messageFooter {
+  justify-content: flex-end;
 }
 /* The actions and time below a message, in flow so they never cover the next entry. */
 .messageFooter {
@@ -196,9 +198,6 @@
   min-height: var(--h-control-small);
   max-width: 100%;
   flex-wrap: wrap;
-}
-.messageFooter > .messageTime {
-  order: -1;
 }
 /* Who wrote the message. */
 .role {
@@ -214,14 +213,34 @@
 .agentMessage {
   display: flex;
   flex-direction: column;
-  align-items: stretch;
+  align-items: flex-start;
 }
-.agentMessage > .messageHead,
+.agentAuthor {
+  display: flex;
+  align-items: center;
+  min-height: var(--h-control-small);
+}
+.agentAuthor > .role {
+  margin-bottom: 0;
+}
+.agentAuthor + * {
+  margin-top: calc(var(--space-2) / 2);
+}
+.conversationRow > .process,
+.conversationRow > .permissionLine {
+  max-width: 100%;
+}
+/* Replies read as plain text on the panel, like other tool-window content. */
 .agentCard {
   box-sizing: border-box;
-  width: 100%;
+  max-width: 100%;
   min-width: 0;
   overflow-wrap: anywhere;
+}
+@container (max-width: 640px) {
+  .stream {
+    --session-card-width: 96%;
+  }
 }
 .messageActions {
   display: inline-flex;
@@ -233,6 +252,15 @@
   -webkit-user-select: none;
   user-select: none;
 }
+.messageFooter > .messageTime {
+  opacity: 0;
+}
+.conversationRow:nth-last-child(1 of [data-message]) .messageFooter > .messageTime,
+.message:hover .messageFooter > .messageTime,
+.agentMessage:hover .messageFooter > .messageTime,
+.message:focus-within .messageFooter > .messageTime,
+.agentMessage:focus-within .messageFooter > .messageTime,
+.conversationRow:nth-last-child(1 of [data-message]) .messageActions,
 .message:hover .messageActions,
 .reply:hover .messageActions,
 .agentMessage:hover .messageActions,
@@ -301,11 +329,10 @@
 .user {
   width: 100%;
   box-sizing: border-box;
-  padding: var(--space-2);
-  border: 1px solid var(--border);
-  border-radius: var(--radius-small);
-  background: var(--bg-elev);
-  color: var(--fg-strong);
+  padding: 6px 10px;
+  border-radius: var(--radius-tab);
+  background: var(--bg-hover);
+  color: var(--fg);
   line-height: 1.5;
   white-space: pre-wrap;
   overflow-wrap: anywhere;
@@ -792,7 +819,7 @@
   display: flex;
   flex-direction: column;
   gap: 6px;
-  align-self: flex-start;
+  align-self: center;
   width: 100%;
   max-width: calc(var(--session-content-width) + var(--space-3) * 2);
   box-sizing: border-box;

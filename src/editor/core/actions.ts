@@ -1,7 +1,7 @@
 /** Editor actions (ids from keymaps/intellij-macos.ts). */
 import { EditorSelection, type EditorState } from "@codemirror/state";
 import { EditorView } from "@codemirror/view";
-import { indentSelection, moveLineDown, moveLineUp, toggleBlockComment } from "@codemirror/commands";
+import { indentSelection, moveLineDown, moveLineUp } from "@codemirror/commands";
 import { foldEffect, syntaxTree, toggleFold } from "@codemirror/language";
 import { acceptCompletion, completionStatus } from "@codemirror/autocomplete";
 import { executeAction, registerActions, type Action } from "@/platform/actions";
@@ -9,6 +9,7 @@ import { getContext } from "@/platform/context";
 import { editorController, useGotoLine, useTabs } from "./controller";
 import {
   addCaretsToLineEnds,
+  commentBlock,
   commentLine,
   completeStatement,
   deleteLine,
@@ -661,7 +662,7 @@ export function registerEditorActions(): () => void {
       "color scheme",
     ]),
     text("code.commentLine", "Comment with Line Comment", (v) => commentLine(v)),
-    text("code.commentBlock", "Comment with Block Comment", (v) => toggleBlockComment(v)),
+    text("code.commentBlock", "Comment with Block Comment", (v) => commentBlock(v)),
     text("code.duplicateLine", "Duplicate Line or Selection", (v) => duplicateLineOrSelection(v)),
     text("code.deleteLine", "Delete Line", (v) => deleteLine(v)),
     text("code.moveLineUp", "Move Line Up", (v) => moveLineUp(v)),
@@ -778,6 +779,14 @@ export function registerEditorActions(): () => void {
     text("code.autoIndentLines", "Auto-Indent Lines", (v) => !v.state.readOnly && indentSelection(v), {
       keywords: ["reindent", "fix indentation"],
     }),
+    {
+      id: "editor.addOrRemoveCaret",
+      title: "Add or Remove Caret",
+      category: "Editor Actions",
+      when: "textEditorActive",
+      // The mouse selection style handles the pointer position and dragging.
+      run: () => {},
+    },
     text("editor.cloneCaretAbove", "Clone Caret Above", (v) => cloneCaretAbove(v), { category: "Editor Actions" }),
     text("editor.cloneCaretBelow", "Clone Caret Below", (v) => cloneCaretBelow(v), { category: "Editor Actions" }),
     text("editor.matchBrace", "Move Caret to Matching Brace", (v) => cursorMatchBrace(v), {

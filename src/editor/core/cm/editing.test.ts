@@ -15,7 +15,7 @@ import {
 } from "./editing";
 import { batchLanguage, commentTokens, findLanguageDescription } from "./languages";
 import { toggleCaret } from "./multiCaret";
-import { enterInLineComment, lineCommentStyle } from "./comments";
+import { commentBlock, enterInLineComment, lineCommentStyle } from "./comments";
 import { languages } from "@codemirror/language-data";
 
 /** Brace languages in miniature: one unit deeper after a line ending in `{`. */
@@ -384,5 +384,133 @@ describe("Batch language mode and @REM comment toggle", () => {
     expect(has("variableName", "%APP%")).toBe(true);
     expect(has("variableName", "!COUNT!")).toBe(true);
     expect(has("labelName", ":sub")).toBe(true);
+  });
+});
+
+describe("toggle comment where the tokens depend on the syntax context", () => {
+  // A JSX comment is `{/* … */}` in JSX children, but its own text parses as
+  // JavaScript, where the tokens are `/* … */`.
+  const wrap = (body: string) => `const a = (\n  <div>\n    ${body}\n  </div>\n);`;
+
+  it("takes a JSX line comment back out, with the caret", async () => {
+    const tsx = await languages.find((l) => l.name === "TSX")!.load();
+    const v = make(wrap("|</div>"), tsx);
+    commentLine(v);
+    expect(v.state.doc.line(3).text).toBe("    {/* </div> */}");
+    commentLine(v);
+    expect(show(v)).toBe(wrap("|</div>"));
+  });
+
+  it("takes a JSX line comment back out, with the line selected", async () => {
+    const tsx = await languages.find((l) => l.name === "TSX")!.load();
+    const v = make(wrap("[</div>]"), tsx);
+    commentLine(v);
+    expect(v.state.doc.line(3).text).toBe("    {/* </div> */}");
+    commentLine(v);
+    expect(v.state.doc.line(3).text).toBe("    </div>");
+  });
+
+  it("takes a JSX block comment back out after ⌘⇧/", async () => {
+    const tsx = await languages.find((l) => l.name === "TSX")!.load();
+    const v = make(wrap("[</div>]"), tsx);
+    commentBlock(v);
+    expect(v.state.doc.line(3).text).toBe("    {/* </div> */}");
+    commentBlock(v);
+    expect(show(v)).toBe(wrap("[</div>]"));
+  });
+
+  it("takes a block comment back out in a language with no line comment", async () => {
+    const html = await languages.find((l) => l.name === "HTML")!.load();
+    const v = make("<section>\n  |<p>hi</p>\n</section>", html);
+    commentLine(v);
+    expect(v.state.doc.line(2).text).toBe("  <!-- <p>hi</p> -->");
+    commentLine(v);
+    expect(show(v)).toBe("<section>\n  |<p>hi</p>\n</section>");
+  });
+
+  it("wraps several selected JSX lines once and unwraps them again", async () => {
+    const tsx = await languages.find((l) => l.name === "TSX")!.load();
+    const v = make("const a = (\n  <div>\n    [<b>x</b>\n    <i>y</i>]\n  </div>\n);", tsx);
+    commentBlock(v);
+    expect(v.state.doc.toString()).toContain("{/* <b>x</b>\n    <i>y</i> */}");
+    commentBlock(v);
+    expect(v.state.doc.toString()).toBe("const a = (\n  <div>\n    <b>x</b>\n    <i>y</i>\n  </div>\n);");
+  });
+});
+
+describe("comment toggle regressions", () => {
+  const cases = [
+    ["TSX", "const a = <div>\n  [<b>x</b>\n  <i>y</i>]\n</div>;"],
+    ["TSX", "const a = <div>{\n  [value +\n  other]\n}</div>;"],
+    ["TSX", "[const a = 1;\nconst b = 2;]"],
+    ["HTML", "<section>\n  [<b>x</b>\n  <i>y</i>]\n</section>"],
+    ["CSS", "[a { color: red; }\nb { color: blue; }]"],
+    ["Vue", "<template>\n[<b>x</b>\n<i>y</i>]\n</template>"],
+  ];
+
+  for (const [action, command] of [
+    ["line", commentLine],
+    ["block", commentBlock],
+  ] as const) {
+    it.each(cases)(`${action} comments round trip in %s: %s`, async (language, input) => {
+      const ext = await languages.find((l) => l.name === language)!.load();
+      const v = make(input, ext);
+      const original = v.state.doc.toString();
+      expect(command(v)).toBe(true);
+      expect(v.state.doc.toString()).not.toBe(original);
+      expect(command(v)).toBe(true);
+      expect(v.state.doc.toString()).toBe(original);
+    });
+
+    it.each(["TSX", "HTML", "CSS", "Vue"])(`${action} comments round trip with multiple ranges in %s`, async (name) => {
+      const ext = await languages.find((l) => l.name === name)!.load();
+      let body = name === "CSS" ? "[a { color: red; }]\n[b { color: blue; }]" : "[<b>x</b>]\n[<i>y</i>]";
+      if (action === "line") body = body.replaceAll("[", "|").replaceAll("]", "");
+      const input = name === "TSX" ? `const a = <div>\n${body}\n</div>;` : body;
+      const v = make(input, ext);
+      const original = v.state.doc.toString();
+      expect(command(v)).toBe(true);
+      expect(command(v)).toBe(true);
+      expect(v.state.doc.toString()).toBe(original);
+      expect(v.state.selection.ranges).toHaveLength(2);
+    });
+
+    it.each([
+      ["CSS", "/*", "*/"],
+      ["JavaScript", "/*", "*/"],
+      ["HTML", "<!--", "-->"],
+      ["TSX", "{/*", "*/}"],
+    ])(`${action} comments do not join separate comments across live code in %s`, async (name, open, close) => {
+      const ext = await languages.find((l) => l.name === name)!.load();
+      for (const body of [`[${open} a ${close} b ${open} c ${close}]`, `${open} [a ${close} b ${open} c] ${close}`]) {
+        const input = name === "TSX" ? `const a = <div>\n${body}\n</div>;` : body;
+        const v = make(input, ext);
+        const original = v.state.doc.toString();
+        if (name === "JavaScript" && action === "line") {
+          commentLine(v);
+          commentLine(v);
+        } else command(v);
+        expect(v.state.doc.toString()).toBe(original);
+      }
+    });
+  }
+
+  it("keeps a line-only language's block command unavailable", async () => {
+    const ext = await languages.find((l) => l.name === "Python")!.load();
+    const v = make("[a = 1\nb = 2]", ext);
+    const original = v.state.doc.toString();
+    expect(commentBlock(v)).toBe(false);
+    expect(v.state.doc.toString()).toBe(original);
+    expect(commentLine(v)).toBe(true);
+    expect(v.state.doc.toString()).not.toBe(original);
+    expect(commentLine(v)).toBe(true);
+    expect(v.state.doc.toString()).toBe(original);
+  });
+
+  it("uncomments a parser-confirmed nested block comment", async () => {
+    const ext = await languages.find((l) => l.name === "Rust")!.load();
+    const v = make("[/* a /* b */ c */]", ext);
+    expect(commentBlock(v)).toBe(true);
+    expect(v.state.doc.toString()).toBe("a /* b */ c");
   });
 });

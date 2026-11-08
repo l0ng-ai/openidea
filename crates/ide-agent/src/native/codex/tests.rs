@@ -623,6 +623,23 @@ async fn auth_failure_names_auth() {
     assert!(start.get("jsonrpc").is_some(), "codex accepts the jsonrpc field");
 }
 
+#[test]
+fn request_errors_classify_authentication_without_matching_author_or_protocol_errors() {
+    for (code, message, expected) in [
+        (codes::INTERNAL_ERROR, "Missing author field", codes::INTERNAL_ERROR),
+        (codes::INTERNAL_ERROR, "Unknown authority", codes::INTERNAL_ERROR),
+        (codes::INTERNAL_ERROR, "Authentication failed: expired token", AUTH_REQUIRED),
+        (codes::INTERNAL_ERROR, "Unauthorized", AUTH_REQUIRED),
+        (codes::METHOD_NOT_FOUND, "authentication method not found", codes::METHOD_NOT_FOUND),
+        (AUTH_REQUIRED, "Account is not eligible", AUTH_REQUIRED),
+    ] {
+        let response = from_codex(RpcError::Server { code, message: message.into(), data: Some(json!({"detail": 1})) });
+        assert_eq!(response.code, expected, "{message}");
+        assert_eq!(response.message, message);
+        assert_eq!(response.data, Some(json!({"detail": 1})));
+    }
+}
+
 #[tokio::test(flavor = "multi_thread")]
 async fn a_stop_sent_right_after_the_prompt_interrupts_the_turn() {
     let (results, _client, frames, _) = replay(Scenario::Interrupt).await;
