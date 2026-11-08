@@ -1,5 +1,6 @@
 /**
- * Comment with Line Comment and Enter inside a line comment, as in IDEA.
+ * Comment with Line Comment, Comment with Block Comment and Enter inside a
+ * line comment, as in IDEA.
  */
 import {
   EditorSelection,
@@ -11,7 +12,7 @@ import {
 } from "@codemirror/state";
 import type { Command, EditorView } from "@codemirror/view";
 import { indentString, syntaxTree } from "@codemirror/language";
-import { toggleComment } from "@codemirror/commands";
+import { toggleBlockComment, toggleComment } from "@codemirror/commands";
 import { offsetAtVisibleColumn, visibleColumn } from "./visibleColumn";
 
 /** Code Style › <Language> › Code Generation › Comment Code. */
@@ -76,7 +77,7 @@ export const commentLine: Command = (view) => {
     lineToken(state, doc.line(b.startLine).from + leadingWs(doc.line(b.startLine).text)),
   );
   // Languages without line comments (CSS, HTML…): block comments.
-  if (tokens.some((t) => !t)) return toggleComment(view);
+  if (tokens.some((t) => !t)) return blockCommentLines(view);
 
   let allCommented = true;
   let commentedNonEmpty = false;
@@ -193,6 +194,142 @@ function minIndent(state: EditorState, startLine: number, endLine: number, token
     if (above.slice(leadingWs(above)).startsWith(token)) min = Math.min(min ?? Infinity, indentOf(above));
   }
   return min ?? 0;
+}
+
+// --- Block comments ---------------------------------------------------------------
+
+interface CommentPair {
+  open: string;
+  close: string;
+}
+
+/** The block comment token pairs the language offers at `pos`, the more specific first. */
+function commentPairs(state: EditorState, pos: number): CommentPair[] {
+  const pairs: CommentPair[] = [];
+  for (const data of state.languageDataAt<{ block?: CommentPair }>("commentTokens", pos)) {
+    const block = data?.block;
+    if (!block?.open || !block.close) continue;
+    if (!pairs.some((p) => p.open === block.open && p.close === block.close)) pairs.push(block);
+  }
+  return pairs;
+}
+
+const BLOCK_SEARCH = 50;
+
+/** A block comment around a range: the tokens' own positions, and how much of their margin to take. */
+interface BlockComment {
+  open: number;
+  openMargin: number;
+  close: number;
+  closeMargin: number;
+}
+
+/**
+ * The comment `pair` around `from..to`: the tokens just outside the range, or
+ * just inside it when the range takes the tokens in itself.
+ */
+function findBlockComment(state: EditorState, pair: CommentPair, from: number, to: number): BlockComment | null {
+  const doc = state.doc;
+  const before = state.sliceDoc(Math.max(0, from - BLOCK_SEARCH), from);
+  const after = state.sliceDoc(to, Math.min(doc.length, to + BLOCK_SEARCH));
+  const spaceBefore = /\s*$/.exec(before)![0].length;
+  const spaceAfter = /^\s*/.exec(after)![0].length;
+  const start = before.length - spaceBefore;
+  if (
+    before.slice(start - pair.open.length, start) === pair.open &&
+    after.slice(spaceAfter, spaceAfter + pair.close.length) === pair.close
+  )
+    return {
+      open: from - spaceBefore,
+      openMargin: spaceBefore ? 1 : 0,
+      close: to + spaceAfter,
+      closeMargin: spaceAfter ? 1 : 0,
+    };
+  const inside = to - from <= 2 * BLOCK_SEARCH;
+  const head = state.sliceDoc(from, inside ? to : from + BLOCK_SEARCH);
+  const tail = inside ? head : state.sliceDoc(Math.max(from, to - BLOCK_SEARCH), to);
+  const headSpace = /^\s*/.exec(head)![0].length;
+  const tailSpace = /\s*$/.exec(tail)![0].length;
+  const end = tail.length - tailSpace - pair.close.length;
+  if (
+    head.slice(headSpace, headSpace + pair.open.length) === pair.open &&
+    tail.slice(end, end + pair.close.length) === pair.close
+  )
+    return {
+      open: from + headSpace + pair.open.length,
+      openMargin: /\s/.test(head.charAt(headSpace + pair.open.length)) ? 1 : 0,
+      close: to - tailSpace - pair.close.length,
+      closeMargin: /\s/.test(tail.charAt(end - 1)) ? 1 : 0,
+    };
+  return null;
+}
+
+/** The lines the selection touches, from their first non-blank column to their end. */
+function selectedLines(state: EditorState): { from: number; to: number }[] {
+  const ranges: { from: number; to: number }[] = [];
+  const doc = state.doc;
+  for (const r of state.selection.ranges) {
+    const firstLine = doc.lineAt(r.from);
+    let lastLine = r.to <= firstLine.to ? firstLine : doc.lineAt(r.to);
+    if (lastLine.from > firstLine.from && lastLine.from === r.to)
+      lastLine = r.to === firstLine.to + 1 ? firstLine : doc.lineAt(r.to - 1);
+    const last = ranges[ranges.length - 1];
+    if (last && last.to > firstLine.from) last.to = lastLine.to;
+    else ranges.push({ from: firstLine.from + leadingWs(firstLine.text), to: lastLine.to });
+  }
+  return ranges;
+}
+
+/**
+ * Removes the block comment wrapping every one of `ranges`; false when one of
+ * them is not commented (the caller then comments instead).
+ *
+ * The pair to look for is read at both ends of a range and past its last line,
+ * not only at its start: a comment can start in one syntax context and end in
+ * another, and a JSX `{/* … *\/}` is the extreme case — it sits in JSX children,
+ * while its own text parses as JavaScript, where the tokens are `/* … *\/`. The
+ * widest pair wins when several fit, so the outer comment is the one removed.
+ */
+function uncommentBlock(view: EditorView, ranges: { from: number; to: number }[]): boolean {
+  const { state } = view;
+  const doc = state.doc;
+  const comments = ranges.map((r) => {
+    const pairs = commentPairs(state, r.from);
+    for (const pos of [r.to, doc.lineAt(r.to).to])
+      for (const pair of commentPairs(state, pos))
+        if (!pairs.some((p) => p.open === pair.open && p.close === pair.close)) pairs.push(pair);
+    let best: { pair: CommentPair; comment: BlockComment } | null = null;
+    for (const pair of pairs) {
+      const comment = findBlockComment(state, pair, r.from, r.to);
+      if (comment && (!best || comment.open - pair.open.length < best.comment.open - best.pair.open.length))
+        best = { pair, comment };
+    }
+    return best;
+  });
+  if (comments.some((c) => !c)) return false;
+
+  const changes: ChangeSpec[] = [];
+  for (const done of comments) {
+    const { pair, comment } = done!;
+    changes.push(
+      { from: comment.open - pair.open.length, to: comment.open + comment.openMargin },
+      { from: comment.close - comment.closeMargin, to: comment.close + pair.close.length },
+    );
+  }
+  view.dispatch({ changes, scrollIntoView: true, userEvent: "delete.uncomment" });
+  return true;
+}
+
+/** ⌘⇧/: block comments the selection, or takes the block comment back out. */
+export const commentBlock: Command = (view) => {
+  if (view.state.readOnly) return false;
+  const ranges = view.state.selection.ranges.map((r) => ({ from: r.from, to: r.to }));
+  return uncommentBlock(view, ranges) || toggleBlockComment(view);
+};
+
+/** ⌘/ in a language without line comments (CSS, HTML…): the block comment of the lines. */
+function blockCommentLines(view: EditorView): boolean {
+  return uncommentBlock(view, selectedLines(view.state)) || toggleComment(view);
 }
 
 // --- Enter in a line comment ------------------------------------------------------
