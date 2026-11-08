@@ -63,9 +63,24 @@ impl EventSink for TauriSink {
         ) {
             flash_taskbar_unless_focused(&self.app);
         }
+        if matches!(&event, IdeEvent::McpRequest { .. })
+            && let Some(label) = self.window.clone()
+        {
+            let app = self.app.clone();
+            let _ = self.app.run_on_main_thread(move || {
+                if let Some(window) = app.get_webview_window(&label) {
+                    let _ = window.unminimize();
+                    let _ = window.show();
+                    let _ = window.set_focus();
+                }
+            });
+        }
         let result = match &self.window {
             Some(label) => {
-                for target in crate::windows::document_windows(&self.app, label) {
+                for target in crate::windows::document_windows(&self.app, label)
+                    .into_iter()
+                    .filter(|_| !matches!(&event, IdeEvent::McpRequest { .. } | IdeEvent::McpRequestClosed { .. }))
+                {
                     let _ = self.app.emit_to(target.as_str(), IDE_EVENT, &event);
                 }
                 self.app.emit_to(label.as_str(), IDE_EVENT, &event)

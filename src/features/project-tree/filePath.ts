@@ -1,5 +1,6 @@
 /** Navigate › File Path (⌥⌘F12): the file and its folders, each revealed in the OS file manager. */
 import { openPopup } from "@/editor/lsp/popupStore";
+import { revealInFileManager } from "@/platform/fileManager";
 import { notifications } from "@/workbench/contributions";
 import { tx } from "@/platform/i18n";
 import { nameOf, parentOf } from "./paths";
@@ -21,8 +22,7 @@ export function filePathChain(path: string): string[] {
 
 async function reveal(path: string) {
   try {
-    const { revealItemInDir } = await import("@tauri-apps/plugin-opener");
-    await revealItemInDir(path);
+    await revealInFileManager(path);
   } catch (e) {
     const fileManager = revealLabel();
     notifications().notify({

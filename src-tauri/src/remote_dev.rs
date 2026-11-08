@@ -533,6 +533,7 @@ pub async fn remote_connect(
     }
     state.remote_dev.disconnect(&label);
     state.host.close_project(&label);
+    state.host.mcp_reports.set_remote(&label, std::path::PathBuf::from(&connection.root));
     state.remote_dev.0.lock().insert(label.clone(), connection.clone());
     let weak = Arc::downgrade(&connection);
     let peer = connection.peer.clone();
@@ -764,6 +765,7 @@ pub async fn remote_stop_forwarding(window: Window, state: State<'_, AppState>, 
 #[tauri::command]
 #[specta::specta]
 pub fn remote_disconnect(window: Window, state: State<'_, AppState>) {
+    state.host.mcp_reports.remove_remote(AppState::owner_window(window.label()));
     state.remote_dev.disconnect(AppState::owner_window(window.label()));
 }
 
