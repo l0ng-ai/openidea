@@ -193,6 +193,7 @@
   "Clone Caret Below": "在下方添加光标",
   "Join Lines": "合并行",
   "Toggle Case": "切换大小写",
+  "Add or Remove Caret": "添加或移除插入点",
   "Add Carets to Ends of Selected Lines": "在所选行末尾添加光标",
   "Unselect Occurrence": "取消选择匹配项",
   "Paste from History…": "从历史记录粘贴…",
