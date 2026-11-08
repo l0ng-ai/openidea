@@ -45,6 +45,9 @@ export interface AppearanceExtras {
   showToolWindowNames: boolean;
   showToolWindowBadges: boolean;
   widescreenToolWindows: boolean;
+  /** View › Appearance › Toolbar; hidden leaves IDEA's compact window header. */
+  showMainToolbar: boolean;
+  showStatusBar: boolean;
 }
 
 export interface DateFormatValid {
@@ -105,6 +108,8 @@ export const DEFAULT_APPEARANCE_EXTRAS: AppearanceExtras = {
   showToolWindowNames: false,
   showToolWindowBadges: true,
   widescreenToolWindows: false,
+  showMainToolbar: true,
+  showStatusBar: true,
 };
 
 export const DEFAULT_GENERAL_EXTRAS: GeneralExtras = {
@@ -163,6 +168,8 @@ export function validateAppearanceExtras(raw: unknown): AppearanceExtras {
     showToolWindowNames: b("showToolWindowNames"),
     showToolWindowBadges: b("showToolWindowBadges"),
     widescreenToolWindows: b("widescreenToolWindows"),
+    showMainToolbar: b("showMainToolbar"),
+    showStatusBar: b("showStatusBar"),
   };
 }
 

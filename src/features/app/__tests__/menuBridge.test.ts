@@ -4,7 +4,8 @@ import { _resetI18nForTests, setLocale } from "@/platform/i18n";
 import { useKeymap } from "@/platform/keymap";
 import * as ipc from "@/platform/ipc";
 import { resetDistractionFree, setDistractionFree } from "@/workbench/distractionFree";
-import { registerToolWindow } from "@/workbench/contributions";
+import { registerStatusItem, registerToolWindow } from "@/workbench/contributions";
+import { useProject } from "@/platform/project";
 import { _reloadLayouts, saveLayout } from "@/workbench/toolwindows/layouts";
 import { clearContext, setContext } from "@/platform/context";
 import {
@@ -29,7 +30,7 @@ describe("menu state from the frontend", () => {
     vi.spyOn(ipc.commands, "appBuildInfo").mockRejectedValue(new Error("No build info in tests"));
     vi.spyOn(ipc.commands, "menuConfigure").mockResolvedValue();
     vi.spyOn(ipc.commands, "menuModel").mockResolvedValue([
-      { kind: "action", id: "test.menuFocus", label: "Test", hint: null, arg: null },
+      { kind: "action", id: "test.menuFocus", label: "Test", hint: null, arg: null, checked: null },
     ]);
     const pushDisabled = vi.spyOn(ipc.commands, "menuSetDisabled").mockResolvedValue();
     const offAction = registerAction({ id: "test.menuFocus", title: "Test", run: () => {} });
@@ -84,11 +85,11 @@ describe("menu state from the frontend", () => {
         id: "x",
         label: "X",
         children: [
-          { kind: "action", id: "test.menu.whenEditor", label: "B", hint: null, arg: null },
-          { kind: "action", id: "test.menu.always", label: "A", hint: null, arg: null },
+          { kind: "action", id: "test.menu.whenEditor", label: "B", hint: null, arg: null, checked: null },
+          { kind: "action", id: "test.menu.always", label: "A", hint: null, arg: null, checked: null },
         ],
       },
-      { kind: "action", id: "not.registered", label: "C", hint: null, arg: null },
+      { kind: "action", id: "not.registered", label: "C", hint: null, arg: null, checked: null },
     ]);
     expect([...ids].sort()).toEqual(["not.registered", "test.menu.always", "test.menu.whenEditor"]);
     // Unregistered ids stay enabled: the action may register later (lazy features).
@@ -204,5 +205,60 @@ describe("window-scoped menu labels", () => {
     setDistractionFree(true);
     expect(buildMenuConfig("macos").labels["menu.editor.toggleZen"]).toBe("Exit Distraction Free Mode");
     resetDistractionFree();
+  });
+});
+
+describe("View › Appearance check marks", () => {
+  it("sends the toggle actions that are on", () => {
+    let on = true;
+    const offs = [
+      registerAction({ id: "test.menu.toggleOn", title: "On", toggled: () => on, run: () => {} }),
+      registerAction({ id: "test.menu.toggleOff", title: "Off", toggled: () => false, run: () => {} }),
+    ];
+    const checked = () => buildMenuConfig("macos").checked!.filter((id) => id.startsWith("test.menu."));
+    expect(checked()).toEqual(["test.menu.toggleOn"]);
+    on = false;
+    expect(checked()).toEqual([]);
+    offs.forEach((d) => d());
+  });
+
+  it("lists titled status bar widgets in bar order with their visibility", () => {
+    const widget = (id: string, align: "left" | "right", priority: number, title?: string, defaultVisible?: boolean) =>
+      registerStatusItem({ id, align, priority, title, defaultVisible, component: () => null });
+    const offs = [
+      widget("w.encoding", "right", 2, "File Encoding"),
+      widget("w.caret", "right", 1, "Line:Column Number"),
+      widget("w.tasks", "left", 0),
+      widget("w.memory", "right", 3, "Memory Indicator", false),
+      widget("plugin.demo.w", "left", 1, "Demo Widget"),
+    ];
+    useProject.setState({ settings: { appearance: { statusBarWidgets: { "w.caret": false } } } as never });
+    expect(dynamicMenuItems().statusBarWidgets).toEqual([
+      { action: "view.toggleStatusBarWidget", arg: "plugin.demo.w", label: "Demo Widget", checked: true },
+      { action: "view.toggleStatusBarWidget", arg: "w.caret", label: "Line:Column Number", checked: false },
+      { action: "view.toggleStatusBarWidget", arg: "w.encoding", label: "File Encoding", checked: true },
+      { action: "view.toggleStatusBarWidget", arg: "w.memory", label: "Memory Indicator", checked: false },
+    ]);
+    useProject.setState({ settings: null });
+    offs.forEach((d) => d());
+  });
+
+  it("lists only the widgets a LightEdit window's status bar has", () => {
+    const offs = [
+      registerStatusItem({
+        id: "w.caret",
+        align: "right",
+        priority: 1,
+        title: "Line:Column Number",
+        lightEdit: true,
+        component: () => null,
+      }),
+      registerStatusItem({ id: "w.branch", align: "right", priority: 2, title: "Git Branch", component: () => null }),
+    ];
+    useProject.setState({ project: null, lightEdit: true });
+    expect(dynamicMenuItems().statusBarWidgets!.map((i) => i.arg)).toEqual(["w.caret"]);
+    useProject.setState({ lightEdit: false });
+    expect(dynamicMenuItems().statusBarWidgets!.map((i) => i.arg)).toEqual(["w.caret", "w.branch"]);
+    offs.forEach((d) => d());
   });
 });

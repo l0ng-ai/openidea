@@ -395,6 +395,9 @@ pub struct AppearanceSettings {
     pub show_tool_window_names: bool,
     pub show_tool_window_badges: bool,
     pub widescreen_tool_windows: bool,
+    /// View › Appearance › Toolbar; hidden leaves IDEA's compact window header.
+    pub show_main_toolbar: bool,
+    pub show_status_bar: bool,
     /// Status bar widgets shown (`true`) or hidden (`false`) by the user
     /// (status bar context menu); widgets not listed use their default.
     pub status_bar_widgets: BTreeMap<String, bool>,
@@ -465,6 +468,8 @@ impl Default for AppearanceSettings {
             show_tool_window_names: false,
             show_tool_window_badges: true,
             widescreen_tool_windows: false,
+            show_main_toolbar: true,
+            show_status_bar: true,
             status_bar_widgets: BTreeMap::new(),
             main_toolbar: None,
         }

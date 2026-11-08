@@ -257,6 +257,8 @@ html {
 
   /* metrics (theme JSON at 100%) */
   --h-titlebar: 40px;
+  /* IDEA's compact header (HEADER_HEIGHT_DFM), the same in compact mode. */
+  --h-compact-header: 30px;
   --titlebar-tool-button: 30px;
   /* tool window stripe button, icons only */
   --stripe-icon-button: 30px;

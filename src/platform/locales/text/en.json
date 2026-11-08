@@ -552,5 +552,14 @@
   "No build": "No build",
   "Build, no error check": "Build, no error check",
   "Before launch build for this Java configuration": "Before launch build for this Java configuration",
-  "the bundle of {gemfile} has no `debug` gem. Add `gem \"debug\"` to the Gemfile and run `bundle install`": "the bundle of {gemfile} has no `debug` gem. Add `gem \"debug\"` to the Gemfile and run `bundle install`"
+  "the bundle of {gemfile} has no `debug` gem. Add `gem \"debug\"` to the Gemfile and run `bundle install`": "the bundle of {gemfile} has no `debug` gem. Add `gem \"debug\"` to the Gemfile and run `bundle install`",
+  "Toolbar": "Toolbar",
+  "Tool Window Bars": "Tool Window Bars",
+  "Status Bar": "Status Bar",
+  "Status Bar Widget": "Status Bar Widget",
+  "Show main toolbar": "Show main toolbar",
+  "Show status bar": "Show status bar",
+  "No background tasks": "No background tasks",
+  "Status Bar Widgets": "Status Bar Widgets",
+  "Background Tasks": "Background Tasks"
 }
