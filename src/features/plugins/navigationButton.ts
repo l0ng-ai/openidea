@@ -18,11 +18,12 @@ async function openTargets(targets: Location[], element: HTMLElement) {
   });
 }
 /** Shared ordinary-click and keyboard navigation for interactive and indexed markers. */
-export function navigationButton(targets: Location[], icon: string): HTMLButtonElement {
+export function navigationButton(targets: Location[], icon: string, tooltip?: string | null): HTMLButtonElement {
   const button = document.createElement("button");
   button.type = "button";
   button.className = "cm-plugin-mapping-button";
-  button.title = targets.map((t) => `${t.path.split("/").pop()}:${t.range.start.line + 1}`).join("\n");
+  const places = targets.map((t) => `${t.path.split("/").pop()}:${t.range.start.line + 1}`);
+  button.title = (tooltip ? [tooltip, ...places] : places).join("\n");
   button.setAttribute("aria-label", tx`Go to mapping: ${button.title}`);
   button.innerHTML = gutterIconMarkup(isIconName(icon) ? icon : "arrow-right") ?? "";
   button.onclick = (event) => {
