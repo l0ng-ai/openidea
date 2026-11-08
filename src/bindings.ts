@@ -42,11 +42,6 @@ export const commands = {
 	windowGroupCloseTabs: (keep: string, labels: string[]) => typedError<null, IdeError>(__TAURI_INVOKE("window_group_close_tabs", { keep, labels })),
 	/**  This window kept its project open (unsaved-changes prompt cancelled); stops a batch close. */
 	windowGroupCancelClose: () => __TAURI_INVOKE<void>("window_group_cancel_close"),
-	/**
-	 *  This window closes next (its prompts passed): a fullscreen group's host first hands its Space
-	 *  to the tab that takes over.
-	 */
-	windowGroupBeforeClose: () => typedError<null, IdeError>(__TAURI_INVOKE("window_group_before_close")),
 	windowGroupReorder: (labels: string[]) => typedError<null, IdeError>(__TAURI_INVOKE("window_group_reorder", { labels })),
 	windowGroupRestore: () => typedError<null, IdeError>(__TAURI_INVOKE("window_group_restore")),
 	/**
@@ -925,10 +920,7 @@ export const commands = {
 	windowFlashTaskbar: (flash: boolean) => typedError<null, IdeError>(__TAURI_INVOKE("window_flash_taskbar", { flash })),
 	/**  Height of the web title bar in native logical pixels (CSS height × IDE zoom). */
 	windowSetTitlebarHeight: (height: number | null) => typedError<null, IdeError>(__TAURI_INVOKE("window_set_titlebar_height", { height })),
-	/**
-	 *  Whether this window fills the screen: in native full screen, or (macOS) shown in its window
-	 *  group's full-screen Space.
-	 */
+	/**  Whether this window is in native full screen (on macOS, also a tab of a fullscreen group). */
 	windowIsFullscreen: () => __TAURI_INVOKE<boolean>("window_is_fullscreen"),
 	/**
 	 *  Starts dragging `window` while the primary mouse button is still down; returns whether a drag began.

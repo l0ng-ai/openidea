@@ -699,8 +699,6 @@ fn create_window_for(
     }
     let window = window?;
     #[cfg(target_os = "macos")]
-    crate::macos::intercept_toggle_fullscreen(&window);
-    #[cfg(target_os = "macos")]
     if let Some(target) = tab_target {
         crate::window_groups::join(app, target.label(), window.label())?;
         return Ok(window);

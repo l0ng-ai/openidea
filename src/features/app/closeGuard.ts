@@ -205,7 +205,6 @@ async function onCloseRequested(deps: CloseDeps): Promise<boolean> {
       deps,
     );
     if (!ok) await (ctx.quitting ? commands.appCancelQuit() : commands.windowGroupCancelClose());
-    else if (!ctx.quitting) await commands.windowGroupBeforeClose();
     return ok;
   } catch (e) {
     maybeEditorService()?.cancelClose?.();
