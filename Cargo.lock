@@ -4318,6 +4318,23 @@ dependencies = [
 ]
 
 [[package]]
+name = "ide-heap"
+version = "0.1.38"
+dependencies = [
+ "ide-core",
+ "libc",
+ "memmap2",
+ "proptest",
+ "serde",
+ "serde_json",
+ "specta",
+ "tempfile",
+ "thiserror 2.0.21",
+ "tracing",
+ "uuid",
+]
+
+[[package]]
 name = "ide-host"
 version = "0.1.38"
 dependencies = [
