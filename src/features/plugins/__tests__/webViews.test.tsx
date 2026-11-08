@@ -1,8 +1,12 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
-import { act, render, waitFor } from "@testing-library/react";
+import { act, fireEvent, render, screen, waitFor } from "@testing-library/react";
+import userEvent from "@testing-library/user-event";
 import type { PluginInfo, ViewEvent } from "@/bindings";
 import { addFileIconProvider, fileIconName, registerExternalIcons } from "@/ui";
 import { provideEditorService, type EditorInput, type EditorService } from "@/workbench/contributions";
+import { useProject } from "@/platform/project";
+import { isToolWindowVisible, resetToolWindowLayout, showToolWindow } from "@/workbench/toolwindows/store";
+import { ToolWindowLayout } from "@/workbench/toolwindows/ToolWindows";
 import {
   addContributedFileTemplate,
   fileTemplates,
@@ -374,6 +378,211 @@ describe("WebView", () => {
     );
     expect(events).toEqual([]);
     view.unmount();
+  });
+
+  it("opens a generic plugin content editor tab and reports invalid requests via content-tab-error", async () => {
+    const opened: EditorInput[] = [];
+    provideEditorService({
+      openFile: async () => {},
+      openVirtual: () => {},
+      openInput: async (input: EditorInput) => void opened.push(input),
+      openDiff: () => {},
+      openMerge: () => {},
+      closeFile: () => {},
+      activeFile: () => null,
+    } as unknown as EditorService);
+
+    const { view, events } = setup(true);
+    usePlugins.setState({
+      plugins: [{ id: "acme.draw", enabled: true, hasCode: true, capabilities: [] } as unknown as PluginInfo],
+    });
+    const { posted, send } = await frameOf(view.container);
+
+    // Invalid payload sends content-tab-error back to the frame.
+    send({ text: JSON.stringify({ op: "open-content-tab", title: "", content: "x" }) });
+    await waitFor(() =>
+      expect(posted.some((m) => typeof m.text === "string" && m.text.includes('"op":"content-tab-error"'))).toBe(true),
+    );
+    expect(opened).toHaveLength(0);
+
+    // Valid payload opens a pluginContent editor tab.
+    send({
+      text: JSON.stringify({
+        op: "open-content-tab",
+        key: "cfg",
+        title: "service.toml",
+        fileName: "service.toml",
+        language: "toml",
+        content: 'name = "demo"\n',
+        actions: [{ id: "save", label: "Apply", icon: "green-checkmark", primary: true, save: true }],
+      }),
+    });
+    await waitFor(() => expect(opened).toHaveLength(1));
+    expect(opened[0]).toMatchObject({
+      kind: "pluginContent",
+      key: `pluginContent:${JSON.stringify(["acme.draw", "draw", "cfg"])}`,
+      data: {
+        pluginId: "acme.draw",
+        view: "draw",
+        key: "cfg",
+        title: "service.toml",
+        fileName: "service.toml",
+        language: "toml",
+        content: 'name = "demo"\n',
+        readOnly: false,
+      },
+    });
+    expect(events).toHaveLength(0);
+    view.unmount();
+  });
+
+  it("keeps the standard tool-window header unless header = 'none', preserves it while loading or on error, and renders keyboard-operable corner actions with inset vars when ready", async () => {
+    resetToolWindowLayout();
+    const prevProject = useProject.getState().project;
+    useProject.setState({ project: { root: "/proj", name: "proj", trusted: true } as never });
+    const undefine = defineViewUiPoints();
+    try {
+      let resolveUrl!: (url: string) => void;
+      let rejectUrl!: (err: Error) => void;
+      let mode: "pending" | "ready" | "error" = "ready";
+      setPluginsBackend({
+        ...createMemoryPluginsBackend([]),
+        webPageUrl: () =>
+          mode === "ready"
+            ? Promise.resolve("about:blank")
+            : mode === "error"
+              ? Promise.reject(new Error("page missing"))
+              : new Promise<string>((res, rej) => {
+                  resolveUrl = res;
+                  rejectUrl = rej;
+                }),
+      });
+      const plugin = { id: "acme.kube", version: "1.0.0", hasCode: false, capabilities: [] } as unknown as PluginInfo;
+      usePlugins.setState({ plugins: [plugin] });
+
+      // 1. Default web view (without header = "none"): keeps the standard <header>.
+      syncUiContributions(
+        [
+          {
+            pluginId: "acme.kube",
+            point: "views",
+            key: "normal",
+            decl: { id: "normal", title: "Normal View", location: "bottom", web: "web/index.html" },
+          },
+        ],
+        [plugin],
+      );
+      showToolWindow("plugin.acme.kube.normal");
+      const first = render(<ToolWindowLayout editor={null} />);
+      const normal = await frameOf(first.container);
+      fireEvent.load(normal.frame);
+      expect(
+        normal.posted.some((m) => (m.theme as { vars: Record<string, string> })?.vars["--openidea-corner-inset-width"]),
+      ).toBe(false);
+      expect(first.container.querySelector('[data-toolwindow="plugin.acme.kube.normal"] header')).not.toBeNull();
+      expect(screen.getByText("Normal View")).toBeInTheDocument();
+      first.unmount();
+      clearUiContributions();
+
+      // 2. Loading state with header = "none": keeps the standard <header> (title + Options + Hide) until ready.
+      mode = "pending";
+      syncUiContributions(
+        [
+          {
+            pluginId: "acme.kube",
+            point: "views",
+            key: "cluster",
+            decl: {
+              id: "cluster",
+              title: "Cluster Explorer",
+              location: "bottom",
+              web: "web/index.html",
+              header: "none",
+            },
+          },
+        ],
+        [plugin],
+      );
+      showToolWindow("plugin.acme.kube.cluster");
+      const second = render(<ToolWindowLayout editor={null} />);
+      expect(second.container.querySelector('[data-toolwindow="plugin.acme.kube.cluster"] header')).not.toBeNull();
+      expect(screen.getByText("Cluster Explorer")).toBeInTheDocument();
+      expect(screen.getByRole("button", { name: "Options" })).toBeInTheDocument();
+      expect(screen.getByRole("button", { name: "Hide" })).toBeInTheDocument();
+
+      // A resolved URL is still loading until the iframe has loaded.
+      act(() => resolveUrl("https://plugin.invalid/revision-1"));
+      const { frame, posted } = await frameOf(second.container);
+      expect(second.container.querySelector('[data-toolwindow="plugin.acme.kube.cluster"] header')).not.toBeNull();
+      fireEvent.load(frame);
+      await waitFor(() =>
+        expect(second.container.querySelector('[data-toolwindow="plugin.acme.kube.cluster"] header')).toBeNull(),
+      );
+      expect(second.container.querySelector("iframe")).toBe(frame);
+      await waitFor(() =>
+        expect(
+          posted.some(
+            (m) =>
+              (m.theme as { vars?: Record<string, string> } | undefined)?.vars?.["--openidea-corner-inset-width"] ===
+                "64px" &&
+              (m.theme as { vars?: Record<string, string> } | undefined)?.vars?.["--openidea-corner-inset-height"] ===
+                "34px",
+          ),
+        ).toBe(true),
+      );
+
+      act(() => usePlugins.setState({ plugins: [{ ...plugin, version: "1.0.1" }] }));
+      act(() => resolveUrl("https://plugin.invalid/revision-2"));
+      await waitFor(() => expect(frame).toHaveAttribute("src", "https://plugin.invalid/revision-2"));
+      expect(second.container.querySelector('[data-toolwindow="plugin.acme.kube.cluster"] header')).not.toBeNull();
+      expect(second.container.querySelector("iframe")).toBe(frame);
+      fireEvent.load(frame);
+      expect(second.container.querySelector('[data-toolwindow="plugin.acme.kube.cluster"] header')).toBeNull();
+
+      act(() => usePlugins.setState({ plugins: [{ ...plugin, version: "1.0.2" }] }));
+      act(() => rejectUrl(new Error("page missing")));
+      await waitFor(() => expect(screen.getByText("page missing")).toBeInTheDocument());
+      expect(second.container.querySelector('[data-toolwindow="plugin.acme.kube.cluster"] header')).not.toBeNull();
+      act(() => usePlugins.setState({ plugins: [{ ...plugin, version: "1.0.3" }] }));
+      act(() => resolveUrl("https://plugin.invalid/revision-2"));
+      const recovered = await frameOf(second.container);
+      expect(second.container.querySelector('[data-toolwindow="plugin.acme.kube.cluster"] header')).not.toBeNull();
+      fireEvent.load(recovered.frame);
+      expect(second.container.querySelector('[data-toolwindow="plugin.acme.kube.cluster"] header')).toBeNull();
+
+      const user = userEvent.setup();
+      const optionsBtn = screen.getByRole("button", { name: "Options" });
+      optionsBtn.focus();
+      expect(document.activeElement).toBe(optionsBtn);
+      await user.keyboard("{Enter}");
+      expect(optionsBtn).toHaveAttribute("aria-expanded", "true");
+      await user.keyboard("{Escape}");
+      expect(optionsBtn).toHaveAttribute("aria-expanded", "false");
+
+      const hideBtn = screen.getByRole("button", { name: "Hide" });
+      await user.tab();
+      expect(document.activeElement).toBe(hideBtn);
+      await user.keyboard(" ");
+      expect(isToolWindowVisible("plugin.acme.kube.cluster")).toBe(false);
+      second.unmount();
+
+      // 4. Error state with header = "none": keeps the standard <header> so the user still has title, Options, and Hide.
+      mode = "pending";
+      act(() => usePlugins.setState({ plugins: [{ ...plugin, version: "1.0.1" }] }));
+      showToolWindow("plugin.acme.kube.cluster");
+      const third = render(<ToolWindowLayout editor={null} />);
+      act(() => rejectUrl(new Error("page missing")));
+      await waitFor(() => expect(screen.getByText("page missing")).toBeInTheDocument());
+      expect(third.container.querySelector('[data-toolwindow="plugin.acme.kube.cluster"] header')).not.toBeNull();
+      expect(screen.getByText("Cluster Explorer")).toBeInTheDocument();
+      expect(screen.getByRole("button", { name: "Hide" })).toBeInTheDocument();
+      third.unmount();
+    } finally {
+      clearUiContributions();
+      undefine();
+      useProject.setState({ project: prevProject });
+      resetToolWindowLayout();
+    }
   });
 });
 

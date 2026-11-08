@@ -149,7 +149,7 @@ work), but 0.1 code no longer runs: rebuild it against the 1.0 SDK.
 | `menus`         | `menu` (`editor.context`, `projectView.context`, `editorTab.context`, `viewItem.context`, `tools`, `commit.message`), `view?`, `command`, `when?`             | no            |
 | `keymaps`       | `command`, `key`, `mac?` (`Ctrl+Alt+C`; a chord: `Meta+K Meta+C`)                                                                                             | no            |
 | `statusBar`     | `id`, `text`, `tooltip?`, `command?`, `align?`, `priority?`                                                                                                   | no            |
-| `settings`      | `schema` (JSON file), `title?` — one table, see _Settings_                                                                                                    | no            |
+| `settings`      | `schema` (JSON file) or `pages` (API 1.3), `title?` — see _Settings_                                                                                          | no            |
 | `views`         | `id`, `title`, `icon?` (an icon name or a package SVG), `location` (`left`, `right`, `bottom`, `services`), `web?` (_Web views_), `group?`, `when?` (API 1.3) | without `web` |
 | `customEditors` | `id`, `title`, `patterns` (file names), `priority` (`default`, `option`), `layout?`, `web?`                                                                   | without `web` |
 | `fileIcons`     | `id`, `patterns` (file names), `icon` (SVG), `iconDark?` — whatever icon theme is in use                                                                      | no            |
@@ -251,6 +251,14 @@ its component with `plugins/build.sh crates/ide-plugin/tests/fixtures/file-templ
 aliases and gutter markers) in background batches, not on the editing path. See
 [Background document indexers](../docs/plugins/indexing.md).
 
+API 1.3 also uses this graph for Find Usages and Rename on published definitions
+and references, alongside language-server results. Name anchors must cover exactly
+the name in UTF-16 columns; markers are excluded. Indexed renames always show a
+preview and apply as one undoable workspace edit. No new WIT export or capability
+is required: the existing `project.read` declaration and trusted-project checks
+still apply. Use `engines.openidea = "^1.3"` when relying on this behavior. The
+[indexer fixture](../crates/ide-plugin/tests/fixtures/indexer) exercises both flows.
+
 ### Activation
 
 Code is instantiated lazily: when one of the plugin's commands runs, or when
@@ -324,6 +332,24 @@ path is resolved as a read's is, so a link inside a granted directory cannot be
 used to write outside it. `project.write` does the same inside the open
 projects, creating missing directories. Both are new in API 1.3
 (`engines.openidea = "^1.3"`).
+
+`host::fs::plugin_dir()` (API 1.3) returns a private directory belonging only to
+this plugin, separate from its installed code and key-value storage. Reading and
+writing inside it needs no `fs.*` or `project.read` grant, including during
+activation or provider calls without an open project. The host creates the
+directory owner-only (0700 on Unix, an owner-only inheritable ACL on Windows),
+and files written there are owner-only from creation (0600 on Unix). Paths are
+checked after symlink resolution: another plugin's directory, adjacent paths,
+and links escaping this directory receive no implicit grant. Explicit `fs.*`
+grants retain their normal behavior.
+
+Use it for generated editor content or caches larger than `storage`. Files and
+the directory survive idle reclaim, plugin reloads, updates, and app restarts;
+uninstall removes them. There is no TTL or stop-time deletion. A returned path
+works with `host::open_location` and as an argument to an approved process;
+normal UI, trust, and process approval rules still apply. Editor saves preserve
+the private file's permissions. Filesystem writes keep the usual size limits,
+encoding behavior, and protection of unsaved editor changes.
 
 Logging, notifications, status bar items, tasks and run-time contributions
 are always available. Calling a gated function without its capability returns
@@ -484,6 +510,7 @@ from another feature, or nothing when run from Search Everywhere / a shortcut. `
 | Kind               | Capability     | Delivered                                                                 |
 | ------------------ | -------------- | ------------------------------------------------------------------------- |
 | `file-opened`      | `events`       | a file opens in an editor                                                 |
+| `files-changed`    | `events`       | debounced created, modified and removed paths in open projects (API 1.3)  |
 | `file-saved`       | `events`       | after the file is written                                                 |
 | `editor-focused`   | `events`       | the focused editor changes (path, or none)                                |
 | `vcs-changed`      | `events`       | a repository's state changed (commit, checkout, fetch…; its root)         |
@@ -492,7 +519,21 @@ from another feature, or nothing when run from Search Everywhere / a shortcut. `
 
 Events are batched: a running plugin gets them within a fraction of a second,
 an idle one collects them for 2 s before it is woken, so frequent events
-(Key Promoter's actions) don't keep it alive.
+(Key Promoter's actions) don't keep it alive. `files-changed` is already debounced
+by the project's watcher (100 ms quiet period, at most 1 s during a continuous
+burst), so it bypasses the idle delay. Queued filesystem batches coalesce paths;
+a later batch does not cancel an earlier one. Closed project sessions discard
+pending filesystem events. Excluded and git-ignored paths follow the normal
+project watcher rules; scratch files and language-server dependency watches do
+not produce this event.
+
+The released WIT event remains unchanged: `event::other` carries kind
+`files-changed` and JSON `{ "created": [...], "modified": [...], "removed": [...] }`.
+The Rust SDK exposes `Event::FilesChanged(FilesChanged)` and
+`EventKind::FilesChanged`. Paths have the same absolute form as `file-saved`.
+Subscribe with `host::subscribe(EventKind::FilesChanged)` or
+`activation = ["on-event:files-changed"]`. Plugins using this event must declare
+`engines.openidea = "^1.3"`.
 
 Kinds are names (`subscribe` takes a string), so later IDEs add kinds without
 a new API: an IDE refuses a kind it doesn't know with `invalid`, and a kind
@@ -501,7 +542,9 @@ The SDK's event enums are `#[non_exhaustive]`; match them with a `_` arm.
 
 API 1.3 adds `host::subscribe_paths("file-opened", &["config/*.yaml"])`
 (`events.subscribe-paths`). The host matches project-relative globs before
-queueing an event or waking an idle plugin. `file-saved` works the same way.
+queueing an event or waking an idle plugin. `file-saved` and `files-changed` work
+the same way. For `files-changed`, each category is filtered and an empty batch
+is omitted; replacing or pausing a filter also affects batches already queued.
 Patterns use `/`, `*` stays within a directory, and `**` crosses
 directories. Up to 64 patterns of 1024 bytes each are accepted; absolute paths,
 parent traversal and malformed patterns fail without replacing the old filter.
@@ -1003,6 +1046,23 @@ Save, the dirty mark and Undo are the document's, as for every custom editor.
 IDE shortcuts the page doesn't handle itself (Save, Close, Find Action…) still
 work while it has focus; editing keys (⌘C, ⌘V, ⌘Z…) stay with the page. With
 the `clipboard` capability the page may use `navigator.clipboard`.
+An ungrouped tool-window web view that renders its own top bar can declare
+`header = "none"` (API 1.3: `engines.openidea = "^1.3"`): once the page is
+ready, the IDE replaces the standard tool-window header with top-right corner
+actions (`Options` and `Hide`) and sets `--openidea-corner-inset-width` (`64px`)
+and `--openidea-corner-inset-height` (`34px`) on the frame's root element (and
+in `openidea.theme.vars`) so the page can pad its top bar around them. Loading
+and error states keep the standard tool-window header.
+Omitting `header` (or setting `header = "default"`) keeps the standard header.
+For example, a page can reserve the corner in its own toolbar:
+
+```css
+.toolbar {
+  min-height: var(--openidea-corner-inset-height, 0px);
+  padding-right: var(--openidea-corner-inset-width, 0px);
+}
+```
+
 `plugins/official/excalidraw` is a complete example: a Vite + React page in
 `web-src/`, built into `web/` by `plugins/build.sh`. `plugins/official/graphviz`
 pairs a page with code: the page renders (Graphviz compiled to WebAssembly) and
@@ -1097,6 +1157,53 @@ Its `Log Probe: Open Stream` and `Log Probe: Try Undeclared Program` commands
 also ask the sandboxed page to open a tab, exercising the Wasm-to-page bridge.
 This extends the web bridge without changing released WIT signatures.
 
+### Plugin-backed content editor tabs (API 1.3)
+
+A web view can open an editor tab on content the plugin supplies, with
+plugin-defined toolbar actions that call back into the plugin. Declare
+`engines.openidea = "^1.3"` when using this protocol:
+
+```js
+openidea.postMessage(JSON.stringify({
+  op: "open-content-tab",
+  key: "service-config",
+  title: "service.toml",
+  fileName: "service.toml",
+  language: "toml",
+  content: "name = \"demo\"\nreplicas = 2\n",
+  readOnly: false,
+  actions: [
+    { id: "reload", label: "Reload", icon: "rerun" },
+    { id: "diff", label: "Diff", icon: "diff" },
+    { id: "save", label: "Apply", icon: "green-checkmark", primary: true, save: true },
+  ],
+}));
+```
+
+`title` (1–256 characters) and `content` (at most 1 Mi UTF-16 code units, no NUL)
+are required. `key` (1–128 characters) defaults to `title` and is scoped to the
+calling plugin and view; `fileName` (1–256 characters, no path separators) and
+`language` (1–64 characters) select syntax highlighting and the tab's file icon.
+`readOnly` defaults to `false`. `actions` lists up to 16 toolbar buttons with
+unique `id`s (1–64 characters), `label`s (1–128 characters), an optional built-in
+`icon` name, `primary`, and `save` (at most one action may set `save: true`).
+Invalid requests send `content-tab-error { error }` through `openidea.onMessage`.
+
+Clicking an action (or saving via ⌘S / the close-with-changes prompt) sends
+`content-tab-action { requestId, key, action, content }` to the web view and, when
+the plugin has code, as a `ViewEvent::Message`. The plugin replies with
+`content-tab-reply { requestId, content?, saved?, readOnly?, status?, error?, diff? }`:
+
+- `content` replaces unchanged editor text and updates the clean baseline (unless `saved: false`); later edits stay in the editor;
+- `saved: true` marks the submitted content clean; edits made while the action is pending remain dirty;
+- `saved: false` rejects a pending Save and keeps the tab open and dirty;
+- `status` / `error` update the toolbar status (and `error` rejects a pending Save so the tab stays open and dirty);
+- `diff: { left, right, leftLabel?, rightLabel?, title? }` opens the IDE's diff viewer.
+
+The tab participates in the standard `EditorDocumentLifecycle` (dirty indicator,
+Save / Don't Save / Cancel prompt on close, Undo / Redo, and read-only toggle).
+`crates/ide-plugin/tests/fixtures/web-content` is a built fixture exercising this flow.
+
 ### Translations
 
 A package translates its own text with `locales/<tag>.json`, one file per language
@@ -1143,6 +1250,81 @@ Types are `boolean`, `string` (optionally `enum`, `multiline`), `number` and
 Settings › Plugins (searchable; projects can override values) and the plugin
 reads values with `host::setting*`; a stored value of the wrong type falls
 back to the default.
+
+#### Multiple pages, groups, lists and tables (API 1.3)
+
+Require `engines.openidea = "^1.3"` when using pages, groups, arrays or actions.
+The single `schema` form above remains supported; do not combine it with `pages`.
+
+```toml
+[contributes.settings]
+title = "Model Profiles"
+
+[[contributes.settings.pages]]
+id = "templates"
+title = "Commit Template"
+schema = "templates.json"
+
+[[contributes.settings.pages]]
+id = "llm"
+title = "LLM Settings"
+schema = "llm.json"
+
+[[contributes.settings.pages.actions]]
+title = "Test"
+command = "test" # must also be declared under contributes.commands
+```
+
+Each page appears under the plugin's Settings node. Page titles, property
+labels, descriptions, groups, table columns, enum options and action titles
+are searchable. Page ids must be unique, contain no dots, and follow the
+contribution id rules. Setting keys are unique across the entire plugin;
+`host::setting(key)` still returns JSON, including arrays.
+
+Properties with `"group": "Provider"` share a heading in schema order.
+An `array` with `"items": {"type": "string"}` provides add/remove/reorder.
+For a model-profile table, use:
+
+```json
+{
+  "properties": {
+    "profiles": {
+      "type": "array", "title": "Model profiles", "group": "Provider",
+      "items": {
+        "type": "object",
+        "properties": {
+          "name": { "type": "string", "title": "Name" },
+          "provider": { "type": "string", "title": "Provider", "enum": ["local", "openai"], "default": "local" },
+          "baseUrl": { "type": "string", "title": "Base URL" },
+          "model": { "type": "string", "title": "Model" }
+        }
+      }
+    }
+  }
+}
+```
+
+Table cells support scalar types, including enums. Rows edit inline; new rows
+use each column's default. Nested collections are unsupported. Arrays default
+to `[]` and contain at most 1,000 entries. A plugin can declare at most 32 pages,
+200 settings across pages, and 32 actions per page. Field and table-column order
+follows the schema; duplicate property keys are rejected, including table columns.
+
+Edits use the normal Apply/OK/Cancel flow. Reset discards only the current page’s
+edits, including when several pages edit one plugin. Invalid collection edits
+are rejected without replacing existing rows. **Running a page action applies all
+pending settings first**, then invokes its declared command using the page’s
+Global or This project settings layer. The command retains its project context. A failed save
+prevents the command; a command error appears beside the button. Successful
+commands report through plugin notifications. Cancel after an action does not
+undo settings that action already applied. Secrets remain under
+`[[contributes.secrets]]`; never store API keys in a profile table. Custom web
+settings pages and conditional fields are unsupported; use a plugin view for
+other custom UI.
+
+See the [complete two-page fixture](../crates/ide-plugin/tests/fixtures/settings-pages)
+for a model-profile table and working Test action, and the
+[Rust SDK settings example](../sdk/rust/openidea-plugin/README.md#multi-page-settings-api-13).
 
 ### Remote projects
 

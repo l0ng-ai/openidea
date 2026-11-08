@@ -5,6 +5,7 @@ mod bytes;
 mod compare;
 mod encoding;
 mod ops;
+mod private;
 mod rules;
 mod watch;
 
@@ -27,8 +28,9 @@ pub use compare::{
 use encoding::SNIFF_LEN;
 pub use encoding::{
     LARGE_FILE_THRESHOLD, MAX_OPEN_SIZE, READ_ONLY_THRESHOLD, decode_properties_escapes, encode,
-    encode_properties_ascii, save_properties_text, write_atomic, write_atomic_strict,
+    encode_properties_ascii, save_properties_text, write_atomic, write_atomic_private, write_atomic_strict,
 };
+pub use private::create_private_dir;
 pub use rules::ExcludeMatcher;
 pub use watch::{WatchMode, Watcher};
 
@@ -200,6 +202,11 @@ pub struct LoadedText {
 /// refused with `InvalidInput`.
 pub fn load_text(path: &Path) -> IdeResult<LoadedText> {
     encoding::load_text(path)
+}
+
+/// Loads a regular file with editor decoding, bounding both disk and decoded bytes.
+pub fn load_text_bounded(path: &Path, fallback: Option<&str>, max_bytes: usize) -> IdeResult<LoadedText> {
+    encoding::load_text_bounded(path, fallback, max_bytes)
 }
 
 /// Like [`load_text`], but text that is neither valid UTF-8 nor marked by a BOM

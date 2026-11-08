@@ -14,6 +14,7 @@ mod phpstan;
 pub mod plugins;
 mod project;
 mod proxy;
+pub mod relay;
 mod requests;
 pub mod rpc;
 pub mod shell_env;
@@ -223,6 +224,7 @@ impl Host {
             self.cancel_request(request);
         }
         let project = self.projects.write().remove(window)?;
+        project.files_events_active.store(false, std::sync::atomic::Ordering::Release);
         project.plugin_diagnostics.close();
         if let Some(plugins) = plugins::editor_plugin_host() {
             plugins.invalidate_client_navigation(&project.root, Some(window), None);
@@ -373,6 +375,9 @@ impl Host {
         self.processes.kill_all();
         self.terminals.kill_all();
         let projects: Vec<_> = self.projects.write().drain().map(|(_, p)| p).collect();
+        for project in &projects {
+            project.files_events_active.store(false, std::sync::atomic::Ordering::Release);
+        }
         for project in &projects {
             project.plugin_diagnostics.close();
             if let Some(bridge) = &project.kotlin_bridge {

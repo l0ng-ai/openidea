@@ -83,23 +83,14 @@ pub async fn plugin_navigation_index(
                 }
                 (snapshot.text, Some(snapshot.version), snapshot.language)
             } else {
-                use std::io::Read;
-                if !std::fs::metadata(&path)
-                    .is_ok_and(|m| m.is_file() && m.len() <= crate::plugins::navigation::MAX_DOCUMENT_BYTES as u64)
-                {
-                    continue;
-                }
-                let Ok(file) = std::fs::File::open(&path) else {
+                let Ok(loaded) = project.documents.load_file_bounded(&path, super::navigation::MAX_DOCUMENT_BYTES)
+                else {
                     continue;
                 };
-                let mut text = String::new();
-                if file
-                    .take((crate::plugins::navigation::MAX_DOCUMENT_BYTES + 1) as u64)
-                    .read_to_string(&mut text)
-                    .is_err()
-                {
+                if loaded.binary || loaded.large {
                     continue;
                 }
+                let text = loaded.text;
                 let language = project.languages.detect(&path, text.lines().next());
                 (text, None, language)
             };
@@ -126,6 +117,7 @@ pub async fn plugin_navigation_index(
                     workspace_root: Some(project.root.clone()),
                     editor: None,
                     selected_paths: Vec::new(),
+                    global_settings: false,
                 },
             )?;
             // A document edit while WASM was executing must not publish stale ranges.

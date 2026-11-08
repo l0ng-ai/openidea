@@ -233,7 +233,7 @@ async fn remote_projects_get_plugin_views_and_custom_editors() {
         PluginHost::new(tmp.path().join("desktop/plugins"), Arc::new(|_: Option<&str>, _| {}), Limits::default())
             .unwrap();
     desktop.set_program_path(path_var.clone());
-    for dir in [official("csv-editor"), fixture("jobs")] {
+    for dir in [official("csv-editor"), fixture("jobs"), fixture("settings-pages")] {
         let info = desktop.install_from_dir(&dir, &Consent::all()).unwrap();
         assert_eq!(info.status, PluginStatus::Inactive, "{:?}", info.error);
     }
@@ -269,8 +269,8 @@ async fn remote_projects_get_plugin_views_and_custom_editors() {
     let _: Value = peer.request("initialize", json!({ "version": rpc::PROTOCOL_VERSION }), None).await.unwrap();
     invoke(&peer, "open_project", json!({ "path": project })).await.unwrap();
     invoke(&peer, "project_trust_set", json!({ "path": project, "trusted": true, "folder": false })).await.unwrap();
-    let report = sync(&peer, &desktop, &["openidea.csv-editor", "jobs"]).await;
-    assert_eq!(report.installed.len(), 2, "{report:?}");
+    let report = sync(&peer, &desktop, &["openidea.csv-editor", "jobs", "settings-pages"]).await;
+    assert_eq!(report.installed.len(), 3, "{report:?}");
 
     // CSV Editor: the document is the server's.
     let opened = invoke(&peer, "doc_open", json!({ "path": project.join("people.csv") })).await.unwrap();
@@ -329,5 +329,24 @@ async fn remote_projects_get_plugin_views_and_custom_editors() {
     .await
     .unwrap();
     assert_eq!(selected, "/srv/src/a.txt");
+    for (scope, name) in [("global", "Global"), ("project", "Project")] {
+        let values = json!({ "settings-pages": { "profiles": [{ "name": name, "provider": "local", "baseUrl": "http://localhost", "model": "test", "enabled": true, "temperature": 0.7, "limit": 100 }] } });
+        invoke(&peer, "settings_set", json!({ "scope": scope, "key": "plugins", "value": values.to_string() }))
+            .await
+            .unwrap();
+    }
+    for (scope, name) in
+        [(None, "Project"), (Some("global"), "Global"), (Some("project"), "Project"), (None, "Project")]
+    {
+        let mut args = json!({ "pluginId": "settings-pages", "commandId": "test", "arg": null, "editor": null });
+        if let Some(scope) = scope {
+            args["settingsScope"] = json!(scope);
+        }
+        let result = invoke(&peer, "plugin_run_command", args).await.unwrap();
+        let result: Value = serde_json::from_str(result.as_str().unwrap()).unwrap();
+        assert_eq!(result["profiles"][0]["name"], name);
+        assert_eq!(result["hasProject"], true);
+    }
+
     plugins.host().shutdown();
 }

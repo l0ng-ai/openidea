@@ -213,6 +213,7 @@ impl From<String> for ContextValue {
 pub enum EventKind {
     FileOpened,
     FileSaved,
+    FilesChanged,
     EditorFocused,
     /// Needs `events.input`.
     ActionPerformed,
@@ -226,6 +227,7 @@ impl EventKind {
         match self {
             Self::FileOpened => "file-opened",
             Self::FileSaved => "file-saved",
+            Self::FilesChanged => "files-changed",
             Self::EditorFocused => "editor-focused",
             Self::ActionPerformed => "action-performed",
             Self::VcsChanged => "vcs-changed",
@@ -270,12 +272,21 @@ pub struct ActionPerformed {
     pub shortcut: Option<String>,
 }
 
+/// Debounced changes in an open project, delivered with the `events` capability.
+#[derive(Clone, Debug, Default, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+pub struct FilesChanged {
+    pub created: Vec<String>,
+    pub modified: Vec<String>,
+    pub removed: Vec<String>,
+}
+
 /// A workbench event (see [`crate::host::subscribe`]).
 #[derive(Clone, Debug, PartialEq, Eq)]
 #[non_exhaustive]
 pub enum Event {
     FileOpened(String),
     FileSaved(String),
+    FilesChanged(FilesChanged),
     EditorFocused(Option<String>),
     ActionPerformed(ActionPerformed),
     /// A repository (its root) changed.
@@ -492,5 +503,17 @@ impl NotificationAction {
     pub fn argument(mut self, argument: impl Into<String>) -> Self {
         self.argument = Some(argument.into());
         self
+    }
+}
+
+impl Event {
+    /// Decodes additive events while preserving unknown or malformed payloads.
+    pub fn from_other(kind: String, data: String) -> Self {
+        if kind == "files-changed"
+            && let Ok(batch) = serde_json::from_str(&data)
+        {
+            return Self::FilesChanged(batch);
+        }
+        Self::Other { kind, data }
     }
 }

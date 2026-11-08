@@ -1098,7 +1098,7 @@ export const commands = {
 	path: string,
 	language: string,
 	selections: Range[],
-} | null, paths: string[] | null) => typedError<string | null, IdeError>(__TAURI_INVOKE("plugin_run_command", { pluginId, commandId, arg, editor, paths })),
+} | null, paths: string[] | null, settingsScope: "global" | "project" | null) => typedError<string | null, IdeError>(__TAURI_INVOKE("plugin_run_command", { pluginId, commandId, arg, editor, paths, settingsScope })),
 	/**  Workbench events from this window (only the kinds of `plugin_event_kinds`). */
 	pluginPostEvents: (events: WorkbenchEvent[]) => __TAURI_INVOKE<void>("plugin_post_events", { events }),
 	/**  Kinds of workbench events plugins want (re-fetch on `subscriptionsChanged`). */
@@ -3738,7 +3738,7 @@ export type ErrorKind = "notFound" | "alreadyExists" | "permissionDenied" | "inv
 "unavailable" | "io" | "protocol" | "internal";
 
 /**  Kinds of workbench events a plugin can subscribe to (`on-event:<kind>`). */
-export type EventKind = "file-opened" | "file-saved" | "editor-focused" | "action-performed" | "vcs-changed" | "scheduled";
+export type EventKind = "file-opened" | "file-saved" | "files-changed" | "editor-focused" | "action-performed" | "vcs-changed" | "scheduled";
 
 /**  An exception breakpoint filter offered by an adapter (`exceptionBreakpointFilters`). */
 export type ExceptionFilter = {
@@ -4012,6 +4012,13 @@ export type FileTypeAssociation = {
 	removedPatterns?: string[],
 	/**  Interpreters run by a `#!` first line, e.g. `node` for `#!/usr/bin/env node`. */
 	hashbangs?: string[],
+};
+
+/**  Debounced worktree changes. Paths use the same absolute form as `file-saved`. */
+export type FilesChanged = {
+	created: string[],
+	modified: string[],
+	removed: string[],
 };
 
 export type FoldKind = "region" | "comment" | "imports";
@@ -6632,7 +6639,9 @@ export type ReferencesIncomplete =
 /**  More project files mention the name than were checked. */
 "tooManyFiles" | 
 /**  Files that mention the name were too large or unreadable to check. */
-"filesSkipped";
+"filesSkipped" | 
+/**  A native query failed; indexed anchors are still available. */
+"serverFailed";
 
 /**  A registry agent this machine can run (or has installed). */
 export type RegistryAgent = {
@@ -6788,6 +6797,8 @@ export type RemoteTarget =
 { kind: "devContainer"; folder: string; config: string };
 
 export type Renamed = {
+	/**  Indexed names always require preview, including a single-file rename. */
+	preview?: boolean,
 	edit: WorkspaceEdit,
 	incomplete: ReferencesIncomplete | null,
 };
@@ -8343,7 +8354,7 @@ export type WindowTab = {
 };
 
 /**  A workbench event delivered to plugins. */
-export type WorkbenchEvent = { kind: "fileOpened"; value: string } | { kind: "fileSaved"; value: string } | { kind: "editorFocused"; value: string | null } | { kind: "actionPerformed"; value: ActionPerformed } | { kind: "vcsChanged"; value: string } | { kind: "scheduled" };
+export type WorkbenchEvent = { kind: "fileOpened"; value: string } | { kind: "fileSaved"; value: string } | { kind: "filesChanged"; value: FilesChanged } | { kind: "editorFocused"; value: string | null } | { kind: "actionPerformed"; value: ActionPerformed } | { kind: "vcsChanged"; value: string } | { kind: "scheduled" };
 
 export type WorkingTreeChange = {
 	path: string,

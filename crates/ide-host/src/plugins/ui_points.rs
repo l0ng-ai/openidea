@@ -283,12 +283,60 @@ pub(super) fn status_item(pkg: &Package, decl: toml::Value) -> Result<UiDecl, St
 struct SettingsDecl {
     #[serde(default)]
     title: Option<String>,
+    schema: Option<PathBuf>,
+    #[serde(default)]
+    pages: Vec<SettingsPage>,
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(deny_unknown_fields)]
+struct SettingsPage {
+    id: String,
+    title: String,
     schema: PathBuf,
+    #[serde(default)]
+    actions: Vec<SettingsAction>,
+}
+
+#[derive(Debug, Deserialize, Serialize)]
+#[serde(deny_unknown_fields)]
+struct SettingsAction {
+    title: String,
+    command: String,
 }
 
 #[derive(Debug, Deserialize)]
 struct SchemaFile {
-    properties: serde_json::Map<String, Value>,
+    #[serde(deserialize_with = "ordered_properties")]
+    properties: Vec<(String, Box<serde_json::value::RawValue>)>,
+}
+
+// Preserve schema field order locally, without changing serde_json maps throughout the host.
+fn ordered_properties<'de, D>(deserializer: D) -> Result<Vec<(String, Box<serde_json::value::RawValue>)>, D::Error>
+where
+    D: serde::Deserializer<'de>,
+{
+    struct Properties;
+    impl<'de> serde::de::Visitor<'de> for Properties {
+        type Value = Vec<(String, Box<serde_json::value::RawValue>)>;
+
+        fn expecting(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+            f.write_str("an object of setting schemas")
+        }
+
+        fn visit_map<M: serde::de::MapAccess<'de>>(self, mut map: M) -> Result<Self::Value, M::Error> {
+            let mut fields = Vec::new();
+            let mut keys = BTreeSet::new();
+            while let Some((key, value)) = map.next_entry::<String, Box<serde_json::value::RawValue>>()? {
+                if !keys.insert(key.clone()) {
+                    return Err(serde::de::Error::custom(format!("duplicate setting key {key:?}")));
+                }
+                fields.push((key, value));
+            }
+            Ok(fields)
+        }
+    }
+    deserializer.deserialize_map(Properties)
 }
 
 /// One setting of a plugin.
@@ -296,7 +344,7 @@ struct SchemaFile {
 #[serde(rename_all = "camelCase")]
 pub struct SettingSchema {
     pub key: String,
-    /// `boolean`, `string`, `number` or `integer`.
+    /// A scalar, top-level `array`, or `object` table row.
     #[serde(rename = "type")]
     pub kind: String,
     pub title: String,
@@ -307,6 +355,12 @@ pub struct SettingSchema {
     pub options: Option<Vec<String>>,
     #[serde(default)]
     pub multiline: bool,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub group: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub items: Option<Box<SettingSchema>>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub properties: Vec<SettingSchema>,
 }
 
 impl SettingSchema {
@@ -316,6 +370,13 @@ impl SettingSchema {
             "boolean" => v.is_boolean(),
             "integer" => v.is_i64() || v.is_u64(),
             "number" => v.is_number(),
+            "array" => v.as_array().is_some_and(|a| {
+                a.len() <= 1000 && self.items.as_ref().is_some_and(|item| a.iter().all(|v| item.accepts(v)))
+            }),
+            "object" => v.as_object().is_some_and(|o| {
+                o.len() == self.properties.len()
+                    && self.properties.iter().all(|p| o.get(&p.key).is_some_and(|v| p.accepts(v)))
+            }),
             _ => v
                 .as_str()
                 .is_some_and(|s| s.len() <= 64 << 10 && self.options.as_ref().is_none_or(|o| o.iter().any(|x| x == s))),
@@ -323,17 +384,47 @@ impl SettingSchema {
     }
 }
 
-fn setting(key: &str, raw: &Value) -> Result<SettingSchema, String> {
+fn setting(key: &str, raw: &serde_json::value::RawValue) -> Result<SettingSchema, String> {
+    setting_at(key, raw, 0)
+}
+
+fn setting_at(key: &str, raw: &serde_json::value::RawValue, depth: u8) -> Result<SettingSchema, String> {
     if key.is_empty() || key.len() > 64 || !key.chars().all(|c| c.is_ascii_alphanumeric() || "-_.".contains(c)) {
         return Err(format!("setting {key:?}: keys are 1–64 of [A-Za-z0-9._-]"));
     }
-    let o = raw.as_object().ok_or_else(|| format!("setting {key:?}: expected an object"))?;
+    let value: Value = serde_json::from_str(raw.get()).map_err(|e| e.to_string())?;
+    let o = value.as_object().ok_or_else(|| format!("setting {key:?}: expected an object"))?;
     let kind = o.get("type").and_then(Value::as_str).unwrap_or("");
+    let mut items = None;
+    let mut properties = Vec::new();
     let default = match kind {
         "boolean" => o.get("default").cloned().unwrap_or(Value::Bool(false)),
         "string" => o.get("default").cloned().unwrap_or(Value::String(String::new())),
         "number" | "integer" => o.get("default").cloned().unwrap_or(Value::from(0)),
-        _ => return Err(format!("setting {key:?}: `type` is boolean, string, number or integer")),
+        "array" if depth == 0 => {
+            #[derive(Deserialize)]
+            struct ArraySchema {
+                items: Box<serde_json::value::RawValue>,
+            }
+            let array: ArraySchema = serde_json::from_str(raw.get()).map_err(|e| e.to_string())?;
+            let item = setting_at("item", &array.items, 1)?;
+            if item.kind != "string" && item.kind != "object" {
+                return Err(format!("setting {key:?}: items must be strings or objects"));
+            }
+            items = Some(Box::new(item));
+            o.get("default").cloned().unwrap_or_else(|| Value::Array(Vec::new()))
+        }
+        "object" if depth == 1 => {
+            let fields = serde_json::from_str::<SchemaFile>(raw.get()).map_err(|e| e.to_string())?.properties;
+            if fields.is_empty() || fields.len() > MAX_SETTINGS {
+                return Err(format!("setting {key:?}: table needs 1–{MAX_SETTINGS} columns"));
+            }
+            properties = fields.iter().map(|(k, v)| setting_at(k, v, 2)).collect::<Result<_, _>>()?;
+            o.get("default").cloned().unwrap_or_else(|| {
+                Value::Object(properties.iter().map(|p| (p.key.clone(), p.default.clone())).collect())
+            })
+        }
+        _ => return Err(format!("setting {key:?}: unsupported setting type {kind:?}")),
     };
     let options = match o.get("enum") {
         None => None,
@@ -359,6 +450,9 @@ fn setting(key: &str, raw: &Value) -> Result<SettingSchema, String> {
         default,
         options,
         multiline: o.get("multiline").and_then(Value::as_bool).unwrap_or(false),
+        group: text("group", MAX_TITLE)?,
+        items,
+        properties,
     };
     if !s.accepts(&s.default) {
         return Err(format!("setting {key:?}: the default does not match its type"));
@@ -377,13 +471,68 @@ pub fn parse_settings_schema(text: &str) -> Result<Vec<SettingSchema>, String> {
 
 pub(super) fn settings(pkg: &Package, decl: toml::Value) -> Result<UiDecl, String> {
     let d: SettingsDecl = decode(SETTINGS, decl)?;
-    let text = pkg.read_text(&d.schema)?;
-    let properties = parse_settings_schema(&text).map_err(|e| format!("{}: {e}", d.schema.display()))?;
+    if d.schema.is_some() == !d.pages.is_empty() {
+        return Err("settings: use either `schema` or nonempty `pages`".into());
+    }
+    if d.pages.len() > 32 {
+        return Err("settings: at most 32 pages".into());
+    }
     let title = d.title.unwrap_or_else(|| pkg.manifest.name.clone());
     title_ok(&title)?;
-    let mut decl =
-        UiDecl::new("settings", title.clone(), serde_json::json!({ "title": title, "properties": properties }));
-    decl.files.push(d.schema);
+    let mut files = Vec::new();
+    let mut keys = BTreeSet::new();
+    let mut load = |path: &Path| -> Result<Vec<SettingSchema>, String> {
+        let properties =
+            parse_settings_schema(&pkg.read_text(path)?).map_err(|e| format!("{}: {e}", path.display()))?;
+        for p in &properties {
+            if !keys.insert(p.key.clone()) {
+                return Err(format!("settings: duplicate key {:?} across pages", p.key));
+            }
+            if p.group.is_some() || p.kind == "array" {
+                pkg.manifest.needs_api("settings: groups / arrays", 3)?;
+            }
+        }
+        if keys.len() > MAX_SETTINGS {
+            return Err(format!("more than {MAX_SETTINGS} settings"));
+        }
+        files.push(path.to_path_buf());
+        Ok(properties)
+    };
+    let mut properties = Vec::new();
+    let mut pages = Vec::new();
+    if let Some(path) = d.schema {
+        properties = load(&path)?;
+    } else {
+        pkg.manifest.needs_api("contributes.settings.pages", 3)?;
+        let mut ids = BTreeSet::new();
+        for p in d.pages {
+            validate_item_id(&p.id, "settings page id")?;
+            if p.id.contains('.') || !ids.insert(p.id.clone()) {
+                return Err(format!("settings: page id {:?} must be unique and contain no dots", p.id));
+            }
+            title_ok(&p.title)?;
+            if p.actions.len() > 32 {
+                return Err("settings: at most 32 actions per page".into());
+            }
+            for a in &p.actions {
+                title_ok(&a.title)?;
+                declared_command(pkg, SETTINGS, &a.command)?;
+            }
+            let fields = load(&p.schema)?;
+            properties.extend(fields.clone());
+            pages.push(serde_json::json!({
+                "id": p.id, "title": p.title, "properties": fields, "actions": p.actions,
+            }));
+        }
+    }
+    let mut decl = UiDecl::new(
+        "settings",
+        title.clone(),
+        serde_json::json!({
+            "title": title, "properties": properties, "pages": pages,
+        }),
+    );
+    decl.files = files;
     Ok(decl)
 }
 
@@ -407,6 +556,9 @@ struct ViewDecl {
     /// Show the selected tree/list item's detail-provider tabs beside it.
     #[serde(default, skip_serializing_if = "std::ops::Not::not")]
     detail: bool,
+    /// `default` or `none` (tool-window web views that render their own header row).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    header: Option<String>,
     /// A web page of the package (`web/index.html`) instead of content the code renders.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     web: Option<String>,
@@ -450,6 +602,18 @@ pub(super) fn view(pkg: &Package, decl: toml::Value) -> Result<UiDecl, String> {
         pkg.manifest.needs_api(&format!("view {:?}: `detail`", d.id), 3)?;
         if d.web.is_some() {
             return Err(format!("view {:?}: `detail` needs a tree or list rendered by the plugin (no `web`)", d.id));
+        }
+    }
+    if let Some(header) = &d.header {
+        pkg.manifest.needs_api("contributes.views.header", 3)?;
+        if header != "default" && header != "none" {
+            return Err(format!("view {:?}: `header` is default or none", d.id));
+        }
+        if header == "none" && (d.web.is_none() || d.group.is_some()) {
+            return Err(format!(
+                "view {:?}: `header = \"none\"` is only for ungrouped tool-window web views (`web`)",
+                d.id
+            ));
         }
     }
     if d.icon.as_ref().is_some_and(|i| i.len() > 64) {
@@ -793,6 +957,104 @@ mod tests {
         assert!(!s.iter().find(|x| x.key == "mode").unwrap().accepts(&Value::from("c")));
         assert!(parse_settings_schema(r#"{"properties": {"x": {"type": "string", "default": 3}}}"#).is_err());
         assert!(parse_settings_schema(r#"{"properties": {"x": {"type": "object"}}}"#).is_err());
+    }
+
+    #[test]
+    fn collections_validate_every_cell_and_keep_schema_order() {
+        let schema =
+            parse_settings_schema(include_str!("../../../ide-plugin/tests/fixtures/settings-pages/llm.json")).unwrap();
+        let profiles = &schema[0];
+        let item = profiles.items.as_ref().unwrap();
+        assert_eq!(
+            item.properties.iter().map(|p| p.key.as_str()).collect::<Vec<_>>(),
+            ["name", "provider", "baseUrl", "model", "enabled", "temperature", "limit"]
+        );
+        assert!(profiles.accepts(&serde_json::json!([item.default])));
+        for (field, value) in [
+            ("provider", Value::from("unknown")),
+            ("enabled", Value::from("true")),
+            ("limit", Value::from(1.5)),
+            ("model", Value::Null),
+        ] {
+            let mut row = item.default.clone();
+            row[field] = value;
+            assert!(!profiles.accepts(&serde_json::json!([row])), "{field}");
+        }
+        assert!(!profiles.accepts(&serde_json::json!([{}])));
+        for items in [
+            r#"{"type":"number"}"#,
+            r#"{"type":"array","items":{"type":"string"}}"#,
+            r#"{"type":"object","properties":{}}"#,
+            r#"{"type":"object","properties":{"nested":{"type":"object"}}}"#,
+        ] {
+            assert!(
+                parse_settings_schema(&format!(r#"{{"properties":{{"x":{{"type":"array","items":{items}}}}}}}"#))
+                    .is_err()
+            );
+        }
+        let lists = parse_settings_schema(
+            r#"{"properties":{"z":{"type":"array","items":{"type":"string"}},"a":{"type":"boolean"}}}"#,
+        )
+        .unwrap();
+        assert_eq!(lists[0].key, "z");
+        assert!(lists[0].accepts(&serde_json::json!(["feat", "fix"])));
+        assert!(!lists[0].accepts(&serde_json::json!([1])));
+    }
+
+    #[test]
+    fn schema_order_is_local_and_duplicate_fields_are_rejected() {
+        let raw = r#"{"properties":{"z":{"type":"string"},"a":{"type":"boolean"}}}"#;
+        let fields = parse_settings_schema(raw).unwrap();
+        assert_eq!(fields.iter().map(|p| p.key.as_str()).collect::<Vec<_>>(), ["z", "a"]);
+        let ordinary: Value = serde_json::from_str(raw).unwrap();
+        assert_eq!(ordinary["properties"].as_object().unwrap().keys().collect::<Vec<_>>(), ["a", "z"]);
+        for raw in [
+            r#"{"properties":{"x":{"type":"string"},"x":{"type":"boolean"}}}"#,
+            r#"{"properties":{"rows":{"type":"array","items":{"type":"object","properties":{"x":{"type":"string"},"x":{"type":"boolean"}}}}}}"#,
+        ] {
+            assert!(parse_settings_schema(raw).unwrap_err().contains("duplicate setting key"));
+        }
+    }
+
+    #[test]
+    fn settings_pages_validate_manifest_files_commands_and_api() {
+        let root = Path::new(env!("CARGO_MANIFEST_DIR")).join("../ide-plugin/tests/fixtures/settings-pages");
+        let source = std::fs::read_to_string(root.join("plugin.toml")).unwrap();
+        let check = |source: &str| {
+            let manifest = ide_extension::Manifest::parse(source)?;
+            let decl = manifest.declarations(SETTINGS).into_iter().next().unwrap();
+            settings(&Package::new(manifest, root.clone()), decl)
+        };
+        let valid = check(&source).unwrap();
+        assert_eq!(valid.json["pages"].as_array().unwrap().len(), 2);
+        assert_eq!(valid.json["properties"].as_array().unwrap().len(), 3);
+        assert_eq!(valid.files.len(), 2);
+        for bad in [
+            source.replace("^1.3", "^1.2"),
+            source.replace(r#"id = "llm""#, r#"id = "templates""#),
+            source.replace(r#"command = "test""#, r#"command = "missing""#),
+            source.replace("llm.json", "missing.json"),
+            source.replace("llm.json", "../outside.json"),
+            source.replace("llm.json", "templates.json"),
+            source.replace(r#"id = "llm""#, r#"id = "llm.child""#),
+        ] {
+            assert!(check(&bad).is_err(), "{bad}");
+        }
+        let old = source.split("[contributes.settings]").next().unwrap().replace("^1.3", "^1.0");
+        let old = format!("{old}\n[contributes.settings]\nschema = \"legacy.json\"\n");
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::write(dir.path().join("legacy.json"), r#"{"properties":{"enabled":{"type":"boolean"}}}"#).unwrap();
+        let manifest = ide_extension::Manifest::parse(&old).unwrap();
+        let decl = manifest.declarations(SETTINGS).into_iter().next().unwrap();
+        assert!(settings(&Package::new(manifest, dir.path().to_path_buf()), decl).is_ok());
+        for field in [r#"{"type":"string","group":"Provider"}"#, r#"{"type":"array","items":{"type":"string"}}"#] {
+            std::fs::write(dir.path().join("legacy.json"), format!(r#"{{"properties":{{"x":{field}}}}}"#)).unwrap();
+            for (api, valid) in [("^1.0", false), ("^1.2", false), ("^1.3", true)] {
+                let manifest = ide_extension::Manifest::parse(&old.replace("^1.0", api)).unwrap();
+                let decl = manifest.declarations(SETTINGS).into_iter().next().unwrap();
+                assert_eq!(settings(&Package::new(manifest, dir.path().to_path_buf()), decl).is_ok(), valid);
+            }
+        }
     }
 
     fn package_with_catalogs(files: &[(&str, &str)]) -> (tempfile::TempDir, Package) {
