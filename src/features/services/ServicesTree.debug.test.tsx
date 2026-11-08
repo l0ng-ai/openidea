@@ -6,7 +6,7 @@ import { useProject } from "@/platform/project";
 import { validateSettings } from "@/features/settings/model/schema";
 import { adoptSession, appendConsole, useDebug } from "@/features/debugger/state";
 import { DebugServiceConsole } from "@/features/debugger/ui/DebugConsole";
-import { runServiceProvider } from "@/features/run/services";
+import { registerRunServiceActions, runServiceProvider } from "@/features/run/services";
 import { onRunExited, runtime, startRun, useRun } from "@/features/run/store";
 import {
   provideToolWindowService,
@@ -53,6 +53,7 @@ const summary = (id: number, extra: Partial<DebugServiceSession> = {}): DebugSer
   ...extra,
 });
 let dispose: () => void;
+let disposeActions: () => void;
 beforeEach(() => {
   localStorage.clear();
   useProject.setState({
@@ -68,10 +69,12 @@ beforeEach(() => {
     expanded: new Set(["run:type:spring-boot"]),
   });
   dispose = registerServiceProvider(runServiceProvider);
+  disposeActions = registerRunServiceActions();
 });
 afterEach(() => {
   vi.restoreAllMocks();
   dispose();
+  disposeActions();
   useDebugRunSessions.setState({ sessions: [], serviceSessions: [], Console: null });
 });
 const select = () =>
@@ -238,13 +241,13 @@ it("shows the owning Run output for attached debugging and overrides both sets o
   expect(actions.getByRole("button", { name: "Stop" })).toBeEnabled();
 });
 
-it("group Stop stops all roots but terminates a shared Maven process only once", async () => {
+it("group Stop All stops all roots but terminates a shared Maven process only once", async () => {
   const first = summary(1, { processId: 7 }),
     second = summary(2, { processId: 7 });
   useDebugRunSessions.setState({ serviceSessions: [first, second] });
   render(<ServicesTreeView />);
   fireEvent.mouseDown(within(screen.getByRole("tree")).getByText("Spring Boot").closest('[role="treeitem"]')!);
-  fireEvent.click(toolbar().getByRole("button", { name: "Stop" }));
+  fireEvent.click(toolbar().getByRole("button", { name: "Stop All" }));
   await vi.waitFor(() => expect(second.stop).toHaveBeenCalledOnce());
   expect(first.stop).toHaveBeenCalledExactlyOnceWith({ stopProcess: false });
   expect(second.stop).toHaveBeenCalledExactlyOnceWith();

@@ -96,6 +96,7 @@ const timers = new Map<string, ReturnType<typeof setTimeout>>();
 /** Ids in the order last sent per file (backend states are index-aligned). */
 const sent = new Map<string, string[]>();
 const inFlight = new Map<string, Promise<void>>();
+let flushing: Promise<void> | null = null;
 const SYNC_DELAY = 120;
 
 export function scheduleSync(path: string) {
@@ -110,7 +111,16 @@ export function scheduleSync(path: string) {
 }
 
 /** Drain debounced edits before the backend takes its startup breakpoint snapshot. */
-export async function flushBreakpoints() {
+export function flushBreakpoints(): Promise<void> {
+  // Concurrent session starts must not keep adding work to each other's drain.
+  if (flushing) return flushing;
+  flushing = drainBreakpoints().finally(() => {
+    flushing = null;
+  });
+  return flushing;
+}
+
+async function drainBreakpoints() {
   let paths = new Set([...timers.keys(), ...inFlight.keys(), ...Object.keys(useBreakpoints.getState().byFile)]);
   while (paths.size) {
     for (const timer of timers.values()) clearTimeout(timer);
