@@ -519,16 +519,68 @@ fn is_dispose_of_the_read_object(packet: &[u8]) -> bool {
     h.command() == (1, 14) && !h.is_reply() && OWN_IDS.contains(&h.id) && packet[HEADER_LEN..] == body.into_vec()
 }
 
+/// `VirtualMachine.Resume` takes back the adapter's `VirtualMachine.Suspend` only: the
+/// breakpoint's own suspension of its thread stays until that thread is resumed.
 #[tokio::test]
-async fn kotlin_lsp_stop_lasts_until_vm_resume() {
+async fn kotlin_lsp_stop_outlasts_vm_resume_until_its_thread_resumes() {
     let mut p = kotlin_lsp_stop().await;
+    let stopped = LinkState::Suspended { generation: 1, thread: Some(super::command_tests::THREAD) };
     let resume = command(72, 1, 9, &[]);
-    let seen = through_to_jvm(&mut p, std::slice::from_ref(&resume)).await;
+    assert_eq!(through_to_jvm(&mut p, std::slice::from_ref(&resume)).await, [resume]);
+    assert_eq!(p.link.state(), stopped);
+    let thread_resume = command(73, 11, 3, &super::command_tests::THREAD.to_be_bytes());
+    let seen = through_to_jvm(&mut p, std::slice::from_ref(&thread_resume)).await;
     assert_eq!(seen.len(), 2, "{seen:?}");
-    assert_eq!(seen[0], resume);
+    assert_eq!(seen[0], thread_resume);
     assert!(is_dispose_of_the_read_object(&seen[1]), "{seen:?}");
     wait_state(&p.link, LinkState::Ready).await;
     assert_eq!(p.link.generation(), 1);
+}
+
+/// fwcd's class prepare requests stay enabled all session with JDI's default `SUSPEND_ALL`, and
+/// it resumes their events with `VirtualMachine.Resume`: a class loaded on another thread while
+/// one is stopped leaves that stop, and the objects read in it, alone.
+#[tokio::test]
+async fn fwcd_class_load_on_another_thread_keeps_the_stop_and_its_objects() {
+    use super::command_tests::{THREAD, own_instances, result, spawn_command, tagged};
+    let mut p = connected(OPEN).await;
+    stop(&mut p, 1, THREAD).await;
+    let stopped = LinkState::Suspended { generation: 1, thread: Some(THREAD) };
+    wait_state(&p.link, stopped.clone()).await;
+    let task = spawn_command(&p.link, WAIT);
+    let id = own_instances(&mut p).await;
+    p.jvm.write_all(&reply(id, 0, &tagged(&[0x11]))).await.unwrap();
+    assert_eq!(result(task).await, Ok(tagged(&[0x11])));
+    let prepare = event(2, 8, THREAD + 1);
+    p.jvm.write_all(&prepare).await.unwrap();
+    assert_eq!(read_packet(&mut p.adapter).await, prepare);
+    let resume = command(72, 1, 9, &[]);
+    assert_eq!(through_to_jvm(&mut p, std::slice::from_ref(&resume)).await, [resume]);
+    assert_eq!(p.link.state(), stopped);
+    let thread_resume = command(73, 11, 3, &THREAD.to_be_bytes());
+    let seen = through_to_jvm(&mut p, std::slice::from_ref(&thread_resume)).await;
+    assert_eq!(seen.len(), 2, "{seen:?}");
+    assert!(is_dispose_of_the_read_object(&seen[1]), "{seen:?}");
+    wait_state(&p.link, LinkState::Ready).await;
+}
+
+/// A class prepare on a thread the VM hides carries the null thread; its suspension of every
+/// thread still needs its `VirtualMachine.Resume`.
+#[tokio::test]
+async fn class_load_on_a_hidden_thread_keeps_the_stop() {
+    use super::command_tests::THREAD;
+    let mut p = connected(OPEN).await;
+    stop(&mut p, 1, THREAD).await;
+    let stopped = LinkState::Suspended { generation: 1, thread: Some(THREAD) };
+    wait_state(&p.link, stopped.clone()).await;
+    let prepare = event(2, 8, 0);
+    p.jvm.write_all(&prepare).await.unwrap();
+    assert_eq!(read_packet(&mut p.adapter).await, prepare);
+    let resume = command(72, 1, 9, &[]);
+    assert_eq!(through_to_jvm(&mut p, std::slice::from_ref(&resume)).await, [resume]);
+    assert_eq!(p.link.state(), stopped);
+    resume_thread(&mut p, THREAD).await;
+    wait_state(&p.link, LinkState::Ready).await;
 }
 
 #[tokio::test]

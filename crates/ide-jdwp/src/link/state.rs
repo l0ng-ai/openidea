@@ -4,7 +4,7 @@ use super::ledger::{DISPOSE_CHUNK, Ledger};
 use super::suspends::Suspends;
 use super::{LinkError, LinkState, OWN_IDS};
 use crate::codec::{Header, Reader};
-use crate::ids::{IdSizes, ReplyIds, dispose_body, object_ids, stop_of};
+use crate::ids::{EVENT_CLASS_PREPARE, IdSizes, ReplyIds, dispose_body, event_kind, object_ids, stop_of};
 use std::collections::{HashMap, HashSet};
 use std::sync::Arc;
 use tokio::sync::{OwnedMutexGuard, oneshot};
@@ -229,12 +229,17 @@ impl Core {
     }
 
     /// A `Composite` event: any event whose policy suspends something starts a new stop, except
-    /// one raised while an adapter invoke runs in the current stop: the JVM runs threads for the
-    /// invoke and suspends them again once it returns, so that stop goes on.
+    /// while a stop is current for one raised during an adapter invoke (the JVM runs threads for
+    /// the invoke and suspends them again once it returns) or a class prepare (fwcd resumes
+    /// those with `VirtualMachine.Resume` and shows no stop for them): that stop goes on.
     pub(super) fn event(&mut self, body: &[u8]) {
         match self.sizes {
             Some(sizes) => {
                 if let Some(stop) = stop_of(body, &sizes).filter(|stop| stop.suspend_policy != 0) {
+                    if self.stopped && event_kind(body) == Some(EVENT_CLASS_PREPARE) {
+                        self.count_class_prepare(stop.suspend_policy, stop.thread);
+                        return;
+                    }
                     self.count_event(stop.suspend_policy, stop.thread);
                     if !(self.stopped && self.invoking()) {
                         self.begin_stop(stop.thread, None);
@@ -271,6 +276,19 @@ impl Core {
             self.suspends.suspend_all();
         }
         true
+    }
+
+    /// A class prepare during a stop, which goes on: unlike [`Self::count_event`], one from a
+    /// thread the VM hides still counts when it suspends every thread, since only a VM-wide
+    /// resume can end it.
+    fn count_class_prepare(&mut self, policy: u8, thread: Option<u64>) {
+        match thread {
+            Some(_) => {
+                self.count_event(policy, thread);
+            }
+            None if policy != SUSPEND_EVENT_THREAD => self.suspends.suspend_all(),
+            None => {}
+        }
     }
 
     /// The adapter's `VirtualMachine.Suspend` (1/8) or `ThreadReference.Suspend` (11/2) with

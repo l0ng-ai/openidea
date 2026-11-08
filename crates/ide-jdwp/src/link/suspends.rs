@@ -38,17 +38,13 @@ impl Suspends {
         self.threads.retain(|_, n| *n != 0);
     }
 
-    /// `VirtualMachine.Resume`: every thread's count goes down by one.
+    /// `VirtualMachine.Resume`: every thread's count goes down by one, so a thread's own
+    /// suspensions above the VM-wide ones stay.
     pub(super) fn resume_all(&mut self) {
-        if self.all > 1 {
+        if self.all > 0 {
             self.all -= 1;
             self.floor();
         } else {
-            // JDWP leaves a thread's own suspensions above the VM-wide one in place; the link
-            // ends them with the last VM-wide one too, so a stop never outlasts the adapter's
-            // last VM resume. The link may then think a thread runs that is still suspended,
-            // never the reverse (pinned by `kotlin_lsp_stop_lasts_until_vm_resume`).
-            self.all = 0;
             self.threads.values_mut().for_each(|n| *n = (*n - 1).max(0));
             self.threads.retain(|_, n| *n != 0);
         }

@@ -109,8 +109,19 @@ pub struct Stop {
     pub thread: Option<u64>,
 }
 
+pub(crate) const EVENT_CLASS_PREPARE: u8 = 8;
 const EVENT_CLASS_UNLOAD: u8 = 9;
 const EVENT_VM_DEATH: u8 = 99;
+
+/// The kind of a `Composite` event's first event; `None` when it holds none or is malformed.
+pub(crate) fn event_kind(event_body: &[u8]) -> Option<u8> {
+    let mut r = Reader::new(event_body);
+    r.u8().ok()?;
+    if r.count().ok()? == 0 {
+        return None;
+    }
+    r.u8().ok()
+}
 
 /// `None` when the packet holds no event or is malformed.
 pub fn stop_of(event_body: &[u8], sizes: &IdSizes) -> Option<Stop> {
