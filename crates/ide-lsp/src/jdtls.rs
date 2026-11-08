@@ -351,6 +351,22 @@ pub fn compile_errors(
     (errors, count)
 }
 
+/// Compile errors that belong to a launch: only `module`'s sources, and not its test
+/// sources unless a test launch. JDTLS reports diagnostics for every imported project.
+fn launch_compile_errors(
+    module: &Path,
+    test: bool,
+    diagnostics: Vec<(PathBuf, lsp_types::Diagnostic)>,
+) -> (Vec<JavaCompileError>, u32) {
+    let diagnostics = diagnostics
+        .into_iter()
+        .filter(|(path, _)| {
+            path.starts_with(module) && (test || !path.to_string_lossy().replace('\\', "/").contains("/src/test/"))
+        })
+        .collect();
+    compile_errors(diagnostics, MAX_LAUNCH_ERRORS)
+}
+
 /// `java.project.getClasspaths` result.
 pub fn parse_classpaths(v: &Value) -> JavaClasspath {
     let strings = |key: &str| -> Vec<String> {
@@ -742,9 +758,16 @@ impl LspManager {
         }
         let (errors, error_count) = match build {
             Some(JavaBuildStatus::WithErrors | JavaBuildStatus::Failed) => {
-                cancellable_wait(cancel, self.java_compile_errors(module)).await?
+                cancellable_wait(cancel, self.java_compile_errors(module, test)).await?
             }
             _ => (Vec::new(), 0),
+        };
+        // jdtls reports errors for every imported project. A module launch must not be
+        // blocked by an unrelated module's (or its test sources') compile error.
+        let build = if build == Some(JavaBuildStatus::WithErrors) && error_count == 0 {
+            Some(JavaBuildStatus::Succeeded)
+        } else {
+            build
         };
         let (cp, java_home) = {
             let (server, _) = self.jdtls(module, cancel).await?;
@@ -779,10 +802,11 @@ impl LspManager {
         })
     }
 
-    /// Compile errors jdtls reports for its workspace (all modules it imported).
-    async fn java_compile_errors(&self, module: &Path) -> (Vec<JavaCompileError>, u32) {
+    /// Compile errors jdtls reports for `module`'s sources. Test sources are excluded
+    /// unless the launch is for a test, so a broken test class does not stop an application Run.
+    async fn java_compile_errors(&self, module: &Path, test: bool) -> (Vec<JavaCompileError>, u32) {
         let Ok((server, _)) = self.jdtls(module, &CancellationToken::new()).await else { return (Vec::new(), 0) };
-        let collect = || compile_errors(server.diagnostics_snapshot(), MAX_LAUNCH_ERRORS);
+        let collect = || launch_compile_errors(module, test, server.diagnostics_snapshot());
         let found = collect();
         if found.1 > 0 {
             return found;
@@ -1056,6 +1080,27 @@ mod tests {
         let (_, count) =
             compile_errors(vec![(path, diagnostic(lsp_types::DiagnosticSeverity::ERROR, restriction))], 10);
         assert_eq!(count, 1);
+    }
+
+    #[test]
+    fn launch_errors_exclude_other_modules_and_test_sources_for_application_runs() {
+        let module = Path::new("/p/web");
+        let diagnostic =
+            |severity| lsp_types::Diagnostic { severity: Some(severity), message: "boom".into(), ..Default::default() };
+        let errors = vec![
+            (PathBuf::from("/p/web/src/main/java/a/Main.java"), diagnostic(lsp_types::DiagnosticSeverity::ERROR)),
+            (PathBuf::from("/p/web/src/test/java/a/MainTest.java"), diagnostic(lsp_types::DiagnosticSeverity::ERROR)),
+            (
+                PathBuf::from("/p/service/src/main/java/a/Service.java"),
+                diagnostic(lsp_types::DiagnosticSeverity::ERROR),
+            ),
+        ];
+        let (main, count) = launch_compile_errors(module, false, errors.clone());
+        assert_eq!(count, 1);
+        assert!(main[0].path.0.to_string_lossy().contains("web/src/main"));
+        let (all, count) = launch_compile_errors(module, true, errors);
+        assert_eq!(count, 2);
+        assert_eq!(all.len(), 2);
     }
 
     #[test]
