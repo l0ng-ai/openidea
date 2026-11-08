@@ -110,6 +110,15 @@ interface SessionRuntime {
   lineListeners: Array<(text: string) => void>;
   /** Called once the process exited (run executors: collect a coverage report…). */
   onExit?: (exitCode: number | null, stopped: boolean) => void;
+  /** Run executors: acts before the stop signal (see `ExecutorLaunch.beforeStop`). */
+  beforeStop?: (runId: RunId) => Promise<void>;
+  /** A first Stop is waiting for `beforeStop`. */
+  hookPending?: boolean;
+  /**
+   * `runStop` was sent. Every later one is the backend's "kill" (a second `runStop` on a stopping
+   * process becomes SIGKILL, which writes no profile), so the first Stop's continuation checks it.
+   */
+  stopSent?: boolean;
   /** User input typed into the console, not yet sent (IDEA: Enter sends the line). */
   input: string;
   /** Output of a run that emulates a terminal (instead of `console`). */
@@ -674,6 +683,8 @@ export async function startRun(
     prepared?: boolean;
     /** Configurations whose launch led to this one (before launch tasks, compounds): breaks cycles. */
     chain?: readonly string[];
+    /** Runs before the stop signal when the user stops this run (run executors). */
+    beforeStop?: (runId: RunId) => Promise<void>;
   } = {},
 ): Promise<RunSession | null> {
   if (config.kind === "compound") {
@@ -788,6 +799,7 @@ export async function startRun(
       patchSession(sessionId, { httpPort: port });
   });
   rt.onExit = options.onExit;
+  rt.beforeStop = options.beforeStop;
   try {
     if (config.focusToolWindow) toolWindowService().show("run", true);
     else if (options.show ?? config.openToolWindow ?? workflowSettings().run.showOnStart)
@@ -1058,6 +1070,26 @@ export function onRunExited(runId: RunId, code: number | null) {
   finishSession(session.id, code);
 }
 
+/** The longest a Stop waits for an executor's `beforeStop` before it sends the stop signal. */
+export const BEFORE_STOP_TIMEOUT_MS = 12_000;
+
+/** Runs the hook, never throwing; returns once it settled or `BEFORE_STOP_TIMEOUT_MS` passed. */
+async function runBeforeStop(hook: (runId: RunId) => Promise<void>, runId: RunId): Promise<void> {
+  let timer: ReturnType<typeof setTimeout> | undefined;
+  const hooked = (async () => {
+    try {
+      await hook(runId);
+    } catch {
+      /* the stop goes ahead without it */
+    }
+  })();
+  try {
+    await Promise.race([hooked, new Promise<void>((resolve) => (timer = setTimeout(resolve, BEFORE_STOP_TIMEOUT_MS)))]);
+  } finally {
+    clearTimeout(timer);
+  }
+}
+
 export async function stopSession(sessionId: string): Promise<void> {
   const session = getSession(sessionId);
   if (!session) return;
@@ -1072,10 +1104,29 @@ export async function stopSession(sessionId: string): Promise<void> {
   // Stopping keeps the process live (IDEA: the Stop button stays until the process is gone);
   // a second Stop meanwhile skips the grace period and kills it.
   patchSession(sessionId, { stopped: true, status: "stopping" });
+  const runId = session.runId;
+  const rt = runtimes.get(sessionId);
+  if (rt) {
+    if (rt.beforeStop && !rt.hookPending && !rt.stopSent) {
+      rt.hookPending = true;
+      try {
+        await runBeforeStop(rt.beforeStop, runId);
+      } finally {
+        rt.hookPending = false;
+      }
+      // The program may have exited, or the tab been rerun, during the wait; a second Stop may
+      // have sent the signal already, and sending again would make the backend kill it.
+      const current = getSession(sessionId);
+      if (runtimes.get(sessionId) !== rt || rt.stopSent || !current || !isLive(current) || current.runId !== runId)
+        return;
+    }
+    rt.stopSent = true;
+  }
   try {
-    await call(commands.runStop(session.runId));
+    await call(commands.runStop(runId));
   } catch (e) {
-    patchSession(sessionId, { status: "running" });
+    const current = getSession(sessionId);
+    if (current && isLive(current) && current.runId === runId) patchSession(sessionId, { status: "running" });
     notifications().notify({
       group: "run",
       level: "error",
