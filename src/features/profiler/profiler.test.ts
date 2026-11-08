@@ -65,6 +65,16 @@ describe("profiler model", () => {
     expect(allocationProfilerSupports(cfg("python", ["main.py"]))).toBe(false);
   });
 
+  it("formats byte weights with the Memory view's rounding", () => {
+    expect(formatWeight(0, "bytes")).toBe("0 B");
+    expect(formatWeight(1, "bytes")).toBe("1 B");
+    expect(formatWeight(1024, "bytes")).toBe("1.0 KB");
+    expect(formatWeight(536_870_912, "bytes")).toBe("512.0 MB");
+    expect(formatWeight(1_288_490_189, "bytes")).toBe("1.2 GB");
+    // The rounded value decides the unit: 1048575 B is "1.0 MB", never "1024.0 KB".
+    expect(formatWeight(1_048_575, "bytes")).toBe("1.0 MB");
+  });
+
   it("lays out the flame graph and zooms into a node", () => {
     const { rects, depth } = flameLayout(profile);
     expect(depth).toBe(3);
@@ -89,6 +99,7 @@ describe("profiler model", () => {
     expect(formatWeight(1, "samples")).toBe("1 sample");
     expect(formatWeight(12.34, "ms")).toBe("12.3 ms");
     expect(formatWeight(12_340, "ms")).toBe("12.3 s");
+    expect(formatWeight(3, "samples")).toBe("3 samples");
     expect(share(6, 10)).toBe("60%");
     expect(share(0.5, 10)).toBe("5.0%");
     expect(frameLocation(profile, 1)).toBe("main.py:5");

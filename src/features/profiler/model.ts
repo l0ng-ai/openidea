@@ -37,8 +37,23 @@ function isLinux(): boolean {
   );
 }
 
-/** `12.3 ms`, `1.2 s`, `340 samples`. */
+const BYTE_UNITS = ["B", "KB", "MB", "GB", "TB"];
+
+/** `0 B`, `1.0 KB`, `512.0 MB`: the Memory view's sizes (it lives in another feature, which this one must not import). */
+function formatBytes(bytes: number): string {
+  let value = bytes;
+  let unit = 0;
+  // Compare the rounded value so 1048575 B becomes "1.0 MB", not "1024.0 KB".
+  while (Math.abs(Number(value.toFixed(1))) >= 1024 && unit < BYTE_UNITS.length - 1) {
+    value /= 1024;
+    unit++;
+  }
+  return unit === 0 ? `${Math.round(value)} B` : `${value.toFixed(1)} ${BYTE_UNITS[unit]}`;
+}
+
+/** `12.3 ms`, `1.2 s`, `340 samples`, `1.2 GB`. */
 export function formatWeight(value: number, unit: string): string {
+  if (unit === "bytes") return formatBytes(value);
   if (unit === "ms") {
     if (value >= 1000) return `${(value / 1000).toFixed(value >= 10_000 ? 1 : 2)} s`;
     return `${value >= 100 ? Math.round(value) : value.toFixed(1)} ms`;
