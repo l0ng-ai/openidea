@@ -77,6 +77,7 @@ const TEXT_KEYS: Record<string, readonly string[]> = {
   commands: ["title", "category"],
   menus: ["submenu"],
   views: ["title"],
+  markerIcons: ["tooltip"],
   customEditors: ["title"],
   statusBar: ["text", "tooltip"],
   settings: ["title"],

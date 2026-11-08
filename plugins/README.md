@@ -634,6 +634,23 @@ several cross-file targets, publish document-index mappings; the existing
 chooser lists every matching definition. Command clicks are deferred; use a
 code action on the same line.
 
+Document-indexer markers (`Edges.markers`) use a declared icon when their key
+starts with one of its `markers` prefixes; the longest matching prefix wins,
+then declaration order. An optional `tooltip` (1–256 bytes, translated by the
+plugin's catalog) is shown above the marker's targets and needs `markers`:
+
+```toml
+[[contributes.markerIcons]]
+id = "usages"
+icon = "icons/usages.svg"
+markers = ["usages#"]          # up to 16 key prefixes of 1–256 bytes
+tooltip = "Usages of this class"
+```
+
+Keys without a matching prefix keep the navigation glyph. Older IDEs that do
+not recognize `markers` or `tooltip` reject the manifest at install; update the
+IDE to use them.
+
 Then `register_plugin!(MyPlugin, providers)` and implement
 `openidea_plugin::providers::Providers` for it: `completion`,
 `inline_completion`, `code_actions`, `definition`, `line_markers`. Each gets
