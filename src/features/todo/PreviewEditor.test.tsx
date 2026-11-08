@@ -16,6 +16,7 @@ function stubAttacher(docs: Map<string, { text: string; dirty?: boolean; readOnl
       path,
       doc: 1,
       text: () => docs.get(path)!.text,
+      lineEnding: () => "lf",
       dirty: () => !!docs.get(path)!.dirty,
       uiMode: () => null,
       readOnly: !!docs.get(path)!.readOnly,

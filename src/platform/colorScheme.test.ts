@@ -73,6 +73,15 @@ describe("color schemes", () => {
     });
   });
 
+  it("resolves package references from the editor foreground and emits their overrides", () => {
+    for (const theme of ["light", "dark", "dark-hc"] as const) {
+      expect(resolvedAttribute(theme, "packageReference").foreground).toBe(schemeTokens(theme).get("--fg-editor"));
+    }
+    const css = schemeCss("dark", { dark: { packageReference: { foreground: "#446688", italic: true } } });
+    expect(css).toContain("--syn-namespace: #446688 !important");
+    expect(css).toContain("--syn-namespace-italic: italic !important");
+  });
+
   it("emits scheme and override declarations", () => {
     const root = document.documentElement;
     root.dataset.theme = "light";

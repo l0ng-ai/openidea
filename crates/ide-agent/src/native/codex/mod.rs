@@ -8,6 +8,7 @@ mod translate;
 mod tests;
 
 use super::Shim;
+use crate::acp::AUTH_REQUIRED;
 use crate::provider::ProviderSpec;
 use ide_jsonrpc::{Framing, Handler, Peer, RpcError, codes};
 use parking_lot::Mutex;
@@ -27,8 +28,6 @@ const OUTPUT_EVERY: Duration = Duration::from_millis(200);
 const EARLY_CANCEL: Duration = Duration::from_secs(1);
 /// How long the client's connection outlives codex.
 const EXIT_GRACE: Duration = Duration::from_millis(100);
-/// ACP's error code for a request that needs the user to sign in.
-const AUTH_REQUIRED: i64 = -32000;
 
 pub(crate) fn connect(
     spec: &ProviderSpec,
@@ -204,7 +203,7 @@ fn from_codex(e: RpcError) -> ResponseError {
                 code,
                 codes::PARSE_ERROR | codes::INVALID_REQUEST | codes::METHOD_NOT_FOUND | codes::INVALID_PARAMS
             );
-            let code = if !protocol && message.to_lowercase().contains("auth") { AUTH_REQUIRED } else { code };
+            let code = if !protocol && crate::acp::auth_required(code, &message) { AUTH_REQUIRED } else { code };
             ResponseError { code, message, data }
         }
         RpcError::Closed => error(codes::INTERNAL_ERROR, "Codex exited"),

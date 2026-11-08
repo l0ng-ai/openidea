@@ -14,6 +14,7 @@ vi.mock("@xterm/xterm", () => ({
     cols = 80;
     rows = 24;
     options = {};
+    textarea?: HTMLTextAreaElement;
     hasSelection() {
       return !!terminal.selection;
     }
@@ -24,7 +25,10 @@ vi.mock("@xterm/xterm", () => ({
       terminal.handler = handler;
     }
     loadAddon() {}
-    open() {}
+    open(host: HTMLElement) {
+      this.textarea = document.createElement("textarea");
+      host.append(this.textarea);
+    }
     dispose() {}
     onData() {
       return { dispose() {} };
@@ -100,4 +104,20 @@ it("copies embedded Run terminal selections before xterm can send Ctrl+C", () =>
     disposeAction();
     term.dispose();
   }
+});
+
+it("delivers input-method commits to the owner on macOS as the terminal sessions do", () => {
+  usePlatform.setState({ os: "macos" });
+  const host = document.createElement("div");
+  document.body.append(host);
+  const onData = vi.fn();
+  const term = createEmbeddedTerminal(host, { onData, onResize: vi.fn() });
+  const textarea = host.querySelector("textarea")!;
+  const keydown = new KeyboardEvent("keydown", { key: "1", bubbles: true });
+  Object.defineProperty(keydown, "keyCode", { value: 229 });
+  textarea.dispatchEvent(keydown);
+  const input = new InputEvent("input", { inputType: "insertText", data: "1", bubbles: true });
+  textarea.dispatchEvent(input);
+  expect(onData).toHaveBeenCalledWith("1");
+  term.dispose();
 });
