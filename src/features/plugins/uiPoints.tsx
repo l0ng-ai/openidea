@@ -368,6 +368,7 @@ interface ViewDecl {
   icon?: string | null;
   location: ToolWindowAnchor | "services";
   detail?: boolean;
+  header?: "default" | "none" | null;
   web?: string;
   group?: string | null;
   when?: string | null;
@@ -476,7 +477,12 @@ function projectView(pluginId: string, decl: ViewDecl, index: number): () => voi
       initialIcon,
       () =>
         decl.web ? (
-          <WebView pluginId={pluginId} view={decl.id} label={decl.title} />
+          <WebView
+            pluginId={pluginId}
+            view={decl.id}
+            label={decl.title}
+            header={decl.header === "none" ? "none" : "default"}
+          />
         ) : (
           <PluginView pluginId={pluginId} view={decl.id} detail={decl.detail} label={decl.title} itemMenu={itemMenu} />
         ),
