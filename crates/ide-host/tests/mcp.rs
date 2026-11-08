@@ -230,7 +230,9 @@ async fn mutations_preserve_unsaved_text_and_reject_metadata_and_escapes() {
     p.documents.redo_workspace_edit(edit_id).unwrap();
     assert_eq!(p.documents.text_snapshot(doc.id).unwrap().text, "agent text\nneedle needle\n");
     h.call("create_new_file", json!({"pathInProject":"new/deep.txt","text":"hello\r\n"})).await;
-    assert_eq!(std::fs::read_to_string(h.root.join("new/deep.txt")).unwrap(), "hello\n");
+    // A new file gets the platform's default line separator.
+    let expected = if cfg!(windows) { "hello\r\n" } else { "hello\n" };
+    assert_eq!(std::fs::read_to_string(h.root.join("new/deep.txt")).unwrap(), expected);
     h.call("create_new_file", json!({"pathInProject":"src/a.txt","text":"buffer only","overwrite":true})).await;
     assert_eq!(p.documents.text_snapshot(doc.id).unwrap().text, "buffer only");
     assert_eq!(std::fs::read_to_string(&path).unwrap(), "old text\nneedle needle\n");
@@ -334,7 +336,7 @@ async fn execute_reports_output_exit_code_and_requires_confirmation() {
         id: "test".into(),
         name: "MCP test".into(),
         kind: "shell".into(),
-        command: "echo captured-output; exit 7".into(),
+        command: if cfg!(windows) { "echo captured-output& exit 7" } else { "echo captured-output; exit 7" }.into(),
         args: vec![],
         cwd: None,
         env: Default::default(),
