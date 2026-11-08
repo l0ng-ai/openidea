@@ -3697,7 +3697,7 @@ mod workbench_tests {
     #[test]
     fn selections_validate_window_and_utf16_without_requiring_a_grant() {
         let dir = tempfile::tempdir().unwrap();
-        let root = dir.path().canonicalize().unwrap();
+        let root = dunce::canonicalize(dir.path()).unwrap();
         let path = root.join("a.txt");
         let api = api(&root, true, Some("😀abc"));
         let range = |col| ide_core::Range::point(ide_core::Pos::new(0, col));
@@ -3708,7 +3708,7 @@ mod workbench_tests {
     #[test]
     fn decoration_sets_validate_paths_limits_and_cleanup() {
         let dir = tempfile::tempdir().unwrap();
-        let root = dir.path().canonicalize().unwrap();
+        let root = dunce::canonicalize(dir.path()).unwrap();
         let path = root.join("a.txt");
         std::fs::write(&path, "text").unwrap();
         let api = api(&root, true, None);
@@ -3746,7 +3746,7 @@ mod workbench_tests {
     #[test]
     fn vcs_reads_reuse_history_and_dirty_blame_and_require_trust() {
         let dir = tempfile::tempdir().unwrap();
-        let root = dir.path().canonicalize().unwrap();
+        let root = dunce::canonicalize(dir.path()).unwrap();
         git(&root, &["init", "-q"]);
         git(&root, &["config", "user.name", "Test"]);
         git(&root, &["config", "user.email", "test@example.com"]);
@@ -3786,7 +3786,7 @@ mod workbench_tests {
     #[test]
     fn vcs_reads_never_run_repository_configured_helpers() {
         let dir = tempfile::tempdir().unwrap();
-        let root = dir.path().canonicalize().unwrap();
+        let root = dunce::canonicalize(dir.path()).unwrap();
         git(&root, &["init", "-q"]);
         git(&root, &["config", "user.name", "Test"]);
         git(&root, &["config", "user.email", "test@example.com"]);

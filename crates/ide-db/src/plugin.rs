@@ -23,7 +23,7 @@ fn update(root: &Path, remove: impl Fn(&DataSource) -> bool, add: Option<&DataSo
     let path = project_dir::path(root, "data-sources.toml");
     if let Some(ancestor) = path.ancestors().find(|p| p.exists())
         && root.exists()
-        && !std::fs::canonicalize(ancestor)?.starts_with(std::fs::canonicalize(root)?)
+        && !dunce::canonicalize(ancestor)?.starts_with(dunce::canonicalize(root)?)
     {
         return Err(IdeError::invalid("data sources file is outside the project"));
     }

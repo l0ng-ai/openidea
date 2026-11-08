@@ -34,8 +34,8 @@ pub fn validate(target: &PluginRunTarget) -> IdeResult<()> {
 pub fn prepare(root: &Path, target: &PluginRunTarget, program: &Path, config: &RunConfig) -> IdeResult<RunConfig> {
     validate(target)?;
     let cwd = wrap::run_dir(root, config);
-    let root = root.canonicalize().unwrap_or_else(|_| root.to_path_buf());
-    let cwd = cwd.canonicalize().unwrap_or(cwd);
+    let root = dunce::canonicalize(root).unwrap_or_else(|_| root.to_path_buf());
+    let cwd = dunce::canonicalize(&cwd).unwrap_or(cwd);
     let relative =
         cwd.strip_prefix(&root).ok().filter(|p| !p.components().any(|c| matches!(c, std::path::Component::ParentDir)));
     let mapped_cwd = target.container_root.as_deref().zip(relative).map(|(container, rel)| {
@@ -97,24 +97,89 @@ mod tests {
             container_root: Some("/var/www/html".into()),
             commands: vec![("composer".into(), vec!["composer".into()])],
         };
-        let root = Path::new("/project");
-        let program = Path::new("/approved/ddev");
+        let tmp = tempfile::tempdir().unwrap();
+        let base = dunce::canonicalize(tmp.path()).unwrap();
+        let root = base.join("project");
+        std::fs::create_dir_all(root.join("src")).unwrap();
+        let program = base.join("approved/ddev");
+        let php = base.join("tools/php");
         let run =
-            prepare(root, &target, program, &config("/usr/bin/php", &["x.php", "$(touch bad); a b"], "src")).unwrap();
-        assert_eq!(run.command, "/approved/ddev");
+            prepare(&root, &target, &program, &config(php.to_str().unwrap(), &["x.php", "$(touch bad); a b"], "src"))
+                .unwrap();
+        assert_eq!(Path::new(&run.command), program);
         assert_eq!(run.args, ["exec", "--dir", "/var/www/html/src", "php", "x.php", "$(touch bad); a b"]);
-        assert_eq!(run.cwd.unwrap().to_string_lossy(), "/project/src");
-        let run = prepare(root, &target, program, &config(r"C:\tools\composer.exe", &["install"], "/outside")).unwrap();
+        assert_eq!(run.cwd.unwrap(), root.join("src"));
+        let outside = base.join("outside");
+        let run = prepare(
+            &root,
+            &target,
+            &program,
+            &config(r"C:\tools\composer.exe", &["install"], outside.to_str().unwrap()),
+        )
+        .unwrap();
         assert_eq!(run.args, ["composer", "install"]);
-        let in_project = prepare(root, &target, program, &config("/tools/composer", &["install"], "src")).unwrap();
+        let in_project = prepare(&root, &target, &program, &config("/tools/composer", &["install"], "src")).unwrap();
         assert_eq!(in_project.args, ["composer", "--dir", "/var/www/html/src", "install"]);
-        let run = prepare(root, &target, program, &config("composer", &["install"], "../outside")).unwrap();
+        let run = prepare(&root, &target, &program, &config("composer", &["install"], "../outside")).unwrap();
         assert_eq!(run.args, ["composer", "install"]);
         let mut target = target;
         target.container_root = None;
-        let run = prepare(root, &target, program, &config("php", &["x.php"], "src")).unwrap();
+        let run = prepare(&root, &target, &program, &config("php", &["x.php"], "src")).unwrap();
         assert_eq!(run.args, ["exec", "php", "x.php"]);
-        let run = prepare(root, &target, program, &config("echo a; touch bad", &[], ".")).unwrap();
+        let run = prepare(&root, &target, &program, &config("echo a; touch bad", &[], ".")).unwrap();
         assert_eq!(run.args, ["exec", "echo a; touch bad"]);
+    }
+
+    #[test]
+    fn command_overrides_match_both_path_separators_on_every_platform() {
+        let tmp = tempfile::tempdir().unwrap();
+        let target = PluginRunTarget {
+            id: "ddev".into(),
+            name: "DDEV".into(),
+            program: "ddev".into(),
+            args: vec!["exec".into()],
+            workdir_args: Vec::new(),
+            container_root: Some("/container".into()),
+            commands: vec![("php".into(), vec!["php".into()])],
+        };
+        for command in ["php", "/usr/bin/php", r"C:\tools\php.exe", r"\\?\C:\tools\php.exe", "C:/tools/php.cmd"] {
+            for container_root in [None, target.container_root.clone()] {
+                let target = PluginRunTarget { container_root, ..target.clone() };
+                let run = prepare(tmp.path(), &target, Path::new("ddev"), &config(command, &["x.php"], ".")).unwrap();
+                assert_eq!(run.args, ["php", "x.php"], "{command}");
+            }
+        }
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn plain_and_verbatim_roots_map_project_commands_and_cwds() {
+        let tmp = tempfile::tempdir().unwrap();
+        std::fs::create_dir(tmp.path().join("src")).unwrap();
+        let root = dunce::canonicalize(tmp.path()).unwrap();
+        let verbatim = std::fs::canonicalize(tmp.path()).unwrap();
+        let target = PluginRunTarget {
+            id: "ddev".into(),
+            name: "DDEV".into(),
+            program: "ddev".into(),
+            args: vec!["exec".into()],
+            workdir_args: vec!["--dir={cwd}".into()],
+            container_root: Some("/container".into()),
+            commands: Vec::new(),
+        };
+        let command = root.join("tool.exe");
+        for project in [&root, &verbatim] {
+            for cwd in [root.join("src"), verbatim.join("src")] {
+                let run = prepare(
+                    project,
+                    &target,
+                    Path::new("ddev"),
+                    &config(command.to_str().unwrap(), &["arg"], cwd.to_str().unwrap()),
+                )
+                .unwrap();
+                assert_eq!(run.args, ["exec", "--dir=/container/src", "/container/tool.exe", "arg"]);
+                assert_eq!(run.cwd.unwrap(), root.join("src"));
+            }
+        }
     }
 }

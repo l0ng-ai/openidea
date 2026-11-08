@@ -76,7 +76,7 @@ fn every_new_kind_requires_api4_at_install() {
 #[tokio::test(flavor = "multi_thread")]
 async fn editor_ops_merge_the_fixture_format_selection_and_execute_owned_commands() {
     let tmp = tempfile::tempdir().unwrap();
-    let root = tmp.path().canonicalize().unwrap().join("project");
+    let root = dunce::canonicalize(tmp.path()).unwrap().join("project");
     std::fs::create_dir(&root).unwrap();
     let host = Arc::new(Host::new(HostConfig {
         config_dir: tmp.path().join("config"),

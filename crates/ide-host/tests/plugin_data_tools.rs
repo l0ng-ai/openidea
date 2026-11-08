@@ -29,7 +29,7 @@ impl Harness {
     fn new() -> Self {
         ide_ssh::secrets::testing::use_memory_store();
         let tmp = tempfile::tempdir().unwrap();
-        let root = tmp.path().canonicalize().unwrap().join("project");
+        let root = dunce::canonicalize(tmp.path()).unwrap().join("project");
         std::fs::create_dir(&root).unwrap();
         let events = Arc::new(Mutex::new(vec![]));
         let out = events.clone();
