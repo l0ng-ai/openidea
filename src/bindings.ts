@@ -3082,7 +3082,12 @@ export type DebugEvent =
  */
 { kind: "hotCodeReplace"; changeType: string; message: string } | 
 /**  The session's capabilities changed after it started: fetch them again. */
-{ kind: "capabilities" } | { kind: "jvmBackend"; state: JvmBackendState };
+{ kind: "capabilities" } | 
+/**
+ *  The adapter's `invalidated` event: what it shows for `areas` (`all`, `stacks`, `threads`,
+ *  `variables`; empty means all) is stale and has to be fetched again.
+ */
+{ kind: "invalidated"; areas: string[] } | { kind: "jvmBackend"; state: JvmBackendState };
 
 /**  A debug adapter session. */
 export type DebugSessionId = number;

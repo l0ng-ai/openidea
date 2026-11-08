@@ -247,6 +247,11 @@ pub enum DebugEvent {
     },
     /// The session's capabilities changed after it started: fetch them again.
     Capabilities,
+    /// The adapter's `invalidated` event: what it shows for `areas` (`all`, `stacks`, `threads`,
+    /// `variables`; empty means all) is stale and has to be fetched again.
+    Invalidated {
+        areas: Vec<String>,
+    },
     JvmBackend {
         state: JvmBackendState,
     },
@@ -301,5 +306,13 @@ mod tests {
             json!({"kind": "jvmBackend", "state": {"kind": "degraded", "detail": "x"}})
         );
         assert_eq!(serde_json::to_value(DebugEvent::Capabilities).unwrap(), json!({"kind": "capabilities"}));
+    }
+
+    #[test]
+    fn invalidated_event_json_shape() {
+        assert_eq!(
+            serde_json::to_value(DebugEvent::Invalidated { areas: vec!["variables".into()] }).unwrap(),
+            json!({"kind": "invalidated", "areas": ["variables"]})
+        );
     }
 }

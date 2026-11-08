@@ -1246,8 +1246,11 @@ impl DebugManager {
     }
 
     pub async fn threads(&self, s: DebugSessionId) -> IdeResult<Vec<ThreadInfo>> {
-        let body = self.session(s)?.conn.request_timeout("threads", Value::Null, REQUEST_TIMEOUT).await?;
-        Ok(body
+        let session = self.session(s)?;
+        // Before sending: a stop that overtakes the reply must not take the reply's ids as its own.
+        let stop = session.suspended.ticket();
+        let body = session.conn.request_timeout("threads", Value::Null, REQUEST_TIMEOUT).await?;
+        let threads: Vec<ThreadInfo> = body
             .get("threads")
             .and_then(Value::as_array)
             .map(|t| {
@@ -1258,11 +1261,16 @@ impl DebugManager {
                     })
                     .collect()
             })
-            .unwrap_or_default())
+            .unwrap_or_default();
+        if let Some(quirks) = session.kotlin_lsp_quirks() {
+            quirks.saw_threads(stop, threads.iter().map(|t| t.id));
+        }
+        Ok(threads)
     }
 
     pub async fn stack_trace(&self, s: DebugSessionId, thread_id: i64) -> IdeResult<Vec<StackFrame>> {
         let session = self.session(s)?;
+        session.check_thread(thread_id)?;
         let body = session
             .conn
             .request_timeout(
@@ -1271,10 +1279,14 @@ impl DebugManager {
                 REQUEST_TIMEOUT,
             )
             .await?;
+        let kotlin_lsp = session.kotlin_lsp_quirks().is_some();
         let frame = |f: &Value| {
             let mut frame = frame_from(f);
             if let Some(client) = frame.path.as_deref().and_then(|p| session.client_path(&p.to_string_lossy())) {
                 frame.path = Some(client.into());
+            }
+            if kotlin_lsp {
+                frame.name = kotlin_lsp::frame_name(&frame.name).to_owned();
             }
             frame
         };
@@ -1387,6 +1399,10 @@ impl DebugManager {
 
     pub async fn resume(&self, s: DebugSessionId, thread_id: i64) -> IdeResult<()> {
         let session = self.session(s)?;
+        session.check_thread(thread_id)?;
+        if let Some(quirks) = session.kotlin_lsp_quirks() {
+            quirks.resume_sent();
+        }
         let ticket = session.suspended.ticket();
         let body = session.conn.request_timeout("continue", json!({ "threadId": thread_id }), REQUEST_TIMEOUT).await?;
         // DAP: a response without the flag continued every thread.
@@ -1431,6 +1447,10 @@ impl DebugManager {
             StepKind::Out => "stepOut",
         };
         let session = self.session(s)?;
+        session.check_thread(thread_id)?;
+        if let Some(quirks) = session.kotlin_lsp_quirks() {
+            quirks.step_sent();
+        }
         let ticket = session.suspended.ticket();
         session.conn.request_timeout(command, json!({ "threadId": thread_id }), REQUEST_TIMEOUT).await?;
         // A step runs its thread; other threads stopped by their own events stay stopped.
@@ -1451,6 +1471,8 @@ impl DebugManager {
         force: bool,
     ) -> IdeResult<()> {
         let session = self.session(s)?;
+        // Before touching breakpoints: a refused `continue` would leave them replaced.
+        session.check_thread(thread_id)?;
         if force {
             self.suspend_breakpoints(&session, Some(&path)).await?;
         }
@@ -1525,6 +1547,7 @@ impl DebugManager {
     /// Force Step Over: `next` with every breakpoint suspended until the step ends.
     pub async fn force_step_over(&self, s: DebugSessionId, thread_id: i64) -> IdeResult<()> {
         let session = self.session(s)?;
+        session.check_thread(thread_id)?;
         self.suspend_breakpoints(&session, None).await?;
         self.step(s, thread_id, StepKind::Over).await
     }
@@ -1532,6 +1555,10 @@ impl DebugManager {
     /// Step into a specific call of the current line (Smart Step Into).
     pub async fn step_in_target(&self, s: DebugSessionId, thread_id: i64, target_id: i64) -> IdeResult<()> {
         let session = self.session(s)?;
+        session.check_thread(thread_id)?;
+        if let Some(quirks) = session.kotlin_lsp_quirks() {
+            quirks.step_sent();
+        }
         let ticket = session.suspended.ticket();
         session
             .conn

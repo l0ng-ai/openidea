@@ -43,6 +43,16 @@ struct Script {
     hang_up_after_stop: bool,
     /// Answer `continue` with this body and keep the program running, instead of letting it exit.
     continue_reply: Option<Value>,
+    /// Answer `continue` and stop at a breakpoint again, instead of letting the program exit.
+    stop_after_continue: bool,
+    /// The `reason` of the stop a `next` ends with (`step` when unset; kotlin-lsp says `breakpoint`).
+    step_reason: Option<&'static str>,
+    /// Send `invalidated { areas: ["variables"] }` right after the first `stopped` event.
+    invalidated_after_stop: bool,
+    /// On `threads`: stop again on thread 2 first, then answer with thread 1 of the earlier stop.
+    stop_during_threads: bool,
+    /// Name of the first stack frame (`main` when unset).
+    frame_name: Option<&'static str>,
 }
 
 impl Default for Script {
@@ -61,6 +71,11 @@ impl Default for Script {
             hang_up_on_pause: false,
             hang_up_after_stop: false,
             continue_reply: None,
+            stop_after_continue: false,
+            step_reason: None,
+            invalidated_after_stop: false,
+            stop_during_threads: false,
+            frame_name: None,
         }
     }
 }
@@ -191,7 +206,8 @@ async fn fake_adapter<S: AsyncRead + AsyncWrite + Unpin + Send + 'static>(stream
             }
             "next" => {
                 ok!(msg, Value::Null);
-                send!(json!({"type": "event", "event": "stopped", "body": {"reason": "step", "threadId": 1}}));
+                let reason = script.step_reason.unwrap_or("step");
+                send!(json!({"type": "event", "event": "stopped", "body": {"reason": reason, "threadId": 1}}));
             }
             "setVariable" => {
                 ok!(msg, json!({"value": format!("{}!", msg["arguments"]["value"].as_str().unwrap()), "type": "int"}))
@@ -216,6 +232,11 @@ async fn fake_adapter<S: AsyncRead + AsyncWrite + Unpin + Send + 'static>(stream
                     json!({"type": "event", "event": "stopped", "body": {"reason": "breakpoint", "threadId": 1, "allThreadsStopped": true}})
                 );
                 stopped = true;
+                if script.invalidated_after_stop {
+                    send!(
+                        json!({"type": "event", "event": "invalidated", "body": {"areas": ["variables"], "threadId": 1}})
+                    );
+                }
                 if script.continued_after_stop {
                     send!(json!({"type": "event", "event": "continued", "body": {"threadId": 1}}));
                 }
@@ -223,11 +244,19 @@ async fn fake_adapter<S: AsyncRead + AsyncWrite + Unpin + Send + 'static>(stream
                     json!({"type": "event", "event": "breakpoint", "body": {"reason": "changed", "breakpoint": {"id": 1, "verified": false, "message": "moved", "line": 9, "source": {"path": script.source_path}}}})
                 );
             }
+            "threads" if script.stop_during_threads => {
+                send!(
+                    json!({"type": "event", "event": "stopped", "body": {"reason": "breakpoint", "threadId": 2, "allThreadsStopped": true}})
+                );
+                // Lets the client handle the stop before it reads the reply.
+                tokio::time::sleep(Duration::from_millis(50)).await;
+                ok!(msg, json!({"threads": [{"id": 1, "name": "\"main\"@1"}]}));
+            }
             "threads" => ok!(msg, json!({"threads": [{"id": 1, "name": "MainThread"}]})),
             "stackTrace" => ok!(
                 msg,
                 json!({"stackFrames": [
-                    {"id": 10, "name": "main", "line": 5, "column": 3, "source": {"path": script.source_path.as_deref().unwrap_or("/p/a.py")}},
+                    {"id": 10, "name": script.frame_name.unwrap_or("main"), "line": 5, "column": 3, "source": {"path": script.source_path.as_deref().unwrap_or("/p/a.py")}},
                     {"id": 11, "name": "lib", "line": 1, "column": 1, "source": {"path": "/usr/lib/x.py", "presentationHint": "deemphasize"}},
                 ]})
             ),
@@ -251,6 +280,12 @@ async fn fake_adapter<S: AsyncRead + AsyncWrite + Unpin + Send + 'static>(stream
                 ]})
             ),
             "continue" if script.continue_reply.is_some() => ok!(msg, script.continue_reply.clone().unwrap()),
+            "continue" if script.stop_after_continue => {
+                ok!(msg, json!({"allThreadsContinued": true}));
+                send!(
+                    json!({"type": "event", "event": "stopped", "body": {"reason": "breakpoint", "threadId": 1, "allThreadsStopped": true}})
+                );
+            }
             "continue" => {
                 ok!(msg, json!({"allThreadsContinued": true}));
                 send!(json!({"type": "event", "event": "exited", "body": {"exitCode": 3}}));
@@ -2103,4 +2138,123 @@ async fn losing_the_kotlin_lsp_connection_ends_the_session() {
     assert!(h.manager.sessions(None).is_empty());
     assert!(session.jdwp_link.lock().is_none());
     assert!(session.jvm_inspector.lock().is_none());
+}
+
+/// The reasons of the first `count` stops, once that many arrived.
+async fn stop_reasons(h: &Harness, count: usize) -> Vec<String> {
+    for _ in 0..200 {
+        let reasons: Vec<String> = h
+            .events
+            .lock()
+            .iter()
+            .filter_map(|e| match e {
+                IdeEvent::Debug { event: DebugEvent::Stopped { reason, .. }, .. } => Some(reason.clone()),
+                _ => None,
+            })
+            .collect();
+        if reasons.len() >= count {
+            return reasons;
+        }
+        tokio::time::sleep(Duration::from_millis(10)).await;
+    }
+    panic!("{count} stops not received; got {:?}", h.events.lock());
+}
+
+#[tokio::test]
+async fn a_step_stop_is_reported_as_a_step() {
+    let project = tempfile::tempdir().unwrap();
+    for (config, reason) in [(kotlin_lsp_attach(project.path()), "step"), (config(), "breakpoint")] {
+        let h = harness(Script { step_reason: Some("breakpoint"), ..Script::default() });
+        let id = h.start(config).await.unwrap();
+        h.wait_event(|e| matches!(e, DebugEvent::Stopped { .. })).await;
+        h.manager.step(id, 1, StepKind::Over).await.unwrap();
+        assert_eq!(stop_reasons(&h, 2).await, ["breakpoint", reason]);
+        h.manager.stop(id).await.unwrap();
+    }
+}
+
+#[tokio::test]
+async fn a_breakpoint_after_continue_stays_a_breakpoint() {
+    let h = harness(Script { step_reason: Some("breakpoint"), stop_after_continue: true, ..Script::default() });
+    let project = tempfile::tempdir().unwrap();
+    let id = h.start(kotlin_lsp_attach(project.path())).await.unwrap();
+    h.wait_event(|e| matches!(e, DebugEvent::Stopped { .. })).await;
+    h.manager.step(id, 1, StepKind::Over).await.unwrap();
+    stop_reasons(&h, 2).await;
+    // The fake ends `stepIn` with no stop: the `continue` after it decides the next one.
+    h.manager.step(id, 1, StepKind::Into).await.unwrap();
+    h.manager.resume(id, 1).await.unwrap();
+    assert_eq!(stop_reasons(&h, 3).await, ["breakpoint", "step", "breakpoint"]);
+    h.manager.stop(id).await.unwrap();
+}
+
+#[tokio::test]
+async fn a_thread_from_an_earlier_stop_is_refused() {
+    let project = tempfile::tempdir().unwrap();
+    for (config, kotlin_lsp) in [(kotlin_lsp_attach(project.path()), true), (config(), false)] {
+        let h = harness(Script::default());
+        let id = h.start(config).await.unwrap();
+        h.wait_event(|e| matches!(e, DebugEvent::Stopped { .. })).await;
+        assert_eq!(h.manager.threads(id).await.unwrap().len(), 1);
+        let started = tokio::time::Instant::now();
+        let stale = h.manager.stack_trace(id, 99).await;
+        let asked =
+            |command: &str| h.log.lock().iter().any(|m| m["command"] == command && m["arguments"]["threadId"] == 99);
+        if kotlin_lsp {
+            assert!(stale.is_err() && started.elapsed() < Duration::from_millis(100), "{stale:?}");
+            assert!(h.manager.step(id, 99, StepKind::Over).await.is_err());
+            assert!(h.manager.resume(id, 99).await.is_err());
+            assert!(!asked("stackTrace") && !asked("next") && !asked("continue"));
+        } else {
+            assert!(stale.is_ok() && asked("stackTrace"), "{stale:?}");
+        }
+        assert!(h.manager.stack_trace(id, 1).await.is_ok());
+        h.manager.stop(id).await.unwrap();
+    }
+}
+
+#[tokio::test]
+async fn a_threads_reply_from_before_a_stop_does_not_vouch_for_its_ids() {
+    let h = harness(Script { stop_during_threads: true, ..Script::default() });
+    let project = tempfile::tempdir().unwrap();
+    let id = h.start(kotlin_lsp_attach(project.path())).await.unwrap();
+    h.wait_event(|e| matches!(e, DebugEvent::Stopped { .. })).await;
+    let threads = h.manager.threads(id).await.unwrap();
+    // M3 maps kotlin-lsp's threads by these names.
+    assert_eq!((threads[0].id, threads[0].name.as_str()), (1, "\"main\"@1"));
+    stop_reasons(&h, 2).await;
+    assert!(h.manager.stack_trace(id, 1).await.is_err());
+    assert!(h.manager.stack_trace(id, 2).await.is_ok());
+    h.manager.stop(id).await.unwrap();
+}
+
+#[tokio::test]
+async fn kotlin_lsp_frames_get_real_paths() {
+    let project = tempfile::tempdir().unwrap();
+    let at = "at com.x.AppKt.main(App.kt:13)";
+    for (config, path, name) in [
+        (kotlin_lsp_attach(project.path()), "/p/App.kt", "com.x.AppKt.main(App.kt:13)"),
+        (java_config("launch"), "file:///p/App.kt", at),
+    ] {
+        let script = Script { source_path: Some("file:///p/App.kt".into()), frame_name: Some(at), ..Script::default() };
+        let h = harness(script);
+        let id = h.start(config).await.unwrap();
+        h.wait_event(|e| matches!(e, DebugEvent::Stopped { .. })).await;
+        let frames = h.manager.stack_trace(id, 1).await.unwrap();
+        assert_eq!(frames[0].path.as_ref().map(|p| p.0.clone()), Some(PathBuf::from(path)));
+        assert_eq!(frames[0].name, name);
+        h.manager.stop(id).await.unwrap();
+    }
+}
+
+#[tokio::test]
+async fn invalidated_events_reach_the_client() {
+    let h = harness(Script { invalidated_after_stop: true, ..Script::default() });
+    let project = tempfile::tempdir().unwrap();
+    let id = h.start(kotlin_lsp_attach(project.path())).await.unwrap();
+    match h.wait_event(|e| matches!(e, DebugEvent::Invalidated { .. })).await {
+        DebugEvent::Invalidated { areas } => assert_eq!(areas, ["variables"]),
+        other => panic!("{other:?}"),
+    }
+    h.manager.stop(id).await.unwrap();
 }
