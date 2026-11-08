@@ -1,5 +1,10 @@
 //! The result of analyzing a heap dump: per-object columns, the class table and the summary.
 
+mod fields;
+mod path;
+mod queries;
+mod rows;
+
 use std::collections::HashMap;
 use std::path::Path;
 
@@ -13,6 +18,9 @@ use crate::graph::ClassInfo;
 use crate::hprof::HeapRootKind;
 use crate::ids::IdMap;
 use crate::shallow::SizeSource;
+
+pub(crate) use self::fields::{id_value, instance_fields};
+pub use self::rows::{HeapClassRow, HeapEdge, HeapObjectPage, HeapObjectRef, HeapObjectRow, HeapPathStep, MAX_PAGE};
 
 /// Counts over instances and arrays; class objects (class dumps) are left out.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, specta::Type)]
@@ -94,3 +102,6 @@ pub(crate) fn write_summary(dir: &Path, summary: &HeapSummary) -> Result<(), Hea
     std::fs::write(dir.join(SUMMARY_FILE), json)?;
     Ok(())
 }
+
+#[cfg(test)]
+mod tests;

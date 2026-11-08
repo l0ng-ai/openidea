@@ -387,6 +387,24 @@ pub fn sample() -> MiniHeap {
     heap
 }
 
+/// [`sample`] plus S `0x1800` String `"v42"` (Latin-1) held as `a` of a second Holder `0x1900`,
+/// rooted as a JNI global. That Holder retains 72 bytes, as much as H.
+pub fn sample_with_string() -> MiniHeap {
+    let mut heap = sample();
+    heap.string(0x1800, "v42", true).object(0x1900, "Holder", &[("a", 0x1800)]).root(HeapRootKind::JniGlobal, 0x1900);
+    heap
+}
+
+/// [`sample`] plus two Nodes `0x1a00` and `0x1b00`, each rooted as a JNI global.
+pub fn sample_with_two_more_nodes() -> MiniHeap {
+    let mut heap = sample();
+    heap.object(0x1a00, "Node", &[])
+        .object(0x1b00, "Node", &[])
+        .root(HeapRootKind::JniGlobal, 0x1a00)
+        .root(HeapRootKind::JniGlobal, 0x1b00);
+    heap
+}
+
 /// Seeded xorshift64 numbers for reproducible random test data (the workspace has no `rand`).
 pub struct XorShift(u64);
 
