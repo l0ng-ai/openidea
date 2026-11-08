@@ -12,6 +12,7 @@ use ide_host::plugins::{
     PluginEditor, PluginEvent, PluginHost, PluginInfo, PluginStatusItem, PluginsSnapshot, WorkbenchEvent,
 };
 use ide_plugin::{Invocation, Limits};
+use ide_workspace::settings::SettingsScope;
 use parking_lot::Mutex;
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
@@ -327,6 +328,7 @@ pub async fn plugin_reload(state: State<'_, AppState>, id: String) -> IdeResult<
 /// Runs a plugin command in the context of this window's project and focused editor.
 #[tauri::command]
 #[specta::specta]
+#[allow(clippy::too_many_arguments)]
 pub async fn plugin_run_command(
     window: Window,
     state: State<'_, AppState>,
@@ -335,6 +337,7 @@ pub async fn plugin_run_command(
     arg: Option<String>,
     editor: Option<PluginEditor>,
     paths: Option<Vec<PathBuf>>,
+    settings_scope: Option<SettingsScope>,
 ) -> IdeResult<Option<String>> {
     let host = state.plugins.clone();
     let project = state.project(window.label()).ok();
@@ -343,6 +346,7 @@ pub async fn plugin_run_command(
         workspace_root: project.as_ref().map(|p| p.root.clone()),
         editor: editor.map(PluginEditor::context),
         selected_paths: paths.unwrap_or_default(),
+        global_settings: matches!(settings_scope, Some(SettingsScope::Global)),
     };
     blocking(move || host.run_command(&plugin_id, &command_id, arg.as_deref(), invocation)).await
 }

@@ -24,7 +24,7 @@ use ide_core::CancellationToken;
 use ide_core::ipc_path::to_ipc;
 use ide_extension::Capability;
 use parking_lot::Mutex;
-use std::path::Path;
+use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::time::{Duration, Instant};
@@ -193,7 +193,7 @@ pub trait HostApi: Send + Sync {
     ) -> Result<ProcessOutput, HostError>;
     /// Delivers every event of `kind`, dropping its path filter.
     fn subscribe(&self, kind: EventKind);
-    /// Delivers `kind` (`file-opened`, `file-saved`) only for paths matching `globs`.
+    /// Delivers `kind` (`file-opened`, `file-saved`, `files-changed`) only for matching paths.
     fn subscribe_paths(&self, kind: &str, globs: Vec<String>) -> Result<(), HostError>;
     fn unsubscribe(&self, kind: &str);
     /// Starts `cmd` and returns the handle to it without waiting.
@@ -253,6 +253,10 @@ pub trait HostApi: Send + Sync {
     /// `fs.read` grant already covers: the unsaved buffer wins, then the disk.
     /// `max` bounds the bytes read.
     fn read_text_file(&self, real: &Path, max: usize) -> Result<String, HostError>;
+    /// The plugin's private directory, independent of the current invocation.
+    fn plugin_dir(&self) -> Result<PathBuf, HostError> {
+        Err(HostError::Failed("private plugin storage is unavailable".into()))
+    }
     /// Replaces the text of a file whose real path the caller already checked:
     /// in one step, keeping its encoding and BOM (a new file is UTF-8). Refused
     /// while an editor holds unsaved changes for it.
@@ -648,6 +652,10 @@ fn event_to_wit(e: WorkbenchEvent) -> wit_events::Event {
     match e {
         WorkbenchEvent::FileOpened(p) => wit_events::Event::FileOpened(p),
         WorkbenchEvent::FileSaved(p) => wit_events::Event::FileSaved(p),
+        WorkbenchEvent::FilesChanged(batch) => wit_events::Event::Other(wit_types::Extension {
+            kind: "files-changed".into(),
+            data: serde_json::to_string(&batch).expect("file paths serialize"),
+        }),
         WorkbenchEvent::EditorFocused(p) => wit_events::Event::EditorFocused(p),
         WorkbenchEvent::VcsChanged(p) => wit_events::Event::VcsChanged(p),
         WorkbenchEvent::Scheduled => wit_events::Event::Scheduled,

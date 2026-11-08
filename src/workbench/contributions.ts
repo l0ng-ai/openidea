@@ -905,11 +905,15 @@ export interface SettingsPageContribution {
  * edits not applied yet. Edits are written on Apply / OK and dropped on Cancel.
  */
 export interface SettingsForm {
+  /** Applies pending edits; false prevents an action from running after a failed save. */
+  apply(): Promise<boolean>;
   scope: "global" | "project";
   /** Value of a dotted key (map entries too, e.g. `languageServers.ruff.args`). */
   useValue(key: string): unknown;
   /** Stages a value; `null` removes the key on Apply. */
   set(key: string, value: unknown): void;
+  /** Stages a literal map entry with independent page/Reset ownership. */
+  setMapEntry(key: string, path: string[], value: unknown): void;
   /** Values stored outside settings JSON; the writer runs on Apply / OK and returns the saved value. */
   useExternal<T>(
     key: string,
@@ -1680,4 +1684,16 @@ export const useContributedFileTemplates = create<{ templates: import("@/platfor
 export function addContributedFileTemplate(t: import("@/platform/fileTemplates").FileTemplate): () => void {
   useContributedFileTemplates.setState((s) => ({ templates: [...s.templates.filter((x) => x.id !== t.id), t] }));
   return () => useContributedFileTemplates.setState((s) => ({ templates: s.templates.filter((x) => x !== t) }));
+}
+
+/** Flush contributed document indexes before workspace usages or refactoring. */
+const documentIndexSync = new Set<(path: string) => Promise<void>>();
+export function registerDocumentIndexSync(sync: (path: string) => Promise<void>): () => void {
+  documentIndexSync.add(sync);
+  return () => {
+    documentIndexSync.delete(sync);
+  };
+}
+export async function synchronizeDocumentIndexes(path: string): Promise<void> {
+  await Promise.all([...documentIndexSync].map((sync) => sync(path)));
 }
