@@ -1,5 +1,7 @@
 import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
 import { EditorState } from "@codemirror/state";
+import { createElement } from "react";
+import { cleanup, fireEvent, render, screen } from "@testing-library/react";
 
 const ipc = vi.hoisted(() => {
   const ok = <T>(data: T) => Promise.resolve({ status: "ok" as const, data });
@@ -86,6 +88,7 @@ import { focusDebugView, blurDebugView } from "../ui/focusedView";
 import { useOverlays } from "../ui/popoverStore";
 import { forgetMemory, selectMemoryClass } from "../memory/memoryState";
 import { forgetInstances, setInstancesLead, showInstances, useInstances } from "../memory/instancesState";
+import { InstancesPane } from "../memory/InstancesPane";
 
 const caps = (p: Partial<DebugCapabilities> = {}): DebugCapabilities => ({
   restartFrame: false,
@@ -328,6 +331,40 @@ describe("debugger actions (IDEA parity)", () => {
     expect(useInstances.getState().bySession[3]).toBeTruthy();
     await executeAction("debug.memory.closeInstances");
     expect(useInstances.getState().bySession[3]).toBeUndefined();
+  });
+
+  it("closes the instances pane of a session that has ended, from its button or the action", async () => {
+    const jvm = caps({ jvmMemory: true, jvmInstances: true });
+    ipc.debugJvmMemoryInstances.mockReturnValueOnce(
+      ipc.ok({
+        status: "ready",
+        generation: 1,
+        instances: [{ kind: "object", id: 9, typeName: "com.x.Order" }],
+        truncated: false,
+      }) as never,
+    );
+    paused({ caps: jvm });
+    await showInstances(3, "com.x.Order");
+    paused({ status: "terminated", caps: jvm });
+    const session = useDebug.getState().sessions[3]!;
+    render(createElement(InstancesPane, { session }));
+    // Reading objects needs a paused program: both instance actions are off, the row button too.
+    setInstancesLead(3, { key: "#0", ref: { generation: 1, id: 9 } });
+    expect(await executeAction("debug.memory.showReferrers")).toBe(false);
+    expect(await executeAction("debug.memory.showInstances", "com.x.Order")).toBe(false);
+    expect(ipc.debugJvmMemoryReferrers).not.toHaveBeenCalled();
+    expect(ipc.debugJvmMemoryInstances).toHaveBeenCalledTimes(1);
+    expect(screen.getByRole("button", { name: "Show Referrers" }).hasAttribute("disabled")).toBe(true);
+
+    fireEvent.click(screen.getByRole("button", { name: "Close Instances" }));
+    await settle();
+    expect(useInstances.getState().bySession[3]).toBeUndefined();
+    expect(screen.queryByRole("tree")).toBeNull();
+
+    await showInstances(3, "com.x.Order");
+    expect(await executeAction("debug.memory.closeInstances")).toBe(true);
+    expect(useInstances.getState().bySession[3]).toBeUndefined();
+    cleanup();
   });
 
   it("Jump to Source opens the class of the open instances list", async () => {

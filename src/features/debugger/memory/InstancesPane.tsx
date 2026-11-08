@@ -48,7 +48,13 @@ export function InstancesPane({ session }: { session: DebugSession }) {
           title="Jump to Source"
           size="small"
         />
-        <IconButton icon="close" action="debug.memory.closeInstances" title="Close Instances" size="small" />
+        <IconButton
+          icon="close"
+          action="debug.memory.closeInstances"
+          actionArg={id}
+          title="Close Instances"
+          size="small"
+        />
       </div>
       {entry.loading && (
         <div className={styles.note} role="status">
@@ -95,6 +101,7 @@ export function InstancesPane({ session }: { session: DebugSession }) {
             nodes={entry.nodes}
             expandedKeys={entry.expanded}
             outdated={outdated}
+            paused={session.status === "paused"}
           />
         </>
       )}
@@ -115,6 +122,7 @@ function InstanceTree({
   nodes,
   expandedKeys,
   outdated,
+  paused,
 }: {
   id: DebugSessionId;
   label: string;
@@ -123,6 +131,8 @@ function InstanceTree({
   nodes: Record<string, NodeEntry>;
   expandedKeys: string[];
   outdated: boolean;
+  /** Referrers are read only while the program is paused, like the Show Referrers action. */
+  paused: boolean;
 }) {
   const expanded = useMemo(() => new Set(expandedKeys), [expandedKeys]);
   const roots = useMemo(() => instanceNodes(generation, instances), [generation, instances]);
@@ -160,7 +170,9 @@ function InstanceTree({
         setInstancesLead(id, lead?.kind === "value" && lead.ref ? { key: lead.key, ref: lead.ref } : null)
       }
       rowClassName={() => styles.row}
-      renderNode={(n) => <NodeRow node={n} outdated={outdated} onReferrers={onReferrers} onRetry={retry} />}
+      renderNode={(n) => (
+        <NodeRow node={n} referrersDisabled={outdated || !paused} onReferrers={onReferrers} onRetry={retry} />
+      )}
       empty={
         <span className={styles.note}>
           <T>Nothing to show</T>
@@ -172,12 +184,12 @@ function InstanceTree({
 
 function NodeRow({
   node,
-  outdated,
+  referrersDisabled,
   onReferrers,
   onRetry,
 }: {
   node: PaneNode;
-  outdated: boolean;
+  referrersDisabled: boolean;
   onReferrers: (n: PaneNode) => void;
   onRetry: (r: Retry) => void;
 }) {
@@ -198,7 +210,7 @@ function NodeRow({
               title="Show Referrers"
               size="small"
               className={styles.rowButton}
-              disabled={outdated}
+              disabled={referrersDisabled}
               onKeyDown={keepKeysOnButton}
               onClick={() => onReferrers(node)}
             />

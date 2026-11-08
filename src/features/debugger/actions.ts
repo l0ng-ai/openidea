@@ -492,15 +492,16 @@ export function registerDebugActions(): () => void {
       },
     },
     {
+      // Closes the pane of the session given as `arg`, else of the active one. No `when`: the pane stays
+      // after its session ends and must still close.
       id: "debug.memory.closeInstances",
       title: "Close Instances",
       category: "Debug",
       icon: "close",
       keywords: ["memory", "instances"],
-      when: "debugHasJvmMemory",
-      run: () => {
-        const s = activeSession();
-        if (s && useInstances.getState().bySession[s.id]) closeInstances(s.id);
+      run: ({ arg }) => {
+        const id = typeof arg === "number" ? arg : activeSession()?.id;
+        if (id != null && useInstances.getState().bySession[id]) closeInstances(id);
       },
     },
     {
