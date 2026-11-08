@@ -1,0 +1,9 @@
+{
+    "name": "openidea/billing",
+    "description": "The Billing module of the fixture app.",
+    "autoload": {
+        "psr-4": {
+            "Modules\\Billing\\": ""
+        }
+    }
+}

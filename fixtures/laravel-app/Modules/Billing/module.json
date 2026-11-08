@@ -1,0 +1,10 @@
+{
+    "name": "Billing",
+    "alias": "billing",
+    "description": "Invoices (an nwidart/laravel-modules module).",
+    "priority": 0,
+    "providers": [
+        "Modules\\Billing\\Providers\\RouteServiceProvider"
+    ],
+    "files": []
+}

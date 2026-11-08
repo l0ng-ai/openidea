@@ -725,11 +725,13 @@ impl<'ast, 'arena, 'f> Walker<'ast, 'arena, Extractor<'f>> for SummaryWalker {
 
     fn walk_in_method_call(&self, node: &'ast MethodCall<'arena>, cx: &mut Extractor<'f>) {
         cx.method_binding(node.object, &node.method, &node.argument_list);
+        cx.method_routes(node.object, &node.method, &node.argument_list);
     }
 
     fn walk_in_static_method_call(&self, node: &'ast StaticMethodCall<'arena>, cx: &mut Extractor<'f>) {
         cx.static_binding(node.class, &node.method, &node.argument_list);
         cx.migration(node.class, &node.method, &node.argument_list);
+        cx.static_routes(node.class, &node.method, &node.argument_list);
         cx.repository_constructor(node.class, &node.method, &node.argument_list);
     }
 

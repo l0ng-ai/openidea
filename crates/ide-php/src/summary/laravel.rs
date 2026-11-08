@@ -1,6 +1,7 @@
 //! What a file tells the Laravel type provider about the rest of the
 //! project ([`LaravelFacts`]): the container bindings service providers
-//! register, the columns migrations create, and the casts of models.
+//! register, the columns migrations create, the casts of models, and the
+//! route files the application or a service provider loads.
 //!
 //! These are recorded for any file (a summary can't know whether Laravel
 //! is installed); the index lists the files that have some, and the
@@ -23,11 +24,13 @@ pub struct LaravelFacts {
     pub tables: Vec<Table>,
     /// The `$casts` property or `casts()` method of a class.
     pub casts: Vec<ModelCasts>,
+    /// Route files loaded with their group attributes, in source order.
+    pub routes: Vec<RouteRegistration>,
 }
 
 impl LaravelFacts {
     pub fn is_empty(&self) -> bool {
-        self.bindings.is_empty() && self.tables.is_empty() && self.casts.is_empty()
+        self.bindings.is_empty() && self.tables.is_empty() && self.casts.is_empty() && self.routes.is_empty()
     }
 
     /// The facts of several files, in order.
@@ -44,6 +47,8 @@ impl LaravelFacts {
             out.bindings.extend(facts.bindings.iter().cloned());
             out.tables.extend(facts.tables.iter().map(|table| Table { file: file.clone(), ..table.clone() }));
             out.casts.extend(facts.casts.iter().map(|casts| ModelCasts { file: file.clone(), ..casts.clone() }));
+            out.routes
+                .extend(facts.routes.iter().map(|route| RouteRegistration { file: file.clone(), ..route.clone() }));
         }
         out
     }
@@ -118,4 +123,63 @@ pub struct Cast {
     pub cast: String,
     /// The attribute's key in the casts array.
     pub loc: Loc,
+}
+
+/// A route file loaded by the application or a service provider:
+/// `withRouting(web: __DIR__.'/../routes/web.php')` in `bootstrap/app.php`,
+/// `Route::middleware('api')->prefix('api')->group(base_path('routes/api.php'))`
+/// in a `RouteServiceProvider`, `$this->loadRoutesFrom(…)` in a package or
+/// module provider.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct RouteRegistration {
+    pub path: RoutePath,
+    pub kind: RouteFileKind,
+    /// The URI prefix of the group (`'api'`), as written.
+    pub prefix: String,
+    /// The route-name prefix of the group (`'admin.'`).
+    pub name_prefix: String,
+    /// Middleware and middleware groups (`'web'`, `'auth'`), in order.
+    pub middleware: Vec<String>,
+    /// The controller namespace of the group (`->namespace('App\Http\Controllers')`).
+    pub namespace: Option<String>,
+    pub domain: Option<String>,
+    /// The path argument.
+    pub loc: Loc,
+    /// The file of the registration, when the facts were merged with their
+    /// files ([`LaravelFacts::merge_located`]); not stored in summaries
+    /// (`__DIR__` paths are resolved against it).
+    #[serde(skip)]
+    pub file: Option<PathBuf>,
+}
+
+/// A route file's path as the registration writes it.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub enum RoutePath {
+    /// `__DIR__.'/../routes/web.php'` (`up: 0`) or
+    /// `dirname(__DIR__).'/routes/web.php'` (`up: 1`): `rest` after the
+    /// registering file's directory and `up` of its parents.
+    Dir { up: u32, rest: String },
+    /// `base_path('routes/web.php')`.
+    Base(String),
+    /// `app_path('Http/routes.php')`.
+    App(String),
+    /// `module_path('Blog', '/routes/web.php')` (nwidart/laravel-modules);
+    /// `name` is `None` when it isn't a literal (`$this->name`): the module
+    /// holding the registering file.
+    Module { name: Option<String>, rest: String },
+}
+
+/// What a route file holds, from how it is loaded.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, Serialize, Deserialize)]
+pub enum RouteFileKind {
+    /// `web:`, or a group with the `web` middleware.
+    Web,
+    /// `api:`, or a group with the `api` middleware.
+    Api,
+    /// `commands:` (`routes/console.php`): closure commands, not routes.
+    Console,
+    /// `channels:` (`routes/channels.php`): broadcast channels.
+    Channels,
+    /// Any other group or `loadRoutesFrom`.
+    Other,
 }

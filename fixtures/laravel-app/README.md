@@ -7,12 +7,15 @@ the MIT `laravel/laravel` skeleton; the rest is hand-written.
 
 It has no `vendor/`. Tests copy it to a temporary folder with
 [`../laravel-stubs`](../laravel-stubs) as its `vendor/`: a Composer vendor directory
-(`composer/installed.json` plus `laravel/framework`) with minimal stand-ins for the
-framework classes and helpers the app uses, so no network or Composer is needed. For
+(`composer/installed.json` plus `laravel/framework` and `nwidart/laravel-modules`) with
+minimal stand-ins for the framework classes and helpers the app uses, so no network or Composer is needed. For
 manual QA, do the same or run `composer install` on a copy.
 
 - `crates/ide-php/tests/laravel_app.rs` indexes it with the engine and inspects every
   PHP file: no problems except the deliberate one below.
+- `crates/ide-php/src/frameworks/laravel/tests.rs` (`the_fixture_app_model`) checks the
+  Laravel project model: version, app namespace, route files with their prefixes, name
+  prefixes and middleware, and the module.
 - `crates/ide-host/tests/language_smoke.rs` (`laravel`) checks hover and completion on a
   model attribute through the app's `ops`.
 
@@ -23,13 +26,15 @@ manual QA, do the same or run `composer install` on a copy.
 
 | File                                                        | Exercises                                                                                                          |
 | ----------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------ |
-| `composer.json`                                             | detection (`laravel/framework` required), PSR-4 app namespace `App\`                                               |
+| `composer.json`                                             | detection (`laravel/framework` required), PSR-4 app namespace `App\`, `nwidart/laravel-modules` and `Modules\`      |
 | `artisan`, `public/index.php`                               | entry points (skeleton)                                                                                            |
-| `bootstrap/app.php`                                         | `withRouting(web:, api:, commands:, health:)` route files, middleware alias `author`                               |
+| `bootstrap/app.php`                                         | `withRouting(web:, api:, commands:, health:, then:)` route files (`then:` loads `routes/admin.php` in a group), middleware alias `author` |
 | `bootstrap/providers.php`                                   | registered service providers                                                                                       |
 | `routes/web.php`                                            | route names, an invokable controller, `Route::view`, `Route::resource()->only()`, a group with prefix, name prefix and middleware, `[Controller::class, 'method']` actions |
 | `routes/api.php`                                            | the `api` route file (prefix from `withRouting`)                                                                   |
+| `routes/admin.php`                                          | a route file loaded with prefix `admin`, name prefix `admin.` and `web`/`auth` middleware                          |
 | `routes/console.php`                                        | `Artisan::command` closure command, `Schedule::command`                                                            |
+| `Modules/Billing/*`, `modules_statuses.json`                | an nwidart module (`module.json`, enabled): its `RouteServiceProvider` loads `Routes/web.php` and `Routes/api.php` through `module_path()` with prefixes and name prefixes |
 | `app/Models/Post.php`                                       | `$casts` (enum, `datetime`, `array`), relations (`belongsTo`, `hasMany`, `belongsToMany`), a local scope, an `Attribute` accessor, `SoftDeletes` |
 | `app/Models/User.php`                                       | `casts()` method, `Authenticatable`, relations with a custom foreign key                                           |
 | `app/Models/Comment.php`, `Tag.php`                         | more relations, `$timestamps = false`                                                                              |

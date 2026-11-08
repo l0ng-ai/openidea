@@ -10,6 +10,16 @@
                 "files": ["helpers.php"]
             },
             "install-path": "../laravel/framework"
+        },
+        {
+            "name": "nwidart/laravel-modules",
+            "version": "v10.0.6",
+            "version_normalized": "10.0.6.0",
+            "type": "library",
+            "autoload": {
+                "files": ["src/helpers.php"]
+            },
+            "install-path": "../nwidart/laravel-modules"
         }
     ],
     "dev": true,

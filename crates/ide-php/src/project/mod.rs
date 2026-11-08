@@ -30,7 +30,7 @@
 //! rules except `.gitignore`, which the watcher has already applied.
 
 mod autoload;
-mod composer;
+pub(crate) mod composer;
 #[cfg(test)]
 mod tests;
 

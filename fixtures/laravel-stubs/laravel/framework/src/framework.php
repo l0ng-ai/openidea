@@ -90,6 +90,12 @@ namespace Illuminate\Support {
     }
 }
 
+namespace Illuminate\Foundation\Support\Providers {
+    class RouteServiceProvider extends \Illuminate\Support\ServiceProvider {
+        public function boot(): void {}
+    }
+}
+
 namespace Illuminate\Support\Facades {
     abstract class Facade {
         public static function __callStatic($method, $args): mixed { return null; }

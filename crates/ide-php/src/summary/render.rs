@@ -10,7 +10,7 @@ use std::fmt::Write;
 
 use super::{
     ClassLike, ConstantKind, DocBlock, DocTemplate, DocType, FileSummary, LaravelFacts, Loc, Param, Property,
-    PropertyAccess, SymfonyFacts, TraitRule, TypeHint, Variance, Visibility,
+    PropertyAccess, RoutePath, SymfonyFacts, TraitRule, TypeHint, Variance, Visibility,
 };
 use crate::meta::{MetaDirectives, MetaValue, OverrideKind};
 use crate::types::LazyType;
@@ -89,6 +89,31 @@ fn laravel(out: &mut String, facts: &LaravelFacts) {
         let casts: Vec<String> =
             model.casts.iter().map(|cast| format!("{} => {}", cast.attribute, cast.cast)).collect();
         let _ = writeln!(out, "laravel casts {}: {}", model.class, casts.join(", "));
+    }
+    for route in &facts.routes {
+        let path = match &route.path {
+            RoutePath::Dir { up, rest } => format!("dir^{up}{rest}"),
+            RoutePath::Base(rest) => format!("base:{rest}"),
+            RoutePath::App(rest) => format!("app:{rest}"),
+            RoutePath::Module { name, rest } => format!("module({}):{rest}", name.as_deref().unwrap_or("?")),
+        };
+        let mut line = format!("laravel routes {:?} {path}", route.kind);
+        if !route.prefix.is_empty() {
+            let _ = write!(line, " prefix '{}'", route.prefix);
+        }
+        if !route.name_prefix.is_empty() {
+            let _ = write!(line, " as '{}'", route.name_prefix);
+        }
+        if !route.middleware.is_empty() {
+            let _ = write!(line, " middleware [{}]", route.middleware.join(", "));
+        }
+        if let Some(namespace) = &route.namespace {
+            let _ = write!(line, " namespace '{namespace}'");
+        }
+        if let Some(domain) = &route.domain {
+            let _ = write!(line, " domain '{domain}'");
+        }
+        let _ = writeln!(out, "{line}");
     }
 }
 

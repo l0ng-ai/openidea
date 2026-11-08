@@ -29,6 +29,12 @@
 //! A Symfony project's YAML configuration ([`SymfonyConfig`]) is read from
 //! `config/` on first use and kept until a rescan or a watcher batch that
 //! touches a YAML file.
+//!
+//! The Laravel project model ([`LaravelProject`], [`PhpEngine::laravel`])
+//! is read the same way: its files that aren't PHP (`composer.json`,
+//! `composer.lock`, modules) on first use until a rescan or a batch touching
+//! one of them or a folder, and its route files from the summaries in the
+//! index for each modification count.
 
 #[cfg(test)]
 mod tests;
@@ -44,6 +50,7 @@ use ide_core::event::ServerStatus;
 use ide_core::{CancellationToken, DocId, IdeError, IdeEvent, IdeResult, Pos, ServerId, SharedSink};
 use parking_lot::{Condvar, Mutex, RwLock};
 
+use crate::frameworks::laravel::LaravelProject;
 use crate::index::{IndexStats, PhpIndex};
 use crate::inspect::runner::Runner;
 use crate::inspect::{InspectionConfig, Inspections};
@@ -176,6 +183,16 @@ struct Shared {
     /// The project's Symfony configuration, read on first use; dropped
     /// when a YAML file changes.
     symfony_config: Mutex<Option<Arc<SymfonyConfig>>>,
+    laravel: Mutex<LaravelCache>,
+}
+
+/// The Laravel project model: what [`LaravelProject::load`] read (`None`:
+/// not read yet), and the model with its route files for a modification
+/// count.
+#[derive(Default)]
+struct LaravelCache {
+    loaded: Option<Option<Arc<LaravelProject>>>,
+    project: Option<(u64, Option<Arc<LaravelProject>>)>,
 }
 
 impl PhpEngine {
@@ -211,6 +228,7 @@ impl PhpEngine {
             inspections: Arc::default(),
             inspection_config: Mutex::new(InspectionConfig::default()),
             symfony_config: Mutex::new(None),
+            laravel: Mutex::new(LaravelCache::default()),
         });
         let worker = shared.clone();
         let thread = std::thread::Builder::new()
@@ -352,6 +370,7 @@ impl PhpEngine {
     /// Loads the layout again and brings the indexes up to date.
     pub fn rescan(&self) {
         *self.shared.symfony_config.lock() = None;
+        *self.shared.laravel.lock() = LaravelCache::default();
         self.shared.modification.fetch_add(1, Ordering::SeqCst);
         let mut q = self.shared.queue.lock();
         q.rescan = true;
@@ -369,6 +388,11 @@ impl PhpEngine {
             *self.shared.symfony_config.lock() = None;
             self.shared.modification.fetch_add(1, Ordering::SeqCst);
             self.shared.inspect_open_documents();
+        }
+        if changed.iter().any(|p| is_laravel_input(p) || p.is_dir()) || removed.iter().any(|p| !is_php_path(p)) {
+            // Detection, paths and modules are read again on next use.
+            *self.shared.laravel.lock() = LaravelCache::default();
+            self.shared.modification.fetch_add(1, Ordering::SeqCst);
         }
         let changed: Vec<PathBuf> = changed
             .iter()
@@ -488,6 +512,37 @@ impl PhpEngine {
         let config = Arc::new(SymfonyConfig::load(&root));
         *self.shared.symfony_config.lock() = Some(config.clone());
         config
+    }
+
+    /// The Laravel project model, or `None` when the project isn't a
+    /// Laravel project. Its files that aren't PHP are read once until one
+    /// of them changes; its route files come from the summaries of the
+    /// index and the open buffers, for the current modification count.
+    pub fn laravel(&self) -> Option<Arc<LaravelProject>> {
+        let modification = self.modification_count();
+        let loaded = {
+            let cache = self.shared.laravel.lock();
+            if let Some((at, project)) = &cache.project
+                && *at == modification
+            {
+                return project.clone();
+            }
+            cache.loaded.clone()
+        };
+        let loaded = match loaded {
+            Some(loaded) => loaded,
+            None => {
+                let loaded = LaravelProject::load(&self.root()).map(Arc::new);
+                self.shared.laravel.lock().loaded = Some(loaded.clone());
+                loaded
+            }
+        };
+        let project = loaded.map(|loaded| Arc::new(loaded.with_routes(&Declarations::laravel(self))));
+        let mut cache = self.shared.laravel.lock();
+        if cache.loaded.is_some() {
+            cache.project = Some((modification, project.clone()));
+        }
+        project
     }
 
     /// Every open document.
@@ -760,6 +815,17 @@ fn is_yaml_path(path: &Path) -> bool {
     matches!(path.extension().and_then(|e| e.to_str()), Some("yaml" | "yml"))
 }
 
+/// A file the Laravel project model reads that isn't PHP (or `artisan`,
+/// which has no extension).
+fn is_laravel_input(path: &Path) -> bool {
+    matches!(
+        path.file_name().and_then(|n| n.to_str()),
+        Some(
+            "composer.json" | "composer.lock" | "installed.json" | "module.json" | "modules_statuses.json" | "artisan"
+        )
+    ) || path.ends_with("config/modules.php")
+}
+
 fn is_manifest_name(path: &Path) -> bool {
     matches!(path.file_name().and_then(|n| n.to_str()), Some("composer.json" | "installed.json"))
 }
@@ -832,6 +898,7 @@ impl Shared {
         let started = Instant::now();
         let stats = index.sync(&paths, &self.cancel)?;
         log_stats("scan", &stats, started);
+        self.modification.fetch_add(1, Ordering::SeqCst);
         self.finish(&index)
     }
 
@@ -876,6 +943,8 @@ impl Shared {
         let started = Instant::now();
         let stats = index.update(&update, &drop, &self.cancel)?;
         log_stats("update", &stats, started);
+        // Caches filled between the batch arriving and now saw the old index.
+        self.modification.fetch_add(1, Ordering::SeqCst);
         let (files, declarations) = index.counts()?;
         let mut status = self.status.lock();
         status.files = files;

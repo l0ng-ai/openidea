@@ -12,6 +12,14 @@
 //!   `morphs()`.
 //! - **Casts:** the array of a class's `$casts` property, or the array a
 //!   `casts()` method returns.
+//! - **Route files:** the `web`, `api`, `commands` and `channels` files of
+//!   `withRouting(…)` (Laravel 11's `bootstrap/app.php`, with the `web` and
+//!   `api` middleware groups and the `apiPrefix` its `ApplicationBuilder`
+//!   gives them), `Route::…->group(path)` chains and `Route::group([…], path)`
+//!   (a `RouteServiceProvider`, a `then:` callback), and
+//!   `$this->loadRoutesFrom(path)`, when the path is relative to `__DIR__`
+//!   or `dirname(__DIR__)`, or made by `base_path()`, `app_path()` or
+//!   `module_path()`.
 //!
 //! The column types follow what Eloquent gives an attribute without a cast
 //! (Laravel's public documentation on migrations and casts): integers are
@@ -20,12 +28,15 @@
 use mago_span::{HasSpan, Span};
 use mago_syntax::cst::{
     Access, Argument, ArgumentList, ArrayElement, BinaryOperator, Call, ClassLikeConstantSelector, ClassLikeMember,
-    ClassLikeMemberSelector, Expression, Literal, MethodBody, Property, PropertyItem, Sequence, Statement, Variable,
+    ClassLikeMemberSelector, Expression, Literal, MagicConstant, MethodBody, Property, PropertyItem, Sequence,
+    Statement, Variable,
 };
 
 use super::Extractor;
 use crate::names::{NameKind, Resolution};
-use crate::summary::{Binding, Cast, Column, DocType, Loc, ModelCasts, Table};
+use crate::summary::{
+    Binding, Cast, Column, DocType, Loc, ModelCasts, RouteFileKind, RoutePath, RouteRegistration, Table,
+};
 use crate::types::ops::literal_type;
 use crate::types::{LazyType, Type};
 
@@ -336,6 +347,277 @@ impl Extractor<'_> {
             }
             Expression::Call(Call::StaticMethod(call)) => self.class_ref(call.class).map(|class| format!("\\{class}")),
             _ => string(value).filter(|cast| !cast.is_empty()),
+        }
+    }
+}
+
+/// The parameters of `ApplicationBuilder::withRouting`, in order.
+const WITH_ROUTING: &[&str] = &["using", "web", "api", "commands", "channels", "pages", "health", "apiPrefix", "then"];
+
+/// The group attributes a route registrar chain or a `Route::group` array
+/// sets. A chain is read from the `group()` call backwards, so the first
+/// value seen of an attribute is the one Laravel keeps (a later call
+/// overrides an earlier one); middleware add up.
+#[derive(Default)]
+struct GroupAttributes {
+    prefix: Option<String>,
+    name: Option<String>,
+    middleware: Vec<String>,
+    namespace: Option<String>,
+    domain: Option<String>,
+}
+
+impl GroupAttributes {
+    /// One attribute: `prefix`, `name`/`as`, `middleware`, `namespace`,
+    /// `domain`; others are ignored.
+    fn set(&mut self, key: &str, value: &Expression<'_>) {
+        let key = key.to_ascii_lowercase();
+        let slot = match key.as_str() {
+            "prefix" => &mut self.prefix,
+            "name" | "as" => &mut self.name,
+            "namespace" => &mut self.namespace,
+            "domain" => &mut self.domain,
+            "middleware" => {
+                let mut found = strings(value);
+                found.append(&mut self.middleware);
+                self.middleware = found;
+                return;
+            }
+            _ => return,
+        };
+        if slot.is_none() {
+            *slot = string(value);
+        }
+    }
+
+    fn kind(&self) -> RouteFileKind {
+        if self.middleware.iter().any(|m| m == "web") {
+            RouteFileKind::Web
+        } else if self.middleware.iter().any(|m| m == "api") {
+            RouteFileKind::Api
+        } else {
+            RouteFileKind::Other
+        }
+    }
+}
+
+/// A string, or the strings of an array (`['web', 'auth']`).
+fn strings(expr: &Expression<'_>) -> Vec<String> {
+    each(expr).into_iter().filter_map(string).collect()
+}
+
+/// The value of a list or key-value array element.
+fn element_value<'a>(element: &'a ArrayElement<'a>) -> Option<&'a Expression<'a>> {
+    match element {
+        ArrayElement::Value(element) => Some(element.value),
+        ArrayElement::KeyValue(element) => Some(element.value),
+        _ => None,
+    }
+}
+
+/// The element values of an array literal, else the expression itself.
+fn each<'a>(expr: &'a Expression<'a>) -> Vec<&'a Expression<'a>> {
+    match expr {
+        Expression::Array(array) => array.elements.iter().filter_map(element_value).collect(),
+        Expression::LegacyArray(array) => array.elements.iter().filter_map(element_value).collect(),
+        other => vec![other],
+    }
+}
+
+/// The name of a called function (without a leading `\`).
+fn function_name(expr: &Expression<'_>) -> Option<String> {
+    let Expression::Identifier(identifier) = expr else { return None };
+    let name = identifier.value();
+    Some(lossy(name.strip_prefix(b"\\").unwrap_or(name)))
+}
+
+/// A route file's path: see [`RoutePath`].
+fn route_path(expr: &Expression<'_>) -> Option<RoutePath> {
+    match expr {
+        Expression::Parenthesized(inner) => route_path(inner.expression),
+        Expression::MagicConstant(MagicConstant::Directory(_)) => Some(RoutePath::Dir { up: 0, rest: String::new() }),
+        Expression::Binary(binary) if matches!(binary.operator, BinaryOperator::StringConcat(_)) => {
+            let tail = string(binary.rhs)?;
+            Some(match route_path(binary.lhs)? {
+                RoutePath::Dir { up, rest } => RoutePath::Dir { up, rest: rest + &tail },
+                RoutePath::Base(rest) => RoutePath::Base(rest + &tail),
+                RoutePath::App(rest) => RoutePath::App(rest + &tail),
+                RoutePath::Module { name, rest } => RoutePath::Module { name, rest: rest + &tail },
+            })
+        }
+        Expression::Call(Call::Function(call)) => {
+            let name = function_name(call.function)?.to_ascii_lowercase();
+            let args = args(&call.argument_list);
+            let text = |index: usize| match args.get(index) {
+                Some(arg) => string(arg),
+                None => Some(String::new()),
+            };
+            match name.as_str() {
+                "base_path" => Some(RoutePath::Base(text(0)?)),
+                "app_path" => Some(RoutePath::App(text(0)?)),
+                "module_path" => {
+                    Some(RoutePath::Module { name: args.first().and_then(|arg| string(arg)), rest: text(1)? })
+                }
+                "dirname" => {
+                    let RoutePath::Dir { up, rest } = route_path(args.first()?)? else { return None };
+                    if !rest.is_empty() {
+                        return None;
+                    }
+                    let levels = match args.get(1) {
+                        None => 1,
+                        Some(Expression::Literal(Literal::Integer(levels))) => u32::try_from(levels.value?).ok()?,
+                        Some(_) => return None,
+                    };
+                    Some(RoutePath::Dir { up: up + levels, rest })
+                }
+                _ => None,
+            }
+        }
+        _ => None,
+    }
+}
+
+impl Extractor<'_> {
+    fn route_file(&mut self, path_expr: &Expression<'_>, kind: RouteFileKind, attributes: GroupAttributes) {
+        let Some(path) = route_path(path_expr) else { return };
+        let loc = self.loc(path_expr.span());
+        self.summary.laravel.routes.push(RouteRegistration {
+            path,
+            kind,
+            prefix: attributes.prefix.unwrap_or_default(),
+            name_prefix: attributes.name.unwrap_or_default(),
+            middleware: attributes.middleware,
+            namespace: attributes.namespace,
+            domain: attributes.domain,
+            loc,
+            file: None,
+        });
+    }
+
+    /// `->withRouting(…)`, `Route::…->group(path)` and
+    /// `$this->loadRoutesFrom(path)`.
+    pub(super) fn method_routes(
+        &mut self,
+        object: &Expression<'_>,
+        selector: &ClassLikeMemberSelector<'_>,
+        list: &ArgumentList<'_>,
+    ) {
+        let Some(method) = method_name(selector) else { return };
+        if method.eq_ignore_ascii_case("withRouting") {
+            self.with_routing(list);
+        } else if method.eq_ignore_ascii_case("loadRoutesFrom") {
+            if variable(object).as_deref() == Some("this")
+                && let [path] = args(list)[..]
+            {
+                self.route_file(path, RouteFileKind::Other, GroupAttributes::default());
+            }
+        } else if method.eq_ignore_ascii_case("group")
+            && let [path] = args(list)[..]
+            && let Some(attributes) = self.registrar_chain(object)
+        {
+            let kind = attributes.kind();
+            self.route_file(path, kind, attributes);
+        }
+    }
+
+    /// `Route::group(['prefix' => …], path)`.
+    pub(super) fn static_routes(
+        &mut self,
+        class: &Expression<'_>,
+        selector: &ClassLikeMemberSelector<'_>,
+        list: &ArgumentList<'_>,
+    ) {
+        if !method_name(selector).is_some_and(|name| name.eq_ignore_ascii_case("group")) || !self.is_route_facade(class)
+        {
+            return;
+        }
+        let [array, path] = args(list)[..] else { return };
+        let elements = match array {
+            Expression::Array(array) => array.elements.iter(),
+            Expression::LegacyArray(array) => array.elements.iter(),
+            _ => return,
+        };
+        let mut attributes = GroupAttributes::default();
+        for element in elements {
+            if let ArrayElement::KeyValue(element) = element
+                && let Some(key) = string(element.key)
+            {
+                attributes.set(&key, element.value);
+            }
+        }
+        let kind = attributes.kind();
+        self.route_file(path, kind, attributes);
+    }
+
+    fn is_route_facade(&self, class: &Expression<'_>) -> bool {
+        self.class_ref(class).is_some_and(|fqn| fqn.rsplit('\\').next().is_some_and(|short| short == "Route"))
+    }
+
+    /// The attributes of `Route::middleware('web')->prefix('x')` (what
+    /// `->group(…)` is called on), or `None` when it isn't a route registrar
+    /// chain starting at the `Route` facade or `$router`.
+    fn registrar_chain(&self, mut expr: &Expression<'_>) -> Option<GroupAttributes> {
+        let mut attributes = GroupAttributes::default();
+        loop {
+            match expr {
+                Expression::Call(Call::Method(call)) => {
+                    let name = method_name(&call.method)?;
+                    if let Some(value) = args(&call.argument_list).first() {
+                        attributes.set(&name, value);
+                    }
+                    expr = call.object;
+                }
+                Expression::Call(Call::StaticMethod(call)) => {
+                    if !self.is_route_facade(call.class) {
+                        return None;
+                    }
+                    let name = method_name(&call.method)?;
+                    if let Some(value) = args(&call.argument_list).first() {
+                        attributes.set(&name, value);
+                    }
+                    return Some(attributes);
+                }
+                Expression::Parenthesized(inner) => expr = inner.expression,
+                other => return (variable(other).as_deref() == Some("router")).then_some(attributes),
+            }
+        }
+    }
+
+    /// The route files of `withRouting(…)`: positional or named arguments,
+    /// `web` and `api` a path or an array of paths.
+    fn with_routing(&mut self, list: &ArgumentList<'_>) {
+        let mut slots: [Option<&Expression<'_>>; WITH_ROUTING.len()] = [None; WITH_ROUTING.len()];
+        for (index, argument) in list.arguments.iter().enumerate() {
+            match argument {
+                Argument::Positional(argument) => {
+                    if let Some(slot) = slots.get_mut(index) {
+                        *slot = Some(argument.value);
+                    }
+                }
+                Argument::Named(argument) => {
+                    if let Some(index) = WITH_ROUTING.iter().position(|name| name.as_bytes() == argument.name.value) {
+                        slots[index] = Some(argument.value);
+                    }
+                }
+            }
+        }
+        let api_prefix = slots[7].and_then(string).unwrap_or_else(|| "api".to_owned());
+        let files = [
+            (1, RouteFileKind::Web, None, Some("web")),
+            (2, RouteFileKind::Api, Some(api_prefix), Some("api")),
+            (3, RouteFileKind::Console, None, None),
+            (4, RouteFileKind::Channels, None, None),
+        ];
+        for (slot, kind, prefix, middleware) in files {
+            let Some(value) = slots[slot] else { continue };
+            for path in each(value) {
+                let attributes = GroupAttributes {
+                    prefix: prefix.clone(),
+                    middleware: middleware.map(str::to_owned).into_iter().collect(),
+                    ..GroupAttributes::default()
+                };
+                self.route_file(path, kind, attributes);
+            }
         }
     }
 }

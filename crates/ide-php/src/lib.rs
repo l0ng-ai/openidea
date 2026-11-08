@@ -63,6 +63,9 @@
 //! - [`blade`]: Blade templates: the PHP of echoes, directives and PHP
 //!   blocks compiled into an embedded document the engine answers on, and
 //!   goto definition of views and components.
+//! - [`frameworks`]: what a framework knows about the whole project: the
+//!   Laravel project model (version, paths, app namespace, route files
+//!   with their groups, modules).
 //! - [`twig`]: Twig templates: outline, completion of variables, tags,
 //!   filters, functions, tests and template names, and goto definition of
 //!   the templates a template loads, through `mago-twig-syntax`.
@@ -77,6 +80,7 @@ pub mod blade;
 pub mod complete;
 pub mod engine;
 pub mod format;
+pub mod frameworks;
 pub mod imports;
 pub mod index;
 pub mod inspect;
