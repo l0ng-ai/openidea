@@ -13,9 +13,11 @@
 
 mod formats;
 mod jvm;
+mod live;
 mod plan;
 mod tree;
 
+pub use live::gc_before_stop;
 pub use plan::prepare;
 
 use ide_core::{IdeError, IdeResult, IpcPath};

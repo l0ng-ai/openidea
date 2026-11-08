@@ -470,6 +470,7 @@ pub fn builder() -> tauri_specta::Builder<tauri::Wry> {
         web::web_open,
         profiler::profiler_prepare,
         profiler::profiler_collect,
+        profiler::profiler_gc_before_stop,
         plugin::plugin_subscribe,
         plugin::plugin_list,
         plugin::plugin_set_enabled,
