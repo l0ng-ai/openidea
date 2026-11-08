@@ -16,7 +16,35 @@
     inset 0 0 0 1px var(--focus-ring),
     0 0 0 1px var(--focus-ring);
 }
+/* A file or folder dragged over it from the Project view. */
+.fileOver {
+  box-shadow:
+    inset 0 0 0 1px var(--focus-ring),
+    0 0 0 1px var(--focus-ring);
+}
+.field {
+  position: relative;
+}
+/* Tags under the transparent textarea: same font, metrics and padding, so the caret
+   and selection of the real textarea line up with the painted text. */
+.mirror {
+  position: absolute;
+  inset: 0;
+  overflow: hidden;
+  padding: 10px 12px 2px;
+  font: inherit;
+  font-size: var(--fs-ui);
+  line-height: 1.5;
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+  color: var(--fg-strong);
+  pointer-events: none;
+  -webkit-user-select: none;
+  user-select: none;
+}
 .textarea {
+  position: relative;
+  z-index: 1;
   display: block;
   width: 100%;
   min-height: 44px;
@@ -24,11 +52,13 @@
   border: 0;
   outline: none;
   background: transparent;
-  color: var(--fg-strong);
+  color: transparent;
+  caret-color: var(--fg-strong);
   font: inherit;
   font-size: var(--fs-ui);
   line-height: 1.5;
   padding: 10px 12px 2px;
+  overflow-wrap: anywhere;
   -webkit-user-select: text;
   user-select: text;
 }
@@ -37,6 +67,13 @@
 }
 .textarea::placeholder {
   color: var(--fg-faint);
+}
+/* The textarea's own glyphs are transparent so the mirror above shows the tags; the
+   selection would then paint an empty highlight. Paint the selected glyphs here instead —
+   the opaque selection background covers the mirror underneath. */
+.textarea::selection {
+  background: var(--bg-editor-selection);
+  color: var(--fg-strong);
 }
 .bar {
   display: flex;
@@ -58,8 +95,19 @@
   display: flex;
   flex: none;
   align-items: center;
-  gap: 2px;
+  gap: 4px;
   margin-left: auto;
+}
+/* Attach/reference buttons share the send button's 24px footprint and chrome. */
+.composerButton {
+  width: var(--h-control);
+  height: var(--h-control);
+  border-radius: var(--radius-small);
+  background: var(--bg-elev);
+  box-shadow: inset 0 0 0 1px var(--border);
+}
+.composerButton:hover:not(:disabled) {
+  background: var(--bg-hover);
 }
 .spacer {
   flex: 1;
@@ -235,9 +283,11 @@
   border-top: 1px solid var(--border);
 }
 @container agent-composer (max-width: 600px) {
+  /* Narrow: keep one row of icons next to the agent picker. The model/mode pickers
+     collapse into the settings menu, so nothing has to wrap onto a second line. */
   .bar {
-    flex-direction: column;
-    align-items: stretch;
+    flex-direction: row;
+    align-items: center;
     gap: 6px;
   }
   .toolbar {
@@ -247,10 +297,22 @@
   .toolbar > .configPicker {
     flex: 0 1 auto;
     min-width: 0;
-    max-width: calc((100% - 28px) / 2);
   }
   .configPicker > button {
-    width: 100%;
+    min-width: 0;
+    max-width: 100%;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+  }
+  /* The agent picker keeps its icon and truncates its name instead of taking the row. */
+  .toolbar > :first-child {
+    flex: 0 1 auto;
+    min-width: 0;
+    max-width: 110px;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
   }
   .inlineSetting {
     display: none;
@@ -261,8 +323,13 @@
     margin-left: auto;
   }
   .actions {
-    width: 100%;
+    width: auto;
+    flex: none;
     margin-left: 0;
+    justify-content: flex-end;
+  }
+  .actions .spacer {
+    display: none;
   }
 }
 .pickerValue {
@@ -337,27 +404,15 @@
   overflow-wrap: break-word;
 }
 .popup {
+  display: flex;
+  flex-direction: column;
   width: min(560px, calc(100vw - 12px));
   border-radius: var(--radius-popup);
   cursor: default;
 }
 .items {
   max-height: 300px;
-  overflow: auto;
-  padding: 4px 0;
-}
-.item {
-  display: flex;
-  align-items: center;
-  gap: 6px;
-  height: var(--h-row);
-  margin: 0 4px;
-  padding: 0 8px;
-  border-radius: var(--radius-row);
-  white-space: nowrap;
-}
-.active {
-  background: var(--bg-list-selected);
+  margin: 4px 0;
 }
 .itemName {
   flex: none;

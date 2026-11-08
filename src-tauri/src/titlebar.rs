@@ -12,11 +12,13 @@ use objc2::{
     runtime::ProtocolObject,
 };
 use objc2_app_kit::{
-    NSToolbar, NSWindow, NSWindowDidExitFullScreenNotification, NSWindowStyleMask, NSWindowToolbarStyle,
+    NSToolbar, NSWindow, NSWindowDidBecomeKeyNotification, NSWindowDidEnterFullScreenNotification,
+    NSWindowDidExitFullScreenNotification, NSWindowStyleMask, NSWindowToolbarStyle,
     NSWindowWillEnterFullScreenNotification,
 };
 use objc2_foundation::{NSNotificationCenter, NSObjectProtocol};
 use std::{cell::Cell, cell::RefCell, collections::HashMap, rc::Rc};
+use tauri::Manager;
 
 /// Unified compact (38pt) and unified (52pt) toolbars; pick the one closer to the web bar.
 const COMPACT_MAX_HEIGHT: f64 = 45.0;
@@ -55,7 +57,7 @@ impl Drop for Observer {
 
 struct Tracked {
     state: Rc<Fullscreen>,
-    _observers: [Observer; 2],
+    _observers: [Observer; 4],
 }
 
 thread_local! {
@@ -71,7 +73,7 @@ fn apply(window: &NSWindow, state: &Fullscreen) {
     }
 }
 
-fn track(window: &NSWindow) -> Tracked {
+fn track(window: &NSWindow, app: &tauri::AppHandle) -> Tracked {
     let state = Rc::new(Fullscreen::default());
     if window.styleMask().contains(NSWindowStyleMask::FullScreen) {
         state.will_enter();
@@ -79,11 +81,20 @@ fn track(window: &NSWindow) -> Tracked {
     let observe = |name, change: fn(&Fullscreen)| {
         let weak = Weak::new(window);
         let state = state.clone();
+        let app = app.clone();
         let block = block2::RcBlock::new(move |_| {
             change(&state);
             if let Some(window) = weak.load() {
                 apply(&window, &state);
+                crate::macos::hide_tab_bar(&window);
             }
+            // The web title bar releases the room kept for the window buttons in full screen.
+            // Closing a window posts this while the runtime still holds its window table, and an
+            // emit from here evaluates script in that table; send it from outside the notification.
+            let app = app.clone();
+            tauri::async_runtime::spawn(async move {
+                app.state::<crate::state::AppState>().sink.emit(ide_core::IdeEvent::WindowFullscreenChanged);
+            });
         });
         let observer = unsafe {
             NSNotificationCenter::defaultCenter().addObserverForName_object_queue_usingBlock(
@@ -98,7 +109,10 @@ fn track(window: &NSWindow) -> Tracked {
     let observers = unsafe {
         [
             observe(NSWindowWillEnterFullScreenNotification, Fullscreen::will_enter),
+            observe(NSWindowDidEnterFullScreenNotification, Fullscreen::will_enter),
             observe(NSWindowDidExitFullScreenNotification, Fullscreen::did_exit),
+            // A tab shown in its group: AppKit's tab bar moves to it, and it may be in full screen.
+            observe(NSWindowDidBecomeKeyNotification, |_| {}),
         ]
     };
     Tracked { state, _observers: observers }
@@ -106,12 +120,13 @@ fn track(window: &NSWindow) -> Tracked {
 
 pub fn set_height(window: &tauri::WebviewWindow, height: f64) -> tauri::Result<()> {
     let label = window.label().to_owned();
+    let app = window.app_handle().clone();
     // with_webview runs on the AppKit thread.
     window.with_webview(move |webview| unsafe {
         let Some(mtm) = MainThreadMarker::new() else { return };
         let native = &*webview.ns_window().cast::<NSWindow>();
-        let state =
-            WINDOWS.with_borrow_mut(|windows| windows.entry(label).or_insert_with(|| track(native)).state.clone());
+        let state = WINDOWS
+            .with_borrow_mut(|windows| windows.entry(label).or_insert_with(|| track(native, &app)).state.clone());
         if native.toolbar().is_none() {
             let toolbar = NSToolbar::new(mtm);
             native.setToolbar(Some(&toolbar));

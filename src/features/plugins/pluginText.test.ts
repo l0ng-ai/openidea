@@ -47,6 +47,53 @@ describe("localizeContributions", () => {
     expect(out[3]).toBe(items[3]);
   });
 
+  it("translates page, group, table-column and action text without changing values", () => {
+    const field = {
+      key: "Refresh",
+      type: "array",
+      title: "Word Tools",
+      group: "Refresh",
+      default: [{ name: "Cancel" }],
+      items: {
+        type: "object",
+        title: "Word Tools",
+        properties: [{ key: "name", title: "Cancel", description: "Refresh", options: ["Cancel"], default: "Cancel" }],
+      },
+    };
+    const declaration = {
+      title: "Word Tools",
+      properties: [field],
+      pages: [
+        { id: "Refresh", title: "Cancel", properties: [field], actions: [{ title: "Refresh", command: "Refresh" }] },
+      ],
+    };
+    const out = localizeContributions([item("a", "settings", declaration)], { a: fr })[0]!.decl;
+    expect(out).toMatchObject({
+      title: "Outils de mots",
+      pages: [
+        {
+          id: "Refresh",
+          title: "Annuler",
+          actions: [{ title: "Actualiser", command: "Refresh" }],
+          properties: [
+            {
+              key: "Refresh",
+              title: "Outils de mots",
+              group: "Actualiser",
+              default: [{ name: "Cancel" }],
+              items: {
+                properties: [
+                  { key: "name", title: "Annuler", description: "Actualiser", options: ["Cancel"], default: "Cancel" },
+                ],
+              },
+            },
+          ],
+        },
+      ],
+    });
+    expect(declaration.pages[0]!.title).toBe("Cancel");
+  });
+
   it("keeps the names of secrets and translates their labels", () => {
     const secret = item("a", "secrets", { id: "k", name: "Refresh", label: "Cancel", description: "Refresh" });
     expect(localizeContributions([secret], { a: fr })[0]!.decl).toMatchObject({
@@ -77,6 +124,22 @@ describe("localizeContributions", () => {
     });
     expect(translatorOf({ a: fr }, "constructor")("Refresh")).toBe("Refresh");
     expect(translatorOf({ a: fr }, "a")("toString")).toBe("toString");
+  });
+
+  it("translates variable prompts without translating variable names or filenames", () => {
+    const items = [
+      item("a", "fileTemplates", {
+        id: "repo",
+        name: "Word Tools",
+        fileName: "Refresh",
+        variables: [{ name: "Refresh", prompt: "Cancel" }],
+      }),
+    ];
+    expect(localizeContributions(items, { a: fr })[0]!.decl).toMatchObject({
+      name: "Outils de mots",
+      fileName: "Refresh",
+      variables: [{ name: "Refresh", prompt: "Annuler" }],
+    });
   });
 
   it("returns the declarations as they are without a catalog", () => {

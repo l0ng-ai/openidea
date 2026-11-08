@@ -156,6 +156,14 @@ pub struct AgentConfigOption {
     pub via: AgentConfigVia,
 }
 
+#[derive(Clone, Copy, Debug, Default, PartialEq, Serialize, Deserialize, Type)]
+#[serde(rename_all = "camelCase")]
+pub enum AgentCommandSource {
+    #[default]
+    Command,
+    Skill,
+}
+
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize, Type)]
 #[serde(rename_all = "camelCase")]
 pub struct AgentCommand {
@@ -164,6 +172,8 @@ pub struct AgentCommand {
     pub description: String,
     /// What to type after the command, when it takes input.
     pub hint: Option<String>,
+    #[serde(default)]
+    pub source: AgentCommandSource,
 }
 
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize, Type)]
@@ -282,6 +292,9 @@ pub struct AgentPermissionOption {
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize, Type)]
 #[serde(rename_all = "camelCase")]
 pub struct AgentQuestion {
+    /// Stable answer identity when the provider supplies question ids.
+    #[serde(default)]
+    pub answer_key: Option<String>,
     #[serde(default)]
     pub header: String,
     pub question: String,
@@ -406,6 +419,9 @@ pub struct AgentProvider {
     pub env: BTreeMap<String, String>,
     /// Settings (models, modes…) the agent offered last time it ran; empty before its first session.
     pub config: Vec<AgentConfigOption>,
+    /// Thinking-level options by model value; absent models have not reported their levels.
+    #[serde(default)]
+    pub thought_levels: BTreeMap<String, Vec<AgentConfigOption>>,
     /// Slash commands it offered last time.
     pub commands: Vec<AgentCommand>,
     pub source: AgentSource,

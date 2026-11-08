@@ -33,6 +33,8 @@ async fn application_commands_work_in_restricted_projects_and_without_a_project(
     for command in [
         "app_info",
         "app_build_info",
+        "app_cli_install",
+        "app_cli_uninstall",
         "app_log_location",
         "app_check_update",
         "app_startup_update_check",
@@ -209,6 +211,24 @@ fn persists_user_decisions_locations_revocation_and_one_time_migration() {
     assert!(!TrustStore::load(&config, &data).trusted(&a).unwrap());
     std::fs::write(data.join("project-trust.json"), "broken").unwrap();
     assert!(TrustStore::load(&config, &data).trusted(&a).is_err(), "corruption fails closed");
+}
+
+#[test]
+fn an_inherited_folder_is_trusted_for_this_process_only() {
+    let tmp = tempfile::tempdir().unwrap();
+    let (config, data) = (tmp.path().join("config"), tmp.path().join("data"));
+    let root = tmp.path().join("workspaces/app");
+    std::fs::create_dir_all(&root).unwrap();
+    let trust = TrustStore::load(&config, &data);
+    assert!(!trust.trusted(&root).unwrap());
+    trust.inherit(&root).unwrap();
+    assert!(trust.trusted(&root).unwrap());
+    assert!(!trust.trusted(root.parent().unwrap()).unwrap(), "only that folder");
+    assert!(trust.status(&root).unwrap().decided, "the trust prompt doesn't ask again");
+    assert!(trust.decisions().unwrap().projects.is_empty(), "no decision is recorded");
+    assert!(!TrustStore::load(&config, &data).trusted(&root).unwrap(), "not persisted");
+    trust.decide(&root, false, false).unwrap();
+    assert!(!trust.trusted(&root).unwrap(), "a decision to restrict it still wins");
 }
 
 #[cfg(unix)]

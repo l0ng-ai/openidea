@@ -1,0 +1,86 @@
+.page,
+.group,
+.field,
+.array {
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+  min-width: 0;
+}
+
+.field {
+  gap: 4px;
+}
+
+.group h3 {
+  margin: 0;
+  font-size: inherit;
+}
+
+.description {
+  color: var(--fg-muted);
+  margin: 0;
+}
+
+.scroll {
+  overflow-x: auto;
+}
+
+.scroll table {
+  width: 100%;
+  border-collapse: collapse;
+}
+
+.scroll th,
+.scroll td {
+  padding: 6px;
+  text-align: left;
+  border-bottom: 1px solid var(--border);
+}
+
+.scroll input {
+  min-width: 100px;
+}
+
+.buttons {
+  display: flex;
+  gap: 6px;
+  flex-wrap: wrap;
+}
+
+.error {
+  color: var(--danger);
+}
+
+.multiline {
+  min-height: 100px;
+  padding: var(--space-2);
+  color: var(--fg);
+  background: var(--bg-input);
+  border: 1px solid var(--border);
+  font: inherit;
+  resize: vertical;
+}
+
+.add {
+  align-self: flex-start;
+}
+
+.scroll th {
+  white-space: nowrap;
+}
+
+.scroll th:last-child,
+.scroll td:last-child {
+  position: sticky;
+  right: 0;
+  background: var(--bg-dialog, var(--bg-elev));
+}
+
+.scroll td:last-child .buttons {
+  flex-wrap: nowrap;
+}
+
+.scalars {
+  max-width: 560px;
+}

@@ -31,10 +31,17 @@ import { useProject } from "@/platform/project";
 import type { ProjectInfo } from "@/bindings";
 import { defaultTaskProject } from "./project";
 import { HomeEditor } from "./HomeEditor";
+import composerStyles from "./Composer.module.css";
+import tagStyles from "@/ui/InlineTag.module.css";
 import { HOME, updateComposer, useAgents } from "./store";
 import { emptyDraft } from "./composerModel";
 
-const command = (name: string, description: string): AgentCommand => ({ name, description, hint: null });
+const command = (name: string, description: string, source: "command" | "skill" = "command"): AgentCommand => ({
+  name,
+  description,
+  hint: null,
+  source,
+});
 const claude: AgentProvider = {
   id: "claude",
   name: "Claude Code",
@@ -74,6 +81,53 @@ beforeEach(() => {
 });
 
 describe("New Task composer commands", () => {
+  it("reaches commands after the first twelve with the keyboard", async () => {
+    agentCommands.mockResolvedValue({
+      status: "ok",
+      data: Array.from({ length: 30 }, (_, i) => command(`command-${i}`, "")),
+    });
+    render(<HomeEditor />);
+    await waitFor(() => expect(agentCommands).toHaveBeenCalled());
+    const box = screen.getByRole("textbox");
+    fireEvent.change(box, { target: { value: "/" } });
+    await screen.findByRole("listbox", { name: "Commands" });
+    for (let i = 0; i < 29; i++) fireEvent.keyDown(box, { key: "ArrowDown" });
+    fireEvent.keyDown(box, { key: "Enter" });
+    expect(box).toHaveValue("/command-29 ");
+  });
+
+  it("groups commands before skills, skips headers, wraps and hides empty groups", async () => {
+    agentCommands.mockResolvedValue({
+      status: "ok",
+      data: [command("triage", "", "skill"), command("compact", ""), command("review", "", "skill")],
+    });
+    render(<HomeEditor />);
+    await waitFor(() => expect(agentCommands).toHaveBeenCalled());
+    const box = screen.getByRole("textbox");
+    fireEvent.change(box, { target: { value: "/" } });
+    const list = await screen.findByRole("listbox", { name: "Commands" });
+    expect(
+      within(list)
+        .getAllByRole("option")
+        .map((o) => o.textContent),
+    ).toEqual(["/compact", "/triage", "/review"]);
+    expect(list.textContent).toBe("Commands/compactSkills/triage/review");
+    expect(within(list).getByRole("option", { selected: true })).toHaveTextContent("/compact");
+    fireEvent.keyDown(box, { key: "ArrowDown" });
+    expect(within(list).getByRole("option", { selected: true })).toHaveTextContent("/triage");
+    fireEvent.keyDown(box, { key: "ArrowUp" });
+    fireEvent.keyDown(box, { key: "ArrowUp" });
+    expect(within(list).getByRole("option", { selected: true })).toHaveTextContent("/review");
+    fireEvent.keyDown(box, { key: "ArrowDown" });
+    expect(within(list).getByRole("option", { selected: true })).toHaveTextContent("/compact");
+    fireEvent.change(box, { target: { value: "/tri" } });
+    expect(list.textContent).toBe("Skills/triage");
+    fireEvent.keyDown(box, { key: "Tab" });
+    expect(box).toHaveValue("/triage ");
+    fireEvent.change(box, { target: { value: "/com" } });
+    expect((await screen.findByRole("listbox", { name: "Commands" })).textContent).toBe("Commands/compact");
+  });
+
   it("names the icon-only Start action and disables it while starting", async () => {
     agentCommands.mockResolvedValue({ status: "ok", data: [] });
     let finish!: (value: unknown) => void;
@@ -123,6 +177,16 @@ describe("New Task composer commands", () => {
     expect(agentCreate.mock.calls[0]![0]).toMatchObject({ prompt: { text: "/triage dry-run" }, provider: "claude" });
   });
 
+  it("tags file references and skills where they stand", async () => {
+    agentCommands.mockResolvedValue({ status: "ok", data: [command("triage", "One pass over issues")] });
+    render(<HomeEditor />);
+    await waitFor(() => expect(agentCommands).toHaveBeenCalled());
+    fireEvent.change(screen.getByRole("textbox"), { target: { value: "12 @Cargo.toml and /triage" } });
+    const mirror = document.querySelector(`.${composerStyles.mirror}`)!;
+    expect(within(mirror as HTMLElement).getByText("@Cargo.toml")).toHaveClass(tagStyles.tag!);
+    expect(within(mirror as HTMLElement).getByText("/triage")).toHaveClass(tagStyles.accent!);
+  });
+
   it("offers nothing the project does not have", async () => {
     agentCommands.mockResolvedValue({ status: "ok", data: [command("compact", "Free up context")] });
     render(<HomeEditor />);
@@ -149,6 +213,17 @@ describe("New Task composer commands", () => {
     expect(box).toHaveValue("/compact keep this context");
     await waitFor(() => expect(screen.queryByRole("listbox", { name: "Commands" })).toBeNull());
     expect(agentCreate).not.toHaveBeenCalled();
+  });
+
+  it("completes a command typed after other text in place", async () => {
+    agentCommands.mockResolvedValue({ status: "ok", data: [command("triage", "One pass over open issues and PRs")] });
+    render(<HomeEditor />);
+    await waitFor(() => expect(agentCommands).toHaveBeenCalled());
+    const box = screen.getByRole("textbox");
+    fireEvent.change(box, { target: { value: "fix the failing build /tri" } });
+    await screen.findByRole("listbox", { name: "Commands" });
+    fireEvent.keyDown(box, { key: "Enter" });
+    expect(useAgents.getState().composers.get(HOME)?.text).toBe("fix the failing build /triage ");
   });
 });
 

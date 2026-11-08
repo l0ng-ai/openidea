@@ -1,22 +1,36 @@
 /**
- * The Services pane of a node of a plugin's `location = "services"` view: the
- * tabs its `service-provider` returns, switched here without calling the plugin.
+ * The detail-provider tabs of a selected item, shared by Services and tool windows.
  */
 import { useEffect, useState } from "react";
 import type { ServiceTab } from "@/bindings";
+import { tx, VerbatimTextContext } from "@/platform/i18n";
 import { EmptyState, LogPane, Spinner, Tabs } from "@/ui";
 import { copySelectionOnKeyDown } from "@/ui/selectableText";
 import { pluginsBackend } from "../backend";
-import { useViewRevision } from "./viewStore";
+import { useToolWindowShown } from "@/workbench/contributions";
+import { useViewLocation, useViewRevision } from "./viewStore";
 import styles from "./ServicePane.module.css";
 
 interface ServicePaneProps {
   pluginId: string;
   view: string;
   itemKey: string;
+  after?: Promise<unknown>;
 }
 
-export function ServicePane({ pluginId, view, itemKey }: ServicePaneProps) {
+/** Plugin text is shown as written: the plugin translates it through its own catalog. */
+export function ServicePane(props: ServicePaneProps) {
+  const location = useViewLocation();
+  const shown = useToolWindowShown();
+  if (!shown) return null;
+  return (
+    <VerbatimTextContext.Provider value={true}>
+      <ServicePaneContent key={JSON.stringify([props.pluginId, props.view, props.itemKey, location])} {...props} />
+    </VerbatimTextContext.Provider>
+  );
+}
+
+function ServicePaneContent({ pluginId, view, itemKey, after }: ServicePaneProps) {
   // `views.refresh(<view>)` asks for the pane again.
   const revision = useViewRevision(pluginId, view);
   const [tabs, setTabs] = useState<ServiceTab[] | null>(null);
@@ -25,8 +39,8 @@ export function ServicePane({ pluginId, view, itemKey }: ServicePaneProps) {
 
   useEffect(() => {
     let alive = true;
-    pluginsBackend()
-      .serviceDetail(pluginId, view, itemKey)
+    Promise.resolve(after)
+      .then(() => (alive ? pluginsBackend().serviceDetail(pluginId, view, itemKey) : []))
       .then(
         (t) => {
           if (!alive) return;
@@ -38,12 +52,12 @@ export function ServicePane({ pluginId, view, itemKey }: ServicePaneProps) {
     return () => {
       alive = false;
     };
-  }, [pluginId, view, itemKey, revision]);
+  }, [pluginId, view, itemKey, revision, after]);
 
   if (error) return <EmptyState title={error} />;
   if (!tabs) return <Spinner />;
   const active = tabs.find((t) => t.id === picked) ?? tabs[0];
-  if (!active) return <EmptyState title="Nothing to show" />;
+  if (!active) return <EmptyState title={tx("Nothing to show")} />;
   return (
     <div className={styles.pane}>
       <Tabs

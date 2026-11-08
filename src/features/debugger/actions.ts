@@ -36,7 +36,14 @@ import { jumpToClass } from "./memory/jumpToClass";
 import { captureHeap } from "./heap/heapState";
 import { activeCapturedSnapshot, openHeapDump, saveHeapDump } from "./heap/heapDumpFiles";
 import { debugUnsupportedReason, launchConfigFor } from "./launch";
-import { isRemoteConfig, REMOTE_JVM, remoteAttachConfig, remoteJvmTarget } from "./remote";
+import {
+  isPythonAttachTarget,
+  isRemoteConfig,
+  pythonAttachConfig,
+  REMOTE_JVM,
+  remoteAttachConfig,
+  remoteJvmTarget,
+} from "./remote";
 import {
   activeSession,
   resumeExecution,
@@ -50,6 +57,7 @@ import {
   startSession,
   startPreparedSession,
   stopSession,
+  stopAssociatedProcess,
   useDebug,
   type DebugSession,
 } from "./state";
@@ -233,7 +241,7 @@ async function listenForJvm(name: string, host: string, port: number): Promise<n
 }
 
 /** Remote JVM Debug, Go Remote, Python / Node.js remote: attach over host:port. */
-async function startRemote(config: RunConfig, root: string) {
+async function startRemote(config: RunConfig, root: string, show?: boolean) {
   if (config.kind === REMOTE_JVM) {
     const t = remoteJvmTarget(config);
     let hostName = t.host;
@@ -245,37 +253,42 @@ async function startRemote(config: RunConfig, root: string) {
     }
     const launch = await javaAttachConfig({ name: config.name, module: t.module, hostName, port }, root);
     // A listen relay accepts one debugger: rerunning listens again through the configuration.
-    await startSession(launch, { runConfig: config, rerunnable: t.mode === "attach" });
+    await startSession(launch, { runConfig: config, rerunnable: t.mode === "attach", show });
     return;
   }
   const launch = remoteAttachConfig(config, root);
-  if (launch) await startSession(launch, { runConfig: config });
+  if (launch) await startSession(launch, { runConfig: config, show });
 }
 
 /** Preparation belongs to a session from the moment the action begins. */
-async function startJavaConfig(config: RunConfig, root: string, origin: RunConfig) {
-  await startPreparedSession(origin, async (signal, report) => {
-    const request = nextRequestId();
-    const cancel = () => {
-      void commands.cancelRequest(request).catch(() => undefined);
-    };
-    signal.addEventListener("abort", cancel, { once: true });
-    try {
-      await maybeEditorService()
-        ?.saveAll()
-        .catch(() => undefined);
-      signal.throwIfAborted();
-      return await javaLaunchConfig(config, root, { request, signal, report });
-    } finally {
-      signal.removeEventListener("abort", cancel);
-    }
-  });
+async function startJavaConfig(config: RunConfig, root: string, origin: RunConfig, show?: boolean) {
+  await startPreparedSession(
+    origin,
+    async (signal, report) => {
+      const request = nextRequestId();
+      const cancel = () => {
+        void commands.cancelRequest(request).catch(() => undefined);
+      };
+      signal.addEventListener("abort", cancel, { once: true });
+      try {
+        await maybeEditorService()
+          ?.saveAll()
+          .catch(() => undefined);
+        signal.throwIfAborted();
+        return await javaLaunchConfig(config, root, { request, signal, report });
+      } finally {
+        signal.removeEventListener("abort", cancel);
+      }
+    },
+    { show },
+  );
 }
 
 async function startConfig(arg: unknown) {
   const root = useProject.getState().project?.root;
   if (!root) return;
   const origin = arg && typeof arg === "object" && "origin" in arg && isRunConfig(arg.origin) ? arg.origin : null;
+  const show = arg && typeof arg === "object" && "show" in arg ? (arg as { show?: boolean }).show : undefined;
   const input = arg && typeof arg === "object" && "config" in arg ? arg.config : arg;
   let config: RunConfig | null = isRunConfig(input) ? input : null;
   if (!config) {
@@ -300,16 +313,16 @@ async function startConfig(arg: unknown) {
     config = configs[0]!;
     // Through Run's debug flow: Maven / Gradle / scripts start the JVM with a JDWP agent there.
     if (getAction("run.debugConfig")) {
-      await executeAction("run.debugConfig", config);
+      await executeAction("run.debugConfig", show === false ? { config, show: false } : config);
       return;
     }
   }
   if (isRemoteConfig(config)) {
-    await startRemote(config, root);
+    await startRemote(config, root, show);
     return;
   }
   if (isJavaDebuggable(config)) {
-    await startJavaConfig(config, root, origin ?? config);
+    await startJavaConfig(config, root, origin ?? config, show);
     return;
   }
   const dotnet = config.kind === "dotnet" && config.debugAdapter === "netcoredbg";
@@ -331,7 +344,7 @@ async function startConfig(arg: unknown) {
   await maybeEditorService()
     ?.saveAll()
     .catch(() => undefined);
-  await startSession(launch, { runConfig: origin ?? config });
+  await startSession(launch, { runConfig: origin ?? config, show });
   await xdebugCheck;
 }
 
@@ -389,6 +402,8 @@ export function registerDebugActions(): () => void {
       title: "Attach Debugger",
       category: "Debug",
       hidden: true,
+      // Also debugpy to a Python program in a run target's container
+      // (arg: { name, adapter: "debugpy", hostName, port, remoteRoot, process }).
       description:
         "Attach the Java debugger to a JVM listening for JDWP (arg: { name, module, hostName, port, process })",
       run: ({ arg }) =>
@@ -396,13 +411,19 @@ export function registerDebugActions(): () => void {
           tx("Cannot attach the debugger"),
           (async () => {
             const root = useProject.getState().project?.root;
-            if (!root || !isJavaAttachTarget(arg)) return;
-            const launch = await javaAttachConfig(arg, root);
-            await startSession(launch, {
+            if (!root) return;
+            let launch: LaunchConfig;
+            if (isPythonAttachTarget(arg)) launch = pythonAttachConfig(arg, root);
+            else if (isJavaAttachTarget(arg)) launch = await javaAttachConfig(arg, root);
+            else return;
+            const session = await startSession(launch, {
               process: (arg.process ?? null) as RunId | null,
               runConfig: arg.runConfig,
               rerunnable: false,
+              show: (arg as { show?: boolean }).show,
             });
+            if (session == null && isPythonAttachTarget(arg) && arg.process != null)
+              await stopAssociatedProcess(arg.process);
           })(),
         ),
     },

@@ -103,7 +103,7 @@ impl ClientHandler {
             }
         };
         let ended = matches!(&event, IdeEvent::Task { done: true, .. });
-        mgr.sink().emit(event);
+        self.server.emit(mgr.sink(), event);
         self.server.refresh_busy_status(mgr.sink());
         if ended {
             self.server.progress_ended();

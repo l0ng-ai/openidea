@@ -7,6 +7,7 @@ const ipc = vi.hoisted(() => {
   const ok = <T>(data: T) => Promise.resolve({ status: "ok" as const, data });
   return {
     ok,
+    runStop: vi.fn(() => ok(null)),
     debugStep: vi.fn(() => ok(null)),
     debugResume: vi.fn(() => ok(null)),
     debugForceStepOver: vi.fn(() => ok(null)),
@@ -582,4 +583,21 @@ describe("output class breakpoint restrictions", () => {
     expect(useSpecialBreakpoints.getState().fields).toHaveLength(0);
     expect(ipc.debugRunTo).not.toHaveBeenCalled();
   });
+});
+
+it("stops the waiting Python container if attaching fails", async () => {
+  useProject.setState({ project: { root: "/p" } as never });
+  ipc.debugStart.mockResolvedValueOnce({
+    status: "error",
+    error: { kind: "internal", message: "connection closed" },
+  } as never);
+  await executeAction("debug.attach", {
+    name: "container",
+    adapter: "debugpy",
+    hostName: "127.0.0.1",
+    port: 41234,
+    remoteRoot: "/app",
+    process: 9,
+  });
+  expect(ipc.runStop).toHaveBeenCalledWith(9);
 });

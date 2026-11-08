@@ -36,6 +36,10 @@ impl server::Server for Sshd {
 impl server::Handler for Sshd {
     type Error = russh::Error;
 
+    async fn auth_none(&mut self, user: &str) -> Result<Auth, Self::Error> {
+        Ok(if user == "coder" { Auth::Accept } else { Auth::reject() })
+    }
+
     async fn auth_password(&mut self, user: &str, password: &str) -> Result<Auth, Self::Error> {
         Ok(if user == "dev" && password == "secret" { Auth::Accept } else { Auth::reject() })
     }
@@ -233,6 +237,25 @@ async fn forwarding_keeps_the_port_number_when_it_is_free() {
 }
 
 #[tokio::test]
+async fn dropping_a_tunnel_closes_active_connections() {
+    let env = env().await;
+    let session = Arc::new(env.connect_trusted(&env.target(SshAuth::Password), Some("secret")).await.ok().unwrap());
+    let tunnel = Tunnel::listen(session.clone(), "127.0.0.1", env.echo_port).await.unwrap();
+    let mut socket = TcpStream::connect(("127.0.0.1", tunnel.port())).await.unwrap();
+    socket.write_all(b"ping").await.unwrap();
+    let mut reply = [0; 4];
+    socket.read_exact(&mut reply).await.unwrap();
+    assert_eq!(&reply, b"ping");
+    drop(tunnel);
+    let mut byte = [0];
+    assert_eq!(
+        tokio::time::timeout(std::time::Duration::from_secs(5), socket.read(&mut byte)).await.unwrap().unwrap(),
+        0
+    );
+    assert!(!session.is_closed());
+}
+
+#[tokio::test]
 async fn key_pair_authentication_with_and_without_passphrase() {
     let env = env().await;
     let target = SshTarget { key_file: fixture("client").to_string_lossy().into(), ..env.target(SshAuth::KeyPair) };
@@ -291,4 +314,47 @@ async fn upload_reports_a_command_that_stops_reading() {
         .expect("the upload must end when the command exits")
         .unwrap_err();
     assert!(err.message.contains("oops"), "{}", err.message);
+}
+
+#[cfg(unix)]
+#[tokio::test]
+async fn openssh_proxy_command_and_none_authentication() {
+    let mut env = env().await;
+    let config = env._tmp.path().join("ssh_config");
+    std::fs::write(
+        &config,
+        format!(
+            "Host *.coder\n\tStrictHostKeyChecking=no\n\tUserKnownHostsFile=/dev/null\n\tProxyCommand nc 127.0.0.1 {}\n",
+            env.ssh_port
+        ),
+    )
+    .unwrap();
+    env.files.config = Some(config);
+    let target = SshTarget {
+        host: "deng-devbox.coder".into(),
+        port: Some(22),
+        user: "coder".into(),
+        auth: SshAuth::OpenSsh,
+        ..Default::default()
+    };
+    let session = env.connect(&target, None).await.expect("ProxyCommand + none auth should connect");
+    let out = session.exec("uname -srm", None).await.unwrap();
+    assert_eq!(out.stdout_str(), "ran: uname -srm");
+}
+
+#[tokio::test]
+async fn accept_new_records_an_unknown_key_and_still_refuses_a_changed_one() {
+    let mut env = env().await;
+    let config = env._tmp.path().join("ssh_config");
+    std::fs::write(&config, "Host 127.0.0.1\n\tStrictHostKeyChecking accept-new\n").unwrap();
+    env.files.config = Some(config);
+    let target = SshTarget { user: "coder".into(), ..env.target(SshAuth::OpenSsh) };
+    assert!(env.connect(&target, None).await.is_ok());
+    let recorded = std::fs::read_to_string(&env.files.known_hosts).unwrap();
+    assert!(recorded.trim_start().starts_with(&format!("[127.0.0.1]:{} ssh-ed25519 ", env.ssh_port)), "{recorded}");
+
+    let other = key("client", None).public_key().to_openssh().unwrap();
+    std::fs::write(&env.files.known_hosts, format!("[127.0.0.1]:{} {other}\n", env.ssh_port)).unwrap();
+    let msg = denied(env.connect(&target, None).await);
+    assert!(msg.contains("has changed"), "{msg}");
 }

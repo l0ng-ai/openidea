@@ -491,8 +491,13 @@ function RunTargetsEditor() {
               className={clsx(styles.toolRow, t.id === selected && styles.toolRowSelected)}
               onMouseDown={() => setSelected(t.id)}
             >
-              <span>{t.name || t.id}</span>
-              <span className={styles.toolGroup}>
+              <span className={styles.toolName} title={t.name || t.id}>
+                {t.name || t.id}
+              </span>
+              <span
+                className={styles.toolGroup}
+                title={t.kind === "ssh" ? (t.sshConfig ? sshName(t.sshConfig) : "") : containerSummary(t)}
+              >
                 {t.kind === "ssh" ? (t.sshConfig ? sshName(t.sshConfig) : "") : containerSummary(t)}
               </span>
             </div>
@@ -553,7 +558,7 @@ function RunTargetsEditor() {
         </T>{" "}
         <T>
           {
-            "Docker connections come from the Services tool window. Each run gets a new container, removed when it ends; debugging, coverage and profiling stay on this machine."
+            "Docker connections come from the Services tool window. Each run gets a new container, removed when it ends. Python configurations can be debugged there; coverage and profiling stay on this machine."
           }
         </T>
       </div>

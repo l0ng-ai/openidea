@@ -27,6 +27,8 @@ pub struct EditorContext {
 pub struct Invocation {
     pub client: Option<String>,
     pub workspace_root: Option<PathBuf>,
+    /// Settings actions can read the global layer while retaining their project context.
+    pub global_settings: bool,
     pub editor: Option<EditorContext>,
     /// Files and folders the command was run on.
     pub selected_paths: Vec<PathBuf>,
@@ -88,6 +90,8 @@ pub enum Prompt {
     Input { prompt: String, value: Option<String>, multiline: bool },
     #[serde(rename_all = "camelCase")]
     Confirm { title: String, message: String },
+    #[serde(rename_all = "camelCase")]
+    PickDirectory { title: String, initial: Option<String> },
 }
 
 /// Kinds of workbench events a plugin can subscribe to (`on-event:<kind>`).
@@ -96,6 +100,7 @@ pub enum Prompt {
 pub enum EventKind {
     FileOpened,
     FileSaved,
+    FilesChanged,
     EditorFocused,
     ActionPerformed,
     VcsChanged,
@@ -103,9 +108,10 @@ pub enum EventKind {
 }
 
 impl EventKind {
-    pub const ALL: [Self; 6] = [
+    pub const ALL: [Self; 7] = [
         Self::FileOpened,
         Self::FileSaved,
+        Self::FilesChanged,
         Self::EditorFocused,
         Self::ActionPerformed,
         Self::VcsChanged,
@@ -116,6 +122,7 @@ impl EventKind {
         match self {
             Self::FileOpened => "file-opened",
             Self::FileSaved => "file-saved",
+            Self::FilesChanged => "files-changed",
             Self::EditorFocused => "editor-focused",
             Self::ActionPerformed => "action-performed",
             Self::VcsChanged => "vcs-changed",
@@ -173,12 +180,21 @@ pub struct ActionPerformed {
     pub shortcut: Option<String>,
 }
 
+/// Debounced worktree changes. Paths use the same absolute form as `file-saved`.
+#[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize, Type)]
+pub struct FilesChanged {
+    pub created: Vec<String>,
+    pub modified: Vec<String>,
+    pub removed: Vec<String>,
+}
+
 /// A workbench event delivered to plugins.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, Type)]
 #[serde(rename_all = "camelCase", tag = "kind", content = "value")]
 pub enum WorkbenchEvent {
     FileOpened(String),
     FileSaved(String),
+    FilesChanged(FilesChanged),
     EditorFocused(Option<String>),
     ActionPerformed(ActionPerformed),
     VcsChanged(String),
@@ -190,6 +206,7 @@ impl WorkbenchEvent {
         match self {
             Self::FileOpened(_) => EventKind::FileOpened,
             Self::FileSaved(_) => EventKind::FileSaved,
+            Self::FilesChanged(_) => EventKind::FilesChanged,
             Self::EditorFocused(_) => EventKind::EditorFocused,
             Self::ActionPerformed(_) => EventKind::ActionPerformed,
             Self::VcsChanged(_) => EventKind::VcsChanged,
@@ -350,6 +367,24 @@ pub struct ProcessOutput {
     pub stderr: String,
 }
 
+/// What to run: the approved file of `process:<program>`, its arguments and
+/// the environment to add to the inherited one (WIT `process.command`).
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct ProcessCommand {
+    pub program: String,
+    pub args: Vec<String>,
+    pub env: Vec<(String, String)>,
+}
+
+/// What a kept-running program printed since the last read, and its exit
+/// status once it ended (WIT `process.chunk`).
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct ProcessChunk {
+    pub stdout: String,
+    pub stderr: String,
+    pub status: Option<i32>,
+}
+
 /// Where `net:` requests may go: the URL's host when it is `https`, or
 /// `http` to the loopback interface.
 pub fn net_host(url: &str) -> Result<String, String> {
@@ -413,6 +448,15 @@ pub struct Location {
     pub range: ide_core::Range,
 }
 
+/// A symbol in the current project index. Ranges use UTF-16 columns.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct SymbolInfo {
+    pub name: String,
+    pub kind: String,
+    pub container: Option<String>,
+    pub location: Location,
+}
+
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct CompletionItem {
     pub label: String,
@@ -442,8 +486,21 @@ pub struct CodeAction {
     pub kind: Option<String>,
     pub preferred: bool,
     pub edits: Vec<(PathBuf, Vec<ide_core::TextEdit>)>,
+    /// Applied before `edits`, in one workspace edit with them.
+    pub operations: Vec<FileOperation>,
+    /// Opened once the action is applied.
+    pub open: Option<PathBuf>,
     /// The plugin's reference: the edits come from `resolve_code_action`.
     pub data: Option<String>,
+    /// Listed by the `file-actions` export, which also resolves it.
+    pub file_action: bool,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum FileOperation {
+    Create { path: PathBuf, text: String, overwrite: bool },
+    Rename { from: PathBuf, to: PathBuf },
+    Delete { path: PathBuf },
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -512,6 +569,8 @@ pub struct ViewListItem {
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize, Type)]
 #[serde(rename_all = "camelCase", tag = "kind", content = "value")]
 pub enum FieldValue {
+    Label(String),
+    ReadonlyText { text: String, multiline: bool },
     Text(String),
     Multiline(String),
     Checkbox(bool),
@@ -526,6 +585,14 @@ pub struct ViewField {
     pub value: FieldValue,
 }
 
+/// A sortable table's order: the column and the direction.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize, Type)]
+#[serde(rename_all = "camelCase")]
+pub struct TableSort {
+    pub column: u32,
+    pub descending: bool,
+}
+
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize, Type)]
 #[serde(rename_all = "camelCase")]
 pub struct ViewTable {
@@ -534,6 +601,10 @@ pub struct ViewTable {
     pub first_row: u32,
     pub rows: Vec<Vec<String>>,
     pub editable: bool,
+    /// The plugin opted its headers in to click-to-sort (a `table` body through `other`).
+    pub sortable: bool,
+    /// The sort the plugin orders by (none: no arrow yet).
+    pub sort: Option<TableSort>,
 }
 
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize, Type)]
@@ -614,4 +685,28 @@ pub enum ViewEvent {
     InsertRow { before: u32 },
     DeleteRows { rows: Vec<u32> },
     Message { text: String },
+    // A sortable table's header click: the column and the direction (leaves
+    // as an `other` view-event, kind `sort`). See `TableSort`.
+    Sort { column: u32, descending: bool },
+    TableSelect { row: u32 },
+    TableActivate { row: u32 },
+}
+
+/// A plugin's HTTP route declaration in a project.
+#[derive(Clone, Debug)]
+pub struct Endpoint {
+    pub method: Option<String>,
+    pub path: String,
+    pub framework: String,
+    pub handler: Option<String>,
+    pub location: Location,
+}
+
+/// A notification button that runs one of the publishing plugin's commands.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, Type)]
+#[serde(rename_all = "camelCase")]
+pub struct NotificationAction {
+    pub label: String,
+    pub command: String,
+    pub argument: Option<String>,
 }

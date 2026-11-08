@@ -77,8 +77,11 @@ pub async fn sdk_php_composer_install(
 pub async fn sdk_project_libraries(
     window: Window,
     state: State<'_, AppState>,
+    request: RequestId,
+    on_groups: Channel<Vec<ide_sdk::libraries::LibraryGroup>>,
 ) -> IdeResult<Vec<ide_sdk::libraries::LibraryGroup>> {
-    ide_host::ops::sdk::sdk_project_libraries(&state.host, window.label()).await
+    ide_host::ops::sdk::sdk_project_libraries(&state.host, window.label(), request, crate::commands::sender(on_groups))
+        .await
 }
 
 /// Looks up `names` (bare command names): `node_modules/.bin` above `near`, then the search path.
@@ -91,6 +94,17 @@ pub async fn sdk_locate_tools(
     near: Option<PathBuf>,
 ) -> IdeResult<LocatedTools> {
     ide_host::ops::sdk::sdk_locate_tools(&state.host, window.label(), names, near).await
+}
+
+/// An existing Python executable or virtualenv folder as an SDK; `None` if Python cannot run.
+#[tauri::command]
+#[specta::specta]
+pub async fn sdk_python_interpreter(
+    window: Window,
+    state: State<'_, AppState>,
+    path: PathBuf,
+) -> IdeResult<Option<Sdk>> {
+    ide_host::ops::sdk::sdk_python_interpreter(&state.host, window.label(), path).await
 }
 
 /// Creates a Python environment with `tool` (`venv` / `uv` / `poetry`); output streams through `on_output`.

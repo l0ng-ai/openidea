@@ -35,9 +35,14 @@ import { applyCodeAction, quickFixesAt } from "./intentions";
 import { editorPrefs } from "@/platform/editorSettings";
 import { CONTRIBUTED_HOVER, contributedAt, type ContributedHover } from "@/editor/api";
 import { navigationModifierHeld, onNavigationModifier, pointerTarget } from "@/platform/navigationModifier";
-import { phpConstructAt } from "./phpConstructs";
+import { languageSemantics } from "./semantic";
 
 let hoverRequest: RequestId | null = null;
+
+/** Documentation of a language construct (PHP's `empty`) at `pos`, via the language's registration. */
+function constructAt(state: EditorView["state"], pos: number, language: string | null | undefined) {
+  return languageSemantics(language)?.constructAt?.(state, pos) ?? null;
+}
 
 export async function requestHover(view: EditorView, pos: number): Promise<Hover | null> {
   const own = contributedAt<ContributedHover>(view.state, CONTRIBUTED_HOVER, pos);
@@ -49,7 +54,7 @@ export async function requestHover(view: EditorView, pos: number): Promise<Hover
   }
   const doc = docOf(view);
   if (!doc) return null;
-  const construct = phpConstructAt(view.state, pos, doc.language);
+  const construct = constructAt(view.state, pos, doc.language);
   if (construct)
     return {
       contents: { kind: "markdown", value: construct.markdown },
@@ -238,7 +243,7 @@ function showDoc(view: EditorView, entry: DocEntry, at: number) {
 }
 
 export function showPhpConstructDocumentation(view: EditorView, pos: number): boolean {
-  const construct = phpConstructAt(view.state, pos, docOf(view)?.language ?? null);
+  const construct = constructAt(view.state, pos, docOf(view)?.language);
   if (!construct) return false;
   showDoc(view, { markup: { kind: "markdown", value: construct.markdown }, language: "PHP" }, construct.from);
   return true;
@@ -278,7 +283,7 @@ export async function quickDocumentation(view: EditorView) {
         markup: hover.contents,
         language: ctx?.uiMode ?? null,
         source:
-          ctx && !phpConstructAt(view.state, pos, ctx.language)
+          ctx && !constructAt(view.state, pos, ctx.language)
             ? definitionOf(ctx.doc, offsetToPos(view.state.doc, pos))
             : undefined,
       },

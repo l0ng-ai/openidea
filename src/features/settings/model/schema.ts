@@ -45,6 +45,7 @@ export interface CustomKeymapSettings {
 }
 
 export interface ValidSettings extends WorkflowSettings {
+  plugins: Record<string, Record<string, unknown>>;
   general: { reopenLastProject: boolean; confirmExit: boolean } & GeneralExtras;
   appearance: { theme: ThemeId; accent: string; uiFontSize: number; locale: Locale } & AppearanceExtras;
   editor: {
@@ -95,6 +96,8 @@ export interface ValidSettings extends WorkflowSettings {
   languageServers: Record<string, LanguageServerEntry>;
   /** Tools › Agents › Chat: the meters in an agent task's header. */
   agents: Required<AgentSettings>;
+  /** Tools › MCP Server (global). */
+  mcpServer: { enabled: boolean };
 }
 
 /** One `languageServers.<name>` entry; every field optional, like in settings.toml. */
@@ -121,6 +124,7 @@ function validateSpelling(raw: unknown): SpellingValid {
 export { ACCENT_PRESETS } from "@/workbench/theme";
 
 export const DEFAULT_SETTINGS: ValidSettings = {
+  plugins: {},
   general: { reopenLastProject: true, confirmExit: true, ...DEFAULT_GENERAL_EXTRAS },
   appearance: { theme: "light", accent: "#3871e1", uiFontSize: 13, locale: "en", ...DEFAULT_APPEARANCE_EXTRAS },
   editor: {
@@ -162,6 +166,7 @@ export const DEFAULT_SETTINGS: ValidSettings = {
   tools: {},
   languageServers: {},
   agents: { showContextUsage: true, showWorkTime: true, showUsageLimits: true, showCost: false },
+  mcpServer: { enabled: false },
   ...DEFAULT_WORKFLOW,
 };
 
@@ -213,6 +218,7 @@ export function validateSettings(raw: Settings | unknown): ValidSettings {
     customKeymaps[id] = { name: str(k.name, id), parent: str(k.parent, d.keymap), overrides: bindingMap(k.overrides) };
   }
   return {
+    plugins: Object.fromEntries(Object.entries(obj(root.plugins)).map(([id, values]) => [id, obj(values)])),
     general: {
       ...validateGeneralExtras(g),
       reopenLastProject: bool(g.reopenLastProject, d.general.reopenLastProject),
@@ -280,6 +286,7 @@ export function validateSettings(raw: Settings | unknown): ValidSettings {
       showUsageLimits: bool(agents.showUsageLimits, d.agents.showUsageLimits),
       showCost: bool(agents.showCost, d.agents.showCost),
     },
+    mcpServer: { enabled: bool(obj(root.mcpServer).enabled, d.mcpServer.enabled) },
     ...validateWorkflow(root),
   };
 }

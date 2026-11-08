@@ -238,6 +238,12 @@
   margin: 0 4px;
   background: var(--border);
 }
+.treeFilter {
+  flex: 1;
+  min-width: 80px;
+  max-width: 280px;
+  margin-left: 4px;
+}
 .treeHost {
   flex: 1;
   min-height: 0;
@@ -344,11 +350,15 @@
 /* Dialogs. */
 .form {
   display: grid;
-  grid-template-columns: max-content 1fr;
+  grid-template-columns: fit-content(40%) minmax(0, 1fr);
   align-items: center;
   gap: 8px 12px;
-  min-width: 440px;
+  min-width: 0;
   padding: 14px;
+  overflow-wrap: anywhere;
+}
+.form > * {
+  min-width: 0;
 }
 .formLabel {
   color: var(--fg-secondary);
@@ -1230,6 +1240,12 @@
 .sqlInputText {
   color: transparent !important;
   caret-color: var(--fg-strong);
+}
+/* The input's own glyphs are transparent so the highlight layer below paints them; without
+   this the selection would be an empty highlight. */
+.sqlInputText::selection {
+  background: var(--bg-editor-selection);
+  color: var(--fg-strong);
 }
 .sqlHighlight {
   position: absolute;

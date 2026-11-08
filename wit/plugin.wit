@@ -3,16 +3,18 @@
 /// API"); a 2.0 keeps 1.0 running through an adapter in the host.
 ///
 /// A plugin is a WebAssembly component targeting the `plugin` world (or
-/// `plugin-syntax`). It runs sandboxed: no filesystem, network, environment
-/// or processes beyond WASI's clocks and randomness; everything else goes
-/// through the imports below, gated by the capabilities granted in
-/// `plugin.toml` (a missing one returns `error::denied`).
+/// `plugin-syntax`). It runs sandboxed: no file system, network, environment
+/// or processes beyond WASI's clocks and randomness; files are read through
+/// `fs` and `workspace`, and everything else goes through the imports below,
+/// gated by the capabilities granted in `plugin.toml` (a missing one returns
+/// `error::denied`).
 package openidea:plugin@1.3.0;
 
 world plugin {
     import log;
     import ui;
     import storage;
+    import fs;
     import workspace;
     import editor;
     import invocation;
@@ -57,11 +59,13 @@ world plugin-indexing {
     export document-indexer;
 }
 
+/// A plugin with semantic tokens (`semantic-tokens` under `[[contributes.providers]]`).
 world plugin-semantic-tokens {
     include plugin;
     export semantic-tokens-provider;
 }
 
+/// A plugin adding to hovers (`hover` under `[[contributes.providers]]`).
 world plugin-hover {
     include plugin;
     export hover-provider;
@@ -86,6 +90,12 @@ world plugin-commit-checks {
     export commit-checker;
 }
 
+/// A plugin with file-changing code actions (`file-actions`, next to `[[contributes.providers]]`).
+world plugin-file-actions {
+    include plugin;
+    export file-actions;
+}
+
 /// Only the `syntax-provider` export: guests generate it next to `plugin`
 /// (the component tools merge both into one component).
 world syntax {
@@ -107,10 +117,12 @@ world indexing {
     export document-indexer;
 }
 
+/// Only the `semantic-tokens-provider` export, generated next to `plugin` like `syntax`.
 world semantic-tokens {
     export semantic-tokens-provider;
 }
 
+/// Only the `hover-provider` export, generated next to `plugin` like `syntax`.
 world hover {
     export hover-provider;
 }
@@ -128,4 +140,31 @@ world details {
 /// Only the `commit-checker` export, generated next to `plugin` like `syntax`.
 world commit-checks {
     export commit-checker;
+}
+
+/// Only the `file-actions` export, generated next to `plugin` like `syntax`.
+world file-actions-provider {
+    export file-actions;
+}
+
+/// A plugin with project HTTP endpoints (`[[contributes.endpoints]]`).
+world plugin-endpoints {
+    include plugin;
+    export endpoints-provider;
+}
+
+/// Only the `endpoints-provider` export, generated next to `plugin` like `syntax`.
+world endpoints {
+    export endpoints-provider;
+}
+
+/// A plugin with diagnostics under `[[contributes.providers]]`.
+world plugin-diagnostics {
+    include plugin;
+    export diagnostics-provider;
+}
+
+/// `diagnostics` is already the released host interface name.
+world editor-diagnostics {
+    export diagnostics-provider;
 }

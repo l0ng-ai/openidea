@@ -1,9 +1,10 @@
 import { afterEach, describe, expect, it } from "vitest";
-import { EditorState } from "@codemirror/state";
-import { EditorView } from "@codemirror/view";
+import { EditorSelection, EditorState, Prec } from "@codemirror/state";
+import { Decoration, EditorView } from "@codemirror/view";
 import { setSearchQuery } from "@codemirror/search";
 import { StreamLanguage } from "@codemirror/language";
 import { literalKindAt } from "./literals";
+import { selectionMarks } from "./selectionMarks";
 import {
   countMatches,
   findResultLines,
@@ -20,6 +21,7 @@ import {
   replaceAll,
   replaceNext,
   setFindScope,
+  setFindOpen,
   type FindOptions,
 } from "./find";
 
@@ -38,6 +40,36 @@ function make(doc: string, o: Partial<FindOptions>, scope?: { from: number; to: 
 }
 
 const sel = (v: EditorView) => [v.state.selection.main.from, v.state.selection.main.to];
+
+describe("find backgrounds", () => {
+  it.each([
+    ["semantic", Prec.highest],
+    ["syntax", Prec.high],
+    ["ordinary", Prec.default],
+  ])("keeps matches inside %s backgrounds and selections inside matches", (_name, precedence) => {
+    const view = new EditorView({
+      parent: document.body,
+      doc: "Session",
+      extensions: [
+        selectionMarks,
+        findExtension(),
+        precedence(EditorView.decorations.of(Decoration.set(Decoration.mark({ class: "token" }).range(0, 7)))),
+      ],
+    });
+    views.push(view);
+    view.dispatch({
+      effects: [
+        setFindOpen.of(true),
+        setSearchQuery.of(
+          makeQuery({ search: "Session", caseSensitive: true, wholeWord: false, regexp: false, replace: "" }),
+        ),
+      ],
+      selection: EditorSelection.single(1, 6),
+    });
+    expect(view.contentDOM.querySelector(".token .cm-openidea-findMatch")?.textContent).toBe("Session");
+    expect(view.contentDOM.querySelector(".cm-openidea-findMatch .cm-openidea-selected")?.textContent).toBe("essio");
+  });
+});
 
 describe("find in selection", () => {
   const doc = "a1 a2\na3 a4\na5 a6\n";

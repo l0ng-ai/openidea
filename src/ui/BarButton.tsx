@@ -1,5 +1,6 @@
 import { forwardRef, type ButtonHTMLAttributes } from "react";
 import clsx from "clsx";
+import { useGivenTx } from "@/platform/i18n";
 import { tooltipAttrs } from "./Tooltip";
 import styles from "./BarButton.module.css";
 
@@ -18,12 +19,13 @@ export const BarButton = forwardRef<HTMLButtonElement, BarButtonProps>(function 
   { variant = "status", mono, tooltip, shortcut, emphasis, className, type = "button", children, ...rest },
   ref,
 ) {
+  const given = useGivenTx();
   return (
     <button
       ref={ref}
       type={type}
       className={clsx(styles.button, styles[variant], mono && styles.mono, emphasis && styles.emphasis, className)}
-      {...tooltipAttrs(tooltip, shortcut)}
+      {...tooltipAttrs(given(tooltip), shortcut, true)}
       {...rest}
     >
       {children}

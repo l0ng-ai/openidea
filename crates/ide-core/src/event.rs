@@ -12,9 +12,25 @@ use std::sync::Arc;
 
 #[derive(Clone, Debug, Serialize, Deserialize, Type)]
 #[serde(tag = "type", rename_all = "camelCase", rename_all_fields = "camelCase")]
+pub enum McpUiRequest {
+    Confirm { client: String, tool: String, subject: String, project: String, detail: Option<String> },
+    OpenFile { path: crate::IpcPath, line: Option<u32>, column: Option<u32> },
+}
+
+#[derive(Clone, Debug, Serialize, Deserialize, Type)]
+#[serde(tag = "type", rename_all = "camelCase", rename_all_fields = "camelCase")]
 pub enum IdeEvent {
+    McpRequest {
+        id: u32,
+        request: McpUiRequest,
+    },
+    McpRequestClosed {
+        id: u32,
+    },
     /// Project window membership or selection changed.
     WindowGroupsChanged,
+    /// A window entered or left full screen, itself or as a member of a full-screen window group.
+    WindowFullscreenChanged,
     ProjectTrustChanged {
         root: crate::IpcPath,
         trusted: bool,

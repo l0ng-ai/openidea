@@ -124,7 +124,7 @@ async function withGradleAttachListener(launch: RunConfig): Promise<RunConfig> {
 }
 
 /** Runs `config` with a JDWP agent and attaches the Java debugger to every JVM it starts. */
-export async function debugWithAgent(config: RunConfig): Promise<boolean> {
+export async function debugWithAgent(config: RunConfig, show?: boolean): Promise<boolean> {
   const agent = jdwpLaunch(config);
   if (!agent) return false;
   const launch = await withGradleAttachListener(agent);
@@ -140,10 +140,12 @@ export async function debugWithAgent(config: RunConfig): Promise<boolean> {
       port,
       process: runId,
       runConfig: config,
+      show,
     });
   };
   const session = await startRun(config, undefined, undefined, {
     launch,
+    show,
     onLine: (line) => {
       const port = jdwpListeningPort(line);
       if (port === null) return;

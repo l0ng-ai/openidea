@@ -27,7 +27,12 @@ import {
   type InspectionRef,
 } from "@/platform/inspections";
 
-type Listener = () => void;
+export interface DiagnosticPublication {
+  source: string;
+  items: Diagnostic[];
+}
+
+type Listener = (publication?: DiagnosticPublication) => void;
 
 const byPath = new Map<string, Map<string, Diagnostic[]>>();
 const listeners = new Map<string, Set<Listener>>();
@@ -45,11 +50,11 @@ export function setFileDiagnostics(path: string, source: string, items: Diagnost
     );
 }
 
-function storeDiagnostics(path: string, source: string, items: Diagnostic[]) {
+function storeDiagnostics(path: string, source: string, items: Diagnostic[], published = false) {
   let sources = byPath.get(path);
   if (!items.length) {
-    if (!sources?.delete(source)) return;
-    if (!sources.size) byPath.delete(path);
+    if (!sources?.delete(source) && !published) return;
+    if (!sources?.size) byPath.delete(path);
   } else {
     if (!sources) byPath.set(path, (sources = new Map()));
     sources.set(
@@ -58,7 +63,7 @@ function storeDiagnostics(path: string, source: string, items: Diagnostic[]) {
     );
     noteDiagnosticCodes(source, items);
   }
-  listeners.get(path)?.forEach((l) => l());
+  listeners.get(path)?.forEach((l) => l(published ? { source, items } : undefined));
 }
 
 /** Diagnostics of `path` under the inspection profile in effect. */
@@ -97,7 +102,7 @@ export function subscribeDiagnostics(path: string, l: Listener): () => void {
 }
 
 export function installDiagnosticsEvents(): () => void {
-  const off = onIdeEvent("diagnostics", (e) => storeDiagnostics(e.path, e.source, e.items));
+  const off = onIdeEvent("diagnostics", (e) => storeDiagnostics(e.path, e.source, e.items, true));
   // Diagnostics published before this window (re)loaded were missed: ask for them again.
   const resend = () => {
     if (isTauri())

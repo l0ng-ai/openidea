@@ -71,6 +71,9 @@ export type Banner = "binary" | "tooLarge" | "readOnly" | "library" | null;
 export interface DocAttachmentTarget {
   /** Applies changes that are already in the model (another view / the backend). */
   applyExternal(changes: ChangeSet, annotations: Annotation<unknown>[]): void;
+  /** Secondary views that share the text tab's undo history hand it over as tabs open/close. */
+  historyState?(): EditorState | null;
+  adoptHistory?(state: EditorState): void;
 }
 
 export interface DocMeta {
@@ -310,6 +313,8 @@ export class DocModel {
   }
 
   removeSlot(slot: EditorSlot) {
+    if (this.slots.size === 1)
+      for (const attachment of this.attachments) attachment.adoptHistory?.(slot.currentState());
     this.slots.delete(slot);
     if (this.lastFocused === slot) this.lastFocused = null;
     if (!this.inUse()) this.manager.release(this);
@@ -538,8 +543,8 @@ export class DocModel {
     const [folds, outline, highlights] = await Promise.allSettled([
       backend.folding(this.doc),
       backend.outline(this.doc),
-      // Without a CodeMirror mode, colours come from the grammar's tree-sitter query.
-      this.desc ? null : backend.highlights(this.doc),
+      // Kotlin's stream mode lacks declaration categories; the grammar supplements it.
+      !this.desc || this.meta.language === "kotlin" ? backend.highlights(this.doc) : null,
     ]);
     if (this.closed) return;
     if (counter !== this.changeCounter) {

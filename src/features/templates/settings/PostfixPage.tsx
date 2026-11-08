@@ -63,7 +63,9 @@ export function PostfixPage() {
               aria-label={tx`Enable .${t.key}`}
             />
             <span className={styles.mono}>.{t.key}</span>
-            <span className={styles.itemDetail}>{t.description}</span>
+            <span className={styles.itemDetail} title={t.description}>
+              {t.description}
+            </span>
           </div>
         ))}
       </div>

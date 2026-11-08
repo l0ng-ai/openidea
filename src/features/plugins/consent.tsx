@@ -103,7 +103,7 @@ function ConsentDialog({ pending, onDone }: { pending: Pending; onDone: () => vo
                     •
                   </span>
                 )}
-                <span className={styles.itemMain}>{c.description}</span>
+                <span className={styles.itemMain}>{tx(c.description)}</span>
                 <span className={styles.mono}>{c.id}</span>
                 <Badge tone={RISK_LABEL[c.risk].tone}>{RISK_LABEL[c.risk].label}</Badge>
               </li>

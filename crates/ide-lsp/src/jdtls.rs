@@ -42,6 +42,12 @@ const ACCESS_OPTIONS: [&str; 2] = [
     "org.eclipse.jdt.core.compiler.problem.discouragedReference",
 ];
 
+const LEVEL_OPTIONS: [&str; 3] = [
+    "org.eclipse.jdt.core.compiler.source",
+    "org.eclipse.jdt.core.compiler.compliance",
+    "org.eclipse.jdt.core.compiler.codegen.targetPlatform",
+];
+
 /// Keep the source model in protocol settings so jdtls's invisible-project
 /// initialization and configuration use the same roots as workspace builds.
 pub fn configure_source_paths(cfg: &mut ide_language::LanguageServerConfig, paths: Option<Vec<String>>) {
@@ -53,6 +59,115 @@ pub fn configure_source_paths(cfg: &mut ide_language::LanguageServerConfig, path
         settings["java"]["project"]["sourcePaths"] = json!(paths);
         cfg.settings = Some(settings);
     }
+}
+
+/// Applies Project Structure compiler output path, project libraries (and source attachments),
+/// and Web facet `WEB-INF/lib` directories to jdtls `java.project.*` settings.
+pub fn configure_project_structure(
+    cfg: &mut ide_language::LanguageServerConfig,
+    root: &Path,
+    server_root: &Path,
+    structure: &ide_core::settings::ProjectStructureSettings,
+) {
+    if cfg.name != SERVER {
+        return;
+    }
+    let module_cfg = structure.module_settings(root, server_root);
+    let module_output = module_cfg.map(|m| m.compiler_output.trim()).filter(|s| !s.is_empty());
+    let output_path = if let Some(output) = module_output {
+        // The dialog stores paths relative to the project, JDT expects the server root.
+        let path = root.join(output);
+        match path.strip_prefix(server_root) {
+            Ok(relative) => Some(relative.to_string_lossy().replace('\\', "/")),
+            Err(_) => {
+                cfg.launch_error = Some(format!("Java compiler output must be inside its module: {}", path.display()));
+                None
+            }
+        }
+    } else {
+        let output = structure.compiler_output.trim();
+        if output.is_empty() {
+            None
+        } else if Path::new(output).is_absolute() {
+            match Path::new(output).strip_prefix(server_root) {
+                Ok(relative) => Some(relative.to_string_lossy().replace('\\', "/")),
+                Err(_) => {
+                    cfg.launch_error = Some(format!("Java compiler output must be inside its module: {output}"));
+                    None
+                }
+            }
+        } else {
+            Some(output.replace('\\', "/"))
+        }
+    };
+
+    let normalize = |entry: &str| -> Option<String> {
+        let trimmed = entry.trim();
+        if trimmed.is_empty() {
+            return None;
+        }
+        // JDT resolves relative library globs against its own root, which may be a submodule.
+        Some(root.join(trimmed).to_string_lossy().replace('\\', "/"))
+    };
+    let mut include: Vec<String> = Vec::new();
+    let mut sources = serde_json::Map::new();
+    for lib in &structure.libraries {
+        let class_entries: Vec<String> = lib.classes.iter().filter_map(|c| normalize(c)).collect();
+        let source_entries: Vec<String> = lib.sources.iter().filter_map(|s| normalize(s)).collect();
+        for c in &class_entries {
+            if !include.contains(c) {
+                include.push(c.clone());
+            }
+        }
+        for (class, source) in class_entries.iter().zip(&source_entries) {
+            sources.insert(class.clone(), json!(source));
+        }
+    }
+    for facet in &structure.facets {
+        if facet.kind == "web" && root.join(&facet.module) == server_root {
+            let web_root = facet.web_root.trim();
+            let web_root = if web_root.is_empty() { "src/main/webapp" } else { web_root };
+            if let Some(path) = normalize(web_root) {
+                let glob = format!("{}/WEB-INF/lib/**/*.jar", path.trim_end_matches('/'));
+                if !include.contains(&glob) {
+                    include.push(glob);
+                }
+            }
+        }
+    }
+
+    if output_path.is_none() && include.is_empty() {
+        return;
+    }
+    let mut settings = cfg.settings.take().unwrap_or_else(|| json!({}));
+    if let Some(output) = output_path {
+        settings["java"]["project"]["outputPath"] = json!(output);
+    }
+    if !include.is_empty() {
+        let existing = &settings["java"]["project"]["referencedLibraries"];
+        let mut libraries = if existing.is_object() {
+            existing.clone()
+        } else if existing.is_array() {
+            json!({ "include": existing })
+        } else {
+            json!({ "include": ["lib/**/*.jar"] })
+        };
+        let mut entries = libraries["include"].as_array().cloned().unwrap_or_default();
+        for path in include {
+            let path = json!(path);
+            if !entries.contains(&path) {
+                entries.push(path);
+            }
+        }
+        libraries["include"] = json!(entries);
+        if !sources.is_empty() {
+            let mut attachments = libraries["sources"].as_object().cloned().unwrap_or_default();
+            attachments.extend(sources);
+            libraries["sources"] = json!(attachments);
+        }
+        settings["java"]["project"]["referencedLibraries"] = libraries;
+    }
+    cfg.settings = Some(settings);
 }
 
 pub(crate) fn source_paths_removed(
@@ -105,11 +220,13 @@ fn compiler_defaults(cfg: &ide_language::LanguageServerConfig) -> Value {
     let Ok(prefs) = std::fs::read_to_string(path) else { return json!({}) };
     let mut options = serde_json::Map::new();
     for line in prefs.lines() {
-        if let Some((key, value)) = line.split_once('=')
-            && ACCESS_OPTIONS.contains(&key.trim())
-            && ["error", "warning", "info", "ignore"].contains(&value.trim())
-        {
-            options.insert(key.trim().into(), json!(value.trim()));
+        if let Some((key, value)) = line.split_once('=') {
+            let (k, v) = (key.trim(), value.trim());
+            if (ACCESS_OPTIONS.contains(&k) && ["error", "warning", "info", "ignore"].contains(&v))
+                || (LEVEL_OPTIONS.contains(&k) && ["1.8", "11", "17", "21", "25"].contains(&v))
+            {
+                options.insert(k.into(), json!(v));
+            }
         }
     }
     Value::Object(options)
@@ -233,6 +350,115 @@ pub fn compile_errors(
     let count = u32::try_from(errors.len()).unwrap_or(u32::MAX);
     errors.truncate(limit);
     (errors, count)
+}
+
+fn launch_path(path: &Path) -> PathBuf {
+    // Resolve existing ancestors too: diagnostics may name a file that was just deleted.
+    let resolved = path.ancestors().find_map(|ancestor| {
+        dunce::canonicalize(ancestor).ok().map(|root| root.join(path.strip_prefix(ancestor).unwrap()))
+    });
+    let mut path = resolved.as_deref().unwrap_or(path).to_string_lossy().replace('\\', "/");
+    if path.as_bytes().get(1) == Some(&b':') {
+        path[..1].make_ascii_lowercase();
+    }
+    PathBuf::from(path)
+}
+
+/// The runtime classpath identifies the launched module's dependencies: a directory
+/// filter alone either drops their errors or includes unrelated reactor modules.
+struct LaunchScope {
+    module: PathBuf,
+    /// None means the dependency scope could not be resolved; retain all errors.
+    roots: Option<Vec<PathBuf>>,
+    test: bool,
+}
+
+impl LaunchScope {
+    fn new(module: &Path, test: bool, cp: Option<&JavaClasspath>) -> Self {
+        let started = Instant::now();
+        let module = launch_path(module);
+        let roots = cp.and_then(|cp| {
+            let mut roots = vec![module.clone()];
+            let mut has_output = false;
+            let mut projects = std::collections::HashMap::<PathBuf, Option<PathBuf>>::new();
+            for entry in cp.class_paths.iter().chain(&cp.module_paths) {
+                let path = project_path(entry).unwrap_or_else(|| PathBuf::from(entry));
+                if path
+                    .extension()
+                    .is_some_and(|ext| ext.eq_ignore_ascii_case("jar") || ext.eq_ignore_ascii_case("zip"))
+                {
+                    continue;
+                }
+                let path = launch_path(&path);
+                let root = path
+                    .ancestors()
+                    .find_map(|ancestor| {
+                        let relative = path.strip_prefix(ancestor).ok()?;
+                        let output = match ancestor.file_name()?.to_str()? {
+                            "target" => relative == Path::new("classes") || relative == Path::new("test-classes"),
+                            "build" => relative.starts_with("classes") || relative.starts_with("resources"),
+                            _ => false,
+                        };
+                        output.then(|| ancestor.parent().map(Path::to_path_buf)).flatten()
+                    })
+                    .or_else(|| {
+                        let mut visited = Vec::new();
+                        let mut project = None;
+                        for ancestor in path.ancestors() {
+                            if let Some(cached) = projects.get(ancestor) {
+                                project = cached.clone();
+                                break;
+                            }
+                            visited.push(ancestor.to_path_buf());
+                            if ["pom.xml", "build.gradle", "build.gradle.kts", ".project"]
+                                .iter()
+                                .any(|name| ancestor.join(name).is_file())
+                            {
+                                project = Some(ancestor.to_path_buf());
+                                break;
+                            }
+                        }
+                        for ancestor in visited {
+                            projects.insert(ancestor, project.clone());
+                        }
+                        project
+                    })?;
+                has_output = true;
+                if !roots.contains(&root) {
+                    roots.push(root);
+                }
+            }
+            has_output.then_some(roots)
+        });
+        tracing::debug!(
+            elapsed_us = started.elapsed().as_micros(),
+            scoped = roots.is_some(),
+            "Java launch diagnostic scope"
+        );
+        Self { module, roots, test }
+    }
+
+    fn includes(&self, path: &Path) -> bool {
+        let Some(roots) = &self.roots else { return true };
+        let path = launch_path(path);
+        let Some(root) =
+            roots.iter().filter(|root| path.starts_with(root)).max_by_key(|root| root.components().count())
+        else {
+            return false;
+        };
+        let relative = path.strip_prefix(root).unwrap();
+        let parts: Vec<_> = relative.components().collect();
+        let test_source = parts.windows(2).any(|pair| pair[0].as_os_str() == "src" && pair[1].as_os_str() == "test");
+        !test_source || (self.test && *root == self.module)
+    }
+}
+
+/// JDTLS reports all imported projects; report errors for the launch and its dependencies.
+fn launch_compile_errors(
+    scope: &LaunchScope,
+    diagnostics: Vec<(PathBuf, lsp_types::Diagnostic)>,
+) -> (Vec<JavaCompileError>, u32) {
+    compile_errors(diagnostics.into_iter().filter(|(path, _)| scope.includes(path)).collect(), MAX_LAUNCH_ERRORS)
 }
 
 /// `java.project.getClasspaths` result.
@@ -624,12 +850,6 @@ impl LspManager {
         if build == Some(JavaBuildStatus::Cancelled) {
             return Err(IdeError::cancelled());
         }
-        let (errors, error_count) = match build {
-            Some(JavaBuildStatus::WithErrors | JavaBuildStatus::Failed) => {
-                cancellable_wait(cancel, self.java_compile_errors(module)).await?
-            }
-            _ => (Vec::new(), 0),
-        };
         let (cp, java_home) = {
             let (server, _) = self.jdtls(module, cancel).await?;
             let _lock = if build_lock_held {
@@ -637,7 +857,15 @@ impl LspManager {
             } else {
                 Some(cancellable_wait(cancel, server.java_build_lock.lock()).await?)
             };
-            let cp = self.java_classpath(module, test, cancel).await?;
+            let cp = match self.java_classpath(module, test, cancel).await {
+                Ok(cp) => Some(cp),
+                Err(e) if e.kind == ErrorKind::Cancelled => return Err(e),
+                Err(e) if matches!(build, Some(JavaBuildStatus::WithErrors | JavaBuildStatus::Failed)) => {
+                    tracing::debug!("java.project.getClasspaths: {e}; retaining all compile errors");
+                    None
+                }
+                Err(e) => return Err(e),
+            };
             let java_home = match self.java_vm_location(module, cancel).await {
                 Ok(home) => home,
                 Err(e) if e.kind == ErrorKind::Cancelled => return Err(e),
@@ -648,6 +876,25 @@ impl LspManager {
             };
             (cp, java_home)
         };
+        let (errors, error_count, scoped) = match build {
+            Some(JavaBuildStatus::WithErrors | JavaBuildStatus::Failed) => {
+                let scope_module = module.to_path_buf();
+                let cp = cp.clone();
+                let scope = tokio::task::spawn_blocking(move || LaunchScope::new(&scope_module, test, cp.as_ref()))
+                    .await
+                    .map_err(|e| IdeError::internal(e.to_string()))?;
+                let scoped = scope.roots.is_some();
+                let (errors, count) = cancellable_wait(cancel, self.java_compile_errors(module, scope)).await??;
+                (errors, count, scoped)
+            }
+            _ => (Vec::new(), 0, false),
+        };
+        let build = if build == Some(JavaBuildStatus::WithErrors) && error_count == 0 && scoped {
+            Some(JavaBuildStatus::Succeeded)
+        } else {
+            build
+        };
+        let cp = cp.unwrap_or_default();
         Ok(JavaLaunchInfo {
             build,
             project_root: cp.project_root,
@@ -663,16 +910,20 @@ impl LspManager {
         })
     }
 
-    /// Compile errors jdtls reports for its workspace (all modules it imported).
-    async fn java_compile_errors(&self, module: &Path) -> (Vec<JavaCompileError>, u32) {
-        let Ok((server, _)) = self.jdtls(module, &CancellationToken::new()).await else { return (Vec::new(), 0) };
-        let collect = || compile_errors(server.diagnostics_snapshot(), MAX_LAUNCH_ERRORS);
-        let found = collect();
-        if found.1 > 0 {
-            return found;
-        }
-        let _ = tokio::time::timeout(ERRORS_WAIT, server.published_notify.notified()).await;
-        collect()
+    /// Wait for late build markers only when no error diagnostics have arrived yet.
+    async fn java_compile_errors(&self, module: &Path, scope: LaunchScope) -> IdeResult<(Vec<JavaCompileError>, u32)> {
+        let (server, _) = self.jdtls(module, &CancellationToken::new()).await?;
+        let diagnostics = server.diagnostics_snapshot();
+        let has_errors = diagnostics.iter().any(|(_, d)| d.severity == Some(lsp_types::DiagnosticSeverity::ERROR));
+        let diagnostics = if has_errors {
+            diagnostics
+        } else {
+            let _ = tokio::time::timeout(ERRORS_WAIT, server.published_notify.notified()).await;
+            server.diagnostics_snapshot()
+        };
+        tokio::task::spawn_blocking(move || launch_compile_errors(&scope, diagnostics))
+            .await
+            .map_err(|e| IdeError::internal(e.to_string()))
     }
 
     /// Resolve a disk/archive class to project source or the server's binary document.
@@ -950,6 +1201,95 @@ mod tests {
         assert_eq!(count, 1);
     }
 
+    fn error_at(path: impl Into<PathBuf>) -> (PathBuf, lsp_types::Diagnostic) {
+        (
+            path.into(),
+            lsp_types::Diagnostic {
+                severity: Some(lsp_types::DiagnosticSeverity::ERROR),
+                message: "boom".into(),
+                ..Default::default()
+            },
+        )
+    }
+
+    #[test]
+    fn launch_errors_include_dependencies_but_only_the_launched_modules_tests() {
+        for output in ["target/classes", "build/classes/java/main", "build/classes/kotlin/main"] {
+            let cp = JavaClasspath {
+                class_paths: vec!["/p/web/target/classes".into(), format!("/p/service/{output}"), "/m2/lib.jar".into()],
+                module_paths: vec!["/p/api/target/classes".into()],
+                ..Default::default()
+            };
+            let paths = [
+                "/p/web/src/main/java/Main.java",
+                "/p/web/src/test/java/MainTest.java",
+                "/p/service/src/main/java/Service.java",
+                "/p/service/src/test/java/ServiceTest.java",
+                "/p/other/src/main/java/Other.java",
+                "/p/web-other/src/main/java/Other.java",
+                "/p/api/src/main/java/Api.java",
+                "/p/web/src/testing/Real.java",
+            ];
+            for (test, expected) in [(false, 4), (true, 5)] {
+                let scope = LaunchScope::new(Path::new("/p/web"), test, Some(&cp));
+                assert_eq!(launch_compile_errors(&scope, paths.iter().map(|p| error_at(*p)).collect()).1, expected);
+                assert!(scope.includes(Path::new("/p/service/src/main/java/Service.java")));
+                assert!(!scope.includes(Path::new("/p/service/src/test/java/ServiceTest.java")));
+            }
+        }
+    }
+
+    #[test]
+    fn unresolved_classpaths_retain_all_errors() {
+        for cp in [
+            None,
+            Some(JavaClasspath::default()),
+            Some(JavaClasspath { class_paths: vec!["/unknown/output".into()], ..Default::default() }),
+            Some(JavaClasspath { class_paths: vec!["/m2/lib.jar".into()], ..Default::default() }),
+            Some(JavaClasspath {
+                class_paths: vec!["/p/web/target/classes".into(), "/unknown/output".into()],
+                ..Default::default()
+            }),
+        ] {
+            let scope = LaunchScope::new(Path::new("/p/web"), false, cp.as_ref());
+            let diagnostics = ["/p/service/src/main/java/Service.java", "/p/other/src/test/java/Test.java"];
+            assert_eq!(launch_compile_errors(&scope, diagnostics.into_iter().map(error_at).collect()).1, 2);
+        }
+    }
+
+    #[test]
+    fn launch_scope_normalizes_windows_drive_letters_and_separators() {
+        let cp = JavaClasspath { class_paths: vec![r"C:\p\web\target\classes".into()], ..Default::default() };
+        let scope = LaunchScope::new(Path::new(r"c:\p\web"), false, Some(&cp));
+        assert!(scope.includes(Path::new("C:/p/web/src/main/java/Main.java")));
+        assert!(!scope.includes(Path::new(r"C:\p\web\src\test\java\MainTest.java")));
+        assert!(!scope.includes(Path::new("C:/p/web-other/src/main/java/Main.java")));
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn launch_scope_resolves_symlinks_and_project_reference_entries() {
+        let tmp = tempfile::tempdir().unwrap();
+        let module = tmp.path().join("web");
+        let dependency = tmp.path().join("service");
+        std::fs::create_dir_all(module.join("src/main/java")).unwrap();
+        std::fs::create_dir_all(&dependency).unwrap();
+        std::fs::write(dependency.join(".project"), "").unwrap();
+        let alias = tmp.path().join("alias");
+        std::os::unix::fs::symlink(&module, &alias).unwrap();
+        let cp = JavaClasspath {
+            class_paths: vec![
+                alias.join("target/classes").to_string_lossy().into_owned(),
+                crate::uri::path_to_uri_string(&dependency),
+            ],
+            ..Default::default()
+        };
+        let scope = LaunchScope::new(&alias, false, Some(&cp));
+        assert!(scope.includes(&dunce::canonicalize(&module).unwrap().join("src/main/java/Deleted.java")));
+        assert!(scope.includes(&dependency.join("src/main/java/Service.java")));
+        assert!(!scope.includes(&dependency.join("src/test/java/ServiceTest.java")));
+    }
+
     #[test]
     fn classpaths() {
         let v = json!({
@@ -986,5 +1326,111 @@ mod tests {
         assert!(not_imported(&e));
         assert!(missing_bundle(&IdeError::invalid("No delegateCommandHandler for vscode.java.startDebugSession")));
         assert!(!missing_bundle(&e));
+    }
+
+    #[test]
+    fn configure_project_structure_sets_output_referenced_libraries_and_web_facets() {
+        let tmp = tempfile::tempdir().unwrap();
+        let root = tmp.path();
+        let lib_dir = root.join("lib");
+        std::fs::create_dir_all(&lib_dir).unwrap();
+        let jar_path = lib_dir.join("helper.jar");
+        let src_path = lib_dir.join("helper-sources.jar");
+        std::fs::write(&jar_path, b"").unwrap();
+        std::fs::write(&src_path, b"").unwrap();
+
+        let mut structure = ide_core::settings::ProjectStructureSettings {
+            compiler_output: "out/production".into(),
+            libraries: vec![ide_core::settings::ProjectLibrary {
+                name: "helper".into(),
+                classes: vec!["lib/helper.jar".into()],
+                sources: vec!["lib/helper-sources.jar".into()],
+                javadocs: vec![],
+                scope: ide_core::settings::DependencyScope::Compile,
+            }],
+            facets: vec![ide_core::settings::FacetConfig {
+                kind: "web".into(),
+                module: ".".into(),
+                descriptor: "src/main/webapp/WEB-INF/web.xml".into(),
+                web_root: "src/main/webapp".into(),
+            }],
+            ..Default::default()
+        };
+        structure.modules.insert(
+            "submod".into(),
+            ide_core::settings::ModuleStructureSettings {
+                compiler_output: "submod/classes".into(),
+                ..Default::default()
+            },
+        );
+
+        let mut cfg: ide_language::LanguageServerConfig = toml::from_str("name = 'jdtls'\ncommand = 'jdtls'").unwrap();
+        configure_project_structure(&mut cfg, root, root, &structure);
+
+        let settings = cfg.settings.as_ref().unwrap();
+        assert_eq!(settings.pointer("/java/project/outputPath").and_then(Value::as_str), Some("out/production"));
+        let include = settings
+            .pointer("/java/project/referencedLibraries/include")
+            .and_then(Value::as_array)
+            .unwrap()
+            .iter()
+            .filter_map(Value::as_str)
+            .collect::<Vec<_>>();
+        assert!(include.iter().any(|p| p.ends_with("lib/helper.jar")));
+        assert!(include.iter().any(|p| p.ends_with("src/main/webapp/WEB-INF/lib/**/*.jar")));
+        let sources = settings.pointer("/java/project/referencedLibraries/sources").and_then(Value::as_object).unwrap();
+        assert!(sources.values().any(|v| v.as_str().is_some_and(|s| s.ends_with("lib/helper-sources.jar"))));
+
+        // Module-specific compiler output overrides project-wide compiler output.
+        let mut sub_cfg: ide_language::LanguageServerConfig =
+            toml::from_str("name = 'jdtls'\ncommand = 'jdtls'").unwrap();
+        configure_project_structure(&mut sub_cfg, root, &root.join("submod"), &structure);
+        assert_eq!(
+            sub_cfg.settings.as_ref().unwrap().pointer("/java/project/outputPath").and_then(Value::as_str),
+            Some("classes")
+        );
+        let sub_settings = sub_cfg.settings.as_ref().unwrap();
+        let libs = sub_settings.pointer("/java/project/referencedLibraries/include").unwrap().as_array().unwrap();
+        assert!(libs.contains(&json!(root.join("lib/helper.jar").to_string_lossy().replace('\\', "/"))));
+        assert!(!libs.iter().any(|v| v.as_str().is_some_and(|p| p.contains("WEB-INF"))));
+    }
+
+    #[test]
+    fn project_libraries_preserve_existing_globs_exclusions_and_source_attachments() {
+        let tmp = tempfile::tempdir().unwrap();
+        let mut cfg: ide_language::LanguageServerConfig = toml::from_str("name = 'jdtls'\ncommand = 'jdtls'").unwrap();
+        cfg.settings = Some(json!({"java": {"project": {"referencedLibraries": {
+            "include": ["vendor/**/*.jar"], "exclude": ["vendor/old.jar"],
+            "sources": {"vendor/base.jar": "vendor/base-sources.jar"}
+        }}}}));
+        let structure = ide_core::settings::ProjectStructureSettings {
+            libraries: vec![ide_core::settings::ProjectLibrary {
+                classes: vec!["lib/new.jar".into()],
+                sources: vec!["lib/new-sources.jar".into()],
+                ..Default::default()
+            }],
+            ..Default::default()
+        };
+        configure_project_structure(&mut cfg, tmp.path(), tmp.path(), &structure);
+        let libraries = cfg.settings.as_ref().unwrap().pointer("/java/project/referencedLibraries").unwrap();
+        assert_eq!(libraries["include"][0], "vendor/**/*.jar");
+        assert_eq!(libraries["exclude"], json!(["vendor/old.jar"]));
+        assert_eq!(libraries["sources"]["vendor/base.jar"], "vendor/base-sources.jar");
+        assert_eq!(libraries["sources"].as_object().unwrap().len(), 2);
+    }
+
+    #[test]
+    fn absolute_output_inside_the_module_becomes_relative() {
+        let tmp = tempfile::tempdir().unwrap();
+        let mut cfg: ide_language::LanguageServerConfig = toml::from_str("name = 'jdtls'\ncommand = 'jdtls'").unwrap();
+        let mut structure = ide_core::settings::ProjectStructureSettings {
+            compiler_output: tmp.path().join("out").to_string_lossy().into_owned(),
+            ..Default::default()
+        };
+        configure_project_structure(&mut cfg, tmp.path(), tmp.path(), &structure);
+        assert_eq!(cfg.settings.as_ref().unwrap().pointer("/java/project/outputPath"), Some(&json!("out")));
+        structure.compiler_output = tmp.path().parent().unwrap().join("elsewhere").to_string_lossy().into_owned();
+        configure_project_structure(&mut cfg, tmp.path(), tmp.path(), &structure);
+        assert!(cfg.launch_error.as_deref().unwrap().contains("inside its module"));
     }
 }

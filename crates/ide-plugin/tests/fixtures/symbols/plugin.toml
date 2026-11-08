@@ -1,0 +1,23 @@
+id = "test.symbols"
+name = "Indexed symbols fixture"
+version = "0.1.0"
+engines.openidea = "^1.3"
+wasm = "dist/plugin.wasm"
+[capabilities]
+required = ["project.read"]
+
+[[contributes.providers]]
+kinds = ["definition"]
+languages = ["php", "java"]
+
+[[contributes.commands]]
+id = "symbols"
+title = "Query indexed symbols"
+
+[[contributes.commands]]
+id = "remember"
+title = "Remember project"
+
+[[contributes.commands]]
+id = "remembered"
+title = "Query remembered project"

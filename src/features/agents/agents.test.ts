@@ -91,10 +91,10 @@ describe("mergeMatches", () => {
 });
 
 describe("agent composer", () => {
-  it("completes @files anywhere and /commands as the first word", () => {
+  it("completes @files and /commands anywhere at a word boundary", () => {
     expect(completionAt("fix @src/le", 11)).toEqual({ kind: "file", query: "src/le", from: 4, to: 11 });
     expect(completionAt("/rev", 4)).toEqual({ kind: "command", query: "rev", from: 0, to: 4 });
-    expect(completionAt("run /rev", 8)).toBeNull();
+    expect(completionAt("run /rev", 8)).toEqual({ kind: "command", query: "rev", from: 4, to: 8 });
     expect(completionAt("a@b", 3)).toBeNull();
     const c = completionAt("see @le and", 7)!;
     expect(applyCompletion("see @le and", c, "@src/lexer.rs")).toEqual({ text: "see @src/lexer.rs and", caret: 18 });
@@ -119,6 +119,27 @@ describe("agent composer", () => {
     expect(names("if")).toEqual(["verify", "issue-fix"]);
     expect(names("xyz")).toEqual([]);
     expect(names("")).toHaveLength(cmds.length);
+  });
+
+  it("keeps all commands and skills and ranks matches within each source", () => {
+    const cmds = Array.from({ length: 600 }, (_, i) => ({
+      name: `item-${i}`,
+      description: "",
+      hint: null,
+      source: i % 2 ? ("command" as const) : ("skill" as const),
+    }));
+    const all = matchCommands(cmds, "");
+    expect(all).toHaveLength(600);
+    expect(all.slice(0, 300)).toEqual(cmds.filter((c) => c.source === "command"));
+    expect(all.slice(300)).toEqual(cmds.filter((c) => c.source === "skill"));
+    const mixed = [
+      { ...cmds[0]!, name: "pre-review" },
+      { ...cmds[1]!, name: "pre-review" },
+      { ...cmds[0]!, name: "review" },
+      { ...cmds[1]!, name: "review" },
+    ];
+    expect(matchCommands(mixed, "rev")).toEqual([mixed[3], mixed[1], mixed[2], mixed[0]]);
+    expect(matchCommands(mixed, "missing")).toEqual([]);
   });
 
   it("sends only the files still mentioned", () => {

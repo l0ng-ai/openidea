@@ -1,10 +1,15 @@
-import { EditorSelection, Facet, Prec } from "@codemirror/state";
+import { EditorSelection, Facet, Prec, type EditorState } from "@codemirror/state";
 import { EditorView } from "@codemirror/view";
 import { pasteClipboardFiles, readClipboardText } from "@/platform/clipboard";
 import { isRemoteWindow } from "@/platform/remote";
+import { isLinewiseClipboardText } from "../clipboardHistory";
 import { isMarkdown, relativeImagePath } from "./markdownImages";
 
 export const clipboardDocumentPath = Facet.define<string, string>({ combine: (paths) => paths[0] ?? "" });
+
+export function filterCopiedText(state: EditorState, text: string): string {
+  return state.facet(EditorView.clipboardOutputFilter).reduce((value, filter) => filter(value, state), text);
+}
 
 function clipboardFileFormatter(view: EditorView): ((paths: string[]) => string) | undefined {
   const path = view.state.facet(clipboardDocumentPath);
@@ -14,8 +19,9 @@ function clipboardFileFormatter(view: EditorView): ((paths: string[]) => string)
 }
 
 /**
- * The dispatch shared by every paste entry point. With several carets and a
- * multi-line clipboard, the lines spread across the carets the way IntelliJ
+ * Line-wise copies go above each distinct caret line, keeping carets on their
+ * original text. Otherwise, with several carets and a multi-line clipboard,
+ * the lines spread across the carets the way IntelliJ
  * does (its ClipboardTextPerCaretSplitter): caret *i* gets line *i*, missing
  * lines become empty inserts, and lines beyond the caret count are dropped —
  * `"a\nb"` at two carets inserts `a` then `b`, not the block twice, while a
@@ -25,7 +31,15 @@ function clipboardFileFormatter(view: EditorView): ((paths: string[]) => string)
  * paste opts out of Reformat on Paste through `"input.pastePlain"`).
  */
 export function dispatchPaste(view: EditorView, text: string, userEvent = "input.paste") {
-  const ranges = view.state.selection.ranges;
+  const state = view.state;
+  const ranges = state.selection.ranges;
+  if (isLinewiseClipboardText(text) && ranges.every((r) => r.empty)) {
+    const insert = state.toText(text + state.lineBreak);
+    const starts = [...new Set(ranges.map((r) => state.doc.lineAt(r.head).from))];
+    const changes = state.changes(starts.map((from) => ({ from, insert })));
+    view.dispatch({ changes, selection: state.selection.map(changes, 1), userEvent, scrollIntoView: true });
+    return;
+  }
   const lines = pasteLinesPerCaret(text, ranges.length);
   if (lines) {
     let i = 0;
@@ -59,7 +73,7 @@ function pasteLinesPerCaret(text: string, caretCount: number): string[] | undefi
 }
 
 export function pasteEditorText(view: EditorView, text: string) {
-  if (!text || !view.dom.isConnected || view.state.readOnly) return;
+  if ((!text && !isLinewiseClipboardText(text)) || !view.dom.isConnected || view.state.readOnly) return;
   dispatchPaste(view, text);
   view.focus();
 }

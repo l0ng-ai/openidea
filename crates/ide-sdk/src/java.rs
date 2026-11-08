@@ -384,6 +384,12 @@ pub fn configure_jdtls(
             // A different source model needs a clean import, including new folders.
             key.push_str(&format!("-sources-{}", text_key(&paths.to_string())));
         }
+        if let Some(output) = cfg.settings.as_ref().and_then(|s| s.pointer("/java/project/outputPath")) {
+            key.push_str(&format!("-out-{}", text_key(&output.to_string())));
+        }
+        if let Some(libs) = cfg.settings.as_ref().and_then(|s| s.pointer("/java/project/referencedLibraries")) {
+            key.push_str(&format!("-libs-{}", text_key(&libs.to_string())));
+        }
         let dir = data_dir.join("lsp").join("jdtls").join(key);
         cfg.args.extend(["-data".to_owned(), dir.to_string_lossy().into_owned()]);
     }
@@ -1199,7 +1205,7 @@ pub fn usages_bundle(data_dir: &Path) -> Option<PathBuf> {
     install_bundle(
         data_dir,
         "java-usages",
-        "1.7.0",
+        "1.9.0",
         include_bytes!("../../../java/java-usages/openidea-java-usages.jar"),
     )
 }

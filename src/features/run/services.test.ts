@@ -18,7 +18,7 @@ import {
   sessionDetail,
   sessionStatus,
 } from "./services";
-import { startedPort } from "./serverPort";
+import { startedPort } from "@/platform/serverPort";
 import { useRun, type RunSession } from "./store";
 import type { DebugServiceSession } from "@/workbench/contributions";
 

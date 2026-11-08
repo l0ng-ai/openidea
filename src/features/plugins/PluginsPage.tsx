@@ -296,7 +296,7 @@ function CapabilityRow({ cap, children }: { cap: CapabilityInfo; children?: Reac
   return (
     <li className={styles.item}>
       {children}
-      <span className={styles.itemMain}>{cap.description}</span>
+      <span className={styles.itemMain}>{tx(cap.description)}</span>
       <span className={styles.mono}>{cap.id}</span>
       <Badge tone={RISK_LABEL[cap.risk].tone}>{RISK_LABEL[cap.risk].label}</Badge>
     </li>
