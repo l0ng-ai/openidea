@@ -6839,5 +6839,6 @@
   "Copy details": "复制详情",
   "Could not copy. Select the details below and copy them.": "无法复制。请选择下方详情并手动复制。",
   "Startup error details": "启动错误详情",
-  "Startup did not finish within 30 seconds.": "启动未在 30 秒内完成。"
+  "Startup did not finish within 30 seconds.": "启动未在 30 秒内完成。",
+  "Branch '{name}' is checked out in the worktree at {path}.\nDelete the worktree and the branch? Its folder is deleted.": "分支 '{name}' 被位于 {path} 的工作树签出。\n删除该工作树和分支？其文件夹将被删除。"
 }
