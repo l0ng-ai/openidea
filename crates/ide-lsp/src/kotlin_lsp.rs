@@ -164,6 +164,8 @@ fn canonical(path: &Path) -> PathBuf {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use ide_core::{IdeEvent, SharedSink};
+    use std::sync::Arc;
 
     #[test]
     fn an_instance_that_was_replaced_does_not_record_its_import() {
@@ -180,7 +182,8 @@ mod tests {
         let done = Some(ImportState { finished: true, failed: vec![PathBuf::from("/p/lib")] });
         assert_eq!(*server.import_state.borrow(), done);
 
-        server.begin_stop();
+        let sink: SharedSink = Arc::new(|_: IdeEvent| {});
+        server.begin_stop(&sink, false);
         let new = server.begin_start().unwrap();
         assert_eq!(*server.import_state.borrow(), None);
         // The dying instance's FINISHED arrives after the restart.
