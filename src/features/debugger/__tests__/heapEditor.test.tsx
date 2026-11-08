@@ -31,6 +31,7 @@ import type {
   RemoteSession,
 } from "@/platform/ipc";
 import { getContext } from "@/platform/context";
+import { setLocale } from "@/platform/i18n";
 import { useRemote } from "@/platform/remote";
 import {
   provideEditorService,
@@ -227,6 +228,30 @@ describe("HeapSnapshotEditor", () => {
     expect(within(path).getByText("Local variable in main")).toBeInTheDocument();
     expect(within(path).queryByText(/Path truncated/)).not.toBeInTheDocument();
     expect(ipc.debugHeapPath).toHaveBeenCalledWith(7, 16);
+  });
+
+  it("follows a live switch to Chinese in the header, the object table and the path", async () => {
+    keep(SNAPSHOT);
+    const steps: HeapPathStep[] = [
+      { object: obj(16), via: { kind: "field", name: "next" } },
+      { object: obj(17, "Node"), via: { kind: "root", root: "javaFrame", thread: "main" } },
+    ];
+    ipc.debugHeapDominators.mockReturnValue(ok(page([obj(16)])));
+    ipc.debugHeapPath.mockReturnValue(ok({ steps, omitted: 0, omittedAfter: 0 }));
+    show();
+    fireEvent.mouseDown(rowOf(classTable(), "Node"));
+    fireEvent.mouseDown(rowOf(await screen.findByRole("grid", { name: "Biggest objects of Node" }), "Node@0x10"));
+    await within(await screen.findByRole("region", { name: "Path to GC Root" })).findByText("Local variable in main");
+    try {
+      await act(() => setLocale("zh"));
+      expect(screen.getByText("pid 4242 · JDK 21.0.2 · 暂停时获取")).toBeInTheDocument();
+      expect(screen.getByText("12 个对象 · 可达 1000 B · 不可达 48 B")).toBeInTheDocument();
+      expect(screen.getByText("Node 中最大的对象")).toBeInTheDocument();
+      const path = screen.getByRole("region", { name: "到 GC 根的路径" });
+      expect(within(path).getByText("main 中的局部变量")).toBeInTheDocument();
+    } finally {
+      await act(() => setLocale("en"));
+    }
   });
 
   it("says where a long path to the GC root leaves steps out", async () => {

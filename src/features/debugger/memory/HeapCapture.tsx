@@ -1,7 +1,7 @@
 /** Heap snapshot capture in the Memory tab: its toolbar button, and the progress or refusal row above the table. */
 import clsx from "clsx";
 import { IconButton, ProgressBar } from "@/ui";
-import { tx } from "@/platform/i18n";
+import { tx, useTx } from "@/platform/i18n";
 import type { HeapProgress, JvmHeapUnavailable } from "@/platform/ipc";
 import { sessionSupports, type DebugSession } from "../state";
 import { useActionEnabled } from "../ui/useActionEnabled";
@@ -59,6 +59,7 @@ function refusalText(reason: JvmHeapUnavailable): string {
 
 /** Capture, or Cancel while a capture of `session` runs; nothing for a session that cannot be dumped. */
 export function HeapCaptureButton({ session }: { session: DebugSession }) {
+  const tx = useTx();
   const id = session.id;
   const capture = useHeap((s) => s.captures[id]);
   const canCapture = useActionEnabled("debug.heap.capture");
@@ -91,6 +92,8 @@ export function HeapCaptureButton({ session }: { session: DebugSession }) {
 }
 
 export function HeapCaptureStatus({ session }: { session: DebugSession }) {
+  // Also re-renders the progress and refusal texts, which read the catalog when called.
+  const tx = useTx();
   const capture = useHeap((s) => s.captures[session.id]);
   if (!capture) return null;
   if (capture.unavailable) {

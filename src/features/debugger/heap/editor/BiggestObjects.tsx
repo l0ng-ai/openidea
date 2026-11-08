@@ -1,6 +1,6 @@
 import clsx from "clsx";
 import { List, T } from "@/ui";
-import { tx } from "@/platform/i18n";
+import { useTx } from "@/platform/i18n";
 import { call, commands, type HeapClassRow, type HeapObjectRow } from "@/platform/ipc";
 import { formatBytes } from "../../memory/rows";
 import { useHeapQuery } from "./heapQuery";
@@ -21,6 +21,7 @@ export function BiggestObjects({
   selected: number | null;
   onSelect: (object: HeapObjectRow) => void;
 }) {
+  const tx = useTx();
   const page = useHeapQuery(`${snapshot}:${cls.classIndex}`, () =>
     call(commands.debugHeapDominators(snapshot, null, cls.classIndex, 0, LIMIT)),
   );

@@ -56,6 +56,7 @@ const confirmTerminate = vi.hoisted(() => vi.fn(async () => false));
 vi.mock("@/workbench/confirmTerminate", () => ({ confirmTerminate }));
 
 import type { RunConfig } from "@/platform/ipc";
+import { setLocale } from "@/platform/i18n";
 import { handleDebugEvent, setVariableValue, useDebug, type DebugSession } from "../state";
 import { DebugTabs, DebugToolWindow } from "../ui/DebugToolWindow";
 
@@ -132,6 +133,20 @@ describe("debug tool window", () => {
     act(() => useDebug.setState({ sessions: { 1: { ...session, caps, status: "paused" } } }));
     expect(memory.getAttribute("aria-selected")).toBe("true");
     expect(screen.getByText("The program has exited.")).toBeTruthy();
+  });
+
+  it("renames the view tabs when the locale switches to Chinese", async () => {
+    const caps = { jvmMemory: true } as DebugSession["caps"];
+    useDebug.setState({ sessions: { 1: { ...session, caps } }, active: 1 });
+    render(<DebugToolWindow />);
+    expect(screen.getByRole("tab", { name: "Memory" })).toBeTruthy();
+    try {
+      await act(() => setLocale("zh"));
+      const tabs = screen.getAllByRole("tab").map((t) => t.textContent);
+      expect(tabs).toEqual(["线程和变量", "控制台", "内存"]);
+    } finally {
+      await act(() => setLocale("en"));
+    }
   });
 
   it("says a PHP Remote Debug session listens for Xdebug while nothing is suspended", () => {

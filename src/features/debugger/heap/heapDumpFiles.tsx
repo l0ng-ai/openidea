@@ -1,7 +1,7 @@
 /** Open Heap Dump… and Save Heap Dump As…: the native dialogs, the open's progress, and what went wrong. */
 import { ProgressBar } from "@/ui";
 import { setContext } from "@/platform/context";
-import { tx } from "@/platform/i18n";
+import { tx, useTx } from "@/platform/i18n";
 import { call, commands, IpcError } from "@/platform/ipc";
 import { ipcPath } from "@/platform/paths";
 import { basename } from "@/platform/project";
@@ -17,6 +17,8 @@ const OPENING = "debug.heap.open";
 const FILTERS = () => [{ name: tx("Heap dump"), extensions: ["hprof"] }];
 
 function OpenProgress() {
+  // Also re-renders the phase text, which reads the catalog when called.
+  const tx = useTx();
   const opening = useHeap((s) => s.opening);
   if (!opening) return null;
   const { progress } = opening;

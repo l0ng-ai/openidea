@@ -247,6 +247,24 @@ describe("MemoryView", () => {
     }
   });
 
+  it("follows a live switch to Chinese in the footer, the instances title and the class rows", async () => {
+    ipc.debugJvmMemoryClasses.mockReturnValue(ok(HEAP));
+    ipc.debugJvmMemoryInstances.mockReturnValue(ok({ ...NO_INSTANCES, truncated: true }));
+    await showInstances(1, "Heap$Live");
+    render(<MemoryView session={withInstances} />);
+    await screen.findByText("Instances of Heap$Live");
+    try {
+      await act(() => setLocale("zh"));
+      expect(screen.getByText(`3 个类 · ${(1_000_042).toLocaleString()} 个对象 · 15.3 MB`)).toBeTruthy();
+      expect(screen.getByText("Heap$Live 的实例")).toBeTruthy();
+      expect(screen.getByText("仅显示前 0 个实例。")).toBeTruthy();
+      expect(screen.getByRole("toolbar", { name: "内存" })).toBeTruthy();
+      expect(screen.getByRole("img", { name: "由多个类加载器加载" })).toBeTruthy();
+    } finally {
+      await act(() => setLocale("en"));
+    }
+  });
+
   it("marks the snapshot outdated after a stop of this session only", async () => {
     ipc.debugJvmMemoryClasses.mockReturnValue(ok(HEAP));
     const { rerender } = render(<MemoryView session={session} />);

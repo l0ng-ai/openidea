@@ -1,5 +1,5 @@
 import { IconButton, Select, T, type SelectOption } from "@/ui";
-import { tx } from "@/platform/i18n";
+import { tx, useTx } from "@/platform/i18n";
 import type { HeapSnapshotInfo, SizeSource } from "@/platform/ipc";
 import { isRemoteWindow } from "@/platform/remote";
 import { formatBytes, formatCount } from "../../memory/rows";
@@ -49,6 +49,8 @@ export function HeapHeader({
   compareWith: number | null;
   onCompare: (id: number | null) => void;
 }) {
+  // Also re-renders the source and size texts, which read the catalog when called.
+  const tx = useTx();
   const { summary } = info;
   const n = formatCount(summary.objects);
   const size = formatBytes(summary.reachableBytes);

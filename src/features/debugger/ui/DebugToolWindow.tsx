@@ -45,7 +45,7 @@ import { useExpressionCompletion } from "./ExpressionCompletion";
 import { sortVariables } from "../values";
 import { workflowSettings } from "@/platform/workflowSettings";
 import styles from "./DebugToolWindow.module.css";
-import { tx } from "@/platform/i18n";
+import { tx, useTx } from "@/platform/i18n";
 
 function ToolButton({ action, icon, tone }: { action: string; icon: string; tone?: "danger" }) {
   const enabled = useActionEnabled(action);
@@ -136,6 +136,7 @@ export function DebugTabs() {
 }
 
 export function DebugToolWindow() {
+  const tx = useTx();
   const active = useDebug((s) => (s.active != null ? s.sessions[s.active] : undefined));
   const muted = useBreakpoints((s) => s.muted);
   const [view, setView] = useState<{

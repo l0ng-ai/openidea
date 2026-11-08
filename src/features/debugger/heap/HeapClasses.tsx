@@ -2,7 +2,7 @@
 import { useMemo, useState } from "react";
 import clsx from "clsx";
 import { Input, List, T } from "@/ui";
-import { tx } from "@/platform/i18n";
+import { useTx } from "@/platform/i18n";
 import type { HeapClassRow } from "@/platform/ipc";
 import { formatBytes, formatCount, formatDelta } from "../memory/rows";
 import {
@@ -66,6 +66,7 @@ export function HeapClasses({
   selected: number | null;
   onSelect: (row: HeapClassRow | null) => void;
 }) {
+  const tx = useTx();
   const [query, setQuery] = useState<ClassQuery>(DEFAULT_CLASS_QUERY);
   const compared = changes !== null;
   const columns = COLUMNS.filter((c) => compared || !c.diff);

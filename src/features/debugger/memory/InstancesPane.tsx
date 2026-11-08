@@ -1,7 +1,7 @@
 /** Instances of one class under the Memory table: each opens into its fields and the objects that refer to it. */
 import { useCallback, useEffect, useMemo } from "react";
 import { Button, IconButton, Spinner, T, Tree } from "@/ui";
-import { tx } from "@/platform/i18n";
+import { useTx } from "@/platform/i18n";
 import type { DebugSessionId, JvmValue } from "@/platform/ipc";
 import type { DebugSession } from "../state";
 import { useActionEnabled } from "../ui/useActionEnabled";
@@ -31,6 +31,7 @@ import { formatCount } from "./rows";
 import styles from "./InstancesPane.module.css";
 
 export function InstancesPane({ session }: { session: DebugSession }) {
+  const tx = useTx();
   const id = session.id;
   const entry = useInstances((s) => s.bySession[id]);
   const canJump = useActionEnabled("debug.memory.jumpToSource");
@@ -71,7 +72,7 @@ export function InstancesPane({ session }: { session: DebugSession }) {
       )}
       {result?.status === "unavailable" && (
         <div className={styles.note}>
-          {inspectUnavailableText(result.reason)}
+          {inspectUnavailableText(result.reason, tx)}
           {result.reason.kind === "timedOut" && (
             <Button size="small" className={styles.retry} onClick={() => void showInstances(id, name)}>
               Retry
@@ -83,7 +84,7 @@ export function InstancesPane({ session }: { session: DebugSession }) {
         <>
           {outdated && (
             <div className={styles.banner} role="status">
-              {outdatedText()}
+              {outdatedText(tx)}
               <IconButton
                 icon="refresh"
                 action="debug.memory.showInstances"
@@ -113,6 +114,7 @@ export function InstancesPane({ session }: { session: DebugSession }) {
 }
 
 function Truncated({ count }: { count: number }) {
+  const tx = useTx();
   const n = formatCount(count);
   return <div className={styles.note}>{tx`Showing the first ${n} instances.`}</div>;
 }
@@ -137,11 +139,13 @@ function InstanceTree({
   /** Referrers are read only while the program is paused, like the Show Referrers action. */
   paused: boolean;
 }) {
+  const tx = useTx();
   const expanded = useMemo(() => new Set(expandedKeys), [expandedKeys]);
   const roots = useMemo(() => instanceNodes(generation, instances), [generation, instances]);
   // The lead row only means something while this tree shows it.
   useEffect(() => () => setInstancesLead(id, null), [id]);
-  const getChildren = useCallback((n: PaneNode) => childrenOf(n, nodes), [nodes]);
+  const getChildren = useCallback((n: PaneNode) => childrenOf(n, nodes, tx), [nodes, tx]);
+  const getLabel = useCallback((n: PaneNode) => labelOf(n, tx), [tx]);
   // Objects of an earlier stop cannot be read any more; what was already loaded stays open.
   const isExpandable = useCallback(
     (n: PaneNode) =>
@@ -161,7 +165,7 @@ function InstanceTree({
       aria-label={label}
       roots={roots}
       getKey={(n) => n.key}
-      getLabel={labelOf}
+      getLabel={getLabel}
       getChildren={getChildren}
       isExpandable={isExpandable}
       expanded={expanded}

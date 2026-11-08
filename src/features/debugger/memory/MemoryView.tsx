@@ -3,7 +3,7 @@ import { useEffect, useMemo } from "react";
 import clsx from "clsx";
 import { Checkbox, Icon, IconButton, Input, List, T } from "@/ui";
 import { executeAction } from "@/platform/actions";
-import { tx } from "@/platform/i18n";
+import { useTx } from "@/platform/i18n";
 import type { JvmClassRow, JvmMemorySnapshot } from "@/platform/ipc";
 import { sessionSupports, type DebugSession } from "../state";
 import { useActionEnabled } from "../ui/useActionEnabled";
@@ -52,6 +52,7 @@ function ClassRow({
   listsInstances: boolean;
   paused: boolean;
 }) {
+  const tx = useTx();
   const delta = formatDelta(row.deltaInstances);
   const retainedBytes = retained?.get(row.name);
   const opens = listsInstances && paused;
@@ -104,6 +105,8 @@ function ClassRow({
 }
 
 export function MemoryView({ session }: { session: DebugSession }) {
+  // Also re-renders the reason text, which reads the catalog when called.
+  const tx = useTx();
   const id = session.id;
   const entry = useMemory((s) => s.bySession[id]);
   const query = entry?.query ?? DEFAULT_QUERY;
@@ -122,7 +125,7 @@ export function MemoryView({ session }: { session: DebugSession }) {
   const listsInstances = sessionSupports("jvmInstances", session);
   const paused = session.status === "paused";
   const canRefresh = useActionEnabled("debug.memory.refresh");
-  const backend = backendText(session.jvmBackend);
+  const backend = backendText(session.jvmBackend, tx);
 
   // Only the first visit loads: later stops mark the table outdated instead of re-running a heap walk.
   useEffect(() => {
@@ -259,6 +262,7 @@ export function MemoryView({ session }: { session: DebugSession }) {
 }
 
 function FooterTotals({ snapshot }: { snapshot: JvmMemorySnapshot }) {
+  const tx = useTx();
   const n = formatCount(snapshot.rows.length);
   const m = formatCount(snapshot.totalInstances);
   const size = formatBytes(snapshot.totalBytes);

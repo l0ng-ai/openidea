@@ -1,6 +1,6 @@
 /** The shortest chain of references that keeps the selected object alive, from the object up to its GC root. */
 import { List, T } from "@/ui";
-import { formatMessage, tx } from "@/platform/i18n";
+import { formatMessage, useTx } from "@/platform/i18n";
 import { call, commands, type HeapObjectRow, type HeapPathStep, type HeapRootPath } from "@/platform/ipc";
 import { formatCount } from "../memory/rows";
 import { edgeText } from "./edgeText";
@@ -18,6 +18,8 @@ function pathRows(path: HeapRootPath): PathRow[] {
 }
 
 export function HeapPath({ snapshot, object }: { snapshot: number; object: HeapObjectRow }) {
+  // Also re-renders the edge texts, which read the catalog when called.
+  const tx = useTx();
   const path = useHeapQuery(`${snapshot}:${object.object}`, () =>
     call(commands.debugHeapPath(snapshot, object.object)),
   );

@@ -5,7 +5,7 @@
 import { useCallback, useEffect, useState } from "react";
 import clsx from "clsx";
 import { Button, Spinner, T, Tree } from "@/ui";
-import { tx } from "@/platform/i18n";
+import { useTx } from "@/platform/i18n";
 import { call, commands, type HeapObjectRow } from "@/platform/ipc";
 import { formatBytes } from "../memory/rows";
 import { retainedShare } from "./editor/classRows";
@@ -23,9 +23,6 @@ import {
 } from "./editor/dominatorPages";
 import styles from "./HeapSnapshotEditor.module.css";
 
-const labelOf = (n: DominatorNode): string =>
-  n.kind === "object" ? `${n.row.className}@${n.row.address}` : n.kind === "more" ? tx("Show more") : n.text;
-
 export function HeapDominators({
   snapshot,
   reachableBytes,
@@ -35,7 +32,13 @@ export function HeapDominators({
   reachableBytes: number;
   onSelect: (object: HeapObjectRow) => void;
 }) {
+  const tx = useTx();
   const [pages, setPages] = useState<DominatorPages>({});
+  const labelOf = useCallback(
+    (n: DominatorNode): string =>
+      n.kind === "object" ? `${n.row.className}@${n.row.address}` : n.kind === "more" ? tx("Show more") : n.text,
+    [tx],
+  );
 
   const load = useCallback(
     (key: string, parent: number | null, offset: number): Promise<void> =>
