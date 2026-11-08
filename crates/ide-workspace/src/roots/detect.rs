@@ -18,7 +18,7 @@ const SKIP_DIRS: &[&str] =
     &["node_modules", "target", "build", "dist", "out", "venv", "__pycache__", "vendor", "bower_components"];
 
 /// Build files whose changes can change the detected roots.
-const BUILD_FILES: &[&str] = &[
+pub(crate) const BUILD_FILES: &[&str] = &[
     "pom.xml",
     "build.gradle",
     "build.gradle.kts",
