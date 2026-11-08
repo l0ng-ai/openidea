@@ -145,6 +145,7 @@ work), but 0.1 code no longer runs: rebuild it against the 1.0 SDK.
 | `languages`         | `path` (`languages/<id>.toml` format, see §6)                                                                                                                 | no            |
 | `runDetectors`      | `id`, `name`, `files`, `command`, `args?`, `test?`, `framework?` (API 1.4; §6.2)                                                                              | no            |
 | `runConfigurations` | `files`: marker files for the optional `run-configurations` export (API 1.4)                                                                                  | yes           |
+| `snippets`          | `language`, `path` (named JSON snippets; API 1.4)                                                                                                             | no            |
 | `providers`         | `kinds`, `languages` (editor providers, see _Providers_)                                                                                                      | yes           |
 | `secrets`           | `name`, `label`, `description?` (see _Network_)                                                                                                               | to use them   |
 | `menus`             | `menu` (`editor.context`, `projectView.context`, `editorTab.context`, `viewItem.context`, `tools`, `commit.message`), `view?`, `command`, `when?`             | no            |
@@ -706,8 +707,7 @@ The referenced icon path is package-relative, up to 256 bytes; both SVGs use the
 references are rejected during installation. Missing or unknown icons retain the
 navigation glyph. A marker's optional target still navigates on click. For
 several cross-file targets, publish document-index mappings; the existing
-chooser lists every matching definition. Command clicks are deferred; use a
-code action on the same line.
+chooser lists every matching definition. Command clicks are available through the API 1.4 `gutter-actions` kind.
 
 Document-indexer markers (`Edges.markers`) use a declared icon when their key
 starts with one of its `markers` prefixes; the longest matching prefix wins,
@@ -879,6 +879,124 @@ hint's kind (`type`, `parameter` or `other`) decides which Inlay Hints setting
 shows it. The host asks the language server and the plugins together, under
 the edit-path budget, and shows both; the editor asks again after edits and
 scrolling. Labels are cut at 256 bytes and tooltips at 1 KiB.
+
+#### Additional language features (API 1.4)
+
+Declare the following kinds under `[[contributes.providers]]`, with
+`engines.openidea = "^1.4"`, implement `language_features::LanguageFeatures`,
+and register `register_plugin!(MyPlugin, language_features)`:
+
+| Kind                  | SDK method                                       | Host policy                                                                                                                                                                                                                                                                                        |
+| --------------------- | ------------------------------------------------ | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `formatting`          | `format(doc, range, options)`                    | Settings › Languages & Frameworks › Plugin Formatters selects a plugin per language; it takes precedence over automatic formatters. Explicit external-formatter actions still select that tool. Format Document, Selection and format-on-save share this choice. Uses the 5-second command budget. |
+| `signature-help`      | `signature_help(doc, at)`                        | Used when LSP returns no signatures. Parameter labels accept literal text or UTF-16 offsets within the signature label.                                                                                                                                                                            |
+| `document-highlights` | `document_highlights(doc, at)`                   | Appended to LSP highlights; the LSP wins duplicate ranges. Kinds are `text`, `read`, `write`.                                                                                                                                                                                                      |
+| `document-links`      | `document_links(doc)`                            | Appended to LSP links, in the same Ctrl/⌘-click UI. Targets are absolute paths, paths relative to the project root, or HTTP(S) URLs. Other URI schemes are ignored.                                                                                                                                |
+| `code-lenses`         | `code_lenses(doc)`                               | Rendered beside LSP and built-in code-vision lenses. Clicks invoke only the returning plugin's declared command.                                                                                                                                                                                   |
+| `selection-ranges`    | `selection_ranges(doc, at)`                      | Extend Selection prefers valid plugin ranges, innermost to outermost, then falls back to tree-sitter.                                                                                                                                                                                              |
+| `folding`             | `folding(doc)`                                   | Merged with tree-sitter folds, deduplicated by start/end lines. Applies to any declared language; `syntax-provider.folding` remains available for a plugin's own languages.                                                                                                                        |
+| `colors`              | `colors(doc)`, `color_presentations(doc, color)` | Color Preview shows swatches and the native picker. A presentation replaces the original range; multiple presentations open a chooser. Channels are finite floats in 0–1.                                                                                                                          |
+| `document-symbols`    | `document_symbols(doc)`                          | Structure and breadcrumbs use these only when LSP returns no document symbols (including an empty list); otherwise LSP symbols win. Tree-sitter is the final fallback.                                                                                                                             |
+| `implementation`      | `implementation(doc, at)`                        | Merged with LSP Go to Implementation, deduplicated by location.                                                                                                                                                                                                                                    |
+| `type-definition`     | `type_definition(doc, at)`                       | Merged with LSP Go to Type Declaration, deduplicated by location.                                                                                                                                                                                                                                  |
+| `gutter-actions`      | `gutter_actions(doc)`                            | Buttons beside line markers. Clicks invoke only the returning plugin's declared command, with its optional string argument and the editor window/project context. Icons accept the same names, aliases and declared marker SVG paths as line markers.                                              |
+
+The optional WIT interface is `language-features`, in worlds
+`plugin-language-features` / `editor-language-features`. Its own `document`
+record contains path, language, version and unsaved text. All functions are
+present in the interface from its first release, but the host calls only
+kinds declared by the plugin. No additional capability is required for the
+supplied document; host imports retain their normal permission checks.
+Except formatting, these calls use the editor-provider soft/hard budgets.
+Missing/unavailable LSP services permit plugin results; other LSP errors
+remain errors.
+
+`document-symbol.parent` is an index in the returned flat list. A parent
+must precede its children and contain their ranges; invalid parents become
+roots, and outline depth is bounded to 64. Symbol/fold/highlight kinds are
+strings so later host versions can recognize new ones. Unknown kinds use
+neutral UI defaults. Invalid document ranges are dropped. Each list is
+limited to 10,000 items; signature help retains at most 100 signatures and
+100 parameters each, presentations at most 100 strings. Text is bounded to
+64 KiB per string. Format edits must be valid and non-overlapping.
+Disabling a selected formatter reports it as unavailable rather than silently
+formatting with another provider. Format-on-save uses the editor's existing
+Format on save setting. Native tests can obtain the current unsaved snapshot
+with `MockHost::provider_document()` and call the traits directly.
+
+#### Embedded languages (API 1.4)
+
+Implement `language_features::Injections`, declare `kinds = ["injections"]`
+for the host language, and register `register_plugin!(MyPlugin, injections)`.
+The optional `injections` interface has worlds `plugin-injections` /
+`language-injections` and returns `{range, language}` entries. Ranges use
+host-document UTF-16 coordinates. The editor refreshes them after edits
+(300 ms debounce) and highlights each slice using the embedded language's
+CodeMirror parser and current color scheme, over the host tokens.
+
+Completion, hover, diagnostics and additional language features use embedded
+languages' **plugin** providers. A virtual document keeps the original path,
+version and newlines, replaces text outside all ranges of that language with
+spaces, and changes the language id. One space is emitted per UTF-16 unit,
+so emoji outside a range do not shift its positions. Point requests ask the
+embedded language at the caret before the host language. Document features
+filter results to their injected ranges, and diagnostics outside those
+ranges are dropped. Completion replacement/additional edits are confined to
+the embedded ranges. Ranges are half-open; the end belongs to the host.
+
+At most 1,000 non-overlapping injection ranges and 32 embedded languages
+are routed per document. Earlier ranges in document order win overlaps.
+Documents over 2 MiB are excluded. Invalid ranges, self-injections and invalid
+language ids are ignored. Injections are not applied recursively. The same
+server-side plugin host handles remote editing. **Embedded LSP forwarding is
+future host-side work**, not part of 1.4, and needs no WIT change.
+
+### Snippets (API 1.4)
+
+Contribution-only or code plugins can package read-only live templates:
+
+```toml
+[[contributes.snippets]]
+language = "sql"
+path = "snippets/sql.json"
+```
+
+```json
+{
+  "Select rows": {
+    "prefix": ["sel", "select"],
+    "body": ["SELECT ${1:column}", "FROM ${2:table}$0"],
+    "description": "Select rows from a table"
+  }
+}
+```
+
+`prefix` and `body` each accept a string or an array of strings (body lines
+join with newlines). Numbered `$1`, `${1:default}` and final `$0` placeholders
+use the existing linked live-template fields, in numeric tab order; `\$`
+escapes a literal dollar. They appear in completion, Tab expansion and
+Settings › Editor › Live Templates, grouped by the plugin name and read-only.
+Disabling or removing the plugin removes them. Plugin locales translate
+`description`; prefixes and bodies remain code. Installation and
+`openidea-plugin check` validate every entry and package path. Limits: 1 MiB
+per file, 1,000 named entries, 32 prefixes per entry, 64 KiB per body, 4 KiB
+per description. No additional permission or runtime export is needed.
+
+### Additional menu locations (API 1.4)
+
+`[[contributes.menus]]` also accepts `editor.title` (the editor tab bar's
+actions area), `mainToolbar`, `problems.context` and `searchResults.context`.
+The existing `when` clauses apply alongside command enablement. Toolbar
+icons use the command's optional API-1.4 `icon`, then the plugin manifest
+icon. A command icon may be a built-in icon name or a package SVG path,
+validated and bundled at installation. Context menus also support the
+existing submenu grouping.
+
+Commands receive the usual invoking window/project/editor context. For a
+problem or search match, `selected-paths` contains its file and the command's
+string argument is JSON `{ "path": "…", "line": 0, "column": 0 }`; lines
+and columns are zero-based and columns are UTF-16 units. Editor-title and
+main-toolbar actions use the focused editor context.
 
 ### Network and secrets
 

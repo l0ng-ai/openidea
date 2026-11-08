@@ -184,3 +184,12 @@ world configurations-provider { export run-configurations; }
 world plugin-test-results { include plugin; export test-results; }
 /// Export-only test parser world, composed with plugin by SDK macros.
 world test-results-provider { export test-results; }
+
+/// A plugin with additional API 1.4 language features.
+world plugin-language-features { include plugin; export language-features; }
+/// Export-only language features, composed with the base plugin world.
+world editor-language-features { export language-features; }
+/// A plugin that identifies embedded language ranges.
+world plugin-injections { include plugin; export injections; }
+/// Export-only injections, composed with the base plugin world.
+world language-injections { export injections; }

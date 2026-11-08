@@ -42,6 +42,19 @@ pub enum ProviderKind {
     Hover,
     InlayHints,
     Diagnostics,
+    Formatting,
+    SignatureHelp,
+    DocumentHighlights,
+    DocumentLinks,
+    CodeLenses,
+    SelectionRanges,
+    Folding,
+    Colors,
+    DocumentSymbols,
+    Implementation,
+    TypeDefinition,
+    GutterActions,
+    Injections,
 }
 
 #[derive(Clone, Debug, Deserialize)]
@@ -94,9 +107,30 @@ impl Providers {
     }
 
     pub(super) fn diagnostic_generations(&self, language: &str) -> HashMap<String, u64> {
-        self.matching(ProviderKind::Diagnostics, language)
+        if self.any(ProviderKind::Injections) {
+            let mut out = HashMap::new();
+            for (seq, plugin, kinds, _) in self.items.read().iter() {
+                if kinds.contains(&ProviderKind::Diagnostics) {
+                    out.entry(plugin.clone()).or_insert(*seq);
+                }
+            }
+            out
+        } else {
+            self.matching(ProviderKind::Diagnostics, language)
+        }
     }
 
+    pub(super) fn injection_generations(&self, language: &str) -> HashMap<String, u64> {
+        self.matching(ProviderKind::Injections, language)
+    }
+    pub(super) fn formatter_declarations(&self) -> Vec<(String, Vec<String>)> {
+        self.items
+            .read()
+            .iter()
+            .filter(|(_, _, k, _)| k.contains(&ProviderKind::Formatting))
+            .map(|(_, p, _, l)| (p.clone(), l.clone()))
+            .collect()
+    }
     /// Whether any plugin provides `kind` (for any language).
     pub fn any(&self, kind: ProviderKind) -> bool {
         self.items.read().iter().any(|(_, _, kinds, _)| kinds.contains(&kind))
@@ -141,6 +175,26 @@ impl ExtensionPoint for ProvidersPoint {
         }
         if d.kinds.contains(&ProviderKind::InlayHints) {
             pkg.manifest.needs_api("contributes.providers: inlay-hints", 3)?;
+        }
+        if d.kinds.iter().any(|k| {
+            matches!(
+                k,
+                ProviderKind::Formatting
+                    | ProviderKind::SignatureHelp
+                    | ProviderKind::DocumentHighlights
+                    | ProviderKind::DocumentLinks
+                    | ProviderKind::CodeLenses
+                    | ProviderKind::SelectionRanges
+                    | ProviderKind::Folding
+                    | ProviderKind::Colors
+                    | ProviderKind::DocumentSymbols
+                    | ProviderKind::Implementation
+                    | ProviderKind::TypeDefinition
+                    | ProviderKind::GutterActions
+                    | ProviderKind::Injections
+            )
+        }) {
+            pkg.manifest.needs_api("contributes.providers: language features and injections", 4)?;
         }
         for l in &d.languages {
             if l != "*"
@@ -211,7 +265,7 @@ pub fn set_editor_providers(host: Option<&Arc<PluginHost>>) {
 /// The plugin host whose providers take part, when any declares `kind`.
 pub(crate) fn editor_providers(kind: ProviderKind) -> Option<Arc<PluginHost>> {
     let host = editor_plugin_host()?;
-    host.providers.any(kind).then_some(host)
+    (host.providers.any(kind) || host.providers.any(ProviderKind::Injections)).then_some(host)
 }
 
 pub(crate) fn editor_plugin_host() -> Option<Arc<PluginHost>> {
@@ -236,15 +290,46 @@ impl PluginHost {
     /// declares `kind` for `language`, in plugin order, leaving out those that
     /// failed or were late. Each plugin runs on its own thread, so the calls
     /// run at the same time: the wait is the slowest plugin's, not the sum.
-    fn edit_calls<R: Send + 'static>(
+    pub(super) fn edit_calls<R: Send + 'static>(
         &self,
         kind: ProviderKind,
         language: &str,
         f: impl FnOnce(&mut Runtime, Duration) -> Result<R, CallError> + Clone + Send + 'static,
     ) -> Vec<(Arc<LoadedPlugin>, R)> {
+        self.edit_calls_plugins(self.provider_plugins(kind, language), f)
+    }
+
+    pub(super) fn document_calls<R: Send + 'static>(
+        &self,
+        kind: ProviderKind,
+        doc: &ProviderDocument,
+        f: impl FnOnce(&mut Runtime, Duration) -> Result<R, CallError> + Clone + Send + 'static,
+    ) -> Vec<(Arc<LoadedPlugin>, R)> {
+        self.document_calls_for(kind, doc, None, f)
+    }
+    pub(super) fn document_calls_for<R: Send + 'static>(
+        &self,
+        kind: ProviderKind,
+        doc: &ProviderDocument,
+        owner: Option<&str>,
+        f: impl FnOnce(&mut Runtime, Duration) -> Result<R, CallError> + Clone + Send + 'static,
+    ) -> Vec<(Arc<LoadedPlugin>, R)> {
+        let plugins = self
+            .provider_plugins(kind, &doc.language)
+            .into_iter()
+            .filter(|p| {
+                p.dev_root.as_ref().is_none_or(|r| doc.path.starts_with(r)) && owner.is_none_or(|id| p.id() == id)
+            })
+            .collect();
+        self.edit_calls_plugins(plugins, f)
+    }
+    fn edit_calls_plugins<R: Send + 'static>(
+        &self,
+        plugins: Vec<Arc<LoadedPlugin>>,
+        f: impl FnOnce(&mut Runtime, Duration) -> Result<R, CallError> + Clone + Send + 'static,
+    ) -> Vec<(Arc<LoadedPlugin>, R)> {
         let (soft, hard) = (self.limits.edit_soft, self.limits.edit_hard);
-        let queued: Vec<_> = self
-            .provider_plugins(kind, language)
+        let queued: Vec<_> = plugins
             .into_iter()
             .filter_map(|plugin| {
                 let (actor, activated) = self.ensure_active(&plugin, None).ok()?;
@@ -303,13 +388,24 @@ impl PluginHost {
         at: ide_core::Pos,
         trigger: Option<&str>,
     ) -> Vec<(String, CompletionItem)> {
-        let (d, t) = (Arc::new(doc.clone()), trigger.map(str::to_owned));
-        self.edit_calls(ProviderKind::Completion, &doc.language, move |rt, timeout| {
-            rt.provide_completion(&d, at, t.as_deref(), timeout)
-        })
-        .into_iter()
-        .flat_map(|(p, items)| items.into_iter().map(move |i| (p.id().to_owned(), i)))
-        .collect()
+        self.feature_documents(doc, Some(at))
+            .into_iter()
+            .flat_map(|(doc, bounds)| {
+                let (d, t) = (Arc::new(doc.clone()), trigger.map(str::to_owned));
+                self.document_calls(ProviderKind::Completion, &doc, move |rt, timeout| {
+                    rt.provide_completion(&d, at, t.as_deref(), timeout)
+                })
+                .into_iter()
+                .flat_map(|(p, items)| items.into_iter().map(move |i| (p.id().to_owned(), i)))
+                .filter_map(move |(p, mut i)| {
+                    if i.replace.is_some_and(|r| !bounds.contains(r)) {
+                        return None;
+                    }
+                    i.additional_edits.retain(|e| bounds.contains(e.range));
+                    Some((p, i))
+                })
+            })
+            .collect()
     }
 
     pub fn provide_code_actions(
@@ -391,10 +487,20 @@ impl PluginHost {
         project: Option<&std::path::Path>,
         language: &str,
     ) -> Vec<Arc<LoadedPlugin>> {
-        self.provider_plugins(ProviderKind::Diagnostics, language)
-            .into_iter()
-            .filter(|p| p.dev_root.is_none() || p.dev_root.as_deref() == project)
-            .collect()
+        let plugins = if self.providers.any(ProviderKind::Injections) {
+            self.providers
+                .diagnostic_generations(language)
+                .keys()
+                .filter_map(|id| self.get(id).ok())
+                .filter(|p| {
+                    let m = p.meta.lock();
+                    matches!(m.status, PluginStatus::Active | PluginStatus::Inactive) && m.pending.is_empty()
+                })
+                .collect()
+        } else {
+            self.provider_plugins(ProviderKind::Diagnostics, language)
+        };
+        plugins.into_iter().filter(|p| p.dev_root.is_none() || p.dev_root.as_deref() == project).collect()
     }
 
     pub(super) fn provide_project_diagnostics(
@@ -403,10 +509,34 @@ impl PluginHost {
         doc: &ProviderDocument,
         cancel: &CancellationToken,
     ) -> Vec<(String, Vec<ide_core::Diagnostic>)> {
+        let mut out = std::collections::BTreeMap::<String, Vec<ide_core::Diagnostic>>::new();
+        for (d, bounds) in self.feature_documents(doc, None) {
+            if cancel.is_cancelled() {
+                break;
+            }
+            for (id, items) in self.provide_document_diagnostics(project, &d, cancel) {
+                out.entry(id).or_default().extend(items.into_iter().filter(|i| bounds.contains(i.range)));
+            }
+        }
+        out.into_iter()
+            .map(|(id, mut items)| {
+                items.truncate(5000);
+                (id, items)
+            })
+            .collect()
+    }
+
+    fn provide_document_diagnostics(
+        &self,
+        project: Option<&std::path::Path>,
+        doc: &ProviderDocument,
+        cancel: &CancellationToken,
+    ) -> Vec<(String, Vec<ide_core::Diagnostic>)> {
         std::thread::scope(|scope| {
             let calls: Vec<_> = self
-                .diagnostic_plugins(project, &doc.language)
+                .provider_plugins(ProviderKind::Diagnostics, &doc.language)
                 .into_iter()
+                .filter(|p| p.dev_root.is_none() || p.dev_root.as_deref() == project)
                 .map(|p| {
                     scope.spawn(move || {
                         if cancel.is_cancelled() {
@@ -432,10 +562,15 @@ impl PluginHost {
     }
 
     pub fn provide_hover(&self, doc: &ProviderDocument, at: ide_core::Pos) -> Vec<PluginHover> {
-        let d = Arc::new(doc.clone());
-        self.edit_calls(ProviderKind::Hover, &doc.language, move |rt, timeout| rt.provide_hover(&d, at, timeout))
+        self.feature_documents(doc, Some(at))
             .into_iter()
-            .filter_map(|(_, hover)| hover)
+            .flat_map(|(doc, bounds)| {
+                let d = Arc::new(doc.clone());
+                self.document_calls(ProviderKind::Hover, &doc, move |rt, timeout| rt.provide_hover(&d, at, timeout))
+                    .into_iter()
+                    .filter_map(|(_, h)| h)
+                    .filter(move |h| h.range.is_none_or(|r| bounds.contains(r)))
+            })
             .collect()
     }
 

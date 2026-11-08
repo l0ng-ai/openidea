@@ -2165,3 +2165,14 @@ impl bindings::openidea::plugin::decorations::Host for StoreData {
         Ok(self.host.file_decorations(None, &set_id, None).map_err(to_wit))
     }
 }
+
+pub(crate) mod language_features_bindings {
+    wasmtime::component::bindgen!({ world: "editor-language-features", path: "../../wit",
+        with: { "openidea:plugin/types": super::bindings::openidea::plugin::types },
+    });
+}
+pub(crate) mod injections_bindings {
+    wasmtime::component::bindgen!({ world: "language-injections", path: "../../wit",
+        with: { "openidea:plugin/types": super::bindings::openidea::plugin::types },
+    });
+}

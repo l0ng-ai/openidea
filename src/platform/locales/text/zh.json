@@ -6927,5 +6927,15 @@
   "Not now": "暂不使用",
   "Run in target": "在目标中运行",
   "Run in target {0}": "在目标 {0} 中运行",
-  "Default run target": "默认运行目标"
+  "Default run target": "默认运行目标",
+  "Snippets": "代码片段",
+  "Plugin Formatters": "插件格式化工具",
+  "Format on save": "保存时格式化",
+  "The selected plugin formatter is unavailable": "所选插件格式化工具不可用",
+  "Plugin formatter returned an invalid range": "插件格式化工具返回了无效范围",
+  "Plugin formatter returned overlapping edits": "插件格式化工具返回了重叠的编辑",
+  "Invalid plugin command": "无效的插件命令",
+  "Plugin host unavailable": "插件宿主不可用",
+  "The plugin did not declare this command": "插件未声明此命令",
+  "Invalid color range": "无效的颜色范围"
 }

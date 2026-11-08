@@ -629,6 +629,8 @@ impl Default for FileSettings {
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize, Type)]
 #[serde(default, rename_all = "camelCase")]
 pub struct LanguagesSettings {
+    /// Explicit plugin formatter, by language id. Empty entries use the normal formatter policy.
+    pub plugin_formatters: BTreeMap<String, String>,
     pub python: PythonSettings,
     pub node: NodeSettings,
     pub php: PhpSettings,
@@ -646,6 +648,7 @@ pub struct LanguagesSettings {
 impl Default for LanguagesSettings {
     fn default() -> Self {
         Self {
+            plugin_formatters: BTreeMap::new(),
             python: PythonSettings::default(),
             node: NodeSettings::default(),
             php: PhpSettings::default(),

@@ -130,6 +130,7 @@ export interface ArtifactConfigValid {
 }
 
 export interface LanguagesValid {
+  pluginFormatters: Record<string, string>;
   python: { interpreter: string; activateVirtualenv: boolean };
   ruby: { interpreter: string };
   node: { runTarget: string; interpreter: string; packageManager: "" | "npm" | "pnpm" | "yarn" | "bun" };
@@ -226,6 +227,7 @@ export type FolderListKey =
   | "unmarked";
 
 export const DEFAULT_LANGUAGES: LanguagesValid = {
+  pluginFormatters: {},
   python: { interpreter: "", activateVirtualenv: true },
   ruby: { interpreter: "" },
   node: { runTarget: "", interpreter: "", packageManager: "" },
@@ -345,6 +347,11 @@ export function validateLanguages(raw: unknown): LanguagesValid {
   const gradle = obj(java.gradle);
   const markdown = obj(l.markdown);
   return {
+    pluginFormatters: Object.fromEntries(
+      Object.entries(obj(l.pluginFormatters)).filter(
+        (entry): entry is [string, string] => typeof entry[1] === "string",
+      ),
+    ),
     python: {
       interpreter: text(py.interpreter, d.python.interpreter),
       activateVirtualenv: bool(py.activateVirtualenv, d.python.activateVirtualenv),

@@ -16,6 +16,8 @@ use crate::types::{
     FieldValue, ServiceLog, ServiceLogToggle, ServicePane, ServiceTab, TableSort, View, ViewBody, ViewButton,
     ViewEvent, ViewField, ViewListItem, ViewTable, ViewTreeItem, Viewport,
 };
+use crate::wit_host::injections_bindings::exports::openidea::plugin::injections as wit_inj;
+use crate::wit_host::language_features_bindings::exports::openidea::plugin::language_features as wit_lf;
 use crate::wit_host::{
     bindings, commit_checks_bindings, details_bindings, endpoints_bindings, file_actions_bindings, hover_bindings,
     indexing_bindings, inlay_bindings, providers_bindings, semantic_bindings, syntax_bindings, views_bindings,
@@ -872,6 +874,8 @@ pub struct Runtime {
 
 /// What the component exports: the `plugin` world, plus optional interfaces.
 struct Exports {
+    language_features: Option<wit_lf::Guest>,
+    injections: Option<wit_inj::Guest>,
     plugin: bindings::Plugin,
     syntax: Option<wit_syntax::Guest>,
     providers: Option<wit_prov::Guest>,
@@ -1006,10 +1010,14 @@ impl Runtime {
         let endpoint_indices = wit_endpoints::GuestIndices::new(&pre).ok();
         let configs_indices = wit_configs::GuestIndices::new(&pre).ok();
         let tests_indices = wit_tests::GuestIndices::new(&pre).ok();
+        let lf_indices = wit_lf::GuestIndices::new(&pre).ok();
+        let inj_indices = wit_inj::GuestIndices::new(&pre).ok();
         let instance = pre.instantiate(&mut store).map_err(api_hint)?;
         let run_configurations =
             configs_indices.map(|i| i.load(&mut store, &instance)).transpose().map_err(api_hint)?;
         let test_results = tests_indices.map(|i| i.load(&mut store, &instance)).transpose().map_err(api_hint)?;
+        let language_features = lf_indices.map(|i| i.load(&mut store, &instance)).transpose().map_err(api_hint)?;
+        let injections = inj_indices.map(|i| i.load(&mut store, &instance)).transpose().map_err(api_hint)?;
         let plugin = plugin_indices.load(&mut store, &instance).map_err(api_hint)?;
         let syntax = match syntax_indices {
             Some(indices) => Some(indices.load(&mut store, &instance).map_err(api_hint)?),
@@ -1062,6 +1070,8 @@ impl Runtime {
         Ok(Self {
             store,
             exports: Exports {
+                language_features,
+                injections,
                 plugin,
                 syntax,
                 providers,
@@ -2162,6 +2172,334 @@ fn test_event_from_wit(event: wit_tests::TestEvent) -> crate::PluginTestEvent {
         wit_tests::TestEvent::Skipped(v) => E::Skipped(TestSkipped { id: v.id, reason: v.reason }),
         wit_tests::TestEvent::Output(v) => E::Output(TestOutput { id: v.id, text: v.text }),
         wit_tests::TestEvent::Other(v) => E::Other { kind: v.kind, data: v.data },
+    }
+}
+
+fn parameter_from(v: wit_lf::Parameter) -> crate::language_features::Parameter {
+    crate::language_features::Parameter {
+        label: parameter_label_from(v.label),
+        documentation: v.documentation.map(|v| crate::runtime::clip(v, 65536)),
+    }
+}
+fn signature_from(v: wit_lf::Signature) -> crate::language_features::Signature {
+    crate::language_features::Signature {
+        label: crate::runtime::clip(v.label, 65536),
+        documentation: v.documentation.map(|v| crate::runtime::clip(v, 65536)),
+        parameters: v.parameters.into_iter().take(10000).map(parameter_from).collect(),
+    }
+}
+fn signature_help_from(v: wit_lf::SignatureHelpResult) -> crate::language_features::SignatureHelp {
+    crate::language_features::SignatureHelp {
+        signatures: v.signatures.into_iter().take(10000).map(signature_from).collect(),
+        active_signature: v.active_signature,
+        active_parameter: v.active_parameter,
+    }
+}
+fn highlight_from(v: wit_lf::Highlight) -> crate::language_features::Highlight {
+    crate::language_features::Highlight { range: range_from_wit(v.range), kind: crate::runtime::clip(v.kind, 65536) }
+}
+fn document_link_from(v: wit_lf::DocumentLink) -> crate::language_features::DocumentLink {
+    crate::language_features::DocumentLink {
+        range: range_from_wit(v.range),
+        target: crate::runtime::clip(v.target, 65536),
+    }
+}
+fn code_lens_from(v: wit_lf::CodeLens) -> crate::language_features::CodeLens {
+    crate::language_features::CodeLens {
+        range: range_from_wit(v.range),
+        title: crate::runtime::clip(v.title, 65536),
+        command: crate::runtime::clip(v.command, 65536),
+        argument: v.argument.map(|v| crate::runtime::clip(v, 65536)),
+    }
+}
+fn fold_range_from(v: wit_lf::FoldRange) -> crate::language_features::FoldRange {
+    crate::language_features::FoldRange {
+        start_line: v.start_line,
+        end_line: v.end_line,
+        kind: crate::runtime::clip(v.kind, 65536),
+    }
+}
+fn color_info_from(v: wit_lf::ColorInfo) -> crate::language_features::ColorInfo {
+    crate::language_features::ColorInfo {
+        range: range_from_wit(v.range),
+        red: v.red,
+        green: v.green,
+        blue: v.blue,
+        alpha: v.alpha,
+    }
+}
+fn document_symbol_from(v: wit_lf::DocumentSymbol) -> crate::language_features::DocumentSymbol {
+    crate::language_features::DocumentSymbol {
+        name: crate::runtime::clip(v.name, 65536),
+        detail: crate::runtime::clip(v.detail, 65536),
+        kind: crate::runtime::clip(v.kind, 65536),
+        range: range_from_wit(v.range),
+        selection_range: range_from_wit(v.selection_range),
+        parent: v.parent,
+    }
+}
+fn gutter_action_from(v: wit_lf::GutterAction) -> crate::language_features::GutterAction {
+    crate::language_features::GutterAction {
+        line: v.line,
+        icon: v.icon.map(|v| crate::runtime::clip(v, 65536)),
+        tooltip: crate::runtime::clip(v.tooltip, 65536),
+        command: crate::runtime::clip(v.command, 65536),
+        argument: v.argument.map(|v| crate::runtime::clip(v, 65536)),
+    }
+}
+fn parameter_label_from(v: wit_lf::ParameterLabel) -> crate::language_features::ParameterLabel {
+    use crate::language_features::ParameterLabel as P;
+    match v {
+        wit_lf::ParameterLabel::Text(t) => P::Text(clip(t, 4096)),
+        wit_lf::ParameterLabel::Offsets(t) => P::Offsets(t),
+    }
+}
+impl Runtime {
+    fn language_feature_call<R>(
+        &mut self,
+        timeout: Duration,
+        f: impl FnOnce(&wit_lf::Guest, &mut Store<StoreData>) -> wasmtime::Result<R>,
+    ) -> Result<R, CallError> {
+        if self.exports.language_features.is_none() {
+            return Err(CallError::missing_export("language-features"));
+        }
+        self.call(Invocation::default(), timeout, |e, s| f(e.language_features.as_ref().expect("checked"), s))
+    }
+    pub fn language_format(
+        &mut self,
+        doc: &ProviderDocument,
+        range: Option<ide_core::Range>,
+        options: crate::language_features::FormatOptions,
+        timeout: Duration,
+    ) -> Result<Vec<ide_core::TextEdit>, CallError> {
+        let d = wit_lf::Document {
+            path: to_ipc(&doc.path),
+            language: doc.language.clone(),
+            version: doc.version,
+            text: doc.text.clone(),
+        };
+        let result = self.language_feature_call(timeout, |p, s| {
+            p.call_format(
+                s,
+                &d,
+                range.map(range_to_wit),
+                wit_lf::FormatOptions { tab_size: options.tab_size, insert_spaces: options.insert_spaces },
+            )
+        })?;
+        let result = result.map_err(|e| CallError::Guest(e.into()))?;
+        Ok(result.into_iter().take(10000).map(edit_from_wit).collect())
+    }
+    pub fn language_signature_help(
+        &mut self,
+        doc: &ProviderDocument,
+        at: ide_core::Pos,
+        timeout: Duration,
+    ) -> Result<Option<crate::language_features::SignatureHelp>, CallError> {
+        let d = wit_lf::Document {
+            path: to_ipc(&doc.path),
+            language: doc.language.clone(),
+            version: doc.version,
+            text: doc.text.clone(),
+        };
+        let result = self.language_feature_call(timeout, |p, s| p.call_signature_help(s, &d, pos_to_wit(at)))?;
+        Ok(result.map(signature_help_from))
+    }
+    pub fn language_document_highlights(
+        &mut self,
+        doc: &ProviderDocument,
+        at: ide_core::Pos,
+        timeout: Duration,
+    ) -> Result<Vec<crate::language_features::Highlight>, CallError> {
+        let d = wit_lf::Document {
+            path: to_ipc(&doc.path),
+            language: doc.language.clone(),
+            version: doc.version,
+            text: doc.text.clone(),
+        };
+        let result = self.language_feature_call(timeout, |p, s| p.call_document_highlights(s, &d, pos_to_wit(at)))?;
+        Ok(result.into_iter().take(10000).map(highlight_from).collect())
+    }
+    pub fn language_document_links(
+        &mut self,
+        doc: &ProviderDocument,
+        timeout: Duration,
+    ) -> Result<Vec<crate::language_features::DocumentLink>, CallError> {
+        let d = wit_lf::Document {
+            path: to_ipc(&doc.path),
+            language: doc.language.clone(),
+            version: doc.version,
+            text: doc.text.clone(),
+        };
+        let result = self.language_feature_call(timeout, |p, s| p.call_document_links(s, &d))?;
+        Ok(result.into_iter().take(10000).map(document_link_from).collect())
+    }
+    pub fn language_code_lenses(
+        &mut self,
+        doc: &ProviderDocument,
+        timeout: Duration,
+    ) -> Result<Vec<crate::language_features::CodeLens>, CallError> {
+        let d = wit_lf::Document {
+            path: to_ipc(&doc.path),
+            language: doc.language.clone(),
+            version: doc.version,
+            text: doc.text.clone(),
+        };
+        let result = self.language_feature_call(timeout, |p, s| p.call_code_lenses(s, &d))?;
+        Ok(result.into_iter().take(10000).map(code_lens_from).collect())
+    }
+    pub fn language_selection_ranges(
+        &mut self,
+        doc: &ProviderDocument,
+        at: ide_core::Pos,
+        timeout: Duration,
+    ) -> Result<Vec<ide_core::Range>, CallError> {
+        let d = wit_lf::Document {
+            path: to_ipc(&doc.path),
+            language: doc.language.clone(),
+            version: doc.version,
+            text: doc.text.clone(),
+        };
+        let result = self.language_feature_call(timeout, |p, s| p.call_selection_ranges(s, &d, pos_to_wit(at)))?;
+        Ok(result.into_iter().take(10000).map(range_from_wit).collect())
+    }
+    pub fn language_folding(
+        &mut self,
+        doc: &ProviderDocument,
+        timeout: Duration,
+    ) -> Result<Vec<crate::language_features::FoldRange>, CallError> {
+        let d = wit_lf::Document {
+            path: to_ipc(&doc.path),
+            language: doc.language.clone(),
+            version: doc.version,
+            text: doc.text.clone(),
+        };
+        let result = self.language_feature_call(timeout, |p, s| p.call_folding(s, &d))?;
+        Ok(result.into_iter().take(10000).map(fold_range_from).collect())
+    }
+    pub fn language_colors(
+        &mut self,
+        doc: &ProviderDocument,
+        timeout: Duration,
+    ) -> Result<Vec<crate::language_features::ColorInfo>, CallError> {
+        let d = wit_lf::Document {
+            path: to_ipc(&doc.path),
+            language: doc.language.clone(),
+            version: doc.version,
+            text: doc.text.clone(),
+        };
+        let result = self.language_feature_call(timeout, |p, s| p.call_colors(s, &d))?;
+        Ok(result.into_iter().take(10000).map(color_info_from).collect())
+    }
+    pub fn language_color_presentations(
+        &mut self,
+        doc: &ProviderDocument,
+        color: crate::language_features::ColorInfo,
+        timeout: Duration,
+    ) -> Result<Vec<String>, CallError> {
+        let d = wit_lf::Document {
+            path: to_ipc(&doc.path),
+            language: doc.language.clone(),
+            version: doc.version,
+            text: doc.text.clone(),
+        };
+        let result = self.language_feature_call(timeout, |p, s| {
+            p.call_color_presentations(
+                s,
+                &d,
+                wit_lf::ColorInfo {
+                    range: range_to_wit(color.range),
+                    red: color.red,
+                    green: color.green,
+                    blue: color.blue,
+                    alpha: color.alpha,
+                },
+            )
+        })?;
+        Ok(result.into_iter().take(10000).map(|v| crate::runtime::clip(v, 65536)).collect())
+    }
+    pub fn language_document_symbols(
+        &mut self,
+        doc: &ProviderDocument,
+        timeout: Duration,
+    ) -> Result<Vec<crate::language_features::DocumentSymbol>, CallError> {
+        let d = wit_lf::Document {
+            path: to_ipc(&doc.path),
+            language: doc.language.clone(),
+            version: doc.version,
+            text: doc.text.clone(),
+        };
+        let result = self.language_feature_call(timeout, |p, s| p.call_document_symbols(s, &d))?;
+        Ok(result.into_iter().take(10000).map(document_symbol_from).collect())
+    }
+    pub fn language_implementation(
+        &mut self,
+        doc: &ProviderDocument,
+        at: ide_core::Pos,
+        timeout: Duration,
+    ) -> Result<Vec<crate::Location>, CallError> {
+        let d = wit_lf::Document {
+            path: to_ipc(&doc.path),
+            language: doc.language.clone(),
+            version: doc.version,
+            text: doc.text.clone(),
+        };
+        let result = self.language_feature_call(timeout, |p, s| p.call_implementation(s, &d, pos_to_wit(at)))?;
+        Ok(result.into_iter().take(10000).map(location_from_wit).collect())
+    }
+    pub fn language_type_definition(
+        &mut self,
+        doc: &ProviderDocument,
+        at: ide_core::Pos,
+        timeout: Duration,
+    ) -> Result<Vec<crate::Location>, CallError> {
+        let d = wit_lf::Document {
+            path: to_ipc(&doc.path),
+            language: doc.language.clone(),
+            version: doc.version,
+            text: doc.text.clone(),
+        };
+        let result = self.language_feature_call(timeout, |p, s| p.call_type_definition(s, &d, pos_to_wit(at)))?;
+        Ok(result.into_iter().take(10000).map(location_from_wit).collect())
+    }
+    pub fn language_gutter_actions(
+        &mut self,
+        doc: &ProviderDocument,
+        timeout: Duration,
+    ) -> Result<Vec<crate::language_features::GutterAction>, CallError> {
+        let d = wit_lf::Document {
+            path: to_ipc(&doc.path),
+            language: doc.language.clone(),
+            version: doc.version,
+            text: doc.text.clone(),
+        };
+        let result = self.language_feature_call(timeout, |p, s| p.call_gutter_actions(s, &d))?;
+        Ok(result.into_iter().take(10000).map(gutter_action_from).collect())
+    }
+    pub fn provide_injections(
+        &mut self,
+        doc: &ProviderDocument,
+        timeout: Duration,
+    ) -> Result<Vec<crate::language_features::Injection>, CallError> {
+        if self.exports.injections.is_none() {
+            return Err(CallError::missing_export("injections"));
+        }
+        let d = wit_inj::Document {
+            path: to_ipc(&doc.path),
+            language: doc.language.clone(),
+            version: doc.version,
+            text: doc.text.clone(),
+        };
+        let result = self.call(Invocation::default(), timeout, |e, s| {
+            e.injections.as_ref().expect("checked").call_injections(s, &d)
+        })?;
+        Ok(result
+            .into_iter()
+            .take(10000)
+            .map(|i| crate::language_features::Injection {
+                range: range_from_wit(i.range),
+                language: clip(i.language, 64),
+            })
+            .collect())
     }
 }
 

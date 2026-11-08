@@ -440,6 +440,16 @@ impl MockHost {
         self.state.borrow().diagnostics.clone()
     }
 
+    /// Snapshot supplied to optional language-feature and injection traits in native tests.
+    pub fn provider_document(&self) -> Option<crate::providers::Document> {
+        self.state.borrow().editor.as_ref().map(|e| crate::providers::Document {
+            path: e.path.clone(),
+            language: e.language.clone(),
+            version: e.version,
+            text: e.text.clone(),
+        })
+    }
+
     /// Runs a diagnostics provider against the current mock editor snapshot.
     /// This explicit call replaces the real host's debounce; it needs no capability.
     pub fn refresh_diagnostics(&self, provider: &mut impl crate::diagnostics::DiagnosticsProvider) {

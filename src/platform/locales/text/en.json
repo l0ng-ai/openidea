@@ -585,5 +585,15 @@
   "Run in target": "Run in target",
   "Run in target {0}": "Run in target {0}",
   "Default run target": "Default run target",
-  "Read-only": "Read-only"
+  "Read-only": "Read-only",
+  "Snippets": "Snippets",
+  "Plugin Formatters": "Plugin Formatters",
+  "Format on save": "Format on save",
+  "The selected plugin formatter is unavailable": "The selected plugin formatter is unavailable",
+  "Plugin formatter returned an invalid range": "Plugin formatter returned an invalid range",
+  "Plugin formatter returned overlapping edits": "Plugin formatter returned overlapping edits",
+  "Invalid plugin command": "Invalid plugin command",
+  "Plugin host unavailable": "Plugin host unavailable",
+  "The plugin did not declare this command": "The plugin did not declare this command",
+  "Invalid color range": "Invalid color range"
 }

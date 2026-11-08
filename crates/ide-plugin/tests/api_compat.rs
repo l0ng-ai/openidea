@@ -32,6 +32,7 @@ fn components() -> Vec<PathBuf> {
         repo().join("crates/ide-plugin/tests/fixtures/hover/dist/plugin.wasm"),
         repo().join("crates/ide-plugin/tests/fixtures/diagnostics/dist/plugin.wasm"),
         repo().join("crates/ide-plugin/tests/fixtures/inlay-hints/dist/plugin.wasm"),
+        repo().join("crates/ide-plugin/tests/fixtures/language-features/dist/plugin.wasm"),
         repo().join("crates/ide-plugin/tests/fixtures/symbols/dist/plugin.wasm"),
     ];
     let official = repo().join("plugins/official");

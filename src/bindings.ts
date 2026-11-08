@@ -407,6 +407,9 @@ export const commands = {
 	replacePreview: (query: SearchQuery, replacement: string, preserveCase: boolean, path: string, only: Pos[] | null) => typedError<ReplacePreview, IdeError>(__TAURI_INVOKE("replace_preview", { query, replacement, preserveCase, path, only })),
 	/**  Validates a query (e.g. regex syntax) while the user types. */
 	searchValidate: (query: SearchQuery) => typedError<null, IdeError>(__TAURI_INVOKE("search_validate", { query })),
+	pluginLanguageVisuals: (doc: DocId) => typedError<PluginLanguageVisuals, IdeError>(__TAURI_INVOKE("plugin_language_visuals", { doc })),
+	pluginColorPresentations: (doc: DocId, plugin: string, color: ColorInfo) => typedError<string[], IdeError>(__TAURI_INVOKE("plugin_color_presentations", { doc, plugin, color })),
+	pluginFormatters: () => typedError<FormatterChoice[], IdeError>(__TAURI_INVOKE("plugin_formatters")),
 	lspCompletion: (request: RequestId, doc: DocId, pos: Pos, trigger: string | null) => typedError<CompletionList, IdeError>(__TAURI_INVOKE("lsp_completion", { request, doc, pos, trigger })),
 	/**  Inline (ghost text) suggestions at `pos`; `automatic` when triggered by typing. */
 	lspInlineCompletion: (request: RequestId, doc: DocId, pos: Pos, automatic: boolean) => typedError<InlineCompletionItem[], IdeError>(__TAURI_INVOKE("lsp_inline_completion", { request, doc, pos, automatic })),
@@ -2449,6 +2452,15 @@ export type CodeStyleSettings_Serialize = {
 	formatterTagsRegexp: boolean,
 };
 
+/**  ColorInfo data. */
+export type ColorInfo = {
+	range: Range,
+	red: number | null,
+	green: number | null,
+	blue: number | null,
+	alpha: number | null,
+};
+
 export type Command = {
 	title: string,
 	command: string,
@@ -4228,6 +4240,12 @@ export type FormatOptions = {
 	tool?: ExternalFormatter | null,
 };
 
+export type FormatterChoice = {
+	id: string,
+	name: string,
+	languages: string[],
+};
+
 /**  A port of the remote host reachable on this machine at `localhost:local_port`. */
 export type ForwardedPort = {
 	remotePort: number,
@@ -4499,6 +4517,15 @@ export type GradleTask = {
 	/**  Lower-case group (`build`, `build setup`, `other`). */
 	group: string,
 	description: string | null,
+};
+
+/**  GutterAction data. */
+export type GutterAction = {
+	line: number,
+	icon: string | null,
+	tooltip: string,
+	command: string,
+	argument: string | null,
 };
 
 /**  HEAD before and after a history rewrite, for its Undo. */
@@ -4845,6 +4872,12 @@ export type IndexedMarker = {
 	pluginId: string,
 	/**  The `[[contributes.markerIcons]]` id whose `markers` prefix matches the marker's key. */
 	icon: string | null,
+};
+
+/**  Injection data. */
+export type Injection = {
+	range: Range,
+	language: string,
 };
 
 export type InlayHint = {
@@ -5342,6 +5375,8 @@ export type LanguageServerSettings_Serialize = {
 };
 
 export type LanguagesSettings = {
+	/**  Explicit plugin formatter, by language id. Empty entries use the normal formatter policy. */
+	pluginFormatters?: { [key in string]: string },
 	python?: PythonSettings,
 	node?: NodeSettings,
 	php?: PhpSettings,
@@ -6460,6 +6495,17 @@ export type PluginInfo = {
 	publisher: string | null,
 	/**  The version an update replaced, to roll back to. */
 	previousVersion: string | null,
+};
+
+/**
+ *  Commands of this module the remote server answers.
+ *  Versioned plugin visuals, refreshed after the editor synchronizes its buffer.
+ */
+export type PluginLanguageVisuals = {
+	version: number,
+	injections: Injection[],
+	colors: ([string, ColorInfo])[],
+	gutterActions: ([string, GutterAction])[],
 };
 
 export type PluginLocation = {

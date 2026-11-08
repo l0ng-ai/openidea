@@ -286,6 +286,8 @@ macro_rules! register_plugin {
 #[doc(hidden)]
 #[macro_export]
 macro_rules! __optional_exports {
+    (injections, $plugin:ty, $component:ident) => { $crate::__injections_exports!($plugin, $component); };
+    (language_features, $plugin:ty, $component:ident) => { $crate::__language_features_exports!($plugin, $component); };
     (run_configurations, $plugin:ty, $component:ident) => { $crate::__run_configurations_exports!($plugin, $component); };
     (test_results, $plugin:ty, $component:ident) => { $crate::__test_results_exports!($plugin, $component); };
 
@@ -656,7 +658,7 @@ pub mod __rt {
         static INSTANCE: RefCell<Option<Box<dyn Any>>> = const { RefCell::new(None) };
     }
 
-    fn with<T: Plugin + Default, R>(f: impl FnOnce(&mut T) -> R) -> R {
+    pub(crate) fn with<T: Plugin + Default, R>(f: impl FnOnce(&mut T) -> R) -> R {
         INSTANCE.with(|cell| {
             let mut slot = cell.borrow_mut();
             let plugin = slot.get_or_insert_with(|| Box::new(T::default()));
@@ -1312,4 +1314,63 @@ macro_rules! __test_results_exports {
         }
         $crate::test_results_bindings::__export_tests_world!($component with_types_in $crate::test_results_bindings);
     };
+}
+
+pub mod language_features;
+
+#[cfg(target_arch = "wasm32")]
+#[doc(hidden)]
+pub mod language_features_bindings {
+    wit_bindgen::generate!({world: "editor-language-features", path: "wit", pub_export_macro: true,
+        export_macro_name: "__export_language_features_world", default_bindings_module: "openidea_plugin::language_features_bindings",
+        with: { "openidea:plugin/types@1.4.0": crate::bindings::openidea::plugin::types },
+    });
+}
+
+#[doc(hidden)]
+#[macro_export]
+macro_rules! __language_features_exports {
+ ($plugin:ty, $component:ident) => {
+  impl $crate::language_features_bindings::exports::openidea::plugin::language_features::Guest for $component {
+fn format(doc: $crate::language_features_bindings::exports::openidea::plugin::language_features::Document, range: Option<$crate::bindings::openidea::plugin::types::Range>, options: $crate::language_features_bindings::exports::openidea::plugin::language_features::FormatOptions) -> Result<Vec<$crate::bindings::openidea::plugin::types::TextEdit>, $crate::bindings::openidea::plugin::types::Error> { $crate::language_features::wasm::format::<$plugin>(doc, range, options) }
+fn signature_help(doc: $crate::language_features_bindings::exports::openidea::plugin::language_features::Document, at: $crate::bindings::openidea::plugin::types::Position) -> Option<$crate::language_features_bindings::exports::openidea::plugin::language_features::SignatureHelpResult> { $crate::language_features::wasm::signature_help::<$plugin>(doc, at) }
+fn document_highlights(doc: $crate::language_features_bindings::exports::openidea::plugin::language_features::Document, at: $crate::bindings::openidea::plugin::types::Position) -> Vec<$crate::language_features_bindings::exports::openidea::plugin::language_features::Highlight> { $crate::language_features::wasm::document_highlights::<$plugin>(doc, at) }
+fn document_links(doc: $crate::language_features_bindings::exports::openidea::plugin::language_features::Document) -> Vec<$crate::language_features_bindings::exports::openidea::plugin::language_features::DocumentLink> { $crate::language_features::wasm::document_links::<$plugin>(doc) }
+fn code_lenses(doc: $crate::language_features_bindings::exports::openidea::plugin::language_features::Document) -> Vec<$crate::language_features_bindings::exports::openidea::plugin::language_features::CodeLens> { $crate::language_features::wasm::code_lenses::<$plugin>(doc) }
+fn selection_ranges(doc: $crate::language_features_bindings::exports::openidea::plugin::language_features::Document, at: $crate::bindings::openidea::plugin::types::Position) -> Vec<$crate::bindings::openidea::plugin::types::Range> { $crate::language_features::wasm::selection_ranges::<$plugin>(doc, at) }
+fn folding(doc: $crate::language_features_bindings::exports::openidea::plugin::language_features::Document) -> Vec<$crate::language_features_bindings::exports::openidea::plugin::language_features::FoldRange> { $crate::language_features::wasm::folding::<$plugin>(doc) }
+fn colors(doc: $crate::language_features_bindings::exports::openidea::plugin::language_features::Document) -> Vec<$crate::language_features_bindings::exports::openidea::plugin::language_features::ColorInfo> { $crate::language_features::wasm::colors::<$plugin>(doc) }
+fn color_presentations(doc: $crate::language_features_bindings::exports::openidea::plugin::language_features::Document, color: $crate::language_features_bindings::exports::openidea::plugin::language_features::ColorInfo) -> Vec<String> { $crate::language_features::wasm::color_presentations::<$plugin>(doc, color) }
+fn document_symbols(doc: $crate::language_features_bindings::exports::openidea::plugin::language_features::Document) -> Vec<$crate::language_features_bindings::exports::openidea::plugin::language_features::DocumentSymbol> { $crate::language_features::wasm::document_symbols::<$plugin>(doc) }
+fn implementation(doc: $crate::language_features_bindings::exports::openidea::plugin::language_features::Document, at: $crate::bindings::openidea::plugin::types::Position) -> Vec<$crate::bindings::openidea::plugin::types::Location> { $crate::language_features::wasm::implementation::<$plugin>(doc, at) }
+fn type_definition(doc: $crate::language_features_bindings::exports::openidea::plugin::language_features::Document, at: $crate::bindings::openidea::plugin::types::Position) -> Vec<$crate::bindings::openidea::plugin::types::Location> { $crate::language_features::wasm::type_definition::<$plugin>(doc, at) }
+fn gutter_actions(doc: $crate::language_features_bindings::exports::openidea::plugin::language_features::Document) -> Vec<$crate::language_features_bindings::exports::openidea::plugin::language_features::GutterAction> { $crate::language_features::wasm::gutter_actions::<$plugin>(doc) }
+  }
+ $crate::language_features_bindings::__export_language_features_world!($component with_types_in $crate::language_features_bindings);
+ };
+}
+
+#[cfg(target_arch = "wasm32")]
+#[doc(hidden)]
+pub mod injections_bindings {
+    wit_bindgen::generate!({world: "language-injections", path: "wit", pub_export_macro: true,
+        export_macro_name: "__export_injections_world", default_bindings_module: "openidea_plugin::injections_bindings",
+        with: { "openidea:plugin/types@1.4.0": crate::bindings::openidea::plugin::types },
+    });
+}
+
+#[doc(hidden)]
+#[macro_export]
+macro_rules! __injections_exports {
+ ($plugin:ty, $component:ident) => {
+  impl $crate::injections_bindings::exports::openidea::plugin::injections::Guest for $component {
+fn injections(doc: $crate::injections_bindings::exports::openidea::plugin::injections::Document) -> Vec<$crate::injections_bindings::exports::openidea::plugin::injections::Injection> { $crate::language_features::wasm::injections::<$plugin>(doc) }
+  }
+ $crate::injections_bindings::__export_injections_world!($component with_types_in $crate::injections_bindings);
+ };
+}
+
+/// Embedded-language range providers (API 1.4).
+pub mod injections {
+    pub use crate::language_features::{Document, Injection, Injections};
 }

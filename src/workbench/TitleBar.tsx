@@ -1,3 +1,4 @@
+import { ContributedToolbar } from "./ContributedToolbar";
 import { useMemo, useRef, useState } from "react";
 import clsx from "clsx";
 import { useActions } from "@/platform/actions";
@@ -357,6 +358,7 @@ export function TitleBar({
       {!minimal && (
         <>
           {toolbar && !menuExpanded && shown.right.map(entry)}
+          {toolbar && !menuExpanded && <ContributedToolbar slot="mainToolbar" />}
           {!menuExpanded && (
             <div className={styles.tools}>
               <GearButton customize={menu} />

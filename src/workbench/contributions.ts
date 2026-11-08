@@ -1043,6 +1043,8 @@ export type ContextMenuId =
   | "editor"
   | "projectView"
   | "editorTab"
+  | "problems"
+  | "searchResults"
   | "editorGutter"
   | "openIn"
   | "stopProcess"
@@ -1085,6 +1087,8 @@ export interface MenuGroupContext {
   text?: string;
   /** Editor menu: 0-based caret line; gutter menu: the clicked line. */
   line?: number;
+  /** Zero-based UTF-16 column for problem/search result commands. */
+  column?: number;
   /** The tab's input, when the menu is for an editor tab without a path. */
   input?: EditorInput;
 }
@@ -1743,4 +1747,19 @@ export function providePluginTestParser(parser: PluginTestParser): () => void {
 }
 export function parsePluginTests(config: string, chunk: string) {
   return pluginTestParser?.(config, chunk) ?? Promise.resolve(null);
+}
+
+/** Read-only named snippets supplied by plugins. */
+export interface ContributedSnippet {
+  id: string;
+  pluginName: string;
+  language: string;
+  prefixes: string[];
+  body: string;
+  description: string;
+}
+export const useContributedSnippets = create<{ snippets: ContributedSnippet[] }>(() => ({ snippets: [] }));
+export function addContributedSnippets(snippets: ContributedSnippet[]): () => void {
+  useContributedSnippets.setState((s) => ({ snippets: [...s.snippets, ...snippets] }));
+  return () => useContributedSnippets.setState((s) => ({ snippets: s.snippets.filter((x) => !snippets.includes(x)) }));
 }

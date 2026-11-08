@@ -1,3 +1,4 @@
+import { pluginLanguageVisuals } from "./languageVisuals";
 /**
  * Plugins: Settings › Plugins (installed list, enable/disable, install from
  * disk with a permission page, uninstall, theme selection) and the runtime
@@ -159,6 +160,7 @@ export function activate(): () => void {
     startViewUi((input) => void editorService().openInput(input)),
     startWorkspaceContains(),
     // Gutter icons from plugins' `line-markers` providers (next to the LSP ones).
+    registerEditorContribution({ id: "plugins.languageFeatures", order: 58, extensions: pluginLanguageVisuals }),
     registerEditorContribution({ id: "plugins.lineMarkers", order: 57, extensions: pluginLineMarkerGutter }),
     // Dev plugins (`<project>/.openidea/plugins`) depend on the open project.
     useProject.subscribe((s, prev) => {
