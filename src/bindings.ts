@@ -3052,6 +3052,8 @@ export type DebugCapabilities = {
 	 *  change during the session ([`ide_core::event::DebugEvent::Capabilities`]).
 	 */
 	jvmInstances: boolean,
+	/**  The session can be asked for a heap dump ([`DebugManager::jvm_heap_dump`]). */
+	jvmHeap: boolean,
 };
 
 /**  A completion the adapter offers for an expression (DAP `completions`). */

@@ -14,6 +14,7 @@ ide-jsonrpc.workspace = true
 ide-jvm-attach.workspace = true
 ide-jvm-inspect.workspace = true
 ide-jdwp.workspace = true
+ide-heap.workspace = true
 serde.workspace = true
 serde_json.workspace = true
 specta.workspace = true

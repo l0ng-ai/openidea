@@ -6,14 +6,16 @@ use super::{
     safe_while_suspended,
 };
 use ide_core::IdeResult;
-use ide_jvm_attach::{AttachError, HistogramRow, JavaVersion};
+use ide_jvm_attach::{AttachError, HeapDumpReply, HistogramRow, JavaVersion};
 use std::collections::HashMap;
+use std::path::Path;
 use std::time::Duration;
 
 /// Version probe for a JVM whose `release` file could not be read.
 const VERSION_TIMEOUT: Duration = Duration::from_secs(2);
+const FLAGS_TIMEOUT: Duration = Duration::from_secs(2);
 
-/// The attach calls a snapshot makes, so tests can stand in for a JVM.
+/// The attach calls a snapshot or a heap dump makes, so tests can stand in for a JVM.
 pub(crate) trait AttachProbe: Send + Sync {
     fn has_listener(&self, pid: u32) -> bool;
     /// Asks only the JVMs whose pid `may_query` accepts.
@@ -21,6 +23,10 @@ pub(crate) trait AttachProbe: Send + Sync {
     fn version(&self, pid: u32) -> Option<JavaVersion>;
     fn histogram(&self, pid: u32) -> Result<String, AttachError>;
     fn alive(&self, pid: u32) -> bool;
+    fn vm_flags(&self, pid: u32) -> Result<String, AttachError>;
+    fn heap_dump(&self, pid: u32, path: &Path, timeout: Duration) -> Result<HeapDumpReply, AttachError>;
+    /// `None` where the free space is not known.
+    fn free_bytes(&self, dir: &Path) -> Option<u64>;
 }
 
 pub(super) struct JdkProbe {
@@ -55,6 +61,18 @@ impl AttachProbe for JdkProbe {
     fn alive(&self, pid: u32) -> bool {
         alive(pid)
     }
+
+    fn vm_flags(&self, pid: u32) -> Result<String, AttachError> {
+        ide_jvm_attach::vm_flags(pid, FLAGS_TIMEOUT)
+    }
+
+    fn heap_dump(&self, pid: u32, path: &Path, timeout: Duration) -> Result<HeapDumpReply, AttachError> {
+        ide_jvm_attach::heap_dump(pid, path, timeout)
+    }
+
+    fn free_bytes(&self, dir: &Path) -> Option<u64> {
+        ide_heap::free_bytes(dir)
+    }
 }
 
 fn alive(pid: u32) -> bool {
@@ -71,6 +89,32 @@ fn alive(pid: u32) -> bool {
     {
         let _ = pid;
         false
+    }
+}
+
+/// Why `pid`'s attach listener cannot answer: it stopped listening or the program ended.
+pub(super) fn gone(probe: &dyn AttachProbe, pid: u32) -> JvmMemoryUnavailable {
+    if probe.alive(pid) { JvmMemoryUnavailable::ListenerNotRunning } else { JvmMemoryUnavailable::ProgramExited }
+}
+
+/// The reason for an attach request (`what`) to `jvm` that failed, or an error where no reason
+/// fits.
+pub(super) fn attach_failure(
+    probe: &dyn AttachProbe,
+    jvm: u32,
+    error: AttachError,
+    what: &str,
+) -> IdeResult<JvmMemoryUnavailable> {
+    use JvmMemoryUnavailable as U;
+    match error {
+        AttachError::Timeout => Ok(U::TimedOut),
+        AttachError::Refused | AttachError::NoListener => Ok(gone(probe, jvm)),
+        AttachError::ForeignListener => {
+            tracing::warn!("attach socket of JVM {jvm} is no longer private to this user; not using it");
+            Ok(U::ListenerNotRunning)
+        }
+        AttachError::Unsupported => Ok(U::UnsupportedPlatform),
+        e => Err(ide_core::IdeError::internal(format!("{what} of JVM {jvm}: {e}"))),
     }
 }
 
@@ -132,12 +176,11 @@ pub(crate) fn take_snapshot(
     previous: Option<&ClassCounts>,
 ) -> IdeResult<Result<(JvmMemorySnapshot, ClassCounts), JvmMemoryUnavailable>> {
     use JvmMemoryUnavailable as U;
-    let gone = |pid: u32| if probe.alive(pid) { U::ListenerNotRunning } else { U::ProgramExited };
     let Some(root) = pid_tree.first().and_then(|&p| u32::try_from(p).ok()) else {
         return Ok(Err(U::NoJvmProcess));
     };
     let Some(jvm) = pick_jvm_pid(pid_tree, |p| probe.has_listener(p)) else {
-        return Ok(Err(gone(root)));
+        return Ok(Err(gone(probe, root)));
     };
 
     let version = probe.version(jvm);
@@ -148,14 +191,7 @@ pub(crate) fn take_snapshot(
     let started = std::time::Instant::now();
     let text = match probe.histogram(jvm) {
         Ok(text) => text,
-        Err(AttachError::Timeout) => return Ok(Err(U::TimedOut)),
-        Err(AttachError::Refused | AttachError::NoListener) => return Ok(Err(gone(jvm))),
-        Err(AttachError::ForeignListener) => {
-            tracing::warn!("attach socket of JVM {jvm} is no longer private to this user; not using it");
-            return Ok(Err(U::ListenerNotRunning));
-        }
-        Err(AttachError::Unsupported) => return Ok(Err(U::UnsupportedPlatform)),
-        Err(e) => return Err(ide_core::IdeError::internal(format!("class histogram of JVM {jvm}: {e}"))),
+        Err(e) => return attach_failure(probe, jvm, e, "class histogram").map(Err),
     };
     let elapsed_ms = u32::try_from(started.elapsed().as_millis()).unwrap_or(u32::MAX);
 

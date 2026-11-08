@@ -102,6 +102,7 @@ const caps = (p: Partial<DebugCapabilities> = {}): DebugCapabilities => ({
   logPoints: true,
   jvmMemory: false,
   jvmInstances: false,
+  jvmHeap: false,
   ...p,
 });
 

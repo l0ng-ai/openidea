@@ -134,6 +134,8 @@ pub struct DebugCapabilities {
     /// The session has a JVM inspector: instances, fields and referrers while suspended. Can
     /// change during the session ([`ide_core::event::DebugEvent::Capabilities`]).
     pub jvm_instances: bool,
+    /// The session can be asked for a heap dump ([`DebugManager::jvm_heap_dump`]).
+    pub jvm_heap: bool,
 }
 
 /// Result of [`DebugManager::redefine_classes`].
@@ -521,7 +523,17 @@ pub(crate) fn capabilities_from(caps: &Value) -> DebugCapabilities {
         hot_code_replace: false,
         jvm_memory: false,
         jvm_instances: false,
+        jvm_heap: false,
     }
+}
+
+pub(crate) fn session_capabilities(session: &Session) -> DebugCapabilities {
+    let mut caps = capabilities_from(&session.caps.lock());
+    caps.hot_code_replace = HOT_CODE_REPLACE_ADAPTERS.contains(&session.adapter.as_str());
+    caps.jvm_memory = JVM_MEMORY_ADAPTERS.contains(&session.adapter.as_str());
+    caps.jvm_instances = session.jvm_inspector.lock().is_some();
+    caps.jvm_heap = JVM_MEMORY_ADAPTERS.contains(&session.adapter.as_str());
+    caps
 }
 
 /// States of a file's line breakpoints that no session has been sent.
@@ -1598,12 +1610,7 @@ impl DebugManager {
     }
 
     pub fn capabilities(&self, s: DebugSessionId) -> IdeResult<DebugCapabilities> {
-        let session = self.session(s)?;
-        let mut caps = capabilities_from(&session.caps.lock());
-        caps.hot_code_replace = HOT_CODE_REPLACE_ADAPTERS.contains(&session.adapter.as_str());
-        caps.jvm_memory = JVM_MEMORY_ADAPTERS.contains(&session.adapter.as_str());
-        caps.jvm_instances = session.jvm_inspector.lock().is_some();
-        Ok(caps)
+        Ok(session_capabilities(&*self.session(s)?))
     }
 
     /// Class table of the session's JVM (`GC.class_histogram -all`, or counted by the debugger
@@ -1612,6 +1619,20 @@ impl DebugManager {
     pub async fn jvm_memory_classes(&self, s: DebugSessionId) -> IdeResult<JvmMemoryResult> {
         let session = self.session(s)?;
         jvm_memory::session_classes(session).await
+    }
+
+    /// Writes a heap dump of the session's JVM to `dir/dump.hprof`, one class-table or dump
+    /// request per session at a time. Anything but `Ready` deletes `dir`, unless `s` is not a
+    /// session. On `cancel` the result is `Cancelled` at once, while a dump the JVM is writing
+    /// still holds the session's turn until the JVM answers.
+    pub async fn jvm_heap_dump(
+        &self,
+        s: DebugSessionId,
+        dir: PathBuf,
+        cancel: ide_core::CancellationToken,
+    ) -> IdeResult<JvmHeapOutcome> {
+        let session = self.session(s)?;
+        jvm_memory::session_heap_dump(session, dir, cancel).await
     }
 
     /// Gives the session the backend for [`Self::jvm_memory_instances`] and the debugger's class

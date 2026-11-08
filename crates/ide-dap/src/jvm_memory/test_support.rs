@@ -80,6 +80,11 @@ pub(crate) struct BareSession {
 
 /// A java-debug session that no adapter answers; must be called inside a Tokio runtime.
 pub(crate) fn bare_session(request: &str) -> BareSession {
+    bare_session_of("java-debug", request)
+}
+
+/// A session of adapter `name` that no adapter answers; must be called inside a Tokio runtime.
+pub(crate) fn bare_session_of(name: &str, request: &str) -> BareSession {
     let events: Arc<Mutex<Vec<IdeEvent>>> = Arc::default();
     let sink_events = events.clone();
     let sink: SharedSink = Arc::new(move |e: IdeEvent| sink_events.lock().push(e));
@@ -87,7 +92,7 @@ pub(crate) fn bare_session(request: &str) -> BareSession {
     let (reader, writer) = tokio::io::split(client);
     let (conn, _) = Connection::start(reader, writer);
     let spec = AdapterSpec {
-        adapter: "java-debug".into(),
+        adapter: name.into(),
         command: String::new(),
         args: Vec::new(),
         transport: Transport::Stdio,
@@ -102,7 +107,7 @@ pub(crate) fn bare_session(request: &str) -> BareSession {
         DebugSessionId(1),
         SessionOwner::new("test", sink),
         "test".into(),
-        "java-debug".into(),
+        name.into(),
         None,
         request.into(),
         conn,
