@@ -4445,6 +4445,17 @@ dependencies = [
 ]
 
 [[package]]
+name = "ide-jvm-inspect"
+version = "0.1.38"
+dependencies = [
+ "futures",
+ "serde",
+ "serde_json",
+ "specta",
+ "thiserror 2.0.21",
+]
+
+[[package]]
 name = "ide-language"
 version = "0.1.38"
 dependencies = [
