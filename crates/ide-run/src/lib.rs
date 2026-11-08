@@ -56,6 +56,37 @@ pub struct RunConfig {
     pub extras: RunExtras,
 }
 
+/// How a Java launch builds the project before starting (IDEA's Before launch › Build).
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize, Type)]
+#[serde(rename_all = "camelCase")]
+pub enum BuildPolicy {
+    /// Build the way this project's backend does it: incremental when possible.
+    #[default]
+    Automatic,
+    /// Incremental build (IDEA's "Build"/Make).
+    Make,
+    /// Clean the output, then build (IDEA's Rebuild).
+    Rebuild,
+    /// Do not build; still resolve the module, JDK and classpath.
+    NoBuild,
+    /// Incremental build; a project with compile errors may still start with its last
+    /// successfully compiled classes (IDEA's "Build, no error check").
+    MakeAndContinueOnErrors,
+}
+
+impl BuildPolicy {
+    /// The spelling used in `run.toml` and the run configuration dialog.
+    pub fn key(self) -> &'static str {
+        match self {
+            Self::Automatic => "automatic",
+            Self::Make => "make",
+            Self::Rebuild => "rebuild",
+            Self::NoBuild => "noBuild",
+            Self::MakeAndContinueOnErrors => "makeAndContinueOnErrors",
+        }
+    }
+}
+
 /// A step run before a configuration launches; a failing step aborts the launch.
 #[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize, Type)]
 #[serde(rename_all = "camelCase")]
@@ -115,6 +146,10 @@ pub struct RunExtras {
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     #[specta(optional)]
     pub before_launch: Vec<BeforeLaunchTask>,
+    /// Before launch build for JVM launches; unset keeps the project's default (incremental).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[specta(optional)]
+    pub build_policy: Option<BuildPolicy>,
     /// Compound configurations: ids of the configurations started together.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     #[specta(optional)]
@@ -160,6 +195,7 @@ impl Default for RunExtras {
             stdin_file: None,
             output_file: None,
             before_launch: Vec::new(),
+            build_policy: None,
             compound: Vec::new(),
             show_on_stdout: false,
             show_on_stderr: false,
