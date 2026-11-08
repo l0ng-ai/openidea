@@ -84,6 +84,12 @@ its indexed anchors from being renamed. Failed reference or name-preparation
 queries show an incomplete-search warning. A server that owns the same name
 keeps its rename validation; a rejected native rename changes nothing.
 
+When no language server can rename there (none is running, or it has no rename
+support), an anchor on a code identifier, per the file's syntax tree, is not
+renamed: the anchors would miss the declaration, imports and file name its
+language owns. Anchors in strings, comments or attribute values, and in files
+without a syntax grammar, are still renamed from the index alone.
+
 These features consume the existing graph; no references or rename export is
 needed. Unindexed names continue through the normal language-server path.
 

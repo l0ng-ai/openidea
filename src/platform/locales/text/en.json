@@ -52,6 +52,7 @@
   "Select Python Environment Folder": "Select Python Environment Folder",
   "Checking interpreter": "Checking interpreter",
   "Cannot run this Python interpreter. Select a working Python executable or virtualenv folder.": "Cannot run this Python interpreter. Select a working Python executable or virtualenv folder.",
+  "The {language} language server can't rename this symbol; renaming only the plugin's indexed names would leave it half renamed": "The {language} language server can't rename this symbol; renaming only the plugin's indexed names would leave it half renamed",
   "Native server declined rename": "Native server declined rename",
   "document is too large or is not a regular file": "document is too large or is not a regular file",
   "document is too large": "document is too large",

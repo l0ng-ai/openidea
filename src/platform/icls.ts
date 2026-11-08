@@ -1,5 +1,13 @@
 /** IntelliJ editor schemes. Unsupported keys are counted, never copied into CSS. */
-import { ATTRIBUTES, customSchemes, isHexColor, listSchemes, resolvedSchemeTokens } from "./colorScheme";
+import {
+  ATTRIBUTES,
+  CLEAR_COLOR,
+  customSchemes,
+  isHexColor,
+  listSchemes,
+  resolvedAttribute,
+  resolvedSchemeTokens,
+} from "./colorScheme";
 import { isBuiltinTheme, themeKind } from "./themes";
 import type { CustomColorScheme, CustomColorSchemes, TextAttributesOverride } from "./editorSettings";
 
@@ -182,12 +190,19 @@ const COLOR_NAMES: Record<string, [string, "foreground" | "background"]> = {
 for (const attr of ATTRIBUTES)
   if (!Object.values(ATTRIBUTE_NAMES).includes(attr.id)) ATTRIBUTE_NAMES[`OPENIDEA_${attr.id}`] = attr.id;
 
+// IntelliJ's EFFECT_TYPE codes. The box (0) and faded text (6) have no counterpart here; the bold and the
+// bold dotted line (4, 5) become an underline.
 const EFFECTS: Record<string, TextAttributesOverride["effect"]> = {
-  "0": "underline",
+  "1": "underline",
+  "2": "wave",
   "3": "strikeout",
-  "4": "wave",
+  "4": "underline",
   "5": "underline",
-  "6": "underline",
+};
+const EFFECT_CODES: Partial<Record<NonNullable<TextAttributesOverride["effect"]>, string>> = {
+  underline: "1",
+  wave: "2",
+  strikeout: "3",
 };
 const children = (el: Element, tag: string) => Array.from(el.children).filter((e) => e.tagName === tag);
 const color = (v: string | null): string | undefined =>
@@ -263,6 +278,10 @@ export function parseIcls(xml: string): { scheme: CustomColorScheme; applied: nu
         // An explicit TextAttributes value defaults to Font.PLAIN, not the last alias's style.
         if (attr.token) merge(id, { bold: false, italic: false });
         if (name.startsWith("PY.")) merge(id, { effect: "none" });
+        // IntelliJ draws no effect without an effect colour.
+        const drawn = children(value, "option").some(
+          (o) => o.getAttribute("name") === "EFFECT_COLOR" && color(o.getAttribute("value")),
+        );
         for (const option of children(value, "option")) {
           const name = option.getAttribute("name");
           const raw = option.getAttribute("value");
@@ -287,7 +306,13 @@ export function parseIcls(xml: string): { scheme: CustomColorScheme; applied: nu
           } else if (name === "FONT_TYPE" && attr.token && raw && /^[0-3]$/.test(raw)) {
             merge(id, { bold: !!(Number(raw) & 1), italic: !!(Number(raw) & 2) });
             applied++;
-          } else if (name === "EFFECT_TYPE" && (attr.token || attr.effect) && raw && Object.hasOwn(EFFECTS, raw)) {
+          } else if (
+            name === "EFFECT_TYPE" &&
+            drawn &&
+            (attr.token || attr.effect) &&
+            raw &&
+            Object.hasOwn(EFFECTS, raw)
+          ) {
             merge(id, { effect: EFFECTS[raw] });
             applied++;
           } else skipped++;
@@ -353,6 +378,11 @@ export function exportIcls(
   const custom = customSchemes(customs)[id];
   const name = listSchemes(customs).find((s) => s.id === id)?.name ?? id;
   const tokens = resolvedSchemeTokens(id, customs);
+  const tokenEffect = (attr: (typeof ATTRIBUTES)[number]): TextAttributesOverride => {
+    if (!attr.token) return {};
+    const { effect, effectColor } = resolvedAttribute(id, attr.id, customs);
+    return { effect, effectColor };
+  };
   const values = (attr: (typeof ATTRIBUTES)[number]): TextAttributesOverride => ({
     ...(attr.token
       ? {
@@ -369,6 +399,7 @@ export function exportIcls(
     ...(attr.fg && isHexColor(tokens.get(attr.fg)) ? { foreground: tokens.get(attr.fg) } : {}),
     ...(attr.bg && isHexColor(tokens.get(attr.bg)) ? { background: tokens.get(attr.bg) } : {}),
     ...(attr.effect && isHexColor(tokens.get(attr.effect)) ? { effectColor: tokens.get(attr.effect) } : {}),
+    ...tokenEffect(attr),
     ...custom?.attributes[attr.id],
     ...overrides[attr.id],
   });
@@ -379,11 +410,15 @@ export function exportIcls(
     const c = attr && values(attr)[field];
     if (isHexColor(c)) colors.push(`    <option name="${key}" value="${exportColor(c)}" />`);
   }
+  const text = values(ATTRIBUTES.find((a) => a.id === "text")!);
   for (const attr of ATTRIBUTES) {
     if (attr.language && !custom?.attributes[attr.id] && !overrides[attr.id]) continue;
     const key = Object.keys(ATTRIBUTE_NAMES).find((key) => ATTRIBUTE_NAMES[key] === attr.id);
     if (!key) continue;
     const v = values(attr);
+    // A cleared effect colour hides the effect. One left unset takes the text's here, and IntelliJ would draw none.
+    const effect = v.effect && v.effectColor !== CLEAR_COLOR ? EFFECT_CODES[v.effect] : undefined;
+    if (effect && !isHexColor(v.effectColor)) v.effectColor = v.foreground ?? text.foreground;
     const opts: string[] = [];
     for (const [key, field] of [
       ["FOREGROUND", "foreground"],
@@ -392,7 +427,6 @@ export function exportIcls(
     ] as const)
       if (isHexColor(v[field])) opts.push(`<option name="${key}" value="${exportColor(v[field]!)}" />`);
     if (attr.token) opts.push(`<option name="FONT_TYPE" value="${(v.bold ? 1 : 0) + (v.italic ? 2 : 0)}" />`);
-    const effect = Object.entries(EFFECTS).find(([, value]) => value === v.effect)?.[0];
     if (effect) opts.push(`<option name="EFFECT_TYPE" value="${effect}" />`);
     if (opts.length) attributes.push(`    <option name="${key}"><value>${opts.join("")}</value></option>`);
   }
