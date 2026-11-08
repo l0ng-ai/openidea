@@ -170,7 +170,6 @@ describe("targetConfig", () => {
     expect(first("describe('m', () => {\n  it('adds', () => {});\n});", "src/a.test.ts").args).toEqual([
       "run",
       "test",
-      "--",
       "src/a.test.ts",
       "-t",
       "^m adds$",

@@ -132,21 +132,19 @@
 /* Scrolled up: one click back to the latest message, floating over the stream's end. */
 .jumpToLatest {
   position: absolute;
-  left: 50%;
-  bottom: var(--space-3);
-  transform: translateX(-50%);
+  right: var(--space-3);
+  bottom: var(--space-2);
   z-index: 2;
   display: inline-flex;
   align-items: center;
   justify-content: center;
-  width: 32px;
-  height: 32px;
+  width: var(--h-control-small);
+  height: var(--h-control-small);
   padding: 0;
-  border: 1px solid var(--border-popup);
-  border-radius: 50%;
-  background: var(--bg-popup);
-  color: var(--fg);
-  box-shadow: var(--shadow-popup);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-toolbar-button);
+  background: var(--bg-app);
+  color: var(--fg-muted);
   cursor: pointer;
 }
 .jumpToLatest:hover {
@@ -230,18 +228,14 @@
 }
 .conversationRow > .process,
 .conversationRow > .permissionLine {
-  max-width: min(var(--session-card-width), calc(var(--session-content-width) * 0.8), 760px);
+  max-width: 100%;
 }
+/* Replies read as plain text on the panel, like other tool-window content. */
 .agentCard {
   box-sizing: border-box;
-  width: fit-content;
-  max-width: min(var(--session-card-width), calc(var(--session-content-width) * 0.8), 760px);
+  max-width: 100%;
   min-width: 0;
   overflow-wrap: anywhere;
-  padding: var(--space-2) calc(var(--space-2) + var(--space-2) / 4);
-  border: 1px solid var(--border);
-  border-radius: var(--radius-small);
-  background: var(--bg-elev);
 }
 @container (max-width: 640px) {
   .stream {
@@ -258,6 +252,14 @@
   -webkit-user-select: none;
   user-select: none;
 }
+.messageFooter > .messageTime {
+  opacity: 0;
+}
+.conversationRow:nth-last-child(1 of [data-message]) .messageFooter > .messageTime,
+.message:hover .messageFooter > .messageTime,
+.agentMessage:hover .messageFooter > .messageTime,
+.message:focus-within .messageFooter > .messageTime,
+.agentMessage:focus-within .messageFooter > .messageTime,
 .conversationRow:nth-last-child(1 of [data-message]) .messageActions,
 .message:hover .messageActions,
 .reply:hover .messageActions,
@@ -327,11 +329,10 @@
 .user {
   width: 100%;
   box-sizing: border-box;
-  padding: var(--space-2) calc(var(--space-2) + var(--space-2) / 4);
-  border: 1px solid var(--border);
-  border-radius: var(--radius-small);
-  background: var(--bg-tree-selected-inactive);
-  color: var(--fg-strong);
+  padding: 6px 10px;
+  border-radius: var(--radius-tab);
+  background: var(--bg-hover);
+  color: var(--fg);
   line-height: 1.5;
   white-space: pre-wrap;
   overflow-wrap: anywhere;
