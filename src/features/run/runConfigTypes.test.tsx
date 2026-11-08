@@ -617,6 +617,8 @@ describe("before launch tasks", () => {
     } finally {
       setBeforeLaunchRunner(null);
     }
+  });
+
   it("runs Build Module and Build Artifacts before launch", async () => {
     const buildModule = vi.fn(async () => setContext("build.lastStatus", "success"));
     const artifacts = vi.fn(async () => setContext("build.lastStatus", "success"));
@@ -634,8 +636,6 @@ describe("before launch tasks", () => {
     expect(buildModule).toHaveBeenCalledExactlyOnceWith(expect.objectContaining({ arg: "core" }));
     expect(artifacts).toHaveBeenCalledOnce();
     disposeBuild();
-  });
-
   });
 });
 
