@@ -1,4 +1,4 @@
-import { useEffect, useRef, useState } from "react";
+import { useRef, useState } from "react";
 import clsx from "clsx";
 import { BarButton, Icon, IconButton, Menu, Spinner, type MenuItem } from "@/ui";
 import { executeAction } from "@/platform/actions";
@@ -11,8 +11,6 @@ import { CURRENT_FILE, useRun, isLive } from "./store";
 import { compoundTargets, selectedTarget } from "./sessionTargets";
 import { isDebugOnly } from "./types";
 import styles from "./Run.module.css";
-
-const RUNNING_FEEDBACK_DELAY_MS = 300;
 
 /** Title bar: configuration chooser, Run / Debug, and Rerun / Stop while running. */
 export function RunWidget() {
@@ -31,19 +29,15 @@ export function RunWidget() {
   const compoundRunning = compoundTargets(selected, running, debug);
   const target = selectedTarget(selectedId, running, debug);
   const { active, debugging, showLoading, launch } = useLaunchFeedback(selectedId, target, compoundRunning);
-  const stopRuns = showLoading ? running.filter((s) => s.status !== "starting" && s.config.id !== selectedId) : running;
-  const stopDebug = showLoading ? debug.filter((s) => s.status !== "starting" && s.configId !== selectedId) : debug;
-  const stopTarget = selectedTarget(selectedId, stopRuns, stopDebug);
-  const stopCompound = compoundTargets(selected, stopRuns, stopDebug);
-  const count = stopRuns.length + stopDebug.length;
-  const stopping = stopRuns.some((s) => s.status === "stopping") || stopDebug.some((s) => s.status === "stopping");
-  const stop = () => void executeAction("run.stop", showLoading ? "widget-running" : "widget");
+  const count = running.length + debug.length;
+  const stopping = running.some((s) => s.status === "stopping") || debug.some((s) => s.status === "stopping");
+  const stop = () => void executeAction("run.stop", "widget");
   const targetStopping =
     running.some((s) => s.status === "stopping" && s.config.id === selectedId) ||
     debug.some((s) => s.status === "stopping" && s.configId === selectedId);
-  const stopName = stopCompound.length
+  const stopName = compoundRunning.length
     ? selected?.name
-    : (stopTarget?.name ?? stopRuns[0]?.config.name ?? stopDebug[0]?.name);
+    : (target?.name ?? running[0]?.config.name ?? debug[0]?.name);
   const moreRef = useRef<HTMLButtonElement>(null);
   const [moreOpen, setMoreOpen] = useState(false);
   const executors = useRunExecutors((s) => s.executors);
@@ -191,11 +185,7 @@ export function RunWidget() {
               size="large"
               iconSize={16}
               className={clsx(styles.widgetButton, styles.widgetFilled, styles.widgetFilledStop)}
-              title={
-                stopTarget || stopCompound.length || count === 1
-                  ? tx`Stop '${stopName ?? ""}'`
-                  : tx`Stop (${count} running)`
-              }
+              title={active || count === 1 ? tx`Stop '${stopName ?? ""}'` : tx`Stop (${count} running)`}
               shortcut={shortcutLabel("run.stop")}
               onClick={stop}
             />
@@ -223,49 +213,31 @@ export function RunWidget() {
   );
 }
 
-/** Keeps launch acknowledgement and the short running-state delay in one place. */
+/** Acknowledges widget clicks before a session exists; session state covers other entry points. */
 function useLaunchFeedback(
   selectedId: string | null,
   target: ReturnType<typeof selectedTarget>,
   compoundRunning: ReturnType<typeof compoundTargets>,
 ) {
-  const [pendingLaunch, setPendingLaunch] = useState<{ configId: string | null; debug: boolean } | null>(null);
-  const launching = useRef(false);
-  const pending = pendingLaunch?.configId === selectedId ? pendingLaunch : null;
+  const [pendingLaunches, setPendingLaunches] = useState<{ configId: string | null; debug: boolean }[]>([]);
+  const launching = useRef(new Set<string | null>());
+  const pending = pendingLaunches.find((launch) => launch.configId === selectedId);
   const debugging = pending ? pending.debug : !!target?.debug;
   const starting =
     !!pending || target?.status === "starting" || compoundRunning.some((session) => session.status === "starting");
   const stopping = target?.status === "stopping" || compoundRunning.some((session) => session.status === "stopping");
   const launch = async (action: "run.run" | "run.debug") => {
-    if (launching.current) return;
-    launching.current = true;
-    setPendingLaunch({ configId: selectedId, debug: action === "run.debug" });
+    if (launching.current.has(selectedId)) return;
+    launching.current.add(selectedId);
+    setPendingLaunches((pending) => [...pending, { configId: selectedId, debug: action === "run.debug" }]);
     try {
       await executeAction(action);
     } finally {
-      launching.current = false;
-      setPendingLaunch(null);
+      launching.current.delete(selectedId);
+      setPendingLaunches((pending) => pending.filter((launch) => launch.configId !== selectedId));
     }
   };
   const active = !!target || compoundRunning.length > 0;
-  const runningKey =
-    active && !starting ? `${selectedId}:${target?.debug ?? false}:${target?.startedAt ?? "compound"}` : null;
-  const [feedback, setFeedback] = useState({ configId: selectedId, key: runningKey, settled: true });
-  if (feedback.key !== runningKey || feedback.configId !== selectedId) {
-    setFeedback({
-      configId: selectedId,
-      key: runningKey,
-      settled: feedback.configId !== selectedId || runningKey === null,
-    });
-  }
-  useEffect(() => {
-    if (runningKey === null || feedback.settled) return;
-    const timer = setTimeout(() => {
-      setFeedback({ configId: selectedId, key: runningKey, settled: true });
-    }, RUNNING_FEEDBACK_DELAY_MS);
-    return () => clearTimeout(timer);
-  }, [selectedId, runningKey, feedback.settled]);
-  // Keep short-lived processes in the loading phase to avoid flashing the red Stop button.
-  const showLoading = !stopping && (starting || (active && !target?.paused && !feedback.settled));
+  const showLoading = !stopping && starting;
   return { active, debugging, showLoading, launch };
 }

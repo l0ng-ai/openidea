@@ -431,5 +431,6 @@
   "Always allowed": "Always allowed",
   "Declined": "Declined",
   "Always declined": "Always declined",
-  "Branch '{name}' is checked out in the worktree at {path}.\nDelete the worktree and the branch? Its folder is deleted.": "Branch '{name}' is checked out in the worktree at {path}.\nDelete the worktree and the branch? Its folder is deleted."
+  "Branch '{name}' is checked out in the worktree at {path}.\nDelete the worktree and the branch? Its folder is deleted.": "Branch '{name}' is checked out in the worktree at {path}.\nDelete the worktree and the branch? Its folder is deleted.",
+  "Starting…": "Starting…"
 }

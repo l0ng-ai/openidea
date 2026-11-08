@@ -1,9 +1,14 @@
 import { afterEach, beforeEach, expect, it, vi } from "vitest";
 import { act, cleanup, fireEvent, render, screen } from "@testing-library/react";
-import { executeAction } from "@/platform/actions";
+import { executeAction, executeActionFrom, getAction, registerAction } from "@/platform/actions";
 import { setContext } from "@/platform/context";
 import type { RunConfig } from "@/platform/ipc";
-import { registerMenuGroup, useDebugRunSessions, type DebugRunSession } from "@/workbench/contributions";
+import {
+  registerMenuGroup,
+  registerRunConfigType,
+  useDebugRunSessions,
+  type DebugRunSession,
+} from "@/workbench/contributions";
 import { useContextMenuStore } from "@/ui";
 import { applicationConfig } from "./application";
 import { activate } from "./index";
@@ -158,25 +163,26 @@ it("matches a detected Spring configuration after its object and id are regenera
   expect(selectedTarget(regenerated.id, [run(original), run(npm)], [])?.name).toBe(original.name);
 });
 
-it("shows startup feedback until the selected run becomes running", async () => {
+it("keeps Stop available during startup and restores Rerun immediately when running", () => {
   useRun.setState({ sessions: [{ ...run(app), status: "starting" }] });
   render(<RunWidget />);
   expect(screen.getByRole("status", { name: "Starting…" })).toBeTruthy();
   expect(screen.queryByRole("button", { name: `Rerun '${app.name}'` })).toBeNull();
-  expect(screen.queryByRole("button", { name: `Stop '${app.name}'` })).toBeNull();
+  expect(screen.getByRole("button", { name: `Stop '${app.name}'` })).toBeEnabled();
   act(() => useRun.setState({ sessions: [run(app)] }));
-  expect(screen.getByRole("status", { name: "Starting…" })).toBeTruthy();
-  expect(screen.queryByRole("button", { name: `Stop '${app.name}'` })).toBeNull();
-  await vi.waitFor(() => expect(screen.getByRole("button", { name: `Stop '${app.name}'` })).toBeEnabled());
   expect(screen.queryByRole("status", { name: "Starting…" })).toBeNull();
+  expect(screen.getByRole("button", { name: `Stop '${app.name}'` })).toBeEnabled();
   expect(screen.getByRole("button", { name: `Rerun '${app.name}'` })).toBeEnabled();
 });
 
-it("shows startup feedback for the selected debugger", () => {
-  useDebugRunSessions.setState({ sessions: [{ ...debug(app), status: "starting" }] });
+it("stops the selected starting debugger", async () => {
+  const session = { ...debug(app), status: "starting" as const };
+  useDebugRunSessions.setState({ sessions: [session] });
   render(<RunWidget />);
   expect(screen.getByRole("status", { name: "Starting…" })).toBeTruthy();
   expect(screen.queryByRole("button", { name: `Rerun '${app.name}'` })).toBeNull();
+  fireEvent.click(screen.getByRole("button", { name: `Stop '${app.name}'` }));
+  await vi.waitFor(() => expect(session.stop).toHaveBeenCalledOnce());
 });
 
 it("does not replay startup feedback when selecting an already running configuration", () => {
@@ -198,20 +204,128 @@ it("does not replay startup feedback when selecting an already running debugger"
   expect(screen.getByRole("button", { name: `Rerun '${npm.name}'` })).toBeEnabled();
 });
 
-it("keeps the other running process stoppable while the selected configuration starts", () => {
-  useRun.setState({ sessions: [{ ...run(app), status: "starting" }, run(npm)] });
-  render(<RunWidget />);
-  expect(screen.getByRole("status", { name: "Starting…" })).toBeTruthy();
-  fireEvent.click(screen.getByRole("button", { name: `Stop '${npm.name}'` }));
-  expect(useRun.getState().sessions.map((s) => !!s.stopped)).toEqual([false, true]);
-});
-
-it("keeps another debugger stoppable while the selected configuration starts", async () => {
+it("stops the selected starting process while other Run and Debug sessions remain live", () => {
   const session = debug(npm);
-  useRun.setState({ sessions: [{ ...run(app), status: "starting" }] });
+  useRun.setState({ sessions: [{ ...run(app), status: "starting" }, run(npm)] });
   useDebugRunSessions.setState({ sessions: [session] });
   render(<RunWidget />);
-  fireEvent.click(screen.getByRole("button", { name: `Stop '${npm.name}'` }));
+  fireEvent.click(screen.getByRole("button", { name: `Stop '${app.name}'` }));
+  expect(useRun.getState().sessions.map((s) => !!s.stopped)).toEqual([true, false]);
+  expect(session.stop).not.toHaveBeenCalled();
+});
+
+it("stops every child of a starting compound, including its starting debugger", async () => {
+  const compound = { ...config("compound"), kind: "compound", compound: [app.id, npm.id] };
+  const session = { ...debug(npm), status: "starting" as const };
+  useRun.setState({
+    configs: [app, npm, compound],
+    selectedId: compound.id,
+    sessions: [{ ...run(app), status: "starting" }],
+  });
+  useDebugRunSessions.setState({ sessions: [session] });
+  render(<RunWidget />);
+  expect(screen.getByRole("status", { name: "Starting…" })).toBeTruthy();
+  fireEvent.click(screen.getByRole("button", { name: `Stop '${compound.name}'` }));
   await vi.waitFor(() => expect(session.stop).toHaveBeenCalledOnce());
-  expect(useRun.getState().sessions[0]?.stopped).toBeUndefined();
+  expect(useRun.getState().sessions[0]?.stopped).toBe(true);
+});
+
+it("keeps the selected starting session stoppable after switching configurations", () => {
+  useRun.setState({ sessions: [{ ...run(app), status: "starting" }, run(npm)] });
+  render(<RunWidget />);
+  act(() => useRun.setState({ selectedId: npm.id }));
+  expect(screen.queryByRole("status", { name: "Starting…" })).toBeNull();
+  expect(screen.getByRole("button", { name: `Rerun '${npm.name}'` })).toBeEnabled();
+  act(() => useRun.setState({ selectedId: app.id }));
+  expect(screen.getByRole("status", { name: "Starting…" })).toBeTruthy();
+  fireEvent.click(screen.getByRole("button", { name: `Stop '${app.name}'` }));
+  expect(useRun.getState().sessions.map((s) => !!s.stopped)).toEqual([true, false]);
+});
+
+it.each(["failed", "finished"] as const)("clears startup feedback when the launch is %s", (status) => {
+  useRun.setState({ sessions: [{ ...run(app), status: "starting" }] });
+  render(<RunWidget />);
+  act(() => useRun.setState({ sessions: [{ ...run(app), status, endedAt: Date.now() }] }));
+  expect(screen.queryByRole("status", { name: "Starting…" })).toBeNull();
+  expect(screen.getByRole("button", { name: `Run '${app.name}'` })).toBeEnabled();
+});
+
+it.each(["keyboard", "menu"] as const)("shows feedback for a %s launch and clears it on failure", async (source) => {
+  const original = getAction("run.run")!;
+  registerAction({ ...original, run: () => useRun.setState({ sessions: [{ ...run(app), status: "starting" }] }) });
+  try {
+    render(<RunWidget />);
+    await act(() => executeActionFrom(source, "run.run"));
+    expect(screen.getByRole("status", { name: "Starting…" })).toBeTruthy();
+    expect(screen.getByRole("button", { name: `Stop '${app.name}'` })).toBeEnabled();
+    act(() => useRun.setState({ sessions: [] }));
+    expect(screen.queryByRole("status", { name: "Starting…" })).toBeNull();
+  } finally {
+    registerAction(original);
+  }
+});
+
+it.each(["run.run", "run.debug"] as const)("clears feedback when %s returns without a session", async (action) => {
+  const original = getAction(action)!;
+  let finish!: () => void;
+  registerAction({
+    ...original,
+    run: () =>
+      new Promise<void>((resolve) => {
+        finish = resolve;
+      }),
+  });
+  try {
+    render(<RunWidget />);
+    fireEvent.click(screen.getByRole("button", { name: `${action === "run.run" ? "Run" : "Debug"} '${app.name}'` }));
+    expect(screen.getByRole("status", { name: "Starting…" })).toBeTruthy();
+    await act(async () => finish());
+    expect(screen.queryByRole("status", { name: "Starting…" })).toBeNull();
+    expect(screen.getByRole("button", { name: `Run '${app.name}'` })).toBeEnabled();
+  } finally {
+    registerAction(original);
+  }
+});
+
+it("keeps a debug-only configuration stoppable during attachment", () => {
+  const unregister = registerRunConfigType({
+    id: "test-remote",
+    commandLine: () => null,
+    label: "Remote",
+    icon: "debug",
+    debugOnly: true,
+    fields: [],
+  });
+  const remote = { ...app, kind: "test-remote" };
+  try {
+    useRun.setState({ configs: [remote], selectedId: remote.id });
+    render(<RunWidget />);
+    expect(screen.getByRole("button", { name: `'${remote.name}' can only be debugged` })).toBeDisabled();
+    act(() => useDebugRunSessions.setState({ sessions: [{ ...debug(remote), status: "starting" }] }));
+    expect(screen.getByRole("status", { name: "Starting…" })).toBeTruthy();
+    expect(screen.getByRole("button", { name: `Stop '${remote.name}'` })).toBeEnabled();
+  } finally {
+    unregister();
+  }
+});
+
+it("allows another configuration to launch while the first launch is pending", async () => {
+  const original = getAction("run.run")!;
+  const finish: (() => void)[] = [];
+  registerAction({ ...original, run: () => new Promise<void>((resolve) => finish.push(resolve)) });
+  try {
+    render(<RunWidget />);
+    fireEvent.click(screen.getByRole("button", { name: `Run '${app.name}'` }));
+    act(() => useRun.setState({ selectedId: npm.id }));
+    fireEvent.click(screen.getByRole("button", { name: `Run '${npm.name}'` }));
+    expect(finish).toHaveLength(2);
+    expect(screen.getByRole("status", { name: "Starting…" })).toBeTruthy();
+    await act(async () => finish[0]!());
+    expect(screen.getByRole("status", { name: "Starting…" })).toBeTruthy();
+    await act(async () => finish[1]!());
+    expect(screen.queryByRole("status", { name: "Starting…" })).toBeNull();
+  } finally {
+    await act(async () => finish.forEach((resolve) => resolve()));
+    registerAction(original);
+  }
 });
