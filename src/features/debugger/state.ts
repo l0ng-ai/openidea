@@ -65,6 +65,8 @@ export interface DebugSession {
   exitCode: number | null;
   /** What the adapter supports (fetched after start). */
   caps: DebugCapabilities | null;
+  /** A cancelled JDT build may have lost class-file deltas needed by this session. */
+  hotSwapNeedsRestart?: boolean;
 }
 
 export interface ConsoleLine {
