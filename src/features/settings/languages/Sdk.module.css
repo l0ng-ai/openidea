@@ -9,20 +9,24 @@
   display: inline-flex;
   align-items: center;
   gap: 4px;
-  min-width: 0;
+  min-width: 180px;
   flex: 1;
   max-width: 560px;
 }
 .sdkSelect {
   flex: 1;
-  min-width: 260px;
+  min-width: 0;
 }
 
 .interpreterRow {
   display: flex;
+  flex-wrap: wrap;
   align-items: center;
   gap: 8px;
   min-height: var(--h-row);
+}
+.interpreterRow > .sdkField {
+  flex-basis: 260px;
 }
 .interpreterLabel {
   white-space: nowrap;
