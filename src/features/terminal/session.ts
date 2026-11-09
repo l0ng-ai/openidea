@@ -521,7 +521,7 @@ export class TerminalSession {
 
   /** xterm's data event, with one IME commit's repeated emissions collapsed. */
   private fromTerminal(data: string) {
-    if (this.ime.accept()) this.input(data);
+    if (this.ime.accept(data)) this.input(data);
   }
 
   private doFit() {
