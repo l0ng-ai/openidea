@@ -49,6 +49,49 @@ function leaderKeys(value: string): string {
   return value;
 }
 
+/**
+ * The vim engine's key names are case-sensitive (`<Esc>` matches, `<esc>`
+ * matches nothing), while rc files written for Vim or IdeaVim spell them in
+ * any case. Canonicalize each `<...>` token: modifiers first (`C-`, `S-`,
+ * `A-`, `M-`, uppercased), then a named key in the engine's casing, or the
+ * single character lowercased — `e.key` for a letter is always lowercase, so
+ * the engine only ever produces `<C-f>`, never `<C-F>`. Unknown names keep
+ * their inner text — the engine would not match them either way.
+ */
+const KEY_NAMES: Readonly<Record<string, string>> = {
+  esc: "Esc",
+  space: "Space",
+  cr: "CR",
+  enter: "CR",
+  return: "CR",
+  bs: "BS",
+  backspace: "BS",
+  del: "Del",
+  delete: "Del",
+  ins: "Ins",
+  insert: "Ins",
+  left: "Left",
+  right: "Right",
+  up: "Up",
+  down: "Down",
+  home: "Home",
+  end: "End",
+  pageup: "PageUp",
+  pagedown: "PageDown",
+  tab: "Tab",
+  lt: "lt",
+};
+
+function normalizeKeys(keys: string): string {
+  return keys.replace(/<([^<>\s]+)>/g, (token, inner: string) => {
+    const parts = inner.split("-");
+    const name = parts.pop()!;
+    const mods = parts.filter((m) => /^[csam]$/i.test(m)).map((m) => `${m.toUpperCase()}-`);
+    const base = KEY_NAMES[name.toLowerCase()] ?? (name.length === 1 ? name.toLowerCase() : null);
+    return base === null ? token : `<${mods.join("")}${base}>`;
+  });
+}
+
 /** `let mapleader = ","` / `"\<Space>"` / `' '`: the quoted value, or null. */
 function parseLetValue(rest: string): string | null {
   const m = /^=\s*(["'])(.*)\1\s*$/.exec(rest.trim());
@@ -149,8 +192,8 @@ export function parseVimrc(text: string, sources?: ReadonlyMap<string, string | 
       const args = splitArgs(rest).filter((a) => !MAP_FLAGS.test(a));
       if (args.length < 2) return ignore("mapping needs a left and right side");
       const withLeader = (keys: string) => keys.replace(/<leader>/gi, leader);
-      const lhs = withLeader(args[0]!);
-      const rhs = withLeader(args.slice(1).join(" "));
+      const lhs = normalizeKeys(withLeader(args[0]!));
+      const rhs = normalizeKeys(withLeader(args.slice(1).join(" ")));
       const mode = MAP_MODES[map[1] ?? ""];
       const ex = exOfRhs(rhs);
       if (ex) commands.push({ kind: "mapEx", mode, lhs, ex });

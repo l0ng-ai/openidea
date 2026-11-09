@@ -70,6 +70,21 @@ describe("ideavimrc parsing", () => {
     const def = parseVimrc("nmap <leader>a b");
     expect(def.commands[0]).toMatchObject({ lhs: "\\a" });
   });
+
+  it("canonicalizes <...> key names, which the engine matches case-sensitively", () => {
+    // `inoremap jk <esc>` as written in #2281's rc; Vim and IdeaVim take any case.
+    expect(parseVimrc("inoremap jk <esc>").commands).toEqual([
+      { kind: "map", mode: "insert", noremap: true, lhs: "jk", rhs: "<Esc>" },
+    ]);
+    expect(parseVimrc("nmap <c-f> <pageup><lt>x").commands).toEqual([
+      { kind: "map", mode: "normal", noremap: false, lhs: "<C-f>", rhs: "<PageUp><lt>x" },
+    ]);
+    expect(parseVimrc("imap <s-tab> <s-cr>").commands).toEqual([
+      { kind: "map", mode: "insert", noremap: false, lhs: "<S-Tab>", rhs: "<S-CR>" },
+    ]);
+    // Unknown names pass through untouched — the engine would not match them anyway.
+    expect(parseVimrc("nmap a <frob>").commands[0]).toMatchObject({ rhs: "<frob>" });
+  });
 });
 
 describe(":action ids", () => {
