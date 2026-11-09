@@ -36,7 +36,14 @@ import { installTracking, resetTracking } from "./common/tracking";
 import { hideSearchEverywhere, showSearchEverywhere, useSearchEverywhere } from "./everywhere/store";
 import { ScopesDialogOverlay, showScopesDialog } from "./find/ScopesDialog";
 import { hideFindPopup, parseFindArg, runFindPopupCommand, showFindPopup, useFindPopup } from "./find/store";
-import { disposeFindWindow, openEditorResults, rerunActiveFindTab, useFindHeaderMenu } from "./find/windowStore";
+import {
+  disposeFindWindow,
+  openEditorResults,
+  rerunActiveFindTab,
+  rerunFindTab,
+  useFindHeaderMenu,
+  useFindWindow,
+} from "./find/windowStore";
 import { cycleSwitcher, hideRecentPopup, showRecentPopup, useRecentPopup } from "./recent/store";
 import { useFileStructurePopup } from "./structure/popupStore";
 import { useOutline, useStructureOptions } from "./structure/store";
@@ -539,6 +546,8 @@ export function activate(): void | (() => void) {
         useFindPopup.setState({ scopeTab: "project", directory: "" });
     }),
     onIdeEvent("fsChanged", (e) => {
+      if (e.ignoreRules?.length)
+        for (const tab of useFindWindow.getState().tabs) if (!tab.editorResults) rerunFindTab(tab.id);
       if (!e.removed.length) return;
       updateBookmarks((list) => e.removed.reduce<Bookmark[]>((acc, p) => renameBookmarks(acc, p, null), [...list]));
       updateBookmarkData((d) => {
