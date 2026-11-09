@@ -844,7 +844,7 @@ mod tests {
                 "name": "JavaSE-21", "path": pick_jdk(&installed, None).unwrap().home, "default": true
             }])
         );
-        assert_eq!(cfg.env["JAVA_HOME"], fixtures.path().join("custom-server-runtime").to_string_lossy());
+        assert_eq!(cfg.env["JAVA_HOME"], server.home.to_string_lossy());
     }
 
     #[test]
