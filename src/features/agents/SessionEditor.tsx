@@ -1,15 +1,18 @@
 /** An agent task as an editor tab: the conversation, a composer and the task's changed files. */
 import {
+  createContext,
   Fragment,
   memo,
   startTransition,
   useCallback,
+  useContext,
   useEffect,
   useLayoutEffect,
   useMemo,
   useRef,
   useState,
   type ReactElement,
+  type ReactNode,
   type RefObject,
 } from "react";
 import clsx from "clsx";
@@ -189,16 +192,18 @@ function TaskSession({ id, docked }: { id: string; docked: boolean }) {
           docked={docked}
         />
         {view && <SubagentBar task={task} path={path} cards={cards} onNavigate={setPath} />}
-        <Stream
-          key={view ?? ""}
-          task={task}
-          entries={viewEntries ?? null}
-          subagent={view ? (cards.at(-1) ?? null) : null}
-          onOpenSubagent={openSubagent}
-          finding={finding && shown}
-          findFocus={findFocus}
-          onCloseFind={() => setFinding(false)}
-        />
+        <FoldedContent.Provider value={finding && shown}>
+          <Stream
+            key={view ?? ""}
+            task={task}
+            entries={viewEntries ?? null}
+            subagent={view ? (cards.at(-1) ?? null) : null}
+            onOpenSubagent={openSubagent}
+            finding={finding && shown}
+            findFocus={findFocus}
+            onCloseFind={() => setFinding(false)}
+          />
+        </FoldedContent.Provider>
         {view ? (
           <div className={styles.readOnly}>
             <T>Subagents take their instructions from the agent that started them.</T>
@@ -457,6 +462,65 @@ function SubagentBar({
   );
 }
 
+/**
+ * Lets the rows of a long conversation skip rendering while off screen (`data-measured`, see
+ * the CSS), so showing the tab again or restyling it costs what is on screen, not the whole
+ * history. A row skips only once it was laid out: it keeps its real height, and scrolling up
+ * doesn't jump (WebKit has no scroll anchoring). A new width lays them out again once it
+ * settles; Find in Conversation (`enabled` false) needs every row laid out.
+ */
+function useOffscreenRows(ref: RefObject<HTMLElement | null>, visible: boolean, enabled: boolean) {
+  // The width the marked rows were laid out at.
+  const width = useRef(0);
+  useEffect(() => {
+    const el = ref.current;
+    if (!el) return;
+    const unmark = () => {
+      for (const row of el.querySelectorAll(`:scope > .${styles.conversationRow}[data-measured]`)) {
+        row.removeAttribute("data-measured");
+      }
+    };
+    if (!enabled) return unmark();
+    if (!visible) return;
+    let frame = 0;
+    let timer: number | undefined;
+    const mark = () => {
+      cancelAnimationFrame(frame);
+      // The next frame lays the new rows out (and remembers their size); mark them after it.
+      frame = requestAnimationFrame(() => {
+        frame = requestAnimationFrame(() => {
+          for (const row of el.querySelectorAll(`:scope > .${styles.conversationRow}:not([data-measured])`)) {
+            row.setAttribute("data-measured", "");
+          }
+        });
+      });
+    };
+    const remeasure = () => {
+      if (el.clientWidth === width.current) return;
+      width.current = el.clientWidth;
+      unmark();
+    };
+    remeasure();
+    mark();
+    const rows = new MutationObserver(mark);
+    rows.observe(el, { childList: true });
+    const resize = new ResizeObserver(() => {
+      window.clearTimeout(timer);
+      timer = window.setTimeout(() => {
+        remeasure();
+        mark();
+      }, 200);
+    });
+    resize.observe(el);
+    return () => {
+      cancelAnimationFrame(frame);
+      window.clearTimeout(timer);
+      rows.disconnect();
+      resize.disconnect();
+    };
+  }, [ref, visible, enabled]);
+}
+
 interface StreamProps {
   task: AgentTask;
   entries: AgentEntry[] | null;
@@ -540,6 +604,7 @@ function Stream({ task, entries, subagent, onOpenSubagent, finding, findFocus, o
   }, [start]);
   // Hidden behind another tab, it has no layout to scroll; shown again, it follows the end again.
   const visible = useEditorShown();
+  useOffscreenRows(ref, visible, !finding);
   /** A diagram that drew after the last streamed chunk grows the conversation: keep following. */
   const onDiagramDrawn = useCallback(() => {
     const el = ref.current;
@@ -1015,19 +1080,23 @@ const Entry = memo(function Entry({
     case "thought":
       return (
         <div className={styles.process}>
-          <details className={styles.thought}>
-            <summary>
-              {working ? (
-                <Spinner size={12} />
-              ) : (
-                <Icon name="chevron-right" size={12} className={styles.thoughtChevron} />
-              )}
-              <T>{working ? "Thinking" : "Reasoning"}</T>
-            </summary>
+          <Fold
+            className={styles.thought}
+            summary={
+              <summary>
+                {working ? (
+                  <Spinner size={12} />
+                ) : (
+                  <Icon name="chevron-right" size={12} className={styles.thoughtChevron} />
+                )}
+                <T>{working ? "Thinking" : "Reasoning"}</T>
+              </summary>
+            }
+          >
             <div className={styles.thoughtBody}>
               <Markdown text={entry.text} cwd={task.cwd} onDiagramDrawn={onDiagramDrawn} />
             </div>
-          </details>
+          </Fold>
         </div>
       );
     case "tool":
@@ -1383,14 +1452,18 @@ const ProcessRun = memo(function ProcessRun({
     tools.length > 0 ? `${tools.length} ${tx(tools.length === 1 ? "tool call" : "tool calls")}` : null,
   ].filter(Boolean);
   return (
-    <details className={clsx(styles.processRun, styles.process)}>
-      <summary className={styles.processSummary}>
-        <Icon name="chevron-right" size={12} className={styles.processChevron} />
-        {working && <Spinner size={12} />}
-        <span>{parts.join(" · ")}</span>
-        {added > 0 && <span className={styles.added}>+{added}</span>}
-        {removed > 0 && <span className={styles.removed}>−{removed}</span>}
-      </summary>
+    <Fold
+      className={clsx(styles.processRun, styles.process)}
+      summary={
+        <summary className={styles.processSummary}>
+          <Icon name="chevron-right" size={12} className={styles.processChevron} />
+          {working && <Spinner size={12} />}
+          <span>{parts.join(" · ")}</span>
+          {added > 0 && <span className={styles.added}>+{added}</span>}
+          {removed > 0 && <span className={styles.removed}>−{removed}</span>}
+        </summary>
+      }
+    >
       <div className={styles.processBody}>
         {row.entries.map(({ index, entry }) =>
           entry.type === "tool" ? (
@@ -1400,9 +1473,37 @@ const ProcessRun = memo(function ProcessRun({
           ),
         )}
       </div>
-    </details>
+    </Fold>
   );
 });
+
+/** Set while Find in Conversation is open: folded sections render their content, so it is found. */
+const FoldedContent = createContext(false);
+
+/**
+ * A collapsed section that renders its content only once opened: most of a long conversation
+ * stays folded, and keeping it out of the DOM keeps showing and restyling the tab cheap.
+ */
+function Fold({
+  className,
+  open,
+  summary,
+  children,
+}: {
+  className?: string;
+  open?: boolean;
+  summary: ReactElement;
+  children: ReactNode;
+}) {
+  const always = useContext(FoldedContent);
+  const [expanded, setExpanded] = useState(!!open);
+  return (
+    <details className={className} open={open || undefined} onToggle={(e) => setExpanded(e.currentTarget.open)}>
+      {summary}
+      {(expanded || open || always) && children}
+    </details>
+  );
+}
 
 const ToolEntry = memo(function ToolEntry({
   task,
@@ -1443,13 +1544,18 @@ const ToolEntry = memo(function ToolEntry({
     );
   return (
     <div className={styles.process}>
-      <details className={styles.toolDetails} open={liveTool(entry) || undefined}>
-        <summary className={styles.tool}>
-          <Icon name="chevron-right" size={12} className={styles.toolChevron} />
-          {head}
-        </summary>
+      <Fold
+        className={styles.toolDetails}
+        open={liveTool(entry)}
+        summary={
+          <summary className={styles.tool}>
+            <Icon name="chevron-right" size={12} className={styles.toolChevron} />
+            {head}
+          </summary>
+        }
+      >
         <pre className={styles.output}>{entry.output}</pre>
-      </details>
+      </Fold>
     </div>
   );
 });
@@ -1532,22 +1638,30 @@ function SubagentCard({
         </div>
       )}
       {entry.prompt && (
-        <details className={styles.subagentSection}>
-          <summary>
-            <T>Task</T>
-          </summary>
+        <Fold
+          className={styles.subagentSection}
+          summary={
+            <summary>
+              <T>Task</T>
+            </summary>
+          }
+        >
           <div className={styles.thoughtText}>{entry.prompt}</div>
-        </details>
+        </Fold>
       )}
       {entry.reply && (
-        <details className={styles.subagentSection}>
-          <summary>
-            <T>Result</T>
-          </summary>
+        <Fold
+          className={styles.subagentSection}
+          summary={
+            <summary>
+              <T>Result</T>
+            </summary>
+          }
+        >
           <div className={styles.subagentReply}>
             <AgentReply text={entry.reply} cwd={task.cwd} task={task} onDiagramDrawn={onDiagramDrawn} />
           </div>
-        </details>
+        </Fold>
       )}
     </div>
   );
