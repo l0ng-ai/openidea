@@ -120,22 +120,32 @@ let applied = 0;
  * hit reapplies the first render's SVG string. Two copies in one document — the same
  * diagram twice, or one drawn again while the first sits hidden (a closed details, an
  * inactive tab) — collide on their marker ids, and Chromium resolves the `url(#…)`
- * references against the hidden copy, losing arrowheads. Rewrites every id per
- * application: longest first, so an id that extends a shorter one moves out of the way.
+ * references against the hidden copy, losing arrowheads.
+ *
+ * Prefixes every id per application in a single longest-first pass, together with the
+ * `<style>` rules mermaid scopes to `#<svg-id>`: a prefix keeps mermaid's own
+ * `[id$="-arrowhead"]` / `[id$="-extensionStart"]` / `[id$="-barbEnd"]` suffix rules
+ * matching, while scoping `#` outside attributes/urls to the root id leaves hex colours
+ * in `<style>` untouched even if a node id is hex.
  */
 function reid(svg: string): string {
   const ids = [...new Set([...svg.matchAll(/\bid="([^"]+)"/g)].map((m) => m[1]!))];
-  if (!ids.length) return svg;
-  const suffix = `-c${++applied}`;
-  // References come as `id="…"`, `href="#…"` and `url(#…)`; the lookahead keeps
-  // an id that extends this one untouched.
-  for (const id of ids.sort((a, b) => b.length - a.length)) {
-    svg = svg.replace(
-      new RegExp(`(\\bid="|#|url\\(#)${escapeRegExp(id)}(?="|\\))`, "g"),
-      (_m, prefix: string) => `${prefix}${id}${suffix}`,
-    );
-  }
-  return svg;
+  const root = ids[0];
+  if (!root) return svg;
+  const prefix = `c${++applied}-`;
+  const pattern = ids
+    .slice()
+    .sort((a, b) => b.length - a.length)
+    .map(escapeRegExp)
+    .join("|");
+  return svg.replace(
+    new RegExp(
+      `(\\b(?:id|aria-labelledby|aria-describedby)="|\\bhref="#|url\\(#)(${pattern})(?="|\\))|(#)(${escapeRegExp(root)})(?![\\w-])`,
+      "g",
+    ),
+    (_m, attr: string | undefined, id: string | undefined, hash: string | undefined, scoped: string | undefined) =>
+      attr ? `${attr}${prefix}${id!}` : `${hash!}${prefix}${scoped!}`,
+  );
 }
 
 function show(block: HTMLElement, result: Result | null, stale?: Node) {

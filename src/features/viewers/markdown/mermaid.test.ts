@@ -14,8 +14,10 @@ const m = vi.hoisted(() => ({
     if (text.includes("bad")) throw new Error("Parse error on line 2:\nbad\n^");
     return {
       svg:
-        `<svg id="${id}"><defs><marker id="${id}-arrow" orient="auto"><path d="M0,0L8,4"/></marker></defs>` +
-        `<path d="M0,4" marker-end="url(#${id}-arrow)"/><text>${text.split("\n")[0]}</text></svg>`,
+        `<svg id="${id}"><style>#${id}{fill:#dad;}#${id} .cluster rect{fill:#2e2f30;}#${id} .flowchart-link{fill:none;}#${id} [id$="-arrow"] path{fill:#9fa2a8;}</style>` +
+        `<defs><marker id="${id}-arrow" orient="auto"><path d="M0,0L8,4"/></marker></defs>` +
+        `<g class="cluster" id="dad"><rect/></g>` +
+        `<path class="flowchart-link" d="M0,4" marker-end="url(#${id}-arrow)"/><text>${text.split("\n")[0]}</text></svg>`,
     };
   }),
 }));
@@ -106,7 +108,7 @@ describe("mermaid in the markdown preview", () => {
     const edited = preview(SEQ.replace("test", "edited"));
     const next = renderMermaidIn(edited, previous);
     expect(next.async).toBe(true);
-    expect(edited.querySelector(".mermaid-output svg")?.textContent).toBe("sequenceDiagram");
+    expect(edited.querySelector(".mermaid-output svg text")?.textContent).toBe("sequenceDiagram");
     await next.done;
     expect(m.render).toHaveBeenCalledTimes(2);
     ids.add(m.render.mock.calls[1]![0]);
@@ -128,14 +130,21 @@ describe("mermaid in the markdown preview", () => {
     const b = second.querySelector("svg")!;
     const idsA = idsOf(a);
     const idsB = idsOf(b);
-    expect(idsA).toHaveLength(2);
-    expect(idsB).toHaveLength(2);
+    expect(idsA).toHaveLength(3);
+    expect(idsB).toHaveLength(3);
     expect(idsA.filter((id) => idsB.includes(id))).toEqual([]);
-    // Every marker reference resolves within its own copy.
+    // Every marker reference, `<style>#<svg-id>` rule and `[id$="-arrow"]` suffix rule
+    // resolves within its own copy without touching hex colours (`#dad`) in `<style>`.
     for (const svg of [a, b]) {
       const own = new Set(idsOf(svg));
+      const rootId = svg.getAttribute("id")!;
       const ref = svg.querySelector("[marker-end]")!.getAttribute("marker-end")!;
       expect(own.has(/url\(#(.+)\)/.exec(ref)![1]!)).toBe(true);
+      const css = svg.querySelector("style")!.textContent!;
+      expect(css).toContain(`#${rootId}{fill:#dad;}`);
+      expect(css).toContain(`#${rootId} .cluster rect{fill:#2e2f30;}`);
+      expect(css).toContain(`#${rootId} .flowchart-link{fill:none;}`);
+      expect(svg.querySelector("defs [id$='-arrow'] path")).not.toBeNull();
     }
   });
 
