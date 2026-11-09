@@ -242,9 +242,8 @@ export class EditorSlot {
     this.kept = null;
     const i = keptSlots.indexOf(this);
     if (i >= 0) keptSlots.splice(i, 1);
-    const top = topLineAt(view, this.scrollPos.top);
-    this.savedTopLine = top;
-    this.scroll = EditorView.scrollIntoView(view.state.doc.line(top + 1).from, { y: "start" });
+    this.savedTopLine = topLineAt(view, this.scrollPos.top);
+    this.scroll = scrollSnapshotAt(view, this.scrollPos);
     this.stored = view.state;
     view.destroy();
   }
@@ -397,6 +396,13 @@ export class EditorSlot {
 
 function topLineOf(view: EditorView): number {
   return topLineAt(view, view.scrollDOM.scrollTop);
+}
+
+/** `view.scrollSnapshot()` at a tracked offset: a detached view's scrollDOM reports 0. */
+function scrollSnapshotAt(view: EditorView, pos: { top: number; left: number }): StateEffect<unknown> {
+  const atPos = Object.create(view) as EditorView;
+  Object.defineProperty(atPos, "scrollDOM", { value: { scrollTop: pos.top, scrollLeft: pos.left } });
+  return atPos.scrollSnapshot();
 }
 
 function topLineAt(view: EditorView, scrollTop: number): number {
