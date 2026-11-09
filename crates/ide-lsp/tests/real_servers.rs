@@ -64,6 +64,104 @@ fn lang(id: &str, ext: &str, server: LanguageServerConfig) -> LanguageConfig {
 }
 
 #[tokio::test(flavor = "multi_thread")]
+#[ignore = "requires OPENIDEA_TEST_JDTLS and OPENIDEA_TEST_GRADLE_HOME, with JDK 21+"]
+async fn shared_jdtls_imports_independent_gradle_builds_and_external_root() {
+    use serde_json::json;
+
+    let jdtls = std::env::var("OPENIDEA_TEST_JDTLS").expect("set OPENIDEA_TEST_JDTLS");
+    let gradle_home = std::env::var("OPENIDEA_TEST_GRADLE_HOME").expect("set OPENIDEA_TEST_GRADLE_HOME");
+    let dir = tempfile::tempdir().unwrap();
+    let temp_root = dunce::canonicalize(dir.path()).unwrap();
+    let root = temp_root.join("workspace");
+    std::fs::create_dir(&root).unwrap();
+    let root = dunce::canonicalize(root).unwrap();
+    let external = temp_root.join("external");
+    let mut files = Vec::new();
+    for (name, build) in [("alpha", root.join("alpha")), ("beta", root.join("beta")), ("external", external.clone())] {
+        let source_dir = build.join("app/src/main/java/demo");
+        std::fs::create_dir_all(&source_dir).unwrap();
+        std::fs::write(build.join("settings.gradle"), format!("rootProject.name = '{name}'\ninclude 'app'\n")).unwrap();
+        std::fs::write(build.join("build.gradle"), "").unwrap();
+        std::fs::write(build.join("app/build.gradle"), "plugins { id 'java' }\n").unwrap();
+        let source = format!(
+            "package demo; public class Main {{ public static void main(String[] args) {{ {name}Marker(); }} static void {name}Marker() {{}} }}\n"
+        );
+        let path = source_dir.join("Main.java");
+        std::fs::write(&path, &source).unwrap();
+        files.push((name, path, source));
+    }
+    let mut java = LanguageRegistry::load(None).unwrap().get(&LanguageId::new("java")).unwrap();
+    java.language_servers.retain(|s| s.name == "jdtls");
+    let server = &mut java.language_servers[0];
+    server.command = jdtls;
+    server.env.insert("GRADLE_USER_HOME".into(), dir.path().join("gradle-user-home").to_string_lossy().into_owned());
+    server.args.extend(["-data".into(), dir.path().join("jdtls-data").to_string_lossy().into_owned()]);
+    let options = server.initialization_options.as_mut().unwrap().as_table_mut().unwrap();
+    let settings = options.get_mut("settings").unwrap().as_table_mut().unwrap();
+    let java_settings = settings.get_mut("java").unwrap().as_table_mut().unwrap();
+    let imports = java_settings.get_mut("import").unwrap().as_table_mut().unwrap();
+    let gradle = imports.get_mut("gradle").unwrap().as_table_mut().unwrap();
+    gradle.insert("home".into(), toml::Value::String(gradle_home));
+    gradle.insert("wrapper".into(), toml::Value::try_from(json!({"enabled": false})).unwrap());
+    if let Ok(home) = std::env::var("OPENIDEA_TEST_GRADLE_JAVA_HOME") {
+        gradle.insert("java".into(), toml::Value::try_from(json!({"home": home})).unwrap());
+    }
+    let (mgr, events) = manager(&root, LanguageRegistry::from_configs(vec![java]));
+    mgr.set_jdtls_shared_hook(Box::new(|| true));
+    mgr.set_content_roots(vec![external]);
+    for (_, path, source) in &files {
+        mgr.did_open(DocId::next(), path, &LanguageId::new("java"), 1, source);
+    }
+    retry("shared jdtls ready", Duration::from_secs(60), || {
+        let status = last_status(&events, "jdtls");
+        if let Some((ServerStatus::Crashed | ServerStatus::Missing | ServerStatus::Misconfigured, message)) = &status {
+            panic!("shared jdtls failed: {message:?}");
+        }
+        async move { matches!(status, Some((ServerStatus::Ready | ServerStatus::Busy, _))).then_some(()) }
+    })
+    .await;
+    for (name, path, _) in &files {
+        let cp = retry(&format!("{name} Gradle classpath"), Duration::from_secs(180), || async {
+            let cp =
+                tokio::time::timeout(Duration::from_secs(10), mgr.java_classpath(path, false, &Default::default()))
+                    .await
+                    .ok()?
+                    .ok()?;
+            cp.class_paths.iter().any(|p| p.contains(&format!("/{name}/app/"))).then_some(cp)
+        })
+        .await;
+        assert!(
+            cp.class_paths
+                .iter()
+                .all(|p| !files.iter().any(|(other, _, _)| other != name && p.contains(&format!("/{other}/app/")))),
+            "classpath leaked between builds: {cp:?}"
+        );
+        let launch = tokio::time::timeout(
+            Duration::from_secs(30),
+            mgr.java_launch(path, false, false, false, false, &Default::default()),
+        )
+        .await
+        .expect("launch resolution timed out")
+        .expect("launch resolution failed");
+        assert_eq!(launch.class_paths, cp.class_paths, "launch resolved a different build for {name}");
+    }
+    let servers = mgr.servers().into_iter().filter(|s| s.name == "jdtls").collect::<Vec<_>>();
+    assert_eq!(servers.len(), 1, "expected one JDT LS: {servers:?}");
+    assert!(servers[0].pid.is_some(), "JDT LS process is not running");
+    for (_, path, _) in [&files[0], &files[2]] {
+        let bad = path.parent().unwrap().join("Broken.java");
+        let bad_source = "package demo; class Broken { MissingType x; }";
+        std::fs::write(&bad, bad_source).unwrap();
+        mgr.did_open(DocId::next(), &bad, &LanguageId::new("java"), 1, bad_source);
+        retry("diagnostics from shared JDT LS", Duration::from_secs(120), || {
+            let found = events.lock().iter().any(|e| matches!(e, IdeEvent::Diagnostics { path, items, .. } if path.0 == bad && items.iter().any(|d| d.message.contains("MissingType"))));
+            async move { found.then_some(()) }
+        }).await;
+    }
+    tokio::time::timeout(Duration::from_secs(10), mgr.shutdown_all()).await.unwrap();
+}
+
+#[tokio::test(flavor = "multi_thread")]
 #[ignore = "requires kmp-lsp on PATH (or OPENIDEA_TEST_KMP_LSP)"]
 async fn kmp_lsp_java_end_to_end() {
     let dir = tempfile::tempdir().unwrap();

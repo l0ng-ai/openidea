@@ -313,8 +313,8 @@ export const viewerHighlight = HighlightStyle.define([
 export const viewerTheme = EditorView.theme(
   {
     ...overviewStyles,
+    "&.cm-editor": { height: "100%" },
     "&": {
-      height: "100%",
       backgroundColor: "var(--bg-app)",
       color: "var(--fg)",
       fontSize: "var(--openidea-editor-font-size, var(--fs-code))",

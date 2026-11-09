@@ -208,6 +208,8 @@ export function defineBuiltinUiPoints(): () => void {
                 : "package",
           when: decl.when ?? undefined,
           verbatim: true,
+          // A command can call a model or a server; its toolbar button must show the click was taken.
+          indicatesRunning: true,
           keywords: ["plugin", plugin.name, pluginId],
           description: tx`From plugin ${plugin.name}`,
           run: async ({ arg }: { arg?: unknown }) => {
