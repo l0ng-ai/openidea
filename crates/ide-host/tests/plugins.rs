@@ -126,6 +126,10 @@ impl PluginWorkspace for TestWorkspace {
     fn trusted(&self, _root: &Path) -> bool {
         self.trusted
     }
+    fn project_windows(&self, root: &Path) -> Vec<String> {
+        // `main` shows the fixture project; other open roots have no window left.
+        if root == self.root { vec!["closing".into(), "main".into()] } else { Vec::new() }
+    }
     fn project_of(&self, _window: &str) -> Option<PathBuf> {
         if let Some(left) = self.project_queries_left.lock().as_mut() {
             if *left == 0 {
@@ -4799,6 +4803,40 @@ fn notification_actions_keep_commands_and_window_scope() {
         assert!(f.take_events().iter().all(|(_, e)| !matches!(e, PluginEvent::Notification { .. })));
     }
     assert_eq!(f.status("jobs"), PluginStatus::Active, "a refused notification leaves the plugin running");
+}
+
+#[test]
+fn project_notifications_go_to_a_window_of_that_project_only() {
+    let f = fixture(Limits::default());
+    f.install(&sample("jobs"));
+    f.host.set_capability("jobs", "project.read", false).unwrap();
+    f.host.forget_client("closing");
+    let other = f.project.parent().unwrap().join("other");
+    std::fs::create_dir(&other).unwrap();
+    f.workspace.other_roots.lock().push(other.clone());
+    f.take_events();
+    let notifications = |f: &Fixture| {
+        f.take_events()
+            .into_iter()
+            .filter_map(|(client, event)| match event {
+                PluginEvent::Notification { title, actions, .. } => Some((client, title, actions)),
+                _ => None,
+            })
+            .collect::<Vec<_>>()
+    };
+    // A scheduled call has no invoking window; a closing window is skipped.
+    let path = f.project.join("notes.txt").to_string_lossy().into_owned();
+    f.host.run_command("jobs", "notify-project", Some(&path), Invocation::default()).unwrap();
+    let sent = notifications(&f);
+    assert_eq!(sent.len(), 1);
+    assert_eq!((sent[0].0.as_deref(), sent[0].1.as_str()), (Some("main"), "Project update"));
+    assert_eq!((sent[0].2[0].command.as_str(), sent[0].2[0].argument.as_deref()), ("context", Some(path.as_str())));
+    // A project without a window fails without falling back to another one, even when invoked from one.
+    let path = other.join("notes.txt").to_string_lossy().into_owned();
+    let error = f.host.run_command("jobs", "notify-project", Some(&path), f.inv()).unwrap_err().message;
+    assert!(error.contains("not open"), "{error}");
+    assert!(notifications(&f).is_empty());
+    assert_eq!(f.status("jobs"), PluginStatus::Active);
 }
 
 #[test]

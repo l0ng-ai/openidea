@@ -2,7 +2,7 @@ import { commitRepo } from "./multiRoot";
 /** Create Patch… (from local changes or commits) and Apply Patch… (file or clipboard, with a preview). */
 import { useEffect, useState } from "react";
 import type { Commit, FileStatus, PatchFile, PatchSource, ShelvedChangeList } from "@/bindings";
-import { fileManagerName, revealInFileManager } from "@/platform/fileManager";
+import { canRevealInFileManager, fileManagerName, revealInFileManager } from "@/platform/fileManager";
 import { call, commands } from "@/platform/ipc";
 import { Button, Checkbox, Dialog, Icon, Input, List, Spinner, fileIconName, T } from "@/ui";
 import { workflowSettings } from "@/platform/workflowSettings";
@@ -95,7 +95,7 @@ export function patchSavedBody(): string {
 /** Settings › Version Control › Confirmation › When patch is created: ask / no / show in the file manager. */
 async function afterPatchSaved(path: string) {
   const mode = workflowSettings().vcs.confirmation.onPatchCreated;
-  if (mode === "no") return;
+  if (mode === "no" || !canRevealInFileManager()) return;
   if (mode === "ask") {
     const r = await ask({
       title: "Create Patch",

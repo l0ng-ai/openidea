@@ -1,8 +1,9 @@
 import { forwardRef, type ButtonHTMLAttributes, type ReactNode } from "react";
 import clsx from "clsx";
-import { getAction, executeAction } from "@/platform/actions";
+import { getAction, executeAction, useRunningActions } from "@/platform/actions";
 import { shortcutLabel } from "@/platform/keymap";
 import { Icon, type IconName } from "./icons";
+import { Spinner } from "./Spinner";
 import { tooltipAttrs } from "./Tooltip";
 import styles from "./Button.module.css";
 import { useGivenTx } from "@/platform/i18n";
@@ -74,6 +75,8 @@ export const IconButton = forwardRef<HTMLButtonElement, IconButtonProps>(functio
   const a = action ? getAction(action) : undefined;
   const label = tx(title) ?? a?.title ?? action ?? icon;
   const keys = shortcut ?? (action ? shortcutLabel(action) : undefined);
+  const busy = useRunningActions((s) => (action ? s.running.has(action) : false));
+  const glyphSize = iconSize ?? 16;
   return (
     <button
       ref={ref}
@@ -81,16 +84,20 @@ export const IconButton = forwardRef<HTMLButtonElement, IconButtonProps>(functio
       aria-label={tx(ariaLabel) ?? label}
       aria-pressed={pressed}
       aria-keyshortcuts={keys}
+      aria-busy={busy || undefined}
+      // Not `disabled`: a disabled button drops keyboard focus while the action runs.
+      aria-disabled={busy || undefined}
       disabled={disabled}
       className={clsx(styles.iconButton, styles[`is-${size}`], tone !== "default" && styles[`tone-${tone}`], className)}
       onClick={(e) => {
+        if (busy) return;
         onClick?.(e);
         if (!e.defaultPrevented && action) void executeAction(action, actionArg);
       }}
       {...tooltipAttrs(label, keys, true)}
       {...rest}
     >
-      <Icon name={icon} size={iconSize ?? 16} />
+      {busy ? <Spinner size={glyphSize} /> : <Icon name={icon} size={glyphSize} />}
     </button>
   );
 });

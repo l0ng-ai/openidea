@@ -1,4 +1,7 @@
 {
+  "Arduino tool '{configured}' was not found. Set its path in Settings > Languages & Frameworks > Language Servers, or in settings.toml under languages.arduino.": "Arduino tool '{configured}' was not found. Set its path in Settings > Languages & Frameworks > Language Servers, or in settings.toml under languages.arduino.",
+  "Arduino tool '{name}' was not found on PATH or in Arduino IDE. Install Arduino IDE 2, or set its path in Settings > Languages & Frameworks > Language Servers or settings.toml under languages.arduino.": "Arduino tool '{name}' was not found on PATH or in Arduino IDE. Install Arduino IDE 2, or set its path in Settings > Languages & Frameworks > Language Servers or settings.toml under languages.arduino.",
+  "Install Arduino IDE 2 (includes Arduino Language Server, Arduino CLI and clangd) and the board's core. Configure the server command and arguments in Settings > Languages & Frameworks > Language Servers, or set languages.arduino.cli, languages.arduino.clangd, languages.arduino.languageServer and languages.arduino.cliConfig in settings.toml. Set the board FQBN in sketch.yaml or languages.arduino.fqbn in settings.toml.": "Install Arduino IDE 2 (includes Arduino Language Server, Arduino CLI and clangd) and the board's core. Configure the server command and arguments in Settings > Languages & Frameworks > Language Servers, or set languages.arduino.cli, languages.arduino.clangd, languages.arduino.languageServer and languages.arduino.cliConfig in settings.toml. Set the board FQBN in sketch.yaml or languages.arduino.fqbn in settings.toml.",
   "Separate Procedures and Functions": "Separate Procedures and Functions",
   "Shared JDT LS is available only in local ordinary project windows. Select Local machine for the Java language server to use it.": "Shared JDT LS is available only in local ordinary project windows. Select Local machine for the Java language server to use it.",
   "Share JDT LS across builds": "Share JDT LS across builds",
@@ -752,5 +755,6 @@
   "Maven could not be started. Configure Maven home in Maven settings, install Maven on PATH, or use a project with a Maven wrapper.": "Maven could not be started. Configure Maven home in Maven settings, install Maven on PATH, or use a project with a Maven wrapper.",
   "Gradle could not be started. Configure a local installation in Gradle settings, install Gradle on PATH, or use a project with a Gradle wrapper.": "Gradle could not be started. Configure a local installation in Gradle settings, install Gradle on PATH, or use a project with a Gradle wrapper.",
   "Remote of {name}": "Remote of {name}",
-  "Target branch of {name}": "Target branch of {name}"
+  "Target branch of {name}": "Target branch of {name}",
+  "Remote project files cannot be shown in {fileManager}": "Remote project files cannot be shown in {fileManager}"
 }

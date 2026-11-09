@@ -184,11 +184,12 @@
 .host :global(.cm-diffHoverRevert) {
   position: absolute;
   right: 8px;
-  top: 0;
+  /* Centre on the first row, including when the editor's line height changes. */
+  top: calc((var(--openidea-editor-line-height, var(--lh-code)) - var(--space-4)) / 2);
   display: inline-flex;
   align-items: center;
   gap: 3px;
-  height: 16px;
+  height: var(--space-4);
   padding: 0 6px;
   border: 1px solid var(--border-strong);
   border-radius: var(--radius-small);
@@ -239,6 +240,7 @@
   border-left: 1px solid var(--border);
   border-right: 1px solid var(--border);
 }
+/* Only the band layer: the chevrons inside the arrow buttons are centred by the button's flex box. */
 .host :global(.cm-diffDivider > svg) {
   position: absolute;
   inset: 0;
@@ -280,6 +282,12 @@
 }
 .host :global(.cm-diffDivider button.cm-diffArrow-b-to-a) {
   right: 0;
+}
+/* With one direction there is no pair to keep apart: the arrow sits in the middle of the divider. */
+.host :global(.cm-diffDivider-lone button.cm-diffArrow) {
+  left: 50%;
+  right: auto;
+  transform: translateX(-50%);
 }
 .host :global(.cm-diffDivider button.cm-diffArrow:hover) {
   color: var(--fg-strong);
