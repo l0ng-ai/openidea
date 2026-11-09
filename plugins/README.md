@@ -2389,8 +2389,9 @@ A plugin using `framework = "plugin"` can implement `TestResults::select_tests`
 configuration id as `parse` and a list of test-tree paths: the names from the
 plugin's `test-start` events, from parent suite to test, exactly as shown in the
 tree. Return the **full replacement argument list**, including any required base
-arguments, to run only those tests. `None` (the Rust SDK default), errors and
-call timeouts leave test selection unsupported. An empty argument list is a
+arguments, to run only those tests. The call uses the 5-second command budget.
+`None` (the Rust SDK default), errors and call timeouts leave test selection
+unsupported. An empty argument list is a
 supported selection. The IDE preserves the configuration's command, environment,
 working directory and run target.
 

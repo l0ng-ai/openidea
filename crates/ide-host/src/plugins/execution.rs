@@ -301,7 +301,7 @@ impl PluginHost {
         Ok(Some((root, owner.to_owned(), id.to_owned())))
     }
 
-    /// Derives replacement argv under the parser's soft/hard call budgets.
+    /// Derives replacement argv for a user action, under the command budget.
     pub fn select_tests(&self, client: &str, config: &str, tests: Vec<Vec<String>>) -> IdeResult<Option<Vec<String>>> {
         if tests.is_empty()
             || tests.len() > 10000
@@ -317,9 +317,10 @@ impl PluginHost {
             self.changed();
         }
         let invocation = ide_plugin::Invocation { workspace_root: Some(root), ..Default::default() };
-        let hard = self.limits.edit_hard;
+        // A user action, not the edit path: allow the command budget (a cold instance may be compiling).
+        let timeout = self.limits.timeout;
         let started = Instant::now();
-        let result = actor.call(Some(self.limits.edit_soft), move |rt| rt.select_tests(id, tests, invocation, hard));
+        let result = actor.call(Some(timeout), move |rt| rt.select_tests(id, tests, invocation, timeout));
         let args = self.finish_provider_call(&plugin, &actor, started, result).flatten();
         Ok(args.filter(|args| args.len() <= 10000 && args.iter().map(String::len).sum::<usize>() <= 4 << 20))
     }
