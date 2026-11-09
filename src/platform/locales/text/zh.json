@@ -3157,7 +3157,6 @@
   "Import JetBrains Settings": "导入 JetBrains 设置",
   "Import Settings from JetBrains IDE": "从 JetBrains IDE 导入设置",
   "Import Settings from JetBrains IDE…": "从 JetBrains IDE 导入设置…",
-  "Choose the IDE to import settings from:": "选择要从中导入设置的 IDE：",
   "No JetBrains IDE settings were found on this computer": "此电脑上没有找到 JetBrains IDE 的设置",
   "These settings will be imported:": "将导入以下设置：",
   "Not imported:": "不导入：",
