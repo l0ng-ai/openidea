@@ -385,7 +385,7 @@ pub fn parse_gdb_version(output: &str) -> Option<(u32, u32)> {
 
 /// `(major, minor)` of `command` (resolved like a launch), or `None` when the binary is
 /// missing, answers nothing or nothing version-like (the failed start reports that).
-async fn gdb_version(command: &str, cwd: &Path) -> IdeResult<Option<(u32, u32)>> {
+pub(crate) async fn gdb_version(command: &str, cwd: &Path) -> IdeResult<Option<(u32, u32)>> {
     let Some(binary) = tokio::task::spawn_blocking({
         let (command, cwd) = (command.to_owned(), cwd.to_owned());
         move || resolve_binary(&command, &cwd)
@@ -430,6 +430,15 @@ async fn prepare_gdb(spec: &AdapterSpec) -> IdeResult<()> {
         msg.push_str(hint);
     }
     Err(IdeError::unavailable(msg))
+}
+
+/// Whether `launch` has to wait for `configurationDone`: GDB 15 starts the program
+/// inside `launch`, so a launch sent before the breakpoint upload races the breakpoints
+/// and `configurationDone` is refused with `notStopped` while the program runs. GDB 14
+/// runs the program at `configurationDone` and 16+ defers the launch there, so both take
+/// the launch-first order every other adapter uses. `false` when the version is unknown.
+pub(crate) async fn gdb_launch_after_configuration(spec: &AdapterSpec) -> bool {
+    matches!(gdb_version(&spec.command, &spec.cwd).await, Ok(Some((15, _))))
 }
 
 /// An adapter that is a plugin of another program (java-debug, a jdtls bundle) rather

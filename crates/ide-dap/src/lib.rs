@@ -1042,16 +1042,29 @@ impl DebugManager {
         // Launch/attach may wait for a slow runtime or a remote target. Let the adapter report
         // failure; Stop cancels configuration and a closed connection fails the pending reply.
         // Many adapters answer only after `configurationDone`, so don't wait for the reply yet.
-        let launch = s.conn.send_request(request, arguments)?;
-        let mut launch = Box::pin(async move { launch.await.unwrap_or(Err(DapError::Closed)) });
+        // GDB 15 is the exception: its `launch` starts the program itself (14 runs at
+        // `configurationDone`, 16+ defers the launch there), so its launch waits below.
+        let launch_in_config = s.adapter == "gdb" && adapter::gdb_launch_after_configuration(&s.spec).await;
+        let mut launch = if launch_in_config {
+            None
+        } else {
+            let reply = s.conn.send_request(request, arguments.clone())?;
+            Some(Box::pin(async move { reply.await.unwrap_or(Err(DapError::Closed)) }))
+        };
         let mut initialized = s.initialized.subscribe();
         let mut launch_result = None;
-        let got_initialized = tokio::select! {
-            r = initialized.wait_for(|v| *v) => { r.map_err(|_| DapError::Closed)?; true }
-            r = &mut launch => {
-                r?;
-                launch_result = Some(());
-                false
+        let got_initialized = match launch.as_mut() {
+            Some(launch) => tokio::select! {
+                r = initialized.wait_for(|v| *v) => { r.map_err(|_| DapError::Closed)?; true }
+                r = launch => {
+                    r?;
+                    launch_result = Some(());
+                    false
+                }
+            },
+            None => {
+                initialized.wait_for(|v| *v).await.map_err(|_| DapError::Closed)?;
+                true
             }
         };
         if !got_initialized {
@@ -1109,8 +1122,17 @@ impl DebugManager {
             }
         }
         s.configured.store(true, Ordering::Release);
-        if launch_result.is_none() {
-            launch.await?;
+        match launch.as_mut() {
+            Some(launch) => {
+                if launch_result.is_none() {
+                    launch.await?;
+                }
+            }
+            None => {
+                // GDB 15: the breakpoints are in, so its `run` cannot miss them.
+                let reply = s.conn.send_request(request, arguments)?;
+                reply.await.unwrap_or(Err(DapError::Closed))?;
+            }
         }
         if let Some(relay) = s.kotlin_relay.lock().as_mut() {
             relay.release();

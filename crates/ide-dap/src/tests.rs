@@ -126,6 +126,9 @@ struct Script {
     pending_startup: Option<bool>,
     startup_error: Option<&'static str>,
     close_during_startup: bool,
+    /// GDB 15 semantics: `initialized` right after `initialize`, the program starts at
+    /// `launch`, and a `configurationDone` sent while it runs is refused with `notStopped`.
+    gdb15_starts_at_launch: bool,
 }
 
 impl Default for Script {
@@ -145,6 +148,7 @@ impl Default for Script {
             pending_startup: None,
             startup_error: None,
             close_during_startup: false,
+            gdb15_starts_at_launch: false,
         }
     }
 }
@@ -180,6 +184,7 @@ async fn fake_adapter<S: AsyncRead + AsyncWrite + Unpin + Send + 'static>(stream
     let mut seq = 1000;
     let mut pending_launch: Option<i64> = None;
     let mut held: Vec<Value> = Vec::new();
+    let mut running = false;
     macro_rules! send {
         ($v:expr) => {{
             let mut v: Value = $v;
@@ -200,24 +205,37 @@ async fn fake_adapter<S: AsyncRead + AsyncWrite + Unpin + Send + 'static>(stream
             continue;
         }
         match msg["command"].as_str().unwrap_or_default() {
-            "initialize" => ok!(
-                msg,
-                json!({
-                    "supportsConfigurationDoneRequest": true,
-                    "supportsCompletionsRequest": true,
-                    "supportsTerminateRequest": script.supports_terminate,
-                    "supportsSetVariable": true,
-                    "supportsFunctionBreakpoints": true,
-                    "supportsDataBreakpoints": true,
-                    "supportsStepInTargetsRequest": true,
-                    "supportsRestartFrame": true,
-                    "exceptionBreakpointFilters": [
-                        {"filter": "raised", "label": "Raised"},
-                        {"filter": "uncaught", "label": "Uncaught", "default": true, "description": "Uncaught exceptions"},
-                    ],
-                })
-            ),
+            "initialize" => {
+                ok!(
+                    msg,
+                    json!({
+                        "supportsConfigurationDoneRequest": true,
+                        "supportsCompletionsRequest": true,
+                        "supportsTerminateRequest": script.supports_terminate,
+                        "supportsSetVariable": true,
+                        "supportsFunctionBreakpoints": true,
+                        "supportsDataBreakpoints": true,
+                        "supportsStepInTargetsRequest": true,
+                        "supportsRestartFrame": true,
+                        "exceptionBreakpointFilters": [
+                            {"filter": "raised", "label": "Raised"},
+                            {"filter": "uncaught", "label": "Uncaught", "default": true, "description": "Uncaught exceptions"},
+                        ],
+                    })
+                );
+                if script.gdb15_starts_at_launch {
+                    // GDB 15 announces itself before it sees `launch` (which a client that
+                    // defers it sends late).
+                    send!(json!({"type": "event", "event": "initialized"}));
+                }
+            }
             "launch" | "attach" => {
+                if script.gdb15_starts_at_launch {
+                    // GDB 15 starts the program here and answers `launch` right away.
+                    running = true;
+                    ok!(msg, Value::Null);
+                    continue;
+                }
                 if script.close_during_startup {
                     return;
                 }
@@ -289,6 +307,14 @@ async fn fake_adapter<S: AsyncRead + AsyncWrite + Unpin + Send + 'static>(stream
                 ok!(msg, json!({"value": format!("{}!", msg["arguments"]["value"].as_str().unwrap()), "type": "int"}))
             }
             "configurationDone" => {
+                if script.gdb15_starts_at_launch && running {
+                    // GDB 15 answers `configurationDone` with `notStopped` while the program
+                    // it started at `launch` is still running.
+                    send!(
+                        json!({"type": "response", "request_seq": msg["seq"], "command": "configurationDone", "success": false, "message": "notStopped"})
+                    );
+                    continue;
+                }
                 if !script.ignore_configuration_done {
                     ok!(msg, Value::Null);
                 }
@@ -510,6 +536,53 @@ async fn stop_cancels_pending_launch_and_attach() {
     }
 }
 
+/// GDB 15 starts the program inside `launch`: a launch that races the breakpoint upload is
+/// refused at `configurationDone` with `notStopped` (Ubuntu 24.04's GDB), so for it the
+/// launch goes out after the configuration. GDB 14 runs at `configurationDone` and 16+
+/// defers the launch there, so those keep the launch-first order every other adapter uses.
+/// The version comes from a fake `gdb` on the managed tools path (a real process probe,
+/// so this test runs on the real clock).
+#[tokio::test]
+async fn gdb_15_launch_waits_for_the_configuration() {
+    let root = std::env::temp_dir().join(format!("openidea-dap-gdb15-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&root);
+    let fake = root.join("gdb").join("bin").join(if cfg!(windows) { "gdb.cmd" } else { "gdb" });
+    std::fs::create_dir_all(fake.parent().unwrap()).unwrap();
+    let answer = |version: &str| {
+        #[cfg(windows)]
+        std::fs::write(&fake, format!("@echo off\r\necho GNU gdb (GDB) {version}\r\n")).unwrap();
+        #[cfg(not(windows))]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            std::fs::write(&fake, format!("#!/bin/sh\necho 'GNU gdb (GDB) {version}'\n")).unwrap();
+            std::fs::set_permissions(&fake, std::fs::Permissions::from_mode(0o755)).unwrap();
+        }
+    };
+    let dir = std::env::temp_dir().join(format!("openidea-dap-gdb15-cwd-{}", std::process::id()));
+    std::fs::create_dir_all(&dir).unwrap();
+    let gdb_config =
+        |dir: &Path| LaunchConfig { adapter: "gdb".into(), cwd: Some(dir.to_path_buf().into()), ..config() };
+
+    answer("15.1");
+    adapter::set_tools_root(root.clone());
+    let h = harness(Script { gdb15_starts_at_launch: true, ..Script::default() });
+    let id = h.start(gdb_config(&dir)).await.expect("GDB 15 defers its launch past the configuration");
+    let commands = h.commands();
+    let pos = |c: &str| commands.iter().position(|x| x == c).unwrap();
+    assert!(pos("launch") > pos("configurationDone"), "{commands:?}");
+    h.wait_event(|e| matches!(e, DebugEvent::Stopped { .. })).await;
+    h.manager.stop(id).await.unwrap();
+
+    // With a GDB whose launch does not race (14, 16+), the script fails exactly like the
+    // real GDB 15 does when a client sends `launch` first.
+    answer("18.1");
+    let h = harness(Script { gdb15_starts_at_launch: true, ..Script::default() });
+    let error = h.start(gdb_config(&dir)).await.unwrap_err();
+    assert!(error.message.contains("configurationDone failed: notStopped"), "{}", error.message);
+    let _ = std::fs::remove_dir_all(&root);
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
 #[tokio::test(start_paused = true)]
 async fn startup_still_reports_adapter_failure_and_connection_closure() {
     for request in ["launch", "attach"] {
@@ -517,7 +590,6 @@ async fn startup_still_reports_adapter_failure_and_connection_closure() {
         let error = h.start(LaunchConfig { request: request.into(), ..config() }).await.unwrap_err();
         assert_eq!(error.message, format!("{request} failed: interpreter could not start"));
         assert!(h.manager.sessions(None).is_empty());
-
         let h = harness(Script { close_during_startup: true, ..Script::default() });
         let error = h.start(LaunchConfig { request: request.into(), ..config() }).await.unwrap_err();
         assert!(error.message.contains("debug adapter `debugpy` exited during startup"), "{error}");
