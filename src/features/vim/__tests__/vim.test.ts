@@ -188,6 +188,38 @@ describe("Vim engine", () => {
     view.destroy();
   });
 
+  it("keeps built-ins and user mappings consistent across rc reloads that change the leader", async () => {
+    const ran: string[] = [];
+    const d = registerAction({ id: "navigate.gotoFile", title: "x", run: () => void ran.push("navigate.gotoFile") });
+    const view = makeView();
+    const cm = getCM(view)!;
+    const keys = (...ks: string[]) => ks.forEach((k) => Vim.handleKey(cm as never, k, "user"));
+    applyRcCommands(parseVimrc('let mapleader = " "\nnmap <leader>ff <Action>(GotoFile)').commands);
+    applyRcCommands(parseVimrc('let mapleader = ","\nnmap <leader>ff <Action>(GotoFile)').commands);
+    applyRcCommands(parseVimrc('let mapleader = " "\nnmap <leader>ff <Action>(GotoFile)\nnnoremap Q dd').commands);
+    keys("<Space>", "f", "f");
+    await tick();
+    expect(ran).toEqual(["navigate.gotoFile"]);
+    // noremap still reaches the built-ins with a stand-in in the default keymap.
+    keys("Q");
+    await tick();
+    expect(view.state.doc.toString()).toBe("three");
+    applyRcCommands([]);
+    applyRcCommands([]);
+    view.dispatch({ changes: { from: 0, to: view.state.doc.length, insert: "axbxcx" }, selection: { anchor: 0 } });
+    keys("<Space>");
+    await tick();
+    expect(view.state.selection.main.head).toBe(1);
+    keys("f", "x", ";", ",");
+    await tick();
+    expect(view.state.selection.main.head).toBe(3);
+    keys("<Space>", "f", "f");
+    await tick();
+    expect(ran).toEqual(["navigate.gotoFile"]);
+    view.destroy();
+    d();
+  });
+
   it("restores the built-in key the leader shadowed once the rc stops using it (#2337)", async () => {
     const view = makeView();
     const cm = getCM(view)!;
