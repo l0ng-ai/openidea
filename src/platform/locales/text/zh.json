@@ -5468,8 +5468,6 @@
   "Choose a WAR artifact": "请选择 WAR 构件",
   "Choose a Maven WAR module": "请选择 Maven WAR 模块",
   "Choose a Gradle WAR module": "请选择 Gradle WAR 模块",
-  "Build the selected WAR artifact before launching Tomcat": "请先构建所选 WAR 构件，再启动 Tomcat",
-  "Build the WAR artifact before launching Tomcat": "请先构建 WAR 构件，再启动 Tomcat",
   "The built WAR artifact does not exist: {path}": "构建的 WAR 构件不存在：{path}",
   "Cannot resolve Maven WAR artifact: {details}": "无法解析 Maven WAR 构件：{details}",
   "Choose a WAR file or exploded directory": "请选择 WAR 文件或展开目录",
@@ -6967,5 +6965,9 @@
   "plugin run target changed; navigate again": "插件运行目标已更改；请重新导航",
   "plugin host is unavailable": "插件宿主不可用",
   "language server targets belong to project settings": "语言服务器目标属于项目设置",
-  "library documents are always read-only": "库文档始终为只读"
+  "library documents are always read-only": "库文档始终为只读",
+  "Debugging a plugin target requires a container root": "调试插件目标需要容器根目录",
+  "This debugger does not support plugin run targets": "此调试器不支持插件运行目标",
+  "invalid debug launch arguments": "调试启动参数无效",
+  "unknown debug adapter": "未知调试适配器"
 }

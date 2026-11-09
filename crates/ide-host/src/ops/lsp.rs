@@ -4,7 +4,7 @@ use crate::apply_workspace_edit as apply_edit;
 use crate::plugins::{ProviderKind, editor_providers_for as editor_providers};
 use crate::rpc::Dispatcher;
 use ide_core::error::ErrorKind;
-use ide_core::{DocId, IdeResult, Location, Pos, Range, RequestId, ServerId, TextEdit, WorkspaceEdit};
+use ide_core::{DocId, IdeError, IdeResult, Location, Pos, Range, RequestId, ServerId, TextEdit, WorkspaceEdit};
 use ide_lsp::types::*;
 use ide_plugin::ProviderDocument;
 use std::path::Path;
@@ -545,6 +545,42 @@ pub async fn lsp_virtual_document(host: &Host, window: &str, uri: String) -> Ide
     if uri.starts_with("git-revision:") {
         return crate::ops::vcs::revision_virtual_document(host, window, &uri).await;
     }
+    if uri.starts_with("openidea-target:") && uri.contains("/0/") {
+        host.require_trust(window)?;
+        let project = host.project(window)?;
+        let plugins =
+            host.plugin_host().ok_or_else(|| IdeError::unavailable("container document reader is unavailable"))?;
+        for registration in plugins.run_targets(&project.root) {
+            let prefix = format!(
+                "openidea-target://{}/0/",
+                percent_encoding::utf8_percent_encode(&registration.id, percent_encoding::NON_ALPHANUMERIC)
+            );
+            if let Some(suffix) = uri.strip_prefix(&prefix) {
+                let path = ide_core::path_mapping::file_path(&format!("file:///{suffix}"))
+                    .filter(|p| p.starts_with('/') && !p.split('/').any(|s| s == ".." || s == "."))
+                    .ok_or_else(|| IdeError::invalid("invalid container document URI"))?;
+                let container_root = registration
+                    .target
+                    .container_root
+                    .ok_or_else(|| IdeError::invalid("invalid container document URI"))?;
+                let target = ide_language::ServerTarget {
+                    id: registration.id,
+                    origin: None,
+                    project_root: project.root.clone(),
+                    mapping: ide_core::path_mapping::PathMapping::new(&project.root.to_string_lossy(), &container_root),
+                    container_root,
+                };
+                let title = std::path::Path::new(&path)
+                    .file_name()
+                    .map(|s| s.to_string_lossy().into_owned())
+                    .unwrap_or_default();
+                let language_id = host.languages.detect(std::path::Path::new(&path), None);
+                let text = host.blocking(move || super::lsp_target::read(&plugins, &target, &path)).await?;
+                return Ok(VirtualDocument { uri, text, title, language_id, description: None, decompiled: false });
+            }
+        }
+        return Err(IdeError::unavailable("plugin run target is no longer available"));
+    }
     host.project(window)?.lsp.virtual_document(&uri).await
 }
 
@@ -556,8 +592,8 @@ pub async fn lsp_resolve_class_file(host: &Host, window: &str, path: std::path::
 
 /// References of the symbol at `pos`. `project_wide` also searches project files
 /// outside the language server's analysis scope; bulk scans over many symbols
-/// leave it off. Java, `project_wide`: without `libraries`, the dependencies and the JDK
-/// are not searched; with it, those found in the sources arrive on `on_partial` before
+/// leave it off. Java: without `libraries`, the dependencies and the JDK are not
+/// searched; with it and `project_wide`, those found in the sources arrive on `on_partial` before
 /// the slower search for the rest, and the result has them all. Cancel with
 /// `cancel_request(request)`.
 #[allow(clippy::too_many_arguments)]

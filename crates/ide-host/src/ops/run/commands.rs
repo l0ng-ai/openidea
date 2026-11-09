@@ -218,12 +218,13 @@ pub async fn run_tomcat_build(host: &Host, window: &str, config: RunConfig) -> I
             .filter(|s| !s.is_empty())
             .or_else(|| artifacts.first().map(|a| &a.id))
             .ok_or_else(|| IdeError::invalid("Choose a WAR artifact"))?;
-        let mut plan = ide_build::web::build(
-            &project.root,
-            &model,
-            id,
-            &ide_run::tomcat::effective_base_dir(&project.root, &project.cache_dir, &config)?,
-        )?;
+        let base = ide_run::tomcat::effective_base_dir(&project.root, &project.cache_dir, &config)?;
+        // "Build before launch" is skipped when the built WAR is already newer than the
+        // module's sources, so a repeated run does not rebuild (IDEA's up-to-date check).
+        if ide_run::tomcat::artifact_is_current(&project.root, &base, &config) {
+            return Ok(None);
+        }
+        let mut plan = ide_build::web::build(&project.root, &model, id, &base)?;
         plan.env.extend(config.env.clone());
         let mut build = RunConfig {
             id: format!("tomcat-build:{}", config.id),

@@ -1594,8 +1594,8 @@ impl LspManager {
         self.references_streaming(doc, pos, include_declaration, project_wide, true, cancel, None).await
     }
 
-    /// [`Self::references`]. Java, `project_wide`: without `libraries`, only the
-    /// workspace's sources are searched (`libraries_skipped`); with it, those found
+    /// [`Self::references`]. Java: without `libraries`, only the workspace's sources
+    /// are searched (`libraries_skipped`); with it and `project_wide`, those found
     /// there arrive on `partial` before the dependencies and the JDK are searched.
     #[allow(clippy::too_many_arguments)]
     pub async fn references_streaming(
@@ -1762,7 +1762,10 @@ impl LspManager {
                     };
                     scope::Widened { first: all, second: Some(found), incomplete: sources.incomplete }
                 } else {
-                    let first = query(false).await?;
+                    // Scoped probes (usage counts, bulk scans) run for many symbols at once:
+                    // without `libraries`, the dependencies and the JDK are not searched.
+                    libraries_skipped = !libraries;
+                    let first = query(!libraries).await?;
                     let empty = first.is_empty();
                     scope::Widened::only(first, empty, &t.server)
                 };

@@ -1166,6 +1166,7 @@ fn godot_registry(port: u16, command: &str, args: &[&str]) -> Arc<LanguageRegist
         tree_sitter: None,
         language_servers: vec![],
         debugger: Some(ide_language::DebuggerConfig {
+            target_placement: None,
             adapter: "godot".into(),
             command: command.into(),
             args: args.iter().map(|a| (*a).to_owned()).collect(),

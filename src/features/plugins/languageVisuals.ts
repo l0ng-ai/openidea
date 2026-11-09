@@ -19,7 +19,7 @@ import {
 } from "@codemirror/view";
 import { highlightingFor } from "@codemirror/language";
 import { highlightTree } from "@lezer/highlight";
-import { type EditorDocContext } from "@/editor/api";
+import { shownAgain, type EditorDocContext } from "@/editor/api";
 import { rangeToOffsets } from "@/editor/lsp/positions";
 import { pluginVisuals } from "@/editor/lsp/pluginVisuals";
 import { findLanguageDescription, languageInfo, loadSupport } from "@/editor/core/cm/languages";
@@ -123,6 +123,7 @@ export function pluginLanguageVisuals(ctx: EditorDocContext): Extension {
           timer: ReturnType<typeof setTimeout> | undefined;
           generation = 0;
           shown = false;
+          skipped = false;
           off: () => void;
           constructor() {
             const a = onNavigationProvidersChanged(() => this.schedule(true));
@@ -147,7 +148,7 @@ export function pluginLanguageVisuals(ctx: EditorDocContext): Extension {
             this.timer = setTimeout(() => void this.run(), 300);
           }
           update(u: ViewUpdate) {
-            if (u.docChanged) this.schedule();
+            if (u.docChanged || (this.skipped && shownAgain(u))) this.schedule();
           }
           async run() {
             const generation = this.generation;
@@ -163,7 +164,9 @@ export function pluginLanguageVisuals(ctx: EditorDocContext): Extension {
                     marker: new ActionMarker(plugin, { ...a, icon: await resolveMarkerIcon(plugin, a.icon) }, ctx),
                   })),
               );
-              if (generation !== this.generation || view.state.doc !== text || !view.dom.isConnected) return;
+              if (generation !== this.generation || view.state.doc !== text) return;
+              this.skipped = !view.dom.isConnected;
+              if (this.skipped) return;
               this.shown = !!placed.length;
               view.dispatch({
                 effects: [
