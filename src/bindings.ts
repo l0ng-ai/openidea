@@ -1035,6 +1035,8 @@ export const commands = {
 	debugDataBreakpointInfo: (session: DebugSessionId, container: number, name: string, frameId: number | null) => typedError<DataBreakpointInfo, IdeError>(__TAURI_INVOKE("debug_data_breakpoint_info", { session, container, name, frameId })),
 	/**  Attach to Process: the user's processes a debugger can attach to. */
 	debugAttachableProcesses: () => typedError<AttachableProcess[], IdeError>(__TAURI_INVOKE("debug_attachable_processes")),
+	/**  A loopback port that is free right now, for a debug agent the launch line starts. */
+	debugFreePort: () => typedError<number, IdeError>(__TAURI_INVOKE("debug_free_port")),
 	/**
 	 *  Remote JVM Debug in listen mode: waits (cancellable through `request`) for the remote
 	 *  JVM to connect to `host:port`; returns the loopback port java-debug attaches to.
@@ -5427,6 +5429,12 @@ export type LanguageServerSettings_Serialize = {
 	codeActionKinds?: string[] | null,
 };
 
+export type LanguageServerTarget = {
+	target?: string,
+	/**  Empty selects the first configured server for the language. */
+	server?: string,
+};
+
 export type LanguagesSettings = {
 	/**  Explicit plugin formatter, by language id. Empty entries use the normal formatter policy. */
 	pluginFormatters?: { [key in string]: string },
@@ -7857,6 +7865,8 @@ export type Settings_Deserialize = {
 	 *  options on top of the language definition, or a server defined here.
 	 */
 	languageServers?: { [key in string]: LanguageServerSettings_Deserialize },
+	/**  Project language id → server and plugin target. Empty target uses the host. */
+	languageServerTargets?: { [key in string]: LanguageServerTarget },
 	/**  Editor › Inspections profiles. */
 	inspections?: InspectionSettings,
 	/**  Editor › Natural Languages › Spelling. */
@@ -7919,6 +7929,8 @@ export type Settings_Serialize = {
 	 *  options on top of the language definition, or a server defined here.
 	 */
 	languageServers: { [key in string]: LanguageServerSettings_Serialize },
+	/**  Project language id → server and plugin target. Empty target uses the host. */
+	languageServerTargets: { [key in string]: LanguageServerTarget },
 	/**  Editor › Inspections profiles. */
 	inspections: InspectionSettings,
 	/**  Editor › Natural Languages › Spelling. */

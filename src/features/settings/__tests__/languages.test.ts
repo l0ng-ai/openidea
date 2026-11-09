@@ -307,6 +307,7 @@ describe("language pages", () => {
       "Rust",
       "TypeScript",
       "Plugin Formatters",
+      "Language server targets",
     ]);
   });
 

@@ -21,6 +21,15 @@ fn selector(plugin: &str, id: &str) -> String {
     format!("plugin-target:{}:{plugin}{id}", plugin.len())
 }
 impl Shared {
+    fn targets_changed(&self) {
+        if let Some(host) = self.workspace().and_then(|w| w.database_host()) {
+            for project in host.projects() {
+                project.lsp.reconfigure_soon();
+            }
+        }
+        self.sink.emit(None, PluginEvent::RunTargetsChanged);
+    }
+
     fn target_answer_file(&self, root: &Path, id: &str) -> PathBuf {
         let key = format!("{}\0{id}", root.display());
         self.data_dir.join(".run-target-answers").join(blake3::hash(key.as_bytes()).to_hex().as_str())
@@ -31,7 +40,7 @@ impl Shared {
         targets.retain(|(r, _), t| !(plugin.is_none_or(|p| p == t.plugin_id) && root.is_none_or(|path| path == r)));
         if before != targets.len() {
             drop(targets);
-            self.sink.emit(None, PluginEvent::RunTargetsChanged);
+            self.targets_changed();
         }
     }
 }
@@ -70,12 +79,12 @@ impl PluginApi {
         );
         drop(targets);
         drop(blocked);
-        self.shared.sink.emit(None, PluginEvent::RunTargetsChanged);
+        self.shared.targets_changed();
         Ok(())
     }
     pub(super) fn unregister_target(&self, root: &Path, id: &str) {
         if self.shared.run_targets.lock().remove(&(root.into(), selector(self.pkg.id(), id))).is_some() {
-            self.shared.sink.emit(None, PluginEvent::RunTargetsChanged);
+            self.shared.targets_changed();
         }
     }
 }
@@ -93,6 +102,9 @@ impl PluginHost {
         id: &str,
         config: &ide_run::RunConfig,
     ) -> IdeResult<ide_run::RunConfig> {
+        if !self.shared.workspace().is_some_and(|w| w.trusted(root)) {
+            return Err(IdeError::new(ide_core::error::ErrorKind::PermissionDenied, "project is not trusted"));
+        }
         let target = self
             .shared
             .run_targets

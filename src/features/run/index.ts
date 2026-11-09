@@ -2,6 +2,7 @@
  * Run configurations, the title bar run widget, the Run tool window (console +
  * test runner) and run/debug/stop actions.
  */
+import { withRunTarget } from "@/platform/runTargetSelection";
 import { registerEditorContribution } from "@/editor/api";
 import { executeAction, executeActionOrThrow, getAction, registerActions } from "@/platform/actions";
 import { getContext, setContext, useContextKeys } from "@/platform/context";
@@ -146,6 +147,7 @@ async function runSelected() {
 }
 
 async function debugConfig(config: RunConfig, chain: readonly string[] = [], show?: boolean) {
+  config = withRunTarget(config);
   if (config.kind === "compound") {
     if (!(await prepareLaunch(config, chain, show))) return;
     const children = compoundChildren(config, useRun.getState().configs);
@@ -155,6 +157,10 @@ async function debugConfig(config: RunConfig, chain: readonly string[] = [], sho
   if (remoteDebugBlocked(config)) return;
   if (!(await prepareLaunch(config, chain, show))) return;
   recordRun(config.id);
+  if (config.target?.startsWith("plugin-target:")) {
+    await executeAction("debug.startConfig", show === false ? { config, show: false } : config);
+    return;
+  }
   // Python on a Docker / Compose target: debugpy in the container, the debugger attaches.
   if (containerDebuggable(config) && getAction("debug.attach")) {
     await debugInContainer(config);

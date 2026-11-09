@@ -368,6 +368,12 @@ impl Server {
             message.push_str(":\n");
             message.push_str(&tail);
         }
+        if cfg.target.is_some() {
+            message.push_str(&format!(
+                "\nargv: {:?}",
+                std::iter::once(&cfg.command).chain(cfg.args.iter()).collect::<Vec<_>>()
+            ));
+        }
         let delay = self.record_crash();
         message.push_str(if delay.is_some() {
             "\nRestarting…"
