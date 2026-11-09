@@ -1,5 +1,9 @@
 {
   "Separate Procedures and Functions": "分别显示过程和函数",
+  "Shared JDT LS is available only in local ordinary project windows. Select Local machine for the Java language server to use it.": "共享 JDT LS 仅适用于本机的普通项目窗口。请将 Java 语言服务器的运行位置设为本机后再使用。",
+  "Share JDT LS across builds": "在构建间共享 JDT LS",
+  "Shared JDT LS is available only in local ordinary project windows. Open a workspace member as a project to change this setting for it.": "共享 JDT LS 仅适用于本机的普通项目窗口。请将工作区成员作为项目打开，再修改其此项设置。",
+  "Uses one JDT LS process for linked builds in each local ordinary project window. Other project windows use separate processes.": "在每个本机普通项目窗口中，已关联的构建共用一个 JDT LS 进程。其他项目窗口使用各自独立的进程。",
   "Finder": "访达",
   "Explorer": "资源管理器",
   "Reveal in Finder": "在访达中显示",

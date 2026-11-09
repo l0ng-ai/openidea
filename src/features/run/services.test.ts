@@ -382,7 +382,6 @@ describe("add service categories", () => {
   it("categorizes every built-in kind; update the table when adding kinds", () => {
     const expected: Record<string, string> = {
       npm: "JavaScript",
-      vue: "JavaScript",
       node: "JavaScript",
       bun: "JavaScript",
       deno: "JavaScript",

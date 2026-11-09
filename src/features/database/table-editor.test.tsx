@@ -125,4 +125,29 @@ describe("table editor capabilities", () => {
       uninstall();
     }
   });
+
+  it("counts the editor-area host focusing the tab as table-editor focus (#2307)", async () => {
+    backend.driver = "postgres";
+    const uninstall = installTableEditorFocus();
+    try {
+      let root!: HTMLElement;
+      await act(async () => {
+        const r = render(<TableEditor input={tableInput("source", "public", "users")} />);
+        root = r.container;
+      });
+      // Mimic EditorArea wrapping the tab in its focusable host, then focusing the host on open.
+      const host = root.closest("div")!;
+      host.setAttribute("data-editor-focus", "");
+      host.tabIndex = -1;
+      act(() => host.focus());
+      expect(getContext()).toMatchObject({ dbTableEditorFocus: true, dbTableEditorChanges: false });
+      // A later focus inside a text field still turns it off.
+      const input = document.createElement("input");
+      root.querySelector("[data-db-table-editor]")!.appendChild(input);
+      act(() => input.focus());
+      expect(getContext().dbTableEditorFocus).toBe(false);
+    } finally {
+      uninstall();
+    }
+  });
 });

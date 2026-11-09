@@ -1,5 +1,9 @@
 {
   "Separate Procedures and Functions": "Separate Procedures and Functions",
+  "Shared JDT LS is available only in local ordinary project windows. Select Local machine for the Java language server to use it.": "Shared JDT LS is available only in local ordinary project windows. Select Local machine for the Java language server to use it.",
+  "Share JDT LS across builds": "Share JDT LS across builds",
+  "Shared JDT LS is available only in local ordinary project windows. Open a workspace member as a project to change this setting for it.": "Shared JDT LS is available only in local ordinary project windows. Open a workspace member as a project to change this setting for it.",
+  "Uses one JDT LS process for linked builds in each local ordinary project window. Other project windows use separate processes.": "Uses one JDT LS process for linked builds in each local ordinary project window. Other project windows use separate processes.",
   "Finder": "Finder",
   "Explorer": "Explorer",
   "Files": "Files",

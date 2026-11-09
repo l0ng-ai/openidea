@@ -23,7 +23,11 @@ function update() {
 
 function onFocusIn(event: FocusEvent) {
   const target = event.target instanceof Element ? event.target : null;
-  const root = target?.closest("[data-db-table-editor]");
+  // The editor area focuses its host `[data-editor-focus]` when the tab opens —
+  // treat that as focus inside a table editor so ⌘F12 / ⌘↩ work right away.
+  const root =
+    target?.closest("[data-db-table-editor]") ??
+    (target?.hasAttribute("data-editor-focus") ? target.querySelector("[data-db-table-editor]") : null);
   active = (root && !isTextField(target!) && handles.get(root)) || null;
   update();
 }
