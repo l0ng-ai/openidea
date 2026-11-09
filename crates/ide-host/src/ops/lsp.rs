@@ -823,6 +823,8 @@ fn plugin_code_action(plugin: &str, root: &Path, a: ide_plugin::CodeAction) -> C
         .and_then(|r| serde_json::to_value(r).ok());
     CodeAction {
         title: a.title,
+        diagnostics: Vec::new(),
+        original_diagnostics: None,
         kind: a.kind,
         is_preferred: a.preferred,
         disabled_reason,

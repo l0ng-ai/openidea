@@ -18,7 +18,7 @@ import {
 } from "@/platform/ipc";
 import { executeAction } from "@/platform/actions";
 import { shortcutLabel } from "@/platform/keymap";
-import { diagnosticsAt, type PlacedDiagnostic } from "./diagnostics";
+import { diagnosticsAt, type PlacedDiagnostic, type EditorDiagnostic } from "./diagnostics";
 import { isEmptyMarkup, languageForPath, renderMarkup } from "./markdown";
 import { selectableText } from "@/ui/selectableText";
 import { docOf, lspRequest, reportLspError } from "./lsp";
@@ -104,7 +104,7 @@ function renderDiagnostics(view: EditorView, diags: PlacedDiagnostic[]): HTMLEle
     fix.className = "cm-lsp-link-button";
     const keys = shortcutLabel("code.showIntentions");
     fix.textContent = keys ? `More actions… ${keys}` : "More actions…";
-    if (d.severity !== "hint") offerQuickFix(view, meta, fix, from, to);
+    if (d.severity !== "hint") offerQuickFix(view, meta, fix, from, to, d);
     fix.addEventListener("mousedown", (e) => e.preventDefault());
     fix.addEventListener("click", () => {
       view.dispatch({ selection: EditorSelection.cursor(from) });
@@ -119,9 +119,16 @@ function renderDiagnostics(view: EditorView, diags: PlacedDiagnostic[]): HTMLEle
 }
 
 /** IDEA's hover link to the problem's preferred quick fix, shown once the server named one. */
-function offerQuickFix(view: EditorView, meta: HTMLElement, before: HTMLElement, from: number, to: number) {
+function offerQuickFix(
+  view: EditorView,
+  meta: HTMLElement,
+  before: HTMLElement,
+  from: number,
+  to: number,
+  diagnostic: EditorDiagnostic,
+) {
   const doc = view.state.doc;
-  void quickFixesAt(view, from, to)
+  void quickFixesAt(view, from, to, diagnostic.problem)
     .then(([action]) => {
       if (!action || view.state.doc !== doc || !before.isConnected) return;
       const link = document.createElement("button");

@@ -2,7 +2,7 @@
 
 use ide_core::event::ServerStatus;
 use ide_core::settings::ExternalFormatter;
-use ide_core::{Location, Range, ServerId, SymbolKind, TextEdit, WorkspaceEdit};
+use ide_core::{Diagnostic, Location, Range, ServerId, SymbolKind, TextEdit, WorkspaceEdit};
 use serde::{Deserialize, Serialize};
 use specta::Type;
 
@@ -197,6 +197,14 @@ pub struct InlineCompletionItem {
 #[serde(rename_all = "camelCase")]
 pub struct CodeAction {
     pub title: String,
+    /// Diagnostics this action fixes, in IDE coordinates.
+    #[serde(default)]
+    #[specta(optional)]
+    pub diagnostics: Vec<Diagnostic>,
+    /// Original server diagnostics, including encoding and data, for codeAction/resolve.
+    #[serde(default)]
+    #[specta(optional)]
+    pub original_diagnostics: Option<String>,
     /// LSP kind, e.g. `quickfix`, `refactor.extract`, `source.organizeImports`.
     pub kind: Option<String>,
     pub is_preferred: bool,

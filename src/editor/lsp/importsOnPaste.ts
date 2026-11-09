@@ -10,6 +10,7 @@ import { subscribeDiagnostics, type DiagnosticPublication } from "./diagnostics"
 import { docOf, lspRequest } from "./lsp";
 import { comparePos, rangeToOffsets } from "./positions";
 import { closePopup, openPopup, useLspPopup, type LspPopup } from "./popupStore";
+import { actionsForDiagnostic } from "./intentions";
 
 const WAIT_MS = 8000;
 const SETTLE_MS = 200;
@@ -281,7 +282,7 @@ const importsOnPastePlugin = ViewPlugin.fromClass(
       const seen = new Set<string>();
       try {
         for (const d of diagnostics) {
-          const key = JSON.stringify(d.range);
+          const key = JSON.stringify([d.range, d.message, d.code, d.source]);
           if (seen.has(key)) continue;
           seen.add(key);
           const id = nextRequestId();
@@ -301,7 +302,7 @@ const importsOnPastePlugin = ViewPlugin.fromClass(
             p.abort.signal.removeEventListener("abort", cancel);
           }
           if (!this.current(p)) return;
-          let fix = pastedImport(actions);
+          let fix = pastedImport(actionsForDiagnostic(actions, d));
           if (!fix) continue;
           fix = withCommandEdit(fix, doc.path);
           if (!fix.edit)
