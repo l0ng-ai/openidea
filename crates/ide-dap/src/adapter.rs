@@ -31,6 +31,7 @@ pub enum Transport {
 /// A fully resolved adapter command line.
 #[derive(Clone, Debug)]
 pub struct AdapterSpec {
+    pub target: Option<crate::target::TargetMapping>,
     pub adapter: String,
     pub command: String,
     pub args: Vec<String>,
@@ -51,6 +52,7 @@ pub struct AdapterSpec {
 /// Built-in adapters used when no language definition names `adapter`.
 fn builtin(adapter: &str) -> Option<DebuggerConfig> {
     let cfg = |command: &str, args: &[&str], transport: &str, hint: &str| DebuggerConfig {
+        target_placement: None,
         adapter: adapter.to_owned(),
         command: command.to_owned(),
         args: args.iter().map(|a| (*a).to_owned()).collect(),
@@ -134,6 +136,7 @@ pub fn default_type(adapter: &str) -> Option<&'static str> {
 
 pub fn resolve(config: &DebuggerConfig, cwd: PathBuf) -> AdapterSpec {
     AdapterSpec {
+        target: None,
         adapter: config.adapter.clone(),
         command: config.command.clone(),
         args: config.args.clone(),
@@ -447,7 +450,7 @@ impl AdapterLauncher for ProcessLauncher {
                     program_output: None,
                 });
             }
-            if spec.adapter == DEBUGPY_TOOL {
+            if spec.adapter == DEBUGPY_TOOL && spec.target.is_none() {
                 prepare_debugpy(&mut spec).await?;
             }
             if is_plugin_bundle(&spec.command) {

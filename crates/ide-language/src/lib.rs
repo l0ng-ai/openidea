@@ -197,6 +197,9 @@ pub struct ServerTarget {
 #[derive(Clone, Debug, Serialize, Deserialize)]
 #[serde(rename_all = "kebab-case")]
 pub struct DebuggerConfig {
+    /// Placement in plugin run targets; absent means unsupported.
+    #[serde(default)]
+    pub target_placement: Option<String>,
     /// DAP adapter name, e.g. `codelldb`, `debugpy`, `js-debug`, `delve`.
     pub adapter: String,
     pub command: String,
