@@ -247,7 +247,7 @@ async function onCloseRequested(deps: CloseDeps): Promise<boolean> {
         confirmTerminate,
         processes: confirmTerminate ? await processNames(deps) : [],
         dirty: dirtyCount(),
-        project: s.project?.name ?? null,
+        project: s.project?.displayName || s.project?.name || null,
       },
       deps,
     );
@@ -275,7 +275,7 @@ async function onCloseRequested(deps: CloseDeps): Promise<boolean> {
  */
 export async function confirmLeave(
   deps: CloseDeps = defaultDeps,
-  project = useProject.getState().project?.name ?? null,
+  project = (useProject.getState().project?.displayName || useProject.getState().project?.name) ?? null,
 ): Promise<boolean> {
   if (!(await closeDocumentWindows())) return false;
   const confirmTerminate = workflowSettings().run.confirmTerminate;

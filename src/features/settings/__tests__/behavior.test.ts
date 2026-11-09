@@ -3,9 +3,15 @@ import { formatPattern, formatTimestamp } from "@/platform/dateFormat";
 import { resolveThemeId } from "@/workbench/theme";
 import { applyAppearanceOptions, nextZoom, SMALL_TREE_INDENT } from "../appearanceRuntime";
 import { validateSettings } from "../model/schema";
-import { validateAppearanceExtras, validateNotifications } from "../model/behaviorSchema";
+import { validateGeneralExtras, validateAppearanceExtras, validateNotifications } from "../model/behaviorSchema";
 
 describe("appearance & behavior settings", () => {
+  it("defaults automatic update checks to on and respects an explicit opt-out", () => {
+    expect(validateSettings({}).general.autoCheckUpdates).toBe(true);
+    expect(validateSettings({ general: { autoCheckUpdates: false } }).general.autoCheckUpdates).toBe(false);
+    expect(validateSettings({ general: { autoCheckUpdates: "off" } }).general.autoCheckUpdates).toBe(true);
+  });
+
   it("steps zoom within 50–300%", () => {
     expect(nextZoom(100, 1)).toBe(110);
     expect(nextZoom(100, -1)).toBe(90);
@@ -135,4 +141,8 @@ describe("appearance & behavior settings", () => {
       groups: { vcs: { display: "balloon", log: false } },
     });
   });
+});
+
+it("loads an old attach setting as ask", () => {
+  expect(validateGeneralExtras({ openProjectIn: "attach" }).openProjectIn).toBe("ask");
 });

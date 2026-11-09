@@ -14,6 +14,93 @@ use tokio::io::{AsyncRead, AsyncWrite, AsyncWriteExt, BufReader};
 
 type Log = Arc<Mutex<Vec<Value>>>;
 
+#[cfg(windows)]
+#[test]
+#[ignore = "child process for Windows stop tests"]
+fn windows_debuggee_process() {
+    if std::env::var_os("OPENIDEA_TEST_DEBUGGEE").is_none() {
+        return;
+    }
+    if std::env::var("OPENIDEA_TEST_DEBUGGEE").unwrap() == "wrapper" {
+        let mut command = std::process::Command::new(std::env::current_exe().unwrap());
+        let mut child = ide_core::process::prepare(&mut command)
+            .args(["--exact", "tests::windows_debuggee_process", "--ignored", "--nocapture"])
+            .env("OPENIDEA_TEST_DEBUGGEE", "leaf")
+            .spawn()
+            .unwrap();
+        let _ = child.wait();
+        return;
+    }
+    let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+    println!("LISTENING {}", listener.local_addr().unwrap().port());
+    std::thread::sleep(Duration::from_secs(60));
+}
+
+#[cfg(windows)]
+#[tokio::test]
+async fn windows_stop_releases_the_debuggees_port_before_returning() {
+    use std::io::BufRead;
+    use std::sync::atomic::Ordering;
+
+    struct Child(std::process::Child, Option<ide_core::process::ProcessTree>);
+    impl Drop for Child {
+        fn drop(&mut self) {
+            if let Some(tree) = &self.1 {
+                tree.terminate();
+            }
+            let _ = self.0.kill();
+            let _ = self.0.wait();
+        }
+    }
+
+    for (second_stop, wrapper, supports_terminate) in
+        [(false, false, false), (true, false, false), (true, true, false), (true, true, true)]
+    {
+        let mut command = std::process::Command::new(std::env::current_exe().unwrap());
+        ide_core::process::prepare(&mut command)
+            .args(["--exact", "tests::windows_debuggee_process", "--ignored", "--nocapture"])
+            .env("OPENIDEA_TEST_DEBUGGEE", if wrapper { "wrapper" } else { "leaf" })
+            .stdout(std::process::Stdio::piped());
+        let mut child = Child(command.spawn().unwrap(), None);
+        let port: u16 = std::io::BufReader::new(child.0.stdout.take().unwrap())
+            .lines()
+            .map(Result::unwrap)
+            .find_map(|line| line.split("LISTENING ").nth(1).and_then(|p| p.parse().ok()))
+            .unwrap();
+        let pid = child.0.id();
+        child.1 = Some(ide_core::process::ProcessTree::capture(pid));
+        let h = harness(Script { debuggee_pid: Some(pid), supports_terminate, ..Default::default() });
+        let id = h.start(config()).await.unwrap();
+        let session = h.manager.session(id).unwrap();
+        while session.debuggee_pid.load(Ordering::Acquire) != i64::from(pid) {
+            tokio::time::sleep(Duration::from_millis(10)).await;
+        }
+        let stop = tokio::spawn({
+            let manager = h.manager.clone();
+            async move { manager.stop(id).await }
+        });
+        let deadline = std::time::Instant::now() + Duration::from_secs(5);
+        while session.stop_tree.lock().is_none() && !stop.is_finished() {
+            assert!(std::time::Instant::now() < deadline, "Stop did not capture the program tree");
+            tokio::time::sleep(Duration::from_millis(10)).await;
+        }
+        assert!(!stop.is_finished(), "Stop must wait for the live program");
+        if wrapper {
+            assert!(session.stop_tree.lock().is_some());
+            child.0.kill().unwrap();
+            child.0.wait().unwrap();
+            assert!(std::net::TcpListener::bind(("127.0.0.1", port)).is_err(), "the child still owns its port");
+        }
+        if second_stop {
+            h.manager.stop(id).await.unwrap();
+        }
+        let limit = if second_stop { 10 } else { 25 };
+        tokio::time::timeout(Duration::from_secs(limit), stop).await.unwrap().unwrap().unwrap();
+        assert!(child.0.try_wait().unwrap().is_some(), "Stop returned with the program alive");
+        let _listener = std::net::TcpListener::bind(("127.0.0.1", port)).expect("Stop returned with its port occupied");
+    }
+}
+
 #[derive(Clone)]
 struct Script {
     /// Send a `runInTerminal` reverse request when `launch` arrives.

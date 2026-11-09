@@ -112,7 +112,7 @@ export function activate(): () => void {
   let shownRoots = "";
   const syncContentRoots = () => {
     const { project, settings } = useProject.getState();
-    const own = project && !project.workspace;
+    const own = project && (!project.workspace || project.workspace.projects[0] === project.root);
     const paths = own ? validateProjectStructure(settings?.projectStructure).contentRoots : [];
     // The Build tool window's model (one load per build change), not a load of our own.
     const build = useBuildModel.getState();

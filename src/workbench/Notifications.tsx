@@ -1,5 +1,6 @@
 import { useEffect, useRef, useState, useSyncExternalStore } from "react";
 import { useTxTemplate, VerbatimTextContext } from "@/platform/i18n";
+import { useProject } from "@/platform/project";
 import { EmptyState, IconButton, Toast, T } from "@/ui";
 import {
   balloonTimeout,
@@ -12,7 +13,7 @@ import {
   useNotifications,
   type IdeNotification,
 } from "./notificationStore";
-import { useToolWindowLayout } from "./toolwindows/store";
+import { useEffectiveVisible, useToolWindows } from "./toolwindows/ToolWindows";
 import styles from "./Notifications.module.css";
 
 const MAX_BALLOONS = 3;
@@ -101,15 +102,15 @@ function Balloon({ n }: { n: IdeNotification }) {
   );
 }
 
-/** Bottom-right balloon stack (newest at the bottom); hidden while the Notifications tool window is open. */
+/** Bottom-right balloon stack (newest at the bottom); listed entries defer to the visible tool window. */
 export function Balloons() {
   const items = useNotifications((s) => s.items);
   const listOpen = useListVisible();
   const balloons = items
-    .filter((n) => n.balloon)
+    .filter((n) => n.balloon && (!listOpen || !n.logged))
     .slice(0, MAX_BALLOONS)
     .reverse();
-  if (listOpen || !balloons.length) return null;
+  if (!balloons.length) return null;
   return (
     <div className={styles.stack} aria-live="polite">
       {balloons.map((n) => (
@@ -122,7 +123,9 @@ export function Balloons() {
 export const NOTIFICATIONS_TOOL_WINDOW = "notifications";
 
 function useListVisible() {
-  return useToolWindowLayout((s) => Object.values(s.visible).includes(NOTIFICATIONS_TOOL_WINDOW));
+  const hasProject = useProject((s) => !!s.project);
+  const visible = useEffectiveVisible(useToolWindows());
+  return hasProject && Object.values(visible).includes(NOTIFICATIONS_TOOL_WINDOW);
 }
 
 /** The Notifications tool window (right stripe, as in IDEA): history, newest first. */
@@ -131,7 +134,7 @@ export function NotificationsToolWindow() {
   const all = useNotifications((s) => s.items);
   const items = all.filter((n) => n.logged);
   const visible = useListVisible();
-  const unread = all.some((n) => !n.read || n.balloon);
+  const unread = items.some((n) => !n.read || n.balloon);
   useEffect(() => {
     if (visible && unread) markAllNotificationsRead();
   }, [visible, unread]);

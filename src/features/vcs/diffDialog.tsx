@@ -15,6 +15,26 @@ import { diffInput, diffTitle, type DiffData } from "./diffInput";
 import { openDialog } from "./dialogs";
 import { GitMergeDiff } from "./GitMergeDiff";
 
+const SIZE_KEY = "openidea.vcs.diffDialogSize";
+
+/** The diff window's last size (#2328); null on first run, clamped to the window by Dialog. */
+export function loadDiffDialogSize(): { w: number; h: number } | null {
+  try {
+    const v = JSON.parse(localStorage.getItem(SIZE_KEY) ?? "null") as { w?: unknown; h?: unknown } | null;
+    return typeof v?.w === "number" && typeof v.h === "number" ? { w: v.w, h: v.h } : null;
+  } catch {
+    return null;
+  }
+}
+
+export function saveDiffDialogSize(size: { w: number; h: number }) {
+  try {
+    localStorage.setItem(SIZE_KEY, JSON.stringify(size));
+  } catch {
+    // Private mode etc. — the size just isn't remembered.
+  }
+}
+
 /** The open diff dialog's close function (one diff window at a time, as in IDEA). */
 let shown: (() => void) | null = null;
 
@@ -52,6 +72,14 @@ export function openMergeDiffDialog(input: EditorInput): () => void {
 
 function FrontWindow({ title, onClose, children }: { title: string; onClose: () => void; children: ReactNode }) {
   const body = useRef<HTMLDivElement>(null);
+  // The size the user last resized the diff window to (#2328), else the usual default.
+  const [initialSize] = useState(
+    () =>
+      loadDiffDialogSize() ?? {
+        w: Math.min(1100, globalThis.innerWidth - 64),
+        h: Math.min(720, globalThis.innerHeight - 64),
+      },
+  );
   useEffect(
     () =>
       registerKeyClaim((e, stroke) => {
@@ -74,7 +102,8 @@ function FrontWindow({ title, onClose, children }: { title: string; onClose: () 
       resizable="both"
       minWidth={480}
       minHeight={280}
-      initialSize={{ w: Math.min(1100, globalThis.innerWidth - 64), h: Math.min(720, globalThis.innerHeight - 64) }}
+      initialSize={initialSize}
+      onResized={saveDiffDialogSize}
       buttons={[{ label: "Close", role: "cancel" }]}
     >
       <div
