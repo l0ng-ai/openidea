@@ -121,8 +121,9 @@ export const overviewStyles = {
 };
 
 export const openideaTheme = EditorView.theme({
+  // Not on "&": the tooltip container in `body` carries the theme classes too.
+  "&.cm-editor": { height: "100%" },
   "&": {
-    height: "100%",
     backgroundColor: "var(--bg-editor, var(--bg-island, var(--bg-app)))",
     color: "var(--fg-editor, var(--fg))",
     "--editor-line-number": "var(--fg-line-number, var(--fg-gutter))",
