@@ -1401,6 +1401,8 @@ function CommitList() {
   const selectedSet = useMemo(() => new Set(selection), [selection]);
   const revealTick = useGitLog((s) => s.revealTick);
   const scrollRef = useRef<HTMLDivElement>(null);
+  // Recycled rows can emit enter events without the pointer moving.
+  const hoverPointer = useRef<{ x: number; y: number } | null>(null);
   const previousRows = useRef(commits);
   useLayoutEffect(() => {
     const element = scrollRef.current;
@@ -1648,6 +1650,11 @@ function CommitList() {
 
   rowEvents.current = {
     onHover: (edge) => {
+      if (
+        edge === hoverColor ||
+        (edge && (virtualizer.isScrolling || scrollRef.current?.hasAttribute("data-hover-paused")))
+      )
+        return;
       setHoverColor(edge);
       if (!edge) return;
       const source = displayedGraph.find((c) => c.parents.some((p) => `${c.id}\0${p}` === edge));
@@ -1704,6 +1711,19 @@ function CommitList() {
         aria-multiselectable
         aria-activedescendant={selectedIndex >= 0 ? `commit-${scope ?? "log"}-${selectedIndex}` : undefined}
         tabIndex={0}
+        onScroll={(e) => {
+          if (!e.currentTarget.hasAttribute("data-hover-paused")) e.currentTarget.dataset.hoverPaused = "";
+          setHoverColor(null);
+        }}
+        onPointerMoveCapture={(e) => {
+          const previous = hoverPointer.current;
+          hoverPointer.current = { x: e.clientX, y: e.clientY };
+          if (!virtualizer.isScrolling && (!previous || previous.x !== e.clientX || previous.y !== e.clientY))
+            delete e.currentTarget.dataset.hoverPaused;
+        }}
+        onPointerLeave={(e) => {
+          hoverPointer.current = { x: e.clientX, y: e.clientY };
+        }}
         onKeyDown={onKeyDown}
         onCopy={(e) => {
           if (window.getSelection()?.toString()) return;
@@ -2079,7 +2099,10 @@ function CommitRowView({
   }, [tooltip]);
   const enterTooltip = () => {
     clearTimeout(tooltipTimer.current);
-    tooltipTimer.current = setTimeout(() => setTooltip(true), TOOLTIP_DELAY);
+    if (tooltip || subjectRef.current?.closest("[data-hover-paused]")) return;
+    tooltipTimer.current = setTimeout(() => {
+      if (!subjectRef.current?.closest("[data-hover-paused]")) setTooltip(true);
+    }, TOOLTIP_DELAY);
   };
   const leaveTooltip = () => {
     clearTimeout(tooltipTimer.current);
@@ -2117,6 +2140,7 @@ function CommitRowView({
         ref={subjectRef}
         className={clsx(styles.subject, head && styles.headSubject, merge && styles.mergeSubject)}
         onPointerEnter={enterTooltip}
+        onPointerMove={enterTooltip}
         onPointerLeave={leaveTooltip}
         onPointerDown={() => {
           clearTimeout(tooltipTimer.current);
@@ -2281,6 +2305,7 @@ export function GraphCell({
           tabIndex={actionable ? 0 : undefined}
           aria-label={actionable ? label : undefined}
           onMouseEnter={() => onHover?.(s.edge ?? `${s.source ?? ""}\0${target ?? ""}`)}
+          onMouseMove={() => onHover?.(s.edge ?? `${s.source ?? ""}\0${target ?? ""}`)}
           onMouseDown={(e) => e.stopPropagation()}
           onClick={(e) => {
             e.stopPropagation();
@@ -2316,6 +2341,7 @@ export function GraphCell({
         aria-label={onNode ? tx("Collapse or expand this branch") : undefined}
         onMouseDown={(e) => e.stopPropagation()}
         onMouseEnter={() => row.id && onHover?.(`node:${row.id}`)}
+        onMouseMove={() => row.id && onHover?.(`node:${row.id}`)}
         onClick={(e) => {
           e.stopPropagation();
           onNode?.();

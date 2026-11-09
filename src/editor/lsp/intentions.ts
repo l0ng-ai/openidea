@@ -8,7 +8,7 @@ import { EditorView, ViewPlugin, type ViewUpdate } from "@codemirror/view";
 import { forEachDiagnostic } from "@codemirror/lint";
 import { indentUnit } from "@codemirror/language";
 import { diff } from "@codemirror/merge";
-import { commands, isCancelled, type CodeAction } from "@/platform/ipc";
+import { commands, isCancelled, type CodeAction, type Diagnostic } from "@/platform/ipc";
 import {
   contributedIntentions,
   contributedQuickFixes,
@@ -28,7 +28,7 @@ import { featureBackoff } from "./availability";
 import { iconNode } from "./iconMarkup";
 import { editorPrefs } from "@/platform/editorSettings";
 import { spellingIntentions } from "./spelling";
-import { inspectionsAt } from "./diagnostics";
+import { inspectionsAt, type EditorDiagnostic } from "./diagnostics";
 import { SPELLING_INSPECTION } from "@/platform/inspections";
 import { editInspectionSettings, intentionControls } from "@/platform/inspectionControls";
 import { runInteractiveCodeAction } from "./interactiveCommand";
@@ -66,6 +66,23 @@ export function sortCodeActions(actions: readonly CodeAction[]): CodeAction[] {
     .map((a, i) => ({ a, i }))
     .sort((x, y) => rank(x.a) - rank(y.a) || x.i - y.i)
     .map((x) => x.a);
+}
+
+/** Servers that omit diagnostic tags retain range-based actions. Tagged actions must match the problem. */
+export function actionsForDiagnostic(actions: readonly CodeAction[], problem: Diagnostic): CodeAction[] {
+  if (!actions.some((a) => a.diagnostics?.length)) return [...actions];
+  return actions.filter((a) =>
+    a.diagnostics?.some(
+      (d) =>
+        d.message === problem.message &&
+        d.range.start.line === problem.range.start.line &&
+        d.range.start.col === problem.range.start.col &&
+        d.range.end.line === problem.range.end.line &&
+        d.range.end.col === problem.range.end.col &&
+        (d.code == null || problem.code == null || d.code === problem.code) &&
+        (d.source == null || problem.source == null || d.source === problem.source),
+    ),
+  );
 }
 
 async function fetchActions(view: EditorView, only: string[], whole = false): Promise<CodeAction[]> {
@@ -134,7 +151,12 @@ async function fetchIntentions(view: EditorView): Promise<CodeAction[]> {
 export type EditorQuickFix = CodeAction | { title: string; run: () => void | Promise<void> };
 
 /** Enabled quick fixes of the problem at `from..to`, including local inspections. */
-export async function quickFixesAt(view: EditorView, from: number, to: number): Promise<EditorQuickFix[]> {
+export async function quickFixesAt(
+  view: EditorView,
+  from: number,
+  to: number,
+  problem?: Diagnostic,
+): Promise<EditorQuickFix[]> {
   const local = contributedQuickFixes(view, from, to).map((fix) => ({ title: fix.label, run: fix.run }));
   const doc = docOf(view);
   if (!doc) return local;
@@ -143,7 +165,8 @@ export async function quickFixesAt(view: EditorView, from: number, to: number): 
     const actions = await lspRequest(() =>
       commands.lspCodeActions(doc.doc, offsetsToRange(view.state.doc, from, to), ["quickfix"]),
     );
-    return [...local, ...sortCodeActions(actions.filter((a) => isQuickFix(a) && !a.disabledReason))];
+    const matching = problem ? actionsForDiagnostic(actions, problem) : actions;
+    return [...local, ...sortCodeActions(matching.filter((a) => isQuickFix(a) && !a.disabledReason))];
   } catch (e) {
     if (local.length) return local;
     throw e;
@@ -158,17 +181,17 @@ export async function applyQuickFix(view: EditorView) {
   const state = view.state;
   const caret = state.selection.main.head;
   const line = state.doc.lineAt(caret);
-  const problems: Array<PlacedProblem & { rank: number }> = [];
+  const problems: Array<PlacedProblem & { rank: number; problem?: Diagnostic }> = [];
   forEachDiagnostic(state, (d, from, to) => {
     if (d.severity === "hint" || to < line.from || from > line.to) return;
     const rank =
       (d.severity === "error" ? 0 : d.severity === "warning" ? 1 : 2) + (from <= caret && caret <= to ? 0 : 3);
-    problems.push({ from, to, severity: d.severity, rank });
+    problems.push({ from, to, severity: d.severity, rank, problem: (d as EditorDiagnostic).problem });
   });
   problems.sort((a, b) => a.rank - b.rank);
   try {
     for (const p of problems) {
-      const fix = (await quickFixesAt(view, p.from, p.to))[0];
+      const fix = (await quickFixesAt(view, p.from, p.to, p.problem))[0];
       if (view.state.doc !== state.doc) return;
       if (fix) return applyCodeAction(view, fix);
     }

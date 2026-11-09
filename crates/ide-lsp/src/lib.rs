@@ -2074,7 +2074,8 @@ impl LspManager {
                             .unwrap_or_default()
                             .into_iter()
                             .map(|a| {
-                                let mut action = convert::code_action(&conv, a, t.server.id);
+                                let mut action =
+                                    convert::code_action(&conv, &snap.path, a, t.server.id, &t.server.name);
                                 self.tag_injected_origin(doc, &mut action.data);
                                 self.tag_injected_command(doc, action.server, &mut action.command);
                                 action

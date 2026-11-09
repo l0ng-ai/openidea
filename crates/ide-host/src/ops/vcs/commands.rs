@@ -996,7 +996,17 @@ pub async fn vcs_rebase_with(
 
 pub async fn vcs_remotes(host: &Host, window: &str, repo: Option<PathBuf>) -> IdeResult<Vec<Remote>> {
     let project = LogAccess::new(host, window, repo.as_deref());
-    blocking(move || project.with_log_repo_at(repo.as_deref(), |r| r.remotes())).await
+    blocking(move || {
+        let mut remotes = project.with_log_repo_at(repo.as_deref(), |r| r.remotes())?;
+        for r in &mut remotes {
+            let resolved = ide_ssh::resolve_ssh_remote_url(&r.url);
+            if resolved != r.url {
+                r.resolved_url = Some(resolved);
+            }
+        }
+        Ok(remotes)
+    })
+    .await
 }
 
 pub async fn vcs_edit_remote(host: &Host, window: &str, repo: Option<PathBuf>, edit: RemoteEdit) -> IdeResult<()> {

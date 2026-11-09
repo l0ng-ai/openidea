@@ -2403,6 +2403,10 @@ export type CloseContext = {
 
 export type CodeAction = {
 	title: string,
+	/**  Diagnostics this action fixes, in IDE coordinates. */
+	diagnostics?: Diagnostic[],
+	/**  Original server diagnostics, including encoding and data, for codeAction/resolve. */
+	originalDiagnostics?: string | null,
 	/**  LSP kind, e.g. `quickfix`, `refactor.extract`, `source.organizeImports`. */
 	kind: string | null,
 	isPreferred: boolean,
@@ -7295,6 +7299,8 @@ export type Remote = {
 	name: string,
 	/**  Fetch URL. */
 	url: string,
+	/**  Fetch URL with any `~/.ssh/config` host alias resolved, when different from `url`. */
+	resolvedUrl?: string | null,
 };
 
 /**  Manage Remotes edits. */
