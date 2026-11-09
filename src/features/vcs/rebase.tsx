@@ -15,6 +15,7 @@ import { stripSlash } from "./model";
 import { openCommit } from "./commitUi";
 import { rememberSetting } from "./confirmations";
 import { confirmDialog, openDialog } from "./dialogs";
+import { loadLogDetails } from "./logDetails";
 import { conflictsInstead, inProgress } from "./operations";
 import { runGitOperation, runOp, saveAll } from "./ops";
 import {
@@ -179,8 +180,11 @@ async function runRebase(
 export async function editCommitMessage(commit: Commit) {
   const range = await rangeFrom(commit, "edit commit message");
   if (!range) return;
-  const message = await promptMessage(`Edit Commit Message (${short(commit.id)})`, commit.message);
-  if (message === null || message.trim() === commit.message.trim()) return;
+  // A paged log only carries the summary line: load the full message so the
+  // dialog edits subject and body, not the subject alone (#2238).
+  const initial = commit.messageTruncated ? (await loadLogDetails(commit)).message : commit.message;
+  const message = await promptMessage(`Edit Commit Message (${short(commit.id)})`, initial);
+  if (message === null || message.trim() === initial.trim()) return;
   // Written without a rebase: the index and the working tree (local changes) stay as they are.
   const change = await runOp(tx`Edit commit message of ${short(commit.id)}`, () =>
     call(commands.vcsReword(range.repo, commit.id, message)),
