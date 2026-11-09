@@ -617,6 +617,11 @@ impl RemotePlugins {
             c.host.mcp_reports.set_focused_editor(&c.window, c.arg("editor")?, c.arg("focused")?);
             Ok(())
         });
+        d.add("mcp_report_problems", |c| async move {
+            c.host.project(&c.window)?;
+            c.host.mcp_reports.report_problems(&c.window, c.arg("reset")?, c.arg("files")?);
+            Ok(())
+        });
         let h = host.clone();
         d.add("plugin_decoration_sets", move |_c| {
             let h = h.clone();
