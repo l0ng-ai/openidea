@@ -1,4 +1,10 @@
 {
+  "Cannot show current revision": "Cannot show current revision",
+  "Compare with Revision…": "Compare with Revision…",
+  "Show Current Revision": "Show Current Revision",
+  "Search file revisions": "Search file revisions",
+  "File revisions": "File revisions",
+  "The current line has no committed revision": "The current line has no committed revision",
   "JAR Application": "JAR Application",
   "Run an executable JAR": "Run an executable JAR",
   "Path to JAR": "Path to JAR",

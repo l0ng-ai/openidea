@@ -88,7 +88,7 @@ export function resolveMenuItems(items: MenuItem[]): Resolved[] {
         label: tx(item.label) ?? a.title,
         icon: item.icon ?? a.icon,
         shortcut: shortcutLabel(item.action),
-        disabled: !!item.disabled || !isActionEnabled(a),
+        disabled: !!item.disabled || !isActionEnabled(a, undefined, item.arg),
         checked: item.checked ?? actionToggled(a),
         run: () => void executeActionFrom("menu", item.action, item.arg),
       });

@@ -1,4 +1,10 @@
 {
+  "Cannot show current revision": "无法显示当前修订版",
+  "Compare with Revision…": "与修订版比较…",
+  "Show Current Revision": "显示当前修订版",
+  "Search file revisions": "搜索文件修订版",
+  "File revisions": "文件修订版",
+  "The current line has no committed revision": "当前行没有已提交的修订版",
   "JAR Application": "JAR 应用程序",
   "Run an executable JAR": "运行可执行 JAR",
   "Path to JAR": "JAR 路径",
