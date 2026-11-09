@@ -229,12 +229,13 @@ const snappedSelectionLayer = layer({
   class: "cm-selectionLayer",
   mount: (dom) => dom.classList.add("cm-openidea-selectionLayer"),
   markers(view) {
+    const ranges = view.state.selection.ranges.filter((r) => !r.empty);
+    if (!ranges.length) return [];
     const dpr = window.devicePixelRatio || 1;
     const edge = view.textDirection === Direction.LTR ? lineRightEdge(view) : null;
     const offset = layerOffset(view);
     const out: RectangleMarker[] = [];
-    for (const r of view.state.selection.ranges) {
-      if (r.empty) continue;
+    for (const r of ranges) {
       const lines = growToLineBoxes(RectangleMarker.forRange(view, CLASS, r), CLASS, (y) => rowAt(view, offset, y));
       const full = edge
         ? fillRowEnds(
