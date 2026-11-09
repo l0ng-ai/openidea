@@ -278,7 +278,14 @@ export async function renameBranch(branch: Branch) {
   const ok = await runOp(
     tx`Rename branch ${name}`,
     () => call(commands.vcsRenameBranch(repo, name, to, unsetUpstream)),
-    { success: tx`Renamed branch ${name} to ${to}` },
+    {
+      success: tx`Renamed branch ${name} to ${to}`,
+      onError: (message) => {
+        // Unsetting the upstream can fail after the rename has succeeded.
+        notifications().notify({ group: "vcs", level: "error", title: tx`Rename branch ${name}`, body: message });
+        return true;
+      },
+    },
   );
   if (ok !== undefined) {
     try {

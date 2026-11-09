@@ -1017,6 +1017,46 @@ fn renaming_a_branch_keeps_or_drops_its_upstream() {
 }
 
 #[test]
+fn renaming_the_current_branch_keeps_or_drops_its_upstream() {
+    for unset_upstream in [false, true] {
+        let (fx, _bare) = with_remote();
+        let repo = fx.repo();
+        repo.rename_branch("main", "renamed", unset_upstream).unwrap();
+        let branch = repo.branch_info().unwrap();
+        assert_eq!(branch.head.as_deref(), Some("renamed"));
+        assert_eq!(branch.upstream.as_deref(), if unset_upstream { None } else { Some("origin/main") });
+    }
+}
+
+#[test]
+fn failed_branch_rename_does_not_unset_upstream() {
+    let (fx, _bare) = with_remote();
+    let repo = fx.repo();
+    fx.git(&["branch", "occupied"]);
+    assert!(repo.rename_branch("main", "occupied", true).is_err());
+    let branch = repo.branch_info().unwrap();
+    assert_eq!(branch.head.as_deref(), Some("main"));
+    assert_eq!(branch.upstream.as_deref(), Some("origin/main"));
+}
+
+#[test]
+fn branch_rename_reports_when_only_unsetting_upstream_fails() {
+    let (fx, _bare) = with_remote();
+    let repo = fx.repo();
+    // The new branch activates a broken config only after the rename has succeeded.
+    fx.write(".git/broken-config", "[broken\n");
+    fx.git(&["config", "includeIf.onbranch:renamed.path", "broken-config"]);
+    let error = repo.rename_branch("main", "renamed", true).unwrap_err();
+    assert!(error.message.contains("Renamed branch 'main' to 'renamed'"), "{error}");
+    assert!(error.message.contains("could not unset its upstream"), "{error}");
+    assert!(error.message.contains("bad config"), "{error}");
+    std::fs::remove_file(fx.path(".git/broken-config")).unwrap();
+    let branch = repo.branch_info().unwrap();
+    assert_eq!(branch.head.as_deref(), Some("renamed"));
+    assert_eq!(branch.upstream.as_deref(), Some("origin/main"));
+}
+
+#[test]
 fn smart_and_force_checkout_with_local_changes_in_the_way() {
     let fx = Fixture::new();
     fx.write("f.txt", "1\n2\n3\n4\n5\n");

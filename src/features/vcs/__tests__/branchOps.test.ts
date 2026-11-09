@@ -132,6 +132,19 @@ it("renames with the tracking kept, or dropped when the box is ticked", async ()
   expect(mocks.rename).toHaveBeenLastCalledWith("/p/front", "plain", "renamed", false);
 });
 
+it("shows a partial failure without claiming that the rename failed", async () => {
+  const message = "Renamed branch 'topic' to 'renamed', but could not unset its upstream: config is locked";
+  mocks.prompt.mockResolvedValue({ value: "renamed", checked: true });
+  mocks.rename.mockResolvedValue({ status: "error", error: { kind: "io", message } });
+  await renameBranch(tracked("topic", "origin/topic"));
+  expect(mocks.notify).toHaveBeenCalledExactlyOnceWith({
+    group: "vcs",
+    level: "error",
+    title: "Rename branch topic",
+    body: message,
+  });
+});
+
 const worktree = (path: string, branchName: string | null, main = false): Worktree => ({
   path,
   head: "abc1234567890",

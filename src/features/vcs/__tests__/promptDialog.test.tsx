@@ -82,6 +82,24 @@ describe("prompt dialog prefilled for replacement", () => {
     expect(input.selectionStart).toBe(0);
     expect(input.selectionEnd).toBe(0);
   });
+
+  it("keeps the caret when an edited field is programmatically focused again", async () => {
+    const user = userEvent.setup();
+    render(<VcsDialogHost />);
+    act(() => void open("feature/ui"));
+    const input = await screen.findByRole<HTMLInputElement>("textbox", { name: "New branch name:" });
+    await waitFor(() => expect(input).toHaveFocus());
+    await user.keyboard("fix");
+    input.setSelectionRange(1, 1);
+    act(() => {
+      input.blur();
+      input.focus();
+    });
+    expect(input.selectionStart).toBe(1);
+    expect(input.selectionEnd).toBe(1);
+    await user.keyboard("x");
+    expect(input).toHaveValue("fxix");
+  });
 });
 
 describe("prompt dialog checkbox", () => {
