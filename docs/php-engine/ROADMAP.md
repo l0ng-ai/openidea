@@ -705,7 +705,7 @@ Runs after Plan 7. Before any 8.x phase, read [LARAVEL-ROADMAP.md](LARAVEL-ROADM
 
   Run batch Inspect Code over the fixture app and check there are no false positives. Text goes in `en.json` and `zh.json`. Tests: an inspection batch test on the fixture, and frontend tests for the page.
 
-- [ ] Phase 8.21: Parity and performance check
+- [x] Phase 8.21: Parity and performance check
       On the fixture app, plus a real Laravel application with `vendor/` when `LARAVEL_APP_DIR` is set:
   - a checklist test going through every reference kind (completion, goto, find usages, inspection) and every generator
   - performance budgets added to `perf/budgets.json`:

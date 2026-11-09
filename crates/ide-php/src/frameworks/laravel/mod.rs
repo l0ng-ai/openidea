@@ -5,7 +5,8 @@
 //! keys ([`env`]), the gates, policies, guards and password brokers
 //! ([`auth`]), the translations
 //! ([`lang`]), the Vite assets ([`assets`]), the routes and middleware
-//! ([`routes`]), the Eloquent model view ([`model_view`]), the route hints and route search ([`route_hints`]), the
+//! ([`routes`]), the Eloquent model view ([`model_view`]), the whole model at once
+//! ([`model_summary`]), the route hints and route search ([`route_hints`]), the
 //! views ([`views`]), Blade layouts, components and directives ([`blade`]),
 //! validation rules ([`validation`]), string references ([`refs`]) and the
 //! `ide.json` files of the project and its packages ([`ide_json`]), and
@@ -26,6 +27,7 @@ pub mod ide_json;
 pub mod inertia;
 pub mod lang;
 pub mod livewire;
+pub mod model_summary;
 pub mod model_view;
 pub mod project;
 pub mod refs;
@@ -48,6 +50,7 @@ pub use ide_json::IdeJson;
 pub use inertia::{InertiaPage, InertiaPages};
 pub use lang::{TransEntry, Translations};
 pub use livewire::{LivewireComponent, LivewireComponents, LivewireMember};
+pub use model_summary::LaravelModelSummary;
 pub use model_view::{ModelLens, ModelView, NewColumn};
 pub use project::{LaravelPackages, LaravelPaths, LaravelProject, Module, ModuleKind, RouteFile};
 pub use route_hints::{RouteHint, RouteInfo, RouteLens};

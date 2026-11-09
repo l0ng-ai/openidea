@@ -15,14 +15,33 @@
 //! skipped when the corpus isn't there: cold index under 30 s, warm start
 //! under 2 s, and the request latencies on `Eloquent/Builder.php`
 //! (2.5k lines).
+//!
+//! The Laravel support budgets (roadmap phase 8.21): `php_laravel_app/*` on
+//! `fixtures/laravel-app` (with `fixtures/laravel-stubs` as its `vendor/`),
+//! and `php_laravel_real/*` on a real application with `vendor/` when
+//! `LARAVEL_APP_DIR` points to one (skipped otherwise):
+//!
+//! - `model_cold`: the whole project model (`PhpEngine::laravel_model`)
+//!   after `PhpEngine::forget_laravel_model`, so `composer.json`, `ide.json`
+//!   and the module manifests are read again, under 2 s,
+//! - `model_warm`: the same right after a keystroke in a route file, under
+//!   200 ms,
+//! - `string_completion`: completion in `route('…')` right after a
+//!   keystroke, under 50 ms,
+//! - `route_hints`: the route hints of the whole route file right after a
+//!   keystroke, under 100 ms.
+//!
+//! These run with no inspections, so nothing builds the model in the
+//! background: each timed request pays for what it rebuilds.
 
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 
 use criterion::{Criterion, SamplingMode, black_box, criterion_group, criterion_main};
-use ide_core::{CancellationToken, DocId, IdeEvent, Pos, SharedSink};
+use ide_core::{CancellationToken, DocId, IdeEvent, Pos, Range, SharedSink};
 use ide_php::engine::{CACHE_SUBDIR, EngineConfig, EngineState, PhpEngine};
+use ide_php::inspect::Inspections;
 use ide_php::project::LayoutConfig;
 use ide_php::stubs::StubFilter;
 
@@ -109,6 +128,140 @@ fn bench(c: &mut Criterion) {
     for workload in &workloads {
         bench_workload(c, workload);
     }
+    for app in laravel_apps() {
+        bench_laravel_app(c, &app);
+    }
+}
+
+/// A Laravel application for the Laravel support benches.
+struct LaravelApp {
+    group: &'static str,
+    root: PathBuf,
+    /// The temporary copy `root` is in, for the fixture.
+    _copy: Option<tempfile::TempDir>,
+}
+
+fn copy_dir(from: &Path, to: &Path) {
+    std::fs::create_dir_all(to).unwrap();
+    for entry in std::fs::read_dir(from).unwrap() {
+        let entry = entry.unwrap();
+        let target = to.join(entry.file_name());
+        if entry.file_type().unwrap().is_dir() {
+            copy_dir(&entry.path(), &target);
+        } else {
+            std::fs::copy(entry.path(), target).unwrap();
+        }
+    }
+}
+
+/// The fixture app (copied with its stub `vendor/`), and the application of
+/// `LARAVEL_APP_DIR` when it is set.
+fn laravel_apps() -> Vec<LaravelApp> {
+    let fixtures = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../fixtures");
+    let copy = tempfile::tempdir().unwrap();
+    let root = canonical(copy.path()).join("laravel-app");
+    copy_dir(&fixtures.join("laravel-app"), &root);
+    copy_dir(&fixtures.join("laravel-stubs"), &root.join("vendor"));
+    let mut out = vec![LaravelApp { group: "php_laravel_app", root, _copy: Some(copy) }];
+    match std::env::var_os("LARAVEL_APP_DIR").map(PathBuf::from) {
+        Some(dir) if dir.join("artisan").is_file() && dir.join("vendor").is_dir() => {
+            out.push(LaravelApp { group: "php_laravel_real", root: canonical(&dir), _copy: None });
+        }
+        Some(dir) => eprintln!("php_laravel_real: {} has no artisan or vendor/, skipped", dir.display()),
+        None => eprintln!("php_laravel_real: LARAVEL_APP_DIR isn't set, skipped"),
+    }
+    out
+}
+
+fn bench_laravel_app(c: &mut Criterion, app: &LaravelApp) {
+    let mut g = c.benchmark_group(app.group);
+    g.sample_size(20).sampling_mode(SamplingMode::Auto).warm_up_time(Duration::from_millis(500));
+    g.measurement_time(Duration::from_secs(5));
+    let cache = tempfile::tempdir().unwrap();
+    let engine = open_engine(&app.root, cache.path());
+    engine.set_inspections(Inspections::default());
+    let summary = engine.laravel_model().unwrap_or_else(|| panic!("{}: not a Laravel project", app.root.display()));
+    eprintln!("{}: {summary:?}", app.group);
+
+    // The route file open in the editor. A keystroke adds a statement at
+    // its end, a different one each time.
+    let path = app.root.join("routes/web.php");
+    let original = std::fs::read_to_string(&path).expect("routes/web.php");
+    let doc = DocId(1);
+    let mut version = 1;
+    engine.document_opened(doc, &path, version, &original);
+    assert!(engine.wait_inspections(WAIT));
+    let edited = |n: u32| format!("{original}\n$bench{n} = {n};\n");
+
+    g.bench_function("model_cold", |b| {
+        b.iter_custom(|iters| {
+            let mut total = Duration::ZERO;
+            for _ in 0..iters {
+                engine.forget_laravel_model();
+                let started = Instant::now();
+                let built = engine.laravel_model();
+                total += started.elapsed();
+                assert!(black_box(built).is_some());
+            }
+            total
+        })
+    });
+
+    g.bench_function("model_warm", |b| {
+        b.iter_custom(|iters| {
+            let mut total = Duration::ZERO;
+            for _ in 0..iters {
+                version += 1;
+                engine.document_changed(doc, version, &edited(version));
+                assert!(engine.wait_inspections(WAIT));
+                let started = Instant::now();
+                let built = engine.laravel_model();
+                total += started.elapsed();
+                assert!(black_box(built).is_some());
+            }
+            total
+        })
+    });
+
+    // `route('` typed on a new line after the keystroke's statement.
+    g.bench_function("string_completion", |b| {
+        b.iter_custom(|iters| {
+            let mut total = Duration::ZERO;
+            for _ in 0..iters {
+                version += 1;
+                let text = format!("{}route('');\n", edited(version));
+                let at = pos_of(&text, text.len() - "');\n".len());
+                engine.document_changed(doc, version, &text);
+                assert!(engine.wait_inspections(WAIT));
+                let started = Instant::now();
+                let found = engine.completion(doc, at, Some("'"), &CancellationToken::new());
+                total += started.elapsed();
+                assert!(found.is_some_and(|found| !found.items.is_empty()), "{}: no route names", app.group);
+            }
+            total
+        })
+    });
+
+    g.bench_function("route_hints", |b| {
+        b.iter_custom(|iters| {
+            let mut total = Duration::ZERO;
+            for _ in 0..iters {
+                version += 1;
+                let text = edited(version);
+                let end = pos_of(&text, text.len());
+                engine.document_changed(doc, version, &text);
+                assert!(engine.wait_inspections(WAIT));
+                let started = Instant::now();
+                let hints = engine.laravel_route_hints(doc, Range { start: Pos::default(), end });
+                total += started.elapsed();
+                assert!(black_box(hints).is_some_and(|hints| !hints.is_empty()), "{}: no route hints", app.group);
+            }
+            total
+        })
+    });
+
+    g.finish();
+    engine.shutdown();
 }
 
 fn bench_workload(c: &mut Criterion, w: &Workload) {

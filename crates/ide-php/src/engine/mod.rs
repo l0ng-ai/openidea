@@ -446,8 +446,7 @@ impl PhpEngine {
         }
         if changed.iter().any(|p| is_laravel_input(p) || p.is_dir()) || removed.iter().any(|p| !is_php_path(p)) {
             // Detection, paths and modules are read again on next use.
-            *self.shared.laravel.lock() = LaravelCache::default();
-            self.shared.modification.fetch_add(1, Ordering::SeqCst);
+            self.reset_laravel_cache();
         }
         let changed: Vec<PathBuf> = changed
             .iter()
@@ -608,6 +607,14 @@ impl PhpEngine {
             cache.project = Some((modification, project.clone()));
         }
         project
+    }
+
+    /// Drops the Laravel project model with what it read from files that
+    /// aren't PHP, and moves the modification count so every part built
+    /// from it is built again.
+    pub(crate) fn reset_laravel_cache(&self) {
+        *self.shared.laravel.lock() = LaravelCache::default();
+        self.shared.modification.fetch_add(1, Ordering::SeqCst);
     }
 
     /// The configuration keys of the Laravel project (`config/*.php`, open

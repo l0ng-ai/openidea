@@ -9,7 +9,9 @@
  *
  * The PHP engine's `php_laravel/*` benches run on laravel/framework from the
  * corpora (`scripts/php-corpus.sh`, `PHP_CORPUS_DIR`); without it they and
- * their budgets are skipped.
+ * their budgets are skipped. The `php_laravel_real/*` benches run on the
+ * Laravel application with `vendor/` that `LARAVEL_APP_DIR` points to, and
+ * are skipped the same way without it.
  */
 import { spawnSync } from "node:child_process";
 import { existsSync, mkdirSync, readdirSync, readFileSync, statSync, writeFileSync } from "node:fs";
@@ -24,10 +26,15 @@ const PACKAGES = ["ide-text", "ide-language", "ide-index", "ide-search", "ide-ho
 /** Benches that need a corpus from `scripts/php-corpus.sh`; skipped (with their budgets) without it. */
 const CORPUS_BENCHES: Record<string, string> = { "php_laravel/": "laravel-framework" };
 const CORPUS_DIR = resolve(process.env.PHP_CORPUS_DIR ?? join(ROOT, "..", "php-corpus"));
+/** Benches on a real Laravel application with `vendor/`; skipped (with their budgets) without `LARAVEL_APP_DIR`. */
+const LARAVEL_APP_BENCHES = "php_laravel_real/";
+const LARAVEL_APP_DIR = process.env.LARAVEL_APP_DIR;
 const missingCorpus = (id: string) =>
   Object.entries(CORPUS_BENCHES).some(
     ([prefix, corpus]) => id.startsWith(prefix) && !existsSync(join(CORPUS_DIR, corpus, "composer.json")),
-  );
+  ) ||
+  (id.startsWith(LARAVEL_APP_BENCHES) &&
+    !(LARAVEL_APP_DIR && existsSync(join(LARAVEL_APP_DIR, "artisan")) && existsSync(join(LARAVEL_APP_DIR, "vendor"))));
 
 const { values: args } = parseArgs({
   options: {

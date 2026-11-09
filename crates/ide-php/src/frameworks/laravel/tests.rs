@@ -543,6 +543,50 @@ fn the_fixture_app_model() {
     assert_eq!(modules, [("Billing", ModuleKind::Nwidart, Some("Modules\\Billing\\"), true)]);
 }
 
+#[test]
+fn the_whole_model_is_built_and_forgotten() {
+    let dir = Dir::new();
+    let fixtures = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../fixtures");
+    copy_dir(&fixtures.join("laravel-app"), &dir.root);
+    copy_dir(&fixtures.join("laravel-stubs"), &dir.root.join("vendor"));
+    let engine = open_engine(&dir);
+    let summary = engine.laravel_model().expect("the fixture is a Laravel app");
+    assert_eq!(summary.route_files, 6);
+    assert_eq!(summary.modules, 1);
+    assert_eq!(summary.gates, 2);
+    assert_eq!(summary.vite_entries, 2);
+    assert_eq!(summary.models, 4);
+    assert_eq!((summary.livewire_components, summary.inertia_pages), (0, 0));
+    for (part, count) in [
+        ("routes", summary.routes),
+        ("views", summary.views),
+        ("components", summary.blade_components),
+        ("config keys", summary.config_keys),
+        ("translations", summary.translations),
+        ("env keys", summary.env_keys),
+        ("commands", summary.artisan_commands),
+    ] {
+        assert!(count > 0, "{part}: {summary:?}");
+    }
+
+    // Forgetting it reads `composer.json` again: a change on disk shows
+    // without a watcher batch.
+    let before = engine.modification_count();
+    let composer = dir.root.join("composer.json");
+    let text = std::fs::read_to_string(&composer).unwrap();
+    std::fs::write(&composer, text.replace("\"App\\\\\": \"app/\"", "\"Blog\\\\\": \"app/\"")).unwrap();
+    assert_eq!(engine.laravel().unwrap().app_namespace, "App\\", "cached until forgotten");
+    engine.forget_laravel_model();
+    assert!(engine.modification_count() > before);
+    assert_eq!(engine.laravel().unwrap().app_namespace, "Blog\\");
+    assert_eq!(engine.laravel_model().unwrap().routes, summary.routes);
+
+    // Outside Laravel projects there is no model.
+    let plain = Dir::new();
+    std::fs::write(plain.root.join("composer.json"), "{}").unwrap();
+    assert_eq!(open_engine(&plain).laravel_model(), None);
+}
+
 fn copy_dir(from: &Path, to: &Path) {
     std::fs::create_dir_all(to).unwrap();
     for entry in std::fs::read_dir(from).unwrap() {
