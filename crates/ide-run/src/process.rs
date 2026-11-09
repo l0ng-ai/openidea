@@ -3,9 +3,10 @@
 
 use crate::utf8::OutputDecoder;
 use crate::{OutputChunk, RunConfig, RunInfo};
+use ide_core::pty::native_pty_system;
 use ide_core::{IdeError, IdeEvent, IdeResult, RunId, SharedSink};
 use parking_lot::Mutex;
-use portable_pty::{CommandBuilder, MasterPty, PtySize, native_pty_system};
+use portable_pty::{CommandBuilder, MasterPty, PtySize};
 use std::collections::BTreeMap;
 use std::io::{Read, Write};
 use std::path::{Path, PathBuf};

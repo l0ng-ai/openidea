@@ -1,5 +1,12 @@
 # Third-party licenses
 
+## Microsoft ConPTY
+
+`crates/ide-core/resources/conpty/` contains the unmodified Microsoft Windows Console
+ConPTY runtime 1.25.260930003, embedded in Windows builds. Copyright (c) Microsoft
+Corporation. Licensed under MIT; see its [license](crates/ide-core/resources/conpty/LICENSE)
+and [package provenance](crates/ide-core/resources/conpty/README.md).
+
 ## Project Lombok
 
 `java/lombok/lombok-1.18.48-openidea.3.jar` contains Project Lombok v1.18.48 with the Equinox

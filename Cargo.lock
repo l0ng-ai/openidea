@@ -4271,10 +4271,12 @@ dependencies = [
 name = "ide-core"
 version = "0.1.40"
 dependencies = [
+ "dirs 6.0.0",
  "dunce",
  "encoding_rs",
  "libc",
  "percent-encoding",
+ "portable-pty",
  "serde",
  "serde_json",
  "specta",
@@ -4282,6 +4284,7 @@ dependencies = [
  "tempfile",
  "thiserror 2.0.21",
  "tokio-util",
+ "tracing",
  "windows-sys 0.61.2",
 ]
 
