@@ -92,7 +92,7 @@ pub struct SequenceInfo {
     pub data_type: String,
 }
 
-/// A schema's routines and sequences (the tree's `procedures` / `functions` / `sequences` folders).
+/// A schema's routines (procedures and functions) and sequences.
 #[derive(Debug, Clone, PartialEq, Eq, Default, Serialize, Deserialize, Type)]
 #[serde(rename_all = "camelCase")]
 #[serde(rename = "DbSchemaObjects")]

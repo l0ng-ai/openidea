@@ -6,6 +6,11 @@ wire-compatible products listed in **New ▸ Data Source**. Connections are save
 per project in `.openidea/data-sources.toml`; passwords live outside the project
 (and never in that file).
 
+The Database tree groups procedures and functions in one `routines` folder by
+default. Enable **Separate Procedures and Functions** in the Database window’s
+**Options** menu to show `procedures` and `functions` folders instead. This view
+option is remembered across sessions.
+
 ## Oracle: Oracle Instant Client
 
 Oracle support uses the Oracle Call Interface, so the Oracle client libraries

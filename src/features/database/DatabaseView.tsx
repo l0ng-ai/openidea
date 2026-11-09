@@ -1,7 +1,7 @@
 /**
  * Database tool window (IDEA's layout): data source → database (PostgreSQL) → schema → `tables` /
- * `views` / `materialized views` / `procedures` / `functions` / `sequences` folders → table →
- * `columns` / `keys` / `foreign keys` / `indexes` / `triggers`,
+ * `views` / `materialized views` / `routines` (optionally `procedures` / `functions`) / `sequences`
+ * folders → table → `columns` / `keys` / `foreign keys` / `indexes` / `triggers`,
  * with counts and column types, loaded lazily. Double-click a table to open its data, a data
  * source to open its query console.
  */
@@ -73,12 +73,21 @@ const FOLDER_LABELS: Record<Folder, string> = {
   tables: "tables",
   views: "views",
   materializedViews: "materialized views",
+  routines: "routines",
   procedures: "procedures",
   functions: "functions",
   sequences: "sequences",
 };
 
-const FOLDERS: readonly Folder[] = ["tables", "views", "materializedViews", "procedures", "functions", "sequences"];
+const FOLDERS: readonly Folder[] = ["tables", "views", "materializedViews", "routines", "sequences"];
+const SEPARATE_FOLDERS: readonly Folder[] = [
+  "tables",
+  "views",
+  "materializedViews",
+  "procedures",
+  "functions",
+  "sequences",
+];
 
 function status<T>(key: string, l: Loaded<T> | undefined, map: (v: T) => Node[]): Node[] | undefined {
   if (!l) return undefined;
@@ -110,6 +119,7 @@ function groupSize(d: DbTableDetails, g: Group): number {
 
 export function DatabaseView() {
   const st = useDatabase();
+  const folders = st.separateProceduresAndFunctions ? SEPARATE_FOLDERS : FOLDERS;
   const tree = useRef<TreeHandle>(null);
   useEffect(() => {
     if (!st.loaded) void loadSources();
@@ -158,10 +168,12 @@ export function DatabaseView() {
     (st.objects[tablesKey(id, schema)]?.routines ?? []).filter(shown(id));
   const sequencesOf = (id: string, schema: string) =>
     (st.objects[tablesKey(id, schema)]?.sequences ?? []).filter(shown(id));
-  /** Members of a schema folder: tables / views / materialized views, procedures / functions or sequences. */
+  /** Members of a schema folder, after object and quick filtering. */
   const folderSize = (id: string, schema: string, folder: Folder): number => {
-    if (folder === "procedures" || folder === "functions")
-      return routinesOf(id, schema).filter((routine) => routineFolder(routine.kind) === folder).length;
+    if (folder === "routines" || folder === "procedures" || folder === "functions")
+      return routinesOf(id, schema).filter(
+        (routine) => routineFolder(routine.kind, st.separateProceduresAndFunctions) === folder,
+      ).length;
     if (folder === "sequences") return sequencesOf(id, schema).length;
     return (tablesOf(id, schema) ?? []).filter((t) => tableFolder(t.kind) === folder).length;
   };
@@ -215,20 +227,22 @@ export function DatabaseView() {
         return schemasOf(n.key, n.id);
       case "schema":
         return status(n.key, st.tables[tablesKey(n.id, n.schema)], () =>
-          FOLDERS.filter((f) => folderSize(n.id, n.schema, f) > 0).map((folder): Node => ({
-            kind: "folder",
-            key: `${n.key}/${folder}`,
-            id: n.id,
-            schema: n.schema,
-            folder,
-          })),
+          folders
+            .filter((f) => folderSize(n.id, n.schema, f) > 0)
+            .map((folder): Node => ({
+              kind: "folder",
+              key: `${n.key}/${folder}`,
+              id: n.id,
+              schema: n.schema,
+              folder,
+            })),
         );
       case "folder": {
         const at = { id: n.id, schema: n.schema };
-        if (n.folder === "procedures" || n.folder === "functions")
+        if (n.folder === "routines" || n.folder === "procedures" || n.folder === "functions")
           // Overloads share a name: the key tells them apart by their arguments.
           return routinesOf(n.id, n.schema)
-            .filter((routine) => routineFolder(routine.kind) === n.folder)
+            .filter((routine) => routineFolder(routine.kind, st.separateProceduresAndFunctions) === n.folder)
             .map((routine) => ({
               kind: "routine",
               key: `${n.key}/${routine.name}(${routine.arguments})`,

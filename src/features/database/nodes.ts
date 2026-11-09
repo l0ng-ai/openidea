@@ -15,8 +15,8 @@ import type { DbObjectRef } from "./objects";
 
 export type Group = "columns" | "keys" | "foreignKeys" | "indexes" | "triggers";
 
-/** Folders under a schema: IDEA's `tables`, `views`, `materialized views`, `procedures`, `functions`, `sequences`. */
-export type Folder = "tables" | "views" | "materializedViews" | "procedures" | "functions" | "sequences";
+/** Schema folders; routines can optionally be separated into procedures and functions. */
+export type Folder = "tables" | "views" | "materializedViews" | "routines" | "procedures" | "functions" | "sequences";
 
 /** The folder a table, view or materialized view is listed in. */
 export function tableFolder(kind: DbTableKind): Folder {
@@ -24,7 +24,8 @@ export function tableFolder(kind: DbTableKind): Folder {
 }
 
 /** IDEA's *Separate Procedures and Functions* option: the folder a routine is listed in. */
-export function routineFolder(kind: DbSchemaObjectKind): "procedures" | "functions" {
+export function routineFolder(kind: DbRoutineInfo["kind"], separate = false): "routines" | "procedures" | "functions" {
+  if (!separate) return "routines";
   return kind === "procedure" ? "procedures" : "functions";
 }
 

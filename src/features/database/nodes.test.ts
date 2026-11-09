@@ -2,9 +2,11 @@ import { describe, expect, it } from "vitest";
 import { routineFolder, tableFolder } from "./nodes";
 
 describe("schema folders", () => {
-  it("separates procedures and functions instead of a combined routines folder", () => {
-    expect(routineFolder("procedure")).toBe("procedures");
-    expect(routineFolder("function")).toBe("functions");
+  it("combines routines by default and separates them on request", () => {
+    expect(routineFolder("procedure")).toBe("routines");
+    expect(routineFolder("function")).toBe("routines");
+    expect(routineFolder("procedure", true)).toBe("procedures");
+    expect(routineFolder("function", true)).toBe("functions");
   });
 
   it("keeps tables, views and materialized views apart", () => {
