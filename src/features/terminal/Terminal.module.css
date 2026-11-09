@@ -161,7 +161,7 @@
 @container terminal-group (max-width: 360px) {
   .find {
     display: grid;
-    grid-template-columns: minmax(0, 1fr) repeat(3, 20px);
+    grid-template-columns: minmax(0, 1fr) repeat(3, var(--h-control-small));
   }
   .findField {
     grid-column: 1 / -1;
