@@ -360,3 +360,30 @@ test("keeps mermaid `<style>` rules scoped to the rendered svg after id rewritin
   expect(await css(reply, ".cluster rect", "fill")).not.toBe("rgb(0, 0, 0)");
   expect(await css(reply, ".flowchart-link", "fill")).toBe("none");
 });
+
+test("keeps mermaid flowchart nodes and sequence control blocks off solid black", async ({ page }) => {
+  const flow = [
+    "```mermaid",
+    "flowchart LR",
+    '  subgraph Client["Client"]',
+    '    A["Local agent"]',
+    '    B["Voice input"]',
+    "  end",
+    '  subgraph Cloud["Cloud"]',
+    '    C["Cloud agent"]',
+    '    D["Memory service"]',
+    "  end",
+    "  B --> A",
+    "  A --> C",
+    "  C --> D",
+    "```",
+  ].join("\n");
+  const sequence = ["```mermaid", "sequenceDiagram", "  loop every minute", "    A->>B: ping", "  end", "```"].join(
+    "\n",
+  );
+  const reply = await openReply(page, `Flow:\n\n${flow}\n\nSequence:\n\n${sequence}`);
+  await expect(reply.locator("[data-mermaid-state='ok'] .mermaid-output svg")).toHaveCount(2);
+  expect(await css(reply, ".node rect", "fill")).not.toBe("rgb(0, 0, 0)");
+  expect(await css(reply, ".cluster rect", "fill")).not.toBe("rgb(0, 0, 0)");
+  expect(await css(reply, ".labelBox", "fill")).not.toBe("rgb(0, 0, 0)");
+});
