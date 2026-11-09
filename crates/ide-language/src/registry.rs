@@ -1007,11 +1007,11 @@ mod tests {
     }
 
     #[test]
-    fn astro_server_reads_the_project_typescript() {
+    fn astro_server_leaves_typescript_sdk_resolution_to_the_launcher() {
         let reg = reg();
         let ls = &reg.get(&LanguageId::new("astro")).unwrap().language_servers[0];
         let tsdk = ls.initialization_options.as_ref().and_then(|o| o.get("typescript")?.get("tsdk")?.as_str());
-        assert_eq!(tsdk, Some("node_modules/typescript/lib"));
+        assert_eq!(tsdk, None);
     }
 
     #[test]
