@@ -1,0 +1,51 @@
+.view {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-3);
+  padding: var(--space-3);
+  overflow: auto;
+  height: 100%;
+  color: var(--fg);
+}
+.view label {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-2);
+  min-width: 0;
+}
+.view select {
+  color: var(--fg);
+  background: var(--bg-elev);
+  border: 1px solid var(--border);
+  padding: var(--space-2);
+  max-width: 100%;
+}
+.toolbar {
+  display: flex;
+  gap: var(--space-2);
+  flex-wrap: wrap;
+}
+.list {
+  padding: 0;
+  margin: var(--space-2) 0;
+  list-style: none;
+}
+.list li {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: var(--space-2);
+  padding: var(--space-2) 0;
+}
+.list li span {
+  flex: 1 1 100%;
+  overflow-wrap: anywhere;
+}
+.error {
+  color: var(--danger);
+  white-space: pre-wrap;
+}
+.output {
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+}
