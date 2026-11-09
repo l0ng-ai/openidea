@@ -811,7 +811,11 @@ fn file_url_working_directories_stay_inside_the_project() {
       <module name="gateway" />
       <option name="SPRING_BOOT_MAIN_CLASS" value="com.example.GatewayApplication" />
       <option name="WORKING_DIRECTORY" value="file://$PROJECT_DIR$" />
-      <method v="2" />
+      <option name="ACTIVE_PROFILES" value="dev,local" />
+      <option name="VM_PARAMETERS" value="-Xmx512m" />
+      <option name="PROGRAM_PARAMETERS" value="--server.port=8081" />
+      <envs><env name="TZ" value="UTC" /></envs>
+      <method v="2"><option name="Make" enabled="true" /></method>
     </configuration>"#,
         ),
     );
@@ -829,7 +833,45 @@ fn file_url_working_directories_stay_inside_the_project() {
         ),
     );
 
+    let local_root = root.to_string_lossy().replace('\\', "/");
+    for (name, working_directory) in [
+        ("Encoded", "file://$PROJECT_DIR$/gateway%20%C3%A9".to_owned()),
+        ("Localhost", format!("file://localhost/{}", local_root.trim_start_matches('/'))),
+    ] {
+        write(
+            &root,
+            &format!(".run/{name}.run.xml"),
+            &run_file(
+                name,
+                &format!(
+                    r#"
+          <configuration name="NAME" type="SpringBootApplicationConfigurationType" factoryName="Spring Boot">
+            <module name="gateway" />
+            <option name="SPRING_BOOT_MAIN_CLASS" value="com.example.GatewayApplication" />
+            <option name="WORKING_DIRECTORY" value="{working_directory}" />
+          </configuration>"#
+                ),
+            ),
+        );
+    }
     let r = import_from(&root, &[]);
+    let boot = get(&r, "Gateway");
+    assert_eq!(boot.kind, "spring-boot");
+    assert_eq!(boot.extras.module.as_deref(), Some("gateway"));
+    assert_eq!(
+        boot.args,
+        s(&[
+            "-Xmx512m",
+            "-cp",
+            "${classpath}",
+            "com.example.GatewayApplication",
+            "--spring.profiles.active=dev,local",
+            "--server.port=8081"
+        ])
+    );
+    assert_eq!(boot.env["TZ"], "UTC");
+    assert_eq!(cwd(get(&r, "Encoded")), Some(PathBuf::from("gateway é")));
+    assert_eq!(cwd(get(&r, "Localhost")), None);
 
     // The project directory itself: no `cwd` to store.
     assert_eq!(cwd(get(&r, "Gateway")), None);

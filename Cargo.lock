@@ -4723,6 +4723,7 @@ dependencies = [
  "ide-language",
  "libc",
  "parking_lot",
+ "percent-encoding",
  "portable-pty",
  "quick-xml 0.42.0",
  "serde",
