@@ -1,5 +1,5 @@
 import { afterEach, beforeEach, expect, it, vi } from "vitest";
-import { act, fireEvent, render, screen } from "@testing-library/react";
+import { act, fireEvent, render, screen, waitFor } from "@testing-library/react";
 import { executeAction, registerAction, allActions, isActionEnabled } from "@/platform/actions";
 import { setContext } from "@/platform/context";
 import type { BuildModel, GradleModel, ProjectInfo, RunConfig } from "@/platform/ipc";
@@ -230,8 +230,12 @@ it("re-adds a picked POM using the plus button and preserves other unlinked root
   await act(async () => {
     fireEvent.click(screen.getByRole("button", { name: "Add Maven Projects" }));
   });
-  expect(mocks.open).toHaveBeenCalledWith(expect.objectContaining({ defaultPath: "/p", directory: false }));
-  expect(mocks.set).toHaveBeenCalledWith("project", "languages.java.maven.unlinkedProjects", '["b/pom.xml"]');
+  await waitFor(() =>
+    expect(mocks.open).toHaveBeenCalledWith(expect.objectContaining({ defaultPath: "/p", directory: false })),
+  );
+  await waitFor(() =>
+    expect(mocks.set).toHaveBeenCalledWith("project", "languages.java.maven.unlinkedProjects", '["b/pom.xml"]'),
+  );
 });
 
 it.each([null, "/outside/pom.xml", "/p/a/build.xml", "/p/../outside/pom.xml", "/p/a/pom.xml"])(

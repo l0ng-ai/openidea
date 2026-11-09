@@ -302,7 +302,7 @@ function projectPoms(root: string, picked: readonly string[]): string[] {
 export async function addProjects() {
   const root = useProject.getState().project?.root;
   if (!root || useProject.getState().project?.workspace || !isTauri()) return;
-  const { open } = await import("@tauri-apps/plugin-dialog");
+  const { open } = await import("@/platform/dialog");
   const picked = await open({
     title: tx`Add Maven Projects`,
     directory: false,
@@ -325,7 +325,7 @@ export async function linkGradleProjects() {
     !isTauri()
   )
     return;
-  const { open } = await import("@tauri-apps/plugin-dialog");
+  const { open } = await import("@/platform/dialog");
   const picked = await open({
     title: tx`Link Gradle Projects`,
     directory: false,

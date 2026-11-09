@@ -201,7 +201,7 @@ export interface ConfigFormProps {
 
 /** Picks files or a directory in the local file dialog, opened at `from`; empty when cancelled. */
 async function choosePaths(opts: { directory?: boolean; multiple?: boolean; from: string | null }): Promise<string[]> {
-  const { open } = await import("@tauri-apps/plugin-dialog");
+  const { open } = await import("@/platform/dialog");
   const picked = await open({
     directory: !!opts.directory,
     multiple: !!opts.multiple,

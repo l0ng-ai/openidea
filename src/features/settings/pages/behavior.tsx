@@ -423,7 +423,7 @@ function DefaultDirectoryRow() {
   const [dir, setDir] = useSetting<string>("general.defaultProjectDirectory");
   const id = useId();
   const browse = async () => {
-    const { open } = await import("@tauri-apps/plugin-dialog");
+    const { open } = await import("@/platform/dialog");
     const picked = await open({
       directory: true,
       multiple: false,

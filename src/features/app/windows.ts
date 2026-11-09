@@ -208,14 +208,14 @@ export function defaultProjectDirectory(): string | undefined {
 }
 
 async function pickFolder(title: string): Promise<string | null> {
-  const { open } = await import("@tauri-apps/plugin-dialog");
+  const { open } = await import("@/platform/dialog");
   const picked = await open({ directory: true, multiple: false, title, defaultPath: defaultProjectDirectory() });
   const path = Array.isArray(picked) ? picked[0] : picked;
   return path ?? null;
 }
 
 async function pickFiles(title: string): Promise<string[]> {
-  const { open } = await import("@tauri-apps/plugin-dialog");
+  const { open } = await import("@/platform/dialog");
   const picked = await open({ directory: false, multiple: true, title, defaultPath: defaultProjectDirectory() });
   return picked === null ? [] : Array.isArray(picked) ? picked : [picked];
 }

@@ -56,7 +56,7 @@ function errorText(e: unknown) {
 }
 
 async function exportSettings() {
-  const { save } = await import("@tauri-apps/plugin-dialog");
+  const { save } = await import("@/platform/dialog");
   const path = await save({
     title: "Export Settings",
     defaultPath: "openidea-settings.json",
@@ -77,7 +77,7 @@ async function exportSettings() {
 }
 
 async function importSettings() {
-  const { open } = await import("@tauri-apps/plugin-dialog");
+  const { open } = await import("@/platform/dialog");
   const picked = await open({
     title: "Import Settings",
     multiple: false,
