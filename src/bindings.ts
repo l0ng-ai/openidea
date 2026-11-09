@@ -94,8 +94,13 @@ export const commands = {
 	settingsExport: (path: string, storage: { [key in string]: string }) => typedError<null, IdeError>(__TAURI_INVOKE("settings_export", { path, storage })),
 	/**  Import Settings…: replaces the global settings with the file's; every window re-reads them. */
 	settingsImport: (path: string) => typedError<SettingsImport_Serialize, IdeError>(__TAURI_INVOKE("settings_import", { path })),
-	/**  Import Settings… with a JetBrains `settings.zip`: reads it; the frontend maps and applies it. */
+	/**
+	 *  Import Settings… with a JetBrains `settings.zip` or an IDE's settings folder: reads it; the
+	 *  frontend maps and applies it.
+	 */
 	settingsReadJetbrains: (path: string) => typedError<JetBrainsSettings, IdeError>(__TAURI_INVOKE("settings_read_jetbrains", { path })),
+	/**  The settings folders of the JetBrains IDEs installed for this user, to import from. */
+	settingsListJetbrainsIdes: () => typedError<InstalledIdeSettings[], IdeError>(__TAURI_INVOKE("settings_list_jetbrains_ides")),
 	/**
 	 *  File › Rename Project…: the project's display name (title bar, recent
 	 *  projects); an empty `name` restores the folder name. Stored in the project's settings.
@@ -451,6 +456,17 @@ export const commands = {
 	 *  classes and disk class files. Cached per project.
 	 */
 	lspVirtualDocument: (uri: string) => typedError<VirtualDocument, IdeError>(__TAURI_INVOKE("lsp_virtual_document", { uri })),
+	lspCanDownloadSources: (uri: string) => typedError<boolean, IdeError>(__TAURI_INVOKE("lsp_can_download_sources", { uri })),
+	lspLibrarySources: (request: RequestId, uri: string, pos: Pos, sources: string | null) => typedError<{
+	/**
+	 *  File path; for virtual targets the URI itself (equal to `uri`), which
+	 *  the UI opens as a read-only virtual document.
+	 */
+	path: IpcPath,
+	range: Range,
+	/**  Set for non-`file:` targets, e.g. `jdt://contents/…`. */
+	uri?: string | null,
+} | null, IdeError>(__TAURI_INVOKE("lsp_library_sources", { request, uri, pos, sources })),
 	lspResolveClassFile: (path: string) => typedError<string, IdeError>(__TAURI_INVOKE("lsp_resolve_class_file", { path })),
 	/**
 	 *  References of the symbol at `pos`. `project_wide` also searches project files
@@ -3882,6 +3898,11 @@ export type EditorSettings_Deserialize = {
 	 *  parameters get a colour derived from their name (IDEA's rainbow identifiers).
 	 */
 	semanticHighlighting?: boolean,
+	/**
+	 *  Docstring markup format whose tags and keywords the Python editor highlights
+	 *  (`plain`, `rest`, `epytext`, `google`, `numpy`).
+	 */
+	docstringFormat?: string,
 	/**  Color Scheme › Language Defaults › Rainbow brackets: `()`, `[]`, `{}` coloured by depth. */
 	rainbowBrackets?: boolean,
 	ligatures?: boolean,
@@ -3931,6 +3952,11 @@ export type EditorSettings_Serialize = {
 	 *  parameters get a colour derived from their name (IDEA's rainbow identifiers).
 	 */
 	semanticHighlighting: boolean,
+	/**
+	 *  Docstring markup format whose tags and keywords the Python editor highlights
+	 *  (`plain`, `rest`, `epytext`, `google`, `numpy`).
+	 */
+	docstringFormat: string,
 	/**  Color Scheme › Language Defaults › Rainbow brackets: `()`, `[]`, `{}` coloured by depth. */
 	rainbowBrackets: boolean,
 	ligatures: boolean,
@@ -5186,6 +5212,14 @@ export type InstallPreview = {
 	needsConsent: boolean,
 };
 
+/**  The settings folder of a JetBrains IDE (or Android Studio) of this user. */
+export type InstalledIdeSettings = {
+	/**  The IDE and its version: `IntelliJ IDEA 2025.2`. */
+	ide: string,
+	/**  What Import Settings reads. */
+	path: IpcPath,
+};
+
 /**  A theme of a plugin installed in a JetBrains IDE. */
 export type InstalledIntellijTheme = {
 	/**  The IDE and its version: `IntelliJ IDEA 2025.2`. */
@@ -5329,7 +5363,7 @@ export type JdkVendor = {
 };
 
 /**
- *  A JetBrains IDE's File › Manage IDE Settings › Export Settings… archive: every
+ *  A JetBrains IDE's settings folder or exported archive: every
  *  entry name, and the text of the entries OpenIDEA maps (the frontend does the mapping).
  */
 export type JetBrainsSettings = {

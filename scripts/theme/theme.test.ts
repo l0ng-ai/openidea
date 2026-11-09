@@ -80,6 +80,15 @@ describe("theme plugin template", () => {
 });
 
 describe("IntelliJ theme import", () => {
+  it("imports Python docstring tags and the OpenIDEA keyword extension", () => {
+    const scheme = convertIcls(`<scheme><attributes>
+      <option name="PY.DOC_COMMENT_TAG"><value><option name="FOREGROUND" value="123456"/></value></option>
+      <option name="OPENIDEA_pyDocstringKeyword"><value><option name="FOREGROUND" value="654321"/></value></option>
+      </attributes></scheme>`);
+    expect(scheme.tokens["--syn-python-docstring-tag"]).toBe("#123456");
+    expect(scheme.tokens["--syn-python-docstring-keyword"]).toBe("#654321");
+  });
+
   const themeJson = `{
     // comment
     "name": "Deep Sea",

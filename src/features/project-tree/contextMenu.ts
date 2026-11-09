@@ -356,7 +356,9 @@ export function contextMenuItems(nodes: ProjectNode[]): MenuItem[] {
           nodes.length > 0 &&
             nodes.every((n) => !n.placeholder) &&
             act("vcs.compareWithBranch", arg, "Compare with Branch…"),
+          singleFile && act("vcs.compareWithRevision", singleFile.path, "Compare with Revision…"),
           nodes.length > 0 && nodes.every((n) => !n.placeholder) && act("vcs.showHistory", arg, "Show History"),
+          singleFile && act("vcs.showCurrentRevision", singleFile.path, "Show Current Revision"),
           act("vcs.rollback", arg, "Rollback…"),
           { kind: "separator" },
           act("vcs.push", undefined, "Push…"),

@@ -385,6 +385,7 @@
   "menu.manageIdeSettings": "管理 IDE 设置",
   "menu.file.exportSettings": "导出设置…",
   "menu.file.importSettings": "导入设置…",
+  "menu.file.importJetBrainsSettings": "从 JetBrains IDE 导入设置…",
   "menu.file.togglePowerSave": "省电模式",
   "menu.macros": "宏",
   "menu.macro.startRecording": "开始录制宏",

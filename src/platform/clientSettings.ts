@@ -27,6 +27,7 @@ export const CLIENT_SETTINGS_KEYS = [
   "editor.colorOverrides",
   "editor.customSchemes",
   "editor.semanticHighlighting",
+  "editor.docstringFormat",
   "editor.rainbowBrackets",
   "editor.softWrap",
   "editor.showWhitespace",
