@@ -240,7 +240,7 @@ html {
   --font-ui: "Inter Variable", Inter, system-ui, -apple-system, sans-serif;
   /* Shortcut glyphs (⌘⇧⌥⌃↵) render best in the system UI font, as in macOS menus. */
   --font-keys: -apple-system, BlinkMacSystemFont, "Segoe UI Symbol", system-ui, sans-serif;
-  --font-mono: "JetBrains Mono Variable", "JetBrains Mono", ui-monospace, Menlo, monospace;
+  --font-mono: "JetBrains Mono", "JetBrains Mono Variable", ui-monospace, Menlo, monospace;
   --fs-ui: 13px;
   --fs-small: 12px;
   --fs-tiny: 11px;
