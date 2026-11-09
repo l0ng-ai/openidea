@@ -38,7 +38,8 @@ const SYMBOL_BASES = new Set([
 
 const pythonSemantics: LanguageSemantics = {
   symbolKinds: pythonSymbolKinds,
-  syntaxRanges: (tree, doc, symbols) => pythonSyntaxRanges(tree, doc, symbols as Map<string, PythonSymbolKind>),
+  syntaxRanges: (tree, doc, symbols, format) =>
+    pythonSyntaxRanges(tree, doc, symbols as Map<string, PythonSymbolKind>, format),
   fallbackRanges: (tree, doc, rainbow, symbols) =>
     pythonFallbackRanges(tree, doc, rainbow, symbols as Map<string, PythonSymbolKind>),
   tokenClasses({ type, modifiers, kind, classes }) {
