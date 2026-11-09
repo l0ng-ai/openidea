@@ -747,12 +747,56 @@ pub struct LaravelSettings {
     /// Settings › PHP › Laravel › Code generation: what the Laravel generators (New Model…)
     /// write.
     pub generation: LaravelCodeGeneration,
+    /// Whether the project is a Laravel project: found from `composer.json`, `composer.lock`
+    /// and `artisan` (`Auto`), or forced on or off.
+    pub detection: LaravelDetection,
+    /// Which modules of a modular application are read.
+    pub modules: LaravelModuleSystem,
+    /// The folders of Inertia pages, relative to the project (`resources/js/Pages`); empty =
+    /// the `ide.json` page paths, else `resources/js/Pages`.
+    pub inertia_pages: Vec<String>,
 }
 
 impl Default for LaravelSettings {
     fn default() -> Self {
-        Self { route_hints: true, database: String::new(), generation: LaravelCodeGeneration::default() }
+        Self {
+            route_hints: true,
+            database: String::new(),
+            generation: LaravelCodeGeneration::default(),
+            detection: LaravelDetection::default(),
+            modules: LaravelModuleSystem::default(),
+            inertia_pages: Vec::new(),
+        }
     }
+}
+
+/// Settings › PHP › Laravel › Laravel support.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize, Type)]
+#[serde(rename_all = "camelCase")]
+pub enum LaravelDetection {
+    /// A Laravel project when `composer.json` requires `laravel/framework`, a lock file lists
+    /// it, or `artisan` exists.
+    #[default]
+    Auto,
+    /// Always a Laravel project.
+    Enabled,
+    /// Never a Laravel project: Laravel support is off.
+    Disabled,
+}
+
+/// Settings › PHP › Laravel › Modules.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize, Type)]
+#[serde(rename_all = "camelCase")]
+pub enum LaravelModuleSystem {
+    /// `nwidart/laravel-modules` modules when the package is installed, and module folders.
+    #[default]
+    Auto,
+    /// Only `nwidart/laravel-modules` modules.
+    Nwidart,
+    /// Only the folders of `modules/`, `app-modules/`, `app/Modules/` and `src/Modules/`.
+    Directory,
+    /// No modules.
+    None,
 }
 
 /// Settings › PHP › Laravel › Code generation.

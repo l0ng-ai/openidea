@@ -1,7 +1,13 @@
 import { cleanup, fireEvent, render, screen } from "@testing-library/react";
 import { afterEach, describe, expect, it } from "vitest";
 import { applyProfile, inspectionOption, inspectionOptions } from "@/platform/inspections";
-import { PHP_INSPECTIONS, PHP_INSPECTION_GROUPS, phpInspection, phpInspectionId } from "@/platform/phpInspections";
+import {
+  PHP_INSPECTIONS,
+  PHP_INSPECTION_GROUPS,
+  phpInspection,
+  phpInspectionId,
+  phpInspectionProfileId,
+} from "@/platform/phpInspections";
 import type { Diagnostic } from "@/bindings";
 import { PageContext } from "../components/context";
 import { PhpInspectionsPage } from "../languages/PhpInspectionsPage";
@@ -64,6 +70,54 @@ describe("PHP engine inspections", () => {
     expect(out.map((x) => [x.code, x.severity])).toEqual([["PhpUnusedAlias", "error"]]);
   });
 
+  it("groups every Laravel inspection, the Blade template checks included", () => {
+    const laravel = PHP_INSPECTIONS.filter((i) => i.group === "Laravel").map((i) => phpInspectionProfileId(i));
+    expect(laravel).toEqual([
+      "lsp:php:PhpUndefinedView",
+      "lsp:php:PhpUndefinedConfigKey",
+      "lsp:php:PhpUndefinedEnvKey",
+      "lsp:php:PhpUndefinedTranslation",
+      "lsp:php:PhpUndefinedViteAsset",
+      "lsp:php:PhpUnknownValidationRule",
+      "lsp:php:PhpUnknownEloquentColumn",
+      "lsp:php:PhpUnknownAbility",
+      "lsp:php:PhpUndefinedInertiaPage",
+      "lsp:blade:BladeUnclosedSection",
+      "lsp:blade:BladeUnopenedSection",
+    ]);
+    expect(phpInspection("lsp:blade:BladeUnclosedSection")?.name).toBe("Unclosed Blade section");
+    expect(PHP_INSPECTIONS.find((i) => i.group === "Frameworks")?.code).toBe("PhpUndefinedRoute");
+  });
+
+  it("applies the PHP inspections' settings to the same problems of Blade templates", () => {
+    const d = (code: string): Diagnostic => ({
+      range: { start: { line: 0, col: 0 }, end: { line: 0, col: 1 } },
+      severity: "error",
+      message: code,
+      source: "blade",
+      code,
+      unnecessary: false,
+      deprecated: false,
+      server: null,
+    });
+    const items = [d("PhpUndefinedConfigKey"), d("PhpUndefinedTranslation"), d("BladeUnclosedSection"), d("X")];
+    const out = applyProfile(
+      {
+        "lsp:php:PhpUndefinedConfigKey": { enabled: false },
+        "lsp:php:PhpUndefinedTranslation": { severity: "weakWarning" },
+        "lsp:blade:BladeUnclosedSection": { severity: "warning" },
+        "lsp:php:X": { enabled: false },
+      },
+      "blade",
+      items,
+    );
+    expect(out.map((x) => [x.code, x.severity])).toEqual([
+      ["PhpUndefinedTranslation", "info"],
+      ["BladeUnclosedSection", "warning"],
+      ["X", "error"],
+    ]);
+  });
+
   it("shows them in Editor › Inspections under PHP › Built-in engine", () => {
     const tree = buildInspectionTree(
       [{ name: "PHP", servers: ["intelephense"] }],
@@ -73,7 +127,10 @@ describe("PHP engine inspections", () => {
     expect(php.children.map((n) => n.id)).toEqual(["lsp:intelephense", "lsp:php"]);
     const engine = php.children[1]!;
     expect(engine.name).toBe("Built-in engine");
-    expect(engine.children.map((n) => n.id)).toEqual(PHP_INSPECTIONS.map((i) => phpInspectionId(i.code)));
+    // The checks of Blade templates are reported by `blade`, not the engine's PHP producer.
+    expect(engine.children.map((n) => n.id)).toEqual(
+      PHP_INSPECTIONS.filter((i) => !i.producer).map((i) => phpInspectionId(i.code)),
+    );
     expect(engine.children[0]!.name).toBe("Undefined class");
     expect(tree.find((g) => g.name === "Other")).toBeUndefined();
   });
@@ -82,7 +139,7 @@ describe("PHP engine inspections", () => {
     const tree = buildPageTree(LANGUAGE_PAGES.map((p) => ({ ...p, component: p.component! })));
     const langs = tree.find((n) => n.title === "Languages & Frameworks")!;
     const php = langs.children.find((n) => n.title === "PHP")!;
-    expect(php.children.map((n) => n.title)).toEqual(["Inspections"]);
+    expect(php.children.map((n) => n.title)).toEqual(["Laravel", "Inspections"]);
     const page = LANGUAGE_PAGES.find((p) => p.id === "languages.php.inspections")!;
     expect(page.keywords).toContain("Argument type mismatch");
   });
@@ -122,6 +179,15 @@ describe("Settings › PHP › Inspections page", () => {
       "lsp:php:PhpUnusedAlias": { severity: "error" },
       "lsp:php:PhpParams": { options: { strict: true } },
     });
+  });
+
+  it("turns a Blade template check off under its own producer", () => {
+    mount();
+    expect(screen.getByRole("region", { name: "Laravel" })).toBeTruthy();
+    fireEvent.click(screen.getByLabelText("Enable Unclosed Blade section"));
+    expect(stagedDefault()).toMatchObject({ "lsp:blade:BladeUnclosedSection": { enabled: false } });
+    expect(screen.getByLabelText<HTMLInputElement>("Enable Unclosed Blade section").checked).toBe(false);
+    expect(screen.getByLabelText<HTMLInputElement>("Enable Undefined config key").checked).toBe(true);
   });
 
   it("only offers Strict on the call and type checks", () => {

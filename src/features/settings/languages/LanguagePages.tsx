@@ -10,8 +10,6 @@ import { GlobListEditor, Row, Section, Select, Toggle } from "../components/Form
 import { choosePath } from "./api";
 import { useSetting } from "../components/context";
 import { SdkField, tildify, useDetected } from "./components";
-import { LaravelDatabaseRow } from "./LaravelDatabase";
-import { LaravelCodeGenerationRows } from "./LaravelCodeGeneration";
 import styles from "./Sdk.module.css";
 
 function PathInput({
@@ -131,7 +129,6 @@ export function PhpPage() {
   const [includePaths, setIncludePaths] = useSetting<string[]>("languages.php.includePaths");
   const [stubs, setStubs] = useSetting<string[]>("languages.php.stubs");
   const [analyzersOnSave, setAnalyzersOnSave] = useSetting<boolean>("languages.php.analyzersOnSave");
-  const [routeHints, setRouteHints] = useSetting<boolean>("languages.php.laravel.routeHints");
   const { list } = useDetected("php");
   const selected = list.find((s) => s.path === interpreter) ?? (interpreter ? undefined : list[0]);
   return (
@@ -190,18 +187,6 @@ export function PhpPage() {
           onChange={setAnalyzersOnSave}
           hint="When vendor/bin/phpstan or vendor/bin/psalm (with a psalm.xml) is installed, runs it on each saved PHP file of a trusted project with the PHP interpreter below and shows its problems, without those the built-in engine already reports."
         />
-      </Section>
-      <Section title="Laravel">
-        <Toggle
-          label="Show route hints"
-          checked={routeHints ?? true}
-          onChange={setRouteHints}
-          hint="In Laravel projects, shows the routes pointing to each controller method above it and the full URI after each route registration. Click one to go to the route, copy or open its URL, or create an HTTP request for it."
-        />
-        <LaravelDatabaseRow />
-      </Section>
-      <Section title="Laravel Code Generation">
-        <LaravelCodeGenerationRows />
       </Section>
       <Section title="CLI Interpreter">
         <SdkRow

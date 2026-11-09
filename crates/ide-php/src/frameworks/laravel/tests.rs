@@ -440,6 +440,78 @@ fn the_engine_keeps_the_model_up_to_date() {
 }
 
 #[test]
+fn the_settings_override_detection_and_modules() {
+    use ide_core::settings::{LaravelDetection, LaravelModuleSystem, LaravelSettings};
+
+    let dir = Dir::new();
+    dir.write("composer.json", r#"{"require": {"symfony/console": "^7.0"}}"#);
+    dir.write(
+        "index.php",
+        "<?php
+",
+    );
+    dir.write(
+        "modules/Blog/routes/web.php",
+        "<?php
+",
+    );
+    let engine = open_engine(&dir);
+    assert!(engine.laravel().is_none(), "not a Laravel project");
+
+    // Forced on: read as a Laravel project with its defaults.
+    let settings = |detection, modules| LaravelSettings { detection, modules, ..LaravelSettings::default() };
+    engine.set_laravel_settings(settings(LaravelDetection::Enabled, LaravelModuleSystem::Auto));
+    let project = engine.laravel().expect("detection forced on");
+    assert_eq!(project.app_namespace, "App\\");
+    let names: Vec<&str> = project.modules.iter().map(|m| m.name.as_str()).collect();
+    assert_eq!(names, ["Blog"]);
+
+    // Module systems: only the nwidart modules (none here), or no modules.
+    for system in [LaravelModuleSystem::Nwidart, LaravelModuleSystem::None] {
+        engine.set_laravel_settings(settings(LaravelDetection::Enabled, system));
+        assert!(engine.laravel().unwrap().modules.is_empty(), "{system:?}");
+    }
+    engine.set_laravel_settings(settings(LaravelDetection::Enabled, LaravelModuleSystem::Directory));
+    assert_eq!(engine.laravel().unwrap().modules.len(), 1);
+
+    // Forced off, even in a Laravel project; back to Auto.
+    let composer = dir.write("composer.json", LARAVEL);
+    engine.files_changed(&[composer], &[]);
+    assert!(engine.wait_idle(Duration::from_secs(60)));
+    engine.set_laravel_settings(settings(LaravelDetection::Disabled, LaravelModuleSystem::Auto));
+    assert!(engine.laravel().is_none(), "detection forced off");
+    assert!(engine.laravel_config().is_none(), "no Laravel model without the project");
+    engine.set_laravel_settings(LaravelSettings::default());
+    assert!(engine.laravel().is_some());
+}
+
+#[test]
+fn module_systems_keep_their_kind_of_module() {
+    let dir = Dir::new();
+    dir.write("composer.json", r#"{"require": {"laravel/framework": "^11.0", "nwidart/laravel-modules": "^11.0"}}"#);
+    dir.write("Modules/Blog/module.json", r#"{"name": "Blog"}"#);
+    dir.write(
+        "app-modules/Billing/routes/web.php",
+        "<?php
+",
+    );
+    let project = LaravelProject::load(&dir.root).unwrap();
+    let names = |system| -> Vec<String> {
+        project.clone().with_module_system(system).modules.into_iter().map(|module| module.name).collect()
+    };
+    use ide_core::settings::LaravelModuleSystem;
+    assert_eq!(names(LaravelModuleSystem::Auto), ["Blog", "Billing"]);
+    assert_eq!(names(LaravelModuleSystem::Nwidart), ["Blog"]);
+    assert_eq!(names(LaravelModuleSystem::Directory), ["Billing"]);
+    assert!(names(LaravelModuleSystem::None).is_empty());
+    // Forcing detection reads a project nothing marks as Laravel.
+    let plain = Dir::new();
+    plain.write("composer.json", "{}");
+    assert!(LaravelProject::load(&plain.root).is_none());
+    assert!(LaravelProject::load_with(&plain.root, true).is_some());
+}
+
+#[test]
 fn the_fixture_app_model() {
     let dir = Dir::new();
     let fixtures = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../fixtures");

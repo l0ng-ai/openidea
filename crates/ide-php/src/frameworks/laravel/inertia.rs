@@ -7,7 +7,8 @@
 //! documentation on pages and its Laravel adapter's `testing.page_paths`
 //! describe it. The folders are the `inertia.pagePaths` of the `ide.json`
 //! files (with a name prefix and a file suffix each), else
-//! `resources/js/Pages` and `resources/js/pages`. Pages are Vue, React or
+//! `resources/js/Pages` and `resources/js/pages`; the folders of Settings ›
+//! PHP › Laravel win over both. Pages are Vue, React or
 //! Svelte files; a new page gets the extension most existing pages have,
 //! else the one of the front-end framework `package.json` requires.
 //!
@@ -52,20 +53,41 @@ impl InertiaPages {
     /// The pages of `project`, empty when Inertia isn't installed;
     /// `package_json` is the text of the project's `package.json`.
     pub fn read(project: &LaravelProject, package_json: Option<&str>) -> Self {
+        Self::read_with(project, &[], package_json)
+    }
+
+    /// [`InertiaPages::read`] with the page folders of the settings
+    /// (Settings › PHP › Laravel, relative to the project), which win over
+    /// the `ide.json` ones when there are any.
+    pub fn read_with(project: &LaravelProject, configured: &[String], package_json: Option<&str>) -> Self {
         if !project.packages.inertia {
             return Self::default();
         }
-        let mut dirs: Vec<PageDir> = project
-            .ide_json
-            .packages
-            .inertia_pages
+        let configured: Vec<PageDir> = configured
             .iter()
-            .map(|(path, prefix, suffix)| PageDir {
-                path: normalize(path),
-                prefix: prefix.clone(),
-                suffix: suffix.clone(),
+            .map(|dir| dir.trim().trim_end_matches(['/', '\\']))
+            .filter(|dir| !dir.is_empty())
+            .map(|dir| PageDir {
+                path: normalize(&project.root.join(dir)),
+                prefix: String::new(),
+                suffix: String::new(),
             })
             .collect();
+        let mut dirs: Vec<PageDir> = if !configured.is_empty() {
+            configured
+        } else {
+            project
+                .ide_json
+                .packages
+                .inertia_pages
+                .iter()
+                .map(|(path, prefix, suffix)| PageDir {
+                    path: normalize(path),
+                    prefix: prefix.clone(),
+                    suffix: suffix.clone(),
+                })
+                .collect()
+        };
         if dirs.is_empty() {
             let js = project.paths.resources.join("js");
             let found: Vec<PathBuf> =

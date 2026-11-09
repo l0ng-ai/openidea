@@ -5,6 +5,7 @@
  */
 import { GoPage, JavaPage, NodePage, PhpPage, RubyPage, RustPage, TypeScriptPage } from "../languages/LanguagePages";
 import { PhpInspectionsPage } from "../languages/PhpInspectionsPage";
+import { LaravelPage } from "../languages/LaravelPage";
 import { PHP_INSPECTIONS } from "@/platform/phpInspections";
 import { MarkdownPage } from "../languages/MarkdownPage";
 import { OxfmtPage, PrettierPage } from "../languages/FormatterPage";
@@ -162,12 +163,34 @@ export const LANGUAGE_PAGES: PageSpec[] = [
       "phpstan",
       "psalm",
       "static analysis",
-      "laravel",
-      "code generation",
-      "generators",
-      "routes",
     ],
     component: PhpPage,
+  },
+  {
+    id: "languages.php.laravel",
+    projectScope: true,
+    defaultScope: "project",
+    title: "Laravel",
+    group: LANGUAGES_GROUP,
+    order: 403.22,
+    keywords: [
+      "laravel",
+      "laravel support",
+      "detection",
+      "modules",
+      "nwidart",
+      "route hints",
+      "routes",
+      "database",
+      "schema",
+      "inertia",
+      "pages",
+      "code generation",
+      "generators",
+      "namespace",
+      "suffix",
+    ],
+    component: LaravelPage,
   },
   {
     id: "languages.php.inspections",

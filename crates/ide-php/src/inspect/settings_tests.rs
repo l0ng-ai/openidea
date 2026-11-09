@@ -154,7 +154,13 @@ fn the_settings_page_lists_every_inspection() {
     .unwrap();
     let listed: Vec<&str> =
         ts.lines().filter_map(|line| line.trim().strip_prefix("code: \"")?.strip_suffix("\",")).collect();
-    assert_eq!(listed, Inspections::builtin().ids());
+    // The engine's inspections in its order, then the checks of Blade templates.
+    let (blade, php): (Vec<&str>, Vec<&str>) =
+        listed.iter().copied().partition(|code| crate::blade::structure::INSPECTIONS.contains(code));
+    assert_eq!(php, Inspections::builtin().ids());
+    assert_eq!(blade, crate::blade::structure::INSPECTIONS);
+    assert!(listed.ends_with(&crate::blade::structure::INSPECTIONS));
+    assert!(ts.contains(&format!("BLADE_PRODUCER = \"{}\"", crate::blade::structure::DIAGNOSTIC_SOURCE)));
     assert!(ts.contains(&format!("PHP_STRICT_OPTION = \"{STRICT_OPTION}\"")));
     assert!(ts.contains("`lsp:${PHP_PRODUCER}:${code}`") && PROFILE_ID == "lsp:php");
 }

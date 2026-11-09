@@ -838,3 +838,89 @@ async fn laravel_artisan_commands() {
     assert_eq!((greet.source.as_str(), greet.description.as_str()), ("closure", "Greet someone"));
     assert!(commands.iter().any(|command| command.name == "migrate" && command.source == "framework"));
 }
+
+/// Inspect Code over `fixtures/laravel-app` (with `fixtures/laravel-stubs` as
+/// its `vendor/`): the Laravel inspections run over its PHP files and Blade
+/// templates and find nothing but the deliberate problem; a new file's
+/// undefined config key and unclosed section are found, and the inspection
+/// profile turns the Laravel inspections off.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn inspect_code_over_the_laravel_fixture_app() {
+    let tmp = tempfile::tempdir().unwrap();
+    let base = dunce::canonicalize(tmp.path()).unwrap();
+    let root = base.join("laravel-app");
+    let fixtures = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../fixtures");
+    copy_dir(&fixtures.join("laravel-app"), &root);
+    copy_dir(&fixtures.join("laravel-stubs"), &root.join("vendor"));
+    let events: Arc<Mutex<Vec<IdeEvent>>> = Arc::default();
+    let host = host(&base.join("app"), events.clone());
+    let project = host.open_project("main", &root).unwrap();
+    set_engine(&host, "native");
+    until("the engine to start", || project.php.engine().is_some()).await;
+    let engine = project.php.engine().unwrap();
+    assert!(engine.wait_idle(Duration::from_secs(120)));
+    assert!(engine.laravel().is_some(), "a Laravel project");
+    let laravel = ["PhpUndefinedView", "PhpUndefinedConfigKey", "PhpUndefinedTranslation", "PhpUnknownAbility"];
+    for id in laravel {
+        assert!(engine.inspections().ids().contains(&id), "{id} runs");
+    }
+    let app = || ide_search::SearchScope::Project;
+    let own = |files: &std::collections::BTreeMap<String, Vec<String>>| -> Vec<(String, Vec<String>)> {
+        files
+            .iter()
+            .filter(|(path, codes)| !path.starts_with("vendor/") && !codes.is_empty())
+            .map(|(path, codes)| (path.clone(), codes.clone()))
+            .collect()
+    };
+
+    let (files, summary, _) = inspect_code(&host, app()).await;
+    assert_eq!(
+        own(&files),
+        [("app/Http/Controllers/PostController.php".to_owned(), vec!["PhpUndefinedMethod".to_owned()])],
+        "no false positives"
+    );
+    for inspected in ["routes/web.php", "config/blog.php", "resources/views/layouts/app.blade.php"] {
+        assert!(files.contains_key(inspected), "{inspected} is inspected: {:?}", files.keys());
+    }
+    assert_eq!(summary.failed, 0);
+
+    // Real problems are found, in PHP files and Blade templates.
+    write(
+        &root.join("app/Support/Probe.php"),
+        "<?php\n\nnamespace App\\Support;\n\nfunction probe()\n{\n    return config('blog.nope');\n}\n",
+    );
+    write(
+        &root.join("resources/views/probe.blade.php"),
+        "@extends('layouts.app')\n@section('content')\n<p>{{ __('messages.nope') }}</p>\n",
+    );
+    let (files, _, _) = inspect_code(&host, app()).await;
+    assert_eq!(files["app/Support/Probe.php"], ["PhpUndefinedConfigKey"], "{files:?}");
+    assert_eq!(files["resources/views/probe.blade.php"], ["BladeUnclosedSection", "PhpUndefinedTranslation"]);
+
+    // Turned off in the profile: the Laravel inspections stop, in templates too.
+    ops::project::set_settings(
+        &host,
+        "main",
+        SettingsScope::Global,
+        "inspections.default",
+        r#"{"lsp:php:PhpUndefinedConfigKey":{"enabled":false},"lsp:php:PhpUndefinedTranslation":{"enabled":false}}"#,
+    )
+    .unwrap();
+    until("the inspections to be turned off", || !engine.inspections().ids().contains(&"PhpUndefinedTranslation"))
+        .await;
+    let (files, _, _) = inspect_code(&host, app()).await;
+    assert_eq!(files["app/Support/Probe.php"], Vec::<String>::new());
+    assert_eq!(files["resources/views/probe.blade.php"], ["BladeUnclosedSection"]);
+
+    // Laravel support turned off in Settings › PHP › Laravel.
+    ops::project::set_settings(
+        &host,
+        "main",
+        SettingsScope::Project,
+        "languages.php.laravel.detection",
+        "\"disabled\"",
+    )
+    .unwrap();
+    until("Laravel support to be turned off", || engine.laravel().is_none()).await;
+    host.close_project("main");
+}

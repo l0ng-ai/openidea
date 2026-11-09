@@ -17,6 +17,8 @@ export const PHP_STRICT_OPTION = "strict";
 export interface PhpInspection {
   /** The engine's id: the diagnostic code and the `@noinspection` name. */
   code: string;
+  /** The producer of its diagnostics when not `php`: `blade` for the checks of Blade templates. */
+  producer?: string;
   name: string;
   group: string;
   description: string;
@@ -27,6 +29,13 @@ export interface PhpInspection {
 /** Profile id of inspection `code` (`lsp:php:<code>`). */
 export const phpInspectionId = (code: string) => `lsp:${PHP_PRODUCER}:${code}`;
 
+/** Producer of the engine's checks of Blade templates (`blade::structure::DIAGNOSTIC_SOURCE`). */
+export const BLADE_PRODUCER = "blade";
+
+/** Profile id of an inspection (`lsp:<producer>:<code>`). */
+export const phpInspectionProfileId = (i: Pick<PhpInspection, "code" | "producer">) =>
+  i.producer ? `lsp:${i.producer}:${i.code}` : phpInspectionId(i.code);
+
 export const PHP_INSPECTION_GROUPS = [
   "Undefined symbols",
   "Variables",
@@ -35,6 +44,7 @@ export const PHP_INSPECTION_GROUPS = [
   "Control flow",
   "Language level",
   "Frameworks",
+  "Laravel",
 ] as const;
 
 /** In the engine's order. */
@@ -204,76 +214,91 @@ export const PHP_INSPECTIONS: readonly PhpInspection[] = [
     name: "Undefined route",
     group: "Frameworks",
     description:
-      "Reports Symfony route names passed to path(), url(), generateUrl(), redirectToRoute() or a URL generator's generate() that no #[Route] attribute or config/routes*.yaml file defines.",
+      "Reports route names that no route defines: Symfony names passed to path(), url(), generateUrl(), redirectToRoute() or a URL generator's generate() (against #[Route] attributes and config/routes*.yaml), and Laravel names passed to route(), to_route(), redirect()->route() or URL::route() (against the ->name() calls of the route files).",
   },
   {
     code: "PhpUndefinedView",
     name: "Undefined view",
-    group: "Frameworks",
+    group: "Laravel",
     description:
       "Reports Laravel view names passed to view(), View::make(), Route::view(), response()->view() or a mailable's view() or markdown() that no view file has. The quick-fix creates the Blade template.",
   },
   {
     code: "PhpUndefinedConfigKey",
     name: "Undefined config key",
-    group: "Frameworks",
+    group: "Laravel",
     description:
       "Reports Laravel configuration keys passed to config() or Config::get() that a known configuration array doesn't have.",
   },
   {
     code: "PhpUndefinedEnvKey",
     name: "Undefined environment variable",
-    group: "Frameworks",
+    group: "Laravel",
     description:
       "Reports keys passed to env() that neither .env nor .env.example sets, and keys missing from .env.example. The quick-fix adds the key to .env.example.",
   },
   {
     code: "PhpUndefinedTranslation",
     name: "Undefined translation key",
-    group: "Frameworks",
+    group: "Laravel",
     description:
       "Reports Laravel translation keys passed to __(), trans(), trans_choice() or Lang::get() that no locale has. The quick-fix creates the key in every locale.",
   },
   {
     code: "PhpUndefinedViteAsset",
     name: "Undefined Vite asset",
-    group: "Frameworks",
+    group: "Laravel",
     description:
       "Reports paths passed to Vite::asset() or @vite that are neither a file, a Vite entry point nor in the build manifest.",
   },
   {
     code: "PhpUnknownValidationRule",
     name: "Unknown validation rule",
-    group: "Frameworks",
+    group: "Laravel",
     description:
       "Reports Laravel validation rules, in the rules of a Form Request, $request->validate() or Validator::make(), that are neither built in nor registered with Validator::extend().",
   },
   {
     code: "PhpUnknownEloquentColumn",
     name: "Unknown Eloquent column",
-    group: "Frameworks",
+    group: "Laravel",
     description:
       "Reports column names in Eloquent queries (where(), orderBy(), select(), create([...]) and the like) and in a model's $fillable, $hidden, $casts or $appends that the model's table doesn't have. Only reported when the migrations say for certain which columns the table has.",
   },
   {
     code: "PhpUnknownAbility",
     name: "Unknown ability",
-    group: "Frameworks",
+    group: "Laravel",
     description:
       "Reports Laravel abilities, in Gate::allows(), $user->can(), authorize() or @can, that no gate defines and that aren't a method of the model's policy (of any policy when the model isn't known).",
   },
   {
     code: "PhpUndefinedInertiaPage",
     name: "Undefined Inertia page",
-    group: "Frameworks",
+    group: "Laravel",
     description:
       "Reports Inertia page names, in Inertia::render(), inertia() or Route::inertia(), that no file of the page folders has. The quick-fix creates the page.",
   },
+  {
+    code: "BladeUnclosedSection",
+    producer: BLADE_PRODUCER,
+    name: "Unclosed Blade section",
+    group: "Laravel",
+    description:
+      "Reports @section, @push and @prepend blocks of a Blade template that no @endsection, @show, @stop, @endpush or matching directive closes.",
+  },
+  {
+    code: "BladeUnopenedSection",
+    producer: BLADE_PRODUCER,
+    name: "Blade closing directive without an opening one",
+    group: "Laravel",
+    description: "Reports @endsection, @show, @endpush and the like in a Blade template with no open block to close.",
+  },
 ];
 
-const BY_ID = new Map(PHP_INSPECTIONS.map((i) => [phpInspectionId(i.code), i]));
+const BY_ID = new Map(PHP_INSPECTIONS.map((i) => [phpInspectionProfileId(i), i]));
 
-/** The engine inspection of profile id `id` (`lsp:php:<code>`). */
+/** The engine inspection of profile id `id` (`lsp:php:<code>`, `lsp:blade:<code>`). */
 export function phpInspection(id: string): PhpInspection | undefined {
   return BY_ID.get(id);
 }

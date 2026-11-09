@@ -694,7 +694,7 @@ Runs after Plan 7. Before any 8.x phase, read [LARAVEL-ROADMAP.md](LARAVEL-ROADM
 
   Tests: a generator snapshot test and caret fixtures with the stub package.
 
-- [ ] Phase 8.20: Laravel inspections and settings page
+- [x] Phase 8.20: Laravel inspections and settings page
       Bring every Laravel inspection added in 8.4–8.19 into the inspection profile under a "Laravel" group, with on/off switches and severities, through the phase 4.10 system. Add a Settings › PHP › Laravel page for:
   - detection override
   - module system

@@ -4863,6 +4863,18 @@ export type LaravelCodeGeneration = {
 	typeHints?: boolean,
 };
 
+/**  Settings › PHP › Laravel › Laravel support. */
+export type LaravelDetection = 
+/**
+ *  A Laravel project when `composer.json` requires `laravel/framework`, a lock file lists
+ *  it, or `artisan` exists.
+ */
+"auto" | 
+/**  Always a Laravel project. */
+"enabled" | 
+/**  Never a Laravel project: Laravel support is off. */
+"disabled";
+
 /**  A choice of a `select` field. */
 export type LaravelFieldOption = {
 	value: string,
@@ -4979,6 +4991,17 @@ export type LaravelModelView = {
 	accessors: LaravelModelMember[],
 	related: LaravelRelatedClass[],
 };
+
+/**  Settings › PHP › Laravel › Modules. */
+export type LaravelModuleSystem = 
+/**  `nwidart/laravel-modules` modules when the package is installed, and module folders. */
+"auto" | 
+/**  Only `nwidart/laravel-modules` modules. */
+"nwidart" | 
+/**  Only the folders of `modules/`, `app-modules/`, `app/Modules/` and `src/Modules/`. */
+"directory" | 
+/**  No modules. */
+"none";
 
 /**
  *  What the dialog of a Laravel class generator (controller, job, view, test…) asks
@@ -5131,6 +5154,18 @@ export type LaravelSettings = {
 	 *  write.
 	 */
 	generation?: LaravelCodeGeneration,
+	/**
+	 *  Whether the project is a Laravel project: found from `composer.json`, `composer.lock`
+	 *  and `artisan` (`Auto`), or forced on or off.
+	 */
+	detection?: LaravelDetection,
+	/**  Which modules of a modular application are read. */
+	modules?: LaravelModuleSystem,
+	/**
+	 *  The folders of Inertia pages, relative to the project (`resources/js/Pages`); empty =
+	 *  the `ide.json` page paths, else `resources/js/Pages`.
+	 */
+	inertiaPages?: string[],
 };
 
 /**

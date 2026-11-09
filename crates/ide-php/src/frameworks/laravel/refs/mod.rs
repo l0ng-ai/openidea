@@ -1389,7 +1389,18 @@ impl PhpEngine {
     pub(crate) fn blade_reference_problems(&self, text: &str) -> Vec<Diagnostic> {
         let compiled = crate::blade::compile(text, false);
         let parsed = ParsedFile::parse("template.php", compiled.php.as_str());
-        let kinds: [&'static dyn ReferenceKind; 5] = [&ConfigKey, &EnvKey, &TranslationKey, &ViteAsset, &Gate];
+        // Only the kinds whose inspection the profile leaves on, as in PHP files.
+        let enabled = self.inspections().ids();
+        let kinds: Vec<&'static dyn ReferenceKind> =
+            [&ConfigKey as &'static dyn ReferenceKind, &EnvKey, &TranslationKey, &ViteAsset, &Gate]
+                .into_iter()
+                .filter(|kind| {
+                    crate::inspect::laravel::inspection_id(kind.id()).is_some_and(|id| enabled.contains(&id))
+                })
+                .collect();
+        if kinds.is_empty() {
+            return Vec::new();
+        }
         let lines = crate::syntax::LineIndex::new(text);
         let mut out = Vec::new();
         for found in self.undefined_references(&parsed, Path::new(""), &kinds, &CancellationToken::new()) {

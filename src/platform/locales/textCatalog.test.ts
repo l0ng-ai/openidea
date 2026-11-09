@@ -93,6 +93,9 @@ const UNTRANSLATED = new Set<string>([
   "oxfmt",
   "IntelliJ IDEA",
   "Laravel",
+  "Inertia",
+  "nwidart/laravel-modules",
+  "resources/js/Pages",
   // Go environment variables and placeholder values
   "CGO",
   "GOPROXY",

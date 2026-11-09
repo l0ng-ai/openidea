@@ -50,7 +50,7 @@ use std::thread::JoinHandle;
 use std::time::{Duration, Instant};
 
 use ide_core::event::ServerStatus;
-use ide_core::settings::LaravelSettings;
+use ide_core::settings::{LaravelDetection, LaravelSettings};
 use ide_core::{CancellationToken, DocId, IdeError, IdeEvent, IdeResult, Pos, ServerId, SharedSink};
 use parking_lot::{Condvar, Mutex, RwLock};
 
@@ -573,8 +573,15 @@ impl PhpEngine {
     /// Laravel project. Its files that aren't PHP are read once until one
     /// of them changes; its route files come from the summaries of the
     /// index and the open buffers, for the current modification count.
+    ///
+    /// Settings › PHP › Laravel can force detection on or off and limit the
+    /// modules read ([`PhpEngine::set_laravel_settings`]).
     pub fn laravel(&self) -> Option<Arc<LaravelProject>> {
         let modification = self.modification_count();
+        let settings = self.laravel_settings();
+        if settings.detection == LaravelDetection::Disabled {
+            return None;
+        }
         let loaded = {
             let cache = self.shared.laravel.lock();
             if let Some((at, project)) = &cache.project
@@ -587,12 +594,15 @@ impl PhpEngine {
         let loaded = match loaded {
             Some(loaded) => loaded,
             None => {
-                let loaded = LaravelProject::load(&self.root()).map(Arc::new);
+                let force = settings.detection == LaravelDetection::Enabled;
+                let loaded = LaravelProject::load_with(&self.root(), force).map(Arc::new);
                 self.shared.laravel.lock().loaded = Some(loaded.clone());
                 loaded
             }
         };
-        let project = loaded.map(|loaded| Arc::new(loaded.with_routes(&Declarations::laravel(self))));
+        let project = loaded.map(|loaded| {
+            Arc::new(loaded.with_routes(&Declarations::laravel(self)).with_module_system(settings.modules))
+        });
         let mut cache = self.shared.laravel.lock();
         if cache.loaded.is_some() {
             cache.project = Some((modification, project.clone()));
@@ -692,7 +702,8 @@ impl PhpEngine {
     /// `None` when the project isn't a Laravel project.
     pub fn laravel_inertia(&self) -> Option<Arc<InertiaPages>> {
         self.laravel_cached(&self.shared.laravel_inertia, |project| {
-            InertiaPages::read(project, self.text_of(&project.root.join("package.json")).as_deref())
+            let dirs = self.laravel_settings().inertia_pages;
+            InertiaPages::read_with(project, &dirs, self.text_of(&project.root.join("package.json")).as_deref())
         })
     }
 
@@ -768,9 +779,23 @@ impl PhpEngine {
         self.shared.laravel_settings.lock().clone()
     }
 
-    /// Changes what Laravel support shows (the front end's settings).
+    /// Changes what Laravel support shows (the front end's settings). When
+    /// detection, the modules or the Inertia page folders change, the
+    /// project model is read again and open documents are inspected again.
     pub fn set_laravel_settings(&self, settings: LaravelSettings) {
-        *self.shared.laravel_settings.lock() = settings;
+        let model_changed = {
+            let mut current = self.shared.laravel_settings.lock();
+            let changed = current.detection != settings.detection
+                || current.modules != settings.modules
+                || current.inertia_pages != settings.inertia_pages;
+            *current = settings;
+            changed
+        };
+        if model_changed {
+            *self.shared.laravel.lock() = LaravelCache::default();
+            self.shared.modification.fetch_add(1, Ordering::SeqCst);
+            self.shared.inspect_open_documents();
+        }
     }
 
     /// Uses the tables and columns of a live database (Settings › PHP ›

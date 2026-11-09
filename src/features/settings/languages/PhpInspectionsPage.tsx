@@ -4,7 +4,8 @@
  * the call and type checks) strict mode. They are stored in the inspection
  * profile in effect (`lsp:php:<Id>`), the same settings Editor › Inspections
  * shows under PHP › Built-in engine, so the editor, Problems and Inspect Code
- * apply them and the engine stops running what is turned off.
+ * apply them and the engine stops running what is turned off. The Laravel
+ * group also holds the checks of Blade templates (`lsp:blade:<Id>`).
  */
 import { Checkbox, T } from "@/ui";
 import {
@@ -20,7 +21,13 @@ import {
   type ProfileId,
   type ProfileOverrides,
 } from "@/platform/inspections";
-import { PHP_INSPECTIONS, PHP_INSPECTION_GROUPS, phpInspectionId, type PhpInspection } from "@/platform/phpInspections";
+import {
+  PHP_INSPECTIONS,
+  PHP_INSPECTION_GROUPS,
+  PHP_PRODUCER,
+  phpInspectionProfileId,
+  type PhpInspection,
+} from "@/platform/phpInspections";
 import { useProject } from "@/platform/project";
 import { tx } from "@/platform/i18n";
 import { Row, Section, Select } from "../components/Form";
@@ -75,8 +82,13 @@ function useProfileOverrides(): {
 }
 
 /** Turns an inspection on or off (on is the default, so it drops the override). */
-export function setPhpInspectionEnabled(o: ProfileOverrides, code: string, enabled: boolean): ProfileOverrides {
-  const id = phpInspectionId(code);
+export function setPhpInspectionEnabled(
+  o: ProfileOverrides,
+  code: string,
+  enabled: boolean,
+  producer?: string,
+): ProfileOverrides {
+  const id = phpInspectionProfileId({ code, producer });
   return setEnabled(o, { key: id, id, name: code, description: "", children: [] }, enabled);
 }
 
@@ -89,14 +101,14 @@ function InspectionRow({
   overrides: ProfileOverrides;
   onChange: (o: ProfileOverrides) => void;
 }) {
-  const id = phpInspectionId(inspection.code);
-  const enabled = isEnabled(overrides, id) && isEnabled(overrides, "lsp:php");
+  const id = phpInspectionProfileId(inspection);
+  const enabled = isEnabled(overrides, id) && isEnabled(overrides, `lsp:${inspection.producer ?? PHP_PRODUCER}`);
   return (
     <Row label={inspection.name} hint={inspection.description}>
       <span className={styles.pathRow}>
         <Checkbox
           checked={enabled}
-          onChange={(on) => onChange(setPhpInspectionEnabled(overrides, inspection.code, on))}
+          onChange={(on) => onChange(setPhpInspectionEnabled(overrides, inspection.code, on, inspection.producer))}
           aria-label={tx`Enable ${inspection.name}`}
         />
         <Select

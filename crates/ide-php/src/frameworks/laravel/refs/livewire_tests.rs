@@ -327,6 +327,29 @@ fn inertia_page_names() {
 }
 
 #[test]
+fn the_settings_choose_the_inertia_page_folders() {
+    let project = Project::with_packages_and(&[(
+        "resources/js/Screens/Home.vue",
+        "<template></template>
+",
+    )]);
+    let names = |engine: &PhpEngine| -> Vec<String> {
+        engine.laravel_inertia().unwrap().pages.iter().map(|page| page.name.clone()).collect()
+    };
+    assert_eq!(names(&project.engine), ["Dashboard", "Posts/Index"]);
+    let settings = ide_core::settings::LaravelSettings {
+        inertia_pages: vec!["resources/js/Screens/".to_owned(), " ".to_owned()],
+        ..Default::default()
+    };
+    project.engine.set_laravel_settings(settings);
+    assert_eq!(names(&project.engine), ["Home"]);
+    let pages = project.engine.laravel_inertia().unwrap();
+    assert_eq!(pages.new_path("Posts/Edit"), Some(project.root.join("resources/js/Screens/Posts/Edit.vue")));
+    project.engine.set_laravel_settings(Default::default());
+    assert_eq!(names(&project.engine), ["Dashboard", "Posts/Index"]);
+}
+
+#[test]
 fn reports_undefined_inertia_pages_with_a_create_fix() {
     let mut project = Project::with_packages();
     let source =

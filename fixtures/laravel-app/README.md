@@ -37,6 +37,8 @@ manual QA, do the same or run `composer install` on a copy.
   static strings, folder files and view names; Blade directives; an unsupported type and key that
   are ignored) and the one of the stub package `vendor/acme/widgets` (a view namespace, a
   component folder and a listed component).
+- `crates/ide-host/tests/php_engine.rs` (`inspect_code_over_the_laravel_fixture_app`) runs batch
+  Inspect Code over the app, PHP files and Blade templates: no problems except the deliberate one.
 - `crates/ide-host/tests/language_smoke.rs` (`laravel`) checks hover and completion on a
   model attribute through the app's `ops`.
 

@@ -90,7 +90,7 @@ function phpEngineNode(seen: readonly SeenCode[]): InspectionNode {
     description:
       'Problems the built-in PHP engine reports (Settings › PHP › Code insight engine: Built-in). Severity "As reported" keeps the level the engine assigns; an inspection below can override it.',
     children: [
-      ...PHP_INSPECTIONS.map((i) => ({
+      ...PHP_INSPECTIONS.filter((i) => !i.producer).map((i) => ({
         key: `PHP/${phpInspectionId(i.code)}`,
         id: phpInspectionId(i.code),
         name: i.name,

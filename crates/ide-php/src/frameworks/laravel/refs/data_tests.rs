@@ -519,4 +519,14 @@ fn blade_templates_report_undefined_references() {
         ]
     );
     assert_eq!(problems[1].range, Range::new(Pos::new(1, 10), Pos::new(1, 23)));
+
+    // The inspections the profile turns off stay quiet in templates too.
+    let profile: std::collections::BTreeMap<String, ide_core::inspection_settings::InspectionOverride> =
+        serde_json::from_str(
+            r#"{"lsp:php:PhpUndefinedTranslation": {"enabled": false}, "lsp:php:PhpUndefinedEnvKey": {"enabled": false}}"#,
+        )
+        .unwrap();
+    project.engine.configure_inspections(crate::inspect::InspectionConfig::from_profile(&profile));
+    let codes: Vec<Option<String>> = project.engine.blade_problems(text).into_iter().map(|p| p.code).collect();
+    assert_eq!(codes, [Some("PhpUndefinedViteAsset".to_owned()), Some("PhpUndefinedConfigKey".to_owned())]);
 }

@@ -11,7 +11,7 @@
 import { create } from "zustand";
 import type { Diagnostic, Severity } from "@/bindings";
 import { useProject } from "./project";
-import { PHP_STRICT_OPTION, phpInspection } from "./phpInspections";
+import { BLADE_PRODUCER, PHP_STRICT_OPTION, phpInspection, phpInspectionId } from "./phpInspections";
 
 export type InspectionLevel = "error" | "warning" | "weakWarning" | "serverProblem" | "typo" | "none";
 /** `default`, `project`, `ide:<key>` or `project:<key>`. */
@@ -381,7 +381,9 @@ export function applyProfile<D extends Diagnostic>(
   let changed = false;
   const out: D[] = [];
   for (const d of items) {
-    const code = d.code ? profile[codeInspectionId(base, d.code)] : undefined;
+    const code = d.code
+      ? (profile[codeInspectionId(base, d.code)] ?? sharedEngineOverride(profile, producer, d.code))
+      : undefined;
     if (code?.enabled === false) {
       changed = true;
       continue;
@@ -399,6 +401,22 @@ export function applyProfile<D extends Diagnostic>(
     }
   }
   return changed ? out : items;
+}
+
+/**
+ * The PHP engine's own inspection a Blade template's problem belongs to: the
+ * undefined configuration keys, translations and the like that Blade views
+ * report under `blade` are the PHP inspections of the same code, set once in
+ * Settings › PHP › Inspections.
+ */
+function sharedEngineOverride(
+  profile: ProfileOverrides,
+  producer: string,
+  code: string,
+): InspectionOverride | undefined {
+  if (producer !== BLADE_PRODUCER) return undefined;
+  const id = phpInspectionId(code);
+  return phpInspection(id) ? profile[id] : undefined;
 }
 
 /** Applies `profile` to diagnostics of mixed producers (Inspect Code results). */

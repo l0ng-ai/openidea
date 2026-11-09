@@ -20,6 +20,10 @@ use crate::syntax::LineIndex;
 /// The source of the template's own diagnostics.
 pub const DIAGNOSTIC_SOURCE: &str = "blade";
 
+/// The codes of the template's own problems ([`inspect`]): a block never
+/// closed, and a closing directive with nothing open.
+pub const INSPECTIONS: [&str; 2] = ["BladeUnclosedSection", "BladeUnopenedSection"];
+
 /// What a [`Name`] names.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
 pub enum NameKind {
@@ -268,11 +272,7 @@ pub fn inspect(text: &str, custom: &[String]) -> Vec<Diagnostic> {
             && open[at].pop().is_none()
         {
             let range = lines.range(node.span.start, node.span.end);
-            out.push(diagnostic(
-                range,
-                format!("`@{name}` without an open `@{}`", OPENERS[at].label),
-                "BladeUnopenedSection",
-            ));
+            out.push(diagnostic(range, format!("`@{name}` without an open `@{}`", OPENERS[at].label), INSPECTIONS[1]));
         }
     }
     for (at, unclosed) in open.into_iter().enumerate() {
@@ -284,7 +284,7 @@ pub fn inspect(text: &str, custom: &[String]) -> Vec<Diagnostic> {
             out.push(diagnostic(
                 lines.range(span.start, span.end),
                 format!("{what} is not closed: add {closers}"),
-                "BladeUnclosedSection",
+                INSPECTIONS[0],
             ));
         }
     }

@@ -35,6 +35,7 @@
 use std::path::{Path, PathBuf};
 
 use ide_core::Range;
+use ide_core::settings::LaravelModuleSystem;
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 
@@ -174,6 +175,13 @@ impl LaravelProject {
     /// The project at `root` without its route files, or `None` when it
     /// isn't a Laravel project.
     pub fn load(root: &Path) -> Option<Self> {
+        Self::load_with(root, false)
+    }
+
+    /// [`LaravelProject::load`]; with `force`, the project at `root` is
+    /// read as a Laravel project even when nothing says it is one
+    /// (Settings › PHP › Laravel › Laravel support: Enabled).
+    pub fn load_with(root: &Path, force: bool) -> Option<Self> {
         let root = normalize(root);
         let composer = read_json(&root.join("composer.json"));
         let lock = read_json(&root.join("composer.lock"));
@@ -191,7 +199,7 @@ impl LaravelProject {
                 .or_else(|| installed.as_ref().and_then(|installed| locked_version(installed, name)))
         };
         let version = locked("laravel/framework");
-        if !required("laravel/framework") && version.is_none() && !root.join("artisan").is_file() {
+        if !force && !required("laravel/framework") && version.is_none() && !root.join("artisan").is_file() {
             return None;
         }
         let paths = LaravelPaths::new(&root);
@@ -245,6 +253,25 @@ impl LaravelProject {
             project.default_route_files();
         }
         project
+    }
+
+    /// This project with only the modules `system` reads (Settings › PHP ›
+    /// Laravel › Modules).
+    pub fn with_module_system(mut self, system: LaravelModuleSystem) -> Self {
+        let keep = |kind: ModuleKind| match system {
+            LaravelModuleSystem::Auto => true,
+            LaravelModuleSystem::Nwidart => kind == ModuleKind::Nwidart,
+            LaravelModuleSystem::Directory => kind == ModuleKind::Directory,
+            LaravelModuleSystem::None => false,
+        };
+        self.modules.retain(|module| keep(module.kind));
+        let modules = &self.modules;
+        for file in &mut self.route_files {
+            if file.module.as_ref().is_some_and(|name| !modules.iter().any(|module| &module.name == name)) {
+                file.module = None;
+            }
+        }
+        self
     }
 
     /// The module holding `path`.

@@ -22,7 +22,8 @@
 //!   settings ([`InspectionConfig`]: the inspection profile in effect, where
 //!   the engine's inspections are `lsp:php:<Id>`, turned off or with their
 //!   type checks set to strict).
-//! - [`PhpEngine::inspect_file`] inspects any file, for batch Inspect Code.
+//! - [`PhpEngine::inspect_file`] inspects any file, for batch Inspect Code
+//!   (a Blade template: its own problems, as the `blade` source).
 //! - [`PhpEngine::inspect`] runs every inspection over an open document,
 //!   drops the problems a `@noinspection` comment suppresses
 //!   ([`suppress`]), and gives them as IDE diagnostics (`source: "php"`,
@@ -518,8 +519,14 @@ impl PhpEngine {
     /// `text` (the file on disk; when the engine holds the file as an open
     /// document, its buffer and background result are used instead). Run
     /// it once indexing finished, or the checks that need other files stay
-    /// quiet. `None` when `cancel` fired.
+    /// quiet. `None` when `cancel` fired. A Blade template gets its own
+    /// problems ([`PhpEngine::blade_problems`], source `blade`), as its
+    /// editor shows them.
     pub fn inspect_file(&self, path: &Path, text: &str, cancel: &CancellationToken) -> Option<Vec<Diagnostic>> {
+        if crate::frameworks::laravel::views::is_blade(path) {
+            let problems = self.blade_problems(text);
+            return (!cancel.is_cancelled()).then_some(problems);
+        }
         if let Some(document) = self.open_document(path) {
             return self.inspected(document.doc).map(|inspected| inspected.diagnostics.clone());
         }
