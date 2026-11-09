@@ -136,8 +136,8 @@ export const DEFAULT_SETTINGS: ValidSettings = {
   general: {
     reopenLastProject: true,
     confirmExit: true,
-    closeWithoutWelcome: true,
-    closeTabsWithWindow: true,
+    closeWithoutWelcome: false,
+    closeTabsWithWindow: false,
     ...DEFAULT_GENERAL_EXTRAS,
   },
   appearance: { theme: "light", accent: "#3871e1", uiFontSize: 13, locale: "en", ...DEFAULT_APPEARANCE_EXTRAS },

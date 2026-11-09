@@ -38,14 +38,14 @@ export function confirmExitEnabled(settings: Settings | null | undefined): boole
   return settings?.general?.confirmExit === true;
 }
 
-/** Last window exits instead of showing Welcome. Missing means on. */
+/** Last window exits instead of showing Welcome. Only an explicit choice does. */
 export function closeWithoutWelcomeEnabled(settings: Settings | null | undefined): boolean {
-  return settings?.general?.closeWithoutWelcome !== false;
+  return settings?.general?.closeWithoutWelcome === true;
 }
 
-/** A closed window does not restore its editor tabs next time. Missing means on. */
+/** A closed window does not restore its editor tabs next time. Only an explicit choice does. */
 export function closeTabsWithWindowEnabled(settings: Settings | null | undefined): boolean {
-  return settings?.general?.closeTabsWithWindow !== false;
+  return settings?.general?.closeTabsWithWindow === true;
 }
 
 /** The last project or LightEdit window shows Welcome instead of closing. */

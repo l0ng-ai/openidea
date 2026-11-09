@@ -63,18 +63,18 @@ describe("appearance & behavior settings", () => {
     });
   });
 
-  it("closes the last window without Welcome and drops its tabs unless turned off", () => {
+  it("keeps Welcome and saved tabs unless the user turns the new close behaviour on", () => {
     const fresh = validateSettings({});
-    expect(fresh.general.closeWithoutWelcome).toBe(true);
-    expect(fresh.general.closeTabsWithWindow).toBe(true);
-    const off = validateSettings({ general: { closeWithoutWelcome: false, closeTabsWithWindow: false } });
-    expect(off.general.closeWithoutWelcome).toBe(false);
-    expect(off.general.closeTabsWithWindow).toBe(false);
+    expect(fresh.general.closeWithoutWelcome).toBe(false);
+    expect(fresh.general.closeTabsWithWindow).toBe(false);
+    const on = validateSettings({ general: { closeWithoutWelcome: true, closeTabsWithWindow: true } });
+    expect(on.general.closeWithoutWelcome).toBe(true);
+    expect(on.general.closeTabsWithWindow).toBe(true);
     expect(
       validateSettings({ general: { closeWithoutWelcome: "yes", closeTabsWithWindow: 1 } } as never).general,
     ).toMatchObject({
-      closeWithoutWelcome: true,
-      closeTabsWithWindow: true,
+      closeWithoutWelcome: false,
+      closeTabsWithWindow: false,
     });
   });
 

@@ -153,23 +153,23 @@ describe("decideClose", () => {
     expect(confirmExitEnabled(null)).toBe(false);
   });
 
-  it("closes the last window instead of showing Welcome unless that is turned off", () => {
-    const off = { general: { closeWithoutWelcome: false } };
-    expect(closeWithoutWelcomeEnabled(null)).toBe(true);
-    expect(closeWithoutWelcomeEnabled({ general: {} })).toBe(true);
-    expect(closeWithoutWelcomeEnabled(off)).toBe(false);
-    expect(returnsToWelcome(false, 1, true, off)).toBe(true);
-    expect(returnsToWelcome(false, 1, true, null)).toBe(false);
-    expect(returnsToWelcome(false, 1, true, { general: { closeWithoutWelcome: true } })).toBe(false);
-    expect(returnsToWelcome(true, 1, true, off)).toBe(false);
-    expect(returnsToWelcome(false, 2, true, off)).toBe(false);
-    expect(returnsToWelcome(false, 1, false, off)).toBe(false);
+  it("returns to Welcome unless the user chooses to close the last window", () => {
+    const on = { general: { closeWithoutWelcome: true } };
+    expect(closeWithoutWelcomeEnabled(null)).toBe(false);
+    expect(closeWithoutWelcomeEnabled({ general: {} })).toBe(false);
+    expect(closeWithoutWelcomeEnabled(on)).toBe(true);
+    expect(returnsToWelcome(false, 1, true, null)).toBe(true);
+    expect(returnsToWelcome(false, 1, true, { general: {} })).toBe(true);
+    expect(returnsToWelcome(false, 1, true, on)).toBe(false);
+    expect(returnsToWelcome(true, 1, true, null)).toBe(false);
+    expect(returnsToWelcome(false, 2, true, null)).toBe(false);
+    expect(returnsToWelcome(false, 1, false, null)).toBe(false);
   });
 
-  it("drops editor tabs on close unless that is turned off", () => {
-    expect(closeTabsWithWindowEnabled(null)).toBe(true);
-    expect(closeTabsWithWindowEnabled({ general: {} })).toBe(true);
-    expect(closeTabsWithWindowEnabled({ general: { closeTabsWithWindow: false } })).toBe(false);
+  it("keeps editor tabs across a close unless the user chooses to drop them", () => {
+    expect(closeTabsWithWindowEnabled(null)).toBe(false);
+    expect(closeTabsWithWindowEnabled({ general: {} })).toBe(false);
+    expect(closeTabsWithWindowEnabled({ general: { closeTabsWithWindow: true } })).toBe(true);
   });
 
   it("includes dirty changes produced while preparing a custom document", async () => {
