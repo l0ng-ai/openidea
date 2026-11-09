@@ -1,4 +1,4 @@
-package openidea:plugin@1.4.0;
+package openidea:plugin@1.5.0;
 
 /// Optional export (world `plugin-diagnostics`): problems in the current,
 /// possibly unsaved document, for the languages declared with the
