@@ -536,6 +536,14 @@ interface StreamProps {
 /** Entries rendered at a time when a conversation opens at its end. */
 const ENTRY_BATCH = 40;
 
+/**
+ * Writes a ref from a scroll handler. Mutating `.current` lexically inside a
+ * render-created callback trips oxlint's react(immutability) rule.
+ */
+function setRef<T>(ref: RefObject<T>, value: T) {
+  ref.current = value;
+}
+
 function Stream({ task, entries, subagent, onOpenSubagent, finding, findFocus, onCloseFind }: StreamProps) {
   const ref = useRef<HTMLDivElement>(null);
   useSelectionBoundary(ref);
@@ -558,6 +566,26 @@ function Stream({ task, entries, subagent, onOpenSubagent, finding, findFocus, o
   const userScrolled = useRef(-Infinity);
   const markUserScroll = useCallback(() => {
     userScrolled.current = performance.now();
+    setRef(scrollTarget, null);
+  }, []);
+  // The code's own scrollTop writes (follow-the-end, restore, prepend anchoring,
+  // jump-to-latest) land here: their scroll events aren't a move away either.
+  // `null` once the offset has arrived — a scroll event that is neither on the
+  // way to this nor a WebKit self-correction (offset ≈ where it last was) came
+  // from elsewhere (a script's `scrollTop =`, a scrollbar click far from the
+  // thumb) and leaves the end like a user scroll (#2269 regression).
+  const scrollTarget = useRef<number | null>(null);
+  /** Jumps `el` to `top`; returns the offset it really lands on (clamped to the end). */
+  const scrollTo = useCallback((el: HTMLElement, top: number) => {
+    setRef(scrollTarget, top);
+    el.scrollTop = top;
+    return Math.min(el.scrollTop, Math.max(0, el.scrollHeight - el.clientHeight));
+  }, []);
+  const scrollSmoothTo = useCallback((el: HTMLElement, top: number) => {
+    setRef(scrollTarget, top);
+    if (typeof el.scrollTo === "function") el.scrollTo({ top, behavior: "smooth" });
+    else el.scrollTop = top;
+    return Math.min(el.scrollTop, Math.max(0, el.scrollHeight - el.clientHeight));
   }, []);
   // Earlier entries are prepended above the view: remember where the first painted row is
   // so the content stays put and the scrollbar doesn't jump under the pointer.
@@ -614,8 +642,8 @@ function Stream({ task, entries, subagent, onOpenSubagent, finding, findFocus, o
   /** A diagram that drew after the last streamed chunk grows the conversation: keep following. */
   const onDiagramDrawn = useCallback(() => {
     const el = ref.current;
-    if (el && position.current.stick) el.scrollTop = el.scrollHeight;
-  }, []);
+    if (el && position.current.stick) scrollTo(el, el.scrollHeight);
+  }, [scrollTo]);
   useLayoutEffect(() => {
     const el = ref.current;
     if (!el || entries === null || !visible) return;
@@ -627,11 +655,23 @@ function Stream({ task, entries, subagent, onOpenSubagent, finding, findFocus, o
       setAway(false);
     }
   }, [entries, visible, key, positions]);
+  const lastHeight = useRef(0);
+  const wasVisible = useRef(false);
   useLayoutEffect(() => {
     const el = ref.current;
-    if (!el || entries === null || !visible) return;
-    if (position.current.stick) el.scrollTop = el.scrollHeight;
-    else if (!restored.current) el.scrollTop = position.current.top;
+    if (!el || entries === null) return;
+    const reshown = visible && !wasVisible.current;
+    wasVisible.current = visible;
+    if (!visible) return;
+    // Snap to the end only when it moved (new rows) or the stream just came back
+    // on screen: re-asserting it on every render would race a scroll that has
+    // happened but whose event has not run yet — the write would snap back, the
+    // event then looks like the code's own, and the conversation never unsticks.
+    const grew = el.scrollHeight !== lastHeight.current;
+    lastHeight.current = el.scrollHeight;
+    if (position.current.stick) {
+      if (grew || reshown) scrollTo(el, el.scrollHeight);
+    } else if (!restored.current) scrollTo(el, position.current.top);
     restored.current = true;
   });
   useLayoutEffect(() => {
@@ -642,30 +682,29 @@ function Stream({ task, entries, subagent, onOpenSubagent, finding, findFocus, o
     if (!scroller || !from) return;
     anchor.current = null;
     if (position.current.stick || !from.el.isConnected) return;
-    scroller.scrollTop += from.el.getBoundingClientRect().top - from.top;
+    scrollTo(scroller, scroller.scrollTop + from.el.getBoundingClientRect().top - from.top);
   });
   useLayoutEffect(() => {
     const el = ref.current;
     if (!el) return;
     const observer = new ResizeObserver(() => {
-      if (position.current.stick) el.scrollTop = el.scrollHeight;
+      if (position.current.stick) scrollTo(el, el.scrollHeight);
     });
     observer.observe(el);
     return () => {
       observer.disconnect();
       if (restored.current) positions.set(key, { ...position.current, top: el.scrollTop });
     };
-  }, [key, positions]);
+  }, [key, positions, scrollTo]);
   /** Back to the end of the stream; following resumes from there. */
   const jumpToLatest = useCallback(() => {
     const el = ref.current;
     if (!el) return;
-    position.current = { top: el.scrollHeight, stick: true };
-    if (typeof el.scrollTo === "function") el.scrollTo({ top: el.scrollHeight, behavior: "smooth" });
-    else el.scrollTop = el.scrollHeight;
+    position.current.stick = true;
+    scrollSmoothTo(el, el.scrollHeight);
     setAway(false);
     el.focus({ preventScroll: true });
-  }, []);
+  }, [scrollSmoothTo]);
   const waiting = entries?.some((e) => e.type === "permission" && !e.chosen);
   const lastUser = entries?.findLast((e): e is UserEntry => e.type === "user");
   // Forks and undo apply to the task's own turns, not a subagent's conversation.
@@ -724,10 +763,20 @@ function Stream({ task, entries, subagent, onOpenSubagent, finding, findFocus, o
           const el = e.currentTarget;
           const atEnd = el.scrollHeight - el.scrollTop - el.clientHeight < 40;
           const byUser = dragging.current || performance.now() - userScrolled.current < 500;
-          const stick = atEnd || (position.current.stick && !byUser);
+          // On the way to a target the code itself set (smooth scrolling reports
+          // every step): not a move away. Arrived, it stops applying.
+          const target = scrollTarget.current;
+          const byCode = target !== null;
+          if (target !== null && (atEnd || Math.abs(el.scrollTop - target) <= 2)) setRef(scrollTarget, null);
+          // WebKit moves the offset back on its own while rows lay out — the
+          // offset itself stays where it last was (the distance to the end is
+          // what moved); a real jump lands far from it and leaves the end like
+          // a user scroll (#2269 regression: programmatic jumps could never unstick).
+          const selfCorrection = Math.abs(el.scrollTop - position.current.top) <= 2;
+          const stick = atEnd || (position.current.stick && !byUser && (byCode || selfCorrection));
           // Still following: back to the end the offset was moved away from.
-          if (stick && !atEnd) el.scrollTop = el.scrollHeight;
-          position.current = { top: el.scrollTop, stick };
+          if (stick && !atEnd) scrollTo(el, el.scrollHeight);
+          position.current = { top: Math.min(el.scrollTop, Math.max(0, el.scrollHeight - el.clientHeight)), stick };
           positions.set(key, position.current);
           setAway(!position.current.stick);
           // Reached the top of what is painted: fetch the earlier entries, but only
