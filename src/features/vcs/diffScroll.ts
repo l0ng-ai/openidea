@@ -175,6 +175,8 @@ export class UnalignedPanes {
     this.sync = opts.sync;
     this.extension = [gapMarks, changedLineGutters, EditorView.updateListener.of(() => this.schedule())];
     this.divider.className = "cm-diffDivider";
+    // A lone arrow is centred in the divider; a pair keeps to the two edges.
+    this.divider.classList.toggle("cm-diffDivider-lone", !!opts.arrows && opts.arrows.toA !== opts.arrows.toB);
     this.divider.setAttribute("data-wheel-scroll", "");
     this.svg.setAttribute("aria-hidden", "true");
     this.svg.appendChild(this.bandLayer);

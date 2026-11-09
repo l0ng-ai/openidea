@@ -185,12 +185,10 @@ export function clearProjectNotifications() {
   useNotifications.setState((s) => ({ items: s.items.filter((x) => x.group === "updates") }));
 }
 
-/** The list was seen: everything is read and no longer shown as a balloon. */
+/** The list was seen: its entries are read; unlogged balloons were not shown there. */
 export function markAllNotificationsRead() {
   useNotifications.setState((s) => ({
-    items: s.items
-      .filter((x) => x.logged)
-      .map((x) => (x.read && !x.balloon ? x : { ...x, read: true, balloon: false })),
+    items: s.items.map((x) => (!x.logged || (x.read && !x.balloon) ? x : { ...x, read: true, balloon: false })),
   }));
 }
 

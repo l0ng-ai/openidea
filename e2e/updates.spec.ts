@@ -1,4 +1,40 @@
-import { expect, test } from "./fixtures";
+import { expect, stubDesktop, test } from "./fixtures";
+
+for (const windowKind of ["project", "welcome", "lightEdit"]) {
+  test(`manual update answers stay visible in ${windowKind} with saved Notifications layout and logging off`, async ({
+    workbench: page,
+  }) => {
+    await stubDesktop(page);
+    await page.evaluate(async (kind) => {
+      const projectPath = "/src/platform/project.ts";
+      const layoutPath = "/src/workbench/toolwindows/store.ts";
+      const updatesPath = "/src/features/app/updates.tsx";
+      const { useProject } = await import(/* @vite-ignore */ projectPath);
+      const { useToolWindowLayout } = await import(/* @vite-ignore */ layoutPath);
+      const { checkForUpdates } = await import(/* @vite-ignore */ updatesPath);
+      const settings = useProject.getState().settings;
+      useProject.setState({
+        ...(kind === "project" ? {} : { project: null, lightEdit: kind === "lightEdit" }),
+        settings: {
+          ...settings,
+          notifications: { balloons: false, groups: { updates: { display: "none", log: false } } },
+        },
+      });
+      useToolWindowLayout.setState({
+        visible: { ...useToolWindowLayout.getState().visible, right: "notifications" },
+        maximized: null,
+      });
+      window.__ipc.handlers.app_check_update = () => ({
+        enabled: true,
+        update: { version: "99.0.0", currentVersion: "0.1.40", notes: null, date: null },
+      });
+      window.__ipc.handlers.app_update_announcement = () => true;
+      await checkForUpdates();
+    }, windowKind);
+    await expect(page.getByRole("status").filter({ hasText: "OpenIDEA 99.0.0 is available" })).toBeVisible();
+    await expect(page.getByRole("button", { name: "Install and Restart", exact: true })).toBeVisible();
+  });
+}
 
 test("Updates shows check status and keeps manual checks available when automatic checks are off", async ({
   workbench: page,

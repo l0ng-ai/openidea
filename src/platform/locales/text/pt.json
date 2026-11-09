@@ -2092,6 +2092,8 @@
   "Sign-off commit": "Assinar commit (sign-off)",
   "Size": "Tamanho",
   "Size:": "Tamanho:",
+  "Previous": "Anterior",
+  "Next": "Próximo",
   "Skip": "Ignorar",
   "Skip Commit": "Pular commit",
   "Skip if defined": "Ignorar se definido",

@@ -4,6 +4,7 @@
  */
 import { Harness, type Metrics, type Scenario } from "./lib/harness.ts";
 import { frameSummary, keySummary, latencySummary, totalBlockingTime } from "./lib/stats.ts";
+import { startTuiRowObserver, stopTuiRowObserver } from "./lib/tuiRows.ts";
 
 const ROOT = "/dev/acme-api";
 const SAMPLE = `${ROOT}/src/main/kotlin/com/acme/orders/service/OrderService.kt`;
@@ -185,6 +186,65 @@ const consoleOutput: Scenario = {
     return {
       // 250 frames of output at the display rate is the floor.
       streamMs: total,
+      ...frameSummary(frames, refresh),
+      ...keySummary(keys, refresh, "key"),
+      tbtMs: totalBlockingTime(await h.longTasksSince(t0)),
+    };
+  },
+};
+
+/**
+ * A full-screen agent TUI (Claude Code, Grok) repainting the terminal 10 times a second
+ * for 6 s — every row rewritten, only the spinner row changed — while the user types in
+ * an editor. Guards the terminal's unchanged-row skip: without it every frame restyles
+ * and lays out the whole screen.
+ */
+const TUI_FRAMES = 60;
+const terminalTui: Scenario = {
+  id: "terminalTui",
+  title: "Type while a full-screen TUI repaints the terminal",
+  async run(h) {
+    await h.openFile(SAMPLE);
+    const st = await h.editorState();
+    await h.setCursor(Math.floor((st?.length ?? 0) / 2));
+    // Open the terminal and let it settle before measuring.
+    const opened = await h.page.evaluate(() =>
+      (
+        window as never as { __openideaPerf: { runAction(id: string, arg?: unknown): Promise<boolean> } }
+      ).__openideaPerf.runAction("terminal.sampleTui", { frames: 1, fps: 10 }),
+    );
+    if (!opened) throw new Error("terminal.sampleTui is unavailable");
+    await h.page.waitForTimeout(300);
+    await h.setCursor((await h.editorState())?.head ?? 0);
+    const refresh = await h.refreshMs();
+    const t0 = await h.now();
+    const before = await h.counters();
+    await h.page.evaluate(startTuiRowObserver);
+    await h.inPage((p) => p.startFrames());
+    const stream = h.page.evaluate(
+      (frames) =>
+        (
+          window as never as { __openideaPerf: { runAction(id: string, arg?: unknown): Promise<boolean> } }
+        ).__openideaPerf.runAction("terminal.sampleTui", { frames, fps: 10 }),
+      TUI_FRAMES,
+    );
+    let keys: number[];
+    let rebuilt: number;
+    try {
+      await h.page.waitForTimeout(200);
+      await h.setCursor((await h.editorState())?.head ?? 0);
+      keys = await h.typeMeasured(TYPED.slice(0, 40), 70);
+      if (!(await stream)) throw new Error("terminal.sampleTui is unavailable");
+    } finally {
+      rebuilt = await h.page.evaluate(stopTuiRowObserver);
+    }
+    const frames = await h.inPage((p) => p.stopFrames());
+    const work = Harness.delta(before, await h.counters());
+    return {
+      // ~1 with unchanged rows left in place (only the spinner row changes), the screen height without.
+      rowsRebuiltPerTuiFrame: rebuilt / TUI_FRAMES,
+      styleLayoutMsPerTuiFrame: work.styleLayoutMs / TUI_FRAMES,
+      scriptMsPerTuiFrame: work.scriptMs / TUI_FRAMES,
       ...frameSummary(frames, refresh),
       ...keySummary(keys, refresh, "key"),
       tbtMs: totalBlockingTime(await h.longTasksSince(t0)),
@@ -740,6 +800,7 @@ export const SCENARIOS: Scenario[] = [
   typingAngular,
   completion,
   consoleOutput,
+  terminalTui,
   gitLog,
   gitLogScrollbar,
   resizePanels,

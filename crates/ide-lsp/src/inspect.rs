@@ -63,6 +63,17 @@ impl LspManager {
     /// run doesn't prompt to install every language it meets.
     pub fn serves_path(&self, path: &Path) -> bool {
         let lang = self.languages.detect(path, None);
+        let arduino = if lang.as_str() == "arduino" {
+            Some(self.servers_for(&lang, path))
+        } else {
+            self.arduino_servers(&lang, path)
+        };
+        if let Some(servers) = arduino {
+            return servers.iter().any(|server| {
+                let cfg = self.configured(server);
+                cfg.launch_error.is_none() && self.launcher.available(&cfg, &server.root)
+            });
+        }
         self.language_servers(&lang).iter().any(|ls| {
             if ls.require_root_marker
                 && crate::launch::marked_root(&self.project_root, path, &ls.root_markers).is_none()

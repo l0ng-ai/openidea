@@ -225,7 +225,7 @@ pub fn window_close_context(app: AppHandle, window: Window, windows: State<'_, W
         windows.pending_closes().iter().map(String::as_str).filter(|l| all.iter().any(|a| a == l)),
     );
     // Members of a tab group asking to close together are one window closing: the first of them
-    // is the last window left (it returns to the welcome screen); the others just close.
+    // is the last window left (the frontend may return it to the welcome screen); the others just close.
     let count = match pending.first() {
         Some(keeper) if pending.len() > 1 && keeper == window.label() => all.len() - pending.len() + 1,
         _ => all.len(),

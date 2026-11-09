@@ -459,7 +459,7 @@ function GroupTabs({ group }: { group: string }) {
             />
             <IconButton
               ref={menuRef}
-              icon="chevron-down"
+              icon="toolbar-expand"
               size="small"
               title="More Terminal Options"
               aria-haspopup="menu"
