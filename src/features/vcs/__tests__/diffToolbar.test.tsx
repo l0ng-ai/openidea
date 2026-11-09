@@ -232,6 +232,50 @@ describe("Diff toolbar", () => {
       useProject.setState({ settings: null as never });
     });
 
+    it.each([
+      { mode: "split", alignChanges: false },
+      { mode: "split", alignChanges: true },
+      { mode: "unified", alignChanges: false },
+    ])("reconfigures $mode (aligned: $alignChanges) without losing selection", async ({ mode, alignChanges }) => {
+      editorSettings(true, "*.ts");
+      localStorage.setItem("openidea.vcs.diffOptions", JSON.stringify({ mode, alignChanges }));
+      const mounted = render(
+        <>
+          <DiffEditor input={input} />
+          <ContextMenuHost />
+        </>,
+      );
+      const count = mode === "split" ? 2 : 1;
+      await waitFor(() => expect(document.querySelectorAll(".cm-editor")).toHaveLength(count));
+      const views = [...document.querySelectorAll<HTMLElement>(".cm-editor")].map((dom) =>
+        EditorView.findFromDOM(dom)!,
+      );
+      for (const view of views) view.dispatch({ selection: { anchor: 1 } });
+      expect(wrapped()).toEqual(Array(count).fill(true));
+      // Settings changes still apply until an explicit viewer override is made.
+      editorSettings(false);
+      await waitFor(() => expect(wrapped()).toEqual(Array(count).fill(false)));
+      editorSettings(true, "*.ts");
+      await waitFor(() => expect(wrapped()).toEqual(Array(count).fill(true)));
+      fireEvent.click(screen.getByRole("button", { name: "Settings" }));
+      fireEvent.click(await screen.findByRole("menuitemcheckbox", { name: "Use Soft Wraps" }));
+      await waitFor(() => expect(wrapped()).toEqual(Array(count).fill(false)));
+      expect(JSON.parse(localStorage.getItem("openidea.vcs.diffOptions")!).softWrap).toBe(false);
+      editorSettings(true, "*");
+      await waitFor(() => expect(wrapped()).toEqual(Array(count).fill(false)));
+      for (const view of views) {
+        expect(view.dom.isConnected).toBe(true);
+        expect(EditorView.findFromDOM(view.dom)).toBe(view);
+        expect(view.state.selection.main.head).toBe(1);
+      }
+      mounted.unmount();
+      render(<DiffEditor input={input} />);
+      await waitFor(() => expect(document.querySelectorAll(".cm-editor")).toHaveLength(count));
+      expect(wrapped()).toEqual(Array(count).fill(false));
+      useProject.setState({ settings: null as never });
+      localStorage.clear();
+    });
+
     it("turn on from the settings menu and stay on", async () => {
       editorSettings(true);
       const mounted = render(

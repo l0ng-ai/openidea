@@ -50,6 +50,11 @@ describe("diff options", () => {
     expect(parseDiffOptions({ mode: "unified" }).softWrap).toBeNull();
   });
 
+  it.each([true, false, null])("round-trips the soft-wrap override %s", (softWrap) => {
+    const options = { ...DEFAULT_DIFF_OPTIONS, softWrap };
+    expect(parseDiffOptions(JSON.parse(JSON.stringify(options)))).toEqual(options);
+  });
+
   it("ignore whitespace policies", () => {
     const a = "fn main() {\n  let x = 1;\n}\n";
     const indented = "fn main() {\n    let x = 1;   \n}\n";
