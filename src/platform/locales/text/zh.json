@@ -5464,8 +5464,6 @@
   "Choose a WAR artifact": "请选择 WAR 构件",
   "Choose a Maven WAR module": "请选择 Maven WAR 模块",
   "Choose a Gradle WAR module": "请选择 Gradle WAR 模块",
-  "Build the selected WAR artifact before launching Tomcat": "请先构建所选 WAR 构件，再启动 Tomcat",
-  "Build the WAR artifact before launching Tomcat": "请先构建 WAR 构件，再启动 Tomcat",
   "The built WAR artifact does not exist: {path}": "构建的 WAR 构件不存在：{path}",
   "Cannot resolve Maven WAR artifact: {details}": "无法解析 Maven WAR 构件：{details}",
   "Choose a WAR file or exploded directory": "请选择 WAR 文件或展开目录",
