@@ -78,6 +78,7 @@ export function withoutDuplicates(items: readonly CompletionItem[]): CompletionI
       it.server,
       it.label,
       it.labelDetail,
+      it.labelDescription,
       it.detail,
       it.kind,
       it.insertText,
@@ -111,9 +112,16 @@ export function importSource(item: Pick<CompletionItem, "additionalEdits">): str
   return null;
 }
 
-/** Text of the right-aligned type column: the detail, with the import source when it lacks one. */
-export function typeColumnText(item: Pick<CompletionItem, "detail" | "additionalEdits">): string | null {
-  const detail = item.detail?.replace(/\s+/g, " ") || null;
+/**
+ * Text of the right-aligned type column: the label description (`void`, `String`), else the
+ * detail, with the import source when it lacks one. JDT.LS sends the whole signature as `detail`
+ * (`PrintStream.print(Object obj) : void`), which would repeat the name and parameters already
+ * shown next to the label; the documentation panel still shows it.
+ */
+export function typeColumnText(
+  item: Pick<CompletionItem, "detail" | "additionalEdits"> & { labelDescription?: string | null },
+): string | null {
+  const detail = (item.labelDescription?.trim() || item.detail)?.replace(/\s+/g, " ") || null;
   const source = importSource(item);
   if (!source || detail?.includes(source)) return detail;
   return !detail || /^auto[- ]?import$/i.test(detail) ? source : `${detail} (${source})`;
