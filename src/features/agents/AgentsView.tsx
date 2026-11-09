@@ -26,7 +26,7 @@ import { useTx } from "@/platform/i18n";
 import { executeAction } from "@/platform/actions";
 
 export function AgentsHeaderActions() {
-  return <IconButton icon="plus" action="agents.newTask" size="small" />;
+  return <IconButton icon="plus" action="agents.newTask" />;
 }
 
 export function AgentsLocationActions() {
@@ -34,13 +34,8 @@ export function AgentsLocationActions() {
   const tx = useTx();
   return (
     <div role="group" aria-label={tx("Conversation location")} className={styles.location}>
-      <IconButton
-        icon="open-in-tool-window"
-        action="agents.useToolWindow"
-        pressed={location === "toolWindow"}
-        size="small"
-      />
-      <IconButton icon="editor-only" action="agents.useEditor" pressed={location === "editor"} size="small" />
+      <IconButton icon="open-in-tool-window" action="agents.useToolWindow" pressed={location === "toolWindow"} />
+      <IconButton icon="editor-only" action="agents.useEditor" pressed={location === "editor"} />
     </div>
   );
 }
@@ -242,7 +237,6 @@ export function AgentsView() {
                 ref={historyRef}
                 icon="history"
                 title="Agent sessions"
-                size="small"
                 aria-haspopup="dialog"
                 aria-expanded={historyOpen}
                 onClick={() => {

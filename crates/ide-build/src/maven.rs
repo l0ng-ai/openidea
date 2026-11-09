@@ -8,10 +8,13 @@
 //! later replaces plugins and dependencies with the effective build.
 
 use crate::xml::{self, Element};
+use ide_core::{Pos, Range};
 use serde::{Deserialize, Serialize};
 use specta::Type;
 use std::collections::{BTreeMap, HashMap, HashSet};
+use std::io::Read;
 use std::path::{Path, PathBuf};
+use std::sync::{Mutex, OnceLock};
 
 /// Phases shown under "Lifecycle" (IDEA's default list).
 pub const LIFECYCLE: &[&str] =
@@ -68,6 +71,9 @@ pub struct MavenModel {
 #[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize, Type)]
 #[serde(rename_all = "camelCase")]
 pub struct MavenProject {
+    /// Owning project folder when displayed in a workspace.
+    #[specta(optional)]
+    pub project_root: Option<String>,
     /// Project-relative, `/`-separated (`pom.xml`, `core/pom.xml`).
     pub pom: String,
     /// Project-relative directory; `""` = the project root.
@@ -166,6 +172,9 @@ pub enum Omission {
 #[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize, Type)]
 #[serde(rename_all = "camelCase")]
 pub struct MavenProfile {
+    /// Owning project folder when displayed in a workspace.
+    #[specta(optional)]
+    pub project_root: Option<String>,
     pub id: String,
     pub active_by_default: bool,
 }
@@ -243,7 +252,8 @@ struct RawPom {
     plugins: Vec<RawPlugin>,
     managed_plugins: Vec<RawPlugin>,
     profiles: Vec<RawProfile>,
-    /// `<build><plugins>` `maven-compiler-plugin` `<release>` / `<source>`.
+    /// `maven-compiler-plugin` `<release>` / `<source>` of `<build><plugins>`, else of
+    /// `<pluginManagement>`.
     compiler_release: Option<String>,
 }
 
@@ -298,6 +308,16 @@ fn read_build(e: &Element, plugins: &mut Vec<RawPlugin>, managed: &mut Vec<RawPl
     managed.extend(e.list("build/pluginManagement/plugins", "plugin").into_iter().filter_map(read_plugin));
 }
 
+/// `maven-compiler-plugin` `<release>` / `<source>` among the plugins at `path`.
+fn compiler_level(project: &Element, path: &str) -> Option<String> {
+    project
+        .list(path, "plugin")
+        .into_iter()
+        .find(|p| p.text_of("artifactId").as_deref() == Some("maven-compiler-plugin"))
+        .and_then(|p| p.child("configuration"))
+        .and_then(|c| c.text_of("release").or_else(|| c.text_of("source")))
+}
+
 fn read_raw(project: &Element) -> RawPom {
     let parent = project.child("parent").and_then(|p| {
         Some(ParentRef {
@@ -326,13 +346,8 @@ fn read_raw(project: &Element) -> RawPom {
         ..RawPom::default()
     };
     read_build(project, &mut pom.plugins, &mut pom.managed_plugins);
-    if let Some(c) = pom.plugins.iter().position(|p| p.artifact_id == "maven-compiler-plugin") {
-        let plugin =
-            project.list("build/plugins", "plugin").into_iter().filter(|p| p.text_of("artifactId").is_some()).nth(c);
-        if let Some(cfg) = plugin.and_then(|p| p.child("configuration")) {
-            pom.compiler_release = cfg.text_of("release").or_else(|| cfg.text_of("source"));
-        }
-    }
+    pom.compiler_release =
+        compiler_level(project, "build/plugins").or_else(|| compiler_level(project, "build/pluginManagement/plugins"));
     for p in project.list("profiles", "profile") {
         let mut profile = RawProfile {
             id: p.text_of("id").unwrap_or_else(|| "default".into()),
@@ -409,6 +424,9 @@ struct Inherited {
     managed: Vec<RawDep>,
     plugins: Vec<RawPlugin>,
     managed_plugins: Vec<RawPlugin>,
+    /// The nearest `maven-compiler-plugin` `<release>` / `<source>`: a module usually
+    /// inherits its compiler level from the parent's (managed) plugin configuration.
+    compiler_release: Option<String>,
     /// `<id>`, `activeByDefault`: profiles of the POM and its ancestors —
     /// Maven lets a child enable a parent's profiles with `-P`.
     profiles: Vec<(String, bool)>,
@@ -449,25 +467,77 @@ const MAX_PARENT_DEPTH: usize = 10;
 
 struct Resolver {
     local_repo: Option<PathBuf>,
+    /// The chosen profiles (`-P` entries; `!id` / `-id` deactivates).
+    profiles: Vec<String>,
     poms: HashMap<PathBuf, Option<RawPom>>,
     contexts: HashMap<PathBuf, Inherited>,
 }
 
 /// `~/.m2/repository`, or `<localRepository>` from `~/.m2/settings.xml`.
-pub(crate) fn default_local_repo() -> Option<PathBuf> {
+pub fn default_local_repo() -> Option<PathBuf> {
     let m2 = dirs::home_dir()?.join(".m2");
-    if let Some(settings) = std::fs::read_to_string(m2.join("settings.xml")).ok().and_then(|t| xml::parse(&t))
-        && let Some(repo) = settings.text_of("localRepository")
-    {
-        let home = dirs::home_dir().map(|h| h.to_string_lossy().into_owned()).unwrap_or_default();
-        return Some(PathBuf::from(repo.replace("${user.home}", &home)));
+    local_repository_of(&m2.join("settings.xml")).or(Some(m2.join("repository")))
+}
+
+/// The user `settings.xml` a build reads: the configured one (`~/` and project-relative
+/// paths allowed), else `~/.m2/settings.xml`.
+pub fn user_settings_file(root: &Path, settings: &ide_core::settings::MavenSettings) -> Option<PathBuf> {
+    let configured = settings.user_settings.trim();
+    if configured.is_empty() {
+        return Some(dirs::home_dir()?.join(".m2").join("settings.xml"));
     }
-    Some(m2.join("repository"))
+    let path = match configured.strip_prefix("~/") {
+        Some(rest) => dirs::home_dir()?.join(rest),
+        None => PathBuf::from(configured),
+    };
+    Some(if path.is_absolute() { path } else { root.join(path) })
+}
+
+/// The profiles a `settings.xml` defines, for the Profiles list beside the POMs' own (as
+/// IDEA lists them): checked by default when `<activeProfiles>` names them or they are
+/// `activeByDefault`.
+pub fn settings_profiles(settings: &Path) -> Vec<MavenProfile> {
+    let Some(root) = std::fs::read_to_string(settings).ok().and_then(|text| xml::parse(&text)) else {
+        return Vec::new();
+    };
+    let active: Vec<String> =
+        root.list("activeProfiles", "activeProfile").iter().map(|e| e.text.trim().to_owned()).collect();
+    let mut profiles: Vec<MavenProfile> = Vec::new();
+    for profile in root.list("profiles", "profile") {
+        let Some(id) = profile.text_of("id") else { continue };
+        if profiles.iter().any(|p| p.id == id) {
+            continue;
+        }
+        let by_default = profile.at("activation/activeByDefault").is_some_and(|e| e.text.trim() == "true");
+        profiles.push(MavenProfile { active_by_default: by_default || active.contains(&id), id, ..Default::default() });
+    }
+    profiles
+}
+
+/// `<localRepository>` of a settings file, when it names one: the repository a build
+/// with `-s <file>` resolves into, which is not necessarily the user's default.
+pub fn local_repository_of(settings: &Path) -> Option<PathBuf> {
+    let text = std::fs::read_to_string(settings).ok()?;
+    let root = xml::parse(&text)?;
+    let repo = root.text_of("localRepository")?.trim().to_owned();
+    if repo.is_empty() {
+        return None;
+    }
+    let home = dirs::home_dir().map(|h| h.to_string_lossy().into_owned()).unwrap_or_default();
+    Some(PathBuf::from(repo.replace("${user.home}", &home)))
 }
 
 impl Resolver {
-    fn new(local_repo: Option<PathBuf>) -> Self {
-        Self { local_repo, poms: HashMap::new(), contexts: HashMap::new() }
+    fn new(local_repo: Option<PathBuf>, profiles: &[String]) -> Self {
+        Self { local_repo, profiles: profiles.to_vec(), poms: HashMap::new(), contexts: HashMap::new() }
+    }
+
+    /// The active profiles of a POM: the chosen ones, and the `activeByDefault` ones not turned
+    /// off while none of the POM's other profiles is chosen (Maven's rule).
+    fn active<'a>(&self, profiles: &'a [RawProfile]) -> impl Iterator<Item = &'a RawProfile> {
+        let chosen = |id: &str| profile_choice(&self.profiles, id);
+        let any_chosen = profiles.iter().any(|p| chosen(&p.id) == Some(true));
+        profiles.iter().filter(move |p| chosen(&p.id).unwrap_or(p.active_by_default && !any_chosen))
     }
 
     fn pom(&mut self, path: &Path) -> Option<RawPom> {
@@ -529,7 +599,10 @@ impl Resolver {
         merge_by(&mut ctx.deps, &pom.deps, RawDep::key);
         merge_plugins(&mut ctx.plugins, &pom.plugins);
         merge_plugins(&mut ctx.managed_plugins, &pom.managed_plugins);
-        for p in pom.profiles.iter().filter(|p| p.active_by_default) {
+        if pom.compiler_release.is_some() {
+            ctx.compiler_release = pom.compiler_release.clone();
+        }
+        for p in self.active(&pom.profiles) {
             merge_by(&mut ctx.properties, &p.properties, |(k, _)| k.clone());
             merge_by(&mut ctx.deps, &p.deps, RawDep::key);
             merge_plugins(&mut ctx.plugins, &p.plugins);
@@ -645,7 +718,7 @@ pub(crate) fn launch_inputs(
         }
         Some(())
     }
-    let mut resolver = Resolver::new(local_repo.or_else(default_local_repo));
+    let mut resolver = Resolver::new(local_repo.or_else(default_local_repo), &[]);
     let mut out = Vec::new();
     for project in projects {
         let dir = root.join(&project.dir);
@@ -688,7 +761,76 @@ pub fn goal_prefix(artifact_id: &str) -> String {
     artifact_id.strip_suffix("-plugin").unwrap_or(artifact_id).to_owned()
 }
 
-/// Goals of well-known plugins (their plugin descriptors are not read).
+/// Goals of every plugin jar read so far, by the path of that jar.
+static DESCRIPTOR: OnceLock<Mutex<HashMap<String, Vec<String>>>> = OnceLock::new();
+
+/// `<goal>` names of the plugin descriptor inside its jar (`META-INF/maven/plugin.xml`),
+/// which is where Maven itself takes the list `plugin:help` prints. Empty when the jar
+/// is not in the local repository yet.
+fn descriptor_goals(repo: &Path, group_id: &str, artifact_id: &str, version: &str) -> Vec<String> {
+    // Keyed by the jar itself, not by its coordinates: a repository can be replaced
+    // between runs, and a test's empty repository must not answer for another's.
+    // One `push` per group segment: the layout is `<repo>/<group as directories>/…` on
+    // every platform, Windows' separator included.
+    let mut dir = repo.to_path_buf();
+    dir.extend(group_id.split('.'));
+    dir.push(artifact_id);
+    dir.push(version);
+    let Some(jar) = plugin_jar(&dir, artifact_id, version) else { return Vec::new() };
+    let key = jar.to_string_lossy().into_owned();
+    let cache = DESCRIPTOR.get_or_init(|| Mutex::new(HashMap::new()));
+    if let Some(cached) = cache.lock().unwrap_or_else(|e| e.into_inner()).get(&key) {
+        return cached.clone();
+    }
+    // A failed read is not remembered: the jar may be half written by Maven right now.
+    let Some(goals) = read_descriptor(&jar) else { return Vec::new() };
+    cache.lock().unwrap_or_else(|e| e.into_inner()).insert(key, goals.clone());
+    goals
+}
+
+/// The plugin's jar in its version directory: `<artifactId>-<version>.jar`, or — for a
+/// SNAPSHOT installed from a repository, whose file name carries a timestamp — the newest
+/// `<artifactId>-*.jar` that is neither sources nor javadoc.
+fn plugin_jar(dir: &Path, artifact_id: &str, version: &str) -> Option<PathBuf> {
+    let exact = dir.join(format!("{artifact_id}-{version}.jar"));
+    if exact.is_file() {
+        return Some(exact);
+    }
+    let prefix = format!("{artifact_id}-");
+    let mut best: Option<(std::time::SystemTime, PathBuf)> = None;
+    for entry in std::fs::read_dir(dir).ok()?.flatten() {
+        let path = entry.path();
+        let Some(name) = path.file_name().and_then(|n| n.to_str()) else { continue };
+        if !name.starts_with(&prefix) || !name.ends_with(".jar") || name.ends_with("-sources.jar") {
+            continue;
+        }
+        if name.ends_with("-javadoc.jar") {
+            continue;
+        }
+        let Ok(modified) = entry.metadata().and_then(|m| m.modified()) else { continue };
+        if best.as_ref().is_none_or(|(at, _)| modified > *at) {
+            best = Some((modified, path));
+        }
+    }
+    best.map(|(_, p)| p)
+}
+
+fn read_descriptor(jar: &Path) -> Option<Vec<String>> {
+    let file = std::fs::File::open(jar).ok()?;
+    let mut archive = zip::ZipArchive::new(file).ok()?;
+    let mut entry = archive.by_name("META-INF/maven/plugin.xml").ok()?;
+    let mut text = String::new();
+    entry.read_to_string(&mut text).ok()?;
+    let root = xml::parse(&text)?;
+    let mut goals: Vec<String> =
+        root.list("mojos", "mojo").iter().filter_map(|m| m.text_of("goal")).map(|g| g.trim().to_owned()).collect();
+    goals.retain(|g| !g.is_empty());
+    goals.sort();
+    goals.dedup();
+    Some(goals)
+}
+
+/// Goals of well-known plugins, for a jar that is not in the local repository yet.
 fn known_goals(artifact_id: &str) -> &'static [&'static str] {
     match artifact_id {
         "maven-clean-plugin" => &["clean", "help"],
@@ -840,9 +982,27 @@ fn lifecycle_plugins(packaging: &str) -> &'static [&'static str] {
     }
 }
 
-/// A plugin as shown in the tree: execution goals plus the plugin's known goals, sorted.
-pub(crate) fn plugin(group_id: &str, artifact_id: &str, version: Option<String>, goals: &[String]) -> MavenPlugin {
+/// A plugin as shown in the tree: the goals its jar declares, the ones known by name for
+/// the common plugins, and the ones the project binds in `<executions>`, sorted. IDEA lists
+/// a plugin's goals the same way, which is why a plugin outside the table (checkstyle, say)
+/// still shows every goal it offers instead of only the bound one.
+pub(crate) fn plugin(
+    group_id: &str,
+    artifact_id: &str,
+    version: Option<String>,
+    goals: &[String],
+    local_repo: Option<&Path>,
+) -> MavenPlugin {
     let mut all: Vec<String> = known_goals(artifact_id).iter().map(|g| (*g).to_owned()).collect();
+    let repo = local_repo.map(Path::to_path_buf).or_else(default_local_repo);
+    // An unresolved `${…}` version names no jar: the table and the bound goals stand in.
+    if let (Some(repo), Some(version)) = (repo.as_deref(), version.as_deref().filter(|v| !v.contains("${"))) {
+        for g in descriptor_goals(repo, group_id, artifact_id, version) {
+            if !all.contains(&g) {
+                all.push(g);
+            }
+        }
+    }
     for g in goals {
         if !all.contains(g) {
             all.push(g.clone());
@@ -860,45 +1020,18 @@ pub(crate) fn plugin(group_id: &str, artifact_id: &str, version: Option<String>,
 
 // ---------------------------------------------------------------- loading
 
-/// Directories never searched for POMs.
-const SKIP_DIRS: &[&str] = &["node_modules", "target", "build", "out", "dist", "src", "vendor"];
 const MAX_PROJECTS: usize = 1000;
-const POM_SEARCH_DEPTH: usize = 3;
 
 fn rel_path(root: &Path, p: &Path) -> String {
     p.strip_prefix(root).unwrap_or(p).to_string_lossy().replace('\\', "/")
 }
 
 /// The POMs that are not modules of another one: the root `pom.xml`, else the
-/// shallowest `pom.xml` of each branch (a folder holding several builds).
+/// shallowest `pom.xml` of each branch (a folder holding several builds). An
+/// aggregate POM directly inside `src/` counts too (issue #1001: `src/pom.xml`
+/// with its modules beside it, `src/app/pom.xml` and so on).
 fn top_level_poms(root: &Path) -> Vec<PathBuf> {
-    let top = root.join("pom.xml");
-    if top.is_file() {
-        return vec![top];
-    }
-    let mut out = Vec::new();
-    let mut queue: Vec<(PathBuf, usize)> = vec![(root.to_path_buf(), 0)];
-    while let Some((dir, depth)) = queue.pop() {
-        let Ok(entries) = std::fs::read_dir(&dir) else { continue };
-        let mut dirs: Vec<PathBuf> = Vec::new();
-        for e in entries.flatten() {
-            let name = e.file_name().to_string_lossy().into_owned();
-            if e.file_type().is_ok_and(|t| t.is_dir()) && !name.starts_with('.') && !SKIP_DIRS.contains(&name.as_str())
-            {
-                dirs.push(e.path());
-            }
-        }
-        dirs.sort();
-        for d in dirs.into_iter().rev() {
-            if d.join("pom.xml").is_file() {
-                out.push(d.join("pom.xml"));
-            } else if depth + 1 < POM_SEARCH_DEPTH {
-                queue.push((d, depth + 1));
-            }
-        }
-    }
-    out.sort();
-    out
+    ide_core::project_roots::discover(root, &["pom.xml"]).into_iter().map(|dir| dir.join("pom.xml")).collect()
 }
 
 /// Whether `root` holds a Maven build (cheap: the same search as [`load`] without parsing).
@@ -934,12 +1067,77 @@ pub fn load(root: &Path) -> MavenModel {
     load_with_repo(root, default_local_repo())
 }
 
+/// [`load`] with the POMs `settings` link (Add Maven Projects).
+pub fn load_linked(root: &Path, settings: &ide_core::settings::MavenSettings) -> MavenModel {
+    load_with_linked(root, default_local_repo(), &settings.profiles(&[]), &settings.linked_projects)
+}
+
 pub(crate) fn load_with_repo(root: &Path, local_repo: Option<PathBuf>) -> MavenModel {
-    let mut resolver = Resolver::new(local_repo);
+    load_with(root, local_repo, &[])
+}
+
+/// The `-P` entries' choice for profile `id`: on, off (`!id` / `-id`), or none (the last wins).
+fn profile_choice(chosen: &[String], id: &str) -> Option<bool> {
+    chosen.iter().rev().find_map(|c| {
+        let c = c.trim();
+        if c == id {
+            Some(true)
+        } else if c.strip_prefix('!').or_else(|| c.strip_prefix('-')) == Some(id) {
+            Some(false)
+        } else {
+            None
+        }
+    })
+}
+
+pub(crate) fn load_with(root: &Path, local_repo: Option<PathBuf>, profiles: &[String]) -> MavenModel {
+    load_with_linked(root, local_repo, profiles, &[])
+}
+
+/// The POMs of `linked` (project-relative, from Settings) that exist inside `root`.
+fn linked_poms(root: &Path, linked: &[String]) -> Vec<PathBuf> {
+    let base = dunce::canonicalize(root).unwrap_or_else(|_| root.to_path_buf());
+    let mut out: Vec<PathBuf> = Vec::new();
+    for pom in linked {
+        let pom = normalized_pom(pom);
+        if pom.is_empty() || pom.starts_with("../") || pom == ".." {
+            continue;
+        }
+        let path = root.join(&pom);
+        let inside = dunce::canonicalize(&path).is_ok_and(|p| p.starts_with(&base));
+        if path.is_file() && inside && !out.contains(&path) {
+            out.push(path);
+        }
+    }
+    out
+}
+
+/// Whether `root` holds a Maven build or the settings link one inside it.
+pub fn has_projects(root: &Path, settings: &ide_core::settings::MavenSettings) -> bool {
+    is_maven_project(root) || !linked_poms(root, &settings.linked_projects).is_empty()
+}
+
+/// The model with the chosen `profiles` (`-P` entries; `!id` deactivates: their modules,
+/// dependencies and properties are part of the model, those turned off are not) and the
+/// `linked` POMs (Add Maven Projects): builds that no reactor lists, shown as independent
+/// top-level projects. A linked POM that turns out to be a module of the root reactor stays that module.
+pub fn load_with_linked(
+    root: &Path,
+    local_repo: Option<PathBuf>,
+    profiles: &[String],
+    linked: &[String],
+) -> MavenModel {
+    let mut resolver = Resolver::new(local_repo, profiles);
     let mut model = MavenModel::default();
     let mut seen: HashSet<PathBuf> = HashSet::new();
-    // (pom, aggregated)
-    let mut stack: Vec<(PathBuf, bool)> = top_level_poms(root).into_iter().rev().map(|p| (p, false)).collect();
+    let mut tops = top_level_poms(root);
+    for pom in linked_poms(root, linked) {
+        if !tops.contains(&pom) {
+            tops.push(pom);
+        }
+    }
+    // (pom, aggregated); the root reactor and its modules come before linked POMs.
+    let mut stack: Vec<(PathBuf, bool)> = tops.into_iter().rev().map(|p| (p, false)).collect();
     while let Some((path, aggregated)) = stack.pop() {
         if model.projects.len() >= MAX_PROJECTS {
             break;
@@ -955,7 +1153,7 @@ pub(crate) fn load_with_repo(root: &Path, local_repo: Option<PathBuf>) -> MavenM
         let i = |s: &str| interpolate(s, &props);
 
         let mut module_names: Vec<String> = pom.modules.clone();
-        for p in pom.profiles.iter().filter(|p| p.active_by_default) {
+        for p in resolver.active(&pom.profiles) {
             module_names.extend(p.modules.iter().cloned());
         }
         let mut modules: Vec<PathBuf> = Vec::new();
@@ -1007,24 +1205,25 @@ pub(crate) fn load_with_repo(root: &Path, local_repo: Option<PathBuf>) -> MavenM
                     .or_else(|| ctx.managed_plugins.iter().find(|m| m.key() == p.key()).and_then(|m| m.version.clone()))
                     .map(|v| i(&v))
                     .filter(|v| !v.contains("${"));
-                plugin(&i(&p.group_id), &i(&p.artifact_id), version, &p.goals)
+                plugin(&i(&p.group_id), &i(&p.artifact_id), version, &p.goals, resolver.local_repo.as_deref())
             })
             .collect();
 
         let jv = ["maven.compiler.release", "java.version", "maven.compiler.source", "maven.compiler.target"]
             .iter()
             .find_map(|k| props.get(*k).map(|v| i(v)))
-            .or_else(|| pom.compiler_release.as_deref().map(i))
+            .or_else(|| ctx.compiler_release.as_deref().map(i))
             .and_then(|v| java_version(&v));
 
         // The project can activate the profiles of its own POM and its ancestors'.
         for (id, active) in &ctx.profiles {
             if !model.profiles.iter().any(|x| x.id == *id) {
-                model.profiles.push(MavenProfile { id: id.clone(), active_by_default: *active });
+                model.profiles.push(MavenProfile { id: id.clone(), active_by_default: *active, ..Default::default() });
             }
         }
         let artifact_id = i(&pom.artifact_id);
         model.projects.push(MavenProject {
+            project_root: None,
             pom: rel_path(root, &path),
             dir: rel_path(root, &dir),
             group_id: i(props.get("project.groupId").map(String::as_str).unwrap_or_default()),
@@ -1061,7 +1260,7 @@ impl UnlinkedProjects {
         if settings.unlinked_projects.is_empty() {
             return Self::default();
         }
-        Self::from_model(&load(root), settings)
+        Self::from_model(&load_linked(root, settings), settings)
     }
 
     pub fn from_model(model: &MavenModel, settings: &ide_core::settings::MavenSettings) -> Self {
@@ -1085,6 +1284,40 @@ impl UnlinkedProjects {
 
     pub fn poms(&self) -> impl Iterator<Item = &str> {
         self.poms.iter().map(String::as_str)
+    }
+
+    /// The POMs the Java language server should import when an unlinked POM is a module of a
+    /// linked reactor, else `None` (excluding the unlinked directories is enough then).
+    ///
+    /// jdtls imports an aggregator together with all of its modules, whatever its import
+    /// exclusions say, so a reactor keeping an unlinked module is left out; its other linked
+    /// modules are listed on their own. Such an aggregator (`pom` packaging) has no sources.
+    pub fn import_poms(&self, model: &MavenModel) -> Option<Vec<String>> {
+        let linked: Vec<&MavenProject> = model.projects.iter().filter(|p| !self.contains(&p.pom)).collect();
+        if !linked.iter().any(|p| p.modules.iter().any(|m| self.contains(m))) {
+            return None;
+        }
+        let by_pom: std::collections::HashMap<String, &MavenProject> =
+            model.projects.iter().map(|p| (normalized_pom(&p.pom), p)).collect();
+        // Whether `pom`'s module tree reaches an unlinked POM.
+        let reaches_unlinked = |pom: &str| {
+            let mut seen = std::collections::HashSet::new();
+            let mut pending = vec![normalized_pom(pom)];
+            while let Some(pom) = pending.pop() {
+                if !seen.insert(pom.clone()) {
+                    continue;
+                }
+                let Some(project) = by_pom.get(&pom) else { continue };
+                for module in &project.modules {
+                    if self.contains(module) {
+                        return true;
+                    }
+                    pending.push(normalized_pom(module));
+                }
+            }
+            false
+        };
+        Some(linked.into_iter().filter(|p| !reaches_unlinked(&p.pom)).map(|p| normalized_pom(&p.pom)).collect())
     }
 
     pub fn filter(&self, model: &mut MavenModel) {
@@ -1119,6 +1352,16 @@ pub fn build_files(root: &Path, model: &MavenModel) -> Vec<PathBuf> {
 /// Projects and their plugins / dependencies from `mvn help:effective-pom` output
 /// (`<project>` or `<projects>`), keyed `groupId:artifactId`.
 pub fn parse_effective_pom(text: &str) -> Vec<(String, Vec<MavenPlugin>, Vec<MavenDependency>)> {
+    parse_effective_pom_in(text, None)
+}
+
+/// The same, with the local repository the project actually builds against (a
+/// `-Dmaven.repo.local` of the build, say): the plugin goals come from jars there,
+/// rather than from the user's default one.
+pub fn parse_effective_pom_in(
+    text: &str,
+    local_repo: Option<&Path>,
+) -> Vec<(String, Vec<MavenPlugin>, Vec<MavenDependency>)> {
     let Some(root) = xml::parse(text) else { return Vec::new() };
     let projects: Vec<&Element> =
         if root.name == "projects" { root.children_named("project").collect() } else { vec![&root] };
@@ -1130,7 +1373,7 @@ pub fn parse_effective_pom(text: &str) -> Vec<(String, Vec<MavenPlugin>, Vec<Mav
             let plugins = raw
                 .plugins
                 .iter()
-                .map(|pl| plugin(&pl.group_id, &pl.artifact_id, pl.version.clone(), &pl.goals))
+                .map(|pl| plugin(&pl.group_id, &pl.artifact_id, pl.version.clone(), &pl.goals, local_repo))
                 .collect();
             let deps = raw
                 .deps
@@ -1257,9 +1500,427 @@ pub fn parse_dependency_tree(output: &str) -> Vec<(String, Vec<MavenDependency>)
     out
 }
 
+// ---------------------------------------------------------------- goto declaration
+
+/// What a go-to-declaration in a POM found, and where.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, Type)]
+#[serde(rename_all = "camelCase")]
+pub struct PomGoto {
+    /// Absolute path of the file with the declaration: the POM itself, or a parent
+    /// POM of the local repository when the definition is inherited from one.
+    pub path: PathBuf,
+    pub range: Range,
+    /// What was found.
+    pub kind: PomGotoKind,
+    /// The declaration as named for the user (`example.version`, `com.example:example-lib`).
+    pub label: String,
+}
+
+/// The kind of declaration a POM go-to-declaration found.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize, Type)]
+#[serde(rename_all = "camelCase")]
+pub enum PomGotoKind {
+    /// A `<properties>` entry of the POM or one of its parents.
+    Property,
+    /// A `<dependencyManagement>` entry providing the dependency's version.
+    ManagedDependency,
+    /// A `<pluginManagement>` entry providing the plugin's version.
+    ManagedPlugin,
+}
+
+/// Byte offset of `pos` (0-based line / UTF-16 column), clamped to `text`.
+fn offset_at(text: &str, pos: Pos) -> usize {
+    let (mut line_seen, mut at) = (0usize, 0usize);
+    if pos.line > 0 {
+        for (i, b) in text.bytes().enumerate() {
+            if b == b'\n' {
+                line_seen += 1;
+                if line_seen == pos.line as usize {
+                    at = i + 1;
+                    break;
+                }
+            }
+        }
+        if line_seen < pos.line as usize {
+            return text.len();
+        }
+    }
+    let line_end = text[at..].find('\n').map_or(text.len(), |i| at + i);
+    let (mut col, mut byte) = (0u32, at);
+    for c in text[at..line_end].chars() {
+        let width = c.len_utf16() as u32;
+        if col + width > pos.col {
+            break;
+        }
+        col += width;
+        byte += c.len_utf8();
+    }
+    byte
+}
+
+/// 0-based line / UTF-16 column of byte offset `at`.
+fn pos_at(text: &str, at: usize) -> Pos {
+    let before = &text[..at];
+    let line_start = before.rfind('\n').map_or(0, |i| i + 1);
+    Pos::new(before.matches('\n').count() as u32, before[line_start..].encode_utf16().count() as u32)
+}
+
+/// The `${property}` reference covering byte offset `at`: its name and the span of
+/// the whole reference. `None` when `at` is outside one (a closing `${…}` before it
+/// ends the search: references do not nest).
+fn property_ref_at(text: &str, at: usize) -> Option<(&str, usize, usize)> {
+    // `at` may sit on the `$` itself.
+    let open = text[..at].rfind("${").or_else(|| text[at..].starts_with("${").then_some(at))?;
+    let close = open + 2 + text[open + 2..].find('}')?;
+    (close >= at).then(|| (text[open + 2..close].trim(), open, close + 1))
+}
+
+/// The elements containing `at`, from the root down to the innermost one.
+fn element_path(root: &Element, at: usize) -> Vec<&Element> {
+    let mut path = vec![root];
+    loop {
+        let Some(next) = path.last().unwrap().children.iter().find(|c| c.start <= at && at < c.end) else {
+            return path;
+        };
+        path.push(next);
+    }
+}
+
+/// The `<groupId>` / `<artifactId>` of a dependency or plugin element, with the
+/// plugin default (`org.apache.maven.plugins`) applied.
+fn coordinates(e: &Element, props: &HashMap<String, String>) -> Option<(String, String)> {
+    let group = if e.name == "plugin" && e.text_of("groupId").is_none() {
+        "org.apache.maven.plugins".to_owned()
+    } else {
+        interpolate(&e.text_of("groupId")?, props)
+    };
+    Some((group, interpolate(&e.text_of("artifactId")?, props)))
+}
+
+/// The go-to-declaration target at `pos` (0-based line / UTF-16 column) of the POM
+/// `text` stored at `path` (the current buffer text when the file is open): a
+/// `${property}` reference to the `<properties>` entry that defines it along the
+/// parent chain, or a dependency / plugin to the `<dependencyManagement>` /
+/// `<pluginManagement>` entry that provides its version (a parent POM, followed into
+/// the local repository when it is not in the project). `None` when there is no
+/// resolvable declaration here.
+pub fn goto_declaration(text: &str, path: &Path, pos: Pos, local_repo: Option<PathBuf>) -> Option<PomGoto> {
+    let root = xml::parse(text).filter(|e| e.name == "project")?;
+    let at = offset_at(text, pos);
+    if let Some((name, _, _)) = property_ref_at(text, at)
+        && !name.is_empty()
+    {
+        return property_target(text, path, name, local_repo);
+    }
+    // A `<dependency>` / `<plugin>` in a declaration position: its version may come
+    // from a management entry of this POM or an ancestor's.
+    let elements = element_path(&root, at);
+    let e = elements.iter().rev().find(|e| e.name == "dependency" || e.name == "plugin")?;
+    if elements.iter().any(|a| a.name == "dependencyManagement" || a.name == "pluginManagement") {
+        return None; // Management entries are declarations; there is nothing to go to.
+    }
+    let kind = match e.name.as_str() {
+        "dependency" => PomGotoKind::ManagedDependency,
+        _ => PomGotoKind::ManagedPlugin,
+    };
+    managed_target(text, path, e, kind, local_repo)
+}
+
+/// The parent POMs of the POM in `text` at `path`, child-first (its `<parent>` refs,
+/// via `relativePath` in the project or the local repository), with their texts.
+fn parent_chain(path: &Path, text: &str, local_repo: Option<PathBuf>) -> Vec<(PathBuf, String)> {
+    let mut resolver = Resolver::new(local_repo, &[]);
+    let path = dunce::canonicalize(path).unwrap_or_else(|_| path.to_path_buf());
+    let mut chain = vec![(path.clone(), text.to_owned())];
+    let mut dir = path.parent().unwrap_or(Path::new("")).to_path_buf();
+    let mut pom = parse_pom(text);
+    for _ in 0..MAX_PARENT_DEPTH {
+        let Some(parent) = pom.and_then(|p| p.parent) else { return chain };
+        let Some(pp) = resolver.parent_path(&dir, &parent) else { return chain };
+        let pp = dunce::canonicalize(&pp).unwrap_or(pp);
+        let Ok(next) = std::fs::read_to_string(&pp) else { return chain };
+        pom = resolver.pom(&pp);
+        dir = pp.parent().unwrap_or(Path::new("")).to_path_buf();
+        chain.push((pp, next));
+    }
+    chain
+}
+
+/// The properties visible in the POM at `chain[i]`: inherited (its parents' and
+/// ancestors' own entries) plus its own, and the `project.*` built-ins.
+fn properties_at(resolver: &mut Resolver, chain: &[(PathBuf, String)], i: usize) -> HashMap<String, String> {
+    let (p, text) = &chain[i];
+    let Some(pom) = parse_pom(text) else { return HashMap::new() };
+    let dir = p.parent().unwrap_or(Path::new("")).to_path_buf();
+    let ctx = resolver.context(p, 0);
+    resolver.properties_for(&pom, &ctx, &dir)
+}
+
+/// Where the property `name` is declared: the `project.*` built-ins go to their
+/// coordinate elements, the rest to the first `<properties>` entry along the parent
+/// chain declaring it (a child's definition wins over a parent's; an active
+/// profile's counts as the POM's own). The winner's path, element range and name.
+fn property_target(text: &str, path: &Path, name: &str, local_repo: Option<PathBuf>) -> Option<PomGoto> {
+    let name = name.strip_prefix("pom.").map(|n| format!("project.{n}")).unwrap_or_else(|| name.to_owned());
+    let resolver = Resolver::new(local_repo.clone(), &[]);
+    let chain = parent_chain(path, text, local_repo);
+    // `project.parent.*` (and the legacy `parent.*` spellings) are declared by the
+    // clicked POM's own `<parent>` section.
+    let parent_key = match name.as_str() {
+        "project.parent.groupId"
+        | "project.parent.artifactId"
+        | "project.parent.version"
+        | "parent.groupId"
+        | "parent.version" => {
+            let key = name.rsplit('.').next().unwrap();
+            Some(&name[name.len() - key.len()..])
+        }
+        _ => None,
+    };
+    if let Some(key) = parent_key {
+        if !matches!(key, "groupId" | "artifactId" | "version") {
+            return None; // No other `project.parent.*` property has a declaration.
+        }
+        let root = xml::parse(&chain[0].1).filter(|e| e.name == "project")?;
+        let e = root.child("parent")?.child(key)?;
+        return Some(PomGoto {
+            path: chain[0].0.clone(),
+            range: range_of(&chain[0].1, e),
+            kind: PomGotoKind::Property,
+            label: name.clone(),
+        });
+    }
+    // Built-in coordinates: the POM's own element, else the first ancestor declaring one.
+    if let Some(key) = name.strip_prefix("project.") {
+        if !matches!(key, "groupId" | "artifactId" | "version" | "packaging" | "name") {
+            return None; // `project.basedir`, `project.build.directory`… have no element.
+        }
+        for (p, text) in &chain {
+            let Some(root) = xml::parse(text).filter(|e| e.name == "project") else { continue };
+            let Some(e) = root.child(key).filter(|e| !e.text.trim().is_empty()) else { continue };
+            return Some(PomGoto {
+                path: p.clone(),
+                range: range_of(text, e),
+                kind: PomGotoKind::Property,
+                label: name.clone(),
+            });
+        }
+        return None;
+    }
+    // A property of `<properties>`: the first POM of the chain (child-first) that
+    // declares it, at project level or in an active profile.
+    for (p, text) in &chain {
+        let Some(root) = xml::parse(text).filter(|e| e.name == "project") else { continue };
+        let active: Vec<String> = parse_pom(text)
+            .map(|pom| resolver.active(&pom.profiles).map(|pr| pr.id.clone()).collect())
+            .unwrap_or_default();
+        // Project level first, then the first active profile declaring the property.
+        let e = root.child("properties").and_then(|props| props.child(&name)).or_else(|| {
+            root.list("profiles", "profile")
+                .into_iter()
+                .find(|profile| {
+                    active.contains(&profile.child("id").map(|id| id.text.trim().to_owned()).unwrap_or_default())
+                        && profile.child("properties").and_then(|props| props.child(&name)).is_some()
+                })?
+                .child("properties")?
+                .child(&name)
+        });
+        if let Some(e) = e {
+            return Some(PomGoto {
+                path: p.clone(),
+                range: range_of(text, e),
+                kind: PomGotoKind::Property,
+                label: name.clone(),
+            });
+        }
+    }
+    None
+}
+
+/// The `<dependencyManagement>` / `<pluginManagement>` entry providing the version
+/// of the dependency / plugin element `e`: this POM's own management first, then the
+/// parent chain, child-first (the nearest declaration wins). Coordinates are matched
+/// after interpolation with each POM's effective properties.
+fn managed_target(
+    text: &str,
+    path: &Path,
+    e: &Element,
+    kind: PomGotoKind,
+    local_repo: Option<PathBuf>,
+) -> Option<PomGoto> {
+    let mut resolver = Resolver::new(local_repo.clone(), &[]);
+    let chain = parent_chain(path, text, local_repo);
+    let key = coordinates(e, &properties_at(&mut resolver, &chain, 0))?;
+    let (section, item) = match kind {
+        PomGotoKind::ManagedDependency => ("dependencyManagement/dependencies", "dependency"),
+        _ => ("build/pluginManagement/plugins", "plugin"),
+    };
+    for (i, (p, text)) in chain.iter().enumerate() {
+        let root = xml::parse(text).filter(|e| e.name == "project")?;
+        let props = properties_at(&mut resolver, &chain, i);
+        let Some(hit) = root.list(section, item).into_iter().find(|m| coordinates(m, &props).as_ref() == Some(&key))
+        else {
+            continue;
+        };
+        let target = hit.child("artifactId").unwrap_or(hit);
+        return Some(PomGoto {
+            path: p.clone(),
+            range: range_of(text, target),
+            kind,
+            label: format!("{}:{}", key.0, key.1),
+        });
+    }
+    None
+}
+
+/// The range of element `e` in `text`.
+fn range_of(text: &str, e: &Element) -> Range {
+    Range::new(pos_at(text, e.start), pos_at(text, e.end))
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// `parent_chain` returns paths normalized by `dunce::canonicalize`, so the
+    /// expected values compared against them must go through the same call: the
+    /// temp dirs sit behind symlinks on macOS (`/var` → `/private/var`) and under
+    /// an 8.3 short name on Windows, and raw paths would not match on those runners.
+    fn canon(path: &Path) -> PathBuf {
+        dunce::canonicalize(path).unwrap_or_else(|_| path.to_path_buf())
+    }
+
+    /// A plugin jar in `repo` whose descriptor declares `goals`.
+    fn write_plugin_jar(repo: &Path, group: &str, artifact: &str, version: &str, goals: &[&str]) {
+        let dir = repo.join(group.replace('.', "/")).join(artifact).join(version);
+        std::fs::create_dir_all(&dir).unwrap();
+        let mojos: String = goals.iter().map(|g| format!("<mojo><goal>{g}</goal></mojo>")).collect();
+        let descriptor = format!("<plugin><mojos>{mojos}</mojos></plugin>");
+        let file = std::fs::File::create(dir.join(format!("{artifact}-{version}.jar"))).unwrap();
+        let mut zip = zip::ZipWriter::new(file);
+        zip.start_file("META-INF/maven/plugin.xml", zip::write::SimpleFileOptions::default()).unwrap();
+        std::io::Write::write_all(&mut zip, descriptor.as_bytes()).unwrap();
+        zip.finish().unwrap();
+    }
+
+    #[test]
+    fn a_plugin_lists_the_goals_its_jar_declares() {
+        let tmp = tempfile::tempdir().unwrap();
+        let repo = tmp.path();
+        write_plugin_jar(
+            repo,
+            "org.apache.maven.plugins",
+            "maven-checkstyle-plugin",
+            "3.3.1",
+            &["checkstyle", "checkstyle-aggregate", "help", "check"],
+        );
+        let p = plugin(
+            "org.apache.maven.plugins",
+            "maven-checkstyle-plugin",
+            Some("3.3.1".into()),
+            &["check".to_owned()],
+            Some(repo),
+        );
+        assert_eq!(p.goals, ["check", "checkstyle", "checkstyle-aggregate", "help"], "every goal the plugin offers");
+        assert_eq!(p.prefix, "checkstyle");
+    }
+
+    #[test]
+    fn settings_profiles_are_listed_with_the_active_ones_checked() {
+        let tmp = tempfile::tempdir().unwrap();
+        let file = tmp.path().join("settings.xml");
+        std::fs::write(
+            &file,
+            r#"<settings>
+  <profiles>
+    <profile><id>nexus</id></profile>
+    <profile><id>jdk21</id><activation><activeByDefault>true</activeByDefault></activation></profile>
+    <profile><id>release</id></profile>
+    <profile><id>nexus</id></profile>
+    <profile><activation/></profile>
+  </profiles>
+  <activeProfiles><activeProfile>nexus</activeProfile></activeProfiles>
+</settings>"#,
+        )
+        .unwrap();
+        let p = |id: &str, active| MavenProfile { id: id.into(), active_by_default: active, ..Default::default() };
+        assert_eq!(settings_profiles(&file), [p("nexus", true), p("jdk21", true), p("release", false)]);
+        assert!(settings_profiles(&tmp.path().join("missing.xml")).is_empty());
+
+        let mut s = ide_core::settings::MavenSettings::default();
+        let home = dirs::home_dir().unwrap();
+        assert_eq!(user_settings_file(tmp.path(), &s), Some(home.join(".m2/settings.xml")));
+        s.user_settings = "conf/settings.xml".into();
+        assert_eq!(user_settings_file(tmp.path(), &s), Some(tmp.path().join("conf/settings.xml")));
+        s.user_settings = "~/work/settings.xml".into();
+        assert_eq!(user_settings_file(tmp.path(), &s), Some(home.join("work/settings.xml")));
+    }
+
+    #[test]
+    fn a_settings_file_names_the_repository_to_read_goals_from() {
+        let tmp = tempfile::tempdir().unwrap();
+        let settings = tmp.path().join("settings.xml");
+        std::fs::write(
+            &settings,
+            "<settings><localRepository>${user.home}/repo-from-settings</localRepository></settings>",
+        )
+        .unwrap();
+        let repo = local_repository_of(&settings).unwrap();
+        assert!(repo.ends_with("repo-from-settings"), "{}", repo.display());
+        assert!(!repo.to_string_lossy().contains("${user.home}"));
+        // A settings file that names none leaves Maven's default alone.
+        let plain = tmp.path().join("plain.xml");
+        std::fs::write(&plain, "<settings><offline>true</offline></settings>").unwrap();
+        assert!(local_repository_of(&plain).is_none());
+        assert!(local_repository_of(&tmp.path().join("missing.xml")).is_none());
+    }
+
+    #[test]
+    fn effective_pom_goals_come_from_the_local_repository_it_is_given() {
+        let tmp = tempfile::tempdir().unwrap();
+        write_plugin_jar(tmp.path(), "org.apache.maven.plugins", "maven-demo-plugin", "1.0", &["run", "help"]);
+        let text = "<project><groupId>g</groupId><artifactId>a</artifactId><build><plugins>\
+            <plugin><groupId>org.apache.maven.plugins</groupId><artifactId>maven-demo-plugin</artifactId>\
+            <version>1.0</version><executions><execution><goals><goal>run</goal></goals></execution></executions>\
+            </plugin></plugins></build></project>";
+        let with_repo = parse_effective_pom_in(text, Some(tmp.path()));
+        assert_eq!(with_repo[0].1[0].goals, ["help", "run"], "the jar's own goals come first");
+        // Without that repository the plugin is unknown: only what the project binds.
+        assert_eq!(parse_effective_pom(text)[0].1[0].goals, ["run"]);
+    }
+
+    #[test]
+    fn a_snapshot_plugin_is_found_by_its_timestamped_jar() {
+        let tmp = tempfile::tempdir().unwrap();
+        let dir = tmp.path().join("g/p/maven-demo-plugin/1.0-SNAPSHOT");
+        std::fs::create_dir_all(&dir).unwrap();
+        let descriptor = "<plugin><mojos><mojo><goal>run</goal></mojo></mojos></plugin>";
+        let file = std::fs::File::create(dir.join("maven-demo-plugin-1.0-20240101.120000-3.jar")).unwrap();
+        let mut zip = zip::ZipWriter::new(file);
+        zip.start_file("META-INF/maven/plugin.xml", zip::write::SimpleFileOptions::default()).unwrap();
+        std::io::Write::write_all(&mut zip, descriptor.as_bytes()).unwrap();
+        zip.finish().unwrap();
+        // A sibling sources jar must not win.
+        std::fs::File::create(dir.join("maven-demo-plugin-1.0-20240101.120000-3-sources.jar")).unwrap();
+        let p = plugin("g.p", "maven-demo-plugin", Some("1.0-SNAPSHOT".into()), &[], Some(tmp.path()));
+        assert_eq!(p.goals, ["run"]);
+    }
+
+    #[test]
+    fn a_plugin_without_its_jar_keeps_the_table_and_the_bound_goals() {
+        let tmp = tempfile::tempdir().unwrap();
+        let p = plugin(
+            "org.apache.maven.plugins",
+            "maven-checkstyle-plugin",
+            Some("3.3.1".into()),
+            &["check".to_owned()],
+            Some(tmp.path()),
+        );
+        assert_eq!(p.goals, ["check"], "nothing beyond what the project binds");
+        let known =
+            plugin("org.apache.maven.plugins", "maven-compiler-plugin", Some("3.13.0".into()), &[], Some(tmp.path()));
+        assert_eq!(known.goals, ["compile", "help", "testCompile"], "the common plugins keep their table");
+    }
 
     fn write(dir: &Path, rel: &str, text: &str) {
         let p = dir.join(rel);
@@ -1302,6 +1963,52 @@ mod tests {
         let model = load_with_repo(root, None);
         assert_eq!(model.projects[0].modules, ["core/pom.xml"]);
         assert!(model.projects.iter().any(|p| p.pom == "core/pom.xml" && p.aggregated));
+    }
+
+    #[test]
+    fn modules_inherit_the_compiler_level_of_the_parent_plugin_configuration() {
+        let tmp = tempfile::tempdir().unwrap();
+        let root = tmp.path();
+        let parent = |build: &str| {
+            format!(
+                r#"<project><groupId>demo</groupId><artifactId>parent</artifactId><version>1.0</version><packaging>pom</packaging>
+                  <modules><module>core</module><module>app</module></modules>
+                  <properties><jdk>17</jdk></properties>{build}</project>"#
+            )
+        };
+        let child = |name: &str, build: &str| {
+            format!(
+                r#"<project><parent><groupId>demo</groupId><artifactId>parent</artifactId><version>1.0</version></parent>
+                  <artifactId>{name}</artifactId>{build}</project>"#
+            )
+        };
+        let compiler = |level: &str| {
+            format!(
+                "<plugin><artifactId>maven-compiler-plugin</artifactId><configuration><source>{level}</source></configuration></plugin>"
+            )
+        };
+        let versions = |model: &MavenModel| -> Vec<(String, Option<u32>)> {
+            model.projects.iter().map(|p| (p.pom.clone(), p.java_version)).collect()
+        };
+        let app_build = format!("<build><plugins>{}</plugins></build>", compiler("21"));
+        write(root, "core/pom.xml", &child("core", ""));
+        write(root, "app/pom.xml", &child("app", &app_build));
+        for build in [
+            format!("<build><pluginManagement><plugins>{}</plugins></pluginManagement></build>", compiler("${jdk}")),
+            format!("<build><plugins>{}</plugins></build>", compiler("1.8")),
+        ] {
+            write(root, "pom.xml", &parent(&build));
+            let expected = if build.contains("1.8") { 8 } else { 17 };
+            assert_eq!(
+                versions(&load_with_repo(root, None)),
+                [
+                    ("pom.xml".to_owned(), Some(expected)),
+                    ("core/pom.xml".to_owned(), Some(expected)),
+                    ("app/pom.xml".to_owned(), Some(21)),
+                ],
+                "{build}"
+            );
+        }
     }
 
     #[test]
@@ -1385,6 +2092,95 @@ mod tests {
         assert_eq!(parent.profiles, ["dev", "extra"]);
         assert_eq!(core.profiles, ["dev", "extra"], "a module inherits its parent's profiles");
         assert!(model.projects.iter().all(|p| p.command == if cfg!(windows) { "mvn.cmd" } else { "mvn" }));
+    }
+
+    /// Add Maven Projects: a POM inside the project that no reactor lists becomes an
+    /// independent top-level project; one the root reactor lists stays its module.
+    #[test]
+    fn linked_poms_outside_the_reactor_are_top_level_projects() {
+        let tmp = tempfile::tempdir().unwrap();
+        let root = tmp.path();
+        write(
+            root,
+            "pom.xml",
+            "<project><groupId>demo</groupId><artifactId>main</artifactId><version>1.0</version><packaging>pom</packaging><modules><module>core</module></modules></project>",
+        );
+        write(
+            root,
+            "core/pom.xml",
+            "<project><groupId>demo</groupId><artifactId>core</artifactId><version>1.0</version></project>",
+        );
+        write(
+            root,
+            "stub/pom.xml",
+            "<project><groupId>demo</groupId><artifactId>stub</artifactId><version>1.0</version></project>",
+        );
+        let top = |m: &MavenModel| m.projects.iter().map(|p| (p.dir.clone(), p.aggregated)).collect::<Vec<_>>();
+
+        assert_eq!(top(&load_with_linked(root, None, &[], &[])), [("".into(), false), ("core".into(), true)]);
+        let linked: Vec<String> =
+            ["stub/pom.xml", "./core/pom.xml", "../outside/pom.xml", "missing/pom.xml"].map(String::from).into();
+        assert_eq!(
+            top(&load_with_linked(root, None, &[], &linked)),
+            [("".into(), false), ("core".into(), true), ("stub".into(), false)]
+        );
+
+        // Deeper than the folder search reaches: only the link makes it a Maven project.
+        let deep = tempfile::tempdir().unwrap();
+        write(deep.path(), "a/b/c/tool/pom.xml", "<project><artifactId>tool</artifactId></project>");
+        let settings = ide_core::settings::MavenSettings {
+            linked_projects: vec!["a/b/c/tool/pom.xml".into()],
+            ..Default::default()
+        };
+        assert!(!has_projects(deep.path(), &Default::default()));
+        assert!(has_projects(deep.path(), &settings));
+        assert_eq!(top(&load_linked(deep.path(), &settings)), [("a/b/c/tool".into(), false)]);
+    }
+
+    #[test]
+    fn chosen_profiles_bring_their_modules_and_dependencies() {
+        let tmp = tempfile::tempdir().unwrap();
+        let root = tmp.path();
+        write(
+            root,
+            "pom.xml",
+            r#"<project><groupId>demo</groupId><artifactId>parent</artifactId><version>1.0</version><packaging>pom</packaging>
+              <modules><module>core</module></modules>
+              <profiles>
+                <profile><id>flink-1.17</id><activation><activeByDefault>true</activeByDefault></activation>
+                  <modules><module>flink-1.17</module></modules></profile>
+                <profile><id>flink-1.20</id><modules><module>flink-1.20</module></modules>
+                  <dependencies><dependency><groupId>org.apache.flink</groupId><artifactId>flink-core</artifactId><version>1.20.0</version></dependency></dependencies>
+                </profile>
+              </profiles>
+            </project>"#,
+        );
+        for m in ["core", "flink-1.17", "flink-1.20"] {
+            write(
+                root,
+                &format!("{m}/pom.xml"),
+                &format!(
+                    "<project><parent><groupId>demo</groupId><artifactId>parent</artifactId><version>1.0</version></parent><artifactId>{m}</artifactId></project>"
+                ),
+            );
+        }
+        let dirs = |m: &MavenModel| m.projects.iter().map(|p| p.dir.clone()).collect::<Vec<_>>();
+        let flink = |m: &MavenModel, dir: &str| {
+            m.projects.iter().find(|p| p.dir == dir).unwrap().dependencies.iter().any(|d| d.artifact_id == "flink-core")
+        };
+
+        let default = load_with(root, None, &[]);
+        assert_eq!(dirs(&default), ["", "core", "flink-1.17"]);
+        assert!(!flink(&default, "core"));
+
+        // Choosing another profile of the POM turns its activeByDefault one off (as `-P` does).
+        let chosen = load_with(root, None, &["flink-1.20".into()]);
+        assert_eq!(dirs(&chosen), ["", "core", "flink-1.20"]);
+        assert!(flink(&chosen, "core"), "a module inherits the chosen profile's dependencies");
+
+        let both = load_with(root, None, &["flink-1.20".into(), "flink-1.17".into()]);
+        assert_eq!(dirs(&both), ["", "core", "flink-1.17", "flink-1.20"]);
+        assert_eq!(dirs(&load_with(root, None, &["!flink-1.17".into()])), ["", "core"]);
     }
 
     #[test]
@@ -1497,6 +2293,25 @@ mod tests {
         assert_eq!(names, ["a", "b"]);
         assert!(is_maven_project(root));
         assert!(!is_maven_project(&root.join("c")));
+    }
+
+    #[test]
+    fn aggregate_pom_in_src_is_a_build() {
+        // Issue #1001: `src/pom.xml` aggregating modules under `src/` is recognized,
+        // with its modules loaded — while `src` stays unsearched otherwise.
+        let tmp = tempfile::tempdir().unwrap();
+        let root = tmp.path();
+        write(
+            root,
+            "src/pom.xml",
+            "<project><groupId>g</groupId><artifactId>parent</artifactId><packaging>pom</packaging>\
+             <modules><module>app</module></modules></project>",
+        );
+        write(root, "src/app/pom.xml", "<project><groupId>g</groupId><artifactId>app</artifactId></project>");
+        let model = load_with_repo(root, None);
+        let names: Vec<&str> = model.projects.iter().map(|p| p.artifact_id.as_str()).collect();
+        assert_eq!(names, ["parent", "app"]);
+        assert!(is_maven_project(root));
     }
 
     #[test]
@@ -1654,6 +2469,325 @@ mod tests {
             assert_eq!((d.group_id.as_str(), d.version.as_deref()), ("g", Some("1")), "{line}");
         }
     }
+
+    // ---------------------------------------------------- goto declaration
+
+    /// The position of the first character of `needle` (a click on it).
+    fn at(text: &str, needle: &str) -> Pos {
+        pos_at(text, text.find(needle).unwrap())
+    }
+
+    /// A parent POM and a child of it in `tmp`: the parent at `tmp/pom.xml`, the
+    /// child at `tmp/app/pom.xml` (found through the default `../pom.xml`).
+    fn write_parent_child(tmp: &Path, parent: &str, child: &str) {
+        std::fs::create_dir_all(tmp.join("app")).unwrap();
+        std::fs::write(tmp.join("pom.xml"), parent).unwrap();
+        std::fs::write(tmp.join("app/pom.xml"), child).unwrap();
+    }
+
+    const CHILD_HEADER: &str = r#"<project xmlns="http://maven.apache.org/POM/4.0.0">
+  <parent>
+    <groupId>com.example</groupId>
+    <artifactId>parent</artifactId>
+    <version>1.0</version>
+  </parent>
+  <artifactId>app</artifactId>
+"#;
+
+    const PARENT_HEADER: &str = r#"<project xmlns="http://maven.apache.org/POM/4.0.0">
+  <groupId>com.example</groupId>
+  <artifactId>parent</artifactId>
+  <version>1.0</version>
+"#;
+
+    #[test]
+    fn a_property_reference_finds_its_definition_in_the_same_pom() {
+        let text = format!(
+            r#"{CHILD_HEADER}<properties>
+    <example.version>1.2.3</example.version>
+  </properties>
+  <dependencies>
+    <dependency>
+      <groupId>com.example</groupId>
+      <artifactId>lib</artifactId>
+      <version>${{example.version}}</version>
+    </dependency>
+  </dependencies>
+</project>"#
+        );
+        let path = Path::new("/tmp/pom.xml");
+        let goto = goto_declaration(&text, path, at(&text, "${example.version}"), None).unwrap();
+        assert_eq!(goto.kind, PomGotoKind::Property);
+        assert_eq!(goto.label, "example.version");
+        assert_eq!(goto.path, path);
+        let from = text.find("<example.version>").unwrap();
+        let to = text.find("</example.version>").unwrap() + "</example.version>".len();
+        assert_eq!(goto.range, Range::new(pos_at(&text, from), pos_at(&text, to)));
+    }
+
+    #[test]
+    fn an_inherited_property_reference_finds_its_definition_in_the_parent_pom() {
+        let tmp = tempfile::tempdir().unwrap();
+        let parent = format!(
+            r#"{PARENT_HEADER}<properties>
+    <example.version>1.2.3</example.version>
+  </properties>
+</project>"#
+        );
+        let child = format!(
+            r#"{CHILD_HEADER}<dependencies>
+  <dependency>
+    <groupId>com.example</groupId>
+    <artifactId>lib</artifactId>
+    <version>${{example.version}}</version>
+  </dependency>
+</dependencies>
+</project>"#
+        );
+        write_parent_child(tmp.path(), &parent, &child);
+        let path = tmp.path().join("app/pom.xml");
+        let text = std::fs::read_to_string(&path).unwrap();
+        let goto = goto_declaration(&text, &path, at(&text, "${example.version}"), None).unwrap();
+        assert_eq!(goto.kind, PomGotoKind::Property);
+        assert_eq!(goto.path, canon(&tmp.path().join("pom.xml")));
+        let from = parent.find("<example.version>").unwrap();
+        assert_eq!(goto.range.start, pos_at(&parent, from));
+    }
+
+    #[test]
+    fn a_child_property_wins_over_the_parent_s_definition() {
+        let tmp = tempfile::tempdir().unwrap();
+        let parent = format!(
+            r#"{PARENT_HEADER}<properties>
+    <example.version>1.0.0</example.version>
+  </properties>
+</project>"#
+        );
+        let child = format!(
+            r#"{CHILD_HEADER}<properties>
+    <example.version>2.0.0</example.version>
+  </properties>
+  <dependencies>
+    <dependency>
+      <groupId>com.example</groupId>
+      <artifactId>lib</artifactId>
+      <version>${{example.version}}</version>
+    </dependency>
+  </dependencies>
+</project>"#
+        );
+        write_parent_child(tmp.path(), &parent, &child);
+        let path = tmp.path().join("app/pom.xml");
+        let text = std::fs::read_to_string(&path).unwrap();
+        let goto = goto_declaration(&text, &path, at(&text, "${example.version}"), None).unwrap();
+        assert_eq!(goto.path, canon(&path), "the child's own definition");
+        let from = text.find("<example.version>").unwrap();
+        let to = text.find("</example.version>").unwrap() + "</example.version>".len();
+        assert_eq!(goto.range, Range::new(pos_at(&text, from), pos_at(&text, to)));
+        assert!(text[from..to].contains("2.0.0"));
+    }
+
+    #[test]
+    fn a_managed_dependency_reference_finds_the_managing_declaration_in_the_parent() {
+        let tmp = tempfile::tempdir().unwrap();
+        let parent = format!(
+            r#"{PARENT_HEADER}<properties>
+    <example.version>1.2.3</example.version>
+  </properties>
+  <dependencyManagement>
+    <dependencies>
+      <dependency>
+        <groupId>com.example</groupId>
+        <artifactId>example-lib</artifactId>
+        <version>${{example.version}}</version>
+      </dependency>
+    </dependencies>
+  </dependencyManagement>
+</project>"#
+        );
+        let child = format!(
+            r#"{CHILD_HEADER}<dependencies>
+  <dependency>
+    <groupId>com.example</groupId>
+    <artifactId>example-lib</artifactId>
+  </dependency>
+</dependencies>
+</project>"#
+        );
+        write_parent_child(tmp.path(), &parent, &child);
+        let path = tmp.path().join("app/pom.xml");
+        let text = std::fs::read_to_string(&path).unwrap();
+        let goto = goto_declaration(&text, &path, at(&text, "<artifactId>example-lib"), None).unwrap();
+        assert_eq!(goto.kind, PomGotoKind::ManagedDependency);
+        assert_eq!(goto.label, "com.example:example-lib");
+        assert_eq!(goto.path, canon(&tmp.path().join("pom.xml")));
+        let from = parent.find("<artifactId>example-lib</artifactId>").unwrap();
+        let to = from + "<artifactId>example-lib</artifactId>".len();
+        assert_eq!(goto.range, Range::new(pos_at(&parent, from), pos_at(&parent, to)));
+    }
+
+    #[test]
+    fn a_managed_plugin_reference_finds_the_managing_declaration_in_the_parent() {
+        let tmp = tempfile::tempdir().unwrap();
+        let parent = format!(
+            r#"{PARENT_HEADER}<build>
+  <pluginManagement>
+    <plugins>
+      <plugin>
+        <groupId>org.apache.maven.plugins</groupId>
+        <artifactId>maven-compiler-plugin</artifactId>
+        <version>3.13.0</version>
+      </plugin>
+    </plugins>
+  </pluginManagement>
+</build>
+</project>"#
+        );
+        let child = format!(
+            r#"{CHILD_HEADER}<build>
+  <plugins>
+    <plugin>
+      <artifactId>maven-compiler-plugin</artifactId>
+    </plugin>
+  </plugins>
+</build>
+</project>"#
+        );
+        write_parent_child(tmp.path(), &parent, &child);
+        let path = tmp.path().join("app/pom.xml");
+        let text = std::fs::read_to_string(&path).unwrap();
+        let goto = goto_declaration(&text, &path, at(&text, "<artifactId>maven-compiler-plugin"), None).unwrap();
+        assert_eq!(goto.kind, PomGotoKind::ManagedPlugin);
+        assert_eq!(goto.label, "org.apache.maven.plugins:maven-compiler-plugin");
+        assert_eq!(goto.path, canon(&tmp.path().join("pom.xml")));
+    }
+
+    #[test]
+    fn an_inherited_property_is_found_in_a_parent_pom_of_the_local_repository() {
+        let tmp = tempfile::tempdir().unwrap();
+        let repo = tmp.path().join("repository");
+        let parent_dir = repo.join("com/example/parent/1.0");
+        std::fs::create_dir_all(&parent_dir).unwrap();
+        let parent = format!(
+            r#"{PARENT_HEADER}<properties>
+    <example.version>1.2.3</example.version>
+  </properties>
+</project>"#
+        );
+        std::fs::write(parent_dir.join("parent-1.0.pom"), &parent).unwrap();
+        let child = format!(
+            r#"{CHILD_HEADER}<dependencies>
+  <dependency>
+    <groupId>com.example</groupId>
+    <artifactId>lib</artifactId>
+    <version>${{example.version}}</version>
+  </dependency>
+</dependencies>
+</project>"#
+        );
+        let path = tmp.path().join("app/pom.xml");
+        std::fs::create_dir_all(tmp.path().join("app")).unwrap();
+        std::fs::write(&path, &child).unwrap();
+        let text = std::fs::read_to_string(&path).unwrap();
+        let goto = goto_declaration(&text, &path, at(&text, "${example.version}"), Some(repo)).unwrap();
+        assert_eq!(goto.kind, PomGotoKind::Property);
+        assert_eq!(goto.path, canon(&parent_dir.join("parent-1.0.pom")));
+        assert_eq!(goto.range.start, pos_at(&parent, parent.find("<example.version>").unwrap()));
+    }
+
+    #[test]
+    fn project_version_resolves_to_the_first_pom_declaring_its_own_version() {
+        let tmp = tempfile::tempdir().unwrap();
+        let parent = format!(r#"{PARENT_HEADER}<packaging>pom</packaging></project>"#);
+        let child = format!(
+            r#"{CHILD_HEADER}<dependencies>
+  <dependency>
+    <groupId>com.example</groupId>
+    <artifactId>lib</artifactId>
+    <version>${{project.version}}</version>
+  </dependency>
+</dependencies>
+</project>"#
+        );
+        write_parent_child(tmp.path(), &parent, &child);
+        let path = tmp.path().join("app/pom.xml");
+        let text = std::fs::read_to_string(&path).unwrap();
+        let goto = goto_declaration(&text, &path, at(&text, "${project.version}"), None).unwrap();
+        assert_eq!(goto.path, canon(&tmp.path().join("pom.xml")), "the child has no own <version>");
+        assert_eq!(goto.range.start, pos_at(&parent, parent.find("<version>").unwrap()));
+    }
+
+    #[test]
+    fn clicks_without_a_resolvable_declaration_find_nothing() {
+        let tmp = tempfile::tempdir().unwrap();
+        let parent = format!(
+            r#"{PARENT_HEADER}<dependencyManagement>
+  <dependencies>
+    <dependency>
+      <groupId>com.example</groupId>
+      <artifactId>managed-lib</artifactId>
+      <version>1.0</version>
+    </dependency>
+  </dependencies>
+</dependencyManagement>
+</project>"#
+        );
+        let child = format!(
+            r#"{CHILD_HEADER}<dependencies>
+  <dependency>
+    <groupId>com.example</groupId>
+    <artifactId>direct-lib</artifactId>
+    <version>${{missing.key}}</version>
+  </dependency>
+  <dependency>
+    <groupId>com.example</groupId>
+    <artifactId>other-lib</artifactId>
+    <version>2.0</version>
+  </dependency>
+</dependencies>
+</project>"#
+        );
+        write_parent_child(tmp.path(), &parent, &child);
+        let path = tmp.path().join("app/pom.xml");
+        let text = std::fs::read_to_string(&path).unwrap();
+        // The property is declared nowhere along the chain.
+        assert_eq!(goto_declaration(&text, &path, at(&text, "${missing.key}"), None), None);
+        // The dependency names its own version: it is the declaration.
+        assert_eq!(goto_declaration(&text, &path, at(&text, "<artifactId>other-lib"), None), None);
+        // A management entry is a declaration itself, not a reference.
+        let parent_path = tmp.path().join("pom.xml");
+        let parent_text = std::fs::read_to_string(&parent_path).unwrap();
+        assert_eq!(
+            goto_declaration(&parent_text, &parent_path, at(&parent_text, "<artifactId>managed-lib"), None),
+            None
+        );
+        // Offsets beyond the document, and non-POM documents, find nothing.
+        assert_eq!(goto_declaration(&text, &path, Pos::new(999, 0), None), None);
+        assert_eq!(goto_declaration("<project></project>", &path, Pos::new(0, 3), None), None);
+    }
+
+    #[test]
+    fn a_property_reference_after_non_ascii_text_is_still_found() {
+        let text = format!(
+            r#"{CHILD_HEADER}<properties>
+    <!-- Версия сборки: сборка 2026 -->
+    <example.version>1.2.3</example.version>
+  </properties>
+  <dependencies>
+    <dependency>
+      <groupId>com.example</groupId>
+      <artifactId>lib</artifactId>
+      <!-- Проверка: ссылка на свойство -->
+      <version>${{example.version}}</version>
+    </dependency>
+  </dependencies>
+</project>"#
+        );
+        let path = Path::new("/tmp/pom.xml");
+        let goto = goto_declaration(&text, path, at(&text, "${example.version}"), None).unwrap();
+        assert_eq!(goto.kind, PomGotoKind::Property);
+        assert_eq!(goto.path, path);
+    }
 }
 
 #[cfg(test)]
@@ -1695,5 +2829,52 @@ mod linkage_tests {
         let mut restored = original.clone();
         UnlinkedProjects::from_model(&original, &MavenSettings::default()).filter(&mut restored);
         assert_eq!(restored, original);
+    }
+
+    #[test]
+    fn language_server_imports_reactor_modules_individually_once_one_is_unlinked() {
+        let tmp = tempfile::tempdir().unwrap();
+        let root = tmp.path();
+        // r ─┬─ x
+        //    ├─ y ─┬─ y/y1
+        //    │     └─ y/y2
+        //    └─ z          other/ is a separate root.
+        for (dir, modules) in [
+            ("r", "<modules><module>x</module><module>y</module><module>z</module></modules>"),
+            ("r/x", ""),
+            ("r/y", "<modules><module>y1</module><module>y2</module></modules>"),
+            ("r/y/y1", ""),
+            ("r/y/y2", ""),
+            ("r/z", ""),
+            ("other", ""),
+        ] {
+            std::fs::create_dir_all(root.join(dir)).unwrap();
+            std::fs::write(
+                root.join(dir).join("pom.xml"),
+                format!("<project><artifactId>{dir}</artifactId>{modules}</project>"),
+            )
+            .unwrap();
+        }
+        let model = load_with_repo(root, None);
+        let cases: [(&[&str], Option<&[&str]>); 5] = [
+            // Nothing unlinked, or whole roots: the import exclusions do it.
+            (&[], None),
+            (&["other/pom.xml"], None),
+            (&["r/pom.xml"], None),
+            // A module of a linked reactor: every other linked POM, minus the aggregators above it.
+            (&["r/y/y1/pom.xml"], Some(&["other/pom.xml", "r/x/pom.xml", "r/y/y2/pom.xml", "r/z/pom.xml"])),
+            (&["./r/y/pom.xml"], Some(&["other/pom.xml", "r/x/pom.xml", "r/z/pom.xml"])),
+        ];
+        for (unlinked, expected) in cases {
+            let settings = MavenSettings {
+                unlinked_projects: unlinked.iter().map(|s| s.to_string()).collect(),
+                ..Default::default()
+            };
+            let mut poms = UnlinkedProjects::from_model(&model, &settings).import_poms(&model);
+            if let Some(poms) = &mut poms {
+                poms.sort();
+            }
+            assert_eq!(poms, expected.map(|e| e.iter().map(|s| s.to_string()).collect::<Vec<_>>()), "{unlinked:?}");
+        }
     }
 }

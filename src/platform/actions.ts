@@ -43,6 +43,8 @@ export interface Action {
   keyWhen?: string;
   /** Extra search terms for the Actions tab. */
   keywords?: string[];
+  /** The title comes from outside the IDE (a plugin) and is shown as written; the category still names an IDE group. */
+  verbatim?: boolean;
   /** Hidden from Search Everywhere (internal / parameterised actions). */
   hidden?: boolean;
   /**
@@ -50,6 +52,12 @@ export interface Action {
    * Search Everywhere shows an ON/OFF switch and keeps the popup open.
    */
   toggled?: () => boolean;
+  /**
+   * The run takes long enough to need feedback where it was clicked: toolbar buttons of this
+   * action show a spinner and ignore clicks until `run` settles. Only for actions that finish
+   * by themselves, not ones that wait on the user (a dialog).
+   */
+  indicatesRunning?: boolean;
   run: (c: ActionContext) => void | Promise<void>;
 }
 
@@ -58,6 +66,19 @@ interface ActionStore {
 }
 
 export const useActions = create<ActionStore>(() => ({ actions: new Map() }));
+
+/** Ids of `indicatesRunning` actions with a run in flight, with how many. */
+export const useRunningActions = create<{ running: ReadonlyMap<string, number> }>(() => ({ running: new Map() }));
+
+function trackRun(id: string, delta: 1 | -1) {
+  useRunningActions.setState(({ running }) => {
+    const next = new Map(running);
+    const count = (next.get(id) ?? 0) + delta;
+    if (count > 0) next.set(id, count);
+    else next.delete(id);
+    return { running: next };
+  });
+}
 
 /** Registered actions as written (English), by id; the store holds their localised copies. */
 const sources = new Map<string, Action>();
@@ -75,7 +96,7 @@ function localized(key: string, text: string | undefined): string | undefined {
 }
 
 function localize(action: Action): Action {
-  const title = localized(`action.${action.id}`, action.title);
+  const title = action.verbatim ? undefined : localized(`action.${action.id}`, action.title);
   const description = localized(`action.${action.id}.description`, action.description);
   const category = localized(`action.category.${action.category}`, action.category);
   if (!title && !description && !category) return action;
@@ -122,6 +143,11 @@ export function allActions(): Action[] {
 }
 
 export function isActionEnabled(action: Action, ctx: ContextKeys = getContext()): boolean {
+  if (
+    ctx.projectOpening &&
+    !["app.quit", "window.next", "window.previous", "window.toggleFullScreen"].includes(action.id)
+  )
+    return false;
   return evaluateWhen(action.when, ctx);
 }
 
@@ -140,8 +166,13 @@ export function actionToggled(action: Action | undefined): boolean | undefined {
   }
 }
 
-type ActionListener = (id: string, arg: unknown) => void;
+/** How the user started an action (for listeners such as plugins' `action-performed`). */
+export type ActionSource = "keyboard" | "menu" | "toolbar" | "contextMenu" | "search" | "other";
+
+type ActionListener = (id: string, arg: unknown, source: ActionSource) => void;
 const listeners = new Set<ActionListener>();
+/** Set by `executeActionFrom` for the duration of the synchronous dispatch. */
+let currentSource: ActionSource = "other";
 /** Actions running synchronously inside another action's `run`. */
 let nesting = 0;
 
@@ -155,7 +186,16 @@ export function onActionExecuted(listener: ActionListener): () => void {
 }
 
 /** Runs an action if registered and enabled. Returns whether it ran. */
-export async function executeAction(id: string, arg?: unknown): Promise<boolean> {
+export function executeAction(id: string, arg?: unknown): Promise<boolean> {
+  return runAction(id, arg, false);
+}
+
+/** Host requests need the launch error before acknowledging an operation. */
+export async function executeActionOrThrow(id: string, arg?: unknown): Promise<void> {
+  if (!(await runAction(id, arg, true))) throw new Error(`Action unavailable: ${id}`);
+}
+
+async function runAction(id: string, arg: unknown, propagateError: boolean): Promise<boolean> {
   const action = getAction(id);
   if (!action) {
     console.warn(`unknown action: ${id}`);
@@ -166,10 +206,11 @@ export async function executeAction(id: string, arg?: unknown): Promise<boolean>
   if (nesting === 0)
     for (const l of listeners)
       try {
-        l(id, arg);
+        l(id, arg, currentSource);
       } catch (e) {
         console.error("action listener failed", e);
       }
+  if (action.indicatesRunning) trackRun(id, 1);
   try {
     let pending: void | Promise<void>;
     nesting++;
@@ -180,7 +221,21 @@ export async function executeAction(id: string, arg?: unknown): Promise<boolean>
     }
     await pending;
   } catch (e) {
+    if (propagateError) throw e;
     console.error(`action ${id} failed`, e);
+  } finally {
+    if (action.indicatesRunning) trackRun(id, -1);
   }
   return true;
+}
+
+/** `executeAction`, telling listeners how the user started it. */
+export function executeActionFrom(source: ActionSource, id: string, arg?: unknown): Promise<boolean> {
+  const previous = currentSource;
+  currentSource = source;
+  try {
+    return executeAction(id, arg);
+  } finally {
+    currentSource = previous;
+  }
 }

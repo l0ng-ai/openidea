@@ -82,9 +82,9 @@ export function orderedRoots(
 export function expandableKeys(items: readonly ServiceTreeItem[]): string[] {
   const out: string[] = [];
   const visit = (i: ServiceTreeItem) => {
-    if (i.children?.length) {
+    if (i.children?.length || i.expandable) {
       out.push(i.key);
-      i.children.forEach(visit);
+      i.children?.forEach(visit);
     }
   };
   items.forEach(visit);

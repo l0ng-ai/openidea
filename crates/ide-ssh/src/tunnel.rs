@@ -26,7 +26,19 @@ impl Tunnel {
 
     /// [`Tunnel::open`] without the reachability check (the target may start later).
     pub async fn listen(session: Arc<Session>, host: &str, port: u16) -> IdeResult<Tunnel> {
-        let listener = TcpListener::bind(("127.0.0.1", 0)).await?;
+        Self::listen_on(session, None, host, port).await
+    }
+
+    /// [`Tunnel::listen`] on local port `preferred` when it is free, else on any free port
+    /// (a forwarded remote port keeps its number locally when it can, like VS Code's Ports).
+    pub async fn listen_on(session: Arc<Session>, preferred: Option<u16>, host: &str, port: u16) -> IdeResult<Tunnel> {
+        let listener = match preferred {
+            Some(p) => match TcpListener::bind(("127.0.0.1", p)).await {
+                Ok(l) => l,
+                Err(_) => TcpListener::bind(("127.0.0.1", 0)).await?,
+            },
+            None => TcpListener::bind(("127.0.0.1", 0)).await?,
+        };
         let local = listener.local_addr()?.port();
         let accept = tokio::spawn(forward(listener, session.clone(), host.to_owned(), port));
         Ok(Tunnel { port: local, session, accept })
@@ -49,11 +61,16 @@ impl Drop for Tunnel {
 }
 
 async fn forward(listener: TcpListener, session: Arc<Session>, host: String, port: u16) {
+    let mut connections = tokio::task::JoinSet::new();
     loop {
-        let Ok((mut socket, _)) = listener.accept().await else { return };
+        let accepted = tokio::select! {
+            Some(_) = connections.join_next(), if !connections.is_empty() => continue,
+            accepted = listener.accept() => accepted,
+        };
+        let Ok((mut socket, _)) = accepted else { return };
         let session = session.clone();
         let host = host.clone();
-        tokio::spawn(async move {
+        connections.spawn(async move {
             match session.direct_tcpip(&host, port).await {
                 Ok(mut stream) => {
                     let _ = tokio::io::copy_bidirectional(&mut socket, &mut stream).await;

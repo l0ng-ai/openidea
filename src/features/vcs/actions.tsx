@@ -27,10 +27,21 @@ import {
 import { setAmend, useCommit } from "./commitStore";
 import { gotoConflict, resolveAtCaret, showConflictsDialog } from "./conflictsUi";
 import { focusedDiffNavigator } from "./diffNavigator";
-import { openDiff, workingDiffData } from "./diffInput";
+import {
+  changeNodeDiff,
+  changeNodeDiffData,
+  openDiff,
+  openVcsDiff,
+  withChain,
+  workingDiffData,
+  type DiffData,
+} from "./diffInput";
+import { buildChangeTree, changeFileNodes, changeGroupPaths, type ChangeNode } from "./changes";
+import { useChangelists } from "./changelists";
 import { openDialog } from "./dialogs";
 import { gotoChange, rollbackSelectedLines } from "./gutter";
 import { openLocalHistory } from "./localHistoryKind";
+import { showSelectionHistory } from "./selectionHistoryKind";
 import { openLogTab, revealCommit, selectGitTab, useGitLog } from "./logStore";
 import { isModalCommit, openCommit, pushAfterCommit } from "./commitUi";
 import { allRepos, runRemote } from "./ops";
@@ -45,7 +56,7 @@ import {
   showRebaseDialog,
   showWorktrees,
 } from "./gitMenuDialogs";
-import { refreshNow, repoName } from "./store";
+import { refreshNow, repoName, useVcs } from "./store";
 import { tx } from "@/platform/i18n";
 
 import { addToIgnore } from "./ignore";
@@ -72,14 +83,60 @@ export const commitWindowFocused = () => {
   return active === "commit" || (active === "git" && useGitLog.getState().tab === "changes");
 };
 
-/** Files the current context refers to: argument, commit view selection, or the active file. */
-function contextPaths(arg: unknown): string[] {
+/** A changed file's working diff, with the other files of its group (in tree order) as the F7 chain. */
+function groupDiffData(tree: readonly ChangeNode[], path: string): DiffData {
+  const siblings = changeGroupPaths(tree, path);
+  return withChain(
+    siblings.map((p) => workingDiffData(p)),
+    Math.max(0, siblings.indexOf(path)),
+  );
+}
+
+/**
+ * Show Diff's files as tree nodes where the side of the index is known: the changes
+ * tree's selected file nodes, else the nodes of `paths` the tree lists once. A
+ * partially staged file listed under both staging groups stays a path: its whole
+ * working diff.
+ */
+function showDiffTargets(tree: readonly ChangeNode[], paths: readonly string[], fromTree: boolean) {
+  const files = changeFileNodes(tree);
+  if (fromTree) {
+    const keys = new Set(useCommit.getState().selectionKeys);
+    const selected = files.filter((n) => keys.has(n.key));
+    if (selected.length && selected.length === keys.size) return selected;
+  }
+  return paths.map((path): ChangeNode | string => {
+    const nodes = files.filter((n) => n.path === path);
+    return nodes.length === 1 ? nodes[0]! : path;
+  });
+}
+
+/** The action's own paths, or the changes tree's selection while the tree has focus. */
+function changedPaths(arg: unknown): string[] {
   const explicit = argPaths(arg);
   if (explicit?.length) return explicit;
   const sel = useCommit.getState().selection;
-  if (commitWindowFocused() && sel.length) return sel;
+  return commitWindowFocused() ? sel : [];
+}
+
+/** Files the current context refers to: argument, commit view selection, or the active file. */
+function contextPaths(arg: unknown): string[] {
+  const changed = changedPaths(arg);
+  if (changed.length) return changed;
   const active = maybeEditorService()?.activePath();
   return active ? [active] : [];
+}
+
+/**
+ * Paths a selection-based action targets: the argument, else the changes tree's selection,
+ * else the Project view's — it keeps its selection while another view has focus — else the
+ * active file.
+ */
+function selectedPaths(arg: unknown): string[] {
+  const changed = changedPaths(arg);
+  if (changed.length) return changed;
+  const project = projectViewSelection();
+  return project.length ? project : contextPaths(arg);
 }
 
 function showGitWindow() {
@@ -318,14 +375,41 @@ export function registerVcsActions(): () => void {
         if (ctx.shelfFocus && arg === undefined) return showShelfDiff();
         const line =
           arg && typeof arg === "object" && "line" in arg ? Number((arg as { line: unknown }).line) : undefined;
-        const selection = arg === undefined ? projectViewSelection() : [];
-        const paths = selection.length ? selection : contextPaths(arg);
+        const paths = selectedPaths(arg);
         if (!paths.length) {
           notifications().notify({ group: "vcs", level: "info", title: "Select a changed file to show its diff" });
           return;
         }
         if (await showDirectoryWorkingDiff(paths)) return;
-        for (const p of paths.slice(0, 5)) await openDiff(workingDiffData(p, line), { preview: paths.length === 1 });
+        const state = useVcs.getState();
+        const tree = buildChangeTree(
+          state.status,
+          state.root ?? "",
+          useCommit.getState().groupByDir,
+          useChangelists.getState().state,
+          state.roots,
+          useCommit.getState().groupByStaging,
+        );
+        // The modal interface has one front diff window (#1863): a file with its group
+        // as the F7 chain, or several selected files as the chain.
+        if (isModalCommit()) {
+          const targets = showDiffTargets(tree, paths, !argPaths(arg)?.length && commitWindowFocused());
+          const [first] = targets;
+          const data =
+            targets.length > 1
+              ? withChain(
+                  targets.map((t) => (typeof t === "string" ? workingDiffData(t) : changeNodeDiff(t))),
+                  0,
+                )
+              : typeof first === "string"
+                ? groupDiffData(tree, first)
+                : changeNodeDiffData(tree, first!);
+          await openVcsDiff({ ...data, line });
+          return;
+        }
+        for (const path of paths.slice(0, 5)) {
+          await openDiff({ ...groupDiffData(tree, path), line }, { preview: paths.length === 1 });
+        }
       },
     },
     {
@@ -335,8 +419,7 @@ export function registerVcsActions(): () => void {
       icon: "diff",
       when: VCS,
       run: async ({ arg }) => {
-        const selection = arg === undefined ? projectViewSelection() : [];
-        const paths = selection.length ? selection : contextPaths(arg);
+        const paths = selectedPaths(arg);
         if (!paths.length) {
           notifications().notify({ group: "vcs", level: "info", title: "Open or select a file or folder to compare" });
           return;
@@ -453,6 +536,15 @@ export function registerVcsActions(): () => void {
         openLogTab("history", path);
         showGitWindow();
       },
+    },
+    {
+      id: "vcs.showHistoryForSelection",
+      title: "Show History for Selection",
+      category: "Git",
+      icon: "history",
+      when: `${VCS} && textEditorActive`,
+      keywords: ["line history", "block history", "git log -L"],
+      run: () => showSelectionHistory(),
     },
     {
       id: "vcs.showCommit",

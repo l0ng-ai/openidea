@@ -31,6 +31,7 @@ vi.mock("@tauri-apps/api/webview", () => ({
 }));
 
 import { registerActions } from "@/platform/actions";
+import { usePlatform } from "@/platform/platformInfo";
 import { useProject } from "@/platform/project";
 import { ContextMenuHost } from "@/ui";
 import { registerSettingsPage } from "@/workbench/contributions";
@@ -38,6 +39,7 @@ import { MessagesHost } from "@/workbench/messages";
 import { projectInitials } from "@/workbench/projectColor";
 import { handleListKey } from "./ProjectsPage";
 import { customizeView } from "./CustomizePage";
+import { recentMenu } from "./RecentList";
 import { filterRecent, useRecent } from "./recent";
 import { WelcomeView } from "./WelcomeView";
 
@@ -126,9 +128,28 @@ describe("Welcome › Projects", () => {
     fireEvent.click(within(screen.getAllByRole("option")[0]!).getByRole("button", { name: "Project actions" }));
     const menu = await screen.findByRole("menu");
     expect(within(menu).getByText("Open in New Window")).toBeTruthy();
-    expect(within(menu).getByText("Show in Finder")).toBeTruthy();
     expect(within(menu).getByText("Remove from Recent Projects…")).toBeTruthy();
     dispose();
+  });
+
+  // Regression: the welcome menus are shared by the projects page and the two
+  // recent-project popups, and used to hardcode "Show in Finder" on every OS.
+  it("names the platform's file manager for the reveal action", () => {
+    const previous = usePlatform.getState().os;
+    const revealLabel = () => {
+      const items = recentMenu(p("acme-api", "/Users/me/repo/acme-api"));
+      return (items.find((i) => "id" in i && i.id === "reveal") as { label?: string } | undefined)?.label;
+    };
+    try {
+      usePlatform.setState({ os: "windows" });
+      expect(revealLabel()).toBe("Show in Explorer");
+      usePlatform.setState({ os: "linux" });
+      expect(revealLabel()).toBe("Show in Files");
+      usePlatform.setState({ os: "macos" });
+      expect(revealLabel()).toBe("Show in Finder");
+    } finally {
+      usePlatform.setState({ os: previous });
+    }
   });
 
   it("shows the landing page without recent projects", async () => {

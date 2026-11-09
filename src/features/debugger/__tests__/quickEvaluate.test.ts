@@ -7,6 +7,7 @@ import { setContext } from "@/platform/context";
 import { installKeyboardDispatcher, useKeymap } from "@/platform/keymap";
 import { usePlatform } from "@/platform/platformInfo";
 import { menuGroupItems } from "@/workbench/contributions";
+import { multiCaretMouse } from "@/editor/core/cm/multiCaret";
 import { navigationExtension } from "@/editor/lsp/navigation";
 import { activate } from "../index";
 import { adoptSession, publishContext, useDebug } from "../state";
@@ -45,7 +46,7 @@ function session(adapter = "debugpy", status: "paused" | "running" | "terminated
   publishContext();
 }
 function click() {
-  const e = new MouseEvent("mousedown", { button: 0, altKey: true, bubbles: true, cancelable: true });
+  const e = new MouseEvent("mousedown", { button: 0, altKey: true, detail: 1, bubbles: true, cancelable: true });
   view.contentDOM.dispatchEvent(e);
   return e;
 }
@@ -58,7 +59,15 @@ beforeEach(() => {
   dispose = activate();
   uninstall = installKeyboardDispatcher(window);
   view = new EditorView({
-    state: EditorState.create({ doc, extensions: [navigationExtension(), quickEvaluateMouse()] }),
+    state: EditorState.create({
+      doc,
+      extensions: [
+        EditorState.allowMultipleSelections.of(true),
+        navigationExtension(),
+        quickEvaluateMouse(),
+        multiCaretMouse,
+      ],
+    }),
     parent: document.body,
   });
   editor.current = { view, ctx: { path: "/p/app.py" } };
@@ -131,6 +140,32 @@ describe("paused editor evaluation", () => {
     expect(e.defaultPrevented).toBe(false);
     expect(dispatch).not.toHaveBeenCalled();
     expect(ipc.debugEvaluateIn).not.toHaveBeenCalled();
+  });
+
+  it.each([false, true])(
+    "adds a caret without dispatching an action after removing the evaluation conflict (paused: %s)",
+    (paused) => {
+      if (paused) session();
+      const run = vi.fn();
+      const remove = registerAction({ id: "editor.addOrRemoveCaret", title: "Add or Remove Caret", run });
+      useKeymap.setState({ overrides: { "editor.addOrRemoveCaret": ["Alt+Button1"], "debug.quickEvaluate": [] } });
+      try {
+        click();
+        expect(view.state.selection.ranges.map((r) => r.head)).toEqual([0, 16]);
+        expect(run).not.toHaveBeenCalled();
+        expect(ipc.debugEvaluateIn).not.toHaveBeenCalled();
+      } finally {
+        remove();
+      }
+    },
+  );
+
+  it("does not also add a caret when an enabled evaluation handles a shared stroke", async () => {
+    session();
+    useKeymap.setState({ overrides: { "editor.addOrRemoveCaret": ["Alt+Button1"] } });
+    click();
+    await vi.waitFor(() => expect(ipc.debugEvaluateIn).toHaveBeenCalledOnce());
+    expect(view.state.selection.ranges.map((r) => r.head)).toEqual([16]);
   });
 
   it("honours removal of the mouse binding", () => {

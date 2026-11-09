@@ -1,10 +1,15 @@
 //! Child processes of the docker CLI: bounded runs and cancellable line streams.
 
+use ide_core::process::terminate_tree;
 use ide_core::{CancellationToken, IdeError, IdeResult};
 use std::io::Read;
 use std::process::{Child, Command, Stdio};
 use std::sync::mpsc;
 use std::time::{Duration, Instant};
+
+/// How long a cancelled or timed-out child's process group (CLI plugins such as compose)
+/// gets to exit on `SIGTERM`, and clean up, before `SIGKILL`.
+const KILL_GRACE: Duration = Duration::from_millis(20);
 
 pub(crate) struct Output {
     pub stdout: String,
@@ -20,34 +25,11 @@ pub(crate) enum Stream {
 
 fn prepare(cmd: &mut Command) {
     cmd.stdin(Stdio::null()).stdout(Stdio::piped()).stderr(Stdio::piped());
-    #[cfg(unix)]
-    {
-        use std::os::unix::process::CommandExt;
-        cmd.process_group(0);
-    }
-    ide_core::process::prepare(cmd);
+    ide_core::process::prepare(ide_core::process::own_group(cmd));
 }
 
 fn spawn(cmd: &mut Command) -> IdeResult<Child> {
     cmd.spawn().map_err(|e| IdeError::unavailable(format!("could not run docker: {e}")))
-}
-
-/// Kills the child and, on Unix, its whole process group (CLI plugins such as compose).
-pub(crate) fn kill(child: &mut Child) {
-    #[cfg(unix)]
-    {
-        let pid = child.id() as libc::pid_t;
-        // SAFETY: plain syscall; the child leads its own process group (`prepare`).
-        unsafe {
-            libc::kill(-pid, libc::SIGTERM);
-        }
-        std::thread::sleep(Duration::from_millis(20));
-        unsafe {
-            libc::kill(-pid, libc::SIGKILL);
-        }
-    }
-    let _ = child.kill();
-    let _ = child.wait();
 }
 
 fn read_all(mut pipe: impl Read + Send + 'static) -> std::thread::JoinHandle<String> {
@@ -88,11 +70,11 @@ pub(crate) fn run_with_input(
             break status;
         }
         if cancel.is_some_and(CancellationToken::is_cancelled) {
-            kill(&mut child);
+            terminate_tree(&mut child, KILL_GRACE);
             return Err(IdeError::cancelled());
         }
         if Instant::now() >= deadline {
-            kill(&mut child);
+            terminate_tree(&mut child, KILL_GRACE);
             return Err(IdeError::unavailable("docker did not respond in time"));
         }
         std::thread::sleep(Duration::from_millis(10));
@@ -166,7 +148,7 @@ pub(crate) fn stream(
     let mut stderr_tail: Vec<String> = Vec::new();
     while open > 0 {
         if cancel.is_cancelled() {
-            kill(&mut child);
+            terminate_tree(&mut child, KILL_GRACE);
             return Err(IdeError::cancelled());
         }
         match rx.recv_timeout(Duration::from_millis(50)) {
@@ -189,7 +171,7 @@ pub(crate) fn stream(
             break status;
         }
         if cancel.is_cancelled() {
-            kill(&mut child);
+            terminate_tree(&mut child, KILL_GRACE);
             return Err(IdeError::cancelled());
         }
         std::thread::sleep(Duration::from_millis(10));

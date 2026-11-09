@@ -62,18 +62,18 @@
 .icon {
   flex: none;
 }
+/* The name takes the whole row; when it doesn't fit, the grey detail after it gives way first. */
 .label {
-  flex: 0 0 auto;
-  max-width: 75%;
+  flex: 0 1 auto;
   min-width: 0;
   overflow: hidden;
   text-overflow: ellipsis;
 }
 .groupLabel {
   color: var(--fg-strong);
-  font-weight: 600;
 }
 .detail {
+  flex: 0 10000 auto;
   min-width: 0;
   overflow: hidden;
   text-overflow: ellipsis;
@@ -190,6 +190,9 @@
   align-items: center;
   gap: 8px;
 }
+.stashRow > .detail {
+  flex-shrink: 1;
+}
 .stashMessage {
   flex: 1;
   min-width: 0;
@@ -217,6 +220,10 @@
   align-items: center;
   gap: 4px;
   border-radius: var(--radius-small);
+}
+/* Test files and the folders under a test root, as IDEA's green "Tests" file colour; hover and selection win. */
+.testFile:not(:hover):not([aria-selected="true"]) {
+  background: var(--bg-file-tests);
 }
 .dropTarget {
   box-shadow: inset 0 0 0 1px var(--accent);

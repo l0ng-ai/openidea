@@ -1,8 +1,11 @@
 //! Child-process helpers shared by every crate that spawns tools.
 
 use std::ffi::{OsStr, OsString};
-use std::process::Command;
+#[cfg(windows)]
+use std::process::Stdio;
+use std::process::{Child, Command};
 use std::sync::{Arc, RwLock};
+use std::time::Duration;
 
 /// Windows `CREATE_NO_WINDOW` creation flag, for call sites that combine it
 /// with other flags (and then call [`host_env`] themselves). Prefer [`prepare`] otherwise.
@@ -25,18 +28,243 @@ pub fn prepare(cmd: &mut Command) -> &mut Command {
     host_env(cmd)
 }
 
+/// Starts the child as the leader of its own process group on Unix, so [`kill_tree`] and
+/// [`terminate_tree`] reach what it starts in turn (`gh` → `git`, `npm` → `node`, `mvnw` →
+/// the JVM). A no-op elsewhere: on Windows the tree is found from the child's process id.
+pub fn own_group(cmd: &mut Command) -> &mut Command {
+    #[cfg(unix)]
+    {
+        use std::os::unix::process::CommandExt;
+        cmd.process_group(0);
+    }
+    cmd
+}
+
+/// Kills the child and everything it started, then reaps it.
+///
+/// - Unix: `SIGKILL` to its process group, so spawn it with [`own_group`].
+/// - Windows: `taskkill /T /F`, which walks the tree from the child's process id, then a
+///   wait for what the child started to be gone.
+pub fn kill_tree(child: &mut Child) {
+    #[cfg(unix)]
+    signal_group(child, libc::SIGKILL);
+    #[cfg(windows)]
+    taskkill_tree_of(child.id());
+    let _ = child.kill();
+    let _ = child.wait();
+}
+
+/// [`kill_tree`] for a child known by its process id (a `tokio` child): `SIGKILL` to its
+/// process group (spawn it with [`own_group`]) or `taskkill /T /F` and a wait for what the
+/// child started to be gone. Call it before the child is reaped, so the id still names it.
+/// The child itself is left to its owner to kill and reap.
+pub fn kill_tree_of(pid: u32) {
+    #[cfg(unix)]
+    if let Ok(pid) = libc::pid_t::try_from(pid) {
+        // SAFETY: plain syscall; see `signal_group`.
+        unsafe {
+            libc::kill(-pid, libc::SIGKILL);
+        }
+    }
+    #[cfg(windows)]
+    taskkill_tree_of(pid);
+    #[cfg(not(any(unix, windows)))]
+    let _ = pid;
+}
+
+/// [`kill_tree`] that first asks the group to exit: `SIGTERM`, then `grace`, then `SIGKILL`.
+/// Git removes its `index.lock` on `SIGTERM`, where `SIGKILL` leaves it behind and the next
+/// git command fails. Windows has no such signal to send from outside the child's console,
+/// so there it is [`kill_tree`].
+pub fn terminate_tree(child: &mut Child, grace: Duration) {
+    #[cfg(unix)]
+    {
+        signal_group(child, libc::SIGTERM);
+        // Sleep rather than `try_wait`: the child stays unreaped, so its process id (and the
+        // group id) cannot be reused before the `SIGKILL` below.
+        std::thread::sleep(grace);
+    }
+    #[cfg(not(unix))]
+    let _ = grace;
+    kill_tree(child);
+}
+
+#[cfg(unix)]
+fn signal_group(child: &Child, signal: libc::c_int) {
+    if let Ok(pid) = libc::pid_t::try_from(child.id()) {
+        // SAFETY: plain syscall. The child is not reaped yet, so `-pid` is still its group (or
+        // no group at all when it was not spawned with `own_group`, and the call fails).
+        unsafe {
+            libc::kill(-pid, signal);
+        }
+    }
+}
+
+/// How long killing a tree waits for the processes the child started to be gone.
+#[cfg(windows)]
+const TREE_EXIT_WAIT: Duration = Duration::from_secs(5);
+
+#[cfg(windows)]
+pub use windows_tree::ProcessTree;
+
+/// `taskkill /T /F` from `pid`, then waits (up to [`TREE_EXIT_WAIT`]) until what the child
+/// started is gone: termination is asynchronous, and until a process is gone the files it
+/// holds open can't be opened or deleted. The child itself is left to its owner to reap.
+#[cfg(windows)]
+fn taskkill_tree_of(pid: u32) {
+    let started = windows_tree::descendants(pid);
+    // When the child started nothing, killing it alone is the whole job:
+    // `taskkill` would be a process spawn (measured at ~0.7 s here) for the
+    // same outcome, and the callers kill the child themselves.
+    if started.is_empty() {
+        return;
+    }
+    let mut taskkill = Command::new("taskkill");
+    prepare(&mut taskkill)
+        .args(["/T", "/F", "/PID", &pid.to_string()])
+        .stdin(Stdio::null())
+        .stdout(Stdio::null())
+        .stderr(Stdio::null());
+    let _ = taskkill.status();
+    windows_tree::wait_all(&started, TREE_EXIT_WAIT);
+}
+
+#[cfg(windows)]
+mod windows_tree {
+    use std::collections::HashSet;
+    use std::os::windows::io::{AsRawHandle, FromRawHandle, OwnedHandle};
+    use std::time::{Duration, Instant};
+    use windows_sys::Win32::Foundation::{FILETIME, INVALID_HANDLE_VALUE};
+    use windows_sys::Win32::System::Diagnostics::ToolHelp::{
+        CreateToolhelp32Snapshot, PROCESSENTRY32W, Process32FirstW, Process32NextW, TH32CS_SNAPPROCESS,
+    };
+    use windows_sys::Win32::System::Threading::{
+        GetProcessTimes, OpenProcess, PROCESS_QUERY_LIMITED_INFORMATION, PROCESS_SYNCHRONIZE, PROCESS_TERMINATE,
+        TerminateProcess, WaitForSingleObject,
+    };
+
+    /// Owned handles to a program and its current descendants, retained even if its launcher exits.
+    pub struct ProcessTree {
+        processes: Vec<OwnedHandle>,
+    }
+
+    impl ProcessTree {
+        pub fn capture(pid: u32) -> Self {
+            let Some(root) = open_with(pid, PROCESS_TERMINATE) else { return Self { processes: Vec::new() } };
+            let children = descendants_with(pid, PROCESS_TERMINATE);
+            Self { processes: std::iter::once(root).chain(children).collect() }
+        }
+
+        pub fn is_running(&self) -> bool {
+            self.processes.iter().any(|process| {
+                // SAFETY: an owned process handle opened with SYNCHRONIZE access.
+                unsafe {
+                    WaitForSingleObject(process.as_raw_handle(), 0) == windows_sys::Win32::Foundation::WAIT_TIMEOUT
+                }
+            })
+        }
+
+        /// Requests termination children first; poll `is_running` until termination completes.
+        pub fn terminate(&self) {
+            for process in self.processes.iter().rev() {
+                // SAFETY: an owned process handle opened with TERMINATE access, never a reused pid.
+                unsafe { TerminateProcess(process.as_raw_handle(), 1) };
+            }
+        }
+    }
+
+    /// Every process `root` started, directly or not, opened so it can be waited for. A
+    /// parent's id is reused once it is gone, so a process counts only if it started after
+    /// its parent.
+    pub(super) fn descendants(root: u32) -> Vec<OwnedHandle> {
+        descendants_with(root, 0)
+    }
+
+    fn descendants_with(root: u32, access: u32) -> Vec<OwnedHandle> {
+        let Some(root_started) = open(root).as_ref().and_then(started) else { return Vec::new() };
+        let processes = processes();
+        let mut seen = HashSet::from([root]);
+        let mut parents = vec![(root, root_started)];
+        let mut found = Vec::new();
+        while let Some((parent, parent_started)) = parents.pop() {
+            for &(pid, ppid) in &processes {
+                if ppid != parent || !seen.insert(pid) {
+                    continue;
+                }
+                let Some(handle) = open_with(pid, access) else { continue };
+                if let Some(at) = started(&handle).filter(|&at| at >= parent_started) {
+                    parents.push((pid, at));
+                    found.push(handle);
+                }
+            }
+        }
+        found
+    }
+
+    pub(super) fn wait_all(processes: &[OwnedHandle], within: Duration) {
+        let until = Instant::now() + within;
+        for process in processes {
+            let left = until.saturating_duration_since(Instant::now());
+            // SAFETY: a live process handle opened with SYNCHRONIZE access.
+            unsafe { WaitForSingleObject(process.as_raw_handle(), left.as_millis().min(u32::MAX as u128 - 1) as u32) };
+        }
+    }
+
+    /// (process id, parent process id) of every running process.
+    fn processes() -> Vec<(u32, u32)> {
+        let mut out = Vec::new();
+        // SAFETY: a snapshot handle owned here and an entry sized as the API requires.
+        unsafe {
+            let snapshot = CreateToolhelp32Snapshot(TH32CS_SNAPPROCESS, 0);
+            if snapshot.is_null() || snapshot == INVALID_HANDLE_VALUE {
+                return out;
+            }
+            let snapshot = OwnedHandle::from_raw_handle(snapshot);
+            let mut entry = PROCESSENTRY32W { dwSize: size_of::<PROCESSENTRY32W>() as u32, ..Default::default() };
+            let mut more = Process32FirstW(snapshot.as_raw_handle(), &mut entry);
+            while more != 0 {
+                out.push((entry.th32ProcessID, entry.th32ParentProcessID));
+                more = Process32NextW(snapshot.as_raw_handle(), &mut entry);
+            }
+        }
+        out
+    }
+
+    fn open(pid: u32) -> Option<OwnedHandle> {
+        open_with(pid, 0)
+    }
+
+    fn open_with(pid: u32, access: u32) -> Option<OwnedHandle> {
+        // SAFETY: plain call; a non-null result is a process handle owned by the caller.
+        let handle = unsafe { OpenProcess(PROCESS_SYNCHRONIZE | PROCESS_QUERY_LIMITED_INFORMATION | access, 0, pid) };
+        // SAFETY: as above.
+        (!handle.is_null()).then(|| unsafe { OwnedHandle::from_raw_handle(handle) })
+    }
+
+    /// When the process started, in 100 ns ticks since 1601.
+    fn started(process: &OwnedHandle) -> Option<u64> {
+        let (mut created, mut exited, mut kernel, mut user) =
+            (FILETIME::default(), FILETIME::default(), FILETIME::default(), FILETIME::default());
+        // SAFETY: a live process handle opened with query access; four out-parameters.
+        let ok = unsafe { GetProcessTimes(process.as_raw_handle(), &mut created, &mut exited, &mut kernel, &mut user) };
+        (ok != 0).then(|| (u64::from(created.dwHighDateTime) << 32) | u64::from(created.dwLowDateTime))
+    }
+}
+
 /// Gives `cmd` the host's environment back when the IDE runs from an AppImage. `AppRun` and
 /// its hooks point `LD_LIBRARY_PATH`, `PATH`, `XDG_DATA_DIRS`, `GIO_MODULE_DIR`, `GTK_PATH`,
 /// `GST_PLUGIN_*`, ... into the mounted image for the IDE itself; a host program that
 /// inherits them loads the image's (older) libraries and plugins next to its own, e.g.
 /// `curl: symbol lookup error ... nghttp2_...`. The IDE process keeps its environment
 /// (WebKit and GTK still need it). Then applies the [`set_env_overlay`] variables and
-/// those of a manual HTTP proxy ([`crate::proxy_settings::ProxySettings::child_env`]).
-/// Variables the call site has already set are kept. A no-op outside an AppImage
-/// without an overlay.
+/// those of a manual HTTP proxy ([`crate::proxy_settings::ProxySettings::child_env`]),
+/// and the login shell's variables this process lacks ([`shell_env`]: an app started from
+/// Finder/Dock doesn't have what rc files export, such as `GOPATH`, `JAVA_HOME` or
+/// `MAVEN_OPTS`). Variables the call site has already set are kept.
 pub fn host_env(cmd: &mut Command) -> &mut Command {
     let fixes = child_env_changes();
-    if fixes.is_empty() {
+    let shell: Vec<_> = shell_env().collect();
+    if fixes.is_empty() && shell.is_empty() {
         return cmd;
     }
     let explicit: Vec<OsString> = cmd.get_envs().map(|(k, _)| k.to_owned()).collect();
@@ -45,6 +273,9 @@ pub fn host_env(cmd: &mut Command) -> &mut Command {
             Some(v) => cmd.env(key, v),
             None => cmd.env_remove(key),
         };
+    }
+    for (key, value) in shell.into_iter().filter(|(k, _)| !explicit.contains(k)) {
+        cmd.env(key, value);
     }
     cmd
 }
@@ -62,12 +293,13 @@ pub fn host_vars() -> impl Iterator<Item = (OsString, OsString)> {
     apply_changes(std::env::vars_os().collect(), &child_env_changes()).into_iter()
 }
 
-/// [`std::env::var_os`] as a child should see it (see [`host_env`]).
+/// [`std::env::var_os`] as a child should see it (see [`host_env`]), the login shell's value
+/// included when this process lacks the variable.
 pub fn host_var_os(key: impl AsRef<OsStr>) -> Option<OsString> {
     let key = key.as_ref();
     match child_env_changes().into_iter().find(|(k, _)| k == key) {
         Some((_, fixed)) => fixed,
-        None => std::env::var_os(key),
+        None => std::env::var_os(key).or_else(|| shell_env().find(|(k, _)| k == key).map(|(_, v)| v)),
     }
 }
 
@@ -115,9 +347,11 @@ fn appimage_fixes() -> Vec<(OsString, Option<OsString>)> {
 const APPIMAGE_LAUNCH_VARS: [&str; 4] = ["APPDIR", "APPIMAGE", "ARGV0", "OWD"];
 
 /// What to change in `vars` (an environment) so a child sees the host's environment rather
-/// than the AppImage's: every `:`-separated entry inside `$APPDIR` is dropped (a saved
-/// `<NAME>_ORIG` wins when present), variables left empty are removed, and so are the
-/// runtime's own launch variables. Nothing changes when `APPDIR` is not set.
+/// than the AppImage's: every `:`-separated entry inside `$APPDIR` — or inside *any*
+/// AppImage mount, since an in-app update restart inherits the previous mount's entries
+/// alongside the new one — is dropped (a saved `<NAME>_ORIG` wins when present),
+/// variables left empty are removed, and so are the runtime's own launch variables.
+/// Nothing changes when `APPDIR` is not set.
 fn appimage_env_fixes(vars: &[(OsString, OsString)]) -> Vec<(OsString, Option<OsString>)> {
     let get = |name: &str| vars.iter().find(|(k, _)| k == name).map(|(_, v)| v);
     let Some(appdir) =
@@ -125,7 +359,12 @@ fn appimage_env_fixes(vars: &[(OsString, OsString)]) -> Vec<(OsString, Option<Os
     else {
         return Vec::new();
     };
-    let inside = |entry: &str| entry.strip_prefix(appdir).is_some_and(|rest| rest.is_empty() || rest.starts_with('/'));
+    let inside = |entry: &str| {
+        let own = entry.strip_prefix(appdir).is_some_and(|rest| rest.is_empty() || rest.starts_with('/'));
+        // AppImages extract to `/tmp/.mount_<name>`; an entry under another mount is
+        // another image's (e.g. the pre-update one a restart inherited), never the host's.
+        own || entry.starts_with("/tmp/.mount_")
+    };
     let mut fixes = Vec::new();
     for (key, value) in vars {
         let (Some(name), Some(value)) = (key.to_str(), value.to_str()) else { continue };
@@ -328,6 +567,28 @@ fn append_path_entries(path: &OsStr, extra: &OsStr) -> OsString {
 mod tests {
     use super::*;
 
+    #[cfg(unix)]
+    #[test]
+    fn kill_tree_of_reaches_what_the_child_started() {
+        use std::io::BufRead;
+        let mut cmd = Command::new("sh");
+        own_group(&mut cmd).args(["-c", "sleep 30 & echo $!; wait"]).stdout(std::process::Stdio::piped());
+        let mut child = cmd.spawn().unwrap();
+        let mut line = String::new();
+        std::io::BufReader::new(child.stdout.take().unwrap()).read_line(&mut line).unwrap();
+        let grandchild: libc::pid_t = line.trim().parse().unwrap();
+        let alive = |pid: libc::pid_t| unsafe { libc::kill(pid, 0) } == 0;
+        assert!(alive(grandchild));
+        kill_tree_of(child.id());
+        let _ = child.wait();
+        // Reparented to init once its parent is gone, which reaps it.
+        let gone = (0..100).any(|_| {
+            std::thread::sleep(Duration::from_millis(20));
+            !alive(grandchild)
+        });
+        assert!(gone, "the grandchild {grandchild} survived");
+    }
+
     #[cfg(windows)]
     #[test]
     fn user_path_reads_the_current_users_path() {
@@ -458,6 +719,15 @@ mod tests {
         assert_eq!(get("HOME"), Some(None));
         let shell: Vec<_> = shell_env().map(|(k, _)| k).collect();
         assert_eq!(shell, [OsString::from("OPENIDEA_OVERLAY_B")]);
+        // Every child gets what the login shell exports and the IDE process lacks (a Finder
+        // launch: `GOPATH`, `JAVA_HOME`...), unless the call site sets it.
+        assert_eq!(get("OPENIDEA_OVERLAY_B"), Some(Some("b".into())));
+        let mut own = Command::new("true");
+        own.env("OPENIDEA_OVERLAY_B", "call site");
+        host_env(&mut own);
+        let value = own.get_envs().find(|(n, _)| *n == "OPENIDEA_OVERLAY_B").and_then(|(_, v)| v);
+        assert_eq!(value, Some(OsStr::new("call site")));
+        assert_eq!(host_var_os("OPENIDEA_OVERLAY_B"), Some("b".into()));
         assert_eq!(host_var_os("PATH"), Some("/reloaded".into()));
         assert!(host_vars().all(|(k, _)| k != "HOME"));
         assert!(host_vars().any(|(k, v)| k == "OPENIDEA_OVERLAY_A" && v == "project"));
@@ -500,7 +770,7 @@ mod tests {
             ("PATH", "/tmp/.mount_OpenIDabc/usr/bin/:/tmp/.mount_OpenIDabc/usr/sbin/:/usr/local/bin:/usr/bin"),
             ("XDG_DATA_DIRS", "/tmp/.mount_OpenIDabc/usr/share:/usr/share:/usr/local/share:/usr/share"),
             ("HOME", "/home/me"),
-            ("JAVA_HOME", "/tmp/.mount_OpenIDabcdef/jdk"),
+            ("JAVA_HOME", "/opt/jdk"),
         ]);
         assert_eq!(
             got,
@@ -509,6 +779,27 @@ mod tests {
                 fix("LD_LIBRARY_PATH", Some("/opt/cuda/lib64:/usr/local/lib")),
                 fix("PATH", Some("/usr/local/bin:/usr/bin")),
                 fix("XDG_DATA_DIRS", Some("/usr/share:/usr/local/share:/usr/share")),
+            ]
+        );
+    }
+
+    #[test]
+    fn entries_of_a_previous_updates_mount_are_dropped() {
+        // An in-app update restart inherits the old mount's entries: a child's curl
+        // must not load the old image's libraries (they can still be mounted).
+        let got = fixes(&[
+            ("APPDIR", "/tmp/.mount_OpenIDjIlFFA"),
+            ("LD_LIBRARY_PATH", "/tmp/.mount_OpenIDjIlFFA/usr/lib/:/tmp/.mount_OpenIDdaNGfM/usr/lib/:/usr/local/lib"),
+            ("PATH", "/tmp/.mount_OpenIDjIlFFA/usr/bin/:/tmp/.mount_OpenIDdaNGfM/usr/bin/:/usr/bin"),
+            ("GIO_MODULE_DIR", "/tmp/.mount_OpenIDdaNGfM/usr/lib/gio/modules"),
+        ]);
+        assert_eq!(
+            got,
+            [
+                fix("APPDIR", None),
+                fix("LD_LIBRARY_PATH", Some("/usr/local/lib")),
+                fix("PATH", Some("/usr/bin")),
+                fix("GIO_MODULE_DIR", None),
             ]
         );
     }
@@ -595,5 +886,73 @@ mod tests {
             assert_eq!(find_executable("agent", &search), Some(a.join("agent")));
         }
         assert_eq!(find_executable("nope", &search), None);
+    }
+}
+
+#[cfg(all(test, unix))]
+mod kill_tests {
+    use super::*;
+    use std::path::Path;
+    use std::time::Instant;
+
+    /// Runs `script` in `sh` as its own group's leader and waits for it to write `ready`.
+    fn start(script: &str, ready: &Path) -> Child {
+        let mut cmd = Command::new("sh");
+        cmd.arg("-c").arg(script);
+        let child = own_group(&mut cmd).spawn().unwrap();
+        let deadline = Instant::now() + Duration::from_secs(5);
+        while !ready.exists() {
+            assert!(Instant::now() < deadline, "the script never got ready");
+            std::thread::sleep(Duration::from_millis(10));
+        }
+        child
+    }
+
+    fn assert_gone(pid: libc::pid_t) {
+        let deadline = Instant::now() + Duration::from_secs(5);
+        // SAFETY: signal 0 only checks that the process exists.
+        while unsafe { libc::kill(pid, 0) } == 0 {
+            assert!(Instant::now() < deadline, "process {pid} survived");
+            std::thread::sleep(Duration::from_millis(20));
+        }
+    }
+
+    #[test]
+    fn kill_tree_kills_what_the_child_started() {
+        let dir = tempfile::tempdir().unwrap();
+        let pid_file = dir.path().join("pid");
+        let script = format!("sleep 30 & echo $! > '{0}.tmp' && mv '{0}.tmp' '{0}'; wait", pid_file.display());
+        let mut child = start(&script, &pid_file);
+        let grandchild: libc::pid_t = std::fs::read_to_string(&pid_file).unwrap().trim().parse().unwrap();
+        kill_tree(&mut child);
+        assert!(child.try_wait().unwrap().is_some(), "the child is reaped");
+        assert_gone(grandchild);
+    }
+
+    #[test]
+    fn terminate_tree_lets_the_child_clean_up() {
+        let dir = tempfile::tempdir().unwrap();
+        let (ready, cleaned) = (dir.path().join("ready"), dir.path().join("cleaned"));
+        let script = format!(
+            "trap 'touch \"{}\"; exit 0' TERM; touch \"{}\"; sleep 30 & wait",
+            cleaned.display(),
+            ready.display()
+        );
+        let mut child = start(&script, &ready);
+        terminate_tree(&mut child, Duration::from_millis(500));
+        assert!(cleaned.exists(), "the SIGTERM handler ran before the SIGKILL");
+        assert!(child.try_wait().unwrap().is_some(), "the child is reaped");
+    }
+
+    #[test]
+    fn terminate_tree_still_kills_a_child_that_ignores_sigterm() {
+        let dir = tempfile::tempdir().unwrap();
+        let ready = dir.path().join("ready");
+        let script = format!("trap '' TERM; touch \"{}\"; while :; do sleep 1; done", ready.display());
+        let mut child = start(&script, &ready);
+        let started = Instant::now();
+        terminate_tree(&mut child, Duration::from_millis(50));
+        assert!(child.try_wait().unwrap().is_some(), "the child is reaped");
+        assert!(started.elapsed() < Duration::from_secs(5));
     }
 }

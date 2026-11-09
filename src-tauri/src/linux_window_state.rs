@@ -14,6 +14,7 @@ mod runtime {
     use super::*;
     use parking_lot::Mutex;
     use std::collections::HashMap;
+    use std::sync::OnceLock;
     use tauri::{AppHandle, Listener, Manager, Window, WindowEvent, plugin::TauriPlugin};
 
     const FILE: &str = tauri_plugin_window_state::DEFAULT_FILENAME;
@@ -63,8 +64,42 @@ mod runtime {
         visible: bool,
     }
 
+    static WAYLAND: OnceLock<bool> = OnceLock::new();
+
+    /// GDK's backend, as tao tests it (`GDK_BACKEND=x11` under a Wayland session is X11).
+    /// Known once the plugin is set up, before any window exists.
+    pub fn is_wayland() -> bool {
+        WAYLAND.get().copied().unwrap_or(false)
+    }
+
+    /// The client size that `set_size` (`gtk_window_resize`) takes. On Wayland, decorated windows
+    /// get a GTK CSD shadow margin that tao's inner and outer sizes (the configure size) include.
+    pub fn content_size(window: &Window) -> tauri::Result<tauri::PhysicalSize<u32>> {
+        let inner = window.inner_size()?;
+        if !is_wayland() {
+            return Ok(inner);
+        }
+        // GTK objects belong to the main thread. `gtk_window_get_size` follows the configure
+        // synchronously; the webview's allocation only catches up on the next layout.
+        let (tx, rx) = std::sync::mpsc::sync_channel(1);
+        let cloned = window.clone();
+        window.run_on_main_thread(move || {
+            let sizes = cloned.gtk_window().ok().zip(cloned.inner_size().ok()).zip(cloned.scale_factor().ok());
+            let _ = tx.send(sizes.map(|((gtk, inner), scale)| {
+                let (width, height) = gtk::prelude::GtkWindowExt::size(&gtk);
+                let content = tauri::LogicalSize::new(width.max(0) as u32, height.max(0) as u32);
+                (content.to_physical::<u32>(scale), inner)
+            }));
+        })?;
+        let Some((content, inner)) = rx.recv().ok().flatten() else { return Ok(inner) };
+        // An unmapped window reports its size request; never exceed the configure size.
+        let usable =
+            content.width > 1 && content.height > 1 && content.width <= inner.width && content.height <= inner.height;
+        Ok(if usable { content } else { inner })
+    }
+
     fn frame(window: &Window) -> Option<Frame> {
-        let size = window.inner_size().ok()?;
+        let size = content_size(window).ok()?;
         Some(Frame {
             visible: window.is_visible().ok()?,
             size: Size(size.width, size.height),
@@ -85,7 +120,7 @@ mod runtime {
     }
 
     fn key(label: &str) -> &str {
-        if crate::windows::is_settings_window(label) { "settings" } else { label }
+        crate::windows::state_key(label)
     }
 
     pub fn prepare(app: &AppHandle, config: &mut WindowConfig) -> bool {
@@ -163,7 +198,7 @@ mod runtime {
             pending.phase = Phase::Mapping;
             pending.mode_requested = false;
         }
-        let mut fit_settings = false;
+        let mut place_aux = false;
         let mut position = None;
         if matches!(pending.phase, Phase::Mapping) {
             if pending.restore_position {
@@ -251,7 +286,7 @@ mod runtime {
                 return;
             }
             pending.phase = Phase::Tracking;
-            fit_settings = crate::windows::is_settings_window(window.label());
+            place_aux = crate::windows::auxiliary_parent(window.label()).is_some();
         }
         pending.history = ModeHistory(frame.mode);
         pending.normal = remember_size(pending.normal, frame.size, false, frame.mode);
@@ -269,15 +304,15 @@ mod runtime {
         if let Some(position) = position {
             let _ = window.set_position(position);
         }
-        if fit_settings {
+        if place_aux {
             let app = window.app_handle().clone();
             let label = window.label().to_owned();
             let _ = window.run_on_main_thread(move || {
-                if let Some(parent) = crate::windows::settings_parent(&label).and_then(|p| app.get_webview_window(p))
-                    && let Some(settings) = app.get_webview_window(&label)
-                    && let Err(error) = crate::windows::place_settings_window(&settings, &parent)
+                if let Some(parent) = crate::windows::auxiliary_parent(&label).and_then(|p| app.get_webview_window(p))
+                    && let Some(aux) = app.get_webview_window(&label)
+                    && let Err(error) = crate::windows::place_over_parent(&aux, &parent)
                 {
-                    tracing::warn!("cannot fit restored settings window: {error}");
+                    tracing::warn!("cannot fit restored auxiliary window: {error}");
                 }
             });
         }
@@ -381,6 +416,9 @@ mod runtime {
     pub fn plugin() -> TauriPlugin<tauri::Wry> {
         tauri::plugin::Builder::new("linux-window-state")
             .setup(|app, _| {
+                // Plugins are set up on the main thread once GTK is initialised, before any window exists.
+                use gtk::gdk::prelude::DisplayExtManual;
+                let _ = WAYLAND.set(gtk::gdk::Display::default().is_some_and(|d| d.backend().is_wayland()));
                 let saved = app
                     .path()
                     .app_config_dir()
@@ -466,7 +504,7 @@ mod runtime {
 }
 
 #[cfg(target_os = "linux")]
-pub use runtime::{normal_size_requested, plugin, prepare, save_before_close};
+pub use runtime::{content_size, is_wayland, normal_size_requested, plugin, prepare, save_before_close};
 
 #[cfg(test)]
 mod tests {

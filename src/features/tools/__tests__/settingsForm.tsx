@@ -44,6 +44,13 @@ export function TestSettingsForm({
   const form = useMemo<SettingsForm>(
     () => ({
       scope,
+      apply: async () => true,
+      setMapEntry: () => {
+        throw new Error("Map entries are not supported by this stand-in");
+      },
+      useExternal: () => {
+        throw new Error("External settings are not supported by this stand-in");
+      },
       useValue: (key) => useTestForm((s) => getAt(s.values, key)),
       set: (key, value) =>
         useTestForm.setState((s) => ({ values: putAt(s.values, key, value), staged: [...s.staged, [key, value]] })),

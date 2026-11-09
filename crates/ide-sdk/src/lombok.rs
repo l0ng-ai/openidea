@@ -246,7 +246,7 @@ fn sources_import_lombok(root: &Path) -> bool {
     // Imports precede the first type, after at most a license header.
     const HEAD: u64 = 8 * 1024;
     let mut walker = ignore::WalkBuilder::new(root);
-    walker.require_git(false).follow_links(false).filter_entry(|e| {
+    walker.require_git(ide_core::ignored::inside_git_repo(root)).follow_links(false).filter_entry(|e| {
         e.depth() == 0
             || !e.file_type().is_some_and(|t| t.is_dir())
             || !OUTPUT_DIRS.contains(&e.file_name().to_string_lossy().as_ref())
@@ -507,7 +507,7 @@ mod tests {
         let cache = repo.join("org/projectlombok/lombok/1.18.48");
         fs::create_dir_all(&cache).unwrap();
         fs::write(cache.join("lombok-1.18.48.jar"), b"official agent").unwrap();
-        let patched = PathBuf::from("/managed/lombok-1.18.48-openidea.1.jar");
+        let patched = PathBuf::from("/managed/lombok-1.18.48-openidea.3.jar");
         let selected = lombok_agent(tmp.path(), None, Some(patched.clone()), Some(repo.clone()));
         assert_eq!(selected.jar(), Some(patched.as_path()));
         assert_eq!(selected.problem(), None);

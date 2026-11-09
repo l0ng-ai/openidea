@@ -27,7 +27,10 @@ pub enum SettingsScope {
     Project,
 }
 
-fn remove_custom_schemes(layer: &mut Json) {
+fn remove_global_settings(layer: &mut Json) {
+    if let Some(layer) = layer.as_object_mut() {
+        layer.remove("mcpServer");
+    }
     if let Some(editor) = layer.get_mut("editor").and_then(Json::as_object_mut) {
         editor.remove("customSchemes");
     }
@@ -187,7 +190,9 @@ impl SettingsStore {
         for (scope, file) in self.layers() {
             let Some(mut layer) = read_layer(&file) else { continue };
             if scope == SettingsScope::Project {
-                remove_custom_schemes(&mut layer);
+                remove_global_settings(&mut layer);
+            } else if let Some(layer) = layer.as_object_mut() {
+                layer.remove("languageServerTargets");
             }
             if let Err(e) = try_merge(&mut merged, layer) {
                 tracing::warn!("{} has invalid settings, ignoring it: {e}", file.display());
@@ -196,8 +201,9 @@ impl SettingsStore {
         let mut settings: Settings = serde_json::from_value(merged).unwrap_or_default();
         if let Some(root) = self.project_file.as_deref().and_then(Path::parent).and_then(Path::parent)
             && let Ok(Some(workspace)) = crate::workspace::Workspace::load(root)
+            && workspace.is_container(root)
         {
-            settings.general.project_name = workspace.name;
+            settings.general.project_name = workspace.name.clone();
             settings.project_structure.content_roots =
                 workspace.projects.iter().map(|p| ide_core::ipc_path::to_ipc(p)).collect();
         }
@@ -213,12 +219,20 @@ impl SettingsStore {
     /// `null` removes the key from that layer. Unknown keys and values of the
     /// wrong type are rejected with `InvalidInput`; the file is left untouched.
     pub fn set(&self, scope: SettingsScope, key: &str, value: serde_json::Value) -> IdeResult<Settings> {
+        if scope == SettingsScope::Global
+            && (key == "languageServerTargets" || key.starts_with("languageServerTargets."))
+        {
+            return Err(IdeError::invalid("language server targets belong to project settings"));
+        }
         if scope == SettingsScope::Project
             && (key == "editor.customSchemes"
                 || key.starts_with("editor.customSchemes.")
                 || (key == "editor" && value.get("customSchemes").is_some()))
         {
             return Err(IdeError::invalid("custom color schemes belong to user settings"));
+        }
+        if scope == SettingsScope::Project && (key == "mcpServer" || key.starts_with("mcpServer.")) {
+            return Err(IdeError::invalid("MCP server belongs to user settings"));
         }
         let file = self.file(scope).ok_or_else(|| IdeError::invalid("no project is open"))?.to_path_buf();
         let segments: Vec<&str> = key.split('.').collect();
@@ -259,7 +273,7 @@ impl SettingsStore {
             let layer = if is_target { parse_layer(&new_text).ok() } else { read_layer(&layer_file) };
             let Some(mut layer) = layer else { continue };
             if layer_scope == SettingsScope::Project {
-                remove_custom_schemes(&mut layer);
+                remove_global_settings(&mut layer);
             }
             if let Err(e) = try_merge(&mut merged, layer)
                 && is_target
@@ -314,6 +328,48 @@ impl SettingsStore {
         ide_vfs::write_atomic(&self.global_file, bundle.settings.as_bytes())?;
         Ok((self.reload(), bundle.storage))
     }
+}
+
+/// A JetBrains IDE's File › Manage IDE Settings › Export Settings… archive: every
+/// entry name, and the text of the entries OpenIDEA maps (the frontend does the mapping).
+#[derive(serde::Serialize, specta::Type)]
+#[serde(rename_all = "camelCase")]
+pub struct JetBrainsSettings {
+    pub entries: Vec<String>,
+    /// Entry name → text, for `colors/*.icls` and the `options/*.xml` files OpenIDEA reads.
+    pub files: BTreeMap<String, String>,
+}
+
+const JETBRAINS_MARKER: &str = "IntelliJ IDEA Global Settings";
+const JETBRAINS_OPTIONS: [&str; 4] =
+    ["options/editor-font.xml", "options/colors.scheme.xml", "options/editor.xml", "options/ide.general.xml"];
+const JETBRAINS_MAX_TEXT: u64 = 4 << 20;
+
+pub fn read_jetbrains_settings(path: &Path) -> IdeResult<JetBrainsSettings> {
+    use std::io::Read;
+    let not_jetbrains = || IdeError::invalid("not a JetBrains settings archive");
+    let mut archive = zip::ZipArchive::new(std::fs::File::open(path)?).map_err(|_| not_jetbrains())?;
+    let mut entries = Vec::with_capacity(archive.len());
+    let mut files = BTreeMap::new();
+    for i in 0..archive.len() {
+        let entry = archive.by_index(i).map_err(|_| not_jetbrains())?;
+        let name = entry.name().map_err(|_| not_jetbrains())?.into_owned();
+        let wanted = JETBRAINS_OPTIONS.contains(&name.as_str())
+            || name.strip_prefix("colors/").is_some_and(|n| !n.contains('/') && n.ends_with(".icls"));
+        if wanted {
+            let mut text = String::new();
+            entry
+                .take(JETBRAINS_MAX_TEXT)
+                .read_to_string(&mut text)
+                .map_err(|e| IdeError::invalid(format!("{name}: {e}")))?;
+            files.insert(name.clone(), text);
+        }
+        entries.push(name);
+    }
+    if !entries.iter().any(|e| e == JETBRAINS_MARKER) {
+        return Err(not_jetbrains());
+    }
+    Ok(JetBrainsSettings { entries, files })
 }
 
 const BUNDLE_FORMAT: &str = "openidea-settings";
@@ -479,6 +535,10 @@ mod tests {
         let text = std::fs::read_to_string(added.join("settings.toml")).unwrap();
         assert_eq!(text, "[languageServers.ruff]\nargs = [\"server\"]\ncommand = \"ruff\"\nlanguages = [\"python\"]\n");
 
+        let s =
+            store.set(SettingsScope::Global, "languages.ruff.configurationDirectory", json!("shared/ruff")).unwrap();
+        assert_eq!(s.languages.ruff.configuration_directory, "shared/ruff");
+
         // Project layer is created on demand and wins.
         let s = store.set(SettingsScope::Project, "editor.fontSize", json!(12)).unwrap();
         assert_eq!(s.editor.font_size, 12.0);
@@ -543,6 +603,38 @@ mod tests {
     }
 
     #[test]
+    fn reads_jetbrains_settings_archives() {
+        use std::io::Write;
+        let tmp = tempfile::tempdir().unwrap();
+        let write = |name: &str, entries: &[(&str, &str)]| {
+            let path = tmp.path().join(name);
+            let mut zip = zip::ZipWriter::new(std::fs::File::create(&path).unwrap());
+            for (entry, text) in entries {
+                zip.start_file(*entry, zip::write::SimpleFileOptions::default()).unwrap();
+                zip.write_all(text.as_bytes()).unwrap();
+            }
+            zip.finish().unwrap();
+            path
+        };
+        let ok = write(
+            "settings.zip",
+            &[
+                (JETBRAINS_MARKER, ""),
+                ("colors/_@user_Darcula.icls", "<scheme name=\"_@user_Darcula\"/>"),
+                ("options/editor-font.xml", "<application/>"),
+                ("options/vcs.xml", "<application/>"),
+                ("keymaps/macOS.xml", "<keymap/>"),
+            ],
+        );
+        let read = read_jetbrains_settings(&ok).unwrap();
+        assert_eq!(read.entries.len(), 5);
+        assert_eq!(read.files.keys().collect::<Vec<_>>(), ["colors/_@user_Darcula.icls", "options/editor-font.xml"]);
+        assert!(read_jetbrains_settings(&write("other.zip", &[("options/editor.xml", "")])).is_err());
+        std::fs::write(tmp.path().join("plain.zip"), "not a zip").unwrap();
+        assert!(read_jetbrains_settings(&tmp.path().join("plain.zip")).is_err());
+    }
+
+    #[test]
     fn main_toolbar_can_be_set_and_reset() {
         let tmp = tempfile::tempdir().unwrap();
         let store = SettingsStore::load(tmp.path(), None);
@@ -558,5 +650,61 @@ mod tests {
         assert_eq!(toolbar.hidden, ["vcs.branch"]);
         let s = store.set(SettingsScope::Global, "appearance.mainToolbar", Json::Null).unwrap();
         assert_eq!(s.appearance.main_toolbar, None);
+    }
+
+    #[test]
+    fn toolbar_and_status_bar_are_shown_until_hidden() {
+        let tmp = tempfile::tempdir().unwrap();
+        std::fs::write(tmp.path().join("settings.toml"), "[appearance]\ncompactMode = true\n").unwrap();
+        let store = SettingsStore::load(tmp.path(), None);
+        let s = store.effective();
+        assert!(s.appearance.show_main_toolbar);
+        assert!(s.appearance.show_status_bar);
+        let s = store.set(SettingsScope::Global, "appearance.showMainToolbar", json!(false)).unwrap();
+        assert!(!s.appearance.show_main_toolbar);
+        let s = store.set(SettingsScope::Global, "appearance.showStatusBar", json!(false)).unwrap();
+        assert!(!s.appearance.show_status_bar);
+        assert!(!store.reload().appearance.show_main_toolbar);
+    }
+
+    #[test]
+    fn mcp_server_is_default_off_and_cannot_be_enabled_by_a_project() {
+        let tmp = tempfile::tempdir().unwrap();
+        let config = tmp.path().join("config");
+        let project = tmp.path().join("project");
+        std::fs::create_dir_all(project.join(".openidea")).unwrap();
+        std::fs::write(project.join(".openidea/settings.toml"), "[mcpServer]\nenabled = true\n").unwrap();
+        let settings = SettingsStore::load(&config, Some(&project));
+        assert!(!settings.effective().mcp_server.enabled);
+        assert!(settings.set(SettingsScope::Project, "mcpServer.enabled", serde_json::json!(true)).is_err());
+        assert!(
+            settings
+                .set(SettingsScope::Global, "mcpServer.enabled", serde_json::json!(true))
+                .unwrap()
+                .mcp_server
+                .enabled
+        );
+    }
+    #[test]
+    fn language_server_targets_are_project_only_and_default_to_the_host() {
+        let tmp = tempfile::tempdir().unwrap();
+        let config = tmp.path().join("config");
+        let project = tmp.path().join("project");
+        std::fs::create_dir_all(&config).unwrap();
+        std::fs::create_dir_all(&project).unwrap();
+        std::fs::write(config.join("settings.toml"), "[languageServerTargets.php]\ntarget = 'global-target'\n")
+            .unwrap();
+        let settings = SettingsStore::load(&config, Some(&project));
+        assert!(settings.effective().language_server_targets.is_empty());
+        assert!(settings.set(SettingsScope::Global, "languageServerTargets", json!({})).is_err());
+        let selected = settings
+            .set(
+                SettingsScope::Project,
+                "languageServerTargets",
+                json!({"php":{"target":"container","server":"intelephense"}}),
+            )
+            .unwrap();
+        assert_eq!(selected.language_server_targets["php"].target, "container");
+        assert_eq!(settings.reload().language_server_targets["php"].server, "intelephense");
     }
 }

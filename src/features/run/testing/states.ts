@@ -2,7 +2,7 @@
  * Last known result per test, across runs, for the gutter ▶ icons: like IDEA, a
  * test (or suite) that failed last time shows a red run icon, a passed one green.
  * Results are matched to gutter targets by their test path (the trailing name
- * parts), plus the file for frameworks whose results are rooted at the file.
+ * parts), plus the file for frameworks whose results are rooted at the file (or its module).
  */
 import { nodeStatus, type TestNode, type TestResults } from "./results";
 import type { TestStatus } from "./types";
@@ -70,8 +70,17 @@ function segmentMatches(result: string, target: string): boolean {
 const cleanPath = (p: string) => p.replace(/\\/g, "/").replace(/^\.\//, "");
 
 function sameFile(resultRoot: string, relPath: string): boolean {
-  const a = cleanPath(resultRoot);
   const b = cleanPath(relPath);
+  // unittest / Django results are rooted at the dotted module (`polls.tests`).
+  if (
+    /^[\p{L}_][\p{L}\p{N}_]*(\.[\p{L}_][\p{L}\p{N}_]*)*$/u.test(resultRoot) &&
+    !resultRoot.endsWith(".py") &&
+    b.endsWith(".py")
+  ) {
+    const module = resultRoot.replace(/\./g, "/");
+    return [`${module}.py`, `${module}/__init__.py`].some((f) => b === f || b.endsWith(`/${f}`));
+  }
+  const a = cleanPath(resultRoot);
   return a === b || b.endsWith(`/${a}`) || a.endsWith(`/${b}`);
 }
 

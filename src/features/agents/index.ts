@@ -23,6 +23,7 @@ import { sendPaths, sendSelection } from "./references";
 import { focusedSession } from "./sessionFocus";
 import { connect, disconnect, openHome, useAgents } from "./store";
 import { taskActions } from "./taskActions";
+import { replyActions } from "./replyActions";
 
 /** Settings › Tools › Agents (also used by the Settings window). */
 export function activateSettingsPages(): () => void {
@@ -44,6 +45,22 @@ export function activate(): () => void {
   sync(useProject.getState().project?.root);
   const disposers = [
     activateSettingsPages(),
+    // The performance harness (`perf/`): long conversations to switch between and scroll.
+    import.meta.env.DEV || import.meta.env.MODE === "perf"
+      ? registerActions([
+          {
+            id: "agents.openSampleConversations",
+            title: "Open Sample Conversations",
+            category: "Agents",
+            hidden: true,
+            run: async ({ arg }) => {
+              const { tasks = 2, turns = 150 } = (arg ?? {}) as { tasks?: number; turns?: number };
+              const { openSampleConversations } = await import("./sampleConversation");
+              openSampleConversations(tasks, turns);
+            },
+          },
+        ])
+      : () => {},
     useProject.subscribe((s, prev) => {
       if (s.project?.root !== prev.project?.root || s.project?.trusted !== prev.project?.trusted) sync(s.project?.root);
     }),
@@ -73,6 +90,8 @@ export function activate(): () => void {
       icon: () => "toolwindow-agents",
       // Tabs of tasks deleted meanwhile are closed when the tasks load (`connect`).
       restorable: true,
+      // Rebuilding a long conversation on every switch back is slow.
+      keepAlive: true,
     }),
     registerEditorKind({
       kind: HOME_KIND,
@@ -98,6 +117,7 @@ export function activate(): () => void {
     }),
     registerActions([
       ...taskActions,
+      ...replyActions,
       {
         id: "agents.findInConversation",
         title: "Find in Conversation",

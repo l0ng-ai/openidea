@@ -1,0 +1,14 @@
+{
+  "properties": {
+    "title": {
+      "type": "string",
+      "title": "Terminal title prefix",
+      "default": "follow: "
+    },
+    "lines": {
+      "type": "integer",
+      "title": "Lines to show first",
+      "default": 20
+    }
+  }
+}

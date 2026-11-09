@@ -197,6 +197,7 @@ impl SyntaxCache {
                     let query = g.outline_query()?;
                     Some(outline::outline(g, query, tree, text))
                 })
+                .or_else(|| super::external::outline(lang, text))
             },
         )
     }
@@ -211,6 +212,7 @@ impl SyntaxCache {
                 self.with_tree(doc, lang, version, text, |g, tree, text| {
                     Some(folding::folding(g.spec, g.kinds(), tree, text, self.syntax.comment_tokens(lang)))
                 })
+                .or_else(|| super::external::folding(lang, text))
                 .or_else(|| Some(self.syntax.custom_folding(lang, text)))
             },
         )
@@ -227,6 +229,7 @@ impl SyntaxCache {
                 self.with_tree(doc, lang, version, text, |g, tree, text| {
                     Some(highlight::highlights(g.highlight_query()?, tree, text))
                 })
+                .or_else(|| super::external::highlights(lang, text))
             },
         ))
     }

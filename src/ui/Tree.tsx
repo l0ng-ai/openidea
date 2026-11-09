@@ -30,9 +30,13 @@ import { fuzzyMatch } from "./match";
 import { acquirePopup } from "./popupState";
 import styles from "./Tree.module.css";
 import { T } from "./T";
-import { tx } from "@/platform/i18n";
+import { setContext } from "@/platform/context";
+import { useGivenTx } from "@/platform/i18n";
 import { useTreeReorder, type TreeReorder } from "./treeReorder";
 import { useTreeDirectoryContext } from "./treeDirectoryContext";
+import { useIconRowHeight } from "./iconAppearance";
+
+const DEFAULT_ROW_HEIGHT = 24;
 export type { TreeReorder } from "./treeReorder";
 
 export interface TreeRowState {
@@ -82,8 +86,8 @@ export interface TreeProps<T> {
   /** Custom row content (after the chevron). Defaults to icon + highlighted label + `getDetail`. */
   renderNode?: (node: T, state: TreeRowState) => ReactNode;
   getIcon?: (node: T, expanded: boolean) => IconName | (string & {}) | undefined;
-  /** Muted trailing text (e.g. a path next to the project root). */
-  getDetail?: (node: T) => string | undefined;
+  /** Muted trailing detail (e.g. a path next to the project root); may include styled content. */
+  getDetail?: (node: T) => ReactNode;
   /** Label colour, e.g. VCS status. */
   getColor?: (node: T) => string | undefined;
   /** Filesystem directory for actions on the focused selection; groups return null. */
@@ -113,6 +117,8 @@ export interface TreeProps<T> {
   rowClassName?: (node: T) => string | undefined;
   "aria-label"?: string;
   handleRef?: Ref<TreeHandle>;
+  /** Context key set while the tree itself has keyboard focus. */
+  focusContext?: string;
   empty?: ReactNode;
   /** Rows wider than the pane scroll horizontally instead of clipping. */
   horizontalScroll?: boolean;
@@ -127,33 +133,34 @@ function useContentWidth<T>(
   enabled: boolean,
 ): number {
   const [width, setWidth] = useState(0);
-  const cache = useRef(new Map<string, number>());
-  const measuredRows = useRef<readonly Row<T>[] | null>(null);
-  const maximum = useRef(0);
-  useLayoutEffect(() => {
-    if (!enabled) {
-      cache.current.clear();
-      measuredRows.current = null;
-      maximum.current = 0;
-      return;
-    }
+  const latestRows = useRef(rows);
+  const schedule = useRef<(() => void) | null>(null);
+  useEffect(() => {
+    if (!enabled) return;
     const element = scroller.current;
     if (!element) return;
-    const mounted = [...element.querySelectorAll<HTMLElement>("[data-row]")];
+    const cache = new Map<string, number>();
+    const observed = new Set<HTMLElement>();
+    let measuredRows: readonly Row<T>[] | null = null;
+    let maximum = 0;
+    let frame = 0;
     const measure = () => {
+      frame = 0;
       // Hidden tool windows have no layout. Keep their estimates until shown;
       // the observer remains attached so showing the window resumes measurement.
       if (element.clientWidth === 0) return;
+      const rows = latestRows.current;
+      const mounted = [...element.querySelectorAll<HTMLElement>("[data-row]")];
       let recompute = false;
-      if (measuredRows.current !== rows) {
+      if (measuredRows !== rows) {
         const keys = new Set(rows.map((row) => row.key));
-        for (const [key, value] of cache.current) {
+        for (const [key, value] of cache) {
           if (!keys.has(key)) {
-            cache.current.delete(key);
-            if (value === maximum.current) recompute = true;
+            cache.delete(key);
+            if (value === maximum) recompute = true;
           }
         }
-        measuredRows.current = rows;
+        measuredRows = rows;
       }
       // Measure max-content, not the viewport's min-width floor. Batch writes and
       // restore before paint so selection backgrounds still fill the viewport.
@@ -162,27 +169,47 @@ function useContentWidth<T>(
       const widths = mounted.map((row) => row.offsetWidth);
       mounted.forEach((row, index) => {
         row.style.minWidth = minimums[index]!;
-        const key = rows[Number(row.dataset.row)]!.key;
+        const key = rows[Number(row.dataset.row)]?.key;
+        if (key === undefined) return;
         const value = widths[index]!;
-        if (cache.current.get(key) === maximum.current && value < maximum.current) recompute = true;
-        cache.current.set(key, value);
-        maximum.current = Math.max(maximum.current, value);
+        if (cache.get(key) === maximum && value < maximum) recompute = true;
+        cache.set(key, value);
+        maximum = Math.max(maximum, value);
       });
       // Ordinary scrolling only touches mounted rows. Scan cached widths only
       // when the previous maximum was removed or actually became narrower.
       if (recompute) {
-        maximum.current = 0;
-        for (const value of cache.current.values()) maximum.current = Math.max(maximum.current, value);
-        recompute = false;
+        maximum = 0;
+        for (const value of cache.values()) maximum = Math.max(maximum, value);
       }
       // Reconcile and measure together: never publish an intermediate shrink.
-      setWidth(maximum.current);
+      setWidth(maximum);
+      // Rows resize without a render when fonts or zoom change.
+      const current = new Set(mounted);
+      for (const row of observed) if (!current.has(row)) observer.unobserve(row);
+      for (const row of mounted) if (!observed.has(row)) observer.observe(row);
+      observed.clear();
+      for (const row of mounted) observed.add(row);
     };
-    measure();
-    const observer = new ResizeObserver(measure);
+    // Measuring forces layout: coalesce renders and resizes into one pass per
+    // frame instead of measuring inside every commit.
+    const request = () => {
+      frame ||= requestAnimationFrame(measure);
+    };
+    const observer = new ResizeObserver(request);
     observer.observe(element);
-    for (const row of mounted) observer.observe(row);
-    return () => observer.disconnect();
+    schedule.current = request;
+    request();
+    return () => {
+      schedule.current = null;
+      cancelAnimationFrame(frame);
+      observer.disconnect();
+    };
+  }, [enabled, scroller]);
+  // Rows or the virtual window may have changed; keep `rows` in step with the DOM.
+  useLayoutEffect(() => {
+    latestRows.current = rows;
+    schedule.current?.();
   });
   // Offscreen widths are estimates after label/font/indent changes; mounting
   // measures them afresh, including decreases for the same key.
@@ -206,6 +233,7 @@ function useControllableSet(value: ReadonlySet<string> | undefined, initial: Ite
 }
 
 export function Tree<T>(props: TreeProps<T>) {
+  const given = useGivenTx();
   const {
     roots,
     getKey,
@@ -223,7 +251,7 @@ export function Tree<T>(props: TreeProps<T>) {
     onContextMenu,
     speedSearch = true,
     speedSearchMode = "highlight",
-    rowHeight = 24,
+    rowHeight: fixedRowHeight,
     indent = 20,
     className,
     rowClassName,
@@ -299,6 +327,8 @@ export function Tree<T>(props: TreeProps<T>) {
   const indexOfKey = useMemo(() => new Map(rows.map((r, i) => [r.key, i])), [rows]);
   const leadIndex = lead != null ? (indexOfKey.get(lead) ?? -1) : -1;
 
+  const themedRowHeight = useIconRowHeight();
+  const rowHeight = fixedRowHeight ?? themedRowHeight ?? DEFAULT_ROW_HEIGHT;
   const virtualizer = useVirtualizer({
     count: rows.length,
     getScrollElement: () => scrollRef.current,
@@ -306,6 +336,7 @@ export function Tree<T>(props: TreeProps<T>) {
     overscan: 12,
     getItemKey: (i) => rows[i]!.key,
   });
+  useEffect(() => virtualizer.measure(), [virtualizer, rowHeight]);
 
   // Keep the keyboard lead in view when the lead changes — not when its index
   // shifts because expanding or collapsing elsewhere inserted rows above it:
@@ -565,6 +596,31 @@ export function Tree<T>(props: TreeProps<T>) {
   );
   const noMatch = !!query && matchMap.size === 0;
 
+  const { focusContext } = props;
+  useLayoutEffect(() => {
+    const element = scrollRef.current;
+    if (!focusContext || !element) return;
+    let focused = false;
+    const focus = () => {
+      focused = true;
+      setContext(focusContext, true);
+    };
+    const blur = () => {
+      if (!focused) return;
+      focused = false;
+      setContext(focusContext, false);
+    };
+    element.addEventListener("focus", focus);
+    element.addEventListener("blur", blur);
+    if (element.ownerDocument.activeElement === element) focus();
+    return () => {
+      element.removeEventListener("focus", focus);
+      element.removeEventListener("blur", blur);
+      // Removing a focused tree can skip blur, leaving its shortcuts active.
+      blur();
+    };
+  }, [emptyState, focusContext]);
+
   if (emptyState) return <div className={clsx(styles.tree, styles.emptyWrap, className)}>{empty}</div>;
 
   return (
@@ -572,7 +628,7 @@ export function Tree<T>(props: TreeProps<T>) {
       <div
         ref={scrollRef}
         role="tree"
-        aria-label={tx(props["aria-label"])}
+        aria-label={given(props["aria-label"])}
         aria-multiselectable={multiSelect || undefined}
         aria-activedescendant={
           leadRow && !leadRow.loading && virtualizer.getVirtualItems().some((v) => v.index === leadIndex)
@@ -605,14 +661,17 @@ export function Tree<T>(props: TreeProps<T>) {
           )}
           {virtualizer.getVirtualItems().map((v) => {
             const row = rows[v.index]!;
-            const pad = 4 + row.depth * indent;
-            const style = { transform: `translateY(${v.start}px)`, height: v.size, paddingLeft: pad };
+            // Settings › Appearance › "Use smaller indents in trees" sets `--tree-indent`
+            // on the root; reading it here applies the setting to every tree at once,
+            // instantly, and keeps chevrons and level alignment consistent with it.
+            const pad = (extra = 0) => `calc(${4 + extra}px + ${row.depth} * var(--tree-indent, ${indent}px))`;
+            const style = { transform: `translateY(${v.start}px)`, height: v.size, paddingLeft: pad() };
             if (row.loading) {
               return (
                 <div
                   key={v.key}
                   className={clsx(styles.row, styles.loading)}
-                  style={{ ...style, paddingLeft: pad + 20 }}
+                  style={{ ...style, paddingLeft: pad(20) }}
                   role="presentation"
                 >
                   <Spinner size={12} /> <T>Loading…</T>
@@ -620,6 +679,10 @@ export function Tree<T>(props: TreeProps<T>) {
               );
             }
             const isSelected = selected.has(row.key);
+            const prevRow = rows[v.index - 1];
+            const nextRow = rows[v.index + 1];
+            const joinPrev = isSelected && !!prevRow && !prevRow.loading && selected.has(prevRow.key);
+            const joinNext = isSelected && !!nextRow && !nextRow.loading && selected.has(nextRow.key);
             const isLead = v.index === leadIndex;
             const matches = matchMap.get(row.key) ?? null;
             const state: TreeRowState = {
@@ -649,6 +712,8 @@ export function Tree<T>(props: TreeProps<T>) {
                   props.horizontalScroll && styles.wideRow,
                   rowClassName?.(row.node),
                   isSelected && styles.selected,
+                  joinPrev && styles.joinPrev,
+                  joinNext && styles.joinNext,
                   isLead && styles.lead,
                   reordering.drop?.key === row.key && styles[reordering.drop.position],
                 )}
@@ -685,7 +750,9 @@ export function Tree<T>(props: TreeProps<T>) {
                       indices={matches}
                       tone="accent"
                     />
-                    {detail && <span className={styles.detail}>{detail}</span>}
+                    {detail != null && detail !== false && detail !== "" && (
+                      <span className={styles.detail}>{detail}</span>
+                    )}
                   </>
                 )}
               </div>

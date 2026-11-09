@@ -21,6 +21,7 @@ import {
   type SyntaxHighlights,
   type TextChange,
 } from "@/platform/ipc";
+import { getCurrentWebviewWindow } from "@tauri-apps/api/webviewWindow";
 
 import { EditorState } from "@codemirror/state";
 import { customRegions } from "./cm/regions";
@@ -28,6 +29,7 @@ import { customRegions } from "./cm/regions";
 export type LanguageInfo = LanguageInfo_Serialize;
 
 export interface DocPatchedEvent {
+  workspaceEdit?: boolean;
   doc: DocId;
   baseVersion: number;
   version: number;
@@ -60,6 +62,11 @@ export interface DocBackend {
   /** Files changed on disk (used to refresh nothing but closed-file state). */
   onFsChanged?(handler: (e: { removed: string[] }) => void): () => void;
   /**
+   * Every OpenIDEA window lost focus to another application. Also seen while focus is in a frame
+   * (a plugin's web view), which hides the window's own `blur`.
+   */
+  onApplicationDeactivated?(handler: () => void): () => void;
+  /**
    * An open document's language changed (Settings › File Types, Override File
    * Type), or its own mode (`DocumentInfo.uiMode`).
    */
@@ -85,6 +92,11 @@ export const ipcBackend: DocBackend = {
   onPatched: (h) => onIdeEvent("docPatched", (e) => h(e)),
   onDirty: (h) => onIdeEvent("docDirty", (e) => h(e)),
   onFsChanged: (h) => onIdeEvent("fsChanged", (e) => h(e)),
+  onApplicationDeactivated: (h) => {
+    if (!isTauri()) return () => {};
+    const listener = getCurrentWebviewWindow().listen("ide://application-deactivated", () => h());
+    return () => void listener.then((unlisten) => unlisten());
+  },
   onLanguage: (h) => onIdeEvent("docLanguage", (e) => h(e)),
 };
 
@@ -106,8 +118,11 @@ interface MemDoc {
 }
 
 const EXT_LANG: Record<string, string> = {
-  astro: "astro",
+  http: "http",
+  rest: "http",
   ts: "typescript",
+  mts: "typescript",
+  cts: "typescript",
   tsx: "typescriptreact",
   js: "javascript",
   jsx: "javascriptreact",
@@ -115,11 +130,14 @@ const EXT_LANG: Record<string, string> = {
   kt: "kotlin",
   kts: "kotlin",
   java: "java",
+  cs: "csharp",
   py: "python",
   gd: "gdscript",
   go: "go",
   json: "json",
   md: "markdown",
+  adoc: "asciidoc",
+  asciidoc: "asciidoc",
   css: "css",
   html: "html",
   yml: "yaml",
@@ -139,18 +157,9 @@ const EXT_LANG: Record<string, string> = {
 
 const MEM_LANGUAGES: LanguageInfo[] = [
   {
-    id: "astro",
-    name: "Astro",
-    extensions: ["astro"],
-    uiMode: "Astro",
-    lineComment: null,
-    blockComment: ["<!--", "-->"],
-    indent: { tabSize: 2, insertSpaces: true },
-  },
-  {
     id: "typescript",
     name: "TypeScript",
-    extensions: ["ts"],
+    extensions: ["ts", "mts", "cts"],
     uiMode: "TypeScript",
     lineComment: "//",
     blockComment: ["/*", "*/"],
@@ -225,6 +234,15 @@ const MEM_LANGUAGES: LanguageInfo[] = [
     extensions: ["json"],
     uiMode: "JSON",
     lineComment: null,
+    blockComment: null,
+    indent: { tabSize: 2, insertSpaces: true },
+  },
+  {
+    id: "asciidoc",
+    name: "AsciiDoc",
+    extensions: ["adoc", "asciidoc"],
+    uiMode: "AsciiDoc",
+    lineComment: "//",
     blockComment: null,
     indent: { tabSize: 2, insertSpaces: true },
   },
@@ -334,7 +352,7 @@ function lineIndex(text: string) {
 
 export interface MemoryBackend extends DocBackend {
   /** Test/dev hook: apply a backend-originated change and emit `docPatched`. */
-  patch(doc: DocId, changes: TextChange[]): void;
+  patch(doc: DocId, changes: TextChange[], workspaceEdit?: boolean): void;
   /** Seed file contents before opening. */
   files: Map<string, string>;
   docs: Map<DocId, MemDoc>;
@@ -363,12 +381,20 @@ export function createMemoryBackend(files: Record<string, string> = {}): MemoryB
     ...(d.uri ? { uri: d.uri } : {}),
     ...(d.uiMode ? { uiMode: d.uiMode } : {}),
   });
-  // An Angular project's templates (an `angular.json` above them), like the backend's `framework-ui-modes`.
-  const uiModeOf = (path: string) =>
-    path.endsWith(".html") &&
-    [...store.keys()].some((f) => f.endsWith("/angular.json") && path.startsWith(f.slice(0, -"angular.json".length)))
-      ? "Angular Template"
-      : null;
+  // Framework modes mirror the backend's `framework-ui-modes` definitions.
+  const uiModeOf = (path: string) => {
+    const angular = [...store.keys()].some((f) => {
+      const root = f.endsWith("/angular.json")
+        ? f.slice(0, -"angular.json".length)
+        : f.includes("/node_modules/@angular/core/")
+          ? f.slice(0, f.indexOf("/node_modules/@angular/core/") + 1)
+          : null;
+      return root !== null && path.startsWith(root);
+    });
+    if (!angular) return null;
+    if (path.endsWith(".html")) return "Angular Template";
+    return /\.(?:ts|mts|cts)$/.test(path) ? "Angular TypeScript" : null;
+  };
   const get = (doc: DocId) => {
     const d = docs.get(doc);
     if (!d) throw new IpcError({ kind: "notFound", message: `document ${doc} is not open` });
@@ -581,13 +607,13 @@ export function createMemoryBackend(files: Record<string, string> = {}): MemoryB
       dirtyHandlers.add(h);
       return () => dirtyHandlers.delete(h);
     },
-    patch(doc, changes) {
+    patch(doc, changes, workspaceEdit = false) {
       const d = get(doc);
       const before = d.text !== d.saved;
       const baseVersion = d.version;
       d.text = applyChanges(d.text, changes);
       d.version++;
-      const e = { doc, baseVersion, version: d.version, changes };
+      const e = { doc, baseVersion, version: d.version, changes, workspaceEdit };
       patched.forEach((h) => h(e));
       setDirty(d, before);
     },

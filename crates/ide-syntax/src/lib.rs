@@ -29,7 +29,7 @@ mod types;
 #[cfg(test)]
 mod tests;
 
-pub use jvm::{JvmPresentation, JvmTypeKind};
+pub use jvm::{JvmPresentation, JvmTypeKind, jvm_type_header};
 pub use types::*;
 
 use ide_core::{CancellationToken, DocId, IdeError, LanguageId, Pos, Range};

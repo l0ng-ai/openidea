@@ -1,0 +1,25 @@
+[package]
+name = "openidea-p0-probe"
+version = "0.0.1"
+edition = "2024"
+publish = false
+
+# Standalone: not a member of the IDE workspace (different target).
+[workspace]
+
+[lib]
+crate-type = ["cdylib"]
+
+[features]
+# Builds the `probe-full` world (with the optional exports); default is `probe-min`.
+full = []
+
+[dependencies]
+wit-bindgen = "0.63"
+
+[profile.release]
+opt-level = "s"
+lto = true
+strip = true
+codegen-units = 1
+panic = "abort"

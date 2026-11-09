@@ -6,8 +6,6 @@
 //! (`textDocument/diagnostic`). The others are waited on: the first
 //! `publishDiagnostics` for the file after it was opened, then a short quiet
 //! period so follow-up publishes (syntax first, semantics later) are caught.
-//! The client never advertises pull support, so servers keep pushing for the
-//! editor as before.
 
 use crate::convert;
 use crate::server::Server;
@@ -156,6 +154,7 @@ impl LspManager {
             .iter()
             .zip(ready)
             .filter_map(|(s, run)| Some(Target { server: s.clone(), run: run? }))
+            .filter(|t| t.caps().restriction.diagnostics())
             .collect();
         if targets.is_empty() {
             return Ok(None);

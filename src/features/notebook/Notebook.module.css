@@ -121,7 +121,8 @@
 .rawCell pre {
   white-space: pre-wrap;
   overflow-wrap: anywhere;
-  font: var(--fs-code) / var(--lh-code, 1.5) var(--font-mono);
+  font: var(--openidea-editor-font-size, var(--fs-code)) / var(--openidea-editor-line-height, var(--lh-code, 1.5))
+    var(--font-mono);
   margin: 0;
   user-select: text;
 }
@@ -160,6 +161,7 @@
 .markdown {
   padding: 8px 14px;
   min-height: 32px;
+  font-size: var(--markdown-preview-font-size, var(--fs-ui));
   overflow-wrap: anywhere;
   line-height: 1.6;
   user-select: text;

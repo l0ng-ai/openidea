@@ -1,0 +1,21 @@
+{
+  "properties": {
+    "owner": {
+      "type": "string",
+      "title": "Copyright holder",
+      "description": "Written after the year, e.g. \"ACME Inc.\"; empty for none.",
+      "default": ""
+    },
+    "license": {
+      "type": "string",
+      "title": "License (SPDX identifier)",
+      "description": "e.g. Apache-2.0, MIT, GPL-3.0-or-later; empty for no SPDX line.",
+      "default": "Apache-2.0"
+    },
+    "reportOnOpen": {
+      "type": "boolean",
+      "title": "Report files without a header when they open",
+      "default": true
+    }
+  }
+}

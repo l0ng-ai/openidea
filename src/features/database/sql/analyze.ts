@@ -174,7 +174,7 @@ export function analyze(text: string, pos: number, driver: DbDriver, lexed: Lexe
   blocks.forEach((g, depth) => {
     // Within an enclosing block, the "caret" is the paren of the block nested in it.
     const [ra, rb] = blockRange(st, parens, g, depth === 0 ? nb : blocks[depth - 1]!);
-    for (const r of parseRefs(st, parens, g, ra, rb, ctes, depth)) {
+    for (const r of parseRefs(st, parens, g, ra, rb, ctes, depth, driver)) {
       refs.push(r.ref);
       if (depth === 0) refEnds.set(r.end, r.ref);
     }
@@ -362,6 +362,7 @@ function parseRefs(
   b: number,
   ctes: TableRef[],
   depth: number,
+  driver: DbDriver,
 ): Array<{ ref: TableRef; end: number }> {
   const out: Array<{ ref: TableRef; end: number }> = [];
   const level = parens.level(g, a, b);
@@ -409,7 +410,10 @@ function parseRefs(
     const name = identName(last);
     const schema = parts.length > 1 ? identName(parts.at(-2)!) : null;
     const al = alias(st, k, b);
-    const cte = schema === null ? ctes.find((c) => c.name.toLowerCase() === name.toLowerCase()) : undefined;
+    const cte =
+      schema === null
+        ? ctes.find((c) => (driver === "clickhouse" ? c.name === name : c.name.toLowerCase() === name.toLowerCase()))
+        : undefined;
     out.push({
       ref: {
         schema,

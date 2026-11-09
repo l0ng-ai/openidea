@@ -21,7 +21,8 @@ pub enum ArchiveKind {
 impl ArchiveKind {
     pub fn from_name(name: &str) -> Self {
         let n = name.to_ascii_lowercase();
-        if n.ends_with(".zip") || n.ends_with(".vsix") {
+        // JetBrains' macOS .sit distributions are zip archives.
+        if n.ends_with(".zip") || n.ends_with(".vsix") || n.ends_with(".sit") {
             Self::Zip
         } else if n.ends_with(".tar.gz") || n.ends_with(".tgz") {
             Self::TarGz
@@ -393,6 +394,7 @@ mod tests {
     fn kinds() {
         assert_eq!(ArchiveKind::from_name("a.vsix"), ArchiveKind::Zip);
         assert_eq!(ArchiveKind::from_name("a.ZIP"), ArchiveKind::Zip);
+        assert_eq!(ArchiveKind::from_name("kotlin-server-263.7084.0-aarch64.sit"), ArchiveKind::Zip);
         assert_eq!(ArchiveKind::from_name("a.tar.gz"), ArchiveKind::TarGz);
         assert_eq!(ArchiveKind::from_name("a.tgz"), ArchiveKind::TarGz);
         assert_eq!(ArchiveKind::from_name("zls.tar.xz"), ArchiveKind::TarXz);

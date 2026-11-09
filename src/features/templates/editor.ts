@@ -48,6 +48,7 @@ import {
 import { usePostfixSettings } from "./postfix/store";
 import { showChooser, type ChooserItem } from "./popup/store";
 import { expandEmmetAtCaret } from "./emmet/editor";
+import { hasEmmet, loadEmmet } from "./emmet/model";
 
 export interface TemplateDocInfo {
   path: string;
@@ -557,6 +558,7 @@ export const templateCompletionSource: CompletionSource = (ctx: CompletionContex
 // Extension
 
 export function templateEditorExtension(ctx: EditorDocContext): Extension {
+  if (hasEmmet(ctx.language)) void loadEmmet().catch(() => {});
   return [
     templateDoc.of({ path: ctx.path, language: ctx.language }),
     fieldCompletion,

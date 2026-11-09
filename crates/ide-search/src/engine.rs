@@ -142,42 +142,16 @@ pub(crate) fn run(req: Request<'_>) -> IdeResult<SearchSummary> {
         }
     }
 
-    if let Some((first, rest)) = on_disk.split_first()
-        && !ctx.ctl.should_stop()
-    {
-        let mut walk = WalkBuilder::new(first);
-        for path in rest {
-            walk.add(path);
-        }
-        walk.hidden(true)
-            .ignore(true)
-            .git_ignore(true)
-            .git_global(true)
-            .git_exclude(true)
-            .parents(true)
-            .require_git(false)
-            .follow_links(false)
-            .threads(std::thread::available_parallelism().map_or(4, |n| n.get()).min(12))
-            .filter_entry(|e| e.file_name() != ".git");
-        walk.build_parallel().run(|| {
+    if !ctx.ctl.should_stop() {
+        walk_files(&on_disk, || {
             let mut searcher = searcher_builder.build();
             let matcher = matcher.clone();
             let ctx = &ctx;
-            Box::new(move |entry| {
+            Box::new(move |path| {
                 if ctx.ctl.should_stop() {
                     return WalkState::Quit;
                 }
-                let entry = match entry {
-                    Ok(entry) => entry,
-                    Err(err) => {
-                        tracing::debug!("search walk: {err}");
-                        return WalkState::Continue;
-                    }
-                };
-                // Archives (jar, zip) are browsed, not searched (IDEA skips them too).
-                if entry.file_type().is_some_and(|t| t.is_file()) && !ide_vfs::is_archive_file(entry.path()) {
-                    ctx.search_file(entry.path(), &matcher, &mut searcher);
-                }
+                ctx.search_file(path, &matcher, &mut searcher);
                 if ctx.ctl.stopped() { WalkState::Quit } else { WalkState::Continue }
             })
         });
@@ -191,6 +165,67 @@ pub(crate) fn run(req: Request<'_>) -> IdeResult<SearchSummary> {
         cancelled,
         elapsed_ms: u32::try_from(started.elapsed().as_millis()).unwrap_or(u32::MAX),
     })
+}
+
+/// A per-thread file visitor of [`walk_files`].
+pub(crate) type VisitFile<'s> = Box<dyn FnMut(&Path) -> WalkState + Send + 's>;
+
+/// Visits the files below `roots` (and the roots that are files) in parallel,
+/// the way IDEA's project scope sees them: directories ignored by
+/// `.gitignore` / `.ignore` / `info/exclude` are skipped with everything in
+/// them, while ignored files elsewhere (`.env`) and hidden files and folders
+/// (`.github`, `.eslintrc`) are visited. `.git`, symlinks and archives (jar,
+/// zip: browsed, not searched) are never visited.
+pub(crate) fn walk_files<'s>(roots: &[PathBuf], mut visitor: impl FnMut() -> VisitFile<'s> + Send) {
+    let Some((first, rest)) = roots.split_first() else { return };
+    let mut walk = WalkBuilder::new(first);
+    for path in rest {
+        walk.add(path);
+    }
+    walk.hidden(false)
+        .ignore(true)
+        .git_ignore(true)
+        .git_global(true)
+        .git_exclude(true)
+        .parents(true)
+        .require_git(ide_core::ignored::inside_git_repo(first))
+        .follow_links(false)
+        .threads(std::thread::available_parallelism().map_or(4, |n| n.get()).min(12))
+        .filter_entry(|e| e.file_name() != ".git");
+    walk.build_parallel().run(|| {
+        let mut visit = visitor();
+        Box::new(move |entry| {
+            let entry = match entry {
+                Ok(entry) => entry,
+                Err(err) => {
+                    tracing::debug!("search walk: {err}");
+                    return WalkState::Continue;
+                }
+            };
+            let Some(file_type) = entry.file_type() else { return WalkState::Continue };
+            if file_type.is_dir() {
+                // The walker drops ignored files unseen, so the files of every walked
+                // directory come from listing it; the walker only picks the directories.
+                let Ok(children) = std::fs::read_dir(entry.path()) else { return WalkState::Continue };
+                for child in children.flatten() {
+                    let path = child.path();
+                    if child.file_name() != ".git"
+                        && child.file_type().is_ok_and(|t| t.is_file())
+                        && !ide_vfs::is_archive_file(&path)
+                        && matches!(visit(&path), WalkState::Quit)
+                    {
+                        return WalkState::Quit;
+                    }
+                }
+                WalkState::Continue
+            } else if file_type.is_file() && entry.depth() == 0 && !ide_vfs::is_archive_file(entry.path()) {
+                // A root that is a file (an explicit file list); files below roots come from listings.
+                visit(entry.path())
+            } else {
+                WalkState::Continue
+            }
+        })
+    });
 }
 
 /// Walk roots for a scope; relative paths are resolved against `root`.

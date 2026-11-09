@@ -553,7 +553,7 @@ export function NewServerDialog({
   const [commandLine, setCommandLine] = useState("");
   const [name, setName] = useState<string | null>(null);
   const [languages, setLanguages] = useState<string[]>([]);
-  // "ruff server": the executable, then its arguments.
+  // "pylyzer --server": the executable, then its arguments.
   let words: string[] = [];
   let quoteError: string | null = null;
   try {
@@ -600,7 +600,7 @@ export function NewServerDialog({
             autoFocus
             className={styles.grow}
             value={commandLine}
-            placeholder="ruff server"
+            placeholder="pylyzer --server"
             onChange={(e) => setCommandLine(e.target.value)}
           />
           <IconButton

@@ -9,7 +9,7 @@ import { getContext } from "@/platform/context";
 import { provideFindResults } from "@/workbench/contributions";
 import { registerEditorActions } from "../actions";
 import { findExtension, findResultLines } from "../cm/find";
-import { FindPanel, useFindOptions, useFindPreferences, type FindTarget } from "./FindBar";
+import { FindPanel, seedFind, useFindOptions, useFindPreferences, useFindSessions, type FindTarget } from "./FindBar";
 
 const disposers: Array<() => void> = [];
 afterEach(() => {
@@ -18,6 +18,7 @@ afterEach(() => {
     .reverse()
     .forEach((dispose) => dispose());
   useFindOptions.setState({ search: "", regexp: false, caseSensitive: false, wholeWord: false });
+  useFindSessions.setState({}, true);
   useFindPreferences.setState({ scrollToResults: true });
   useKeymap.setState({ preset: "intellij-macos", overrides: {} });
 });
@@ -145,5 +146,68 @@ describe("Find bar More actions", () => {
     await waitFor(() => expect(screen.getByText("?/3")).toBeInTheDocument());
     fireEvent.keyDown(field, { key: "Enter", code: "Enter" });
     expect(view.state.selection.main.empty).toBe(false);
+  });
+});
+
+describe("Find bars on different editors", () => {
+  function editor(id: string, doc: string) {
+    const view = new EditorView({
+      parent: document.body,
+      state: EditorState.create({ doc, extensions: [findExtension()] }),
+    });
+    const target: FindTarget = { id, view: () => view, watch: () => () => {}, isOpen: () => true };
+    disposers.push(() => view.destroy());
+    return { view, target };
+  }
+  const panel = (target: FindTarget) => {
+    const r = render(
+      <FindPanel key={target.id} target={target} version={target.id} replace={false} seq={0} onClose={() => {}} />,
+    );
+    return { ...r, field: screen.getByRole("textbox", { name: "Find" }) };
+  };
+
+  it("keeps each editor's query and caret", () => {
+    const a = editor("a", "alpha\nbeta\nalpha");
+    const b = editor("b", "one\ntwo\nalpha\nthree");
+    disposers.push(registerEditorActions(), installKeyboardDispatcher());
+
+    seedFind(a.target, false);
+    const barA = panel(a.target);
+    setSearch(barA.field, "alpha");
+    expect(a.view.state.sliceDoc(a.view.state.selection.main.from, a.view.state.selection.main.to)).toBe("alpha");
+    barA.unmount();
+
+    // B has its caret on "two"; opening its bar starts from A's search without moving the caret.
+    b.view.dispatch({ selection: { anchor: 5 } });
+    seedFind(b.target, false);
+    const barB = panel(b.target);
+    expect(barB.field).toHaveValue("alpha");
+    expect(b.view.state.selection.main.head).toBe(5);
+    setSearch(barB.field, "three");
+    expect(b.view.state.sliceDoc(b.view.state.selection.main.from, b.view.state.selection.main.to)).toBe("three");
+    barB.unmount();
+
+    // Back on A: its own query, and showing the bar again leaves the caret where it was.
+    a.view.dispatch({ selection: { anchor: 8 } });
+    const againA = panel(a.target);
+    expect(againA.field).toHaveValue("alpha");
+    expect(a.view.state.selection.main.head).toBe(8);
+    expect(screen.getByText("?/2")).toBeInTheDocument();
+    againA.unmount();
+    expect(useFindSessions.getState().b?.search).toBe("three");
+    // A new bar starts from the last search, from whichever editor it came.
+    expect(useFindOptions.getState().search).toBe("three");
+  });
+
+  it("re-seeds an open bar from a new selection without touching other bars", () => {
+    const a = editor("a", "alpha beta");
+    const b = editor("b", "gamma");
+    seedFind(b.target, false);
+    act(() => useFindSessions.setState({ b: { ...useFindSessions.getState().b!, search: "gamma" } }));
+    seedFind(a.target, false);
+    a.view.dispatch({ selection: { anchor: 6, head: 10 } });
+    seedFind(a.target, false);
+    expect(useFindSessions.getState().a?.search).toBe("beta");
+    expect(useFindSessions.getState().b?.search).toBe("gamma");
   });
 });

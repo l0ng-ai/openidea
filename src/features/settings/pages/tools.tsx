@@ -1,12 +1,13 @@
 /**
- * Tools pages: Terminal, Actions on Save and External Tools. Consumed by the
- * terminal feature, the editor save participants and the run feature
- * (External Tools actions).
+ * Tools pages: Terminal, Actions on Save, External Tools and Agents › Chat. Consumed
+ * by the terminal feature, the editor save participants, the run feature
+ * (External Tools actions) and the agent task editor.
  */
 
 import { FontPicker } from "../components/FontPicker";
 import { useEffect, useId, useRef, useState, type ReactNode } from "react";
 import clsx from "clsx";
+import { quotePath } from "@/platform/commandLine";
 import { commands, isTauri } from "@/platform/ipc";
 import {
   DEFAULT_EXTERNAL_TOOL,
@@ -18,6 +19,7 @@ import { Button, Checkbox, IconButton, Input, Menu, type SelectOption, T } from 
 import { NumberInput, Row, SearchLabel, Section, Select } from "../components/Form";
 import { useLabelMatch, useSetting } from "../components/context";
 import { selectPage, setQuery } from "../model/staging";
+import { MCP_SERVER_PAGE } from "./mcpServer";
 import type { PageSpec } from "./spec";
 import { BoundToggle, Grid, Indented, PageLink, TableEditor } from "./workflowControls";
 import styles from "./Workflow.module.css";
@@ -110,7 +112,7 @@ function ShellPathRow() {
     const { open: pick } = await import("@tauri-apps/plugin-dialog");
     const picked = await pick({ multiple: false, title: "Shell Path" });
     const path = Array.isArray(picked) ? picked[0] : picked;
-    if (path) set(path);
+    if (path) set(quotePath(path));
   };
   return (
     <Row
@@ -142,7 +144,7 @@ function ShellPathRow() {
         anchor={menuRef}
         placement="bottom-end"
         aria-label="Installed shells"
-        items={shells.map((p) => ({ id: p, label: p, checked: p === value, run: () => set(p) }))}
+        items={shells.map((p) => ({ id: p, label: p, checked: quotePath(p) === value, run: () => set(quotePath(p)) }))}
       />
       <IconButton
         icon="folder-open"
@@ -479,8 +481,12 @@ function ExternalToolsEditor() {
                 checked={t.enabled}
                 onChange={(on) => setTools(tools.map((x) => (x.id === t.id ? { ...x, enabled: on } : x)))}
               />
-              <span>{t.name}</span>
-              <span className={styles.toolGroup}>{t.group}</span>
+              <span className={styles.toolName} title={t.name}>
+                {t.name}
+              </span>
+              <span className={styles.toolGroup} title={t.group}>
+                {t.group}
+              </span>
             </div>
           ))}
         </div>
@@ -624,6 +630,35 @@ export const TOOLS_PAGES: PageSpec[] = [
     ],
   },
   {
+    // Under Settings › Tools › Agents (the agents feature registers `tools.agents`).
+    id: "tools.agents.chat",
+    title: "Chat",
+    group: TOOLS_GROUP,
+    order: 0,
+    keywords: ["agent", "claude", "codex", "usage", "quota", "rate limit", "cost", "tokens", "meter"],
+    sections: [
+      {
+        title: "Shown in the Task Header",
+        options: [
+          { kind: "toggle", key: "agents.showContextUsage", label: "Context window usage" },
+          { kind: "toggle", key: "agents.showWorkTime", label: "Time spent on the task" },
+          {
+            kind: "toggle",
+            key: "agents.showUsageLimits",
+            label: "Usage limits",
+            hint: "The account's 5-hour and weekly limits, when the agent reports them (Claude Code)",
+          },
+          {
+            kind: "toggle",
+            key: "agents.showCost",
+            label: "Session cost",
+            hint: "What the session has cost so far, as the agent reports it (API pricing, also shown on subscriptions)",
+          },
+        ],
+      },
+    ],
+  },
+  {
     id: "tools.externalTools",
     title: "External Tools",
     group: TOOLS_GROUP,
@@ -648,4 +683,5 @@ export const TOOLS_PAGES: PageSpec[] = [
       },
     ],
   },
+  MCP_SERVER_PAGE,
 ];

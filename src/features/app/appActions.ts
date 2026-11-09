@@ -1,9 +1,10 @@
 import { redo, undo } from "@codemirror/commands";
 import { EditorView } from "@codemirror/view";
 import type { Action } from "@/platform/actions";
+import { revealInFileManager } from "@/platform/fileManager";
 import { t } from "@/platform/i18n";
 import { call, commands, isTauri } from "@/platform/ipc";
-import { maybeEditorService, notifications } from "@/workbench/contributions";
+import { maybeEditorService, notifications, runUndoHandlers } from "@/workbench/contributions";
 import { showAbout } from "./AboutDialog";
 import { quitApp } from "./closeGuard";
 import { guessOs } from "./host";
@@ -18,8 +19,7 @@ export async function showLog(): Promise<void> {
   if (!isTauri()) return;
   try {
     const loc = await call(commands.appLogLocation());
-    const { revealItemInDir } = await import("@tauri-apps/plugin-opener");
-    await revealItemInDir(loc.file ?? loc.dir);
+    await revealInFileManager(loc.file ?? loc.dir);
   } catch (e) {
     notifications().notify({ level: "error", title: t("app.log.failed"), body: errorText(e) });
   }
@@ -46,6 +46,7 @@ export function editCommand(command: "undo" | "redo" | "cut" | "copy" | "paste" 
         (command === "undo" ? undo : redo)(view);
         return;
       }
+      if (focused instanceof Element && runUndoHandlers(command, focused)) return;
     }
     if (command === "paste" && navigator.clipboard?.readText) {
       void navigator.clipboard.readText().then((text) => document.execCommand("insertText", false, text));

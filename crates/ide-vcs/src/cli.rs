@@ -1,12 +1,17 @@
 //! Thin wrapper around the `git` executable used for every mutating operation.
 
+use ide_core::process::{own_group, terminate_tree};
 use ide_core::{CancellationToken, IdeError, IdeResult};
 use std::io::{Read, Write};
 use std::path::{Path, PathBuf};
-use std::process::{Child, Command, Stdio};
+use std::process::{Command, Stdio};
 use std::sync::OnceLock;
 use std::sync::mpsc;
 use std::time::{Duration, Instant};
+
+/// How long a cancelled git's process group (remote helpers, `ssh`, credential helpers) gets
+/// to exit on `SIGTERM` before `SIGKILL`: git removes its `index.lock` on `SIGTERM`.
+const KILL_GRACE: Duration = Duration::from_millis(20);
 
 /// Explicit git executable from Settings › Version Control › Git (`None` = auto-detect).
 static CONFIGURED: std::sync::RwLock<Option<PathBuf>> = std::sync::RwLock::new(None);
@@ -356,44 +361,128 @@ pub(crate) fn run_cancellable(root: &Path, args: &[&str], cancel: &CancellationT
 
 /// Cancellable capture preserving exit codes for commands with documented non-error states.
 pub(crate) fn run_cancellable_raw(root: &Path, args: &[&str], cancel: &CancellationToken) -> IdeResult<Output> {
+    run_cancellable_raw_stdin(root, args, None, cancel)
+}
+
+/// Like `run_cancellable`, feeding `stdin` to git. Revisions and paths passed through
+/// `--stdin` are not bound by the command-line length limit (Windows: ~32K characters).
+pub(crate) fn run_cancellable_stdin(
+    root: &Path,
+    args: &[&str],
+    stdin: &[u8],
+    cancel: &CancellationToken,
+) -> IdeResult<Output> {
+    let out = run_cancellable_raw_stdin(root, args, Some(stdin), cancel)?;
+    if out.code == Some(0) { Ok(out) } else { Err(failure(args, &out.stderr, &out.stdout, out.code)) }
+}
+
+fn run_cancellable_raw_stdin(
+    root: &Path,
+    args: &[&str],
+    stdin: Option<&[u8]>,
+    cancel: &CancellationToken,
+) -> IdeResult<Output> {
+    run_capture(root, args, stdin, cancel, usize::MAX)
+}
+
+/// Neutralizes repository clean/process filters for a read of working-tree bytes.
+/// Git still applies them with --no-ext-diff and --no-textconv.
+pub(crate) fn filter_overrides(root: &Path, cancel: &CancellationToken) -> IdeResult<Vec<String>> {
+    if crate::execution_allowed() {
+        return Ok(Vec::new());
+    }
+    let config = run_bounded(root, &["config", "--null", "--list"], cancel, 4 << 20)?;
+    let mut overrides = Vec::new();
+    for record in config.stdout_str().split('\0') {
+        let key = record.split('\n').next().unwrap_or_default();
+        if key.starts_with("filter.")
+            && (key.ends_with(".clean") || key.ends_with(".process") || key.ends_with(".required"))
+        {
+            overrides.push("-c".into());
+            overrides.push(format!("{key}={}", if key.ends_with(".required") { "false" } else { "" }));
+        }
+    }
+    Ok(overrides)
+}
+
+/// Cancellable capture with bounded stdout and stderr; stops git on overflow.
+pub(crate) fn run_bounded(root: &Path, args: &[&str], cancel: &CancellationToken, max: usize) -> IdeResult<Output> {
+    let out = run_capture(root, args, None, cancel, max)?;
+    if out.code == Some(0) { Ok(out) } else { Err(failure(args, &out.stderr, &out.stdout, out.code)) }
+}
+fn run_capture(
+    root: &Path,
+    args: &[&str],
+    stdin: Option<&[u8]>,
+    cancel: &CancellationToken,
+    max: usize,
+) -> IdeResult<Output> {
     if cancel.is_cancelled() {
         return Err(IdeError::cancelled());
     }
+    let overflow = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
     let mut cmd = command(root)?;
-    cmd.args(args).stdin(Stdio::null()).stdout(Stdio::piped()).stderr(Stdio::piped());
-    #[cfg(unix)]
-    {
-        use std::os::unix::process::CommandExt;
-        cmd.process_group(0);
-    }
+    cmd.args(args)
+        .stdin(if stdin.is_some() { Stdio::piped() } else { Stdio::null() })
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped());
+    own_group(&mut cmd);
     let mut session = CommandSession::start(&mut cmd);
     let mut child = cmd.spawn().map_err(spawn_error)?;
+    let writer = match (stdin, child.stdin.take()) {
+        (Some(data), Some(mut pipe)) => {
+            let data = data.to_vec();
+            Some(std::thread::spawn(move || {
+                // A broken pipe just means git stopped reading early; its exit status tells the story.
+                let _ = pipe.write_all(&data);
+            }))
+        }
+        _ => None,
+    };
     let capture = |mut pipe: Box<dyn Read + Send>| {
+        let overflow = overflow.clone();
         std::thread::spawn(move || {
             let mut bytes = Vec::new();
-            pipe.read_to_end(&mut bytes).map(|_| bytes)
+            (&mut pipe).take(max.saturating_add(1) as u64).read_to_end(&mut bytes)?;
+            if bytes.len() > max {
+                overflow.store(true, std::sync::atomic::Ordering::Release);
+                std::io::copy(&mut pipe, &mut std::io::sink())?;
+            }
+            Ok(bytes)
         })
     };
     let stdout = capture(Box::new(child.stdout.take().expect("piped stdout")));
     let stderr = capture(Box::new(child.stderr.take().expect("piped stderr")));
     let status = loop {
-        if cancel.is_cancelled() {
-            kill(&mut child);
-            let _ = child.wait();
+        if cancel.is_cancelled() || overflow.load(std::sync::atomic::Ordering::Acquire) {
+            terminate_tree(&mut child, KILL_GRACE);
             let _ = stdout.join();
             let _ = stderr.join();
-            return Err(IdeError::cancelled());
+            if let Some(w) = writer {
+                let _ = w.join();
+            }
+            return Err(if cancel.is_cancelled() {
+                IdeError::cancelled()
+            } else {
+                IdeError::invalid(format!("git output exceeds {max} bytes"))
+            });
         }
         if let Some(status) = child.try_wait()? {
             break status;
         }
         std::thread::sleep(Duration::from_millis(20));
     };
+    if let Some(w) = writer {
+        let _ = w.join();
+    }
     let join = |thread: std::thread::JoinHandle<std::io::Result<Vec<u8>>>| {
         thread.join().map_err(|_| IdeError::internal("git output reader panicked"))?.map_err(IdeError::from)
     };
     let out = Output { stdout: join(stdout)?, stderr: join(stderr)?, code: status.code() };
     session.finish(status.success(), &String::from_utf8_lossy(&out.stderr));
+    if out.stdout.len() > max || out.stderr.len() > max {
+        return Err(IdeError::invalid(format!("git output exceeds {max} bytes")));
+    }
     Ok(out)
 }
 
@@ -504,11 +593,7 @@ pub(crate) fn run_streaming_env(
         cmd.env(k, v);
     }
     cmd.args(args).stdin(Stdio::null()).stdout(Stdio::piped()).stderr(Stdio::piped());
-    #[cfg(unix)]
-    {
-        use std::os::unix::process::CommandExt;
-        cmd.process_group(0);
-    }
+    own_group(&mut cmd);
     tracing::debug!(?args, "git (streaming)");
     let mut session = CommandSession::start(&mut cmd);
     let mut child = cmd.spawn().map_err(spawn_error)?;
@@ -529,8 +614,7 @@ pub(crate) fn run_streaming_env(
     let mut open = readers.len();
     while open > 0 {
         if cancel.is_cancelled() {
-            kill(&mut child);
-            let _ = child.wait();
+            terminate_tree(&mut child, KILL_GRACE);
             for r in readers {
                 let _ = r.join();
             }
@@ -559,8 +643,7 @@ pub(crate) fn run_streaming_env(
             break status;
         }
         if cancel.is_cancelled() {
-            kill(&mut child);
-            let _ = child.wait();
+            terminate_tree(&mut child, KILL_GRACE);
             return Err(IdeError::cancelled());
         }
         std::thread::sleep(Duration::from_millis(10));
@@ -642,22 +725,6 @@ fn spawn_reader(
         flush(&mut pending);
         let _ = tx.send(Event::Closed);
     })
-}
-
-fn kill(child: &mut Child) {
-    #[cfg(unix)]
-    {
-        let pid = child.id() as libc::pid_t;
-        // SAFETY: plain syscall; the child was spawned as leader of its own process group.
-        unsafe {
-            libc::kill(-pid, libc::SIGTERM);
-        }
-        std::thread::sleep(Duration::from_millis(20));
-        unsafe {
-            libc::kill(-pid, libc::SIGKILL);
-        }
-    }
-    let _ = child.kill();
 }
 
 #[cfg(test)]

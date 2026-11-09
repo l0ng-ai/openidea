@@ -1,0 +1,9 @@
+#!/bin/sh
+# Install this directory on PATH before granting process:openidea-example-wrapper.
+case "$1" in
+  terminal) printf 'Example wrapper terminal finished\n'; exit 0 ;;
+  exec) shift ;;
+  *) exit 2 ;;
+esac
+if [ "$1" = --cwd ]; then cd "$2" || exit; shift 2; fi
+exec "$@"

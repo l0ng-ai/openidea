@@ -73,6 +73,10 @@ fn bench(c: &mut Criterion) {
             BatchSize::SmallInput,
         )
     });
+    let two_edits = text.replacen("value_100 ", "renamed_100 ", 1).replacen("value_9000 ", "renamed_9000 ", 1);
+    c.bench_function("text/diff_two_edits_1mb", |b| b.iter(|| base.diff(black_box(&two_edits))));
+    let every_line = text.replace("compute", "calculate");
+    c.bench_function("text/diff_every_line_1mb", |b| b.iter(|| base.diff(black_box(&every_line))));
     c.bench_function("text/offset_to_pos_round_trip", |b| {
         let mut rng = Lcg(3);
         let len = base.len_utf16();

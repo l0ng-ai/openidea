@@ -2,11 +2,12 @@
 //! line to a callback, and cancellation kills the whole process group (the
 //! `mvnw` / `gradlew` wrapper scripts start the JVM as a child).
 
+use ide_core::process::kill_tree;
 use ide_core::{CancellationToken, IdeError, IdeResult};
 use std::collections::BTreeMap;
 use std::io::{BufRead, BufReader, Read};
 use std::path::Path;
-use std::process::{Child, Command, Stdio};
+use std::process::{Command, Stdio};
 use std::sync::mpsc;
 use std::time::Duration;
 
@@ -20,18 +21,6 @@ pub(crate) struct Output {
     pub success: bool,
     /// Every line, stdout and stderr interleaved as received.
     pub text: String,
-}
-
-fn kill_tree(child: &mut Child) {
-    #[cfg(unix)]
-    if let Ok(pid) = i32::try_from(child.id()) {
-        // SAFETY: plain syscall; the group was created by `process_group(0)` at spawn.
-        unsafe {
-            libc::kill(-pid, libc::SIGKILL);
-        }
-    }
-    let _ = child.kill();
-    let _ = child.wait();
 }
 
 /// `program` as spawnable: a bare name (`mvn`, `mvn.cmd`) resolves on the IDE's
@@ -80,12 +69,8 @@ pub(crate) fn run_with_env(
     let mut command = Command::new(&program);
     command.args(args).current_dir(cwd).envs(env).envs(encoding.env.iter().map(|(k, v)| (k, v))).stdin(Stdio::null());
     command.stdout(Stdio::piped()).stderr(Stdio::piped());
-    #[cfg(unix)]
-    {
-        use std::os::unix::process::CommandExt;
-        command.process_group(0);
-    }
-    ide_core::process::prepare(&mut command);
+    // Its own group: `mvnw` / `gradlew` start the JVM as a child, and cancelling kills both.
+    ide_core::process::prepare(ide_core::process::own_group(&mut command));
     if clear_env {
         command.env_clear().envs(env).envs(encoding.env);
     }

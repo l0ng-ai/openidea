@@ -61,6 +61,17 @@ const FUNCS = ["parse", "format", "validate", "render", "save"].map(
 const MINIFIED = Array.from({ length: 2_000 }, (_, i) => `var a${i}=f(${i},"k${i}");`).join("");
 
 export const CASES: readonly DiffCase[] = [
+  {
+    path: "src/soft-wrap.ts",
+    before:
+      `// ${"long original text ".repeat(100)}\n` +
+      lines(150, (i) => `const value${i} = ${i};`) +
+      `// ${"old tail ".repeat(100)}\n`,
+    after:
+      `// ${"long changed text ".repeat(160)}\n` +
+      lines(150, (i) => `const value${i} = ${i};`) +
+      `// ${"new changed tail ".repeat(180)}\n`,
+  },
   // A word edited and a comment added: one modified block (the reported case).
   { path: "src/options.ts", before: OPTIONS_BEFORE, after: OPTIONS_AFTER },
   {
@@ -91,6 +102,11 @@ export const CASES: readonly DiffCase[] = [
   { path: "data/no-eol.txt", before: "alpha\nkeep\nbeta", after: "alpha\nkeep\ngamma" },
   { path: "data/add-eol.txt", before: "alpha\nbeta", after: "alpha\nbeta\n" },
   { path: "src/moved.ts", before: FUNCS.join("\n"), after: [...FUNCS.slice(1), FUNCS[0]!].join("\n") },
+  {
+    path: "src/moved-edited.ts",
+    before: FUNCS.join("\n"),
+    after: [...FUNCS.slice(1), FUNCS[0]!.replace("parseImpl", "parseUpdated")].join("\n"),
+  },
   { path: "src/new-file.ts", before: null, after: lines(6, (i) => `export const n${i} = ${i};`) },
   { path: "src/deleted-file.ts", before: lines(6, (i) => `export const d${i} = ${i};`), after: null },
   {

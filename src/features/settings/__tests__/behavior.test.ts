@@ -1,11 +1,17 @@
 import { describe, expect, it } from "vitest";
 import { formatPattern, formatTimestamp } from "@/platform/dateFormat";
 import { resolveThemeId } from "@/workbench/theme";
-import { applyAppearanceOptions, nextZoom } from "../appearanceRuntime";
+import { applyAppearanceOptions, nextZoom, SMALL_TREE_INDENT } from "../appearanceRuntime";
 import { validateSettings } from "../model/schema";
-import { validateAppearanceExtras, validateNotifications } from "../model/behaviorSchema";
+import { validateGeneralExtras, validateAppearanceExtras, validateNotifications } from "../model/behaviorSchema";
 
 describe("appearance & behavior settings", () => {
+  it("defaults automatic update checks to on and respects an explicit opt-out", () => {
+    expect(validateSettings({}).general.autoCheckUpdates).toBe(true);
+    expect(validateSettings({ general: { autoCheckUpdates: false } }).general.autoCheckUpdates).toBe(false);
+    expect(validateSettings({ general: { autoCheckUpdates: "off" } }).general.autoCheckUpdates).toBe(true);
+  });
+
   it("steps zoom within 50–300%", () => {
     expect(nextZoom(100, 1)).toBe(110);
     expect(nextZoom(100, -1)).toBe(90);
@@ -22,10 +28,65 @@ describe("appearance & behavior settings", () => {
     expect(validateAppearanceExtras({ theme: "system" }).syncWithOs).toBe(true);
   });
 
+  it("keeps valid file icon theme options and drops or clamps the rest", () => {
+    expect(validateAppearanceExtras({}).fileIconThemeOptions).toEqual({});
+    const options = validateAppearanceExtras({
+      fileIconThemeOptions: {
+        "p/t": {
+          groups: { tests: true, bad: "yes" },
+          choices: { arrows: "plus", bad: 1 },
+          hideFiles: true,
+          hollowFolders: "x",
+          hideUiIcons: true,
+          hidePsiIcons: 1,
+          monochrome: "#546E7A",
+          saturation: 50,
+          opacity: 1,
+          iconSize: 20.4,
+          rowHeight: 100,
+          accent: "red",
+        },
+        "not a key": { hideFiles: true },
+        "p/u": 5,
+      },
+    }).fileIconThemeOptions;
+    expect(options).toEqual({
+      "p/t": {
+        groups: { tests: true },
+        choices: { arrows: "plus" },
+        hideFiles: true,
+        hideFolders: false,
+        hollowFolders: false,
+        hideUiIcons: true,
+        hidePsiIcons: false,
+        monochrome: "#546E7A",
+        saturation: 20,
+        opacity: 10,
+        iconSize: 20,
+        rowHeight: 48,
+        accent: null,
+      },
+    });
+  });
+
   it("defaults Show tool window badges to on and honours the stored value", () => {
     expect(validateAppearanceExtras({}).showToolWindowBadges).toBe(true);
     expect(validateAppearanceExtras({ showToolWindowBadges: false }).showToolWindowBadges).toBe(false);
     expect(validateAppearanceExtras({ showToolWindowBadges: 1 }).showToolWindowBadges).toBe(true);
+  });
+
+  it("defaults Use smaller indents in trees to off and applies the indent variable", () => {
+    expect(validateAppearanceExtras({}).smallTreeIndents).toBe(false);
+    expect(validateAppearanceExtras({ smallTreeIndents: true }).smallTreeIndents).toBe(true);
+    expect(validateAppearanceExtras({ smallTreeIndents: "on" }).smallTreeIndents).toBe(false);
+    const root = document.createElement("div");
+    applyAppearanceOptions(validateSettings({ appearance: { smallTreeIndents: true } }), root);
+    expect(root.style.getPropertyValue("--tree-indent")).toBe(SMALL_TREE_INDENT);
+    // Off (or a stored non-boolean) restores the default indents.
+    applyAppearanceOptions(validateSettings({}), root);
+    expect(root.style.getPropertyValue("--tree-indent")).toBe("");
+    applyAppearanceOptions(validateSettings({ appearance: { smallTreeIndents: false } }), root);
+    expect(root.style.getPropertyValue("--tree-indent")).toBe("");
   });
 
   it("keeps the UI fallback font empty by default and trims a stored one", () => {
@@ -65,4 +126,8 @@ describe("appearance & behavior settings", () => {
       groups: { vcs: { display: "balloon", log: false } },
     });
   });
+});
+
+it("loads an old attach setting as ask", () => {
+  expect(validateGeneralExtras({ openProjectIn: "attach" }).openProjectIn).toBe("ask");
 });

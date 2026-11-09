@@ -6,7 +6,7 @@ import { IconButton, SearchField } from "@/ui";
 import type { TerminalSearchOptions, TerminalSearchResult } from "./session";
 import { activeSession } from "./store";
 import styles from "./Terminal.module.css";
-import { hasPrimaryModifier } from "@/platform/keymap";
+import { formatBinding, hasPrimaryModifier } from "@/platform/keymap";
 import { tx } from "@/platform/i18n";
 
 export const useTerminalFind = create<{ open: boolean; seq: number; query: string; options: TerminalSearchOptions }>(
@@ -44,13 +44,19 @@ export function matchCounter(r: TerminalSearchResult | null, query: string): str
   return r.index >= 0 ? `${r.index + 1}/${r.count}` : `${r.count}+`;
 }
 
+/** The last open request the find bar took focus for. */
+let focusedSeq = 0;
+
 export function TerminalFindBar({ sessionKey }: { sessionKey: string | null }) {
   const { open, seq, query, options } = useTerminalFind();
   const input = useRef<HTMLInputElement>(null);
   const [result, setResult] = useState<TerminalSearchResult | null>(null);
 
+  // Only an open request focuses the field: the bar also re-mounts when another
+  // tab group becomes active, and must not take focus from its terminal then.
   useEffect(() => {
-    if (!open) return;
+    if (!open || seq === focusedSeq) return;
+    focusedSeq = seq;
     input.current?.focus();
     input.current?.select();
   }, [open, seq]);
@@ -119,7 +125,7 @@ export function TerminalFindBar({ sessionKey }: { sessionKey: string | null }) {
             id: "case",
             icon: "case",
             title: "Match Case",
-            shortcut: "⌥C",
+            shortcut: formatBinding("Alt+C"),
             pressed: options.caseSensitive,
             onToggle: () => toggle("caseSensitive"),
           },
@@ -127,7 +133,7 @@ export function TerminalFindBar({ sessionKey }: { sessionKey: string | null }) {
             id: "word",
             icon: "word",
             title: "Words",
-            shortcut: "⌥W",
+            shortcut: formatBinding("Alt+W"),
             pressed: options.wholeWord,
             onToggle: () => toggle("wholeWord"),
           },
@@ -135,7 +141,7 @@ export function TerminalFindBar({ sessionKey }: { sessionKey: string | null }) {
             id: "regex",
             icon: "regex",
             title: "Regex",
-            shortcut: "⌥X",
+            shortcut: formatBinding("Alt+X"),
             pressed: options.regex,
             onToggle: () => toggle("regex"),
           },
@@ -147,7 +153,7 @@ export function TerminalFindBar({ sessionKey }: { sessionKey: string | null }) {
       <IconButton
         icon="arrow-up"
         title="Previous Occurrence"
-        shortcut="⇧↵"
+        shortcut={formatBinding("Shift+Enter")}
         size="small"
         disabled={!query}
         onClick={() => find("previous")}

@@ -126,6 +126,66 @@ export function turnNumbers(entries: AgentEntry[]): Map<number, number> {
   return out;
 }
 
+export interface ReplyTurn {
+  turn: number;
+  prompt: Extract<AgentEntry, { type: "user" }>;
+  steered: boolean;
+}
+
+export interface ReplyTimes {
+  sentMs: number | null;
+  doneMs: number | null;
+}
+
+/** When the turn behind each agent reply was asked and finished, by entry index. */
+export function replyTimes(entries: AgentEntry[]): Map<number, ReplyTimes> {
+  const out = new Map<number, ReplyTimes>();
+  let current: Extract<AgentEntry, { type: "user" }> | null = null;
+  entries.forEach((entry, i) => {
+    if (entry.type === "user" && !entry.steered) current = entry;
+    else if (entry.type === "agent" && current)
+      out.set(i, { sentMs: current.sentMs ?? null, doneMs: current.doneMs ?? null });
+  });
+  return out;
+}
+
+/** Only the last reply of a turn offers actions that change the conversation. */
+export function replyTurns(entries: AgentEntry[]): Map<number, ReplyTurn> {
+  const out = new Map<number, ReplyTurn>();
+  let current: ReplyTurn | null = null;
+  let previous: number | null = null;
+  let turn = 0;
+  entries.forEach((entry, i) => {
+    if (entry.type === "user") {
+      if (!entry.steered) {
+        current = { turn: turn++, prompt: entry, steered: false };
+        previous = null;
+      } else if (current) current.steered = true;
+    } else if (entry.type === "agent" && entry.text.trim() && current) {
+      if (previous !== null) out.delete(previous);
+      out.set(i, current);
+      previous = i;
+    }
+  });
+  return out;
+}
+
+export function replyOperations(task: AgentTask, reply: ReplyTurn | undefined, turnCount: number) {
+  const idle = task.status !== "archived" && !isBusy(task.status) && !!reply;
+  const latest = reply?.turn === turnCount - 1;
+  const { fork = false, rollback = false } = task.capabilities ?? {};
+  return {
+    regenerate:
+      idle &&
+      latest &&
+      rollback &&
+      !reply.steered &&
+      !!reply.prompt.text.trim() &&
+      reply.prompt.attachments.length === (reply.prompt.images?.length ?? 0),
+    fork: idle && fork && (rollback || latest),
+  };
+}
+
 /** "3m", "2h", "5d" since `ms`. */
 export function age(ms: number, now = Date.now()): string {
   const s = Math.max(0, Math.round((now - ms) / 1000));

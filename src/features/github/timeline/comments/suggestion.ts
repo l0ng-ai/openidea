@@ -13,11 +13,12 @@ import type { GHPullRequest, GHPullRequestReviewThread } from "../../api/types";
 import { withBusy } from "../../data/local";
 import { resolveThread } from "../../data/operations";
 import { usePullRequestData } from "../../data/pullRequest";
+import { connectedRoot } from "../../data/repository";
 import { buildSuggestionPatch, type SuggestionTarget } from "../model";
 
+/** The connected pull requests' local repository (the project's primary one when unknown). */
 async function repositoryRoot(): Promise<string> {
-  const roots = await call(commands.vcsRoots());
-  const root = roots[0]?.root;
+  const root = connectedRoot() ?? (await call(commands.vcsRoots()))[0]?.root;
   if (!root) throw new Error("The project is not a Git repository");
   return String(root).replace(/[\\/]+$/, "");
 }
@@ -30,13 +31,15 @@ export async function applySuggestion(
   suggestion: readonly string[],
   commitMessage?: string,
 ): Promise<boolean> {
-  const title = commitMessage ? tx("Committing suggested change") : tx("Applying suggested change");
-  const done = await withBusy(title, async () => {
+  const op = commitMessage
+    ? { title: tx("Committing suggested change"), failure: tx("Couldn't commit the suggested change") }
+    : { title: tx("Applying suggested change"), failure: tx("Couldn't apply the suggested change") };
+  const done = await withBusy(op, async () => {
     const root = await repositoryRoot();
     const abs = `${root}/${target.path}`;
     const text = await call(commands.fsReadText(abs));
     const { patch, start, lines } = buildSuggestionPatch(text, target, suggestion);
-    const outcome = await call(commands.vcsApplyPatch(null, patch));
+    const outcome = await call(commands.vcsApplyPatch(connectedRoot(), patch));
     const files = outcome.conflicts.join(", ");
     if (files) throw new Error(tx`Conflicts in ${files}`);
     if (commitMessage) {
@@ -48,7 +51,7 @@ export async function applySuggestion(
         .map(({ start, lines, oldStart, oldLines }) => ({ start, lines, oldStart, oldLines }));
       if (!hunks.length) throw new Error(tx`${target.path}: nothing to commit`);
       await call(
-        commands.vcsCommit(null, commitMessage, {
+        commands.vcsCommit(connectedRoot(), commitMessage, {
           amend: false,
           signOff: false,
           author: null,
@@ -60,7 +63,10 @@ export async function applySuggestion(
     return true;
   });
   if (!done) return false;
-  if (thread.viewerCanResolve) await withBusy(tx("Resolving thread"), () => resolveThread(number, thread.id));
+  if (thread.viewerCanResolve)
+    await withBusy({ title: tx("Resolving thread"), failure: tx("Couldn't resolve the thread") }, () =>
+      resolveThread(number, thread.id),
+    );
   return true;
 }
 
@@ -75,7 +81,7 @@ function branchInfo(version: number) {
     branchCache = {
       at: Date.now(),
       version,
-      value: call(commands.vcsBranchInfo(null)).then(
+      value: call(commands.vcsBranchInfo(connectedRoot())).then(
         (b) => ({ head: b.head, upstream: b.upstream, commit: b.headCommit }),
         () => ({ head: null, upstream: null, commit: null }),
       ),

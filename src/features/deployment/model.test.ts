@@ -12,6 +12,7 @@ import {
   resolveServer,
   sshRemedy,
   summarizeReport,
+  transferMenuEntries,
   syncChoices,
   syncSteps,
   targetPaths,
@@ -102,6 +103,16 @@ describe("servers and reports", () => {
     expect(resolveServer({ ...DEFAULT_DEPLOYMENT, servers: [a, b], defaultServer: "b" }, "a")?.id).toBe("a");
   });
 
+  it("names the menu's transfers after the default server", () => {
+    const actions = (servers: (typeof a)[], defaultServer: string) =>
+      transferMenuEntries({ ...DEFAULT_DEPLOYMENT, servers, defaultServer }).map((e) => e.label ?? e.action);
+    const named = ["Upload to Staging", "Download from Staging", "Sync with Deployed to Staging…"];
+    const choosers = ["deployment.uploadTo", "deployment.downloadFrom", "deployment.syncWith"];
+    expect(actions([a], "")).toEqual(named);
+    expect(actions([a, b], "a")).toEqual([...named, ...choosers]);
+    expect(actions([a, b], "")).toEqual(choosers);
+  });
+
   it("summarizes transfer reports", () => {
     expect(summarizeReport({ files: 3, skipped: 1, errors: [] }, "upload", "Staging")).toEqual({
       level: "info",
@@ -140,16 +151,25 @@ describe("remote paths", () => {
 
   it("maps remote paths back to project paths through the most specific mapping", () => {
     const mappings = [
-      { local: "", deployment: "", web: "" },
-      { local: "public", deployment: "htdocs", web: "" },
-      { local: "shared", deployment: "/opt/shared", web: "" },
+      { local: ROOT, deployment: "/var/www" },
+      { local: `${ROOT}/public`, deployment: "/var/www/htdocs" },
+      { local: `${ROOT}/shared`, deployment: "/var/www/opt/shared" },
     ];
-    const map = (p: string) => localPathForRemote(p, "/var/www", mappings, ROOT);
+    const map = (p: string) => localPathForRemote(p, mappings);
     expect(map("/var/www/index.php")).toBe(`${ROOT}/index.php`);
     expect(map("/var/www/htdocs/css/a.css")).toBe(`${ROOT}/public/css/a.css`);
     expect(map("/var/www/htdocs")).toBe(`${ROOT}/public`);
-    expect(map("/opt/shared/lib")).toBe(`${ROOT}/shared/lib`);
+    expect(map("/var/www/opt/shared/lib")).toBe(`${ROOT}/shared/lib`);
+    expect(map("/opt/shared/lib")).toBeNull();
     expect(map("/var/wwwx/a")).toBeNull();
     expect(map("/etc/passwd")).toBeNull();
+  });
+
+  it("uses the backend folder for aliases and does not invent mappings", () => {
+    const mappings = [{ local: `${ROOT}/src`, deployment: "/mnt/deploy" }];
+    expect(localPathForRemote("/mnt/deploy/a.txt", mappings)).toBe(`${ROOT}/src/a.txt`);
+    expect(localPathForRemote("/mnt/deploy/a.txt", [])).toBeNull();
+    expect(localPathForRemote("/mnt/deploy/../a.txt", mappings)).toBeNull();
+    expect(localPathForRemote("/a.txt", [{ local: ROOT, deployment: "/" }])).toBe(`${ROOT}/a.txt`);
   });
 });

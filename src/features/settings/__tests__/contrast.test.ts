@@ -121,7 +121,7 @@ describe("theme tokens", () => {
 /**
  * Tokens the palette themes (Solarized, One) take from their light / dark base
  * on purpose: colours the user assigns (project and data source colours), the
- * platform's caption close button, and the tint strength.
+ * platform's caption close and macOS window buttons, and the tint strength.
  */
 const INHERITED_FROM_BASE = /^--(project-color-|db-color-|caption-close-|fg-caption-close-|tint-strength$)/;
 

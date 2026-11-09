@@ -1,4 +1,5 @@
 /** Content of the native Settings window: title bar, page tree + page, buttons. */
+import clsx from "clsx";
 import { useEffect, useRef } from "react";
 import { OverlayHost } from "@/workbench/OverlayHost";
 import { usePlatform } from "@/platform/platformInfo";
@@ -10,18 +11,22 @@ import styles from "../dialog/SettingsDialog.module.css";
 
 export function SettingsWindow() {
   useApplyTheme();
+  const os = usePlatform((s) => s.os);
   const ownTitleBar = usePlatform((s) => s.overlayTitleBar || s.framelessTitleBar);
   const open = useSettingsDialog((s) => s.open);
+  const pagesLoading = useSettingsDialog((s) => s.pagesLoading);
   const title = useSettingsTitle();
   const ref = useRef<HTMLDivElement>(null);
 
   useEffect(() => {
-    if (open) ref.current?.querySelector<HTMLElement>("[data-autofocus]")?.focus({ preventScroll: true });
-  }, [open]);
+    if (open && !pagesLoading) {
+      ref.current?.querySelector<HTMLElement>("[data-autofocus]")?.focus({ preventScroll: true });
+    }
+  }, [open, pagesLoading]);
 
   return (
-    <div ref={ref} className={styles.window}>
-      {/* macOS overlays traffic lights on it; Windows is frameless. Linux keeps the OS title bar. */}
+    <div ref={ref} className={clsx(styles.window, os === "linux" && styles.windowEdge)}>
+      {/* macOS overlays traffic lights on it; Windows and Linux are frameless (tauri.<os>.conf.json). */}
       {ownTitleBar && <TitleBar minimal dialog title={title} />}
       {open && (
         <>

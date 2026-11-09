@@ -41,6 +41,20 @@ pub fn window_group_close(window: WebviewWindow, label: String) -> IdeResult<()>
         .map_err(|e| IdeError::internal(e.to_string()))
 }
 
+/// Closes several project tabs one by one (each asks about its own unsaved changes), then selects `keep`.
+#[tauri::command]
+#[specta::specta]
+pub fn window_group_close_tabs(window: WebviewWindow, keep: String, labels: Vec<String>) -> IdeResult<()> {
+    groups::close_tabs(window.app_handle(), window.label(), &keep, labels)
+}
+
+/// This window kept its project open (unsaved-changes prompt cancelled); stops a batch close.
+#[tauri::command]
+#[specta::specta]
+pub fn window_group_cancel_close(window: WebviewWindow) {
+    groups::cancel_close(window.app_handle(), window.label());
+}
+
 #[tauri::command]
 #[specta::specta]
 pub async fn window_group_reorder(window: WebviewWindow, labels: Vec<String>) -> IdeResult<()> {

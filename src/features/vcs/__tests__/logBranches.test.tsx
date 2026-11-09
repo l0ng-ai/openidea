@@ -15,7 +15,15 @@ vi.mock("@/platform/ipc", async (importOriginal) => {
   };
 });
 
+const execute = vi.hoisted(() => vi.fn());
+vi.mock("@/platform/actions", async (importOriginal) => ({
+  ...(await importOriginal<typeof import("@/platform/actions")>()),
+  executeAction: execute,
+}));
+
+import { ContextMenuHost } from "@/ui";
 import { BranchesPanel } from "../GitLog";
+import syncStyles from "../BranchSync.module.css";
 import { emptyFilters, useGitLog } from "../logStore";
 import { useVcs } from "../store";
 
@@ -54,11 +62,47 @@ beforeEach(() => {
 });
 
 describe("Git Log branches pane", () => {
+  it("offers Manage Remotes… on the Remote node and on each remote, like IDEA", async () => {
+    useVcs.setState({ branches: [...branches, b("origin/main", { remote: true, commit: "1" })] });
+    render(
+      <>
+        <BranchesPanel />
+        <ContextMenuHost />
+      </>,
+    );
+    fireEvent.contextMenu(screen.getByText("Remote"));
+    fireEvent.click(await screen.findByRole("menuitem", { name: "Manage Remotes…" }));
+    await waitFor(() => expect(execute).toHaveBeenCalledWith("vcs.manageRemotes"));
+    execute.mockClear();
+    // Expand Remote, then the remote itself.
+    fireEvent.mouseDown(screen.getByText("Remote"));
+    fireEvent.keyDown(screen.getByRole("tree", { name: "Branches" }), { key: "ArrowRight" });
+    fireEvent.contextMenu(await screen.findByText("origin"));
+    fireEvent.click(await screen.findByRole("menuitem", { name: "Manage Remotes…" }));
+    await waitFor(() => expect(execute).toHaveBeenCalledWith("vcs.manageRemotes"));
+  });
+
   it("one click only selects the branch", () => {
     render(<BranchesPanel />);
     fireEvent.mouseDown(screen.getByText("feature"));
     expect(useGitLog.getState().filters.branches).toEqual([]);
     expect(screen.getByText("feature").closest("[data-row]")).toHaveAttribute("aria-selected", "true");
+  });
+
+  it.each([
+    [2, 0],
+    [0, 3],
+    [2, 3],
+    [0, 0],
+  ])("renders shared branch markers for ahead %i / behind %i", (ahead, behind) => {
+    useVcs.setState({ branches: [b("main", { current: true, ahead, behind })] });
+    render(<BranchesPanel />);
+    const incoming = screen.queryByLabelText("3 incoming commits");
+    const outgoing = screen.queryByLabelText("2 outgoing commits");
+    if (behind) expect(incoming).toHaveClass(syncStyles.incoming!);
+    else expect(incoming).toBeNull();
+    if (ahead) expect(outgoing).toHaveClass(syncStyles.outgoing!);
+    else expect(outgoing).toBeNull();
   });
 
   it("double click switches the log to that branch", () => {

@@ -2,6 +2,7 @@
  * Database tools state: data sources, connection status, the introspection
  * cache of the tree, query consoles (file → data source) and their results.
  */
+import { useProject } from "@/platform/project";
 import { create } from "zustand";
 import {
   IpcError,
@@ -33,17 +34,30 @@ import {
 } from "@/workbench/contributions";
 import { workflowSettings } from "@/platform/workflowSettings";
 import { ask, confirm } from "@/workbench/messages";
-import { colorVar, connectRemedy, databaseKey, effectiveSsh, idleTargets, newSourceId, splitTarget } from "./model";
+import {
+  activeSchema,
+  colorVar,
+  connectRemedy,
+  databaseKey,
+  effectiveSsh,
+  idleTargets,
+  newSourceId,
+  splitTarget,
+} from "./model";
 import { tableFolder, type DbNode } from "./nodes";
 import type { ExportData, ExportFormat } from "./export";
 import type { DbObjectRef } from "./objects";
 import { formatted } from "./sql/format";
 import { bindParams, findParams } from "./sql/params";
+import { isReadOnlyQuery } from "./sql/readOnly";
+import { pageFetch } from "./resultView";
 import { tx } from "@/platform/i18n";
 
 export const DB_TOOL_WINDOW = "database";
 export const RESULTS_VIEW = "dbResults";
 const BINDINGS_KEY = "openidea.database.consoles";
+const CONSOLE_SCHEMAS_KEY = "openidea.database.consoleSchemas";
+const VIEW_OPTIONS_KEY = "openidea.database.viewOptions";
 const MAX_TABS = 12;
 
 export interface ResultTab {
@@ -53,11 +67,18 @@ export interface ResultTab {
   /** Console file the statement came from. */
   path: string;
   sourceId: string;
+  /** Schema used for these rows; retained across edits, paging and refresh. */
+  schema?: string;
   outcome: DbStatementOutcome;
   /** The Query Plan tab: the plan of `outcome.statement` (which was explained, not run). */
   plan?: DbPlanNode[];
   /** Being re-run. */
   busy?: boolean;
+  /** Zero-based page of the result shown in `outcome` (IDEA's paging re-runs the query). */
+  page?: number;
+  pageSize?: number;
+  /** Rows of the whole query, once counted. */
+  total?: number | null;
 }
 
 /** One line of the consoles' Output log (IDEA's Database Console output). */
@@ -120,6 +141,11 @@ interface DatabaseState {
   objects: Record<string, DbSchemaObjects>;
   /** Console / SQL file path → data source id. */
   consoles: Record<string, string>;
+  /** Console path → its active schema (unqualified names resolve there; see `consoleSchema`). */
+  consoleSchemas: Record<string, string>;
+  /** The Database tree's quick object filter (empty: everything shows). */
+  treeFilter: string;
+  separateProceduresAndFunctions: boolean;
   completion: Record<string, DbCompletion>;
   results: ResultTab[];
   /** Result tab id, or `OUTPUT_TAB`. */
@@ -156,6 +182,24 @@ function readBindings(): Record<string, string> {
   }
 }
 
+function readConsoleSchemas(): Record<string, string> {
+  try {
+    const raw = localStorage.getItem(CONSOLE_SCHEMAS_KEY);
+    return raw ? (JSON.parse(raw) as Record<string, string>) : {};
+  } catch {
+    return {};
+  }
+}
+
+function readSeparateProceduresAndFunctions(): boolean {
+  try {
+    const raw = localStorage.getItem(VIEW_OPTIONS_KEY);
+    return raw ? JSON.parse(raw)?.separateProceduresAndFunctions === true : false;
+  } catch {
+    return false;
+  }
+}
+
 export const useDatabase = create<DatabaseState>(() => ({
   sources: [],
   loaded: false,
@@ -166,6 +210,9 @@ export const useDatabase = create<DatabaseState>(() => ({
   details: {},
   objects: {},
   consoles: readBindings(),
+  consoleSchemas: readConsoleSchemas(),
+  treeFilter: "",
+  separateProceduresAndFunctions: readSeparateProceduresAndFunctions(),
   completion: {},
   results: [],
   activeResult: null,
@@ -182,6 +229,16 @@ export const useDatabase = create<DatabaseState>(() => ({
   manualCommit: new Set(),
   pendingTx: new Set(),
 }));
+
+export function toggleSeparateProceduresAndFunctions() {
+  const separateProceduresAndFunctions = !useDatabase.getState().separateProceduresAndFunctions;
+  useDatabase.setState({ separateProceduresAndFunctions });
+  try {
+    localStorage.setItem(VIEW_OPTIONS_KEY, JSON.stringify({ separateProceduresAndFunctions }));
+  } catch {
+    // Per-viewer convenience only.
+  }
+}
 
 export const tablesKey = (id: string, schema: string) => `${id}\u0000${schema}`;
 export const detailsKey = (id: string, schema: string, table: string) => `${id}\u0000${schema}\u0000${table}`;
@@ -209,11 +266,20 @@ export function connectedTargets(id: string): string[] {
   return [...useDatabase.getState().connected].filter((t) => splitTarget(t).id === id);
 }
 
+let sourcesRequest = 0;
+
 export async function loadSources(): Promise<void> {
+  const request = ++sourcesRequest;
+  const root = useProject.getState().project?.root;
   try {
     const [sources, connected] = await Promise.all([call(commands.dbSources()), call(commands.dbConnected())]);
+    if (request !== sourcesRequest || useProject.getState().project?.root !== root) return;
+    for (const old of useDatabase.getState().sources) {
+      if (JSON.stringify(old) !== JSON.stringify(sources.find((s) => s.id === old.id))) forget(old.id ?? "");
+    }
     useDatabase.setState({ sources, connected: new Set(connected), loaded: true });
   } catch (e) {
+    if (request !== sourcesRequest || useProject.getState().project?.root !== root) return;
     useDatabase.setState({ loaded: true });
     notifications().notify({ level: "error", title: "Cannot read data sources", body: message(e), key: "db-sources" });
   }
@@ -265,7 +331,10 @@ export async function duplicateSource(id: string): Promise<void> {
   let n = 2;
   while (names.has(`${src.name} [${n}]`)) n++;
   try {
-    await saveSource({ ...src, id: newSourceId(), name: `${src.name} [${n}]` }, undefined);
+    await saveSource(
+      { ...src, id: newSourceId(), name: `${src.name} [${n}]`, pluginOwner: null, pluginSourceId: null },
+      undefined,
+    );
   } catch (e) {
     notifications().notify({ level: "error", title: "Cannot duplicate the data source", body: message(e) });
   }
@@ -353,7 +422,11 @@ const lastUsed = new Map<string, number>();
 
 /** Options › Transaction control: a manual data source's consoles start in manual commit. */
 function applyConnectDefaults(id: string) {
-  if (sourceById(id)?.options?.transaction === "manual" && !useDatabase.getState().manualCommit.has(id))
+  if (
+    sourceById(id)?.driver !== "clickhouse" &&
+    sourceById(id)?.options?.transaction === "manual" &&
+    !useDatabase.getState().manualCommit.has(id)
+  )
     void setManualCommit(id, true).catch(() => {});
 }
 
@@ -582,7 +655,39 @@ export function bindConsole(path: string, id: string | null) {
     } catch {
       // Per-viewer convenience only.
     }
-    return { consoles };
+    // Re-bound to another data source: the console starts from its default schema again.
+    const consoleSchemas = { ...s.consoleSchemas };
+    if (consoles[path] !== s.consoles[path]) {
+      delete consoleSchemas[path];
+      try {
+        localStorage.setItem(CONSOLE_SCHEMAS_KEY, JSON.stringify(consoleSchemas));
+      } catch {
+        // Per-viewer convenience only.
+      }
+    }
+    return { consoles, consoleSchemas };
+  });
+}
+
+/** The schema a console's statements run in: its pick, else the connection's default. */
+export function consoleSchema(path: string): string {
+  const s = useDatabase.getState();
+  const id = consoleSource(path);
+  return activeSchema(s.consoleSchemas[path], id ? s.completion[id]?.defaultSchema : undefined);
+}
+
+/** Sets (or clears, for `null`) the console's active schema and remembers it per console file. */
+export function setConsoleSchema(path: string, schema: string | null) {
+  useDatabase.setState((s) => {
+    const consoleSchemas = { ...s.consoleSchemas };
+    if (schema) consoleSchemas[path] = schema;
+    else delete consoleSchemas[path];
+    try {
+      localStorage.setItem(CONSOLE_SCHEMAS_KEY, JSON.stringify(consoleSchemas));
+    } catch {
+      // Per-viewer convenience only.
+    }
+    return { consoleSchemas };
   });
 }
 
@@ -639,15 +744,28 @@ function promptOf(id: string): string {
   return useDatabase.getState().completion[id]?.defaultSchema || sourceById(id)?.name || id;
 }
 
-/** Runs `statements` on `id`, logging to Output; errors stop the batch (backend). */
-async function run(id: string, statements: SqlStatement[], request: RequestId): Promise<DbStatementOutcome[]> {
+/**
+ * Runs `statements` on `id`, logging to Output; errors stop the batch (backend).
+ * Results keep `maxRows` rows after the first `skip`, which the backend reads past.
+ * `schema` is a console's active context: the backend puts the connection that runs
+ * each statement in it, so unqualified names resolve there.
+ */
+async function run(
+  id: string,
+  statements: SqlStatement[],
+  request: RequestId,
+  maxRows = useDatabase.getState().maxRows,
+  skip = 0,
+  schema?: string,
+): Promise<DbStatementOutcome[]> {
   const wasConnected = useDatabase.getState().connected.has(id);
   const outcomes = await withConnection(id, () =>
-    call(commands.dbExecute(request, id, statements, useDatabase.getState().maxRows)),
+    call(commands.dbExecute(request, id, statements, skip, maxRows, schema || null)),
   );
   if (!wasConnected) log("info", "Connected");
+  const prompt = schema || promptOf(id);
   for (const o of outcomes) {
-    log("statement", o.statement.text, `${promptOf(id)}>`);
+    log("statement", o.statement.text, `${prompt}>`);
     log(o.error ? "error" : "result", o.error ? `[${targetLabel(id)}] ${o.error}` : outcomeSummary(o));
   }
   if (useDatabase.getState().manualCommit.has(id) && outcomes.some((o) => !o.error && !READS.test(o.statement.text)))
@@ -787,12 +905,14 @@ export async function executeConsole(
   const request = nextRequestId();
   useDatabase.setState((s) => ({ running: { ...s.running, [path]: request } }));
   try {
-    const outcomes = await run(id, statements, request);
+    const pageSize = useDatabase.getState().maxRows;
+    const schema = consoleSchema(path) || (await loadCompletion(id))?.defaultSchema || "";
+    const outcomes = await run(id, statements, request, pageSize, 0, schema);
     const tabs: ResultTab[] = outcomes
       .filter((o) => o.result?.columns.length)
       .map((outcome) => {
         const n = nextTab++;
-        return { id: n, title: tx`Result ${n}`, path, sourceId: id, outcome };
+        return { id: n, title: tx`Result ${n}`, path, sourceId: id, schema, outcome, page: 0, pageSize };
       });
     const failed = outcomes.some((o) => o.error);
     useDatabase.setState((s) => ({
@@ -851,9 +971,11 @@ function showPlan(path: string, id: string, statement: SqlStatement, plan: DbPla
   showServiceView(RESULTS_VIEW, false);
 }
 
-async function explain(id: string, statement: SqlStatement): Promise<DbPlanNode[]> {
-  const plan = await withConnection(id, () => call(commands.dbExplain(nextRequestId(), id, statement.text)));
-  log("statement", `explain ${statement.text}`, `${promptOf(id)}>`);
+async function explain(id: string, statement: SqlStatement, schema?: string): Promise<DbPlanNode[]> {
+  const plan = await withConnection(id, () =>
+    call(commands.dbExplain(nextRequestId(), id, statement.text, schema || null)),
+  );
+  log("statement", `explain ${statement.text}`, `${schema || promptOf(id)}>`);
   log("result", `${plan.length} plan node${plan.length === 1 ? "" : "s"}`);
   return plan;
 }
@@ -865,7 +987,12 @@ export async function explainConsole(path: string, text: string, from: number, t
   try {
     const [statement] = await consoleStatements(id, text, from, to);
     if (!statement) return;
-    showPlan(path, id, statement, await explain(id, statement));
+    showPlan(
+      path,
+      id,
+      statement,
+      await explain(id, statement, useDatabase.getState().consoleSchemas[path] || undefined),
+    );
   } catch (e) {
     if (isCancelled(e)) return;
     log("error", `[${targetLabel(id)}] ${message(e)}`);
@@ -908,25 +1035,104 @@ export async function openObjectDdl(id: string, schema: string, kind: DbObjectKi
 export async function rerunResult(tabId: number): Promise<void> {
   const tab = useDatabase.getState().results.find((r) => r.id === tabId);
   if (!tab || tab.busy) return;
-  const patch = (p: Partial<ResultTab>) =>
-    useDatabase.setState((s) => ({ results: s.results.map((r) => (r.id === tabId ? { ...r, ...p } : r)) }));
-  patch({ busy: true });
   if (tab.plan) {
+    patchResult(tabId, { busy: true });
     try {
-      patch({ plan: await explain(tab.sourceId, tab.outcome.statement), busy: false });
+      patchResult(tabId, {
+        plan: await explain(tab.sourceId, tab.outcome.statement, tab.schema ?? consoleSchema(tab.path)),
+        busy: false,
+      });
     } catch (e) {
-      patch({ busy: false });
+      patchResult(tabId, { busy: false });
       if (!isCancelled(e)) log("error", `[${targetLabel(tab.sourceId)}] ${message(e)}`);
     }
     return;
   }
+  await loadResultPage(tabId, tab.page ?? 0, tab.pageSize ?? useDatabase.getState().maxRows, true);
+}
+
+/** Whether result tab `tab` can show other pages: running its query again only reads. */
+export function pageable(tab: ResultTab): boolean {
+  return !tab.plan && isReadOnlyQuery(tab.outcome.statement.text, sourceById(tab.sourceId)?.driver ?? "sqlite");
+}
+
+function patchResult(tabId: number, p: Partial<ResultTab>) {
+  useDatabase.setState((s) => ({ results: s.results.map((r) => (r.id === tabId ? { ...r, ...p } : r)) }));
+}
+
+/**
+ * Shows page `page` of `pageSize` rows of result tab `tabId`: its query runs
+ * again and the backend returns only that page (IDEA's result paging).
+ * `rerun` also forgets the counted total.
+ */
+export async function loadResultPage(tabId: number, page: number, pageSize: number, rerun = false): Promise<void> {
+  const tab = useDatabase.getState().results.find((r) => r.id === tabId);
+  if (!tab || tab.busy || tab.plan) return;
+  if (page > 0 && !pageable(tab)) return;
+  patchResult(tabId, { busy: true });
+  const { maxRows, skip } = pageFetch(page, pageSize);
   try {
-    const [outcome] = await run(tab.sourceId, [tab.outcome.statement], nextRequestId());
-    patch(outcome?.result ? { outcome, busy: false } : { busy: false });
+    const [outcome] = await run(
+      tab.sourceId,
+      [tab.outcome.statement],
+      nextRequestId(),
+      maxRows,
+      skip,
+      tab.schema ?? consoleSchema(tab.path),
+    );
+    const r = outcome?.result;
+    if (r) {
+      const sizeChanged = pageSize !== tab.pageSize;
+      patchResult(tabId, {
+        outcome,
+        page,
+        pageSize,
+        busy: false,
+        ...(rerun || sizeChanged ? { total: null } : {}),
+      });
+    } else patchResult(tabId, { busy: false });
     if (outcome?.error) useDatabase.setState({ activeResult: OUTPUT_TAB });
   } catch (e) {
-    patch({ busy: false });
+    patchResult(tabId, { busy: false });
     if (!isCancelled(e)) log("error", message(e));
+  }
+}
+
+/** `SELECT COUNT(*)` over a query, for queries that can be a subquery. */
+function countQuery(text: string): string | null {
+  if (!/^\s*(\(|select\b|with\b|values\b|table\b)/i.test(text)) return null;
+  // `)` on its own line: a trailing line comment (`… from t -- note`) would swallow it.
+  return `select count(*) from (\n${text.trim()}\n) q`;
+}
+
+/** Whether the rows of result tab `tab` can be counted. */
+export function countable(tab: ResultTab): boolean {
+  return pageable(tab) && countQuery(tab.outcome.statement.text) !== null;
+}
+
+/** Counts the rows of result tab `tabId`'s whole query (the pager's "of 501+"). */
+export async function countResult(tabId: number): Promise<number | null> {
+  const tab = useDatabase.getState().results.find((r) => r.id === tabId);
+  if (!tab || tab.busy || !countable(tab)) return null;
+  const text = countQuery(tab.outcome.statement.text)!;
+  patchResult(tabId, { busy: true });
+  try {
+    const [outcome] = await run(
+      tab.sourceId,
+      [{ from: 0, to: text.length, text }],
+      nextRequestId(),
+      1,
+      0,
+      tab.schema ?? consoleSchema(tab.path),
+    );
+    const total = Number(outcome?.result?.rows[0]?.[0]);
+    const known = outcome?.error || !Number.isFinite(total) ? null : total;
+    patchResult(tabId, { busy: false, ...(known === null ? {} : { total: known }) });
+    return known;
+  } catch (e) {
+    patchResult(tabId, { busy: false });
+    if (!isCancelled(e)) log("error", message(e));
+    return null;
   }
 }
 
@@ -944,6 +1150,7 @@ function setPending(id: string, pending: boolean) {
 
 /** Commits or rolls back the open transaction of a manual-commit data source. */
 export async function finishTransaction(id: string, commit: boolean): Promise<boolean> {
+  if (sourceById(id)?.driver === "clickhouse") return false;
   try {
     await call(commands.dbFinishTransaction(id, commit));
     log("statement", commit ? "commit" : "rollback", `${promptOf(id)}>`);
@@ -975,6 +1182,7 @@ async function askEndTransaction(source: DataSource): Promise<boolean | null> {
  * whether to commit or roll them back.
  */
 export async function setManualCommit(id: string, manual: boolean): Promise<void> {
+  if (sourceById(id)?.driver === "clickhouse" && manual) return;
   const st = useDatabase.getState();
   if (manual === st.manualCommit.has(id)) return;
   if (!manual && st.pendingTx.has(id)) {

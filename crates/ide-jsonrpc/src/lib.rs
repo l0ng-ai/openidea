@@ -49,6 +49,10 @@ pub mod framing {
                 }
                 return Ok(None);
             }
+            // A UTF-16LE line break is `\n\0`: the cut after `\n` leaves a NUL at the start of the
+            // next line, which would turn the `Content-Length` after it into noise.
+            let nuls = line.iter().take_while(|&&b| b == 0).count();
+            line.drain(..nuls);
             if line.last() != Some(&b'\n') {
                 if n as u64 >= MAX_HEADER_LINE {
                     return Err(Error::new(ErrorKind::InvalidData, "header line too long"));
@@ -216,6 +220,9 @@ pub trait Handler: Send + Sync + 'static {
     fn on_request_with_data(&self, method: &str, params: Value) -> Result<Value, (i64, String, Option<Value>)> {
         self.on_request(method, params).map_err(|(code, message)| (code, message, None))
     }
+
+    /// Called once the response to a `method` request is queued: what it sends follows the response.
+    fn after_response(&self, _method: &str) {}
 }
 
 /// A [`Handler`] that ignores notifications and rejects requests.
@@ -241,8 +248,31 @@ struct Inner {
     /// Fired by [`Peer::kill`]; stops tasks and kills the child.
     kill: CancellationToken,
     pid: Option<u32>,
+    transform: Option<Arc<dyn MessageTransform>>,
     /// Fired when the reader task has stopped (EOF, error or kill).
     reader_done: CancellationToken,
+    /// Fired once the child process has exited and been reaped (after [`Peer::kill`],
+    /// also what it started); at once when there is no child.
+    exited: CancellationToken,
+}
+
+/// Translates protocol values before serialization and after parsing, including
+/// responses to requests initiated by the server.
+pub trait MessageTransform: Send + Sync + 'static {
+    fn outgoing(&self, value: &mut Value);
+    fn incoming(&self, value: &mut Value);
+}
+
+#[derive(Default)]
+pub struct TransportOptions {
+    pub framing: Framing,
+    pub transform: Option<Arc<dyn MessageTransform>>,
+}
+
+impl From<Framing> for TransportOptions {
+    fn from(framing: Framing) -> Self {
+        Self { framing, transform: None }
+    }
 }
 
 impl Inner {
@@ -250,6 +280,14 @@ impl Inner {
         if self.transport_closed.load(Ordering::Acquire) {
             return Err(RpcError::Closed);
         }
+        let mut translated;
+        let value = if let Some(transform) = &self.transform {
+            translated = value.clone();
+            transform.outgoing(&mut translated);
+            &translated
+        } else {
+            value
+        };
         let body = serde_json::to_vec(value).map_err(|e| RpcError::Protocol(e.to_string()))?;
         tracing::trace!(target: "ide_jsonrpc::wire", "--> {}", String::from_utf8_lossy(&body));
         self.out.send(body).map_err(|_| RpcError::Closed)
@@ -336,7 +374,7 @@ impl Drop for KillOnDrop {
 /// child's `PATH` (a caller's `env` PATH, else the login shell's, else ours), so
 /// that on Windows `PATHEXT` names (`codex` → `codex.cmd`) start; anything else
 /// is kept as given.
-fn resolve_spawn_program(command: &str, env: &[(String, String)]) -> std::path::PathBuf {
+pub fn resolve_spawn_program(command: &str, env: &[(String, String)]) -> std::path::PathBuf {
     let path = std::path::Path::new(command);
     if path.components().count() > 1 || path.is_absolute() {
         return path.to_path_buf();
@@ -378,12 +416,28 @@ impl Peer {
         on_stderr: Box<dyn Fn(String) + Send + Sync>,
         framing: Framing,
     ) -> std::io::Result<Self> {
+        Self::spawn_transport(command, args, cwd, env, handler, on_stderr, framing.into())
+    }
+
+    /// Starts a stdio peer with message translation installed before any IO.
+    pub fn spawn_transport(
+        command: &str,
+        args: &[String],
+        cwd: &std::path::Path,
+        env: &[(String, String)],
+        handler: Arc<dyn Handler>,
+        on_stderr: Box<dyn Fn(String) + Send + Sync>,
+        options: TransportOptions,
+    ) -> std::io::Result<Self> {
         use std::process::Stdio;
         // Windows resolves a bare name only as `.exe`; find the file a child
         // would (`PATH` × `PATHEXT`, e.g. `codex` → `codex.cmd`) first.
         let resolved = resolve_spawn_program(command, env);
         let mut cmd = tokio::process::Command::new(&resolved);
         ide_core::process::prepare(cmd.as_std_mut());
+        // Wrappers (`npx`, `codex.cmd`, launcher scripts) start the real server as a child:
+        // stopping the connection stops the whole tree.
+        ide_core::process::own_group(cmd.as_std_mut());
         cmd.args(args)
             .current_dir(cwd)
             .envs(ide_core::process::shell_env())
@@ -399,7 +453,7 @@ impl Peer {
         let pid = child.id();
 
         let on_output: Arc<dyn Fn(String) + Send + Sync> = Arc::from(on_stderr);
-        let peer = Self::start(stdout, stdin, handler, false, pid, framing, Some(on_output.clone()));
+        let peer = Self::start(stdout, stdin, handler, false, pid, options, Some(on_output.clone()));
 
         let stderr_task = stderr.map(|stderr| {
             let name = command.to_owned();
@@ -422,10 +476,14 @@ impl Peer {
             let (status, killed) = tokio::select! {
                 status = child.wait() => (status.ok(), false),
                 _ = inner.kill.cancelled() => {
+                    if let Some(pid) = child.id() {
+                        let _ = tokio::task::spawn_blocking(move || ide_core::process::kill_tree_of(pid)).await;
+                    }
                     let _ = child.start_kill();
                     (child.wait().await.ok(), true)
                 }
             };
+            inner.exited.cancel();
             if !killed {
                 // Bounded: a grandchild may keep the pipes open.
                 let drained = async {
@@ -449,7 +507,7 @@ impl Peer {
         R: AsyncRead + Unpin + Send + 'static,
         W: AsyncWrite + Unpin + Send + 'static,
     {
-        Self::start(reader, writer, handler, true, None, Framing::ContentLength, None)
+        Self::start(reader, writer, handler, true, None, Framing::ContentLength.into(), None)
     }
 
     /// [`connect`](Self::connect) with the given wire framing.
@@ -458,7 +516,7 @@ impl Peer {
         R: AsyncRead + Unpin + Send + 'static,
         W: AsyncWrite + Unpin + Send + 'static,
     {
-        Self::start(reader, writer, handler, true, None, framing, None)
+        Self::start(reader, writer, handler, true, None, framing.into(), None)
     }
 
     /// [`Peer::connect`] over streams served by `child` (a server reached over a socket
@@ -475,7 +533,7 @@ impl Peer {
         R: AsyncRead + Unpin + Send + 'static,
         W: AsyncWrite + Unpin + Send + 'static,
     {
-        let peer = Self::start(reader, writer, handler, true, child.id(), Framing::ContentLength, None);
+        let peer = Self::start(reader, writer, handler, true, child.id(), Framing::ContentLength.into(), None);
         peer.supervise(child, None);
         peer
     }
@@ -486,13 +544,14 @@ impl Peer {
         handler: Arc<dyn Handler>,
         close_on_eof: bool,
         pid: Option<u32>,
-        framing: Framing,
+        options: TransportOptions,
         on_noise: Option<Arc<dyn Fn(String) + Send + Sync>>,
     ) -> Self
     where
         R: AsyncRead + Unpin + Send + 'static,
         W: AsyncWrite + Unpin + Send + 'static,
     {
+        let TransportOptions { framing, transform } = options;
         let (out_tx, mut out_rx) = mpsc::unbounded_channel::<Vec<u8>>();
         let (closed, _) = watch::channel(None);
         let inner = Arc::new(Inner {
@@ -503,8 +562,13 @@ impl Peer {
             closed,
             kill: CancellationToken::new(),
             pid,
+            transform,
             reader_done: CancellationToken::new(),
+            exited: CancellationToken::new(),
         });
+        if pid.is_none() {
+            inner.exited.cancel();
+        }
 
         // Writer: a single task drains the queue so messages never interleave.
         {
@@ -698,6 +762,13 @@ impl Peer {
         self.inner.close_transport();
         self.inner.kill.cancel();
     }
+
+    /// Resolves once the child process is gone: exited on its own, or killed with what it
+    /// started and reaped. [`closed`](Self::closed) can come earlier, at EOF. Until then the
+    /// child may still hold files open, which on Windows can't be deleted.
+    pub async fn exited(&self) {
+        self.inner.exited.cancelled().await;
+    }
 }
 
 /// Removes the pending entry and tells the remote side to stop when a request
@@ -734,7 +805,8 @@ enum Incoming {
 
 async fn handle_request(inner: Arc<Inner>, handler: Arc<dyn Handler>, id: Value, method: String, params: Value) {
     let m = method.clone();
-    let result = tokio::task::spawn_blocking(move || handler.on_request_with_data(&m, params)).await;
+    let h = handler.clone();
+    let result = tokio::task::spawn_blocking(move || h.on_request_with_data(&m, params)).await;
     let reply = match result {
         Ok(Ok(result)) => json!({ "jsonrpc": "2.0", "id": id, "result": result }),
         Ok(Err((code, message, data))) => {
@@ -749,18 +821,23 @@ async fn handle_request(inner: Arc<Inner>, handler: Arc<dyn Handler>, id: Value,
             "error": { "code": codes::INTERNAL_ERROR, "message": format!("handler for {method} panicked") }
         }),
     };
-    let _ = inner.send_value(&reply);
+    if inner.send_value(&reply).is_ok() {
+        handler.after_response(&method);
+    }
 }
 
 fn dispatch(inner: &Arc<Inner>, notif_tx: &std::sync::mpsc::Sender<Incoming>, body: &[u8]) {
     tracing::trace!(target: "ide_jsonrpc::wire", "<-- {}", String::from_utf8_lossy(body));
-    let msg: Value = match serde_json::from_slice(body) {
+    let mut msg: Value = match serde_json::from_slice(body) {
         Ok(v) => v,
         Err(e) => {
             tracing::warn!("jsonrpc: unparsable message: {e}");
             return;
         }
     };
+    if let Some(transform) = &inner.transform {
+        transform.incoming(&mut msg);
+    }
     let Value::Object(mut obj) = msg else {
         tracing::warn!("jsonrpc: ignoring non-object message");
         return;

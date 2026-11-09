@@ -39,8 +39,8 @@ pub async fn fs_copy_merge(
 
 #[tauri::command]
 #[specta::specta]
-pub fn fs_read_dir(window: Window, state: State<'_, AppState>, path: PathBuf) -> IdeResult<Vec<FileEntry>> {
-    fs::read_dir(&state.host, window.label(), path)
+pub async fn fs_read_dir(window: Window, state: State<'_, AppState>, path: PathBuf) -> IdeResult<Vec<FileEntry>> {
+    fs::read_dir(&state.host, window.label(), path).await
 }
 
 /// Creates an empty file; inside a project, honours the EditorConfig
@@ -65,8 +65,8 @@ pub fn fs_create_dir(path: PathBuf) -> IdeResult<()> {
 
 #[tauri::command]
 #[specta::specta]
-pub fn fs_rename(from: PathBuf, to: PathBuf) -> IdeResult<()> {
-    ide_vfs::rename(&from, &to)
+pub async fn fs_rename(state: State<'_, AppState>, from: PathBuf, to: PathBuf) -> IdeResult<()> {
+    fs::rename(&state.host, from, to).await
 }
 
 /// Toggle Read-only Attribute: sets the writable bit (and the open document's

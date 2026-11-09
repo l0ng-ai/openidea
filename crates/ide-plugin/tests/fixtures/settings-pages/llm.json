@@ -1,0 +1,19 @@
+{
+  "properties": {
+    "profiles": {
+      "type": "array", "title": "Model profiles", "group": "Provider",
+      "items": {
+        "type": "object",
+        "properties": {
+          "name": { "type": "string", "title": "Name", "default": "Local" },
+          "provider": { "type": "string", "title": "Provider", "enum": ["local", "openai"], "default": "local" },
+          "baseUrl": { "type": "string", "title": "Base URL", "default": "http://localhost:11434" },
+          "model": { "type": "string", "title": "Model", "default": "example-model" },
+          "enabled": { "type": "boolean", "title": "Enabled", "default": true },
+          "temperature": { "type": "number", "title": "Temperature", "default": 0.7 },
+          "limit": { "type": "integer", "title": "Token limit", "default": 2048 }
+        }
+      }
+    }
+  }
+}

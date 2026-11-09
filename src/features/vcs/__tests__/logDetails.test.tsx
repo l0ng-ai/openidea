@@ -1,83 +1,94 @@
-import { commitKey } from "../multiRoot";
-import { afterEach, describe, expect, it, vi } from "vitest";
-import { render, screen } from "@testing-library/react";
+import { beforeEach, describe, expect, it, vi } from "vitest";
 import type { Commit } from "@/bindings";
-
-const vcsCommitFiles = vi.fn();
-const vcsCommitsChanges = vi.fn();
-
-vi.mock("@/platform/ipc", async (importOriginal) => {
-  const real = await importOriginal<typeof import("@/platform/ipc")>();
+const api = vi.hoisted(() => ({ batch: vi.fn(), cancel: vi.fn() }));
+vi.mock("@/platform/ipc", async (original) => {
+  const real = await original<typeof import("@/platform/ipc")>();
   return {
     ...real,
     commands: {
       ...real.commands,
-      vcsCommitFiles: (repo: unknown, id: string) => vcsCommitFiles(repo, id),
-      vcsCommitsChanges: (repo: unknown, ids: string[]) => vcsCommitsChanges(repo, ids),
+      vcsLogDetailsBatch: (...args: unknown[]) => api.batch(...args),
+      cancelRequest: (...args: unknown[]) => api.cancel(...args),
     },
   };
 });
-
-import { CommitDetails } from "../GitLog";
+import { loadLogDetails } from "../logDetails";
+import { useVcs } from "../store";
 import { useGitLog } from "../logStore";
-
-const commit = (summary: string, d: string): Commit => ({
-  id: d.repeat(40),
-  shortId: d.repeat(8),
+const commit = (id: string): Commit => ({
+  id,
+  shortId: id,
   parents: [],
-  author: "A",
-  email: "a@example.com",
-  timeMs: 0,
-  summary,
-  message: `${summary}\n\nBody of ${summary}`,
   refs: [],
+  author: "A",
+  email: "a@x",
+  summary: id,
+  message: id,
+  timeMs: 0,
 });
-
-// Log order: newest first.
-const log = [commit("Third", "3"), commit("Second", "2"), commit("First", "1")];
-
-afterEach(() => {
-  useGitLog.setState({ commits: [], selection: [], selected: null });
-  vcsCommitFiles.mockReset();
-  vcsCommitsChanges.mockReset();
+beforeEach(() => {
+  api.batch.mockReset().mockImplementation(async (_repo: string, ids: string[]) => ({
+    status: "ok",
+    data: ids.map((id) => ({
+      message: id,
+      containingBranches: [],
+      signature: "N",
+      signer: "",
+      key: "",
+      fingerprint: "",
+    })),
+  }));
+  api.cancel.mockReset().mockResolvedValue(undefined);
+  useVcs.setState((s) => ({ repo: "/repo", root: "/repo", version: s.version + 1 }));
 });
-
-describe("Git Log commit details", () => {
-  it("shows one commit's files and full message", async () => {
-    vcsCommitFiles.mockResolvedValue({ status: "ok", data: [{ path: "a.ts", kind: "modified", oldPath: null }] });
-    useGitLog.setState({ commits: log, selected: log[1]!.id, selection: [log[1]!.id] });
-    render(<CommitDetails commits={log} />);
-    expect(await screen.findByText("1 file")).toBeInTheDocument();
-    expect(vcsCommitFiles).toHaveBeenCalledWith(null, log[1]!.id);
-    expect(screen.getByText("Body of Second")).toBeInTheDocument();
+describe("commit detail jobs", () => {
+  it("retries immediately after the last consumer cancels without losing the replacement cache entry", async () => {
+    let rejectOld!: (error: Error) => void;
+    api.batch.mockImplementationOnce(
+      () =>
+        new Promise((_resolve, reject) => {
+          rejectOld = reject;
+        }),
+    );
+    const controller = new AbortController();
+    const old = loadLogDetails(commit("retry-cancelled"), controller.signal).catch((error: unknown) => error);
+    await vi.waitFor(() => expect(api.batch).toHaveBeenCalledTimes(1));
+    controller.abort();
+    const replacement = loadLogDetails(commit("retry-cancelled"));
+    await vi.waitFor(() => expect(api.batch).toHaveBeenCalledTimes(2));
+    await expect(replacement).resolves.toMatchObject({ message: "retry-cancelled" });
+    rejectOld(new Error("Cancelled"));
+    await old;
+    await loadLogDetails(commit("retry-cancelled"));
+    expect(api.batch).toHaveBeenCalledTimes(2);
   });
-
-  it("combines the changes of several selected commits, oldest first, and lists them", async () => {
-    vcsCommitsChanges.mockResolvedValue({
-      status: "ok",
-      data: [
-        { path: "a.ts", kind: "modified", oldPath: null, before: "0".repeat(40), after: log[0]!.id },
-        { path: "b.ts", kind: "added", oldPath: null, before: null, after: log[2]!.id },
-      ],
-    });
-    // Selected in click order (Cmd-click), not log order; non-contiguous.
-    useGitLog.setState({ commits: log, selected: log[0]!.id, selection: [log[2]!.id, log[0]!.id] });
-    render(<CommitDetails commits={log} />);
-    expect(await screen.findByText(/2 files\s*in 2 commits/)).toBeInTheDocument();
-    expect(vcsCommitsChanges).toHaveBeenCalledWith(null, [log[2]!.id, log[0]!.id]);
-    expect(vcsCommitFiles).not.toHaveBeenCalled();
-    expect(screen.getByText("First")).toBeInTheDocument();
-    expect(screen.getByText("Third")).toBeInTheDocument();
-    expect(screen.queryByText("Second")).toBeNull();
+  it("batches rows and reuses results across log generations", async () => {
+    const [a, b] = await Promise.all([loadLogDetails(commit("batch-a")), loadLogDetails(commit("batch-b"))]);
+    expect([a.message, b.message]).toEqual(["batch-a", "batch-b"]);
+    expect(api.batch).toHaveBeenCalledTimes(1);
+    expect(api.batch.mock.calls[0]![1]).toEqual(["batch-a", "batch-b"]);
+    useGitLog.setState((s) => ({ generation: s.generation + 1 }));
+    await loadLogDetails(commit("batch-a"));
+    expect(api.batch).toHaveBeenCalledTimes(1);
   });
-  it("loads the selected root even when two repositories contain the same SHA", async () => {
-    const front = { ...commit("Front", "1"), repo: "/front" };
-    const back = { ...commit("Back", "1"), repo: "/back" };
-    vcsCommitFiles.mockResolvedValue({ status: "ok", data: [{ path: "same.ts", kind: "modified", oldPath: null }] });
-    useGitLog.setState({ commits: [front, back], selected: commitKey(back), selection: [commitKey(back)] });
-    render(<CommitDetails commits={[front, back]} />);
-    expect(await screen.findByText("1 file")).toBeInTheDocument();
-    expect(vcsCommitFiles).toHaveBeenCalledWith("/back", back.id);
-    expect(screen.getByText("Body of Back")).toBeInTheDocument();
+  it("cancels running native work only when its last consumer leaves", async () => {
+    let finish!: (value: unknown) => void;
+    api.batch.mockImplementationOnce(
+      () =>
+        new Promise((resolve) => {
+          finish = resolve;
+        }),
+    );
+    const a = new AbortController(),
+      b = new AbortController();
+    const first = loadLogDetails(commit("shared"), a.signal);
+    const second = loadLogDetails(commit("shared"), b.signal);
+    await vi.waitFor(() => expect(api.batch).toHaveBeenCalledTimes(1));
+    a.abort();
+    expect(api.cancel).not.toHaveBeenCalled();
+    b.abort();
+    expect(api.cancel).toHaveBeenCalledWith(api.batch.mock.calls[0]![2]);
+    finish({ status: "ok", data: [{ message: "shared" }] });
+    await Promise.all([first, second]);
   });
 });

@@ -1,8 +1,10 @@
 /**
  * An editor slot is one tab showing a text document in one pane. It owns the
  * tab's EditorState (selection, folds, undo history, scroll) and, while the
- * tab is visible, an EditorView. Background tabs keep only their state; views
- * are created on show and destroyed on hide, so many open tabs cost little.
+ * tab is visible, an EditorView. The most recently used tabs keep their view,
+ * detached, while hidden (`KEPT_VIEWS`): showing one again re-attaches it with
+ * its decorations, height map and plugin state; older background tabs keep
+ * only their state and get a new view when shown.
  *
  * All slots of a document share its DocModel: local edits flow
  * slot → model → backend and are mirrored into the other slots.
@@ -17,12 +19,15 @@ import {
   type ChangeSet,
   type TransactionSpec,
 } from "@codemirror/state";
+import { historyField } from "@codemirror/commands";
 import { EditorView, ViewPlugin, keymap, type ViewUpdate } from "@codemirror/view";
 import {
   _addEditor,
   _removeEditor,
   documentSynced,
+  viewShown,
   isExternalChange,
+  transientChange,
   type EditorDocContext,
   type TextEditorHandle,
 } from "@/editor/api";
@@ -30,6 +35,7 @@ import { showContextMenu } from "@/ui";
 import { baseExtensions, compartments, contributionExtensions } from "../cm/setup";
 import { gutterMenuItems, inGutterMenuArea } from "../gutterMenu";
 import type { DocModel } from "./document";
+import type { WorkspaceHistoryTarget } from "./workspaceHistory";
 import { isNavigation } from "./navHistory";
 
 export interface SlotHost {
@@ -50,9 +56,20 @@ export interface Reveal {
   center?: boolean;
 }
 
+/** Hidden views kept for showing again, least recently hidden first. */
+const KEPT_VIEWS = 8;
+const keptSlots: EditorSlot[] = [];
+
 export class EditorSlot {
-  state: EditorState;
+  private stored: EditorState;
+  private historyTarget: WorkspaceHistoryTarget;
+  private detachHistory: () => void;
+  /** The view while the tab is visible. */
   view: EditorView | null = null;
+  /** The view kept, detached from the document, while the tab is hidden. */
+  private kept: EditorView | null = null;
+  /** The view's scroll offset, tracked so hiding it needn't read layout. */
+  private scrollPos = { top: 0, left: 0 };
   handle: TextEditorHandle | null = null;
   private scroll: StateEffect<unknown> | null = null;
   private pendingReveal: Reveal | null = null;
@@ -71,38 +88,67 @@ export class EditorSlot {
     private host: SlotHost,
     init?: { from?: EditorSlot; reveal?: Reveal },
   ) {
+    this.historyTarget = {
+      path: model.path,
+      state: () => this.currentState(),
+      dispatch: (tr) => {
+        if (this.live) this.live.dispatch(tr);
+        else this.stored = tr.state;
+      },
+    };
     const source = init?.from;
-    this.state = EditorState.create({
+    const secondary = !model.slots.size
+      ? [...model.attachments]
+          .map((attachment) => attachment.historyState?.())
+          .find((state) => state?.field(historyField, false))
+      : null;
+    const history = secondary?.field(historyField, false);
+    this.stored = EditorState.create({
       doc: model.sync.localText,
       selection: source ? source.currentState().selection : undefined,
-      extensions: baseExtensions({
-        ctx: model.ctx(),
-        settings: model.settings(),
-        info: model.info,
-        language: model.language,
-        docLength: model.sync.localText.length,
-        indent: model.effectiveIndent(),
-        wrapOverride: model.softWrapOverride,
-        extra: this.slotExtensions(),
-      }),
+      extensions: [
+        history ? historyField.init(() => history) : [],
+        baseExtensions({
+          ctx: model.ctx(),
+          settings: model.settings(),
+          info: model.info,
+          language: model.language,
+          docLength: model.sync.localText.length,
+          indent: model.effectiveIndent(),
+          formatIndent: model.formatIndent(),
+          wrapOverride: model.softWrapOverride,
+          extra: this.slotExtensions(),
+        }),
+      ],
     });
     this.contributionsVersion = model.manager.contributionsVersion;
     if (source?.view) this.scroll = source.view.scrollSnapshot();
     else if (source) this.scroll = source.scroll;
     if (init?.reveal) this.pendingReveal = init.reveal;
     model.addSlot(this);
+    this.detachHistory = model.manager.workspaceHistory.attach(this.historyTarget, !history);
   }
 
   get ctx(): EditorDocContext {
     return this.model.ctx();
   }
 
+  /** The visible or kept view: the one holding the tab's state. */
+  private get live(): EditorView | null {
+    return this.view ?? this.kept;
+  }
+
+  get state(): EditorState {
+    return this.live?.state ?? this.stored;
+  }
+
   currentState(): EditorState {
-    return this.view?.state ?? this.state;
+    return this.state;
   }
 
   private slotExtensions() {
     return [
+      this.model.manager.workspaceHistory.extension(this.historyTarget),
       documentSynced.of(() => this.model.sync.whenIdle()),
       EditorView.updateListener.of((u) => {
         for (const l of this.listeners) l(u);
@@ -112,6 +158,11 @@ export class EditorSlot {
         }
       }),
       Prec.highest(keymap.of([{ key: "Escape", run: () => this.host.onEscape?.(this) ?? false }])),
+      EditorView.domEventObservers({
+        scroll: (_e, view) => {
+          if (view === this.view) this.scrollPos = { top: view.scrollDOM.scrollTop, left: view.scrollDOM.scrollLeft };
+        },
+      }),
       EditorView.domEventHandlers({
         contextmenu: (e) => {
           this.host.onContextMenu(this, e);
@@ -137,14 +188,28 @@ export class EditorSlot {
 
   mount(parent: HTMLElement): EditorView {
     if (this.view) return this.view;
-    this.syncContributions();
-    const view = new EditorView({
-      state: this.state,
-      parent,
-      dispatchTransactions: (trs, v) => this.onTransactions(trs, v),
-    });
-    this.view = view;
-    if (this.scroll) view.dispatch({ effects: this.scroll });
+    const kept = this.kept;
+    let view: EditorView;
+    if (kept) {
+      this.kept = null;
+      keptSlots.splice(keptSlots.indexOf(this), 1);
+      parent.appendChild(kept.dom);
+      // Detached, it lost its scroll offset.
+      kept.scrollDOM.scrollTop = this.scrollPos.top;
+      kept.scrollDOM.scrollLeft = this.scrollPos.left;
+      view = this.view = kept;
+      this.syncContributions();
+      // Plugins that skipped work while it was hidden catch up.
+      view.dispatch({ effects: this.scroll ? [this.scroll, viewShown.of(null)] : viewShown.of(null) });
+    } else {
+      this.syncContributions();
+      view = this.view = new EditorView({
+        state: this.stored,
+        parent,
+        dispatchTransactions: (trs, v) => this.onTransactions(trs, v),
+      });
+      if (this.scroll) view.dispatch({ effects: this.scroll });
+    }
     this.scroll = null;
     this.handle = { view, ctx: this.model.ctx() };
     _addEditor(this.handle);
@@ -156,21 +221,38 @@ export class EditorSlot {
     return view;
   }
 
-  unmount() {
+  /** Hides the view: keeps it detached for the most recent tabs, else (or `keep: false`) destroys it. */
+  unmount(keep = true) {
     const view = this.view;
     if (!view) return;
-    this.savedTopLine = topLineOf(view);
-    this.state = view.state;
-    this.scroll = view.scrollSnapshot();
     if (this.handle) _removeEditor(this.handle);
     this.handle = null;
     this.view = null;
+    this.kept = view;
+    if (!keep) return this.release();
+    view.dom.remove();
+    keptSlots.push(this);
+    if (keptSlots.length > KEPT_VIEWS) keptSlots.shift()!.release();
+  }
+
+  /** Destroys the kept view, keeping its state. */
+  private release() {
+    const view = this.kept;
+    if (!view) return;
+    this.kept = null;
+    const i = keptSlots.indexOf(this);
+    if (i >= 0) keptSlots.splice(i, 1);
+    this.savedTopLine = topLineAt(view, this.scrollPos.top);
+    this.scroll = scrollSnapshotAt(view, this.scrollPos);
+    this.stored = view.state;
     view.destroy();
   }
 
   dispose() {
     if (this.disposed) return;
-    this.unmount();
+    this.detachHistory();
+    this.unmount(false);
+    this.release();
     this.disposed = true;
     this.model.removeSlot(this);
   }
@@ -184,6 +266,7 @@ export class EditorSlot {
   private onTransactions(trs: readonly Transaction[], view: EditorView) {
     view.update(trs);
     let selection = false;
+    let reformatted = false;
     let navigatedFrom: { line: number; col: number } | undefined;
     for (const tr of trs) {
       if (!navigatedFrom && tr.selection && isNavigation(tr)) {
@@ -191,7 +274,7 @@ export class EditorSlot {
         const line = tr.startState.doc.lineAt(head);
         navigatedFrom = { line: line.number - 1, col: head - line.from };
       }
-      if (tr.docChanged && !isExternalChange(tr)) {
+      if (tr.docChanged && !isExternalChange(tr) && !tr.annotation(transientChange)) {
         this.model.onLocal(tr.changes, this);
         if (
           tr.isUserEvent("input") ||
@@ -202,34 +285,37 @@ export class EditorSlot {
         )
           this.host.onUserEdit(this, tr);
       }
+      if (tr.docChanged && tr.isUserEvent("format.reformat")) reformatted = true;
       if (tr.selection || tr.docChanged) selection = true;
     }
+    if (reformatted) this.model.redetectIndent();
     if (selection) this.host.onSelection(this, navigatedFrom);
   }
 
   /** Applies a transaction as if the user made it (synced, undoable). */
-  dispatchLocal(spec: TransactionSpec) {
-    if (this.view) {
-      this.view.dispatch(spec);
+  dispatchLocal(spec: TransactionSpec | Transaction) {
+    if (this.live) {
+      this.live.dispatch(spec);
       return;
     }
-    const tr = this.state.update(spec);
-    this.state = tr.state;
+    const tr = "startState" in spec ? spec : this.stored.update(spec);
+    this.stored = tr.state;
     if (tr.docChanged) this.model.onLocal(tr.changes, this);
+    if (tr.docChanged && tr.isUserEvent("format.reformat")) this.model.redetectIndent();
   }
 
   /** Applies changes that are already in the model (other slot / backend). */
   applyExternal(changes: ChangeSet, annotations: Annotation<unknown>[]) {
     const spec: TransactionSpec = { changes, annotations };
-    if (this.view) this.view.dispatch(spec);
-    else this.state = this.state.update(spec).state;
+    if (this.live) this.live.dispatch(spec);
+    else this.stored = this.stored.update(spec).state;
   }
 
   /** Applies effects (reconfiguration) to the view or the stored state. */
   reconfigure(effects: StateEffect<unknown>[]) {
     if (!effects.length) return;
-    if (this.view) this.view.dispatch({ effects });
-    else this.state = this.state.update({ effects }).state;
+    if (this.live) this.live.dispatch({ effects });
+    else this.stored = this.stored.update({ effects }).state;
     if (this.handle) this.handle.ctx = this.model.ctx();
   }
 
@@ -248,7 +334,7 @@ export class EditorSlot {
     const anchor = Math.min(Math.max(0, r.anchor), len);
     const head = Math.min(Math.max(0, r.head ?? anchor), len);
     if (!this.view) {
-      this.state = this.state.update({ selection: EditorSelection.single(anchor, head) }).state;
+      this.dispatchState({ selection: EditorSelection.single(anchor, head) });
       this.pendingReveal = r;
       return;
     }
@@ -264,7 +350,11 @@ export class EditorSlot {
   /** Caret and first visible line, for the persisted editor session. */
   viewState(): { anchor: number; head: number; topLine?: number } {
     const main = this.currentState().selection.main;
-    const topLine = this.view ? topLineOf(this.view) : this.savedTopLine;
+    const topLine = this.view
+      ? topLineOf(this.view)
+      : this.kept
+        ? topLineAt(this.kept, this.scrollPos.top)
+        : this.savedTopLine;
     return { anchor: main.anchor, head: main.head, ...(topLine !== undefined ? { topLine } : {}) };
   }
 
@@ -283,11 +373,17 @@ export class EditorSlot {
       this.view.dispatch({ selection, effects: scroll ? [scroll] : [] });
       return;
     }
-    this.state = this.state.update({ selection }).state;
+    this.dispatchState({ selection });
     if (scroll) {
       this.scroll = scroll;
       this.savedTopLine = v.topLine;
     }
+  }
+
+  /** Updates the state of a hidden tab (its kept view, if any). */
+  private dispatchState(spec: TransactionSpec) {
+    if (this.kept) this.kept.dispatch(spec);
+    else this.stored = this.stored.update(spec).state;
   }
 
   caret(): { line: number; col: number; offset: number } {
@@ -299,6 +395,17 @@ export class EditorSlot {
 }
 
 function topLineOf(view: EditorView): number {
-  const block = view.lineBlockAtHeight(Math.max(0, view.scrollDOM.scrollTop));
+  return topLineAt(view, view.scrollDOM.scrollTop);
+}
+
+/** `view.scrollSnapshot()` at a tracked offset: a detached view's scrollDOM reports 0. */
+function scrollSnapshotAt(view: EditorView, pos: { top: number; left: number }): StateEffect<unknown> {
+  const atPos = Object.create(view) as EditorView;
+  Object.defineProperty(atPos, "scrollDOM", { value: { scrollTop: pos.top, scrollLeft: pos.left } });
+  return atPos.scrollSnapshot();
+}
+
+function topLineAt(view: EditorView, scrollTop: number): number {
+  const block = view.lineBlockAtHeight(Math.max(0, scrollTop));
   return view.state.doc.lineAt(block.from).number - 1;
 }

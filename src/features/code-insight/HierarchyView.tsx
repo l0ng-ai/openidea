@@ -183,6 +183,11 @@ export function HierarchyView() {
           {basename(item.path)}:{item.selectionRange.start.line + 1}
         </span>
         {calls > 1 && <span className={styles.muted}>{tx`(${calls} calls)`}</span>}
+        {n.node.recursion && (
+          <span className={styles.muted}>
+            <T>recursive</T>
+          </span>
+        )}
         {notes.has(n.id) && (
           <span className={styles.muted} title={notes.get(n.id)}>
             {notes.get(n.id)}

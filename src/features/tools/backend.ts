@@ -88,26 +88,26 @@ export function sampleTools(): ToolInfo[] {
     }),
     tool({ name: "vtsls", displayName: "vtsls (TypeScript)", languages: ["TypeScript", "JavaScript"] }),
     tool({
-      name: "astro-language-server",
-      displayName: "Astro Language Server",
-      command: "astro-ls",
-      languages: ["Astro"],
-      defaultArgs: ["--stdio"],
-    }),
-    tool({
       name: "typescript-language-server",
       languages: ["TypeScript", "JavaScript"],
       status: "onPath",
       version: "4.3.3",
       path: "/opt/homebrew/bin/typescript-language-server",
     }),
-    ...["basedpyright", "pyright", "ty"].map((name) =>
+    ...["basedpyright", "pyright", "ty", "pyrefly"].map((name) =>
       tool({
         name,
-        displayName: name === "pyright" ? "Pyright" : name === "ty" ? "ty (Python)" : name,
+        displayName:
+          name === "pyright"
+            ? "Pyright"
+            : name === "ty"
+              ? "ty (Python)"
+              : name === "pyrefly"
+                ? "Pyrefly (Python)"
+                : name,
         languages: ["Python"],
-        installMethod: "pip (virtualenv)",
-        alternatives: ["basedpyright", "pyright", "ty"],
+        installMethod: "uv (virtualenv)",
+        alternatives: ["basedpyright", "pyright", "ty", "pyrefly"],
       }),
     ),
     tool({ name: "gopls", languages: ["Go"], installMethod: "go install" }),
@@ -228,7 +228,6 @@ export class MemoryToolsBackend implements ToolsBackend {
 
   async languages() {
     return [
-      { id: "astro", name: "Astro" },
       { id: "go", name: "Go" },
       { id: "python", name: "Python" },
       { id: "rust", name: "Rust" },

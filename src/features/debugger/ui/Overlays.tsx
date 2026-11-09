@@ -31,6 +31,7 @@ import {
 } from "../breakpoints/exceptions";
 import { closeBreakpointPopover, useOverlays } from "./popoverStore";
 import { VariablesView, type VarRoot } from "./VariablesView";
+import { useExpressionCompletion } from "./ExpressionCompletion";
 import { pushHistory, readHistory } from "./expressionHistory";
 import styles from "./Overlays.module.css";
 import { isImeKey } from "@/platform/ime";
@@ -697,6 +698,7 @@ function EvaluateDialogInner({ initial }: { initial: string }) {
   const paused = session?.status === "paused";
   const close = () => useOverlays.setState({ evaluate: null });
   const lines = Math.min(10, expression.split("\n").length);
+  const completion = useExpressionCompletion(field, expression, setExpression, session);
   const run = async () => {
     const e = expression.trim();
     if (!e) return;
@@ -720,7 +722,7 @@ function EvaluateDialogInner({ initial }: { initial: string }) {
     });
   };
   const onKeyDown = (e: KeyboardEvent<HTMLTextAreaElement>) => {
-    if (isImeKey(e.nativeEvent)) return;
+    if (isImeKey(e.nativeEvent) || completion.onKeyDown(e)) return;
     const el = e.currentTarget;
     if (e.key === "Enter" && e.shiftKey && (e.metaKey || e.ctrlKey)) {
       e.preventDefault();
@@ -746,6 +748,7 @@ function EvaluateDialogInner({ initial }: { initial: string }) {
       onClose={close}
       title="Evaluate"
       width={620}
+      resizable="both"
       aria-label="Evaluate expression"
       footerStart={
         <Button
@@ -778,8 +781,10 @@ function EvaluateDialogInner({ initial }: { initial: string }) {
               onChange={(e) => {
                 setExpression(e.target.value);
                 historyPos.current = -1;
+                completion.onInput();
               }}
               onKeyDown={onKeyDown}
+              onBlur={completion.close}
               onFocus={(e) => e.currentTarget.select()}
               spellCheck={false}
               autoComplete="off"
@@ -787,6 +792,7 @@ function EvaluateDialogInner({ initial }: { initial: string }) {
               aria-label={tx("Expression")}
               placeholder={paused ? "Expression to evaluate in the selected frame" : "Pause the program to evaluate"}
             />
+            {completion.popup}
             <span ref={historyButton}>
               <IconButton
                 icon="history"

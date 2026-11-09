@@ -10,6 +10,7 @@ import type { Text } from "@codemirror/state";
 import type { EditorView } from "@codemirror/view";
 import { whenSynced, type EditorDocContext } from "@/editor/api";
 import { call, commands, isTauri, type DocumentLink } from "@/platform/ipc";
+import { isVirtualUri } from "@/platform/virtualDocs";
 import { openExternalUrl } from "@/platform/openUrl";
 import { executeAction } from "@/platform/actions";
 import { editorService } from "@/workbench/contributions";
@@ -87,14 +88,19 @@ export function textReference(text: Text, offset: number): Reference | null {
       return { kind: "url", from: line.from + m.index, to: line.from + m.index + m[0].length, url: m[0] };
   }
   const strings = [
-    ...[...line.text.matchAll(QUOTED_RE)].map((m) => ({ value: m[1] ?? m[2] ?? m[3] ?? "", from: m.index + 1 })),
+    ...[...line.text.matchAll(QUOTED_RE)].map((m) => ({
+      value: m[1] ?? m[2] ?? m[3] ?? "",
+      from: m.index + 1,
+      fragment: /\bhref\s*=\s*$/i.test(line.text.slice(0, m.index)),
+    })),
     ...[...line.text.matchAll(BARE_RE)].map((m) => {
       const value = m[1] ?? m[2] ?? "";
-      return { value, from: m.index + m[0].indexOf(value) };
+      return { value, from: m.index + m[0].indexOf(value), fragment: m[1] !== undefined };
     }),
   ];
-  for (const { value, from } of strings) {
-    if (col < from || col > from + value.length || !looksLikePath(value)) continue;
+  for (const { value, from, fragment } of strings) {
+    if (col < from || col > from + value.length || (!looksLikePath(value) && !(fragment && /^#[^\s]+$/.test(value))))
+      continue;
     return { kind: "path", from: line.from + from, to: line.from + from + value.length, value };
   }
   return null;
@@ -113,6 +119,13 @@ async function isFile(path: string): Promise<boolean> {
 /** Resolves a `path` reference (in the backend, like IDEA's file references); null when nothing exists there. */
 export async function resolvePath(ref: Reference, from: string): Promise<Reference | null> {
   if (ref.kind !== "path") return ref;
+  if (ref.value.startsWith("#")) {
+    try {
+      return { kind: "file", from: ref.from, to: ref.to, path: from, fragment: decodeURIComponent(ref.value.slice(1)) };
+    } catch {
+      return null;
+    }
+  }
   if (!isTauri()) return null;
   const path = await call(commands.fsResolveReference(from, ref.value)).catch(() => null);
   if (!path) return null;
@@ -142,7 +155,6 @@ export function fragmentOffset(text: string, path: string, fragment: string): nu
       if (h && slug(h[1]!) === fragment.toLowerCase()) return offset;
       offset += l.length + 1;
     }
-    return null;
   }
   const m = new RegExp(`\\b(?:id|name)\\s*=\\s*["']?${esc}(?=["'\\s>])`).exec(text);
   return m ? m.index : null;
@@ -168,7 +180,11 @@ export async function followReference(ref: Reference): Promise<void> {
   if (ref.kind !== "file") return;
   let selection: { line: number; col: number } | undefined;
   if (ref.fragment) {
-    const text = await call(commands.fsReadText(ref.path)).catch(() => null);
+    const text = await (
+      isVirtualUri(ref.path)
+        ? call(commands.lspVirtualDocument(ref.path)).then((doc) => doc.text)
+        : call(commands.fsReadText(ref.path))
+    ).catch(() => null);
     const offset = text === null ? null : fragmentOffset(text, ref.path, ref.fragment);
     if (text !== null && offset !== null) {
       const before = text.slice(0, offset);
@@ -191,7 +207,7 @@ export async function referenceAt(view: EditorView, doc: EditorDocContext, offse
     if (!ref || doc.virtual) return ref?.kind === "url" ? ref : null;
     return resolvePath(ref, doc.path);
   }
-  if (await isFile(link.path)) return link;
+  if (isVirtualUri(link.path) || (await isFile(link.path))) return link;
   // Servers resolve `/x` against the file system or workspace root; web roots (`public/`) are ours.
   const own = ref && !doc.virtual ? await resolvePath(ref, doc.path) : null;
   if (own) return own;

@@ -9,22 +9,25 @@ use serde_json::json;
 use std::ffi::OsString;
 use std::path::Path;
 
-pub(crate) const SERVER: &str = "astro-language-server";
-const COMMAND: &str = "astro-ls";
+pub(crate) const SERVER: &str = "astro-ls";
 
 fn has_typescript(lib: &Path) -> bool {
     lib.join("typescript.js").is_file() || lib.join("tsserverlibrary.js").is_file()
 }
 
 pub(crate) fn configure(cfg: &mut LanguageServerConfig, root: &Path, server_root: &Path, s: &Settings) {
-    let search = cfg.env.get("PATH").map_or_else(search_path, OsString::from);
+    let overrides = s.language_servers.get(SERVER);
+    let search = overrides
+        .and_then(|server| server.env.get("PATH"))
+        .or_else(|| cfg.env.get("PATH"))
+        .map_or_else(search_path, OsString::from);
     // A project's installation wins over managed / global tools. Explicit
     // executable settings still win, as they do for other language servers.
-    if cfg.command == COMMAND
+    if cfg.command == SERVER
         && let Some(bin) = server_root
             .ancestors()
             .take_while(|dir| dir.starts_with(root))
-            .find_map(|dir| find_command(COMMAND, dir.join("node_modules/.bin").as_os_str(), server_root))
+            .find_map(|dir| find_command(SERVER, dir.join("node_modules/.bin").as_os_str(), server_root))
     {
         cfg.command = bin.to_string_lossy().into_owned();
     }
@@ -36,17 +39,14 @@ pub(crate) fn configure(cfg: &mut LanguageServerConfig, root: &Path, server_root
     });
     if node.is_none() {
         cfg.launch_error = Some(
-            "Astro Language Server needs Node.js. Install Node.js and select its executable in \
-             Settings › Languages & Frameworks › Node.js."
+            "Astro Language Server needs Node.js. Install it or select its executable in Settings › Languages & Frameworks › Node.js."
                 .into(),
         );
         return;
     }
 
     // Respect an explicit initialization option before the shared SDK setting.
-    let explicit = s
-        .language_servers
-        .get(SERVER)
+    let explicit = overrides
         .and_then(|ls| ls.initialization_options.as_ref())
         .and_then(|v| v.pointer("/typescript/tsdk"))
         .and_then(|v| v.as_str())
@@ -59,7 +59,9 @@ pub(crate) fn configure(cfg: &mut LanguageServerConfig, root: &Path, server_root
             .as_str()
             .and_then(|p| setting_path(server_root, p))
     });
-    let selected = explicit.or_else(|| tsdk(server_root, s).or_else(|| tsdk(root, s)));
+    let selected = explicit.or_else(|| {
+        if s.languages.typescript.version.trim() == "workspace" { tsdk(server_root, s) } else { tsdk(root, s) }
+    });
     let lib = if let Some(lib) = selected {
         // An invalid explicit SDK is a settings error; silently using another
         // version would hide it. TypeScript 7 has no language-service API.
@@ -85,9 +87,7 @@ pub(crate) fn configure(cfg: &mut LanguageServerConfig, root: &Path, server_root
         Some(lib) => merge_init_options(cfg, json!({ "typescript": { "tsdk": lib.to_string_lossy() } })),
         None => {
             cfg.launch_error = Some(
-                "Astro Language Server needs TypeScript 5 or 6 (TypeScript 7 has no language-service API). \
-             Install typescript@6 in the project, reinstall Astro Language Server in Settings › Language Servers, \
-             or select a TypeScript lib directory in Settings › Languages & Frameworks › TypeScript."
+                "Astro Language Server needs a TypeScript language-service library. Install typescript@6 in the project or select a TypeScript lib directory in Settings."
                     .into(),
             )
         }
@@ -136,8 +136,9 @@ mod tests {
     #[test]
     fn project_sdk_then_managed_sdk_with_explicit_settings_winning() {
         let tmp = tempfile::tempdir().unwrap();
-        let t = tmp.path();
-        let bin = binary(&t.join("tools/node_modules/.bin"), COMMAND);
+        let root = dunce::canonicalize(tmp.path()).unwrap();
+        let t = root.as_path();
+        let bin = binary(&t.join("tools/node_modules/.bin"), SERVER);
         touch(&t.join("tools/node_modules/@astrojs/language-server/package.json"));
         let managed = t.join("tools/node_modules/typescript/lib");
         touch(&managed.join("typescript.js"));
@@ -162,32 +163,31 @@ mod tests {
     fn local_server_is_preferred_but_an_explicit_command_is_preserved() {
         let tmp = tempfile::tempdir().unwrap();
         let t = tmp.path();
-        let local = binary(&t.join("project/apps/web/node_modules/.bin"), COMMAND);
+        let local = binary(&t.join("project/apps/web/node_modules/.bin"), SERVER);
         touch(&t.join("project/node_modules/typescript/lib/typescript.js"));
-        let cfg = configured(t, Path::new(COMMAND), &Settings::default());
+        let cfg = configured(t, Path::new(SERVER), &Settings::default());
         assert_eq!(Path::new(&cfg.command), local);
         assert!(cfg.launch_error.is_none());
-        let custom = binary(&t.join("custom"), COMMAND);
+        let custom = binary(&t.join("custom"), SERVER);
         assert_eq!(Path::new(&configured(t, &custom, &Settings::default()).command), custom);
         // Existing global/project enable switches use the ordinary lifecycle.
         let mut s = Settings::default();
         s.language_servers.entry(SERVER.into()).or_default().enabled = false;
         assert!(language_servers("astro", &[config()], &s).is_empty());
-        assert_eq!(language_servers("html", &[], &s).len(), 0);
     }
 
     #[test]
     fn missing_node_or_typescript_is_actionable_and_missing_server_can_be_installed() {
         let tmp = tempfile::tempdir().unwrap();
         let t = tmp.path();
-        let bin = binary(&t.join("tools/node_modules/.bin"), COMMAND);
+        let bin = binary(&t.join("tools/node_modules/.bin"), SERVER);
         let mut cfg = config();
         cfg.command = bin.to_string_lossy().into_owned();
         cfg.env.insert("PATH".into(), String::new());
         configure(&mut cfg, t, t, &Settings::default());
         assert!(cfg.launch_error.unwrap().contains("Node.js"));
         let cfg = configured(t, &bin, &Settings::default());
-        assert!(cfg.launch_error.unwrap().contains("TypeScript 5 or 6"));
+        assert!(cfg.launch_error.unwrap().contains("TypeScript language-service library"));
         // A native TypeScript compiler is not a language-service library.
         touch(&t.join("project/node_modules/typescript/lib/tsc.js"));
         assert!(configured(t, &bin, &Settings::default()).launch_error.is_some());

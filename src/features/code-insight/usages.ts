@@ -1,10 +1,12 @@
 /** Find Usages (⌥F7 → "usages" tool window) and Show Usages (⌥⌘F7 → popup). */
 import { create } from "zustand";
-import type { ClassifiedReference, ReferenceAccess, ReferenceKind, Location, RequestId } from "@/bindings";
+import { Channel } from "@tauri-apps/api/core";
+import type { ClassifiedReference, ReferenceAccess, ReferenceKind, Location, References, RequestId } from "@/bindings";
 import { clearLineTokens } from "@/editor/lineTokens";
 import { incompleteNote } from "@/editor/lsp/lsp";
-import { commands, isCancelled, nextRequestId } from "@/platform/ipc";
-import { toolWindowService } from "@/workbench/contributions";
+import { commands, IpcError, isCancelled, nextRequestId } from "@/platform/ipc";
+import { shortcutLabel } from "@/platform/keymap";
+import { synchronizeDocumentIndexes, toolWindowService } from "@/workbench/contributions";
 import {
   caretContext,
   caretPoint,
@@ -49,7 +51,7 @@ export function groupUsages(
     const key = usageLocationKey(l);
     if (seen.has(key)) continue;
     seen.add(key);
-    const text = files.get(l.path)?.[l.range.start.line] ?? "";
+    const text = files.get(l.path)?.[l.range.start.line] ?? kinds.get(key)?.text ?? "";
     const endCol = l.range.end.line === l.range.start.line ? l.range.end.col : Math.max(text.length, l.range.start.col);
     let list = byPath.get(l.path);
     if (!list) byPath.set(l.path, (list = []));
@@ -86,6 +88,15 @@ export function trimPreview(u: Usage): { text: string; textCol: number; from: nu
   return { text, textCol: lead, from, to };
 }
 
+/** Project Files, or Project and Libraries (Java's dependency jars and JDK too). */
+export type UsageScope = "project" | "libraries";
+
+/** The scope a search ran in, when there was a choice (`null` when the server has none). */
+function searchedScope(libraries: boolean, librariesSkipped: boolean, widenable: boolean): UsageScope | null {
+  if (librariesSkipped) return "project";
+  return libraries && widenable ? "libraries" : null;
+}
+
 export interface UsageSearch {
   /** Identifies one search run (UI state such as expansion resets per run). */
   id: number;
@@ -97,6 +108,10 @@ export interface UsageSearch {
   note: string | null;
   /** Re-runs the same query (rerun button). */
   rerun: (() => void) | null;
+  /** Where it searched, when the server can search beyond Project Files (Java's jars and JDK). */
+  scope?: UsageScope | null;
+  /** Runs it again in Project and Libraries. */
+  searchLibraries?: (() => void) | null;
   /** Kept when a new search runs (Pin Tab). */
   pinned?: boolean;
 }
@@ -163,6 +178,10 @@ interface UsagesPopupState {
   symbol: string | null;
   groups: UsageGroup[];
   note: string | null;
+  /** Shows those found so far while the search goes on. */
+  loading: boolean;
+  /** Where it searched, when the server can search beyond Project Files. */
+  scope: UsageScope | null;
 }
 
 export const useUsagesPopup = create<UsagesPopupState>(() => ({
@@ -171,31 +190,67 @@ export const useUsagesPopup = create<UsagesPopupState>(() => ({
   symbol: null,
   groups: [],
   note: null,
+  loading: false,
+  scope: null,
 }));
 
 interface FetchedUsages {
   groups: UsageGroup[];
   note: string | null;
+  librariesSkipped: boolean;
+}
+
+/** Paths whose lines are read to show these usages: not those the server gave along. */
+function pathsToRead(locs: readonly Location[], classified: readonly ClassifiedReference[]): string[] {
+  const given = new Set(classified.filter((r) => r.text != null).map((r) => usageLocationKey(r.location)));
+  return locs.filter((l) => !given.has(usageLocationKey(l))).map((l) => l.path);
 }
 
 /**
  * The server's references across the project (files outside its analysis scope
  * included); when it is not ready or fails, the syntax fallback (an empty server
- * answer is respected). Without a fallback the server error stands.
+ * answer is respected). Without a fallback the server error stands. Without
+ * `libraries`, Java's dependencies and JDK are not searched (Project Files); with it,
+ * those found in the sources go to `onPartial` before the slower search for the rest.
  * Cancel with `commands.cancelRequest(request)`.
  */
-export async function fetchUsages(c: CaretContext, request: RequestId = nextRequestId()): Promise<FetchedUsages> {
+export async function fetchUsages(
+  c: CaretContext,
+  request: RequestId = nextRequestId(),
+  onPartial?: (found: FetchedUsages) => void,
+  libraries = false,
+): Promise<FetchedUsages> {
   // Usage lines are read afresh: so are the files their syntax colours come from.
   clearLineTokens();
+  const before = c.view?.state.doc;
   let locs: Location[];
   let classified: ClassifiedReference[] = [];
   let note: string | null = null;
+  let librariesSkipped = false;
+  await synchronizeDocumentIndexes(c.path);
+  if (c.view && c.view.state.doc !== before) throw new IpcError({ kind: "cancelled", message: "", data: null });
+  let settled = false;
+  const channel = new Channel<References>();
+  channel.onmessage = (refs) => {
+    if (!onPartial) return;
+    void readManyFileLines(pathsToRead(refs.locations, refs.classified ?? [])).then((files) => {
+      if (settled) return;
+      onPartial({
+        groups: groupUsages(refs.locations, files, refs.classified ?? []),
+        note: refs.incomplete ? incompleteNote(refs.incomplete, c.word) : null,
+        librariesSkipped: false,
+      });
+    });
+  };
   try {
     const refs = await lspRequest(() =>
-      commands.lspReferences(request, c.doc, { line: c.line, col: c.col }, false, true),
-    );
+      commands.lspReferences(request, c.doc, { line: c.line, col: c.col }, false, true, libraries, channel),
+    ).finally(() => {
+      settled = true;
+    });
     locs = refs.locations;
     classified = refs.classified ?? [];
+    librariesSkipped = refs.librariesSkipped ?? false;
     if (refs.incomplete) note = incompleteNote(refs.incomplete, c.word);
   } catch (e) {
     if (isCancelled(e)) throw e;
@@ -210,8 +265,8 @@ export async function fetchUsages(c: CaretContext, request: RequestId = nextRequ
     locs = fb.locs;
     note = fb.note;
   }
-  const files = await readManyFileLines(locs.map((l) => l.path));
-  return { groups: groupUsages(locs, files, classified), note };
+  const files = await readManyFileLines(pathsToRead(locs, classified));
+  return { groups: groupUsages(locs, files, classified), note, librariesSkipped };
 }
 
 /** In-flight server requests: of tool window searches by search id, and of the popup. */
@@ -231,7 +286,8 @@ export function resetUsages() {
   if (popupRequest !== null) void commands.cancelRequest(popupRequest).catch(() => {});
   popupRequest = null;
   useUsages.setState({ tabs: [], active: null });
-  useUsagesPopup.setState({ open: false, symbol: null, groups: [], note: null });
+  useUsagesPopup.setState({ open: false, symbol: null, groups: [], note: null, loading: false, scope: null });
+  popupTarget = null;
 }
 
 export async function findUsages() {
@@ -240,9 +296,15 @@ export async function findUsages() {
     hint("Open a file to find usages");
     return;
   }
-  const run = async (prev: number | null) => {
+  // `widenable`: an earlier run of this search skipped the libraries.
+  const run = async (prev: number | null, libraries: boolean, widenable: boolean) => {
     const id = ++searchSeq;
-    const base = { id, symbol: c.word, rerun: () => void run(id) };
+    const base = {
+      id,
+      symbol: c.word,
+      rerun: () => void run(id, libraries, widenable),
+      searchLibraries: () => void run(id, true, true),
+    };
     const loading = { ...base, loading: true, groups: [], error: null, note: null };
     if (prev !== null) cancelSearch(prev);
     if (prev === null || !replaceUsageTab(prev, loading)) openUsageTab(loading);
@@ -250,8 +312,16 @@ export async function findUsages() {
     const request = nextRequestId();
     inflight.set(id, request);
     try {
-      const { groups, note } = await fetchUsages(c, request);
-      replaceUsageTab(id, { ...base, loading: false, groups, error: null, note });
+      const { groups, note, librariesSkipped } = await fetchUsages(
+        c,
+        request,
+        (found) => {
+          if (inflight.get(id) === request) replaceUsageTab(id, { ...loading, groups: found.groups, note: found.note });
+        },
+        libraries,
+      );
+      const scope = searchedScope(libraries, librariesSkipped, widenable);
+      replaceUsageTab(id, { ...base, loading: false, groups, error: null, note, scope });
     } catch (e) {
       // Cancelled here (closed tab, rerun): a newer state already replaced it.
       if (isCancelled(e) && !inflight.has(id)) return;
@@ -262,7 +332,7 @@ export async function findUsages() {
       if (inflight.get(id) === request) inflight.delete(id);
     }
   };
-  await run(null);
+  await run(null, false, false);
 }
 
 /**
@@ -300,34 +370,101 @@ export function dismissUsagesPopup() {
   useUsagesPopup.setState({ open: false });
 }
 
+/** How long Show Usages waits for all usages before it shows those found first. */
+const EARLY_POPUP_DELAY_MS = 300;
+/** How long the hint after Show Usages stays (and invoking it again widens its search). */
+const HINT_MS = 4000;
+
+/**
+ * What the popup, or the hint after it, shows usages of: invoked again meanwhile, Show
+ * Usages searches it in Project and Libraries, wherever the caret is now.
+ */
+let popupTarget: { c: CaretContext; widenable: boolean; hintUntil: number } | null = null;
+
 export async function showUsagesPopup() {
+  const target = popupTarget;
+  const popup = useUsagesPopup.getState();
+  if (target?.widenable && ((popup.open && popup.scope === "project") || Date.now() < target.hintUntil)) {
+    await searchPopup(target.c, true, true);
+    return;
+  }
   const c = caretContext();
   if (!c) {
     hint("Open a file to show usages");
     return;
   }
+  await searchPopup(c, false, false);
+}
+
+/** The popup's scope chooser: searches its symbol again in `scope`. */
+export function setUsagesPopupScope(scope: UsageScope) {
+  const target = popupTarget;
+  if (!target || scope === useUsagesPopup.getState().scope) return;
+  void searchPopup(target.c, scope === "libraries", target.widenable);
+}
+
+async function searchPopup(c: CaretContext, libraries: boolean, widenable: boolean) {
+  // Set from the start: the scope chooser can switch while this search goes on.
+  popupTarget = { c, widenable, hintUntil: 0 };
+  const reopened = useUsagesPopup.getState().open;
+  if (reopened) useUsagesPopup.setState({ loading: true, scope: libraries ? "libraries" : "project" });
   if (popupRequest !== null) void commands.cancelRequest(popupRequest).catch(() => {});
   const request = nextRequestId();
   popupRequest = request;
+  // Opened with those found first when the rest take a while; it then stays open, even
+  // when they were all. A quick search still jumps to a single usage.
+  let early = false;
+  let found: FetchedUsages | null = null;
+  let timer: ReturnType<typeof setTimeout> | undefined;
+  const openEarly = () => {
+    if (popupRequest !== request || !found) return;
+    if (!early && !reopened) useUsagesPopup.setState({ open: true, anchor: caretPoint(), symbol: c.word });
+    early = true;
+    useUsagesPopup.setState({ ...found, loading: true, scope: widenable ? "libraries" : null });
+  };
+  const again = shortcutLabel("find.showUsages");
   try {
-    const { groups, note } = await fetchUsages(c, request);
+    const { groups, note, librariesSkipped } = await fetchUsages(
+      c,
+      request,
+      (partial) => {
+        if (!usageCount(partial.groups)) return;
+        found = partial;
+        if (early) openEarly();
+        else timer ??= setTimeout(openEarly, EARLY_POPUP_DELAY_MS);
+      },
+      libraries,
+    ).finally(() => clearTimeout(timer));
     if (popupRequest !== request) return;
+    const scope = searchedScope(libraries, librariesSkipped, widenable);
+    popupTarget = { c, widenable: widenable || scope !== null, hintUntil: 0 };
     const total = usageCount(groups);
+    if (early || reopened || total > 1) {
+      if (!early && !reopened) useUsagesPopup.setState({ open: true, anchor: caretPoint(), symbol: c.word });
+      useUsagesPopup.setState({ groups, note, loading: false, scope });
+      return;
+    }
+    // As in IDEA, the hint offers to widen the search, which Show Usages does while it shows.
+    const widen = scope === "project" && again !== "";
+    if (widen) popupTarget.hintUntil = Date.now() + HINT_MS;
     if (!total) {
-      const none = c.word ? `No usages of '${c.word}' found` : "No usages found";
-      hint(note ? `${none}. ${note}` : none);
+      if (widen) hint(`No usages found in Project Files. Press ${again} again to search in 'Project and Libraries'`);
+      else if (scope === "project") hint("No usages found in Project Files");
+      else {
+        const none = c.word ? `No usages of '${c.word}' found` : "No usages found";
+        hint(note ? `${none}. ${note}` : none);
+      }
       return;
     }
-    if (total === 1) {
-      // IDEA jumps to the only usage and says so in the target editor.
-      const u = groups[0]!.usages[0]!;
-      await openLocation(u.path, u.line, u.col);
-      hint("Only one usage in Project Files");
-      return;
-    }
-    useUsagesPopup.setState({ open: true, anchor: caretPoint(), symbol: c.word, groups, note });
+    // IDEA jumps to the only usage and says so in the target editor.
+    const u = groups[0]!.usages[0]!;
+    await openLocation(u.path, u.line, u.col);
+    if (widen) hint(`Only one usage in Project Files. Press ${again} again to search in 'Project and Libraries'`);
+    else if (scope === "libraries") hint("Only one usage in Project and Libraries");
+    else hint("Only one usage in Project Files");
   } catch (e) {
     if (popupRequest !== request || isCancelled(e)) return;
+    if (early || reopened) useUsagesPopup.setState({ loading: false });
     reportError(e);
   } finally {
     if (popupRequest === request) popupRequest = null;

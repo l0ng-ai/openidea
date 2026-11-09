@@ -10,15 +10,13 @@ import { defaultPreset, PRESET_TITLES } from "@/platform/keymap";
 import { useProject } from "@/platform/project";
 import { Checkbox, Select, type SelectOption, T } from "@/ui";
 import { notifications } from "@/workbench/contributions";
-import { ACCENT_PRESETS, DEFAULT_ACCENT } from "@/workbench/theme";
+import { ACCENT_PRESETS, DEFAULT_ACCENT, themeSelectOptions, useThemeChoices } from "@/workbench/theme";
 import { reopenEnabled, setReopenPreference, useSession } from "./session";
 import styles from "./Welcome.module.css";
-import { BUILTIN_THEMES, isBuiltinTheme, type BuiltinThemeId } from "@/platform/themes";
+import { isThemeChoiceId, type ThemeChoiceId } from "@/platform/themes";
 import { tx } from "@/platform/i18n";
 
-type Theme = BuiltinThemeId;
-
-export const THEME_OPTIONS: SelectOption<Theme>[] = BUILTIN_THEMES.map((t) => ({ value: t.id, label: t.label }));
+type Theme = ThemeChoiceId;
 
 const DEFAULT_UI_FONT_SIZE = 13;
 const DEFAULT_UI_FONT = "Inter";
@@ -50,7 +48,7 @@ interface AppearanceView {
 /** The values Customize shows, from (possibly partial / legacy) settings. */
 export function customizeView(settings: ReturnType<typeof useProject.getState>["settings"]): AppearanceView {
   const a = (settings?.appearance ?? {}) as Record<string, unknown>;
-  const theme = isBuiltinTheme(a.theme) ? a.theme : "light";
+  const theme = isThemeChoiceId(a.theme) ? a.theme : "light";
   const custom = a.useCustomFont === true;
   const size = typeof a.uiFontSize === "number" ? a.uiFontSize : DEFAULT_UI_FONT_SIZE;
   return {
@@ -98,6 +96,7 @@ export function CustomizePage() {
     );
   };
 
+  const themes = useThemeChoices();
   const keymaps = useMemo<SelectOption[]>(() => {
     const custom = (settings?.customKeymaps ?? {}) as Record<string, { name?: string }>;
     const list: SelectOption[] = Object.entries(PRESET_TITLES).map(([value, label]) => ({ value, label }));
@@ -112,7 +111,7 @@ export function CustomizePage() {
         <Field label="Theme">
           <Select<Theme>
             value={shown.theme}
-            options={THEME_OPTIONS}
+            options={themeSelectOptions(themes, shown.theme)}
             disabled={shown.syncWithOs}
             aria-label="Color theme"
             onChange={(t) => update("theme", t, () => setGlobalSetting("appearance.theme", t))}

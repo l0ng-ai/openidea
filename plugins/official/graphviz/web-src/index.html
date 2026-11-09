@@ -1,0 +1,25 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>Graphviz</title>
+    <link rel="stylesheet" href="./src/style.css" />
+  </head>
+  <body>
+    <div class="toolbar" role="toolbar" aria-label="Preview">
+      <select id="engine" title="Layout engine" aria-label="Layout engine"></select>
+      <span class="sep"></span>
+      <button id="zoom-out" title="Zoom out" aria-label="Zoom out">−</button>
+      <button id="zoom-reset" title="Actual size" aria-label="Actual size"><span id="zoom-label">100%</span></button>
+      <button id="zoom-in" title="Zoom in" aria-label="Zoom in">+</button>
+      <button id="zoom-fit" title="Fit to window" aria-label="Fit to window">Fit</button>
+      <span class="sep"></span>
+      <button id="export-svg" title="Export as SVG…">SVG</button>
+      <button id="export-png" title="Export as PNG…">PNG</button>
+    </div>
+    <div id="stage" class="stage"><div id="canvas" class="canvas"></div></div>
+    <div id="banner" class="banner" role="status" hidden></div>
+    <script type="module" src="./src/main.ts"></script>
+  </body>
+</html>

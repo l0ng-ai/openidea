@@ -43,7 +43,11 @@ export function VirtualBanner({
     <div className={`${styles.banner} ${styles.libraryBanner}`} role="status">
       <Icon name={decompiled ? "info" : "lock"} size={14} className={styles.bannerIcon} />
       <span className={styles.virtualBannerText}>
-        {decompiled ? tx("Decompiled .class file: sources are not available.") : tx("Library source (read-only).")}
+        {decompiled
+          ? path.startsWith("csharp:")
+            ? tx("Decompiled assembly (read-only).")
+            : tx("Decompiled .class file: sources are not available.")
+          : tx("Library source (read-only).")}
         {reason && ` ${tx(reason)}`}
       </span>
       {description && (

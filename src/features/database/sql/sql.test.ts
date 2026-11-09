@@ -1,8 +1,9 @@
 import { describe, expect, it } from "vitest";
-import type { DbCompletion } from "@/platform/ipc";
+import type { DbCompletion, DbDriver } from "@/platform/ipc";
 import { analyze, templateContexts, valuesSlot } from "./analyze";
 import { aliasFor, quoteIdent, sqlCandidates, type SqlCandidate } from "./complete";
-import { inLiteral, lex } from "./lexer";
+import { identName, inLiteral, lex } from "./lexer";
+import { DATA_TYPES, statementStarters } from "./dialect";
 import { bindParams, findParams } from "./params";
 import { SqlResolver } from "./resolve";
 
@@ -65,17 +66,13 @@ const model: DbCompletion = {
 };
 
 /** Analysis at the `|` of `sql`. */
-function at(sql: string, driver: "sqlite" | "postgres" | "mysql" = "sqlite") {
+function at(sql: string, driver: DbDriver = "sqlite") {
   const pos = sql.indexOf("|");
   const text = sql.slice(0, pos) + sql.slice(pos + 1);
   return analyze(text, pos, driver);
 }
 
-function complete(
-  sql: string,
-  driver: "sqlite" | "postgres" | "mysql" = "sqlite",
-  m: DbCompletion = model,
-): SqlCandidate[] {
+function complete(sql: string, driver: DbDriver = "sqlite", m: DbCompletion = model): SqlCandidate[] {
   return sqlCandidates({ model: m, analysis: at(sql, driver), driver, sourceName: "shop" }).sort(
     (a, b) => b.boost - a.boost,
   );
@@ -83,6 +80,14 @@ function complete(
 const labels = (c: SqlCandidate[], kind?: string) => c.filter((x) => !kind || x.kind === kind).map((x) => x.label);
 
 describe("lexer", () => {
+  it("reads ClickHouse backticks and escaped quotes without exposing literal parameters", () => {
+    const sql = String.raw`select "a\\b\"c", ` + "`my column`" + String.raw`, 'it\'s ?; text', ?`;
+    const tokens = lex(sql, "clickhouse").tokens;
+    expect(identName(tokens[1]!)).toBe('a\\b"c');
+    expect(tokens.filter((t) => t.kind === "quoted").map(identName)).toEqual(['a\\b"c', "my column"]);
+    expect(findParams(sql, "clickhouse").map((p) => p.name)).toEqual(["?1"]);
+  });
+
   it("skips comments and knows literals", () => {
     const l = lex("select 'a;b', \"Col\" -- c\nfrom t /* x */ where a::int = $1", "postgres");
     expect(l.tokens.map((t) => t.text)).toEqual([
@@ -164,9 +169,58 @@ describe("analysis", () => {
 });
 
 describe("completion candidates", () => {
+  it("keeps ClickHouse schema, table and column names distinct by case", () => {
+    const catalog: DbCompletion = {
+      defaultSchema: "analytics",
+      foreignKeys: [],
+      tables: [
+        { schema: "analytics", name: "Events", kind: "table", columns: [col("UpperOnly")] },
+        { schema: "analytics", name: "events", kind: "table", columns: [col("Value"), col("value")] },
+        { schema: "Analytics", name: "events", kind: "table", columns: [col("OtherSchema")] },
+      ],
+    };
+    expect(labels(complete("select e.| from events e", "clickhouse", catalog))).toEqual(["Value", "value"]);
+    expect(labels(complete("select e.| from Events e", "clickhouse", catalog))).toEqual(["UpperOnly"]);
+    expect(labels(complete("select e.| from Analytics.events e", "clickhouse", catalog))).toEqual(["OtherSchema"]);
+    const problems = (sql: string) => new SqlResolver(sql, "clickhouse", catalog).problems().map((p) => p.message);
+    expect(problems("select Value, value from events")).toEqual([]);
+    expect(problems("select VALUE from events")).toEqual(["Unable to resolve column 'VALUE'"]);
+    expect(problems("select UpperOnly from events")).toEqual(["Unable to resolve column 'UpperOnly'"]);
+    expect(problems("select OtherSchema from Analytics.events")).toEqual([]);
+    expect(problems("select OtherSchema from analytics.events")).toEqual(["Unable to resolve column 'OtherSchema'"]);
+    expect(
+      at("with Events as (select 1 as UpperOnly) select | from events e", "clickhouse").refs.find(
+        (ref) => ref.name === "events",
+      )?.kind,
+    ).toBe("table");
+  });
+
+  it("offers ClickHouse SQL and keeps case-sensitive function and type names", () => {
+    expect(statementStarters("clickhouse")).toEqual(expect.arrayContaining(["SHOW DATABASES", "ALTER TABLE"]));
+    expect(statementStarters("clickhouse")).not.toEqual(expect.arrayContaining(["BEGIN", "SET search_path TO"]));
+    expect(DATA_TYPES.clickhouse).toContain("UInt64");
+    expect(complete("SELECT | FROM users", "clickhouse").find((c) => c.label === "toDateTime")).toMatchObject({
+      snippet: "toDateTime(${})",
+    });
+    expect(quoteIdent('a\\b"c', "clickhouse")).toBe('"a\\\\b\\"c"');
+  });
+
   it("offers statement starters in the user's case", () => {
     expect(labels(complete("|"))).toContain("SELECT");
     expect(labels(complete("select 1; ins|"))).toContain("insert into");
+  });
+
+  it("offers Oracle vocabulary and quotes names the server folds to upper case", () => {
+    expect(statementStarters("oracle")).toEqual(expect.arrayContaining(["MERGE INTO", "TRUNCATE TABLE"]));
+    expect(statementStarters("oracle")).not.toContain("SET search_path TO");
+    expect(DATA_TYPES.oracle).toEqual(expect.arrayContaining(["VARCHAR2(255)", "NUMBER", "CLOB"]));
+    expect(complete("SELECT | FROM users", "oracle").find((c) => c.label === "NVL")).toMatchObject({
+      snippet: "NVL(${})",
+    });
+    // Upper-case names are plain; lower-case ones need quotes (the server folds unquoted names).
+    expect(quoteIdent("EMPLOYEES", "oracle")).toBe("EMPLOYEES");
+    expect(quoteIdent("employees", "oracle")).toBe('"employees"');
+    expect(quoteIdent('a"b', "oracle")).toBe('"a""b"');
   });
 
   it("offers tables after FROM, with schema and data source", () => {
@@ -388,6 +442,15 @@ describe("resolve", () => {
 });
 
 describe("params", () => {
+  it("binds whole ClickHouse typed parameters without treating their types as names", () => {
+    const sql = "select {value:UInt64}, {label: Nullable(String)}, '{skip:String}'";
+    const params = findParams(sql, "clickhouse");
+    expect(params.map((p) => p.name)).toEqual(["{value:UInt64}", "{label: Nullable(String)}"]);
+    expect(bindParams(sql, params, { "{value:UInt64}": "12", "{label: Nullable(String)}": "'test'" })).toBe(
+      "select 12, 'test', '{skip:String}'",
+    );
+  });
+
   it("finds parameters per dialect and binds values", () => {
     const names = (sql: string, driver: "sqlite" | "postgres" | "mysql" = "sqlite", n = 0) =>
       findParams(sql, driver, n).map((p) => p.name);

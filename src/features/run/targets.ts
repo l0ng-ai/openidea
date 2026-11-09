@@ -1,17 +1,22 @@
 /**
  * Run targets inside a file, for the gutter ▶ icons and "Run test" code lenses:
  * `fn main`, `#[test]` functions and `mod tests`, JS/TS `test`/`it`/`describe`,
- * pytest `def test_*` / `class Test*`, Go `func TestX(t *testing.T)`, JUnit `@Test`.
+ * pytest `def test_*` / `class Test*`, unittest `TestCase` subclasses, Go `func TestX(t *testing.T)`,
+ * JUnit `@Test`, Minitest / Test::Unit classes, modules holding them and `def test_*`.
  * Line-based regex detection (cheap, no parser), plus the run configuration for
  * one target derived from the project's detected test configurations.
  */
+import { goTargets } from "./goTargets";
+import { csharpTargets } from "./csharpTargets";
 import { formatArgs } from "./configs";
 import type { RunConfig } from "@/platform/ipc";
 import { applicationConfig, jvmTestConfig } from "./application";
 import { goTestParts, withoutGoSelection } from "./goArguments";
-import { contextConfig, testConfigFor } from "./context";
+import { contextConfig, relToCwd, testConfigFor } from "./context";
+import { djangoLabel, djangoTestsOf } from "./djangoTypes";
 import { scanJvmTargets, simpleClassName } from "./jvmTargets";
 import { escapeRegExp } from "./testing/rerun";
+import { pestFilter, phpunitArgs, phpunitFilter } from "./testing/phpunit";
 
 export type TargetKind = "main" | "test" | "suite" | "generate";
 
@@ -29,19 +34,27 @@ export interface RunTarget {
   className?: string;
   /** JVM: a `@SpringBootApplication` main class. */
   spring?: boolean;
+  /** Python: a unittest `TestCase` subclass or one of its methods (what Django's runner can run). */
+  unittest?: boolean;
+  /** Ruby: a `module` suite, which runs the tests of every class declared inside it. */
+  rubyModule?: boolean;
+  pest?: boolean;
 }
 
 /** Above this size we skip detection (generated / minified files). */
 export const MAX_SCAN = 400_000;
 
-type Lang = "rust" | "js" | "python" | "go" | "jvm" | null;
+type Lang = "rust" | "js" | "python" | "php" | "go" | "jvm" | "ruby" | "csharp" | null;
 
 export function targetLanguage(relPath: string): Lang {
+  if (/\.cs$/i.test(relPath)) return "csharp";
   if (/\.rs$/.test(relPath)) return "rust";
   if (/\.[cm]?[jt]sx?$/.test(relPath)) return "js";
   if (/\.py$/.test(relPath)) return "python";
+  if (/\.php$/.test(relPath)) return "php";
   if (/\.go$/.test(relPath)) return "go";
   if (/\.(java|kt|kts|scala|groovy)$/.test(relPath)) return "jvm";
+  if (/\.rb$/.test(relPath)) return "ruby";
   return null;
 }
 
@@ -140,25 +153,87 @@ function jsTargets(lines: string[]): RunTarget[] {
   return out;
 }
 
+/** PHPUnit: classes named `*Test` / extending `TestCase`, and `test*` methods or `#[Test]` / `@test` ones. */
+function phpTargets(lines: string[]): RunTarget[] {
+  const out: RunTarget[] = [];
+  let cls: string | null = null;
+  let marked = false;
+  for (let i = 0; i < lines.length; i++) {
+    const line = lines[i]!;
+    const c = /^\s*(?:final\s+|abstract\s+|readonly\s+)*class\s+(\w+)(?:\s+extends\s+([\w\\]+))?/.exec(line);
+    if (c) {
+      const test = /Test$|TestCase$/.test(c[1]!) || /TestCase$/.test(c[2] ?? "");
+      cls = test && !/^\s*abstract\b/.test(line) ? c[1]! : null;
+      if (cls) out.push({ line: i, kind: "suite", name: cls, path: [cls] });
+      marked = false;
+      continue;
+    }
+    if (!cls) continue;
+    if (/#\[\s*(?:\\?PHPUnit\\Framework\\Attributes\\)?Test\s*[\],(]|@test\b/.test(line)) {
+      marked = true;
+      continue;
+    }
+    const m = /^\s*public\s+(?:static\s+)?function\s+(\w+)\s*\(/.exec(line);
+    if (m && (marked || /^test/.test(m[1]!)))
+      out.push({ line: i, kind: "test", name: `${cls}::${m[1]}`, path: [cls, m[1]!] });
+    if (m || /^\s*(?:public|private|protected)\b/.test(line)) marked = false;
+  }
+  return out;
+}
+
+const PEST_RE = /^(\s*)(describe|test|it)\s*\(\s*(['"])((?:\\.|(?!\3).)*)\3/;
+
+function pestTargets(lines: string[]): RunTarget[] {
+  const out: RunTarget[] = [];
+  const stack: Array<{ indent: number; name: string }> = [];
+  for (let i = 0; i < lines.length; i++) {
+    const m = PEST_RE.exec(lines[i]!);
+    if (!m) continue;
+    const indent = indentOf(m[1]!);
+    while (stack.length && stack[stack.length - 1]!.indent >= indent) stack.pop();
+    const text = m[4]!.replace(m[3] === "'" ? /\\(['\\])/g : /\\(["\\$])/g, "$1");
+    const describes = stack.map((s) => s.name);
+    if (m[2] === "describe") {
+      const path = [...describes, text];
+      out.push({ line: i, kind: "suite", name: path.join(" → "), path, pest: true });
+      stack.push({ indent, name: text });
+    } else {
+      const path = [...describes, m[2] === "it" ? `it ${text}` : text];
+      out.push({ line: i, kind: "test", name: path.join(" → "), path, pest: true });
+    }
+  }
+  return out;
+}
+
 function pythonTargets(lines: string[]): RunTarget[] {
   const out: RunTarget[] = [];
-  const classes: Array<{ indent: number; name: string; test: boolean }> = [];
+  const classes: Array<{ indent: number; name: string; test: boolean; unittest: boolean }> = [];
   for (let i = 0; i < lines.length; i++) {
     const line = lines[i]!;
     if (!line.trim() || /^\s*#/.test(line)) continue;
     const indent = indentOf(line);
     while (classes.length && classes[classes.length - 1]!.indent >= indent) classes.pop();
-    const cls = /^\s*class\s+(\w+)/.exec(line);
+    const cls = /^\s*class\s+(\w+)\s*(?:\(([^)]*))?/.exec(line);
     if (cls) {
-      const test = /^Test/.test(cls[1]!) && classes.every((c) => c.test);
-      classes.push({ indent, name: cls[1]!, test });
-      if (test) out.push({ line: i, kind: "suite", name: cls[1]!, path: classes.map((c) => c.name) });
+      // pytest collects `Test*` classes; unittest (and Django) any `TestCase` subclass.
+      const unittest = /TestCase\b/.test(cls[2] ?? "");
+      const test = (/^Test/.test(cls[1]!) || unittest) && classes.every((c) => c.test);
+      classes.push({ indent, name: cls[1]!, test, unittest });
+      if (test)
+        out.push({
+          line: i,
+          kind: "suite",
+          name: cls[1]!,
+          path: classes.map((c) => c.name),
+          ...(unittest ? { unittest } : {}),
+        });
       continue;
     }
     const def = /^\s*(?:async\s+)?def\s+(test\w*)\s*\(/.exec(line);
     if (def && classes.every((c) => c.test)) {
       const path = [...classes.map((c) => c.name), def[1]!];
-      out.push({ line: i, kind: "test", name: path.join("."), path });
+      const unittest = classes.length > 0 && classes[classes.length - 1]!.unittest;
+      out.push({ line: i, kind: "test", name: path.join("."), path, ...(unittest ? { unittest } : {}) });
       continue;
     }
     if (indent === 0 && /^if\s+__name__\s*==\s*['"]__main__['"]\s*:/.test(line))
@@ -167,75 +242,51 @@ function pythonTargets(lines: string[]): RunTarget[] {
   return out;
 }
 
-/** `go test` reports subtest names with spaces as `_` (`t.Run("zero case")` → `TestX/zero_case`). */
-export const goSubtestName = (name: string) => name.replace(/\s/g, "_");
+/** A class that holds Minitest / Test::Unit tests: by its superclass or its name. */
+const isRubyTestClass = (name: string, superclass: string | undefined) =>
+  /(Test|TestCase|Spec)$/.test(superclass ?? "") || /Tests?(Case)?$/.test(name.split("::").pop()!);
 
-function goTargets(lines: string[]): RunTarget[] {
-  const out: RunTarget[] = [];
-  const isMain = lines.some((l) => /^package\s+main\b/.test(l));
+/**
+ * Minitest / Test::Unit: test classes, the modules that hold them (run together) and their
+ * `def test_*` methods (ActiveSupport's `test "does x" do` is `test_does_x`). Frames are tracked
+ * by indentation, as Python's are. Results name a class by its full name (`Outer::InnerTest`).
+ */
+function rubyTargets(lines: string[]): RunTarget[] {
+  const frames: Array<{ indent: number; name: string; test: boolean; at: number; hasTests: boolean }> = [];
+  const out: Array<RunTarget & { frame?: (typeof frames)[number] }> = [];
+  const fullName = () => frames.map((f) => f.name).join("::");
   for (let i = 0; i < lines.length; i++) {
     const line = lines[i]!;
-    if (/^\/\/go:generate[ \t]+\S/.test(line)) {
+    if (!line.trim() || /^\s*#/.test(line)) continue;
+    const indent = indentOf(line);
+    while (frames.length && frames[frames.length - 1]!.indent >= indent) frames.pop();
+    const decl = /^\s*(class|module)\s+([A-Z]\w*(?:::[A-Z]\w*)*)(?:\s*<\s*([\w:]+))?/.exec(line);
+    if (decl) {
+      const test = decl[1] === "class" && isRubyTestClass(decl[2]!, decl[3]);
+      const frame = { indent, name: decl[2]!, test, at: i, hasTests: false };
+      frames.push(frame);
       out.push({
         line: i,
-        kind: "generate",
-        name: line.replace(/^\/\/go:generate[ \t]+/, "").trim(),
-        path: [String(i)],
+        kind: "suite",
+        name: fullName(),
+        path: [fullName()],
+        ...(decl[1] === "module" ? { rubyModule: true } : {}),
+        frame,
       });
       continue;
     }
-    const t = /^func\s+(Test\w*|Benchmark\w*|Example\w*|Fuzz\w*)\s*\(\s*(?:\w+\s+\*testing\.[TFB])?\s*\)?/.exec(line);
-    if (t && (/^Example/.test(t[1]!) || /\*testing\.[TFB]/.test(line))) {
-      out.push({ line: i, kind: "test", name: t[1]!, path: [t[1]!] });
-      if (/\*testing\.[TB]\b/.test(line)) out.push(...goSubtests(lines, i, t[1]!));
-      continue;
+    const owner = frames[frames.length - 1];
+    if (!owner?.test) continue;
+    const method =
+      /^\s*def\s+(test_\w*[?!]?)/.exec(line)?.[1] ??
+      (/^\s*test\s*\(?\s*(["'])(.+?)\1/.exec(line)?.[2] ?? "").replace(/\s+/g, "_").replace(/^(?=.)/, "test_");
+    if (method && method !== "test_") {
+      for (const f of frames) f.hasTests = true;
+      out.push({ line: i, kind: "test", name: `${fullName()}#${method}`, path: [fullName(), method] });
     }
-    if (isMain && /^func\s+main\s*\(\s*\)/.test(line)) out.push({ line: i, kind: "main", name: "main", path: [] });
   }
-  return out;
-}
-
-/**
- * Subtests of the test function at `start` (GoLand's gutter on subtests and
- * table-driven tests): `t.Run("name", …)`, and table entries run with
- * `t.Run(tt.name, …)` (`{name: "…", …}`) or keyed by name
- * (`for name, tc := range cases { t.Run(name, …) }` over `"…": {…}`).
- */
-function goSubtests(lines: string[], start: number, test: string): RunTarget[] {
-  if (/\}\s*(?:\/\/.*)?$/.test(lines[start]!)) return [];
-  let end = start;
-  while (end + 1 < lines.length && !/^}/.test(lines[end]!)) end++;
-  const body = lines.slice(start + 1, end);
-  const out: RunTarget[] = [];
-  const add = (offset: number, name: string) => {
-    const sub = goSubtestName(name.replace(/\\(.)/g, "$1"));
-    if (!out.some((t) => t.path[1] === sub))
-      out.push({ line: start + 1 + offset, kind: "test", name: `${test}/${sub}`, path: [test, sub] });
-  };
-  const fields = new Set<string>();
-  const keys = new Set<string>();
-  body.forEach((l, i) => {
-    const lit = /\b\w+\.Run\(\s*"((?:[^"\\]|\\.)*)"\s*,/.exec(l);
-    if (lit) add(i, lit[1]!);
-    const field = /\b\w+\.Run\(\s*\w+\.(\w+)\s*,/.exec(l);
-    if (field) fields.add(field[1]!);
-    const key = /\b\w+\.Run\(\s*(\w+)\s*,/.exec(l);
-    if (key && body.slice(0, i).some((b) => new RegExp(`\\bfor\\s+${key[1]}\\s*,\\s*\\w+\\s*:=\\s*range\\b`).test(b)))
-      keys.add(key[1]!);
-  });
-  if (fields.size || keys.size) {
-    body.forEach((l, i) => {
-      for (const f of fields) {
-        const m = new RegExp(`\\b${f}\\s*:\\s*"((?:[^"\\\\]|\\\\.)*)"`).exec(l);
-        if (m) add(i, m[1]!);
-      }
-      if (keys.size) {
-        const m = /^\s*"((?:[^"\\]|\\.)*)"\s*:\s*\{/.exec(l);
-        if (m) add(i, m[1]!);
-      }
-    });
-  }
-  return out.sort((a, b) => a.line - b.line);
+  // A class or module that holds no tests is noise.
+  return out.filter((t) => t.kind !== "suite" || t.frame?.hasTests).map(({ frame: _frame, ...t }) => t);
 }
 
 /** Java / Kotlin: classes and methods with binary class names (see `jvmTargets.ts`). */
@@ -298,23 +349,38 @@ function jvmTargets(lines: string[], relPath: string): RunTarget[] {
   return out;
 }
 
-/** Run targets of a file (relative path picks the language). */
-export function detectRunTargets(text: string, relPath: string): RunTarget[] {
+/**
+ * Run targets of a file (relative path picks the language). `django`: a Django project, where
+ * `tests.py` (Django's default test module) holds tests too.
+ */
+export function detectRunTargets(text: string, relPath: string, django = false): RunTarget[] {
   if (text.length > MAX_SCAN) return [];
   const lines = text.split("\n");
   switch (targetLanguage(relPath)) {
+    case "csharp":
+      return csharpTargets(text);
     case "rust":
       return rustTargets(lines, relPath);
     case "js":
       return /\.(test|spec)\.[cm]?[jt]sx?$|(^|\/)__tests__\//.test(relPath) ? jsTargets(lines) : [];
     case "python":
       return pythonTargets(lines).filter(
-        (t) => t.kind === "main" || /(^|\/)(test_[^/]*|[^/]*_test)\.py$|(^|\/)tests?\//.test(relPath),
+        (t) =>
+          t.kind === "main" ||
+          /(^|\/)(test_[^/]*|[^/]*_test)\.py$|(^|\/)tests?\//.test(relPath) ||
+          (django && /(^|\/)tests\.py$/.test(relPath)),
       );
+    case "php":
+      return /Test\.php$|(^|\/)tests?\//.test(relPath)
+        ? [...phpTargets(lines), ...pestTargets(lines)].sort((a, b) => a.line - b.line)
+        : [];
     case "go":
-      return goTargets(lines).filter((t) => t.kind === "main" || t.kind === "generate" || /_test\.go$/.test(relPath));
+      return goTargets(text).filter((t) => t.kind === "main" || t.kind === "generate" || /_test\.go$/.test(relPath));
     case "jvm":
       return /\.(java|kts?)$/.test(relPath) ? javaKotlinTargets(text, relPath) : jvmTargets(lines, relPath);
+    case "ruby":
+      // RSpec files (`spec/`) are not Minitest.
+      return /(^|\/)test_[^/]*\.rb$|_test\.rb$|(^|\/)tests?\//.test(relPath) ? rubyTargets(lines) : [];
     default:
       return [];
   }
@@ -347,7 +413,7 @@ export function targetConfig(
       return applicationConfig({ className: target.className, spring: target.spring }, relPath, configs);
     return contextConfig(relPath, configs, content);
   }
-  const file = testConfigFor(relPath, configs, base);
+  const file = testConfigFor(relPath, configs, base, content);
   if (!file) return null;
   if (target.className && (file.kind === "maven" || file.kind === "gradle"))
     return jvmTestConfig(
@@ -365,6 +431,15 @@ export function targetConfig(
     detected: true,
   });
   switch (file.kind) {
+    case "dotnet-test": {
+      const methods =
+        target.kind === "suite" && content
+          ? csharpTargets(content)
+              .filter((t) => t.kind === "test" && t.path[0] === target.path[0])
+              .map((t) => t.path.join("."))
+          : [target.path.join(".")];
+      return { ...named(file.args), params: { ...file.params, testMethods: JSON.stringify(methods) } };
+    }
     case "npm":
     case "bun":
     case "deno":
@@ -372,6 +447,22 @@ export function targetConfig(
     case "pytest":
     case "python":
       return named(withLast(file.args, (f) => `${f}::${target.path.join("::")}`));
+    case "phpunit": {
+      const [cls, method] = [target.path[0]!, target.path[1]];
+      const filter = !target.pest
+        ? phpunitFilter([method ? [cls, method] : [cls]])
+        : target.kind === "suite"
+          ? pestFilter(target.path)
+          : pestFilter(target.path.slice(0, -1), target.path[target.path.length - 1]);
+      return named(phpunitArgs(file.args, { target: relToCwd(relPath, file), filter }));
+    }
+    case "django-test": {
+      // unittest's loader would call a module-level `test_*` function (or a plain class) to build the suite.
+      if (!target.unittest) return null;
+      const label = [djangoLabel(relToCwd(relPath, file)), ...target.path].join(".");
+      const tests = djangoTestsOf(file, [label]);
+      return tests ? { ...named(tests.args), ...(tests.params ? { params: tests.params } : {}) } : null;
+    }
     case "go": {
       const pattern = `^${target.path.map(escapeRegExp).join("$/^")}$`;
       const benchmark = target.path[0]?.startsWith("Benchmark");
@@ -382,15 +473,27 @@ export function targetConfig(
         ...withoutGoSelection(parts.flags),
         ...parts.targets,
         ...selection,
-        ...parts.program,
+        ...withoutGoSelection(parts.program),
       ]);
       if (file.params?.goKind)
         result.params = {
           ...file.params,
           pattern: benchmark ? "^$" : pattern,
           toolArgs: formatArgs([...withoutGoSelection(parts.flags), ...(benchmark ? ["-bench", pattern] : [])]),
+          programArgs: formatArgs(withoutGoSelection(parts.program).slice(1)),
         };
       return result;
+    }
+    case "rake":
+    case "ruby": {
+      // Minitest's `--name=`: `Class#test_x` names one test exactly, a regexp (no `$`, which a shell would
+      // eat) the rest. The `=` form is one argument: rake's test loader would `require` the value of `-n x`.
+      const full = target.path[0]!;
+      const pattern =
+        target.kind === "test" ? `${full}#${target.path[1]}` : target.rubyModule ? `/^${full}::/` : `/^${full}#/`;
+      return file.kind === "rake"
+        ? named([...file.args, `TESTOPTS=--name=${pattern}`])
+        : named([...file.args, `--name=${pattern}`]);
     }
     case "cargo": {
       const path = target.path.join("::");

@@ -1,0 +1,55 @@
+package openidea:plugin@1.4.0;
+
+/// Files outside the open projects: the configuration of the program a
+/// plugin integrates with, a tool installed elsewhere, a licence file.
+///
+/// A plugin's own WASI has no preopened directory. Every path outside its
+/// own `plugin-dir` is checked against its `fs.read:<path>` (reading) or
+/// `fs.write:<path>`
+/// (writing; it doesn't imply reading) grants; without one covering the path a
+/// call returns `denied` naming the capability the manifest has to declare. A
+/// file inside a project is `workspace.project.read-file` / `write-file`.
+/// `path` is absolute, or starts with `~/` for the user's home.
+interface fs {
+    use types.{error};
+    use workspace.{file-kind, file-stat};
+
+    /// The plugin's persistent private directory, created owner-only (0700,
+    /// owner-only ACL on Windows), removed on uninstall. Reading and writing
+    /// under it needs no fs.* grant; files created there are owner-only.
+    plugin-dir: func() -> result<string, error>;
+
+    /// A text file, decoded as the editor decodes it (BOM and encoding
+    /// detection), at most 16 MiB. Unsaved editor contents win, as they do
+    /// for `project.read-file`.
+    read-file: func(path: string) -> result<string, error>;
+
+    /// The bytes of a file (images, class files, archives), at most 16 MiB.
+    read-bytes: func(path: string) -> result<list<u8>, error>;
+
+    /// Metadata of an existing path, as `project.stat` reports it; a missing
+    /// path is `not-found`.
+    stat: func(path: string) -> result<file-stat, error>;
+
+    /// An entry of a directory.
+    record dir-entry {
+        /// The entry's name, without its directory.
+        name: string,
+        kind: file-kind,
+    }
+
+    /// The entries directly under a directory, sorted by name, at most 4096
+    /// (like `find-files`); a file is `invalid`.
+    read-dir: func(path: string) -> result<list<dir-entry>, error>;
+
+    /// Replaces the text of a file, or creates it, at most 16 MiB: in one step
+    /// (a reader never sees half of it), keeping the file's encoding and BOM;
+    /// a new file is UTF-8. `invalid` when the text can't be written in that
+    /// encoding, the directory is missing, the path is a directory, or an
+    /// editor holds unsaved changes for the file (save them first).
+    write-file: func(path: string, text: string) -> result<_, error>;
+
+    /// Replaces the bytes of a file, or creates it, at most 16 MiB, in one
+    /// step; fails like `write-file`.
+    write-bytes: func(path: string, bytes: list<u8>) -> result<_, error>;
+}

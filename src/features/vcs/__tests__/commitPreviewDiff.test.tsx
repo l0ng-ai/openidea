@@ -1,0 +1,248 @@
+import { act, fireEvent, render, screen } from "@testing-library/react";
+import { beforeEach, describe, expect, it, vi } from "vitest";
+import type { EditorInput } from "@/workbench/contributions";
+
+const editor = vi.hoisted(() => ({
+  input: null as EditorInput | null,
+  follow: null as ((input: EditorInput | null) => void) | null,
+}));
+beforeEach(() => {
+  editor.input = null;
+  editor.follow = null;
+});
+
+vi.mock("@/workbench/contributions", async (original) => ({
+  ...(await original<typeof import("@/workbench/contributions")>()),
+  maybeEditorService: () => ({
+    activeInput: () => editor.input,
+    onActiveInputChange: (follow: typeof editor.follow) => {
+      editor.follow = follow;
+      return () => {
+        editor.follow = null;
+      };
+    },
+  }),
+}));
+
+vi.mock("@/platform/ipc", async (importOriginal) => {
+  const real = await importOriginal<typeof import("@/platform/ipc")>();
+  return { ...real, call: vi.fn() };
+});
+
+vi.mock("../DiffEditor", () => ({
+  DiffEditor: ({ input }: { input: { data: { path: string } } }) => (
+    <div data-testid="diff-preview" data-path={input.data.path} />
+  ),
+}));
+
+const openDiff = vi.hoisted(() => vi.fn());
+vi.mock("../diffInput", async (original) => ({
+  ...(await original<typeof import("../diffInput")>()),
+  openDiff,
+}));
+
+import { CommitToolWindow } from "../CommitView";
+import { setCommitDiffPreview, useCommit } from "../commitStore";
+import { diffInput, workingDiffData } from "../diffInput";
+import { useVcs } from "../store";
+
+/** The splitter between the changes and the preview: the only vertical one in the layout. */
+const previewHandle = () =>
+  screen.queryAllByRole("separator").find((s) => s.getAttribute("aria-orientation") === "vertical");
+
+const modified = (path: string) => ({
+  path,
+  relPath: path.slice(3),
+  staged: null,
+  unstaged: "modified" as const,
+  renamedFrom: null,
+});
+
+/** Selects the tree's first file the way a user does, so the tree's own state moves too. */
+function selectFirstFile() {
+  const tree = screen.getByRole("tree", { name: "Changes" });
+  tree.focus();
+  fireEvent.keyDown(tree, { key: "Home" });
+  fireEvent.keyDown(tree, { key: "ArrowDown" });
+}
+
+describe("Commit tool window Preview Diff (#1599)", () => {
+  beforeEach(() => {
+    localStorage.clear();
+    openDiff.mockClear();
+    useCommit.setState({ commitDiffPreview: false, selection: [] });
+    useVcs.setState({ available: true, root: "/p", repo: "/p", roots: ["/p"], status: [] });
+  });
+
+  it("offers a Preview Diff toggle in the changes toolbar, off by default", () => {
+    render(<CommitToolWindow />);
+    const toggle = screen.getByRole("button", { name: "Preview Diff" });
+    expect(toggle).toHaveAttribute("aria-pressed", "false");
+    expect(screen.queryByTestId("diff-preview")).toBeNull();
+  });
+
+  it("shows an embedded diff pane beside the changes when enabled", () => {
+    useVcs.setState({ status: [modified("/p/a.ts")] });
+    render(<CommitToolWindow />);
+    selectFirstFile();
+    act(() => setCommitDiffPreview(true));
+    // Side by side with the changes: the splitter between the panels is vertical.
+    expect(previewHandle()).toBeTruthy();
+    expect(screen.getByTestId("diff-preview")).toHaveAttribute("data-path", "/p/a.ts");
+    expect(screen.getByPlaceholderText("Commit Message")).toBeTruthy();
+  });
+
+  it("previews the selected file and follows the selection", () => {
+    useVcs.setState({ status: ["a.ts", "b.ts"].map((name) => modified(`/p/${name}`)) });
+    render(<CommitToolWindow />);
+    act(() => setCommitDiffPreview(true));
+    expect(screen.getByText("Select a file to preview its changes")).toBeTruthy();
+    selectFirstFile();
+    expect(screen.getByTestId("diff-preview")).toHaveAttribute("data-path", "/p/a.ts");
+    const tree = screen.getByRole("tree", { name: "Changes" });
+    fireEvent.keyDown(tree, { key: "ArrowDown" });
+    expect(screen.getByTestId("diff-preview")).toHaveAttribute("data-path", "/p/b.ts");
+    fireEvent.keyDown(tree, { key: "ArrowUp" });
+    expect(screen.getByTestId("diff-preview")).toHaveAttribute("data-path", "/p/a.ts");
+  });
+
+  it("keeps the files list and the commit message accessible while the preview is open", () => {
+    useVcs.setState({ status: [modified("/p/a.ts")] });
+    render(<CommitToolWindow />);
+    selectFirstFile();
+    act(() => setCommitDiffPreview(true));
+    expect(screen.getByTestId("diff-preview")).toBeTruthy();
+    expect(screen.getByRole("tree", { name: "Changes" })).toBeTruthy();
+    expect(screen.getByPlaceholderText("Commit Message")).toBeTruthy();
+    expect(screen.getByRole("button", { name: "Commit" })).toBeTruthy();
+  });
+
+  it("offers a resize handle between the changes and the preview", () => {
+    useVcs.setState({ status: [modified("/p/a.ts")] });
+    render(<CommitToolWindow />);
+    selectFirstFile();
+    act(() => setCommitDiffPreview(true));
+    const handle = previewHandle();
+    expect(handle).toBeTruthy();
+    expect(handle!.getAttribute("aria-valuenow")).not.toBeNull();
+    // Resizing moves the boundary and keeps both sides rendered.
+    fireEvent.keyDown(handle!, { key: "ArrowLeft" });
+    expect(screen.getByTestId("diff-preview")).toBeTruthy();
+    expect(screen.getByRole("tree", { name: "Changes" })).toBeTruthy();
+  });
+
+  it("hides the pane when disabled and persists the toggle state", () => {
+    useVcs.setState({ status: [modified("/p/a.ts")] });
+    render(<CommitToolWindow />);
+    selectFirstFile();
+    const toggle = screen.getByRole("button", { name: "Preview Diff" });
+    act(() => toggle.click());
+    expect(useCommit.getState().commitDiffPreview).toBe(true);
+    expect(localStorage.getItem("openidea.vcs.commitDiffPreview")).toBe("true");
+    expect(screen.getByTestId("diff-preview")).toHaveAttribute("data-path", "/p/a.ts");
+    act(() => toggle.click());
+    expect(useCommit.getState().commitDiffPreview).toBe(false);
+    expect(localStorage.getItem("openidea.vcs.commitDiffPreview")).toBe("false");
+    expect(screen.queryByTestId("diff-preview")).toBeNull();
+    expect(previewHandle()).toBeUndefined();
+    // The tree keeps its selection across the toggling.
+    expect(screen.getByText("a.ts").closest('[role="treeitem"]')).toHaveAttribute("aria-selected", "true");
+  });
+
+  it("shows an empty state until exactly one file is selected", () => {
+    useVcs.setState({ status: ["a.ts", "b.ts"].map((name) => modified(`/p/${name}`)) });
+    render(<CommitToolWindow />);
+    act(() => setCommitDiffPreview(true));
+    expect(screen.getByText("Select a file to preview its changes")).toBeTruthy();
+    act(() => useCommit.setState({ selection: ["/p/a.ts", "/p/b.ts"] }));
+    expect(screen.getByText("Select a file to preview its changes")).toBeTruthy();
+  });
+
+  it("shows an empty state when there are no changes to preview", () => {
+    render(<CommitToolWindow />);
+    act(() => setCommitDiffPreview(true));
+    expect(screen.getByText("No changes to preview")).toBeTruthy();
+    expect(screen.queryByTestId("diff-preview")).toBeNull();
+  });
+});
+
+it("follows the active working diff without following other revisions or taking focus", () => {
+  useCommit.setState({ commitDiffPreview: false, selection: [] });
+  useVcs.setState({
+    available: true,
+    root: "/p",
+    repo: "/p",
+    roots: ["/p"],
+    status: [modified("/p/a.ts"), modified("/p/b.ts")],
+  });
+  render(<CommitToolWindow />);
+  const message = screen.getByPlaceholderText("Commit Message");
+  message.focus();
+  act(() => editor.follow?.(diffInput(workingDiffData("/p/b.ts"))));
+  expect(useCommit.getState().selection).toEqual(["/p/b.ts"]);
+  expect(screen.getByRole("treeitem", { name: /b.ts/ })).toHaveAttribute("aria-selected", "true");
+  expect(document.activeElement).toBe(message);
+  act(() =>
+    editor.follow?.(
+      diffInput({ path: "/p/a.ts", left: { type: "rev", rev: "old" }, right: { type: "rev", rev: "new" } }),
+    ),
+  );
+  expect(useCommit.getState().selection).toEqual(["/p/b.ts"]);
+});
+
+describe("following the active diff across Git status refreshes", () => {
+  beforeEach(() => {
+    editor.input = diffInput(workingDiffData("/p/b.ts"));
+    useCommit.setState({ commitDiffPreview: false, selection: [], groupByDir: false, groupByStaging: false });
+    useVcs.setState({
+      available: true,
+      root: "/p",
+      repo: "/p",
+      roots: ["/p"],
+      status: [modified("/p/a.ts"), modified("/p/b.ts")],
+    });
+  });
+
+  it("keeps a manually selected file when status refreshes with the same active diff", () => {
+    render(<CommitToolWindow />);
+    expect(useCommit.getState().selection).toEqual(["/p/b.ts"]);
+    selectFirstFile();
+    expect(useCommit.getState().selection).toEqual(["/p/a.ts"]);
+    act(() => useVcs.setState({ status: [modified("/p/a.ts"), modified("/p/b.ts")] }));
+    expect(useCommit.getState().selection).toEqual(["/p/a.ts"]);
+    act(() => editor.follow?.(editor.input));
+    expect(useCommit.getState().selection).toEqual(["/p/a.ts"]);
+  });
+
+  it("keeps a manually collapsed group across status refreshes", () => {
+    render(<CommitToolWindow />);
+    const tree = screen.getByRole("tree", { name: "Changes" });
+    tree.focus();
+    fireEvent.keyDown(tree, { key: "Home" });
+    fireEvent.keyDown(tree, { key: "ArrowLeft" });
+    expect(tree.querySelector('[role="treeitem"][aria-expanded="false"]')).toBeTruthy();
+    expect(screen.queryByRole("treeitem", { name: /b.ts/ })).toBeNull();
+    act(() => useVcs.setState({ status: [modified("/p/a.ts"), modified("/p/b.ts")] }));
+    expect(screen.queryByRole("treeitem", { name: /b.ts/ })).toBeNull();
+  });
+
+  it.each([
+    null,
+    diffInput({ path: "/p/b.ts", left: { type: "rev", rev: "old" }, right: { type: "rev", rev: "new" } }),
+  ])("follows the same diff again after switching away from it (%#)", (other) => {
+    render(<CommitToolWindow />);
+    selectFirstFile();
+    act(() => editor.follow?.(other));
+    act(() => editor.follow?.(editor.input));
+    expect(useCommit.getState().selection).toEqual(["/p/b.ts"]);
+  });
+});
+
+it("follows a newly opened diff when its Git status arrives later", () => {
+  editor.input = diffInput(workingDiffData("/p/new.ts"));
+  useCommit.setState({ commitDiffPreview: false, selection: [] });
+  useVcs.setState({ available: true, root: "/p", repo: "/p", roots: ["/p"], status: [] });
+  render(<CommitToolWindow />);
+  act(() => useVcs.setState({ status: [modified("/p/new.ts")] }));
+  expect(useCommit.getState().selection).toEqual(["/p/new.ts"]);
+});

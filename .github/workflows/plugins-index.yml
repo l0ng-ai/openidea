@@ -1,0 +1,48 @@
+name: Plugin index
+
+# Refreshes the community plugins in the latest release's plugins-index.json
+# (what released apps read) from the registry, l0ng-ai/openidea-plugins. The
+# official plugins, their key and revocations stay as the release wrote them.
+on:
+  schedule:
+    - cron: "17 * * * *"
+  workflow_dispatch:
+  # Sent by the registry when its index changes.
+  repository_dispatch:
+    types: [community-plugins]
+
+permissions:
+  contents: write
+
+concurrency:
+  group: plugins-index
+
+env:
+  COMMUNITY_PLUGINS_INDEX: https://github.com/l0ng-ai/openidea-plugins/releases/download/index/index.json
+
+jobs:
+  merge:
+    # The schedule is for this repository's release; forks can still run it by hand.
+    if: github.event_name != 'schedule' || github.repository == 'l0ng-ai/openidea'
+    runs-on: ubuntu-latest
+    steps:
+      - name: Merge the community index
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          set -euo pipefail
+          cd "$RUNNER_TEMP"
+          tag="$(gh release view --repo "$GITHUB_REPOSITORY" --json tagName -q .tagName)"
+          tool=openidea-plugin-linux-x86_64
+          if ! gh release download "$tag" --repo "$GITHUB_REPOSITORY" -p plugins-index.json -p "$tool.gz"; then
+            echo "::notice::$tag has no plugin index or openidea-plugin tool yet"
+            exit 0
+          fi
+          gunzip "$tool.gz" && chmod +x "$tool"
+          cp plugins-index.json before.json
+          "./$tool" merge plugins-index.json "$COMMUNITY_PLUGINS_INDEX" --keep openidea
+          if cmp -s before.json plugins-index.json; then
+            echo "unchanged"
+          else
+            gh release upload "$tag" plugins-index.json --repo "$GITHUB_REPOSITORY" --clobber
+          fi

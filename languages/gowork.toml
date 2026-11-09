@@ -3,6 +3,7 @@ name = "Go Workspace"
 filenames = ["go.work"]
 line-comment = "//"
 indent = { tab-size = 4, insert-spaces = false }
+ui-mode = "GoMod"
 
 [[language-servers]]
 name = "gopls"

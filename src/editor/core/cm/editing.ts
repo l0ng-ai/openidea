@@ -659,7 +659,7 @@ export function completeStatement(language: string): Command {
 
 // --- comments ------------------------------------------------------------------------
 
-export { commentLine } from "./comments";
+export { commentBlock, commentLine } from "./comments";
 
 // --- smart keys ------------------------------------------------------------------
 

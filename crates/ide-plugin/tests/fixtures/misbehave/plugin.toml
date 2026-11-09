@@ -1,7 +1,107 @@
 id = "misbehave"
 name = "Misbehave"
-version = "0.0.1"
-description = "Test fixture: traps, spins, allocates, probes permissions."
-openidea-api = "0.1"
+version = "0.0.2"
+description = "Test fixture: traps, spins, allocates, probes capabilities."
+engines.openidea = "^1.0"
 wasm = "dist/plugin.wasm"
-permissions = ["project-read"]
+activation = ["on-command:*"]
+
+[capabilities]
+required = ["project.read"]
+optional = ["process:git"]
+
+[[contributes.commands]]
+id = "echo"
+title = "echo"
+
+[[contributes.commands]]
+id = "panic"
+title = "panic"
+
+[[contributes.commands]]
+id = "spin"
+title = "spin"
+
+[[contributes.commands]]
+id = "alloc"
+title = "alloc"
+
+[[contributes.commands]]
+id = "read"
+title = "read"
+
+[[contributes.commands]]
+id = "root"
+title = "root"
+
+[[contributes.commands]]
+id = "fsread"
+title = "fsread"
+
+[[contributes.commands]]
+id = "read-dir"
+title = "List a directory outside the project"
+
+[[contributes.commands]]
+id = "fswrite"
+title = "fswrite"
+
+[[contributes.commands]]
+id = "projwrite"
+title = "projwrite"
+
+[[contributes.commands]]
+id = "insert"
+title = "insert"
+
+[[contributes.commands]]
+id = "cancel"
+title = "cancel"
+
+[[contributes.commands]]
+id = "subscribe"
+title = "subscribe"
+
+[[contributes.commands]]
+id = "diagnose"
+title = "diagnose"
+
+[[contributes.commands]]
+id = "child"
+title = "child"
+
+[[contributes.commands]]
+id = "envrun"
+title = "envrun"
+
+[[contributes.commands]]
+id = "envstart"
+title = "envstart"
+
+[[contributes.commands]]
+id = "envdeny-run"
+title = "envdeny-run"
+
+[[contributes.commands]]
+id = "envdeny-start"
+title = "envdeny-start"
+
+[[contributes.commands]]
+id = "childkeep"
+title = "childkeep"
+
+[[contributes.commands]]
+id = "childpoll"
+title = "childpoll"
+
+[[contributes.commands]]
+id = "childdrop"
+title = "childdrop"
+
+[[contributes.commands]]
+id = "childtrap"
+title = "childtrap"
+
+[[contributes.commands]]
+id = "patient"
+title = "patient"

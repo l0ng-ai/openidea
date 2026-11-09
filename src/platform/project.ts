@@ -1,6 +1,7 @@
 /** The project open in this window. */
 import { confirmProjectTrust } from "./projectTrust";
 import { create } from "zustand";
+import { setContext } from "./context";
 import { call, commands, type ProjectInfo, type Settings } from "./ipc";
 import { isVirtualUri, virtualContainer, virtualName, virtualParent } from "./virtualDocs";
 
@@ -9,6 +10,7 @@ interface ProjectState {
   /** Effective settings (project-layered when a project is open). */
   settings: Settings | null;
   opening: boolean;
+  openingPath: string | null;
   /** LightEdit: this window edits loose files without a project (`project` stays null). */
   lightEdit: boolean;
 }
@@ -17,8 +19,11 @@ export const useProject = create<ProjectState>(() => ({
   project: null,
   settings: null,
   opening: false,
+  openingPath: null,
   lightEdit: false,
 }));
+
+useProject.subscribe((s) => setContext("projectOpening", s.openingPath !== null));
 
 let leaveGuard: (() => Promise<boolean>) | null = null;
 
@@ -50,13 +55,21 @@ export function startupLaunchHandled(): Promise<void> {
 
 export async function openProject(path: string): Promise<ProjectInfo> {
   await confirmProjectTrust(path, "local");
-  useProject.setState({ opening: true });
+  useProject.setState({ opening: true, openingPath: path });
   try {
     const project = await call(commands.openProject(path));
     useProject.setState({ project, settings: project.settings, lightEdit: false });
     return project;
+  } catch (error) {
+    // Opening may fail after the backend has already closed the old project.
+    if (useProject.getState().project) {
+      const project = await commands.projectCurrent().catch(() => null);
+      if (project?.root !== useProject.getState().project?.root)
+        useProject.setState({ project, ...(project ? { settings: project.settings } : {}), lightEdit: false });
+    }
+    throw error;
   } finally {
-    useProject.setState({ opening: false });
+    useProject.setState({ opening: false, openingPath: null });
   }
 }
 

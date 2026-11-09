@@ -1,9 +1,10 @@
 /**
  * Dependency Analyzer model: the artifacts of a Maven module's dependency tree
  * (read with `dependency:tree -Dverbose`, so it also lists the occurrences Maven
- * omitted), which of them conflict, and every path that brings them in.
+ * omitted) or of a Gradle configuration (`dependencies` report), which of them
+ * conflict, and every path that brings them in.
  */
-import type { ArtifactKey, MavenDependency } from "@/platform/ipc";
+import type { ArtifactKey, GradleDependency, MavenDependency } from "@/platform/ipc";
 
 /** One occurrence of an artifact in the tree, with the path from a direct dependency down to it. */
 export interface DependencyUsage {
@@ -36,6 +37,10 @@ export interface AnalyzerFilter {
   scope: string | null;
 }
 
+/** A Gradle project of the build (`project :core`): no group, its path as the name. */
+export const isBuildProject = (d: Pick<MavenDependency, "groupId" | "artifactId">) =>
+  !d.groupId && d.artifactId.startsWith(":");
+
 export const artifactKey = (d: Pick<MavenDependency, "groupId" | "artifactId" | "classifier">) =>
   [d.groupId, d.artifactId, d.classifier].filter(Boolean).join(":");
 
@@ -44,10 +49,50 @@ export function coordinates(d: Pick<MavenDependency, "groupId" | "artifactId" | 
   return [d.groupId, d.artifactId, d.classifier, d.version].filter(Boolean).join(":");
 }
 
+/**
+ * A Gradle occurrence in the analyzer's terms: `version` is the one Gradle selected,
+ * `requested` the one this path asked for when conflict resolution replaced it.
+ */
+type GradleOccurrence = MavenDependency & { requested?: string | null; unresolved?: boolean };
+
 const isResolved = (d: MavenDependency) => d.omitted == null;
 
-/** The version a usage asked for: before `<dependencyManagement>` replaced it, if it did. */
-export const requestedVersion = (d: MavenDependency) => d.managedFrom ?? d.version ?? null;
+/** The version a usage asked for: before `<dependencyManagement>` (or Gradle) replaced it, if it did. */
+export const requestedVersion = (d: MavenDependency) =>
+  (d as GradleOccurrence).requested ?? d.managedFrom ?? d.version ?? null;
+
+/** `{strictly 1.0}` / `{require 1.0}` / `{prefer 1.0}` → `1.0`. */
+const plainVersion = (v: string) => v.replace(/^\{(?:strictly|require|prefer) ([^}]*)\}$/, "$1");
+
+/** A version that names one release (not a range or dynamic version). */
+const isExact = (v: string) => !/[[\](),+{}]|latest\./.test(v);
+
+/**
+ * A Gradle configuration's report as analyzer dependencies. Constraints (`(c)`) are left
+ * out: they are not dependencies. A path whose exact request lost to another version
+ * (`1.0 -> 1.1`) is a conflict.
+ */
+export function fromGradle(deps: readonly GradleDependency[]): MavenDependency[] {
+  return deps
+    .filter((d) => !d.constraint)
+    .map((d): GradleOccurrence => {
+      const requested = d.requested ? plainVersion(d.requested) : null;
+      // A project of the build has no version (`""`, not `null`: it isn't omitted).
+      const version = d.project ? (d.selected ? `project ${d.selected}` : "") : (d.selected ?? requested);
+      return {
+        groupId: d.group,
+        artifactId: d.name,
+        version,
+        type: "jar",
+        classifier: null,
+        scope: "compile",
+        optional: false,
+        children: fromGradle(d.children),
+        requested: !d.project && requested && version && requested !== version && isExact(requested) ? requested : null,
+        unresolved: d.unresolved,
+      };
+    });
+}
 
 /** Every artifact of `deps` (a module's dependency tree), sorted by key. */
 export function analyze(deps: readonly MavenDependency[]): AnalyzedArtifact[] {
@@ -78,7 +123,7 @@ export function analyze(deps: readonly MavenDependency[]): AnalyzedArtifact[] {
       }
       const requested = requestedVersion(d);
       if (requested && !a.requested.includes(requested)) a.requested.push(requested);
-      if (d.omitted === "conflict") a.conflict = true;
+      if (d.omitted === "conflict" || (d as GradleOccurrence).requested) a.conflict = true;
       walk(d.children, path);
     }
   };
@@ -138,13 +183,16 @@ export function filterTree(
 }
 
 export type UsageStatus =
-  | { kind: "resolved"; version: string | null; managedFrom: string | null }
+  | { kind: "resolved"; version: string | null; managedFrom: string | null; requested: string | null }
+  | { kind: "unresolved"; version: string | null }
   | { kind: "conflict"; version: string | null; winner: string | null }
   | { kind: "duplicate"; version: string | null }
   | { kind: "cycle"; version: string | null };
 
 export function usageStatus(d: MavenDependency): UsageStatus {
   const version = d.version ?? null;
+  const gradle = d as GradleOccurrence;
+  if (gradle.unresolved) return { kind: "unresolved", version };
   switch (d.omitted) {
     case "conflict":
       return { kind: "conflict", version, winner: d.conflictWith ?? null };
@@ -153,7 +201,7 @@ export function usageStatus(d: MavenDependency): UsageStatus {
     case "cycle":
       return { kind: "cycle", version };
     default:
-      return { kind: "resolved", version, managedFrom: d.managedFrom ?? null };
+      return { kind: "resolved", version, managedFrom: d.managedFrom ?? null, requested: gradle.requested ?? null };
   }
 }
 
@@ -166,7 +214,10 @@ export function statusText(s: UsageStatus): string | null {
       return "omitted for duplicate";
     case "cycle":
       return "omitted for cycle";
+    case "unresolved":
+      return "not resolved";
     default:
+      if (s.requested) return `requested ${s.requested}`;
       return s.managedFrom ? `version managed from ${s.managedFrom}` : null;
   }
 }

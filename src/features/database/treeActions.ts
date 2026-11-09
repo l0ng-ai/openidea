@@ -8,7 +8,7 @@ import { registerActions, type Action } from "@/platform/actions";
 import { editorService, notifications, showServiceView, toolWindowService } from "@/workbench/contributions";
 import { splitTarget } from "./model";
 import { nodeTarget, objectOf, schemaObjectOf, tableFolder, tableOf, type DbNode } from "./nodes";
-import { canDrop, canRename, reference, scriptSql, type ScriptKind } from "./objects";
+import { canDrop, canModifyTable, canRename, reference, scriptSql, type ScriptKind } from "./objects";
 import {
   DB_TOOL_WINDOW,
   OUTPUT_TAB,
@@ -32,6 +32,7 @@ import {
   runSql,
   sourceById,
   tablesKey,
+  toggleSeparateProceduresAndFunctions,
   useDatabase,
   withConnection,
   removeSource,
@@ -134,7 +135,15 @@ export async function insertScript(n: DbNode, kind: ScriptKind) {
   if (useDatabase.getState().details[key]?.status !== "ok") await loadDetails(t.id, t.schema, t.table);
   const d = useDatabase.getState().details[key];
   const columns = d?.status === "ok" ? d.value.columns : [];
-  await openConsoleWith(t.id, scriptSql(driverOf(t.id), kind, t.schema, t.table, columns));
+  try {
+    await openConsoleWith(t.id, scriptSql(driverOf(t.id), kind, t.schema, t.table, columns));
+  } catch (e) {
+    notifications().notify({
+      level: "error",
+      title: "Cannot generate the SQL script",
+      body: e instanceof Error ? e.message : String(e),
+    });
+  }
 }
 
 /** SQL Scripts › Run SQL Script…: picks a `.sql` file and runs all its statements. */
@@ -319,7 +328,7 @@ export function registerDatabaseTreeActions(): () => void {
       run: ({ arg }) => {
         const n = nodeFrom(arg);
         const t = n && tableOf(n);
-        if (!t || t.view) return;
+        if (!t || t.view || !canModifyTable(driverOf(t.id))) return;
         openDialog({
           kind: "modifyTable",
           id: t.id,
@@ -351,7 +360,7 @@ export function registerDatabaseTreeActions(): () => void {
       run: ({ arg }) => {
         const n = nodeFrom(arg);
         const t = n && tableOf(n);
-        if (t && !t.view)
+        if (t && !t.view && canModifyTable(driverOf(t.id)))
           openDialog({ kind: "modifyTable", id: t.id, schema: t.schema, table: t.table, addColumn: true });
       },
     }),
@@ -362,7 +371,7 @@ export function registerDatabaseTreeActions(): () => void {
       keywords: ["csv", "tsv", "load data"],
       run: ({ arg }) => {
         const n = nodeFrom(arg);
-        if (n?.kind === "table" && n.table.kind === "table")
+        if (n?.kind === "table" && n.table.kind === "table" && driverOf(n.id) !== "clickhouse")
           openDialog({ kind: "import", id: n.id, schema: n.schema, table: n.table.name });
       },
     }),
@@ -453,6 +462,11 @@ export function registerDatabaseTreeActions(): () => void {
         toolWindowService().show(DB_TOOL_WINDOW, false);
         useDatabase.setState({ newMenuOpen: true });
       },
+    }),
+    tree({
+      id: "db.separateProceduresAndFunctions",
+      title: "Separate Procedures and Functions",
+      run: toggleSeparateProceduresAndFunctions,
     }),
     tree({
       id: "db.collapseAll",

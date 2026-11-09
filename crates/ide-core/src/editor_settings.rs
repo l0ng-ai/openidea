@@ -166,6 +166,16 @@ impl Default for CompletionSettings {
 pub struct AutoImportSettings {
     pub add_unambiguous: bool,
     pub optimize_on_the_fly: bool,
+    pub imports_on_paste: ImportsOnPaste,
+}
+
+#[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize, Type)]
+#[serde(rename_all = "camelCase")]
+pub enum ImportsOnPaste {
+    #[default]
+    Ask,
+    Always,
+    Never,
 }
 
 /// Editor › General › Code Folding.
@@ -251,7 +261,10 @@ pub struct SmartKeysSettings {
     pub tab_out_of_pair: bool,
     /// Reformat on paste: `none` | `indentBlock` | `indentEachLine`.
     pub reformat_on_paste: String,
+    pub escape_on_paste: bool,
     pub smart_indent: bool,
+    /// Enter › Insert documentation comment stub: Enter after `/**` closes the comment.
+    pub insert_doc_stub: bool,
     /// Backspace › Unindent: `autoindent` (proper indent position) | `nearest` indent position | `none`.
     pub backspace_unindent: String,
 }
@@ -266,7 +279,9 @@ impl Default for SmartKeysSettings {
             surround_selection: true,
             tab_out_of_pair: true,
             reformat_on_paste: "indentEachLine".into(),
+            escape_on_paste: true,
             smart_indent: true,
+            insert_doc_stub: true,
             backspace_unindent: "autoindent".into(),
         }
     }
@@ -458,6 +473,27 @@ impl Default for EncodingSettings {
             properties: "iso-8859-1".into(),
             native_to_ascii: false,
             utf8_bom: "never".into(),
+        }
+    }
+}
+
+#[cfg(test)]
+mod auto_import_tests {
+    use super::{AutoImportSettings, ImportsOnPaste};
+
+    #[test]
+    fn imports_on_paste_defaults_to_ask_for_existing_settings() {
+        let settings: AutoImportSettings = serde_json::from_str(r#"{"addUnambiguous":true}"#).unwrap();
+        assert!(settings.add_unambiguous);
+        assert_eq!(settings.imports_on_paste, ImportsOnPaste::Ask);
+    }
+
+    #[test]
+    fn imports_on_paste_modes_round_trip() {
+        for mode in ["ask", "always", "never"] {
+            let json = serde_json::json!({ "importsOnPaste": mode });
+            let settings: AutoImportSettings = serde_json::from_value(json).unwrap();
+            assert_eq!(serde_json::to_value(settings).unwrap()["importsOnPaste"], mode);
         }
     }
 }

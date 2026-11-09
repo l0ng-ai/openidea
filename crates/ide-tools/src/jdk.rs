@@ -108,26 +108,7 @@ fn adoptium_arch(arch: Arch) -> &'static str {
 
 /// The latest Temurin JDK build of Java `feature` for `platform`.
 pub fn adoptium_assets_url(feature: u32, platform: Platform) -> String {
-    assets_url(feature, platform, ImageType::Jdk)
-}
-
-#[derive(Clone, Copy)]
-enum ImageType {
-    Jdk,
-    Jre,
-}
-
-impl ImageType {
-    fn name(self) -> &'static str {
-        match self {
-            Self::Jdk => "jdk",
-            Self::Jre => "jre",
-        }
-    }
-}
-
-fn assets_url(feature: u32, platform: Platform, image: ImageType) -> String {
-    let image = image.name();
+    let image = "jdk";
     format!(
         "{ADOPTIUM_API}/assets/latest/{feature}/hotspot?architecture={}&image_type={image}&os={}&vendor=eclipse",
         adoptium_arch(platform.arch),
@@ -190,16 +171,12 @@ impl AssetVersion {
 /// The JDK archive (`.tar.gz` on macOS / Linux, `.zip` on Windows) in an Adoptium
 /// `assets/latest` response; `None` when there is no build for the platform.
 pub fn adoptium_pick(json: &str, platform: Platform) -> IdeResult<Option<(Download, u32)>> {
-    pick_image(json, platform, ImageType::Jdk)
-}
-
-fn pick_image(json: &str, platform: Platform, image: ImageType) -> IdeResult<Option<(Download, u32)>> {
     let assets: Vec<Asset> =
         serde_json::from_str(json).map_err(|e| proto(format!("unexpected Adoptium response: {e}")))?;
     let ext = if platform.os == Os::Windows { ".zip" } else { ".tar.gz" };
     let os = adoptium_os(platform.os);
     let found = assets.into_iter().find(|a| {
-        a.binary.image_type.as_deref().is_none_or(|t| t == image.name())
+        a.binary.image_type.as_deref().is_none_or(|t| t == "jdk")
             && a.binary.heap_size.as_deref().is_none_or(|h| h == "normal")
             && a.binary.os.as_deref().is_none_or(|o| o == os)
             && a.binary.package.name.ends_with(ext)
@@ -249,6 +226,10 @@ pub fn find_jdk_home(dir: &Path, platform: Platform) -> Option<PathBuf> {
     subdirs.iter().flat_map(|d| candidates(d)).find(|h| is_jdk_home(h, platform))
 }
 
+fn usable_java_home(dir: &Path, platform: Platform, runtime: bool) -> Option<PathBuf> {
+    find_jdk_home(dir, platform).filter(|home| !runtime || ide_core::java_runtime::supports_java_bundles(home))
+}
+
 /// The directory to move into place: the archive's single top-level folder
 /// holding the JDK, else everything that was unpacked.
 fn unpacked_root(pkg: &Path, home: &Path) -> PathBuf {
@@ -283,8 +264,8 @@ impl Tools {
         self.download_java(vendor, feature, location, false, cancel, emit)
     }
 
-    /// Downloads a runtime for a language server, preferring a JRE. Only a
-    /// platform without a JRE build falls back to a full JDK.
+    /// Downloads a full JDK for a language server and its bundles (java-debug
+    /// needs `jdk.jdi`). Kept outside project JDK discovery roots.
     pub fn download_java_runtime(
         &self,
         feature: u32,
@@ -310,19 +291,8 @@ impl Tools {
         let http = self.http()?;
         let location = location.map(Path::to_path_buf).unwrap_or_else(|| self.root.join("jdks"));
         emit(InstallEvent::Line { text: format!("Resolving the latest Eclipse Temurin {feature}…") });
-        let mut picked = if runtime {
-            pick_image(
-                &http.get_text_or_empty_on_404(&assets_url(feature, self.platform, ImageType::Jre), cancel)?,
-                self.platform,
-                ImageType::Jre,
-            )?
-        } else {
-            None
-        };
-        if picked.is_none() {
-            picked =
-                adoptium_pick(&http.get_text(&adoptium_assets_url(feature, self.platform), cancel)?, self.platform)?;
-        }
+        let mut picked =
+            adoptium_pick(&http.get_text(&adoptium_assets_url(feature, self.platform), cancel)?, self.platform)?;
         if picked.is_none() && matches!(self.platform.os, Os::Mac | Os::Windows) && self.platform.arch == Arch::Arm64 {
             // Older JDKs may need the OS-provided x64 emulation.
             let intel = Platform { os: self.platform.os, arch: Arch::X64 };
@@ -336,7 +306,7 @@ impl Tools {
         })?;
         let target = location.join(jdk_dir_name(vendor, &dl.version));
         let done = |home: PathBuf| DownloadedJdk { home: home.into(), version: dl.version.clone(), major };
-        if let Some(home) = find_jdk_home(&target, self.platform) {
+        if let Some(home) = usable_java_home(&target, self.platform, runtime) {
             emit(InstallEvent::Line { text: format!("{} is already installed", target.display()) });
             return Ok(done(home));
         }
@@ -351,7 +321,7 @@ impl Tools {
             emit(InstallEvent::Line { text: "Extracting…".into() });
             let pkg = staging.join("pkg");
             archive::extract(&archive, archive::ArchiveKind::from_name(&dl.name), &pkg, "java", cancel)?;
-            let home = find_jdk_home(&pkg, self.platform)
+            let home = usable_java_home(&pkg, self.platform, runtime)
                 .ok_or_else(|| IdeError::new(ErrorKind::Io, format!("no JDK found in {}", dl.name)))?;
             // Last point to stop: from here the JDK replaces what is at `target`.
             if cancel.is_cancelled() {
@@ -362,7 +332,7 @@ impl Tools {
             }
             std::fs::rename(unpacked_root(&pkg, &home), &target)?;
             clear_quarantine(&target);
-            find_jdk_home(&target, self.platform)
+            usable_java_home(&target, self.platform, runtime)
                 .ok_or_else(|| IdeError::new(ErrorKind::Io, format!("no JDK found in {}", target.display())))
         })();
         let _ = std::fs::remove_dir_all(&staging);
@@ -437,18 +407,56 @@ mod tests {
     }
 
     #[test]
-    fn runtime_assets_use_jre_without_changing_jdk_downloads() {
+    fn runtime_assets_require_jdk_images() {
         for platform in [MAC_ARM, LINUX_X64, WIN_X64] {
-            assert!(assets_url(25, platform, ImageType::Jre).contains("image_type=jre"));
             assert!(adoptium_assets_url(25, platform).contains("image_type=jdk"));
             let ext = if platform.os == Os::Windows { "zip" } else { "tar.gz" };
             let jdk = asset(&format!("java.{ext}"), adoptium_os(platform.os), "normal", "");
             let jre = jdk.replace("\"image_type\":\"jdk\"", "\"image_type\":\"jre\"");
-            assert!(pick_image(&format!("[{jre}]"), platform, ImageType::Jre).unwrap().is_some());
+            assert!(adoptium_pick(&format!("[{jre},{jdk}]"), platform).unwrap().is_some());
             assert!(adoptium_pick(&format!("[{jre}]"), platform).unwrap().is_none());
-            assert!(pick_image(&format!("[{jdk}]"), platform, ImageType::Jre).unwrap().is_none());
-            assert!(pick_image("[]", platform, ImageType::Jre).unwrap().is_none());
-            assert!(pick_image("offline", platform, ImageType::Jre).is_err());
+        }
+    }
+
+    #[test]
+    fn stale_runtime_is_replaced_even_at_the_same_version() {
+        for platform in [MAC_ARM, LINUX_X64, WIN_X64] {
+            let tmp = tempfile::tempdir().unwrap();
+            let target = tmp.path().join(jdk_dir_name(TEMURIN, "25.0.1"));
+            let home = if platform.os == Os::Mac { target.join("Contents/Home") } else { target.clone() };
+            fake_jdk(&home, platform);
+            let javac = home.join("bin").join(if cfg!(windows) { "javac.exe" } else { "javac" });
+            std::fs::write(&javac, "").unwrap();
+            for modules in [None, Some("java.base java.compiler jdk.jdix"), Some("java.base jdk.jdi.agent")] {
+                let line = modules.map(|m| format!("MODULES=\"{m}\"\n")).unwrap_or_default();
+                std::fs::write(home.join("release"), format!("JAVA_VERSION=\"25.0.1\"\n{line}")).unwrap();
+                assert!(usable_java_home(&target, platform, true).is_none(), "{modules:?}");
+                assert_eq!(usable_java_home(&target, platform, false), Some(home.clone()));
+            }
+            std::fs::write(
+                home.join("release"),
+                "JAVA_VERSION=\"25.0.1\"\nMODULES=\"java.base jdk.compiler jdk.jdi jdk.unsupported\"\n",
+            )
+            .unwrap();
+            assert_eq!(usable_java_home(&target, platform, true), Some(home.clone()));
+            std::fs::write(home.join("release"), "JAVA_VERSION=\"25.0.1\"\n").unwrap();
+            std::fs::create_dir_all(home.join("jmods")).unwrap();
+            for module in ["jdk.compiler", "jdk.jdi", "jdk.unsupported"] {
+                std::fs::write(home.join("jmods").join(format!("{module}.jmod")), "").unwrap();
+            }
+            assert_eq!(usable_java_home(&target, platform, true), Some(home.clone()));
+            std::fs::write(
+                home.join("release"),
+                "IMAGE_TYPE=\"JRE\"\nMODULES=\"java.base jdk.compiler jdk.jdi jdk.unsupported\"\n",
+            )
+            .unwrap();
+            assert!(usable_java_home(&target, platform, true).is_none(), "Temurin JRE release can list absent modules");
+            std::fs::write(home.join("release"), "MODULES=\"java.base jdk.compiler jdk.jdi jdk.unsupported\"\n")
+                .unwrap();
+            std::fs::remove_file(javac).unwrap();
+            assert!(usable_java_home(&target, platform, true).is_none(), "custom runtime without compiler");
+            std::fs::write(home.join("release"), "MODULES=\"java.base\"\n").unwrap();
+            assert!(usable_java_home(&target, platform, true).is_none(), "release describes the runtime image");
         }
     }
 

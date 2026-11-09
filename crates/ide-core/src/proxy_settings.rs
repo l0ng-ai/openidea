@@ -207,6 +207,58 @@ impl ProxySettings {
         env.push((OsString::from("no_proxy"), Some(OsString::from(no_proxy))));
         env
     }
+
+    /// System properties that make a JVM follow this configuration. A JVM reads none of
+    /// [`Self::child_env`]: a Java tool (jetty, Maven's resolver, a language server's own
+    /// HTTP client) goes direct without these, and a repository its proxy answers in
+    /// milliseconds can then hang it instead.
+    pub fn jvm_args(&self) -> Vec<String> {
+        match self.mode {
+            // macOS and Windows JVMs read the system proxy with this one.
+            ProxyMode::Auto => vec!["-Djava.net.useSystemProxies=true".into()],
+            ProxyMode::None => Vec::new(),
+            ProxyMode::Manual if self.manual() => self.manual_jvm_args(),
+            ProxyMode::Manual => Vec::new(),
+        }
+    }
+
+    fn manual_jvm_args(&self) -> Vec<String> {
+        let (host, port) = (self.host.trim(), self.port);
+        match self.kind {
+            ProxyKind::Http => {
+                // HTTPS hosts read `https.proxyHost`, plain ones `http.proxyHost`.
+                let mut args = vec![
+                    format!("-Dhttp.proxyHost={host}"),
+                    format!("-Dhttp.proxyPort={port}"),
+                    format!("-Dhttps.proxyHost={host}"),
+                    format!("-Dhttps.proxyPort={port}"),
+                ];
+                let hosts = self.non_proxy_hosts();
+                if !hosts.is_empty() {
+                    args.push(format!("-Dhttp.nonProxyHosts={}", hosts.join("|")));
+                }
+                args
+            }
+            // SOCKS proxies every TCP connection, so there is one property pair.
+            ProxyKind::Socks => vec![
+                format!("-DsocksProxyHost={host}"),
+                format!("-DsocksProxyPort={port}"),
+                "-Djava.net.useSystemProxies=false".into(),
+            ],
+        }
+    }
+
+    /// [`Self::no_proxy`] in the JVM's `http.nonProxyHosts` format: `|` between host
+    /// globs. CIDR ranges and IPv6 literals have no equivalent there and are dropped.
+    fn non_proxy_hosts(&self) -> Vec<String> {
+        let mut hosts: Vec<String> = LOOPBACK.iter().filter(|h| !h.contains(':')).map(|h| (*h).to_owned()).collect();
+        for entry in self.no_proxy_entries() {
+            if !entry.contains(['/', ':', '[', ']']) && !hosts.contains(&entry) {
+                hosts.push(entry);
+            }
+        }
+        hosts
+    }
 }
 
 /// Case-insensitive host glob (`pattern` is lowercase): `*` matches any run of characters.
@@ -290,6 +342,34 @@ mod tests {
         assert_eq!(p.route_for_url("https://example.com/"), ProxyRoute::Direct);
         assert_eq!(p.curl_args("https://example.com/"), ["--noproxy", "*"]);
         assert!(p.child_env().is_empty());
+    }
+
+    #[test]
+    fn jvm_args_carry_the_proxy_as_system_properties() {
+        // A JVM reads none of `child_env`: a Java language server needs these to not go
+        // direct while curl, git and Node follow the environment.
+        assert_eq!(ProxySettings::default().jvm_args(), ["-Djava.net.useSystemProxies=true"]);
+        assert!(ProxySettings { mode: ProxyMode::None, ..manual("proxy", 3128) }.jvm_args().is_empty());
+        assert_eq!(
+            manual("proxy.corp", 3128).jvm_args(),
+            [
+                "-Dhttp.proxyHost=proxy.corp",
+                "-Dhttp.proxyPort=3128",
+                "-Dhttps.proxyHost=proxy.corp",
+                "-Dhttps.proxyPort=3128",
+                "-Dhttp.nonProxyHosts=localhost|127.0.0.1",
+            ]
+        );
+        let socks = ProxySettings { kind: ProxyKind::Socks, ..manual("10.0.0.1", 1080) };
+        assert_eq!(socks.jvm_args()[..2], ["-DsocksProxyHost=10.0.0.1", "-DsocksProxyPort=1080"]);
+        // `http.nonProxyHosts` takes host globs: CIDR ranges and IPv6 literals drop out.
+        let p = ProxySettings {
+            no_proxy: "*.corp.com, 172.0.0.0/8, [::1], ::1, localhost".into(),
+            ..manual("proxy.corp", 3128)
+        };
+        assert_eq!(p.jvm_args().last().unwrap(), "-Dhttp.nonProxyHosts=localhost|127.0.0.1|*.corp.com");
+        // A manual proxy without a host connects directly, and so does its JVM.
+        assert!(manual(" ", 80).jvm_args().is_empty());
     }
 
     #[test]

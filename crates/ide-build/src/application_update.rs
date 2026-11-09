@@ -40,7 +40,7 @@ pub fn plan(root: &Path, model: &BuildModel, module: &Path, cache: &Path) -> Ide
             kind: "maven",
         });
     }
-    if let Some(g) = &model.gradle
+    if let Some(g) = model.gradle_for_module(root, &module)
         && let Some(p) = g.projects.iter().find(|p| root.join(&p.dir) == module)
     {
         let script = cache.join("resources.init.gradle");
@@ -163,11 +163,11 @@ mod tests {
         assert!(maven.args.contains(&"-Dexpression=project.build.outputDirectory".into()));
         assert_eq!(maven.env["JAVA_HOME"], "/jdk");
         model.maven = None;
-        model.gradle = Some(crate::GradleModel {
+        model.gradle = vec![crate::GradleModel {
             command: "/tools/gradlew".into(),
             projects: vec![crate::GradleProject { path: ":app".into(), dir: "app".into(), ..Default::default() }],
             ..Default::default()
-        });
+        }];
         let gradle = plan(&root, &model, Path::new("app"), &cache).unwrap();
         assert_eq!(gradle.command, "/tools/gradlew");
         assert_eq!(gradle.args.last().unwrap(), ":app:openideaUpdateResources");

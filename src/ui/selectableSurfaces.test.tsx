@@ -22,7 +22,15 @@ describe("selectable read-only surfaces", () => {
   it("Markdown preview (the reported case)", () => {
     act(() =>
       useLiveMarkdown.setState({
-        "/p/README.md": { text: "# Title\n\nSome *text*", topLine: 0, scrollSeq: 0, fontZoom: 0 },
+        "/p/README.md": {
+          text: "# Title\n\nSome *text*",
+          topLine: 0,
+          scrollSeq: 0,
+          fontZoom: 0,
+          caretLine: 0,
+          caretSeq: 0,
+          previewTop: 0,
+        },
       }),
     );
     act(() => useMarkdownModes.setState((s) => ({ byPath: { ...s.byPath, "/p/README.md": "preview" } })));

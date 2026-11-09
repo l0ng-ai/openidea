@@ -1,7 +1,8 @@
 //! Find / Replace in Files (⌘⇧F / ⌘⇧R).
 //!
-//! Built on ripgrep's engine crates: a parallel `ignore` walk (honouring
-//! `.gitignore` / `.ignore`, skipping hidden files and `.git`) feeding
+//! Built on ripgrep's engine crates: a parallel `ignore` walk (skipping the
+//! folders `.gitignore` / `.ignore` exclude and `.git`, but like IDEA keeping
+//! ignored files elsewhere and hidden files) feeding
 //! `grep-searcher` with a `grep-regex` matcher. Binary files are skipped,
 //! unsaved editor buffers (the overlay) take precedence over disk content,
 //! and all columns are UTF-16.
@@ -250,6 +251,18 @@ pub fn validate_query(query: &SearchQuery) -> IdeResult<()> {
         query::compile(query)?;
     }
     Ok(())
+}
+
+/// Byte ranges of the matches of `query` in `text`, matched as [`search`] does.
+/// Unlike [`LineMatch`]es, a match spanning lines comes back whole.
+pub fn match_ranges(text: &str, query: &SearchQuery) -> IdeResult<Vec<(usize, usize)>> {
+    if query.pattern.is_empty() {
+        return Ok(Vec::new());
+    }
+    let compiled = query::compile(query)?;
+    let mut out = Vec::new();
+    iter::for_each_match(&compiled.matcher, text.as_bytes(), 0, |m| out.push((m.start(), m.end())));
+    Ok(out)
 }
 
 /// Computes the replacement text for every match of `query` in `text`

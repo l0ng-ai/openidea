@@ -60,14 +60,14 @@ export function findTerminalLinks(text: string): TerminalLink[] {
   return links.sort((a, b) => a.start - b.start);
 }
 
-/** Resolves `path` against `cwd` (POSIX); `~` expands with `home` when known. */
+/** Resolves `path` against `cwd` (POSIX, or Windows drive paths); `~` expands with `home` when known. */
 export function resolvePath(path: string, cwd: string, home?: string | null): string {
-  let p = path;
+  let p = path.replace(/\\/g, "/");
   if (p === "~" || p.startsWith("~/")) {
     if (!home) return p;
-    p = home + p.slice(1);
-  } else if (!p.startsWith("/")) {
-    p = `${cwd.replace(/\/+$/, "")}/${p}`;
+    p = home.replace(/\\/g, "/") + p.slice(1);
+  } else if (!p.startsWith("/") && !/^[A-Za-z]:\//.test(p)) {
+    p = `${cwd.replace(/\\/g, "/").replace(/\/+$/, "")}/${p}`;
   }
   const parts: string[] = [];
   for (const seg of p.split("/")) {
@@ -75,5 +75,7 @@ export function resolvePath(path: string, cwd: string, home?: string | null): st
     if (seg === "..") parts.pop();
     else parts.push(seg);
   }
-  return "/" + parts.join("/");
+  const joined = parts.join("/");
+  // A Windows drive prefix is its own root; POSIX results keep the leading slash.
+  return /^[A-Za-z]:\//.test(joined) ? joined : `/${joined}`;
 }

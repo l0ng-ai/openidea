@@ -1,4 +1,2 @@
 allowBuilds:
   simple-git-hooks: true
-patchedDependencies:
-  "@fazelstudio/codemirror-lang-astro@0.2.0": patches/@fazelstudio__codemirror-lang-astro@0.2.0.patch

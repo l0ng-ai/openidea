@@ -252,6 +252,7 @@ export function reviewGutter(handlers: ReviewGutterHandlers): Extension {
   const startDrag = (view: EditorView, drag: Drag) => {
     view.dispatch({ effects: setDrag.of(drag) });
     const move = (e: MouseEvent) => {
+      if (!(e.buttons & 1)) return up();
       const line = lineAtY(view, e.clientY);
       const cur = view.state.field(field).drag;
       if (line === null || !cur) return;

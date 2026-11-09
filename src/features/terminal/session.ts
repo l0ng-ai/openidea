@@ -9,15 +9,20 @@ import { SearchAddon, type ISearchOptions } from "@xterm/addon-search";
 import "@xterm/xterm/css/xterm.css";
 import { Channel } from "@tauri-apps/api/core";
 import { call, commands, isTauri, type TerminalId } from "@/platform/ipc";
-import { editorService, notifications } from "@/workbench/contributions";
+import { tx } from "@/platform/i18n";
+import { editorService, notifications, registerFontZoomSurface } from "@/workbench/contributions";
 import { fitScheduler, settledResize } from "./fit";
+import { watchWindowsPty, windowsPty } from "./windowsPty";
 import { installTerminalDrop } from "./drop";
+import { installDomRowCache } from "./domRowCache";
 import { installTerminalPaste, pasteTerminalClipboard } from "./paste";
 import { ImeCommitGate } from "./imeCommit";
+import { ownTerminalInput } from "./imeInput";
 import { findTerminalLinks, resolvePath, type TerminalLink } from "./links";
-import { splitCommandLine } from "@/platform/commandLine";
+import { parseShellCommand } from "@/platform/commandLine";
 import { useProject } from "@/platform/project";
-import { useRemote } from "@/platform/remote";
+import { hostOs, useRemote } from "@/platform/remote";
+import { usePlatform } from "@/platform/platformInfo";
 import { workflowSettings, type TerminalSettingsValid } from "@/platform/workflowSettings";
 import { editorPrefs } from "@/platform/editorSettings";
 import {
@@ -55,8 +60,6 @@ export interface SessionSnapshot {
   commandRunning: boolean;
   /** Current directory (initial cwd, updated by OSC 7). */
   cwd: string;
-  /** True while the viewport is pinned to the newest output. */
-  follow: boolean;
 }
 
 export interface SessionOptions {
@@ -70,7 +73,19 @@ export interface SessionOptions {
    * Run this program instead of the configured shell (e.g. `docker exec -it <id> sh`).
    * `shell`: it is a shell (a predefined session), so shell integration still applies.
    */
-  command?: { program: string; args: string[]; shell?: boolean };
+  command?: {
+    program: string;
+    args: string[];
+    shell?: boolean;
+    env?: Record<string, string>;
+    spawn?: (cols: number, rows: number, output: Channel<string>) => Promise<import("@/bindings").TerminalInfo>;
+    onExit?: (status: number | null, closed: boolean) => void;
+  };
+  /**
+   * Restored tabs only: the project root, used when `cwd` no longer exists
+   * (deleted since the last run, see `resolveStartCwd`).
+   */
+  fallbackRoot?: string;
 }
 
 /** Mouse-tracking DEC private modes (X10, normal, button, any-event, encodings). */
@@ -137,27 +152,49 @@ export const LINK_HANDLER: ILinkHandler = {
 export async function openFileLink(link: Extract<TerminalLink, { kind: "file" }>, cwd: string) {
   const selection = link.line ? { line: link.line - 1, col: Math.max(0, (link.col ?? 1) - 1) } : undefined;
   const path = resolvePath(link.path, cwd);
-  const name = link.path.split("/").pop() ?? link.path;
+  const rel = link.path.replace(/\\/g, "/");
+  const name = rel.split("/").pop() ?? rel;
   try {
     const slash = path.lastIndexOf("/");
-    const entries = await call(commands.fsReadDir(path.slice(0, slash) || "/"));
+    const entries = await call(commands.fsReadDir(slash > 0 ? path.slice(0, slash) : "/"));
     if (entries.some((e) => e.name === name && e.kind !== "dir")) {
       await editorService().openFile(path, { selection, focus: true });
       return;
     }
   } catch {
-    /* fall back to a project-wide lookup by file name */
+    /* fall back to a project-wide lookup */
   }
-  try {
-    const [hit] = await call(commands.findFiles(name, 1));
-    if (hit && hit.path.endsWith(name)) {
-      await editorService().openFile(hit.path, { selection, focus: true });
-      return;
+  // The basename alone is ambiguous (`a/x.ts` vs `b/x.ts`): rank the link's
+  // directory part too and verify the hit actually sits on that path, settling
+  // for a basename match only when the link names no directory.
+  for (const q of rel === name ? [name] : [rel, name]) {
+    try {
+      const hits = await call(commands.findFiles(q, 5));
+      const hit = hits.find((h) => h.relPath === q || h.relPath.endsWith(`/${q}`));
+      if (hit) {
+        await editorService().openFile(hit.path, { selection, focus: true });
+        return;
+      }
+    } catch {
+      /* ignore */
     }
-  } catch {
-    /* ignore */
   }
   notifications().notify({ level: "warning", title: "File not found", body: link.path });
+}
+
+/**
+ * A tab restored from the last session may remember a directory that has since
+ * been deleted. The backend would silently start such a shell in $HOME; when a
+ * `fallbackRoot` (the project root) is given, start there instead.
+ */
+export async function resolveStartCwd(cwd: string, fallbackRoot: string | undefined): Promise<string> {
+  if (!fallbackRoot || cwd === fallbackRoot) return cwd;
+  try {
+    if ((await call(commands.fsEntryKind(cwd))) === "dir") return cwd;
+  } catch {
+    /* deleted or unreachable */
+  }
+  return fallbackRoot;
 }
 
 export class TerminalSession {
@@ -172,14 +209,20 @@ export class TerminalSession {
   private snapshot: SessionSnapshot;
   private ptyId: TerminalId | null = null;
   private opened = false;
+  /** `focus()` arrived before the textarea existed (the pane is focused while xterm is still closed). */
+  private pendingFocus = false;
+  /** Bounds retries when the pane has no box yet, or xterm cannot measure a cell. */
+  private fitAttempts = 0;
   private disposed = false;
   private disposables: IDisposable[] = [];
   private resizeObserver: ResizeObserver | null = null;
   private readonly fitter = fitScheduler(() => this.doFit());
   private readonly ptyResize = settledResize((cols, rows) => this.resizePty(cols, rows));
-  private inputRaf = 0;
+  /** Keystrokes typed while the PTY is still starting; sent as soon as it exists. */
   private pendingInput = "";
   private lastSize = { cols: 0, rows: 0 };
+  /** Per-tab font size offset (px) relative to `workflowSettings().terminal.fontSize`. */
+  private fontZoom = 0;
   /** Bumped on restart so late output from a previous PTY is ignored. */
   private generation = 0;
   /** WebKitGTK delivers one IME commit' worth of text more than once; see `ImeCommitGate`. */
@@ -197,7 +240,6 @@ export class TerminalSession {
       appTitle: null,
       commandRunning: false,
       cwd: opts.cwd,
-      follow: true,
     };
     this.host = document.createElement("div");
     this.host.className = "openidea-terminal-host";
@@ -208,6 +250,7 @@ export class TerminalSession {
     const settings = workflowSettings().terminal;
     const font = fontFor(settings);
     this.term = new Terminal({
+      windowsPty: windowsPty(),
       fontFamily: font.family,
       fontSize: font.size,
       lineHeight: font.lineHeight,
@@ -235,6 +278,7 @@ export class TerminalSession {
     this.term.loadAddon(this.searchAddon);
 
     this.disposables.push(
+      watchWindowsPty(this.term),
       this.searchAddon.onDidChangeResults((r) => {
         for (const l of this.searchListeners) l({ index: r.resultIndex, count: r.resultCount });
       }),
@@ -272,17 +316,13 @@ export class TerminalSession {
         const modes = params.map((p) => (Array.isArray(p) ? p[0] : p) ?? 0);
         return modes.length > 0 && modes.every((m) => MOUSE_MODES.has(m));
       }),
-      // Track scroll position: follow when the user scrolls back to the bottom.
-      this.term.onScroll(() => {
-        const atBottom = this.isAtBottom();
-        if (atBottom !== this.snapshot.follow) this.update({ follow: atBottom });
-      }),
     );
     this.disposables.push(
-      { dispose: installTerminalPaste(this.host, (text) => this.paste(text), this.remotePasteTarget) },
+      { dispose: installTerminalPaste(this.host, (text) => this.paste(text), this.clipboardTarget) },
       { dispose: installTerminalDrop(this.host, (text) => this.paste(text)) },
     );
     this.host.addEventListener("mousedown", this.onMiddleClick);
+    this.disposables.push({ dispose: registerFontZoomSurface(this.host, (delta) => this.stepFontSize(delta)) });
   }
 
   private onMiddleClick = (e: MouseEvent) => {
@@ -291,14 +331,16 @@ export class TerminalSession {
     void this.pasteClipboard();
   };
 
-  private remotePasteTarget = () => {
+  private clipboardTarget = () => {
     const remote = useRemote.getState().session;
     const id = this.ptyId;
-    if (!remote || id === null || this.disposed) return null;
+    if (id === null || this.disposed) return null;
     const generation = this.generation;
     return {
       id,
-      supported: remote.commands.includes("term_store_image"),
+      supported: !remote || remote.commands.includes("term_store_image"),
+      remote: !!remote,
+      shell: this.snapshot.title,
       current: () =>
         !this.disposed &&
         this.ptyId === id &&
@@ -308,8 +350,8 @@ export class TerminalSession {
   };
 
   pasteClipboard() {
-    if (this.remotePasteTarget()) this.focus();
-    return pasteTerminalClipboard((text) => this.paste(text), this.remotePasteTarget);
+    if (this.clipboardTarget()) this.focus();
+    return pasteTerminalClipboard((text) => this.paste(text), this.clipboardTarget);
   }
   /** Applies Settings › Tools › Terminal changes to a live session. */
   applySettings(t: TerminalSettingsValid) {
@@ -325,7 +367,8 @@ export class TerminalSession {
           () => this.scheduleFit(),
         );
     }
-    if (o.fontSize !== font.size) o.fontSize = font.size;
+    const targetSize = Math.max(8, Math.min(36, font.size + this.fontZoom));
+    if (o.fontSize !== targetSize) o.fontSize = targetSize;
     if (o.lineHeight !== font.lineHeight) o.lineHeight = font.lineHeight;
     if (o.letterSpacing !== font.letterSpacing) o.letterSpacing = font.letterSpacing;
     if (o.fontWeight !== font.weight) o.fontWeight = font.weight;
@@ -334,6 +377,22 @@ export class TerminalSession {
     o.cursorBlink = t.cursorBlink;
     o.macOptionIsMeta = t.optionAsMeta;
     this.scheduleFit();
+  }
+
+  /** Steps this terminal tab's font size by `delta` px (or resets to 0 when `delta === 0`). */
+  stepFontSize(delta: number) {
+    const base = fontFor(workflowSettings().terminal).size;
+    if (delta === 0) {
+      this.fontZoom = 0;
+    } else {
+      const nextSize = Math.max(8, Math.min(36, base + this.fontZoom + delta));
+      this.fontZoom = nextSize - base;
+    }
+    const targetSize = Math.max(8, Math.min(36, base + this.fontZoom));
+    if (this.term.options.fontSize !== targetSize) {
+      this.term.options.fontSize = targetSize;
+      this.refit();
+    }
   }
 
   get state(): SessionSnapshot {
@@ -368,28 +427,42 @@ export class TerminalSession {
     }));
   }
 
-  /** Moves the host into `container` and opens / fits / starts as needed. */
+  /** Moves the host into `container` and fits / starts once the pane has a size. */
   attach(container: HTMLElement) {
     if (this.disposed) return;
     if (this.host.parentElement !== container) container.appendChild(this.host);
-    if (!this.opened) {
-      this.opened = true;
-      // xterm's DOM renderer: the WebGL one rasterizes glyphs per background, so
-      // selected text rendered at a visibly different weight than the rest.
-      this.term.open(this.host);
-      remeasureWhenFontsLoad(
-        this.term,
-        fontFor(workflowSettings().terminal),
-        () => !this.disposed,
-        () => this.scheduleFit(),
-      );
-      this.term.textarea?.addEventListener("focus", () => this.opts.onFocus(this.key));
-      this.watchImeCommit();
-    }
     this.resizeObserver?.disconnect();
-    this.resizeObserver = new ResizeObserver(() => this.scheduleFit());
+    this.resizeObserver = new ResizeObserver(() => {
+      this.fitAttempts = 0;
+      this.scheduleFit();
+    });
     this.resizeObserver.observe(container);
     this.scheduleFit();
+  }
+
+  /**
+   * Opens xterm only after the host has a box. `open()` measures the cell size
+   * immediately; doing it while the tool window is still 0×0 (the first layout
+   * pass, or a tab under `display: none`) leaves the helper textarea unable to
+   * take keys for the rest of the session.
+   */
+  private openIfReady() {
+    if (this.opened || this.disposed) return;
+    if (this.host.offsetWidth === 0 || this.host.offsetHeight === 0) return;
+    // xterm's DOM renderer: the WebGL one rasterizes glyphs per background, so
+    // selected text rendered at a visibly different weight than the rest.
+    this.term.open(this.host);
+    installDomRowCache(this.term);
+    this.opened = true;
+    remeasureWhenFontsLoad(
+      this.term,
+      fontFor(workflowSettings().terminal),
+      () => !this.disposed,
+      () => this.scheduleFit(),
+    );
+    this.term.textarea?.addEventListener("focus", () => this.opts.onFocus(this.key));
+    this.watchImeCommit();
+    if (this.pendingFocus) this.focus();
   }
 
   detach(container: HTMLElement) {
@@ -399,22 +472,33 @@ export class TerminalSession {
   }
 
   private scheduleFit() {
+    this.ptyResize.cancel();
     this.fitter.schedule();
   }
 
   /**
-   * Routes a WebKitGTK / fcitx5 IME commit through `ImeCommitGate`: the platform reports the
-   * composition's own keystroke (code 229) and its input event but never `compositionstart`,
-   * which is what xterm's own bookkeeping is built on.
+   * Delivers the IME commits xterm loses on macOS, and routes a WebKitGTK / fcitx5 commit
+   * through `ImeCommitGate` elsewhere (that platform reports the commit's own keystroke code
+   * 229 and its input event, but reports `compositionstart` only for composed words).
    */
   private watchImeCommit() {
     const textarea = this.term.textarea;
     if (!textarea) return;
+    // WKWebView: xterm drops commits IMEs without composition events inject (Doubao) and
+    // misses text that lands after its textarea snapshot. Deliver those here.
+    if (usePlatform.getState().os === "macos") {
+      this.disposables.push({
+        dispose: ownTerminalInput({ host: this.host, textarea, send: (data) => this.send(data) }),
+      });
+      return;
+    }
+    // WebKitGTK (Linux) and WebView2 keep the fcitx5 deduplication gate.
     const onKeyDown = (e: KeyboardEvent) => {
       if (e.keyCode === 229) this.ime.begin();
+      else this.ime.keystroke();
     };
     const onInput = (e: InputEvent) => {
-      if (e.inputType === "insertFromComposition" || e.inputType === "insertCompositionText") this.ime.begin();
+      if (e.inputType === "insertFromComposition" || e.inputType === "insertCompositionText") this.ime.input();
     };
     const onCompositionStart = () => this.ime.compositionStart();
     // Bubble phase, i.e. after xterm's own listener: the rebase must land behind the emissions
@@ -437,14 +521,26 @@ export class TerminalSession {
 
   /** xterm's data event, with one IME commit's repeated emissions collapsed. */
   private fromTerminal(data: string) {
-    if (this.ime.accept()) this.input(data);
+    if (this.ime.accept(data)) this.input(data);
   }
 
   private doFit() {
     if (this.disposed || !this.host.isConnected) return;
-    if (this.host.offsetWidth === 0 || this.host.offsetHeight === 0) return;
+    // The grid row is still 0 on the first layout pass (the track is set by a
+    // parent layout effect after this one). Keep asking until it has a box;
+    // ResizeObserver also resets the budget when the size actually changes.
+    if (this.host.offsetWidth === 0 || this.host.offsetHeight === 0) {
+      if (this.fitAttempts++ < 20) this.scheduleFit();
+      return;
+    }
+    this.openIfReady();
+    if (!this.opened) return;
     const dims = this.fit.proposeDimensions();
-    if (!dims || !Number.isFinite(dims.cols) || !Number.isFinite(dims.rows)) return;
+    if (!dims || !Number.isFinite(dims.cols) || !Number.isFinite(dims.rows)) {
+      if (this.fitAttempts++ < 20) this.scheduleFit();
+      return;
+    }
+    this.fitAttempts = 0;
     if (dims.cols !== this.term.cols || dims.rows !== this.term.rows) this.term.resize(dims.cols, dims.rows);
     if (this.snapshot.status === "idle") {
       void this.start();
@@ -480,32 +576,38 @@ export class TerminalSession {
     };
     try {
       const t = workflowSettings().terminal;
-      const [shellPath, ...shellArgs] = splitCommandLine(t.shellPath);
+      const [shellPath, ...shellArgs] = parseShellCommand(t.shellPath, hostOs() === "windows");
       const shell = custom ? custom.program : shellPath;
       const args = custom ? custom.args : shellArgs;
-      const info = await call(
-        commands.termSpawn(
-          {
-            cwd: this.opts.cwd,
-            shell: shell ?? null,
-            args,
-            env: { ...t.env },
-            cols,
-            rows,
-            shellIntegration: (!custom || !!custom.shell) && t.shellIntegration,
-          },
-          channel,
-        ),
-      );
+      const cwd = await resolveStartCwd(this.opts.cwd, this.opts.fallbackRoot);
+      if (cwd !== this.opts.cwd) this.update({ cwd });
+      const info = custom?.spawn
+        ? await custom.spawn(cols, rows, channel)
+        : await call(
+            commands.termSpawn(
+              {
+                cwd,
+                shell: shell ?? null,
+                args,
+                env: custom?.onExit ? { ...custom.env } : { ...t.env, ...custom?.env },
+                cols,
+                rows,
+                shellIntegration: (!custom || !!custom.shell) && t.shellIntegration,
+              },
+              channel,
+            ),
+          );
       if (this.disposed || generation !== this.generation) {
         void commands.termKill(info.id);
         return;
       }
       this.ptyId = info.id;
       this.update({ status: "running", title: info.title || "Local" });
+      this.flushPendingInput();
     } catch (e) {
+      this.pendingInput = "";
       this.term.writeln(`\x1b[31mFailed to start terminal: ${e instanceof Error ? e.message : String(e)}\x1b[0m`);
-      this.term.writeln(RESTART_HINT);
+      if (!custom?.onExit) this.term.writeln(RESTART_HINT);
       this.update({ status: "error" });
     }
   }
@@ -534,39 +636,60 @@ export class TerminalSession {
   exited(code: number | null) {
     if (this.disposed) return;
     this.ptyId = null;
+    this.opts.command?.onExit?.(code, false);
+    this.pendingInput = "";
     this.update({ status: "exited", exitCode: code });
     // Let output still in flight on the channel land first.
     setTimeout(() => {
       if (this.disposed || this.snapshot.status !== "exited") return;
       const suffix = code !== null && code !== 0 ? ` (exit code ${code})` : "";
-      this.term.write(`\r\n\x1b[2m[Process completed${suffix}]\x1b[0m\r\n${RESTART_HINT}\r\n`);
+      const hint = this.opts.command?.onExit ? "" : `${RESTART_HINT}\r\n`;
+      this.term.write(`\r\n\x1b[2m[Process completed${suffix}]\x1b[0m\r\n${hint}`);
       this.opts.onExit?.(this.key);
     }, 60);
   }
 
   restart() {
+    if (this.opts.command?.onExit) return;
     if (this.snapshot.status === "running" || this.snapshot.status === "starting") return;
     this.term.write("\r\n");
+    this.pendingInput = "";
     this.update({ status: "idle" });
     void this.start();
   }
 
-  /** Sends input to the PTY, coalescing rapid keystrokes per animation frame. */
+  /**
+   * Sends input to the PTY. Keystrokes are not coalesced: WebKit delivers at most one key
+   * event per frame already, and a frame-based batch only made input wait for rendering.
+   */
   input(data: string) {
+    if (!data) return;
     const status = this.snapshot.status;
     if (status === "exited" || status === "error") {
-      if (data === "\r") this.restart();
+      // Shift+Enter sends Esc+Return.
+      if (data === "\r" || data === "\x1b\r") this.restart();
       return;
     }
-    if (this.ptyId === null) return;
-    this.pendingInput += data;
-    if (this.inputRaf) return;
-    this.inputRaf = requestAnimationFrame(() => {
-      this.inputRaf = 0;
-      const chunk = this.pendingInput;
-      this.pendingInput = "";
-      if (chunk && this.ptyId !== null) void commands.termWrite(this.ptyId, chunk);
+    if (this.ptyId === null) {
+      // The shell is still being spawned (tens of ms); keep the keystrokes and send them
+      // once the PTY exists instead of dropping them.
+      this.pendingInput += data;
+      return;
+    }
+    void call(commands.termWrite(this.ptyId, data)).catch((error) => {
+      notifications().notify({
+        level: "error",
+        title: tx("Cannot write to terminal"),
+        body: error instanceof Error ? tx(error.message) : String(error),
+      });
     });
+  }
+
+  /** Sends keystrokes buffered while the PTY was starting. */
+  private flushPendingInput() {
+    const queued = this.pendingInput;
+    this.pendingInput = "";
+    if (queued && this.ptyId !== null) this.input(queued);
   }
 
   /** Writes input immediately (shortcuts translated outside xterm). */
@@ -595,18 +718,22 @@ export class TerminalSession {
     this.term.clear();
   }
 
-  isAtBottom(): boolean {
-    return this.term.buffer.active.viewportY >= this.term.buffer.active.baseY;
-  }
-
-  /** Sets the follow flag; when turning it on also scrolls to the bottom. */
-  setFollow(follow: boolean) {
-    if (follow) this.term.scrollToBottom();
-    if (follow !== this.snapshot.follow) this.update({ follow });
-  }
-
+  /** Asks xterm to take the caret. Remembered when the textarea does not exist yet. */
   focus() {
+    if (this.disposed) return;
+    if (!this.opened || !this.term.textarea) {
+      this.pendingFocus = true;
+      this.scheduleFit();
+      return;
+    }
+    this.pendingFocus = false;
     this.term.focus();
+  }
+
+  /** Fits again after the tool window is shown or its box changes. */
+  refit() {
+    this.fitAttempts = 0;
+    this.scheduleFit();
   }
 
   applyTheme() {
@@ -651,12 +778,14 @@ export class TerminalSession {
   dispose() {
     if (this.disposed) return;
     this.disposed = true;
+    if (this.snapshot.status === "running" || this.snapshot.status === "starting")
+      this.opts.command?.onExit?.(null, true);
     this.fitter.cancel();
     this.ptyResize.cancel();
-    cancelAnimationFrame(this.inputRaf);
+    this.pendingInput = "";
     this.resizeObserver?.disconnect();
     this.host.removeEventListener("mousedown", this.onMiddleClick);
-    if (this.ptyId !== null) void commands.termKill(this.ptyId);
+    if (this.ptyId !== null && !this.opts.command?.spawn) void commands.termKill(this.ptyId);
     this.ptyId = null;
     this.disposables.forEach((d) => d.dispose());
     this.term.dispose();

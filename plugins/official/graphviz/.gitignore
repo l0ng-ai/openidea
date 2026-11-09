@@ -1,0 +1,4 @@
+web-src/node_modules/
+# Built by plugins/build.sh, not checked in.
+web/
+web.sources

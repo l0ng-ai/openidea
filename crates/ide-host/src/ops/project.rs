@@ -13,26 +13,37 @@ pub struct ProjectInfo {
     pub trusted: bool,
     pub root: ide_core::IpcPath,
     pub name: String,
+    #[serde(default)]
+    pub display_name: String,
     pub is_git: bool,
     pub settings: Settings,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub workspace: Option<ide_workspace::workspace::Workspace>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub unity: Option<ide_workspace::unity::UnityProjectInfo>,
 }
 
 pub fn info(project: &Project) -> ProjectInfo {
     let settings = project.settings.effective();
     let custom = settings.general.project_name.trim();
+    let primary = if custom.is_empty() {
+        project.root.file_name().map(|n| n.to_string_lossy().into_owned()).unwrap_or_default()
+    } else {
+        custom.to_owned()
+    };
+    let workspace = ide_workspace::workspace::Workspace::load(&project.root).ok().flatten();
     ProjectInfo {
         trusted: project.is_trusted(),
-        name: if custom.is_empty() {
-            project.root.file_name().map(|n| n.to_string_lossy().into_owned()).unwrap_or_default()
-        } else {
-            custom.to_owned()
-        },
+        display_name: workspace
+            .as_ref()
+            .map(|w| w.display_name(&project.root, &primary))
+            .unwrap_or_else(|| primary.clone()),
+        name: workspace.as_ref().filter(|w| w.is_container(&project.root)).map(|w| w.name.clone()).unwrap_or(primary),
         is_git: !project.repos.read().is_empty(),
         settings,
         root: project.root.clone().into(),
-        workspace: ide_workspace::workspace::Workspace::load(&project.root).ok().flatten(),
+        workspace,
+        unity: ide_workspace::unity::detect(&project.root),
     }
 }
 
@@ -60,38 +71,71 @@ pub fn roots(host: &Host, window: &str) -> IdeResult<ide_workspace::ProjectRoots
 
 pub fn save_workspace(host: &Host, window: &str, name: &str, paths: Vec<std::path::PathBuf>) -> IdeResult<ProjectInfo> {
     let project = host.project(window)?;
-    ide_workspace::workspace::Workspace::save(&project.root, name, paths, false)?;
+    let previous = ide_workspace::workspace::Workspace::load(&project.root)?
+        .ok_or_else(|| ide_core::IdeError::invalid("This folder is not a workspace"))?;
+    for path in paths.iter().filter(|p| !previous.projects.contains(p)) {
+        require_attachment_trust(host, path)?;
+    }
+    if !previous.is_container(&project.root) && paths.first() != Some(&project.root) {
+        return Err(ide_core::IdeError::invalid("The primary project cannot be detached"));
+    }
+    if !previous.is_container(&project.root) && paths == [project.root.clone()] {
+        std::fs::remove_file(project.root.join(ide_workspace::workspace::FILE))?;
+    } else {
+        let workspace = ide_workspace::workspace::Workspace::save(&project.root, name, paths, false)?;
+        keep_attachment_private(&project.root, &workspace)?;
+    }
+    refresh_workspace(&project);
+    Ok(info(&project))
+}
+
+fn require_attachment_trust(host: &Host, path: &Path) -> IdeResult<()> {
+    if !host.trust.trusted(path)? {
+        return Err(ide_core::IdeError::invalid("Trust the project before attaching it"));
+    }
+    Ok(())
+}
+
+fn keep_attachment_private(root: &Path, workspace: &ide_workspace::workspace::Workspace) -> IdeResult<()> {
+    if !workspace.is_container(root) {
+        ide_vcs::changelists::ensure_ignored(&root.join(".openidea"), &["/workspace.json"])?;
+    }
+    Ok(())
+}
+
+fn refresh_workspace(project: &Project) {
     project.settings.reload();
     project.refresh_index_scope();
     project.refresh_repositories();
     project.sink.emit(ide_core::IdeEvent::ProjectRootsChanged { root: project.root.clone().into() });
-    Ok(info(&project))
 }
 
-/// Links a folder, or prepares an automatic workspace for the caller to open in place.
+/// Attaches a trusted folder without replacing the current project.
 pub fn attach_workspace(host: &Host, window: &str, path: &Path) -> IdeResult<ide_core::IpcPath> {
     let project = host.project(window)?;
     let path = dunce::canonicalize(path)?;
     if project.light {
         return Err(ide_core::IdeError::invalid("Open a project before attaching a folder"));
     }
+    if path == project.root {
+        return Ok(project.root.clone().into());
+    }
+    require_attachment_trust(host, &path)?;
     if let Some(mut workspace) = ide_workspace::workspace::Workspace::load(&project.root)? {
         if !workspace.projects.contains(&path) {
             workspace.projects.push(path);
             save_workspace(host, window, &workspace.name, workspace.projects)?;
         }
-        return Ok(project.root.clone().into());
+    } else {
+        let workspace = ide_workspace::workspace::Workspace::attach(
+            &project.root,
+            &info(&project).name,
+            vec![project.root.clone(), path],
+        )?;
+        keep_attachment_private(&project.root, &workspace)?;
+        refresh_workspace(&project);
     }
-    if path == project.root {
-        return Ok(project.root.clone().into());
-    }
-    Ok(ide_workspace::workspace::Workspace::create_for_project(
-        &host.data_dir,
-        &project.root,
-        &info(&project).name,
-        &path,
-    )?
-    .into())
+    Ok(project.root.clone().into())
 }
 
 /// What [`set_settings`] changed; the caller tells the windows.
@@ -172,8 +216,13 @@ pub fn set_settings(
         host.apply_proxy();
     }
     // A new interpreter / toolchain / server executable restarts the language servers it affects.
-    let code_style = key == "editor" || key == "editor.codeStyle" || key.starts_with("editor.codeStyle.");
-    let toolchain = ["languages", "tools", "languageServers", "projectStructure"]
+    // So do inspections that are compiler options (`ide-sdk` `configure_java_compiler`).
+    let code_style = key == "editor"
+        || key == "editor.codeStyle"
+        || key.starts_with("editor.codeStyle.")
+        || key == "inspections"
+        || key.starts_with("inspections.");
+    let toolchain = ["languages", "tools", "languageServers", "languageServerTargets", "projectStructure"]
         .iter()
         .any(|k| key == *k || key.starts_with(&format!("{k}.")));
     // Code style only reaches servers as settings (e.g. jdtls' formatter profile); builds don't depend on it.
@@ -188,7 +237,9 @@ pub fn set_settings(
     }
     let roots_changed = key == "projectStructure"
         || key.starts_with("projectStructure.")
-        || "languages.java.maven.unlinkedProjects".starts_with(key);
+        || "languages.java.maven.unlinkedProjects".starts_with(key)
+        || "languages.java.maven.linkedProjects".starts_with(key)
+        || "languages.java.gradle.linkedProjects".starts_with(key);
     // Content roots and excludes (files.exclude, ignored names, excluded folders) reach the
     // index and the watchers without reopening the project (the rescan runs in the background).
     if roots_changed || key == "files" || key.starts_with("files.") {

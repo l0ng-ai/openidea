@@ -57,6 +57,37 @@ fn fixture() -> Fixture {
     Fixture { _tmp: tmp, root, docs, events, rec }
 }
 
+#[test]
+fn own_disk_changes_preserve_the_open_documents_encoding() {
+    let f = fixture();
+    let path = f.root.join("query.sql");
+    let original = "SELECT '中文';\r\n";
+    fs::write(&path, ide_vfs::encode(original, "gbk", false).unwrap()).unwrap();
+    let mut defaults = f.docs.file_defaults();
+    defaults.project_fallback = "gbk".into();
+    f.docs.set_file_defaults(defaults.clone());
+    let doc = f.docs.open(&path).unwrap();
+    assert_eq!(doc.encoding, "gbk");
+    defaults.project_fallback = "windows-1252".into();
+    f.docs.set_file_defaults(defaults);
+    f.docs.sync_after_disk_change();
+    let unchanged = f.docs.snapshot(doc.id).unwrap();
+    assert_eq!(unchanged.text, doc.text);
+    assert_eq!(unchanged.encoding, "gbk");
+    assert!(!unchanged.dirty);
+    let changed = "SELECT '世界';\r\n";
+    let bytes = ide_vfs::encode(changed, "gbk", false).unwrap();
+    fs::write(&path, &bytes).unwrap();
+    f.docs.sync_after_disk_change();
+    let reloaded = f.docs.snapshot(doc.id).unwrap();
+    assert_eq!(reloaded.text, changed.replace("\r\n", "\n"));
+    assert_eq!(reloaded.encoding, "gbk");
+    assert_eq!(reloaded.line_ending, LineEnding::CrLf);
+    assert!(!reloaded.dirty);
+    f.docs.save_all().unwrap();
+    assert_eq!(fs::read(&path).unwrap(), bytes);
+}
+
 fn change(from: u32, to: u32, insert: &str) -> ChangeSet {
     ChangeSet { changes: vec![TextChange { from, to, insert: insert.into() }] }
 }
@@ -314,6 +345,28 @@ fn backend_edits_emit_patches() {
 }
 
 #[test]
+fn external_change_in_two_places_patches_each() {
+    let f = fixture();
+    let path = f.root.join("two.txt");
+    let old: String = (0..400).map(|i| format!("line {i}\n")).collect();
+    fs::write(&path, &old).unwrap();
+    let id = f.docs.open(&path).unwrap().id;
+
+    std::thread::sleep(std::time::Duration::from_millis(10));
+    let new = old.replace("line 20\n", "line 20x\n").replace("line 299\n", "line 299x\n");
+    fs::write(&path, &new).unwrap();
+    f.docs.on_disk_changed(std::slice::from_ref(&path));
+
+    assert_eq!(f.docs.snapshot(id).unwrap().text, new);
+    let events = f.events.lock();
+    let changes = events.iter().find_map(|e| match e {
+        IdeEvent::DocPatched { changes, .. } => Some(changes),
+        _ => None,
+    });
+    assert_eq!(changes.map(Vec::len), Some(2));
+}
+
+#[test]
 fn external_changes() {
     let f = fixture();
     let path = f.root.join("ext.txt");
@@ -348,6 +401,46 @@ fn external_changes() {
 
     // Unknown paths are ignored.
     f.docs.on_disk_changed(&[f.root.join("other.txt")]);
+}
+
+/// An IDE operation that rewrites a file with the same length and mtime still refreshes
+/// the clean buffer.
+#[test]
+fn own_disk_change_preserving_length_and_mtime_reloads_a_clean_document() {
+    let f = fixture();
+    let path = f.root.join("stamp.txt");
+    fs::write(&path, "first").unwrap();
+    let id = f.docs.open(&path).unwrap().id;
+    let mtime = fs::metadata(&path).unwrap().modified().unwrap();
+    fs::write(&path, "other").unwrap();
+    fs::File::options().write(true).open(&path).unwrap().set_modified(mtime).unwrap();
+    f.docs.sync_after_disk_change();
+    assert_eq!(f.docs.snapshot(id).unwrap().text, "other");
+}
+
+/// An external write that keeps the byte length and the mtime (timestamp-preserving
+/// tools, coarse-granularity filesystems) leaves the `(mtime, length)` stamp equal:
+/// the OS event is still authoritative, so a clean document reloads.
+#[test]
+fn external_change_preserving_length_and_mtime_reloads_a_clean_document() {
+    let f = fixture();
+    let path = f.root.join("stamp.txt");
+    fs::write(&path, "first").unwrap(); // 5 bytes
+    let id = f.docs.open(&path).unwrap().id;
+    let mtime = fs::metadata(&path).unwrap().modified().unwrap();
+
+    fs::write(&path, "other").unwrap(); // 5 bytes, different content
+    fs::File::options().write(true).open(&path).unwrap().set_modified(mtime).unwrap();
+    f.docs.on_disk_changed(std::slice::from_ref(&path));
+    let snap = f.docs.snapshot(id).unwrap();
+    assert_eq!(snap.text, "other");
+    assert!(!snap.dirty);
+
+    // The reload recorded the new stamp: repeating the same event changes nothing.
+    let before = f.events.lock().len();
+    f.docs.on_disk_changed(std::slice::from_ref(&path));
+    assert_eq!(f.events.lock().len(), before);
+    assert_eq!(f.docs.snapshot(id).unwrap().text, "other");
 }
 
 #[test]

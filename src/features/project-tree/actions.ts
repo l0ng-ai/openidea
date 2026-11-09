@@ -1,6 +1,8 @@
 /** Actions of the project view (Find Action, keymap, other features via `executeAction`). */
 import { activeEditor } from "@/editor/api";
 import { getAction, registerActions, type Action } from "@/platform/actions";
+import { getContext } from "@/platform/context";
+import { revealInFileManagerLabel } from "@/platform/fileManager";
 import { dirname, useProject } from "@/platform/project";
 import { showContextMenu, type MenuItem } from "@/ui";
 import { maybeEditorService, menuGroupItems, toolWindowService } from "@/workbench/contributions";
@@ -72,6 +74,16 @@ function nodesFrom(arg: unknown): ProjectNode[] {
       symlink: false,
     };
   });
+}
+
+/**
+ * The target of an action invoked without one: the Project view's selection while it has focus,
+ * otherwise the active editor's file (a shortcut pressed in the editor acts on the edited file).
+ */
+function contextTarget(arg: unknown): unknown {
+  if (arg !== undefined && arg !== null) return arg;
+  if (getContext().projectViewFocus) return arg;
+  return maybeEditorService()?.activePath() ?? arg;
 }
 
 function folderFrom(arg: unknown): string | null {
@@ -146,7 +158,8 @@ export function registerProjectActions(): () => void {
     id,
     title,
     category: "Project View",
-    when: OPEN,
+    when: "projectOpen || textEditorActive",
+    keyWhen: FOCUS,
     keywords: ["path", "clipboard"],
     run: ({ arg }) => copyPaths(kind, nodesFrom(arg)),
   });
@@ -155,7 +168,8 @@ export function registerProjectActions(): () => void {
     id: `project.option.${key}`,
     title: tx`Project View: ${label}`,
     category: "View",
-    keywords: ["project", "tree", "toggle"],
+    // IDEA's former name of Always Select Opened File.
+    keywords: ["project", "tree", "toggle", ...(key === "autoscrollFromSource" ? ["autoscroll from source"] : [])],
     toggled: () => useProjectTree.getState().options[key],
     run: () => setViewOption(key, !useProjectTree.getState().options[key]),
   }));
@@ -372,14 +386,15 @@ export function registerProjectActions(): () => void {
     copyPath("absolute", "project.copyAbsolutePath", "Copy Absolute Path"),
     copyPath("relative", "project.copyRelativePath", "Copy Path From Content Root"),
     copyPath("name", "project.copyFileName", "Copy File Name"),
+    copyPath("source", "project.copySourceRootPath", "Copy Path From Source Root"),
     {
       id: "project.revealInFinder",
-      title: tx`Reveal in ${revealLabel()}`,
+      title: revealInFileManagerLabel(),
       category: "Project View",
       icon: "external-link",
       when: OPEN,
       keywords: ["show in explorer", "open in finder"],
-      run: ({ arg }) => revealInFinder(nodesFrom(arg)),
+      run: ({ arg }) => revealInFinder(nodesFrom(contextTarget(arg))),
     },
     {
       id: "project.openInTerminal",
@@ -388,7 +403,7 @@ export function registerProjectActions(): () => void {
       icon: "terminal",
       when: OPEN,
       run: ({ arg }) => {
-        const dir = folderFrom(arg);
+        const dir = folderFrom(contextTarget(arg));
         if (dir) delegate("terminal.openAt", dir);
       },
     },

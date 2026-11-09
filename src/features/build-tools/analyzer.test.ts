@@ -1,11 +1,12 @@
 import { describe, expect, it } from "vitest";
-import type { MavenDependency } from "@/platform/ipc";
+import type { GradleDependency, MavenDependency } from "@/platform/ipc";
 import {
   analyze,
   coordinates,
   exclusionFor,
   filterArtifacts,
   filterTree,
+  fromGradle,
   scopesOf,
   sortedUsages,
   statusText,
@@ -120,5 +121,49 @@ describe("dependency analyzer", () => {
   it("formats coordinates with the classifier", () => {
     expect(coordinates(dep("g:a:1", { classifier: "linux" }))).toBe("g:a:linux:1");
     expect(coordinates(dep("g:a:1"))).toBe("g:a:1");
+  });
+});
+
+describe("Gradle reports", () => {
+  const g = (coords: string, extra: Partial<GradleDependency> = {}): GradleDependency => {
+    const [group, name, requested] = coords.split(":");
+    return {
+      group: group!,
+      name: name!,
+      requested: requested ?? null,
+      selected: null,
+      project: false,
+      repeated: false,
+      constraint: false,
+      unresolved: false,
+      children: [],
+      ...extra,
+    };
+  };
+
+  it("keeps dependencies, drops constraints and marks only exact requests that lost as conflicts", () => {
+    const deps = fromGradle([
+      g("a:replaced:1.0", { selected: "1.1" }),
+      g("a:strict:{strictly 2.0}", { selected: "2.0" }),
+      g("a:dynamic:1.+", { selected: "1.5" }),
+      g("a:platform", { selected: "3.0" }),
+      g("a:constraint:4.0", { constraint: true }),
+      g("a:legacy:1.0", { selected: ":legacy", project: true }),
+      g("a:missing:9", { unresolved: true }),
+      g("x:y", { group: "", name: ":core", project: true }),
+    ]);
+    const artifacts = analyze(deps);
+    expect(artifacts.map((a) => [a.key, a.version, a.conflict])).toEqual([
+      [":core", "", false],
+      ["a:dynamic", "1.5", false],
+      ["a:legacy", "project :legacy", false],
+      ["a:missing", "9", false],
+      ["a:platform", "3.0", false],
+      ["a:replaced", "1.1", true],
+      ["a:strict", "2.0", false],
+    ]);
+    expect(artifacts.find((a) => a.key === "a:replaced")!.requested).toEqual(["1.0"]);
+    expect(statusText(usageStatus(deps[0]!))).toBe("requested 1.0");
+    expect(statusText(usageStatus(deps[5]!))).toBe("not resolved");
   });
 });
