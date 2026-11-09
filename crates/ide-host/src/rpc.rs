@@ -262,7 +262,7 @@ impl Dispatcher {
         .add("run_system_env", |_| async move { Ok(ide_run::system_env()) })
         .add("run_start", |c| async move {
             let on_output = c.channel("onOutput")?;
-            ops::run::start(&c.host, &c.window, c.arg("config")?, on_output).await
+            ops::run::start_request(&c.host, &c.window, c.arg("config")?, on_output, c.arg("request")?).await
         })
         .add("run_stop", |c| async move { ops::run::stop(&c.host, &c.window, c.arg("id")?) })
         .add("run_stdin", |c| async move { ops::run::stdin(&c.host, c.arg("id")?, &c.arg::<String>("data")?) })

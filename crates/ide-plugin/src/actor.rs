@@ -196,7 +196,7 @@ impl Actor {
         grace: Duration,
         f: impl FnOnce(&mut Runtime) -> Result<R, CallError> + Send + 'static,
     ) -> Result<R, ActorError> {
-        self.call_cancellable_before(cancel, grace, None, f)
+        self.call_cancellable_before(cancel, grace, None, false, f)
     }
 
     /// A cancellable editor call: queued work expires after `soft`, and a
@@ -209,7 +209,18 @@ impl Actor {
         soft: Duration,
         f: impl FnOnce(&mut Runtime) -> Result<R, CallError> + Send + 'static,
     ) -> Result<R, ActorError> {
-        self.call_cancellable_before(cancel, grace, Some(Instant::now() + soft), f)
+        self.call_cancellable_before(cancel, grace, Some(Instant::now() + soft), false, f)
+    }
+
+    /// A launch gate's deadline also interrupts running host calls and background tasks.
+    pub fn call_bounded<R: Send + 'static>(
+        &self,
+        cancel: &ide_core::CancellationToken,
+        grace: Duration,
+        timeout: Duration,
+        f: impl FnOnce(&mut Runtime) -> Result<R, CallError> + Send + 'static,
+    ) -> Result<R, ActorError> {
+        self.call_cancellable_before(cancel, grace, Some(Instant::now() + timeout), true, f)
     }
 
     fn call_cancellable_before<R: Send + 'static>(
@@ -217,6 +228,7 @@ impl Actor {
         cancel: &ide_core::CancellationToken,
         grace: Duration,
         deadline: Option<Instant>,
+        hard_deadline: bool,
         f: impl FnOnce(&mut Runtime) -> Result<R, CallError> + Send + 'static,
     ) -> Result<R, ActorError> {
         let (reply, result) = mpsc::sync_channel(1);
@@ -260,7 +272,7 @@ impl Actor {
             match result.recv_timeout(Duration::from_millis(5)) {
                 Ok(outcome) if cancelled_at.is_some() => {
                     drop(outcome);
-                    return Err(ActorError::Cancelled);
+                    return Err(if cancel.is_cancelled() { ActorError::Cancelled } else { ActorError::SoftTimeout });
                 }
                 Ok(outcome) => return outcome,
                 Err(mpsc::RecvTimeoutError::Disconnected) => {
@@ -268,19 +280,21 @@ impl Actor {
                 }
                 Err(mpsc::RecvTimeoutError::Timeout) => {}
             }
-            if !cancel.is_cancelled() {
+            let timed_out = hard_deadline && deadline.is_some_and(|t| Instant::now() >= t);
+            if !cancel.is_cancelled() && !timed_out {
                 if deadline.is_some_and(|t| Instant::now() >= t) && !*running.lock().unwrap_or_else(|e| e.into_inner())
                 {
                     return Err(ActorError::SoftTimeout);
                 }
                 continue;
             }
+            let failure = || if cancel.is_cancelled() { ActorError::Cancelled } else { ActorError::SoftTimeout };
             match cancelled_at {
                 None => {
                     cancelled_at = Some(Instant::now());
                     let running = running.lock().unwrap_or_else(|e| e.into_inner());
                     if !*running {
-                        return Err(ActorError::Cancelled);
+                        return Err(failure());
                     }
                     self.cancel.cancel_soft();
                 }
@@ -290,7 +304,7 @@ impl Actor {
                     if *running {
                         self.cancel();
                     }
-                    return Err(ActorError::Cancelled);
+                    return Err(failure());
                 }
                 Some(_) => {}
             }

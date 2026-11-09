@@ -345,6 +345,7 @@ async function startConfig(arg: unknown) {
   if (pluginTarget) {
     const extra = JSON.parse(launch.extraJson ?? "{}");
     extra.__runTarget = config.target;
+    extra.__runTargetProgram = config.command;
     launch.extraJson = JSON.stringify(extra);
   }
   const xdebugCheck =
@@ -352,9 +353,14 @@ async function startConfig(arg: unknown) {
   await maybeEditorService()
     ?.saveAll()
     .catch(() => undefined);
-  const started = await startSession(launch, { runConfig: origin ?? config, show });
+  const started = pluginTarget
+    ? await startPreparedSession(origin ?? config, async () => launch, { show })
+    : await startSession(launch, { runConfig: origin ?? config, show });
   if (started && pluginTarget && config.debugAdapter === "php-debug") {
-    await executeAction("run.runConfig", config);
+    await executeAction("run.runConfig", {
+      ...config,
+      params: { ...config.params, "plugin.targetOperation": "debug" },
+    });
   }
   await xdebugCheck;
 }

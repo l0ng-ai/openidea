@@ -322,6 +322,7 @@ describe("remote debugging", () => {
       expect(ipc.runStart).toHaveBeenCalledWith(
         expect.objectContaining({ id: "app", params: { containerDebug: "true" } }),
         expect.anything(),
+        expect.any(Number),
       );
       const channel = ipc.runStart.mock.calls.at(-1)![1] as { onmessage: (m: unknown) => void };
       channel.onmessage({

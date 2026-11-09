@@ -54,3 +54,7 @@ title = "untarget"
 [[contributes.commands]]
 id = "target-overrides"
 title = "target-overrides"
+
+[[contributes.commands]]
+id = "validation"
+title = "validation"

@@ -79,6 +79,7 @@ impl Plugin for Execution {
                 Ok(None)
             }
             "events" => host::storage::get("events"),
+            "validation" => host::storage::get("validation"),
             _ => Err(Error::NotFound(id.into())),
         }
     }
@@ -147,4 +148,25 @@ impl TestResults for Execution {
         ]
     }
 }
-register_plugin!(Execution, run_configurations, test_results);
+impl RunTargetValidation for Execution {
+    fn validate(&mut self, project: &str, target: &str, launch: &RunTargetLaunch) -> Result<(), String> {
+        host::storage::set(
+            "validation",
+            &format!("{project}|{target}|{:?}|{}|{}", launch.operation, launch.program, launch.cwd),
+        )
+        .unwrap();
+        match target {
+            "refuse" => Err("Project runtime is stopped".into()),
+            "long-refusal" => Err("x".repeat(10000)),
+            "trap" => panic!("validator failed"),
+            "timeout" => {
+                let _task = host::begin_task("Validation", true);
+                loop {
+                    std::hint::spin_loop();
+                }
+            }
+            _ => Ok(()),
+        }
+    }
+}
+register_plugin!(Execution, run_configurations, test_results, run_target_validation);
