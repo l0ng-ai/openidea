@@ -110,6 +110,12 @@ const TREE_EXIT_WAIT: Duration = Duration::from_secs(5);
 #[cfg(windows)]
 fn taskkill_tree_of(pid: u32) {
     let started = windows_tree::descendants(pid);
+    // When the child started nothing, killing it alone is the whole job:
+    // `taskkill` would be a process spawn (measured at ~0.7 s here) for the
+    // same outcome, and the callers kill the child themselves.
+    if started.is_empty() {
+        return;
+    }
     let mut taskkill = Command::new("taskkill");
     prepare(&mut taskkill)
         .args(["/T", "/F", "/PID", &pid.to_string()])
