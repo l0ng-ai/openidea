@@ -73,3 +73,21 @@ it("propagates host launch errors while retaining ordinary action error handling
     log.mockRestore();
   }
 });
+
+it("checks argument-specific enablement before dispatch", async () => {
+  const run = vi.fn();
+  const dispose = registerAction({
+    id: "test.fileAction",
+    title: "Test",
+    enabled: ({ arg }) => arg === "/tracked.txt",
+    run,
+  });
+  try {
+    expect(await executeAction("test.fileAction", "/untracked.txt")).toBe(false);
+    expect(await executeAction("test.fileAction", "/tracked.txt")).toBe(true);
+    expect(run).toHaveBeenCalledOnce();
+    expect(run).toHaveBeenCalledWith(expect.objectContaining({ arg: "/tracked.txt" }));
+  } finally {
+    dispose();
+  }
+});
