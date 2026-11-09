@@ -37,7 +37,7 @@ sdk/rust/openidea-plugin/     # the Rust SDK (host API, Plugin trait, mock host)
 crates/ide-plugin/tests/fixtures/  # test plugins: hello, jobs, language-toy, misbehave, semantic-tokens, hover, commit, inlay-hints
 ```
 
-The plugin API is defined in [`wit/`](../wit/) (`openidea:plugin@1.4.0`, world
+The plugin API is defined in [`wit/`](../wit/) (`openidea:plugin@1.5.0`, world
 `plugin`).
 
 ## 1. Quick start
@@ -365,9 +365,19 @@ are always available. Calling a gated function without its capability returns
 
 ## 3. Writing code (Rust SDK)
 
+### API 1.5
+
+API 1.5.0 is planned for the next OpenIDEA release. Use
+`engines.openidea = "^1.5"` and the matching SDK. Released 1.4 plugins keep
+working. New in 1.5:
+
+- [Notifications for a project](#notifications-with-commands):
+  `Project::notify` shows a notification in a window of that project only,
+  also from scheduled or background work.
+
 ### API 1.4
 
-API 1.4.0 is planned for the next OpenIDEA release. Use
+API 1.4.0 shipped with OpenIDEA 0.1.40. Use
 `engines.openidea = "^1.4"` and the matching SDK. Released 1.3 plugins keep
 working. New in 1.4:
 
@@ -525,6 +535,7 @@ then run `openidea-plugin check`.
 | `host::output_append(channel, text)`, `output_clear`, `output_reveal`                                          | `output.{append,clear,reveal}`             | API 1.4: read-only Output tabs; 32 named channels per plugin, each a 1 MiB UTF-8 ring buffer. Reveal requires the invoking window.                                                                                                                                                                                                                        |
 | `host::set_context(key, value)`, `remove_context`                                                              | `ui.{set,remove}-context`                  | Sets `plugin.<id>.<key>` for `when` clauses in the window the call came from (`true`, `3.5`, `"text"`; `ContextValue`). Key 1–64 of `A-Za-z0-9_-`, 100 per plugin; gone when the plugin stops.                                                                                                                                                            |
 | `host::notify(level, title, body)`                                                                             | `ui.show-notification`                     | Balloon in the window the command or events came from (every window otherwise).                                                                                                                                                                                                                                                                           |
+| `Project::notify(level, title, body, actions)`                                                                 | `ui.notify-project`                        | API 1.5: balloon only in a window of that project (the most recently focused one), with or without an invoking window; see _Notifications with commands_.                                                                                                                                                                                                 |
 | `host::copy_to_clipboard(text)`                                                                                | `ui.copy-to-clipboard`                     | Copies `text` to the system clipboard. Needs `clipboard`.                                                                                                                                                                                                                                                                                                 |
 | `host::open_url(url)`                                                                                          | `ui.open-url`                              | Opens an `http://` or `https://` URL in the user's default browser.                                                                                                                                                                                                                                                                                       |
 | `host::pick(title, items)`, `pick_many`                                                                        | `ui.pick`, `ui.pick-many`                  | Picks key(s) from `PickItem`s, or `None` when dismissed. From a command/event or code-action resolution in its editor window (else `invalid`); waiting is excluded from the budget.                                                                                                                                                                       |
@@ -2254,8 +2265,8 @@ the API itself follows _Evolving the plugin API_ below.
 ## 10. Evolving the plugin API
 
 Released versions are frozen: 1.0.0 shipped with OpenIDEA 0.1.36, 1.1.0
-with 0.1.37, 1.2.0 with 0.1.38 and 1.3.0 with 0.1.39. API 1.4.0 is planned
-with the next release. wasmtime decides what stays compatible: it resolves interface names
+with 0.1.37, 1.2.0 with 0.1.38, 1.3.0 with 0.1.39 and 1.4.0 with 0.1.40.
+API 1.5.0 is planned with the next release. wasmtime decides what stays compatible: it resolves interface names
 by semver (a component importing `openidea:plugin/x@1.0.0` links against a
 host defining `@1.1.0`, and the host finds its exports the same way), but
 function types must match exactly — a record with another field count, or a
@@ -2381,6 +2392,29 @@ one dismisses the balloon and runs the command in the receiving window with
 its normal editor and project context. No capability is needed. Invalid or
 undeclared actions reject the whole notification. Labels are limited to 256
 bytes and arguments to 64 KiB. Plain `host::notify` behaves as before.
+
+Both go to the window the command or event came from, or to every window when
+there is none (a scheduled call, for instance). To reach one project from such
+work, call `notify` on that [`Project`](#the-api) (API 1.5, `ui.notify-project`),
+with the same actions and limits:
+
+```rust
+for project in host::projects()? {
+    if let Some(update) = check_for_update(&project)? {
+        let disable = NotificationAction::new("Disable automatic checks", "disable-checks")
+            .argument(project.root()?);
+        project.notify(NotificationLevel::Info, "Update available", &update, &[disable])?;
+    }
+}
+```
+
+- It shows only in a window of that project: the most recently focused one
+  when the project is open in several.
+- A button runs its command with an invocation from that window, so
+  `ctx.project()` is the notification's project.
+- If the project has closed by the time of the call, the call fails with
+  `Error::NotFound` and shows nothing; it never falls back to another window.
+  A balloon already shown goes away with its window.
 
 ### Selecting plugin tests (API 1.4, unreleased)
 

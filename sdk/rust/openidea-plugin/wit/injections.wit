@@ -1,4 +1,4 @@
-package openidea:plugin@1.4.0;
+package openidea:plugin@1.5.0;
 
 /// Embedded languages. The host routes plugin providers and configured language
 /// servers inside these ranges, preserving host-document UTF-16 coordinates.
