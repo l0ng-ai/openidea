@@ -350,4 +350,81 @@ str
     );
     expect(styles).toEqual([]);
   });
+
+  it.each(["rest", "epytext"])("highlights %s fields on the opening line in UTF-16 coordinates", async (format) => {
+    const marker = format === "rest" ? ":" : "@";
+    const source = `# 😀\ndef f():\n    r"""${marker}param 名称: 😀 description"""\n`;
+    const state = await parse(source);
+    const ranges = pythonSyntaxRanges(state.tree, state.doc, undefined, format);
+    for (const [value, suffix] of [
+      ["param", "tag"],
+      ["名称", "keyword"],
+    ]) {
+      const from = source.indexOf(value!);
+      expect(ranges).toContainEqual({
+        from,
+        to: from + value!.length,
+        className: `cm-sem-python-docstring-${suffix}`,
+        source: "syntax",
+      });
+    }
+  });
+
+  it.each(["b", "br", "rb", "B", "Rb", "f", "fr", "rf"])("never marks %s strings as docstrings", async (prefix) => {
+    expect(await markup("rest", `${prefix}"""Description.\n:param x: value\n"""`)).toEqual([]);
+  });
+
+  it("restricts markup to the first statement of modules, classes and functions", async () => {
+    const source = `# 😀 module\n"""Description.\n:param module: value\n"""
+class C:
+    # comment
+    """Description.
+    :param cls: value
+    """
+    def f(self):
+        """Description.
+        :param func: value
+        """
+        value = """Description.
+        :param assigned: value
+        """
+        """Description.
+        :param later: value
+        """
+if True:
+    """Description.
+    :param conditional: value
+    """
+`;
+    const styles = await markup("rest", source);
+    expect(styles.filter(([, c]) => c?.endsWith("-keyword")).map(([value]) => value)).toEqual([
+      "module",
+      "cls",
+      "func",
+    ]);
+  });
+
+  it("requires indented content after a Google section heading", async () => {
+    expect(await markup("google", '"""Description.\nArgs:\nNot a section.\nNotes:\n"""')).toEqual([]);
+  });
+
+  it.each([
+    ["google", "Args:\n    𐐀名称 (int): value"],
+    ["numpy", "Parameters\n----------\n𐐀名称 : int\n    value"],
+  ])("keeps %s keyword ranges in UTF-16 for Unicode names", async (format, content) => {
+    const source = `"""😀 Description.\n${content}\n"""`;
+    const state = await parse(source);
+    const from = source.indexOf("𐐀名称");
+    expect(pythonSyntaxRanges(state.tree, state.doc, undefined, format)).toContainEqual({
+      from,
+      to: from + "𐐀名称".length,
+      className: "cm-sem-python-docstring-keyword",
+      source: "syntax",
+    });
+  });
+
+  it.each(["rest", "epytext", "google", "numpy"])("handles long unfinished %s fields", async (format) => {
+    const source = `"""Description.\n:param ${" ".repeat(2000)}unfinished\nArgs:\nParameters\n----------\nx${" ".repeat(2000)}unfinished\n"""`;
+    expect(await markup(format, source)).not.toContainEqual(["unfinished", "cm-sem-python-docstring-keyword"]);
+  });
 });
