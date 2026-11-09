@@ -741,5 +741,7 @@
   "Choose Gradle JVM": "Choose Gradle JVM",
   "Choose a JDK compatible with this Gradle version in Gradle JVM. Download JDK is available in the JVM selector.": "Choose a JDK compatible with this Gradle version in Gradle JVM. Download JDK is available in the JVM selector.",
   "Maven could not be started. Configure Maven home in Maven settings, install Maven on PATH, or use a project with a Maven wrapper.": "Maven could not be started. Configure Maven home in Maven settings, install Maven on PATH, or use a project with a Maven wrapper.",
-  "Gradle could not be started. Configure a local installation in Gradle settings, install Gradle on PATH, or use a project with a Gradle wrapper.": "Gradle could not be started. Configure a local installation in Gradle settings, install Gradle on PATH, or use a project with a Gradle wrapper."
+  "Gradle could not be started. Configure a local installation in Gradle settings, install Gradle on PATH, or use a project with a Gradle wrapper.": "Gradle could not be started. Configure a local installation in Gradle settings, install Gradle on PATH, or use a project with a Gradle wrapper.",
+  "Remote of {name}": "Remote of {name}",
+  "Target branch of {name}": "Target branch of {name}"
 }
