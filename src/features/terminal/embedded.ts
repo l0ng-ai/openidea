@@ -17,6 +17,7 @@ import { useProject } from "@/platform/project";
 import { usePlatform } from "@/platform/platformInfo";
 import { workflowSettings } from "@/platform/workflowSettings";
 import { fitScheduler, settledResize } from "./fit";
+import { watchWindowsPty, windowsPty } from "./windowsPty";
 import { findTerminalLinks } from "./links";
 import { LINK_HANDLER, fontFor, openExternal, openFileLink } from "./session";
 import { MIN_CONTRAST_RATIO, readTerminalTheme, remeasureWhenFontsLoad } from "./theme";
@@ -33,6 +34,7 @@ export function createEmbeddedTerminal(host: HTMLElement, opts: EmbeddedTerminal
   const settings = workflowSettings().terminal;
   const font = fontFor(settings);
   const term = new Terminal({
+    windowsPty: windowsPty(),
     linkHandler: LINK_HANDLER,
     fontFamily: font.family,
     fontSize: font.size,
@@ -76,6 +78,7 @@ export function createEmbeddedTerminal(host: HTMLElement, opts: EmbeddedTerminal
     opts.onResize(cols, rows);
   });
   const disposables: IDisposable[] = [
+    watchWindowsPty(term),
     term.onData((d) => opts.onData(d)),
     term.onBinary((d) => opts.onData(d)),
     term.registerLinkProvider({

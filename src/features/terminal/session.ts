@@ -12,6 +12,7 @@ import { call, commands, isTauri, type TerminalId } from "@/platform/ipc";
 import { tx } from "@/platform/i18n";
 import { editorService, notifications, registerFontZoomSurface } from "@/workbench/contributions";
 import { fitScheduler, settledResize } from "./fit";
+import { watchWindowsPty, windowsPty } from "./windowsPty";
 import { installTerminalDrop } from "./drop";
 import { installTerminalPaste, pasteTerminalClipboard } from "./paste";
 import { ImeCommitGate } from "./imeCommit";
@@ -248,6 +249,7 @@ export class TerminalSession {
     const settings = workflowSettings().terminal;
     const font = fontFor(settings);
     this.term = new Terminal({
+      windowsPty: windowsPty(),
       fontFamily: font.family,
       fontSize: font.size,
       lineHeight: font.lineHeight,
@@ -275,6 +277,7 @@ export class TerminalSession {
     this.term.loadAddon(this.searchAddon);
 
     this.disposables.push(
+      watchWindowsPty(this.term),
       this.searchAddon.onDidChangeResults((r) => {
         for (const l of this.searchListeners) l({ index: r.resultIndex, count: r.resultCount });
       }),
