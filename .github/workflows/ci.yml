@@ -33,6 +33,7 @@ jobs:
     outputs:
       rust: ${{ steps.classify.outputs.rust }}
       frontend: ${{ steps.classify.outputs.frontend }}
+      release_packaging: ${{ steps.classify.outputs.release_packaging }}
     steps:
       - id: classify
         env:
@@ -41,8 +42,11 @@ jobs:
         run: |
           set -euo pipefail
           if [ "$GITHUB_EVENT_NAME" != pull_request ]; then
-            echo "rust=true" >> "$GITHUB_OUTPUT"
-            echo "frontend=true" >> "$GITHUB_OUTPUT"
+            {
+              echo "rust=true"
+              echo "frontend=true"
+              echo "release_packaging=true"
+            } >> "$GITHUB_OUTPUT"
             exit 0
           fi
           gh api --paginate "repos/$GITHUB_REPOSITORY/pulls/$PR/files" \
@@ -57,9 +61,14 @@ jobs:
           if grep -Ev "$docs|$web" files.txt | grep -q . || grep -Eq "$embedded" files.txt; then rust=true; fi
           frontend=false
           if grep -Ev "$docs" files.txt | grep -q .; then frontend=true; fi
-          echo "rust=$rust frontend=$frontend"
-          echo "rust=$rust" >> "$GITHUB_OUTPUT"
-          echo "frontend=$frontend" >> "$GITHUB_OUTPUT"
+          release_packaging=false
+          if grep -Eq '^(\.github/workflows/(ci|release)\.yml|release\.toml|scripts/package-linux-desktop\.sh|scripts/release-packaging\.test\.ts)$' files.txt; then release_packaging=true; fi
+          echo "rust=$rust frontend=$frontend release_packaging=$release_packaging"
+          {
+            echo "rust=$rust"
+            echo "frontend=$frontend"
+            echo "release_packaging=$release_packaging"
+          } >> "$GITHUB_OUTPUT"
 
   rust:
     name: Rust (${{ matrix.os }})
@@ -206,6 +215,34 @@ jobs:
       - run: pnpm knip
       - run: pnpm test
       - run: pnpm build
+
+  release-packaging:
+    name: Linux release packaging
+    needs: changes
+    if: needs.changes.outputs.release_packaging == 'true'
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v5
+      - uses: pnpm/action-setup@v5
+        with: { version: 11 }
+      - uses: actions/setup-node@v5
+        with: { node-version: 22, cache: pnpm }
+      - run: pnpm install --frozen-lockfile
+      - name: Install pinned packslip CLI
+        env:
+          PACKSLIP_SHA256: dd7e1e07c9b84f76bbe66603b325d8fb8738aad36da2fb91e3dd6296c32eb873
+        run: |
+          set -euo pipefail
+          packslip="$RUNNER_TEMP/packslip"
+          curl -fsSL --retry 3 \
+            https://github.com/jdx/packslip/releases/download/v1.11.3/packslip-v1.11.3-linux-x64 \
+            -o "$packslip"
+          echo "$PACKSLIP_SHA256  $packslip" | sha256sum --check
+          chmod +x "$packslip"
+          echo "PACKSLIP_BIN=$packslip" >> "$GITHUB_ENV"
+          echo "REQUIRE_PACKSLIP=1" >> "$GITHUB_ENV"
+      - run: pnpm exec vitest run scripts/release-packaging.test.ts
 
   e2e:
     name: E2E
