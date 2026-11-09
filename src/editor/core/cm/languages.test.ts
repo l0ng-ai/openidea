@@ -136,6 +136,120 @@ describe("language modes", () => {
     ]);
   });
 
+  describe("reStructuredText", () => {
+    const highlighter = tagHighlighter([
+      { tag: t.heading, class: "heading" },
+      { tag: t.attributeName, class: "attribute" },
+      { tag: t.meta, class: "meta" },
+      { tag: t.monospace, class: "monospace" },
+      { tag: t.strong, class: "strong" },
+      { tag: t.emphasis, class: "emphasis" },
+      { tag: t.link, class: "link" },
+      { tag: t.comment, class: "comment" },
+    ]);
+    const highlight = async (doc: string, path = "/docs/index.rst") => {
+      const support = await loadSupport(findLanguageDescription("reStructuredText", path)!);
+      const found: [string, string][] = [];
+      highlightTree(support!.language.parser.parse(doc), highlighter, (from, to, style) => {
+        found.push([doc.slice(from, to), style]);
+      });
+      return found;
+    };
+
+    it("recognizes .rst files", async () => {
+      for (const path of ["/docs/index.rst", "/docs/README.RST"]) {
+        const description = findLanguageDescription("reStructuredText", path);
+        expect(description?.name, path).toBe("reStructuredText");
+        expect((await loadSupport(description!))?.language, path).toBeTruthy();
+      }
+    });
+
+    it("styles section adornments, and the text of a title that has an overline", async () => {
+      const doc = ["=====", "Guide", "=====", "", "Section", "-------", "", "Too long a title", "---", "", "----"].join(
+        "\n",
+      );
+      // A stream sees one line at a time: the text of an underline-only title cannot be styled.
+      expect(await highlight(doc)).toEqual([
+        ["=====", "meta"],
+        ["Guide", "heading"],
+        ["=====", "heading"],
+        ["-------", "heading"],
+        ["---", "meta"],
+        ["----", "meta"],
+      ]);
+    });
+
+    it("does not take a paragraph after an underline for a title", async () => {
+      expect(await highlight(["Section", "-------", "Text *right* after."].join("\n"))).toEqual([
+        ["-------", "heading"],
+        ["*right*", "emphasis"],
+      ]);
+    });
+
+    it("styles inline markup, roles and references", async () => {
+      const doc = "Some *emphasis*, **strong**, ``a * b``, :ref:`other`, link_, https://example.com and __init__.";
+      expect(await highlight(doc)).toEqual([
+        ["*emphasis*", "emphasis"],
+        ["**strong**", "strong"],
+        ["``a * b``", "monospace"],
+        [":ref:", "attribute"],
+        ["`other`", "monospace"],
+        ["link_", "link"],
+        ["https://example.com", "link"],
+      ]);
+    });
+
+    it("styles literal blocks after `::` and code directives, with their options", async () => {
+      const doc = [
+        "Example::",
+        "",
+        "    code *here*",
+        "",
+        "Back to text with *emphasis*.",
+        "",
+        ".. code-block:: python",
+        "   :linenos:",
+        "",
+        "   print('hi')",
+        "   :not: an option",
+        "",
+        ".. note:: Remember this.",
+      ].join("\n");
+      expect(await highlight(doc)).toEqual([
+        ["    code *here*", "monospace"],
+        ["*emphasis*", "emphasis"],
+        [".. code-block::", "meta"],
+        ["   :linenos:", "attribute"],
+        ["   print('hi')", "monospace"],
+        ["   :not: an option", "monospace"],
+        [".. note::", "meta"],
+      ]);
+    });
+
+    it("styles comments with their indented continuation, field lists, targets and bullets", async () => {
+      const doc = [
+        ".. a comment",
+        "   continues here",
+        "",
+        "   and here",
+        ":Author: Me",
+        ".. _target: https://example.com",
+        "- item",
+        "1. numbered",
+      ].join("\n");
+      expect(await highlight(doc)).toEqual([
+        [".. a comment", "comment"],
+        ["   continues here", "comment"],
+        ["   and here", "comment"],
+        [":Author:", "attribute"],
+        [".. _target:", "link"],
+        ["https://example.com", "link"],
+        ["-", "meta"],
+        ["1.", "meta"],
+      ]);
+    });
+  });
+
   it("styles `?.` like `.` in JavaScript and TypeScript", async () => {
     const highlighter = tagHighlighter([{ tag: t.derefOperator, class: "deref" }]);
     for (const [mode, path] of [

@@ -70,6 +70,7 @@ const BUILTIN: &[(&str, &str)] = &[
     ("proto", include_str!("../../../languages/proto.toml")),
     ("python", include_str!("../../../languages/python.toml")),
     ("r", include_str!("../../../languages/r.toml")),
+    ("rst", include_str!("../../../languages/rst.toml")),
     ("ruby", include_str!("../../../languages/ruby.toml")),
     ("rust", include_str!("../../../languages/rust.toml")),
     ("sass", include_str!("../../../languages/sass.toml")),
@@ -479,6 +480,7 @@ mod tests {
         "PLSQL",
         "PostgreSQL",
         "Python",
+        "reStructuredText",
         "Rust",
         "Sass",
         "SCSS",
@@ -628,6 +630,14 @@ mod tests {
         let asciidoc = reg.get(&LanguageId::new("asciidoc")).unwrap();
         assert_eq!(asciidoc.ui_mode.as_deref(), Some("AsciiDoc"));
         assert_eq!(asciidoc.line_comment.as_deref(), Some("//"));
+        for path in ["docs/index.rst", "README.RST"] {
+            assert_eq!(detect(&reg, path), "rst");
+        }
+        // `.rest` belongs to HTTP client files.
+        assert_eq!(detect(&reg, "api/requests.rest"), "http");
+        let rst = reg.get(&LanguageId::new("rst")).unwrap();
+        assert_eq!(rst.ui_mode.as_deref(), Some("reStructuredText"));
+        assert_eq!(rst.line_comment.as_deref(), Some(".."));
         assert_eq!(reg.detect(Path::new("script"), Some("#!/usr/bin/env python3")).as_str(), "python");
         assert_eq!(detect(&reg, "README"), "plaintext");
         assert_eq!(detect(&reg, "unknown.zzz"), "plaintext");

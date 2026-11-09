@@ -138,6 +138,7 @@ const EXT_LANG: Record<string, string> = {
   md: "markdown",
   adoc: "asciidoc",
   asciidoc: "asciidoc",
+  rst: "rst",
   css: "css",
   html: "html",
   yml: "yaml",
@@ -245,6 +246,15 @@ const MEM_LANGUAGES: LanguageInfo[] = [
     lineComment: "//",
     blockComment: null,
     indent: { tabSize: 2, insertSpaces: true },
+  },
+  {
+    id: "rst",
+    name: "reStructuredText",
+    extensions: ["rst"],
+    uiMode: "reStructuredText",
+    lineComment: "..",
+    blockComment: null,
+    indent: { tabSize: 3, insertSpaces: true },
   },
   {
     id: "markdown",
