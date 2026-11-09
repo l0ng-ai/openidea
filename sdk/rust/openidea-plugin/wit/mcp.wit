@@ -1,4 +1,4 @@
-package openidea:plugin@1.4.0;
+package openidea:plugin@1.5.0;
 
 /// Discovery of the IDE's built-in MCP server; never exposes its URL or token.
 interface mcp {

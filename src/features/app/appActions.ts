@@ -19,7 +19,7 @@ export async function showLog(): Promise<void> {
   if (!isTauri()) return;
   try {
     const loc = await call(commands.appLogLocation());
-    await revealInFileManager(loc.file ?? loc.dir);
+    await revealInFileManager(loc.file ?? loc.dir, null);
   } catch (e) {
     notifications().notify({ level: "error", title: t("app.log.failed"), body: errorText(e) });
   }
