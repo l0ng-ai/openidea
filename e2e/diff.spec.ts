@@ -292,7 +292,7 @@ test.describe("10,000-line files", () => {
       await expectCount(page, path, 42);
       // The first change is a single edited identifier.
       await page.locator(".cm-editor.cm-merge-b .cm-content").first().click();
-      await page.keyboard.press("Meta+ArrowUp");
+      await page.keyboard.press("Meta+Home");
       await page.keyboard.press("F7");
       await expect(counter(page)).toHaveText("1 of 42 differences");
       if (opts.mode !== "unified") {
