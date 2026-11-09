@@ -8,6 +8,8 @@ import { useVirtualizer } from "@tanstack/react-virtual";
 import clsx from "clsx";
 import { Dialog, Icon, showContextMenu, type MenuItem } from "@/ui";
 import { parseDelimited, toCsv, toOneRow, toTsv, type Cell } from "./model";
+import { formatJson, isJsonValue } from "./jsonValue";
+import { JsonValueWindow } from "./JsonValueEditor";
 import styles from "./Database.module.css";
 import { tx } from "@/platform/i18n";
 import { CELL_PREVIEW_LIMIT, cellPreview, hasLineBreak } from "./cellPreview";
@@ -144,7 +146,13 @@ export function Grid(props: GridProps) {
     window.addEventListener("mouseup", stop);
     return () => window.removeEventListener("mouseup", stop);
   }, []);
-  const [editing, setEditing] = useState<{ row: number; col: number; text: string; dialog: boolean } | null>(null);
+  const [editing, setEditing] = useState<{
+    row: number;
+    col: number;
+    text: string;
+    json: boolean;
+    dialog: boolean;
+  } | null>(null);
   /** The inline editor is being swapped for the multi-line one: its blur must not commit. */
   const maximizing = useRef(false);
   useEffect(() => {
@@ -256,11 +264,22 @@ export function Grid(props: GridProps) {
     scrollRef.current?.focus();
   };
 
+  /** The JSON value window's Apply / Set NULL: the same pending-edit pipeline as the inline editor. */
+  const commitJsonWindow = (text: string | null) => {
+    if (!editing) return;
+    if (text !== (value(editing.row, editing.col) ?? "")) onEdit?.(editing.row, editing.col, text);
+    setEditing(null);
+    scrollRef.current?.focus();
+  };
+
   /** `maximized` (⇧Enter): the multi-line editor, which multi-line and long values always use. */
   const startEdit = (row: number, col: number, maximized = false) => {
     if (!editable || props.rowState?.(row) === "deleted") return;
-    const text = value(row, col) ?? "";
-    setEditing({ row, col, text, dialog: maximized || text.length > CELL_PREVIEW_LIMIT || hasLineBreak(text) });
+    const cell = value(row, col);
+    const text = cell ?? "";
+    // JSON cells (type or content) edit in the JSON value editor when the dialog opens (#2333).
+    const json = isJsonValue(columns[col]?.type ?? "", cell);
+    setEditing({ row, col, text, json, dialog: maximized || text.length > CELL_PREVIEW_LIMIT || hasLineBreak(text) });
   };
 
   const onKeyDown = (e: KeyboardEvent<HTMLDivElement>) => {
@@ -407,7 +426,19 @@ export function Grid(props: GridProps) {
       onPaste={onPaste}
       onContextMenu={onContextMenu}
     >
-      {editing?.dialog && (
+      {editing?.dialog && editing.json && (
+        <JsonValueWindow
+          title={tx`Edit ${columns[editing.col]!.name}`}
+          initial={formatJson(editing.text)}
+          onClose={() => {
+            setEditing(null);
+            scrollRef.current?.focus();
+          }}
+          onApply={(text) => commitJsonWindow(text)}
+          onSetNull={() => commitJsonWindow(null)}
+        />
+      )}
+      {editing?.dialog && !editing.json && (
         <Dialog
           open
           title={tx`Edit ${columns[editing.col]!.name}`}

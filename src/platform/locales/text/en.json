@@ -766,5 +766,7 @@
   "Gradle could not be started. Configure a local installation in Gradle settings, install Gradle on PATH, or use a project with a Gradle wrapper.": "Gradle could not be started. Configure a local installation in Gradle settings, install Gradle on PATH, or use a project with a Gradle wrapper.",
   "Remote of {name}": "Remote of {name}",
   "Target branch of {name}": "Target branch of {name}",
-  "Remote project files cannot be shown in {fileManager}": "Remote project files cannot be shown in {fileManager}"
+  "Remote project files cannot be shown in {fileManager}": "Remote project files cannot be shown in {fileManager}",
+  "Reformat": "Reformat",
+  "Open in Window": "Open in Window"
 }
