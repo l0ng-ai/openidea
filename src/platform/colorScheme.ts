@@ -170,6 +170,8 @@ const BASE_ATTRIBUTES: readonly AttributeDef[] = [
   },
   syn("pyKeywordArg", "Keyword argument", ["Python"], "keyword-arg"),
   syn("pyDocstring", "Docstring", ["Python"], "docstring", { defaultItalic: true }),
+  syn("pyDocstringTag", "Docstring › Tag", ["Python"], "python-docstring-tag"),
+  syn("pyDocstringKeyword", "Docstring › Keyword", ["Python"], "python-docstring-keyword"),
   syn("pyBuiltin", "Built-in name", ["Python"], "python-builtin"),
   syn("pyDecorator", "Decorator", ["Python"], "annotation"),
   syn("pyLocalVariable", "Local variable", ["Python"], "python-local-variable"),

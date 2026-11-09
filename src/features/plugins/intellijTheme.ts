@@ -187,6 +187,8 @@ export const ICLS_ATTRIBUTES: Record<string, Array<[Part, string]>> = {
   "PY.SELF_PARAMETER": [["FOREGROUND", "--syn-self"]],
   "PY.KEYWORD_ARGUMENT": [["FOREGROUND", "--syn-keyword-arg"]],
   "PY.DOC_COMMENT": [["FOREGROUND", "--syn-docstring"]],
+  "PY.DOC_COMMENT_TAG": [["FOREGROUND", "--syn-python-docstring-tag"]],
+  "PY.DOC_COMMENT_TAG_VALUE": [["FOREGROUND", "--syn-python-docstring-keyword"]],
   "PY.BUILTIN_NAME": [["FOREGROUND", "--syn-predefined"]],
   MARKDOWN_HEADER_LEVEL_1: [["FOREGROUND", "--syn-markup-heading"]],
   MARKDOWN_CODE_SPAN: [["FOREGROUND", "--syn-markup-code"]],
