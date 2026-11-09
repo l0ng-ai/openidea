@@ -52,6 +52,12 @@ export interface Action {
    * Search Everywhere shows an ON/OFF switch and keeps the popup open.
    */
   toggled?: () => boolean;
+  /**
+   * The run takes long enough to need feedback where it was clicked: toolbar buttons of this
+   * action show a spinner and ignore clicks until `run` settles. Only for actions that finish
+   * by themselves, not ones that wait on the user (a dialog).
+   */
+  indicatesRunning?: boolean;
   run: (c: ActionContext) => void | Promise<void>;
 }
 
@@ -60,6 +66,19 @@ interface ActionStore {
 }
 
 export const useActions = create<ActionStore>(() => ({ actions: new Map() }));
+
+/** Ids of `indicatesRunning` actions with a run in flight, with how many. */
+export const useRunningActions = create<{ running: ReadonlyMap<string, number> }>(() => ({ running: new Map() }));
+
+function trackRun(id: string, delta: 1 | -1) {
+  useRunningActions.setState(({ running }) => {
+    const next = new Map(running);
+    const count = (next.get(id) ?? 0) + delta;
+    if (count > 0) next.set(id, count);
+    else next.delete(id);
+    return { running: next };
+  });
+}
 
 /** Registered actions as written (English), by id; the store holds their localised copies. */
 const sources = new Map<string, Action>();
@@ -191,6 +210,7 @@ async function runAction(id: string, arg: unknown, propagateError: boolean): Pro
       } catch (e) {
         console.error("action listener failed", e);
       }
+  if (action.indicatesRunning) trackRun(id, 1);
   try {
     let pending: void | Promise<void>;
     nesting++;
@@ -203,6 +223,8 @@ async function runAction(id: string, arg: unknown, propagateError: boolean): Pro
   } catch (e) {
     if (propagateError) throw e;
     console.error(`action ${id} failed`, e);
+  } finally {
+    if (action.indicatesRunning) trackRun(id, -1);
   }
   return true;
 }

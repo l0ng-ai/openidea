@@ -421,6 +421,7 @@ pub fn managed_bundle(app_data: &Path, name: &str) -> Option<PathBuf> {
 }
 
 /// Installer and detector over one tools directory.
+#[derive(Clone)]
 pub struct Tools {
     root: PathBuf,
     /// Search path for system tools (excludes our own dirs).
@@ -432,6 +433,8 @@ pub struct Tools {
     custom: BTreeMap<String, PathBuf>,
     /// Executables found outside the search path (app bundles), by command.
     found: BTreeMap<String, PathBuf>,
+    runtime_commands: BTreeMap<String, PathBuf>,
+    runtime_env: BTreeMap<String, String>,
     version_timeout: Duration,
     /// The project the tools are used for: tools that install into "the active runtime" (gems) run here,
     /// so a version manager picks the project's Ruby.
@@ -456,9 +459,39 @@ impl Tools {
             platform,
             custom: BTreeMap::new(),
             found: BTreeMap::new(),
+            runtime_commands: BTreeMap::new(),
+            runtime_env: BTreeMap::new(),
             version_timeout: Duration::from_secs(4),
             work_dir: None,
         }
+    }
+
+    /// Applies the project's SDKs to prerequisite lookup, probes and installer children.
+    pub fn with_runtime(mut self, commands: BTreeMap<String, PathBuf>, env: BTreeMap<String, String>) -> Self {
+        self.runtime_commands = commands;
+        self.runtime_env = env;
+        self
+    }
+
+    fn for_method(&self, method: Method) -> Self {
+        let commands: &[&str] = match method {
+            Method::Go { .. } => &["go"],
+            Method::Npm { .. } => &["node"],
+            Method::Gem { .. } | Method::GemActive { .. } => &["ruby"],
+            Method::PipVenv { .. } | Method::PipUser { .. } | Method::PipTarget { .. } => &["python"],
+            _ => &[],
+        };
+        let mut runtime = self.clone();
+        runtime.runtime_commands.retain(|name, _| commands.contains(&name.as_str()));
+        runtime.runtime_env.retain(|name, _| name == "GOROOT" && commands.contains(&"go"));
+        let dirs: Vec<PathBuf> =
+            runtime.runtime_commands.values().filter_map(|p| p.parent().map(Path::to_path_buf)).collect();
+        runtime.system_path =
+            std::env::join_paths(dirs.iter().cloned().chain(std::env::split_paths(&self.system_path)))
+                .unwrap_or_else(|_| self.system_path.clone());
+        runtime.child_path = std::env::join_paths(dirs.iter().cloned().chain(std::env::split_paths(&self.child_path)))
+            .unwrap_or_else(|_| self.child_path.clone());
+        runtime
     }
 
     /// Reports the executables chosen in settings (command → path) as the tools' location.
@@ -493,6 +526,9 @@ impl Tools {
     }
 
     fn which(&self, cmd: &str) -> Option<PathBuf> {
+        if let Some(path) = self.runtime_commands.get(cmd) {
+            return path.is_file().then(|| path.clone());
+        }
         ide_core::tool_path::find_command(cmd, &self.system_path, &self.root)
     }
 
@@ -502,7 +538,7 @@ impl Tools {
 
     fn command(&self, program: impl AsRef<std::ffi::OsStr>) -> Command {
         let mut cmd = Command::new(program);
-        ide_core::process::prepare(&mut cmd).env("PATH", &self.child_path);
+        ide_core::process::prepare(&mut cmd).envs(&self.runtime_env).env("PATH", &self.child_path);
         cmd
     }
 
@@ -524,6 +560,9 @@ impl Tools {
     /// Aliases that only open the Store unless the Store's Python is installed, so they count
     /// only when they run.
     fn python(&self) -> Option<PathBuf> {
+        if self.runtime_commands.contains_key("python") {
+            return self.which("python");
+        }
         if self.platform.os != Os::Windows {
             return self.which_any(&["python3", "python"]);
         }
@@ -664,6 +703,13 @@ impl Tools {
     }
 
     fn info_for(&self, name: &str, usage: Option<&Usage>) -> Option<ToolInfo> {
+        match registry::find(name) {
+            Some(spec) => self.for_method(spec.method).info_for_runtime(name, usage),
+            None => self.info_for_runtime(name, usage),
+        }
+    }
+
+    fn info_for_runtime(&self, name: &str, usage: Option<&Usage>) -> Option<ToolInfo> {
         let spec = registry::find(name);
         let languages = usage.map(|u| u.languages.clone()).unwrap_or_default();
         let install_hint = usage.and_then(|u| u.install_hint.clone());
@@ -863,6 +909,19 @@ impl Tools {
     /// same live events and result instead of an "already installing" error,
     /// and cancelling either request cancels the shared run.
     pub fn install(
+        &self,
+        name: &str,
+        langs: &[LanguageConfig],
+        cancel: &CancellationToken,
+        emit: Emit,
+    ) -> IdeResult<ToolInfo> {
+        match registry::find(name) {
+            Some(spec) => self.for_method(spec.method).install_for_runtime(name, langs, cancel, emit),
+            None => self.install_for_runtime(name, langs, cancel, emit),
+        }
+    }
+
+    fn install_for_runtime(
         &self,
         name: &str,
         langs: &[LanguageConfig],
@@ -1130,6 +1189,9 @@ impl Tools {
             if let Some(uv) = self.which("uv") {
                 let mut c = self.command(&uv);
                 c.arg("venv").arg(&venv);
+                if let Some(python) = self.runtime_commands.get("python") {
+                    c.arg("--python").arg(python);
+                }
                 run_streamed(c, cancel, emit)?;
                 let mut c = self.command(&uv);
                 c.args(["pip", "install", "--python"]).arg(&python).arg(package);
@@ -1371,6 +1433,13 @@ impl Tools {
 
     /// Removes a tool the IDE installed.
     pub fn uninstall(&self, name: &str, langs: &[LanguageConfig]) -> IdeResult<ToolInfo> {
+        match registry::find(name) {
+            Some(spec) => self.for_method(spec.method).uninstall_for_runtime(name, langs),
+            None => self.uninstall_for_runtime(name, langs),
+        }
+    }
+
+    fn uninstall_for_runtime(&self, name: &str, langs: &[LanguageConfig]) -> IdeResult<ToolInfo> {
         let spec = registry::find(name).ok_or_else(|| IdeError::not_found(format!("unknown tool `{name}`")))?;
         // Uninstalling mid-install would tear down the directory under the running installer.
         if INSTALLING.lock().as_ref().is_some_and(|m| m.contains_key(name)) {

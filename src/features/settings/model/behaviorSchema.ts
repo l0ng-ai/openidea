@@ -10,7 +10,7 @@ import { ZOOM_LIMITS } from "@/platform/zoom";
 import { validateIconThemeOptionsMap } from "@/platform/iconThemeOptions";
 
 export type Antialiasing = "subpixel" | "greyscale" | "none";
-export type OpenProjectIn = "ask" | "new" | "same" | "attach";
+export type OpenProjectIn = "ask" | "new" | "same";
 export type NotificationDisplay = "balloon" | "sticky" | "none";
 /** Themes selectable as "preferred" when syncing with the OS. */
 export type ConcreteTheme = ThemeChoiceId;
@@ -62,6 +62,7 @@ export type UpdateSourceSetting = "auto" | "github" | "cnb";
 export interface GeneralExtras {
   openProjectIn: OpenProjectIn;
   updateSource: UpdateSourceSetting;
+  autoCheckUpdates: boolean;
   defaultProjectDirectory: string;
   saveOnIdle: boolean;
   idleSeconds: number;
@@ -115,6 +116,7 @@ export const DEFAULT_APPEARANCE_EXTRAS: AppearanceExtras = {
 export const DEFAULT_GENERAL_EXTRAS: GeneralExtras = {
   openProjectIn: "ask",
   updateSource: "auto",
+  autoCheckUpdates: true,
   defaultProjectDirectory: "",
   saveOnIdle: false,
   idleSeconds: 15,
@@ -178,8 +180,9 @@ export function validateGeneralExtras(raw: unknown): GeneralExtras {
   const d = DEFAULT_GENERAL_EXTRAS;
   const df = obj(g.dateFormat);
   return {
-    openProjectIn: oneOf(g.openProjectIn, ["ask", "new", "same", "attach"] as const, d.openProjectIn),
+    openProjectIn: oneOf(g.openProjectIn, ["ask", "new", "same"] as const, d.openProjectIn),
     updateSource: oneOf(g.updateSource, ["auto", "github", "cnb"] as const, d.updateSource),
+    autoCheckUpdates: bool(g.autoCheckUpdates, d.autoCheckUpdates),
     defaultProjectDirectory: typeof g.defaultProjectDirectory === "string" ? g.defaultProjectDirectory : "",
     saveOnIdle: bool(g.saveOnIdle, d.saveOnIdle),
     idleSeconds: int(g.idleSeconds, d.idleSeconds, IDLE_LIMITS),

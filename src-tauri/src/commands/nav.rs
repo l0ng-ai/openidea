@@ -28,6 +28,12 @@ pub fn find_files(window: Window, state: State<'_, AppState>, query: String, lim
     ide_host::ops::nav::find_files(&state.host, window.label(), query, limit)
 }
 
+#[tauri::command]
+#[specta::specta]
+pub async fn find_files_named(window: Window, state: State<'_, AppState>, name: String) -> IdeResult<Vec<IpcPath>> {
+    ide_host::ops::nav::find_files_named(&state.host, window.label(), name).await
+}
+
 /// Folders holding indexed files, for `@` references.
 #[tauri::command]
 #[specta::specta]

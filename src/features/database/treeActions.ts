@@ -32,6 +32,7 @@ import {
   runSql,
   sourceById,
   tablesKey,
+  toggleSeparateProceduresAndFunctions,
   useDatabase,
   withConnection,
   removeSource,
@@ -461,6 +462,11 @@ export function registerDatabaseTreeActions(): () => void {
         toolWindowService().show(DB_TOOL_WINDOW, false);
         useDatabase.setState({ newMenuOpen: true });
       },
+    }),
+    tree({
+      id: "db.separateProceduresAndFunctions",
+      title: "Separate Procedures and Functions",
+      run: toggleSeparateProceduresAndFunctions,
     }),
     tree({
       id: "db.collapseAll",

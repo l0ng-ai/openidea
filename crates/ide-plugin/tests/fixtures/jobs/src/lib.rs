@@ -75,6 +75,14 @@ impl Plugin for Jobs {
                 )?;
                 Ok(None)
             }
+            "notify-project" => {
+                // The argument is a path in the target project, as a scheduled check would have.
+                let path = arg.unwrap_or_default();
+                let project = host::project_of(path).ok_or("no project contains the path")?;
+                let action = openidea_plugin::NotificationAction::new("Disable", "context").argument(path);
+                project.notify(NotificationLevel::Info, "Project update", path, &[action])?;
+                Ok(None)
+            }
             "copy" => {
                 host::copy_to_clipboard(arg.unwrap_or_default())?;
                 Ok(None)

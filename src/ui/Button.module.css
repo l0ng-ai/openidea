@@ -98,6 +98,9 @@
   opacity: 0.4;
   cursor: default;
 }
+.iconButton[aria-busy="true"] {
+  cursor: progress;
+}
 .iconButton[aria-pressed="true"] {
   background: var(--bg-toolbar-selected, var(--bg-tree-selected));
   color: var(--fg-strong);
