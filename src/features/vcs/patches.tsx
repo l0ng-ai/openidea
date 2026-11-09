@@ -2,9 +2,8 @@ import { commitRepo } from "./multiRoot";
 /** Create Patch… (from local changes or commits) and Apply Patch… (file or clipboard, with a preview). */
 import { useEffect, useState } from "react";
 import type { Commit, FileStatus, PatchFile, PatchSource, ShelvedChangeList } from "@/bindings";
-import { revealInFileManager } from "@/platform/fileManager";
+import { fileManagerName, revealInFileManager } from "@/platform/fileManager";
 import { call, commands } from "@/platform/ipc";
-import { usePlatform } from "@/platform/platformInfo";
 import { Button, Checkbox, Dialog, Icon, Input, List, Spinner, fileIconName, T } from "@/ui";
 import { workflowSettings } from "@/platform/workflowSettings";
 import { notifications } from "@/workbench/contributions";
@@ -83,15 +82,12 @@ async function browseSave(current: string): Promise<string | null> {
   }
 }
 
-/**
- * The question asked after a patch is saved, naming the platform's file manager.
- * Written in English so the text catalog translates it (Finder is macOS only).
- */
-function patchSavedBody(): string {
-  const os = usePlatform.getState().os;
-  return os === "macos"
+/** Whole sentences let each locale translate the patch question. */
+export function patchSavedBody(): string {
+  const name = fileManagerName();
+  return name === "Finder"
     ? "Patch file created successfully. Show it in Finder?"
-    : os === "windows"
+    : name === "Explorer"
       ? "Patch file created successfully. Show it in Explorer?"
       : "Patch file created successfully. Show it in Files?";
 }

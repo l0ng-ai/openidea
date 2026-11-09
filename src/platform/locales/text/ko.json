@@ -4137,7 +4137,6 @@
   "Include {path}": "{path} 포함",
   "Project View: {option}": "프로젝트 뷰: {option}",
   "Project View: Show {view}": "프로젝트 뷰: {view} 표시",
-  "Reveal in {fileManager}": "{fileManager}에서 표시",
   "Unmark as {role}": "{role} 표시 해제",
   "Updated references in {count} file": "파일 {count}개의 참조를 업데이트했습니다",
   "Updated references in {count} files": "파일 {count}개의 참조를 업데이트했습니다",

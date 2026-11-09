@@ -3928,7 +3928,6 @@
   "Include {path}": "Inclure {path}",
   "Project View: {option}": "Vue Projet : {option}",
   "Project View: Show {view}": "Vue Projet : afficher {view}",
-  "Reveal in {fileManager}": "Afficher dans {fileManager}",
   "Unmark as {role}": "Retirer le marquage {role}",
   "Updated references in {count} file": "Références mises à jour dans {count} fichier",
   "Updated references in {count} files": "Références mises à jour dans {count} fichiers",
