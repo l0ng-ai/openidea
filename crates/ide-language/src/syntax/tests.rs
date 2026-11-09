@@ -1638,3 +1638,91 @@ fn script_outlines_compose_positions_across_multiple_blocks() {
 fn script_outline_attaches_to_case_insensitive_html_tags() {
     check_outline("html", "<SCRIPT>function boot() {}</SCRIPT>", "Field SCRIPT\n  Function boot");
 }
+
+#[test]
+fn outline_restructuredtext_levels_follow_first_use_of_each_adornment() {
+    let src = "\
+=========
+ Project
+=========
+
+Install
+~~~~~~~
+
+From source
+-----------
+
+Literal block::
+
+    Not a title
+    -----------
+
+Intro
+--
+
+A paragraph
+with a line
+------------
+
+.. comment
+-----------
+
+Usage
+~~~~~
+
+.. note::
+
+   Indented
+   --------
+
+Short underline, still a title
+------
+
+Underline only
+==============
+";
+    check_outline(
+        "restructuredtext",
+        src,
+        "
+        Key Project
+          Key Install
+            Key From source
+          Key Usage
+            Key Short underline, still a title
+              Key Underline only
+        ",
+    );
+    let items = syntax().outline(&lang("restructuredtext"), src);
+    let project = &items[0];
+    assert_eq!(project.range.start, Pos::new(0, 0));
+    assert_eq!((project.selection_range.start, project.selection_range.end), (Pos::new(1, 1), Pos::new(1, 8)));
+    let install = &project.children[0];
+    assert_eq!((install.range.start, install.range.end), (Pos::new(4, 0), Pos::new(23, 11)));
+    assert!(syntax().outline(&lang("restructuredtext"), "Title\n\n").is_empty());
+}
+
+#[test]
+fn outline_restructuredtext_unicode_crlf_and_cached_edits() {
+    use ide_core::DocId;
+    use std::sync::Arc;
+
+    let src = "=========\r\n 中文😀\r\n=========\r\n\r\n子章节\r\n------\r\n\r\nBody\r\n\r\nOther\r\n------\r\n";
+    let id = DocId::next();
+    let language = lang("restructuredtext");
+    let cache = SyntaxCache::new(Arc::new(Syntax::new()));
+    cache.open(id, &language, 0);
+    let items = cache.outline(id, &language, 0, src);
+    assert_eq!(items, syntax().outline(&language, src));
+    assert_eq!(items[0].name, "中文😀");
+    assert_eq!(items[0].selection_range, Range::new(Pos::new(1, 1), Pos::new(1, 5)));
+    assert_eq!(items[0].children[0].name, "子章节");
+    assert_eq!(items[0].children[0].selection_range, Range::new(Pos::new(4, 0), Pos::new(4, 3)));
+    assert_eq!(items[0].children[0].range.end, Pos::new(7, 4));
+    assert_eq!(items[0].children[1].name, "Other");
+    let edited = src.replace("子章节", "新章节😀");
+    let updated = cache.outline(id, &language, 1, &edited);
+    assert_eq!(updated, syntax().outline(&language, &edited));
+    assert_eq!(updated[0].children[0].selection_range.end, Pos::new(4, 5));
+    assert_ne!(items, updated);
+}
