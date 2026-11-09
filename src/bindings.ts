@@ -368,6 +368,7 @@ export const commands = {
 	/**  Spring Web mapping sources for the request-path index of Search Everywhere. */
 	springRouteSources: () => typedError<RouteSource[], IdeError>(__TAURI_INVOKE("spring_route_sources")),
 	findFiles: (query: string, limit: number) => typedError<FileMatch[], IdeError>(__TAURI_INVOKE("find_files", { query, limit })),
+	findFilesNamed: (name: string) => typedError<IpcPath[], IdeError>(__TAURI_INVOKE("find_files_named", { name })),
 	/**  Folders holding indexed files, for `@` references. */
 	findDirs: (query: string, limit: number) => typedError<FileMatch[], IdeError>(__TAURI_INVOKE("find_dirs", { query, limit })),
 	findSymbols: (query: string, filter: SymbolFilter, limit: number) => typedError<SymbolMatch[], IdeError>(__TAURI_INVOKE("find_symbols", { query, filter, limit })),
@@ -1958,6 +1959,11 @@ export type AppearanceSettings = {
 	showMainToolbar?: boolean,
 	showStatusBar?: boolean,
 	/**
+	 *  View › Appearance › Navigation Bar: the file path breadcrumbs, shown in
+	 *  the status bar by default, above the editor, or not at all.
+	 */
+	navigationBar?: NavigationBarPosition,
+	/**
 	 *  Status bar widgets shown (`true`) or hidden (`false`) by the user
 	 *  (status bar context menu); widgets not listed use their default.
 	 */
@@ -1971,6 +1977,15 @@ export type ApplyOutcome = {
 	applied: string[],
 	/**  Repository-relative paths left with conflicts (index stages for the merge UI). */
 	conflicts: string[],
+};
+
+/**  Arduino tool discovery paths and default board FQBN, configured in `settings.toml`. */
+export type ArduinoSettings = {
+	cli?: string,
+	clangd?: string,
+	languageServer?: string,
+	cliConfig?: string,
+	fqbn?: string,
 };
 
 /**  Packaging artifact definition (Project Structure › Artifacts). */
@@ -4386,6 +4401,10 @@ export type FunctionBreakpoint = {
 export type GeneralSettings = {
 	reopenLastProject?: boolean,
 	confirmExit?: boolean,
+	/**  When on, the last window closes instead of showing the Welcome screen. */
+	closeWithoutWelcome?: boolean,
+	/**  When on, closing a window drops its saved editor tabs, so they are not restored next time. */
+	closeTabsWithWindow?: boolean,
 	/**  Where Open… puts a project while one is open: `ask` | `new` | `same` | `attach`. */
 	openProjectIn?: string,
 	/**  Initial folder of the Open / Clone dialogs; empty = the OS default. */
@@ -5508,6 +5527,7 @@ export type LanguagesSettings = {
 	java?: JavaSettings,
 	ruby?: RubySettings,
 	markdown?: MarkdownSettings,
+	arduino?: ArduinoSettings,
 };
 
 /**  What a freshly opened window should do once its frontend is up. */
@@ -6071,6 +6091,21 @@ export type ModuleStructureSettings = {
 	/**  Additional module dependencies. */
 	dependencies?: ModuleDependency[],
 };
+
+/**
+ *  Where the Navigation Bar (the file path breadcrumbs) is shown. Mirrors
+ *  IDEA's `View | Appearance | Navigation Bar` (Top / Status Bar / Don't show).
+ */
+export type NavigationBarPosition = 
+/**  Above the editor, below the main menu / toolbar. */
+"top" | 
+/**
+ *  In the footer, next to the status bar widgets — the default, matching
+ *  where the bar lived before the three-state choice existed.
+ */
+"statusBar" | 
+/**  Not shown at all. */
+"hidden";
 
 export type NavigationFiles = {
 	paths: IpcPath[],

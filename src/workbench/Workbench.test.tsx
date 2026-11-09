@@ -2,6 +2,7 @@ import { afterEach, describe, expect, it, vi } from "vitest";
 import { act, fireEvent, render, screen } from "@testing-library/react";
 import { emitLocalIdeEvent } from "@/platform/ipc";
 import { setLocale } from "@/platform/i18n";
+import { useProject } from "@/platform/project";
 import { registerStatusItem, registerToolWindow, type StatusItemContribution } from "./contributions";
 import { orderStatusItems, StatusBar, TaskStatus } from "./StatusBar";
 import { orderTitleItems } from "./TitleBar";
@@ -223,6 +224,8 @@ describe("notifications", () => {
   });
 
   it("the Notifications tool window lists history, marks it read and hides balloons", () => {
+    const previousProject = useProject.getState().project;
+    useProject.setState({ project: { root: "/notifications", name: "notifications" } as never });
     const dispose = registerToolWindow({
       id: NOTIFICATIONS_TOOL_WINDOW,
       title: "Notifications",
@@ -244,6 +247,7 @@ describe("notifications", () => {
     expect(screen.getAllByText("Hello")).toHaveLength(1);
     expect(useNotifications.getState().items.every((n) => n.read && !n.balloon)).toBe(true);
     dispose();
+    useProject.setState({ project: previousProject });
   });
 
   it("pops up the answer to a command the user ran even when balloons are off for its group", async () => {

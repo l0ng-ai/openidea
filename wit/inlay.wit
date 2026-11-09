@@ -1,4 +1,4 @@
-package openidea:plugin@1.4.0;
+package openidea:plugin@1.5.0;
 
 /// Optional export (world `plugin-inlay-hints`): inline hints in documents of
 /// the languages declared with the `inlay-hints` provider kind, including
