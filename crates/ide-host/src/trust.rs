@@ -227,6 +227,7 @@ pub fn restricted_command_allowed(cmd: &str) -> bool {
             | "clear_caches"
             | "clipboard_file_list"
             | "clipboard_has_files"
+            | "clipboard_image"
             | "clipboard_set_file_list"
             | "jdk_download_vendors"
             | "jdk_download_releases"
