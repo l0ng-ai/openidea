@@ -7,6 +7,7 @@ const state = vi.hoisted(() => ({
   registryChanged: () => {},
   editorChanged: () => {},
   projectChanged: () => {},
+  remoteChanged: () => {},
   reportOpen: vi.fn(async () => undefined),
   reportFocused: vi.fn(async () => undefined),
 }));
@@ -44,7 +45,15 @@ vi.mock("@/platform/project", () => ({
     },
   },
 }));
-vi.mock("@/platform/remote", () => ({ isRemoteWindow: () => state.remote }));
+vi.mock("@/platform/remote", () => ({
+  isRemoteWindow: () => state.remote,
+  useRemote: {
+    subscribe: (fn: (s: unknown, prev: unknown) => void) => {
+      state.remoteChanged = () => fn({ session: {} }, { session: {} });
+      return () => {};
+    },
+  },
+}));
 vi.mock("@/platform/ipc", () => ({
   call: (promise: Promise<unknown>) => promise,
   onIdeEvent: () => () => {},
@@ -102,6 +111,14 @@ describe("MCP editor reports", () => {
   it("reports again after reopening the same project", async () => {
     await vi.advanceTimersByTimeAsync(300);
     state.projectChanged();
+    await vi.advanceTimersByTimeAsync(300);
+    expect(state.reportOpen).toHaveBeenCalledTimes(2);
+    expect(state.reportFocused).toHaveBeenCalledTimes(2);
+  });
+  it("resends unchanged editors after reconnecting at the same root", async () => {
+    state.remote = true;
+    await vi.advanceTimersByTimeAsync(300);
+    state.remoteChanged();
     await vi.advanceTimersByTimeAsync(300);
     expect(state.reportOpen).toHaveBeenCalledTimes(2);
     expect(state.reportFocused).toHaveBeenCalledTimes(2);

@@ -1,7 +1,7 @@
 /** Reports changed files from the Problems view to the built-in MCP host. */
 import { commands, call, type FileProblems } from "@/platform/ipc";
 import { useProject } from "@/platform/project";
-import { isRemoteWindow } from "@/platform/remote";
+import { useRemote } from "@/platform/remote";
 import { useProblems, type ProblemsMap } from "./problemsStore";
 
 const REPORT_MS = 1000;
@@ -13,7 +13,7 @@ export function reportProblems(): () => void {
   let timer: ReturnType<typeof setTimeout> | null = null;
   const flush = () => {
     timer = null;
-    if (isRemoteWindow() || !useProject.getState().project) return;
+    if (!useProject.getState().project) return;
     const map = useProblems.getState().map;
     const files: FileProblems[] = [];
     for (const [path, sources] of map)
@@ -42,8 +42,16 @@ export function reportProblems(): () => void {
       schedule();
     }
   });
+  const offRemote = useRemote.subscribe((s, prev) => {
+    if (s.session !== prev.session) {
+      reset = true;
+      reported = new Map();
+      schedule();
+    }
+  });
   return () => {
     disposed = true;
+    offRemote();
     offProject();
     off();
     if (timer) clearTimeout(timer);

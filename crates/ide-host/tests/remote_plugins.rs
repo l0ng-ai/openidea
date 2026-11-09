@@ -396,7 +396,7 @@ async fn api14_remote_calls_keep_browser_listeners_and_secrets_on_the_desktop() 
     plugins.register(&mut dispatcher);
     let (client_io, server_io) = tokio::io::duplex(1 << 20);
     let (sr, sw) = tokio::io::split(server_io);
-    tokio::spawn(rpc::serve(host, dispatcher, peer_slot, sr, sw));
+    let server = tokio::spawn(rpc::serve(host.clone(), dispatcher, peer_slot, sr, sw));
     let (cr, cw) = tokio::io::split(client_io);
     let client = Arc::new(Client { desktop: Some(desktop.clone()), ..Client::default() });
     let peer = Peer::connect(cr, cw, client.clone());
@@ -416,6 +416,53 @@ async fn api14_remote_calls_keep_browser_listeners_and_secrets_on_the_desktop() 
     assert!(editors.as_str().unwrap().contains("active: true"));
     let problems = invoke(&peer, "plugin_run_command", run("problems", None)).await.unwrap();
     assert_eq!(problems.as_str(), Some("[]"));
+    let other_file = project.join("other.txt");
+    std::fs::write(&other_file, "other text").unwrap();
+    let outside_file = tmp.path().join("outside.txt");
+    std::fs::write(&outside_file, "outside").unwrap();
+    let problem = |path: &Path, message: &str| {
+        json!({"path": path, "items": [{
+            "range": {"start": {"line": 0, "col": 1}, "end": {"line": 0, "col": 3}},
+            "severity": "warning", "message": message, "source": "remote-check", "code": null
+        }]})
+    };
+    let files = json!([
+        problem(&remote_file, "remote warning"),
+        problem(&other_file, "other warning"),
+        problem(&outside_file, "outside warning")
+    ]);
+    invoke(&peer, "mcp_report_problems", json!({"reset": true, "files": files})).await.unwrap();
+    let problems = invoke(&peer, "plugin_run_command", run("problems", None)).await.unwrap();
+    let problems = problems.as_str().unwrap();
+    assert!(problems.contains("remote warning"), "{problems}");
+    assert!(problems.contains("other warning"), "{problems}");
+    assert!(!problems.contains("outside warning"), "{problems}");
+    for path in ["remote.txt", remote_file.to_str().unwrap()] {
+        let problems = invoke(&peer, "plugin_run_command", run("problems", Some(path))).await.unwrap();
+        let problems = problems.as_str().unwrap();
+        assert!(problems.contains("remote warning"), "{problems}");
+        assert!(!problems.contains("other warning"), "{problems}");
+        assert!(problems.contains(remote_file.to_str().unwrap()), "{problems}");
+    }
+    assert_eq!(invoke(&peer, "plugin_run_command", run("problems", Some("missing.txt"))).await.unwrap(), json!("[]"));
+    invoke(&peer, "mcp_report_problems", json!({"reset": false, "files": [{"path": remote_file, "items": []}]}))
+        .await
+        .unwrap();
+    let problems = invoke(&peer, "plugin_run_command", run("problems", None)).await.unwrap();
+    assert!(!problems.as_str().unwrap().contains("remote warning"));
+    assert!(problems.as_str().unwrap().contains("other warning"));
+    invoke(
+        &peer,
+        "mcp_report_problems",
+        json!({"reset": true, "files": [problem(&remote_file, "replacement warning")]}),
+    )
+    .await
+    .unwrap();
+    let problems = invoke(&peer, "plugin_run_command", run("problems", None)).await.unwrap();
+    assert!(problems.as_str().unwrap().contains("replacement warning"));
+    assert!(!problems.as_str().unwrap().contains("other warning"));
+    invoke(&peer, "mcp_report_problems", json!({"reset": true, "files": []})).await.unwrap();
+    assert_eq!(invoke(&peer, "plugin_run_command", run("problems", None)).await.unwrap(), json!("[]"));
     invoke(&peer, "plugin_run_command", run("open-editor", Some("remote.txt"))).await.unwrap();
     invoke(&peer, "plugin_run_command", run("decorations", remote_file.to_str())).await.unwrap();
     let sets = invoke(&peer, "plugin_decoration_sets", json!({})).await.unwrap();
@@ -466,9 +513,33 @@ async fn api14_remote_calls_keep_browser_listeners_and_secrets_on_the_desktop() 
     stream.read_to_string(&mut response).await.unwrap();
     assert!(response.contains("You can close this tab"));
     assert_eq!(oauth.await.unwrap().unwrap(), json!("code=desktop%2Bcode"));
+    invoke(&peer, "mcp_report_problems", json!({"reset": true, "files": files})).await.unwrap();
+    invoke(&peer, "close_project", json!({})).await.unwrap();
+    invoke(&peer, "open_project", json!({"path": project})).await.unwrap();
+    assert_eq!(invoke(&peer, "plugin_run_command", run("problems", None)).await.unwrap(), json!("[]"));
+    invoke(&peer, "mcp_report_problems", json!({"reset": true, "files": files})).await.unwrap();
+    peer.kill();
+    tokio::time::timeout(Duration::from_secs(5), server).await.unwrap().unwrap();
+    let plugin_host = plugins.host().clone();
+    let result = tokio::task::spawn_blocking(move || {
+        plugin_host
+            .run_command(
+                "api14",
+                "problems",
+                None,
+                ide_plugin::Invocation {
+                    client: Some("main".into()),
+                    workspace_root: Some(project),
+                    ..Default::default()
+                },
+            )
+            .unwrap()
+    })
+    .await
+    .unwrap();
+    assert_eq!(result.as_deref(), Some("[]"));
     plugins.host().shutdown();
     desktop.shutdown();
-    peer.kill();
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
