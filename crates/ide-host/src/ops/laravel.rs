@@ -291,7 +291,14 @@ pub(crate) async fn refresh_schema(project: &Project) -> IdeResult<Option<Larave
         return Ok(None);
     }
     let source = project.db.source(&id)?;
-    let model = match project.db.completion(&id).await {
+    let read = project.db.completion(&id).await;
+    // The setting can change while the schema is read (another data source, or none): a
+    // refresh started for the new value owns the result then, so this stale one must not
+    // overwrite it.
+    if project.settings.effective().languages.php.laravel.database != id {
+        return Ok(None);
+    }
+    let model = match read {
         Ok(model) => model,
         Err(e) => {
             project.php.set_live_schema(&id, None);
