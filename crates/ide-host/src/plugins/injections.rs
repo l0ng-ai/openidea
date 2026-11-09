@@ -1,4 +1,4 @@
-//! Embedded plugin-provider documents preserve the host's UTF-16 coordinates.
+//! Embedded documents preserve the host's UTF-16 coordinates.
 use super::{PluginHost, ProviderKind};
 use ide_core::{Pos, Range};
 use ide_plugin::{ProviderDocument, language_features::Injection};
@@ -102,6 +102,38 @@ pub(crate) fn virtual_text(doc: &ProviderDocument, ranges: &[Injection], languag
         }
     }
     text
+}
+
+/// Shared by local and remote projects; all plugin work runs on the host.
+static LSP_PROJECTS: parking_lot::Mutex<Vec<std::sync::Weak<ide_lsp::LspManager>>> =
+    parking_lot::Mutex::new(Vec::new());
+
+pub(super) fn providers_changed() {
+    let projects = {
+        let mut projects = LSP_PROJECTS.lock();
+        projects.retain(|p| p.strong_count() > 0);
+        projects.iter().filter_map(std::sync::Weak::upgrade).collect::<Vec<_>>()
+    };
+    for project in projects {
+        project.injection_providers_changed();
+    }
+}
+
+pub(crate) fn configure_lsp(lsp: &Arc<ide_lsp::LspManager>) {
+    LSP_PROJECTS.lock().push(Arc::downgrade(lsp));
+    lsp.set_injection_provider(Arc::new(|path, language, version, text| {
+        let Some(plugins) = super::editor_plugin_host() else { return Vec::new() };
+        plugins
+            .provide_injections(&ProviderDocument {
+                path: path.to_path_buf(),
+                language: language.0.clone(),
+                version: version.into(),
+                text: text.to_owned(),
+            })
+            .into_iter()
+            .map(|i| ide_lsp::InjectedRange { range: i.range, language: ide_core::LanguageId::new(i.language) })
+            .collect()
+    }));
 }
 
 #[cfg(test)]

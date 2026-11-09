@@ -11,7 +11,7 @@ use std::collections::{BTreeMap, HashMap};
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, Weak};
 
-pub const MAX_DOCUMENT_BYTES: usize = 2 << 20;
+pub const MAX_DOCUMENT_BYTES: usize = ide_lsp::MAX_INJECTED_DOCUMENT_BYTES;
 const MAX_FILES: usize = 20_000;
 const MAX_EDGES: usize = 4096;
 

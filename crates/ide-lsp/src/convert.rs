@@ -17,15 +17,30 @@ pub type Lookup<'a> = Box<dyn Fn(&Path) -> Option<Arc<DocText>> + Send + Sync + 
 
 /// Converts server positions to IDE coordinates. For UTF-16 servers this is
 /// the identity; otherwise line text comes from open documents or disk.
+type MapLocation<'a> = Box<dyn Fn(Location) -> Option<Location> + Send + Sync + 'a>;
+type MapEdit<'a> = Box<dyn Fn(&mut WorkspaceEdit) + Send + Sync + 'a>;
+
 pub struct Conv<'a> {
     pub enc: Encoding,
+    map_location: Option<MapLocation<'a>>,
+    map_edit: Option<MapEdit<'a>>,
     lookup: Lookup<'a>,
     cache: Mutex<HashMap<PathBuf, Option<Arc<DocText>>>>,
 }
 
 impl<'a> Conv<'a> {
     pub fn new(enc: Encoding, lookup: impl Fn(&Path) -> Option<Arc<DocText>> + Send + Sync + 'a) -> Self {
-        Self { enc, lookup: Box::new(lookup), cache: Mutex::new(HashMap::new()) }
+        Self { enc, lookup: Box::new(lookup), cache: Mutex::new(HashMap::new()), map_location: None, map_edit: None }
+    }
+
+    pub fn with_injections(
+        mut self,
+        location: impl Fn(Location) -> Option<Location> + Send + Sync + 'a,
+        edit: impl Fn(&mut WorkspaceEdit) + Send + Sync + 'a,
+    ) -> Self {
+        self.map_location = Some(Box::new(location));
+        self.map_edit = Some(Box::new(edit));
+        self
     }
 
     #[cfg(test)]
@@ -62,7 +77,11 @@ impl<'a> Conv<'a> {
     pub fn location(&self, loc: &lsp::Location) -> Option<Location> {
         let (path, uri) = uri_target(loc.uri.as_str());
         let range = self.range(&path, loc.range);
-        Some(Location { path: path.into(), range, uri })
+        let loc = Location { path: path.into(), range, uri };
+        match &self.map_location {
+            Some(map) => map(loc),
+            None => Some(loc),
+        }
     }
 
     pub fn text_edit(&self, path: &Path, e: lsp::TextEdit) -> TextEdit {
@@ -662,6 +681,9 @@ pub fn workspace_edit(conv: &Conv, e: lsp::WorkspaceEdit) -> WorkspaceEdit {
         }
     }
     let mut edit = WorkspaceEdit { files, ..Default::default() };
+    if let Some(map) = &conv.map_edit {
+        map(&mut edit);
+    }
     edit.deduplicate();
     edit
 }
@@ -829,7 +851,13 @@ pub fn workspace_symbols(conv: &Conv, r: lsp::WorkspaceSymbolResponse) -> Vec<Wo
                     lsp::OneOf::Left(l) => conv.location(&l)?,
                     lsp::OneOf::Right(w) => {
                         let (path, uri) = uri_target(w.uri.as_str());
-                        Location { path: path.into(), range: Range::default(), uri }
+                        {
+                            let loc = Location { path: path.into(), range: Range::default(), uri };
+                            match &conv.map_location {
+                                Some(map) => map(loc)?,
+                                None => loc,
+                            }
+                        }
                     }
                 };
                 Some(WorkspaceSymbol { name: s.name, kind: symbol_kind(s.kind), container: s.container_name, location })
