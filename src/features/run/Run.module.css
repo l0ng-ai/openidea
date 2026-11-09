@@ -462,9 +462,9 @@
 }
 .editBody {
   display: flex;
-  flex: 1;
-  /* Floor only: the dialog body bounds it, so each pane scrolls on its own. */
-  min-height: min(520px, calc(100vh - 200px));
+  flex: 1 1 auto;
+  height: min(520px, calc(100vh - 200px));
+  min-height: 0;
 }
 .editSidebar {
   flex: none;
