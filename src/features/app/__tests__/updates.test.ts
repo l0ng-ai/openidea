@@ -1,4 +1,6 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import { createElement } from "react";
+import { act, render, screen } from "@testing-library/react";
 import type { Settings, UpdateCheck, UpdateInfo, UpdateProgress } from "@/bindings";
 import type { NotificationService } from "@/workbench/contributions";
 
@@ -191,6 +193,85 @@ describe("Install and Restart", () => {
 });
 
 describe("Check for Updates", () => {
+  describe.each(["welcome", "lightEdit", "project"])("visible answers in %s windows", (windowKind) => {
+    describe.each(["logged", "unlogged", "maximized"])("%s notifications", (mode) => {
+      it.each(["available", "none", "error"])(
+        "shows %s with a saved Notifications layout and popups off",
+        async (outcome) => {
+          const { notificationServiceImpl, useNotifications, dismissBalloon } =
+            await import("@/workbench/notificationStore");
+          const { Balloons, NotificationsToolWindow } = await import("@/workbench/Notifications");
+          const { registerToolWindow } = await import("@/workbench/contributions");
+          const { useToolWindowLayout } = await import("@/workbench/toolwindows/store");
+          const previousLayout = useToolWindowLayout.getState();
+          const dispose = registerToolWindow({
+            id: "notifications",
+            title: "Notifications",
+            icon: "bell",
+            anchor: "right",
+            component: NotificationsToolWindow,
+          });
+          useProject.setState({
+            project: windowKind === "project" ? ({ root: "/p", name: "p" } as never) : null,
+            lightEdit: windowKind === "lightEdit",
+            settings: {
+              notifications: { balloons: false, groups: { updates: { display: "none", log: mode !== "unlogged" } } },
+            } as unknown as Settings,
+          });
+          useToolWindowLayout.setState({
+            visible: { ...previousLayout.visible, right: "notifications" },
+            maximized: mode === "maximized" ? "left" : null,
+          });
+          useNotifications.setState({ items: [] });
+          provideNotificationService(notificationServiceImpl);
+          const view = render(createElement(Balloons));
+          const list =
+            windowKind === "project"
+              ? render(createElement("div", { hidden: mode === "maximized" }, createElement(NotificationsToolWindow)))
+              : null;
+          try {
+            // A dismissed answer with the same key must not hide a later manual result.
+            const { notify } = await import("@/workbench/notificationStore");
+            act(() =>
+              dismissBalloon(notify({ level: "info", title: "Old update", key: UPDATE_KEY, userInitiated: true })),
+            );
+            await act(async () => {
+              const done = checkForUpdates();
+              check.resolve(
+                outcome === "error"
+                  ? { status: "error", error: { kind: "unavailable", message: "offline" } }
+                  : ok({
+                      enabled: true,
+                      update:
+                        outcome === "available"
+                          ? { version: "0.1.22", currentVersion: "0.1.21", notes: null, date: null }
+                          : null,
+                    }),
+              );
+              await done;
+            });
+            const title =
+              outcome === "error"
+                ? "Update check failed"
+                : outcome === "available"
+                  ? "OpenIDEA 0.1.22 is available"
+                  : "OpenIDEA 0.1.21 is up to date";
+            const answer = screen.getByRole(outcome === "error" ? "alert" : "status");
+            expect(answer).toBeVisible();
+            expect(answer).toHaveTextContent(title);
+            expect(task(CHECK_TASK_ID)?.done).toBe(true);
+          } finally {
+            view.unmount();
+            list?.unmount();
+            dispose();
+            useNotifications.setState({ items: [] });
+            useToolWindowLayout.setState(previousLayout);
+          }
+        },
+      );
+    });
+  });
+
   it("shows a background task while checking and joins a running check", async () => {
     const first = checkForUpdates();
     void checkForUpdates();
