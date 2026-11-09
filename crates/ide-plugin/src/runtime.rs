@@ -16,6 +16,8 @@ use crate::types::{
     FieldValue, ServiceLog, ServiceLogToggle, ServicePane, ServiceTab, TableSort, View, ViewBody, ViewButton,
     ViewEvent, ViewField, ViewListItem, ViewTable, ViewTreeItem, Viewport,
 };
+use crate::wit_host::injections_bindings::exports::openidea::plugin::injections as wit_inj;
+use crate::wit_host::language_features_bindings::exports::openidea::plugin::language_features as wit_lf;
 use crate::wit_host::{
     bindings, commit_checks_bindings, details_bindings, endpoints_bindings, file_actions_bindings, hover_bindings,
     indexing_bindings, inlay_bindings, providers_bindings, semantic_bindings, syntax_bindings, views_bindings,
@@ -33,6 +35,8 @@ use wasmtime::{Config, Engine, Store, StoreLimits, StoreLimitsBuilder, UpdateDea
 use wasmtime_wasi::p2::pipe::MemoryOutputPipe;
 use wasmtime_wasi::{WasiCtx, WasiCtxView, WasiView};
 
+use crate::wit_host::run_configurations_bindings::exports::openidea::plugin::run_configurations as wit_configs;
+use crate::wit_host::test_results_bindings::exports::openidea::plugin::test_results as wit_tests;
 use bindings::openidea::plugin::events as wit_events;
 use bindings::openidea::plugin::types as wit_types;
 use commit_checks_bindings::exports::openidea::plugin::commit_checker as wit_cc;
@@ -50,7 +54,7 @@ use views_bindings::exports::openidea::plugin::view_provider as wit_view;
 use views_bindings::openidea::plugin::view_types as wit_vt;
 
 /// The API version of the world above, `major.minor` of [`host_api`].
-pub const API_VERSION: &str = "1.3";
+pub const API_VERSION: &str = "1.4";
 const EPOCH_TICK: Duration = Duration::from_millis(10);
 pub(crate) const MAX_TEXT: usize = 1 << 20;
 pub(crate) const MAX_TITLE: usize = 256;
@@ -62,6 +66,190 @@ pub const CANCELLED: &str = "was cancelled";
 /// which routes notifications and status items to windows and edits to open
 /// documents. Capabilities are already checked when these are called.
 pub trait HostApi: Send + Sync {
+    /// Creates/replaces this plugin's non-secret project connection settings.
+    fn database_upsert(&self, root: &Path, source: crate::PluginDataSource) -> Result<(), HostError> {
+        let _ = (root, source);
+        Err(HostError::Invalid("Database subsystem is unavailable on this host".into()))
+    }
+    /// Removes only an owned data source and its credentials.
+    fn database_remove(&self, root: &Path, id: &str) -> Result<(), HostError> {
+        let _ = (root, id);
+        Err(HostError::Invalid("Database subsystem is unavailable on this host".into()))
+    }
+    /// Private ids of only this plugin's sources.
+    fn database_sources(&self, root: &Path) -> Result<Vec<String>, HostError> {
+        let _ = root;
+        Err(HostError::Invalid("Database subsystem is unavailable on this host".into()))
+    }
+    /// Writes a password to the Database credential store, without a read path.
+    fn database_credential(&self, root: &Path, id: &str, password: String) -> Result<(), HostError> {
+        let _ = (root, id, password);
+        Err(HostError::Invalid("Database subsystem is unavailable on this host".into()))
+    }
+    /// Requests normal connection/introspection in the invoking project's window.
+    fn database_connect(
+        &self,
+        root: &Path,
+        client: &str,
+        id: &str,
+        cancel: &CancellationToken,
+        timeout: Duration,
+    ) -> Result<(), HostError> {
+        let _ = (root, client, id, cancel, timeout);
+        Err(HostError::Invalid("Database subsystem is unavailable on this host".into()))
+    }
+    /// Stdio argv only; no URL or bearer token.
+    fn mcp_stdio_command(&self, client: &str) -> Option<Vec<String>> {
+        let _ = client;
+        None
+    }
+
+    /// Registers a project-scoped wrapper after validating its process grant and pin.
+    fn register_run_target(&self, root: &Path, target: crate::PluginRunTarget) -> Result<(), HostError> {
+        let _ = (root, target);
+        Err(HostError::Failed("run targets unavailable".into()))
+    }
+    /// Withdraws this plugin's target, preserving the user's remembered prompt answer.
+    fn unregister_run_target(&self, root: &Path, id: &str) {
+        let _ = (root, id);
+    }
+
+    /// Starts one of this plugin's configurations in a window.
+    fn start_run(
+        &self,
+        client: &str,
+        config: &str,
+        args: Vec<String>,
+        debug: bool,
+        cancel: &CancellationToken,
+        timeout: Duration,
+    ) -> Result<String, HostError> {
+        let _ = (client, config, args, debug, cancel, timeout);
+        Err(HostError::Failed("runs unavailable".into()))
+    }
+    /// Opens/reuses a keyed terminal, retained across idle instance reclamation.
+    fn open_terminal_session(
+        &self,
+        client: &str,
+        key: String,
+        title: String,
+        cmd: ProcessCommand,
+        cancel: &CancellationToken,
+        timeout: Duration,
+    ) -> Result<String, HostError> {
+        let _ = (client, key, title, cmd, cancel, timeout);
+        Err(HostError::Failed("terminals unavailable".into()))
+    }
+    /// Writes only to an owned, live terminal.
+    fn write_terminal(
+        &self,
+        client: &str,
+        key: &str,
+        text: String,
+        cancel: &CancellationToken,
+        timeout: Duration,
+    ) -> Result<(), HostError> {
+        let _ = (client, key, text, cancel, timeout);
+        Err(HostError::Failed("terminals unavailable".into()))
+    }
+    /// Opens a content tab through the shared editor implementation.
+    fn open_content_tab(
+        &self,
+        client: &str,
+        tab: crate::ContentTab,
+        cancel: &CancellationToken,
+        timeout: Duration,
+    ) -> Result<(), HostError> {
+        let _ = (client, tab, cancel, timeout);
+        Err(HostError::Failed("content tabs unavailable".into()))
+    }
+    /// Answers a content action in the invoking window.
+    fn reply_content_tab(&self, client: &str, request: &str, reply: crate::ContentTabReply) -> Result<(), HostError> {
+        let _ = (client, request, reply);
+        Err(HostError::Failed("content tabs unavailable".into()))
+    }
+    /// The invoking window's editors.
+    fn open_editors(&self, client: &str) -> Result<Vec<crate::OpenEditor>, HostError> {
+        let _ = client;
+        Ok(Vec::new())
+    }
+    /// Opens a validated file and optionally selects a range.
+    fn editor_open(&self, client: &str, path: &Path, selection: Option<ide_core::Range>) -> Result<(), HostError> {
+        let _ = (client, path, selection);
+        Err(HostError::Failed("editor unavailable".into()))
+    }
+    /// Changes the selections, or reveals a range, only in an editor of this window.
+    fn editor_ranges(
+        &self,
+        client: &str,
+        path: &Path,
+        ranges: Vec<ide_core::Range>,
+        reveal: bool,
+    ) -> Result<(), HostError> {
+        let _ = (client, path, ranges, reveal);
+        Err(HostError::Failed("editor unavailable".into()))
+    }
+    /// Find in Files with the project's document overlay.
+    fn search_text(
+        &self,
+        client: Option<&str>,
+        root: &Path,
+        query: crate::TextQuery,
+        limit: u32,
+        cancel: &CancellationToken,
+        deadline: Instant,
+    ) -> Result<crate::TextSearch, HostError> {
+        let _ = (client, root, query, limit, cancel, deadline);
+        Err(HostError::Failed("search unavailable".into()))
+    }
+    /// Window-reported Problems view snapshot.
+    fn problems(&self, client: &str, path: Option<&Path>) -> Result<Vec<crate::FileProblems>, HostError> {
+        let _ = (client, path);
+        Ok(Vec::new())
+    }
+    /// Replace or clear an editor decoration set.
+    fn decorations(&self, path: Option<&Path>, set: &str, items: Vec<crate::Decoration>) -> Result<(), HostError> {
+        let _ = (path, set, items);
+        Err(HostError::Failed("decorations unavailable".into()))
+    }
+    /// Replace or clear a tree decoration set.
+    fn file_decorations(
+        &self,
+        path: Option<&Path>,
+        set: &str,
+        item: Option<crate::FileDecoration>,
+    ) -> Result<(), HostError> {
+        let _ = (path, set, item);
+        Err(HostError::Failed("decorations unavailable".into()))
+    }
+    /// Trusted repository history.
+    fn vcs_log(
+        &self,
+        root: &Path,
+        path: Option<&str>,
+        limit: u32,
+        cancel: &CancellationToken,
+    ) -> Result<Vec<crate::CommitInfo>, HostError> {
+        let _ = (root, path, limit, cancel);
+        Err(HostError::Failed("git unavailable".into()))
+    }
+    /// Trusted repository attribution, including unsaved documents.
+    fn vcs_blame(&self, client: Option<&str>, root: &Path, path: &str) -> Result<Vec<crate::BlameLine>, HostError> {
+        let _ = (client, root, path);
+        Err(HostError::Failed("git unavailable".into()))
+    }
+    /// Trusted repository working-tree patch, bounded to 4 MiB.
+    fn vcs_diff(
+        &self,
+        root: &Path,
+        path: Option<&str>,
+        against: Option<&str>,
+        cancel: &CancellationToken,
+    ) -> Result<Option<String>, HostError> {
+        let _ = (root, path, against, cancel);
+        Err(HostError::Failed("git unavailable".into()))
+    }
+
     /// Shows a notification; `actions` name commands the plugin declares.
     fn notify(
         &self,
@@ -101,8 +289,45 @@ pub trait HostApi: Send + Sync {
         let _ = (client, view);
         Ok(())
     }
+    /// Whether this stable id is a command declared by this plugin.
+    fn owns_command(&self, id: &str) -> bool {
+        let _ = id;
+        false
+    }
+    /// Executes a stable command in the invoking window and waits for its result.
+    fn execute_command(
+        &self,
+        invocation: &Invocation,
+        id: &str,
+        arg: Option<String>,
+        cancel: &CancellationToken,
+        timeout: Duration,
+    ) -> Result<Option<String>, HostError> {
+        let _ = (invocation, id, arg, cancel, timeout);
+        Err(HostError::NotFound("command".into()))
+    }
+    /// Appends text, or clears (`None`), in a plugin-owned output channel.
+    fn output_write(&self, channel: &str, text: Option<&str>) -> Result<(), HostError> {
+        let _ = (channel, text);
+        Err(HostError::Failed("output unavailable".into()))
+    }
+    /// Reveals an output channel in the invoking window.
+    fn output_reveal(&self, client: &str, channel: &str) -> Result<(), HostError> {
+        let _ = (client, channel);
+        Err(HostError::Failed("output unavailable".into()))
+    }
+    /// Checks manifest minimum API requirements for new declarations or subscriptions.
+    fn require_api(&self, what: &str, minor: u64) -> Result<(), HostError> {
+        let _ = (what, minor);
+        Ok(())
+    }
     /// Sets (`Some`) or removes the plugin's status bar item `id`.
     fn status_item(&self, id: &str, item: Option<StatusItem>);
+    /// Sets or removes the status override in the invoking window.
+    fn window_status_item(&self, client: &str, id: &str, item: Option<StatusItem>) -> Result<(), HostError> {
+        let _ = (client, id, item);
+        Err(HostError::Invalid("window status unavailable".into()))
+    }
     /// Sets (`Some`, validated JSON text) or removes the plugin's context key,
     /// for window `client` (every window if `None`).
     fn set_context(&self, client: Option<&str>, key: &str, value: Option<String>) -> Result<(), HostError> {
@@ -181,6 +406,62 @@ pub trait HostApi: Send + Sync {
     /// Performs `request` (its host is granted), filling in secret placeholders.
     fn fetch(&self, request: HttpRequest, cancel: &CancellationToken) -> Result<HttpResponse, HostError>;
     fn secret_is_set(&self, name: &str) -> bool;
+
+    /// Stores or deletes a secret declared by this plugin; never returns its value.
+    fn secret_set(&self, name: &str, value: Option<&str>) -> Result<(), HostError> {
+        let _ = (name, value);
+        Err(HostError::NotFound("secret".into()))
+    }
+    /// Creates a desktop loopback listener and returns its handle and redirect URI.
+    fn begin_loopback(&self, client: &str, path: &str) -> Result<(u64, String), HostError> {
+        let _ = (client, path);
+        Err(HostError::Failed("loopback unavailable".into()))
+    }
+    /// Awaits a browser redirect, excluded from the caller's execution budget.
+    fn wait_loopback(
+        &self,
+        id: u64,
+        timeout: Duration,
+        cancel: &CancellationToken,
+    ) -> Result<Option<String>, HostError> {
+        let _ = (id, timeout, cancel);
+        Err(HostError::NotFound("loopback".into()))
+    }
+    /// Releases a desktop listener when its resource or plugin stops.
+    fn close_loopback(&self, id: u64) {
+        let _ = id;
+    }
+    /// Connects to an approved host-local socket; owned by this plugin instance.
+    fn ipc_connect(&self, name: &str, cancel: &CancellationToken, timeout: Duration) -> Result<u64, HostError> {
+        let _ = (name, cancel, timeout);
+        Err(HostError::Failed("IPC unavailable".into()))
+    }
+    /// Writes to an owned IPC connection.
+    fn ipc_write(
+        &self,
+        id: u64,
+        bytes: Vec<u8>,
+        cancel: &CancellationToken,
+        timeout: Duration,
+    ) -> Result<(), HostError> {
+        let _ = (id, bytes, cancel, timeout);
+        Err(HostError::NotFound("connection".into()))
+    }
+    /// Reads from an owned IPC connection, empty on timeout or EOF.
+    fn ipc_read(
+        &self,
+        id: u64,
+        max: usize,
+        timeout: Duration,
+        cancel: &CancellationToken,
+    ) -> Result<Vec<u8>, HostError> {
+        let _ = (id, max, timeout, cancel);
+        Err(HostError::NotFound("connection".into()))
+    }
+    /// Closes an owned IPC connection, including when its resource is dropped.
+    fn ipc_close(&self, id: u64) {
+        let _ = id;
+    }
     /// Runs the approved file of `process:<program>` with `cmd.env` added to
     /// the inherited environment, and waits.
     fn run_process(
@@ -631,6 +912,8 @@ pub struct Runtime {
 
 /// What the component exports: the `plugin` world, plus optional interfaces.
 struct Exports {
+    language_features: Option<wit_lf::Guest>,
+    injections: Option<wit_inj::Guest>,
     plugin: bindings::Plugin,
     syntax: Option<wit_syntax::Guest>,
     providers: Option<wit_prov::Guest>,
@@ -644,6 +927,9 @@ struct Exports {
     commit_checks: Option<wit_cc::Guest>,
     inlay: Option<wit_inlay::Guest>,
     endpoints: Option<wit_endpoints::Guest>,
+    run_configurations: Option<wit_configs::Guest>,
+    test_results: Option<wit_tests::Guest>,
+    mcp: Option<crate::wit_host::mcp_bindings::exports::openidea::plugin::mcp_provider::Guest>,
 }
 
 /// Most results one syntax call may return (more are dropped).
@@ -653,6 +939,30 @@ const MAX_BATCH: usize = 1000;
 
 fn event_to_wit(e: WorkbenchEvent) -> wit_events::Event {
     match e {
+        WorkbenchEvent::RunExited(value) => wit_events::Event::Other(wit_types::Extension {
+            kind: "run-exited".into(),
+            data: serde_json::to_string(&value).unwrap(),
+        }),
+        WorkbenchEvent::TerminalExited(value) => wit_events::Event::Other(wit_types::Extension {
+            kind: "terminal-exited".into(),
+            data: serde_json::to_string(&value).unwrap(),
+        }),
+        WorkbenchEvent::ContentTabAction(value) => wit_events::Event::Other(wit_types::Extension {
+            kind: "content-tab-action".into(),
+            data: serde_json::to_string(&value).unwrap(),
+        }),
+        WorkbenchEvent::FileClosed(p) => wit_events::Event::Other(wit_types::Extension {
+            kind: "file-closed".into(),
+            data: serde_json::to_string(&p).expect("path serializes"),
+        }),
+        WorkbenchEvent::SettingsChanged(keys) => wit_events::Event::Other(wit_types::Extension {
+            kind: "settings-changed".into(),
+            data: serde_json::to_string(&keys).expect("keys serialize"),
+        }),
+        WorkbenchEvent::InputModeChanged(mode) => wit_events::Event::Other(wit_types::Extension {
+            kind: "input-mode-changed".into(),
+            data: serde_json::to_string(&mode).expect("mode serializes"),
+        }),
         WorkbenchEvent::FileOpened(p) => wit_events::Event::FileOpened(p),
         WorkbenchEvent::FileSaved(p) => wit_events::Event::FileSaved(p),
         WorkbenchEvent::FilesChanged(batch) => wit_events::Event::Other(wit_types::Extension {
@@ -737,7 +1047,19 @@ impl Runtime {
         let commit_check_indices = wit_cc::GuestIndices::new(&pre).ok();
         let inlay_indices = wit_inlay::GuestIndices::new(&pre).ok();
         let endpoint_indices = wit_endpoints::GuestIndices::new(&pre).ok();
+        let configs_indices = wit_configs::GuestIndices::new(&pre).ok();
+        let tests_indices = wit_tests::GuestIndices::new(&pre).ok();
+        let lf_indices = wit_lf::GuestIndices::new(&pre).ok();
+        let inj_indices = wit_inj::GuestIndices::new(&pre).ok();
+        let mcp_indices =
+            crate::wit_host::mcp_bindings::exports::openidea::plugin::mcp_provider::GuestIndices::new(&pre).ok();
         let instance = pre.instantiate(&mut store).map_err(api_hint)?;
+        let mcp = mcp_indices.map(|i| i.load(&mut store, &instance)).transpose().map_err(api_hint)?;
+        let run_configurations =
+            configs_indices.map(|i| i.load(&mut store, &instance)).transpose().map_err(api_hint)?;
+        let test_results = tests_indices.map(|i| i.load(&mut store, &instance)).transpose().map_err(api_hint)?;
+        let language_features = lf_indices.map(|i| i.load(&mut store, &instance)).transpose().map_err(api_hint)?;
+        let injections = inj_indices.map(|i| i.load(&mut store, &instance)).transpose().map_err(api_hint)?;
         let plugin = plugin_indices.load(&mut store, &instance).map_err(api_hint)?;
         let syntax = match syntax_indices {
             Some(indices) => Some(indices.load(&mut store, &instance).map_err(api_hint)?),
@@ -790,6 +1112,8 @@ impl Runtime {
         Ok(Self {
             store,
             exports: Exports {
+                language_features,
+                injections,
                 plugin,
                 syntax,
                 providers,
@@ -802,11 +1126,63 @@ impl Runtime {
                 commit_checks,
                 inlay,
                 endpoints,
+                run_configurations,
+                test_results,
+                mcp,
                 file_actions,
             },
             limits: setup.limits,
             version: setup.version,
         })
+    }
+
+    /// Complete configurations from the optional API 1.4 export.
+    pub fn run_configurations(
+        &mut self,
+        root: String,
+        timeout: Duration,
+    ) -> Result<Vec<crate::PluginRunConfiguration>, CallError> {
+        if self.exports.run_configurations.is_none() {
+            return Err(CallError::missing_export("run-configurations"));
+        }
+        let invocation = Invocation { workspace_root: Some(root.clone().into()), ..Default::default() };
+        let items = self.call(invocation, timeout, |e, store| {
+            e.run_configurations.as_ref().unwrap().call_configurations(store, &root)
+        })?;
+        if items.len() > 1000 {
+            return Err(CallError::Guest(GuestError::Invalid("too many run configurations".into())));
+        }
+        Ok(items
+            .into_iter()
+            .map(|c| crate::PluginRunConfiguration {
+                id: c.id,
+                name: c.name,
+                program: c.program,
+                args: c.args,
+                cwd: c.cwd,
+                test: c.test,
+                framework: c.framework,
+            })
+            .collect())
+    }
+    /// One editor-budget batch of a plugin test parser.
+    pub fn parse_test_results(
+        &mut self,
+        config: String,
+        chunk: String,
+        invocation: Invocation,
+        timeout: Duration,
+    ) -> Result<Vec<crate::PluginTestEvent>, CallError> {
+        if self.exports.test_results.is_none() {
+            return Err(CallError::missing_export("test-results"));
+        }
+        let items = self.call(invocation, timeout, |e, store| {
+            e.test_results.as_ref().unwrap().call_parse(store, &config, &chunk)
+        })?;
+        if items.len() > 10000 {
+            return Err(CallError::Guest(GuestError::Invalid("too many test events".into())));
+        }
+        Ok(items.into_iter().map(test_event_from_wit).collect())
     }
 
     /// The component exports `syntax-provider`.
@@ -1806,6 +2182,392 @@ fn event_to_wit_view(e: ViewEvent) -> wit_vt::ViewEvent {
             kind: "sort".into(),
             data: format!(r#"{{"column":{column},"descending":{descending}}}"#),
         }),
+    }
+}
+
+fn test_event_from_wit(event: wit_tests::TestEvent) -> crate::PluginTestEvent {
+    use crate::{PluginTestEvent as E, TestFailed, TestOutput, TestPassed, TestSkipped, TestStart};
+    let location = |l: wit_types::Location| crate::Location {
+        path: l.path.into(),
+        range: ide_core::Range::new(
+            ide_core::Pos::new(l.range.start.line, l.range.start.character),
+            ide_core::Pos::new(l.range.end.line, l.range.end.character),
+        ),
+    };
+    let start = |v: wit_tests::TestStart| TestStart {
+        id: v.id,
+        parent: v.parent,
+        name: v.name,
+        location: v.location.map(location),
+    };
+    match event {
+        wit_tests::TestEvent::SuiteStarted(v) => E::SuiteStarted(start(v)),
+        wit_tests::TestEvent::TestStarted(v) => E::TestStarted(start(v)),
+        wit_tests::TestEvent::Passed(v) => E::Passed(TestPassed { id: v.id, duration_ms: v.duration_ms }),
+        wit_tests::TestEvent::Failed(v) => E::Failed(TestFailed {
+            id: v.id,
+            duration_ms: v.duration_ms,
+            message: v.message,
+            expected: v.expected,
+            actual: v.actual,
+            location: v.location.map(location),
+        }),
+        wit_tests::TestEvent::Skipped(v) => E::Skipped(TestSkipped { id: v.id, reason: v.reason }),
+        wit_tests::TestEvent::Output(v) => E::Output(TestOutput { id: v.id, text: v.text }),
+        wit_tests::TestEvent::Other(v) => E::Other { kind: v.kind, data: v.data },
+    }
+}
+
+fn parameter_from(v: wit_lf::Parameter) -> crate::language_features::Parameter {
+    crate::language_features::Parameter {
+        label: parameter_label_from(v.label),
+        documentation: v.documentation.map(|v| crate::runtime::clip(v, 65536)),
+    }
+}
+fn signature_from(v: wit_lf::Signature) -> crate::language_features::Signature {
+    crate::language_features::Signature {
+        label: crate::runtime::clip(v.label, 65536),
+        documentation: v.documentation.map(|v| crate::runtime::clip(v, 65536)),
+        parameters: v.parameters.into_iter().take(10000).map(parameter_from).collect(),
+    }
+}
+fn signature_help_from(v: wit_lf::SignatureHelpResult) -> crate::language_features::SignatureHelp {
+    crate::language_features::SignatureHelp {
+        signatures: v.signatures.into_iter().take(10000).map(signature_from).collect(),
+        active_signature: v.active_signature,
+        active_parameter: v.active_parameter,
+    }
+}
+fn highlight_from(v: wit_lf::Highlight) -> crate::language_features::Highlight {
+    crate::language_features::Highlight { range: range_from_wit(v.range), kind: crate::runtime::clip(v.kind, 65536) }
+}
+fn document_link_from(v: wit_lf::DocumentLink) -> crate::language_features::DocumentLink {
+    crate::language_features::DocumentLink {
+        range: range_from_wit(v.range),
+        target: crate::runtime::clip(v.target, 65536),
+    }
+}
+fn code_lens_from(v: wit_lf::CodeLens) -> crate::language_features::CodeLens {
+    crate::language_features::CodeLens {
+        range: range_from_wit(v.range),
+        title: crate::runtime::clip(v.title, 65536),
+        command: crate::runtime::clip(v.command, 65536),
+        argument: v.argument.map(|v| crate::runtime::clip(v, 65536)),
+    }
+}
+fn fold_range_from(v: wit_lf::FoldRange) -> crate::language_features::FoldRange {
+    crate::language_features::FoldRange {
+        start_line: v.start_line,
+        end_line: v.end_line,
+        kind: crate::runtime::clip(v.kind, 65536),
+    }
+}
+fn color_info_from(v: wit_lf::ColorInfo) -> crate::language_features::ColorInfo {
+    crate::language_features::ColorInfo {
+        range: range_from_wit(v.range),
+        red: v.red,
+        green: v.green,
+        blue: v.blue,
+        alpha: v.alpha,
+    }
+}
+fn document_symbol_from(v: wit_lf::DocumentSymbol) -> crate::language_features::DocumentSymbol {
+    crate::language_features::DocumentSymbol {
+        name: crate::runtime::clip(v.name, 65536),
+        detail: crate::runtime::clip(v.detail, 65536),
+        kind: crate::runtime::clip(v.kind, 65536),
+        range: range_from_wit(v.range),
+        selection_range: range_from_wit(v.selection_range),
+        parent: v.parent,
+    }
+}
+fn gutter_action_from(v: wit_lf::GutterAction) -> crate::language_features::GutterAction {
+    crate::language_features::GutterAction {
+        line: v.line,
+        icon: v.icon.map(|v| crate::runtime::clip(v, 65536)),
+        tooltip: crate::runtime::clip(v.tooltip, 65536),
+        command: crate::runtime::clip(v.command, 65536),
+        argument: v.argument.map(|v| crate::runtime::clip(v, 65536)),
+    }
+}
+fn parameter_label_from(v: wit_lf::ParameterLabel) -> crate::language_features::ParameterLabel {
+    use crate::language_features::ParameterLabel as P;
+    match v {
+        wit_lf::ParameterLabel::Text(t) => P::Text(clip(t, 4096)),
+        wit_lf::ParameterLabel::Offsets(t) => P::Offsets(t),
+    }
+}
+impl Runtime {
+    fn language_feature_call<R>(
+        &mut self,
+        timeout: Duration,
+        f: impl FnOnce(&wit_lf::Guest, &mut Store<StoreData>) -> wasmtime::Result<R>,
+    ) -> Result<R, CallError> {
+        if self.exports.language_features.is_none() {
+            return Err(CallError::missing_export("language-features"));
+        }
+        self.call(Invocation::default(), timeout, |e, s| f(e.language_features.as_ref().expect("checked"), s))
+    }
+    pub fn language_format(
+        &mut self,
+        doc: &ProviderDocument,
+        range: Option<ide_core::Range>,
+        options: crate::language_features::FormatOptions,
+        timeout: Duration,
+    ) -> Result<Vec<ide_core::TextEdit>, CallError> {
+        let d = wit_lf::Document {
+            path: to_ipc(&doc.path),
+            language: doc.language.clone(),
+            version: doc.version,
+            text: doc.text.clone(),
+        };
+        let result = self.language_feature_call(timeout, |p, s| {
+            p.call_format(
+                s,
+                &d,
+                range.map(range_to_wit),
+                wit_lf::FormatOptions { tab_size: options.tab_size, insert_spaces: options.insert_spaces },
+            )
+        })?;
+        let result = result.map_err(|e| CallError::Guest(e.into()))?;
+        Ok(result.into_iter().take(10000).map(edit_from_wit).collect())
+    }
+    pub fn language_signature_help(
+        &mut self,
+        doc: &ProviderDocument,
+        at: ide_core::Pos,
+        timeout: Duration,
+    ) -> Result<Option<crate::language_features::SignatureHelp>, CallError> {
+        let d = wit_lf::Document {
+            path: to_ipc(&doc.path),
+            language: doc.language.clone(),
+            version: doc.version,
+            text: doc.text.clone(),
+        };
+        let result = self.language_feature_call(timeout, |p, s| p.call_signature_help(s, &d, pos_to_wit(at)))?;
+        Ok(result.map(signature_help_from))
+    }
+    pub fn language_document_highlights(
+        &mut self,
+        doc: &ProviderDocument,
+        at: ide_core::Pos,
+        timeout: Duration,
+    ) -> Result<Vec<crate::language_features::Highlight>, CallError> {
+        let d = wit_lf::Document {
+            path: to_ipc(&doc.path),
+            language: doc.language.clone(),
+            version: doc.version,
+            text: doc.text.clone(),
+        };
+        let result = self.language_feature_call(timeout, |p, s| p.call_document_highlights(s, &d, pos_to_wit(at)))?;
+        Ok(result.into_iter().take(10000).map(highlight_from).collect())
+    }
+    pub fn language_document_links(
+        &mut self,
+        doc: &ProviderDocument,
+        timeout: Duration,
+    ) -> Result<Vec<crate::language_features::DocumentLink>, CallError> {
+        let d = wit_lf::Document {
+            path: to_ipc(&doc.path),
+            language: doc.language.clone(),
+            version: doc.version,
+            text: doc.text.clone(),
+        };
+        let result = self.language_feature_call(timeout, |p, s| p.call_document_links(s, &d))?;
+        Ok(result.into_iter().take(10000).map(document_link_from).collect())
+    }
+    pub fn language_code_lenses(
+        &mut self,
+        doc: &ProviderDocument,
+        timeout: Duration,
+    ) -> Result<Vec<crate::language_features::CodeLens>, CallError> {
+        let d = wit_lf::Document {
+            path: to_ipc(&doc.path),
+            language: doc.language.clone(),
+            version: doc.version,
+            text: doc.text.clone(),
+        };
+        let result = self.language_feature_call(timeout, |p, s| p.call_code_lenses(s, &d))?;
+        Ok(result.into_iter().take(10000).map(code_lens_from).collect())
+    }
+    pub fn language_selection_ranges(
+        &mut self,
+        doc: &ProviderDocument,
+        at: ide_core::Pos,
+        timeout: Duration,
+    ) -> Result<Vec<ide_core::Range>, CallError> {
+        let d = wit_lf::Document {
+            path: to_ipc(&doc.path),
+            language: doc.language.clone(),
+            version: doc.version,
+            text: doc.text.clone(),
+        };
+        let result = self.language_feature_call(timeout, |p, s| p.call_selection_ranges(s, &d, pos_to_wit(at)))?;
+        Ok(result.into_iter().take(10000).map(range_from_wit).collect())
+    }
+    pub fn language_folding(
+        &mut self,
+        doc: &ProviderDocument,
+        timeout: Duration,
+    ) -> Result<Vec<crate::language_features::FoldRange>, CallError> {
+        let d = wit_lf::Document {
+            path: to_ipc(&doc.path),
+            language: doc.language.clone(),
+            version: doc.version,
+            text: doc.text.clone(),
+        };
+        let result = self.language_feature_call(timeout, |p, s| p.call_folding(s, &d))?;
+        Ok(result.into_iter().take(10000).map(fold_range_from).collect())
+    }
+    pub fn language_colors(
+        &mut self,
+        doc: &ProviderDocument,
+        timeout: Duration,
+    ) -> Result<Vec<crate::language_features::ColorInfo>, CallError> {
+        let d = wit_lf::Document {
+            path: to_ipc(&doc.path),
+            language: doc.language.clone(),
+            version: doc.version,
+            text: doc.text.clone(),
+        };
+        let result = self.language_feature_call(timeout, |p, s| p.call_colors(s, &d))?;
+        Ok(result.into_iter().take(10000).map(color_info_from).collect())
+    }
+    pub fn language_color_presentations(
+        &mut self,
+        doc: &ProviderDocument,
+        color: crate::language_features::ColorInfo,
+        timeout: Duration,
+    ) -> Result<Vec<String>, CallError> {
+        let d = wit_lf::Document {
+            path: to_ipc(&doc.path),
+            language: doc.language.clone(),
+            version: doc.version,
+            text: doc.text.clone(),
+        };
+        let result = self.language_feature_call(timeout, |p, s| {
+            p.call_color_presentations(
+                s,
+                &d,
+                wit_lf::ColorInfo {
+                    range: range_to_wit(color.range),
+                    red: color.red,
+                    green: color.green,
+                    blue: color.blue,
+                    alpha: color.alpha,
+                },
+            )
+        })?;
+        Ok(result.into_iter().take(10000).map(|v| crate::runtime::clip(v, 65536)).collect())
+    }
+    pub fn language_document_symbols(
+        &mut self,
+        doc: &ProviderDocument,
+        timeout: Duration,
+    ) -> Result<Vec<crate::language_features::DocumentSymbol>, CallError> {
+        let d = wit_lf::Document {
+            path: to_ipc(&doc.path),
+            language: doc.language.clone(),
+            version: doc.version,
+            text: doc.text.clone(),
+        };
+        let result = self.language_feature_call(timeout, |p, s| p.call_document_symbols(s, &d))?;
+        Ok(result.into_iter().take(10000).map(document_symbol_from).collect())
+    }
+    pub fn language_implementation(
+        &mut self,
+        doc: &ProviderDocument,
+        at: ide_core::Pos,
+        timeout: Duration,
+    ) -> Result<Vec<crate::Location>, CallError> {
+        let d = wit_lf::Document {
+            path: to_ipc(&doc.path),
+            language: doc.language.clone(),
+            version: doc.version,
+            text: doc.text.clone(),
+        };
+        let result = self.language_feature_call(timeout, |p, s| p.call_implementation(s, &d, pos_to_wit(at)))?;
+        Ok(result.into_iter().take(10000).map(location_from_wit).collect())
+    }
+    pub fn language_type_definition(
+        &mut self,
+        doc: &ProviderDocument,
+        at: ide_core::Pos,
+        timeout: Duration,
+    ) -> Result<Vec<crate::Location>, CallError> {
+        let d = wit_lf::Document {
+            path: to_ipc(&doc.path),
+            language: doc.language.clone(),
+            version: doc.version,
+            text: doc.text.clone(),
+        };
+        let result = self.language_feature_call(timeout, |p, s| p.call_type_definition(s, &d, pos_to_wit(at)))?;
+        Ok(result.into_iter().take(10000).map(location_from_wit).collect())
+    }
+    pub fn language_gutter_actions(
+        &mut self,
+        doc: &ProviderDocument,
+        timeout: Duration,
+    ) -> Result<Vec<crate::language_features::GutterAction>, CallError> {
+        let d = wit_lf::Document {
+            path: to_ipc(&doc.path),
+            language: doc.language.clone(),
+            version: doc.version,
+            text: doc.text.clone(),
+        };
+        let result = self.language_feature_call(timeout, |p, s| p.call_gutter_actions(s, &d))?;
+        Ok(result.into_iter().take(10000).map(gutter_action_from).collect())
+    }
+    pub fn provide_injections(
+        &mut self,
+        doc: &ProviderDocument,
+        timeout: Duration,
+    ) -> Result<Vec<crate::language_features::Injection>, CallError> {
+        if self.exports.injections.is_none() {
+            return Err(CallError::missing_export("injections"));
+        }
+        let d = wit_inj::Document {
+            path: to_ipc(&doc.path),
+            language: doc.language.clone(),
+            version: doc.version,
+            text: doc.text.clone(),
+        };
+        let result = self.call(Invocation::default(), timeout, |e, s| {
+            e.injections.as_ref().expect("checked").call_injections(s, &d)
+        })?;
+        Ok(result
+            .into_iter()
+            .take(10000)
+            .map(|i| crate::language_features::Injection {
+                range: range_from_wit(i.range),
+                language: clip(i.language, 64),
+            })
+            .collect())
+    }
+}
+
+impl Runtime {
+    /// Optional MCP export, with the same wall-clock and fuel budgets as commands.
+    pub fn mcp_call(&mut self, tool: &str, arguments: &str, invocation: Invocation) -> Result<String, CallError> {
+        if self.exports.mcp.is_none() {
+            return Err(CallError::missing_export("mcp-provider"));
+        }
+        let result = self.call(invocation, self.limits.timeout, |e, store| {
+            let ctx = store.data_mut().new_invocation()?;
+            let result = e.mcp.as_ref().unwrap().call_call(
+                &mut *store,
+                tool,
+                arguments,
+                wasmtime::component::Resource::new_borrow(ctx.rep()),
+            );
+            store.data_mut().drop_invocation(ctx);
+            result
+        })?;
+        let result = result.map_err(|e| CallError::Guest(e.into()))?;
+        if result.len() > 4 << 20 {
+            return Err(CallError::Guest(GuestError::Invalid("MCP result exceeds 4 MiB".into())));
+        }
+        Ok(result)
     }
 }
 

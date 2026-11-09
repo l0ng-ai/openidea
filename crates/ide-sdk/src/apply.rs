@@ -170,7 +170,10 @@ pub fn jdtls_jdk(root: &Path, s: &Settings) -> Result<Option<crate::java::Jdk>, 
         Some(Ok(jdk)) if !ide_core::java_runtime::supports_java_bundles(&jdk.home) => {
             Err(crate::java::server_jdk_incomplete_message(&jdk, jdk.major.max(crate::java::JDTLS_MIN_JAVA)))
         }
-        Some(Ok(jdk)) => Ok(Some(jdk)),
+        Some(Ok(jdk)) => match crate::java::java_execution_error(&crate::java::java_executable(&jdk.home)) {
+            Some(error) => Err(error),
+            None => Ok(Some(jdk)),
+        },
         Some(Err(p)) => {
             Err(format!("The language server JDK {} (Settings › Languages & Frameworks › Java).", not_a_jdk(&p)))
         }
@@ -408,12 +411,15 @@ pub fn gradle_env(
 }
 
 /// Maven options from settings, placed before the goals: `-s <settings.xml>`,
-/// `-Dmaven.repo.local=<dir>` and `-T <count>` (the thread count).
+/// `-t <toolchains.xml>`, `-Dmaven.repo.local=<dir>`, `-T <count>` and `-P <profiles>`.
 pub fn maven_options(root: &Path, s: &Settings) -> Vec<String> {
     let m = &s.languages.java.maven;
     let mut out = Vec::new();
     if let Some(file) = setting_path(root, &m.user_settings) {
         out.extend(["-s".to_owned(), file.to_string_lossy().into_owned()]);
+    }
+    if let Some(file) = setting_path(root, &m.toolchains) {
+        out.extend(["-t".to_owned(), file.to_string_lossy().into_owned()]);
     }
     if let Some(dir) = setting_path(root, &m.local_repository) {
         out.push(format!("-Dmaven.repo.local={}", dir.to_string_lossy()));
@@ -421,20 +427,18 @@ pub fn maven_options(root: &Path, s: &Settings) -> Vec<String> {
     if let Some(threads) = m.thread_count() {
         out.extend(["-T".to_owned(), threads.to_owned()]);
     }
+    if let Some(profiles) = non_empty(&m.active_profiles) {
+        out.extend(["-P".to_owned(), profiles.to_owned()]);
+    }
     out
 }
 
 fn maven_settings_prefixes(args: &[String]) -> Vec<usize> {
     let mut prefixes = vec![0];
     let mut i = 0;
-    while let Some(arg) = args.get(i) {
-        if (arg == "-s" || arg == "-T") && args.get(i + 1).is_some() {
-            i += 2;
-        } else if arg.starts_with("-Dmaven.repo.local=") {
-            i += 1;
-        } else {
-            break;
-        }
+    while i < args.len() {
+        let Some(n) = maven_option_len(&args[i..]) else { break };
+        i += n;
         prefixes.push(i);
     }
     prefixes
@@ -1110,44 +1114,86 @@ fn is_python_command(cmd: &str) -> bool {
 
 const PY_RUNNERS: [&str; 3] = ["uv", "poetry", "pdm"];
 
-/// [`maven_options`] as the groups they are passed in (`-s <file>`, `-Dmaven.repo.local=…`,
-/// `-T <count>`).
+fn maven_option_flag(arg: &str) -> Option<&'static str> {
+    for (short, long) in
+        [("-s", "--settings"), ("-t", "--toolchains"), ("-T", "--threads"), ("-P", "--activate-profiles")]
+    {
+        if arg.starts_with(short) || arg == long || arg.starts_with(&format!("{long}=")) {
+            return Some(short);
+        }
+    }
+    arg.starts_with("-Dmaven.repo.local=").then_some("-Dmaven.repo.local")
+}
+
+fn maven_option_len(args: &[String]) -> Option<usize> {
+    let arg = args.first()?;
+    maven_option_flag(arg)?;
+    let separate = matches!(
+        arg.as_str(),
+        "-s" | "--settings" | "-t" | "--toolchains" | "-T" | "--threads" | "-P" | "--activate-profiles"
+    );
+    Some(if separate { 2.min(args.len()) } else { 1 })
+}
+
+/// [`maven_options`] grouped with each option's value.
 fn maven_option_groups(options: &[String]) -> Vec<&[String]> {
     let mut groups = Vec::new();
     let mut i = 0;
     while i < options.len() {
-        let n = if options[i] == "-s" || options[i] == "-T" { 2.min(options.len() - i) } else { 1 };
+        let n = maven_option_len(&options[i..]).unwrap_or(1);
         groups.push(&options[i..i + n]);
         i += n;
     }
     groups
 }
 
-/// Whether `args` set what `group` sets: a user settings file, the local
-/// repository, or the thread count.
+/// Whether the configuration sets the same option, including attached and long forms.
 fn sets_maven_option(args: &[String], group: &[String]) -> bool {
-    match group.first().map(String::as_str) {
-        Some("-s") => args.iter().any(|a| a == "-s" || a == "--settings" || a.starts_with("--settings=")),
-        // `-T 4`, `--threads 4`, `-T4` and `--threads=4` all set the thread count.
-        Some("-T") => args.iter().any(|a| {
-            a == "-T" || a == "--threads" || a.starts_with("--threads=") || (a.starts_with("-T") && a.len() > 2)
-        }),
-        Some(flag) => {
-            let key = flag.split_once('=').map_or(flag, |(k, _)| k);
-            args.iter().any(|a| a.split_once('=').map_or(a.as_str(), |(k, _)| k) == key)
-                || args
-                    .windows(2)
-                    .any(|a| a[0] == "-D" && format!("-D{}", a[1].split('=').next().unwrap_or_default()) == key)
-        }
-        None => true,
-    }
+    let Some(flag) = group.first().and_then(|a| maven_option_flag(a)) else { return true };
+    args.iter().any(|a| maven_option_flag(a) == Some(flag))
+        || (flag == "-Dmaven.repo.local"
+            && args.windows(2).any(|a| a[0] == "-D" && a[1].starts_with("maven.repo.local=")))
 }
 
-/// Settings › Maven's options ahead of the goals, each unless the configuration sets it itself.
-fn add_maven_options(args: &mut Vec<String>, options: &[String]) {
-    let missing: Vec<String> =
-        maven_option_groups(options).into_iter().filter(|g| !sets_maven_option(args, g)).flatten().cloned().collect();
+/// Settings options precede the goals. Tool-window checkbox profiles are additive;
+/// profiles explicitly typed in the configuration replace the Settings profiles.
+fn add_maven_options(args: &mut Vec<String>, options: &[String], additive_profiles: bool) {
+    let missing: Vec<String> = maven_option_groups(options)
+        .into_iter()
+        .filter(|g| {
+            if additive_profiles && g[0] == "-P" {
+                !args.windows(g.len()).any(|w| w == *g)
+            } else {
+                !sets_maven_option(args, g)
+            }
+        })
+        .flatten()
+        .cloned()
+        .collect();
     args.splice(0..0, missing);
+}
+
+/// The interpreter target or project default; an explicit local choice returns an empty id.
+pub fn run_target<'a>(config: &RunConfig, settings: &'a Settings) -> Option<&'a str> {
+    let name = ide_run::wrap::program_name(&config.command);
+    let target = if matches!(name.as_str(), "php" | "composer" | "phpunit" | "pest")
+        || matches!(config.kind.as_str(), "php" | "composer" | "phpunit")
+    {
+        &settings.languages.php.run_target
+    } else if matches!(name.as_str(), "node" | "npm" | "npx" | "pnpm" | "yarn" | "bun")
+        || matches!(config.kind.as_str(), "node" | "npm" | "vitest" | "jest" | "mocha")
+    {
+        &settings.languages.node.run_target
+    } else {
+        return non_empty(&settings.run.default_target);
+    };
+    if target == "local" {
+        Some("")
+    } else if target.is_empty() {
+        non_empty(&settings.run.default_target)
+    } else {
+        Some(target)
+    }
 }
 
 /// Points run configurations at the selected toolchains: Python configs use the
@@ -1187,6 +1233,19 @@ pub fn apply_to_run_configs(configs: &mut [RunConfig], root: &Path, s: &Settings
     };
 
     for c in configs.iter_mut() {
+        if let Some(pm) = pm
+            && c.kind == "npm"
+            && c.detected
+            && matches!(c.command.as_str(), "npm" | "pnpm" | "yarn" | "bun")
+        {
+            c.command = pm.to_owned();
+        }
+        if c.extras.target.is_none() {
+            c.extras.target = run_target(c, s).map(str::to_owned);
+        }
+        if c.extras.target.as_deref().is_some_and(|t| t.starts_with("plugin-target:")) {
+            continue;
+        }
         let owner = ide_run::scope::owner(root, c);
         resolve_run_command(c, root, s);
         let mut path_dirs: Vec<PathBuf> = Vec::new();
@@ -1220,13 +1279,6 @@ pub fn apply_to_run_configs(configs: &mut [RunConfig], root: &Path, s: &Settings
                 }
             }
             "npm" | "node" | "deno" | "bun" => {
-                if let Some(pm) = pm
-                    && c.kind == "npm"
-                    && c.detected
-                    && matches!(c.command.as_str(), "npm" | "pnpm" | "yarn" | "bun")
-                {
-                    c.command = pm.to_owned();
-                }
                 // The configuration's own Node interpreter, else the project's.
                 let own = c.extras.params.get("nodeInterpreter").and_then(|p| setting_path(root, p));
                 if let Some(dir) =
@@ -1315,7 +1367,11 @@ pub fn apply_to_run_configs(configs: &mut [RunConfig], root: &Path, s: &Settings
                 {
                     c.command = mvn.to_string_lossy().into_owned();
                 }
-                add_maven_options(&mut c.args, &mvn_options);
+                let additive_profiles = generated_maven_goal(c)
+                    && c.id.split_once(".xml:").is_some_and(|(_, goals)| {
+                        !goals.split_whitespace().any(|a| maven_option_flag(a) == Some("-P"))
+                    });
+                add_maven_options(&mut c.args, &mvn_options, additive_profiles);
             }
             _ => {}
         }
@@ -1340,6 +1396,9 @@ pub fn without_derived(config: &RunConfig, root: &Path, s: &Settings) -> RunConf
         c
     };
     let mut out = config.clone();
+    if out.extras.target.as_deref() == run_target(&out, s) {
+        out.extras.target = None;
+    }
     // Until nothing changes: some entries are derived only once others are gone
     // (the virtualenv's `PATH` is added only without `VIRTUAL_ENV`). An entry derived before
     // the configuration's own choice (an npm script's Node interpreter) is derived too.

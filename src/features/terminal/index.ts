@@ -102,6 +102,19 @@ export function activate(): () => void {
         run: ({ arg }) => openNewTab(typeof arg === "string" && arg ? arg : undefined),
       },
       {
+        id: "terminal.pluginSession",
+        title: "Open Plugin Terminal Session",
+        category: "Terminal",
+        hidden: true,
+        when: "projectOpen",
+        run: async ({ arg }) => {
+          const rt = await loadTerminalRuntime();
+          await rt.pluginSession(arg as Parameters<typeof rt.pluginSession>[0]);
+          toolWindowService().show(WINDOW, true);
+          focusActiveSoon();
+        },
+      },
+      {
         id: "terminal.runCommand",
         title: "Run Command in Terminal",
         description: "Opens a terminal tab running `{ program, args, name?, cwd? }` instead of the shell.",

@@ -4,6 +4,7 @@
  * a disposer. The editor provides the editor service; app must install its launch
  * barrier before welcome can restore a remembered project.
  */
+import { activate as mcp } from "./mcp";
 import { activate as projectTrust } from "./project-trust";
 import { activate as editor } from "@/editor/core";
 import { activate as editorLsp } from "@/editor/lsp";
@@ -59,6 +60,7 @@ const features: Array<[string, Activate]> = [
   ["project-trust", projectTrust],
   ["editor", editor],
   ["editor-lsp", editorLsp],
+  ["mcp", mcp],
   ["app", app],
   ["welcome", welcome],
   ["project-tree", projectTree],

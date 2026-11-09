@@ -1110,7 +1110,12 @@ export function SourceDialog({
           />
           {/* IDEA's Make Global: stored with the IDE and listed in every project. */}
           <span title={tx("Available in all projects")}>
-            <Checkbox checked={!!s.global} onChange={(global) => set({ global })} label="Global" />
+            <Checkbox
+              checked={!!s.global}
+              disabled={!!s.pluginOwner}
+              onChange={(global) => set({ global })}
+              label="Global"
+            />
           </span>
         </div>
         <span />

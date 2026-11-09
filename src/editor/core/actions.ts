@@ -6,6 +6,7 @@ import { foldEffect, syntaxTree, toggleFold } from "@codemirror/language";
 import { acceptCompletion, completionStatus } from "@codemirror/autocomplete";
 import { executeAction, registerActions, type Action } from "@/platform/actions";
 import { getContext } from "@/platform/context";
+import { resetSurfaceFontZoom, stepFocusedSurfaceFontZoom } from "@/workbench/contributions";
 import { editorController, useGotoLine, useTabs } from "./controller";
 import {
   addCaretsToLineEnds,
@@ -107,6 +108,27 @@ function withView(run: (view: EditorView, slot: EditorSlot) => unknown) {
     run(slot.view, slot);
     if (!slot.view.hasFocus && !getContext().popupOpen) slot.view.focus();
   };
+}
+
+/** Routes keyboard font zoom to focus, then the active editor slot. */
+function stepSurfaceFontSize(delta: 1 | -1): void {
+  const activeEl = typeof document !== "undefined" ? (document.activeElement as HTMLElement | null) : null;
+  if (activeEl) {
+    if (stepFocusedSurfaceFontZoom(delta)) return;
+    const cmEl = activeEl.closest?.(".cm-editor") as HTMLElement | null;
+    if (cmEl) {
+      const cmView = EditorView.findFromDOM(cmEl);
+      if (cmView) {
+        stepFontZoom(cmView, delta);
+        return;
+      }
+    }
+  }
+
+  const slot = activeSlot();
+  if (!slot?.view) return;
+  stepFontZoom(slot.view, delta);
+  if (!slot.view.hasFocus && !getContext().popupOpen) slot.view.focus();
 }
 
 // --- extend / shrink selection ---------------------------------------------------
@@ -784,6 +806,7 @@ export function registerEditorActions(): () => void {
       title: "Add or Remove Caret",
       category: "Editor Actions",
       when: "textEditorActive",
+      hidden: true,
       // The mouse selection style handles the pointer position and dragging.
       run: () => {},
     },
@@ -872,6 +895,9 @@ export function registerEditorActions(): () => void {
       run: () => {
         for (const ed of useEditorRegistry.getState().editors)
           if (ed.view.state.field(fontZoom, false)) ed.view.dispatch({ effects: setFontZoom.of(0) });
+        if (typeof document !== "undefined") {
+          resetSurfaceFontZoom();
+        }
       },
     },
     {
@@ -879,16 +905,16 @@ export function registerEditorActions(): () => void {
       title: "Increase Font Size",
       category: "View",
       keywords: ["zoom", "font size"],
-      when: EDITOR_WHEN,
-      run: withView((view) => stepFontZoom(view, 1)),
+      when: "projectOpen",
+      run: () => stepSurfaceFontSize(1),
     },
     {
       id: "editor.decreaseFontSize",
       title: "Decrease Font Size",
       category: "View",
       keywords: ["zoom", "font size"],
-      when: EDITOR_WHEN,
-      run: withView((view) => stepFontZoom(view, -1)),
+      when: "projectOpen",
+      run: () => stepSurfaceFontSize(-1),
     },
     {
       id: "file.toggleReadOnly",

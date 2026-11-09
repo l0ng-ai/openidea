@@ -16,15 +16,22 @@ struct Fixture {
 }
 impl Fixture {
     fn new() -> Self {
+        Self::with_manifest(|_| {})
+    }
+    fn with_manifest(edit: impl FnOnce(&Path)) -> Self {
         let tmp = tempfile::tempdir().unwrap();
-        let root = tmp.path().canonicalize().unwrap();
+        let root = dunce::canonicalize(tmp.path()).unwrap();
         let host = PluginHost::new(root.join("plugins"), Arc::new(|_: Option<&str>, _| {}), Limits::default()).unwrap();
         host.set_project_policy(Arc::new(|_| true));
-        host.install_from_dir(
-            &Path::new(env!("CARGO_MANIFEST_DIR")).join("../ide-plugin/tests/fixtures/indexer"),
-            &Consent::all(),
-        )
-        .unwrap();
+        let fixture = Path::new(env!("CARGO_MANIFEST_DIR")).join("../ide-plugin/tests/fixtures/indexer");
+        let package = tempfile::tempdir().unwrap();
+        let pkg = package.path();
+        std::fs::create_dir_all(pkg.join("dist")).unwrap();
+        for file in ["plugin.toml", "dist/plugin.wasm"] {
+            std::fs::copy(fixture.join(file), pkg.join(file)).unwrap();
+        }
+        edit(pkg);
+        host.install_from_dir(pkg, &Consent::all()).unwrap();
         Self { _tmp: tmp, root, host }
     }
     fn index(&self, path: &str, text: &str, symbols: &[SymbolTag], version: Option<u32>, scope: &str) -> PathBuf {
@@ -140,6 +147,48 @@ fn permissions_and_paths_are_checked_before_indexing() {
     );
 }
 
+#[cfg(windows)]
+#[test]
+fn verbatim_snapshots_use_the_hosts_plain_document_identity() {
+    let f = Fixture::new();
+    let source = f.index("source.idx", SOURCE, &[method()], Some(1), "app");
+    let mapping = f.index("mapping.idx", MAPPING, &[], Some(1), "app");
+    let verbatim = std::fs::canonicalize(&source).unwrap();
+    assert_ne!(source, verbatim);
+    f.host
+        .index_navigation(
+            &f.root,
+            Snapshot { path: &verbatim, version: Some(2), text: SOURCE, symbols: &[method()], scope: "app" },
+            Invocation { workspace_root: Some(f.root.clone()), ..Default::default() },
+        )
+        .unwrap();
+    let result = f.host.navigation_at(&f.root, &mapping, 1, reference_pos(), None, |_| None).unwrap();
+    assert_eq!(result.targets.len(), 1, "a different prefix must replace the same document snapshot");
+    assert_eq!(result.targets[0].path.0, source);
+    assert!(f.host.indexed_symbol_at(&f.root, &source, Pos::new(0, 4), None).is_some());
+}
+
+#[cfg(unix)]
+#[test]
+fn snapshot_paths_still_reject_symlink_aliases_and_escapes() {
+    let f = Fixture::new();
+    let path = f.index("source.idx", SOURCE, &[method()], Some(1), "app");
+    let outside = tempfile::NamedTempFile::new().unwrap();
+    for (target, name) in [(path.as_path(), "alias.idx"), (outside.path(), "escape.idx")] {
+        let alias = f.root.join(name);
+        std::os::unix::fs::symlink(target, &alias).unwrap();
+        assert!(
+            f.host
+                .index_navigation(
+                    &f.root,
+                    Snapshot { path: &alias, version: None, text: SOURCE, symbols: &[], scope: "app" },
+                    Invocation::default(),
+                )
+                .is_err()
+        );
+    }
+}
+
 #[test]
 fn indexed_refactorings_drop_graphs_after_permission_revocation_or_lost_trust() {
     let f = Fixture::new();
@@ -187,6 +236,7 @@ fn two_windows_of_same_root_keep_unsaved_snapshots_isolated() {
                     &f.root,
                     Snapshot { path, version: Some(1), text, symbols: &symbols, scope: "" },
                     Invocation {
+                        command_chain: Vec::new(),
                         client: Some(client.into()),
                         workspace_root: Some(f.root.clone()),
                         editor: None,
@@ -235,6 +285,47 @@ fn markers_and_disable_follow_graph_state() {
     assert!(f.host.navigation_markers(&f.root, std::slice::from_ref(&source), None, |_| None).is_empty());
     f.host.set_enabled("test.indexer", false).unwrap();
     assert!(f.host.navigation_markers(&f.root, &[source], None, |_| None).is_empty());
+}
+
+#[test]
+fn marker_icons_map_indexed_markers_by_longest_key_prefix() {
+    let f = Fixture::with_manifest(|pkg| {
+        let manifest = std::fs::read_to_string(pkg.join("plugin.toml")).unwrap().replace("^1.2", "^1.3");
+        std::fs::create_dir_all(pkg.join("icons")).unwrap();
+        std::fs::write(
+            pkg.join("icons/marker.svg"),
+            r#"<svg viewBox="0 0 16 16"><rect width="16" height="16"/></svg>"#,
+        )
+        .unwrap();
+        std::fs::write(
+            pkg.join("plugin.toml"),
+            format!(
+                r#"{manifest}
+[[contributes.markerIcons]]
+id = "mapping"
+icon = "icons/marker.svg"
+markers = ["mapping:"]
+
+[[contributes.markerIcons]]
+id = "mapping-item"
+icon = "icons/marker.svg"
+markers = ["other:", "mapping:item"]
+tooltip = "Mapped item"
+"#
+            ),
+        )
+        .unwrap();
+    });
+    let source = f.index("source.idx", "def source:item\nref mapping:item\nref mapping:other\n", &[], Some(1), "app");
+    let mapping = f.index("mapping.idx", "def mapping:item\ndef mapping:other\nref source:item\n", &[], Some(1), "app");
+    let entries = f.host.navigation_markers(&f.root, &[source.clone(), mapping.clone()], None, |_| None);
+    let icons = |path: &PathBuf| {
+        let entry = entries.iter().find(|e| &e.path == path).unwrap();
+        assert!(entry.markers.iter().all(|m| m.plugin_id == "test.indexer"));
+        entry.markers.iter().map(|m| m.icon.as_deref()).collect::<Vec<_>>()
+    };
+    assert_eq!(icons(&source), [Some("mapping-item"), Some("mapping")]);
+    assert_eq!(icons(&mapping), [None]);
 }
 
 #[test]

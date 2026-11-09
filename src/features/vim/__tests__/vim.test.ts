@@ -2,7 +2,7 @@ import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import { EditorState, Prec } from "@codemirror/state";
 import { EditorView, keymap } from "@codemirror/view";
 import { getCM, Vim } from "@replit/codemirror-vim";
-import { embeddedEditorExtensions, transientChange, useEditorRegistry } from "@/editor/api";
+import { embeddedEditorExtensions, transientChange, useEditorRegistry, onEditorEvent } from "@/editor/api";
 import { executeAction, registerAction } from "@/platform/actions";
 import { getContext } from "@/platform/context";
 import { _handleEx, applyRcCommands, vimExtension } from "../engine";
@@ -49,6 +49,7 @@ describe("Vim mode toggle", () => {
     await executeAction("vim.toggle");
     expect(useVimSettings.getState().enabled).toBe(false);
     expect(hasContribution()).toBe(false);
+    expect(getContext()["vim.mode"]).toBe("");
     expect(diffSide.dom.hasAttribute("data-openidea-vim")).toBe(false);
     expect(getCM(diffSide)).toBeNull();
     diffSide.destroy();
@@ -217,7 +218,17 @@ describe("Vim engine", () => {
     const closePopup = Prec.highest(
       keymap.of([{ key: "Escape", run: () => (popupOpen ? !(popupOpen = false) : false) }]),
     );
-    const view = makeView([vimExtension(), closePopup]);
+    const modes: string[] = [];
+    const offModes = onEditorEvent((event) => {
+      if (event.type === "inputModeChanged") {
+        expect(event.path).toBe("/p/a.ts");
+        modes.push(event.mode);
+      }
+    });
+    const view = makeView([
+      vimExtension({ doc: 1, path: "/p/a.ts", language: "typescript", uiMode: null, readOnly: false }),
+      closePopup,
+    ]);
     view.focus();
     const cm = getCM(view)!;
     Vim.handleKey(cm as never, "i", "user");
@@ -233,6 +244,9 @@ describe("Vim engine", () => {
     expect(cm.state.vim?.insertMode).toBe(false);
     Vim.handleKey(cm as never, "v", "user");
     expect(useVimMode.getState().mode).toBe("visual");
+    expect(getContext()["vim.mode"]).toBe("visual");
+    expect(modes).toEqual(expect.arrayContaining(["insert", "normal", "visual"]));
+    offModes();
     view.destroy();
   });
 });

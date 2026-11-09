@@ -1,10 +1,11 @@
 /** Diff editor inputs and helpers to open them. */
 import type { ChangedFile, RevisionChange } from "@/bindings";
-import { call, commands } from "@/platform/ipc";
+import { call, commands, type LineEnding } from "@/platform/ipc";
+import { workflowSettings } from "@/platform/workflowSettings";
 import { editorService, type EditorInput } from "@/workbench/contributions";
 import { baseName, effectiveKind } from "./model";
 import { readWorkingText } from "./ops";
-import { renamedFromPath } from "./changes";
+import { groupFileNodes, renamedFromPath, stagingSide, type ChangeNode } from "./changes";
 import { currentRepoRoot, statusOf } from "./store";
 import { repositoryPath } from "./repositoryPaths";
 
@@ -133,6 +134,40 @@ export async function openDiff(data: DiffData, opts: { preview?: boolean; focus?
   await editorService().openInput(diffInput(data), { preview: opts.preview, focus: opts.focus ?? true });
 }
 
+/**
+ * Whether openVcsDiff shows diffs in the front window: the modal commit interface
+ * (Settings › Version Control › Commit). Same test as commitUi.isModalCommit, which
+ * this module cannot import (commitUi → remoteUi → … → diffInput is a cycle).
+ */
+export const vcsDiffInFront = () => !workflowSettings().vcs.commit.nonModal;
+
+/**
+ * Diffs the user opens (changed files, a log entry's file, Show Diff, Shelf, compare
+ * with a revision, Compare actions): the modal commit interface shows them in the front
+ * window (#1863), the non-modal one keeps editor tabs. Passive previews, diffs embedded
+ * in dedicated surfaces (the comparison window, merge editors) and pull request files
+ * (`vcs.openDiff`, with review comments) call openDiff directly.
+ */
+export async function openVcsDiff(data: DiffData, opts: { preview?: boolean; focus?: boolean } = {}) {
+  if (!vcsDiffInFront()) return openDiff(data, opts);
+  const { openDiffDialog } = await import("./diffDialog");
+  openDiffDialog(data);
+}
+
+/** A changes-tree file's working diff, on its side of the index under a "by staging state" group. */
+export function changeNodeDiff(node: ChangeNode, line?: number): DiffData {
+  return workingDiffData(node.path!, line, stagingSide(node.group, node.files[0]!));
+}
+
+/** A changes-tree file's diff, with the files of its group (in tree order) as the F7 chain. */
+export function changeNodeDiffData(roots: readonly ChangeNode[], node: ChangeNode): DiffData {
+  const nodes = groupFileNodes(roots, node);
+  return withChain(
+    nodes.map((n) => changeNodeDiff(n)),
+    Math.max(0, nodes.indexOf(node)),
+  );
+}
+
 /** Default local-changes diff for a working file: HEAD (or empty) vs the working copy. */
 export function workingDiffData(path: string, line?: number, side?: "staged" | "unstaged" | null): DiffData {
   if (side === "staged") {
@@ -219,3 +254,40 @@ export const isWorktree = (s: DiffSide) => s.type === "worktree";
 export const sideFile = (s: DiffSide, path: string): string | null =>
   s.type === "worktree" ? path : s.type === "file" ? s.path : null;
 export const isIndex = (s: DiffSide) => s.type === "rev" && (s.rev === ":0" || s.rev === ":");
+
+/** The dominant line ending of `text` (`lf` for ties and no breaks), like the backend's detection. */
+export function detectLineEnding(text: string): LineEnding {
+  let lf = 0;
+  let crlf = 0;
+  let cr = 0;
+  for (let i = 0; i < text.length; i++) {
+    const ch = text.charCodeAt(i);
+    if (ch === 10) lf++;
+    else if (ch === 13) {
+      if (text.charCodeAt(i + 1) === 10) {
+        crlf++;
+        i++;
+      } else cr++;
+    }
+  }
+  return lf >= crlf && lf >= cr ? "lf" : crlf >= cr ? "crLf" : "cr";
+}
+
+const EOL_BADGE: Record<LineEnding, string> = { lf: "LF", crLf: "CRLF", cr: "CR" };
+
+const EOL_SEPARATOR: Record<LineEnding, string> = { lf: "\n", crLf: "\r\n", cr: "\r" };
+
+/** Reconstruct a normalized document using its configured save separator. */
+export function liveSideText(text: string, ending: LineEnding): string {
+  return text.replace(/\n/g, EOL_SEPARATOR[ending]);
+}
+
+export function lineEndingBadge(text: string): string {
+  const separators = new Set(text.match(/\r\n|\r|\n/g));
+  return (
+    Object.entries(EOL_SEPARATOR)
+      .filter(([, separator]) => separators.has(separator))
+      .map(([ending]) => EOL_BADGE[ending as LineEnding])
+      .join(" / ") || "LF"
+  );
+}

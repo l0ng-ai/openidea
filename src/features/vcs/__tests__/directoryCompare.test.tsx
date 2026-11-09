@@ -36,6 +36,7 @@ vi.mock("../dialogs", () => ({ confirmDialog: mocks.confirm, openDialog: vi.fn()
 vi.mock("../diffInput", async (original) => ({
   ...(await original<typeof import("../diffInput")>()),
   openDiff: mocks.open,
+  openVcsDiff: mocks.open,
 }));
 import { DirectoryCompareDialog, directoryDiff } from "../DirectoryCompare";
 

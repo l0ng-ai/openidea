@@ -17,7 +17,7 @@ fn joined_path(root: &Path, path: &str) -> Result<(PathBuf, PathBuf), String> {
     if path.is_empty() {
         return Err("empty path".into());
     }
-    let root = root.canonicalize().map_err(|e| format!("project root unavailable: {e}"))?;
+    let root = dunce::canonicalize(root).map_err(|e| format!("project root unavailable: {e}"))?;
     let requested = Path::new(path);
     let joined = if requested.is_absolute() { requested.to_path_buf() } else { root.join(requested) };
     Ok((root, joined))
@@ -31,7 +31,7 @@ pub fn resolve_real(joined: &Path) -> PathBuf {
     let mut tail = Vec::new();
     let mut candidate = joined.to_path_buf();
     let mut real = loop {
-        match candidate.canonicalize() {
+        match dunce::canonicalize(&candidate) {
             Ok(real) => break real,
             Err(_) => {
                 let Some(last) = candidate.components().next_back() else {
@@ -58,7 +58,7 @@ pub fn resolve_real(joined: &Path) -> PathBuf {
 /// path — after following `..` and symlinks — stays inside `root`.
 pub fn resolve_in_root(root: &Path, path: &str) -> Result<PathBuf, String> {
     let (root, joined) = joined_path(root, path)?;
-    let real = joined.canonicalize().map_err(|_| format!("{path}: no such file"))?;
+    let real = dunce::canonicalize(&joined).map_err(|_| format!("{path}: no such file"))?;
     if !real.starts_with(&root) {
         return Err(format!("{path}: access outside the project root is not allowed"));
     }
@@ -83,7 +83,7 @@ pub fn resolve_new_in_root(root: &Path, path: &str) -> Result<PathBuf, String> {
     if path.is_empty() {
         return Err("empty path".into());
     }
-    let root = root.canonicalize().map_err(|e| format!("project root unavailable: {e}"))?;
+    let root = dunce::canonicalize(root).map_err(|e| format!("project root unavailable: {e}"))?;
     let requested = Path::new(path);
     let joined = if requested.is_absolute() { requested.to_path_buf() } else { root.join(requested) };
     let mut lexical = PathBuf::new();
@@ -108,7 +108,7 @@ pub fn resolve_new_in_root(root: &Path, path: &str) -> Result<PathBuf, String> {
         missing.push(dir);
         existing = above;
     }
-    let mut real = existing.canonicalize().map_err(|e| format!("{path}: {e}"))?;
+    let mut real = dunce::canonicalize(existing).map_err(|e| format!("{path}: {e}"))?;
     real.extend(missing.into_iter().rev());
     real.push(name);
     if !real.starts_with(&root) {
@@ -207,9 +207,8 @@ fn resolve(granted: &[Capability], path: &str, wanted: Wanted) -> Result<PathBuf
         return Err(Refusal::Invalid(format!("{path}: use an absolute path (or ~/…)")));
     }
     let real = match wanted {
-        Wanted::Read => asked.canonicalize().map_err(|_| Refusal::Invalid(format!("{path}: no such file")))?,
-        Wanted::Write => asked
-            .canonicalize()
+        Wanted::Read => dunce::canonicalize(&asked).map_err(|_| Refusal::Invalid(format!("{path}: no such file")))?,
+        Wanted::Write => dunce::canonicalize(&asked)
             .or_else(|_| resolve_unsaved(&asked))
             .map_err(|e| Refusal::Invalid(format!("{path}: {e}")))?,
     };
@@ -223,7 +222,7 @@ fn resolve(granted: &[Capability], path: &str, wanted: Wanted) -> Result<PathBuf
         };
         // The grant is compared where it really is too: `/tmp/x` is `/private/tmp/x`
         // on macOS, and `~` is the home directory.
-        let base = match expand_tilde(base).canonicalize() {
+        let base = match dunce::canonicalize(expand_tilde(base)) {
             Ok(real) => strip_verbatim(&real),
             Err(_) => strip_verbatim(&expand_tilde(base)),
         };
@@ -246,19 +245,72 @@ fn resolve(granted: &[Capability], path: &str, wanted: Wanted) -> Result<PathBuf
 fn resolve_unsaved(asked: &Path) -> Result<PathBuf, String> {
     let name = asked.file_name().ok_or_else(|| "not a file name".to_string())?;
     let parent = asked.parent().ok_or_else(|| "no directory to put it in".to_string())?;
-    let dir = parent.canonicalize().map_err(|_| "its directory does not exist".to_string())?;
+    let dir = dunce::canonicalize(parent).map_err(|_| "its directory does not exist".to_string())?;
     Ok(dir.join(name))
 }
 
-/// `\\?\C:\…` (what `canonicalize` returns on Windows) as `C:\…`.
+/// Simplifies Windows drive paths only when the plain form preserves their meaning.
 fn strip_verbatim(path: &Path) -> String {
-    let text = path.to_string_lossy();
-    text.strip_prefix(r"\\?\").unwrap_or(&text).to_owned()
+    dunce::simplified(path).to_string_lossy().into_owned()
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[cfg(windows)]
+    #[test]
+    fn grant_paths_simplify_drive_paths_and_preserve_unc_prefixes() {
+        assert_eq!(strip_verbatim(Path::new(r"\\?\C:\project\a.txt")), r"C:\project\a.txt");
+        for path in [r"C:\project\a.txt", r"\\?\UNC\server\share\a.txt", r"\\server\share\a.txt"] {
+            assert_eq!(strip_verbatim(Path::new(path)), path);
+        }
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn resolvers_return_plain_paths_for_plain_and_verbatim_inputs() {
+        let tmp = tempfile::tempdir().unwrap();
+        let root = tmp.path().join("project");
+        std::fs::create_dir(&root).unwrap();
+        std::fs::write(root.join("a.txt"), "text").unwrap();
+        let plain = dunce::canonicalize(&root).unwrap();
+        let verbatim = std::fs::canonicalize(&root).unwrap();
+        assert_ne!(plain, verbatim);
+        let file = plain.join("a.txt");
+        let missing = plain.join("new/deep/a.txt");
+        for root in [&plain, &verbatim] {
+            for path in ["a.txt", file.to_str().unwrap(), verbatim.join("a.txt").to_str().unwrap()] {
+                assert_eq!(resolve_in_root(root, path).unwrap(), file);
+                assert_eq!(resolve_new_in_root(root, path).unwrap(), file);
+                assert!(inside_root(root, path).unwrap());
+            }
+            for path in ["new/deep/a.txt", missing.to_str().unwrap(), verbatim.join("new/deep/a.txt").to_str().unwrap()]
+            {
+                assert_eq!(resolve_new_in_root(root, path).unwrap(), missing);
+                assert_eq!(resolve_real(&root.join(path)), missing);
+                assert!(inside_root(root, path).unwrap());
+            }
+            let outside = tmp.path().join("outside.txt");
+            std::fs::write(&outside, "secret").unwrap();
+            assert!(resolve_in_root(root, outside.to_str().unwrap()).is_err());
+            assert!(resolve_new_in_root(root, outside.to_str().unwrap()).is_err());
+        }
+        for root in [&plain, &verbatim] {
+            let read = Capability::FsRead(root.to_string_lossy().into_owned());
+            let write = Capability::FsWrite(root.to_string_lossy().into_owned());
+            for path in [file.clone(), verbatim.join("a.txt")] {
+                assert_eq!(resolve_granted(std::slice::from_ref(&read), path.to_str().unwrap()).unwrap(), file);
+                assert_eq!(resolve_writable(std::slice::from_ref(&write), path.to_str().unwrap()).unwrap(), file);
+            }
+            for path in [plain.join("new.txt"), verbatim.join("new.txt")] {
+                assert_eq!(
+                    resolve_writable(std::slice::from_ref(&write), path.to_str().unwrap()).unwrap(),
+                    plain.join("new.txt")
+                );
+            }
+        }
+    }
 
     #[test]
     fn confines_reads_to_root() {
@@ -310,7 +362,7 @@ mod tests {
         let tmp = tempfile::tempdir().unwrap();
         let root = tmp.path().join("proj");
         std::fs::create_dir_all(root.join("src")).unwrap();
-        let root_real = root.canonicalize().unwrap();
+        let root_real = dunce::canonicalize(&root).unwrap();
 
         assert_eq!(resolve_new_in_root(&root, "src/new/a.txt").unwrap(), root_real.join("src/new/a.txt"));
         assert_eq!(resolve_new_in_root(&root, "src/../b.txt").unwrap(), root_real.join("b.txt"));
@@ -329,7 +381,7 @@ mod tests {
         std::fs::write(root.join("target.txt"), "t").unwrap();
         std::os::unix::fs::symlink(root.join("target.txt"), root.join("link.txt")).unwrap();
         std::os::unix::fs::symlink(tmp.path(), root.join("out")).unwrap();
-        let root_real = root.canonicalize().unwrap();
+        let root_real = dunce::canonicalize(&root).unwrap();
 
         assert_eq!(resolve_new_in_root(&root, "link.txt").unwrap(), root_real.join("link.txt"));
         assert!(resolve_new_in_root(&root, "out/x.txt").unwrap_err().contains("outside"));
@@ -362,13 +414,13 @@ mod tests {
     /// The grant a manifest author would write for `dir`: the plain path, no
     /// `\\?\` prefix.
     fn grant_for(dir: &Path) -> Capability {
-        Capability::FsRead(strip_verbatim(&dir.canonicalize().unwrap()))
+        Capability::FsRead(strip_verbatim(&dunce::canonicalize(dir).unwrap()))
     }
 
     fn text_at(dir: &Path, name: &str, body: &str) -> PathBuf {
         let file = dir.join(name);
         std::fs::write(&file, body).unwrap();
-        file.canonicalize().unwrap()
+        dunce::canonicalize(file).unwrap()
     }
 
     #[test]

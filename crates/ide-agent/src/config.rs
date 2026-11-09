@@ -2,7 +2,8 @@
 //! the agent reports them over ACP.
 
 use crate::model::{
-    AgentCommand, AgentConfigOption, AgentConfigValue, AgentConfigVia, AgentCost, AgentLimit, AgentUsage,
+    AgentCommand, AgentCommandSource, AgentConfigOption, AgentConfigValue, AgentConfigVia, AgentCost, AgentLimit,
+    AgentUsage,
 };
 use serde_json::{Value, json};
 
@@ -145,15 +146,22 @@ pub(crate) fn set_request(option: &AgentConfigOption, value: &str) -> (&'static 
 }
 
 /// `available_commands_update`.
-pub(crate) fn commands_of(update: &Value) -> Vec<AgentCommand> {
+pub(crate) fn commands_of(update: &Value, provider: &str) -> Vec<AgentCommand> {
     update
         .get("availableCommands")
         .and_then(Value::as_array)
         .into_iter()
         .flatten()
         .filter_map(|c| {
+            let name = c.get("name")?.as_str()?.trim_start_matches('/');
+            let source = if provider == "codex-acp" && name.starts_with('$') {
+                AgentCommandSource::Skill
+            } else {
+                c.get("source").and_then(|s| serde_json::from_value(s.clone()).ok()).unwrap_or_default()
+            };
             Some(AgentCommand {
-                name: c.get("name")?.as_str()?.trim_start_matches('/').to_owned(),
+                name: name.to_owned(),
+                source,
                 description: str_of(c, "description").unwrap_or_default(),
                 hint: c.pointer("/input/hint").and_then(Value::as_str).filter(|h| !h.is_empty()).map(str::to_owned),
             })
@@ -326,11 +334,38 @@ mod tests {
     }
 
     #[test]
+    fn command_sources_in_updates_and_stored_tasks() {
+        let update = json!({"availableCommands": [
+            {"name": "review", "source": "skill"},
+            {"name": "$lint"},
+            {"name": "compact"}
+        ]});
+        let sources = |provider| commands_of(&update, provider).into_iter().map(|c| c.source).collect::<Vec<_>>();
+        assert_eq!(
+            sources("codex-acp"),
+            [AgentCommandSource::Skill, AgentCommandSource::Skill, AgentCommandSource::Command]
+        );
+        assert_eq!(
+            sources("custom"),
+            [AgentCommandSource::Skill, AgentCommandSource::Command, AgentCommandSource::Command]
+        );
+        let old: AgentCommand =
+            serde_json::from_value(json!({"name": "review", "description": "Review", "hint": null})).unwrap();
+        assert_eq!(old.source, AgentCommandSource::Command);
+        let skill = AgentCommand { source: AgentCommandSource::Skill, ..old };
+        assert_eq!(serde_json::from_value::<AgentCommand>(serde_json::to_value(&skill).unwrap()).unwrap(), skill);
+    }
+
+    #[test]
     fn commands_and_usage() {
-        let cmds = commands_of(&json!({"availableCommands": [
-            {"name": "review", "description": "Review changes", "input": {"hint": "what to review"}},
-            {"name": "/init", "description": "Write CLAUDE.md", "input": null}
-        ]}));
+        let cmds = commands_of(
+            &json!({"availableCommands": [
+                {"name": "review", "description": "Review changes", "input": {"hint": "what to review"}},
+                {"name": "/init", "description": "Write CLAUDE.md", "input": null}
+            ]}),
+            "claude",
+        );
+        assert_eq!(cmds[0].source, AgentCommandSource::Command);
         assert_eq!(cmds[0].hint.as_deref(), Some("what to review"));
         assert_eq!((cmds[1].name.as_str(), cmds[1].hint.as_ref()), ("init", None));
         let u = usage_of(&json!({"used": 1200, "size": 200000, "cost": {"amount": 0.42, "currency": "USD"}})).unwrap();

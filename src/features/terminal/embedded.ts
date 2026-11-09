@@ -54,19 +54,30 @@ export function createEmbeddedTerminal(host: HTMLElement, opts: EmbeddedTerminal
     theme: readTerminalTheme(),
   });
   term.attachCustomKeyEventHandler((e) => {
-    if (isImeKey(e) || terminalKeyAction(e, term.hasSelection()).kind !== "copy") return true;
-    if (e.type === "keydown") void navigator.clipboard?.writeText(term.getSelection()).catch(() => undefined);
+    if (isImeKey(e)) return true;
+    const action = terminalKeyAction(e, term.hasSelection());
+    if (action.kind === "send" && e.key === "Enter") {
+      if (e.type === "keydown") term.input(action.data);
+    } else if (action.kind === "copy") {
+      if (e.type === "keydown") void navigator.clipboard?.writeText(term.getSelection()).catch(() => undefined);
+    } else {
+      return true;
+    }
     e.preventDefault();
     return false;
   });
   const fit = new FitAddon();
   term.loadAddon(fit);
   live.add(term);
-  const processResize = settledResize((cols, rows) => opts.onResize(cols, rows));
+  let lastSize = { cols: term.cols, rows: term.rows };
+  const processResize = settledResize((cols, rows) => {
+    if (cols === lastSize.cols && rows === lastSize.rows) return;
+    lastSize = { cols, rows };
+    opts.onResize(cols, rows);
+  });
   const disposables: IDisposable[] = [
     term.onData((d) => opts.onData(d)),
     term.onBinary((d) => opts.onData(d)),
-    term.onResize(({ cols, rows }) => processResize.resized(cols, rows)),
     term.registerLinkProvider({
       provideLinks(y, callback) {
         const line = term.buffer.active.getLine(y - 1);
@@ -101,8 +112,12 @@ export function createEmbeddedTerminal(host: HTMLElement, opts: EmbeddedTerminal
     const dims = fit.proposeDimensions();
     if (!dims || !Number.isFinite(dims.cols) || !Number.isFinite(dims.rows)) return;
     if (dims.cols !== term.cols || dims.rows !== term.rows) term.resize(dims.cols, dims.rows);
+    processResize.resized(dims.cols, dims.rows);
   });
-  const scheduleFit = () => fitter.schedule();
+  const scheduleFit = () => {
+    processResize.cancel();
+    fitter.schedule();
+  };
   const observer = new ResizeObserver(scheduleFit);
   observer.observe(host);
   scheduleFit();

@@ -7,6 +7,7 @@ const mocks = vi.hoisted(() => ({ openDiff: vi.fn(), execute: vi.fn(), ipc: vi.f
 vi.mock("../diffInput", async (original) => ({
   ...(await original<typeof import("../diffInput")>()),
   openDiff: mocks.openDiff,
+  openVcsDiff: mocks.openDiff,
 }));
 vi.mock("@/platform/actions", async (original) => ({
   ...(await original<typeof import("@/platform/actions")>()),

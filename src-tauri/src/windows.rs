@@ -171,6 +171,12 @@ impl WindowsState {
         self.launches.lock().insert(label.to_owned(), launch);
     }
 
+    /// Whether the window `label` is created to open a project (local or remote).
+    #[cfg(target_os = "macos")]
+    pub fn opens_project(&self, label: &str) -> bool {
+        self.launches.lock().get(label).is_some_and(|l| l.project.is_some() || l.remote.is_some())
+    }
+
     pub fn take_launch(&self, label: &str) -> Option<Launch> {
         let mut launch = self.launches.lock().remove(label)?;
         let mut positions = self.positions.lock();
@@ -595,7 +601,7 @@ fn build_project_window(app: &AppHandle, mut config: WindowConfig) -> IdeResult<
     crate::page_swipe::install(&window);
     apply_zoom(app, &window);
     #[cfg(target_os = "macos")]
-    align_titlebar(app, &window);
+    align_titlebar(app, &window, app.try_state::<WindowsState>().is_some_and(|w| w.opens_project(window.label())));
     // "Sync with OS" needs the OS mode, known once the window exists.
     if let Some(a) = appearance.filter(|a| plugin_frame.is_none() && (a.sync_with_os || a.theme == "system"))
         && window.theme().is_ok_and(|t| t == Theme::Dark)
@@ -640,15 +646,29 @@ fn apply_zoom(app: &AppHandle, window: &WebviewWindow) {
 /// Aligns the native window buttons before the page reports its title bar height,
 /// so they don't visibly move once it loads.
 #[cfg(target_os = "macos")]
-fn align_titlebar(app: &AppHandle, window: &WebviewWindow) {
-    // `--h-titlebar` in tokens.css.
-    const HEIGHT: f64 = 40.0;
-    const COMPACT_HEIGHT: f64 = 32.0;
+fn align_titlebar(app: &AppHandle, window: &WebviewWindow, opens_project: bool) {
     let Some(a) = app.try_state::<AppState>().map(|s| s.global_settings.effective().appearance) else {
         return;
     };
-    let height = if a.compact_mode { COMPACT_HEIGHT } else { HEIGHT };
-    let _ = crate::titlebar::set_height(window, height * f64::from(a.zoom.clamp(50, 300)) / 100.0);
+    let _ = crate::titlebar::set_height(window, initial_titlebar_height(&a, opens_project));
+}
+
+/// The title bar height (AppKit points) the page will draw. Only a project window hides its
+/// toolbar for View › Appearance › Toolbar, and it is known to be one when it opens a project.
+#[cfg(any(target_os = "macos", test))]
+fn initial_titlebar_height(a: &AppearanceSettings, opens_project: bool) -> f64 {
+    // `--h-titlebar` and `--h-compact-header` in tokens.css.
+    const HEIGHT: f64 = 40.0;
+    const COMPACT_HEIGHT: f64 = 32.0;
+    const COMPACT_HEADER_HEIGHT: f64 = 30.0;
+    let height = if opens_project && !a.show_main_toolbar {
+        COMPACT_HEADER_HEIGHT
+    } else if a.compact_mode {
+        COMPACT_HEIGHT
+    } else {
+        HEIGHT
+    };
+    height * f64::from(a.zoom.clamp(50, 300)) / 100.0
 }
 
 /// The first window (`create: false` in tauri.conf.json so it can take the theme's colour).
@@ -1290,7 +1310,7 @@ pub fn open_auxiliary_window(app: &AppHandle, caller: &WebviewWindow, aux: AuxWi
     crate::page_swipe::install(&window);
     apply_zoom(app, &window);
     #[cfg(target_os = "macos")]
-    align_titlebar(app, &window);
+    align_titlebar(app, &window, false);
     // Restore runs during build; fit its size to the parent's current display before showing.
     #[cfg(target_os = "macos")]
     if let Err(e) = fit_over_parent(&window, &parent, aux.min_size) {
@@ -1522,6 +1542,20 @@ fn dev_font_preferences(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn a_project_window_starts_with_the_header_its_page_draws() {
+        let mut a = AppearanceSettings::default();
+        assert_eq!(initial_titlebar_height(&a, true), 40.0);
+        a.compact_mode = true;
+        assert_eq!(initial_titlebar_height(&a, true), 32.0);
+        a.show_main_toolbar = false;
+        assert_eq!(initial_titlebar_height(&a, true), 30.0);
+        // Welcome, Settings and a window whose project comes later keep the full bar.
+        assert_eq!(initial_titlebar_height(&a, false), 32.0);
+        a.zoom = 150;
+        assert_eq!(initial_titlebar_height(&a, true), 45.0);
+    }
 
     fn s(v: &[&str]) -> Vec<String> {
         v.iter().map(|x| x.to_string()).collect()

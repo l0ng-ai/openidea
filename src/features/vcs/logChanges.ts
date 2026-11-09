@@ -8,7 +8,15 @@ import type { ChangedFile, Commit, FileLineStats, RevisionChange } from "@/bindi
 import { call, commands } from "@/platform/ipc";
 import { editorService } from "@/workbench/contributions";
 import { tx } from "@/platform/i18n";
-import { commitFileDiffData, openDiff, revisionChangeDiffData, withChain, type DiffData } from "./diffInput";
+import {
+  commitFileDiffData,
+  openDiff,
+  openVcsDiff,
+  revisionChangeDiffData,
+  vcsDiffInFront,
+  withChain,
+  type DiffData,
+} from "./diffInput";
 import type { FileTreeNode } from "./fileTree";
 import { baseName } from "./model";
 import { readWorkingText, runOp, saveAll, writeFileText } from "./ops";
@@ -218,30 +226,30 @@ export async function showChangesDiff(changes: readonly LogChange[], preview = f
   const first = changes[0];
   if (!first) return;
   if (first.mergeParents?.length === 2 && first.after) {
-    await editorService().openInput(
-      {
-        kind: "git-merge-diff",
-        key: `git-merge-diff:${first.repo}:${first.after}:${first.path}`,
-        data: {
-          repo: first.repo ?? currentRepoRoot(),
-          revision: first.after,
-          path: first.path,
-          parents: first.mergeParents,
-        },
+    const input = {
+      kind: "git-merge-diff",
+      key: `git-merge-diff:${first.repo}:${first.after}:${first.path}`,
+      data: {
+        repo: first.repo ?? currentRepoRoot(),
+        revision: first.after,
+        path: first.path,
+        parents: first.mergeParents,
       },
-      { preview, focus: !preview },
-    );
+    };
+    if (!preview && vcsDiffInFront()) (await import("./diffDialog")).openMergeDiffDialog(input);
+    else await editorService().openInput(input, { preview, focus: !preview });
     return;
   }
   const all = useLogChanges.getState().all;
   const chain = all.includes(first) ? all : [...changes];
-  await openDiff(
-    withChain(
-      chain.map((c) => c.diff),
-      Math.max(0, chain.indexOf(first)),
-    ),
-    preview ? { preview: true, focus: false } : {},
+  const data = withChain(
+    chain.map((c) => c.diff),
+    Math.max(0, chain.indexOf(first)),
   );
+  // Selection preview stays a preview tab even under the modal interface; an explicit
+  // diff opens where the commit interface puts it.
+  if (preview) await openDiff(data, { preview: true, focus: false });
+  else await openVcsDiff(data);
 }
 
 /** Compare with Local (`side` after) / Compare Before with Local: the revision ↔ the working file. */
@@ -250,7 +258,7 @@ export async function compareChangeWithLocal(change: LogChange, side: "after" | 
   const rev = side === "after" ? change.after : change.before;
   if (!rev) return;
   const revPath = side === "before" && change.oldPath ? absolutePath(change.oldPath, change.repo) : undefined;
-  await openDiff({
+  await openVcsDiff({
     path: absolutePath(change.path, change.repo),
     left: { type: "rev", rev, path: revPath, label: rev.slice(0, 8) },
     right: { type: "worktree" },

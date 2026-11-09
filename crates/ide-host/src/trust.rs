@@ -146,6 +146,9 @@ impl crate::Host {
                 phpstan.interrupt();
             }
             if !trusted {
+                if let Some(plugins) = self.plugin_host() {
+                    plugins.withdraw_project_run_targets(&project.root);
+                }
                 project.lsp.set_execution_allowed(false);
             }
             project.repos();
@@ -279,6 +282,7 @@ pub fn restricted_command_allowed(cmd: &str) -> bool {
             | "project_rename"
             | "light_edit_open"
             | "workspace_create"
+            | "workspace_discover_projects"
             | "workspace_update"
             | "workspace_attach"
             | "cancel_request"
@@ -395,6 +399,8 @@ pub fn projectless_command_allowed(cmd: &str) -> bool {
             | "plugin_set_enabled"
             | "plugin_grant"
             | "plugin_set_capability"
+            | "plugin_choose_program"
+            | "plugin_program"
             | "plugin_roll_back"
             | "plugin_reload"
     )

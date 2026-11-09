@@ -1,3 +1,4 @@
+import { ContributedToolbar } from "@/workbench/ContributedToolbar";
 import { useFilePresentationIcons } from "@/platform/filePresentation";
 /**
  * The editor area: split layout of panes, each with IDEA-style tabs (preview
@@ -474,6 +475,7 @@ function EditorTabActions({ paneId, tab }: { paneId: string; tab: Tab }) {
   const moreRef = useRef<HTMLButtonElement>(null);
   return (
     <div className={styles.tabActions}>
+      <ContributedToolbar slot="editor.title" />
       {LayoutActions && <LayoutActions path={tab.input.path!} tabId={tab.id} />}
       <IconButton
         icon="split"

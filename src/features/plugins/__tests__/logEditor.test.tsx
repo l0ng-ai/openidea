@@ -8,6 +8,7 @@ import { useContributions } from "@/workbench/contributions";
 import { usePlugins } from "../store";
 import { startViewUi } from "../uiPoints";
 import { registerLogActions } from "../views/logActions";
+import { setPluginOutput, usePluginOutput } from "../views/outputStore";
 import { PluginLogEditor } from "../views/logEditor";
 import { boundedLog, logTabData, type PluginLogEditorData } from "../views/logTab";
 import { logTabPtyBackend, webPtyBackend } from "../views/ptyBackend";
@@ -71,6 +72,33 @@ function setup(extra: Partial<PluginLogEditorData> = {}) {
 }
 
 describe("plugin streaming log tabs", () => {
+  it("shows output channel snapshots in the read-only log editor without starting a process", () => {
+    vi.mocked(webPtyBackend).mockClear();
+    vi.mocked(logTabPtyBackend).mockClear();
+    usePluginOutput.setState({ channels: new Map() });
+    setPluginOutput("probe", "build", "first output");
+    const data: PluginLogEditorData = {
+      pluginId: "probe",
+      view: "",
+      key: "build",
+      title: "Build output",
+      program: "",
+      args: [],
+      toggles: [],
+      origin: "output",
+    };
+    const rendered = render(<PluginLogEditor input={{ kind: "pluginLog", key: "output", data }} />);
+    const view = EditorView.findFromDOM(rendered.container.querySelector(".cm-content") as HTMLElement)!;
+    expect(view.state.doc.toString()).toBe("first output");
+    expect(view.state.readOnly).toBe(true);
+    act(() => setPluginOutput("probe", "build", "next output"));
+    expect(view.state.doc.toString()).toBe("next output");
+    act(() => setPluginOutput("probe", "build", ""));
+    expect(view.state.doc.length).toBe(0);
+    expect(webPtyBackend).not.toHaveBeenCalled();
+    expect(logTabPtyBackend).not.toHaveBeenCalled();
+  });
+
   it("rejects malformed requests and exact-grant failures instead of rewriting commands", () => {
     usePlugins.setState({ plugins: [plugin] });
     for (const bad of [

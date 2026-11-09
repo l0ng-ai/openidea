@@ -95,7 +95,7 @@ pub fn launch_fingerprint(
         return Ok(None);
     }
     let Some(mut inputs) = maven::launch_inputs(root, &projects, local_repo) else { return Ok(None) };
-    let plan = launch_plan(root, model, module, test)?;
+    let plan = launch_plan(root, model, module, test, BuildKind::Build)?;
     let mut environment: BTreeMap<String, String> = std::env::vars()
         .map(|(key, value)| (key.to_ascii_uppercase(), value))
         .filter(|(key, _)| {

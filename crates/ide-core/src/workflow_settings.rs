@@ -272,6 +272,8 @@ impl Default for PythonDebuggerSettings {
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize, Type)]
 #[serde(default, rename_all = "camelCase")]
 pub struct RunSettings {
+    /// Target for configurations without an explicit target. Empty = local.
+    pub default_target: String,
     pub confirm_rerun: bool,
     /// Ask before closing a Run tab whose process is still running.
     pub confirm_terminate: bool,
@@ -282,7 +284,13 @@ pub struct RunSettings {
 
 impl Default for RunSettings {
     fn default() -> Self {
-        Self { confirm_rerun: true, confirm_terminate: true, show_on_start: true, termination_timeout_ms: 3000 }
+        Self {
+            default_target: String::new(),
+            confirm_rerun: true,
+            confirm_terminate: true,
+            show_on_start: true,
+            termination_timeout_ms: 3000,
+        }
     }
 }
 

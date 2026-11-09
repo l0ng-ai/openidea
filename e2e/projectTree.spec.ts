@@ -50,6 +50,29 @@ test("Git ignore submenu offers shared and local destinations for files and fold
   }
 });
 
+test("keeps New open on a slow diagonal path across sibling items", async ({ workbench: page }) => {
+  await page.getByRole("treeitem", { name: "README.md", exact: true }).click({ button: "right" });
+  const parent = page.getByRole("menuitem", { name: "New", exact: true });
+  const box = (await parent.boundingBox())!;
+  const start = { x: box.x + 20, y: box.y + box.height / 2 };
+  await page.mouse.move(start.x, start.y);
+  await expect(parent).toHaveAttribute("aria-expanded", "true");
+  const submenu = page
+    .getByRole("menu")
+    .filter({ has: page.getByRole("menuitem", { name: "Directory", exact: true }) });
+  const target = (await submenu.getByRole("menuitem").last().boundingBox())!;
+  const end = { x: target.x + 20, y: target.y + target.height / 2 };
+  for (let step = 1; step <= 10; step++) {
+    await page.mouse.move(start.x + ((end.x - start.x) * step) / 10, start.y + ((end.y - start.y) * step) / 10);
+    await page.waitForTimeout(75);
+    await expect(parent).toHaveAttribute("aria-expanded", "true");
+  }
+  await page.waitForTimeout(350);
+  await expect(parent).toHaveAttribute("aria-expanded", "true");
+  await page.keyboard.press("Escape");
+  await page.keyboard.press("Escape");
+});
+
 // macOS WebKit can deliver a tap's pointerup before its pointerdown, leaving a press with no button held (#760).
 const settle = (page: Page) =>
   page.evaluate(() => new Promise((done) => requestAnimationFrame(() => requestAnimationFrame(done))));

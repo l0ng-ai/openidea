@@ -5,6 +5,7 @@
 import { createElement, Fragment } from "react";
 import { askUsagesDetected, fileUsages, viewUsages } from "@/editor/refactor";
 import { executeAction, getAction } from "@/platform/actions";
+import { fileManagerPath, revealInFileManager } from "@/platform/fileManager";
 import { maybeEditorService, notifications } from "@/workbench/contributions";
 import { ask, confirmChecked } from "@/workbench/messages";
 import { osClipboard } from "./clipboard";
@@ -38,7 +39,7 @@ import {
   useProjectTree,
 } from "./store";
 import { tx } from "@/platform/i18n";
-import { hostOs, isRemoteWindow, useRemote } from "@/platform/remote";
+import { hostOs, isRemoteWindow } from "@/platform/remote";
 import { usePlatform } from "@/platform/platformInfo";
 import { pathToCopy, type PathKind } from "@/platform/copyPath";
 import { projectFolder, useProject } from "@/platform/project";
@@ -829,18 +830,12 @@ export async function copyPaths(kind: PathKind, nodes: ProjectNode[] = selectedN
  * local paths — translate them to `\\wsl.localhost\<distro>\…` UNC shares.
  */
 export function revealablePath(path: string): string {
-  const session = useRemote.getState().session;
-  if (session?.target.kind !== "wsl" || usePlatform.getState().os !== "windows") return path;
-  if (!path.startsWith("/")) return path;
-  return `\\\\wsl.localhost\\${session.target.distro}${path.replaceAll("/", "\\")}`;
+  return fileManagerPath(path);
 }
 
 export async function revealInFinder(nodes: ProjectNode[] = selectedNodes()) {
-  const paths = nodes.map((n) => revealablePath(n.path));
-  if (!paths.length) return;
   try {
-    const { revealItemInDir } = await import("@tauri-apps/plugin-opener");
-    await revealItemInDir(paths.length === 1 ? paths[0]! : paths);
+    await revealInFileManager(nodes.map((n) => n.path));
   } catch (e) {
     // Same names as contextMenu.revealLabel (kept local: contextMenu imports
     // this module, so importing it back would be a cycle).

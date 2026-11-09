@@ -1306,6 +1306,111 @@ async fn progress_titled_with_an_executable_path_shows_the_program_name() {
     assert_eq!(titles, ["cargo check"; 3]);
 }
 
+/// PHPantom reuses a fixed token for concurrent requests: begin, begin, end, end.
+/// Every task it started ends, and the server reads ready afterwards.
+#[tokio::test(flavor = "multi_thread")]
+async fn a_progress_token_begun_again_ends_the_task_it_replaces() {
+    let h = harness(&[("mock", incremental_caps())]);
+    h.open("a.mk", "x");
+    h.wait_status("mock", ServerStatus::Ready).await;
+    let peer = h.launcher.state("mock").peer();
+    let progress =
+        |token: &str, kind: &str, title: &str| json!({ "token": token, "value": { "kind": kind, "title": title } });
+    for kind in ["begin", "begin", "end", "end"] {
+        peer.notify("$/progress", progress("find_references", kind, "Finding references")).unwrap();
+    }
+    // Notifications are handled in order: once this task ended, so did everything above.
+    peer.notify("$/progress", progress("later", "begin", "Indexing")).unwrap();
+    peer.notify("$/progress", progress("later", "end", "Indexing")).unwrap();
+    eventually(|| {
+        h.events.lock().iter().any(|e| matches!(e, IdeEvent::Task { title, done: true, .. } if title == "Indexing"))
+    })
+    .await;
+    let (mut begun, mut ended) = (Vec::new(), Vec::new());
+    for e in h.events.lock().iter() {
+        if let IdeEvent::Task { id, title, done, .. } = e
+            && title == "Finding references"
+        {
+            if *done { ended.push(*id) } else { begun.push(*id) }
+        }
+    }
+    assert_eq!(begun.len(), 2);
+    for id in &begun {
+        assert_eq!(ended.iter().filter(|e| *e == id).count(), 1, "every task ends once: {begun:?} {ended:?}");
+    }
+    h.wait_status("mock", ServerStatus::Ready).await;
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn replacing_progress_keeps_cancellation_reports_and_indexing_on_the_new_task() {
+    let h = harness(&[("mock", incremental_caps())]);
+    let (doc, _) = h.open("a.mk", "target");
+    h.wait_status("mock", ServerStatus::Ready).await;
+    let s = h.launcher.state("mock");
+    let peer = s.peer();
+    let begin = |title| json!({ "token": 7, "value": { "kind": "begin", "title": title, "cancellable": true } });
+    let task_of = |title: &str| {
+        h.events.lock().iter().find_map(|e| match e {
+            IdeEvent::Task { id, title: t, done: false, .. } if t == title => Some(*id),
+            _ => None,
+        })
+    };
+    peer.notify("$/progress", begin("Old work")).unwrap();
+    h.wait_status("mock", ServerStatus::Busy).await;
+    let old = task_of("Old work").unwrap();
+    let mgr = h.mgr.clone();
+    let search = tokio::spawn(async move { mgr.references(doc, Pos::new(0, 1), true, true, Default::default()).await });
+    eventually(|| !s.requested("textDocument/references").is_empty()).await;
+
+    peer.notify("$/progress", begin("New work")).unwrap();
+    peer.notify(
+        "$/progress",
+        json!({ "token": 7, "value": { "kind": "report", "message": "Halfway", "percentage": 50 } }),
+    )
+    .unwrap();
+    eventually(|| {
+        h.events.lock().iter().any(|e| matches!(e, IdeEvent::Task { title, message: Some(m), fraction: Some(f), done: false, .. } if title == "New work" && m == "Halfway" && *f == 0.5))
+    })
+    .await;
+    let new = task_of("New work").unwrap();
+    assert_ne!(old, new);
+    assert!(!ide_core::task::cancel(old), "a replaced task cannot cancel its successor");
+    assert!(ide_core::task::cancel(new));
+    eventually(|| !s.notified("window/workDoneProgress/cancel").is_empty()).await;
+    assert_eq!(s.notified("window/workDoneProgress/cancel"), [json!({ "token": 7 })]);
+    assert_eq!(h.statuses("mock").last(), Some(&ServerStatus::Busy));
+    assert!(!search.is_finished(), "replacement must not release a search waiting for idle");
+    let refs = h.mgr.references(doc, Pos::new(0, 1), true, false, Default::default()).await.unwrap();
+    assert_eq!(refs.incomplete, Some(ReferencesIncomplete::Indexing));
+
+    for _ in 0..2 {
+        peer.notify("$/progress", json!({ "token": 7, "value": { "kind": "end" } })).unwrap();
+    }
+    // A later task is a barrier for both end notifications.
+    peer.notify("$/progress", json!({ "token": "barrier", "value": { "kind": "begin", "title": "Barrier" } })).unwrap();
+    peer.notify("$/progress", json!({ "token": "barrier", "value": { "kind": "end" } })).unwrap();
+    eventually(|| {
+        h.events.lock().iter().any(|e| matches!(e, IdeEvent::Task { title, done: true, .. } if title == "Barrier"))
+    })
+    .await;
+    h.wait_status("mock", ServerStatus::Ready).await;
+    let refs = tokio::time::timeout(Duration::from_secs(5), search).await.unwrap().unwrap().unwrap();
+    assert_eq!(refs.incomplete, None);
+    assert!(!ide_core::task::cancel(new));
+    let events = h.events.lock();
+    for id in [old, new] {
+        assert_eq!(
+            events.iter().filter(|e| matches!(e, IdeEvent::Task { id: t, done: true, .. } if *t == id)).count(),
+            1
+        );
+    }
+    assert!(
+        !events
+            .iter()
+            .any(|e| matches!(e, IdeEvent::Task { id, message: Some(m), .. } if *id == old && m == "Halfway"))
+    );
+}
+
 #[tokio::test(flavor = "multi_thread")]
 async fn cancelling_a_cancellable_progress_task_asks_the_server_to_stop() {
     let h = harness(&[("mock", incremental_caps())]);
@@ -1752,7 +1857,7 @@ async fn java_source_paths_reach_initialization_live_configuration_and_builds() 
     assert_eq!(state.launches.load(Ordering::SeqCst), 1);
     state.respond("java/buildWorkspace", json!(1));
     assert_eq!(
-        h.mgr.java_build(&h.root, &Default::default()).await.unwrap(),
+        h.mgr.java_build(&h.root, false, &Default::default()).await.unwrap(),
         ide_lsp::jdtls::JavaBuildStatus::Succeeded
     );
     assert_eq!(state.requested("java/buildWorkspace"), vec![json!(false)]);
@@ -1769,6 +1874,18 @@ async fn java_source_paths_reach_initialization_live_configuration_and_builds() 
 }
 
 #[tokio::test(flavor = "multi_thread")]
+async fn java_build_asks_for_a_full_build_when_rebuilding() {
+    let h = harness_for("java", "java", &[("jdtls", incremental_caps())], &[]);
+    let state = h.launcher.state("jdtls");
+    state.respond("java/buildWorkspace", json!(1));
+    assert_eq!(
+        h.mgr.java_build(&h.root, true, &Default::default()).await.unwrap(),
+        ide_lsp::jdtls::JavaBuildStatus::Succeeded
+    );
+    assert_eq!(state.requested("java/buildWorkspace"), vec![json!(true)]);
+}
+
+#[tokio::test(flavor = "multi_thread")]
 async fn unmanaged_java_run_imports_sources_without_an_open_editor() {
     let h = harness_for("java", "java", &[("jdtls", incremental_caps())], &[]);
     std::fs::create_dir_all(h.root.join("src/demo")).unwrap();
@@ -1780,7 +1897,7 @@ async fn unmanaged_java_run_imports_sources_without_an_open_editor() {
     let state = h.launcher.state("jdtls");
     state.respond("java/buildWorkspace", json!(1));
     assert_eq!(
-        h.mgr.java_build(&h.root, &Default::default()).await.unwrap(),
+        h.mgr.java_build(&h.root, false, &Default::default()).await.unwrap(),
         ide_lsp::jdtls::JavaBuildStatus::Succeeded
     );
     assert_eq!(state.requested("initialize")[0]["initializationOptions"]["triggerFiles"], json!([uri_of(&file)]));
@@ -1798,7 +1915,7 @@ async fn java_launch_serializes_the_classpath_with_the_build_lock() {
     // A launch with a build re-takes the lock after java_build has released it.
     let info = tokio::time::timeout(
         Duration::from_secs(30),
-        h.mgr.java_launch(&h.root, false, true, false, &Default::default()),
+        h.mgr.java_launch(&h.root, false, true, false, false, &Default::default()),
     )
     .await
     .expect("java_launch deadlocked on the build lock")
@@ -1808,10 +1925,13 @@ async fn java_launch_serializes_the_classpath_with_the_build_lock() {
     // The delegated external build holds the lock while java_launch resolves the
     // classpath; java_launch must not re-take it, or the launch would deadlock.
     let guard = h.mgr.java_external_build(&h.root, &Default::default()).await.unwrap();
-    tokio::time::timeout(Duration::from_secs(30), h.mgr.java_launch(&h.root, false, false, true, &Default::default()))
-        .await
-        .expect("java_launch deadlocked on the delegated external build's lock")
-        .unwrap();
+    tokio::time::timeout(
+        Duration::from_secs(30),
+        h.mgr.java_launch(&h.root, false, false, false, true, &Default::default()),
+    )
+    .await
+    .expect("java_launch deadlocked on the delegated external build's lock")
+    .unwrap();
     drop(guard);
     let commands: Vec<_> = state
         .requested("workspace/executeCommand")
@@ -1819,6 +1939,108 @@ async fn java_launch_serializes_the_classpath_with_the_build_lock() {
         .filter_map(|p| p["command"].as_str().map(str::to_owned))
         .collect();
     assert!(commands.contains(&"java.project.getClasspaths".to_owned()));
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn java_launch_scopes_build_status_and_does_not_wait_for_unrelated_errors() {
+    use ide_lsp::jdtls::JavaBuildStatus;
+
+    let h = harness_for("java", "java", &[("jdtls", incremental_caps())], &[]);
+    h.open("Main.java", "class Main {}");
+    h.wait_status("jdtls", ServerStatus::Ready).await;
+    let state = h.launcher.state("jdtls");
+    state.respond("java/buildWorkspace", json!(2));
+    let web = h.root.join("web");
+    let classpath = json!({"classpaths": [web.join("target/classes"), h.root.join("service/target/classes")]});
+    for (path, test, expected, classpaths_available) in [
+        ("other/src/main/java/Other.java", false, JavaBuildStatus::Succeeded, true),
+        ("other/src/main/java/Other.java", false, JavaBuildStatus::Succeeded, true),
+        ("web/src/test/java/MainTest.java", false, JavaBuildStatus::Succeeded, true),
+        ("web/src/test/java/MainTest.java", true, JavaBuildStatus::WithErrors, true),
+        ("service/src/test/java/ServiceTest.java", true, JavaBuildStatus::Succeeded, true),
+        ("service/src/main/java/Service.java", false, JavaBuildStatus::WithErrors, true),
+        ("web/src/main/java/Main.java", false, JavaBuildStatus::WithErrors, true),
+        ("other/src/main/java/Other.java", false, JavaBuildStatus::WithErrors, false),
+    ] {
+        state.respond("workspace/executeCommand", classpath.clone());
+        if !classpaths_available {
+            state.errors.lock().insert("workspace/executeCommand".into(), (-32603, "classpath unavailable".into()));
+        }
+        let file = h.root.join(path);
+        std::fs::create_dir_all(file.parent().unwrap()).unwrap();
+        std::fs::write(&file, "broken").unwrap();
+        let diag = json!({"range": {"start":{"line":0,"character":0},"end":{"line":0,"character":1}},
+            "severity": 1, "message": path});
+        state
+            .peer()
+            .notify("textDocument/publishDiagnostics", json!({"uri": uri_of(&file), "diagnostics": [diag]}))
+            .unwrap();
+        eventually(|| diagnostics_for(&h, &file) == 1).await;
+        let info = tokio::time::timeout(
+            Duration::from_secs(1),
+            h.mgr.java_launch(&web, test, true, false, false, &Default::default()),
+        )
+        .await
+        .expect("an already-published error must not incur the diagnostics wait")
+        .unwrap();
+        assert_eq!(info.build, Some(expected), "{path}, test={test}, classpath={classpaths_available}");
+        assert_eq!(info.error_count, u32::from(expected == JavaBuildStatus::WithErrors));
+        state
+            .peer()
+            .notify("textDocument/publishDiagnostics", json!({"uri": uri_of(&file), "diagnostics": []}))
+            .unwrap();
+        eventually(|| diagnostics_for(&h, &file) == 2).await;
+        h.events.lock().clear();
+    }
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn delegated_java_launch_retains_scoped_errors_without_a_jdt_build() {
+    use ide_lsp::jdtls::JavaBuildStatus;
+
+    let h = harness_for("java", "java", &[("jdtls", incremental_caps())], &[]);
+    h.open("Main.java", "class Main {}");
+    h.wait_status("jdtls", ServerStatus::Ready).await;
+    let state = h.launcher.state("jdtls");
+    let web = h.root.join("web");
+    state.respond(
+        "workspace/executeCommand",
+        json!({"classpaths": [web.join("target/classes"), h.root.join("service/target/classes")]}),
+    );
+    for (path, test, errors) in [
+        ("web/src/main/java/Main.java", false, 1),
+        ("web/src/test/java/MainTest.java", false, 0),
+        ("web/src/test/java/MainTest.java", true, 1),
+        ("service/src/main/java/Service.java", false, 1),
+        ("service/src/test/java/ServiceTest.java", true, 0),
+        ("other/src/main/java/Other.java", false, 0),
+    ] {
+        let file = h.root.join(path);
+        std::fs::create_dir_all(file.parent().unwrap()).unwrap();
+        std::fs::write(&file, "System.out.println(missingName);").unwrap();
+        let diag = json!({"range": {"start":{"line":0,"character":19},"end":{"line":0,"character":30}},
+            "severity": 1, "message": "missingName cannot be resolved to a variable"});
+        state
+            .peer()
+            .notify("textDocument/publishDiagnostics", json!({"uri": uri_of(&file), "diagnostics": [diag]}))
+            .unwrap();
+        eventually(|| diagnostics_for(&h, &file) == 1).await;
+        let guard = h.mgr.java_external_build(&web, &Default::default()).await.unwrap();
+        let info = h.mgr.java_launch(&web, test, false, false, true, &Default::default()).await.unwrap();
+        drop(guard);
+        assert_eq!(info.error_count, errors, "{path}, test={test}");
+        assert_eq!(info.build, (errors > 0).then_some(JavaBuildStatus::WithErrors));
+        if errors > 0 {
+            assert_eq!(info.errors[0].message, "missingName cannot be resolved to a variable");
+        }
+        state
+            .peer()
+            .notify("textDocument/publishDiagnostics", json!({"uri": uri_of(&file), "diagnostics": []}))
+            .unwrap();
+        eventually(|| diagnostics_for(&h, &file) == 2).await;
+        h.events.lock().clear();
+    }
+    assert!(state.requested("java/buildWorkspace").is_empty());
 }
 
 #[tokio::test(flavor = "multi_thread")]

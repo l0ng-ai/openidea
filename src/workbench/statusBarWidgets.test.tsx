@@ -17,6 +17,8 @@ import { ContextMenuHost } from "@/ui";
 import { registerStatusItem, type StatusItemContribution } from "./contributions";
 import { StatusBar } from "./StatusBar";
 import { isStatusItemVisible, statusBarMenu } from "./statusBarWidgets";
+import { executeAction } from "@/platform/actions";
+import { registerShellActions } from "./shellActions";
 
 const item = (id: string, extra: Partial<StatusItemContribution> = {}): StatusItemContribution => ({
   id,
@@ -102,5 +104,26 @@ describe("status bar widgets", () => {
       JSON.stringify({ "w.memory": true }),
     );
     expect(await screen.findByText("w.memory")).toBeTruthy();
+  });
+
+  it("toggles one widget by id from View › Appearance › Status Bar Widgets", async () => {
+    disposers.push(
+      registerShellActions(),
+      registerStatusItem(item("w.caret", { title: "Line:Column Number" })),
+      registerStatusItem(item("w.memory", { title: "Memory Indicator", defaultVisible: false })),
+      registerStatusItem(item("w.tasks")),
+    );
+    await act(() => executeAction("view.toggleStatusBarWidget", "w.memory"));
+    expect(settingsSet).toHaveBeenLastCalledWith(
+      "global",
+      "appearance.statusBarWidgets",
+      JSON.stringify({ "w.memory": true }),
+    );
+    await act(() => executeAction("view.toggleStatusBarWidget", "w.caret"));
+    expect(widgets).toEqual({ "w.memory": true, "w.caret": false });
+    // Untitled or unknown widgets cannot be hidden.
+    await act(() => executeAction("view.toggleStatusBarWidget", "w.tasks"));
+    await act(() => executeAction("view.toggleStatusBarWidget", "w.gone"));
+    expect(settingsSet).toHaveBeenCalledTimes(2);
   });
 });

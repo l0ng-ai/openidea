@@ -30,6 +30,7 @@ import {
 } from "@codemirror/state";
 import { GutterMarker, ViewPlugin, type EditorView } from "@codemirror/view";
 import type { LanguageDescription } from "@codemirror/language";
+import type { LineEnding } from "@/platform/ipc";
 import { create } from "zustand";
 import { maybeEditorService } from "@/workbench/contributions";
 
@@ -455,6 +456,7 @@ export function _provideNavigationHistory(provider: () => NavigationHistorySnaps
 // --- editor events ------------------------------------------------------------
 
 export type EditorEvent =
+  | { type: "inputModeChanged"; path: string; mode: string; sub: string | null }
   | { type: "docOpened"; doc: number; path: string; language: string }
   | { type: "docClosed"; doc: number; path: string }
   /** After the backend wrote the file. */
@@ -463,6 +465,11 @@ export type EditorEvent =
   | { type: "activeEditorChanged"; path: string | null; doc: number | null }
   /** Caret moved in the active text editor (throttled to animation frames). 0-based. */
   | { type: "caretMoved"; doc: number; path: string; line: number; col: number; offset: number };
+
+/** Reports the focused editor's input mode from an editor contribution. */
+export function reportInputMode(path: string, mode: string, sub: string | null) {
+  _emitEditorEvent({ type: "inputModeChanged", path, mode, sub });
+}
 
 type EditorEventListener = (e: EditorEvent) => void;
 const editorEventListeners = new Set<EditorEventListener>();
@@ -636,6 +643,8 @@ export interface DocumentAttachment {
   doc: number;
   /** Current document text; build the view's state from it. */
   text(): string;
+  /** The document's line ending (detected on load, as the status bar shows). */
+  lineEnding(): LineEnding;
   /** The document's language mode name (backend-assigned, as the editor tabs use). */
   uiMode(): string | null;
   readOnly: boolean;

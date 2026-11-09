@@ -256,6 +256,11 @@
   height: 30px;
   border-radius: 6px;
 }
+.widgetLoading {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+}
 .widgetConfigIcon {
   position: relative;
   display: inline-flex;

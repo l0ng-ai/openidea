@@ -146,7 +146,12 @@ fn converted_blame(
     let current = crate::diff::normalize_eol(text);
     let mut result = uncommitted_lines(current.split_inclusive('\n').count());
     let Some(base) = r.file_bytes_at(path, Some(revision))? else { return Ok(result) };
-    let out = run(r.root(), &["--literal-pathspecs", "blame", "--porcelain", revision, "--", rel], None)?;
+    let args: &[&str] = if crate::execution_allowed() {
+        &["--literal-pathspecs", "blame", "--porcelain", revision, "--", rel]
+    } else {
+        &["--literal-pathspecs", "blame", "--no-textconv", "--porcelain", revision, "--", rel]
+    };
+    let out = run(r.root(), args, None)?;
     let physical = crate::blame::parse_porcelain(&out.stdout_str());
     let raw = crate::text_encoding::decode_raw(&base, encoding);
     let raw = crate::diff::normalize_eol(&raw);

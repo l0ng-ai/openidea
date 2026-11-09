@@ -246,20 +246,34 @@ pub fn app_cancel_quit(app: AppHandle, windows: State<'_, WindowsState>) {
     });
 }
 
-/// Sets the menu's labels / shortcut text and updates the menu when the visible
-/// items changed. Shortcuts for actions that are not on the menu must not call
+/// Sets the menu's labels / accelerators and updates the menu when the visible
+/// items changed. Accelerators of actions that are not on the menu must not call
 /// `set_menu`, which redraws the macOS menu bar.
 #[tauri::command]
 #[specta::specta]
 pub fn menu_configure(
+    window: WebviewWindow,
     app: AppHandle,
     menu_state: State<'_, MenuState>,
     state: State<'_, AppState>,
     config: MenuConfig,
 ) {
+    if menu::native_menu_bar()
+        && windows::target_window(&app).is_some_and(|target| !owns_menu_config(window.label(), target.label()))
+    {
+        return;
+    }
     if menu::store_config(&menu_state, config) {
         menu::install(&app, &menu_state, &state.recent.list());
     }
+}
+
+fn owns_menu_config(source: &str, target: &str) -> bool {
+    let owner = match windows::auxiliary(target) {
+        Some((windows::AuxKind::Settings, parent)) => parent,
+        _ => target,
+    };
+    source == owner
 }
 
 /// Updates the menu after the recent-projects list changed. Only the Open Recent
@@ -588,6 +602,21 @@ pub async fn app_install_update(
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn menu_configuration_follows_the_active_window_or_its_settings_parent() {
+        for (source, target, allowed) in [
+            ("main", "main", true),
+            ("project-1", "main", false),
+            ("main", "settings-main", true),
+            ("project-1", "settings-main", false),
+            ("project-1", "settings-project-1", true),
+            ("comparison-main-1", "comparison-main-1", true),
+            ("main", "comparison-main-1", false),
+        ] {
+            assert_eq!(super::owns_menu_config(source, target), allowed, "{source} → {target}");
+        }
+    }
+
     use super::*;
 
     fn downloading(p: Option<UpdateProgress>) -> Option<(f64, Option<f64>)> {

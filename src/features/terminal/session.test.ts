@@ -1,5 +1,8 @@
+import { useProject } from "@/platform/project";
+import { workflowSettings } from "@/platform/workflowSettings";
+import { getSession, newTab, splitTab, syncTerminalProject, unbindTerminals, useTerminals } from "./store";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import { FIT_INTERVAL_MS } from "./fit";
+import { FIT_SETTLE_MS } from "./fit";
 import { findTerminalLinks, type TerminalLink } from "./links";
 import { openFileLink, resolveStartCwd, TerminalSession } from "./session";
 
@@ -13,6 +16,7 @@ const ipc = vi.hoisted(() => ({
     termKill: vi.fn(),
     termResize: vi.fn(),
     termIsBusy: vi.fn(),
+    termWrite: vi.fn(),
   },
 }));
 const workbench = vi.hoisted(() => ({
@@ -21,7 +25,8 @@ const workbench = vi.hoisted(() => ({
 }));
 
 vi.mock("@/platform/ipc", () => ({ call: ipc.call, commands: ipc.commands, isTauri: () => true }));
-vi.mock("@/workbench/contributions", () => ({
+vi.mock("@/workbench/contributions", async (importOriginal) => ({
+  ...(await importOriginal<object>()),
   editorService: () => ({ openFile: workbench.openFile }),
   notifications: () => ({ notify: workbench.notify }),
   OWNS_FILE_DROP: { "data-owner": true },
@@ -118,6 +123,27 @@ describe("resolveStartCwd", () => {
 describe("terminal start directory fallback", () => {
   beforeEach(() => vi.clearAllMocks());
 
+  it("shows rejected terminal input instead of silently discarding it", async () => {
+    ipc.commands.termSpawn.mockResolvedValue({ id: 9, title: "zsh" });
+    ipc.commands.termWrite.mockRejectedValueOnce(new Error("input queue full"));
+    const session = new TerminalSession({
+      key: "s-input-error",
+      cwd: "/repo",
+      onChange: () => undefined,
+      onFocus: () => undefined,
+    });
+    await session.start();
+    session.input("paste");
+    await vi.waitFor(() =>
+      expect(workbench.notify).toHaveBeenCalledWith({
+        level: "error",
+        title: "Cannot write to terminal",
+        body: "input queue full",
+      }),
+    );
+    session.dispose();
+  });
+
   it("spawns a restored session in the project root when its saved directory is gone", async () => {
     ipc.commands.fsEntryKind.mockRejectedValue(new Error("gone"));
     ipc.commands.termSpawn.mockResolvedValue({ id: 7, title: "zsh" });
@@ -156,6 +182,28 @@ describe("terminal start directory fallback", () => {
   });
 });
 
+describe("terminal restart", () => {
+  beforeEach(() => vi.clearAllMocks());
+
+  it("restarts a session that failed to start on Shift+Enter's Esc+Return as on Enter", async () => {
+    ipc.commands.fsEntryKind.mockResolvedValue("dir");
+    ipc.commands.termSpawn.mockRejectedValueOnce(new Error("no shell")).mockRejectedValueOnce(new Error("no shell"));
+    const session = new TerminalSession({
+      key: "s-restart",
+      cwd: "/repo",
+      onChange: () => undefined,
+      onFocus: () => undefined,
+    });
+    await session.start();
+    expect(session.state.status).toBe("error");
+    session.send("\x1b");
+    expect(session.state.status).toBe("error");
+    session.send("\x1b\r");
+    await vi.waitFor(() => expect(ipc.commands.termSpawn).toHaveBeenCalledTimes(2));
+    session.dispose();
+  });
+});
+
 describe("terminal open", () => {
   afterEach(() => vi.useRealTimers());
 
@@ -182,9 +230,52 @@ describe("terminal open", () => {
 
     width = 400;
     height = 300;
-    vi.advanceTimersByTime(FIT_INTERVAL_MS);
+    vi.advanceTimersByTime(FIT_SETTLE_MS);
     expect(open).toHaveBeenCalledTimes(1);
     session.dispose();
     container.remove();
+  });
+});
+
+describe("terminal font zoom", () => {
+  afterEach(() => {
+    unbindTerminals();
+    localStorage.clear();
+    useProject.setState({ settings: null });
+  });
+
+  it("keeps the offset through settings, refit and moving splits; fresh splits and restores start at the base", () => {
+    const settings = (fontSize: number) => {
+      useProject.setState({ settings: { terminal: { useEditorFont: false, fontSize } } } as never);
+      for (const tab of useTerminals.getState().tabs)
+        getSession(tab.session)?.applySettings(workflowSettings().terminal);
+    };
+    settings(14);
+    syncTerminalProject("/font-zoom");
+    const a = newTab("/font-zoom");
+    const first = getSession(a.session)!;
+    const b = newTab("/font-zoom");
+    const second = getSession(b.session)!;
+    first.stepFontSize(2);
+    expect(first.term.options.fontSize).toBe(16);
+    expect(second.term.options.fontSize).toBe(14);
+    settings(18);
+    expect(first.term.options.fontSize).toBe(20);
+    first.refit();
+    expect(first.term.options.fontSize).toBe(20);
+    splitTab(a.id, "horizontal", true);
+    expect(getSession(a.session)).toBe(first);
+    expect(first.term.options.fontSize).toBe(20);
+    const split = splitTab(a.id, "vertical")!;
+    const splitTabInfo = useTerminals.getState().tabs.find((t) => t.id === split)!;
+    expect(getSession(splitTabInfo.session)!.term.options.fontSize).toBe(18);
+    first.stepFontSize(0);
+    expect(first.term.options.fontSize).toBe(18);
+    second.stepFontSize(3);
+    expect(second.term.options.fontSize).toBe(21);
+    expect(first.term.options.fontSize).toBe(18);
+    syncTerminalProject(null);
+    syncTerminalProject("/font-zoom");
+    for (const tab of useTerminals.getState().tabs) expect(getSession(tab.session)!.term.options.fontSize).toBe(18);
   });
 });

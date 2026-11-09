@@ -29,7 +29,7 @@ import { removeAllSpecial, specialAt, toggleFieldAt, toggleMethodAt } from "./br
 import { fieldAt, methodAt } from "./breakpoints/symbols";
 import { toggleBreakpointSmart } from "./breakpoints/toggle";
 import { isJavaAttachTarget, isJavaDebuggable, javaAttachConfig, javaLaunchConfig } from "./java";
-import { reloadChangedClasses } from "./hotswap";
+import { cancelHotSwapBuild, reloadChangedClasses } from "./hotswap";
 import { debugUnsupportedReason, launchConfigFor } from "./launch";
 import {
   isPythonAttachTarget,
@@ -266,11 +266,14 @@ async function startJavaConfig(config: RunConfig, root: string, origin: RunConfi
       };
       signal.addEventListener("abort", cancel, { once: true });
       try {
-        await maybeEditorService()
-          ?.saveAll()
-          .catch(() => undefined);
-        signal.throwIfAborted();
-        return await javaLaunchConfig(config, root, { request, signal, report });
+        return await javaLaunchConfig(config, root, {
+          request,
+          signal,
+          report,
+          saveAll: async () => {
+            await maybeEditorService()?.saveAll();
+          },
+        });
       } finally {
         signal.removeEventListener("abort", cancel);
       }
@@ -320,6 +323,7 @@ async function startConfig(arg: unknown) {
     await startJavaConfig(config, root, origin ?? config, show);
     return;
   }
+  if (config.kind === "plugin") config = await call(commands.pluginPrepareDebugRun(config));
   const dotnet = config.kind === "dotnet" && config.debugAdapter === "netcoredbg";
   const prepared = dotnet ? await call(commands.runDotnetResolve(config, true)) : config;
   // php-debug starts the PHP chosen in Settings unless the command names one.
@@ -385,6 +389,45 @@ export function registerDebugActions(): () => void {
 
   return registerActions([
     {
+      id: "debug.pluginStart",
+      title: "Debug Plugin Configuration",
+      category: "Debug",
+      hidden: true,
+      when: "projectOpen",
+      run: async ({ arg }) => {
+        const a = arg as { config: RunConfig; onExit: (code: number | null, stopped: boolean) => void };
+        const config = await call(commands.pluginPrepareDebugRun(a.config));
+        const root = useProject.getState().project?.root;
+        if (!root) throw new Error("No project");
+        const launch = launchConfigFor(config, root);
+        if (!launch) throw new Error("This configuration has no debugger");
+        let id: number | null = null;
+        let stopped = false;
+        const observe = () => {
+          if (id === null) return;
+          const session = useDebug.getState().sessions[id];
+          if (session?.status === "stopping") stopped = true;
+          if (!session || session.status === "terminated") {
+            off();
+            a.onExit(session?.exitCode ?? null, stopped);
+          }
+        };
+        const off = useDebug.subscribe(observe);
+        try {
+          await maybeEditorService()?.saveAll();
+          id = await startSession(launch, { runConfig: config });
+          if (id === null) {
+            off();
+            throw new Error("Debug session did not start");
+          }
+          observe();
+        } catch (error) {
+          off();
+          throw error;
+        }
+      },
+    },
+    {
       id: "debug.startConfig",
       title: "Debug…",
       category: "Debug",
@@ -448,6 +491,15 @@ export function registerDebugActions(): () => void {
             ? arg.configId
             : undefined,
         ),
+    },
+    {
+      id: "debug.cancelHotSwap",
+      title: "Cancel Hot Swap Build",
+      description: "Stop the compile a Reload Changed Classes action is waiting on",
+      category: "Debug",
+      icon: "stop",
+      when: "debugHotSwapBuilding",
+      run: () => cancelHotSwapBuild(),
     },
     {
       id: "debug.rerun",

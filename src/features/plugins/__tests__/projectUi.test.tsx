@@ -74,3 +74,28 @@ describe("project UI requests", () => {
     }
   });
 });
+
+it("acknowledges database connection only after the normal project action succeeds", async () => {
+  const run = vi.fn().mockResolvedValue(undefined);
+  dispose = registerAction({ id: "db.pluginConnect", title: "Connect Plugin Data Source", run });
+  const answerCommand = vi.fn().mockResolvedValue(true);
+  setPluginsBackend({ ...createMemoryPluginsBackend(), answerCommand });
+  handleRuntimeEvent({
+    type: "windowRequest",
+    pluginId: "p",
+    requestId: "db",
+    request: { kind: "databaseConnect", id: "owned" },
+  });
+  await waitFor(() => expect(answerCommand).toHaveBeenCalledWith("db", { kind: "value", value: null }));
+  expect(run).toHaveBeenCalledWith(expect.objectContaining({ arg: "owned" }));
+  run.mockRejectedValueOnce(new Error("offline"));
+  handleRuntimeEvent({
+    type: "windowRequest",
+    pluginId: "p",
+    requestId: "failed",
+    request: { kind: "databaseConnect", id: "owned" },
+  });
+  await waitFor(() =>
+    expect(answerCommand).toHaveBeenCalledWith("failed", { kind: "failed", value: "Error: offline" }),
+  );
+});

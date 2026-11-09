@@ -90,3 +90,10 @@ describe("page tree", () => {
     );
   });
 });
+
+it("indexes toolbar and status bar visibility in Appearance settings", () => {
+  const appearance = BEHAVIOR_PAGES.find((p) => p.id === "appearance")!;
+  const labels = specLabels(appearance);
+  expect(labels).toContain("Show main toolbar");
+  expect(labels).toContain("Show status bar");
+});

@@ -2,6 +2,8 @@ import { beforeEach, describe, expect, it, vi } from "vitest";
 
 const vcsLog = vi.fn();
 const fsReadText = vi.fn();
+const showCommitDialog = vi.hoisted(() => vi.fn());
+vi.mock("../CommitDialog", () => ({ showCommitDialog }));
 const vcsConfigGet = vi.fn(async (_repo: unknown, _key: string) => ({ status: "ok", data: null as string | null }));
 
 vi.mock("@/platform/ipc", async (importOriginal) => {
@@ -17,6 +19,10 @@ vi.mock("@/platform/ipc", async (importOriginal) => {
   };
 });
 
+import type { FileStatus, Settings } from "@/bindings";
+import { useProject } from "@/platform/project";
+import { commitChangelist, commitFiles } from "../changelistsUi";
+import { initialChangelists, useChangelists } from "../changelists";
 import { gitTabs, shownTab, stashTabOf, stashTabs } from "../gitTabs";
 import { pushDialogNeeded } from "../commitUi";
 import {
@@ -136,6 +142,49 @@ describe("commit template", () => {
     await Promise.resolve();
     expect(useCommit.getState().message).toBe("typed");
     dispose();
+  });
+});
+
+describe("Commit File… and the modal commit interface", () => {
+  const status: FileStatus[] = [
+    { path: "/p/src/a.ts", relPath: "src/a.ts", staged: null, unstaged: "modified", renamedFrom: null },
+    { path: "/p/src/b.ts", relPath: "src/b.ts", staged: null, unstaged: "modified", renamedFrom: null },
+  ];
+
+  beforeEach(() => {
+    showCommitDialog.mockClear();
+    useProject.setState({ settings: null });
+    useVcs.setState({ available: true, root: "/p", repo: "/p", roots: ["/p"], status });
+    useCommit.setState({ checks: new Map(), message: "" });
+  });
+
+  it("opens the Commit dialog with just the file included", async () => {
+    useProject.setState({ settings: { vcs: { commit: { nonModal: false } } } as Settings });
+    commitFiles(["/p/src/a.ts"]);
+    await vi.waitFor(() => expect(showCommitDialog).toHaveBeenCalled());
+    expect(useCommit.getState().checks.get("/p/src/a.ts")).toBe("all");
+    expect(useCommit.getState().checks.get("/p/src/b.ts")).toBe("none");
+  });
+
+  it("keeps the message in the Commit tool window without the modal interface", () => {
+    const tick = useCommit.getState().focusTick;
+    commitFiles(["/p/src/a.ts"]);
+    expect(showCommitDialog).not.toHaveBeenCalled();
+    expect(useCommit.getState().focusTick).toBe(tick + 1);
+    expect(useCommit.getState().checks.get("/p/src/a.ts")).toBe("all");
+    expect(useCommit.getState().checks.get("/p/src/b.ts")).toBe("none");
+  });
+
+  it("opens the Commit dialog for Commit… on a change list too", async () => {
+    useProject.setState({ settings: { vcs: { commit: { nonModal: false } } } as Settings });
+    const lists = initialChangelists();
+    lists.lists.push({ id: "other", name: "Other", comment: "" });
+    lists.files = { "src/a.ts": "other" };
+    useChangelists.setState({ state: lists });
+    commitChangelist("other");
+    await vi.waitFor(() => expect(showCommitDialog).toHaveBeenCalled());
+    expect(useCommit.getState().checks.get("/p/src/a.ts")).toBe("all");
+    expect(useCommit.getState().checks.get("/p/src/b.ts")).toBe("none");
   });
 });
 

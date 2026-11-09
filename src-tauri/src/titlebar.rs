@@ -1,7 +1,8 @@
 //! Size the native title bar around the window buttons to match the web toolbar.
 //!
 //! An empty unified toolbar makes AppKit lay out and vertically centre the buttons itself, so
-//! nothing moves them behind its back and they stay still during live resize.
+//! nothing moves them behind its back and they stay still during live resize. A bar lower than
+//! the compact toolbar (IDEA's 30px compact header) keeps the plain title bar instead.
 //!
 //! In native full screen the same toolbar is drawn as an opaque strip over the web title bar, so
 //! it is hidden from the moment the window starts entering full screen until it has left (#1899).
@@ -20,11 +21,28 @@ use objc2_foundation::{NSNotificationCenter, NSObjectProtocol};
 use std::{cell::Cell, cell::RefCell, collections::HashMap, rc::Rc};
 use tauri::Manager;
 
-/// Unified compact (38pt) and unified (52pt) toolbars; pick the one closer to the web bar.
+/// The native chrome around the window buttons: the plain title bar (28pt), or an empty unified
+/// compact (38pt) or unified (52pt) toolbar.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum Chrome {
+    Plain,
+    Toolbar(NSWindowToolbarStyle),
+}
+
+/// Midpoints between the 28, 38 and 52pt bars.
+const PLAIN_MAX_HEIGHT: f64 = 33.0;
 const COMPACT_MAX_HEIGHT: f64 = 45.0;
 
-fn style_for(height: f64) -> NSWindowToolbarStyle {
-    if height < COMPACT_MAX_HEIGHT { NSWindowToolbarStyle::UnifiedCompact } else { NSWindowToolbarStyle::Unified }
+/// The chrome closest to the web bar, so the buttons sit on its centre line (IDEA's 30px compact
+/// header takes the plain title bar).
+fn chrome_for(height: f64) -> Chrome {
+    if height < PLAIN_MAX_HEIGHT {
+        Chrome::Plain
+    } else if height < COMPACT_MAX_HEIGHT {
+        Chrome::Toolbar(NSWindowToolbarStyle::UnifiedCompact)
+    } else {
+        Chrome::Toolbar(NSWindowToolbarStyle::Unified)
+    }
 }
 
 /// Whether a window is in, or on its way into, native full screen. `styleMask` cannot answer
@@ -127,13 +145,23 @@ pub fn set_height(window: &tauri::WebviewWindow, height: f64) -> tauri::Result<(
         let native = &*webview.ns_window().cast::<NSWindow>();
         let state = WINDOWS
             .with_borrow_mut(|windows| windows.entry(label).or_insert_with(|| track(native, &app)).state.clone());
-        if native.toolbar().is_none() {
-            let toolbar = NSToolbar::new(mtm);
-            native.setToolbar(Some(&toolbar));
-        }
-        let style = style_for(height);
-        if native.toolbarStyle() != style {
-            native.setToolbarStyle(style);
+        match chrome_for(height) {
+            Chrome::Plain => {
+                if native.toolbar().is_some() {
+                    native.setToolbar(None);
+                }
+            }
+            Chrome::Toolbar(style) => {
+                if native.toolbar().is_none() {
+                    let toolbar = NSToolbar::new(mtm);
+                    // Hidden from the start in full screen, where it would paint an opaque strip.
+                    toolbar.setVisible(state.toolbar_visible());
+                    native.setToolbar(Some(&toolbar));
+                }
+                if native.toolbarStyle() != style {
+                    native.setToolbarStyle(style);
+                }
+            }
         }
         apply(native, &state);
     })
@@ -195,12 +223,22 @@ mod tests {
     }
 
     #[test]
-    fn toolbar_style_follows_the_web_bar_height() {
-        for (height, compact) in
-            [(31.9, true), (32.0, true), (40.0, true), (44.9, true), (45.0, false), (52.0, false), (120.0, false)]
-        {
-            let expected = if compact { NSWindowToolbarStyle::UnifiedCompact } else { NSWindowToolbarStyle::Unified };
-            assert_eq!(style_for(height), expected, "{height}");
+    fn chrome_is_the_closest_to_the_web_bar_height() {
+        use NSWindowToolbarStyle as Style;
+        for (height, expected) in [
+            (28.0, Chrome::Plain),
+            (30.0, Chrome::Plain),
+            (32.0, Chrome::Plain),
+            (32.9, Chrome::Plain),
+            (33.0, Chrome::Toolbar(Style::UnifiedCompact)),
+            (38.0, Chrome::Toolbar(Style::UnifiedCompact)),
+            (40.0, Chrome::Toolbar(Style::UnifiedCompact)),
+            (44.9, Chrome::Toolbar(Style::UnifiedCompact)),
+            (45.0, Chrome::Toolbar(Style::Unified)),
+            (52.0, Chrome::Toolbar(Style::Unified)),
+            (120.0, Chrome::Toolbar(Style::Unified)),
+        ] {
+            assert_eq!(chrome_for(height), expected, "{height}");
         }
     }
 }

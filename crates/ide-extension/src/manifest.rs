@@ -32,7 +32,7 @@ use std::path::{Component, Path, PathBuf};
 
 pub const MANIFEST_FILE: &str = "plugin.toml";
 /// The plugin API (engine) version this host implements.
-pub const ENGINE_VERSION: &str = "1.3.0";
+pub const ENGINE_VERSION: &str = "1.4.0";
 /// The 0.1 API, still accepted for contribution-only packages and 0.1 components.
 pub const LEGACY_API: &str = "0.1";
 /// Marketplace categories, in the order they are shown.
@@ -144,8 +144,20 @@ impl ActivationEvent {
 
 /// Workbench event kinds (`on-event:<kind>`, WIT `events.event-kind`).
 /// `scheduled` comes from `on-schedule` instead.
-pub const EVENT_KINDS: &[&str] =
-    &["file-opened", "file-saved", "files-changed", "editor-focused", "action-performed", "vcs-changed"];
+pub const EVENT_KINDS: &[&str] = &[
+    "run-exited",
+    "terminal-exited",
+    "content-tab-action",
+    "file-closed",
+    "settings-changed",
+    "input-mode-changed",
+    "file-opened",
+    "file-saved",
+    "files-changed",
+    "editor-focused",
+    "action-performed",
+    "vcs-changed",
+];
 
 impl std::fmt::Display for ActivationEvent {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
@@ -317,6 +329,12 @@ impl Manifest {
             check_relative(icon, "icon")?;
         }
         for cap in self.capabilities.required.iter().chain(&self.capabilities.optional) {
+            if matches!(
+                cap,
+                Capability::IdeCommands | Capability::DatabaseSources | Capability::NetHttp(_) | Capability::Ipc(_)
+            ) {
+                self.needs_api(&format!("capability `{cap}`"), 4)?;
+            }
             if matches!(cap, Capability::ProjectWrite | Capability::FsWrite(_)) {
                 self.needs_api(&format!("capability `{cap}`"), 3)?;
             }
@@ -332,6 +350,10 @@ impl Manifest {
         }
         let mut seen = BTreeSet::new();
         for event in &self.activation {
+            if matches!(event, ActivationEvent::Event(kind) if matches!(kind.as_str(), "file-closed" | "settings-changed" | "input-mode-changed" | "run-exited" | "terminal-exited" | "content-tab-action"))
+            {
+                self.needs_api(&format!("`{event}`"), 4)?;
+            }
             if matches!(event, ActivationEvent::Event(kind) if kind == "files-changed") {
                 self.needs_api("`on-event:files-changed`", 3)?;
             }
@@ -653,5 +675,46 @@ mod tests {
         assert!(!engine_compatible("^0.2", false), "0.x components don't run on 1.0");
         assert!(engine_compatible("0.1.3", true));
         assert!(!engine_compatible("0.10", true));
+    }
+}
+
+#[cfg(test)]
+mod api14_tests {
+    use super::*;
+    #[test]
+    fn new_capabilities_and_activations_require_api_1_4() {
+        for declaration in [
+            "[capabilities]\nrequired = [\"net.http:example.com\"]",
+            "[capabilities]\noptional = [\"ipc:$TMPDIR/test-*\"]",
+            "activation = [\"on-event:file-closed\"]",
+            "activation = [\"on-event:settings-changed\"]",
+            "activation = [\"on-event:input-mode-changed\"]",
+            "activation = [\"on-event:run-exited\"]",
+            "activation = [\"on-event:terminal-exited\"]",
+            "activation = [\"on-event:content-tab-action\"]",
+        ] {
+            for engine in ["^1.0", "^1.3", "^1.4"] {
+                let manifest = format!(
+                    "id = 'test'\nname = 'Test'\nversion = '0.1.0'\nwasm = 'plugin.wasm'\nengines.openidea = '{engine}'\n{declaration}\n"
+                );
+                let parsed = Manifest::parse(&manifest);
+                if engine == "^1.4" {
+                    parsed.unwrap();
+                } else {
+                    assert!(parsed.unwrap_err().contains("new in plugin API 1.4"));
+                }
+            }
+        }
+    }
+}
+
+#[cfg(test)]
+mod commands_api_tests {
+    use super::*;
+    #[test]
+    fn ide_commands_requires_api_1_4() {
+        let manifest = "id = \"test\"\nname = \"Test\"\nversion = \"1.0.0\"\nengines.openidea = \"^1.3\"\n[capabilities]\nrequired = [\"ide.commands\"]\n";
+        assert!(Manifest::parse(manifest).unwrap_err().contains("1.4"));
+        assert!(Manifest::parse(&manifest.replace("^1.3", "^1.4")).is_ok());
     }
 }

@@ -23,6 +23,7 @@ import {
   toggleMaximizeToolWindow,
   sanitizePlacements,
   resetToolWindowLayout,
+  restoreMaximizedToolWindow,
   setFocusedToolWindow,
   setToolWindowSize,
   showToolWindow,
@@ -140,6 +141,55 @@ describe("tool window semantics", () => {
 });
 
 describe("tool window persistence", () => {
+  it.each(["left", "right", "bottom"] as const)("preserves the %s layout through maximize and reload", (anchor) => {
+    moveToolWindow("terminal", anchor);
+    moveToolWindow("problems", `${anchor}-split`);
+    showToolWindow("terminal");
+    showToolWindow("problems");
+    setToolWindowSize(anchor, 987);
+    setToolWindowSplit(anchor, 0.63);
+    const before = useToolWindowLayout.getState();
+    toggleMaximizeToolWindow("terminal");
+    setToolWindowSize(anchor, 111);
+    expect(isToolWindowVisible("terminal")).toBe(true);
+    expect(isToolWindowVisible("problems")).toBe(true);
+    if (anchor !== "left") {
+      expect(isToolWindowVisible("project")).toBe(false);
+      expect(getContext()["toolWindow.project.visible"]).toBe(false);
+    }
+    toggleMaximizeToolWindow("terminal");
+    expect(useToolWindowLayout.getState()).toMatchObject({
+      visible: before.visible,
+      sizes: before.sizes,
+      splits: before.splits,
+    });
+    toggleMaximizeToolWindow("terminal");
+    // Saving another layout choice while maximized must retain all the original anchors.
+    setToolWindowSplit(anchor, 0.63);
+    showToolWindow("terminal");
+    loadToolWindowLayout("/work/a");
+    expect(useToolWindowLayout.getState()).toMatchObject({
+      visible: before.visible,
+      sizes: before.sizes,
+      splits: before.splits,
+      maximized: null,
+    });
+  });
+
+  it("restores other anchors on navigation, opening another side, or closing the maximized window", () => {
+    showToolWindow("terminal");
+    toggleMaximizeToolWindow("terminal");
+    restoreMaximizedToolWindow();
+    expect(isToolWindowVisible("project")).toBe(true);
+    toggleMaximizeToolWindow("terminal");
+    showToolWindow("project", true);
+    expect(useToolWindowLayout.getState().maximized).toBeNull();
+    toggleMaximizeToolWindow("terminal");
+    hideToolWindow("terminal");
+    expect(useToolWindowLayout.getState().maximized).toBeNull();
+    expect(isToolWindowVisible("project")).toBe(true);
+  });
+
   it("persists visible windows and sizes per project root", () => {
     showToolWindow("structure");
     showToolWindow("terminal");
@@ -273,8 +323,10 @@ describe("split areas", () => {
   it("keeps the side maximized while its other area shows a window", () => {
     showToolWindow("bookmarks");
     toggleMaximizeToolWindow("project");
+    setFocusedToolWindow("bookmarks");
     hideToolWindow("bookmarks");
     expect(useToolWindowLayout.getState().maximized).toBe("left");
+    expect(useToolWindowLayout.getState().focusRequest?.id).toBe("project");
     hideToolWindow("project");
     expect(useToolWindowLayout.getState().maximized).toBeNull();
   });

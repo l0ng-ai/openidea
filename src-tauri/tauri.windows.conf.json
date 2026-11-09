@@ -19,6 +19,7 @@
   "bundle": {
     "windows": {
       "nsis": {
+        "installMode": "both",
         "installerIcon": "icons/icon.ico",
         "uninstallerIcon": "icons/icon.ico"
       }

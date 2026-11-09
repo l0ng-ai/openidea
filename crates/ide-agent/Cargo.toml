@@ -9,6 +9,7 @@ license.workspace = true
 encoding_rs.workspace = true
 ide-vfs.workspace = true
 ide-core.workspace = true
+ide-mcp.workspace = true
 ide-jsonrpc.workspace = true
 ide-vcs.workspace = true
 ide-tools = { path = "../ide-tools" }
@@ -21,7 +22,5 @@ tracing.workspace = true
 parking_lot.workspace = true
 dunce.workspace = true
 uuid.workspace = true
-which = "8"
-
-[dev-dependencies]
 tempfile.workspace = true
+which = "8"

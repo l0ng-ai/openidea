@@ -4,6 +4,8 @@ import { pluginsBackend } from "../backend";
 import { usePlugins } from "../store";
 import { onViewMessage } from "./viewStore";
 
+export const WASM_CONTENT_VIEW = "@wasm-content";
+
 export const PLUGIN_CONTENT_EDITOR_KIND = "pluginContent";
 
 const BUILTIN_ICONS = new Set<string>(ICON_NAMES);
@@ -245,7 +247,15 @@ export function dispatchContentTabAction(
     if (senders) {
       for (const send of senders) send({ text: payload });
     }
-    if (plugin.hasCode) {
+    if (data.view === WASM_CONTENT_VIEW) {
+      void pluginsBackend()
+        .contentTabAction(data.pluginId, { requestId, key: data.key, action, content })
+        .catch((err: unknown) => {
+          if (!pendingRequests.delete(requestId)) return;
+          clearTimeout(timer);
+          reject(err instanceof Error ? err : new Error(String(err)));
+        });
+    } else if (plugin.hasCode) {
       let offOnce = () => {};
       offOnce = onViewMessage(data.pluginId, data.view, (raw) => {
         if (handleContentTabReplyText(data.pluginId, raw)) offOnce();

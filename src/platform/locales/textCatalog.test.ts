@@ -70,6 +70,8 @@ const NOTIFY = new Set(["notify"]);
 
 /** Code templates shown as written, and the in-memory backends of plain-browser development. */
 const UNCHECKED_FILES = new Set([
+  // Pre-module failure UI carries its own English/Chinese text when catalogs cannot load.
+  "public/boot.js",
   "src/editor/core/backend.ts",
   "src/features/plugins/backend.ts",
   "src/features/tools/backend.ts",
@@ -87,6 +89,7 @@ const UNTRANSLATED = new Set<string>([
   "dotnet test",
   "netcoredbg (.NET)",
   "php-debug (PHP)",
+  "rdbg (Ruby)",
   // Product names
   "Cargo",
   "CMake",
@@ -490,7 +493,10 @@ function scanTypeScript(): Scan {
   const spliced: Use[] = [];
   const keys: Use[] = [];
   const literals = new Set<string>();
-  const files = walk(`${ROOT}src`, (p) => /\.tsx?$/.test(p) && !isTest(p) && !p.endsWith("/bindings.ts"));
+  const files = [
+    ...walk(`${ROOT}src`, (p) => /\.tsx?$/.test(p) && !isTest(p) && !p.endsWith("/bindings.ts")),
+    `${ROOT}public/boot.js`,
+  ];
   for (const file of files) {
     const path = file.slice(ROOT.length);
     const source = readFileSync(file, "utf8");
@@ -534,6 +540,8 @@ function scanTypeScript(): Scan {
         for (const text of texts) {
           literals.add(shape(text));
           literals.add(shape(text.trim()));
+          // Color scheme trees display the individual segments of grouped attribute names.
+          for (const part of text.split(" › ")) literals.add(shape(part));
         }
         const sink = checked ? sinkOf(node, exact, template) : undefined;
         if (sink) {
@@ -557,7 +565,7 @@ function scanTypeScript(): Scan {
 /** Read strings without letting a Rust character literal open a string match. */
 function backendLiterals(source: string): string[] {
   const out: string[] = [];
-  for (const m of source.matchAll(/'(?:\\.|[^'\\\r\n])'|"((?:[^"\\]|\\.)*)"/g)) {
+  for (const m of source.matchAll(/'(?:\\.|[^'\\\r\n])'|"((?:[^"\\]|\\[\s\S])*)"/g)) {
     if (m[1] !== undefined) out.push(m[1]);
   }
   return out;
@@ -567,6 +575,13 @@ it("reads backend messages after quote character literals", () => {
   expect(
     backendLiterals(`let quote = '"'; let message = "Select a .NET project"; let detail = "Expected 'x'";`),
   ).toEqual(["Select a .NET project", "Expected 'x'"]);
+});
+
+it("reads backend messages continued over a line", () => {
+  expect(backendLiterals('let m = "can\'t rename; \\\n    half renamed"; let n = "Next";')).toEqual([
+    "can't rename; \\\n    half renamed",
+    "Next",
+  ]);
 });
 
 /** String literals of the Rust crates and language definitions (backend messages). */

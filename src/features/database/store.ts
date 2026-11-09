@@ -2,6 +2,7 @@
  * Database tools state: data sources, connection status, the introspection
  * cache of the tree, query consoles (file → data source) and their results.
  */
+import { useProject } from "@/platform/project";
 import { create } from "zustand";
 import {
   IpcError,
@@ -243,11 +244,20 @@ export function connectedTargets(id: string): string[] {
   return [...useDatabase.getState().connected].filter((t) => splitTarget(t).id === id);
 }
 
+let sourcesRequest = 0;
+
 export async function loadSources(): Promise<void> {
+  const request = ++sourcesRequest;
+  const root = useProject.getState().project?.root;
   try {
     const [sources, connected] = await Promise.all([call(commands.dbSources()), call(commands.dbConnected())]);
+    if (request !== sourcesRequest || useProject.getState().project?.root !== root) return;
+    for (const old of useDatabase.getState().sources) {
+      if (JSON.stringify(old) !== JSON.stringify(sources.find((s) => s.id === old.id))) forget(old.id ?? "");
+    }
     useDatabase.setState({ sources, connected: new Set(connected), loaded: true });
   } catch (e) {
+    if (request !== sourcesRequest || useProject.getState().project?.root !== root) return;
     useDatabase.setState({ loaded: true });
     notifications().notify({ level: "error", title: "Cannot read data sources", body: message(e), key: "db-sources" });
   }
@@ -299,7 +309,10 @@ export async function duplicateSource(id: string): Promise<void> {
   let n = 2;
   while (names.has(`${src.name} [${n}]`)) n++;
   try {
-    await saveSource({ ...src, id: newSourceId(), name: `${src.name} [${n}]` }, undefined);
+    await saveSource(
+      { ...src, id: newSourceId(), name: `${src.name} [${n}]`, pluginOwner: null, pluginSourceId: null },
+      undefined,
+    );
   } catch (e) {
     notifications().notify({ level: "error", title: "Cannot duplicate the data source", body: message(e) });
   }

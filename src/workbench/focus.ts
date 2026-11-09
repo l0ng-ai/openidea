@@ -6,6 +6,15 @@ export const EDITOR_AREA_SELECTOR = "[data-editor-area]";
 
 /** Moves focus to the active editor (or the editor area when none is open). */
 export function focusEditor() {
+  if (typeof document !== "undefined" && document.querySelector(EDITOR_AREA_SELECTOR)?.closest("[hidden]")) {
+    // Restoring the layout commits the editor's visibility on the next render.
+    requestAnimationFrame(focusEditorNow);
+    return;
+  }
+  focusEditorNow();
+}
+
+function focusEditorNow() {
   const service = maybeEditorService();
   if (service?.focus) {
     service.focus();
@@ -15,6 +24,23 @@ export function focusEditor() {
   const area = document.querySelector<HTMLElement>(EDITOR_AREA_SELECTOR);
   const target = area?.querySelector<HTMLElement>(".cm-content, [data-editor-focus]") ?? area;
   target?.focus({ preventScroll: true });
+}
+
+/**
+ * WebKit keeps the DOM caret of an editor that loses focus during a mouse press, as when a
+ * right-click opens the context menu. The editor redraws its lines while unfocused, which moves
+ * that caret to an unrelated line, and focusing the editor again scrolls to it even with
+ * `preventScroll`. Without it, focusing puts the caret at the start of the content without
+ * scrolling and CodeMirror restores its own selection.
+ */
+function dropEditorCaret(e: FocusEvent) {
+  const editor = e.target;
+  if (!(editor instanceof HTMLElement) || !editor.matches('.cm-content[contenteditable="true"]')) return;
+  // The window lost focus and keeps the editor focused for its return.
+  if (document.activeElement === editor) return;
+  if (e.relatedTarget instanceof Node && editor.contains(e.relatedTarget)) return;
+  const selection = document.getSelection();
+  if (selection?.anchorNode && editor.contains(selection.anchorNode)) selection.removeAllRanges();
 }
 
 /**
@@ -29,6 +55,7 @@ export function installFocusTracking(onToolWindowFocus: (id: string | null) => v
     setContext("editorAreaFocus", !!el?.closest?.(EDITOR_AREA_SELECTOR));
   };
   const onFocusOut = (e: FocusEvent) => {
+    dropEditorCaret(e);
     if (e.relatedTarget) return;
     // Focus left to nowhere (window blur keeps document.activeElement).
     queueMicrotask(() => {

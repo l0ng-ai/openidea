@@ -3,7 +3,7 @@
  * test runner) and run/debug/stop actions.
  */
 import { registerEditorContribution } from "@/editor/api";
-import { executeAction, getAction, registerActions } from "@/platform/actions";
+import { executeAction, executeActionOrThrow, getAction, registerActions } from "@/platform/actions";
 import { getContext, setContext, useContextKeys } from "@/platform/context";
 import { call, commands, onIdeEvent, type RunConfig } from "@/platform/ipc";
 import { useProject } from "@/platform/project";
@@ -42,8 +42,9 @@ import { invalidateGoModules } from "./goModules";
 import { invalidatePythonPackages } from "./pythonPackages";
 import { RunWidget } from "./RunWidget";
 import { runConfigsRunAnything } from "./runAnything";
-import { cleanupRemovedProject, recordRun, runServiceProvider } from "./services";
+import { cleanupRemovedProject, recordRun, registerRunServiceActions, runServiceProvider } from "./services";
 import { liveServiceSession, serviceSessions } from "./serviceSessions";
+import { ServiceImportHost } from "./serviceImport";
 import { cmakeBuildId } from "./cmake";
 import { runBeforeLaunch } from "./beforeLaunch";
 import { compoundChildren } from "./configs";
@@ -136,7 +137,18 @@ async function debugConfig(config: RunConfig, chain: readonly string[] = [], sho
     return;
   }
   // "Build and run using: Gradle": the JavaExec JVM gets the agent, the debugger attaches to it.
-  const delegated = getAction("debug.attach") ? await gradleDelegation(config) : null;
+  let delegated: RunConfig | null;
+  try {
+    delegated = getAction("debug.attach") ? await gradleDelegation(config) : null;
+  } catch (error) {
+    notifications().notify({
+      group: "run",
+      level: "error",
+      title: `Cannot run '${config.name}'`,
+      body: error instanceof Error ? error.message : String(error),
+    });
+    return;
+  }
   if (delegated) {
     await debugWithAgent(delegated, show);
     return;
@@ -341,7 +353,10 @@ export function activate(): () => void {
       component: lazyWhen(useEditConfigsOpen, () => import("./EditConfigsDialog").then((m) => m.EditConfigsOverlay)),
     }),
     registerOverlay({ id: "run.dialogs", component: RunDialogsOverlay }),
+    registerOverlay({ id: "run.serviceImport", component: ServiceImportHost }),
+    registerOverlay({ id: "run.serviceImport", component: ServiceImportHost }),
     registerServiceProvider(runServiceProvider),
+    registerRunServiceActions(),
     registerRunningProcessesProvider({
       id: "run",
       running: () =>
@@ -573,6 +588,28 @@ export function activate(): () => void {
         run: () => {
           clearRuntimeCache();
           return loadConfigs();
+        },
+      },
+      {
+        id: "run.pluginStart",
+        title: "Run Plugin Configuration",
+        category: "Run",
+        hidden: true,
+        when: "projectOpen",
+        run: async ({ arg }) => {
+          const a = arg as {
+            config: import("@/bindings").RunConfig;
+            debug: boolean;
+            onExit: (code: number | null, stopped: boolean) => void;
+          };
+          if (a.debug) {
+            if (!getAction("debug.pluginStart")) throw new Error("Debugger unavailable");
+            await executeActionOrThrow("debug.pluginStart", a);
+            return;
+          }
+          const session = await startRun(a.config, undefined, undefined, { onExit: a.onExit });
+          if (!session || session.status === "failed") throw new Error("Run did not start");
+          if (session.runId === null && session.status === "finished") a.onExit(session.exitCode, !!session.stopped);
         },
       },
       {

@@ -61,6 +61,8 @@ pub struct Settings {
     pub cmake: CMakeSettings,
     /// Tools › Agents › Chat.
     pub agents: AgentSettings,
+    /// Tools › MCP Server (global only).
+    pub mcp_server: McpServerSettings,
     /// Plugin settings (`[contributes.settings]`): plugin id → its values by key.
     #[specta(type = BTreeMap<String, BTreeMap<String, specta_typescript::Unknown>>)]
     pub plugins: BTreeMap<String, serde_json::Map<String, serde_json::Value>>,
@@ -84,6 +86,14 @@ impl Default for AgentSettings {
     fn default() -> Self {
         Self { show_context_usage: true, show_work_time: true, show_usage_limits: true, show_cost: false }
     }
+}
+
+/// Tools › MCP Server: agents use the IDE's built-in tools.
+#[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize, Type)]
+#[serde(default, rename_all = "camelCase")]
+pub struct McpServerSettings {
+    /// Serve the tools on 127.0.0.1 while the IDE runs.
+    pub enabled: bool,
 }
 
 /// Absent profiles retain automatic discovery for existing projects.
@@ -230,6 +240,7 @@ impl Default for Settings {
             run_targets: Vec::new(),
             cmake: CMakeSettings::default(),
             agents: AgentSettings::default(),
+            mcp_server: McpServerSettings::default(),
             plugins: BTreeMap::new(),
         }
     }
@@ -375,6 +386,8 @@ pub struct AppearanceSettings {
     pub menu_icons: bool,
     /// `hamburger` | `merged`: main menu presentation in the frameless title bar.
     pub main_menu_style: String,
+    /// A lone Alt press focuses or opens the main menu (IDEA `ide.windows.main.menu.focus.on.alt`).
+    pub main_menu_alt: bool,
     /// `subpixel` | `greyscale` | `none`
     pub ide_antialiasing: String,
     pub editor_antialiasing: String,
@@ -382,6 +395,9 @@ pub struct AppearanceSettings {
     pub show_tool_window_names: bool,
     pub show_tool_window_badges: bool,
     pub widescreen_tool_windows: bool,
+    /// View › Appearance › Toolbar; hidden leaves IDEA's compact window header.
+    pub show_main_toolbar: bool,
+    pub show_status_bar: bool,
     /// Status bar widgets shown (`true`) or hidden (`false`) by the user
     /// (status bar context menu); widgets not listed use their default.
     pub status_bar_widgets: BTreeMap<String, bool>,
@@ -445,12 +461,15 @@ impl Default for AppearanceSettings {
             dnd_with_alt_only: false,
             menu_icons: true,
             main_menu_style: "hamburger".into(),
+            main_menu_alt: true,
             ide_antialiasing: "greyscale".into(),
             editor_antialiasing: "greyscale".into(),
             show_tool_window_bars: true,
             show_tool_window_names: false,
             show_tool_window_badges: true,
             widescreen_tool_windows: false,
+            show_main_toolbar: true,
+            show_status_bar: true,
             status_bar_widgets: BTreeMap::new(),
             main_toolbar: None,
         }
@@ -610,6 +629,8 @@ impl Default for FileSettings {
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize, Type)]
 #[serde(default, rename_all = "camelCase")]
 pub struct LanguagesSettings {
+    /// Explicit plugin formatter, by language id. Empty entries use the normal formatter policy.
+    pub plugin_formatters: BTreeMap<String, String>,
     pub python: PythonSettings,
     pub node: NodeSettings,
     pub php: PhpSettings,
@@ -627,6 +648,7 @@ pub struct LanguagesSettings {
 impl Default for LanguagesSettings {
     fn default() -> Self {
         Self {
+            plugin_formatters: BTreeMap::new(),
             python: PythonSettings::default(),
             node: NodeSettings::default(),
             php: PhpSettings::default(),
@@ -748,6 +770,8 @@ impl Default for PythonSettings {
 pub struct PhpSettings {
     /// `php` CLI executable; empty = the one on `PATH`.
     pub interpreter: String,
+    /// Run PHP/Composer or Node/package-manager commands in this target; empty = project default, `local` = local.
+    pub run_target: String,
     /// PHP version the language server checks the code against (`7.4`); empty = from
     /// `composer.json` (`config.platform.php`, else the lowest version `require.php` allows).
     pub language_level: String,
@@ -775,6 +799,8 @@ pub struct RubySettings {
 pub struct NodeSettings {
     /// `node` executable; empty = the one on `PATH`.
     pub interpreter: String,
+    /// Run PHP/Composer or Node/package-manager commands in this target; empty = project default, `local` = local.
+    pub run_target: String,
     /// `npm` | `pnpm` | `yarn`; empty = detect from the lock file / `packageManager`.
     pub package_manager: String,
 }
@@ -915,6 +941,8 @@ pub struct MavenSettings {
     pub home: String,
     /// User `settings.xml` (`-s`); empty = `~/.m2/settings.xml`.
     pub user_settings: String,
+    /// Toolchains file (`-t`); empty = `~/.m2/toolchains.xml`.
+    pub toolchains: String,
     /// Local repository (`-Dmaven.repo.local`); empty = from `settings.xml`.
     pub local_repository: String,
     /// Run Maven through the Maven Daemon (`mvnd`) for faster builds. mvnd embeds
@@ -926,9 +954,25 @@ pub struct MavenSettings {
     /// Thread count of Maven builds (`-T`): a number of threads (`4`) or a core
     /// multiplier (`2C`, `2.5C`); empty = Maven's default (one thread per module).
     pub threads: String,
+    /// Active Maven profiles (`-P`), comma-separated; empty leaves profiles to the POM/settings.
+    pub active_profiles: String,
 }
 
 impl MavenSettings {
+    /// Settings profiles followed by the Maven tool window's choices.
+    pub fn profiles(&self, choices: &[String]) -> Vec<String> {
+        let mut profiles = Vec::new();
+        for profile in self.active_profiles.split(',').chain(choices.iter().map(String::as_str)).map(str::trim) {
+            if !profile.is_empty() && !profiles.iter().any(|p| p == profile) {
+                profiles.push(profile.to_owned());
+            }
+        }
+        let excluded: Vec<String> =
+            profiles.iter().filter_map(|p| p.strip_prefix(['!', '-']).map(str::to_owned)).collect();
+        profiles.retain(|p| !excluded.contains(p));
+        profiles
+    }
+
     /// The `-T` value when it is one Maven accepts: a thread count (`4`) or a
     /// core multiplier with an optional decimal fraction (`1C`, `2.5C`).
     /// Anything else is dropped: a bad `-T` would make every Maven run fail.
@@ -1219,9 +1263,13 @@ mod tests {
     fn main_menu_style_defaults_and_round_trips() {
         let old: Settings = serde_json::from_str(r#"{"appearance":{"compactMode":true}}"#).unwrap();
         assert_eq!(old.appearance.main_menu_style, "hamburger");
+        assert!(old.appearance.main_menu_alt);
         let merged: Settings = serde_json::from_str(r#"{"appearance":{"mainMenuStyle":"merged"}}"#).unwrap();
         assert_eq!(merged.appearance.main_menu_style, "merged");
         assert_eq!(serde_json::to_value(merged).unwrap()["appearance"]["mainMenuStyle"], "merged");
+        let off: Settings = serde_json::from_str(r#"{"appearance":{"mainMenuAlt":false}}"#).unwrap();
+        assert!(!off.appearance.main_menu_alt);
+        assert_eq!(serde_json::to_value(off).unwrap()["appearance"]["mainMenuAlt"], false);
     }
 
     #[test]
@@ -1386,6 +1434,24 @@ mod maven_linkage_tests {
         assert_eq!(threads("-4").as_deref(), None);
         assert_eq!(threads("1e3").as_deref(), None);
         assert_eq!(threads("2..5C").as_deref(), None);
+    }
+
+    #[test]
+    fn maven_profiles_combine_settings_and_tool_window_choices() {
+        let settings = MavenSettings { active_profiles: " a, b, ,a ".into(), ..Default::default() };
+        assert_eq!(settings.profiles(&["!b".into(), "c".into(), "a".into()]), ["a", "!b", "c"]);
+        let settings = MavenSettings { active_profiles: "!a".into(), ..Default::default() };
+        assert_eq!(settings.profiles(&["a".into()]), ["!a"]);
+    }
+
+    #[test]
+    fn maven_profiles_and_toolchains_round_trip_and_default_to_empty() {
+        let old: MavenSettings = serde_json::from_str(r#"{"home":"/opt/maven"}"#).unwrap();
+        assert!(old.toolchains.is_empty() && old.active_profiles.is_empty());
+        let settings =
+            MavenSettings { toolchains: "config files/toolchains.xml".into(), active_profiles: "a,b,!c".into(), ..old };
+        let encoded = serde_json::to_string(&settings).unwrap();
+        assert_eq!(serde_json::from_str::<MavenSettings>(&encoded).unwrap(), settings);
     }
 
     #[test]

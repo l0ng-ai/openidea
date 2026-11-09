@@ -32,6 +32,7 @@ async fn application_commands_work_in_restricted_projects_and_without_a_project(
     assert!(!host.open_project("main", &root).unwrap().is_trusted());
     for command in [
         "app_info",
+        "workspace_discover_projects",
         "app_build_info",
         "app_cli_install",
         "app_cli_uninstall",

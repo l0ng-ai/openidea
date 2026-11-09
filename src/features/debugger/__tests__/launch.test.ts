@@ -1,5 +1,6 @@
-import { describe, expect, it } from "vitest";
+import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import type { RunConfig } from "@/platform/ipc";
+import { usePlatform } from "@/platform/platformInfo";
 import { debugUnsupportedReason, launchConfigFor } from "../launch";
 
 const rc = (p: Partial<RunConfig>): RunConfig => ({
@@ -17,6 +18,10 @@ const rc = (p: Partial<RunConfig>): RunConfig => ({
 });
 
 const extra = (l: { extraJson: string | null } | null) => JSON.parse(l?.extraJson ?? "{}");
+
+const originalPlatform = usePlatform.getState();
+beforeEach(() => usePlatform.setState({ os: "linux" }));
+afterEach(() => usePlatform.setState(originalPlatform));
 
 describe("run config → launch config", () => {
   it("returns null without an adapter", () => {
@@ -134,6 +139,18 @@ describe("run config → launch config", () => {
 
     const django = debug("pdm", ["run", "python", "manage.py", "runserver"]);
     expect(extra(django)).toMatchObject({ django: true, python: ["pdm", "run", "python"] });
+  });
+
+  it("debugpy: Windows falls back to python, not the python3 Store alias", () => {
+    usePlatform.setState({ os: "windows" });
+    const globalPytest = launchConfigFor(rc({ kind: "pytest", command: "pytest", debugAdapter: "debugpy" }), "/p")!;
+    expect(extra(globalPytest).python).toBe("python");
+
+    const uv = launchConfigFor(
+      rc({ kind: "python", command: "uv", args: ["run", "python", "main.py"], debugAdapter: "debugpy" }),
+      "/p",
+    )!;
+    expect(extra(uv)).toMatchObject({ python: ["uv", "run", "python"], debugLauncherPython: "python" });
   });
 
   it("js-debug: npm scripts run through the package manager, node scripts directly", () => {

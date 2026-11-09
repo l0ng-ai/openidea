@@ -633,6 +633,13 @@ export interface NotificationService {
      * `vcs`, `run`, `tools`, `plugins`, `search`, `updates`.
      */
     group?: string;
+    /**
+     * The notification answers a command the user just ran (Check for Updates
+     * and the install it offers). It pops up even when balloon notifications
+     * are turned off or its group's popup type is "No popup": those settings
+     * silence what the IDE reports on its own, not the answer to a request.
+     */
+    userInitiated?: boolean;
   }): void;
   /** Hides the balloon of the notification with `key` (it stays in the log), e.g. once its cause is gone. */
   expire?(key: string): void;
@@ -1036,6 +1043,8 @@ export type ContextMenuId =
   | "editor"
   | "projectView"
   | "editorTab"
+  | "problems"
+  | "searchResults"
   | "editorGutter"
   | "openIn"
   | "stopProcess"
@@ -1078,6 +1087,8 @@ export interface MenuGroupContext {
   text?: string;
   /** Editor menu: 0-based caret line; gutter menu: the clicked line. */
   line?: number;
+  /** Zero-based UTF-16 column for problem/search result commands. */
+  column?: number;
   /** The tab's input, when the menu is for an editor tab without a path. */
   input?: EditorInput;
 }
@@ -1442,6 +1453,8 @@ export function localChangedPaths(
 // running a whole command line; anything else runs as a shell command.
 
 export interface RunAnythingItem {
+  /** Optional section within the provider; the shared `recent` id merges command histories. */
+  group?: { id: string; label: string };
   /** Stable within the provider. */
   key: string;
   label: string;
@@ -1696,4 +1709,57 @@ export function registerDocumentIndexSync(sync: (path: string) => Promise<void>)
 }
 export async function synchronizeDocumentIndexes(path: string): Promise<void> {
   await Promise.all([...documentIndexSync].map((sync) => sync(path)));
+}
+
+/** Font zoom for non-CodeMirror surfaces, owned and released by their features. */
+const fontZoomSurfaces = new Map<Element, (delta: number) => void>();
+
+export function registerFontZoomSurface(host: Element, step: (delta: number) => void): () => void {
+  fontZoomSurfaces.set(host, step);
+  return () => {
+    fontZoomSurfaces.delete(host);
+  };
+}
+
+export function stepFocusedSurfaceFontZoom(delta: number): boolean {
+  const focused = document.activeElement;
+  for (const [host, step] of fontZoomSurfaces) {
+    if (focused && host.contains(focused)) {
+      step(delta);
+      return true;
+    }
+  }
+  return false;
+}
+
+export function resetSurfaceFontZoom(): void {
+  for (const step of fontZoomSurfaces.values()) step(0);
+}
+
+/** Optional plugin test parser; the Run feature keeps the existing test tree. */
+type PluginTestParser = (config: string, chunk: string) => Promise<import("@/bindings").PluginTestEvent[] | null>;
+let pluginTestParser: PluginTestParser | null = null;
+export function providePluginTestParser(parser: PluginTestParser): () => void {
+  pluginTestParser = parser;
+  return () => {
+    if (pluginTestParser === parser) pluginTestParser = null;
+  };
+}
+export function parsePluginTests(config: string, chunk: string) {
+  return pluginTestParser?.(config, chunk) ?? Promise.resolve(null);
+}
+
+/** Read-only named snippets supplied by plugins. */
+export interface ContributedSnippet {
+  id: string;
+  pluginName: string;
+  language: string;
+  prefixes: string[];
+  body: string;
+  description: string;
+}
+export const useContributedSnippets = create<{ snippets: ContributedSnippet[] }>(() => ({ snippets: [] }));
+export function addContributedSnippets(snippets: ContributedSnippet[]): () => void {
+  useContributedSnippets.setState((s) => ({ snippets: [...s.snippets, ...snippets] }));
+  return () => useContributedSnippets.setState((s) => ({ snippets: s.snippets.filter((x) => !snippets.includes(x)) }));
 }

@@ -1,0 +1,12 @@
+package openidea:plugin@1.4.0;
+
+/// Embedded languages. This host routes plugin providers, not embedded LSP servers.
+interface injections {
+    /// A versioned document snapshot. Coordinates are zero-based UTF-16.
+    record document { path: string, language: string, version: u64, text: string }
+    /// A host-document range containing the named language.
+    record injection { range: range, language: string }
+    use types.{range};
+    /// Embedded ranges, refreshed after edits under the editor-provider budget.
+    injections: func(doc: document) -> list<injection>;
+}

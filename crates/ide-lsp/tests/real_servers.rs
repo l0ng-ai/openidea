@@ -156,7 +156,7 @@ async fn java_searches_skip_indexed_sources_but_keep_exclusions_outside_scope() 
     let (mgr, _) = manager(&root, LanguageRegistry::from_configs(vec![java]));
     let doc = DocId::next();
     mgr.did_open(doc, &path, &LanguageId::new("java"), 1, source);
-    mgr.java_build(&path, &Default::default()).await.unwrap();
+    mgr.java_build(&path, false, &Default::default()).await.unwrap();
     let uri = ide_lsp::path_to_uri_string;
     let covered = retry("imported source scope", Duration::from_secs(120), || async {
         mgr.jdtls_command(

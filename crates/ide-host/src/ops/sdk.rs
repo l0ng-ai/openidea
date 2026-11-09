@@ -207,7 +207,13 @@ pub async fn sdk_project_libraries(
     if cancel.is_cancelled() {
         return Err(IdeError::cancelled());
     }
-    Ok(ide_sdk::libraries::merge_groups([libraries.map_err(join_err)?, dependencies.map_err(join_err)?].concat()))
+    let groups =
+        ide_sdk::libraries::merge_groups([libraries.map_err(join_err)?, dependencies.map_err(join_err)?].concat());
+    if host.project(window).is_ok_and(|current| std::sync::Arc::ptr_eq(&current, &project)) {
+        host.mcp_reports
+            .set_libraries(window, groups.iter().flat_map(|g| g.roots.iter().map(|r| r.path.0.clone())).collect());
+    }
+    Ok(groups)
 }
 
 /// Looks up `names` (bare command names): `node_modules/.bin` above `near`, then the search path.

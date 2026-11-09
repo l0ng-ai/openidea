@@ -29,6 +29,7 @@ pub mod history;
 pub mod http;
 pub mod java;
 pub mod lsp;
+pub mod mcp;
 pub mod nav;
 pub mod notebook;
 pub mod perf;
@@ -65,6 +66,12 @@ pub(crate) fn sender<T: tauri::ipc::IpcResponse + Send + Sync + 'static>(
 pub fn builder() -> tauri_specta::Builder<tauri::Wry> {
     tauri_specta::Builder::<tauri::Wry>::new().commands(collect_commands![
         app::app_info,
+        mcp::mcp_ui_ready,
+        mcp::mcp_respond,
+        mcp::mcp_server_status,
+        mcp::mcp_set_open_editors,
+        mcp::mcp_set_focused_editor,
+        mcp::mcp_report_problems,
         android::android_devices,
         android::android_logcat,
         app::recent_projects,
@@ -78,6 +85,7 @@ pub fn builder() -> tauri_specta::Builder<tauri::Wry> {
         app::project_trust_add_location,
         app::project_trust_remove_location,
         workspace::workspace_create,
+        workspace::workspace_discover_projects,
         workspace::workspace_attach,
         workspace::workspace_update,
         window_group::window_group_current,
@@ -216,6 +224,9 @@ pub fn builder() -> tauri_specta::Builder<tauri::Wry> {
         search::replace_in_files,
         search::replace_preview,
         search::search_validate,
+        lsp::plugin_language_visuals,
+        lsp::plugin_color_presentations,
+        lsp::plugin_formatters,
         lsp::lsp_completion,
         lsp::lsp_inline_completion,
         lsp::lsp_resolve_completion,
@@ -492,10 +503,20 @@ pub fn builder() -> tauri_specta::Builder<tauri::Wry> {
         plugin::plugin_post_events,
         plugin::plugin_event_kinds,
         plugin::plugin_status_items,
+        plugin::plugin_decoration_sets,
         plugin::plugin_context_keys,
         plugin::plugin_cancel_task,
         plugin::plugin_answer_prompt,
         plugin::plugin_answer_commit,
+        plugin::plugin_answer_command,
+        plugin::plugin_finish_operation,
+        plugin::plugin_prepare_debug_run,
+        plugin::plugin_terminal_session_spawn,
+        plugin::plugin_terminal_session_close,
+        plugin::plugin_parse_test_results,
+        plugin::plugin_content_tab_action,
+        plugin::plugin_choose_program,
+        plugin::plugin_program,
         plugin::plugin_commit_checks,
         plugin::plugin_view_render,
         plugin::plugin_view_event,
@@ -513,6 +534,8 @@ pub fn builder() -> tauri_specta::Builder<tauri::Wry> {
         plugin::plugin_navigation_goto,
         plugin::plugin_navigation_markers,
         plugin::plugin_endpoints,
+        plugin::plugin_run_targets,
+        plugin::plugin_answer_run_target,
         plugin::plugin_market,
         plugin::plugin_market_url,
         plugin::plugin_set_market_url,

@@ -12,6 +12,7 @@ pub mod file_refs;
 pub mod history;
 pub mod memory;
 pub mod process;
+pub mod project_discovery;
 pub mod recent;
 pub mod roots;
 pub mod settings;
