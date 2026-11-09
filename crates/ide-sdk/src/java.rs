@@ -279,11 +279,8 @@ pub fn jdtls_runtime(jdks: &[Jdk], min_java: u32) -> Option<&Jdk> {
 /// for 21, but the Eclipse platform it ships moves on (1.63 needs 25), and on
 /// an older JDK the server dies resolving its bundles.
 pub fn jdtls_min_java(cfg: &LanguageServerConfig) -> u32 {
-    let search = cfg.env.get("PATH").map(std::ffi::OsString::from).or_else(|| std::env::var_os("PATH"));
-    let required = search
-        .and_then(|s| ide_run::which::find_executable(&cfg.command, &s))
-        .and_then(|exe| dunce::canonicalize(exe).ok())
-        .and_then(|exe| Some(exe.parent()?.parent()?.to_path_buf()))
+    let required = crate::jdtls::script_for(cfg)
+        .and_then(|script| Some(script.parent()?.parent()?.to_path_buf()))
         .and_then(|home| bundles_min_java(&home));
     required.map_or(JDTLS_MIN_JAVA, |v| v.max(JDTLS_MIN_JAVA))
 }
@@ -506,21 +503,31 @@ pub fn configure_jdtls(
         }
     }
     let jdks = all.as_slice();
-    if cfg.launch_error.is_none() && !cfg.env.contains_key("JAVA_HOME") {
-        let runtime = match server_jdk {
-            Some(jdk) => server_jdk_error(jdk, min_java).map_or(Ok(jdk), Err),
-            None => jdtls_runtime(jdks, min_java).ok_or_else(|| missing_runtime_message(jdks, min_java)),
-        };
-        match runtime {
-            Ok(jdk) => {
-                cfg.env.insert("JAVA_HOME".to_owned(), jdk.home.to_string_lossy().into_owned());
+    if cfg.launch_error.is_none() {
+        // A `JAVA_HOME` the config inherits (e.g. the project's JDK 8 for
+        // compilation) must not run jdtls: a chosen `server_jdk`, else any
+        // usable JDK, replaces it when it probes as too old or incomplete for
+        // the server (issue #2227). A `JAVA_HOME` that cannot be probed is the
+        // user's call and is left untouched.
+        let env_jdk = cfg.env.get("JAVA_HOME").and_then(|home| jdk_at(Path::new(home)));
+        if cfg.env.contains_key("JAVA_HOME") && env_jdk.is_none() {
+            // Unresolvable explicit value: keep it, jdtls reports what it finds.
+        } else {
+            let existing = env_jdk.filter(|jdk| server_jdk_error(jdk, min_java).is_none());
+            let runtime = if let Some(jdk) = server_jdk {
+                server_jdk_error(jdk, min_java).map_or(Ok(jdk), Err)
+            } else if let Some(jdk) = existing.as_ref() {
+                Ok(jdk)
+            } else {
+                jdtls_runtime(jdks, min_java).ok_or_else(|| missing_runtime_message(jdks, min_java))
+            };
+            match runtime {
+                Ok(jdk) => {
+                    cfg.env.insert("JAVA_HOME".to_owned(), jdk.home.to_string_lossy().into_owned());
+                }
+                Err(e) => cfg.launch_error = Some(e),
             }
-            Err(e) => cfg.launch_error = Some(e),
         }
-    } else if cfg.launch_error.is_none()
-        && let Some(jdk) = cfg.env.get("JAVA_HOME").and_then(|home| jdk_at(Path::new(home)))
-    {
-        cfg.launch_error = server_jdk_error(&jdk, min_java);
     }
     let mut runtimes = runtimes(&project_jdks);
     if let Some(project) = project_jdk.or_else(|| pick_jdk(&project_jdks, project_java_version(server_root))) {
@@ -715,6 +722,10 @@ mod tests {
         .unwrap();
         write_test_java(&home);
         std::fs::write(home.join("bin").join(crate::exe("javac")), "").unwrap();
+        // `jdk_at` reports the canonical home; `configure_jdtls` writes it to
+        // JAVA_HOME, so tests compare against the same real path (macOS
+        // /var→/private/var, Windows 8.3 short names).
+        let home = dunce::canonicalize(home).unwrap();
         Jdk { major, home }
     }
 
@@ -833,7 +844,7 @@ mod tests {
                 "name": "JavaSE-21", "path": pick_jdk(&installed, None).unwrap().home, "default": true
             }])
         );
-        assert_eq!(cfg.env["JAVA_HOME"], fixtures.path().join("custom-server-runtime").to_string_lossy());
+        assert_eq!(cfg.env["JAVA_HOME"], server.home.to_string_lossy());
     }
 
     #[test]
@@ -1007,15 +1018,11 @@ mod tests {
         );
         let opts = serde_json::to_value(cfg.initialization_options.clone().unwrap()).unwrap();
         let rt = &opts["settings"]["java"]["configuration"]["runtimes"];
-        assert_eq!(rt[0], json!({ "name": "JavaSE-1.8", "path": fixtures.path().join("jdk8") }));
-        assert_eq!(rt[1], json!({ "name": "JavaSE-21", "path": fixtures.path().join("jdk21a") }));
-        assert_eq!(rt[2], json!({ "name": "JavaSE-25", "path": fixtures.path().join("jdk25"), "default": true }));
+        assert_eq!(rt[0], json!({ "name": "JavaSE-1.8", "path": jdks[3].home }));
+        assert_eq!(rt[1], json!({ "name": "JavaSE-21", "path": jdks[1].home }));
+        assert_eq!(rt[2], json!({ "name": "JavaSE-25", "path": jdks[0].home, "default": true }));
         assert_eq!(opts["bundles"], json!(["/tools/java-debug/bin/com.microsoft.java.debug.plugin.jar"]));
-        assert_eq!(
-            cfg.env["JAVA_HOME"],
-            fixtures.path().join("jdk25").to_string_lossy(),
-            "first JDK new enough to run jdtls"
-        );
+        assert_eq!(cfg.env["JAVA_HOME"], jdks[0].home.to_string_lossy(), "first JDK new enough to run jdtls");
         assert_eq!(cfg.launch_error, None);
 
         // Deterministic (reconfigure compares configs) and idempotent.
@@ -1049,8 +1056,8 @@ mod tests {
         );
         let opts = serde_json::to_value(cfg.initialization_options.clone().unwrap()).unwrap();
         let rt = &opts["settings"]["java"]["configuration"]["runtimes"];
-        assert_eq!(rt[1], json!({ "name": "JavaSE-21", "path": fixtures.path().join("jdk21b"), "default": true }));
-        assert_eq!(cfg.env["JAVA_HOME"], fixtures.path().join("jdk21b").to_string_lossy());
+        assert_eq!(rt[1], json!({ "name": "JavaSE-21", "path": project.home, "default": true }));
+        assert_eq!(cfg.env["JAVA_HOME"], project.home.to_string_lossy());
 
         let mut other: LanguageServerConfig = toml::from_str("name = \"pyright\"\ncommand = \"x\"").unwrap();
         configure_jdtls(
@@ -1222,11 +1229,71 @@ mod tests {
         assert!(err.contains("Download JDK 25"), "{err}");
 
         // Once a JDK 25 has been downloaded, Auto runs jdtls on it.
-        let downloaded = [installed.as_slice(), &[test_jdk(fixtures.path(), 25, "/tools/jdks/temurin-25")]].concat();
+        let temurin = test_jdk(fixtures.path(), 25, "/tools/jdks/temurin-25");
+        let downloaded = [installed.as_slice(), std::slice::from_ref(&temurin)].concat();
         let mut cfg = jdtls();
         configure_jdtls(&mut cfg, Path::new("/p"), Path::new("/data"), &downloaded, None, None, 25, &[], None);
         assert_eq!(cfg.launch_error, None);
-        assert_eq!(cfg.env["JAVA_HOME"], fixtures.path().join("tools/jdks/temurin-25").to_string_lossy());
+        assert_eq!(cfg.env["JAVA_HOME"], temurin.home.to_string_lossy());
+    }
+
+    #[test]
+    fn issue_2227_a_project_java_home_too_old_for_the_server_is_replaced() {
+        // A project's JAVA_HOME (JDK 8 for compilation) must not run jdtls when
+        // the chosen server_jdk — or any usable JDK — is new enough.
+        let fixtures = tempfile::tempdir().unwrap();
+        let jdtls = || -> LanguageServerConfig { toml::from_str("name = \"jdtls\"\ncommand = \"jdtls\"").unwrap() };
+        let project = test_jdk(fixtures.path(), 8, "/jdk8");
+        let server = test_jdk(fixtures.path(), 25, "/jdk25");
+
+        // The chosen server JDK overrides the project's JAVA_HOME.
+        let mut cfg = jdtls();
+        cfg.env.insert("JAVA_HOME".into(), project.home.to_string_lossy().into_owned());
+        configure_jdtls(
+            &mut cfg,
+            Path::new("/p"),
+            Path::new("/data"),
+            std::slice::from_ref(&project),
+            None,
+            Some(&server),
+            25,
+            &[],
+            None,
+        );
+        assert_eq!(cfg.launch_error, None);
+        assert_eq!(cfg.env["JAVA_HOME"], server.home.to_string_lossy());
+
+        // Auto picks any usable installed JDK over the stale JAVA_HOME.
+        let mut cfg = jdtls();
+        cfg.env.insert("JAVA_HOME".into(), project.home.to_string_lossy().into_owned());
+        let installed = [project.clone(), server.clone()];
+        configure_jdtls(&mut cfg, Path::new("/p"), Path::new("/data"), &installed, None, None, 25, &[], None);
+        assert_eq!(cfg.launch_error, None);
+        assert_eq!(cfg.env["JAVA_HOME"], server.home.to_string_lossy());
+
+        // A JAVA_HOME new enough for the server stays.
+        let mut cfg = jdtls();
+        cfg.env.insert("JAVA_HOME".into(), server.home.to_string_lossy().into_owned());
+        configure_jdtls(&mut cfg, Path::new("/p"), Path::new("/data"), &installed, None, None, 25, &[], None);
+        assert_eq!(cfg.launch_error, None);
+        assert_eq!(cfg.env["JAVA_HOME"], server.home.to_string_lossy());
+
+        // Nothing usable to replace it with: the too-old JAVA_HOME loses to the
+        // same missing-runtime error a missing JAVA_HOME gives.
+        let mut cfg = jdtls();
+        cfg.env.insert("JAVA_HOME".into(), project.home.to_string_lossy().into_owned());
+        configure_jdtls(
+            &mut cfg,
+            Path::new("/p"),
+            Path::new("/data"),
+            std::slice::from_ref(&project),
+            None,
+            None,
+            25,
+            &[],
+            None,
+        );
+        assert!(cfg.launch_error.unwrap().contains("JDK 25 or newer"), "auto must say what to install");
     }
 
     #[test]
@@ -1288,23 +1355,23 @@ mod tests {
         let cfg = run(Some(&jdk(21, "/jdk21")), JDTLS_MIN_JAVA);
         assert_eq!(
             (cfg.env["JAVA_HOME"].clone(), cfg.launch_error),
-            (fixtures.path().join("jdk21").to_string_lossy().into_owned(), None)
+            (jdk(21, "/jdk21").home.to_string_lossy().into_owned(), None)
         );
         let opts = serde_json::to_value(cfg.initialization_options.unwrap()).unwrap();
         let rt = &opts["settings"]["java"]["configuration"]["runtimes"];
         assert_eq!(
             rt[0],
-            json!({ "name": "JavaSE-17", "path": fixtures.path().join("jdk17"), "default": true }),
+            json!({ "name": "JavaSE-17", "path": project.home, "default": true }),
             "still compiles on 17"
         );
 
         // Not set: the first installed JDK new enough, as before.
-        assert_eq!(run(None, JDTLS_MIN_JAVA).env["JAVA_HOME"], fixtures.path().join("jdk25").to_string_lossy());
+        assert_eq!(run(None, JDTLS_MIN_JAVA).env["JAVA_HOME"], jdk(25, "/jdk25").home.to_string_lossy());
 
         // A chosen JDK outside the scanned locations.
         let own = jdk(25, "/opt/own-jdk");
         let cfg = run(Some(&own), 25);
-        assert_eq!(cfg.env["JAVA_HOME"], fixtures.path().join("opt/own-jdk").to_string_lossy());
+        assert_eq!(cfg.env["JAVA_HOME"], own.home.to_string_lossy());
 
         // Too old for this jdtls: the user's choice is not overridden, it is explained.
         let old = jdk(21, "/jdk21");
