@@ -100,18 +100,22 @@
 }
 /* Library class notice (IDEA's yellowish decompiled-file bar). */
 .libraryBanner {
+  flex-wrap: wrap;
   background: var(--bg-feedback-warning);
   border-bottom-color: var(--border-feedback-warning);
 }
 .virtualBannerText {
+  flex: none;
   min-width: 0;
   padding: 8px 0;
+  white-space: nowrap;
 }
 .bannerText {
   flex: none;
   white-space: nowrap;
 }
 .bannerDetail {
+  flex: 1;
   min-width: 0;
   overflow: hidden;
   text-overflow: ellipsis;

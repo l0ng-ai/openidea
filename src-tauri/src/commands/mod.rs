@@ -240,6 +240,8 @@ pub fn builder() -> tauri_specta::Builder<tauri::Wry> {
         lsp::lsp_implementations,
         lsp::lsp_goto_implementation,
         lsp::lsp_virtual_document,
+        lsp::lsp_can_download_sources,
+        lsp::lsp_library_sources,
         lsp::lsp_resolve_class_file,
         lsp::lsp_references,
         lsp::lsp_document_highlights,

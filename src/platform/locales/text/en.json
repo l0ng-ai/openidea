@@ -782,5 +782,12 @@
   "Gradle could not be started. Configure a local installation in Gradle settings, install Gradle on PATH, or use a project with a Gradle wrapper.": "Gradle could not be started. Configure a local installation in Gradle settings, install Gradle on PATH, or use a project with a Gradle wrapper.",
   "Remote of {name}": "Remote of {name}",
   "Target branch of {name}": "Target branch of {name}",
-  "Remote project files cannot be shown in {fileManager}": "Remote project files cannot be shown in {fileManager}"
+  "Remote project files cannot be shown in {fileManager}": "Remote project files cannot be shown in {fileManager}",
+  "Download Sources": "Download Sources",
+  "Choose Sources…": "Choose Sources…",
+  "Source archives": "Source archives",
+  "Loading library sources…": "Loading library sources…",
+  "Sources not found": "Sources not found",
+  "Cannot load library sources": "Cannot load library sources",
+  "Decompiled .class file: sources are not available.": "Decompiled .class file: sources are not available."
 }
