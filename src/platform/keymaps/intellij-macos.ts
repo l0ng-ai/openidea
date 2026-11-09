@@ -354,6 +354,9 @@ export const intellijMacos: Record<string, string[]> = {
   "http.runRequest": ["Meta+Enter"],
   "graphql.runQuery": ["Meta+Enter"],
   "http.runAll": [],
+  "db.reformatValue": ["Meta+Alt+L"],
+  "db.openValueWindow": [],
+  "db.findInValue": ["Meta+F"],
   "db.execute": ["Meta+Enter"],
   // Table editor with pending changes (after `vcs.rollback`, so ⌥⌘Z reverts the table's edits there).
   "db.goToColumn": ["Meta+F12"],

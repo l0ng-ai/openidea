@@ -1,8 +1,10 @@
 import { installKeyboardDispatcher, useKeymap } from "@/platform/keymap";
 import { registerActions } from "@/platform/actions";
-import { fireEvent, render, screen } from "@testing-library/react";
+import { act, fireEvent, render, screen } from "@testing-library/react";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { useState } from "react";
+import { within } from "@testing-library/react";
+import { EditorView } from "@codemirror/view";
 import { DataView } from "./DataView";
 import { Grid } from "./Grid";
 import { CELL_PREVIEW_LIMIT, cellPreview } from "./cellPreview";
@@ -171,19 +173,22 @@ describe("large database cells", () => {
 
   it("edits the full large value in a dialog and supports cancel and apply", () => {
     const onEdit = vi.fn();
-    render(<Grid columns={columns} rowCount={1} value={() => full} editable onEdit={onEdit} />);
+    const large = "word ".repeat(40_000); // not JSON: the plain multi-line editor
+    render(
+      <Grid columns={[{ name: "note", type: "text" }]} rowCount={1} value={() => large} editable onEdit={onEdit} />,
+    );
     fireEvent.doubleClick(screen.getByRole("gridcell"));
     expect(screen.getByRole("dialog")).toBeTruthy();
     const editor = screen.getByRole("textbox") as HTMLTextAreaElement;
     expect(editor.tagName).toBe("TEXTAREA");
-    expect(editor.value).toBe(full);
-    fireEvent.change(editor, { target: { value: full + "changed" } });
+    expect(editor.value).toBe(large);
+    fireEvent.change(editor, { target: { value: large + "changed" } });
     fireEvent.click(screen.getByRole("button", { name: "Cancel" }));
     expect(onEdit).not.toHaveBeenCalled();
     fireEvent.doubleClick(screen.getByRole("gridcell"));
-    fireEvent.change(screen.getByRole("textbox"), { target: { value: full + "changed" } });
+    fireEvent.change(screen.getByRole("textbox"), { target: { value: large + "changed" } });
     fireEvent.click(screen.getByRole("button", { name: "Apply" }));
-    expect(onEdit).toHaveBeenCalledWith(0, 0, full + "changed");
+    expect(onEdit).toHaveBeenCalledWith(0, 0, large + "changed");
     expect(screen.queryByRole("dialog")).toBeNull();
   });
 
@@ -244,6 +249,208 @@ describe("multi-line database cells", () => {
     expect(onEdit).not.toHaveBeenCalled();
   });
 });
+describe("JSON value editor (#2333)", () => {
+  const json = '{"name":"Ada","tags":["math","code"]}';
+  const pretty = JSON.stringify(JSON.parse(json), null, 2);
+  const payload = [{ name: "payload", type: "jsonb" }];
+  // CodeMirror renders each line in its own element: compare text without layout whitespace.
+  const shown = (text: string) => text.replace(/\s+/g, "");
+
+  /** The mounted CodeMirror view of the open editor. */
+  const view = () => {
+    const content = document.querySelector(".cm-content") as HTMLElement;
+    return EditorView.findFromDOM(content)!;
+  };
+  const editDoc = (insert: string) => {
+    const v = view();
+    act(() => v.dispatch({ changes: { from: 0, to: v.state.doc.length, insert } }));
+  };
+  const openWindow = () => {
+    fireEvent.mouseDown(screen.getByRole("gridcell"), { button: 0 });
+    fireEvent.mouseUp(window);
+    fireEvent.keyDown(screen.getByRole("grid"), { key: "Enter", shiftKey: true });
+  };
+
+  it("opens the JSON window with Shift+Enter, pretty-printed, and applies edits to the grid", () => {
+    const onEdit = vi.fn();
+    render(<Grid columns={payload} rowCount={1} value={() => json} editable onEdit={onEdit} />);
+    openWindow();
+    expect(screen.getByRole("dialog")).toBeTruthy();
+    // The code editor, not the plain textarea: a contenteditable div, pretty-printed.
+    const editor = screen.getByRole("textbox", { name: "Edit payload" });
+    expect(editor.tagName).toBe("DIV");
+    expect(shown(editor.textContent ?? "")).toBe(shown(pretty));
+    editDoc(pretty.replace('"Ada"', '"Grace"'));
+    fireEvent.click(screen.getByRole("button", { name: "Apply" }));
+    expect(onEdit).toHaveBeenCalledWith(0, 0, pretty.replace('"Ada"', '"Grace"'));
+    expect(screen.queryByRole("dialog")).toBeNull();
+  });
+
+  it("opens SQL NULL without an error or a redundant pending edit", () => {
+    const onEdit = vi.fn();
+    render(<Grid columns={payload} rowCount={1} value={() => null} editable onEdit={onEdit} />);
+    openWindow();
+    expect(screen.queryByRole("status")).toBeNull();
+    fireEvent.click(screen.getByRole("button", { name: "Set NULL" }));
+    expect(onEdit).not.toHaveBeenCalled();
+  });
+
+  it("keeps an edited inline draft when maximizing and applies it unchanged", () => {
+    const onEdit = vi.fn();
+    render(<Grid columns={payload} rowCount={1} value={() => json} editable onEdit={onEdit} />);
+    fireEvent.doubleClick(screen.getByRole("gridcell"));
+    const input = screen.getByRole("textbox");
+    const draft = '{"name": "Grace", "n":9007199254740993}';
+    fireEvent.change(input, { target: { value: draft } });
+    fireEvent.keyDown(input, { key: "Enter", shiftKey: true });
+    expect(view().state.doc.toString()).toBe(draft);
+    expect(onEdit).not.toHaveBeenCalled();
+    fireEvent.click(screen.getByRole("button", { name: "Apply" }));
+    expect(onEdit).toHaveBeenCalledWith(0, 0, draft);
+  });
+
+  it("marks invalid JSON and blocks Apply until it parses", () => {
+    const onEdit = vi.fn();
+    render(<Grid columns={payload} rowCount={1} value={() => json} editable onEdit={onEdit} />);
+    openWindow();
+    const apply = () => screen.getByRole("button", { name: "Apply" }) as HTMLButtonElement;
+    expect(apply().disabled).toBe(true); // unchanged
+    editDoc('{"broken": ');
+    expect(apply().disabled).toBe(true);
+    expect(screen.getByRole("status").textContent).toMatch(/JSON/i);
+    fireEvent.click(apply());
+    expect(onEdit).not.toHaveBeenCalled();
+    editDoc('{"ok": 1}');
+    expect(apply().disabled).toBe(false);
+    expect(screen.queryByRole("status")).toBeNull();
+    fireEvent.click(apply());
+    expect(onEdit).toHaveBeenCalledWith(0, 0, '{"ok": 1}');
+  });
+
+  it("allows plain text after JSON highlighting was inferred from text content", () => {
+    const onEdit = vi.fn();
+    render(
+      <Grid columns={[{ name: "payload", type: "text" }]} rowCount={1} value={() => json} editable onEdit={onEdit} />,
+    );
+    openWindow();
+    editDoc("plain text now");
+    fireEvent.click(screen.getByRole("button", { name: "Apply" }));
+    expect(onEdit).toHaveBeenCalledWith(0, 0, "plain text now");
+  });
+
+  it("keeps the compact value unchanged after opening, applying and closing", () => {
+    const onEdit = vi.fn();
+    render(<Grid columns={payload} rowCount={1} value={() => json} editable onEdit={onEdit} />);
+    openWindow();
+    fireEvent.click(screen.getByRole("button", { name: "Apply" }));
+    fireEvent.keyDown(screen.getByRole("textbox"), { key: "Enter", metaKey: true });
+    fireEvent.click(screen.getByRole("button", { name: "Cancel" }));
+    expect(onEdit).not.toHaveBeenCalled();
+  });
+
+  it("reformats the edited text in the window", () => {
+    render(<Grid columns={payload} rowCount={1} value={() => json} editable onEdit={vi.fn()} />);
+    openWindow();
+    editDoc('{"a":1}');
+    fireEvent.click(screen.getByRole("button", { name: "Reformat" }));
+    expect(shown(screen.getByRole("textbox", { name: "Edit payload" }).textContent ?? "")).toBe(
+      shown('{\n  "a": 1\n}'),
+    );
+  });
+
+  it("carries the panel draft into the window and keeps typed text on Apply", () => {
+    const onEdit = vi.fn();
+    render(
+      <DataView
+        columns={payload}
+        rowCount={1}
+        value={() => json}
+        panel="value"
+        onPanelChange={() => {}}
+        editable
+        onEdit={onEdit}
+      />,
+    );
+    fireEvent.mouseDown(screen.getByRole("gridcell"), { button: 0 });
+    const draft = '{"name": "Grace", "n": 9007199254740993}';
+    editDoc(draft);
+    fireEvent.click(screen.getByRole("button", { name: "Open in Window" }));
+    const dialog = screen.getByRole("dialog");
+    const content = dialog.querySelector<HTMLElement>(".cm-content")!;
+    expect(EditorView.findFromDOM(content)!.state.doc.toString()).toBe(draft);
+    fireEvent.click(within(dialog).getByRole("button", { name: "Apply" }));
+    expect(onEdit).toHaveBeenCalledWith(0, 0, draft);
+  });
+
+  it("does not reformat or apply a read-only Value panel", () => {
+    const onEdit = vi.fn();
+    render(
+      <DataView
+        columns={payload}
+        rowCount={1}
+        value={() => json}
+        panel="value"
+        onPanelChange={() => {}}
+        onEdit={onEdit}
+      />,
+    );
+    fireEvent.mouseDown(screen.getByRole("gridcell"), { button: 0 });
+    expect((screen.getByRole("button", { name: "Reformat" }) as HTMLButtonElement).disabled).toBe(true);
+    const v = view();
+    act(() => v.contentDOM.dispatchEvent(new KeyboardEvent("keydown", { key: "Enter", metaKey: true, bubbles: true })));
+    expect(onEdit).not.toHaveBeenCalled();
+    fireEvent.click(screen.getByRole("button", { name: "Open in Window" }));
+    expect(within(screen.getByRole("dialog")).queryByRole("button", { name: "Apply" })).toBeNull();
+  });
+
+  it("treats blank text as invalid for typed JSON and restores the unchanged state when the original text is restored", () => {
+    const onEdit = vi.fn();
+    render(<Grid columns={payload} rowCount={1} value={() => json} editable onEdit={onEdit} />);
+    openWindow();
+    editDoc("");
+    expect((screen.getByRole("button", { name: "Apply" }) as HTMLButtonElement).disabled).toBe(true);
+    editDoc(pretty);
+    expect((screen.getByRole("button", { name: "Apply" }) as HTMLButtonElement).disabled).toBe(true);
+    expect(onEdit).not.toHaveBeenCalled();
+  });
+
+  it("shows formatted JSON in the Value panel with Reformat, Open in Window and guarded Apply", () => {
+    const onEdit = vi.fn();
+    const columns = [
+      { name: "id", type: "int4" },
+      { name: "payload", type: "jsonb" },
+    ];
+    const data = [["1", json]];
+    render(
+      <DataView
+        columns={columns}
+        rowCount={1}
+        value={(r, c) => data[r]![c]!}
+        panel="value"
+        onPanelChange={() => {}}
+        editable
+        onEdit={onEdit}
+      />,
+    );
+    fireEvent.mouseDown(screen.getAllByRole("gridcell")[1]!, { button: 0 });
+    const editor = screen.getByRole("textbox", { name: "Value of payload" });
+    expect(shown(editor.textContent ?? "")).toBe(shown(pretty));
+    const apply = () => screen.getByRole("button", { name: "Apply" }) as HTMLButtonElement;
+    expect(apply().disabled).toBe(true);
+    editDoc(pretty.replace('"Ada"', '"Grace"'));
+    expect(apply().disabled).toBe(false);
+    fireEvent.click(apply());
+    expect(onEdit).toHaveBeenCalledWith(0, 1, pretty.replace('"Ada"', '"Grace"'));
+    // The panel editor restarts on the committed value.
+    expect(shown(editor.textContent ?? "")).toBe(shown(pretty.replace('"Ada"', '"Grace"')));
+    // The same editor in a larger, resizable window.
+    fireEvent.click(screen.getByRole("button", { name: "Open in Window" }));
+    expect(screen.getByRole("dialog", { name: "Value of payload" })).toBeTruthy();
+    fireEvent.click(screen.getByRole("button", { name: "Cancel" }));
+    expect(screen.queryByRole("dialog")).toBeNull();
+  });
+});
+
 describe("result grid search", () => {
   const columns = [
     { name: "city", type: "text" },
