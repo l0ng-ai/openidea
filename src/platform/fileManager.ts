@@ -29,6 +29,20 @@ export function fileManagerPath(
   return path;
 }
 
+/** English source text; callers and the action registry translate it. */
+export function fileManagerName(os = usePlatform.getState().os): string {
+  return os === "macos" ? "Finder" : os === "windows" ? "Explorer" : "Files";
+}
+
+export function showInFileManagerLabel(os = usePlatform.getState().os): string {
+  return os === "macos" ? "Show in Finder" : os === "windows" ? "Show in Explorer" : "Show in Files";
+}
+
+/** The project action has historically used "Reveal" on macOS. */
+export function revealInFileManagerLabel(os = usePlatform.getState().os): string {
+  return os === "macos" ? "Reveal in Finder" : showInFileManagerLabel(os);
+}
+
 /** Reveals files in Explorer, Finder or the Linux desktop's file manager. */
 export async function revealInFileManager(paths: string | readonly string[]): Promise<void> {
   if (!isTauri()) return;
