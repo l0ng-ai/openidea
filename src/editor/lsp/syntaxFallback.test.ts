@@ -327,6 +327,7 @@ describe("navigation wiring", () => {
     expect(openFile).toHaveBeenCalledWith(target.path, { selection: target.range.start, focus: true });
     expect(cmd.syntaxLocals).not.toHaveBeenCalled();
     expect(cmd.syntaxNodeAt).not.toHaveBeenCalled();
+    invalidateConfigurationNavigation();
     cmd.lspGoto.mockReturnValueOnce(ok([]));
     await gotoTargets(view, "definition");
     expect(openFile).toHaveBeenCalledOnce();

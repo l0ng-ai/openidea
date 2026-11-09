@@ -350,9 +350,12 @@ export async function quickDefinition(view: EditorView, kind: "definition" | "ty
   const doc = docOf(view);
   if (!doc) return;
   const pos = view.state.selection.main.head;
+  const source = view.state.doc;
+  const stale = () => !view.dom.isConnected || view.state.doc !== source || docOf(view) !== doc;
   if (kind === "definition" && showPhpConstructDocumentation(view, pos)) return;
   try {
     const found = await requestNavigation(view, pos, kind);
+    if (stale()) return;
     const seen = new Set<string>();
     const locations = found.filter((l) => {
       const key = `${l.path}:${l.range.start.line}:${l.range.start.col}`;
@@ -365,6 +368,7 @@ export async function quickDefinition(view: EditorView, kind: "definition" | "ty
     const targets = (
       await Promise.all(locations.slice(0, MAX_TARGETS).map((l) => definitionTarget(l, doc.uiMode)))
     ).filter((t): t is DefinitionTarget => !!t);
+    if (stale()) return;
     if (!targets.length) {
       showHint(view, "Cannot read the definition's file");
       return;
@@ -377,6 +381,6 @@ export async function quickDefinition(view: EditorView, kind: "definition" | "ty
       themeClasses: view.themeClasses,
     });
   } catch (e) {
-    reportLspError(view, e, true);
+    if (!stale()) reportLspError(view, e, true);
   }
 }

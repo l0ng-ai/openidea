@@ -28,6 +28,16 @@ interface Cached {
   pending: Promise<Location[]>;
 }
 const results = new Map<string, Cached>();
+const editors = new WeakMap<EditorView, number>();
+let nextEditor = 0;
+
+function requestKey(view: EditorView, from: number, to: number, kind: GotoKind): string {
+  let editor = editors.get(view);
+  if (editor === undefined) editors.set(view, (editor = ++nextEditor));
+  const doc = docOf(view)!;
+  // lspGoto chooses servers in the backend; revision also tracks server lifecycle and routing changes.
+  return `${editor}:${doc.doc}:${doc.language}:${revision}:${from}:${to}:${kind}`;
+}
 let revision = 0;
 
 export function configurationNavigationRevision(): number {
@@ -71,13 +81,13 @@ export function hasConfigurationNavigation(view: EditorView, offset: number): bo
   const doc = docOf(view);
   const word = navigationWord(view, offset);
   if (!doc || !word) return false;
-  const entry = results.get(`${doc.doc}:${word.from}:${word.to}:definition`);
+  const entry = results.get(requestKey(view, word.from, word.to, "definition"));
   return (
     !!entry &&
     entry.size > 0 &&
     entry.retain &&
     entry.path === doc.path &&
-    entry.text.eq(view.state.doc) &&
+    entry.text === view.state.doc &&
     Date.now() - entry.at < CONFIGURATION_NAVIGATION_MAX_AGE
   );
 }
@@ -88,10 +98,10 @@ export function requestNavigation(view: EditorView, offset: number, kind: GotoKi
   const config = isConfigurationDocument(view);
   if (!word || !(config ? kind === "definition" : SHARED_KINDS.has(kind)))
     return lspRequest(() => commands.lspGoto(doc.doc, offsetToPos(view.state.doc, offset), kind));
-  const key = `${doc.doc}:${word.from}:${word.to}:${kind}`;
+  const key = requestKey(view, word.from, word.to, kind);
   const text = view.state.doc;
   const hit = results.get(key);
-  if (hit && hit.path === doc.path && hit.text.eq(text) && Date.now() - hit.at < CONFIGURATION_NAVIGATION_MAX_AGE) {
+  if (hit && hit.path === doc.path && hit.text === text && Date.now() - hit.at < CONFIGURATION_NAVIGATION_MAX_AGE) {
     results.delete(key);
     results.set(key, hit);
     return hit.pending;
@@ -107,12 +117,10 @@ export function requestNavigation(view: EditorView, offset: number, kind: GotoKi
     retain: true,
     pending: lspRequest(
       () => commands.lspGoto(doc.doc, offsetToPos(text, at), kind),
-      config ? () => revision === version : undefined,
+      () => revision === version && view.state.doc === text && docOf(view) === doc && view.dom.isConnected,
     )
       .then((locations) => {
-        // Outside configuration files an answer that raced an edit still serves the
-        // gestures waiting for it, as it did before sharing; it is just not kept.
-        if (config && (revision !== version || !view.state.doc.eq(text)))
+        if (revision !== version || view.state.doc !== text || docOf(view) !== doc || !view.dom.isConnected)
           throw new IpcError({ kind: "cancelled", message: "cancelled" });
         entry.size = locations.length;
         if ((!locations.length || !entry.retain) && results.get(key) === entry) results.delete(key);

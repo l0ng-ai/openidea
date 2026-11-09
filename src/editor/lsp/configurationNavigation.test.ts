@@ -78,11 +78,11 @@ describe("configuration navigation result reuse", () => {
     expect(lspGoto).toHaveBeenCalledOnce();
   });
 
-  it("reuses results when the same document is shown again", async () => {
+  it("keeps separate editors of the same document isolated", async () => {
     const view = editor();
     await requestNavigation(view, 10, "definition");
     await requestNavigation(editor(), 11, "definition");
-    expect(lspGoto).toHaveBeenCalledOnce();
+    expect(lspGoto).toHaveBeenCalledTimes(2);
   });
 
   it("keeps different keys and documents separate", async () => {
@@ -100,7 +100,7 @@ describe("configuration navigation result reuse", () => {
     expect(lspGoto).toHaveBeenCalledExactlyOnceWith(1, { line: 0, col: 1 }, "definition");
   });
 
-  it("does not drop a native answer that raced an edit, but asks again afterwards", async () => {
+  it("discards a native answer that raced an edit and asks again afterwards", async () => {
     let resolve!: (r: Awaited<ReturnType<typeof commands.lspGoto>>) => void;
     lspGoto.mockImplementationOnce(
       () =>
@@ -110,10 +110,24 @@ describe("configuration navigation result reuse", () => {
     );
     const view = editor(1, "java", "value other");
     const pending = requestNavigation(view, 1, "definition");
+    const rejected = expect(pending).rejects.toMatchObject({ kind: "cancelled" });
     await vi.waitFor(() => expect(lspGoto).toHaveBeenCalledOnce());
     view.dispatch({ changes: { from: 11, insert: " x" } });
     resolve({ status: "ok", data: [target] });
-    expect(await pending).toEqual([target]);
+    await rejected;
+    await requestNavigation(view, 1, "definition");
+    expect(lspGoto).toHaveBeenCalledTimes(2);
+  });
+
+  it("does not reuse an answer after replacing the editor state with equal text", async () => {
+    const view = editor(1, "java", "value");
+    await requestNavigation(view, 1, "definition");
+    view.setState(
+      EditorState.create({
+        doc: "value",
+        extensions: [lspDoc.of({ doc: 1, path: "/p/1.java", language: "java", uiMode: "Java", readOnly: false })],
+      }),
+    );
     await requestNavigation(view, 1, "definition");
     expect(lspGoto).toHaveBeenCalledTimes(2);
   });

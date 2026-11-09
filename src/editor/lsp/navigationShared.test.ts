@@ -160,6 +160,20 @@ describe.each(cases)("shared definition requests in $language", (c) => {
     expect(document.querySelector(".cm-lsp-hint")).toBeNull();
   });
 
+  it("does not show progress for an older request after the newer gesture finishes", async () => {
+    editor(c);
+    const finish = deferred();
+    vi.useFakeTimers();
+    const earlier = gotoTargets(view, "definition", c.inside);
+    await vi.advanceTimersByTimeAsync(0);
+    await gotoTargets(view, "definition", c.other);
+    await vi.advanceTimersByTimeAsync(300);
+    expect(document.querySelector(".cm-lsp-hint")).toBeNull();
+    finish(ok([loc("/p/Stale.java")]));
+    await earlier;
+    expect(openFile).toHaveBeenCalledOnce();
+  });
+
   it("asks again after an edit between hover and click", async () => {
     editor(c);
     hover(c.word);
@@ -167,6 +181,31 @@ describe.each(cases)("shared definition requests in $language", (c) => {
     view.dispatch({ changes: { from: view.state.doc.length, insert: "\n" } });
     await gotoTargets(view, "definition", c.inside);
     expect(lspGoto).toHaveBeenCalledTimes(2);
+  });
+
+  it("does not navigate when the document changes while a request is running", async () => {
+    editor(c);
+    const finish = deferred();
+    const pending = gotoTargets(view, "definition", c.inside);
+    await vi.waitFor(() => expect(lspGoto).toHaveBeenCalledOnce());
+    view.dispatch({ changes: { from: view.state.doc.length, insert: "\n" } });
+    finish(ok([loc("/p/Stale.java")]));
+    await pending;
+    expect(openFile).not.toHaveBeenCalled();
+  });
+
+  it("does not retry an older gesture superseded during its edit backoff", async () => {
+    editor(c);
+    vi.useFakeTimers();
+    view.dispatch({ changes: { from: view.state.doc.length, insert: "\n" } });
+    lspGoto.mockResolvedValueOnce(ok([]));
+    const earlier = gotoTargets(view, "definition", c.inside);
+    await vi.advanceTimersByTimeAsync(0);
+    await gotoTargets(view, "definition", c.other);
+    await vi.advanceTimersByTimeAsync(250);
+    await earlier;
+    expect(lspGoto).toHaveBeenCalledTimes(2);
+    expect(openFile).toHaveBeenCalledOnce();
   });
 
   it("does not keep an empty answer", async () => {
