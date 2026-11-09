@@ -93,10 +93,35 @@ describe("configuration navigation result reuse", () => {
     expect(lspGoto).toHaveBeenCalledTimes(3);
   });
 
-  it.each(["java", "typescript"])("leaves %s native navigation uncached", async (language) => {
+  it.each(["java", "typescript"])("shares %s native navigation per word", async (language) => {
     const view = editor(1, language, "value");
     await requestNavigation(view, 1, "definition");
+    await requestNavigation(view, 3, "definition");
+    expect(lspGoto).toHaveBeenCalledExactlyOnceWith(1, { line: 0, col: 1 }, "definition");
+  });
+
+  it("does not drop a native answer that raced an edit, but asks again afterwards", async () => {
+    let resolve!: (r: Awaited<ReturnType<typeof commands.lspGoto>>) => void;
+    lspGoto.mockImplementationOnce(
+      () =>
+        new Promise((r) => {
+          resolve = r;
+        }),
+    );
+    const view = editor(1, "java", "value other");
+    const pending = requestNavigation(view, 1, "definition");
+    await vi.waitFor(() => expect(lspGoto).toHaveBeenCalledOnce());
+    view.dispatch({ changes: { from: 11, insert: " x" } });
+    resolve({ status: "ok", data: [target] });
+    expect(await pending).toEqual([target]);
     await requestNavigation(view, 1, "definition");
+    expect(lspGoto).toHaveBeenCalledTimes(2);
+  });
+
+  it("does not share implementations, whose search streams on its own", async () => {
+    const view = editor(1, "java", "value");
+    await requestNavigation(view, 1, "implementation");
+    await requestNavigation(view, 1, "implementation");
     expect(lspGoto).toHaveBeenCalledTimes(2);
   });
 

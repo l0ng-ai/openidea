@@ -765,7 +765,7 @@ describe("modifier-hover navigation recovery", () => {
     expect(cmd.lspGoto).toHaveBeenCalledTimes(2);
   });
 
-  it("retries a stuck configuration probe without retaining the late response", async () => {
+  it("re-probes a stuck configuration lookup through the running request, without retaining its empty answer", async () => {
     let finish!: (value: Awaited<R<unknown>>) => void;
     cmd.lspGoto.mockReturnValueOnce(
       new Promise((resolve) => {
@@ -777,16 +777,16 @@ describe("modifier-hover navigation recovery", () => {
     try {
       move(view, 1);
       await vi.advanceTimersByTimeAsync(3001);
-      cmd.lspGoto.mockReturnValueOnce(ok([target]));
       move(view, 1);
       await vi.advanceTimersByTimeAsync(0);
-      expect(cmd.lspGoto).toHaveBeenCalledTimes(2);
+      expect(cmd.lspGoto).toHaveBeenCalledOnce();
     } finally {
       vi.useRealTimers();
     }
-    await vi.waitFor(() => expect(view.dom.querySelector(".cm-lsp-link")).not.toBeNull());
     finish({ status: "ok", data: [] });
     await new Promise((resolve) => setTimeout(resolve, 20));
+    expect(view.dom.querySelector(".cm-lsp-link")).toBeNull();
+    cmd.lspGoto.mockReturnValueOnce(ok([target]));
     await gotoTargets(view, "definition", 1);
     expect(cmd.lspGoto).toHaveBeenCalledTimes(2);
     expect(openFile).toHaveBeenCalledOnce();
@@ -814,7 +814,7 @@ describe("modifier-hover navigation recovery", () => {
     expect(cmd.lspGoto).toHaveBeenCalledTimes(2);
   });
 
-  it("retries a stuck probe and ignores its eventual response", async () => {
+  it("re-probes a stuck word through the running request", async () => {
     let finish!: (value: Awaited<R<unknown>>) => void;
     cmd.lspGoto.mockReturnValueOnce(
       new Promise((resolve) => {
@@ -826,17 +826,15 @@ describe("modifier-hover navigation recovery", () => {
     try {
       move(view);
       await vi.advanceTimersByTimeAsync(3001);
-      cmd.lspGoto.mockReturnValueOnce(ok([target]));
       move(view);
       await vi.advanceTimersByTimeAsync(0);
-      expect(cmd.lspGoto).toHaveBeenCalledTimes(2);
+      expect(cmd.lspGoto).toHaveBeenCalledOnce();
     } finally {
       vi.useRealTimers();
     }
+    finish(await ok([target]));
     await vi.waitFor(() => expect(view.dom.querySelector(".cm-lsp-link")?.textContent).toBe("foo"));
-    finish({ status: "ok", data: [] });
-    await new Promise((resolve) => setTimeout(resolve, 20));
-    expect(view.dom.querySelector(".cm-lsp-link")?.textContent).toBe("foo");
+    expect(cmd.lspGoto).toHaveBeenCalledOnce();
   });
 
   it("ignores a late probe after moving to a different word", async () => {

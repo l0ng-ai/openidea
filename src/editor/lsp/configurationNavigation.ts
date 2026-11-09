@@ -1,4 +1,7 @@
-/** Shared, bounded navigation results for YAML/properties hover and click. */
+/**
+ * Shared, bounded navigation results per word: the ⌘-hover probe, ⌘-click and ⌘B on one
+ * word ask the server once. Each identical request costs a server like jdtls a full search.
+ */
 import type { Text } from "@codemirror/state";
 import type { EditorView } from "@codemirror/view";
 import { onEditorEvent } from "@/editor/api";
@@ -9,11 +12,13 @@ import { docOf, lspRequest } from "./lsp";
 import { offsetToPos } from "./positions";
 
 // Events provide invalidation; the age limit is a backstop for servers/remote
-// file systems which do not report every semantic change. Empty/error responses
-// are never retained, since import may still be in progress.
+// file systems which do not report every semantic change, and for a request the
+// backend never answers (it times out sooner). Empty/error responses are never
+// retained, since a server may still be importing or indexing.
 export const CONFIGURATION_NAVIGATION_MAX_AGE = 30_000;
 const MAX_ENTRIES = 128;
 const MAX_LOCATIONS = 4096;
+const SHARED_KINDS: ReadonlySet<GotoKind> = new Set(["definition", "declaration", "typeDefinition"]);
 interface Cached {
   text: Text;
   path: string;
@@ -66,7 +71,7 @@ export function hasConfigurationNavigation(view: EditorView, offset: number): bo
   const doc = docOf(view);
   const word = navigationWord(view, offset);
   if (!doc || !word) return false;
-  const entry = results.get(`${doc.doc}:${word.from}:${word.to}`);
+  const entry = results.get(`${doc.doc}:${word.from}:${word.to}:definition`);
   return (
     !!entry &&
     entry.size > 0 &&
@@ -80,22 +85,20 @@ export function hasConfigurationNavigation(view: EditorView, offset: number): bo
 export function requestNavigation(view: EditorView, offset: number, kind: GotoKind): Promise<Location[]> {
   const doc = docOf(view)!;
   const word = navigationWord(view, offset);
-  if (!isConfigurationDocument(view) || kind !== "definition" || !word)
+  const config = isConfigurationDocument(view);
+  if (!word || !(config ? kind === "definition" : SHARED_KINDS.has(kind)))
     return lspRequest(() => commands.lspGoto(doc.doc, offsetToPos(view.state.doc, offset), kind));
-  const key = `${doc.doc}:${word.from}:${word.to}`;
+  const key = `${doc.doc}:${word.from}:${word.to}:${kind}`;
   const text = view.state.doc;
   const hit = results.get(key);
-  if (
-    hit &&
-    hit.path === doc.path &&
-    hit.text.eq(text) &&
-    Date.now() - hit.at < (hit.size ? CONFIGURATION_NAVIGATION_MAX_AGE : 3000)
-  ) {
+  if (hit && hit.path === doc.path && hit.text.eq(text) && Date.now() - hit.at < CONFIGURATION_NAVIGATION_MAX_AGE) {
     results.delete(key);
     results.set(key, hit);
     return hit.pending;
   }
   const version = revision;
+  // Just past a word's end some servers resolve the next token, so the shared answer is asked inside the word.
+  const at = config ? word.from : Math.min(offset, word.to - 1);
   const entry: Cached = {
     text,
     path: doc.path,
@@ -103,11 +106,13 @@ export function requestNavigation(view: EditorView, offset: number, kind: GotoKi
     size: 0,
     retain: true,
     pending: lspRequest(
-      () => commands.lspGoto(doc.doc, offsetToPos(text, word.from), kind),
-      () => revision === version,
+      () => commands.lspGoto(doc.doc, offsetToPos(text, at), kind),
+      config ? () => revision === version : undefined,
     )
       .then((locations) => {
-        if (revision !== version || !view.state.doc.eq(text))
+        // Outside configuration files an answer that raced an edit still serves the
+        // gestures waiting for it, as it did before sharing; it is just not kept.
+        if (config && (revision !== version || !view.state.doc.eq(text)))
           throw new IpcError({ kind: "cancelled", message: "cancelled" });
         entry.size = locations.length;
         if ((!locations.length || !entry.retain) && results.get(key) === entry) results.delete(key);

@@ -22,6 +22,7 @@ import { diagnosticsAt, type PlacedDiagnostic } from "./diagnostics";
 import { isEmptyMarkup, languageForPath, renderMarkup } from "./markdown";
 import { selectableText } from "@/ui/selectableText";
 import { docOf, lspRequest, reportLspError } from "./lsp";
+import { requestNavigation } from "./configurationNavigation";
 import { offsetToPos, rangeToOffsets } from "./positions";
 import { showHint } from "./hint";
 import { caretAnchor, focusPopup, openPopup, useLspPopup, type DefinitionTarget, type DocEntry } from "./popupStore";
@@ -351,7 +352,7 @@ export async function quickDefinition(view: EditorView, kind: "definition" | "ty
   const pos = view.state.selection.main.head;
   if (kind === "definition" && showPhpConstructDocumentation(view, pos)) return;
   try {
-    const found = await lspRequest(() => commands.lspGoto(doc.doc, offsetToPos(view.state.doc, pos), kind));
+    const found = await requestNavigation(view, pos, kind);
     const seen = new Set<string>();
     const locations = found.filter((l) => {
       const key = `${l.path}:${l.range.start.line}:${l.range.start.col}`;
