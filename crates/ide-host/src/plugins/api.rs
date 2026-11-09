@@ -13,6 +13,8 @@ use ide_plugin::{
 use parking_lot::{Mutex, RwLock};
 use std::collections::{BTreeMap, BTreeSet, HashMap};
 use std::path::{Path, PathBuf};
+#[cfg(windows)]
+use std::os::windows::process::CommandExt;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::time::{Duration, Instant};
@@ -571,12 +573,17 @@ impl HostApi for PluginApi {
         let binary = self.approved_program(program)?;
         let cwd = cwd.map(Path::to_path_buf).unwrap_or_else(|| self.shared.data_dir.join(self.id()));
         let _ = std::fs::create_dir_all(&cwd);
-        let mut child = std::process::Command::new(&binary)
-            .args(&args)
+        let mut cmd = std::process::Command::new(&binary);
+        cmd.args(&args)
             .current_dir(&cwd)
             .stdin(if stdin.is_some() { std::process::Stdio::piped() } else { std::process::Stdio::null() })
             .stdout(std::process::Stdio::piped())
-            .stderr(std::process::Stdio::piped())
+            .stderr(std::process::Stdio::piped());
+        // Release builds are GUI-subsystem: without this, every console child
+        // (a `.cmd` shim in particular) flashes a console window.
+        #[cfg(windows)]
+        cmd.creation_flags(ide_core::process::CREATE_NO_WINDOW);
+        let mut child = cmd
             .spawn()
             .map_err(|e| HostError::Failed(format!("{}: {e}", binary.display())))?;
         if let (Some(input), Some(mut pipe)) = (stdin, child.stdin.take()) {
