@@ -191,6 +191,8 @@ impl SettingsStore {
             let Some(mut layer) = read_layer(&file) else { continue };
             if scope == SettingsScope::Project {
                 remove_global_settings(&mut layer);
+            } else if let Some(layer) = layer.as_object_mut() {
+                layer.remove("languageServerTargets");
             }
             if let Err(e) = try_merge(&mut merged, layer) {
                 tracing::warn!("{} has invalid settings, ignoring it: {e}", file.display());
@@ -216,6 +218,11 @@ impl SettingsStore {
     /// `null` removes the key from that layer. Unknown keys and values of the
     /// wrong type are rejected with `InvalidInput`; the file is left untouched.
     pub fn set(&self, scope: SettingsScope, key: &str, value: serde_json::Value) -> IdeResult<Settings> {
+        if scope == SettingsScope::Global
+            && (key == "languageServerTargets" || key.starts_with("languageServerTargets."))
+        {
+            return Err(IdeError::invalid("language server targets belong to project settings"));
+        }
         if scope == SettingsScope::Project
             && (key == "editor.customSchemes"
                 || key.starts_with("editor.customSchemes.")
@@ -676,5 +683,27 @@ mod tests {
                 .mcp_server
                 .enabled
         );
+    }
+    #[test]
+    fn language_server_targets_are_project_only_and_default_to_the_host() {
+        let tmp = tempfile::tempdir().unwrap();
+        let config = tmp.path().join("config");
+        let project = tmp.path().join("project");
+        std::fs::create_dir_all(&config).unwrap();
+        std::fs::create_dir_all(&project).unwrap();
+        std::fs::write(config.join("settings.toml"), "[languageServerTargets.php]\ntarget = 'global-target'\n")
+            .unwrap();
+        let settings = SettingsStore::load(&config, Some(&project));
+        assert!(settings.effective().language_server_targets.is_empty());
+        assert!(settings.set(SettingsScope::Global, "languageServerTargets", json!({})).is_err());
+        let selected = settings
+            .set(
+                SettingsScope::Project,
+                "languageServerTargets",
+                json!({"php":{"target":"container","server":"intelephense"}}),
+            )
+            .unwrap();
+        assert_eq!(selected.language_server_targets["php"].target, "container");
+        assert_eq!(settings.reload().language_server_targets["php"].server, "intelephense");
     }
 }

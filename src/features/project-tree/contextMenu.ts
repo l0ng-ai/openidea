@@ -1,5 +1,6 @@
 /** Context menu and "New" popup of the project view. */
 import { executeAction, getAction } from "@/platform/actions";
+import { fileManagerName } from "@/platform/fileManager";
 import { formatBinding, hostBinding, isMacHost, shortcutLabel } from "@/platform/keymap";
 import { relativePath, useProject } from "@/platform/project";
 import { currentDetectedRoots, currentRoots } from "@/platform/projectRoots";
@@ -458,10 +459,7 @@ function libraryMenuItems(nodes: ProjectNode[]): MenuItem[] {
 }
 
 export function revealLabel() {
-  const ua = typeof navigator !== "undefined" ? navigator.userAgent : "";
-  if (/Win/i.test(ua)) return "Explorer";
-  if (/Linux/i.test(ua)) return "Files";
-  return "Finder";
+  return fileManagerName();
 }
 
 /** What contributed menu groups see: the selected (non-placeholder) paths. */

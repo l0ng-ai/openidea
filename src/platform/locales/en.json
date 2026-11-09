@@ -97,6 +97,8 @@
   "common.close": "Close",
   "common.copied": "Copied",
   "common.copy": "Copy",
+  "menu.activeEditor": "Active Editor",
+  "menu.editor.toggleSoftWrap": "Soft-Wrap",
   "menu.app": "OpenIDEA",
   "menu.app.about": "About OpenIDEA",
   "menu.app.checkForUpdates": "Check for Updates…",

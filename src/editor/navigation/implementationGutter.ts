@@ -15,7 +15,7 @@
  */
 import { RangeSet, StateEffect, StateField, type Extension, type Text } from "@codemirror/state";
 import { EditorView, GutterMarker, ViewPlugin, gutter, type ViewUpdate } from "@codemirror/view";
-import type { EditorDocContext } from "@/editor/api";
+import { shownAgain, type EditorDocContext } from "@/editor/api";
 import { docOf, debounce, isUnavailable, lspRequest } from "@/editor/lsp/lsp";
 import { featureBackoff, onServerSettled } from "@/editor/lsp/availability";
 import { readManyFileLines, withDocument } from "@/editor/lsp/files";
@@ -295,6 +295,7 @@ function markerSet(placed: readonly PlacedMarker[]): RangeSet<GutterMarker> {
 class MarkersPlugin {
   private refresh = debounce(() => void this.run(), DEBOUNCE_MS);
   private generation = 0;
+  private skipped = false;
   private request: RequestId | null = null;
   private offSettings: () => void;
 
@@ -316,7 +317,7 @@ class MarkersPlugin {
       // Other documents' markers may depend on this one.
       changes++;
       this.refresh();
-    } else if (u.viewportChanged) this.refresh();
+    } else if (u.viewportChanged || (this.skipped && shownAgain(u))) this.refresh();
     // Other files may have changed meanwhile (a new implementation).
     else if (u.focusChanged && u.view.hasFocus) {
       const ctx = docOf(u.view);
@@ -337,7 +338,8 @@ class MarkersPlugin {
 
   private async run() {
     const view = this.view;
-    if (!view.dom.isConnected) return;
+    this.skipped = !view.dom.isConnected;
+    if (this.skipped) return;
     const ctx = docOf(view);
     if (!ctx) return;
     const gen = ++this.generation;

@@ -60,6 +60,7 @@ require-root-marker = true
 install-hint = "pip install ruff (or: uv tool install ruff)"
 
 [debugger]
+target-placement = "adapter-in-target"
 adapter = "debugpy"
 command = "python3"
 args = ["-m", "debugpy.adapter"]

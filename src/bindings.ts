@@ -965,9 +965,13 @@ export const commands = {
 	comparison?: ComparisonLaunch | null,
 	/**  `openidea diff a.txt b.txt`: the two files to open in the diff viewer (boxed: most launches have none). */
 	diff?: DiffFilesLaunch | null,
+	/**  Files requested after the pending diff take focus after it opens. */
+	diffBeforeFiles?: boolean,
 	/**  Deployment windows: the server and local selection to compare. */
 	deployment?: DeploymentLaunch | null,
 } | null>("window_take_launch"),
+	/**  Release the opening window's reservation after navigation or cancellation. */
+	windowCompleteLaunch: () => typedError<null, IdeError>(__TAURI_INVOKE("window_complete_launch")),
 	windowCloseContext: () => __TAURI_INVOKE<CloseContext>("window_close_context"),
 	/**  Projects open in project windows, in window order (title bar project widget). */
 	windowOpenProjects: () => typedError<OpenProject[], IdeError>(__TAURI_INVOKE("window_open_projects")),
@@ -1035,6 +1039,8 @@ export const commands = {
 	debugDataBreakpointInfo: (session: DebugSessionId, container: number, name: string, frameId: number | null) => typedError<DataBreakpointInfo, IdeError>(__TAURI_INVOKE("debug_data_breakpoint_info", { session, container, name, frameId })),
 	/**  Attach to Process: the user's processes a debugger can attach to. */
 	debugAttachableProcesses: () => typedError<AttachableProcess[], IdeError>(__TAURI_INVOKE("debug_attachable_processes")),
+	/**  A loopback port that is free right now, for a debug agent the launch line starts. */
+	debugFreePort: () => typedError<number, IdeError>(__TAURI_INVOKE("debug_free_port")),
 	/**
 	 *  Remote JVM Debug in listen mode: waits (cancellable through `request`) for the remote
 	 *  JVM to connect to `host:port`; returns the loopback port java-debug attaches to.
@@ -1280,6 +1286,12 @@ export const commands = {
 	dockerRemove: (endpoint: DockerEndpoint, object: DockerObject, ids: string[], force: boolean) => typedError<null, IdeError>(__TAURI_INVOKE("docker_remove", { endpoint, object, ids, force })),
 	/**  Pretty-printed `docker inspect` JSON. */
 	dockerInspect: (endpoint: DockerEndpoint, object: DockerObject, id: string) => typedError<string, IdeError>(__TAURI_INVOKE("docker_inspect", { endpoint, object, id })),
+	/**  Layers of an image (`docker image history`). */
+	dockerImageHistory: (endpoint: DockerEndpoint, id: string) => typedError<DockerImageLayer[], IdeError>(__TAURI_INVOKE("docker_image_history", { endpoint, id })),
+	/**  Processes running inside a container (`docker top`). */
+	dockerContainerTop: (endpoint: DockerEndpoint, id: string) => typedError<DockerProcessList, IdeError>(__TAURI_INVOKE("docker_container_top", { endpoint, id })),
+	/**  One-shot resource usage snapshot of a running container (`docker stats --no-stream`). */
+	dockerContainerStats: (endpoint: DockerEndpoint, id: string) => typedError<DockerContainerStats, IdeError>(__TAURI_INVOKE("docker_container_stats", { endpoint, id })),
 	/**  Streams a container's log lines until it stops or the request is cancelled. */
 	dockerLogs: (request: RequestId, endpoint: DockerEndpoint, id: string, tail: number, follow: boolean, timestamps: boolean, onLine: Channel<DockerLogLine>) => typedError<null, IdeError>(__TAURI_INVOKE("docker_logs", { request, endpoint, id, tail, follow, timestamps, onLine })),
 	/**  Follows `docker events` until the daemon goes away or the request is cancelled. */
@@ -3544,6 +3556,22 @@ export type DockerContainer = {
 	composeWorkingDir: string | null,
 	/**  `com.docker.compose.project.config_files` label (comma-separated in docker). */
 	composeFiles: string[],
+	/**  Mounted volume names or host paths reported by `docker ps` (`Mounts`). */
+	mounts?: string[],
+	/**  Connected network names reported by `docker ps` (`Networks`). */
+	networks?: string[],
+	/**  User and tool labels assigned to the container. */
+	labels?: { [key in string]: string },
+};
+
+/**  Live resource metrics returned by `docker stats --no-stream --no-trunc --format '{{json .}}'`. */
+export type DockerContainerStats = {
+	cpuPerc: string,
+	memUsage: string,
+	memPerc: string,
+	netIo: string,
+	blockIo: string,
+	pids: string,
 };
 
 /**  Which daemon a docker command talks to. */
@@ -3578,6 +3606,16 @@ export type DockerImage = {
 	createdSince: string,
 };
 
+/**  One layer in `docker image history --no-trunc --format '{{json .}}'`. */
+export type DockerImageLayer = {
+	id: string,
+	createdBy: string,
+	size: string,
+	createdSince: string,
+	createdAt: string,
+	comment: string,
+};
+
 /**  A line of `docker logs` output. */
 export type DockerLogLine = {
 	stderr: boolean,
@@ -3590,9 +3628,19 @@ export type DockerNetwork = {
 	driver: string,
 	scope: string,
 	composeProject: string | null,
+	createdAt?: string,
+	ipv6?: boolean,
+	internal?: boolean,
+	labels?: { [key in string]: string },
 };
 
 export type DockerObject = "container" | "image" | "volume" | "network";
+
+/**  Process table returned by `docker top <container>`. */
+export type DockerProcessList = {
+	titles: string[],
+	processes: string[][],
+};
 
 /**  A registry to log in to (Docker Hub, GHCR, a private one). The password is stored separately. */
 export type DockerRegistry = {
@@ -3628,6 +3676,8 @@ export type DockerVolume = {
 	driver: string,
 	mountpoint: string,
 	composeProject: string | null,
+	scope?: string,
+	labels?: { [key in string]: string },
 };
 
 /**  What the UI needs to show an opened document. */
@@ -5427,6 +5477,12 @@ export type LanguageServerSettings_Serialize = {
 	codeActionKinds?: string[] | null,
 };
 
+export type LanguageServerTarget = {
+	target?: string,
+	/**  Empty selects the first configured server for the language. */
+	server?: string,
+};
+
 export type LanguagesSettings = {
 	/**  Explicit plugin formatter, by language id. Empty entries use the normal formatter policy. */
 	pluginFormatters?: { [key in string]: string },
@@ -5465,6 +5521,8 @@ export type Launch = {
 	comparison?: ComparisonLaunch | null,
 	/**  `openidea diff a.txt b.txt`: the two files to open in the diff viewer (boxed: most launches have none). */
 	diff?: DiffFilesLaunch | null,
+	/**  Files requested after the pending diff take focus after it opens. */
+	diffBeforeFiles?: boolean,
 	/**  Deployment windows: the server and local selection to compare. */
 	deployment?: DeploymentLaunch | null,
 };
@@ -5494,7 +5552,7 @@ export type LaunchConfig = {
 export type LibraryGroup = {
 	/**  Display name, e.g. `Python 3.12 (.venv)`. */
 	name: string,
-	/**  `python` | `jdk` | `nodeModules` | `nodeCore` | `rust` | `cargo` | `go` | `goModules` | `maven` | `gradle`. */
+	/**  `python` | `jdk` | `nodeModules` | `nodeCore` | `rust` | `cargo` | `go` | `goModules` | `maven` | `gradle` | `classpath`. */
 	kind: string,
 	roots: LibraryRoot[],
 };
@@ -7857,6 +7915,8 @@ export type Settings_Deserialize = {
 	 *  options on top of the language definition, or a server defined here.
 	 */
 	languageServers?: { [key in string]: LanguageServerSettings_Deserialize },
+	/**  Project language id → server and plugin target. Empty target uses the host. */
+	languageServerTargets?: { [key in string]: LanguageServerTarget },
 	/**  Editor › Inspections profiles. */
 	inspections?: InspectionSettings,
 	/**  Editor › Natural Languages › Spelling. */
@@ -7919,6 +7979,8 @@ export type Settings_Serialize = {
 	 *  options on top of the language definition, or a server defined here.
 	 */
 	languageServers: { [key in string]: LanguageServerSettings_Serialize },
+	/**  Project language id → server and plugin target. Empty target uses the host. */
+	languageServerTargets: { [key in string]: LanguageServerTarget },
 	/**  Editor › Inspections profiles. */
 	inspections: InspectionSettings,
 	/**  Editor › Natural Languages › Spelling. */

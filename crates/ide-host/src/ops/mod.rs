@@ -98,3 +98,5 @@ impl Host {
         self.runtime.spawn_blocking(f).await.map_err(|e| IdeError::internal(e.to_string()))?
     }
 }
+
+pub(crate) mod lsp_target;

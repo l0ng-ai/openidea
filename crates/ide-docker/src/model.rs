@@ -41,6 +41,15 @@ pub struct DockerContainer {
     pub compose_working_dir: Option<String>,
     /// `com.docker.compose.project.config_files` label (comma-separated in docker).
     pub compose_files: Vec<String>,
+    /// Mounted volume names or host paths reported by `docker ps` (`Mounts`).
+    #[serde(default)]
+    pub mounts: Vec<String>,
+    /// Connected network names reported by `docker ps` (`Networks`).
+    #[serde(default)]
+    pub networks: Vec<String>,
+    /// User and tool labels assigned to the container.
+    #[serde(default)]
+    pub labels: BTreeMap<String, String>,
 }
 
 impl DockerContainer {
@@ -80,6 +89,10 @@ pub struct DockerVolume {
     pub driver: String,
     pub mountpoint: String,
     pub compose_project: Option<String>,
+    #[serde(default)]
+    pub scope: String,
+    #[serde(default)]
+    pub labels: BTreeMap<String, String>,
 }
 
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize, Type)]
@@ -90,6 +103,46 @@ pub struct DockerNetwork {
     pub driver: String,
     pub scope: String,
     pub compose_project: Option<String>,
+    #[serde(default)]
+    pub created_at: String,
+    #[serde(default)]
+    pub ipv6: bool,
+    #[serde(default)]
+    pub internal: bool,
+    #[serde(default)]
+    pub labels: BTreeMap<String, String>,
+}
+
+/// One layer in `docker image history --no-trunc --format '{{json .}}'`.
+#[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize, Type)]
+#[serde(rename_all = "camelCase")]
+pub struct DockerImageLayer {
+    pub id: String,
+    pub created_by: String,
+    pub size: String,
+    pub created_since: String,
+    pub created_at: String,
+    pub comment: String,
+}
+
+/// Process table returned by `docker top <container>`.
+#[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize, Type)]
+#[serde(rename_all = "camelCase")]
+pub struct DockerProcessList {
+    pub titles: Vec<String>,
+    pub processes: Vec<Vec<String>>,
+}
+
+/// Live resource metrics returned by `docker stats --no-stream --no-trunc --format '{{json .}}'`.
+#[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize, Type)]
+#[serde(rename_all = "camelCase")]
+pub struct DockerContainerStats {
+    pub cpu_perc: String,
+    pub mem_usage: String,
+    pub mem_perc: String,
+    pub net_io: String,
+    pub block_io: String,
+    pub pids: String,
 }
 
 /// Everything the Services tree shows, fetched in one go.
@@ -186,17 +239,20 @@ struct RawContainer {
     ports: String,
     created_at: String,
     labels: String,
+    mounts: String,
+    networks: String,
+}
+
+fn split_csv(raw: &str) -> Vec<String> {
+    raw.split(',').map(str::trim).filter(|s| !s.is_empty()).map(str::to_owned).collect()
 }
 
 /// `docker ps -a --no-trunc --format '{{json .}}'`.
 pub fn parse_containers(text: &str) -> Vec<DockerContainer> {
     let mut out: Vec<DockerContainer> = lines::<RawContainer>(text)
         .map(|r| {
-            let mut labels = parse_labels(&r.labels);
-            let files = labels
-                .remove(COMPOSE_FILES)
-                .map(|f| f.split(',').map(str::trim).filter(|s| !s.is_empty()).map(str::to_owned).collect())
-                .unwrap_or_default();
+            let all_labels = parse_labels(&r.labels);
+            let files = all_labels.get(COMPOSE_FILES).map(|f| split_csv(f)).unwrap_or_default();
             // Older docker versions derive `State` from nothing: fall back on the status text.
             let state = if r.state.is_empty() {
                 if r.status.starts_with("Up") { "running".into() } else { "exited".into() }
@@ -212,10 +268,13 @@ pub fn parse_containers(text: &str) -> Vec<DockerContainer> {
                 status: r.status,
                 ports: r.ports,
                 created_at: r.created_at,
-                compose_project: labels.remove(COMPOSE_PROJECT).filter(|s| !s.is_empty()),
-                compose_service: labels.remove(COMPOSE_SERVICE).filter(|s| !s.is_empty()),
-                compose_working_dir: labels.remove(COMPOSE_DIR).filter(|s| !s.is_empty()),
+                compose_project: all_labels.get(COMPOSE_PROJECT).filter(|s| !s.is_empty()).cloned(),
+                compose_service: all_labels.get(COMPOSE_SERVICE).filter(|s| !s.is_empty()).cloned(),
+                compose_working_dir: all_labels.get(COMPOSE_DIR).filter(|s| !s.is_empty()).cloned(),
                 compose_files: files,
+                mounts: split_csv(&r.mounts),
+                networks: split_csv(&r.networks),
+                labels: all_labels,
             }
         })
         .collect();
@@ -258,17 +317,23 @@ struct RawVolume {
     name: String,
     driver: String,
     mountpoint: String,
+    scope: String,
     labels: String,
 }
 
 /// `docker volume ls --format '{{json .}}'`.
 pub fn parse_volumes(text: &str) -> Vec<DockerVolume> {
     let mut out: Vec<DockerVolume> = lines::<RawVolume>(text)
-        .map(|r| DockerVolume {
-            compose_project: parse_labels(&r.labels).remove(COMPOSE_PROJECT).filter(|s| !s.is_empty()),
-            name: r.name,
-            driver: r.driver,
-            mountpoint: r.mountpoint,
+        .map(|r| {
+            let labels = parse_labels(&r.labels);
+            DockerVolume {
+                compose_project: labels.get(COMPOSE_PROJECT).filter(|s| !s.is_empty()).cloned(),
+                name: r.name,
+                driver: r.driver,
+                mountpoint: r.mountpoint,
+                scope: r.scope,
+                labels,
+            }
         })
         .collect();
     out.sort_by(|a, b| a.name.cmp(&b.name));
@@ -283,22 +348,119 @@ struct RawNetwork {
     name: String,
     driver: String,
     scope: String,
+    created_at: String,
+    #[serde(rename = "IPv6")]
+    ipv6: String,
+    internal: String,
     labels: String,
 }
 
 /// `docker network ls --no-trunc --format '{{json .}}'`.
 pub fn parse_networks(text: &str) -> Vec<DockerNetwork> {
     let mut out: Vec<DockerNetwork> = lines::<RawNetwork>(text)
-        .map(|r| DockerNetwork {
-            compose_project: parse_labels(&r.labels).remove(COMPOSE_PROJECT).filter(|s| !s.is_empty()),
-            id: r.id,
-            name: r.name,
-            driver: r.driver,
-            scope: r.scope,
+        .map(|r| {
+            let labels = parse_labels(&r.labels);
+            DockerNetwork {
+                compose_project: labels.get(COMPOSE_PROJECT).filter(|s| !s.is_empty()).cloned(),
+                id: r.id,
+                name: r.name,
+                driver: r.driver,
+                scope: r.scope,
+                created_at: r.created_at,
+                ipv6: r.ipv6.eq_ignore_ascii_case("true"),
+                internal: r.internal.eq_ignore_ascii_case("true"),
+                labels,
+            }
         })
         .collect();
     out.sort_by(|a, b| a.name.cmp(&b.name));
     out
+}
+
+#[derive(Deserialize, Default)]
+#[serde(rename_all = "PascalCase", default)]
+struct RawImageLayer {
+    #[serde(rename = "ID")]
+    id: String,
+    created_by: String,
+    size: String,
+    created_since: String,
+    created_at: String,
+    comment: String,
+}
+
+/// `docker image history --no-trunc --format '{{json .}}'`.
+pub fn parse_image_history(text: &str) -> Vec<DockerImageLayer> {
+    lines::<RawImageLayer>(text)
+        .map(|r| DockerImageLayer {
+            id: r.id,
+            created_by: r.created_by,
+            size: r.size,
+            created_since: r.created_since,
+            created_at: r.created_at,
+            comment: r.comment,
+        })
+        .collect()
+}
+
+/// `docker top <container>` tabular output.
+pub fn parse_container_top(text: &str) -> DockerProcessList {
+    let mut lines = text.lines().map(str::trim).filter(|l| !l.is_empty());
+    let Some(header) = lines.next() else {
+        return DockerProcessList::default();
+    };
+    let titles: Vec<String> = header.split_whitespace().map(str::to_owned).collect();
+    if titles.is_empty() {
+        return DockerProcessList::default();
+    }
+    let cols = titles.len();
+    let processes = lines
+        .map(|line| {
+            let mut row = Vec::with_capacity(cols);
+            let mut rest = line.trim_start();
+            for _ in 0..cols.saturating_sub(1) {
+                match rest.split_once(char::is_whitespace) {
+                    Some((field, tail)) => {
+                        row.push(field.to_owned());
+                        rest = tail.trim_start();
+                    }
+                    None => break,
+                }
+            }
+            if !rest.is_empty() || row.len() < cols {
+                row.push(rest.to_owned());
+            }
+            row
+        })
+        .collect();
+    DockerProcessList { titles, processes }
+}
+
+#[derive(Deserialize, Default)]
+#[serde(rename_all = "PascalCase", default)]
+struct RawStats {
+    #[serde(rename = "CPUPerc")]
+    cpu_perc: String,
+    mem_usage: String,
+    mem_perc: String,
+    #[serde(rename = "NetIO")]
+    net_io: String,
+    #[serde(rename = "BlockIO")]
+    block_io: String,
+    #[serde(rename = "PIDs")]
+    pids: String,
+}
+
+/// `docker stats --no-stream --no-trunc --format '{{json .}}'`.
+pub fn parse_container_stats(text: &str) -> Option<DockerContainerStats> {
+    lines::<RawStats>(text).next().map(|r| DockerContainerStats {
+        cpu_perc: r.cpu_perc,
+        mem_usage: r.mem_usage,
+        mem_perc: r.mem_perc,
+        net_io: r.net_io,
+        block_io: r.block_io,
+        pids: r.pids,
+    })
 }
 
 #[derive(Deserialize, Default)]

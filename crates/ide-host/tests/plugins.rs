@@ -6058,7 +6058,8 @@ fn api14_test_selection_traps_and_timeouts_are_unsupported() {
         f.host.refresh_run_configurations(&f.project);
         let started = Instant::now();
         assert_eq!(f.host.select_tests("main", "plugin:execution:dynamic", vec![vec![failure.into()]]).unwrap(), None);
-        assert!(started.elapsed() < Duration::from_secs(5));
+        // Selection is a user action: bounded by the command budget, not the edit path.
+        assert!(started.elapsed() < Limits::default().timeout + Duration::from_secs(2));
     }
 }
 

@@ -10,6 +10,7 @@ import { Channel } from "@tauri-apps/api/core";
 import type {
   DockerAvailability,
   DockerConnection,
+  DockerContainer,
   DockerEndpoint,
   DockerLogLine,
   DockerObject,
@@ -28,6 +29,7 @@ import {
 import { confirm } from "@/workbench/messages";
 import { openConnectionDialog, openRegistryDialog } from "./dialogs";
 import {
+  DEFAULT_DOCKER_FILTERS,
   DOCKER_KEY,
   childrenOf,
   connectionKey,
@@ -40,9 +42,20 @@ import {
   registryKey,
   rootNodes,
   treeKey,
+  type DockerFilters,
   type DockerTarget,
   type ServiceNode,
 } from "./model";
+import {
+  ComposeProjectDashboard,
+  ContainerDashboard,
+  ContainerProcessesView,
+  ImageDashboard,
+  ImageLayersView,
+  NetworkDashboard,
+  VolumeDashboard,
+} from "./dashboard";
+import { openContainerLogInEditor } from "./logEditor";
 import {
   canRemove,
   canRestart,
@@ -68,6 +81,7 @@ import {
   useServices,
   watch,
   type ConnectionState,
+  type DetailTab,
 } from "./store";
 import { useServicesTree } from "./tree";
 import styles from "./Services.module.css";
@@ -101,11 +115,12 @@ export function dockerItems(
   connections: readonly DockerConnection[],
   registries: readonly DockerRegistry[],
   conns: Record<string, ConnectionState>,
+  filters: DockerFilters = DEFAULT_DOCKER_FILTERS,
 ): ServiceTreeItem[] {
   const items: ServiceTreeItem[] = connections.map((c) => {
     const state = conns[c.id] ?? { snapshot: null, loading: false, error: null };
     const snap = state.snapshot;
-    const children = childrenOf(snap);
+    const children = childrenOf(snap, filters);
     const convert = (n: ServiceNode): ServiceTreeItem => {
       const kids = children(n);
       return {
@@ -121,13 +136,14 @@ export function dockerItems(
     return {
       key: connectionKey(c.id),
       label: c.name,
-      icon: "file-docker",
+      icon: snap?.availability.kind === "ready" ? "docker-connected" : "file-docker",
       detail: connectionDetail(state),
       dim: snap?.availability.kind !== "ready",
       children: children(root)?.map(convert) ?? [],
     };
   });
-  for (const r of registries) items.push({ key: registryKey(r.id), label: r.name, icon: "package", detail: r.address });
+  for (const r of registries)
+    items.push({ key: registryKey(r.id), label: r.name, icon: "docker-registry", detail: r.address });
   return items;
 }
 
@@ -205,7 +221,7 @@ function actions(item: ServiceTreeItem): ServiceItemAction[] {
       disabled: !container || !isRunning(container),
       run: () => execShell(t),
     },
-    { id: "pull", title: "Pull Image…", icon: "git-pull", run: () => void pullPrompt(t.conn) },
+    { id: "pull", title: "Pull Image…", icon: "docker-pull", run: () => void pullPrompt(t.conn) },
   ];
 }
 
@@ -275,14 +291,23 @@ export function DockerTaskBanner() {
 }
 
 /** Follows a container's log while shown. */
-function LogView({ conn, id, running }: { conn: string; id: string; running: boolean }) {
+function LogView({ conn, container, running }: { conn: string; container: DockerContainer; running: boolean }) {
   const tx = useTx();
+  const id = container.id;
   return (
     <div className={styles.detailBody}>
       <LogPane
         sourceKey={`${conn}:${id}:${running}`}
         live={running}
         toggles={[{ id: "timestamps", label: "Timestamps" }]}
+        actions={
+          <IconButton
+            icon="external-link"
+            size="small"
+            title="Open Log in Editor"
+            onClick={() => openContainerLogInEditor(conn, container)}
+          />
+        }
         ariaLabel={tx("Container log")}
         start={(onLine, onError, on) => {
           const request = nextRequestId();
@@ -300,21 +325,43 @@ function LogView({ conn, id, running }: { conn: string; id: string; running: boo
   );
 }
 
-function InspectView({ conn, object, id }: { conn: string; object: DockerObject; id: string }) {
-  const tx = useTx();
-  const [text, setText] = useState<string | null>(null);
-  const [error, setError] = useState<string | null>(null);
+function useObjectInspect(conn: string, object: DockerObject | null, id: string | null) {
+  const [state, setState] = useState<{ key: string; text: string | null; error: string | null }>({
+    key: "",
+    text: null,
+    error: null,
+  });
+  const currentKey = object && id ? `${conn}:${object}:${id}` : "";
   useEffect(() => {
+    if (!object || !id) return;
+    const reqKey = `${conn}:${object}:${id}`;
     let alive = true;
     call(commands.dockerInspect(endpointOf(conn), object, id))
-      .then((t) => alive && setText(t))
-      .catch((e) => alive && setError(errorMessage(e)));
+      .then((t) => alive && setState({ key: reqKey, text: t, error: null }))
+      .catch((e) => alive && setState({ key: reqKey, text: null, error: errorMessage(e) }));
     return () => {
       alive = false;
     };
   }, [conn, object, id]);
+  return state.key === currentKey ? { text: state.text, error: state.error } : { text: null, error: null };
+}
+
+function InspectView({ text, error }: { text: string | null; error: string | null }) {
+  const tx = useTx();
   return (
     <div className={styles.detailBody}>
+      <div className={styles.subToolbar}>
+        <span className={styles.subToolbarTitle}>
+          <T>Inspect JSON</T>
+        </span>
+        <IconButton
+          icon="copy"
+          size="small"
+          title="Copy"
+          disabled={!text}
+          onClick={() => text && void navigator.clipboard?.writeText(text)}
+        />
+      </div>
       <pre
         tabIndex={0}
         onKeyDown={copySelectionOnKeyDown}
@@ -362,10 +409,26 @@ function DockerDetail({ item }: { item: ServiceTreeItem }) {
   const state = useServices((s) => (parsed ? connectionState(parsed.conn, s) : null));
   const target = resolveTarget(item.key);
   const registry = settings?.registries.find((r) => registryKey(r.id) === item.key);
+  const node = target?.node ?? null;
+  const object: DockerObject | null =
+    node && (node.kind === "container" || node.kind === "image" || node.kind === "volume" || node.kind === "network")
+      ? node.kind
+      : null;
+  const objectId =
+    node?.kind === "container"
+      ? node.container.id
+      : node?.kind === "image"
+        ? node.image.id
+        : node?.kind === "volume"
+          ? node.volume.name
+          : node?.kind === "network"
+            ? node.network.id
+            : null;
+  const inspect = useObjectInspect(parsed?.conn ?? "default", object, objectId);
+
   if (registry) return <RegistryDetail registry={registry} />;
-  if (!target || !parsed || !state) return <EmptyState title="Select service to view details" />;
+  if (!target || !parsed || !state || !node) return <EmptyState title="Select service to view details" />;
   const conn = connectionOf(parsed.conn);
-  const node = target.node;
   const snapshot = state.snapshot;
   if (!snapshot)
     return (
@@ -379,7 +442,14 @@ function DockerDetail({ item }: { item: ServiceTreeItem }) {
     );
   if (snapshot.availability.kind !== "ready")
     return <Unavailable availability={snapshot.availability} conn={parsed.conn} />;
-  if (node.kind === "docker" || node.kind === "group" || node.kind === "compose") {
+  if (node.kind === "compose") {
+    return (
+      <div className={styles.detailPane}>
+        <ComposeProjectDashboard conn={parsed.conn} project={node.project} containers={node.containers} />
+      </div>
+    );
+  }
+  if (node.kind === "docker" || node.kind === "group") {
     const a = snapshot.availability;
     return (
       <div className={styles.detailPane}>
@@ -388,9 +458,7 @@ function DockerDetail({ item }: { item: ServiceTreeItem }) {
             <span className={styles.bannerText}>{snapshot.errors.join("; ")}</span>
           </div>
         )}
-        <EmptyState
-          title={node.kind === "compose" ? txTemplate(`Compose project '${node.project}'`) : (conn?.name ?? "Docker")}
-        >
+        <EmptyState title={conn?.name ?? "Docker"}>
           <div>
             {txTemplate(`Engine ${a.serverVersion} · CLI ${a.clientVersion}`)}
             {a.context ? txTemplate(` · context ${a.context}`) : ""}
@@ -403,32 +471,66 @@ function DockerDetail({ item }: { item: ServiceTreeItem }) {
       </div>
     );
   }
-  const object: DockerObject = node.kind;
-  const id =
+
+  const tabItems: Array<{ id: DetailTab; label: string }> =
     node.kind === "container"
-      ? node.container.id
+      ? [
+          { id: "dashboard", label: "Dashboard" },
+          { id: "log", label: "Log" },
+          { id: "processes", label: "Processes" },
+          { id: "inspect", label: "Inspect" },
+        ]
       : node.kind === "image"
-        ? node.image.id
-        : node.kind === "volume"
-          ? node.volume.name
-          : node.network.id;
-  const showLog = node.kind === "container" && tab === "log";
+        ? [
+            { id: "dashboard", label: "Dashboard" },
+            { id: "layers", label: "Layers" },
+            { id: "inspect", label: "Inspect" },
+          ]
+        : [
+            { id: "dashboard", label: "Dashboard" },
+            { id: "inspect", label: "Inspect" },
+          ];
+
+  const activeId: DetailTab = tabItems.some((t) => t.id === tab) ? tab : "dashboard";
+  const id = objectId!;
+
   return (
     <div className={styles.detailPane}>
       <Tabs
         variant="compact"
-        activeId={showLog ? "log" : "inspect"}
-        onSelect={(t) => useServices.setState({ detailTab: t as "log" | "inspect" })}
+        activeId={activeId}
+        onSelect={(t) => useServices.setState({ detailTab: t as DetailTab })}
         aria-label="Details"
-        items={[
-          ...(node.kind === "container" ? [{ id: "log", label: "Log" }] : []),
-          { id: "inspect", label: "Inspect" },
-        ]}
+        items={tabItems}
       />
-      {showLog ? (
-        <LogView key={id} conn={parsed.conn} id={id} running={isRunning(node.container)} />
+      {activeId === "log" && node.kind === "container" ? (
+        <LogView key={id} conn={parsed.conn} container={node.container} running={isRunning(node.container)} />
+      ) : activeId === "processes" && node.kind === "container" ? (
+        <ContainerProcessesView key={id} conn={parsed.conn} id={id} running={isRunning(node.container)} />
+      ) : activeId === "layers" && node.kind === "image" ? (
+        <ImageLayersView key={id} conn={parsed.conn} id={id} />
+      ) : activeId === "inspect" ? (
+        <InspectView key={id} text={inspect.text} error={inspect.error} />
+      ) : node.kind === "container" ? (
+        <ContainerDashboard
+          key={id}
+          conn={parsed.conn}
+          container={node.container}
+          snapshot={snapshot}
+          inspectText={inspect.text}
+        />
+      ) : node.kind === "image" ? (
+        <ImageDashboard key={id} conn={parsed.conn} image={node.image} snapshot={snapshot} inspectText={inspect.text} />
+      ) : node.kind === "volume" ? (
+        <VolumeDashboard key={id} conn={parsed.conn} volume={node.volume} snapshot={snapshot} />
       ) : (
-        <InspectView key={id} conn={parsed.conn} object={object} id={id} />
+        <NetworkDashboard
+          key={id}
+          conn={parsed.conn}
+          network={node.network}
+          snapshot={snapshot}
+          inspectText={inspect.text}
+        />
       )}
     </div>
   );
@@ -437,7 +539,11 @@ function DockerDetail({ item }: { item: ServiceTreeItem }) {
 function useRoots(): ServiceTreeItem[] {
   const settings = useServices((s) => s.settings);
   const conns = useServices((s) => s.conns);
-  return useMemo(() => dockerItems(settings?.connections ?? [], settings?.registries ?? [], conns), [settings, conns]);
+  const filters = useServices((s) => s.filters);
+  return useMemo(
+    () => dockerItems(settings?.connections ?? [], settings?.registries ?? [], conns, filters),
+    [settings, conns, filters],
+  );
 }
 
 export const dockerProvider: ServiceProviderContribution = {
@@ -456,7 +562,7 @@ export const dockerProvider: ServiceProviderContribution = {
   detail: DockerDetail,
   banner: DockerTaskBanner,
   addMenu: () => [
-    { label: "Docker Registry…", icon: "package", run: () => openRegistryDialog() },
+    { label: "Docker Registry…", icon: "docker-registry", run: () => openRegistryDialog() },
     { label: "Docker Connection…", icon: "file-docker", run: () => openConnectionDialog() },
   ],
 };

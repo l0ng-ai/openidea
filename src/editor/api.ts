@@ -28,11 +28,12 @@ import {
   type RangeSet,
   type Transaction,
 } from "@codemirror/state";
-import { GutterMarker, ViewPlugin, type EditorView } from "@codemirror/view";
+import { GutterMarker, ViewPlugin, type EditorView, type ViewUpdate } from "@codemirror/view";
 import type { LanguageDescription } from "@codemirror/language";
 import type { LineEnding } from "@/platform/ipc";
 import { create } from "zustand";
 import { maybeEditorService } from "@/workbench/contributions";
+import { cornerInset } from "@/editor/core/cm/cornerInset";
 
 /** Documents above this size (UTF-16 units) skip per-line decorations. */
 export const HEAVY_LIMIT = 8_000_000;
@@ -358,6 +359,8 @@ export function editorCorner(view: EditorView): HTMLElement {
     gap: "4px",
   });
   view.dom.appendChild(el);
+  // The lines leave room for its measured width, so it never covers a line end.
+  view.plugin(cornerInset)?.track(el);
   return el;
 }
 
@@ -401,6 +404,17 @@ export interface ContributedIntention {
 
 /** A background provider has new context actions for the current document. */
 export const intentionsChanged = StateEffect.define<null>();
+
+/**
+ * A hidden editor view is shown again. Recently used tabs keep their view, detached from the
+ * document, while hidden; plugins that skip work while `view.dom` is disconnected redo it when
+ * `shownAgain`.
+ */
+export const viewShown = StateEffect.define<null>();
+
+export function shownAgain(u: ViewUpdate): boolean {
+  return u.transactions.some((tr) => tr.effects.some((e) => e.is(viewShown)));
+}
 
 /** Local fixes of a diagnostic range (hover link and Apply Quick Fix). */
 export const quickFixProviders = Facet.define<(view: EditorView, from: number, to: number) => ContributedIntention[]>();

@@ -95,6 +95,33 @@ impl Launcher for ProcessLauncher {
         on_stderr: Box<dyn Fn(String) + Send + Sync>,
         cancel: &CancellationToken,
     ) -> Result<(Peer, Option<PathBuf>), LaunchError> {
+        if let Some(target) = &config.target {
+            let argv =
+                format!("argv: {:?}", std::iter::once(&config.command).chain(config.args.iter()).collect::<Vec<_>>());
+            on_stderr(argv.clone());
+            let binary = config
+                .pinned
+                .as_ref()
+                .ok_or_else(|| LaunchError::Config("target wrapper has no executable pin".into()))?
+                .verify()
+                .map_err(LaunchError::Failed)?
+                .to_owned();
+            let env = config.env.iter().map(|(k, v)| (k.clone(), v.clone())).collect::<Vec<_>>();
+            return Peer::spawn_transport(
+                &binary.to_string_lossy(),
+                &config.args,
+                &target.project_root,
+                &env,
+                handler,
+                on_stderr,
+                ide_jsonrpc::TransportOptions {
+                    transform: Some(Arc::new(crate::target::TargetTransform(target.clone()))),
+                    ..Default::default()
+                },
+            )
+            .map(|peer| (peer, Some(binary)))
+            .map_err(|e| LaunchError::Failed(format!("{argv}: {e}")));
+        }
         let search = server_search_path(config);
         let binary = match &config.pinned {
             // A plugin's server: the approved program, unchanged since.
@@ -125,6 +152,9 @@ impl Launcher for ProcessLauncher {
     }
 
     fn available(&self, config: &LanguageServerConfig, root: &Path) -> bool {
+        if config.target.is_some() {
+            return true;
+        }
         if let Some(pin) = &config.pinned {
             return pin.path.is_file();
         }
