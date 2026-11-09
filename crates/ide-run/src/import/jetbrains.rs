@@ -16,7 +16,6 @@ use super::{
 };
 use crate::RunConfig;
 use ide_core::IdeResult;
-use percent_encoding::percent_decode_str;
 use quick_xml::{Reader, XmlVersion, events::Event};
 use std::cell::Cell;
 use std::collections::BTreeMap;
@@ -918,8 +917,6 @@ fn file_url_path(value: &str) -> String {
     let Some(rest) = value.strip_prefix("file:") else {
         return value.to_owned();
     };
-    let decoded = percent_decode_str(rest).decode_utf8_lossy();
-    let rest = decoded.as_ref();
     let rest = match rest.strip_prefix("//").and_then(|r| r.split_once('/')) {
         Some((host, path)) if host.eq_ignore_ascii_case("localhost") => path,
         _ => rest,
@@ -1052,16 +1049,18 @@ mod tests {
     }
 
     #[test]
-    fn file_urls_decode_paths_and_treat_localhost_as_local() {
+    fn file_urls_preserve_paths_and_treat_localhost_as_local() {
         for (url, expected) in [
-            ("file:///p/a%20b/%E4%B8%AD.py", "/p/a b/中.py"),
-            ("file://C:/a%20b/%C3%A9", "C:/a b/é"),
-            ("file:///C:/a%20b", "C:/a b"),
-            ("file://localhost/p/a%20b", "/p/a b"),
-            ("file://localhost/C:/a%20b", "C:/a b"),
+            ("file:///p/100%20", "/p/100%20"),
+            ("file:///p/a%E4", "/p/a%E4"),
+            ("file:///p/a b/中.py", "/p/a b/中.py"),
+            ("file://C:/a b/é", "C:/a b/é"),
+            ("file:///C:/a%20b", "C:/a%20b"),
+            ("file://localhost/p/a%20b", "/p/a%20b"),
+            ("file://localhost/C:/a%20b", "C:/a%20b"),
             ("file://LOCALHOST/p", "/p"),
-            ("file://server/share/a%20b", "//server/share/a b"),
-            ("file:///p/%2520", "/p/%20"),
+            ("file://server/share/a%20b", "//server/share/a%20b"),
+            ("file:///p/%2520", "/p/%2520"),
             ("/p/a%20b", "/p/a%20b"),
             ("relative%20path", "relative%20path"),
             ("https://localhost/a%20b", "https://localhost/a%20b"),

@@ -835,7 +835,7 @@ fn file_url_working_directories_stay_inside_the_project() {
 
     let local_root = root.to_string_lossy().replace('\\', "/");
     for (name, working_directory) in [
-        ("Encoded", "file://$PROJECT_DIR$/gateway%20%C3%A9".to_owned()),
+        ("Literal", "file://$PROJECT_DIR$/gateway é".to_owned()),
         ("Localhost", format!("file://localhost/{}", local_root.trim_start_matches('/'))),
     ] {
         write(
@@ -870,7 +870,7 @@ fn file_url_working_directories_stay_inside_the_project() {
         ])
     );
     assert_eq!(boot.env["TZ"], "UTC");
-    assert_eq!(cwd(get(&r, "Encoded")), Some(PathBuf::from("gateway é")));
+    assert_eq!(cwd(get(&r, "Literal")), Some(PathBuf::from("gateway é")));
     assert_eq!(cwd(get(&r, "Localhost")), None);
 
     // The project directory itself: no `cwd` to store.
@@ -886,14 +886,14 @@ fn file_urls_work_in_all_imported_path_fields() {
         (
             "Python",
             r#"<configuration name="NAME" type="PythonConfigurationType">
-          <option name="WORKING_DIRECTORY" value="{base}/jobs%20%E4%B8%AD" />
+          <option name="WORKING_DIRECTORY" value="{base}/jobs 中" />
           <option name="SDK_HOME" value="{base}/bin/python" />
-          <option name="SCRIPT_NAME" value="{base}/jobs%20%E4%B8%AD/run%20me.py" />
-          <option name="PARAMETERS" value="&quot;{base}/data%20file&quot; unchanged%20arg" />
-          <option name="ENV_FILES" value="{base}/.env%20dev{sep}{base}/.env%20local" />
+          <option name="SCRIPT_NAME" value="{base}/jobs 中/run me.py" />
+          <option name="PARAMETERS" value="&quot;{base}/data file&quot; unchanged%20arg" />
+          <option name="ENV_FILES" value="{base}/.env dev{sep}{base}/.env local" />
           <extension name="net.ashald.envfile">
             <option name="IS_ENABLED" value="true" />
-            <ENTRIES><ENTRY PATH="{base}/.env%20plugin" PARSER="env" /></ENTRIES>
+            <ENTRIES><ENTRY PATH="{base}/.env plugin" PARSER="env" /></ENTRIES>
           </extension>
         </configuration>"#,
         ),
@@ -908,14 +908,14 @@ fn file_urls_work_in_all_imported_path_fields() {
             "Pytest",
             r#"<configuration name="NAME" type="tests" factoryName="pytest">
           <option name="_new_targetType" value="&quot;PATH&quot;" />
-          <option name="_new_target" value="&quot;{base}/test%20file.py&quot;" />
-          <option name="_new_additionalArguments" value="&quot;'{base}/data%20file'&quot;" />
+          <option name="_new_target" value="&quot;{base}/test file.py&quot;" />
+          <option name="_new_additionalArguments" value="&quot;'{base}/data file'&quot;" />
         </configuration>"#,
         ),
         (
             "Npm",
             r#"<configuration name="NAME" type="js.build_tools.npm">
-          <package-json value="{base}/web%20app/package.json" />
+          <package-json value="{base}/web app/package.json" />
           <package-manager value="{base}/bin/pnpm" />
           <node-interpreter value="{base}/bin/node" />
           <command value="run" /><scripts><script value="start" /></scripts>
@@ -924,28 +924,28 @@ fn file_urls_work_in_all_imported_path_fields() {
         (
             "Jest",
             r#"<configuration name="NAME" type="JavaScriptTestRunnerJest">
-          <working-dir value="{base}/web%20app" />
-          <config-file value="{base}/web%20app/jest%20config.js" />
-          <scope-kind value="TEST_FILE" /><test-file value="{base}/web%20app/test%20file.js" />
+          <working-dir value="{base}/web app" />
+          <config-file value="{base}/web app/jest config.js" />
+          <scope-kind value="TEST_FILE" /><test-file value="{base}/web app/test file.js" />
         </configuration>"#,
         ),
         (
             "Vitest",
             r#"<configuration name="NAME" type="JavaScriptTestRunnerVitest">
-          <scope-kind value="DIRECTORY" /><test-directory value="{base}/test%20dir" />
+          <scope-kind value="DIRECTORY" /><test-directory value="{base}/test dir" />
         </configuration>"#,
         ),
         (
             "Node",
             r#"<configuration name="NAME" type="NodeJSConfigurationType"
-          working-dir="{base}/web%20app" path-to-js-file="{base}/web%20app/main%20file.js"
-          application-parameters="&quot;{base}/data%20file&quot;" />"#,
+          working-dir="{base}/web app" path-to-js-file="{base}/web app/main file.js"
+          application-parameters="&quot;{base}/data file&quot;" />"#,
         ),
         (
             "Shell",
             r#"<configuration name="NAME" type="ShConfigurationType">
-          <option name="SCRIPT_WORKING_DIRECTORY" value="{base}/jobs%20%E4%B8%AD" />
-          <option name="SCRIPT_PATH" value="{base}/jobs%20%E4%B8%AD/run%20me.sh" />
+          <option name="SCRIPT_WORKING_DIRECTORY" value="{base}/jobs 中" />
+          <option name="SCRIPT_PATH" value="{base}/jobs 中/run me.sh" />
           <option name="INTERPRETER_PATH" value="{base}/bin/sh" />
         </configuration>"#,
         ),
@@ -990,8 +990,8 @@ fn file_urls_expand_module_and_home_macros() {
         &run_file(
             "Home",
             r#"<configuration name="NAME" type="PythonConfigurationType">
-          <option name="WORKING_DIRECTORY" value="file://$MODULE_DIR$/jobs%20dir" />
-          <option name="SCRIPT_NAME" value="file://$MODULE_WORKING_DIR$/jobs%20dir/main.py" />
+          <option name="WORKING_DIRECTORY" value="file://$MODULE_DIR$/jobs dir" />
+          <option name="SCRIPT_NAME" value="file://$MODULE_WORKING_DIR$/jobs dir/main.py" />
           <option name="SDK_HOME" value="file://$USER_HOME$/bin/python" />
         </configuration>"#,
         ),
