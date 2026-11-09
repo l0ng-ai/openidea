@@ -1165,6 +1165,22 @@ impl Runtime {
             })
             .collect())
     }
+    /// Selects tests under the same budget as the test parser.
+    pub fn select_tests(
+        &mut self,
+        config: String,
+        tests: Vec<Vec<String>>,
+        invocation: Invocation,
+        timeout: Duration,
+    ) -> Result<Option<Vec<String>>, CallError> {
+        if self.exports.test_results.is_none() {
+            return Err(CallError::missing_export("test-results"));
+        }
+        self.call(invocation, timeout, |e, store| {
+            e.test_results.as_ref().unwrap().call_select_tests(store, &config, &tests)
+        })
+    }
+
     /// One editor-budget batch of a plugin test parser.
     pub fn parse_test_results(
         &mut self,

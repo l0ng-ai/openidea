@@ -2,6 +2,7 @@
  * "Rerun Failed Tests": derives a run configuration that runs only the failed
  * tests of a previous run, using each framework's own filter syntax.
  */
+import { selectPluginTests } from "@/workbench/contributions";
 import { phpunitArgs, phpunitFilter } from "./phpunit";
 import type { RunConfig } from "@/platform/ipc";
 import { formatArgs } from "../configs";
@@ -149,18 +150,25 @@ export function leafTestPaths(nodes: readonly TestNode[]): string[][] {
 }
 
 /** Config running only `paths` (failed test paths from the results tree), or null when unsupported. */
-export function rerunFailedConfig(config: RunConfig, paths: string[][]): RunConfig | null {
+export function rerunFailedConfig(config: RunConfig, paths: string[][]): RunConfig | null | Promise<RunConfig | null> {
   const configs = rerunFailedConfigs(config, paths);
-  return configs.length === 1 ? configs[0]! : null;
+  const single = (configs: RunConfig[]) => (configs.length === 1 ? configs[0]! : null);
+  return configs instanceof Promise ? configs.then(single) : single(configs);
 }
 
-export function rerunFailedConfigs(config: RunConfig, paths: string[][]): RunConfig[] {
+export function rerunFailedConfigs(config: RunConfig, paths: string[][]): RunConfig[] | Promise<RunConfig[]> {
   const baseName = config.name.replace(/^Failed: /, "");
   return testsConfigs(config, paths, `Failed: ${baseName}`);
 }
 
 /** Go filters apply to every package in an invocation, so each package keeps its own selection. */
-export function testsConfigs(config: RunConfig, paths: string[][], name: string): RunConfig[] {
+export function testsConfigs(config: RunConfig, paths: string[][], name: string): RunConfig[] | Promise<RunConfig[]> {
+  if (!paths.length) return [];
+  if (config.params?.framework === "plugin") {
+    const selected = testsConfig(config, paths, name);
+    const list = (config: RunConfig | null) => (config ? [config] : []);
+    return selected instanceof Promise ? selected.then(list) : list(selected);
+  }
   const groups = new Map<string, string[][]>();
   for (const path of paths) {
     const key = frameworkFor(config) === "go" ? (path[0] ?? "") : "";
@@ -169,14 +177,28 @@ export function testsConfigs(config: RunConfig, paths: string[][], name: string)
     groups.set(key, group);
   }
   return [...groups].flatMap(([pkg, selected]) => {
-    const derived = testsConfig(config, selected, groups.size > 1 ? `${name} (${pkg})` : name);
+    const derived = builtinTestsConfig(config, selected, groups.size > 1 ? `${name} (${pkg})` : name);
     if (!derived) return [];
     return [{ ...derived, id: groups.size > 1 ? `context:tests:${config.id}:${pkg}` : derived.id }];
   });
 }
 
 /** Config running only the tests at `paths` (test tree paths), named `name`; null when unsupported. */
-export function testsConfig(config: RunConfig, paths: string[][], name: string): RunConfig | null {
+export function testsConfig(
+  config: RunConfig,
+  paths: string[][],
+  name: string,
+): RunConfig | null | Promise<RunConfig | null> {
+  if (!paths.length) return null;
+  if (config.params?.framework === "plugin") {
+    return selectPluginTests(config.id, paths)
+      .then((args) => (args === null ? null : { ...config, args, name, detected: true, env: { ...config.env } }))
+      .catch(() => null);
+  }
+  return builtinTestsConfig(config, paths, name);
+}
+
+function builtinTestsConfig(config: RunConfig, paths: string[][], name: string): RunConfig | null {
   if (!paths.length) return null;
   let args: string[] | null;
   switch (frameworkFor(config)) {

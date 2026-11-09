@@ -220,7 +220,7 @@ async function smoke(language: string) {
   // Rerun Failed Tests runs that one test only.
   const rerunOutput: string[] = [];
   const before = useRun.getState().sessions.find((s) => s.id === id)!.startedAt;
-  expect(rerunFailed(id), "Rerun Failed Tests is offered").toBe(true);
+  expect(await rerunFailed(id), "Rerun Failed Tests is offered").toBe(true);
   const ended = () => {
     const s = useRun.getState().sessions.find((s) => s.id === id)!;
     return s.startedAt > before && s.endedAt !== null && s.endedAt >= s.startedAt;

@@ -276,16 +276,12 @@ impl PluginHost {
             self.shared.run_configurations.write().insert((plugin, project), items);
         }
     }
-    /// Parses a bounded batch under the editor-provider soft/hard budgets.
-    pub fn parse_test_results(
+    /// Resolves only an owned plugin test configuration in the client's trusted project.
+    fn test_configuration(
         &self,
         client: &str,
         config: &str,
-        chunk: String,
-    ) -> IdeResult<Option<Vec<ide_plugin::PluginTestEvent>>> {
-        if chunk.len() > 64 << 10 {
-            return Err(IdeError::invalid("test output batch too large"));
-        }
+    ) -> IdeResult<Option<(std::path::PathBuf, String, String)>> {
         let root = self.shared.project_of(client).ok_or_else(|| IdeError::not_found("no project"))?;
         if !self.shared.workspace().is_some_and(|w| w.trusted(&root)) {
             return Err(IdeError::invalid("project is not trusted"));
@@ -302,7 +298,44 @@ impl PluginHost {
         {
             return Ok(None);
         }
-        let plugin = self.get(owner)?;
+        Ok(Some((root, owner.to_owned(), id.to_owned())))
+    }
+
+    /// Derives replacement argv under the parser's soft/hard call budgets.
+    pub fn select_tests(&self, client: &str, config: &str, tests: Vec<Vec<String>>) -> IdeResult<Option<Vec<String>>> {
+        if tests.is_empty()
+            || tests.len() > 10000
+            || tests.iter().any(|p| p.is_empty() || p.len() > 128)
+            || serde_json::to_vec(&tests).is_ok_and(|b| b.len() > 4 << 20)
+        {
+            return Ok(None);
+        }
+        let Some((root, owner, id)) = self.test_configuration(client, config)? else { return Ok(None) };
+        let plugin = self.get(&owner)?;
+        let (actor, activated) = self.ensure_active(&plugin, None)?;
+        if activated {
+            self.changed();
+        }
+        let invocation = ide_plugin::Invocation { workspace_root: Some(root), ..Default::default() };
+        let hard = self.limits.edit_hard;
+        let started = Instant::now();
+        let result = actor.call(Some(self.limits.edit_soft), move |rt| rt.select_tests(id, tests, invocation, hard));
+        let args = self.finish_provider_call(&plugin, &actor, started, result).flatten();
+        Ok(args.filter(|args| args.len() <= 10000 && args.iter().map(String::len).sum::<usize>() <= 4 << 20))
+    }
+
+    /// Parses a bounded batch under the editor-provider soft/hard budgets.
+    pub fn parse_test_results(
+        &self,
+        client: &str,
+        config: &str,
+        chunk: String,
+    ) -> IdeResult<Option<Vec<ide_plugin::PluginTestEvent>>> {
+        if chunk.len() > 64 << 10 {
+            return Err(IdeError::invalid("test output batch too large"));
+        }
+        let Some((root, owner, id)) = self.test_configuration(client, config)? else { return Ok(None) };
+        let plugin = self.get(&owner)?;
         let (actor, activated) = self.ensure_active(&plugin, None)?;
         if activated {
             self.changed();

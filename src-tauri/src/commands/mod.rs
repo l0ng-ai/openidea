@@ -514,6 +514,7 @@ pub fn builder() -> tauri_specta::Builder<tauri::Wry> {
         plugin::plugin_terminal_session_spawn,
         plugin::plugin_terminal_session_close,
         plugin::plugin_parse_test_results,
+        plugin::plugin_select_tests,
         plugin::plugin_content_tab_action,
         plugin::plugin_choose_program,
         plugin::plugin_program,

@@ -1101,6 +1101,12 @@ pub mod __rt {
             })
             .collect()
     }
+    pub fn select_tests<T: Plugin + crate::TestResults + Default>(
+        config: &str,
+        tests: &[Vec<String>],
+    ) -> Option<Vec<String>> {
+        with::<T, _>(|p| p.select_tests(config, tests))
+    }
     pub fn test_results<T: Plugin + crate::TestResults + Default>(
         config: &str,
         chunk: &str,
@@ -1320,6 +1326,9 @@ macro_rules! __test_results_exports {
         impl $crate::test_results_bindings::exports::openidea::plugin::test_results::Guest for $component {
             fn parse(config: String, chunk: String) -> Vec<$crate::test_results_bindings::exports::openidea::plugin::test_results::TestEvent> {
                 $crate::__rt::test_results::<$plugin>(&config, &chunk)
+            }
+            fn select_tests(config: String, tests: Vec<Vec<String>>) -> Option<Vec<String>> {
+                $crate::__rt::select_tests::<$plugin>(&config, &tests)
             }
         }
         $crate::test_results_bindings::__export_tests_world!($component with_types_in $crate::test_results_bindings);

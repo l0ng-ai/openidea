@@ -89,6 +89,17 @@ impl RunConfigurations for Execution {
     }
 }
 impl TestResults for Execution {
+    fn select_tests(&mut self, config: &str, tests: &[Vec<String>]) -> Option<Vec<String>> {
+        match tests.first()?.first()?.as_str() {
+            "none" => return None,
+            "trap" => panic!("selection failed"),
+            "timeout" => loop {
+                std::hint::spin_loop();
+            },
+            _ => {}
+        }
+        Some(std::iter::once(config.to_owned()).chain(tests.iter().map(|p| p.join("::"))).collect())
+    }
     fn parse(&mut self, _: &str, chunk: &str) -> Vec<PluginTestEvent> {
         if chunk == "trap" {
             panic!("parser failed");

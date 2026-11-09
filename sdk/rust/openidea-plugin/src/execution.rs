@@ -158,6 +158,10 @@ pub trait RunConfigurations {
 /// Parses bounded test output batches; register with test_results.
 pub trait TestResults {
     fn parse(&mut self, config: &str, chunk: &str) -> Vec<PluginTestEvent>;
+    /// Full replacement argv for test-tree name paths, or None when filtering is unsupported.
+    fn select_tests(&mut self, _config: &str, _tests: &[Vec<String>]) -> Option<Vec<String>> {
+        None
+    }
 }
 
 impl crate::Event {

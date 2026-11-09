@@ -468,6 +468,16 @@ impl RemotePlugins {
             }
         });
         let h = host.clone();
+        d.add("plugin_select_tests", move |c| {
+            let h = h.clone();
+            async move {
+                let host = alive(&h)?;
+                let config = c.arg::<String>("config")?;
+                let tests = c.arg("tests")?;
+                blocking(move || host.select_tests(&c.window, &config, tests)).await
+            }
+        });
+        let h = host.clone();
         d.add("plugin_parse_test_results", move |c| {
             let h = h.clone();
             async move {
