@@ -565,11 +565,12 @@ fn is_dependency_configuration(name: &str) -> bool {
 /// `(group, artifact, version)` of the external dependencies a build script declares:
 /// `implementation 'g:a:v'`, `api("g:a:v:classifier@jar")`, and the map notation
 /// `implementation group: 'g', name: 'a', version: 'v'` (Groovy) / `group = "g", …` (Kotlin).
-/// Versions with interpolations, ranges and catalog aliases (`libs.x`) are skipped.
-pub fn script_dependencies(text: &str) -> Vec<(String, String, String)> {
+/// Versions written as `${gsonVersion}` are filled in from `properties` (`ext` values, see
+/// [`script_properties`]); ranges, unknown names and catalog aliases (`libs.x`) are skipped.
+pub fn script_dependencies(text: &str, properties: &BTreeMap<String, String>) -> Vec<(String, String, String)> {
     let text = strip_comments(text);
     let mut out = Vec::new();
-    for line in text.lines().flat_map(|l| l.split(['{', ';'])) {
+    for line in text.lines().flat_map(statements) {
         let line = line.trim_start();
         let name: String = line.chars().take_while(|c| c.is_ascii_alphanumeric() || *c == '_').collect();
         if name.is_empty() || !is_dependency_configuration(&name) {
@@ -591,6 +592,7 @@ pub fn script_dependencies(text: &str) -> Vec<(String, String, String)> {
             }),
         };
         if let Some((g, a, v)) = coordinate {
+            let v = interpolate(&v, properties);
             let plain = |s: &str| {
                 !s.is_empty() && s.chars().all(|c| c.is_ascii_alphanumeric() || matches!(c, '.' | '-' | '_' | '+'))
             };
@@ -602,11 +604,247 @@ pub fn script_dependencies(text: &str) -> Vec<(String, String, String)> {
     out
 }
 
+/// `line` split at `{` and `;` outside quoted strings, so a `${version}` stays in one piece.
+fn statements(line: &str) -> Vec<&str> {
+    let mut out = Vec::new();
+    let mut start = 0;
+    let mut quote: Option<char> = None;
+    for (index, c) in line.char_indices() {
+        match quote {
+            Some(q) if c == q => quote = None,
+            Some(_) => {}
+            None if c == '"' || c == '\'' => quote = Some(c),
+            None if c == '{' || c == ';' => {
+                out.push(&line[start..index]);
+                start = index + 1;
+            }
+            None => {}
+        }
+    }
+    out.push(&line[start..]);
+    out
+}
+
+/// `apply from: 'x.gradle'` (Groovy) and `apply(from = "x.gradle.kts")` (Kotlin DSL)
+/// targets, as written in the script.
+pub fn applied_scripts(text: &str) -> Vec<String> {
+    let text = strip_comments(text);
+    let mut out = Vec::new();
+    for (index, _) in text.match_indices("apply") {
+        if !starts_word(&text, index) {
+            continue;
+        }
+        let mut rest = text[index + "apply".len()..].trim_start();
+        if let Some(inner) = rest.strip_prefix('(') {
+            rest = inner.trim_start();
+        }
+        let Some(rest) = rest.strip_prefix("from") else { continue };
+        let Some(rest) = rest.trim_start().strip_prefix(':').or_else(|| rest.trim_start().strip_prefix('=')) else {
+            continue;
+        };
+        let mut rest = rest.trim_start();
+        if let Some(inner) = rest.strip_prefix("file") {
+            let inner = inner.trim_start();
+            if let Some(inner) = inner.strip_prefix('(') {
+                rest = inner.trim_start();
+            }
+        }
+        if let Some((path, _)) = literal(rest) {
+            out.push(path);
+        }
+    }
+    out
+}
+
+/// The `ext` values a build script defines: `ext { gsonVersion = '2.8.9' }` and
+/// `ext.gsonVersion = '2.8.9'`, which `script_dependencies` fills into `${gsonVersion}`.
+pub fn script_properties(text: &str) -> BTreeMap<String, String> {
+    let text = strip_comments(text);
+    let mut out = BTreeMap::new();
+    for (index, _) in text.match_indices("ext") {
+        let followed_by_identifier = text[index + "ext".len()..].starts_with(|c: char| c.is_alphanumeric() || c == '_');
+        if !starts_word(&text, index) || followed_by_identifier {
+            continue;
+        }
+        let rest = text[index + "ext".len()..].trim_start();
+        if let Some(block) = rest.strip_prefix('{') {
+            if let Some(end) = matching_brace(block) {
+                out.extend(assignments(&block[..end]));
+            }
+        } else if let Some(rest) = rest.strip_prefix('.') {
+            let line = rest.split('\n').next().unwrap_or_default();
+            out.extend(assignments(line));
+        }
+    }
+    out
+}
+
+/// The build script of a project and, recursively, the scripts it applies with `apply from`,
+/// read from disk: absolute path and text. Targets that do not exist are skipped.
+pub fn scripts_of(root: &Path, project_dir: &Path, build_dir: &Path, build_file: &Path) -> Vec<(PathBuf, String)> {
+    let mut out = Vec::new();
+    let mut seen = std::collections::HashSet::new();
+    let mut stack = vec![root.join(build_file)];
+    while let Some(path) = stack.pop() {
+        if !seen.insert(path.clone()) {
+            continue;
+        }
+        let Ok(text) = std::fs::read_to_string(&path) else { continue };
+        for spec in applied_scripts(&text) {
+            if let Some(target) = resolve_script(&spec, &path, project_dir, build_dir) {
+                stack.push(target);
+            }
+        }
+        out.push((path, text));
+    }
+    out
+}
+
+/// `spec` of an `apply from` in `script`: `$rootDir` starts at `build_dir`, other paths at the
+/// project directory (Gradle's rule), else at the folder of the script that applies it.
+fn resolve_script(spec: &str, script: &Path, project_dir: &Path, build_dir: &Path) -> Option<PathBuf> {
+    let spec = spec.trim();
+    let path = match spec.strip_prefix("${rootDir}/").or_else(|| spec.strip_prefix("$rootDir/")) {
+        Some(rest) => build_dir.join(rest),
+        None => {
+            let path = Path::new(spec);
+            if path.is_absolute() {
+                path.to_path_buf()
+            } else {
+                let near_project = project_dir.join(path);
+                if near_project.is_file() {
+                    near_project
+                } else {
+                    script.parent().map_or(near_project, |dir| dir.join(path))
+                }
+            }
+        }
+    };
+    path.is_file().then_some(path)
+}
+
+/// `2.8.9` for `${gsonVersion}` / `$gsonVersion` / `${ext.gsonVersion}`; unknown names and
+/// expressions are left as written, so ranges and catalogs stay skipped.
+fn interpolate(value: &str, properties: &BTreeMap<String, String>) -> String {
+    if !value.contains('$') {
+        return value.to_owned();
+    }
+    let mut out = String::with_capacity(value.len());
+    let mut chars = value.chars().peekable();
+    while let Some(c) = chars.next() {
+        if c != '$' {
+            out.push(c);
+            continue;
+        }
+        let braced = chars.peek() == Some(&'{');
+        if braced {
+            chars.next();
+        }
+        let mut name = String::new();
+        if braced {
+            for n in chars.by_ref() {
+                if n == '}' {
+                    break;
+                }
+                name.push(n);
+            }
+        } else {
+            while let Some(&n) = chars.peek() {
+                if n.is_alphanumeric() || n == '_' || n == '.' {
+                    name.push(n);
+                    chars.next();
+                } else {
+                    break;
+                }
+            }
+        }
+        match properties.get(name.strip_prefix("ext.").unwrap_or(name.as_str())) {
+            Some(v) if !name.is_empty() => out.push_str(v),
+            _ => {
+                out.push('$');
+                if braced {
+                    out.push('{');
+                }
+                out.push_str(&name);
+                if braced {
+                    out.push('}');
+                }
+            }
+        }
+    }
+    out
+}
+
+/// Whether `index` starts a whole word in `text` (not `reapply`, `my.apply`).
+fn starts_word(text: &str, index: usize) -> bool {
+    text[..index].chars().next_back().is_none_or(|c| !(c.is_alphanumeric() || c == '_' || c == '.'))
+}
+
+/// The quoted string at the start of `s`, and how many bytes it spans.
+fn literal(s: &str) -> Option<(String, usize)> {
+    let quote = s.chars().next().filter(|c| *c == '"' || *c == '\'')?;
+    let rest = &s[quote.len_utf8()..];
+    let end = rest.find(quote)?;
+    Some((rest[..end].to_owned(), quote.len_utf8() + end + quote.len_utf8()))
+}
+
+/// Byte index of the `}` closing a `{` that was already consumed, ignoring quoted text.
+fn matching_brace(text: &str) -> Option<usize> {
+    let mut depth = 1usize;
+    let mut quote: Option<char> = None;
+    for (index, c) in text.char_indices() {
+        match quote {
+            Some(q) if c == q => quote = None,
+            Some(_) => {}
+            None if c == '"' || c == '\'' => quote = Some(c),
+            None if c == '{' => depth += 1,
+            None if c == '}' => {
+                depth -= 1;
+                if depth == 0 {
+                    return Some(index);
+                }
+            }
+            None => {}
+        }
+    }
+    None
+}
+
+/// `name = 'value'` pairs in `text`.
+fn assignments(text: &str) -> Vec<(String, String)> {
+    let mut out = Vec::new();
+    let mut rest = text;
+    while let Some(eq) = rest.find('=') {
+        let before = rest[..eq].trim_end();
+        let name: String =
+            before.rsplit(|c: char| !(c.is_alphanumeric() || c == '_')).next().unwrap_or_default().to_owned();
+        let after = rest[eq + 1..].trim_start();
+        if !name.is_empty()
+            && after.starts_with(['\'', '"'])
+            && let Some((value, used)) = literal(after)
+        {
+            out.push((name, value));
+            rest = &after[used..];
+            continue;
+        }
+        rest = &rest[eq + 1..];
+    }
+    out
+}
+
 /// Every settings and build script of the model (for change detection).
 pub fn build_files(root: &Path, model: &GradleModel) -> Vec<PathBuf> {
     let dir = root.join(&model.dir);
     let mut out: Vec<PathBuf> = SETTINGS_FILES.iter().map(|f| dir.join(f)).filter(|p| p.is_file()).collect();
     out.extend(model.projects.iter().filter_map(|p| p.build_file.as_ref().map(|f| root.join(f))));
+    // Scripts a build script applies are build files too: editing one can change the model.
+    for project in &model.projects {
+        let Some(file) = project.build_file.as_deref() else { continue };
+        let script = root.join(file);
+        let project_dir = script.parent().map_or_else(|| root.to_path_buf(), Path::to_path_buf);
+        let applied = scripts_of(root, &project_dir, &dir, Path::new(file));
+        out.extend(applied.into_iter().skip(1).map(|(path, _)| path));
+    }
     // The settings of each nested build (its root project's folder).
     for p in model.projects.iter().filter(|p| p.build.as_deref() == Some(p.path.as_str())) {
         let nested = root.join(&p.dir);
@@ -808,7 +1046,7 @@ dependencies {
     classpath 'not:a:library'
 }
 "#;
-        let deps = script_dependencies(script);
+        let deps = script_dependencies(script, &BTreeMap::new());
         let names: Vec<String> = deps.iter().map(|(g, a, v)| format!("{g}:{a}:{v}")).collect();
         assert_eq!(
             names,
@@ -820,6 +1058,70 @@ dependencies {
                 "com.h2database:h2:2.2.224",
             ]
         );
+    }
+
+    #[test]
+    fn applied_scripts_read_groovy_and_kotlin_forms() {
+        let script = r#"
+            apply plugin: 'java'
+            apply from: 'gradle/dependencies.gradle'
+            apply from: file('gradle/extra.gradle')
+            apply(from = "gradle/kotlin.gradle.kts")
+            // apply from: 'commented.gradle'
+            reapply from: 'not-a-call.gradle'
+        "#;
+        assert_eq!(
+            applied_scripts(script),
+            ["gradle/dependencies.gradle", "gradle/extra.gradle", "gradle/kotlin.gradle.kts"]
+        );
+    }
+
+    #[test]
+    fn ext_values_fill_in_dependency_versions() {
+        let script = r#"
+            ext {
+                gsonVersion = '2.8.9'
+                junit = "4.13.2"
+            }
+            ext.logback = '1.4.14'
+            dependencies {
+                implementation "com.google.code.gson:gson:${gsonVersion}"
+                testImplementation "junit:junit:$junit"
+                implementation "ch.qos.logback:logback-classic:${ext.logback}"
+                implementation 'org.plain:literal:1.0'
+                implementation "org.x:unknown:${missing}"
+            }
+        "#;
+        let names: Vec<String> = script_dependencies(script, &script_properties(script))
+            .into_iter()
+            .map(|(g, a, v)| format!("{g}:{a}:{v}"))
+            .collect();
+        assert_eq!(
+            names,
+            [
+                "com.google.code.gson:gson:2.8.9",
+                "junit:junit:4.13.2",
+                "ch.qos.logback:logback-classic:1.4.14",
+                "org.plain:literal:1.0",
+            ]
+        );
+    }
+
+    #[test]
+    fn applied_scripts_are_read_recursively_and_survive_cycles() {
+        let tmp = tempfile::tempdir().unwrap();
+        let root = tmp.path();
+        std::fs::create_dir_all(root.join("gradle")).unwrap();
+        std::fs::write(root.join("build.gradle"), "apply from: 'gradle/deps.gradle'\n").unwrap();
+        std::fs::write(root.join("gradle/deps.gradle"), "apply from: '$rootDir/gradle/more.gradle'\n").unwrap();
+        std::fs::write(root.join("gradle/more.gradle"), "apply from: 'deps.gradle'\n").unwrap();
+
+        let scripts: Vec<String> = scripts_of(root, root, root, Path::new("build.gradle"))
+            .into_iter()
+            .map(|(path, _)| path.strip_prefix(root).unwrap().to_string_lossy().replace('\\', "/"))
+            .collect();
+        assert_eq!(scripts, ["build.gradle", "gradle/deps.gradle", "gradle/more.gradle"]);
+        assert_eq!(build_files(root, &load(root).unwrap()).len(), 3);
     }
 
     use super::*;

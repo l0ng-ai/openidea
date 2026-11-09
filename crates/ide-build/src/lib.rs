@@ -147,7 +147,8 @@ pub struct DependencyCoordinate {
 
 /// The external libraries of `model`, sorted and deduplicated: Maven dependencies
 /// (with the transitive ones the last sync read), except the build's own modules,
-/// `pom` imports and `system` scope; dependencies declared in the Gradle build scripts.
+/// `pom` imports and `system` scope; dependencies declared in the Gradle build scripts,
+/// including the scripts they pull in with `apply from`.
 pub fn dependency_coordinates(root: &Path, model: &BuildModel) -> Vec<DependencyCoordinate> {
     let mut out = Vec::new();
     if let Some(m) = &model.maven {
@@ -177,11 +178,25 @@ pub fn dependency_coordinates(root: &Path, model: &BuildModel) -> Vec<Dependency
         }
     }
     for g in &model.gradle {
-        for script in g.projects.iter().filter_map(|p| p.build_file.as_ref()) {
-            let Ok(text) = std::fs::read_to_string(root.join(script)) else { continue };
-            out.extend(gradle::script_dependencies(&text).into_iter().map(|(group_id, artifact_id, version)| {
-                DependencyCoordinate { gradle: true, group_id, artifact_id, version }
-            }));
+        let build_dir = root.join(&g.dir);
+        for p in &g.projects {
+            let Some(build_file) = p.build_file.as_deref() else { continue };
+            let scripts = gradle::scripts_of(root, &root.join(&p.dir), &build_dir, Path::new(build_file));
+            // The script's own `ext` values win over the scripts it applies.
+            let mut properties = std::collections::BTreeMap::new();
+            for (_, text) in scripts.iter().rev() {
+                properties.extend(gradle::script_properties(text));
+            }
+            for (_, text) in &scripts {
+                out.extend(gradle::script_dependencies(text, &properties).into_iter().map(
+                    |(group_id, artifact_id, version)| DependencyCoordinate {
+                        gradle: true,
+                        group_id,
+                        artifact_id,
+                        version,
+                    },
+                ));
+            }
         }
     }
     out.sort();
@@ -311,5 +326,24 @@ mod tests {
             .map(|c| format!("{}{}:{}:{}", if c.gradle { "G " } else { "M " }, c.group_id, c.artifact_id, c.version))
             .collect();
         assert_eq!(names, ["M org.b:y:2", "M org.c:z:3", "G org.a:x:1.0"]);
+    }
+
+    #[test]
+    fn dependency_coordinates_read_scripts_brought_in_by_apply_from() {
+        let tmp = tempfile::tempdir().unwrap();
+        let root = tmp.path();
+        std::fs::create_dir_all(root.join("gradle")).unwrap();
+        std::fs::write(root.join("build.gradle"), "apply from: 'gradle/dependencies.gradle'\n").unwrap();
+        std::fs::write(
+            root.join("gradle/dependencies.gradle"),
+            "ext { gson = '2.8.9' }\ndependencies { implementation \"com.google.code.gson:gson:${gson}\" }\n",
+        )
+        .unwrap();
+        let model = BuildModel { maven: None, gradle: gradle::load(root).into_iter().collect() };
+        let names: Vec<String> = dependency_coordinates(root, &model)
+            .into_iter()
+            .map(|c| format!("{}:{}:{}", c.group_id, c.artifact_id, c.version))
+            .collect();
+        assert_eq!(names, ["com.google.code.gson:gson:2.8.9"]);
     }
 }
