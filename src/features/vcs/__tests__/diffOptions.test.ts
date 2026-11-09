@@ -32,6 +32,7 @@ describe("diff options", () => {
         collapse: false,
         syncScroll: false,
         alignChanges: false,
+        softWrap: true,
       }),
     ).toEqual({
       mode: "split",
@@ -40,6 +41,7 @@ describe("diff options", () => {
       collapse: false,
       syncScroll: false,
       alignChanges: false,
+      softWrap: true,
     });
     expect(parseDiffOptions({ ignore: "bogus", highlight: 3, collapse: "x" })).toEqual(DEFAULT_DIFF_OPTIONS);
   });

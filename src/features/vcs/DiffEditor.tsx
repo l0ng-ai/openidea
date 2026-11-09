@@ -419,6 +419,7 @@ export function DiffEditor({
     const inclusion = includable ? inclusionGutter(path, textA) : [];
     const side = (att: DocumentAttachment | null, editable: boolean, notes?: "left" | "right"): Extension[] => [
       viewerBase({ readOnly: !editable, findBar: true }),
+      opts.softWrap ? EditorView.lineWrapping : [],
       // Esc closes the find bar before it collapses the selection (a found match); open popups go first.
       Prec.high(keymap.of([{ key: "Escape", run: () => findEscape.current() }])),
       lang,
@@ -573,6 +574,7 @@ export function DiffEditor({
     opts.collapse,
     opts.ignore,
     opts.highlight,
+    opts.softWrap,
     editableA,
     editableB,
     updateChunkInfo,
@@ -940,6 +942,12 @@ export function DiffEditor({
         checked: opts.alignChanges,
         disabled: opts.mode !== "split",
         run: () => setOpts({ alignChanges: !opts.alignChanges }),
+      },
+      {
+        id: "softWrap",
+        label: "Use Soft Wraps",
+        checked: opts.softWrap,
+        run: () => setOpts({ softWrap: !opts.softWrap }),
       },
       ...contribs.flatMap((c) => {
         const items = c.settingsItems?.() ?? [];

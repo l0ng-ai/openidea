@@ -2678,6 +2678,7 @@
   "Use smaller indents in trees": "使用较小的树缩进",
   "Use smooth caret blinking": "使用平滑光标闪烁",
   "Use smooth caret movement": "使用平滑光标移动",
+  "Use Soft Wraps": "使用软换行",
   "Use soft wraps in console": "在控制台中使用软换行",
   "Use tab character": "使用制表符",
   "Used by the npm run configurations detected from package.json scripts.": "供从 package.json 脚本检测到的 npm 运行配置使用。",
