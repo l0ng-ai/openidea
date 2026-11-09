@@ -349,6 +349,25 @@ export const commands = {
 	 */
 	phpLaravelAddColumns: (model: string, columns: LaravelNewColumn[], fillable: boolean, timestamp: string) => typedError<WorkspaceEdit, IdeError>(__TAURI_INVOKE("php_laravel_add_columns", { model, columns, fillable, timestamp })),
 	/**
+	 *  What the Laravel generator dialogs offer (namespace, modules, models, generators);
+	 *  `None` outside Laravel projects and without the native PHP engine.
+	 */
+	phpLaravelGenerationContext: () => typedError<{
+	/**  The application's namespace, with a trailing `\`. */
+	namespace: string,
+	modules: string[],
+	/**  The module of Settings › PHP › Laravel › Code generation. */
+	defaultModule: string | null,
+	/**  The project's Eloquent models (FQNs). */
+	models: string[],
+	generators: LaravelGenerator[],
+} | null, IdeError>(__TAURI_INVOKE("php_laravel_generation_context")),
+	/**
+	 *  The edit of the Laravel New Model dialog: the model and its companion classes,
+	 *  rendered from the file templates (`templates`: the user's edited ones).
+	 */
+	phpLaravelNewModel: (spec: LaravelNewModel, templates: LaravelTemplate[], timestamp: string) => typedError<WorkspaceEdit, IdeError>(__TAURI_INVOKE("php_laravel_new_model", { spec, templates, timestamp })),
+	/**
 	 *  Reads the schema of the data source chosen in Settings › PHP › Laravel again for the
 	 *  native PHP engine (`None`: none chosen).
 	 */
@@ -4768,6 +4787,52 @@ export type LanguagesSettings = {
 	markdown?: MarkdownSettings,
 };
 
+/**  Settings › PHP › Laravel › Code generation. */
+export type LaravelCodeGeneration = {
+	/**  The application's root namespace (`App\`); empty = the one `composer.json` maps to `app/`. */
+	namespace?: string,
+	/**
+	 *  The module (`nwidart/laravel-modules` or a modules folder) new classes go to unless the
+	 *  generator's dialog picks another; empty = the application.
+	 */
+	module?: string,
+	/**  The suffixes of generated class names (`PostController`); empty = none. */
+	controllerSuffix?: string,
+	requestSuffix?: string,
+	resourceSuffix?: string,
+	policySuffix?: string,
+	seederSuffix?: string,
+	/**
+	 *  Constructors declare their properties by promoting parameters (`public function
+	 *  __construct(private Mailer $mailer)`) rather than assigning them.
+	 */
+	constructorPromotion?: boolean,
+	/**  Generated methods declare their return types (`: bool`, `: array`). */
+	typeHints?: boolean,
+};
+
+/**  What the Laravel generator dialogs offer. */
+export type LaravelGenerationContext = {
+	/**  The application's namespace, with a trailing `\`. */
+	namespace: string,
+	modules: string[],
+	/**  The module of Settings › PHP › Laravel › Code generation. */
+	defaultModule: string | null,
+	/**  The project's Eloquent models (FQNs). */
+	models: string[],
+	generators: LaravelGenerator[],
+};
+
+/**  A generator of the Laravel › Generate menu. */
+export type LaravelGenerator = {
+	/**  `model`. */
+	id: string,
+	title: string,
+	description: string,
+	/**  The names of the file templates it renders (`Laravel Model`). */
+	templates: string[],
+};
+
 /**  A place in a file of the model view. */
 export type LaravelLocation = {
 	path: IpcPath,
@@ -4835,6 +4900,55 @@ export type LaravelNewColumn = {
 	nullable: boolean,
 };
 
+/**  What the New Model dialog asks for. */
+export type LaravelNewModel = {
+	/**  The class name (`Post`, `Blog/Post`). */
+	name: string,
+	/**  The module; `None` = the one of the settings, empty = the application. */
+	module: string | null,
+	fields: LaravelNewModelField[],
+	relations: LaravelNewModelRelation[],
+	indexes: LaravelNewModelIndex[],
+	timestamps: boolean,
+	softDeletes: boolean,
+	migration: boolean,
+	factory: boolean,
+	seeder: boolean,
+	/**  `none`, `plain`, `resource` or `api`. */
+	controller: string,
+	formRequests: boolean,
+	resource: boolean,
+	policy: boolean,
+};
+
+/**  A field (column) of the New Model dialog. */
+export type LaravelNewModelField = {
+	name: string,
+	/**  The `Blueprint` method making the column (`string`). */
+	ty: string,
+	nullable: boolean,
+	unique: boolean,
+	index: boolean,
+	/**  The default value as PHP; empty = none. */
+	default: string,
+};
+
+/**  An index of the New Model dialog. */
+export type LaravelNewModelIndex = {
+	columns: string[],
+	unique: boolean,
+};
+
+/**  A relation of the New Model dialog. */
+export type LaravelNewModelRelation = {
+	/**  `belongsTo`, `hasOne`, `hasMany`, `belongsToMany`, `morphMany` or `morphTo`. */
+	kind: string,
+	/**  The related model (FQN or short name). */
+	model: string,
+	/**  The method name; empty = from the related model. */
+	name: string,
+};
+
 /**  A factory, resource, policy, observer or migration of a model. */
 export type LaravelRelatedClass = {
 	/**  `factory`, `resource`, `policy`, `observer` or `migration`. */
@@ -4888,6 +5002,20 @@ export type LaravelSettings = {
 	 *  empty = the migrations alone.
 	 */
 	database?: string,
+	/**
+	 *  Settings › PHP › Laravel › Code generation: what the Laravel generators (New Model…)
+	 *  write.
+	 */
+	generation?: LaravelCodeGeneration,
+};
+
+/**
+ *  A file template's body as the user edited it (Settings › Editor › File and Code
+ *  Templates › Code).
+ */
+export type LaravelTemplate = {
+	name: string,
+	body: string,
 };
 
 /**  What a freshly opened window should do once its frontend is up. */

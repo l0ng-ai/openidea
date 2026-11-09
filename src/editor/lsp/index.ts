@@ -29,6 +29,7 @@ import { usagesLensExtension } from "./codeLens";
 import { serverLensExtension } from "./serverLens";
 import { CreateTranslationDialog, registerCreateTranslation } from "./createTranslation";
 import { ModelViewDialog, registerModelView } from "./modelView";
+import { NewModelDialog, registerLaravelGenerators } from "./laravelGenerate";
 import { autoImportExtension } from "./autoImport";
 import { installAvailabilityEvents } from "./availability";
 import { registerActionsOnSave, registerFormatOnSave, registerLspActions } from "./actions";
@@ -87,6 +88,9 @@ export function activate(): () => void {
     // Laravel: the Eloquent model view, from the lens on a model class.
     registerOverlay({ id: "editor-lsp.modelViewDialog", component: ModelViewDialog }),
     registerModelView(),
+    // Laravel: the Generate menu, its actions and the New Model dialog.
+    registerOverlay({ id: "editor-lsp.newModelDialog", component: NewModelDialog }),
+    registerLaravelGenerators(),
     registerEditorBanner(outsideProjectBanner),
     registerStatusItem({ id: "editor-lsp.usagesStatus", align: "left", priority: 10, component: UsagesStatus }),
     // IDEA's Documentation tool window: right side, listed once F1 moved documentation there.

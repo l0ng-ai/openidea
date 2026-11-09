@@ -617,7 +617,7 @@ Runs after Plan 7. Before any 8.x phase, read [LARAVEL-ROADMAP.md](LARAVEL-ROADM
 
   Clicking an item navigates, finds usages or renames. An **Add columns** button collects new columns, generates a migration for them, and adds them to `$fillable`. Frontend and engine queries, with text in `en.json` and `zh.json`. Tests: the engine query, and frontend component tests.
 
-- [ ] Phase 8.13: Code generation framework and the New Model dialog
+- [x] Phase 8.13: Code generation framework and the New Model dialog
       Add a Laravel › Generate menu and a searchable list (search everywhere scope "Laravel generators"). Generators render file templates from `src/features/templates`, which users can edit. They respect the app namespace, modules, class suffixes, constructor promotion and type hints set in Settings › PHP › Laravel › Code generation.
 
   Add the **New Model** dialog:

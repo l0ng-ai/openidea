@@ -163,6 +163,8 @@ export const LANGUAGE_PAGES: PageSpec[] = [
       "psalm",
       "static analysis",
       "laravel",
+      "code generation",
+      "generators",
       "routes",
     ],
     component: PhpPage,

@@ -14,6 +14,7 @@ pub mod blade;
 pub mod config;
 pub mod database;
 pub mod env;
+pub mod generate;
 pub mod lang;
 pub mod model_view;
 pub mod project;

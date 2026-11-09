@@ -27,6 +27,7 @@ import {
   actionItem,
   fileItem,
   matchActions,
+  matchGenerators,
   matchSettings,
   mergeActionResults,
   mergeSymbols,
@@ -263,6 +264,14 @@ export class SeController {
         case "endpoints":
           await this.startEndpoints(id, gen, text, limit, req);
           break;
+        case "generators": {
+          const hits = matchGenerators(this.deps.actions(), text, {
+            isEnabled: (a) => this.deps.isEnabled(a),
+            recent: this.deps.recentActions(),
+          });
+          this.set(id, gen, hits.slice(0, limit), hits.length > limit, false);
+          break;
+        }
         case "actions": {
           const hits = matchActions(this.deps.actions(), text, {
             isEnabled: (a) => this.deps.isEnabled(a),

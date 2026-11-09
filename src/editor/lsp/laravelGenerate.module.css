@@ -1,0 +1,36 @@
+.body {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  padding: 14px;
+  min-height: 240px;
+  max-height: 70vh;
+  overflow-y: auto;
+}
+.row {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+.row > :first-child {
+  flex: 1;
+  min-width: 0;
+}
+.narrow {
+  width: 96px;
+}
+.heading {
+  margin: 6px 0 0;
+  font-size: var(--fs-normal, inherit);
+  font-weight: 600;
+}
+.checks {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 6px 16px;
+}
+.error {
+  color: var(--danger);
+  font-size: var(--fs-small);
+}

@@ -1,0 +1,249 @@
+---
+source: crates/ide-php/src/frameworks/laravel/generate/tests.rs
+expression: app.golden(&files)
+---
+== Modules/Billing/Models/Invoice.php
+<?php
+
+namespace Modules\Billing\Models;
+
+use App\Models\Comment;
+use Illuminate\Database\Eloquent\Factories\HasFactory;
+use Illuminate\Database\Eloquent\Model;
+use Illuminate\Database\Eloquent\Relations\MorphMany;
+use Illuminate\Database\Eloquent\Relations\MorphTo;
+use Modules\Billing\Database\Factories\InvoiceFactory;
+
+class Invoice extends Model
+{
+    /** @use HasFactory<InvoiceFactory> */
+    use HasFactory;
+
+    /**
+     * Indicates if the model should be timestamped.
+     *
+     * @var bool
+     */
+    public $timestamps = false;
+
+    /**
+     * The attributes that are mass assignable.
+     *
+     * @var list<string>
+     */
+    protected $fillable = [
+        'number',
+        'paid',
+        'billable_type',
+        'billable_id',
+    ];
+
+    /**
+     * Get the attributes that should be cast.
+     *
+     * @return array<string, string>
+     */
+    protected function casts()
+    {
+        return [
+            'paid' => 'boolean',
+        ];
+    }
+
+    /**
+     * @return MorphTo<Model, $this>
+     */
+    public function billable()
+    {
+        return $this->morphTo();
+    }
+
+    /**
+     * @return MorphMany<Comment, $this>
+     */
+    public function comments()
+    {
+        return $this->morphMany(Comment::class, 'commentable');
+    }
+
+    /**
+     * Create a new factory instance for the model.
+     */
+    protected static function newFactory()
+    {
+        return InvoiceFactory::new();
+    }
+}
+== Modules/Billing/database/migrations/2024_06_01_120000_create_invoices_table.php
+<?php
+
+use Illuminate\Database\Migrations\Migration;
+use Illuminate\Database\Schema\Blueprint;
+use Illuminate\Support\Facades\Schema;
+
+return new class extends Migration
+{
+    /**
+     * Run the migrations.
+     */
+    public function up()
+    {
+        Schema::create('invoices', function (Blueprint $table) {
+            $table->id();
+            $table->string('number');
+            $table->boolean('paid')->nullable();
+            $table->morphs('billable');
+        });
+    }
+
+    /**
+     * Reverse the migrations.
+     */
+    public function down()
+    {
+        Schema::dropIfExists('invoices');
+    }
+};
+== Modules/Billing/database/factories/InvoiceFactory.php
+<?php
+
+namespace Modules\Billing\Database\Factories;
+
+use Illuminate\Database\Eloquent\Factories\Factory;
+use Modules\Billing\Models\Invoice;
+
+/**
+ * @extends Factory<Invoice>
+ */
+class InvoiceFactory extends Factory
+{
+    /**
+     * Define the model's default state.
+     *
+     * @return array<string, mixed>
+     */
+    public function definition()
+    {
+        return [
+            'number' => fake()->word(),
+            'paid' => fake()->boolean(),
+        ];
+    }
+}
+== Modules/Billing/Http/Controllers/InvoiceEndpoint.php
+<?php
+
+namespace Modules\Billing\Http\Controllers;
+
+use App\Http\Controllers\Controller;
+use Illuminate\Http\Request;
+use Modules\Billing\Models\Invoice;
+
+class InvoiceEndpoint extends Controller
+{
+    /**
+     * Display a listing of the resource.
+     */
+    public function index()
+    {
+        //
+    }
+
+    /**
+     * Store a newly created resource in storage.
+     */
+    public function store(Request $request)
+    {
+        //
+    }
+
+    /**
+     * Display the specified resource.
+     */
+    public function show(Invoice $invoice)
+    {
+        //
+    }
+
+    /**
+     * Update the specified resource in storage.
+     */
+    public function update(Request $request, Invoice $invoice)
+    {
+        //
+    }
+
+    /**
+     * Remove the specified resource from storage.
+     */
+    public function destroy(Invoice $invoice)
+    {
+        //
+    }
+}
+== Modules/Billing/Policies/Invoice.php
+<?php
+
+namespace Modules\Billing\Policies;
+
+use App\Models\User;
+use Modules\Billing\Models\Invoice as InvoiceModel;
+
+class Invoice
+{
+    /**
+     * Determine whether the user can view any models.
+     */
+    public function viewAny(User $user)
+    {
+        return false;
+    }
+
+    /**
+     * Determine whether the user can view the model.
+     */
+    public function view(User $user, InvoiceModel $invoice)
+    {
+        return false;
+    }
+
+    /**
+     * Determine whether the user can create models.
+     */
+    public function create(User $user)
+    {
+        return false;
+    }
+
+    /**
+     * Determine whether the user can update the model.
+     */
+    public function update(User $user, InvoiceModel $invoice)
+    {
+        return false;
+    }
+
+    /**
+     * Determine whether the user can delete the model.
+     */
+    public function delete(User $user, InvoiceModel $invoice)
+    {
+        return false;
+    }
+
+    /**
+     * Determine whether the user can restore the model.
+     */
+    public function restore(User $user, InvoiceModel $invoice)
+    {
+        return false;
+    }
+
+    /**
+     * Determine whether the user can permanently delete the model.
+     */
+    public function forceDelete(User $user, InvoiceModel $invoice)
+    {
+        return false;
+    }
+}

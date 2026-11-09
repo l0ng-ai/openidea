@@ -643,3 +643,112 @@ async fn laravel_model_view_lens_and_commands() {
     assert!(err.message.contains("already"), "{err:?}");
     host.close_project("main");
 }
+
+/// The Laravel generators: the generation context lists the modules and models, and
+/// the New Model command renders the model and its companions from the templates
+/// (edited ones replacing the defaults), following the code generation settings.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn laravel_generators_context_and_new_model() {
+    use ide_core::FileEdit;
+    use ide_host::ops::laravel::{
+        LaravelNewModel, LaravelNewModelField, LaravelTemplate, php_laravel_generation_context, php_laravel_new_model,
+    };
+    let tmp = tempfile::tempdir().unwrap();
+    let base = dunce::canonicalize(tmp.path()).unwrap();
+    let root = base.join("shop");
+    write(
+        &root.join("composer.json"),
+        r#"{"require": {"laravel/framework": "^11.0"}, "autoload": {"psr-4": {"App\\": "app/", "Database\\Factories\\": "database/factories/"}}}"#,
+    );
+    write(
+        &root.join("vendor/laravel/framework/src/Model.php"),
+        "<?php\nnamespace Illuminate\\Database\\Eloquent;\n\nabstract class Model\n{\n}\n",
+    );
+    write(
+        &root.join("app/Models/User.php"),
+        "<?php\nnamespace App\\Models;\n\nuse Illuminate\\Database\\Eloquent\\Model;\n\nclass User extends Model\n{\n}\n",
+    );
+    let events: Arc<Mutex<Vec<IdeEvent>>> = Arc::default();
+    let host = host(&base.join("app"), events.clone());
+    let project = host.open_project("main", &root).unwrap();
+    set_engine(&host, "native");
+    until("the engine to start", || project.php.engine().is_some()).await;
+    let engine = project.php.engine().unwrap();
+    assert!(engine.wait_idle(WAIT));
+
+    let context = php_laravel_generation_context(&host, "main").await.unwrap().expect("a Laravel project");
+    assert_eq!(context.namespace, "App\\");
+    assert_eq!(context.models, ["App\\Models\\User"]);
+    assert_eq!(context.generators[0].id, "model");
+
+    // Settings › PHP › Laravel › Code generation reach the engine.
+    ops::project::set_settings(
+        &host,
+        "main",
+        SettingsScope::Project,
+        "languages.php.laravel.generation.controllerSuffix",
+        "\"Endpoint\"",
+    )
+    .unwrap();
+    until("the settings to reach the engine", || engine.laravel_settings().generation.controller_suffix == "Endpoint")
+        .await;
+
+    let spec = LaravelNewModel {
+        name: "Product".into(),
+        module: None,
+        fields: vec![LaravelNewModelField {
+            name: "price".into(),
+            ty: "decimal".into(),
+            nullable: false,
+            unique: false,
+            index: false,
+            default: String::new(),
+        }],
+        relations: Vec::new(),
+        indexes: Vec::new(),
+        timestamps: true,
+        soft_deletes: false,
+        migration: true,
+        factory: true,
+        seeder: false,
+        controller: "plain".into(),
+        form_requests: false,
+        resource: false,
+        policy: false,
+    };
+    let templates = vec![LaravelTemplate { name: "Laravel Controller".into(), body: "<?php // $CLASS$\n".into() }];
+    let edit = php_laravel_new_model(&host, "main", spec.clone(), templates, "2024_06_01_120000".into()).await.unwrap();
+    let created: Vec<String> = edit
+        .files
+        .iter()
+        .filter_map(|f| match f {
+            FileEdit::Create { path, .. } => {
+                Some(path.to_string_lossy().replace('\\', "/").rsplit("shop/").next().unwrap().to_owned())
+            }
+            _ => None,
+        })
+        .collect();
+    assert_eq!(
+        created,
+        [
+            "app/Models/Product.php",
+            "database/migrations/2024_06_01_120000_create_products_table.php",
+            "database/factories/ProductFactory.php",
+            "app/Http/Controllers/ProductEndpoint.php",
+        ]
+    );
+    let controller = edit.files.iter().find_map(|f| match f {
+        FileEdit::Edit { path, edits, .. } if path.to_string_lossy().ends_with("ProductEndpoint.php") => {
+            Some(edits[0].new_text.clone())
+        }
+        _ => None,
+    });
+    assert_eq!(controller.as_deref(), Some("<?php // ProductEndpoint\n"));
+
+    let err =
+        php_laravel_new_model(&host, "main", LaravelNewModel { name: "User".into(), ..spec }, Vec::new(), "x".into())
+            .await
+            .unwrap_err();
+    assert!(err.message.contains("exists already"), "{err:?}");
+    host.close_project("main");
+}

@@ -744,11 +744,52 @@ pub struct LaravelSettings {
     /// for model columns, validation rules and `DB::table('…')`, along with the migrations;
     /// empty = the migrations alone.
     pub database: String,
+    /// Settings › PHP › Laravel › Code generation: what the Laravel generators (New Model…)
+    /// write.
+    pub generation: LaravelCodeGeneration,
 }
 
 impl Default for LaravelSettings {
     fn default() -> Self {
-        Self { route_hints: true, database: String::new() }
+        Self { route_hints: true, database: String::new(), generation: LaravelCodeGeneration::default() }
+    }
+}
+
+/// Settings › PHP › Laravel › Code generation.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, Type)]
+#[serde(default, rename_all = "camelCase")]
+pub struct LaravelCodeGeneration {
+    /// The application's root namespace (`App\`); empty = the one `composer.json` maps to `app/`.
+    pub namespace: String,
+    /// The module (`nwidart/laravel-modules` or a modules folder) new classes go to unless the
+    /// generator's dialog picks another; empty = the application.
+    pub module: String,
+    /// The suffixes of generated class names (`PostController`); empty = none.
+    pub controller_suffix: String,
+    pub request_suffix: String,
+    pub resource_suffix: String,
+    pub policy_suffix: String,
+    pub seeder_suffix: String,
+    /// Constructors declare their properties by promoting parameters (`public function
+    /// __construct(private Mailer $mailer)`) rather than assigning them.
+    pub constructor_promotion: bool,
+    /// Generated methods declare their return types (`: bool`, `: array`).
+    pub type_hints: bool,
+}
+
+impl Default for LaravelCodeGeneration {
+    fn default() -> Self {
+        Self {
+            namespace: String::new(),
+            module: String::new(),
+            controller_suffix: "Controller".to_owned(),
+            request_suffix: "Request".to_owned(),
+            resource_suffix: "Resource".to_owned(),
+            policy_suffix: "Policy".to_owned(),
+            seeder_suffix: "Seeder".to_owned(),
+            constructor_promotion: true,
+            type_hints: true,
+        }
     }
 }
 

@@ -2,7 +2,9 @@
 //! the "Create translation key…" dialog writes the texts it asked for with
 //! [`php_laravel_create_translation`]; the Eloquent model view (opened from the
 //! lens on a model class) shows [`php_laravel_model_view`], and its **Add columns**
-//! button applies [`php_laravel_add_columns`].
+//! button applies [`php_laravel_add_columns`]. The Laravel › Generate menu reads
+//! [`php_laravel_generation_context`], and its New Model dialog applies
+//! [`php_laravel_new_model`].
 //!
 //! The live database schema (Settings › PHP › Laravel › Database): the tables and columns
 //! of the chosen data source are read through `ide-db` and given to the engine
@@ -16,6 +18,7 @@ use crate::Host;
 use crate::project::Project;
 use ide_core::{IdeError, IdeResult, WorkspaceEdit};
 use ide_db::CompletionModel;
+use ide_php::frameworks::laravel::generate;
 use ide_php::frameworks::laravel::model_view::{
     ColumnSource, ModelLocation, ModelMember, ModelView, NewColumn, RelatedKind,
 };
@@ -405,4 +408,190 @@ mod tests {
         assert!(!is_schema_statement("INSERT INTO created VALUES (1)"));
         assert!(!is_schema_statement("creates"));
     }
+}
+
+/// A generator of the Laravel › Generate menu.
+#[derive(Clone, Debug, Serialize, Deserialize, Type, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct LaravelGenerator {
+    /// `model`.
+    pub id: String,
+    pub title: String,
+    pub description: String,
+    /// The names of the file templates it renders (`Laravel Model`).
+    pub templates: Vec<String>,
+}
+
+/// What the Laravel generator dialogs offer.
+#[derive(Clone, Debug, Serialize, Deserialize, Type, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct LaravelGenerationContext {
+    /// The application's namespace, with a trailing `\`.
+    pub namespace: String,
+    pub modules: Vec<String>,
+    /// The module of Settings › PHP › Laravel › Code generation.
+    pub default_module: Option<String>,
+    /// The project's Eloquent models (FQNs).
+    pub models: Vec<String>,
+    pub generators: Vec<LaravelGenerator>,
+}
+
+/// What the Laravel generator dialogs offer: the namespace, modules, models and
+/// generators. `None` while the native PHP engine isn't running and outside Laravel
+/// projects (the Generate menu is hidden then).
+pub async fn php_laravel_generation_context(host: &Host, window: &str) -> IdeResult<Option<LaravelGenerationContext>> {
+    let project = host.project(window)?;
+    let Some(engine) = project.php.engine() else { return Ok(None) };
+    host.blocking(move || {
+        Ok(engine.laravel_generation_context().map(|context| LaravelGenerationContext {
+            namespace: context.namespace,
+            modules: context.modules,
+            default_module: context.default_module,
+            models: context.models,
+            generators: context
+                .generators
+                .into_iter()
+                .map(|g| LaravelGenerator {
+                    id: g.id,
+                    title: g.title,
+                    description: g.description,
+                    templates: g.templates,
+                })
+                .collect(),
+        }))
+    })
+    .await
+}
+
+/// A field (column) of the New Model dialog.
+#[derive(Clone, Debug, Serialize, Deserialize, Type, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct LaravelNewModelField {
+    pub name: String,
+    /// The `Blueprint` method making the column (`string`).
+    pub ty: String,
+    pub nullable: bool,
+    pub unique: bool,
+    pub index: bool,
+    /// The default value as PHP; empty = none.
+    pub default: String,
+}
+
+/// A relation of the New Model dialog.
+#[derive(Clone, Debug, Serialize, Deserialize, Type, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct LaravelNewModelRelation {
+    /// `belongsTo`, `hasOne`, `hasMany`, `belongsToMany`, `morphMany` or `morphTo`.
+    pub kind: String,
+    /// The related model (FQN or short name).
+    pub model: String,
+    /// The method name; empty = from the related model.
+    pub name: String,
+}
+
+/// An index of the New Model dialog.
+#[derive(Clone, Debug, Serialize, Deserialize, Type, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct LaravelNewModelIndex {
+    pub columns: Vec<String>,
+    pub unique: bool,
+}
+
+/// What the New Model dialog asks for.
+#[derive(Clone, Debug, Serialize, Deserialize, Type, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct LaravelNewModel {
+    /// The class name (`Post`, `Blog/Post`).
+    pub name: String,
+    /// The module; `None` = the one of the settings, empty = the application.
+    pub module: Option<String>,
+    pub fields: Vec<LaravelNewModelField>,
+    pub relations: Vec<LaravelNewModelRelation>,
+    pub indexes: Vec<LaravelNewModelIndex>,
+    pub timestamps: bool,
+    pub soft_deletes: bool,
+    pub migration: bool,
+    pub factory: bool,
+    pub seeder: bool,
+    /// `none`, `plain`, `resource` or `api`.
+    pub controller: String,
+    pub form_requests: bool,
+    pub resource: bool,
+    pub policy: bool,
+}
+
+/// A file template's body as the user edited it (Settings › Editor › File and Code
+/// Templates › Code).
+#[derive(Clone, Debug, Serialize, Deserialize, Type, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct LaravelTemplate {
+    pub name: String,
+    pub body: String,
+}
+
+impl From<LaravelNewModel> for generate::NewModel {
+    fn from(spec: LaravelNewModel) -> Self {
+        Self {
+            name: spec.name,
+            module: spec.module,
+            fields: spec
+                .fields
+                .into_iter()
+                .map(|f| generate::ModelField {
+                    name: f.name,
+                    ty: f.ty,
+                    nullable: f.nullable,
+                    unique: f.unique,
+                    index: f.index,
+                    default: f.default,
+                })
+                .collect(),
+            relations: spec
+                .relations
+                .into_iter()
+                .map(|r| generate::ModelRelation { kind: r.kind, model: r.model, name: r.name })
+                .collect(),
+            indexes: spec
+                .indexes
+                .into_iter()
+                .map(|i| generate::ModelIndex { columns: i.columns, unique: i.unique })
+                .collect(),
+            timestamps: spec.timestamps,
+            soft_deletes: spec.soft_deletes,
+            migration: spec.migration,
+            factory: spec.factory,
+            seeder: spec.seeder,
+            controller: match spec.controller.as_str() {
+                "plain" => generate::ControllerKind::Plain,
+                "resource" => generate::ControllerKind::Resource,
+                "api" => generate::ControllerKind::Api,
+                _ => generate::ControllerKind::None,
+            },
+            form_requests: spec.form_requests,
+            resource: spec.resource,
+            policy: spec.policy,
+        }
+    }
+}
+
+/// The edit of the New Model dialog: the model and the classes it ticked, rendered from
+/// the file templates (`templates`: the user's edited ones; the others are the
+/// defaults). `timestamp` is the migration's prefix (`2024_05_01_120000`). Fails for an
+/// invalid request and when a file exists already.
+pub async fn php_laravel_new_model(
+    host: &Host,
+    window: &str,
+    spec: LaravelNewModel,
+    templates: Vec<LaravelTemplate>,
+    timestamp: String,
+) -> IdeResult<WorkspaceEdit> {
+    let project = host.project(window)?;
+    let Some(engine) = project.php.engine() else {
+        return Err(IdeError::unavailable("The native PHP engine isn't running"));
+    };
+    host.blocking(move || {
+        let templates = generate::TemplateSet::new(templates.into_iter().map(|t| (t.name, t.body)));
+        engine.laravel_new_model(&spec.into(), &templates, &timestamp).map_err(IdeError::invalid)
+    })
+    .await
 }

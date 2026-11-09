@@ -1,5 +1,15 @@
 /** Built-in file templates for the "New ▸" menu, with the includes and code templates they `#parse`. */
 import type { FileTemplate, TemplateFragment } from "./model";
+import LARAVEL_MODEL from "./laravel/model.php.ft?raw";
+import LARAVEL_MIGRATION from "./laravel/migration.php.ft?raw";
+import LARAVEL_FACTORY from "./laravel/factory.php.ft?raw";
+import LARAVEL_SEEDER from "./laravel/seeder.php.ft?raw";
+import LARAVEL_CONTROLLER from "./laravel/controller.php.ft?raw";
+import LARAVEL_RESOURCE_CONTROLLER from "./laravel/controller.resource.php.ft?raw";
+import LARAVEL_API_CONTROLLER from "./laravel/controller.api.php.ft?raw";
+import LARAVEL_FORM_REQUEST from "./laravel/request.php.ft?raw";
+import LARAVEL_JSON_RESOURCE from "./laravel/resource.php.ft?raw";
+import LARAVEL_POLICY from "./laravel/policy.php.ft?raw";
 
 /** Includes tab: fragments file templates pull in with `#parse("…")`. */
 export const BUILTIN_INCLUDES: readonly TemplateFragment[] = [{ name: "File Header", body: "" }];
@@ -36,7 +46,38 @@ export const BUILTIN_CODE_TEMPLATES: readonly TemplateFragment[] = [
     description: "Python File › Test (pytest)",
     body: "def test_$NAME$():\n    $END$\n",
   },
+  ...laravelCodeTemplates(),
 ];
+
+/**
+ * The templates of the Laravel generators (Laravel › Generate › Model…). The native
+ * PHP engine renders them (`ide_php::frameworks::laravel::generate::template`, which
+ * includes the same files as its defaults): `$NAME$` variables, a variable alone on a
+ * line expands to indented lines or disappears, and `#if ($NAME$)` / `#else` / `#end`
+ * lines keep or drop the lines between them.
+ */
+function laravelCodeTemplates(): TemplateFragment[] {
+  const model = "Laravel › Generate › Model";
+  return [
+    { name: "Laravel Model", description: model, body: LARAVEL_MODEL },
+    { name: "Laravel Migration", description: `${model} › Migration`, body: LARAVEL_MIGRATION },
+    { name: "Laravel Factory", description: `${model} › Factory`, body: LARAVEL_FACTORY },
+    { name: "Laravel Seeder", description: `${model} › Seeder`, body: LARAVEL_SEEDER },
+    { name: "Laravel Controller", description: `${model} › Controller (plain)`, body: LARAVEL_CONTROLLER },
+    {
+      name: "Laravel Resource Controller",
+      description: `${model} › Controller (resource)`,
+      body: LARAVEL_RESOURCE_CONTROLLER,
+    },
+    { name: "Laravel API Controller", description: `${model} › Controller (API)`, body: LARAVEL_API_CONTROLLER },
+    { name: "Laravel Form Request", description: `${model} › Form Requests`, body: LARAVEL_FORM_REQUEST },
+    { name: "Laravel JSON Resource", description: `${model} › JSON resource`, body: LARAVEL_JSON_RESOURCE },
+    { name: "Laravel Policy", description: `${model} › Policy`, body: LARAVEL_POLICY },
+  ];
+}
+
+/** The Laravel generators' templates start with this (they go with each generator request). */
+export const LARAVEL_TEMPLATE_PREFIX = "Laravel ";
 
 export const BUILTIN_FILE_TEMPLATES: readonly FileTemplate[] = [
   {

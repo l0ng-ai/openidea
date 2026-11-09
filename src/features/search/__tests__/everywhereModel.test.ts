@@ -336,6 +336,7 @@ describe("parseCommand", () => {
       "/files",
       "/symbols",
       "/routes",
+      "/generators",
       "/actions",
       "/text",
     ]);

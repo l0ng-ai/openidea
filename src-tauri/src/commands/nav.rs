@@ -98,6 +98,31 @@ pub async fn php_laravel_add_columns(
         .await
 }
 
+/// What the Laravel generator dialogs offer (namespace, modules, models, generators);
+/// `None` outside Laravel projects and without the native PHP engine.
+#[tauri::command]
+#[specta::specta]
+pub async fn php_laravel_generation_context(
+    window: Window,
+    state: State<'_, AppState>,
+) -> IdeResult<Option<ide_host::ops::laravel::LaravelGenerationContext>> {
+    ide_host::ops::laravel::php_laravel_generation_context(&state.host, window.label()).await
+}
+
+/// The edit of the Laravel New Model dialog: the model and its companion classes,
+/// rendered from the file templates (`templates`: the user's edited ones).
+#[tauri::command]
+#[specta::specta]
+pub async fn php_laravel_new_model(
+    window: Window,
+    state: State<'_, AppState>,
+    spec: ide_host::ops::laravel::LaravelNewModel,
+    templates: Vec<ide_host::ops::laravel::LaravelTemplate>,
+    timestamp: String,
+) -> IdeResult<ide_core::WorkspaceEdit> {
+    ide_host::ops::laravel::php_laravel_new_model(&state.host, window.label(), spec, templates, timestamp).await
+}
+
 /// Reads the schema of the data source chosen in Settings › PHP › Laravel again for the
 /// native PHP engine (`None`: none chosen).
 #[tauri::command]
