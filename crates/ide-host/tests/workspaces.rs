@@ -32,11 +32,15 @@ async fn linked_projects_share_navigation_but_keep_files_repositories_and_run_di
     });
     std::fs::write(root.join("internal-needle.txt"), "needle").unwrap();
     host.trust.decide(&root, true, false).unwrap();
+    for member in &roots {
+        host.trust.decide(member, true, false).unwrap();
+    }
     let project = host.open_project("main", &root).unwrap();
     assert_eq!(ops::project::info(&project).name, "Full stack");
     assert_eq!(ops::project::attach_workspace(&host, "main", &roots[1]).unwrap().as_ref(), root.as_path());
     ops::project::attach_workspace(&host, "main", &roots[1]).unwrap();
     assert_eq!(project.content_roots(), roots);
+    assert!(!root.join(".openidea/.gitignore").exists());
     assert!(project.index.wait_idle(Duration::from_secs(10)));
     assert!(project.index.find_files("internal-needle", 100).is_empty());
     assert!(project.index.find_files("workspace.json", 100).is_empty());
@@ -98,20 +102,6 @@ async fn linked_projects_share_navigation_but_keep_files_repositories_and_run_di
     std::fs::write(invalid.join(ide_workspace::workspace::FILE), "broken").unwrap();
     assert!(host.open_project("main", &invalid).is_err());
     assert!(Arc::ptr_eq(&host.project("main").unwrap(), &project));
-    host.open_project("main", &roots[0]).unwrap();
-    let automatic = ops::project::attach_workspace(&host, "main", &roots[1]).unwrap();
-    assert_eq!(host.project("main").unwrap().root, roots[0]);
-    let automatic = host.open_project("main", &automatic).unwrap();
-    assert_eq!(automatic.content_roots(), roots);
-    assert_eq!(ops::project::info(&automatic).name, "frontend");
-    assert!(automatic.root.starts_with(base.join("data/workspaces")));
-    assert!(automatic.index.wait_idle(Duration::from_secs(10)));
-    assert!(automatic.index.find_files("workspace.json", 100).is_empty());
-    let updated = ops::project::save_workspace(&host, "main", "frontend", vec![roots[1].clone()]).unwrap();
-    assert_eq!(updated.workspace.unwrap().projects, vec![roots[1].clone()]);
-    assert_eq!(automatic.root, updated.root.as_ref());
-    assert!(automatic.index.wait_idle(Duration::from_secs(10)));
-    assert_eq!(automatic.index.find_files("same.txt", 100).len(), 1);
     host.close_project("main");
 }
 
@@ -204,5 +194,124 @@ async fn build_tool_availability_follows_workspace_members_and_trust() {
     let model = ops::build::build_model(&host, "main").await.unwrap();
     assert_eq!(model.maven.unwrap().projects[0].dir, ide_core::ipc_path::to_ipc(&members[1]));
     assert_eq!(model.gradle.len(), 1);
+    host.close_project("main");
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn attach_and_detach_preserve_the_primary_project_session() {
+    let temp = tempfile::tempdir().unwrap();
+    let base = dunce::canonicalize(temp.path()).unwrap();
+    let roots = vec![base.join("primary"), base.join("other")];
+    for root in &roots {
+        std::fs::create_dir(root).unwrap();
+        std::fs::write(root.join("same.txt"), "needle").unwrap();
+        std::fs::write(root.join("package.json"), r#"{"scripts":{"test":"echo test"}}"#).unwrap();
+    }
+    let host = Host::new(HostConfig {
+        config_dir: base.join("config"),
+        data_dir: base.join("data"),
+        local_data_dir: base.join("data"),
+        languages: Arc::new(ide_language::LanguageRegistry::load(None).unwrap()),
+        syntax: Arc::default(),
+        sink_for: Box::new(|_| Arc::new(NullSink)),
+        owner: |w| w,
+        runtime: tokio::runtime::Handle::current(),
+        project_environment: false,
+    });
+    host.trust.decide(&roots[0], true, false).unwrap();
+    let project = host.open_project("main", &roots[0]).unwrap();
+    assert!(project.index.wait_idle(Duration::from_secs(10)));
+    let configs = ops::run::configs(&host, "main").unwrap();
+    assert!(!configs.is_empty());
+    let cache = project.build_cache_dir();
+    let doc = ops::doc::open(&host, "main", roots[0].join("same.txt")).await.unwrap();
+    ops::doc::edit(
+        &host,
+        "main",
+        doc.id,
+        doc.version,
+        ChangeSet { changes: vec![TextChange { from: 0, to: 0, insert: "unsaved ".into() }] },
+    )
+    .unwrap();
+    assert!(ops::project::attach_workspace(&host, "main", &roots[1]).is_err());
+    host.trust.decide(&roots[1], false, false).unwrap();
+    assert!(ops::project::attach_workspace(&host, "main", &roots[1]).is_err());
+    assert!(!roots[0].join(ide_workspace::workspace::FILE).exists());
+    let existing_index = &project.index as *const _;
+    host.trust.decide(&roots[1], true, false).unwrap();
+    assert_eq!(ops::project::attach_workspace(&host, "main", &roots[1]).unwrap().as_ref(), roots[0]);
+    assert!(Arc::ptr_eq(&host.project("main").unwrap(), &project));
+    assert_eq!(&host.project("main").unwrap().index as *const _, existing_index);
+    assert_eq!(project.root, roots[0]);
+    assert_eq!(project.build_cache_dir(), cache);
+    assert!(!base.join("data/workspaces").exists());
+    assert_eq!(Workspace::load(&roots[0]).unwrap().unwrap().projects, roots);
+    assert!(
+        std::fs::read_to_string(roots[0].join(".openidea/.gitignore")).unwrap().lines().any(|l| l == "/workspace.json")
+    );
+    assert_eq!(project.content_roots(), vec![roots[1].clone()]);
+    let attached = ops::project::info(&project);
+    assert_eq!(attached.name, "primary, other");
+    let restricted = base.join("restricted");
+    std::fs::create_dir(&restricted).unwrap();
+    host.trust.decide(&restricted, false, false).unwrap();
+    assert!(
+        ops::project::save_workspace(&host, "main", "Primary", vec![roots[0].clone(), roots[1].clone(), restricted])
+            .is_err()
+    );
+    let all = ops::run::configs(&host, "main").unwrap();
+    assert_eq!(all.len(), configs.len() * 2);
+    for config in &configs {
+        assert_eq!(all.iter().filter(|c| c.id == config.id).count(), 1);
+    }
+    assert!(project.index.wait_idle(Duration::from_secs(10)));
+    assert_eq!(project.index.find_files("same.txt", 100).len(), 2);
+    let hits = Arc::new(Mutex::new(Vec::new()));
+    let out = hits.clone();
+    let query = serde_json::from_value(serde_json::json!({"pattern":"needle", "isRegex":false,"caseSensitive":false,"wholeWord":false,"include":[],"exclude":[],"scope":{"kind":"project"},"maxMatches":100})).unwrap();
+    ops::search::start(
+        &host,
+        "main",
+        RequestId::next(),
+        query,
+        Arc::new(move |event| {
+            if let ops::search::SearchEvent::File { file } = event {
+                out.lock().unwrap().push(file);
+            }
+        }),
+    )
+    .await
+    .unwrap();
+    assert_eq!(hits.lock().unwrap().len(), 2);
+    assert!(ops::project::save_workspace(&host, "main", "Primary", vec![roots[1].clone()]).is_err());
+    let updated = ops::project::save_workspace(&host, "main", "Primary", vec![roots[0].clone()]).unwrap();
+    assert!(updated.workspace.is_none());
+    assert_eq!(updated.name, "primary");
+    assert_eq!(updated.root.as_ref(), roots[0]);
+    assert!(!roots[0].join(ide_workspace::workspace::FILE).exists());
+    assert!(project.content_roots().is_empty());
+    assert_eq!(
+        ops::run::configs(&host, "main").unwrap().iter().map(|c| &c.id).collect::<Vec<_>>(),
+        configs.iter().map(|c| &c.id).collect::<Vec<_>>()
+    );
+    assert!(project.documents.text_of(&roots[0].join("same.txt")).unwrap().starts_with("unsaved"));
+    assert!(project.index.wait_idle(Duration::from_secs(10)));
+    assert_eq!(project.index.find_files("same.txt", 100).len(), 1);
+    let nested = roots[0].join("nested");
+    std::fs::create_dir(&nested).unwrap();
+    std::fs::write(nested.join("same.txt"), "needle").unwrap();
+    host.trust.decide(&nested, true, false).unwrap();
+    Workspace::save(&nested, "Nested", vec![nested.clone()], true).unwrap();
+    ops::project::attach_workspace(&host, "main", &nested).unwrap();
+    assert!(project.content_roots().is_empty());
+    let container = base.join("container");
+    Workspace::save(&container, "Container", vec![], true).unwrap();
+    host.trust.decide(&container, true, false).unwrap();
+    assert!(ops::project::attach_workspace(&host, "main", &container).is_err());
+    host.close_project("main");
+    let reopened = host.open_project("main", &roots[0]).unwrap();
+    assert_eq!(ops::project::info(&reopened).name, "primary, nested");
+    host.set_project_trust(&nested, false, false).await.unwrap();
+    assert!(!reopened.is_trusted());
     host.close_project("main");
 }

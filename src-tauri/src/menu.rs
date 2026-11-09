@@ -224,6 +224,7 @@ pub fn spec(os: Os) -> Vec<Entry> {
         act("file.new", "New…"),
         act("file.newScratchFile", "New Scratch File…"),
         act("file.openProject", "Open…"),
+        act("project.attach", "Attach Project…"),
         act("file.openFile", "Open File…"),
         act("file.openInNewWindow", "Open in New Window…"),
         sub(

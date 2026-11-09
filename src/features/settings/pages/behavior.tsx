@@ -391,7 +391,6 @@ function ToolWindowsGrid() {
 
 const OPEN_IN: Array<{ value: OpenProjectIn; label: string }> = [
   { value: "new", label: "New window" },
-  { value: "attach", label: "Attach" },
   { value: "same", label: "Current window" },
   { value: "ask", label: "Ask" },
 ];
@@ -699,7 +698,7 @@ export const BEHAVIOR_PAGES: PageSpec[] = [
           {
             kind: "custom",
             label: "Open project in",
-            keywords: ["New window", "Current window", "Attach", "Ask"],
+            keywords: ["New window", "Current window", "Ask"],
             component: OpenProjectInRow,
           },
           { kind: "custom", label: "Default directory", component: DefaultDirectoryRow },

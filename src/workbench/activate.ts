@@ -2,7 +2,9 @@
  * Shell services and built-in contributions. Call before `activateFeatures()`
  * so features can rely on the tool window and notification services.
  */
+import { openPolicy } from "./projectWindow";
 import { setContext } from "@/platform/context";
+import { isRemoteWindow, useRemote } from "@/platform/remote";
 import { useProject } from "@/platform/project";
 import {
   provideNotificationService,
@@ -40,15 +42,23 @@ export function activateWorkbench(): () => void {
   provideNotificationService(notificationServiceImpl);
   void loadPlatformInfo();
 
+  const syncProjectContext = () => {
+    const project = useProject.getState().project;
+    setContext("projectLocal", !!project && !isRemoteWindow() && !useProject.getState().lightEdit);
+    setContext("workspaceOpen", !!project?.workspace);
+    setContext("workspaceContainer", !!project?.workspace && project.workspace.projects[0] !== project.root);
+    setContext("projectOpenAsk", openPolicy() === "ask");
+  };
   // Synchronous so the frame's first render after opening already has the project's layout.
   const onProject = (root: string | null) => {
     setContext("projectOpen", root !== null);
-    setContext("workspaceOpen", !!useProject.getState().project?.workspace);
+    syncProjectContext();
     setContext("lightEdit", useProject.getState().lightEdit);
     if (root !== null) loadToolWindowLayout(root);
   };
   onProject(useProject.getState().project?.root ?? null);
   const unsubProject = useProject.subscribe((s, prev) => {
+    syncProjectContext();
     if (s.project?.root === prev.project?.root && s.lightEdit === prev.lightEdit) return;
     // The previous project's notifications (and their actions) no longer apply.
     if (prev.project) clearProjectNotifications();
@@ -57,6 +67,7 @@ export function activateWorkbench(): () => void {
 
   const disposers = [
     unsubProject,
+    useRemote.subscribe(syncProjectContext),
     registerShellActions(),
     installToolWindowActions(),
     installToolWindowLayoutSync(),

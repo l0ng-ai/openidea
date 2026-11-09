@@ -247,3 +247,22 @@ it("offers workspace removal for every member root", () => {
     expect.objectContaining({ action: "workspace.removeProject" }),
   );
 });
+
+it("does not offer removal on the attached primary", () => {
+  useProject.setState({
+    project: {
+      root: "/a",
+      name: "A, b",
+      trusted: true,
+      isGit: false,
+      settings: {},
+      workspace: { version: 1, name: "A", projects: ["/a", "/b"] },
+    },
+  });
+  expect(contextMenuItems([node("/a", true, true)])).not.toContainEqual(
+    expect.objectContaining({ action: "workspace.removeProject" }),
+  );
+  expect(contextMenuItems([node("/b", true, true)])).toContainEqual(
+    expect.objectContaining({ action: "workspace.removeProject" }),
+  );
+});

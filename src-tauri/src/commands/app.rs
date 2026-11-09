@@ -121,12 +121,14 @@ fn project_info(project: &crate::state::Project) -> ProjectInfo {
 pub fn project_rename(window: Window, state: State<'_, AppState>, name: String) -> IdeResult<ProjectInfo> {
     let project = state.project(window.label())?;
     let name = name.trim();
-    if let Some(workspace) = ide_workspace::workspace::Workspace::load(&project.root)? {
+    if let Some(workspace) = ide_workspace::workspace::Workspace::load(&project.root)?
+        && workspace.is_container(&project.root)
+    {
         return ide_host::ops::project::save_workspace(&state.host, window.label(), name, workspace.projects);
     }
     let value = if name.is_empty() { serde_json::Value::Null } else { serde_json::Value::String(name.to_owned()) };
     project.settings.set(SettingsScope::Project, "general.projectName", value)?;
-    state.recent.rename(&project.root, (!name.is_empty()).then_some(name))?;
+    state.record_project(&project)?;
     crate::jump_list::refresh(&state.app, state.recent.list());
     Ok(project_info(&project))
 }

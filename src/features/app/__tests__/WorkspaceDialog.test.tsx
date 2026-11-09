@@ -19,6 +19,10 @@ beforeEach(() => {
   vi.restoreAllMocks();
   vi.mocked(openProjectWithPolicy).mockClear();
   vi.mocked(open).mockReset();
+  vi.spyOn(commands, "projectTrustStatus").mockResolvedValue({
+    status: "ok",
+    data: { root: "/work", trusted: true, decided: true },
+  });
   vi.mocked(invokeLocal).mockClear();
   useProject.setState({ project: null, settings: null, lightEdit: false });
 });

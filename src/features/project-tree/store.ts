@@ -221,7 +221,7 @@ export function selectModel(s: ProjectTreeState): TreeModel {
   const contributed = projectViewRoots(extras);
   const memberRoots = s.members
     ?.map((path) => ({ path, label: nameOf(path), icon: "", detail: path }))
-    .sort((a, b) => compareNames(a.label, b.label));
+    .sort((a, b) => (a.path === s.root ? -1 : b.path === s.root ? 1 : compareNames(a.label, b.label)));
   const project = () =>
     memberRoots
       ? withExtraRoots(EMPTY_MODEL, memberRoots, s.listings, options, placeholder)
