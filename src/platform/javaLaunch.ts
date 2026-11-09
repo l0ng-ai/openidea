@@ -46,6 +46,7 @@ export interface JavaCommandLine {
   /** VM options, without the classpath. */
   vmArgs: string[];
   mainClass: string | null;
+  jarPath?: string;
   programArgs: string[];
   /** Which classpath placeholder the configuration uses (`null`: an explicit classpath or none). */
   classpath: "runtime" | "test" | null;
@@ -60,6 +61,15 @@ export function parseJavaArgs(args: readonly string[]): JavaCommandLine {
   let explicitClasspath: string | null = null;
   for (let i = 0; i < args.length; i++) {
     const a = args[i]!;
+    if (a === "-jar")
+      return {
+        vmArgs,
+        mainClass: null,
+        jarPath: args[i + 1],
+        programArgs: args.slice(i + 2),
+        classpath,
+        explicitClasspath,
+      };
     if (a === "-cp" || a === "-classpath" || a === "--class-path") {
       const value = args[++i] ?? "";
       if (value === CLASSPATH) classpath = "runtime";

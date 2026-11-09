@@ -2,10 +2,11 @@
  * File operations behind the project view's actions: new / rename / delete,
  * internal copy-cut-paste, drag & drop moves and OS file imports.
  */
+import { writeClipboardText } from "@/platform/clipboard";
 import { createElement, Fragment } from "react";
 import { askUsagesDetected, fileUsages, viewUsages } from "@/editor/refactor";
 import { executeAction, getAction } from "@/platform/actions";
-import { fileManagerName, fileManagerPath, revealInFileManager } from "@/platform/fileManager";
+import { canRevealInFileManager, fileManagerName, fileManagerPath, revealInFileManager } from "@/platform/fileManager";
 import { maybeEditorService, notifications } from "@/workbench/contributions";
 import { ask, confirmChecked } from "@/workbench/messages";
 import { osClipboard } from "./clipboard";
@@ -566,7 +567,7 @@ export function copySelection(cut: boolean) {
   const remote = isRemoteWindow();
   const osWrite = (async () => {
     if (!remote) return osClipboard().setFiles(paths);
-    await navigator.clipboard.writeText(paths.join("\n"));
+    await writeClipboardText(paths.join("\n"));
     return true;
   })().catch(() => false);
   setClipboard({ paths, cut, remote, osWrite });
@@ -817,7 +818,7 @@ export async function copyPaths(kind: PathKind, nodes: ProjectNode[] = selectedN
   const text = pathsFor(kind, nodes).join("\n");
   if (!text) return;
   try {
-    await navigator.clipboard.writeText(text);
+    await writeClipboardText(text);
     void executeAction("editor.showHint", { text: tx`Copied ${text}` });
   } catch (e) {
     fail(tx("Cannot access the clipboard"), e);
@@ -833,7 +834,14 @@ export function revealablePath(path: string): string {
   return fileManagerPath(path);
 }
 
+/** For a reveal invoked where the menus hide it (shortcut, Search Everywhere) in an SSH or dev-container window. */
+export function notifyRevealUnavailable() {
+  const fileManager = tx(fileManagerName());
+  notifications().notify({ level: "warning", title: tx`Remote project files cannot be shown in ${fileManager}` });
+}
+
 export async function revealInFinder(nodes: ProjectNode[] = selectedNodes()) {
+  if (!canRevealInFileManager()) return notifyRevealUnavailable();
   try {
     await revealInFileManager(nodes.map((n) => n.path));
   } catch (e) {

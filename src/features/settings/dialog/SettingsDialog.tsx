@@ -18,6 +18,9 @@ import {
   IconButton,
   SearchField,
   Spinner,
+  SplitGroup,
+  SplitHandle,
+  SplitPanel,
   Tree,
   type DialogButton,
   type TreeHandle,
@@ -277,8 +280,8 @@ export function SettingsLayout() {
   }
 
   return (
-    <div className={styles.layout}>
-      <div className={styles.sidebar}>
+    <SplitGroup id="settings" orientation="horizontal" storageKey="openidea.settings.layout" className={styles.layout}>
+      <SplitPanel id="navigation" defaultSize="240px" minSize="160px" maxSize="40%" className={styles.sidebar}>
         <SearchField
           data-autofocus
           className={styles.search}
@@ -332,8 +335,9 @@ export function SettingsLayout() {
             )}
           />
         </div>
-      </div>
-      <div className={styles.main}>
+      </SplitPanel>
+      <SplitHandle aria-label={tx("Settings pages")} />
+      <SplitPanel id="content" minSize="60%" className={styles.main}>
         <PageHost
           node={current}
           page={current?.page}
@@ -343,8 +347,8 @@ export function SettingsLayout() {
           history={history}
           key={current?.key ?? groupKey("")}
         />
-      </div>
-    </div>
+      </SplitPanel>
+    </SplitGroup>
   );
 }
 

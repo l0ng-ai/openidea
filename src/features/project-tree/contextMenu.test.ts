@@ -1,6 +1,7 @@
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import { registerActions } from "@/platform/actions";
 import { useProject } from "@/platform/project";
+import { useRemote } from "@/platform/remote";
 import { resolveMenuItems, type MenuItem } from "@/ui";
 import { registerMenuGroup } from "@/workbench/contributions";
 import { contextMenuItems, revealLabel } from "./contextMenu";
@@ -73,6 +74,7 @@ afterEach(() => {
   disposers.forEach((d) => d());
   useProject.setState({ project: null, settings: null });
   useProjectTree.setState({ root: null });
+  useRemote.setState({ session: null });
 });
 
 describe("project view context menu", () => {
@@ -136,6 +138,19 @@ describe("project view context menu", () => {
       expect(sub(folder, "Mark Directory as")).toContain("Excluded");
     } finally {
       dispose();
+    }
+  });
+
+  it("hides the OS file manager in an SSH or dev-container window, whose files are not on this desktop", () => {
+    const library = { ...node("/root/.m2/lib.jar"), readOnly: true };
+    expect(sub(contextMenuItems([library]), "Open In")).toEqual([revealLabel()]);
+    for (const target of [
+      { kind: "ssh", config: "box" },
+      { kind: "devContainer", folder: "/Users/me/app", config: "" },
+    ] as const) {
+      useRemote.setState({ session: { target, root: ROOT, host: "h", os: "linux", commands: [] } });
+      expect(sub(contextMenuItems([node(`${ROOT}/src/a.py`)]), "Open In")).toEqual(["Terminal"]);
+      expect(labels(contextMenuItems([library]))).not.toContain("Open In");
     }
   });
 
