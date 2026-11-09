@@ -1174,6 +1174,11 @@ pub struct ProjectStructureSettings {
     pub unmarked: Vec<String>,
     /// Content roots besides the project folder (absolute paths), shown and searched with it.
     pub content_roots: Vec<String>,
+    /// Other projects (absolute paths) this project depends on; indexed and navigable like content roots.
+    pub dependencies: Vec<String>,
+    /// Per-workspace-member dependencies: member root (IPC path) → the roots it depends on.
+    /// A member not listed here (or with an empty list) navigates only into itself.
+    pub member_dependencies: BTreeMap<String, Vec<String>>,
     /// "Exclude files": `;`-separated name patterns (`*.log;tmp*`) excluded at any depth.
     pub exclude_files: String,
     /// Project compiler output directory (relative to project root or absolute; empty = default).

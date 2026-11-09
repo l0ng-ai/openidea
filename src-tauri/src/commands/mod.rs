@@ -218,6 +218,8 @@ pub fn builder() -> tauri_specta::Builder<tauri::Wry> {
         nav::recent_files,
         nav::remove_recent,
         nav::web_goto,
+        nav::nav_resolve_module,
+        nav::nav_index_definitions,
         nav::fs_resolve_reference,
         nav::path_completions,
         nav::web_unresolved_references,

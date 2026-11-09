@@ -25,7 +25,7 @@ import {
 import { SettingsFormContext } from "@/workbench/contributions";
 import { call, commands, isTauri, nextRequestId, type FileEntry } from "@/platform/ipc";
 import { mergeLibraryGroups } from "@/platform/libraries";
-import type { BuildModel, LibraryGroup, WebArtifact } from "@/bindings";
+import type { BuildModel, LibraryGroup, RecentProject, WebArtifact } from "@/bindings";
 import { relativePath, useProject } from "@/platform/project";
 import { PageContext, useSettingsFormFor } from "../components/context";
 import {
@@ -54,7 +54,6 @@ import {
   type FacetConfigValid,
   type FolderListKey,
   type FolderRole,
-  type ModuleDependencyValid,
   type ModuleStructureValid,
   type ProjectLibraryValid,
   type ProjectStructureValid,
@@ -157,6 +156,10 @@ function useStructure(): [ProjectStructureValid, (next: ProjectStructureValid) =
   const [excluded, setExcluded] = useProjectSetting<string[] | undefined>("projectStructure.excluded");
   const [unmarked, setUnmarked] = useProjectSetting<string[] | undefined>("projectStructure.unmarked");
   const [contentRoots] = useProjectSetting<string[] | undefined>("projectStructure.contentRoots");
+  const [dependencies] = useProjectSetting<string[] | undefined>("projectStructure.dependencies");
+  const [memberDependencies] = useProjectSetting<Record<string, string[]> | undefined>(
+    "projectStructure.memberDependencies",
+  );
   const [excludeFiles] = useProjectSetting<string | undefined>("projectStructure.excludeFiles");
   const [compilerOutput] = useProjectSetting<string | undefined>("projectStructure.compilerOutput");
   const [modules] = useProjectSetting<Record<string, ModuleStructureValid> | undefined>("projectStructure.modules");
@@ -174,6 +177,8 @@ function useStructure(): [ProjectStructureValid, (next: ProjectStructureValid) =
         excluded: excluded ?? [],
         unmarked: unmarked ?? [],
         contentRoots: contentRoots ?? [],
+        dependencies: dependencies ?? [],
+        memberDependencies: memberDependencies ?? {},
         excludeFiles: excludeFiles ?? "",
         compilerOutput: compilerOutput ?? "",
         modules: modules ?? {},
@@ -189,6 +194,8 @@ function useStructure(): [ProjectStructureValid, (next: ProjectStructureValid) =
       excluded,
       unmarked,
       contentRoots,
+      dependencies,
+      memberDependencies,
       excludeFiles,
       compilerOutput,
       modules,
@@ -581,6 +588,212 @@ interface DiscoveredModule {
   buildTool: "maven" | "gradle" | "custom";
 }
 
+/** One row of the Project Structure › Dependencies checklist. */
+export interface DependencyCandidate {
+  path: string;
+  name: string;
+  checked: boolean;
+  disabled: boolean;
+}
+
+/**
+ * Rows of the "project dependencies" checklist of a single root (the project folder, or a
+ * workspace member): the configured dependencies first, then recent projects as candidates.
+ */
+export function dependencyCandidates(
+  root: string | null,
+  dependencies: readonly string[],
+  options: { recents?: ReadonlyArray<{ path: string; name: string }> } = {},
+): DependencyCandidate[] {
+  const out: DependencyCandidate[] = [];
+  const listed = new Set<string>();
+  const nameOf = (p: string) => p.slice(p.lastIndexOf("/") + 1).replace(/[\\/]+$/, "") || p;
+  const attachable = (p: string) => !!root && p !== root && !p.startsWith(`${root}/`);
+  for (const p of dependencies) {
+    if (listed.has(p) || !attachable(p)) continue;
+    listed.add(p);
+    out.push({ path: p, name: nameOf(p), checked: true, disabled: false });
+  }
+  for (const r of options.recents ?? []) {
+    if (listed.has(r.path) || !attachable(r.path)) continue;
+    listed.add(r.path);
+    out.push({ path: r.path, name: r.name || nameOf(r.path), checked: false, disabled: false });
+  }
+  return out;
+}
+
+/** Settings › Project Structure › Modules › Dependencies. */
+function ModuleDependenciesTab() {
+  const workspaceProjects = useProject((s) => s.project?.workspace?.projects ?? null);
+  // A workspace: every member is an equal root that picks the roots it depends on.
+  return workspaceProjects ? <MemberDependencies members={workspaceProjects} /> : <ProjectDependencies />;
+}
+
+/** The dependency checklist of a standalone project (no workspace). */
+function ProjectDependencies() {
+  const root = useProject((s) => s.project?.root ?? null);
+  const [deps, setDeps] = useProjectSetting<string[] | undefined>("projectStructure.dependencies");
+  const [recents, setRecents] = useState<RecentProject[]>([]);
+
+  useEffect(() => {
+    let live = true;
+    void commands
+      .recentProjects()
+      .then((rs) => live && setRecents(rs))
+      .catch(() => {});
+    return () => {
+      live = false;
+    };
+  }, []);
+
+  const list = deps ?? [];
+  const candidates = useMemo(() => dependencyCandidates(root, deps ?? [], { recents }), [root, deps, recents]);
+
+  const toggle = (path: string, checked: boolean) =>
+    setDeps(checked ? [...list, path] : list.filter((x) => x !== path));
+  const add = async () => {
+    const picked = await choosePath({
+      directory: true,
+      title: "Add Project Dependency",
+      defaultPath: root ?? undefined,
+    });
+    if (!picked || !root || picked === root || inside(root, picked) || list.includes(picked)) return;
+    setDeps([...list, picked]);
+  };
+
+  return (
+    <Section title="Project Dependencies">
+      <div className={styles.note}>
+        <T>
+          Dependency projects are indexed and navigable together with this project: Go to Declaration, Find Usages and
+          the Project view include them.
+        </T>
+      </div>
+      <div className={styles.entryList} role="group" aria-label={tx("The project depends on these projects")}>
+        {candidates.length === 0 && (
+          <div className={styles.note}>
+            <T>No candidate projects. Recently opened projects appear here.</T>
+          </div>
+        )}
+        {candidates.map((c) => (
+          <div key={c.path} className={styles.entryRow}>
+            <Checkbox
+              checked={c.checked}
+              disabled={c.disabled}
+              label={c.name}
+              onChange={(checked) => toggle(c.path, checked)}
+              aria-label={tx`The project depends on ${c.name}`}
+            />
+            <span className={styles.rootPath} title={c.path}>
+              {tildify(c.path)}
+            </span>
+          </div>
+        ))}
+      </div>
+      <div className={styles.entryActions}>
+        <Button size="small" variant="ghost" icon="plus" onClick={() => void add()}>
+          <T>Add Project…</T>
+        </Button>
+      </div>
+    </Section>
+  );
+}
+
+/** The per-root dependency checklist of a workspace: all members are equal roots. */
+function MemberDependencies({ members }: { members: readonly string[] }) {
+  const [memberDeps, setMemberDeps] = useProjectSetting<Record<string, string[]> | undefined>(
+    "projectStructure.memberDependencies",
+  );
+  const [selected, setSelected] = useState(0);
+  const active = members[Math.min(selected, members.length - 1)] ?? "";
+  const activeName = active.slice(active.lastIndexOf("/") + 1);
+  const deps = useMemo(() => memberDeps?.[active] ?? [], [memberDeps, active]);
+  const others = useMemo(() => {
+    const nameOf = (p: string) => p.slice(p.lastIndexOf("/") + 1);
+    const extra = deps.filter((d) => !members.includes(d)).map((path) => ({ path, name: nameOf(path) }));
+    return members
+      .filter((m) => m !== active)
+      .map((path) => ({ path, name: nameOf(path) }))
+      .concat(extra);
+  }, [members, active, deps]);
+  const roots = useMemo(
+    () => members.map((path) => ({ path, name: path.slice(path.lastIndexOf("/") + 1) })),
+    [members],
+  );
+  const setDeps = (next: string[]) => setMemberDeps({ ...(memberDeps ?? {}), [active]: next });
+  const toggle = (path: string, checked: boolean) =>
+    setDeps(checked ? [...deps, path] : deps.filter((x) => x !== path));
+  const add = async () => {
+    const picked = await choosePath({
+      directory: true,
+      title: "Add Project Dependency",
+      defaultPath: active,
+    });
+    if (!picked || picked === active || inside(active, picked) || deps.includes(picked)) return;
+    setDeps([...deps, picked]);
+  };
+
+  return (
+    <div className={styles.page}>
+      <div className={styles.note}>
+        <T>
+          Every root is equal: pick a root on the left, then check the roots it depends on. Go to Declaration in it
+          resolves only into its own code and its dependencies.
+        </T>
+      </div>
+      <div className={styles.splitLayout}>
+        <div className={styles.sideList}>
+          <div className={styles.sideItems} role="listbox" aria-label={tx("Roots")}>
+            {roots.map((m, i) => (
+              <button
+                key={m.path}
+                type="button"
+                role="option"
+                aria-selected={m.path === active}
+                className={clsx(styles.sideItem, m.path === active && styles.sideItemActive)}
+                onClick={() => setSelected(i)}
+              >
+                <Icon name="module" size={14} />
+                <span className={styles.sideItemLabel}>{m.name}</span>
+                <span className={styles.sideItemMeta}>{tildify(m.path)}</span>
+              </button>
+            ))}
+          </div>
+        </div>
+        <div className={styles.detailPane}>
+          <Section title={tx`Dependencies of ${activeName}`}>
+            <div className={styles.entryList} role="group" aria-label={tx("The root depends on these projects")}>
+              {others.length === 0 && (
+                <div className={styles.note}>
+                  <T>No other roots.</T>
+                </div>
+              )}
+              {others.map((c) => (
+                <div key={c.path} className={styles.entryRow}>
+                  <Checkbox
+                    checked={deps.includes(c.path)}
+                    label={c.name}
+                    onChange={(checked) => toggle(c.path, checked)}
+                    aria-label={tx`The root depends on ${c.name}`}
+                  />
+                  <span className={styles.rootPath} title={c.path}>
+                    {tildify(c.path)}
+                  </span>
+                </div>
+              ))}
+            </div>
+            <div className={styles.entryActions}>
+              <Button size="small" variant="ghost" icon="plus" onClick={() => void add()}>
+                <T>Add Project…</T>
+              </Button>
+            </div>
+          </Section>
+        </div>
+      </div>
+    </div>
+  );
+}
+
 function ModulesSection() {
   const root = useProject((s) => s.project?.root ?? null);
   const projectName = useProject((s) => s.project?.name ?? "");
@@ -588,10 +801,8 @@ function ModulesSection() {
   const [modulesMap, setModulesMap] = useProjectSetting<Record<string, ModuleStructureValid> | undefined>(
     "projectStructure.modules",
   );
-  const [libraries] = useProjectSetting<ProjectLibraryValid[] | undefined>("projectStructure.libraries");
   const [selectedModule, setSelectedModule] = useState<string>(".");
   const [subTab, setSubTab] = useState<"sources" | "paths" | "dependencies">("sources");
-  const [selectedDepIdx, setSelectedDepIdx] = useState<number>(-1);
   const [moduleError, setModuleError] = useState(false);
   const outId = useId();
   const testOutId = useId();
@@ -662,27 +873,6 @@ function ModulesSection() {
     delete next[activeKey];
     setModulesMap(next);
     setSelectedModule(".");
-  };
-
-  const addLibraryDependency = () => {
-    const firstLib = libraries?.[0]?.name ?? "project-lib";
-    const dep: ModuleDependencyValid = { kind: "library", target: firstLib, scope: "compile", exported: false };
-    updateModuleCfg({ dependencies: [...currentModuleCfg.dependencies, dep] });
-    setSelectedDepIdx(currentModuleCfg.dependencies.length);
-  };
-
-  const addModuleDependency = () => {
-    const otherMod = modules.find((m) => m.key !== activeKey)?.key ?? "shared";
-    const dep: ModuleDependencyValid = { kind: "module", target: otherMod, scope: "compile", exported: false };
-    updateModuleCfg({ dependencies: [...currentModuleCfg.dependencies, dep] });
-    setSelectedDepIdx(currentModuleCfg.dependencies.length);
-  };
-
-  const removeDependency = () => {
-    if (selectedDepIdx < 0 || selectedDepIdx >= currentModuleCfg.dependencies.length) return;
-    const next = currentModuleCfg.dependencies.filter((_, idx) => idx !== selectedDepIdx);
-    updateModuleCfg({ dependencies: next });
-    setSelectedDepIdx(-1);
   };
 
   const activeMod = modules.find((m) => m.key === activeKey) ?? modules[0];
@@ -869,107 +1059,7 @@ function ModulesSection() {
             </Section>
           )}
 
-          {subTab === "dependencies" && (
-            <div className={styles.tablePanel}>
-              <div className={styles.note}>
-                <T>Custom module dependencies are not supported yet. Configure dependencies in Maven or Gradle.</T>
-              </div>
-              <fieldset disabled className={styles.pendingFeature}>
-                <div className={styles.tableToolbar}>
-                  <Button size="small" variant="ghost" icon="plus" onClick={addLibraryDependency}>
-                    <T>Add Library</T>
-                  </Button>
-                  <Button size="small" variant="ghost" icon="plus" onClick={addModuleDependency}>
-                    <T>Add Module Dependency</T>
-                  </Button>
-                  <IconButton
-                    icon="minus"
-                    size="small"
-                    title="Remove dependency"
-                    disabled={selectedDepIdx < 0}
-                    onClick={removeDependency}
-                  />
-                </div>
-                <div className={styles.tableScroll}>
-                  <table className={styles.table}>
-                    <thead>
-                      <tr>
-                        <th>
-                          <T>Export</T>
-                        </th>
-                        <th>
-                          <T>Dependency</T>
-                        </th>
-                        <th>
-                          <T>Kind</T>
-                        </th>
-                        <th>
-                          <T>Scope</T>
-                        </th>
-                      </tr>
-                    </thead>
-                    <tbody>
-                      {currentModuleCfg.dependencies.length === 0 && (
-                        <tr>
-                          <td colSpan={4} className={styles.empty}>
-                            <T>No custom module dependencies configured.</T>
-                          </td>
-                        </tr>
-                      )}
-                      {currentModuleCfg.dependencies.map((dep, idx) => (
-                        <tr
-                          key={`${dep.kind}-${dep.target}-${idx}`}
-                          className={clsx(idx === selectedDepIdx && styles.selected)}
-                          onClick={() => setSelectedDepIdx(idx)}
-                        >
-                          <td>
-                            <Checkbox
-                              checked={dep.exported}
-                              onChange={(exported) => {
-                                const next = [...currentModuleCfg.dependencies];
-                                next[idx] = { ...dep, exported };
-                                updateModuleCfg({ dependencies: next });
-                              }}
-                              aria-label="Export dependency"
-                            />
-                          </td>
-                          <td>
-                            <Input
-                              mono
-                              value={dep.target}
-                              aria-label="Dependency target"
-                              onChange={(e) => {
-                                const next = [...currentModuleCfg.dependencies];
-                                next[idx] = { ...dep, target: e.target.value };
-                                updateModuleCfg({ dependencies: next });
-                              }}
-                            />
-                          </td>
-                          <td>
-                            <span className={styles.badge}>
-                              {dep.kind === "module" ? <T>Module</T> : <T>Library</T>}
-                            </span>
-                          </td>
-                          <td>
-                            <Select
-                              value={dep.scope}
-                              options={SCOPE_OPTIONS}
-                              onChange={(scope) => {
-                                const next = [...currentModuleCfg.dependencies];
-                                next[idx] = { ...dep, scope: scope as DependencyScopeValid };
-                                updateModuleCfg({ dependencies: next });
-                              }}
-                              aria-label="Dependency scope"
-                            />
-                          </td>
-                        </tr>
-                      ))}
-                    </tbody>
-                  </table>
-                </div>
-              </fieldset>
-            </div>
-          )}
+          {subTab === "dependencies" && <ModuleDependenciesTab />}
         </div>
       </div>
     </div>

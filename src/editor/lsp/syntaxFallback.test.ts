@@ -22,6 +22,8 @@ const cmd = {
   syntaxIdentifiers: vi.fn((): R<unknown> => ok([])),
   syntaxErrors: vi.fn((): R<unknown> => ok({ errors: [], truncated: false })),
   findSymbols: vi.fn((): R<SymbolMatch[]> => ok([])),
+  navIndexDefinitions: vi.fn((): R<SymbolMatch[]> => ok([])),
+  navResolveModule: vi.fn((): R<string | null> => ok(null)),
   applyWorkspaceEdit: vi.fn((): R<unknown> => ok(null)),
 };
 
@@ -340,6 +342,71 @@ describe("navigation wiring", () => {
     await gotoTargets(view, "definition");
     expect(cmd.syntaxLocals).not.toHaveBeenCalled();
     expect(document.querySelector(".cm-lsp-hint")?.textContent).toBe("Cannot find declaration to go to");
+  });
+
+  it("answers from the index when the server cannot resolve an import into a dependency project", async () => {
+    cmd.lspGoto.mockReturnValueOnce(ok([]));
+    cmd.navIndexDefinitions.mockReturnValueOnce(ok([sym("ParallelDims", "class", "/deps/engine/model.py")]));
+    const view = editor("from torchtitan.distributed import ParallelDims;\n", "python", 35, "/p/a.py");
+    await gotoTargets(view, "definition");
+    expect(openFile).toHaveBeenCalledWith("/deps/engine/model.py", {
+      selection: { line: 3, col: 4 },
+      focus: true,
+    });
+  });
+
+  it("opens the file a package segment of an import path names", async () => {
+    cmd.navResolveModule.mockReturnValueOnce(ok("/deps/torchtitan/__init__.py"));
+    cmd.navResolveModule.mockReturnValueOnce(ok("/deps/torchtitan/tools/logging.py"));
+    const view = editor("from torchtitan.tools.logging import logger;\n", "python", 6, "/p/a.py");
+    await gotoTargets(view, "definition");
+    expect(cmd.navResolveModule).toHaveBeenCalledWith("torchtitan", "/p/a.py");
+    expect(openFile).toHaveBeenCalledWith("/deps/torchtitan/__init__.py", {
+      selection: { line: 0, col: 0 },
+      focus: true,
+    });
+    openFile.mockClear();
+    const deeper = editor("from torchtitan.tools.logging import logger;\n", "python", 24, "/p/a.py");
+    await gotoTargets(deeper, "definition");
+    expect(cmd.navResolveModule).toHaveBeenLastCalledWith("torchtitan.tools.logging", "/p/a.py");
+    expect(openFile).toHaveBeenCalledWith("/deps/torchtitan/tools/logging.py", {
+      selection: { line: 0, col: 0 },
+      focus: true,
+    });
+  });
+
+  it("never looks a module path segment up as a symbol name", async () => {
+    cmd.lspGoto.mockReturnValueOnce(ok([]));
+    const view = editor("from torchtitan.tools.logging import logger;\n", "python", 17, "/p/a.py");
+    await gotoTargets(view, "definition");
+    expect(cmd.navResolveModule).toHaveBeenCalledWith("torchtitan.tools", "/p/a.py");
+    expect(cmd.navIndexDefinitions).not.toHaveBeenCalled();
+    expect(openFile).not.toHaveBeenCalled();
+    expect(document.querySelector(".cm-lsp-hint")?.textContent).toBe("Cannot find declaration to go to");
+  });
+
+  it("still looks the imported name up, not the module path", async () => {
+    cmd.lspGoto.mockReturnValueOnce(ok([]));
+    cmd.navIndexDefinitions.mockReturnValueOnce(ok([sym("logger", "variable", "/deps/torchtitan/tools/logging.py")]));
+    const view = editor("from torchtitan.tools.logging import logger;\n", "python", 39, "/p/a.py");
+    await gotoTargets(view, "definition");
+    expect(cmd.navResolveModule).not.toHaveBeenCalled();
+    expect(openFile).toHaveBeenCalledWith("/deps/torchtitan/tools/logging.py", {
+      selection: { line: 3, col: 4 },
+      focus: true,
+    });
+  });
+
+  it("looks past a server answer that points at the import itself", async () => {
+    cmd.lspGoto.mockReturnValueOnce(ok([{ path: "/p/a.py", range: r(0, 37, 43) }]));
+    cmd.navIndexDefinitions.mockReturnValueOnce(ok([sym("logger", "variable", "/deps/torchtitan/tools/logging.py")]));
+    const view = editor("from torchtitan.tools.logging import logger;\n", "python", 39, "/p/a.py");
+    await gotoTargets(view, "definition");
+    expect(openFile).toHaveBeenCalledWith("/deps/torchtitan/tools/logging.py", {
+      selection: { line: 3, col: 4 },
+      focus: true,
+    });
+    expect(executeAction).not.toHaveBeenCalledWith("find.showUsages");
   });
 
   it("says why when the server only checks the file's syntax", async () => {

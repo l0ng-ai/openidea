@@ -1251,9 +1251,44 @@ fn content_roots(settings: &ide_core::settings::Settings, root: &Path, build_cac
     extra_content_roots(settings, root, build_cache)
 }
 
+/// The roots a file may navigate into: its own root (the workspace member containing it, or
+/// the project root) plus that root's configured dependencies. A workspace member depends
+/// only on the roots picked per member in Settings › Project Structure › Dependencies —
+/// being attached to the workspace never makes its code navigable by itself.
+pub(crate) fn navigation_roots(project: &Project, from: &Path) -> Vec<PathBuf> {
+    let settings = project.settings.effective();
+    let workspace = ide_workspace::workspace::Workspace::load(&project.root).ok().flatten();
+    let own = workspace
+        .as_ref()
+        .and_then(|w| w.projects.iter().filter(|p| from.starts_with(p)).max_by_key(|p| p.components().count()).cloned())
+        .unwrap_or_else(|| project.root.clone());
+    let mut roots = vec![own.clone()];
+    if let Some(deps) = settings.project_structure.member_dependencies.get(&ide_core::ipc_path::to_ipc(&own)) {
+        for dep in deps {
+            let dep = PathBuf::from(dep.trim());
+            if dep.is_dir() && !roots.contains(&dep) {
+                roots.push(dep);
+            }
+        }
+    }
+    if workspace.is_none() {
+        for root in content_roots(&settings, &project.root, &project.build_cache_dir()) {
+            if !roots.contains(&root) {
+                roots.push(root);
+            }
+        }
+    }
+    roots
+}
+
 fn extra_content_roots(settings: &ide_core::settings::Settings, root: &Path, build_cache: &Path) -> Vec<PathBuf> {
     let mut out: Vec<PathBuf> = Vec::new();
-    let user = settings.project_structure.content_roots.iter().map(|r| PathBuf::from(r.trim()));
+    let user = settings
+        .project_structure
+        .content_roots
+        .iter()
+        .chain(settings.project_structure.dependencies.iter())
+        .map(|r| PathBuf::from(r.trim()));
     for p in user.chain(ide_build::gradle_external_roots(root, build_cache, &settings.languages.java.gradle)) {
         if p.is_absolute() && p.is_dir() && !p.starts_with(root) && !out.contains(&p) {
             out.push(p);
@@ -1863,5 +1898,27 @@ mod composer_tests {
         assert!(changed(&["src/a.php", "composer.json"]));
         assert!(!changed(&["composer.lock", "vendor/acme/lib/composer.json", "packages/b/composer.json"]));
         assert!(!changed(&[]));
+    }
+}
+
+#[cfg(test)]
+mod content_roots_tests {
+    use super::content_roots;
+
+    #[test]
+    fn dependency_projects_join_the_content_roots() {
+        let tmp = tempfile::tempdir().unwrap();
+        let root = tmp.path().join("app");
+        let shared = tmp.path().join("shared");
+        let dep = tmp.path().join("lib");
+        for dir in [&root, &shared, &dep] {
+            std::fs::create_dir_all(dir).unwrap();
+        }
+        let mut settings = ide_core::settings::Settings::default();
+        settings.project_structure.content_roots = vec![shared.to_string_lossy().into_owned()];
+        settings.project_structure.dependencies =
+            vec![dep.to_string_lossy().into_owned(), root.to_string_lossy().into_owned()];
+        let roots = content_roots(&settings, &root, &tmp.path().join("build"));
+        assert_eq!(roots, vec![shared, dep]);
     }
 }

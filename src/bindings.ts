@@ -388,6 +388,16 @@ export const commands = {
 	reference: WebReference,
 	targets: Location[],
 } | null, IdeError>(__TAURI_INVOKE("web_goto", { doc, pos })),
+	/**
+	 *  The file a Python import path (`a.b.c`, or `.x` relative to `from`) names; `None` when
+	 *  no project or content root has it.
+	 */
+	navResolveModule: (name: string, from: IpcPath) => typedError<string | null, IdeError>(__TAURI_INVOKE("nav_resolve_module", { name, from })),
+	/**
+	 *  Index definitions named `name` within the roots `from` may navigate into (its own root
+	 *  plus its configured dependencies).
+	 */
+	navIndexDefinitions: (name: string, from: IpcPath) => typedError<SymbolMatch[], IdeError>(__TAURI_INVOKE("nav_index_definitions", { name, from })),
 	/**  The existing file or directory a path written in `from` names (`href`, `url()`, a string literal). */
 	fsResolveReference: (from: IpcPath, value: string) => typedError<string | null, IdeError>(__TAURI_INVOKE("fs_resolve_reference", { from, value })),
 	/**  Files and folders that continue `prefix`, a path being typed in `from`. */
@@ -7094,6 +7104,13 @@ export type ProjectStructureSettings = {
 	unmarked?: string[],
 	/**  Content roots besides the project folder (absolute paths), shown and searched with it. */
 	contentRoots?: string[],
+	/**  Other projects (absolute paths) this project depends on; indexed and navigable like content roots. */
+	dependencies?: string[],
+	/**
+	 *  Per-workspace-member dependencies: member root (IPC path) → the roots it depends on.
+	 *  A member not listed here (or with an empty list) navigates only into itself.
+	 */
+	memberDependencies?: { [key in string]: string[] },
 	/**  "Exclude files": `;`-separated name patterns (`*.log;tmp*`) excluded at any depth. */
 	excludeFiles?: string,
 	/**  Project compiler output directory (relative to project root or absolute; empty = default). */

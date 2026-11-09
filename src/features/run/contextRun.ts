@@ -8,7 +8,7 @@ import { activeEditor } from "@/editor/api";
 import { executeAction, getAction } from "@/platform/actions";
 import { call, commands, isTauri, type RunConfig } from "@/platform/ipc";
 import { useProject } from "@/platform/project";
-import { validateProjectStructure } from "@/platform/languageSettings";
+import { effectiveContentRoots, validateProjectStructure } from "@/platform/languageSettings";
 import { useBuildModel } from "@/platform/buildModel";
 import { isVirtualUri } from "@/platform/virtualDocs";
 import { showContextMenu, type MenuItem } from "@/ui";
@@ -48,7 +48,7 @@ async function ensureConfigs() {
 /** The focused editor's file, text and caret line. */
 /** Project folders outside its root: Project Structure content roots and Gradle modules (as of the last sync). */
 export function projectContentRoots(): string[] {
-  const own = validateProjectStructure(useProject.getState().settings?.projectStructure).contentRoots;
+  const own = effectiveContentRoots(validateProjectStructure(useProject.getState().settings?.projectStructure));
   // The build model keeps the folders of modules outside the project absolute.
   const gradle = (useBuildModel.getState().model?.gradle ?? [])
     .flatMap((g) => g.projects)

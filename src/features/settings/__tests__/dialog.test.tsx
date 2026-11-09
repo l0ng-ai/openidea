@@ -712,8 +712,9 @@ describe("Settings dialog", () => {
     fireEvent.click(screen.getByRole("tab", { name: "Paths" }));
     expect(screen.getByLabelText("Test output path")).toBeDisabled();
     fireEvent.click(screen.getByRole("tab", { name: "Dependencies" }));
-    expect(screen.getByRole("button", { name: "Add Library" })).toBeDisabled();
-    expect(screen.getByRole("button", { name: "Add Module Dependency" })).toBeDisabled();
+    // Project dependencies are supported: the checklist is live, no disabled placeholder.
+    expect(screen.getByRole("group", { name: "The project depends on these projects" })).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "Add Project…" })).toBeEnabled();
     fireEvent.click(screen.getByRole("button", { name: "Artifacts" }));
     expect(screen.getByRole("button", { name: "JAR" })).toBeDisabled();
     expect(screen.getByRole("button", { name: "WAR" })).toBeDisabled();

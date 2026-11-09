@@ -48,10 +48,11 @@ import { basename, relativePath, useProject } from "@/platform/project";
 import { editorService } from "@/workbench/contributions";
 import { fileIconName } from "@/ui";
 import { NO_SERVER, debounce, docOf, isUnavailable, lspRequest, reportLspError } from "./lsp";
-import { offsetToPos, rangeToOffsets } from "./positions";
+import { offsetToPos, rangeContains, rangeToOffsets } from "./positions";
 import {
   SYNTAX_NOTE,
   declarationFallback,
+  indexDefinitions,
   isSelfTarget,
   localHighlights,
   type DeclarationTarget,
@@ -314,6 +315,16 @@ export async function gotoTargets(view: EditorView, kind: GotoKind, at?: number)
   let locs: DeclarationTarget[];
   let fromSyntax = false;
   const declaration = kind === "definition" || kind === "declaration";
+  // A segment of an import path names a file — possibly in a dependency project, which
+  // neither the single-root server nor the name index resolves.
+  const moduleName = declaration ? importModuleName(view, doc, offset) : null;
+  if (moduleName) {
+    const module = await moduleFile(doc, moduleName).catch(() => null);
+    if (module) {
+      await navigateTo(module);
+      return;
+    }
+  }
   let serverDown = false;
   let streamed: ReturnType<typeof streamedImplementations> | null = null;
   try {
@@ -347,7 +358,8 @@ export async function gotoTargets(view: EditorView, kind: GotoKind, at?: number)
       return;
     serverDown = isUnavailable(e);
     // Dumb mode: the server is not ready / failing — answer from the syntax tree.
-    const fb = await gotoFallback(view, doc, pos);
+    // An import path is not a name to look up: only its file matters.
+    const fb = moduleName ? null : await gotoFallback(view, doc, pos);
     if (superseded()) return;
     if (!fb) {
       reportLspError(view, e, true);
@@ -371,6 +383,31 @@ export async function gotoTargets(view: EditorView, kind: GotoKind, at?: number)
     )
       return;
     if (superseded()) return;
+    // The server only resolves what it sees: answer from the project index, which also
+    // covers attached dependency projects (an unresolved import into them). Never for a
+    // module path: a segment is not a symbol name.
+    if (declaration && !fromSyntax && !moduleName) {
+      const name = nameAt(view, offset);
+      const targets = name ? await indexDefinitions(doc.path, name).catch(() => []) : [];
+      if (targets.length) {
+        if (isSelfTarget(targets, doc.path, pos)) {
+          if (!(await executeAction("find.showUsages"))) showHint(view, "No usages found");
+          return;
+        }
+        if (targets.length === 1) {
+          await navigateTo(targets[0]!);
+          return;
+        }
+        openPopup({
+          kind: "list",
+          anchor: caretAnchor(view, offset),
+          title: chooserTitle(kind, name, targets.length),
+          items: await locationItems(targets),
+          pin: pinToFind(name ?? "", targets),
+        });
+        return;
+      }
+    }
     // The server only checks this file's syntax: say why instead of just "not found".
     const reason = serverDown ? null : outsideProjectReason(doc.path);
     showHint(
@@ -385,6 +422,25 @@ export async function gotoTargets(view: EditorView, kind: GotoKind, at?: number)
   }
   // IDEA: ⌘B on a declaration shows its usages.
   if (kind === "definition" && isSelfTarget(locs, doc.path, pos)) {
+    // An imported name is not the declaration it means: when the server points at the import
+    // itself (it analyses one root and cannot see the dependency project), the index can.
+    const name = /^\s*(from|import)\b/.test(view.state.doc.lineAt(offset).text) ? nameAt(view, offset) : null;
+    const targets = name ? await indexDefinitions(doc.path, name).catch(() => []) : [];
+    const others = targets.filter((t) => !(t.path === doc.path && rangeContains(t.range, pos)));
+    if (others.length === 1) {
+      await navigateTo(others[0]!);
+      return;
+    }
+    if (others.length > 1) {
+      openPopup({
+        kind: "list",
+        anchor: caretAnchor(view, offset),
+        title: chooserTitle(kind, name, others.length),
+        items: await locationItems(others),
+        pin: pinToFind(name ?? "", others),
+      });
+      return;
+    }
     if (!(await executeAction("find.showUsages")) && !superseded()) showHint(view, "No usages found");
     return;
   }
@@ -495,6 +551,41 @@ async function gotoFallback(view: EditorView, doc: EditorDocContext, pos: Pos): 
   }
 }
 
+/**
+ * The module path up to the caret's segment — `a.b` for `a.b.c` with the caret on `b`, with
+ * the leading dots of a relative import — or null when the caret is not on a module path
+ * (an imported name is not a path). Read from the line text: a segment names a file whether
+ * or not a syntax tree is available.
+ */
+function importModuleName(view: EditorView, doc: EditorDocContext, offset: number): string | null {
+  if (doc.virtual) return null;
+  const line = view.state.doc.lineAt(offset);
+  const col = offset - line.from;
+  const prefixTo = (path: string, at: number) => {
+    const cut = Math.min(Math.max(0, col - at), path.length);
+    let end = cut;
+    while (end < path.length && path[end] !== ".") end++;
+    return path.slice(0, end);
+  };
+  const from = /^\s*from\s+(\.*[\w.]*)\s+import\b/.exec(line.text);
+  if (from?.[1]) {
+    const at = line.text.indexOf(from[1], from.index);
+    if (col >= at && col <= at + from[1].length) return prefixTo(from[1], at) || null;
+  }
+  const plain = /^\s*import\s+([\w.]+)/.exec(line.text);
+  if (plain?.[1]) {
+    const at = line.text.indexOf(plain[1], plain.index);
+    if (col >= at && col <= at + plain[1].length) return prefixTo(plain[1], at) || null;
+  }
+  return null;
+}
+
+/** The file a dotted module path names, in the roots the document may navigate into. */
+async function moduleFile(doc: EditorDocContext, name: string): Promise<DeclarationTarget | null> {
+  const path = await lspRequest(() => commands.navResolveModule(name, doc.path)).catch(() => null);
+  return path ? { path, range: { start: { line: 0, col: 0 }, end: { line: 0, col: 0 } } } : null;
+}
+
 // ---------------------------------------------------------------------------
 // ⌘-hover link + ⌘-click
 
@@ -562,14 +653,28 @@ async function probeNavigation(
   let navigable = !!contributedAt<ContributedDefinition>(view.state, CONTRIBUTED_DEFINITION, offset);
   if (!navigable && doc) {
     const pos = offsetToPos(view.state.doc, offset);
+    let fromSyntax = false;
     try {
       navigable = (await requestNavigation(view, offset, "definition")).length > 0;
     } catch (e) {
       if (!isUnavailable(e)) throw e;
       navigable = !!(await gotoFallback(view, doc, pos))?.length;
+      fromSyntax = true;
     }
     if (!navigable && WEB_LANGUAGES.has(doc.language) && !doc.virtual)
       navigable = !!(await lspRequest(() => commands.webGoto(doc.doc, pos)).catch(() => null))?.targets.length;
+    // The index answers across dependency roots too (unresolved imports), but a module path
+    // segment is a file rather than a name.
+    if (!navigable && !fromSyntax) {
+      const moduleName = importModuleName(view, doc, offset);
+      if (moduleName) navigable = !!(await moduleFile(doc, moduleName).catch(() => null));
+      else {
+        const word = navigationWord(view, offset);
+        const name = word ? view.state.sliceDoc(word.from, word.to) : null;
+        const targets = name ? await indexDefinitions(doc.path, name).catch(() => []) : [];
+        navigable = targets.length > 0;
+      }
+    }
   }
   if (!navigable) return null;
   return { info: null };
