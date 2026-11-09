@@ -54,6 +54,40 @@ pub fn kill_tree(child: &mut Child) {
     let _ = child.wait();
 }
 
+/// Whether `pid` still names a running process. A process that exited but has not been
+/// reaped yet counts as gone: what callers wait for is the program leaving, not its entry.
+pub fn is_running(pid: u32) -> bool {
+    #[cfg(windows)]
+    {
+        use windows_sys::Win32::Foundation::{CloseHandle, STILL_ACTIVE};
+        use windows_sys::Win32::System::Threading::{
+            GetExitCodeProcess, OpenProcess, PROCESS_QUERY_LIMITED_INFORMATION,
+        };
+        // SAFETY: the handle is closed on both paths, and the exit code is read only
+        // after `GetExitCodeProcess` reports it was written.
+        unsafe {
+            let handle = OpenProcess(PROCESS_QUERY_LIMITED_INFORMATION, 0, pid);
+            if handle.is_null() {
+                return false;
+            }
+            let mut code = 0u32;
+            let read = GetExitCodeProcess(handle, &mut code) != 0;
+            CloseHandle(handle);
+            read && code == STILL_ACTIVE as u32
+        }
+    }
+    #[cfg(unix)]
+    {
+        // Signal 0 checks for the process without sending anything.
+        libc::pid_t::try_from(pid).is_ok_and(|pid| unsafe { libc::kill(pid, 0) } == 0)
+    }
+    #[cfg(not(any(unix, windows)))]
+    {
+        let _ = pid;
+        false
+    }
+}
+
 /// [`kill_tree`] for a child known by its process id (a `tokio` child): `SIGKILL` to its
 /// process group (spawn it with [`own_group`]) or `taskkill /T /F` and a wait for what the
 /// child started to be gone. Call it before the child is reaped, so the id still names it.
@@ -524,6 +558,30 @@ fn append_path_entries(path: &OsStr, extra: &OsStr) -> OsString {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn is_running_follows_a_child_through_its_exit() {
+        let mut cmd = if cfg!(windows) {
+            let mut c = Command::new("cmd");
+            c.args(["/C", "pause"]).stdin(std::process::Stdio::piped());
+            c
+        } else {
+            let mut c = Command::new("sh");
+            c.args(["-c", "read line"]).stdin(std::process::Stdio::piped());
+            c
+        };
+        prepare(&mut cmd);
+        let mut child = cmd.spawn().unwrap();
+        let pid = child.id();
+        assert!(is_running(pid), "the child it just spawned is running");
+
+        kill_tree(&mut child);
+        let gone = (0..100).any(|_| {
+            std::thread::sleep(Duration::from_millis(20));
+            !is_running(pid)
+        });
+        assert!(gone, "the killed child stops being reported as running");
+    }
 
     #[cfg(unix)]
     #[test]

@@ -349,12 +349,20 @@ pub(crate) fn signal_debuggee(s: &Arc<Session>, force: bool) {
     }
     #[cfg(windows)]
     {
-        let mut cmd = std::process::Command::new("taskkill");
-        cmd.args(["/PID", &pid.to_string(), "/T"]);
+        // `taskkill` without `/F` only posts `WM_CLOSE`, which a console program
+        // never receives, so the polite form reaches a JVM or a `node` only when
+        // it has a window. `kill_tree_of` is the forced one, and it waits.
         if force {
-            cmd.arg("/F");
+            ide_core::process::kill_tree_of(pid as u32);
+        } else {
+            let mut cmd = std::process::Command::new("taskkill");
+            ide_core::process::prepare(&mut cmd)
+                .args(["/PID", &pid.to_string(), "/T"])
+                .stdin(std::process::Stdio::null())
+                .stdout(std::process::Stdio::null())
+                .stderr(std::process::Stdio::null());
+            let _ = cmd.status();
         }
-        let _ = cmd.status();
     }
     #[cfg(not(any(unix, windows)))]
     let _ = (pid, force);
@@ -391,7 +399,26 @@ pub(crate) async fn wait_for_debuggee(s: &Arc<Session>, terminate: bool) {
             tokio::time::sleep(Duration::from_millis(50)).await;
         }
     }
-    #[cfg(not(unix))]
+    #[cfg(windows)]
+    {
+        // Nothing here can ask a console program to exit (see `signal_debuggee`),
+        // so the program leaves when its own terminate handling does. Without the
+        // escalation below it stays, holding the ports it listens on.
+        let deadline = tokio::time::Instant::now() + DEBUGGEE_EXIT_WAIT;
+        while ide_core::process::is_running(pid as u32) {
+            if s.stop_force.swap(false, Ordering::AcqRel) {
+                signal_debuggee(s, true);
+                break;
+            }
+            if tokio::time::Instant::now() >= deadline {
+                tracing::info!(session = s.id.0, pid, "stop: the debugged program stayed; killing its tree");
+                signal_debuggee(s, true);
+                break;
+            }
+            tokio::time::sleep(Duration::from_millis(50)).await;
+        }
+    }
+    #[cfg(not(any(unix, windows)))]
     {
         let _ = pid;
     }
