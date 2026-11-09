@@ -56,6 +56,22 @@ impl TrustStore {
                 || self.inherited.lock().contains(&root)))
     }
 
+    pub fn window_trusted(&self, root: &Path) -> IdeResult<bool> {
+        if !self.trusted(root)? {
+            return Ok(false);
+        }
+        if let Some(workspace) = ide_workspace::workspace::Workspace::load(root)?
+            && !workspace.is_container(root)
+        {
+            for member in workspace.projects.iter().filter(|p| *p != root && p.exists()) {
+                if !self.trusted(member)? {
+                    return Ok(false);
+                }
+            }
+        }
+        Ok(true)
+    }
+
     /// Trusts `path` for this process without recording a decision (see [`TRUSTED_ROOT_ENV`]).
     pub fn inherit(&self, path: &Path) -> IdeResult<()> {
         let root = dunce::canonicalize(path)?;
@@ -134,7 +150,7 @@ impl crate::Host {
 
     pub async fn refresh_project_trust(&self) -> IdeResult<()> {
         for project in self.projects().into_iter().filter(|p| !p.light) {
-            let trusted = self.trust.trusted(&project.root).unwrap_or(false);
+            let trusted = self.trust.window_trusted(&project.root).unwrap_or(false);
             let previous = project.trusted.swap(trusted, std::sync::atomic::Ordering::AcqRel);
             if previous == trusted {
                 continue;

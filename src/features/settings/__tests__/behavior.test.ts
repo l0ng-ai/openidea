@@ -3,7 +3,7 @@ import { formatPattern, formatTimestamp } from "@/platform/dateFormat";
 import { resolveThemeId } from "@/workbench/theme";
 import { applyAppearanceOptions, nextZoom, SMALL_TREE_INDENT } from "../appearanceRuntime";
 import { validateSettings } from "../model/schema";
-import { validateAppearanceExtras, validateNotifications } from "../model/behaviorSchema";
+import { validateGeneralExtras, validateAppearanceExtras, validateNotifications } from "../model/behaviorSchema";
 
 describe("appearance & behavior settings", () => {
   it("defaults automatic update checks to on and respects an explicit opt-out", () => {
@@ -126,4 +126,8 @@ describe("appearance & behavior settings", () => {
       groups: { vcs: { display: "balloon", log: false } },
     });
   });
+});
+
+it("loads an old attach setting as ask", () => {
+  expect(validateGeneralExtras({ openProjectIn: "attach" }).openProjectIn).toBe("ask");
 });

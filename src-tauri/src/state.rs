@@ -144,14 +144,22 @@ impl AppState {
         // A local project replaces a remote one in this window.
         self.remote_dev.disconnect(window);
         let project = self.host.open_project(window, root)?;
-        let branch = project.repos.read().primary().and_then(|r| r.branch_info().ok()).and_then(|b| b.head);
-        self.recent.touch(&project.root, branch)?;
-        let display_name = project.settings.effective().general.project_name;
-        if !display_name.trim().is_empty() {
-            self.recent.rename(&project.root, Some(display_name.trim()))?;
-        }
-        crate::jump_list::refresh(&self.app, self.recent.list());
+        self.record_project(&project)?;
         Ok(project)
+    }
+
+    pub fn record_project(&self, project: &Project) -> IdeResult<()> {
+        let info = ide_host::ops::project::info(project);
+        let attached = info.workspace.as_ref().is_some_and(|w| !w.is_container(&project.root));
+        let branch = if attached {
+            None
+        } else {
+            project.repos.read().primary().and_then(|r| r.branch_info().ok()).and_then(|b| b.head)
+        };
+        self.recent.touch(&project.root, branch)?;
+        self.recent.rename(&project.root, Some(&info.display_name))?;
+        crate::jump_list::refresh(&self.app, self.recent.list());
+        Ok(())
     }
 
     /// Opens `window` for editing the loose file `file` (LightEdit); not a recent project.

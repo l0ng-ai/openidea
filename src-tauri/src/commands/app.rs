@@ -85,7 +85,7 @@ pub async fn open_project(window: Window, path: PathBuf) -> IdeResult<ProjectInf
         .await
         .map_err(|e| IdeError::internal(e.to_string()))??;
     let info = project_info(&project);
-    let _ = window.set_title(&info.name);
+    let _ = window.set_title(&info.display_name);
     window.state::<AppState>().sink.emit(ide_core::IdeEvent::WindowGroupsChanged);
     // Every project window is part of the session reopened at the next start.
     crate::window_groups::persist(window.app_handle()).await?;
@@ -121,14 +121,19 @@ fn project_info(project: &crate::state::Project) -> ProjectInfo {
 pub fn project_rename(window: Window, state: State<'_, AppState>, name: String) -> IdeResult<ProjectInfo> {
     let project = state.project(window.label())?;
     let name = name.trim();
-    if let Some(workspace) = ide_workspace::workspace::Workspace::load(&project.root)? {
-        return ide_host::ops::project::save_workspace(&state.host, window.label(), name, workspace.projects);
+    if let Some(workspace) = ide_workspace::workspace::Workspace::load(&project.root)?
+        && workspace.is_container(&project.root)
+    {
+        ide_host::ops::project::save_workspace(&state.host, window.label(), name, workspace.projects)?;
+    } else {
+        let value = if name.is_empty() { serde_json::Value::Null } else { serde_json::Value::String(name.to_owned()) };
+        project.settings.set(SettingsScope::Project, "general.projectName", value)?;
     }
-    let value = if name.is_empty() { serde_json::Value::Null } else { serde_json::Value::String(name.to_owned()) };
-    project.settings.set(SettingsScope::Project, "general.projectName", value)?;
-    state.recent.rename(&project.root, (!name.is_empty()).then_some(name))?;
-    crate::jump_list::refresh(&state.app, state.recent.list());
-    Ok(project_info(&project))
+    let info = project_info(&project);
+    state.record_project(&project)?;
+    let _ = window.set_title(&info.display_name);
+    state.sink.emit(ide_core::IdeEvent::WindowGroupsChanged);
+    Ok(info)
 }
 
 // Not on the main thread: closing stops the project's language servers, runs and file watcher.

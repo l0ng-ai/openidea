@@ -24,7 +24,7 @@ pub(super) fn project_configs(
     let root_suppressed = ide_run::load_suppressed_config_ids(root)?;
     let mut all = detected_and_saved(root, settings, &user, &root_suppressed);
     if let Some(workspace) = ide_workspace::workspace::Workspace::load(root)? {
-        for member in workspace.projects.into_iter().filter(|p| p.is_dir()) {
+        for member in workspace.projects.into_iter().filter(|p| p != root && p.is_dir()) {
             let settings = ide_workspace::SettingsStore::load(config_dir, Some(&member)).effective();
             let saved = ide_run::load_user_configs(&member)?;
             let suppressed = ide_run::load_suppressed_config_ids(&member)?;
@@ -145,20 +145,21 @@ fn settings_for(
     config: &mut RunConfig,
 ) -> IdeResult<(std::path::PathBuf, ide_core::settings::Settings)> {
     let workspace = ide_workspace::workspace::Workspace::load(&project.root)?;
-    if workspace.is_some() {
+    let owner = ide_run::scope::owner(&project.root, config);
+    let member = workspace.as_ref().and_then(|workspace| {
+        workspace
+            .projects
+            .iter()
+            .filter(|root| **root != project.root && owner.starts_with(root))
+            .max_by_key(|root| root.components().count())
+            .cloned()
+    });
+    if workspace.as_ref().is_some_and(|w| w.is_container(&project.root)) || member.is_some() {
         if config.extras.module.is_none() && !matches!(config.kind.as_str(), "application" | "spring-boot") {
             config.extras.module = config.cwd.as_deref().map(ide_core::ipc_path::to_ipc);
         }
         ide_run::scope::rebase(config, &project.root, None);
     }
-    let member = workspace.and_then(|workspace| {
-        let owner = ide_run::scope::owner(&project.root, config);
-        workspace
-            .projects
-            .into_iter()
-            .filter(|root| owner.starts_with(root))
-            .max_by_key(|root| root.components().count())
-    });
     Ok(match member {
         Some(root) => {
             let settings = ide_workspace::SettingsStore::load(&host.config_dir, Some(&root)).effective();

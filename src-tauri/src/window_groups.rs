@@ -37,7 +37,7 @@ pub fn current(app: &AppHandle, caller: &str) -> Vec<WindowTab> {
             let project = host.project(label).ok();
             let name = project
                 .as_ref()
-                .map(|p| ide_host::ops::project::info(p).name)
+                .map(|p| ide_host::ops::project::info(p).display_name)
                 .unwrap_or_else(|| window.title().unwrap_or_default());
             Some(WindowTab {
                 label: label.clone(),
