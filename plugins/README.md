@@ -2415,7 +2415,8 @@ A missing target fails the run rather than silently using the local tool.
 
 For each launch the host checks project trust and the wrapper's current process
 grant and executable pin, including per-project executable choices. Debugging on
-plugin targets returns `invalid`; language servers are not run in these targets.
+plugin targets returns `invalid`. Language servers can opt into targets with a
+`container_root` as described below.
 There are at most 32 targets per plugin/project, 64 unique command overrides and
 256 arguments per prefix (16 KiB each, 256 KiB metadata per registration).
 
@@ -2452,5 +2453,34 @@ or a named target). The `languages.php.runTarget` / `languages.node.runTarget`
 settings store a selector id, empty for the default, or `local` for local execution. Code-created PHP/Node runs,
 Composer/npm scripts, PHPUnit and Node tests use that choice through the normal
 Run flow. Explicit per-configuration targets take precedence. Choosing Local
-machine explicitly overrides defaults. Language servers, tool discovery/version
-probes and external analysis helpers remain local to the host.
+machine explicitly overrides defaults. Tool discovery/version probes and external
+analysis helpers remain local to the host.
+
+Language servers run on the host by default. In the PHP and Node interpreter
+pages, **Language server: run in target** selects a plugin target independently
+of runs. **Languages & Frameworks › Language server targets** offers the same
+choice for every language, including plugin languages. These are project-only
+`languageServerTargets.<language-id> = { target, server }` settings; an empty
+`target` uses the host and an empty `server` picks the first configured server.
+Only plugin targets with `container_root` are eligible. The selected configured
+server is used instead of the language's other servers while this option is on.
+Registration and the first run-target prompt never enable it automatically.
+
+Install that server and its runtime **inside the container**. The host wraps the
+language definition's command/arguments (or its Language Servers overrides) with
+the target's normal argv construction, using the project root as cwd. It uses
+stdio, rechecks the wrapper's process grant, pin and project trust, and does not
+substitute IDE-downloaded host binaries or host interpreter paths. A failed
+launch shows the exact argv and stderr tail in language-server status, without
+falling back. Changing the setting restarts the server; withdrawing the target
+returns it to the host. SSH projects use this same path on `openidea-server`.
+
+Protocol file URIs and paths under the project map bidirectionally to
+`container_root`, including workspace edits and configuration replies. Opaque
+`data` and command `arguments` remain untouched. File URIs outside the container
+project become read-only library documents, fetched with the granted wrapper's
+`cat -- <path>` command (no shell, at most 4 MiB of UTF-8 text, 10-second timeout).
+The virtual URI identifies its originating server, including for document links
+and diagnostic-related locations. Navigation inside these documents returns to
+that server; editing and saving
+are disabled. No WIT signature change is needed for this opt-in host setting.

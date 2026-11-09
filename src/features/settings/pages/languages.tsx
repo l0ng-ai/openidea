@@ -1,3 +1,4 @@
+import { LanguageServerTargetsPage } from "../languages/LanguageServerTarget";
 import { PluginFormattersPage } from "../languages/PluginFormattersPage";
 /**
  * PyCharm's top-level "Python" group (Interpreter), "Project Structure", and
@@ -16,6 +17,16 @@ import type { PageSpec } from "./spec";
 export const LANGUAGES_GROUP = "Languages & Frameworks";
 
 export const LANGUAGE_PAGES: PageSpec[] = [
+  {
+    id: "languages.serverTargets",
+    title: "Language server targets",
+    group: LANGUAGES_GROUP,
+    projectScope: true,
+    defaultScope: "project",
+    order: 451,
+    keywords: ["lsp", "container", "target"],
+    component: LanguageServerTargetsPage,
+  },
   {
     id: "languages.pluginFormatters",
     title: "Plugin Formatters",

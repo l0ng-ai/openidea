@@ -176,6 +176,22 @@ pub struct LanguageServerConfig {
     /// Set on plugin languages: start exactly this approved program.
     #[serde(skip)]
     pub pinned: Option<ProgramPin>,
+    /// Host-only transport configuration; never accepted from language definitions.
+    #[serde(skip)]
+    pub target: Option<ServerTarget>,
+    /// Separates instances when languages sharing a server select different targets.
+    #[serde(skip)]
+    pub target_key: Option<String>,
+}
+
+/// A prepared plugin wrapper. The LSP client never resolves container binaries on the host.
+#[derive(Clone, Debug, PartialEq)]
+pub struct ServerTarget {
+    pub id: String,
+    pub origin: Option<ide_core::ServerId>,
+    pub project_root: PathBuf,
+    pub container_root: String,
+    pub mapping: ide_core::path_mapping::PathMapping,
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
