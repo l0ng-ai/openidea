@@ -1,4 +1,4 @@
-package openidea:plugin@1.4.0;
+package openidea:plugin@1.5.0;
 
 /// What the pane beside the Services tree shows for a plugin's node.
 interface detail-types {
