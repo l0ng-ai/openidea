@@ -7148,5 +7148,14 @@
   "Set Docker Compose File Detection": "设置 Docker Compose 文件识别",
   "Could not save Docker Compose file detection": "无法保存 Docker Compose 文件识别设置",
   "Compose Up": "Compose 启动",
-  "Start the service at the caret, or all services in the active Docker Compose file": "启动光标处的服务，或当前 Docker Compose 文件中的所有服务"
+  "Start the service at the caret, or all services in the active Docker Compose file": "启动光标处的服务，或当前 Docker Compose 文件中的所有服务",
+  "Full screen": "全屏",
+  "Download image": "下载图片",
+  "Diagram preview": "图表预览",
+  "Save diagram": "保存图表",
+  "PNG image": "PNG 图片",
+  "Diagram saved": "图表已保存",
+  "Cannot save the diagram": "无法保存图表",
+  "The diagram could not be drawn": "无法绘制图表",
+  "A canvas is not available": "画布不可用"
 }

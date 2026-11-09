@@ -430,6 +430,10 @@
 .codeCopy:focus-visible {
   opacity: 1;
 }
+/* A drawn diagram carries its own tools at the top-right; Copy moves aside. */
+.markdown :global([data-mermaid][data-mermaid-state="ok"]) .codeCopy {
+  right: 56px;
+}
 .codeCopy:hover {
   background: var(--bg-hover);
 }
