@@ -554,8 +554,11 @@ function Stream({ task, entries, subagent, onOpenSubagent, finding, findFocus, o
   while (entries && start > 0 && isProcessEntry(entries[start]!) && isProcessEntry(entries[start - 1]!)) start--;
   const dragging = useRef(false);
   // When the user last scrolled the conversation (wheel, touch, keys, the scrollbar, Find):
-  // only that leaves the end. WebKit also moves the offset back on its own while rows lay out.
+  // that leaves the end. WebKit also moves the offset back on its own while rows lay out,
+  // which comes with a change of the content height; a scroll without one is meant too (the
+  // scrollbar thumb, a jump), whatever moved it.
   const userScrolled = useRef(-Infinity);
+  const seenHeight = useRef(0);
   const markUserScroll = useCallback(() => {
     userScrolled.current = performance.now();
   }, []);
@@ -723,7 +726,9 @@ function Stream({ task, entries, subagent, onOpenSubagent, finding, findFocus, o
         onScroll={(e) => {
           const el = e.currentTarget;
           const atEnd = el.scrollHeight - el.scrollTop - el.clientHeight < 40;
-          const byUser = dragging.current || performance.now() - userScrolled.current < 500;
+          const laidOut = el.scrollHeight !== seenHeight.current;
+          seenHeight.current = el.scrollHeight;
+          const byUser = dragging.current || performance.now() - userScrolled.current < 500 || !laidOut;
           const stick = atEnd || (position.current.stick && !byUser);
           // Still following: back to the end the offset was moved away from.
           if (stick && !atEnd) el.scrollTop = el.scrollHeight;

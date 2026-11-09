@@ -479,7 +479,7 @@ describe("Recent Files multi-selection", () => {
 describe("Switcher", () => {
   afterEach(() => vi.restoreAllMocks());
 
-  it("opens the selection when Ctrl is released, once the popup gave focus back, in the same task", async () => {
+  it("opens the selection when Ctrl is released, once the popup closed, in the same task", async () => {
     const tab = (key: string, lastActive: number) => ({
       input: { kind: "agent-session", key },
       title: key,
@@ -508,7 +508,9 @@ describe("Switcher", () => {
     await tick();
     expect(screen.getByRole("dialog", { name: "Switcher" })).toBeInTheDocument();
     act(() => void fireEvent.keyUp(window, { key: "Control" }));
-    expect(seen).toEqual([{ key: "task-a", popup: false, focus: editor }]);
+    // The editor opened takes focus itself: the one left behind doesn't get it back first.
+    expect(seen).toEqual([{ key: "task-a", popup: false, focus: document.body }]);
+    expect(editor).not.toHaveFocus();
   });
 });
 

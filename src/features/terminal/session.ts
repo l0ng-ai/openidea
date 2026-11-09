@@ -14,6 +14,7 @@ import { editorService, notifications, registerFontZoomSurface } from "@/workben
 import { fitScheduler, settledResize } from "./fit";
 import { watchWindowsPty, windowsPty } from "./windowsPty";
 import { installTerminalDrop } from "./drop";
+import { installDomRowCache } from "./domRowCache";
 import { installTerminalPaste, pasteTerminalClipboard } from "./paste";
 import { ImeCommitGate } from "./imeCommit";
 import { ownTerminalInput } from "./imeInput";
@@ -451,6 +452,7 @@ export class TerminalSession {
     // xterm's DOM renderer: the WebGL one rasterizes glyphs per background, so
     // selected text rendered at a visibly different weight than the rest.
     this.term.open(this.host);
+    installDomRowCache(this.term);
     this.opened = true;
     remeasureWhenFontsLoad(
       this.term,
