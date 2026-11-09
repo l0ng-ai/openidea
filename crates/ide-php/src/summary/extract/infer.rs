@@ -24,7 +24,7 @@ use mago_syntax::walker::Walker;
 use crate::names::{NameKind, NameScope, Resolution};
 use crate::types::ops::{Op, is_int, is_string, literal_type, op_type, unary_type};
 use crate::types::provider::{CallKind, CallSite, NO_NEXT, site_args};
-use crate::types::{LazyType, Relative, Type, TypeProviders};
+use crate::types::{LazyType, Relative, Signature, Type, TypeProviders};
 
 /// Infers types from expressions in one name scope.
 pub(super) struct Infer<'s> {
@@ -227,9 +227,28 @@ impl Infer<'_> {
     fn arg_types(&self, list: &ArgumentList<'_>) -> Vec<LazyType> {
         list.arguments
             .iter()
-            .map(|argument| match argument {
-                Argument::Positional(argument) => self.expr_inner(argument.value),
-                Argument::Named(argument) => self.expr_inner(argument.value),
+            .map(|argument| {
+                let value = match argument {
+                    Argument::Positional(argument) => argument.value,
+                    Argument::Named(argument) => argument.value,
+                };
+                // A closure with a declared return type keeps it, for the
+                // providers (`Attribute::make(get: fn (): string => …)`).
+                let hint = match value {
+                    Expression::Closure(closure) => closure.return_type_hint.as_ref(),
+                    Expression::ArrowFunction(arrow) => arrow.return_type_hint.as_ref(),
+                    _ => None,
+                };
+                match hint {
+                    Some(hint) => {
+                        let return_type = Type::from_hint(&super::type_hint(self.scope, &hint.hint));
+                        known(Type::Closure(Some(Box::new(Signature {
+                            params: Vec::new(),
+                            return_type: Some(return_type),
+                        }))))
+                    }
+                    None => self.expr_inner(value),
+                }
             })
             .collect()
     }

@@ -5,9 +5,15 @@
 //! and where they come from. The builder is typed `Query\Builder<'posts'>`
 //! by the Laravel type provider, so the `eloquentField` places on it
 //! (`where('…')`, `orderBy`, `insert([...])`) complete that table's columns.
+//! The tables a query joins (`->join('users', …)`, on a query or an
+//! Eloquent builder) are this kind too, and are remembered by the builder
+//! the same way. A table may have an alias (`'posts as p'`): the kind is
+//! about the table's part.
 
+use super::eloquent::table_alias;
 use super::{CalleePattern, PlacePattern, RefContext, RefItem, ReferenceKind};
 use crate::navigate::Target;
+use crate::types::provider::laravel::JOINS;
 
 const TABLE: CalleePattern = CalleePattern::Method {
     classes: &[
@@ -18,7 +24,18 @@ const TABLE: CalleePattern = CalleePattern::Method {
     names: &["table"],
 };
 
-static PATTERNS: [PlacePattern; 1] = [PlacePattern::argument(TABLE, 0, "table")];
+const JOIN: CalleePattern = CalleePattern::Method {
+    classes: &[
+        "Illuminate\\Database\\Query\\Builder",
+        "Illuminate\\Database\\Eloquent\\Builder",
+        "Illuminate\\Database\\Eloquent\\Model",
+        "Illuminate\\Database\\Eloquent\\Relations\\Relation",
+    ],
+    names: JOINS,
+};
+
+static PATTERNS: [PlacePattern; 2] =
+    [PlacePattern::argument(TABLE, 0, "table"), PlacePattern::argument(JOIN, 0, "table")];
 
 /// See the module documentation.
 pub struct DbTable;
@@ -52,20 +69,21 @@ impl ReferenceKind for DbTable {
         &PATTERNS
     }
 
-    fn complete(&self, cx: &RefContext<'_>, value: &str, _at: usize) -> Vec<RefItem> {
+    fn complete(&self, cx: &RefContext<'_>, value: &str, at: usize) -> Vec<RefItem> {
+        // `posts as p`: the table's part.
+        let (table, _) = table_alias(value);
+        let to = value.find(table).map_or(value.len(), |start| start + table.len());
+        if at > to {
+            return Vec::new();
+        }
         Self::tables(cx)
             .into_iter()
-            .map(|(name, detail)| RefItem {
-                insert: name.clone(),
-                label: name,
-                detail: Some(detail),
-                from: 0,
-                to: value.len(),
-            })
+            .map(|(name, detail)| RefItem { insert: name.clone(), label: name, detail: Some(detail), from: 0, to })
             .collect()
     }
 
     fn resolve(&self, cx: &RefContext<'_>, value: &str, _at: usize) -> Vec<Target> {
+        let (value, _) = table_alias(value);
         // The migration creating the table, at its first column.
         let facts = cx.engine.resolver().laravel();
         facts
@@ -81,10 +99,12 @@ impl ReferenceKind for DbTable {
     }
 
     fn is_known(&self, cx: &RefContext<'_>, value: &str) -> bool {
+        let (value, _) = table_alias(value);
         cx.engine.resolver().laravel().tables.iter().any(|table| table.name == value)
     }
 
     fn hover(&self, cx: &RefContext<'_>, value: &str) -> Option<String> {
+        let (value, _) = table_alias(value);
         let facts = cx.engine.resolver().laravel();
         let columns = facts.columns(value);
         if columns.is_empty() {

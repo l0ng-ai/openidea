@@ -44,7 +44,7 @@ use mago_syntax::cst::{
 use mago_syntax::walker::Walker;
 
 use super::ops::{Op, literal_type, op_type, unary_type};
-use super::provider::{CallKind, CallSite, NO_NEXT, site_args};
+use super::provider::{CallKind, CallSite, NO_NEXT, ParameterSite, site_args};
 use super::resolve::{CallArg, declared_params};
 use super::{Context, LazyType, Relative, Resolver, Shape, ShapeField, ShapeKey, Signature, SignatureParam, Type};
 use crate::names::{FileNames, NameKind, NameScope, Resolution};
@@ -509,7 +509,10 @@ impl<'a, 'r> ExprTypes<'a, 'r> {
                 }
                 let mut templates: Vec<&str> = class_templates(class);
                 templates.extend(doc.iter().flat_map(|doc| doc.local_type_names()));
-                declared(&decl.params, doc, templates)
+                let ty = declared(&decl.params, doc, templates)?;
+                let index = decl.params.iter().position(|param| param.name == name)?;
+                let site = ParameterSite { class: &class.fqn, method: decl, index, declared: &ty };
+                Some(self.resolver.providers().parameter(&site, self.resolver).unwrap_or(ty))
             }
             Frame::Closure(closure) => self.function_parameter(&closure.parameter_list, frame.key(), &name),
             Frame::Arrow(arrow) => self.function_parameter(&arrow.parameter_list, frame.key(), &name),

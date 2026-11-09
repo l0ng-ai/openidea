@@ -47,14 +47,26 @@
 //!   builder or relation the related model's scopes and the query
 //!   builder's methods (a relation's also the Eloquent builder's); after
 //!   `$model->` the relation properties, accessors, cast attributes and
-//!   migrated columns, each with where it comes from. Dynamic `where*` calls
-//!   aren't listed.
+//!   migrated columns, each with where it comes from, and the `*_count` of
+//!   the relations a `withCount()`, `loadCount()` or `$withCount` of the
+//!   project counts (`posts_count`, or the alias of `'posts as
+//!   drafts_count'`). Dynamic `where*` calls aren't listed.
+//! - **Scopes:** the raw `Builder $query` parameter of a local scope is the
+//!   model's builder ([`TypeProvider::parameter`]).
+//! - **Accessors:** `fooBar(): Attribute` without `@return` is typed by the
+//!   declared return type of the getter it makes (`Attribute::make(get:
+//!   fn (): string => …)`).
+//! - **Joins:** `join('users', …)` and the other joins on a model's or a
+//!   table's builder add the table (as written, with its alias) to the
+//!   builder's generic arguments, for the columns of later calls.
 //!
 //! The behaviour follows Laravel's public documentation and its MIT source
 //! (`Facade::__callStatic`, `Model::__call`, `Builder::__call`,
 //! `Application::registerCoreContainerAliases`).
 
-use super::{AttributeOrigin, CallKind, CallSite, MagicMember, MagicTarget, Source, TypeProvider, provided};
+use super::{
+    AttributeOrigin, CallKind, CallSite, MagicMember, MagicTarget, ParameterSite, Source, TypeProvider, provided,
+};
 use crate::frameworks::laravel::validation::rule_type;
 use crate::summary::{ClassKind, Column, LaravelFacts, ModelCasts, RequestRules, Visibility};
 use crate::types::{ClassModel, Context, LazyType, Resolver, Type};
@@ -137,6 +149,10 @@ const RELATION_CLOSURES: &[&str] = &[
     "loadCount",
     "withExists",
 ];
+
+/// Query builder methods joining a table (its first argument).
+pub(crate) const JOINS: &[&str] =
+    &["join", "leftJoin", "rightJoin", "crossJoin", "joinWhere", "leftJoinWhere", "rightJoinWhere"];
 
 /// Container methods resolving a binding.
 const MAKE_METHODS: &[&str] = &["make", "makeWith"];
@@ -396,6 +412,24 @@ impl LaravelProvider {
                 _ => None,
             })
         })
+    }
+
+    /// `ty` with the builders among its members remembering `table` too
+    /// (a literal generic argument after the model or table they query).
+    fn joined(resolver: &Resolver<'_>, ty: Type, table: &str, context: &Context) -> Type {
+        let joined = Type::LiteralString(table.to_owned());
+        Type::union(ty.members().iter().map(|member| match member {
+            Type::Named { fqn, args }
+                if !args.is_empty()
+                    && !args.contains(&joined)
+                    && Self::is_a(resolver, member, context, &[ELOQUENT_BUILDER, QUERY_BUILDER]) =>
+            {
+                let mut args = args.clone();
+                args.push(joined.clone());
+                Type::generic(fqn, args)
+            }
+            other => other.clone(),
+        }))
     }
 
     /// The factory class among the members of `ty`, with its arguments.
@@ -666,9 +700,11 @@ impl LaravelProvider {
     fn relation_return(resolver: &Resolver<'_>, model: &ClassModel, name: &str) -> Type {
         let this = Type::named(model.fqn());
         let returned = resolver.method_return(&this, name, &Context::default());
+        // A raw accessor (`title(): Attribute`) too: `Attribute::make(get:
+        // fn (): string => …)` in the body types it.
         let raw_relation = returned.members().iter().any(|member| {
             matches!(member, Type::Named { fqn, args } if args.is_empty()
-                && resolver.class_model(fqn).is_some_and(|class| class.is_subclass_of(RELATION)))
+                && resolver.class_model(fqn).is_some_and(|class| class.is_subclass_of(RELATION) || class.is_subclass_of(ATTRIBUTE)))
         });
         if !raw_relation {
             return returned;
@@ -682,7 +718,7 @@ impl LaravelProvider {
             .unwrap_or(Type::Mixed);
         let generic = inferred.members().iter().any(|member| {
             matches!(member, Type::Named { fqn, args } if !args.is_empty()
-                && resolver.class_model(fqn).is_some_and(|class| class.is_subclass_of(RELATION)))
+                && resolver.class_model(fqn).is_some_and(|class| class.is_subclass_of(RELATION) || class.is_subclass_of(ATTRIBUTE)))
         });
         if generic { inferred } else { returned }
     }
@@ -733,14 +769,38 @@ impl LaravelProvider {
             .or_else(|| Self::count_relation(resolver, class, name).map(|_| Type::Int))
     }
 
-    /// The relation `name` (`posts_count`, `blog_posts_count`) counts, as
-    /// `withCount()` loads it.
+    /// The relation property `name` (`posts_count`, `blog_posts_count`, an
+    /// alias) counts, when some `withCount()`, `loadCount()` or `$withCount`
+    /// of the project counts a relation of model `class` under that name.
     fn count_relation(resolver: &Resolver<'_>, class: &str, name: &str) -> Option<String> {
-        let relation = name.strip_suffix("_count").filter(|relation| !relation.is_empty())?;
+        let facts = resolver.laravel();
+        let counted: Vec<&str> = facts
+            .counted
+            .iter()
+            .filter(|counted| counted.property == name)
+            .map(|counted| counted.relation.as_str())
+            .collect();
+        if counted.is_empty() {
+            return None;
+        }
         Self::model_relations(resolver, class)
             .into_iter()
-            .find(|found| found.name == relation || snake(&found.name) == relation)
+            .find(|found| counted.iter().any(|relation| found.name.eq_ignore_ascii_case(relation)))
             .map(|found| found.name)
+    }
+
+    /// Any relation of model `class` counted as `name` (`posts_count`) the
+    /// way `withCount('posts')` would, counted anywhere or not: what a
+    /// query may name without the inspection knowing about every
+    /// `withCount` (scopes, `$withCount`, packages).
+    pub(crate) fn any_count_relation(resolver: &Resolver<'_>, class: &str, name: &str) -> bool {
+        let Some(relation) = name.strip_suffix("_count").filter(|relation| !relation.is_empty()) else {
+            return Self::count_relation(resolver, class, name).is_some();
+        };
+        Self::model_relations(resolver, class)
+            .into_iter()
+            .any(|found| found.name == relation || snake(&found.name) == relation)
+            || Self::count_relation(resolver, class, name).is_some()
     }
 
     /// The public methods of `class` other than magic ones, forwarded to.
@@ -841,11 +901,14 @@ impl LaravelProvider {
             };
             push(&mut found, column.name.clone(), origin);
         }
-        // `withCount('posts')` loads `posts_count` (laravel-ide-helper lists
-        // one for every relation too).
-        for relation in Self::model_relations(resolver, &class) {
-            let origin = AttributeOrigin::Count { method: relation.name.clone() };
-            push(&mut found, format!("{}_count", snake(&relation.name)), origin);
+        // `withCount('posts')` loads `posts_count`: only the relations some
+        // `withCount()`, `loadCount()` or `$withCount` counts.
+        let relations = Self::model_relations(resolver, &class);
+        for counted in &facts.counted {
+            if let Some(relation) = relations.iter().find(|r| r.name.eq_ignore_ascii_case(&counted.relation)) {
+                let origin = AttributeOrigin::Count { method: relation.name.clone() };
+                push(&mut found, counted.property.clone(), origin);
+            }
         }
         out.extend(found);
     }
@@ -1117,6 +1180,32 @@ fn camel(studly: &str) -> String {
     chars.next().map(|first| first.to_lowercase().chain(chars).collect()).unwrap_or_default()
 }
 
+impl LaravelProvider {
+    /// `Attribute::make(get: fn (): string => …)`: what the getter returns
+    /// (its declared return type in summaries), so an accessor declared
+    /// with a raw `Attribute` is typed without `@return`.
+    fn accessor_getter(site: &CallSite<'_>) -> Option<Type> {
+        if site.kind != CallKind::StaticMethod || !site.name.eq_ignore_ascii_case("make") {
+            return None;
+        }
+        let Some(LazyType::Known(Type::Named { fqn, .. })) = site.receiver else { return None };
+        if !fqn.trim_start_matches('\\').eq_ignore_ascii_case(ATTRIBUTE) {
+            return None;
+        }
+        let index = site
+            .args
+            .iter()
+            .position(|arg| arg.name.as_deref() == Some("get"))
+            .or_else(|| site.args.first().filter(|arg| arg.name.is_none()).map(|_| 0))?;
+        match (site.arg_types)().into_iter().nth(index)? {
+            LazyType::Known(Type::Closure(Some(signature))) => {
+                signature.return_type.filter(|ty| !matches!(ty, Type::Mixed | Type::Void))
+            }
+            _ => None,
+        }
+    }
+}
+
 impl TypeProvider for LaravelProvider {
     fn key(&self) -> &'static str {
         "laravel"
@@ -1142,6 +1231,9 @@ impl TypeProvider for LaravelProvider {
                 Some(provided(self.key(), payload, Vec::new(), (site.next)()))
             }
             CallKind::Method | CallKind::StaticMethod => {
+                if let Some(getter) = Self::accessor_getter(site) {
+                    return Some(LazyType::Known(Type::generic(ATTRIBUTE, vec![getter, Type::Mixed])));
+                }
                 let receiver = site.receiver?.clone();
                 // In summaries, only what is likely to matter there: relation
                 // definitions and static calls on a class (facades, models).
@@ -1185,7 +1277,14 @@ impl TypeProvider for LaravelProvider {
                 let [name, class, counted, string] = rest.splitn(4, ':').collect::<Vec<_>>()[..] else {
                     return None;
                 };
-                self.resolve_call(name, (class, counted == "n"), string, args, resolver, context)
+                let ty = self.resolve_call(name, (class, counted == "n"), string, args, resolver, context);
+                if is_one_of(JOINS, name) && !string.is_empty() {
+                    // The builder remembers the joined table (`'users as u'`)
+                    // after the table or model it queries.
+                    let base = ty.or_else(|| args.get(1).filter(|core| **core != Type::Mixed).cloned())?;
+                    return Some(Self::joined(resolver, base, string, context));
+                }
+                ty
             }
             _ => None,
         }
@@ -1217,6 +1316,22 @@ impl TypeProvider for LaravelProvider {
             return None;
         }
         Self::relation_closure(resolver, receiver, method, key, context)
+    }
+
+    /// The `Builder $query` of a model's local scope (`scopePublished`, a
+    /// `#[Scope]` method), declared raw, is the model's builder.
+    fn parameter(&self, site: &ParameterSite<'_>, resolver: &Resolver<'_>) -> Option<Type> {
+        let scope = scope_name(&site.method.name).is_some() || is_scope_attributed(site.method);
+        if site.index != 0 || !scope || site.method.is_static {
+            return None;
+        }
+        let raw = matches!(site.declared, Type::Named { fqn, args }
+            if args.is_empty() && fqn.trim_start_matches('\\').eq_ignore_ascii_case(ELOQUENT_BUILDER));
+        if !raw || !Self::installed(resolver) {
+            return None;
+        }
+        let model = resolver.class_model(site.class).filter(|model| model.is_subclass_of(MODEL))?;
+        Some(Type::generic(ELOQUENT_BUILDER, vec![Type::named(model.fqn())]))
     }
 }
 

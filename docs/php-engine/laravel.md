@@ -204,6 +204,35 @@ Monica does have a real gap, though: almost none of its rules sit in Form Reques
 
 `real_app_checklist` passes on Monica. On Bagisto it passes too, but only with larger thread stacks (`RUST_MIN_STACK=67108864`): in a debug build an indexing thread overflows its default 2 MB stack on one of Bagisto's files. That happens at the 8.25 commit as well, so it isn't new. Release builds and the benches are not affected.
 
+### Eloquent on real applications (phase 8.27, 2026-11-10)
+
+`real_app_eloquent_columns` (ignored, `LARAVEL_APP_DIR`) builds the model view of every model, then runs the inspections on the application's own PHP files (`app/`, `packages/`, `database/`, `routes/`) and prints every `PhpUnknownEloquentColumn` problem. Its first runs found these false positives, now fixed:
+
+- **`foreignIdFor(User::class)`** made the migration "not understood", so 64 of Monica's 70 models had no certain schema and weren't checked at all. It is `user_id` now, and `numericMorphs()` is read too.
+- **`NestedSet::columns($table)`** (kalnoy/nestedset) passed for understood while it makes `_lft`, `_rgt` and `parent_id`. It makes those columns now, and any other call handed the blueprint makes the table uncertain.
+- **Pivot columns:** `$account->currencies()->where('active', true)` names a `withPivot('active')` column. Unqualified names on a many-to-many or through relation aren't reported.
+- **Select aliases:** `select(DB::raw('… as year'))->orderBy('year')`. `orderBy`, `groupBy`, `having` and the like aren't checked.
+- **Translatable models:** `$translatedAttributes` (astrotomic/laravel-translatable) are attributes.
+- **The model's own lists:** `$guarded = ['shipping_address']` names a method of the model. A method, or its snake case, is fine there.
+
+Debug build, with `RUST_MIN_STACK=67108864`:
+
+| Application | Models | Certain schema | Files inspected | Unknown-column problems |
+| ----------- | ------ | -------------- | --------------- | ----------------------- |
+| Monica      | 70     | 63             | 891             | 1                       |
+| Bagisto     | 127    | 105            | 2,418           | 11                      |
+
+Every model has a model view on both. Every remaining problem names a column that no migration makes:
+
+- Monica: `Goal::create(['author_id' => …])`, while `goals` has no `author_id`.
+- Bagisto: `CartRule::$fillable` lists `actions`. `ProductCustomizableOptionPrice::$fillable` lists `is_default`, `is_user_defined` and `qty`. `$guarded`/`$hidden` entries name `created_at`/`updated_at` of a table without timestamps, `token`, `_token` and `child`. A test calls `forceFill(['base_image' => …])` on an `OrderItem`.
+
+To run it again:
+
+```sh
+LARAVEL_APP_DIR=../php-corpus/apps/monica RUST_MIN_STACK=67108864 cargo test -p ide-php --test laravel_parity -- --ignored real_app_eloquent_columns --nocapture
+```
+
 ## Still missing
 
 These gaps are tracked as phases 8.22–8.29 in [ROADMAP.md](ROADMAP.md).
@@ -241,7 +270,7 @@ These are the gaps against the feature list in LARAVEL-ROADMAP.md, gathered from
    - Unknown-guard and unknown-broker inspections.
    - Completion of `in:` values and `Rule::` arguments.
    - Generated rules with `Rule::enum()` and `max:255`.
-6. **Eloquent.**
+6. **Eloquent.** Done in 8.27. A `*_count` property is offered once some `withCount()`, `loadCount()` or `$withCount` of the project counts that relation. This is project-wide, not tracked along the query that loads the model.
    - Columns of the related model in the second argument of `whereRelation`/`withSum`.
    - `*_count` only after `withCount`.
    - A raw `Builder $query` scope's model.

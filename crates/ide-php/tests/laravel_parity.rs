@@ -603,3 +603,71 @@ fn real_app_checklist() {
     engine.shutdown();
     assert!(failures.is_empty(), "failing generators:\n{}", failures.join("\n"));
 }
+
+/// The PHP files of the application itself under `root` (not `vendor/`,
+/// `node_modules/` or `storage/`).
+fn app_php_files(root: &Path) -> Vec<PathBuf> {
+    let mut out = Vec::new();
+    let mut stack: Vec<PathBuf> =
+        ["app", "packages", "database", "routes"].iter().map(|dir| root.join(dir)).filter(|dir| dir.is_dir()).collect();
+    while let Some(dir) = stack.pop() {
+        let Ok(entries) = std::fs::read_dir(&dir) else { continue };
+        for entry in entries.flatten() {
+            let path = entry.path();
+            let name = entry.file_name().to_string_lossy().into_owned();
+            if path.is_dir() {
+                if !["vendor", "node_modules", "storage", ".git"].contains(&name.as_str()) {
+                    stack.push(path);
+                }
+            } else if name.ends_with(".php") && !name.ends_with(".blade.php") {
+                out.push(path);
+            }
+        }
+    }
+    out.sort();
+    out
+}
+
+/// Phase 8.27: the model view of every model of a real application, and the
+/// unknown-column problems of its own files (`LARAVEL_APP_DIR`). Prints
+/// each problem so they can be checked for false positives; the counts
+/// are recorded in `docs/php-engine/laravel.md`.
+#[test]
+#[ignore = "needs a real Laravel application in LARAVEL_APP_DIR"]
+fn real_app_eloquent_columns() {
+    let Some(root) = std::env::var_os("LARAVEL_APP_DIR").map(PathBuf::from) else {
+        eprintln!("LARAVEL_APP_DIR isn't set; skipped");
+        return;
+    };
+    let root = dunce::canonicalize(&root).expect("LARAVEL_APP_DIR exists");
+    let tmp = tempfile::tempdir().unwrap();
+    let engine = open_engine(&root, tmp.path());
+    let models = engine.laravel_models();
+    let mut without_view = Vec::new();
+    let mut certain = 0;
+    for model in &models {
+        match engine.laravel_model_view(model) {
+            Some(view) => certain += usize::from(view.schema_certain),
+            None => without_view.push(model.clone()),
+        }
+    }
+    eprintln!("{} models, {certain} with a certain schema", models.len());
+    assert!(!models.is_empty(), "no models");
+    assert!(without_view.is_empty(), "no model view for {without_view:?}");
+
+    let files = app_php_files(&root);
+    let mut problems = Vec::new();
+    for path in &files {
+        let Ok(text) = std::fs::read_to_string(path) else { continue };
+        let found = engine.inspect_file(path, &text, &CancellationToken::new()).unwrap_or_default();
+        for problem in found.iter().filter(|d| d.code.as_deref() == Some("PhpUnknownEloquentColumn")) {
+            let rel = slashes(path.strip_prefix(&root).unwrap_or(path));
+            problems.push(format!("{rel}:{}: {}", problem.range.start.line + 1, problem.message));
+        }
+    }
+    for problem in &problems {
+        eprintln!("{problem}");
+    }
+    eprintln!("{} files inspected, {} unknown-column problems", files.len(), problems.len());
+    engine.shutdown();
+}

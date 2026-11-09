@@ -50,7 +50,11 @@ impl Project {
     }
 
     fn eloquent_type(&mut self, body: &str) -> String {
-        let (doc, pos) = self.open(PROBE, &controller(body));
+        self.type_in(PROBE, &controller(body))
+    }
+
+    fn type_in(&mut self, rel: &str, source: &str) -> String {
+        let (doc, pos) = self.open(rel, source);
         let found = self.engine.type_at(doc, pos).map(|ty| ty.to_string()).unwrap_or_default();
         self.engine.document_closed(doc);
         found
@@ -222,8 +226,10 @@ fn types_relation_closures_collections_and_factories() {
         ("Post::factory(3)->make()/*|*/;", collection("Post")),
         ("Post::factory()->count(2)->state([])->create()/*|*/;", collection("Post")),
         ("Post::factory()->createOne()/*|*/;", "App\\Models\\Post".to_owned()),
-        ("$post->tags_count/*|*/;", "int".to_owned()),
-        ("$user->posts_count/*|*/;", "int".to_owned()),
+        // `*_count` after a `withCount` of the relation.
+        ("Post::withCount('tags')->get();\n        $post->tags_count/*|*/;", "int".to_owned()),
+        ("User::query()->withCount(['posts'])->get();\n        $user->posts_count/*|*/;", "int".to_owned()),
+        ("Post::withCount('comments as replies');\n        $post->replies/*|*/;", "int".to_owned()),
         // A column of that name wins (and is an int too).
         ("$post->comments_count/*|*/;", "int".to_owned()),
     ];
@@ -231,10 +237,243 @@ fn types_relation_closures_collections_and_factories() {
         assert_eq!(project.eloquent_type(body), expected, "{body}");
     }
     // `withCount` loads `*_count` properties: listed with the attributes.
-    let found = project.eloquent_labels(PROBE, &controller("$post->tags_c/*|*/"));
+    let found = project.eloquent_labels(PROBE, &controller("Post::withCount('tags');\n        $post->tags_c/*|*/"));
     assert_eq!(names(&found), ["tags_count"]);
-    let hover = project.eloquent_hover(PROBE, &controller("$post->tags_c/*|*/ount;"));
+    let hover = project.eloquent_hover(PROBE, &controller("Post::withCount('tags');\n        $post->tags_c/*|*/ount;"));
     assert!(hover.contains("withCount('tags')"), "{hover}");
+}
+
+#[test]
+fn counts_only_after_a_matching_with_count() {
+    let mut project = Project::app();
+    // No `withCount('tags')` anywhere: no `tags_count`.
+    assert_eq!(project.eloquent_type("$post->tags_count/*|*/;"), "mixed");
+    assert!(project.eloquent_labels(PROBE, &controller("$post->tags_c/*|*/")).is_empty());
+    // Counting another relation doesn't count this one.
+    assert_eq!(project.eloquent_type("Post::withCount('comments');\n        $post->tags_count/*|*/;"), "mixed");
+    // `loadCount`, and a model's `$withCount`.
+    assert_eq!(project.eloquent_type("$post->loadCount('tags');\n        $post->tags_count/*|*/;"), "int");
+    let source = post_with(&project, "protected $withCount = ['author'];/*|*/");
+    let (post_doc, _) = project.open(POST, &source);
+    assert_eq!(project.eloquent_type("$post->author_count/*|*/;"), "int");
+    project.engine.document_closed(post_doc);
+    // The inspection doesn't know every `withCount` (scopes, packages):
+    // the count of any relation is fine there.
+    assert!(project.column_problems(PROBE, &controller("Post::where('tags_count', 1);")).is_empty());
+}
+
+#[test]
+fn model_lists_accept_translated_attributes_and_methods() {
+    let mut project = Project::app();
+    let source = post_with(
+        &project,
+        "public $translatedAttributes = ['headline'];\n    protected $guarded = ['headline', 'author', 'word_total', 'missing'];\n\n    public function wordTotal(): int\n    {\n        return 0;\n    }",
+    );
+    let found = project.column_problems(POST, &source);
+    let messages: Vec<&str> = found.iter().map(|(_, message)| message.as_str()).collect();
+    assert_eq!(messages, ["Unknown column 'missing' of model 'Post' (table 'posts')"]);
+    // A translated attribute is fine in queries too; a method name isn't.
+    let (doc, _) = project.open(POST, &format!("{source}/*|*/"));
+    let found = project.column_problems(PROBE, &controller("Post::where('headline', 1)->where('word_total', 2);"));
+    assert_eq!(found, [(11, "Unknown column 'word_total' of model 'Post' (table 'posts')".to_owned())]);
+    project.engine.document_closed(doc);
+}
+
+#[test]
+fn related_columns_in_where_relation_and_aggregates() {
+    let mut project = Project::app();
+    for body in ["Post::whereRelation('comments', '/*|*/body', 'x');", "Post::withSum('comments', '/*|*/user_id');"] {
+        assert_eq!(project.eloquent_kind_at(body), Some("eloquentField"), "{body}");
+    }
+    let found = project.eloquent_labels(PROBE, &controller("Post::whereRelation('comments', '/*|*/');"));
+    let labels = names(&found);
+    assert!(labels.contains(&"body") && labels.contains(&"user_id"), "{labels:?}");
+    assert!(!labels.contains(&"title"), "{labels:?}");
+    let found = project.eloquent_labels(PROBE, &controller("$user->posts()->withAvg('comments', 'po/*|*/');"));
+    assert_eq!(names(&found), ["post_id"]);
+    // Nested relations, and an alias of the aggregate.
+    let found = project.eloquent_labels(PROBE, &controller("User::whereRelation('posts.comments', 'bo/*|*/');"));
+    assert_eq!(names(&found), ["body"]);
+    let found = project.eloquent_labels(PROBE, &controller("Post::withMax('comments as latest', 'cre/*|*/');"));
+    assert_eq!(names(&found), ["created_at"]);
+
+    let found = project.eloquent_goto(&controller("Post::whereRelation('comments', 'bo/*|*/dy', 'x');"));
+    assert_eq!(
+        found,
+        [("database/migrations/2024_05_02_100000_create_comments_table.php".to_owned(), 14, "'body'".to_owned())]
+    );
+    let found = project.column_problems(
+        PROBE,
+        &controller("Post::whereRelation('comments', 'titel', 'x');\n        Post::withSum('comments', 'user_id');"),
+    );
+    assert_eq!(found, [(11, "Unknown column 'titel' of model 'Comment' (table 'comments')".to_owned())]);
+}
+
+#[test]
+fn scope_builders_are_the_models() {
+    let mut project = Project::app();
+    let scope = |project: &Project, body: &str| {
+        post_with(
+            project,
+            &format!("public function scopeDrafts(Builder $query): Builder\n    {{\n        {body}\n    }}"),
+        )
+    };
+    let source = scope(&project, "return $query/*|*/;");
+    assert_eq!(project.type_in(POST, &source), "Illuminate\\Database\\Eloquent\\Builder<App\\Models\\Post>");
+    let source = scope(&project, "return $query->where('sl/*|*/');");
+    assert_eq!(names(&project.eloquent_labels(POST, &source)), ["slug"]);
+    let source = scope(&project, "return $query->where('titel', 1);");
+    assert_eq!(
+        project.column_problems(POST, &source),
+        [(25, "Unknown column 'titel' of model 'Post' (table 'posts')".to_owned())]
+    );
+    // Its scopes complete on it.
+    let source = scope(&project, "return $query->publ/*|*/;");
+    assert!(names(&project.eloquent_labels(POST, &source)).contains(&"published"));
+    // Not a scope: a raw builder stays raw.
+    let source = post_with(
+        &project,
+        "public function drafts(Builder $query): Builder\n    {\n        return $query/*|*/;\n    }",
+    );
+    assert_eq!(project.type_in(POST, &source), "Illuminate\\Database\\Eloquent\\Builder");
+}
+
+#[test]
+fn typed_attribute_accessors_without_return_docs() {
+    let mut project = Project::app();
+    let source = post_with(
+        &project,
+        "protected function headline(): Attribute\n    {\n        return Attribute::make(get: fn (): string => strtoupper($this->title));\n    }\n\n    protected function wordCount(): Attribute\n    {\n        return Attribute::make(fn (): int => 1);\n    }\n\n    protected function untyped(): Attribute\n    {\n        return Attribute::make(get: fn () => 1);\n    }/*|*/",
+    );
+    let (post_doc, _) = project.open(POST, &source);
+    assert_eq!(project.eloquent_type("$post->headline/*|*/;"), "string");
+    assert_eq!(project.eloquent_type("$post->word_count/*|*/;"), "int");
+    let found = project.eloquent_labels(PROBE, &controller("$post->head/*|*/"));
+    assert_eq!(names(&found), ["headline"]);
+    // The documented one still wins; an untyped getter isn't guessed.
+    assert_eq!(project.eloquent_type("$post->excerpt/*|*/;"), "string");
+    assert_eq!(project.eloquent_type("$post->untyped/*|*/;"), "mixed");
+    project.engine.document_closed(post_doc);
+}
+
+/// A later migration renaming `body` to `content` and dropping `options`,
+/// and a rollback that would undo it.
+const CHANGE_POSTS: &str = "<?php\n\nuse Illuminate\\Database\\Migrations\\Migration;\nuse Illuminate\\Database\\Schema\\Blueprint;\nuse Illuminate\\Support\\Facades\\Schema;\n\nreturn new class extends Migration\n{\n    public function up(): void\n    {\n        Schema::table('posts', function (Blueprint $table) {\n            $table->renameColumn('body', 'content');\n            $table->dropColumn(['options', 'status']);\n        });\n    }\n\n    public function down(): void\n    {\n        Schema::table('posts', function (Blueprint $table) {\n            $table->renameColumn('content', 'body');\n            $table->dropColumn('slug');\n        });\n    }\n};\n/*|*/";
+
+#[test]
+fn later_migrations_drop_and_rename_columns() {
+    let mut project = Project::app();
+    let (doc, _) = project.open("database/migrations/2024_06_01_000000_change_posts_table.php", CHANGE_POSTS);
+    let columns: Vec<String> = project
+        .engine
+        .resolver()
+        .laravel()
+        .columns("posts")
+        .into_iter()
+        .map(|(_, column)| column.name.clone())
+        .collect();
+    for gone in ["body", "options", "status"] {
+        assert!(!columns.contains(&gone.to_owned()), "{gone}: {columns:?}");
+    }
+    for kept in ["title", "slug", "content", "comments_count"] {
+        assert!(columns.contains(&kept.to_owned()), "{kept}: {columns:?}");
+    }
+    let labels = project.eloquent_labels(PROBE, &controller("Post::where('conte/*|*/');"));
+    assert_eq!(names(&labels), ["content"]);
+    let labels = project.eloquent_labels(PROBE, &controller("Post::where('bo/*|*/');"));
+    assert!(names(&labels).is_empty(), "{labels:?}");
+    assert_eq!(project.eloquent_type("$post->content/*|*/;"), "string");
+    let found = project.eloquent_goto(&controller("Post::where('cont/*|*/ent', 'x');"));
+    assert_eq!(
+        found,
+        [("database/migrations/2024_06_01_000000_change_posts_table.php".to_owned(), 11, "'content'".to_owned())]
+    );
+    let found = project.column_problems(PROBE, &controller("Post::where('body', 'x')->where('content', 'y');"));
+    assert_eq!(found, [(11, "Unknown column 'body' of model 'Post' (table 'posts')".to_owned())]);
+    project.engine.document_closed(doc);
+}
+
+#[test]
+fn joins_and_table_aliases() {
+    let mut project = Project::app();
+    let db = r"\Illuminate\Support\Facades\DB";
+    let table: &[(String, Option<&str>)] = &[
+        (format!("{db}::table('posts')->join('/*|*/users', 'users.id', '=', 'posts.author_id');"), Some("dbTable")),
+        (
+            format!("{db}::table('posts')->join('users', '/*|*/users.id', '=', 'posts.author_id');"),
+            Some("eloquentField"),
+        ),
+        (
+            format!("{db}::table('posts')->join('users', 'users.id', '=', '/*|*/posts.author_id');"),
+            Some("eloquentField"),
+        ),
+        ("Post::query()->leftJoin('/*|*/users', 'users.id', '=', 'posts.author_id');".to_owned(), Some("dbTable")),
+    ];
+    for (body, expected) in table {
+        assert_eq!(project.eloquent_kind_at(body), *expected, "{body}");
+    }
+    // The joined table is remembered by the builder.
+    assert_eq!(
+        project
+            .eloquent_type(&format!("{db}::table('posts')->join('users', 'users.id', '=', 'posts.author_id')/*|*/;")),
+        r"Illuminate\Database\Query\Builder<string, string>"
+    );
+    // Unqualified columns from either table; a qualified one from its table.
+    let join = format!("{db}::table('posts')->join('users', 'users.id', '=', 'posts.author_id')");
+    let found = project.eloquent_labels(PROBE, &controller(&format!("{join}->where('ema/*|*/');")));
+    assert_eq!(names(&found), ["email", "email_verified_at"]);
+    let found = project.eloquent_labels(PROBE, &controller(&format!("{join}->where('sl/*|*/');")));
+    assert_eq!(names(&found), ["slug"]);
+    let found =
+        project.eloquent_labels(PROBE, &controller(&format!("{db}::table('posts')->join('users', 'users.ema/*|*/');")));
+    assert_eq!(names(&found), ["email", "email_verified_at"]);
+    let found = project.eloquent_goto(&controller(&format!("{join}->where('ema/*|*/il', 'x');")));
+    assert_eq!(found.len(), 1, "{found:?}");
+    assert_eq!(found[0].0, "database/migrations/0001_01_01_000000_create_users_table.php");
+
+    // Aliases.
+    let aliased = format!("{db}::table('posts as p')->join('users as u', 'u.id', '=', 'p.author_id')");
+    let found = project.eloquent_labels(PROBE, &controller(&format!("{aliased}->where('u.ema/*|*/');")));
+    assert_eq!(names(&found), ["email", "email_verified_at"]);
+    let found = project.eloquent_labels(PROBE, &controller(&format!("{aliased}->orderBy('p.sl/*|*/');")));
+    assert_eq!(names(&found), ["slug"]);
+    let found = project.eloquent_labels(PROBE, &controller(&format!("{db}::table('pos/*|*/ts as p');")));
+    assert!(names(&found).contains(&"posts"), "{found:?}");
+    let hover = project.eloquent_hover(PROBE, &controller(&format!("{db}::table('pos/*|*/ts as p');")));
+    assert!(hover.contains("Table `posts`"), "{hover}");
+
+    // The inspection checks every table of the query.
+    let found = project.column_problems(
+        PROBE,
+        &controller(&format!(
+            "{join}->where('email', 1)->where('slug', 2)->where('nope', 3);\n        {aliased}->where('u.email', 1)->where('p.nope', 2);"
+        )),
+    );
+    assert_eq!(
+        found,
+        [
+            (11, "Unknown column 'nope' of tables 'posts', 'users'".to_owned()),
+            (12, "Unknown column 'nope' of table 'posts'".to_owned()),
+        ]
+    );
+    // Ordering and grouping may name an alias of the select list.
+    let found = project.column_problems(
+        PROBE,
+        &controller("Post::select(\\DB::raw('year(published_at) as year'))->orderBy('year')->groupBy('year');"),
+    );
+    assert!(found.is_empty(), "{found:?}");
+    // A many-to-many relation's query joins its pivot table.
+    let found =
+        project.column_problems(PROBE, &controller("$post->tags()->where('tag_id', 1)->where('tags.nope', 2);"));
+    assert_eq!(found, [(11, "Unknown column 'nope' of model 'Tag' (table 'tags')".to_owned())]);
+    // A model's query: the joined table's columns are fine too.
+    let found = project.column_problems(
+        PROBE,
+        &controller(
+            "Post::query()->join('users', 'users.id', '=', 'posts.author_id')->where('email', 1)->where('nope', 2);",
+        ),
+    );
+    assert_eq!(found, [(11, "Unknown column 'nope' of model 'Post' (table 'posts')".to_owned())]);
 }
 
 #[test]

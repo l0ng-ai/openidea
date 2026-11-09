@@ -33,6 +33,10 @@ pub struct LaravelFacts {
     /// (`Validator::make($data, $this->rules())`), so what they return,
     /// in the class and its subclasses, is a rules array.
     pub rule_methods: Vec<RuleMethod>,
+    /// The relations `withCount(…)` and `loadCount(…)` calls and `$withCount`
+    /// properties name, with the property each loads (`posts_count`, or the
+    /// alias of `'posts as drafts_count'`).
+    pub counted: Vec<CountedRelation>,
 }
 
 impl LaravelFacts {
@@ -43,6 +47,7 @@ impl LaravelFacts {
             && self.routes.is_empty()
             && self.rules.is_empty()
             && self.rule_methods.is_empty()
+            && self.counted.is_empty()
     }
 
     /// The facts of several files, in order.
@@ -63,8 +68,56 @@ impl LaravelFacts {
                 .extend(facts.routes.iter().map(|route| RouteRegistration { file: file.clone(), ..route.clone() }));
             out.rules.extend(facts.rules.iter().map(|rules| RequestRules { file: file.clone(), ..rules.clone() }));
             out.rule_methods.extend(facts.rule_methods.iter().cloned());
+            for counted in &facts.counted {
+                if !out.counted.contains(counted) {
+                    out.counted.push(counted.clone());
+                }
+            }
         }
+        out.apply_schema_changes();
         out
+    }
+
+    /// Applies the columns later migrations drop and rename to the tables
+    /// before them, in order: a dropped column is removed from the earlier
+    /// tables of its name, and a renamed one moves to the renaming
+    /// migration under its new name (keeping its type).
+    fn apply_schema_changes(&mut self) {
+        for at in 0..self.tables.len() {
+            let (before, rest) = self.tables.split_at_mut(at);
+            let current = &mut rest[0];
+            if current.dropped.is_empty() && current.renamed.is_empty() {
+                continue;
+            }
+            let mut earlier: Vec<&mut Table> =
+                before.iter_mut().filter(|table| table.name.eq_ignore_ascii_case(&current.name)).collect();
+            for renamed in &current.renamed {
+                let mut found = None;
+                for table in earlier.iter_mut() {
+                    if let Some(position) = table.columns.iter().position(|column| column.name == renamed.from) {
+                        found = Some(table.columns.remove(position));
+                    }
+                }
+                let column = match found {
+                    Some(column) => Column { name: renamed.to.clone(), loc: renamed.loc, ..column },
+                    // Made by a statement the migrations didn't understand.
+                    None => Column {
+                        name: renamed.to.clone(),
+                        ty: DocType("mixed".to_owned()),
+                        nullable: false,
+                        length: None,
+                        loc: renamed.loc,
+                    },
+                };
+                current.columns.retain(|known| known.name != column.name);
+                current.columns.push(column);
+            }
+            for dropped in &current.dropped {
+                for table in earlier.iter_mut() {
+                    table.columns.retain(|column| &column.name != dropped);
+                }
+            }
+        }
     }
 
     /// The columns migrations give `table` (with the migration call adding
@@ -132,9 +185,48 @@ pub struct Table {
     /// in summaries.
     #[serde(skip)]
     pub database: Option<String>,
+    /// The columns the call drops (`dropColumn('a')`, `dropTimestamps()`),
+    /// from the tables of earlier migrations.
+    pub dropped: Vec<String>,
+    /// The columns the call renames (`renameColumn('from', 'to')`), in the
+    /// tables of earlier migrations.
+    pub renamed: Vec<RenamedColumn>,
+}
+
+/// `renameColumn('from', 'to')`.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct RenamedColumn {
+    pub from: String,
+    pub to: String,
+    /// The new name in the migration.
+    pub loc: Loc,
+}
+
+/// A relation counted by `withCount('posts')` and the like.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct CountedRelation {
+    /// The relation method's name.
+    pub relation: String,
+    /// The property the count is loaded as (`posts_count`, or the alias).
+    pub property: String,
 }
 
 impl Table {
+    /// A table a migration call makes (`created`) or changes, before any
+    /// of its statements is read.
+    pub fn new(name: String, created: bool) -> Self {
+        Self {
+            name,
+            columns: Vec::new(),
+            created,
+            partial: false,
+            file: None,
+            database: None,
+            dropped: Vec::new(),
+            renamed: Vec::new(),
+        }
+    }
+
     /// Where the columns come from, for hover: "a migration", "the
     /// database `app`".
     pub fn source_label(&self) -> String {

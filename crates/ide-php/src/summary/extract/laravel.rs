@@ -9,7 +9,12 @@
 //!   `Schema::table(…)`: the columns made by the `$table->type('name')`
 //!   statements of the closure, with `->nullable()`, and the columns of
 //!   `id()`, `timestamps()`, `softDeletes()`, `rememberToken()` and
-//!   `morphs()`.
+//!   `morphs()`; the columns `dropColumn()`, `dropTimestamps()` and the
+//!   like drop and `renameColumn()` renames (`Schema::dropColumns()` too),
+//!   outside `down()` methods.
+//! - **Counted relations:** the relations `withCount(…)` and `loadCount(…)`
+//!   name (strings, list items and array keys; `'posts as drafts_count'`
+//!   loads `drafts_count`), and those of a class's `$withCount` property.
 //! - **Casts:** the array of a class's `$casts` property, or the array a
 //!   `casts()` method returns.
 //! - **Rules:** the keys of the array a class's `rules()` method returns,
@@ -37,8 +42,8 @@ use mago_syntax::cst::{
 use super::Extractor;
 use crate::names::{NameKind, Resolution};
 use crate::summary::{
-    Binding, Cast, Column, DocType, Loc, ModelCasts, RequestRules, RouteFileKind, RoutePath, RouteRegistration,
-    RuleEntry, RuleMethod, Table,
+    Binding, Cast, Column, CountedRelation, DocType, Loc, ModelCasts, RenamedColumn, RequestRules, RouteFileKind,
+    RoutePath, RouteRegistration, RuleEntry, RuleMethod, Table,
 };
 use crate::types::ops::literal_type;
 use crate::types::{LazyType, Type};
@@ -101,6 +106,67 @@ fn variable(expr: &Expression<'_>) -> Option<String> {
         }
         _ => None,
     }
+}
+
+/// The strings of arguments that are strings or arrays of them
+/// (`dropColumn('a', 'b')`, `dropColumn(['a', 'b'])`).
+fn string_list(args: &[&Expression<'_>]) -> Vec<String> {
+    let mut out = Vec::new();
+    for arg in args {
+        let elements = match arg {
+            Expression::Array(array) => array.elements.iter(),
+            Expression::LegacyArray(array) => array.elements.iter(),
+            other => {
+                out.extend(string(other));
+                continue;
+            }
+        };
+        for element in elements {
+            if let ArrayElement::Value(element) = element {
+                out.extend(string(element.value));
+            }
+        }
+    }
+    out
+}
+
+/// `posts` (or `posts as drafts_count`) counted by `withCount()`.
+fn counted(spec: &str) -> Option<CountedRelation> {
+    let lower = spec.to_ascii_lowercase();
+    let (relation, property) = match lower.find(" as ") {
+        Some(at) => (spec[..at].trim(), Some(spec[at + 4..].trim().to_owned())),
+        None => (spec.trim(), None),
+    };
+    if relation.is_empty() || relation.contains(['.', ' ', ':']) {
+        return None;
+    }
+    let property = property.filter(|alias| !alias.is_empty()).unwrap_or_else(|| format!("{}_count", snake(relation)));
+    Some(CountedRelation { relation: relation.to_owned(), property })
+}
+
+/// `BlogPost` → `blog_post`.
+fn snake(name: &str) -> String {
+    let mut out = String::new();
+    for (i, c) in name.chars().enumerate() {
+        if c.is_uppercase() && i > 0 {
+            out.push('_');
+        }
+        out.extend(c.to_lowercase());
+    }
+    out
+}
+
+/// The short name of the class `Foo::class` names (`App\Models\Foo::class`
+/// is `Foo`).
+fn class_short_name(expr: &Expression<'_>) -> Option<String> {
+    let Expression::Access(Access::ClassConstant(access)) = expr else { return None };
+    let ClassLikeConstantSelector::Identifier(constant) = &access.constant else { return None };
+    let Expression::Identifier(class) = access.class else { return None };
+    if !constant.value.eq_ignore_ascii_case(b"class") {
+        return None;
+    }
+    let name = lossy(class.value());
+    name.rsplit('\\').next().map(str::to_owned)
 }
 
 /// A plain id (`'payments'`): not a class name.
@@ -247,10 +313,24 @@ impl Extractor<'_> {
         let schema =
             self.class_ref(class).is_some_and(|fqn| fqn.rsplit('\\').next().is_some_and(|short| short == "Schema"));
         let Some(method) = method_name(selector) else { return };
-        if !schema || !(method.eq_ignore_ascii_case("create") || method.eq_ignore_ascii_case("table")) {
+        // A rollback doesn't change the schema the application sees.
+        if !schema || self.in_down {
             return;
         }
         let args = args(list);
+        // `Schema::dropColumns('posts', ['a', 'b'])`.
+        if method.eq_ignore_ascii_case("dropColumns") {
+            let Some(name) = args.first().and_then(|arg| string(arg)) else { return };
+            let dropped = string_list(args.get(1..).unwrap_or_default());
+            if !dropped.is_empty() {
+                let table = Table { dropped, ..Table::new(name, false) };
+                self.summary.laravel.tables.push(table);
+            }
+            return;
+        }
+        if !(method.eq_ignore_ascii_case("create") || method.eq_ignore_ascii_case("table")) {
+            return;
+        }
         let (Some(name), Some(callback)) = (args.first().and_then(|arg| string(arg)), args.get(1)) else { return };
         // Statements other than expressions (`if`, loops) may make columns.
         let mut partial = false;
@@ -281,13 +361,72 @@ impl Extractor<'_> {
         else {
             return;
         };
-        let mut columns = Vec::new();
-        for expr in expressions {
-            partial |= !column_statement(expr, &table, &mut columns, |span| self.loc(span));
-        }
         let created = method.eq_ignore_ascii_case("create");
-        if !columns.is_empty() || created || partial {
-            self.summary.laravel.tables.push(Table { name, columns, created, partial, file: None, database: None });
+        let mut made = Table::new(name, created);
+        for expr in expressions {
+            partial |= !column_statement(expr, &table, &mut made, |span| self.loc(span));
+        }
+        made.partial = partial;
+        if !made.columns.is_empty() || created || partial || !made.dropped.is_empty() || !made.renamed.is_empty() {
+            self.summary.laravel.tables.push(made);
+        }
+    }
+
+    // ---------------------------------------------------- counted relations
+
+    /// `withCount('posts')`, `loadCount(['posts', 'tags as labels_count'])`.
+    pub(super) fn counted_relations(&mut self, selector: &ClassLikeMemberSelector<'_>, list: &ArgumentList<'_>) {
+        let Some(method) = method_name(selector) else { return };
+        if !method.eq_ignore_ascii_case("withCount") && !method.eq_ignore_ascii_case("loadCount") {
+            return;
+        }
+        for arg in args(list) {
+            self.counted_value(arg);
+        }
+    }
+
+    /// The `$withCount` property of a class (a model counting relations
+    /// on every query).
+    pub(super) fn counted_property(&mut self, members: &Sequence<'_, ClassLikeMember<'_>>) {
+        for member in members {
+            let ClassLikeMember::Property(Property::Plain(property)) = member else { continue };
+            for item in &property.items {
+                if let PropertyItem::Concrete(item) = item
+                    && item.variable.name == b"$withCount"
+                {
+                    self.counted_value(item.value);
+                }
+            }
+        }
+    }
+
+    fn counted_value(&mut self, value: &Expression<'_>) {
+        let elements = match value {
+            Expression::Array(array) => array.elements.iter(),
+            Expression::LegacyArray(array) => array.elements.iter(),
+            other => {
+                if let Some(found) = string(other).as_deref().and_then(counted) {
+                    self.add_counted(found);
+                }
+                return;
+            }
+        };
+        for element in elements {
+            let spec = match element {
+                ArrayElement::Value(element) => string(element.value),
+                // `['posts' => fn ($q) => …]`.
+                ArrayElement::KeyValue(element) => string(element.key),
+                _ => None,
+            };
+            if let Some(found) = spec.as_deref().and_then(counted) {
+                self.add_counted(found);
+            }
+        }
+    }
+
+    fn add_counted(&mut self, found: CountedRelation) {
+        if !self.summary.laravel.counted.contains(&found) {
+            self.summary.laravel.counted.push(found);
         }
     }
 
@@ -848,7 +987,10 @@ const NON_COLUMNS: &[&str] = &[
 /// The columns one `$table->…;` statement makes; `loc` maps a span of the
 /// file. False when the statement is a call on the blueprint that may make
 /// columns it doesn't know.
-fn column_statement(expr: &Expression<'_>, table: &str, out: &mut Vec<Column>, loc: impl Fn(Span) -> Loc) -> bool {
+fn column_statement(expr: &Expression<'_>, table: &str, out: &mut Table, loc: impl Fn(Span) -> Loc) -> bool {
+    if let Some(understood) = blueprint_given(expr, table, out, &loc) {
+        return understood;
+    }
     // Unwind `$table->string('a')->nullable()->default('')`.
     let mut modifiers: Vec<(String, Vec<&Expression<'_>>)> = Vec::new();
     let mut expr = expr;
@@ -871,6 +1013,9 @@ fn column_statement(expr: &Expression<'_>, table: &str, out: &mut Vec<Column>, l
         _ => method_span,
     });
     let lower = method.to_ascii_lowercase();
+    if let Some(understood) = schema_change(&lower, &args, named.as_deref(), out, &loc) {
+        return understood;
+    }
     // `string('title', 100)`; Laravel's default string length otherwise.
     let length = match lower.as_str() {
         "string" | "char" => Some(match args.get(1).map(|arg| literal_type_of(arg)) {
@@ -881,8 +1026,8 @@ fn column_statement(expr: &Expression<'_>, table: &str, out: &mut Vec<Column>, l
         _ => None,
     };
     let mut push = |name: String, ty: &str, nullable: bool| {
-        out.retain(|column: &Column| column.name != name);
-        out.push(Column { name, ty: DocType(ty.to_owned()), nullable, length, loc: at });
+        out.columns.retain(|column: &Column| column.name != name);
+        out.columns.push(Column { name, ty: DocType(ty.to_owned()), nullable, length, loc: at });
     };
     match lower.as_str() {
         "id" => push(named.unwrap_or_else(|| "id".to_owned()), "int", nullable),
@@ -892,7 +1037,23 @@ fn column_statement(expr: &Expression<'_>, table: &str, out: &mut Vec<Column>, l
         }
         "softdeletes" | "softdeletestz" => push(named.unwrap_or_else(|| "deleted_at".to_owned()), CARBON, true),
         "remembertoken" => push("remember_token".to_owned(), "string", true),
-        "morphs" | "nullablemorphs" | "uuidmorphs" | "nullableuuidmorphs" | "ulidmorphs" | "nullableulidmorphs" => {
+        // `foreignIdFor(User::class)` is `user_id` (the model's
+        // `getForeignKey()`), unless named.
+        "foreignidfor" => {
+            let name = args.get(1).and_then(|arg| string(arg)).or_else(|| {
+                args.first().and_then(|arg| class_short_name(arg)).map(|class| format!("{}_id", snake(&class)))
+            });
+            let Some(name) = name else { return false };
+            push(name, "int", nullable);
+        }
+        "morphs"
+        | "nullablemorphs"
+        | "numericmorphs"
+        | "nullablenumericmorphs"
+        | "uuidmorphs"
+        | "nullableuuidmorphs"
+        | "ulidmorphs"
+        | "nullableulidmorphs" => {
             let Some(name) = named else { return false };
             let nullable = nullable || lower.starts_with("nullable");
             let id = if lower.contains("uuid") || lower.contains("ulid") { "string" } else { "int" };
@@ -905,4 +1066,94 @@ fn column_statement(expr: &Expression<'_>, table: &str, out: &mut Vec<Column>, l
         },
     }
     true
+}
+
+/// A statement dropping or renaming columns (`dropColumn('a')`,
+/// `renameColumn('a', 'b')`, `dropTimestamps()`): `Some(understood)`, or
+/// `None` for other statements. A column the same call made is changed
+/// there; the others are recorded for the earlier migrations.
+fn schema_change(
+    lower: &str,
+    args: &[&Expression<'_>],
+    named: Option<&str>,
+    out: &mut Table,
+    loc: &impl Fn(Span) -> Loc,
+) -> Option<bool> {
+    let dropped: Vec<String> = match lower {
+        "dropcolumn" => string_list(args),
+        "droptimestamps" | "droptimestampstz" => vec!["created_at".to_owned(), "updated_at".to_owned()],
+        "dropsoftdeletes" | "dropsoftdeletestz" => vec![named.unwrap_or("deleted_at").to_owned()],
+        "dropremembertoken" => vec!["remember_token".to_owned()],
+        "dropmorphs" => match named {
+            Some(name) => vec![format!("{name}_type"), format!("{name}_id")],
+            None => return Some(false),
+        },
+        "dropconstrainedforeignid" => match named {
+            Some(name) => vec![name.to_owned()],
+            None => return Some(false),
+        },
+        "renamecolumn" => {
+            let (Some(from), Some(to)) = (args.first().and_then(|arg| string(arg)), args.get(1)) else {
+                return Some(false);
+            };
+            let Some(name) = string(to) else { return Some(false) };
+            let at = loc(to.span());
+            match out.columns.iter_mut().find(|column| column.name == from) {
+                Some(column) => {
+                    column.name = name;
+                    column.loc = at;
+                }
+                None => out.renamed.push(RenamedColumn { from, to: name, loc: at }),
+            }
+            return Some(true);
+        }
+        _ => return None,
+    };
+    if dropped.is_empty() {
+        return Some(false);
+    }
+    for name in dropped {
+        out.columns.retain(|column| column.name != name);
+        if !out.dropped.contains(&name) {
+            out.dropped.push(name);
+        }
+    }
+    Some(true)
+}
+
+/// A call the blueprint is given to (`NestedSet::columns($table)`):
+/// `Some(understood)`, or `None` when `expr` isn't one. kalnoy/nestedset's
+/// `NestedSet::columns()` makes `_lft`, `_rgt` and `parent_id` (as its
+/// public README documents); any other call may make columns the
+/// migrations can't know.
+fn blueprint_given(expr: &Expression<'_>, table: &str, out: &mut Table, loc: &impl Fn(Span) -> Loc) -> Option<bool> {
+    let (list, nested_set) = match expr {
+        Expression::Call(Call::StaticMethod(call)) => {
+            let nested_set = matches!(call.class, Expression::Identifier(class)
+                    if class.value().rsplit(|byte| *byte == b'\\').next() == Some(b"NestedSet".as_slice()))
+                && method_name(&call.method).is_some_and(|name| name.eq_ignore_ascii_case("columns"));
+            (&call.argument_list, nested_set)
+        }
+        Expression::Call(Call::Function(call)) => (&call.argument_list, false),
+        Expression::Call(Call::Method(call)) => (&call.argument_list, false),
+        _ => return None,
+    };
+    if !args(list).iter().any(|arg| variable(arg).as_deref() == Some(table)) {
+        return None;
+    }
+    if !nested_set {
+        return Some(false);
+    }
+    let at = loc(expr.span());
+    for (name, nullable) in [("_lft", false), ("_rgt", false), ("parent_id", true)] {
+        out.columns.retain(|column| column.name != name);
+        out.columns.push(Column {
+            name: name.to_owned(),
+            ty: DocType("int".to_owned()),
+            nullable,
+            length: None,
+            loc: at,
+        });
+    }
+    Some(true)
 }

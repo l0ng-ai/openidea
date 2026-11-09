@@ -507,6 +507,8 @@ namespace Illuminate\Database\Eloquent {
         public function has($relation, $operator = '>=', $count = 1, $boolean = 'and', ?\Closure $callback = null): static { return $this; }
         public function whereHas($relation, ?\Closure $callback = null, $operator = '>=', $count = 1): static { return $this; }
         public function withCount($relations): static { return $this; }
+        public function join($table, $first, $operator = null, $second = null, $type = 'inner', $where = false): static { return $this; }
+        public function leftJoin($table, $first, $operator = null, $second = null): static { return $this; }
         /** @return TModel */
         public function firstOrCreate(array $attributes = [], array $values = []) { return new Model(); }
         public function update(array $values): int { return 0; }
@@ -656,6 +658,8 @@ namespace Illuminate\Database\Query {
         public function where($column, $operator = null, $value = null, $boolean = 'and'): static { return $this; }
         public function orderBy($column, $direction = 'asc'): static { return $this; }
         public function select($columns = ['*']): static { return $this; }
+        public function join($table, $first, $operator = null, $second = null, $type = 'inner', $where = false): static { return $this; }
+        public function leftJoin($table, $first, $operator = null, $second = null): static { return $this; }
         public function pluck($column, $key = null): \Illuminate\Support\Collection { return new \Illuminate\Support\Collection(); }
         public function get($columns = ['*']): \Illuminate\Support\Collection { return new \Illuminate\Support\Collection(); }
         public function insert(array $values): bool { return true; }

@@ -773,7 +773,7 @@ Runs after Plan 7. Before any 8.x phase, read [LARAVEL-ROADMAP.md](LARAVEL-ROADM
 
   Tests: caret fixtures, plus the Monica check in `real_app_checklist`.
 
-- [ ] Phase 8.27: Eloquent, complete
+- [x] Phase 8.27: Eloquent, complete
       Close the Eloquent gaps phase 8.21 listed:
   - columns of the related model in the second argument of `whereRelation`, `withSum`, `withAvg` and similar
   - `*_count` properties only after a matching `withCount`

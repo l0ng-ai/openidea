@@ -92,6 +92,8 @@ impl LiveSchema {
                     partial: false,
                     file,
                     database: Some(self.source.clone()),
+                    dropped: Vec::new(),
+                    renamed: Vec::new(),
                 });
             }
         }
@@ -178,6 +180,8 @@ mod tests {
             partial: true,
             file: Some(PathBuf::from("create_posts.php")),
             database: None,
+            dropped: Vec::new(),
+            renamed: Vec::new(),
         });
         let live = LiveSchema {
             source: "app".into(),

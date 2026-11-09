@@ -1,5 +1,5 @@
 use super::core_alias;
-use crate::summary::FileSummary;
+use crate::summary::{FileSummary, LaravelFacts};
 use crate::syntax::ParsedFile;
 use crate::types::{Resolver, SummarySet, TypeCache, type_at};
 
@@ -399,12 +399,36 @@ namespace Database\Migrations {
             });
             Schema::create('ledger', function (Blueprint $table) {
                 $table->integer('amount');
+                $table->string('legacy');
+                $table->string('memo');
+                $table->foreignIdFor(\App\Models\BlogCategory::class)->constrained();
+                $table->foreignIdFor(Invoice::class, 'bill_id');
+                $table->timestamps();
             });
-            Schema::table('ledger', fn (Blueprint $t) => $t->dropColumn('amount'));
+            Schema::table('ledger', fn (Blueprint $t) => $t->dropColumn(['legacy']));
+            Schema::table('ledger', function (Blueprint $table) {
+                $table->renameColumn('memo', 'note');
+                $table->dropTimestamps();
+                $table->string('code');
+                $table->renameColumn('code', 'reference');
+            });
             Schema::create('drafts', function (Blueprint $table) {
                 $table->id();
                 $table->vector('embedding', 3);
             });
+            Schema::create('nodes', function (Blueprint $table) {
+                $table->id();
+                \Kalnoy\Nestedset\NestedSet::columns($table);
+            });
+            Schema::create('odd', function (Blueprint $table) {
+                $table->id();
+                add_columns($table);
+            });
+        }
+        // A rollback changes nothing.
+        public function down(): void {
+            Schema::table('ledger', fn (Blueprint $t) => $t->dropColumn('amount'));
+            Schema::dropColumns('invoices', ['number']);
         }
     }
 }
@@ -489,6 +513,12 @@ fn model_attributes_from_casts_and_migrations() {
         (format!("{category}->owner_id/*|*/;"), "int"),
         // `$table`.
         ("(new \\App\\Models\\Entry())->amount/*|*/;".to_owned(), "int"),
+        // Dropped and renamed by later migrations.
+        ("(new \\App\\Models\\Entry())->legacy/*|*/;".to_owned(), "mixed"),
+        ("(new \\App\\Models\\Entry())->memo/*|*/;".to_owned(), "mixed"),
+        ("(new \\App\\Models\\Entry())->created_at/*|*/;".to_owned(), "mixed"),
+        ("(new \\App\\Models\\Entry())->note/*|*/;".to_owned(), "string"),
+        ("(new \\App\\Models\\Entry())->reference/*|*/;".to_owned(), "string"),
     ];
     let cases: Vec<(&str, &str)> = cases.iter().map(|(body, expected)| (body.as_str(), *expected)).collect();
     check(&libs, &cases);
@@ -514,8 +544,13 @@ fn laravel_facts_are_summarised() {
          updated_at: ?\\Illuminate\\Support\\Carbon, deleted_at: ?\\Illuminate\\Support\\Carbon",
         "laravel table 'invoices': label: ?string",
         "laravel table 'blog_categories' created: owner_type: string, owner_id: int, title: string",
-        "laravel table 'ledger' created: amount: int",
+        "laravel table 'ledger' created: amount: int, legacy: string, memo: string, blog_category_id: int, \
+         bill_id: int, created_at: ?\\Illuminate\\Support\\Carbon, updated_at: ?\\Illuminate\\Support\\Carbon",
+        "laravel table 'ledger': drops legacy",
+        "laravel table 'ledger': reference: string drops created_at, updated_at renames memo => note",
         "laravel table 'drafts' created partial: id: int",
+        "laravel table 'nodes' created: id: int, _lft: int, _rgt: int, parent_id: ?int",
+        "laravel table 'odd' created partial: id: int",
         "laravel casts App\\Models\\Invoice: paid => boolean, meta => array, status => \\App\\Support\\Status, \
          total => \\App\\Support\\MoneyCast, issued_at => datetime:Y-m-d",
         "laravel casts App\\Models\\BlogCategory: tags => \\Illuminate\\Database\\Eloquent\\Casts\\AsCollection, \
@@ -527,4 +562,49 @@ fn laravel_facts_are_summarised() {
     let facts = &summary.laravel;
     assert!(facts.schema_certain("invoices") && facts.schema_certain("ledger"));
     assert!(!facts.schema_certain("drafts") && !facts.schema_certain("unknown"));
+    // `NestedSet::columns($table)` is understood; another call given the
+    // blueprint may make anything.
+    assert!(facts.schema_certain("nodes") && !facts.schema_certain("odd"));
+
+    // Merged, later migrations drop and rename the columns of earlier ones;
+    // the rollback in `down()` changes nothing.
+    let merged = LaravelFacts::merge([facts]);
+    let names = |table: &str| -> Vec<String> {
+        merged.columns(table).into_iter().map(|(_, column)| column.name.clone()).collect()
+    };
+    assert_eq!(names("ledger"), ["amount", "blog_category_id", "bill_id", "reference", "note"]);
+    assert!(names("invoices").contains(&"number".to_owned()));
+    let (from, note) = merged.columns("ledger").into_iter().find(|(_, column)| column.name == "note").unwrap();
+    assert_eq!((from.name.as_str(), note.ty.0.as_str(), from.created), ("ledger", "string", false));
+}
+
+#[test]
+fn counted_relations_are_summarised() {
+    let source = r#"<?php
+namespace App\Models {
+    use Illuminate\Database\Eloquent\Model;
+    class Team extends Model {
+        protected $withCount = ['members', 'BlogPosts'];
+        public function run(): void {
+            self::withCount('projects')->get();
+            self::query()->withCount(['tasks', 'tasks as open_tasks' => fn ($q) => $q, 'a.b'])->get();
+            $this->loadCount('invites');
+        }
+    }
+}
+"#;
+    let summary = FileSummary::extract(&ParsedFile::parse("team.php", source));
+    let rendered = summary.render();
+    let counts: Vec<&str> = rendered.lines().filter(|line| line.starts_with("laravel counts ")).collect();
+    assert_eq!(
+        counts,
+        [
+            "laravel counts members as members_count",
+            "laravel counts BlogPosts as blog_posts_count",
+            "laravel counts projects as projects_count",
+            "laravel counts tasks as tasks_count",
+            "laravel counts tasks as open_tasks",
+            "laravel counts invites as invites_count",
+        ]
+    );
 }

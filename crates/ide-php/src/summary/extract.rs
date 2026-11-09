@@ -43,6 +43,7 @@ pub(super) fn extract(file: &ParsedFile) -> FileSummary {
         summary: FileSummary { schema: SCHEMA_VERSION, has_errors: file.has_errors(), ..FileSummary::default() },
         repository_scope: None,
         classes: Vec::new(),
+        in_down: false,
     };
     SummaryWalker.walk_program(file.program(), &mut cx);
     cx.summary
@@ -64,6 +65,7 @@ pub(crate) fn inline_vars(file: &ParsedFile, scope: &NameScope, start: u32) -> V
         summary: FileSummary::default(),
         repository_scope: None,
         classes: Vec::new(),
+        in_down: false,
     };
     let Some(doc) = cx.doc_at(start, &[]) else { return Vec::new() };
     doc.vars.into_iter().map(|var| (var.name, var.ty)).collect()
@@ -183,6 +185,9 @@ struct Extractor<'f> {
     repository_scope: Option<String>,
     /// The named classes around the walker (FQNs), innermost last.
     classes: Vec<String>,
+    /// Walking a `down()` method (a migration's rollback, whose drops
+    /// don't change the schema).
+    in_down: bool,
 }
 
 impl Extractor<'_> {
@@ -598,8 +603,11 @@ impl Extractor<'_> {
         let accessor = node.name.value.eq_ignore_ascii_case(b"getFacadeAccessor");
         // An Eloquent relation declared raw (`comments(): HasMany`): the
         // body (`$this->hasMany(Comment::class)`) names the related model.
+        // So is a raw accessor (`title(): Attribute`): `Attribute::make(get:
+        // fn (): string => …)` types it.
         let relation = matches!(&return_type, Some(TypeHint::Named(fqn))
-            if fqn.trim_start_matches('\\').starts_with("Illuminate\\Database\\Eloquent\\Relations\\"))
+            if fqn.trim_start_matches('\\').starts_with("Illuminate\\Database\\Eloquent\\Relations\\")
+                || fqn.trim_start_matches('\\').eq_ignore_ascii_case("Illuminate\\Database\\Eloquent\\Casts\\Attribute"))
             && doc.as_ref().is_none_or(|doc| doc.return_type.is_none());
         let inferred_return = match &node.body {
             MethodBody::Concrete(body)
@@ -682,6 +690,7 @@ impl<'ast, 'arena, 'f> Walker<'ast, 'arena, Extractor<'f>> for SummaryWalker {
             node.implements.as_ref().map(|implements| cx.class_names(&implements.types)).unwrap_or_default();
         cx.provided_properties(&mut class, &node.members);
         cx.model_casts(&class.fqn, &node.members);
+        cx.counted_property(&node.members);
         cx.request_rules(&class.fqn, &node.members);
         cx.routes(&node.attribute_lists, &node.members);
         cx.entity_repository(&class.fqn, class.repository.as_deref());
@@ -741,7 +750,16 @@ impl<'ast, 'arena, 'f> Walker<'ast, 'arena, Extractor<'f>> for SummaryWalker {
         }
     }
 
+    fn walk_in_method(&self, node: &'ast AstMethod<'arena>, cx: &mut Extractor<'f>) {
+        cx.in_down = node.name.value.eq_ignore_ascii_case(b"down");
+    }
+
+    fn walk_out_method(&self, _: &'ast AstMethod<'arena>, cx: &mut Extractor<'f>) {
+        cx.in_down = false;
+    }
+
     fn walk_in_method_call(&self, node: &'ast MethodCall<'arena>, cx: &mut Extractor<'f>) {
+        cx.counted_relations(&node.method, &node.argument_list);
         cx.method_binding(node.object, &node.method, &node.argument_list);
         cx.method_routes(node.object, &node.method, &node.argument_list);
         cx.rule_method(&node.method, &node.argument_list);
@@ -750,6 +768,7 @@ impl<'ast, 'arena, 'f> Walker<'ast, 'arena, Extractor<'f>> for SummaryWalker {
     fn walk_in_static_method_call(&self, node: &'ast StaticMethodCall<'arena>, cx: &mut Extractor<'f>) {
         cx.static_binding(node.class, &node.method, &node.argument_list);
         cx.migration(node.class, &node.method, &node.argument_list);
+        cx.counted_relations(&node.method, &node.argument_list);
         cx.static_routes(node.class, &node.method, &node.argument_list);
         cx.repository_constructor(node.class, &node.method, &node.argument_list);
         cx.rule_method(&node.method, &node.argument_list);

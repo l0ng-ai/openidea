@@ -194,6 +194,17 @@ pub struct PropertySite<'s> {
     pub assigned: &'s [Assigned],
 }
 
+/// A parameter of a method, for [`TypeProvider::parameter`].
+pub struct ParameterSite<'s> {
+    /// The class declaring the method (FQN).
+    pub class: &'s str,
+    pub method: &'s crate::summary::Method,
+    /// The parameter's position.
+    pub index: usize,
+    /// What its hint or PHPDoc declares.
+    pub declared: &'s Type,
+}
+
 /// A member a class only has through magic methods
 /// ([`TypeProvider::magic_members`]).
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -344,6 +355,13 @@ pub trait TypeProvider: Send + Sync {
         None
     }
 
+    /// The type of a method's parameter, given what its hint or PHPDoc
+    /// declares: `None` keeps the declared type. (Eloquent: the raw
+    /// `Builder $query` of a model's local scope is the model's builder.)
+    fn parameter(&self, _site: &ParameterSite<'_>, _resolver: &Resolver<'_>) -> Option<Type> {
+        None
+    }
+
     /// The function and method names (any case) whose arguments
     /// [`TypeProvider::known_strings`] may know: inspections only ask about
     /// calls of these names.
@@ -460,6 +478,12 @@ impl TypeProviders {
         self.providers
             .iter()
             .find_map(|(_, provider)| provider.closure_parameters(receiver, method, key, resolver, context))
+    }
+
+    /// The first answer for a method parameter's type; see
+    /// [`TypeProvider::parameter`].
+    pub fn parameter(&self, site: &ParameterSite<'_>, resolver: &Resolver<'_>) -> Option<Type> {
+        self.providers.iter().find_map(|(_, provider)| provider.parameter(site, resolver))
     }
 
     /// The first answer for an undeclared property of `class`.

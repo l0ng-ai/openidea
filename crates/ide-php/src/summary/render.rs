@@ -85,7 +85,20 @@ fn laravel(out: &mut String, facts: &LaravelFacts) {
             .collect();
         let created = if table.created { " created" } else { "" };
         let partial = if table.partial { " partial" } else { "" };
-        let _ = writeln!(out, "laravel table '{}'{created}{partial}: {}", table.name, columns.join(", "));
+        let mut line = format!("laravel table '{}'{created}{partial}:", table.name);
+        if !columns.is_empty() || (table.dropped.is_empty() && table.renamed.is_empty()) {
+            let _ = write!(line, " {}", columns.join(", "));
+        }
+        if !table.dropped.is_empty() {
+            let _ = write!(line, " drops {}", table.dropped.join(", "));
+        }
+        for renamed in &table.renamed {
+            let _ = write!(line, " renames {} => {}", renamed.from, renamed.to);
+        }
+        let _ = writeln!(out, "{line}");
+    }
+    for counted in &facts.counted {
+        let _ = writeln!(out, "laravel counts {} as {}", counted.relation, counted.property);
     }
     for model in &facts.casts {
         let casts: Vec<String> =
