@@ -319,6 +319,20 @@ describe("rename helpers", () => {
 });
 
 describe("navigation wiring", () => {
+  it.each(["vue", "html", "svelte", "jsp"])("keeps %s server answers ahead of syntax", async (language) => {
+    const target = { path: `/p/a.${language}`, range: r(0, 6, 7), uri: null };
+    const view = editor("const x = 1;\nx;", language, 13, target.path);
+    cmd.lspGoto.mockReturnValueOnce(ok([target]));
+    await gotoTargets(view, "definition");
+    expect(openFile).toHaveBeenCalledWith(target.path, { selection: target.range.start, focus: true });
+    expect(cmd.syntaxLocals).not.toHaveBeenCalled();
+    expect(cmd.syntaxNodeAt).not.toHaveBeenCalled();
+    cmd.lspGoto.mockReturnValueOnce(ok([]));
+    await gotoTargets(view, "definition");
+    expect(openFile).toHaveBeenCalledOnce();
+    expect(cmd.syntaxLocals).not.toHaveBeenCalled();
+  });
+
   it("respects an empty server answer", async () => {
     cmd.lspGoto.mockReturnValueOnce(ok([]));
     const view = editor("const x = 1;\nx;", "typescript", 13);

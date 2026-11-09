@@ -336,3 +336,74 @@ fn locals_inside_a_script_region_shift_every_range() {
     let l = service().locals(&snap(&vue, src), pos_of(src, byte), &none()).unwrap();
     assert!(matches!(l, Locals::NoIdentifier));
 }
+
+#[test]
+fn web_script_queries_honour_cancellation_outside_regions() {
+    let cancel = CancellationToken::new();
+    cancel.cancel();
+    for id in ["html", "vue", "svelte", "jsp"] {
+        let language = lang(id);
+        let src = "<template>中文😀</template><script>let value = 1;</script>";
+        let snap = snap(&language, src);
+        assert_eq!(service().node_at(&snap, Range::point(Pos::new(0, 2)), &cancel), Err(StructureError::Cancelled));
+        assert_eq!(service().locals(&snap, Pos::new(0, 2), &cancel), Err(StructureError::Cancelled));
+    }
+}
+
+#[test]
+fn web_script_queries_compose_utf16_positions_and_isolate_blocks() {
+    let src = "<template>中文😀</template><script lang=ts>/* 中文😀 */ function first() { let 名 = '😀'; 名; }</script>\r\n<script setup lang=ts>function second() {\r\nlet 名 = 2;\r\n名;\r\n}</script>";
+    for id in ["html", "vue", "svelte", "jsp"] {
+        let language = lang(id);
+        for (at, def, reference) in [(2, 1, 2), (4, 3, 4)] {
+            assert_local(id, src, "名", at, def, &[reference]);
+            let r = occ(src, "名", at);
+            let node = service().node_at(&snap(&language, src), r, &none()).unwrap().unwrap();
+            assert_eq!(node.node.range, r);
+            assert_eq!(node.node.kind, "identifier");
+        }
+    }
+}
+
+#[test]
+fn web_script_queries_follow_open_document_edits() {
+    use ide_core::{ChangeSet, TextChange};
+
+    for id in ["html", "vue", "svelte", "jsp"] {
+        let cache = Arc::new(SyntaxCache::new(Arc::new(Syntax::new())));
+        let service = StructureService::new(cache.clone());
+        let language = lang(id);
+        let id = DocId::next();
+        let mut doc = ide_text::Document::new("<script>function f() { let x = 1; x; }</script>");
+        cache.open(id, &language, 0);
+        for version in 0..2 {
+            let text = doc.text();
+            let snap = Snapshot::doc(id, doc.version(), &language, &text);
+            let range = occ(&text, "x", 2);
+            let at = service.node_at(&snap, range, &none()).unwrap().unwrap();
+            assert_eq!(at.node.range, range);
+            let Locals::Local { symbol } = service.locals(&snap, range.start, &none()).unwrap() else {
+                panic!("expected local");
+            };
+            assert_eq!(symbol.definition, occ(&text, "x", 1));
+            assert_eq!(symbol.references, [range]);
+            if version == 0 {
+                let changes =
+                    ChangeSet { changes: vec![TextChange { from: 0, to: 0, insert: "<!-- 中文😀 -->\n".into() }] };
+                let (_, edits) = doc.apply_detailed(doc.version(), &changes).unwrap();
+                cache.edit(id, doc.version(), &edits);
+            }
+        }
+    }
+}
+
+#[test]
+fn web_script_queries_preserve_parse_size_errors() {
+    let src = " ".repeat(ide_language::MAX_PARSE_BYTES + 1);
+    for id in ["html", "vue", "svelte", "jsp"] {
+        let language = lang(id);
+        let snap = snap(&language, &src);
+        assert_eq!(service().node_at(&snap, Range::point(Pos::new(0, 0)), &none()), Err(StructureError::TooLarge));
+        assert_eq!(service().locals(&snap, Pos::new(0, 0), &none()), Err(StructureError::TooLarge));
+    }
+}

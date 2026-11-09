@@ -1613,3 +1613,28 @@ fn cached_outline_matches_syntax_outline_for_web_documents() {
     cache.open(id, &lang("html"), 0);
     assert_eq!(cache.outline(id, &lang("html"), 0, src), syntax().outline(&lang("html"), src));
 }
+
+#[test]
+fn script_outlines_compose_positions_across_multiple_blocks() {
+    use super::lines::LineIndex;
+
+    let src = "<template>中文😀</template><script lang=ts>/* 中文😀 */ function first() { return 1; }</script>\r\n<script setup lang=ts>/* 中文😀 */ const second = 2;\r\nfunction third() {}\r\n</script>";
+    let lines = LineIndex::new(src);
+    for id in ["html", "vue", "svelte", "jsp"] {
+        let items = syntax().outline(&lang(id), src);
+        let scripts: Vec<_> = items.iter().filter(|item| item.name == "script").collect();
+        assert_eq!(scripts.len(), 2, "{id}");
+        assert_eq!(scripts[0].children.len(), 1);
+        assert_eq!(scripts[1].children.len(), 2);
+        for (item, name) in scripts.iter().flat_map(|s| &s.children).zip(["first", "second", "third"]) {
+            let byte = src.find(name).unwrap();
+            assert_eq!(item.name, name);
+            assert_eq!(item.selection_range, lines.range(byte, byte + name.len()), "{id}: {name}");
+        }
+    }
+}
+
+#[test]
+fn script_outline_attaches_to_case_insensitive_html_tags() {
+    check_outline("html", "<SCRIPT>function boot() {}</SCRIPT>", "Field SCRIPT\n  Function boot");
+}

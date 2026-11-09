@@ -33,7 +33,7 @@ pub use jvm::{JvmPresentation, JvmTypeKind, jvm_type_header};
 pub use types::*;
 
 use ide_core::{CancellationToken, DocId, IdeError, LanguageId, Pos, Range};
-use ide_language::{ParsedTree, ScriptRegion, Syntax, SyntaxCache, TreeError, shift_range};
+use ide_language::{ParsedTree, Syntax, SyntaxCache, TreeError, shift_range};
 use kinds::Kinds;
 use lines::Lines;
 use std::sync::Arc;
@@ -289,7 +289,7 @@ impl StructureService {
     /// plus the inline `<script>` regions' block grammars.
     fn web_container(&self, language: &LanguageId) -> bool {
         let syn = self.cache.syntax();
-        syn.grammar_name(language).is_none() && syn.web_grammar_name(language).is_some()
+        syn.grammar_name(language).is_none() && syn.web_grammar_name(language) == Some("html")
     }
 
     /// Runs `f` on the block grammar's tree when one of the document's inline
@@ -303,20 +303,20 @@ impl StructureService {
         cancel: &CancellationToken,
         f: impl FnOnce(&Ctx, Range, Pos) -> StructureResult<R>,
     ) -> StructureResult<Option<R>> {
+        if cancel.is_cancelled() {
+            return Err(StructureError::Cancelled);
+        }
         let cancelled = || cancel.is_cancelled();
         let syn = self.cache.syntax();
-        // Regions from the cached incremental tree when the language has one
-        // (html); containers without their own grammar parse fresh — shortcut:
-        // no incremental re-parse for containers, upgrade when their trees
-        // join the cache.
-        let regions: Result<Vec<ScriptRegion>, TreeError> = match snap.doc {
-            Some(doc) => self
-                .cache
-                .with_parsed(doc, snap.language, snap.version, snap.text, &cancelled, |p| {
-                    Syntax::script_regions_of(p.tree, p.text)
-                })
-                .or_else(|_| Ok(syn.script_regions(snap.language, snap.text))),
-            None => Ok(syn.script_regions(snap.language, snap.text)),
+        if syn.web_grammar_name(snap.language) != Some("html") {
+            return Ok(None);
+        }
+        let extract = |p: ParsedTree<'_>| Syntax::script_regions_of(p.tree, p.text);
+        let regions = match snap.doc {
+            Some(doc) if syn.grammar_name(snap.language).is_some() => {
+                self.cache.with_parsed(doc, snap.language, snap.version, snap.text, &cancelled, extract)
+            }
+            _ => syn.with_parsed(&LanguageId::new("html"), snap.text, &cancelled, extract),
         };
         let Some(region) = regions?.into_iter().find(|r| bytes.0 >= r.base && bytes.1 <= r.base + r.text.len()) else {
             return Ok(None);

@@ -346,7 +346,7 @@ fn attach_script(items: &mut [OutlineItem], base: Pos, decls: &mut Option<Vec<Ou
             && (base.line, base.col) < (range.end.line, range.end.col)
     };
     for item in items.iter_mut() {
-        if item.name == "script" && covers(&item.range) {
+        if item.name.eq_ignore_ascii_case("script") && covers(&item.range) {
             item.children.extend(decls.take().unwrap_or_default());
             return true;
         }
