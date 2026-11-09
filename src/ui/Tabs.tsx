@@ -215,17 +215,42 @@ export function Tabs({
     });
   }, [dndType]);
 
+  // Tab slots wholly in view as last observed, which needs no layout read: switching to one of
+  // them doesn't measure the strip (a forced layout of the window, mid-switch).
+  const inView = useRef(new Set<Element>());
   // Bring a tab's whole slot (label + close button) into view. Narrowing the strip clips
   // the active tab's close button (#1740), and clicking the already-active tab doesn't
   // change `activeId`, so the strip must also reveal on clicks and resizes.
   const revealTab = useCallback(
-    (id: string | null) => {
+    (id: string | null, always = false) => {
       const scroller = scrollRef.current;
       const tab = id ? tabRefs.current.get(id)?.parentElement : null;
-      if (scroller && tab) (vertical ? revealVertically : revealHorizontally)(scroller, tab);
+      if (!scroller || !tab || (!always && inView.current.has(tab))) return;
+      (vertical ? revealVertically : revealHorizontally)(scroller, tab);
     },
     [vertical],
   );
+
+  const tabIds = items.map((it) => it.id).join("\n");
+  useEffect(() => {
+    const root = scrollRef.current;
+    if (!root || typeof IntersectionObserver === "undefined") return;
+    const seen = inView.current;
+    const io = new IntersectionObserver(
+      (entries) => {
+        for (const e of entries) {
+          if (e.intersectionRatio >= 1) seen.add(e.target);
+          else seen.delete(e.target);
+        }
+      },
+      { root, threshold: 1 },
+    );
+    for (const tab of tabRefs.current.values()) if (tab.parentElement) io.observe(tab.parentElement);
+    return () => {
+      io.disconnect();
+      seen.clear();
+    };
+  }, [tabIds]);
 
   useLayoutEffect(() => {
     const el = scrollRef.current;
@@ -235,7 +260,7 @@ export function Tabs({
       setOverflow(!vertical && el.scrollWidth > el.clientWidth + 1);
       // A resize (e.g. the editor area narrowing) must scroll the active tab back
       // into view instead of leaving its close button clipped until a tab switch.
-      revealTab(latest.current.activeId);
+      revealTab(latest.current.activeId, true);
     };
     measure();
     if (typeof ResizeObserver === "undefined") return;

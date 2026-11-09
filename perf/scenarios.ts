@@ -449,12 +449,24 @@ const tabs: Scenario = {
       await h.openFile(`${ROOT}/src/tabs/${name}`, tsSource(2_000, `tab-${i}`));
     }
     const switches: number[] = [];
+    // Recently shown tabs keep their editor view: showing one again must not build a new one.
+    let viewsRebuilt = 0;
+    let switchWork = await h.counters();
     for (let round = 0; round < 3; round++) {
+      if (round === 1) switchWork = await h.counters();
       for (let i = 0; i < names.length; i++) {
         const tab = h.page.getByRole("tab", { name: names[i], exact: true });
         switches.push(await h.measure(() => tab.click(), ".cm-content", `// tab-${i}`));
+        const fresh = await h.page.evaluate(() => {
+          const view = document.querySelector("[data-editor-host] .cm-editor") as { perfSeen?: boolean } | null;
+          if (!view || view.perfSeen) return false;
+          view.perfSeen = true;
+          return true;
+        });
+        if (round > 0 && fresh) viewsRebuilt++;
       }
     }
+    const work = Harness.delta(switchWork, await h.counters());
     // The Switcher (Ctrl+Tab) back and forth between the two most recent tabs.
     const before = await h.counters();
     const switcher: number[] = [];
@@ -463,12 +475,14 @@ const tabs: Scenario = {
       switcher.push(await h.measure(() => h.pressAction("navigate.switcher"), ".cm-content", `// tab-${tag}`));
       await h.page.waitForTimeout(150);
     }
-    const work = Harness.delta(before, await h.counters());
+    const switcherWork = Harness.delta(before, await h.counters());
     return {
       openSmallMs,
       ...latencySummary(switches, "switch"),
+      switchMainThreadMs: work.taskMs / (names.length * 2),
+      viewsRebuilt,
       ...latencySummary(switcher, "switcher"),
-      switcherMainThreadMs: work.taskMs / switcher.length,
+      switcherMainThreadMs: switcherWork.taskMs / switcher.length,
     };
   },
 };
