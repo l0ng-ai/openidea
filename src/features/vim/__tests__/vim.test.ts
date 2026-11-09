@@ -173,6 +173,21 @@ describe("Vim engine", () => {
     d();
   });
 
+  it.each([
+    ["nmap dx <Action>(GotoFile)", ["d", "w"], "two\nthree"],
+    ["nmap cs <Action>(GotoFile)", ["c", "w"], " two\nthree"],
+    ["nnoremap yz yy", ["y", "y", "p"], "one two\none two\nthree"],
+  ])("keeps built-in operators a mapping starts with (%s)", async (rc, keys, doc) => {
+    const view = makeView();
+    const cm = getCM(view)!;
+    applyRcCommands(parseVimrc(rc).commands);
+    for (const k of keys) Vim.handleKey(cm as never, k, "user");
+    await tick();
+    expect(view.state.doc.toString()).toBe(doc);
+    applyRcCommands([]);
+    view.destroy();
+  });
+
   it("restores the built-in key the leader shadowed once the rc stops using it (#2337)", async () => {
     const view = makeView();
     const cm = getCM(view)!;
