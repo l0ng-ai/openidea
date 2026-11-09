@@ -507,6 +507,7 @@ export function Grid(props: GridProps) {
                     <input
                       key={c}
                       className={styles.cellEditor}
+                      data-cell-editor=""
                       autoFocus
                       aria-label={`Edit ${columns[c]!.name}`}
                       value={editing.text}

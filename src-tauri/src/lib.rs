@@ -89,11 +89,15 @@ pub fn run() {
     linux_webkit::configure();
 
     let refresh_shell_path = ide_host::shell_env::inherit_login_shell_path(&context.config().identifier);
+    let local_data_dir = ide_host::data_dirs::local_data_dir(&context.config().identifier);
     // Managed LSP/DAP installs; must run before other threads start and before PATH is cached.
-    if let Some(data) = dirs::data_local_dir() {
-        ide_tools::extend_process_path(&data.join(&context.config().identifier));
-        ide_dap::adapter::set_tools_root(ide_tools::tools_dir(&data.join(&context.config().identifier)));
-        ide_sdk::java::add_jdk_root(&ide_tools::jdk::jdks_dir(&data.join(&context.config().identifier)));
+    match &local_data_dir {
+        Ok(data) => {
+            ide_tools::extend_process_path(data);
+            ide_dap::adapter::set_tools_root(ide_tools::tools_dir(data));
+            ide_sdk::java::add_jdk_root(&ide_tools::jdk::jdks_dir(data));
+        }
+        Err(error) => tracing::error!("{error}"),
     }
     if let Some(refresh) = refresh_shell_path {
         refresh();
@@ -176,7 +180,20 @@ pub fn run() {
     })
     .setup(move |app| {
         builder.mount_events(app);
-        let state = AppState::new(app.handle().clone())?;
+        let local_data_dir = match local_data_dir {
+            Ok(dir) => dir,
+            Err(error) => {
+                use tauri_plugin_dialog::DialogExt;
+                let handle = app.handle().clone();
+                app.dialog()
+                    .message(error)
+                    .title("OpenIDEA")
+                    .kind(tauri_plugin_dialog::MessageDialogKind::Error)
+                    .show(move |_| handle.exit(1));
+                return Ok(());
+            }
+        };
+        let state = AppState::new(app.handle().clone(), local_data_dir)?;
         let windows = app.state::<WindowsState>();
         if let Ok(cwd) = std::env::current_dir() {
             match windows::cli_launch(&std::env::args().collect::<Vec<_>>(), &cwd) {

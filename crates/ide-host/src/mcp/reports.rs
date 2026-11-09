@@ -28,6 +28,8 @@ pub struct Reports(RwLock<State>);
 struct State {
     windows: HashMap<String, Window>,
     focused: Option<String>,
+    /// Windows in the order they were last focused, the most recent last.
+    focus_order: Vec<String>,
     remote: HashMap<String, PathBuf>,
     libraries: HashMap<String, Vec<PathBuf>>,
 }
@@ -46,7 +48,15 @@ impl Reports {
         state.windows.entry(window.into()).or_default().focused = editor;
         if focused {
             state.focused = Some(window.into());
+            state.focus_order.retain(|w| w != window);
+            state.focus_order.push(window.into());
         }
+    }
+    /// Sorts `windows` by when they were last focused, the most recent first; windows
+    /// never focused keep their order after them.
+    pub(crate) fn most_recently_focused_first(&self, windows: &mut [String]) {
+        let order = &self.0.read().focus_order;
+        windows.sort_by_key(|w| std::cmp::Reverse(order.iter().position(|o| o == w)));
     }
     pub fn report_problems(&self, window: &str, reset: bool, files: Vec<FileProblems>) {
         let mut state = self.0.write();
@@ -68,6 +78,7 @@ impl Reports {
         state.windows.remove(window);
         state.remote.remove(window);
         state.libraries.remove(window);
+        state.focus_order.retain(|w| w != window);
         if state.focused.as_deref() == Some(window) {
             state.focused = None;
         }
@@ -120,5 +131,26 @@ impl Reports {
             }
         }
         files.into_iter().map(|(path, items)| FileProblems { path: path.into(), items }).collect()
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn windows_sort_by_their_last_focus() {
+        let reports = Reports::default();
+        for window in ["a", "b", "a", "c"] {
+            reports.set_focused_editor(window, None, true);
+        }
+        reports.set_focused_editor("b", None, false);
+        let mut windows: Vec<String> = ["a", "b", "c", "never"].map(String::from).into();
+        reports.most_recently_focused_first(&mut windows);
+        assert_eq!(windows, ["c", "a", "b", "never"]);
+        reports.forget_window("c");
+        let mut windows: Vec<String> = ["never", "c", "b", "a"].map(String::from).into();
+        reports.most_recently_focused_first(&mut windows);
+        assert_eq!(windows, ["a", "b", "never", "c"]);
     }
 }

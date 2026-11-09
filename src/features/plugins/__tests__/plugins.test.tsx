@@ -155,7 +155,7 @@ describe("plugin actions", () => {
       [cmd("a", "go"), cmd("a", "when", { when: "editorFocus", category: "Cat" }), cmd("gone", "x")],
       [plugin({ id: "a", name: "Alpha" })],
     );
-    expect(getAction("plugin.a.go")).toMatchObject({ title: "T go", category: "Alpha" });
+    expect(getAction("plugin.a.go")).toMatchObject({ title: "T go", category: "Alpha", indicatesRunning: true });
     expect(getAction("plugin.a.when")).toMatchObject({ when: "editorFocus", category: "Cat" });
     expect(getAction("plugin.gone.x")).toBeUndefined();
     expect(pluginActionId("p", "c.d")).toBe("plugin.p.c.d");

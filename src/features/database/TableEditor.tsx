@@ -13,7 +13,7 @@ import {
   type DbTablePage,
   type RequestId,
 } from "@/platform/ipc";
-import { Button, EmptyState, Icon, IconButton, Select, Spinner, T, showContextMenu } from "@/ui";
+import { Button, EmptyState, Icon, IconButton, Select, Spinner, T, showContextMenu, tooltipAttrs } from "@/ui";
 import { notifications, type EditorInput } from "@/workbench/contributions";
 import { SqlFilterInput } from "./SqlFilterInput";
 import { ColumnsPopup } from "./ColumnsPopup";
@@ -241,10 +241,21 @@ export function TableEditor({ input }: { input: EditorInput }) {
               title="Add Row"
               onClick={() => setEdits((e) => ({ ...e, inserts: [...e.inserts, new Map()] }))}
             />
-            <Button size="small" variant="primary" disabled={!dirty} onClick={() => void submit()}>
+            <Button
+              size="small"
+              variant="primary"
+              disabled={!dirty}
+              onClick={() => void submit()}
+              {...tooltipAttrs("Submit", shortcutLabel("db.submitChanges"))}
+            >
               <T>Submit</T>
             </Button>
-            <Button size="small" disabled={!dirty} onClick={() => setEdits(emptyEdits())}>
+            <Button
+              size="small"
+              disabled={!dirty}
+              onClick={() => setEdits(emptyEdits())}
+              {...tooltipAttrs("Revert", shortcutLabel("db.revertChanges"))}
+            >
               <T>Revert</T>
             </Button>
           </>

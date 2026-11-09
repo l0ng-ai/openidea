@@ -1,4 +1,4 @@
-package openidea:plugin@1.4.0;
+package openidea:plugin@1.5.0;
 
 /// Additional language features, called only for declared API 1.4 provider kinds.
 /// Editor calls have a 50 ms soft / 500 ms hard budget; formatting has 5 seconds.

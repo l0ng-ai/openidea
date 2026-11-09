@@ -1,4 +1,4 @@
-package openidea:plugin@1.4.0;
+package openidea:plugin@1.5.0;
 
 /// The commit being prepared in the window the current command or event came
 /// from (the Commit tool window, or the Commit dialog while it is open): the
