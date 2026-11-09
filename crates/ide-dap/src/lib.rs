@@ -16,6 +16,7 @@ pub mod jdwp;
 pub mod kotlin;
 mod kotlin_jdwp;
 mod session;
+pub mod target;
 
 use adapter::{AdapterLauncher, AdapterSpec, ProcessLauncher};
 use connection::{Connection, DapError};
@@ -607,11 +608,22 @@ fn remove_delve_binaries(cwd: &Path) {
                 || s == ".exe"
                 || (s.starts_with(".exe") && s[".exe".len()..].chars().all(|c| c.is_ascii_digit()))
         });
-        if leftover
-            && entry.file_type().is_ok_and(|t| t.is_file())
-            && let Err(e) = std::fs::remove_file(entry.path())
-        {
-            tracing::debug!("could not remove Delve leftover {}: {e}", entry.path().display());
+        if !leftover || entry.file_type().is_ok_and(|t| !t.is_file()) {
+            continue;
+        }
+        // Windows: a just-killed dlv / debuggee can still hold this session's
+        // binary while the previous one's lock is already gone, so one try
+        // leaves exactly the current leftover behind. Retry on a short back-off
+        // to outlast the handle release; a truly busy file is retried into the
+        // next run's sweep anyway.
+        for attempt in 0..5 {
+            match std::fs::remove_file(entry.path()) {
+                Ok(()) => break,
+                Err(e) if attempt == 4 => {
+                    tracing::debug!("could not remove Delve leftover {}: {e}", entry.path().display());
+                }
+                Err(_) => std::thread::sleep(std::time::Duration::from_millis(50 * (attempt as u64 + 1))),
+            }
         }
     }
 }
@@ -686,6 +698,17 @@ impl DebugManager {
         owner: SessionOwner,
         custom_command: impl FnOnce(&str) -> Option<String>,
     ) -> IdeResult<DebugSessionId> {
+        self.start_prepared(config, owner, custom_command, |_, _| Ok(())).await
+    }
+
+    /// Configure a target adapter before any host tool resolution or launch.
+    pub async fn start_prepared(
+        &self,
+        config: LaunchConfig,
+        owner: SessionOwner,
+        custom_command: impl FnOnce(&str) -> Option<String>,
+        prepare: impl FnOnce(&mut AdapterSpec, &mut Value) -> IdeResult<()>,
+    ) -> IdeResult<DebugSessionId> {
         let mut arguments = launch_arguments(&config)?;
         // An IDE-side marker (never sent to the adapter): the session is a Flutter
         // one regardless of what the working directory holds.
@@ -699,6 +722,22 @@ impl DebugManager {
         let dbg = adapter::find_config(&self.languages, &config.adapter)
             .ok_or_else(|| IdeError::unavailable(format!("unknown debug adapter `{}`", config.adapter)))?;
         let mut spec = adapter::resolve(&dbg, cwd.clone());
+        prepare(&mut spec, &mut arguments)?;
+        if spec.target.is_some() {
+            return self
+                .start_session(
+                    DebugSessionId::next(),
+                    owner,
+                    config.name,
+                    config.adapter,
+                    None,
+                    config.request,
+                    arguments,
+                    spec,
+                    None,
+                )
+                .await;
+        }
         if config.adapter == kotlin::ADAPTER
             && let Some(home) = arguments
                 .as_object_mut()
@@ -847,11 +886,22 @@ impl DebugManager {
         if request != "launch" && request != "attach" {
             return Err(IdeError::invalid(format!("request must be `launch` or `attach`, got `{request}`")));
         }
-        let io = self.launcher.launch(spec.clone(), reuse_port).await?;
+        let io = self.launcher.launch(spec.clone(), reuse_port).await.map_err(|e| {
+            if spec.target.is_some() {
+                IdeError::new(e.kind, format!("{}\nargv: {:?} {:?}", e.message, spec.command, spec.args))
+            } else {
+                e
+            }
+        })?;
         let stderr = io.stderr.clone();
         let (conn, incoming) = {
             let stderr = stderr.clone();
-            Connection::start_with_output(io.reader, io.writer, Box::new(move |line| adapter::push_line(&stderr, line)))
+            Connection::start_with_target(
+                io.reader,
+                io.writer,
+                Box::new(move |line| adapter::push_line(&stderr, line)),
+                spec.target.clone(),
+            )
         };
         let rdbg_pid = (adapter_name == "rdbg" && request == "launch")
             .then(|| io.child.as_ref().and_then(tokio::process::Child::id))
@@ -892,6 +942,9 @@ impl DebugManager {
             Err(e) => {
                 let e = if session.conn.is_closed() {
                     let mut msg = format!("debug adapter `{}` exited during startup", session.adapter);
+                    if session.spec.target.is_some() {
+                        msg.push_str(&format!("\nargv: {:?} {:?}", session.spec.command, session.spec.args));
+                    }
                     let tail = stderr.lock().join("\n");
                     if !tail.is_empty() {
                         msg.push_str(":\n");
@@ -902,6 +955,17 @@ impl DebugManager {
                         msg.push_str(hint);
                     }
                     IdeError::unavailable(msg)
+                } else if session.spec.target.is_some() {
+                    IdeError::new(
+                        e.kind,
+                        format!(
+                            "{}\nargv: {:?} {:?}\n{}",
+                            e.message,
+                            session.spec.command,
+                            session.spec.args,
+                            stderr.lock().join("\n")
+                        ),
+                    )
                 } else {
                     e
                 };
@@ -939,8 +1003,8 @@ impl DebugManager {
                     "pathFormat": "path",
                     "supportsVariableType": true,
                     "supportsVariablePaging": false,
-                    "supportsRunInTerminalRequest": true,
-                    "supportsStartDebuggingRequest": true,
+                    "supportsRunInTerminalRequest": s.spec.target.is_none(),
+                    "supportsStartDebuggingRequest": s.spec.target.is_none(),
                     "supportsProgressReporting": true,
                     "supportsInvalidatedEvent": false,
                     "supportsMemoryReferences": false,

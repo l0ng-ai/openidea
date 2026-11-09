@@ -62,9 +62,7 @@ async function rename() {
 function historyStep(slot: EditorSlot, forward = false) {
   return (forward ? redo : undo)({
     state: slot.currentState(),
-    dispatch: (tr) => {
-      slot.state = tr.state;
-    },
+    dispatch: (tr) => slot.dispatchLocal(tr),
   });
 }
 

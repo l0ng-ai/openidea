@@ -56,6 +56,7 @@ import {
   enforceTabLimit,
   findTab,
   initialTabsState,
+  mergeSessionTabs,
   moveTab,
   moveTabToNewSplit,
   neighbourPane,
@@ -531,7 +532,9 @@ export class EditorController implements SlotHost {
     this.restoredTabs = new Set(Object.values(state.panes).flatMap((p) => p.tabs.map((t) => t.id)));
     this.restoring = true;
     try {
-      useTabs.setState(state, true);
+      // A restore landing after tabs were already opened (e.g. a launched file
+      // admitted while the transition was still in flight) must not wipe them.
+      useTabs.setState((current) => mergeSessionTabs(current, state), true);
     } finally {
       this.restoring = false;
     }

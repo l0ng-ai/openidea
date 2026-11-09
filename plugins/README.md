@@ -393,7 +393,7 @@ working. New in 1.4:
 - [Language features](#additional-language-features-api-14): formatting,
   signature help, highlights, links, code lenses, selection ranges, folds,
   colors/presentations, symbols, implementation, type definition and gutter
-  actions; [injections](#embedded-languages-api-14) route plugin providers to
+  actions; [injections](#embedded-languages-api-14) route providers and language servers to
   embedded virtual documents.
 - [Snippets](#snippets-api-14) and [menus](#additional-menu-locations-api-14):
   numbered placeholders and editor title, main toolbar, Problems and search
@@ -1119,8 +1119,31 @@ At most 1,000 non-overlapping injection ranges and 32 embedded languages
 are routed per document. Earlier ranges in document order win overlaps.
 Documents over 2 MiB are excluded. Invalid ranges, self-injections and invalid
 language ids are ignored. Injections are not applied recursively. The same
-server-side plugin host handles remote editing. **Embedded LSP forwarding is
-future host-side work**, not part of 1.4, and needs no WIT change.
+server-side plugin host handles remote editing.
+
+When the embedded language has configured language servers, the host also
+routes completion (including resolve), hover, signature help, definition,
+declaration, type definition, implementation, references, document highlights
+and code actions to those servers inside the range. Each range gets its own
+masked document, even when several ranges share a language. At most 32 LSP
+documents are kept per host document; the same 2 MiB document limit applies.
+These documents use non-existent sibling paths with the embedded language's
+extension, so servers can discover project configuration. They are never
+written to disk. Servers start through the usual settings, project trust and
+installation flow; a missing server does not prompt again on each edit.
+
+Edits invalidate old ranges immediately. The host refreshes them after the
+300 ms debounce, or before a position request, synchronizes retained documents
+with `didChange`, and closes documents when their range disappears, the plugin
+is disabled or the host document closes. Results into these documents map back
+to the host path and are clipped to the range; locations in other files pass
+through. Replacement edits crossing a boundary and resource operations on
+virtual paths are dropped. Completion and code-action resolve keep their
+originating range/server, and stale results cannot resolve after an edit.
+Diagnostics are restricted to each range, labelled with the embedded server's
+name and merged with that server's other diagnostics for the host file. They
+clear when the range disappears. Formatting and rename use the host server.
+Remote projects use this same host-side LSP lifecycle and routing.
 
 ### Snippets (API 1.4)
 
@@ -2366,8 +2389,9 @@ A plugin using `framework = "plugin"` can implement `TestResults::select_tests`
 configuration id as `parse` and a list of test-tree paths: the names from the
 plugin's `test-start` events, from parent suite to test, exactly as shown in the
 tree. Return the **full replacement argument list**, including any required base
-arguments, to run only those tests. `None` (the Rust SDK default), errors and
-call timeouts leave test selection unsupported. An empty argument list is a
+arguments, to run only those tests. The call uses the 5-second command budget.
+`None` (the Rust SDK default), errors and call timeouts leave test selection
+unsupported. An empty argument list is a
 supported selection. The IDE preserves the configuration's command, environment,
 working directory and run target.
 
@@ -2391,7 +2415,8 @@ A missing target fails the run rather than silently using the local tool.
 
 For each launch the host checks project trust and the wrapper's current process
 grant and executable pin, including per-project executable choices. Debugging on
-plugin targets returns `invalid`; language servers are not run in these targets.
+plugin targets returns `invalid`. Language servers can opt into targets with a
+`container_root` as described below.
 There are at most 32 targets per plugin/project, 64 unique command overrides and
 256 arguments per prefix (16 KiB each, 256 KiB metadata per registration).
 
@@ -2428,5 +2453,50 @@ or a named target). The `languages.php.runTarget` / `languages.node.runTarget`
 settings store a selector id, empty for the default, or `local` for local execution. Code-created PHP/Node runs,
 Composer/npm scripts, PHPUnit and Node tests use that choice through the normal
 Run flow. Explicit per-configuration targets take precedence. Choosing Local
-machine explicitly overrides defaults. Language servers, tool discovery/version
-probes and external analysis helpers remain local to the host.
+machine explicitly overrides defaults. Tool discovery/version probes and external
+analysis helpers remain local to the host.
+
+Language servers run on the host by default. In the PHP and Node interpreter
+pages, **Language server: run in target** selects a plugin target independently
+of runs. **Languages & Frameworks › Language server targets** offers the same
+choice for every language, including plugin languages. These are project-only
+`languageServerTargets.<language-id> = { target, server }` settings; an empty
+`target` uses the host and an empty `server` picks the first configured server.
+Only plugin targets with `container_root` are eligible. The selected configured
+server is used instead of the language's other servers while this option is on.
+Registration and the first run-target prompt never enable it automatically.
+
+Install that server and its runtime **inside the container**. The host wraps the
+language definition's command/arguments (or its Language Servers overrides) with
+the target's normal argv construction, using the project root as cwd. It uses
+stdio, rechecks the wrapper's process grant, pin and project trust, and does not
+substitute IDE-downloaded host binaries or host interpreter paths. A failed
+launch shows the exact argv and stderr tail in language-server status, without
+falling back. Changing the setting restarts the server; withdrawing the target
+returns it to the host. SSH projects use this same path on `openidea-server`.
+
+Protocol file URIs and paths under the project map bidirectionally to
+`container_root`, including workspace edits and configuration replies. Opaque
+`data` and command `arguments` remain untouched. File URIs outside the container
+project become read-only library documents, fetched with the granted wrapper's
+`cat -- <path>` command (no shell, at most 4 MiB of UTF-8 text, 10-second timeout).
+The virtual URI identifies its originating server, including for document links
+and diagnostic-related locations. Navigation inside these documents returns to
+that server; editing and saving
+are disabled. No WIT signature change is needed for this opt-in host setting.
+
+### Debugging run targets
+
+Plugin targets require `container-root` for debugging. PHP uses `connect-back`: the
+IDE runs php-debug on the host (on the SSH server for remote projects), listens on
+port 9003 unless configured otherwise, then starts the program through the normal
+target run path. The target must enable Xdebug debug mode and request startup, and
+set `xdebug.client_host` and `xdebug.client_port` to reach that listener. DDEV normally
+provides the host setting; enable its Xdebug support before debugging.
+
+Python uses `adapter-in-target`: the wrapper starts `python3 -m debugpy.adapter`
+over stdio. Install debugpy in that container interpreter; no host installation is
+used. The wrapper must preserve stdin/stdout and forward environment as needed.
+Project paths and DAP sources map between the project root and `container-root`.
+Other debuggers default to unsupported: Node and Go adapters currently require
+additional ports and have no supported stdio target configuration.

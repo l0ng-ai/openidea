@@ -106,6 +106,32 @@ fn is_python_name(name: &str) -> bool {
         || rest.strip_prefix("3.").is_some_and(|v| !v.is_empty() && v.chars().all(|c| c.is_ascii_digit()))
 }
 
+/// Prefixes named by `conda env list`: `base * /opt/conda`, `myenv  /opt/conda/envs/myenv`,
+/// a `--prefix` env shown as a bare path, comment lines skipped (#2240).
+fn conda_env_list_prefixes(output: &str) -> Vec<PathBuf> {
+    output
+        .lines()
+        .map(|l| l.trim_start_matches(['#', '*', ' ']).trim_end())
+        .filter(|l| !l.is_empty() && !l.starts_with('#'))
+        .filter_map(|l| {
+            // `name   /path` or a bare `/path` (a --prefix env shows no name): the path
+            // starts at the first rooted prefix — a drive letter, '/', '~' or '\\\\' —
+            // so names and the stripped "# conda environments:" header never leak, and
+            // paths with spaces (C:\\Program Files\\...) stay whole.
+            let bytes = l.as_bytes();
+            let drive = (0..bytes.len().saturating_sub(2))
+                .filter(|&i| {
+                    bytes[i].is_ascii_alphabetic()
+                        && bytes[i + 1] == b':'
+                        && (bytes[i + 2] == b'\\' || bytes[i + 2] == b'/')
+                })
+                .map(Some);
+            let start = [l.find(['/', '~']), l.find("\\\\")].into_iter().chain(drive).flatten().min();
+            start.map(|i| PathBuf::from(l[i..].trim()))
+        })
+        .collect()
+}
+
 fn python(root: Option<&Path>) -> Vec<Sdk> {
     let mut found: Vec<(PathBuf, &'static str)> = Vec::new();
     if let Some(root) = root {
@@ -155,10 +181,41 @@ fn python(root: Option<&Path>) -> Vec<Sdk> {
         if let Some(prefix) = std::env::var_os("CONDA_PREFIX") {
             conda_roots.push(PathBuf::from(prefix));
         }
+        // A conda on PATH reveals a non-default install root (Anaconda on D:\, Miniconda
+        // in ProgramData): the binary lives at <root>/Scripts/conda.exe (Windows) or
+        // <root>/bin/conda. Without this, an install outside the home-dir guesses keeps
+        // every `envs/` environment invisible (#2240).
+        if let Some(conda) = which("conda") {
+            if let Some(root) = conda.parent().and_then(Path::parent) {
+                conda_roots.push(root.to_path_buf());
+            }
+            // `conda env list` also names `--prefix` envs kept outside `envs/` and envs_dirs
+            // configured in .condarc — every env the user sees on the CLI shows up here.
+            if let Some(list) = query(&conda, &["env", "list"], VERSION_TIMEOUT) {
+                conda_roots.extend(conda_env_list_prefixes(&list));
+            }
+        }
+        let mut seen_roots = HashSet::new();
+        conda_roots.retain(|r| seen_roots.insert(r.clone()));
+        // Conda prefixes keep `python.exe` at the env root on Windows (`envs/x/python.exe`),
+        // not under Scripts/ like a virtualenv — probe every conventional location (#2240).
+        let conda_python = |prefix: &Path| -> Option<PathBuf> {
+            [
+                prefix.join(exe("python")),
+                prefix.join(bin_dir()).join(exe("python")),
+                prefix.join("bin").join(exe("python")),
+            ]
+            .into_iter()
+            .find(|p| p.is_file())
+        };
         for base in conda_roots {
-            found.push((base.join(bin_dir()).join(exe("python")), "conda"));
+            if let Some(p) = conda_python(&base) {
+                found.push((p, "conda"));
+            }
             for env in subdirs(&base.join("envs")) {
-                found.push((env.join(bin_dir()).join(exe("python")), "conda"));
+                if let Some(p) = conda_python(&env) {
+                    found.push((p, "conda"));
+                }
             }
         }
     }
@@ -870,5 +927,43 @@ mod pixi_tests {
         assert_eq!(pixi_env_home(Path::new("/usr/bin/python3")), None);
         assert_eq!(pixi_env_home(Path::new("/p/.venv/bin/python")), None);
         assert_eq!(pixi_env_home(Path::new("/p/envs/x/bin/python")), None);
+    }
+}
+
+#[cfg(test)]
+mod conda_tests {
+    use super::*;
+
+    #[test]
+    fn conda_env_list_names_named_prefix_and_bare_prefix_envs() {
+        // `conda env list` on Windows with Anaconda on a second drive (#2240).
+        let output = "\
+# conda environments:
+#
+base                  *  D:\\soft\\anaconda3
+ml                       D:\\soft\\anaconda3\\envs\\ml
+                         D:\\envs\\scratchpad
+legacy                   C:\\Users\\dev\\.conda\\envs\\legacy
+";
+        let prefixes = conda_env_list_prefixes(output);
+        assert_eq!(
+            prefixes,
+            vec![
+                PathBuf::from("D:\\soft\\anaconda3"),
+                PathBuf::from("D:\\soft\\anaconda3\\envs\\ml"),
+                PathBuf::from("D:\\envs\\scratchpad"),
+                PathBuf::from("C:\\Users\\dev\\.conda\\envs\\legacy"),
+            ]
+        );
+    }
+
+    #[test]
+    fn conda_env_list_handles_unix_and_empty_output() {
+        assert!(conda_env_list_prefixes("").is_empty());
+        let output = "# conda environments:\n#\nbase  *  /opt/miniconda3\nprod     /opt/miniconda3/envs/prod\n";
+        assert_eq!(
+            conda_env_list_prefixes(output),
+            vec![PathBuf::from("/opt/miniconda3"), PathBuf::from("/opt/miniconda3/envs/prod")]
+        );
     }
 }

@@ -22,8 +22,31 @@ import type {
 import { tx } from "@/platform/i18n";
 import { call, commands, isCancelled, isTauri, nextRequestId } from "@/platform/ipc";
 import { notifications } from "@/workbench/contributions";
+import { DEFAULT_DOCKER_FILTERS, type DockerFilters } from "./model";
 
-export type DetailTab = "log" | "inspect";
+export type DetailTab = "dashboard" | "log" | "processes" | "layers" | "inspect";
+
+const FILTERS_STORAGE_KEY = "openidea.docker.filters";
+
+function loadStoredFilters(): DockerFilters {
+  try {
+    const raw = typeof localStorage !== "undefined" ? localStorage.getItem(FILTERS_STORAGE_KEY) : null;
+    if (!raw) return DEFAULT_DOCKER_FILTERS;
+    const parsed = JSON.parse(raw) as Partial<DockerFilters>;
+    return {
+      showStoppedContainers:
+        typeof parsed.showStoppedContainers === "boolean"
+          ? parsed.showStoppedContainers
+          : DEFAULT_DOCKER_FILTERS.showStoppedContainers,
+      showUntaggedImages:
+        typeof parsed.showUntaggedImages === "boolean"
+          ? parsed.showUntaggedImages
+          : DEFAULT_DOCKER_FILTERS.showUntaggedImages,
+    };
+  } catch {
+    return DEFAULT_DOCKER_FILTERS;
+  }
+}
 
 /** `DockerSettings` with its defaults filled in. */
 export interface Settings {
@@ -43,6 +66,7 @@ interface DockerState {
   /** By connection id. */
   conns: Record<string, ConnectionState>;
   detailTab: DetailTab;
+  filters: DockerFilters;
   /** Long operation in progress (pull, prune, compose…): its title and last output line. */
   task: { title: string; line: string; request: RequestId } | null;
 }
@@ -50,9 +74,24 @@ interface DockerState {
 export const useServices = create<DockerState>(() => ({
   settings: null,
   conns: {},
-  detailTab: "log",
+  detailTab: "dashboard",
+  filters: loadStoredFilters(),
   task: null,
 }));
+
+export function setDockerFilters(patch: Partial<DockerFilters>): void {
+  useServices.setState((s) => {
+    const filters = { ...s.filters, ...patch };
+    try {
+      if (typeof localStorage !== "undefined") {
+        localStorage.setItem(FILTERS_STORAGE_KEY, JSON.stringify(filters));
+      }
+    } catch {
+      // ignore storage quota errors
+    }
+    return { filters };
+  });
+}
 
 export const errorMessage = (e: unknown) => (e instanceof Error ? e.message : String(e));
 

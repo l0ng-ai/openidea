@@ -97,6 +97,8 @@
   "common.close": "关闭",
   "common.copied": "已复制",
   "common.copy": "复制",
+  "menu.activeEditor": "活动编辑器",
+  "menu.editor.toggleSoftWrap": "软换行",
   "menu.app": "OpenIDEA",
   "menu.app.about": "关于 OpenIDEA",
   "menu.app.checkForUpdates": "检查更新…",

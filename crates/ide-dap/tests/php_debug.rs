@@ -93,9 +93,23 @@ async fn listens_for_xdebug_until_stopped_with_path_mappings() {
         .await
         .unwrap();
     let id = manager
-        .start_with(listen_config(port, &served, &local), SessionOwner::new("main", sink.clone()), |_| {
-            Some(adapter.clone())
-        })
+        .start_prepared(
+            listen_config(port, &served, &served),
+            SessionOwner::new("main", sink.clone()),
+            |_| None,
+            |spec, _| {
+                spec.command = adapter.clone();
+                spec.cwd = local.clone();
+                spec.target = Some(ide_dap::target::TargetMapping {
+                    paths: ide_core::path_mapping::PathMapping::new(
+                        &local.to_string_lossy(),
+                        &served.to_string_lossy(),
+                    ),
+                    external_prefix: "openidea-target://php/0/".into(),
+                });
+                Ok(())
+            },
+        )
         .await
         .unwrap_or_else(|e| panic!("start: {e:?}"));
 

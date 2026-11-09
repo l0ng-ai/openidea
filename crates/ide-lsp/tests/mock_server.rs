@@ -1,7 +1,9 @@
 //! Protocol tests against in-memory mock language servers.
 
 use ide_core::event::ServerStatus;
-use ide_core::{DocId, FileEdit, IdeEvent, LanguageId, Pos, Range, ServerId, Severity, WorkspaceEdit};
+use ide_core::{
+    CancellationToken, DocId, FileEdit, IdeEvent, LanguageId, Pos, Range, ServerId, Severity, WorkspaceEdit,
+};
 use ide_jsonrpc::{Handler, NoopHandler, Peer};
 use ide_language::{LanguageConfig, LanguageRegistry, LanguageServerConfig};
 use ide_lsp::types::*;
@@ -241,6 +243,8 @@ fn server_cfg(name: &str) -> LanguageServerConfig {
         tsserver_project_extras: Default::default(),
         resync_on_configuration: false,
         pinned: None,
+        target: None,
+        target_key: None,
     }
 }
 
@@ -3450,6 +3454,81 @@ async fn unavailable_scope_capability_keeps_widening_and_incomplete_signals() {
     }
 }
 
+/// A common name is mentioned by more files than a search opens, but a server that reports its
+/// analysis scope already covers most of them: only those beyond it count toward the limit.
+#[tokio::test(flavor = "multi_thread")]
+async fn covered_candidates_do_not_count_toward_the_open_limit() {
+    for covers_all in [true, false] {
+        let mut caps = incremental_caps();
+        caps["executeCommandProvider"]["commands"] = json!(["openidea.workspace.coveredFiles"]);
+        let h = harness(&[("mock", caps)]);
+        let s = h.launcher.state("mock");
+        let files: Vec<PathBuf> = (0..ide_lsp::MAX_CANDIDATES + 100)
+            .map(|i| {
+                let path = h.root.join(format!("f{i:03}.mk"));
+                std::fs::write(&path, "target\n").unwrap();
+                path
+            })
+            .collect();
+        let covered: Vec<String> = if covers_all { files.iter().map(|f| uri_of(f)).collect() } else { vec![] };
+        let responder = open_files_only(vec![]);
+        *s.responder.lock() = Some(Arc::new(move |s, method, params| {
+            if method == "workspace/executeCommand" {
+                return Some(json!(covered));
+            }
+            responder(s, method, params)
+        }));
+        let seen = grep_candidates(&h);
+        let (doc, _) = h.open("a.mk", "def target\n");
+        h.wait_status("mock", ServerStatus::Ready).await;
+        let refs = h.mgr.references(doc, Pos::new(0, 5), true, true, Default::default()).await.unwrap();
+        assert!(seen.lock().iter().all(|q| q.limit > ide_lsp::MAX_CANDIDATES));
+        let opened = s.notified("textDocument/didOpen").len() - 1;
+        if covers_all {
+            assert_eq!(refs.incomplete, None);
+            assert_eq!(opened, 0);
+            assert_eq!(s.requested("textDocument/references").len(), 1);
+        } else {
+            assert_eq!(refs.incomplete, Some(ReferencesIncomplete::TooManyFiles));
+            assert_eq!(opened, ide_lsp::MAX_CANDIDATES);
+        }
+    }
+}
+
+/// Files under the directories a server analyses fully are not read to find candidates.
+#[tokio::test(flavor = "multi_thread")]
+async fn candidates_skip_the_directories_the_server_covers() {
+    for (commands, reported) in [
+        (json!(["openidea.workspace.coveredFiles", "openidea.workspace.coveredRoots"]), json!(["src"])),
+        (json!(["openidea.workspace.coveredFiles", "openidea.workspace.coveredRoots"]), json!(null)),
+        (json!(["openidea.workspace.coveredFiles"]), json!(["src"])),
+    ] {
+        let mut caps = incremental_caps();
+        caps["executeCommandProvider"]["commands"] = commands.clone();
+        let h = harness(&[("mock", caps)]);
+        let s = h.launcher.state("mock");
+        let src = h.root.join("src");
+        let roots = reported.as_array().map(|r| r.iter().map(|_| json!(uri_of(&src))).collect::<Vec<_>>());
+        let responder = open_files_only(vec![]);
+        *s.responder.lock() = Some(Arc::new(move |s, method, params| {
+            if method == "workspace/executeCommand" {
+                return Some(match params["command"].as_str() {
+                    Some("openidea.workspace.coveredRoots") => roots.clone().map_or(json!(null), Value::Array),
+                    _ => json!([]),
+                });
+            }
+            responder(s, method, params)
+        }));
+        let seen = grep_candidates(&h);
+        let (doc, _) = h.open("a.mk", "def target\n");
+        h.wait_status("mock", ServerStatus::Ready).await;
+        h.mgr.references(doc, Pos::new(0, 5), true, true, Default::default()).await.unwrap();
+        let skipped: Vec<Vec<PathBuf>> = seen.lock().iter().map(|q| q.skip.clone()).collect();
+        let expected = if commands.as_array().unwrap().len() == 2 && reported.is_array() { vec![src] } else { vec![] };
+        assert_eq!(skipped, vec![expected], "{commands} {reported}");
+    }
+}
+
 #[tokio::test(flavor = "multi_thread")]
 async fn references_open_unopened_files_that_mention_the_name() {
     let (h, s) = scope_harness();
@@ -3746,6 +3825,32 @@ async fn classified_java_references_widen_without_losing_metadata() {
             Some(if limit_hit { ReferencesIncomplete::TooManyFiles } else { ReferencesIncomplete::FilesSkipped })
         );
     }
+}
+
+/// Usage counts probe many symbols at once: without `libraries` they search the sources alone.
+#[tokio::test(flavor = "multi_thread")]
+async fn scoped_java_usages_search_the_sources_unless_libraries_are_asked_for() {
+    let mut caps = incremental_caps();
+    caps["executeCommandProvider"] = json!({"commands": ["openidea.java.usages"]});
+    let h = harness_for("java", "java", &[("jdtls", caps)], &[]);
+    let s = h.launcher.state("jdtls");
+    s.respond("workspace/executeCommand", json!([]));
+    let (doc, _) = h.open("a.java", "int target;");
+    h.wait_status("jdtls", ServerStatus::Ready).await;
+    let seen = grep_candidates(&h);
+    for libraries in [false, true] {
+        let refs = h
+            .mgr
+            .references_streaming(doc, Pos::new(0, 5), false, false, libraries, Default::default(), None)
+            .await
+            .unwrap();
+        assert_eq!(refs.libraries_skipped, !libraries);
+        let requested = s.requested("workspace/executeCommand");
+        let arguments = requested.last().unwrap()["arguments"].as_array().unwrap().clone();
+        assert_eq!(arguments.get(4) == Some(&json!("sources")), !libraries);
+        assert_eq!(arguments.len(), if libraries { 4 } else { 5 });
+    }
+    assert!(seen.lock().is_empty());
 }
 
 /// A library method's usages in the sources are shown before the dependencies and the JDK
@@ -5116,4 +5221,265 @@ async fn hierarchy_refactorings_name_the_servers_without_them() {
         .unwrap_err();
     assert_eq!(e.kind, ide_core::error::ErrorKind::Unavailable);
     assert_eq!(e.message, "plain doesn't support Pull Members Up");
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn injected_documents_route_and_resolve_without_exposing_virtual_files() {
+    for encoding in ["utf-16", "utf-8"] {
+        let mut caps = incremental_caps();
+        caps["positionEncoding"] = json!(encoding);
+        caps["signatureHelpProvider"] = json!({});
+        for cap in
+            ["declarationProvider", "typeDefinitionProvider", "implementationProvider", "documentHighlightProvider"]
+        {
+            caps[cap] = json!(true);
+        }
+        let mut h = harness_for("sql", "sql", &[("embedded", caps)], &[]);
+        let builtins = LanguageRegistry::load(None).unwrap();
+        let mut sql = builtins.get(&LanguageId::new("sql")).unwrap();
+        sql.language_servers = vec![server_cfg("embedded")];
+        let mut native = builtins.get(&LanguageId::plain_text()).unwrap();
+        native.language_servers = vec![server_cfg("host")];
+        *h.launcher.state("host").caps.lock() = incremental_caps();
+        h.launcher.state("host").respond("textDocument/completion", json!([{"label":"native"}]));
+        let events = h.events.clone();
+        h.mgr = LspManager::with_launcher(
+            h.root.clone(),
+            Arc::new(LanguageRegistry::from_configs(vec![sql, native])),
+            Arc::new(move |e| events.lock().push(e)),
+            h.launcher.clone(),
+        );
+        let state = h.launcher.state("embedded");
+        *state.responder.lock() = Some(Arc::new(|_, method, p| {
+            let whole = json!({"start":{"line":0,"character":0},"end":{"line":0,"character":99}});
+            let uri = p["textDocument"]["uri"].clone();
+            Some(match method {
+                "textDocument/completion" => {
+                    json!([{"label":"one","textEdit":{"range":whole,"newText":"ONE"},"data":{"id":7},"command":{"title":"run","command":"mock.run"}}])
+                }
+                "completionItem/resolve" => {
+                    assert_eq!(p["data"], json!({"id":7}));
+                    assert_eq!(p["command"]["command"], "mock.run");
+                    json!({"label":"one","detail":"resolved"})
+                }
+                "textDocument/hover" => json!({"contents":"SQL","range":whole}),
+                "textDocument/signatureHelp" => json!({"signatures":[{"label":"sql()"}]}),
+                "textDocument/definition"
+                | "textDocument/declaration"
+                | "textDocument/typeDefinition"
+                | "textDocument/implementation" => json!([
+                    {"uri":uri,"range":whole},
+                    {"uri":uri,"range":{"start":{"line":0,"character":0},"end":{"line":0,"character":1}}}
+                ]),
+                "textDocument/references" => json!([{"uri":uri,"range":whole}]),
+                "textDocument/documentHighlight" => json!([{"range":whole}]),
+                "textDocument/codeAction" => json!([{"title":"fix","data":{"uri":uri}}]),
+                "codeAction/resolve" => json!({"title":"fix","edit":{"documentChanges":[
+                    {"textDocument":{"uri":p["data"]["uri"],"version":1},"edits":[{"range":{"start":{"line":0,"character":4},"end":{"line":0,"character":7}},"newText":"ONE"}]},
+                    {"kind":"create","uri":p["data"]["uri"]}
+                ]},"command":{"title":"run","command":"mock.run"}}),
+                _ => Value::Null,
+            })
+        }));
+        h.mgr.set_injection_provider(Arc::new(|_, _, _, text| {
+            text.match_indices("[[")
+                .filter_map(|(start, _)| {
+                    let end = start + 2 + text[start + 2..].find("]]")?;
+                    Some(ide_lsp::InjectedRange {
+                        range: Range::new(
+                            Pos::new(0, text[..start + 2].encode_utf16().count() as u32),
+                            Pos::new(0, text[..end].encode_utf16().count() as u32),
+                        ),
+                        language: LanguageId::new("sql"),
+                    })
+                })
+                .collect()
+        }));
+        let host = DocId::next();
+        let path = h.root.join("host.java");
+        let source = "😀[[one]] [[two]]";
+        h.mgr.did_open(host, &path, &LanguageId::plain_text(), 1, source);
+        h.mgr.refresh_injections(host).await.unwrap();
+        let doc = h.mgr.injected_document(host, Pos::new(0, 5));
+        let second = h.mgr.injected_document(host, Pos::new(0, 13));
+        assert_ne!(doc, host);
+        assert_ne!(doc, second, "separate SQL fragments must not share a document");
+        assert_eq!(h.mgr.injected_document(host, Pos::new(0, 7)), host);
+        assert_eq!(
+            h.mgr.completion(host, Pos::new(0, 1), None, Default::default()).await.unwrap().items[0].label,
+            "native"
+        );
+        let item = h.mgr.completion(doc, Pos::new(0, 5), None, Default::default()).await.unwrap().items.remove(0);
+        assert_eq!(item.replace_range, Some(rng(0, 4, 0, 7)));
+        let resolved = h.mgr.resolve_completion(host, item).await.unwrap();
+        assert_eq!(resolved.detail.as_deref(), Some("resolved"));
+        h.mgr.execute_command(host, resolved.command.clone().unwrap()).await.unwrap();
+        assert_eq!(state.requested("workspace/executeCommand")[0]["command"], "mock.run");
+        assert_eq!(
+            h.mgr.hover(doc, Pos::new(0, 5), Default::default()).await.unwrap().unwrap().range,
+            Some(rng(0, 4, 0, 7))
+        );
+        assert!(h.mgr.signature_help(doc, Pos::new(0, 5)).await.unwrap().is_some());
+        for kind in [GotoKind::Definition, GotoKind::Declaration, GotoKind::TypeDefinition, GotoKind::Implementation] {
+            let locations = h.mgr.goto(doc, Pos::new(0, 5), kind).await.unwrap();
+            assert_eq!(locations.len(), 1);
+            assert_eq!(locations[0].path.0, path);
+            assert_eq!(locations[0].range, rng(0, 4, 0, 7));
+        }
+        let refs = h.mgr.references(doc, Pos::new(0, 5), true, false, Default::default()).await.unwrap();
+        assert_eq!(refs.locations[0].path.0, path);
+        let highlights = h.mgr.document_highlights(doc, Pos::new(0, 5)).await.unwrap();
+        assert_eq!(highlights[0].range, rng(0, 4, 0, 7));
+        let action = h.mgr.code_actions(doc, rng(0, 5, 0, 5), vec![]).await.unwrap().remove(0);
+        let action = h.mgr.resolve_code_action(host, action).await.unwrap();
+        let edit = action.edit.unwrap();
+        assert_eq!(edit.files.len(), 1, "resource operations on virtual paths are dropped");
+        assert!(
+            matches!(&edit.files[0],FileEdit::Edit {path:p,edits,..} if p.0 == path && edits[0].range == rng(0,4,0,7))
+        );
+        let command = action.command.unwrap();
+        assert!(h.mgr.provides_command(host, Some(action.server), &command.command).await);
+        assert!(
+            h.mgr
+                .resolve_command(host, action.server, command.clone(), vec![], Default::default())
+                .await
+                .unwrap()
+                .is_none()
+        );
+        h.mgr.execute_action_command(host, action.server, command, vec![], Default::default()).await.unwrap();
+        eventually(|| state.docs.lock().len() == 2).await;
+        assert!(state.docs.lock().values().any(|t| t == "    one          "));
+        assert!(state.docs.lock().values().any(|t| t == "            two  "));
+        let virtual_uris: Vec<_> = state.docs.lock().iter().map(|(u, t)| (u.clone(), t.clone())).collect();
+        for (uri, text) in &virtual_uris {
+            let col = if text.contains("one") { 4 } else { 12 };
+            state.peer().notify("textDocument/publishDiagnostics", json!({"uri":uri,"version":1,"diagnostics":[
+                {"range":{"start":{"line":0,"character":col},"end":{"line":0,"character":col+3}},"message":"embedded"},
+                {"range":{"start":{"line":0,"character":0},"end":{"line":0,"character":1}},"message":"outside"}
+            ]})).unwrap();
+        }
+        let diagnostics = || {
+            h.events
+                .lock()
+                .iter()
+                .rev()
+                .find_map(|e| match e {
+                    IdeEvent::Diagnostics { path: p, source, items } if p.0 == path && source == "embedded" => {
+                        Some(items.clone())
+                    }
+                    _ => None,
+                })
+                .unwrap_or_default()
+        };
+        eventually(|| diagnostics().len() == 2).await;
+        assert!(diagnostics().iter().all(|d| d.source.as_deref() == Some("embedded")));
+        h.mgr.did_change(host, 2, &[AppliedChange { range: rng(0, 4, 0, 7), text: "ONE".into() }], &|| {
+            "😀[[ONE]] [[two]]".into()
+        });
+        assert_eq!(h.mgr.injected_document(host, Pos::new(0, 5)), host, "stale ranges cannot route");
+        h.mgr.refresh_injections(host).await.unwrap();
+        assert_eq!(h.mgr.injected_document(host, Pos::new(0, 5)), doc);
+        eventually(|| state.docs.lock().values().any(|t| t == "    ONE          ")).await;
+        assert!(h.mgr.resolve_completion(host, resolved).await.is_err(), "old completions cannot resolve after edits");
+        h.mgr.set_injections(host, 2, vec![]);
+        eventually(|| diagnostics().is_empty()).await;
+        assert!(h.events.lock().iter().all(
+            |e| !matches!(e,IdeEvent::Diagnostics {path,..} if path.0.to_string_lossy().contains(".openidea-injected-"))
+        ));
+        h.mgr.did_close(host);
+        eventually(|| state.docs.lock().is_empty()).await;
+        h.mgr.shutdown_all().await;
+    }
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn missing_injected_server_uses_the_normal_single_install_notification() {
+    let h = harness_for("sql", "sql", &[("embedded", incremental_caps())], &[]);
+    h.launcher.state("embedded").missing.store(true, Ordering::SeqCst);
+    let host = DocId::next();
+    let path = h.root.join("host.java");
+    h.mgr.did_open(host, &path, &LanguageId::plain_text(), 1, "sql");
+    let ranges = || vec![ide_lsp::InjectedRange { range: rng(0, 0, 0, 3), language: LanguageId::new("sql") }];
+    h.mgr.set_injections(host, 1, ranges());
+    h.wait_status("embedded", ServerStatus::Missing).await;
+    for version in 2..10 {
+        h.mgr.did_change(host, version, &[], &|| "sql".into());
+        h.mgr.set_injections(host, version, ranges());
+    }
+    assert_eq!(h.mgr.servers().len(), 1);
+    assert_eq!(h.statuses("embedded").iter().filter(|s| **s == ServerStatus::Missing).count(), 1);
+    h.mgr.did_close(host);
+    h.mgr.shutdown_all().await;
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn languages_sharing_a_server_keep_independent_target_choices() {
+    let dir = tempfile::tempdir().unwrap();
+    let root = dunce::canonicalize(dir.path()).unwrap();
+    let language = |id: &str| {
+        let mut lang: LanguageConfig = toml::from_str(&format!("id='{id}'\nname='{id}'\nextensions=['{id}']")).unwrap();
+        lang.language_servers = vec![server_cfg("shared")];
+        lang
+    };
+    let registry = Arc::new(LanguageRegistry::from_configs(vec![language("one"), language("two")]));
+    struct ScopedLauncher(Arc<MockLauncher>);
+    impl Launcher for ScopedLauncher {
+        fn launch(
+            &self,
+            config: &LanguageServerConfig,
+            root: &Path,
+            handler: Arc<dyn Handler>,
+            stderr: Box<dyn Fn(String) + Send + Sync>,
+        ) -> Result<Peer, LaunchError> {
+            let mut config = config.clone();
+            if let Some(key) = &config.target_key {
+                config.name = format!("{}@{key}", config.name);
+            }
+            self.0.launch(&config, root, handler, stderr)
+        }
+    }
+    let launcher = Arc::new(MockLauncher::default());
+    for name in ["shared", "shared@container"] {
+        *launcher.state(name).caps.lock() = json!({"textDocumentSync":1,"hoverProvider":true});
+    }
+    let manager = LspManager::with_launcher(
+        root.clone(),
+        registry,
+        Arc::new(ide_core::NullSink),
+        Arc::new(ScopedLauncher(launcher.clone())),
+    );
+    let selected = Arc::new(std::sync::atomic::AtomicBool::new(false));
+    let selected_hook = selected.clone();
+    manager.set_servers_hook(Box::new(move |lang, defined| {
+        let mut configs = defined.to_vec();
+        if lang.as_str() == "one" && selected_hook.load(Ordering::Acquire) {
+            configs[0].target_key = Some("container".into());
+        }
+        configs
+    }));
+    let one = DocId::next();
+    let two = DocId::next();
+    manager.did_open(one, &root.join("a.one"), &LanguageId::new("one"), 1, "one");
+    manager.did_open(two, &root.join("b.two"), &LanguageId::new("two"), 1, "two");
+    eventually(|| manager.servers().iter().any(|s| s.status == ServerStatus::Ready)).await;
+    assert_eq!(manager.servers().len(), 1);
+    let host = manager.servers()[0].id;
+    selected.store(true, Ordering::Release);
+    manager.reconfigure().await;
+    eventually(|| manager.servers().iter().filter(|s| s.status == ServerStatus::Ready).count() == 2).await;
+    assert!(manager.servers().iter().any(|s| s.id == host));
+    // Each document has one server. Hover must not send to both after splitting.
+    let state = launcher.state("shared");
+    state.requests.lock().clear();
+    let target_state = launcher.state("shared@container");
+    target_state.requests.lock().clear();
+    let _ = manager.hover(one, Pos::new(0, 0), CancellationToken::new()).await;
+    let _ = manager.hover(two, Pos::new(0, 0), CancellationToken::new()).await;
+    assert_eq!(state.requested("textDocument/hover").len(), 1);
+    assert_eq!(target_state.requested("textDocument/hover").len(), 1);
+    selected.store(false, Ordering::Release);
+    manager.reconfigure().await;
+    assert_eq!(manager.servers().len(), 1);
+    assert_eq!(manager.servers()[0].id, host);
+    manager.shutdown_all().await;
 }

@@ -93,6 +93,29 @@ export function openKeys(s: TabsState): Set<string> {
   return keys;
 }
 
+/**
+ * Folds restored tabs into the current tabs without losing anything open: tabs
+ * already open stay (with their active tab), restored tabs missing by key are
+ * appended to the active pane. An empty window takes the restored state as-is,
+ * keeping its saved layout and active tab.
+ */
+export function mergeSessionTabs(current: TabsState, restored: TabsState): TabsState {
+  const target = current.panes[current.activePane];
+  if (!target || !Object.values(current.panes).some((p) => p.tabs.length)) return restored;
+  const seen = openKeys(current);
+  const additions: Tab[] = [];
+  for (const pane of Object.values(restored.panes))
+    for (const tab of pane.tabs) {
+      if (seen.has(tab.input.key)) continue;
+      seen.add(tab.input.key);
+      additions.push(tab);
+    }
+  if (!additions.length) return current;
+  const tabs = [...target.tabs, ...additions];
+  const mru = [...target.mru, ...additions.map((t) => t.id).filter((id) => !target.mru.includes(id))];
+  return withPane(current, { ...target, tabs, mru });
+}
+
 function withPane(s: TabsState, pane: Pane): TabsState {
   return { ...s, panes: { ...s.panes, [pane.id]: pane } };
 }

@@ -849,21 +849,115 @@ fn sync_tree(
     Ok(())
 }
 
+/// A built `*.war` under a module's usual output directory (`target/`, `build/libs/`).
+fn is_war(path: &Path) -> bool {
+    path.extension().is_some_and(|e| e.eq_ignore_ascii_case("war"))
+}
+
+/// The module directory a config's `cwd` names (absolute, or relative to the project root).
+fn module_dir(root: &Path, module: Option<&Path>) -> PathBuf {
+    match module {
+        Some(m) if m.is_absolute() => m.to_path_buf(),
+        Some(m) => root.join(m),
+        None => root.to_path_buf(),
+    }
+}
+
+/// The newest modification time of `path` or, for a directory, anything below it.
+fn newest_mtime_under(path: &Path) -> Option<std::time::SystemTime> {
+    let meta = fs::metadata(path).ok()?;
+    let mut newest = meta.modified().ok();
+    if meta.is_dir() {
+        for entry in fs::read_dir(path).ok()?.flatten() {
+            if let Some(time) = newest_mtime_under(&entry.path())
+                && newest.is_none_or(|cur| time > cur)
+            {
+                newest = Some(time);
+            }
+        }
+    }
+    newest
+}
+
+/// The newest `*.war` a build tool left in the module's output directories. Used when no
+/// build ran this launch and nothing was recorded, so a project that was already built can
+/// start directly (IDEA deploys the existing artifact instead of rebuilding it).
+fn find_built_war(root: &Path, module: Option<&Path>) -> Option<PathBuf> {
+    let module = module_dir(root, module);
+    let mut newest: Option<(std::time::SystemTime, PathBuf)> = None;
+    for dir in [module.join("target"), module.join("build/libs")] {
+        let Ok(entries) = fs::read_dir(dir) else { continue };
+        for entry in entries.flatten() {
+            let path = entry.path();
+            if path.is_file() && is_war(&path) {
+                let modified = entry.metadata().and_then(|m| m.modified()).unwrap_or(std::time::UNIX_EPOCH);
+                if newest.as_ref().is_none_or(|(at, _)| modified > *at) {
+                    newest = Some((modified, path));
+                }
+            }
+        }
+    }
+    newest.map(|(_, path)| path)
+}
+
+/// Whether the WAR a Tomcat config deploys is newer than the module's sources, so its
+/// "Before launch › Build" task can be skipped (IDEA's up-to-date check). Conservative:
+/// a missing WAR or a newer source/build file means it is not current. Only the module's
+/// own sources and build files are inspected, not dependency modules.
+pub fn artifact_is_current(root: &Path, base: &Path, config: &RunConfig) -> bool {
+    let p = &config.extras.params;
+    if p.get("deployment").map(String::as_str).unwrap_or("artifact") != "artifact" {
+        return true;
+    }
+    let module = module_dir(root, config.cwd.as_ref().map(|c| c.0.as_path()));
+    let selected = p.get("artifact").filter(|s| !s.is_empty());
+    let recorded_id = fs::read_to_string(base.join("artifact-id.txt")).ok();
+    let id_matches = selected.is_none_or(|id| recorded_id.as_deref().map(str::trim) == Some(id.as_str()));
+    let recorded = fs::read_to_string(base.join("artifact-path.txt")).ok().map(|s| PathBuf::from(s.trim()));
+    let war = match recorded.filter(|_| id_matches) {
+        Some(war) if war.is_file() && is_war(&war) => war,
+        _ => match find_built_war(root, Some(&module)) {
+            Some(war) => war,
+            None => return false,
+        },
+    };
+    let Ok(war_time) = fs::metadata(&war).and_then(|m| m.modified()) else { return false };
+    let mut newest = newest_mtime_under(&module.join("src"));
+    for dir in [module.as_path(), root] {
+        for name in ["pom.xml", "build.gradle", "build.gradle.kts"] {
+            if let Ok(time) = fs::metadata(dir.join(name)).and_then(|m| m.modified())
+                && newest.is_none_or(|cur| time > cur)
+            {
+                newest = Some(time);
+            }
+        }
+    }
+    newest.is_none_or(|time| time <= war_time)
+}
+
 pub fn deployment(root: &Path, base: &Path, config: &RunConfig, resources_only: bool) -> IdeResult<PathBuf> {
     let p = &config.extras.params;
     match p.get("deployment").map(String::as_str).unwrap_or("artifact") {
         "artifact" => {
-            if let Some(id) = p.get("artifact").filter(|s| !s.is_empty())
-                && fs::read_to_string(base.join("artifact-id.txt")).ok().as_ref() != Some(id)
-            {
-                return Err(invalid("Build the selected WAR artifact before launching Tomcat"));
-            }
-            let war = fs::read_to_string(base.join("artifact-path.txt"))
-                .map_err(|_| invalid("Build the WAR artifact before launching Tomcat"))?;
-            let war = PathBuf::from(war.trim());
-            if !war.is_file() || !war.extension().is_some_and(|e| e.eq_ignore_ascii_case("war")) {
-                return Err(invalid(format!("The built WAR artifact does not exist: {}", war.display())));
-            }
+            // A build run this launch records its archive here. Without one (Before launch ›
+            // Build removed, as IDEA allows), reuse the last build's archive, or an archive a
+            // build tool already left in the module output, instead of rebuilding.
+            let selected = p.get("artifact").filter(|s| !s.is_empty());
+            let recorded_id = fs::read_to_string(base.join("artifact-id.txt")).ok();
+            let id_matches = selected.is_none_or(|id| recorded_id.as_deref().map(str::trim) == Some(id.as_str()));
+            let recorded = fs::read_to_string(base.join("artifact-path.txt")).ok().map(|s| PathBuf::from(s.trim()));
+            let war = match recorded.filter(|_| id_matches) {
+                Some(war) => {
+                    if war.is_file() && is_war(&war) {
+                        war
+                    } else {
+                        return Err(invalid(format!("The built WAR artifact does not exist: {}", war.display())));
+                    }
+                }
+                None => find_built_war(root, config.cwd.as_ref().map(|c| c.0.as_path())).ok_or_else(|| {
+                    invalid("No built WAR artifact found - build the project first, or add 'Build' to Before launch")
+                })?,
+            };
             let dest = base.join("deployment");
             explode(&war, &dest, resources_only)?;
             Ok(dest)
@@ -1402,6 +1496,57 @@ mod tests {
             }
         }
     }
+    #[test]
+    fn reuses_a_built_war_when_no_build_ran() {
+        let tmp = tempfile::tempdir().unwrap();
+        let root = tmp.path();
+        let module = root.join("web");
+        fs::create_dir_all(module.join("target")).unwrap();
+        let war = module.join("target/app.war");
+        archive(&war, &[("index.html", "built")]);
+        let base = root.join("cache");
+        fs::create_dir_all(&base).unwrap();
+        let mut c = config();
+        c.cwd = Some(ide_core::IpcPath(PathBuf::from("web")));
+        c.extras.params.insert("artifact".into(), "maven:web/pom.xml".into());
+        // No artifact-path.txt / artifact-id.txt: it was never built through Tomcat.
+        let dest = deployment(root, &base, &c, false).unwrap();
+        assert_eq!(fs::read_to_string(dest.join("index.html")).unwrap(), "built");
+    }
+
+    #[test]
+    fn reports_a_missing_artifact_when_nothing_was_built() {
+        let tmp = tempfile::tempdir().unwrap();
+        let base = tmp.path().join("cache");
+        fs::create_dir_all(&base).unwrap();
+        let error = deployment(tmp.path(), &base, &config(), false).unwrap_err().to_string();
+        assert!(error.contains("No built WAR artifact found"), "{error}");
+    }
+
+    #[test]
+    fn skips_the_build_when_the_built_war_is_current() {
+        let tmp = tempfile::tempdir().unwrap();
+        let root = tmp.path();
+        let module = root.join("web");
+        fs::create_dir_all(module.join("src/main/java")).unwrap();
+        fs::create_dir_all(module.join("target")).unwrap();
+        fs::write(module.join("pom.xml"), "<project/>").unwrap();
+        let source = module.join("src/main/java/App.java");
+        fs::write(&source, "class App {}").unwrap();
+        let war = module.join("target/app.war");
+        archive(&war, &[("index.html", "built")]);
+        let base = root.join("cache");
+        fs::create_dir_all(&base).unwrap();
+        let mut c = config();
+        c.cwd = Some(ide_core::IpcPath(PathBuf::from("web")));
+        c.extras.params.insert("artifact".into(), "maven:web/pom.xml".into());
+        // The WAR was packed after the source was written.
+        assert!(artifact_is_current(root, &base, &c));
+        std::thread::sleep(std::time::Duration::from_millis(20));
+        fs::write(&source, "class App { int changed; }").unwrap();
+        assert!(!artifact_is_current(root, &base, &c));
+    }
+
     #[test]
     fn prepares_isolated_base_and_jdwp_only_for_run() {
         let tmp = tempfile::tempdir().unwrap();
