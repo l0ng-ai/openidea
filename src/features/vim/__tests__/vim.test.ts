@@ -127,6 +127,35 @@ describe("Vim engine", () => {
     view.destroy();
   });
 
+  it.each([
+    ["<f1>", { key: "F1" }],
+    ["<s-tab>", { key: "Tab", shiftKey: true }],
+    ["<c-f>", { key: "f", ctrlKey: true }],
+    ["<C-S-x>", { key: "X", ctrlKey: true, shiftKey: true }],
+    ["<m-x>", { key: "x", altKey: true }],
+    ["<d-x>", { key: "x", metaKey: true }],
+  ])("matches browser key events for %s", (lhs, event) => {
+    const view = makeView();
+    const cm = getCM(view)!;
+    applyRcCommands(parseVimrc(`nnoremap ${lhs} i`).commands);
+    const key = Vim.vimKeyFromEvent(new KeyboardEvent("keydown", event));
+    Vim.handleKey(cm as never, key!, "user");
+    expect(cm.state.vim?.insertMode).toBe(true);
+    view.destroy();
+  });
+
+  it("inserts escaped key notation literally", () => {
+    const view = makeView();
+    const cm = getCM(view)!;
+    applyRcCommands(parseVimrc("inoremap jk <LT>Esc><BAR><BSLASH>").commands);
+    Vim.handleKey(cm as never, "i", "user");
+    Vim.handleKey(cm as never, "j", "user");
+    Vim.handleKey(cm as never, "k", "user");
+    expect(cm.state.vim?.insertMode).toBe(true);
+    expect(view.state.doc.toString()).toBe("<Esc>|\\one two\nthree");
+    view.destroy();
+  });
+
   it("keeps an IME composition out of the document in Normal mode", async () => {
     const transient: boolean[] = [];
     const view = makeView([

@@ -58,6 +58,9 @@ const SPECIAL_KEYS: Record<string, string> = {
   insert: "Ins",
   space: "Space",
   tab: "Tab",
+  lt: "lt",
+  bar: "|",
+  bslash: "\\",
   left: "Left",
   right: "Right",
   up: "Up",
@@ -69,15 +72,33 @@ const SPECIAL_KEYS: Record<string, string> = {
 };
 
 /** Rewrites `<esc>`/`<cr>`/`<c-c>`… to the exact `<Esc>`/`<CR>`/`<C-c>` codemirror-vim matches. */
-function normalizeVimKeys(keys: string): string {
-  return keys.replace(/<([^<>]+)>/g, (whole, inner: string) => {
-    const m = /^((?:[csam]-)*)(.*)$/i.exec(inner)!;
-    const mods = m[1]!.toUpperCase();
+function normalizeVimKeys(keys: string, rhs = false): string {
+  return keys.replace(/<([^<>\s]+)>/g, (whole, inner: string) => {
+    const m = /^((?:[csamd]-)*)(.+)$/i.exec(inner);
+    if (!m) return whole;
+    const prefixes = m[1]!.toUpperCase().split("-");
     const name = m[2]!;
-    if (!mods && name.toLowerCase() === "lt") return "<";
-    const canonical = SPECIAL_KEYS[name.toLowerCase()];
-    if (!canonical) return mods ? `<${mods}${name}>` : whole;
-    return `<${mods}${canonical}>`;
+    const lower = name.toLowerCase();
+    let canonical = Object.hasOwn(SPECIAL_KEYS, lower)
+      ? SPECIAL_KEYS[lower]!
+      : /^f(?:[1-9]|1[0-2])$/.test(lower)
+        ? name.toUpperCase()
+        : prefixes.length > 1 && name.length === 1
+          ? name
+          : null;
+    if (canonical === null) return whole;
+    if (canonical === "lt") canonical = rhs ? "<lt>" : "<";
+    // Vim's M- aliases Alt; D- is Command (the engine's M-).
+    const mods = [
+      prefixes.includes("C") ? "C-" : "",
+      prefixes.includes("A") || prefixes.includes("M") ? "A-" : "",
+      prefixes.includes("D") ? "M-" : "",
+    ].join("");
+    const shift = prefixes.includes("S");
+    if (shift && canonical.length === 1) canonical = canonical.toUpperCase();
+    if (!mods && canonical.length === 1) return canonical;
+    if (!mods && canonical === "<lt>") return canonical;
+    return `<${mods}${shift ? "S-" : ""}${canonical}>`;
   });
 }
 /** Options the Vim engine implements (others, e.g. IdeaVim's `ideajoin`, are reported as ignored). */
@@ -104,7 +125,7 @@ function splitArgs(s: string): string[] {
 export function exOfRhs(rhs: string): string | null {
   const action = /^<Action>\(([^)\s]+)\)$/i.exec(rhs);
   if (action) return `action ${action[1]}`;
-  const ex = /^:(?:<C-u>)?([^<]+)<CR>$/i.exec(rhs);
+  const ex = /^:(?:<C-u>)?([^<]+)<(?:CR|Enter|Return)>$/i.exec(rhs);
   return ex ? ex[1]!.trim() : null;
 }
 
@@ -188,13 +209,13 @@ export function parseVimrc(text: string, sources?: ReadonlyMap<string, string | 
     if (map) {
       const args = splitArgs(rest).filter((a) => !MAP_FLAGS.test(a));
       if (args.length < 2) return ignore("mapping needs a left and right side");
-      const withLeader = (keys: string) => keys.replace(/<leader>/gi, leader);
+      const withLeader = (keys: string) => keys.replace(/<leader>/gi, () => leader);
       const lhs = normalizeVimKeys(withLeader(args[0]!));
       const rawRhs = withLeader(args.slice(1).join(" "));
       const mode = MAP_MODES[map[1] ?? ""];
       const ex = exOfRhs(rawRhs);
       if (ex) commands.push({ kind: "mapEx", mode, lhs, ex });
-      else commands.push({ kind: "map", mode, noremap: map[2] !== "map", lhs, rhs: normalizeVimKeys(rawRhs) });
+      else commands.push({ kind: "map", mode, noremap: map[2] !== "map", lhs, rhs: normalizeVimKeys(rawRhs, true) });
       return;
     }
 
