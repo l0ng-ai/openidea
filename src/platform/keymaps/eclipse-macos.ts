@@ -9,7 +9,7 @@ export const eclipseMacos: Record<string, string[]> = {
   ...intellijMacos,
   // $Undo / $Redo stay unbound as in the parent keymap: the focused editor or view handles them.
   "code.autoIndentLines": ["Meta+I"],
-  "navigate.back": ["Meta+[", "Button4"],
+  "navigate.back": ["Meta+[", "Button4", "SwipeRight"],
   "refactor.changeSignature": ["Alt+Meta+C"],
   "db.modifyTable": ["Alt+Meta+C"],
   "vcs.commit": [],
@@ -61,7 +61,7 @@ export const eclipseMacos: Record<string, string[]> = {
   "find.popup.previousResult": ["Shift+Meta+K"],
   "find.usages": ["Meta+Shift+G"],
   "project.findUsages": ["Meta+Shift+G"],
-  "navigate.forward": ["Meta+]", "Button5"],
+  "navigate.forward": ["Meta+]", "Button5", "SwipeLeft"],
   "navigate.gotoTest": [],
   "navigate.gotoClass": ["Shift+Meta+T"],
   "navigate.declaration": ["F3"],

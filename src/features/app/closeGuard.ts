@@ -189,6 +189,7 @@ async function onCloseRequested(deps: CloseDeps): Promise<boolean> {
     // screen (to open another one); closing the welcome screen, or quitting, closes the window.
     if (!ctx.quitting && ctx.windows <= 1 && (s.project || s.lightEdit)) {
       if (await confirmLeave(deps)) await closeProject();
+      await commands.windowGroupCancelClose();
       return false;
     }
     const confirmTerminate = workflowSettings().run.confirmTerminate;
@@ -200,12 +201,11 @@ async function onCloseRequested(deps: CloseDeps): Promise<boolean> {
         confirmTerminate,
         processes: confirmTerminate ? await processNames(deps) : [],
         dirty: dirtyCount(),
-        project: s.project?.name ?? null,
+        project: s.project?.displayName || s.project?.name || null,
       },
       deps,
     );
     if (!ok) await (ctx.quitting ? commands.appCancelQuit() : commands.windowGroupCancelClose());
-    else if (!ctx.quitting) await commands.windowGroupBeforeClose();
     return ok;
   } catch (e) {
     maybeEditorService()?.cancelClose?.();
@@ -223,7 +223,7 @@ async function onCloseRequested(deps: CloseDeps): Promise<boolean> {
  */
 export async function confirmLeave(
   deps: CloseDeps = defaultDeps,
-  project = useProject.getState().project?.name ?? null,
+  project = (useProject.getState().project?.displayName || useProject.getState().project?.name) ?? null,
 ): Promise<boolean> {
   if (!(await closeDocumentWindows())) return false;
   const confirmTerminate = workflowSettings().run.confirmTerminate;

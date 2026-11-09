@@ -1,7 +1,7 @@
 /**
  * Database tool window (IDEA's layout): data source → database (PostgreSQL) → schema → `tables` /
- * `views` / `materialized views` / `routines` / `sequences` folders → table → `columns` / `keys` /
- * `foreign keys` / `indexes` / `triggers`,
+ * `views` / `materialized views` / `routines` (optionally `procedures` / `functions`) / `sequences`
+ * folders → table → `columns` / `keys` / `foreign keys` / `indexes` / `triggers`,
  * with counts and column types, loaded lazily. Double-click a table to open its data, a data
  * source to open its query console.
  */
@@ -32,7 +32,15 @@ import {
   splitTarget,
   targetOf,
 } from "./model";
-import { nodeTarget, schemaObjectOf, tableFolder, type DbNode as Node, type Folder, type Group } from "./nodes";
+import {
+  nodeTarget,
+  routineFolder,
+  schemaObjectOf,
+  tableFolder,
+  type DbNode as Node,
+  type Folder,
+  type Group,
+} from "./nodes";
 import {
   connect,
   detailsKey,
@@ -66,10 +74,20 @@ const FOLDER_LABELS: Record<Folder, string> = {
   views: "views",
   materializedViews: "materialized views",
   routines: "routines",
+  procedures: "procedures",
+  functions: "functions",
   sequences: "sequences",
 };
 
 const FOLDERS: readonly Folder[] = ["tables", "views", "materializedViews", "routines", "sequences"];
+const SEPARATE_FOLDERS: readonly Folder[] = [
+  "tables",
+  "views",
+  "materializedViews",
+  "procedures",
+  "functions",
+  "sequences",
+];
 
 function status<T>(key: string, l: Loaded<T> | undefined, map: (v: T) => Node[]): Node[] | undefined {
   if (!l) return undefined;
@@ -101,6 +119,7 @@ function groupSize(d: DbTableDetails, g: Group): number {
 
 export function DatabaseView() {
   const st = useDatabase();
+  const folders = st.separateProceduresAndFunctions ? SEPARATE_FOLDERS : FOLDERS;
   const tree = useRef<TreeHandle>(null);
   useEffect(() => {
     if (!st.loaded) void loadSources();
@@ -149,9 +168,12 @@ export function DatabaseView() {
     (st.objects[tablesKey(id, schema)]?.routines ?? []).filter(shown(id));
   const sequencesOf = (id: string, schema: string) =>
     (st.objects[tablesKey(id, schema)]?.sequences ?? []).filter(shown(id));
-  /** Members of a schema folder: tables / views / materialized views, routines or sequences. */
+  /** Members of a schema folder, after object and quick filtering. */
   const folderSize = (id: string, schema: string, folder: Folder): number => {
-    if (folder === "routines") return routinesOf(id, schema).length;
+    if (folder === "routines" || folder === "procedures" || folder === "functions")
+      return routinesOf(id, schema).filter(
+        (routine) => routineFolder(routine.kind, st.separateProceduresAndFunctions) === folder,
+      ).length;
     if (folder === "sequences") return sequencesOf(id, schema).length;
     return (tablesOf(id, schema) ?? []).filter((t) => tableFolder(t.kind) === folder).length;
   };
@@ -205,24 +227,28 @@ export function DatabaseView() {
         return schemasOf(n.key, n.id);
       case "schema":
         return status(n.key, st.tables[tablesKey(n.id, n.schema)], () =>
-          FOLDERS.filter((f) => folderSize(n.id, n.schema, f) > 0).map((folder): Node => ({
-            kind: "folder",
-            key: `${n.key}/${folder}`,
-            id: n.id,
-            schema: n.schema,
-            folder,
-          })),
+          folders
+            .filter((f) => folderSize(n.id, n.schema, f) > 0)
+            .map((folder): Node => ({
+              kind: "folder",
+              key: `${n.key}/${folder}`,
+              id: n.id,
+              schema: n.schema,
+              folder,
+            })),
         );
       case "folder": {
         const at = { id: n.id, schema: n.schema };
-        if (n.folder === "routines")
+        if (n.folder === "routines" || n.folder === "procedures" || n.folder === "functions")
           // Overloads share a name: the key tells them apart by their arguments.
-          return routinesOf(n.id, n.schema).map((routine) => ({
-            kind: "routine",
-            key: `${n.key}/${routine.name}(${routine.arguments})`,
-            routine,
-            ...at,
-          }));
+          return routinesOf(n.id, n.schema)
+            .filter((routine) => routineFolder(routine.kind, st.separateProceduresAndFunctions) === n.folder)
+            .map((routine) => ({
+              kind: "routine",
+              key: `${n.key}/${routine.name}(${routine.arguments})`,
+              routine,
+              ...at,
+            }));
         if (n.folder === "sequences")
           return sequencesOf(n.id, n.schema).map((sequence) => ({
             kind: "sequence",
@@ -292,7 +318,7 @@ export function DatabaseView() {
   const label = (n: Node): string => {
     switch (n.kind) {
       case "source":
-        return n.source.name ?? "";
+        return n.source.pluginOwner ? `${n.source.name} (${n.source.pluginOwner})` : (n.source.name ?? "");
       case "database":
         return n.name;
       case "schema":

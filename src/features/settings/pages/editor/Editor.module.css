@@ -176,7 +176,7 @@
 }
 .schemeBody {
   display: grid;
-  grid-template-columns: minmax(0, 1fr) minmax(220px, 260px);
+  grid-template-columns: minmax(180px, 1fr) minmax(220px, 260px);
   gap: 14px;
   min-height: 320px;
 }

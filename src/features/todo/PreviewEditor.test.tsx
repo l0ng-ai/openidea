@@ -16,9 +16,12 @@ function stubAttacher(docs: Map<string, { text: string; dirty?: boolean; readOnl
       path,
       doc: 1,
       text: () => docs.get(path)!.text,
+      lineEnding: () => "lf",
       dirty: () => !!docs.get(path)!.dirty,
       uiMode: () => null,
       readOnly: !!docs.get(path)!.readOnly,
+      editorState: () => null,
+      dispatchTransactions: (trs, view) => view.update(trs),
       extension: EditorView.updateListener.of((u) => {
         for (const tr of u.transactions)
           if (tr.docChanged) {

@@ -31,6 +31,22 @@ Keys are the plugin's own strings and ranges are UTF-16. When a key has
 definitions in the same detected module, other modules' definitions are left
 out. Several targets open a chooser.
 
+A marker's tooltip lists its targets. With API 1.3, a `[[contributes.markerIcons]]`
+entry can brand markers by key prefix; the longest matching prefix wins, and
+other markers keep the navigation glyph:
+
+```toml
+[[contributes.markerIcons]]
+id = "usages"
+icon = "icons/usages.svg"
+iconDark = "icons/usages_dark.svg"
+markers = ["usages#"]
+tooltip = "Usages of this class"   # shown above the targets
+```
+
+A marker published as `Anchor { key: "usages#User".into(), range }` then shows
+that icon. See `plugins/README.md` for the limits.
+
 Initial discovery reuses the host's project index. The editor schedules
 cancellable batches of at most 16 files; edits and file changes invalidate the
 affected entries before they are indexed again. Reloading, disabling or a
@@ -41,6 +57,41 @@ Limits: 2 MiB per document, 20,000 files per graph, 4,096 definitions and
 references and 4,096 markers per document, 256 aliases, 200,000 entries per
 graph, 16 project/window graphs and 256 candidates per lookup. A document over
 a limit is not indexed; editing is never blocked.
+
+## Find Usages and Rename (API 1.3)
+
+Find Usages on a published definition or reference lists every definition and
+reference of its key alongside the language server's results. Rename replaces
+every such anchor with the new name, merging language-server edits into the
+same workspace edit. Alias-linked keys follow the same definition targets and
+module preference as navigation. Markers are excluded: their ranges may cover
+an annotation or an entire line.
+
+Anchors must cover **exactly the name**, without quotes, delimiters or surrounding
+syntax. Use UTF-16 columns, including two columns for an astral character.
+Rename always shows a preview, even for a single file; cancelling leaves files
+unchanged, and applying it creates one undoable workspace change. The host
+checks snapshots containing returned anchors against current buffers and disk
+before returning the edit, and checks preview fingerprints again before applying
+it. If a document changed, wait for indexing and request the rename again.
+
+Queries flush queued indexing work; they do not rescan the project. External
+changes must reach the filesystem watcher and be indexed before newly added
+anchors appear. Files without matching anchors are not refreshed by the query.
+
+A language server that declines ownership of the indexed name does not prevent
+its indexed anchors from being renamed. Failed reference or name-preparation
+queries show an incomplete-search warning. A server that owns the same name
+keeps its rename validation; a rejected native rename changes nothing.
+
+When no language server can rename there (none is running, or it has no rename
+support), an anchor on a code identifier, per the file's syntax tree, is not
+renamed: the anchors would miss the declaration, imports and file name its
+language owns. Anchors in strings, comments or attribute values, and in files
+without a syntax grammar, are still renamed from the index alone.
+
+These features consume the existing graph; no references or rename export is
+needed. Unindexed names continue through the normal language-server path.
 
 ## Minimal fixture
 

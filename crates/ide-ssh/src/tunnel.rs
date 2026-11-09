@@ -61,11 +61,16 @@ impl Drop for Tunnel {
 }
 
 async fn forward(listener: TcpListener, session: Arc<Session>, host: String, port: u16) {
+    let mut connections = tokio::task::JoinSet::new();
     loop {
-        let Ok((mut socket, _)) = listener.accept().await else { return };
+        let accepted = tokio::select! {
+            Some(_) = connections.join_next(), if !connections.is_empty() => continue,
+            accepted = listener.accept() => accepted,
+        };
+        let Ok((mut socket, _)) = accepted else { return };
         let session = session.clone();
         let host = host.clone();
-        tokio::spawn(async move {
+        connections.spawn(async move {
             match session.direct_tcpip(&host, port).await {
                 Ok(mut stream) => {
                     let _ = tokio::io::copy_bidirectional(&mut socket, &mut stream).await;

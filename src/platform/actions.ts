@@ -52,6 +52,12 @@ export interface Action {
    * Search Everywhere shows an ON/OFF switch and keeps the popup open.
    */
   toggled?: () => boolean;
+  /**
+   * The run takes long enough to need feedback where it was clicked: toolbar buttons of this
+   * action show a spinner and ignore clicks until `run` settles. Only for actions that finish
+   * by themselves, not ones that wait on the user (a dialog).
+   */
+  indicatesRunning?: boolean;
   run: (c: ActionContext) => void | Promise<void>;
 }
 
@@ -60,6 +66,19 @@ interface ActionStore {
 }
 
 export const useActions = create<ActionStore>(() => ({ actions: new Map() }));
+
+/** Ids of `indicatesRunning` actions with a run in flight, with how many. */
+export const useRunningActions = create<{ running: ReadonlyMap<string, number> }>(() => ({ running: new Map() }));
+
+function trackRun(id: string, delta: 1 | -1) {
+  useRunningActions.setState(({ running }) => {
+    const next = new Map(running);
+    const count = (next.get(id) ?? 0) + delta;
+    if (count > 0) next.set(id, count);
+    else next.delete(id);
+    return { running: next };
+  });
+}
 
 /** Registered actions as written (English), by id; the store holds their localised copies. */
 const sources = new Map<string, Action>();
@@ -167,7 +186,16 @@ export function onActionExecuted(listener: ActionListener): () => void {
 }
 
 /** Runs an action if registered and enabled. Returns whether it ran. */
-export async function executeAction(id: string, arg?: unknown): Promise<boolean> {
+export function executeAction(id: string, arg?: unknown): Promise<boolean> {
+  return runAction(id, arg, false);
+}
+
+/** Host requests need the launch error before acknowledging an operation. */
+export async function executeActionOrThrow(id: string, arg?: unknown): Promise<void> {
+  if (!(await runAction(id, arg, true))) throw new Error(`Action unavailable: ${id}`);
+}
+
+async function runAction(id: string, arg: unknown, propagateError: boolean): Promise<boolean> {
   const action = getAction(id);
   if (!action) {
     console.warn(`unknown action: ${id}`);
@@ -182,6 +210,7 @@ export async function executeAction(id: string, arg?: unknown): Promise<boolean>
       } catch (e) {
         console.error("action listener failed", e);
       }
+  if (action.indicatesRunning) trackRun(id, 1);
   try {
     let pending: void | Promise<void>;
     nesting++;
@@ -192,7 +221,10 @@ export async function executeAction(id: string, arg?: unknown): Promise<boolean>
     }
     await pending;
   } catch (e) {
+    if (propagateError) throw e;
     console.error(`action ${id} failed`, e);
+  } finally {
+    if (action.indicatesRunning) trackRun(id, -1);
   }
   return true;
 }

@@ -52,7 +52,8 @@ pub trait FileActions {
 
     /// The operations and edits of an action [`FileActions::file_actions`]
     /// returned with `data`, when the user picks it (the command budget
-    /// applies, not 50 ms).
+    /// applies, not 50 ms). The same four prompts as
+    /// [`crate::providers::Providers::resolve_code_action`] work here.
     fn resolve_file_action(&mut self, _doc: &Document, action: FileAction) -> Result<FileAction, crate::Error> {
         Ok(action)
     }

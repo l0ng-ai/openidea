@@ -36,6 +36,7 @@ import { defineBuiltinUiPoints } from "./points";
 import { localizeContributions, loadPluginCatalogs, usePluginCatalogs } from "./pluginText";
 import { clearUiContributions, syncUiContributions } from "./projection";
 import { handleRuntimeEvent, refreshEventKinds, startRuntimeUi } from "./runtimeUi";
+import { refreshRunTargets } from "./runTargets";
 import {
   grantPlugin,
   runPluginCommand,
@@ -53,7 +54,14 @@ export function syncProjection(): () => void {
     const s = usePlugins.getState();
     syncUiContributions(localizeContributions(s.ui, usePluginCatalogs.getState().catalogs), s.plugins);
     // Their problems are listed by name in Settings › Inspections.
-    useProducerNames.setState({ names: new Map(s.plugins.map((p) => [`plugin:${p.id}`, p.name])) });
+    useProducerNames.setState({
+      names: new Map(
+        s.plugins.flatMap((p): [string, string][] => [
+          [`plugin:${p.id}`, p.name],
+          [`plugin-provider:${p.id}`, p.name],
+        ]),
+      ),
+    });
   };
   const loadCatalogs = () => void loadPluginCatalogs(usePlugins.getState().ui, useI18n.getState().locale);
   apply();
@@ -323,6 +331,7 @@ export function handlePluginEvent(e: PluginEvent) {
  */
 export function followPluginChanges(): () => void {
   return pluginsBackend().onEvent((e) => {
+    if (e.type === "runTargetsChanged") void refreshRunTargets(false).catch(() => {});
     if (e.type === "commandsChanged" || e.type === "themeChanged" || e.type === "languagesChanged")
       handlePluginEvent(e);
   });

@@ -80,6 +80,15 @@
   outline: none;
 }
 
+.listItem[aria-selected="true"] {
+  background: var(--bg-tree-selected);
+}
+
+.master {
+  height: 100%;
+  overflow: auto;
+}
+
 .detail {
   color: var(--fg-muted);
 }
@@ -182,6 +191,19 @@
 .tableEmpty {
   padding: 32px 12px;
   color: var(--fg-muted);
+}
+
+.webWrap {
+  position: relative;
+  width: 100%;
+  height: 100%;
+}
+
+.cornerActions {
+  position: absolute;
+  top: 5px;
+  right: 8px;
+  z-index: 20;
 }
 
 .frame {

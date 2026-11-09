@@ -2,10 +2,11 @@ import { describe, expect, it } from "vitest";
 import { readFileSync } from "node:fs";
 import { resolve } from "node:path";
 import { EditorState } from "@codemirror/state";
-import { ensureSyntaxTree, foldable, matchBrackets } from "@codemirror/language";
+import { foldable, matchBrackets } from "@codemirror/language";
 import type { Tree } from "@lezer/common";
 import { buildParserFile } from "@lezer/generator";
 import { highlightTree, tagHighlighter, tags as t } from "@lezer/highlight";
+import { completedSyntaxState, completedSyntaxTree } from "@/test/syntax";
 import { findLanguageDescription, loadSupport } from "../languages";
 import { jsp, jspLanguage } from "./index";
 
@@ -48,9 +49,7 @@ function errors(doc: string): string[] {
 
 /** The tree of `state`, parsed to the end. */
 function stateTree(state: EditorState): Tree {
-  const tree = ensureSyntaxTree(state, state.doc.length, 5000);
-  if (!tree) throw new Error("parse did not finish");
-  return tree;
+  return completedSyntaxTree(state, 5000);
 }
 
 /** A ~8 KB page with directives, scriptlets around markup, expressions and EL. */
@@ -95,8 +94,7 @@ describe("JSP pages", () => {
       "<%:pi",
       "%>:pi",
     ]);
-    const state = EditorState.create({ doc, extensions: jsp() });
-    stateTree(state);
+    const state = completedSyntaxState(EditorState.create({ doc, extensions: jsp() }));
     const open = doc.indexOf("{");
     expect(matchBrackets(state, open, 1)?.end?.from).toBe(doc.lastIndexOf("}"));
   });
@@ -191,8 +189,7 @@ describe("JSP pages", () => {
 
   it("comments with JSP comments in the markup and Java ones in scriptlets", () => {
     const doc = `<p>x</p><% int a; %>`;
-    const state = EditorState.create({ doc, extensions: jsp() });
-    stateTree(state);
+    const state = completedSyntaxState(EditorState.create({ doc, extensions: jsp() }));
     const at = (pos: number) =>
       state.languageDataAt<{ line?: string; block?: { open: string } }>("commentTokens", pos)[0];
     expect(at(4)?.block?.open).toBe("<%--");
@@ -201,8 +198,7 @@ describe("JSP pages", () => {
 
   it("folds JSP comments and scriptlets", () => {
     const doc = `<%--\n a\n--%>\n<%\n int a;\n%>`;
-    const state = EditorState.create({ doc, extensions: jsp() });
-    stateTree(state);
+    const state = completedSyntaxState(EditorState.create({ doc, extensions: jsp() }));
     expect(foldable(state, 0, 4)).toEqual({ from: 4, to: doc.indexOf("--%>") });
     const line = state.doc.line(4);
     expect(foldable(state, line.from, line.to)).toEqual({ from: line.to, to: doc.lastIndexOf("%>") });

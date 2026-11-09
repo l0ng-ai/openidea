@@ -17,6 +17,12 @@
 .flex {
   flex: 1;
 }
+.output {
+  flex: 1;
+  min-height: 0;
+  position: relative;
+  overflow: hidden;
+}
 .log {
   flex: 1;
   min-height: 0;

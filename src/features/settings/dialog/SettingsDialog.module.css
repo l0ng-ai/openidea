@@ -75,9 +75,10 @@
 .pageHeader {
   flex: none;
   display: flex;
+  flex-wrap: wrap;
   align-items: center;
   gap: 12px;
-  height: 40px;
+  min-height: 40px;
   padding: 0 12px 0 20px;
 }
 .history {
@@ -120,6 +121,7 @@
 }
 .scope {
   display: inline-flex;
+  flex: none;
   padding: 2px;
   border-radius: var(--radius-small);
   box-shadow: inset 0 0 0 1px var(--border-strong);
@@ -130,6 +132,7 @@
   border-radius: 3px;
   color: var(--fg-muted);
   font-size: var(--fs-small);
+  white-space: nowrap;
 }
 .scopeButton:hover {
   color: var(--fg-emphasis);

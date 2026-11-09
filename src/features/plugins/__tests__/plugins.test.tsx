@@ -135,6 +135,15 @@ afterEach(() => {
 });
 
 describe("plugin actions", () => {
+  it("names manual and provider inspection producers after their plugin", async () => {
+    const { useProducerNames } = await import("@/platform/inspections");
+    usePlugins.setState({ plugins: [plugin({ id: "a", name: "Alpha" })] });
+    const stop = syncProjection();
+    expect(useProducerNames.getState().names.get("plugin:a")).toBe("Alpha");
+    expect(useProducerNames.getState().names.get("plugin-provider:a")).toBe("Alpha");
+    stop();
+  });
+
   it("projects command contributions to plugin.<plugin>.<command> actions", () => {
     const cmd = (pluginId: string, id: string, extra: Record<string, unknown> = {}) => ({
       pluginId,
@@ -146,7 +155,7 @@ describe("plugin actions", () => {
       [cmd("a", "go"), cmd("a", "when", { when: "editorFocus", category: "Cat" }), cmd("gone", "x")],
       [plugin({ id: "a", name: "Alpha" })],
     );
-    expect(getAction("plugin.a.go")).toMatchObject({ title: "T go", category: "Alpha" });
+    expect(getAction("plugin.a.go")).toMatchObject({ title: "T go", category: "Alpha", indicatesRunning: true });
     expect(getAction("plugin.a.when")).toMatchObject({ when: "editorFocus", category: "Cat" });
     expect(getAction("plugin.gone.x")).toBeUndefined();
     expect(pluginActionId("p", "c.d")).toBe("plugin.p.c.d");
@@ -493,6 +502,60 @@ describe("bridge events", () => {
     expect(useTasks.getState().tasks.find((t) => t.id === "plugin:7")?.done).toBe(true);
   });
 
+  it("keeps a window status override above global updates and falls back on removal", () => {
+    const global = { text: "global", tooltip: null, command: null };
+    const local = { text: "window", tooltip: null, command: null };
+    handleRuntimeEvent({ type: "statusItemChanged", pluginId: "scope", id: "state", item: global });
+    handleRuntimeEvent({ type: "windowStatusItemChanged", pluginId: "scope", id: "state", item: local });
+    handleRuntimeEvent({
+      type: "statusItemChanged",
+      pluginId: "scope",
+      id: "state",
+      item: { ...global, text: "updated" },
+    });
+    expect(usePluginStatusItems.getState().items.get("scope/state")?.item.text).toBe("window");
+    handleRuntimeEvent({ type: "windowStatusItemChanged", pluginId: "scope", id: "state", item: null });
+    expect(usePluginStatusItems.getState().items.get("scope/state")?.item.text).toBe("updated");
+    handleRuntimeEvent({ type: "statusItemChanged", pluginId: "scope", id: "state", item: null });
+  });
+
+  it("executes host command requests through actions and returns plugin command results", async () => {
+    const answerCommand = vi.fn().mockResolvedValue(undefined);
+    const runCommand = vi.fn().mockResolvedValue("plugin result");
+    setPluginsBackend({ ...backend, answerCommand, runCommand });
+    const run = vi.fn();
+    const dispose = registerAction({ id: "test.host-command", title: "Test", run });
+    try {
+      handleRuntimeEvent({
+        type: "executeCommand",
+        requestId: "ide",
+        id: "test.host-command",
+        arg: "argument",
+        chain: ["caller"],
+      });
+      await waitFor(() => expect(answerCommand).toHaveBeenCalledWith("ide", { kind: "value", value: null }));
+      expect(run).toHaveBeenCalledWith(expect.objectContaining({ arg: "argument" }));
+      usePlugins.setState({
+        ui: [{ pluginId: "other", point: "commands", key: "test", decl: { id: "test", title: "Test" } }],
+      });
+      handleRuntimeEvent({
+        type: "executeCommand",
+        requestId: "plugin",
+        id: "plugin.other.test",
+        arg: "argument",
+        chain: ["caller"],
+      });
+      await waitFor(() =>
+        expect(answerCommand).toHaveBeenCalledWith("plugin", { kind: "value", value: "plugin result" }),
+      );
+      expect(runCommand).toHaveBeenCalledWith("other", "test", "argument", null, [], undefined, ["caller"]);
+      handleRuntimeEvent({ type: "executeCommand", requestId: "missing", id: "unknown", arg: null, chain: ["caller"] });
+      await waitFor(() => expect(answerCommand).toHaveBeenCalledWith("missing", { kind: "notFound" }));
+    } finally {
+      dispose();
+    }
+  });
+
   it("runs notification buttons as commands of the publishing plugin with their arguments", async () => {
     const runCommand = vi.fn().mockResolvedValue(null);
     setPluginsBackend({ ...backend, runCommand });
@@ -696,6 +759,55 @@ describe("PluginsPage", () => {
     expect(screen.getByLabelText("Iconic details").querySelector("circle")).not.toBeNull();
   });
 
+  describe.each(["installed", "catalog"] as const)("%s homepage", (source) => {
+    async function showHomepage(homepage: string) {
+      const entry = plugin({ id: "homepage", name: "Homepage Example", homepage });
+      const catalog = { ...sampleCatalog()[0]!, id: entry.id, name: entry.name, homepage };
+      setPluginsBackend(createMemoryPluginsBackend(source === "installed" ? [entry] : [], [catalog]));
+      const user = userEvent.setup();
+      render(<PluginsPage />);
+      if (source === "catalog") await user.click(screen.getByRole("tab", { name: /Available/ }));
+      await screen.findByRole("heading", { level: 2, name: entry.name });
+      return user;
+    }
+
+    it.each(["https://example.com/plugin", "http://example.com/plugin", "HTTPS://example.com/plugin"])(
+      "opens a web homepage %s with a click or Enter",
+      async (homepage) => {
+        const open = vi.spyOn(window, "open").mockImplementation(() => null);
+        try {
+          const user = await showHomepage(homepage);
+          const link = screen.getByRole("link", { name: homepage });
+          expect(link).toHaveAttribute("href", homepage);
+          await user.click(link);
+          expect(open).toHaveBeenCalledWith(homepage, "_blank", "noopener");
+          open.mockClear();
+          link.focus();
+          expect(link).toHaveFocus();
+          await user.keyboard("{Enter}");
+          expect(open).toHaveBeenCalledWith(homepage, "_blank", "noopener");
+        } finally {
+          open.mockRestore();
+        }
+      },
+    );
+
+    it.each(["not a URL", "https://", "/relative", "file:///tmp/plugin", "javascript:alert(1)", "mailto:a@b.com"])(
+      "keeps an unsupported or malformed homepage %s as plain text",
+      async (homepage) => {
+        const open = vi.spyOn(window, "open").mockImplementation(() => null);
+        try {
+          const user = await showHomepage(homepage);
+          expect(screen.queryByRole("link", { name: homepage })).not.toBeInTheDocument();
+          await user.click(screen.getByText(homepage));
+          expect(open).not.toHaveBeenCalled();
+        } finally {
+          open.mockRestore();
+        }
+      },
+    );
+  });
+
   it("restarts a failed plugin instead of disabling it", async () => {
     setPluginsBackend(createMemoryPluginsBackend([plugin({ id: "broken", status: "failed", error: "trap" })]));
     const user = userEvent.setup();
@@ -711,6 +823,44 @@ describe("PluginsPage", () => {
     await user.click(screen.getByRole("button", { name: "Uninstall…" }));
     await user.click(screen.getByRole("button", { name: "Confirm uninstall Hello" }));
     await waitFor(() => expect(screen.getByRole("heading", { level: 2 })).not.toHaveTextContent("Hello"));
+    expect(notes.at(-1)).toMatchObject({ title: "Uninstalled Hello" });
+  });
+
+  it("keeps failed cleanup visible and lets Uninstall retry", async () => {
+    const list = backend.list;
+    const uninstall = backend.uninstall;
+    let failed = false;
+    vi.spyOn(backend, "list").mockImplementation(async () => {
+      const snapshot = await list();
+      if (failed) {
+        snapshot.plugins = snapshot.plugins.map((p) =>
+          p.id === "hello" ? { ...p, status: "failed", error: "Private data is locked" } : p,
+        );
+      }
+      return snapshot;
+    });
+    const remove = vi.spyOn(backend, "uninstall").mockImplementation(async (id) => {
+      if (!failed) {
+        failed = true;
+        throw new Error("Private data is locked");
+      }
+      await uninstall(id);
+    });
+    const user = userEvent.setup();
+    render(<PluginsPage />);
+    await screen.findByRole("heading", { level: 2 });
+    await user.click(screen.getByRole("button", { name: "Uninstall…" }));
+    await user.click(screen.getByRole("button", { name: "Confirm uninstall Hello" }));
+    await screen.findByText("Private data is locked");
+    expect(notes.at(-1)).toMatchObject({
+      level: "error",
+      title: "Could not uninstall Hello",
+      body: "Private data is locked",
+    });
+    expect(screen.getByRole("heading", { level: 2 })).toHaveTextContent("Hello");
+    await user.click(screen.getByRole("button", { name: "Confirm uninstall Hello" }));
+    await waitFor(() => expect(screen.getByRole("heading", { level: 2 })).not.toHaveTextContent("Hello"));
+    expect(remove).toHaveBeenCalledTimes(2);
     expect(notes.at(-1)).toMatchObject({ title: "Uninstalled Hello" });
   });
 
@@ -779,6 +929,7 @@ describe("plugin line markers", () => {
     const doc = EditorState.create({ doc: "a\nbb\nccc" }).doc;
     const marker = (line: number, icon: string | null) => ({ pluginId: "m", line, icon, tooltip: "t", target: null });
     expect(placeMarkers(doc, [marker(1, "run"), marker(7, null)]).map((m) => m.pos)).toEqual([2]);
+    expect(markerIcon("database")).toBe("database");
     expect(markerIcon("run")).toBe("gutter-run");
     expect(markerIcon("implemented")).toBe("gutter-implemented");
     expect(markerIcon(null)).toBe("gutter-implementing");

@@ -52,6 +52,20 @@ pub fn doc_set_line_ending(host: &Host, window: &str, doc: DocId, line_ending: L
 pub async fn doc_outline(host: &Host, window: &str, doc: DocId) -> IdeResult<Vec<OutlineItem>> {
     let project = host.project(window)?;
     let lsp = project.lsp.document_symbols(doc).await.ok().flatten();
+    let lsp = if lsp.as_ref().is_none_or(|v| v.is_empty()) {
+        if let Some((plugins, d)) =
+            crate::ops::lsp::plugin_providers(host, window, doc, crate::plugins::ProviderKind::DocumentSymbols)
+        {
+            let items =
+                crate::ops::lsp::plugin_call(move || plugins.language_document_symbols(&d)).await.unwrap_or_default();
+            if items.is_empty() { lsp } else { Some(crate::plugins::language_features::outline(items)) }
+        } else {
+            lsp
+        }
+    } else {
+        lsp
+    };
+    let lsp = lsp.filter(|v| !v.is_empty());
     blocking(move || {
         let snap = match project.documents.text_snapshot(doc) {
             Ok(snap) => snap,
@@ -80,7 +94,27 @@ pub async fn doc_folding(host: &Host, window: &str, doc: DocId) -> IdeResult<Vec
         if snap.large {
             return Ok(Vec::new());
         }
-        Ok(project.syntax.folding(doc, &snap.language, snap.version, &snap.text))
+        let mut folds = project.syntax.folding(doc, &snap.language, snap.version, &snap.text);
+        if let Some(plugins) = crate::plugins::editor_providers_for(crate::plugins::ProviderKind::Folding) {
+            let d = ide_plugin::ProviderDocument {
+                path: project.documents.identity(doc)?.0,
+                language: snap.language.0,
+                version: u64::from(snap.version),
+                text: snap.text,
+            };
+            folds.extend(plugins.language_folding(&d).into_iter().map(|f| FoldRange {
+                start_line: f.start_line,
+                end_line: f.end_line,
+                kind: match f.kind.as_str() {
+                    "comment" => ide_language::FoldKind::Comment,
+                    "imports" => ide_language::FoldKind::Imports,
+                    _ => ide_language::FoldKind::Region,
+                },
+            }));
+            folds.sort_by_key(|f| (f.start_line, f.end_line));
+            folds.dedup_by_key(|f| (f.start_line, f.end_line));
+        }
+        Ok(folds)
     })
     .await
 }
@@ -105,6 +139,21 @@ pub async fn doc_selection_ranges(host: &Host, window: &str, doc: DocId, offset:
     let project = host.project(window)?;
     blocking(move || {
         let snap = project.documents.text_snapshot(doc)?;
+        if !snap.large
+            && let Some(plugins) = crate::plugins::editor_providers_for(crate::plugins::ProviderKind::SelectionRanges)
+        {
+            let at = ide_text::Document::new(&snap.text).offset_to_pos(offset);
+            let d = ide_plugin::ProviderDocument {
+                path: project.documents.identity(doc)?.0,
+                language: snap.language.0.clone(),
+                version: u64::from(snap.version),
+                text: snap.text.clone(),
+            };
+            let ranges = plugins.language_selection_ranges(&d, at);
+            if !ranges.is_empty() {
+                return Ok(ranges);
+            }
+        }
         let language = if snap.large { ide_core::LanguageId::plain_text() } else { snap.language };
         Ok(project.syntax.selection_ranges(doc, &language, snap.version, &snap.text, offset))
     })

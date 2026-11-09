@@ -20,6 +20,18 @@ first and runs the full search after it. Rows in library classes (`jdt:` URIs) c
 line as `text`, from the contents the client would request for the class, so the client
 need not fetch thousands of class files to show them.
 
+`openidea.workspace.coveredFiles([candidateUri, ...])` returns candidate URIs already
+covered by the current JDT source search scope. It checks imported compilation units,
+classpath inclusion/exclusion rules and test-source policy; it does not infer coverage
+from directory names. References, rename and incoming calls leave those files closed
+and only widen with the remaining candidates. A missing or failing command retains
+widening. The result is query-local, so imports and classpath changes need no cache invalidation.
+
+`openidea.workspace.coveredRoots()` returns the URIs of source folders whose Java files the search
+scope covers all: no exclusion patterns, no inclusion pattern other than Maven's `**/*.java`, and
+enclosed by the test-source policy. The client does not read the files under them when it looks
+for candidates, which on a large project took most of a cached search's time.
+
 ## Search plan and access semantics
 
 For source fields on the verified JDT LS implementation, a single plan merges
@@ -51,7 +63,14 @@ traversals. It indexes only requested exact AST ranges and verified invocation
 selector-to-call-end spans; duplicate, recovered, malformed or uncontained ranges
 fall back to NodeFinder. Method references do not get invocation aliases. Source
 snapshot checks remain per result, and the index is discarded after the query.
-There is no cross-request cache or binding-resolution shortcut.
+
+Answers are cached by their search targets (JDT handles, kinds, declarations), the scope and the
+search settings, together with a digest of the editors' unsaved contents, until a Java element
+delta reports a change to the sources, a compilation unit or a classpath (`UsageCache`). Opening
+or closing an editor and decompiled library classes' private working copies do not invalidate
+them. A usage count and the usages shown when it is clicked, or the same search run again, need
+no second search, and concurrent requests for the same targets share one. There is no
+binding-resolution shortcut.
 
 Popup and Find share persisted read/write toolbar switches. Both initially show;
 turning the last one off automatically enables the other. Unknown and readWrite
@@ -69,7 +88,7 @@ is not a claim of full IntelliJ feature parity.
 ## Rebuild and delivery
 
 The checked-in jar is embedded by ide-sdk `include_bytes!`, installed as
-`java-usages-1.8.0.jar`, and added alongside existing initialization bundles.
+`java-usages-1.12.0.jar`, and added alongside existing initialization bundles.
 Users need no compiler, Maven or Python. Manifest/install version must change
 when replacing the bundle because OSGi caches bundles.
 
@@ -107,6 +126,13 @@ Version 1.8.0 keeps each dependency JAR's configuration metadata across rebuilds
 configuration index (until the JAR or the project's classpath changes), so a source change no
 longer resolves every Spring Boot property again; its reproducible SHA-256 is
 `728ab33b5e01fa5e496818f25ddbc487458a92339026899b0e22abda5adfd67b`.
+
+Version 1.9.0 adds the analysis-scope command to avoid redundant semantic queries;
+its reproducible SHA-256 is
+`ae04182d6a86dfdd6f6befaaeb28907fd9e4c022ceedb445f0b32ea917dca379`.
+Version 1.12.0 caches usages answers until the Java model or an unsaved edit changes and adds
+`openidea.workspace.coveredRoots`; its reproducible SHA-256 is
+`c1bd28d7b956cb64af3e936aac0553413a5dc5fd373a043ddba003009e0ea783`.
 
 ```sh
 export PATH=/path/to/jdk25/bin:$PATH

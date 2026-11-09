@@ -1,7 +1,8 @@
-//! The pane beside the Services tree for the nodes of the plugin's
-//! `location = "services"` views (world `plugin-details`). The nodes, the
+//! The selected item's pane for `location = "services"` views and tree/list
+//! views declaring `detail = true` (API 1.3, world `plugin-details`). The items,
 //! toolbar and their events come from [`crate::views::Views`] as in any view;
-//! register both: `register_plugin!(MyPlugin, views, details)`.
+//! register both: `register_plugin!(MyPlugin, views, details)`. The host remembers
+//! the resizable divider and requests details after the select event finishes.
 
 use crate::{Error, Invocation};
 
@@ -64,7 +65,7 @@ impl Tab {
     }
 }
 
-/// The detail pane of the nodes of the plugin's services views.
+/// The selected item's detail pane in Services or a `detail = true` tree/list view.
 pub trait Details {
     /// The tabs of node `key` of view `view` (at most 8), asked when the node is
     /// selected and again after [`crate::host::refresh_view`] of the view.

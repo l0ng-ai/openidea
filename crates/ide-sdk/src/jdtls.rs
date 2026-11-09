@@ -228,6 +228,29 @@ pub fn java_args(install: &JdtlsInstall, java_major: u32, script_args: &[String]
     args
 }
 
+/// The release script a `jdtls` command on `PATH` resolves to: itself when it
+/// already is one, or the script its Scoop shim launches. `None` for a command
+/// that is neither a release script nor a jdtls Scoop shim.
+///
+/// Shared with [`crate::java::jdtls_min_java`], which needs the same install
+/// root to read the bundles' required Java version.
+pub(crate) fn script_for(cfg: &LanguageServerConfig) -> Option<PathBuf> {
+    if cfg.name != "jdtls" {
+        return None;
+    }
+    let search = cfg.env.get("PATH").map(std::ffi::OsString::from).or_else(|| std::env::var_os("PATH"));
+    let script = search.and_then(|s| ide_run::which::find_executable(&cfg.command, &s))?;
+    let resolved = dunce::canonicalize(script).ok()?;
+    let name = resolved.file_name().map(|n| n.to_string_lossy().to_ascii_lowercase());
+    match name.as_deref() {
+        Some(n) if SCRIPTS.contains(&n) => Some(resolved),
+        // A scoop shim (`shims\jdtls.exe` from PATHEXT) hides the release
+        // layout behind itself (issue #794); follow its `.shim` to the script.
+        Some("jdtls.exe") if cfg!(windows) => shim_target(&resolved),
+        _ => None,
+    }
+}
+
 /// Scoop shims either point at the release script or run Python with the
 /// script in `args`. Paths may be quoted and contain spaces and backslashes.
 fn shim_target(shim_exe: &Path) -> Option<PathBuf> {
@@ -263,21 +286,7 @@ pub fn launch_directly(cfg: &mut LanguageServerConfig) {
     if cfg.name != "jdtls" || cfg.launch_error.is_some() {
         return;
     }
-    let search = cfg.env.get("PATH").map(std::ffi::OsString::from).or_else(|| std::env::var_os("PATH"));
-    let Some(script) = search.and_then(|s| ide_run::which::find_executable(&cfg.command, &s)) else { return };
-    let Ok(resolved) = dunce::canonicalize(&script) else { return };
-    let name = resolved.file_name().map(|n| n.to_string_lossy().to_ascii_lowercase());
-    let script = match name.as_deref() {
-        Some(n) if SCRIPTS.contains(&n) => resolved,
-        // A scoop shim (`shims\jdtls.exe` from PATHEXT) hides the release layout
-        // behind itself, so the launch ran the shim's own command line and the
-        // configured JDK never applied (issue #794).
-        Some("jdtls.exe") if cfg!(windows) => match shim_target(&resolved) {
-            Some(target) => target,
-            None => return,
-        },
-        _ => return,
-    };
+    let Some(script) = script_for(cfg) else { return };
     let Some(install) =
         jdtls_home(&script).and_then(|h| find_install(&h, std::env::consts::OS, std::env::consts::ARCH))
     else {
@@ -292,8 +301,10 @@ pub fn launch_directly(cfg: &mut LanguageServerConfig) {
         }),
     };
     let Some((java, jdk)) = jdk.filter(|(java, _)| java.is_file()) else { return };
-    if !ide_core::java_runtime::supports_java_bundles(&jdk.home) {
-        cfg.launch_error = Some(crate::java::server_jdk_incomplete_message(&jdk, crate::java::jdtls_min_java(cfg)));
+    if let Some(error) = crate::java::server_jdk_metadata_error(&jdk, crate::java::jdtls_min_java(cfg))
+        .or_else(|| crate::java::java_execution_error(&java))
+    {
+        cfg.launch_error = Some(error);
         return;
     }
     cfg.args = java_args(&install, jdk.major, &cfg.args);
@@ -526,7 +537,7 @@ mod tests {
         )
         .unwrap();
         std::fs::write(jdk.join("bin/javac"), "").unwrap();
-        std::fs::write(jdk.join("bin/java"), "").unwrap();
+        crate::java::write_test_java(&jdk);
 
         let cfg = |command: &str| -> LanguageServerConfig {
             let mut cfg: LanguageServerConfig =
@@ -554,6 +565,25 @@ mod tests {
         overridden.args.push(format!("--java-executable={}", jre.join("bin/java").display()));
         launch_directly(&mut overridden);
         assert!(overridden.launch_error.unwrap().contains("jdk.jdi"));
+
+        let alternate = jdk.join("bin/alternate-java");
+        std::fs::write(&alternate, "#!/bin/sh\nexit 126\n").unwrap();
+        std::fs::set_permissions(&alternate, std::os::unix::fs::PermissionsExt::from_mode(0o755)).unwrap();
+        let mut overridden = cfg("jdtls");
+        overridden.args.push(format!("--java-executable={}", alternate.display()));
+        launch_directly(&mut overridden);
+        let error = overridden.launch_error.unwrap();
+        assert!(error.contains(alternate.to_string_lossy().as_ref()) && error.contains("cannot run"), "{error}");
+
+        let old = dir.path().join("jdk-17");
+        std::fs::create_dir_all(old.join("bin")).unwrap();
+        std::fs::write(old.join("release"), "JAVA_VERSION=\"17\"\n").unwrap();
+        crate::java::write_test_java(&old);
+        let mut overridden = cfg("jdtls");
+        overridden.args.push(format!("--java-executable={}", old.join("bin/java").display()));
+        launch_directly(&mut overridden);
+        let error = overridden.launch_error.unwrap();
+        assert!(error.contains(old.to_string_lossy().as_ref()) && error.contains("too old"), "{error}");
 
         // Someone's own wrapper, or no usable JDK: the command is kept.
         std::fs::write(home.join("bin/my-jdtls"), "#!/bin/sh\n").unwrap();
@@ -637,7 +667,7 @@ mod tests {
         )
         .unwrap();
         std::fs::write(jdk.join("bin").join(crate::exe("javac")), "").unwrap();
-        std::fs::write(jdk.join("bin").join(crate::exe("java")), "").unwrap();
+        crate::java::write_test_java(&jdk);
         let target = format!(
             "path = \"C:\\Python313\\python.exe\"\nargs = {}\n",
             home.join("bin").join("jdtls").to_string_lossy()

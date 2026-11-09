@@ -4,9 +4,9 @@ import { Channel } from "@tauri-apps/api/core";
 import type { ClassifiedReference, ReferenceAccess, ReferenceKind, Location, References, RequestId } from "@/bindings";
 import { clearLineTokens } from "@/editor/lineTokens";
 import { incompleteNote } from "@/editor/lsp/lsp";
-import { commands, isCancelled, nextRequestId } from "@/platform/ipc";
+import { commands, IpcError, isCancelled, nextRequestId } from "@/platform/ipc";
 import { shortcutLabel } from "@/platform/keymap";
-import { toolWindowService } from "@/workbench/contributions";
+import { synchronizeDocumentIndexes, toolWindowService } from "@/workbench/contributions";
 import {
   caretContext,
   caretPoint,
@@ -222,10 +222,13 @@ export async function fetchUsages(
 ): Promise<FetchedUsages> {
   // Usage lines are read afresh: so are the files their syntax colours come from.
   clearLineTokens();
+  const before = c.view?.state.doc;
   let locs: Location[];
   let classified: ClassifiedReference[] = [];
   let note: string | null = null;
   let librariesSkipped = false;
+  await synchronizeDocumentIndexes(c.path);
+  if (c.view && c.view.state.doc !== before) throw new IpcError({ kind: "cancelled", message: "", data: null });
   let settled = false;
   const channel = new Channel<References>();
   channel.onmessage = (refs) => {

@@ -8,12 +8,14 @@ pub mod environment;
 mod formatter;
 mod java_runtime;
 mod kotlin_bridge;
+pub mod mcp;
 pub mod notebook;
 pub mod ops;
 mod phpstan;
 pub mod plugins;
 mod project;
 mod proxy;
+pub mod relay;
 mod requests;
 pub mod rpc;
 pub mod shell_env;
@@ -53,6 +55,10 @@ pub struct HostConfig {
 }
 
 pub struct Host {
+    pub(crate) mcp_executable: RwLock<Option<PathBuf>>,
+    plugin_host: Arc<RwLock<std::sync::Weak<plugins::PluginHost>>>,
+    pub mcp_reports: mcp::Reports,
+    pub mcp_requests: mcp::Requests,
     pub trust: trust::TrustStore,
     pub config_dir: PathBuf,
     /// Persistent user state, including credentials and recovery history.
@@ -95,6 +101,14 @@ pub struct Host {
 const EXIT_SHUTDOWN_WAIT: std::time::Duration = std::time::Duration::from_secs(10);
 
 impl Host {
+    /// Windows whose current project has this root.
+    pub(crate) fn windows_for_root(&self, root: &std::path::Path) -> Vec<String> {
+        let mut windows: Vec<_> =
+            self.projects.read().iter().filter(|(_, p)| p.root == root).map(|(w, _)| w.clone()).collect();
+        windows.sort();
+        windows
+    }
+
     pub fn new(config: HostConfig) -> Self {
         let HostConfig {
             config_dir,
@@ -111,6 +125,10 @@ impl Host {
         let ssh = Arc::new(ide_ssh::SshManager::new(data_dir.join("ssh-passwords.json")));
         ssh.set_configs(global_settings.effective().ssh.configs);
         let host = Self {
+            plugin_host: Arc::default(),
+            mcp_executable: RwLock::default(),
+            mcp_reports: Default::default(),
+            mcp_requests: Default::default(),
             trust: trust::TrustStore::load(&config_dir, &data_dir),
             proxy_password: ide_ssh::secrets::SecretFile::new(data_dir.join("proxy-password.json")),
             proxy_session_password: Mutex::default(),
@@ -158,6 +176,19 @@ impl Host {
             let lsp = project.lsp.clone();
             self.runtime.spawn(async move { lsp.reconfigure().await });
         }
+    }
+
+    /// Associates the plugin runtime that executes this host's project operations.
+    /// Publishes only the executable of the running built-in MCP service.
+    pub fn set_mcp_executable(&self, executable: Option<PathBuf>) {
+        *self.mcp_executable.write() = executable;
+    }
+
+    pub fn set_plugin_host(&self, plugins: &Arc<plugins::PluginHost>) {
+        *self.plugin_host.write() = Arc::downgrade(plugins);
+    }
+    pub(crate) fn plugin_host(&self) -> Option<Arc<plugins::PluginHost>> {
+        self.plugin_host.read().upgrade()
     }
 
     /// Every open project (all windows).
@@ -218,11 +249,20 @@ impl Host {
     /// so the window can open another project at once. Returns the thread that
     /// finishes shutting down its workers.
     fn begin_close(&self, window: &str) -> Option<std::thread::JoinHandle<()>> {
+        self.mcp_reports.forget_window(window);
+        self.mcp_requests.forget_window(window);
         self.external_logs.write().remove(self.owner_window(window));
         for request in self.project_requests.write().remove(self.owner_window(window)).unwrap_or_default() {
             self.cancel_request(request);
         }
         let project = self.projects.write().remove(window)?;
+        if self.windows_for_root(&project.root).is_empty()
+            && let Some(plugins) = self.plugin_host()
+        {
+            plugins.withdraw_project_run_targets(&project.root);
+        }
+        project.files_events_active.store(false, std::sync::atomic::Ordering::Release);
+        project.plugin_diagnostics.close();
         if let Some(plugins) = plugins::editor_plugin_host() {
             plugins.invalidate_client_navigation(&project.root, Some(window), None);
             plugins.set_active_file(window, None);
@@ -373,6 +413,10 @@ impl Host {
         self.terminals.kill_all();
         let projects: Vec<_> = self.projects.write().drain().map(|(_, p)| p).collect();
         for project in &projects {
+            project.files_events_active.store(false, std::sync::atomic::Ordering::Release);
+        }
+        for project in &projects {
+            project.plugin_diagnostics.close();
             if let Some(bridge) = &project.kotlin_bridge {
                 bridge.stop();
             }

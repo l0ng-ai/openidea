@@ -235,6 +235,7 @@ export function ImageViewer({ input }: { input: EditorInput }) {
         <div className={styles.message}>{tx`Cannot show the image: ${error}`}</div>
       ) : (
         <div
+          data-wheel-scroll
           ref={canvasRef}
           className={clsx(styles.canvas, dragging && styles.dragging)}
           onPointerDown={onPointerDown}

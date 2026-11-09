@@ -14,7 +14,8 @@ import { expressionTypeInfo } from "./typeInfo";
 import { gotoHighlightedUsage, gotoTargets, highlightUsages } from "./navigation";
 import { gotoDiagnostic, showErrorDescription } from "./diagnostics";
 import { applyKindSilently, applyQuickFix, runKindAction, showIntentions } from "./intentions";
-import { implementPythonAbstractMethods } from "./pythonMembers";
+import { docOf } from "./lsp";
+import { languageSemantics } from "./semantic";
 import { workflowSettings, type ActionsOnSaveValid } from "@/platform/workflowSettings";
 import { startRename } from "./rename";
 import { formatDocument, reformatDialog } from "./format";
@@ -340,7 +341,7 @@ export function registerLspActions(): () => void {
         title: IMPLEMENT_TITLE,
         none: "Nothing to implement",
         label: "Implement Members",
-        fallback: () => implementPythonAbstractMethods(v),
+        fallback: () => languageSemantics(docOf(v)?.language)?.implementMethods?.(v) ?? Promise.resolve(false),
       }),
     ),
     editorAction("code.overrideMethods", "Override Methods…", "Code", (v) =>

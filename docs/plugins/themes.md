@@ -103,6 +103,10 @@ Three things still layer on top of it:
 The selection is remembered. When the plugin is disabled or uninstalled the
 built-in theme returns.
 
+Stripe tooltips use `--bg-stripe-tooltip`, `--fg-stripe-tooltip`,
+`--border-stripe-tooltip` and `--shadow-stripe-tooltip`. A plugin that omits
+these tokens inherits its corresponding base tooltip tokens, including in light themes.
+
 ## Building, packaging, installing
 
 There is no build step. The package *is* the folder.
@@ -217,6 +221,7 @@ The full table is `UI_KEYS` in [`src/features/plugins/intellijTheme.ts`](../../s
 | `--vcs-*`, `--gutter-*` | colour `FILESTATUS_*`, `MODIFIED_LINES_COLOR`, `ADDED_LINES_COLOR`, `DELETED_LINES_COLOR` |
 | `--syn-keyword`, `--syn-string`, `--syn-number` | `DEFAULT_KEYWORD`, `DEFAULT_STRING`, `DEFAULT_NUMBER` |
 | `--syn-comment` (+ `--syn-comment-style`), `--syn-doc-comment` | `DEFAULT_LINE_COMMENT` (+ `FONT_TYPE`), `DEFAULT_DOC_COMMENT` |
+| `--syn-doc-comment-tag`, `--syn-doc-comment-tag-value`, `--syn-doc-markup` (+ `-bg`) | `DEFAULT_DOC_COMMENT_TAG`, `DEFAULT_DOC_COMMENT_TAG_VALUE`, `DEFAULT_DOC_MARKUP` |
 | `--syn-function`, `--syn-function-call` | `DEFAULT_FUNCTION_DECLARATION`, `DEFAULT_FUNCTION_CALL` |
 | `--syn-type`, `--syn-constant`, `--syn-property` | `DEFAULT_CLASS_NAME`, `DEFAULT_CONSTANT`, `DEFAULT_INSTANCE_FIELD` |
 | `--syn-variable`, `--syn-param`, `--syn-builtin` | `DEFAULT_LOCAL_VARIABLE`, `DEFAULT_PARAMETER`, `DEFAULT_PREDEFINED_SYMBOL` |
@@ -324,7 +329,7 @@ a token.
 
 <!-- BEGIN GENERATED TOKEN REFERENCE: pnpm gen:theme-docs -->
 
-242 themeable tokens: 121 in the UI theme file, 121 in the editor colour scheme file.
+252 themeable tokens: 125 in the UI theme file, 127 in the editor colour scheme file.
 
 ### Surfaces (UI theme)
 
@@ -424,6 +429,11 @@ a token.
 | `--syn-comment` | `#7a7e85` | `#8c8c8c` |
 | `--syn-comment-style` | `normal` | `italic` |
 | `--syn-doc-comment` | `#5f826b` | `#8c8c8c` |
+| `--syn-doc-comment-tag` | `#67a37c` | `#8c8c8c` |
+| `--syn-doc-comment-tag-effect` | `none` | `underline #999999` |
+| `--syn-doc-comment-tag-value` | `#abadb3` | `#3d3d3d` |
+| `--syn-doc-markup` | `#68a67e` | `#8c8c8c` |
+| `--syn-doc-markup-bg` | `transparent` | `#e2ffe2` |
 | `--syn-docstring` | `#5f826b` | `#067d17` |
 | `--syn-annotation` | `#b3ae60` | `#9e880d` |
 | `--syn-decorator` | `#b3ae60` | `#9e880d` |
@@ -431,6 +441,7 @@ a token.
 | `--syn-punct` | `#bcbec4` | `#080808` |
 | `--syn-variable` | `#bcbec4` | `#080808` |
 | `--syn-global` | `var(--syn-variable)` | `var(--syn-variable)` |
+| `--syn-namespace` | `var(--fg-editor)` | `var(--fg-editor)` |
 | `--syn-param` | `#bcbec4` | `#080808` |
 | `--syn-property` | `#c77dbb` | `#871094` |
 | `--syn-constant` | `#c77dbb` | `#871094` |
@@ -570,6 +581,10 @@ a token.
 
 | Token | Islands Dark | Islands Light |
 |---|---|---|
+| `--bg-stripe-tooltip` | `var(--bg-tooltip)` | `#27282e` |
+| `--fg-stripe-tooltip` | `var(--fg-tooltip)` | `#ffffff` |
+| `--border-stripe-tooltip` | `var(--border-tooltip)` | `#383a42` |
+| `--shadow-stripe-tooltip` | `var(--shadow-tooltip)` | `0 2px 8px rgba(0, 0, 0, 0.24)` |
 | `--bg-tooltip` | `#33353b` | `#ffffff` |
 | `--fg-tooltip` | `#d1d3d9` | `#000000` |
 | `--border-tooltip` | `#33353b` | `#d1d3d9` |

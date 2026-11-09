@@ -13,6 +13,8 @@ import {
   commands,
   isCancelled,
   isTauri,
+  ideEventsReady,
+  onIdeEvent,
   nextRequestId,
   type UpdateInfo,
   type UpdateProgress,
@@ -88,6 +90,7 @@ async function runCheck() {
       title,
       body: <UpdateBalloonBody task={CHECK_TASK_ID} />,
       key: UPDATE_KEY,
+      userInitiated: true,
     });
   try {
     const r = await Promise.race([call(commands.appCheckUpdate(updateSource())), abandoned]);
@@ -98,6 +101,7 @@ async function runCheck() {
         title: t("app.update.disabled"),
         body: t("app.update.disabledBody"),
         key: UPDATE_KEY,
+        userInitiated: true,
       });
     } else if (!r.update) {
       const info = await commands.appBuildInfo();
@@ -105,25 +109,51 @@ async function runCheck() {
         level: "info",
         title: t("app.update.none", { version: info.version }),
         key: UPDATE_KEY,
+        userInitiated: true,
       });
     } else if (!installing) {
-      notifyUpdate(r.update);
+      await notifyUpdate(r.update, true);
     }
   } catch (e) {
-    notifications().notify({ level: "error", title: t("app.update.failed"), body: errorText(e), key: UPDATE_KEY });
+    notifications().notify({
+      level: "error",
+      title: t("app.update.failed"),
+      body: errorText(e),
+      key: UPDATE_KEY,
+      userInitiated: true,
+    });
   } finally {
     upsertTask({ id: CHECK_TASK_ID, title, message: null, fraction: 1, done: true });
   }
 }
 
-/** Silent check once per app start; only an available update is shown. */
-export async function checkForUpdatesOnStartup(): Promise<void> {
-  if (!isTauri()) return;
-  const update = await commands.appStartupUpdateCheck(updateSource()).catch(() => null);
-  if (update) notifyUpdate(update);
+/** Start one backend schedule after this window can receive its notifications. */
+export function installUpdateChecks(): () => void {
+  let disposed = false;
+  const off = onIdeEvent("updateAvailable", ({ update }) => {
+    if (!installing) void notifyUpdate(update);
+  });
+  void ideEventsReady().then(() => {
+    if (!disposed && isTauri())
+      void call(commands.appUpdateWindowReady(true, navigator.language)).catch((e) =>
+        console.warn("cannot start update checks", e),
+      );
+  });
+  return () => {
+    disposed = true;
+    off();
+    if (isTauri()) void call(commands.appUpdateWindowReady(false, navigator.language)).catch(() => {});
+  };
 }
 
-export function notifyUpdate(update: UpdateInfo) {
+/** `userInitiated`: the update came from a manual check, so it pops up regardless of the balloon settings. */
+export async function notifyUpdate(update: UpdateInfo, userInitiated = false): Promise<void> {
+  if (isTauri()) {
+    const claimed = await call(commands.appUpdateAnnouncement(update.version, !userInitiated)).catch(
+      () => userInitiated,
+    );
+    if (!claimed) return;
+  }
   notifications().notify({
     level: "info",
     title: t("app.update.available", { version: update.version }),
@@ -131,6 +161,7 @@ export function notifyUpdate(update: UpdateInfo) {
     sticky: true,
     key: UPDATE_KEY,
     actions: [{ label: t("app.update.install"), run: () => void installUpdate(update.version) }],
+    userInitiated,
   });
 }
 
@@ -171,6 +202,7 @@ async function runInstall(version: string, source: UpdateSource) {
       sticky: true,
       key: UPDATE_KEY,
       actions,
+      userInitiated: true,
     });
   let installingShown = false;
   channel.onmessage = (p) => {
@@ -202,6 +234,7 @@ async function runInstall(version: string, source: UpdateSource) {
         title: t("app.update.cancelled"),
         key: UPDATE_KEY,
         actions: [otherSourceAction(version, source)],
+        userInitiated: true,
       });
     } else {
       notifications().notify({
@@ -213,6 +246,7 @@ async function runInstall(version: string, source: UpdateSource) {
           { label: t("app.update.retry"), run: () => void installUpdate(version, source) },
           otherSourceAction(version, source),
         ],
+        userInitiated: true,
       });
     }
     return;
@@ -228,6 +262,7 @@ async function runInstall(version: string, source: UpdateSource) {
     sticky: true,
     key: UPDATE_KEY,
     actions: [{ label: t("app.update.restart"), run: restart }],
+    userInitiated: true,
   });
   restart();
 }

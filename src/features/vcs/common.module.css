@@ -275,6 +275,29 @@
   width: 220px;
   margin-left: 6px;
 }
+/* Fits the remote and target fields into a 22px tree row. */
+.pushRowTarget {
+  --h-field: var(--h-control-small);
+  --h-control: var(--h-control-small);
+  display: inline-flex;
+  align-items: center;
+  gap: 2px;
+  min-width: 0;
+  font-size: var(--fs-small);
+}
+.pushRowTarget button {
+  font-size: var(--fs-small);
+}
+.pushRowSeparator {
+  color: var(--fg-faint);
+}
+.pushRowInput {
+  min-width: 0;
+  font-size: var(--fs-small);
+}
+.pushRowInput[data-changed]:not(:focus-visible) {
+  box-shadow: inset 0 0 0 1px var(--accent);
+}
 .choiceList {
   max-height: 240px;
   overflow: auto;
@@ -322,17 +345,30 @@
 .manageRowSelected:hover {
   background: var(--bg-list-selected);
 }
-/* A fixed slot, so the names line up whether or not a row is marked. */
-.worktreeMark {
-  display: flex;
-  flex: none;
-  width: 14px;
-  margin-right: -4px;
+/* Worktrees dialog: the tree needs a height of its own inside the auto-sized body. */
+.worktreeListDialog {
+  height: 340px;
+  min-height: 0;
 }
-/* The branch keeps its width; the path is what gets cut short. */
-.worktreeName {
+/* Worktrees tree rows: the worktree name keeps its width, the path is what gets cut short. */
+.worktreeIcon {
   flex: none;
-  max-width: 40%;
+  margin-right: 2px;
+  color: var(--fg-muted);
+}
+.worktreeLabel {
+  flex: none;
+  max-width: 45%;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.worktreeDetail {
+  min-width: 0;
+  margin-left: 4px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  color: var(--fg-muted);
 }
 
 .comparisonDialog > [data-dialog-body] {

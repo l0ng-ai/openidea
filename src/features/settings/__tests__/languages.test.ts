@@ -18,6 +18,9 @@ import { validateSettings } from "../model/schema";
 describe("languages settings", () => {
   it("defaults and normalises malformed values", () => {
     expect(validateLanguages(undefined)).toEqual(DEFAULT_LANGUAGES);
+    expect(validateLanguages({ pluginFormatters: { sql: "example.formatter", text: 42 } }).pluginFormatters).toEqual({
+      sql: "example.formatter",
+    });
     const v = validateLanguages({
       python: { interpreter: " /usr/bin/python3 ", activateVirtualenv: "yes" },
       node: { packageManager: "pip" },
@@ -48,12 +51,14 @@ describe("languages settings", () => {
       runnerJre: "/opt/jdk-21",
       home: "/opt/maven",
       userSettings: "",
+      toolchains: "",
       localRepository: "",
       unlinkedProjects: [],
       linkedProjects: [],
       daemon: false,
       mvndHome: "/opt/mvnd",
       threads: "2C",
+      activeProfiles: "",
     });
     expect(validateSettings({}).languages).toEqual(DEFAULT_LANGUAGES);
     expect(validateLanguages({ java: { maven: { threads: 4 } } }).java.maven.threads).toBe("");
@@ -76,6 +81,7 @@ describe("languages settings", () => {
 
   it("defaults the PHP language level to Auto and keeps only known levels", () => {
     expect(validateSettings({}).languages.php).toEqual({
+      runTarget: "",
       interpreter: "",
       languageLevel: "",
       includePaths: [],
@@ -184,6 +190,15 @@ describe("languages settings", () => {
     expect(folderRole(ps, "src/")).toBe("test");
     ps = markFolder(ps, "src", null);
     expect(folderRole(ps, "src")).toBeNull();
+  });
+
+  it("defaults shared JDT LS to off and accepts only boolean values", () => {
+    expect(DEFAULT_LANGUAGES.java.jdtlsShared).toBe(false);
+    expect(validateLanguages({}).java.jdtlsShared).toBe(false);
+    expect(validateSettings({ languages: { java: { jdtlsShared: true } } }).languages.java.jdtlsShared).toBe(true);
+    expect(validateLanguages({ java: { jdtlsShared: false } }).java.jdtlsShared).toBe(false);
+    for (const invalid of ["true", 1, null, []])
+      expect(validateLanguages({ java: { jdtlsShared: invalid } }).java.jdtlsShared).toBe(false);
   });
 
   it("defaults Java language level to SDK default and keeps only supported levels", () => {
@@ -300,6 +315,8 @@ describe("language pages", () => {
       "Ruby",
       "Rust",
       "TypeScript",
+      "Plugin Formatters",
+      "Language server targets",
     ]);
   });
 

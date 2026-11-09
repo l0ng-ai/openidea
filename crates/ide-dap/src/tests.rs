@@ -14,6 +14,93 @@ use tokio::io::{AsyncRead, AsyncWrite, AsyncWriteExt, BufReader};
 
 type Log = Arc<Mutex<Vec<Value>>>;
 
+#[cfg(windows)]
+#[test]
+#[ignore = "child process for Windows stop tests"]
+fn windows_debuggee_process() {
+    if std::env::var_os("OPENIDEA_TEST_DEBUGGEE").is_none() {
+        return;
+    }
+    if std::env::var("OPENIDEA_TEST_DEBUGGEE").unwrap() == "wrapper" {
+        let mut command = std::process::Command::new(std::env::current_exe().unwrap());
+        let mut child = ide_core::process::prepare(&mut command)
+            .args(["--exact", "tests::windows_debuggee_process", "--ignored", "--nocapture"])
+            .env("OPENIDEA_TEST_DEBUGGEE", "leaf")
+            .spawn()
+            .unwrap();
+        let _ = child.wait();
+        return;
+    }
+    let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+    println!("LISTENING {}", listener.local_addr().unwrap().port());
+    std::thread::sleep(Duration::from_secs(60));
+}
+
+#[cfg(windows)]
+#[tokio::test]
+async fn windows_stop_releases_the_debuggees_port_before_returning() {
+    use std::io::BufRead;
+    use std::sync::atomic::Ordering;
+
+    struct Child(std::process::Child, Option<ide_core::process::ProcessTree>);
+    impl Drop for Child {
+        fn drop(&mut self) {
+            if let Some(tree) = &self.1 {
+                tree.terminate();
+            }
+            let _ = self.0.kill();
+            let _ = self.0.wait();
+        }
+    }
+
+    for (second_stop, wrapper, supports_terminate) in
+        [(false, false, false), (true, false, false), (true, true, false), (true, true, true)]
+    {
+        let mut command = std::process::Command::new(std::env::current_exe().unwrap());
+        ide_core::process::prepare(&mut command)
+            .args(["--exact", "tests::windows_debuggee_process", "--ignored", "--nocapture"])
+            .env("OPENIDEA_TEST_DEBUGGEE", if wrapper { "wrapper" } else { "leaf" })
+            .stdout(std::process::Stdio::piped());
+        let mut child = Child(command.spawn().unwrap(), None);
+        let port: u16 = std::io::BufReader::new(child.0.stdout.take().unwrap())
+            .lines()
+            .map(Result::unwrap)
+            .find_map(|line| line.split("LISTENING ").nth(1).and_then(|p| p.parse().ok()))
+            .unwrap();
+        let pid = child.0.id();
+        child.1 = Some(ide_core::process::ProcessTree::capture(pid));
+        let h = harness(Script { debuggee_pid: Some(pid), supports_terminate, ..Default::default() });
+        let id = h.start(config()).await.unwrap();
+        let session = h.manager.session(id).unwrap();
+        while session.debuggee_pid.load(Ordering::Acquire) != i64::from(pid) {
+            tokio::time::sleep(Duration::from_millis(10)).await;
+        }
+        let stop = tokio::spawn({
+            let manager = h.manager.clone();
+            async move { manager.stop(id).await }
+        });
+        let deadline = std::time::Instant::now() + Duration::from_secs(5);
+        while session.stop_tree.lock().is_none() && !stop.is_finished() {
+            assert!(std::time::Instant::now() < deadline, "Stop did not capture the program tree");
+            tokio::time::sleep(Duration::from_millis(10)).await;
+        }
+        assert!(!stop.is_finished(), "Stop must wait for the live program");
+        if wrapper {
+            assert!(session.stop_tree.lock().is_some());
+            child.0.kill().unwrap();
+            child.0.wait().unwrap();
+            assert!(std::net::TcpListener::bind(("127.0.0.1", port)).is_err(), "the child still owns its port");
+        }
+        if second_stop {
+            h.manager.stop(id).await.unwrap();
+        }
+        let limit = if second_stop { 10 } else { 25 };
+        tokio::time::timeout(Duration::from_secs(limit), stop).await.unwrap().unwrap().unwrap();
+        assert!(child.0.try_wait().unwrap().is_some(), "Stop returned with the program alive");
+        let _listener = std::net::TcpListener::bind(("127.0.0.1", port)).expect("Stop returned with its port occupied");
+    }
+}
+
 #[derive(Clone)]
 struct Script {
     /// Send a `runInTerminal` reverse request when `launch` arrives.
@@ -33,6 +120,12 @@ struct Script {
     supports_terminate: bool,
     /// Answer `setBreakpoints` only once this many are waiting (a client that waits for each never gets one).
     hold_set_breakpoints: usize,
+    initialized_delay: Duration,
+    launch_delay: Duration,
+    /// Leave startup pending before `initialized` (false) or after configuration (true).
+    pending_startup: Option<bool>,
+    startup_error: Option<&'static str>,
+    close_during_startup: bool,
 }
 
 impl Default for Script {
@@ -47,6 +140,11 @@ impl Default for Script {
             output_after_terminate: false,
             supports_terminate: true,
             hold_set_breakpoints: 0,
+            initialized_delay: Duration::ZERO,
+            launch_delay: Duration::ZERO,
+            pending_startup: None,
+            startup_error: None,
+            close_during_startup: false,
         }
     }
 }
@@ -120,6 +218,15 @@ async fn fake_adapter<S: AsyncRead + AsyncWrite + Unpin + Send + 'static>(stream
                 })
             ),
             "launch" | "attach" => {
+                if script.close_during_startup {
+                    return;
+                }
+                if let Some(message) = script.startup_error {
+                    send!(
+                        json!({"type": "response", "request_seq": msg["seq"], "command": msg["command"], "success": false, "message": message})
+                    );
+                    continue;
+                }
                 pending_launch = msg["seq"].as_i64();
                 if let Some(args) = &script.run_in_terminal {
                     send!(
@@ -131,7 +238,10 @@ async fn fake_adapter<S: AsyncRead + AsyncWrite + Unpin + Send + 'static>(stream
                         json!({"type": "request", "command": "startDebugging", "arguments": {"request": "launch", "configuration": {"name": "child", "isChild": true}}})
                     );
                 }
-                send!(json!({"type": "event", "event": "initialized"}));
+                if script.pending_startup != Some(false) {
+                    tokio::time::sleep(script.initialized_delay).await;
+                    send!(json!({"type": "event", "event": "initialized"}));
+                }
             }
             "setBreakpoints" => {
                 held.push(msg);
@@ -182,6 +292,10 @@ async fn fake_adapter<S: AsyncRead + AsyncWrite + Unpin + Send + 'static>(stream
                 if !script.ignore_configuration_done {
                     ok!(msg, Value::Null);
                 }
+                if script.pending_startup == Some(true) {
+                    continue;
+                }
+                tokio::time::sleep(script.launch_delay).await;
                 if let Some(l) = pending_launch.take() {
                     send!(json!({"type": "response", "request_seq": l, "command": "launch", "success": true}));
                 }
@@ -349,6 +463,66 @@ fn config() -> LaunchConfig {
 
 fn bp(line: u32) -> Breakpoint {
     Breakpoint { line, condition: None, hit_condition: None, log_message: None, enabled: true }
+}
+
+#[tokio::test(start_paused = true)]
+async fn slow_launch_and_attach_follow_adapter_startup() {
+    for request in ["launch", "attach"] {
+        for before_initialized in [true, false] {
+            let delay = Duration::from_secs(125);
+            let h = harness(Script {
+                initialized_delay: if before_initialized { delay } else { Duration::ZERO },
+                launch_delay: if before_initialized { Duration::ZERO } else { delay },
+                ..Script::default()
+            });
+            let config = LaunchConfig { request: request.into(), ..config() };
+            let id = h.start(config).await.expect("a slow adapter can finish starting");
+            h.wait_event(|e| matches!(e, DebugEvent::Stopped { .. })).await;
+            assert!(!h.commands().iter().any(|c| c == "terminate" || c == "disconnect"));
+            h.manager.stop(id).await.unwrap();
+        }
+    }
+}
+
+#[tokio::test(start_paused = true)]
+async fn stop_cancels_pending_launch_and_attach() {
+    for request in ["launch", "attach"] {
+        for configured in [false, true] {
+            let h = harness(Script { pending_startup: Some(configured), ..Script::default() });
+            let config = LaunchConfig { request: request.into(), ..config() };
+            let start = h.start(config);
+            tokio::pin!(start);
+            let stop = async {
+                loop {
+                    let command = if configured { "configurationDone" } else { request };
+                    if h.commands().iter().any(|c| c == command) {
+                        break;
+                    }
+                    tokio::task::yield_now().await;
+                }
+                let id = h.manager.sessions(None)[0].id;
+                h.manager.stop(id).await.unwrap();
+            };
+            let (result, ()) = tokio::join!(&mut start, stop);
+            assert_eq!(result.unwrap_err().kind, ide_core::error::ErrorKind::Cancelled);
+            assert!(h.manager.sessions(None).is_empty());
+        }
+    }
+}
+
+#[tokio::test(start_paused = true)]
+async fn startup_still_reports_adapter_failure_and_connection_closure() {
+    for request in ["launch", "attach"] {
+        let h = harness(Script { startup_error: Some("interpreter could not start"), ..Script::default() });
+        let error = h.start(LaunchConfig { request: request.into(), ..config() }).await.unwrap_err();
+        assert_eq!(error.message, format!("{request} failed: interpreter could not start"));
+        assert!(h.manager.sessions(None).is_empty());
+
+        let h = harness(Script { close_during_startup: true, ..Script::default() });
+        let error = h.start(LaunchConfig { request: request.into(), ..config() }).await.unwrap_err();
+        assert!(error.message.contains("debug adapter `debugpy` exited during startup"), "{error}");
+        assert!(h.manager.sessions(None).is_empty());
+    }
 }
 
 #[tokio::test]
@@ -552,6 +726,22 @@ async fn run_in_terminal_program_reads_typed_input() {
     assert!(!output.contains('\r'), "{output:?}");
     h.manager.stop(session).await.unwrap();
     assert!(h.manager.send_input(session, "x\n").is_err());
+}
+
+#[cfg(unix)]
+#[tokio::test]
+async fn blocked_program_input_does_not_hold_up_shutdown() {
+    let h = harness(Script {
+        run_in_terminal: Some(vec!["sh".into(), "-c".into(), "stty raw -echo; printf READY; exec sleep 60".into()]),
+        ..Script::default()
+    });
+    let session = h.start(config()).await.unwrap();
+    h.wait_event(|e| matches!(e, DebugEvent::Output { output, .. } if output.contains("READY"))).await;
+    let started = std::time::Instant::now();
+    h.manager.send_input(session, &"x".repeat(512 * 1024)).unwrap();
+    assert!(started.elapsed() < std::time::Duration::from_millis(250));
+    h.manager.stop(session).await.unwrap();
+    assert!(h.manager.send_input(session, "later").is_err());
 }
 
 #[test]
@@ -1063,6 +1253,7 @@ fn godot_registry(port: u16, command: &str, args: &[&str]) -> Arc<LanguageRegist
         tree_sitter: None,
         language_servers: vec![],
         debugger: Some(ide_language::DebuggerConfig {
+            target_placement: None,
             adapter: "godot".into(),
             command: command.into(),
             args: args.iter().map(|a| (*a).to_owned()).collect(),
@@ -1391,6 +1582,109 @@ fn flutter_projects_are_found_from_the_program_or_the_working_directory() {
     std::fs::remove_dir_all(&root).unwrap();
 }
 
+#[test]
+fn rdbg_runs_the_debuggee_after_its_options_with_the_configuration_environment() {
+    let dir = tempfile::tempdir().unwrap();
+    let rdbg = adapter::find_config(&LanguageRegistry::from_configs(Vec::new()), "rdbg").unwrap();
+    let config = LaunchConfig {
+        adapter: "rdbg".into(),
+        program: Some("ruby".into()),
+        args: ["-Ilib", "app with spaces.rb", "$(touch sentinel); literal"].map(String::from).to_vec(),
+        env: BTreeMap::from([("RAILS_ENV".into(), "test".into())]),
+        extra_json: None,
+        ..config()
+    };
+    let mut spec = adapter::resolve(&rdbg, dir.path().into());
+    rdbg_command_line(&mut spec, &config, dir.path()).unwrap();
+    assert_eq!(spec.command, "rdbg");
+    assert_eq!(
+        spec.args,
+        ["-O", "--port", "${port}", "-c", "--", "ruby", "-Ilib", "app with spaces.rb", "$(touch sentinel); literal"]
+    );
+    assert!(spec.env.contains(&("RAILS_ENV".into(), "test".into())));
+}
+
+#[test]
+fn rdbg_runs_from_a_bundle_that_has_debug_and_refuses_one_without() {
+    let dir = tempfile::tempdir().unwrap();
+    let app = dir.path().join("app");
+    std::fs::create_dir_all(app.join("lib")).unwrap();
+    std::fs::write(app.join("Gemfile"), "source \"https://rubygems.org\"\n").unwrap();
+    // A dependency of another gem is not a gem of the bundle.
+    std::fs::write(app.join("Gemfile.lock"), "GEM\n  specs:\n    irb (1.14.0)\n      debug (>= 1)\n").unwrap();
+    let rdbg = adapter::find_config(&LanguageRegistry::from_configs(Vec::new()), "rdbg").unwrap();
+    let config = LaunchConfig {
+        adapter: "rdbg".into(),
+        program: Some("bundle".into()),
+        args: ["exec", "rspec"].map(String::from).to_vec(),
+        extra_json: None,
+        ..config()
+    };
+    let mut spec = adapter::resolve(&rdbg, app.clone());
+    let err = rdbg_command_line(&mut spec, &config, &app).unwrap_err();
+    assert!(err.message.contains("gem \"debug\""), "{}", err.message);
+
+    std::fs::write(app.join("Gemfile.lock"), "GEM\n  specs:\n    debug (1.9.2)\n      irb (~> 1.10)\n").unwrap();
+    // From a subdirectory too: Bundler finds the Gemfile above it.
+    for cwd in [app.clone(), app.join("lib")] {
+        let mut spec = adapter::resolve(&rdbg, cwd.clone());
+        rdbg_command_line(&mut spec, &config, &cwd).unwrap();
+        assert_eq!(spec.command, "bundle");
+        assert_eq!(spec.args, ["exec", "rdbg", "-O", "--port", "${port}", "-c", "--", "bundle", "exec", "rspec"]);
+    }
+}
+
+#[test]
+fn rdbg_commands_without_arguments_are_ruby_entry_points_not_shell_text() {
+    let dir = tempfile::tempdir().unwrap();
+    let rdbg = adapter::find_config(&LanguageRegistry::from_configs(Vec::new()), "rdbg").unwrap();
+    for program in ["rspec", "/app with spaces/bin/rake", "$(touch sentinel); literal"] {
+        let config =
+            LaunchConfig { adapter: "rdbg".into(), program: Some(program.into()), args: Vec::new(), ..config() };
+        let mut spec = adapter::resolve(&rdbg, dir.path().into());
+        rdbg_command_line(&mut spec, &config, dir.path()).unwrap();
+        assert_eq!(&spec.args[4..], ["--", "ruby", "-S", "--", program]);
+    }
+}
+
+#[test]
+fn rdbg_remote_attach_does_not_check_the_local_bundle_or_append_a_program() {
+    let dir = tempfile::tempdir().unwrap();
+    std::fs::write(dir.path().join("Gemfile"), "").unwrap();
+    let rdbg = adapter::find_config(&LanguageRegistry::from_configs(Vec::new()), "rdbg").unwrap();
+    let config = LaunchConfig { adapter: "rdbg".into(), request: "attach".into(), ..config() };
+    let mut spec = adapter::resolve(&rdbg, dir.path().into());
+    let args = spec.args.clone();
+    rdbg_command_line(&mut spec, &config, dir.path()).unwrap();
+    assert_eq!(spec.command, "rdbg");
+    assert_eq!(spec.args, args);
+}
+
+#[test]
+fn bundler_prefers_gems_rb_when_both_gemfiles_exist() {
+    let dir = tempfile::tempdir().unwrap();
+    for name in ["Gemfile", "gems.rb"] {
+        std::fs::write(dir.path().join(name), "").unwrap();
+    }
+    assert_eq!(bundler_gemfile(dir.path(), &BTreeMap::new()), Some(dir.path().join("gems.rb")));
+}
+
+#[test]
+fn bundler_gemfile_and_lockfile_follow_bundle_gemfile_and_gems_rb() {
+    let dir = tempfile::tempdir().unwrap();
+    let root = dir.path();
+    std::fs::create_dir_all(root.join("gems")).unwrap();
+    let none = BTreeMap::new();
+    assert_eq!(bundler_gemfile(root, &none), None);
+    std::fs::write(root.join("gems/gems.rb"), "").unwrap();
+    std::fs::write(root.join("gems/gems.locked"), "GEM\n  specs:\n    debug (1.9.2)\n").unwrap();
+    let gems_rb = bundler_gemfile(&root.join("gems"), &none).unwrap();
+    assert_eq!(gems_rb, root.join("gems/gems.rb"));
+    assert!(bundles_debug(&gems_rb));
+    let env = BTreeMap::from([("BUNDLE_GEMFILE".into(), "gems/gems.rb".into())]);
+    assert_eq!(bundler_gemfile(root, &env), Some(gems_rb));
+}
+
 #[cfg(unix)]
 #[tokio::test]
 async fn stop_waits_for_the_launched_program_to_exit() {
@@ -1607,4 +1901,65 @@ fn delve_leftovers_are_removed_without_touching_other_files() {
         assert!(dir.join(name).exists(), "{name} should stay");
     }
     std::fs::remove_dir_all(&dir).unwrap();
+}
+
+#[cfg(unix)]
+#[tokio::test]
+async fn rdbg_drains_test_output_after_dap_closes_before_killing_the_process() {
+    struct Launcher;
+    impl AdapterLauncher for Launcher {
+        fn launch(&self, _spec: AdapterSpec, _reuse: Option<u16>) -> LaunchFuture {
+            Box::pin(async {
+                let (client, server) = tokio::io::duplex(1 << 16);
+                tokio::spawn(fake_adapter(server, Arc::default(), Script::default()));
+                let mut command = tokio::process::Command::new("/bin/sh");
+                ide_core::process::own_group(command.as_std_mut());
+                let mut child = command
+                    .args(["-c", "sleep 1; printf 'test summary\\n'"])
+                    .stdout(std::process::Stdio::piped())
+                    .kill_on_drop(true)
+                    .spawn()
+                    .unwrap();
+                let mut stdout = child.stdout.take().unwrap();
+                let (tx, rx) = tokio::sync::mpsc::unbounded_channel();
+                tokio::spawn(async move {
+                    let mut text = String::new();
+                    tokio::io::AsyncReadExt::read_to_string(&mut stdout, &mut text).await.unwrap();
+                    let _ = tx.send(("stdout", text));
+                });
+                let (reader, writer) = tokio::io::split(client);
+                Ok(AdapterIo {
+                    reader: Box::new(reader),
+                    writer: Box::new(writer),
+                    child: Some(child),
+                    port: None,
+                    stderr: Arc::default(),
+                    program_output: Some(rx),
+                })
+            })
+        }
+    }
+    let dir = tempfile::tempdir().unwrap();
+    let manager = DebugManager::with_launcher(Arc::new(LanguageRegistry::from_configs(Vec::new())), Arc::new(Launcher));
+    let events = Arc::new(Mutex::new(Vec::new()));
+    let collected = events.clone();
+    let owner = SessionOwner::new("rdbg-test", Arc::new(move |e| collected.lock().push(e)));
+    let id = manager
+        .start(
+            LaunchConfig { adapter: "rdbg".into(), cwd: Some(dir.path().into()), extra_json: None, ..config() },
+            owner,
+        )
+        .await
+        .unwrap();
+    manager.session(id).unwrap().conn.close();
+    tokio::time::timeout(Duration::from_secs(5), async {
+        while !manager.sessions(None).is_empty() {
+            tokio::time::sleep(Duration::from_millis(10)).await;
+        }
+    })
+    .await
+    .unwrap();
+    assert!(events.lock().iter().any(|e| matches!(e,
+        IdeEvent::Debug { event: DebugEvent::Output { output, .. }, .. } if output == "test summary\n"
+    )));
 }

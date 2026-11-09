@@ -2,6 +2,7 @@
 import { activeEditor } from "@/editor/api";
 import { getAction, registerActions, type Action } from "@/platform/actions";
 import { getContext } from "@/platform/context";
+import { revealInFileManagerLabel } from "@/platform/fileManager";
 import { dirname, useProject } from "@/platform/project";
 import { showContextMenu, type MenuItem } from "@/ui";
 import { maybeEditorService, menuGroupItems, toolWindowService } from "@/workbench/contributions";
@@ -157,7 +158,8 @@ export function registerProjectActions(): () => void {
     id,
     title,
     category: "Project View",
-    when: OPEN,
+    when: "projectOpen || textEditorActive",
+    keyWhen: FOCUS,
     keywords: ["path", "clipboard"],
     run: ({ arg }) => copyPaths(kind, nodesFrom(arg)),
   });
@@ -384,9 +386,10 @@ export function registerProjectActions(): () => void {
     copyPath("absolute", "project.copyAbsolutePath", "Copy Absolute Path"),
     copyPath("relative", "project.copyRelativePath", "Copy Path From Content Root"),
     copyPath("name", "project.copyFileName", "Copy File Name"),
+    copyPath("source", "project.copySourceRootPath", "Copy Path From Source Root"),
     {
       id: "project.revealInFinder",
-      title: tx`Reveal in ${revealLabel()}`,
+      title: revealInFileManagerLabel(),
       category: "Project View",
       icon: "external-link",
       when: OPEN,

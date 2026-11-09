@@ -1,3 +1,4 @@
+import { useProject } from "@/platform/project";
 /**
  * Plugin host backend: `plugin_*` IPC + a `plugin_subscribe` event channel in the desktop
  * app; an in-memory simulation (the bundled samples) in plain-browser
@@ -9,6 +10,7 @@ import type {
   CapabilityInfo,
   CatalogPlugin,
   CommitAnswer,
+  CommandAnswer,
   CommitSelection,
   Consent,
   EventKind,
@@ -35,6 +37,7 @@ import type {
   WorkbenchEvent,
 } from "@/bindings";
 import { tx } from "@/platform/i18n";
+import { useRemote } from "@/platform/remote";
 import { call, commands, IpcError, isCancelled, isTauri, nextRequestId } from "@/platform/ipc";
 import { editorContext } from "./editorContext";
 
@@ -46,6 +49,14 @@ export interface PluginsBackend {
   installDir(path: string, consent: Consent): Promise<PluginInfo>;
   /** Confirms a plugin waiting for consent. */
   grant(id: string, consent: Consent): Promise<PluginInfo>;
+  chooseProgram(
+    pluginId: string,
+    capability: string,
+    scope: "global" | "project",
+    path: string | null,
+  ): Promise<PluginInfo>;
+  program(pluginId: string, program: string, scope: "global" | "project"): Promise<string>;
+  pickProgram(): Promise<string | null>;
   setCapability(id: string, capability: string, granted: boolean): Promise<PluginInfo>;
   /** Validated assets (icon theme mapping and SVGs) whose id starts with `prefix`. */
   assets(pluginId: string, prefix: string): Promise<[string, string][]>;
@@ -62,6 +73,8 @@ export interface PluginsBackend {
     arg: string | null,
     editor: PluginEditor | null,
     paths: string[],
+    settingsScope?: "global" | "project",
+    commandChain?: string[],
   ): Promise<string | null>;
   /** Workbench events plugins subscribed to (see `eventKinds`). */
   postEvents(events: WorkbenchEvent[]): Promise<void>;
@@ -74,6 +87,18 @@ export interface PluginsBackend {
   /** Reports the answer to a plugin's `promptRequested`: keys, `[text]`, anything for OK, `null` when dismissed. */
   answerPrompt(promptId: string, answer: string[] | null): Promise<void>;
   /** This window's answer to a plugin's `commitRequested`. */
+  answerCommand(requestId: string, answer: CommandAnswer): Promise<void>;
+  selectTests(config: string, tests: string[][]): Promise<string[] | null>;
+  parseTestResults(config: string, chunk: string): Promise<import("@/bindings").PluginTestEvent[] | null>;
+  closeTerminalSession(operation: string): Promise<void>;
+  terminalSessionSpawn(
+    operation: string,
+    cols: number,
+    rows: number,
+    output: Channel<string>,
+  ): Promise<import("@/bindings").TerminalInfo>;
+  finishOperation(id: string, status: number | null, stopped: boolean): Promise<void>;
+  contentTabAction(pluginId: string, action: import("@/bindings").ContentTabAction): Promise<void>;
   answerCommit(requestId: string, answer: CommitAnswer): Promise<void>;
   /** Runs plugins' before-commit checks on what `selection` commits. */
   commitChecks(selection: CommitSelection, checks: PluginCommitCheckRef[]): Promise<PluginCommitCheckResult[]>;
@@ -100,9 +125,11 @@ export interface PluginsBackend {
   /** Content of a plugin view (`doc`: the document of a custom editor). */
   renderView(pluginId: string, view: string, viewport: Viewport | null, doc: number | null): Promise<View>;
   viewEvent(pluginId: string, view: string, event: ViewEvent, doc: number | null): Promise<void>;
-  /** The Services pane of node `key` of a plugin's services view. */
+  /** The detail tabs of item `key` in a Services or `detail = true` view. */
   serviceDetail(pluginId: string, view: string, key: string): Promise<ServiceTab[]>;
   /** The HTTP routes a plugin reports for this window's project (`[[contributes.endpoints]]`). */
+  runTargets(): Promise<import("@/bindings").RegisteredRunTarget[]>;
+  answerRunTarget(id: string, useTarget: boolean): Promise<import("@/bindings").Settings>;
   endpoints(pluginId: string): Promise<PluginEndpoint[]>;
   /**
    * Runs the program of node `key`'s log tab `tab` (with the toggles in `on`) and streams its
@@ -174,6 +201,20 @@ export const tauriPluginsBackend: PluginsBackend = {
   previewInstall: (path) => call(commands.pluginPreviewInstall(path)),
   installDir: (path, consent) => call(commands.pluginInstallDir(path, consent)),
   grant: (id, consent) => call(commands.pluginGrant(id, consent)),
+  chooseProgram: async (id, cap, scope, path) => {
+    const remote = !!useRemote.getState().session;
+    if (remote && path !== null) await call(commands.pluginSetCapability(id, cap, true));
+    const chosen = await call(commands.pluginChooseProgram(id, cap, scope, path));
+    if (remote && !chosen.capabilities.some((c) => c.id === cap && c.granted))
+      await call(commands.pluginSetCapability(id, cap, false));
+    return chosen;
+  },
+  program: (id, program, scope) => call(commands.pluginProgram(id, program, scope)),
+  pickProgram: async () => {
+    const { open } = await import("@tauri-apps/plugin-dialog");
+    const picked = await open({ directory: false, multiple: false, title: tx("Choose plugin executable") });
+    return (Array.isArray(picked) ? picked[0] : picked) ?? null;
+  },
   setCapability: (id, capability, granted) => call(commands.pluginSetCapability(id, capability, granted)),
   assets: (pluginId, prefix) => call(commands.pluginAssets(pluginId, prefix)),
   activationEvent: async (kind, value) => {
@@ -184,10 +225,12 @@ export const tauriPluginsBackend: PluginsBackend = {
     await call(commands.pluginUninstall(id));
   },
   reload: (id) => call(commands.pluginReload(id)),
-  runCommand: (pluginId, commandId, arg, editor, paths) =>
-    call(commands.pluginRunCommand(pluginId, commandId, arg, editor, paths)),
+  runCommand: (pluginId, commandId, arg, editor, paths, settingsScope, commandChain) =>
+    call(
+      commands.pluginRunCommand(pluginId, commandId, arg, editor, paths, settingsScope ?? null, commandChain ?? null),
+    ),
   postEvents: async (events) => {
-    await commands.pluginPostEvents(events);
+    await commands.pluginPostEvents(events, editorContext());
   },
   eventKinds: () => commands.pluginEventKinds(),
   statusItems: () => commands.pluginStatusItems(),
@@ -197,6 +240,22 @@ export const tauriPluginsBackend: PluginsBackend = {
   },
   answerPrompt: async (promptId, answer) => {
     await commands.pluginAnswerPrompt(promptId, answer);
+  },
+  selectTests: (config, tests) => call(commands.pluginSelectTests(config, tests)),
+  parseTestResults: (config, chunk) => call(commands.pluginParseTestResults(config, chunk)),
+  closeTerminalSession: async (operation) => {
+    await call(commands.pluginTerminalSessionClose(operation));
+  },
+  terminalSessionSpawn: (operation, cols, rows, output) =>
+    call(commands.pluginTerminalSessionSpawn(operation, cols, rows, output)),
+  finishOperation: async (id, status, stopped) => {
+    await call(commands.pluginFinishOperation(id, status, stopped));
+  },
+  contentTabAction: async (pluginId, action) => {
+    await call(commands.pluginContentTabAction(pluginId, action));
+  },
+  answerCommand: async (requestId, answer) => {
+    await call(commands.pluginAnswerCommand(requestId, answer));
   },
   answerCommit: async (requestId, answer) => {
     await commands.pluginAnswerCommit(requestId, answer);
@@ -238,6 +297,8 @@ export const tauriPluginsBackend: PluginsBackend = {
     await call(commands.pluginViewEvent(pluginId, view, event, doc, doc == null ? editorContext() : null));
   },
   serviceDetail: (pluginId, view, key) => call(commands.pluginServiceDetail(pluginId, view, key)),
+  runTargets: () => call(commands.pluginRunTargets()),
+  answerRunTarget: (id, useTarget) => call(commands.pluginAnswerRunTarget(id, useTarget)),
   endpoints: (pluginId) => call(commands.pluginEndpoints(pluginId)),
   serviceLog: (pluginId, view, key, tab, on, onLine, onError, onExit) => {
     const request = nextRequestId();
@@ -519,6 +580,11 @@ export function createMemoryPluginsBackend(
       emit({ type: "commandsChanged" });
       return { ...p };
     },
+    chooseProgram: async (id) => {
+      return { ...find(id) };
+    },
+    program: async (_id, program) => program,
+    pickProgram: async () => null,
     setCapability: async (id, capability, granted) => {
       const p = find(id);
       p.capabilities = p.capabilities.map((c) => (c.id === capability ? { ...c, granted } : c));
@@ -592,7 +658,18 @@ export function createMemoryPluginsBackend(
     }),
     viewEvent: async () => {},
     serviceDetail: async () => [],
+    runTargets: async () => [],
+    answerRunTarget: async () => useProject.getState().settings as import("@/bindings").Settings,
     endpoints: async () => [],
+    answerCommand: async () => {},
+    finishOperation: async () => {},
+    closeTerminalSession: async () => {},
+    terminalSessionSpawn: async () => {
+      throw new Error("Terminal unavailable");
+    },
+    parseTestResults: async () => null,
+    selectTests: async () => null,
+    contentTabAction: async () => {},
     answerCommit: async () => {},
     commitChecks: async () => [],
     serviceLog: (pluginId, view, key, _tab, _on, _onLine, onError) => {

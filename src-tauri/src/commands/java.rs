@@ -5,11 +5,12 @@ use ide_core::{IdeResult, RequestId};
 #[allow(unused_imports)]
 pub use ide_host::ops::java::*;
 use ide_lsp::jdtls::JavaLaunchInfo;
+use ide_run::BuildPolicy;
 use std::path::PathBuf;
 use tauri::{State, Window};
 
 /// Cancellable with `cancel_request(request)`.
-/// Builds the workspace (when `build`), then resolves the runtime (or test)
+/// Builds according to `policy`, then resolves the runtime (or test)
 /// classpath and the JDK of the module at `module` (absolute, or relative to the project root).
 /// A module with Kotlin / Groovy / Scala sources is built by its build system, whose class directories come first.
 #[tauri::command]
@@ -19,10 +20,10 @@ pub async fn java_resolve_launch(
     state: State<'_, AppState>,
     module: PathBuf,
     test: bool,
-    build: bool,
+    policy: BuildPolicy,
     request: RequestId,
 ) -> IdeResult<JavaLaunchInfo> {
-    ide_host::ops::java::java_resolve_launch(&state.host, window.label(), module, test, build, request).await
+    ide_host::ops::java::java_resolve_launch(&state.host, window.label(), module, test, policy, request).await
 }
 
 /// Port of java-debug's DAP server inside the jdtls serving `module` (started on demand).
@@ -39,6 +40,7 @@ pub async fn java_build_workspace(
     window: Window,
     state: State<'_, AppState>,
     module: PathBuf,
+    request: Option<RequestId>,
 ) -> IdeResult<ide_lsp::jdtls::JavaBuildStatus> {
-    ide_host::ops::java::java_build_workspace(&state.host, window.label(), module).await
+    ide_host::ops::java::java_build_workspace(&state.host, window.label(), module, request).await
 }

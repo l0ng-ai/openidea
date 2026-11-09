@@ -1,4 +1,4 @@
-import React from "react";
+import React, { useEffect } from "react";
 import ReactDOM from "react-dom/client";
 import "./styles/global.css";
 import { Workbench } from "./workbench/Workbench";
@@ -14,9 +14,10 @@ import {
 } from "./features";
 import { auxiliaryWindow } from "./platform/auxWindow";
 import { installRepeatedDoubleClick } from "./platform/doubleClick";
-import { installErrorLogging } from "./platform/errorLog";
+import { installErrorLogging, logError } from "./platform/errorLog";
 import { guessOs } from "./platform/platformInfo";
 import { installReorderedTapClick } from "./platform/reordered-tap-click";
+import { installPageSwipeTracking } from "./platform/pageSwipe";
 import { installKeyboardDispatcher } from "./platform/keymap";
 import { installPointerFocus } from "./platform/pointerFocus";
 import { isTauri } from "./platform/ipc";
@@ -39,6 +40,7 @@ if (guessOs() === "macos" && !/Chrome|Firefox/.test(navigator.userAgent)) instal
 installWindowDrag();
 installPointerFocus();
 installErrorLogging();
+installPageSwipeTracking(window);
 
 // Auxiliary windows (Settings `settings-<parent>`, comparisons `comparison-<parent>-<n>`, Sync with
 // Deployed `deployment-<parent>`) load this page too.
@@ -72,19 +74,30 @@ if (aux?.kind === "settings") {
   installKeyboardDispatcher();
 }
 
-ReactDOM.createRoot(document.getElementById("root") as HTMLElement).render(
+function App() {
+  useEffect(() => {
+    hideSplash();
+    // Views split out of the start-up bundle load in the background once the UI is up.
+    if (!aux) return prefetchLazyComponents();
+  }, []);
+  return aux?.kind === "settings" ? (
+    <SettingsWindow />
+  ) : aux?.kind === "comparison" ? (
+    <ComparisonWindow />
+  ) : aux?.kind === "deployment" ? (
+    <DeploymentWindow />
+  ) : (
+    <Workbench />
+  );
+}
+
+ReactDOM.createRoot(document.getElementById("root") as HTMLElement, {
+  onUncaughtError: (error) => {
+    logError("Uncaught render error", error);
+    window.dispatchEvent(new CustomEvent("openidea:boot-error", { detail: error }));
+  },
+}).render(
   <React.StrictMode>
-    {aux?.kind === "settings" ? (
-      <SettingsWindow />
-    ) : aux?.kind === "comparison" ? (
-      <ComparisonWindow />
-    ) : aux?.kind === "deployment" ? (
-      <DeploymentWindow />
-    ) : (
-      <Workbench />
-    )}
+    <App />
   </React.StrictMode>,
 );
-hideSplash();
-// Views split out of the start-up bundle load in the background once the UI is up.
-if (!aux) prefetchLazyComponents();

@@ -1,14 +1,17 @@
 /** Editor actions (ids from keymaps/intellij-macos.ts). */
 import { EditorSelection, type EditorState } from "@codemirror/state";
 import { EditorView } from "@codemirror/view";
-import { indentSelection, moveLineDown, moveLineUp, toggleBlockComment } from "@codemirror/commands";
+import { indentSelection, moveLineDown, moveLineUp } from "@codemirror/commands";
 import { foldEffect, syntaxTree, toggleFold } from "@codemirror/language";
 import { acceptCompletion, completionStatus } from "@codemirror/autocomplete";
 import { executeAction, registerActions, type Action } from "@/platform/actions";
 import { getContext } from "@/platform/context";
+import { focusedSoftWrapSurface } from "@/workbench/softWrap";
+import { resetSurfaceFontZoom, stepFocusedSurfaceFontZoom } from "@/workbench/contributions";
 import { editorController, useGotoLine, useTabs } from "./controller";
 import {
   addCaretsToLineEnds,
+  commentBlock,
   commentLine,
   completeStatement,
   deleteLine,
@@ -47,7 +50,7 @@ import { reverseLines, sortLines } from "./cm/lines";
 import { customRegions } from "./cm/regions";
 import { enclosingHeaders } from "./cm/stickyScroll";
 import { moveElementLeft, moveElementRight } from "./cm/moveElement";
-import { caretAnchor, openPopup } from "@/editor/lsp/popupStore";
+import { caretAnchor, openPopup, updatePopup, useLspPopup, type LspPopup } from "@/editor/lsp/popupStore";
 import {
   cursorCodeBlockEnd,
   cursorCodeBlockStart,
@@ -86,6 +89,8 @@ import { structure } from "@/editor/structure";
 import { tx } from "@/platform/i18n";
 import { lspRequest } from "@/editor/lsp/lsp";
 import { readFileLines, withDocument } from "@/editor/lsp/files";
+import { pathToCopy } from "@/platform/copyPath";
+import { shortcutLabel } from "@/platform/keymap";
 
 /** Text-editing actions: the editor has focus, or a popup (Find Action) runs them on it. */
 export const TEXT_WHEN = "editorTextFocus || textEditorActive && popupOpen";
@@ -104,6 +109,27 @@ function withView(run: (view: EditorView, slot: EditorSlot) => unknown) {
     run(slot.view, slot);
     if (!slot.view.hasFocus && !getContext().popupOpen) slot.view.focus();
   };
+}
+
+/** Routes keyboard font zoom to focus, then the active editor slot. */
+function stepSurfaceFontSize(delta: 1 | -1): void {
+  const activeEl = typeof document !== "undefined" ? (document.activeElement as HTMLElement | null) : null;
+  if (activeEl) {
+    if (stepFocusedSurfaceFontZoom(delta)) return;
+    const cmEl = activeEl.closest?.(".cm-editor") as HTMLElement | null;
+    if (cmEl) {
+      const cmView = EditorView.findFromDOM(cmEl);
+      if (cmView) {
+        stepFontZoom(cmView, delta);
+        return;
+      }
+    }
+  }
+
+  const slot = activeSlot();
+  if (!slot?.view) return;
+  stepFontZoom(slot.view, delta);
+  if (!slot.view.hasFocus && !getContext().popupOpen) slot.view.focus();
 }
 
 // --- extend / shrink selection ---------------------------------------------------
@@ -475,8 +501,7 @@ async function resolveReference(view: EditorView, slot: EditorSlot): Promise<str
   return reference;
 }
 
-function copyReference(view: EditorView, slot: EditorSlot) {
-  const reference = resolveReference(view, slot);
+function copyReference(reference: Promise<string>) {
   const failed = (error: unknown) => {
     notifications().notify({
       level: "error",
@@ -494,6 +519,93 @@ function copyReference(view: EditorView, slot: EditorSlot) {
   } catch (error) {
     failed(error);
   }
+}
+
+function copyPathReferencePopup(view: EditorView, slot: EditorSlot) {
+  const path = slot.model.path;
+  const line = view.state.doc.lineAt(view.state.selection.main.head).number;
+  const flavours = [
+    { id: "project.copyAbsolutePath", label: "Absolute Path", value: pathToCopy("absolute", path) },
+    { id: "project.copyFileName", label: "File Name", value: pathToCopy("name", path) },
+    { id: "project.copyRelativePath", label: "Path From Content Root", value: pathToCopy("relative", path) },
+    { id: "project.copySourceRootPath", label: "Path From Source Root", value: pathToCopy("source", path) },
+    {
+      id: "editor.copyPathWithLineNumber",
+      label: "Path with line number",
+      value: `${pathToCopy("relative", path)}:${line}`,
+    },
+  ];
+  const popup: Extract<LspPopup, { kind: "list" }> = {
+    kind: "list",
+    title: tx("Copy Path/Reference…"),
+    anchor: caretAnchor(view, view.state.selection.main.head),
+    items: [
+      ...flavours
+        .filter((f) => f.value !== null)
+        .map((f) => ({
+          id: f.id,
+          label: tx(f.label),
+          preview: f.value!,
+          shortcut: shortcutLabel(f.id),
+          run: () => {
+            void executeAction(f.id, f.id === "editor.copyPathWithLineNumber" ? f.value : path);
+          },
+        })),
+      {
+        id: "editor.copyReference",
+        label: tx("Reference"),
+        preview: tx("Resolving reference…"),
+        disabled: tx("Resolving reference…"),
+        shortcut: shortcutLabel("editor.copyReference"),
+        run: () => {},
+      },
+    ],
+  };
+  openPopup(popup);
+  void resolveReference(view, slot)
+    .then((reference) => {
+      if (useLspPopup.getState().popup !== popup) return;
+      updatePopup("list", {
+        items: popup.items.map((item) =>
+          item.id === "editor.copyReference"
+            ? {
+                ...item,
+                preview: reference,
+                disabled: null,
+                run: () => {
+                  void executeAction(item.id, reference);
+                },
+              }
+            : item,
+        ),
+      });
+    })
+    .catch(() => {
+      if (useLspPopup.getState().popup === popup)
+        updatePopup("list", {
+          items: popup.items.map((item) =>
+            item.id === "editor.copyReference"
+              ? { ...item, preview: undefined, disabled: tx("Cannot copy reference") }
+              : item,
+          ),
+        });
+    });
+}
+
+function copyEditorPath(text: string) {
+  void navigator.clipboard
+    .writeText(text)
+    .then(() => {
+      recordClipboard(text);
+      void executeAction("editor.showHint", { text: tx`Copied ${text}` });
+    })
+    .catch((error: unknown) => {
+      notifications().notify({
+        level: "error",
+        title: tx("Cannot access the clipboard"),
+        body: error instanceof Error ? error.message : String(error),
+      });
+    });
 }
 
 /** ⌃G; when nothing more is found, a hint first and the search from the top on the next press (IDEA). */
@@ -573,7 +685,7 @@ export function registerEditorActions(): () => void {
       "color scheme",
     ]),
     text("code.commentLine", "Comment with Line Comment", (v) => commentLine(v)),
-    text("code.commentBlock", "Comment with Block Comment", (v) => toggleBlockComment(v)),
+    text("code.commentBlock", "Comment with Block Comment", (v) => commentBlock(v)),
     text("code.duplicateLine", "Duplicate Line or Selection", (v) => duplicateLineOrSelection(v)),
     text("code.deleteLine", "Delete Line", (v) => deleteLine(v)),
     text("code.moveLineUp", "Move Line Up", (v) => moveLineUp(v)),
@@ -606,10 +718,17 @@ export function registerEditorActions(): () => void {
         keywords: ["hippie", "complete word", "dabbrev"],
       },
     ),
-    text("editor.copyReference", "Copy Reference", (v, slot) => copyReference(v, slot), {
+    {
+      id: "editor.copyReference",
+      title: "Copy Reference",
+      when: TEXT_WHEN,
+      run: ({ arg }) => {
+        if (typeof arg === "string") copyReference(Promise.resolve(arg));
+        else withView((v, slot) => copyReference(resolveReference(v, slot)))();
+      },
       category: "Edit",
       keywords: ["fully qualified name", "fqn", "copy path"],
-    }),
+    },
     text("code.pasteAsPlainText", "Paste as Plain Text", (v) => pasteAsPlainText(v), {
       category: "Edit",
       icon: "paste",
@@ -620,9 +739,13 @@ export function registerEditorActions(): () => void {
       category: "View",
       icon: "soft-wrap",
       keywords: ["word wrap", "line wrap"],
-      when: "textEditorActive",
-      toggled: () => activeSlot()?.model.softWrapOn() ?? false,
-      run: () => activeSlot()?.model.toggleSoftWrap(),
+      when: "textEditorActive || softWrapSurfaceFocus",
+      toggled: () => focusedSoftWrapSurface()?.enabled() ?? activeSlot()?.model.softWrapOn() ?? false,
+      run: () => {
+        const surface = focusedSoftWrapSurface();
+        if (surface) surface.toggle();
+        else activeSlot()?.model.toggleSoftWrap();
+      },
     },
     text("code.foldAll", "Collapse All", (v) => collapseAll(v), { category: "Folding", icon: "collapse-all" }),
     text("code.unfoldAll", "Expand All", (v) => expandAll(v), { category: "Folding", icon: "expand-all" }),
@@ -683,6 +806,15 @@ export function registerEditorActions(): () => void {
     text("code.autoIndentLines", "Auto-Indent Lines", (v) => !v.state.readOnly && indentSelection(v), {
       keywords: ["reindent", "fix indentation"],
     }),
+    {
+      id: "editor.addOrRemoveCaret",
+      title: "Add or Remove Caret",
+      category: "Editor Actions",
+      when: "textEditorActive",
+      hidden: true,
+      // The mouse selection style handles the pointer position and dragging.
+      run: () => {},
+    },
     text("editor.cloneCaretAbove", "Clone Caret Above", (v) => cloneCaretAbove(v), { category: "Editor Actions" }),
     text("editor.cloneCaretBelow", "Clone Caret Below", (v) => cloneCaretBelow(v), { category: "Editor Actions" }),
     text("editor.matchBrace", "Move Caret to Matching Brace", (v) => cursorMatchBrace(v), {
@@ -768,6 +900,9 @@ export function registerEditorActions(): () => void {
       run: () => {
         for (const ed of useEditorRegistry.getState().editors)
           if (ed.view.state.field(fontZoom, false)) ed.view.dispatch({ effects: setFontZoom.of(0) });
+        if (typeof document !== "undefined") {
+          resetSurfaceFontZoom();
+        }
       },
     },
     {
@@ -775,16 +910,16 @@ export function registerEditorActions(): () => void {
       title: "Increase Font Size",
       category: "View",
       keywords: ["zoom", "font size"],
-      when: EDITOR_WHEN,
-      run: withView((view) => stepFontZoom(view, 1)),
+      when: "projectOpen",
+      run: () => stepSurfaceFontSize(1),
     },
     {
       id: "editor.decreaseFontSize",
       title: "Decrease Font Size",
       category: "View",
       keywords: ["zoom", "font size"],
-      when: EDITOR_WHEN,
-      run: withView((view) => stepFontZoom(view, -1)),
+      when: "projectOpen",
+      run: () => stepSurfaceFontSize(-1),
     },
     {
       id: "file.toggleReadOnly",
@@ -1026,7 +1161,7 @@ export function registerEditorActions(): () => void {
     },
     {
       id: "editor.copyPath",
-      title: "Copy Path",
+      title: "Absolute Path",
       category: "Edit",
       icon: "copy",
       when: "textEditorActive",
@@ -1034,7 +1169,31 @@ export function registerEditorActions(): () => void {
       keyWhen: "editorFocus || !toolWindowFocus",
       run: () => {
         const p = ctrl.activePath();
-        if (p) void navigator.clipboard?.writeText(p);
+        if (p) copyEditorPath(p);
+      },
+    },
+    {
+      id: "editor.copyPathReference",
+      title: "Copy Path/Reference…",
+      category: "Edit",
+      icon: "copy",
+      when: "textEditorActive",
+      keyWhen: "editorFocus || !toolWindowFocus",
+      run: withView(copyPathReferencePopup),
+    },
+    {
+      id: "editor.copyPathWithLineNumber",
+      title: "Copy Path with Line Number",
+      category: "Edit",
+      when: TEXT_WHEN,
+      run: ({ arg }) => {
+        if (typeof arg === "string") copyEditorPath(arg);
+        else
+          withView((view, slot) =>
+            copyEditorPath(
+              `${pathToCopy("relative", slot.model.path)}:${view.state.doc.lineAt(view.state.selection.main.head).number}`,
+            ),
+          )();
       },
     },
     {

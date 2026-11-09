@@ -118,6 +118,9 @@
   flex-direction: column;
   overflow: hidden;
 }
+.host:not([hidden]) {
+  animation: diff-enter var(--dur) var(--ease) both;
+}
 .host[hidden] {
   display: none;
 }
@@ -345,4 +348,19 @@
   box-shadow: var(--shadow-tooltip);
   font-size: var(--fs-small);
   pointer-events: none;
+}
+
+@keyframes diff-enter {
+  from {
+    opacity: 0;
+  }
+  to {
+    opacity: 1;
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .host:not([hidden]) {
+    animation: none;
+  }
 }

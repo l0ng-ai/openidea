@@ -1,0 +1,18 @@
+id = "openidea.blame-annotations"
+name = "Blame Annotations (API Example)"
+version = "0.1.0"
+description = "Small plugin API 1.4 example; see the package README."
+authors = ["OpenIDEA contributors"]
+license = "Apache-2.0"
+engines.openidea = "^1.4"
+wasm = "dist/plugin.wasm"
+activation = ["on-command:*"]
+
+[capabilities]
+required = ["project.read", "editor.read", "vcs.read"]
+[[contributes.commands]]
+id = "annotate"
+title = "Example: Show Blame Annotations"
+[[contributes.providers]]
+kinds = ["code-lenses"]
+languages = ["*"]

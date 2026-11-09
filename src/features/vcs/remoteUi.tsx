@@ -25,6 +25,7 @@ import { openDialog } from "./dialogs";
 import { formatTime } from "./model";
 import { allRepos, lastRemoteFailure, runRemote, saveAll } from "./ops";
 import { PushChanges, pushChangesKey } from "./PushChanges";
+import { pushOperation, splitTracked, type PushChoice } from "./pushTarget";
 import { currentRepo, refreshNow, repoName, useVcs } from "./store";
 import styles from "./common.module.css";
 
@@ -242,6 +243,10 @@ function MultiPushDialog({ onClose }: { onClose: () => void }) {
   const [tagsMode, setTagsMode] = useState<PushTags>("all");
   const hasHook = usePrePushHook(roots);
   const [runHooks, setRunHooks] = useState(true);
+  const [remotesOf, setRemotesOf] = useState<Record<string, string[]>>({});
+  const [edits, setEdits] = useState<Record<string, { remote?: string; target?: string }>>({});
+  const edit = (root: string, change: { remote?: string; target?: string }) =>
+    setEdits((prev) => ({ ...prev, [root]: { ...prev[root], ...change } }));
 
   useEffect(() => {
     let alive = true;
@@ -249,12 +254,16 @@ function MultiPushDialog({ onClose }: { onClose: () => void }) {
     // branch falls back to recent history (pushRepoCommits) and stays pushable.
     Promise.allSettled(
       roots.map(async (root) => {
+        const remotes = call(commands.vcsRemotes(root)).catch(() => []);
         const branch = await call(commands.vcsBranchInfo(root));
-        return { root, branch, commits: await pushRepoCommits(root, branch) };
+        const commits = await pushRepoCommits(root, branch);
+        return { repo: { root, branch, commits }, remotes: (await remotes).map((r) => r.name) };
       }),
     ).then((results) => {
       if (!alive) return;
-      const loaded = results.flatMap((r) => (r.status === "fulfilled" ? [r.value] : []));
+      const fulfilled = results.flatMap((r) => (r.status === "fulfilled" ? [r.value] : []));
+      const loaded = fulfilled.map((r) => r.repo);
+      setRemotesOf(Object.fromEntries(fulfilled.map((r) => [r.repo.root, r.remotes])));
       const failed = results.find((r): r is PromiseRejectedResult => r.status === "rejected");
       if (!loaded.length && failed) {
         setError(failed.reason instanceof Error ? failed.reason.message : String(failed.reason));
@@ -275,9 +284,28 @@ function MultiPushDialog({ onClose }: { onClose: () => void }) {
       if (!next.delete(root)) next.add(root);
       return next;
     });
-  const targetOf = (r: RepoPush) =>
-    r.branch.upstream ? r.branch.upstream.slice(r.branch.upstream.indexOf("/") + 1) : r.branch.head!;
+  const targetOf = (r: RepoPush) => (r.branch.upstream ? splitTracked(r.branch.upstream).branch : r.branch.head!);
+  const trackedRemoteOf = (r: RepoPush) => (r.branch.upstream ? splitTracked(r.branch.upstream).remote : null);
+  const shownRemoteOf = (r: RepoPush) => {
+    const remotes = remotesOf[r.root] ?? [];
+    return (
+      edits[r.root]?.remote ?? trackedRemoteOf(r) ?? (remotes.includes("origin") ? "origin" : (remotes[0] ?? null))
+    );
+  };
+  const targetNameOf = (r: RepoPush) => edits[r.root]?.target?.trim() || targetOf(r);
+  const choiceOf = (r: RepoPush, tags: PushTags | null): PushChoice => ({
+    head: r.branch.head!,
+    tracked: r.branch.upstream,
+    remote: edits[r.root]?.remote ?? null,
+    target: edits[r.root]?.target ?? "",
+    forceWithLease: force && !isProtectedBranch(targetNameOf(r)),
+    setUpstream: false,
+    tags,
+    noVerify: hasHook && !runHooks,
+  });
   const picked = (repos ?? []).filter((r) => checked.has(r.root));
+  // Like the single-repository dialog: tags go only with plain pushes, so a retargeted repository hides them.
+  const retargeted = picked.some((r) => pushOperation(choiceOf(r, null)).op === "pushBranch");
   const push = async () => {
     onClose();
     // Every picked repository is pushed even when another fails; the outcome is summed up.
@@ -285,19 +313,20 @@ function MultiPushDialog({ onClose }: { onClose: () => void }) {
     const failed: string[] = [];
     for (const r of picked) {
       const upstream = r.branch.upstream;
-      const ok = await pushWithAutoUpdate(
-        {
-          op: "push",
-          force_with_lease: force && !isProtectedBranch(targetOf(r)),
-          set_upstream: !upstream,
-          tags: pushTags ? tagsMode : null,
-          no_verify: hasHook && !runHooks,
-        },
-        `${repoName(r.root)}: ${r.branch.head} → ${upstream ?? "new remote branch"}`,
-        r.root,
-        session,
-      );
-      if (!ok) failed.push(repoName(r.root));
+      const op = pushOperation(choiceOf(r, pushTags && !retargeted ? tagsMode : null));
+      const name = repoName(r.root);
+      const remote = shownRemoteOf(r);
+      // A retargeted push names a branch, so it has no tracked branch to update from when rejected.
+      const ok =
+        op.op === "pushBranch"
+          ? await runRemote(op, `${name}: ${r.branch.head} → ${remote ? `${remote}/` : ""}${targetNameOf(r)}`, [r.root])
+          : await pushWithAutoUpdate(
+              op,
+              `${name}: ${r.branch.head} → ${upstream ?? "new remote branch"}`,
+              r.root,
+              session,
+            );
+      if (!ok) failed.push(name);
     }
     const notPushed = failed.join(", ");
     if (failed.length && picked.length > 1)
@@ -331,17 +360,21 @@ function MultiPushDialog({ onClose }: { onClose: () => void }) {
         <>
           <Checkbox checked={force} onChange={setForce} label="Force (with lease)" />
           {hasHook && <Checkbox checked={runHooks} onChange={setRunHooks} label="Run Git hooks" />}
-          <Checkbox checked={pushTags} onChange={setPushTags} label="Push tags:" />
-          <Select<PushTags>
-            value={tagsMode}
-            disabled={!pushTags}
-            aria-label="Tags to push"
-            onChange={setTagsMode}
-            options={[
-              { value: "all", label: "All" },
-              { value: "currentBranch", label: "Current Branch" },
-            ]}
-          />
+          {!retargeted && (
+            <>
+              <Checkbox checked={pushTags} onChange={setPushTags} label="Push tags:" />
+              <Select<PushTags>
+                value={tagsMode}
+                disabled={!pushTags}
+                aria-label="Tags to push"
+                onChange={setTagsMode}
+                options={[
+                  { value: "all", label: "All" },
+                  { value: "currentBranch", label: "Current Branch" },
+                ]}
+              />
+            </>
+          )}
         </>
       }
       buttons={[
@@ -411,9 +444,20 @@ function MultiPushDialog({ onClose }: { onClose: () => void }) {
                     onChange={() => toggle(n.repo.root)}
                     label={repoName(n.repo.root)}
                   />
-                  <span className={styles.commitMeta}>
-                    {n.repo.branch.head} → {n.repo.branch.upstream ?? tx("new remote branch")}
-                  </span>
+                  <span className={styles.commitMeta}>{n.repo.branch.head} →</span>
+                  <PushRowTarget
+                    name={repoName(n.repo.root)}
+                    remotes={remotesOf[n.repo.root] ?? []}
+                    remote={shownRemoteOf(n.repo)}
+                    onRemote={(remote) => edit(n.repo.root, { remote })}
+                    target={edits[n.repo.root]?.target ?? targetOf(n.repo)}
+                    onTarget={(target) => edit(n.repo.root, { target })}
+                    changed={pushOperation(choiceOf(n.repo, null)).op === "pushBranch"}
+                    onEnter={() => {
+                      if (picked.length) void push();
+                    }}
+                  />
+                  {!n.repo.branch.upstream && <span className={styles.commitMeta}>{tx("new remote branch")}</span>}
                 </span>
               )
             }
@@ -424,6 +468,59 @@ function MultiPushDialog({ onClose }: { onClose: () => void }) {
         <PushChanges key={pushChangesKey(shownRepo.root, shownCommits)} repo={shownRepo.root} commits={shownCommits} />
       )}
     </Dialog>
+  );
+}
+
+/** The remote and target branch of one repository's row in the multi-repository Push tree. */
+function PushRowTarget(props: {
+  name: string;
+  remotes: string[];
+  remote: string | null;
+  onRemote: (remote: string) => void;
+  target: string;
+  onTarget: (target: string) => void;
+  /** Pushed elsewhere than to the upstream: the field is marked so the difference is not missed. */
+  changed: boolean;
+  onEnter: () => void;
+}) {
+  return (
+    <span
+      className={styles.pushRowTarget}
+      // The tree would take typed keys for speed search and navigation, and a click for toggling the row.
+      onKeyDown={(e) => {
+        if (e.key !== "Escape" && e.key !== "Tab") e.stopPropagation();
+      }}
+      onClick={(e) => e.stopPropagation()}
+      onDoubleClick={(e) => e.stopPropagation()}
+    >
+      {props.remotes.length > 1 ? (
+        <Select<string>
+          variant="ghost"
+          value={props.remote ?? ""}
+          aria-label={tx`Remote of ${props.name}`}
+          onChange={props.onRemote}
+          options={props.remotes.map((r) => ({ value: r, label: r }))}
+        />
+      ) : (
+        props.remote && <span className={styles.commitMeta}>{props.remote}</span>
+      )}
+      {props.remote && <span className={styles.pushRowSeparator}>/</span>}
+      <Input
+        aria-label={tx`Target branch of ${props.name}`}
+        mono
+        value={props.target}
+        data-changed={props.changed || undefined}
+        // Mono, so `ch` is exact: the field follows the branch name instead of a fixed width.
+        style={{ width: `${Math.min(32, Math.max(10, props.target.length + 3))}ch` }}
+        onChange={(e) => props.onTarget(e.target.value)}
+        onKeyDown={(e) => {
+          if (e.key !== "Enter" || e.nativeEvent.isComposing) return;
+          e.preventDefault();
+          props.onEnter();
+        }}
+        className={styles.pushRowInput}
+      />
+    </span>
   );
 }
 
@@ -515,34 +612,24 @@ function PushDialog({ target: pushTarget, onClose }: { target: PushTarget; onClo
   const push = async () => {
     if (force && !protectedTarget && !(await confirmForcePush(remote ? `${remote}/${target}` : (target ?? "")))) return;
     onClose();
-    if ((explicit || retarget || remoteChanged) && head) {
-      await runRemote(
-        {
-          op: "pushBranch",
-          branch: head,
-          revision,
-          force_with_lease: force && !protectedTarget,
-          target: retarget ? edited : null,
-          remote: remoteChanged ? remote : null,
-          set_upstream: setUpstream && !revision,
-          no_verify: hasHook && !runHooks,
-        },
-        `${revision ? `${head} up to ${revision.slice(0, 8)}` : head} → ${targetLabel}`,
-        [repo],
-      );
+    if (!head) return;
+    const op = pushOperation({
+      head,
+      tracked,
+      remote,
+      target: targetName,
+      explicit,
+      revision,
+      forceWithLease: force && !protectedTarget,
+      setUpstream,
+      tags: pushTags ? tagsMode : null,
+      noVerify: hasHook && !runHooks,
+    });
+    if (op.op === "pushBranch") {
+      await runRemote(op, `${revision ? `${head} up to ${revision.slice(0, 8)}` : head} → ${targetLabel}`, [repo]);
       return;
     }
-    await pushWithAutoUpdate(
-      {
-        op: "push",
-        force_with_lease: force && !protectedTarget,
-        set_upstream: setUpstream || !upstream,
-        tags: pushTags ? tagsMode : null,
-        no_verify: hasHook && !runHooks,
-      },
-      upstream ? `${head} → ${upstream}` : `${head} → new remote branch`,
-      repo,
-    );
+    await pushWithAutoUpdate(op, upstream ? `${head} → ${upstream}` : `${head} → new remote branch`, repo);
   };
 
   const commitList = (

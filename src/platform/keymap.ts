@@ -21,6 +21,7 @@ import { vscodeMacos } from "./keymaps/vscode-macos";
 import { vscodeWindows } from "./keymaps/vscode-windows";
 import { usePlatform } from "./platformInfo";
 import { isImeKey } from "./ime";
+import { isPageSwipe, PAGE_SWIPE_EVENT } from "./pageSwipe";
 
 export type Keymap = Record<string, string[]>;
 
@@ -118,6 +119,9 @@ export function isValidBinding(binding: unknown): binding is string {
   const b = binding.trim();
   if (parseDoubleModifier(b)) return true;
   const strokes = b.split(/\s+/);
+  if (strokes.some((s) => /swipe(left|right)$/i.test(s))) {
+    return strokes.length === 1 && /^swipe(left|right)$/i.test(b);
+  }
   return strokes.length >= 1 && strokes.length <= 2 && strokes.every((s) => STROKE_RE.test(s));
 }
 
@@ -260,6 +264,8 @@ export function normalizeBinding(binding: string): string {
       const key = parts.pop()!;
       const mods = MOD_ORDER.filter((m) => parts.some((p) => p.toLowerCase() === m.toLowerCase()));
       const mouse = MOUSE_KEY_RE.exec(key);
+      const swipe = /^swipe(left|right)$/i.exec(key);
+      if (swipe) return `Swipe${swipe[1]!.toLowerCase() === "left" ? "Left" : "Right"}`;
       return [...mods, mouse ? `Button${mouse[1]}` : key.length === 1 ? key.toUpperCase() : key].join("+");
     })
     .join(" ");
@@ -387,7 +393,7 @@ export function formatBinding(binding: string, mac = isMacHost()): string {
 
 /** The first keyboard binding of an action: what menus and tooltips show. */
 export function primaryKeyBinding(actionId: string): string | undefined {
-  return bindingsFor(actionId).find((b) => !isMouseBinding(b));
+  return bindingsFor(actionId).find((b) => !isMouseBinding(b) && !isPageSwipe(b));
 }
 
 export function shortcutLabel(actionId: string): string | undefined {
@@ -650,6 +656,17 @@ export function installKeyboardDispatcher(
     resetTap();
   };
 
+  const onSwipe = (event: Event) => {
+    const stroke = (event as CustomEvent).detail;
+    if (suspended > 0 || !isPageSwipe(stroke)) return;
+    reset();
+    resetTap();
+    const ids = effectiveBindings()
+      .filter(([binding]) => binding === stroke)
+      .map(([, id]) => id);
+    for (const id of ids.reverse()) if (runIfEnabled(id)) return;
+  };
+  target.addEventListener(PAGE_SWIPE_EVENT, onSwipe);
   target.addEventListener("keydown", onKeyDown, true);
   target.addEventListener("keyup", onKeyUp, true);
   target.addEventListener("mousedown", onMouseDown, true);
@@ -658,6 +675,7 @@ export function installKeyboardDispatcher(
   target.addEventListener("webkitmouseforcewillbegin", onForceWillBegin, true);
   target.addEventListener("blur", onBlur);
   return () => {
+    target.removeEventListener(PAGE_SWIPE_EVENT, onSwipe);
     target.removeEventListener("keydown", onKeyDown, true);
     target.removeEventListener("keyup", onKeyUp, true);
     target.removeEventListener("mousedown", onMouseDown, true);

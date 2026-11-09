@@ -5,6 +5,7 @@ export {
   applyThemeToAll,
   closeAll,
   newTab,
+  pluginSession,
   syncTerminalProject,
   unbindTerminals,
   newTabAt,

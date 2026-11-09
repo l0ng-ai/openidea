@@ -104,12 +104,21 @@ fn signal_group(child: &Child, signal: libc::c_int) {
 #[cfg(windows)]
 const TREE_EXIT_WAIT: Duration = Duration::from_secs(5);
 
+#[cfg(windows)]
+pub use windows_tree::ProcessTree;
+
 /// `taskkill /T /F` from `pid`, then waits (up to [`TREE_EXIT_WAIT`]) until what the child
 /// started is gone: termination is asynchronous, and until a process is gone the files it
 /// holds open can't be opened or deleted. The child itself is left to its owner to reap.
 #[cfg(windows)]
 fn taskkill_tree_of(pid: u32) {
     let started = windows_tree::descendants(pid);
+    // When the child started nothing, killing it alone is the whole job:
+    // `taskkill` would be a process spawn (measured at ~0.7 s here) for the
+    // same outcome, and the callers kill the child themselves.
+    if started.is_empty() {
+        return;
+    }
     let mut taskkill = Command::new("taskkill");
     prepare(&mut taskkill)
         .args(["/T", "/F", "/PID", &pid.to_string()])
@@ -130,13 +139,48 @@ mod windows_tree {
         CreateToolhelp32Snapshot, PROCESSENTRY32W, Process32FirstW, Process32NextW, TH32CS_SNAPPROCESS,
     };
     use windows_sys::Win32::System::Threading::{
-        GetProcessTimes, OpenProcess, PROCESS_QUERY_LIMITED_INFORMATION, PROCESS_SYNCHRONIZE, WaitForSingleObject,
+        GetProcessTimes, OpenProcess, PROCESS_QUERY_LIMITED_INFORMATION, PROCESS_SYNCHRONIZE, PROCESS_TERMINATE,
+        TerminateProcess, WaitForSingleObject,
     };
+
+    /// Owned handles to a program and its current descendants, retained even if its launcher exits.
+    pub struct ProcessTree {
+        processes: Vec<OwnedHandle>,
+    }
+
+    impl ProcessTree {
+        pub fn capture(pid: u32) -> Self {
+            let Some(root) = open_with(pid, PROCESS_TERMINATE) else { return Self { processes: Vec::new() } };
+            let children = descendants_with(pid, PROCESS_TERMINATE);
+            Self { processes: std::iter::once(root).chain(children).collect() }
+        }
+
+        pub fn is_running(&self) -> bool {
+            self.processes.iter().any(|process| {
+                // SAFETY: an owned process handle opened with SYNCHRONIZE access.
+                unsafe {
+                    WaitForSingleObject(process.as_raw_handle(), 0) == windows_sys::Win32::Foundation::WAIT_TIMEOUT
+                }
+            })
+        }
+
+        /// Requests termination children first; poll `is_running` until termination completes.
+        pub fn terminate(&self) {
+            for process in self.processes.iter().rev() {
+                // SAFETY: an owned process handle opened with TERMINATE access, never a reused pid.
+                unsafe { TerminateProcess(process.as_raw_handle(), 1) };
+            }
+        }
+    }
 
     /// Every process `root` started, directly or not, opened so it can be waited for. A
     /// parent's id is reused once it is gone, so a process counts only if it started after
     /// its parent.
     pub(super) fn descendants(root: u32) -> Vec<OwnedHandle> {
+        descendants_with(root, 0)
+    }
+
+    fn descendants_with(root: u32, access: u32) -> Vec<OwnedHandle> {
         let Some(root_started) = open(root).as_ref().and_then(started) else { return Vec::new() };
         let processes = processes();
         let mut seen = HashSet::from([root]);
@@ -147,7 +191,7 @@ mod windows_tree {
                 if ppid != parent || !seen.insert(pid) {
                     continue;
                 }
-                let Some(handle) = open(pid) else { continue };
+                let Some(handle) = open_with(pid, access) else { continue };
                 if let Some(at) = started(&handle).filter(|&at| at >= parent_started) {
                     parents.push((pid, at));
                     found.push(handle);
@@ -187,8 +231,12 @@ mod windows_tree {
     }
 
     fn open(pid: u32) -> Option<OwnedHandle> {
+        open_with(pid, 0)
+    }
+
+    fn open_with(pid: u32, access: u32) -> Option<OwnedHandle> {
         // SAFETY: plain call; a non-null result is a process handle owned by the caller.
-        let handle = unsafe { OpenProcess(PROCESS_SYNCHRONIZE | PROCESS_QUERY_LIMITED_INFORMATION, 0, pid) };
+        let handle = unsafe { OpenProcess(PROCESS_SYNCHRONIZE | PROCESS_QUERY_LIMITED_INFORMATION | access, 0, pid) };
         // SAFETY: as above.
         (!handle.is_null()).then(|| unsafe { OwnedHandle::from_raw_handle(handle) })
     }

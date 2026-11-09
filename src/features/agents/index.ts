@@ -45,6 +45,22 @@ export function activate(): () => void {
   sync(useProject.getState().project?.root);
   const disposers = [
     activateSettingsPages(),
+    // The performance harness (`perf/`): long conversations to switch between and scroll.
+    import.meta.env.DEV || import.meta.env.MODE === "perf"
+      ? registerActions([
+          {
+            id: "agents.openSampleConversations",
+            title: "Open Sample Conversations",
+            category: "Agents",
+            hidden: true,
+            run: async ({ arg }) => {
+              const { tasks = 2, turns = 150 } = (arg ?? {}) as { tasks?: number; turns?: number };
+              const { openSampleConversations } = await import("./sampleConversation");
+              openSampleConversations(tasks, turns);
+            },
+          },
+        ])
+      : () => {},
     useProject.subscribe((s, prev) => {
       if (s.project?.root !== prev.project?.root || s.project?.trusted !== prev.project?.trusted) sync(s.project?.root);
     }),

@@ -55,20 +55,6 @@ pub fn window_group_cancel_close(window: WebviewWindow) {
     groups::cancel_close(window.app_handle(), window.label());
 }
 
-/// This window closes next (its prompts passed): a fullscreen group's host first hands its Space
-/// to the tab that takes over.
-#[tauri::command]
-#[specta::specta]
-pub async fn window_group_before_close(window: WebviewWindow) -> IdeResult<()> {
-    #[cfg(target_os = "macos")]
-    return groups::before_close(window.app_handle(), window.label()).await;
-    #[cfg(not(target_os = "macos"))]
-    {
-        let _ = window;
-        Ok(())
-    }
-}
-
 #[tauri::command]
 #[specta::specta]
 pub async fn window_group_reorder(window: WebviewWindow, labels: Vec<String>) -> IdeResult<()> {

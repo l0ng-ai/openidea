@@ -86,8 +86,8 @@ export interface TreeProps<T> {
   /** Custom row content (after the chevron). Defaults to icon + highlighted label + `getDetail`. */
   renderNode?: (node: T, state: TreeRowState) => ReactNode;
   getIcon?: (node: T, expanded: boolean) => IconName | (string & {}) | undefined;
-  /** Muted trailing text (e.g. a path next to the project root). */
-  getDetail?: (node: T) => string | undefined;
+  /** Muted trailing detail (e.g. a path next to the project root); may include styled content. */
+  getDetail?: (node: T) => ReactNode;
   /** Label colour, e.g. VCS status. */
   getColor?: (node: T) => string | undefined;
   /** Filesystem directory for actions on the focused selection; groups return null. */
@@ -750,7 +750,9 @@ export function Tree<T>(props: TreeProps<T>) {
                       indices={matches}
                       tone="accent"
                     />
-                    {detail && <span className={styles.detail}>{detail}</span>}
+                    {detail != null && detail !== false && detail !== "" && (
+                      <span className={styles.detail}>{detail}</span>
+                    )}
                   </>
                 )}
               </div>

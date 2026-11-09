@@ -1,3 +1,4 @@
+import { menuGroupItems } from "@/workbench/contributions";
 /** Problems tool window: "File" (current editor) and "Project Errors" tabs. */
 import { useCallback, useMemo, useRef, useState, type KeyboardEvent } from "react";
 import { create } from "zustand";
@@ -387,6 +388,7 @@ export function ProblemsView() {
             run: () => copy(n),
           },
           ...inspectionMenu(n.kind === "diag" ? diagInspection(map, n.path, n.d) : null),
+          ...menuGroupItems("problems", { paths: [t.path], line: t.d.range.start.line, column: t.d.range.start.col }),
         ]);
       }}
       activateExpandable={false}

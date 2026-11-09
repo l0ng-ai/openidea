@@ -1,7 +1,9 @@
 //! Protocol tests against in-memory mock language servers.
 
 use ide_core::event::ServerStatus;
-use ide_core::{DocId, FileEdit, IdeEvent, LanguageId, Pos, Range, ServerId, Severity, WorkspaceEdit};
+use ide_core::{
+    CancellationToken, DocId, FileEdit, IdeEvent, LanguageId, Pos, Range, ServerId, Severity, WorkspaceEdit,
+};
 use ide_jsonrpc::{Handler, NoopHandler, Peer};
 use ide_language::{LanguageConfig, LanguageRegistry, LanguageServerConfig};
 use ide_lsp::types::*;
@@ -33,6 +35,8 @@ struct MockState {
     responder: Mutex<Option<Responder>>,
     /// Holds the handling of notifications of this method until the gate opens.
     held: Mutex<Option<(String, Arc<Gate>)>>,
+    initialize_gate: Mutex<Option<Arc<Gate>>>,
+    launch_gate: Mutex<Option<Arc<Gate>>>,
     peer: Mutex<Option<Peer>>,
 }
 
@@ -71,7 +75,9 @@ fn utf16_to_byte(text: &str, line: u64, col: u64) -> usize {
     text.len()
 }
 
-struct MockHandler(Arc<MockState>);
+type MockConnection = Mutex<Option<Peer>>;
+
+struct MockHandler(Arc<MockState>, std::sync::Weak<MockConnection>);
 
 impl Handler for MockHandler {
     fn on_notification(&self, method: &str, params: Value) {
@@ -116,8 +122,14 @@ impl Handler for MockHandler {
                 s.docs.lock().remove(&uri);
             }
             "exit" => {
-                if let Some(p) = s.peer.lock().take() {
-                    p.kill();
+                if let Some(connection) = self.1.upgrade()
+                    && let Some(peer) = connection.lock().take()
+                {
+                    peer.kill();
+                }
+                let mut latest = s.peer.lock();
+                if latest.as_ref().is_some_and(Peer::is_closed) {
+                    *latest = None;
                 }
             }
             _ => {}
@@ -129,7 +141,13 @@ impl Handler for MockHandler {
         let s = &self.0;
         s.requests.lock().push((method.to_owned(), params.clone()));
         match method {
-            "initialize" => Ok(json!({ "capabilities": s.caps.lock().clone(), "serverInfo": { "name": "mock" } })),
+            "initialize" => {
+                let gate = s.initialize_gate.lock().take();
+                if let Some(gate) = gate {
+                    gate.hold();
+                }
+                Ok(json!({ "capabilities": s.caps.lock().clone(), "serverInfo": { "name": "mock" } }))
+            }
             "shutdown" => Ok(Value::Null),
             _ => {
                 if let Some(error) = s.errors.lock().get(method).cloned() {
@@ -148,6 +166,7 @@ impl Handler for MockHandler {
 #[derive(Default)]
 struct MockLauncher {
     servers: Mutex<HashMap<String, Arc<MockState>>>,
+    connections: Mutex<Vec<Arc<MockConnection>>>,
 }
 
 impl MockLauncher {
@@ -184,10 +203,18 @@ impl Launcher for MockLauncher {
         state.docs.lock().clear();
         let (client_io, server_io) = tokio::io::duplex(1 << 20);
         let (sr, sw) = tokio::io::split(server_io);
-        let server = Peer::connect(sr, sw, Arc::new(MockHandler(state.clone())));
+        let connection = Arc::new(Mutex::new(None));
+        let server = Peer::connect(sr, sw, Arc::new(MockHandler(state.clone(), Arc::downgrade(&connection))));
+        *connection.lock() = Some(server.clone());
+        self.connections.lock().push(connection);
         *state.peer.lock() = Some(server);
         let (cr, cw) = tokio::io::split(client_io);
-        Ok(Peer::connect(cr, cw, handler))
+        let client = Peer::connect(cr, cw, handler);
+        let gate = state.launch_gate.lock().take();
+        if let Some(gate) = gate {
+            gate.hold();
+        }
+        Ok(client)
     }
 }
 
@@ -241,6 +268,8 @@ fn server_cfg(name: &str) -> LanguageServerConfig {
         tsserver_project_extras: Default::default(),
         resync_on_configuration: false,
         pinned: None,
+        target: None,
+        target_key: None,
     }
 }
 
@@ -391,6 +420,45 @@ fn change(range: Range, text: &str) -> AppliedChange {
     AppliedChange { range, text: text.into() }
 }
 
+#[tokio::test(flavor = "multi_thread")]
+async fn dart_file_watching_requires_an_explicit_registration() {
+    for (language, extension, name, fallback) in
+        [("dart", "dart", "dart", false), ("dart", "dart", "alternative-dart", true), ("java", "java", "jdtls", true)]
+    {
+        let h = harness_for(language, extension, &[(name, incremental_caps())], &[]);
+        let (doc, _) = h.open(&format!("open.{extension}"), "x");
+        h.wait_status(name, ServerStatus::Ready).await;
+        let s = h.launcher.state(name);
+        let path = h.root.join(format!("closed.{extension}"));
+        let notify = || h.mgr.watched_files_changed(&[], std::slice::from_ref(&path), &[], &[]);
+        notify();
+        h.mgr.hover(doc, Pos::new(0, 0), Default::default()).await.unwrap();
+        assert_eq!(s.notified("workspace/didChangeWatchedFiles").len(), usize::from(fallback), "{name}");
+        s.peer()
+            .request::<_, Value>(
+                "client/registerCapability",
+                json!({ "registrations": [{ "id": "watch", "method": "workspace/didChangeWatchedFiles", "registerOptions": { "watchers": [{ "globPattern": "**/*" }] } }] }),
+                None,
+            )
+            .await
+            .unwrap();
+        notify();
+        eventually(|| s.notified("workspace/didChangeWatchedFiles").len() == usize::from(fallback) + 1).await;
+        s.peer()
+            .request::<_, Value>(
+                "client/unregisterCapability",
+                json!({ "unregisterations": [{ "id": "watch", "method": "workspace/didChangeWatchedFiles" }] }),
+                None,
+            )
+            .await
+            .unwrap();
+        notify();
+        h.mgr.hover(doc, Pos::new(0, 0), Default::default()).await.unwrap();
+        assert_eq!(s.notified("workspace/didChangeWatchedFiles").len(), usize::from(fallback) * 2 + 1, "{name}");
+        h.mgr.shutdown_all().await;
+    }
+}
+
 // ------------------------------------------------------------------ tests
 
 #[tokio::test(flavor = "multi_thread")]
@@ -416,13 +484,459 @@ async fn linked_projects_initialize_separate_language_server_roots() {
     h.mgr.shutdown_all().await;
 }
 
+fn java_siblings(h: &Harness) -> Vec<PathBuf> {
+    ["first", "second"]
+        .into_iter()
+        .map(|name| {
+            let root = h.root.join(name);
+            std::fs::create_dir(&root).unwrap();
+            std::fs::write(root.join("mock.toml"), "").unwrap();
+            let path = root.join("Main.java");
+            std::fs::write(&path, "class Main {}").unwrap();
+            path
+        })
+        .collect()
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn java_sharing_is_opt_in_and_keeps_module_requests_on_one_instance() {
+    for shared in [false, true] {
+        let h = harness_for("java", "java", &[("jdtls", incremental_caps())], &[]);
+        h.mgr.set_jdtls_shared_hook(Box::new(move || shared));
+        let paths = java_siblings(&h);
+        std::thread::scope(|scope| {
+            for path in &paths {
+                scope.spawn(|| h.mgr.did_open(DocId::next(), path, &h.lang, 1, "class Main {}"));
+            }
+        });
+        let state = h.launcher.state("jdtls");
+        let count = if shared { 1 } else { 2 };
+        eventually(|| state.requested("initialize").len() == count).await;
+        assert_eq!(state.launches.load(Ordering::SeqCst), count);
+        assert_eq!(h.mgr.servers().len(), count);
+        for path in &paths {
+            h.mgr.java_classpath(path.parent().unwrap(), false, &Default::default()).await.unwrap();
+        }
+        let requests = state.requested("workspace/executeCommand");
+        let classpaths: Vec<_> = requests.iter().filter(|r| r["command"] == "java.project.getClasspaths").collect();
+        assert_eq!(classpaths.len(), 2);
+        for path in &paths {
+            assert!(classpaths.iter().any(|r| r["arguments"][0] == uri_of(path.parent().unwrap())));
+        }
+        if shared {
+            let init = &state.requested("initialize")[0];
+            assert_eq!(init["rootUri"], uri_of(&h.root));
+            assert_eq!(init["initializationOptions"]["workspaceFolders"], json!([uri_of(&h.root)]));
+        }
+        h.mgr.shutdown_all().await;
+    }
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn java_sharing_toggle_retires_old_instances_and_reopens_every_document() {
+    let h = harness_for("java", "java", &[("jdtls", incremental_caps())], &[]);
+    let shared = Arc::new(std::sync::atomic::AtomicBool::new(false));
+    h.mgr.set_jdtls_shared_hook(Box::new({
+        let shared = shared.clone();
+        move || shared.load(Ordering::SeqCst)
+    }));
+    let paths = java_siblings(&h);
+    for path in &paths {
+        h.mgr.did_open(DocId::next(), path, &h.lang, 1, "class Main {}");
+    }
+    let state = h.launcher.state("jdtls");
+    eventually(|| state.requested("initialize").len() == 2).await;
+    eventually(|| {
+        paths
+            .iter()
+            .all(|path| state.notified("textDocument/didOpen").iter().any(|v| v["textDocument"]["uri"] == uri_of(path)))
+    })
+    .await;
+    let old: Vec<_> = h.mgr.servers().into_iter().map(|s| s.id).collect();
+    shared.store(true, Ordering::SeqCst);
+    h.mgr.reconfigure().await;
+    eventually(|| state.launches.load(Ordering::SeqCst) == 3 && state.docs.lock().len() == 2).await;
+    assert_eq!(h.mgr.servers().len(), 1);
+    for id in old {
+        assert!(
+            h.events
+                .lock()
+                .iter()
+                .any(|event| matches!(event, IdeEvent::LanguageServerRemoved {server} if *server == id))
+        );
+    }
+    shared.store(false, Ordering::SeqCst);
+    h.mgr.reconfigure().await;
+    eventually(|| state.launches.load(Ordering::SeqCst) == 5).await;
+    assert_eq!(h.mgr.servers().len(), 2);
+    eventually(|| {
+        paths.iter().all(|path| {
+            state.notified("textDocument/didOpen").iter().filter(|v| v["textDocument"]["uri"] == uri_of(path)).count()
+                == 3
+        })
+    })
+    .await;
+    h.mgr.shutdown_all().await;
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn java_sharing_cancels_a_retiring_initialize_before_starting_its_replacement() {
+    let h = harness_for("java", "java", &[("jdtls", incremental_caps())], &[]);
+    let shared = Arc::new(std::sync::atomic::AtomicBool::new(false));
+    h.mgr.set_jdtls_shared_hook(Box::new({
+        let shared = shared.clone();
+        move || shared.load(Ordering::SeqCst)
+    }));
+    let state = h.launcher.state("jdtls");
+    let gate = Arc::new(Gate::default());
+    *state.initialize_gate.lock() = Some(gate.clone());
+    let path = java_siblings(&h).remove(0);
+    h.mgr.did_open(DocId::next(), &path, &h.lang, 1, "class Main {}");
+    eventually(|| gate.entered()).await;
+    let old = state.peer();
+    shared.store(true, Ordering::SeqCst);
+    let switched = tokio::time::timeout(Duration::from_secs(2), h.mgr.reconfigure()).await;
+    let closed_before_response = old.is_closed();
+    gate.open();
+    switched.expect("initialize cancellation must not wait for its response");
+    eventually(|| state.requested("initialize").len() == 2).await;
+    assert!(closed_before_response, "the old transport must close before its initialize response is released");
+    assert_eq!(h.mgr.servers().len(), 1);
+    assert_eq!(h.mgr.servers()[0].root.as_ref(), h.root.as_path());
+    h.mgr.shutdown_all().await;
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn shared_java_waits_for_an_abandoned_launcher_before_replacing_the_workspace() {
+    let h = harness_for("java", "java", &[("jdtls", incremental_caps())], &[]);
+    h.mgr.set_jdtls_shared_hook(Box::new(|| true));
+    let state = h.launcher.state("jdtls");
+    let gate = Arc::new(Gate::default());
+    *state.launch_gate.lock() = Some(gate.clone());
+    h.open("Main.java", "class Main {}");
+    eventually(|| gate.entered()).await;
+    let old = state.peer();
+    let id = h.mgr.servers()[0].id;
+    let external = tempfile::tempdir().unwrap();
+    h.mgr.set_content_roots(vec![dunce::canonicalize(external.path()).unwrap()]);
+    eventually(|| h.mgr.servers().iter().all(|s| s.id != id)).await;
+    h.open("Another.java", "class Another {}");
+    let mut transition = tokio::spawn({
+        let manager = h.mgr.clone();
+        async move { manager.reconfigure().await }
+    });
+    let pending = tokio::time::timeout(Duration::from_millis(100), &mut transition).await.is_err();
+    let launches = state.launches.load(Ordering::SeqCst);
+    let old_alive = !old.is_closed();
+    gate.open();
+    assert!(pending, "retirement must wait for the launcher to return");
+    assert_eq!(launches, 1, "the retiring launcher still owns its peer");
+    assert!(old_alive);
+    transition.await.unwrap();
+    h.mgr.reconfigure().await;
+    eventually(|| state.launches.load(Ordering::SeqCst) == 2 && state.docs.lock().len() == 2).await;
+    assert!(old.is_closed());
+    assert_eq!(h.mgr.servers().len(), 1);
+    h.mgr.shutdown_all().await;
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn java_classpath_waits_for_a_config_restart_that_is_reaping_startup() {
+    for (shared, failed) in [(false, false), (true, false), (false, true)] {
+        let h = harness_for("java", "java", &[("jdtls", incremental_caps())], &[]);
+        let changed = Arc::new(std::sync::atomic::AtomicBool::new(false));
+        h.mgr.set_jdtls_shared_hook(Box::new({
+            let changed = changed.clone();
+            move || shared && changed.load(Ordering::SeqCst)
+        }));
+        h.mgr.set_config_hook(Box::new({
+            let changed = changed.clone();
+            move |cfg, _| {
+                let changed = changed.load(Ordering::SeqCst);
+                cfg.env.insert("MOCK_CONFIG_REVISION".into(), changed.to_string());
+                if failed && changed {
+                    cfg.launch_error = Some("restart configuration error".into());
+                }
+            }
+        }));
+        let state = h.launcher.state("jdtls");
+        let gate = Arc::new(Gate::default());
+        *state.launch_gate.lock() = Some(gate.clone());
+        let path = java_siblings(&h).remove(0);
+        h.mgr.did_open(DocId::next(), &path, &h.lang, 1, "class Main {}");
+        eventually(|| gate.entered()).await;
+        let old = h.mgr.servers()[0].id;
+        changed.store(true, Ordering::SeqCst);
+        let restarting = tokio::spawn({
+            let manager = h.mgr.clone();
+            async move { manager.reconfigure().await }
+        });
+        h.wait_status("jdtls", ServerStatus::Stopped).await;
+        let mut query = tokio::spawn({
+            let manager = h.mgr.clone();
+            async move { manager.java_classpath(path.parent().unwrap(), false, &Default::default()).await }
+        });
+        let early = tokio::time::timeout(Duration::from_millis(100), &mut query).await;
+        gate.open();
+        restarting.await.unwrap();
+        let result = match early {
+            Ok(result) => result.unwrap(),
+            Err(_) => query.await.unwrap(),
+        };
+        if failed {
+            assert!(result.unwrap_err().message.contains("restart configuration error"));
+        } else {
+            assert!(result.is_ok(), "a configuration restart is transient: {result:?}");
+            assert_eq!(state.launches.load(Ordering::SeqCst), 2);
+            assert_eq!(h.mgr.servers()[0].id != old, shared);
+        }
+        h.mgr.shutdown_all().await;
+    }
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn java_classpath_restart_barrier_wait_remains_cancellable() {
+    let h = harness_for("java", "java", &[("jdtls", incremental_caps())], &[]);
+    let changed = Arc::new(std::sync::atomic::AtomicBool::new(false));
+    h.mgr.set_config_hook(Box::new({
+        let changed = changed.clone();
+        move |cfg, _| {
+            cfg.env.insert("MOCK_CONFIG_REVISION".into(), changed.load(Ordering::SeqCst).to_string());
+        }
+    }));
+    let state = h.launcher.state("jdtls");
+    let gate = Arc::new(Gate::default());
+    *state.launch_gate.lock() = Some(gate.clone());
+    h.open("Main.java", "class Main {}");
+    eventually(|| gate.entered()).await;
+    changed.store(true, Ordering::SeqCst);
+    let restarting = tokio::spawn({
+        let manager = h.mgr.clone();
+        async move { manager.reconfigure().await }
+    });
+    h.wait_status("jdtls", ServerStatus::Stopped).await;
+    let cancel = CancellationToken::new();
+    let mut query = tokio::spawn({
+        let manager = h.mgr.clone();
+        let root = h.root.clone();
+        let cancel = cancel.clone();
+        async move { manager.java_classpath(&root, false, &cancel).await }
+    });
+    let early = tokio::time::timeout(Duration::from_millis(100), &mut query).await;
+    let waiting = early.is_err();
+    cancel.cancel();
+    let result = match early {
+        Ok(result) => Ok(result),
+        Err(_) => tokio::time::timeout(Duration::from_secs(1), query).await,
+    };
+    gate.open();
+    restarting.await.unwrap();
+    assert!(waiting, "the query must wait behind the restart barrier");
+    assert_eq!(result.unwrap().unwrap().unwrap_err().kind, ide_core::error::ErrorKind::Cancelled);
+    h.mgr.shutdown_all().await;
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn java_classpath_does_not_retry_permanently_unavailable_servers() {
+    for missing in [false, true] {
+        let h = harness_for("java", "java", &[("jdtls", incremental_caps())], &[]);
+        if missing {
+            h.launcher.state("jdtls").missing.store(true, Ordering::SeqCst);
+        } else {
+            h.mgr.set_config_hook(Box::new(|cfg, _| {
+                cfg.launch_error = Some("permanent mock configuration error".into())
+            }));
+        }
+        let result =
+            tokio::time::timeout(Duration::from_secs(1), h.mgr.java_classpath(&h.root, false, &Default::default()))
+                .await
+                .expect("permanent failures must not incur the Java readiness timeout");
+        let error = result.unwrap_err();
+        assert!(error.message.contains(if missing { "not installed" } else { "permanent mock configuration error" }));
+        h.mgr.shutdown_all().await;
+    }
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn shared_java_external_roots_reach_initialization_queries_and_watches() {
+    let h = harness_for("java", "java", &[("jdtls", incremental_caps())], &[]);
+    h.mgr.set_jdtls_shared_hook(Box::new(|| true));
+    let external = tempfile::tempdir().unwrap();
+    let external = dunce::canonicalize(external.path()).unwrap();
+    h.mgr.set_content_roots(vec![external.clone(), external.clone(), h.root.clone()]);
+    let file = external.join("External.java");
+    std::fs::write(&file, "class External {}").unwrap();
+    h.mgr.did_open(DocId::next(), &file, &h.lang, 1, "class External {}");
+    let state = h.launcher.state("jdtls");
+    h.wait_status("jdtls", ServerStatus::Ready).await;
+    let init = &state.requested("initialize")[0];
+    assert_eq!(init["initializationOptions"]["workspaceFolders"], json!([uri_of(&h.root), uri_of(&external)]));
+    assert_eq!(init["initializationOptions"]["triggerFiles"], json!([uri_of(&file)]));
+    let folders: Value = state.peer().request("workspace/workspaceFolders", Value::Null, None).await.unwrap();
+    assert_eq!(folders, init["workspaceFolders"]);
+    state.peer().request::<_, Value>("client/registerCapability", json!({"registrations":[{
+        "id":"external-java", "method":"workspace/didChangeWatchedFiles", "registerOptions":{"watchers":[{"globPattern":"**/*.java"}]}
+    }]}), None).await.unwrap();
+    let other = external.join("Other.java");
+    h.mgr.watched_files_changed(std::slice::from_ref(&other), &[], &[], &[]);
+    eventually(|| {
+        state.notified("workspace/didChangeWatchedFiles").iter().any(|v| v["changes"][0]["uri"] == uri_of(&other))
+    })
+    .await;
+    h.mgr.set_content_roots(vec![]);
+    h.mgr.reconfigure().await;
+    eventually(|| state.requested("initialize").len() == 2).await;
+    assert_eq!(state.requested("initialize")[1]["initializationOptions"]["workspaceFolders"], json!([uri_of(&h.root)]));
+    assert_eq!(h.mgr.servers().len(), 1);
+    h.mgr.shutdown_all().await;
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn trusting_an_existing_java_instance_restarts_it_without_locking_the_registry() {
+    for shared in [false, true] {
+        let h = harness_for("java", "java", &[("jdtls", incremental_caps())], &[]);
+        h.mgr.set_jdtls_shared_hook(Box::new(move || shared));
+        h.open("Main.java", "class Main {}");
+        h.wait_status("jdtls", ServerStatus::Ready).await;
+        let state = h.launcher.state("jdtls");
+        h.mgr.set_execution_allowed(false);
+        h.mgr.reconfigure().await;
+        h.mgr.set_execution_allowed(true);
+        eventually(|| state.launches.load(Ordering::SeqCst) == 2 && state.docs.lock().len() == 1).await;
+        assert_eq!(h.mgr.servers().len(), 1);
+        h.mgr.shutdown_all().await;
+    }
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn java_sharing_preserves_other_servers_and_marker_scoped_fallbacks() {
+    for fallback in [false, true] {
+        let h = harness_for(
+            "java",
+            "java",
+            &[("jdtls", incremental_caps()), ("other", incremental_caps())],
+            if fallback { &["other"] } else { &[] },
+        );
+        h.mgr.set_jdtls_shared_hook(Box::new(|| true));
+        h.launcher.state("jdtls").missing.store(fallback, Ordering::SeqCst);
+        for path in java_siblings(&h) {
+            h.mgr.did_open(DocId::next(), &path, &h.lang, 1, "class Main {}");
+        }
+        eventually(|| h.launcher.state("other").requested("initialize").len() == 2).await;
+        let servers = h.mgr.servers();
+        assert_eq!(servers.iter().filter(|s| s.name == "jdtls").count(), 1);
+        assert_eq!(servers.iter().filter(|s| s.name == "other").count(), 2);
+        assert_eq!(h.launcher.state("jdtls").launches.load(Ordering::SeqCst), usize::from(!fallback));
+        h.mgr.shutdown_all().await;
+    }
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn java_sharing_keeps_target_instances_separate_and_preserves_them_on_toggle() {
+    let h = harness_for("java", "java", &[("jdtls", incremental_caps())], &[]);
+    let shared = Arc::new(std::sync::atomic::AtomicBool::new(true));
+    h.mgr.set_jdtls_shared_hook(Box::new({
+        let shared = shared.clone();
+        move || shared.load(Ordering::SeqCst)
+    }));
+    h.mgr.set_servers_hook(Box::new(|_, configs| {
+        let mut target = configs[0].clone();
+        target.target_key = Some("container".into());
+        target
+            .initialization_options
+            .as_mut()
+            .unwrap()
+            .as_table_mut()
+            .unwrap()
+            .insert("selectedTarget".into(), toml::Value::Boolean(true));
+        vec![configs[0].clone(), target]
+    }));
+    h.open("Main.java", "class Main {}");
+    for path in java_siblings(&h) {
+        h.mgr.did_open(DocId::next(), &path, &h.lang, 1, "class Main {}");
+    }
+    let state = h.launcher.state("jdtls");
+    eventually(|| h.mgr.servers().iter().filter(|s| s.status == ServerStatus::Ready).count() == 4).await;
+    let initial = state.requested("initialize");
+    assert_eq!(initial.len(), 4);
+    let targets: Vec<_> = initial.iter().filter(|v| v["initializationOptions"]["selectedTarget"] == true).collect();
+    assert_eq!(targets.len(), 3, "target roots retain their marker-based identity");
+    assert!(targets.iter().all(|v| v["initializationOptions"].get("workspaceFolders").is_none()));
+    let local = initial.iter().find(|v| v["initializationOptions"]["selectedTarget"] != true).unwrap();
+    assert_eq!(local["rootUri"], uri_of(&h.root));
+    assert_eq!(local["initializationOptions"]["workspaceFolders"], json!([uri_of(&h.root)]));
+    let old: HashSet<_> = h.mgr.servers().into_iter().map(|s| s.id).collect();
+    shared.store(false, Ordering::SeqCst);
+    h.mgr.reconfigure().await;
+    eventually(|| h.mgr.servers().iter().filter(|s| s.status == ServerStatus::Ready).count() == 6).await;
+    assert_eq!(
+        h.mgr.servers().iter().filter(|s| old.contains(&s.id)).count(),
+        3,
+        "local sharing does not retire targets"
+    );
+    h.mgr.shutdown_all().await;
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn virtual_java_documents_opened_during_a_toggle_attach_to_the_successor() {
+    let h = harness_for("java", "java", &[("jdtls", incremental_caps())], &[]);
+    let shared = Arc::new(std::sync::atomic::AtomicBool::new(false));
+    h.mgr.set_jdtls_shared_hook(Box::new({
+        let shared = shared.clone();
+        move || shared.load(Ordering::SeqCst)
+    }));
+    let (doc, _) = h.open("Main.java", "class Main {}");
+    h.wait_status("jdtls", ServerStatus::Ready).await;
+    let state = h.launcher.state("jdtls");
+    let uris: Vec<_> = (0..16).map(|n| format!("jdt://contents/project/Virtual{n}.class")).collect();
+    state.respond(
+        "textDocument/definition",
+        json!(
+            uris.iter()
+                .map(|uri| json!({"uri":uri,"range":{"start":{"line":0,"character":0},"end":{"line":0,"character":1}}}))
+                .collect::<Vec<_>>()
+        ),
+    );
+    h.mgr.goto(doc, Pos::default(), GotoKind::Definition).await.unwrap();
+    shared.store(true, Ordering::SeqCst);
+    let toggle = tokio::spawn({
+        let manager = h.mgr.clone();
+        async move { manager.reconfigure().await }
+    });
+    let mut opened = Vec::new();
+    for uri in uris {
+        let manager = h.mgr.clone();
+        let language = h.lang.clone();
+        let doc = DocId::next();
+        opened.push((
+            doc,
+            std::thread::spawn(move || manager.did_open_virtual(doc, &uri, &language, 0, "class Virtual {}")),
+        ));
+    }
+    let docs: Vec<_> = opened
+        .into_iter()
+        .map(|(doc, thread)| {
+            thread.join().unwrap();
+            doc
+        })
+        .collect();
+    toggle.await.unwrap();
+    eventually(|| state.docs.lock().len() == docs.len() + 1).await;
+    assert_eq!(h.mgr.servers().len(), 1);
+    for doc in docs {
+        h.mgr.hover(doc, Pos::default(), Default::default()).await.unwrap();
+    }
+    h.mgr.shutdown_all().await;
+}
+
 #[tokio::test(flavor = "multi_thread")]
 async fn files_changed_on_disk_reach_the_servers_of_their_language() {
     let h = harness(&[("mock", incremental_caps())]);
     h.open("a.mk", "x");
     h.wait_status("mock", ServerStatus::Ready).await;
     let s = h.launcher.state("mock");
-    let (created, modified, removed) = (h.root.join("new.mk"), h.root.join("a.mk"), h.root.join("old.mk"));
+    // `a.mk` is open on the server: its changes reach it through document sync, not here.
+    let (created, modified, removed) = (h.root.join("new.mk"), h.root.join("changed.mk"), h.root.join("old.mk"));
     // Other languages and files outside the server's root are left out.
     let other = h.root.join("notes.txt");
     let outside = tempfile::tempdir().unwrap().path().join("far.mk");
@@ -445,6 +959,197 @@ async fn files_changed_on_disk_reach_the_servers_of_their_language() {
     h.mgr.watched_files_changed(&[h.root.join("b.txt")], &[], &[], &[]);
     tokio::time::sleep(std::time::Duration::from_millis(100)).await;
     assert_eq!(s.notified("workspace/didChangeWatchedFiles").len(), 1);
+    h.mgr.shutdown_all().await;
+}
+
+/// An external change to a document open on the server's current instance reaches it only
+/// through the reload's `didChange`: a watched-file change for it too would make a server
+/// that re-reads the file on one (csharp-ls) apply the reload and then the diff computed
+/// against the pre-reload copy, so it would keep analysing stale content (#1780). A closed
+/// file's change is watched as before, and the file is watched again once its document closes.
+#[tokio::test(flavor = "multi_thread")]
+async fn documents_open_on_a_server_are_left_out_of_watched_file_changes() {
+    let h = harness(&[("mock", incremental_caps())]);
+    let (doc, path) = h.open("a.mk", "old");
+    h.wait_status("mock", ServerStatus::Ready).await;
+    let s = h.launcher.state("mock");
+    eventually(|| !s.notified("textDocument/didOpen").is_empty()).await;
+
+    // The open document and a closed file changed outside the editor.
+    let closed = h.root.join("b.mk");
+    h.mgr.watched_files_changed(&[], &[path.clone(), closed.clone()], &[], &[]);
+    eventually(|| !s.notified("workspace/didChangeWatchedFiles").is_empty()).await;
+    assert_eq!(
+        s.notified("workspace/didChangeWatchedFiles")[0]["changes"],
+        json!([{ "uri": uri_of(&closed), "type": 2 }])
+    );
+
+    // The editor reloads the open buffer from disk; the server hears the new text.
+    h.mgr.did_change(doc, 2, &[change(rng(0, 0, 0, 3), "new")], &|| "new".to_owned());
+    eventually(|| s.docs.lock().get(uri_of(&path).as_str()).map(String::as_str) == Some("new")).await;
+
+    // Once the document closes, the file is watched again.
+    h.mgr.did_close(doc);
+    h.mgr.watched_files_changed(&[], std::slice::from_ref(&path), &[], &[]);
+    eventually(|| s.notified("workspace/didChangeWatchedFiles").len() == 2).await;
+    assert_eq!(
+        s.notified("workspace/didChangeWatchedFiles")[1]["changes"],
+        json!([{ "uri": uri_of(&path), "type": 2 }])
+    );
+    h.mgr.shutdown_all().await;
+}
+
+async fn watch_all(s: &MockState) {
+    s.peer()
+        .request::<_, Value>(
+            "client/registerCapability",
+            json!({ "registrations": [{ "id": "all", "method": "workspace/didChangeWatchedFiles",
+                "registerOptions": { "watchers": [{ "globPattern": "**/*" }] } }] }),
+            None,
+        )
+        .await
+        .unwrap();
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn open_document_watches_keep_deletions_and_renames() {
+    for registered in [false, true] {
+        let h = harness(&[("mock", incremental_caps())]);
+        let (_, path) = h.open("a.mk", "old");
+        h.wait_status("mock", ServerStatus::Ready).await;
+        let s = h.launcher.state("mock");
+        if registered {
+            watch_all(&s).await;
+        }
+        let closed = h.root.join("closed.mk");
+        // An atomic replacement is reported as created and still uses document sync.
+        h.mgr.watched_files_changed(std::slice::from_ref(&path), &[path.clone(), closed.clone()], &[], &[]);
+        eventually(|| !s.notified("workspace/didChangeWatchedFiles").is_empty()).await;
+        assert_eq!(
+            s.notified("workspace/didChangeWatchedFiles")[0]["changes"],
+            json!([{ "uri": uri_of(&closed), "type": 2 }])
+        );
+
+        let renamed = h.root.join("renamed.mk");
+        std::fs::rename(&path, &renamed).unwrap();
+        h.mgr.watched_files_changed(std::slice::from_ref(&renamed), &[], std::slice::from_ref(&path), &[]);
+        eventually(|| s.notified("workspace/didChangeWatchedFiles").len() == 2).await;
+        assert_eq!(
+            s.notified("workspace/didChangeWatchedFiles")[1]["changes"],
+            json!([
+                { "uri": uri_of(&renamed), "type": 1 },
+                { "uri": uri_of(&path), "type": 3 }
+            ])
+        );
+        h.mgr.shutdown_all().await;
+    }
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn open_document_watches_resolve_path_aliases() {
+    for registered in [false, true] {
+        let h = harness(&[("mock", incremental_caps())]);
+        let (_, path) = h.open("Mixed.mk", "old");
+        h.wait_status("mock", ServerStatus::Ready).await;
+        let s = h.launcher.state("mock");
+        if registered {
+            watch_all(&s).await;
+        }
+        let mut aliases = vec![path.clone()];
+        let case_alias = h.root.join("mixed.mk");
+        if dunce::canonicalize(&case_alias).ok() == Some(path.clone()) {
+            aliases.push(case_alias);
+        }
+        #[cfg(unix)]
+        {
+            let link = h.root.join("alias.mk");
+            std::os::unix::fs::symlink(&path, &link).unwrap();
+            aliases.push(link);
+        }
+        let closed = h.root.join("closed.mk");
+        aliases.push(closed.clone());
+        h.mgr.watched_files_changed(&[], &aliases, &[], &[]);
+        eventually(|| !s.notified("workspace/didChangeWatchedFiles").is_empty()).await;
+        assert_eq!(
+            s.notified("workspace/didChangeWatchedFiles")[0]["changes"],
+            json!([{ "uri": uri_of(&closed), "type": 2 }])
+        );
+        h.mgr.shutdown_all().await;
+    }
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn open_document_watches_are_scoped_to_the_attached_server() {
+    let h = harness(&[("mock", incremental_caps()), ("other", incremental_caps())]);
+    h.mgr.set_servers_hook(Box::new(|_, configs| configs.iter().filter(|c| c.name == "mock").cloned().collect()));
+    let (_, path) = h.open("a.mk", "old");
+    h.wait_status("mock", ServerStatus::Ready).await;
+    h.mgr.set_servers_hook(Box::new(|_, configs| configs.iter().filter(|c| c.name == "other").cloned().collect()));
+    h.open("b.mk", "other");
+    h.wait_status("other", ServerStatus::Ready).await;
+    let first = h.launcher.state("mock");
+    let second = h.launcher.state("other");
+    watch_all(&first).await;
+    watch_all(&second).await;
+    let closed = h.root.join("closed.mk");
+    h.mgr.watched_files_changed(&[], &[path.clone(), closed.clone()], &[], &[]);
+    eventually(|| {
+        !first.notified("workspace/didChangeWatchedFiles").is_empty()
+            && !second.notified("workspace/didChangeWatchedFiles").is_empty()
+    })
+    .await;
+    assert_eq!(
+        first.notified("workspace/didChangeWatchedFiles")[0]["changes"],
+        json!([{ "uri": uri_of(&closed), "type": 2 }])
+    );
+    assert_eq!(
+        second.notified("workspace/didChangeWatchedFiles")[0]["changes"],
+        json!([
+            { "uri": uri_of(&path), "type": 2 }, { "uri": uri_of(&closed), "type": 2 }
+        ])
+    );
+    h.mgr.shutdown_all().await;
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn open_document_watches_resume_on_a_restart_without_open_documents() {
+    let h = harness(&[("mock", incremental_caps())]);
+    let (doc, path) = h.open("a.mk", "old");
+    h.wait_status("mock", ServerStatus::Ready).await;
+    let s = h.launcher.state("mock");
+    let id = h.mgr.servers()[0].id;
+    h.mgr.restart(id).await.unwrap();
+    let closed = h.root.join("closed.mk");
+    h.mgr.watched_files_changed(&[], &[path.clone(), closed.clone()], &[], &[]);
+    eventually(|| !s.notified("workspace/didChangeWatchedFiles").is_empty()).await;
+    assert_eq!(
+        s.notified("workspace/didChangeWatchedFiles")[0]["changes"],
+        json!([{ "uri": uri_of(&closed), "type": 2 }])
+    );
+    h.mgr.did_close(doc);
+    h.mgr.restart(id).await.unwrap();
+    h.mgr.watched_files_changed(&[], std::slice::from_ref(&path), &[], &[]);
+    eventually(|| s.notified("workspace/didChangeWatchedFiles").len() == 2).await;
+    assert_eq!(
+        s.notified("workspace/didChangeWatchedFiles")[1]["changes"],
+        json!([{ "uri": uri_of(&path), "type": 2 }])
+    );
+    h.mgr.shutdown_all().await;
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn servers_without_document_sync_keep_open_document_watches() {
+    let h = harness(&[("mock", json!({ "textDocumentSync": 0 }))]);
+    let (_, path) = h.open("a.mk", "old");
+    h.wait_status("mock", ServerStatus::Ready).await;
+    let s = h.launcher.state("mock");
+    let closed = h.root.join("closed.mk");
+    h.mgr.watched_files_changed(&[], &[path.clone(), closed.clone()], &[], &[]);
+    eventually(|| !s.notified("workspace/didChangeWatchedFiles").is_empty()).await;
+    assert_eq!(
+        s.notified("workspace/didChangeWatchedFiles")[0]["changes"],
+        json!([{ "uri": uri_of(&path), "type": 2 }, { "uri": uri_of(&closed), "type": 2 }])
+    );
     h.mgr.shutdown_all().await;
 }
 
@@ -1114,6 +1819,111 @@ async fn progress_titled_with_an_executable_path_shows_the_program_name() {
     assert_eq!(titles, ["cargo check"; 3]);
 }
 
+/// PHPantom reuses a fixed token for concurrent requests: begin, begin, end, end.
+/// Every task it started ends, and the server reads ready afterwards.
+#[tokio::test(flavor = "multi_thread")]
+async fn a_progress_token_begun_again_ends_the_task_it_replaces() {
+    let h = harness(&[("mock", incremental_caps())]);
+    h.open("a.mk", "x");
+    h.wait_status("mock", ServerStatus::Ready).await;
+    let peer = h.launcher.state("mock").peer();
+    let progress =
+        |token: &str, kind: &str, title: &str| json!({ "token": token, "value": { "kind": kind, "title": title } });
+    for kind in ["begin", "begin", "end", "end"] {
+        peer.notify("$/progress", progress("find_references", kind, "Finding references")).unwrap();
+    }
+    // Notifications are handled in order: once this task ended, so did everything above.
+    peer.notify("$/progress", progress("later", "begin", "Indexing")).unwrap();
+    peer.notify("$/progress", progress("later", "end", "Indexing")).unwrap();
+    eventually(|| {
+        h.events.lock().iter().any(|e| matches!(e, IdeEvent::Task { title, done: true, .. } if title == "Indexing"))
+    })
+    .await;
+    let (mut begun, mut ended) = (Vec::new(), Vec::new());
+    for e in h.events.lock().iter() {
+        if let IdeEvent::Task { id, title, done, .. } = e
+            && title == "Finding references"
+        {
+            if *done { ended.push(*id) } else { begun.push(*id) }
+        }
+    }
+    assert_eq!(begun.len(), 2);
+    for id in &begun {
+        assert_eq!(ended.iter().filter(|e| *e == id).count(), 1, "every task ends once: {begun:?} {ended:?}");
+    }
+    h.wait_status("mock", ServerStatus::Ready).await;
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn replacing_progress_keeps_cancellation_reports_and_indexing_on_the_new_task() {
+    let h = harness(&[("mock", incremental_caps())]);
+    let (doc, _) = h.open("a.mk", "target");
+    h.wait_status("mock", ServerStatus::Ready).await;
+    let s = h.launcher.state("mock");
+    let peer = s.peer();
+    let begin = |title| json!({ "token": 7, "value": { "kind": "begin", "title": title, "cancellable": true } });
+    let task_of = |title: &str| {
+        h.events.lock().iter().find_map(|e| match e {
+            IdeEvent::Task { id, title: t, done: false, .. } if t == title => Some(*id),
+            _ => None,
+        })
+    };
+    peer.notify("$/progress", begin("Old work")).unwrap();
+    h.wait_status("mock", ServerStatus::Busy).await;
+    let old = task_of("Old work").unwrap();
+    let mgr = h.mgr.clone();
+    let search = tokio::spawn(async move { mgr.references(doc, Pos::new(0, 1), true, true, Default::default()).await });
+    eventually(|| !s.requested("textDocument/references").is_empty()).await;
+
+    peer.notify("$/progress", begin("New work")).unwrap();
+    peer.notify(
+        "$/progress",
+        json!({ "token": 7, "value": { "kind": "report", "message": "Halfway", "percentage": 50 } }),
+    )
+    .unwrap();
+    eventually(|| {
+        h.events.lock().iter().any(|e| matches!(e, IdeEvent::Task { title, message: Some(m), fraction: Some(f), done: false, .. } if title == "New work" && m == "Halfway" && *f == 0.5))
+    })
+    .await;
+    let new = task_of("New work").unwrap();
+    assert_ne!(old, new);
+    assert!(!ide_core::task::cancel(old), "a replaced task cannot cancel its successor");
+    assert!(ide_core::task::cancel(new));
+    eventually(|| !s.notified("window/workDoneProgress/cancel").is_empty()).await;
+    assert_eq!(s.notified("window/workDoneProgress/cancel"), [json!({ "token": 7 })]);
+    assert_eq!(h.statuses("mock").last(), Some(&ServerStatus::Busy));
+    assert!(!search.is_finished(), "replacement must not release a search waiting for idle");
+    let refs = h.mgr.references(doc, Pos::new(0, 1), true, false, Default::default()).await.unwrap();
+    assert_eq!(refs.incomplete, Some(ReferencesIncomplete::Indexing));
+
+    for _ in 0..2 {
+        peer.notify("$/progress", json!({ "token": 7, "value": { "kind": "end" } })).unwrap();
+    }
+    // A later task is a barrier for both end notifications.
+    peer.notify("$/progress", json!({ "token": "barrier", "value": { "kind": "begin", "title": "Barrier" } })).unwrap();
+    peer.notify("$/progress", json!({ "token": "barrier", "value": { "kind": "end" } })).unwrap();
+    eventually(|| {
+        h.events.lock().iter().any(|e| matches!(e, IdeEvent::Task { title, done: true, .. } if title == "Barrier"))
+    })
+    .await;
+    h.wait_status("mock", ServerStatus::Ready).await;
+    let refs = tokio::time::timeout(Duration::from_secs(5), search).await.unwrap().unwrap().unwrap();
+    assert_eq!(refs.incomplete, None);
+    assert!(!ide_core::task::cancel(new));
+    let events = h.events.lock();
+    for id in [old, new] {
+        assert_eq!(
+            events.iter().filter(|e| matches!(e, IdeEvent::Task { id: t, done: true, .. } if *t == id)).count(),
+            1
+        );
+    }
+    assert!(
+        !events
+            .iter()
+            .any(|e| matches!(e, IdeEvent::Task { id, message: Some(m), .. } if *id == old && m == "Halfway"))
+    );
+}
+
 #[tokio::test(flavor = "multi_thread")]
 async fn cancelling_a_cancellable_progress_task_asks_the_server_to_stop() {
     let h = harness(&[("mock", incremental_caps())]);
@@ -1560,7 +2370,7 @@ async fn java_source_paths_reach_initialization_live_configuration_and_builds() 
     assert_eq!(state.launches.load(Ordering::SeqCst), 1);
     state.respond("java/buildWorkspace", json!(1));
     assert_eq!(
-        h.mgr.java_build(&h.root, &Default::default()).await.unwrap(),
+        h.mgr.java_build(&h.root, false, &Default::default()).await.unwrap(),
         ide_lsp::jdtls::JavaBuildStatus::Succeeded
     );
     assert_eq!(state.requested("java/buildWorkspace"), vec![json!(false)]);
@@ -1577,6 +2387,46 @@ async fn java_source_paths_reach_initialization_live_configuration_and_builds() 
 }
 
 #[tokio::test(flavor = "multi_thread")]
+async fn java_build_waits_for_a_reconfigured_server_to_restart() {
+    let h = harness_for("java", "java", &[("jdtls", incremental_caps())], &[]);
+    h.open("App.java", "class App {}\n");
+    h.wait_status("jdtls", ServerStatus::Ready).await;
+    let state = h.launcher.state("jdtls");
+    state.respond("java/buildWorkspace", json!(1));
+    let gate = Arc::new(Gate::default());
+    *state.held.lock() = Some(("exit".into(), gate.clone()));
+    h.mgr.set_config_hook(Box::new(|cfg, _| cfg.args.push("--new-configuration".into())));
+    let reconfigure = tokio::spawn({
+        let mgr = h.mgr.clone();
+        async move { mgr.reconfigure().await }
+    });
+    eventually(|| gate.entered()).await;
+    let mut build = tokio::spawn({
+        let (mgr, root) = (h.mgr.clone(), h.root.clone());
+        async move { mgr.java_build(&root, false, &Default::default()).await }
+    });
+    let early = tokio::time::timeout(Duration::from_millis(100), &mut build).await;
+    gate.open();
+    reconfigure.await.unwrap();
+    assert!(early.is_err(), "a planned restart must not fail a pending build: {early:?}");
+    assert_eq!(build.await.unwrap().unwrap(), ide_lsp::jdtls::JavaBuildStatus::Succeeded);
+    assert_eq!(state.launches.load(Ordering::SeqCst), 2);
+    h.mgr.shutdown_all().await;
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn java_build_asks_for_a_full_build_when_rebuilding() {
+    let h = harness_for("java", "java", &[("jdtls", incremental_caps())], &[]);
+    let state = h.launcher.state("jdtls");
+    state.respond("java/buildWorkspace", json!(1));
+    assert_eq!(
+        h.mgr.java_build(&h.root, true, &Default::default()).await.unwrap(),
+        ide_lsp::jdtls::JavaBuildStatus::Succeeded
+    );
+    assert_eq!(state.requested("java/buildWorkspace"), vec![json!(true)]);
+}
+
+#[tokio::test(flavor = "multi_thread")]
 async fn unmanaged_java_run_imports_sources_without_an_open_editor() {
     let h = harness_for("java", "java", &[("jdtls", incremental_caps())], &[]);
     std::fs::create_dir_all(h.root.join("src/demo")).unwrap();
@@ -1588,7 +2438,7 @@ async fn unmanaged_java_run_imports_sources_without_an_open_editor() {
     let state = h.launcher.state("jdtls");
     state.respond("java/buildWorkspace", json!(1));
     assert_eq!(
-        h.mgr.java_build(&h.root, &Default::default()).await.unwrap(),
+        h.mgr.java_build(&h.root, false, &Default::default()).await.unwrap(),
         ide_lsp::jdtls::JavaBuildStatus::Succeeded
     );
     assert_eq!(state.requested("initialize")[0]["initializationOptions"]["triggerFiles"], json!([uri_of(&file)]));
@@ -1606,7 +2456,7 @@ async fn java_launch_serializes_the_classpath_with_the_build_lock() {
     // A launch with a build re-takes the lock after java_build has released it.
     let info = tokio::time::timeout(
         Duration::from_secs(30),
-        h.mgr.java_launch(&h.root, false, true, false, &Default::default()),
+        h.mgr.java_launch(&h.root, false, true, false, false, &Default::default()),
     )
     .await
     .expect("java_launch deadlocked on the build lock")
@@ -1616,10 +2466,13 @@ async fn java_launch_serializes_the_classpath_with_the_build_lock() {
     // The delegated external build holds the lock while java_launch resolves the
     // classpath; java_launch must not re-take it, or the launch would deadlock.
     let guard = h.mgr.java_external_build(&h.root, &Default::default()).await.unwrap();
-    tokio::time::timeout(Duration::from_secs(30), h.mgr.java_launch(&h.root, false, false, true, &Default::default()))
-        .await
-        .expect("java_launch deadlocked on the delegated external build's lock")
-        .unwrap();
+    tokio::time::timeout(
+        Duration::from_secs(30),
+        h.mgr.java_launch(&h.root, false, false, false, true, &Default::default()),
+    )
+    .await
+    .expect("java_launch deadlocked on the delegated external build's lock")
+    .unwrap();
     drop(guard);
     let commands: Vec<_> = state
         .requested("workspace/executeCommand")
@@ -1627,6 +2480,108 @@ async fn java_launch_serializes_the_classpath_with_the_build_lock() {
         .filter_map(|p| p["command"].as_str().map(str::to_owned))
         .collect();
     assert!(commands.contains(&"java.project.getClasspaths".to_owned()));
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn java_launch_scopes_build_status_and_does_not_wait_for_unrelated_errors() {
+    use ide_lsp::jdtls::JavaBuildStatus;
+
+    let h = harness_for("java", "java", &[("jdtls", incremental_caps())], &[]);
+    h.open("Main.java", "class Main {}");
+    h.wait_status("jdtls", ServerStatus::Ready).await;
+    let state = h.launcher.state("jdtls");
+    state.respond("java/buildWorkspace", json!(2));
+    let web = h.root.join("web");
+    let classpath = json!({"classpaths": [web.join("target/classes"), h.root.join("service/target/classes")]});
+    for (path, test, expected, classpaths_available) in [
+        ("other/src/main/java/Other.java", false, JavaBuildStatus::Succeeded, true),
+        ("other/src/main/java/Other.java", false, JavaBuildStatus::Succeeded, true),
+        ("web/src/test/java/MainTest.java", false, JavaBuildStatus::Succeeded, true),
+        ("web/src/test/java/MainTest.java", true, JavaBuildStatus::WithErrors, true),
+        ("service/src/test/java/ServiceTest.java", true, JavaBuildStatus::Succeeded, true),
+        ("service/src/main/java/Service.java", false, JavaBuildStatus::WithErrors, true),
+        ("web/src/main/java/Main.java", false, JavaBuildStatus::WithErrors, true),
+        ("other/src/main/java/Other.java", false, JavaBuildStatus::WithErrors, false),
+    ] {
+        state.respond("workspace/executeCommand", classpath.clone());
+        if !classpaths_available {
+            state.errors.lock().insert("workspace/executeCommand".into(), (-32603, "classpath unavailable".into()));
+        }
+        let file = h.root.join(path);
+        std::fs::create_dir_all(file.parent().unwrap()).unwrap();
+        std::fs::write(&file, "broken").unwrap();
+        let diag = json!({"range": {"start":{"line":0,"character":0},"end":{"line":0,"character":1}},
+            "severity": 1, "message": path});
+        state
+            .peer()
+            .notify("textDocument/publishDiagnostics", json!({"uri": uri_of(&file), "diagnostics": [diag]}))
+            .unwrap();
+        eventually(|| diagnostics_for(&h, &file) == 1).await;
+        let info = tokio::time::timeout(
+            Duration::from_secs(1),
+            h.mgr.java_launch(&web, test, true, false, false, &Default::default()),
+        )
+        .await
+        .expect("an already-published error must not incur the diagnostics wait")
+        .unwrap();
+        assert_eq!(info.build, Some(expected), "{path}, test={test}, classpath={classpaths_available}");
+        assert_eq!(info.error_count, u32::from(expected == JavaBuildStatus::WithErrors));
+        state
+            .peer()
+            .notify("textDocument/publishDiagnostics", json!({"uri": uri_of(&file), "diagnostics": []}))
+            .unwrap();
+        eventually(|| diagnostics_for(&h, &file) == 2).await;
+        h.events.lock().clear();
+    }
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn delegated_java_launch_retains_scoped_errors_without_a_jdt_build() {
+    use ide_lsp::jdtls::JavaBuildStatus;
+
+    let h = harness_for("java", "java", &[("jdtls", incremental_caps())], &[]);
+    h.open("Main.java", "class Main {}");
+    h.wait_status("jdtls", ServerStatus::Ready).await;
+    let state = h.launcher.state("jdtls");
+    let web = h.root.join("web");
+    state.respond(
+        "workspace/executeCommand",
+        json!({"classpaths": [web.join("target/classes"), h.root.join("service/target/classes")]}),
+    );
+    for (path, test, errors) in [
+        ("web/src/main/java/Main.java", false, 1),
+        ("web/src/test/java/MainTest.java", false, 0),
+        ("web/src/test/java/MainTest.java", true, 1),
+        ("service/src/main/java/Service.java", false, 1),
+        ("service/src/test/java/ServiceTest.java", true, 0),
+        ("other/src/main/java/Other.java", false, 0),
+    ] {
+        let file = h.root.join(path);
+        std::fs::create_dir_all(file.parent().unwrap()).unwrap();
+        std::fs::write(&file, "System.out.println(missingName);").unwrap();
+        let diag = json!({"range": {"start":{"line":0,"character":19},"end":{"line":0,"character":30}},
+            "severity": 1, "message": "missingName cannot be resolved to a variable"});
+        state
+            .peer()
+            .notify("textDocument/publishDiagnostics", json!({"uri": uri_of(&file), "diagnostics": [diag]}))
+            .unwrap();
+        eventually(|| diagnostics_for(&h, &file) == 1).await;
+        let guard = h.mgr.java_external_build(&web, &Default::default()).await.unwrap();
+        let info = h.mgr.java_launch(&web, test, false, false, true, &Default::default()).await.unwrap();
+        drop(guard);
+        assert_eq!(info.error_count, errors, "{path}, test={test}");
+        assert_eq!(info.build, (errors > 0).then_some(JavaBuildStatus::WithErrors));
+        if errors > 0 {
+            assert_eq!(info.errors[0].message, "missingName cannot be resolved to a variable");
+        }
+        state
+            .peer()
+            .notify("textDocument/publishDiagnostics", json!({"uri": uri_of(&file), "diagnostics": []}))
+            .unwrap();
+        eventually(|| diagnostics_for(&h, &file) == 2).await;
+        h.events.lock().clear();
+    }
+    assert!(state.requested("java/buildWorkspace").is_empty());
 }
 
 #[tokio::test(flavor = "multi_thread")]
@@ -2312,7 +3267,7 @@ async fn noop_handler_is_usable_for_raw_peers() {
     let (a, b) = tokio::io::duplex(1024);
     let (ar, aw) = tokio::io::split(a);
     let (br, bw) = tokio::io::split(b);
-    let _server = Peer::connect(br, bw, Arc::new(MockHandler(Arc::default())));
+    let _server = Peer::connect(br, bw, Arc::new(MockHandler(Arc::default(), std::sync::Weak::new())));
     let client = Peer::connect(ar, aw, Arc::new(NoopHandler));
     let v: Value = client.request("shutdown", (), None).await.unwrap();
     assert_eq!(v, Value::Null);
@@ -2931,6 +3886,187 @@ fn scope_harness() -> (Harness, Arc<MockState>) {
 }
 
 #[tokio::test(flavor = "multi_thread")]
+async fn indexed_sources_are_not_widened_but_outside_callers_are() {
+    for classified in [false, true] {
+        for outside in [false, true] {
+            let mut caps = incremental_caps();
+            caps["executeCommandProvider"]["commands"] = if classified {
+                json!(["openidea.workspace.coveredFiles", "openidea.java.usages"])
+            } else {
+                json!(["openidea.workspace.coveredFiles"])
+            };
+            let h = harness_for("java", "java", &[("jdtls", caps)], &[]);
+            let s = h.launcher.state("jdtls");
+            let caller = h.root.join("Caller.java");
+            let decoy = h.root.join("Unrelated.java");
+            let extra = h.root.join("Outside.java");
+            std::fs::write(&caller, "target();").unwrap();
+            std::fs::write(&decoy, "target").unwrap();
+            if outside {
+                std::fs::write(&extra, "target();").unwrap();
+            }
+            let covered = vec![uri_of(&caller), uri_of(&decoy)];
+            let indexed = uri_of(&caller);
+            *s.responder.lock() = Some(Arc::new(move |s, method, params| {
+                if method == "workspace/executeCommand" && params["command"] == "openidea.workspace.coveredFiles" {
+                    return Some(json!(covered));
+                }
+                let model = MockState::default();
+                *model.docs.lock() = s.docs.lock().clone();
+                model.docs.lock().insert(indexed.clone(), "target();".into());
+                let responder = open_files_only(vec![]);
+                if method == "workspace/executeCommand" && params["command"] == "openidea.java.usages" {
+                    let refs = responder(&model, "textDocument/references", params).unwrap();
+                    return Some(Value::Array(
+                        refs.as_array()
+                            .unwrap()
+                            .iter()
+                            .map(|location| json!({ "location": location, "kind": "unknown", "access": "read" }))
+                            .collect(),
+                    ));
+                }
+                responder(&model, method, params)
+            }));
+            grep_candidates(&h);
+            let (doc, _) = h.open("Target.java", "def target\n");
+            h.wait_status("jdtls", ServerStatus::Ready).await;
+            let refs = h
+                .mgr
+                .references_streaming(doc, Pos::new(0, 5), true, true, false, Default::default(), None)
+                .await
+                .unwrap();
+            assert!(refs.locations.iter().any(|l| l.path == caller));
+            assert_eq!(refs.locations.iter().any(|l| l.path == extra), outside);
+            assert_eq!(refs.incomplete, None);
+            let calls = h
+                .mgr
+                .call_hierarchy(doc, Pos::new(0, 5), HierarchyDirection::Incoming, Default::default())
+                .await
+                .unwrap();
+            assert!(calls.items.iter().any(|i| i.path == caller));
+            assert_eq!(calls.items.iter().any(|i| i.path == extra), outside);
+            assert_eq!(calls.incomplete, None);
+            let rounds = if outside { 2 } else { 1 };
+            assert_eq!(s.requested("callHierarchy/incomingCalls").len(), rounds);
+            if classified {
+                assert_eq!(
+                    s.requested("workspace/executeCommand")
+                        .iter()
+                        .filter(|p| p["command"] == "openidea.java.usages")
+                        .count(),
+                    rounds
+                );
+                assert_eq!(refs.classified.len(), refs.locations.len());
+            } else {
+                assert_eq!(s.requested("textDocument/references").len(), rounds);
+            }
+            eventually(|| s.docs.lock().len() == 1).await;
+            let opened = uris(&s.notified("textDocument/didOpen"));
+            assert!(!opened.contains(&uri_of(&caller)));
+            assert!(!opened.contains(&uri_of(&decoy)));
+            assert_eq!(opened.contains(&uri_of(&extra)), outside);
+        }
+    }
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn unavailable_scope_capability_keeps_widening_and_incomplete_signals() {
+    for response in [json!(null), json!([false]), json!([])] {
+        let mut caps = incremental_caps();
+        caps["executeCommandProvider"]["commands"] = json!(["openidea.workspace.coveredFiles"]);
+        let h = harness(&[("mock", caps)]);
+        let s = h.launcher.state("mock");
+        *s.responder.lock() = Some(open_files_only(vec![]));
+        s.respond("workspace/executeCommand", response);
+        h.mgr.set_candidates_hook(Box::new(|q, _| ide_lsp::CandidateFiles {
+            files: vec![q.root.join("b.mk")],
+            limit_hit: true,
+        }));
+        std::fs::write(h.root.join("b.mk"), "target\n").unwrap();
+        let (doc, _) = h.open("a.mk", "def target\n");
+        h.wait_status("mock", ServerStatus::Ready).await;
+        expect_all(incomplete_reports(&h, doc).await, Some(ReferencesIncomplete::TooManyFiles));
+        assert_eq!(s.requested("textDocument/references").len(), 2);
+        assert_eq!(s.requested("callHierarchy/incomingCalls").len(), 2);
+    }
+}
+
+/// A common name is mentioned by more files than a search opens, but a server that reports its
+/// analysis scope already covers most of them: only those beyond it count toward the limit.
+#[tokio::test(flavor = "multi_thread")]
+async fn covered_candidates_do_not_count_toward_the_open_limit() {
+    for covers_all in [true, false] {
+        let mut caps = incremental_caps();
+        caps["executeCommandProvider"]["commands"] = json!(["openidea.workspace.coveredFiles"]);
+        let h = harness(&[("mock", caps)]);
+        let s = h.launcher.state("mock");
+        let files: Vec<PathBuf> = (0..ide_lsp::MAX_CANDIDATES + 100)
+            .map(|i| {
+                let path = h.root.join(format!("f{i:03}.mk"));
+                std::fs::write(&path, "target\n").unwrap();
+                path
+            })
+            .collect();
+        let covered: Vec<String> = if covers_all { files.iter().map(|f| uri_of(f)).collect() } else { vec![] };
+        let responder = open_files_only(vec![]);
+        *s.responder.lock() = Some(Arc::new(move |s, method, params| {
+            if method == "workspace/executeCommand" {
+                return Some(json!(covered));
+            }
+            responder(s, method, params)
+        }));
+        let seen = grep_candidates(&h);
+        let (doc, _) = h.open("a.mk", "def target\n");
+        h.wait_status("mock", ServerStatus::Ready).await;
+        let refs = h.mgr.references(doc, Pos::new(0, 5), true, true, Default::default()).await.unwrap();
+        assert!(seen.lock().iter().all(|q| q.limit > ide_lsp::MAX_CANDIDATES));
+        let opened = s.notified("textDocument/didOpen").len() - 1;
+        if covers_all {
+            assert_eq!(refs.incomplete, None);
+            assert_eq!(opened, 0);
+            assert_eq!(s.requested("textDocument/references").len(), 1);
+        } else {
+            assert_eq!(refs.incomplete, Some(ReferencesIncomplete::TooManyFiles));
+            assert_eq!(opened, ide_lsp::MAX_CANDIDATES);
+        }
+    }
+}
+
+/// Files under the directories a server analyses fully are not read to find candidates.
+#[tokio::test(flavor = "multi_thread")]
+async fn candidates_skip_the_directories_the_server_covers() {
+    for (commands, reported) in [
+        (json!(["openidea.workspace.coveredFiles", "openidea.workspace.coveredRoots"]), json!(["src"])),
+        (json!(["openidea.workspace.coveredFiles", "openidea.workspace.coveredRoots"]), json!(null)),
+        (json!(["openidea.workspace.coveredFiles"]), json!(["src"])),
+    ] {
+        let mut caps = incremental_caps();
+        caps["executeCommandProvider"]["commands"] = commands.clone();
+        let h = harness(&[("mock", caps)]);
+        let s = h.launcher.state("mock");
+        let src = h.root.join("src");
+        let roots = reported.as_array().map(|r| r.iter().map(|_| json!(uri_of(&src))).collect::<Vec<_>>());
+        let responder = open_files_only(vec![]);
+        *s.responder.lock() = Some(Arc::new(move |s, method, params| {
+            if method == "workspace/executeCommand" {
+                return Some(match params["command"].as_str() {
+                    Some("openidea.workspace.coveredRoots") => roots.clone().map_or(json!(null), Value::Array),
+                    _ => json!([]),
+                });
+            }
+            responder(s, method, params)
+        }));
+        let seen = grep_candidates(&h);
+        let (doc, _) = h.open("a.mk", "def target\n");
+        h.wait_status("mock", ServerStatus::Ready).await;
+        h.mgr.references(doc, Pos::new(0, 5), true, true, Default::default()).await.unwrap();
+        let skipped: Vec<Vec<PathBuf>> = seen.lock().iter().map(|q| q.skip.clone()).collect();
+        let expected = if commands.as_array().unwrap().len() == 2 && reported.is_array() { vec![src] } else { vec![] };
+        assert_eq!(skipped, vec![expected], "{commands} {reported}");
+    }
+}
+
+#[tokio::test(flavor = "multi_thread")]
 async fn references_open_unopened_files_that_mention_the_name() {
     let (h, s) = scope_harness();
     let seen = grep_candidates(&h);
@@ -3226,6 +4362,32 @@ async fn classified_java_references_widen_without_losing_metadata() {
             Some(if limit_hit { ReferencesIncomplete::TooManyFiles } else { ReferencesIncomplete::FilesSkipped })
         );
     }
+}
+
+/// Usage counts probe many symbols at once: without `libraries` they search the sources alone.
+#[tokio::test(flavor = "multi_thread")]
+async fn scoped_java_usages_search_the_sources_unless_libraries_are_asked_for() {
+    let mut caps = incremental_caps();
+    caps["executeCommandProvider"] = json!({"commands": ["openidea.java.usages"]});
+    let h = harness_for("java", "java", &[("jdtls", caps)], &[]);
+    let s = h.launcher.state("jdtls");
+    s.respond("workspace/executeCommand", json!([]));
+    let (doc, _) = h.open("a.java", "int target;");
+    h.wait_status("jdtls", ServerStatus::Ready).await;
+    let seen = grep_candidates(&h);
+    for libraries in [false, true] {
+        let refs = h
+            .mgr
+            .references_streaming(doc, Pos::new(0, 5), false, false, libraries, Default::default(), None)
+            .await
+            .unwrap();
+        assert_eq!(refs.libraries_skipped, !libraries);
+        let requested = s.requested("workspace/executeCommand");
+        let arguments = requested.last().unwrap()["arguments"].as_array().unwrap().clone();
+        assert_eq!(arguments.get(4) == Some(&json!("sources")), !libraries);
+        assert_eq!(arguments.len(), if libraries { 4 } else { 5 });
+    }
+    assert!(seen.lock().is_empty());
 }
 
 /// A library method's usages in the sources are shown before the dependencies and the JDK
@@ -4196,6 +5358,198 @@ async fn configuration_extension_failure_preserves_native_java_navigation() {
 }
 
 #[tokio::test(flavor = "multi_thread")]
+async fn configuration_placeholder_definition_lands_in_spring_xml_and_properties() {
+    let h = harness_for("java", "java", &[("jdtls", incremental_caps())], &[]);
+    let s = h.launcher.state("jdtls");
+    std::fs::write(h.root.join("pom.xml"), "<project/>").unwrap();
+    let resources = h.root.join("src/main/resources");
+    std::fs::create_dir_all(&resources).unwrap();
+    std::fs::write(
+        resources.join("context.xml"),
+        r#"<beans><util:properties id="db"><prop key="db.user">sa</prop></util:properties></beans>"#,
+    )
+    .unwrap();
+    std::fs::write(h.root.join("db.properties"), "db.user=root\n").unwrap();
+    let config = h.root.join("application.yml");
+    let doc = DocId::next();
+    h.mgr.did_open(doc, &config, &LanguageId::new("yaml"), 1, "spring:\n  datasource:\n    username: ${db.user}\n");
+    let locations = h.mgr.goto(doc, Pos::new(2, 16), GotoKind::Definition).await.unwrap();
+    // The Java extension is not needed: the declarations come from the XML
+    // wiring and the properties file, and the open YAML never matches itself.
+    assert_eq!(locations.len(), 2, "{locations:?}");
+    assert!(locations.iter().any(|l| l.path.to_path_buf() == resources.join("context.xml")));
+    assert!(locations.iter().any(|l| l.path.to_path_buf() == h.root.join("db.properties")));
+    assert!(s.requested("workspace/executeCommand").is_empty());
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn configuration_placeholders_use_java_module_roots_and_utf16_columns() {
+    let mut caps = incremental_caps();
+    caps["executeCommandProvider"] = json!({"commands": ["openidea.java.configuration"]});
+    let h = harness_for("java", "java", &[("jdtls", caps)], &[]);
+    std::fs::write(
+        h.root.join("pom.xml"),
+        "<project><packaging>pom</packaging><modules><module>child</module></modules></project>",
+    )
+    .unwrap();
+    let child = h.root.join("child");
+    let resources = child.join("src/main/resources");
+    std::fs::create_dir_all(&resources).unwrap();
+    std::fs::write(child.join("pom.xml"), "<project/>").unwrap();
+    let definition = resources.join("application.properties");
+    std::fs::write(&definition, "db.user=sa\n").unwrap();
+    let sibling = h.root.join("sibling");
+    std::fs::create_dir(&sibling).unwrap();
+    std::fs::write(sibling.join("pom.xml"), "<project/>").unwrap();
+    std::fs::write(sibling.join("application.properties"), "db.user=wrong\n").unwrap();
+    h.launcher.state("jdtls").respond("workspace/executeCommand", json!({
+        "locations": [], "keys": [], "roots": [uri_of(&h.root), uri_of(&child), uri_of(&child.join("src/main/java"))]
+    }));
+    for (file, language, text) in [
+        ("references.properties", "properties", "message=你好😀 ${db.user}"),
+        ("references.yml", "yaml", "message: 你好😀 ${db.user}"),
+        ("context.xml", "xml", "<bean value=\"你好😀 ${db.user}\"/>"),
+    ] {
+        let doc = DocId::next();
+        h.mgr.did_open(doc, &h.root.join(file), &LanguageId::new(language), 1, text);
+        let col = text[..text.find("db.user").unwrap()].encode_utf16().count() as u32;
+        let locations = h.mgr.goto(doc, Pos::new(0, col + 2), GotoKind::Definition).await.unwrap();
+        assert_eq!(locations.len(), 1, "{file}: {locations:?}");
+        assert_eq!(locations[0].path.to_path_buf(), definition);
+        assert_eq!(locations[0].range.start, Pos::new(0, 0));
+        assert_eq!(locations[0].range.end, Pos::new(0, 7));
+    }
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn configuration_file_list_refreshes_on_watched_changes_and_renames() {
+    let h = harness_for("java", "java", &[("jdtls", incremental_caps())], &[]);
+    std::fs::write(h.root.join("pom.xml"), "<project/>").unwrap();
+    let child = h.root.join("child");
+    std::fs::create_dir(&child).unwrap();
+    std::fs::write(child.join("pom.xml"), "<project/>").unwrap();
+    let file = child.join("application.properties");
+    std::fs::write(&file, "db.user=sa\n").unwrap();
+    let doc = DocId::next();
+    h.mgr.did_open(doc, &child.join("reference.yml"), &LanguageId::new("yaml"), 1, "message: ${db.user}");
+    assert_eq!(h.mgr.goto(doc, Pos::new(0, 13), GotoKind::Definition).await.unwrap().len(), 1);
+    let profile = child.join("application-dev.properties");
+    std::fs::write(&profile, "db.user=dev\n").unwrap();
+    // No notification yet: the existing file list is reused.
+    assert_eq!(h.mgr.goto(doc, Pos::new(0, 13), GotoKind::Definition).await.unwrap().len(), 1);
+    h.mgr.watched_files_changed(std::slice::from_ref(&profile), &[], &[], &[]);
+    assert_eq!(h.mgr.goto(doc, Pos::new(0, 13), GotoKind::Definition).await.unwrap().len(), 2);
+    std::fs::write(&profile, "db.user=development\n").unwrap();
+    h.mgr.watched_files_changed(&[], std::slice::from_ref(&profile), &[], &[]);
+    assert_eq!(h.mgr.goto(doc, Pos::new(0, 13), GotoKind::Definition).await.unwrap().len(), 2);
+    let renamed = child.join("application-test.properties");
+    std::fs::rename(&profile, &renamed).unwrap();
+    h.mgr.did_rename_files(&[(profile, renamed.clone())]);
+    let locations = h.mgr.goto(doc, Pos::new(0, 13), GotoKind::Definition).await.unwrap();
+    assert_eq!(locations.len(), 2);
+    assert!(locations.iter().any(|l| l.path.to_path_buf() == renamed));
+    std::fs::remove_file(&renamed).unwrap();
+    h.mgr.watched_files_changed(&[], &[], &[renamed], &[]);
+    assert_eq!(h.mgr.goto(doc, Pos::new(0, 13), GotoKind::Definition).await.unwrap().len(), 1);
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn configuration_placeholder_definition_merges_java_members_with_xml_declarations() {
+    let mut caps = incremental_caps();
+    caps["executeCommandProvider"] = json!({"commands": ["openidea.java.configuration"]});
+    let h = harness_for("java", "java", &[("jdtls", caps)], &[]);
+    std::fs::write(h.root.join("pom.xml"), "<project/>").unwrap();
+    std::fs::write(h.root.join("context.xml"), r#"<beans><prop key="db.user">sa</prop></beans>"#).unwrap();
+    let s = h.launcher.state("jdtls");
+    let target = uri_of(&h.root.join("Db.java"));
+    s.respond(
+        "workspace/executeCommand",
+        json!({
+            "locations": [{"uri": target, "range": {"start": {"line": 1, "character": 4}, "end": {"line": 1, "character": 8}}}],
+            "keys": [{"name": "db.user", "relaxed": true}], "roots": []
+        }),
+    );
+    let config = h.root.join("application.yml");
+    let doc = DocId::next();
+    h.mgr.did_open(doc, &config, &LanguageId::new("yaml"), 1, "spring:\n  datasource:\n    username: ${db.user}\n");
+    let locations = h.mgr.goto(doc, Pos::new(2, 16), GotoKind::Definition).await.unwrap();
+    // A bound Java member and the XML declaration are both candidates.
+    assert_eq!(locations.len(), 2, "{locations:?}");
+    assert!(locations.iter().any(|l| l.range.start == Pos::new(1, 4)));
+    assert!(locations.iter().any(|l| l.path.to_path_buf() == h.root.join("context.xml")));
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn configuration_placeholder_definition_survives_a_failing_java_extension() {
+    let mut caps = incremental_caps();
+    caps["executeCommandProvider"] = json!({"commands": ["openidea.java.configuration"]});
+    let h = harness_for("java", "java", &[("jdtls", caps)], &[]);
+    std::fs::write(h.root.join("pom.xml"), "<project/>").unwrap();
+    std::fs::write(h.root.join("context.xml"), r#"<beans><prop key="db.user">sa</prop></beans>"#).unwrap();
+    let s = h.launcher.state("jdtls");
+    s.errors.lock().insert("workspace/executeCommand".into(), (-32603, "old server".into()));
+    let config = h.root.join("application.yml");
+    let doc = DocId::next();
+    h.mgr.did_open(doc, &config, &LanguageId::new("yaml"), 1, "spring:\n  datasource:\n    username: ${db.user}\n");
+    let locations = h.mgr.goto(doc, Pos::new(2, 16), GotoKind::Definition).await.unwrap();
+    // The XML declaration still answers when the Java extension fails.
+    assert_eq!(locations.len(), 1, "{locations:?}");
+    assert!(locations.iter().any(|l| l.path.to_path_buf() == h.root.join("context.xml")));
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn configuration_key_definition_stays_java_only() {
+    let mut caps = incremental_caps();
+    caps["executeCommandProvider"] = json!({"commands": ["openidea.java.configuration"]});
+    let h = harness_for("java", "java", &[("jdtls", caps)], &[]);
+    std::fs::write(h.root.join("pom.xml"), "<project/>").unwrap();
+    std::fs::write(h.root.join("context.xml"), r#"<beans><prop key="spring.datasource.username">sa</prop></beans>"#)
+        .unwrap();
+    let s = h.launcher.state("jdtls");
+    let target = uri_of(&h.root.join("Settings.java"));
+    s.respond(
+        "workspace/executeCommand",
+        json!({
+            "locations": [{"uri": target, "range": {"start": {"line": 2, "character": 4}, "end": {"line": 2, "character": 11}}}],
+            "keys": [{"name": "spring.datasource.username", "relaxed": true}], "roots": []
+        }),
+    );
+    let config = h.root.join("application.yml");
+    let doc = DocId::next();
+    h.mgr.did_open(doc, &config, &LanguageId::new("yaml"), 1, "spring:\n  datasource:\n    username: sa\n");
+    let locations = h.mgr.goto(doc, Pos::new(2, 6), GotoKind::Definition).await.unwrap();
+    // A key keeps the Java-only definition path; the XML declaration is not a candidate.
+    assert_eq!(locations.len(), 1, "{locations:?}");
+    assert_eq!(locations[0].range.start, Pos::new(2, 4));
+    assert_eq!(s.requested("workspace/executeCommand")[0]["arguments"][1], "spring.datasource.username");
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn configuration_definition_on_an_xml_property_asks_java() {
+    let mut caps = incremental_caps();
+    caps["executeCommandProvider"] = json!({"commands": ["openidea.java.configuration"]});
+    let h = harness_for("java", "java", &[("jdtls", caps)], &[]);
+    std::fs::write(h.root.join("pom.xml"), "<project/>").unwrap();
+    let s = h.launcher.state("jdtls");
+    let target = uri_of(&h.root.join("Db.java"));
+    s.respond(
+        "workspace/executeCommand",
+        json!({
+            "locations": [{"uri": target, "range": {"start": {"line": 1, "character": 4}, "end": {"line": 1, "character": 8}}}],
+            "keys": [{"name": "db.user", "relaxed": true}], "roots": []
+        }),
+    );
+    let xml = h.root.join("context.xml");
+    let doc = DocId::next();
+    h.mgr.did_open(doc, &xml, &LanguageId::new("xml"), 1, "<beans><prop key=\"db.user\">sa</prop></beans>\n");
+    let locations = h.mgr.goto(doc, Pos::new(0, 19), GotoKind::Definition).await.unwrap();
+    // A Spring XML declaration is a configuration site: it navigates to the
+    // binding member through the Java index.
+    assert_eq!(locations.len(), 1, "{locations:?}");
+    assert_eq!(s.requested("workspace/executeCommand")[0]["arguments"][1], "db.user");
+}
+
+#[tokio::test(flavor = "multi_thread")]
 async fn configuration_prewarm_starts_java_without_an_open_editor_and_waits_for_import() {
     let mut caps = incremental_caps();
     caps["executeCommandProvider"] = json!({"commands": ["openidea.java.configuration.warmup"]});
@@ -4319,6 +5673,39 @@ async fn jdtls_import_failure_names_reserved_device_files_on_windows() {
     let _ = std::fs::remove_file(&nul);
 }
 
+#[tokio::test(flavor = "multi_thread")]
+async fn gradle_incompatible_jdk_log_is_surfaced_once_across_message_channels() {
+    let h = harness_for("java", "java", &[("jdtls", incremental_caps())], &[]);
+    let s = h.launcher.state("jdtls");
+    h.open("A.java", "class A {}");
+    h.wait_status("jdtls", ServerStatus::Ready).await;
+    let failure = "Can't use Java 27.0.1.0.3 and Gradle 9.7.1 to import Gradle project kotlin-gradle.";
+    for _ in 0..2 {
+        s.peer()
+            .notify(
+                "window/logMessage",
+                json!({ "type": 1, "message": format!("{failure}\njava.lang.Exception: details stay in the log") }),
+            )
+            .unwrap();
+    }
+    eventually(|| h.events.lock().iter().any(|e| matches!(e, IdeEvent::Notify { body: Some(b), .. } if b == failure)))
+        .await;
+    s.peer().notify("window/showMessage", json!({ "type": 1, "message": failure })).unwrap();
+    s.peer().notify("window/logMessage", json!({ "type": 1, "message": "unrelated internal error" })).unwrap();
+    s.peer().notify("window/showMessage", json!({ "type": 2, "message": "after" })).unwrap();
+    eventually(|| h.events.lock().iter().any(|e| matches!(e, IdeEvent::Notify { body: Some(b), .. } if b == "after")))
+        .await;
+    let events = h.events.lock();
+    let messages: Vec<_> = events
+        .iter()
+        .filter_map(|e| match e {
+            IdeEvent::Notify { body: Some(body), .. } => Some(body.as_str()),
+            _ => None,
+        })
+        .collect();
+    assert_eq!(messages, vec![failure, "after"]);
+}
+
 /// Pull Members Up / Push Members Down: the extension's answers, refusals and edits.
 #[tokio::test(flavor = "multi_thread")]
 async fn java_hierarchy_refactorings_use_the_extension_commands() {
@@ -4404,4 +5791,265 @@ async fn hierarchy_refactorings_name_the_servers_without_them() {
         .unwrap_err();
     assert_eq!(e.kind, ide_core::error::ErrorKind::Unavailable);
     assert_eq!(e.message, "plain doesn't support Pull Members Up");
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn injected_documents_route_and_resolve_without_exposing_virtual_files() {
+    for encoding in ["utf-16", "utf-8"] {
+        let mut caps = incremental_caps();
+        caps["positionEncoding"] = json!(encoding);
+        caps["signatureHelpProvider"] = json!({});
+        for cap in
+            ["declarationProvider", "typeDefinitionProvider", "implementationProvider", "documentHighlightProvider"]
+        {
+            caps[cap] = json!(true);
+        }
+        let mut h = harness_for("sql", "sql", &[("embedded", caps)], &[]);
+        let builtins = LanguageRegistry::load(None).unwrap();
+        let mut sql = builtins.get(&LanguageId::new("sql")).unwrap();
+        sql.language_servers = vec![server_cfg("embedded")];
+        let mut native = builtins.get(&LanguageId::plain_text()).unwrap();
+        native.language_servers = vec![server_cfg("host")];
+        *h.launcher.state("host").caps.lock() = incremental_caps();
+        h.launcher.state("host").respond("textDocument/completion", json!([{"label":"native"}]));
+        let events = h.events.clone();
+        h.mgr = LspManager::with_launcher(
+            h.root.clone(),
+            Arc::new(LanguageRegistry::from_configs(vec![sql, native])),
+            Arc::new(move |e| events.lock().push(e)),
+            h.launcher.clone(),
+        );
+        let state = h.launcher.state("embedded");
+        *state.responder.lock() = Some(Arc::new(|_, method, p| {
+            let whole = json!({"start":{"line":0,"character":0},"end":{"line":0,"character":99}});
+            let uri = p["textDocument"]["uri"].clone();
+            Some(match method {
+                "textDocument/completion" => {
+                    json!([{"label":"one","textEdit":{"range":whole,"newText":"ONE"},"data":{"id":7},"command":{"title":"run","command":"mock.run"}}])
+                }
+                "completionItem/resolve" => {
+                    assert_eq!(p["data"], json!({"id":7}));
+                    assert_eq!(p["command"]["command"], "mock.run");
+                    json!({"label":"one","detail":"resolved"})
+                }
+                "textDocument/hover" => json!({"contents":"SQL","range":whole}),
+                "textDocument/signatureHelp" => json!({"signatures":[{"label":"sql()"}]}),
+                "textDocument/definition"
+                | "textDocument/declaration"
+                | "textDocument/typeDefinition"
+                | "textDocument/implementation" => json!([
+                    {"uri":uri,"range":whole},
+                    {"uri":uri,"range":{"start":{"line":0,"character":0},"end":{"line":0,"character":1}}}
+                ]),
+                "textDocument/references" => json!([{"uri":uri,"range":whole}]),
+                "textDocument/documentHighlight" => json!([{"range":whole}]),
+                "textDocument/codeAction" => json!([{"title":"fix","data":{"uri":uri}}]),
+                "codeAction/resolve" => json!({"title":"fix","edit":{"documentChanges":[
+                    {"textDocument":{"uri":p["data"]["uri"],"version":1},"edits":[{"range":{"start":{"line":0,"character":4},"end":{"line":0,"character":7}},"newText":"ONE"}]},
+                    {"kind":"create","uri":p["data"]["uri"]}
+                ]},"command":{"title":"run","command":"mock.run"}}),
+                _ => Value::Null,
+            })
+        }));
+        h.mgr.set_injection_provider(Arc::new(|_, _, _, text| {
+            text.match_indices("[[")
+                .filter_map(|(start, _)| {
+                    let end = start + 2 + text[start + 2..].find("]]")?;
+                    Some(ide_lsp::InjectedRange {
+                        range: Range::new(
+                            Pos::new(0, text[..start + 2].encode_utf16().count() as u32),
+                            Pos::new(0, text[..end].encode_utf16().count() as u32),
+                        ),
+                        language: LanguageId::new("sql"),
+                    })
+                })
+                .collect()
+        }));
+        let host = DocId::next();
+        let path = h.root.join("host.java");
+        let source = "😀[[one]] [[two]]";
+        h.mgr.did_open(host, &path, &LanguageId::plain_text(), 1, source);
+        h.mgr.refresh_injections(host).await.unwrap();
+        let doc = h.mgr.injected_document(host, Pos::new(0, 5));
+        let second = h.mgr.injected_document(host, Pos::new(0, 13));
+        assert_ne!(doc, host);
+        assert_ne!(doc, second, "separate SQL fragments must not share a document");
+        assert_eq!(h.mgr.injected_document(host, Pos::new(0, 7)), host);
+        assert_eq!(
+            h.mgr.completion(host, Pos::new(0, 1), None, Default::default()).await.unwrap().items[0].label,
+            "native"
+        );
+        let item = h.mgr.completion(doc, Pos::new(0, 5), None, Default::default()).await.unwrap().items.remove(0);
+        assert_eq!(item.replace_range, Some(rng(0, 4, 0, 7)));
+        let resolved = h.mgr.resolve_completion(host, item).await.unwrap();
+        assert_eq!(resolved.detail.as_deref(), Some("resolved"));
+        h.mgr.execute_command(host, resolved.command.clone().unwrap()).await.unwrap();
+        assert_eq!(state.requested("workspace/executeCommand")[0]["command"], "mock.run");
+        assert_eq!(
+            h.mgr.hover(doc, Pos::new(0, 5), Default::default()).await.unwrap().unwrap().range,
+            Some(rng(0, 4, 0, 7))
+        );
+        assert!(h.mgr.signature_help(doc, Pos::new(0, 5)).await.unwrap().is_some());
+        for kind in [GotoKind::Definition, GotoKind::Declaration, GotoKind::TypeDefinition, GotoKind::Implementation] {
+            let locations = h.mgr.goto(doc, Pos::new(0, 5), kind).await.unwrap();
+            assert_eq!(locations.len(), 1);
+            assert_eq!(locations[0].path.0, path);
+            assert_eq!(locations[0].range, rng(0, 4, 0, 7));
+        }
+        let refs = h.mgr.references(doc, Pos::new(0, 5), true, false, Default::default()).await.unwrap();
+        assert_eq!(refs.locations[0].path.0, path);
+        let highlights = h.mgr.document_highlights(doc, Pos::new(0, 5)).await.unwrap();
+        assert_eq!(highlights[0].range, rng(0, 4, 0, 7));
+        let action = h.mgr.code_actions(doc, rng(0, 5, 0, 5), vec![]).await.unwrap().remove(0);
+        let action = h.mgr.resolve_code_action(host, action).await.unwrap();
+        let edit = action.edit.unwrap();
+        assert_eq!(edit.files.len(), 1, "resource operations on virtual paths are dropped");
+        assert!(
+            matches!(&edit.files[0],FileEdit::Edit {path:p,edits,..} if p.0 == path && edits[0].range == rng(0,4,0,7))
+        );
+        let command = action.command.unwrap();
+        assert!(h.mgr.provides_command(host, Some(action.server), &command.command).await);
+        assert!(
+            h.mgr
+                .resolve_command(host, action.server, command.clone(), vec![], Default::default())
+                .await
+                .unwrap()
+                .is_none()
+        );
+        h.mgr.execute_action_command(host, action.server, command, vec![], Default::default()).await.unwrap();
+        eventually(|| state.docs.lock().len() == 2).await;
+        assert!(state.docs.lock().values().any(|t| t == "    one          "));
+        assert!(state.docs.lock().values().any(|t| t == "            two  "));
+        let virtual_uris: Vec<_> = state.docs.lock().iter().map(|(u, t)| (u.clone(), t.clone())).collect();
+        for (uri, text) in &virtual_uris {
+            let col = if text.contains("one") { 4 } else { 12 };
+            state.peer().notify("textDocument/publishDiagnostics", json!({"uri":uri,"version":1,"diagnostics":[
+                {"range":{"start":{"line":0,"character":col},"end":{"line":0,"character":col+3}},"message":"embedded"},
+                {"range":{"start":{"line":0,"character":0},"end":{"line":0,"character":1}},"message":"outside"}
+            ]})).unwrap();
+        }
+        let diagnostics = || {
+            h.events
+                .lock()
+                .iter()
+                .rev()
+                .find_map(|e| match e {
+                    IdeEvent::Diagnostics { path: p, source, items } if p.0 == path && source == "embedded" => {
+                        Some(items.clone())
+                    }
+                    _ => None,
+                })
+                .unwrap_or_default()
+        };
+        eventually(|| diagnostics().len() == 2).await;
+        assert!(diagnostics().iter().all(|d| d.source.as_deref() == Some("embedded")));
+        h.mgr.did_change(host, 2, &[AppliedChange { range: rng(0, 4, 0, 7), text: "ONE".into() }], &|| {
+            "😀[[ONE]] [[two]]".into()
+        });
+        assert_eq!(h.mgr.injected_document(host, Pos::new(0, 5)), host, "stale ranges cannot route");
+        h.mgr.refresh_injections(host).await.unwrap();
+        assert_eq!(h.mgr.injected_document(host, Pos::new(0, 5)), doc);
+        eventually(|| state.docs.lock().values().any(|t| t == "    ONE          ")).await;
+        assert!(h.mgr.resolve_completion(host, resolved).await.is_err(), "old completions cannot resolve after edits");
+        h.mgr.set_injections(host, 2, vec![]);
+        eventually(|| diagnostics().is_empty()).await;
+        assert!(h.events.lock().iter().all(
+            |e| !matches!(e,IdeEvent::Diagnostics {path,..} if path.0.to_string_lossy().contains(".openidea-injected-"))
+        ));
+        h.mgr.did_close(host);
+        eventually(|| state.docs.lock().is_empty()).await;
+        h.mgr.shutdown_all().await;
+    }
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn missing_injected_server_uses_the_normal_single_install_notification() {
+    let h = harness_for("sql", "sql", &[("embedded", incremental_caps())], &[]);
+    h.launcher.state("embedded").missing.store(true, Ordering::SeqCst);
+    let host = DocId::next();
+    let path = h.root.join("host.java");
+    h.mgr.did_open(host, &path, &LanguageId::plain_text(), 1, "sql");
+    let ranges = || vec![ide_lsp::InjectedRange { range: rng(0, 0, 0, 3), language: LanguageId::new("sql") }];
+    h.mgr.set_injections(host, 1, ranges());
+    h.wait_status("embedded", ServerStatus::Missing).await;
+    for version in 2..10 {
+        h.mgr.did_change(host, version, &[], &|| "sql".into());
+        h.mgr.set_injections(host, version, ranges());
+    }
+    assert_eq!(h.mgr.servers().len(), 1);
+    assert_eq!(h.statuses("embedded").iter().filter(|s| **s == ServerStatus::Missing).count(), 1);
+    h.mgr.did_close(host);
+    h.mgr.shutdown_all().await;
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn languages_sharing_a_server_keep_independent_target_choices() {
+    let dir = tempfile::tempdir().unwrap();
+    let root = dunce::canonicalize(dir.path()).unwrap();
+    let language = |id: &str| {
+        let mut lang: LanguageConfig = toml::from_str(&format!("id='{id}'\nname='{id}'\nextensions=['{id}']")).unwrap();
+        lang.language_servers = vec![server_cfg("shared")];
+        lang
+    };
+    let registry = Arc::new(LanguageRegistry::from_configs(vec![language("one"), language("two")]));
+    struct ScopedLauncher(Arc<MockLauncher>);
+    impl Launcher for ScopedLauncher {
+        fn launch(
+            &self,
+            config: &LanguageServerConfig,
+            root: &Path,
+            handler: Arc<dyn Handler>,
+            stderr: Box<dyn Fn(String) + Send + Sync>,
+        ) -> Result<Peer, LaunchError> {
+            let mut config = config.clone();
+            if let Some(key) = &config.target_key {
+                config.name = format!("{}@{key}", config.name);
+            }
+            self.0.launch(&config, root, handler, stderr)
+        }
+    }
+    let launcher = Arc::new(MockLauncher::default());
+    for name in ["shared", "shared@container"] {
+        *launcher.state(name).caps.lock() = json!({"textDocumentSync":1,"hoverProvider":true});
+    }
+    let manager = LspManager::with_launcher(
+        root.clone(),
+        registry,
+        Arc::new(ide_core::NullSink),
+        Arc::new(ScopedLauncher(launcher.clone())),
+    );
+    let selected = Arc::new(std::sync::atomic::AtomicBool::new(false));
+    let selected_hook = selected.clone();
+    manager.set_servers_hook(Box::new(move |lang, defined| {
+        let mut configs = defined.to_vec();
+        if lang.as_str() == "one" && selected_hook.load(Ordering::Acquire) {
+            configs[0].target_key = Some("container".into());
+        }
+        configs
+    }));
+    let one = DocId::next();
+    let two = DocId::next();
+    manager.did_open(one, &root.join("a.one"), &LanguageId::new("one"), 1, "one");
+    manager.did_open(two, &root.join("b.two"), &LanguageId::new("two"), 1, "two");
+    eventually(|| manager.servers().iter().any(|s| s.status == ServerStatus::Ready)).await;
+    assert_eq!(manager.servers().len(), 1);
+    let host = manager.servers()[0].id;
+    selected.store(true, Ordering::Release);
+    manager.reconfigure().await;
+    eventually(|| manager.servers().iter().filter(|s| s.status == ServerStatus::Ready).count() == 2).await;
+    assert!(manager.servers().iter().any(|s| s.id == host));
+    // Each document has one server. Hover must not send to both after splitting.
+    let state = launcher.state("shared");
+    state.requests.lock().clear();
+    let target_state = launcher.state("shared@container");
+    target_state.requests.lock().clear();
+    let _ = manager.hover(one, Pos::new(0, 0), CancellationToken::new()).await;
+    let _ = manager.hover(two, Pos::new(0, 0), CancellationToken::new()).await;
+    assert_eq!(state.requested("textDocument/hover").len(), 1);
+    assert_eq!(target_state.requested("textDocument/hover").len(), 1);
+    selected.store(false, Ordering::Release);
+    manager.reconfigure().await;
+    assert_eq!(manager.servers().len(), 1);
+    assert_eq!(manager.servers()[0].id, host);
+    manager.shutdown_all().await;
 }

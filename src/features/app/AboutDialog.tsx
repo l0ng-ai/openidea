@@ -1,6 +1,7 @@
 import { useEffect, useState } from "react";
 import { create } from "zustand";
 import { executeAction } from "@/platform/actions";
+import { revealInFileManager } from "@/platform/fileManager";
 import { t as translate, useT } from "@/platform/i18n";
 import { commands, isTauri, type AppInfo, type BuildInfo } from "@/platform/ipc";
 import { openExternalUrl } from "@/platform/openUrl";
@@ -109,11 +110,7 @@ function AboutDialog({ onClose }: { onClose: () => void }) {
               {t("app.action.showLog", { os: build?.os ?? guessOs() })}
             </button>
             {app && (
-              <button
-                type="button"
-                className={styles.link}
-                onClick={() => void import("@tauri-apps/plugin-opener").then((o) => o.revealItemInDir(app.configDir))}
-              >
+              <button type="button" className={styles.link} onClick={() => void revealInFileManager(app.configDir)}>
                 {t("app.about.showConfig")}
               </button>
             )}

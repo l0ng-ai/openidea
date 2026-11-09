@@ -27,6 +27,9 @@ import {
   Input,
   Select,
   Spinner,
+  SplitGroup,
+  SplitHandle,
+  SplitPanel,
   Tree,
   showContextMenu,
   type MenuItem,
@@ -35,7 +38,8 @@ import { pluginsBackend } from "../backend";
 import { subscribeTheme, themeKey } from "@/platform/themeWatch";
 import { FRAME_TAG, frameDocument, frameTheme, frameThemeMessage } from "./frame";
 import { localizeView, usePluginT } from "../pluginText";
-import { onViewMessage, useViewRevision } from "./viewStore";
+import { currentViewLocation, onViewMessage, useViewLocation, useViewRevision } from "./viewStore";
+import { ServicePane } from "./ServicePane";
 import styles from "./PluginView.module.css";
 
 export interface PluginViewProps {
@@ -49,6 +53,8 @@ export interface PluginViewProps {
   label?: string;
   /** Context menu entries by item key (tables use the absolute row index). */
   itemMenu?: (key: string) => MenuItem[];
+  /** Show detail-provider tabs beside a tree or list. */
+  detail?: boolean;
 }
 
 /** Table rows asked for beyond the visible ones (each side). */
@@ -57,14 +63,23 @@ const ROW_HEIGHT = 24;
 
 /** Plugin text is shown as written: the plugin translates it through its own catalog. */
 export function PluginView(props: PluginViewProps) {
+  const location = useViewLocation();
   return (
     <VerbatimTextContext.Provider value={true}>
-      <PluginViewContent {...props} />
+      <PluginViewContent key={JSON.stringify([props.pluginId, props.view, props.doc, location])} {...props} />
     </VerbatimTextContext.Provider>
   );
 }
 
-function PluginViewContent({ pluginId, view, doc = null, revision = 0, label, itemMenu }: PluginViewProps) {
+function PluginViewContent({
+  pluginId,
+  view,
+  doc = null,
+  revision = 0,
+  label,
+  itemMenu,
+  detail = false,
+}: PluginViewProps) {
   const [rendered, setContent] = useState<View | null>(null);
   const t = usePluginT(pluginId);
   const content = useMemo(() => rendered && localizeView(rendered, t), [rendered, t]);
@@ -72,6 +87,24 @@ function PluginViewContent({ pluginId, view, doc = null, revision = 0, label, it
   const [viewport, setViewport] = useState<Viewport | null>(null);
   const pluginRevision = useViewRevision(pluginId, view);
   const seq = useRef(0);
+  const mounted = useRef(true);
+  const queue = useRef(Promise.resolve());
+  const [selection, setSelection] = useState<{ key: string; after: Promise<unknown> } | null>(null);
+  const items = content?.body.kind === "tree" || content?.body.kind === "list" ? content.body.value : null;
+  const hasDetail = detail && items !== null;
+  const selected = hasDetail && items.some((i) => i.key === selection?.key) ? selection : null;
+  const splitId = `plugin-detail-${encodeURIComponent(JSON.stringify([pluginId, view]))}`;
+
+  useEffect(() => {
+    mounted.current = true;
+    return () => {
+      mounted.current = false;
+    };
+  }, []);
+
+  useEffect(() => {
+    if (!selected) setSelection(null);
+  }, [selected]);
 
   useEffect(() => {
     const mine = ++seq.current;
@@ -88,13 +121,23 @@ function PluginViewContent({ pluginId, view, doc = null, revision = 0, label, it
           setError(e instanceof Error ? e.message : String(e));
         },
       );
+    return () => {
+      ++seq.current;
+    };
   }, [pluginId, view, doc, viewport, revision, pluginRevision]);
 
   const send = useCallback(
     (event: ViewEvent) => {
-      pluginsBackend()
-        .viewEvent(pluginId, view, event, doc)
-        .catch((e: unknown) => setError(e instanceof Error ? e.message : String(e)));
+      const location = currentViewLocation();
+      const pending = queue.current.then(() =>
+        mounted.current && location === currentViewLocation()
+          ? pluginsBackend().viewEvent(pluginId, view, event, doc)
+          : undefined,
+      );
+      queue.current = pending.catch((e: unknown) => {
+        if (mounted.current) setError(e instanceof Error ? e.message : String(e));
+      });
+      if (event.kind === "select") setSelection({ key: event.key, after: pending });
     },
     [pluginId, view, doc],
   );
@@ -143,14 +186,43 @@ function PluginViewContent({ pluginId, view, doc = null, revision = 0, label, it
         </div>
       )}
       <div className={styles.body}>
-        <Body
-          content={content}
-          send={send}
-          pluginId={pluginId}
-          view={view}
-          onViewport={setViewport}
-          itemMenu={itemMenu}
-        />
+        {hasDetail ? (
+          <SplitGroup
+            orientation="horizontal"
+            storageKey={`openidea.plugins.detailSplit.${JSON.stringify([pluginId, view])}`}
+          >
+            <SplitPanel id={`${splitId}-items`} defaultSize="40%" minSize="100px">
+              <div className={styles.master}>
+                <Body
+                  content={content}
+                  send={send}
+                  pluginId={pluginId}
+                  view={view}
+                  onViewport={setViewport}
+                  itemMenu={itemMenu}
+                  selectedKey={selected?.key ?? null}
+                />
+              </div>
+            </SplitPanel>
+            <SplitHandle />
+            <SplitPanel id={`${splitId}-detail`} minSize="100px">
+              {selected ? (
+                <ServicePane pluginId={pluginId} view={view} itemKey={selected.key} after={selected.after} />
+              ) : (
+                <EmptyState title={tx("Select an item to view details")} />
+              )}
+            </SplitPanel>
+          </SplitGroup>
+        ) : (
+          <Body
+            content={content}
+            send={send}
+            pluginId={pluginId}
+            view={view}
+            onViewport={setViewport}
+            itemMenu={itemMenu}
+          />
+        )}
       </div>
       {content.status && <div className={styles.status}>{content.status}</div>}
     </div>
@@ -164,15 +236,16 @@ interface BodyProps {
   view: string;
   onViewport: (v: Viewport) => void;
   itemMenu?: (key: string) => MenuItem[];
+  selectedKey?: string | null;
 }
 
-function Body({ content, send, pluginId, view, onViewport, itemMenu }: BodyProps) {
+function Body({ content, send, pluginId, view, onViewport, itemMenu, selectedKey }: BodyProps) {
   const body = content.body;
   switch (body.kind) {
     case "message":
       return <EmptyState className={styles.empty} title={body.value} />;
     case "tree":
-      return <TreeBody items={body.value} send={send} itemMenu={itemMenu} />;
+      return <TreeBody items={body.value} send={send} itemMenu={itemMenu} selectedKey={selectedKey} />;
     case "list":
       return (
         <ul className={styles.list} role="listbox">
@@ -180,12 +253,32 @@ function Body({ content, send, pluginId, view, onViewport, itemMenu }: BodyProps
             <li
               key={i.key}
               role="option"
-              aria-selected={false}
+              aria-selected={i.key === selectedKey}
               tabIndex={0}
               className={styles.listItem}
               onClick={() => send({ kind: "select", key: i.key })}
               onDoubleClick={() => send({ kind: "activate", key: i.key })}
-              onKeyDown={(e) => e.key === "Enter" && send({ kind: "activate", key: i.key })}
+              onKeyDown={(e) => {
+                if (selectedKey === undefined) {
+                  if (e.key === "Enter") send({ kind: "activate", key: i.key });
+                  return;
+                }
+                if (e.key === " ") {
+                  e.preventDefault();
+                  send({ kind: "select", key: i.key });
+                } else if (e.key === "Enter") {
+                  send({ kind: "select", key: i.key });
+                  send({ kind: "activate", key: i.key });
+                } else if (e.key === "ArrowDown" || e.key === "ArrowUp") {
+                  e.preventDefault();
+                  const index = body.value.indexOf(i) + (e.key === "ArrowDown" ? 1 : -1);
+                  const next = body.value[index];
+                  if (next) {
+                    (e.currentTarget.parentElement?.children[index] as HTMLElement | undefined)?.focus();
+                    send({ kind: "select", key: next.key });
+                  }
+                }
+              }}
               onContextMenu={(e) => openItemMenu(e, itemMenu, i.key)}
             >
               {i.icon && <Icon name={i.icon} size={14} />}
@@ -245,9 +338,10 @@ interface TreeBodyProps {
   items: ViewTreeItem[];
   send: (e: ViewEvent) => void;
   itemMenu?: (key: string) => MenuItem[];
+  selectedKey?: string | null;
 }
 
-function TreeBody({ items, send, itemMenu }: TreeBodyProps) {
+function TreeBody({ items, send, itemMenu, selectedKey }: TreeBodyProps) {
   const roots = useMemo(() => treeNodes(items), [items]);
   const expanded = useMemo(() => new Set(items.filter((i) => i.expanded).map((i) => i.key)), [items]);
   return (
@@ -260,6 +354,7 @@ function TreeBody({ items, send, itemMenu }: TreeBodyProps) {
       getIcon={(n) => n.item.icon ?? undefined}
       getDetail={(n) => n.item.detail ?? undefined}
       expanded={expanded}
+      selected={selectedKey === undefined ? undefined : new Set(selectedKey === null ? [] : [selectedKey])}
       onExpandedChange={(_, node, isExpanded) =>
         send(isExpanded ? { kind: "expand", key: node.item.key } : { kind: "collapse", key: node.item.key })
       }

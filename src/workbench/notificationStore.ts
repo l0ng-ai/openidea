@@ -2,6 +2,7 @@
 import type { ReactNode } from "react";
 import { create } from "zustand";
 import { call, commands, onIdeEvent } from "@/platform/ipc";
+import { buildToolRecovery } from "@/platform/buildToolRecovery";
 import { txTemplate } from "@/platform/i18n";
 import { useProject } from "@/platform/project";
 import type { NotificationService } from "./contributions";
@@ -129,7 +130,8 @@ export function notify(n: Parameters<NotificationService["notify"]>[0]): number 
   const id = ++seq;
   const group = groupOf(n);
   const prefs = notificationPrefs(group);
-  const balloon = prefs.balloons && prefs.display !== "none";
+  // The answer to a command the user ran is not a notification they opted out of.
+  const balloon = n.userInitiated === true || (prefs.balloons && prefs.display !== "none");
   const sticky = prefs.display === "sticky" || (n.sticky ?? BALLOON_TIMEOUT[n.level] === null);
   // Neither shown nor listed: dropped, as IDEA's "No popup" + no log.
   if (!balloon && !prefs.log) return id;
@@ -201,6 +203,14 @@ export function installNotifyEvents(): () => void {
   return onIdeEvent(
     "notify",
     // Backend text may carry values (paths, names); `{name}` catalog templates translate it.
-    (e) => void notify({ level: e.level, title: txTemplate(e.title), body: e.body ? txTemplate(e.body) : undefined }),
+    (e) => {
+      const recovery = e.body ? buildToolRecovery(e.body) : undefined;
+      void notify({
+        level: e.level,
+        title: txTemplate(e.title),
+        ...recovery,
+        body: recovery ? txTemplate(recovery.body) : undefined,
+      });
+    },
   );
 }

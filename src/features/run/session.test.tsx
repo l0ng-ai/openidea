@@ -5,16 +5,28 @@ import { setContext } from "@/platform/context";
 import type { RunConfig } from "@/platform/ipc";
 import {
   useDebugRunSessions,
+  providePluginTestSelector,
   provideNotificationService,
   provideToolWindowService,
   registerMenuGroup,
   type ToolWindowService,
 } from "@/workbench/contributions";
+import * as navigate from "./navigate";
 import { ConsoleModel } from "./console";
 import { ConsoleView, type ConsoleInput } from "./ConsoleView";
 import { buildRows, mnemonics } from "./ConfigChooser";
 import { activate } from "./index";
-import { closeSessionTab, resetRuns, runtime, startRun, useRun, type RunSession } from "./store";
+import {
+  onRunExited,
+  closeSessionTab,
+  resetRuns,
+  runtime,
+  startRun,
+  useRun,
+  runSelectedTests,
+  rerunFailed,
+  type RunSession,
+} from "./store";
 
 const confirm = vi.hoisted(() => vi.fn(async () => true));
 const confirmTerminate = vi.hoisted(() => vi.fn(async () => true));
@@ -118,6 +130,38 @@ describe("HTTP port", () => {
     await startRun(app, session.id);
     expect(useRun.getState().sessions[0]!.httpPort).toBeUndefined();
   });
+});
+
+describe("Tomcat browser launch", () => {
+  it.each([
+    ["true", undefined, "http://localhost:18080/demo/"],
+    ["true", "https://example.test/custom", "https://example.test/custom"],
+    ["false", undefined, null],
+  ] as const)(
+    "opens the configured URL once after startup (openBrowser=%s)",
+    async (openBrowser, browserUrl, expected) => {
+      const open = vi.spyOn(navigate, "openUrl").mockResolvedValue();
+      try {
+        const app = config("tomcat", {
+          kind: "tomcat",
+          params: { openBrowser, httpPort: "18080", contextPath: "/demo", ...(browserUrl ? { browserUrl } : {}) },
+        });
+        const session = (await startRun(app))!;
+        const console = runtime(session.id)!.console;
+        console.append({ kind: "stdout", text: "Starting service Catalina\n" });
+        expect(open).not.toHaveBeenCalled();
+        console.append({ kind: "stdout", text: "Server startup in [800] milliseconds\n" });
+        console.append({ kind: "stdout", text: "Server startup in [900] milliseconds\n" });
+        expect(useRun.getState().sessions[0]!.httpPort).toBe(18080);
+        if (expected) {
+          expect(open).toHaveBeenCalledOnce();
+          expect(open).toHaveBeenCalledWith(expected);
+        } else expect(open).not.toHaveBeenCalled();
+      } finally {
+        open.mockRestore();
+      }
+    },
+  );
 });
 
 describe("closing a Run tab", () => {
@@ -230,5 +274,73 @@ describe("console input", () => {
     fireEvent.paste(log, { clipboardData: { getData: () => "1\r\n2\n3" } });
     expect(vi.mocked(input.onSubmit).mock.calls).toEqual([["x1"], ["2"]]);
     expect(input.onChange).toHaveBeenLastCalledWith("3");
+  });
+});
+
+describe("plugin test selection launches", () => {
+  it("keeps the owning configuration id, selected argv and original config when running tree tests", async () => {
+    const base = config("plugin:example:tests", {
+      kind: "plugin",
+      detected: true,
+      isTest: true,
+      params: { framework: "plugin" },
+      args: ["all"],
+    });
+    const session = (await startRun(base))!;
+    const tests = runtime(session.id)!.tests!;
+    tests.apply([{ type: "result", path: ["suite", "case"], status: "failed" }]);
+    const selector = vi.fn().mockResolvedValue(["--only", "suite::case"]);
+    const dispose = providePluginTestSelector(selector);
+    try {
+      expect(await runSelectedTests(session.id, ["suite"], false)).toBe(true);
+      const selected = useRun.getState().sessions.find((s) => s.id === session.id)!;
+      expect(selected.config.id).toBe(base.id);
+      expect(selected.config.args).toEqual(["--only", "suite::case"]);
+      expect(selected.baseConfig).toEqual(base);
+      expect(selector).toHaveBeenCalledWith(base.id, [["suite", "case"]]);
+      expect(useRun.getState().temporary).toEqual([]);
+    } finally {
+      dispose();
+    }
+  });
+
+  it("does not launch when the plugin cannot filter the selection", async () => {
+    const base = config("plugin:example:tests", {
+      kind: "plugin",
+      detected: true,
+      isTest: true,
+      params: { framework: "plugin" },
+    });
+    const session = (await startRun(base))!;
+    runtime(session.id)!.tests!.apply([{ type: "result", path: ["case"], status: "failed" }]);
+    const dispose = providePluginTestSelector(async () => null);
+    try {
+      expect(await runSelectedTests(session.id, ["case"], false)).toBe(false);
+      expect(await rerunFailed(session.id)).toBe(false);
+      expect(useRun.getState().sessions[0]).toBe(session);
+    } finally {
+      dispose();
+    }
+  });
+});
+
+describe("Go SDK recovery", () => {
+  it.each([
+    ["mise ERROR No version is set for shim: go", "go", 1, true],
+    ["No version is set for shim: go", "shell", 1, false],
+    ["compile error", "go", 1, false],
+    ["No version is set for shim: go", "go", 0, false],
+  ] as const)("offers Go settings for %s (%s, %s)", async (text, kind, code, expected) => {
+    const notify = vi.fn();
+    provideNotificationService({ notify });
+    const session = (await startRun(config("go", { kind })))!;
+    runtime(session.id)!.console.append({ kind: "stderr", text: text.slice(0, 12) });
+    runtime(session.id)!.console.append({ kind: "stderr", text: text.slice(12) + "\n" });
+    const runId = 4321 as NonNullable<RunSession["runId"]>;
+    useRun.setState((s) => ({ sessions: s.sessions.map((x) => ({ ...x, runId })) }));
+    onRunExited(runId, code);
+    await vi.waitFor(() => expect(useRun.getState().sessions[0]!.status).toBe("finished"));
+    expect(notify).toHaveBeenCalledTimes(expected ? 1 : 0);
+    if (expected) expect(notify.mock.calls[0]![0].actions[0].label).toBe("Go Settings…");
   });
 });
