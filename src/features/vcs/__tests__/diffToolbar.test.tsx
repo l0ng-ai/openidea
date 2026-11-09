@@ -50,6 +50,9 @@ import { DiffEditorTab } from "../diff-editor-tab";
 import { diffInput, withChain, type DiffData } from "../diffInput";
 import { useToolWindowLayout } from "@/workbench/toolwindows/store";
 import { useProject } from "@/platform/project";
+import { applyKeymapSettings, installKeyboardDispatcher, useKeymap } from "@/platform/keymap";
+import { setContext } from "@/platform/context";
+import { registerCompareActions } from "../compare";
 
 /** Git Log opens a commit's file: both sides are revisions. */
 const input = {
@@ -455,6 +458,44 @@ describe("Jump to Source of a revision diff", () => {
     setUp();
     render(<DiffEditor input={input} />);
     expect(await jumpFrom(0, 2)).toEqual(["/p/a.ts", { selection: { line: 5, col: 1 }, focus: true }]);
+  });
+
+  it("jumps on ⌘↓ in the IntelliJ macOS keymap only while a diff pane has focus", async () => {
+    setUp();
+    const keymap = useKeymap.getState();
+    applyKeymapSettings("intellij-macos", {});
+    const unregister = registerCompareActions();
+    const uninstall = installKeyboardDispatcher(window);
+    const cmdDown = (target: EventTarget) => {
+      const e = new KeyboardEvent("keydown", {
+        key: "ArrowDown",
+        code: "ArrowDown",
+        metaKey: true,
+        bubbles: true,
+        cancelable: true,
+      });
+      target.dispatchEvent(e);
+      return e;
+    };
+    try {
+      render(<DiffEditor input={input} />);
+      const v = await pane(1);
+      v.dispatch({ selection: { anchor: v.state.doc.line(3).from + 1 } });
+      v.contentDOM.dispatchEvent(new FocusEvent("focus"));
+      v.contentDOM.dispatchEvent(new FocusEvent("focusin", { bubbles: true }));
+      expect(cmdDown(v.contentDOM).defaultPrevented).toBe(true);
+      await waitFor(() => expect(openFile).toHaveBeenCalled());
+      expect(openFile.mock.calls[0]).toEqual(["/p/a.ts", { selection: { line: 3, col: 1 }, focus: true }]);
+
+      setContext("diffEditorFocus", false);
+      const plain = document.body.appendChild(document.createElement("div"));
+      expect(cmdDown(plain).defaultPrevented).toBe(false);
+      plain.remove();
+    } finally {
+      uninstall();
+      unregister();
+      useKeymap.setState(keymap);
+    }
   });
 });
 

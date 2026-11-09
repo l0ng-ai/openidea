@@ -41,7 +41,7 @@ import { t } from "@/platform/i18n";
 import { call, commands } from "@/platform/ipc";
 import { isRemoteWindow } from "@/platform/remote";
 import { fileIconName, showContextMenu, type MenuItem } from "@/ui";
-import { usePlatform } from "@/platform/platformInfo";
+import { fileManagerName } from "@/platform/fileManager";
 import {
   activateTab,
   changeSplitOrientation,
@@ -307,15 +307,6 @@ export class EditorController implements SlotHost {
           prevRoot = root;
           prevLight = s.lightEdit;
           this.saveSession();
-          if (
-            root &&
-            previous.project &&
-            !previous.project.workspace &&
-            s.project?.workspace?.projects[0] === previous.project.root
-          ) {
-            const session = loadSession(previous.project.root);
-            if (session) storeSession(root, session);
-          }
           this.sessionRoot = null;
           const generation = ++this.projectGeneration;
           const documents = customDocuments(useTabs.getState(), useContributions.getState().editorKinds);
@@ -1919,7 +1910,7 @@ function openInMenu(path: string): MenuItem {
     label: "Open In",
     submenu: [
       { kind: "action", action: "navigate.selectIn", arg: { path }, label: "Project View" },
-      { kind: "action", action: "project.revealInFinder", arg: path, label: revealLabel() },
+      { kind: "action", action: "project.revealInFinder", arg: path, label: fileManagerName() },
       { kind: "action", action: "project.openInTerminal", arg: path, label: "Terminal" },
       { kind: "separator" },
       ...menuGroupItems("openIn", { paths: [path] }),
@@ -2002,12 +1993,6 @@ let controller: EditorController | null = null;
 
 export function editorController(): EditorController {
   return (controller ??= new EditorController());
-}
-
-/** "Finder" / "Explorer" / "Files", like IDEA's Open In submenu. */
-function revealLabel(): string {
-  const os = usePlatform.getState().os;
-  return os === "macos" ? "Finder" : os === "windows" ? "Explorer" : "Files";
 }
 
 function inPopup(target: EventTarget | null): boolean {

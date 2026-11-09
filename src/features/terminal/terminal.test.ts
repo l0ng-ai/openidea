@@ -302,7 +302,7 @@ describe("split layout", () => {
 });
 
 describe("terminalFont", () => {
-  const BASE = '"JetBrains Mono Variable", "JetBrains Mono", ui-monospace, Menlo, monospace';
+  const BASE = '"JetBrains Mono", "JetBrains Mono Variable", ui-monospace, Menlo, monospace';
   const t = {
     useEditorFont: true,
     fontFamily: "JetBrains Mono",
@@ -320,13 +320,13 @@ describe("terminalFont", () => {
       "editor font, default family",
       t,
       editor,
-      `"JetBrains Mono Variable", "JetBrains Mono", ${BASE.replace(", monospace", "")}, `,
+      `"JetBrains Mono", "JetBrains Mono Variable", ${BASE.replace(", monospace", "")}, `,
     ],
     [
       "editor font, no editor settings",
       t,
       undefined,
-      `"JetBrains Mono Variable", "JetBrains Mono", ${BASE.replace(", monospace", "")}, `,
+      `"JetBrains Mono", "JetBrains Mono Variable", ${BASE.replace(", monospace", "")}, `,
     ],
     [
       "editor font, custom family",
@@ -338,13 +338,13 @@ describe("terminalFont", () => {
       "editor font, editor fallback",
       t,
       { ...editor, fallbackFont: "PingFang SC" },
-      `"JetBrains Mono Variable", "JetBrains Mono", "PingFang SC", ${BASE.replace(", monospace", "")}, `,
+      `"JetBrains Mono", "JetBrains Mono Variable", "PingFang SC", ${BASE.replace(", monospace", "")}, `,
     ],
     [
       "own font, default family",
       { ...t, useEditorFont: false },
       editor,
-      `"JetBrains Mono Variable", "JetBrains Mono", ${BASE.replace(", monospace", "")}, `,
+      `"JetBrains Mono", "JetBrains Mono Variable", ${BASE.replace(", monospace", "")}, `,
     ],
     [
       "own font, custom + fallback",
@@ -360,14 +360,14 @@ describe("terminalFont", () => {
   });
 
   it("resolves bundled Inter in inherited, independent and fallback selections", () => {
-    expect(terminalFont(t, { ...editor, fontFamily: "Inter" }, BASE).family).toMatch(/^"Inter Variable", "Inter",/);
+    expect(terminalFont(t, { ...editor, fontFamily: "Inter" }, BASE).family).toMatch(/^"Inter", "Inter Variable",/);
     expect(terminalFont({ ...t, useEditorFont: false, fontFamily: "Inter" }, editor, BASE).family).toMatch(
-      /^"Inter Variable", "Inter",/,
+      /^"Inter", "Inter Variable",/,
     );
     expect(terminalFont({ ...t, fallbackFontFamily: "Inter" }, editor, BASE).family).toContain(
-      '"Inter Variable", "Inter"',
+      '"Inter", "Inter Variable"',
     );
-    expect(terminalFont(t, { ...editor, fallbackFont: "Inter" }, BASE).family).toContain('"Inter Variable", "Inter"');
+    expect(terminalFont(t, { ...editor, fallbackFont: "Inter" }, BASE).family).toContain('"Inter", "Inter Variable"');
   });
 
   it("prefers the terminal's fallback over the editor's", () => {

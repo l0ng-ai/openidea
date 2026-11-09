@@ -1007,3 +1007,74 @@ fn file_urls_expand_module_and_home_macros() {
     assert_eq!(cwd(home), Some(PathBuf::from("jobs dir")));
     assert!(home.extras.local);
 }
+
+#[test]
+fn imports_go_application_and_test_configurations() {
+    let dir = tempfile::tempdir().unwrap();
+    write(
+        dir.path(),
+        ".run/build-linux-amd64.run.xml",
+        &run_file(
+            "build-linux-amd64",
+            r#"<configuration default="false" name="NAME" type="GoApplicationRunConfiguration" factoryName="Go Application" folderName="go-build">
+    <module name="goproject" />
+    <working_directory value="$PROJECT_DIR$" />
+    <go_parameters value="-ldflags &quot;-s -w&quot; -o bin/goproject.linux-amd64" />
+    <envs>
+      <env name="CGO_ENABLED" value="0" />
+      <env name="GOARCH" value="amd64" />
+      <env name="GOOS" value="linux" />
+    </envs>
+    <kind value="PACKAGE" />
+    <package value="goproject" />
+    <directory value="$PROJECT_DIR$" />
+    <filePath value="$PROJECT_DIR$/main.go" />
+    <output_directory value="$PROJECT_DIR$/bin" />
+    <option name="run" value="false" />
+    <method v="2" />
+  </configuration>"#,
+        ),
+    );
+    write(
+        dir.path(),
+        ".run/Test.run.xml",
+        &run_file(
+            "Run tests",
+            r#"<configuration default="false" name="NAME" type="GoTestRunConfiguration" factoryName="Go Test">
+    <module name="goproject" />
+    <working_directory value="$PROJECT_DIR$/pkg" />
+    <go_parameters value="-tags integration" />
+    <kind value="PACKAGE" />
+    <package value="example.com/pkg" />
+    <pattern value="TestLogin" />
+    <parameters value="-v -count=1" />
+    <method v="2" />
+  </configuration>"#,
+        ),
+    );
+    let r = import_from(dir.path(), &[]);
+
+    let app = get(&r, "build-linux-amd64");
+    assert_eq!(app.kind, "go");
+    assert_eq!(app.command, "go");
+    assert_eq!(app.args, s(&["build", "-ldflags", "-s -w", "-o", "bin/goproject.linux-amd64", "goproject"]));
+    assert_eq!(app.env["GOOS"], "linux");
+    assert_eq!(app.extras.params["goKind"], "build");
+    assert_eq!(app.extras.params["scope"], "package");
+    assert_eq!(app.extras.params["target"], "goproject");
+    assert_eq!(app.extras.params["outputDir"], "bin");
+    assert_eq!(app.extras.params["runAfterBuild"], "false");
+    assert_eq!(app.extras.folder.as_deref(), Some("go-build"));
+
+    let test = get(&r, "Run tests");
+    assert!(test.is_test);
+    assert_eq!(test.kind, "go");
+    assert_eq!(
+        test.args,
+        s(&["test", "-tags", "integration", "-run", "TestLogin", "example.com/pkg", "-args", "-v", "-count=1"])
+    );
+    assert_eq!(cwd(test), Some(PathBuf::from("pkg")));
+    assert_eq!(test.extras.params["goKind"], "test");
+    assert_eq!(test.extras.params["pattern"], "TestLogin");
+    assert_eq!(test.extras.params["module"], "pkg");
+}

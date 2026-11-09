@@ -27,6 +27,7 @@ import {
   prepareJavaLaunch,
 } from "@/platform/javaLaunch";
 import { downloadJdkActions } from "@/platform/jdk";
+import { buildToolRecovery } from "@/platform/buildToolRecovery";
 import { useProject } from "@/platform/project";
 import { executeAction } from "@/platform/actions";
 import { workflowSettings } from "@/platform/workflowSettings";
@@ -930,7 +931,7 @@ export async function startRun(
       group: "run",
       level: "error",
       title: `Error running '${remoteLabel(config)}'`,
-      body: message,
+      ...buildToolRecovery(message),
     });
   }
   return getSession(sessionId) ?? null;
@@ -1103,6 +1104,21 @@ export function testReportEvents(reports: readonly TestCaseReport[]): TestEvent[
 function notifyExit(sessionId: string, code: number | null) {
   const session = getSession(sessionId);
   if (!session || session.stopped || code === 0 || code === null) return;
+  if (
+    session.config.kind === "go" &&
+    !useProject.getState().settings?.languages?.go?.goroot?.trim() &&
+    /No version (?:is )?set for (?:shim: )?go/i.test(runtimes.get(sessionId)?.console.text() ?? "")
+  ) {
+    notifications().notify({
+      group: "run",
+      level: "error",
+      key: `run-exit-${sessionId}`,
+      title: tx("Choose a Go SDK"),
+      body: tx("The Go version manager has no SDK selected. Choose an installed SDK in Go settings and run again."),
+      actions: [{ label: tx("Go Settings…"), run: () => void executeAction("file.settings", "languages.go") }],
+    });
+    return;
+  }
   let visible = true;
   try {
     visible = toolWindowService().isVisible("run");
