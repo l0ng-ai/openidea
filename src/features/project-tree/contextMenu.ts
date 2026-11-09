@@ -153,8 +153,20 @@ export function contextMenuItems(nodes: ProjectNode[]): MenuItem[] {
   const items: MenuItem[] = [];
   const push = (...list: Entry[]) => list.forEach((i) => i && items.push(i));
 
-  if (single && project?.workspace && project.workspace.projects.includes(single.path)) {
-    push({ kind: "action", action: "workspace.removeProject", arg: single.path }, { kind: "separator" });
+  if (
+    single &&
+    project?.workspace &&
+    single.path !== project.root &&
+    project.workspace.projects.includes(single.path)
+  ) {
+    push(
+      {
+        kind: "action",
+        action: project.workspace.projects[0] === project.root ? "project.detach" : "workspace.removeProject",
+        arg: single.path,
+      },
+      { kind: "separator" },
+    );
   }
 
   push({ id: "new", label: "New", submenu: newMenuItems(folder) }, { kind: "separator" });

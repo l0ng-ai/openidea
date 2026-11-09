@@ -420,6 +420,45 @@ fn change(range: Range, text: &str) -> AppliedChange {
     AppliedChange { range, text: text.into() }
 }
 
+#[tokio::test(flavor = "multi_thread")]
+async fn dart_file_watching_requires_an_explicit_registration() {
+    for (language, extension, name, fallback) in
+        [("dart", "dart", "dart", false), ("dart", "dart", "alternative-dart", true), ("java", "java", "jdtls", true)]
+    {
+        let h = harness_for(language, extension, &[(name, incremental_caps())], &[]);
+        let (doc, _) = h.open(&format!("open.{extension}"), "x");
+        h.wait_status(name, ServerStatus::Ready).await;
+        let s = h.launcher.state(name);
+        let path = h.root.join(format!("closed.{extension}"));
+        let notify = || h.mgr.watched_files_changed(&[], std::slice::from_ref(&path), &[], &[]);
+        notify();
+        h.mgr.hover(doc, Pos::new(0, 0), Default::default()).await.unwrap();
+        assert_eq!(s.notified("workspace/didChangeWatchedFiles").len(), usize::from(fallback), "{name}");
+        s.peer()
+            .request::<_, Value>(
+                "client/registerCapability",
+                json!({ "registrations": [{ "id": "watch", "method": "workspace/didChangeWatchedFiles", "registerOptions": { "watchers": [{ "globPattern": "**/*" }] } }] }),
+                None,
+            )
+            .await
+            .unwrap();
+        notify();
+        eventually(|| s.notified("workspace/didChangeWatchedFiles").len() == usize::from(fallback) + 1).await;
+        s.peer()
+            .request::<_, Value>(
+                "client/unregisterCapability",
+                json!({ "unregisterations": [{ "id": "watch", "method": "workspace/didChangeWatchedFiles" }] }),
+                None,
+            )
+            .await
+            .unwrap();
+        notify();
+        h.mgr.hover(doc, Pos::new(0, 0), Default::default()).await.unwrap();
+        assert_eq!(s.notified("workspace/didChangeWatchedFiles").len(), usize::from(fallback) * 2 + 1, "{name}");
+        h.mgr.shutdown_all().await;
+    }
+}
+
 // ------------------------------------------------------------------ tests
 
 #[tokio::test(flavor = "multi_thread")]
@@ -2345,6 +2384,34 @@ async fn java_source_paths_reach_initialization_live_configuration_and_builds() 
     let init = state.requested("initialize").pop().unwrap();
     assert!(init["initializationOptions"]["settings"]["java"]["project"].get("sourcePaths").is_none());
     assert_eq!(init["initializationOptions"]["triggerFiles"], json!([uri_of(&file)]));
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn java_build_waits_for_a_reconfigured_server_to_restart() {
+    let h = harness_for("java", "java", &[("jdtls", incremental_caps())], &[]);
+    h.open("App.java", "class App {}\n");
+    h.wait_status("jdtls", ServerStatus::Ready).await;
+    let state = h.launcher.state("jdtls");
+    state.respond("java/buildWorkspace", json!(1));
+    let gate = Arc::new(Gate::default());
+    *state.held.lock() = Some(("exit".into(), gate.clone()));
+    h.mgr.set_config_hook(Box::new(|cfg, _| cfg.args.push("--new-configuration".into())));
+    let reconfigure = tokio::spawn({
+        let mgr = h.mgr.clone();
+        async move { mgr.reconfigure().await }
+    });
+    eventually(|| gate.entered()).await;
+    let mut build = tokio::spawn({
+        let (mgr, root) = (h.mgr.clone(), h.root.clone());
+        async move { mgr.java_build(&root, false, &Default::default()).await }
+    });
+    let early = tokio::time::timeout(Duration::from_millis(100), &mut build).await;
+    gate.open();
+    reconfigure.await.unwrap();
+    assert!(early.is_err(), "a planned restart must not fail a pending build: {early:?}");
+    assert_eq!(build.await.unwrap().unwrap(), ide_lsp::jdtls::JavaBuildStatus::Succeeded);
+    assert_eq!(state.launches.load(Ordering::SeqCst), 2);
+    h.mgr.shutdown_all().await;
 }
 
 #[tokio::test(flavor = "multi_thread")]

@@ -148,6 +148,12 @@ pub enum IdeEvent {
     SettingsChanged {
         key: String,
     },
+    UpdateStatusChanged {
+        status: crate::updates::UpdateStatus,
+    },
+    UpdateAvailable {
+        update: crate::updates::UpdateInfo,
+    },
     /// The project's source / test / resource / excluded roots changed (build files
     /// changed or folders were marked); the UI re-reads them with `project_roots`.
     ProjectRootsChanged {

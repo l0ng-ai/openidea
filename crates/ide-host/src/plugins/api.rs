@@ -110,6 +110,10 @@ pub trait PluginWorkspace: Send + Sync {
     fn trusted(&self, root: &Path) -> bool;
     /// Root of the project open in `window`.
     fn project_of(&self, window: &str) -> Option<PathBuf>;
+    /// Windows showing the open project at `root`, the most recently focused first.
+    fn project_windows(&self, _root: &Path) -> Vec<String> {
+        Vec::new()
+    }
     /// Shows `items` as producer `source`'s diagnostics of `path` (replacing earlier ones).
     fn publish_diagnostics(&self, source: &str, path: &Path, items: Vec<ide_core::Diagnostic>)
     -> Result<(), HostError>;
@@ -1758,14 +1762,28 @@ impl HostApi for PluginApi {
         body: String,
         actions: Vec<ide_plugin::NotificationAction>,
     ) -> Result<(), HostError> {
-        if !actions.is_empty() {
-            let commands = self.shared.ui.items("commands", Some(self.id()));
-            if let Some(a) = actions.iter().find(|a| !commands.iter().any(|c| c.key == a.command)) {
-                return Err(HostError::NotFound(format!("the plugin declares no command {:?}", a.command)));
-            }
-        }
+        check_actions(self, &actions)?;
         let plugin_id = self.id().to_owned();
         self.shared.sink.emit(client, PluginEvent::Notification { plugin_id, level, title, body, actions });
+        Ok(())
+    }
+
+    fn notify_project(
+        &self,
+        root: &Path,
+        level: NotificationLevel,
+        title: String,
+        body: String,
+        actions: Vec<ide_plugin::NotificationAction>,
+    ) -> Result<(), HostError> {
+        check_actions(self, &actions)?;
+        let windows = self.shared.workspace().map(|w| w.project_windows(root)).unwrap_or_default();
+        let window = windows
+            .into_iter()
+            .find(|w| !self.shared.client_closed(w))
+            .ok_or_else(|| HostError::NotFound(format!("the project {} is not open", root.display())))?;
+        let plugin_id = self.id().to_owned();
+        self.shared.sink.emit(Some(&window), PluginEvent::Notification { plugin_id, level, title, body, actions });
         Ok(())
     }
 
@@ -2718,6 +2736,15 @@ fn not_writable(path: &Path, e: ide_core::error::IdeError) -> HostError {
     }
 }
 
+/// Notification buttons must name commands the plugin declares.
+fn check_actions(api: &PluginApi, actions: &[ide_plugin::NotificationAction]) -> Result<(), HostError> {
+    let commands = if actions.is_empty() { Vec::new() } else { api.shared.ui.items("commands", Some(api.id())) };
+    match actions.iter().find(|a| !commands.iter().any(|c| c.key == a.command)) {
+        Some(a) => Err(HostError::NotFound(format!("the plugin declares no command {:?}", a.command))),
+        None => Ok(()),
+    }
+}
+
 /// [`PluginWorkspace`] over the desktop host's open projects.
 pub struct HostWorkspace(pub std::sync::Weak<crate::Host>);
 
@@ -3014,6 +3041,13 @@ impl PluginWorkspace for HostWorkspace {
 
     fn project_of(&self, window: &str) -> Option<PathBuf> {
         self.0.upgrade()?.project(window).ok().map(|p| p.root.clone())
+    }
+
+    fn project_windows(&self, root: &Path) -> Vec<String> {
+        let Some(host) = self.0.upgrade() else { return Vec::new() };
+        let mut windows = host.windows_for_root(root);
+        host.mcp_reports.most_recently_focused_first(&mut windows);
+        windows
     }
 
     fn publish_diagnostics(

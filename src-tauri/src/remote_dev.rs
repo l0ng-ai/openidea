@@ -528,7 +528,7 @@ pub async fn remote_connect(
         peer.request("invoke", call, None).await.map_err(ide_host::rpc::error_from_reply)?;
     // As the server resolved it (symlinks, a trailing `/`): the frontend compares it with the project's.
     let root = serde_json::to_value(&project.root).ok().and_then(|v| v.as_str().map(str::to_owned)).unwrap_or(root);
-    let _ = window.set_title(&format!("{} [{title_tag}]", project.name));
+    let _ = window.set_title(&format!("{} [{title_tag}]", project.display_name));
     let connection = Arc::new(Connection {
         peer,
         target: target.clone(),

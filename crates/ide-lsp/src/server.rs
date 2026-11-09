@@ -52,6 +52,7 @@ pub enum Phase {
 struct State {
     generation: u64,
     conn: Conn,
+    restarting: bool,
     events: VecDeque<IdeEvent>,
     publishing: bool,
 }
@@ -140,7 +141,13 @@ impl Server {
             effective: Mutex::new(None),
             resolved_binary: RwLock::new(None),
             languages: Mutex::new(vec![language]),
-            state: Mutex::new(State { generation: 0, conn: Conn::Idle, events: VecDeque::new(), publishing: false }),
+            state: Mutex::new(State {
+                generation: 0,
+                conn: Conn::Idle,
+                restarting: false,
+                events: VecDeque::new(),
+                publishing: false,
+            }),
             initializing: Mutex::new(None),
             start_cancel: Mutex::new(CancellationToken::new()),
             phase: watch::channel(Phase::Down).0,
@@ -217,6 +224,7 @@ impl Server {
         }
         st.generation += 1;
         st.conn = Conn::Starting;
+        st.restarting = false;
         *self.start_cancel.lock() = CancellationToken::new();
         *self.started.lock() = Some(Instant::now());
         self.phase.send_replace(Phase::Starting);
@@ -300,21 +308,43 @@ impl Server {
         self.running().filter(|r| r.generation == generation)
     }
 
-    /// Waits while the server is starting; returns the instance once ready.
+    /// Waits through startup or a planned restart; returns the instance once ready.
     pub async fn wait_ready(&self, timeout: Duration) -> Option<Running> {
         let mut rx = self.phase.subscribe();
-        let _ = tokio::time::timeout(timeout, rx.wait_for(|p| *p != Phase::Starting)).await;
-        self.running()
+        tokio::time::timeout(timeout, async {
+            loop {
+                {
+                    let st = self.state.lock();
+                    // Read both under the writer's lock: a restart can begin just after a wakeup.
+                    if *rx.borrow_and_update() != Phase::Starting {
+                        return match &st.conn {
+                            Conn::Ready(run) => Some(run.clone()),
+                            _ => None,
+                        };
+                    }
+                }
+                if rx.changed().await.is_err() {
+                    return None;
+                }
+            }
+        })
+        .await
+        .ok()
+        .flatten()
     }
 
     /// Ready → Stopping, returning the instance to shut down. An in-flight
     /// start is abandoned instead.
     pub fn begin_stop(&self, sink: &SharedSink, final_stop: bool) -> Option<Running> {
         let mut st = self.state.lock();
+        if final_stop {
+            st.restarting = false;
+        }
         match std::mem::replace(&mut st.conn, Conn::Idle) {
             Conn::Ready(run) => {
                 st.conn = Conn::Stopping;
-                self.phase.send_replace(Phase::Down);
+                st.restarting = !final_stop;
+                self.phase.send_replace(if st.restarting { Phase::Starting } else { Phase::Down });
                 Some(run)
             }
             Conn::Starting => {
@@ -322,7 +352,8 @@ impl Server {
                 self.start_cancel.lock().cancel();
                 self.queue_cleanup(&mut st);
                 self.queue_status(&mut st, ServerStatus::Stopped, None);
-                self.phase.send_replace(Phase::Down);
+                st.restarting = !final_stop;
+                self.phase.send_replace(if st.restarting { Phase::Starting } else { Phase::Down });
                 drop(st);
                 self.publish(sink);
                 None
@@ -331,6 +362,7 @@ impl Server {
                 st.conn = other;
                 if final_stop {
                     self.queue_status(&mut st, ServerStatus::Stopped, None);
+                    self.phase.send_replace(Phase::Down);
                 }
                 drop(st);
                 self.publish(sink);
@@ -352,7 +384,7 @@ impl Server {
         self.queue_cleanup(&mut st);
         self.queue_status(&mut st, ServerStatus::Stopped, None);
         st.conn = Conn::Idle;
-        self.phase.send_replace(Phase::Down);
+        self.phase.send_replace(if st.restarting { Phase::Starting } else { Phase::Down });
         drop(st);
         self.publish(sink);
     }
@@ -904,6 +936,37 @@ mod tests {
         s.begin_stop(&sink, false); // abandons the start and invalidates its generation
         assert!(!s.fail_start(generation, Conn::Failed, &sink, ServerStatus::Crashed, Some("boom".into())));
         assert_eq!(s.status(), ServerStatus::Stopped);
+    }
+
+    #[tokio::test]
+    async fn final_stop_cancels_pending_restarts_in_every_phase() {
+        for phase in ["starting", "stopping", "between"] {
+            let s = server();
+            let sink: SharedSink = Arc::new(|_: IdeEvent| {});
+            let generation = s.begin_start().unwrap();
+            if phase == "starting" {
+                s.begin_stop(&sink, false);
+            } else {
+                let mut st = s.state.lock();
+                st.conn = Conn::Stopping;
+                st.restarting = true;
+            }
+            if phase == "between" {
+                s.end_stop(generation, &sink);
+            }
+            assert!(
+                tokio::time::timeout(Duration::from_millis(10), s.wait_ready(Duration::from_secs(30))).await.is_err()
+            );
+            s.begin_stop(&sink, true);
+            s.end_stop(generation, &sink);
+            assert_eq!(*s.phase.borrow(), Phase::Down);
+            assert!(
+                tokio::time::timeout(Duration::from_secs(1), s.wait_ready(Duration::from_secs(30)))
+                    .await
+                    .unwrap()
+                    .is_none()
+            );
+        }
     }
 
     #[test]

@@ -5,7 +5,7 @@
 import { registerOverlay, registerStatusItem } from "@/workbench/contributions";
 import { AboutOverlay } from "./AboutDialog";
 import { appActions, updateActions } from "./appActions";
-import { checkForUpdatesOnStartup } from "./updates";
+import { installUpdateChecks } from "./updates";
 import { cliActions } from "./cliCommand";
 import { installCloseGuard } from "./closeGuard";
 import { TerminationOverlay } from "./termination";
@@ -60,7 +60,7 @@ export function activate(): () => void {
   void buildInfo().then((b) => {
     if (!b?.updates || disposed) return;
     disposers.push(registerLocalizedActions(updateActions));
-    void checkForUpdatesOnStartup();
+    disposers.push(installUpdateChecks());
   });
   return () => {
     disposed = true;

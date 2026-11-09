@@ -1,4 +1,7 @@
 {
+  "Arduino tool '{configured}' was not found. Set its path in Settings > Languages & Frameworks > Language Servers, or in settings.toml under languages.arduino.": "Arduino tool '{configured}' was not found. Set its path in Settings > Languages & Frameworks > Language Servers, or in settings.toml under languages.arduino.",
+  "Arduino tool '{name}' was not found on PATH or in Arduino IDE. Install Arduino IDE 2, or set its path in Settings > Languages & Frameworks > Language Servers or settings.toml under languages.arduino.": "Arduino tool '{name}' was not found on PATH or in Arduino IDE. Install Arduino IDE 2, or set its path in Settings > Languages & Frameworks > Language Servers or settings.toml under languages.arduino.",
+  "Install Arduino IDE 2 (includes Arduino Language Server, Arduino CLI and clangd) and the board's core. Configure the server command and arguments in Settings > Languages & Frameworks > Language Servers, or set languages.arduino.cli, languages.arduino.clangd, languages.arduino.languageServer and languages.arduino.cliConfig in settings.toml. Set the board FQBN in sketch.yaml or languages.arduino.fqbn in settings.toml.": "Install Arduino IDE 2 (includes Arduino Language Server, Arduino CLI and clangd) and the board's core. Configure the server command and arguments in Settings > Languages & Frameworks > Language Servers, or set languages.arduino.cli, languages.arduino.clangd, languages.arduino.languageServer and languages.arduino.cliConfig in settings.toml. Set the board FQBN in sketch.yaml or languages.arduino.fqbn in settings.toml.",
   "Separate Procedures and Functions": "Separate Procedures and Functions",
   "Shared JDT LS is available only in local ordinary project windows. Select Local machine for the Java language server to use it.": "Shared JDT LS is available only in local ordinary project windows. Select Local machine for the Java language server to use it.",
   "Share JDT LS across builds": "Share JDT LS across builds",
@@ -27,6 +30,9 @@
   "The language server Java executable ({path}) cannot run on this machine. Choose a working JDK in {setting}, or set it to Auto.": "The language server Java executable ({path}) cannot run on this machine. Choose a working JDK in {setting}, or set it to Auto.",
   "Input queue is full (4 MiB or 1024 writes); input was not sent.": "Input queue is full (4 MiB or 1024 writes); input was not sent.",
   "Cannot write to terminal": "Cannot write to terminal",
+  "Detach Project": "Detach Project",
+  "Project not attached": "Project not attached",
+  "Cannot attach {0} because it is restricted. Open it separately and choose Trust Project, then attach it again.": "Cannot attach {0} because it is restricted. Open it separately and choose Trust Project, then attach it again.",
   "Docker": "Docker",
   "Shell": "Shell",
   "C/C++": "C/C++",
@@ -168,6 +174,12 @@
   "Unable to load image: {path}": "Unable to load image: {path}",
   "Updates": "Updates",
   "Update source": "Update source",
+  "Current version": "Current version",
+  "Last checked": "Last checked",
+  "Check Now": "Check Now",
+  "Check for updates automatically": "Check for updates automatically",
+  "At startup and every 4 hours while OpenIDEA runs. Each new version is announced once per session.": "At startup and every 4 hours while OpenIDEA runs. Each new version is announced once per session.",
+  "Checking for updates…": "Checking for updates…",
   "Where updates are downloaded from. If it can't be reached, the other source is tried.": "Where updates are downloaded from. If it can't be reached, the other source is tried.",
   "Automatic": "Automatic",
   "CNB (China mirror)": "CNB (China mirror)",
@@ -742,5 +754,7 @@
   "Choose a JDK compatible with this Gradle version in Gradle JVM. Download JDK is available in the JVM selector.": "Choose a JDK compatible with this Gradle version in Gradle JVM. Download JDK is available in the JVM selector.",
   "Maven could not be started. Configure Maven home in Maven settings, install Maven on PATH, or use a project with a Maven wrapper.": "Maven could not be started. Configure Maven home in Maven settings, install Maven on PATH, or use a project with a Maven wrapper.",
   "Gradle could not be started. Configure a local installation in Gradle settings, install Gradle on PATH, or use a project with a Gradle wrapper.": "Gradle could not be started. Configure a local installation in Gradle settings, install Gradle on PATH, or use a project with a Gradle wrapper.",
+  "Remote of {name}": "Remote of {name}",
+  "Target branch of {name}": "Target branch of {name}",
   "Remote project files cannot be shown in {fileManager}": "Remote project files cannot be shown in {fileManager}"
 }

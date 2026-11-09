@@ -292,6 +292,7 @@ pub struct GeneralSettings {
     pub project_name: String,
     /// Where updates come from: `auto` (the CNB mirror for the Chinese UI, else GitHub) | `github` | `cnb`.
     pub update_source: String,
+    pub auto_check_updates: bool,
 }
 
 impl Default for GeneralSettings {
@@ -307,6 +308,7 @@ impl Default for GeneralSettings {
             power_save_mode: false,
             project_name: String::new(),
             update_source: "auto".into(),
+            auto_check_updates: true,
         }
     }
 }
@@ -654,6 +656,7 @@ pub struct LanguagesSettings {
     pub java: JavaSettings,
     pub ruby: RubySettings,
     pub markdown: MarkdownSettings,
+    pub arduino: ArduinoSettings,
 }
 
 impl Default for LanguagesSettings {
@@ -675,8 +678,20 @@ impl Default for LanguagesSettings {
             java: JavaSettings::default(),
             ruby: RubySettings::default(),
             markdown: MarkdownSettings::default(),
+            arduino: ArduinoSettings::default(),
         }
     }
+}
+
+/// Arduino tool discovery paths and default board FQBN, configured in `settings.toml`.
+#[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize, Type)]
+#[serde(default, rename_all = "camelCase")]
+pub struct ArduinoSettings {
+    pub cli: String,
+    pub clangd: String,
+    pub language_server: String,
+    pub cli_config: String,
+    pub fqbn: String,
 }
 
 /// Languages & Frameworks › Markdown. Like IDEA's, it is application-level only.

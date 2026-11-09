@@ -66,6 +66,7 @@ export const commands = {
 	trusted: boolean,
 	root: IpcPath,
 	name: string,
+	displayName: string,
 	isGit: boolean,
 	settings: Settings_Serialize,
 	workspace?: Workspace_Serialize | null,
@@ -227,6 +228,12 @@ export const commands = {
 	/**  Whether the clipboard holds files: cheap, for the Paste item's enabled state. */
 	clipboardHasFiles: () => __TAURI_INVOKE<boolean>("clipboard_has_files"),
 	/**
+	 *  The clipboard's image as a PNG data URL, for a paste whose event carried no
+	 *  files: WebKitGTK leaves `clipboardData` empty for a raw image (a screenshot).
+	 *  None when the clipboard holds no image, and always on other platforms.
+	 */
+	clipboardImage: () => typedError<string | null, IdeError>(__TAURI_INVOKE("clipboard_image")),
+	/**
 	 *  Replaces the clipboard with `paths`, so Explorer can paste them. Best-effort:
 	 *  false when the clipboard stayed busy; the caller keeps working either way.
 	 */
@@ -361,6 +368,7 @@ export const commands = {
 	/**  Spring Web mapping sources for the request-path index of Search Everywhere. */
 	springRouteSources: () => typedError<RouteSource[], IdeError>(__TAURI_INVOKE("spring_route_sources")),
 	findFiles: (query: string, limit: number) => typedError<FileMatch[], IdeError>(__TAURI_INVOKE("find_files", { query, limit })),
+	findFilesNamed: (name: string) => typedError<IpcPath[], IdeError>(__TAURI_INVOKE("find_files_named", { name })),
 	/**  Folders holding indexed files, for `@` references. */
 	findDirs: (query: string, limit: number) => typedError<FileMatch[], IdeError>(__TAURI_INVOKE("find_dirs", { query, limit })),
 	findSymbols: (query: string, filter: SymbolFilter, limit: number) => typedError<SymbolMatch[], IdeError>(__TAURI_INVOKE("find_symbols", { query, filter, limit })),
@@ -1004,17 +1012,9 @@ export const commands = {
 	appCliUninstall: () => typedError<IpcPath[], IdeError>(__TAURI_INVOKE("app_cli_uninstall")),
 	appBuildInfo: () => __TAURI_INVOKE<BuildInfo>("app_build_info"),
 	appCheckUpdate: (source: UpdateSource) => typedError<UpdateCheck, IdeError>(__TAURI_INVOKE("app_check_update", { source })),
-	/**
-	 *  The background check made once per process when the first window starts;
-	 *  later calls (other windows) and debug builds get `None`. Failures are logged,
-	 *  not reported: the user didn't ask for this check.
-	 */
-	appStartupUpdateCheck: (source: UpdateSource) => __TAURI_INVOKE<{
-	version: string,
-	currentVersion: string,
-	notes: string | null,
-	date: string | null,
-} | null>("app_startup_update_check", { source }),
+	appUpdateWindowReady: (ready: boolean, systemLocale: string) => typedError<null, IdeError>(__TAURI_INVOKE("app_update_window_ready", { ready, systemLocale })),
+	appUpdateStatus: () => typedError<UpdateStatus, IdeError>(__TAURI_INVOKE("app_update_status")),
+	appUpdateAnnouncement: (version: string, automatic: boolean) => typedError<boolean, IdeError>(__TAURI_INVOKE("app_update_announcement", { version, automatic })),
 	/**
 	 *  Downloads and installs the available update, streaming progress to `on_progress`.
 	 *  Cancellable through `request` until the download completes; the UI then restarts
@@ -1972,6 +1972,15 @@ export type ApplyOutcome = {
 	applied: string[],
 	/**  Repository-relative paths left with conflicts (index stages for the merge UI). */
 	conflicts: string[],
+};
+
+/**  Arduino tool discovery paths and default board FQBN, configured in `settings.toml`. */
+export type ArduinoSettings = {
+	cli?: string,
+	clangd?: string,
+	languageServer?: string,
+	cliConfig?: string,
+	fqbn?: string,
 };
 
 /**  Packaging artifact definition (Project Structure › Artifacts). */
@@ -4396,6 +4405,7 @@ export type GeneralSettings = {
 	projectName?: string,
 	/**  Where updates come from: `auto` (the CNB mirror for the Chinese UI, else GitHub) | `github` | `cnb`. */
 	updateSource?: string,
+	autoCheckUpdates?: boolean,
 };
 
 /**  A repository of the signed-in account (owned, collaborator, or organization member). */
@@ -4871,7 +4881,7 @@ cancellable: boolean } |
  *  A setting was written (any window); the windows it concerns (all for a
  *  global value, the project's for a project value) re-read their effective settings.
  */
-{ type: "settingsChanged"; key: string } | 
+{ type: "settingsChanged"; key: string } | { type: "updateStatusChanged"; status: UpdateStatus } | { type: "updateAvailable"; update: UpdateInfo } | 
 /**
  *  The project's source / test / resource / excluded roots changed (build files
  *  changed or folders were marked); the UI re-reads them with `project_roots`.
@@ -5500,6 +5510,7 @@ export type LanguagesSettings = {
 	java?: JavaSettings,
 	ruby?: RubySettings,
 	markdown?: MarkdownSettings,
+	arduino?: ArduinoSettings,
 };
 
 /**  What a freshly opened window should do once its frontend is up. */
@@ -6948,6 +6959,7 @@ export type ProjectInfo_Deserialize = {
 	trusted: boolean,
 	root: IpcPath,
 	name: string,
+	displayName?: string,
 	isGit: boolean,
 	settings: Settings_Deserialize,
 	workspace?: Workspace_Deserialize | null,
@@ -6958,6 +6970,7 @@ export type ProjectInfo_Serialize = {
 	trusted: boolean,
 	root: IpcPath,
 	name: string,
+	displayName: string,
 	isGit: boolean,
 	settings: Settings_Serialize,
 	workspace?: Workspace_Serialize | null,
@@ -8744,7 +8757,6 @@ export type UnityProjectInfo = {
 };
 
 export type UpdateCheck = {
-	/**  False when no update endpoint is configured (no request was made). */
 	enabled: boolean,
 	update: UpdateInfo | null,
 };
@@ -8763,12 +8775,13 @@ export type UpdateProgress =
 /**  Download done; the new version is being written over this one. */
 { type: "installing" };
 
-/**  Where updates are downloaded from (System Settings › Updates). */
-export type UpdateSource = 
-/**  The GitHub releases named in tauri.conf.json. */
-"github" | 
-/**  The CNB mirror of the same releases, for networks where GitHub is slow. */
-"cnb";
+export type UpdateSource = "github" | "cnb";
+
+export type UpdateStatus = {
+	/**  Unix milliseconds of the last successful check in this process. */
+	lastChecked: number | null,
+	checking: boolean,
+};
 
 export type Variable = {
 	name: string,
