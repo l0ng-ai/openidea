@@ -1351,10 +1351,12 @@ dependencies {
         let tmp = tempfile::tempdir().unwrap();
         let root = tmp.path();
         // Even a local path resembling a URL must not be read.
-        for scheme in ["http", "https"] {
-            let local = root.join(format!("{scheme}:/example.com/deps.gradle"));
-            std::fs::create_dir_all(local.parent().unwrap()).unwrap();
-            std::fs::write(local, "implementation 'g:remote:1'").unwrap();
+        if !cfg!(windows) {
+            for scheme in ["http", "https"] {
+                let local = root.join(format!("{scheme}:/example.com/deps.gradle"));
+                std::fs::create_dir_all(local.parent().unwrap()).unwrap();
+                std::fs::write(local, "implementation 'g:remote:1'").unwrap();
+            }
         }
         std::fs::write(root.join("build.gradle"), "apply from: 'http://example.com/deps.gradle'\napply(from = \"https://example.com/deps.gradle\")\napply from: 'missing.gradle'").unwrap();
         assert_eq!(scripts_of(root, root, root, Path::new("build.gradle")).len(), 1);
