@@ -159,6 +159,9 @@ pub struct WindowsState {
     last_focused: Mutex<Option<String>>,
     /// Set by Quit while windows close one by one.
     quitting: AtomicBool,
+    /// The last closed project opted out of Welcome; macOS keeps its app in the Dock.
+    #[cfg(target_os = "macos")]
+    pub keep_alive: AtomicBool,
     /// Windows asked to close whose guards have not finished. AppKit closes a whole tab group at
     /// once, so its members ask together.
     close_requests: Mutex<Vec<String>>,

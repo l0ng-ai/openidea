@@ -25,6 +25,7 @@ import {
   type DateFormatValid,
   type NotificationDisplay,
   type NotificationGroupValid,
+  type NavigationBarPosition,
   type OpenProjectIn,
 } from "../model/behaviorSchema";
 import { ACCENT_PRESETS, LIMITS, type ThemeId } from "../model/schema";
@@ -368,6 +369,12 @@ const AA_OPTIONS: SelectOption<Antialiasing>[] = [
   { value: "none", label: "No antialiasing" },
 ];
 
+const NAV_BAR_OPTIONS: SelectOption<NavigationBarPosition>[] = [
+  { value: "top", label: "Top" },
+  { value: "statusBar", label: "Status Bar" },
+  { value: "hidden", label: "Don't show" },
+];
+
 function ToolWindowsGrid() {
   return (
     <Grid
@@ -644,6 +651,7 @@ export const BEHAVIOR_PAGES: PageSpec[] = [
         options: [
           { kind: "toggle", key: "appearance.showMainToolbar", label: "Show main toolbar" },
           { kind: "toggle", key: "appearance.showStatusBar", label: "Show status bar" },
+          { kind: "select", key: "appearance.navigationBar", label: "Navigation bar", options: NAV_BAR_OPTIONS },
           {
             kind: "custom",
             label: "Main menu",
@@ -690,7 +698,7 @@ export const BEHAVIOR_PAGES: PageSpec[] = [
     title: "System Settings",
     group: APPEARANCE_GROUP,
     order: 1,
-    keywords: ["general", "startup", "exit", "quit", "autosave", "save", "local history"],
+    keywords: ["general", "startup", "exit", "quit", "autosave", "save", "local history", "welcome", "editor tabs"],
     sections: [
       {
         title: "Project",
@@ -751,7 +759,21 @@ export const BEHAVIOR_PAGES: PageSpec[] = [
       },
       {
         title: "Exit",
-        options: [{ kind: "toggle", key: "general.confirmExit", label: "Confirm before exiting the IDE" }],
+        options: [
+          { kind: "toggle", key: "general.confirmExit", label: "Confirm before exiting the IDE" },
+          {
+            kind: "toggle",
+            key: "general.closeWithoutWelcome",
+            label: "Close the window instead of showing the Welcome screen",
+            hint: "When this is the only window, closing a project or a file closes the window. On macOS, the app stays in the Dock.",
+          },
+          {
+            kind: "toggle",
+            key: "general.closeTabsWithWindow",
+            label: "Close all editor tabs when the window closes",
+            hint: "Files left open are not restored the next time that project or a standalone file is opened.",
+          },
+        ],
       },
     ],
   },
