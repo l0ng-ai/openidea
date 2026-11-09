@@ -2,6 +2,7 @@ import { describe, expect, it, vi } from "vitest";
 import { fireEvent, render, screen, within, waitFor } from "@testing-library/react";
 import { StrictMode, useState } from "react";
 import { Select, SelectListbox, type SelectOption } from "./Select";
+import { useI18n } from "@/platform/i18n";
 import { Dialog } from "./Dialog";
 
 const options: SelectOption[] = [
@@ -166,4 +167,18 @@ describe("Select preview lifecycle", () => {
     expect(close).not.toHaveBeenCalled();
     expect(trigger).toHaveFocus();
   });
+});
+
+it("preserves user values when their labels match translated UI text", () => {
+  const previous = useI18n.getState().texts;
+  useI18n.setState({ texts: { Cancel: "取消" } });
+  try {
+    const changed = setup(false, [{ value: "Cancel", label: "Cancel", verbatim: true }]);
+    expect(within(list()).getByRole("option", { name: "Cancel" })).toBeInTheDocument();
+    key("c");
+    key("Enter");
+    expect(changed).toHaveBeenCalledWith("Cancel");
+  } finally {
+    useI18n.setState({ texts: previous });
+  }
 });

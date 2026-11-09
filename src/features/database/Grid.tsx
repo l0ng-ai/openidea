@@ -5,11 +5,22 @@
  * (booleans toggle, enums pick from their values, Set NULL / Set DEFAULT).
  */
 import { writeClipboardText } from "@/platform/clipboard";
-import { useEffect, useMemo, useRef, useState, type ClipboardEvent, type KeyboardEvent, type MouseEvent } from "react";
+import {
+  useEffect,
+  useLayoutEffect,
+  useMemo,
+  useRef,
+  useState,
+  type ClipboardEvent,
+  type KeyboardEvent,
+  type MouseEvent,
+} from "react";
 import { useVirtualizer } from "@tanstack/react-virtual";
 import clsx from "clsx";
-import { Dialog, Icon, showContextMenu, type MenuItem } from "@/ui";
+import { Checkbox, Dialog, Icon, Popup, SelectListbox, showContextMenu, type MenuItem } from "@/ui";
 import { parseDelimited, toCsv, toOneRow, toTsv, type Cell } from "./model";
+import { initialJsonText, isJsonColumn, isJsonValue } from "./jsonValue";
+import { JsonValueWindow } from "./JsonValueEditor";
 import styles from "./Database.module.css";
 import { tx } from "@/platform/i18n";
 import { CELL_PREVIEW_LIMIT, cellPreview, hasLineBreak } from "./cellPreview";
@@ -21,6 +32,7 @@ import {
   NULL_INPUT,
   type BooleanLiterals,
 } from "./cellEditors";
+import { registerCellGrid, type CellActions } from "./cellActions";
 import type { DbDriver } from "@/platform/ipc";
 
 export interface GridColumn {
@@ -62,6 +74,8 @@ export interface GridProps {
   onEdit?: (row: number, col: number, value: Cell) => void;
   /** The data source's driver: which literals boolean editors write (`t`/`f`, `1`/`0`…). */
   driver?: DbDriver;
+  /** Omit an inserted cell from the INSERT, so its database default applies. */
+  onResetCell?: (row: number, col: number) => void;
   sort?: ReadonlyArray<{ column: string; descending: boolean }>;
   onSort?: (column: string, add: boolean) => void;
   /** Extra context menu items for the selected rows. */
@@ -163,28 +177,30 @@ export function Grid(props: GridProps) {
     window.addEventListener("mouseup", stop);
     return () => window.removeEventListener("mouseup", stop);
   }, []);
-  const [editing, setEditing] = useState<{ row: number; col: number; text: string; dialog: boolean } | null>(null);
-  /** The inline editor is being swapped for the multi-line one: its blur must not commit. */
-  const maximizing = useRef(false);
-  /** The select editor commits on its change event: its blur must not commit again. */
-  const picked = useRef(false);
+  const [editing, setEditing] = useState<{
+    row: number;
+    col: number;
+    text: string;
+    json: boolean;
+    dialog: boolean;
+  } | null>(null);
+  /** The inline editor is being replaced or closed: its blur must not commit again. */
+  const skipBlurCommit = useRef(false);
   useEffect(() => {
-    if (!editing?.dialog) maximizing.current = false;
+    if (!editing?.dialog) skipBlurCommit.current = false;
   }, [editing?.dialog]);
   const columnKey = columns.map((c) => c.name).join("\u0000");
   const [widths, setWidths] = useState<number[]>([]);
   const [numeric, setNumeric] = useState<boolean[]>([]);
   /** Boolean columns edit as a checkbox; enum columns offer their allowed values. */
-  const [bools, setBools] = useState<boolean[]>([]);
-  const [enums, setEnums] = useState<Array<readonly string[] | null>>([]);
+  const bools = columns.map((c) => isBooleanType(c.type, props.driver));
+  const enums = columns.map((c) => c.enumValues ?? enumValuesOfType(c.type));
   useEffect(() => {
     const sampleRows = Math.min(rowCount, 50);
     const samples = columns.map((_, ci) => Array.from({ length: sampleRows }, (_, r) => value(r, ci)));
     const decorations = (props.onFilter ? 20 : 0) + (onSort ? 20 : 0);
     setWidths(columns.map((c, ci) => initialWidth(c, samples[ci]!, decorations)));
     setNumeric(columns.map((c, ci) => isNumericColumn(c.type, samples[ci]!)));
-    setBools(columns.map((c) => isBooleanType(c.type)));
-    setEnums(columns.map((c) => c.enumValues ?? enumValuesOfType(c.type)));
     setSel(null);
     setEditing(null);
     // Re-measure only when the column set changes.
@@ -269,6 +285,7 @@ export function Grid(props: GridProps) {
 
   const commit = () => {
     if (!editing) return;
+    skipBlurCommit.current = true;
     const prev = value(editing.row, editing.col);
     // A textarea turns CRLF into LF; a value that used CRLF throughout keeps it.
     const text =
@@ -282,18 +299,27 @@ export function Grid(props: GridProps) {
     scrollRef.current?.focus();
   };
 
+  /** The JSON value window's Apply / Set NULL: the same pending-edit pipeline as the inline editor. */
+  const commitJsonWindow = (text: string | null) => {
+    if (!editing) return;
+    if (text !== value(editing.row, editing.col)) onEdit?.(editing.row, editing.col, text);
+    setEditing(null);
+    scrollRef.current?.focus();
+  };
+
   /** `maximized` (⇧Enter): the multi-line editor, which multi-line and long values always use. */
   const startEdit = (row: number, col: number, maximized = false) => {
     if (!editable || props.rowState?.(row) === "deleted") return;
-    const text = value(row, col) ?? "";
-    picked.current = false;
-    setEditing({ row, col, text, dialog: maximized || text.length > CELL_PREVIEW_LIMIT || hasLineBreak(text) });
+    const cell = value(row, col);
+    const text = cell ?? "";
+    // JSON cells (type or content) edit in the JSON value editor when the dialog opens (#2333).
+    const json = isJsonValue(columns[col]?.type ?? "", cell);
+    setEditing({ row, col, text, json, dialog: maximized || text.length > CELL_PREVIEW_LIMIT || hasLineBreak(text) });
   };
 
   /** The select editor's pick: values are final, so it commits at once (Escape still cancels). */
   const pickSelect = (v: string) => {
     if (!editing) return;
-    picked.current = true;
     onEdit?.(editing.row, editing.col, v === NULL_INPUT ? null : v);
     setEditing(null);
     scrollRef.current?.focus();
@@ -311,14 +337,20 @@ export function Grid(props: GridProps) {
   /** Set DEFAULT over a range: added rows drop the cell's value (the DB default applies); */
   /** otherwise the column's default is used, when introspected as a plain literal. */
   const defaultable = (n: { top: number; bottom: number; left: number; right: number }): boolean => {
+    let usable = false;
     for (let r = n.top; r <= n.bottom; r++) {
-      if (props.rowState?.(r) === "inserted") return true;
+      if (props.rowState?.(r) === "deleted") continue;
+      usable = true;
+      if (props.rowState?.(r) === "inserted") {
+        if (!props.onResetCell) return false;
+        continue;
+      }
       for (let c = n.left; c <= n.right; c++) {
         const d = columns[c]!.default;
-        if (d != null && defaultLiteralOf(d) !== null) return true;
+        if (d == null || defaultLiteralOf(d) === null) return false;
       }
     }
-    return false;
+    return usable;
   };
   const setNulls = (n: { top: number; bottom: number; left: number; right: number }) => {
     if (!onEdit || !nullOk(n)) return;
@@ -326,21 +358,53 @@ export function Grid(props: GridProps) {
       for (let c = n.left; c <= n.right; c++) if (props.rowState?.(r) !== "deleted") onEdit(r, c, null);
   };
   const setDefaults = (n: { top: number; bottom: number; left: number; right: number }) => {
-    if (!onEdit) return;
+    if (!onEdit || !defaultable(n)) return;
     for (let r = n.top; r <= n.bottom; r++) {
       if (props.rowState?.(r) === "deleted") continue;
       for (let c = n.left; c <= n.right; c++) {
         if (props.rowState?.(r) === "inserted") {
           // An added row's untouched cells are omitted from the INSERT: the DB default applies.
-          onEdit(r, c, null);
+          props.onResetCell?.(r, c);
           continue;
         }
         const d = columns[c]!.default;
         const literal = d != null ? defaultLiteralOf(d) : null;
-        if (literal !== null) onEdit(r, c, literal);
+        if (literal !== null) {
+          const lit = booleanLiterals(props.driver);
+          const text =
+            bools[c] && /^(true|false|t|f|1|0)$/i.test(literal)
+              ? /^(true|t|1)$/i.test(literal)
+                ? lit.t
+                : lit.f
+              : literal;
+          onEdit(r, c, text);
+        }
       }
     }
   };
+  const jsonWindowChanged = editing?.dialog && editing.json && editing.text !== (value(editing.row, editing.col) ?? "");
+
+  const cellActions = useRef<CellActions>(null!);
+  useLayoutEffect(() => {
+    const canEdit = () =>
+      !!editable && !!onEdit && !!sel && !editing && selectedRows().some((r) => props.rowState?.(r) !== "deleted");
+    const actions: CellActions = {
+      canToggle: () => canEdit() && !!bools[sel!.c1] && props.rowState?.(sel!.r1) !== "deleted",
+      canSetNull: () => canEdit() && nullOk(norm(sel!)),
+      canSetDefault: () => canEdit() && defaultable(norm(sel!)),
+      toggle: () => {
+        if (actions.canToggle()) toggleBoolean(sel!.r1, sel!.c1, booleanLiterals(props.driver));
+      },
+      setNull: () => {
+        if (actions.canSetNull()) setNulls(norm(sel!));
+      },
+      setDefault: () => {
+        if (actions.canSetDefault()) setDefaults(norm(sel!));
+      },
+    };
+    Object.assign((cellActions.current ??= {} as CellActions), actions);
+  });
+  useEffect(() => registerCellGrid(scrollRef.current!, cellActions.current), []);
 
   const onKeyDown = (e: KeyboardEvent<HTMLDivElement>) => {
     if (editing) return;
@@ -364,19 +428,6 @@ export function Grid(props: GridProps) {
     if ((e.key === "Enter" || e.key === "F2") && editable) {
       e.preventDefault();
       startEdit(sel.r1, sel.c1, e.key === "Enter" && e.shiftKey);
-      return;
-    }
-    // Space toggles a boolean cell in place (DataGrip).
-    if (e.key === " " && editable && bools[sel.c1]) {
-      e.preventDefault();
-      toggleBoolean(sel.r1, sel.c1, booleanLiterals(props.driver));
-      return;
-    }
-    if (mod && e.key === "Backspace" && editable) {
-      e.preventDefault();
-      const n = norm(sel);
-      if (e.shiftKey) setDefaults(n);
-      else setNulls(n);
       return;
     }
     const moves: Record<string, [number, number]> = {
@@ -457,8 +508,8 @@ export function Grid(props: GridProps) {
       items.push(
         { kind: "separator" },
         { label: "Edit Cell", disabled: n.top !== n.bottom || n.left !== n.right, run: () => startEdit(n.top, n.left) },
-        { label: "Set NULL", shortcut: "⌘⌫", disabled: !nullOk(n), run: () => setNulls(n) },
-        { label: "Set DEFAULT", shortcut: "⇧⌘⌫", disabled: !defaultable(n), run: () => setDefaults(n) },
+        { kind: "action", action: "db.setCellNull", arg: cellActions.current },
+        { kind: "action", action: "db.setCellDefault", arg: cellActions.current },
       );
     }
     const extra = rowMenu?.(selectedRows()) ?? [];
@@ -489,13 +540,29 @@ export function Grid(props: GridProps) {
       className={styles.grid}
       tabIndex={0}
       role="grid"
+      data-db-cell-grid=""
       aria-label={props["aria-label"] ?? "Results"}
       aria-rowcount={rowCount}
       onKeyDown={onKeyDown}
       onPaste={onPaste}
       onContextMenu={onContextMenu}
     >
-      {editing?.dialog && (
+      {editing?.dialog && editing.json && (
+        <JsonValueWindow
+          title={tx`Edit ${columns[editing.col]!.name}`}
+          initial={jsonWindowChanged ? editing.text : initialJsonText(editing.text)}
+          baseline={jsonWindowChanged ? (value(editing.row, editing.col) ?? "") : undefined}
+          validate={isJsonColumn(columns[editing.col]!.type)}
+          emptyIsNull={value(editing.row, editing.col) === null}
+          onClose={() => {
+            setEditing(null);
+            scrollRef.current?.focus();
+          }}
+          onApply={(text) => commitJsonWindow(text)}
+          onSetNull={() => commitJsonWindow(null)}
+        />
+      )}
+      {editing?.dialog && !editing.json && (
         <Dialog
           open
           title={tx`Edit ${columns[editing.col]!.name}`}
@@ -599,41 +666,23 @@ export function Grid(props: GridProps) {
                   if ((lit || values) && !(cell === null && col.nullable === false)) {
                     const options: Array<{ value: string; label: string }> = [];
                     const known = (v: string) => options.some((o) => o.value === v);
-                    if (lit) options.push({ value: lit.t, label: lit.t }, { value: lit.f, label: lit.f });
+                    if (lit) options.push({ value: lit.t, label: tx("true") }, { value: lit.f, label: tx("false") });
                     else for (const v of values!) if (!known(v)) options.push({ value: v, label: v });
                     // A value the editor doesn't offer stays selectable instead of silently changing on commit.
                     if (cell !== null && !known(cell)) options.unshift({ value: cell, label: cell });
                     if (col.nullable !== false) options.push({ value: NULL_INPUT, label: "NULL" });
                     return (
-                      <select
+                      <CellSelect
                         key={c}
-                        className={styles.cellEditor}
-                        data-cell-editor=""
-                        autoFocus
-                        aria-label={`Edit ${col.name}`}
+                        label={tx`Edit ${col.name}`}
                         value={cell === null ? NULL_INPUT : cell}
-                        onChange={(e) => pickSelect(e.target.value)}
-                        onBlur={(e) => {
-                          if (!picked.current) pickSelect(e.currentTarget.value);
+                        options={options}
+                        onChoose={pickSelect}
+                        onClose={() => {
+                          setEditing(null);
+                          scrollRef.current?.focus();
                         }}
-                        onKeyDown={(e) => {
-                          e.stopPropagation();
-                          if (e.key === "Enter") {
-                            e.preventDefault();
-                            pickSelect(e.currentTarget.value);
-                          } else if (e.key === "Escape") {
-                            picked.current = true;
-                            setEditing(null);
-                            scrollRef.current?.focus();
-                          }
-                        }}
-                      >
-                        {options.map((o) => (
-                          <option key={o.value} value={o.value}>
-                            {o.label}
-                          </option>
-                        ))}
-                      </select>
+                      />
                     );
                   }
                   return (
@@ -646,19 +695,20 @@ export function Grid(props: GridProps) {
                       value={editing.text}
                       onChange={(e) => setEditing({ ...editing, text: e.target.value })}
                       onBlur={() => {
-                        if (!maximizing.current) commit();
+                        if (!skipBlurCommit.current) commit();
                       }}
                       onKeyDown={(e) => {
                         e.stopPropagation();
                         if (e.key === "Enter" && e.shiftKey) {
                           // A line break can't be typed in a single-line field: continue in the multi-line editor.
                           e.preventDefault();
-                          maximizing.current = true;
+                          skipBlurCommit.current = true;
                           setEditing({ ...editing, dialog: true });
                           return;
                         }
                         if (e.key === "Enter") commit();
                         if (e.key === "Escape") {
+                          skipBlurCommit.current = true;
                           setEditing(null);
                           scrollRef.current?.focus();
                         }
@@ -668,7 +718,8 @@ export function Grid(props: GridProps) {
                 }
                 const val = value(r, c);
                 // Boolean cells show a checkbox while the grid is editable (DataGrip); Space toggles too.
-                const lit = editable && bools[c] && state !== "deleted" ? booleanLiterals(props.driver) : null;
+                const lit =
+                  editable && onEdit && bools[c] && state !== "deleted" ? booleanLiterals(props.driver) : null;
                 return (
                   <div
                     key={c}
@@ -690,18 +741,24 @@ export function Grid(props: GridProps) {
                   >
                     {lit ? (
                       <>
-                        <input
-                          type="checkbox"
-                          className={styles.cellCheckbox}
-                          aria-label={`Toggle ${columns[c]!.name}`}
-                          checked={val === lit.t}
-                          ref={(el) => {
-                            if (el) el.indeterminate = val !== lit.t && val !== lit.f;
+                        <span
+                          onMouseDown={(e) => {
+                            e.stopPropagation();
+                            setSel({ r0: r, c0: c, r1: r, c1: c });
                           }}
-                          onMouseDown={(e) => e.stopPropagation()}
                           onDoubleClick={(e) => e.stopPropagation()}
-                          onChange={() => toggleBoolean(r, c, lit)}
-                        />
+                        >
+                          <Checkbox
+                            className={styles.cellCheckbox}
+                            aria-label={tx`Toggle ${columns[c]!.name}`}
+                            checked={val === lit.t}
+                            indeterminate={val === null}
+                            onChange={() => {
+                              toggleBoolean(r, c, lit);
+                              scrollRef.current?.focus();
+                            }}
+                          />
+                        </span>
                         {val === null ? (
                           <span className={styles.null}>&lt;null&gt;</span>
                         ) : (
@@ -720,6 +777,35 @@ export function Grid(props: GridProps) {
           );
         })}
       </div>
+    </div>
+  );
+}
+
+function CellSelect({
+  label,
+  value,
+  options,
+  onChoose,
+  onClose,
+}: {
+  label: string;
+  value: string;
+  options: Array<{ value: string; label: string }>;
+  onChoose(value: string): void;
+  onClose(): void;
+}) {
+  const anchor = useRef<HTMLDivElement>(null);
+  return (
+    <div ref={anchor} role="gridcell" className={styles.cellEditor}>
+      {options.find((o) => o.value === value)?.label}
+      <Popup open anchor={anchor} onClose={onClose} matchWidth role="presentation">
+        <SelectListbox
+          value={value}
+          options={options.map((o) => ({ ...o, verbatim: true }))}
+          onChoose={onChoose}
+          aria-label={label}
+        />
+      </Popup>
     </div>
   );
 }

@@ -255,6 +255,7 @@ function Result({ tab }: { tab: ResultTab }) {
         const d = detailsValue?.columns.find((x) => eq(x.name, c.name));
         return {
           ...c,
+          type: d?.dataType ?? c.type,
           primaryKey: !!pk?.includes(c.name),
           nullable: d?.nullable,
           default: d?.default ?? null,
@@ -310,6 +311,16 @@ function Result({ tab }: { tab: ResultTab }) {
         else next.updates.delete(row);
       }
       return next;
+    });
+  };
+
+  const onResetCell = (row: number, col: number) => {
+    setEdits((e) => {
+      const inserts = [...e.inserts];
+      const ins = new Map(inserts[row - loaded]);
+      ins.delete(resultNames[col]!);
+      inserts[row - loaded] = ins;
+      return { ...e, inserts };
     });
   };
 
@@ -493,6 +504,7 @@ function Result({ tab }: { tab: ResultTab }) {
               isModified={(row, col) => !!edits.updates.get(row)?.has(resultNames[col]!)}
               editable={editable && !busy}
               onEdit={onEdit}
+              onResetCell={onResetCell}
               revealColumn={revealColumn}
               rowMenu={(rows) =>
                 editable && !busy

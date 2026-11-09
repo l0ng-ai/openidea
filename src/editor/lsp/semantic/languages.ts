@@ -36,8 +36,8 @@ export interface ConstructDoc {
 export interface LanguageSemantics {
   /** Classifies identifiers from the parse tree (`"from:to"` → kind). */
   symbolKinds?(tree: Tree, doc: Text): Map<string, string>;
-  /** Parse-tree ranges styling what the LSP tokens do not cover. */
-  syntaxRanges?(tree: Tree, doc: Text, symbols: Map<string, string>): SemanticRange[];
+  /** Parse-tree ranges styling what the LSP tokens do not cover; `format` is `editor.docstringFormat`. */
+  syntaxRanges?(tree: Tree, doc: Text, symbols: Map<string, string>, format?: string): SemanticRange[];
   /** Fast local guesses shown while the server is pending. */
   fallbackRanges?(
     tree: Tree,

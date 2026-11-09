@@ -21,7 +21,8 @@ export interface BooleanLiterals {
  * The column's SQL type edits as a boolean: a real `BOOLEAN`, MySQL / SQLite's
  * `TINYINT(1)` alias or SQL Server's one-bit `BIT`.
  */
-export function isBooleanType(type: string): boolean {
+export function isBooleanType(type: string, driver?: DbDriver): boolean {
+  if (/^bit$/i.test(type.trim()) && (driver === "postgres" || driver === "mysql")) return false;
   return /^(boolean|bool|tinyint\(1\)|bit)$/i.test(type.trim());
 }
 
@@ -32,7 +33,6 @@ export function booleanLiterals(driver: DbDriver | undefined): BooleanLiterals {
       return { t: "t", f: "f" };
     case "mysql":
     case "sqlite":
-    case "sqlServer":
       return { t: "1", f: "0" };
     default:
       return { t: "true", f: "false" };
@@ -58,6 +58,14 @@ export function enumValuesOfType(type: string): readonly string[] | null {
     for (;;) {
       if (at >= body.length) return null; // unterminated string
       const ch = body[at]!;
+      if (ch === "\\") {
+        const escaped = body[++at];
+        if (escaped === undefined) return null;
+        const escapes: Record<string, string> = { "0": "\0", b: "\b", n: "\n", r: "\r", t: "\t", Z: "\x1a" };
+        value += escapes[escaped] ?? escaped;
+        at++;
+        continue;
+      }
       if (ch === "'") {
         if (body[at + 1] === "'") {
           value += "'";
@@ -86,7 +94,9 @@ export function enumValuesOfType(type: string): readonly string[] | null {
  * SQL NULL only, so an expression default can't be applied from here.
  */
 export function defaultLiteralOf(defaultExpr: string): string | null {
-  const s = defaultExpr.trim();
+  let s = defaultExpr.trim();
+  while (s.startsWith("(") && s.endsWith(")")) s = s.slice(1, -1).trim();
+  if (/^(true|false)$/i.test(s)) return s.toLowerCase();
   const quoted = quotedLiteral(s);
   if (quoted !== null) return quoted;
   return /^[-+]?(\d+\.?\d*|\.\d+)([eE][+-]?\d+)?$/.test(s) ? s : null;
@@ -113,6 +123,12 @@ function quotedLiteral(s: string): string | null {
     at++;
   }
   const rest = s.slice(at).trim();
-  if (rest && !rest.startsWith("::")) return null;
+  if (
+    rest &&
+    !/^::\s*(?:[\w]+|"[^"]+")(?:\s*\.\s*(?:[\w]+|"[^"]+"))*(?:\s+(?:varying|precision|with(?:out)?\s+time\s+zone))?(?:\s*\(\d+(?:\s*,\s*\d+)?\))?(?:\[\])?$/i.test(
+      rest,
+    )
+  )
+    return null;
   return value;
 }

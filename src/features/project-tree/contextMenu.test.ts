@@ -47,6 +47,8 @@ const OTHER_ACTIONS = [
   "vcs.annotate",
   "vcs.showDiff",
   "vcs.compareWithBranch",
+  "vcs.compareWithRevision",
+  "vcs.showCurrentRevision",
   "vcs.rollback",
   "vcs.push",
 ];
@@ -151,6 +153,16 @@ describe("project view context menu", () => {
       useRemote.setState({ session: { target, root: ROOT, host: "h", os: "linux", commands: [] } });
       expect(sub(contextMenuItems([node(`${ROOT}/src/a.py`)]), "Open In")).toEqual(["Terminal"]);
       expect(labels(contextMenuItems([library]))).not.toContain("Open In");
+    }
+  });
+
+  it("offers file revision actions only for a single file", () => {
+    expect(sub(contextMenuItems([node("/p/a.py")]), "Git")).toEqual(
+      expect.arrayContaining(["Compare with Revision…", "Show Current Revision"]),
+    );
+    for (const nodes of [[node("/p/src", true)], [node("/p/a.py"), node("/p/b.py")]]) {
+      expect(sub(contextMenuItems(nodes), "Git")).not.toContain("Compare with Revision…");
+      expect(sub(contextMenuItems(nodes), "Git")).not.toContain("Show Current Revision");
     }
   });
 

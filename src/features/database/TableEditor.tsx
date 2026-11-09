@@ -103,7 +103,7 @@ export function TableEditor({ input }: { input: EditorInput }) {
         const d = page?.details.columns.find((x) => x.name === c.name);
         return {
           name: c.name,
-          type: c.typeName,
+          type: d?.dataType ?? c.typeName,
           primaryKey: pk.includes(c.name),
           foreignKey: fkColumns.has(c.name),
           nullable: d?.nullable,
@@ -147,6 +147,16 @@ export function TableEditor({ input }: { input: EditorInput }) {
         else next.updates.delete(row);
       }
       return next;
+    });
+  };
+
+  const onResetCell = (row: number, col: number) => {
+    setEdits((e) => {
+      const inserts = [...e.inserts];
+      const ins = new Map(inserts[row - loaded]);
+      ins.delete(names[col]!);
+      inserts[row - loaded] = ins;
+      return { ...e, inserts };
     });
   };
 
@@ -379,6 +389,7 @@ export function TableEditor({ input }: { input: EditorInput }) {
             isModified={(r, c) => !!edits.updates.get(r)?.has(names[c]!)}
             editable={editable}
             onEdit={onEdit}
+            onResetCell={onResetCell}
             driver={source?.driver}
             sort={sort}
             onSort={onSort}

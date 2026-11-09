@@ -9,11 +9,17 @@ describe("boolean cell editing", () => {
       expect(isBooleanType(type), type).toBe(false);
   });
 
+  it("does not treat PostgreSQL and MySQL bit strings as booleans", () => {
+    expect(isBooleanType("bit", "postgres")).toBe(false);
+    expect(isBooleanType("bit", "mysql")).toBe(false);
+    expect(isBooleanType("bit", "sqlServer")).toBe(true);
+  });
+
   it("writes the literals the driver renders booleans with", () => {
     expect(booleanLiterals("postgres")).toEqual({ t: "t", f: "f" });
     expect(booleanLiterals("mysql")).toEqual({ t: "1", f: "0" });
     expect(booleanLiterals("sqlite")).toEqual({ t: "1", f: "0" });
-    expect(booleanLiterals("sqlServer")).toEqual({ t: "1", f: "0" });
+    expect(booleanLiterals("sqlServer")).toEqual({ t: "true", f: "false" });
     expect(booleanLiterals("oracle")).toEqual({ t: "true", f: "false" });
     expect(booleanLiterals(undefined)).toEqual({ t: "true", f: "false" });
   });
@@ -30,6 +36,7 @@ describe("enum cell editing", () => {
     expect(enumValuesOfType("ENUM( 'x' , 'y' )")).toEqual(["x", "y"]);
     expect(enumValuesOfType("enum('it''s','say \"hi\"','a,b')")).toEqual(["it's", 'say "hi"', "a,b"]);
     expect(enumValuesOfType("enum('')")).toEqual([""]);
+    expect(enumValuesOfType(String.raw`enum('it\'s','a\\b','line\nbreak')`)).toEqual(["it's", "a\\b", "line\nbreak"]);
   });
 
   it("rejects types that don't carry a value list", () => {
@@ -55,12 +62,26 @@ describe("Set DEFAULT", () => {
     expect(defaultLiteralOf("''::text")).toBe("");
     expect(defaultLiteralOf("'it''s'")).toBe("it's");
     expect(defaultLiteralOf("42")).toBe("42");
+    expect(defaultLiteralOf("((1))")).toBe("1");
+    expect(defaultLiteralOf("('ready')")).toBe("ready");
     expect(defaultLiteralOf("-1.5")).toBe("-1.5");
     expect(defaultLiteralOf("+7")).toBe("+7");
+    expect(defaultLiteralOf("true")).toBe("true");
+    expect(defaultLiteralOf("FALSE")).toBe("false");
   });
 
   it("rejects expression defaults the grid's pending edits cannot send", () => {
-    for (const d of ["now()", "nextval('ids'::regclass)", "CURRENT_TIMESTAMP", "b'0'", "'a' || 'b'", "", "  "])
+    for (const d of [
+      "now()",
+      "nextval('ids'::regclass)",
+      "CURRENT_TIMESTAMP",
+      "b'0'",
+      "'a' || 'b'",
+      "'a'::text || 'b'",
+      "'a'::text; SELECT 1",
+      "",
+      "  ",
+    ])
       expect(defaultLiteralOf(d), d).toBeNull();
   });
 });

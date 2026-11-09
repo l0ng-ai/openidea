@@ -26,6 +26,15 @@ import {
 } from "./resultView";
 import { openDialog } from "./store";
 import { hasLineBreak } from "./cellPreview";
+import {
+  initialJsonText,
+  isJsonColumn,
+  isJsonValue,
+  jsonErrorOf,
+  JSON_INLINE_LIMIT,
+  type JsonError,
+} from "./jsonValue";
+import { JsonValueEditor, JsonValueWindow, type JsonEditorApi } from "./JsonValueEditor";
 import styles from "./Database.module.css";
 import { tx } from "@/platform/i18n";
 
@@ -81,7 +90,7 @@ interface Shaping {
 
 export interface DataViewProps extends Pick<
   GridProps,
-  "rowState" | "isModified" | "editable" | "onEdit" | "driver" | "sort" | "onSort" | "rowMenu"
+  "rowState" | "isModified" | "editable" | "onEdit" | "onResetCell" | "driver" | "sort" | "onSort" | "rowMenu"
 > {
   columns: readonly GridColumn[];
   rowCount: number;
@@ -216,6 +225,7 @@ export function DataView(props: DataViewProps) {
             rowState={props.rowState && ((r) => props.rowState!(at(r)))}
             isModified={props.isModified && ((r, c) => props.isModified!(at(r), c))}
             editable={props.editable}
+            onResetCell={props.onResetCell && ((r, c) => props.onResetCell!(at(r), c))}
             onEdit={props.onEdit && ((r, c, v) => props.onEdit!(at(r), c, v))}
             driver={props.driver}
             sort={sort}
@@ -480,8 +490,9 @@ function SidePanel(props: {
           <RecordView key={range.lead.row} {...props} row={range.lead.row} />
         ) : props.panel === "value" ? (
           <ValueView
-            key={`${range.lead.row}:${range.lead.col}`}
-            column={columns[range.lead.col]?.name ?? ""}
+            // A committed value (here or in the grid) starts the editor over.
+            key={`${range.lead.row}:${range.lead.col}\u0000${value(range.lead.row, range.lead.col) ?? "\u0001"}`}
+            column={columns[range.lead.col] ?? { name: "", type: "" }}
             cell={value(range.lead.row, range.lead.col)}
             editable={props.editable}
             onCommit={(v) => props.onEdit(range.lead.row, range.lead.col, v)}
@@ -559,32 +570,108 @@ function RecordField(props: { column: GridColumn; cell: Cell; editable: boolean;
   );
 }
 
-function ValueView(props: { column: string; cell: Cell; editable: boolean; onCommit: (v: Cell) => void }) {
-  const [text, setText] = useState(props.cell ?? "");
-  const dirty = text !== (props.cell ?? "") || (props.cell === null && text !== "");
+/** The Value panel's editor: plain text, or the JSON code editor for JSON cells (#2333). */
+function ValueView(props: { column: GridColumn; cell: Cell; editable: boolean; onCommit: (v: Cell) => void }) {
+  const name = props.column.name;
+  const [json] = useState(() => isJsonValue(props.column.type, props.cell));
+  const validate = isJsonColumn(props.column.type);
+  // JSON opens pretty-printed; the panel applies what the editor shows.
+  const [initial] = useState(() => (json ? initialJsonText(props.cell ?? "") : (props.cell ?? "")));
+  const [text, setText] = useState(initial);
+  const [error, setError] = useState<JsonError | null>(() =>
+    props.cell !== null && validate && initial.length <= JSON_INLINE_LIMIT ? jsonErrorOf(initial) : null,
+  );
+  const [pending, setPending] = useState(json && initial.length > JSON_INLINE_LIMIT);
+  const editor = useRef<JsonEditorApi | null>(null);
+  const dirty = text !== initial;
+  const commit = () => {
+    if (props.editable && dirty && !error && !pending) props.onCommit(text);
+  };
+  const [windowOpen, setWindowOpen] = useState(false);
   return (
     <div className={styles.valueView}>
-      <textarea
-        className={styles.valueText}
-        aria-label={`Value of ${props.column}`}
-        value={text}
-        readOnly={!props.editable}
-        placeholder={props.cell === null ? "<null>" : undefined}
-        spellCheck={false}
-        onChange={(e) => setText(e.target.value)}
-        onKeyDown={(e) => {
-          if (e.key === "Enter" && (e.metaKey || e.ctrlKey) && dirty) props.onCommit(text);
-        }}
-      />
+      {json ? (
+        <>
+          <JsonValueEditor
+            initial={initial}
+            validate={validate}
+            emptyIsNull={props.cell === null}
+            readOnly={!props.editable}
+            ariaLabel={tx`Value of ${name}`}
+            onChange={(t, e, busy) => {
+              setText(t);
+              setError(e);
+              setPending(busy);
+            }}
+            onReady={(api) => (editor.current = api)}
+            onSubmit={commit}
+            onOpenWindow={() => setWindowOpen(true)}
+          />
+          {error && (
+            <div className={styles.valueError} role="status">
+              {error.message}
+            </div>
+          )}
+          <div className={styles.filterButtons}>
+            <Button
+              size="small"
+              disabled={!props.editable || !!error || pending}
+              onClick={() => editor.current?.reformat()}
+            >
+              <T>Reformat</T>
+            </Button>
+            <Button size="small" onClick={() => setWindowOpen(true)}>
+              <T>Open in Window</T>
+            </Button>
+          </div>
+        </>
+      ) : (
+        <textarea
+          className={styles.valueText}
+          aria-label={tx`Value of ${name}`}
+          value={text}
+          readOnly={!props.editable}
+          placeholder={props.cell === null ? "<null>" : undefined}
+          spellCheck={false}
+          onChange={(e) => setText(e.target.value)}
+          onKeyDown={(e) => {
+            if (e.key === "Enter" && (e.metaKey || e.ctrlKey) && dirty) props.onCommit(text);
+          }}
+        />
+      )}
       {props.editable && (
         <div className={styles.filterButtons}>
-          <Button size="small" disabled={!dirty} onClick={() => props.onCommit(text)}>
+          <Button size="small" disabled={!dirty || !!error || pending} onClick={commit}>
             <T>Apply</T>
           </Button>
-          <Button size="small" onClick={() => props.onCommit(null)}>
+          <Button
+            size="small"
+            onClick={() => {
+              if (props.cell !== null) props.onCommit(null);
+            }}
+          >
             <T>Set NULL</T>
           </Button>
         </div>
+      )}
+      {windowOpen && (
+        <JsonValueWindow
+          title={tx`Value of ${name}`}
+          initial={text}
+          baseline={initial}
+          validate={validate}
+          emptyIsNull={props.cell === null}
+          readOnly={!props.editable}
+          onClose={() => setWindowOpen(false)}
+          onApply={(t) => {
+            props.onCommit(t);
+            setWindowOpen(false);
+          }}
+          onSetNull={() => {
+            props.onCommit(null);
+            setWindowOpen(false);
+          }}
+        />
       )}
     </div>
   );

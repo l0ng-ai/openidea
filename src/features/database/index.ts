@@ -19,6 +19,8 @@ import {
   setFileDecorations,
   toolWindowService,
 } from "@/workbench/contributions";
+import { installCellActions } from "./cellActions";
+import { installValueEditorActions } from "./valueEditorActions";
 import { SQL_LANGUAGE } from "./sqlLanguage";
 import { TABLE_KIND, tableTitle } from "./tableInput";
 import { nodeTarget, type DbNode } from "./nodes";
@@ -123,6 +125,8 @@ export function activate(): () => void {
     () => setFileDecorations("database", new Map()),
     watchIdleConnections(),
     installTableEditorFocus(),
+    installValueEditorActions(),
+    installCellActions(),
     registerDatabaseTreeActions(),
     registerActions([
       {
