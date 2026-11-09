@@ -3454,6 +3454,81 @@ async fn unavailable_scope_capability_keeps_widening_and_incomplete_signals() {
     }
 }
 
+/// A common name is mentioned by more files than a search opens, but a server that reports its
+/// analysis scope already covers most of them: only those beyond it count toward the limit.
+#[tokio::test(flavor = "multi_thread")]
+async fn covered_candidates_do_not_count_toward_the_open_limit() {
+    for covers_all in [true, false] {
+        let mut caps = incremental_caps();
+        caps["executeCommandProvider"]["commands"] = json!(["openidea.workspace.coveredFiles"]);
+        let h = harness(&[("mock", caps)]);
+        let s = h.launcher.state("mock");
+        let files: Vec<PathBuf> = (0..ide_lsp::MAX_CANDIDATES + 100)
+            .map(|i| {
+                let path = h.root.join(format!("f{i:03}.mk"));
+                std::fs::write(&path, "target\n").unwrap();
+                path
+            })
+            .collect();
+        let covered: Vec<String> = if covers_all { files.iter().map(|f| uri_of(f)).collect() } else { vec![] };
+        let responder = open_files_only(vec![]);
+        *s.responder.lock() = Some(Arc::new(move |s, method, params| {
+            if method == "workspace/executeCommand" {
+                return Some(json!(covered));
+            }
+            responder(s, method, params)
+        }));
+        let seen = grep_candidates(&h);
+        let (doc, _) = h.open("a.mk", "def target\n");
+        h.wait_status("mock", ServerStatus::Ready).await;
+        let refs = h.mgr.references(doc, Pos::new(0, 5), true, true, Default::default()).await.unwrap();
+        assert!(seen.lock().iter().all(|q| q.limit > ide_lsp::MAX_CANDIDATES));
+        let opened = s.notified("textDocument/didOpen").len() - 1;
+        if covers_all {
+            assert_eq!(refs.incomplete, None);
+            assert_eq!(opened, 0);
+            assert_eq!(s.requested("textDocument/references").len(), 1);
+        } else {
+            assert_eq!(refs.incomplete, Some(ReferencesIncomplete::TooManyFiles));
+            assert_eq!(opened, ide_lsp::MAX_CANDIDATES);
+        }
+    }
+}
+
+/// Files under the directories a server analyses fully are not read to find candidates.
+#[tokio::test(flavor = "multi_thread")]
+async fn candidates_skip_the_directories_the_server_covers() {
+    for (commands, reported) in [
+        (json!(["openidea.workspace.coveredFiles", "openidea.workspace.coveredRoots"]), json!(["src"])),
+        (json!(["openidea.workspace.coveredFiles", "openidea.workspace.coveredRoots"]), json!(null)),
+        (json!(["openidea.workspace.coveredFiles"]), json!(["src"])),
+    ] {
+        let mut caps = incremental_caps();
+        caps["executeCommandProvider"]["commands"] = commands.clone();
+        let h = harness(&[("mock", caps)]);
+        let s = h.launcher.state("mock");
+        let src = h.root.join("src");
+        let roots = reported.as_array().map(|r| r.iter().map(|_| json!(uri_of(&src))).collect::<Vec<_>>());
+        let responder = open_files_only(vec![]);
+        *s.responder.lock() = Some(Arc::new(move |s, method, params| {
+            if method == "workspace/executeCommand" {
+                return Some(match params["command"].as_str() {
+                    Some("openidea.workspace.coveredRoots") => roots.clone().map_or(json!(null), Value::Array),
+                    _ => json!([]),
+                });
+            }
+            responder(s, method, params)
+        }));
+        let seen = grep_candidates(&h);
+        let (doc, _) = h.open("a.mk", "def target\n");
+        h.wait_status("mock", ServerStatus::Ready).await;
+        h.mgr.references(doc, Pos::new(0, 5), true, true, Default::default()).await.unwrap();
+        let skipped: Vec<Vec<PathBuf>> = seen.lock().iter().map(|q| q.skip.clone()).collect();
+        let expected = if commands.as_array().unwrap().len() == 2 && reported.is_array() { vec![src] } else { vec![] };
+        assert_eq!(skipped, vec![expected], "{commands} {reported}");
+    }
+}
+
 #[tokio::test(flavor = "multi_thread")]
 async fn references_open_unopened_files_that_mention_the_name() {
     let (h, s) = scope_harness();
