@@ -45,6 +45,7 @@ export interface IconButtonProps extends Omit<ButtonHTMLAttributes<HTMLButtonEle
   shortcut?: string;
   /** Toggle state (renders `aria-pressed`). */
   pressed?: boolean;
+  /** Button dimensions; icons keep their 16px size unless iconSize is set. */
   size?: "small" | "normal" | "large";
   iconSize?: number;
   tone?: "default" | "danger" | "accent";
@@ -75,7 +76,7 @@ export const IconButton = forwardRef<HTMLButtonElement, IconButtonProps>(functio
   const label = tx(title) ?? a?.title ?? action ?? icon;
   const keys = shortcut ?? (action ? shortcutLabel(action) : undefined);
   const busy = useRunningActions((s) => (action ? s.running.has(action) : false));
-  const glyphSize = iconSize ?? (size === "small" ? 14 : 16);
+  const glyphSize = iconSize ?? 16;
   return (
     <button
       ref={ref}

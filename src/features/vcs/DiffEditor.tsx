@@ -1133,14 +1133,14 @@ export function DiffEditor({
         )}
         <span className={styles.sep} />
         <IconButton
-          icon="split"
+          icon="diff-side-by-side"
           title="Side-by-side Viewer"
           size="small"
           pressed={opts.mode === "split"}
           onClick={() => setOpts({ mode: "split" })}
         />
         <IconButton
-          icon="list"
+          icon="diff-unified"
           title="Unified Viewer"
           size="small"
           pressed={opts.mode === "unified"}
