@@ -15,7 +15,8 @@
 //! `controllerAction` and `resourceAction` ([`controller_action`]),
 //! `middleware` ([`middleware`]), `viewName` ([`view_name`]), and
 //! `validationRule` and `requestField` ([`validation_rule`]), and
-//! `eloquentField` and `eloquentRelation` ([`eloquent`]).
+//! `eloquentField` and `eloquentRelation` ([`eloquent`]), and `gate`,
+//! `authGuard` and `passwordBroker` ([`gate`]).
 //!
 //! A place may also be the value a method returns
 //! ([`CalleePattern::Return`]: what a Form Request's `rules()` returns), or
@@ -51,6 +52,7 @@ pub mod controller_action;
 pub mod db_table;
 pub mod eloquent;
 pub mod env_key;
+pub mod gate;
 pub mod intentions;
 pub mod middleware;
 pub mod route_name;
@@ -92,6 +94,7 @@ pub use controller_action::{ControllerAction, ResourceAction};
 pub use db_table::DbTable;
 pub use eloquent::{EloquentField, EloquentRelation};
 pub use env_key::EnvKey;
+pub use gate::{AuthGuard, Gate, PasswordBroker};
 pub use middleware::Middleware;
 pub use route_name::RouteName;
 pub use translation_key::TranslationKey;
@@ -206,6 +209,13 @@ impl PlacePattern {
                         classes.iter().any(|class| fqn_eq(NameKind::ClassLike, receiver, class))
                             || resolver.class_model(receiver).is_some_and(|model| {
                                 classes.iter().any(|class| class.contains('\\') && model.is_subclass_of(class))
+                                    // A method of a listed trait the class uses
+                                    // (`AuthorizesRequests::authorize`).
+                                    || model.method(name).is_some_and(|method| {
+                                        classes.iter().any(|class| {
+                                            fqn_eq(NameKind::ClassLike, method.declaring.fqn.trim_start_matches('\\'), class)
+                                        })
+                                    })
                             })
                     })
             }
@@ -271,6 +281,12 @@ pub struct StringSite {
     /// The byte the call (or the `return`) starts at: strings of one call
     /// share it.
     pub call: u32,
+    /// What the positional argument after the string's argument is, for
+    /// kinds that ask ([`ReferenceKind::uses_next_argument`]): the classes
+    /// of its type (`$post` in `Gate::allows('update', $post)`, the first
+    /// element of an array), the class of `Post::class`, or the content of
+    /// a string literal.
+    pub next_argument: Vec<String>,
 }
 
 /// Helpers that return a service when called without arguments, as
@@ -282,6 +298,7 @@ const HELPER_INSTANCES: &[(&str, &str)] = &[
     ("response", "Illuminate\\Routing\\ResponseFactory"),
     ("view", "Illuminate\\View\\Factory"),
     ("trans", "Illuminate\\Translation\\Translator"),
+    ("auth", "Illuminate\\Auth\\AuthManager"),
 ];
 
 /// What a string literal sits in: a call, or the value a method returns.
@@ -330,6 +347,9 @@ struct RawSite<'a> {
     steps: Vec<ArrayStep>,
     /// The `Foo::class` of the string's array: the name and its offset.
     class: Option<(String, u32)>,
+    /// The positional argument after the string's argument, when its call
+    /// is named like a pattern of a kind using it.
+    next: Option<&'a Expression<'a>>,
 }
 
 struct Collect<'a, 'n> {
@@ -337,6 +357,10 @@ struct Collect<'a, 'n> {
     want: Option<u32>,
     /// The function and method names asked about, lower case.
     names: &'n HashSet<String>,
+    /// Those of kinds using the argument after the string's.
+    next_names: &'n HashSet<String>,
+    /// The argument after the one being walked, for those calls.
+    next: Option<&'a Expression<'a>>,
     out: Vec<RawSite<'a>>,
     /// The class-likes, functions and methods around the walker.
     frames: Vec<Frame>,
@@ -396,6 +420,7 @@ impl<'a> Collect<'a, '_> {
                         argument_name: at.1.map(str::to_owned),
                         steps: steps.clone(),
                         class: class.cloned(),
+                        next: self.next,
                     });
                 }
             }
@@ -534,12 +559,23 @@ impl<'a> Walker<'a, 'a, Collect<'a, '_>> for SiteWalker {
             return;
         }
         let call = SiteCall::Call(expr);
+        let wants_next = cx.next_names.contains(&name.to_ascii_lowercase());
+        let positionals: Vec<&'a Expression<'a>> = list
+            .arguments
+            .iter()
+            .filter_map(|argument| match argument {
+                Argument::Positional(argument) => Some(argument.value),
+                Argument::Named(_) => None,
+            })
+            .collect();
         let mut positional = 0;
         for argument in list.arguments.iter() {
             let mut steps = Vec::new();
             match argument {
                 Argument::Positional(argument) => {
+                    cx.next = if wants_next { positionals.get(positional + 1).copied() } else { None };
                     cx.strings(&call, argument.value, (Some(positional), None), &mut steps, None);
+                    cx.next = None;
                     positional += 1;
                 }
                 Argument::Named(argument) => {
@@ -565,7 +601,14 @@ pub fn sites(
         .flat_map(|kind| kind.patterns().iter().flat_map(PlacePattern::names))
         .map(str::to_ascii_lowercase)
         .collect();
-    let mut collect = Collect { want, names: &names, out: Vec::new(), frames: Vec::new() };
+    let next_names: HashSet<String> = kinds
+        .iter()
+        .filter(|kind| kind.uses_next_argument())
+        .flat_map(|kind| kind.patterns().iter().flat_map(PlacePattern::names))
+        .map(str::to_ascii_lowercase)
+        .collect();
+    let mut collect =
+        Collect { want, names: &names, next_names: &next_names, next: None, out: Vec::new(), frames: Vec::new() };
     SiteWalker.walk_program(parsed.program(), &mut collect);
     if collect.out.is_empty() {
         return Vec::new();
@@ -604,6 +647,7 @@ pub fn sites(
                     Resolution::Relative(_) => None,
                 }
             });
+            let next_argument = raw.next.map(|next| next_argument(&types, &file_names, next)).unwrap_or_default();
             let start = raw.span.start.offset + 1;
             let end = raw.span.end.offset.saturating_sub(1).max(start);
             Some(StringSite {
@@ -616,9 +660,46 @@ pub fn sites(
                 steps: raw.steps,
                 class,
                 call,
+                next_argument,
             })
         })
         .collect()
+}
+
+/// See [`StringSite::next_argument`].
+fn next_argument<'a>(types: &ExprTypes<'a, '_>, names: &FileNames, expr: &'a Expression<'a>) -> Vec<String> {
+    let first = |elements: Vec<&'a ArrayElement<'a>>| match elements.first() {
+        Some(ArrayElement::Value(element)) => Some(element.value),
+        _ => None,
+    };
+    let expr = match expr {
+        Expression::Array(array) => first(array.elements.iter().collect()),
+        Expression::LegacyArray(array) => first(array.elements.iter().collect()),
+        _ => Some(expr),
+    };
+    let Some(expr) = expr else { return Vec::new() };
+    if let Some((name, offset)) = class_constant(expr) {
+        return match names.scope_at(offset).resolve(NameKind::ClassLike, &name).resolution {
+            Resolution::Fqn(fqn) | Resolution::Fallback { namespaced: fqn, .. } => {
+                vec![fqn.trim_start_matches('\\').to_owned()]
+            }
+            Resolution::Relative(_) => Vec::new(),
+        };
+    }
+    if let Expression::Literal(Literal::String(string)) = expr {
+        return string.value.map(lossy).into_iter().collect();
+    }
+    let frames = types.locate(expr.span().start.offset).expression.map(|(_, frames)| frames).unwrap_or_default();
+    let mut out: Vec<String> = Vec::new();
+    for member in types.type_of(expr, &frames).members() {
+        if let Type::Named { fqn, .. } = member {
+            let fqn = fqn.trim_start_matches('\\').to_owned();
+            if !out.contains(&fqn) {
+                out.push(fqn);
+            }
+        }
+    }
+    out
 }
 
 fn call_target<'a>(
@@ -642,6 +723,8 @@ fn call_target<'a>(
         .iter()
         .filter_map(|member| match member {
             Type::Named { fqn, .. } => Some(fqn.trim_start_matches('\\').to_owned()),
+            // `$this`, `static`, `self`: the class the call is in.
+            Type::Relative(_) | Type::GenericRelative { .. } => types.context(&frames).self_class,
             _ => None,
         })
         .collect();
@@ -711,6 +794,8 @@ pub struct SiteInfo {
     /// The key of the string's entry in the argument's array, when it sits
     /// in one (`'title'` for `['title' => 'required']`).
     pub key: Option<String>,
+    /// [`StringSite::next_argument`].
+    pub next_argument: Vec<String>,
 }
 
 impl RefContext<'_> {
@@ -819,6 +904,12 @@ pub trait ReferenceKind: Send + Sync {
     /// inspection).
     fn is_known(&self, cx: &RefContext<'_>, value: &str) -> bool;
 
+    /// Whether the kind looks at the argument after the string's
+    /// ([`SiteInfo::next_argument`]).
+    fn uses_next_argument(&self) -> bool {
+        false
+    }
+
     /// Markdown describing what a usage written `value` names (hover).
     fn hover(&self, _cx: &RefContext<'_>, _value: &str) -> Option<String> {
         None
@@ -889,6 +980,9 @@ pub fn kinds() -> &'static [&'static dyn ReferenceKind] {
         &EloquentField,
         &EloquentRelation,
         &DbTable,
+        &Gate,
+        &AuthGuard,
+        &PasswordBroker,
     ]
 }
 
@@ -1018,6 +1112,7 @@ impl PhpEngine {
             class,
             call: Some((site.target.clone(), site.call)),
             key,
+            next_argument: site.next_argument.clone(),
         });
         Some(cx)
     }
@@ -1139,12 +1234,12 @@ impl PhpEngine {
         out
     }
 
-    /// The undefined configuration keys, environment keys, translations and
-    /// Vite assets of a Blade template, as diagnostics of the template.
+    /// The undefined configuration keys, environment keys, translations, Vite
+    /// assets and abilities of a Blade template, as diagnostics of the template.
     pub(crate) fn blade_reference_problems(&self, text: &str) -> Vec<Diagnostic> {
         let compiled = crate::blade::compile(text, false);
         let parsed = ParsedFile::parse("template.php", compiled.php.as_str());
-        let kinds: [&'static dyn ReferenceKind; 4] = [&ConfigKey, &EnvKey, &TranslationKey, &ViteAsset];
+        let kinds: [&'static dyn ReferenceKind; 5] = [&ConfigKey, &EnvKey, &TranslationKey, &ViteAsset, &Gate];
         let lines = crate::syntax::LineIndex::new(text);
         let mut out = Vec::new();
         for found in self.undefined_references(&parsed, Path::new(""), &kinds, &CancellationToken::new()) {

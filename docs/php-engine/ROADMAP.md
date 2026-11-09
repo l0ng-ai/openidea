@@ -648,7 +648,7 @@ Runs after Plan 7. Before any 8.x phase, read [LARAVEL-ROADMAP.md](LARAVEL-ROADM
 
   Tests: before/after fixtures per action.
 
-- [ ] Phase 8.16: Gates, policies and auth
+- [x] Phase 8.16: Gates, policies and auth
       Add the `gate` kind:
   - `Gate::allows/denies/authorize`, `$user->can/cannot`, `@can`, `authorize()`, `can:` middleware
   - completion of abilities from gates and the matching policy's methods (by model argument)

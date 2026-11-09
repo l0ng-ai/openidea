@@ -149,6 +149,15 @@ namespace Illuminate\Support\Facades {
      * @method static \Illuminate\Contracts\Auth\Access\Gate define(\UnitEnum|string $ability, callable|array|string $callback)
      * @method static \Illuminate\Auth\Access\Response authorize(\UnitEnum|string $ability, mixed $arguments = [])
      * @method static bool allows(iterable|\UnitEnum|string $ability, mixed $arguments = [])
+     * @method static bool denies(iterable|\UnitEnum|string $ability, mixed $arguments = [])
+     * @method static bool check(iterable|\UnitEnum|string $abilities, mixed $arguments = [])
+     * @method static bool any(iterable|\UnitEnum|string $abilities, mixed $arguments = [])
+     * @method static bool none(iterable|\UnitEnum|string $abilities, mixed $arguments = [])
+     * @method static \Illuminate\Auth\Access\Response inspect(\UnitEnum|string $ability, mixed $arguments = [])
+     * @method static bool has(iterable|\UnitEnum|string $ability)
+     * @method static \Illuminate\Auth\Access\Gate define(\UnitEnum|string $ability, callable|array|string $callback)
+     * @method static \Illuminate\Auth\Access\Gate resource(string $name, string $class, array|null $abilities = null)
+     * @method static \Illuminate\Auth\Access\Gate policy(string $class, string $policy)
      */
     class Gate extends Facade {
         protected static function getFacadeAccessor() { return \Illuminate\Contracts\Auth\Access\Gate::class; }
@@ -156,6 +165,17 @@ namespace Illuminate\Support\Facades {
     /**
      * @method static \Illuminate\Foundation\Console\ClosureCommand command(string $signature, \Closure $callback)
      */
+    /**
+     * @method static \Illuminate\Contracts\Auth\Guard guard(string|null $name = null)
+     * @method static void shouldUse(string $name)
+     */
+    class Auth extends Facade {
+        protected static function getFacadeAccessor() { return 'auth'; }
+    }
+    /** @method static \Illuminate\Auth\Passwords\PasswordBroker broker(string|null $name = null) */
+    class Password extends Facade {
+        protected static function getFacadeAccessor() { return 'auth.password'; }
+    }
     class Artisan extends Facade {
         protected static function getFacadeAccessor() { return \Illuminate\Contracts\Console\Kernel::class; }
     }
@@ -225,6 +245,35 @@ namespace Illuminate\Contracts\Auth\Access {
 
 namespace Illuminate\Auth\Access {
     class Response {}
+    class Gate implements \Illuminate\Contracts\Auth\Access\Gate {
+        public function allows($ability, $arguments = []): bool { return false; }
+        public function forUser($user): static { return $this; }
+    }
+}
+
+namespace Illuminate\Contracts\Auth {
+    interface Guard {}
+}
+
+namespace Illuminate\Auth {
+    class AuthManager {
+        public function guard($name = null): ?\Illuminate\Contracts\Auth\Guard { return null; }
+        public function shouldUse($name): void {}
+    }
+}
+
+namespace Illuminate\Auth\Passwords {
+    class PasswordBroker {}
+    class PasswordBrokerManager {
+        public function broker($name = null): PasswordBroker { return new PasswordBroker(); }
+    }
+}
+
+namespace Illuminate\Foundation\Auth\Access {
+    trait AuthorizesRequests {
+        public function authorize($ability, $arguments = []): \Illuminate\Auth\Access\Response { return new \Illuminate\Auth\Access\Response(); }
+        public function authorizeForUser($user, $ability, $arguments = []): \Illuminate\Auth\Access\Response { return new \Illuminate\Auth\Access\Response(); }
+    }
 }
 
 namespace Illuminate\Contracts\Console {
@@ -267,6 +316,7 @@ namespace Illuminate\Routing {
         public function name(string $name): static { return $this; }
         public function middleware(array|string|null $middleware = null): static { return $this; }
         public function withoutMiddleware(array|string $middleware): static { return $this; }
+        public function can($ability, $models = []): static { return $this; }
     }
     class RouteRegistrar {
         public function get(string $uri, array|string|callable|null $action = null): \Illuminate\Routing\Route { return new \Illuminate\Routing\Route(); }
@@ -540,6 +590,8 @@ namespace Illuminate\Pagination {
 namespace Illuminate\Foundation\Auth {
     class User extends \Illuminate\Database\Eloquent\Model {
         public function can($abilities, $arguments = []): bool { return false; }
+        public function cannot($abilities, $arguments = []): bool { return false; }
+        public function canAny($abilities, $arguments = []): bool { return false; }
     }
 }
 

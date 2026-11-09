@@ -13,6 +13,9 @@ function resolve($name, array $parameters = []) { return null; }
 function config($key = null, $default = null) { return null; }
 
 /** @return mixed */
+function auth($guard = null) { return null; }
+
+/** @return mixed */
 function env($key, $default = null) { return null; }
 
 /** @return mixed */

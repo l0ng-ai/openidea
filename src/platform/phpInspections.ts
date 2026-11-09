@@ -255,6 +255,13 @@ export const PHP_INSPECTIONS: readonly PhpInspection[] = [
     description:
       "Reports column names in Eloquent queries (where(), orderBy(), select(), create([...]) and the like) and in a model's $fillable, $hidden, $casts or $appends that the model's table doesn't have. Only reported when the migrations say for certain which columns the table has.",
   },
+  {
+    code: "PhpUnknownAbility",
+    name: "Unknown ability",
+    group: "Frameworks",
+    description:
+      "Reports Laravel abilities, in Gate::allows(), $user->can(), authorize() or @can, that no gate defines and that aren't a method of the model's policy (of any policy when the model isn't known).",
+  },
 ];
 
 const BY_ID = new Map(PHP_INSPECTIONS.map((i) => [phpInspectionId(i.code), i]));

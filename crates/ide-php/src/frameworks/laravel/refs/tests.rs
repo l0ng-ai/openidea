@@ -428,3 +428,6 @@ mod model_view_tests;
 
 #[path = "intentions_tests.rs"]
 mod intentions_tests;
+
+#[path = "auth_tests.rs"]
+mod auth_tests;

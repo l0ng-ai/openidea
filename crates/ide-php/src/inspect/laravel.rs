@@ -15,6 +15,9 @@
 //! - `PhpUnknownEloquentColumn`: a column name in a query or a model's
 //!   attribute lists that the model's table doesn't have, when the
 //!   migrations say for certain which columns it has.
+//! - `PhpUnknownAbility`: an ability (`Gate::allows`, `$user->can`, `@can`,
+//!   …) that no gate defines and that isn't a method of the policy of its
+//!   model (of any policy, without a model).
 //!
 //! They run only while the indexes are ready, in Laravel projects.
 
@@ -23,7 +26,7 @@ use ide_core::Severity;
 use super::{Inspection, InspectionContext, Problems, QuickFix};
 use crate::engine::{EngineState, is_meta_path};
 use crate::frameworks::laravel::refs::{
-    ConfigKey, EloquentField, EnvKey, ReferenceKind, TranslationKey, ValidationRule, ViteAsset,
+    ConfigKey, EloquentField, EnvKey, Gate, ReferenceKind, TranslationKey, ValidationRule, ViteAsset,
 };
 
 /// One "undefined …" inspection; see the module documentation.
@@ -33,13 +36,14 @@ pub struct UndefinedReference {
 }
 
 /// The inspections, as `(inspection id, kind)`.
-const INSPECTIONS: [(&str, &dyn ReferenceKind); 6] = [
+const INSPECTIONS: [(&str, &dyn ReferenceKind); 7] = [
     ("PhpUndefinedConfigKey", &ConfigKey),
     ("PhpUndefinedEnvKey", &EnvKey),
     ("PhpUndefinedTranslation", &TranslationKey),
     ("PhpUndefinedViteAsset", &ViteAsset),
     ("PhpUnknownValidationRule", &ValidationRule),
     ("PhpUnknownEloquentColumn", &EloquentField),
+    ("PhpUnknownAbility", &Gate),
 ];
 
 impl UndefinedReference {

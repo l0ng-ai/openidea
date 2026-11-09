@@ -55,7 +55,8 @@ use ide_core::{CancellationToken, DocId, IdeError, IdeEvent, IdeResult, Pos, Ser
 use parking_lot::{Condvar, Mutex, RwLock};
 
 use crate::frameworks::laravel::{
-    BladeCatalog, ConfigKeys, EnvKeys, LaravelProject, LiveSchema, RouteTable, Translations, ViewTable, ViteAssets,
+    AuthFacts, BladeCatalog, ConfigKeys, EnvKeys, LaravelProject, LiveSchema, RouteTable, Translations, ViewTable,
+    ViteAssets,
 };
 use crate::index::{IndexStats, PhpIndex};
 use crate::inspect::runner::Runner;
@@ -197,6 +198,8 @@ struct Shared {
     laravel_env: Mutex<Option<(u64, Arc<EnvKeys>)>>,
     laravel_lang: Mutex<Option<(u64, Arc<Translations>)>>,
     laravel_assets: Mutex<Option<(u64, Arc<ViteAssets>)>>,
+    /// The Laravel gates and policies, for a modification count.
+    laravel_auth: Mutex<Option<(u64, Arc<AuthFacts>)>>,
     /// The Laravel routes, for a modification count.
     laravel_routes: Mutex<Option<(u64, Arc<RouteTable>)>>,
     /// The Laravel views, for a modification count.
@@ -261,6 +264,7 @@ impl PhpEngine {
             laravel_env: Mutex::new(None),
             laravel_lang: Mutex::new(None),
             laravel_assets: Mutex::new(None),
+            laravel_auth: Mutex::new(None),
             laravel_routes: Mutex::new(None),
             laravel_views: Mutex::new(None),
             view_variables: Mutex::new(HashMap::new()),
@@ -654,6 +658,13 @@ impl PhpEngine {
         self.laravel_cached(&self.shared.laravel_assets, |project| {
             ViteAssets::read(&project.root, &project.paths.resources, |path| std::fs::read_to_string(path).ok())
         })
+    }
+
+    /// The gates and policies of the Laravel project's service providers and
+    /// policy folders (open buffers first), or `None` when the project isn't a
+    /// Laravel project.
+    pub fn laravel_auth(&self) -> Option<Arc<AuthFacts>> {
+        self.laravel_cached(&self.shared.laravel_auth, |project| AuthFacts::read(project, |path| self.text_of(path)))
     }
 
     /// The routes and middleware of the Laravel project (its route files,

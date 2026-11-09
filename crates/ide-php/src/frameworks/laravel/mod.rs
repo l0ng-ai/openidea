@@ -1,7 +1,8 @@
 //! Laravel support (`docs/php-engine/LARAVEL-ROADMAP.md`): the project
 //! model ([`project`]) every Laravel feature reads, the configuration keys
 //! ([`config`]), a live database schema ([`database`]), the environment
-//! keys ([`env`]), the translations
+//! keys ([`env`]), the gates, policies, guards and password brokers
+//! ([`auth`]), the translations
 //! ([`lang`]), the Vite assets ([`assets`]), the routes and middleware
 //! ([`routes`]), the Eloquent model view ([`model_view`]), the route hints and route search ([`route_hints`]), the
 //! views ([`views`]), Blade layouts, components and directives ([`blade`]),
@@ -10,6 +11,7 @@
 //! Only Laravel's own source and documentation (MIT) are design inputs.
 
 pub mod assets;
+pub mod auth;
 pub mod blade;
 pub mod config;
 pub mod database;
@@ -28,6 +30,7 @@ pub mod views;
 mod tests;
 
 pub use assets::ViteAssets;
+pub use auth::{AuthEntry, AuthFacts, GateDef, PolicyDef};
 pub use blade::{BladeCatalog, BladeComponent, CustomDirective};
 pub use config::{ConfigEntry, ConfigKeys};
 pub use database::{LiveColumn, LiveSchema, LiveTable};

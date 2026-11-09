@@ -6,8 +6,14 @@
 //! reference. Goto opens the alias's class (or where the project declares
 //! it, for a group).
 //!
+//! The parameters of three of Laravel's middleware are references too
+//! ([`Parameter`]): the ability of `can:update,post` (completion, goto and
+//! hover as the `gate` kind does it, the model from the route parameter or
+//! class after it), and the guards of `auth:web,api` and `guest:web`.
+//!
 //! [`MiddlewareDef`]: crate::frameworks::laravel::MiddlewareDef
 
+use super::gate::{ability_hover, ability_items, ability_targets, guard_items, guard_targets};
 use super::{CalleePattern, PlacePattern, Position, RefContext, RefItem, ReferenceKind};
 use crate::frameworks::laravel::RouteTable;
 use crate::navigate::Target;
@@ -42,6 +48,42 @@ fn name_of(value: &str) -> &str {
     value.split_once(':').map_or(value, |(name, _)| name)
 }
 
+/// A parameter of a middleware value that is a reference.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum Parameter<'v> {
+    /// The ability of `can:`, with the parameters after it (the models).
+    Ability { name: &'v str, subjects: Vec<String> },
+    /// A guard of `auth:` or `guest:`.
+    Guard(&'v str),
+}
+
+/// The parameter of `value` around byte `at` and its byte range, when it is
+/// a reference.
+pub fn parameter_at(value: &str, at: usize) -> Option<(Parameter<'_>, usize, usize)> {
+    let (name, params) = value.split_once(':')?;
+    let base = name.len() + 1;
+    if at < base {
+        return None;
+    }
+    let mut start = base;
+    let mut parts = Vec::new();
+    for part in params.split(',') {
+        parts.push((start, part));
+        start += part.len() + 1;
+    }
+    let index = parts.iter().rposition(|(start, _)| *start <= at)?;
+    let (start, part) = parts[index];
+    let end = start + part.len();
+    match name {
+        "can" if index == 0 => {
+            let subjects = parts[1..].iter().map(|(_, part)| part.trim().to_owned()).collect();
+            Some((Parameter::Ability { name: part, subjects }, start, end))
+        }
+        "auth" | "guest" => Some((Parameter::Guard(part), start, end)),
+        _ => None,
+    }
+}
+
 /// See the module documentation.
 pub struct Middleware;
 
@@ -64,7 +106,11 @@ impl ReferenceKind for Middleware {
         let to = value.find(':').unwrap_or(value.len());
         if at > to {
             // In the parameters.
-            return Vec::new();
+            return match parameter_at(value, at) {
+                Some((Parameter::Ability { subjects, .. }, start, end)) => ability_items(cx, &subjects, start, end),
+                Some((Parameter::Guard(_), start, end)) => guard_items(cx, start, end),
+                None => Vec::new(),
+            };
         }
         Self::table(cx)
             .middleware()
@@ -85,7 +131,12 @@ impl ReferenceKind for Middleware {
             .collect()
     }
 
-    fn resolve(&self, cx: &RefContext<'_>, value: &str, _at: usize) -> Vec<Target> {
+    fn resolve(&self, cx: &RefContext<'_>, value: &str, at: usize) -> Vec<Target> {
+        match parameter_at(value, at) {
+            Some((Parameter::Ability { name, subjects }, ..)) => return ability_targets(cx, &subjects, name),
+            Some((Parameter::Guard(name), ..)) => return guard_targets(cx, name),
+            None => {}
+        }
         let name = name_of(value);
         let table = Self::table(cx);
         let Some(middleware) = table.middleware_named(name) else {
@@ -111,6 +162,14 @@ impl ReferenceKind for Middleware {
 
     fn canonical(&self, _cx: &RefContext<'_>, value: &str) -> String {
         name_of(value).to_owned()
+    }
+
+    fn hover(&self, cx: &RefContext<'_>, value: &str) -> Option<String> {
+        let at = value.find(':')? + 1;
+        match parameter_at(value, at)? {
+            (Parameter::Ability { name, subjects }, ..) => ability_hover(cx, &subjects, name),
+            (Parameter::Guard(_), ..) => None,
+        }
     }
 
     fn is_known(&self, cx: &RefContext<'_>, value: &str) -> bool {

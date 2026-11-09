@@ -27,6 +27,9 @@ manual QA, do the same or run `composer install` on a copy.
 - `crates/ide-php/src/frameworks/laravel/refs/eloquent_tests.rs` checks Eloquent columns and
   nested relations in queries and model properties (completion, goto, hover, the unknown-column
   inspection), relation closures, typed collections, factories and `*_count` properties.
+- `crates/ide-php/src/frameworks/laravel/refs/auth_tests.rs` checks gates, policies, guards and password
+  brokers (completion, goto, hover, usages and rename of gates, the unknown-ability inspection,
+  `can:`/`auth:` middleware parameters, `@can` in Blade).
 - `crates/ide-host/tests/language_smoke.rs` (`laravel`) checks hover and completion on a
   model attribute through the app's `ops`.
 
@@ -60,6 +63,7 @@ manual QA, do the same or run `composer install` on a copy.
 | `app/Services/FeedBuilder.php`                                                              | the bound service, a nested `config()` key                                                                                                                                                                                                                    |
 | `app/Console/Commands/PublishScheduledPosts.php`                                            | an Artisan command: `$signature` with an option, `$description`, `option()`                                                                                                                                                                                   |
 | `app/View/Components/Alert.php`                                                             | a class-based Blade component                                                                                                                                                                                                                                 |
+| `config/auth.php`                                                                           | guards (`web`, `admin`) and the `users` password broker                                                                                                                                                                                                       |
 | `config/app.php`, `config/blog.php`                                                         | config keys, nested arrays, `env()` keys                                                                                                                                                                                                                      |
 | `lang/en/messages.php`, `lang/en.json`, `lang/fr/*`, `lang/fr.json`                         | PHP (nested) and JSON translation keys in two locales                                                                                                                                                                                                         |
 | `database/migrations/*`                                                                     | `Schema::create` and `Schema::table`, `foreignId()->constrained()`, `timestamps`, `softDeletes`, a pivot table                                                                                                                                                |
