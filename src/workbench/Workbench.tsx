@@ -33,8 +33,8 @@ function useAppearanceFlag(key: "showMainToolbar" | "showStatusBar"): boolean {
 type NavigationBarPosition = "top" | "statusBar" | "hidden";
 function useNavigationBarPosition(): NavigationBarPosition {
   const position = useProject((s) => s.settings?.appearance?.navigationBar);
-  // Nothing loaded yet, or a malformed value: match the backend default (`top`).
-  return position === "top" || position === "statusBar" || position === "hidden" ? position : "top";
+  // Nothing loaded yet, or a malformed value: match the backend default (`statusBar`).
+  return position === "top" || position === "statusBar" || position === "hidden" ? position : "statusBar";
 }
 
 /** LightEdit: editor tabs only; no tool windows, toolbar widgets or project status items. */

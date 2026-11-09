@@ -48,12 +48,12 @@ describe("caret-driven status widgets", () => {
       project: {
         root: "/workspace",
         name: "Workspace",
-        settings: { appearance: { navigationBar: "statusBar" } },
+        settings: { appearance: { navigationBar: "top" } },
         trusted: true,
         isGit: false,
         workspace: { version: 1, name: "Workspace", projects: ["/a", "/b"] },
       },
-      settings: { appearance: { navigationBar: "statusBar" } } as unknown as Settings,
+      settings: { appearance: { navigationBar: "top" } } as unknown as Settings,
     });
     useOutline.setState({ [PATH]: [item("Orders", 0, 40, [item("place", 2, 10), item("cancel", 12, 20)])] });
     act(() => useEditorStatus.setState({ status: caret(3, 4) }));
@@ -88,16 +88,17 @@ describe("caret-driven status widgets", () => {
 });
 
 it("shows the member and its directories in workspace breadcrumbs", async () => {
+  // No `navigationBar` key: the status bar is the default placement.
   useProject.setState({
     project: {
       root: "/workspace",
       name: "Workspace",
-      settings: { appearance: { navigationBar: "statusBar" } },
+      settings: {},
       trusted: true,
       isGit: false,
       workspace: { version: 1, name: "Workspace", projects: ["/a", "/b"] },
     },
-    settings: { appearance: { navigationBar: "statusBar" } } as unknown as Settings,
+    settings: {} as unknown as Settings,
   });
   useEditorStatus.setState({ status: { ...caret(0, 0), path: "/b/src/file.ts" } });
   const view = render(<Breadcrumbs inStatusBar />);

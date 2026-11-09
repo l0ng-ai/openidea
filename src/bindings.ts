@@ -1944,8 +1944,8 @@ export type AppearanceSettings = {
 	showMainToolbar?: boolean,
 	showStatusBar?: boolean,
 	/**
-	 *  View › Appearance › Navigation Bar: the file path breadcrumbs, shown above
-	 *  the editor, in the status bar, or not at all.
+	 *  View › Appearance › Navigation Bar: the file path breadcrumbs, shown in
+	 *  the status bar by default, above the editor, or not at all.
 	 */
 	navigationBar?: NavigationBarPosition,
 	/**
@@ -6013,7 +6013,10 @@ export type ModuleStructureSettings = {
 export type NavigationBarPosition = 
 /**  Above the editor, below the main menu / toolbar. */
 "top" | 
-/**  In the footer, next to the status bar widgets. */
+/**
+ *  In the footer, next to the status bar widgets — the default, matching
+ *  where the bar lived before the three-state choice existed.
+ */
 "statusBar" | 
 /**  Not shown at all. */
 "hidden";
@@ -6949,6 +6952,8 @@ export type ProjectStructureSettings = {
 	unmarked?: string[],
 	/**  Content roots besides the project folder (absolute paths), shown and searched with it. */
 	contentRoots?: string[],
+	/**  Other projects (absolute paths) this project depends on; indexed and navigable like content roots. */
+	dependencies?: string[],
 	/**  "Exclude files": `;`-separated name patterns (`*.log;tmp*`) excluded at any depth. */
 	excludeFiles?: string,
 	/**  Project compiler output directory (relative to project root or absolute; empty = default). */

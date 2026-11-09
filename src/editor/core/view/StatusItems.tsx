@@ -138,10 +138,11 @@ export function Breadcrumbs({ className, inStatusBar = false }: { className?: st
   const outline = useOutline((s) => (path ? s[path] : undefined));
   const chain = useCaretSymbols(path, outline) ?? NO_SYMBOLS;
   const position = useProject((s) => s.settings?.appearance?.navigationBar);
-  // The workbench top instance renders for anything but `hidden` (the caller
-  // gates on `top`); the status bar only renders it when the user picked the
-  // status bar explicitly.
-  const shown = inStatusBar ? position === "statusBar" : position !== "hidden";
+  // The status bar is the default (where the bar lived before the three-state
+  // choice), so the footer instance shows unless the user moved the bar to the
+  // top or hid it; the workbench top instance only renders for an explicit
+  // `top` (its caller gates the same way).
+  const shown = inStatusBar ? position !== "top" && position !== "hidden" : position === "top";
   const distractionFree = useDistractionFree((s) => s.active);
   if (!path || !shown || distractionFree) return null;
   const segments = pathCrumbs(project, path);

@@ -76,7 +76,7 @@ fn normalize_navigation_bar(mut layer: Json) -> Json {
         return layer;
     };
     if let Some(on) = legacy.as_bool() {
-        appearance.insert("navigationBar".into(), Json::String(if on { "top" } else { "hidden" }.into()));
+        appearance.insert("navigationBar".into(), Json::String(if on { "statusBar" } else { "hidden" }.into()));
     }
     // Not a boolean: leave it out and let the default apply, rather than silently
     // turning the navigation bar back on.
@@ -687,11 +687,11 @@ mod tests {
     #[test]
     fn legacy_navigation_bar_boolean_migrates_to_the_three_state_key() {
         let tmp = tempfile::tempdir().unwrap();
-        // `true` → `top`, the default position.
+        // `true` → `statusBar`, where the bar lived before the three-state choice.
         std::fs::write(tmp.path().join("settings.toml"), "[appearance]\nshowNavigationBar = true\n").unwrap();
         assert_eq!(
             SettingsStore::load(tmp.path(), None).effective().appearance.navigation_bar,
-            ide_core::settings::NavigationBarPosition::Top
+            ide_core::settings::NavigationBarPosition::StatusBar
         );
         // `false` → `hidden`.
         std::fs::write(tmp.path().join("settings.toml"), "[appearance]\nshowNavigationBar = false\n").unwrap();
@@ -699,21 +699,21 @@ mod tests {
             SettingsStore::load(tmp.path(), None).effective().appearance.navigation_bar,
             ide_core::settings::NavigationBarPosition::Hidden
         );
-        // An explicit three-state value wins over the legacy key.
+        // An explicit three-state value wins over the migrated legacy key.
         std::fs::write(
             tmp.path().join("settings.toml"),
-            "[appearance]\nshowNavigationBar = true\nnavigationBar = \"statusBar\"\n",
+            "[appearance]\nshowNavigationBar = true\nnavigationBar = \"top\"\n",
         )
         .unwrap();
         assert_eq!(
             SettingsStore::load(tmp.path(), None).effective().appearance.navigation_bar,
-            ide_core::settings::NavigationBarPosition::StatusBar
+            ide_core::settings::NavigationBarPosition::Top
         );
-        // A non-boolean legacy value is dropped and the default is used.
+        // A non-boolean legacy value is dropped and the default (status bar) is used.
         std::fs::write(tmp.path().join("settings.toml"), "[appearance]\nshowNavigationBar = \"everywhere\"\n").unwrap();
         assert_eq!(
             SettingsStore::load(tmp.path(), None).effective().appearance.navigation_bar,
-            ide_core::settings::NavigationBarPosition::Top
+            ide_core::settings::NavigationBarPosition::StatusBar
         );
     }
 

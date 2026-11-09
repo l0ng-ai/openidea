@@ -114,7 +114,7 @@ export const DEFAULT_APPEARANCE_EXTRAS: AppearanceExtras = {
   widescreenToolWindows: false,
   showMainToolbar: true,
   showStatusBar: true,
-  navigationBar: "top",
+  navigationBar: "statusBar",
 };
 
 const NAV_BAR_POSITIONS: readonly NavigationBarPosition[] = ["top", "statusBar", "hidden"];
@@ -177,11 +177,11 @@ export function validateAppearanceExtras(raw: unknown): AppearanceExtras {
     widescreenToolWindows: b("widescreenToolWindows"),
     showMainToolbar: b("showMainToolbar"),
     showStatusBar: b("showStatusBar"),
-    // Legacy settings stored this as `showNavigationBar: bool` (`true` = they
-    // wanted it, so `top`); `navigationBar` is the three-state key.
+    // Legacy settings stored this as `showNavigationBar: bool` (`true` = shown,
+    // which was the status bar); `navigationBar` is the three-state key.
     navigationBar: (() => {
       const legacy = a.showNavigationBar;
-      if (typeof legacy === "boolean") return legacy ? "top" : "hidden";
+      if (typeof legacy === "boolean") return legacy ? "statusBar" : "hidden";
       return oneOf(a.navigationBar, NAV_BAR_POSITIONS, d.navigationBar);
     })(),
   };

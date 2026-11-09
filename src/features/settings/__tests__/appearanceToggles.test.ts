@@ -56,10 +56,10 @@ describe("View › Appearance toggles", () => {
 
 describe("View › Appearance › Navigation Bar", () => {
   it("marks only the chosen position and stores it", async () => {
-    // Nothing stored yet: the default is `top`.
+    // Nothing stored yet: the default is the status bar.
     const [top, statusBar, hidden] = navigationBarActions();
-    expect(top.toggled?.()).toBe(true);
-    expect(statusBar.toggled?.()).toBe(false);
+    expect(top.toggled?.()).toBe(false);
+    expect(statusBar.toggled?.()).toBe(true);
     expect(hidden.toggled?.()).toBe(false);
 
     await statusBar.run({ ctx: {} } as ActionContext);

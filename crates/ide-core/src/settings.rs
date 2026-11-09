@@ -356,9 +356,10 @@ impl Default for NotificationGroupSettings {
 #[serde(rename_all = "camelCase")]
 pub enum NavigationBarPosition {
     /// Above the editor, below the main menu / toolbar.
-    #[default]
     Top,
-    /// In the footer, next to the status bar widgets.
+    /// In the footer, next to the status bar widgets — the default, matching
+    /// where the bar lived before the three-state choice existed.
+    #[default]
     StatusBar,
     /// Not shown at all.
     Hidden,
@@ -412,8 +413,8 @@ pub struct AppearanceSettings {
     /// View › Appearance › Toolbar; hidden leaves IDEA's compact window header.
     pub show_main_toolbar: bool,
     pub show_status_bar: bool,
-    /// View › Appearance › Navigation Bar: the file path breadcrumbs, shown above
-    /// the editor, in the status bar, or not at all.
+    /// View › Appearance › Navigation Bar: the file path breadcrumbs, shown in
+    /// the status bar by default, above the editor, or not at all.
     pub navigation_bar: NavigationBarPosition,
     /// Status bar widgets shown (`true`) or hidden (`false`) by the user
     /// (status bar context menu); widgets not listed use their default.
@@ -487,7 +488,7 @@ impl Default for AppearanceSettings {
             widescreen_tool_windows: false,
             show_main_toolbar: true,
             show_status_bar: true,
-            navigation_bar: NavigationBarPosition::Top,
+            navigation_bar: NavigationBarPosition::StatusBar,
             status_bar_widgets: BTreeMap::new(),
             main_toolbar: None,
         }
@@ -1125,6 +1126,8 @@ pub struct ProjectStructureSettings {
     pub unmarked: Vec<String>,
     /// Content roots besides the project folder (absolute paths), shown and searched with it.
     pub content_roots: Vec<String>,
+    /// Other projects (absolute paths) this project depends on; indexed and navigable like content roots.
+    pub dependencies: Vec<String>,
     /// "Exclude files": `;`-separated name patterns (`*.log;tmp*`) excluded at any depth.
     pub exclude_files: String,
     /// Project compiler output directory (relative to project root or absolute; empty = default).
