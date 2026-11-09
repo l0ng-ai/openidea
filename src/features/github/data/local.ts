@@ -4,6 +4,7 @@
  * the diff viewer (`vcs.openDiff`; `diff/` shows its review threads). Long operations run
  * one at a time and are shown in the tool window's banner (`useGhBusy`), cancellable.
  */
+import { writeClipboardText } from "@/platform/clipboard";
 import { Channel } from "@tauri-apps/api/core";
 import { create } from "zustand";
 import { withChain, type DiffData } from "@/features/vcs/diffInput";
@@ -178,7 +179,7 @@ export function openInBrowser(url: string): Promise<void> {
 
 /** "Copy Pull Request URL". */
 export async function copyUrl(url: string): Promise<void> {
-  await navigator.clipboard?.writeText(url);
+  await writeClipboardText(url);
 }
 
 /**

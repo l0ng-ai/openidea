@@ -164,6 +164,7 @@ pub fn builder() -> tauri_specta::Builder<tauri::Wry> {
         fs::fs_copy_merge,
         fs::fs_compare_directories,
         fs::fs_read_text,
+        clipboard::clipboard_write_text,
         clipboard::clipboard_file_list,
         clipboard::clipboard_has_files,
         clipboard::clipboard_image,

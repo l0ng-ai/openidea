@@ -99,7 +99,7 @@ describe("unaligned side-by-side scrolling", () => {
   });
 });
 
-describe("animated synchronized scrolling", () => {
+describe("synchronized navigation scrolling", () => {
   function panes(sync = true) {
     const root = document.createElement("div");
     const text = doc(Array.from({ length: 200 }, () => "line").join("\n"));
@@ -130,14 +130,19 @@ describe("animated synchronized scrolling", () => {
     return { a, b, controller, scroll };
   }
 
-  it.each(["a", "b"] as const)("ignores delayed follower layout scrolls while %s animates", (side) => {
+  it.each([
+    ["a", "smooth"],
+    ["b", "smooth"],
+    ["a", "instant"],
+    ["b", "instant"],
+  ] as const)("keeps %s as the source during a %s jump", (side, behavior) => {
     vi.useFakeTimers();
     const frame = vi.spyOn(window, "requestAnimationFrame").mockReturnValue(1);
     const p = panes();
     try {
       const leader = p[side];
       const follower = p[side === "a" ? "b" : "a"];
-      p.controller.scrollTo(side, { top: 2000, behavior: "smooth" });
+      p.controller.scrollTo(side, { top: 2000, behavior });
       p.scroll(leader, 1000);
       expect(follower.scrollDOM.scrollTop).toBe(1000);
       p.scroll(follower, 200);

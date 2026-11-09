@@ -4,6 +4,7 @@
  * and size go to the owner instead of a terminal PTY (a Run console emulating
  * a terminal feeds its process).
  */
+import { writeClipboardText } from "@/platform/clipboard";
 import { installTerminalDrop } from "./drop";
 import { installDomRowCache } from "./domRowCache";
 import { installTerminalPaste } from "./paste";
@@ -62,7 +63,7 @@ export function createEmbeddedTerminal(host: HTMLElement, opts: EmbeddedTerminal
     if (action.kind === "send" && e.key === "Enter") {
       if (e.type === "keydown") term.input(action.data);
     } else if (action.kind === "copy") {
-      if (e.type === "keydown") void navigator.clipboard?.writeText(term.getSelection()).catch(() => undefined);
+      if (e.type === "keydown") void writeClipboardText(term.getSelection()).catch(() => undefined);
     } else {
       return true;
     }

@@ -4,6 +4,7 @@
  * client-side sorting when the caller does not sort on the server, and the
  * Record / Value / Aggregates side panel following the selection.
  */
+import { writeClipboardText } from "@/platform/clipboard";
 import { useMemo, useRef, useState, type KeyboardEvent, type RefObject } from "react";
 import clsx from "clsx";
 import { Button, Checkbox, Icon, IconButton, Input, Popup, SearchField, Select, Tabs, T, type MenuItem } from "@/ui";
@@ -40,7 +41,7 @@ export function exportMenu(data: ExportData, source: string, format?: ExportForm
     ...EXPORT_FORMATS.map((f): MenuItem => ({
       label: tx`Copy as ${f.label}`,
       icon: "copy",
-      run: () => void navigator.clipboard?.writeText(exportData(f.id, data)),
+      run: () => void writeClipboardText(exportData(f.id, data)),
     })),
   ];
 }

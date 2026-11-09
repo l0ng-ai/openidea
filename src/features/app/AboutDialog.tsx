@@ -1,3 +1,4 @@
+import { writeClipboardText } from "@/platform/clipboard";
 import { useEffect, useState } from "react";
 import { create } from "zustand";
 import { executeAction } from "@/platform/actions";
@@ -61,7 +62,7 @@ function AboutDialog({ onClose }: { onClose: () => void }) {
   const rows = aboutRows(build, app?.configDir ?? null);
   const copy = () => {
     const text = [t("app.about.title"), ...rows.map(([k, v]) => `${k}: ${v}`)].join("\n");
-    void navigator.clipboard?.writeText(text).then(() => setCopied(true));
+    void writeClipboardText(text).then(() => setCopied(true));
   };
   const run = (id: string) => {
     onClose();

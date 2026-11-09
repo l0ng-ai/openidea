@@ -223,6 +223,8 @@ export const commands = {
 	 *  definition). Prefers the unsaved buffer when the file is open.
 	 */
 	fsReadText: (path: string) => typedError<string, IdeError>(__TAURI_INVOKE("fs_read_text", { path })),
+	/**  Writes text locally, without WebView user-activation requirements. */
+	clipboardWriteText: (text: string) => typedError<null, IdeError>(__TAURI_INVOKE("clipboard_write_text", { text })),
 	/**  Absolute paths on the clipboard, empty when it holds no file list. */
 	clipboardFileList: () => typedError<string[], IdeError>(__TAURI_INVOKE("clipboard_file_list")),
 	/**  Whether the clipboard holds files: cheap, for the Paste item's enabled state. */
@@ -573,7 +575,7 @@ export const commands = {
 	vcsReword: (repo: string | null, commit: string, message: string) => typedError<HeadChange, IdeError>(__TAURI_INVOKE("vcs_reword", { repo, commit, message })),
 	/**  Undo of a history rewrite (Edit Commit Message, Drop, Squash). */
 	vcsRestoreHead: (repo: string | null, before: string, after: string) => typedError<null, IdeError>(__TAURI_INVOKE("vcs_restore_head", { repo, before, after })),
-	vcsRenameBranch: (repo: string | null, from: string, to: string) => typedError<null, IdeError>(__TAURI_INVOKE("vcs_rename_branch", { repo, from, to })),
+	vcsRenameBranch: (repo: string | null, from: string, to: string, unsetUpstream: boolean) => typedError<null, IdeError>(__TAURI_INVOKE("vcs_rename_branch", { repo, from, to, unsetUpstream })),
 	vcsMerge: (repo: string | null, branch: string) => typedError<null, IdeError>(__TAURI_INVOKE("vcs_merge", { repo, branch })),
 	vcsRebase: (repo: string | null, onto: string) => typedError<null, IdeError>(__TAURI_INVOKE("vcs_rebase", { repo, onto })),
 	vcsStashPush: (repo: string | null, message: string | null, includeUntracked: boolean, keepIndex: boolean) => typedError<null, IdeError>(__TAURI_INVOKE("vcs_stash_push", { repo, message, includeUntracked, keepIndex })),
@@ -2396,6 +2398,10 @@ export type CloseContext = {
 
 export type CodeAction = {
 	title: string,
+	/**  Diagnostics this action fixes, in IDE coordinates. */
+	diagnostics?: Diagnostic[],
+	/**  Original server diagnostics, including encoding and data, for codeAction/resolve. */
+	originalDiagnostics?: string | null,
 	/**  LSP kind, e.g. `quickfix`, `refactor.extract`, `source.organizeImports`. */
 	kind: string | null,
 	isPreferred: boolean,
@@ -7280,6 +7286,8 @@ export type Remote = {
 	name: string,
 	/**  Fetch URL. */
 	url: string,
+	/**  Fetch URL with any `~/.ssh/config` host alias resolved, when different from `url`. */
+	resolvedUrl?: string | null,
 };
 
 /**  Manage Remotes edits. */

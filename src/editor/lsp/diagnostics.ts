@@ -125,9 +125,13 @@ export function installDiagnosticsEvents(): () => void {
 
 const SEVERITY_RANK: Record<Severity, number> = { error: 0, warning: 1, info: 2, hint: 3 };
 
+export interface EditorDiagnostic extends LintDiagnostic {
+  problem?: Diagnostic;
+}
+
 /** Backend diagnostics → lint diagnostics for `doc` (empty ranges widened to one character). */
-export function toLintDiagnostics(doc: Text, items: readonly Diagnostic[]): LintDiagnostic[] {
-  const out: LintDiagnostic[] = items.map((d) => {
+export function toLintDiagnostics(doc: Text, items: readonly Diagnostic[]): EditorDiagnostic[] {
+  const out: EditorDiagnostic[] = items.map((d) => {
     let { from, to } = rangeToOffsets(doc, d.range);
     if (from === to) {
       const line = doc.lineAt(from);
@@ -142,6 +146,7 @@ export function toLintDiagnostics(doc: Text, items: readonly Diagnostic[]): Lint
     return {
       from,
       to,
+      problem: d,
       severity: d.severity,
       message: d.message,
       source: [d.source, isInternalCode(d.code) ? null : d.code].filter(Boolean).join(" ") || undefined,
@@ -282,7 +287,7 @@ export function diagnosticsExtension() {
 export interface PlacedDiagnostic {
   from: number;
   to: number;
-  diagnostic: LintDiagnostic;
+  diagnostic: EditorDiagnostic;
 }
 
 export function diagnosticsAt(view: EditorView, pos: number): PlacedDiagnostic[] {
