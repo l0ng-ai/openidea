@@ -2584,6 +2584,10 @@ impl LspManager {
             let watchers = run.watchers.read();
             let roots = self.server_workspace_roots(&s);
             let changes: Vec<(&PathBuf, Change)> = if watchers.is_empty() {
+                // Dart watches the filesystem itself and rejects this unregistered notification.
+                if s.name == "dart" {
+                    continue;
+                }
                 let languages = s.languages();
                 all.filter(|(p, change)| {
                     roots.iter().any(|root| p.starts_with(root))

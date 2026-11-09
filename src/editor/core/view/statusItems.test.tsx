@@ -73,6 +73,17 @@ describe("caret-driven status widgets", () => {
     expect(screen.queryByText("place")).toBeNull();
     expect(commits).toBeGreaterThan(0);
   });
+
+  it("follows the caret into a Vue component's <script> declarations", () => {
+    useOutline.setState({
+      [PATH]: [item("template", 0, 4), { ...item("script", 5, 30), children: [item("size", 10, 20)] }],
+    });
+    act(() => useEditorStatus.setState({ status: caret(12, 2) }));
+    render(<Breadcrumbs />);
+    const crumbs = screen.getByRole("navigation", { name: "Breadcrumbs" }).textContent!;
+    expect(crumbs).toContain("script");
+    expect(crumbs).toContain("size");
+  });
 });
 
 it("shows the member and its directories in workspace breadcrumbs", async () => {

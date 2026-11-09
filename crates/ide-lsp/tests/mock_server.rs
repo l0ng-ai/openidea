@@ -420,6 +420,45 @@ fn change(range: Range, text: &str) -> AppliedChange {
     AppliedChange { range, text: text.into() }
 }
 
+#[tokio::test(flavor = "multi_thread")]
+async fn dart_file_watching_requires_an_explicit_registration() {
+    for (language, extension, name, fallback) in
+        [("dart", "dart", "dart", false), ("dart", "dart", "alternative-dart", true), ("java", "java", "jdtls", true)]
+    {
+        let h = harness_for(language, extension, &[(name, incremental_caps())], &[]);
+        let (doc, _) = h.open(&format!("open.{extension}"), "x");
+        h.wait_status(name, ServerStatus::Ready).await;
+        let s = h.launcher.state(name);
+        let path = h.root.join(format!("closed.{extension}"));
+        let notify = || h.mgr.watched_files_changed(&[], std::slice::from_ref(&path), &[], &[]);
+        notify();
+        h.mgr.hover(doc, Pos::new(0, 0), Default::default()).await.unwrap();
+        assert_eq!(s.notified("workspace/didChangeWatchedFiles").len(), usize::from(fallback), "{name}");
+        s.peer()
+            .request::<_, Value>(
+                "client/registerCapability",
+                json!({ "registrations": [{ "id": "watch", "method": "workspace/didChangeWatchedFiles", "registerOptions": { "watchers": [{ "globPattern": "**/*" }] } }] }),
+                None,
+            )
+            .await
+            .unwrap();
+        notify();
+        eventually(|| s.notified("workspace/didChangeWatchedFiles").len() == usize::from(fallback) + 1).await;
+        s.peer()
+            .request::<_, Value>(
+                "client/unregisterCapability",
+                json!({ "unregisterations": [{ "id": "watch", "method": "workspace/didChangeWatchedFiles" }] }),
+                None,
+            )
+            .await
+            .unwrap();
+        notify();
+        h.mgr.hover(doc, Pos::new(0, 0), Default::default()).await.unwrap();
+        assert_eq!(s.notified("workspace/didChangeWatchedFiles").len(), usize::from(fallback) * 2 + 1, "{name}");
+        h.mgr.shutdown_all().await;
+    }
+}
+
 // ------------------------------------------------------------------ tests
 
 #[tokio::test(flavor = "multi_thread")]
@@ -2345,6 +2384,34 @@ async fn java_source_paths_reach_initialization_live_configuration_and_builds() 
     let init = state.requested("initialize").pop().unwrap();
     assert!(init["initializationOptions"]["settings"]["java"]["project"].get("sourcePaths").is_none());
     assert_eq!(init["initializationOptions"]["triggerFiles"], json!([uri_of(&file)]));
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn java_build_waits_for_a_reconfigured_server_to_restart() {
+    let h = harness_for("java", "java", &[("jdtls", incremental_caps())], &[]);
+    h.open("App.java", "class App {}\n");
+    h.wait_status("jdtls", ServerStatus::Ready).await;
+    let state = h.launcher.state("jdtls");
+    state.respond("java/buildWorkspace", json!(1));
+    let gate = Arc::new(Gate::default());
+    *state.held.lock() = Some(("exit".into(), gate.clone()));
+    h.mgr.set_config_hook(Box::new(|cfg, _| cfg.args.push("--new-configuration".into())));
+    let reconfigure = tokio::spawn({
+        let mgr = h.mgr.clone();
+        async move { mgr.reconfigure().await }
+    });
+    eventually(|| gate.entered()).await;
+    let mut build = tokio::spawn({
+        let (mgr, root) = (h.mgr.clone(), h.root.clone());
+        async move { mgr.java_build(&root, false, &Default::default()).await }
+    });
+    let early = tokio::time::timeout(Duration::from_millis(100), &mut build).await;
+    gate.open();
+    reconfigure.await.unwrap();
+    assert!(early.is_err(), "a planned restart must not fail a pending build: {early:?}");
+    assert_eq!(build.await.unwrap().unwrap(), ide_lsp::jdtls::JavaBuildStatus::Succeeded);
+    assert_eq!(state.launches.load(Ordering::SeqCst), 2);
+    h.mgr.shutdown_all().await;
 }
 
 #[tokio::test(flavor = "multi_thread")]
@@ -5604,6 +5671,39 @@ async fn jdtls_import_failure_names_reserved_device_files_on_windows() {
         assert!(failures.is_empty(), "{failures:?}");
     }
     let _ = std::fs::remove_file(&nul);
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn gradle_incompatible_jdk_log_is_surfaced_once_across_message_channels() {
+    let h = harness_for("java", "java", &[("jdtls", incremental_caps())], &[]);
+    let s = h.launcher.state("jdtls");
+    h.open("A.java", "class A {}");
+    h.wait_status("jdtls", ServerStatus::Ready).await;
+    let failure = "Can't use Java 27.0.1.0.3 and Gradle 9.7.1 to import Gradle project kotlin-gradle.";
+    for _ in 0..2 {
+        s.peer()
+            .notify(
+                "window/logMessage",
+                json!({ "type": 1, "message": format!("{failure}\njava.lang.Exception: details stay in the log") }),
+            )
+            .unwrap();
+    }
+    eventually(|| h.events.lock().iter().any(|e| matches!(e, IdeEvent::Notify { body: Some(b), .. } if b == failure)))
+        .await;
+    s.peer().notify("window/showMessage", json!({ "type": 1, "message": failure })).unwrap();
+    s.peer().notify("window/logMessage", json!({ "type": 1, "message": "unrelated internal error" })).unwrap();
+    s.peer().notify("window/showMessage", json!({ "type": 2, "message": "after" })).unwrap();
+    eventually(|| h.events.lock().iter().any(|e| matches!(e, IdeEvent::Notify { body: Some(b), .. } if b == "after")))
+        .await;
+    let events = h.events.lock();
+    let messages: Vec<_> = events
+        .iter()
+        .filter_map(|e| match e {
+            IdeEvent::Notify { body: Some(body), .. } => Some(body.as_str()),
+            _ => None,
+        })
+        .collect();
+    assert_eq!(messages, vec![failure, "after"]);
 }
 
 /// Pull Members Up / Push Members Down: the extension's answers, refusals and edits.

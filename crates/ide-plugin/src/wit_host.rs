@@ -362,6 +362,25 @@ impl StoreData {
     }
 }
 
+/// Checks `ui.notify` buttons; the host checks that their commands are declared.
+fn notification_actions(actions: Vec<ui::NotificationAction>) -> Result<Vec<crate::NotificationAction>, wit::Error> {
+    const MAX_ACTIONS: usize = 3;
+    if actions.len() > MAX_ACTIONS {
+        return Err(wit::Error::Invalid(format!("a notification has at most {MAX_ACTIONS} actions")));
+    }
+    let mut checked = Vec::with_capacity(actions.len());
+    for a in actions {
+        if a.label.trim().is_empty() || a.label.len() > 256 || a.label.chars().any(char::is_control) {
+            return Err(wit::Error::Invalid(format!("invalid action label {:?}", a.label)));
+        }
+        if a.argument.as_ref().is_some_and(|arg| arg.len() > 64 << 10) {
+            return Err(wit::Error::Invalid("an action argument is limited to 64 KiB".into()));
+        }
+        checked.push(crate::NotificationAction { label: a.label, command: a.command, argument: a.argument });
+    }
+    Ok(checked)
+}
+
 impl ui::Host for StoreData {
     fn notify(
         &mut self,
@@ -370,22 +389,29 @@ impl ui::Host for StoreData {
         body: String,
         actions: Vec<ui::NotificationAction>,
     ) -> Fallible<()> {
-        const MAX_ACTIONS: usize = 3;
-        if actions.len() > MAX_ACTIONS {
-            return Ok(Err(wit::Error::Invalid(format!("a notification has at most {MAX_ACTIONS} actions"))));
-        }
-        let mut checked = Vec::with_capacity(actions.len());
-        for a in actions {
-            if a.label.trim().is_empty() || a.label.len() > 256 || a.label.chars().any(char::is_control) {
-                return Ok(Err(wit::Error::Invalid(format!("invalid action label {:?}", a.label))));
-            }
-            if a.argument.as_ref().is_some_and(|arg| arg.len() > 64 << 10) {
-                return Ok(Err(wit::Error::Invalid("an action argument is limited to 64 KiB".into())));
-            }
-            checked.push(crate::NotificationAction { label: a.label, command: a.command, argument: a.argument });
-        }
+        let actions = match notification_actions(actions) {
+            Ok(actions) => actions,
+            Err(e) => return Ok(Err(e)),
+        };
         let (title, body) = (clip(title, MAX_TITLE), clip(body, 16 << 10));
-        Ok(self.host.notify(self.client(), notification_level(level), title, body, checked).map_err(to_wit))
+        Ok(self.host.notify(self.client(), notification_level(level), title, body, actions).map_err(to_wit))
+    }
+
+    fn notify_project(
+        &mut self,
+        target: Resource<ProjectRes>,
+        level: wit::NotificationLevel,
+        title: String,
+        body: String,
+        actions: Vec<ui::NotificationAction>,
+    ) -> Fallible<()> {
+        let actions = match notification_actions(actions) {
+            Ok(actions) => actions,
+            Err(e) => return Ok(Err(e)),
+        };
+        let root = self.table.get(&target)?.root.clone();
+        let (title, body) = (clip(title, MAX_TITLE), clip(body, 16 << 10));
+        Ok(self.host.notify_project(&root, notification_level(level), title, body, actions).map_err(to_wit))
     }
 
     fn show_notification(
