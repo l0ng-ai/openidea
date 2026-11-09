@@ -228,6 +228,29 @@ pub fn java_args(install: &JdtlsInstall, java_major: u32, script_args: &[String]
     args
 }
 
+/// The release script a `jdtls` command on `PATH` resolves to: itself when it
+/// already is one, or the script its Scoop shim launches. `None` for a command
+/// that is neither a release script nor a jdtls Scoop shim.
+///
+/// Shared with [`crate::java::jdtls_min_java`], which needs the same install
+/// root to read the bundles' required Java version.
+pub(crate) fn script_for(cfg: &LanguageServerConfig) -> Option<PathBuf> {
+    if cfg.name != "jdtls" {
+        return None;
+    }
+    let search = cfg.env.get("PATH").map(std::ffi::OsString::from).or_else(|| std::env::var_os("PATH"));
+    let script = search.and_then(|s| ide_run::which::find_executable(&cfg.command, &s))?;
+    let resolved = dunce::canonicalize(script).ok()?;
+    let name = resolved.file_name().map(|n| n.to_string_lossy().to_ascii_lowercase());
+    match name.as_deref() {
+        Some(n) if SCRIPTS.contains(&n) => Some(resolved),
+        // A scoop shim (`shims\jdtls.exe` from PATHEXT) hides the release
+        // layout behind itself (issue #794); follow its `.shim` to the script.
+        Some("jdtls.exe") if cfg!(windows) => shim_target(&resolved),
+        _ => None,
+    }
+}
+
 /// Scoop shims either point at the release script or run Python with the
 /// script in `args`. Paths may be quoted and contain spaces and backslashes.
 fn shim_target(shim_exe: &Path) -> Option<PathBuf> {
@@ -263,21 +286,7 @@ pub fn launch_directly(cfg: &mut LanguageServerConfig) {
     if cfg.name != "jdtls" || cfg.launch_error.is_some() {
         return;
     }
-    let search = cfg.env.get("PATH").map(std::ffi::OsString::from).or_else(|| std::env::var_os("PATH"));
-    let Some(script) = search.and_then(|s| ide_run::which::find_executable(&cfg.command, &s)) else { return };
-    let Ok(resolved) = dunce::canonicalize(&script) else { return };
-    let name = resolved.file_name().map(|n| n.to_string_lossy().to_ascii_lowercase());
-    let script = match name.as_deref() {
-        Some(n) if SCRIPTS.contains(&n) => resolved,
-        // A scoop shim (`shims\jdtls.exe` from PATHEXT) hides the release layout
-        // behind itself, so the launch ran the shim's own command line and the
-        // configured JDK never applied (issue #794).
-        Some("jdtls.exe") if cfg!(windows) => match shim_target(&resolved) {
-            Some(target) => target,
-            None => return,
-        },
-        _ => return,
-    };
+    let Some(script) = script_for(cfg) else { return };
     let Some(install) =
         jdtls_home(&script).and_then(|h| find_install(&h, std::env::consts::OS, std::env::consts::ARCH))
     else {
