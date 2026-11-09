@@ -61,7 +61,7 @@ test("font picker supports manual families and CJK fallback in browser developme
   expect(interLoaded).toBe(true);
   await family.fill("Inter");
   await family.press("Enter");
-  await expect(dialog.getByLabel("Font preview")).toHaveCSS("font-family", /^"Inter Variable",/);
+  await expect(dialog.getByLabel("Font preview")).toHaveCSS("font-family", /^"Inter", "Inter Variable",/);
   const fallback = dialog.getByRole("combobox", { name: "Fallback font", exact: true });
   await family.fill("Maple Mono NF");
   await family.press("Enter");
