@@ -1,4 +1,6 @@
 {
+  "Active Editor": "Active Editor",
+  "Soft-Wrap": "Soft-Wrap",
   "The language server Java executable ({path}) cannot run on this machine. Choose a working JDK in {setting}, or set it to Auto.": "The language server Java executable ({path}) cannot run on this machine. Choose a working JDK in {setting}, or set it to Auto.",
   "Input queue is full (4 MiB or 1024 writes); input was not sent.": "Input queue is full (4 MiB or 1024 writes); input was not sent.",
   "Cannot write to terminal": "Cannot write to terminal",
@@ -602,6 +604,7 @@
   "Database connection failed": "Database connection failed",
   "Database service unavailable": "Database service unavailable",
   "Trust this project to connect plugin data sources": "Trust this project to connect plugin data sources",
+  "Use Soft Wraps": "Use Soft Wraps",
   "Language server runs on": "Language server runs on",
   "Requires a container root for path mapping": "Requires a container root for path mapping",
   "Target unavailable; language server runs on the host": "Target unavailable; language server runs on the host",

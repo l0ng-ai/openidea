@@ -13,7 +13,7 @@ import {
 } from "react";
 import clsx from "clsx";
 import { EditorView, keymap } from "@codemirror/view";
-import { Prec, Text, type Extension } from "@codemirror/state";
+import { Compartment, Prec, Text, type Extension } from "@codemirror/state";
 import { history, historyKeymap } from "@codemirror/commands";
 import {
   MergeView,
@@ -27,12 +27,16 @@ import {
 } from "@codemirror/merge";
 import { attachDocument, embeddedEditorExtensions, type DocumentAttachment } from "@/editor/api";
 import { setFindOpen } from "@/editor/core/cm/find";
+import { softWrapActive } from "@/editor/core/cm/prefs";
 import { FindPanel, searchAgain, seedFind, type FindTarget } from "@/editor/core/view/FindBar";
 import { getContext, setContext } from "@/platform/context";
+import { editorPrefs } from "@/platform/editorSettings";
 import { call, commands } from "@/platform/ipc";
 import { bindingsFor, normalizeBinding, shortcutLabel, strokeOf } from "@/platform/keymap";
 import { tx } from "@/platform/i18n";
+import { useProject } from "@/platform/project";
 import { IconButton, Select, Spinner, T, showContextMenu } from "@/ui";
+import { registerSoftWrapSurface } from "@/workbench/softWrap";
 import { editorService, type EditorInput } from "@/workbench/contributions";
 import { changedLineGutters, diffOverview, diffWords, languageFor, viewerBase } from "./cm";
 import { applyChunk, arrowControls, chunkAt, hoverRevert, revertUnifiedChunk } from "./diffControls";
@@ -365,6 +369,24 @@ export function DiffEditor({
   const editableB = !binary && !!attached?.b && !attached.b.readOnly;
   const ready = !!attached && !!statics && lang !== null && binary !== null;
 
+  // Soft wraps follow the editor's (Settings › Editor › General) unless toggled in the viewer settings.
+  const editorSoftWrap = useProject((s) => softWrapActive(s.settings?.editor?.softWrap, editorPrefs(s.settings), path));
+  const softWrap = opts.softWrap ?? editorSoftWrap;
+  const wrapSlot = useMemo(() => new Compartment(), []);
+  const softWrapRef = useRef(softWrap);
+  softWrapRef.current = softWrap;
+  const toggleSoftWrapRef = useRef(() => {});
+  toggleSoftWrapRef.current = () => setOpts({ softWrap: !softWrapRef.current });
+
+  useEffect(() => {
+    const host = hostRef.current;
+    if (!host || !ready || binary) return;
+    return registerSoftWrapSurface(host, {
+      enabled: () => softWrapRef.current,
+      toggle: () => toggleSoftWrapRef.current(),
+    });
+  }, [ready, binary]);
+
   // Read when the views are built; toggling it later goes through `setSync`.
   const syncScroll = useRef(opts.syncScroll);
   syncScroll.current = opts.syncScroll;
@@ -419,6 +441,7 @@ export function DiffEditor({
     const inclusion = includable ? inclusionGutter(path, textA) : [];
     const side = (att: DocumentAttachment | null, editable: boolean, notes?: "left" | "right"): Extension[] => [
       viewerBase({ readOnly: !editable, findBar: true }),
+      wrapSlot.of(softWrapRef.current ? EditorView.lineWrapping : []),
       // Esc closes the find bar before it collapses the selection (a found match); open popups go first.
       Prec.high(keymap.of([{ key: "Escape", run: () => findEscape.current() }])),
       lang,
@@ -573,6 +596,7 @@ export function DiffEditor({
     opts.collapse,
     opts.ignore,
     opts.highlight,
+    wrapSlot,
     editableA,
     editableB,
     updateChunkInfo,
@@ -580,6 +604,37 @@ export function DiffEditor({
     includable,
     path,
   ]);
+
+  useEffect(() => {
+    const views = viewsRef.current;
+    if (!views) return;
+    // Aligned panes scroll in MergeView's outer element, which scrollSnapshot does not cover.
+    const outer = views.merge && !views.panes ? views.merge.dom : null;
+    const top = outer?.getBoundingClientRect().top;
+    const block = top == null ? null : views.b.lineBlockAtHeight(Math.max(0, top - views.b.documentTop));
+    const anchor =
+      block && top != null
+        ? EditorView.scrollIntoView(block.from, { y: "start", yMargin: block.top + views.b.documentTop - top })
+        : null;
+    for (const view of [views.a, views.b]) {
+      if (view)
+        view.dispatch({
+          effects: [
+            wrapSlot.reconfigure(softWrap ? EditorView.lineWrapping : []),
+            ...(outer ? (view === views.b && anchor ? [anchor] : []) : [view.scrollSnapshot()]),
+          ],
+        });
+    }
+    // MergeView inserts alignment spacers on its next measure, after the panes have reflowed.
+    if (anchor) {
+      let frame = requestAnimationFrame(() => {
+        frame = requestAnimationFrame(() => {
+          if (viewsRef.current === views) views.b.dispatch({ effects: anchor });
+        });
+      });
+      return () => cancelAnimationFrame(frame);
+    }
+  }, [softWrap, wrapSlot]);
 
   useEffect(() => viewsRef.current?.panes?.setSync(opts.syncScroll), [opts.syncScroll]);
 
@@ -926,6 +981,12 @@ export function DiffEditor({
         label: "Collapse Unchanged Fragments",
         checked: opts.collapse,
         run: () => setOpts({ collapse: !opts.collapse }),
+      },
+      {
+        id: "softWrap",
+        label: "Use Soft Wraps",
+        checked: softWrap,
+        run: () => setOpts({ softWrap: !softWrap }),
       },
       {
         id: "sync",

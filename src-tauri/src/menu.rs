@@ -395,6 +395,7 @@ pub fn spec(os: Os) -> Vec<Entry> {
                     sub("statusBarWidgets", "Status Bar Widgets", vec![Entry::Dynamic(DYNAMIC_STATUS_BAR_WIDGETS)]),
                 ],
             ),
+            sub("activeEditor", "Active Editor", vec![act("editor.toggleSoftWrap", "Soft-Wrap")]),
             SEP,
             act("code.quickDefinition", "Quick Definition"),
             act("code.quickTypeDefinition", "Quick Type Definition"),
@@ -1649,6 +1650,24 @@ mod tests {
             for id in action_ids(&spec) {
                 assert_eq!(route(&spec, id), Some(MenuRoute { action: id.into(), arg: None }), "{id} on {os:?}");
             }
+        }
+    }
+
+    #[test]
+    fn soft_wrap_is_available_under_view_active_editor_on_every_os() {
+        for os in ALL_OS {
+            let menus = spec(os);
+            let Entry::Submenu { children: view, .. } =
+                menus.iter().find(|e| matches!(e, Entry::Submenu { id: "view", .. })).unwrap()
+            else {
+                panic!("View menu missing")
+            };
+            let Entry::Submenu { children: active, .. } =
+                view.iter().find(|e| matches!(e, Entry::Submenu { id: "activeEditor", .. })).unwrap()
+            else {
+                panic!("Active Editor menu missing")
+            };
+            assert!(action_ids(active).contains(&"editor.toggleSoftWrap"), "{os:?}");
         }
     }
 
