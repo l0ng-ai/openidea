@@ -803,6 +803,7 @@ Runs after Plan 7. Before any 8.x phase, read [LARAVEL-ROADMAP.md](LARAVEL-ROADM
   - every `php_laravel_real/*` budget passes on both
   - batch Inspect Code over each app's own code (not `vendor/`) has no false positives in a reviewed sample of 100 diagnostics per app
 
+  Also fix a crash risk first. In a debug build, an indexing thread overflows its default 2 MB stack on one of Bagisto's files (see `laravel.md`: the real-application tests run only with `RUST_MIN_STACK=67108864`). A stack overflow aborts the whole editor process, and a slightly deeper file could do the same in a release build. Find the file and the recursive walk that overflows. Make the walk iterative, or bound its depth (with a diagnostic past the bound), instead of only enlarging thread stacks. Add a unit test with deeply nested PHP (thousands of nested arrays, expressions and closures) that passes on a default 2 MB stack in a debug build. Then drop `RUST_MIN_STACK` from the real-application commands in `laravel.md`.
   Fix what fails. Anything too big to fix becomes a new follow-up phase right after this one. Record the final numbers and the review in `laravel.md`. Tests: the ignored real-application tests and benches. Their results go in `PROGRESS.md`.
 
 - [ ] Phase 8.30: Documentation
