@@ -414,6 +414,9 @@ mod view_tests;
 #[path = "blade_tests.rs"]
 mod blade_tests;
 
+#[path = "component_tests.rs"]
+mod component_tests;
+
 #[path = "data_tests.rs"]
 mod data_tests;
 

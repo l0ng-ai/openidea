@@ -449,7 +449,7 @@ fn calls<'n>(text: &str, names: &[&'n str]) -> Vec<(usize, &'n str)> {
 }
 
 /// `from => to` at its top-level arrow.
-fn split_arrow(pair: &str) -> Option<(&str, &str)> {
+pub(super) fn split_arrow(pair: &str) -> Option<(&str, &str)> {
     let b = pair.as_bytes();
     let mut depth = 0usize;
     let mut i = 0;

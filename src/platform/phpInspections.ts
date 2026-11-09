@@ -294,6 +294,14 @@ export const PHP_INSPECTIONS: readonly PhpInspection[] = [
     group: "Laravel",
     description: "Reports @endsection, @show, @endpush and the like in a Blade template with no open block to close.",
   },
+  {
+    code: "BladeUndefinedComponent",
+    producer: BLADE_PRODUCER,
+    name: "Undefined Blade component",
+    group: "Laravel",
+    description:
+      "Reports <x-…> tags in a Blade template that no class component, anonymous component or Blade::component() registration defines. The quick-fix creates the component's view.",
+  },
 ];
 
 const BY_ID = new Map(PHP_INSPECTIONS.map((i) => [phpInspectionProfileId(i), i]));

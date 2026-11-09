@@ -1414,6 +1414,12 @@ impl PhpEngine {
     /// The undefined configuration keys, environment keys, translations, Vite
     /// assets and abilities of a Blade template, as diagnostics of the template.
     pub(crate) fn blade_reference_problems(&self, text: &str) -> Vec<Diagnostic> {
+        self.blade_reference_fixes(text).into_iter().map(|(diagnostic, _)| diagnostic).collect()
+    }
+
+    /// [`blade_reference_problems`](Self::blade_reference_problems), each
+    /// with its quick-fix ("Create view").
+    pub(crate) fn blade_reference_fixes(&self, text: &str) -> Vec<(Diagnostic, Option<(String, WorkspaceEdit)>)> {
         let compiled = crate::blade::compile(text, false);
         let parsed = ParsedFile::parse("template.php", compiled.php.as_str());
         // Only the kinds whose inspection the profile leaves on, as in PHP files.
@@ -1435,7 +1441,7 @@ impl PhpEngine {
             else {
                 continue;
             };
-            out.push(Diagnostic {
+            let diagnostic = Diagnostic {
                 range: lines.range(start, end),
                 severity: found.problem.severity,
                 message: found.problem.message,
@@ -1444,7 +1450,8 @@ impl PhpEngine {
                 unnecessary: false,
                 deprecated: false,
                 server: None,
-            });
+            };
+            out.push((diagnostic, found.problem.fix));
         }
         out
     }

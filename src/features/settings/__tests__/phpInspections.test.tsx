@@ -84,6 +84,7 @@ describe("PHP engine inspections", () => {
       "lsp:php:PhpUndefinedInertiaPage",
       "lsp:blade:BladeUnclosedSection",
       "lsp:blade:BladeUnopenedSection",
+      "lsp:blade:BladeUndefinedComponent",
     ]);
     expect(phpInspection("lsp:blade:BladeUnclosedSection")?.name).toBe("Unclosed Blade section");
     expect(PHP_INSPECTIONS.find((i) => i.group === "Frameworks")?.code).toBe("PhpUndefinedRoute");

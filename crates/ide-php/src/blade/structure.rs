@@ -20,9 +20,11 @@ use crate::syntax::LineIndex;
 /// The source of the template's own diagnostics.
 pub const DIAGNOSTIC_SOURCE: &str = "blade";
 
-/// The codes of the template's own problems ([`inspect`]): a block never
-/// closed, and a closing directive with nothing open.
-pub const INSPECTIONS: [&str; 2] = ["BladeUnclosedSection", "BladeUnopenedSection"];
+/// The codes of the template's own problems: a block never closed, and a
+/// closing directive with nothing open ([`inspect`]), and, in a Laravel
+/// project, a component tag no component has
+/// (`crate::frameworks::laravel::components`).
+pub const INSPECTIONS: [&str; 3] = ["BladeUnclosedSection", "BladeUnopenedSection", "BladeUndefinedComponent"];
 
 /// What a [`Name`] names.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
@@ -166,29 +168,50 @@ pub fn props(text: &str) -> Vec<Prop> {
     let mut out = Vec::new();
     for node in parse_with(text, &[]) {
         let (NodeKind::Directive { name }, Some(code)) = (&node.kind, &node.code) else { continue };
-        if name != "props" {
-            continue;
+        if name == "props" {
+            out.extend(array_entries(text, code));
         }
-        let Some(array) = arguments(text, code).into_iter().next() else { continue };
-        let inner = &text[array.start as usize..array.end as usize];
-        let (open, close) = match (inner.starts_with('['), inner.starts_with("array(")) {
-            (true, _) => (1, u32::from(inner.ends_with(']'))),
-            (_, true) => (6, u32::from(inner.ends_with(')'))),
-            _ => continue,
-        };
-        let elements = array.start + open..array.end - close;
-        for element in arguments(text, &elements) {
-            let piece = &text[element.start as usize..element.end as usize];
-            let (key, default) = match split_arrow(piece) {
-                Some(arrow) => {
-                    let key = element.start..element.start + piece[..arrow].trim_end().len() as u32;
-                    (key, Some(piece[arrow + 2..].trim().to_owned()))
-                }
-                None => (element.clone(), None),
-            };
-            if let Some((name, span)) = string_at(text, &key) {
-                out.push(Prop { name, span, default });
+    }
+    out
+}
+
+/// The `@aware([...])` entries of a component view (the parent
+/// component's data it reads), as [`Prop`]s.
+pub fn aware(text: &str) -> Vec<Prop> {
+    let mut out = Vec::new();
+    for node in parse_with(text, &[]) {
+        if let (NodeKind::Directive { name }, Some(code)) = (&node.kind, &node.code)
+            && name == "aware"
+        {
+            out.extend(array_entries(text, code));
+        }
+    }
+    out
+}
+
+/// The entries of the array that is the first argument of a directive
+/// whose arguments are `code` (`@props([...])`, `@aware([...])`).
+pub(crate) fn array_entries(text: &str, code: &Span<u32>) -> Vec<Prop> {
+    let mut out = Vec::new();
+    let Some(array) = arguments(text, code).into_iter().next() else { return out };
+    let inner = &text[array.start as usize..array.end as usize];
+    let (open, close) = match (inner.starts_with('['), inner.starts_with("array(")) {
+        (true, _) => (1, u32::from(inner.ends_with(']'))),
+        (_, true) => (6, u32::from(inner.ends_with(')'))),
+        _ => return out,
+    };
+    let elements = array.start + open..array.end - close;
+    for element in arguments(text, &elements) {
+        let piece = &text[element.start as usize..element.end as usize];
+        let (key, default) = match split_arrow(piece) {
+            Some(arrow) => {
+                let key = element.start..element.start + piece[..arrow].trim_end().len() as u32;
+                (key, Some(piece[arrow + 2..].trim().to_owned()))
             }
+            None => (element.clone(), None),
+        };
+        if let Some((name, span)) = string_at(text, &key) {
+            out.push(Prop { name, span, default });
         }
     }
     out

@@ -753,7 +753,7 @@ Runs after Plan 7. Before any 8.x phase, read [LARAVEL-ROADMAP.md](LARAVEL-ROADM
 
   Index route-name and view references inside Blade templates that aren't open, so that renaming a route also edits `{{ route('…') }}` in closed templates and find usages lists them. Run the undefined-view inspection in Blade templates. Tests: rename and usages fixtures on the fixture app.
 
-- [ ] Phase 8.25: Blade components, complete
+- [x] Phase 8.25: Blade components, complete
       Complete the Blade component support:
   - class components' public properties and methods as variables in their view
   - `@aware`, `<x-slot>` / `<x-slot:name>` names, and `<x-dynamic-component>`

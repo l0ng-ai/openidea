@@ -6499,5 +6499,6 @@
   "Code Generation": "代码生成",
   "Reports route names that no route defines: Symfony names passed to path(), url(), generateUrl(), redirectToRoute() or a URL generator's generate() (against #[Route] attributes and config/routes*.yaml), and Laravel names passed to route(), to_route(), redirect()->route() or URL::route() (against the ->name() calls of the route files).": "报告没有任何路由定义的路由名称：传给 path()、url()、generateUrl()、redirectToRoute() 或 URL 生成器 generate() 的 Symfony 名称（对照 #[Route] 特性和 config/routes*.yaml），以及传给 route()、to_route()、redirect()->route() 或 URL::route() 的 Laravel 名称（对照路由文件中的 ->name() 调用）。",
   "Reports @section, @push and @prepend blocks of a Blade template that no @endsection, @show, @stop, @endpush or matching directive closes.": "报告 Blade 模板中没有被 @endsection、@show、@stop、@endpush 或对应指令关闭的 @section、@push 和 @prepend 块。",
-  "Reports @endsection, @show, @endpush and the like in a Blade template with no open block to close.": "报告 Blade 模板中没有可关闭的已打开块的 @endsection、@show、@endpush 等指令。"
+  "Reports @endsection, @show, @endpush and the like in a Blade template with no open block to close.": "报告 Blade 模板中没有可关闭的已打开块的 @endsection、@show、@endpush 等指令。",
+  "Reports <x-…> tags in a Blade template that no class component, anonymous component or Blade::component() registration defines. The quick-fix creates the component's view.": "报告 Blade 模板中没有任何类组件、匿名组件或 Blade::component() 注册定义的 <x-…> 标签。快速修复会创建该组件的视图。"
 }

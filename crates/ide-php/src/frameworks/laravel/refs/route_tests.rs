@@ -22,12 +22,23 @@ pub(super) fn copy_dir(from: &Path, to: &Path) {
 impl Project {
     /// The fixture app with the stubs as its `vendor/`.
     pub(super) fn app() -> Self {
+        Self::app_with(&[])
+    }
+
+    /// [`app`](Self::app) with `files` written (over the fixture's) before
+    /// the engine opens it.
+    pub(super) fn app_with(files: &[(&str, &str)]) -> Self {
         let tmp = tempfile::tempdir().unwrap();
         let base = dunce::canonicalize(tmp.path()).unwrap();
         let root = base.join("project");
         let fixtures = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../fixtures");
         copy_dir(&fixtures.join("laravel-app"), &root);
         copy_dir(&fixtures.join("laravel-stubs"), &root.join("vendor"));
+        for (rel, text) in files {
+            let path = root.join(rel);
+            std::fs::create_dir_all(path.parent().unwrap()).unwrap();
+            std::fs::write(path, text).unwrap();
+        }
         let sink: SharedSink = Arc::new(|_: IdeEvent| {});
         let config = EngineConfig {
             cache_dir: base.join("cache").join(CACHE_SUBDIR),

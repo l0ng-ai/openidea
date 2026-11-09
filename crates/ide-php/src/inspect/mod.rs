@@ -520,11 +520,11 @@ impl PhpEngine {
     /// document, its buffer and background result are used instead). Run
     /// it once indexing finished, or the checks that need other files stay
     /// quiet. `None` when `cancel` fired. A Blade template gets its own
-    /// problems ([`PhpEngine::blade_problems`], source `blade`), as its
+    /// problems ([`PhpEngine::blade_file_problems`], source `blade`), as its
     /// editor shows them.
     pub fn inspect_file(&self, path: &Path, text: &str, cancel: &CancellationToken) -> Option<Vec<Diagnostic>> {
         if crate::frameworks::laravel::views::is_blade(path) {
-            let problems = self.blade_problems(text);
+            let problems = self.blade_file_problems(path, text);
             return (!cancel.is_cancelled()).then_some(problems);
         }
         if let Some(document) = self.open_document(path) {

@@ -567,3 +567,51 @@ fn embedded_documents_are_not_inspected() {
         assert!(held.embedded && held.text.contains("echo  undefined_function() ;"));
     });
 }
+
+#[test]
+fn props_and_aware_entries_compile_to_variables() {
+    let text = "@props(['type' => 'info', 'message'])\n@aware(['color' => 'gray'])\n{{ $type }}";
+    let compiled = compile_full(text, true, &[("message".to_owned(), "string".to_owned())], &[], &[]);
+    assert!(compiled.php.contains("$type = ('info');\n"), "{}", compiled.php);
+    assert!(compiled.php.contains("$color = ('gray');\n"), "{}", compiled.php);
+    // A variable the callers pass keeps its type.
+    assert!(!compiled.php.contains("@var mixed $message"), "{}", compiled.php);
+    let compiled = compile_full("@props(['size'])", true, &[], &[], &[]);
+    assert!(compiled.php.contains("/** @var mixed $size */\n$size = null;\n"), "{}", compiled.php);
+}
+
+#[test]
+fn bound_attributes_of_class_components_compile_to_constructor_calls() {
+    let text = "<x-alert :message=\"$m\" :user-name=\"$u\" :$type class=\"a\" />\n<x-badge :status=\"$s\" />";
+    let classes = [("alert".to_owned(), "App\\View\\Components\\Alert".to_owned())];
+    let compiled = compile_full(text, false, &[], &[], &classes);
+    assert!(compiled.php.contains("new \\App\\View\\Components\\Alert(message: $m);\n"), "{}", compiled.php);
+    assert!(compiled.php.contains("new \\App\\View\\Components\\Alert(userName: $u);\n"), "{}", compiled.php);
+    assert!(compiled.php.contains("new \\App\\View\\Components\\Alert(type: $type);\n"), "{}", compiled.php);
+    // Anonymous components keep the plain expression.
+    assert!(compiled.php.contains("($s);\n"), "{}", compiled.php);
+    // The value still maps both ways.
+    let at = text.find("$m").unwrap() as u32;
+    let php = compiled.php_offset(at).unwrap();
+    assert_eq!(&compiled.php[php as usize..php as usize + 2], "$m");
+    assert_eq!(compiled.blade_offset(php), Some(at));
+    assert_eq!(camel("user-name"), "userName");
+    assert_eq!(camel("is_active"), "isActive");
+    assert_eq!(camel("type"), "type");
+}
+
+#[test]
+fn slots_find_their_enclosing_component() {
+    use super::tags::{attribute_value_at, enclosing_component, is_builtin};
+    let text = "<x-card>\n<x-alert />\n<x-panel>\n</x-panel>\n<x-slot:title>T</x-slot>\n<x-slot name=\"footer\"></x-slot>\n</x-card>\n";
+    let at = |needle: &str| text.find(needle).unwrap() as u32;
+    assert_eq!(enclosing_component(text, at("<x-alert")).as_deref(), Some("card"));
+    assert_eq!(enclosing_component(text, at("</x-panel>")).as_deref(), Some("panel"));
+    assert_eq!(enclosing_component(text, at("<x-slot:title")).as_deref(), Some("card"));
+    assert_eq!(enclosing_component(text, text.len() as u32), None);
+    let value = attribute_value_at(text, at("footer") + 2, "slot", "name").unwrap();
+    assert_eq!(&text[value.start as usize..value.end as usize], "footer");
+    assert!(attribute_value_at(text, at("title"), "slot", "name").is_none());
+    assert!(is_builtin("slot") && is_builtin("slot:title") && is_builtin("dynamic-component"));
+    assert!(!is_builtin("slotted"));
+}

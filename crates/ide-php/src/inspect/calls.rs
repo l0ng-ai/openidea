@@ -158,12 +158,12 @@ pub(crate) enum Check {
 /// A problem found in a file.
 #[derive(Clone, Debug)]
 pub(crate) struct Found {
-    check: Check,
+    pub(crate) check: Check,
     /// Fails at runtime for certain: reported in lenient mode too.
-    certain: bool,
-    start: u32,
-    end: u32,
-    message: String,
+    pub(crate) certain: bool,
+    pub(crate) start: u32,
+    pub(crate) end: u32,
+    pub(crate) message: String,
 }
 
 fn report(cx: &InspectionContext<'_>, check: Check, mode: TypeCheckMode, out: &mut Problems) {

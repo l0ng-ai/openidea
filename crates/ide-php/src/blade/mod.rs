@@ -494,7 +494,57 @@ pub fn compile(text: &str, component: bool) -> Compiled {
 /// [`compile`], with `variables` (`(name, type)`, the variables the view's
 /// callers pass it) declared at the top, and `custom` directives.
 pub fn compile_with(text: &str, component: bool, variables: &[(String, String)], custom: &[String]) -> Compiled {
+    compile_full(text, component, variables, custom, &[])
+}
+
+/// `user-name` → `userName` (Laravel's `Str::camel` of an attribute name,
+/// as the component's constructor parameter is matched).
+pub fn camel(name: &str) -> String {
+    let mut out = String::new();
+    let mut upper = false;
+    for c in name.chars() {
+        if matches!(c, '-' | '_' | ' ') {
+            upper = !out.is_empty();
+        } else if upper {
+            out.extend(c.to_uppercase());
+            upper = false;
+        } else {
+            out.push(c);
+        }
+    }
+    out
+}
+
+/// [`compile_with`], with `classes` (`(tag, class)`: the class components
+/// of the project): a bound attribute of one of their tags compiles to the
+/// constructor call it stands for, `new \Class(name: expr);`, so the
+/// value is checked against the parameter's type and signature help shows
+/// the constructor. The `@props` and `@aware` entries become variables
+/// (with their default's type) unless a caller passes them already.
+pub fn compile_full(
+    text: &str,
+    component: bool,
+    variables: &[(String, String)],
+    custom: &[String],
+    classes: &[(String, String)],
+) -> Compiled {
     let nodes = parse_with(text, custom);
+    // The bound attributes of class components: code start → (class, parameter).
+    let mut constructors: Vec<(u32, &str, String)> = Vec::new();
+    if !classes.is_empty() {
+        for tag in tags::component_tags(text) {
+            let name = &text[tag.name.start as usize..tag.name.end as usize];
+            let Some((_, class)) = classes.iter().find(|(known, _)| known == name) else { continue };
+            for attribute in &tag.attributes {
+                let param = camel(attribute.bare_name(text));
+                if let Some(code) = attribute.bound_code(text)
+                    && is_identifier(&param)
+                {
+                    constructors.push((code.start, class.as_str(), param));
+                }
+            }
+        }
+    }
     let mut out = Out { text, php: String::from("<?php\n"), segments: Vec::new() };
 
     // `@use` imports go first: PHP takes them only at the top level.
@@ -545,11 +595,37 @@ pub fn compile_with(text: &str, component: bool, variables: &[(String, String)],
                 out.push("\n;\n");
             }
             NodeKind::Bound => {
-                out.push("(");
-                out.code_or(code, "null");
-                out.push(");\n");
+                let constructor = code.and_then(|code| constructors.iter().find(|(start, ..)| *start == code.start));
+                match constructor {
+                    Some((_, class, param)) => {
+                        out.push(&format!("new \\{}({param}: ", class.trim_start_matches('\\')));
+                        out.code_or(code, "null");
+                        out.push(");\n");
+                    }
+                    None => {
+                        out.push("(");
+                        out.code_or(code, "null");
+                        out.push(");\n");
+                    }
+                }
             }
-            NodeKind::Directive { name } => directive(&mut out, &mut blocks, name, code),
+            NodeKind::Directive { name } => {
+                directive(&mut out, &mut blocks, name, code);
+                if let (Some(code), "props" | "aware") = (code, name.as_str()) {
+                    for entry in structure::array_entries(text, code) {
+                        let taken = defined.iter().any(|(_, known)| *known == entry.name)
+                            || variables.iter().any(|(known, _)| *known == entry.name);
+                        if !is_identifier(&entry.name) || taken {
+                            continue;
+                        }
+                        let name = &entry.name;
+                        match &entry.default {
+                            Some(default) => out.push(&format!("${name} = ({default});\n")),
+                            None => out.push(&format!("/** @var mixed ${name} */\n${name} = null;\n")),
+                        }
+                    }
+                }
+            }
         }
     }
     for _ in blocks {

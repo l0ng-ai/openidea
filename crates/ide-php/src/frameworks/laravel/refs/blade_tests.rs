@@ -9,26 +9,26 @@ use crate::frameworks::laravel::blade::kebab;
 use crate::navigate::Target;
 
 /// A template of the app with the caret.
-struct Template {
-    path: PathBuf,
-    text: String,
-    pos: Pos,
+pub(super) struct Template {
+    pub(super) path: PathBuf,
+    pub(super) text: String,
+    pub(super) pos: Pos,
 }
 
 impl Template {
-    fn new(project: &Project, rel: &str, source: &str) -> Self {
+    pub(super) fn new(project: &Project, rel: &str, source: &str) -> Self {
         let (text, pos) = caret(source);
         Self { path: project.root.join(rel), text, pos }
     }
 
-    fn blade(&self) -> BladeDocument<'_> {
+    pub(super) fn blade(&self) -> BladeDocument<'_> {
         BladeDocument { doc: DocId(90), path: &self.path, version: 1, text: &self.text }
     }
 }
 
 impl Project {
     /// The labels of the Laravel completion (directives first) at the caret.
-    fn blade_labels(&self, rel: &str, source: &str) -> Vec<String> {
+    pub(super) fn blade_labels(&self, rel: &str, source: &str) -> Vec<String> {
         let template = Template::new(self, rel, source);
         let found = self
             .engine
@@ -39,7 +39,7 @@ impl Project {
     }
 
     /// The labels of the PHP completion at the caret.
-    fn blade_php_labels(&self, rel: &str, source: &str) -> Vec<String> {
+    pub(super) fn blade_php_labels(&self, rel: &str, source: &str) -> Vec<String> {
         let template = Template::new(self, rel, source);
         let found = self.engine.blade_completion(&template.blade(), template.pos, None, &CancellationToken::new());
         self.engine.document_closed(DocId(90));
@@ -47,14 +47,14 @@ impl Project {
     }
 
     /// `(relative path, line, text)` of the Laravel goto targets at the caret.
-    fn blade_goto(&self, rel: &str, source: &str) -> Vec<(String, u32, String)> {
+    pub(super) fn blade_goto(&self, rel: &str, source: &str) -> Vec<(String, u32, String)> {
         let template = Template::new(self, rel, source);
         let targets = self.engine.blade_laravel_definition(&template.blade(), template.pos).unwrap_or_default();
         targets.iter().map(|Target { path, range }| self.describe(path, *range)).collect()
     }
 }
 
-const PAGE: &str = "resources/views/probe.blade.php";
+pub(super) const PAGE: &str = "resources/views/probe.blade.php";
 const LAYOUT: &str = "resources/views/layouts/app.blade.php";
 
 #[test]
@@ -251,9 +251,10 @@ fn stacks_complete_and_go_across_views() {
 fn component_tags_and_attributes_complete() {
     let project = Project::app();
     // The last two from `vendor/acme/widgets/ide.json`.
+    // Then Blade's own tags.
     assert_eq!(
         project.blade_labels(PAGE, "<div>\n<x-/*|*/"),
-        ["x-alert", "x-badge", "x-widgets::chart", "x-widgets::stat"]
+        ["x-alert", "x-badge", "x-widgets::chart", "x-widgets::stat", "x-dynamic-component", "x-slot"]
     );
     let template = Template::new(&project, PAGE, "<x-al/*|*/ert />");
     let found = project.engine.blade_laravel_completion(&template.blade(), template.pos).unwrap();

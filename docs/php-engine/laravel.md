@@ -219,7 +219,7 @@ These are the gaps against the feature list in LARAVEL-ROADMAP.md, gathered from
    - `aliasMiddleware` in service providers.
    - Route files of vendor packages.
    - `domain()` in route hints, and lenses for controllers routed through module providers.
-4. **Blade components.**
+4. **Blade components.** Done in 8.25. Adding a missing constructor parameter to a class component (rather than a `@props` entry) isn't offered, and `@aware` entries don't complete from the parent component.
    - Class components' public properties as view variables.
    - `@aware`, `<x-slot>` names and `<x-dynamic-component>`.
    - `Blade::component()`, `componentNamespace()` and `anonymousComponentPath()` registrations.

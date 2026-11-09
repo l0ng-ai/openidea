@@ -898,10 +898,15 @@ impl PhpEngine {
         }
         let project = self.laravel()?;
         let views = self.laravel_views()?;
-        let catalog = BladeCatalog::read_parts(&project, &views, self);
-        let catalog = Arc::new(catalog.with_ide_json(&project.ide_json, |class| {
-            self.class_targets(class).into_iter().next().map(|target| target.path)
-        }));
+        let class_file = |class: &str| self.class_targets(class).into_iter().next().map(|target| target.path);
+        let catalog = BladeCatalog::read_parts(&project, &views, self).with_registrations(
+            &project,
+            &views,
+            self,
+            class_file,
+            |namespace| self.namespace_classes(namespace),
+        );
+        let catalog = Arc::new(catalog.with_ide_json(&project.ide_json, class_file));
         *self.shared.laravel_blade.lock() = Some((modification, catalog.clone()));
         Some(catalog)
     }

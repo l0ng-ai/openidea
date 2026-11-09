@@ -7,7 +7,8 @@
 //! and stack names, component tags and attributes (completion and goto),
 //! and Find Usages of a view (the one named at the caret, else the
 //! view itself) in PHP files and templates, "Create translation key…"
-//! on a translation key, and the Blade context actions (switch `{{ }}` and
+//! on a translation key, the quick-fixes of template problems (create a
+//! missing view or component, add a prop), and the Blade context actions (switch `{{ }}` and
 //! `{!! !!}`, `class` to `@class`). [`BladeObserver`] publishes the
 //! template's own problems (unclosed sections) for open views. The engine
 //! holds the PHP compiled from the open view as an embedded document under
@@ -60,16 +61,30 @@ impl BladeService {
         })
     }
 
-    /// "Create translation key…" and the Blade context actions at `range`
+    /// "Create translation key…", the quick-fixes of the template's
+    /// problems in a Laravel project (create a missing view or component,
+    /// add a prop) and the Blade context actions at `range`
     /// (`ide_php::blade::intentions`: switching echoes, `@class`).
     fn actions(&self, doc: DocId, range: Range, only: &[String]) -> Vec<CodeAction> {
         let mut out: Vec<CodeAction> = self.translation_action(doc, range, only).into_iter().collect();
-        let rewrite = ide_php::imports::REWRITE;
-        let wanted = only.is_empty()
-            || only
-                .iter()
-                .any(|o| rewrite == o || rewrite.strip_prefix(o.as_str()).is_some_and(|r| r.starts_with('.')));
-        if wanted && let Some(info) = self.info(doc) {
+        let wants = |kind: &str| {
+            only.is_empty()
+                || only.iter().any(|o| kind == o || kind.strip_prefix(o.as_str()).is_some_and(|r| r.starts_with('.')))
+        };
+        if wants(ide_php::imports::QUICKFIX)
+            && let Some(info) = self.info(doc)
+            && let Some(engine) = self.php.engine()
+        {
+            out.extend(
+                engine
+                    .blade_quick_fixes(&blade(&info), range)
+                    .into_iter()
+                    .map(|action| crate::php::code_action(action, engine.server_id())),
+            );
+        }
+        if wants(ide_php::imports::REWRITE)
+            && let Some(info) = self.info(doc)
+        {
             let server = self.php.engine().map_or(self.server, |engine| engine.server_id());
             out.extend(
                 ide_php::blade::intentions::code_actions(&info.path, &info.text, range)
@@ -244,7 +259,7 @@ pub(crate) struct BladeObserver {
 impl BladeObserver {
     fn publish(&self, path: &Path, text: &str) {
         let items = match self.php.engine() {
-            Some(engine) => engine.blade_problems(text),
+            Some(engine) => engine.blade_file_problems(path, text),
             None => ide_php::blade::structure::inspect(text, &[]),
         };
         self.sink.emit(IdeEvent::Diagnostics { path: path.into(), source: DIAGNOSTIC_SOURCE.into(), items });

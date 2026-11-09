@@ -7,8 +7,7 @@ use std::path::Path;
 
 use ide_core::{CancellationToken, DocId, Pos};
 
-use super::views::ViewPaths;
-use super::{Compiled, compile_with};
+use super::Compiled;
 use crate::complete::{CompletionData, Completions};
 use crate::engine::PhpEngine;
 use crate::navigate::{HoverInfo, Target};
@@ -27,12 +26,10 @@ impl PhpEngine {
     /// Compiles the template and holds its PHP as the embedded document of
     /// `blade.doc`. In a Laravel project, the variables the view's callers
     /// pass it are declared with their types
-    /// ([`PhpEngine::laravel_view_variables`]).
+    /// ([`PhpEngine::laravel_view_variables`]), and so are those a class
+    /// component gives its view ([`PhpEngine::laravel_component_variables`]).
     pub fn blade_sync(&self, blade: &BladeDocument) -> Compiled {
-        let component = ViewPaths::new(&self.root()).is_component_view(blade.path);
-        let variables = self.laravel_view_variables(blade.path);
-        let custom = self.laravel_blade().map(|catalog| catalog.directive_names()).unwrap_or_default();
-        let compiled = compile_with(blade.text, component, &variables, &custom);
+        let compiled = self.blade_compile(blade.path, blade.text);
         self.embedded_document(blade.doc, blade.path, blade.version, &compiled.php);
         compiled
     }

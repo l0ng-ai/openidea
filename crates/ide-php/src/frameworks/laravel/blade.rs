@@ -35,7 +35,9 @@ use super::parts::{PartReader, TextParts};
 use super::views::{call_arguments, is_blade, provider_files};
 use super::{LaravelProject, ViewTable};
 use crate::blade::structure::{self, Name, NameKind, NameRole};
-use crate::blade::tags::{LIVEWIRE_PREFIXES, TagPlace, tag_at, tag_at_with, tag_place, tag_place_with};
+use crate::blade::tags::{
+    DYNAMIC_COMPONENT, LIVEWIRE_PREFIXES, TagPlace, enclosing_component, tag_at, tag_at_with, tag_place, tag_place_with,
+};
 use crate::blade::{BladeDocument, DIRECTIVES, directive_prefix};
 use crate::complete::{Completion, CompletionKind, Completions};
 use crate::engine::PhpEngine;
@@ -164,7 +166,9 @@ impl BladeCatalog {
             let part = parts.part("blade-directives", &path, "", &|text| registered_directives(&path, text));
             directives.extend(part.iter().flat_map(|part| part.iter().cloned()));
         }
-        Self { components, directives }
+        let mut catalog = Self { components, directives };
+        catalog.rendered_views(views, parts);
+        catalog
     }
 
     /// This catalog with the components and directives of the `ide.json`
@@ -246,7 +250,12 @@ fn class_files(dir: &Path, segments: &mut Vec<String>, out: &mut Vec<(Vec<String
 
 /// The files below `dir` ending with `extension`, with their path segments
 /// (the last one without the extension), sorted.
-fn class_files_with(dir: &Path, segments: &mut Vec<String>, out: &mut Vec<(Vec<String>, PathBuf)>, extension: &str) {
+pub(super) fn class_files_with(
+    dir: &Path,
+    segments: &mut Vec<String>,
+    out: &mut Vec<(Vec<String>, PathBuf)>,
+    extension: &str,
+) {
     let Ok(entries) = std::fs::read_dir(dir) else { return };
     let mut entries: Vec<_> = entries.flatten().collect();
     entries.sort_by_key(|entry| entry.file_name());
@@ -388,12 +397,13 @@ impl PhpEngine {
         Some(Completions { items, incomplete: false })
     }
 
-    /// The template's own problems (unclosed sections and pushes), and its
-    /// undefined configuration keys, environment keys, translations and
-    /// Vite assets.
+    /// The template's own problems (unclosed sections and pushes), its
+    /// undefined configuration keys, environment keys, translations, Vite
+    /// assets and views, and its undefined component tags.
     pub fn blade_problems(&self, text: &str) -> Vec<Diagnostic> {
         let mut out = structure::inspect(text, &self.custom_directives());
         out.extend(self.blade_reference_problems(text));
+        out.extend(self.undefined_components(text));
         out.sort_by_key(|diagnostic| diagnostic.range.start);
         out
     }
@@ -504,6 +514,9 @@ impl PhpEngine {
         if let Some(found) = self.livewire_completion(blade, offset, &lines) {
             return Some(found);
         }
+        if let Some(found) = self.component_completion(blade, offset, &lines) {
+            return Some(found);
+        }
         let catalog = self.laravel_blade()?;
         match tag_place(blade.text, offset)? {
             TagPlace::Name(span) => {
@@ -511,7 +524,7 @@ impl PhpEngine {
                 let start = span.start - 2;
                 let replace = lines.range(start, offset);
                 let tab = lines.range(start, span.end);
-                let items = catalog
+                let mut items: Vec<Completion> = catalog
                     .components
                     .iter()
                     .map(|component| {
@@ -522,7 +535,29 @@ impl PhpEngine {
                         item(format!("x-{}", component.tag), Some(detail), CompletionKind::Class, replace, tab)
                     })
                     .collect();
+                let builtin =
+                    |label: String, detail: String| item(label, Some(detail), CompletionKind::Keyword, replace, tab);
+                items.push(builtin("x-dynamic-component".into(), "Blade · component named at runtime".into()));
+                items.push(builtin("x-slot".into(), "Blade · slot".into()));
+                if let Some(owner) = enclosing_component(blade.text, start)
+                    && let Some(component) = catalog.component(&owner)
+                {
+                    for slot in self.laravel_slot_names(component) {
+                        items.push(builtin(format!("x-slot:{}", slot.name), format!("slot · x-{owner}")));
+                    }
+                }
                 Some(Completions { items, incomplete: false })
+            }
+            TagPlace::Attribute { component, name, .. } if component == DYNAMIC_COMPONENT => {
+                let replace = lines.range(name.start, offset);
+                let tab = lines.range(name.start, name.end);
+                let detail = Some("the component's name".to_owned());
+                let mut found = item("component".into(), detail, CompletionKind::Property, replace, tab);
+                if blade.text.as_bytes().get(name.end as usize) != Some(&b'=') {
+                    found.insert_text = "component=\"$0\"".into();
+                    found.is_snippet = true;
+                }
+                Some(Completions { items: vec![found], incomplete: false })
             }
             TagPlace::Attribute { component, name, .. } => {
                 let component = catalog.component(&component)?;
@@ -597,6 +632,9 @@ impl PhpEngine {
         if let Some(found) = self.livewire_definition(blade, offset) {
             return Some(found);
         }
+        if let Some(found) = self.component_definition(blade, offset) {
+            return Some(found);
+        }
         let catalog = self.laravel_blade()?;
         if let Some((_, range)) = directive_prefix(blade.text, pos) {
             let word = &blade.text[lines.byte(range.start) as usize..lines.byte(range.end) as usize];
@@ -607,16 +645,7 @@ impl PhpEngine {
             TagPlace::Name(span) => {
                 let tag = &blade.text[span.start as usize..span.end as usize];
                 let component = catalog.component(tag)?;
-                let mut targets = Vec::new();
-                if let Some((class, path)) = &component.class {
-                    let range =
-                        self.resolver().class_model(class).map(|model| model.class.name_loc.range).unwrap_or_default();
-                    targets.push(Target { path: path.clone(), range });
-                }
-                if let Some(view) = &component.view {
-                    targets.push(Target { path: view.clone(), range: Range::default() });
-                }
-                Some(targets)
+                Some(self.component_targets(component))
             }
             TagPlace::Attribute { component, name, .. } => {
                 let component = catalog.component(&component)?;

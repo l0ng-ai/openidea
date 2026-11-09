@@ -240,7 +240,7 @@ fn subclasses(engine: &PhpEngine, parent: &str) -> Vec<Arc<ClassModel>> {
 
 /// The view a component's `render()` names: the first `view('…')` of the
 /// class's text.
-fn rendered_view(text: &str) -> Option<String> {
+pub(super) fn rendered_view(text: &str) -> Option<String> {
     let mut from = 0;
     while let Some(at) = text[from..].find("view(") {
         let start = from + at;

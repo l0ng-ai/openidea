@@ -8,6 +8,8 @@
 //! ([`routes`]), the Eloquent model view ([`model_view`]), the whole model at once
 //! ([`model_summary`]), the route hints and route search ([`route_hints`]), the
 //! views ([`views`]), Blade layouts, components and directives ([`blade`]),
+//! the components providers register and component views' variables, slots
+//! and checks ([`components`]),
 //! validation rules ([`validation`]), string references ([`refs`]), the
 //! parts read from single files that builds share ([`parts`]) and the
 //! `ide.json` files of the project and its packages ([`ide_json`]), the
@@ -21,6 +23,7 @@ pub mod artisan;
 pub mod assets;
 pub mod auth;
 pub mod blade;
+pub mod components;
 pub mod config;
 pub mod database;
 pub mod env;
@@ -47,6 +50,7 @@ pub use artisan::{ArtisanArgument, ArtisanCommand, ArtisanCommands, ArtisanOptio
 pub use assets::ViteAssets;
 pub use auth::{AuthEntry, AuthFacts, GateDef, PolicyDef};
 pub use blade::{BladeCatalog, BladeComponent, CustomDirective};
+pub use components::ComponentRegistrations;
 pub use config::{ConfigEntry, ConfigKeys};
 pub use database::{LiveColumn, LiveSchema, LiveTable};
 pub use env::{EnvEntry, EnvKeys};

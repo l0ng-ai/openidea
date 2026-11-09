@@ -214,3 +214,79 @@ pub fn tag_place_with(text: &str, offset: u32, prefixes: &[&str]) -> Option<TagP
         bound: false,
     })
 }
+
+impl ComponentTag {
+    /// Written `<x-… />`: it has no body.
+    pub fn self_closing(&self, text: &str) -> bool {
+        self.closed && text[..self.end as usize].ends_with("/>")
+    }
+
+    /// The tag's name after `x-`.
+    pub fn name<'t>(&self, text: &'t str) -> &'t str {
+        &text[self.name.start as usize..self.name.end as usize]
+    }
+}
+
+/// Whether `name` (after `x-`) is a slot of the enclosing component
+/// (`slot`, `slot:title`) rather than a component.
+pub fn is_slot(name: &str) -> bool {
+    name == "slot" || name.starts_with("slot:")
+}
+
+/// The tag names Blade itself handles: slots and `<x-dynamic-component>`.
+pub fn is_builtin(name: &str) -> bool {
+    is_slot(name) || name == DYNAMIC_COMPONENT
+}
+
+/// `<x-dynamic-component component="alert" />`: the component its
+/// `component` attribute names.
+pub const DYNAMIC_COMPONENT: &str = "dynamic-component";
+
+/// The component whose body `offset` is in: the nearest component tag
+/// before it (neither a slot nor self-closing) that no `</x-…>` closes
+/// before it. Its name after `x-`.
+pub fn enclosing_component(text: &str, offset: u32) -> Option<String> {
+    let offset = (offset as usize).min(text.len());
+    // (position, Some(opened name) | None for a closing tag with its name).
+    let mut events: Vec<(usize, bool, String)> = Vec::new();
+    for tag in component_tags(&text[..offset]) {
+        let name = tag.name(text).to_owned();
+        if tag.closed && !tag.self_closing(text) && !is_slot(&name) && (tag.end as usize) <= offset {
+            events.push((tag.start as usize, true, name));
+        }
+    }
+    let mut from = 0;
+    while let Some(at) = text[from..offset].find("</x-") {
+        let start = from + at;
+        let name_start = start + 4;
+        let name_end = (name_start..offset).find(|&i| !is_name(text.as_bytes()[i])).unwrap_or(offset);
+        events.push((start, false, text[name_start..name_end].to_owned()));
+        from = name_end.max(start + 4);
+    }
+    events.sort_by_key(|(at, ..)| *at);
+    let mut open: Vec<String> = Vec::new();
+    for (_, opens, name) in events {
+        if opens {
+            open.push(name);
+        } else if let Some(at) = open.iter().rposition(|known| *known == name) {
+            open.truncate(at);
+        }
+    }
+    open.pop()
+}
+
+/// The value of attribute `attribute` of the `<x-{tag}` tag the caret at
+/// `offset` is in, when the caret is inside that value.
+pub fn attribute_value_at(text: &str, offset: u32, tag: &str, attribute: &str) -> Option<Span<u32>> {
+    let start = text[..(offset as usize).min(text.len())].rfind(&format!("<x-{tag}"))?;
+    let found = tag_at(text, start)?;
+    if found.name(text) != tag || found.closed && offset >= found.end {
+        return None;
+    }
+    found
+        .attributes
+        .iter()
+        .find(|known| known.bare_name(text) == attribute && !text[known.name.start as usize..].starts_with(':'))
+        .and_then(|known| known.value.clone())
+        .filter(|value| value.start <= offset && offset <= value.end)
+}
