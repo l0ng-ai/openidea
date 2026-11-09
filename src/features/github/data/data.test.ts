@@ -405,6 +405,7 @@ describe("pull request helpers", () => {
       expect(parseGitHubRemote(url), url).toEqual({ owner: "o", name: "r" });
     expect(parseGitHubRemote("https://gitlab.com/o/r.git")).toBeNull();
     expect(parseGitHubRemote("/local/repo")).toBeNull();
+    expect(parseGitHubRemote("https://ssh.github.com/o/r.git")).toBeNull();
     expect(
       githubRemotes([
         { name: "origin", url: "git@github.com:me/r.git" },

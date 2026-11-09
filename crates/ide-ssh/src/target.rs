@@ -6,6 +6,9 @@ use ide_core::{IdeError, IdeResult};
 use std::path::{Path, PathBuf};
 use std::time::{Duration, Instant};
 
+mod remote_url;
+pub use remote_url::{resolve_ssh_remote_url, resolve_ssh_remote_url_with};
+
 const MATCH_EXEC_TIMEOUT: Duration = Duration::from_secs(10);
 
 /// An SSH host and how to authenticate to it.
@@ -372,7 +375,6 @@ fn parse_config_file(
     user_override: Option<&str>,
     out: &mut RawConfig,
     depth: usize,
-    allow_exec: bool,
 ) {
     if depth >= 8 {
         return;
@@ -388,7 +390,7 @@ fn parse_config_file(
                 active = pattern_list_matches(patterns.iter().map(String::as_str), alias);
             }
             "match" => {
-                active = eval_match(value, alias, port_override, user_override, out, allow_exec);
+                active = eval_match(value, alias, port_override, user_override, out, true);
             }
             _ if !active => {}
             "include" => {
@@ -396,7 +398,7 @@ fn parse_config_file(
                     let expanded = expand(&raw);
                     let pat = if expanded.is_relative() { base_dir.join(expanded) } else { expanded };
                     for file in expand_include_glob(&pat) {
-                        parse_config_file(&file, alias, port_override, user_override, out, depth + 1, allow_exec);
+                        parse_config_file(&file, alias, port_override, user_override, out, depth + 1);
                     }
                 }
             }
@@ -463,7 +465,7 @@ fn config_hop(
 ) -> (Hop, Option<String>) {
     let mut raw = RawConfig::default();
     if let Some(p) = config {
-        parse_config_file(p, alias, port_override, user_override, &mut raw, 0, true);
+        parse_config_file(p, alias, port_override, user_override, &mut raw, 0);
     }
     let local = local_user();
     let host = raw.hostname.unwrap_or_else(|| alias.to_owned());
@@ -560,92 +562,6 @@ pub fn openssh_args(target: &SshTarget) -> Vec<String> {
     args.push("--".into());
     args.push(if target.user.trim().is_empty() { host.to_owned() } else { format!("{}@{host}", target.user.trim()) });
     args
-}
-
-/// Normalizes SSH-only git forge hostnames to their canonical hostnames.
-fn normalize_git_ssh_host(host: &str) -> &str {
-    if host.eq_ignore_ascii_case("ssh.github.com") {
-        "github.com"
-    } else if host.eq_ignore_ascii_case("altssh.gitlab.com") {
-        "gitlab.com"
-    } else {
-        host
-    }
-}
-
-/// Resolves any `~/.ssh/config` `Host` alias in an SSH git remote URL (`git@alias:owner/repo.git`
-/// or `ssh://git@alias/owner/repo.git`) to its configured `HostName`. Non-SSH URLs are returned unchanged.
-pub fn resolve_ssh_remote_url(url: &str) -> String {
-    resolve_ssh_remote_url_with(url, SshFiles::default().config.as_deref())
-}
-
-/// Like [`resolve_ssh_remote_url`], reading from `config` when provided.
-pub fn resolve_ssh_remote_url_with(url: &str, config: Option<&Path>) -> String {
-    let trimmed = url.trim();
-    if let Some((scheme, rest)) = trimmed.split_once("://") {
-        if !scheme.eq_ignore_ascii_case("ssh") {
-            return url.to_owned();
-        }
-        let Some((authority, path)) = rest.split_once('/') else {
-            return url.to_owned();
-        };
-        let (user_opt, host_port) = match authority.rsplit_once('@') {
-            Some((u, hp)) => (Some(u), hp),
-            None => (None, authority),
-        };
-        if host_port.starts_with('[') || host_port.is_empty() {
-            return url.to_owned();
-        }
-        let (alias, port_str) = match host_port.split_once(':') {
-            Some((h, p)) => (h, Some(p)),
-            None => (host_port, None),
-        };
-        if alias.is_empty() {
-            return url.to_owned();
-        }
-        let port_override = port_str.and_then(|p| p.parse::<u16>().ok());
-        let mut raw = RawConfig::default();
-        if let Some(p) = config {
-            parse_config_file(p, alias, port_override, user_opt, &mut raw, 0, false);
-        }
-        let resolved = raw.hostname.as_deref().unwrap_or(alias);
-        let resolved = normalize_git_ssh_host(resolved);
-        if resolved == alias {
-            return url.to_owned();
-        }
-        let user_prefix = user_opt.map(|u| format!("{u}@")).unwrap_or_default();
-        let port_suffix = port_str.map(|p| format!(":{p}")).unwrap_or_default();
-        return format!("{scheme}://{user_prefix}{resolved}{port_suffix}/{path}");
-    }
-
-    // SCP-like syntax: `[user@]host:path` (not a Windows drive `C:\...` or local path).
-    let Some((left, path)) = trimmed.split_once(':') else {
-        return url.to_owned();
-    };
-    if path.is_empty() || path.starts_with('/') || path.starts_with('\\') || left.contains(['/', '\\']) {
-        return url.to_owned();
-    }
-    let (user_opt, alias) = match left.rsplit_once('@') {
-        Some((u, h)) => (Some(u), h),
-        None => (None, left),
-    };
-    if alias.len() <= 1 || alias.starts_with('[') {
-        return url.to_owned();
-    }
-    let mut raw = RawConfig::default();
-    if let Some(p) = config {
-        parse_config_file(p, alias, None, user_opt, &mut raw, 0, false);
-    }
-    let resolved = raw.hostname.as_deref().unwrap_or(alias);
-    let resolved = normalize_git_ssh_host(resolved);
-    if resolved == alias {
-        return url.to_owned();
-    }
-    let user_prefix = match user_opt {
-        Some(u) => format!("{u}@"),
-        None => String::new(),
-    };
-    format!("{user_prefix}{resolved}:{path}")
 }
 
 #[cfg(test)]
@@ -815,5 +731,54 @@ mod tests {
             resolve_ssh_remote_url_with("https://github.com/l0ng-ai/openidea.git", Some(&config)),
             "https://github.com/l0ng-ai/openidea.git"
         );
+    }
+
+    #[test]
+    fn remote_urls_cover_scp_paths_and_leave_local_urls_unchanged() {
+        let tmp = tempfile::tempdir().unwrap();
+        let config = tmp.path().join("config");
+        std::fs::write(&config, "Host *\n  HostName github.com\n").unwrap();
+        for (url, expected) in [
+            ("git@alias:/org/repo.git", "git@github.com:/org/repo.git"),
+            ("a:org/repo.git", "github.com:org/repo.git"),
+            ("ssh://alice@alias:443/org/repo.git", "ssh://alice@github.com:443/org/repo.git"),
+            ("https://alias/org/repo.git", "https://alias/org/repo.git"),
+            ("file:///alias/org/repo.git", "file:///alias/org/repo.git"),
+            ("./alias:repo.git", "./alias:repo.git"),
+            ("/alias:repo.git", "/alias:repo.git"),
+            ("C:\\repo.git", "C:\\repo.git"),
+            ("C:/repo.git", "C:/repo.git"),
+            ("ssh://alias:bad/org/repo.git", "ssh://alias:bad/org/repo.git"),
+        ] {
+            assert_eq!(resolve_ssh_remote_url_with(url, Some(&config)), expected, "{url}");
+        }
+    }
+
+    #[test]
+    fn remote_config_include_keeps_host_context_and_first_option() {
+        let tmp = tempfile::tempdir().unwrap();
+        let config = tmp.path().join("config");
+        std::fs::create_dir(tmp.path().join("parts")).unwrap();
+        std::fs::write(tmp.path().join("parts/hosts"), "Include more\nHost other\n  User other\n").unwrap();
+        std::fs::write(tmp.path().join("more"), "Host included\n  HostName github.com\n").unwrap();
+        std::fs::write(&config, "Include parts/hosts\n  HostName wrong.example\nHost g? !gl\n  HostName github.com # forge\nHost *\n  HostName fallback.example\n").unwrap();
+        for (alias, host) in [("gh", "github.com"), ("gl", "fallback.example"), ("included", "github.com")] {
+            assert_eq!(
+                resolve_ssh_remote_url_with(&format!("git@{alias}:o/r"), Some(&config)),
+                format!("git@{host}:o/r")
+            );
+        }
+    }
+
+    #[test]
+    fn remote_config_malformed_or_unreadable_hosts_fall_back() {
+        let tmp = tempfile::tempdir().unwrap();
+        let config = tmp.path().join("config");
+        let url = "git@alias:o/r";
+        assert_eq!(resolve_ssh_remote_url_with(url, Some(&config)), url);
+        for value in ["\"\"", "\"github.com", "github.com extra", "bad/host", ""] {
+            std::fs::write(&config, format!("Host alias\n  HostName {value}\n")).unwrap();
+            assert_eq!(resolve_ssh_remote_url_with(url, Some(&config)), url, "{value:?}");
+        }
     }
 }
