@@ -8,6 +8,7 @@ import { useEffect, useId, useState } from "react";
 import { call, commands, isTauri } from "@/platform/ipc";
 import { useProject } from "@/platform/project";
 import { WORKFLOW_LIMITS, type IssueLinkValid } from "@/platform/workflowSettings";
+import { showInFileManagerLabel } from "@/platform/fileManager";
 import { Button, Icon, Input, type SelectOption, T } from "@/ui";
 import { Row, SettingSelect } from "../components/Form";
 import { useSetting } from "../components/context";
@@ -222,7 +223,7 @@ function PushDialogRows() {
 const PATCH_CREATED: SelectOption[] = [
   { value: "ask", label: "Ask" },
   { value: "no", label: "No" },
-  { value: "reveal", label: "Show in Finder" },
+  { value: "reveal", label: showInFileManagerLabel() },
 ];
 
 const INCOMING: SelectOption[] = [
