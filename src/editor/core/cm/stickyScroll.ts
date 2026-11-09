@@ -142,6 +142,8 @@ class StickyScroll {
   private gutterWidth = 0;
   private numberLeft = 0;
   private scheduled = false;
+  private selectionDirty = true;
+  private scrollLeft = 0;
 
   constructor(private view: EditorView) {
     this.dom = document.createElement("div");
@@ -155,6 +157,7 @@ class StickyScroll {
   }
 
   update(u: ViewUpdate) {
+    if (u.docChanged || u.selectionSet || u.geometryChanged) this.selectionDirty = true;
     if (
       u.docChanged ||
       u.selectionSet ||
@@ -223,7 +226,8 @@ class StickyScroll {
           return;
         }
         this.dom.style.display = "";
-        if (!same || gutterWidth !== this.gutterWidth || numberLeft !== this.numberLeft) {
+        const rebuild = !same || gutterWidth !== this.gutterWidth || numberLeft !== this.numberLeft;
+        if (rebuild) {
           this.lines = lines;
           this.renderedFrom = { texts, tree };
           this.gutterWidth = gutterWidth;
@@ -252,9 +256,16 @@ class StickyScroll {
           }
           this.dom.replaceChildren(frag);
         }
-        for (const inner of this.dom.querySelectorAll<HTMLElement>(".cm-openidea-stickyInner"))
-          inner.style.transform = scrollLeft ? `translateX(${-scrollLeft}px)` : "";
-        this.paintSelection();
+        if (rebuild || scrollLeft !== this.scrollLeft) {
+          for (const inner of this.dom.querySelectorAll<HTMLElement>(".cm-openidea-stickyInner"))
+            inner.style.transform = scrollLeft ? `translateX(${-scrollLeft}px)` : "";
+          this.selectionDirty = true;
+        }
+        this.scrollLeft = scrollLeft;
+        if (this.selectionDirty) {
+          this.selectionDirty = false;
+          this.paintSelection();
+        }
       },
     });
   }
