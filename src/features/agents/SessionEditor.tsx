@@ -7,11 +7,11 @@ import {
   useCallback,
   useContext,
   useEffect,
+  useId,
   useLayoutEffect,
   useMemo,
   useRef,
   useState,
-  type KeyboardEvent as ReactKeyboardEvent,
   type ReactElement,
   type ReactNode,
   type RefObject,
@@ -44,6 +44,7 @@ import {
   SearchField,
   Spinner,
   T,
+  Tabs,
   Tree,
   copyMenuFor,
   copyText,
@@ -1876,14 +1877,16 @@ function QuestionForm({
   const [position, setPosition] = useState(0);
   const [hovered, setHovered] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
-  const tabRefs = useRef(new Map<number, HTMLButtonElement>());
+  const questionPrefix = useId();
+  const panelsRef = useRef<HTMLDivElement>(null);
   const panelRef = useRef<HTMLDivElement>(null);
   // Paging with the buttons lands the keyboard focus on the question itself.
   const focusPanel = useRef(false);
   const multiple = answers.length > 1;
   const complete = answers.every(isAnswered);
-  const questionId = (part: string, index: number) => `question-${entry.id}-${part}-${index}`;
+  const questionId = (part: string, index: number) => `${questionPrefix}-${part}-${index}`;
   useEffect(() => {
+    if (panelsRef.current) panelsRef.current.scrollTop = 0;
     if (!focusPanel.current) return;
     focusPanel.current = false;
     panelRef.current?.focus();
@@ -1930,18 +1933,6 @@ function QuestionForm({
     setPosition(next);
     setHovered(null);
   };
-  const onTabKeyDown = (event: ReactKeyboardEvent<HTMLButtonElement>, index: number) => {
-    const last = answers.length - 1;
-    let next: number | null = null;
-    if (event.key === "ArrowRight") next = index === last ? 0 : index + 1;
-    else if (event.key === "ArrowLeft") next = index === 0 ? last : index - 1;
-    else if (event.key === "Home") next = 0;
-    else if (event.key === "End") next = last;
-    if (next === null) return;
-    event.preventDefault();
-    goTo(next);
-    tabRefs.current.get(next)?.focus();
-  };
   return (
     <form
       className={styles.questionCard}
@@ -1960,34 +1951,30 @@ function QuestionForm({
       }}
     >
       {multiple && (
-        <div className={styles.questionTabs} role="tablist" aria-label={entry.title}>
-          {answers.map((item, index) => (
-            <button
-              key={questionId("tab", index)}
-              ref={(el) => {
-                if (el) tabRefs.current.set(index, el);
-                else tabRefs.current.delete(index);
-              }}
-              type="button"
-              role="tab"
-              id={questionId("tab", index)}
-              aria-selected={index === position}
-              aria-controls={questionId("panel", index)}
-              tabIndex={index === position ? 0 : -1}
-              disabled={busy}
-              title={item.question.question}
-              className={clsx(styles.questionTab, index === position && styles.questionTabActive)}
-              onClick={() => goTo(index)}
-              onKeyDown={(event) => onTabKeyDown(event, index)}
-            >
-              <span className={styles.questionTabLabel}>{item.question.header?.trim() || item.question.question}</span>
-              {isAnswered(item) && <Icon name="check" size={12} className={styles.questionTabCheck} />}
-            </button>
-          ))}
+        <div inert={busy}>
+          <Tabs
+            variant="compact"
+            layout="squeeze"
+            aria-label={entry.title}
+            panelIdPrefix={questionPrefix}
+            activeId={String(position)}
+            onSelect={(id) => {
+              if (!busy) goTo(Number(id));
+            }}
+            items={answers.map((item, index) => ({
+              id: String(index),
+              label: <span>{item.question.header?.trim() || item.question.question}</span>,
+              text: item.question.header?.trim() || item.question.question,
+              tooltip: item.question.question,
+              trailing: isAnswered(item) ? (
+                <Icon name="check" size={12} className={styles.questionTabCheck} />
+              ) : undefined,
+            }))}
+          />
         </div>
       )}
       {/* All questions stay mounted in one grid cell, so the card keeps the tallest one's height. */}
-      <div className={styles.questionPanels}>
+      <div ref={panelsRef} className={clsx(styles.questionPanels, multiple && styles.questionPanelsPaged)}>
         {answers.map((item, index) => {
           const current = index === position;
           const group = questionId("group", index);
@@ -2036,7 +2023,7 @@ function QuestionForm({
               aria-labelledby={multiple ? questionId("tab", index) : undefined}
               aria-hidden={!current}
               inert={!current}
-              tabIndex={-1}
+              tabIndex={multiple && current ? 0 : -1}
               className={clsx(styles.questionPanel, !current && styles.questionPanelHidden)}
             >
               <fieldset className={styles.question} disabled={busy}>

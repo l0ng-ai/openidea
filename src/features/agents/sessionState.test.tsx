@@ -543,6 +543,15 @@ describe("a pending AskUserQuestion", () => {
     expect(screen.queryByRole("alert")).toBeNull();
     const tabs = within(card).getAllByRole("tab");
     expect(tabs.map((tab) => tab.textContent)).toEqual(["Layout", "Checks"]);
+    const panel = within(card).getByRole("tabpanel", { name: "Layout" });
+    expect(panel).toHaveAttribute("tabindex", "0");
+    expect(tabs[0]).toHaveAttribute("aria-controls", panel.id);
+    tabs[0]!.focus();
+    fireEvent.keyDown(tabs[0]!, { key: "ArrowLeft" });
+    expect(tabs[1]).toHaveFocus();
+    expect(tabs[1]).toHaveAttribute("aria-selected", "true");
+    fireEvent.keyDown(tabs[1]!, { key: "Home" });
+    expect(tabs[0]).toHaveFocus();
     // Every question stays mounted (one grid cell), so switching tabs keeps the card's height.
     expect(card.querySelectorAll('[role="tabpanel"]')).toHaveLength(2);
     expect(within(card).getByText("One row per check")).toBeTruthy();
@@ -556,6 +565,7 @@ describe("a pending AskUserQuestion", () => {
     expect(within(card).getByRole("button", { name: "Previous" })).toHaveProperty("disabled", true);
     fireEvent.click(within(card).getByRole("button", { name: "Next" }));
     expect(within(card).getByRole("tab", { name: "Checks" })).toHaveAttribute("aria-selected", "true");
+    expect(within(card).getByRole("tabpanel", { name: "Checks" })).toHaveFocus();
     fireEvent.click(within(card).getByRole("tab", { name: "Layout" }));
     expect(within(card).getByRole("radio", { name: /^List/ })).toHaveProperty("checked", true);
     fireEvent.click(within(card).getByRole("tab", { name: "Checks" }));
@@ -596,6 +606,9 @@ describe("a pending AskUserQuestion", () => {
     useAgents.setState({ entries: new Map(backend.entries) });
     render(<SessionEditor input={input("A")} />);
     const card = await screen.findByRole("form", { name: "Which layout?" });
+    expect(within(card).queryByRole("tablist")).toBeNull();
+    expect(within(card).queryByRole("tabpanel")).toBeNull();
+    expect(within(card).queryByRole("button", { name: "Next" })).toBeNull();
     const table = within(card).getByRole("radio", { name: /^Table/ });
     const list = within(card).getByRole("radio", { name: /^List/ });
     fireEvent.focus(table);
