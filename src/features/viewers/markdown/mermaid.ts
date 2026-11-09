@@ -122,29 +122,54 @@ let applied = 0;
  * inactive tab) — collide on their marker ids, and Chromium resolves the `url(#…)`
  * references against the hidden copy, losing arrowheads.
  *
- * Prefixes every id per application in a single longest-first pass, together with the
- * `<style>` rules mermaid scopes to `#<svg-id>`: a prefix keeps mermaid's own
- * `[id$="-arrowhead"]` / `[id$="-extensionStart"]` / `[id$="-barbEnd"]` suffix rules
- * matching, while scoping `#` outside attributes/urls to the root id leaves hex colours
- * in `<style>` untouched even if a node id is hex.
+ * Prefix ids so Mermaid's marker suffix selectors keep matching. Rewrite only
+ * attributes and CSS rules, leaving diagram labels and CSS colours untouched.
  */
 function reid(svg: string): string {
-  const ids = [...new Set([...svg.matchAll(/\bid="([^"]+)"/g)].map((m) => m[1]!))];
-  const root = ids[0];
-  if (!root) return svg;
+  const tag = /<[a-zA-Z](?:[^>"']|"[^"]*"|'[^']*')*>/g;
+  const attribute = /(\s)([\w:-]+)(\s*=\s*)(["'])([\s\S]*?)\4/g;
+  const ids = new Set<string>();
+  for (const [markup] of svg.matchAll(tag)) {
+    for (const attr of markup.matchAll(attribute)) if (attr[2] === "id") ids.add(attr[5]!);
+  }
+  if (!ids.size) return svg;
   const prefix = `c${++applied}-`;
-  const pattern = ids
-    .slice()
+  const rename = (id: string) => (ids.has(id) ? `${prefix}${id}` : id);
+  const pattern = [...ids]
     .sort((a, b) => b.length - a.length)
     .map(escapeRegExp)
     .join("|");
+  const selector = new RegExp(`#(${pattern})(?=$|[\\s.:>+~\\[,])`, "g");
+  const urls = (value: string) =>
+    value.replace(
+      /(url\(\s*)(["']?)#([^'"\s)]+)(\2\s*\))/g,
+      (_m, start: string, quote: string, id: string, end: string) => `${start}${quote}#${rename(id)}${end}`,
+    );
   return svg.replace(
-    new RegExp(
-      `(\\b(?:id|aria-labelledby|aria-describedby)="|\\bhref="#|url\\(#)(${pattern})(?="|\\))|(#)(${escapeRegExp(root)})(?![\\w-])`,
-      "g",
-    ),
-    (_m, attr: string | undefined, id: string | undefined, hash: string | undefined, scoped: string | undefined) =>
-      attr ? `${attr}${prefix}${id!}` : `${hash!}${prefix}${scoped!}`,
+    /(<style\b[^>]*>)([\s\S]*?)(<\/style\s*>)|<[a-zA-Z](?:[^>"']|"[^"]*"|'[^']*')*>/g,
+    (markup, open: string | undefined, css: string | undefined, close: string | undefined) => {
+      if (css !== undefined) {
+        // Only selector lists contain ID selectors; declarations may contain hex colours.
+        const scoped = css.replace(
+          /(^|[{}])([^{}]+)(?=\{)/g,
+          (_m, boundary: string, selectors: string) =>
+            boundary + selectors.replace(selector, (_m, id: string) => `#${rename(id)}`),
+        );
+        return `${open!}${urls(scoped)}${close!}`;
+      }
+      return markup.replace(
+        attribute,
+        (_m: string, space: string, name: string, equal: string, quote: string, value: string) => {
+          if (name === "id") value = rename(value);
+          else if (name === "href" || name === "xlink:href") {
+            if (value.startsWith("#")) value = `#${rename(value.slice(1))}`;
+          } else if (name === "aria-labelledby" || name === "aria-describedby") value = value.replace(/\S+/g, rename);
+          else if (/^(?:style|fill|stroke|filter|clip-path|mask|marker(?:-start|-mid|-end)?|cursor)$/.test(name))
+            value = urls(value);
+          return `${space}${name}${equal}${quote}${value}${quote}`;
+        },
+      );
+    },
   );
 }
 
