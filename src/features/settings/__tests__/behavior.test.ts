@@ -83,6 +83,10 @@ describe("appearance & behavior settings", () => {
     // (`true` meant shown, which was the status bar).
     expect(validateAppearanceExtras({ showNavigationBar: true }).navigationBar).toBe("statusBar");
     expect(validateAppearanceExtras({ showNavigationBar: false }).navigationBar).toBe("hidden");
+    expect(validateAppearanceExtras({ showNavigationBar: true, navigationBar: "top" }).navigationBar).toBe("top");
+    expect(validateAppearanceExtras({ showNavigationBar: false, navigationBar: "statusBar" }).navigationBar).toBe(
+      "statusBar",
+    );
     // Anything that is neither a position nor a boolean falls back to the default.
     expect(validateAppearanceExtras({ navigationBar: "everywhere" }).navigationBar).toBe("statusBar");
   });

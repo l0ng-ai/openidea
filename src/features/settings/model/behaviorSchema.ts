@@ -183,7 +183,7 @@ export function validateAppearanceExtras(raw: unknown): AppearanceExtras {
     // which was the status bar); `navigationBar` is the three-state key.
     navigationBar: (() => {
       const legacy = a.showNavigationBar;
-      if (typeof legacy === "boolean") return legacy ? "statusBar" : "hidden";
+      if (!("navigationBar" in a) && typeof legacy === "boolean") return legacy ? "statusBar" : "hidden";
       return oneOf(a.navigationBar, NAV_BAR_POSITIONS, d.navigationBar);
     })(),
   };

@@ -4,7 +4,7 @@ import { createMemoryBackend } from "./backend";
 import { initialTabsState } from "./model/tabs";
 import { useDocMeta } from "./model/document";
 import { resetDistractionFree, setDistractionFree } from "@/workbench/distractionFree";
-import { registerTextEditorWrapper } from "@/workbench/contributions";
+import { registerTextEditorWrapper, setProjectViewLead, useProjectViewLead } from "@/workbench/contributions";
 import { registerActions } from "@/platform/actions";
 import { useProject } from "@/platform/project";
 import { resolveMenuItems } from "@/ui";
@@ -22,6 +22,15 @@ afterEach(() => {
 });
 
 describe("EditorController", () => {
+  it("returns navigation context to the editor when activating a non-text tab", async () => {
+    ctrl = new EditorController(createMemoryBackend({ "/p/a.ts": "one\n" }));
+    ctrl.start();
+    await ctrl.openFile("/p/a.ts", { focus: false });
+    setProjectViewLead({ path: "/p/src", dir: true });
+    await ctrl.openInput({ kind: "agent-session", key: "task" });
+    expect(useProjectViewLead.getState().lead).toBeNull();
+  });
+
   it("autosaves on blur, but not while focus is in a popup over the editor", async () => {
     const backend = createMemoryBackend({ "/p/a.c": "int main() {\n    \n}\n" });
     const save = vi.spyOn(backend, "save");

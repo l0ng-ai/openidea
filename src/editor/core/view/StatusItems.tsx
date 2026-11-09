@@ -78,7 +78,12 @@ function projectCrumb(project: { root: string; name: string }): Crumb {
 function pathCrumbs(project: { root: string; name: string } | null, path: string, dir = false): Crumb[] {
   const target = dir ? path : dirname(path);
   const segments: Crumb[] = [];
+  if (project && target !== project.root && !target.startsWith(project.root + "/")) project = null;
   if (project) segments.push(projectCrumb(project));
+  else {
+    const label = basename(target) || target;
+    segments.push({ label, icon: "folder", title: target, nav: { kind: "dir", path: target, label } });
+  }
   if (project && target !== project.root && target.startsWith(project.root + "/")) {
     // Every directory from the root to the file, eliding the middle of deep paths.
     const dirs = relativePath(project.root, target).split("/");
@@ -119,7 +124,29 @@ function pathCrumbs(project: { root: string; name: string } | null, path: string
 function CrumbNav({ segments, className, ariaLabel }: { segments: Crumb[]; className?: string; ariaLabel?: string }) {
   const [popup, setPopup] = useState<{ nav: NavSegment; anchor: HTMLElement } | null>(null);
   return (
-    <nav className={className} aria-label={ariaLabel}>
+    <nav
+      className={className}
+      aria-label={ariaLabel}
+      onKeyDown={(e) => {
+        const buttons = [...e.currentTarget.querySelectorAll<HTMLButtonElement>("button")];
+        const index = buttons.indexOf(e.target as HTMLButtonElement);
+        if (index < 0) return;
+        let next: number;
+        if (e.key === "ArrowLeft") next = Math.max(0, index - 1);
+        else if (e.key === "ArrowRight") next = Math.min(buttons.length - 1, index + 1);
+        else if (e.key === "Home") next = 0;
+        else if (e.key === "End") next = buttons.length - 1;
+        else if (e.key === "ArrowDown") {
+          e.preventDefault();
+          e.stopPropagation();
+          buttons[index]?.click();
+          return;
+        } else return;
+        e.preventDefault();
+        e.stopPropagation();
+        buttons[next]?.focus();
+      }}
+    >
       {segments.map((s, i) => (
         <Fragment key={i}>
           {i > 0 && <Icon name="chevron-right" size={12} className={styles.statusSep} />}
@@ -155,7 +182,7 @@ export function Breadcrumbs({ className, inStatusBar = false }: { className?: st
   // The project view's node wins while the tree is the user's context (IDEA's bar
   // follows it, e.g. a folder selected there), then the editor's file.
   const lead = useProjectViewLead((s) => s.lead);
-  const path = lead?.path ?? statusPath ?? activeTabPath;
+  const path = lead?.path ?? activeTabPath ?? statusPath;
   const currentProject = useProject((s) => s.project);
   const project = projectFolder(currentProject, path ?? "");
   const outline = useOutline((s) => (path ? s[path] : undefined));

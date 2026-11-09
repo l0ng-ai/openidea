@@ -21,7 +21,7 @@
   display: flex;
   align-items: center;
   gap: 2px;
-  height: 26px;
+  height: var(--h-navigationbar);
   padding: 0 10px;
   overflow: hidden;
   color: var(--fg);

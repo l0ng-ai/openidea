@@ -726,6 +726,49 @@ mod tests {
     }
 
     #[test]
+    fn navigation_bar_layers_migrate_without_rewriting_other_settings() {
+        use ide_core::settings::NavigationBarPosition::{Hidden, StatusBar, Top};
+
+        let tmp = tempfile::tempdir().unwrap();
+        let project = tmp.path().join("project");
+        std::fs::create_dir_all(project.join(".openidea")).unwrap();
+        let global_file = tmp.path().join("settings.toml");
+        let project_file = project.join(".openidea/settings.toml");
+        let global =
+            "# keep this comment\n[editor]\nfontSize = 17 # keep this too\n[appearance]\nnavigationBar = \"top\"\n";
+        std::fs::write(&global_file, global).unwrap();
+        let store = SettingsStore::load(tmp.path(), Some(&project));
+        assert_eq!(store.effective().appearance.navigation_bar, Top);
+        assert_eq!(std::fs::read_to_string(&global_file).unwrap(), global);
+
+        for (layer, expected) in [
+            ("[appearance]\nshowNavigationBar = false\n", Hidden),
+            ("[appearance]\nshowNavigationBar = true\n", StatusBar),
+            ("[appearance]\nnavigationBar = \"hidden\"\n", Hidden),
+            ("[editor]\nfontSize = 19\n", Top),
+        ] {
+            std::fs::write(&project_file, layer).unwrap();
+            assert_eq!(store.reload().appearance.navigation_bar, expected);
+            assert_eq!(std::fs::read_to_string(&project_file).unwrap(), layer);
+        }
+
+        std::fs::remove_file(&project_file).unwrap();
+        let legacy = global.replace("navigationBar = \"top\"", "showNavigationBar = false");
+        std::fs::write(&global_file, &legacy).unwrap();
+        assert_eq!(store.reload().appearance.navigation_bar, Hidden);
+        let updated = store.set(SettingsScope::Global, "appearance.navigationBar", serde_json::json!("top")).unwrap();
+        assert_eq!(updated.appearance.navigation_bar, Top);
+        assert_eq!(updated.editor.font_size, 17.0);
+        let written = std::fs::read_to_string(&global_file).unwrap();
+        assert!(written.starts_with(&legacy));
+        assert_eq!(
+            store.set(SettingsScope::Global, "appearance.navigationBar", Json::Null).unwrap().appearance.navigation_bar,
+            Hidden
+        );
+        assert_eq!(std::fs::read_to_string(&global_file).unwrap(), legacy);
+    }
+
+    #[test]
     fn mcp_server_is_default_off_and_cannot_be_enabled_by_a_project() {
         let tmp = tempfile::tempdir().unwrap();
         let config = tmp.path().join("config");
