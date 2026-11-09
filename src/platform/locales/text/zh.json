@@ -7051,5 +7051,11 @@
   "Run test": "运行测试",
   "Project evaluation failed": "项目求值失败",
   "dotnet exited with code {0}": "dotnet 已退出，退出码 {0}",
-  "Microsoft.Testing.Platform was not found in the restored project.": "还原后的项目中未找到 Microsoft.Testing.Platform。"
+  "Microsoft.Testing.Platform was not found in the restored project.": "还原后的项目中未找到 Microsoft.Testing.Platform。",
+  "Current version": "当前版本",
+  "Last checked": "上次检查",
+  "Check Now": "立即检查",
+  "Check for updates automatically": "自动检查更新",
+  "At startup and every 4 hours while OpenIDEA runs. Each new version is announced once per session.": "启动时及 OpenIDEA 运行期间每隔 4 小时检查一次，每次启动后同一新版本只提醒一次。",
+  "Checking for updates…": "正在检查更新…"
 }

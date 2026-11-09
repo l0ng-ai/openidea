@@ -184,6 +184,9 @@ pub fn settings_set(
     if key == "mcpServer" || key.starts_with("mcpServer.") {
         crate::commands::mcp::apply(&state);
     }
+    if !applied.project_scope {
+        state.updates.wake.notify_one();
+    }
     // A project value concerns only that project's window (and its settings window).
     let event = ide_core::IdeEvent::SettingsChanged { key };
     if applied.project_scope {
@@ -238,6 +241,7 @@ pub async fn settings_import(window: Window, state: State<'_, AppState>, path: P
     crate::commands::ssh::apply_ssh_settings(&state);
     crate::commands::mcp::apply(&state);
     state.host.apply_proxy();
+    state.updates.wake.notify_one();
     state.sink.emit(ide_core::IdeEvent::SettingsChanged { key: String::new() });
     let settings = ide_host::ops::project::settings(&state.host, window.label());
     Ok(SettingsImport { settings, storage })

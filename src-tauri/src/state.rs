@@ -15,6 +15,7 @@ pub struct AppState {
     pub app: AppHandle,
     pub host: Arc<Host>,
     pub startup: Startup,
+    pub updates: crate::updates::Updates,
     pub recent: RecentProjects,
     /// Plugins (`ide_host::plugins`), shared by all windows.
     pub plugins: Arc<ide_host::plugins::PluginHost>,
@@ -99,6 +100,7 @@ impl AppState {
         }));
         Ok(Self {
             recent: RecentProjects::load(&config_dir),
+            updates: Default::default(),
             askpass: start_askpass(&app),
             sink: global_sink,
             plugins: crate::commands::plugin::create_host(&app, &data_dir, &host)?,

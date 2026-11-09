@@ -712,5 +712,11 @@
   "Select a .NET project": "Select a .NET project",
   "Project evaluation failed": "Project evaluation failed",
   "dotnet exited with code {0}": "dotnet exited with code {0}",
-  "Microsoft.Testing.Platform was not found in the restored project.": "Microsoft.Testing.Platform was not found in the restored project."
+  "Microsoft.Testing.Platform was not found in the restored project.": "Microsoft.Testing.Platform was not found in the restored project.",
+  "Current version": "Current version",
+  "Last checked": "Last checked",
+  "Check Now": "Check Now",
+  "Check for updates automatically": "Check for updates automatically",
+  "At startup and every 4 hours while OpenIDEA runs. Each new version is announced once per session.": "At startup and every 4 hours while OpenIDEA runs. Each new version is announced once per session.",
+  "Checking for updates…": "Checking for updates…"
 }

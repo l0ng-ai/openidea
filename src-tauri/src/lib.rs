@@ -31,6 +31,7 @@ mod state;
 mod theme_frame;
 #[cfg(target_os = "macos")]
 mod titlebar;
+mod updates;
 mod window_groups;
 #[cfg(any(windows, test))]
 mod window_work_area;
@@ -240,6 +241,7 @@ pub fn run() {
                 window_groups::destroyed(window.app_handle(), window.label());
                 windows::close_auxiliary_windows(window.app_handle(), window.label());
                 if let Some(state) = window.try_state::<AppState>() {
+                    state.updates.forget_window(window.label());
                     state.close_project(window.label());
                     state.plugins.forget_client(window.label());
                 }
