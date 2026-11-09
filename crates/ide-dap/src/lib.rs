@@ -607,11 +607,22 @@ fn remove_delve_binaries(cwd: &Path) {
                 || s == ".exe"
                 || (s.starts_with(".exe") && s[".exe".len()..].chars().all(|c| c.is_ascii_digit()))
         });
-        if leftover
-            && entry.file_type().is_ok_and(|t| t.is_file())
-            && let Err(e) = std::fs::remove_file(entry.path())
-        {
-            tracing::debug!("could not remove Delve leftover {}: {e}", entry.path().display());
+        if !leftover || entry.file_type().is_ok_and(|t| !t.is_file()) {
+            continue;
+        }
+        // Windows: a just-killed dlv / debuggee can still hold this session's
+        // binary while the previous one's lock is already gone, so one try
+        // leaves exactly the current leftover behind. Retry on a short back-off
+        // to outlast the handle release; a truly busy file is retried into the
+        // next run's sweep anyway.
+        for attempt in 0..5 {
+            match std::fs::remove_file(entry.path()) {
+                Ok(()) => break,
+                Err(e) if attempt == 4 => {
+                    tracing::debug!("could not remove Delve leftover {}: {e}", entry.path().display());
+                }
+                Err(_) => std::thread::sleep(std::time::Duration::from_millis(50 * (attempt as u64 + 1))),
+            }
         }
     }
 }
