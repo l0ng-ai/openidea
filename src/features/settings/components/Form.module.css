@@ -54,6 +54,9 @@
 .row:not(.stacked) > .label::after {
   content: ":";
 }
+:lang(fr) .row:not(.stacked) > .label::after {
+  content: "\00a0:";
+}
 .control {
   display: flex;
   align-items: center;

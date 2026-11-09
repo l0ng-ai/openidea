@@ -1,0 +1,59 @@
+/// Runtime probe: optional exports, async calls and
+/// cancellation, and a WASI p2 task model built on `wasi:io/poll`.
+/// Test fixture only; not part of the plugin API.
+package openidea:probe@0.1.0;
+
+interface host-api {
+    use wasi:io/poll@0.2.0.{pollable};
+
+    /// A long-running job the host started for the guest.
+    resource task {
+        /// Progress report (`total` unknown while `none`).
+        report: func(done: u32, total: option<u32>);
+        /// Set by the host when the user cancels.
+        is-cancelled: func() -> bool;
+        /// Ready when the host pushed the next item, or on cancellation.
+        next-ready: func() -> pollable;
+        /// The pushed item, if any (non-blocking).
+        take: func() -> option<string>;
+    }
+
+    /// The task of the current call.
+    current-task: func() -> task;
+
+    /// An async host import: sleeps without blocking the host thread.
+    sleep-ms: func(ms: u32);
+}
+
+interface base {
+    run: func(cmd: string, arg: string) -> result<string, string>;
+}
+
+/// Optional exports: a plugin implements only the providers it needs.
+interface code-actions {
+    actions: func(path: string) -> list<string>;
+}
+
+interface completion {
+    complete: func(prefix: string) -> list<string>;
+}
+
+world probe-min {
+    import host-api;
+    export base;
+}
+
+world probe-full {
+    import host-api;
+    export base;
+    export code-actions;
+    export completion;
+}
+
+/// The host binds this world; guests implement `probe-min` or `probe-full`.
+world probe-host {
+    import host-api;
+    export base;
+    export code-actions;
+    export completion;
+}

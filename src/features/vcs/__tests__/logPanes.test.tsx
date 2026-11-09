@@ -1,9 +1,15 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import { fireEvent, render, screen } from "@testing-library/react";
+import { fireEvent, render, screen, waitFor } from "@testing-library/react";
 import type { Branch, Commit } from "@/bindings";
 
 const vcsCommitFiles = vi.fn();
+const vcsDiffNumstat = vi.fn();
 const vcsTags = vi.fn();
+const { deleteBranches } = vi.hoisted(() => ({ deleteBranches: vi.fn() }));
+vi.mock("../branchOps", async (original) => ({
+  ...(await original<typeof import("../branchOps")>()),
+  deleteBranches,
+}));
 
 vi.mock("@/platform/ipc", async (importOriginal) => {
   const real = await importOriginal<typeof import("@/platform/ipc")>();
@@ -12,6 +18,8 @@ vi.mock("@/platform/ipc", async (importOriginal) => {
     commands: {
       ...real.commands,
       vcsCommitFiles: (repo: unknown, id: string) => vcsCommitFiles(repo, id),
+      vcsDiffNumstat: (repo: unknown, from: string, to: string, paths: string[]) =>
+        vcsDiffNumstat(repo, from, to, paths),
       vcsTags: (repo: unknown) => vcsTags(repo),
       vcsLog: () => Promise.resolve({ status: "ok", data: [] }),
       vcsConfigGet: () => Promise.resolve({ status: "ok", data: null }),
@@ -19,10 +27,20 @@ vi.mock("@/platform/ipc", async (importOriginal) => {
   };
 });
 
+import { canDeleteBranch } from "../branchOps";
 import { buildBranchTree, filterBranchTree } from "../branches";
 import { buildFileTree } from "../fileTree";
-import { filesUnder, filterPatch, flatFileNodes, toLogChanges, useLogChanges } from "../logChanges";
-import { canDeleteBranch, canUpdateBranch, useBranchesPane } from "../logPaneActions";
+import {
+  EMPTY_TREE,
+  assignLineStats,
+  filesUnder,
+  filterPatch,
+  flatFileNodes,
+  lineStatRanges,
+  toLogChanges,
+  useLogChanges,
+} from "../logChanges";
+import { canUpdateBranch, useBranchesPane } from "../logPaneActions";
 import { BranchesPanel, CommitDetails, changesMenu, graphOptionsMenu } from "../GitLog";
 import { LogSettingsPage } from "../LogSettingsPage";
 import { DEFAULT_LOG_OPTIONS, useLogOptions } from "../logOptions";
@@ -61,7 +79,9 @@ afterEach(() => {
   useGitLog.setState({ commits: [], selection: [], selected: null, filters: emptyFilters() });
   useLogOptions.setState({ ...DEFAULT_LOG_OPTIONS });
   vcsCommitFiles.mockReset();
+  vcsDiffNumstat.mockReset();
   vcsTags.mockReset();
+  deleteBranches.mockReset();
 });
 
 describe("changed files model", () => {
@@ -77,6 +97,28 @@ describe("changed files model", () => {
     expect([mod!.before, mod!.after]).toEqual([commit.parents[0], commit.id]);
     expect([add!.before, add!.after]).toEqual([null, commit.id]);
     expect([del!.before, del!.after]).toEqual([commit.parents[0], null]);
+    // Added and deleted files still count against the parent diff, not the empty tree.
+    expect([add!.statsFrom, add!.statsTo, del!.statsTo]).toEqual([commit.parents[0], commit.id, commit.id]);
+    const [rootFile] = toLogChanges([{ path: "a.ts", kind: "added", oldPath: null }], { ...commit, parents: [] });
+    expect(rootFile!.statsFrom).toBe(EMPTY_TREE);
+  });
+
+  it("asks for one numstat per revision pair and matches a rename by either name", () => {
+    const files = toLogChanges(
+      [
+        { path: "a.ts", kind: "modified", oldPath: null },
+        { path: "b.ts", kind: "added", oldPath: null },
+        { path: "new.ts", kind: "renamed", oldPath: "old.ts" },
+      ],
+      commit,
+    );
+    expect(lineStatRanges(files).map(({ from, to, paths }) => ({ from, to, paths }))).toEqual([
+      { from: commit.parents[0], to: commit.id, paths: ["a.ts", "b.ts", "new.ts", "old.ts"] },
+    ]);
+    const [renamed] = assignLineStats(files, [
+      { ...lineStatRanges(files)[0]!, stats: [{ path: "new.ts", oldPath: "old.ts", added: 1, removed: 2 }] },
+    ]).filter((f) => f.path === "new.ts");
+    expect([renamed!.added, renamed!.removed]).toEqual([1, 2]);
   });
 
   it("lists files without directories by name, and the files under selected directories", () => {
@@ -128,6 +170,34 @@ describe("changed files pane", () => {
     unmount();
     expect(useLogChanges.getState().selected).toEqual([]);
   });
+
+  it("shows added and deleted lines when the log option is on", async () => {
+    vcsCommitFiles.mockResolvedValue({
+      status: "ok",
+      data: [
+        { path: "src/a.ts", kind: "modified", oldPath: null },
+        { path: "src/b.ts", kind: "added", oldPath: null },
+      ],
+    });
+    vcsDiffNumstat.mockResolvedValue({
+      status: "ok",
+      data: [
+        { path: "src/a.ts", oldPath: null, added: 2, removed: 1 },
+        { path: "src/b.ts", oldPath: null, added: 4, removed: 0 },
+      ],
+    });
+    useLogOptions.setState({ showLineStats: true });
+    useGitLog.setState({ commits: [commit], selected: commit.id, selection: [commit.id] });
+    render(<CommitDetails commits={[commit]} />);
+    expect(await screen.findByLabelText("2 lines added")).toBeInTheDocument();
+    // The file, its directory and the toolbar each report the deleted line.
+    expect(screen.getAllByLabelText("1 line deleted")).toHaveLength(3);
+    expect(screen.getAllByLabelText("6 lines added")).toHaveLength(2);
+    expect(vcsDiffNumstat.mock.calls[0]!.slice(1)).toEqual([commit.parents[0], commit.id, ["src/a.ts", "src/b.ts"]]);
+
+    useLogOptions.setState({ showLineStats: false });
+    await waitFor(() => expect(screen.queryByLabelText("2 lines added")).not.toBeInTheDocument());
+  });
 });
 
 describe("Branches pane", () => {
@@ -150,6 +220,32 @@ describe("Branches pane", () => {
     expect(canUpdateBranch({ ref: "origin/x", branch: b("origin/x", { remote: true }) })).toBe(false);
   });
 
+  it.each([true, false])("context Delete respects membership in the selection (%s)", async (inside) => {
+    vcsTags.mockResolvedValue({ status: "ok", data: ["v1"] });
+    useVcs.setState({
+      root: "/p",
+      repo: "/p",
+      branchesLoaded: true,
+      branches: [b("main", { current: true }), b("one"), b("two"), b("outside")],
+    });
+    render(<BranchesPanel />);
+    fireEvent.doubleClick(await screen.findByText("Tags"));
+    fireEvent.mouseDown(screen.getByText("one"));
+    fireEvent.mouseDown(screen.getByText("two"), { metaKey: true });
+    fireEvent.mouseDown(await screen.findByText("v1"), { metaKey: true });
+    fireEvent.mouseDown(screen.getByText("Local"), { metaKey: true });
+    fireEvent.contextMenu(screen.getByText(inside ? "two" : "outside"));
+    const { useContextMenuStore, hideContextMenu } = await import("@/ui/Menu");
+    const item = useContextMenuStore.getState().menu!.items.find((i) => "label" in i && i.label === "Delete");
+    expect(item).toBeDefined();
+    if (item && "run" in item) item.run?.();
+    await waitFor(() => expect(deleteBranches).toHaveBeenCalledTimes(1));
+    expect(deleteBranches.mock.calls[0]![0].map((t: { ref: string }) => t.ref)).toEqual(
+      inside ? ["one", "two", "v1"] : ["outside"],
+    );
+    hideContextMenu();
+  });
+
   it("has a vertical toolbar acting on the selected branch, and shows tags", async () => {
     vcsTags.mockResolvedValue({ status: "ok", data: ["v1"] });
     useVcs.setState({
@@ -163,6 +259,12 @@ describe("Branches pane", () => {
     expect(screen.getByRole("toolbar", { name: "Branches" })).toHaveAttribute("aria-orientation", "vertical");
     expect(screen.getByPlaceholderText("Branch or tag")).toBeInTheDocument();
     expect(screen.getByRole("button", { name: "Delete Branch" })).toBeDisabled();
+    fireEvent.mouseDown(screen.getByText("main"));
+    expect(screen.getByRole("button", { name: "Delete Branch" })).toBeDisabled();
+    fireEvent.contextMenu(screen.getByText("main"));
+    const { useContextMenuStore, hideContextMenu } = await import("@/ui/Menu");
+    expect(useContextMenuStore.getState().menu!.items.some((i) => "label" in i && i.label === "Delete")).toBe(false);
+    hideContextMenu();
     fireEvent.mouseDown(screen.getByText("feature"));
     expect(useBranchesPane.getState().selected.map((t) => t.ref)).toEqual(["feature"]);
     expect(screen.getByRole("button", { name: "Delete Branch" })).toBeEnabled();
@@ -190,5 +292,7 @@ describe("Settings › Version Control › Log", () => {
     expect(useLogOptions.getState().tagNames).toBe(!DEFAULT_LOG_OPTIONS.tagNames);
     fireEvent.click(screen.getByLabelText("Hash"));
     expect(useLogOptions.getState().showHash).toBe(!DEFAULT_LOG_OPTIONS.showHash);
+    fireEvent.click(screen.getByLabelText("Show lines added and deleted"));
+    expect(useLogOptions.getState().showLineStats).toBe(true);
   });
 });

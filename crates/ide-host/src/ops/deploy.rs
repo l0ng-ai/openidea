@@ -1,6 +1,6 @@
 use crate::Host;
 use ide_core::{CancellationToken, IdeEvent, IdeResult, IpcPath, RequestId, SharedSink, TaskId};
-use ide_remote::{DeployedPath, DeploymentCoverage, SyncEntry, SyncStep, TransferReport};
+use ide_remote::{DeployedPath, DeploymentCoverage, DeploymentRoot, SyncEntry, SyncStep, TransferReport};
 use ide_ssh::{FsConnection, RemoteEntry};
 use std::path::PathBuf;
 
@@ -134,13 +134,12 @@ pub async fn deploy_info(
     state.remote.deployed(&project.settings.effective(), &project.root, server.as_deref(), &path).await
 }
 
-/// Remote Host tool window: the server root of `server`, resolved on the host.
-pub async fn deploy_server_root(window: &str, state: &Host, server: String) -> IdeResult<String> {
-    let settings = match state.project(window) {
-        Ok(p) => p.settings.effective(),
-        Err(_) => state.global_settings.effective(),
-    };
-    state.remote.server_root(&settings, &server).await
+/// Remote Host tool window: the resolved server root and project mappings.
+pub async fn deploy_server_root(window: &str, state: &Host, server: String) -> IdeResult<DeploymentRoot> {
+    let project = state.project(window).ok();
+    let settings =
+        project.as_ref().map(|p| p.settings.effective()).unwrap_or_else(|| state.global_settings.effective());
+    state.remote.server_info(&settings, project.as_ref().map(|p| p.root.as_path()), &server).await
 }
 
 /// Entries of a folder on the selected filesystem (`~`: its home directory).

@@ -12,6 +12,7 @@ ide-core.workspace = true
 # Hence no `unicode_lines` / `cr_lines` (a test guards against feature unification).
 ropey = { version = "1.6", default-features = false, features = ["simd"] }
 serde.workspace = true
+similar = { version = "2.7", default-features = false }
 specta.workspace = true
 
 [dev-dependencies]

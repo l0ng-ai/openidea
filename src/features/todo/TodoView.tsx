@@ -13,7 +13,6 @@ import {
   IconButton,
   Menu,
   Select,
-  SourcePreview,
   SplitGroup,
   SplitHandle,
   SplitPanel,
@@ -27,6 +26,7 @@ import {
   T,
 } from "@/ui";
 import { previewText } from "./ipc";
+import { PreviewEditor } from "./PreviewEditor";
 import {
   BUILTIN_TODO_SCOPES,
   activePatterns,
@@ -530,5 +530,15 @@ export function TodoView() {
 function TodoPreview({ node }: { node: Node | null }) {
   const item = node?.kind === "item" ? node.item : (node?.group.items[0] ?? null);
   const highlights = item ? [{ line: item.line, ranges: [[item.col, item.col + item.text.length] as const] }] : [];
-  return <SourcePreview path={item?.path ?? null} line={item?.line ?? 0} highlights={highlights} load={previewText} />;
+  // IDEA's TODO preview is simply an editor on the file: editable in place,
+  // with read-only files falling back to the read-only preview (in PreviewEditor).
+  return (
+    <PreviewEditor
+      path={item?.path ?? null}
+      line={item?.line ?? 0}
+      col={item?.col ?? 0}
+      highlights={highlights}
+      fallbackLoad={previewText}
+    />
+  );
 }

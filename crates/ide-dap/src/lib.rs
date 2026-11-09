@@ -16,9 +16,11 @@ pub mod jdwp;
 pub mod kotlin;
 mod kotlin_jdwp;
 mod session;
+pub mod target;
 
 use adapter::{AdapterLauncher, AdapterSpec, ProcessLauncher};
 use connection::{Connection, DapError};
+use futures::future::join_all;
 use ide_core::{DebugSessionId, IdeError, IdeResult, SharedSink};
 use ide_language::LanguageRegistry;
 use parking_lot::Mutex;
@@ -212,6 +214,19 @@ pub struct Variable {
     pub evaluate_name: Option<String>,
 }
 
+/// A completion the adapter offers for an expression (DAP `completions`).
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize, Type)]
+#[serde(rename_all = "camelCase")]
+pub struct DebugCompletion {
+    pub label: String,
+    /// What to insert, when it differs from `label`.
+    pub text: Option<String>,
+    /// DAP item type: `method`, `field`, `variable`, `class`, `keyword`, …
+    pub kind: Option<String>,
+    pub detail: Option<String>,
+    pub sort_text: Option<String>,
+}
+
 #[derive(Clone, Copy, Debug, Serialize, Deserialize, Type)]
 #[serde(rename_all = "camelCase")]
 pub enum StepKind {
@@ -268,7 +283,6 @@ impl SessionOwner {
 }
 
 const INIT_TIMEOUT: Duration = Duration::from_secs(20);
-const LAUNCH_TIMEOUT: Duration = Duration::from_secs(60);
 const REQUEST_TIMEOUT: Duration = Duration::from_secs(30);
 const SHUTDOWN_TIMEOUT: Duration = Duration::from_secs(3);
 /// Redefining many classes in a large JVM can take a while.
@@ -287,6 +301,82 @@ pub struct DebugManager {
     exception_choices: Mutex<BTreeMap<String, bool>>,
     function_breakpoints: Mutex<Vec<FunctionBreakpoint>>,
     data_breakpoints: Mutex<Vec<DataBreakpoint>>,
+    /// In-flight stops, by session: a second Stop sets `stop_force`, the waiting one kills.
+    stopping: Mutex<HashMap<DebugSessionId, Arc<Session>>>,
+}
+
+/// rdbg (Ruby's debug gem) starts the debuggee itself and ignores `launch`'s program,
+/// arguments and environment: they go on its command line after `--` and into its process.
+/// In a Bundler project it runs from the bundle, which must have `debug`: the debuggee then
+/// loads that version, and the gems rdbg needs (irb is not a default gem from Ruby 3.5).
+fn rdbg_command_line(spec: &mut AdapterSpec, config: &LaunchConfig, cwd: &Path) -> IdeResult<()> {
+    if config.request != "launch" {
+        return Ok(());
+    }
+    if spec.command == "rdbg"
+        && let Some(gemfile) = bundler_gemfile(cwd, &config.env)
+    {
+        if !bundles_debug(&gemfile) {
+            return Err(IdeError::unavailable(format!(
+                "the bundle of {} has no `debug` gem. Add `gem \"debug\"` to the Gemfile and run `bundle install`",
+                gemfile.display()
+            )));
+        }
+        spec.args.splice(0..0, ["exec".to_owned(), "rdbg".to_owned()]);
+        spec.command = "bundle".into();
+    }
+    spec.env.extend(config.env.iter().map(|(k, v)| (k.clone(), v.clone())));
+    spec.args.push("--".into());
+    // With only a command, Ruby's exec treats it as shell text. Ruby entry points
+    // without arguments go through -S so spaces and metacharacters stay literal.
+    if config.program.is_some() && config.args.is_empty() {
+        spec.args.extend(["ruby", "-S", "--"].map(str::to_owned));
+    }
+    spec.args.extend(config.program.iter().cloned());
+    spec.args.extend(config.args.iter().cloned());
+    Ok(())
+}
+
+/// The Gemfile Bundler uses in `dir`: `BUNDLE_GEMFILE`, else the closest `Gemfile` / `gems.rb` from `dir` up.
+fn bundler_gemfile(dir: &Path, env: &BTreeMap<String, String>) -> Option<PathBuf> {
+    let gemfile = env
+        .get("BUNDLE_GEMFILE")
+        .cloned()
+        .or_else(|| ide_core::process::host_var_os("BUNDLE_GEMFILE").map(|v| v.to_string_lossy().into_owned()));
+    match gemfile.filter(|g| !g.is_empty()) {
+        Some(gemfile) => Some(dir.join(gemfile)),
+        None => dir.ancestors().flat_map(|d| [d.join("gems.rb"), d.join("Gemfile")]).find(|g| g.is_file()),
+    }
+}
+
+/// Whether the lockfile of `gemfile` lists the `debug` gem.
+fn bundles_debug(gemfile: &Path) -> bool {
+    let lockfile = if gemfile.file_name().is_some_and(|n| n == "gems.rb") {
+        gemfile.with_file_name("gems.locked")
+    } else {
+        let mut name = gemfile.as_os_str().to_owned();
+        name.push(".lock");
+        PathBuf::from(name)
+    };
+    // The bundle's gems are the lines indented by four spaces: `    debug (1.9.2)`.
+    std::fs::read_to_string(lockfile).is_ok_and(|text| text.lines().any(|l| l.starts_with("    debug (")))
+}
+
+/// Whether the debugged project depends on the Flutter SDK, so it must go
+/// through `flutter debug_adapter` instead of the plain Dart one.
+///
+/// `dart debug_adapter` cannot start a program that imports `dart:ui`, and only
+/// the Flutter adapter answers `hotReload` / `hotRestart`. `dir` is the launch
+/// `cwd`; the program's own directory is tried first because a module inside a
+/// larger repository has its `pubspec.yaml` above the program, not above `cwd`.
+fn is_flutter_project(dir: &Path, program: Option<&Path>) -> bool {
+    let mut start: Vec<&Path> = program.and_then(Path::parent).into_iter().collect();
+    start.push(dir);
+    start
+        .iter()
+        .filter_map(|d| d.ancestors().take(6).find(|a| a.join("pubspec.yaml").is_file()))
+        .filter_map(|root| std::fs::read_to_string(root.join("pubspec.yaml")).ok())
+        .any(|s| s.contains("sdk: flutter"))
 }
 
 fn no_session(s: DebugSessionId) -> IdeError {
@@ -480,11 +570,62 @@ pub(crate) fn capabilities_from(caps: &Value) -> DebugCapabilities {
     }
 }
 
+/// States of a file's line breakpoints that no session has been sent.
+fn unsent(breakpoints: &[Breakpoint]) -> Vec<BreakpointState> {
+    breakpoints
+        .iter()
+        .map(|b| BreakpointState {
+            line: b.line,
+            verified: false,
+            message: (!b.enabled).then(|| "Disabled".to_owned()),
+        })
+        .collect()
+}
+
 /// States for breakpoints no session has verified yet.
 fn unverified(enabled: impl Iterator<Item = bool>) -> Vec<BreakpointState> {
     enabled
         .map(|e| BreakpointState { line: 0, verified: false, message: (!e).then(|| "Disabled".to_owned()) })
         .collect()
+}
+
+/// Delve compiles the debuggee to `__debug_bin` in the session's cwd (on Windows
+/// `__debug_bin.exe` plus `__debug_bin.exe<digits>` in DAP mode) and removes it on a
+/// graceful exit — a shutdown it doesn't always reach, so the files pile up. Sweep
+/// the leftovers once the session is down. Runs after `session_closed`, so Delve
+/// has already exited or been killed and holds no file locks; a leftover of a
+/// still-building run is removed on that run's own shutdown.
+fn remove_delve_binaries(cwd: &Path) {
+    let Ok(entries) = std::fs::read_dir(cwd) else { return };
+    for entry in entries.flatten() {
+        let name = entry.file_name();
+        let Some(name) = name.to_str() else { continue };
+        // Windows writes `__debug_bin.exe` (and `.exe<digits>` in DAP mode); other
+        // platforms keep the bare name. Suffixes like `.go` are user files.
+        let suffix = name.strip_prefix("__debug_bin");
+        let leftover = suffix.is_some_and(|s| {
+            s.is_empty()
+                || s == ".exe"
+                || (s.starts_with(".exe") && s[".exe".len()..].chars().all(|c| c.is_ascii_digit()))
+        });
+        if !leftover || entry.file_type().is_ok_and(|t| !t.is_file()) {
+            continue;
+        }
+        // Windows: a just-killed dlv / debuggee can still hold this session's
+        // binary while the previous one's lock is already gone, so one try
+        // leaves exactly the current leftover behind. Retry on a short back-off
+        // to outlast the handle release; a truly busy file is retried into the
+        // next run's sweep anyway.
+        for attempt in 0..5 {
+            match std::fs::remove_file(entry.path()) {
+                Ok(()) => break,
+                Err(e) if attempt == 4 => {
+                    tracing::debug!("could not remove Delve leftover {}: {e}", entry.path().display());
+                }
+                Err(_) => std::thread::sleep(std::time::Duration::from_millis(50 * (attempt as u64 + 1))),
+            }
+        }
+    }
 }
 
 pub(crate) fn variable_from(v: &Value) -> Variable {
@@ -516,6 +657,7 @@ impl DebugManager {
             exception_choices: Mutex::default(),
             function_breakpoints: Mutex::default(),
             data_breakpoints: Mutex::default(),
+            stopping: Mutex::default(),
         })
     }
 
@@ -556,7 +698,22 @@ impl DebugManager {
         owner: SessionOwner,
         custom_command: impl FnOnce(&str) -> Option<String>,
     ) -> IdeResult<DebugSessionId> {
+        self.start_prepared(config, owner, custom_command, |_, _| Ok(())).await
+    }
+
+    /// Configure a target adapter before any host tool resolution or launch.
+    pub async fn start_prepared(
+        &self,
+        config: LaunchConfig,
+        owner: SessionOwner,
+        custom_command: impl FnOnce(&str) -> Option<String>,
+        prepare: impl FnOnce(&mut AdapterSpec, &mut Value) -> IdeResult<()>,
+    ) -> IdeResult<DebugSessionId> {
         let mut arguments = launch_arguments(&config)?;
+        // An IDE-side marker (never sent to the adapter): the session is a Flutter
+        // one regardless of what the working directory holds.
+        let force_flutter =
+            arguments.as_object_mut().and_then(|o| o.remove("__flutter")).and_then(|v| v.as_bool()).unwrap_or(false);
         let cwd = config
             .cwd
             .clone()
@@ -565,6 +722,22 @@ impl DebugManager {
         let dbg = adapter::find_config(&self.languages, &config.adapter)
             .ok_or_else(|| IdeError::unavailable(format!("unknown debug adapter `{}`", config.adapter)))?;
         let mut spec = adapter::resolve(&dbg, cwd.clone());
+        prepare(&mut spec, &mut arguments)?;
+        if spec.target.is_some() {
+            return self
+                .start_session(
+                    DebugSessionId::next(),
+                    owner,
+                    config.name,
+                    config.adapter,
+                    None,
+                    config.request,
+                    arguments,
+                    spec,
+                    None,
+                )
+                .await;
+        }
         if config.adapter == kotlin::ADAPTER
             && let Some(home) = arguments
                 .as_object_mut()
@@ -573,18 +746,31 @@ impl DebugManager {
         {
             spec.env.push(("JAVA_HOME".into(), home));
         }
+        if config.adapter == "rdbg" {
+            rdbg_command_line(&mut spec, &config, &cwd)?;
+        }
         if let Some(command) = custom_command(&spec.command) {
             spec.command = command;
         }
-        // debugpy: run the adapter with the debuggee's interpreter (venvs carry their own debugpy).
+        // debugpy: run the adapter with the debuggee's interpreter (venvs carry their own debugpy),
+        // or with the launcher's when the debuggee runs through a manager (`uv run python`).
         if config.adapter == "debugpy" {
-            let python = match arguments.get("python") {
-                Some(Value::String(p)) => Some(p.clone()),
-                Some(Value::Array(a)) => a.first().and_then(Value::as_str).map(str::to_owned),
+            let python = match (arguments.get("debugLauncherPython"), arguments.get("python")) {
+                (Some(Value::String(p)), _) | (_, Some(Value::String(p))) => Some(p.clone()),
+                (_, Some(Value::Array(a))) => a.first().and_then(Value::as_str).map(str::to_owned),
                 _ => None,
             };
             if let Some(python) = python {
                 spec.command = python;
+            }
+        }
+        // Flutter: a project depending on the Flutter SDK needs `flutter debug_adapter`
+        // (the Dart adapter cannot start a program importing `dart:ui`, and hot reload
+        // is Flutter-only). Plain Dart projects keep the configured `dart`.
+        if config.adapter == "dart" && spec.command == "dart" {
+            let program = arguments.get("program").and_then(Value::as_str).map(Path::new);
+            if force_flutter || is_flutter_project(&cwd, program) {
+                spec.command = "flutter".into();
             }
         }
         let id = DebugSessionId::next();
@@ -638,8 +824,19 @@ impl DebugManager {
         {
             arguments["project"] = json!(real);
         }
-        if config.adapter == "codelldb" && arguments.get("sourceLanguages").is_none() {
-            arguments["sourceLanguages"] = json!(["rust"]);
+        if config.adapter == "codelldb" {
+            if arguments.get("sourceLanguages").is_none() {
+                arguments["sourceLanguages"] = json!(["rust"]);
+            }
+            // The Debug Console and Evaluate Expression take expressions, as with every other
+            // debugger; LLDB commands still run with a leading backtick.
+            match arguments.get_mut("_adapterSettings") {
+                None => arguments["_adapterSettings"] = json!({"consoleMode": "evaluate"}),
+                Some(Value::Object(settings)) => {
+                    settings.entry("consoleMode").or_insert_with(|| json!("evaluate"));
+                }
+                Some(_) => {}
+            }
         }
         let port = debug_server.map(|s| s.port);
         self.start_session(id, owner, config.name, config.adapter, None, config.request, arguments, spec, port).await
@@ -689,20 +886,40 @@ impl DebugManager {
         if request != "launch" && request != "attach" {
             return Err(IdeError::invalid(format!("request must be `launch` or `attach`, got `{request}`")));
         }
-        let io = self.launcher.launch(spec.clone(), reuse_port).await?;
+        let io = self.launcher.launch(spec.clone(), reuse_port).await.map_err(|e| {
+            if spec.target.is_some() {
+                IdeError::new(e.kind, format!("{}\nargv: {:?} {:?}", e.message, spec.command, spec.args))
+            } else {
+                e
+            }
+        })?;
         let stderr = io.stderr.clone();
         let (conn, incoming) = {
             let stderr = stderr.clone();
-            Connection::start_with_output(io.reader, io.writer, Box::new(move |line| adapter::push_line(&stderr, line)))
+            Connection::start_with_target(
+                io.reader,
+                io.writer,
+                Box::new(move |line| adapter::push_line(&stderr, line)),
+                spec.target.clone(),
+            )
         };
+        let rdbg_pid = (adapter_name == "rdbg" && request == "launch")
+            .then(|| io.child.as_ref().and_then(tokio::process::Child::id))
+            .flatten();
         let session =
             Arc::new(Session::new(id, owner, name, adapter_name, parent, request, conn, spec, io.port, io.child));
+        // rdbg execs the debuggee in its own process and sends no DAP process event.
+        if let Some(pid) = rdbg_pid {
+            session.debuggee_pid.store(i64::from(pid), Ordering::Release);
+        }
         if let Some(mut output) = io.program_output {
+            session.output_drained.send_replace(false);
             let session = session.clone();
             tokio::spawn(async move {
                 while let Some((category, output)) = output.recv().await {
                     session.emit(ide_core::event::DebugEvent::Output { category: category.into(), output });
                 }
+                session.output_drained.send_replace(true);
             });
         }
         self.sessions.lock().insert(id, session.clone());
@@ -715,11 +932,19 @@ impl DebugManager {
         });
         tokio::spawn(session::event_loop(self.me.clone(), session.clone(), incoming));
 
-        match self.configure(&session, arguments).await {
+        let configured = tokio::select! {
+            biased;
+            _ = session.startup_cancel.cancelled() => return Err(IdeError::cancelled()),
+            result = self.configure(&session, arguments) => result,
+        };
+        match configured {
             Ok(()) => Ok(id),
             Err(e) => {
                 let e = if session.conn.is_closed() {
                     let mut msg = format!("debug adapter `{}` exited during startup", session.adapter);
+                    if session.spec.target.is_some() {
+                        msg.push_str(&format!("\nargv: {:?} {:?}", session.spec.command, session.spec.args));
+                    }
                     let tail = stderr.lock().join("\n");
                     if !tail.is_empty() {
                         msg.push_str(":\n");
@@ -730,6 +955,17 @@ impl DebugManager {
                         msg.push_str(hint);
                     }
                     IdeError::unavailable(msg)
+                } else if session.spec.target.is_some() {
+                    IdeError::new(
+                        e.kind,
+                        format!(
+                            "{}\nargv: {:?} {:?}\n{}",
+                            e.message,
+                            session.spec.command,
+                            session.spec.args,
+                            stderr.lock().join("\n")
+                        ),
+                    )
                 } else {
                     e
                 };
@@ -767,8 +1003,8 @@ impl DebugManager {
                     "pathFormat": "path",
                     "supportsVariableType": true,
                     "supportsVariablePaging": false,
-                    "supportsRunInTerminalRequest": true,
-                    "supportsStartDebuggingRequest": true,
+                    "supportsRunInTerminalRequest": s.spec.target.is_none(),
+                    "supportsStartDebuggingRequest": s.spec.target.is_none(),
                     "supportsProgressReporting": true,
                     "supportsInvalidatedEvent": false,
                     "supportsMemoryReferences": false,
@@ -803,7 +1039,9 @@ impl DebugManager {
             arguments["hostName"] = json!("127.0.0.1");
             arguments["port"] = json!(port);
         }
-        // Many adapters answer `launch` only after `configurationDone`, so don't wait for it yet.
+        // Launch/attach may wait for a slow runtime or a remote target. Let the adapter report
+        // failure; Stop cancels configuration and a closed connection fails the pending reply.
+        // Many adapters answer only after `configurationDone`, so don't wait for the reply yet.
         let launch = s.conn.send_request(request, arguments)?;
         let mut launch = Box::pin(async move { launch.await.unwrap_or(Err(DapError::Closed)) });
         let mut initialized = s.initialized.subscribe();
@@ -815,19 +1053,26 @@ impl DebugManager {
                 launch_result = Some(());
                 false
             }
-            _ = tokio::time::sleep(LAUNCH_TIMEOUT) => return Err(DapError::Timeout(s.request.clone()).into()),
         };
         if !got_initialized {
             // Launched before `initialized`; give the adapter a moment to send it.
             let _ = tokio::time::timeout(INIT_TIMEOUT, initialized.wait_for(|v| *v)).await;
         }
 
-        let files: Vec<(PathBuf, Vec<Breakpoint>)> =
-            self.breakpoints.lock().iter().map(|(p, b)| (p.clone(), b.clone())).collect();
+        // A fresh adapter has no breakpoints, so a file with none enabled needs no request; the
+        // others go out together, as VS Code sends them, instead of one round trip per file.
+        let (files, idle): (Vec<_>, Vec<_>) = self
+            .breakpoints
+            .lock()
+            .iter()
+            .map(|(p, b)| (p.clone(), b.clone()))
+            .partition(|(_, b)| b.iter().any(|b| b.enabled));
+        let sent = join_all(files.iter().map(|(path, bps)| s.send_breakpoints(path, bps, None))).await;
         // Breakpoint states follow the owner's first session.
         let first = self.live_sessions().into_iter().find(|f| f.owner.key == s.owner.key).map(|f| f.id) == Some(s.id);
-        for (path, bps) in files {
-            match s.send_breakpoints(&path, &bps, None).await {
+        let idle = idle.into_iter().map(|(path, bps)| (path, Ok(unsent(&bps))));
+        for (path, result) in files.into_iter().map(|(path, _)| path).zip(sent).chain(idle) {
+            match result {
                 Ok(states) => {
                     if first {
                         self.states.lock().insert(path.clone(), states);
@@ -865,12 +1110,7 @@ impl DebugManager {
         }
         s.configured.store(true, Ordering::Release);
         if launch_result.is_none() {
-            match tokio::time::timeout(LAUNCH_TIMEOUT, launch).await {
-                Ok(r) => {
-                    r?;
-                }
-                Err(_) => return Err(DapError::Timeout(s.request.clone()).into()),
-            }
+            launch.await?;
         }
         if let Some(relay) = s.kotlin_relay.lock().as_mut() {
             relay.release();
@@ -890,21 +1130,74 @@ impl DebugManager {
 
     /// Ends a session: `terminate` (when asked and supported) → `disconnect` → kill.
     pub(crate) async fn shutdown(&self, s: &Arc<Session>, terminate: bool) {
+        // java-debug runs the program itself and pipes its stdout over DAP. A `disconnect`
+        // ends that DAP session, so every line the program writes while shutting down is lost.
+        // Ask the program to exit ourselves and keep the adapter attached until it has drained
+        // the console (`terminated`), as IDEA does with the process it owns.
+        let pid = s.debuggee_pid.load(Ordering::Acquire);
+        let own_terminate = terminate && s.request == "launch" && pid > 0;
+        // rdbg's terminate exits the Ruby process without terminating its children.
+        let graceful =
+            terminate && s.request == "launch" && s.adapter != "rdbg" && s.supports("supportsTerminateRequest");
         if !s.conn.is_closed() {
-            if terminate && s.request == "launch" && s.supports("supportsTerminateRequest") {
+            if graceful {
                 let _ = s.conn.request_timeout("terminate", json!({ "restart": false }), SHUTDOWN_TIMEOUT).await;
             }
+            if !graceful && !own_terminate {
+                let _ = s
+                    .conn
+                    .request_timeout(
+                        "disconnect",
+                        json!({ "restart": false, "terminateDebuggee": s.request == "launch" }),
+                        SHUTDOWN_TIMEOUT,
+                    )
+                    .await;
+            }
+        }
+        if own_terminate && !graceful {
+            // Signal before anything else: waiting on a request the adapter may not answer
+            // would delay the shutdown the console is supposed to show.
+            crate::session::signal_debuggee(s, false);
+        }
+        if graceful {
+            // java-debug sends `terminated` only after it has drained the program's console
+            // (it waits up to 5 s for the output pump). Close on the process id alone and the
+            // last shutdown lines are dropped, so wait for that event here.
+            let deadline = std::time::Instant::now() + crate::session::DEBUGGEE_EXIT_WAIT;
+            while !s.terminated.load(Ordering::Acquire) && std::time::Instant::now() < deadline {
+                tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+            }
+        }
+        // An adapter answers `disconnect` before the program it launched has exited, and that
+        // program keeps its port until it is gone. Reporting the session as terminated then
+        // lets Run start again into an occupied port, so wait for the program first — with the
+        // connection still open, so a second Stop can find the session and kill it.
+        crate::session::wait_for_debuggee(s, terminate).await;
+        if terminate && s.request == "launch" {
+            // The adapter reports `terminated` only after it has drained the program's console
+            // (java-debug waits up to 5 s for the pump): closing before that drops the last
+            // shutdown lines from the console.
+            let deadline = std::time::Instant::now() + std::time::Duration::from_secs(6);
+            while !s.terminated.load(Ordering::Acquire) && !s.conn.is_closed() && std::time::Instant::now() < deadline {
+                tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+            }
+        }
+        if graceful && !s.conn.is_closed() {
             let _ = s
                 .conn
                 .request_timeout(
                     "disconnect",
-                    json!({ "restart": false, "terminateDebuggee": s.request == "launch" }),
+                    json!({ "restart": false, "terminateDebuggee": false }),
                     SHUTDOWN_TIMEOUT,
                 )
                 .await;
         }
         s.conn.close();
         self.session_closed(s);
+        if s.adapter == "delve" && s.spec.server_host.is_none() {
+            let cwd = s.spec.cwd.clone();
+            tokio::task::spawn_blocking(move || remove_delve_binaries(&cwd));
+        }
     }
 
     /// Breakpoints are kept per file even without a session and sent on start.
@@ -935,16 +1228,7 @@ impl DebugManager {
                 Err(e) => tracing::debug!("setBreakpoints on session {} failed: {e}", s.id.0),
             }
         }
-        let states = result.unwrap_or_else(|| {
-            breakpoints
-                .iter()
-                .map(|b| BreakpointState {
-                    line: b.line,
-                    verified: false,
-                    message: (!b.enabled).then(|| "Disabled".to_owned()),
-                })
-                .collect()
-        });
+        let states = result.unwrap_or_else(|| unsent(&breakpoints));
         self.states.lock().insert(path, states.clone());
         Ok(states)
     }
@@ -1157,6 +1441,47 @@ impl DebugManager {
         })
     }
 
+    /// Completions for `text` at `line` / `column` (0-based, UTF-16) in the frame's scope; none
+    /// when the adapter doesn't offer them.
+    pub async fn completions(
+        &self,
+        s: DebugSessionId,
+        frame_id: Option<i64>,
+        text: String,
+        line: u32,
+        column: u32,
+    ) -> IdeResult<Vec<DebugCompletion>> {
+        let session = self.session(s)?;
+        if !session.supports("supportsCompletionsRequest") {
+            return Ok(Vec::new());
+        }
+        let mut args = json!({ "text": text, "line": line + 1, "column": column + 1 });
+        if let Some(f) = frame_id {
+            args["frameId"] = f.into();
+        }
+        let body = session.conn.request_timeout("completions", args, REQUEST_TIMEOUT).await?;
+        let text =
+            |v: &Value, key: &str| v.get(key).and_then(Value::as_str).filter(|t| !t.is_empty()).map(str::to_owned);
+        Ok(body
+            .get("targets")
+            .and_then(Value::as_array)
+            .map(|targets| {
+                targets
+                    .iter()
+                    .filter_map(|t| {
+                        Some(DebugCompletion {
+                            label: text(t, "label")?,
+                            text: text(t, "text"),
+                            kind: text(t, "type"),
+                            detail: text(t, "detail"),
+                            sort_text: text(t, "sortText"),
+                        })
+                    })
+                    .collect()
+            })
+            .unwrap_or_default())
+    }
+
     pub async fn resume(&self, s: DebugSessionId, thread_id: i64) -> IdeResult<()> {
         let session = self.session(s)?;
         let body = session.conn.request_timeout("continue", json!({ "threadId": thread_id }), REQUEST_TIMEOUT).await?;
@@ -1167,6 +1492,29 @@ impl DebugManager {
 
     pub async fn pause(&self, s: DebugSessionId, thread_id: i64) -> IdeResult<()> {
         self.session(s)?.conn.request_timeout("pause", json!({ "threadId": thread_id }), REQUEST_TIMEOUT).await?;
+        Ok(())
+    }
+
+    /// Types `text` into the terminal the session's program runs in (see [`ide_core::event::DebugEvent::ProgramInput`]).
+    pub fn send_input(&self, s: DebugSessionId, text: &str) -> IdeResult<()> {
+        let session = self.session(s)?;
+        let mut program = session.program.lock();
+        let program = program
+            .as_mut()
+            .ok_or_else(|| IdeError::invalid("The program doesn't read input from the debug console"))?;
+        program.write(text).map_err(|e| IdeError::internal(format!("cannot write to the program: {e}")))
+    }
+
+    /// Flutter's DAP adapter: injects the changed sources into the running app.
+    /// Not part of the DAP standard; adapters that do not know the request reject it.
+    pub async fn hot_reload(&self, s: DebugSessionId) -> IdeResult<()> {
+        self.session(s)?.conn.request_timeout("hotReload", json!({ "reason": "manual" }), REQUEST_TIMEOUT).await?;
+        Ok(())
+    }
+
+    /// Flutter's DAP adapter: restarts the app without preserving state.
+    pub async fn hot_restart(&self, s: DebugSessionId) -> IdeResult<()> {
+        self.session(s)?.conn.request_timeout("hotRestart", json!({ "reason": "manual" }), REQUEST_TIMEOUT).await?;
         Ok(())
     }
 
@@ -1208,13 +1556,26 @@ impl DebugManager {
     /// Sends empty breakpoint lists (line, function, data) to `session` until its next
     /// stop, when the stored ones are restored. `except` is left to the caller.
     async fn suspend_breakpoints(&self, session: &Arc<Session>, except: Option<&Path>) -> IdeResult<()> {
-        let files: Vec<PathBuf> = self.breakpoints.lock().keys().cloned().collect();
-        for path in files {
-            if Some(path.as_path()) == except {
-                continue;
+        // While paused the adapter holds the stored lists: only files with something enabled change.
+        let files: Vec<PathBuf> = self
+            .breakpoints
+            .lock()
+            .iter()
+            .filter(|(path, bps)| Some(path.as_path()) != except && bps.iter().any(|b| b.enabled))
+            .map(|(path, _)| path.clone())
+            .collect();
+        let sent = join_all(files.iter().map(|path| session.send_breakpoints(path, &[], None))).await;
+        let mut failed = None;
+        for (path, result) in files.into_iter().zip(sent) {
+            match result {
+                Ok(_) => {
+                    session.pending_restore.lock().files.insert(path);
+                }
+                Err(e) => failed = failed.or(Some(e)),
             }
-            session.send_breakpoints(&path, &[], None).await?;
-            session.pending_restore.lock().files.insert(path);
+        }
+        if let Some(e) = failed {
+            return Err(e.into());
         }
         if !self.function_breakpoints.lock().is_empty() && session.supports("supportsFunctionBreakpoints") {
             session.send_function_breakpoints(&[]).await?;
@@ -1230,9 +1591,11 @@ impl DebugManager {
     /// Re-sends what [`suspend_breakpoints`](Self::suspend_breakpoints) / run to cursor replaced.
     pub(crate) async fn restore_breakpoints(&self, session: &Arc<Session>) {
         let pending = std::mem::take(&mut *session.pending_restore.lock());
-        for path in pending.files {
-            let bps = self.stored_breakpoints(&path);
-            if let Err(e) = session.send_breakpoints(&path, &bps, None).await {
+        let files: Vec<(PathBuf, Vec<Breakpoint>)> =
+            pending.files.into_iter().map(|path| (path.clone(), self.stored_breakpoints(&path))).collect();
+        let sent = join_all(files.iter().map(|(path, bps)| session.send_breakpoints(path, bps, None))).await;
+        for ((path, _), result) in files.iter().zip(sent) {
+            if let Err(e) = result {
                 tracing::debug!("restoring breakpoints of {} failed: {e}", path.display());
             }
         }
@@ -1399,11 +1762,43 @@ impl DebugManager {
         }
     }
 
-    /// Stops a session and its child sessions.
+    /// Stops every debug session started from `root` or below — closing a project stops the
+    /// programs it launched even when the session's owner key does not name the window doing
+    /// the closing (window groups, auxiliary windows).
+    pub async fn stop_under(&self, root: &Path) {
+        let ids: Vec<DebugSessionId> =
+            self.live_sessions().into_iter().filter(|s| s.spec.cwd.starts_with(root)).map(|s| s.id).collect();
+        tracing::info!(root = %root.display(), sessions = ids.len(), "closing project: stopping debug sessions");
+        for id in ids {
+            if let Err(e) = self.stop(id).await {
+                tracing::debug!("debug session {id:?} did not stop: {e}");
+            }
+        }
+    }
+
+    /// Stops a session and its child sessions. A second Stop while the first one waits kills
+    /// the program instead of waiting for it — even after the adapter dropped the session.
     pub async fn stop(&self, s: DebugSessionId) -> IdeResult<()> {
+        {
+            let in_flight = self.stopping.lock();
+            if let Some(session) = in_flight.get(&s) {
+                session.stop_force.store(true, Ordering::Release);
+                return Ok(());
+            }
+        }
         let session = self.session(s)?;
-        let children: Vec<Arc<Session>> = self.live_sessions().into_iter().filter(|c| c.parent == Some(s)).collect();
+        self.stopping.lock().insert(s, session.clone());
+        let result = self.stop_tree(session).await;
+        self.stopping.lock().remove(&s);
+        result
+    }
+
+    async fn stop_tree(&self, session: Arc<Session>) -> IdeResult<()> {
+        session.startup_cancel.cancel();
+        let children: Vec<Arc<Session>> =
+            self.live_sessions().into_iter().filter(|c| c.parent == Some(session.id)).collect();
         for child in children {
+            child.startup_cancel.cancel();
             self.shutdown(&child, true).await;
         }
         self.shutdown(&session, true).await;

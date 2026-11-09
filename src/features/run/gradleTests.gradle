@@ -1,0 +1,61 @@
+// OpenIDEA: reports each test of Gradle's Test tasks as a TeamCity service message on the
+// build's output, for the Run window's test tree: Gradle itself prints only failures (or a
+// project's own format), and writes its XML reports when a task ends. Test tasks always run,
+// so a rerun never ends UP-TO-DATE without results.
+
+def tc = { String s ->
+    s == null ? '' : s.replace('|', '||').replace("'", "|'").replace('\n', '|n').replace('\r', '|r')
+        .replace('[', '|[').replace(']', '|]')
+}
+
+allprojects {
+    tasks.withType(Test).configureEach { Test task ->
+        task.outputs.upToDateWhen { false }
+        task.addTestListener(new TestListener() {
+            void beforeSuite(TestDescriptor suite) {}
+
+            void afterSuite(TestDescriptor suite, TestResult result) {}
+
+            void beforeTest(TestDescriptor test) {
+                println "##teamcity[testStarted name='${tc(test.name)}' className='${tc(test.className)}']"
+            }
+
+            void afterTest(TestDescriptor test, TestResult result) {
+                def id = "name='${tc(test.name)}' className='${tc(test.className)}'"
+                def type = result.resultType.toString()
+                if (type == 'FAILURE') {
+                    def error = result.exception
+                    def trace = new StringWriter()
+                    error?.printStackTrace(new PrintWriter(trace))
+                    println "##teamcity[testFailed ${id} message='${tc(error?.toString())}' details='${tc(trace.toString())}']"
+                } else if (type == 'SKIPPED') {
+                    println "##teamcity[testIgnored ${id}]"
+                }
+                println "##teamcity[testFinished ${id} duration='${result.endTime - result.startTime}']"
+            }
+        })
+        task.addTestOutputListener(new TestOutputListener() {
+            void onOutput(TestDescriptor test, TestOutputEvent output) {
+                if (test.className == null) return
+                println "##teamcity[testStdOut name='${tc(test.name)}' className='${tc(test.className)}' out='${tc(output.message)}']"
+            }
+        })
+    }
+}
+
+// Replace build-configured agents only for this debug launch, after project configuration.
+gradle.projectsEvaluated {
+    allprojects {
+        tasks.withType(Test).configureEach { Test task ->
+            if (System.getProperty('openidea.run.debug') == 'true') {
+                task.debugOptions.enabled = false
+                task.doFirst {
+                    task.setJvmArgs(task.jvmArgs.findAll {
+                        !it.startsWith('-agentlib:jdwp=') && !it.startsWith('-Xrunjdwp:')
+                    })
+                    task.jvmArgs('-agentlib:jdwp=transport=dt_socket,server=y,suspend=y,address=127.0.0.1:0')
+                }
+            }
+        }
+    }
+}

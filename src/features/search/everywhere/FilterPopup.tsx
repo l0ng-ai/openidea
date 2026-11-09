@@ -5,7 +5,7 @@
  */
 import { useEffect, useMemo, useState } from "react";
 import { Button, Checkbox, Input, Popup, T, type PopupAnchor } from "@/ui";
-import { recentMasks } from "../find/store";
+import { recentMasks, refreshProjectMasks, useProjectMasks } from "../find/store";
 import { KIND_LABELS, kindsFor, type FilterTab, type SeFilters } from "./filters";
 import { loadLanguages } from "./deps";
 import { setSearchEverywhereFilter } from "./store";
@@ -135,6 +135,8 @@ export function FilterPopup({
 
 function MaskFilter({ mask, onClose }: { mask: string; onClose: () => void }) {
   const [value, setValue] = useState(mask);
+  const projectMasks = useProjectMasks((p) => p.masks);
+  useEffect(() => void refreshProjectMasks(), []);
   const apply = (m: string) => setSearchEverywhereFilter("text", { mask: m.trim() });
   return (
     <div className={styles.filterGroup}>
@@ -145,7 +147,7 @@ function MaskFilter({ mask, onClose }: { mask: string; onClose: () => void }) {
         id="se-file-mask"
         data-autofocus
         value={value}
-        placeholder="*.ts, !*.test.*"
+        placeholder={projectMasks[0] ?? ""}
         spellCheck={false}
         onChange={(e) => {
           setValue(e.target.value);

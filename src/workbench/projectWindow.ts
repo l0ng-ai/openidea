@@ -1,6 +1,6 @@
 /** Where a project opens when this window already has one: System Settings › Project › "Open project in". */
 import { t } from "@/platform/i18n";
-import { call, commands } from "@/platform/ipc";
+import { call, commands, type RemoteTarget } from "@/platform/ipc";
 import { confirmLeaveProject, useProject } from "@/platform/project";
 import { connectRemote, isRemoteWindow } from "@/platform/remote";
 import { ask } from "./messages";
@@ -50,20 +50,20 @@ export async function chooseProjectWindow(name: string, allowAttach = true): Pro
 }
 
 /**
- * Opens folder `path` on the host of SSH configuration `sshConfig`: focuses the
+ * Opens folder `path` of `target` (an SSH host or a WSL distribution): focuses the
  * window that has it, else opens it in a new window or (`here`) this one per
  * "Open project in". `false`: cancelled.
  */
 export async function openRemoteProject(
-  sshConfig: string,
+  target: RemoteTarget,
   path: string,
-  here: () => Promise<unknown> = () => connectRemote(sshConfig, path),
+  here: () => Promise<unknown> = () => connectRemote(target, path),
 ): Promise<boolean> {
-  if ((await call(commands.windowOpenRemote(sshConfig, path, false))).kind === "focused") return true;
+  if ((await call(commands.windowOpenRemote(target, path, false))).kind === "focused") return true;
   const mode = await chooseProjectWindow(path.replace(/\/+$/, "").split("/").pop() || path, false);
   if (!mode) return false;
   if (mode === "new") {
-    await call(commands.windowOpenRemote(sshConfig, path, true));
+    await call(commands.windowOpenRemote(target, path, true));
     return true;
   }
   if (!(await confirmLeaveProject())) return false;

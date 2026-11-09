@@ -16,16 +16,19 @@ import { notifications } from "@/workbench/contributions";
 import { errorMessage } from "../api/client";
 import type { GHCommitFile, GHPullRequest } from "../api/types";
 import { loadPullRequestData } from "./pullRequest";
-import { nameWithOwner, requireConnection } from "./repository";
+import { connectedRoot, nameWithOwner, requireConnection } from "./repository";
 
 /** The running operation (checkout, fetch for a diff) with its last output line. */
 export const useGhBusy = create<{ busy: { title: string; line: string; request: RequestId } | null }>(() => ({
   busy: null,
 }));
 
-/** Runs a cancellable, streaming gh / git operation; null when it failed, was cancelled or another one runs. */
+/**
+ * Runs a cancellable, streaming gh / git operation; null when it failed, was cancelled or another one runs.
+ * `title` shows in the banner while it runs, `failure` titles the error notification.
+ */
 export async function withBusy<T>(
-  title: string,
+  { title, failure }: { title: string; failure: string },
   run: (request: RequestId, out: Channel<string>) => Promise<T>,
 ): Promise<T | null> {
   if (useGhBusy.getState().busy) {
@@ -48,7 +51,7 @@ export async function withBusy<T>(
       notifications().notify({
         group: "vcs",
         level: "error",
-        title: `${title.replace(/…$/, "")} failed`,
+        title: failure,
         body: errorMessage(e),
         key: "github-op",
       });
@@ -66,8 +69,9 @@ export function cancelBusy() {
 /** "Checkout Branch": fetches and checks out the pull request's branch (gh's local name). */
 export async function checkoutPullRequest(number: number): Promise<boolean> {
   // The command resolves with nothing (`null`), which `withBusy` reports as a failure.
-  const done = await withBusy(`Checking out #${number}…`, async (r, out) => {
-    await call(commands.ghPrCheckout(r, number, out));
+  const op = { title: tx`Checking out #${number}…`, failure: tx`Couldn't check out #${number}` };
+  const done = await withBusy(op, async (r, out) => {
+    await call(commands.ghPrCheckout(connectedRoot(), r, number, out));
     return true;
   });
   if (done === null) return false;
@@ -87,9 +91,11 @@ export async function prepareDiff(pr: GHPullRequest): Promise<PrDiffRevisions | 
   const key = `${pr.number}:${pr.headRefOid}:${pr.baseRefOid}`;
   const hit = diffCache.get(key);
   if (hit) return hit;
-  const repo = nameWithOwner(requireConnection().coordinates);
-  const revs = await withBusy(`Fetching #${pr.number}…`, (r, out) =>
-    call(commands.ghPrPrepareDiff(r, pr.number, pr.headRefOid, pr.baseRefOid, pr.baseRefName, repo, out)),
+  const { coordinates, root } = requireConnection();
+  const repo = nameWithOwner(coordinates);
+  const op = { title: tx`Fetching #${pr.number}…`, failure: tx`Couldn't fetch #${pr.number}` };
+  const revs = await withBusy(op, (r, out) =>
+    call(commands.ghPrPrepareDiff(root, r, pr.number, pr.headRefOid, pr.baseRefOid, pr.baseRefName, repo, out)),
   );
   if (revs) diffCache.set(key, revs);
   return revs;
@@ -184,8 +190,12 @@ export async function openInWorktree(number: number): Promise<void> {
   const revs = await prepareDiff(pr);
   if (!revs) return;
   const path = `${String(revs.root).replace(/[\\/]+$/, "")}_PR_${number}`;
-  const added = await withBusy(`Creating worktree for #${number}…`, async () => {
-    await call(commands.vcsAddWorktree(null, path, pr.headRefOid, null));
+  const op = {
+    title: tx`Creating worktree for #${number}…`,
+    failure: tx`Couldn't create the worktree for #${number}`,
+  };
+  const added = await withBusy(op, async () => {
+    await call(commands.vcsAddWorktree(revs.root, path, pr.headRefOid, null));
     return true;
   });
   if (added) await executeAction("file.openInNewWindow", path);

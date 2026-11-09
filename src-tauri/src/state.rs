@@ -16,10 +16,12 @@ pub struct AppState {
     pub host: Arc<Host>,
     pub startup: Startup,
     pub recent: RecentProjects,
-    /// WASM plugins (`ide-plugin`), shared by all windows.
-    pub plugins: Arc<ide_plugin::PluginHost>,
+    /// Plugins (`ide_host::plugins`), shared by all windows.
+    pub plugins: Arc<ide_host::plugins::PluginHost>,
     /// The built-in web server (Open In › Browser, the editor's browser bar).
     pub web: ide_web::WebServer,
+    /// Tools › MCP Server: built-in IDE tools for agents.
+    pub mcp: crate::commands::mcp::McpService,
     /// Credential prompts of `ssh` / `git` child processes (`None` if it failed to start).
     pub askpass: Option<ide_ssh::askpass::AskpassServer>,
     /// Remote development connections, by window label.
@@ -101,6 +103,7 @@ impl AppState {
             sink: global_sink,
             plugins: crate::commands::plugin::create_host(&app, &data_dir, &host)?,
             web: ide_web::WebServer::new(),
+            mcp: Default::default(),
             remote_dev: crate::remote_dev::Connections::default(),
             host,
             startup: Startup {
@@ -131,7 +134,7 @@ impl AppState {
 
     /// The window that owns what `window` starts: a settings window's parent, else `window`.
     pub fn owner_window(window: &str) -> &str {
-        crate::windows::settings_parent(window).unwrap_or(window)
+        crate::windows::auxiliary_parent(window).unwrap_or(window)
     }
 
     /// Opens `root` in `window` and records it in the recent projects.
@@ -145,6 +148,7 @@ impl AppState {
         if !display_name.trim().is_empty() {
             self.recent.rename(&project.root, Some(display_name.trim()))?;
         }
+        crate::jump_list::refresh(&self.app, self.recent.list());
         Ok(project)
     }
 
@@ -154,9 +158,11 @@ impl AppState {
         self.host.open_light(window, file)
     }
 
+    /// Called on the event-loop thread (window destruction, the `close_project`
+    /// command), so it must not wait for the project's workers to shut down.
     pub fn close_project(&self, window: &str) {
         self.remote_dev.disconnect(window);
-        self.host.close_project(window);
+        self.host.close_project_detached(window);
     }
 }
 

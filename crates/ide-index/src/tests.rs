@@ -112,6 +112,28 @@ fn indexes_files_and_symbols_honouring_excludes() {
 }
 
 #[test]
+fn counts_file_extensions_most_common_first() {
+    let fx = Fixture::new(&[
+        ("src/a.rs", "fn a() {}\n"),
+        ("src/b.RS", "fn b() {}\n"),
+        ("src/lib.rs", "fn c() {}\n"),
+        ("Cargo.toml", "[package]\n"),
+        ("README.md", "# r\n"),
+        ("docs/guide.md", "# g\n"),
+        (".gitignore", "target\n"),
+        ("Makefile", "all:\n"),
+        ("target/debug/gen.rs", "fn generated() {}\n"),
+    ]);
+    let idx = fx.open();
+    let counts: Vec<(String, u32)> = idx.file_extensions().into_iter().map(|c| (c.extension, c.files)).collect();
+    assert_eq!(
+        counts,
+        [("rs".into(), 3), ("md".into(), 2), ("toml".into(), 1)],
+        "case-folded, excluded folders and extension-less files left out"
+    );
+}
+
+#[test]
 fn file_ranking_is_idea_like() {
     let fx = sample();
     let idx = fx.open();
@@ -136,6 +158,23 @@ fn file_ranking_is_idea_like() {
     let m = &idx.find_files("ui/btn", 1)[0];
     let shown: String = m.indices.iter().map(|&i| m.rel_path.chars().nth(i as usize).unwrap()).collect();
     assert_eq!(shown.to_lowercase(), "uibtn");
+}
+
+#[test]
+fn find_dirs_ranks_folder_names() {
+    let f = sample();
+    let idx = f.open();
+    let dirs = |q: &str| idx.find_dirs(q, 20).into_iter().map(|m| m.rel_path).collect::<Vec<_>>();
+    assert_eq!(dirs("order"), ["src/order/"]);
+    assert_eq!(dirs("src")[0], "src/");
+    assert!(dirs("src").contains(&"src/ui/".to_owned()), "{:?}", dirs("src"));
+    assert_eq!(dirs("src/ui/"), ["src/ui/"]);
+    assert!(dirs("").is_empty());
+    assert!(dirs("main").is_empty());
+
+    let m = &idx.find_dirs("ui", 1)[0];
+    assert_eq!(m.path.0, f.root.join("src/ui"));
+    assert_eq!(m.indices, vec![4, 5]);
 }
 
 #[test]
@@ -274,6 +313,56 @@ fn binary_and_huge_files_are_listed_without_symbols() {
     assert_eq!(files(&idx, "logo"), vec!["img/logo.rs"]);
     assert_eq!(files(&idx, "huge"), vec!["big/huge.rs"]);
     assert_eq!(idx.status().symbols, 0);
+}
+
+#[test]
+fn go_to_file_finds_ignored_files_but_not_their_symbols() {
+    let fx = Fixture::new(&[
+        (".gitignore", ".env\n*.local.ts\ndist/\n"),
+        (".env", "SECRET=1\n"),
+        ("src/app.ts", "export function app() {}\n"),
+        ("src/config.local.ts", "export function localOnly() {}\n"),
+        ("dist/bundle.js", "function bundled() {}\n"),
+    ]);
+    let idx = fx.open();
+    assert_eq!(files(&idx, ".env"), vec![".env"], "the reported case: a git-ignored root file");
+    assert_eq!(files(&idx, "config.local"), vec!["src/config.local.ts"]);
+    assert!(files(&idx, "bundle").is_empty(), "ignored directories stay out");
+    assert!(symbols(&idx, "localOnly", SymbolFilter::All).is_empty(), "ignored files are listed by name only");
+    assert_eq!(symbols(&idx, "app", SymbolFilter::All), vec!["app"]);
+
+    // Watcher updates keep the distinction.
+    let fresh = fx.write("src/fresh.local.ts", "export function freshLocal() {}\n");
+    let bundled = fx.write("dist/more.js", "function more() {}\n");
+    idx.update(&[fresh, bundled], &[]);
+    assert!(idx.wait_idle(WAIT));
+    assert_eq!(files(&idx, "fresh.local"), vec!["src/fresh.local.ts"]);
+    assert!(symbols(&idx, "freshLocal", SymbolFilter::All).is_empty());
+    assert!(files(&idx, "more.js").is_empty());
+
+    // Nested ignore files apply to watcher updates as they do to the scan.
+    fx.write("pkg/.gitignore", "gen.ts\n");
+    let generated = fx.write("pkg/gen.ts", "export function generatedThing() {}\n");
+    let kept = fx.write("pkg/kept.ts", "export function keptThing() {}\n");
+    idx.update(&[generated, kept], &[]);
+    assert!(idx.wait_idle(WAIT));
+    assert_eq!(files(&idx, "pkg/gen"), vec!["pkg/gen.ts"]);
+    assert!(symbols(&idx, "generatedThing", SymbolFilter::All).is_empty());
+    assert_eq!(symbols(&idx, "keptThing", SymbolFilter::All), vec!["keptThing"]);
+    drop(idx);
+
+    // No longer ignored: the next scan parses it although its mtime is unchanged.
+    std::fs::write(fx.root.join(".gitignore"), ".env\ndist/\n").unwrap();
+    let idx = fx.open();
+    assert_eq!(symbols(&idx, "localOnly", SymbolFilter::All), vec!["localOnly"]);
+    assert_eq!(files(&idx, ".env"), vec![".env"]);
+    drop(idx);
+
+    // Ignored again: its symbols are dropped.
+    std::fs::write(fx.root.join(".gitignore"), "*.local.ts\n").unwrap();
+    let idx = fx.open();
+    assert!(symbols(&idx, "localOnly", SymbolFilter::All).is_empty());
+    assert_eq!(files(&idx, "bundle"), vec!["dist/bundle.js"]);
 }
 
 #[test]
@@ -542,4 +631,101 @@ fn workspace_scope_excludes_state_from_scans_updates_and_cached_results() {
     idx.set_scope(crate::IndexRoots { include_root: false, folders: Vec::new() }, Vec::new());
     assert!(idx.wait_idle(WAIT));
     assert!(idx.find_files("", 100).is_empty());
+}
+
+#[test]
+fn plugin_inventory_respects_excludes_and_symbols_require_matching_text() {
+    let java = "package demo; interface UserMapper { void find(); }";
+    let f = Fixture::new(&[
+        ("src/UserMapper.java", java),
+        ("src/mapper.xml", "<mapper/>"),
+        ("target/Generated.java", "class Generated {}"),
+        ("other.txt", "ignored"),
+    ]);
+    let index = f.open();
+    let paths = index.files_with_extensions(&["java".into(), "xml".into()], 100);
+    assert_eq!(paths.len(), 2);
+    assert!(paths.iter().all(|p| p.starts_with(f.root.join("src"))));
+    assert_eq!(index.files_with_extensions(&["java".into(), "xml".into()], 1).len(), 1);
+    let path = f.root.join("src/UserMapper.java");
+    let symbols = index.symbols_for_text(&path, java).unwrap();
+    assert!(symbols.iter().any(|s| s.name == "find"));
+    assert!(index.symbols_for_text(&path, &java.replace("find", "renamed")).is_none());
+}
+
+#[test]
+fn symbol_search_can_stop_during_scanning_and_lock_waits() {
+    use std::sync::atomic::AtomicUsize;
+    let fx = sample();
+    let idx = fx.open();
+    let calls = AtomicUsize::new(0);
+    let stopped = || calls.fetch_add(1, Ordering::Relaxed) >= 5;
+    assert!(idx.find_symbols_until("a", SymbolFilter::All, 20, &|_| true, &stopped).is_none());
+    assert!(calls.load(Ordering::Relaxed) > 5);
+    for recent in [false, true] {
+        let _data = (!recent).then(|| idx.shared.data.write());
+        let _recent = recent.then(|| idx.shared.recent.lock());
+        let deadline = std::time::Instant::now() + Duration::from_millis(10);
+        assert!(
+            idx.find_symbols_until("a", SymbolFilter::All, 20, &|_| true, &|| std::time::Instant::now() >= deadline)
+                .is_none()
+        );
+    }
+}
+
+#[test]
+fn scoped_symbol_search_preserves_fuzzy_ranking_within_allowed_paths() {
+    let fx = sample();
+    let idx = fx.open();
+    let allowed = fx.root.join("src/order");
+    let symbols =
+        idx.find_symbols_until("OCo", SymbolFilter::All, 1, &|path| path.starts_with(&allowed), &|| false).unwrap();
+    assert_eq!(symbols.len(), 1);
+    assert_eq!(symbols[0].name, "OrderController");
+    assert!(
+        idx.find_symbols_until("OtherCollection", SymbolFilter::All, 1, &|path| path.starts_with(&allowed), &|| false)
+            .unwrap()
+            .is_empty()
+    );
+}
+
+#[cfg(unix)]
+#[test]
+fn incremental_symbols_resolve_symlink_ancestors_before_scope_checks() {
+    let fx = Fixture::new(&[("src/inside.rs", "fn inside_symbol() {}\n")]);
+    let outside = fx._dir.path().join("outside");
+    std::fs::create_dir(&outside).unwrap();
+    std::fs::write(outside.join("secret.rs"), "fn secret_symbol() {}\n").unwrap();
+    std::os::unix::fs::symlink(&outside, fx.root.join("escape")).unwrap();
+    std::os::unix::fs::symlink(fx.root.join("src"), fx.root.join("alias")).unwrap();
+    let idx = fx.open();
+    idx.update(&[fx.root.join("escape/secret.rs"), fx.root.join("alias/inside.rs")], &[]);
+    assert!(idx.wait_idle(WAIT));
+    assert!(symbols(&idx, "secret_symbol", SymbolFilter::All).is_empty());
+    let inside = idx.find_symbols("inside_symbol", SymbolFilter::All, 10);
+    assert_eq!(inside.len(), 1);
+    assert_eq!(inside[0].path.0, fx.root.join("src/inside.rs"));
+}
+
+#[cfg(unix)]
+#[test]
+fn persisted_symbols_do_not_load_through_escaping_symlink_ancestors() {
+    let fx = Fixture::new(&[("src/old.rs", "fn old_symbol() {}\n")]);
+    drop(fx.open());
+    let outside = fx._dir.path().join("outside");
+    std::fs::rename(fx.root.join("src"), &outside).unwrap();
+    std::os::unix::fs::symlink(outside, fx.root.join("src")).unwrap();
+    let initial = Arc::new(Mutex::new(Vec::new()));
+    let events = initial.clone();
+    let sink: SharedSink = Arc::new(move |event: IdeEvent| {
+        if let IdeEvent::IndexState { symbols, .. } = event {
+            events.lock().push(symbols);
+        }
+    });
+    let languages = Arc::new(LanguageRegistry::load(None).unwrap());
+    let idx = ProjectIndex::open(&fx.root, &fx.cache, Vec::new(), Vec::new(), languages, Arc::new(Syntax::new()), sink)
+        .unwrap();
+    assert!(idx.wait_idle(WAIT));
+    assert!(symbols(&idx, "old_symbol", SymbolFilter::All).is_empty());
+    assert_eq!(initial.lock()[0], 0, "unsafe cached symbols must never be published");
 }

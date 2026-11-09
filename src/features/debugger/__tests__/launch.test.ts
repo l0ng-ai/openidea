@@ -1,5 +1,6 @@
-import { describe, expect, it } from "vitest";
+import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import type { RunConfig } from "@/platform/ipc";
+import { usePlatform } from "@/platform/platformInfo";
 import { debugUnsupportedReason, launchConfigFor } from "../launch";
 
 const rc = (p: Partial<RunConfig>): RunConfig => ({
@@ -18,9 +19,49 @@ const rc = (p: Partial<RunConfig>): RunConfig => ({
 
 const extra = (l: { extraJson: string | null } | null) => JSON.parse(l?.extraJson ?? "{}");
 
+const originalPlatform = usePlatform.getState();
+beforeEach(() => usePlatform.setState({ os: "linux" }));
+afterEach(() => usePlatform.setState(originalPlatform));
+
 describe("run config → launch config", () => {
   it("returns null without an adapter", () => {
     expect(launchConfigFor(rc({}), "/p")).toBeNull();
+  });
+
+  it("php-debug: the script runs on the PHP from Settings with Xdebug's debug mode, on a free port", () => {
+    const xdebug = ["-dxdebug.mode=debug", "-dxdebug.start_with_request=yes", "-dxdebug.client_port=${port}"];
+    // `artisan serve` with PHP at Default: the script is a file of the project.
+    const serve = launchConfigFor(
+      rc({ kind: "php", command: "php", args: ["artisan", "serve"], debugAdapter: "php-debug" }),
+      "/app",
+      "/opt/php@8.3/bin/php",
+    )!;
+    expect(serve).toMatchObject({ adapter: "php-debug", program: "/app/artisan", args: ["serve"], cwd: "/app" });
+    expect(extra(serve)).toEqual({ port: 0, runtimeArgs: xdebug, runtimeExecutable: "/opt/php@8.3/bin/php" });
+    // The PHP the command names wins, and its options stay with it.
+    const file = launchConfigFor(
+      rc({
+        kind: "php",
+        command: "/usr/bin/php8.4",
+        args: ["-dmemory_limit=1G", "src/a.php", "x"],
+        debugAdapter: "php-debug",
+      }),
+      "/app",
+      "/opt/php@8.3/bin/php",
+    )!;
+    expect(file).toMatchObject({ program: "/app/src/a.php", args: ["x"] });
+    expect(extra(file)).toEqual({
+      port: 0,
+      runtimeArgs: [...xdebug, "-dmemory_limit=1G"],
+      runtimeExecutable: "/usr/bin/php8.4",
+    });
+    // PHPUnit runs its script directly; without a PHP in Settings, php-debug uses the `php` on PATH.
+    const unit = launchConfigFor(
+      rc({ kind: "phpunit", command: "vendor/bin/phpunit", args: ["--filter", "testA"], debugAdapter: "php-debug" }),
+      "/app",
+    )!;
+    expect(unit).toMatchObject({ program: "/app/vendor/bin/phpunit", args: ["--filter", "testA"] });
+    expect(extra(unit)).toEqual({ port: 0, runtimeArgs: xdebug });
   });
 
   it("cargo run builds the binary through codelldb's cargo integration", () => {
@@ -77,6 +118,39 @@ describe("run config → launch config", () => {
 
     const globalPytest = launchConfigFor(rc({ kind: "pytest", command: "pytest", debugAdapter: "debugpy" }), "/p")!;
     expect(extra(globalPytest).python).toBe("python3");
+  });
+
+  it("debugpy: uv / poetry run the debuggee in the project's environment", () => {
+    const debug = (command: string, args: string[]) =>
+      launchConfigFor(rc({ kind: "python", command, args, debugAdapter: "debugpy" }), "/p")!;
+
+    const script = debug("uv", ["run", "python", "main.py", "-v"]);
+    expect(script.program).toBe("/p/main.py");
+    expect(script.args).toEqual(["-v"]);
+    expect(extra(script)).toMatchObject({ python: ["uv", "run", "python"], debugLauncherPython: "python3" });
+    expect(extra(script).module).toBeUndefined();
+
+    const mod = debug("poetry", ["run", "python3", "-m", "app"]);
+    expect(extra(mod)).toMatchObject({ module: "app", python: ["poetry", "run", "python3"] });
+
+    const tool = debug("uv", ["run", "pytest", "-x"]);
+    expect(extra(tool)).toMatchObject({ module: "pytest", python: ["uv", "run", "python"] });
+    expect(tool.args).toEqual(["-x"]);
+
+    const django = debug("pdm", ["run", "python", "manage.py", "runserver"]);
+    expect(extra(django)).toMatchObject({ django: true, python: ["pdm", "run", "python"] });
+  });
+
+  it("debugpy: Windows falls back to python, not the python3 Store alias", () => {
+    usePlatform.setState({ os: "windows" });
+    const globalPytest = launchConfigFor(rc({ kind: "pytest", command: "pytest", debugAdapter: "debugpy" }), "/p")!;
+    expect(extra(globalPytest).python).toBe("python");
+
+    const uv = launchConfigFor(
+      rc({ kind: "python", command: "uv", args: ["run", "python", "main.py"], debugAdapter: "debugpy" }),
+      "/p",
+    )!;
+    expect(extra(uv)).toMatchObject({ python: ["uv", "run", "python"], debugLauncherPython: "python" });
   });
 
   it("js-debug: npm scripts run through the package manager, node scripts directly", () => {
@@ -179,7 +253,7 @@ describe("run config → launch config", () => {
   it("delve: debug mode for run, test mode for test", () => {
     const run = launchConfigFor(rc({ kind: "go", command: "go", args: ["run", "."], debugAdapter: "delve" }), "/p")!;
     expect(run.program).toBe("/p");
-    expect(extra(run)).toEqual({ mode: "debug" });
+    expect(extra(run)).toEqual({ mode: "debug", __goToolArgs: [], __goUseTags: true });
     const sub = launchConfigFor(
       rc({ kind: "go", command: "go", args: ["run", "./cmd/api"], debugAdapter: "delve" }),
       "/p",
@@ -189,7 +263,7 @@ describe("run config → launch config", () => {
       rc({ kind: "go", command: "go", args: ["test", "./..."], debugAdapter: "delve" }),
       "/p",
     )!;
-    expect(extra(test)).toEqual({ mode: "test" });
+    expect(extra(test)).toEqual({ mode: "test", __goToolArgs: [], __goUseTags: true });
     expect(test.program).toBe("/p");
     // A gutter test / subtest: the package, and `-run` for the test binary.
     const one = launchConfigFor(
@@ -242,19 +316,22 @@ describe("run config → launch config", () => {
     expect(extra(dap)).toEqual({ env: ["K=v"] });
   });
 
-  it("maps CMake debug-info paths to the editor's canonical source root", () => {
-    const config = rc({
-      kind: "native",
-      command: "/private/tmp/project/build/app",
-      debugAdapter: "lldb-dap",
-      env: { K: "v" },
-      params: { cmakeSourceRoot: "/tmp/project", cmakeCanonicalSourceRoot: "/private/tmp/project" },
-    });
-    expect(extra(launchConfigFor(config, "/private/tmp/project")!)).toEqual({
-      env: ["K=v"],
-      sourceMap: [["/tmp/project", "/private/tmp/project"]],
-    });
-  });
+  it.each(["native", "cmake-application"])(
+    "maps %s CMake debug-info paths to the editor's canonical source root",
+    (kind) => {
+      const config = rc({
+        kind,
+        command: "/private/tmp/project/build/app",
+        debugAdapter: "lldb-dap",
+        env: { K: "v" },
+        params: { cmakeSourceRoot: "/tmp/project", cmakeCanonicalSourceRoot: "/private/tmp/project" },
+      });
+      expect(extra(launchConfigFor(config, "/private/tmp/project")!)).toEqual({
+        env: ["K=v"],
+        sourceMap: [["/tmp/project", "/private/tmp/project"]],
+      });
+    },
+  );
 
   it("Godot: the editor's adapter plays the main scene or the chosen one of the project", () => {
     const project = rc({
@@ -340,4 +417,20 @@ it("netcoredbg launches the evaluated DLL with resolved profile arguments, env a
   });
   expect(launchConfigFor({ ...c, params: { ...c.params, programArgs: "" } }, "/repo")?.args).toEqual(["--profile"]);
   expect(launchConfigFor({ ...c, params: {} }, "/repo")).toBeNull();
+});
+
+it("raw and typed Go debug configurations inherit custom tags unless explicitly disabled", () => {
+  for (const typed of [false, true]) {
+    for (const useTags of [undefined, "true", "false"]) {
+      const params = {
+        ...(typed ? { goKind: "test", scope: "package", target: "." } : {}),
+        ...(useTags === undefined ? {} : { useTags }),
+      };
+      const launch = launchConfigFor(
+        rc({ kind: "go", command: "go", args: ["test", "-tags=explicit", "."], debugAdapter: "delve", params }),
+        "/p",
+      )!;
+      expect(extra(launch).__goUseTags).toBe(useTags !== "false");
+    }
+  }
 });

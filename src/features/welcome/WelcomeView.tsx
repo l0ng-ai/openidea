@@ -7,14 +7,14 @@ import { isTauri } from "@/platform/ipc";
 import { useProject } from "@/platform/project";
 import { useRemoteProgress } from "@/platform/remote";
 import { stageLabel, useConnectDialog } from "@/features/remote-dev/model";
-import { Icon, IconButton, Menu, ProgressBar, Spinner, type MenuItem, T } from "@/ui";
+import { Icon, IconButton, Menu, ProgressBar, Spinner, type MenuItem, Button, T } from "@/ui";
 import { useSettingsPages } from "@/workbench/contributions";
 import { ErrorBoundary, Slot } from "@/workbench/ErrorBoundary";
 import logo from "../../../src-tauri/icons/128x128.png";
 import { CustomizePage } from "./CustomizePage";
 import { ProjectsPage } from "./ProjectsPage";
 import { loadRecent, useRecent } from "./recent";
-import { useSession } from "./session";
+import { cancelReopen, useSession } from "./session";
 import styles from "./Welcome.module.css";
 
 export type WelcomePage = "projects" | "customize" | "plugins";
@@ -135,6 +135,9 @@ function Reopening({ location }: { location: string }) {
           <ProgressBar value={progress.fraction} aria-label={tx(stageLabel(progress.stage))} />
         </div>
       )}
+      <Button size="small" onClick={cancelReopen}>
+        <T>Cancel</T>
+      </Button>
     </div>
   );
 }

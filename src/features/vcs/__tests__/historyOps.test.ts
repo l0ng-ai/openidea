@@ -47,6 +47,11 @@ describe("operations in progress", () => {
     ]);
     expect(operationActions("merge", 0).map((a) => a.id)).toEqual(["vcs.merge.abort"]);
   });
+
+  it("offers Resolve Conflicts when conflicts remain with no operation in progress", () => {
+    // Applying a stash, or the autostash of a pull, leaves conflicts and no merge or rebase.
+    expect(operationActions(null, 1).map((a) => a.id)).toEqual(["vcs.resolveConflicts"]);
+  });
 });
 
 describe("Git Log commit actions", () => {

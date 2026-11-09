@@ -14,32 +14,43 @@
 import { getCurrentWebviewWindow } from "@tauri-apps/api/webviewWindow";
 import { registerActions, type Action } from "@/platform/actions";
 import { call, commands, isTauri } from "@/platform/ipc";
-import { isPopupOpen, lazyComponent } from "@/ui";
+import { isPopupOpen, lazyComponent, lazyWhen } from "@/ui";
 import { loadSettings, useProject } from "@/platform/project";
+import { logError } from "@/platform/errorLog";
 import { restoreRemote } from "@/platform/remote";
 import { provideSettingsSearchIndex, registerOverlay } from "@/workbench/contributions";
 import { windowBackgroundHex } from "@/workbench/theme";
-import { LazySettingsDialog, loadBuiltinPages, unloadBuiltinPages } from "./dialog/LazySettingsDialog";
+import {
+  LazyProjectStructureDialog,
+  LazySettingsDialog,
+  loadBuiltinPages,
+  unloadBuiltinPages,
+} from "./dialog/LazySettingsDialog";
 import {
   closeSettings,
+  openProjectStructure,
   openSettings,
+  rebaseSettings,
   selectPage,
   setNewProjects,
   setQuery,
   settingsTitle,
   useSettingsDialog,
 } from "./model/staging";
-import { zoomActions } from "./appearanceRuntime";
+import { appearanceToggleActions, zoomActions } from "./appearanceRuntime";
 import { activateFileTypes } from "./fileTypesRuntime";
 import { trackRuntimeSettings } from "./runtime";
 import { installActionProxies, installSettingsHost } from "./window/bridge";
-import { AssignShortcutOverlay, showAssignShortcut } from "./keymap/AssignShortcut";
+import { showAssignShortcut, useAssignShortcut } from "./keymap/assignShortcutStore";
 import { settingsSearchEntries } from "./searchIndex";
 import { activatePythonStatus } from "./languages/PythonStatus";
+import { activatePhpStatus } from "./languages/PhpStatus";
 import { nativeToAsciiAction } from "./nativeToAscii";
 import { isImeKey } from "@/platform/ime";
+import { trackIconThemePages } from "./iconThemePages";
 
-export { settingsWindowParent } from "./window/bridge";
+/** Settings-driven runtime state (zoom, fonts, theme) of a secondary window. */
+export const activateRuntimeSettings = trackRuntimeSettings;
 export const SettingsWindow = lazyComponent(() => import("./window/SettingsWindow").then((m) => m.SettingsWindow));
 
 /** Same event as `windows::LAUNCH_EVENT`: a pending launch (page) is waiting. */
@@ -100,16 +111,37 @@ async function showSettings(page?: string, newProjects = false) {
   openSettings(page, { newProjects });
 }
 
+const useAssignShortcutOpen = () => useAssignShortcut((s) => s.actionId !== null);
+
 export function activate(): () => void {
   const disposers = [
     trackRuntimeSettings(),
+    trackIconThemePages(),
     activatePythonStatus(),
+    activatePhpStatus(),
     unloadBuiltinPages,
     registerOverlay({ id: "settings.dialog", component: LazySettingsDialog }),
+    registerOverlay({ id: "settings.projectStructure", component: LazyProjectStructureDialog }),
     registerActions(zoomActions()),
+    registerActions(appearanceToggleActions()),
     registerActions(settingsActions((page, newProjects) => void showSettings(page, newProjects))),
+    registerActions([
+      {
+        id: "file.projectStructure",
+        title: "Project Structure…",
+        category: "File",
+        icon: "folder",
+        keywords: ["project structure", "sdk", "jdk", "modules", "libraries", "facets", "artifacts", "sources"],
+        run: ({ arg }) => openProjectStructure(typeof arg === "string" ? arg : undefined),
+      },
+    ]),
     activateFileTypes(),
-    registerOverlay({ id: "settings.assignShortcut", component: AssignShortcutOverlay }),
+    registerOverlay({
+      id: "settings.assignShortcut",
+      component: lazyWhen(useAssignShortcutOpen, () =>
+        import("./keymap/AssignShortcut").then((m) => m.AssignShortcutOverlay),
+      ),
+    }),
     registerActions([
       {
         // Search Everywhere's ⌥↵ on an action (arg: the action id).
@@ -191,6 +223,7 @@ function installWindowKeys(): () => void {
 export function activateSettingsWindow(parent: string): () => void {
   const disposers = [
     trackRuntimeSettings(),
+    trackIconThemePages(),
     unloadBuiltinPages,
     registerActions(settingsActions((page, newProjects) => relaunch({ page, newProjects: !!newProjects }))),
     installActionProxies(parent),
@@ -206,14 +239,24 @@ export function activateSettingsWindow(parent: string): () => void {
     }),
   ];
   void (async () => {
-    await loadBuiltinPages();
-    await restoreRemote();
-    const project = await commands.projectCurrent().catch(() => null);
-    if (project) useProject.setState({ project, settings: project.settings });
-    else await loadSettings().catch((e) => console.warn("cannot load settings", e));
-    // `listenLaunch` may have taken the launch first and applied it already.
-    const launch = await takeLaunch();
-    openSettings(launch?.page, { newProjects: launch?.newProjects ?? useSettingsDialog.getState().newProjects });
-  })();
+    useSettingsDialog.setState({ pagesLoading: true });
+    openSettings();
+    try {
+      const launch = await takeLaunch();
+      relaunch(launch);
+      await Promise.all([
+        loadBuiltinPages().catch((e) => logError("cannot register settings pages", e)),
+        (async () => {
+          await restoreRemote();
+          const project = await commands.projectCurrent().catch(() => null);
+          if (project) useProject.setState({ project, settings: project.settings });
+          else await loadSettings().catch((e) => console.warn("cannot load settings", e));
+          rebaseSettings();
+        })(),
+      ]);
+    } finally {
+      useSettingsDialog.setState({ pagesLoading: false });
+    }
+  })().catch((e) => logError("settings window startup failed", e));
   return () => disposers.reverse().forEach((d) => d());
 }

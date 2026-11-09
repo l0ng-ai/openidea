@@ -1,0 +1,57 @@
+.view {
+  height: 100%;
+  min-height: 0;
+  display: flex;
+  flex-direction: column;
+}
+.add {
+  flex: none;
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  padding: 6px 8px;
+  border-bottom: 1px solid var(--border);
+}
+.input {
+  width: 200px;
+}
+.list {
+  flex: 1;
+  min-height: 0;
+  overflow: auto;
+  margin: 0;
+  padding: 4px 0;
+  list-style: none;
+}
+.row {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  height: 26px;
+  padding: 0 8px 0 12px;
+}
+.row:hover {
+  background: var(--bg-hover);
+}
+.remote {
+  min-width: 48px;
+  font-family: var(--font-mono);
+  color: var(--fg-strong);
+}
+.arrow {
+  color: var(--fg-faint);
+}
+.local {
+  font-family: var(--font-mono);
+  color: var(--fg-muted);
+}
+.actions {
+  margin-left: auto;
+  display: flex;
+  gap: 2px;
+  opacity: 0;
+}
+.row:hover .actions,
+.row:focus-within .actions {
+  opacity: 1;
+}

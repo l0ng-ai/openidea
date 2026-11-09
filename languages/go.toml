@@ -6,10 +6,18 @@ block-comment = ["/*", "*/"]
 indent = { tab-size = 4, insert-spaces = false }
 ui-mode = "Go"
 tree-sitter = "go"
+scratch-template = '''
+package main
+
+func main() {
+	$END$
+}
+'''
 
 [[language-servers]]
 name = "gopls"
 command = "gopls"
+initialization-options = { semanticTokens = true }
 root-markers = ["go.work", "go.mod"]
 install-hint = "go install golang.org/x/tools/gopls@latest"
 

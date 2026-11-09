@@ -17,6 +17,7 @@ import {
 import { CodePreview } from "./CodePreview";
 import { closeDialog } from "./store";
 import styles from "./Database.module.css";
+import { cellPreview } from "./cellPreview";
 
 const PREVIEW_ROWS = 100;
 /** Formats with a tabular layout (the options apply). */
@@ -59,7 +60,15 @@ export function ExportDialog({
   const tabular = TABULAR.has(format);
   const effective = tabular ? options : DEFAULT_EXPORT_OPTIONS;
   const preview = useMemo(
-    () => exportData(format, { ...data, rows: data.rows.slice(0, PREVIEW_ROWS) }, effective),
+    () =>
+      exportData(
+        format,
+        {
+          ...data,
+          rows: data.rows.slice(0, PREVIEW_ROWS).map((row) => row.map((v) => (v === null ? null : cellPreview(v)))),
+        },
+        effective,
+      ),
     [format, data, effective],
   );
   const text = () => exportData(format, data, effective);

@@ -17,6 +17,8 @@ vi.mock("@/workbench/contributions", async (orig) => {
 const { LspPopups, DocumentationWindow } = await import("./Popups");
 const { closePopup, openPopup, useLspPopup } = await import("./popupStore");
 const { useDocWindow, pushHistory, stepHistory, hoverCandidates } = await import("./docs");
+import popupStyles from "./Popups.module.css";
+import { registerImportsOnPasteActions } from "./importsOnPaste";
 
 const loc = (path: string, line: number): Location => ({
   path,
@@ -26,6 +28,40 @@ const loc = (path: string, line: number): Location => ({
 afterEach(() => {
   act(() => closePopup());
   vi.clearAllMocks();
+});
+
+describe("imports on paste dialog", () => {
+  it("checks all imports by default and applies only the selected ones through its action", () => {
+    const dispose = registerImportsOnPasteActions();
+    const onApply = vi.fn();
+    openPopup({
+      kind: "importsOnPaste",
+      imports: ["Import java.util.List", "Import java.util.Map"],
+      onApply,
+      onClose: vi.fn(),
+    });
+    render(<LspPopups />);
+    const boxes = screen.getAllByRole("checkbox");
+    expect(boxes).toHaveLength(2);
+    boxes.forEach((box) => expect(box).toBeChecked());
+    fireEvent.click(boxes[1]!);
+    fireEvent.click(screen.getByRole("button", { name: "Add Imports" }));
+    expect(onApply).toHaveBeenCalledWith([0]);
+    fireEvent.click(boxes[0]!);
+    expect(screen.getByRole("button", { name: "Add Imports" })).toBeDisabled();
+    dispose();
+  });
+
+  it("Cancel dismisses the dialog without applying imports", () => {
+    const onClose = vi.fn();
+    const onApply = vi.fn();
+    openPopup({ kind: "importsOnPaste", imports: ["Import java.util.List"], onApply, onClose });
+    render(<LspPopups />);
+    fireEvent.click(screen.getByRole("button", { name: "Cancel" }));
+    expect(onClose).toHaveBeenCalledOnce();
+    expect(onApply).not.toHaveBeenCalled();
+    expect(useLspPopup.getState().popup).toBeNull();
+  });
 });
 
 describe("list popup", () => {
@@ -221,5 +257,25 @@ describe("quick definition popup", () => {
     expect(frame().textContent).toContain("run(): void;");
     fireEvent.keyDown(frame(), { key: "F4" });
     expect(openFile).toHaveBeenCalledWith("/p/b.ts", { selection: { line: 5, col: 4 }, focus: true });
+  });
+});
+
+describe("reformat dialog", () => {
+  it("wraps its content in the padded body", () => {
+    const onRun = vi.fn();
+    openPopup({
+      kind: "reformat",
+      title: "Reformat File",
+      hasSelection: false,
+      canOptimizeImports: true,
+      initial: { selectionOnly: false, optimizeImports: false },
+      onRun,
+    });
+    render(<LspPopups />);
+    const body = screen.getByRole("dialog", { name: "Reformat File" }).querySelector("[data-dialog-body]")!;
+    expect(body.firstElementChild).toHaveClass(popupStyles.reformatBody!);
+    expect(body.firstElementChild!.querySelectorAll("fieldset")).toHaveLength(2);
+    fireEvent.click(screen.getByRole("button", { name: "Run" }));
+    expect(onRun).toHaveBeenCalledWith({ selectionOnly: false, optimizeImports: false });
   });
 });

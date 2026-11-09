@@ -10,7 +10,8 @@ import { fullDateTime, prettyDate } from "./prettyDate";
 
 describe("prettyDate", () => {
   const o = { ...DEFAULT_DATE_FORMAT, overrideSystem: true, pattern: "dd.MM.yyyy", use24Hour: true };
-  const now = new Date(2026, 9, 31, 9, 2).getTime();
+  // Between May and June, so that no date below crosses a DST change in any time zone that has one.
+  const now = new Date(2026, 5, 30, 9, 2).getTime();
 
   it("formats relative dates like GitHub", () => {
     expect(prettyDate(now - 20_000, now, o)).toBe("just now");
@@ -18,16 +19,16 @@ describe("prettyDate", () => {
     expect(prettyDate(now - 60_000, now, o)).toBe("1 minute ago");
     expect(prettyDate(now - 42 * 60_000, now, o)).toBe("42 minutes ago");
     expect(prettyDate(now - 3_600_000, now, o)).toBe("1 hour ago");
-    expect(prettyDate(new Date(2026, 9, 31, 0, 27).getTime(), now, o)).toBe("8 hours ago");
-    expect(prettyDate(new Date(2026, 9, 30, 8, 0).getTime(), now, o)).toBe("yesterday");
-    expect(prettyDate(new Date(2026, 9, 21, 9, 5).getTime(), now, o)).toBe("9 days ago");
-    expect(prettyDate(new Date(2026, 8, 2, 9, 5).getTime(), now, o)).toBe("on 02.09.2026");
+    expect(prettyDate(new Date(2026, 5, 30, 0, 27).getTime(), now, o)).toBe("8 hours ago");
+    expect(prettyDate(new Date(2026, 5, 29, 8, 0).getTime(), now, o)).toBe("yesterday");
+    expect(prettyDate(new Date(2026, 5, 20, 9, 5).getTime(), now, o)).toBe("9 days ago");
+    expect(prettyDate(new Date(2026, 4, 2, 9, 5).getTime(), now, o)).toBe("on 02.05.2026");
     expect(prettyDate("not a date", now, o)).toBe("");
   });
 
   it("shows the plain date and time with pretty formatting off", () => {
-    expect(prettyDate(now - 20_000, now, { ...o, pretty: false })).toBe("31.10.2026 09:01");
-    expect(fullDateTime(new Date(2026, 9, 31, 0, 27).getTime(), o)).toBe("31.10.2026 00:27");
+    expect(prettyDate(now - 20_000, now, { ...o, pretty: false })).toBe("30.06.2026 09:01");
+    expect(fullDateTime(new Date(2026, 5, 30, 0, 27).getTime(), o)).toBe("30.06.2026 00:27");
   });
 });
 

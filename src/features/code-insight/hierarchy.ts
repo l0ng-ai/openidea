@@ -13,6 +13,8 @@ export type HierarchyMode = "call" | "type";
 export interface HierarchyNode {
   id: string;
   item: HierarchyItem;
+  /** Set when the node repeats an ancestor: it is kept a leaf and marked "recursive". */
+  recursion?: boolean;
 }
 
 export interface HierarchyRoot {
@@ -107,19 +109,49 @@ export function childId(parent: string, item: HierarchyItem): string {
   return `${parent}/${item.path}:${p.line}:${p.col}:${item.name}`;
 }
 
-function setChildren(generation: number, parent: string, items: HierarchyItem[], note: string | null) {
+/** Position-unique key of a hierarchy item: the same symbol always has the same one. */
+function itemKey(item: HierarchyItem): string {
+  const p = item.selectionRange.start;
+  return `${item.path}:${p.line}:${p.col}:${item.name}`;
+}
+
+/** The root's key, matching itemKey of the item its position resolves to. */
+function rootKey(root: HierarchyRoot): string {
+  return `${root.path}:${root.line}:${root.col}:${root.name}`;
+}
+
+/** Each node's position key plus its ancestors', so a child repeating one is a cycle. */
+const nodeKeys = new WeakMap<HierarchyNode, readonly string[]>();
+
+function setChildren(
+  generation: number,
+  parent: string,
+  parentKeys: readonly string[],
+  items: HierarchyItem[],
+  note: string | null,
+) {
   const s = useHierarchy.getState();
   if (s.generation !== generation) return;
+  const ancestors = new Set(parentKeys);
   const seen = new Set<string>();
   const nodes: HierarchyNode[] = [];
+  const children = new Map(s.children);
+  children.set(parent, nodes);
   for (const item of items) {
     const id = childId(parent, item);
     if (seen.has(id)) continue;
     seen.add(id);
-    nodes.push({ id, item });
+    const key = itemKey(item);
+    // A recursive symbol arrives with a fresh id on every level (the id carries the
+    // parent chain); only its position key reveals the cycle. Keep such a node a
+    // leaf — expanding it again would request the same level forever.
+    const node: HierarchyNode = ancestors.has(key) ? { id, item, recursion: true } : { id, item };
+    if (node.recursion) children.set(id, []);
+    nodeKeys.set(node, [...parentKeys, key]);
+    nodes.push(node);
   }
   useHierarchy.setState({
-    children: new Map(s.children).set(parent, nodes),
+    children,
     ...(note ? { notes: new Map(s.notes).set(parent, note) } : {}),
   });
 }
@@ -138,7 +170,7 @@ async function loadRoot(quiet = false): Promise<RootResult> {
     const { items, incomplete } = await withDocument(root.path, (doc) =>
       request(s.mode, doc, root.line, root.col, s.direction),
     );
-    setChildren(generation, ROOT_ID, items, incomplete && incompleteNote(incomplete, root.name));
+    setChildren(generation, ROOT_ID, [rootKey(root)], items, incomplete && incompleteNote(incomplete, root.name));
     return "loaded";
   } catch (e) {
     if (useHierarchy.getState().generation !== generation) return "stale";
@@ -189,7 +221,13 @@ export async function loadChildren(node: HierarchyNode) {
     const { items, incomplete } = await withDocument(node.item.path, (doc) =>
       request(mode, doc, at.line, at.col, direction),
     );
-    setChildren(generation, node.id, items, incomplete && incompleteNote(incomplete, node.item.name));
+    setChildren(
+      generation,
+      node.id,
+      nodeKeys.get(node) ?? [],
+      items,
+      incomplete && incompleteNote(incomplete, node.item.name),
+    );
   } catch (e) {
     if (useHierarchy.getState().generation !== generation) return;
     useHierarchy.setState((st) => ({

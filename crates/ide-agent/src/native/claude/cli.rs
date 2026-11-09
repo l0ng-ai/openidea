@@ -98,6 +98,8 @@ impl Cli for Process {
         use std::process::Stdio;
         let mut cmd = tokio::process::Command::new(&l.program);
         ide_core::process::prepare(cmd.as_std_mut());
+        // `claude` may be a wrapper (`claude.cmd` → node): stopping it stops what it started.
+        ide_core::process::own_group(cmd.as_std_mut());
         cmd.args(&l.args)
             .current_dir(&l.cwd)
             .envs(ide_core::process::shell_env())
@@ -120,6 +122,9 @@ impl Cli for Process {
             tokio::select! {
                 _ = child.wait() => {}
                 _ = token.cancelled() => {
+                    if let Some(pid) = child.id() {
+                        let _ = tokio::task::spawn_blocking(move || ide_core::process::kill_tree_of(pid)).await;
+                    }
                     let _ = child.start_kill();
                     let _ = child.wait().await;
                 }

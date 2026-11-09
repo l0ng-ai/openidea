@@ -36,8 +36,13 @@ export function hideSplash(): void {
       requestAnimationFrame(() => {
         setTimeout(
           () => {
+            if (document.documentElement.dataset.boot === "failed") return;
             el.classList.add("splash-out");
-            setTimeout(() => el.remove(), 200);
+            setTimeout(() => {
+              if (document.documentElement.dataset.boot === "failed") return;
+              el.remove();
+              window.dispatchEvent(new Event("openidea:boot-ready"));
+            }, 200);
           },
           completeBar(el) ? FILL_MS : 0,
         );

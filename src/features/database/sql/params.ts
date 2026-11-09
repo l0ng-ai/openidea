@@ -21,7 +21,18 @@ export function findParams(text: string, driver: DbDriver, numbered = 0): SqlPar
   const toks = lex(text, driver).tokens;
   const out: SqlParam[] = [];
   let positional = numbered;
+  let typedEnd = -1;
   toks.forEach((t, i) => {
+    if (t.from < typedEnd) return;
+    if (driver === "clickhouse" && t.kind === "punct" && t.text === "{") {
+      const end = toks.slice(i + 1).find((candidate) => candidate.kind === "punct" && candidate.text === "}");
+      const name = end ? text.slice(t.from, end.to) : "";
+      if (end && /^\{[A-Za-z_][A-Za-z0-9_]*\s*:\s*[^{}]+\}$/.test(name)) {
+        out.push({ name, from: t.from, to: end.to });
+        typedEnd = end.to;
+        return;
+      }
+    }
     if (t.kind === "param") {
       // MySQL `@var` / `@@var` are session variables.
       if (driver === "mysql" && t.text.startsWith("@")) return;

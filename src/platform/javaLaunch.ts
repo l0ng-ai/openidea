@@ -4,8 +4,17 @@
  * `${classpath}` (or `${testClasspath}`) and the `java` launcher are resolved
  * through jdtls when the configuration starts.
  */
-import { call, commands, IpcError, type JavaLaunchInfo, type RunConfig, type RequestId } from "@/platform/ipc";
+import {
+  call,
+  commands,
+  IpcError,
+  type BuildPolicy,
+  type JavaLaunchInfo,
+  type RunConfig,
+  type RequestId,
+} from "@/platform/ipc";
 import { tx } from "@/platform/i18n";
+import { useBuildPresentation } from "@/platform/projectPresentation";
 
 export const CLASSPATH = "${classpath}";
 export const TEST_CLASSPATH = "${testClasspath}";
@@ -117,11 +126,19 @@ export function jdwpListeningPort(line: string): number | null {
 }
 
 /**
- * Module directory (relative to the project root, `""` for the root) of a JVM
- * source file: the part before `src/{main,test}/…`, else the working directory
- * of the closest Maven / Gradle configuration.
+ * Module directory (relative to the project root, `""` for the root; absolute for a
+ * module outside it) of a JVM source file. Like IDEA's `ProjectFileIndex.getModuleForFile`:
+ * the innermost Maven / Gradle module folder holding the file, as the build model knows
+ * them (`modules`). Before a model knows a deeper one: the part before
+ * `src/{main,test}/…`, else the working directory of the closest Maven / Gradle configuration.
  */
-export function jvmModuleDir(relPath: string, configs: readonly RunConfig[] = []): string {
+export function jvmModuleDir(
+  relPath: string,
+  configs: readonly RunConfig[] = [],
+  modules: Iterable<string> = useBuildPresentation.getState().modules.keys(),
+): string {
+  const owner = [...modules].filter((d) => d && relPath.startsWith(d + "/")).sort((a, b) => b.length - a.length)[0];
+  if (owner) return owner;
   const m = /^(?:(.*)\/)?src\/(?:main|test|[\w-]+)\/(?:java|kotlin|scala|groovy)\//.exec(relPath);
   if (m) return m[1] ?? "";
   const cwds = configs
@@ -161,25 +178,47 @@ export async function resolveJavaModule(config: RunConfig): Promise<string> {
   return module;
 }
 
+/** Saves before resolving the module, for direct and delegated Run and Debug. */
+export async function prepareJavaModule(config: RunConfig, saveAll?: () => Promise<void>, signal?: AbortSignal) {
+  signal?.throwIfAborted();
+  await saveAll?.();
+  signal?.throwIfAborted();
+  const module = await resolveJavaModule(config);
+  signal?.throwIfAborted();
+  return module;
+}
+
 /** Shared, cancellable build and classpath preparation for Run and Debug. */
 export interface JavaPreparation {
   request: RequestId;
   signal: AbortSignal;
   report?: (text: string, kind?: "system" | "stderr") => void;
+  /** Before launch build; unset reads the run configuration (default: automatic/incremental). */
+  policy?: BuildPolicy;
+  /** Saves open documents first, as IDEA's Before launch does. */
+  saveAll?: () => Promise<void>;
 }
+
+/** The build the launch would do: the configuration's policy, else incremental. */
+export function buildPolicyOf(config: RunConfig): BuildPolicy {
+  return config.buildPolicy ?? "automatic";
+}
+
+/** A build stopped the launch: the message is ready for the console and the notification. */
+export class JavaBuildFailedError extends Error {}
 
 export async function prepareJavaLaunch(config: RunConfig, preparation: JavaPreparation) {
   const { signal, report } = preparation;
+  const policy = preparation.policy ?? buildPolicyOf(config);
   signal.throwIfAborted();
   const parsed = parseJavaArgs(config.args);
   if (!parsed.mainClass) throw new Error(`No main class in '${config.name}'`);
   report?.(tx`Building and resolving the classpath of ${parsed.mainClass}…` + "\n");
   const started = performance.now();
-  const module = await resolveJavaModule(config);
-  signal.throwIfAborted();
+  const module = await prepareJavaModule(config, preparation.saveAll, signal);
   const moduleMs = performance.now() - started;
   const info = await call(
-    commands.javaResolveLaunch(module, parsed.classpath === "test", true, preparation.request),
+    commands.javaResolveLaunch(module, parsed.classpath === "test", policy, preparation.request),
   ).catch((error: unknown) => {
     if (
       error instanceof IpcError &&
@@ -195,11 +234,17 @@ export async function prepareJavaLaunch(config: RunConfig, preparation: JavaPrep
   });
   signal.throwIfAborted();
   console.info("Java launch preparation", { module, moduleMs, resolveMs: performance.now() - started - moduleMs });
-  if (info.build === "withErrors")
-    report?.(tx("Build completed with errors; launching with the last compiled classes.") + "\n", "stderr");
-  if (info.build === "failed") report?.(tx("Build failed; launching with the last compiled classes.") + "\n", "stderr");
   const errors = formatCompileErrors(info);
   if (errors) report?.(errors, "stderr");
+  // IDEA's default: a failed build (or one with compile errors) does not start the program;
+  // only "Build, no error check" continues with the last compiled classes.
+  if ((info.build === "failed" || info.build === "withErrors") && policy !== "makeAndContinueOnErrors") {
+    const reason =
+      info.build === "failed"
+        ? tx`Build failed; '${config.name}' was not started.`
+        : tx`Build has compile errors; '${config.name}' was not started.`;
+    throw new JavaBuildFailedError(reason);
+  }
   if (parsed.classpath && !info.classPaths.length)
     throw new Error(tx("The classpath is empty: is the module imported by the Java language server?"));
   return { module, info, resolved: resolveJavaCommand(config, info) };

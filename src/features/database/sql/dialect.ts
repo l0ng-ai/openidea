@@ -24,6 +24,9 @@ export function isReserved(word: string): boolean {
   return RESERVED.has(word.toUpperCase());
 }
 
+export const nameMatcher = (driver: DbDriver) => (a: string | null | undefined, b: string | null | undefined) =>
+  !!a && !!b && (driver === "clickhouse" ? a === b : a.toLowerCase() === b.toLowerCase());
+
 /** Clause keywords: a word in this set ends a table alias or expression. */
 export const CLAUSE_WORDS = new Set(
   (
@@ -34,6 +37,30 @@ export const CLAUSE_WORDS = new Set(
 );
 
 export function statementStarters(driver: DbDriver): string[] {
+  if (driver === "clickhouse")
+    return [
+      "SELECT",
+      "INSERT INTO",
+      "WITH",
+      "CREATE TABLE",
+      "CREATE VIEW",
+      "CREATE MATERIALIZED VIEW",
+      "CREATE DATABASE",
+      "ALTER TABLE",
+      "DROP TABLE",
+      "DROP VIEW",
+      "DROP DATABASE",
+      "RENAME TABLE",
+      "TRUNCATE TABLE",
+      "EXPLAIN",
+      "SHOW DATABASES",
+      "SHOW TABLES",
+      "SHOW CREATE TABLE",
+      "DESCRIBE TABLE",
+      "USE",
+      "SET",
+      "OPTIMIZE TABLE",
+    ];
   const common = [
     "SELECT",
     "INSERT INTO",
@@ -65,6 +92,20 @@ export function statementStarters(driver: DbDriver): string[] {
       "CREATE DATABASE",
       "START TRANSACTION",
     ];
+  if (driver === "oracle")
+    return [
+      ...common,
+      "TRUNCATE TABLE",
+      "MERGE INTO",
+      "CREATE SEQUENCE",
+      "CREATE OR REPLACE PROCEDURE",
+      "CREATE OR REPLACE FUNCTION",
+      "CREATE OR REPLACE TRIGGER",
+      "CREATE OR REPLACE VIEW",
+      "ALTER SESSION SET",
+      "GRANT",
+      "REVOKE",
+    ];
   return [
     ...common,
     "TRUNCATE",
@@ -82,6 +123,7 @@ export function joinKeywords(driver: DbDriver): string[] {
   const j = ["JOIN", "LEFT JOIN", "INNER JOIN", "CROSS JOIN", "RIGHT JOIN"];
   if (driver !== "mysql") j.push("FULL JOIN");
   if (driver === "postgres") j.push("JOIN LATERAL", "LEFT JOIN LATERAL");
+  if (driver === "oracle") j.push("JOIN", "(+)");
   return j;
 }
 
@@ -105,6 +147,7 @@ export function predicateKeywords(driver: DbDriver): string[] {
   if (driver === "postgres") k.push("ILIKE", "IS DISTINCT FROM", "ANY", "SIMILAR TO");
   if (driver === "mysql") k.push("REGEXP");
   if (driver === "sqlite") k.push("GLOB", "REGEXP");
+  if (driver === "oracle") k.push("CONNECT BY PRIOR", "START WITH", "NOT IN", "IS NOT NULL");
   return k;
 }
 
@@ -176,6 +219,58 @@ export const DATA_TYPES: Record<DbDriver, string[]> = {
     "BIT",
     "VARBINARY",
     "XML",
+  ],
+  clickhouse: [
+    "UInt64",
+    "UInt32",
+    "UInt16",
+    "UInt8",
+    "Int64",
+    "Int32",
+    "Float64",
+    "Float32",
+    "Decimal",
+    "String",
+    "FixedString",
+    "Bool",
+    "Date",
+    "Date32",
+    "DateTime",
+    "DateTime64",
+    "UUID",
+    "IPv4",
+    "IPv6",
+    "Array",
+    "Tuple",
+    "Map",
+    "Nullable",
+    "LowCardinality",
+    "JSON",
+  ],
+  oracle: [
+    "NUMBER",
+    "NUMBER(10)",
+    "NUMBER(19, 4)",
+    "INTEGER",
+    "BINARY_FLOAT",
+    "BINARY_DOUBLE",
+    "VARCHAR2(255)",
+    "VARCHAR2(4000)",
+    "NVARCHAR2(255)",
+    "CHAR(1)",
+    "CLOB",
+    "NCLOB",
+    "BLOB",
+    "RAW(16)",
+    "DATE",
+    "TIMESTAMP",
+    "TIMESTAMP WITH TIME ZONE",
+    "TIMESTAMP WITH LOCAL TIME ZONE",
+    "INTERVAL DAY TO SECOND",
+    "INTERVAL YEAR TO MONTH",
+    "ROWID",
+    "XMLTYPE",
+    "BOOLEAN",
   ],
 };
 
@@ -296,6 +391,71 @@ const FUNCTIONS: Record<DbDriver, SqlFunction[]> = {
     f("newid", "", "uniqueidentifier"),
     f("row_number", "", "bigint"),
     f("rank", "", "bigint"),
+  ],
+  clickhouse: [
+    f("count", "*", "UInt64", true),
+    f("sum", "expr", undefined, true),
+    f("avg", "expr", "Float64", true),
+    f("min", "expr", undefined, true),
+    f("max", "expr", undefined, true),
+    f("uniq", "expr", "UInt64", true),
+    f("uniqExact", "expr", "UInt64", true),
+    f("groupArray", "expr", "Array", true),
+    f("argMax", "arg, value", undefined, true),
+    f("coalesce", "value, ..."),
+    f("ifNull", "a, b"),
+    f("nullIf", "a, b"),
+    f("lower", "text", "String"),
+    f("upper", "text", "String"),
+    f("length", "value", "UInt64"),
+    f("concat", "value, ...", "String"),
+    f("substring", "text, start, length", "String"),
+    f("replaceAll", "text, pattern, replacement", "String"),
+    f("abs", "number"),
+    f("round", "number, digits"),
+    f("toString", "expr", "String"),
+    f("toUInt64", "expr", "UInt64"),
+    f("toDate", "expr", "Date"),
+    f("toDateTime", "expr", "DateTime"),
+    f("toStartOfDay", "datetime", "DateTime"),
+    f("now", "", "DateTime"),
+    f("today", "", "Date"),
+    f("arrayJoin", "array"),
+    f("tuple", "value, ...", "Tuple"),
+    f("cast", "expr AS type"),
+  ],
+  oracle: [
+    ...COMMON,
+    f("nvl", "expr, replacement"),
+    f("nvl2", "expr, value_if_not_null, value_if_null"),
+    f("decode", "expr, search, result, ..., default"),
+    f("greatest", "value, ..."),
+    f("least", "value, ..."),
+    f("instr", "text, substring, position, occurrence", "number"),
+    f("translate", "text, from, to"),
+    f("lpad", "text, length, pad"),
+    f("rpad", "text, length, pad"),
+    f("regexp_replace", "text, pattern, replacement, position, occurrence"),
+    f("regexp_like", "text, pattern", "boolean"),
+    f("to_char", "value, format", "varchar2"),
+    f("to_date", "text, format", "date"),
+    f("to_number", "text, format", "number"),
+    f("trunc", "date_or_number, format"),
+    f("add_months", "date, months", "date"),
+    f("months_between", "date, date", "number"),
+    f("last_day", "date", "date"),
+    f("next_day", "date, weekday", "date"),
+    f("sysdate", "", "date"),
+    f("systimestamp", "", "timestamp with time zone"),
+    f("extract", "field FROM source", "number"),
+    f("listagg", "expr, delimiter ON OVERFLOW TRUNCATE", "varchar2", true),
+    f("row_number", "", "number"),
+    f("rank", "", "number"),
+    f("dense_rank", "", "number"),
+    f("lag", "value, offset, default"),
+    f("lead", "value, offset, default"),
+    f("raise_application_error", "code, message"),
+    f("sys_context", "namespace, parameter", "varchar2"),
   ],
 };
 

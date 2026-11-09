@@ -2,6 +2,7 @@
 .button {
   --button-radius: var(--radius-control, 4px);
   display: inline-flex;
+  flex-shrink: 0;
   align-items: center;
   justify-content: center;
   gap: 6px;
@@ -71,7 +72,7 @@
   color: var(--fg-faint);
 }
 
-/* Toolbar / action buttons (ActionButton): transparent, rounded-square hover. */
+/* Toolbar / action buttons: transparent on hover, filled when pressed or selected. */
 .iconButton {
   flex: none;
   display: inline-flex;
@@ -88,7 +89,6 @@
   outline-offset: -2px;
 }
 .iconButton:not(:disabled):hover {
-  background: var(--bg-toolbar-hover);
   color: var(--fg-strong);
 }
 .iconButton:not(:disabled):active {

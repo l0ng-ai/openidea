@@ -23,14 +23,19 @@ import {
   menuGroupItems,
   notifications,
   resolveFileEditor,
+  textEditorWrapperFor,
   useContributions,
+  useStandaloneEditor,
+  useTextEditorWrappers,
   type EditorCloseSession,
   type EditorInput,
   type OpenOptions,
   type FileEditorResolution,
   type OpenEditorTab,
+  type TextEditorWrapperContribution,
 } from "@/workbench/contributions";
 import { useDistractionFree } from "@/workbench/distractionFree";
+import { restoreMaximizedToolWindow } from "@/workbench/toolwindows/store";
 import { ask } from "@/workbench/messages";
 import { t } from "@/platform/i18n";
 import { call, commands } from "@/platform/ipc";
@@ -51,6 +56,7 @@ import {
   enforceTabLimit,
   findTab,
   initialTabsState,
+  mergeSessionTabs,
   moveTab,
   moveTabToNewSplit,
   neighbourPane,
@@ -143,7 +149,7 @@ export interface EditorStatus {
 export const useEditorStatus = create<{ status: EditorStatus | null }>(() => ({ status: null }));
 /** Per-tab open errors (file missing, too large…). */
 export const useTabErrors = create<Record<string, string>>(() => ({}));
-/** Per-pane find bar state (open / replace mode); the bar keeps its own query. */
+/** Per-tab find bar state (open / replace mode), like IDEA's per-editor search session. */
 export const useFindBars = create<Record<string, { replace: boolean; seq: number } | undefined>>(() => ({}));
 export const useGotoLine = create<{ open: boolean }>(() => ({ open: false }));
 
@@ -193,7 +199,7 @@ export function tabTitle(input: EditorInput, kinds: EditorKinds): string {
 }
 
 export function tabIcon(input: EditorInput, kinds: EditorKinds): string {
-  if (input.kind === "file") return fileIconName(basename(input.path ?? ""));
+  if (input.kind === "file") return fileIconName(basename(input.path ?? ""), input.path ?? null);
   if (input.kind === "virtual") return fileIconName(tabTitle(input, kinds));
   const kind = kinds.get(input.kind);
   try {
@@ -230,11 +236,14 @@ export class EditorController implements SlotHost {
   private closeSession: EditorCloseSession | null = null;
   private closeCommitted = false;
   private projectGeneration = 0;
+  private replacingProject = false;
   private admissionGeneration = 0;
   private openSequence = 0;
   private selectionRequests = new Map<string, number>();
   private activationGeneration = 0;
   private admitting = false;
+  /** Tabs restored from a saved session: not a user's activation, so a pending open still activates its tab. */
+  private restoring = false;
   private closeRequests = 0;
   private projectTransition: Promise<void> = Promise.resolve();
 
@@ -255,16 +264,29 @@ export class EditorController implements SlotHost {
     _provideOpenEditorPaths(() => openFilePaths(useTabs.getState()));
     let prevTabs = useTabs.getState();
     this.disposers.push(
-      useTabs.subscribe((s) => {
+      useTabs.subscribe((s, previous) => {
+        const open = openKeys(s);
+        const closed = new Map<string, EditorInput>();
+        for (const pane of Object.values(previous.panes))
+          for (const tab of pane.tabs) if (!open.has(tab.input.key)) closed.set(tab.input.key, tab.input);
+        if (!this.replacingProject)
+          for (const input of closed.values())
+            useContributions.getState().editorKinds.get(input.kind)?.onClose?.(input);
         const prev = prevTabs;
         prevTabs = s;
         if (
           !this.admitting &&
+          !this.restoring &&
           (s.activePane !== prev.activePane || s.panes[s.activePane]?.active !== prev.panes[prev.activePane]?.active)
         )
           ++this.activationGeneration;
         this.stampActive(s);
         this.onTabsChanged(prev, s);
+        const kinds = useContributions.getState().editorKinds;
+        const standalone = Object.values(s.panes)
+          .flatMap((pane) => pane.tabs)
+          .find((tab) => kinds.get(tab.input.kind)?.standalone);
+        useStandaloneEditor.setState({ title: standalone ? tabTitle(standalone.input, kinds) : null });
       }),
     );
     tabOptions.activateOnClose = editorPrefs().tabs.activateOnClose as typeof tabOptions.activateOnClose;
@@ -299,7 +321,12 @@ export class EditorController implements SlotHost {
           const documents = customDocuments(useTabs.getState(), useContributions.getState().editorKinds);
           // The guard decided already. Disposal must never prompt or autosave
           // custom documents after the backend has replaced their project.
-          useTabs.setState(initialTabsState(), true);
+          this.replacingProject = true;
+          try {
+            useTabs.setState(initialTabsState(), true);
+          } finally {
+            this.replacingProject = false;
+          }
           this.closeSession = null;
           this.closeCommitted = false;
           this.preparedDocuments.clear();
@@ -322,6 +349,11 @@ export class EditorController implements SlotHost {
     );
     // Gutter, centred column and sticky lines follow Distraction Free Mode.
     this.disposers.push(useDistractionFree.subscribe(() => this.manager.applySettings()));
+    this.disposers.push(
+      useTextEditorWrappers.subscribe(({ wrappers }) => {
+        this.upgradeWrappedImageTabs(wrappers);
+      }),
+    );
     if (prevRoot) this.restoreSession(prevRoot);
     if (this.manager.backend.onFsChanged)
       this.disposers.push(this.manager.backend.onFsChanged((e) => this.onFilesRemoved(e.removed)));
@@ -331,6 +363,8 @@ export class EditorController implements SlotHost {
         void this.saveCustomDocuments(true).catch((e) => this.documentError(e));
       }
     };
+    if (this.manager.backend.onApplicationDeactivated)
+      this.disposers.push(this.manager.backend.onApplicationDeactivated(onWindowBlur));
     const onPageHide = () => this.saveSession();
     if (typeof window !== "undefined") {
       if (this.manager.backend.syncFromDisk)
@@ -367,6 +401,7 @@ export class EditorController implements SlotHost {
     this.selectionRequests.clear();
     this.manager.stop();
     useTabs.setState(initialTabsState(), true);
+    useStandaloneEditor.setState({ title: null });
     void this.releaseDocuments(documents.values()).catch((e) => this.documentError(e));
   }
 
@@ -387,6 +422,8 @@ export class EditorController implements SlotHost {
         slot.dispose();
       }
     }
+    const bars = Object.entries(useFindBars.getState()).filter(([id, bar]) => bar && !live.has(id));
+    if (bars.length) useFindBars.setState(Object.fromEntries(bars.map(([id]) => [id, undefined])));
     for (const id of Object.keys(useTabErrors.getState()))
       if (!live.has(id))
         useTabErrors.setState((s) => {
@@ -427,6 +464,35 @@ export class EditorController implements SlotHost {
 
   // --- session (open tabs, splits, carets per project) ---------------------------
 
+  private upgradeWrappedImageTabs(wrappers: ReadonlyMap<string, TextEditorWrapperContribution>) {
+    const s = useTabs.getState();
+    let changed = false;
+    const panes: TabsState["panes"] = {};
+    const toEnsure: string[] = [];
+    for (const [paneId, pane] of Object.entries(s.panes)) {
+      let paneChanged = false;
+      const tabs = pane.tabs.map((tab) => {
+        const path = tab.input.path;
+        if (
+          tab.input.kind === "image" &&
+          path &&
+          textEditorWrapperFor(wrappers, path) &&
+          !pane.tabs.some((other) => other.id !== tab.id && other.input.key === fileKey(path))
+        ) {
+          paneChanged = true;
+          changed = true;
+          if (pane.active === tab.id) toEnsure.push(tab.id);
+          return { ...tab, input: fileInput(path) };
+        }
+        return tab;
+      });
+      panes[paneId] = paneChanged ? { ...pane, tabs } : pane;
+    }
+    if (!changed) return;
+    useTabs.setState({ ...s, panes }, true);
+    for (const tabId of toEnsure) void this.ensureSlot(tabId);
+  }
+
   private scheduleSessionSave() {
     if (!this.sessionRoot) return;
     clearTimeout(this.sessionTimer);
@@ -464,7 +530,14 @@ export class EditorController implements SlotHost {
       pane.tabs = pane.tabs.map((tab) => (documentLifecycle(tab.input, kinds) ? { ...tab, preview: false } : tab));
     this.restoredViews = new Map(Object.entries(session.files));
     this.restoredTabs = new Set(Object.values(state.panes).flatMap((p) => p.tabs.map((t) => t.id)));
-    useTabs.setState(state, true);
+    this.restoring = true;
+    try {
+      // A restore landing after tabs were already opened (e.g. a launched file
+      // admitted while the transition was still in flight) must not wipe them.
+      useTabs.setState((current) => mergeSessionTabs(current, state), true);
+    } finally {
+      this.restoring = false;
+    }
     for (const pane of Object.values(state.panes)) if (pane.active) void this.ensureSlot(pane.active);
   }
 
@@ -588,7 +661,21 @@ export class EditorController implements SlotHost {
 
   onBlur(slot: EditorSlot) {
     setContext("editorTextFocus", false);
-    if (this.autoSave()) void slot.model.save("auto").catch(() => {});
+    if (!this.autoSave()) return;
+    const save = () => void slot.model.save("auto").catch(() => {});
+    if (typeof document === "undefined") return save();
+    // A popup (intentions, completion, …) belongs to the editor: saving under it would change
+    // the text (save cleanup) its items were computed for. Save once focus leaves it elsewhere.
+    setTimeout(() => {
+      if (slot.view?.hasFocus) return;
+      if (!inPopup(document.activeElement)) return save();
+      const onFocusIn = (e: FocusEvent) => {
+        if (inPopup(e.target)) return;
+        document.removeEventListener("focusin", onFocusIn);
+        if (!slot.view?.hasFocus) save();
+      };
+      document.addEventListener("focusin", onFocusIn);
+    });
   }
 
   onSelection(slot: EditorSlot, navigatedFrom?: { line: number; col: number }) {
@@ -615,9 +702,8 @@ export class EditorController implements SlotHost {
   }
 
   onEscape(slot: EditorSlot): boolean {
-    const loc = this.locateTab(slot.tabId);
-    if (loc && useFindBars.getState()[loc.paneId]) {
-      useFindBars.setState({ [loc.paneId]: undefined });
+    if (useFindBars.getState()[slot.tabId]) {
+      useFindBars.setState({ [slot.tabId]: undefined });
       return true;
     }
     return false;
@@ -670,7 +756,9 @@ export class EditorController implements SlotHost {
       {
         label: "Copy / Paste Special",
         submenu: [
-          { label: "Copy Path", run: () => void navigator.clipboard?.writeText(slot.model.path) },
+          { kind: "action", action: "editor.copyPathReference" },
+          { kind: "action", action: "editor.copyReference" },
+          { kind: "action", action: "code.pasteAsPlainText" },
           { kind: "action", action: "code.pasteFromHistory" },
         ],
       },
@@ -716,6 +804,8 @@ export class EditorController implements SlotHost {
           { kind: "action", action: "refactor.extractConstant" },
           { kind: "action", action: "refactor.extractMethod" },
           { kind: "action", action: "refactor.inline" },
+          { kind: "action", action: "refactor.pullMembersUp" },
+          { kind: "action", action: "refactor.pushMembersDown" },
           { kind: "separator" },
           { kind: "action", action: "refactor.safeDelete" },
         ],
@@ -883,8 +973,18 @@ export class EditorController implements SlotHost {
     return generation;
   }
 
+  /**
+   * A decision to leave that was authorized, but whose project change or window close never
+   * came (the window stayed with its project): released, so the window can open files and
+   * be left again instead of refusing both until it is restarted.
+   */
+  private releaseStaleClose() {
+    if (this.closeSession && this.closeCommitted && !useProject.getState().opening) this.closeSession.cancel();
+  }
+
   private checkOpening(generation: { project: number; admission: number }) {
     if (generation.project !== this.projectGeneration) throw new Error("The project changed while opening the editor");
+    this.releaseStaleClose();
     if (generation.admission !== this.admissionGeneration || this.closeSession || this.closeRequests)
       throw new Error("The project is closing");
   }
@@ -975,6 +1075,7 @@ export class EditorController implements SlotHost {
     try {
       let s = useTabs.getState();
       const activate = this.isCurrentOpening(generation);
+      if (activate) restoreMaximizedToolWindow();
       const preview =
         !!o.preview &&
         editorPrefs().tabs.previewTab &&
@@ -1084,9 +1185,14 @@ export class EditorController implements SlotHost {
   }
 
   activate(paneId: string, tabId: string, focus = true) {
+    const restored = restoreMaximizedToolWindow();
     ++this.activationGeneration;
     useTabs.setState((s) => activateTab(setActivePane(s, paneId), paneId, tabId), true);
     if (focus) {
+      if (restored) {
+        requestAnimationFrame(() => this.focus());
+        return;
+      }
       const slot = this.slots.get(tabId);
       if (slot?.view) slot.focus();
       else if (slot) slot.wantsFocus = true;
@@ -1316,8 +1422,8 @@ export class EditorController implements SlotHost {
     this.apply((s) => (s.panes[paneId] ? promoteTab(s, paneId, tabId) : s));
   }
   /** Drag & drop; the tab keeps its id (and slot) when moved within a pane. */
-  moveTab(fromPane: string, tabId: string, toPane: string, index: number) {
-    this.apply((s) => moveTab(s, fromPane, tabId, toPane, index));
+  moveTab(fromPane: string, tabId: string, toPane: string, index: number, pin?: boolean) {
+    this.apply((s) => moveTab(s, fromPane, tabId, toPane, index, pin));
   }
   /** Drag & drop onto an editor edge: the tab moves into a new split on that side. */
   moveTabToSplit(fromPane: string, tabId: string, targetPane: string, edge: SplitEdge) {
@@ -1498,6 +1604,10 @@ export class EditorController implements SlotHost {
   // --- service helpers ------------------------------------------------------------------
 
   focus() {
+    if (restoreMaximizedToolWindow()) {
+      requestAnimationFrame(() => this.focus());
+      return;
+    }
     const tab = this.activeTabOf();
     if (!tab) {
       document.querySelector<HTMLElement>("[data-editor-area]")?.focus({ preventScroll: true });
@@ -1612,6 +1722,7 @@ export class EditorController implements SlotHost {
     ++this.admissionGeneration;
     ++this.closeRequests;
     return this.enqueueRemoval(async () => {
+      this.releaseStaleClose();
       if (this.closeSession) throw new Error("An editor close decision is already pending");
       const generation = this.projectGeneration;
       const documents = [...customDocuments(useTabs.getState(), useContributions.getState().editorKinds).values()];
@@ -1820,6 +1931,7 @@ function gitMenu(path: string): MenuItem {
       { kind: "action", action: "vcs.showDiff", arg: [path], label: "Show Diff" },
       { kind: "action", action: "vcs.compareWithBranch", arg: { path }, label: "Compare with Branch…" },
       { kind: "action", action: "vcs.showHistory", arg: [path], label: "Show History" },
+      { kind: "action", action: "vcs.showHistoryForSelection", label: "Show History for Selection" },
       { kind: "action", action: "vcs.rollback", arg: [path], label: "Rollback…" },
       { kind: "separator" },
       { kind: "action", action: "vcs.push", label: "Push…" },
@@ -1878,4 +1990,8 @@ export function editorController(): EditorController {
 function revealLabel(): string {
   const os = usePlatform.getState().os;
   return os === "macos" ? "Finder" : os === "windows" ? "Explorer" : "Files";
+}
+
+function inPopup(target: EventTarget | null): boolean {
+  return target instanceof Element && !!target.closest("[data-popup]");
 }

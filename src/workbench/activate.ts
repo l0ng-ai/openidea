@@ -15,7 +15,7 @@ import { installBrowserGuards } from "./browserGuards";
 import { installDistractionFree } from "./distractionFree";
 import { installFileDrop } from "./fileDrop";
 import { installFocusTracking } from "./focus";
-import { clearNotifications, installNotifyEvents, notificationServiceImpl } from "./notificationStore";
+import { clearProjectNotifications, installNotifyEvents, notificationServiceImpl } from "./notificationStore";
 import {
   NOTIFICATIONS_TOOL_WINDOW,
   NotificationsHeaderActions,
@@ -25,7 +25,7 @@ import {
 import { loadPlatformInfo } from "@/platform/platformInfo";
 import { registerShellActions } from "./shellActions";
 import { MainToolbarDialogHost } from "./MainToolbarDialog";
-import { StatusInfo, TaskStatus } from "./StatusBar";
+import { BackgroundTasksHost, StatusInfo, TaskStatus } from "./StatusBar";
 import { installTaskEvents } from "./tasks";
 import { installToolWindowActions } from "./toolwindows/actions";
 import {
@@ -51,7 +51,7 @@ export function activateWorkbench(): () => void {
   const unsubProject = useProject.subscribe((s, prev) => {
     if (s.project?.root === prev.project?.root && s.lightEdit === prev.lightEdit) return;
     // The previous project's notifications (and their actions) no longer apply.
-    if (prev.project) clearNotifications();
+    if (prev.project) clearProjectNotifications();
     onProject(s.project?.root ?? null);
   });
 
@@ -67,6 +67,7 @@ export function activateWorkbench(): () => void {
     installBrowserGuards(),
     installFileDrop(),
     registerOverlay({ id: "workbench.customizeToolbar", component: MainToolbarDialogHost }),
+    registerOverlay({ id: "workbench.backgroundTasks", component: BackgroundTasksHost }),
     registerStatusItem({ id: "workbench.tasks", align: "right", priority: 0, component: TaskStatus, lightEdit: true }),
     registerStatusItem({ id: "workbench.info", align: "left", priority: 5, component: StatusInfo, lightEdit: true }),
     registerToolWindow({

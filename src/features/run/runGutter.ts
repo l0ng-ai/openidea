@@ -12,8 +12,17 @@ import { isVirtualUri } from "@/platform/virtualDocs";
 import { shortcutLabel } from "@/platform/keymap";
 import { gutterIconMarkup, showContextMenu, type MenuItem } from "@/ui";
 import { notifications, runExecutors } from "@/workbench/contributions";
-import { choiceItems, executeContext, launchProduced, modifyContext, produceResolved } from "./contextRun";
-import { goModulePath, loadGoModules } from "./goModules";
+import {
+  choiceItems,
+  executeContext,
+  launchProduced,
+  modifyContext,
+  produceResolved,
+  projectContext,
+} from "./contextRun";
+import { loadGoModules } from "./goModules";
+import { onServerSettled } from "@/editor/lsp/availability";
+import { resolveCandidates, retryNegativeInheritedMain, unresolvedCandidates } from "./inheritedMain";
 import { fileTargets, OPTIMISTIC, produceContextChoices, type ContextInput } from "./producers";
 import { loadConfigs, useRun } from "./store";
 import { targetLanguage, type RunTarget } from "./targets";
@@ -52,14 +61,7 @@ const targetsField = StateField.define<PlacedTarget[]>({
 });
 
 function targetInput(path: string, content: string, line: number): ContextInput {
-  return {
-    path,
-    root: useProject.getState().project?.root ?? null,
-    configs: useRun.getState().configs,
-    content,
-    line,
-    goModule: goModulePath,
-  };
+  return { ...projectContext(), path, content, line };
 }
 
 async function launch(target: RunTarget, path: string, debug: boolean, content: string) {
@@ -197,15 +199,21 @@ export function runGutter(ctx: EditorDocContext): Extension {
   if (!useProject.getState().project?.root || isVirtualUri(path) || !hasGutterTargets(path)) return [];
   if (/\.go$/.test(path))
     void loadGoModules(useProject.getState().project?.root ?? null, useRun.getState().configs).catch(() => {});
-  const detect = (text: string) =>
-    fileTargets({ path, root: useProject.getState().project?.root ?? null, configs: useRun.getState().configs }, text);
+  const detect = (text: string) => fileTargets({ ...projectContext(), path }, text);
 
   const detector = ViewPlugin.fromClass(
     class {
       timer: ReturnType<typeof setTimeout> | undefined;
       readonly unsubscribe: () => void;
+      readonly offServers: () => void;
+      resolving = false;
+      destroyed = false;
       constructor(readonly view: EditorView) {
         this.schedule(0);
+        this.offServers = onServerSettled(() => {
+          retryNegativeInheritedMain();
+          this.schedule(0);
+        });
         // Redraw the markers with the new results (the gutter recomputes them on any update).
         this.unsubscribe = onTestStatesChanged(() => {
           if (view.state.field(targetsField).length) view.dispatch({ effects: testStatesChanged.of(null) });
@@ -224,10 +232,26 @@ export function runGutter(ctx: EditorDocContext): Extension {
             cur.length === found.length &&
             cur.every((t, i) => t.pos === found[i]!.pos && t.name === found[i]!.name && t.kind === found[i]!.kind);
           if (!same) view.dispatch({ effects: setTargets.of(found) });
+          this.resolveInherited(view.state.doc.toString());
         }, delay);
+      }
+      /** Classes that may inherit a `main`: ask the language server, then redraw if one does. */
+      resolveInherited(text: string) {
+        if (this.resolving || !path.endsWith(".java")) return;
+        const pending = unresolvedCandidates(path, text);
+        if (!pending.length) return;
+        this.resolving = true;
+        resolveCandidates(path, pending)
+          .then((found) => {
+            if (found && !this.destroyed) this.schedule(0);
+          })
+          .catch(() => {})
+          .finally(() => (this.resolving = false));
       }
       destroy() {
         clearTimeout(this.timer);
+        this.destroyed = true;
+        this.offServers();
         this.unsubscribe();
       }
     },

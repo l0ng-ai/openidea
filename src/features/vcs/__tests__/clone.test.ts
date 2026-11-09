@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { cloneDirName, joinPath, validateClone } from "../clone";
+import { cloneDirName, joinPath, parseCloneDepth, validateClone } from "../clone";
 import { outgoingQuery } from "../remoteUi";
 
 describe("cloneDirName", () => {
@@ -28,6 +28,17 @@ describe("joinPath / validateClone", () => {
     expect(validateClone("https://h/r", "")).toMatch(/directory/i);
     expect(validateClone("https://h/r", "rel/dir")).toMatch(/absolute/);
     expect(validateClone("https://h/r", "/abs/r")).toBeNull();
+  });
+});
+
+describe("parseCloneDepth", () => {
+  it("accepts positive Git depths only", () => {
+    expect(parseCloneDepth("1")).toBe(1);
+    expect(parseCloneDepth(" 25 ")).toBe(25);
+    expect(parseCloneDepth("0")).toBeNull();
+    expect(parseCloneDepth("1.5")).toBeNull();
+    expect(parseCloneDepth("abc")).toBeNull();
+    expect(parseCloneDepth("4294967296")).toBeNull();
   });
 });
 

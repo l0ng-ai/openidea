@@ -10,7 +10,8 @@
 import { mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { basename, join } from "node:path";
 import { parseArgs } from "node:util";
-import { convertIntellijTheme, pluginManifest } from "./intellij.ts";
+import { convertIntellijTheme, pluginManifest } from "../../src/features/plugins/intellijTheme.ts";
+import { stripJsonComments } from "./tokens.ts";
 
 const { values, positionals } = parseArgs({
   allowPositionals: true,
@@ -25,7 +26,7 @@ if (!themePath || !values.out) {
 }
 
 const converted = convertIntellijTheme(
-  readFileSync(themePath, "utf8"),
+  stripJsonComments(readFileSync(themePath, "utf8")),
   iclsPath ? readFileSync(iclsPath, "utf8") : undefined,
   values.id,
 );
@@ -34,7 +35,17 @@ const source = [basename(themePath), iclsPath && basename(iclsPath)].filter(Bool
 const header = (what: string) => `// ${theme.name}: ${what}, converted from ${source}.\n`;
 
 mkdirSync(join(values.out, "themes"), { recursive: true });
-writeFileSync(join(values.out, "plugin.toml"), pluginManifest(converted, values.author ?? "Unknown", source));
+const info = {
+  id: `theme-${theme.id}`,
+  name: `${theme.name} Theme`,
+  version: "1.0.0",
+  description: `${theme.name}, converted from an IntelliJ theme.`,
+  authors: [values.author ?? "Unknown"],
+};
+writeFileSync(
+  join(values.out, "plugin.toml"),
+  pluginManifest(info, [converted], `Converted from ${source} by scripts/theme/import-intellij-theme.ts.`),
+);
 writeFileSync(
   join(values.out, "themes", `${theme.id}.theme.json`),
   header("UI theme") + JSON.stringify(theme, null, 2) + "\n",

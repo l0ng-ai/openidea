@@ -3,11 +3,16 @@ import type { FileStatus } from "@/bindings";
 import {
   aggregateCheck,
   buildChangeTree,
+  checkOf,
   commitRepos,
+  changeFileNodes,
   ignoreTargets,
   initialCheck,
   hunkIncluded,
+  groupFileNodes,
   planCommit,
+  remainingOverrides,
+  stagingSide,
   toggledHunk,
   type CheckState,
   type ChangeNode,
@@ -34,6 +39,45 @@ const status = [
 
 const shape = (nodes: ChangeNode[], depth = 0): string[] =>
   nodes.flatMap((n) => [`${"  ".repeat(depth)}${n.label}`, ...shape(n.children ?? [], depth + 1)]);
+
+describe("buildChangeTree by staging state", () => {
+  const tree = buildChangeTree(status, "/r", false, undefined, [], true);
+  const names = (g: string) => (tree.find((n) => n.group === g)?.children ?? []).map((n) => n.label);
+
+  it("splits Changes into Staged and Unstaged, keeping the other groups", () => {
+    expect(tree.map((n) => n.label)).toEqual([
+      "Merge Conflicts",
+      "Staged Changes",
+      "Unstaged Changes",
+      "Unversioned Files",
+    ]);
+  });
+
+  it("lists a partially staged file under both groups", () => {
+    expect(names("staged")).toEqual(["AppTest.kt", "Partial.kt", "README.md"]);
+    expect(names("unstaged")).toEqual(["App.kt", "Partial.kt"]);
+  });
+
+  it("compares a partially staged file on the side of its group only", () => {
+    const partial = status[1]!;
+    expect(stagingSide("staged", partial)).toBe("staged");
+    expect(stagingSide("unstaged", partial)).toBe("unstaged");
+    expect(stagingSide("staged", status[3]!)).toBeNull();
+    expect(stagingSide("changes", partial)).toBeNull();
+  });
+
+  it("chains the diff through the files of the clicked group", () => {
+    const node = tree.find((n) => n.group === "unstaged")!.children![1]!;
+    expect(groupFileNodes(tree, node).map((n) => n.key)).toEqual([
+      "unstaged:/r/src/main/kotlin/App.kt",
+      "unstaged:/r/src/main/kotlin/Partial.kt",
+    ]);
+  });
+
+  it("is off by default", () => {
+    expect(buildChangeTree(status, "/r", false).some((n) => n.group === "staged")).toBe(false);
+  });
+});
 
 describe("buildChangeTree", () => {
   it("groups conflicts, changes and unversioned files (flat)", () => {
@@ -154,14 +198,14 @@ describe("commit inclusion", () => {
     expect(initialCheck(status[5]!)).toBe("none");
   });
 
-  it("plans staging so the index holds exactly the checked changes", () => {
+  it("plans which changes the commit takes and which staged ones it leaves out", () => {
     const checks = new Map<string, CheckState>([
       ["/r/README.md", "none"],
       ["/r/notes.txt", "all"],
     ]);
     const plan = planCommit(status, checks);
     expect(plan.stage.sort()).toEqual(["/r/notes.txt", "/r/src/main/kotlin/App.kt"]);
-    expect(plan.unstage).toEqual(["/r/README.md"]);
+    expect(plan.exclude).toEqual(["/r/README.md"]);
     expect(plan.included.map((f) => f.relPath).sort()).toEqual([
       "notes.txt",
       "src/main/kotlin/App.kt",
@@ -175,6 +219,28 @@ describe("commit inclusion", () => {
     expect(aggregateCheck([status[0]!, status[3]!], checks)).toMatchObject({ checked: true, indeterminate: false });
     expect(aggregateCheck([status[0]!, status[4]!], checks)).toMatchObject({ checked: false, indeterminate: true });
     expect(aggregateCheck([status[1]!], checks)).toMatchObject({ checked: false, indeterminate: true });
+  });
+
+  it("keeps the changes left out of a commit excluded after it", () => {
+    const files = Array.from({ length: 20 }, (_, i) => fs(`src/f${i}.kt`, null, "modified"));
+    const leftOut = files.slice(5);
+    const checks = new Map<string, CheckState>(leftOut.map((f) => [f.path, "none"]));
+    const plan = planCommit(files, checks);
+    expect(plan.included).toHaveLength(5);
+
+    // The commit takes its 5 files out of the tree; the 15 left out keep their override.
+    const kept = remainingOverrides(checks, plan.included);
+    expect(kept.has(files[0]!.path)).toBe(false);
+    expect(leftOut.every((f) => checkOf(f, kept) === "none")).toBe(true);
+    expect(aggregateCheck(leftOut, kept)).toMatchObject({ checked: false, indeterminate: false });
+  });
+
+  it("drops only the committed paths from the per-file overrides", () => {
+    const overrides = new Map([
+      ["/r/a.ts", new Set(["h1"])],
+      ["/r/b.ts/", new Set(["h2"])],
+    ]);
+    expect([...remainingOverrides(overrides, [fs("a.ts", null, "modified")])]).toEqual([["/r/b.ts/", new Set(["h2"])]]);
   });
 
   it("commits a file with excluded blocks partially, without staging it", () => {
@@ -199,5 +265,35 @@ describe("commit inclusion", () => {
     expect(toggledHunk("hunks", new Set(["a", "b"]), all, "c").check).toBe("none");
     // Keys of blocks that no longer exist are dropped.
     expect(toggledHunk("hunks", new Set(["gone", "a"]), all, "b").excluded).toEqual(new Set(["a", "b"]));
+  });
+});
+
+describe("changeFileNodes", () => {
+  const file: ChangeNode = {
+    key: "/p/src/a.ts",
+    type: "file",
+    label: "a.ts",
+    group: "changes",
+    path: "/p/src/a.ts",
+    files: [],
+  };
+  const tree: ChangeNode[] = [
+    { key: "group:changes", type: "group", label: "Changes", group: "changes", children: [file], files: [] },
+  ];
+
+  it("lists the file nodes through nested groups, in tree order", () => {
+    expect(changeFileNodes(tree)).toEqual([file]);
+  });
+
+  it("lists a partially staged file under both staging groups", () => {
+    const fs = {
+      path: "/p/a.ts",
+      relPath: "a.ts",
+      staged: "modified",
+      unstaged: "modified",
+      renamedFrom: null,
+    } as const;
+    const nodes = changeFileNodes(buildChangeTree([fs], "/p", false, undefined, ["/p"], true));
+    expect(nodes.map((n) => n.group)).toEqual(["staged", "unstaged"]);
   });
 });

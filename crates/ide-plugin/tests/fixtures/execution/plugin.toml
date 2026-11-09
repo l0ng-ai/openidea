@@ -1,0 +1,52 @@
+id = "execution"
+name = "Plugin execution tests"
+version = "0.1.0"
+engines.openidea = "^1.4"
+wasm = "dist/plugin.wasm"
+activation = ["on-command:*"]
+[capabilities]
+required = ["storage", "project.read"]
+optional = ["process:execution-tool"]
+[[contributes.runDetectors]]
+id = "detected"
+name = "Detected test"
+files = ["execution.marker"]
+command = "execution-tool"
+args = ["test"]
+test = true
+framework = "plugin"
+[[contributes.runConfigurations]]
+files = ["execution.marker"]
+
+[[contributes.commands]]
+id = "run"
+title = "run"
+
+[[contributes.commands]]
+id = "debug"
+title = "debug"
+
+[[contributes.commands]]
+id = "terminal"
+title = "terminal"
+
+[[contributes.commands]]
+id = "write"
+title = "write"
+
+
+
+[[contributes.commands]]
+id = "content"
+title = "content"
+
+[[contributes.commands]]
+id = "events"
+title = "events"
+
+[[contributes.commands]]
+id = "target"
+title = "target"
+[[contributes.commands]]
+id = "untarget"
+title = "untarget"

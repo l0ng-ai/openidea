@@ -187,24 +187,77 @@ fn file_masks() {
     assert_eq!(with(&[], &["*.kt,*.ts"]), ["notes.md", "src/Util.java"]);
 }
 
+/// The files of `scope` under `root` (relative), sorted.
+fn scope_rels(root: &Path, scope: &SearchScope) -> Vec<String> {
+    let none = ide_search::FileMask::new(&[], &[]).unwrap();
+    let files = ide_search::scope_files(root, scope, &none, None, &CancellationToken::new()).unwrap();
+    let mut rels: Vec<_> = files.into_iter().map(|f| f.rel_path).collect();
+    rels.sort();
+    rels
+}
+
 #[test]
-fn honours_ignore_files_hidden_and_git() {
-    let p = project(&[
-        (".gitignore", b"target/\n*.log\n"),
-        (".ignore", b"generated.rs\n"),
-        ("src/a.rs", b"needle\n"),
-        ("src/generated.rs", b"needle\n"),
-        ("target/debug/out.rs", b"needle\n"),
-        ("build.log", b"needle\n"),
-        (".hidden/secret.rs", b"needle\n"),
-        (".env", b"needle\n"),
-        (".git/config", b"needle\n"),
-        ("sub/.gitignore", b"local.txt\n"),
-        ("sub/local.txt", b"needle\n"),
-        ("sub/kept.txt", b"needle\n"),
-    ]);
+fn searches_ignored_and_hidden_files_but_not_ignored_folders() {
+    // #1317: like IDEA, only ignored folders are left out; ignored files and dotfiles are searched.
+    // (path, content, walked): every file mentions `needle`.
+    let files: &[(&str, &[u8], bool)] = &[
+        (".gitignore", b"# needle\ntarget/\n*.log\n.env\nsrc/local/\n", true),
+        (".ignore", b"# needle\ngenerated.rs\nout/\n", true),
+        ("src/a.rs", b"needle\n", true),
+        // Ignored files outside ignored folders.
+        ("src/generated.rs", b"needle\n", true),
+        ("build.log", b"needle\n", true),
+        (".env", b"needle\n", true),
+        ("sub/.gitignore", b"# needle\nlocal.txt\ncache/\n", true),
+        ("sub/local.txt", b"needle\n", true),
+        ("sub/kept.txt", b"needle\n", true),
+        // Hidden files and folders.
+        (".eslintrc", b"needle\n", true),
+        (".github/workflows/ci.yml", b"needle\n", true),
+        (".hidden/secret.rs", b"needle\n", true),
+        // Ignored folders, whatever they hold.
+        ("target/debug/out.rs", b"needle\n", false),
+        ("target/.env", b"needle\n", false),
+        ("src/local/notes.txt", b"needle\n", false),
+        ("out/gen.rs", b"needle\n", false),
+        ("sub/cache/blob.txt", b"needle\n", false),
+        // Never: Git's own folder.
+        (".git/config", b"needle\n", false),
+    ];
+    let p = project(&files.iter().map(|(path, text, _)| (*path, *text)).collect::<Vec<_>>());
+    let mut expected: Vec<&str> = files.iter().filter(|(_, _, walked)| *walked).map(|(path, _, _)| *path).collect();
+    expected.sort();
+
     let (views, _) = run(p.path(), &query("needle"));
-    assert_eq!(paths(&views), ["src/a.rs", "sub/kept.txt"]);
+    assert_eq!(paths(&views), expected, "Find in Files");
+
+    assert_eq!(scope_rels(p.path(), &SearchScope::Project), expected, "scope files");
+
+    // A directory scope and an explicit ignored file are searched the same way.
+    let dir = SearchScope::Directory { path: ide_core::IpcPath(p.path().join("sub")) };
+    let (views, _) = run(p.path(), &SearchQuery { scope: dir, ..query("needle") });
+    assert_eq!(paths(&views), ["sub/.gitignore", "sub/kept.txt", "sub/local.txt"]);
+    let one = SearchScope::Files { paths: vec![ide_core::IpcPath(p.path().join("build.log"))] };
+    let (views, _) = run(p.path(), &SearchQuery { scope: one, ..query("needle") });
+    assert_eq!(paths(&views), ["build.log"]);
+}
+
+#[test]
+fn nested_repository_ignores_outer_repository_rules() {
+    // #1254: the opened project is a Git repository inside a folder its parent repository ignores.
+    let p = project(&[
+        (".git/HEAD", b"ref: refs/heads/main\n"),
+        ("projects/.gitignore", b"*\n!.gitignore\n"),
+        ("projects/nested/.git/HEAD", b"ref: refs/heads/main\n"),
+        ("projects/nested/.gitignore", b"logs/\n"),
+        ("projects/nested/search-test.txt", b"somesss\n"),
+        ("projects/nested/src/main.txt", b"somesss\n"),
+        ("projects/nested/logs/debug.txt", b"somesss\n"),
+    ]);
+    let nested = p.path().join("projects/nested");
+    let (views, _) = run(&nested, &query("somesss"));
+    assert_eq!(paths(&views), ["search-test.txt", "src/main.txt"]);
+    assert_eq!(scope_rels(&nested, &SearchScope::Project), [".gitignore", "search-test.txt", "src/main.txt"]);
 }
 
 #[test]
@@ -641,5 +694,33 @@ fn archives_are_skipped() {
     // A stored (uncompressed) zip entry would otherwise match before the first NUL byte.
     let p = project(&[("lib/needle.jar", b"needle in a jar"), ("docs.zip", b"needle"), ("src/a.txt", b"needle\n")]);
     let (views, _) = run(p.path(), &query("needle"));
+    assert_eq!(paths(&views), ["src/a.txt"]);
+}
+
+#[test]
+fn a_nested_repository_is_not_hidden_by_the_outer_repositorys_gitignore() {
+    // parent/.git, parent/projects/.gitignore ignores everything, parent/projects/nested is its own repository.
+    let p = project(&[
+        ("projects/.gitignore", b"*\n!.gitignore\n"),
+        ("projects/nested/search-test.txt", b"somesss\n"),
+        ("projects/nested/src/main.txt", b"somesss\n"),
+        ("projects/nested/.gitignore", b"logs/\n"),
+        ("projects/nested/logs/debug.txt", b"somesss\n"),
+    ]);
+    std::fs::create_dir(p.path().join(".git")).unwrap();
+    std::fs::create_dir(p.path().join("projects/nested/.git")).unwrap();
+    let (views, _) = run(&p.path().join("projects/nested"), &query("somesss"));
+    assert_eq!(
+        paths(&views),
+        ["search-test.txt", "src/main.txt"],
+        "the nested repository's own .gitignore still applies"
+    );
+}
+
+#[test]
+fn a_project_inside_a_repository_keeps_the_repositorys_gitignore() {
+    let p = project(&[(".gitignore", b"build/\n"), ("app/build/out.txt", b"hit\n"), ("app/src/a.txt", b"hit\n")]);
+    std::fs::create_dir(p.path().join(".git")).unwrap();
+    let (views, _) = run(&p.path().join("app"), &query("hit"));
     assert_eq!(paths(&views), ["src/a.txt"]);
 }

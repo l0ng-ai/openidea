@@ -1,5 +1,5 @@
 import { afterEach, beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
-import { EditorState, Text } from "@codemirror/state";
+import { EditorState, StateEffect, Text } from "@codemirror/state";
 import { EditorView } from "@codemirror/view";
 import type { IdeError, Locals, NodeAt, Range, SymbolMatch, SyntaxNode } from "@/bindings";
 
@@ -38,14 +38,16 @@ vi.mock("@/platform/actions", async (orig) => {
 });
 
 const openFile = vi.fn(async () => {});
-const { provideEditorService } = await import("@/workbench/contributions");
+const { provideEditorService, registerDocumentIndexSync } = await import("@/workbench/contributions");
 provideEditorService({ openFile } as never);
 
 const fb = await import("./syntaxFallback");
 const { gotoTargets, navigationExtension, highlightUsages } = await import("./navigation");
 const { startRename, renameNamePart } = await import("./rename");
 const { lspDoc } = await import("./lsp");
+const { invalidateConfigurationNavigation } = await import("./configurationNavigation");
 const { useLspPopup, closePopup } = await import("./popupStore");
+const { inplaceRenameExtension, inplaceSession } = await import("./inplaceRename");
 
 const r = (line: number, col: number, endCol: number): Range => ({ start: { line, col }, end: { line, col: endCol } });
 const node = (kind: string, range: Range, field: string | null = null): SyntaxNode => ({
@@ -82,15 +84,12 @@ const local = (over: Partial<Extract<Locals, { status: "local" }>["symbol"]> = {
 });
 
 const views: EditorView[] = [];
-function editor(doc: string, language = "typescript", anchor = 0) {
+function editor(doc: string, language = "typescript", anchor = 0, path = "/p/a.ts") {
   const view = new EditorView({
     state: EditorState.create({
       doc,
       selection: { anchor },
-      extensions: [
-        lspDoc.of({ doc: 7, path: "/p/a.ts", language, uiMode: null, readOnly: false }),
-        navigationExtension(),
-      ],
+      extensions: [lspDoc.of({ doc: 7, path, language, uiMode: null, readOnly: false }), navigationExtension()],
     }),
     parent: document.body,
   });
@@ -99,6 +98,7 @@ function editor(doc: string, language = "typescript", anchor = 0) {
 }
 
 beforeEach(() => {
+  invalidateConfigurationNavigation();
   for (const f of Object.values(cmd)) f.mockClear();
   openFile.mockClear();
   closePopup();
@@ -303,6 +303,29 @@ describe("navigation wiring", () => {
     expect(document.querySelector(".cm-lsp-hint")?.textContent).toBe("Cannot find declaration to go to");
   });
 
+  it("says why when the server only checks the file's syntax", async () => {
+    const { setFileDiagnostics } = await import("./diagnostics");
+    setFileDiagnostics("/p/a.ts", "jdtls", [
+      {
+        range: { start: { line: 0, col: 0 }, end: { line: 0, col: 1 } },
+        severity: "warning",
+        message: "a.ts is not on the classpath of project app, only syntax errors are reported",
+        source: "Java",
+        code: "32",
+      },
+    ]);
+    try {
+      cmd.lspGoto.mockReturnValueOnce(ok([]));
+      const view = editor("const x = 1;\nx;", "typescript", 13);
+      await gotoTargets(view, "definition");
+      expect(document.querySelector(".cm-lsp-hint")?.textContent).toBe(
+        "Cannot find declaration to go to. This file is outside the source folders of its Java module: only syntax errors are reported, and navigation and completion don't work.",
+      );
+    } finally {
+      setFileDiagnostics("/p/a.ts", "jdtls", []);
+    }
+  });
+
   it("falls back to the local definition when the server is not ready", async () => {
     cmd.syntaxLocals.mockReturnValueOnce(ok(local({ references: [r(1, 0, 1)] })));
     const view = editor("const x = 1;\nx;", "typescript", 13);
@@ -440,6 +463,74 @@ describe("rename wiring", () => {
     await vi.waitFor(() => expect(cmd.applyWorkspaceEdit).toHaveBeenCalledExactlyOnceWith(edit));
   });
 
+  it.each(["outOfSync", "invalidInput"] as const)(
+    "never falls back to a partial local rename after %s preparation",
+    async (kind) => {
+      const failed = () =>
+        Promise.resolve({
+          status: "error" as const,
+          error: { kind, message: "Indexed anchors cannot be used" } as IdeError,
+        });
+      cmd.lspPrepareRename.mockReturnValueOnce(failed()).mockReturnValueOnce(failed());
+      const view = editor("old", "typescript", 0);
+      await startRename(view);
+      await renameNamePart(view, { from: 0, to: 3 }, "new");
+      expect(cmd.syntaxLocals).not.toHaveBeenCalled();
+      expect(cmd.applyWorkspaceEdit).not.toHaveBeenCalled();
+      expect(view.state.doc.toString()).toBe("old");
+    },
+  );
+
+  it("keeps a native-owned rename refusal out of the syntax fallback even over broken code", async () => {
+    cmd.lspPrepareRename.mockReturnValueOnce(ok(r(0, 6, 7)));
+    cmd.lspRename.mockReturnValueOnce(
+      Promise.resolve({
+        status: "error",
+        error: { kind: "invalidInput", message: "Native server declined rename" } as IdeError,
+      }),
+    );
+    cmd.syntaxErrors.mockReturnValueOnce(ok({ errors: [r(0, 0, 1)], truncated: false }));
+    cmd.syntaxLocals.mockReturnValueOnce(ok(local()));
+    const view = editor("const x = 1;\nx;", "typescript", 6);
+    await renameNamePart(view, { from: 6, to: 7 }, "y");
+    expect(cmd.syntaxLocals).not.toHaveBeenCalled();
+    expect(cmd.applyWorkspaceEdit).not.toHaveBeenCalled();
+    expect(useLspPopup.getState().popup).toBeNull();
+    expect(view.state.doc.toString()).toBe("const x = 1;\nx;");
+  });
+
+  it("does not fall back to a local-only rename when a contributed index is unavailable", async () => {
+    const off = registerDocumentIndexSync(async () => {
+      throw new Error("Index not ready");
+    });
+    try {
+      const view = editor("old", "typescript", 0);
+      await renameNamePart(view, { from: 0, to: 3 }, "new");
+      expect(cmd.lspPrepareRename).not.toHaveBeenCalled();
+      expect(cmd.syntaxLocals).not.toHaveBeenCalled();
+      expect(cmd.applyWorkspaceEdit).not.toHaveBeenCalled();
+      expect(view.state.doc.toString()).toBe("old");
+    } finally {
+      off();
+    }
+  });
+
+  it("requires confirmation for a single-file indexed rename and cancellation leaves every anchor unchanged", async () => {
+    cmd.lspPrepareRename.mockReturnValueOnce(ok(r(0, 0, 3)));
+    const edit = {
+      files: [{ kind: "edit", path: "/p/key.idx", edits: [{ range: r(0, 0, 3), new_text: "new" }] }],
+      preconditions: [{ path: "/p/key.idx", hash: "before" }],
+    };
+    cmd.lspRename.mockReturnValueOnce(ok({ edit, incomplete: null, preview: true }));
+    const view = editor("old", "text", 0);
+    await renameNamePart(view, { from: 0, to: 3 }, "new");
+    expect(useLspPopup.getState().popup?.kind).toBe("preview");
+    expect(cmd.applyWorkspaceEdit).not.toHaveBeenCalled();
+    closePopup();
+    expect(view.state.doc.toString()).toBe("old");
+    expect(cmd.applyWorkspaceEdit).not.toHaveBeenCalled();
+  });
+
   describe("Typo: Rename to (issue #42)", () => {
     it("renames the whole name through the server, references included", async () => {
       cmd.lspPrepareRename.mockReturnValueOnce(ok(r(0, 0, 12)));
@@ -518,6 +609,51 @@ describe("rename wiring", () => {
     });
   });
 
+  it.each(["dialog", "cancel"])("does not revive an older preparation after the current %s", async (finish) => {
+    let release!: (value: Awaited<R<unknown>>) => void;
+    cmd.lspPrepareRename.mockReturnValueOnce(new Promise((resolve) => (release = resolve)));
+    cmd.lspPrepareRename.mockReturnValueOnce(ok(r(0, 6, 7)));
+    const view = editor("const x = 1;", "typescript", 6);
+    view.dispatch({ effects: StateEffect.appendConfig.of(inplaceRenameExtension()) });
+    const older = startRename(view);
+    await vi.waitFor(() => expect(cmd.lspPrepareRename).toHaveBeenCalledTimes(1));
+    await startRename(view);
+    expect(inplaceSession(view.state)?.oldName).toBe("x");
+    await startRename(view);
+    expect(useLspPopup.getState().popup?.kind).toBe("rename");
+    if (finish === "cancel") closePopup();
+    release({ status: "ok", data: r(0, 6, 7) });
+    await older;
+    expect(inplaceSession(view.state)).toBeNull();
+    expect(useLspPopup.getState().popup?.kind ?? null).toBe(finish === "dialog" ? "rename" : null);
+  });
+
+  it.each(["text", "document"])("drops pending preparation when the editor %s changes", async (change) => {
+    let release!: (value: Awaited<R<unknown>>) => void;
+    cmd.lspPrepareRename.mockReturnValueOnce(new Promise((resolve) => (release = resolve)));
+    const view = editor("const x = 1;", "typescript", 6);
+    view.dispatch({ effects: StateEffect.appendConfig.of(inplaceRenameExtension()) });
+    const pending = startRename(view);
+    await vi.waitFor(() => expect(cmd.lspPrepareRename).toHaveBeenCalledTimes(1));
+    if (change === "text") view.dispatch({ changes: { from: 6, to: 7, insert: "other" } });
+    else
+      view.setState(
+        EditorState.create({
+          doc: view.state.doc,
+          extensions: [
+            lspDoc.of({ doc: 8, path: "/p/other.ts", language: "typescript", uiMode: null, readOnly: false }),
+            inplaceRenameExtension(),
+          ],
+        }),
+      );
+    const before = view.state.doc.toString();
+    release({ status: "ok", data: r(0, 6, 7) });
+    await pending;
+    expect(inplaceSession(view.state)).toBeNull();
+    expect(useLspPopup.getState().popup).toBeNull();
+    expect(view.state.doc.toString()).toBe(before);
+  });
+
   it("renames the file itself when no server covers it (a plain text file)", async () => {
     cmd.lspPrepareRename.mockReturnValueOnce(
       Promise.resolve({
@@ -583,6 +719,79 @@ describe("modifier-hover navigation recovery", () => {
     );
   }
 
+  it.each(["yaml", "properties"])(
+    "%s hover underlines without a popup and clicking reuses the target",
+    async (language) => {
+      cmd.lspGoto.mockReturnValueOnce(ok([target]));
+      const view = editor("port: 8080", language);
+      move(view, 1);
+      await vi.waitFor(() => expect(view.dom.querySelector(".cm-lsp-link")?.textContent).toBe("port"));
+      expect(cmd.lspHover).not.toHaveBeenCalled();
+      view.contentDOM.dispatchEvent(
+        new MouseEvent("mousedown", {
+          bubbles: true,
+          cancelable: true,
+          metaKey: mac,
+          ctrlKey: !mac,
+        }),
+      );
+      await vi.waitFor(() => expect(openFile).toHaveBeenCalledOnce());
+      expect(cmd.lspGoto).toHaveBeenCalledOnce();
+      expect(view.dom.querySelector(".cm-lsp-nav-info")).toBeNull();
+    },
+  );
+
+  it.each(["yaml", "properties"])("%s underlines the entire hyphenated configuration name", async (language) => {
+    cmd.lspGoto.mockReturnValueOnce(ok([target]));
+    const view = editor("driver-class-name: example.Driver", language);
+    for (const pos of [1, 6, 8, 12, 15]) {
+      move(view, pos);
+      await vi.waitFor(() => expect(view.dom.querySelector(".cm-lsp-link")?.textContent).toBe("driver-class-name"));
+    }
+    await gotoTargets(view, "definition", 14);
+    expect(cmd.lspGoto).toHaveBeenCalledOnce();
+    expect(openFile).toHaveBeenCalledOnce();
+  });
+
+  it("invalidates the hover marker after dependencies change", async () => {
+    cmd.lspGoto.mockReturnValueOnce(ok([target]));
+    const view = editor("port: 8080", "yaml");
+    move(view, 1);
+    await vi.waitFor(() => expect(view.dom.querySelector(".cm-lsp-link")).not.toBeNull());
+    invalidateConfigurationNavigation();
+    cmd.lspGoto.mockReturnValueOnce(ok([]));
+    move(view, 1);
+    await vi.waitFor(() => expect(view.dom.querySelector(".cm-lsp-link")).toBeNull());
+    expect(cmd.lspGoto).toHaveBeenCalledTimes(2);
+  });
+
+  it("retries a stuck configuration probe without retaining the late response", async () => {
+    let finish!: (value: Awaited<R<unknown>>) => void;
+    cmd.lspGoto.mockReturnValueOnce(
+      new Promise((resolve) => {
+        finish = resolve;
+      }),
+    );
+    const view = editor("port: 8080", "yaml");
+    vi.useFakeTimers();
+    try {
+      move(view, 1);
+      await vi.advanceTimersByTimeAsync(3001);
+      cmd.lspGoto.mockReturnValueOnce(ok([target]));
+      move(view, 1);
+      await vi.advanceTimersByTimeAsync(0);
+      expect(cmd.lspGoto).toHaveBeenCalledTimes(2);
+    } finally {
+      vi.useRealTimers();
+    }
+    await vi.waitFor(() => expect(view.dom.querySelector(".cm-lsp-link")).not.toBeNull());
+    finish({ status: "ok", data: [] });
+    await new Promise((resolve) => setTimeout(resolve, 20));
+    await gotoTargets(view, "definition", 1);
+    expect(cmd.lspGoto).toHaveBeenCalledTimes(2);
+    expect(openFile).toHaveBeenCalledOnce();
+  });
+
   it("shows the link without waiting for documentation", async () => {
     cmd.lspGoto.mockReturnValueOnce(ok([target]));
     cmd.lspHover.mockReturnValueOnce(new Promise(() => {}));
@@ -646,4 +855,17 @@ describe("modifier-hover navigation recovery", () => {
     await new Promise((resolve) => setTimeout(resolve, 20));
     expect(view.dom.querySelector(".cm-lsp-link")?.textContent).toBe("bar");
   });
+});
+
+describe("same-document fragment navigation", () => {
+  it.each(["definition", "declaration"] as const)(
+    "follows Markdown HTML anchors through %s without a server",
+    async (kind) => {
+      const source = '[artist::order](#Artist-order)\n\n<a id="Artist-order"></a>';
+      const view = editor(source, "markdown", source.indexOf("#Artist"), "/p/notes.md");
+      await gotoTargets(view, kind);
+      expect(view.state.selection.main.head).toBe(source.indexOf("id="));
+      expect(openFile).not.toHaveBeenCalled();
+    },
+  );
 });

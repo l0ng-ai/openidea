@@ -4,6 +4,7 @@ import userEvent from "@testing-library/user-event";
 import { EditorView } from "@codemirror/view";
 import type { EditorInput } from "@/workbench/contributions";
 import { useKeymap } from "@/platform/keymap";
+import { useFindOptions, useFindSessions } from "@/editor/core/view/FindBar";
 
 const texts: Record<string, string> = { HEAD: "foo\nbar\nfoo\n", abc123: "foo\nbaz\nfoo\n" };
 
@@ -32,6 +33,7 @@ vi.mock("@/editor/api", async (importOriginal) => ({
     Promise.resolve({
       path,
       text: () => "foo\nqux\nfoo\n",
+      lineEnding: () => "lf",
       readOnly: false,
       extension: [],
       save: () => Promise.resolve(),
@@ -72,7 +74,11 @@ const press = async (index: number, code: string, shift = false) => {
   return v;
 };
 
-afterEach(() => useKeymap.setState({ overrides: {} }));
+afterEach(() => {
+  useKeymap.setState({ overrides: {} });
+  useFindOptions.setState({ search: "", replace: "" });
+  useFindSessions.setState({}, true);
+});
 
 describe("Find in the diff viewer", () => {
   it("preserves external focus when loading and changing a working-tree preview", async () => {

@@ -146,6 +146,17 @@ describe("reveal and expand", () => {
     expect(visibleInfo(currentModel(), s.expanded).visible.has("/p/docs/guide.md")).toBe(true);
   });
 
+  it("reveals files of linked workspace projects outside the workspace directory", async () => {
+    fs = new MemoryFs({ "/ws/.openidea/workspace.json": "x", "/a/src/app.ts": "x", "/b/lib/util.ts": "x" }, "/");
+    setProjectFsForTests(fs, "/ws");
+    initProjectTree("/ws", "ws", ["/a", "/b"]);
+    expect(revealPath("/b/lib/util.ts")).toBe(true);
+    await vi.waitFor(() => expect(childLabels("/b/lib")).toEqual(["util.ts"]));
+    const s = useProjectTree.getState();
+    expect(s.revealRequest?.path).toBe("/b/lib/util.ts");
+    expect(visibleInfo(currentModel(), s.expanded).visible.has("/b/lib/util.ts")).toBe(true);
+  });
+
   it("expands everything below a folder", async () => {
     await expandAll();
     const s = useProjectTree.getState();

@@ -1,4 +1,5 @@
 /** Registers the built-in pages as ordinary settings-page contributions and indexes their labels. */
+import { onLanguageListChanged } from "@/platform/languageList";
 import { registerSettingsPage, type SettingsPageContribution } from "@/workbench/contributions";
 import { BEHAVIOR_PAGES } from "./behavior";
 import { BUILTIN_PAGES as CORE_PAGES } from "./builtins";
@@ -55,19 +56,29 @@ function toContribution(spec: PageSpec): SettingsPageContribution {
 
 export function registerBuiltinPages(): () => void {
   const disposers = BUILTIN_PAGES.map((spec) => registerSettingsPage(toContribution(spec)));
-  // Code Style › <Language> pages come from the backend's language list.
+  // Code Style › <Language> pages come from the backend's language list, which plugins change.
   let live = true;
-  void codeStyleLanguagePages()
-    .then((pages) => {
-      if (!live) return;
-      for (const spec of pages) {
-        specs.set(spec.id, spec);
-        disposers.push(registerSettingsPage(toContribution(spec)));
-      }
-    })
-    .catch(() => {});
+  let languagePages: (() => void)[] = [];
+  let generation = 0;
+  const loadLanguagePages = () => {
+    const mine = ++generation;
+    void codeStyleLanguagePages()
+      .then((pages) => {
+        if (!live || mine !== generation) return;
+        languagePages.forEach((d) => d());
+        languagePages = pages.map((spec) => {
+          specs.set(spec.id, spec);
+          return registerSettingsPage(toContribution(spec));
+        });
+      })
+      .catch(() => {});
+  };
+  loadLanguagePages();
+  const unsubscribe = onLanguageListChanged(loadLanguagePages);
   return () => {
     live = false;
+    unsubscribe();
+    languagePages.forEach((d) => d());
     disposers.forEach((d) => d());
   };
 }

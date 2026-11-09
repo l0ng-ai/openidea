@@ -6,12 +6,16 @@
  */
 import { call, commands, type RunConfig } from "@/platform/ipc";
 import { CLASSPATH, parseJavaArgs, TEST_CLASSPATH } from "@/platform/javaLaunch";
+import { hostOs } from "@/platform/remote";
+import { basename, useProject } from "@/platform/project";
+import { useBuildPresentation } from "@/platform/projectPresentation";
 import type { RunConfigTypeContribution, RunConfigTypeField } from "@/workbench/contributions";
 import { formatArgs, parseArgs } from "./configs";
 import { commandName } from "./commandName";
 import { updatePolicyDefaults, updatePolicyFields } from "./updatePolicies";
 
-export const isWindows = () => typeof navigator !== "undefined" && /win/i.test(navigator.platform);
+/** Whether this window's commands run on Windows: the remote server's OS in a remote window, else the desktop's. */
+export const isWindows = () => hostOs() === "windows";
 
 /** VM options / program arguments as typed; on Windows a backslash is a path separator. */
 export const splitJvmArgs = (text: string | undefined, windows = isWindows()) => parseArgs(text ?? "", windows);
@@ -51,6 +55,45 @@ function mainClasses(configs: readonly RunConfig[]): string[] {
   return [...out];
 }
 
+/** The module of the project root in the `module` param (`RunConfig.module` is `""` for it). */
+export const ROOT_MODULE = ".";
+
+/** `java` in a JDK home (`params.jre`); the home itself when the path names `bin/java` already. */
+export function jreJava(home: string, windows = isWindows()): string {
+  const java = windows ? "java.exe" : "java";
+  return /[\\/]bin[\\/]java(\.exe)?$/i.test(home) ? home : `${home.replace(/[\\/]+$/, "")}/bin/${java}`;
+}
+
+/** IDEA's JRE: the module's JDK unless one installed JDK is chosen. */
+const jreField: RunConfigTypeField = {
+  key: "jre",
+  label: "JRE",
+  control: "select",
+  options: [{ value: "", label: "Default (the module's JDK)" }],
+  loadOptions: async () =>
+    (await call(commands.sdkDetect("jdk"))).map((jdk) => ({
+      value: String(jdk.path),
+      label: jdk.name,
+      detail: String(jdk.path),
+    })),
+};
+
+/** IDEA's "Use classpath of module": the module whose classpath and build the run uses. */
+const moduleField: RunConfigTypeField = {
+  key: "module",
+  label: "Use classpath of module",
+  control: "select",
+  options: [{ value: "", label: "Find by main class" }],
+  loadOptions: async () => {
+    const root = useProject.getState().project?.root ?? "";
+    return [...useBuildPresentation.getState().modules.keys()].sort().map((dir) => ({
+      value: dir || ROOT_MODULE,
+      label: dir ? basename(dir) : basename(root),
+      detail: dir.includes("/") ? dir : undefined,
+    }));
+  },
+};
+
 function jvmApplicationType(spring: boolean): RunConfigTypeContribution {
   return {
     id: spring ? "spring-boot" : "application",
@@ -72,6 +115,8 @@ function jvmApplicationType(spring: boolean): RunConfigTypeContribution {
       { key: "programArgs", label: "Program arguments", mono: true },
       ...(spring ? [profilesField("Comma separated; passed as --spring.profiles.active")] : []),
       ...(spring ? updatePolicyFields(false) : []),
+      jreField,
+      moduleField,
       {
         key: "classpath",
         label: "Classpath",
@@ -86,7 +131,7 @@ function jvmApplicationType(spring: boolean): RunConfigTypeContribution {
       const main = p.mainClass?.trim() ?? "";
       const profiles = spring ? (p.activeProfiles?.trim() ?? "") : "";
       return {
-        command: p.executable || "java",
+        command: p.jre ? jreJava(p.jre) : p.executable || "java",
         args: [
           ...splitJvmArgs(p.vmOptions),
           "-cp",
@@ -116,6 +161,7 @@ function jvmApplicationType(spring: boolean): RunConfigTypeContribution {
       }
       return {
         ...(c.command !== "java" ? { executable: c.command } : {}),
+        ...(c.module != null ? { module: c.module || ROOT_MODULE } : {}),
         mainClass: parsed.mainClass,
         vmOptions: formatArgs(parsed.vmArgs),
         programArgs: formatArgs(rest),

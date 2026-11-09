@@ -1,6 +1,7 @@
 import { afterEach, describe, expect, it } from "vitest";
 import { isLibraryPath, setLibraryRoots } from "@/editor/api";
 import { librariesRoot, touchesManifest } from "./index";
+import { mergeLibraryGroups } from "@/platform/libraries";
 
 describe("External Libraries", () => {
   let dispose = () => {};
@@ -72,6 +73,7 @@ describe("External Libraries", () => {
     expect(touchesManifest(["/p/src/main.rs", "/p/Cargo.toml"])).toBe(true);
     expect(touchesManifest(["C:\\p\\go.mod"])).toBe(true);
     expect(touchesManifest(["/p/.venv/pyvenv.cfg"])).toBe(true);
+    expect(touchesManifest(["/p/pnpm-workspace.yaml", "/p/Gemfile.lock"])).toBe(true);
     expect(touchesManifest(["/p/node_modules/react/package.json"])).toBe(false);
     expect(touchesManifest(["/p/src/package.json.bak", "/p/README.md"])).toBe(false);
   });
@@ -82,5 +84,29 @@ describe("External Libraries", () => {
     expect(isLibraryPath("/py/lib/python3.120/x.py")).toBe(false);
     dispose();
     expect(isLibraryPath("/py/lib/python3.12/os.py")).toBe(false);
+  });
+
+  it("merges streamed module groups without dropping ecosystems or distinct roots", () => {
+    const group = (kind: string, path: string) => ({ name: kind, kind, roots: [{ name: "dep", path }] });
+    expect(
+      mergeLibraryGroups([
+        group("cargo", "/cargo/serde"),
+        group("nodeModules", "/web/node_modules/dep"),
+        group("maven", "/m2/dep.jar!"),
+        group("nodeModules", "/api/node_modules/dep"),
+        group("cargo", "/cargo/serde"),
+      ]),
+    ).toEqual([
+      group("cargo", "/cargo/serde"),
+      {
+        name: "nodeModules",
+        kind: "nodeModules",
+        roots: [
+          { name: "dep", path: "/web/node_modules/dep" },
+          { name: "dep", path: "/api/node_modules/dep" },
+        ],
+      },
+      group("maven", "/m2/dep.jar!"),
+    ]);
   });
 });

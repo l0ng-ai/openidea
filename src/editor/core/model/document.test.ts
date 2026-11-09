@@ -1,11 +1,12 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { EditorState } from "@codemirror/state";
-import { language as languageFacet } from "@codemirror/language";
-import { registerSaveParticipant, remoteChange } from "@/editor/api";
+import { indentUnit, language as languageFacet } from "@codemirror/language";
+import { HEAVY_LIMIT, registerSaveParticipant, remoteChange, shownAgain } from "@/editor/api";
 import { createMemoryBackend, type MemoryBackend } from "../backend";
 import { _resetLanguages } from "../cm/languages";
 import { DocumentManager, ModifiedRanges, saveCleanupChanges, useDocMeta } from "./document";
 import { EditorSlot, type SlotHost } from "./slot";
+import { formatOptionsOf } from "@/editor/lsp/format";
 
 const host: SlotHost = {
   onFocus: () => {},
@@ -37,6 +38,86 @@ function setup(files: Record<string, string>, settings = {}) {
 afterEach(() => useDocMeta.setState({}, true));
 
 describe("DocumentManager + slots", () => {
+  it("requests Kotlin declaration highlights while retaining its CodeMirror language", async () => {
+    const { backend, manager, frame } = setup({ "/p/Palette.kt": "class Greeter { fun greet() {} }" });
+    const highlights = vi.spyOn(backend, "highlights").mockResolvedValue({ kinds: ["function"], data: [20, 25, 0] });
+    const model = await manager.acquire("/p/Palette.kt");
+    await frame();
+    expect(model.language).not.toBeNull();
+    expect(model.getMeta().language).toBe("kotlin");
+    await vi.waitFor(() => expect(highlights).toHaveBeenCalledWith(model.doc));
+    manager.stop();
+  });
+
+  it.each([
+    ["Palette.kt", "fun greet() {}", 1],
+    ["demo.py", "def greet(): pass", 0],
+    ["demo.ex", "defmodule Demo do\nend", 1],
+    ["Large.kt", " ".repeat(HEAVY_LIMIT + 1), 1],
+  ])("debounces backend highlights after an edit burst in %s", async (name, text, requests) => {
+    const { backend, manager, frame } = setup({ [`/p/${name}`]: text });
+    const highlights = vi.spyOn(backend, "highlights");
+    try {
+      const model = await manager.acquire(`/p/${name}`);
+      const slot = new EditorSlot(model, name, host);
+      await frame();
+      expect(highlights).toHaveBeenCalledTimes(requests);
+      highlights.mockClear();
+      for (let i = 0; i < 5; i++) slot.dispatchLocal({ changes: { from: 0, insert: " " } });
+      await frame();
+      expect(highlights).not.toHaveBeenCalled();
+      await new Promise((resolve) => setTimeout(resolve, 550));
+      expect(highlights).toHaveBeenCalledTimes(requests);
+    } finally {
+      manager.stop();
+    }
+  });
+
+  it("gives a new slot the Code Style indent for Reformat Code, not the detected one", async () => {
+    const settings = {
+      editor: {
+        codeStyle: {
+          languages: { java: { useTab: true, tabSize: 1, indent: 1 } },
+          detectIndents: true,
+          editorconfig: false,
+        },
+      },
+    };
+    const { manager } = setup({ "/p/A.java": "class A {\n    int x;\n}\n" }, settings);
+    const model = await manager.acquire("/p/A.java");
+    const first = new EditorSlot(model, "t1", host);
+    const split = new EditorSlot(model, "t2", host, { from: first });
+    for (const slot of [first, split])
+      expect(formatOptionsOf(slot.currentState())).toEqual({ tabSize: 1, insertSpaces: false });
+  });
+
+  it("detects the indents again after Reformat Code rewrote them", async () => {
+    const settings = {
+      editor: {
+        codeStyle: {
+          languages: { java: { useTab: true, tabSize: 1, indent: 1 } },
+          detectIndents: true,
+          editorconfig: false,
+        },
+      },
+    };
+    const { manager } = setup({ "/p/A.java": "class A {\n    int x;\n}\n" }, settings);
+    const model = await manager.acquire("/p/A.java");
+    const first = new EditorSlot(model, "t1", host);
+    const split = new EditorSlot(model, "t2", host, { from: first });
+    expect(first.currentState().tabSize).toBe(4);
+    // Typing keeps the indents detected when the file was opened.
+    first.dispatchLocal({ changes: { from: 10, to: 14, insert: "\t" }, userEvent: "input.type" });
+    expect(first.currentState().tabSize).toBe(4);
+    first.dispatchLocal({ changes: { from: 10, to: 11, insert: "    " }, userEvent: "undo" });
+    first.dispatchLocal({ changes: { from: 10, to: 14, insert: "\t" }, userEvent: "format.reformat" });
+    for (const slot of [first, split]) {
+      expect(slot.currentState().tabSize).toBe(1);
+      expect(slot.currentState().facet(indentUnit)).toBe("\t");
+    }
+    expect(useDocMeta.getState()["/p/A.java"]?.indent).toEqual({ tabSize: 1, insertSpaces: false });
+  });
+
   it("shares one document between split slots and syncs edits to the backend", async () => {
     const { backend, manager, frame } = setup({ "/p/a.txt": "hello\n" });
     const model = await manager.acquire("/p/a.txt");
@@ -61,9 +142,10 @@ describe("DocumentManager + slots", () => {
     const a = new EditorSlot(model, "t1", host);
     const b = new EditorSlot(model, "t2", host);
     let sawRemote = false;
-    const spy = vi.spyOn(a, "applyExternal").mockImplementation(function (this: EditorSlot, changes, annotations) {
+    const applyExternal = a.applyExternal.bind(a);
+    const spy = vi.spyOn(a, "applyExternal").mockImplementation((changes, annotations) => {
       sawRemote = annotations.some((x) => x.type === remoteChange);
-      this.state = this.state.update({ changes, annotations }).state;
+      applyExternal(changes, annotations);
     });
     backend.patch(model.doc, [{ from: 3, to: 3, insert: "def" }]);
     expect(sawRemote).toBe(true);
@@ -185,6 +267,20 @@ describe("DocumentManager + slots", () => {
     expect(slot.currentState().facet(languageFacet)?.name).not.toBe("angular");
   });
 
+  it.each(["ts", "mts", "cts"])("loads Angular inline templates for .%s documents", async (ext) => {
+    const path = `/p/src/app.${ext}`;
+    const { manager } = setup({
+      "/p/angular.json": "{}",
+      [path]: "@Component({ template: `<r-card/>` }) class App {}",
+    });
+    const model = await manager.acquire(path);
+    const slot = new EditorSlot(model, "t1", host);
+    expect(model.getMeta()).toMatchObject({ language: "typescript", uiMode: "Angular TypeScript" });
+    expect(slot.currentState().facet(languageFacet)?.name).toBe("angular-typescript");
+    slot.dispose();
+    manager.stop();
+  });
+
   it("Save All rejects a failed document save after saving the remaining dirty documents", async () => {
     const { backend, manager } = setup({ "/p/a.txt": "a\n", "/p/b.txt": "b\n" }, { files: { autoSave: false } });
     try {
@@ -205,6 +301,51 @@ describe("DocumentManager + slots", () => {
     } finally {
       manager.stop();
     }
+  });
+
+  it("keeps a hidden tab's view and shows it again instead of building a new one", async () => {
+    const { backend, manager } = setup({ "/p/a.txt": "abc" });
+    const model = await manager.acquire("/p/a.txt");
+    const slot = new EditorSlot(model, "t1", host);
+    const shown: boolean[] = [];
+    slot.listeners.add((u) => shown.push(shownAgain(u)));
+    const view = slot.mount(document.body);
+    slot.unmount();
+    expect(slot.view).toBeNull();
+    expect(view.dom.isConnected).toBe(false);
+    // Changes while hidden go to the kept view.
+    backend.patch(model.doc, [{ from: 3, to: 3, insert: "def" }]);
+    expect(view.state.doc.toString()).toBe("abcdef");
+    expect(slot.currentState()).toBe(view.state);
+    shown.length = 0;
+    expect(slot.mount(document.body)).toBe(view);
+    expect(view.dom.isConnected).toBe(true);
+    expect(shown).toContain(true);
+    slot.dispose();
+    manager.stop();
+  });
+
+  it("destroys the least recently hidden views beyond the kept ones, and kept views on dispose", async () => {
+    const { manager } = setup({ "/p/a.txt": "abc" });
+    const model = await manager.acquire("/p/a.txt");
+    const slots = Array.from({ length: 8 }, (_, i) => new EditorSlot(model, `t${i}`, host));
+    const views = slots.map((slot) => {
+      const view = slot.mount(document.body);
+      slot.unmount();
+      return view;
+    });
+    const destroyed = views.map((view) => vi.spyOn(view, "destroy"));
+    slots.push(new EditorSlot(model, "t8", host));
+    slots[8]!.mount(document.body);
+    slots[8]!.unmount();
+    expect(destroyed[0]).toHaveBeenCalled();
+    expect(destroyed[1]).not.toHaveBeenCalled();
+    // A destroyed view leaves its state behind; showing the tab builds a new view on it.
+    expect(slots[0]!.mount(document.body)).not.toBe(views[0]);
+    slots[1]!.dispose();
+    expect(destroyed[1]).toHaveBeenCalled();
+    for (const slot of slots) slot.dispose();
+    manager.stop();
   });
 });
 

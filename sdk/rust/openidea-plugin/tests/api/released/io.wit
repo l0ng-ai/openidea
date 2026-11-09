@@ -1,0 +1,146 @@
+package openidea:plugin@1.3.0;
+
+/// Problems in files, shown in the editor and the Problems view.
+interface diagnostics {
+    use types.{error, range, location};
+
+    enum severity {
+        error,
+        warning,
+        info,
+        hint,
+    }
+
+    /// Another place that explains a diagnostic (the earlier declaration, say).
+    record related-information {
+        location: location,
+        message: string,
+    }
+
+    record diagnostic {
+        range: range,
+        severity: severity,
+        message: string,
+        /// Rule or check id (`LineLength`).
+        code: option<string>,
+        /// The tool that found it, when not the plugin itself (`checkstyle`).
+        source: option<string>,
+        /// `unnecessary` (shown faded) and `deprecated` (struck through); unknown ones are ignored.
+        tags: list<string>,
+        related: list<related-information>,
+    }
+
+    /// Replaces the plugin's diagnostics for the file at `path` (absolute, in
+    /// an open project); an empty list clears them. Requires `project.read`.
+    publish: func(path: string, diagnostics: list<diagnostic>) -> result<_, error>;
+}
+
+/// HTTP(S) to the hosts granted with `net:<host>`.
+interface net {
+    use types.{error};
+
+    record header {
+        name: string,
+        value: string,
+    }
+
+    record request {
+        method: string,
+        /// `https://…`; plain `http://` only to `localhost` / `127.0.0.1`.
+        url: string,
+        /// `{{secret:<name>}}` in a value is replaced by the plugin's secret
+        /// `name` on the way out (requires `secrets`); the plugin never sees it.
+        headers: list<header>,
+        body: option<list<u8>>,
+        /// Default 30 s; the call's own budget applies too.
+        timeout-ms: option<u32>,
+    }
+
+    record response {
+        status: u16,
+        headers: list<header>,
+        /// At most 8 MiB.
+        body: list<u8>,
+    }
+
+    /// Fails with `denied` for a host the plugin may not reach, `cancelled`
+    /// when a newer request replaced the call or the user cancelled.
+    fetch: func(req: request) -> result<response, error>;
+}
+
+/// Secrets the user stored for the plugin (Settings › Plugins, kept in the
+/// OS keychain). Plugins only use them through `{{secret:<name>}}` in
+/// `net` requests. Requires `secrets`.
+interface secrets {
+    is-set: func(name: string) -> bool;
+}
+
+/// Runs of programs granted with `process:<program>` (the file the user
+/// approved, checked before every run): once and awaited with `run`, once
+/// with an environment with `run-command`, or kept running behind a `child`
+/// handle started with `start`.
+interface process {
+    use types.{error};
+    use workspace.{project};
+
+    record output {
+        /// `none` when killed by a signal.
+        status: option<s32>,
+        /// At most 4 MiB each (the rest is dropped).
+        stdout: string,
+        stderr: string,
+    }
+
+    /// What to run (API 1.3). `env` only adds variables: an existing name in
+    /// the prepared child environment (including the login-shell PATH) is an
+    /// error naming that key; nothing is replaced or removed. Names compare
+    /// case-insensitively on Windows. At most 64 entries, nonempty names of
+    /// at most 256 bytes without '=' or NUL, values at most 4 KiB without NUL.
+    record command {
+        program: string,
+        args: list<string>,
+        env: list<tuple<string, string>>,
+    }
+
+    /// What a kept-running program printed since the last call, and its exit
+    /// code once it ended (`none` while it still runs).
+    record chunk {
+        /// Up to 1 MiB per stream; unpolled output keeps the last 1 MiB.
+        /// `poll` takes up to `max-bytes`, or one whole character when that
+        /// limit is smaller. Incomplete characters wait for the next read.
+        stdout: string,
+        stderr: string,
+        status: option<s32>,
+    }
+
+    /// A program left running. Dropping the handle kills it if it still
+    /// runs, so a plugin cannot leak one; a plugin has at most 8 at a time
+    /// (the ninth `start` is `invalid`). They also end with the plugin:
+    /// stopping, disabling or reclaiming it kills what it started.
+    resource child {
+        /// What it printed since the last call, and its status once it ends.
+        poll: func(max-bytes: u32) -> result<chunk, error>;
+        /// Waits up to `timeout-ms` for it to end (0 only checks), then
+        /// reports what it printed since the last call.
+        wait: func(timeout-ms: u32) -> result<chunk, error>;
+        /// Writes to its stdin; fails once it ended or stdin was closed.
+        write: func(text: string) -> result<_, error>;
+        /// Closes stdin; fails once the program ended.
+        close-stdin: func() -> result<_, error>;
+        /// Kills it and reaps it, so its status is available afterwards.
+        kill: func() -> result<_, error>;
+    }
+
+    /// Runs `program` with `args` in `cwd`'s root (else the plugin's data
+    /// directory) and waits; cancelled with the task or call. Call it inside
+    /// a task for anything slow.
+    run: func(program: string, args: list<string>, cwd: option<borrow<project>>, stdin: option<string>) -> result<output, error>;
+
+    /// The same as `run`, with append-only environment variables (API 1.3).
+    run-command: func(cmd: command, cwd: option<borrow<project>>, stdin: option<string>) -> result<output, error>;
+
+    /// Starts `cmd` with piped stdin and stdout/stderr, and returns the
+    /// handle to it without waiting (API 1.3). Closing the invoking window
+    /// also ends its processes.
+    start: func(cmd: command, cwd: option<borrow<project>>) -> result<child, error>;
+}

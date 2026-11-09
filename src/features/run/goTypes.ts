@@ -22,7 +22,7 @@ const fields: RunConfigTypeContribution["fields"] = [
     validate: (value, p) =>
       p.goKind === "test" && p.scope === "file" && value.includes("|") ? "Select one Go test file" : null,
   },
-  { key: "outputDir", label: "Output directory", mono: true, visible: (p) => p.goKind !== "test" },
+  { key: "outputDir", label: "Output directory", mono: true, browse: "directory", visible: (p) => p.goKind !== "test" },
   { key: "runAfterBuild", label: "Run after build", control: "checkbox", visible: (p) => p.goKind !== "test" },
   { key: "pattern", label: "Pattern", mono: true, visible: (p) => p.goKind === "test" },
   { key: "toolArgs", label: "Go tool arguments", mono: true },

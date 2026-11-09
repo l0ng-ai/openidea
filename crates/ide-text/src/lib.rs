@@ -14,6 +14,7 @@ use ide_core::{ChangeSet, IdeError, IdeResult, Pos, Range, TextChange, TextEdit}
 use serde::{Deserialize, Serialize};
 use specta::Type;
 use std::borrow::Cow;
+use std::time::{Duration, Instant};
 
 pub use ropey;
 
@@ -64,6 +65,36 @@ impl LineEnding {
             Self::Cr
         }
     }
+}
+
+/// How long [`Document::diff`] may look for separate regions, so a reload never stalls on a huge file.
+const DIFF_BUDGET: Duration = Duration::from_millis(50);
+
+type LineRange = std::ops::Range<usize>;
+
+/// Byte lengths of the common prefix and suffix; they never overlap.
+fn common_ends(a: &str, b: &str) -> (usize, usize) {
+    let shared = |a: &mut dyn Iterator<Item = char>, b: &mut dyn Iterator<Item = char>| -> usize {
+        a.zip(b).take_while(|(x, y)| x == y).map(|(x, _)| x.len_utf8()).sum()
+    };
+    let prefix = shared(&mut a.chars(), &mut b.chars());
+    let suffix = shared(&mut a[prefix..].chars().rev(), &mut b[prefix..].chars().rev());
+    (prefix, suffix)
+}
+
+/// Byte offset of each line, then the total length.
+fn line_starts(lines: &[&str]) -> Vec<usize> {
+    let mut at = 0;
+    let mut starts = vec![0];
+    starts.extend(lines.iter().map(|line| {
+        at += line.len();
+        at
+    }));
+    starts
+}
+
+fn utf16_len(text: &str) -> u32 {
+    text.chars().map(|c| c.len_utf16() as u32).sum()
 }
 
 /// Converts `\r\n` and lone `\r` to `\n`. Borrows when there is nothing to do.
@@ -334,42 +365,63 @@ impl Document {
         cs
     }
 
-    /// The minimal single-change (common prefix/suffix) change set turning the
-    /// current text into `text` (after line-ending normalization). Empty when equal.
+    /// The change set turning the current text into `text` (after line-ending
+    /// normalization), one change per changed region. Empty when equal. A single change
+    /// spanning two distant edits would drag the editor's caret and view to the first one.
     pub fn diff(&self, text: &str) -> ChangeSet {
+        self.diff_until(text, Instant::now() + DIFF_BUDGET)
+    }
+
+    /// Past `deadline` the regions get coarser, never wrong.
+    fn diff_until(&self, text: &str, deadline: Instant) -> ChangeSet {
         let new = normalize_line_endings(text);
-        let old_chars = self.rope.len_chars();
+        let old = self.rope.to_string();
+        let (prefix, suffix) = common_ends(&old, &new);
+        let old_rest = &old[prefix..old.len() - suffix];
+        let new_rest = &new[prefix..new.len() - suffix];
 
-        let mut prefix_chars = 0usize;
-        let mut prefix_bytes = 0usize;
-        for (a, b) in self.rope.chars().zip(new.chars()) {
-            if a != b {
-                break;
+        let old_lines: Vec<&str> = old_rest.split_inclusive('\n').collect();
+        let new_lines: Vec<&str> = new_rest.split_inclusive('\n').collect();
+        let old_starts = line_starts(&old_lines);
+        let new_starts = line_starts(&new_lines);
+
+        let mut changes = Vec::new();
+        let mut utf16_at = utf16_len(&old[..prefix]);
+        let mut old_at = 0;
+        let mut region: Option<(LineRange, LineRange)> = None;
+        let ops =
+            similar::capture_diff_slices_deadline(similar::Algorithm::Myers, &old_lines, &new_lines, Some(deadline));
+        let mut flush = |region: Option<(LineRange, LineRange)>| {
+            let Some((old_range, new_range)) = region else { return };
+            let region_old = &old_rest[old_starts[old_range.start]..old_starts[old_range.end]];
+            let region_new = &new_rest[new_starts[new_range.start]..new_starts[new_range.end]];
+            let (head, tail) = common_ends(region_old, region_new);
+            let start = old_starts[old_range.start] + head;
+            let end = old_starts[old_range.end] - tail;
+            let from = utf16_at + utf16_len(&old_rest[old_at..start]);
+            let to = from + utf16_len(&old_rest[start..end]);
+            changes.push(TextChange { from, to, insert: region_new[head..region_new.len() - tail].to_owned() });
+            utf16_at = to;
+            old_at = end;
+        };
+        // Positions come from the lengths: `similar` can report a stale start for the empty
+        // side of an op (an insert after an equal run still names the run's first old line).
+        let (mut old_line, mut new_line) = (0, 0);
+        for op in ops {
+            let old_end = old_line + op.old_range().len();
+            let new_end = new_line + op.new_range().len();
+            if op.tag() == similar::DiffTag::Equal {
+                flush(region.take());
+            } else {
+                region = Some(match region.take() {
+                    Some((o, n)) => (o.start..old_end, n.start..new_end),
+                    None => (old_line..old_end, new_line..new_end),
+                });
             }
-            prefix_chars += 1;
-            prefix_bytes += b.len_utf8();
+            (old_line, new_line) = (old_end, new_end);
         }
-        let new_rest = &new[prefix_bytes..];
-        let new_rest_chars = new_rest.chars().count();
-        if prefix_chars == old_chars && new_rest_chars == 0 {
-            return ChangeSet::default();
-        }
-
-        let max_suffix = (old_chars - prefix_chars).min(new_rest_chars);
-        let mut suffix_chars = 0usize;
-        let mut suffix_bytes = 0usize;
-        for (a, b) in self.rope.chars_at(old_chars).reversed().zip(new_rest.chars().rev()).take(max_suffix) {
-            if a != b {
-                break;
-            }
-            suffix_chars += 1;
-            suffix_bytes += b.len_utf8();
-        }
-
-        let from = self.rope.char_to_utf16_cu(prefix_chars) as u32;
-        let to = self.rope.char_to_utf16_cu(old_chars - suffix_chars) as u32;
-        let insert = new_rest[..new_rest.len() - suffix_bytes].to_owned();
-        ChangeSet { changes: vec![TextChange { from, to, insert }] }
+        flush(region);
+        ChangeSet { changes }
     }
 
     // ---- coordinate conversion (UTF-16 offset ⇄ Pos ⇄ byte offset) ----
@@ -605,5 +657,46 @@ mod tests {
         let set = doc.replace_all("😀x😀");
         assert_eq!(set.changes, vec![tc(2, 2, "x")]);
         assert_eq!(doc.text(), "😀x😀");
+    }
+
+    fn numbered_lines(n: usize) -> String {
+        (0..n).map(|i| format!("line {i}\n")).collect()
+    }
+
+    #[test]
+    fn diff_keeps_distant_edits_apart() {
+        let old = numbered_lines(400);
+        let new = old.replace("line 20\n", "line 20x\n").replace("line 299\n", "line 299x\n");
+        let at = |line: &str| (old.find(line).unwrap() + line.len() - 1) as u32;
+        let set = Document::new(&old).diff(&new);
+        assert_eq!(
+            set.changes,
+            vec![tc(at("line 20\n"), at("line 20\n"), "x"), tc(at("line 299\n"), at("line 299\n"), "x")]
+        );
+    }
+
+    #[test]
+    fn diff_handles_added_and_removed_lines() {
+        let old = "a\nb\nc\nd\ne\nf\n";
+        let set = Document::new(old).diff("a\nnew\nb\nc\ne\nf\n");
+        assert_eq!(set.changes, vec![tc(2, 2, "new\n"), tc(5, 7, "")]);
+    }
+
+    #[test]
+    fn diff_counts_utf16_past_astral_text() {
+        let old = "😀 one\nsame\n😀 two\n";
+        let set = Document::new(old).diff("😀 ONE\nsame\n😀 TWO\n");
+        assert_eq!(set.changes, vec![tc(3, 6, "ONE"), tc(15, 18, "TWO")]);
+    }
+
+    #[test]
+    fn diff_past_its_deadline_is_coarser_but_still_correct() {
+        let old = numbered_lines(5000);
+        let new = old.replace("line 20\n", "line 20x\n").replace("line 4000\n", "line 4000x\n");
+        let doc = Document::new(&old);
+        let set = doc.diff_until(&new, std::time::Instant::now());
+        let mut replayed = Document::new(&old);
+        replayed.apply(0, &set).unwrap();
+        assert_eq!(replayed.text(), new);
     }
 }

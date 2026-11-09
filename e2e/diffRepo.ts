@@ -91,6 +91,11 @@ export const CASES: readonly DiffCase[] = [
   { path: "data/no-eol.txt", before: "alpha\nkeep\nbeta", after: "alpha\nkeep\ngamma" },
   { path: "data/add-eol.txt", before: "alpha\nbeta", after: "alpha\nbeta\n" },
   { path: "src/moved.ts", before: FUNCS.join("\n"), after: [...FUNCS.slice(1), FUNCS[0]!].join("\n") },
+  {
+    path: "src/moved-edited.ts",
+    before: FUNCS.join("\n"),
+    after: [...FUNCS.slice(1), FUNCS[0]!.replace("parseImpl", "parseUpdated")].join("\n"),
+  },
   { path: "src/new-file.ts", before: null, after: lines(6, (i) => `export const n${i} = ${i};`) },
   { path: "src/deleted-file.ts", before: lines(6, (i) => `export const d${i} = ${i};`), after: null },
   {

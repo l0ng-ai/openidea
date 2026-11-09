@@ -1,11 +1,11 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
-import { FIT_INTERVAL_MS, PROCESS_RESIZE_DELAY_MS, fitScheduler, settledResize } from "./fit";
+import { FIT_SETTLE_MS, PROCESS_RESIZE_DELAY_MS, fitScheduler, settledResize } from "./fit";
 import { isAllowedIdeShortcut, terminalKeyAction } from "./keys";
 import { matchCounter } from "./FindBar";
 import { buildSearchDecorations } from "./theme";
 import { findTerminalLinks, resolvePath, trimUrl } from "./links";
 import {
-  layoutPanes,
+  layoutGroups,
   nextTabName,
   removeFromLayout,
   reorderTabs,
@@ -195,6 +195,23 @@ describe("terminal keys", () => {
     expect(terminalKeyAction(key({ key: "a" }), false)).toEqual({ kind: "pass" });
   });
 
+  it("sends Shift+Enter as Esc+Return, a newline for Claude Code instead of submitting", () => {
+    expect(terminalKeyAction(key({ key: "Enter", code: "Enter", shiftKey: true }), false)).toEqual({
+      kind: "send",
+      data: "\x1b\r",
+    });
+    expect(terminalKeyAction(key({ key: "Enter", code: "NumpadEnter", shiftKey: true }), true)).toEqual({
+      kind: "send",
+      data: "\x1b\r",
+    });
+    expect(terminalKeyAction(key({ key: "Enter", code: "Enter" }), false)).toEqual({ kind: "pass" });
+    for (const mod of [{ ctrlKey: true }, { altKey: true }, { metaKey: true }]) {
+      expect(terminalKeyAction(key({ key: "Enter", code: "Enter", shiftKey: true, ...mod }), false)).toEqual({
+        kind: "pass",
+      });
+    }
+  });
+
   it("clears a selection with Escape before sending it", () => {
     expect(terminalKeyAction(key({ key: "Escape" }), true)).toEqual({ kind: "clearSelection" });
     expect(terminalKeyAction(key({ key: "Escape", shiftKey: true }), true)).toEqual({ kind: "send", data: "\x1b" });
@@ -273,7 +290,7 @@ describe("split layout", () => {
       children: ["a", { id: "g2", orientation: "horizontal", children: ["b", "c"] }],
     });
     l = splitLayout(l, "a", "d", "vertical", "g3");
-    expect(layoutPanes(l)).toEqual(["a", "d", "b", "c"]);
+    expect(layoutGroups(l)).toEqual(["a", "d", "b", "c"]);
   });
 
   it("collapses single-child splits on removal", () => {
@@ -387,9 +404,9 @@ describe("terminalFont", () => {
 });
 
 describe("terminal tab titles", () => {
-  const tab: TerminalTab = { id: "t1", name: "Local", customName: null, panes: ["s1"], layout: "s1", activePane: "s1" };
+  const tab: TerminalTab = { id: "t1", name: "Local", customName: null, shell: null, session: "s1", group: "g1" };
   const snap = (appTitle: string | null, commandRunning = true): Record<string, SessionSnapshot> => ({
-    s1: { status: "running", exitCode: null, title: "zsh", appTitle, commandRunning, cwd: "/p", follow: true },
+    s1: { status: "running", exitCode: null, title: "zsh", appTitle, commandRunning, cwd: "/p" },
   });
 
   it("shows the default name at the prompt, whatever title the shell sets", () => {
@@ -421,24 +438,79 @@ describe("terminal tab titles", () => {
 describe("fit scheduling", () => {
   afterEach(() => vi.useRealTimers());
 
-  it("refits at most once per interval while resizing, and once after it stops", () => {
+  it("fits an idle terminal on the next frame, and a resizing one once it settles", () => {
     vi.useFakeTimers();
     const fit = vi.fn();
     const f = fitScheduler(fit);
     f.schedule();
     vi.advanceTimersToNextFrame();
     expect(fit).toHaveBeenCalledTimes(1);
-    for (let i = 0; i < 6; i++) {
+    for (let i = 0; i < 30; i++) {
       f.schedule();
       vi.advanceTimersByTime(16);
     }
     expect(fit).toHaveBeenCalledTimes(1);
-    vi.advanceTimersByTime(FIT_INTERVAL_MS);
+    vi.advanceTimersByTime(FIT_SETTLE_MS);
     expect(fit).toHaveBeenCalledTimes(2);
+    vi.advanceTimersByTime(FIT_SETTLE_MS);
     f.schedule();
     f.cancel();
-    vi.advanceTimersByTime(FIT_INTERVAL_MS * 2);
+    vi.advanceTimersByTime(FIT_SETTLE_MS * 2);
     expect(fit).toHaveBeenCalledTimes(2);
+  });
+
+  it("fits a lone second request after it settles without needing another request", () => {
+    vi.useFakeTimers();
+    const fit = vi.fn();
+    const f = fitScheduler(fit);
+    f.schedule();
+    vi.advanceTimersToNextFrame();
+    vi.advanceTimersByTime(40);
+    f.schedule();
+    vi.advanceTimersByTime(FIT_SETTLE_MS - 1);
+    expect(fit).toHaveBeenCalledTimes(1);
+    vi.advanceTimersByTime(1);
+    expect(fit).toHaveBeenCalledTimes(2);
+    expect(vi.getTimerCount()).toBe(0);
+  });
+
+  it("fits without animation frames in a background window", () => {
+    vi.useFakeTimers();
+    const frame = vi.spyOn(window, "requestAnimationFrame").mockReturnValue(0);
+    const fit = vi.fn();
+    try {
+      fitScheduler(fit).schedule();
+      vi.advanceTimersByTime(100);
+      expect(fit).toHaveBeenCalledOnce();
+      expect(vi.getTimerCount()).toBe(0);
+    } finally {
+      frame.mockRestore();
+    }
+  });
+
+  it.each([false, true])("cancels all pending work after repeated requests: %s", (repeated) => {
+    vi.useFakeTimers();
+    const fit = vi.fn();
+    const f = fitScheduler(fit);
+    f.schedule();
+    if (repeated) f.schedule();
+    f.cancel();
+    expect(vi.getTimerCount()).toBe(0);
+    vi.advanceTimersByTime(FIT_SETTLE_MS * 2);
+    expect(fit).not.toHaveBeenCalled();
+  });
+
+  it("flushes a deferred fit immediately and leaves no delayed duplicate", () => {
+    vi.useFakeTimers();
+    const fit = vi.fn();
+    const f = fitScheduler(fit);
+    f.schedule();
+    f.schedule();
+    f.flush();
+    expect(fit).toHaveBeenCalledOnce();
+    expect(vi.getTimerCount()).toBe(0);
+    vi.advanceTimersByTime(FIT_SETTLE_MS * 2);
+    expect(fit).toHaveBeenCalledOnce();
   });
 
   it("reports only the size the terminal settles on", () => {

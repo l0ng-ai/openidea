@@ -2,16 +2,20 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { MEMBER_PREFIX, type ProjectNode } from "./model";
 import {
   canPaste,
+  checkEditingName,
   copySelection,
   importExternal,
   paste,
   refreshOsClipboard,
+  revealablePath,
   selectionAfterDelete,
   transfer,
+  topLevelPaths,
 } from "./operations";
 import { IpcError } from "@/platform/ipc";
 import { closeFileRefactorDialog, pendingFileRefactorDialog } from "./FileRefactorDialogs";
 import { useRemote } from "@/platform/remote";
+import { usePlatform } from "@/platform/platformInfo";
 import { provideNotificationService } from "@/workbench/contributions";
 import { MemoryFs, setProjectFsForTests } from "./fs";
 import { initProjectTree, loadDir, setClipboard, setSelection, useProjectTree } from "./store";
@@ -19,6 +23,30 @@ import { setOsClipboardForTests } from "./clipboard";
 
 let fs: MemoryFs;
 const notify = vi.fn();
+
+describe("file names follow the execution host", () => {
+  const platform = usePlatform.getState();
+  afterEach(() => {
+    usePlatform.setState(platform);
+    useRemote.setState({ session: null });
+    setProjectFsForTests(null);
+    initProjectTree(null);
+  });
+
+  it.each(["linux", "windows", "macos"])("validates names on a %s host from a Windows desktop", async (os) => {
+    usePlatform.setState({ os: "windows" });
+    useRemote.setState({
+      session: { target: { kind: "ssh", config: "host" }, root: "/p", host: "host", os, commands: [] },
+    });
+    fs = new MemoryFs({ "/p/readme.txt": "" }, "/p");
+    setProjectFsForTests(fs, "/p");
+    initProjectTree("/p", "p");
+    await loadDir("/p");
+    useProjectTree.setState({ editing: { kind: "new", parent: "/p", nodeKind: "file" } });
+    expect(checkEditingName("con").error !== null).toBe(os === "windows");
+    expect(checkEditingName("README.txt").error !== null).toBe(os !== "linux");
+  });
+});
 
 const node = (path: string, dir = false): ProjectNode => ({
   key: path,
@@ -50,6 +78,50 @@ describe("selectionAfterDelete", () => {
   });
 });
 
+describe("Unity asset selections", () => {
+  beforeEach(async () => {
+    fs = new MemoryFs(
+      {
+        "/p/Assets/Player.cs": "code",
+        "/p/Assets/Player.cs.meta": "metadata",
+        "/p/Assets/Player copy.cs.meta": "orphan",
+      },
+      "/p",
+    );
+    setProjectFsForTests(fs, "/p");
+    initProjectTree("/p", "Game", null, { editorVersion: "6000.0.1f1", projects: [], solutions: [] });
+    provideNotificationService({ notify });
+    notify.mockClear();
+    await loadDir("/p/Assets");
+  });
+
+  afterEach(() => {
+    setProjectFsForTests(null);
+    initProjectTree(null);
+  });
+
+  it("treats an asset and its selected metadata as one operation", () => {
+    expect(topLevelPaths([node("/p/Assets/Player.cs"), node("/p/Assets/Player.cs.meta")])).toEqual([
+      "/p/Assets/Player.cs",
+    ]);
+    expect(
+      topLevelPaths([
+        node("/p/Assets/Group", true),
+        node("/p/Assets/Group.meta"),
+        node("/p/Assets/Group/Inner.cs.meta"),
+      ]),
+    ).toEqual(["/p/Assets/Group"]);
+    expect(topLevelPaths([node("/p/Assets/Player.cs.meta")])).toEqual(["/p/Assets/Player.cs.meta"]);
+  });
+
+  it("skips orphan metadata names when choosing a duplicate asset name", async () => {
+    const copy = vi.spyOn(fs, "copy");
+    await transfer(["/p/Assets/Player.cs", "/p/Assets/Player.cs.meta"], "/p/Assets", "copy");
+    expect(copy).toHaveBeenCalledTimes(1);
+    expect(copy).toHaveBeenCalledWith("/p/Assets/Player.cs", "/p/Assets/Player copy 2.cs");
+  });
+});
+
 // Local OS paths and remote project paths may be identical strings.
 describe("OS file imports", () => {
   beforeEach(async () => {
@@ -57,7 +129,9 @@ describe("OS file imports", () => {
     setProjectFsForTests(fs, "/p");
     initProjectTree("/p", "p");
     await loadDir("/p");
-    useRemote.setState({ session: { sshConfig: "ssh", root: "/p", host: "host", commands: ["fs_copy"] } });
+    useRemote.setState({
+      session: { target: { kind: "ssh", config: "ssh" }, root: "/p", host: "host", os: "linux", commands: ["fs_copy"] },
+    });
     provideNotificationService({ notify });
     notify.mockClear();
   });
@@ -247,7 +321,15 @@ describe("project clipboard ownership", () => {
   it.each(remoteCases)(
     "remote hand-off=$handedOff OS=$osList cut=$cut on $entry",
     async ({ handedOff, osList, cut, entry }) => {
-      useRemote.setState({ session: { sshConfig: "ssh", root: "/p", host: "host", commands: ["fs_copy"] } });
+      useRemote.setState({
+        session: {
+          target: { kind: "ssh", config: "ssh" },
+          root: "/p",
+          host: "host",
+          os: "linux",
+          commands: ["fs_copy"],
+        },
+      });
       const writeText = vi.fn(async () => {
         if (!handedOff) throw new Error("unavailable");
       });
@@ -293,7 +375,9 @@ describe("project clipboard ownership", () => {
   );
 
   it("writes multiple remote paths as newline-joined text", async () => {
-    useRemote.setState({ session: { sshConfig: "ssh", root: "/p", host: "host", commands: ["fs_copy"] } });
+    useRemote.setState({
+      session: { target: { kind: "ssh", config: "ssh" }, root: "/p", host: "host", os: "linux", commands: ["fs_copy"] },
+    });
     await fs.createFile("/p/second.txt");
     await loadDir("/p", true);
     setSelection(new Set(["/p/source.txt", "/p/second.txt"]), "/p/source.txt");
@@ -305,7 +389,9 @@ describe("project clipboard ownership", () => {
   });
 
   it("waits for a pending remote text write before reading file URLs", async () => {
-    useRemote.setState({ session: { sshConfig: "ssh", root: "/p", host: "host", commands: ["fs_copy"] } });
+    useRemote.setState({
+      session: { target: { kind: "ssh", config: "ssh" }, root: "/p", host: "host", os: "linux", commands: ["fs_copy"] },
+    });
     let finish!: () => void;
     vi.stubGlobal("navigator", {
       clipboard: {
@@ -365,5 +451,45 @@ describe("project clipboard ownership", () => {
     await refreshing;
     expect(useProjectTree.getState().clipboard).toBe(newer);
     expect(canPaste()).toBe(true);
+  });
+});
+
+describe("revealablePath", () => {
+  const platform = usePlatform.getState();
+  afterEach(() => {
+    usePlatform.setState(platform);
+    useRemote.setState({ session: null });
+  });
+
+  it("translates distro paths to the \\\\wsl.localhost share for a WSL session on Windows", () => {
+    usePlatform.setState({ os: "windows" });
+    useRemote.setState({
+      session: {
+        target: { kind: "wsl", distro: "Ubuntu-24.04" },
+        root: "/p",
+        host: "Ubuntu",
+        os: "linux",
+        commands: [],
+      },
+    });
+    expect(revealablePath("/home/me/app/src/main.rs")).toBe(
+      "\\\\wsl.localhost\\Ubuntu-24.04\\home\\me\\app\\src\\main.rs",
+    );
+    expect(revealablePath("/")).toBe("\\\\wsl.localhost\\Ubuntu-24.04\\");
+  });
+
+  it("leaves paths alone for local projects, SSH sessions and non-Windows desktops", () => {
+    usePlatform.setState({ os: "windows" });
+    useRemote.setState({
+      session: { target: { kind: "ssh", config: "host" }, root: "/p", host: "host", os: "linux", commands: [] },
+    });
+    expect(revealablePath("/home/me/app")).toBe("/home/me/app");
+    useRemote.setState({ session: null });
+    expect(revealablePath("C:\\work\\app")).toBe("C:\\work\\app");
+    usePlatform.setState({ os: "macos" });
+    useRemote.setState({
+      session: { target: { kind: "wsl", distro: "Ubuntu" }, root: "/p", host: "Ubuntu", os: "linux", commands: [] },
+    });
+    expect(revealablePath("/home/me/app")).toBe("/home/me/app");
   });
 });

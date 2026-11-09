@@ -134,47 +134,59 @@ async function changeTo(view: EditorView, typo: PlacedTypo) {
   });
 }
 
-/** Typo quick fixes at the caret (⌥↵), or none. */
+/**
+ * Typo quick fixes at the caret (⌥↵), or none. Dictionary saves write
+ * settings, so they are offered in read-only documents too (library sources,
+ * stubs); only the in-place correction needs a writable file.
+ */
 export function spellingIntentions(view: EditorView): ListPopupItem[] {
   const doc = docOf(view);
   const sel = view.state.selection.main;
-  if (!doc || doc.readOnly || !sel.empty || !spellingEnabled()) return [];
+  if (!doc || !sel.empty || !spellingEnabled()) return [];
   const typo = typoAt(view.state, sel.head);
   if (!typo) return [];
   const hasProject = !!useProject.getState().project;
-  const saves: ListPopupItem[] = [
+  // One row saves to the project dictionary (application-level without a project);
+  // its submenu still offers each level, then the inspection controls.
+  const saveSubmenu: MenuItem[] = [
     ...(hasProject
       ? [
           {
             id: "spelling.saveProject",
-            label: tx`Save '${typo.word}' to project-level dictionary`,
-            icon: "bulb-fix",
-            run: () => saveToDictionary(typo.word, "project"),
+            label: "Save to project-level dictionary",
+            run: () => void saveToDictionary(typo.word, "project"),
           },
         ]
       : []),
     {
       id: "spelling.saveIde",
-      label: tx`Save '${typo.word}' to application-level dictionary`,
-      icon: "bulb-fix",
-      run: () => saveToDictionary(typo.word, "ide"),
+      label: "Save to application-level dictionary",
+      run: () => void saveToDictionary(typo.word, "ide"),
     },
-  ];
-  const submenu: MenuItem[] = [
-    ...saves.map((s) => ({ id: s.id, label: s.label, verbatim: true, run: () => void s.run() })),
     { kind: "separator" },
     ...intentionControls({ id: SPELLING_INSPECTION, name: "Typo" }),
   ];
+  const change: ListPopupItem[] = doc.readOnly
+    ? []
+    : [
+        {
+          id: "spelling.change",
+          label: typo.context === "code" ? "Typo: Rename to…" : "Typo: Change to…",
+          icon: "bulb-fix",
+          emphasis: true,
+          run: () => changeTo(view, typo),
+          submenu: saveSubmenu,
+        },
+      ];
   return [
+    ...change,
     {
-      id: "spelling.change",
-      label: typo.context === "code" ? "Typo: Rename to…" : "Typo: Change to…",
+      id: "spelling.save",
+      label: tx`Save '${typo.word}' to dictionary`,
       icon: "bulb-fix",
-      emphasis: true,
-      run: () => changeTo(view, typo),
-      submenu,
+      run: () => saveToDictionary(typo.word, hasProject ? "project" : "ide"),
+      submenu: saveSubmenu,
     },
-    ...saves.map((s) => ({ ...s, submenu })),
   ];
 }
 

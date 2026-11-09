@@ -3,13 +3,20 @@ import type { ChangelistState, FileStatus } from "@/bindings";
 import { baseName, dirName, effectiveKind, relTo, repoLabel, rootOf, stripSlash, type EffectiveKind } from "./model";
 import { tx } from "@/platform/i18n";
 
-export type GroupId = "conflicts" | "changes" | "unversioned";
+export type GroupId = "conflicts" | "changes" | "unversioned" | "staged" | "unstaged";
 
 export const GROUP_LABEL: Record<GroupId, string> = {
   conflicts: "Merge Conflicts",
   changes: "Changes",
   unversioned: "Unversioned Files",
+  staged: "Staged Changes",
+  unstaged: "Unstaged Changes",
 };
+
+/** The index side a file under a "by staging state" group is compared on (partially staged files only). */
+export function stagingSide(group: GroupId, fs: FileStatus): "staged" | "unstaged" | null {
+  return (group === "staged" || group === "unstaged") && isPartiallyStaged(fs) ? group : null;
+}
 
 /**
  * Inclusion of a file in the next commit:
@@ -216,7 +223,8 @@ function tagList(nodes: ChangeNode[], id: string): ChangeNode[] {
  * Group roots (Merge Conflicts / Changes / Unversioned Files) with flat or directory
  * children. With change lists, "Changes" is split into one group per list
  * (`ChangelistState.files` keys are project-relative paths). With several
- * repositories (`repos`), each group's files are grouped by repository first.
+ * repositories (`repos`), each group's files are grouped by repository first. With
+ * `byStaging`, "Changes" becomes "Staged Changes" and "Unstaged Changes" instead.
  */
 export function buildChangeTree(
   status: readonly FileStatus[],
@@ -224,6 +232,7 @@ export function buildChangeTree(
   groupByDir: boolean,
   lists?: ChangelistState,
   repos: readonly string[] = [],
+  byStaging = false,
 ): ChangeNode[] {
   const byGroup = new Map<GroupId, FileStatus[]>();
   for (const fs of status) {
@@ -236,6 +245,26 @@ export function buildChangeTree(
   const roots: ChangeNode[] = [];
   for (const g of KIND_ORDER) {
     const files = byGroup.get(g) ?? [];
+    if (g === "changes" && byStaging) {
+      // A partially staged file is listed under both, each opening its own side of the index.
+      const sides: Array<["staged" | "unstaged", FileStatus[]]> = [
+        ["staged", files.filter((f) => !!f.staged)],
+        ["unstaged", files.filter((f) => !!f.unstaged)],
+      ];
+      for (const [side, own] of sides) {
+        if (!own.length) continue;
+        const children = repoNodes(own, root, side, groupByDir, side, repos);
+        roots.push({
+          key: `group:${side}`,
+          type: "group",
+          label: GROUP_LABEL[side],
+          group: side,
+          children,
+          files: own,
+        });
+      }
+      continue;
+    }
     if (g === "changes" && lists) {
       const byList = new Map<string, FileStatus[]>(lists.lists.map((l) => [l.id, []]));
       for (const f of files) {
@@ -268,9 +297,53 @@ export function buildChangeTree(
   return roots;
 }
 
+export function changeGroupPaths(roots: readonly ChangeNode[], path: string): string[] {
+  const group = roots.find((node) => node.files.some((file) => stripSlash(file.path) === path));
+  if (!group) return [path];
+  const paths: string[] = [];
+  const walk = (nodes: readonly ChangeNode[]) => {
+    for (const node of nodes) {
+      if (node.type === "file" && node.path) paths.push(node.path);
+      else walk(node.children ?? []);
+    }
+  };
+  walk([group]);
+  return paths;
+}
+
+/** Every file node of the tree, in tree order (a partially staged file is listed under both staging groups). */
+export function changeFileNodes(roots: readonly ChangeNode[]): ChangeNode[] {
+  const out: ChangeNode[] = [];
+  const walk = (nodes: readonly ChangeNode[]) => {
+    for (const node of nodes) {
+      if (node.type === "file" && node.path) out.push(node);
+      else walk(node.children ?? []);
+    }
+  };
+  walk(roots);
+  return out;
+}
+
+/** File nodes, in tree order, of the group a file node belongs to. */
+export function groupFileNodes(roots: readonly ChangeNode[], node: ChangeNode): ChangeNode[] {
+  const group = roots.find((r) => r.group === node.group && r.files.some((f) => stripSlash(f.path) === node.path));
+  if (!group) return [node];
+  const out: ChangeNode[] = [];
+  const walk = (nodes: readonly ChangeNode[]) => {
+    for (const n of nodes) {
+      if (n.type === "file" && n.path) out.push(n);
+      else walk(n.children ?? []);
+    }
+  };
+  walk([group]);
+  return out;
+}
+
 export interface CommitPlan {
+  /** Included files committed with their working-tree content. */
   stage: string[];
-  unstage: string[];
+  /** Staged files left out of the commit; they stay staged. */
+  exclude: string[];
   /** Files that end up in the commit. */
   included: FileStatus[];
   /** Absolute paths of included files committed with only some of their hunks. */
@@ -299,19 +372,19 @@ export function renamedFromPath(fs: FileStatus): string | null {
   return root === null ? null : `${root}${fs.renamedFrom}`;
 }
 
-/** What to stage / unstage so the index holds exactly the included changes. */
+/** What the commit takes beyond the index, and what staged changes it leaves out. */
 export function planCommit(status: readonly FileStatus[], checks: ReadonlyMap<string, CheckState>): CommitPlan {
-  const plan: CommitPlan = { stage: [], unstage: [], included: [], partial: [] };
+  const plan: CommitPlan = { stage: [], exclude: [], included: [], partial: [] };
   for (const fs of status) {
     if (!groupOf(fs)) continue;
     const c = checkOf(fs, checks);
     const path = stripSlash(fs.path);
     if (c === "none") {
       if (fs.staged && fs.staged !== "conflicted") {
-        plan.unstage.push(path);
-        // A staged rename is a deletion + addition: leaving the deletion staged would commit it.
+        plan.exclude.push(path);
+        // A staged rename is a deletion + addition: leaving the deletion in would commit it.
         const from = renamedFromPath(fs);
-        if (from) plan.unstage.push(from);
+        if (from) plan.exclude.push(from);
       }
       continue;
     }
@@ -321,6 +394,20 @@ export function planCommit(status: readonly FileStatus[], checks: ReadonlyMap<st
     plan.included.push(fs);
   }
   return plan;
+}
+
+/**
+ * Inclusion overrides kept after a commit (same shape for `checks` and `excludedHunks`):
+ * the committed changes start over, since they either left the tree or only some of
+ * their blocks went in. The changes the user left out keep their override, so they stay
+ * excluded instead of falling back to "included" in the next commit.
+ */
+export function remainingOverrides<T>(
+  overrides: ReadonlyMap<string, T>,
+  committed: readonly FileStatus[],
+): Map<string, T> {
+  const done = new Set(committed.map((f) => stripSlash(f.path)));
+  return new Map([...overrides].filter(([path]) => !done.has(stripSlash(path))));
 }
 
 /**

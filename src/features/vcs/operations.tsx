@@ -7,13 +7,17 @@ import { commitKey, commitRepo } from "./multiRoot";
 import { useEffect, useMemo, useState } from "react";
 import type { ChangedFile, Commit, CompareResult, ResetMode, WorkingTreeChange } from "@/bindings";
 import { executeAction } from "@/platform/actions";
-import { call, commands, nextRequestId } from "@/platform/ipc";
-import { Checkbox, Dialog, Icon, Input, Spinner, T } from "@/ui";
+import { call, commands, isTauri, nextRequestId } from "@/platform/ipc";
+import { Button, Checkbox, Dialog, Icon, Input, Spinner, T } from "@/ui";
 import { notifications } from "@/workbench/contributions";
-import { diffInput, openDiff, type DiffData, type DiffSide } from "./diffInput";
+import { windowBackgroundHex } from "@/workbench/theme";
+import { diffInput, openVcsDiff, vcsDiffInFront, type DiffData, type DiffSide } from "./diffInput";
 import { openDialog, promptText } from "./dialogs";
 import { KIND_COLOR, fileCount } from "./model";
 import { runGitOperation, runOp } from "./ops";
+import { loadLogDetails } from "./logDetails";
+import { isProtectedBranch } from "./remoteUi";
+import { showLocalChanges } from "./commitUi";
 import { reloadLog, useGitLog } from "./logStore";
 import { conflictedFiles, currentRepo, currentRepoRoot, refreshNow, repoName, repoOf, useVcs } from "./store";
 import styles from "./common.module.css";
@@ -77,6 +81,38 @@ export function operationControls(op: InProgress): Array<"continue" | "skip" | "
 export function controlLabel(op: InProgress, control: "continue" | "skip" | "abort"): string {
   if (control === "skip") return "Skip Commit";
   return `${control === "continue" ? "Continue" : "Abort"} ${OP_NOUN[op]}`;
+}
+
+/** Why `git rebase --continue` refused (see the backend's UNSTAGED_CHANGES_PREVENT_REBASE). */
+const UNSTAGED_CHANGES_PREVENT_REBASE = "There are unstaged changes in tracked files preventing rebase from continuing";
+
+/**
+ * Links of the balloon of an operation that failed and is still stopped: Abort, and for
+ * a rebase held up by unstaged changes, Stage and Retry (stages the tracked files'
+ * changes and continues) and Show Files.
+ */
+export function stoppedActions(op: InProgress, message: string): Array<{ label: string; run: () => void }> {
+  if (!inProgress()) return [];
+  const abort = { label: "Abort", run: () => void controlOperation("abort", op) };
+  if (op !== "rebase" || !message.includes(UNSTAGED_CHANGES_PREVENT_REBASE)) return [abort];
+  return [
+    {
+      label: "Stage and Retry",
+      run: () =>
+        void runGitOperation(
+          { op: "stageAndContinue" },
+          {
+            progress: "Continuing rebase",
+            success: "Rebase continued",
+            failure: tx`${controlLabel(op, "continue")} failed`,
+            onError: conflictsInstead,
+            errorActions: (m) => stoppedActions(op, m),
+          },
+        ),
+    },
+    { label: "Show Files", run: () => showLocalChanges() },
+    abort,
+  ];
 }
 
 /** Opens the conflicts dialog instead of an error balloon when the operation stopped on conflicts. */
@@ -165,8 +201,9 @@ export async function controlOperation(control: "continue" | "skip" | "abort", e
     {
       progress,
       success,
-      failure: `${controlLabel(op, control)} failed`,
+      failure: tx`${controlLabel(op, control)} failed`,
       onError: control === "abort" ? undefined : conflictsInstead,
+      errorActions: control === "abort" ? undefined : (message) => stoppedActions(op, message),
     },
   );
   // A rebase that continued and stopped again (next conflict) is reported by the conflicts listener.
@@ -179,24 +216,22 @@ export function OperationBanner() {
   const conflicts = useVcs((s) => s.status.filter((f) => f.unstaged === "conflicted").length);
   const busy = useVcs((s) => s.remoteBusy);
   const op = inProgress(branch?.operation);
-  if (!op) return null;
+  // Conflicts need a notice with no operation in progress too (applying a stash leaves them).
+  if (!op && !conflicts) return null;
+  const count = conflicts === 1 ? tx`${conflicts} conflict` : tx`${conflicts} conflicts`;
   return (
-    <div className={styles.banner} role="status" aria-label={tx(IN_PROGRESS[op])}>
+    <div className={styles.banner} role="status" aria-label={tx(op ? IN_PROGRESS[op] : "Merge conflicts")}>
       <Icon name={conflicts ? "warning" : "branch"} size={14} />
       <span className={styles.bannerText}>
-        {operationTitle(op, branch?.head ?? null)}
-        {conflicts
-          ? ` · ${conflicts === 1 ? tx`${conflicts} conflict` : tx`${conflicts} conflicts`}`
-          : op === "merge"
-            ? tx(" · commit to conclude")
-            : ""}
+        {op ? operationTitle(op, branch?.head ?? null) : tx("Unresolved merge conflicts")}
+        {conflicts ? ` · ${count}` : op === "merge" ? tx(" · commit to conclude") : ""}
       </span>
       {conflicts > 0 && (
         <button type="button" className={styles.linkButton} onClick={() => void executeAction("vcs.resolveConflicts")}>
           <T>Resolve…</T>
         </button>
       )}
-      {operationControls(op).map((c) => (
+      {(op ? operationControls(op) : []).map((c) => (
         <button
           key={c}
           type="button"
@@ -239,12 +274,24 @@ export async function cherryPick(commits: Commit[]) {
   const ordered = newestFirst(commits).reverse();
   const label =
     ordered.length === 1 ? `${short(ordered[0]!.id)} “${ordered[0]!.summary}”` : `${ordered.length} commits`;
+  // Commits already pushed to a protected branch get "(cherry picked from commit …)".
+  const remoteBranches = new Set(
+    useVcs
+      .getState()
+      .branches.filter((b) => b.remote)
+      .map((b) => b.name),
+  );
+  const fromProtected = async (c: Commit) =>
+    (await loadLogDetails(c).catch(() => null))?.containingBranches.some(
+      (b) => remoteBranches.has(b) && isProtectedBranch(b.slice(b.indexOf("/") + 1)),
+    ) ?? false;
+  const recordOrigin = (await Promise.all(ordered.map(fromProtected))).every(Boolean);
   await runGitOperation(
-    { op: "cherryPick", commits: ordered.map((c) => c.id) },
+    { op: "cherryPick", commits: ordered.map((c) => c.id), recordOrigin },
     {
       progress: "Cherry-picking",
-      success: `Cherry-picked ${label}`,
-      failure: "Cherry-pick failed",
+      success: tx`Cherry-picked ${label}`,
+      failure: tx("Cherry-pick failed"),
       onError: conflictsInstead,
     },
     commitRepo(commits[0]!) ?? currentRepo(),
@@ -258,7 +305,7 @@ export async function revertCommits(commits: Commit[]) {
     ordered.length === 1 ? `${short(ordered[0]!.id)} “${ordered[0]!.summary}”` : `${ordered.length} commits`;
   await runGitOperation(
     { op: "revert", commits: ordered.map((c) => c.id) },
-    { progress: "Reverting", success: `Reverted ${label}`, failure: "Revert failed", onError: conflictsInstead },
+    { progress: "Reverting", success: tx`Reverted ${label}`, failure: tx("Revert failed"), onError: conflictsInstead },
     commitRepo(commits[0]!) ?? currentRepo(),
   );
 }
@@ -296,8 +343,8 @@ function ResetDialog({ commit, onClose }: { commit?: Commit; onClose: () => void
       { op: "reset", commit: rev, mode },
       {
         progress: "Resetting",
-        success: `Reset ${head} to ${commit ? short(commit.id) : rev} (${mode})`,
-        failure: "Reset failed",
+        success: tx`Reset ${head} to ${commit ? short(commit.id) : rev} (${mode})`,
+        failure: tx("Reset failed"),
       },
       repo,
     );
@@ -376,8 +423,8 @@ export async function newTagOn(commit: Commit) {
   });
   if (!r) return;
   const create = () => call(commands.vcsCreateTag(repo, r.value, commit.id, null, false));
-  const ok = await runOp(`Create tag ${r.value}`, create, {
-    success: `Created tag ${r.value} on ${short(commit.id)}`,
+  const ok = await runOp(tx`Create tag ${r.value}`, create, {
+    success: tx`Created tag ${r.value} on ${short(commit.id)}`,
   });
   // Tags are not part of the refs signature that reloads the log.
   if (ok !== undefined) void reloadLog();
@@ -404,9 +451,9 @@ function TagDialog({ onClose }: { onClose: () => void }) {
     onClose();
     const tag = name.trim();
     const ok = await runOp(
-      `Create tag ${tag}`,
+      tx`Create tag ${tag}`,
       () => call(commands.vcsCreateTag(repo, tag, commit.trim() || "HEAD", message || null, force)),
-      { success: `Created tag ${tag}` },
+      { success: tx`Created tag ${tag}` },
     );
     if (ok !== undefined && useGitLog.getState().commits.length) void reloadLog();
   };
@@ -462,31 +509,32 @@ export function showCompareWithLocal(commit: Commit) {
 
 /** Files that differ between `rev` (a commit or branch) and the working tree. */
 export function showDiffWithWorkingTree(rev: string, label = rev) {
-  openDialog((close) => <ChangesBetweenDialog from={{ rev, label }} to={null} onClose={close} />);
+  showComparison({ rev, label }, null);
 }
 
 /** IDEA's Compare Versions of two Git Log commits: files that differ between them, older first. */
 export function showCompareVersions(older: Commit, newer: Commit) {
-  openDialog((close) => (
-    <ChangesBetweenDialog
-      from={{ rev: older.id, label: short(older.id) }}
-      to={{ rev: newer.id, label: short(newer.id) }}
-      onClose={close}
-    />
-  ));
+  showComparison({ rev: older.id, label: short(older.id) }, { rev: newer.id, label: short(newer.id) });
 }
 
 /** Files that differ between two revisions (e.g. two branches from Compare with Current). */
 export function showCompareRevisions(from: string, to: string, fromLabel = from, toLabel = to) {
-  openDialog((close) => (
-    <ChangesBetweenDialog from={{ rev: from, label: fromLabel }} to={{ rev: to, label: toLabel }} onClose={close} />
-  ));
+  showComparison({ rev: from, label: fromLabel }, { rev: to, label: toLabel });
 }
 
 export function showPathComparison(paths: string[], rev: string, repositories: string[] | null) {
-  openDialog((close) => (
-    <ChangesBetweenDialog from={{ rev, label: rev }} to={null} scope={{ paths, repositories }} onClose={close} />
-  ));
+  showComparison({ rev, label: rev }, null, { paths, repositories });
+}
+
+function showComparison(from: Revision, to: Revision | null, scope?: ScopedComparison) {
+  if (!isTauri()) {
+    openDialog((close) => <ChangesBetweenDialog from={from} to={to} scope={scope} onClose={close} />);
+    return;
+  }
+  const comparison = { from, to, scope: scope ?? null, repo: currentRepo() };
+  void call(commands.windowOpenComparison(comparison, windowBackgroundHex())).catch((error) =>
+    notifications().notify({ level: "error", title: "Could not open comparison", body: String(error) }),
+  );
 }
 
 interface Revision {
@@ -518,11 +566,18 @@ export function ChangesBetweenDialog({
   to,
   scope,
   onClose,
+  native = false,
+  onCaption,
+  onShowDiff,
 }: {
   from: Revision;
   to: Revision | null;
   scope?: ScopedComparison;
   onClose: () => void;
+  /** Content of the comparison window rather than a dialog: its caption goes to `onCaption`. */
+  native?: boolean;
+  onCaption?: (caption: string) => void;
+  onShowDiff?: (data: DiffData) => void;
 }) {
   const [root] = useState(currentRepoRoot);
   const [repo] = useState(currentRepo);
@@ -609,27 +664,21 @@ export function ChangesBetweenDialog({
   const skipped = result?.skippedPaths.map((path) => displayPath(path)) ?? [];
   const skippedNames = skipped.slice(0, 5).join(", ");
   const skippedLabel = skipped.length > 5 ? tx`${skippedNames} and ${skipped.length - 5} more` : skippedNames;
-  return (
-    <Dialog
-      open
-      title={files ? `${title} — ${count}` : title}
-      onClose={onClose}
-      width={input ? 1100 : 680}
-      buttons={[
-        {
-          label: "Show Diff",
-          role: "default",
-          disabled: !current,
-          onClick: () => {
-            if (current) {
-              void openDiff(diffFor(current));
-              onClose();
-            }
-          },
-        },
-        { label: "Close", role: "cancel" },
-      ]}
-    >
+  const caption = files ? `${title} — ${count}` : title;
+  useEffect(() => {
+    if (native) onCaption?.(caption);
+  }, [native, onCaption, caption]);
+  const showDiff = () => {
+    if (!current) return;
+    if (onShowDiff) onShowDiff(diffFor(current));
+    else {
+      void openVcsDiff(diffFor(current));
+      // A diff window opens on top of this list (#1863); an editor tab would sit behind it.
+      if (!vcsDiffInFront()) onClose();
+    }
+  };
+  const contents = (
+    <>
       {error && (
         <div className={styles.error} role="alert">
           {error}
@@ -684,6 +733,34 @@ export function ChangesBetweenDialog({
           }
         />
       ) : null}
+    </>
+  );
+  if (native)
+    return (
+      <div className={styles.comparisonWindow}>
+        <div className={styles.comparisonWindowBody}>{contents}</div>
+        <div className={styles.comparisonWindowFooter}>
+          <Button onClick={onClose}>Close</Button>
+          <Button variant="primary" disabled={!current} onClick={showDiff}>
+            Show Diff
+          </Button>
+        </div>
+      </div>
+    );
+  return (
+    <Dialog
+      open
+      title={caption}
+      onClose={onClose}
+      width={input ? 1100 : 680}
+      resizable="both"
+      className={styles.comparisonDialog}
+      buttons={[
+        { label: "Show Diff", role: "default", disabled: !current, onClick: showDiff },
+        { label: "Close", role: "cancel" },
+      ]}
+    >
+      {contents}
     </Dialog>
   );
 }

@@ -1,13 +1,13 @@
 /**
  * Update check and install. Both run as background tasks in the status bar: the
- * check while the request is out, the install with download progress and Cancel,
- * which its balloon shows too (the welcome screen has no status bar).
+ * check while the request is out, the install with download progress and Cancel.
+ * Their balloons show the progress too (the welcome screen has no status bar).
  * Every entry point (Help menu, toolbar gear, welcome screen, Search Everywhere,
  * the "is available" notification and its log entry) goes through these, so a
  * repeated click joins the running check or install instead of starting another.
  */
 import { Channel } from "@tauri-apps/api/core";
-import { t } from "@/platform/i18n";
+import { resolveLocale, t } from "@/platform/i18n";
 import {
   call,
   commands,
@@ -16,7 +16,9 @@ import {
   nextRequestId,
   type UpdateInfo,
   type UpdateProgress,
+  type UpdateSource,
 } from "@/platform/ipc";
+import { useProject } from "@/platform/project";
 import { notifications } from "@/workbench/contributions";
 import { upsertTask } from "@/workbench/tasks";
 import { UpdateBalloonBody } from "./UpdateBalloonBody";
@@ -27,6 +29,39 @@ export const INSTALL_TASK_ID = "app.update.install";
 
 function errorText(e: unknown) {
   return e instanceof Error ? e.message : String(e);
+}
+
+/** System Settings › Updates › Update source; `auto` picks the CNB mirror for the Chinese UI. */
+export function updateSource(): UpdateSource {
+  const { settings } = useProject.getState();
+  const chosen = settings?.general?.updateSource;
+  if (chosen === "github" || chosen === "cnb") return chosen;
+  return resolveLocale(settings?.appearance?.locale) === "zh" ? "cnb" : "github";
+}
+
+const SOURCE_NAMES: Record<UpdateSource, string> = { github: "GitHub", cnb: "CNB" };
+
+/** Makes `source` the update source; the retry it precedes uses it even if saving fails. */
+async function chooseSource(source: UpdateSource) {
+  try {
+    useProject.setState({
+      settings: await call(commands.settingsSet("global", "general.updateSource", JSON.stringify(source))),
+    });
+  } catch {
+    /* the choice still applies to this retry */
+  }
+}
+
+/**
+ * Offered once a download failed or was cancelled (likely too slow): the same install from
+ * the other source. A check never needs it, since it already falls back to the other source.
+ */
+function otherSourceAction(version: string, source: UpdateSource) {
+  const other: UpdateSource = source === "cnb" ? "github" : "cnb";
+  return {
+    label: t("app.update.retryWith", { source: SOURCE_NAMES[other] }),
+    run: () => void chooseSource(other).then(() => installUpdate(version, other)),
+  };
 }
 
 let checking: Promise<void> | null = null;
@@ -45,8 +80,18 @@ async function runCheck() {
   let abandon = () => {};
   const abandoned = new Promise<"cancelled">((resolve) => (abandon = () => resolve("cancelled")));
   upsertTask({ id: CHECK_TASK_ID, title, message: null, fraction: null, done: false, cancel: () => abandon() });
+  // No status bar (the welcome screen): the balloon is the only place the check can show.
+  const { project, lightEdit } = useProject.getState();
+  if (!installing && !project && !lightEdit)
+    notifications().notify({
+      level: "info",
+      title,
+      body: <UpdateBalloonBody task={CHECK_TASK_ID} />,
+      key: UPDATE_KEY,
+      userInitiated: true,
+    });
   try {
-    const r = await Promise.race([call(commands.appCheckUpdate()), abandoned]);
+    const r = await Promise.race([call(commands.appCheckUpdate(updateSource())), abandoned]);
     if (r === "cancelled") return;
     if (!r.enabled) {
       notifications().notify({
@@ -54,6 +99,7 @@ async function runCheck() {
         title: t("app.update.disabled"),
         body: t("app.update.disabledBody"),
         key: UPDATE_KEY,
+        userInitiated: true,
       });
     } else if (!r.update) {
       const info = await commands.appBuildInfo();
@@ -61,12 +107,19 @@ async function runCheck() {
         level: "info",
         title: t("app.update.none", { version: info.version }),
         key: UPDATE_KEY,
+        userInitiated: true,
       });
     } else if (!installing) {
-      notifyUpdate(r.update);
+      notifyUpdate(r.update, true);
     }
   } catch (e) {
-    notifications().notify({ level: "error", title: t("app.update.failed"), body: errorText(e), key: UPDATE_KEY });
+    notifications().notify({
+      level: "error",
+      title: t("app.update.failed"),
+      body: errorText(e),
+      key: UPDATE_KEY,
+      userInitiated: true,
+    });
   } finally {
     upsertTask({ id: CHECK_TASK_ID, title, message: null, fraction: 1, done: true });
   }
@@ -75,11 +128,12 @@ async function runCheck() {
 /** Silent check once per app start; only an available update is shown. */
 export async function checkForUpdatesOnStartup(): Promise<void> {
   if (!isTauri()) return;
-  const update = await commands.appStartupUpdateCheck().catch(() => null);
+  const update = await commands.appStartupUpdateCheck(updateSource()).catch(() => null);
   if (update) notifyUpdate(update);
 }
 
-export function notifyUpdate(update: UpdateInfo) {
+/** `userInitiated`: the update came from a manual check, so it pops up regardless of the balloon settings. */
+export function notifyUpdate(update: UpdateInfo, userInitiated = false) {
   notifications().notify({
     level: "info",
     title: t("app.update.available", { version: update.version }),
@@ -87,6 +141,7 @@ export function notifyUpdate(update: UpdateInfo) {
     sticky: true,
     key: UPDATE_KEY,
     actions: [{ label: t("app.update.install"), run: () => void installUpdate(update.version) }],
+    userInitiated,
   });
 }
 
@@ -108,13 +163,13 @@ export function progressText(p: UpdateProgress): { message: string; fraction: nu
 }
 
 /** Downloads and installs `version`, then restarts. A second call while one runs joins it. */
-export function installUpdate(version: string): Promise<void> {
+export function installUpdate(version: string, source = updateSource()): Promise<void> {
   if (!isTauri()) return Promise.resolve();
-  installing ??= runInstall(version).finally(() => (installing = null));
+  installing ??= runInstall(version, source).finally(() => (installing = null));
   return installing;
 }
 
-async function runInstall(version: string) {
+async function runInstall(version: string, source: UpdateSource) {
   const title = t("app.update.downloading", { version });
   const request = nextRequestId();
   const cancel = () => void commands.cancelRequest(request).catch(() => {});
@@ -127,6 +182,7 @@ async function runInstall(version: string) {
       sticky: true,
       key: UPDATE_KEY,
       actions,
+      userInitiated: true,
     });
   let installingShown = false;
   channel.onmessage = (p) => {
@@ -150,17 +206,27 @@ async function runInstall(version: string) {
   // Replaces the notification whose action is now spent.
   balloon([{ label: t("app.update.cancel"), run: cancel }]);
   try {
-    await call(commands.appInstallUpdate(request, channel));
+    await call(commands.appInstallUpdate(source, request, channel));
   } catch (e) {
     if (isCancelled(e)) {
-      notifications().notify({ level: "info", title: t("app.update.cancelled"), key: UPDATE_KEY });
+      notifications().notify({
+        level: "info",
+        title: t("app.update.cancelled"),
+        key: UPDATE_KEY,
+        actions: [otherSourceAction(version, source)],
+        userInitiated: true,
+      });
     } else {
       notifications().notify({
         level: "error",
         title: t("app.update.installFailed"),
         body: errorText(e),
         key: UPDATE_KEY,
-        actions: [{ label: t("app.update.retry"), run: () => void installUpdate(version) }],
+        actions: [
+          { label: t("app.update.retry"), run: () => void installUpdate(version, source) },
+          otherSourceAction(version, source),
+        ],
+        userInitiated: true,
       });
     }
     return;
@@ -176,6 +242,7 @@ async function runInstall(version: string) {
     sticky: true,
     key: UPDATE_KEY,
     actions: [{ label: t("app.update.restart"), run: restart }],
+    userInitiated: true,
   });
   restart();
 }

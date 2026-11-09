@@ -20,11 +20,15 @@ vi.mock("@/editor/lsp/popupStore", async (orig) => ({
 }));
 
 import { candidateKey, markerCandidates, type MarkerCandidate } from "./lineMarkers";
+import { Text } from "@codemirror/state";
 import {
+  affectsMarkers,
   cachedMarkers,
   emptyCache,
   enabledGroups,
   fillMarkers,
+  markersOf,
+  noteOtherChanges,
   openMarkerTargets,
   type MarkerDeps,
 } from "./implementationGutter";
@@ -296,6 +300,34 @@ describe("markers from server answers", () => {
     const kept = emptyCache();
     await expect(fillMarkers(SHAPE_PATH, candidates, ALL, cancelled.deps, kept)).rejects.toThrow();
     expect(kept.entries.size).toBe(0);
+  });
+});
+
+describe("marker cache across views", () => {
+  it("keeps a document's answers until its text or other files change", () => {
+    const doc = Text.of(["interface Shape {", "  double area();", "}"]);
+    const first = markersOf("/p/Shape.java", doc);
+    first.cache.entries.set("k", { inheritors: null });
+    // A remounted editor (tab switch) with the same text reuses the answers.
+    expect(markersOf("/p/Shape.java", doc).cache.entries.has("k")).toBe(true);
+    // Edited text starts over.
+    const edited = Text.of(["interface Shape {", "  double area();", "  double perimeter();", "}"]);
+    expect(markersOf("/p/Shape.java", edited).cache.entries.size).toBe(0);
+    // Other files changed: the answers are asked again, the outline is kept.
+    const again = markersOf("/p/Shape.java", edited);
+    again.cache.entries.set("k", { inheritors: null });
+    again.outline = { items: [], candidates: [] };
+    noteOtherChanges();
+    const after = markersOf("/p/Shape.java", edited);
+    expect(after.cache.entries.size).toBe(0);
+    expect(after.outline).toBe(again.outline);
+  });
+
+  it("ignores changes to build output", () => {
+    expect(affectsMarkers(["/p/target/classes/a/Shape.class"])).toBe(false);
+    expect(affectsMarkers(["/p/build/tmp/x.txt", "/p/.git/index", "C:\\p\\out\\Main.class"])).toBe(false);
+    expect(affectsMarkers(["/p/target/classes/a/Shape.class", "/p/src/main/java/a/Circle.java"])).toBe(true);
+    expect(affectsMarkers(["/p/src/builder/Shape.java"])).toBe(true);
   });
 });
 

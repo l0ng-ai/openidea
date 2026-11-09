@@ -14,6 +14,11 @@ export async function openLocation(
   pos?: Position | null,
   options: Omit<OpenOptions, "selection"> = {},
 ): Promise<void> {
+  if (path.startsWith("git-log:")) {
+    const { executeAction } = await import("@/platform/actions");
+    await executeAction("vcs.log.revealBookmark", path);
+    return;
+  }
   const service = maybeEditorService();
   if (!service) {
     notifications().notify({

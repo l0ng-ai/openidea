@@ -1,6 +1,8 @@
-import { describe, expect, it } from "vitest";
+import { commands } from "@/platform/ipc";
+import { provideEditorService } from "@/workbench/contributions";
+import { describe, expect, it, vi } from "vitest";
 import { Text } from "@codemirror/state";
-import { fragmentOffset, linkReference, looksLikePath, textReference } from "./links";
+import { fragmentOffset, followReference, linkReference, looksLikePath, resolvePath, textReference } from "./links";
 
 const at = (src: string, marker = "|") => {
   const offset = src.indexOf(marker);
@@ -28,6 +30,20 @@ describe("text references", () => {
     expect(textReference(text, offset)).toMatchObject({ kind: "path", value: "img/logo.svg" });
   });
 
+  it("finds fragment-only link targets", () => {
+    for (const source of ["[artist::order](#Artist-or|der)", '<a href="#Artist-or|der">order</a>']) {
+      const { text, offset } = at(source);
+      expect(textReference(text, offset)).toMatchObject({ kind: "path", value: "#Artist-order" });
+    }
+  });
+
+  it("does not treat arbitrary fragment strings as links", () => {
+    for (const source of ['const color = "#ff|f"', '<a id="Artist-or|der">', "url(#ic|on)"]) {
+      const { text, offset } = at(source);
+      expect(textReference(text, offset)).toBeNull();
+    }
+  });
+
   it("ignores prose and identifiers", () => {
     expect(looksLikePath("hello world.txt")).toBe(false);
     expect(looksLikePath("utf-8")).toBe(false);
@@ -41,6 +57,18 @@ describe("text references", () => {
 });
 
 describe("links and fragments", () => {
+  it("resolves local fragments without probing the filesystem", async () => {
+    const ref = { kind: "path" as const, from: 5, to: 20, value: "#Artist%2Dorder" };
+    expect(await resolvePath(ref, "/p/notes.md")).toEqual({
+      kind: "file",
+      from: 5,
+      to: 20,
+      path: "/p/notes.md",
+      fragment: "Artist-order",
+    });
+    expect(await resolvePath({ ...ref, value: "#bad%" }, "/p/notes.md")).toBeNull();
+  });
+
   it("picks the server link around the offset", () => {
     const text = Text.of(['<a href="b.html#top">']);
     const range = { start: { line: 0, col: 9 }, end: { line: 0, col: 19 } };
@@ -55,6 +83,39 @@ describe("links and fragments", () => {
     const html = '<p>\n<div class="x" id="main">';
     expect(fragmentOffset(html, "/i.html", "main")).toBe(html.indexOf("id="));
     expect(fragmentOffset("# Intro\n\n## Getting Started!\n", "/r.md", "getting-started")).toBe(9);
+    for (const path of ["/r.md", "/r.markdown", "/r.mdx"]) {
+      for (const attr of ["id", "name"]) {
+        const source = `[artist::order](#Artist-order)\n\n<a ${attr}="Artist-order"></a>`;
+        expect(fragmentOffset(source, path, "Artist-order")).toBe(source.indexOf(`${attr}=`));
+      }
+    }
     expect(fragmentOffset("x", "/i.html", "nope")).toBeNull();
   });
+});
+
+it("opens a container document link in the editor and resolves its fragment through virtual content", async () => {
+  const uri = "openidea-target://target/7/usr/lib/library.php";
+  const openFile = vi.fn(async () => {});
+  provideEditorService({ openFile } as never);
+  const read = vi.spyOn(commands, "lspVirtualDocument").mockResolvedValue({
+    status: "ok",
+    data: {
+      uri,
+      text: "<?php\nfunction library() {}\n",
+      title: "library.php",
+      description: null,
+      languageId: "php",
+      decompiled: false,
+    },
+  });
+  const disk = vi.spyOn(commands, "fsReadText");
+  try {
+    await followReference({ kind: "file", path: uri, fragment: "L2", from: 0, to: 1 });
+    expect(read).toHaveBeenCalledWith(uri);
+    expect(disk).not.toHaveBeenCalled();
+    expect(openFile).toHaveBeenCalledWith(uri, { focus: true, selection: { line: 1, col: 0 } });
+  } finally {
+    read.mockRestore();
+    disk.mockRestore();
+  }
 });

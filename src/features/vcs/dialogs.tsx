@@ -1,7 +1,7 @@
 /** Imperative dialogs for VCS actions, rendered by one overlay contribution. */
 import { Fragment, useState, type ReactNode } from "react";
 import { create } from "zustand";
-import { Checkbox, Dialog, Input, T } from "@/ui";
+import { Checkbox, Dialog, Input, T, useSanitizedField } from "@/ui";
 import { confirm } from "@/workbench/messages";
 import styles from "./common.module.css";
 
@@ -42,14 +42,20 @@ export interface PromptOptions {
   okLabel?: string;
   mono?: boolean;
   /** Returns an error message, or null when valid. */
-  validate?: (value: string) => string | null;
+  validate?: (value: string, overwrite: boolean) => string | null;
+  /** Rewrites the field as the user types or pastes (e.g. spaces in a branch name). */
+  sanitize?: (value: string) => string;
+  /** Show the prefilled value's problem (e.g. the branch exists) before it is edited. */
+  validateInitial?: boolean;
   /** Optional checkbox below the field. */
   checkbox?: { label: string; initial: boolean };
+  overwriteBranch?: (value: string) => boolean;
 }
 
 export interface PromptResult {
   value: string;
   checked: boolean;
+  overwrite?: boolean;
 }
 
 export function promptText(opts: PromptOptions): Promise<PromptResult | null> {
@@ -67,14 +73,17 @@ export function promptText(opts: PromptOptions): Promise<PromptResult | null> {
 }
 
 function PromptDialog(props: PromptOptions & { onDone: (r: PromptResult | null) => void }) {
-  const { title, label, initial = "", placeholder, okLabel = "OK", mono, validate, checkbox, onDone } = props;
+  const { title, label, initial = "", placeholder, okLabel = "OK", mono, validate, sanitize, checkbox, onDone } = props;
+  const { ref, clean } = useSanitizedField(sanitize);
   const [value, setValue] = useState(initial);
   const [checked, setChecked] = useState(checkbox?.initial ?? false);
-  const [touched, setTouched] = useState(false);
-  const error = validate ? validate(value) : value.trim() ? null : "Value must not be empty";
+  const [overwrite, setOverwrite] = useState(false);
+  const [touched, setTouched] = useState(!!props.validateInitial && initial !== "");
+  const canOverwrite = props.overwriteBranch?.(value) ?? false;
+  const error = validate ? validate(value, canOverwrite && overwrite) : value.trim() ? null : "Value must not be empty";
   const submit = () => {
     setTouched(true);
-    if (!error) onDone({ value: value.trim(), checked });
+    if (!error) onDone({ value: value.trim(), checked, ...(canOverwrite ? { overwrite } : {}) });
   };
   return (
     <Dialog
@@ -94,8 +103,13 @@ function PromptDialog(props: PromptOptions & { onDone: (r: PromptResult | null) 
           submit();
         }}
       >
-        {label && <label className={styles.fieldLabel}>{label}</label>}
+        {label && (
+          <label className={styles.fieldLabel}>
+            <T>{label}</T>
+          </label>
+        )}
         <Input
+          ref={ref}
           data-autofocus
           aria-label={label ?? title}
           value={value}
@@ -104,11 +118,14 @@ function PromptDialog(props: PromptOptions & { onDone: (r: PromptResult | null) 
           invalid={touched && !!error}
           onChange={(e) => {
             setTouched(true);
-            setValue(e.target.value);
+            const next = clean(e);
+            if (next.trim() !== value.trim()) setOverwrite(false);
+            setValue(next);
           }}
         />
         {touched && error && value && <div className={styles.error}>{error}</div>}
         {checkbox && <Checkbox checked={checked} onChange={setChecked} label={checkbox.label} />}
+        {canOverwrite && <Checkbox checked={overwrite} onChange={setOverwrite} label="Overwrite existing branch" />}
       </form>
     </Dialog>
   );
@@ -216,7 +233,9 @@ function ChooseManyDialog(props: ChooseManyOptions & { onDone: (r: string[] | nu
         </div>
         {customLabel && (
           <>
-            <label className={styles.fieldLabel}>{customLabel}</label>
+            <label className={styles.fieldLabel}>
+              <T>{customLabel}</T>
+            </label>
             <Input aria-label={customLabel} value={custom} onChange={(e) => setCustom(e.target.value)} />
           </>
         )}

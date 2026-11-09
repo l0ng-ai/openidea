@@ -7,15 +7,20 @@
 pub mod editor_settings;
 pub mod error;
 pub mod event;
+pub mod go;
 pub mod ids;
 pub mod ignored;
+pub mod input;
 pub mod inspection_settings;
 pub mod ipc_path;
 pub mod java_runtime;
 pub mod jsonc;
 pub mod output_encoding;
+pub mod path_mapping;
+pub mod platform;
 pub mod process;
 pub mod project_dir;
+pub mod project_roots;
 pub mod proxy_settings;
 pub mod remote_settings;
 pub mod settings;
@@ -24,6 +29,7 @@ pub mod text;
 pub mod tool_path;
 pub mod version_managers;
 pub mod workflow_settings;
+pub mod wsl;
 
 pub use error::{IdeError, IdeResult};
 pub use event::{EventSink, IdeEvent, NullSink, SharedSink};

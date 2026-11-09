@@ -16,6 +16,21 @@ args = ["--stdio"]
 root-markers = ["tsconfig.json", "jsconfig.json", "package.json"]
 install-hint = "npm i -g @vtsls/language-server"
 
+# Rename renames the symbol everywhere: no `import { a as b }` alias in the file renamed from.
+[language-servers.initialization-options.typescript.preferences]
+useAliasesForRenames = false
+
+[language-servers.initialization-options.javascript.preferences]
+useAliasesForRenames = false
+
+# Moving a file: the IDE asks for the import updates up front (preview, undo); the server
+# doesn't prompt after the move.
+[language-servers.initialization-options.typescript.updateImportsOnFileMove]
+enabled = "never"
+
+[language-servers.initialization-options.javascript.updateImportsOnFileMove]
+enabled = "never"
+
 [[language-servers]]
 name = "typescript-language-server"
 tsserver-project = true
@@ -25,6 +40,10 @@ command = "typescript-language-server"
 args = ["--stdio"]
 root-markers = ["tsconfig.json", "jsconfig.json", "package.json"]
 install-hint = "npm i -g typescript@6 typescript-language-server"
+
+# Rename renames the symbol everywhere: no `import { a as b }` alias in the file renamed from.
+[language-servers.initialization-options.preferences]
+providePrefixAndSuffixTextForRename = false
 
 [[language-servers]]
 name = "oxlint"
@@ -39,4 +58,4 @@ adapter = "js-debug"
 command = "js-debug-adapter"
 args = ["${port}", "127.0.0.1"]
 transport = "tcp"
-install-hint = "Install vscode-js-debug's DAP server (js-debug-dap-*.tar.gz from https://github.com/microsoft/vscode-js-debug/releases) as `js-debug-adapter`"
+install-hint = "Install JavaScript Debugger (vscode-js-debug) in Settings › Languages & Frameworks › Language Servers"

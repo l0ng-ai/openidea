@@ -208,7 +208,11 @@ async function withEditorsFollowing<T>(run: () => Promise<T>, done: (r: T) => Fi
 // ---------------------------------------------------------------------------
 // Run / undo
 
-let lastMove: { id: number; title: string } | null = null;
+let lastMove: { id: number; title: string; seq: number } | null = null;
+let fileOperations = 0;
+
+/** Orders file operations (move / rename, delete) for Undo, which reverts the latest. */
+export const nextFileOperation = () => ++fileOperations;
 
 /** The latest file refactoring that Undo reverts. */
 export function lastFileRefactoring() {
@@ -270,7 +274,7 @@ export async function runFileRefactoring(
     });
     return "failed";
   }
-  lastMove = { id, title };
+  lastMove = { id, title, seq: nextFileOperation() };
   if (collected.errors.length)
     notifications().notify({
       level: "warning",

@@ -30,6 +30,7 @@ export function WindowGroupTabs() {
                 drag.current = { label: tab.label, x: e.clientX, moved: false };
             }}
             onPointerMove={(e) => {
+              if (drag.current && !(e.buttons & 1)) drag.current = null; // reordered macOS tap, not a drag
               if (drag.current && Math.abs(e.clientX - drag.current.x) > 5) {
                 drag.current.moved = true;
                 e.currentTarget.setPointerCapture(e.pointerId);
@@ -61,13 +62,26 @@ export function WindowGroupTabs() {
             }}
             onContextMenu={(e) => {
               e.preventDefault();
+              const index = tabs.indexOf(tab);
               showContextMenu(e, [
                 {
                   label: "Move Tab to New Window",
                   disabled: !tab.current,
                   run: () => executeAction("window.detachTab"),
                 },
+                { kind: "separator" },
                 { label: "Close Tab", run: () => executeAction("window.closeTab", tab.label) },
+                { label: "Close Other Tabs", run: () => executeAction("window.closeOtherTabs", tab.label) },
+                {
+                  label: "Close Tabs to the Left",
+                  disabled: index <= 0,
+                  run: () => executeAction("window.closeTabsToLeft", tab.label),
+                },
+                {
+                  label: "Close Tabs to the Right",
+                  disabled: index >= tabs.length - 1,
+                  run: () => executeAction("window.closeTabsToRight", tab.label),
+                },
               ]);
             }}
           >

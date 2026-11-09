@@ -1,4 +1,5 @@
 mod output;
+mod target;
 
 use crate::Host;
 use crate::rpc::Dispatcher;
@@ -9,6 +10,15 @@ use std::path::PathBuf;
 /// Starts a session owned by this window: its events (and those of child sessions) go here only.
 pub async fn debug_start(host: &Host, window: &str, config: LaunchConfig) -> IdeResult<DebugSessionId> {
     host.require_trust(window)?;
+    let target_id = config
+        .extra_json
+        .as_deref()
+        .and_then(|s| serde_json::from_str::<serde_json::Value>(s).ok())
+        .and_then(|v| v.get("__runTarget").and_then(|v| v.as_str()).map(str::to_owned));
+    if let Some(id) = target_id {
+        let owner = SessionOwner::new(host.owner_window(window), host.window_sink(window));
+        return target::start(host, window, config, owner, id).await;
+    }
     let mut config = match_java_debug_encoding(config, cfg!(windows));
     if config.adapter == "debugpy"
         && config.request == "launch"
@@ -28,9 +38,11 @@ pub async fn debug_start(host: &Host, window: &str, config: LaunchConfig) -> Ide
         let settings = settings.clone();
         config = host
             .blocking(move || {
-                ide_sdk::go::debug_environment(&root, &settings, &mut config.env);
+                ide_sdk::go::configure_environment(&root, &settings, &mut config.env);
                 ide_sdk::go::apply_to_debug(
                     &mut config.env,
+                    &mut config.program,
+                    &mut config.args,
                     &mut config.extra_json,
                     &settings.languages.go.build_tags,
                 )?;
@@ -73,8 +85,20 @@ pub async fn debug_start(host: &Host, window: &str, config: LaunchConfig) -> Ide
         config.extra_json = Some(extra.to_string());
     }
     let root = config.cwd.clone().map(PathBuf::from).unwrap_or_default();
+    let mut ruby_tools = Vec::new();
+    if config.adapter == "rdbg" && config.request == "launch" {
+        let project_root = host.project(window).map(|p| p.root.clone()).unwrap_or_else(|_| root.clone());
+        let (dir, settings) = (root.clone(), settings.clone());
+        (config, ruby_tools) = host
+            .blocking(move || {
+                let tools = ide_sdk::ruby::debug_environment(&project_root, &dir, &settings, &mut config.env);
+                Ok((config, tools))
+            })
+            .await?;
+    }
     let custom = |command: &str| {
-        let path = ide_sdk::apply::tool_command(&root, &settings, command)?;
+        let path = ide_sdk::apply::tool_command(&root, &settings, command)
+            .or_else(|| ruby_tools.into_iter().find(|(name, _)| *name == command).map(|(_, path)| path))?;
         Some(path.to_string_lossy().into_owned())
     };
     host.require_trust(window)?;
@@ -162,6 +186,19 @@ pub async fn debug_pause(host: &Host, _window: &str, session: DebugSessionId, th
     host.debugger.pause(session, thread_id).await
 }
 
+/// Types `text` into the session's program (a `runInTerminal` program).
+pub async fn debug_send_input(host: &Host, _window: &str, session: DebugSessionId, text: String) -> IdeResult<()> {
+    host.debugger.send_input(session, &text)
+}
+
+pub async fn debug_hot_reload(host: &Host, _window: &str, session: DebugSessionId) -> IdeResult<()> {
+    host.debugger.hot_reload(session).await
+}
+
+pub async fn debug_hot_restart(host: &Host, _window: &str, session: DebugSessionId) -> IdeResult<()> {
+    host.debugger.hot_restart(session).await
+}
+
 pub async fn debug_step(
     host: &Host,
     _window: &str,
@@ -186,6 +223,19 @@ pub async fn debug_run_to(
 
 pub async fn debug_stop(host: &Host, _window: &str, session: DebugSessionId) -> IdeResult<()> {
     host.debugger.stop(session).await
+}
+
+/// The adapter's completions for an expression being typed in the frame `frame_id`.
+pub async fn debug_completions(
+    host: &Host,
+    _window: &str,
+    session: DebugSessionId,
+    frame_id: Option<i64>,
+    text: String,
+    line: u32,
+    column: u32,
+) -> IdeResult<Vec<ide_dap::DebugCompletion>> {
+    host.debugger.completions(session, frame_id, text, line, column).await
 }
 
 /// Evaluate with an explicit DAP context: `repl`, `watch`, `hover` or `clipboard`.
@@ -311,6 +361,14 @@ pub async fn debug_attachable_processes(_host: &Host, _window: &str) -> IdeResul
         .map_err(|e| ide_core::IdeError::internal(format!("listing processes failed: {e}")))?
 }
 
+/// A loopback port that is free right now, for a debug agent the launch line starts
+/// (`address=127.0.0.1:<port>`) — used when its "Listening for transport" line never reaches
+/// the console (a Surefire fork holds it until the tests run, which `suspend=y` prevents).
+pub async fn debug_free_port(host: &Host, window: &str) -> IdeResult<u16> {
+    host.require_trust(window)?;
+    ide_dap::adapter::free_port().map_err(ide_core::IdeError::from)
+}
+
 /// Remote JVM Debug in listen mode: waits (cancellable through `request`) for the remote
 /// JVM to connect to `host:port`; returns the loopback port java-debug attaches to.
 pub async fn debug_listen_for_jvm(
@@ -360,6 +418,9 @@ pub(crate) fn register(d: &mut Dispatcher) {
         "debug_pause",
         |c| async move { debug_pause(&c.host, &c.window, c.arg("session")?, c.arg("threadId")?).await },
     );
+    d.add("debug_send_input", |c| async move {
+        debug_send_input(&c.host, &c.window, c.arg("session")?, c.arg("text")?).await
+    });
     d.add("debug_step", |c| async move {
         debug_step(&c.host, &c.window, c.arg("session")?, c.arg("threadId")?, c.arg("kind")?).await
     });
@@ -376,6 +437,18 @@ pub(crate) fn register(d: &mut Dispatcher) {
         .await
     });
     d.add("debug_stop", |c| async move { debug_stop(&c.host, &c.window, c.arg("session")?).await });
+    d.add("debug_completions", |c| async move {
+        debug_completions(
+            &c.host,
+            &c.window,
+            c.arg("session")?,
+            c.arg("frameId")?,
+            c.arg("text")?,
+            c.arg("line")?,
+            c.arg("column")?,
+        )
+        .await
+    });
     d.add("debug_evaluate_in", |c| async move {
         debug_evaluate_in(
             &c.host,
@@ -437,6 +510,7 @@ pub(crate) fn register(d: &mut Dispatcher) {
         .await
     });
     d.add("debug_attachable_processes", |c| async move { debug_attachable_processes(&c.host, &c.window).await });
+    d.add("debug_free_port", |c| async move { debug_free_port(&c.host, &c.window).await });
     d.add("debug_listen_for_jvm", |c| async move {
         debug_listen_for_jvm(&c.host, &c.window, c.arg("request")?, c.arg("host")?, c.arg("port")?).await
     });

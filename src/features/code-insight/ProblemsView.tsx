@@ -1,9 +1,11 @@
+import { menuGroupItems } from "@/workbench/contributions";
 /** Problems tool window: "File" (current editor) and "Project Errors" tabs. */
 import { useCallback, useMemo, useRef, useState, type KeyboardEvent } from "react";
 import { create } from "zustand";
 import clsx from "clsx";
 import type { Diagnostic, Severity } from "@/bindings";
 import { useEditorRegistry } from "@/editor/api";
+import { previewColors } from "@/editor/lineTokens";
 import { executeAction } from "@/platform/actions";
 import { formatBinding, hasPrimaryModifier, hostBinding, shortcutLabel } from "@/platform/keymap";
 import { basename, relativeDir, useProject } from "@/platform/project";
@@ -301,7 +303,7 @@ export function ProblemsView() {
       );
       return (
         <span className={styles.row}>
-          <Icon name={fileIconName(basename(n.path))} size={16} className={styles.fileIcon} />
+          <Icon name={fileIconName(basename(n.path), n.path)} size={16} className={styles.fileIcon} />
           <span
             className={clsx(styles.fileName, c.error > 0 && styles.fileError, state.selected && styles.selectedText)}
           >
@@ -386,6 +388,7 @@ export function ProblemsView() {
             run: () => copy(n),
           },
           ...inspectionMenu(n.kind === "diag" ? diagInspection(map, n.path, n.d) : null),
+          ...menuGroupItems("problems", { paths: [t.path], line: t.d.range.start.line, column: t.d.range.start.col }),
         ]);
       }}
       activateExpandable={false}
@@ -409,6 +412,7 @@ export function ProblemsView() {
                 line={selected?.d.range.start.line ?? 0}
                 highlights={selected ? [diagHighlight(selected.d)] : []}
                 load={previewText}
+                colorize={previewColors}
               />
             </SplitPanel>
           </SplitGroup>

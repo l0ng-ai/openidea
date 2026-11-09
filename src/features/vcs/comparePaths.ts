@@ -2,7 +2,7 @@ import { call, commands } from "@/platform/ipc";
 import { notifications } from "@/workbench/contributions";
 import { tx } from "@/platform/i18n";
 import { chooseRepositoryRevision } from "./RevisionChooser";
-import { openDiff } from "./diffInput";
+import { openVcsDiff } from "./diffInput";
 import { showPathComparison } from "./operations";
 import { displayPath } from "./compare";
 
@@ -25,7 +25,7 @@ export async function comparePathsWithRevision(paths: string[], revision?: strin
       });
   if (!choice) return;
   if (scope.singleFile && !revision) {
-    await openDiff({
+    await openVcsDiff({
       path: paths[0]!,
       left: { type: "rev", rev: choice.rev, label: choice.rev },
       right: { type: "worktree" },

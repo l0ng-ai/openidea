@@ -15,6 +15,8 @@ serde_json.workspace = true
 specta.workspace = true
 gix = { workspace = true, features = ["sha1", "sha256", "status", "blob-diff", "revision", "index", "dirwalk", "parallel"] }
 tracing.workspace = true
+redb.workspace = true
+blake3.workspace = true
 tempfile.workspace = true
 which = "8"
 regex-lite = "0.1"

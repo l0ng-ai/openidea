@@ -1,0 +1,23 @@
+id = "test.diagnostics"
+name = "Diagnostics fixture"
+version = "0.1.0"
+engines.openidea = "^1.3"
+wasm = "dist/plugin.wasm"
+[capabilities]
+required = ["project.read"]
+
+[[contributes.providers]]
+kinds = ["diagnostics"]
+languages = ["text", "plaintext"]
+
+[[contributes.commands]]
+id = "publish"
+title = "Publish fixture diagnostic"
+
+[[contributes.commands]]
+id = "calls"
+title = "Diagnostics fixture call count"
+
+[[contributes.commands]]
+id = "wait"
+title = "Wait for diagnostics fixture"

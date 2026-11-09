@@ -4,7 +4,7 @@ use crate::state::AppState;
 use ide_core::{DocId, IdeResult, IpcPath, Pos};
 #[allow(unused_imports)]
 pub use ide_host::ops::nav::*;
-use ide_index::{FileMatch, IndexStatus, SymbolFilter, SymbolMatch};
+use ide_index::{ExtensionCount, FileMatch, IndexStatus, SymbolFilter, SymbolMatch};
 use ide_language::FileReference;
 use ide_workspace::file_refs::PathCompletion;
 use std::path::PathBuf;
@@ -18,8 +18,21 @@ pub fn index_status(window: Window, state: State<'_, AppState>) -> IdeResult<Ind
 
 #[tauri::command]
 #[specta::specta]
+pub fn index_file_extensions(window: Window, state: State<'_, AppState>) -> IdeResult<Vec<ExtensionCount>> {
+    ide_host::ops::nav::index_file_extensions(&state.host, window.label())
+}
+
+#[tauri::command]
+#[specta::specta]
 pub fn find_files(window: Window, state: State<'_, AppState>, query: String, limit: u32) -> IdeResult<Vec<FileMatch>> {
     ide_host::ops::nav::find_files(&state.host, window.label(), query, limit)
+}
+
+/// Folders holding indexed files, for `@` references.
+#[tauri::command]
+#[specta::specta]
+pub fn find_dirs(window: Window, state: State<'_, AppState>, query: String, limit: u32) -> IdeResult<Vec<FileMatch>> {
+    ide_host::ops::nav::find_dirs(&state.host, window.label(), query, limit)
 }
 
 /// Spring Web mapping sources for the request-path index of Search Everywhere.

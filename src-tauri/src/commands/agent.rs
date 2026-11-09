@@ -36,6 +36,32 @@ pub fn agent_providers(window: Window, state: State<'_, AppState>) -> IdeResult<
     agent::providers(&state.host, window.label())
 }
 
+/// Overrides built-in agent `id`'s command with `command` (its agent file keeps the
+/// built-in's driver and arguments), or returns it to auto-detection with `None`.
+#[tauri::command]
+#[specta::specta]
+pub fn agent_set_command(
+    window: Window,
+    state: State<'_, AppState>,
+    id: String,
+    command: Option<String>,
+) -> IdeResult<()> {
+    agent::set_command(&state.host, window.label(), id, command)
+}
+
+/// Environment variables built-in agent `id` starts with (saved in its agent file);
+/// an empty map clears them.
+#[tauri::command]
+#[specta::specta]
+pub fn agent_set_env(
+    window: Window,
+    state: State<'_, AppState>,
+    id: String,
+    env: std::collections::BTreeMap<String, String>,
+) -> IdeResult<()> {
+    agent::set_env(&state.host, window.label(), id, env)
+}
+
 /// Agents of the ACP Registry this machine can run, with what is installed; the list
 /// saved earlier when the registry is unreachable. Cancel with `cancel_request(request)`.
 #[tauri::command]
@@ -199,6 +225,18 @@ pub fn agent_cancel(
     agent::cancel(&state.host, window.label(), task, subagent)
 }
 
+/// Stops one of the task's background tasks.
+#[tauri::command]
+#[specta::specta]
+pub async fn agent_stop_background(
+    window: Window,
+    state: State<'_, AppState>,
+    task: String,
+    background: String,
+) -> IdeResult<()> {
+    agent::stop_background(&state.host, window.label(), task, background).await
+}
+
 /// Answers a permission request; `option: null` cancels it.
 #[tauri::command]
 #[specta::specta]
@@ -222,6 +260,12 @@ pub fn agent_archive(window: Window, state: State<'_, AppState>, task: String) -
 #[specta::specta]
 pub fn agent_unarchive(window: Window, state: State<'_, AppState>, task: String) -> IdeResult<()> {
     agent::unarchive(&state.host, window.label(), task)
+}
+
+#[tauri::command]
+#[specta::specta]
+pub fn agent_rename(window: Window, state: State<'_, AppState>, task: String, title: String) -> IdeResult<()> {
+    agent::rename(&state.host, window.label(), task, title)
 }
 
 #[tauri::command]

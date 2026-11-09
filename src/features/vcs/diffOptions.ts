@@ -7,6 +7,8 @@ import { Change, Chunk, type DiffConfig } from "@codemirror/merge";
 import type { ChangeDesc, Text } from "@codemirror/state";
 import { compareTexts, type ComparisonPolicy, type LineFragment } from "./comparison";
 import { DiffTooBigError } from "./comparison/lcs";
+import { findMovedBlocks, type MovedBlock } from "./comparison/moves";
+import { stripSpaces } from "./comparison/text";
 
 export type DiffMode = "split" | "unified";
 export type IgnorePolicy = "none" | "trim" | "whitespace" | "whitespaceAndLines";
@@ -118,6 +120,15 @@ export function ideaDiffConfig(ignore: IgnorePolicy, highlight: HighlightPolicy)
 /** The line fragment a chunk was built from. */
 const fragments = new WeakMap<Chunk, LineFragment>();
 
+interface DiffInsights {
+  readonly moves: readonly MovedBlock[];
+  readonly whitespaceOnly: boolean;
+}
+
+const insights = new WeakMap<readonly Chunk[], DiffInsights>();
+const NO_INSIGHTS: DiffInsights = { moves: [], whitespaceOnly: false };
+export const getDiffInsights = (chunks: readonly Chunk[]): DiffInsights => insights.get(chunks) ?? NO_INSIGHTS;
+
 /**
  * Whether the chunk has IDEA's inner fragments (its words were compared):
  * such a chunk gets the lighter line background (TextDiffType "ignored"
@@ -131,15 +142,24 @@ export function ideaChunks(a: Text, b: Text, ignore: IgnorePolicy, highlight: Hi
 }
 
 function toChunks(a: Text, b: Text, idea: IdeaDiff): readonly Chunk[] {
+  const textA = a.toString();
+  const textB = b.toString();
+  const remember = (chunks: readonly Chunk[]) => {
+    insights.set(chunks, {
+      moves: findMovedBlocks(a, b, chunks),
+      whitespaceOnly: textA !== textB && stripSpaces(textA) === stripSpaces(textB),
+    });
+    return chunks;
+  };
   let compared: LineFragment[];
   try {
-    compared = compareTexts(a.toString(), b.toString(), idea);
+    compared = compareTexts(textA, textB, idea);
   } catch (error) {
     if (!(error instanceof DiffTooBigError)) throw error;
     // Repeated lines can exhaust IDEA's search. Keep the viewer usable with a bounded, coarser diff.
-    return build.call(Chunk, a, b, { scanLimit: 500 });
+    return remember(build.call(Chunk, a, b, { scanLimit: 500 }));
   }
-  return compared.map((f) => {
+  const chunks = compared.map((f) => {
     // `to` is one past the last line's end, past the document for its last line.
     const toA = f.startLine1 === f.endLine1 ? f.startOffset1 : f.endLine1 === a.lines ? a.length + 1 : f.endOffset1;
     const toB = f.startLine2 === f.endLine2 ? f.startOffset2 : f.endLine2 === b.lines ? b.length + 1 : f.endOffset2;
@@ -150,6 +170,7 @@ function toChunks(a: Text, b: Text, idea: IdeaDiff): readonly Chunk[] {
     fragments.set(chunk, f);
     return chunk;
   });
+  return remember(chunks);
 }
 
 // Every chunk computation of MergeView and unifiedMergeView goes through these.

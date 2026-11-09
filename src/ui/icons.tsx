@@ -21,6 +21,7 @@
  */
 import { useId, useMemo, type CSSProperties } from "react";
 import clsx from "clsx";
+import { create } from "zustand";
 import styles from "./icons.module.css";
 
 const RAW = import.meta.glob<string>(["./expui/**/*.svg", "./openidea/**/*.svg"], {
@@ -56,6 +57,9 @@ const ICONS = {
   "gradle-project": "gradle/gradle",
   "gradle-module": "gradle/gradleSubproject",
   "spring-boot": "openidea/runConfigurations/springBoot",
+  tomcat: "openidea/runConfigurations/tomcat",
+  server: "openidea/runConfigurations/tomcat",
+  visualgc: "openidea/runConfigurations/visualgc",
   file: "fileTypes/text",
   "file-unknown": "fileTypes/unknown",
   "file-code": "fileTypes/anyType",
@@ -63,6 +67,7 @@ const ICONS = {
   "file-json": "fileTypes/json",
   "file-md": "fileTypes/markdown",
   "file-image": "fileTypes/image",
+  paperclip: "openidea/general/paperclip",
   "file-config": "fileTypes/config",
   "file-python": "fileTypes/python",
   "file-jupyter": "fileTypes/jupyter",
@@ -76,6 +81,8 @@ const ICONS = {
   "file-npm": "openidea/fileTypes/npm",
   "file-vue": "fileTypes/vue",
   "file-svelte": "openidea/fileTypes/svelte",
+  "file-jsp": "openidea/fileTypes/jsp",
+  "file-astro": "fileTypes/astro",
   "file-yaml": "fileTypes/yaml",
   "file-toml": "fileTypes/toml",
   "file-html": "fileTypes/html",
@@ -144,6 +151,22 @@ const ICONS = {
   "file-latex": "openidea/fileTypes/latex",
   "file-rst": "fileTypes/rst",
   "file-docker": "fileTypes/docker",
+  "docker-connected": "docker/dockerConnected",
+  "docker-compose-running": "docker/containersRunning",
+  "docker-compose-stopped": "docker/composeProjectStopped",
+  "docker-compose-service-running": "docker/dockerComposeServiceUp",
+  "docker-compose-service-stopped": "docker/dockerComposeServiceStopped",
+  "docker-devcontainer": "docker/devContainers",
+  "docker-containers": "docker/containersList",
+  "docker-images": "docker/imagesList",
+  "docker-networks": "docker/network",
+  "docker-volumes": "docker/volume",
+  "docker-container-running": "docker/singleRunningContainer",
+  "docker-container-stopped": "docker/singleStoppedContainer",
+  "docker-image": "docker/singleImage",
+  "docker-registry": "docker/dockerRegistry",
+  "docker-pull": "docker/pullImage",
+  "docker-push": "docker/pushImage",
   "file-makefile": "fileTypes/makefile",
   "file-cmake": "openidea/fileTypes/cmake",
   "file-bazel": "fileTypes/bazel",
@@ -181,6 +204,7 @@ const ICONS = {
   "toolwindow-changes": "toolwindows/changes",
   "toolwindow-database": "openidea/toolwindows/database",
   "toolwindow-agents": "openidea/toolwindows/agents",
+  "toolwindow-graphql": "openidea/toolwindows/graphql",
   // Coding agents (logos via Paseo)
   "agent-claude": "openidea/agents/claude",
   "agent-codex": "openidea/agents/codex",
@@ -215,12 +239,18 @@ const ICONS = {
   word: "inline/exactWords",
   "text-match": "openidea/nodes/textMatch",
   "open-in-tool-window": "general/openInToolWindow",
-  "preserve-case": "openidea/inline/preserveCase",
-  "new-line": "openidea/inline/newLine",
-  "search-history": "openidea/inline/searchHistory",
+  "preserve-case": "inline/preserveCase",
+  "new-line": "inline/newLine",
+  "search-history": "inline/searchHistory",
   filter: "general/filter",
   refresh: "general/refresh",
+  quote: "openidea/general/quote",
   settings: "general/settings",
+  help: "openidea/general/help",
+  "page-first": "openidea/general/pageFirst",
+  "page-last": "openidea/general/pageLast",
+  sliders: "openidea/general/sliders",
+  "graphql-variables": "openidea/general/graphqlVariables",
   layout: "general/layout",
   split: "general/splitVertically",
   "split-horizontal": "general/splitHorizontally",
@@ -301,8 +331,10 @@ const ICONS = {
   "db-disconnect": "openidea/database/disconnect",
   "db-sqlite": "openidea/database/sqlite",
   "db-postgres": "openidea/database/postgres",
+  "db-clickhouse": "openidea/database/clickhouse",
   "db-mysql": "openidea/database/mysql",
   "db-sqlserver": "openidea/database/sqlserver",
+  "db-oracle": "openidea/database/oracle",
   "db-mariadb": "openidea/database/mariadb",
   "db-aurora": "openidea/database/aurora",
   "db-redshift": "openidea/database/redshift",
@@ -342,6 +374,7 @@ const ICONS = {
   profile: "run/profile",
   "toolwindow-coverage": "toolwindows/coverage",
   "toolwindow-profiler": "toolwindows/profiler",
+  "toolwindow-logcat": "openidea/fileTypes/log",
   "gutter-run": "gutter/run",
   "gutter-run-all": "actions/runAll",
   "gutter-run-passed": "gutter/runSuccess",
@@ -352,6 +385,7 @@ const ICONS = {
   "gutter-overriding": "gutter/overridingMethod",
   stop: "run/stop",
   rerun: "run/rerun",
+  "hot-reload": "openidea/general/hotReload",
   "rerun-filled": "run/rerun_stroke",
   "restart-debug": "run/restartDebug",
   "restart-debug-filled": "run/restartDebug_stroke",
@@ -399,6 +433,8 @@ const ICONS = {
   library: "nodes/library",
   // VCS
   commit: "vcs/commit",
+  "resolve-continue": "vcs/resolveContinue",
+  "vcs-abort": "vcs/abort",
   branch: "general/vcs",
   "git-pull": "vcs/update",
   "git-push": "vcs/push",
@@ -408,6 +444,18 @@ const ICONS = {
   "vcs-outgoing": "vcs/changesPush@12x12",
   diff: "vcs/diff",
   revert: "vcs/revert",
+  // The merge tool's own controls (IntelliJ's AllIcons.Diff)
+  "diff-apply-left": "diff/applyNotConflictsLeft",
+  "diff-apply-all": "diff/applyNotConflicts",
+  "diff-apply-right": "diff/applyNotConflictsRight",
+  "diff-arrow-right": "diff/arrowRight@14x14",
+  "diff-arrow-left": "diff/arrow@14x14",
+  "diff-arrow-right-down": "diff/arrowRightDown@14x14",
+  "diff-arrow-left-down": "diff/arrowLeftDown@14x14",
+  "diff-magic": "diff/magicResolve@14x14",
+  "diff-magic-toolbar": "diff/magicResolveToolbar",
+  "diff-remove": "diff/remove@14x14",
+  "diff-revert": "diff/revert@14x14",
   shelve: "vcs/shelve",
   unshelve: "vcs/unshelve",
   changelist: "vcs/changelist",
@@ -419,6 +467,7 @@ const ICONS = {
   // Code review / GitHub pull requests (collaboration-tools, GitHub plugin, DVCS)
   "branch-label": "vcs/branchLabel",
   "current-branch-label": "vcs/currentBranchLabel",
+  github: "vcs/vendors/github",
   "github-pr-open": "github/pullRequestOpen",
   "github-pr-closed": "github/pullRequestClosed",
   "github-pr-draft": "github/pullRequestDraft",
@@ -517,13 +566,85 @@ const SYMBOL_ICONS: Partial<Record<SymbolKind, string>> = {
   text: "fileTypes/text",
 };
 
+const NOT_SYMBOLS: ReadonlySet<string> = new Set(["file", "text"]);
+
+export function isSymbolIcon(name: string): boolean {
+  if (name.startsWith("symbol-")) return true;
+  return Object.hasOwn(SYMBOL_ICONS, name) && !NOT_SYMBOLS.has(name);
+}
+
 export type IconName = BaseName | `symbol-${SymbolKind}`;
 
 export const ICON_NAMES = Object.keys(ICONS) as BaseName[];
 
 function iconPath(name: string): string | undefined {
-  if (name.startsWith("symbol-")) return SYMBOL_ICONS[name.slice(7) as SymbolKind];
-  return (ICONS as Record<string, string>)[name];
+  const themed = fileIconTheme?.icon?.(name);
+  if (themed && EXTERNAL.has(themed)) return themed;
+  if (name.startsWith(EXTERNAL_PREFIX)) return EXTERNAL.has(name) ? name : undefined;
+  if (name.startsWith("symbol-")) {
+    const kind = name.slice(7);
+    return Object.hasOwn(SYMBOL_ICONS, kind) ? SYMBOL_ICONS[kind as SymbolKind] : undefined;
+  }
+  return Object.hasOwn(ICONS, name) ? (ICONS as Record<string, string>)[name] : undefined;
+}
+
+// ---------------------------------------------------------------------------
+// Icons supplied at runtime (plugin icon themes). The markup was sanitised by
+// the backend (`ide_host::plugins::sanitize_svg`); names are `ext:<source>/<icon>`.
+
+const EXTERNAL_PREFIX = "ext:";
+const EXTERNAL = new Map<string, string>();
+
+/** Registers icons by name (`ext:…`); the returned function removes them. */
+export function registerExternalIcons(icons: ReadonlyArray<readonly [name: string, svg: string]>): () => void {
+  const names: string[] = [];
+  for (const [name, svg] of icons) {
+    if (!name.startsWith(EXTERNAL_PREFIX)) continue;
+    EXTERNAL.set(name, svg);
+    prepared.delete(`${name}|16`);
+    prepared.delete(`${name}|20`);
+    names.push(name);
+  }
+  return () => {
+    for (const name of names) {
+      EXTERNAL.delete(name);
+      prepared.delete(`${name}|16`);
+      prepared.delete(`${name}|20`);
+    }
+  };
+}
+
+/** A file icon theme (plugin `iconThemes`). Each method returns an icon name, or null for the built-in one. */
+export interface FileIconTheme {
+  file(fileName: string, path?: string | null): string | null;
+  /** Plain folders only: folders with a role (source root, excluded, …) keep their built-in icons. */
+  folder(folderName: string, expanded: boolean, holdsOpenFile?: boolean, path?: string | null): string | null;
+  icon?(name: string): string | null;
+}
+
+let fileIconTheme: FileIconTheme | null = null;
+
+/** Bumped when the file icon theme changes; file lists subscribe to redraw their icons. */
+export const useFileIconRevision = create<number>(() => 0);
+
+/**
+ * Sets the file icon theme: consulted after the user's own file type
+ * associations and before the built-in icons.
+ */
+export function setFileIconTheme(theme: FileIconTheme | null) {
+  if (fileIconTheme === theme) return;
+  fileIconTheme = theme;
+  useFileIconRevision.setState((n) => n + 1, true);
+}
+
+/** The icon theme's icon for a plain folder, or null to keep the built-in one. */
+export function themedFolderIconName(
+  folderName: string,
+  expanded = false,
+  holdsOpenFile = false,
+  path: string | null = null,
+): IconName | null {
+  return (fileIconTheme?.folder(folderName, expanded, holdsOpenFile, path) ?? null) as IconName | null;
 }
 
 // ---------------------------------------------------------------------------
@@ -547,6 +668,7 @@ interface Prepared {
 }
 
 function raw(path: string): string | undefined {
+  if (path.startsWith(EXTERNAL_PREFIX)) return EXTERNAL.get(path);
   return RAW[path.startsWith("openidea/") ? `./${path}.svg` : `./expui/${path}.svg`];
 }
 
@@ -590,6 +712,14 @@ function build(lightSrc: string, darkSrc: string | undefined, keepColours: boole
 }
 
 function prepare(path: string, large: boolean): Prepared | null {
+  if (path === ICONS.quote) {
+    return {
+      viewBox: "0 0 16 16",
+      html: '<path d="M3 3v10M6.5 4.5H13M6.5 8H13M6.5 11.5H11" stroke="currentColor" stroke-linecap="round" stroke-linejoin="round"/>',
+      hasIds: false,
+      mono: true,
+    };
+  }
   const key = `${path}|${large ? 20 : 16}`;
   let out = prepared.get(key);
   if (out !== undefined) return out;
@@ -621,6 +751,7 @@ export interface IconProps {
 }
 
 export function Icon({ name, size = 16, className, style, label }: IconProps) {
+  useFileIconRevision();
   const uid = useId();
   const path = iconPath(name);
   const p = (path && prepare(path, size >= 18)) || prepare(ICONS.file, size >= 18) || EMPTY;
@@ -649,13 +780,36 @@ let markupSeq = 0;
 
 /** SVG markup for non-React (CodeMirror DOM) callers; `null` when the name is unknown. */
 export function iconMarkup(name: string, size = 16, className?: string): string | null {
+  return markupAs(name, name, size, className);
+}
+
+function markupAs(name: string, shown: string, size: number, className?: string): string | null {
   const path = iconPath(name);
   const p = path && prepare(path, size >= 18);
   if (!p) return null;
   const cls = clsx(styles.icon, p.mono && styles.mono, className);
   const html = withIds(p, `m${++markupSeq}-`);
-  return `<svg class="${cls}" width="${size}" height="${size}" viewBox="${p.viewBox}" fill="none" aria-hidden="true" focusable="false">${html}</svg>`;
+  return `<svg class="${cls}" ${markupData(shown, size, className)} width="${size}" height="${size}" viewBox="${p.viewBox}" fill="none" aria-hidden="true" focusable="false">${html}</svg>`;
 }
+
+const attr = (v: string) => v.replace(/[&<>"]/g, (c) => `&#${c.charCodeAt(0)};`);
+
+function markupData(name: string, size: number, className?: string) {
+  const cls = className ? ` data-icon-class="${attr(className)}"` : "";
+  return `data-icon="${attr(name)}" data-icon-size="${size}"${cls}`;
+}
+
+function repaintMarkup() {
+  if (typeof document === "undefined") return;
+  for (const el of document.querySelectorAll<HTMLElement | SVGElement>("[data-icon][data-icon-size]")) {
+    const name = el.getAttribute("data-icon") ?? "";
+    const size = Number(el.getAttribute("data-icon-size")) || 16;
+    const className = el.getAttribute("data-icon-class") ?? undefined;
+    el.outerHTML = iconMarkupOrFallback(name, size, className);
+  }
+}
+
+useFileIconRevision.subscribe(repaintMarkup);
 
 /**
  * Gutter icon markup in the 14px gutter column. The plain play glyph fills its canvas, so it is
@@ -671,15 +825,15 @@ export function gutterIconMarkup(name: string): string | null {
  * (a symbol letter badge, else the generic file icon). Plain strings, so
  * CodeMirror callers need no React renderer.
  */
-export function iconMarkupOrFallback(name: string, size = 16): string {
-  const html = iconMarkup(name, size);
+export function iconMarkupOrFallback(name: string, size = 16, className?: string): string {
+  const html = iconMarkup(name, size, className);
   if (html !== null) return html;
   if (name.startsWith("symbol-")) {
     const kind = name.slice(7).replace(/[^\w-]/g, "");
     const letter = symbolLetter(kind).replace(/[&<>]/g, (c) => `&#${c.charCodeAt(0)};`);
-    return `<span class="${styles.symbol}" data-kind="${kind}" aria-hidden="true">${letter}</span>`;
+    return `<span class="${styles.symbol}" ${markupData(name, size, className)} data-kind="${kind}" aria-hidden="true">${letter}</span>`;
   }
-  return iconMarkup("file", size) ?? "";
+  return markupAs("file", name, size, className) ?? "";
 }
 
 export function hasIcon(name: string): boolean {
@@ -822,6 +976,8 @@ const EXT_ICONS = table({
   "file-tsx": "tsx",
   "file-vue": "vue",
   "file-svelte": "svelte",
+  "file-jsp": "jsp jspx jspf jsph tag tagf tagx",
+  "file-astro": "astro",
   "file-json": "json jsonc json5 jsonl ndjson geojson topojson webmanifest har avsc code-workspace code-snippets map",
   "file-md": "md mdx markdown mdown mkd mkdn mdwn ronn workbook",
   "file-rst": "rst",
@@ -866,7 +1022,7 @@ const EXT_ICONS = table({
   "file-perl": "pl pm pod psgi cgi",
   "file-c": "c",
   "file-h": "h hpp hh hxx h++",
-  "file-cpp": "cpp cc cxx c++ ipp tpp inl ixx cppm",
+  "file-cpp": "cpp cc cxx c++ ipp tpp inl ixx cppm ino",
   "file-objc": "m",
   "file-objcpp": "mm",
   "file-csharp": "cs csx",
@@ -874,7 +1030,7 @@ const EXT_ICONS = table({
   "file-swift": "swift swiftinterface",
   "file-go": "go",
   "file-rust": "rs",
-  "file-ruby": "rb rake gemspec ru rbi jbuilder podspec",
+  "file-ruby": "rb rake gemspec ru rbi jbuilder podspec erb rhtml",
   "file-lua": "lua luau rockspec",
   "file-zig": "zig zon",
   "file-gdscript": "gd",
@@ -905,7 +1061,7 @@ const EXT_ICONS = table({
 });
 
 /** Source files for languages without a file-type icon. */
-const CODE_EXT = new Set(["astro", "nim", "wit", "wat", "sol", "v", "sv"]);
+const CODE_EXT = new Set(["nim", "wit", "wat", "sol", "v", "sv"]);
 
 let iconOverride: ((fileName: string) => IconName | null) | null = null;
 
@@ -914,10 +1070,29 @@ export function setFileIconOverride(resolve: ((fileName: string) => IconName | n
   iconOverride = resolve;
 }
 
+/** Icons for particular files (plugin `fileIcons`), newest first: after the user's, before the icon theme's. */
+let fileIconProviders: ReadonlyArray<(fileName: string) => string | null> = [];
+
+/** Adds a file icon provider (an `ext:` icon name or null); the returned function removes it. */
+export function addFileIconProvider(resolve: (fileName: string) => string | null): () => void {
+  fileIconProviders = [resolve, ...fileIconProviders];
+  useFileIconRevision.setState((n) => n + 1, true);
+  return () => {
+    fileIconProviders = fileIconProviders.filter((p) => p !== resolve);
+    useFileIconRevision.setState((n) => n + 1, true);
+  };
+}
+
 /** Picks a file-type icon from a file name. */
-export function fileIconName(fileName: string): IconName {
+export function fileIconName(fileName: string, path: string | null = null): IconName {
   const custom = iconOverride?.(fileName);
   if (custom) return custom;
+  for (const provide of fileIconProviders) {
+    const icon = provide(fileName);
+    if (icon && iconPath(icon)) return icon as IconName;
+  }
+  const themed = fileIconTheme?.file(fileName, path);
+  if (themed) return themed as IconName;
   const lower = fileName.toLowerCase();
   const named = FILE_NAMES[lower] ?? NAME_PATTERNS.find(([re]) => re.test(lower))?.[1];
   if (named) return named;
@@ -980,4 +1155,9 @@ export function folderIconName(kind: FolderKind = "plain"): IconName {
     default:
       return "folder";
   }
+}
+
+/** Validated built-in and registered, sanitized plugin icons. */
+export function isIconName(name: string): name is IconName {
+  return iconPath(name) !== undefined;
 }

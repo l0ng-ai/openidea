@@ -43,6 +43,7 @@ import { describeSummary } from "./workspaceEdit";
 import { useUsagesStatus } from "./navigation";
 import styles from "./Popups.module.css";
 import { tx } from "@/platform/i18n";
+import { executeAction } from "@/platform/actions";
 
 export function BulbIcon({ fix }: { fix?: boolean }) {
   return <Icon name={fix ? "bulb-fix" : "bulb"} size={16} className={styles.bulb} />;
@@ -221,7 +222,11 @@ function ListPopup({ popup }: { popup: Extract<LspPopup, { kind: "list" }> }) {
                   {popup.numbered && <span className={styles.mnemonic}>{n > 0 && n <= 9 ? n : ""}</span>}
                   <ItemIcon item={item} />
                   <HighlightedText className={styles.label} text={item.label} indices={match} tone="accent" />
-                  {item.preview && <span className={styles.preview}>{item.preview}</span>}
+                  {item.preview && (
+                    <span className={styles.preview} title={item.preview}>
+                      {item.preview}
+                    </span>
+                  )}
                   <span className={styles.spacer} />
                   {item.detail && <span className={styles.detail}>{item.detail}</span>}
                   {item.shortcut && <span className={styles.shortcut}>{item.shortcut}</span>}
@@ -488,7 +493,7 @@ function DefinitionPopup({ popup }: { popup: Extract<LspPopup, { kind: "definiti
     <Popup open anchor={popup.anchor} onClose={closePopup} aria-label="Definition" className={styles.defPopup}>
       <div className={styles.defFrame} tabIndex={-1} data-autofocus onKeyDown={onKeyDown}>
         <div className={styles.defHeader}>
-          <Icon name={fileIconName(basename(location.path))} size={14} />
+          <Icon name={fileIconName(basename(location.path), location.path)} size={14} />
           {many ? (
             <Select
               variant="ghost"
@@ -579,7 +584,7 @@ function PreviewDialog({ popup }: { popup: Extract<LspPopup, { kind: "preview" }
         <ul className={styles.previewList} aria-label={tx("Changes")}>
           {summary.entries.map((e) => (
             <li key={e.path} className={styles.previewRow}>
-              <Icon name={fileIconName(basename(e.path))} size={14} className={styles.itemIcon} />
+              <Icon name={fileIconName(basename(e.path), e.path)} size={14} className={styles.itemIcon} />
               <span className={styles.previewName}>{basename(e.path)}</span>
               <span className={styles.previewPath}>{relativePath(root, e.path)}</span>
               <span className={styles.spacer} />
@@ -621,36 +626,82 @@ function ReformatDialog({ popup }: { popup: Extract<LspPopup, { kind: "reformat"
         { label: "Cancel", role: "cancel" },
       ]}
     >
-      <fieldset className={styles.reformatGroup}>
-        <legend className={styles.reformatLegend}>
-          <T>Scope</T>
-        </legend>
-        <label className={styles.reformatOption}>
-          <input type="radio" name="reformat-scope" checked={!selectionOnly} onChange={() => setSelectionOnly(false)} />
-          <T>Whole file</T>
-        </label>
-        <label className={clsx(styles.reformatOption, !popup.hasSelection && styles.disabled)}>
-          <input
-            type="radio"
-            name="reformat-scope"
-            checked={selectionOnly}
-            disabled={!popup.hasSelection}
-            onChange={() => setSelectionOnly(true)}
+      <div className={styles.reformatBody}>
+        <fieldset className={styles.reformatGroup}>
+          <legend className={styles.reformatLegend}>
+            <T>Scope</T>
+          </legend>
+          <label className={styles.reformatOption}>
+            <input
+              type="radio"
+              name="reformat-scope"
+              checked={!selectionOnly}
+              onChange={() => setSelectionOnly(false)}
+            />
+            <T>Whole file</T>
+          </label>
+          <label className={clsx(styles.reformatOption, !popup.hasSelection && styles.disabled)}>
+            <input
+              type="radio"
+              name="reformat-scope"
+              checked={selectionOnly}
+              disabled={!popup.hasSelection}
+              onChange={() => setSelectionOnly(true)}
+            />
+            <T>Selected text</T>
+          </label>
+        </fieldset>
+        <fieldset className={styles.reformatGroup}>
+          <legend className={styles.reformatLegend}>
+            <T>Options</T>
+          </legend>
+          <Checkbox
+            checked={optimizeImports}
+            disabled={!popup.canOptimizeImports}
+            onChange={setOptimizeImports}
+            label="Optimize imports"
           />
-          <T>Selected text</T>
-        </label>
-      </fieldset>
-      <fieldset className={styles.reformatGroup}>
-        <legend className={styles.reformatLegend}>
-          <T>Options</T>
-        </legend>
-        <Checkbox
-          checked={optimizeImports}
-          disabled={!popup.canOptimizeImports}
-          onChange={setOptimizeImports}
-          label="Optimize imports"
-        />
-      </fieldset>
+        </fieldset>
+      </div>
+    </Dialog>
+  );
+}
+
+function ImportsOnPasteDialog({ popup }: { popup: Extract<LspPopup, { kind: "importsOnPaste" }> }) {
+  const [selected, setSelected] = useState(() => popup.imports.map((_item, i) => i));
+  return (
+    <Dialog
+      open
+      title={tx("Add Imports on Paste")}
+      onClose={closePopup}
+      width={460}
+      buttons={[
+        {
+          label: "Add Imports",
+          role: "default",
+          disabled: !selected.length,
+          onClick: () => void executeAction("code.applyPastedImports", selected),
+        },
+        { label: "Cancel", role: "cancel" },
+      ]}
+    >
+      <div className={styles.pasteImports}>
+        <div>
+          <T>Select imports to add to the pasted code:</T>
+        </div>
+        <div className={styles.pasteImportList}>
+          {popup.imports.map((label, i) => (
+            <Checkbox
+              key={i}
+              label={label}
+              checked={selected.includes(i)}
+              onChange={(checked) =>
+                setSelected((current) => (checked ? [...current, i] : current.filter((n) => n !== i)))
+              }
+            />
+          ))}
+        </div>
+      </div>
     </Dialog>
   );
 }
@@ -672,6 +723,8 @@ export function LspPopups() {
   const seq = useLspPopup((s) => s.seq);
   if (!popup) return null;
   switch (popup.kind) {
+    case "importsOnPaste":
+      return <ImportsOnPasteDialog key={seq} popup={popup} />;
     case "list":
       return <ListPopup key={seq} popup={popup} />;
     case "rename":

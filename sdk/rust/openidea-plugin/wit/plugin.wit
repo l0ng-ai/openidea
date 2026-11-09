@@ -1,0 +1,202 @@
+/// OpenIDEA plugin API, version 1.0. Once released, 1.x only adds (new
+/// interfaces, new optional exports; plugins/README.md, "Evolving the plugin
+/// API"); a 2.0 keeps 1.0 running through an adapter in the host.
+///
+/// A plugin is a WebAssembly component targeting the `plugin` world (or
+/// `plugin-syntax`). It runs sandboxed: no file system, network, environment
+/// or processes beyond WASI's clocks and randomness; files are read through
+/// `fs` and `workspace`, and everything else goes through the imports below,
+/// gated by the capabilities granted in `plugin.toml` (a missing one returns
+/// `error::denied`).
+package openidea:plugin@1.4.0;
+
+world plugin {
+    import log;
+    import ui;
+    import storage;
+    import fs;
+    import workspace;
+    import editor;
+    import decorations;
+    import invocation;
+    import vcs;
+    import commit;
+    import events;
+    import tasks;
+    import diagnostics;
+    import net;
+    import secrets;
+    import process;
+    import ipc;
+    import output;
+    import auth;
+    import command-runner;
+    import views;
+    import run;
+    import run-targets;
+    import database;
+    import mcp;
+    import settings;
+
+    export lifecycle;
+    export commands;
+    export event-handler;
+}
+
+/// A plugin that also provides syntax for its languages.
+world plugin-syntax {
+    include plugin;
+    export syntax-provider;
+}
+
+/// A plugin with editor providers (`[[contributes.providers]]`).
+world plugin-providers {
+    include plugin;
+    export providers;
+}
+
+/// A plugin with views or custom editors (`[[contributes.views]]`,
+/// `[[contributes.custom-editors]]`).
+world plugin-views {
+    include plugin;
+    export view-provider;
+}
+
+/// A plugin with a document indexer (`[[contributes.documentIndexers]]`).
+world plugin-indexing {
+    include plugin;
+    export document-indexer;
+}
+
+/// A plugin with semantic tokens (`semantic-tokens` under `[[contributes.providers]]`).
+world plugin-semantic-tokens {
+    include plugin;
+    export semantic-tokens-provider;
+}
+
+/// A plugin adding to hovers (`hover` under `[[contributes.providers]]`).
+world plugin-hover {
+    include plugin;
+    export hover-provider;
+}
+
+/// A plugin with inlay hints (`inlay-hints` under `[[contributes.providers]]`).
+world plugin-inlay-hints {
+    include plugin;
+    export inlay-hints-provider;
+}
+
+/// A plugin whose views show in the Services tool window
+/// (`location = "services"`): their nodes' detail pane.
+world plugin-details {
+    include plugin;
+    export detail-provider;
+}
+
+/// A plugin with before-commit checks (`[[contributes.commitChecks]]`).
+world plugin-commit-checks {
+    include plugin;
+    export commit-checker;
+}
+
+/// A plugin with file-changing code actions (`file-actions`, next to `[[contributes.providers]]`).
+world plugin-file-actions {
+    include plugin;
+    export file-actions;
+}
+
+/// Only the `syntax-provider` export: guests generate it next to `plugin`
+/// (the component tools merge both into one component).
+world syntax {
+    export syntax-provider;
+}
+
+/// Only the `providers` export, generated next to `plugin` like `syntax`.
+world editor-providers {
+    export providers;
+}
+
+/// Only the `view-provider` export, generated next to `plugin` like `syntax`.
+world views-provider {
+    export view-provider;
+}
+
+/// Only the `document-indexer` export, generated next to `plugin` like `syntax`.
+world indexing {
+    export document-indexer;
+}
+
+/// Only the `semantic-tokens-provider` export, generated next to `plugin` like `syntax`.
+world semantic-tokens {
+    export semantic-tokens-provider;
+}
+
+/// Only the `hover-provider` export, generated next to `plugin` like `syntax`.
+world hover {
+    export hover-provider;
+}
+
+/// Only the `inlay-hints-provider` export, generated next to `plugin` like `syntax`.
+world inlay-hints {
+    export inlay-hints-provider;
+}
+
+/// Only the `detail-provider` export, generated next to `plugin` like `syntax`.
+world details {
+    export detail-provider;
+}
+
+/// Only the `commit-checker` export, generated next to `plugin` like `syntax`.
+world commit-checks {
+    export commit-checker;
+}
+
+/// Only the `file-actions` export, generated next to `plugin` like `syntax`.
+world file-actions-provider {
+    export file-actions;
+}
+
+/// A plugin with project HTTP endpoints (`[[contributes.endpoints]]`).
+world plugin-endpoints {
+    include plugin;
+    export endpoints-provider;
+}
+
+/// Only the `endpoints-provider` export, generated next to `plugin` like `syntax`.
+world endpoints {
+    export endpoints-provider;
+}
+
+/// A plugin with diagnostics under `[[contributes.providers]]`.
+world plugin-diagnostics {
+    include plugin;
+    export diagnostics-provider;
+}
+
+/// `diagnostics` is already the released host interface name.
+world editor-diagnostics {
+    export diagnostics-provider;
+}
+
+/// A plugin that exports project run configurations.
+world plugin-run-configurations { include plugin; export run-configurations; }
+/// Export-only configurations world, composed with plugin by SDK macros.
+world configurations-provider { export run-configurations; }
+/// A plugin that parses its test output.
+world plugin-test-results { include plugin; export test-results; }
+/// Export-only test parser world, composed with plugin by SDK macros.
+world test-results-provider { export test-results; }
+
+/// A plugin with additional API 1.4 language features.
+world plugin-language-features { include plugin; export language-features; }
+/// Export-only language features, composed with the base plugin world.
+world editor-language-features { export language-features; }
+/// A plugin that identifies embedded language ranges.
+world plugin-injections { include plugin; export injections; }
+/// Export-only injections, composed with the base plugin world.
+world language-injections { export injections; }
+
+/// A plugin contributing tools to the built-in MCP server.
+world plugin-mcp { include plugin; export mcp-provider; }
+/// Export-only MCP tools, composed with the base plugin world.
+world mcp-tools { export mcp-provider; }

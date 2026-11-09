@@ -4,19 +4,24 @@
  * `ide-core::settings` defaults; validation never throws.
  */
 
-import { BUILTIN_THEME_IDS, type BuiltinThemeId } from "@/platform/themes";
+import { isThemeChoiceId, type ThemeChoiceId } from "@/platform/themes";
+import type { FileIconThemeOptions } from "@/bindings";
 import { ZOOM_LIMITS } from "@/platform/zoom";
+import { validateIconThemeOptionsMap } from "@/platform/iconThemeOptions";
 
 export type Antialiasing = "subpixel" | "greyscale" | "none";
 export type OpenProjectIn = "ask" | "new" | "same" | "attach";
 export type NotificationDisplay = "balloon" | "sticky" | "none";
 /** Themes selectable as "preferred" when syncing with the OS. */
-export type ConcreteTheme = BuiltinThemeId;
+export type ConcreteTheme = ThemeChoiceId;
 
 export interface AppearanceExtras {
   syncWithOs: boolean;
   preferredLightTheme: ConcreteTheme;
   preferredDarkTheme: ConcreteTheme;
+  /** A plugin's file icon theme (`<pluginId>/<themeId>`); empty for the built-in icons. */
+  fileIconTheme: string;
+  fileIconThemeOptions: Record<string, FileIconThemeOptions>;
   zoom: number;
   useCustomFont: boolean;
   uiFontFamily: string;
@@ -25,17 +30,24 @@ export interface AppearanceExtras {
   redGreenVision: boolean;
   differentToolWindowBackground: boolean;
   compactMode: boolean;
+  /** IDEA "Use smaller indents in trees": tool window trees indent less per level. */
+  smallTreeIndents: boolean;
   fullPathInTitle: boolean;
   projectColorsInToolbar: boolean;
   dndWithAltOnly: boolean;
   menuIcons: boolean;
   mainMenuStyle: "hamburger" | "merged";
+  /** A lone Alt press focuses or opens the main menu (IDEA `ide.windows.main.menu.focus.on.alt`). */
+  mainMenuAlt: boolean;
   ideAntialiasing: Antialiasing;
   editorAntialiasing: Antialiasing;
   showToolWindowBars: boolean;
   showToolWindowNames: boolean;
   showToolWindowBadges: boolean;
   widescreenToolWindows: boolean;
+  /** View › Appearance › Toolbar; hidden leaves IDEA's compact window header. */
+  showMainToolbar: boolean;
+  showStatusBar: boolean;
 }
 
 export interface DateFormatValid {
@@ -45,8 +57,11 @@ export interface DateFormatValid {
   pretty: boolean;
 }
 
+export type UpdateSourceSetting = "auto" | "github" | "cnb";
+
 export interface GeneralExtras {
   openProjectIn: OpenProjectIn;
+  updateSource: UpdateSourceSetting;
   defaultProjectDirectory: string;
   saveOnIdle: boolean;
   idleSeconds: number;
@@ -70,6 +85,8 @@ export const DEFAULT_APPEARANCE_EXTRAS: AppearanceExtras = {
   syncWithOs: false,
   preferredLightTheme: "light",
   preferredDarkTheme: "dark",
+  fileIconTheme: "",
+  fileIconThemeOptions: {},
   zoom: 100,
   useCustomFont: false,
   uiFontFamily: "Inter",
@@ -78,21 +95,26 @@ export const DEFAULT_APPEARANCE_EXTRAS: AppearanceExtras = {
   redGreenVision: false,
   differentToolWindowBackground: false,
   compactMode: false,
+  smallTreeIndents: false,
   fullPathInTitle: false,
   projectColorsInToolbar: true,
   dndWithAltOnly: false,
   menuIcons: true,
   mainMenuStyle: "hamburger",
+  mainMenuAlt: true,
   ideAntialiasing: "greyscale",
   editorAntialiasing: "greyscale",
   showToolWindowBars: true,
   showToolWindowNames: false,
   showToolWindowBadges: true,
   widescreenToolWindows: false,
+  showMainToolbar: true,
+  showStatusBar: true,
 };
 
 export const DEFAULT_GENERAL_EXTRAS: GeneralExtras = {
   openProjectIn: "ask",
+  updateSource: "auto",
   defaultProjectDirectory: "",
   saveOnIdle: false,
   idleSeconds: 15,
@@ -110,7 +132,7 @@ const int = (v: unknown, d: number, { min, max }: { min: number; max: number }) 
   typeof v === "number" && Number.isFinite(v) ? Math.round(Math.min(max, Math.max(min, v))) : d;
 
 const AA: readonly Antialiasing[] = ["subpixel", "greyscale", "none"];
-const CONCRETE = BUILTIN_THEME_IDS;
+const concrete = (v: unknown, d: ConcreteTheme): ConcreteTheme => (isThemeChoiceId(v) ? v : d);
 const DISPLAYS: readonly NotificationDisplay[] = ["balloon", "sticky", "none"];
 
 export function validateAppearanceExtras(raw: unknown): AppearanceExtras {
@@ -120,8 +142,11 @@ export function validateAppearanceExtras(raw: unknown): AppearanceExtras {
   return {
     // A legacy `theme = "system"` means syncing too.
     syncWithOs: bool(a.syncWithOs, d.syncWithOs) || a.theme === "system",
-    preferredLightTheme: oneOf(a.preferredLightTheme, CONCRETE, d.preferredLightTheme),
-    preferredDarkTheme: oneOf(a.preferredDarkTheme, CONCRETE, d.preferredDarkTheme),
+    preferredLightTheme: concrete(a.preferredLightTheme, d.preferredLightTheme),
+    preferredDarkTheme: concrete(a.preferredDarkTheme, d.preferredDarkTheme),
+    fileIconTheme:
+      typeof a.fileIconTheme === "string" && /^[^/\s]+\/[^/\s]+$/.test(a.fileIconTheme) ? a.fileIconTheme : "",
+    fileIconThemeOptions: validateIconThemeOptionsMap(a.fileIconThemeOptions),
     zoom: int(a.zoom, d.zoom, ZOOM_LIMITS),
     useCustomFont: b("useCustomFont"),
     uiFontFamily: typeof a.uiFontFamily === "string" && a.uiFontFamily.trim() ? a.uiFontFamily.trim() : d.uiFontFamily,
@@ -130,17 +155,21 @@ export function validateAppearanceExtras(raw: unknown): AppearanceExtras {
     redGreenVision: b("redGreenVision"),
     differentToolWindowBackground: b("differentToolWindowBackground"),
     compactMode: b("compactMode"),
+    smallTreeIndents: b("smallTreeIndents"),
     fullPathInTitle: b("fullPathInTitle"),
     projectColorsInToolbar: b("projectColorsInToolbar"),
     dndWithAltOnly: b("dndWithAltOnly"),
     menuIcons: b("menuIcons"),
     mainMenuStyle: oneOf(a.mainMenuStyle, ["hamburger", "merged"], d.mainMenuStyle),
+    mainMenuAlt: b("mainMenuAlt"),
     ideAntialiasing: oneOf(a.ideAntialiasing, AA, d.ideAntialiasing),
     editorAntialiasing: oneOf(a.editorAntialiasing, AA, d.editorAntialiasing),
     showToolWindowBars: b("showToolWindowBars"),
     showToolWindowNames: b("showToolWindowNames"),
     showToolWindowBadges: b("showToolWindowBadges"),
     widescreenToolWindows: b("widescreenToolWindows"),
+    showMainToolbar: b("showMainToolbar"),
+    showStatusBar: b("showStatusBar"),
   };
 }
 
@@ -150,6 +179,7 @@ export function validateGeneralExtras(raw: unknown): GeneralExtras {
   const df = obj(g.dateFormat);
   return {
     openProjectIn: oneOf(g.openProjectIn, ["ask", "new", "same", "attach"] as const, d.openProjectIn),
+    updateSource: oneOf(g.updateSource, ["auto", "github", "cnb"] as const, d.updateSource),
     defaultProjectDirectory: typeof g.defaultProjectDirectory === "string" ? g.defaultProjectDirectory : "",
     saveOnIdle: bool(g.saveOnIdle, d.saveOnIdle),
     idleSeconds: int(g.idleSeconds, d.idleSeconds, IDLE_LIMITS),

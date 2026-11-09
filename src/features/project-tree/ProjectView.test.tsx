@@ -1,6 +1,7 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { act, fireEvent, render, screen, waitFor, within } from "@testing-library/react";
 import { emitLocalIdeEvent } from "@/platform/ipc";
+import { installRepeatedDoubleClick } from "@/platform/doubleClick";
 import { getContext } from "@/platform/context";
 import { provideEditorService, registerProjectViewRoot, type EditorService } from "@/workbench/contributions";
 import { activate } from "./index";
@@ -13,7 +14,8 @@ import { ProjectView } from "./ProjectView";
 import { beginNew, canPaste } from "./operations";
 import { initProjectTree, setViewOption, useProjectTree } from "./store";
 import type { OutlineItem } from "@/bindings";
-import { _emitEditorEvent } from "@/editor/api";
+import { _emitEditorEvent, useEditorRegistry } from "@/editor/api";
+import { ProjectHeaderActions } from "./HeaderActions";
 import { loadOutline } from "./store";
 
 const ipc = vi.hoisted(() => ({
@@ -94,6 +96,47 @@ function setup() {
 }
 
 describe("ProjectView", () => {
+  it("toggles Unity metadata and generated files independently in the rendered tree", async () => {
+    fs = new MemoryFs(
+      {
+        "/w/acme/Assets/Player.cs": "code",
+        "/w/acme/Assets/Player.cs.meta": "metadata",
+        "/w/acme/Library/cache": "cache",
+        "/w/acme/Game.sln": "",
+      },
+      ROOT,
+    );
+    setProjectFsForTests(fs, ROOT);
+    initProjectTree(ROOT, "Game", null, { editorVersion: "6000.0.62f1", projects: [], solutions: [] });
+    const { rows } = setup();
+    act(() => useProjectTree.setState({ expanded: new Set([ROOT, `${ROOT}/Assets`]) }));
+    await waitFor(() => expect(rows()).toContain("Player.cs"));
+    expect(rows()).not.toContain("Player.cs.meta");
+    expect(rows()).not.toContain("Library");
+    act(() => setViewOption("showUnityMeta", true));
+    await waitFor(() => expect(rows()).toContain("Player.cs.meta"));
+    expect(rows()).not.toContain("Game.sln");
+    act(() => setViewOption("showUnityGenerated", true));
+    await waitFor(() => expect(rows()).toContain("Game.sln"));
+    expect(rows()).toContain("Library");
+    act(() => setViewOption("showUnityMeta", false));
+    expect(rows()).not.toContain("Player.cs.meta");
+    expect(rows()).toContain("Library");
+  });
+
+  it("shows Unity version and generation guidance, then updates when project files arrive", async () => {
+    initProjectTree(ROOT, "Game", null, { editorVersion: "6000.0.62f1", projects: [], solutions: [] });
+    const { row } = setup();
+    expect(screen.getByText(/C# project files are missing/)).toHaveAttribute("role", "status");
+    await waitFor(() => expect(row("Game")).toHaveTextContent("Unity 6000.0.62f1"));
+    act(() => {
+      useProjectTree.setState({
+        unity: { editorVersion: "6000.0.62f1", projects: ["Assembly-CSharp.csproj"], solutions: ["Game.sln"] },
+      });
+    });
+    expect(screen.queryByText(/C# project files are missing/)).not.toBeInTheDocument();
+  });
+
   it("shows the root with its path and loads children lazily", async () => {
     const { rows, row, tree } = setup();
     await waitFor(() => expect(rows()).toEqual(["acme/w/acme", "build", "src", "README.md"]));
@@ -178,6 +221,38 @@ describe("ProjectView", () => {
     act(() => setViewOption("previewTab", false));
   });
 
+  it("follows tab switches with Always Select Opened File, hiding Select Opened File", async () => {
+    const focusEditor = (path: string) => act(() => useEditorRegistry.setState({ active: { ctx: { path } } } as never));
+    const selected = () =>
+      screen
+        .getAllByRole("treeitem")
+        .filter((r) => r.getAttribute("aria-selected") === "true")
+        .map((r) => r.textContent);
+    try {
+      render(<ProjectHeaderActions />);
+      const { rows } = setup();
+      await waitFor(() => expect(rows()).toContain("README.md"));
+      expect(screen.getByRole("button", { name: "Select Opened File" })).toBeTruthy();
+      focusEditor("/w/acme/src/Util.kt");
+      expect(rows()).not.toContain("Util.kt");
+
+      act(() => setViewOption("autoscrollFromSource", true));
+      await waitFor(() => expect(selected()).toEqual(["Util.kt"]));
+      expect(screen.queryByRole("button", { name: "Select Opened File" })).toBeNull();
+      focusEditor("/w/acme/README.md");
+      await waitFor(() => expect(selected()).toEqual(["README.md"]));
+      focusEditor("/w/acme/src/App.kt");
+      await waitFor(() => expect(selected()).toEqual(["App.kt"]));
+
+      act(() => setViewOption("autoscrollFromSource", false));
+      focusEditor("/w/acme/README.md");
+      expect(selected()).toEqual(["App.kt"]);
+      expect(screen.getByRole("button", { name: "Select Opened File" })).toBeTruthy();
+    } finally {
+      act(() => useEditorRegistry.setState({ active: null }));
+    }
+  });
+
   it("expands and collapses folders on single click only when enabled", async () => {
     const { row, rows } = setup();
     await waitFor(() => expect(rows()).toContain("README.md"));
@@ -211,29 +286,63 @@ describe("ProjectView", () => {
   });
 
   it("toggles folders once for each rapid double-click pair", async () => {
+    const uninstall = installRepeatedDoubleClick();
+    try {
+      const { row, rows } = setup();
+      await waitFor(() => expect(rows()).toContain("README.md"));
+      const content = () => row("src").querySelector("[data-project-path]")!;
+      // WebKit fires `dblclick` only for the second click of a burst, never for the 4th or 6th.
+      const burst = (clicks: number) => {
+        for (let detail = 1; detail <= clicks; detail++) {
+          fireEvent.mouseDown(row("src"), { detail });
+          fireEvent.click(content(), { detail });
+          if (detail === 2) fireEvent.doubleClick(content(), { detail });
+        }
+      };
+      // Double-click mode toggles once per pair; single-click mode once per odd click.
+      let expanded = false;
+      for (const singleClickExpand of [false, true]) {
+        act(() => setViewOption("singleClickExpand", singleClickExpand));
+        for (const clicks of [2, 4, 6, 3, 5]) {
+          burst(clicks);
+          const toggles = singleClickExpand ? Math.ceil(clicks / 2) : Math.floor(clicks / 2);
+          if (toggles % 2) expanded = !expanded;
+          await waitFor(() => expect(rows().includes("App.kt")).toBe(expanded));
+        }
+      }
+    } finally {
+      uninstall();
+      act(() => setViewOption("singleClickExpand", false));
+    }
+  });
+
+  it("starts a file drag only while the primary button is held", async () => {
     const { row, rows } = setup();
     await waitFor(() => expect(rows()).toContain("README.md"));
-    act(() => setViewOption("singleClickExpand", true));
-    const content = () => row("src").querySelector("[data-project-path]")!;
-    const click = (detail: number) => {
-      fireEvent.mouseDown(row("src"), { detail });
-      fireEvent.click(content(), { detail });
-    };
-    click(1);
-    click(2);
-    fireEvent.doubleClick(content(), { detail: 2 });
-    await waitFor(() => expect(rows()).toContain("App.kt"));
-    click(3);
-    click(4);
-    fireEvent.doubleClick(content(), { detail: 4 });
-    expect(rows()).not.toContain("App.kt");
-
-    act(() => setViewOption("singleClickExpand", false));
-    click(5);
-    click(6);
-    expect(rows()).not.toContain("App.kt");
-    fireEvent.doubleClick(content(), { detail: 6 });
-    await waitFor(() => expect(rows()).toContain("App.kt"));
+    document.elementFromPoint = () => null; // jsdom lacks it; the drop-target lookup needs it
+    // The drag label repeats the file name outside the tree row.
+    const ghost = () => (screen.queryAllByText("README.md").length > 1 ? true : null);
+    const move = (buttons: number, x: number) =>
+      act(() => {
+        window.dispatchEvent(new MouseEvent("pointermove", { bubbles: true, buttons, clientX: x, clientY: 0 }));
+      });
+    const release = () => act(() => void window.dispatchEvent(new MouseEvent("pointerup", { bubbles: true })));
+    // jsdom has no PointerEvent, so React would see `button` undefined on a plain pointerDown.
+    const press = () =>
+      fireEvent(
+        row("README.md").querySelector("[data-project-path]")!,
+        new MouseEvent("pointerdown", { bubbles: true, button: 0 }),
+      );
+    // A macOS tap WebKit reorders: the press arrives late and no button is held.
+    press();
+    move(0, 40);
+    expect(ghost()).toBeNull();
+    release();
+    press();
+    move(1, 40);
+    expect(ghost()).not.toBeNull();
+    release();
+    expect(ghost()).toBeNull();
   });
 
   it("cancels a new file when its name field loses focus", async () => {
@@ -588,10 +697,24 @@ describe("Show Members", () => {
   });
 });
 
-it("renders workspace member roots with their own paths, without the settings directory", async () => {
-  fs = new MemoryFs({ "/z/first.txt": "", "/a/second.txt": "", "/workspace/.openidea/workspace.json": "{}" });
+it("sorts workspace member roots by the folder names shown in the tree", async () => {
+  fs = new MemoryFs({
+    "/a/service10/ten.txt": "",
+    "/z/Service2/two.txt": "",
+    "/m/alpha/first.txt": "",
+    "/workspace/.openidea/workspace.json": "{}",
+  });
   setProjectFsForTests(fs, "/workspace");
-  initProjectTree("/workspace", "Workspace", ["/z", "/a"]);
+  initProjectTree("/workspace", "Workspace", ["/a/service10", "/z/Service2", "/m/alpha"]);
   const { rows } = setup();
-  await waitFor(() => expect(rows()).toEqual(["z/z", "first.txt", "a/a", "second.txt"]));
+  await waitFor(() =>
+    expect(rows()).toEqual([
+      "alpha/m/alpha",
+      "first.txt",
+      "Service2/z/Service2",
+      "two.txt",
+      "service10/a/service10",
+      "ten.txt",
+    ]),
+  );
 });

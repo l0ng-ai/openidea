@@ -12,6 +12,7 @@ import {
   validateFileTypes,
   type FileTypeAssociations,
 } from "@/platform/fileTypes";
+import { onLanguageListChanged } from "@/platform/languageList";
 import { loadSettings, useProject } from "@/platform/project";
 import { fileIconName, setFileIconOverride, type IconName, type MenuItem } from "@/ui";
 import { registerMenuGroup } from "@/workbench/contributions";
@@ -97,6 +98,11 @@ export function activateFileTypes(): () => void {
     if (s.settings !== prev.settings) syncIcons();
   });
   const disposers = [
+    // Plugins add and remove languages: read the list again.
+    onLanguageListChanged(() => {
+      loading = null;
+      void loadLanguages().then(syncIcons);
+    }),
     unsub,
     () => setFileIconOverride(null),
     registerActions([

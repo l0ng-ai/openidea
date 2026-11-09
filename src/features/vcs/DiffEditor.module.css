@@ -118,6 +118,9 @@
   flex-direction: column;
   overflow: hidden;
 }
+.host:not([hidden]) {
+  animation: diff-enter var(--dur) var(--ease) both;
+}
 .host[hidden] {
   display: none;
 }
@@ -135,6 +138,9 @@
 }
 .host :global(.cm-mergeViewEditor) {
   min-width: 0;
+  /* Clips like the library's `hidden` without becoming a scroll container, so the aligned view's
+     overview lane sticks to the MergeView's viewport (cm/lanes.ts `overviewLaneIn`). */
+  overflow: clip;
 }
 .host :global(.cm-merge-revert) {
   width: 22px;
@@ -151,7 +157,7 @@
 }
 .host :global(.cm-merge-revert button:hover) {
   color: var(--fg-strong);
-  background: var(--bg-hover);
+  background: transparent;
 }
 .select {
   height: var(--h-control-small);
@@ -277,7 +283,7 @@
 }
 .host :global(.cm-diffDivider button.cm-diffArrow:hover) {
   color: var(--fg-strong);
-  background: var(--bg-hover);
+  background: transparent;
 }
 /* Where the other pane has lines this one lacks. */
 .host :global(.cm-diffGap-inserted) {
@@ -342,4 +348,19 @@
   box-shadow: var(--shadow-tooltip);
   font-size: var(--fs-small);
   pointer-events: none;
+}
+
+@keyframes diff-enter {
+  from {
+    opacity: 0;
+  }
+  to {
+    opacity: 1;
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .host:not([hidden]) {
+    animation: none;
+  }
 }

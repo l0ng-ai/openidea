@@ -1,10 +1,95 @@
 .workbench {
+  position: relative;
   height: 100%;
   display: flex;
   flex-direction: column;
   min-width: 0;
   background: var(--bg-app);
   color: var(--fg);
+}
+
+.content {
+  display: contents;
+}
+.content[inert] {
+  visibility: hidden;
+}
+.opening {
+  position: absolute;
+  inset: 0;
+  z-index: var(--z-panel);
+  display: flex;
+  flex-direction: column;
+  background: var(--bg-frame);
+}
+.openingBody {
+  flex: 1;
+  min-height: 0;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: var(--splash-gap);
+  padding: var(--space-4) var(--space-4) var(--splash-offset);
+  color: var(--fg-muted);
+  text-align: center;
+  animation: opening-in var(--dur-slow) ease-out both;
+}
+.openingBrand {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: var(--splash-gap);
+  font-size: var(--fs-input-large);
+  font-weight: 500;
+  line-height: 1.21;
+}
+.openingLogo {
+  width: var(--splash-logo-size);
+  height: var(--splash-logo-size);
+}
+.openingProgress {
+  width: var(--splash-bar-width);
+  height: var(--splash-bar-height);
+  flex-shrink: 0;
+  border-radius: calc(var(--splash-bar-height) / 2);
+  background: color-mix(in srgb, var(--fg-muted) 24%, transparent);
+}
+.opening .openingProgress > div {
+  left: 0;
+  width: 100%;
+  opacity: 1;
+  background: var(--accent);
+  transform-origin: left;
+  animation: opening-progress var(--splash-progress-duration) var(--splash-progress-easing) both;
+}
+.openingTitle {
+  max-width: 100%;
+  overflow-wrap: anywhere;
+  font-size: var(--fs-small);
+}
+.openingPath {
+  max-width: 100%;
+  overflow-wrap: anywhere;
+  font-size: var(--fs-tiny);
+}
+@keyframes opening-in {
+  from {
+    opacity: 0;
+  }
+}
+@keyframes opening-progress {
+  from {
+    transform: scaleX(0.04);
+  }
+  to {
+    transform: scaleX(0.92);
+  }
+}
+@media (prefers-reduced-motion: reduce) {
+  .openingBody {
+    animation: none;
+  }
 }
 /* Islands frame; the project colour washes in from the top-left corner (IDEA project gradient). */
 .framed {

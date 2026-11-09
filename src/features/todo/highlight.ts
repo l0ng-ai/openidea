@@ -90,6 +90,16 @@ const theme = EditorView.baseTheme({
 });
 
 export function todoEditorExtension(ctx: EditorDocContext): Extension {
+  return todoPlugin(ctx);
+}
+
+/** The colouring alone, for views outside the editor tabs (the TODO tool window's preview). */
+export function todoHighlightExtension(): Extension {
+  return todoPlugin(null);
+}
+
+/** `ctx` given: also reports the document's live TODO items to the tool window. */
+function todoPlugin(ctx: EditorDocContext | null): Extension {
   const plugin = ViewPlugin.fromClass(
     class {
       decorations: DecorationSet;
@@ -112,7 +122,7 @@ export function todoEditorExtension(ctx: EditorDocContext): Extension {
         if (u.docChanged) this.scheduleLive(400);
       }
       scheduleLive(delay: number) {
-        if (!ctx.path || ctx.virtual) return;
+        if (!ctx?.path || ctx.virtual) return;
         if (this.timer) clearTimeout(this.timer);
         this.timer = setTimeout(() => {
           this.timer = null;

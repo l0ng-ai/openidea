@@ -89,7 +89,7 @@ describe("Language Servers page settings", () => {
     const ty = details("ty (Python)");
     expect(within(ty).getByRole("button", { name: "Language server for Python" })).toHaveTextContent("Automatic");
     // The language is in the label already, so names drop a "(Python)" suffix.
-    expect(within(ty).getByText(/basedpyright → Pyright → ty\.$/)).toBeInTheDocument();
+    expect(within(ty).getByText(/basedpyright → Pyright → ty → Pyrefly\.$/)).toBeInTheDocument();
     await user.click(listItem("gopls")!);
     expect(within(details("gopls")).getByRole("checkbox", { name: /Use gopls/ })).toBeInTheDocument();
     expect(within(details("gopls")).queryByRole("button", { name: /^Language server for/ })).toBeNull();
@@ -108,7 +108,7 @@ describe("Language Servers page settings", () => {
     expect(picker).toHaveTextContent("ty");
     await user.click(picker);
     await user.click(screen.getByRole("option", { name: /Automatic/ }));
-    for (const name of ["basedpyright", "pyright", "ty"]) {
+    for (const name of ["basedpyright", "pyright", "ty", "pyrefly"]) {
       expect(stagedFor(`languageServers.${name}.enabled`)).toBeNull();
       expect(useTestForm.getState().values).not.toHaveProperty(`languageServers.${name}.enabled`);
     }
@@ -127,10 +127,11 @@ describe("Language Servers page settings", () => {
     expect(stagedFor("languageServers.basedpyright.enabled")).toBe(false);
     expect(stagedFor("languageServers.pyright.enabled")).toBe(true);
     expect(stagedFor("languageServers.ty.enabled")).toBe(false);
+    expect(stagedFor("languageServers.pyrefly.enabled")).toBe(false);
     expect(picker).toHaveTextContent("Pyright");
     await user.click(picker);
     await user.click(screen.getByRole("option", { name: /Automatic/ }));
-    for (const name of ["basedpyright", "pyright", "ty"]) {
+    for (const name of ["basedpyright", "pyright", "ty", "pyrefly"]) {
       expect(stagedFor(`languageServers.${name}.enabled`)).toBe(true);
     }
   });

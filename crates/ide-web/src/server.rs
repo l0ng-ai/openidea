@@ -241,9 +241,9 @@ async fn resolve(shared: &Shared, target: &str) -> Response {
     let Some(root) = shared.roots.read().get(&key).cloned() else { return NOT_FOUND };
     let Ok(real_root) = tokio::fs::canonicalize(&root).await else { return NOT_FOUND };
     let mut file = root;
-    let mut trailing_slash = true;
+    // `/<token>/<key>` names a directory too: it redirects like any other.
+    let trailing_slash = path.ends_with('/');
     for seg in segments {
-        trailing_slash = seg.is_empty();
         if seg.is_empty() {
             continue;
         }
@@ -347,6 +347,10 @@ mod tests {
         let base = url.trim_end_matches("/web/index.html");
         assert!(get(&format!("{base}/web/sub/a%20b.js"), None).await.contains("text/javascript"));
         assert!(get(&format!("{base}/web"), None).await.contains("Location: /"));
+        // The served root itself, so relative URLs of its index page resolve inside it.
+        let page = get(base, None).await;
+        let root_path = base.trim_start_matches("http://").split_once('/').unwrap().1;
+        assert!(page.starts_with("HTTP/1.1 301") && page.contains(&format!("Location: /{root_path}/\r\n")), "{page}");
         assert!(get(&format!("{base}/web/"), None).await.ends_with("<h1>hi</h1>"));
         assert!(get(&format!("{base}/../secret.txt"), None).await.starts_with("HTTP/1.1 404"));
         assert!(get(&format!("{base}/%2e%2e/secret.txt"), None).await.starts_with("HTTP/1.1 404"));

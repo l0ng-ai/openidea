@@ -1,7 +1,7 @@
 /** Welcome screen, recent projects (File › Open Recent) and reopening the last project on startup. */
 import { registerActions } from "@/platform/actions";
+import { lazyComponent } from "@/ui";
 import { provideProjectPopup, provideWelcomeView, registerOverlay } from "@/workbench/contributions";
-import { ProjectPopup } from "./ProjectPopup";
 import { RecentProjectsPopup, showRecentProjectsPopup } from "./RecentProjectsPopup";
 import { reopenLastProject, trackSession } from "./session";
 import { WelcomeView } from "./WelcomeView";
@@ -10,7 +10,7 @@ export function activate(): () => void {
   const disposers = [
     trackSession(),
     provideWelcomeView(WelcomeView),
-    provideProjectPopup(ProjectPopup),
+    provideProjectPopup(lazyComponent(() => import("./ProjectPopup").then((m) => m.ProjectPopup))),
     registerOverlay({ id: "welcome.recentProjects", component: RecentProjectsPopup }),
     registerActions([
       {

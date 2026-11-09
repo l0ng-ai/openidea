@@ -24,24 +24,58 @@ import { registerLogPaneActions } from "./logPaneActions";
 import { controlLabel, controlOperation, inProgress } from "./operations";
 import { annotationsShown, blameSlot } from "./blame";
 import { inlineBlame } from "./inlineBlame";
-import { BranchWidget, useBranchesPopup } from "./BranchWidget";
-import { showConflictsDialog } from "./conflictsUi";
+import { BranchWidget, BranchesPopupHost, useBranchesPopup } from "./BranchWidget";
+import { showConflictsDialog, takeContinueWhenResolved } from "./conflictsUi";
 import { registerCompareActions } from "./compare";
 import { DIFF_KIND, diffTitle, type DiffData } from "./diffInput";
 import { VcsDialogHost } from "./dialogs";
 import { changeMarkers } from "./gutter";
 import { installHunkPopup } from "./HunkPopup";
 import { LOCAL_HISTORY_KIND } from "./localHistoryKind";
+import { SELECTION_HISTORY_KIND, type SelectionHistoryData } from "./selectionHistoryKind";
 import { registerLocalHistoryActions } from "./localHistoryActions";
 import { MERGE_KIND, type MergeData } from "./mergeKind";
+import { registerMergeActions } from "./mergeActions";
 import { baseName } from "./model";
 import { installDiagnosticsTracking } from "./commitChecks";
 import { installPreparedMessage, useCommit } from "./commitStore";
+import { installDraftRevision, provideCommit } from "./commitSelection";
+import { activate as activateConflictBanner } from "./conflictBanner";
+import { activate as activateConflictMarkers } from "./conflictMarkers";
+import { MergeRebaseWidget } from "./MergeRebaseWidget";
 import { installFileConfirmations } from "./confirmations";
 import { installIncomingCheck } from "./incoming";
-import { installGitLog, selectGitTab, useGitLog } from "./logStore";
+import { closeLogTab, installGitLog, selectGitTab, useGitLog } from "./logStore";
 import { installVcsStore, onConflictsAppeared, onConflictsCleared, useVcs } from "./store";
 import { tx } from "@/platform/i18n";
+
+/** The Resolve/Continue/Abort buttons exist in the title bar only while there is something to resolve. */
+function trackMergeRebaseItem(): () => void {
+  let dispose: (() => void) | null = null;
+  const sync = () => {
+    const s = useVcs.getState();
+    const needed =
+      s.available && (!!inProgress(s.branch?.operation) || s.status.some((f) => f.unstaged === "conflicted"));
+    if (needed && !dispose) {
+      dispose = registerTitleItem({
+        id: "vcs.mergeRebase",
+        title: "Merge/Rebase Widget",
+        align: "left",
+        priority: 11,
+        component: MergeRebaseWidget,
+      });
+    } else if (!needed && dispose) {
+      dispose();
+      dispose = null;
+    }
+  };
+  sync();
+  const unsub = useVcs.subscribe(sync);
+  return () => {
+    unsub();
+    dispose?.();
+  };
+}
 
 function trackTitleItem(): () => void {
   let dispose: (() => void) | null = null;
@@ -115,6 +149,19 @@ function conflictsBody(names: string[]): string {
 }
 
 /** Settings › Version Control › Log (also used by the Settings window). */
+export { activateComparisonWindow, ComparisonWindow } from "./ComparisonWindow";
+
+/** The diff viewer (editor kind `diff`), also for windows that show diffs without Git (deployment). */
+export function activateDiffViewer(): () => void {
+  return registerEditorKind({
+    kind: DIFF_KIND,
+    standalone: true,
+    component: lazyComponent(() => import("./diff-editor-tab").then((m) => m.DiffEditorTab)),
+    title: (input) => diffTitle(input.data as DiffData),
+    icon: () => "diff",
+  });
+}
+
 export function activateSettingsPages(): () => void {
   return registerSettingsPage({
     id: "vcs.log",
@@ -140,8 +187,13 @@ export function activate(): () => void {
 
   onConflictsCleared(() => {
     notifications().expire?.("vcs.conflicts");
-    // As IDEA does once the last conflict is resolved: offer to continue the stopped operation.
     const op = inProgress();
+    // Resolved from the Conflicts dialog: the stopped rebase / cherry-pick goes on by itself.
+    if (op && takeContinueWhenResolved() === op) {
+      void controlOperation("continue", op);
+      return;
+    }
+    // Otherwise, as IDEA does once the last conflict is resolved: offer to continue it.
     if (op)
       notifications().notify({
         group: "vcs",
@@ -164,6 +216,8 @@ export function activate(): () => void {
     installGitLog(),
     installDiagnosticsTracking(),
     installPreparedMessage(),
+    installDraftRevision(),
+    provideCommit(),
     installIncomingCheck(),
     installFileConfirmations(),
     // Settings › Git › Sign-off commit: the default of Commit Options › Sign-off Commit.
@@ -179,9 +233,14 @@ export function activate(): () => void {
     installChangelists(),
     trackOperationContext(),
     registerCompareActions(),
+    registerMergeActions(),
     trackTitleItem(),
+    trackMergeRebaseItem(),
     installHunkPopup(),
     registerOverlay({ id: "vcs.dialogs", component: VcsDialogHost }),
+    registerOverlay({ id: "vcs.branches", component: BranchesPopupHost }),
+    activateConflictBanner(),
+    activateConflictMarkers(),
     trackCommitWindow(),
     registerToolWindow({
       id: "git",
@@ -193,11 +252,34 @@ export function activate(): () => void {
       headerContent: lazyComponent(() => import("./GitLog").then((m) => m.GitTabs)),
     }),
     registerEditorKind({
-      kind: DIFF_KIND,
-      component: lazyComponent(() => import("./DiffEditor").then((m) => m.DiffEditor)),
-      title: (input) => diffTitle(input.data as DiffData),
-      icon: () => "diff",
+      kind: "git-revision",
+      standalone: true,
+      component: lazyComponent(() => import("./RevisionBrowser").then((m) => m.GitRevisionEditor)),
+      title: (input) => {
+        const data = input.data as { path: string; revision: string };
+        return `${baseName(data.path)} (${data.revision.slice(0, 8)})`;
+      },
+      icon: () => "file",
+      restorable: true,
     }),
+    registerEditorKind({
+      kind: "git-log",
+      standalone: true,
+      component: lazyComponent(() => import("./LogScope").then((m) => m.GitLogEditor)),
+      title: (input) => (input.data as { label: string }).label,
+      icon: () => "toolwindow-git",
+      restorable: true,
+      onClose: (input) => closeLogTab((input.data as { id: string }).id),
+    }),
+    registerEditorKind({
+      kind: "git-merge-diff",
+      standalone: true,
+      component: lazyComponent(() => import("./GitMergeDiff").then((m) => m.GitMergeDiff)),
+      title: (input) => (input.data as { path: string }).path,
+      icon: () => "diff",
+      restorable: true,
+    }),
+    activateDiffViewer(),
     registerEditorKind({
       kind: MERGE_KIND,
       component: lazyComponent(() => import("./MergeEditor").then((m) => m.MergeEditor)),
@@ -209,6 +291,15 @@ export function activate(): () => void {
       component: lazyComponent(() => import("./LocalHistory").then((m) => m.LocalHistoryEditor)),
       title: (input) => `Local History: ${baseName((input.data as { path: string }).path)}`,
       icon: () => "clock",
+    }),
+    registerEditorKind({
+      kind: SELECTION_HISTORY_KIND,
+      component: lazyComponent(() => import("./SelectionHistory").then((m) => m.SelectionHistoryEditor)),
+      title: (input) => {
+        const { path, lines } = input.data as SelectionHistoryData;
+        return `History: ${baseName(path)}:${lines[0] + 1}-${lines[1] + 1}`;
+      },
+      icon: () => "history",
     }),
     registerEditorContribution({
       id: "vcs.changeMarkers",

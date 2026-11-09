@@ -2,7 +2,7 @@
 //! skills (`.claude/skills/<dir>/SKILL.md`) and custom commands (`.claude/commands/**/*.md`)
 //! of the working directory and every directory above it, then the user's `~/.claude`.
 
-use crate::AgentCommand;
+use crate::{AgentCommand, AgentCommandSource};
 use std::collections::HashSet;
 use std::path::Path;
 
@@ -36,9 +36,14 @@ pub(crate) fn discover(cwd: &Path, home: Option<&Path>) -> Vec<AgentCommand> {
 
 /// `first` (the agent's own list) plus the commands of `more` it lacks.
 pub(crate) fn merge(first: Vec<AgentCommand>, more: Vec<AgentCommand>) -> Vec<AgentCommand> {
-    let names: HashSet<String> = first.iter().map(|c| c.name.clone()).collect();
     let mut out = first;
-    out.extend(more.into_iter().filter(|c| !names.contains(&c.name)));
+    for c in more {
+        if let Some(offered) = out.iter_mut().find(|offered| offered.name == c.name) {
+            offered.source = c.source;
+        } else {
+            out.push(c);
+        }
+    }
     out
 }
 
@@ -61,7 +66,7 @@ fn skills(dir: &Path) -> Vec<AgentCommand> {
                 return None;
             }
             let name = meta.get("name").filter(|n| !n.is_empty()).map(str::to_owned).or_else(|| file_name(&path))?;
-            Some(meta.command(name, &text))
+            Some(meta.command(name, &text, AgentCommandSource::Skill))
         })
         .collect();
     out.sort_by(|a, b| a.name.cmp(&b.name));
@@ -79,7 +84,7 @@ fn commands(dir: &Path, prefix: &str, depth: usize, out: &mut Vec<AgentCommand>)
         } else if let Some(stem) = name.strip_suffix(".md")
             && let Ok(text) = std::fs::read_to_string(&path)
         {
-            out.push(Frontmatter::parse(&text).command(format!("{prefix}{stem}"), &text));
+            out.push(Frontmatter::parse(&text).command(format!("{prefix}{stem}"), &text, AgentCommandSource::Command));
         }
     }
 }
@@ -147,7 +152,7 @@ impl Frontmatter {
     }
 
     /// `description`, else the body's first line.
-    fn command(&self, name: String, text: &str) -> AgentCommand {
+    fn command(&self, name: String, text: &str, source: AgentCommandSource) -> AgentCommand {
         let description = self.get("description").filter(|d| !d.is_empty()).map(str::to_owned).unwrap_or_else(|| {
             let body = text.get(self.body..).unwrap_or_default();
             body.lines()
@@ -158,6 +163,7 @@ impl Frontmatter {
         });
         AgentCommand {
             name,
+            source,
             description: truncate(&description),
             hint: self.get("argument-hint").filter(|h| !h.is_empty()).map(str::to_owned),
         }
@@ -194,13 +200,20 @@ mod tests {
     }
 
     fn cmd(name: &str, description: &str) -> AgentCommand {
-        AgentCommand { name: name.into(), description: description.into(), hint: None }
+        AgentCommand {
+            name: name.into(),
+            description: description.into(),
+            hint: None,
+            source: AgentCommandSource::Command,
+        }
     }
 
     #[test]
     fn project_and_user_skills_and_commands() {
         let tmp = tempfile::tempdir().unwrap();
-        let home = tmp.path().join("home");
+        // Home is an ancestor of the project, so the walk stops there instead of climbing
+        // past it into the real profile (a temp dir under the user's home holds its skills).
+        let home = tmp.path().to_path_buf();
         let repo = tmp.path().join("work").join("idea");
         let skills = repo.join(".claude/skills");
         write(
@@ -227,6 +240,12 @@ mod tests {
             ["issue-fix", "triage", "verify", "git:commit", "review", "parent", "lint", "brooks-review"]
         );
         let by = |n: &str| found.iter().find(|c| c.name == n).unwrap();
+        for name in ["issue-fix", "triage", "verify", "lint"] {
+            assert_eq!(by(name).source, AgentCommandSource::Skill);
+        }
+        for name in ["git:commit", "review", "parent", "brooks-review"] {
+            assert_eq!(by(name).source, AgentCommandSource::Command);
+        }
         assert_eq!(by("triage").description, "One pass over open issues and PRs");
         assert_eq!(by("issue-fix").description, "Fix an issue");
         assert_eq!(by("verify").description, "Build and drive the app");
@@ -262,10 +281,14 @@ mod tests {
     fn the_agents_entries_win() {
         let merged = merge(
             vec![cmd("triage", "from the agent"), cmd("compact", "Compact")],
-            vec![cmd("triage", "from disk"), cmd("verify", "Verify")],
+            vec![
+                AgentCommand { source: AgentCommandSource::Skill, ..cmd("triage", "from disk") },
+                cmd("verify", "Verify"),
+            ],
         );
         assert_eq!(names(&merged), ["triage", "compact", "verify"]);
         assert_eq!(merged[0].description, "from the agent");
+        assert_eq!(merged[0].source, AgentCommandSource::Skill);
     }
 
     #[test]
