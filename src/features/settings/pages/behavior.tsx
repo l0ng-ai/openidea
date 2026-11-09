@@ -54,6 +54,9 @@ function Indented({ children }: { children: ReactNode }) {
 // ---------------------------------------------------------------------------
 // Appearance
 
+/** Shows the theme picked in Settings in this window until Apply, or the selected one again. */
+const showPicked = (id: ConcreteTheme) => previewTheme(id !== currentThemeChoice() ? id : null);
+
 function ThemeRow() {
   const [theme, setTheme] = useSetting<ThemeId>("appearance.theme");
   const [sync, setSync] = useSetting<boolean>("appearance.syncWithOs");
@@ -73,11 +76,16 @@ function ThemeRow() {
     },
     [],
   );
+  // The staged theme can also change without the list, e.g. by Reset.
+  useEffect(() => {
+    if (previewed.current) showPicked(shown);
+  }, [shown]);
   const preview = (id: ConcreteTheme | null) => {
     previewed.current = true;
     if (id !== null) return picker.preview(id);
+    // The picker takes back only its own hover preview, not a theme picked here earlier.
     picker.restore();
-    if (shown !== currentThemeChoice()) previewTheme(shown);
+    showPicked(shown);
   };
   return (
     <Row label="Theme">
