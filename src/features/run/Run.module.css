@@ -456,14 +456,15 @@
 .editDialog {
   max-width: calc(100vw - 48px);
 }
+.editDialog [data-dialog-body] {
+  display: flex;
+  flex-direction: column;
+}
 .editBody {
   display: flex;
-  height: 100%;
+  flex: 1;
+  /* Floor only: the dialog body bounds it, so each pane scrolls on its own. */
   min-height: min(520px, calc(100vh - 200px));
-  /* A cap, not just a floor: left list and right form scroll on their own
-     (IDEA), so the panes never grow the dialog body into one shared scroller.
-     vh − ~104px is what a full-height resized dialog's body can hold anyway. */
-  max-height: calc(100vh - 120px);
 }
 .editSidebar {
   flex: none;
