@@ -11,9 +11,15 @@
 //! next argument names (`$post`, `Post::class`, or a route parameter
 //! `'post'`), registered or found by Laravel's conventions
 //! ([`guessed_policies`]); without a model, of every policy. Completion
-//! lists both, goto opens the gate's definition or the policy method, find
-//! usages and rename work from a usage or a `Gate::define` string, and an
-//! ability that is neither is unknown.
+//! lists both, goto opens the gate's definition or the policy method (the
+//! one a `Gate::define('x', [Policy::class, 'm'])` names too), find usages
+//! and rename work from a usage or a `Gate::define` string (the abilities of
+//! `can:` middleware included), and an ability that is neither is unknown.
+//! A model's policy is found as Laravel's `Gate::getPolicyFor` does it
+//! ([`policy_for`]): registered for it or a parent class, its
+//! `#[UsePolicy]`, then the project's `Gate::guessPolicyNamesUsing` or the
+//! conventions. Guards and brokers `config/auth.php` doesn't declare are
+//! reported by `PhpUnknownGuard` and `PhpUnknownPasswordBroker`.
 //!
 //! `authGuard`: a guard of `config/auth.php` in `auth('…')`,
 //! `Auth::guard(…)` / `shouldUse(…)`, `auth()->guard(…)`, Blade's
@@ -27,7 +33,9 @@ use ide_core::Severity;
 use super::{
     CalleePattern, Declared, PlacePattern, Position, RefContext, RefItem, ReferenceKind, RenameTarget, Undefined,
 };
-use crate::frameworks::laravel::auth::{AuthEntry, AuthFacts, brokers, guards, guessed_policies};
+use crate::frameworks::laravel::auth::{
+    AuthEntry, AuthFacts, USE_POLICY, brokers, guards, guessed_policies, use_policy,
+};
 use crate::navigate::Target;
 use crate::summary::{ClassKind, Visibility};
 use crate::syntax::ParsedFile;
@@ -134,15 +142,37 @@ pub(crate) fn models_of(cx: &RefContext<'_>, subjects: &[String]) -> Vec<String>
     out
 }
 
-/// The policy of `model`: registered, else found by Laravel's conventions.
+/// The policy of `model`, in the order Laravel's `Gate::getPolicyFor` looks
+/// (its documentation on authorization): registered for the model or one
+/// of its parent classes, then named by the model's `#[UsePolicy]`
+/// attribute, then guessed: by the `Gate::guessPolicyNamesUsing` callback
+/// when the project sets one, else by Laravel's conventions.
 pub(crate) fn policy_for(cx: &RefContext<'_>, facts: &AuthFacts, model: &str) -> Option<String> {
-    if let Some(found) = facts.registered_policy(model) {
+    let resolver = cx.engine.resolver();
+    let class = resolver.class_model(model.trim_start_matches('\\'));
+    let mut lineage = vec![model.trim_start_matches('\\').to_owned()];
+    if let Some(class) = &class {
+        lineage.extend(class.parents.iter().map(|parent| parent.trim_start_matches('\\').to_owned()));
+    }
+    if let Some(found) = lineage.iter().find_map(|model| facts.registered_policy(model)) {
         return Some(found.policy.clone());
     }
-    let resolver = cx.engine.resolver();
-    guessed_policies(model)
-        .into_iter()
-        .find_map(|candidate| resolver.class_model(&candidate).map(|m| m.fqn().to_owned()))
+    if let Some(class) = &class
+        && class.class.attributes.iter().any(|attribute| {
+            crate::names::fqn_eq(crate::names::NameKind::ClassLike, attribute.trim_start_matches('\\'), USE_POLICY)
+        })
+        && let Some(found) = cx.engine.class_targets(class.fqn()).into_iter().find_map(|target| {
+            let parsed = cx.engine.file_parse(&target.path)?;
+            use_policy(parsed.text())
+        })
+    {
+        return Some(found);
+    }
+    let candidates = match &facts.policy_guess {
+        Some(guess) => vec![guess.policy_of(model)],
+        None => guessed_policies(model),
+    };
+    candidates.into_iter().find_map(|candidate| resolver.class_model(&candidate).map(|m| m.fqn().to_owned()))
 }
 
 /// Every policy of the project: the registered ones and the classes of the
@@ -282,6 +312,33 @@ pub(crate) fn ability_hover(cx: &RefContext<'_>, subjects: &[String], name: &str
     (!lines.is_empty()).then(|| format!("**ability** `{name}`\n\n{}", lines.join("  \n")))
 }
 
+/// The byte ranges of ability `key` in the `can:` middleware strings of
+/// `text` (`'can:update,post'`, `"can:publish"`): a quote, `can:`, the
+/// ability, then `,` or the closing quote.
+pub(crate) fn can_middleware_usages(text: &str, key: &str) -> Vec<(u32, u32)> {
+    if key.is_empty() {
+        return Vec::new();
+    }
+    let bytes = text.as_bytes();
+    let mut out = Vec::new();
+    let mut from = 0;
+    while let Some(found) = text[from..].find("can:") {
+        let at = from + found;
+        from = at + 4;
+        let quote = match at.checked_sub(1).map(|before| bytes[before]) {
+            Some(quote @ (b'\'' | b'"')) => quote,
+            _ => continue,
+        };
+        let start = at + 4;
+        let end = start + key.len();
+        let ends = bytes.get(end).is_some_and(|after| *after == b',' || *after == quote);
+        if ends && text.get(start..end) == Some(key) {
+            out.push((start as u32, end as u32));
+        }
+    }
+    out
+}
+
 /// See the module documentation.
 pub struct Gate;
 
@@ -316,10 +373,24 @@ impl ReferenceKind for Gate {
         crate::index::words(value)
     }
 
+    fn markup_usages(&self, _cx: &RefContext<'_>, path: &Path, text: &str, key: &str) -> Vec<(u32, u32)> {
+        // `can:` middleware is searched in PHP files (route files, controllers).
+        if path.extension().is_none_or(|ext| ext != "php") || path.to_string_lossy().ends_with(".blade.php") {
+            return Vec::new();
+        }
+        can_middleware_usages(text, key)
+    }
+
+    fn markup_words(&self, key: &str) -> Vec<String> {
+        let mut words = crate::index::words(key);
+        words.push("can".to_owned());
+        words
+    }
+
     fn declared_at(&self, cx: &RefContext<'_>, path: &Path, parsed: &ParsedFile, offset: u32) -> Option<Declared> {
         let facts = auth(cx);
         let lines = parsed.line_index();
-        facts.gates.iter().filter(|gate| gate.policy.is_none() && gate.path == path).find_map(|gate| {
+        facts.gates.iter().filter(|gate| !gate.resource && gate.path == path).find_map(|gate| {
             let start = lines.byte(gate.range.start);
             let end = lines.byte(gate.range.end);
             (start <= offset && offset <= end).then(|| Declared {
@@ -334,7 +405,7 @@ impl ReferenceKind for Gate {
     fn rename_target(&self, cx: &RefContext<'_>, value: &str, _at: usize) -> Option<RenameTarget> {
         // Only a gate (a policy method is renamed as a method).
         let facts = auth(cx);
-        let mut gates = facts.gates_named(value).filter(|gate| gate.policy.is_none());
+        let mut gates = facts.gates_named(value).filter(|gate| !gate.resource);
         let gate = gates.next()?;
         if gates.next().is_some() {
             return None;
@@ -412,6 +483,25 @@ pub(crate) fn guard_entries(cx: &RefContext<'_>) -> Vec<AuthEntry> {
     guards(&cx.engine.laravel_config().unwrap_or_default())
 }
 
+/// What is wrong with `name` among `entries` (of `config/auth.php`): not
+/// declared there. Nothing is said when the project has no such array
+/// (Laravel's own configuration is used then) or `name` is empty.
+fn entry_problem(entries: &[AuthEntry], name: &str, what: &str) -> Option<Undefined> {
+    if name.is_empty() || entries.iter().all(|entry| entry.declared.is_none()) {
+        return None;
+    }
+    if entries.iter().any(|entry| entry.name == name) {
+        return None;
+    }
+    let known: Vec<String> = entries.iter().map(|entry| format!("'{}'", entry.name)).collect();
+    Some(Undefined::warning(format!("Unknown {what} '{name}': config/auth.php declares {}", known.join(", "))))
+}
+
+/// What is wrong with guard `name`: `config/auth.php` doesn't declare it.
+pub(crate) fn guard_problem(cx: &RefContext<'_>, name: &str) -> Option<Undefined> {
+    entry_problem(&guard_entries(cx), name, "guard")
+}
+
 /// Completion items of guards, replacing `from..to` of the value.
 pub(crate) fn guard_items(cx: &RefContext<'_>, from: usize, to: usize) -> Vec<RefItem> {
     entry_items(guard_entries(cx), "guard", from, to)
@@ -452,6 +542,10 @@ impl ReferenceKind for AuthGuard {
         let driver = entry.detail.as_deref().map(|driver| format!("\n\ndriver: `{driver}`")).unwrap_or_default();
         Some(format!("**guard** `{value}`{driver}"))
     }
+
+    fn undefined(&self, cx: &RefContext<'_>, value: &str) -> Option<Undefined> {
+        guard_problem(cx, value)
+    }
 }
 
 /// See the module documentation.
@@ -490,5 +584,9 @@ impl ReferenceKind for PasswordBroker {
         let provider =
             entry.detail.as_deref().map(|provider| format!("\n\nprovider: `{provider}`")).unwrap_or_default();
         Some(format!("**password broker** `{value}`{provider}"))
+    }
+
+    fn undefined(&self, cx: &RefContext<'_>, value: &str) -> Option<Undefined> {
+        entry_problem(&Self::entries(cx), value, "password broker")
     }
 }

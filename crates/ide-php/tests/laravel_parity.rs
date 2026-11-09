@@ -560,7 +560,9 @@ fn real_app_checklist() {
         ("viewName", "view('/*|*/');"),
         ("translationKey", "__('/*|*/');"),
         ("envKey", "env('/*|*/');"),
-        ("validationRule", "$request->validate(['a' => '/*|*/']);"),
+        // The probe's `StorePostRequest` is the fixture's: a request every app has.
+        ("validationRule", "(new \\Illuminate\\Http\\Request())->validate(['a' => '/*|*/']);"),
+        ("validationRule", "\\Illuminate\\Support\\Facades\\Validator::make([], ['a' => ['/*|*/']]);"),
         ("artisanCommand", "Artisan::call('/*|*/');"),
     ] {
         let (doc, pos) = session.open(body, false);
@@ -570,16 +572,29 @@ fn real_app_checklist() {
             missing.push(kind);
         }
     }
+    // Monica's services validate what their `rules()` returns
+    // (`Validator::make($data, $this->rules())` in `App\Services\BaseService`).
+    if root.join("app/Services/BaseService.php").is_file() {
+        let source = "<?php\n\nnamespace App\\Services;\n\nclass ParityProbe extends BaseService\n{\n    public function rules(): array\n    {\n        return ['a' => 'requ/*|*/'];\n    }\n}\n";
+        let (text, pos) = caret(source);
+        let doc = DocId(9_999);
+        engine.document_opened(doc, &root.join("app/Services/ParityProbe.php"), 1, &text);
+        let found = engine.completion(doc, pos, None, &CancellationToken::new());
+        engine.document_closed(doc);
+        if !found.is_some_and(|found| found.items.iter().any(|item| item.label == "required")) {
+            missing.push("validationRule (service rules())");
+        }
+    }
     assert!(missing.is_empty(), "no completion for {missing:?}");
 
     let context = engine.laravel_generation_context().expect("generators");
     let mut failures = Vec::new();
     for generator in context.generators.iter().filter(|generator| generator.id != "model") {
-        let request = NewClass {
-            model: engine.laravel_models().first().cloned().unwrap_or_default(),
-            name: format!("ParityCheck{}", class_request(&generator.id).name),
-            ..class_request(&generator.id)
-        };
+        let base = class_request(&generator.id);
+        // Class names get a prefix the app won't have; migration and view
+        // names (`create_parities_table`, `parity.card`) stay as they are.
+        let name = if base.name.contains(['_', '.']) { base.name.clone() } else { format!("ParityCheck{}", base.name) };
+        let request = NewClass { model: engine.laravel_models().first().cloned().unwrap_or_default(), name, ..base };
         let result = engine.laravel_generate_class(&request, &TemplateSet::default(), TIMESTAMP);
         if let Err(error) = result.and_then(|edit| check_generated(&created_files(&edit))) {
             failures.push(format!("{}: {error}", generator.id));

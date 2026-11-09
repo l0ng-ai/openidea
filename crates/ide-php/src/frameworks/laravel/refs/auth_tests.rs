@@ -269,3 +269,204 @@ fn middleware_parameters() {
     assert_eq!(parameter_at("throttle:60,1", 10), None);
     assert_eq!(parameter_at("auth", 2), None);
 }
+
+impl Project {
+    /// The problems of `code` in `body`: `(line, message)`.
+    fn problems_of(&mut self, body: &str, code: &str) -> Vec<(u32, String)> {
+        let (doc, _) = self.open("app/Http/Probe.php", &format!("{}/*|*/", probe(body)));
+        let inspected = self.engine.inspect(doc, &CancellationToken::new()).unwrap();
+        self.engine.document_closed(doc);
+        inspected
+            .diagnostics
+            .iter()
+            .filter(|d| d.code.as_deref() == Some(code))
+            .map(|d| (d.range.start.line, d.message.clone()))
+            .collect()
+    }
+}
+
+/// A provider registering a policy for `Tag`, gates calling policy methods
+/// and a policy name guess.
+const AUTH_PROVIDER: &str = r#"<?php
+namespace App\Providers;
+
+use App\Models\Tag;
+use App\Policies\PostPolicy;
+use App\Policies\TagPolicy;
+use Illuminate\Support\Facades\Gate;
+
+class AuthServiceProvider
+{
+    public function boot(): void
+    {
+        Gate::policy(Tag::class, TagPolicy::class);
+        Gate::define('archive-post', [PostPolicy::class, 'delete']);
+        Gate::define('legacy-post', 'App\Policies\PostPolicy@update');
+        Gate::guessPolicyNamesUsing(fn (string $model) => 'App\\Authorization\\'.class_basename($model).'Rules');
+    }
+}
+"#;
+
+const BASE_POLICY: &str = "<?php\nnamespace App\\Policies;\n\nclass BasePolicy\n{\n    public function audit($user): bool\n    {\n        return true;\n    }\n}\n";
+const TAG_POLICY: &str = "<?php\nnamespace App\\Policies;\n\nclass TagPolicy extends BasePolicy\n{\n    public function merge($user, $tag): bool\n    {\n        return true;\n    }\n}\n";
+const SPECIAL_TAG: &str = "<?php\nnamespace App\\Models;\n\nclass SpecialTag extends Tag\n{\n}\n";
+const ARTICLE: &str = "<?php\nnamespace App\\Models;\n\nuse App\\Policies\\Content\\ArticlePolicy;\nuse Illuminate\\Database\\Eloquent\\Attributes\\UsePolicy;\nuse Illuminate\\Database\\Eloquent\\Model;\n\n#[UsePolicy(ArticlePolicy::class)]\nclass Article extends Model\n{\n}\n";
+const ARTICLE_POLICY: &str = "<?php\nnamespace App\\Policies\\Content;\n\nclass ArticlePolicy\n{\n    public function feature($user, $article): bool\n    {\n        return true;\n    }\n}\n";
+const COMMENT_RULES: &str = "<?php\nnamespace App\\Authorization;\n\nclass CommentRules\n{\n    public function moderate($user, $comment): bool\n    {\n        return true;\n    }\n}\n";
+
+fn policies_app() -> Project {
+    Project::app_with(&[
+        ("app/Providers/AuthServiceProvider.php", AUTH_PROVIDER),
+        ("app/Policies/BasePolicy.php", BASE_POLICY),
+        ("app/Policies/TagPolicy.php", TAG_POLICY),
+        ("app/Models/SpecialTag.php", SPECIAL_TAG),
+        ("app/Models/Article.php", ARTICLE),
+        ("app/Policies/Content/ArticlePolicy.php", ARTICLE_POLICY),
+        ("app/Authorization/CommentRules.php", COMMENT_RULES),
+    ])
+}
+
+#[test]
+fn policies_from_parents_attributes_and_the_guess_callback() {
+    use crate::frameworks::laravel::auth::PolicyGuess;
+    let mut project = policies_app();
+    let facts = project.engine.laravel_auth().unwrap();
+    assert_eq!(
+        facts.policy_guess,
+        Some(PolicyGuess::Basename { prefix: "App\\Authorization\\".to_owned(), suffix: "Rules".to_owned() })
+    );
+    let cx = project.engine.ref_context().unwrap();
+    let policy = |model: &str| gate::policy_for(&cx, &facts, model);
+    // Registered for the parent class.
+    assert_eq!(policy("App\\Models\\SpecialTag").as_deref(), Some("App\\Policies\\TagPolicy"));
+    // `#[UsePolicy]` before the guess.
+    assert_eq!(policy("App\\Models\\Article").as_deref(), Some("App\\Policies\\Content\\ArticlePolicy"));
+    // The project's guess replaces Laravel's conventions.
+    assert_eq!(policy("App\\Models\\Comment").as_deref(), Some("App\\Authorization\\CommentRules"));
+    assert_eq!(policy("App\\Models\\Post"), None);
+    drop(cx);
+
+    // An inherited policy method is an ability of the model.
+    let body = "Gate::allows('/*|*/', new \\App\\Models\\SpecialTag());";
+    let found = project.auth_complete(body);
+    for ability in ["audit", "merge", "archive-post"] {
+        assert!(found.contains(&ability.to_owned()), "{ability} in {found:?}");
+    }
+    let found = project.auth_goto("Gate::allows('aud/*|*/it', new \\App\\Models\\SpecialTag());");
+    assert_eq!(found, [("app/Policies/BasePolicy.php".to_owned(), 5, "audit".to_owned())]);
+    assert!(
+        project.problems_of("Gate::allows('merge', new \\App\\Models\\SpecialTag());", "PhpUnknownAbility").is_empty()
+    );
+}
+
+#[test]
+fn gates_defined_with_a_policy_method_go_to_it() {
+    let mut project = policies_app();
+    let facts = project.engine.laravel_auth().unwrap();
+    let gates: Vec<String> = facts
+        .gates
+        .iter()
+        .filter(|gate| gate.path.ends_with("AuthServiceProvider.php"))
+        .map(|gate| format!("{} {:?} {}", gate.name, gate.policy, gate.resource))
+        .collect();
+    assert_eq!(
+        gates,
+        [
+            "archive-post Some((\"App\\\\Policies\\\\PostPolicy\", \"delete\")) false",
+            "legacy-post Some((\"App\\\\Policies\\\\PostPolicy\", \"update\")) false",
+        ]
+    );
+    assert_eq!(project.auth_goto("Gate::allows('archive/*|*/-post');"), [(POLICY.to_owned(), 19, "delete".to_owned())]);
+    assert_eq!(project.auth_goto("Gate::allows('legacy/*|*/-post');"), [(POLICY.to_owned(), 14, "update".to_owned())]);
+    // Still a gate: renamed from a usage.
+    let (doc, pos) = project.open("app/Http/Probe.php", &probe("Gate::allows('archive/*|*/-post');"));
+    assert!(project.engine.prepare_rename(doc, pos).flatten().is_some());
+    project.engine.document_closed(doc);
+}
+
+#[test]
+fn can_middleware_is_checked_and_listed_with_the_gates_usages() {
+    let controller = "<?php\nnamespace App\\Http\\Controllers;\n\nclass DraftController extends Controller\n{\n    public function __construct()\n    {\n        $this->middleware('can:edit-post');\n        $this->middleware(['auth', \"can:edit-post,post\"]);\n        $this->middleware('can:edit-posts');\n    }\n}\n";
+    let mut project = Project::app_with(&[("app/Http/Controllers/DraftController.php", controller)]);
+    // The inspection: the ability's range only.
+    let body = "Route::get('/', fn () => 1)->middleware('can:update,post');\n    Route::get('/', fn () => 1)->middleware(['auth', 'can:nope,post']);\n    Route::get('/', fn () => 1)->middleware('can:edit-post');";
+    let found = project.problems_of(body, "PhpUnknownAbility");
+    assert_eq!(
+        found,
+        [(15, "Unknown ability 'nope': no gate defines it and PostPolicy has no such method".to_owned())]
+    );
+    let (doc, _) = project.open("app/Http/Probe.php", &format!("{}/*|*/", probe(body)));
+    let inspected = project.engine.inspect(doc, &CancellationToken::new()).unwrap();
+    project.engine.document_closed(doc);
+    let problem = inspected.diagnostics.iter().find(|d| d.code.as_deref() == Some("PhpUnknownAbility")).unwrap();
+    assert_eq!(problem.range.end.col - problem.range.start.col, 4, "{problem:?}");
+
+    // Find usages of the gate lists the middleware, and rename edits it.
+    let source = project.app_file_with(PROVIDER, "Gate::define('edit-post'", "Gate::define('edit-/*|*/post'");
+    let found: Vec<(String, u32)> =
+        project.references(PROVIDER, &source).into_iter().map(|(path, line, _, _)| (path, line)).collect();
+    let controller_rel = "app/Http/Controllers/DraftController.php".to_owned();
+    assert!(found.contains(&(controller_rel.clone(), 7)) && found.contains(&(controller_rel.clone(), 8)), "{found:?}");
+    assert!(!found.contains(&(controller_rel.clone(), 9)), "{found:?}");
+    let edits = project.rename(PROVIDER, &source, "modify-post");
+    let in_controller: Vec<&(String, u32, String)> =
+        edits.iter().filter(|(path, ..)| *path == controller_rel).collect();
+    assert_eq!(in_controller.len(), 2, "{edits:?}");
+    assert!(in_controller.iter().all(|(_, _, text)| text == "edit-post"), "{edits:?}");
+}
+
+#[test]
+fn reports_unknown_guards_and_brokers() {
+    let mut project = Project::app();
+    let body = "auth('admin');\n    auth('nobody');\n    Auth::guard('web');\n    Route::get('/', fn () => 1)->middleware('auth:web,ghost');\n    Password::broker('users');\n    Password::broker('admins');";
+    let guards = project.problems_of(body, "PhpUnknownGuard");
+    assert_eq!(
+        guards,
+        [
+            (15, "Unknown guard 'nobody': config/auth.php declares 'admin', 'web'".to_owned()),
+            (17, "Unknown guard 'ghost': config/auth.php declares 'admin', 'web'".to_owned()),
+        ]
+    );
+    let brokers = project.problems_of(body, "PhpUnknownPasswordBroker");
+    assert_eq!(brokers, [(19, "Unknown password broker 'admins': config/auth.php declares 'users'".to_owned())]);
+    // Blade's `@auth`.
+    let problems = project.engine.blade_problems("@auth('ghost')\n@endauth\n@guest('web')\n@endguest\n");
+    let found: Vec<(u32, Option<&str>)> =
+        problems.iter().map(|problem| (problem.range.start.line, problem.code.as_deref())).collect();
+    assert_eq!(found, [(0, Some("PhpUnknownGuard"))]);
+}
+
+#[test]
+fn reads_policy_name_guesses() {
+    use crate::frameworks::laravel::auth::{AuthFacts, PolicyGuess};
+    let read = |callback: &str| {
+        let text = format!(
+            "<?php\nnamespace App\\Providers;\n\nuse Illuminate\\Support\\Facades\\Gate;\n\nclass P\n{{\n    public function boot(): void\n    {{\n        {callback}\n    }}\n}}\n"
+        );
+        let mut facts = AuthFacts::default();
+        facts.read_provider(std::path::Path::new("p.php"), &text);
+        facts.policy_guess
+    };
+    let basename =
+        read("Gate::guessPolicyNamesUsing(fn ($model) => 'App\\\\Policies\\\\'.class_basename($model).'Policy');");
+    assert_eq!(
+        basename,
+        Some(PolicyGuess::Basename { prefix: "App\\Policies\\".to_owned(), suffix: "Policy".to_owned() })
+    );
+    assert_eq!(basename.unwrap().policy_of("\\App\\Models\\Post"), "App\\Policies\\PostPolicy");
+    let replace = read(
+        "Gate::guessPolicyNamesUsing(function (string $modelClass) {\n            return str_replace('Models', 'Policies', $modelClass).'Policy';\n        });",
+    );
+    assert_eq!(
+        replace,
+        Some(PolicyGuess::Replace {
+            from: "Models".to_owned(),
+            to: "Policies".to_owned(),
+            suffix: "Policy".to_owned()
+        })
+    );
+    assert_eq!(replace.unwrap().policy_of("App\\Models\\Post"), "App\\Policies\\PostPolicy");
+    // Callbacks the engine can't follow.
+    assert_eq!(read("Gate::guessPolicyNamesUsing(fn ($model) => $this->policyFor($model));"), None);
+    assert_eq!(read("Gate::guessPolicyNamesUsing([$this, 'guess']);"), None);
+}

@@ -29,6 +29,10 @@ pub struct LaravelFacts {
     /// The fields of the array a class's `rules()` method returns (a Form
     /// Request's, when the class is one).
     pub rules: Vec<RequestRules>,
+    /// Methods whose value a class passes as the rules of a validator
+    /// (`Validator::make($data, $this->rules())`), so what they return,
+    /// in the class and its subclasses, is a rules array.
+    pub rule_methods: Vec<RuleMethod>,
 }
 
 impl LaravelFacts {
@@ -38,6 +42,7 @@ impl LaravelFacts {
             && self.casts.is_empty()
             && self.routes.is_empty()
             && self.rules.is_empty()
+            && self.rule_methods.is_empty()
     }
 
     /// The facts of several files, in order.
@@ -57,6 +62,7 @@ impl LaravelFacts {
             out.routes
                 .extend(facts.routes.iter().map(|route| RouteRegistration { file: file.clone(), ..route.clone() }));
             out.rules.extend(facts.rules.iter().map(|rules| RequestRules { file: file.clone(), ..rules.clone() }));
+            out.rule_methods.extend(facts.rule_methods.iter().cloned());
         }
         out
     }
@@ -74,6 +80,17 @@ impl LaravelFacts {
             }
         }
         out
+    }
+
+    /// Whether what method `method` of `class` returns is a rules array
+    /// because `class` or one of `parents` (its ancestors) validates with
+    /// it ([`LaravelFacts::rule_methods`]).
+    pub fn returns_rules(&self, class: &str, parents: &[String], method: &str) -> bool {
+        let same = |a: &str, b: &str| a.trim_start_matches('\\').eq_ignore_ascii_case(b.trim_start_matches('\\'));
+        self.rule_methods.iter().any(|found| {
+            found.method.eq_ignore_ascii_case(method)
+                && (same(&found.class, class) || parents.iter().any(|parent| same(&found.class, parent)))
+        })
     }
 
     /// Whether the migrations say for certain which columns `table` has:
@@ -136,6 +153,9 @@ pub struct Column {
     /// `->nullable()`, or a column Laravel creates nullable
     /// (`timestamps()`).
     pub nullable: bool,
+    /// The maximum length of a string column (`string('title', 100)`, 255
+    /// when not given), when known.
+    pub length: Option<u32>,
     /// The column's name in the migration (the method's when the name is
     /// implied: `timestamps()`).
     pub loc: Loc,
@@ -174,6 +194,16 @@ pub struct RequestRules {
     /// files ([`LaravelFacts::merge_located`]); not stored in summaries.
     #[serde(skip)]
     pub file: Option<PathBuf>,
+}
+
+/// A method a class validates with: `$this->rules()` given as the rules
+/// of `Validator::make`, `validator()`, `$request->validate()` and the
+/// like inside the class.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct RuleMethod {
+    /// The class (FQN).
+    pub class: String,
+    pub method: String,
 }
 
 /// A field of a rules array: `'title' => 'required|string|max:255'`.

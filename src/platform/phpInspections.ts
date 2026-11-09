@@ -270,7 +270,7 @@ export const PHP_INSPECTIONS: readonly PhpInspection[] = [
     name: "Unknown ability",
     group: "Laravel",
     description:
-      "Reports Laravel abilities, in Gate::allows(), $user->can(), authorize() or @can, that no gate defines and that aren't a method of the model's policy (of any policy when the model isn't known).",
+      "Reports Laravel abilities, in Gate::allows(), $user->can(), authorize(), @can or can: middleware, that no gate defines and that aren't a method of the model's policy (of any policy when the model isn't known).",
   },
   {
     code: "PhpUndefinedInertiaPage",
@@ -278,6 +278,19 @@ export const PHP_INSPECTIONS: readonly PhpInspection[] = [
     group: "Laravel",
     description:
       "Reports Inertia page names, in Inertia::render(), inertia() or Route::inertia(), that no file of the page folders has. The quick-fix creates the page.",
+  },
+  {
+    code: "PhpUnknownGuard",
+    name: "Unknown guard",
+    group: "Laravel",
+    description:
+      "Reports guards, in auth(), Auth::guard(), @auth, @guest or the auth: and guest: middleware, that config/auth.php doesn't declare.",
+  },
+  {
+    code: "PhpUnknownPasswordBroker",
+    name: "Unknown password broker",
+    group: "Laravel",
+    description: "Reports password brokers passed to Password::broker() that config/auth.php doesn't declare.",
   },
   {
     code: "BladeUnclosedSection",

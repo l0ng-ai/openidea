@@ -33,8 +33,12 @@ pub struct GateDef {
     /// The provider, and the range of the name's string in it.
     pub path: PathBuf,
     pub range: Range,
-    /// The policy class and method of a `Gate::resource` ability.
+    /// The policy class and method of the ability: a `Gate::resource`
+    /// ability's, or the callback of `Gate::define('x', [Policy::class,
+    /// 'method'])` (or `'Policy@method'`).
     pub policy: Option<(String, String)>,
+    /// One of the abilities of `Gate::resource` (not renamed as a gate).
+    pub resource: bool,
 }
 
 /// A policy registered for a model.
@@ -55,6 +59,110 @@ pub struct AuthFacts {
     pub policies: Vec<PolicyDef>,
     /// The classes of the `Policies` folders (FQNs), sorted.
     pub policy_classes: Vec<String>,
+    /// How `Gate::guessPolicyNamesUsing(…)` names a model's policy, when
+    /// its callback is one of the simple forms ([`PolicyGuess`]).
+    pub policy_guess: Option<PolicyGuess>,
+}
+
+/// A `Gate::guessPolicyNamesUsing` callback the engine follows:
+///
+/// - `'App\\Policies\\'.class_basename($model).'Policy'` (`prefix`, the
+///   model's base name, `suffix`);
+/// - `str_replace('Models', 'Policies', $model).'Policy'` (and
+///   `Str::replace`): the model's name with `from` replaced by `to`, then
+///   `suffix`.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum PolicyGuess {
+    Basename { prefix: String, suffix: String },
+    Replace { from: String, to: String, suffix: String },
+}
+
+impl PolicyGuess {
+    /// The policy class this guess gives `model` (FQN without the leading
+    /// `\`).
+    pub fn policy_of(&self, model: &str) -> String {
+        let model = model.trim_start_matches('\\');
+        let found = match self {
+            PolicyGuess::Basename { prefix, suffix } => {
+                let base = model.rsplit('\\').next().unwrap_or(model);
+                format!("{prefix}{base}{suffix}")
+            }
+            PolicyGuess::Replace { from, to, suffix } => format!("{}{suffix}", model.replace(from.as_str(), to)),
+        };
+        found.trim_start_matches('\\').to_owned()
+    }
+
+    /// The guess of the callback whose text (the call's arguments) is
+    /// `callback`.
+    fn read(callback: &str) -> Option<Self> {
+        // The value the callback returns: after `=>` or `return`.
+        let body = match callback.find("=>") {
+            Some(at) => &callback[at + 2..],
+            None => &callback[callback.find("return")? + "return".len()..],
+        };
+        let body = body.split(';').next()?.trim();
+        // The arrow function's closing `)` of the call.
+        let body = if callback.contains("=>") { body.strip_suffix(')').unwrap_or(body).trim() } else { body };
+        let parts: Vec<&str> = split_concat(body);
+        let literal = |part: &str| string_literal(part.trim()).map(|value| value.replace("\\\\", "\\"));
+        let basename = |part: &str| part.trim_start().starts_with("class_basename(");
+        match parts.as_slice() {
+            [prefix, base, suffix] if basename(base) => {
+                Some(PolicyGuess::Basename { prefix: literal(prefix)?, suffix: literal(suffix)? })
+            }
+            [base, suffix] if basename(base) => {
+                Some(PolicyGuess::Basename { prefix: String::new(), suffix: literal(suffix)? })
+            }
+            [replace, suffix] => {
+                let replace = replace.trim();
+                let open = replace.find('(')?;
+                let name = replace[..open].trim().trim_start_matches('\\');
+                if !["str_replace", "Str::replace", "Illuminate\\Support\\Str::replace"].contains(&name) {
+                    return None;
+                }
+                let args = call_arguments(replace, open)?;
+                Some(PolicyGuess::Replace {
+                    from: literal(args.first()?)?,
+                    to: literal(args.get(1)?)?,
+                    suffix: literal(suffix)?,
+                })
+            }
+            _ => None,
+        }
+    }
+}
+
+/// The operands of a `.` concatenation, outside strings and brackets.
+fn split_concat(text: &str) -> Vec<&str> {
+    let mut out = Vec::new();
+    let mut depth = 0i32;
+    let mut quote: Option<char> = None;
+    let mut escaped = false;
+    let mut start = 0;
+    for (i, c) in text.char_indices() {
+        if let Some(open) = quote {
+            if escaped {
+                escaped = false;
+            } else if c == '\\' {
+                escaped = true;
+            } else if c == open {
+                quote = None;
+            }
+            continue;
+        }
+        match c {
+            '\'' | '"' => quote = Some(c),
+            '(' | '[' => depth += 1,
+            ')' | ']' => depth -= 1,
+            '.' if depth == 0 => {
+                out.push(&text[start..i]);
+                start = i + 1;
+            }
+            _ => {}
+        }
+    }
+    out.push(&text[start..]);
+    out
 }
 
 impl AuthFacts {
@@ -77,6 +185,9 @@ impl AuthFacts {
             if let Some(part) = part {
                 facts.gates.extend(part.gates.iter().cloned());
                 facts.policies.extend(part.policies.iter().cloned());
+                if part.policy_guess.is_some() {
+                    facts.policy_guess.clone_from(&part.policy_guess);
+                }
             }
         }
         let mut dirs = vec![
@@ -109,9 +220,16 @@ impl AuthFacts {
         let names = FileNames::resolve(&parsed);
         let lines = LineIndex::new(text);
         let class_at = |written: &str, offset: usize| class_name(&names, written, offset);
-        for (open, _) in calls(text, "Gate::define(") {
+        for (open, args) in calls(text, "Gate::define(") {
             if let Some((name, range)) = first_string(text, open, &lines) {
-                self.gates.push(GateDef { name, path: path.to_path_buf(), range, policy: None });
+                let policy = args.get(1).and_then(|callback| policy_method(&names, callback, open));
+                self.gates.push(GateDef { name, path: path.to_path_buf(), range, policy, resource: false });
+            }
+        }
+        for (open, _) in calls(text, "Gate::guessPolicyNamesUsing(") {
+            let close = text[open..].find(';').map_or(text.len(), |at| open + at);
+            if let Some(guess) = PolicyGuess::read(&text[open + 1..close]) {
+                self.policy_guess = Some(guess);
             }
         }
         for (open, args) in calls(text, "Gate::resource(") {
@@ -123,6 +241,7 @@ impl AuthFacts {
                     path: path.to_path_buf(),
                     range,
                     policy: Some((policy.clone(), (*ability).to_owned())),
+                    resource: true,
                 });
             }
         }
@@ -164,6 +283,20 @@ impl AuthFacts {
     pub fn registered_policy(&self, model: &str) -> Option<&PolicyDef> {
         self.policies.iter().find(|policy| policy.model.eq_ignore_ascii_case(model.trim_start_matches('\\')))
     }
+}
+
+/// The policy method a `Gate::define` callback names: `[Policy::class,
+/// 'method']` or `'Policy@method'`.
+fn policy_method(names: &FileNames, callback: &str, offset: usize) -> Option<(String, String)> {
+    let callback = callback.trim();
+    if let Some(inner) = callback.strip_prefix('[').and_then(|rest| rest.strip_suffix(']')) {
+        let items = call_arguments(&format!("({inner})"), 0)?;
+        let [class, method] = items.as_slice() else { return None };
+        return Some((class_name(names, class, offset)?, string_literal(method.trim())?));
+    }
+    let written = string_literal(callback)?;
+    let (class, method) = written.split_once('@')?;
+    Some((class.replace("\\\\", "\\").trim_start_matches('\\').to_owned(), method.to_owned()))
 }
 
 /// The `(` offsets and arguments of the calls starting with `call` (which
@@ -211,6 +344,20 @@ pub(super) fn class_name(names: &FileNames, written: &str, offset: usize) -> Opt
         };
     }
     string_literal(written).map(|name| name.replace("\\\\", "\\").trim_start_matches('\\').to_owned())
+}
+
+/// The attribute naming a model's policy (Laravel 12).
+pub const USE_POLICY: &str = "Illuminate\\Database\\Eloquent\\Attributes\\UsePolicy";
+
+/// The policy the `#[UsePolicy(PostPolicy::class)]` attribute in `text` (a
+/// model's file) names.
+pub fn use_policy(text: &str) -> Option<String> {
+    let at = text.find("UsePolicy(")?;
+    let open = at + "UsePolicy".len();
+    let args = call_arguments(text, open)?;
+    let parsed = ParsedFile::parse("model.php", text);
+    let names = FileNames::resolve(&parsed);
+    class_name(&names, args.first()?, open)
 }
 
 /// The policy class names Laravel tries for `model`, most specific first
@@ -312,7 +459,8 @@ class AuthServiceProvider
             gates,
             [
                 ("edit-settings", 16, None),
-                ("publish", 17, None),
+                // The policy method the callback names.
+                ("publish", 17, Some("publish")),
                 ("posts.viewAny", 20, Some("viewAny")),
                 ("posts.view", 20, Some("view")),
                 ("posts.create", 20, Some("create")),

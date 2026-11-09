@@ -41,7 +41,7 @@ mod symfony;
 pub(crate) use extract::{inline_vars, type_hint};
 pub use laravel::{
     Binding, Cast, Column, LaravelFacts, ModelCasts, RequestRules, RouteFileKind, RoutePath, RouteRegistration,
-    RuleEntry, Table,
+    RuleEntry, RuleMethod, Table,
 };
 pub use symfony::{RepositoryEntity, RouteAttribute, SymfonyFacts};
 
@@ -65,7 +65,7 @@ use crate::types::LazyType;
 /// fields of `rules()` methods; 16: created and partial migration
 /// tables, inferred returns of raw Eloquent relations), so stored
 /// summaries are rebuilt.
-pub const SCHEMA_VERSION: u32 = 16;
+pub const SCHEMA_VERSION: u32 = 17;
 
 /// A source location: byte offsets (end exclusive) and the IDE range.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Hash, Serialize, Deserialize)]

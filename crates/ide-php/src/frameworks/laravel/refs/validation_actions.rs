@@ -19,7 +19,9 @@
 //!   `PostController` → `Post`; its `$fillable` when it has one) that the
 //!   array lacks: `required` or `nullable`, then the type its cast or
 //!   column gives (`integer`, `numeric`, `boolean`, `array`, `date`,
-//!   `string`), and `exists:table,id` for a `…_id` column whose table exists.
+//!   `string`, with `max:<length>` from a string column's length), and
+//!   `exists:table,id` for a `…_id` column whose table exists; an attribute
+//!   cast to an enum gets `Rule::enum(Status::class)` (rules as an array).
 //!   The title starts with "Generate", so the editor's Generate menu lists it.
 
 use std::path::{Path, PathBuf};
@@ -36,7 +38,7 @@ use crate::imports::{ImportAction, REWRITE, import_insertion, removal};
 use crate::inspect::fixes::{indent_unit, line_indent, newline};
 use crate::names::{FileNames, NameKind, NameRole};
 use crate::navigate::enclosing_class;
-use crate::summary::FileSummary;
+use crate::summary::{ClassKind, FileSummary};
 use crate::syntax::ParsedFile;
 use crate::types::provider::laravel::{LaravelProvider, plural, studly};
 
@@ -218,6 +220,7 @@ impl PhpEngine {
         let Some(site) = sites(parsed, &resolver, &[&ValidationRule], None).into_iter().find(|site| {
             site.start <= start
                 && end <= site.end
+                && !super::validation_rule::is_builder_argument(site)
                 && kind_of(site, &resolver).is_some_and(|kind| kind.id() == "validationRule")
         }) else {
             return Vec::new();
@@ -503,6 +506,8 @@ impl PhpEngine {
             .unwrap_or_default();
         let facts = resolver.laravel();
         const SKIPPED: &[&str] = &["id", "created_at", "updated_at", "deleted_at", "remember_token"];
+        let names = FileNames::resolve(parsed);
+        let mut imports: Vec<String> = Vec::new();
         let mut entries = Vec::new();
         for (column, cast) in LaravelProvider::model_columns(&resolver, model.fqn()) {
             let name = &column.name;
@@ -536,13 +541,36 @@ impl PhpEngine {
                     },
                 };
             rules.extend(type_rule.map(str::to_owned));
+            if type_rule == Some("string")
+                && let Some(length) = column.length
+            {
+                rules.push(format!("max:{length}"));
+            }
             if let Some(prefix) = name.strip_suffix("_id") {
                 let table = plural(prefix);
                 if facts.tables.iter().any(|known| known.name == table) {
                     rules.push(format!("exists:{table},id"));
                 }
             }
-            entries.push(format!("{} => {}", quoted(name), quoted(&rules.join("|"))));
+            // An enum cast: `Rule::enum(Status::class)`, so the rules are an array.
+            let enumeration = cast
+                .as_deref()
+                .filter(|cast| cast.starts_with('\\'))
+                .and_then(|cast| resolver.class_model(cast.trim_start_matches('\\')))
+                .filter(|class| class.kind() == ClassKind::Enum)
+                .map(|class| class.fqn().trim_start_matches('\\').to_owned());
+            let value = match enumeration {
+                Some(enumeration) => {
+                    let (rule, rule_import) = class_name(self, &names, start, RULE);
+                    let (written, enum_import) = class_name(self, &names, start, &enumeration);
+                    imports.extend(rule_import.into_iter().chain(enum_import));
+                    let mut items: Vec<String> = rules.iter().map(|rule| quoted(rule)).collect();
+                    items.push(format!("{rule}::enum({written}::class)"));
+                    format!("[{}]", items.join(", "))
+                }
+                None => quoted(&rules.join("|")),
+            };
+            entries.push(format!("{} => {value}", quoted(name)));
         }
         if entries.is_empty() {
             return Vec::new();
@@ -574,11 +602,18 @@ impl PhpEngine {
             None => (open, close, format!("{body}{nl}{close_indent}")),
         };
         let model_name = model.fqn().rsplit('\\').next().unwrap_or(model.fqn()).to_owned();
+        let mut edits = vec![edit];
+        imports.sort();
+        imports.dedup();
+        for import in imports {
+            let (at, line) = import_insertion(parsed, start, NameKind::ClassLike, &import);
+            edits.push((at, at, line));
+        }
         vec![ImportAction {
             title: format!("Generate validation rules from '{model_name}'"),
             kind: REWRITE,
             preferred: false,
-            edit: Self::byte_edit(parsed, path, vec![edit]),
+            edit: Self::byte_edit(parsed, path, edits),
         }]
     }
 }

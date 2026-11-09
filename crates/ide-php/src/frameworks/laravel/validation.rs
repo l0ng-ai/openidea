@@ -26,6 +26,10 @@ pub enum Params {
     Fields,
     /// A table, then one of its columns (`exists:table,column`).
     Table,
+    /// Values the field may take (`in:draft,published`): completed with the
+    /// backing values of the enum its attribute is cast to and the simple
+    /// constants named after it.
+    Choices,
 }
 
 /// A built-in rule.
@@ -52,7 +56,7 @@ const fn optional(name: &'static str, signature: &'static str, params: Params) -
     RuleSpec { name, signature, required: false, params }
 }
 
-use Params::{Fields, FirstField, Table, Values};
+use Params::{Choices, Fields, FirstField, Table, Values};
 
 /// Laravel's built-in rules, by name.
 pub const RULES: &[RuleSpec] = &[
@@ -102,7 +106,7 @@ pub const RULES: &[RuleSpec] = &[
     with("gte", "field", Fields),
     rule("hex_color"),
     rule("image"),
-    with("in", "foo,bar", Values),
+    with("in", "foo,bar", Choices),
     with("in_array", "anotherfield.*", Fields),
     rule("integer"),
     rule("ip"),
@@ -126,7 +130,7 @@ pub const RULES: &[RuleSpec] = &[
     with("missing_with", "foo,bar", Fields),
     with("missing_with_all", "foo,bar", Fields),
     with("multiple_of", "value", Values),
-    with("not_in", "foo,bar", Values),
+    with("not_in", "foo,bar", Choices),
     with("not_regex", "pattern", Values),
     rule("nullable"),
     rule("numeric"),

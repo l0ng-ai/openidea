@@ -42,8 +42,8 @@ Gaps go in the test's `GAPS` list. A gap that starts working fails the test unti
 | `eloquentRelation`  | `Post::with('comments')`                    | ✓          | ✓                  | ✓      | n/a                          |
 | `dbTable`           | `DB::table('posts')`                        | ✓          | ✓                  | ✓      | n/a                          |
 | `gate`              | `Gate::allows('publish-posts')`             | ✓          | ✓                  | ✓      | ✓ `PhpUnknownAbility`        |
-| `authGuard`         | `auth('web')`                               | ✓          | ✓                  | ✓      | n/a                          |
-| `passwordBroker`    | `Password::broker('users')`                 | ✓          | ✓                  | ✓      | n/a                          |
+| `authGuard`         | `auth('web')`                               | ✓          | ✓                  | ✓      | ✓ `PhpUnknownGuard`          |
+| `passwordBroker`    | `Password::broker('users')`                 | ✓          | ✓                  | ✓      | ✓ `PhpUnknownPasswordBroker` |
 | `artisanCommand`    | `Artisan::call('posts:publish')`            | ✓          | ✓                  | ✓      | n/a                          |
 | `livewireComponent` | `Livewire::test('counter')`                 | ✓          | ✓                  | ✓      | n/a                          |
 | `livewireParameter` | `Livewire::test('counter', ['start' => 1])` | ✓          | ✓                  | ✓      | n/a                          |
@@ -196,6 +196,14 @@ The `route_hints` bench now opens `routes/web.php` when it has routes, and other
 
 `real_app_checklist` now gets past the model check on Bagisto (it has routes, views and configuration keys). On both apps it still stops at `no completion for ["validationRule"]`, which phase 8.26 covers.
 
+### Validation on real applications (phase 8.26)
+
+The missing validation-rule completion wasn't the rule catalogue: the checklist's probe typed `$request` as the fixture's `App\Http\Requests\StorePostRequest`, which no real application has, so the `validate()` call had no receiver class. The probe now uses `Illuminate\Http\Request` and `Validator::make`, which every application has. Both complete on Monica and Bagisto.
+
+Monica does have a real gap, though: almost none of its rules sit in Form Requests. Its 250 or so services return them from `rules()` and validate in `App\Services\BaseService` with `Validator::make($data, $this->rules())->validate()`. The file summaries now record the methods a class passes as the rules of `Validator::make`, `validator()`, `validate()` or `validateWithBag()` (`$this->rules()`), and what those methods return in the class and its subclasses is a rules array. `real_app_checklist` checks a service's `rules()` when the app has `App\Services\BaseService`.
+
+`real_app_checklist` passes on Monica. On Bagisto it passes too, but only with larger thread stacks (`RUST_MIN_STACK=67108864`): in a debug build an indexing thread overflows its default 2 MB stack on one of Bagisto's files. That happens at the 8.25 commit as well, so it isn't new. Release builds and the benches are not affected.
+
 ## Still missing
 
 These gaps are tracked as phases 8.22–8.29 in [ROADMAP.md](ROADMAP.md).
@@ -226,7 +234,7 @@ These are the gaps against the feature list in LARAVEL-ROADMAP.md, gathered from
    - Vendor components.
    - Checking bound attributes against parameter types.
    - Quick-fixes for template problems.
-5. **Auth and validation.**
+5. **Auth and validation.** Done in 8.26, along with the Monica validation gap described above.
    - `#[UsePolicy]`, `Gate::guessPolicyNamesUsing` and inherited policies.
    - `can:` abilities in the inspection and in gate usages.
    - `Gate::define('x', [Policy::class, 'm'])` going to the method.

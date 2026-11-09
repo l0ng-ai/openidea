@@ -763,7 +763,7 @@ Runs after Plan 7. Before any 8.x phase, read [LARAVEL-ROADMAP.md](LARAVEL-ROADM
 
   Tests: caret fixtures in Blade files, and quick-fix tests.
 
-- [ ] Phase 8.26: Auth and validation, complete
+- [x] Phase 8.26: Auth and validation, complete
       Fix the real-application gap first: `real_app_checklist` gets no validation-rule completion on Monica. Find why, for example the rule catalogue or the place patterns not matching Monica's Form Requests, and fix it. Then add:
   - **Policies:** `#[UsePolicy]`, `Gate::guessPolicyNamesUsing`, inherited policies, and `Gate::define('x', [Policy::class, 'm'])` going to the method.
   - **`can:` abilities:** checked in the unknown-ability inspection and listed in gate usages.

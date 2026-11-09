@@ -142,6 +142,12 @@ pub enum CalleePattern {
     /// subclass, returns (`rules()` of a Form Request). The returned value
     /// is the argument at index 0.
     Return { classes: &'static [&'static str], names: &'static [&'static str] },
+    /// What one of `names` (any case) returns in a Form Request (or a
+    /// subclass of `form_request`), or in a class that validates with it
+    /// (`Validator::make($data, $this->rules())` in the class or an
+    /// ancestor, [`LaravelFacts::rule_methods`](crate::summary::LaravelFacts::rule_methods)).
+    /// The returned value is the argument at index 0.
+    Rules { form_request: &'static str, names: &'static [&'static str] },
     /// The default value of one of the properties `names` (without `$`) of
     /// one of `classes` or of a subclass (a model's `$fillable`). The value
     /// is the argument at index 0.
@@ -197,6 +203,7 @@ impl PlacePattern {
             CalleePattern::Function(fqn) => vec![fqn.rsplit('\\').next().unwrap_or(fqn)],
             CalleePattern::Method { names, .. }
             | CalleePattern::Return { names, .. }
+            | CalleePattern::Rules { names, .. }
             | CalleePattern::Property { names, .. } => names.to_vec(),
         }
     }
@@ -252,6 +259,13 @@ impl PlacePattern {
                         || resolver.class_model(class).is_some_and(|model| {
                             classes.iter().any(|wanted| wanted.contains('\\') && model.is_subclass_of(wanted))
                         }))
+            }
+            (CalleePattern::Rules { form_request, names }, CallTarget::Return { class, method }) => {
+                names.iter().any(|wanted| wanted.eq_ignore_ascii_case(method))
+                    && resolver.class_model(class).is_some_and(|model| {
+                        model.is_subclass_of(form_request)
+                            || resolver.laravel().returns_rules(model.fqn(), &model.parents, method)
+                    })
             }
             _ => false,
         }
@@ -1392,7 +1406,13 @@ impl PhpEngine {
         let project = self.laravel();
         let rules = project.as_ref().map(|project| project.ide_json.completions.as_slice()).unwrap_or_default();
         let mut out = Vec::new();
-        for site in sites_with(parsed, &resolver, kinds, rules, None) {
+        // The parameters of `can:` and `auth:` middleware are abilities and guards.
+        let parameters = kinds.iter().any(|kind| kind.id() == Gate.id() || kind.id() == AuthGuard.id());
+        let mut walked = kinds.to_vec();
+        if parameters {
+            walked.push(&Middleware);
+        }
+        for site in sites_with(parsed, &resolver, &walked, rules, None) {
             if cancel.is_cancelled() {
                 break;
             }
@@ -1400,6 +1420,16 @@ impl PhpEngine {
                 continue;
             }
             let Some((kind, rule)) = classify(&site, &resolver, rules) else { continue };
+            if parameters && kind.id() == Middleware.id() {
+                let Some(cx) = self.rule_site_context(path, &site, rule) else { continue };
+                for (id, from, to, problem) in middleware::parameter_problems(&cx, &site.value) {
+                    if kinds.iter().any(|wanted| wanted.id() == id) {
+                        let (start, end) = (site.start + from as u32, site.start + to as u32);
+                        out.push(UndefinedSite { kind: id, start, end, problem });
+                    }
+                }
+                continue;
+            }
             if !kinds.iter().any(|wanted| wanted.id() == kind.id()) {
                 continue;
             }
@@ -1424,13 +1454,18 @@ impl PhpEngine {
         let parsed = ParsedFile::parse("template.php", compiled.php.as_str());
         // Only the kinds whose inspection the profile leaves on, as in PHP files.
         let enabled = self.inspections().ids();
-        let kinds: Vec<&'static dyn ReferenceKind> =
-            [&ConfigKey as &'static dyn ReferenceKind, &EnvKey, &TranslationKey, &ViteAsset, &Gate, &ViewName]
-                .into_iter()
-                .filter(|kind| {
-                    crate::inspect::laravel::inspection_id(kind.id()).is_some_and(|id| enabled.contains(&id))
-                })
-                .collect();
+        let kinds: Vec<&'static dyn ReferenceKind> = [
+            &ConfigKey as &'static dyn ReferenceKind,
+            &EnvKey,
+            &TranslationKey,
+            &ViteAsset,
+            &Gate,
+            &AuthGuard,
+            &ViewName,
+        ]
+        .into_iter()
+        .filter(|kind| crate::inspect::laravel::inspection_id(kind.id()).is_some_and(|id| enabled.contains(&id)))
+        .collect();
         if kinds.is_empty() {
             return Vec::new();
         }

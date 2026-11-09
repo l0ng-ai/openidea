@@ -38,7 +38,7 @@ use super::Extractor;
 use crate::names::{NameKind, Resolution};
 use crate::summary::{
     Binding, Cast, Column, DocType, Loc, ModelCasts, RequestRules, RouteFileKind, RoutePath, RouteRegistration,
-    RuleEntry, Table,
+    RuleEntry, RuleMethod, Table,
 };
 use crate::types::ops::literal_type;
 use crate::types::{LazyType, Type};
@@ -63,6 +63,15 @@ fn string(expr: &Expression<'_>) -> Option<String> {
         },
         Expression::Parenthesized(inner) => string(inner.expression),
         _ => None,
+    }
+}
+
+/// The type of a literal (`mixed` for anything else).
+fn literal_type_of(expr: &Expression<'_>) -> Type {
+    match expr {
+        Expression::Literal(literal) => literal_type(literal),
+        Expression::Parenthesized(inner) => literal_type_of(inner.expression),
+        _ => Type::Mixed,
     }
 }
 
@@ -338,6 +347,33 @@ impl Extractor<'_> {
         }
         if !fields.is_empty() {
             self.summary.laravel.rules.push(RequestRules { class: class.to_owned(), fields, file: None });
+        }
+    }
+
+    /// A call validating (`validate`, `validateWithBag`, `make`,
+    /// `validator()`) with `$this->method()` among its arguments.
+    pub(super) fn rule_method(&mut self, method: &ClassLikeMemberSelector<'_>, list: &ArgumentList<'_>) {
+        let Some(name) = method_name(method) else { return };
+        if ["validate", "validateWithBag", "make"].iter().any(|known| known.eq_ignore_ascii_case(&name)) {
+            self.rule_method_arguments(list);
+        }
+    }
+
+    /// Records the `$this->method()` arguments of a validating call as
+    /// rule methods of the class being walked.
+    pub(super) fn rule_method_arguments(&mut self, list: &ArgumentList<'_>) {
+        let Some(class) = self.classes.last().cloned() else { return };
+        for arg in args(list) {
+            let Expression::Call(Call::Method(call)) = arg else { continue };
+            let Expression::Variable(Variable::Direct(variable)) = call.object else { continue };
+            if variable.name != b"$this" || !call.argument_list.arguments.is_empty() {
+                continue;
+            }
+            let Some(method) = method_name(&call.method) else { continue };
+            let found = RuleMethod { class: class.clone(), method };
+            if !self.summary.laravel.rule_methods.contains(&found) {
+                self.summary.laravel.rule_methods.push(found);
+            }
         }
     }
 
@@ -834,11 +870,20 @@ fn column_statement(expr: &Expression<'_>, table: &str, out: &mut Vec<Column>, l
         Some(arg) if named.is_some() => arg.span(),
         _ => method_span,
     });
+    let lower = method.to_ascii_lowercase();
+    // `string('title', 100)`; Laravel's default string length otherwise.
+    let length = match lower.as_str() {
+        "string" | "char" => Some(match args.get(1).map(|arg| literal_type_of(arg)) {
+            Some(Type::LiteralInt(length)) => u32::try_from(length).unwrap_or(255),
+            _ => 255,
+        }),
+        "remembertoken" => Some(100),
+        _ => None,
+    };
     let mut push = |name: String, ty: &str, nullable: bool| {
         out.retain(|column: &Column| column.name != name);
-        out.push(Column { name, ty: DocType(ty.to_owned()), nullable, loc: at });
+        out.push(Column { name, ty: DocType(ty.to_owned()), nullable, length, loc: at });
     };
-    let lower = method.to_ascii_lowercase();
     match lower.as_str() {
         "id" => push(named.unwrap_or_else(|| "id".to_owned()), "int", nullable),
         "timestamps" | "timestampstz" | "nullabletimestamps" => {

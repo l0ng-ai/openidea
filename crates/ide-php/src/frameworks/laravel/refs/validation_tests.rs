@@ -426,15 +426,34 @@ fn generates_rules_from_the_model() {
     // columns the array lacks.
     let request = "<?php\nnamespace App\\Http\\Requests;\n\nuse Illuminate\\Foundation\\Http\\FormRequest;\n\nclass UpdatePostRequest extends FormRequest\n{\n    public function rules(): array\n    {\n        return [\n            'title' => 'required',/*|*/\n        ];\n    }\n}\n";
     let found = project.refactorings("app/Http/Requests/UpdatePostRequest.php", request, "Generate validation rules");
-    let expected = "\n            'slug' => 'required|string',\n            'body' => 'required|string',\n            'status' => 'required',\n            'published_at' => 'nullable|date',\n        ";
+    // `max:` from the string column's length, `Rule::enum()` for the enum
+    // cast (imported with the enum).
+    let expected = "\n            'slug' => 'required|string|max:255',\n            'body' => 'required|string',\n            'status' => ['required', Rule::enum(PostStatus::class)],\n            'published_at' => 'nullable|date',\n        ";
     assert_eq!(
         found,
         [(
             "Generate validation rules from 'Post'".to_owned(),
-            vec![("app/Http/Requests/UpdatePostRequest.php".to_owned(), vec![expected.to_owned()])],
+            vec![(
+                "app/Http/Requests/UpdatePostRequest.php".to_owned(),
+                vec![
+                    // Sorted: before `use Illuminate\Foundation\Http\FormRequest;`.
+                    "use App\\Enums\\PostStatus;\n".to_owned(),
+                    "\nuse Illuminate\\Validation\\Rule;".to_owned(),
+                    expected.to_owned()
+                ]
+            )],
             vec![]
         )]
     );
+    // A string column with its own length.
+    project.write_file(
+        "database/migrations/2024_06_01_000000_create_badges_table.php",
+        "<?php\n\nuse Illuminate\\Database\\Migrations\\Migration;\nuse Illuminate\\Database\\Schema\\Blueprint;\nuse Illuminate\\Support\\Facades\\Schema;\n\nreturn new class extends Migration\n{\n    public function up(): void\n    {\n        Schema::create('badges', function (Blueprint $table) {\n            $table->id();\n            $table->string('code', 12);\n            $table->char('grade');\n            $table->text('note');\n        });\n    }\n};\n",
+    );
+    let facts = project.engine.resolver().laravel();
+    let lengths: Vec<(&str, Option<u32>)> =
+        facts.columns("badges").into_iter().map(|(_, column)| (column.name.as_str(), column.length)).collect();
+    assert_eq!(lengths, [("id", None), ("code", Some(12)), ("grade", Some(255)), ("note", None)]);
 
     // A model without `$fillable`: every column, with `exists` for keys.
     project.write_file(
@@ -464,4 +483,108 @@ fn rule_types() {
     assert_eq!(rule_type(&["required", "nullable", "string"]), Type::string().nullable());
     assert_eq!(rule_type(&["required", "image"]), Type::named("Illuminate\\Http\\UploadedFile"));
     assert_eq!(rule_type(&["required", "max"]), Type::Mixed);
+}
+
+/// A service base class validating with what `rules()` returns, as
+/// Monica's `App\\Services\\BaseService` does.
+const BASE_SERVICE: &str = "<?php\nnamespace App\\Services;\n\nuse Illuminate\\Support\\Facades\\Validator;\n\nabstract class BaseService\n{\n    public function rules(): array\n    {\n        return [];\n    }\n\n    public function validate(array $data): bool\n    {\n        Validator::make($data, $this->rules())->validate();\n\n        return true;\n    }\n}\n";
+
+/// A service of the app around `rules`, the array its `rules()` returns.
+fn service(rules: &str) -> String {
+    format!(
+        "<?php\nnamespace App\\Services;\n\nclass CreateNote extends BaseService\n{{\n    public function rules(): array\n    {{\n        return {rules};\n    }}\n}}\n"
+    )
+}
+
+#[test]
+fn rules_of_classes_validating_with_them() {
+    let mut project = Project::app_with(&[("app/Services/BaseService.php", BASE_SERVICE)]);
+    let facts = project.engine.resolver().laravel();
+    assert_eq!(
+        facts.rule_methods,
+        [crate::summary::RuleMethod { class: "App\\Services\\BaseService".to_owned(), method: "rules".to_owned() }]
+    );
+    // A subclass's `rules()`: rule names, parameters and the inspection.
+    let labels = project.labels("app/Services/CreateNote.php", &service("['title' => 'nullable|requ/*|*/']"));
+    assert!(labels.contains(&"required".to_owned()), "{labels:?}");
+    let labels = project.labels("app/Services/CreateNote.php", &service("['post' => 'exists:/*|*/']"));
+    assert!(labels.contains(&"posts".to_owned()), "{labels:?}");
+    let (doc, _) = project.open("app/Services/CreateNote.php", &format!("{}/*|*/", service("['a' => 'requird']")));
+    let inspected = project.engine.inspect(doc, &CancellationToken::new()).unwrap();
+    project.engine.document_closed(doc);
+    let codes: Vec<&str> = inspected.diagnostics.iter().filter_map(|d| d.code.as_deref()).collect();
+    assert!(codes.contains(&"PhpUnknownValidationRule"), "{codes:?}");
+    // A class whose `rules()` nothing validates with: not rules.
+    let other = "<?php\nnamespace App\\Support;\n\nclass Game\n{\n    public function rules(): array\n    {\n        return ['board' => 'requ/*|*/'];\n    }\n}\n";
+    assert!(!project.labels("app/Support/Game.php", other).contains(&"required".to_owned()));
+    // `validator($data, $this->rules())` and `$request->validate($this->rules())` too.
+    for call in ["validator($data, $this->rules());", "request()->validate($this->rules());"] {
+        let source = format!(
+            "<?php\nnamespace App\\Support;\n\nclass Form\n{{\n    public function rules(): array\n    {{\n        return ['a' => 'requ/*|*/'];\n    }}\n\n    public function check(array $data): void\n    {{\n        {call}\n    }}\n}}\n"
+        );
+        assert!(project.labels("app/Support/Form.php", &source).contains(&"required".to_owned()), "{call}");
+    }
+}
+
+/// A model with simple constants named after an attribute.
+const TICKET: &str = "<?php\nnamespace App\\Models;\n\nuse Illuminate\\Database\\Eloquent\\Model;\n\nclass Ticket extends Model\n{\n    public const PRIORITY_LOW = 'low';\n    public const PRIORITY_HIGH = 'high';\n    public const PRIORITY_DEFAULT = self::PRIORITY_LOW;\n    public const LEVEL = 3;\n\n    protected $casts = ['priority' => 'string'];\n}\n";
+
+#[test]
+fn completes_in_values_from_enums_and_constants() {
+    let mut project = Project::app_with(&[("app/Models/Ticket.php", TICKET)]);
+    // The backing values of the enum `status` is cast to.
+    let found = project.details(PROBE, &controller("$request->validate(['status' => 'required|in:/*|*/']);"));
+    assert_eq!(
+        found,
+        [
+            ("draft".to_owned(), Some("PostStatus::Draft".to_owned())),
+            ("published".to_owned(), Some("PostStatus::Published".to_owned())),
+            ("scheduled".to_owned(), Some("PostStatus::Scheduled".to_owned())),
+        ]
+    );
+    let labels = project.labels(PROBE, &controller("$request->validate(['status' => ['not_in:draft,/*|*/']]);"));
+    assert_eq!(labels, ["draft", "published", "scheduled"]);
+    // The simple constants named after the attribute.
+    let found = project.details(PROBE, &controller("$request->validate(['priority' => 'in:/*|*/']);"));
+    assert_eq!(
+        found,
+        [
+            ("high".to_owned(), Some("Ticket::PRIORITY_HIGH".to_owned())),
+            ("low".to_owned(), Some("Ticket::PRIORITY_LOW".to_owned())),
+        ]
+    );
+    // `Rule::in([...])`, the field from the rules array.
+    let labels = project
+        .labels(PROBE, &controller_with_rule("$request->validate(['status' => ['required', Rule::in(['/*|*/'])]]);"));
+    assert_eq!(labels, ["draft", "published", "scheduled"]);
+    let labels =
+        project.labels(PROBE, &controller_with_rule("$request->validate(['priority' => Rule::notIn(['/*|*/'])]);"));
+    assert_eq!(labels, ["high", "low"]);
+    // Nothing for a field without such values.
+    let labels = project.labels(PROBE, &controller("$request->validate(['title' => 'in:/*|*/']);"));
+    assert!(labels.is_empty(), "{labels:?}");
+}
+
+#[test]
+fn completes_and_resolves_rule_builder_arguments() {
+    let mut project = Project::app();
+    let labels = project.labels(PROBE, &controller_with_rule("$request->validate(['post' => Rule::exists('/*|*/')]);"));
+    assert!(["posts", "tags", "users"].iter().all(|t| labels.contains(&t.to_string())), "{labels:?}");
+    let labels = project
+        .labels(PROBE, &controller_with_rule("$request->validate(['slug' => [Rule::unique('posts', 'sl/*|*/')]]);"));
+    assert_eq!(labels, ["slug"]);
+    let found = project
+        .goto(PROBE, &controller_with_rule("$request->validate(['post' => Rule::exists('posts', 'sl/*|*/ug')]);"));
+    assert_eq!(found.len(), 1, "{found:?}");
+    assert!(found[0].0.ends_with("create_posts_table.php") && found[0].2 == "'slug'", "{found:?}");
+    let found =
+        project.goto(PROBE, &controller_with_rule("$request->validate(['post' => Rule::exists('po/*|*/sts')]);"));
+    assert!(found.len() == 1 && found[0].0.ends_with("create_posts_table.php"), "{found:?}");
+    // Not rule strings: no unknown rule, no rule-array intention.
+    let found = project.rule_problems(
+        "$request->validate(['post' => [Rule::exists('posts', 'slug'), Rule::in(['draft', 'x'])], 'b' => Rule::unique('tags')]);",
+    );
+    assert!(found.is_empty(), "{found:?}");
+    let source = controller_with_rule("$request->validate(['status' => Rule::in(['dr/*|*/aft'])]);");
+    assert!(project.rewrites(&source).is_empty());
 }

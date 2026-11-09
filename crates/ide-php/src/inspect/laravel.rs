@@ -17,7 +17,12 @@
 //!   migrations say for certain which columns it has.
 //! - `PhpUnknownAbility`: an ability (`Gate::allows`, `$user->can`, `@can`,
 //!   …) that no gate defines and that isn't a method of the policy of its
-//!   model (of any policy, without a model).
+//!   model (of any policy, without a model); also the ability of `can:`
+//!   middleware (`->middleware('can:update,post')`).
+//! - `PhpUnknownGuard`: a guard (`auth('…')`, `Auth::guard`, `@auth`, the
+//!   `auth:`/`guest:` middleware) that `config/auth.php` doesn't declare.
+//! - `PhpUnknownPasswordBroker`: a password broker (`Password::broker('…')`)
+//!   that `config/auth.php` doesn't declare.
 //! - `PhpUndefinedInertiaPage`: an Inertia page (`Inertia::render`,
 //!   `inertia()`, `Route::inertia`) no page folder has (fix: create the
 //!   page).
@@ -29,8 +34,8 @@ use ide_core::Severity;
 use super::{Inspection, InspectionContext, Problems, QuickFix};
 use crate::engine::{EngineState, is_meta_path};
 use crate::frameworks::laravel::refs::{
-    ConfigKey, EloquentField, EnvKey, Gate, InertiaPageKind, ReferenceKind, TranslationKey, ValidationRule, ViewName,
-    ViteAsset,
+    AuthGuard, ConfigKey, EloquentField, EnvKey, Gate, InertiaPageKind, PasswordBroker, ReferenceKind, TranslationKey,
+    ValidationRule, ViewName, ViteAsset,
 };
 
 /// One "undefined …" inspection; see the module documentation.
@@ -40,7 +45,7 @@ pub struct UndefinedReference {
 }
 
 /// The inspections, as `(inspection id, kind)`.
-const INSPECTIONS: [(&str, &dyn ReferenceKind); 8] = [
+const INSPECTIONS: [(&str, &dyn ReferenceKind); 10] = [
     ("PhpUndefinedConfigKey", &ConfigKey),
     ("PhpUndefinedEnvKey", &EnvKey),
     ("PhpUndefinedTranslation", &TranslationKey),
@@ -49,6 +54,8 @@ const INSPECTIONS: [(&str, &dyn ReferenceKind); 8] = [
     ("PhpUnknownEloquentColumn", &EloquentField),
     ("PhpUnknownAbility", &Gate),
     ("PhpUndefinedInertiaPage", &InertiaPageKind),
+    ("PhpUnknownGuard", &AuthGuard),
+    ("PhpUnknownPasswordBroker", &PasswordBroker),
 ];
 
 impl UndefinedReference {

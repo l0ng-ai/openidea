@@ -5,14 +5,19 @@
 //!   array of strings, in the array of `$request->validate([...])`,
 //!   `validateWithBag('bag', [...])`, `Validator::make($data, [...])`,
 //!   `validator($data, [...])`, a controller's `$this->validate($request,
-//!   [...])` and what a Form Request's `rules()` returns. Completion offers
+//!   [...])` and what a Form Request's `rules()` returns, or the method a
+//!   class validates with (`Validator::make($data, $this->rules())` in it
+//!   or a parent, as Monica's services do). Completion offers
 //!   the rule names of the segment at the caret ([`RULES`]), then its
 //!   parameters: tables and their columns from the migrations for
-//!   `exists:` and `unique:`, and the other fields of the rules array for
-//!   `required_if:`, `same:` and the like. Goto opens a column's migration
-//!   or a field's rule entry. A rule that is neither built in nor
-//!   registered with `Validator::extend(…)` is reported by the "unknown
-//!   validation rule" inspection.
+//!   `exists:` and `unique:`, the other fields of the rules array for
+//!   `required_if:`, `same:` and the like, and the field's values for
+//!   `in:`/`not_in:` ([`field_choices`]: enum backing values and simple
+//!   constants). The string arguments of `Rule::exists/unique('table',
+//!   'column')` and `Rule::in/notIn([...])` complete the same way. Goto
+//!   opens a column's migration or a field's rule entry. A rule that is
+//!   neither built in nor registered with `Validator::extend(…)` is
+//!   reported by the "unknown validation rule" inspection.
 //! - **`requestField`**: the key of `$request->input('…')`, `query`,
 //!   `string`, `validated('…')` and the like, completed with the fields of
 //!   the Form Request's `rules()` (when the request is one) and of the
@@ -60,7 +65,7 @@ const MAKE: CalleePattern = CalleePattern::Method { classes: FACTORY, names: &["
 const HELPER: CalleePattern = CalleePattern::Function("validator");
 const CONTROLLER_VALIDATE: CalleePattern = CalleePattern::Method { classes: CONTROLLER, names: &["validate"] };
 const CONTROLLER_BAG: CalleePattern = CalleePattern::Method { classes: CONTROLLER, names: &["validateWithBag"] };
-const RULES_METHOD: CalleePattern = CalleePattern::Return { classes: &[FORM_REQUEST], names: &["rules"] };
+const RULES_METHOD: CalleePattern = CalleePattern::Rules { form_request: FORM_REQUEST, names: &["rules"] };
 
 /// The rules arrays: the call and the argument holding the array.
 const RULE_ARRAYS: [PlacePattern; 7] = [
@@ -93,8 +98,157 @@ const fn keys(array: [PlacePattern; 7]) -> [PlacePattern; 7] {
     out
 }
 
-/// A rule: a value of a rules array, or of the array of a field's rules.
-static RULE_PATTERNS: [PlacePattern; 7] = values(RULE_ARRAYS);
+/// Laravel's rule builder.
+const RULE: &[&str] = &["Illuminate\\Validation\\Rule"];
+/// `Rule::exists('table', 'column')` and `Rule::unique(…)`.
+const RULE_TABLE: CalleePattern = CalleePattern::Method { classes: RULE, names: &["exists", "unique"] };
+/// `Rule::in([...])` and `Rule::notIn([...])`.
+const RULE_IN: CalleePattern = CalleePattern::Method { classes: RULE, names: &["in", "notIn"] };
+
+const fn rule_patterns() -> [PlacePattern; 11] {
+    let v = values(RULE_ARRAYS);
+    [
+        v[0],
+        v[1],
+        v[2],
+        v[3],
+        v[4],
+        v[5],
+        v[6],
+        PlacePattern::argument(RULE_TABLE, 0, "table"),
+        PlacePattern::argument(RULE_TABLE, 1, "column"),
+        PlacePattern::argument(RULE_IN, 0, "values"),
+        PlacePattern::argument(RULE_IN, 0, "values").at(Position::ListValue),
+    ]
+}
+
+/// A rule: a value of a rules array, or of the array of a field's rules;
+/// and the string arguments of `Rule::exists/unique/in/notIn`.
+static RULE_PATTERNS: [PlacePattern; 11] = rule_patterns();
+
+/// The `Rule::` method a site's string is an argument of (lower case), when
+/// it is one.
+fn rule_builder(cx: &RefContext<'_>) -> Option<String> {
+    builder_of(&cx.site.as_ref()?.call.as_ref()?.0)
+}
+
+/// Whether `site` is a string argument of `Rule::exists/unique/in/notIn`
+/// rather than a rule string.
+pub(crate) fn is_builder_argument(site: &super::StringSite) -> bool {
+    builder_of(&site.target).is_some()
+}
+
+fn builder_of(target: &CallTarget) -> Option<String> {
+    let CallTarget::Method { classes, name, .. } = target else { return None };
+    let builder = classes
+        .iter()
+        .any(|class| RULE.iter().any(|rule| crate::names::fqn_eq(crate::names::NameKind::ClassLike, class, rule)));
+    let name = name.to_ascii_lowercase();
+    (builder && ["exists", "unique", "in", "notin"].contains(&name.as_str())).then_some(name)
+}
+
+/// The value of a simple constant expression: a string literal without
+/// escapes or interpolation, or an integer.
+fn simple_value(written: &str) -> Option<String> {
+    let written = written.trim();
+    let quoted = written
+        .strip_prefix('\'')
+        .and_then(|rest| rest.strip_suffix('\''))
+        .or_else(|| written.strip_prefix('"').and_then(|rest| rest.strip_suffix('"')));
+    match quoted {
+        Some(value) => (!value.contains(['\\', '$', '\'', '"', ',', '|'])).then(|| value.to_owned()),
+        None => {
+            let digits = written.strip_prefix('-').unwrap_or(written);
+            (!digits.is_empty() && digits.bytes().all(|b| b.is_ascii_digit())).then(|| written.to_owned())
+        }
+    }
+}
+
+/// The values field `field` may take, with a detail: the backing values of
+/// the enums an attribute of that name is cast to, then the simple
+/// constants named after it (`STATUS_DRAFT = 'draft'` for `status`) of the
+/// models with such an attribute (cast, or a column of their table).
+pub(crate) fn field_choices(engine: &PhpEngine, field: &str) -> Vec<(String, String)> {
+    use crate::summary::ClassKind;
+    let field = field.trim();
+    if field.is_empty() {
+        return Vec::new();
+    }
+    let resolver = engine.resolver();
+    let facts = resolver.laravel();
+    let short = |fqn: &str| fqn.rsplit('\\').next().unwrap_or(fqn).to_owned();
+    let mut out: Vec<(String, String)> = Vec::new();
+    let mut push = |value: String, detail: String| {
+        if !out.iter().any(|(known, _)| *known == value) {
+            out.push((value, detail));
+        }
+    };
+    let mut models: Vec<String> = Vec::new();
+    for casts in &facts.casts {
+        for cast in casts.casts.iter().filter(|cast| cast.attribute == field) {
+            models.push(casts.class.clone());
+            let Some(enumeration) = resolver.class_model(cast.cast.trim_start_matches('\\')) else { continue };
+            if enumeration.kind() != ClassKind::Enum {
+                continue;
+            }
+            for constant in enumeration.constants.iter() {
+                let Some(case) = constant.case() else { continue };
+                if let Some(value) = case.value.as_deref().and_then(simple_value) {
+                    push(value, format!("{}::{}", short(enumeration.fqn()), case.name));
+                }
+            }
+        }
+    }
+    for model in engine.laravel_models() {
+        if !models.contains(&model)
+            && crate::types::provider::laravel::LaravelProvider::model_columns(&resolver, &model)
+                .iter()
+                .any(|(column, _)| column.name == field)
+        {
+            models.push(model);
+        }
+    }
+    let prefix = format!("{}_", field.to_ascii_uppercase());
+    for model in models {
+        let Some(class) = resolver.class_model(&model) else { continue };
+        for constant in class.constants.iter() {
+            let Some(declared) = constant.declared() else { continue };
+            if !declared.name.starts_with(&prefix) {
+                continue;
+            }
+            if let Some(value) = simple_value(&declared.value) {
+                push(value, format!("{}::{}", short(class.fqn()), declared.name));
+            }
+        }
+    }
+    out
+}
+
+/// The field whose rules the call starting at byte `call` of `text` is
+/// in: the key of the nearest `'field' =>` before it, outside brackets the
+/// call isn't in (`'status' => ['required', Rule::in([...])]`).
+fn enclosing_field(text: &str, call: usize) -> Option<String> {
+    let bytes = text.as_bytes();
+    let mut depth = 0i32;
+    let mut i = call.min(bytes.len());
+    while i > 0 {
+        i -= 1;
+        match bytes[i] {
+            b')' | b']' => depth += 1,
+            b'(' | b'[' => depth = (depth - 1).max(0),
+            b';' | b'{' | b'}' => return None,
+            b'>' if depth == 0 && i > 0 && bytes[i - 1] == b'=' => {
+                let before = text[..i - 1].trim_end();
+                let quote = before.chars().last().filter(|c| *c == '\'' || *c == '"')?;
+                let inner = &before[..before.len() - 1];
+                let open = inner.rfind(quote)?;
+                return Some(inner[open + 1..].to_owned());
+            }
+            _ => {}
+        }
+    }
+    None
+}
 /// A field: a key of a rules array.
 static FIELD_PATTERNS: [PlacePattern; 7] = keys(RULE_ARRAYS);
 
@@ -310,7 +464,9 @@ impl PhpEngine {
         let convertible: Vec<(u32, u32, u32, String)> = sites(parsed, &resolver, &[&ValidationRule], None)
             .into_iter()
             .filter(|site| {
-                site.steps.len() == 1 && kind_of(site, &resolver).is_some_and(|k| k.id() == "validationRule")
+                site.steps.len() == 1
+                    && !is_builder_argument(site)
+                    && kind_of(site, &resolver).is_some_and(|k| k.id() == "validationRule")
             })
             .filter_map(|site| {
                 let quote = text[site.start as usize - 1..].chars().next()?;
@@ -366,6 +522,62 @@ impl ValidationRule {
         out
     }
 
+    /// The items of a string argument of `Rule::<builder>(…)`: a table, then
+    /// its columns, of `exists`/`unique`; the field's values of
+    /// `in`/`notIn`.
+    fn builder_items(cx: &RefContext<'_>, builder: &str, value: &str) -> Vec<RefItem> {
+        let item = |label: String, detail: String| RefItem {
+            insert: label.clone(),
+            label,
+            detail: Some(detail),
+            from: 0,
+            to: value.len(),
+        };
+        let Some(site) = &cx.site else { return Vec::new() };
+        match builder {
+            "exists" | "unique" => match &site.first_argument {
+                None => Self::tables(cx).into_iter().map(|table| item(table, "table".to_owned())).collect(),
+                Some(table) => {
+                    let facts = cx.engine.resolver().laravel();
+                    facts
+                        .columns(table)
+                        .into_iter()
+                        .map(|(_, column)| item(column.name.clone(), column.ty.0.trim_start_matches('\\').to_owned()))
+                        .collect()
+                }
+            },
+            _ => {
+                let Some(parsed) = cx.engine.file_parse(&site.path) else { return Vec::new() };
+                let Some((_, call)) = &site.call else { return Vec::new() };
+                let Some(field) = enclosing_field(parsed.text(), *call as usize) else { return Vec::new() };
+                field_choices(cx.engine, &field).into_iter().map(|(value, detail)| item(value, detail)).collect()
+            }
+        }
+    }
+
+    /// Where a string argument of `Rule::exists/unique(…)` goes: the
+    /// migration creating the table, or the column's.
+    fn builder_targets(cx: &RefContext<'_>, builder: &str, value: &str) -> Vec<Target> {
+        if builder != "exists" && builder != "unique" {
+            return Vec::new();
+        }
+        let Some(site) = &cx.site else { return Vec::new() };
+        let facts = cx.engine.resolver().laravel();
+        let (table, column) = match &site.first_argument {
+            None => (value, None),
+            Some(table) => (table.as_str(), Some(value)),
+        };
+        let columns = facts.columns(table);
+        let found = match column {
+            None => columns.first().copied(),
+            Some(column) => columns.iter().find(|(_, known)| known.name == column).copied(),
+        };
+        found
+            .and_then(|(migration, column)| Some(Target { path: migration.file.clone()?, range: column.loc.range }))
+            .into_iter()
+            .collect()
+    }
+
     /// The items for parameter `index` of rule `name` (written `segment`).
     fn param_items(
         cx: &RefContext<'_>,
@@ -388,6 +600,12 @@ impl ValidationRule {
         };
         match (spec.params, index) {
             (Params::Fields, _) | (Params::FirstField, 0) => field_items(),
+            (Params::Choices, _) => {
+                let Some(field) = own else { return Vec::new() };
+                // The field's last segment (`items.*.status` → `status`).
+                let field = field.rsplit('.').find(|segment| *segment != "*").unwrap_or(&field).to_owned();
+                field_choices(cx.engine, &field).into_iter().map(|(value, detail)| item(value, Some(detail))).collect()
+            }
             (Params::Table, 0) => Self::tables(cx).into_iter().map(|table| item(table, Some("table".into()))).collect(),
             (Params::Table, 1) => {
                 let Some(table) = segment.param(0) else { return Vec::new() };
@@ -413,6 +631,9 @@ impl ReferenceKind for ValidationRule {
     }
 
     fn complete(&self, cx: &RefContext<'_>, value: &str, at: usize) -> Vec<RefItem> {
+        if let Some(builder) = rule_builder(cx) {
+            return Self::builder_items(cx, &builder, value);
+        }
         let Some(segment) = segment_at(value, at) else { return Vec::new() };
         if at <= segment.name_end {
             return RULES
@@ -434,6 +655,9 @@ impl ReferenceKind for ValidationRule {
     }
 
     fn resolve(&self, cx: &RefContext<'_>, value: &str, at: usize) -> Vec<Target> {
+        if let Some(builder) = rule_builder(cx) {
+            return Self::builder_targets(cx, &builder, value);
+        }
         let Some(segment) = segment_at(value, at) else { return Vec::new() };
         let Some(spec) = rule_spec(segment.name) else { return Vec::new() };
         let Some((index, from, to)) = segment.param_at(at) else { return Vec::new() };
@@ -467,10 +691,13 @@ impl ReferenceKind for ValidationRule {
     }
 
     fn is_known(&self, cx: &RefContext<'_>, value: &str) -> bool {
-        unknown_rules(value, &cx.engine.custom_validation_rules()).is_empty()
+        rule_builder(cx).is_some() || unknown_rules(value, &cx.engine.custom_validation_rules()).is_empty()
     }
 
-    fn hover(&self, _: &RefContext<'_>, value: &str) -> Option<String> {
+    fn hover(&self, cx: &RefContext<'_>, value: &str) -> Option<String> {
+        if rule_builder(cx).is_some() {
+            return None;
+        }
         let lines: Vec<String> = segments(value)
             .into_iter()
             .filter_map(|segment| rule_spec(segment.name))
@@ -486,6 +713,9 @@ impl ReferenceKind for ValidationRule {
     }
 
     fn undefined(&self, cx: &RefContext<'_>, value: &str) -> Option<Undefined> {
+        if rule_builder(cx).is_some() {
+            return None;
+        }
         let unknown = unknown_rules(value, &cx.engine.custom_validation_rules());
         match unknown.as_slice() {
             [] => None,

@@ -13,8 +13,10 @@
 //!
 //! [`MiddlewareDef`]: crate::frameworks::laravel::MiddlewareDef
 
-use super::gate::{ability_hover, ability_items, ability_targets, guard_items, guard_targets};
-use super::{CalleePattern, PlacePattern, Position, RefContext, RefItem, ReferenceKind};
+use super::gate::{
+    ability_hover, ability_items, ability_problem, ability_targets, guard_items, guard_problem, guard_targets,
+};
+use super::{CalleePattern, PlacePattern, Position, RefContext, RefItem, ReferenceKind, Undefined};
 use crate::frameworks::laravel::RouteTable;
 use crate::navigate::Target;
 
@@ -81,6 +83,35 @@ pub fn parameter_at(value: &str, at: usize) -> Option<(Parameter<'_>, usize, usi
         }
         "auth" | "guest" => Some((Parameter::Guard(part), start, end)),
         _ => None,
+    }
+}
+
+/// What is wrong with the references among the parameters of middleware
+/// `value`: the ability of `can:` that no gate or policy defines (kind
+/// `gate`), and the guards of `auth:`/`guest:` that `config/auth.php`
+/// doesn't declare (kind `authGuard`), with their byte ranges in `value`.
+pub(crate) fn parameter_problems(cx: &RefContext<'_>, value: &str) -> Vec<(&'static str, usize, usize, Undefined)> {
+    let Some((name, params)) = value.split_once(':') else { return Vec::new() };
+    let base = name.len() + 1;
+    match name {
+        "can" => match parameter_at(value, base) {
+            Some((Parameter::Ability { name, subjects }, start, end)) if !name.trim().is_empty() => {
+                ability_problem(cx, &subjects, name).map(|problem| ("gate", start, end, problem)).into_iter().collect()
+            }
+            _ => Vec::new(),
+        },
+        "auth" | "guest" => {
+            let mut out = Vec::new();
+            let mut start = base;
+            for part in params.split(',') {
+                if let Some(problem) = guard_problem(cx, part.trim()) {
+                    out.push(("authGuard", start, start + part.len(), problem));
+                }
+                start += part.len() + 1;
+            }
+            out
+        }
+        _ => Vec::new(),
     }
 }
 

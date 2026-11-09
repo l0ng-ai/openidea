@@ -27,6 +27,17 @@ pub struct LiveTable {
     pub columns: Vec<LiveColumn>,
 }
 
+/// The length of a character type as the database names it
+/// (`varchar(100)`, `character varying(50)`, `NVARCHAR(20)`).
+fn sql_length(data_type: &str) -> Option<u32> {
+    let lower = data_type.to_ascii_lowercase();
+    let (name, rest) = lower.split_once('(')?;
+    if !name.trim().ends_with("char") && !name.trim().ends_with("varying") {
+        return None;
+    }
+    rest.split(')').next()?.trim().parse().ok()
+}
+
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub struct LiveColumn {
     pub name: String,
@@ -62,6 +73,7 @@ impl LiveSchema {
                     name: column.name.clone(),
                     ty: DocType(php.to_owned()),
                     nullable: column.nullable || nullable,
+                    length: sql_length(&column.data_type),
                     loc,
                 };
                 match groups.iter_mut().find(|(known, _)| *known == file) {
@@ -153,7 +165,7 @@ mod tests {
     fn column(name: &str, ty: &str, line: u32) -> Column {
         let mut loc = Loc::default();
         loc.range.start.line = line;
-        Column { name: name.into(), ty: DocType(ty.into()), nullable: false, loc }
+        Column { name: name.into(), ty: DocType(ty.into()), nullable: false, length: None, loc }
     }
 
     #[test]
