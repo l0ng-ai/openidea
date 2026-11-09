@@ -431,3 +431,6 @@ mod intentions_tests;
 
 #[path = "auth_tests.rs"]
 mod auth_tests;
+
+#[path = "artisan_tests.rs"]
+mod artisan_tests;

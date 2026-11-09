@@ -34,6 +34,8 @@ export interface RunTarget {
   spring?: boolean;
   /** Python: a unittest `TestCase` subclass or one of its methods (what Django's runner can run). */
   unittest?: boolean;
+  /** Laravel: the Artisan command a console command class declares (from the PHP engine). */
+  artisan?: string;
 }
 
 /** Above this size we skip detection (generated / minified files). */

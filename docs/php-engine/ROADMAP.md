@@ -657,7 +657,7 @@ Runs after Plan 7. Before any 8.x phase, read [LARAVEL-ROADMAP.md](LARAVEL-ROADM
 
   Also cover guards (`auth('…')`) and password brokers from `config/auth.php`. Tests: caret fixtures.
 
-- [ ] Phase 8.17: Artisan
+- [x] Phase 8.17: Artisan
       Add an **Artisan command run configuration** with completion of command names and options from the project model (`ide-run`), plus:
   - a "Run Artisan command…" dialog listing the commands
   - a run gutter icon on console command classes

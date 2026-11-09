@@ -789,3 +789,51 @@ async fn laravel_generators_context_and_new_model() {
     assert!(err.message.contains("no generator"), "{err:?}");
     host.close_project("main");
 }
+
+/// The Artisan command table the "Run Artisan command…" dialog, the Artisan run
+/// configuration and the run gutter read: a command class with its signature and
+/// location, a closure command of `routes/console.php` and Laravel's own commands.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn laravel_artisan_commands() {
+    use ide_host::ops::laravel::php_laravel_artisan_commands;
+    let tmp = tempfile::tempdir().unwrap();
+    let base = dunce::canonicalize(tmp.path()).unwrap();
+    let root = base.join("shop");
+    write(
+        &root.join("composer.json"),
+        r#"{"require": {"laravel/framework": "^11.0"}, "autoload": {"psr-4": {"App\\": "app/"}}}"#,
+    );
+    write(
+        &root.join("vendor/laravel/framework/src/Command.php"),
+        "<?php\nnamespace Illuminate\\Console;\n\nclass Command\n{\n    protected $signature;\n    protected $description;\n}\n",
+    );
+    write(
+        &root.join("app/Console/Commands/SendInvoices.php"),
+        "<?php\nnamespace App\\Console\\Commands;\n\nuse Illuminate\\Console\\Command;\n\nclass SendInvoices extends Command\n{\n    protected $signature = 'invoices:send {month? : The month} {--Q|queue= : The queue}';\n    protected $description = 'Send the invoices';\n}\n",
+    );
+    write(
+        &root.join("routes/console.php"),
+        "<?php\n\nArtisan::command('greet {name}', function ($name) {})->purpose('Greet someone');\n",
+    );
+    let events: Arc<Mutex<Vec<IdeEvent>>> = Arc::default();
+    let host = host(&base.join("app"), events.clone());
+    let project = host.open_project("main", &root).unwrap();
+    set_engine(&host, "native");
+    until("the engine to start", || project.php.engine().is_some()).await;
+    let engine = project.php.engine().unwrap();
+    assert!(engine.wait_idle(WAIT));
+
+    let commands = php_laravel_artisan_commands(&host, "main").await.unwrap().expect("a Laravel project");
+    let send = commands.iter().find(|command| command.name == "invoices:send").unwrap();
+    assert_eq!(send.description, "Send the invoices");
+    assert_eq!(send.source, "class");
+    assert_eq!(send.class.as_deref(), Some("App\\Console\\Commands\\SendInvoices"));
+    assert_eq!(send.synopsis, "invoices:send [--queue=QUEUE] [<month>]");
+    assert_eq!(send.options[0].shortcut.as_deref(), Some("Q"));
+    assert!(send.options[0].accepts_value);
+    assert_eq!(send.location.as_ref().unwrap().range.start.line, 7);
+    assert_eq!(send.class_line, Some(5));
+    let greet = commands.iter().find(|command| command.name == "greet").unwrap();
+    assert_eq!((greet.source.as_str(), greet.description.as_str()), ("closure", "Greet someone"));
+    assert!(commands.iter().any(|command| command.name == "migrate" && command.source == "framework"));
+}

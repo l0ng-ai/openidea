@@ -163,9 +163,6 @@ namespace Illuminate\Support\Facades {
         protected static function getFacadeAccessor() { return \Illuminate\Contracts\Auth\Access\Gate::class; }
     }
     /**
-     * @method static \Illuminate\Foundation\Console\ClosureCommand command(string $signature, \Closure $callback)
-     */
-    /**
      * @method static \Illuminate\Contracts\Auth\Guard guard(string|null $name = null)
      * @method static void shouldUse(string $name)
      */
@@ -176,6 +173,12 @@ namespace Illuminate\Support\Facades {
     class Password extends Facade {
         protected static function getFacadeAccessor() { return 'auth.password'; }
     }
+    /**
+     * @method static \Illuminate\Foundation\Console\ClosureCommand command(string $signature, \Closure $callback)
+     * @method static int call(string $command, array $parameters = [], $outputBuffer = null)
+     * @method static mixed queue(string $command, array $parameters = [])
+     * @method static string output()
+     */
     class Artisan extends Facade {
         protected static function getFacadeAccessor() { return \Illuminate\Contracts\Console\Kernel::class; }
     }
@@ -277,7 +280,17 @@ namespace Illuminate\Foundation\Auth\Access {
 }
 
 namespace Illuminate\Contracts\Console {
-    interface Kernel {}
+    interface Kernel {
+        public function call($command, array $parameters = [], $outputBuffer = null);
+        public function queue($command, array $parameters = []);
+    }
+}
+
+namespace Symfony\Component\Console\Attribute {
+    #[\Attribute(\Attribute::TARGET_CLASS)]
+    class AsCommand {
+        public function __construct(public string $name, public ?string $description = null, array $aliases = [], bool $hidden = false) {}
+    }
 }
 
 namespace Illuminate\Console {
@@ -292,14 +305,34 @@ namespace Illuminate\Console {
         public function comment($string, $verbosity = null): void {}
         /** @return mixed */
         public function option($key = null) { return null; }
+        /** @return mixed */
+        public function argument($key = null) { return null; }
+        public function call($command, array $arguments = []): int { return 0; }
+        public function callSilent($command, array $arguments = []): int { return 0; }
+        public function callSilently($command, array $arguments = []): int { return 0; }
     }
 }
 
 namespace Illuminate\Console\Scheduling {
-    class Schedule {}
+    class Schedule {
+        public function command($command, array $parameters = []): Event { return new Event(); }
+    }
     class Event {
         public function hourly(): static { return $this; }
         public function everyFiveMinutes(): static { return $this; }
+    }
+}
+
+namespace Illuminate\Foundation\Testing\Concerns {
+    trait InteractsWithConsole {
+        /** @return int */
+        public function artisan($command, $parameters = []) { return 0; }
+    }
+}
+
+namespace Illuminate\Foundation\Testing {
+    abstract class TestCase {
+        use Concerns\InteractsWithConsole;
     }
 }
 

@@ -33,6 +33,7 @@ import {
 import { runWithExecutor } from "./executors";
 import { debugWithAgent, jdwpLaunch } from "./javaDebug";
 import { RunDialogsOverlay } from "./dialogs";
+import { ArtisanDialogOverlay, openArtisanDialog } from "./ArtisanDialog";
 import { registerExternalTools } from "./externalTools";
 import { EditConfigsOverlay } from "./EditConfigsDialog";
 import { openImport } from "./importConfigs";
@@ -293,6 +294,7 @@ export function activate(): () => void {
     registerOverlay({ id: "run.chooser", component: ConfigChooserOverlay }),
     registerOverlay({ id: "run.editConfigs", component: EditConfigsOverlay }),
     registerOverlay({ id: "run.dialogs", component: RunDialogsOverlay }),
+    registerOverlay({ id: "run.artisanDialog", component: ArtisanDialogOverlay }),
     registerServiceProvider(runServiceProvider),
     onWorkflowSettingsChange((w) => w.console, applyConsoleSettings),
     registerExternalTools(),
@@ -318,6 +320,15 @@ export function activate(): () => void {
       prepare: prepareMenu,
     }),
     registerActions([
+      {
+        id: "run.artisan",
+        title: "Run Artisan Command…",
+        category: "Run",
+        icon: "run",
+        when: "projectOpen",
+        keywords: ["laravel", "artisan", "php", "console", "command"],
+        run: () => openArtisanDialog(),
+      },
       {
         id: "run.updateApplication",
         title: "Update Application",

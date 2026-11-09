@@ -113,6 +113,10 @@ const UNTRANSLATED = new Set<string>([
   "java",
   "node",
   "python3",
+  // Artisan run configuration placeholders
+  "artisan",
+  "migrate",
+  "php",
   // Products, tools and formats
   "Amazon Aurora MySQL",
   "Amazon Redshift",

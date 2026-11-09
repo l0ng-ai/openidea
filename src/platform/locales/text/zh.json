@@ -6463,5 +6463,21 @@
   "HTTP status": "HTTP 状态",
   "HTTP status, e.g. 403 (500 when empty)": "HTTP 状态，例如 403（为空时为 500）",
   "Queued": "队列化",
-  "API (no create and edit actions)": "API（无 create 和 edit 动作）"
+  "API (no create and edit actions)": "API（无 create 和 edit 动作）",
+  "Artisan Command": "Artisan 命令",
+  "Run a Laravel Artisan command": "运行 Laravel Artisan 命令",
+  "The Artisan command, e.g. migrate, queue:work, make:model": "Artisan 命令，例如 migrate、queue:work、make:model",
+  "Arguments and options": "参数和选项",
+  "e.g. --seed --force": "例如 --seed --force",
+  "e.g. php, /usr/local/bin/php8.3": "例如 php、/usr/local/bin/php8.3",
+  "Artisan script": "Artisan 脚本",
+  "Run Artisan command": "运行 Artisan 命令",
+  "Run Artisan Command…": "运行 Artisan 命令…",
+  "Run Artisan Command": "运行 Artisan 命令",
+  "Save as Configuration": "另存为配置",
+  "Filter commands": "筛选命令",
+  "Artisan commands": "Artisan 命令",
+  "No matching commands": "没有匹配的命令",
+  "No Artisan commands": "没有 Artisan 命令",
+  "Artisan commands are listed for Laravel projects while the native PHP engine is on.": "仅在 Laravel 项目中且原生 PHP 引擎开启时才会列出 Artisan 命令。"
 }

@@ -16,7 +16,8 @@
 //! `middleware` ([`middleware`]), `viewName` ([`view_name`]), and
 //! `validationRule` and `requestField` ([`validation_rule`]), and
 //! `eloquentField` and `eloquentRelation` ([`eloquent`]), and `gate`,
-//! `authGuard` and `passwordBroker` ([`gate`]).
+//! `authGuard` and `passwordBroker` ([`gate`]), and `artisanCommand`
+//! ([`artisan_command`]).
 //!
 //! A place may also be the value a method returns
 //! ([`CalleePattern::Return`]: what a Form Request's `rules()` returns), or
@@ -47,6 +48,7 @@
 //! Everything is off unless the project is a Laravel project
 //! ([`PhpEngine::laravel`]).
 
+pub mod artisan_command;
 pub mod config_key;
 pub mod controller_action;
 pub mod db_table;
@@ -89,6 +91,7 @@ use crate::summary::FileSummary;
 use crate::syntax::ParsedFile;
 use crate::types::{ExprTypes, Resolver, Type};
 
+pub use artisan_command::ArtisanCommandKind;
 pub use config_key::ConfigKey;
 pub use controller_action::{ControllerAction, ResourceAction};
 pub use db_table::DbTable;
@@ -983,6 +986,7 @@ pub fn kinds() -> &'static [&'static dyn ReferenceKind] {
         &Gate,
         &AuthGuard,
         &PasswordBroker,
+        &ArtisanCommandKind,
     ]
 }
 

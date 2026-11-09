@@ -363,6 +363,12 @@ export const commands = {
 	generators: LaravelGenerator[],
 } | null, IdeError>(__TAURI_INVOKE("php_laravel_generation_context")),
 	/**
+	 *  The Artisan commands of the Laravel project (classes, closure commands, packages',
+	 *  Laravel's own) with their arguments and options; `None` outside Laravel projects and
+	 *  without the native PHP engine.
+	 */
+	phpLaravelArtisanCommands: () => typedError<LaravelArtisanCommand[] | null, IdeError>(__TAURI_INVOKE("php_laravel_artisan_commands")),
+	/**
 	 *  The edit of the Laravel New Model dialog: the model and its companion classes,
 	 *  rendered from the file templates (`templates`: the user's edited ones).
 	 */
@@ -4790,6 +4796,47 @@ export type LanguagesSettings = {
 	java?: JavaSettings,
 	ruby?: RubySettings,
 	markdown?: MarkdownSettings,
+};
+
+/**  An argument of an Artisan command. */
+export type LaravelArtisanArgument = {
+	name: string,
+	description: string,
+	required: boolean,
+	/**  Takes several values. */
+	array: boolean,
+	default: string | null,
+};
+
+/**  An Artisan command of a Laravel project. */
+export type LaravelArtisanCommand = {
+	/**  `posts:publish`. */
+	name: string,
+	description: string,
+	/**  `posts:publish [--dry-run] <post>`. */
+	synopsis: string,
+	arguments: LaravelArtisanArgument[],
+	options: LaravelArtisanOption[],
+	/**  `class` (the project's), `closure` (`routes/console.php`), `package` or `framework`. */
+	source: string,
+	/**  The command class (FQN). */
+	class: string | null,
+	/**  The command's name in its signature (or its class name). */
+	location: LaravelLocation | null,
+	/**  The 0-based line of the command class's name (its run gutter icon). */
+	classLine: number | null,
+};
+
+/**  An option of an Artisan command (`name` without `--`). */
+export type LaravelArtisanOption = {
+	name: string,
+	shortcut: string | null,
+	description: string,
+	/**  Takes a value (`--queue=`), as opposed to a flag. */
+	acceptsValue: boolean,
+	/**  Can be given several times. */
+	array: boolean,
+	default: string | null,
 };
 
 /**  Settings › PHP › Laravel › Code generation. */

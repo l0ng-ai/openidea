@@ -193,6 +193,7 @@ pub fn builder() -> tauri_specta::Builder<tauri::Wry> {
         nav::php_laravel_model_view,
         nav::php_laravel_add_columns,
         nav::php_laravel_generation_context,
+        nav::php_laravel_artisan_commands,
         nav::php_laravel_new_model,
         nav::php_laravel_generate_class,
         nav::php_laravel_refresh_schema,

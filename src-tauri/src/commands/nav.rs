@@ -98,6 +98,18 @@ pub async fn php_laravel_add_columns(
         .await
 }
 
+/// The Artisan commands of the Laravel project (classes, closure commands, packages',
+/// Laravel's own) with their arguments and options; `None` outside Laravel projects and
+/// without the native PHP engine.
+#[tauri::command]
+#[specta::specta]
+pub async fn php_laravel_artisan_commands(
+    window: Window,
+    state: State<'_, AppState>,
+) -> IdeResult<Option<Vec<ide_host::ops::laravel::LaravelArtisanCommand>>> {
+    ide_host::ops::laravel::php_laravel_artisan_commands(&state.host, window.label()).await
+}
+
 /// What the Laravel generator dialogs offer (namespace, modules, models, generators);
 /// `None` outside Laravel projects and without the native PHP engine.
 #[tauri::command]

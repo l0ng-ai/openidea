@@ -5,7 +5,9 @@
 //! button applies [`php_laravel_add_columns`]. The Laravel › Generate menu reads
 //! [`php_laravel_generation_context`], its New Model dialog applies
 //! [`php_laravel_new_model`] and the dialog of the other generators
-//! [`php_laravel_generate_class`].
+//! [`php_laravel_generate_class`]. The "Run Artisan command…" dialog, the Artisan run
+//! configuration and the run gutter icon of console commands read
+//! [`php_laravel_artisan_commands`].
 //!
 //! The live database schema (Settings › PHP › Laravel › Database): the tables and columns
 //! of the chosen data source are read through `ide-db` and given to the engine
@@ -23,6 +25,7 @@ use ide_php::frameworks::laravel::generate;
 use ide_php::frameworks::laravel::model_view::{
     ColumnSource, ModelLocation, ModelMember, ModelView, NewColumn, RelatedKind,
 };
+use ide_php::frameworks::laravel::{ArtisanCommand, CommandSource};
 use ide_php::frameworks::laravel::{LiveColumn, LiveSchema, LiveTable};
 use serde::{Deserialize, Serialize};
 use specta::Type;
@@ -233,6 +236,111 @@ pub async fn php_laravel_model_view(host: &Host, window: &str, class: String) ->
     .await
 }
 
+/// An argument of an Artisan command.
+#[derive(Clone, Debug, Serialize, Deserialize, Type, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct LaravelArtisanArgument {
+    pub name: String,
+    pub description: String,
+    pub required: bool,
+    /// Takes several values.
+    pub array: bool,
+    pub default: Option<String>,
+}
+
+/// An option of an Artisan command (`name` without `--`).
+#[derive(Clone, Debug, Serialize, Deserialize, Type, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct LaravelArtisanOption {
+    pub name: String,
+    pub shortcut: Option<String>,
+    pub description: String,
+    /// Takes a value (`--queue=`), as opposed to a flag.
+    pub accepts_value: bool,
+    /// Can be given several times.
+    pub array: bool,
+    pub default: Option<String>,
+}
+
+/// An Artisan command of a Laravel project.
+#[derive(Clone, Debug, Serialize, Deserialize, Type, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct LaravelArtisanCommand {
+    /// `posts:publish`.
+    pub name: String,
+    pub description: String,
+    /// `posts:publish [--dry-run] <post>`.
+    pub synopsis: String,
+    pub arguments: Vec<LaravelArtisanArgument>,
+    pub options: Vec<LaravelArtisanOption>,
+    /// `class` (the project's), `closure` (`routes/console.php`), `package` or `framework`.
+    pub source: String,
+    /// The command class (FQN).
+    pub class: Option<String>,
+    /// The command's name in its signature (or its class name).
+    pub location: Option<LaravelLocation>,
+    /// The 0-based line of the command class's name (its run gutter icon).
+    pub class_line: Option<u32>,
+}
+
+impl From<&ArtisanCommand> for LaravelArtisanCommand {
+    fn from(command: &ArtisanCommand) -> Self {
+        Self {
+            name: command.name.clone(),
+            description: command.description.clone(),
+            synopsis: command.synopsis(),
+            arguments: command
+                .arguments
+                .iter()
+                .map(|a| LaravelArtisanArgument {
+                    name: a.name.clone(),
+                    description: a.description.clone(),
+                    required: a.required,
+                    array: a.array,
+                    default: a.default.clone(),
+                })
+                .collect(),
+            options: command
+                .options
+                .iter()
+                .map(|o| LaravelArtisanOption {
+                    name: o.name.clone(),
+                    shortcut: o.shortcut.clone(),
+                    description: o.description.clone(),
+                    accepts_value: o.accepts_value,
+                    array: o.array,
+                    default: o.default.clone(),
+                })
+                .collect(),
+            source: match command.source {
+                CommandSource::Class => "class",
+                CommandSource::Closure => "closure",
+                CommandSource::Package => "package",
+                CommandSource::Framework => "framework",
+            }
+            .to_owned(),
+            class: command.class.clone(),
+            location: match (&command.path, command.range) {
+                (Some(path), Some(range)) => Some(LaravelLocation { path: path.clone().into(), range }),
+                _ => None,
+            },
+            class_line: command.class_range.map(|range| range.start.line),
+        }
+    }
+}
+
+/// The Artisan commands of the project (its command classes, its `routes/console.php`
+/// closures, its packages' and Laravel's own), sorted by name. `None` while the native PHP
+/// engine isn't running and outside Laravel projects.
+pub async fn php_laravel_artisan_commands(host: &Host, window: &str) -> IdeResult<Option<Vec<LaravelArtisanCommand>>> {
+    let project = host.project(window)?;
+    let Some(engine) = project.php.engine() else { return Ok(None) };
+    host.blocking(move || {
+        Ok(engine.laravel_artisan().map(|commands| commands.commands.iter().map(LaravelArtisanCommand::from).collect()))
+    })
+    .await
+}
+
 /// A column the model view's **Add columns** button adds.
 #[derive(Clone, Debug, Serialize, Deserialize, Type, PartialEq, Eq)]
 #[serde(rename_all = "camelCase")]
@@ -401,6 +509,7 @@ pub(crate) fn register(d: &mut crate::rpc::Dispatcher) {
         .await
     });
     d.add("php_laravel_refresh_schema", |c| async move { php_laravel_refresh_schema(&c.host, &c.window).await });
+    d.add("php_laravel_artisan_commands", |c| async move { php_laravel_artisan_commands(&c.host, &c.window).await });
 }
 
 #[cfg(test)]

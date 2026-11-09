@@ -7,6 +7,7 @@
 import { RangeSet, StateEffect, StateField, type EditorState, type Extension } from "@codemirror/state";
 import { EditorView, GutterMarker, ViewPlugin, gutter, type ViewUpdate } from "@codemirror/view";
 import type { EditorDocContext } from "@/editor/api";
+import { executeAction } from "@/platform/actions";
 import { useProject } from "@/platform/project";
 import { isVirtualUri } from "@/platform/virtualDocs";
 import { shortcutLabel } from "@/platform/keymap";
@@ -24,6 +25,7 @@ import { loadGoModules } from "./goModules";
 import { onServerSettled } from "@/editor/lsp/availability";
 import { resolveCandidates, retryNegativeInheritedMain, unresolvedCandidates } from "./inheritedMain";
 import { fileTargets, OPTIMISTIC, produceContextChoices, type ContextInput } from "./producers";
+import { artisanConfig, artisanTargetsIn, loadArtisanCommands } from "./artisan";
 import { loadConfigs, useRun } from "./store";
 import { targetLanguage, type RunTarget } from "./targets";
 import { onTestStatesChanged, testState, testStatesVersion, type TestState } from "./testing/states";
@@ -66,6 +68,12 @@ function targetInput(path: string, content: string, line: number): ContextInput 
 
 async function launch(target: RunTarget, path: string, debug: boolean, content: string) {
   if (!useProject.getState().project?.root) return;
+  if (target.artisan) {
+    // Like a gutter target elsewhere: a temporary configuration, selected.
+    const config = artisanConfig(target.artisan);
+    await executeAction(debug ? "run.debugConfig" : "run.runConfig", { config, temporary: true });
+    return;
+  }
   if (!useRun.getState().loaded) await loadConfigs();
   const produced = await produceResolved(targetInput(path, content.slice(0, 400_000), target.line));
   if (!produced) {
@@ -83,6 +91,7 @@ async function launch(target: RunTarget, path: string, debug: boolean, content: 
 }
 
 export function targetTitle(t: RunTarget): string {
+  if (t.artisan) return tx`Run Artisan command`;
   if (t.kind === "generate") return tx`Run Go Generate`;
   if (t.kind === "main") return "Run";
   if (t.kind === "suite") return "Run tests";
@@ -90,11 +99,13 @@ export function targetTitle(t: RunTarget): string {
 }
 
 export function label(t: RunTarget): string {
+  if (t.artisan) return `artisan ${t.artisan}`;
   if (t.kind === "main") return t.className ? `${t.name}.main()` : "main";
   return t.name;
 }
 
 export function targetMenuItems(target: RunTarget, path: string, content: string): MenuItem[] {
+  if (target.artisan) return artisanMenuItems(target, path, content);
   const input = targetInput(path, content.slice(0, 400_000), target.line);
   const choices = produceContextChoices(input, OPTIMISTIC);
   const p = choices[0] ?? null;
@@ -125,6 +136,34 @@ export function targetMenuItems(target: RunTarget, path: string, content: string
     { kind: "separator" },
     { label: "Modify Run Configuration…", icon: "edit", run: () => void modifyContext(context) },
   ];
+}
+
+/** The gutter menu of a console command class: Run, Debug, and a saved configuration to edit. */
+function artisanMenuItems(target: RunTarget, path: string, content: string): MenuItem[] {
+  const name = label(target);
+  return [
+    { label: tx`Run '${name}'`, icon: "run", run: () => void launch(target, path, false, content) },
+    { label: tx`Debug '${name}'`, icon: "debug", run: () => void launch(target, path, true, content) },
+    { kind: "separator" },
+    {
+      label: "Modify Run Configuration…",
+      icon: "edit",
+      run: () => void executeAction("run.createConfig", artisanConfig(target.artisan!)),
+    },
+  ];
+}
+
+/** Console command classes of a PHP file, as gutter targets (the engine knows which classes are commands). */
+async function artisanTargets(path: string, text: string): Promise<RunTarget[]> {
+  if (!/\.php$/.test(path) || !/\bclass\s/.test(text)) return [];
+  const found = await loadArtisanCommands();
+  return artisanTargetsIn(path, found ?? []).map((c) => ({
+    line: c.line,
+    kind: "main",
+    name: c.name,
+    path: [c.name],
+    artisan: c.name,
+  }));
 }
 
 function showTargetMenu(view: EditorView, target: RunTarget, path: string, at: { x: number; y: number }) {
@@ -224,15 +263,22 @@ export function runGutter(ctx: EditorDocContext): Extension {
       }
       schedule(delay: number) {
         clearTimeout(this.timer);
-        this.timer = setTimeout(() => {
+        this.timer = setTimeout(async () => {
           const view = this.view;
-          const found = place(view.state, detect(view.state.doc.toString()));
+          const text = view.state.doc.toString();
+          const artisan = await artisanTargets(path, text).catch(() => []);
+          // Edited while the engine answered: the next run places them.
+          if (this.destroyed || view.state.doc.toString() !== text) return;
+          const lines = new Set(artisan.map((t) => t.line));
+          const found = place(view.state, [...detect(text).filter((t) => !lines.has(t.line)), ...artisan]).sort(
+            (a, b) => a.pos - b.pos,
+          );
           const cur = view.state.field(targetsField);
           const same =
             cur.length === found.length &&
             cur.every((t, i) => t.pos === found[i]!.pos && t.name === found[i]!.name && t.kind === found[i]!.kind);
           if (!same) view.dispatch({ effects: setTargets.of(found) });
-          this.resolveInherited(view.state.doc.toString());
+          this.resolveInherited(text);
         }, delay);
       }
       /** Classes that may inherit a `main`: ask the language server, then redraw if one does. */

@@ -1,5 +1,6 @@
 //! Laravel support (`docs/php-engine/LARAVEL-ROADMAP.md`): the project
-//! model ([`project`]) every Laravel feature reads, the configuration keys
+//! model ([`project`]) every Laravel feature reads, the Artisan commands
+//! ([`artisan`]), the configuration keys
 //! ([`config`]), a live database schema ([`database`]), the environment
 //! keys ([`env`]), the gates, policies, guards and password brokers
 //! ([`auth`]), the translations
@@ -10,6 +11,7 @@
 //!
 //! Only Laravel's own source and documentation (MIT) are design inputs.
 
+pub mod artisan;
 pub mod assets;
 pub mod auth;
 pub mod blade;
@@ -29,6 +31,7 @@ pub mod views;
 #[cfg(test)]
 mod tests;
 
+pub use artisan::{ArtisanArgument, ArtisanCommand, ArtisanCommands, ArtisanOption, CommandSource};
 pub use assets::ViteAssets;
 pub use auth::{AuthEntry, AuthFacts, GateDef, PolicyDef};
 pub use blade::{BladeCatalog, BladeComponent, CustomDirective};

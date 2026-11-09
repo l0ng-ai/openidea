@@ -55,8 +55,8 @@ use ide_core::{CancellationToken, DocId, IdeError, IdeEvent, IdeResult, Pos, Ser
 use parking_lot::{Condvar, Mutex, RwLock};
 
 use crate::frameworks::laravel::{
-    AuthFacts, BladeCatalog, ConfigKeys, EnvKeys, LaravelProject, LiveSchema, RouteTable, Translations, ViewTable,
-    ViteAssets,
+    ArtisanCommands, AuthFacts, BladeCatalog, ConfigKeys, EnvKeys, LaravelProject, LiveSchema, RouteTable,
+    Translations, ViewTable, ViteAssets,
 };
 use crate::index::{IndexStats, PhpIndex};
 use crate::inspect::runner::Runner;
@@ -200,6 +200,8 @@ struct Shared {
     laravel_assets: Mutex<Option<(u64, Arc<ViteAssets>)>>,
     /// The Laravel gates and policies, for a modification count.
     laravel_auth: Mutex<Option<(u64, Arc<AuthFacts>)>>,
+    /// The Artisan commands, for a modification count.
+    laravel_artisan: Mutex<Option<(u64, Arc<ArtisanCommands>)>>,
     /// The Laravel routes, for a modification count.
     laravel_routes: Mutex<Option<(u64, Arc<RouteTable>)>>,
     /// The Laravel views, for a modification count.
@@ -265,6 +267,7 @@ impl PhpEngine {
             laravel_lang: Mutex::new(None),
             laravel_assets: Mutex::new(None),
             laravel_auth: Mutex::new(None),
+            laravel_artisan: Mutex::new(None),
             laravel_routes: Mutex::new(None),
             laravel_views: Mutex::new(None),
             view_variables: Mutex::new(HashMap::new()),
@@ -665,6 +668,13 @@ impl PhpEngine {
     /// Laravel project.
     pub fn laravel_auth(&self) -> Option<Arc<AuthFacts>> {
         self.laravel_cached(&self.shared.laravel_auth, |project| AuthFacts::read(project, |path| self.text_of(path)))
+    }
+
+    /// The Artisan commands of the Laravel project (its command classes,
+    /// `routes/console.php` closures and Laravel's own commands), or `None`
+    /// when the project isn't a Laravel project.
+    pub fn laravel_artisan(&self) -> Option<Arc<ArtisanCommands>> {
+        self.laravel_cached(&self.shared.laravel_artisan, |project| ArtisanCommands::read(self, project))
     }
 
     /// The routes and middleware of the Laravel project (its route files,
