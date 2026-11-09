@@ -292,6 +292,7 @@ pub struct GeneralSettings {
     pub project_name: String,
     /// Where updates come from: `auto` (the CNB mirror for the Chinese UI, else GitHub) | `github` | `cnb`.
     pub update_source: String,
+    pub auto_check_updates: bool,
 }
 
 impl Default for GeneralSettings {
@@ -307,6 +308,7 @@ impl Default for GeneralSettings {
             power_save_mode: false,
             project_name: String::new(),
             update_source: "auto".into(),
+            auto_check_updates: true,
         }
     }
 }

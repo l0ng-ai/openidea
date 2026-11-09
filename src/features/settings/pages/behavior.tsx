@@ -26,7 +26,6 @@ import {
   type NotificationDisplay,
   type NotificationGroupValid,
   type OpenProjectIn,
-  type UpdateSourceSetting,
 } from "../model/behaviorSchema";
 import { ACCENT_PRESETS, LIMITS, type ThemeId } from "../model/schema";
 import type { PageSpec } from "./spec";
@@ -396,12 +395,6 @@ const OPEN_IN: Array<{ value: OpenProjectIn; label: string }> = [
   { value: "ask", label: "Ask" },
 ];
 
-const UPDATE_SOURCES: SelectOption<UpdateSourceSetting>[] = [
-  { value: "auto", label: "Automatic" },
-  { value: "github", label: "GitHub" },
-  { value: "cnb", label: "CNB (China mirror)" },
-];
-
 function OpenProjectInRow() {
   const [value, set] = useSetting<OpenProjectIn>("general.openProjectIn");
   const name = useId();
@@ -746,18 +739,6 @@ export const BEHAVIOR_PAGES: PageSpec[] = [
             integer: true,
             step: 64,
             unit: "MB",
-          },
-        ],
-      },
-      {
-        title: "Updates",
-        options: [
-          {
-            kind: "select",
-            key: "general.updateSource",
-            label: "Update source",
-            hint: "Where updates are downloaded from. If it can't be reached, the other source is tried.",
-            options: UPDATE_SOURCES,
           },
         ],
       },

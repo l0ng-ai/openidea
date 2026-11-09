@@ -62,6 +62,7 @@ export type UpdateSourceSetting = "auto" | "github" | "cnb";
 export interface GeneralExtras {
   openProjectIn: OpenProjectIn;
   updateSource: UpdateSourceSetting;
+  autoCheckUpdates: boolean;
   defaultProjectDirectory: string;
   saveOnIdle: boolean;
   idleSeconds: number;
@@ -115,6 +116,7 @@ export const DEFAULT_APPEARANCE_EXTRAS: AppearanceExtras = {
 export const DEFAULT_GENERAL_EXTRAS: GeneralExtras = {
   openProjectIn: "ask",
   updateSource: "auto",
+  autoCheckUpdates: true,
   defaultProjectDirectory: "",
   saveOnIdle: false,
   idleSeconds: 15,
@@ -180,6 +182,7 @@ export function validateGeneralExtras(raw: unknown): GeneralExtras {
   return {
     openProjectIn: oneOf(g.openProjectIn, ["ask", "new", "same", "attach"] as const, d.openProjectIn),
     updateSource: oneOf(g.updateSource, ["auto", "github", "cnb"] as const, d.updateSource),
+    autoCheckUpdates: bool(g.autoCheckUpdates, d.autoCheckUpdates),
     defaultProjectDirectory: typeof g.defaultProjectDirectory === "string" ? g.defaultProjectDirectory : "",
     saveOnIdle: bool(g.saveOnIdle, d.saveOnIdle),
     idleSeconds: int(g.idleSeconds, d.idleSeconds, IDLE_LIMITS),
