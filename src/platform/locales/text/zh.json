@@ -3454,6 +3454,7 @@
   "e.g. --force-recreate --remove-orphans": "例如 --force-recreate --remove-orphans",
   "Show main toolbar": "显示主工具栏",
   "Don't show": "不显示",
+  "Don't Show": "不显示",
   "Show status bar": "显示状态栏",
   "Compact Mode": "紧凑模式",
   "Toolbar": "工具栏",
