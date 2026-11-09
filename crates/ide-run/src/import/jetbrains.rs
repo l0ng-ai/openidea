@@ -1001,6 +1001,22 @@ mod tests {
         assert_eq!(file_url_path(""), "");
     }
 
+    /// The property the bug broke: `working_dir` joins its `cwd` onto the project
+    /// directory, so a URL that reads as a relative path resolves inside it instead
+    /// of replacing it.
+    #[test]
+    fn file_urls_name_absolute_paths() {
+        let absolute = if cfg!(windows) {
+            vec!["file://C:/p", "file:///C:/p", r"file://C:\p", "file://server/share"]
+        } else {
+            vec!["file:///p/a", "file://server/share"]
+        };
+        for url in absolute {
+            let path = file_url_path(url);
+            assert!(Path::new(&path).is_absolute(), "{url} became {path:?}, which is not absolute");
+        }
+    }
+
     #[test]
     fn env_files_split_on_the_path_separator() {
         assert_eq!(
