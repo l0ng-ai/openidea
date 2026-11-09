@@ -3,6 +3,7 @@
  * Build Tools › Maven: the toolchain each language's server and run configurations
  * use (applied by `ide-sdk` when language servers start and when run configurations load).
  */
+import { LanguageServerTargetRows, LanguageServerTargetsPage } from "./LanguageServerTarget";
 import { useRunTargets } from "@/platform/pluginRunTargets";
 import { tx } from "@/platform/i18n";
 import { useEffect, useId, useMemo, useState } from "react";
@@ -123,6 +124,7 @@ export function NodePage() {
           hint="Runs npm scripts and Node-based language servers (vtsls, eslint, pyright…)."
         />
         <RunTargetRow language="node" />
+        <LanguageServerTargetsPage ids={["javascript", "javascriptreact", "typescript", "typescriptreact"]} />
         <Row label="Package manager" hint="Used by the npm run configurations detected from package.json scripts.">
           <Select value={pm} options={pmOptions} onChange={setPm} aria-label="Package manager" />
         </Row>
@@ -233,6 +235,7 @@ export function PhpPage() {
       </Section>
       <Section title="CLI Interpreter">
         <RunTargetRow language="php" />
+        <LanguageServerTargetRows language="php" />
         <SdkRow
           k="languages.php.interpreter"
           label="PHP interpreter"

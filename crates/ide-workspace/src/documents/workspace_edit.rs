@@ -179,6 +179,9 @@ fn normalize_edit(edit: &WorkspaceEdit) -> IdeResult<WorkspaceEdit> {
     let mut files = Vec::new();
     for file in &edit.files {
         let resolve = |path: &Path, text: bool| -> IdeResult<PathBuf> {
+            if ide_core::is_virtual_uri(&path.to_string_lossy()) {
+                return Err(IdeError::invalid("library documents are always read-only"));
+            }
             if !changed.is_empty() {
                 return after_resources(path, &changed, 0);
             }

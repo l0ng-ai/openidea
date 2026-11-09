@@ -1,6 +1,6 @@
 //! Language server manager.
 //!
-//! Servers start lazily per `(server name, workspace root)` when a document of
+//! Servers start lazily per `(server name, workspace root, target)` when a document of
 //! a matching language opens. Several servers may serve one language (e.g.
 //! `vtsls` + `eslint`); results are merged. Every request takes positions in
 //! IDE coordinates (UTF-16, 0-based) and returns IDE types from [`types`],
@@ -24,6 +24,7 @@ mod loading;
 mod pull;
 mod scope;
 mod server;
+mod target;
 mod tcp;
 mod text;
 mod ts_file_moves;
@@ -85,6 +86,10 @@ pub type ApplyEditHook = Arc<dyn Fn(WorkspaceEdit) -> bool + Send + Sync>;
 /// settings before each launch; receives the server's workspace root.
 pub type ConfigFn = dyn Fn(&mut LanguageServerConfig, &Path) + Send + Sync;
 pub type ConfigHook = Arc<ConfigFn>;
+/// Returns true when target configuration replaces host toolchain configuration.
+pub type TargetConfigFn = dyn Fn(&LanguageId, &mut LanguageServerConfig) -> bool + Send + Sync;
+/// Fetches a bounded read-only container document after rechecking grants and trust.
+pub type TargetReadFn = dyn Fn(&ide_language::ServerTarget, &str) -> IdeResult<String> + Send + Sync;
 /// Prepares dependencies on a blocking worker immediately before launching an installed server.
 pub type PrepareFn = dyn Fn(&LanguageServerConfig, &Path, &CancellationToken) + Send + Sync;
 /// The servers a language uses, from its definition's list (user settings
@@ -183,6 +188,8 @@ pub struct LspManager {
     apply_edit_hook: RwLock<Option<ApplyEditHook>>,
     applied_edits: tokio::sync::broadcast::Sender<(ide_core::ServerId, WorkspaceEdit)>,
     config_hook: RwLock<Option<ConfigHook>>,
+    target_hook: RwLock<Option<Arc<TargetConfigFn>>>,
+    target_read_hook: RwLock<Option<Arc<TargetReadFn>>>,
     prepare_hook: RwLock<Option<Arc<PrepareFn>>>,
     servers_hook: RwLock<Option<Arc<ServersFn>>>,
     candidates_hook: RwLock<Option<Arc<CandidateFn>>>,
@@ -388,6 +395,8 @@ impl LspManager {
             apply_edit_hook: RwLock::new(None),
             applied_edits: tokio::sync::broadcast::channel(64).0,
             config_hook: RwLock::new(None),
+            target_hook: RwLock::new(None),
+            target_read_hook: RwLock::new(None),
             prepare_hook: RwLock::new(None),
             servers_hook: RwLock::new(None),
             candidates_hook: RwLock::new(None),
@@ -427,12 +436,14 @@ impl LspManager {
             // Outside the project (library sources, …): reuse a running instance.
             servers
                 .iter()
-                .filter(|s| s.name == cfg.name)
+                .filter(|s| s.name == cfg.name && s.config.target_key == cfg.target_key)
                 .min_by_key(|s| s.root != self.project_root)
                 .map(|s| s.root.clone())
                 .unwrap_or_else(|| self.project_root.clone())
         });
-        if let Some(s) = servers.iter().find(|s| s.name == cfg.name && s.root == root) {
+        if let Some(s) =
+            servers.iter().find(|s| s.name == cfg.name && s.root == root && s.config.target_key == cfg.target_key)
+        {
             s.add_language(language);
             return s.clone();
         }
@@ -479,8 +490,13 @@ impl LspManager {
     /// to the open documents (and start them). Also attaches servers newly
     /// enabled in settings.
     fn attach_fallbacks(&self) {
-        let open: Vec<(DocId, LanguageId, PathBuf)> =
-            self.docs.lock().iter().map(|(id, d)| (*id, d.language.clone(), d.path.clone())).collect();
+        let open: Vec<(DocId, LanguageId, PathBuf)> = self
+            .docs
+            .lock()
+            .iter()
+            .filter(|(_, d)| !d.uri.as_str().starts_with("openidea-target:"))
+            .map(|(id, d)| (*id, d.language.clone(), d.path.clone()))
+            .collect();
         let wanted: Vec<(DocId, Vec<Arc<Server>>)> =
             open.into_iter().map(|(id, language, path)| (id, self.servers_for(&language, &path))).collect();
         let mut start = Vec::new();
@@ -557,7 +573,8 @@ impl LspManager {
             }
             tail.set_effective_config(generation, cfg.clone());
             let prepare = me.prepare_hook.read().clone();
-            if !cancel.is_cancelled()
+            if cfg.target.is_none()
+                && !cancel.is_cancelled()
                 && me.launcher.available(&cfg, &tail.root)
                 && let Some(prepare) = prepare
             {
@@ -568,7 +585,7 @@ impl LspManager {
             let root = tail.root.clone();
             if let Some(message) = &cfg.launch_error {
                 // A missing binary still asks to be installed first.
-                let missing = !me.launcher.available(&cfg, &root);
+                let missing = cfg.target.is_none() && !me.launcher.available(&cfg, &root);
                 return Err(if missing { LaunchError::Missing } else { LaunchError::Config(message.clone()) });
             }
             if !me.execution_allowed.load(Ordering::Acquire) || cancel.is_cancelled() {
@@ -2765,8 +2782,15 @@ impl LspManager {
     }
 
     fn origin_server(&self, uri: &str) -> Option<Arc<Server>> {
-        let id = *self.virtual_origins.lock().get(uri)?;
-        self.servers.lock().iter().find(|s| s.id == id).cloned()
+        let id = self.virtual_origins.lock().get(uri).copied();
+        self.servers
+            .lock()
+            .iter()
+            .find(|s| {
+                Some(s.id) == id
+                    || s.effective_config().target.as_ref().is_some_and(|t| target::external_path(t, uri).is_some())
+            })
+            .cloned()
     }
 
     /// Contents of a virtual document, from the server that owns `uri`:
@@ -2775,6 +2799,29 @@ impl LspManager {
     /// is read from its archive, a `jar:` class shown as its library source
     /// (see [`library_source`]) or else decompiled by the server. Cached.
     pub async fn virtual_document(&self, uri: &str) -> IdeResult<VirtualDocument> {
+        if uri.starts_with("openidea-target:") {
+            let server = self
+                .origin_server(uri)
+                .ok_or_else(|| IdeError::unavailable("container language server is no longer available"))?;
+            let target = server
+                .effective_config()
+                .target
+                .ok_or_else(|| IdeError::unavailable("container language server is no longer available"))?;
+            let path = target::external_path(&target, uri)
+                .ok_or_else(|| IdeError::invalid("invalid container document URI"))?;
+            let read = self
+                .target_read_hook
+                .read()
+                .clone()
+                .ok_or_else(|| IdeError::unavailable("container document reader is unavailable"))?;
+            let languages = server.languages();
+            let title = Path::new(&path).file_name().map(|n| n.to_string_lossy().into_owned());
+            let description = Some(path.clone());
+            let text = tokio::task::spawn_blocking(move || read(&target, &path))
+                .await
+                .map_err(|e| IdeError::unavailable(e.to_string()))??;
+            return Ok(self.store_virtual(uri, text, title, description, &languages, Some(server.id)));
+        }
         if let Some(d) = self.virtual_docs.lock().get(uri) {
             return Ok(d.clone());
         }
@@ -2929,6 +2976,11 @@ impl LspManager {
 
     /// Called when a server sends `workspace/applyEdit`; installed by `src-tauri`
     /// so edits flow through `ide-workspace::Documents`.
+    pub fn set_target_hooks(&self, configure: Box<TargetConfigFn>, read: Box<TargetReadFn>) {
+        *self.target_hook.write() = Some(Arc::from(configure));
+        *self.target_read_hook.write() = Some(Arc::from(read));
+    }
+
     pub fn set_config_hook(&self, hook: Box<ConfigFn>) {
         *self.config_hook.write() = Some(Arc::from(hook));
     }
@@ -2949,8 +3001,22 @@ impl LspManager {
             cfg.launch_error = Some("Project is in Restricted Mode".into());
             return cfg;
         }
-        if let Some(hook) = self.config_hook.read().clone() {
+        let in_target = self.target_hook.read().clone().is_some_and(|hook| {
+            server
+                .languages()
+                .iter()
+                .filter(|language| {
+                    self.language_servers(language)
+                        .iter()
+                        .any(|c| c.name == server.name && c.target_key == server.config.target_key)
+                })
+                .any(|language| hook(language, &mut cfg))
+        });
+        if !in_target && let Some(hook) = self.config_hook.read().clone() {
             hook(&mut cfg, &server.root);
+        }
+        if let Some(target) = &mut cfg.target {
+            target.origin = Some(server.id);
         }
         cfg
     }
@@ -3022,6 +3088,11 @@ impl LspManager {
                 }
                 continue;
             }
+            if next.target != current.target {
+                for doc in self.docs.lock().values_mut().filter(|d| d.uri.as_str().starts_with("openidea-target:")) {
+                    doc.servers.retain(|a| a.server.id != s.id);
+                }
+            }
             match s.status() {
                 ide_core::event::ServerStatus::Ready
                 | ide_core::event::ServerStatus::Busy
@@ -3042,13 +3113,13 @@ impl LspManager {
             }
         }
         self.attach_fallbacks();
-        self.detach_shadowed_fallbacks().await;
+        self.detach_shadowed_servers().await;
         self.injection_providers_changed();
     }
 
-    /// A server enabled again shadows the fallbacks attached in its place: they
-    /// leave the open documents, and stop once no document uses them.
-    async fn detach_shadowed_fallbacks(&self) {
+    /// Detaches fallbacks shadowed by enabled servers and instances whose target
+    /// no longer matches the document's language. Stop them once unused.
+    async fn detach_shadowed_servers(&self) {
         let open: Vec<(DocId, LanguageId, PathBuf)> =
             self.docs.lock().iter().map(|(id, d)| (*id, d.language.clone(), d.path.clone())).collect();
         let mut shadowed: Vec<(DocId, Vec<ide_core::ServerId>)> = Vec::new();
@@ -3062,7 +3133,10 @@ impl LspManager {
                 .iter()
                 .filter(|a| {
                     !wanted.iter().any(|w| w.id == a.server.id)
-                        && configs.iter().any(|c| c.fallback && c.name == a.server.name)
+                        && (configs.iter().any(|c| c.fallback && c.name == a.server.name)
+                            || !configs
+                                .iter()
+                                .any(|c| c.name == a.server.name && c.target_key == a.server.config.target_key))
                 })
                 .map(|a| a.server.id)
                 .collect();
@@ -3118,7 +3192,11 @@ impl LspManager {
         let servers: Vec<Arc<Server>> = self.servers.lock().clone();
         let unlisted: Vec<Arc<Server>> = servers
             .into_iter()
-            .filter(|s| !s.languages().iter().any(|l| self.language_servers(l).iter().any(|c| c.name == s.name)))
+            .filter(|s| {
+                !s.languages().iter().any(|l| {
+                    self.language_servers(l).iter().any(|c| c.name == s.name && c.target_key == s.config.target_key)
+                })
+            })
             .collect();
         if unlisted.is_empty() {
             return;

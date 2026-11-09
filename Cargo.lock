@@ -4273,6 +4273,7 @@ dependencies = [
  "dunce",
  "encoding_rs",
  "libc",
+ "percent-encoding",
  "serde",
  "serde_json",
  "specta",
