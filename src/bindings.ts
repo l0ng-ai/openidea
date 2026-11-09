@@ -2675,7 +2675,15 @@ export type CompletionItem = {
 	label: string,
 	/**  e.g. `(req: CreateOrderRequest)` shown right after the label. */
 	labelDetail: string | null,
-	/**  e.g. return type, shown right-aligned. */
+	/**
+	 *  `labelDetails.description`: a return type or module path, shown right-aligned. Servers
+	 *  such as JDT.LS also send the whole signature as `detail`, which would repeat the label.
+	 */
+	labelDescription: string | null,
+	/**
+	 *  The signature or type when the server sent no `label_description`; the documentation panel
+	 *  shows it either way.
+	 */
 	detail: string | null,
 	kind: CompletionKind | null,
 	documentation: Markup | null,

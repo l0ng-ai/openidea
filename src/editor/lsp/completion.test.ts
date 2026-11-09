@@ -37,6 +37,7 @@ function item(over: Partial<CompletionItem> = {}): CompletionItem {
   return {
     label: "create",
     labelDetail: null,
+    labelDescription: null,
     detail: null,
     kind: "method",
     documentation: null,
@@ -484,6 +485,30 @@ describe("typeColumnText", () => {
       "std::collections",
     );
     expect(typeColumnText({ detail: null, additionalEdits: edit('import { a } from "./money";\n') })).toBe("./money");
+  });
+
+  it("shows the type, not the repeated signature, when the server sends both (JDT.LS `print`)", () => {
+    expect(
+      typeColumnText({
+        labelDescription: "void",
+        detail: "PrintStream.print(Object obj) : void",
+        additionalEdits: [],
+      }),
+    ).toBe("void");
+    expect(typeColumnText({ labelDescription: "String", detail: "Person.name : String", additionalEdits: [] })).toBe(
+      "String",
+    );
+  });
+
+  it("falls back to the detail when the server sends no description, and names the import source", () => {
+    expect(typeColumnText({ labelDescription: null, detail: "Order", additionalEdits: [] })).toBe("Order");
+    expect(
+      typeColumnText({
+        labelDescription: "Auto-import",
+        detail: "Auto import from './money'",
+        additionalEdits: edit('import { a } from "./money";\n'),
+      }),
+    ).toBe("./money");
   });
 
   it("keeps a detail that already says where", () => {

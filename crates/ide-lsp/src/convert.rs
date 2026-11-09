@@ -301,6 +301,7 @@ pub fn completion_item(conv: &Conv, path: &Path, item: lsp::CompletionItem, serv
     let mut out = CompletionItem {
         label: item.label.clone(),
         label_detail: None,
+        label_description: None,
         detail: None,
         kind: None,
         documentation: None,
@@ -348,6 +349,9 @@ pub fn overlay_completion(conv: &Conv, path: &Path, out: &mut CompletionItem, it
     let description = label_details.as_ref().and_then(|d| d.description.clone());
     if let Some(d) = label_details.and_then(|d| d.detail) {
         out.label_detail = Some(d);
+    }
+    if let Some(d) = description.clone() {
+        out.label_description = Some(d);
     }
     if let Some(d) = detail.or(description) {
         out.detail = Some(d);
@@ -425,10 +429,12 @@ pub fn lsp_completion_item(text: &DocText, enc: Encoding, item: &CompletionItem)
     });
     lsp::CompletionItem {
         label: item.label.clone(),
-        label_details: item
-            .label_detail
-            .clone()
-            .map(|detail| lsp::CompletionItemLabelDetails { detail: Some(detail), description: None }),
+        label_details: (item.label_detail.is_some() || item.label_description.is_some()).then(|| {
+            lsp::CompletionItemLabelDetails {
+                detail: item.label_detail.clone(),
+                description: item.label_description.clone(),
+            }
+        }),
         kind: item.kind.map(lsp_completion_kind),
         detail: item.detail.clone(),
         documentation: item.documentation.as_ref().map(lsp_documentation),
@@ -1209,7 +1215,8 @@ mod tests {
         assert_eq!(a.insert_text, "println!($0)");
         assert!(a.is_snippet);
         assert_eq!(a.label_detail.as_deref(), Some("(…)"));
-        assert_eq!(a.detail.as_deref(), Some("std"));
+        assert_eq!(a.label_description.as_deref(), Some("std"));
+        assert_eq!(a.detail.as_deref(), Some("std"), "no `detail` from the server: the description stands in");
         assert_eq!(a.kind, Some(CompletionKind::Function));
         assert_eq!(a.replace_range, Some(Range::new(p(0, 4), p(0, 6))));
         assert_eq!(a.replace_range_tab, Some(Range::new(p(0, 4), p(0, 9))));
@@ -1225,6 +1232,9 @@ mod tests {
         let back = lsp_completion_item(&text, Encoding::Utf16, &a);
         assert_eq!(back.data, Some(json!({"k": 1})));
         assert!(matches!(back.text_edit, Some(lsp::CompletionTextEdit::InsertAndReplace(_))));
+        let details = back.label_details.expect("label details survive the resolve round trip");
+        assert_eq!(details.detail.as_deref(), Some("(…)"));
+        assert_eq!(details.description.as_deref(), Some("std"));
     }
 
     #[test]
@@ -1255,6 +1265,10 @@ mod tests {
             let item = completion_item(&Conv::utf16(), Path::new("/Main.java"), items[0].clone(), ServerId(1));
             assert_eq!(item.replace_range, Some(Range::new(p(2, 19), p(2, end))));
             assert_eq!(item.replace_range_tab, None);
+            // The list shows `print (Object obj)` and `void`; the long signature is only for the docs panel.
+            assert_eq!(item.label_detail.as_deref(), Some("(Object obj)"));
+            assert_eq!(item.label_description.as_deref(), Some("void"));
+            assert_eq!(item.detail.as_deref(), Some("PrintStream.print(Object obj) : void"));
             assert_eq!(item.filter_text.as_deref(), Some("print(Object obj) : void"));
             assert_eq!(item.insert_text, "print(${0});");
             assert!(item.is_snippet);
