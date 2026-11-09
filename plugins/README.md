@@ -393,7 +393,7 @@ working. New in 1.4:
 - [Language features](#additional-language-features-api-14): formatting,
   signature help, highlights, links, code lenses, selection ranges, folds,
   colors/presentations, symbols, implementation, type definition and gutter
-  actions; [injections](#embedded-languages-api-14) route plugin providers to
+  actions; [injections](#embedded-languages-api-14) route providers and language servers to
   embedded virtual documents.
 - [Snippets](#snippets-api-14) and [menus](#additional-menu-locations-api-14):
   numbered placeholders and editor title, main toolbar, Problems and search
@@ -1119,8 +1119,31 @@ At most 1,000 non-overlapping injection ranges and 32 embedded languages
 are routed per document. Earlier ranges in document order win overlaps.
 Documents over 2 MiB are excluded. Invalid ranges, self-injections and invalid
 language ids are ignored. Injections are not applied recursively. The same
-server-side plugin host handles remote editing. **Embedded LSP forwarding is
-future host-side work**, not part of 1.4, and needs no WIT change.
+server-side plugin host handles remote editing.
+
+When the embedded language has configured language servers, the host also
+routes completion (including resolve), hover, signature help, definition,
+declaration, type definition, implementation, references, document highlights
+and code actions to those servers inside the range. Each range gets its own
+masked document, even when several ranges share a language. At most 32 LSP
+documents are kept per host document; the same 2 MiB document limit applies.
+These documents use non-existent sibling paths with the embedded language's
+extension, so servers can discover project configuration. They are never
+written to disk. Servers start through the usual settings, project trust and
+installation flow; a missing server does not prompt again on each edit.
+
+Edits invalidate old ranges immediately. The host refreshes them after the
+300 ms debounce, or before a position request, synchronizes retained documents
+with `didChange`, and closes documents when their range disappears, the plugin
+is disabled or the host document closes. Results into these documents map back
+to the host path and are clipped to the range; locations in other files pass
+through. Replacement edits crossing a boundary and resource operations on
+virtual paths are dropped. Completion and code-action resolve keep their
+originating range/server, and stale results cannot resolve after an edit.
+Diagnostics are restricted to each range, labelled with the embedded server's
+name and merged with that server's other diagnostics for the host file. They
+clear when the range disappears. Formatting and rename use the host server.
+Remote projects use this same host-side LSP lifecycle and routing.
 
 ### Snippets (API 1.4)
 

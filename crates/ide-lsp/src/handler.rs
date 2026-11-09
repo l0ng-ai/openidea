@@ -139,6 +139,9 @@ impl ClientHandler {
             }
         };
         let Some(path) = uri_to_path(params.uri.as_str()) else { return };
+        if !mgr.accepts_injected_diagnostics(&path, params.version) {
+            return;
+        }
         // Files opened only for a request (references search) are not the user's problems.
         if (self.server.external_diagnostics.load(std::sync::atomic::Ordering::Acquire)
             && !mgr.docs.lock().values().any(|d| d.path == path))

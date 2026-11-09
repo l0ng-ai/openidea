@@ -5117,3 +5117,192 @@ async fn hierarchy_refactorings_name_the_servers_without_them() {
     assert_eq!(e.kind, ide_core::error::ErrorKind::Unavailable);
     assert_eq!(e.message, "plain doesn't support Pull Members Up");
 }
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn injected_documents_route_and_resolve_without_exposing_virtual_files() {
+    for encoding in ["utf-16", "utf-8"] {
+        let mut caps = incremental_caps();
+        caps["positionEncoding"] = json!(encoding);
+        caps["signatureHelpProvider"] = json!({});
+        for cap in
+            ["declarationProvider", "typeDefinitionProvider", "implementationProvider", "documentHighlightProvider"]
+        {
+            caps[cap] = json!(true);
+        }
+        let mut h = harness_for("sql", "sql", &[("embedded", caps)], &[]);
+        let builtins = LanguageRegistry::load(None).unwrap();
+        let mut sql = builtins.get(&LanguageId::new("sql")).unwrap();
+        sql.language_servers = vec![server_cfg("embedded")];
+        let mut native = builtins.get(&LanguageId::plain_text()).unwrap();
+        native.language_servers = vec![server_cfg("host")];
+        *h.launcher.state("host").caps.lock() = incremental_caps();
+        h.launcher.state("host").respond("textDocument/completion", json!([{"label":"native"}]));
+        let events = h.events.clone();
+        h.mgr = LspManager::with_launcher(
+            h.root.clone(),
+            Arc::new(LanguageRegistry::from_configs(vec![sql, native])),
+            Arc::new(move |e| events.lock().push(e)),
+            h.launcher.clone(),
+        );
+        let state = h.launcher.state("embedded");
+        *state.responder.lock() = Some(Arc::new(|_, method, p| {
+            let whole = json!({"start":{"line":0,"character":0},"end":{"line":0,"character":99}});
+            let uri = p["textDocument"]["uri"].clone();
+            Some(match method {
+                "textDocument/completion" => {
+                    json!([{"label":"one","textEdit":{"range":whole,"newText":"ONE"},"data":{"id":7},"command":{"title":"run","command":"mock.run"}}])
+                }
+                "completionItem/resolve" => {
+                    assert_eq!(p["data"], json!({"id":7}));
+                    assert_eq!(p["command"]["command"], "mock.run");
+                    json!({"label":"one","detail":"resolved"})
+                }
+                "textDocument/hover" => json!({"contents":"SQL","range":whole}),
+                "textDocument/signatureHelp" => json!({"signatures":[{"label":"sql()"}]}),
+                "textDocument/definition"
+                | "textDocument/declaration"
+                | "textDocument/typeDefinition"
+                | "textDocument/implementation" => json!([
+                    {"uri":uri,"range":whole},
+                    {"uri":uri,"range":{"start":{"line":0,"character":0},"end":{"line":0,"character":1}}}
+                ]),
+                "textDocument/references" => json!([{"uri":uri,"range":whole}]),
+                "textDocument/documentHighlight" => json!([{"range":whole}]),
+                "textDocument/codeAction" => json!([{"title":"fix","data":{"uri":uri}}]),
+                "codeAction/resolve" => json!({"title":"fix","edit":{"documentChanges":[
+                    {"textDocument":{"uri":p["data"]["uri"],"version":1},"edits":[{"range":{"start":{"line":0,"character":4},"end":{"line":0,"character":7}},"newText":"ONE"}]},
+                    {"kind":"create","uri":p["data"]["uri"]}
+                ]},"command":{"title":"run","command":"mock.run"}}),
+                _ => Value::Null,
+            })
+        }));
+        h.mgr.set_injection_provider(Arc::new(|_, _, _, text| {
+            text.match_indices("[[")
+                .filter_map(|(start, _)| {
+                    let end = start + 2 + text[start + 2..].find("]]")?;
+                    Some(ide_lsp::InjectedRange {
+                        range: Range::new(
+                            Pos::new(0, text[..start + 2].encode_utf16().count() as u32),
+                            Pos::new(0, text[..end].encode_utf16().count() as u32),
+                        ),
+                        language: LanguageId::new("sql"),
+                    })
+                })
+                .collect()
+        }));
+        let host = DocId::next();
+        let path = h.root.join("host.java");
+        let source = "😀[[one]] [[two]]";
+        h.mgr.did_open(host, &path, &LanguageId::plain_text(), 1, source);
+        h.mgr.refresh_injections(host).await.unwrap();
+        let doc = h.mgr.injected_document(host, Pos::new(0, 5));
+        let second = h.mgr.injected_document(host, Pos::new(0, 13));
+        assert_ne!(doc, host);
+        assert_ne!(doc, second, "separate SQL fragments must not share a document");
+        assert_eq!(h.mgr.injected_document(host, Pos::new(0, 7)), host);
+        assert_eq!(
+            h.mgr.completion(host, Pos::new(0, 1), None, Default::default()).await.unwrap().items[0].label,
+            "native"
+        );
+        let item = h.mgr.completion(doc, Pos::new(0, 5), None, Default::default()).await.unwrap().items.remove(0);
+        assert_eq!(item.replace_range, Some(rng(0, 4, 0, 7)));
+        let resolved = h.mgr.resolve_completion(host, item).await.unwrap();
+        assert_eq!(resolved.detail.as_deref(), Some("resolved"));
+        h.mgr.execute_command(host, resolved.command.clone().unwrap()).await.unwrap();
+        assert_eq!(state.requested("workspace/executeCommand")[0]["command"], "mock.run");
+        assert_eq!(
+            h.mgr.hover(doc, Pos::new(0, 5), Default::default()).await.unwrap().unwrap().range,
+            Some(rng(0, 4, 0, 7))
+        );
+        assert!(h.mgr.signature_help(doc, Pos::new(0, 5)).await.unwrap().is_some());
+        for kind in [GotoKind::Definition, GotoKind::Declaration, GotoKind::TypeDefinition, GotoKind::Implementation] {
+            let locations = h.mgr.goto(doc, Pos::new(0, 5), kind).await.unwrap();
+            assert_eq!(locations.len(), 1);
+            assert_eq!(locations[0].path.0, path);
+            assert_eq!(locations[0].range, rng(0, 4, 0, 7));
+        }
+        let refs = h.mgr.references(doc, Pos::new(0, 5), true, false, Default::default()).await.unwrap();
+        assert_eq!(refs.locations[0].path.0, path);
+        let highlights = h.mgr.document_highlights(doc, Pos::new(0, 5)).await.unwrap();
+        assert_eq!(highlights[0].range, rng(0, 4, 0, 7));
+        let action = h.mgr.code_actions(doc, rng(0, 5, 0, 5), vec![]).await.unwrap().remove(0);
+        let action = h.mgr.resolve_code_action(host, action).await.unwrap();
+        let edit = action.edit.unwrap();
+        assert_eq!(edit.files.len(), 1, "resource operations on virtual paths are dropped");
+        assert!(
+            matches!(&edit.files[0],FileEdit::Edit {path:p,edits,..} if p.0 == path && edits[0].range == rng(0,4,0,7))
+        );
+        let command = action.command.unwrap();
+        assert!(h.mgr.provides_command(host, Some(action.server), &command.command).await);
+        assert!(
+            h.mgr
+                .resolve_command(host, action.server, command.clone(), vec![], Default::default())
+                .await
+                .unwrap()
+                .is_none()
+        );
+        h.mgr.execute_action_command(host, action.server, command, vec![], Default::default()).await.unwrap();
+        eventually(|| state.docs.lock().len() == 2).await;
+        assert!(state.docs.lock().values().any(|t| t == "    one          "));
+        assert!(state.docs.lock().values().any(|t| t == "            two  "));
+        let virtual_uris: Vec<_> = state.docs.lock().iter().map(|(u, t)| (u.clone(), t.clone())).collect();
+        for (uri, text) in &virtual_uris {
+            let col = if text.contains("one") { 4 } else { 12 };
+            state.peer().notify("textDocument/publishDiagnostics", json!({"uri":uri,"version":1,"diagnostics":[
+                {"range":{"start":{"line":0,"character":col},"end":{"line":0,"character":col+3}},"message":"embedded"},
+                {"range":{"start":{"line":0,"character":0},"end":{"line":0,"character":1}},"message":"outside"}
+            ]})).unwrap();
+        }
+        let diagnostics = || {
+            h.events
+                .lock()
+                .iter()
+                .rev()
+                .find_map(|e| match e {
+                    IdeEvent::Diagnostics { path: p, source, items } if p.0 == path && source == "embedded" => {
+                        Some(items.clone())
+                    }
+                    _ => None,
+                })
+                .unwrap_or_default()
+        };
+        eventually(|| diagnostics().len() == 2).await;
+        assert!(diagnostics().iter().all(|d| d.source.as_deref() == Some("embedded")));
+        h.mgr.did_change(host, 2, &[AppliedChange { range: rng(0, 4, 0, 7), text: "ONE".into() }], &|| {
+            "😀[[ONE]] [[two]]".into()
+        });
+        assert_eq!(h.mgr.injected_document(host, Pos::new(0, 5)), host, "stale ranges cannot route");
+        h.mgr.refresh_injections(host).await.unwrap();
+        assert_eq!(h.mgr.injected_document(host, Pos::new(0, 5)), doc);
+        eventually(|| state.docs.lock().values().any(|t| t == "    ONE          ")).await;
+        assert!(h.mgr.resolve_completion(host, resolved).await.is_err(), "old completions cannot resolve after edits");
+        h.mgr.set_injections(host, 2, vec![]);
+        eventually(|| diagnostics().is_empty()).await;
+        assert!(h.events.lock().iter().all(
+            |e| !matches!(e,IdeEvent::Diagnostics {path,..} if path.0.to_string_lossy().contains(".openidea-injected-"))
+        ));
+        h.mgr.did_close(host);
+        eventually(|| state.docs.lock().is_empty()).await;
+        h.mgr.shutdown_all().await;
+    }
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn missing_injected_server_uses_the_normal_single_install_notification() {
+    let h = harness_for("sql", "sql", &[("embedded", incremental_caps())], &[]);
+    h.launcher.state("embedded").missing.store(true, Ordering::SeqCst);
+    let host = DocId::next();
+    let path = h.root.join("host.java");
+    h.mgr.did_open(host, &path, &LanguageId::plain_text(), 1, "sql");
+    let ranges = || vec![ide_lsp::InjectedRange { range: rng(0, 0, 0, 3), language: LanguageId::new("sql") }];
+    h.mgr.set_injections(host, 1, ranges());
+    h.wait_status("embedded", ServerStatus::Missing).await;
+    for version in 2..10 {
+        h.mgr.did_change(host, version, &[], &|| "sql".into());
+        h.mgr.set_injections(host, version, ranges());
+    }
+    assert_eq!(h.mgr.servers().len(), 1);
+    assert_eq!(h.statuses("embedded").iter().filter(|s| **s == ServerStatus::Missing).count(), 1);
+    h.mgr.did_close(host);
+    h.mgr.shutdown_all().await;
+}

@@ -9,6 +9,34 @@ use ide_lsp::types::*;
 use ide_plugin::ProviderDocument;
 use std::path::Path;
 
+/// Select an embedded server only for point requests; formatting and rename keep the host.
+async fn position_document(host: &Host, window: &str, doc: DocId, pos: Pos) -> IdeResult<DocId> {
+    let lsp = host.project(window)?.lsp.clone();
+    lsp.refresh_injections(doc).await?;
+    Ok(lsp.injected_document(doc, pos))
+}
+
+async fn begin_position_request(
+    host: &Host,
+    window: &str,
+    request: RequestId,
+    doc: DocId,
+    pos: Pos,
+) -> IdeResult<(DocId, ide_core::CancellationToken)> {
+    let cancel = host.begin_request(request);
+    let target = tokio::select! {
+        result = position_document(host, window, doc, pos) => result,
+        _ = cancel.cancelled() => Err(ide_core::IdeError::cancelled()),
+    };
+    match target {
+        Ok(target) => Ok((target, cancel)),
+        Err(e) => {
+            host.end_request(request);
+            Err(e)
+        }
+    }
+}
+
 async fn prepare_actions(
     project: std::sync::Arc<crate::Project>,
     doc: DocId,
@@ -41,8 +69,8 @@ pub async fn lsp_completion(
     trigger: Option<String>,
 ) -> IdeResult<CompletionList> {
     let lsp = host.project(window)?.lsp.clone();
-    let cancel = host.begin_request(request);
-    let result = lsp.completion(doc, pos, trigger.clone(), cancel).await;
+    let (target, cancel) = begin_position_request(host, window, request, doc, pos).await?;
+    let result = lsp.completion(target, pos, trigger.clone(), cancel).await;
     host.end_request(request);
     // Plugin providers (`[[contributes.providers]]`) add theirs.
     let Some((plugins, d)) = plugin_providers(host, window, doc, ProviderKind::Completion) else { return result };
@@ -238,14 +266,14 @@ pub async fn lsp_hover(
     pos: Pos,
 ) -> IdeResult<Option<Hover>> {
     let lsp = host.project(window)?.lsp.clone();
-    let cancel = host.begin_request(request);
+    let (target, cancel) = begin_position_request(host, window, request, doc, pos).await?;
     let Some((plugins, d)) = plugin_providers(host, window, doc, ProviderKind::Hover) else {
-        let result = lsp.hover(doc, pos, cancel).await;
+        let result = lsp.hover(target, pos, cancel).await;
         host.end_request(request);
         return result;
     };
     let (result, hovers) =
-        tokio::join!(lsp.hover(doc, pos, cancel), plugin_call(move || plugins.provide_hover(&d, pos)));
+        tokio::join!(lsp.hover(target, pos, cancel), plugin_call(move || plugins.provide_hover(&d, pos)));
     host.end_request(request);
     let hovers = hovers.unwrap_or_default();
     if hovers.is_empty() {
@@ -260,7 +288,8 @@ pub async fn lsp_hover(
 }
 
 pub async fn lsp_signature_help(host: &Host, window: &str, doc: DocId, pos: Pos) -> IdeResult<Option<SignatureHelp>> {
-    let server = host.project(window)?.lsp.signature_help(doc, pos).await;
+    let target = position_document(host, window, doc, pos).await?;
+    let server = host.project(window)?.lsp.signature_help(target, pos).await;
     if matches!(&server,Ok(Some(h)) if !h.signatures.is_empty()) {
         return server;
     }
@@ -278,7 +307,9 @@ pub async fn lsp_signature_help(host: &Host, window: &str, doc: DocId, pos: Pos)
 }
 
 pub async fn lsp_goto(host: &Host, window: &str, doc: DocId, pos: Pos, kind: GotoKind) -> IdeResult<Vec<Location>> {
-    if kind == GotoKind::Definition
+    let target = position_document(host, window, doc, pos).await?;
+    if target == doc
+        && kind == GotoKind::Definition
         && let Some(plugins) = crate::plugins::editor_plugin_host()
     {
         let project = host.project(window)?;
@@ -289,7 +320,7 @@ pub async fn lsp_goto(host: &Host, window: &str, doc: DocId, pos: Pos, kind: Got
             return Ok(found.targets);
         }
     }
-    let result = host.project(window)?.lsp.goto(doc, pos, kind).await;
+    let result = host.project(window)?.lsp.goto(target, pos, kind).await;
     if matches!(kind, GotoKind::Implementation | GotoKind::TypeDefinition) {
         let k =
             if kind == GotoKind::Implementation { ProviderKind::Implementation } else { ProviderKind::TypeDefinition };
@@ -424,8 +455,46 @@ pub async fn lsp_implementations(
     positions: Vec<Pos>,
 ) -> IdeResult<Vec<Vec<Location>>> {
     let lsp = host.project(window)?.lsp.clone();
-    let cancel = host.begin_request(request);
-    let result = lsp.implementations(doc, &positions, cancel).await;
+    let (_, cancel) =
+        begin_position_request(host, window, request, doc, positions.first().copied().unwrap_or_default()).await?;
+    let mut groups = std::collections::BTreeMap::<DocId, Vec<(usize, Pos)>>::new();
+    for (index, pos) in positions.iter().copied().enumerate() {
+        groups.entry(lsp.injected_document(doc, pos)).or_default().push((index, pos));
+    }
+    if groups.is_empty() {
+        groups.insert(doc, Vec::new());
+    }
+    let results = futures::future::join_all(groups.into_iter().map(|(target, entries)| {
+        let (lsp, cancel) = (lsp.clone(), cancel.clone());
+        async move {
+            let positions: Vec<_> = entries.iter().map(|(_, p)| *p).collect();
+            (entries, lsp.implementations(target, &positions, cancel).await)
+        }
+    }))
+    .await;
+    let mut out = vec![Vec::new(); positions.len()];
+    let mut error = None;
+    let mut succeeded = false;
+    for (entries, result) in results {
+        match result {
+            Ok(found) => {
+                succeeded = true;
+                for ((index, _), locations) in entries.into_iter().zip(found) {
+                    out[index] = locations;
+                }
+            }
+            Err(e) => {
+                error.get_or_insert(e);
+            }
+        }
+    }
+    let result = if cancel.is_cancelled() {
+        Err(ide_core::IdeError::cancelled())
+    } else if succeeded {
+        Ok(out)
+    } else {
+        Err(error.expect("at least one request"))
+    };
     host.end_request(request);
     if let Some((plugins, d)) = plugin_providers(host, window, doc, ProviderKind::Implementation) {
         let count = positions.len();
@@ -456,9 +525,9 @@ pub async fn lsp_goto_implementation(
     on_partial: super::Channel<Vec<Location>>,
 ) -> IdeResult<Vec<Location>> {
     let lsp = host.project(window)?.lsp.clone();
-    let cancel = host.begin_request(request);
+    let (target, cancel) = begin_position_request(host, window, request, doc, pos).await?;
     let result = lsp
-        .goto_implementation(doc, pos, cancel, &|locs| {
+        .goto_implementation(target, pos, cancel, &|locs| {
             let _ = on_partial.send(locs);
         })
         .await;
@@ -505,9 +574,9 @@ pub async fn lsp_references(
 ) -> IdeResult<References> {
     let project = host.project(window)?;
     let lsp = project.lsp.clone();
-    let cancel = host.begin_request(request);
+    let (target, cancel) = begin_position_request(host, window, request, doc, pos).await?;
     let result = async {
-        let symbol = indexed_symbol(host, window, doc, pos).await?;
+        let symbol = if target == doc { indexed_symbol(host, window, doc, pos).await? } else { None };
         if let Some(symbol) = &symbol {
             let project = project.clone();
             let snapshot = symbol.clone();
@@ -517,7 +586,7 @@ pub async fn lsp_references(
         }
         let result = lsp
             .references_streaming(
-                doc,
+                target,
                 pos,
                 include_declaration,
                 project_wide,
@@ -643,7 +712,8 @@ fn merge_indexed_references(mut server: References, symbol: &crate::plugins::nav
 }
 
 pub async fn lsp_document_highlights(host: &Host, window: &str, doc: DocId, pos: Pos) -> IdeResult<Vec<Highlight>> {
-    let server = host.project(window)?.lsp.document_highlights(doc, pos).await;
+    let target = position_document(host, window, doc, pos).await?;
+    let server = host.project(window)?.lsp.document_highlights(target, pos).await;
     let Some((plugins, d)) = plugin_providers(host, window, doc, ProviderKind::DocumentHighlights) else {
         return server;
     };
@@ -674,7 +744,9 @@ pub async fn lsp_code_actions(
     let project = host.project(window)?;
     let documents = project.documents.clone();
     let version = blocking(move || documents.version(doc)).await?;
-    let result = project.lsp.code_actions(doc, range, only.clone()).await;
+    let target = position_document(host, window, doc, range.start).await?;
+    let range = project.lsp.injected_request_range(target, range);
+    let result = project.lsp.code_actions(target, range, only.clone()).await;
     let plugin_actions = match plugin_providers(host, window, doc, ProviderKind::CodeActions) {
         Some((plugins, d)) => plugin_call(move || plugins.provide_code_actions(&d, range)).await.unwrap_or_default(),
         None => Vec::new(),
@@ -811,8 +883,9 @@ pub async fn lsp_code_action_query(
     let project = host.project(window)?;
     let documents = project.documents.clone();
     let version = blocking(move || documents.version(doc)).await?;
-    let cancel = host.begin_request(request);
-    let result = project.lsp.code_action_query(doc, range, only, cancel).await;
+    let (target, cancel) = begin_position_request(host, window, request, doc, range.start).await?;
+    let range = project.lsp.injected_request_range(target, range);
+    let result = project.lsp.code_action_query(target, range, only, cancel).await;
     host.end_request(request);
     let mut result = result?;
     result.actions = prepare_actions(project, doc, version, result.actions).await?;
@@ -1433,7 +1506,9 @@ pub struct PluginLanguageVisuals {
     pub gutter_actions: Vec<(String, ide_plugin::language_features::GutterAction)>,
 }
 pub async fn plugin_language_visuals(host: &Host, window: &str, doc: DocId) -> IdeResult<PluginLanguageVisuals> {
-    let snap = host.project(window)?.documents.snapshot(doc)?;
+    let project = host.project(window)?;
+    let snap = project.documents.snapshot(doc)?;
+    let generation = project.lsp.injection_generation();
     blocking(move || {
         let d = ProviderDocument {
             path: snap.path.0,
@@ -1450,6 +1525,18 @@ pub async fn plugin_language_visuals(host: &Host, window: &str, doc: DocId) -> I
             out.colors = plugins.language_colors(&d);
             out.gutter_actions = plugins.language_gutter_actions(&d);
         }
+        project.lsp.set_injections_at(
+            doc,
+            d.version as u32,
+            out.injections
+                .iter()
+                .map(|i| ide_lsp::InjectedRange {
+                    range: i.range,
+                    language: ide_core::LanguageId::new(i.language.clone()),
+                })
+                .collect(),
+            generation,
+        );
         Ok(out)
     })
     .await
