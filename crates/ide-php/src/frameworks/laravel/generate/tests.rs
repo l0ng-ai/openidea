@@ -263,7 +263,9 @@ fn the_generation_context_lists_modules_and_models() {
     assert_eq!(context.models, ["App\\Models\\Comment", "App\\Models\\Post", "App\\Models\\Tag", "App\\Models\\User"]);
     let ids: Vec<&str> = context.generators.iter().map(|g| g.id.as_str()).collect();
     assert_eq!(ids[0], "model");
-    assert_eq!(ids[1..], CLASS_GENERATORS.iter().map(|g| g.id).collect::<Vec<_>>()[..]);
+    assert_eq!(ids[1..=CLASS_GENERATORS.len()], CLASS_GENERATORS.iter().map(|g| g.id).collect::<Vec<_>>()[..]);
+    // Then the code generations of the fixture's ide.json.
+    assert_eq!(ids[CLASS_GENERATORS.len() + 1..], ["ide-json:acme.dto"]);
     assert_eq!(context.generators[0].templates.len(), 10);
     assert!(context.generators[0].options.is_empty());
     let listener = context.generators.iter().find(|g| g.id == "listener").unwrap();
@@ -603,4 +605,54 @@ fn names() {
     assert_eq!(table_name("Category"), "categories");
     assert_eq!(camel("BlogPost"), "blogPost");
     assert_eq!(camel("blog_posts"), "blogPosts");
+}
+
+/// The code generation of the fixture's `ide.json`: listed with its input
+/// fields, and rendered from its stubs (a class of `appNamespace`, and a
+/// file of `directory` from the fallback stub).
+#[test]
+fn ide_json_code_generation() {
+    let app = App::new();
+    let context = app.engine.laravel_generation_context().unwrap();
+    let dto = context.generators.iter().find(|g| g.id == "ide-json:acme.dto").expect("the ide.json generator");
+    assert_eq!(dto.title, "Data Transfer Object");
+    assert!(dto.description.ends_with("ide.json"), "{}", dto.description);
+    assert_eq!(dto.templates.len(), 2);
+    assert!(dto.templates[0].replace('\\', "/").ends_with("stubs/dto.stub"), "{:?}", dto.templates);
+    let fields: Vec<(&str, &str, &str)> =
+        dto.fields.iter().map(|f| (f.id.as_str(), f.kind.as_str(), f.variable.as_str())).collect();
+    assert_eq!(
+        fields,
+        [("readonly", "checkbox", "READONLY"), ("source", "select", "SOURCE"), ("summary", "text", "SUMMARY")]
+    );
+    assert_eq!(dto.fields[1].options.iter().map(|o| o.label.as_str()).collect::<Vec<_>>(), ["Request", "Model"]);
+
+    // The defaults: read-only, from a request.
+    let files = app.class(&class_spec("ide-json:acme.dto", "Invoice")).unwrap();
+    assert_eq!(app.paths(&files), ["app/Data/InvoiceData.php", "docs/data/invoice_data.md"]);
+    insta::assert_snapshot!("ide_json_dto_defaults", app.golden(&files));
+
+    // Inputs given, in a sub-namespace.
+    let spec = NewClass {
+        inputs: [("readonly", ""), ("source", "model"), ("summary", "Totals only.")]
+            .into_iter()
+            .map(|(k, v)| (k.to_owned(), v.to_owned()))
+            .collect(),
+        ..class_spec("ide-json:acme.dto", "Billing/Refund")
+    };
+    let files = app.class(&spec).unwrap();
+    assert_eq!(app.paths(&files), ["app/Data/Billing/RefundData.php", "docs/data/Billing/refund_data.md"]);
+    insta::assert_snapshot!("ide_json_dto_inputs", app.golden(&files));
+
+    // Errors: a choice that isn't one, no name, an unknown generator, a file in the way.
+    let bad = NewClass {
+        inputs: [("source".to_owned(), "csv".to_owned())].into_iter().collect(),
+        ..class_spec("ide-json:acme.dto", "Invoice")
+    };
+    assert!(app.class(&bad).unwrap_err().contains("'csv' is not a choice of Source"));
+    assert!(app.class(&class_spec("ide-json:acme.dto", " ")).unwrap_err().contains("Enter a name"));
+    assert!(app.class(&class_spec("ide-json:nope", "Invoice")).unwrap_err().contains("no generator"));
+    std::fs::create_dir_all(app.root.join("app/Data")).unwrap();
+    std::fs::write(app.root.join("app/Data/InvoiceData.php"), "<?php\n").unwrap();
+    assert!(app.class(&class_spec("ide-json:acme.dto", "Invoice")).unwrap_err().contains("exists already"));
 }

@@ -28,7 +28,44 @@ const { NewClassDialog, emptyClassForm, nameKind, newClassError, newClassRequest
 const { CLASS_GENERATORS, GENERATORS, generateMenu, generatorAction } = await import("./laravelGenerate");
 const { isGenerateAction } = await import("./generate");
 
-const generator = (id: string, options: string[]) => ({ id, title: id, description: "", templates: [], options });
+const generator = (id: string, options: string[]) => ({
+  id,
+  title: id,
+  description: "",
+  templates: [],
+  options,
+  fields: [],
+});
+
+/** An `ide.json` code generation with a field of each kind. */
+const dto = {
+  ...generator("ide-json:acme.dto", []),
+  title: "Data Transfer Object",
+  fields: [
+    {
+      id: "readonly",
+      title: "Read-only",
+      kind: "checkbox",
+      variable: "READONLY",
+      optional: true,
+      default: "true",
+      options: [],
+    },
+    {
+      id: "source",
+      title: "Source",
+      kind: "select",
+      variable: "SOURCE",
+      optional: false,
+      default: "request",
+      options: [
+        { value: "request", label: "Request" },
+        { value: "model", label: "Model" },
+      ],
+    },
+    { id: "summary", title: "Summary", kind: "text", variable: "SUMMARY", optional: false, default: "", options: [] },
+  ],
+};
 
 const context: LaravelGenerationContext = {
   namespace: "App\\",
@@ -41,6 +78,7 @@ const context: LaravelGenerationContext = {
     generator("pivot-migration", ["model", "related"]),
     generator("http-exception", ["status"]),
     generator("view", []),
+    dto,
   ],
 };
 
@@ -70,6 +108,8 @@ describe("Laravel class generators", () => {
       { kind: "action", action: generatorAction("http-exception") },
       { kind: "action", action: generatorAction("view") },
       { kind: "separator" },
+      { kind: "action", action: generatorAction("ide-json:acme.dto") },
+      { kind: "separator" },
       { kind: "action", action: "laravel.generate" },
     ]);
   });
@@ -89,6 +129,7 @@ describe("Laravel class generators", () => {
       api: false,
       backing: "",
       status: 418,
+      inputs: [],
     });
     expect(newClassRequest("job", emptyClassForm()).status).toBe(0);
     const named = (name: string) => ({ ...emptyClassForm(), name });
@@ -144,6 +185,36 @@ describe("Laravel class generators", () => {
     );
     expect(openFile).toHaveBeenCalledWith("/app/app/Listeners/SendReceipt.php", { focus: true });
     expect(useNewClass.getState().open).toBeNull();
+  });
+
+  it("shows the input fields of an ide.json code generation and sends their values", async () => {
+    ipc.phpLaravelGenerationContext.mockResolvedValue({ status: "ok", data: context });
+    ipc.phpLaravelGenerateClass.mockResolvedValue({ status: "ok", data: edit });
+    render(<NewClassDialog />);
+    act(() => openNewClass("ide-json:acme.dto"));
+    const form = await screen.findByRole("form", { name: "Data Transfer Object" });
+    await waitFor(() => expect(within(form).getByLabelText("Summary")).toBeTruthy());
+    expect(within(form).getByLabelText("Source")).toBeTruthy();
+    const readonly = within(form).getByLabelText<HTMLInputElement>("Read-only");
+    expect(readonly.checked).toBe(true);
+    fireEvent.change(within(form).getByLabelText("Name"), { target: { value: "Invoice" } });
+    const create = screen.getByRole<HTMLButtonElement>("button", { name: "Create" });
+    expect(within(form).getByText("Enter Summary")).toBeTruthy();
+    expect(create.disabled).toBe(true);
+    fireEvent.change(within(form).getByLabelText("Summary"), { target: { value: "Totals" } });
+    fireEvent.click(readonly);
+    expect(create.disabled).toBe(false);
+    fireEvent.click(create);
+    await waitFor(() => expect(ipc.applyWorkspaceEdit).toHaveBeenCalledWith(edit));
+    const [spec] = ipc.phpLaravelGenerateClass.mock.calls[0]!;
+    expect(spec).toMatchObject({
+      generator: "ide-json:acme.dto",
+      name: "Invoice",
+      inputs: [
+        { id: "summary", value: "Totals" },
+        { id: "readonly", value: "" },
+      ],
+    });
   });
 
   it("asks a pivot table for two models and no name", async () => {

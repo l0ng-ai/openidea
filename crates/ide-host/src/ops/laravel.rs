@@ -540,6 +540,41 @@ pub struct LaravelGenerator {
     /// The options its dialog asks for (`model`, `related`, `table`, `create`, `event`,
     /// `queued`, `api`, `backing`, `status`); empty for the New Model dialog.
     pub options: Vec<String>,
+    /// The input fields of an `ide.json` code generation (id `ide-json:<id>`).
+    pub fields: Vec<LaravelGeneratorField>,
+}
+
+/// An input field of an `ide.json` code generation's dialog.
+#[derive(Clone, Debug, Serialize, Deserialize, Type, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct LaravelGeneratorField {
+    /// The key of its value in [`LaravelNewClass::inputs`].
+    pub id: String,
+    pub title: String,
+    /// `text`, `checkbox` or `select`.
+    pub kind: String,
+    /// The template variable it sets.
+    pub variable: String,
+    pub optional: bool,
+    /// The value when left empty (`true` for a ticked checkbox).
+    pub default: String,
+    /// The choices of a `select`.
+    pub options: Vec<LaravelFieldOption>,
+}
+
+/// A choice of a `select` field.
+#[derive(Clone, Debug, Serialize, Deserialize, Type, PartialEq, Eq)]
+pub struct LaravelFieldOption {
+    pub value: String,
+    pub label: String,
+}
+
+/// The value of an input field of an `ide.json` code generation.
+#[derive(Clone, Debug, Serialize, Deserialize, Type, PartialEq, Eq)]
+pub struct LaravelGeneratorInput {
+    /// [`LaravelGeneratorField::id`].
+    pub id: String,
+    pub value: String,
 }
 
 /// What the Laravel generator dialogs offer.
@@ -577,6 +612,23 @@ pub async fn php_laravel_generation_context(host: &Host, window: &str) -> IdeRes
                     description: g.description,
                     templates: g.templates,
                     options: g.options,
+                    fields: g
+                        .fields
+                        .into_iter()
+                        .map(|f| LaravelGeneratorField {
+                            id: f.id,
+                            title: f.title,
+                            kind: f.kind,
+                            variable: f.variable,
+                            optional: f.optional,
+                            default: f.default,
+                            options: f
+                                .options
+                                .into_iter()
+                                .map(|o| LaravelFieldOption { value: o.value, label: o.label })
+                                .collect(),
+                        })
+                        .collect(),
                 })
                 .collect(),
         }))
@@ -747,6 +799,9 @@ pub struct LaravelNewClass {
     pub backing: String,
     /// An HTTP exception's status; 0 = 500.
     pub status: u16,
+    /// The values of an `ide.json` code generation's input fields.
+    #[serde(default)]
+    pub inputs: Vec<LaravelGeneratorInput>,
 }
 
 impl From<LaravelNewClass> for generate::NewClass {
@@ -764,6 +819,7 @@ impl From<LaravelNewClass> for generate::NewClass {
             api: spec.api,
             backing: spec.backing,
             status: spec.status,
+            inputs: spec.inputs.into_iter().map(|input| (input.id, input.value)).collect(),
         }
     }
 }

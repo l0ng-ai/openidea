@@ -768,6 +768,7 @@ async fn laravel_generators_context_and_new_model() {
         api: false,
         backing: String::new(),
         status: 0,
+        inputs: Vec::new(),
     };
     let templates = vec![LaravelTemplate { name: "Laravel Job".into(), body: "<?php // $CLASS$\n".into() }];
     let edit =

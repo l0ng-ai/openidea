@@ -157,6 +157,7 @@ impl Host {
                 let root = member.as_ref().unwrap_or(&root);
                 ide_sdk::apply::server_launch_overrides(cfg, &effective);
                 ide_sdk::apply::configure_server(cfg, root, server_root, &effective);
+                crate::php::associate_ide_json_schema(cfg);
                 if cfg.name == "jdtls" {
                     // A workspace member keeps its build model under its own key (Build Project).
                     let cache = match &member {

@@ -14,6 +14,7 @@
 //!   has a `tests/Pest.php`; unit tests extend PHPUnit's `TestCase`, as
 //!   Laravel's do.
 
+use std::collections::BTreeMap;
 use std::path::PathBuf;
 
 use ide_core::settings::LaravelCodeGeneration;
@@ -59,6 +60,9 @@ pub struct NewClass {
     pub backing: String,
     /// `status`: the HTTP status of an HTTP exception; 0 = 500.
     pub status: u16,
+    /// The values of an `ide.json` code generation's input fields, by
+    /// field id ([`super::GeneratorField::id`]).
+    pub inputs: BTreeMap<String, String>,
 }
 
 impl Default for NewClass {
@@ -76,6 +80,7 @@ impl Default for NewClass {
             api: false,
             backing: String::new(),
             status: 0,
+            inputs: BTreeMap::new(),
         }
     }
 }
@@ -220,7 +225,7 @@ pub fn headline(name: &str) -> String {
 
 /// The sub-namespace parts and the class name of `name` (`Admin/Post`),
 /// with `suffix` added unless it ends with it already.
-fn class_parts(name: &str, suffix: &str) -> Result<(Vec<String>, String), String> {
+pub(super) fn class_parts(name: &str, suffix: &str) -> Result<(Vec<String>, String), String> {
     let cleaned = name.trim().trim_end_matches(".php").replace('/', "\\");
     let cleaned = cleaned.trim_matches('\\');
     let parts: Vec<&str> = cleaned.split('\\').collect();
@@ -456,8 +461,6 @@ impl PhpEngine {
         let project = self.laravel().ok_or("Not a Laravel project")?;
         let settings = self.laravel_settings().generation;
         let target = self.generation_target(&project, &settings, spec.module.as_deref())?;
-        let generator =
-            class_generator(&spec.generator).ok_or_else(|| format!("There is no generator '{}'", spec.generator))?;
         let mut files: Vec<GeneratedFile> = Vec::new();
         let type_hints = settings.type_hints;
         let mut push = |path: PathBuf, text: String| -> Result<(), String> {
@@ -470,6 +473,18 @@ impl PhpEngine {
             files.push(GeneratedFile { path, text });
             Ok(())
         };
+        if spec.generator.starts_with(super::custom::PREFIX) {
+            let generation = super::custom::code_generations(&project.ide_json)
+                .into_iter()
+                .find(|generation| generation.id == spec.generator)
+                .ok_or_else(|| format!("There is no generator '{}'", spec.generator))?;
+            for (path, text) in self.code_generation_files(&generation, &target, templates, spec)? {
+                push(path, text)?;
+            }
+            return Ok(files);
+        }
+        let generator =
+            class_generator(&spec.generator).ok_or_else(|| format!("There is no generator '{}'", spec.generator))?;
         let job = Generation { engine: self, target: &target, settings: &settings, templates, spec };
         match generator.id {
             "migration" => {

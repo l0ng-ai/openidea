@@ -17,7 +17,8 @@
 //! - **`view.paths`:** more view folders, with an optional namespace.
 //! - **`blade`:** component folders (`components.viewPaths`) and components
 //!   (`components.list`), directives (`directives`, `ifDirectives`).
-//! - **`codeGenerations`:** kept as written for the generators.
+//! - **`codeGenerations`:** kept as written; the generators read them
+//!   ([`super::generate::custom`]).
 //! - **`packages`:** package settings (enabled and disabled packages,
 //!   Livewire namespaces, Inertia page folders, Passport scopes).
 //!

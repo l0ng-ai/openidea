@@ -1,0 +1,23 @@
+<?php
+
+namespace {{ namespace }};
+
+use ${BASE_CLASS};
+
+#if ($READONLY$)
+final readonly class DummyClass extends ${BASE_CLASS_NAME}
+#else
+final class DummyClass extends ${BASE_CLASS_NAME}
+#end
+{
+    /**
+     * Built from a ${SOURCE|lowerCase}.
+#if ($SUMMARY$)
+     *
+     * $SUMMARY$
+#end
+     */
+    public function __construct()
+    {
+    }
+}

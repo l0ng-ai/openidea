@@ -4863,6 +4863,12 @@ export type LaravelCodeGeneration = {
 	typeHints?: boolean,
 };
 
+/**  A choice of a `select` field. */
+export type LaravelFieldOption = {
+	value: string,
+	label: string,
+};
+
 /**  What the Laravel generator dialogs offer. */
 export type LaravelGenerationContext = {
 	/**  The application's namespace, with a trailing `\`. */
@@ -4888,6 +4894,31 @@ export type LaravelGenerator = {
 	 *  `queued`, `api`, `backing`, `status`); empty for the New Model dialog.
 	 */
 	options: string[],
+	/**  The input fields of an `ide.json` code generation (id `ide-json:<id>`). */
+	fields: LaravelGeneratorField[],
+};
+
+/**  An input field of an `ide.json` code generation's dialog. */
+export type LaravelGeneratorField = {
+	/**  The key of its value in [`LaravelNewClass::inputs`]. */
+	id: string,
+	title: string,
+	/**  `text`, `checkbox` or `select`. */
+	kind: string,
+	/**  The template variable it sets. */
+	variable: string,
+	optional: boolean,
+	/**  The value when left empty (`true` for a ticked checkbox). */
+	default: string,
+	/**  The choices of a `select`. */
+	options: LaravelFieldOption[],
+};
+
+/**  The value of an input field of an `ide.json` code generation. */
+export type LaravelGeneratorInput = {
+	/**  [`LaravelGeneratorField::id`]. */
+	id: string,
+	value: string,
 };
 
 /**  A place in a file of the model view. */
@@ -4981,6 +5012,8 @@ export type LaravelNewClass = {
 	backing: string,
 	/**  An HTTP exception's status; 0 = 500. */
 	status: number,
+	/**  The values of an `ide.json` code generation's input fields. */
+	inputs?: LaravelGeneratorInput[],
 };
 
 /**  A column the model view's **Add columns** button adds. */

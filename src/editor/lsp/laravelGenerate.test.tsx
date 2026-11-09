@@ -44,7 +44,7 @@ const context: LaravelGenerationContext = {
   modules: ["Billing"],
   defaultModule: null,
   models: ["App\\Models\\Post", "App\\Models\\User"],
-  generators: [{ id: "model", title: "Model", description: "", templates: ["Laravel Model"], options: [] }],
+  generators: [{ id: "model", title: "Model", description: "", templates: ["Laravel Model"], options: [], fields: [] }],
 };
 
 const edit: WorkspaceEdit = {

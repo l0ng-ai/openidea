@@ -6449,6 +6449,7 @@
   "Pure enum": "纯枚举",
   "Backed by string": "以 string 为底层类型",
   "Backed by int": "以 int 为底层类型",
+  "Enter {title}": "请输入{title}",
   "View name, e.g. posts.index": "视图名称，例如 posts.index",
   "Component name, e.g. forms.input": "组件名称，例如 forms.input",
   "Migration name, e.g. add_votes_to_users_table": "迁移名称，例如 add_votes_to_users_table",

@@ -3,11 +3,19 @@
  * mail, view, migration, test…): a name, the module, and the options the engine lists
  * for the generator (`LaravelGenerator.options`). The engine renders the files
  * (`php_laravel_generate_class`) from the "Laravel …" code templates, the user's edited
- * bodies included. The generators themselves are `CLASS_GENERATORS` of `laravelGenerate`.
+ * bodies included. The generators themselves are `CLASS_GENERATORS` of `laravelGenerate`,
+ * plus the code generations of the project's `ide.json` files (`ide-json:<id>`), whose
+ * input fields (`LaravelGenerator.fields`) the dialog shows below the name.
  */
 import { useEffect, useState } from "react";
 import { create } from "zustand";
-import { call, commands, type LaravelGenerationContext, type LaravelNewClass } from "@/platform/ipc";
+import {
+  call,
+  commands,
+  type LaravelGenerationContext,
+  type LaravelGeneratorField,
+  type LaravelNewClass,
+} from "@/platform/ipc";
 import { t, tx } from "@/platform/i18n";
 import { ipcPath } from "@/platform/paths";
 import { Checkbox, Dialog, Input, Select, T, type SelectOption } from "@/ui";
@@ -18,11 +26,13 @@ import { migrationTimestamp } from "./modelView";
 import styles from "./laravelGenerate.module.css";
 
 /** The dialog's form: the engine's request without the generator. */
-export type NewClassForm = Omit<LaravelNewClass, "generator" | "module" | "status"> & {
+export type NewClassForm = Omit<LaravelNewClass, "generator" | "module" | "status" | "inputs"> & {
   /** "" = the application. */
   module: string;
   /** As typed. */
   status: string;
+  /** The values of an `ide.json` generator's fields by field id; a field missing here has its default. */
+  inputs: Record<string, string>;
 };
 
 export function emptyClassForm(module = ""): NewClassForm {
@@ -38,6 +48,7 @@ export function emptyClassForm(module = ""): NewClassForm {
     api: false,
     backing: "",
     status: "",
+    inputs: {},
   };
 }
 
@@ -57,8 +68,14 @@ export function newClassRequest(id: string, form: NewClassForm): LaravelNewClass
     api: form.api,
     backing: form.backing,
     status: Number.isFinite(status) ? status : 0,
+    inputs: Object.entries(form.inputs).map(([id, value]) => ({ id, value })),
   };
 }
+
+/** The value field `field` has in `form` (its default until changed). */
+export const fieldValue = (form: NewClassForm, field: LaravelGeneratorField) => form.inputs[field.id] ?? field.default;
+
+const truthy = (value: string) => !["", "false", "0"].includes(value.trim());
 
 const CLASS_NAME = /^[A-Za-z_][A-Za-z0-9_]*([\\/][A-Za-z_][A-Za-z0-9_]*)*$/;
 const VIEW_NAME = /^[A-Za-z0-9_-]+([./][A-Za-z0-9_-]+)*$/;
@@ -72,8 +89,9 @@ export function nameKind(id: string): "class" | "view" | "migration" | "none" {
   return "class";
 }
 
-/** Why the form can't be submitted yet, or null (the engine checks the rest). */
-export function newClassError(id: string, form: NewClassForm): string | null {
+/** Why the form can't be submitted yet, or null (the engine checks the rest). `fields`: the
+ * input fields of an `ide.json` generator. */
+export function newClassError(id: string, form: NewClassForm, fields: LaravelGeneratorField[] = []): string | null {
   const name = form.name.trim();
   const kind = nameKind(id);
   if (kind === "none") {
@@ -86,6 +104,11 @@ export function newClassError(id: string, form: NewClassForm): string | null {
     return tx`'${name}' is not a valid view name`;
   if (kind === "migration" && !MIGRATION_NAME.test(name)) return tx`'${name}' is not a valid migration name`;
   if (form.status.trim() && !/^\d{3}$/.test(form.status.trim())) return "The status is a three-digit HTTP status";
+  for (const field of fields) {
+    if (field.kind === "checkbox" || field.optional) continue;
+    const title = field.title;
+    if (!fieldValue(form, field).trim()) return tx`Enter ${title}`;
+  }
   return null;
 }
 
@@ -140,8 +163,10 @@ function placeholder(id: string): string {
 
 function NewClassPanel({ id }: { id: string }) {
   const entry = CLASS_GENERATORS.find((g) => g.id === id);
-  const title = entry?.dialog ?? id;
   const [ctx, setCtx] = useState<LaravelGenerationContext | null | undefined>(undefined);
+  const generator = ctx?.generators.find((g) => g.id === id);
+  const title = entry?.dialog ?? generator?.title ?? id;
+  const fields = generator?.fields ?? [];
   const [form, setForm] = useState<NewClassForm>(() => emptyClassForm());
   const [pending, setPending] = useState(false);
   const [failure, setFailure] = useState<string | null>(null);
@@ -160,8 +185,9 @@ function NewClassPanel({ id }: { id: string }) {
     setFailure(null);
     setForm((f) => ({ ...f, ...change }));
   };
-  const options = new Set(ctx?.generators.find((g) => g.id === id)?.options ?? []);
-  const invalid = newClassError(id, form);
+  const options = new Set(generator?.options ?? []);
+  const invalid = newClassError(id, form, fields);
+  const setInput = (field: string, value: string) => update({ inputs: { ...form.inputs, [field]: value } });
   const submit = async () => {
     if (invalid || pending) return;
     setPending(true);
@@ -320,6 +346,15 @@ function NewClassPanel({ id }: { id: string }) {
             )}
           </div>
         )}
+        {fields.map((field) => (
+          <GeneratorFieldInput
+            key={field.id}
+            field={field}
+            value={fieldValue(form, field)}
+            disabled={pending}
+            onChange={(value) => setInput(field.id, value)}
+          />
+        ))}
         {showError && (
           <div className={styles.error}>
             <T>{failure ?? invalid!}</T>
@@ -327,5 +362,52 @@ function NewClassPanel({ id }: { id: string }) {
         )}
       </div>
     </Dialog>
+  );
+}
+
+/** An input field of an `ide.json` generator; its title and choices are the file's own text. */
+function GeneratorFieldInput({
+  field,
+  value,
+  disabled,
+  onChange,
+}: {
+  field: LaravelGeneratorField;
+  value: string;
+  disabled: boolean;
+  onChange(value: string): void;
+}) {
+  if (field.kind === "checkbox") {
+    return (
+      <div className={styles.checks}>
+        <Checkbox
+          checked={truthy(value)}
+          disabled={disabled}
+          label={field.title}
+          onChange={(on) => onChange(on ? "true" : "")}
+        />
+      </div>
+    );
+  }
+  if (field.kind === "select") {
+    const choices: SelectOption[] = field.options.map((o) => ({ value: o.value, label: o.label }));
+    if (field.optional || !field.options.some((o) => o.value === value))
+      choices.unshift({ value: "", label: field.title });
+    return (
+      <div className={styles.row}>
+        <Select value={value} options={choices} disabled={disabled} onChange={onChange} aria-label={field.title} />
+      </div>
+    );
+  }
+  return (
+    <div className={styles.row}>
+      <Input
+        aria-label={field.title}
+        placeholder={field.title}
+        value={value}
+        disabled={disabled}
+        onChange={(e) => onChange(e.target.value)}
+      />
+    </div>
   );
 }

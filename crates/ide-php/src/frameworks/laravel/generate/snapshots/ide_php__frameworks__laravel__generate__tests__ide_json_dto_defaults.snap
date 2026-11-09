@@ -1,0 +1,24 @@
+---
+source: crates/ide-php/src/frameworks/laravel/generate/tests.rs
+expression: app.golden(&files)
+---
+== app/Data/InvoiceData.php
+<?php
+
+namespace App\Data;
+
+use App\Data\BaseData;
+
+final readonly class InvoiceData extends BaseData
+{
+    /**
+     * Built from a request.
+     */
+    public function __construct()
+    {
+    }
+}
+== docs/data/invoice_data.md
+# InvoiceData
+
+`App\InvoiceData`, in data classes of App.

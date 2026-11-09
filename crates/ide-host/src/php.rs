@@ -173,6 +173,47 @@ impl PhpEngineSlot {
     }
 }
 
+/// The JSON language server's name (`languages/json.toml`).
+const JSON_SERVER: &str = "vscode-json-language-server";
+
+/// Associates `ide.json` files with the bundled schema of the format
+/// ([`ide_php::frameworks::laravel::ide_json::IDE_JSON_SCHEMA`]) in the JSON
+/// server's `json.schemas`, so they get completion and validation without a
+/// `$schema` line. The schema is inline (the server names it
+/// `vscode://schemas/custom/…`); it only describes keys, so a file naming
+/// a remote schema as well gets both. Other servers, and settings already
+/// associating `ide.json`, are left alone.
+pub(crate) fn associate_ide_json_schema(cfg: &mut ide_language::LanguageServerConfig) {
+    use serde_json::{Value, json};
+    if cfg.name != JSON_SERVER {
+        return;
+    }
+    let file = ide_php::frameworks::laravel::ide_json::FILE_NAME;
+    let Ok(schema) = serde_json::from_str::<Value>(ide_php::frameworks::laravel::ide_json::IDE_JSON_SCHEMA) else {
+        return;
+    };
+    let mut settings = cfg.settings.take().filter(Value::is_object).unwrap_or_else(|| json!({}));
+    if !settings.get("json").is_some_and(Value::is_object) {
+        settings["json"] = json!({});
+    }
+    if !settings["json"].get("schemas").is_some_and(Value::is_array) {
+        settings["json"]["schemas"] = json!([]);
+    }
+    let schemas = settings["json"]["schemas"].as_array_mut().expect("an array");
+    let associated = schemas.iter().any(|entry| {
+        entry.get("fileMatch").and_then(Value::as_array).is_some_and(|patterns| {
+            patterns
+                .iter()
+                .filter_map(Value::as_str)
+                .any(|p| p.trim_start_matches("**/").trim_start_matches('/') == file)
+        })
+    });
+    if !associated {
+        schemas.push(json!({ "fileMatch": [file], "schema": schema }));
+    }
+    cfg.settings = Some(settings);
+}
+
 fn is_php_document(info: &DocumentInfo) -> bool {
     info.language.as_str() == "php" && info.uri.is_none() && !info.large
 }
@@ -860,6 +901,46 @@ impl EventSink for Producer {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn server(name: &str, settings: Option<serde_json::Value>) -> ide_language::LanguageServerConfig {
+        let mut cfg: ide_language::LanguageServerConfig =
+            serde_json::from_value(serde_json::json!({ "name": name, "command": name })).unwrap();
+        cfg.settings = settings;
+        cfg
+    }
+
+    #[test]
+    fn ide_json_files_get_the_bundled_schema() {
+        let mut cfg = server(JSON_SERVER, None);
+        associate_ide_json_schema(&mut cfg);
+        let settings = cfg.settings.clone().unwrap();
+        let schemas = settings["json"]["schemas"].as_array().unwrap();
+        assert_eq!(schemas.len(), 1);
+        assert_eq!(schemas[0]["fileMatch"], serde_json::json!(["ide.json"]));
+        assert!(schemas[0]["schema"]["properties"]["codeGenerations"].is_object());
+        // Once only, when the configuration is worked out again.
+        associate_ide_json_schema(&mut cfg);
+        assert_eq!(cfg.settings.unwrap()["json"]["schemas"].as_array().unwrap().len(), 1);
+
+        // The user's schemas stay, and so does their own association of ide.json.
+        let own = serde_json::json!({ "fileMatch": ["*.foo.json"], "url": "https://example.invalid/foo.json" });
+        let mut cfg =
+            server(JSON_SERVER, Some(serde_json::json!({ "json": { "schemas": [own.clone()] }, "http": {} })));
+        associate_ide_json_schema(&mut cfg);
+        let settings = cfg.settings.unwrap();
+        assert_eq!(settings["json"]["schemas"][0], own);
+        assert_eq!(settings["json"]["schemas"].as_array().unwrap().len(), 2);
+        assert!(settings["http"].is_object());
+        let theirs = serde_json::json!({ "fileMatch": ["**/ide.json"], "url": "https://example.invalid/ide.json" });
+        let mut cfg = server(JSON_SERVER, Some(serde_json::json!({ "json": { "schemas": [theirs.clone()] } })));
+        associate_ide_json_schema(&mut cfg);
+        assert_eq!(cfg.settings.unwrap()["json"]["schemas"], serde_json::json!([theirs]));
+
+        // Other servers are left alone.
+        let mut cfg = server("yaml-language-server", None);
+        associate_ide_json_schema(&mut cfg);
+        assert!(cfg.settings.is_none());
+    }
 
     #[test]
     fn index_states_stay_indexing_while_any_producer_is() {

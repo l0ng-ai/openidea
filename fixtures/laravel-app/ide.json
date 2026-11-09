@@ -38,6 +38,42 @@
     "directives": [{ "name": "price", "prefix": "<?php echo number_format(", "suffix": ", 2); ?>" }],
     "ifDirectives": [{ "name": "feature", "prefix": "<?php if (feature(", "suffix": ")): ?>" }]
   },
+  "codeGenerations": [
+    {
+      "id": "acme.dto",
+      "name": "Data Transfer Object",
+      "classSuffix": "Data",
+      "parameters": [
+        { "id": "readonly", "name": "Read-only", "type": "checkbox", "variable": "READONLY", "defaultValue": "true" },
+        {
+          "id": "source",
+          "name": "Source",
+          "type": "select",
+          "variable": "SOURCE",
+          "options": { "request": "Request", "model": "Model" },
+          "defaultValue": "request"
+        },
+        { "id": "summary", "name": "Summary", "type": "string", "variable": "SUMMARY", "optional": true }
+      ],
+      "files": [
+        {
+          "appNamespace": "Data",
+          "baseClass": "\\Spatie\\LaravelData\\Data",
+          "fallbackBaseClass": "\\App\\Data\\BaseData",
+          "template": {
+            "type": "stub",
+            "path": "stubs/dto.stub",
+            "parameters": { "namespace": "${NAMESPACE}", "DummyClass": "${INPUT_CLASS}" }
+          }
+        },
+        {
+          "directory": "docs/data",
+          "name": "${INPUT_CLASS|snakeCase}.md",
+          "template": { "type": "stub", "path": "stubs/missing.stub", "fallbackPath": "stubs/dto.md.stub" }
+        }
+      ]
+    }
+  ],
   "packages": { "disabledPackages": ["livewire/livewire"] },
   "helperCode": {}
 }

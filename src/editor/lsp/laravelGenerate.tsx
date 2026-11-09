@@ -300,7 +300,41 @@ export async function generationContext(refresh = false): Promise<LaravelGenerat
   if (!refresh && context && context.root === root) return context.value;
   const value = await call(commands.phpLaravelGenerationContext()).catch(() => null);
   context = { root, value };
+  syncIdeJsonGenerators(value);
   return value;
+}
+
+// The actions of the project's `ide.json` code generations, replaced with each context.
+let ideJsonActions: { key: string; dispose: () => void } | null = null;
+
+/** The generators of the `ide.json` code generations of `ctx`. */
+export const ideJsonGenerators = (ctx: LaravelGenerationContext | null) =>
+  (ctx?.generators ?? []).filter((g) => g.id.startsWith("ide-json:"));
+
+/** Registers an action per `ide.json` code generation of `ctx` (in the generators'
+ * category, so Search Everywhere lists them), dropping the ones of the previous context. */
+function syncIdeJsonGenerators(ctx: LaravelGenerationContext | null): void {
+  const generators = ideJsonGenerators(ctx);
+  const key = JSON.stringify(generators.map((g) => [g.id, g.title]));
+  if (ideJsonActions?.key === key) return;
+  ideJsonActions?.dispose();
+  ideJsonActions = {
+    key,
+    dispose: registerActions(
+      generators.map((g) => {
+        // The file's own text, shown as written.
+        const title = `${g.title}…`;
+        return {
+          id: generatorAction(g.id),
+          title,
+          category: LARAVEL_GENERATORS_CATEGORY,
+          when: "projectOpen",
+          keywords: ["laravel", "generate", "ide.json"],
+          run: () => openNewClass(g.id),
+        };
+      }),
+    ),
+  };
 }
 
 /** The cached context, without asking the engine. */
@@ -640,6 +674,11 @@ export function generateMenu(ctx: LaravelGenerationContext | null): MenuItem[] {
     kind: "action",
     action: generatorAction(g.id),
   }));
+  const custom = ideJsonGenerators(ctx);
+  if (custom.length) {
+    items.push({ kind: "separator" });
+    for (const g of custom) items.push({ kind: "action", action: generatorAction(g.id) });
+  }
   items.push({ kind: "separator" }, { kind: "action", action: "laravel.generate" });
   return [{ label: "Laravel", icon: "php", submenu: [{ label: "Generate", submenu: items }] }];
 }
@@ -673,6 +712,10 @@ export function registerLaravelGenerators(): () => void {
       },
       items: () => generateMenu(knownContext()),
     }),
+    () => {
+      ideJsonActions?.dispose();
+      ideJsonActions = null;
+    },
   ];
   return () => disposers.reverse().forEach((d) => d());
 }

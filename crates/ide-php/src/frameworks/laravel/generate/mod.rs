@@ -15,8 +15,11 @@
 //!   tests…), one dialog each.
 //! - [`from_model`]: the Generate actions inside a model class (JSON
 //!   resource and factory from the model, all fields in `$fillable`).
+//! - [`custom`]: the code generations of `ide.json` files, with the input
+//!   fields they declare.
 
 pub mod classes;
+pub mod custom;
 mod from_model;
 pub mod model;
 pub mod template;
@@ -36,6 +39,7 @@ use crate::summary::ClassKind;
 use crate::types::provider::laravel::{plural, snake, studly};
 
 pub use classes::{CLASS_GENERATORS, ClassGenerator, NewClass, class_generator};
+pub use custom::{CodeGeneration, FieldOption, GeneratorField};
 pub use model::{ControllerKind, ModelField, ModelIndex, ModelRelation, NewModel};
 pub use template::{BUILTIN_TEMPLATES, TemplateSet, Vars};
 
@@ -54,6 +58,9 @@ pub struct GeneratorInfo {
     /// The [`NewClass`] options its dialog asks for (`model`, `queued`);
     /// empty for the New Model dialog.
     pub options: Vec<String>,
+    /// The input fields of an `ide.json` code generation ([`custom`]).
+    #[serde(default)]
+    pub fields: Vec<GeneratorField>,
 }
 
 /// The generators, in menu order: New Model, then the class generators.
@@ -77,6 +84,7 @@ pub fn generators() -> Vec<GeneratorInfo> {
         .map(str::to_owned)
         .to_vec(),
         options: Vec::new(),
+        fields: Vec::new(),
     }];
     out.extend(CLASS_GENERATORS.iter().map(|generator| GeneratorInfo {
         id: generator.id.to_owned(),
@@ -84,8 +92,21 @@ pub fn generators() -> Vec<GeneratorInfo> {
         description: generator.description.to_owned(),
         templates: generator.templates.iter().map(|name| (*name).to_owned()).collect(),
         options: generator.options.iter().map(|name| (*name).to_owned()).collect(),
+        fields: Vec::new(),
     }));
     out
+}
+
+/// The generator of `ide.json` code generation `generation`.
+pub fn code_generation_info(generation: &CodeGeneration) -> GeneratorInfo {
+    GeneratorInfo {
+        id: generation.id.clone(),
+        title: generation.title.clone(),
+        description: format!("From {}", generation.file.display()),
+        templates: generation.files.iter().map(|file| file.template.label()).collect(),
+        options: Vec::new(),
+        fields: generation.fields.clone(),
+    }
 }
 
 /// What the generator dialogs offer: the namespace, the modules and the
@@ -101,6 +122,8 @@ pub struct GenerationContext {
     pub default_module: Option<String>,
     /// The project's Eloquent models (FQNs, sorted).
     pub models: Vec<String>,
+    /// The built-in generators ([`generators`]), then the code generations
+    /// of the project's `ide.json` files.
     pub generators: Vec<GeneratorInfo>,
 }
 
@@ -388,7 +411,10 @@ impl PhpEngine {
             modules,
             default_module,
             models: self.laravel_models(),
-            generators: generators(),
+            generators: generators()
+                .into_iter()
+                .chain(custom::code_generations(&project.ide_json).iter().map(code_generation_info))
+                .collect(),
         })
     }
 }

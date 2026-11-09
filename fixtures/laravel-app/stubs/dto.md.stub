@@ -1,0 +1,3 @@
+# ${INPUT_CLASS}
+
+`${INPUT_FQN}`, in ${CLASS_SUFFIX|lowerCase} classes of ${APP_NAMESPACE}.
