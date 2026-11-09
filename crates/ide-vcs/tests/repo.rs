@@ -980,15 +980,80 @@ fn checkout_create_detached_delete_rebase() {
     );
 
     repo.checkout("main", false).unwrap();
-    repo.rename_branch("topic", "topic2").unwrap();
+    repo.rename_branch("topic", "topic2", false).unwrap();
     assert!(repo.branches().unwrap().iter().any(|b| b.name == "topic2"));
-    assert!(repo.rename_branch("topic2", "main").is_err(), "existing name must be refused");
-    assert!(repo.rename_branch("topic2", " ").is_err());
-    repo.rename_branch("topic2", "topic").unwrap();
+    assert!(repo.rename_branch("topic2", "main", false).is_err(), "existing name must be refused");
+    assert!(repo.rename_branch("topic2", " ", false).is_err());
+    repo.rename_branch("topic2", "topic", false).unwrap();
     assert!(repo.delete_branch("topic", false).is_err(), "unmerged branch must need force");
     repo.delete_branch("topic", true).unwrap();
     assert!(!repo.branches().unwrap().iter().any(|b| b.name == "topic"));
     assert!(repo.checkout("does-not-exist", false).is_err());
+}
+
+#[test]
+fn renaming_a_branch_keeps_or_drops_its_upstream() {
+    let (fx, _bare) = with_remote();
+    let repo = fx.repo();
+    fx.git(&["branch", "--track", "topic", "origin/main"]);
+
+    let upstream = |name: &str| {
+        repo.branches().unwrap().into_iter().find(|b| b.name == name && !b.remote).and_then(|b| b.upstream)
+    };
+    assert_eq!(upstream("topic").as_deref(), Some("origin/main"));
+
+    // `git branch -m` moves the tracking with the name.
+    repo.rename_branch("topic", "topic2", false).unwrap();
+    assert_eq!(upstream("topic2").as_deref(), Some("origin/main"));
+
+    // Asked to drop it, the new branch tracks nothing.
+    repo.rename_branch("topic2", "topic3", true).unwrap();
+    assert_eq!(upstream("topic3"), None);
+
+    // A branch that tracks nothing has no upstream to drop; that is not an error.
+    fx.git(&["branch", "plain"]);
+    repo.rename_branch("plain", "plain2", true).unwrap();
+    assert!(repo.branches().unwrap().iter().any(|b| b.name == "plain2" && !b.remote));
+}
+
+#[test]
+fn renaming_the_current_branch_keeps_or_drops_its_upstream() {
+    for unset_upstream in [false, true] {
+        let (fx, _bare) = with_remote();
+        let repo = fx.repo();
+        repo.rename_branch("main", "renamed", unset_upstream).unwrap();
+        let branch = repo.branch_info().unwrap();
+        assert_eq!(branch.head.as_deref(), Some("renamed"));
+        assert_eq!(branch.upstream.as_deref(), if unset_upstream { None } else { Some("origin/main") });
+    }
+}
+
+#[test]
+fn failed_branch_rename_does_not_unset_upstream() {
+    let (fx, _bare) = with_remote();
+    let repo = fx.repo();
+    fx.git(&["branch", "occupied"]);
+    assert!(repo.rename_branch("main", "occupied", true).is_err());
+    let branch = repo.branch_info().unwrap();
+    assert_eq!(branch.head.as_deref(), Some("main"));
+    assert_eq!(branch.upstream.as_deref(), Some("origin/main"));
+}
+
+#[test]
+fn branch_rename_reports_when_only_unsetting_upstream_fails() {
+    let (fx, _bare) = with_remote();
+    let repo = fx.repo();
+    // The new branch activates a broken config only after the rename has succeeded.
+    fx.write(".git/broken-config", "[broken\n");
+    fx.git(&["config", "includeIf.onbranch:renamed.path", "broken-config"]);
+    let error = repo.rename_branch("main", "renamed", true).unwrap_err();
+    assert!(error.message.contains("Renamed branch 'main' to 'renamed'"), "{error}");
+    assert!(error.message.contains("could not unset its upstream"), "{error}");
+    assert!(error.message.contains("bad config"), "{error}");
+    std::fs::remove_file(fx.path(".git/broken-config")).unwrap();
+    let branch = repo.branch_info().unwrap();
+    assert_eq!(branch.head.as_deref(), Some("renamed"));
+    assert_eq!(branch.upstream.as_deref(), Some("origin/main"));
 }
 
 #[test]
