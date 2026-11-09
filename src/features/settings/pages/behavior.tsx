@@ -698,7 +698,7 @@ export const BEHAVIOR_PAGES: PageSpec[] = [
     title: "System Settings",
     group: APPEARANCE_GROUP,
     order: 1,
-    keywords: ["general", "startup", "exit", "quit", "autosave", "save", "local history"],
+    keywords: ["general", "startup", "exit", "quit", "autosave", "save", "local history", "welcome", "editor tabs"],
     sections: [
       {
         title: "Project",
@@ -759,7 +759,21 @@ export const BEHAVIOR_PAGES: PageSpec[] = [
       },
       {
         title: "Exit",
-        options: [{ kind: "toggle", key: "general.confirmExit", label: "Confirm before exiting the IDE" }],
+        options: [
+          { kind: "toggle", key: "general.confirmExit", label: "Confirm before exiting the IDE" },
+          {
+            kind: "toggle",
+            key: "general.closeWithoutWelcome",
+            label: "Close the window instead of showing the Welcome screen",
+            hint: "When this is the only window, closing a project or a file closes the window. On macOS, the app stays in the Dock.",
+          },
+          {
+            kind: "toggle",
+            key: "general.closeTabsWithWindow",
+            label: "Close all editor tabs when the window closes",
+            hint: "Files left open are not restored the next time that project or a standalone file is opened.",
+          },
+        ],
       },
     ],
   },

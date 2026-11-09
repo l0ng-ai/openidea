@@ -277,6 +277,10 @@ pub struct CustomKeymap {
 pub struct GeneralSettings {
     pub reopen_last_project: bool,
     pub confirm_exit: bool,
+    /// When on, the last window closes instead of showing the Welcome screen.
+    pub close_without_welcome: bool,
+    /// When on, closing a window drops its saved editor tabs, so they are not restored next time.
+    pub close_tabs_with_window: bool,
     /// Where Open… puts a project while one is open: `ask` | `new` | `same` | `attach`.
     pub open_project_in: String,
     /// Initial folder of the Open / Clone dialogs; empty = the OS default.
@@ -300,6 +304,8 @@ impl Default for GeneralSettings {
         Self {
             reopen_last_project: true,
             confirm_exit: true,
+            close_without_welcome: false,
+            close_tabs_with_window: false,
             open_project_in: "ask".into(),
             default_project_directory: String::new(),
             save_on_idle: false,
@@ -1216,6 +1222,26 @@ impl Settings {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn window_close_settings_default_off_and_round_trip() {
+        for old in [r#"{}"#, r#"{"general":{"confirmExit":false}}"#] {
+            let settings: Settings = serde_json::from_str(old).unwrap();
+            assert!(!settings.general.close_without_welcome);
+            assert!(!settings.general.close_tabs_with_window);
+        }
+        for close_window in [false, true] {
+            for close_tabs in [false, true] {
+                let mut settings = Settings::default();
+                settings.general.close_without_welcome = close_window;
+                settings.general.close_tabs_with_window = close_tabs;
+                let json = serde_json::to_value(&settings).unwrap();
+                assert_eq!(json["general"]["closeWithoutWelcome"], close_window);
+                assert_eq!(json["general"]["closeTabsWithWindow"], close_tabs);
+                assert_eq!(serde_json::from_value::<Settings>(json).unwrap().general, settings.general);
+            }
+        }
+    }
 
     #[test]
     fn cmake_profile_argument_arrays_round_trip() {

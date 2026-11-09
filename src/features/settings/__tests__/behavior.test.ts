@@ -69,6 +69,21 @@ describe("appearance & behavior settings", () => {
     });
   });
 
+  it("keeps Welcome and saved tabs unless the user turns the new close behaviour on", () => {
+    const fresh = validateSettings({});
+    expect(fresh.general.closeWithoutWelcome).toBe(false);
+    expect(fresh.general.closeTabsWithWindow).toBe(false);
+    const on = validateSettings({ general: { closeWithoutWelcome: true, closeTabsWithWindow: true } });
+    expect(on.general.closeWithoutWelcome).toBe(true);
+    expect(on.general.closeTabsWithWindow).toBe(true);
+    expect(
+      validateSettings({ general: { closeWithoutWelcome: "yes", closeTabsWithWindow: 1 } } as never).general,
+    ).toMatchObject({
+      closeWithoutWelcome: false,
+      closeTabsWithWindow: false,
+    });
+  });
+
   it("defaults Show tool window badges to on and honours the stored value", () => {
     expect(validateAppearanceExtras({}).showToolWindowBadges).toBe(true);
     expect(validateAppearanceExtras({ showToolWindowBadges: false }).showToolWindowBadges).toBe(false);

@@ -2009,6 +2009,8 @@
   "Sign-off commit": "Signer le commit (sign-off)",
   "Size": "Taille",
   "Size:": "Taille :",
+  "Previous": "Précédent",
+  "Next": "Suivant",
   "Skip": "Ignorer",
   "Skip Commit": "Ignorer le commit",
   "Skip if defined": "Ignorer si défini",

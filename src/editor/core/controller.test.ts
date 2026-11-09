@@ -7,6 +7,7 @@ import { resetDistractionFree, setDistractionFree } from "@/workbench/distractio
 import { registerTextEditorWrapper, setProjectViewLead, useProjectViewLead } from "@/workbench/contributions";
 import { registerActions } from "@/platform/actions";
 import { useProject } from "@/platform/project";
+import { useRemote } from "@/platform/remote";
 import { resolveMenuItems } from "@/ui";
 import { getContext } from "@/platform/context";
 import { installKeyboardDispatcher } from "@/platform/keymap";
@@ -338,6 +339,15 @@ describe("EditorController", () => {
     const items = resolveMenuItems(ctrl.tabMenu(pane.id, pane.tabs[0]!));
     expect(items.find((i) => i.label === "Close Tabs to the Left")?.disabled).toBe(true);
     expect(items.find((i) => i.label === "Close Tabs to the Right")?.disabled).toBe(false);
+    const tabMenu = () => ctrl!.tabMenu(pane.id, pane.tabs[0]!);
+    const openIn = () => resolveMenuItems(resolveMenuItems(tabMenu()).find((i) => i.label === "Open In")!.submenu!);
+    const reveal = "project.revealInFinder|/p/a.ts";
+    expect(openIn().map((i) => i.key)).toContain(reveal);
+    useRemote.setState({
+      session: { target: { kind: "ssh", config: "box" }, root: "/p", host: "box", os: "linux", commands: [] },
+    });
+    expect(openIn().map((i) => i.key)).not.toContain(reveal);
+    useRemote.setState({ session: null });
     dispose();
     useProject.setState({ project: null, settings: null });
   });
