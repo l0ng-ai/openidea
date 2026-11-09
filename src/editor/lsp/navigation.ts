@@ -423,10 +423,30 @@ export async function gotoTargets(view: EditorView, kind: GotoKind, at?: number)
   // IDEA: ⌘B on a declaration shows its usages.
   if (kind === "definition" && isSelfTarget(locs, doc.path, pos)) {
     // An imported name is not the declaration it means: when the server points at the import
-    // itself (it analyses one root and cannot see the dependency project), the index can.
-    const name = /^\s*(from|import)\b/.test(view.state.doc.lineAt(offset).text) ? nameAt(view, offset) : null;
-    const targets = name ? await indexDefinitions(doc.path, name).catch(() => []) : [];
-    const others = targets.filter((t) => !(t.path === doc.path && rangeContains(t.range, pos)));
+    // itself (it analyses one root and cannot see the dependency project), the import names
+    // the module the declaration lives in. Prefer that module — the bare name alone matches
+    // unrelated declarations of the same name in other roots.
+    const modulePath = importedModulePath(view, offset);
+    const name = modulePath ? importedDeclarationName(view, offset) : null;
+    let others: DeclarationTarget[] = [];
+    if (name && modulePath) {
+      // An imported name can be a submodule itself (`from a import b` → a/b.py).
+      const submodule = await moduleFile(doc, joinModulePath(modulePath, name)).catch(() => null);
+      if (submodule) {
+        others = [submodule];
+      } else {
+        const file = await moduleFile(doc, modulePath).catch(() => null);
+        if (file) {
+          const defs = await indexDefinitions(doc.path, name).catch(() => []);
+          others = defs.filter((t) => t.path === file.path);
+          if (!others.length) others = [file];
+        }
+      }
+    }
+    if (!others.length && name) {
+      const targets = await indexDefinitions(doc.path, name).catch(() => []);
+      others = targets.filter((t) => !(t.path === doc.path && rangeContains(t.range, pos)));
+    }
     if (others.length === 1) {
       await navigateTo(others[0]!);
       return;
@@ -584,6 +604,41 @@ function importModuleName(view: EditorView, doc: EditorDocContext, offset: numbe
 async function moduleFile(doc: EditorDocContext, name: string): Promise<DeclarationTarget | null> {
   const path = await lspRequest(() => commands.navResolveModule(name, doc.path)).catch(() => null);
   return path ? { path, range: { start: { line: 0, col: 0 }, end: { line: 0, col: 0 } } } : null;
+}
+
+/**
+ * The full module path an import binds names from — `a.b` of `from a.b import c` (with the
+ * relative dots), or the dotted path of a plain `import`. Reads through a parenthesised
+ * `from … import (…)` so a caret on a listed name finds its module. Null off an import.
+ */
+function importedModulePath(view: EditorView, offset: number): string | null {
+  const doc = view.state.doc;
+  let line = doc.lineAt(offset);
+  for (let hops = 0; ; hops++) {
+    const from = /^\s*from\s+(\.*[\w.]*)\s+import\b/.exec(line.text);
+    if (from?.[1]) return from[1];
+    const plain = /^\s*import\s+([\w.]+)(?:\s+as\s+\w+)?\s*$/.exec(line.text);
+    if (plain?.[1]) return plain[1];
+    if (line.number === 1 || hops > 20) return null;
+    const prev = doc.line(line.number - 1);
+    // A listed name continues an import above; anything else does not.
+    if (!/[,(]\s*$/.test(prev.text) || !/^[\w*,\s()]*$/.test(line.text)) return null;
+    line = prev;
+  }
+}
+
+/** The name an import binds at the caret — the original when the caret is on its alias. */
+function importedDeclarationName(view: EditorView, offset: number): string | null {
+  const word = navigationWord(view, offset);
+  if (!word) return null;
+  const text = view.state.sliceDoc(word.from, word.to);
+  const alias = new RegExp(`(\\w+)\\s+as\\s+${text}\\b`).exec(view.state.doc.lineAt(offset).text);
+  return alias?.[1] ?? text;
+}
+
+/** `from . import x` joins as `.x`; `from a.b import c` as `a.b.c`. */
+function joinModulePath(module: string, name: string): string {
+  return module.endsWith(".") ? `${module}${name}` : `${module}.${name}`;
 }
 
 // ---------------------------------------------------------------------------

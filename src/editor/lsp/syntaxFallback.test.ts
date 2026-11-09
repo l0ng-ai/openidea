@@ -409,6 +409,57 @@ describe("navigation wiring", () => {
     expect(executeAction).not.toHaveBeenCalledWith("find.showUsages");
   });
 
+  it("narrows a self-pointed import answer to the module the import names", async () => {
+    cmd.lspGoto.mockReturnValueOnce(ok([{ path: "/p/a.py", range: r(0, 45, 52) }]));
+    cmd.navResolveModule
+      .mockImplementationOnce(() => ok(null)) // the name is not a submodule of the module
+      .mockImplementationOnce(() => ok("/deps/torchtitan/models/common/decoder.py"));
+    cmd.navIndexDefinitions.mockReturnValueOnce(
+      ok([
+        sym("Decoder", "class", "/deps/torchtitan/models/common/decoder.py"),
+        sym("Decoder", "class", "/deps/torchtitan/models/flux/autoencoder.py"),
+      ]),
+    );
+    const view = editor("from torchtitan.models.common.decoder import Decoder\n", "python", 47, "/p/a.py");
+    await gotoTargets(view, "definition");
+    expect(openFile).toHaveBeenCalledWith("/deps/torchtitan/models/common/decoder.py", {
+      selection: { line: 3, col: 4 },
+      focus: true,
+    });
+    expect(executeAction).not.toHaveBeenCalledWith("find.showUsages");
+  });
+
+  it("jumps to the file when an imported name is a submodule", async () => {
+    cmd.lspGoto.mockReturnValueOnce(ok([{ path: "/p/a.py", range: r(0, 30, 37) }]));
+    cmd.navResolveModule.mockImplementationOnce(() => ok("/deps/torchtitan/models/decoder/__init__.py"));
+    const view = editor("from torchtitan.models import decoder\n", "python", 35, "/p/a.py");
+    await gotoTargets(view, "definition");
+    expect(openFile).toHaveBeenCalledWith("/deps/torchtitan/models/decoder/__init__.py", {
+      selection: { line: 0, col: 0 },
+      focus: true,
+    });
+    expect(cmd.navIndexDefinitions).not.toHaveBeenCalled();
+  });
+
+  it("narrows a listed name of a parenthesised import to its module", async () => {
+    cmd.lspGoto.mockReturnValueOnce(ok([{ path: "/p/a.py", range: r(1, 2, 9) }]));
+    cmd.navResolveModule
+      .mockImplementationOnce(() => ok(null))
+      .mockImplementationOnce(() => ok("/deps/torchtitan/models/common/decoder.py"));
+    cmd.navIndexDefinitions.mockReturnValueOnce(
+      ok([
+        sym("Decoder", "class", "/deps/torchtitan/models/common/decoder.py"),
+        sym("Decoder", "class", "/deps/torchtitan/models/flux/autoencoder.py"),
+      ]),
+    );
+    const view = editor("from torchtitan.models.common.decoder import (\n  Decoder,\n)\n", "python", 52, "/p/a.py");
+    await gotoTargets(view, "definition");
+    expect(openFile).toHaveBeenCalledWith("/deps/torchtitan/models/common/decoder.py", {
+      selection: { line: 3, col: 4 },
+      focus: true,
+    });
+  });
+
   it("says why when the server only checks the file's syntax", async () => {
     const { setFileDiagnostics } = await import("./diagnostics");
     setFileDiagnostics("/p/a.ts", "jdtls", [
