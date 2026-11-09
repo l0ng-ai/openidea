@@ -1,3 +1,4 @@
+import { writeClipboardText } from "@/platform/clipboard";
 import { useMemo, useState, type KeyboardEvent, type MouseEvent, type ReactNode } from "react";
 import clsx from "clsx";
 import { call, commands, type RecentProject, type RecentProjectGroup } from "@/platform/ipc";
@@ -139,13 +140,13 @@ export function recentMenu(project: RecentProject, onOpened?: () => void, onRemo
       id: "reveal",
       label: showInFileManagerLabel(),
       icon: "external-link",
-      run: () => void revealInFileManager(project.path).catch(() => undefined),
+      run: () => void revealInFileManager(project.path, null).catch(() => undefined),
     },
     {
       id: "copy",
       label: "Copy Path",
       icon: "copy",
-      run: () => void navigator.clipboard?.writeText(project.path).catch(() => undefined),
+      run: () => void writeClipboardText(project.path).catch(() => undefined),
     },
     { kind: "separator" },
     // Groups hold local projects (remote ones live in this window's own list).

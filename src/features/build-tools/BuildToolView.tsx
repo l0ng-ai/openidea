@@ -1,4 +1,5 @@
 /** The Maven and Gradle tool windows: toolbar, status banner and the project tree. */
+import { writeClipboardText } from "@/platform/clipboard";
 import { useCallback, useEffect, useMemo, useState, type MouseEvent } from "react";
 import clsx from "clsx";
 import type { BuildTool, GradleModel, MavenModel, RunConfig } from "@/platform/ipc";
@@ -377,7 +378,7 @@ function BuildToolView({ tool }: { tool: BuildTool }) {
     if (node.kind === "dependency") {
       const d = node.dependency;
       const coords = [d.groupId, d.artifactId, d.version].filter(Boolean).join(":");
-      items.push({ label: "Copy Coordinates", icon: "copy", run: () => void navigator.clipboard?.writeText(coords) });
+      items.push({ label: "Copy Coordinates", icon: "copy", run: () => void writeClipboardText(coords) });
     }
     if (items.length) showContextMenu({ x: e.clientX, y: e.clientY }, items);
   };

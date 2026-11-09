@@ -1,4 +1,8 @@
 {
+  "Stream Sample TUI": "Stream Sample TUI",
+  "Arduino tool '{configured}' was not found. Set its path in Settings > Languages & Frameworks > Language Servers, or in settings.toml under languages.arduino.": "Arduino tool '{configured}' was not found. Set its path in Settings > Languages & Frameworks > Language Servers, or in settings.toml under languages.arduino.",
+  "Arduino tool '{name}' was not found on PATH or in Arduino IDE. Install Arduino IDE 2, or set its path in Settings > Languages & Frameworks > Language Servers or settings.toml under languages.arduino.": "Arduino tool '{name}' was not found on PATH or in Arduino IDE. Install Arduino IDE 2, or set its path in Settings > Languages & Frameworks > Language Servers or settings.toml under languages.arduino.",
+  "Install Arduino IDE 2 (includes Arduino Language Server, Arduino CLI and clangd) and the board's core. Configure the server command and arguments in Settings > Languages & Frameworks > Language Servers, or set languages.arduino.cli, languages.arduino.clangd, languages.arduino.languageServer and languages.arduino.cliConfig in settings.toml. Set the board FQBN in sketch.yaml or languages.arduino.fqbn in settings.toml.": "Install Arduino IDE 2 (includes Arduino Language Server, Arduino CLI and clangd) and the board's core. Configure the server command and arguments in Settings > Languages & Frameworks > Language Servers, or set languages.arduino.cli, languages.arduino.clangd, languages.arduino.languageServer and languages.arduino.cliConfig in settings.toml. Set the board FQBN in sketch.yaml or languages.arduino.fqbn in settings.toml.",
   "Separate Procedures and Functions": "Separate Procedures and Functions",
   "Shared JDT LS is available only in local ordinary project windows. Select Local machine for the Java language server to use it.": "Shared JDT LS is available only in local ordinary project windows. Select Local machine for the Java language server to use it.",
   "Share JDT LS across builds": "Share JDT LS across builds",
@@ -188,6 +192,8 @@
   "Type your answer": "Type your answer",
   "Recommended": "Recommended",
   "No preview": "No preview",
+  "Previous": "Previous",
+  "Next": "Next",
   "Running in the background": "Running in the background",
   "Couldn't stop the background task": "Couldn't stop the background task",
   "Copy Markdown": "Copy Markdown",
@@ -593,6 +599,9 @@
   "Status Bar": "Status Bar",
   "Status Bar Widget": "Status Bar Widget",
   "Show main toolbar": "Show main toolbar",
+  "Navigation bar": "Navigation bar",
+  "Don't show": "Don't show",
+  "Don't Show": "Don't Show",
   "Show status bar": "Show status bar",
   "No background tasks": "No background tasks",
   "Status Bar Widgets": "Status Bar Widgets",
@@ -715,6 +724,10 @@
   "Show Processes": "Show Processes",
   "Open Log in Editor": "Open Log in Editor",
   "Open Container Log in Editor": "Open Container Log in Editor",
+  "Close the window instead of showing the Welcome screen": "Close the window instead of showing the Welcome screen",
+  "When this is the only window, closing a project or a file closes the window. On macOS, the app stays in the Dock.": "When this is the only window, closing a project or a file closes the window. On macOS, the app stays in the Dock.",
+  "Close all editor tabs when the window closes": "Close all editor tabs when the window closes",
+  "Files left open are not restored the next time that project or a standalone file is opened.": "Files left open are not restored the next time that project or a standalone file is opened.",
   "Could not read .NET test results: {error}\n": "Could not read .NET test results: {error}\n",
   "Invalid TRX report": "Invalid TRX report",
   ".NET Workspace": ".NET Workspace",
@@ -753,5 +766,6 @@
   "Maven could not be started. Configure Maven home in Maven settings, install Maven on PATH, or use a project with a Maven wrapper.": "Maven could not be started. Configure Maven home in Maven settings, install Maven on PATH, or use a project with a Maven wrapper.",
   "Gradle could not be started. Configure a local installation in Gradle settings, install Gradle on PATH, or use a project with a Gradle wrapper.": "Gradle could not be started. Configure a local installation in Gradle settings, install Gradle on PATH, or use a project with a Gradle wrapper.",
   "Remote of {name}": "Remote of {name}",
-  "Target branch of {name}": "Target branch of {name}"
+  "Target branch of {name}": "Target branch of {name}",
+  "Remote project files cannot be shown in {fileManager}": "Remote project files cannot be shown in {fileManager}"
 }

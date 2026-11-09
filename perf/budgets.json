@@ -46,6 +46,13 @@
     "consoleOutput.keyMissedFramePct": 10,
     "consoleOutput.tbtMs": 50,
 
+    "terminalTui.rowsRebuiltPerTuiFrame": 3,
+    "terminalTui.styleLayoutMsPerTuiFrame": 6,
+    "terminalTui.droppedFramesPct": 2,
+    "terminalTui.keyP95Ms": 25,
+    "terminalTui.keyMissedFramePct": 15,
+    "terminalTui.tbtMs": 50,
+
     "gitLog.showMs": 300,
     "gitLog.droppedFramesPct": 2,
     "gitLog.tbtMs": 50,

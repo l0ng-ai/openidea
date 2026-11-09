@@ -258,6 +258,11 @@ pub fn run() {
                 window_groups::destroyed(window.app_handle(), window.label());
                 windows::close_auxiliary_windows(window.app_handle(), window.label());
                 if let Some(state) = window.try_state::<AppState>() {
+                    #[cfg(target_os = "macos")]
+                    if let Some(w) = window.try_state::<WindowsState>() {
+                        let settings = ide_host::ops::project::settings(&state.host, window.label());
+                        w.keep_alive.store(settings.general.close_without_welcome, std::sync::atomic::Ordering::SeqCst);
+                    }
                     state.updates.forget_window(window.label());
                     state.close_project(window.label());
                     state.plugins.forget_client(window.label());
@@ -275,6 +280,21 @@ pub fn run() {
     .build(context)
     .expect("error while running OpenIDEA")
     .run(move |app, event| {
+        #[cfg(target_os = "macos")]
+        match &event {
+            tauri::RunEvent::ExitRequested { code: None, api, .. }
+                if app.state::<WindowsState>().keep_alive.load(std::sync::atomic::Ordering::SeqCst)
+                    && !app.state::<WindowsState>().quitting() =>
+            {
+                api.prevent_exit();
+            }
+            tauri::RunEvent::Reopen { has_visible_windows: false, .. }
+                if windows::project_window_labels(app).is_empty() =>
+            {
+                windows::spawn_window(app, None);
+            }
+            _ => {}
+        }
         #[cfg(target_os = "macos")]
         if let tauri::RunEvent::Opened { urls } = &event {
             let paths = windows::opened_paths(urls);
