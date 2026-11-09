@@ -31,6 +31,7 @@ import {
   SELECTION_MATCH_HIGHLIGHT,
   clearPreviewHighlights,
   findPreviewMatches,
+  invalidatePreviewIndex,
   openDetailsContaining,
   previewSelectionOf,
   revealPreviewRange,
@@ -136,6 +137,10 @@ function MarkdownPreview({ path, sync }: { path: string; sync: boolean }) {
       const open = toggled.current.get(i);
       if (open !== undefined) d.open = open;
     });
+  }, [html]);
+
+  useLayoutEffect(() => {
+    if (ref.current) invalidatePreviewIndex(ref.current);
   }, [html]);
 
   // Mermaid diagrams: before paint, so cached ones don't flash their source.
@@ -284,12 +289,19 @@ function MarkdownPreview({ path, sync }: { path: string; sync: boolean }) {
     };
     applyAll();
 
-    const observer = new MutationObserver(applyAll);
+    let timer: ReturnType<typeof setTimeout> | undefined;
+    const observer = new MutationObserver(() => {
+      invalidatePreviewIndex(root);
+      clearTimeout(timer);
+      timer = setTimeout(applyAll, 120);
+    });
     observer.observe(root, { subtree: true, childList: true, characterData: true });
     document.addEventListener("selectionchange", applySelection);
     root.addEventListener("toggle", applyAll, true);
     return () => {
+      if (observer.takeRecords().length) invalidatePreviewIndex(root);
       observer.disconnect();
+      clearTimeout(timer);
       document.removeEventListener("selectionchange", applySelection);
       root.removeEventListener("toggle", applyAll, true);
     };
@@ -298,7 +310,10 @@ function MarkdownPreview({ path, sync }: { path: string; sync: boolean }) {
   useEffect(() => {
     const root = ref.current;
     return () => {
-      if (root) clearPreviewHighlights(root);
+      if (root) {
+        clearPreviewHighlights(root);
+        invalidatePreviewIndex(root);
+      }
       publishPreviewSelection(path, "");
     };
   }, [path]);

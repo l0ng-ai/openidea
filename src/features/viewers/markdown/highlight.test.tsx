@@ -194,6 +194,9 @@ describe("Markdown preview search & selection highlights", () => {
     const p = preview.querySelector("p")!;
     const textNode = p.firstChild as Text;
 
+    // A retained editor selection must not suppress a new preview selection.
+    act(() => view.dispatch({ selection: EditorSelection.single(6, 10) }));
+
     // Select the first "alpha" (0..5) in the preview
     const range = document.createRange();
     range.setStart(textNode, 0);
@@ -211,7 +214,8 @@ describe("Markdown preview search & selection highlights", () => {
       expect(view.contentDOM.querySelectorAll(".cm-selectionMatch")).toHaveLength(3);
     });
 
-    // Collapsing the selection clears both highlights.
+    // Collapsing both selections clears both highlights.
+    act(() => view.dispatch({ selection: EditorSelection.cursor(0) }));
     sel.removeAllRanges();
     act(() => {
       document.dispatchEvent(new Event("selectionchange"));
@@ -240,6 +244,29 @@ describe("Markdown preview search & selection highlights", () => {
       view.dispatch({ selection: EditorSelection.cursor(0) });
     });
     expect(highlightTexts(SELECTION_MATCH_HIGHLIGHT)).toEqual([]);
+  });
+
+  it("refreshes cached ranges after asynchronous preview text changes", async () => {
+    openEditor("token\n");
+    render(
+      <MarkdownEditor path={path} tabId="t">
+        <div />
+      </MarkdownEditor>,
+    );
+    act(() => {
+      view.dispatch({
+        effects: [setFindOpen.of(true), setSearchQuery.of(makeQuery({ ...defaultFindOptions, search: "token" }))],
+      });
+      findNext(view);
+    });
+    const paragraph = screen.getByRole("document", { name: "Markdown preview" }).querySelector("p")!;
+    paragraph.innerHTML = "new <strong>token</strong>";
+    await waitFor(() => {
+      const registry = (globalThis as unknown as { CSS: { highlights: Map<string, Set<Range>> } }).CSS.highlights;
+      const current = [...registry.get(FIND_CURRENT_HIGHLIGHT)!][0]!;
+      expect(current.startContainer.parentElement?.tagName).toBe("STRONG");
+      expect(current.toString()).toBe("token");
+    });
   });
 
   it("seeds Command+F from a word selected in the Markdown preview", () => {

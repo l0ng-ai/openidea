@@ -131,7 +131,6 @@ function editorSelectionOf(state: EditorState): string {
 
 function previewSelectionDecorations(view: EditorView, query: string): DecorationSet {
   if (!query || query.length < 2 || query.length > 200) return Decoration.none;
-  if (!view.state.selection.main.empty) return Decoration.none;
   if (!editorPrefs(useProject.getState().settings).codeEditing.highlightSelection) return Decoration.none;
   const ranges = [];
   for (const part of view.visibleRanges) {

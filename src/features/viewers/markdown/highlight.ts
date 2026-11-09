@@ -126,8 +126,12 @@ function rangeInRun(run: TextRun, from: number, to: number): Range | null {
 }
 
 function isWholeWordMatch(text: string, start: number, end: number): boolean {
-  const leftWord = WORD_CHAR.test(text[start] ?? "") && WORD_CHAR.test(text[start - 1] ?? "");
-  const rightWord = WORD_CHAR.test(text[end - 1] ?? "") && WORD_CHAR.test(text[end] ?? "");
+  const before = [...text.slice(Math.max(0, start - 2), start)].at(-1) ?? "";
+  const after = String.fromCodePoint(text.codePointAt(end) ?? 0);
+  const first = String.fromCodePoint(text.codePointAt(start) ?? 0);
+  const last = [...text.slice(Math.max(start, end - 2), end)].at(-1) ?? "";
+  const leftWord = WORD_CHAR.test(first) && WORD_CHAR.test(before);
+  const rightWord = WORD_CHAR.test(last) && WORD_CHAR.test(after);
   return !leftWord && !rightWord;
 }
 
@@ -140,7 +144,11 @@ export interface PreviewMatchOptions {
 
 /** DOM ranges matching `options` under `root`, in document order. */
 export function findMatchesInNode(root: Node, options: PreviewMatchOptions, limit = MAX_COUNT): Range[] {
-  if (!options.search) return [];
+  return matchesInRuns(collectRuns(root), options, limit);
+}
+
+function matchesInRuns(runs: readonly TextRun[], options: PreviewMatchOptions, limit: number): Range[] {
+  if (!options.search || limit <= 0) return [];
   const source = options.regexp ? options.search : options.search.replace(REGEX_SPECIALS, "\\$&");
   let re: RegExp;
   try {
@@ -149,14 +157,14 @@ export function findMatchesInNode(root: Node, options: PreviewMatchOptions, limi
     return [];
   }
   const out: Range[] = [];
-  for (const run of collectRuns(root)) {
+  for (const run of runs) {
     re.lastIndex = 0;
     let found: RegExpExecArray | null;
     while ((found = re.exec(run.text))) {
       const start = found.index;
       const end = start + found[0].length;
       if (end === start) {
-        re.lastIndex = start + 1;
+        re.lastIndex = start + ((run.text.codePointAt(start) ?? 0) > 0xffff ? 2 : 1);
         continue;
       }
       if (options.wholeWord && !isWholeWordMatch(run.text, start, end)) continue;
@@ -168,42 +176,80 @@ export function findMatchesInNode(root: Node, options: PreviewMatchOptions, limi
   return out;
 }
 
-/**
- * Finds all preview matches for `find` and resolves the `current` match range
- * by mapping `find.currentMatchIndex` through `[data-line]` blocks.
- */
+interface PreviewBlock {
+  startLine: number;
+  runs: TextRun[];
+}
+
+interface PreviewIndex {
+  blocks: PreviewBlock[];
+  runs: TextRun[];
+  query?: string;
+  matches?: Range[][];
+}
+
+const previewIndexes = new WeakMap<HTMLElement, PreviewIndex>();
+
+export function invalidatePreviewIndex(root: HTMLElement) {
+  previewIndexes.delete(root);
+}
+
+function previewIndex(root: HTMLElement): PreviewIndex {
+  let index = previewIndexes.get(root);
+  if (!index) {
+    const els = [...root.querySelectorAll<HTMLElement>(":scope > [data-line]")];
+    const blocks = els.map((el) => ({ startLine: Number(el.dataset.line), runs: collectRuns(el) }));
+    index = { blocks, runs: blocks.length ? blocks.flatMap((b) => b.runs) : collectRuns(root) };
+    previewIndexes.set(root, index);
+  }
+  return index;
+}
+
+function lowerBound(lines: readonly number[], line: number): number {
+  let lo = 0;
+  let hi = lines.length;
+  while (lo < hi) {
+    const mid = (lo + hi) >>> 1;
+    if (lines[mid]! < line) lo = mid + 1;
+    else hi = mid;
+  }
+  return lo;
+}
+
+/** Reuses the rendered text index across queries and match navigation. */
 export function findPreviewMatches(
   root: HTMLElement,
   find: LiveMarkdownFind,
 ): { ranges: Range[]; current: Range | null } {
-  const blockEls = [...root.querySelectorAll<HTMLElement>(":scope > [data-line]")];
-  if (!blockEls.length) {
-    const ranges = findMatchesInNode(root, find);
-    const current = find.currentMatchIndex >= 0 ? (ranges[find.currentMatchIndex] ?? null) : null;
-    return { ranges, current };
+  const index = previewIndex(root);
+  const key = JSON.stringify([find.search, find.caseSensitive, find.wholeWord, find.regexp]);
+  if (index.query !== key) {
+    let remaining = MAX_COUNT;
+    index.matches = (index.blocks.length ? index.blocks : [{ runs: index.runs }]).map((block) => {
+      const ranges = matchesInRuns(block.runs, find, remaining);
+      remaining -= ranges.length;
+      return ranges;
+    });
+    index.query = key;
   }
-  const blocks = blockEls.map((el, i) => ({
-    startLine: Number(el.dataset.line),
-    endLine: i + 1 < blockEls.length ? Number(blockEls[i + 1]!.dataset.line) : Infinity,
-    ranges: findMatchesInNode(el, find),
-  }));
-  const ranges = blocks.flatMap((b) => b.ranges);
+  const matches = index.matches!;
+  const ranges = matches.flat();
   if (find.currentMatchIndex < 0 || !ranges.length) return { ranges, current: null };
 
   const line = find.matchLines[find.currentMatchIndex];
-  if (line !== undefined) {
-    let targetBlock = blocks[0];
-    for (const b of blocks) {
-      if (b.startLine <= line) targetBlock = b;
-      else break;
+  if (line !== undefined && index.blocks.length) {
+    let lo = 0;
+    let hi = index.blocks.length;
+    while (lo < hi) {
+      const mid = (lo + hi) >>> 1;
+      if (index.blocks[mid]!.startLine <= line) lo = mid + 1;
+      else hi = mid;
     }
-    if (targetBlock && targetBlock.ranges.length > 0) {
-      let ordinal = 0;
-      for (let j = find.currentMatchIndex - 1; j >= 0 && find.matchLines[j]! >= targetBlock.startLine; j--) {
-        ordinal++;
-      }
-      return { ranges, current: targetBlock.ranges[Math.min(ordinal, targetBlock.ranges.length - 1)]! };
-    }
+    const blockIndex = lo - 1;
+    if (blockIndex < 0) return { ranges, current: null };
+    const block = index.blocks[blockIndex]!;
+    const ordinal = find.currentMatchIndex - lowerBound(find.matchLines, block.startLine);
+    return { ranges, current: matches[blockIndex]?.[ordinal] ?? null };
   }
   return { ranges, current: ranges[find.currentMatchIndex] ?? null };
 }
@@ -246,8 +292,8 @@ export function selectionMatchesInNode(
 ): Range[] {
   if (text.length < MIN_SELECTION_LENGTH || text.length > MAX_SELECTION_LENGTH || text.includes("\n") || !text.trim())
     return [];
-  const all = findMatchesInNode(
-    root,
+  const all = matchesInRuns(
+    previewIndex(root).runs,
     { search: text, caseSensitive: true, wholeWord: false, regexp: false },
     maxMatches + 2,
   );
@@ -269,12 +315,13 @@ export function isRangeShown(range: Range, root: HTMLElement): boolean {
 /** Opens any collapsed `<details>` ancestors containing `range`. */
 export function openDetailsContaining(range: Range, root: HTMLElement, toggled?: Map<number, boolean>): boolean {
   let opened = false;
-  const allDetails = toggled ? [...root.querySelectorAll("details")] : [];
+  let allDetails: HTMLDetailsElement[] | undefined;
   for (let el = range.startContainer.parentElement; el && el !== root; el = el.parentElement) {
     if (el instanceof HTMLDetailsElement && !el.open) {
       el.open = true;
       opened = true;
       if (toggled) {
+        allDetails ??= [...root.querySelectorAll("details")];
         const idx = allDetails.indexOf(el);
         if (idx >= 0) toggled.set(idx, true);
       }
