@@ -209,7 +209,7 @@ describe("diff controls in the stylesheet", () => {
 
   it("centres the hover Revert button on the line's own height", () => {
     const rule = css.match(/\.cm-diffHoverRevert\)\s*\{([^}]*)\}/)![1]!;
-    expect(rule).toContain("top: calc((1lh - 16px) / 2);");
+    expect(rule).toContain("top: calc((var(--openidea-editor-line-height, var(--lh-code)) - var(--space-4)) / 2);");
     expect(rule).not.toMatch(/top: 0;/);
   });
 });
