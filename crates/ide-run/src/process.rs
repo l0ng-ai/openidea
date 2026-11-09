@@ -54,6 +54,12 @@ struct Entry {
     stdin: Mutex<Option<ide_core::input::InputWriter>>,
     /// The PTY master of a terminal-emulated run (resize; dropped on exit).
     pty: Option<Mutex<Option<Box<dyn MasterPty + Send>>>>,
+    /// The Windows job over the launch: everything it starts joins the job, so a Stop
+    /// reaches the tree even when the launcher exited first (and took the tracked pid's
+    /// meaning along). `None` when the assignment failed; the kill then falls back to
+    /// `taskkill /T /F` from the pid.
+    #[cfg(windows)]
+    job: Option<ide_core::process::Job>,
     stop: Option<StopCommand>,
     output: OutputFn,
     exited: AtomicBool,
@@ -420,6 +426,10 @@ impl ProcessManager {
             std::io::ErrorKind::NotFound => IdeError::unavailable(format!("command not found: {}", config.command)),
             _ => IdeError::from(e),
         })?;
+        // The job follows the launch's tree kernel-side; Stop reaches what the launcher
+        // started even after the launcher itself is gone.
+        #[cfg(windows)]
+        let job = ide_core::process::Job::for_child(&child);
 
         let id = RunId::next();
         let stdin = (|| -> std::io::Result<_> {
@@ -452,6 +462,8 @@ impl ProcessManager {
             pid: Mutex::new(Some(child.id())),
             stdin: Mutex::new(stdin),
             pty: None,
+            #[cfg(windows)]
+            job,
             stop,
             output: on_output.clone(),
             exited: AtomicBool::new(false),
@@ -596,6 +608,9 @@ impl ProcessManager {
             pid: Mutex::new(child.process_id()),
             stdin: Mutex::new(Some(writer)),
             pty: Some(Mutex::new(Some(pair.master))),
+            // By pid, not by handle: the PTY's child exposes its id only.
+            #[cfg(windows)]
+            job: child.process_id().and_then(ide_core::process::Job::for_pid),
             stop,
             output: on_output.clone(),
             exited: AtomicBool::new(false),
@@ -702,11 +717,11 @@ impl ProcessManager {
         }
         if already_stopping {
             // Second stop request: don't wait out the grace period.
-            kill_tree(pid, true);
+            kill_tree(&entry, pid, true);
             return Ok(());
         }
         if entry.stop.is_none() {
-            kill_tree(pid, false);
+            kill_tree(&entry, pid, false);
         }
         let entry = entry.clone();
         std::thread::Builder::new()
@@ -727,7 +742,7 @@ impl ProcessManager {
                     if exits_within(grace) {
                         return;
                     }
-                    kill_tree(pid, false);
+                    kill_tree(&entry, pid, false);
                 }
                 // A first Stop only asks the process tree to exit, as IDEA does: it waits for
                 // the shutdown to finish (a Spring Boot app can take seconds) and a second Stop
@@ -759,7 +774,7 @@ impl ProcessManager {
             if !entry.exited.load(Ordering::Acquire)
                 && let Some(pid) = *entry.pid.lock()
             {
-                kill_tree(pid, true);
+                kill_tree(entry, pid, true);
             }
         }
     }
@@ -770,7 +785,7 @@ impl ProcessManager {
             if !entry.exited.load(Ordering::Acquire)
                 && let Some(pid) = *entry.pid.lock()
             {
-                kill_tree(pid, true);
+                kill_tree(entry, pid, true);
             }
         }
     }
@@ -820,6 +835,12 @@ fn run_followup(
     }
     (entry.output)(OutputChunk::System { text: format!("{}\n", inv.display) });
     let mut child = cmd.spawn()?;
+    // The follow-up run continues the same launch: it joins the run's job, so a Stop
+    // reaches its tree too.
+    #[cfg(windows)]
+    if let Some(job) = entry.job.as_ref() {
+        job.assign_pid(child.id());
+    }
     *pid = Some(child.id());
     *entry.stdin.lock() = (|| -> std::io::Result<_> {
         Ok(match child.stdin.take() {
@@ -987,13 +1008,24 @@ fn group_alive(pid: u32, _entry: &Entry) -> bool {
     unsafe { libc::kill(-(pid as libc::pid_t), 0) == 0 }
 }
 
-#[cfg(not(unix))]
+#[cfg(windows)]
+fn group_alive(_pid: u32, entry: &Entry) -> bool {
+    // The job sees what an exited launcher left behind; without one (the assignment
+    // failed), a run is over when the launcher itself is.
+    match entry.job.as_ref() {
+        Some(job) => job.is_running(),
+        None => !entry.exited.load(Ordering::Acquire),
+    }
+}
+
+#[cfg(not(any(unix, windows)))]
 fn group_alive(_pid: u32, entry: &Entry) -> bool {
     !entry.exited.load(Ordering::Acquire)
 }
 
 #[cfg(unix)]
-fn kill_tree(pid: u32, force: bool) {
+fn kill_tree(entry: &Entry, pid: u32, force: bool) {
+    let _ = entry;
     let sig = if force { libc::SIGKILL } else { libc::SIGINT };
     let pid = pid as libc::pid_t;
     if pid <= 0 {
@@ -1021,9 +1053,15 @@ fn add_raw_args(cmd: &mut Command, args: &[String]) {
 }
 
 #[cfg(windows)]
-fn kill_tree(pid: u32, _force: bool) {
+fn kill_tree(entry: &Entry, pid: u32, _force: bool) {
     use std::os::windows::process::CommandExt;
-    // Console children have no reliable graceful signal from outside their console.
+    // The job ends the whole launch kernel-side, members included that the launcher
+    // started after any snapshot would have been taken.
+    if entry.job.as_ref().is_some_and(|job| job.terminate()) {
+        return;
+    }
+    // Console children have no reliable graceful signal from outside their console, and
+    // without a job the tree can only be found from the tracked root's pid.
     let _ = Command::new("taskkill")
         .args(["/T", "/F", "/PID", &pid.to_string()])
         .creation_flags(ide_core::process::CREATE_NO_WINDOW)
@@ -1184,15 +1222,24 @@ fn spawn_pump(
         if let Some(pty) = &entry.pty {
             pty.lock().take();
         }
-        // A stopped run is over when the whole process group is gone, not when the child we
-        // spawned exits: a shell or `mvn` can end while the application it started keeps its
-        // port, and reporting "finished" then would let Run start into an occupied port.
-        // A second Stop kills the group, which ends this wait.
+        // A stopped run is over when the whole process group (Unix) or the whole job
+        // (Windows) is gone, not when the child we spawned exits: a shell or `mvn` can
+        // end while the application it started keeps its port, and reporting "finished"
+        // then would let Run start into an occupied port. A second Stop kills the group
+        // or the job, which ends this wait.
         #[cfg(unix)]
         if entry.stopping.load(Ordering::Acquire)
             && let Some(pid) = *entry.pid.lock()
         {
             while group_alive(pid, &entry) {
+                std::thread::sleep(Duration::from_millis(50));
+            }
+        }
+        // Without a job the exited flag is the only probe, and it always reads "alive"
+        // here: this thread is the one that sets it.
+        #[cfg(windows)]
+        if entry.stopping.load(Ordering::Acquire) && entry.job.is_some() {
+            while group_alive(0, &entry) {
                 std::thread::sleep(Duration::from_millis(50));
             }
         }
