@@ -961,8 +961,8 @@ pub enum OpenStep {
     Focus(String),
     /// Files open in this window: in its project, or join its LightEdit session.
     Files(String, Vec<PathBuf>),
-    /// A free window opens this.
-    Launch(String, Launch),
+    /// A free window opens this (boxed: the enum stays small).
+    Launch(String, Box<Launch>),
     /// A new window opens the project folder or (without one) the files in LightEdit.
     New(Option<PathBuf>, Vec<PathBuf>),
     /// A new window connects to a WSL distribution.
@@ -1003,7 +1003,9 @@ pub fn plan_open(paths: Vec<(PathBuf, bool)>, windows: &[(String, Holds)]) -> Ve
             steps.push(match windows.iter().find(|(_, h)| h.is_wsl_folder(&remote)) {
                 Some((label, _)) => OpenStep::Focus(label.clone()),
                 None => match free.next() {
-                    Some(label) => OpenStep::Launch(label, Launch { remote: Some(remote), ..Default::default() }),
+                    Some(label) => {
+                        OpenStep::Launch(label, Box::new(Launch { remote: Some(remote), ..Default::default() }))
+                    }
                     None => OpenStep::NewRemote(remote),
                 },
             });
@@ -1051,12 +1053,12 @@ pub fn plan_open(paths: Vec<(PathBuf, bool)>, windows: &[(String, Holds)]) -> Ve
     steps
 }
 
-fn path_launch_of(project: Option<PathBuf>, files: Vec<PathBuf>) -> Launch {
-    Launch {
+fn path_launch_of(project: Option<PathBuf>, files: Vec<PathBuf>) -> Box<Launch> {
+    Box::new(Launch {
         project: project.map(Into::into),
         files: files.into_iter().map(Into::into).collect(),
         ..Default::default()
-    }
+    })
 }
 
 /// [`plan_open`] for loose `files` asked for by window `caller` (listed first in `windows`):
@@ -1148,7 +1150,7 @@ fn run_open(app: &AppHandle, steps: Vec<OpenStep>) {
                 None => windows.add_files(&label, files),
             },
             OpenStep::Launch(label, launch) => {
-                windows.set_launch(&label, launch);
+                windows.set_launch(&label, *launch);
                 if let Some(w) = app.get_webview_window(&label) {
                     let _ = app.emit_to(&label, LAUNCH_EVENT, ());
                     focus(&w);
@@ -1828,7 +1830,7 @@ mod tests {
             [OpenStep::Files("main".into(), vec![p("/x/b.txt")])]
         );
         let st = WindowsState::default();
-        st.set_launch("main", cli);
+        st.set_launch("main", *cli);
         st.add_files("main", vec![p("/x/b.txt")]);
         assert_eq!(st.take_launch("main").unwrap().files, [p("/x/a.txt"), p("/x/b.txt")]);
     }
@@ -1900,7 +1902,7 @@ mod tests {
             RemoteLaunch { target: RemoteTarget::Wsl { distro: distro.into() }, path: linux_path.into() }
         );
         assert!(wsl_launch(&p(linux_path)).is_none());
-        let launch = Launch { remote: Some(remote.clone()), ..Default::default() };
+        let launch = Box::new(Launch { remote: Some(remote.clone()), ..Default::default() });
         let folder = vec![(p(share), true)];
         // A free window connects, else a new one; the window that has it open is focused.
         assert_eq!(plan_open(folder.clone(), &[w("main", Holds::Nothing)]), [OpenStep::Launch("main".into(), launch)]);
