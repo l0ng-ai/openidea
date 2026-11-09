@@ -1,5 +1,5 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
-import { discoveredTests, packageList, selectDotnet, resetDotnet, useDotnet } from "./store";
+import { cancelDotnet, discoveredTests, packageList, selectDotnet, resetDotnet, useDotnet } from "./store";
 import * as platform from "@/platform/dotnet";
 
 afterEach(() => {
@@ -40,6 +40,23 @@ it("ignores an evaluation completed after switching workspaces", async () => {
   await pending;
   expect(useDotnet.getState().selected).toBe("");
   expect(useDotnet.getState().busy).toBe(false);
+});
+
+it("ignores an evaluation completed after cancellation", async () => {
+  let complete!: (p: platform.DotnetProject) => void;
+  vi.spyOn(platform, "evaluateProject").mockImplementation(
+    () =>
+      new Promise((resolve) => {
+        complete = resolve;
+      }),
+  );
+  const pending = selectDotnet("/repo/Test.csproj");
+  cancelDotnet();
+  complete({ path: "/repo/Test.csproj", frameworks: ["net9.0"] } as platform.DotnetProject);
+  await pending;
+  expect(useDotnet.getState().selected).toBe("");
+  expect(useDotnet.getState().busy).toBe(false);
+  expect(useDotnet.getState().error).toBe("");
 });
 
 describe("real dotnet discovery output", () => {

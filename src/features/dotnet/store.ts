@@ -63,7 +63,7 @@ async function task(work: (signal: AbortSignal) => Promise<Partial<State>>) {
   useDotnet.setState({ busy: true, error: "" });
   try {
     const patch = await work(abort.signal);
-    if (current === generation) useDotnet.setState(patch);
+    if (current === generation && !abort.signal.aborted) useDotnet.setState(patch);
   } catch (e) {
     if (current === generation && !abort.signal.aborted) useDotnet.setState({ error: String(e) });
   } finally {

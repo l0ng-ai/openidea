@@ -30,6 +30,28 @@ public class Calculator {
  }
 }`;
 describe("C# editor test targets", () => {
+  it("tracks lines across multiline tokens and separate test classes", () => {
+    const text = `namespace Demo {
+/* a comment
+   across lines */
+class First {
+  [Fact]
+  void One(
+  ) {}
+}
+class Second {
+  [TestCase(
+    1)]
+  void Two(int value) {}
+}
+}`;
+    expect(csharpTargets(text).map((t) => [t.line, t.path])).toEqual([
+      [3, ["Demo.First"]],
+      [5, ["Demo.First", "One"]],
+      [8, ["Demo.Second"]],
+      [11, ["Demo.Second", "Two"]],
+    ]);
+  });
   it("runs only methods declared in the chosen file", () => {
     const result = produceFile(
       { path: "/repo/two/Tests.cs", root: "/repo", content: source, configs: [config("/repo/two/Two.csproj")] },
