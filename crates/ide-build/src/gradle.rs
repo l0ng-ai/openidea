@@ -109,11 +109,11 @@ fn strip_comments(text: &str) -> String {
 /// Quoted string literals in `s`.
 fn literals(s: &str) -> Vec<String> {
     let mut out = Vec::new();
-    let mut chars = s.chars();
-    while let Some(c) = chars.next() {
-        if c == '"' || c == '\'' {
-            out.push(chars.by_ref().take_while(|&n| n != c).collect());
-        }
+    let mut rest = s;
+    while let Some(start) = rest.find(['"', '\'']) {
+        let Some((value, used)) = literal(&rest[start..]) else { break };
+        out.push(value);
+        rest = &rest[start + used..];
     }
     out
 }
@@ -608,18 +608,18 @@ pub fn script_dependencies(text: &str, properties: &BTreeMap<String, String>) ->
 fn statements(line: &str) -> Vec<&str> {
     let mut out = Vec::new();
     let mut start = 0;
-    let mut quote: Option<char> = None;
-    for (index, c) in line.char_indices() {
-        match quote {
-            Some(q) if c == q => quote = None,
-            Some(_) => {}
-            None if c == '"' || c == '\'' => quote = Some(c),
-            None if c == '{' || c == ';' => {
-                out.push(&line[start..index]);
-                start = index + 1;
-            }
-            None => {}
+    let mut index = 0;
+    while index < line.len() {
+        let c = line[index..].chars().next().unwrap();
+        if c == '"' || c == '\'' {
+            index += literal(&line[index..]).map_or(line.len() - index, |(_, used)| used);
+            continue;
         }
+        if matches!(c, '{' | '}' | ';' | '\n') {
+            out.push(&line[start..index]);
+            start = index + c.len_utf8();
+        }
+        index += c.len_utf8();
     }
     out.push(&line[start..]);
     out
@@ -630,8 +630,8 @@ fn statements(line: &str) -> Vec<&str> {
 pub fn applied_scripts(text: &str) -> Vec<String> {
     let text = strip_comments(text);
     let mut out = Vec::new();
-    for (index, _) in text.match_indices("apply") {
-        if !starts_word(&text, index) {
+    for (index, word) in code_words(&text) {
+        if word != "apply" || !starts_word(&text, index) {
             continue;
         }
         let mut rest = text[index + "apply".len()..].trim_start();
@@ -656,27 +656,67 @@ pub fn applied_scripts(text: &str) -> Vec<String> {
     out
 }
 
-/// The `ext` values a build script defines: `ext { gsonVersion = '2.8.9' }` and
-/// `ext.gsonVersion = '2.8.9'`, which `script_dependencies` fills into `${gsonVersion}`.
+/// Literal extra properties declared by Groovy's `ext` or Kotlin's `extra`.
 pub fn script_properties(text: &str) -> BTreeMap<String, String> {
     let text = strip_comments(text);
     let mut out = BTreeMap::new();
-    for (index, _) in text.match_indices("ext") {
-        let followed_by_identifier = text[index + "ext".len()..].starts_with(|c: char| c.is_alphanumeric() || c == '_');
-        if !starts_word(&text, index) || followed_by_identifier {
+    for (index, word) in code_words(&text) {
+        if !starts_word(&text, index) {
             continue;
         }
-        let rest = text[index + "ext".len()..].trim_start();
+        let rest = text[index + word.len()..].trim_start();
+        if word == "val" || word == "var" {
+            let (name, rest) = identifier(rest);
+            let Some(rest) = rest.trim_start().strip_prefix("by").map(str::trim_start) else { continue };
+            let Some(rest) = rest.strip_prefix("extra").map(str::trim_start) else { continue };
+            if let Some(rest) = rest.strip_prefix('(')
+                && let Some((value, used)) = literal(rest.trim_start())
+                && rest.trim_start()[used..].trim_start().starts_with(')')
+                && !name.is_empty()
+            {
+                out.insert(name.to_owned(), value);
+            }
+            continue;
+        }
+        if word != "ext" && word != "extra" {
+            continue;
+        }
         if let Some(block) = rest.strip_prefix('{') {
             if let Some(end) = matching_brace(block) {
                 out.extend(assignments(&block[..end]));
             }
         } else if let Some(rest) = rest.strip_prefix('.') {
-            let line = rest.split('\n').next().unwrap_or_default();
-            out.extend(assignments(line));
+            let (name, rest) = identifier(rest);
+            if let Some(value) = assigned_literal(rest)
+                && !name.is_empty()
+            {
+                out.insert(name.to_owned(), value);
+            }
+        } else if let Some(rest) = rest.strip_prefix('[')
+            && let Some((name, used)) = literal(rest.trim_start())
+            && let Some(rest) = rest.trim_start()[used..].trim_start().strip_prefix(']')
+            && let Some(value) = assigned_literal(rest)
+        {
+            out.insert(name, value);
         }
     }
     out
+}
+
+pub(crate) fn file_properties(build_dir: &Path) -> BTreeMap<String, String> {
+    let text = std::fs::read_to_string(build_dir.join("gradle.properties")).unwrap_or_default();
+    text.lines()
+        .filter_map(|line| {
+            let line = line.trim();
+            if line.starts_with(['#', '!']) {
+                return None;
+            }
+            let separator = line.find(|c: char| c == '=' || c == ':' || c.is_whitespace())?;
+            let (key, rest) = line.split_at(separator);
+            let value = rest.trim_start().trim_start_matches(['=', ':']).trim_start();
+            (!key.is_empty()).then(|| (key.to_owned(), value.to_owned()))
+        })
+        .collect()
 }
 
 /// The build script of a project and, recursively, the scripts it applies with `apply from`,
@@ -771,7 +811,12 @@ fn interpolate(value: &str, properties: &BTreeMap<String, String>) -> String {
                 }
             }
         }
-        match properties.get(name.strip_prefix("ext.").unwrap_or(name.as_str())) {
+        let key = name.strip_prefix("ext.").or_else(|| name.strip_prefix("extra.")).unwrap_or(&name);
+        let bracket = name.strip_prefix("ext[").or_else(|| name.strip_prefix("extra[")).and_then(|rest| {
+            let (key, used) = literal(rest.trim_start())?;
+            (rest.trim_start()[used..].trim() == "]").then_some(key)
+        });
+        match properties.get(bracket.as_deref().unwrap_or(key)) {
             Some(v) if !name.is_empty() => out.push_str(v),
             _ => {
                 out.push('$');
@@ -793,56 +838,94 @@ fn starts_word(text: &str, index: usize) -> bool {
     text[..index].chars().next_back().is_none_or(|c| !(c.is_alphanumeric() || c == '_' || c == '.'))
 }
 
+/// Identifiers outside quoted strings, with their byte positions.
+fn code_words(text: &str) -> Vec<(usize, &str)> {
+    let mut out = Vec::new();
+    let mut index = 0;
+    while index < text.len() {
+        let c = text[index..].chars().next().unwrap();
+        if c == '"' || c == '\'' {
+            index += literal(&text[index..]).map_or(text.len() - index, |(_, used)| used);
+        } else if c.is_alphabetic() || c == '_' {
+            let (word, _) = identifier(&text[index..]);
+            out.push((index, word));
+            index += word.len();
+        } else {
+            index += c.len_utf8();
+        }
+    }
+    out
+}
+
+fn identifier(text: &str) -> (&str, &str) {
+    let end = text.find(|c: char| !(c.is_alphanumeric() || c == '_')).unwrap_or(text.len());
+    text.split_at(end)
+}
+
+fn assigned_literal(text: &str) -> Option<String> {
+    let rest = text.trim_start().strip_prefix('=')?.trim_start();
+    let (value, used) = literal(rest)?;
+    // Do not turn a computed value (`'1.' + suffix`) into a concrete version.
+    let tail = rest[used..].trim_start_matches([' ', '\t', '\r']);
+    (tail.is_empty() || tail.starts_with(['\n', ';', '}'])).then_some(value)
+}
+
 /// The quoted string at the start of `s`, and how many bytes it spans.
 fn literal(s: &str) -> Option<(String, usize)> {
     let quote = s.chars().next().filter(|c| *c == '"' || *c == '\'')?;
     let rest = &s[quote.len_utf8()..];
-    let end = rest.find(quote)?;
-    Some((rest[..end].to_owned(), quote.len_utf8() + end + quote.len_utf8()))
+    let mut index = 0;
+    while index < rest.len() {
+        let c = rest[index..].chars().next()?;
+        if c == quote {
+            return Some((rest[..index].to_owned(), quote.len_utf8() + index + c.len_utf8()));
+        }
+        if c == '\\' {
+            index += c.len_utf8();
+            index += rest[index..].chars().next()?.len_utf8();
+        } else if quote == '"' && rest[index..].starts_with("${") {
+            index += 2;
+            index += matching_brace(&rest[index..])? + 1;
+        } else {
+            index += c.len_utf8();
+        }
+    }
+    None
 }
 
 /// Byte index of the `}` closing a `{` that was already consumed, ignoring quoted text.
 fn matching_brace(text: &str) -> Option<usize> {
     let mut depth = 1usize;
-    let mut quote: Option<char> = None;
-    for (index, c) in text.char_indices() {
-        match quote {
-            Some(q) if c == q => quote = None,
-            Some(_) => {}
-            None if c == '"' || c == '\'' => quote = Some(c),
-            None if c == '{' => depth += 1,
-            None if c == '}' => {
-                depth -= 1;
-                if depth == 0 {
-                    return Some(index);
-                }
-            }
-            None => {}
+    let mut index = 0;
+    while index < text.len() {
+        let c = text[index..].chars().next()?;
+        if c == '"' || c == '\'' {
+            index += literal(&text[index..])?.1;
+            continue;
         }
+        if c == '{' {
+            depth += 1;
+        } else if c == '}' {
+            depth -= 1;
+            if depth == 0 {
+                return Some(index);
+            }
+        }
+        index += c.len_utf8();
     }
     None
 }
 
 /// `name = 'value'` pairs in `text`.
 fn assignments(text: &str) -> Vec<(String, String)> {
-    let mut out = Vec::new();
-    let mut rest = text;
-    while let Some(eq) = rest.find('=') {
-        let before = rest[..eq].trim_end();
-        let name: String =
-            before.rsplit(|c: char| !(c.is_alphanumeric() || c == '_')).next().unwrap_or_default().to_owned();
-        let after = rest[eq + 1..].trim_start();
-        if !name.is_empty()
-            && after.starts_with(['\'', '"'])
-            && let Some((value, used)) = literal(after)
-        {
-            out.push((name, value));
-            rest = &after[used..];
-            continue;
-        }
-        rest = &rest[eq + 1..];
-    }
-    out
+    statements(text)
+        .into_iter()
+        .filter_map(|statement| {
+            let (name, rest) = identifier(statement.trim_start());
+            let value = assigned_literal(rest)?;
+            (!name.is_empty()).then(|| (name.to_owned(), value))
+        })
+        .collect()
 }
 
 /// Every settings and build script of the model (for change detection).
@@ -854,6 +937,10 @@ pub fn build_files(root: &Path, model: &GradleModel) -> Vec<PathBuf> {
     for project in &model.projects {
         let Some(file) = project.build_file.as_deref() else { continue };
         let build_dir = project_build_dir(root, model, project);
+        let properties = build_dir.join("gradle.properties");
+        if properties.is_file() {
+            out.push(properties);
+        }
         let applied = scripts_of(root, &root.join(&project.dir), &build_dir, Path::new(file));
         out.extend(applied.into_iter().skip(1).map(|(path, _)| path));
     }
@@ -874,6 +961,8 @@ pub fn build_files(root: &Path, model: &GradleModel) -> Vec<PathBuf> {
         catalogs.sort();
         out.extend(catalogs);
     }
+    out.sort();
+    out.dedup();
     out
 }
 
@@ -1123,6 +1212,78 @@ dependencies {
                 "org.plain:literal:1.0",
             ]
         );
+    }
+
+    #[test]
+    fn extra_properties_support_brackets_and_kotlin_delegates() {
+        for declaration in [
+            "ext.x = '1.2'",
+            "ext { x = '1.2' }",
+            "ext[\"x\"] = '1.2'",
+            "extra[\"x\"] = \"1.2\"",
+            "val x by extra(\"1.2\")",
+        ] {
+            let script = format!("{declaration}\ndependencies {{ implementation \"g:a:${{x}}\" }}");
+            assert_eq!(
+                script_dependencies(&script, &script_properties(&script)),
+                [("g".into(), "a".into(), "1.2".into())],
+                "{declaration}"
+            );
+        }
+    }
+
+    #[test]
+    fn parsers_ignore_apply_and_ext_inside_strings() {
+        let script = r#"
+            println "apply from: 'fake.gradle'"
+            println "ext.x = 'bogus'"
+            ext.real = '1'
+        "#;
+        assert!(applied_scripts(script).is_empty());
+        assert_eq!(script_properties(script), BTreeMap::from([("real".into(), "1".into())]));
+    }
+
+    #[test]
+    fn dependency_statements_preserve_interpolation_and_escaped_quotes() {
+        let script = r#"dependencies { implementation "g:a:${v}"; api(group = "g", name = "b", version = "${v}-RC1") }; dependencies { runtimeOnly 'g:c:2' }"#;
+        let properties = BTreeMap::from([("v".into(), "1.2".into())]);
+        assert_eq!(
+            script_dependencies(script, &properties),
+            [
+                ("g".into(), "a".into(), "1.2".into()),
+                ("g".into(), "b".into(), "1.2-RC1".into()),
+                ("g".into(), "c".into(), "2".into())
+            ]
+        );
+        assert_eq!(
+            statements(r#"println "escaped\"; {still quoted}"; implementation 'g:a:1'"#),
+            [r#"println "escaped\"; {still quoted}""#, " implementation 'g:a:1'"]
+        );
+    }
+
+    #[test]
+    fn dependency_versions_skip_unresolved_names_and_expressions() {
+        let script = r#"dependencies {
+            implementation "g:missing:${unknown}"
+            implementation "g:expression:${1 + 2}"
+            implementation "g:cyclic:${cycle}"
+            implementation 'g:range:[1,2)'
+            implementation 'g:dynamic:1.+'
+        }"#;
+        let properties = BTreeMap::from([("cycle".into(), "${cycle}".into())]);
+        assert!(script_dependencies(script, &properties).is_empty());
+    }
+
+    #[test]
+    fn extra_property_references_support_qualified_and_bracket_access() {
+        let script = r#"dependencies {
+            implementation "g:a:${ext.x}"
+            implementation "g:b:${extra.x}"
+            implementation "g:c:${ext['x']}"
+            implementation "g:d:${extra["x"]}"
+        }"#;
+        let properties = BTreeMap::from([("x".into(), "1".into())]);
+        assert_eq!(script_dependencies(script, &properties).len(), 4);
     }
 
     #[test]

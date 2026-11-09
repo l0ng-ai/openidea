@@ -187,6 +187,7 @@ pub fn dependency_coordinates(root: &Path, model: &BuildModel) -> Vec<Dependency
             for (_, text) in scripts.iter().rev() {
                 properties.extend(gradle::script_properties(text));
             }
+            properties.extend(gradle::file_properties(&build_dir));
             for (_, text) in &scripts {
                 out.extend(gradle::script_dependencies(text, &properties).into_iter().map(
                     |(group_id, artifact_id, version)| DependencyCoordinate {
@@ -345,5 +346,21 @@ mod tests {
             .map(|c| format!("{}:{}:{}", c.group_id, c.artifact_id, c.version))
             .collect();
         assert_eq!(names, ["com.google.code.gson:gson:2.8.9"]);
+    }
+
+    #[test]
+    fn gradle_properties_override_script_extra_values() {
+        let tmp = tempfile::tempdir().unwrap();
+        let root = tmp.path();
+        std::fs::write(root.join("build.gradle"), "ext.v = 'wrong'\napply from: 'deps.gradle'").unwrap();
+        std::fs::write(
+            root.join("deps.gradle"),
+            "ext.v = 'alsoWrong'\nimplementation \"g:a:${v}\"\nimplementation \"g:b:${onlyInProperties}\"",
+        )
+        .unwrap();
+        std::fs::write(root.join("gradle.properties"), "# versions\nv = 1.2\nonlyInProperties: 2.3\n").unwrap();
+        let model = BuildModel { maven: None, gradle: gradle::load(root).into_iter().collect() };
+        let versions: Vec<_> = dependency_coordinates(root, &model).into_iter().map(|c| c.version).collect();
+        assert_eq!(versions, ["1.2", "2.3"]);
     }
 }
