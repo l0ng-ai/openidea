@@ -140,6 +140,7 @@ function TaskSession({ id, docked }: { id: string; docked: boolean }) {
   const [path, setPath] = useState<string[]>([]);
   const view = path.at(-1) ?? null;
   const viewEntries = useAgents((s) => s.entries.get(entriesKey(id, view)));
+  const loadError = useAgents((s) => s.entryLoads.get(entriesKey(id, view))?.error);
   // Each subagent's card, from its parent's conversation.
   const cards = useAgents(
     useShallow((s) => path.map((sub, i) => findSubagent(s.entries.get(entriesKey(id, path[i - 1] ?? null)), sub))),
@@ -199,6 +200,7 @@ function TaskSession({ id, docked }: { id: string; docked: boolean }) {
             key={view ?? ""}
             task={task}
             entries={viewEntries ?? null}
+            loadError={loadError}
             subagent={view ? (cards.at(-1) ?? null) : null}
             onOpenSubagent={openSubagent}
             finding={finding && shown}
@@ -526,6 +528,7 @@ function useOffscreenRows(ref: RefObject<HTMLElement | null>, visible: boolean, 
 interface StreamProps {
   task: AgentTask;
   entries: AgentEntry[] | null;
+  loadError?: string | null;
   /** The card of the subagent whose conversation this is; `null`: the task's own. */
   subagent: SubagentEntry | null;
   onOpenSubagent: (id: string) => void;
@@ -538,7 +541,7 @@ interface StreamProps {
 /** Entries rendered at a time when a conversation opens at its end. */
 const ENTRY_BATCH = 40;
 
-function Stream({ task, entries, subagent, onOpenSubagent, finding, findFocus, onCloseFind }: StreamProps) {
+function Stream({ loadError, task, entries, subagent, onOpenSubagent, finding, findFocus, onCloseFind }: StreamProps) {
   const ref = useRef<HTMLDivElement>(null);
   useSelectionBoundary(ref);
   const key = entriesKey(task.id, subagent?.id ?? null);
@@ -754,8 +757,26 @@ function Stream({ task, entries, subagent, onOpenSubagent, finding, findFocus, o
           showContextMenu(e, items);
         }}
       >
+        {loadError && (
+          <div role="alert">
+            <EmptyState
+              title={tx`Couldn't load the conversation: ${loadError}`}
+              actions={
+                <Button
+                  onClick={() =>
+                    void executeAction("agents.retryConversation", { task: task.id, subagent: subagent?.id ?? null })
+                  }
+                >
+                  Retry
+                </Button>
+              }
+            />
+          </div>
+        )}
         {entries === null ? (
-          <Spinner />
+          !loadError && <Spinner />
+        ) : entries.length === 0 && !busy && !loadError ? (
+          <EmptyState title="No conversation history" />
         ) : (
           rows.map((row) => (
             <div
