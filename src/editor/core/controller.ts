@@ -3,6 +3,7 @@
  * status, navigation history, autosave. The React views and actions talk to
  * this singleton; other features use the EditorService and editor/api.
  */
+import { writeClipboardText } from "@/platform/clipboard";
 import { pasteEditorClipboard } from "./cm/clipboard";
 import { EditorSelection } from "@codemirror/state";
 import { create } from "zustand";
@@ -19,6 +20,7 @@ import {
   type NavigationLocation,
 } from "@/editor/api";
 import {
+  clearProjectViewLead,
   getFileDecoration,
   menuGroupItems,
   notifications,
@@ -41,7 +43,7 @@ import { t } from "@/platform/i18n";
 import { call, commands } from "@/platform/ipc";
 import { isRemoteWindow } from "@/platform/remote";
 import { fileIconName, showContextMenu, type MenuItem } from "@/ui";
-import { fileManagerName } from "@/platform/fileManager";
+import { canRevealInFileManager, fileManagerName } from "@/platform/fileManager";
 import {
   activateTab,
   changeSplitOrientation,
@@ -221,6 +223,8 @@ export class EditorController implements SlotHost {
   private disposers: Array<() => void> = [];
   /** Project root (or {@link LIGHT_EDIT_SESSION}) whose editor session is being tracked (null while switching). */
   private sessionRoot: string | null = null;
+  /** Session keys a window close dropped. Restoring one starts empty, and saves stay empty until then. */
+  private forgottenSessions = new Set<string>();
   private sessionTimer: ReturnType<typeof setTimeout> | undefined;
   /** Restored caret / scroll per path, applied when the file's first slot is created. */
   private restoredViews = new Map<string, FileViewState>();
@@ -446,6 +450,7 @@ export class EditorController implements SlotHost {
 
     // Active editor follows the active pane's active tab.
     const tab = this.activeTabOf(next);
+    if (prev.activePane !== next.activePane || this.activeTabOf(prev)?.id !== tab?.id) clearProjectViewLead();
     const slot = tab && isTextTab(tab) ? (this.slots.get(tab.id) ?? null) : null;
     if (slot !== this.activeSlot) this.setActiveSlot(slot, tab);
     this.publishContext();
@@ -495,6 +500,10 @@ export class EditorController implements SlotHost {
     clearTimeout(this.sessionTimer);
     const root = this.sessionRoot;
     if (!root) return;
+    if (this.forgottenSessions.has(root)) {
+      storeSession(root, null);
+      return;
+    }
     const files: Record<string, FileViewState> = Object.fromEntries(this.restoredViews);
     for (const slot of this.slots.values()) {
       if (slot.disposed) continue;
@@ -510,9 +519,34 @@ export class EditorController implements SlotHost {
     );
   }
 
+  /** Drops this window's saved tabs. Later saves keep them dropped until the close is undone. */
+  forgetSavedTabs() {
+    const root = this.sessionRoot ?? this.openSessionKey();
+    if (!root) return;
+    this.forgottenSessions.add(root);
+    if (this.sessionRoot === root) this.saveSession();
+    else storeSession(root, null);
+  }
+
+  /** Writes the open tabs again after {@link forgetSavedTabs}, when the close did not happen. */
+  keepSavedTabs() {
+    const root = this.sessionRoot;
+    if (!root || !this.forgottenSessions.delete(root)) return;
+    this.saveSession();
+  }
+
+  private openSessionKey(): string | null {
+    const s = useProject.getState();
+    if (s.project?.root) return s.project.root;
+    if (s.lightEdit) return LIGHT_EDIT_SESSION;
+    return null;
+  }
+
   /** Reopens the tabs, splits and carets saved for `root` (after the project opened). */
   async restoreSession(root: string) {
     this.sessionRoot = root;
+    // A window close dropped this session: the next open starts from the tabs opened now.
+    if (this.forgottenSessions.delete(root)) return;
     const session = loadSession(root);
     if (!session) return;
     const state = restoreTabsState(session, fileKey);
@@ -640,7 +674,11 @@ export class EditorController implements SlotHost {
         path: slot?.model.path ?? nonTextTab?.input.path ?? null,
         doc: slot?.model.doc ?? null,
       });
-      if (slot) this.recordNav(slot, true);
+      if (slot) {
+        // The editor is the context again: the navigation bar leaves the project view's node.
+        clearProjectViewLead();
+        this.recordNav(slot, true);
+      }
     }
     this.scheduleStatus();
   }
@@ -649,6 +687,7 @@ export class EditorController implements SlotHost {
 
   onFocus(slot: EditorSlot) {
     slot.model.lastFocused = slot;
+    clearProjectViewLead();
     const loc = this.locateTab(slot.tabId);
     if (loc) {
       const s = useTabs.getState();
@@ -824,7 +863,7 @@ export class EditorController implements SlotHost {
       ...(slot.model.virtual
         ? ([
             { kind: "separator" },
-            { label: "Copy Reference", run: () => void navigator.clipboard?.writeText(slot.model.path) },
+            { label: "Copy Reference", run: () => void writeClipboardText(slot.model.path) },
           ] as MenuItem[])
         : ([
             { kind: "separator" },
@@ -1910,7 +1949,9 @@ function openInMenu(path: string): MenuItem {
     label: "Open In",
     submenu: [
       { kind: "action", action: "navigate.selectIn", arg: { path }, label: "Project View" },
-      { kind: "action", action: "project.revealInFinder", arg: path, label: fileManagerName() },
+      ...(canRevealInFileManager()
+        ? [{ kind: "action" as const, action: "project.revealInFinder", arg: path, label: fileManagerName() }]
+        : []),
       { kind: "action", action: "project.openInTerminal", arg: path, label: "Terminal" },
       { kind: "separator" },
       ...menuGroupItems("openIn", { paths: [path] }),
@@ -1938,7 +1979,7 @@ function gitMenu(path: string): MenuItem {
       { kind: "separator" },
       { kind: "action", action: "vcs.annotate", arg: path, label: "Annotate with Git Blame" },
       { kind: "action", action: "vcs.showDiff", arg: [path], label: "Show Diff" },
-      { kind: "action", action: "vcs.compareWithBranch", arg: { path }, label: "Compare with Branch…" },
+      { kind: "action", action: "vcs.compareWithBranch", arg: { path } },
       { kind: "action", action: "vcs.showHistory", arg: [path], label: "Show History" },
       { kind: "action", action: "vcs.showHistoryForSelection", label: "Show History for Selection" },
       { kind: "action", action: "vcs.rollback", arg: [path], label: "Rollback…" },
@@ -1947,7 +1988,29 @@ function gitMenu(path: string): MenuItem {
       { kind: "action", action: "vcs.update", label: "Pull…" },
       { kind: "action", action: "vcs.fetch", label: "Fetch" },
       { kind: "separator" },
+      { kind: "action", action: "vcs.merge" },
+      { kind: "action", action: "vcs.rebase" },
+      { kind: "separator" },
       { kind: "action", action: "vcs.branches", label: "Branches…" },
+      { kind: "action", action: "vcs.newBranch" },
+      { kind: "action", action: "vcs.newTag" },
+      { kind: "action", action: "vcs.resetHead" },
+      { kind: "separator" },
+      { kind: "action", action: "vcs.stash" },
+      { kind: "action", action: "vcs.unstash" },
+      { kind: "separator" },
+      {
+        label: "GitHub",
+        icon: "github",
+        submenu: [
+          { kind: "action", action: "github.pullRequests" },
+          { kind: "action", action: "github.createPullRequest" },
+          { kind: "action", action: "github.checkoutPullRequest" },
+          { kind: "action", action: "github.openInBrowser" },
+        ],
+      },
+      { kind: "action", action: "vcs.manageRemotes" },
+      { kind: "action", action: "vcs.clone", label: "Clone…" },
     ],
   };
 }

@@ -2091,6 +2091,8 @@
   "Sign-off commit": "Podpisz zatwierdzenie (sign-off)",
   "Size": "Rozmiar",
   "Size:": "Rozmiar:",
+  "Previous": "Poprzedni",
+  "Next": "Następny",
   "Skip": "Pomiń",
   "Skip Commit": "Pomiń zatwierdzenie",
   "Skip if defined": "Pomiń, jeśli zdefiniowano",

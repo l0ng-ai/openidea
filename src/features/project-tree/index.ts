@@ -13,6 +13,7 @@ import {
   registerProjectViewRoot,
   registerToolWindow,
   registerUndoHandler,
+  setProjectViewLead,
   useLocalChanges,
   useProjectViewRoots,
 } from "@/workbench/contributions";
@@ -29,6 +30,7 @@ import {
   applyFsChange,
   dropOutlines,
   initProjectTree,
+  leadSelection,
   reloadAll,
   reloadLoadedDirs,
   setChangedFiles,
@@ -173,6 +175,14 @@ export function activate(): () => void {
     if (s.lists !== prev.lists) syncChanged();
   });
 
+  // IDEA's navigation bar shows the tree's current node while the tree is the
+  // user's context; the editor hands it back on focus or on a tab switch.
+  const publishLead = () => setProjectViewLead(leadSelection());
+  publishLead();
+  const unsubLead = useProjectTree.subscribe((s, prev) => {
+    if (s.selected !== prev.selected || s.lead !== prev.lead) publishLead();
+  });
+
   const disposers = [
     () => {
       clearTimeout(unityTimer);
@@ -182,6 +192,10 @@ export function activate(): () => void {
     () => clearTimeout(openTimer),
     unsubEditor,
     unsubDecorations,
+    () => {
+      unsubLead();
+      setProjectViewLead(null);
+    },
     unsubProject,
     unsubExtraRoots,
     unsubExcludes,
