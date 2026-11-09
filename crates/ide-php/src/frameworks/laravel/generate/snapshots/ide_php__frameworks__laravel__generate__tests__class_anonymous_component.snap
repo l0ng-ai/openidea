@@ -1,0 +1,8 @@
+---
+source: crates/ide-php/src/frameworks/laravel/generate/tests.rs
+expression: app.golden(&files)
+---
+== resources/views/components/forms/date-picker.blade.php
+<div>
+    <!-- components.forms.date-picker -->
+</div>

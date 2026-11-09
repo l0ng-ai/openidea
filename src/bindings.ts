@@ -368,6 +368,11 @@ export const commands = {
 	 */
 	phpLaravelNewModel: (spec: LaravelNewModel, templates: LaravelTemplate[], timestamp: string) => typedError<WorkspaceEdit, IdeError>(__TAURI_INVOKE("php_laravel_new_model", { spec, templates, timestamp })),
 	/**
+	 *  The edit of a Laravel class generator (controller, job, view, test…): the new files
+	 *  rendered from the file templates (`templates`: the user's edited ones).
+	 */
+	phpLaravelGenerateClass: (spec: LaravelNewClass, templates: LaravelTemplate[], timestamp: string) => typedError<WorkspaceEdit, IdeError>(__TAURI_INVOKE("php_laravel_generate_class", { spec, templates, timestamp })),
+	/**
 	 *  Reads the schema of the data source chosen in Settings › PHP › Laravel again for the
 	 *  native PHP engine (`None`: none chosen).
 	 */
@@ -4831,6 +4836,11 @@ export type LaravelGenerator = {
 	description: string,
 	/**  The names of the file templates it renders (`Laravel Model`). */
 	templates: string[],
+	/**
+	 *  The options its dialog asks for (`model`, `related`, `table`, `create`, `event`,
+	 *  `queued`, `api`, `backing`, `status`); empty for the New Model dialog.
+	 */
+	options: string[],
 };
 
 /**  A place in a file of the model view. */
@@ -4890,6 +4900,40 @@ export type LaravelModelView = {
 	scopes: LaravelModelMember[],
 	accessors: LaravelModelMember[],
 	related: LaravelRelatedClass[],
+};
+
+/**
+ *  What the dialog of a Laravel class generator (controller, job, view, test…) asks
+ *  for. Each generator reads the options its [`LaravelGenerator::options`] lists.
+ */
+export type LaravelNewClass = {
+	/**  The generator's id (`controller`, `migration`). */
+	generator: string,
+	/**
+	 *  The class name (`Admin/PostController`), view name (`posts.index`) or migration
+	 *  name (`add_votes_to_users_table`).
+	 */
+	name: string,
+	/**  The module; `None` = the one of the settings, empty = the application. */
+	module: string | null,
+	/**  The model (FQN or short name). */
+	model: string,
+	/**  The other model of a pivot table. */
+	related: string,
+	/**  A migration's table; empty = guessed from the name. */
+	table: string,
+	/**  The migration creates the table. */
+	create: boolean,
+	/**  The event a listener handles (FQN or short name). */
+	event: string,
+	/**  A queued job or listener. */
+	queued: boolean,
+	/**  An API resource controller. */
+	api: boolean,
+	/**  An enum's backing type: `string`, `int` or empty. */
+	backing: string,
+	/**  An HTTP exception's status; 0 = 500. */
+	status: number,
 };
 
 /**  A column the model view's **Add columns** button adds. */

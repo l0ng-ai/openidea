@@ -123,6 +123,20 @@ pub async fn php_laravel_new_model(
     ide_host::ops::laravel::php_laravel_new_model(&state.host, window.label(), spec, templates, timestamp).await
 }
 
+/// The edit of a Laravel class generator (controller, job, view, test…): the new files
+/// rendered from the file templates (`templates`: the user's edited ones).
+#[tauri::command]
+#[specta::specta]
+pub async fn php_laravel_generate_class(
+    window: Window,
+    state: State<'_, AppState>,
+    spec: ide_host::ops::laravel::LaravelNewClass,
+    templates: Vec<ide_host::ops::laravel::LaravelTemplate>,
+    timestamp: String,
+) -> IdeResult<ide_core::WorkspaceEdit> {
+    ide_host::ops::laravel::php_laravel_generate_class(&state.host, window.label(), spec, templates, timestamp).await
+}
+
 /// Reads the schema of the data source chosen in Settings › PHP › Laravel again for the
 /// native PHP engine (`None`: none chosen).
 #[tauri::command]

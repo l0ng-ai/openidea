@@ -30,6 +30,7 @@ import { serverLensExtension } from "./serverLens";
 import { CreateTranslationDialog, registerCreateTranslation } from "./createTranslation";
 import { ModelViewDialog, registerModelView } from "./modelView";
 import { NewModelDialog, registerLaravelGenerators } from "./laravelGenerate";
+import { NewClassDialog } from "./laravelGenerateClass";
 import { autoImportExtension } from "./autoImport";
 import { installAvailabilityEvents } from "./availability";
 import { registerActionsOnSave, registerFormatOnSave, registerLspActions } from "./actions";
@@ -88,8 +89,9 @@ export function activate(): () => void {
     // Laravel: the Eloquent model view, from the lens on a model class.
     registerOverlay({ id: "editor-lsp.modelViewDialog", component: ModelViewDialog }),
     registerModelView(),
-    // Laravel: the Generate menu, its actions and the New Model dialog.
+    // Laravel: the Generate menu, its actions, the New Model dialog and the other generators' one.
     registerOverlay({ id: "editor-lsp.newModelDialog", component: NewModelDialog }),
+    registerOverlay({ id: "editor-lsp.newClassDialog", component: NewClassDialog }),
     registerLaravelGenerators(),
     registerEditorBanner(outsideProjectBanner),
     registerStatusItem({ id: "editor-lsp.usagesStatus", align: "left", priority: 10, component: UsagesStatus }),

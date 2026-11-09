@@ -1,0 +1,40 @@
+---
+source: crates/ide-php/src/frameworks/laravel/generate/tests.rs
+expression: app.golden(&files)
+---
+== app/Http/Resources/PostResource.php
+<?php
+
+namespace App\Http\Resources;
+
+use Illuminate\Http\Request;
+use Illuminate\Http\Resources\Json\JsonResource;
+
+class PostResource extends JsonResource
+{
+    /**
+     * Transform the resource into an array.
+     *
+     * @return array<string, mixed>
+     */
+    public function toArray(Request $request): array
+    {
+        return [
+            'id' => $this->id,
+            'author_id' => $this->author_id,
+            'title' => $this->title,
+            'slug' => $this->slug,
+            'body' => $this->body,
+            'status' => $this->status,
+            'published_at' => $this->published_at,
+            'options' => $this->options,
+            'created_at' => $this->created_at,
+            'updated_at' => $this->updated_at,
+            'deleted_at' => $this->deleted_at,
+            'comments_count' => $this->comments_count,
+            'author' => $this->whenLoaded('author'),
+            'comments' => $this->whenLoaded('comments'),
+            'tags' => $this->whenLoaded('tags'),
+        ];
+    }
+}

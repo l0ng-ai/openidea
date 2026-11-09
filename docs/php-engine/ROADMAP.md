@@ -628,7 +628,7 @@ Runs after Plan 7. Before any 8.x phase, read [LARAVEL-ROADMAP.md](LARAVEL-ROADM
 
   Tests: generator snapshot tests (`insta`), and a dialog component test.
 
-- [ ] Phase 8.14: The other generators
+- [x] Phase 8.14: The other generators
       Add generators, all on the 8.13 framework:
   - **Classes:** controller, resource controller, middleware, Form Request, JSON resource and resource collection, factory, seeder, migration (create or update a table), event, listener, job, mail, notification, observer, policy, rule, exception, HTTP exception, service provider, console command, Blade component (class and anonymous), view, view composer, broadcasting channel, enum, pivot table migration
   - **Tests:** feature tests and unit tests

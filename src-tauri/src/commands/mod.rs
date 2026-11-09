@@ -194,6 +194,7 @@ pub fn builder() -> tauri_specta::Builder<tauri::Wry> {
         nav::php_laravel_add_columns,
         nav::php_laravel_generation_context,
         nav::php_laravel_new_model,
+        nav::php_laravel_generate_class,
         nav::php_laravel_refresh_schema,
         nav::find_files,
         nav::find_dirs,

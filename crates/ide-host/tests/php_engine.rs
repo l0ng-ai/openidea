@@ -651,7 +651,8 @@ async fn laravel_model_view_lens_and_commands() {
 async fn laravel_generators_context_and_new_model() {
     use ide_core::FileEdit;
     use ide_host::ops::laravel::{
-        LaravelNewModel, LaravelNewModelField, LaravelTemplate, php_laravel_generation_context, php_laravel_new_model,
+        LaravelNewClass, LaravelNewModel, LaravelNewModelField, LaravelTemplate, php_laravel_generate_class,
+        php_laravel_generation_context, php_laravel_new_model,
     };
     let tmp = tempfile::tempdir().unwrap();
     let base = dunce::canonicalize(tmp.path()).unwrap();
@@ -750,5 +751,41 @@ async fn laravel_generators_context_and_new_model() {
             .await
             .unwrap_err();
     assert!(err.message.contains("exists already"), "{err:?}");
+
+    // The other generators: a job with an edited template.
+    let listed = context.generators.iter().find(|g| g.id == "job").expect("the job generator");
+    assert_eq!(listed.options, ["queued"]);
+    let job = LaravelNewClass {
+        generator: "job".into(),
+        name: "SendReceipt".into(),
+        module: None,
+        model: String::new(),
+        related: String::new(),
+        table: String::new(),
+        create: false,
+        event: String::new(),
+        queued: true,
+        api: false,
+        backing: String::new(),
+        status: 0,
+    };
+    let templates = vec![LaravelTemplate { name: "Laravel Job".into(), body: "<?php // $CLASS$\n".into() }];
+    let edit =
+        php_laravel_generate_class(&host, "main", job.clone(), templates, "2024_06_01_120000".into()).await.unwrap();
+    let texts: Vec<(String, String)> = edit
+        .files
+        .iter()
+        .filter_map(|f| match f {
+            FileEdit::Edit { path, edits, .. } => Some((
+                path.to_string_lossy().replace('\\', "/").rsplit("shop/").next().unwrap().to_owned(),
+                edits[0].new_text.clone(),
+            )),
+            _ => None,
+        })
+        .collect();
+    assert_eq!(texts, [("app/Jobs/SendReceipt.php".to_owned(), "<?php // SendReceipt\n".to_owned())]);
+    let unknown = LaravelNewClass { generator: "nope".into(), ..job };
+    let err = php_laravel_generate_class(&host, "main", unknown, Vec::new(), "x".into()).await.unwrap_err();
+    assert!(err.message.contains("no generator"), "{err:?}");
     host.close_project("main");
 }

@@ -1,7 +1,8 @@
 /**
  * Laravel code generation: the Laravel › Generate menu (project view, editor and New
  * menus), an action per generator (category "Laravel Generators", which Search
- * Everywhere's Laravel Generators tab lists), and the New Model dialog. Generators
+ * Everywhere's Laravel Generators tab lists), and the New Model dialog (the other
+ * generators' dialog is in `laravelGenerateClass.tsx`). Generators
  * run in the native PHP engine (`php_laravel_new_model`), which renders the "Laravel …"
  * code templates of Settings › Editor › File and Code Templates (the user's edited
  * bodies go with the request) and follows Settings › PHP › Laravel › Code generation.
@@ -27,6 +28,7 @@ import { whenAllSynced } from "@/editor/api";
 import { useFileTemplates } from "@/features/templates/files/store";
 import { LARAVEL_TEMPLATE_PREFIX } from "@/features/templates/files/builtins";
 import { COLUMN_TYPES, migrationTimestamp } from "./modelView";
+import { openNewClass } from "./laravelGenerateClass";
 import styles from "./laravelGenerate.module.css";
 
 /** The category of the generator actions: Search Everywhere's Laravel Generators tab. */
@@ -34,6 +36,119 @@ export const LARAVEL_GENERATORS_CATEGORY = "Laravel Generators";
 
 /** The action opening a generator's dialog. */
 export const generatorAction = (id: string) => `laravel.generate.${id}`;
+
+/** A class generator of the front end: its action and dialog titles and search keywords. */
+export interface ClassGeneratorEntry {
+  id: string;
+  title: string;
+  /** The dialog's title. */
+  dialog: string;
+  keywords: string[];
+}
+
+/** The class generators, in menu order (the engine's ids); `laravelGenerateClass.tsx` has their dialog. */
+export const CLASS_GENERATORS: readonly ClassGeneratorEntry[] = [
+  { id: "controller", title: "New Controller…", dialog: "New Controller", keywords: ["make:controller"] },
+  {
+    id: "resource-controller",
+    title: "New Resource Controller…",
+    dialog: "New Resource Controller",
+    keywords: ["make:controller", "resource", "api"],
+  },
+  { id: "middleware", title: "New Middleware…", dialog: "New Middleware", keywords: ["make:middleware", "http"] },
+  {
+    id: "request",
+    title: "New Form Request…",
+    dialog: "New Form Request",
+    keywords: ["make:request", "validation", "rules"],
+  },
+  {
+    id: "resource",
+    title: "New JSON Resource…",
+    dialog: "New JSON Resource",
+    keywords: ["make:resource", "api", "transformer"],
+  },
+  {
+    id: "resource-collection",
+    title: "New Resource Collection…",
+    dialog: "New Resource Collection",
+    keywords: ["make:resource", "collection"],
+  },
+  { id: "factory", title: "New Factory…", dialog: "New Factory", keywords: ["make:factory", "faker", "testing"] },
+  { id: "seeder", title: "New Seeder…", dialog: "New Seeder", keywords: ["make:seeder", "database"] },
+  {
+    id: "migration",
+    title: "New Migration…",
+    dialog: "New Migration",
+    keywords: ["make:migration", "schema", "table", "database"],
+  },
+  {
+    id: "pivot-migration",
+    title: "New Pivot Table Migration…",
+    dialog: "New Pivot Table Migration",
+    keywords: ["make:migration", "belongsToMany", "pivot"],
+  },
+  { id: "event", title: "New Event…", dialog: "New Event", keywords: ["make:event", "broadcast"] },
+  { id: "listener", title: "New Listener…", dialog: "New Listener", keywords: ["make:listener", "event", "queue"] },
+  { id: "job", title: "New Job…", dialog: "New Job", keywords: ["make:job", "queue"] },
+  { id: "mail", title: "New Mailable…", dialog: "New Mailable", keywords: ["make:mail", "email", "mail"] },
+  { id: "notification", title: "New Notification…", dialog: "New Notification", keywords: ["make:notification"] },
+  { id: "observer", title: "New Observer…", dialog: "New Observer", keywords: ["make:observer", "model", "events"] },
+  { id: "policy", title: "New Policy…", dialog: "New Policy", keywords: ["make:policy", "authorization", "gate"] },
+  { id: "rule", title: "New Validation Rule…", dialog: "New Validation Rule", keywords: ["make:rule", "validation"] },
+  { id: "exception", title: "New Exception…", dialog: "New Exception", keywords: ["make:exception", "error"] },
+  {
+    id: "http-exception",
+    title: "New HTTP Exception…",
+    dialog: "New HTTP Exception",
+    keywords: ["make:exception", "status", "error"],
+  },
+  {
+    id: "provider",
+    title: "New Service Provider…",
+    dialog: "New Service Provider",
+    keywords: ["make:provider", "container"],
+  },
+  {
+    id: "command",
+    title: "New Console Command…",
+    dialog: "New Console Command",
+    keywords: ["make:command", "artisan", "console"],
+  },
+  {
+    id: "component",
+    title: "New Blade Component…",
+    dialog: "New Blade Component",
+    keywords: ["make:component", "blade", "view"],
+  },
+  {
+    id: "anonymous-component",
+    title: "New Anonymous Blade Component…",
+    dialog: "New Anonymous Blade Component",
+    keywords: ["make:component", "blade"],
+  },
+  { id: "view", title: "New Blade View…", dialog: "New Blade View", keywords: ["make:view", "blade", "template"] },
+  { id: "view-composer", title: "New View Composer…", dialog: "New View Composer", keywords: ["composer", "view"] },
+  {
+    id: "channel",
+    title: "New Broadcasting Channel…",
+    dialog: "New Broadcasting Channel",
+    keywords: ["make:channel", "broadcast"],
+  },
+  { id: "enum", title: "New Enum…", dialog: "New Enum", keywords: ["make:enum", "backed"] },
+  {
+    id: "feature-test",
+    title: "New Feature Test…",
+    dialog: "New Feature Test",
+    keywords: ["make:test", "phpunit", "pest"],
+  },
+  {
+    id: "unit-test",
+    title: "New Unit Test…",
+    dialog: "New Unit Test",
+    keywords: ["make:test", "phpunit", "pest", "unit"],
+  },
+];
 
 /** The generators known to the front end, with their dialogs. */
 export const GENERATORS: ReadonlyArray<{ id: string; title: string; keywords: string[]; open(): void }> = [
@@ -43,6 +158,12 @@ export const GENERATORS: ReadonlyArray<{ id: string; title: string; keywords: st
     keywords: ["laravel", "model", "eloquent", "migration", "factory", "seeder", "controller", "policy", "make:model"],
     open: () => openNewModel(),
   },
+  ...CLASS_GENERATORS.map((g) => ({
+    id: g.id,
+    title: g.title,
+    keywords: ["laravel", "generate", ...g.keywords],
+    open: () => openNewClass(g.id),
+  })),
 ];
 
 export const RELATION_KINDS = ["belongsTo", "hasOne", "hasMany", "belongsToMany", "morphMany", "morphTo"] as const;

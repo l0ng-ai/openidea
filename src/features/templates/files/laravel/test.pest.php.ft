@@ -1,0 +1,13 @@
+<?php
+
+#if ($FEATURE$)
+test('example', function () {
+    $response = $this->get('/');
+
+    $response->assertStatus(200);
+});
+#else
+test('example', function () {
+    expect(true)->toBeTrue();
+});
+#end

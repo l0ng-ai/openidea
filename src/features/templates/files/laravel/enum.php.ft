@@ -1,0 +1,12 @@
+<?php
+
+namespace $NAMESPACE$;
+
+#if ($BACKING$)
+enum $CLASS$: $BACKING$
+#else
+enum $CLASS$
+#end
+{
+    //
+}

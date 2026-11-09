@@ -13,6 +13,12 @@ class $CLASS$ extends JsonResource
      */
     public function toArray(Request $request): array
     {
+        #if ($FIELDS$)
+        return [
+            $FIELDS$
+        ];
+        #else
         return parent::toArray($request);
+        #end
     }
 }

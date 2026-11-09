@@ -1,0 +1,31 @@
+---
+source: crates/ide-php/src/frameworks/laravel/generate/tests.rs
+expression: app.golden(&files)
+---
+== app/Exceptions/InvalidOrderException.php
+<?php
+
+namespace App\Exceptions;
+
+use Exception;
+use Illuminate\Http\Request;
+use Illuminate\Http\Response;
+
+class InvalidOrderException extends Exception
+{
+    /**
+     * Report the exception.
+     */
+    public function report(): void
+    {
+        //
+    }
+
+    /**
+     * Render the exception as an HTTP response.
+     */
+    public function render(Request $request): Response
+    {
+        return response(status: 500);
+    }
+}

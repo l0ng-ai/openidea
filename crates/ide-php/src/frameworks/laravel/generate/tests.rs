@@ -261,8 +261,299 @@ fn the_generation_context_lists_modules_and_models() {
     assert_eq!(context.modules, ["Billing"]);
     assert_eq!(context.default_module.as_deref(), Some("Billing"));
     assert_eq!(context.models, ["App\\Models\\Comment", "App\\Models\\Post", "App\\Models\\Tag", "App\\Models\\User"]);
-    assert_eq!(context.generators.iter().map(|g| g.id.as_str()).collect::<Vec<_>>(), ["model"]);
-    assert_eq!(context.generators[0].templates.len(), BUILTIN_TEMPLATES.len());
+    let ids: Vec<&str> = context.generators.iter().map(|g| g.id.as_str()).collect();
+    assert_eq!(ids[0], "model");
+    assert_eq!(ids[1..], CLASS_GENERATORS.iter().map(|g| g.id).collect::<Vec<_>>()[..]);
+    assert_eq!(context.generators[0].templates.len(), 10);
+    assert!(context.generators[0].options.is_empty());
+    let listener = context.generators.iter().find(|g| g.id == "listener").unwrap();
+    assert_eq!(listener.options, ["event", "queued"]);
+    // Every template is rendered by some generator.
+    for template in BUILTIN_TEMPLATES {
+        assert!(
+            context.generators.iter().any(|g| g.templates.iter().any(|name| name == template.name)),
+            "{}",
+            template.name
+        );
+    }
+}
+
+/// `(relative path, new texts)` of each edited file.
+type FileTexts = Vec<(String, Vec<String>)>;
+
+impl App {
+    fn class(&self, spec: &NewClass) -> Result<Vec<GeneratedFile>, String> {
+        self.engine.laravel_generate_class_files(spec, &TemplateSet::default(), TIMESTAMP)
+    }
+
+    /// Opens `rel` with `source` (a `/*|*/` caret) and answers the context
+    /// actions starting with `prefix`: `(title, [(path, new texts)])`.
+    fn generate_actions(&self, rel: &str, source: &str, prefix: &str) -> Vec<(String, FileTexts)> {
+        let at = source.find("/*|*/").unwrap();
+        let text = source.replace("/*|*/", "");
+        let pos = crate::syntax::LineIndex::new(&text).pos(at as u32);
+        let doc = ide_core::DocId(1);
+        self.engine.document_opened(doc, &self.root.join(rel), 1, &text);
+        let actions = self
+            .engine
+            .code_actions(doc, ide_core::Range::new(pos, pos), &[crate::imports::REWRITE.to_owned()])
+            .unwrap()
+            .into_iter()
+            .filter(|action| action.title.starts_with(prefix))
+            .map(|action| {
+                let files = action
+                    .edit
+                    .files
+                    .iter()
+                    .filter_map(|file| match file {
+                        FileEdit::Edit { path, edits, .. } => {
+                            Some((self.relative(path.as_ref()), edits.iter().map(|e| e.new_text.clone()).collect()))
+                        }
+                        _ => None,
+                    })
+                    .collect();
+                (action.title, files)
+            })
+            .collect();
+        self.engine.document_closed(doc);
+        actions
+    }
+}
+
+fn class_spec(generator: &str, name: &str) -> NewClass {
+    NewClass { generator: generator.to_owned(), name: name.to_owned(), ..NewClass::default() }
+}
+
+/// One snapshot per generator: its files for a typical request.
+#[test]
+fn every_class_generator() {
+    let app = App::new();
+    let cases: Vec<(&str, NewClass, &[&str])> = vec![
+        (
+            "controller",
+            class_spec("controller", "Admin/Dashboard"),
+            &["app/Http/Controllers/Admin/DashboardController.php"],
+        ),
+        (
+            "resource_controller",
+            NewClass { model: "Tag".to_owned(), ..class_spec("resource-controller", "TagController") },
+            &["app/Http/Controllers/TagController.php"],
+        ),
+        (
+            "resource_controller_api_without_model",
+            NewClass { api: true, ..class_spec("resource-controller", "Report") },
+            &["app/Http/Controllers/ReportController.php"],
+        ),
+        ("middleware", class_spec("middleware", "EnsureTokenIsValid"), &["app/Http/Middleware/EnsureTokenIsValid.php"]),
+        ("request", class_spec("request", "StoreTag"), &["app/Http/Requests/StoreTagRequest.php"]),
+        (
+            "resource",
+            NewClass { model: "Post".to_owned(), ..class_spec("resource", "Post") },
+            &["app/Http/Resources/PostResource.php"],
+        ),
+        ("resource_collection", class_spec("resource-collection", "Post"), &["app/Http/Resources/PostCollection.php"]),
+        ("factory", class_spec("factory", "Comment"), &["database/factories/CommentFactory.php"]),
+        (
+            "seeder",
+            NewClass { model: "Post".to_owned(), ..class_spec("seeder", "Post") },
+            &["database/seeders/PostSeeder.php"],
+        ),
+        (
+            "migration_create",
+            class_spec("migration", "create_flights_table"),
+            &["database/migrations/2024_06_01_120000_create_flights_table.php"],
+        ),
+        (
+            "migration_update",
+            class_spec("migration", "add_votes_to_users_table"),
+            &["database/migrations/2024_06_01_120000_add_votes_to_users_table.php"],
+        ),
+        (
+            "pivot_migration",
+            NewClass {
+                model: "Tag".to_owned(),
+                related: "App\\Models\\Post".to_owned(),
+                ..class_spec("pivot-migration", "")
+            },
+            &["database/migrations/2024_06_01_120000_create_post_tag_table.php"],
+        ),
+        ("event", class_spec("event", "PodcastProcessed"), &["app/Events/PodcastProcessed.php"]),
+        (
+            "listener",
+            NewClass { event: "PodcastProcessed".to_owned(), ..class_spec("listener", "SendPodcastNotification") },
+            &["app/Listeners/SendPodcastNotification.php"],
+        ),
+        (
+            "listener_sync",
+            NewClass { queued: false, ..class_spec("listener", "LogPodcast") },
+            &["app/Listeners/LogPodcast.php"],
+        ),
+        ("job", class_spec("job", "ProcessPodcast"), &["app/Jobs/ProcessPodcast.php"]),
+        ("job_sync", NewClass { queued: false, ..class_spec("job", "TidyUp") }, &["app/Jobs/TidyUp.php"]),
+        ("mail", class_spec("mail", "OrderShipped"), &["app/Mail/OrderShipped.php"]),
+        ("notification", class_spec("notification", "InvoicePaid"), &["app/Notifications/InvoicePaid.php"]),
+        ("observer", class_spec("observer", "Comment"), &["app/Observers/CommentObserver.php"]),
+        ("policy", class_spec("policy", "Comment"), &["app/Policies/CommentPolicy.php"]),
+        ("policy_plain", class_spec("policy", "Billing"), &["app/Policies/BillingPolicy.php"]),
+        ("rule", class_spec("rule", "Uppercase"), &["app/Rules/Uppercase.php"]),
+        ("exception", class_spec("exception", "InvalidOrderException"), &["app/Exceptions/InvalidOrderException.php"]),
+        (
+            "http_exception",
+            NewClass { status: 418, ..class_spec("http-exception", "TeapotException") },
+            &["app/Exceptions/TeapotException.php"],
+        ),
+        ("provider", class_spec("provider", "RiakServiceProvider"), &["app/Providers/RiakServiceProvider.php"]),
+        ("command", class_spec("command", "SendEmails"), &["app/Console/Commands/SendEmails.php"]),
+        (
+            "component",
+            class_spec("component", "Forms/InputField"),
+            &["app/View/Components/Forms/InputField.php", "resources/views/components/forms/input-field.blade.php"],
+        ),
+        (
+            "anonymous_component",
+            class_spec("anonymous-component", "forms.DatePicker"),
+            &["resources/views/components/forms/date-picker.blade.php"],
+        ),
+        ("view", class_spec("view", "posts/edit"), &["resources/views/posts/edit.blade.php"]),
+        ("view_composer", class_spec("view-composer", "Profile"), &["app/View/Composers/ProfileComposer.php"]),
+        ("channel", class_spec("channel", "Order"), &["app/Broadcasting/OrderChannel.php"]),
+        ("enum", NewClass { backing: "string".to_owned(), ..class_spec("enum", "Suit") }, &["app/Enums/Suit.php"]),
+        ("feature_test", class_spec("feature-test", "UserTest"), &["tests/Feature/UserTest.php"]),
+        ("unit_test", class_spec("unit-test", "Money/Parser"), &["tests/Unit/Money/ParserTest.php"]),
+    ];
+    let mut covered: Vec<&str> = Vec::new();
+    for (snapshot, spec, paths) in cases {
+        let files = app.class(&spec).unwrap_or_else(|e| panic!("{snapshot}: {e}"));
+        assert_eq!(app.paths(&files), paths, "{snapshot}");
+        insta::assert_snapshot!(format!("class_{snapshot}"), app.golden(&files));
+        covered.push(class_generator(&spec.generator).unwrap().id);
+    }
+    for generator in CLASS_GENERATORS {
+        assert!(covered.contains(&generator.id), "no snapshot of '{}'", generator.id);
+    }
+}
+
+#[test]
+fn class_generators_in_a_module_and_with_settings() {
+    let app = App::new().with_generation(LaravelCodeGeneration {
+        module: "Billing".to_owned(),
+        policy_suffix: String::new(),
+        type_hints: false,
+        ..LaravelCodeGeneration::default()
+    });
+    let files = app.class(&class_spec("job", "ChargeCard")).unwrap();
+    assert_eq!(app.paths(&files), ["Modules/Billing/Jobs/ChargeCard.php"]);
+    assert!(files[0].text.contains("namespace Modules\\Billing\\Jobs;"), "{}", files[0].text);
+    assert!(files[0].text.contains("public function handle()\n"), "{}", files[0].text);
+    let files = app.class(&class_spec("component", "Total")).unwrap();
+    assert_eq!(
+        app.paths(&files),
+        ["Modules/Billing/View/Components/Total.php", "Modules/Billing/resources/views/components/total.blade.php"]
+    );
+    assert!(files[0].text.contains("return view('billing::components.total');"), "{}", files[0].text);
+    let files = app.class(&class_spec("migration", "create_invoices_table")).unwrap();
+    assert_eq!(app.paths(&files), ["Modules/Billing/database/migrations/2024_06_01_120000_create_invoices_table.php"]);
+    let files = app.class(&class_spec("feature-test", "Invoice")).unwrap();
+    assert_eq!(app.paths(&files), ["Modules/Billing/tests/Feature/InvoiceTest.php"]);
+    assert!(files[0].text.contains("namespace Modules\\Billing\\Tests\\Feature;"), "{}", files[0].text);
+    // An empty policy suffix, and the application chosen in the dialog.
+    let files = app.class(&NewClass { module: Some(String::new()), ..class_spec("policy", "Tag") }).unwrap();
+    assert_eq!(app.paths(&files), ["app/Policies/Tag.php"]);
+    // A migration with an explicit table.
+    let files = app
+        .class(&NewClass {
+            table: "posts".to_owned(),
+            create: false,
+            module: Some(String::new()),
+            ..class_spec("migration", "tidy posts")
+        })
+        .unwrap();
+    assert_eq!(app.paths(&files), ["database/migrations/2024_06_01_120000_tidy_posts.php"]);
+    assert!(files[0].text.contains("Schema::table('posts'"), "{}", files[0].text);
+}
+
+#[test]
+fn providers_are_registered_and_pest_tests_detected() {
+    let app = App::new();
+    let edit =
+        app.engine.laravel_generate_class(&class_spec("provider", "Riak"), &TemplateSet::default(), TIMESTAMP).unwrap();
+    let registration = edit
+        .files
+        .iter()
+        .find_map(|file| match file {
+            FileEdit::Edit { path, edits, .. } if app.relative(path.as_ref()) == "bootstrap/providers.php" => {
+                Some(edits[0].new_text.clone())
+            }
+            _ => None,
+        })
+        .expect("the registration");
+    assert_eq!(registration, "\n    App\\Providers\\Riak::class,");
+
+    std::fs::create_dir_all(app.root.join("tests")).unwrap();
+    std::fs::write(app.root.join("tests/Pest.php"), "<?php\n").unwrap();
+    let files = app.class(&class_spec("unit-test", "Money")).unwrap();
+    assert_eq!(files[0].text, "<?php\n\ntest('example', function () {\n    expect(true)->toBeTrue();\n});\n");
+}
+
+#[test]
+fn invalid_class_requests_fail_with_a_reason() {
+    let app = App::new();
+    let fails = |spec: NewClass| app.class(&spec).unwrap_err();
+    assert!(fails(class_spec("nothing", "X")).contains("no generator 'nothing'"));
+    assert!(fails(class_spec("job", "1Job")).contains("not a valid class name"));
+    assert!(fails(class_spec("controller", "Post")).contains("exists already"));
+    assert!(fails(class_spec("view", "posts/index")).contains("exists already"));
+    assert!(fails(class_spec("view", "posts..x")).contains("not a valid view name"));
+    assert!(fails(class_spec("migration", "tidy_up")).contains("Name the table"));
+    assert!(fails(class_spec("migration", "")).contains("not a valid migration name"));
+    assert!(fails(class_spec("pivot-migration", "")).contains("two models"));
+    assert!(
+        fails(NewClass { model: "Post".to_owned(), related: "Post".to_owned(), ..class_spec("pivot-migration", "") })
+            .contains("two different models")
+    );
+    assert!(fails(NewClass { backing: "float".to_owned(), ..class_spec("enum", "Suit") }).contains("string or int"));
+    assert!(fails(NewClass { status: 99, ..class_spec("http-exception", "Odd") }).contains("not an HTTP status"));
+    assert!(fails(NewClass { module: Some("Shop".to_owned()), ..class_spec("job", "X") }).contains("no module 'Shop'"));
+}
+
+#[test]
+fn generate_actions_inside_a_model() {
+    let app = App::new();
+    let comment = std::fs::read_to_string(app.root.join("app/Models/Comment.php")).unwrap();
+    let source = comment.replacen("    protected $fillable", "    /*|*/protected $fillable", 1);
+    let rel = "app/Models/Comment.php";
+
+    let resource = app.generate_actions(rel, &source, "Generate JSON resource");
+    assert_eq!(resource.len(), 1, "{resource:?}");
+    assert_eq!(resource[0].0, "Generate JSON resource from 'Comment'");
+    assert_eq!(resource[0].1[0].0, "app/Http/Resources/CommentResource.php");
+    insta::assert_snapshot!("from_model_resource", resource[0].1[0].1[0]);
+
+    let factory = app.generate_actions(rel, &source, "Generate factory");
+    assert_eq!(factory.len(), 1, "{factory:?}");
+    assert_eq!(factory[0].0, "Generate factory from 'Comment'");
+    assert_eq!(factory[0].1[0].0, "database/factories/CommentFactory.php");
+    insta::assert_snapshot!("from_model_factory", factory[0].1[0].1[0]);
+
+    let fillable = app.generate_actions(rel, &source, "Add all fields");
+    assert_eq!(
+        fillable,
+        [("Add all fields to $fillable".to_owned(), vec![(rel.to_owned(), vec![", 'post_id', 'user_id'".to_owned()])])]
+    );
+
+    // Post has a factory, and everything but `options`/`author_id`… is
+    // fillable already: no factory action.
+    let post = std::fs::read_to_string(app.root.join("app/Models/Post.php")).unwrap();
+    let source = post.replacen("    use SoftDeletes;", "    use SoftDeletes;/*|*/", 1);
+    assert!(app.generate_actions("app/Models/Post.php", &source, "Generate factory").is_empty());
+    assert_eq!(app.generate_actions("app/Models/Post.php", &source, "Generate JSON resource").len(), 1);
+
+    // Nothing outside a model.
+    let controller = std::fs::read_to_string(app.root.join("app/Http/Controllers/HomeController.php")).unwrap();
+    let at = controller.find('{').unwrap() + 1;
+    let source = format!("{}/*|*/{}", &controller[..at], &controller[at..]);
+    assert!(app.generate_actions("app/Http/Controllers/HomeController.php", &source, "Generate").is_empty());
+    assert!(app.generate_actions("app/Http/Controllers/HomeController.php", &source, "Add all fields").is_empty());
 }
 
 #[test]

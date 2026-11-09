@@ -10,6 +10,29 @@ import LARAVEL_API_CONTROLLER from "./laravel/controller.api.php.ft?raw";
 import LARAVEL_FORM_REQUEST from "./laravel/request.php.ft?raw";
 import LARAVEL_JSON_RESOURCE from "./laravel/resource.php.ft?raw";
 import LARAVEL_POLICY from "./laravel/policy.php.ft?raw";
+import LARAVEL_PLAIN_POLICY from "./laravel/policy.plain.php.ft?raw";
+import LARAVEL_MIDDLEWARE from "./laravel/middleware.php.ft?raw";
+import LARAVEL_RESOURCE_COLLECTION from "./laravel/resource.collection.php.ft?raw";
+import LARAVEL_UPDATE_MIGRATION from "./laravel/migration.update.php.ft?raw";
+import LARAVEL_EVENT from "./laravel/event.php.ft?raw";
+import LARAVEL_LISTENER from "./laravel/listener.php.ft?raw";
+import LARAVEL_JOB from "./laravel/job.php.ft?raw";
+import LARAVEL_MAIL from "./laravel/mail.php.ft?raw";
+import LARAVEL_NOTIFICATION from "./laravel/notification.php.ft?raw";
+import LARAVEL_OBSERVER from "./laravel/observer.php.ft?raw";
+import LARAVEL_RULE from "./laravel/rule.php.ft?raw";
+import LARAVEL_EXCEPTION from "./laravel/exception.php.ft?raw";
+import LARAVEL_HTTP_EXCEPTION from "./laravel/exception.http.php.ft?raw";
+import LARAVEL_PROVIDER from "./laravel/provider.php.ft?raw";
+import LARAVEL_COMMAND from "./laravel/command.php.ft?raw";
+import LARAVEL_COMPONENT from "./laravel/component.php.ft?raw";
+import LARAVEL_COMPONENT_VIEW from "./laravel/component.blade.php.ft?raw";
+import LARAVEL_VIEW from "./laravel/view.blade.php.ft?raw";
+import LARAVEL_VIEW_COMPOSER from "./laravel/composer.php.ft?raw";
+import LARAVEL_CHANNEL from "./laravel/channel.php.ft?raw";
+import LARAVEL_ENUM from "./laravel/enum.php.ft?raw";
+import LARAVEL_TEST from "./laravel/test.php.ft?raw";
+import LARAVEL_PEST_TEST from "./laravel/test.pest.php.ft?raw";
 
 /** Includes tab: fragments file templates pull in with `#parse("…")`. */
 export const BUILTIN_INCLUDES: readonly TemplateFragment[] = [{ name: "File Header", body: "" }];
@@ -50,14 +73,15 @@ export const BUILTIN_CODE_TEMPLATES: readonly TemplateFragment[] = [
 ];
 
 /**
- * The templates of the Laravel generators (Laravel › Generate › Model…). The native
+ * The templates of the Laravel generators (Laravel › Generate › Model, Controller, Job…). The native
  * PHP engine renders them (`ide_php::frameworks::laravel::generate::template`, which
  * includes the same files as its defaults): `$NAME$` variables, a variable alone on a
  * line expands to indented lines or disappears, and `#if ($NAME$)` / `#else` / `#end`
  * lines keep or drop the lines between them.
  */
 function laravelCodeTemplates(): TemplateFragment[] {
-  const model = "Laravel › Generate › Model";
+  const generate = "Laravel › Generate";
+  const model = `${generate} › Model`;
   return [
     { name: "Laravel Model", description: model, body: LARAVEL_MODEL },
     { name: "Laravel Migration", description: `${model} › Migration`, body: LARAVEL_MIGRATION },
@@ -73,6 +97,41 @@ function laravelCodeTemplates(): TemplateFragment[] {
     { name: "Laravel Form Request", description: `${model} › Form Requests`, body: LARAVEL_FORM_REQUEST },
     { name: "Laravel JSON Resource", description: `${model} › JSON resource`, body: LARAVEL_JSON_RESOURCE },
     { name: "Laravel Policy", description: `${model} › Policy`, body: LARAVEL_POLICY },
+    { name: "Laravel Plain Policy", description: `${generate} › Policy (no model)`, body: LARAVEL_PLAIN_POLICY },
+    { name: "Laravel Middleware", description: `${generate} › Middleware`, body: LARAVEL_MIDDLEWARE },
+    {
+      name: "Laravel Resource Collection",
+      description: `${generate} › Resource Collection`,
+      body: LARAVEL_RESOURCE_COLLECTION,
+    },
+    {
+      name: "Laravel Update Migration",
+      description: `${generate} › Migration (update a table)`,
+      body: LARAVEL_UPDATE_MIGRATION,
+    },
+    { name: "Laravel Event", description: `${generate} › Event`, body: LARAVEL_EVENT },
+    { name: "Laravel Listener", description: `${generate} › Listener`, body: LARAVEL_LISTENER },
+    { name: "Laravel Job", description: `${generate} › Job`, body: LARAVEL_JOB },
+    { name: "Laravel Mail", description: `${generate} › Mailable`, body: LARAVEL_MAIL },
+    { name: "Laravel Notification", description: `${generate} › Notification`, body: LARAVEL_NOTIFICATION },
+    { name: "Laravel Observer", description: `${generate} › Observer`, body: LARAVEL_OBSERVER },
+    { name: "Laravel Rule", description: `${generate} › Validation Rule`, body: LARAVEL_RULE },
+    { name: "Laravel Exception", description: `${generate} › Exception`, body: LARAVEL_EXCEPTION },
+    { name: "Laravel HTTP Exception", description: `${generate} › HTTP Exception`, body: LARAVEL_HTTP_EXCEPTION },
+    { name: "Laravel Service Provider", description: `${generate} › Service Provider`, body: LARAVEL_PROVIDER },
+    { name: "Laravel Console Command", description: `${generate} › Console Command`, body: LARAVEL_COMMAND },
+    { name: "Laravel Component", description: `${generate} › Blade Component`, body: LARAVEL_COMPONENT },
+    {
+      name: "Laravel Component View",
+      description: `${generate} › Blade Component (view)`,
+      body: LARAVEL_COMPONENT_VIEW,
+    },
+    { name: "Laravel View", description: `${generate} › Blade View`, body: LARAVEL_VIEW },
+    { name: "Laravel View Composer", description: `${generate} › View Composer`, body: LARAVEL_VIEW_COMPOSER },
+    { name: "Laravel Channel", description: `${generate} › Broadcasting Channel`, body: LARAVEL_CHANNEL },
+    { name: "Laravel Enum", description: `${generate} › Enum`, body: LARAVEL_ENUM },
+    { name: "Laravel Test", description: `${generate} › Feature/Unit Test (PHPUnit)`, body: LARAVEL_TEST },
+    { name: "Laravel Pest Test", description: `${generate} › Feature/Unit Test (Pest)`, body: LARAVEL_PEST_TEST },
   ];
 }
 

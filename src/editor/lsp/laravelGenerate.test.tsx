@@ -44,7 +44,7 @@ const context: LaravelGenerationContext = {
   modules: ["Billing"],
   defaultModule: null,
   models: ["App\\Models\\Post", "App\\Models\\User"],
-  generators: [{ id: "model", title: "Model", description: "", templates: ["Laravel Model"] }],
+  generators: [{ id: "model", title: "Model", description: "", templates: ["Laravel Model"], options: [] }],
 };
 
 const edit: WorkspaceEdit = {
@@ -152,8 +152,12 @@ describe("Laravel generators", () => {
       { id: "other", title: "New Model Thing", category: "File", run: () => {} },
     ];
     const opts = { isEnabled: () => true, recent: [] };
-    expect(matchGenerators(actions, "", opts).map((i) => i.id)).toEqual(["laravel.generate.model"]);
-    expect(matchGenerators(actions, "model", opts).map((i) => i.id)).toEqual(["laravel.generate.model"]);
+    const all = matchGenerators(actions, "", opts).map((i) => i.id);
+    expect(all).toHaveLength(GENERATORS.length);
+    expect(all).toContain("laravel.generate.model");
+    expect(all).not.toContain("other");
+    expect(matchGenerators(actions, "eloquent model", opts).map((i) => i.id)).toEqual(["laravel.generate.model"]);
+    expect(matchGenerators(actions, "new job", opts).map((i) => i.id)).toContain("laravel.generate.job");
     expect(matchGenerators(actions, "zzz", opts)).toEqual([]);
   });
 

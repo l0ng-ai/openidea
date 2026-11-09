@@ -178,7 +178,7 @@ fn cast_of(ty: &str) -> Option<&'static str> {
 }
 
 /// A factory value for `field`, by name, then type.
-fn fake_value(field: &ModelField) -> String {
+pub(super) fn fake_value(field: &ModelField) -> String {
     let name = field.name.to_ascii_lowercase();
     let by_name = match name.as_str() {
         "email" | "email_address" => Some("fake()->unique()->safeEmail()"),

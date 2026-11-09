@@ -272,7 +272,7 @@ pub fn append_to_array(text: &str, open: usize, close: usize, items: &[String]) 
 
 impl PhpEngine {
     /// The model class `class` (a subclass of Eloquent's `Model`).
-    fn eloquent_model(&self, class: &str) -> Option<std::sync::Arc<ClassModel>> {
+    pub(crate) fn eloquent_model(&self, class: &str) -> Option<std::sync::Arc<ClassModel>> {
         let model = self.resolver().class_model(class.trim_start_matches('\\'))?;
         (model.kind() == ClassKind::Class && model.fqn() != MODEL && model.is_subclass_of(MODEL)).then_some(model)
     }
@@ -540,7 +540,7 @@ impl PhpEngine {
     /// The edit adding `names` to `$fillable` of `model` (its own
     /// declaration), or declaring the property when the model has neither
     /// it nor `$guarded`.
-    fn fillable_edit(&self, model: &ClassModel, names: &[&str]) -> Option<FileEdit> {
+    pub(crate) fn fillable_edit(&self, model: &ClassModel, names: &[&str]) -> Option<FileEdit> {
         let location = self.class_location(model)?;
         let text = self.text_of(&location.path)?;
         let lines = LineIndex::new(&text);

@@ -1,0 +1,27 @@
+---
+source: crates/ide-php/src/frameworks/laravel/generate/tests.rs
+expression: app.golden(&files)
+---
+== app/Listeners/LogPodcast.php
+<?php
+
+namespace App\Listeners;
+
+class LogPodcast
+{
+    /**
+     * Create the event listener.
+     */
+    public function __construct()
+    {
+        //
+    }
+
+    /**
+     * Handle the event.
+     */
+    public function handle(object $event): void
+    {
+        //
+    }
+}

@@ -1,0 +1,13 @@
+---
+source: crates/ide-php/src/frameworks/laravel/generate/tests.rs
+expression: app.golden(&files)
+---
+== app/Enums/Suit.php
+<?php
+
+namespace App\Enums;
+
+enum Suit: string
+{
+    //
+}

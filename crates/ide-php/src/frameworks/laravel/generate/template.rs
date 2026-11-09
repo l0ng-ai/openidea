@@ -51,6 +51,29 @@ pub const API_CONTROLLER: &str = "Laravel API Controller";
 pub const FORM_REQUEST: &str = "Laravel Form Request";
 pub const JSON_RESOURCE: &str = "Laravel JSON Resource";
 pub const POLICY: &str = "Laravel Policy";
+pub const PLAIN_POLICY: &str = "Laravel Plain Policy";
+pub const MIDDLEWARE: &str = "Laravel Middleware";
+pub const RESOURCE_COLLECTION: &str = "Laravel Resource Collection";
+pub const UPDATE_MIGRATION: &str = "Laravel Update Migration";
+pub const EVENT: &str = "Laravel Event";
+pub const LISTENER: &str = "Laravel Listener";
+pub const JOB: &str = "Laravel Job";
+pub const MAIL: &str = "Laravel Mail";
+pub const NOTIFICATION: &str = "Laravel Notification";
+pub const OBSERVER: &str = "Laravel Observer";
+pub const RULE: &str = "Laravel Rule";
+pub const EXCEPTION: &str = "Laravel Exception";
+pub const HTTP_EXCEPTION: &str = "Laravel HTTP Exception";
+pub const PROVIDER: &str = "Laravel Service Provider";
+pub const COMMAND: &str = "Laravel Console Command";
+pub const COMPONENT: &str = "Laravel Component";
+pub const COMPONENT_VIEW: &str = "Laravel Component View";
+pub const VIEW: &str = "Laravel View";
+pub const VIEW_COMPOSER: &str = "Laravel View Composer";
+pub const CHANNEL: &str = "Laravel Channel";
+pub const ENUM: &str = "Laravel Enum";
+pub const TEST: &str = "Laravel Test";
+pub const PEST_TEST: &str = "Laravel Pest Test";
 
 /// The default templates, by name.
 pub const BUILTIN_TEMPLATES: &[BuiltinTemplate] = &[
@@ -64,6 +87,29 @@ pub const BUILTIN_TEMPLATES: &[BuiltinTemplate] = &[
     builtin!("Laravel Form Request", "request.php.ft"),
     builtin!("Laravel JSON Resource", "resource.php.ft"),
     builtin!("Laravel Policy", "policy.php.ft"),
+    builtin!("Laravel Plain Policy", "policy.plain.php.ft"),
+    builtin!("Laravel Middleware", "middleware.php.ft"),
+    builtin!("Laravel Resource Collection", "resource.collection.php.ft"),
+    builtin!("Laravel Update Migration", "migration.update.php.ft"),
+    builtin!("Laravel Event", "event.php.ft"),
+    builtin!("Laravel Listener", "listener.php.ft"),
+    builtin!("Laravel Job", "job.php.ft"),
+    builtin!("Laravel Mail", "mail.php.ft"),
+    builtin!("Laravel Notification", "notification.php.ft"),
+    builtin!("Laravel Observer", "observer.php.ft"),
+    builtin!("Laravel Rule", "rule.php.ft"),
+    builtin!("Laravel Exception", "exception.php.ft"),
+    builtin!("Laravel HTTP Exception", "exception.http.php.ft"),
+    builtin!("Laravel Service Provider", "provider.php.ft"),
+    builtin!("Laravel Console Command", "command.php.ft"),
+    builtin!("Laravel Component", "component.php.ft"),
+    builtin!("Laravel Component View", "component.blade.php.ft"),
+    builtin!("Laravel View", "view.blade.php.ft"),
+    builtin!("Laravel View Composer", "composer.php.ft"),
+    builtin!("Laravel Channel", "channel.php.ft"),
+    builtin!("Laravel Enum", "enum.php.ft"),
+    builtin!("Laravel Test", "test.php.ft"),
+    builtin!("Laravel Pest Test", "test.pest.php.ft"),
 ];
 
 /// The templates a request uses: the user's edited bodies over the

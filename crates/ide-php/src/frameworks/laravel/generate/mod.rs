@@ -11,7 +11,13 @@
 //!
 //! - [`model`]: the New Model dialog (a model with its migration, factory,
 //!   seeder, controller, Form Requests, JSON resource and policy).
+//! - [`classes`]: the other generators (controllers, jobs, mail, views,
+//!   tests…), one dialog each.
+//! - [`from_model`]: the Generate actions inside a model class (JSON
+//!   resource and factory from the model, all fields in `$fillable`).
 
+pub mod classes;
+mod from_model;
 pub mod model;
 pub mod template;
 
@@ -29,6 +35,7 @@ use crate::frameworks::laravel::LaravelProject;
 use crate::summary::ClassKind;
 use crate::types::provider::laravel::{plural, snake, studly};
 
+pub use classes::{CLASS_GENERATORS, ClassGenerator, NewClass, class_generator};
 pub use model::{ControllerKind, ModelField, ModelIndex, ModelRelation, NewModel};
 pub use template::{BUILTIN_TEMPLATES, TemplateSet, Vars};
 
@@ -44,11 +51,14 @@ pub struct GeneratorInfo {
     pub description: String,
     /// The templates it renders.
     pub templates: Vec<String>,
+    /// The [`NewClass`] options its dialog asks for (`model`, `queued`);
+    /// empty for the New Model dialog.
+    pub options: Vec<String>,
 }
 
-/// The generators, in menu order.
+/// The generators, in menu order: New Model, then the class generators.
 pub fn generators() -> Vec<GeneratorInfo> {
-    vec![GeneratorInfo {
+    let mut out = vec![GeneratorInfo {
         id: "model".to_owned(),
         title: "Model".to_owned(),
         description: "An Eloquent model with its fields and relations, and optionally its migration, factory, seeder, controller, Form Requests, JSON resource and policy".to_owned(),
@@ -66,7 +76,16 @@ pub fn generators() -> Vec<GeneratorInfo> {
         ]
         .map(str::to_owned)
         .to_vec(),
-    }]
+        options: Vec::new(),
+    }];
+    out.extend(CLASS_GENERATORS.iter().map(|generator| GeneratorInfo {
+        id: generator.id.to_owned(),
+        title: generator.title.to_owned(),
+        description: generator.description.to_owned(),
+        templates: generator.templates.iter().map(|name| (*name).to_owned()).collect(),
+        options: generator.options.iter().map(|name| (*name).to_owned()).collect(),
+    }));
+    out
 }
 
 /// What the generator dialogs offer: the namespace, the modules and the

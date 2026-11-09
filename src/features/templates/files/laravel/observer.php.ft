@@ -1,0 +1,52 @@
+<?php
+
+namespace $NAMESPACE$;
+
+$IMPORTS$
+
+class $CLASS$
+{
+    #if ($MODEL$)
+    /**
+     * Handle the $MODEL$ "created" event.
+     */
+    public function created($MODEL$ $$MODEL_VARIABLE$): void
+    {
+        //
+    }
+
+    /**
+     * Handle the $MODEL$ "updated" event.
+     */
+    public function updated($MODEL$ $$MODEL_VARIABLE$): void
+    {
+        //
+    }
+
+    /**
+     * Handle the $MODEL$ "deleted" event.
+     */
+    public function deleted($MODEL$ $$MODEL_VARIABLE$): void
+    {
+        //
+    }
+
+    /**
+     * Handle the $MODEL$ "restored" event.
+     */
+    public function restored($MODEL$ $$MODEL_VARIABLE$): void
+    {
+        //
+    }
+
+    /**
+     * Handle the $MODEL$ "force deleted" event.
+     */
+    public function forceDeleted($MODEL$ $$MODEL_VARIABLE$): void
+    {
+        //
+    }
+    #else
+    //
+    #end
+}

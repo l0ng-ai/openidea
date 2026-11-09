@@ -3,8 +3,9 @@
 //! [`php_laravel_create_translation`]; the Eloquent model view (opened from the
 //! lens on a model class) shows [`php_laravel_model_view`], and its **Add columns**
 //! button applies [`php_laravel_add_columns`]. The Laravel › Generate menu reads
-//! [`php_laravel_generation_context`], and its New Model dialog applies
-//! [`php_laravel_new_model`].
+//! [`php_laravel_generation_context`], its New Model dialog applies
+//! [`php_laravel_new_model`] and the dialog of the other generators
+//! [`php_laravel_generate_class`].
 //!
 //! The live database schema (Settings › PHP › Laravel › Database): the tables and columns
 //! of the chosen data source are read through `ide-db` and given to the engine
@@ -420,6 +421,9 @@ pub struct LaravelGenerator {
     pub description: String,
     /// The names of the file templates it renders (`Laravel Model`).
     pub templates: Vec<String>,
+    /// The options its dialog asks for (`model`, `related`, `table`, `create`, `event`,
+    /// `queued`, `api`, `backing`, `status`); empty for the New Model dialog.
+    pub options: Vec<String>,
 }
 
 /// What the Laravel generator dialogs offer.
@@ -456,6 +460,7 @@ pub async fn php_laravel_generation_context(host: &Host, window: &str) -> IdeRes
                     title: g.title,
                     description: g.description,
                     templates: g.templates,
+                    options: g.options,
                 })
                 .collect(),
         }))
@@ -592,6 +597,79 @@ pub async fn php_laravel_new_model(
     host.blocking(move || {
         let templates = generate::TemplateSet::new(templates.into_iter().map(|t| (t.name, t.body)));
         engine.laravel_new_model(&spec.into(), &templates, &timestamp).map_err(IdeError::invalid)
+    })
+    .await
+}
+
+/// What the dialog of a Laravel class generator (controller, job, view, test…) asks
+/// for. Each generator reads the options its [`LaravelGenerator::options`] lists.
+#[derive(Clone, Debug, Serialize, Deserialize, Type, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct LaravelNewClass {
+    /// The generator's id (`controller`, `migration`).
+    pub generator: String,
+    /// The class name (`Admin/PostController`), view name (`posts.index`) or migration
+    /// name (`add_votes_to_users_table`).
+    pub name: String,
+    /// The module; `None` = the one of the settings, empty = the application.
+    pub module: Option<String>,
+    /// The model (FQN or short name).
+    pub model: String,
+    /// The other model of a pivot table.
+    pub related: String,
+    /// A migration's table; empty = guessed from the name.
+    pub table: String,
+    /// The migration creates the table.
+    pub create: bool,
+    /// The event a listener handles (FQN or short name).
+    pub event: String,
+    /// A queued job or listener.
+    pub queued: bool,
+    /// An API resource controller.
+    pub api: bool,
+    /// An enum's backing type: `string`, `int` or empty.
+    pub backing: String,
+    /// An HTTP exception's status; 0 = 500.
+    pub status: u16,
+}
+
+impl From<LaravelNewClass> for generate::NewClass {
+    fn from(spec: LaravelNewClass) -> Self {
+        Self {
+            generator: spec.generator,
+            name: spec.name,
+            module: spec.module,
+            model: spec.model,
+            related: spec.related,
+            table: spec.table,
+            create: spec.create,
+            event: spec.event,
+            queued: spec.queued,
+            api: spec.api,
+            backing: spec.backing,
+            status: spec.status,
+        }
+    }
+}
+
+/// The edit of a Laravel class generator: the new files rendered from the file
+/// templates (`templates`: the user's edited ones), and the registration of a new
+/// service provider in `bootstrap/providers.php`. `timestamp` is a migration's prefix.
+/// Fails for an invalid request and when a class or file exists already.
+pub async fn php_laravel_generate_class(
+    host: &Host,
+    window: &str,
+    spec: LaravelNewClass,
+    templates: Vec<LaravelTemplate>,
+    timestamp: String,
+) -> IdeResult<WorkspaceEdit> {
+    let project = host.project(window)?;
+    let Some(engine) = project.php.engine() else {
+        return Err(IdeError::unavailable("The native PHP engine isn't running"));
+    };
+    host.blocking(move || {
+        let templates = generate::TemplateSet::new(templates.into_iter().map(|t| (t.name, t.body)));
+        engine.laravel_generate_class(&spec.into(), &templates, &timestamp).map_err(IdeError::invalid)
     })
     .await
 }

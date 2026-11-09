@@ -1,0 +1,29 @@
+---
+source: crates/ide-php/src/frameworks/laravel/generate/tests.rs
+expression: app.golden(&files)
+---
+== app/Providers/RiakServiceProvider.php
+<?php
+
+namespace App\Providers;
+
+use Illuminate\Support\ServiceProvider;
+
+class RiakServiceProvider extends ServiceProvider
+{
+    /**
+     * Register services.
+     */
+    public function register(): void
+    {
+        //
+    }
+
+    /**
+     * Bootstrap services.
+     */
+    public function boot(): void
+    {
+        //
+    }
+}
