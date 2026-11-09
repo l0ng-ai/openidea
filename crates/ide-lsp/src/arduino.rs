@@ -96,6 +96,36 @@ mod tests {
     use super::*;
 
     #[test]
+    fn bundled_server_allows_diagnostics() {
+        let registry = ide_language::LanguageRegistry::load(None).unwrap();
+        let language = registry.get(&LanguageId::new("arduino")).unwrap();
+        let cfg = language.language_servers.iter().find(|cfg| cfg.name == SERVER).unwrap();
+        assert!(crate::caps::Restriction::new(SERVER, &cfg.features, &cfg.code_action_kinds).diagnostics());
+    }
+
+    #[tokio::test]
+    async fn inspection_checks_the_sketch_server_and_root_for_all_sources() {
+        let dir = tempfile::tempdir().unwrap();
+        let root = dir.path();
+        let sketch = root.join("examples/blink");
+        std::fs::create_dir_all(&sketch).unwrap();
+        std::fs::write(sketch.join("blink.ino"), "").unwrap();
+        let registry = Arc::new(ide_language::LanguageRegistry::load(None).unwrap());
+        let manager = LspManager::new(root.to_path_buf(), registry, Arc::new(|_: ide_core::IdeEvent| {}));
+        let expected_root = sketch.clone();
+        manager.set_config_hook(Box::new(move |cfg, server_root| {
+            cfg.command = std::env::current_exe().unwrap().to_string_lossy().into_owned();
+            if cfg.name != SERVER || server_root != expected_root {
+                cfg.launch_error = Some("unavailable".into());
+            }
+        }));
+        for name in ["blink.ino", "helper.cpp", "helper.h"] {
+            assert!(manager.serves_path(&sketch.join(name)), "{name}");
+        }
+        assert!(!manager.serves_path(&root.join("main.cpp")));
+    }
+
+    #[test]
     fn nested_sketches_keep_separate_board_roots() {
         let dir = tempfile::tempdir().unwrap();
         let root = dir.path();

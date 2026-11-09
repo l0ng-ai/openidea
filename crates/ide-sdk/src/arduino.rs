@@ -154,6 +154,21 @@ fn argument<'a>(args: &'a [String], flag: &str) -> IdeResult<Option<&'a str>> {
     Ok(None)
 }
 
+fn set_path_argument(args: &mut [String], flag: &str, path: &Path) {
+    let value = path.to_string_lossy().into_owned();
+    for index in 0..args.len() {
+        let key = args[index].trim_start_matches('-');
+        if key == flag {
+            args[index + 1] = value;
+            return;
+        }
+        if key.strip_prefix(flag).is_some_and(|tail| tail.starts_with('=')) {
+            args[index] = format!("-{flag}={value}");
+            return;
+        }
+    }
+}
+
 fn configure_inner(cfg: &mut LanguageServerConfig, root: &Path, sketch: &Path, settings: &Settings) -> IdeResult<()> {
     let arduino = &settings.languages.arduino;
     let explicit_server = settings.language_servers.get(SERVER).is_some_and(|s| !s.command.trim().is_empty());
@@ -165,14 +180,17 @@ fn configure_inner(cfg: &mut LanguageServerConfig, root: &Path, sketch: &Path, s
     for (flag, configured, executable) in [("cli", &arduino.cli, "arduino-cli"), ("clangd", &arduino.clangd, "clangd")]
     {
         if let Some(value) = argument(&cfg.args, flag)? {
-            resolve_tool(sketch, value, executable)?;
+            let path = resolve_tool(sketch, value, executable)?;
+            set_path_argument(&mut cfg.args, flag, &path);
         } else {
             let path = resolve_tool(root, configured, executable)?;
             cfg.args.extend([format!("-{flag}"), path.to_string_lossy().into_owned()]);
         }
     }
     if let Some(value) = argument(&cfg.args, "cli-config")? {
-        cli_config(sketch, value)?;
+        if let Some(path) = cli_config(sketch, value)? {
+            set_path_argument(&mut cfg.args, "cli-config", &path);
+        }
     } else if let Some(path) = cli_config(root, &arduino.cli_config)? {
         cfg.args.extend(["-cli-config".into(), path.to_string_lossy().into_owned()]);
     }
@@ -195,6 +213,33 @@ pub fn configure(cfg: &mut LanguageServerConfig, root: &Path, sketch: &Path, set
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn explicit_tool_arguments_are_resolved_before_launch() {
+        let dir = tempfile::tempdir().unwrap();
+        let root = dir.path();
+        let settings = Settings::default();
+        for name in [SERVER, "arduino-cli", "clangd", "arduino-cli.yaml"] {
+            std::fs::write(root.join(name), "").unwrap();
+        }
+        let registry = ide_language::LanguageRegistry::load(None).unwrap();
+        let language = registry.get(&ide_core::LanguageId::new("arduino")).unwrap();
+        for equals in [false, true] {
+            let mut cfg = language.language_servers[0].clone();
+            cfg.command = root.join(SERVER).to_string_lossy().into_owned();
+            for (flag, name) in [("cli", "arduino-cli"), ("clangd", "clangd"), ("cli-config", "arduino-cli.yaml")] {
+                if equals {
+                    cfg.args.push(format!("-{flag}=./{name}"));
+                } else {
+                    cfg.args.extend([format!("-{flag}"), format!("./{name}")]);
+                }
+            }
+            configure_inner(&mut cfg, root, root, &settings).unwrap();
+            for (flag, name) in [("cli", "arduino-cli"), ("clangd", "clangd"), ("cli-config", "arduino-cli.yaml")] {
+                assert_eq!(Path::new(argument(&cfg.args, flag).unwrap().unwrap()), root.join(name));
+            }
+        }
+    }
 
     #[test]
     fn parses_sketch_yaml_default_fqbn() {

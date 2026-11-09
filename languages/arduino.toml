@@ -14,6 +14,7 @@ command = "arduino-language-server"
 root-markers = ["*.ino", "sketch.yaml"]
 require-root-marker = true
 features = [
+  "diagnostics",
   "completion",
   "hover",
   "signature-help",
