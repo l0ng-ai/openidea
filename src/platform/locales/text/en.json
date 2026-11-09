@@ -620,5 +620,9 @@
   "plugin run target changed; navigate again": "plugin run target changed; navigate again",
   "plugin host is unavailable": "plugin host is unavailable",
   "language server targets belong to project settings": "language server targets belong to project settings",
-  "library documents are always read-only": "library documents are always read-only"
+  "library documents are always read-only": "library documents are always read-only",
+  "Debugging a plugin target requires a container root": "Debugging a plugin target requires a container root",
+  "This debugger does not support plugin run targets": "This debugger does not support plugin run targets",
+  "invalid debug launch arguments": "invalid debug launch arguments",
+  "unknown debug adapter": "unknown debug adapter"
 }

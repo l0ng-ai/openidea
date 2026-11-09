@@ -1,4 +1,5 @@
 mod output;
+mod target;
 
 use crate::Host;
 use crate::rpc::Dispatcher;
@@ -9,6 +10,15 @@ use std::path::PathBuf;
 /// Starts a session owned by this window: its events (and those of child sessions) go here only.
 pub async fn debug_start(host: &Host, window: &str, config: LaunchConfig) -> IdeResult<DebugSessionId> {
     host.require_trust(window)?;
+    let target_id = config
+        .extra_json
+        .as_deref()
+        .and_then(|s| serde_json::from_str::<serde_json::Value>(s).ok())
+        .and_then(|v| v.get("__runTarget").and_then(|v| v.as_str()).map(str::to_owned));
+    if let Some(id) = target_id {
+        let owner = SessionOwner::new(host.owner_window(window), host.window_sink(window));
+        return target::start(host, window, config, owner, id).await;
+    }
     let mut config = match_java_debug_encoding(config, cfg!(windows));
     if config.adapter == "debugpy"
         && config.request == "launch"

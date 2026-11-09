@@ -2484,3 +2484,19 @@ The virtual URI identifies its originating server, including for document links
 and diagnostic-related locations. Navigation inside these documents returns to
 that server; editing and saving
 are disabled. No WIT signature change is needed for this opt-in host setting.
+
+### Debugging run targets
+
+Plugin targets require `container-root` for debugging. PHP uses `connect-back`: the
+IDE runs php-debug on the host (on the SSH server for remote projects), listens on
+port 9003 unless configured otherwise, then starts the program through the normal
+target run path. The target must enable Xdebug debug mode and request startup, and
+set `xdebug.client_host` and `xdebug.client_port` to reach that listener. DDEV normally
+provides the host setting; enable its Xdebug support before debugging.
+
+Python uses `adapter-in-target`: the wrapper starts `python3 -m debugpy.adapter`
+over stdio. Install debugpy in that container interpreter; no host installation is
+used. The wrapper must preserve stdin/stdout and forward environment as needed.
+Project paths and DAP sources map between the project root and `container-root`.
+Other debuggers default to unsupported: Node and Go adapters currently require
+additional ports and have no supported stdio target configuration.
