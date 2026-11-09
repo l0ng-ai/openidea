@@ -122,6 +122,19 @@ describe("scheme actions", () => {
 });
 
 describe("doc comment scheme attributes", () => {
+  it("selects Python docstring tags and keywords from their preview", () => {
+    schemePage("editor.colorScheme.python");
+    const preview = screen.getByLabelText("Color scheme preview");
+    const tag = preview.querySelector('code span[style*="--syn-python-docstring-tag"]')!;
+    expect(tag).toHaveTextContent("param");
+    act(() => fireEvent.click(tag));
+    expect(screen.getByRole("treeitem", { name: "Tag", selected: true })).toBeInTheDocument();
+    const keyword = preview.querySelector('code span[style*="--syn-python-docstring-keyword"]')!;
+    expect(keyword).toHaveTextContent("x");
+    act(() => fireEvent.click(keyword));
+    expect(screen.getByRole("treeitem", { name: "Keyword", selected: true })).toBeInTheDocument();
+  });
+
   it.each([
     ["en", "Doc comment", "Tag", "Tag value", "Markup"],
     ["zh", "文档注释", "标签", "标签值", "标记"],

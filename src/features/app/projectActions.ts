@@ -9,6 +9,7 @@ import { call, commands, isTauri } from "@/platform/ipc";
 import { useProject } from "@/platform/project";
 import { notifications, registerEditorBanner } from "@/workbench/contributions";
 import { promptInput } from "@/workbench/inputDialogs";
+import { ask } from "@/workbench/messages";
 import { importJetBrainsSettings } from "./jetbrainsSettings";
 import { showNewProject } from "./NewProject";
 import { tx } from "@/platform/i18n";
@@ -114,6 +115,35 @@ async function importSettings() {
   }
 }
 
+/** Import Settings from a JetBrains IDE installed on this computer, without exporting a `settings.zip` first. */
+export async function importFromJetBrainsIde() {
+  try {
+    const ides = await call(commands.settingsListJetbrainsIdes());
+    if (!ides.length) {
+      notifications().notify({
+        level: "warning",
+        title: "No JetBrains IDE settings were found on this computer",
+        key: "app.settingsImport",
+      });
+      return;
+    }
+    const { button } = await ask({
+      title: tx("Import Settings from JetBrains IDE"),
+      body: tx("Choose the IDE to import settings from:"),
+      buttons: ides.map((ide, i) => ({ id: String(i), label: ide.ide, primary: i === 0 })),
+    });
+    const chosen = ides[Number(button)];
+    if (chosen) await importJetBrainsSettings(chosen.path);
+  } catch (e) {
+    notifications().notify({
+      level: "error",
+      title: "Cannot import settings",
+      body: errorText(e),
+      key: "app.settingsImport",
+    });
+  }
+}
+
 async function renameProject() {
   const project = useProject.getState().project;
   if (!project) return;
@@ -183,6 +213,13 @@ export function projectActions(): Action[] {
       category: "File",
       keywords: ["restore settings", "keymap", "templates", "manage ide settings"],
       run: desktop(importSettings),
+    },
+    {
+      id: "file.importJetBrainsSettings",
+      title: "Import Settings from JetBrains IDE…",
+      category: "File",
+      keywords: ["intellij", "pycharm", "webstorm", "android studio", "migrate", "manage ide settings"],
+      run: desktop(importFromJetBrainsIde),
     },
     {
       id: "file.togglePowerSave",
