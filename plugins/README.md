@@ -29,7 +29,6 @@ plugins/
    ├─ ai-completion/          # inline completion over the network, secrets
    ├─ mybatis/                # navigation, gutter markers, completion across files
    ├─ csv-editor/             # custom editor sharing the text document
-   ├─ excalidraw/             # web view custom editor, file icons, a template
    ├─ graphviz/               # web view with code: live preview, problems from the page, a language
    ├─ regex-tester/           # html view talking to its code, settings, the editor's selection
    └─ license-header/         # file-opened events, quick fix, project scan in a task
@@ -1513,11 +1512,10 @@ For example, a page can reserve the corner in its own toolbar:
 }
 ```
 
-`plugins/official/excalidraw` is a complete example: a Vite + React page in
-`web-src/`, built into `web/` by `plugins/build.sh`. `plugins/official/graphviz`
-pairs a page with code: the page renders (Graphviz compiled to WebAssembly) and
+`plugins/official/graphviz` is a complete example: a Vite + React page in
+`web-src/`, built into `web/` by `plugins/build.sh`, paired with code — the page renders (Graphviz compiled to WebAssembly) and
 sends what Graphviz reports to the plugin, which publishes it as problems. The built page is not
-checked in (it is tens of MB): run `plugins/build.sh official/excalidraw`
+checked in (it is tens of MB): run `plugins/build.sh official/graphviz`
 before installing the plugin from the repository.
 
 ### Web frame PTYs (API 1.3)

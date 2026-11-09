@@ -3694,31 +3694,6 @@ fn listing_while_projects_change_does_not_deadlock() {
     }
 }
 
-/// Excalidraw: a web custom editor beside the text editor, with its fonts,
-/// file icon, template and language — no code.
-#[test]
-fn official_excalidraw_installs_and_serves_its_page() {
-    let tmp = tempfile::tempdir().unwrap();
-    let pkg = with_stand_in_page(&official("excalidraw"), tmp.path());
-    let f = fixture(Limits::default());
-    let info = f.install(&pkg);
-    assert_eq!(info.status, PluginStatus::Static, "{:?}", info.error);
-    let page = f.host.web_page("openidea.excalidraw", "canvas").unwrap();
-    let (rev, entry) = page.path.strip_prefix("openidea.excalidraw/").unwrap().split_once('/').unwrap();
-    assert_eq!(entry, "web/index.html");
-    let html = f.host.web_file("openidea.excalidraw", &format!("{rev}/{entry}")).unwrap();
-    let html = String::from_utf8(html.bytes).unwrap();
-    // Relative URLs only: the page is served from the package.
-    let script = html.split("src=\"").nth(1).unwrap().split('"').next().unwrap();
-    assert!(script.starts_with("./assets/"), "{script}");
-    assert!(f.host.web_file("openidea.excalidraw", &format!("{rev}/web/{}", &script[2..])).is_ok());
-    let font = f.host.web_file("openidea.excalidraw", &format!("{rev}/web/fonts/Virgil/Virgil-Regular.woff2")).unwrap();
-    assert_eq!(font.mime, "font/woff2");
-    assert_eq!(f.host.ui_items("customEditors")[0].decl["layout"], "preview");
-    assert!(f.host.languages().iter().any(|l| l.id.as_str() == "excalidraw"));
-    assert_eq!(f.host.assets("openidea.excalidraw", "fileIcon/excalidraw/").unwrap().len(), 2);
-}
-
 /// A copy of the official plugin at `src` in `dir`, with a stand-in for its
 /// built page (`web/` is built by plugins/build.sh, not checked in; build.sh
 /// checks what the build produces): an entry loading a script and a font by
@@ -3760,7 +3735,18 @@ fn official_graphviz_turns_its_pages_reports_into_problems() {
     assert_eq!(info.status, PluginStatus::Inactive, "{:?}", info.error);
     assert_eq!(f.host.ui_items("customEditors")[0].decl["layout"], "split");
     assert!(f.host.languages().iter().any(|l| l.id.as_str() == "dot"));
-    assert!(f.host.web_page("openidea.graphviz", "preview").is_ok());
+    assert_eq!(f.host.assets("openidea.graphviz", "fileIcon/graphviz/").unwrap().len(), 2);
+    let page = f.host.web_page("openidea.graphviz", "preview").unwrap();
+    let (rev, entry) = page.path.strip_prefix("openidea.graphviz/").unwrap().split_once('/').unwrap();
+    assert_eq!(entry, "web/index.html");
+    let html = f.host.web_file("openidea.graphviz", &format!("{rev}/{entry}")).unwrap();
+    let html = String::from_utf8(html.bytes).unwrap();
+    // Relative URLs only: the page is served from the package.
+    let script = html.split("src=\"").nth(1).unwrap().split('"').next().unwrap();
+    assert!(script.starts_with("./assets/"), "{script}");
+    assert!(f.host.web_file("openidea.graphviz", &format!("{rev}/web/{}", &script[2..])).is_ok());
+    let font = f.host.web_file("openidea.graphviz", &format!("{rev}/web/fonts/Virgil/Virgil-Regular.woff2")).unwrap();
+    assert_eq!(font.mime, "font/woff2");
 
     std::fs::write(f.project.join("flow.dot"), "digraph {\n  a -> \n}\n").unwrap();
     let editor = f.workspace.open("flow.dot", &[]);
