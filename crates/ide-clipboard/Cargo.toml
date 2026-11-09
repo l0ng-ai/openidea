@@ -11,3 +11,6 @@ license.workspace = true
 objc2 = { version = "0.6", default-features = false, features = ["std"] }
 objc2-foundation = { version = "0.3", default-features = false, features = ["std", "NSArray", "NSDictionary", "NSEnumerator", "NSObject", "NSString", "NSURL", "NSValue"] }
 objc2-app-kit = { version = "0.3", default-features = false, features = ["std", "NSPasteboard"] }
+
+[target.'cfg(target_os = "linux")'.dependencies]
+gtk = "0.18"

@@ -1,4 +1,5 @@
 /** What the Services toolbar, context menu and `docker.*` actions do with a node of a connection. */
+import { writeClipboardText } from "@/platform/clipboard";
 import { tx, txTemplate } from "@/platform/i18n";
 import type { PruneTarget } from "@/platform/ipc";
 import { executeAction } from "@/platform/actions";
@@ -186,7 +187,7 @@ export function pruneMenu(conn: string): MenuItem[] {
   return PRUNE.map(([target, label]) => ({ label, run: () => void prunePrompt(conn, target) }));
 }
 
-const copy = (text: string) => void navigator.clipboard?.writeText(text);
+const copy = (text: string) => void writeClipboardText(text);
 
 export function showDetail(tab: DetailTab) {
   useServices.setState({ detailTab: tab });

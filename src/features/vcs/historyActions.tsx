@@ -1,3 +1,4 @@
+import { writeClipboardText } from "@/platform/clipboard";
 import { parseCommitBookmark } from "./logBookmarks";
 import { commitKey, commitRepo } from "./multiRoot";
 /**
@@ -281,7 +282,7 @@ export function registerHistoryActions(): () => void {
       icon: "copy",
       when: "vcsAvailable || projectOpen || vcsLogFocus",
       keyWhen: IN_GIT_LOG,
-      run: withCommits((cs) => navigator.clipboard?.writeText(cs.map((c) => c.id).join(" ")), true),
+      run: withCommits((cs) => writeClipboardText(cs.map((c) => c.id).join(" ")), true),
     },
     {
       id: "vcs.log.createPatch",
