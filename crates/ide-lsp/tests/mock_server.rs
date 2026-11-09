@@ -3752,6 +3752,32 @@ async fn classified_java_references_widen_without_losing_metadata() {
     }
 }
 
+/// Usage counts probe many symbols at once: without `libraries` they search the sources alone.
+#[tokio::test(flavor = "multi_thread")]
+async fn scoped_java_usages_search_the_sources_unless_libraries_are_asked_for() {
+    let mut caps = incremental_caps();
+    caps["executeCommandProvider"] = json!({"commands": ["openidea.java.usages"]});
+    let h = harness_for("java", "java", &[("jdtls", caps)], &[]);
+    let s = h.launcher.state("jdtls");
+    s.respond("workspace/executeCommand", json!([]));
+    let (doc, _) = h.open("a.java", "int target;");
+    h.wait_status("jdtls", ServerStatus::Ready).await;
+    let seen = grep_candidates(&h);
+    for libraries in [false, true] {
+        let refs = h
+            .mgr
+            .references_streaming(doc, Pos::new(0, 5), false, false, libraries, Default::default(), None)
+            .await
+            .unwrap();
+        assert_eq!(refs.libraries_skipped, !libraries);
+        let requested = s.requested("workspace/executeCommand");
+        let arguments = requested.last().unwrap()["arguments"].as_array().unwrap().clone();
+        assert_eq!(arguments.get(4) == Some(&json!("sources")), !libraries);
+        assert_eq!(arguments.len(), if libraries { 4 } else { 5 });
+    }
+    assert!(seen.lock().is_empty());
+}
+
 /// A library method's usages in the sources are shown before the dependencies and the JDK
 /// are searched, which takes seconds; scope widening searches the sources alone again.
 #[tokio::test(flavor = "multi_thread")]

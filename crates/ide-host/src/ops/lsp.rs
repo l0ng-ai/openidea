@@ -592,8 +592,8 @@ pub async fn lsp_resolve_class_file(host: &Host, window: &str, path: std::path::
 
 /// References of the symbol at `pos`. `project_wide` also searches project files
 /// outside the language server's analysis scope; bulk scans over many symbols
-/// leave it off. Java, `project_wide`: without `libraries`, the dependencies and the JDK
-/// are not searched; with it, those found in the sources arrive on `on_partial` before
+/// leave it off. Java: without `libraries`, the dependencies and the JDK are not
+/// searched; with it and `project_wide`, those found in the sources arrive on `on_partial` before
 /// the slower search for the rest, and the result has them all. Cancel with
 /// `cancel_request(request)`.
 #[allow(clippy::too_many_arguments)]
