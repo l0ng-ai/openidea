@@ -1409,3 +1409,66 @@ fn spelling_regions_cover_declared_names_only() {
         .collect();
     assert_eq!(names, ["Bird", "fly", "text"]);
 }
+
+#[test]
+fn outline_restructuredtext_levels_follow_first_use_of_each_adornment() {
+    let src = "\
+=========
+ Project
+=========
+
+Install
+~~~~~~~
+
+From source
+-----------
+
+Literal block::
+
+    Not a title
+    -----------
+
+Intro
+--
+
+A paragraph
+with a line
+------------
+
+.. comment
+-----------
+
+Usage
+~~~~~
+
+.. note::
+
+   Indented
+   --------
+
+Short underline, still a title
+------
+
+Underline only
+==============
+";
+    check_outline(
+        "restructuredtext",
+        src,
+        "
+        Key Project
+          Key Install
+            Key From source
+          Key Usage
+            Key Short underline, still a title
+              Key Underline only
+        ",
+    );
+    let items = syntax().outline(&lang("restructuredtext"), src);
+    let project = &items[0];
+    assert_eq!(project.range.start, Pos::new(0, 0));
+    assert_eq!((project.selection_range.start, project.selection_range.end), (Pos::new(1, 1), Pos::new(1, 8)));
+    let install = &project.children[0];
+    assert_eq!((install.range.start, install.range.end), (Pos::new(4, 0), Pos::new(23, 11)));
+    assert!(syntax().outline(&lang("restructuredtext"), "Title\n\n").is_empty());
+}

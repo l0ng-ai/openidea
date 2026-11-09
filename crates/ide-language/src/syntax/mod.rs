@@ -9,6 +9,7 @@ mod highlight;
 pub(crate) mod lines;
 mod literals;
 mod outline;
+mod rst;
 mod selection;
 mod web;
 
@@ -169,7 +170,13 @@ impl Syntax {
             let query = g.outline_query()?;
             Some(outline::outline(g, query, tree, text))
         })
+        .or_else(|| self.builtin_outline(lang, text))
         .unwrap_or_default()
+    }
+
+    /// Outline for languages without a grammar that have a built-in parser.
+    fn builtin_outline(&self, lang: &LanguageId, text: &str) -> Option<Vec<OutlineItem>> {
+        (lang.as_str() == "restructuredtext" && text.len() <= MAX_PARSE_BYTES).then(|| rst::outline(text))
     }
 
     pub fn folding(&self, lang: &LanguageId, text: &str) -> Vec<FoldRange> {

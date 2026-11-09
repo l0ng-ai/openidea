@@ -15,6 +15,7 @@ import {
 } from "./editing";
 import { batchLanguage, commentTokens, findLanguageDescription } from "./languages";
 import { toggleCaret } from "./multiCaret";
+import { restructuredtextLanguage } from "./restructuredtext";
 import { commentBlock, enterInLineComment, lineCommentStyle } from "./comments";
 import { languages } from "@codemirror/language-data";
 
@@ -336,6 +337,17 @@ describe("fallback indentation boundaries", () => {
     const v = make(input, fallback(id));
     insertNewlineAndIndent(v);
     expect(show(v)).toBe(expected);
+  });
+});
+
+describe("reStructuredText comment toggle", () => {
+  it("comments with `.. `, since `..text` is not a comment", () => {
+    const v = make("Some| text\n", restructuredtextLanguage);
+    commentLine(v);
+    expect(v.state.doc.toString()).toBe(".. Some text\n");
+    v.dispatch({ selection: EditorSelection.cursor(0) });
+    commentLine(v);
+    expect(v.state.doc.toString()).toBe("Some text\n");
   });
 });
 

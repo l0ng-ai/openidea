@@ -1,3 +1,4 @@
+import { EditorState } from "@codemirror/state";
 import { describe, expect, it } from "vitest";
 import { highlightTree, tagHighlighter, tags as t } from "@lezer/highlight";
 import { logWarning } from "./highlight";
@@ -133,6 +134,89 @@ describe("language modes", () => {
       ["`code`", "monospace"],
       ["https://example.com", "link"],
       ["// Comment", "comment"],
+    ]);
+  });
+
+  it("recognizes reStructuredText files and highlights their syntax", async () => {
+    expect(findLanguageDescription("reStructuredText", "/docs/index.rst")?.name).toBe("reStructuredText");
+    const support = await loadSupport(findLanguageDescription("reStructuredText", "/docs/index.rst")!);
+    const state = EditorState.create({ extensions: support!.language });
+    expect(state.languageDataAt("commentTokens", 0)).toEqual([{ line: ".." }]);
+    const doc = [
+      "=====",
+      "Guide",
+      "=====",
+      "",
+      "Intro",
+      "-----",
+      "",
+      "Some **bold**, *em*, ``code``, :py:func:`len`, `Docs <https://example.com>`_ and target_.",
+      "See https://example.com and |sub|.",
+      "",
+      "Example::",
+      "",
+      "   Not a title",
+      "   -----------",
+      "",
+      ".. code-block:: python",
+      "   :linenos:",
+      "",
+      "   x = 1",
+      "",
+      ".. _target:",
+      "",
+      ".. a comment",
+      "   continued",
+      "",
+      ":field: value",
+      "",
+      "A paragraph",
+      "-----",
+      "",
+      "Two lines of",
+      "a paragraph",
+      "------------",
+    ].join("\n");
+    const highlighter = tagHighlighter([
+      { tag: t.heading, class: "heading" },
+      { tag: t.strong, class: "strong" },
+      { tag: t.emphasis, class: "emphasis" },
+      { tag: t.monospace, class: "monospace" },
+      { tag: t.keyword, class: "keyword" },
+      { tag: t.string, class: "string" },
+      { tag: t.link, class: "link" },
+      { tag: t.url, class: "url" },
+      { tag: t.variableName, class: "variable" },
+      { tag: t.attributeName, class: "attribute" },
+      { tag: t.labelName, class: "label" },
+      { tag: t.comment, class: "comment" },
+    ]);
+    const highlighted: [string, string][] = [];
+    highlightTree(support!.language.parser.parse(doc), highlighter, (from, to, style) => {
+      highlighted.push([doc.slice(from, to), style]);
+    });
+    expect(highlighted).toEqual([
+      ["=====\nGuide\n=====", "heading"],
+      ["Intro\n-----", "heading"],
+      ["**bold**", "strong"],
+      ["*em*", "emphasis"],
+      ["``code``", "monospace"],
+      [":py:func:", "keyword"],
+      ["`len`", "string"],
+      ["`Docs <https://example.com>`_", "link"],
+      ["target_", "link"],
+      ["https://example.com", "url"],
+      ["|sub|", "variable"],
+      ["Not a title", "monospace"],
+      ["-----------", "monospace"],
+      [".. code-block::", "keyword"],
+      [":linenos:", "attribute"],
+      ["x = 1", "monospace"],
+      [".. _target:", "label"],
+      [".. a comment", "comment"],
+      ["continued", "comment"],
+      [":field:", "attribute"],
+      ["A paragraph\n-----", "heading"],
     ]);
   });
 

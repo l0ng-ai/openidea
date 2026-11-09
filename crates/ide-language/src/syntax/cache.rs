@@ -198,6 +198,7 @@ impl SyntaxCache {
                     Some(outline::outline(g, query, tree, text))
                 })
                 .or_else(|| super::external::outline(lang, text))
+                .or_else(|| self.syntax.builtin_outline(lang, text))
             },
         )
     }
