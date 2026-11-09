@@ -498,6 +498,7 @@ describe("a pending AskUserQuestion", () => {
     render(<SessionEditor input={input("A")} />);
     const card = await screen.findByRole("form", { name: "Which?" });
     fireEvent.click(within(card).getByRole("radio", { name: /^One/ }));
+    fireEvent.click(within(card).getByRole("tab", { name: "second" }));
     fireEvent.click(within(card).getByRole("radio", { name: /^Two/ }));
     fireEvent.click(within(card).getByRole("button", { name: "Submit" }));
     await waitFor(() =>
@@ -505,7 +506,7 @@ describe("a pending AskUserQuestion", () => {
     );
   });
 
-  it("shows every question with its descriptions in a card and sends all answers at once", async () => {
+  it("shows one question at a time with tabs and sends all answers at once", async () => {
     backend.entries.set("A", [
       {
         type: "permission",
@@ -540,14 +541,26 @@ describe("a pending AskUserQuestion", () => {
     render(<SessionEditor input={input("A")} />);
     const card = await screen.findByRole("form", { name: "Which layout?" });
     expect(screen.queryByRole("alert")).toBeNull();
+    const tabs = within(card).getAllByRole("tab");
+    expect(tabs.map((tab) => tab.textContent)).toEqual(["Layout", "Checks"]);
+    // Every question stays mounted (one grid cell), so switching tabs keeps the card's height.
+    expect(card.querySelectorAll('[role="tabpanel"]')).toHaveLength(2);
     expect(within(card).getByText("One row per check")).toBeTruthy();
     expect(within(card).getByText("Recommended")).toBeTruthy();
+    // Only the first question is on screen; the second waits behind its tab.
+    expect(within(card).queryByRole("checkbox", { name: /^Disk/ })).toBeNull();
     const submit = within(card).getByRole("button", { name: "Submit" });
     fireEvent.click(within(card).getByRole("radio", { name: /^List/ }));
     expect(submit).toHaveProperty("disabled", true);
+    // Paging moves between questions, without losing the answers already given.
+    expect(within(card).getByRole("button", { name: "Previous" })).toHaveProperty("disabled", true);
+    fireEvent.click(within(card).getByRole("button", { name: "Next" }));
+    expect(within(card).getByRole("tab", { name: "Checks" })).toHaveAttribute("aria-selected", "true");
+    fireEvent.click(within(card).getByRole("tab", { name: "Layout" }));
+    expect(within(card).getByRole("radio", { name: /^List/ })).toHaveProperty("checked", true);
+    fireEvent.click(within(card).getByRole("tab", { name: "Checks" }));
     fireEvent.click(within(card).getByRole("checkbox", { name: /^Disk/ }));
-    const others = within(card).getAllByRole("checkbox", { name: /^Other/ });
-    fireEvent.click(others[0]!);
+    fireEvent.click(within(card).getByRole("checkbox", { name: /^Other/ }));
     expect(submit).toHaveProperty("disabled", true);
     fireEvent.change(within(card).getByPlaceholderText("Type your answer"), { target: { value: "GPU temps" } });
     fireEvent.click(submit);

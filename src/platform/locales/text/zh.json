@@ -6626,6 +6626,8 @@
   "Type your answer": "输入你的回答",
   "Recommended": "推荐",
   "No preview": "无预览",
+  "Previous": "上一题",
+  "Next": "下一题",
   "Running in the background": "后台运行中",
   "Couldn't stop the background task": "无法停止后台任务",
   "Stage {count} files": "暂存 {count} 个文件",

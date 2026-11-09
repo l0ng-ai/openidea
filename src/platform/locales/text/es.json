@@ -2109,6 +2109,8 @@
   "Sign-off commit": "Firmar confirmación (sign-off)",
   "Size": "Tamaño",
   "Size:": "Tamaño:",
+  "Previous": "Anterior",
+  "Next": "Siguiente",
   "Skip": "Omitir",
   "Skip Commit": "Omitir confirmación",
   "Skip if defined": "Omitir si está definido",

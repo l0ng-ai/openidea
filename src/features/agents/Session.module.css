@@ -1278,6 +1278,73 @@
   background: var(--bg-elev);
   container: question-card / inline-size;
 }
+/* Several questions: tabs page through them, one question on screen. */
+.questionTabs {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 4px;
+  min-width: 0;
+}
+.questionTab {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  min-width: 0;
+  max-width: 240px;
+  padding: 3px 10px;
+  border: 1px solid var(--border);
+  border-radius: var(--radius-control);
+  background: transparent;
+  color: var(--fg-muted);
+  font: inherit;
+  font-size: var(--fs-small);
+  cursor: pointer;
+}
+.questionTab:hover:not(:disabled) {
+  background: var(--bg-hover);
+  color: var(--fg-strong);
+}
+.questionTab:focus-visible {
+  outline: 2px solid var(--focus-ring);
+  outline-offset: -2px;
+}
+.questionTabActive,
+.questionTabActive:hover:not(:disabled) {
+  border-color: var(--border-strong);
+  background: var(--bg-selected);
+  color: var(--fg-strong);
+}
+.questionTab:disabled {
+  opacity: 0.5;
+  cursor: default;
+}
+.questionTabLabel {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.questionTabCheck {
+  flex: none;
+  color: var(--accent);
+}
+/* All questions share one grid cell: the card keeps the tallest question's height. */
+.questionPanels {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr);
+  min-width: 0;
+}
+.questionPanel {
+  grid-area: 1 / 1;
+  min-width: 0;
+}
+.questionPanelHidden {
+  visibility: hidden;
+  pointer-events: none;
+}
+/* The shown preview re-enables visibility, which would escape the hidden panel. */
+.questionPanelHidden .questionPreviewActive {
+  visibility: hidden;
+}
 .question {
   display: flex;
   flex-direction: column;
@@ -1426,6 +1493,17 @@
 }
 .questionActions {
   display: flex;
+  align-items: center;
   justify-content: flex-end;
   gap: 8px;
+}
+.questionPager {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+}
+.questionPage {
+  color: var(--fg-subtle);
+  font-size: var(--fs-small);
+  font-variant-numeric: tabular-nums;
 }

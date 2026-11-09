@@ -11,6 +11,7 @@ import {
   useMemo,
   useRef,
   useState,
+  type KeyboardEvent as ReactKeyboardEvent,
   type ReactElement,
   type ReactNode,
   type RefObject,
@@ -1849,7 +1850,7 @@ const isRecommended = (label: string) => label.endsWith(RECOMMENDED_SUFFIX);
 
 const plainLabel = (label: string) => (isRecommended(label) ? label.slice(0, -RECOMMENDED_SUFFIX.length) : label);
 
-/** An open `AskUserQuestion` request, as a card above the composer that answers all its questions at once. */
+/** An open `AskUserQuestion` request, as a card above the composer; one question at a time. */
 function QuestionCard({ task, entries }: { task: AgentTask; entries: AgentEntry[] | null }) {
   const entry = entries?.find(
     (candidate): candidate is PermissionEntry =>
@@ -1872,10 +1873,21 @@ function QuestionForm({
   const [answers, setAnswers] = useState<QuestionAnswer[]>(() =>
     questions.map((question) => ({ question, picked: [], other: null })),
   );
-  const [focusedPosition, setFocusedPosition] = useState(0);
-  const [hovered, setHovered] = useState<{ position: number; label: string } | null>(null);
+  const [position, setPosition] = useState(0);
+  const [hovered, setHovered] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
+  const tabRefs = useRef(new Map<number, HTMLButtonElement>());
+  const panelRef = useRef<HTMLDivElement>(null);
+  // Paging with the buttons lands the keyboard focus on the question itself.
+  const focusPanel = useRef(false);
+  const multiple = answers.length > 1;
   const complete = answers.every(isAnswered);
+  const questionId = (part: string, index: number) => `question-${entry.id}-${part}-${index}`;
+  useEffect(() => {
+    if (!focusPanel.current) return;
+    focusPanel.current = false;
+    panelRef.current?.focus();
+  }, [position]);
   const send = (option: string) => {
     setBusy(true);
     void respond(task.id, entry.id, option).finally(() => setBusy(false));
@@ -1906,11 +1918,29 @@ function QuestionForm({
       answer.question.multiSelect ? { ...answer, other: checked ? "" : null } : { ...answer, picked: [], other: "" },
     );
   const chooseByNumber = (number: number) => {
-    const answer = answers[focusedPosition];
+    const answer = answers[position];
     if (!answer) return;
     const option = answer.question.options[number - 1];
     if (option) choose(answer, option.label, !answer.picked.includes(option.label));
     else if (number === answer.question.options.length + 1) chooseOther(answer, answer.other === null);
+  };
+  const goTo = (next: number, moveFocus = false) => {
+    if (next < 0 || next >= answers.length) return;
+    focusPanel.current = moveFocus;
+    setPosition(next);
+    setHovered(null);
+  };
+  const onTabKeyDown = (event: ReactKeyboardEvent<HTMLButtonElement>, index: number) => {
+    const last = answers.length - 1;
+    let next: number | null = null;
+    if (event.key === "ArrowRight") next = index === last ? 0 : index + 1;
+    else if (event.key === "ArrowLeft") next = index === 0 ? last : index - 1;
+    else if (event.key === "Home") next = 0;
+    else if (event.key === "End") next = last;
+    if (next === null) return;
+    event.preventDefault();
+    goTo(next);
+    tabRefs.current.get(next)?.focus();
   };
   return (
     <form
@@ -1929,142 +1959,193 @@ function QuestionForm({
         }
       }}
     >
-      {answers.map((answer, position) => {
-        const { question } = answer;
-        const group = `question-${entry.id}-${position}`;
-        const hasPreviews = question.options.some((option) => option.preview);
-        const targetLabel =
-          (hovered?.position === position ? hovered.label : undefined) ??
-          answer.picked[0] ??
-          (answer.other !== null ? group : undefined);
-        const previewed =
-          targetLabel === undefined
-            ? question.options.find((option) => option.preview)
-            : question.options.find((option) => option.label === targetLabel);
-        const choices = [
-          ...question.options.map((option) => ({
-            key: option.label,
-            checked: answer.picked.includes(option.label),
-            onChange: (checked: boolean) => choose(answer, option.label, checked),
-            label: (
-              <span className={styles.questionOptionText}>
-                <span className={styles.questionLabel}>
-                  {plainLabel(option.label)}
-                  {isRecommended(option.label) && (
-                    <span className={styles.questionTag}>
-                      <T>Recommended</T>
-                    </span>
-                  )}
+      {multiple && (
+        <div className={styles.questionTabs} role="tablist" aria-label={entry.title}>
+          {answers.map((item, index) => (
+            <button
+              key={questionId("tab", index)}
+              ref={(el) => {
+                if (el) tabRefs.current.set(index, el);
+                else tabRefs.current.delete(index);
+              }}
+              type="button"
+              role="tab"
+              id={questionId("tab", index)}
+              aria-selected={index === position}
+              aria-controls={questionId("panel", index)}
+              tabIndex={index === position ? 0 : -1}
+              disabled={busy}
+              title={item.question.question}
+              className={clsx(styles.questionTab, index === position && styles.questionTabActive)}
+              onClick={() => goTo(index)}
+              onKeyDown={(event) => onTabKeyDown(event, index)}
+            >
+              <span className={styles.questionTabLabel}>{item.question.header?.trim() || item.question.question}</span>
+              {isAnswered(item) && <Icon name="check" size={12} className={styles.questionTabCheck} />}
+            </button>
+          ))}
+        </div>
+      )}
+      {/* All questions stay mounted in one grid cell, so the card keeps the tallest one's height. */}
+      <div className={styles.questionPanels}>
+        {answers.map((item, index) => {
+          const current = index === position;
+          const group = questionId("group", index);
+          const hasPreviews = item.question.options.some((option) => option.preview);
+          const targetLabel = (current ? hovered : null) ?? item.picked[0] ?? (item.other !== null ? group : undefined);
+          const previewed =
+            targetLabel === undefined
+              ? item.question.options.find((option) => option.preview)
+              : item.question.options.find((option) => option.label === targetLabel);
+          const choices = [
+            ...item.question.options.map((option) => ({
+              key: option.label,
+              checked: item.picked.includes(option.label),
+              onChange: (checked: boolean) => choose(item, option.label, checked),
+              label: (
+                <span className={styles.questionOptionText}>
+                  <span className={styles.questionLabel}>
+                    {plainLabel(option.label)}
+                    {isRecommended(option.label) && (
+                      <span className={styles.questionTag}>
+                        <T>Recommended</T>
+                      </span>
+                    )}
+                  </span>
+                  {option.description && <span className={styles.questionDescription}>{option.description}</span>}
                 </span>
-                {option.description && <span className={styles.questionDescription}>{option.description}</span>}
-              </span>
-            ),
-          })),
-          {
-            key: group,
-            checked: answer.other !== null,
-            onChange: (checked: boolean) => chooseOther(answer, checked),
-            label: (
-              <span className={styles.questionLabel}>
-                <T>Other</T>
-              </span>
-            ),
-          },
-        ];
-        return (
-          <fieldset
-            key={group}
-            className={styles.question}
-            disabled={busy}
-            onFocus={() => setFocusedPosition(position)}
-          >
-            <legend className={styles.questionText}>
-              {question.header && <span className={styles.questionTag}>{question.header}</span>}
-              {question.question}
-            </legend>
-            <div className={clsx(styles.questionBody, hasPreviews && styles.questionBodyWithPreview)}>
-              <div className={styles.questionChoices}>
-                {choices.map((choice, index) => {
-                  const label = (
-                    <span className={styles.questionChoice}>
-                      {choice.label}
-                      <span className={styles.questionKey}>{index + 1}</span>
-                    </span>
-                  );
-                  return (
-                    <div
-                      key={choice.key}
-                      onMouseEnter={() => setHovered({ position, label: choice.key })}
-                      onMouseLeave={() => setHovered(null)}
-                    >
-                      {question.multiSelect ? (
-                        <Checkbox
-                          className={styles.questionOption}
-                          checked={choice.checked}
-                          label={label}
-                          onChange={choice.onChange}
-                        />
-                      ) : (
-                        <Radio
-                          className={styles.questionOption}
-                          name={group}
-                          checked={choice.checked}
-                          label={label}
-                          onChange={() => choice.onChange(true)}
-                        />
-                      )}
-                    </div>
-                  );
-                })}
-                {answer.other !== null && (
-                  <Input
-                    autoFocus
-                    className={styles.questionOther}
-                    value={answer.other}
-                    placeholder="Type your answer"
-                    onChange={(event) => update(answer, { ...answer, other: event.target.value })}
-                    onKeyDown={(event) => {
-                      if (event.key === "Escape" && answer.other) {
-                        event.stopPropagation();
-                        update(answer, { ...answer, other: "" });
-                      }
-                    }}
-                  />
-                )}
-              </div>
-              {hasPreviews && (
-                <div className={styles.questionPreview}>
-                  {[...question.options, null].map((option) => {
-                    const active = option === (previewed ?? null);
-                    return (
-                      <div
-                        key={option?.label ?? group}
-                        className={clsx(styles.questionPreviewItem, active && styles.questionPreviewActive)}
-                        aria-hidden={!active}
-                      >
-                        <span className={styles.questionPreviewCaption}>
-                          {option ? plainLabel(option.label) : <T>Other</T>}
+              ),
+            })),
+            {
+              key: group,
+              checked: item.other !== null,
+              onChange: (checked: boolean) => chooseOther(item, checked),
+              label: (
+                <span className={styles.questionLabel}>
+                  <T>Other</T>
+                </span>
+              ),
+            },
+          ];
+          return (
+            <div
+              key={group}
+              ref={current ? panelRef : undefined}
+              role={multiple ? "tabpanel" : undefined}
+              id={questionId("panel", index)}
+              aria-labelledby={multiple ? questionId("tab", index) : undefined}
+              aria-hidden={!current}
+              inert={!current}
+              tabIndex={-1}
+              className={clsx(styles.questionPanel, !current && styles.questionPanelHidden)}
+            >
+              <fieldset className={styles.question} disabled={busy}>
+                <legend className={styles.questionText}>
+                  {item.question.header && <span className={styles.questionTag}>{item.question.header}</span>}
+                  {item.question.question}
+                </legend>
+                <div className={clsx(styles.questionBody, hasPreviews && styles.questionBodyWithPreview)}>
+                  <div className={styles.questionChoices}>
+                    {choices.map((choice, choiceIndex) => {
+                      const label = (
+                        <span className={styles.questionChoice}>
+                          {choice.label}
+                          <span className={styles.questionKey}>{choiceIndex + 1}</span>
                         </span>
-                        {option?.preview ? (
-                          <pre className={styles.questionPreviewBody}>{option.preview}</pre>
-                        ) : (
-                          <span className={styles.questionPreviewEmpty}>
-                            <T>No preview</T>
-                          </span>
-                        )}
-                      </div>
-                    );
-                  })}
+                      );
+                      return (
+                        <div
+                          key={choice.key}
+                          onMouseEnter={() => setHovered(choice.key)}
+                          onMouseLeave={() => setHovered(null)}
+                        >
+                          {item.question.multiSelect ? (
+                            <Checkbox
+                              className={styles.questionOption}
+                              checked={choice.checked}
+                              label={label}
+                              onChange={choice.onChange}
+                            />
+                          ) : (
+                            <Radio
+                              className={styles.questionOption}
+                              name={group}
+                              checked={choice.checked}
+                              label={label}
+                              onChange={() => choice.onChange(true)}
+                            />
+                          )}
+                        </div>
+                      );
+                    })}
+                    {item.other !== null && (
+                      <Input
+                        autoFocus
+                        className={styles.questionOther}
+                        value={item.other}
+                        placeholder="Type your answer"
+                        onChange={(event) => update(item, { ...item, other: event.target.value })}
+                        onKeyDown={(event) => {
+                          if (event.key === "Escape" && item.other) {
+                            event.stopPropagation();
+                            update(item, { ...item, other: "" });
+                          }
+                        }}
+                      />
+                    )}
+                  </div>
+                  {hasPreviews && (
+                    <div className={styles.questionPreview}>
+                      {[...item.question.options, null].map((option) => {
+                        const shown = option === (previewed ?? null);
+                        return (
+                          <div
+                            key={option?.label ?? group}
+                            className={clsx(styles.questionPreviewItem, shown && styles.questionPreviewActive)}
+                            aria-hidden={!shown}
+                          >
+                            <span className={styles.questionPreviewCaption}>
+                              {option ? plainLabel(option.label) : <T>Other</T>}
+                            </span>
+                            {option?.preview ? (
+                              <pre className={styles.questionPreviewBody}>{option.preview}</pre>
+                            ) : (
+                              <span className={styles.questionPreviewEmpty}>
+                                <T>No preview</T>
+                              </span>
+                            )}
+                          </div>
+                        );
+                      })}
+                    </div>
+                  )}
                 </div>
-              )}
+              </fieldset>
             </div>
-          </fieldset>
-        );
-      })}
+          );
+        })}
+      </div>
       <div className={styles.questionActions}>
         <Button variant="ghost" disabled={busy} onClick={() => send("reject")}>
           Skip
         </Button>
+        {multiple && (
+          <div className={styles.questionPager}>
+            <Button size="small" disabled={busy || position === 0} onClick={() => goTo(position - 1, true)}>
+              Previous
+            </Button>
+            <span className={styles.questionPage}>
+              {position + 1} / {answers.length}
+            </span>
+            <Button
+              size="small"
+              disabled={busy || position === answers.length - 1}
+              onClick={() => goTo(position + 1, true)}
+            >
+              Next
+            </Button>
+          </div>
+        )}
         <Button type="submit" variant="primary" disabled={busy || !complete}>
           Submit
         </Button>
