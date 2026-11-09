@@ -9,6 +9,7 @@
 import { Channel } from "@tauri-apps/api/core";
 import { commands, type LibraryGroup, type RequestId } from "@/bindings";
 import { mergeLibraryGroups } from "@/platform/libraries";
+import { isGradleBuildInput } from "@/platform/buildFiles";
 import { registerActions } from "@/platform/actions";
 import { setLibraryRoots } from "@/editor/api";
 import { call, isCancelled, isTauri, nextRequestId, onIdeEvent } from "@/platform/ipc";
@@ -73,7 +74,7 @@ export function touchesManifest(paths: readonly string[]): boolean {
   return paths.some(
     (p) =>
       !/[\\/]node_modules[\\/]/.test(p) &&
-      MANIFESTS.has(p.slice(Math.max(p.lastIndexOf("/"), p.lastIndexOf("\\")) + 1)),
+      (isGradleBuildInput(p) || MANIFESTS.has(p.slice(Math.max(p.lastIndexOf("/"), p.lastIndexOf("\\")) + 1))),
   );
 }
 

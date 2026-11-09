@@ -3,8 +3,8 @@
 use crate::state::AppState;
 use ide_core::{IdeError, IdeResult, RequestId};
 use ide_docker::{
-    ComposeOp, ContainerOp, DockerEndpoint, DockerEvent, DockerLogLine, DockerObject, DockerRegistry, DockerSettings,
-    DockerSnapshot, PruneTarget, RegistryAuth,
+    ComposeOp, ContainerOp, DockerContainerStats, DockerEndpoint, DockerEvent, DockerImageLayer, DockerLogLine,
+    DockerObject, DockerProcessList, DockerRegistry, DockerSettings, DockerSnapshot, PruneTarget, RegistryAuth,
 };
 use tauri::State;
 use tauri::ipc::Channel;
@@ -54,6 +54,27 @@ pub async fn docker_remove(
 #[specta::specta]
 pub async fn docker_inspect(endpoint: DockerEndpoint, object: DockerObject, id: String) -> IdeResult<String> {
     blocking(move || ide_docker::inspect(&endpoint, object, &id)).await
+}
+
+/// Layers of an image (`docker image history`).
+#[tauri::command]
+#[specta::specta]
+pub async fn docker_image_history(endpoint: DockerEndpoint, id: String) -> IdeResult<Vec<DockerImageLayer>> {
+    blocking(move || ide_docker::image_history(&endpoint, &id)).await
+}
+
+/// Processes running inside a container (`docker top`).
+#[tauri::command]
+#[specta::specta]
+pub async fn docker_container_top(endpoint: DockerEndpoint, id: String) -> IdeResult<DockerProcessList> {
+    blocking(move || ide_docker::container_top(&endpoint, &id)).await
+}
+
+/// One-shot resource usage snapshot of a running container (`docker stats --no-stream`).
+#[tauri::command]
+#[specta::specta]
+pub async fn docker_container_stats(endpoint: DockerEndpoint, id: String) -> IdeResult<DockerContainerStats> {
+    blocking(move || ide_docker::container_stats(&endpoint, &id)).await
 }
 
 /// Streams a container's log lines until it stops or the request is cancelled.
