@@ -195,3 +195,45 @@ pub struct PluginRunTarget {
     pub container_root: Option<String>,
     pub commands: Vec<(String, Vec<String>)>,
 }
+
+/// Per-command argv prefix and optional working-directory arguments (API 1.5).
+#[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct PluginCommandOverride {
+    pub name: String,
+    pub args: Vec<String>,
+    /// None inherits the target's list; Some(Vec::new()) suppresses it.
+    #[serde(default)]
+    pub workdir_args: Option<Vec<String>>,
+}
+
+/// A project run target with per-command working-directory control (API 1.5).
+#[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct PluginRunTargetWithOverrides {
+    pub id: String,
+    pub name: String,
+    pub program: String,
+    pub args: Vec<String>,
+    pub workdir_args: Vec<String>,
+    pub container_root: Option<String>,
+    pub commands: Vec<PluginCommandOverride>,
+}
+
+impl From<PluginRunTarget> for PluginRunTargetWithOverrides {
+    fn from(target: PluginRunTarget) -> Self {
+        Self {
+            id: target.id,
+            name: target.name,
+            program: target.program,
+            args: target.args,
+            workdir_args: target.workdir_args,
+            container_root: target.container_root,
+            commands: target
+                .commands
+                .into_iter()
+                .map(|(name, args)| PluginCommandOverride { name, args, workdir_args: None })
+                .collect(),
+        }
+    }
+}

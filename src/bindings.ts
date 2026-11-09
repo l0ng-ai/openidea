@@ -4883,7 +4883,9 @@ export type IdeEvent =
 /**  A window entered or left full screen, itself or as a member of a full-screen window group. */
 { type: "windowFullscreenChanged" } | { type: "projectTrustChanged"; root: IpcPath; trusted: boolean } | 
 /**  Files or directories changed on disk (after debouncing, ignore rules applied). */
-{ type: "fsChanged"; created: IpcPath[]; modified: IpcPath[]; removed: IpcPath[] } | 
+{ type: "fsChanged"; created: IpcPath[]; modified: IpcPath[]; removed: IpcPath[]; 
+/**  Subtrees whose ignore rules changed, after the matchers were rebuilt. */
+ignoreRules?: IpcPath[] } | 
 /**  Excluded or ignored folders whose contents changed; they stay out of `FsChanged`. */
 { type: "excludedDirsChanged"; dirs: IpcPath[] } | 
 /**
@@ -6420,6 +6422,14 @@ export type PickItem = {
 	description: string | null,
 };
 
+/**  Per-command argv prefix and optional replacement working-directory arguments. */
+export type PluginCommandOverride = {
+	name: string,
+	args: string[],
+	/**  None inherits the target's list; Some([]) suppresses it. */
+	workdirArgs?: string[] | null,
+};
+
 /**  A plugin's before-commit check to run (`[[contributes.commitChecks]]`). */
 export type PluginCommitCheckRef = {
 	pluginId: string,
@@ -6723,7 +6733,7 @@ export type PluginRunTarget = {
 	args: string[],
 	workdirArgs: string[],
 	containerRoot: string | null,
-	commands: ([string, string[]])[],
+	commands: PluginCommandOverride[],
 };
 
 /**  A secret a plugin declares, and whether the user stored it. */

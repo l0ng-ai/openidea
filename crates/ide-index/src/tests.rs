@@ -750,3 +750,66 @@ fn persisted_symbols_do_not_load_through_escaping_symlink_ancestors() {
     assert!(symbols(&idx, "old_symbol", SymbolFilter::All).is_empty());
     assert_eq!(initial.lock()[0], 0, "unsafe cached symbols must never be published");
 }
+
+#[test]
+fn rule_changes_refresh_only_the_affected_index_subtree() {
+    for (rule, subtree) in [(".git/info/exclude", ""), ("sub/.gitignore", "sub"), ("sub/.ignore", "sub")] {
+        let fx = Fixture::new(&[
+            (".git/HEAD", "ref: refs/heads/main\n"),
+            ("sub/generated/file.ts", "export function generated() {}\n"),
+            ("sub/local.ts", "export function localOnly() {}\n"),
+            ("other/keep.ts", "export function keep() {}\n"),
+        ]);
+        fx.write(rule, "");
+        let idx = fx.open();
+        assert_eq!(files(&idx, "file.ts"), ["sub/generated/file.ts"]);
+        fx.write(rule, "generated/\nlocal.ts\n");
+        let dirs = [fx.root.join(subtree)];
+        idx.ignore_rules_changed(&dirs);
+        assert!(idx.wait_idle(WAIT));
+        assert!(files(&idx, "file.ts").is_empty(), "{rule}: ignored directory remained indexed");
+        assert_eq!(files(&idx, "local.ts"), ["sub/local.ts"]);
+        assert!(symbols(&idx, "localOnly", SymbolFilter::All).is_empty());
+        assert_eq!(files(&idx, "keep.ts"), ["other/keep.ts"]);
+
+        fx.write(rule, "");
+        idx.ignore_rules_changed(&dirs);
+        assert!(idx.wait_idle(WAIT));
+        assert_eq!(files(&idx, "file.ts"), ["sub/generated/file.ts"]);
+        assert_eq!(symbols(&idx, "localOnly", SymbolFilter::All), ["localOnly"]);
+        // The cached root matcher must also follow the rules for later watcher updates.
+        let fresh = fx.write("sub/generated/new.ts", "export function fresh() {}\n");
+        idx.update(&[fresh], &[]);
+        assert!(idx.wait_idle(WAIT));
+        assert_eq!(files(&idx, "new.ts"), ["sub/generated/new.ts"]);
+    }
+}
+
+#[test]
+fn repository_rule_changes_refresh_members_of_an_unindexed_container() {
+    let fx = Fixture::new(&[
+        (".git/HEAD", "ref: refs/heads/main\n"),
+        (".git/info/exclude", ""),
+        ("member/generated/item.txt", "x"),
+    ]);
+    let idx = ProjectIndex::open(
+        &fx.root,
+        &fx.cache,
+        IndexRoots { include_root: false, folders: vec![fx.root.join("member")] },
+        vec![],
+        Arc::new(LanguageRegistry::load(None).unwrap()),
+        Arc::new(Syntax::new()),
+        Arc::new(NullSink),
+    )
+    .unwrap();
+    assert!(idx.wait_idle(WAIT));
+    assert_eq!(files(&idx, "item.txt"), ["member/generated/item.txt"]);
+    fx.write(".git/info/exclude", "generated/\n");
+    idx.ignore_rules_changed(std::slice::from_ref(&fx.root));
+    assert!(idx.wait_idle(WAIT));
+    assert!(files(&idx, "item.txt").is_empty());
+    fx.write(".git/info/exclude", "");
+    idx.ignore_rules_changed(std::slice::from_ref(&fx.root));
+    assert!(idx.wait_idle(WAIT));
+    assert_eq!(files(&idx, "item.txt"), ["member/generated/item.txt"]);
+}

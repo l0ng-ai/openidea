@@ -475,7 +475,12 @@ export function loadDir(path: string, force = false): Promise<void> {
 }
 
 /** Applies a backend `fsChanged` event: reloads affected loaded folders only. */
-export async function applyFsChange(event: { created: string[]; modified: string[]; removed: string[] }) {
+export async function applyFsChange(event: {
+  created: string[];
+  modified: string[];
+  removed: string[];
+  ignoreRules?: string[];
+}) {
   const s = get();
   if (!s.root) return;
   const plan = planRefresh(event, new Set(s.listings.keys()));

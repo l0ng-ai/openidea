@@ -149,6 +149,11 @@ fn everything_missing_on_an_empty_system() {
     assert_eq!(angular.command, "ngserver");
     assert_eq!(angular.install_method.as_deref(), Some("npm"));
     assert_eq!(angular.languages, ["HTML", "TypeScript"]);
+    let astro = find(&list, "astro-ls");
+    assert_eq!(astro.display_name, "Astro Language Server");
+    assert_eq!(astro.install_method.as_deref(), Some("npm"));
+    assert_eq!(astro.languages, ["Astro"]);
+    assert_eq!(astro.default_args, ["--stdio"]);
     // Servers without an installer are listed with their manual hint.
     let hls = find(&list, "haskell-language-server");
     assert_eq!(hls.install_method, None);
@@ -480,6 +485,7 @@ echo "added 1 package""#,
 fn npm_typescript_is_pinned_and_shared() {
     let env = Env::new();
     let log = env.root.parent().unwrap().join("npm-args.txt");
+    env.script(&env.sys, "node", "exit 0");
     env.script(
         &env.sys,
         "npm",
@@ -491,6 +497,7 @@ prefix=""; for a in "$@"; do [ "$prev" = "--prefix" ] && prefix="$a"; prev="$a";
 for a in "$@"; do case "$a" in
   typescript-language-server@latest) n=typescript-language-server;;
   @vue/language-server@latest) n=vue-language-server; d=@vue/language-server;;
+  @astrojs/language-server@latest) n=astro-ls; d=@astrojs/language-server;;
   *) continue;;
 esac
 d="${{d:-$n}}"; /bin/mkdir -p "$prefix/node_modules/$d"
@@ -501,7 +508,7 @@ done"#,
         ),
     );
     let tools = env.tools();
-    for name in ["vue-language-server", "typescript-language-server"] {
+    for name in ["vue-language-server", "typescript-language-server", "astro-ls"] {
         assert_eq!(
             tools.install(name, &langs(), &CancellationToken::new(), &|_| {}).unwrap().status,
             ToolStatus::Installed
@@ -512,6 +519,7 @@ done"#,
         assert!(line.contains("typescript@6") && !line.contains("typescript@latest"), "{line}");
     }
     assert!(installs.contains("@vue/language-server@latest"), "{installs}");
+    assert!(installs.contains("@astrojs/language-server@latest"), "{installs}");
 
     fs::write(&log, "").unwrap();
     tools.uninstall("vue-language-server", &langs()).unwrap();

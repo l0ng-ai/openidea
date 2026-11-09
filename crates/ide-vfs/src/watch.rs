@@ -89,11 +89,16 @@ impl Watcher {
             // VCS-metadata-only batches (`batch.vcs`) carry no worktree paths:
             // consumers that refresh on any `fsChanged` would reschedule purely
             // from the backend's own `.git/index` write.
-            if !(batch.created.is_empty() && batch.modified.is_empty() && batch.removed.is_empty()) {
+            if !(batch.created.is_empty()
+                && batch.modified.is_empty()
+                && batch.removed.is_empty()
+                && batch.ignore_rules.is_empty())
+            {
                 sink.emit(IdeEvent::FsChanged {
                     created: batch.created.iter().map(Into::into).collect(),
                     modified: batch.modified.iter().map(Into::into).collect(),
                     removed: batch.removed.iter().map(Into::into).collect(),
+                    ignore_rules: batch.ignore_rules.iter().map(Into::into).collect(),
                 });
             }
             if !batch.excluded_dirs.is_empty() {
@@ -659,7 +664,10 @@ impl EventFilter {
         // Rebuild ignore rules first, so files in the same batch are filtered
         // by the new rules regardless of path order.
         let mut rule_dirs: BTreeSet<PathBuf> = BTreeSet::new();
-        for path in changes.keys() {
+        let rule_events = events
+            .clone()
+            .filter(|e| matches!(e.kind, EventKind::Create(_) | EventKind::Modify(_) | EventKind::Remove(_)));
+        for path in rule_events.clone().flat_map(|e| &e.paths) {
             let name = path.file_name().and_then(|n| n.to_str());
             if matches!(name, Some(".gitignore" | ".ignore"))
                 && let Some(dir) = path.parent()
@@ -668,7 +676,7 @@ impl EventFilter {
                 rule_dirs.insert(dir.to_path_buf());
             }
         }
-        if events.flat_map(|e| &e.paths).any(|p| p.ends_with(".git/info/exclude")) {
+        if rule_events.flat_map(|e| &e.paths).any(|p| p.ends_with(".git/info/exclude")) {
             self.gitignore.reload_repo_level();
             rule_dirs.insert(self.root.clone());
         }
@@ -729,7 +737,9 @@ impl EventFilter {
             }
         }
         batch.excluded_dirs = excluded_dirs.into_iter().collect();
-        (batch, rule_dirs.into_iter().collect())
+        batch.ignore_rules = rule_dirs.into_iter().collect();
+        let rule_dirs = batch.ignore_rules.clone();
+        (batch, rule_dirs)
     }
 }
 
@@ -1045,6 +1055,41 @@ mod tests {
         assert!(batch.modified.is_empty() && batch.vcs.is_empty(), "{batch:?}");
         assert_eq!(batch.ignored, vec![root.join("b.tmp")]);
         assert_eq!(rules, vec![root.clone()]);
+    }
+
+    #[test]
+    fn only_rule_file_mutations_invalidate_subtrees() {
+        let tmp = tempfile::tempdir().unwrap();
+        let root = dunce::canonicalize(tmp.path()).unwrap();
+        std::fs::create_dir_all(root.join(".git/info")).unwrap();
+        std::fs::create_dir(root.join("pkg")).unwrap();
+        let filter = EventFilter::new(root.clone(), &[]);
+        for (rel, dir) in [
+            (".git/info/exclude", root.clone()),
+            ("pkg/.gitignore", root.join("pkg")),
+            ("pkg/.ignore", root.join("pkg")),
+        ] {
+            let path = root.join(rel);
+            std::fs::write(&path, "").unwrap();
+            for kind in [EventKind::Any, EventKind::Other] {
+                assert!(filter.batch(&[ev(kind, vec![path.clone()])]).ignore_rules.is_empty());
+            }
+            for kind in [
+                EventKind::Create(CreateKind::File),
+                EventKind::Modify(ModifyKind::Data(DataChange::Content)),
+                EventKind::Remove(RemoveKind::File),
+                EventKind::Modify(ModifyKind::Name(RenameMode::Both)),
+            ] {
+                let paths = if matches!(kind, EventKind::Modify(ModifyKind::Name(_))) {
+                    vec![path.clone(), path.with_extension("bak")]
+                } else {
+                    vec![path.clone()]
+                };
+                let batch = filter.batch(&[ev(kind, paths)]);
+                assert_eq!(batch.ignore_rules.as_slice(), std::slice::from_ref(&dir), "{kind:?} on {rel}");
+                assert!(!batch.is_empty());
+            }
+        }
     }
 
     #[test]
