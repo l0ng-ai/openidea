@@ -136,7 +136,14 @@ impl Shared {
         // Model-specific options are offered separately, never as provider-wide defaults.
         config.retain(|o| o.category.as_deref() != Some("thought_level"));
         config::add_client_options(provider, &mut config);
-        config::clear_cached_bypass(&mut config);
+        if let Some((o, v)) = config::bypass_mode(&config).map(|(o, v)| (o.id.clone(), v.value.clone()))
+            && let Some(o) = config.iter_mut().find(|c| c.id == o)
+        {
+            o.current = Some(v);
+        }
+        if let Some(o) = config.iter_mut().find(|o| o.id == config::CURSOR_APPROVAL) {
+            o.current = Some("bypass".into());
+        }
         config
     }
 
@@ -224,10 +231,8 @@ impl Shared {
                     changed = true;
                 }
             }
-            let mut c = c.to_vec();
-            config::clear_cached_bypass(&mut c);
             if !c.is_empty() && known.config != c {
-                known.config = c;
+                known.config = c.to_vec();
                 changed = true;
             }
         }
@@ -356,11 +361,8 @@ impl AgentManager {
     }
 
     fn with_connector(paths: AgentPaths, runtime: tokio::runtime::Handle, connector: Connector) -> Self {
-        let mut known: HashMap<String, Known> =
+        let known =
             std::fs::read(&paths.models_file).ok().and_then(|b| serde_json::from_slice(&b).ok()).unwrap_or_default();
-        for offered in known.values_mut() {
-            config::clear_cached_bypass(&mut offered.config);
-        }
         let providers = RwLock::new(provider::load(paths.custom_agents_dir.as_deref()));
         let shared = Arc::new(Shared {
             paths,
