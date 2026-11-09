@@ -1,4 +1,5 @@
 {
+  "Separate Procedures and Functions": "分别显示过程和函数",
   "Shared JDT LS is available only in local ordinary project windows. Select Local machine for the Java language server to use it.": "共享 JDT LS 仅适用于本机的普通项目窗口。请将 Java 语言服务器的运行位置设为本机后再使用。",
   "Share JDT LS across builds": "在构建间共享 JDT LS",
   "Shared JDT LS is available only in local ordinary project windows. Open a workspace member as a project to change this setting for it.": "共享 JDT LS 仅适用于本机的普通项目窗口。请将工作区成员作为项目打开，再修改其此项设置。",
@@ -6,6 +7,13 @@
   "Finder": "访达",
   "Explorer": "资源管理器",
   "Reveal in Finder": "在访达中显示",
+  "Classes reloaded": "类已重新加载",
+  "Active frames keep running the old code until they return. New calls use the reloaded code.": "活动栈帧将继续执行旧代码，直到方法返回。新的调用将使用重新加载的代码。",
+  "The bottom frame cannot be reset. Re-enter the method or restart the debug session to run the new code.": "无法重置栈底帧。请重新进入该方法或重启调试会话，以执行新代码。",
+  "Reset Frame ({0})": "重置栈帧（{0}）",
+  "Choose a Go SDK": "选择 Go SDK",
+  "The Go version manager has no SDK selected. Choose an installed SDK in Go settings and run again.": "Go 版本管理器未选择 SDK。请在 Go 设置中选择已安装的 SDK，然后重新运行。",
+  "Go Settings…": "Go 设置…",
   "Active Editor": "活动编辑器",
   "The language server Java executable ({path}) cannot run on this machine. Choose a working JDK in {setting}, or set it to Auto.": "语言服务器的 Java 可执行文件（{path}）无法在此机器上运行。请在 {setting} 中选择可正常运行的 JDK，或设为自动。",
   "Input queue is full (4 MiB or 1024 writes); input was not sent.": "输入队列已满（4 MiB 或 1024 次写入）；本次输入未发送。",
@@ -7061,5 +7069,11 @@
   "Run test": "运行测试",
   "Project evaluation failed": "项目求值失败",
   "dotnet exited with code {0}": "dotnet 已退出，退出码 {0}",
-  "Microsoft.Testing.Platform was not found in the restored project.": "还原后的项目中未找到 Microsoft.Testing.Platform。"
+  "Microsoft.Testing.Platform was not found in the restored project.": "还原后的项目中未找到 Microsoft.Testing.Platform。",
+  "Open Maven Settings": "打开 Maven 设置",
+  "Open Gradle Settings": "打开 Gradle 设置",
+  "Choose Gradle JVM": "选择 Gradle JVM",
+  "Choose a JDK compatible with this Gradle version in Gradle JVM. Download JDK is available in the JVM selector.": "请在 Gradle JVM 中选择与此 Gradle 版本兼容的 JDK。JVM 选择器中提供下载 JDK 选项。",
+  "Maven could not be started. Configure Maven home in Maven settings, install Maven on PATH, or use a project with a Maven wrapper.": "无法启动 Maven。请在 Maven 设置中配置 Maven 主目录，将 Maven 安装到 PATH，或使用带有 Maven wrapper 的项目。",
+  "Gradle could not be started. Configure a local installation in Gradle settings, install Gradle on PATH, or use a project with a Gradle wrapper.": "无法启动 Gradle。请在 Gradle 设置中配置本地安装，将 Gradle 安装到 PATH，或使用带有 Gradle wrapper 的项目。"
 }

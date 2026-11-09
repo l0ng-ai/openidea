@@ -1,4 +1,5 @@
 {
+  "Separate Procedures and Functions": "Separate Procedures and Functions",
   "Shared JDT LS is available only in local ordinary project windows. Select Local machine for the Java language server to use it.": "Shared JDT LS is available only in local ordinary project windows. Select Local machine for the Java language server to use it.",
   "Share JDT LS across builds": "Share JDT LS across builds",
   "Shared JDT LS is available only in local ordinary project windows. Open a workspace member as a project to change this setting for it.": "Shared JDT LS is available only in local ordinary project windows. Open a workspace member as a project to change this setting for it.",
@@ -14,6 +15,13 @@
   "Patch file created successfully. Show it in Explorer?": "Patch file created successfully. Show it in Explorer?",
   "Patch file created successfully. Show it in Files?": "Patch file created successfully. Show it in Files?",
   "Cannot reveal in {fileManager}": "Cannot reveal in {fileManager}",
+  "Classes reloaded": "Classes reloaded",
+  "Active frames keep running the old code until they return. New calls use the reloaded code.": "Active frames keep running the old code until they return. New calls use the reloaded code.",
+  "The bottom frame cannot be reset. Re-enter the method or restart the debug session to run the new code.": "The bottom frame cannot be reset. Re-enter the method or restart the debug session to run the new code.",
+  "Reset Frame ({0})": "Reset Frame ({0})",
+  "Choose a Go SDK": "Choose a Go SDK",
+  "The Go version manager has no SDK selected. Choose an installed SDK in Go settings and run again.": "The Go version manager has no SDK selected. Choose an installed SDK in Go settings and run again.",
+  "Go Settings…": "Go Settings…",
   "Active Editor": "Active Editor",
   "Soft-Wrap": "Soft-Wrap",
   "The language server Java executable ({path}) cannot run on this machine. Choose a working JDK in {setting}, or set it to Auto.": "The language server Java executable ({path}) cannot run on this machine. Choose a working JDK in {setting}, or set it to Auto.",
@@ -727,5 +735,11 @@
   "Select a .NET project": "Select a .NET project",
   "Project evaluation failed": "Project evaluation failed",
   "dotnet exited with code {0}": "dotnet exited with code {0}",
-  "Microsoft.Testing.Platform was not found in the restored project.": "Microsoft.Testing.Platform was not found in the restored project."
+  "Microsoft.Testing.Platform was not found in the restored project.": "Microsoft.Testing.Platform was not found in the restored project.",
+  "Open Maven Settings": "Open Maven Settings",
+  "Open Gradle Settings": "Open Gradle Settings",
+  "Choose Gradle JVM": "Choose Gradle JVM",
+  "Choose a JDK compatible with this Gradle version in Gradle JVM. Download JDK is available in the JVM selector.": "Choose a JDK compatible with this Gradle version in Gradle JVM. Download JDK is available in the JVM selector.",
+  "Maven could not be started. Configure Maven home in Maven settings, install Maven on PATH, or use a project with a Maven wrapper.": "Maven could not be started. Configure Maven home in Maven settings, install Maven on PATH, or use a project with a Maven wrapper.",
+  "Gradle could not be started. Configure a local installation in Gradle settings, install Gradle on PATH, or use a project with a Gradle wrapper.": "Gradle could not be started. Configure a local installation in Gradle settings, install Gradle on PATH, or use a project with a Gradle wrapper."
 }

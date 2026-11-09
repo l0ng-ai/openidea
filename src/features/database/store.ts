@@ -57,6 +57,7 @@ export const DB_TOOL_WINDOW = "database";
 export const RESULTS_VIEW = "dbResults";
 const BINDINGS_KEY = "openidea.database.consoles";
 const CONSOLE_SCHEMAS_KEY = "openidea.database.consoleSchemas";
+const VIEW_OPTIONS_KEY = "openidea.database.viewOptions";
 const MAX_TABS = 12;
 
 export interface ResultTab {
@@ -144,6 +145,7 @@ interface DatabaseState {
   consoleSchemas: Record<string, string>;
   /** The Database tree's quick object filter (empty: everything shows). */
   treeFilter: string;
+  separateProceduresAndFunctions: boolean;
   completion: Record<string, DbCompletion>;
   results: ResultTab[];
   /** Result tab id, or `OUTPUT_TAB`. */
@@ -189,6 +191,15 @@ function readConsoleSchemas(): Record<string, string> {
   }
 }
 
+function readSeparateProceduresAndFunctions(): boolean {
+  try {
+    const raw = localStorage.getItem(VIEW_OPTIONS_KEY);
+    return raw ? JSON.parse(raw)?.separateProceduresAndFunctions === true : false;
+  } catch {
+    return false;
+  }
+}
+
 export const useDatabase = create<DatabaseState>(() => ({
   sources: [],
   loaded: false,
@@ -201,6 +212,7 @@ export const useDatabase = create<DatabaseState>(() => ({
   consoles: readBindings(),
   consoleSchemas: readConsoleSchemas(),
   treeFilter: "",
+  separateProceduresAndFunctions: readSeparateProceduresAndFunctions(),
   completion: {},
   results: [],
   activeResult: null,
@@ -217,6 +229,16 @@ export const useDatabase = create<DatabaseState>(() => ({
   manualCommit: new Set(),
   pendingTx: new Set(),
 }));
+
+export function toggleSeparateProceduresAndFunctions() {
+  const separateProceduresAndFunctions = !useDatabase.getState().separateProceduresAndFunctions;
+  useDatabase.setState({ separateProceduresAndFunctions });
+  try {
+    localStorage.setItem(VIEW_OPTIONS_KEY, JSON.stringify({ separateProceduresAndFunctions }));
+  } catch {
+    // Per-viewer convenience only.
+  }
+}
 
 export const tablesKey = (id: string, schema: string) => `${id}\u0000${schema}`;
 export const detailsKey = (id: string, schema: string, table: string) => `${id}\u0000${schema}\u0000${table}`;
