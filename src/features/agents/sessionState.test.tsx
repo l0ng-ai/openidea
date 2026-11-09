@@ -362,7 +362,10 @@ describe("scrolling", () => {
     let height = 1000;
     Object.defineProperty(el, "scrollHeight", { configurable: true, get: () => height });
     Object.defineProperty(el, "clientHeight", { configurable: true, value: 400 });
-    // The conversation grew after it was scrolled to the end, or WebKit moved the offset back.
+    el.scrollTop = 600;
+    fireEvent.scroll(el);
+    // The conversation grew after it was scrolled to the end, or WebKit moved the offset back
+    // while rows laid out: both change the content height.
     height = 1300;
     el.scrollTop = 600;
     fireEvent.scroll(el);
@@ -373,6 +376,20 @@ describe("scrolling", () => {
     el.scrollTop = 600;
     fireEvent.scroll(el);
     expect(el.scrollTop).toBe(600);
+    expect(await screen.findByRole("button", { name: "Jump to Latest" })).toBeInTheDocument();
+  });
+
+  it("leaves the end for a scroll that no layout caused, as dragging the scrollbar thumb", async () => {
+    render(<SessionEditor input={input("A")} />);
+    expect(await screen.findByText("Answer A")).toBeInTheDocument();
+    const el = stream();
+    Object.defineProperty(el, "scrollHeight", { configurable: true, value: 1000 });
+    Object.defineProperty(el, "clientHeight", { configurable: true, value: 400 });
+    el.scrollTop = 600;
+    fireEvent.scroll(el);
+    el.scrollTop = 0;
+    fireEvent.scroll(el);
+    expect(el.scrollTop).toBe(0);
     expect(await screen.findByRole("button", { name: "Jump to Latest" })).toBeInTheDocument();
   });
 
