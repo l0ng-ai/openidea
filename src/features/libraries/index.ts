@@ -28,6 +28,7 @@ const GROUP_ICONS: Record<string, string> = {
   goModules: "file-gomod",
   maven: "maven-project",
   gradle: "file-gradle",
+  classpath: "file-java",
   ruby: "file-ruby",
   gems: "file-ruby",
 };
@@ -57,6 +58,7 @@ const MANIFESTS = new Set([
   "go.mod",
   "go.sum",
   "go.work",
+  ".classpath",
   "pyproject.toml",
   "setup.py",
   "requirements.txt",
