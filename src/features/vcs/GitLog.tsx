@@ -1,3 +1,4 @@
+import { writeClipboardText } from "@/platform/clipboard";
 import { useBookmarkPopups } from "@/features/search/bookmarks/store";
 import { commitBookmarkPath } from "./logBookmarks";
 import { copySelectionOnKeyDown } from "@/ui/selectableText";
@@ -2785,7 +2786,7 @@ function CommitMessage({ commit, compact = false }: { commit: Commit; compact?: 
           type="button"
           className={clsx(styles.linkButton, styles.hash)}
           title={tx("Copy revision number")}
-          onClick={() => void navigator.clipboard?.writeText(commit.id)}
+          onClick={() => void writeClipboardText(commit.id)}
         >
           {commit.shortId}
         </button>{" "}

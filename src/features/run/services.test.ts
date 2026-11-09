@@ -403,6 +403,7 @@ describe("add service categories", () => {
       program: "Shell",
       compound: "Others",
       application: "Java",
+      "jar-application": "Java",
       "spring-boot": "Java",
       native: "Java",
       "java-file": "Java",

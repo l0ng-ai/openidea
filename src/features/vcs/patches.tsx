@@ -1,3 +1,4 @@
+import { writeClipboardText } from "@/platform/clipboard";
 import { commitRepo } from "./multiRoot";
 /** Create Patch… (from local changes or commits) and Apply Patch… (file or clipboard, with a preview). */
 import { useEffect, useState } from "react";
@@ -58,7 +59,7 @@ export async function copyChangesAsPatch(paths: readonly string[]) {
     tx("Create patch"),
     async () => {
       const source: PatchSource = { from: "changes", paths: files.map((f) => stripSlash(f.path)), reverse: false };
-      await navigator.clipboard.writeText(await call(commands.vcsCreatePatch(currentRepoRoot(), source)));
+      await writeClipboardText(await call(commands.vcsCreatePatch(currentRepoRoot(), source)));
     },
     { success: "Patch copied to the clipboard", refresh: false },
   );
@@ -149,7 +150,7 @@ function CreatePatchDialog({ origin, onClose }: { origin: PatchOrigin; onClose: 
             ? await call(commands.vcsShelfPatch(origin.entry.id, origin.path ?? null))
             : await call(commands.vcsCreatePatch(repo, source!));
         if (toFile) await call(commands.vcsWritePatch(file.trim(), patch));
-        else await navigator.clipboard.writeText(patch);
+        else await writeClipboardText(patch);
         return true;
       },
       { success: toFile ? `Patch saved to ${baseName(file.trim())}` : "Patch copied to the clipboard", refresh: false },

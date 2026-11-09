@@ -293,6 +293,7 @@ const ICONS = {
   "arrow-right": "general/right",
   "arrow-up": "general/up",
   "arrow-down": "general/down",
+  "scroll-to-end": "general/scrollDown",
   undo: "general/undo",
   redo: "general/redo",
   sun: "meetNewUi/lightTheme",
