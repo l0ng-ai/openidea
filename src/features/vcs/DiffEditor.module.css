@@ -239,7 +239,7 @@
   border-left: 1px solid var(--border);
   border-right: 1px solid var(--border);
 }
-.host :global(.cm-diffDivider svg) {
+.host :global(.cm-diffDivider > svg) {
   position: absolute;
   inset: 0;
 }
@@ -276,10 +276,10 @@
   cursor: pointer;
 }
 .host :global(.cm-diffDivider button.cm-diffArrow-a-to-b) {
-  left: 1px;
+  left: 0;
 }
 .host :global(.cm-diffDivider button.cm-diffArrow-b-to-a) {
-  right: 1px;
+  right: 0;
 }
 .host :global(.cm-diffDivider button.cm-diffArrow:hover) {
   color: var(--fg-strong);
