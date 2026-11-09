@@ -628,6 +628,7 @@ impl PhpEngine {
             out.extend(self.validation_intentions(&parsed, &path, start, end));
             out.extend(self.validation_refactorings(&parsed, &path, start, end));
             out.extend(self.laravel_model_generate_actions(&parsed, &path, start, end));
+            out.extend(self.laravel_intentions(&parsed, &path, start, end));
         }
         if [
             crate::refactor::EXTRACT_VARIABLE,

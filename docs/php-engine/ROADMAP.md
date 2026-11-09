@@ -635,7 +635,7 @@ Runs after Plan 7. Before any 8.x phase, read [LARAVEL-ROADMAP.md](LARAVEL-ROADM
 
   Inside a model, the Generate menu offers "JSON resource from model" and "Factory from model", which use the model's fields and relations, and "Add all fields" in `$fillable`. Tests: snapshot tests per generator.
 
-- [ ] Phase 8.15: Laravel intentions
+- [x] Phase 8.15: Laravel intentions
       Add these code actions (some rule ones come in 8.9):
   - convert a facade alias to a facade import
   - convert a facade call to an injected dependency, through the constructor or the method

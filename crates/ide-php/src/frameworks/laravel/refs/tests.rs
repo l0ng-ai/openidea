@@ -425,3 +425,6 @@ mod eloquent_tests;
 
 #[path = "model_view_tests.rs"]
 mod model_view_tests;
+
+#[path = "intentions_tests.rs"]
+mod intentions_tests;

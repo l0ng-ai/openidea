@@ -528,6 +528,11 @@ namespace Illuminate\Database\Eloquent\Casts {
     }
 }
 
+namespace Illuminate\Database\Eloquent\Attributes {
+    #[\Attribute(\Attribute::TARGET_METHOD)]
+    class Scope {}
+}
+
 namespace Illuminate\Pagination {
     class LengthAwarePaginator implements \Illuminate\Contracts\Pagination\LengthAwarePaginator {}
 }

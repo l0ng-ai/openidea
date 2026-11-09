@@ -6,8 +6,9 @@
 //! component attributes; in a Laravel project, custom directives, section
 //! and stack names, component tags and attributes (completion and goto),
 //! and Find Usages of a view (the one named at the caret, else the
-//! view itself) in PHP files and templates, and "Create translation key…"
-//! on a translation key. [`BladeObserver`] publishes the
+//! view itself) in PHP files and templates, "Create translation key…"
+//! on a translation key, and the Blade context actions (switch `{{ }}` and
+//! `{!! !!}`, `class` to `@class`). [`BladeObserver`] publishes the
 //! template's own problems (unclosed sections) for open views. The engine
 //! holds the PHP compiled from the open view as an embedded document under
 //! the view's id; `PhpObserver` drops it when the view closes.
@@ -57,6 +58,26 @@ impl BladeService {
         crate::php::translation_action(only, engine.server_id(), || {
             engine.blade_translation_request(&blade(&info), range.start)
         })
+    }
+
+    /// "Create translation key…" and the Blade context actions at `range`
+    /// (`ide_php::blade::intentions`: switching echoes, `@class`).
+    fn actions(&self, doc: DocId, range: Range, only: &[String]) -> Vec<CodeAction> {
+        let mut out: Vec<CodeAction> = self.translation_action(doc, range, only).into_iter().collect();
+        let rewrite = ide_php::imports::REWRITE;
+        let wanted = only.is_empty()
+            || only
+                .iter()
+                .any(|o| rewrite == o || rewrite.strip_prefix(o.as_str()).is_some_and(|r| r.starts_with('.')));
+        if wanted && let Some(info) = self.info(doc) {
+            let server = self.php.engine().map_or(self.server, |engine| engine.server_id());
+            out.extend(
+                ide_php::blade::intentions::code_actions(&info.path, &info.text, range)
+                    .into_iter()
+                    .map(|action| crate::php::code_action(action, server)),
+            );
+        }
+        out
     }
 }
 
@@ -167,10 +188,12 @@ impl LanguageService for BladeService {
     }
 
     /// Laravel's "Create translation key…" on a translation key in the
-    /// template's PHP (`@lang('…')`, `{{ __('…') }}`); left to the other
-    /// services everywhere else.
+    /// template's PHP (`@lang('…')`, `{{ __('…') }}`), and the Blade context
+    /// actions (switch `{{ }}`/`{!! !!}`, `class` to `@class`); left to the
+    /// other services where there is none.
     fn code_actions(&self, doc: DocId, range: Range, only: &[String]) -> Answer<Vec<CodeAction>> {
-        Some(Ok(vec![self.translation_action(doc, range, only)?]))
+        let actions = self.actions(doc, range, only);
+        (!actions.is_empty()).then_some(Ok(actions))
     }
 
     fn code_action_query(
@@ -180,8 +203,8 @@ impl LanguageService for BladeService {
         only: &[String],
         _cancel: &CancellationToken,
     ) -> Answer<CodeActionQuery> {
-        let action = self.translation_action(doc, range, only)?;
-        Some(Ok(CodeActionQuery { actions: vec![action], advertised_kinds: None }))
+        let actions = self.actions(doc, range, only);
+        (!actions.is_empty()).then_some(Ok(CodeActionQuery { actions, advertised_kinds: None }))
     }
 
     /// The views and components the view names, else the PHP's targets.
@@ -323,6 +346,20 @@ mod tests {
         let list = service.completion(doc, Pos::new(2, 5), None, &CancellationToken::new()).unwrap().unwrap();
         assert!(list.items.is_empty());
         assert!(service.hover(doc, Pos::new(2, 4), &CancellationToken::new()).unwrap().unwrap().is_none());
+
+        // The Blade context actions don't need the engine.
+        let rewrite = [ide_php::imports::REWRITE.to_owned()];
+        let actions = service.code_actions(doc, Range::new(Pos::new(2, 3), Pos::new(2, 3)), &rewrite).unwrap().unwrap();
+        let titles: Vec<&str> = actions.iter().map(|a| a.title.as_str()).collect();
+        assert_eq!(titles, ["Switch to unescaped echo {!! !!}"]);
+        let edits = match &actions[0].edit.as_ref().unwrap().files[0] {
+            ide_core::FileEdit::Edit { edits, .. } => edits.iter().map(|e| e.new_text.as_str()).collect::<Vec<_>>(),
+            other => panic!("{other:?}"),
+        };
+        assert_eq!(edits, ["{!!", "!!}"]);
+        // Nowhere else, nor for other kinds.
+        assert!(service.code_actions(doc, Range::new(Pos::new(1, 2), Pos::new(1, 2)), &rewrite).is_none());
+        assert!(service.code_actions(doc, Range::new(Pos::new(2, 3), Pos::new(2, 3)), &["quickfix".into()]).is_none());
     }
 
     #[test]

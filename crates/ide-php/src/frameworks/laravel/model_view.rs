@@ -26,7 +26,7 @@ use serde::{Deserialize, Serialize};
 use crate::engine::PhpEngine;
 use crate::summary::{ClassKind, FileSummary};
 use crate::syntax::LineIndex;
-use crate::types::provider::laravel::{accessor_name, scope_name, snake};
+use crate::types::provider::laravel::{accessor_name, is_scope_attributed, scope_name, snake};
 use crate::types::provider::{AttributeOrigin, LaravelProvider, MagicTarget};
 use crate::types::{ClassModel, Context, Type};
 
@@ -366,7 +366,9 @@ impl PhpEngine {
             if method.is_static || method.declaring.fqn.starts_with("Illuminate\\") {
                 continue;
             }
-            if let Some(rest) = scope_name(&method.name) {
+            let scope = scope_name(&method.name)
+                .or_else(|| method.declared().is_some_and(is_scope_attributed).then_some(method.name.as_str()));
+            if let Some(rest) = scope {
                 let mut chars = rest.chars();
                 let name = chars.next().map(|c| c.to_lowercase().chain(chars).collect()).unwrap_or_default();
                 scopes.push(ModelMember {

@@ -723,7 +723,7 @@ pub(crate) fn translation_action(
     })
 }
 
-fn code_action(action: ide_php::imports::ImportAction, server: ide_core::ServerId) -> CodeAction {
+pub(crate) fn code_action(action: ide_php::imports::ImportAction, server: ide_core::ServerId) -> CodeAction {
     CodeAction {
         title: action.title,
         kind: Some(action.kind.to_owned()),

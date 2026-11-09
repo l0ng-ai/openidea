@@ -295,7 +295,7 @@ fn declares(class: &ClassLike, kind: MemberKind, name: &str) -> bool {
 // ------------------------------------------------------------ text
 
 /// Where the docblock right before `start` begins (`start` without one).
-pub(super) fn doc_start(text: &str, start: u32) -> u32 {
+pub(crate) fn doc_start(text: &str, start: u32) -> u32 {
     let before = text[..start as usize].trim_end();
     if before.ends_with("*/")
         && let Some(open) = before.rfind("/**")

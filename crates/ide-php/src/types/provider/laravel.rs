@@ -294,6 +294,16 @@ impl LaravelProvider {
         })
     }
 
+    /// The class behind facade `facade` (what its `getFacadeAccessor()`
+    /// names), when it is one class.
+    pub(crate) fn facade_class(resolver: &Resolver<'_>, facade: &str) -> Option<String> {
+        let service = Self::facade_service(resolver, &Type::named(facade), &Context::default())?;
+        match service.members() {
+            [Type::Named { fqn, .. }] => Some(fqn.trim_start_matches('\\').to_owned()),
+            _ => None,
+        }
+    }
+
     /// The `make()` of a container: the binding a string names, else the
     /// class an argument names (`Foo::class`).
     fn make(resolver: &Resolver<'_>, class: &str, string: &str) -> Option<Type> {
@@ -520,6 +530,7 @@ impl LaravelProvider {
                 || framework
                 || method.name.starts_with("__")
                 || scope_name(&method.name).is_some()
+                || method.declared().is_some_and(is_scope_attributed)
                 || accessor_name(&method.name).is_some()
             {
                 continue;
@@ -641,9 +652,12 @@ impl LaravelProvider {
         if Self::raw_builder(resolver, &ty, context) { builder.clone() } else { ty }
     }
 
-    /// `scope{Name}()` on `model`.
+    /// `scope{Name}()` on `model`, or a `#[Scope]` method `name`.
     fn has_scope(resolver: &Resolver<'_>, model: &str, name: &str) -> bool {
-        resolver.class_model(model).is_some_and(|model| model.method(&format!("scope{name}")).is_some())
+        resolver.class_model(model).is_some_and(|model| {
+            model.method(&format!("scope{name}")).is_some()
+                || model.method(name).and_then(|method| method.declared().map(is_scope_attributed)).unwrap_or(false)
+        })
     }
 
     /// What method `name` of `model` returns: a relation declared raw
@@ -748,9 +762,13 @@ impl LaravelProvider {
     fn scopes(resolver: &Resolver<'_>, model: &str, is_static: bool, out: &mut Vec<MagicMember>) {
         let Some(model) = resolver.class_model(model) else { return };
         for method in model.methods.iter() {
-            let Some(rest) = scope_name(&method.name) else { continue };
+            let name = match scope_name(&method.name) {
+                Some(rest) => camel(rest),
+                None if method.declared().is_some_and(is_scope_attributed) => method.name.clone(),
+                None => continue,
+            };
             out.push(MagicMember {
-                name: camel(rest),
+                name,
                 is_static,
                 target: MagicTarget::Method { class: model.fqn().to_owned(), method: method.name.clone() },
             });
@@ -775,7 +793,12 @@ impl LaravelProvider {
         for method in model.methods.iter() {
             // The application's methods, not the framework's own.
             let framework = method.declaring.fqn.starts_with("Illuminate\\");
-            if method.is_static || framework || method.name.starts_with("__") || scope_name(&method.name).is_some() {
+            if method.is_static
+                || framework
+                || method.name.starts_with("__")
+                || scope_name(&method.name).is_some()
+                || method.declared().is_some_and(is_scope_attributed)
+            {
                 continue;
             }
             if let Some(attribute) = accessor_name(&method.name) {
@@ -1021,6 +1044,14 @@ fn cast_type(resolver: &Resolver<'_>, cast: &str) -> Option<Type> {
 pub(crate) fn scope_name(method: &str) -> Option<&str> {
     let rest = method.get(5..).filter(|rest| !rest.is_empty())?;
     method[..5].eq_ignore_ascii_case("scope").then_some(rest)
+}
+
+/// Laravel 12's `#[Scope]` attribute marking a local scope method.
+pub(crate) const SCOPE_ATTRIBUTE: &str = "Illuminate\\Database\\Eloquent\\Attributes\\Scope";
+
+/// A method marked `#[Scope]`: a local scope called by its own name.
+pub(crate) fn is_scope_attributed(method: &crate::summary::Method) -> bool {
+    method.attributes.iter().any(|attribute| attribute.trim_start_matches('\\').eq_ignore_ascii_case(SCOPE_ATTRIBUTE))
 }
 
 /// `getFullNameAttribute` → `FullName`.

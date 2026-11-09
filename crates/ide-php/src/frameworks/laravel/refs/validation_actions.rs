@@ -50,7 +50,7 @@ const OBJECT_RULES: &[&str] = &["unique", "exists", "in", "dimensions"];
 
 /// The nodes from the program down to the innermost one holding bytes
 /// `start..end`.
-fn path_to<'ast, 'arena>(root: Node<'ast, 'arena>, start: u32, end: u32) -> Vec<Node<'ast, 'arena>> {
+pub(super) fn path_to<'ast, 'arena>(root: Node<'ast, 'arena>, start: u32, end: u32) -> Vec<Node<'ast, 'arena>> {
     let mut path = vec![root];
     loop {
         let last = path[path.len() - 1];
@@ -65,7 +65,7 @@ fn path_to<'ast, 'arena>(root: Node<'ast, 'arena>, start: u32, end: u32) -> Vec<
     }
 }
 
-fn span(node: &impl HasSpan) -> (u32, u32) {
+pub(super) fn span(node: &impl HasSpan) -> (u32, u32) {
     let span = node.span();
     (span.start.offset, span.end.offset)
 }
@@ -80,7 +80,7 @@ fn args<'a>(list: &'a mago_syntax::cst::ArgumentList<'a>) -> Vec<&'a Expression<
         .collect()
 }
 
-fn method_name(selector: &ClassLikeMemberSelector<'_>) -> Option<String> {
+pub(super) fn method_name(selector: &ClassLikeMemberSelector<'_>) -> Option<String> {
     match selector {
         ClassLikeMemberSelector::Identifier(name) => Some(String::from_utf8_lossy(name.value).into_owned()),
         _ => None,
@@ -168,7 +168,7 @@ fn rule_object(segment: &Segment<'_>, rule: &str) -> Option<String> {
 
 /// How code at `at` writes class `fqn`: its short name when that already
 /// means it or is free (then the import to add), else fully qualified.
-fn class_name(engine: &PhpEngine, names: &FileNames, at: u32, fqn: &str) -> (String, Option<String>) {
+pub(super) fn class_name(engine: &PhpEngine, names: &FileNames, at: u32, fqn: &str) -> (String, Option<String>) {
     let short = fqn.rsplit('\\').next().unwrap_or(fqn);
     let resolved = names.scope_at(at).resolve(NameKind::ClassLike, short);
     if resolved.resolution.matches(NameKind::ClassLike, fqn) {
@@ -200,7 +200,7 @@ impl PhpEngine {
 
     /// The edits of one file as a workspace edit, `(start, end, text)` in
     /// bytes.
-    fn byte_edit(parsed: &ParsedFile, path: &Path, mut edits: Vec<(u32, u32, String)>) -> WorkspaceEdit {
+    pub(super) fn byte_edit(parsed: &ParsedFile, path: &Path, mut edits: Vec<(u32, u32, String)>) -> WorkspaceEdit {
         edits.sort_by_key(|(start, end, _)| (*start, *end));
         let lines = parsed.line_index();
         crate::imports::file_edit(

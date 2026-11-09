@@ -51,6 +51,7 @@ pub mod controller_action;
 pub mod db_table;
 pub mod eloquent;
 pub mod env_key;
+pub mod intentions;
 pub mod middleware;
 pub mod route_name;
 #[cfg(test)]
