@@ -20,7 +20,7 @@ import { call, commands, isTauri } from "@/platform/ipc";
 import { editorService, notifications, notifyTabTitlesChanged, toolWindowService } from "@/workbench/contributions";
 import { tx } from "@/platform/i18n";
 import { confirm } from "@/workbench/messages";
-import { bypassDefaults, canSend, emptyDraft, toPrompt, type ComposerDraft, type FileRef } from "./composerModel";
+import { canSend, emptyDraft, toPrompt, type ComposerDraft, type FileRef } from "./composerModel";
 import { withQuote } from "./conversation";
 import {
   HOME_KEY,
@@ -538,12 +538,8 @@ export async function startTask(
     providers.find((p) => p.id === draft.provider),
     draft,
   );
-  const defaults = bypassDefaults(options);
   const config = options.flatMap((o) => {
-    const value =
-      o.category === "model" || o.category === "thought_level"
-        ? o.current
-        : (draft.config[o.id] ?? defaults[o.id] ?? null);
+    const value = o.current;
     return value !== null && o.values.some((v) => v.value === value) ? [{ id: o.id, value }] : [];
   });
   const task = await call(
