@@ -1,7 +1,5 @@
 import { expect, stubDesktop, test } from "./fixtures";
 
-test.use({ video: "on" });
-
 test.beforeEach(async ({ workbench: page }) => {
   await stubDesktop(page);
   await page.evaluate(async () => {
