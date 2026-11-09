@@ -35,6 +35,7 @@ use ide_core::Range;
 use super::LaravelProject;
 use super::auth::{calls, class_name, first_string};
 use super::blade::kebab;
+use super::parts::PartReader;
 use super::views::{ViewTable, provider_files};
 use crate::engine::PhpEngine;
 use crate::names::FileNames;
@@ -124,8 +125,10 @@ impl LivewireComponents {
         let mut out: Vec<LivewireComponent> = Vec::new();
         let resolver = engine.resolver();
         for path in provider_files(project) {
-            let Some(text) = engine.text_of(&path) else { continue };
-            for (alias, class) in registrations(&text) {
+            let Some(found) = engine.part("livewire-registrations", &path, "", &|text| registrations(text)) else {
+                continue;
+            };
+            for (alias, class) in found.iter().cloned() {
                 let Some(model) = resolver.class_model(&class) else { continue };
                 if out.iter().any(|known| known.name == alias) || !model.is_subclass_of(COMPONENT) {
                     continue;

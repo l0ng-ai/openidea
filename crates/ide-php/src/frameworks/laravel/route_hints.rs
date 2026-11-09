@@ -8,7 +8,8 @@
 //! browser, create an HTTP client request from [`RouteInfo::request`]).
 //! The URL starts with the application's `APP_URL` from `.env` (else
 //! `.env.example`, else `http://localhost`), as Laravel's URL generator
-//! does when it has no request.
+//! does when it has no request; a route limited to a `domain()` gets that
+//! host instead, with `APP_URL`'s scheme, and its hint shows the domain.
 
 use std::path::{Path, PathBuf};
 
@@ -49,6 +50,9 @@ pub struct RouteInfo {
     /// The route as an HTTP client request (`.http` syntax), ending with a
     /// line break.
     pub request: String,
+    /// The domain the route is limited to (`{account}.example.com`).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub domain: Option<String>,
 }
 
 impl RouteInfo {
@@ -179,11 +183,20 @@ fn action_text(action: &RouteAction) -> String {
     }
 }
 
+/// `app_url` with the host `domain`, keeping its scheme.
+fn with_domain(app_url: &str, domain: &str) -> String {
+    let scheme = app_url.split_once("://").map_or("http", |(scheme, _)| scheme);
+    format!("{scheme}://{}", domain.trim_matches('/'))
+}
+
 /// `route` with the application's URL.
 pub fn route_info(route: &RouteDef, app_url: &str) -> RouteInfo {
     let uri = format!("/{}", route.uri);
     let methods = shown_methods(&route.methods);
+    let domain_url = route.domain.as_deref().map(|domain| with_domain(app_url, domain));
+    let app_url = domain_url.as_deref().unwrap_or(app_url);
     RouteInfo {
+        domain: route.domain.clone(),
         request: request(route.name.as_deref(), &route.methods, &uri, &route.middleware, app_url),
         url: if route.uri.is_empty() { format!("{app_url}/") } else { format!("{app_url}{uri}") },
         name: route.name.clone(),
@@ -323,13 +336,14 @@ fn same_path(a: &Path, b: &Path) -> bool {
 }
 
 /// The URI of one route; for several (a resource), the shortest URI and
-/// the count.
+/// the count. A route limited to a domain shows it before the URI.
 fn hint_label(routes: &[RouteInfo]) -> String {
+    let domain = routes.first().and_then(|route| route.domain.as_deref()).unwrap_or_default();
     match routes {
-        [route] => route.uri.clone(),
+        [route] => format!("{domain}{}", route.uri),
         routes => {
             let base = routes.iter().map(|route| route.uri.as_str()).min_by_key(|uri| uri.len()).unwrap_or("/");
-            format!("{base} … {} routes", routes.len())
+            format!("{domain}{base} … {} routes", routes.len())
         }
     }
 }
@@ -383,6 +397,7 @@ mod tests {
             range: Range::default(),
             name_decl: None,
             resource: None,
+            domain: None,
         }
     }
 
@@ -445,5 +460,15 @@ mod tests {
         let index = route_info(&route(None, &["GET"], "posts", &[]), "h");
         assert_eq!(hint_label(std::slice::from_ref(&one)), "/posts/{post}");
         assert_eq!(hint_label(&[one, index, unnamed]), "/posts … 3 routes");
+    }
+
+    #[test]
+    fn domains_in_urls_and_hints() {
+        let mut def = route(Some("account.home"), &["GET", "HEAD"], "home", &[]);
+        def.domain = Some("{account}.example.com".to_owned());
+        let info = route_info(&def, "https://app.test");
+        assert_eq!(info.url, "https://{account}.example.com/home");
+        assert!(info.request.contains("GET https://{account}.example.com/home"), "{}", info.request);
+        assert_eq!(hint_label(std::slice::from_ref(&info)), "{account}.example.com/home");
     }
 }

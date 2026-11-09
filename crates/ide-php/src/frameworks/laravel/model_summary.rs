@@ -18,6 +18,13 @@ use crate::engine::PhpEngine;
 pub struct LaravelModelSummary {
     pub route_files: usize,
     pub modules: usize,
+    /// The service providers read (the app's, the modules', and the ones
+    /// the application and packages register).
+    pub providers: usize,
+    /// The folders and files of `loadMigrationsFrom`.
+    pub package_migrations: usize,
+    /// What providers `publishes`.
+    pub published: usize,
     pub routes: usize,
     pub middleware: usize,
     pub views: usize,
@@ -50,9 +57,13 @@ impl PhpEngine {
         let artisan = self.laravel_artisan()?;
         let livewire = self.laravel_livewire()?;
         let inertia = self.laravel_inertia()?;
+        let registrations = super::providers::package_registrations(&project, self);
         Some(LaravelModelSummary {
             route_files: project.route_files.len(),
             modules: project.modules.len(),
+            providers: registrations.len(),
+            package_migrations: registrations.iter().map(|(_, part)| part.migrations.len()).sum(),
+            published: registrations.iter().map(|(_, part)| part.publishes.len()).sum(),
             routes: routes.routes().len(),
             middleware: routes.middleware().len(),
             views: views.views().len(),

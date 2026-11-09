@@ -173,6 +173,25 @@ fn laravel_apps() -> Vec<LaravelApp> {
     out
 }
 
+/// `routes/web.php` when it registers routes, else the file registering
+/// the most.
+fn route_file(engine: &PhpEngine, root: &Path) -> PathBuf {
+    let routes = engine.laravel_routes().expect("the routes");
+    let mut counts: Vec<(PathBuf, usize)> = Vec::new();
+    for route in routes.routes() {
+        match counts.iter_mut().find(|(path, _)| *path == route.path) {
+            Some((_, count)) => *count += 1,
+            None => counts.push((route.path.clone(), 1)),
+        }
+    }
+    let web = root.join("routes").join("web.php");
+    let is_web = |path: &Path| path.strip_prefix(root).is_ok_and(|rel| rel == Path::new("routes").join("web.php"));
+    if let Some((path, _)) = counts.iter().find(|(path, _)| is_web(path)) {
+        return path.clone();
+    }
+    counts.into_iter().max_by_key(|(_, count)| *count).map_or(web, |(path, _)| path)
+}
+
 fn bench_laravel_app(c: &mut Criterion, app: &LaravelApp) {
     let mut g = c.benchmark_group(app.group);
     g.sample_size(20).sampling_mode(SamplingMode::Auto).warm_up_time(Duration::from_millis(500));
@@ -183,10 +202,13 @@ fn bench_laravel_app(c: &mut Criterion, app: &LaravelApp) {
     let summary = engine.laravel_model().unwrap_or_else(|| panic!("{}: not a Laravel project", app.root.display()));
     eprintln!("{}: {summary:?}", app.group);
 
-    // The route file open in the editor. A keystroke adds a statement at
-    // its end, a different one each time.
-    let path = app.root.join("routes/web.php");
-    let original = std::fs::read_to_string(&path).expect("routes/web.php");
+    // The route file open in the editor: `routes/web.php` when it has
+    // routes, else the file with the most (an app whose routes come from
+    // packages). A keystroke adds a statement at its end, a different one
+    // each time.
+    let path = route_file(&engine, &app.root);
+    eprintln!("{}: route file {}", app.group, path.display());
+    let original = std::fs::read_to_string(&path).expect("the route file");
     let doc = DocId(1);
     let mut version = 1;
     engine.document_opened(doc, &path, version, &original);

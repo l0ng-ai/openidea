@@ -979,6 +979,7 @@ mod tests {
             range: Range::default(),
             url: "http://localhost/posts/{post}".into(),
             request: "### posts.show\nGET http://localhost/posts/{{post}}\n".into(),
+            domain: None,
         };
         let command = route_command("GET /posts/{post}".into(), std::slice::from_ref(&route)).unwrap();
         assert_eq!(command.command, "laravel.routeActions");

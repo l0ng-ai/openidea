@@ -8,8 +8,12 @@
 //! - **JSON files:** `lang/<locale>.json` maps whole strings (`"Read more"`)
 //!   to their translations; such keys aren't split at dots.
 //! - **Namespaces:** `lang/vendor/<package>/<locale>/<group>.php` overrides a
-//!   package's lines (`package::group.key`), and modules have their own
-//!   `lang` (or `resources/lang`) folder under the module's lower-case name.
+//!   package's lines (`package::group.key`), modules have their own
+//!   `lang` (or `resources/lang`) folder under the module's lower-case name,
+//!   and service providers add folders with `loadTranslationsFrom(path, 'ns')`
+//!   (`shop::app.title`; without a namespace, more folders of the
+//!   application's keys) and `loadJsonTranslationsFrom(path)` (more JSON
+//!   files).
 //!
 //! [`Translations::create`] builds the edit that adds a key to the files
 //! of some locales: into the right nested array of a group file (created
@@ -25,6 +29,8 @@ use mago_syntax::cst::{ArrayElement, Expression, Literal, Statement};
 use super::LaravelProject;
 use super::config::ConfigKeys;
 use super::parts::{Merged, PartReader, TextParts};
+use super::project::ModuleKind;
+use super::providers::package_registrations;
 use crate::syntax::{LineIndex, ParsedFile};
 
 /// See the module documentation.
@@ -96,7 +102,7 @@ impl Translations {
                 dirs.push((Some(package.file_name().to_string_lossy().into_owned()), package.path()));
             }
         }
-        for module in project.modules.iter().filter(|module| module.enabled) {
+        for module in project.modules.iter().filter(|module| module.enabled && module.kind != ModuleKind::Concord) {
             for sub in ["lang", "resources/lang"] {
                 let dir = module.path.join(sub);
                 if dir.is_dir() {
@@ -105,12 +111,26 @@ impl Translations {
                 }
             }
         }
+        let mut json_dirs: Vec<PathBuf> = Vec::new();
+        for (_, part) in package_registrations(project, parts) {
+            for (namespace, dir) in &part.translations {
+                let known = dirs.iter().any(|(n, d)| n == namespace && crate::project::normalize(d) == *dir);
+                if dir.is_dir() && !known {
+                    dirs.push((namespace.clone(), dir.clone()));
+                }
+            }
+            json_dirs.extend(part.json_translations.iter().filter(|dir| dir.is_dir()).cloned());
+        }
         let mut out = Self { dirs: Vec::new(), ..Self::default() };
         let mut files = Vec::new();
         for (namespace, dir) in dirs {
             let dir = crate::project::normalize(&dir);
-            out.read_dir(namespace.as_deref(), &dir, parts, &mut files);
+            out.read_dir(namespace.as_deref(), &dir, false, parts, &mut files);
             out.dirs.push((namespace, dir));
+        }
+        json_dirs.dedup();
+        for dir in json_dirs {
+            out.read_dir(None, &crate::project::normalize(&dir), true, parts, &mut files);
         }
         let by_key = |a: &TransEntry, b: &TransEntry| (&a.key, &a.locale).cmp(&(&b.key, &b.locale));
         out.entries = Merged::new(files, by_key, previous.map(|previous| &previous.entries));
@@ -119,30 +139,35 @@ impl Translations {
         out
     }
 
+    /// The keys of the locale folders and JSON files in `dir` (`json`: the
+    /// JSON files only).
     fn read_dir(
         &mut self,
         namespace: Option<&str>,
         dir: &Path,
+        json: bool,
         parts: &impl PartReader,
         out: &mut Vec<Arc<Vec<TransEntry>>>,
     ) {
-        let Ok(found) = std::fs::read_dir(dir) else { return };
-        let mut found: Vec<_> = found.flatten().map(|entry| entry.path()).collect();
-        found.sort();
+        // Listed again only when files were created or removed.
+        let found = parts.listing("lang", dir, &|| language_files(dir));
         let prefix = |group: &str| match namespace {
             Some(namespace) => format!("{namespace}::{group}"),
             None => group.to_owned(),
         };
-        for path in found {
-            let name = path.file_name().map(|n| n.to_string_lossy().into_owned()).unwrap_or_default();
-            if path.is_dir() {
-                if name == "vendor" || name.starts_with('.') {
+        let mut found = found.iter().peekable();
+        while let Some((entry, path)) = found.next() {
+            if let Some(name) = entry.strip_suffix('/') {
+                let name = name.to_owned();
+                // The locale's group files follow its folder's entry.
+                let mut files = Vec::new();
+                while let Some((group, file)) = found.next_if(|(next, _)| next.starts_with(&format!("{name}/"))) {
+                    files.push((group[name.len() + 1..].to_owned(), file.clone()));
+                }
+                if json {
                     continue;
                 }
                 self.locales.push(name.clone());
-                let mut files = Vec::new();
-                php_files_below(&path, &path, &mut files);
-                files.sort();
                 for (group, file) in files {
                     let file = crate::project::normalize(&file);
                     let group = prefix(&group);
@@ -169,9 +194,9 @@ impl Translations {
                     out.extend(part);
                 }
             } else if namespace.is_none()
-                && let Some(locale) = name.strip_suffix(".json")
+                && let Some(locale) = entry.strip_suffix(".json")
             {
-                let path = crate::project::normalize(&path);
+                let path = crate::project::normalize(path);
                 let Some(part) = parts.part("lang-json", &path, locale, &|text| json_entries(locale, &path, text))
                 else {
                     continue;
@@ -473,6 +498,32 @@ fn create_in_json(path: &Path, key: &str, text: &str) -> Vec<FileEdit> {
             insert(path, "", 0, &format!("{{\n    {line}\n}}\n")),
         ],
     }
+}
+
+/// The language files of `dir`, sorted: each locale folder as `en/`
+/// followed by its group files as `en/admin/users` (any depth), and the
+/// JSON files (`fr.json`). `vendor` and hidden folders are left out.
+fn language_files(dir: &Path) -> Vec<(String, PathBuf)> {
+    let Ok(found) = std::fs::read_dir(dir) else { return Vec::new() };
+    let mut found: Vec<_> = found.flatten().map(|entry| entry.path()).collect();
+    found.sort();
+    let mut out = Vec::new();
+    for path in found {
+        let name = path.file_name().map(|n| n.to_string_lossy().into_owned()).unwrap_or_default();
+        if path.is_dir() {
+            if name == "vendor" || name.starts_with('.') {
+                continue;
+            }
+            out.push((format!("{name}/"), path.clone()));
+            let mut files = Vec::new();
+            php_files_below(&path, &path, &mut files);
+            files.sort();
+            out.extend(files.into_iter().map(|(group, file)| (format!("{name}/{group}"), file)));
+        } else if name.ends_with(".json") {
+            out.push((name, path));
+        }
+    }
+    out
 }
 
 /// The `.php` files below `dir` with their group names (`admin/users`).

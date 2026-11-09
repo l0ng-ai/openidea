@@ -20,7 +20,13 @@
 //!   the modules folder and namespace from `config/modules.php`, enabled
 //!   per `modules_statuses.json`), and directory modules: the folders below
 //!   `modules/`, `app-modules/`, `app/Modules/` or `src/Modules/` that look
-//!   like a module (routes, resources, providers or their own `composer.json`).
+//!   like a module (routes, resources, providers or their own `composer.json`),
+//!   and the module providers of `konekt/concord` (`config/concord.php`).
+//! - **Service providers:** the ones in `app/Providers` and in the modules'
+//!   provider folders, then the ones the application, Concord and package
+//!   discovery register, and the ones those register in turn
+//!   ([`super::providers`]). Listed once per load: every part of the model
+//!   reading providers uses this list.
 //!
 //! - **`ide.json`:** the project's and its packages' ([`IdeJson`]).
 //! - **Packages:** whether Livewire and Inertia are installed
@@ -63,6 +69,12 @@ pub struct LaravelProject {
     /// The packages the engine supports that are installed.
     #[serde(default)]
     pub packages: LaravelPackages,
+    /// The service provider files: the ones of `app/Providers` and of the
+    /// modules' provider folders, then the ones registered by the
+    /// application, Concord and package discovery, and by those providers
+    /// in turn, in registration order.
+    #[serde(default)]
+    pub providers: Vec<PathBuf>,
 }
 
 /// The packages with support of their own; see the module documentation.
@@ -166,6 +178,8 @@ pub enum ModuleKind {
     Nwidart,
     /// A folder of a modules directory.
     Directory,
+    /// A `konekt/concord` module (`config/concord.php`).
+    Concord,
 }
 
 /// The folders whose subfolders can be directory modules.
@@ -226,11 +240,27 @@ impl LaravelProject {
             modules: Vec::new(),
             ide_json,
             packages,
+            providers: Vec::new(),
         };
         if nwidart {
             project.modules.extend(nwidart_modules(&root));
         }
         project.directory_modules(manifest.as_ref());
+        let local = super::views::local_provider_files(&project);
+        let discovery = super::providers::discover(&root, &vendor, manifest.as_ref(), &local);
+        for module in discovery.concord {
+            if !project.modules.iter().any(|known| same_path(&known.path, &module.path)) {
+                project.modules.push(module);
+            }
+        }
+        // The Concord modules' provider folders are read as the modules'.
+        let mut providers = super::views::local_provider_files(&project);
+        for provider in discovery.providers {
+            if !providers.contains(&provider) {
+                providers.push(provider);
+            }
+        }
+        project.providers = providers;
         project.modules.sort_by(|a, b| a.path.cmp(&b.path));
         Some(project)
     }
@@ -262,9 +292,14 @@ impl LaravelProject {
             LaravelModuleSystem::Auto => true,
             LaravelModuleSystem::Nwidart => kind == ModuleKind::Nwidart,
             LaravelModuleSystem::Directory => kind == ModuleKind::Directory,
+            // Concord modules are read in automatic mode only.
             LaravelModuleSystem::None => false,
         };
+        let dropped: Vec<PathBuf> =
+            self.modules.iter().filter(|module| !keep(module.kind)).map(|module| module.path.clone()).collect();
         self.modules.retain(|module| keep(module.kind));
+        // The providers of the modules left out aren't read either.
+        self.providers.retain(|path| !dropped.iter().any(|module| path.starts_with(module)));
         let modules = &self.modules;
         for file in &mut self.route_files {
             if file.module.as_ref().is_some_and(|name| !modules.iter().any(|module| &module.name == name)) {

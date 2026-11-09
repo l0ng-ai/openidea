@@ -8,13 +8,20 @@
 //! MIT):
 //!
 //! - **Registrations:** `Route::get/post/put/patch/delete/options/any`,
-//!   `match`, `view`, `redirect`/`permanentRedirect`, `resource` and
-//!   `apiResource` on the `Route` facade (or `$router`), with `->name()`,
-//!   `->middleware()`, and `->only()`/`->except()`/`->names()` for resources.
+//!   `match`, `view`, `redirect`/`permanentRedirect`, `fallback`, `resource`,
+//!   `apiResource`, `resources([…])`/`apiResources([…])` and
+//!   `singleton`/`apiSingleton` on the `Route` facade (or `$router`), with
+//!   `->name()`, `->middleware()`, `->domain()`, and
+//!   `->only()`/`->except()`/`->names()` (an array or a name prefix) and
+//!   `->creatable()`/`->destroyable()` for resources.
 //! - **Groups:** `Route::prefix(…)->name(…)->middleware(…)->controller(…)->group(fn …)`
 //!   and `Route::group([…], fn …)` (`prefix`, `as`, `middleware`,
-//!   `namespace`, `controller`), nested, on top of the route file's own
-//!   group ([`RouteFile`]).
+//!   `namespace`, `controller`, `domain`), nested, on top of the route file's
+//!   own group ([`RouteFile`]).
+//! - **Included files:** a route file's `require 'more-routes.php';` (also
+//!   `__DIR__.'/…'`, `include`, `require_once`, and `->group('file.php')`),
+//!   inside a group or not, is read as a route file of its own loaded in
+//!   that group.
 //! - **Actions:** `[Controller::class, 'method']`, an invokable
 //!   `Controller::class`, `'Controller@method'` (relative to the group's
 //!   namespace) and a method name inside a `controller()` group.
@@ -24,9 +31,10 @@
 //!
 //! The middleware ([`MiddlewareDef`]) are Laravel's default aliases and
 //! groups (`Middleware::defaultAliases()`), then what `bootstrap/app.php`
-//! (`$middleware->alias([…])`, `->group('name', […])`, `appendToGroup`) and an
+//! (`$middleware->alias([…])`, `->group('name', […])`, `appendToGroup`), an
 //! `app/Http/Kernel.php` (`$middlewareAliases`, `$routeMiddleware`,
-//! `$middlewareGroups`) declare.
+//! `$middlewareGroups`) and the service providers (`$router->aliasMiddleware`,
+//! `middlewareGroup`, a `$middlewareAliases` property) declare.
 
 use std::path::{Path, PathBuf};
 
@@ -34,13 +42,14 @@ use ide_core::Range;
 use mago_span::{HasSpan, Span};
 use mago_syntax::cst::{
     Access, Argument, ArgumentList, ArrayElement, Call, Class, ClassLikeConstantSelector, ClassLikeMember,
-    ClassLikeMemberSelector, Expression, Literal, Property, PropertyItem, Statement, Variable,
+    ClassLikeMemberSelector, Construct, Expression, Literal, Property, PropertyItem, Statement, Variable,
 };
 use mago_syntax::walker::Walker;
 
 use super::LaravelProject;
 use super::parts::{PartReader, TextParts};
 use super::project::RouteFile;
+use super::views::{path_expression, provider_files};
 use crate::names::{FileNames, NameKind, Resolution};
 use crate::syntax::ParsedFile;
 
@@ -49,6 +58,9 @@ pub const RESOURCE_ACTIONS: &[&str] = &["index", "create", "store", "show", "edi
 
 /// The actions of `Route::apiResource`.
 pub const API_RESOURCE_ACTIONS: &[&str] = &["index", "store", "show", "update", "destroy"];
+
+/// The most route files read through `require`, against include cycles.
+const MAX_INCLUDED: usize = 2000;
 
 /// See the module documentation.
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
@@ -81,6 +93,8 @@ pub struct RouteDef {
     pub name_decl: Option<NameDecl>,
     /// Made by `resource` (`Some(false)`) or `apiResource` (`Some(true)`).
     pub resource: Option<bool>,
+    /// The domain the route is limited to (`{account}.example.com`).
+    pub domain: Option<String>,
 }
 
 /// What a route runs.
@@ -169,14 +183,52 @@ impl RouteTable {
     /// parsed again.
     pub fn read_parts(project: &LaravelProject, parts: &impl PartReader) -> Self {
         let mut routes = Vec::new();
-        for file in project.http_route_files() {
+        // Each file with the files that included it, so an include cycle
+        // stops.
+        let mut queue: Vec<(RouteFile, Vec<PathBuf>)> =
+            project.http_route_files().map(|file| (file.clone(), Vec::new())).collect();
+        let mut read: Vec<(PathBuf, String, String)> = Vec::new();
+        let mut next = 0;
+        while next < queue.len() && next < MAX_INCLUDED {
+            let (file, mut chain) = queue[next].clone();
+            next += 1;
+            let key = (file.path.clone(), file.prefix.clone(), file.name_prefix.clone());
+            if read.contains(&key) {
+                continue;
+            }
+            read.push(key);
             // The group the file is loaded in shapes its routes.
             let context = format!("{file:?}");
             let part = parts.part("routes", &file.path, &context, &|text| {
-                file_routes(&ParsedFile::parse("routes.php", text.to_owned()), file)
+                let parsed = ParsedFile::parse("routes.php", text.to_owned());
+                let (routes, includes) = read_route_file(&parsed, &file);
+                let includes = includes
+                    .into_iter()
+                    .filter_map(|(written, group, range)| {
+                        let path = included_path(project, &file.path, &written)?;
+                        Some(RouteFile {
+                            path,
+                            kind: file.kind,
+                            prefix: group.prefix,
+                            name_prefix: group.name,
+                            middleware: group.middleware,
+                            namespace: group.namespace,
+                            domain: group.domain,
+                            registered_at: Some((file.path.clone(), range)),
+                            module: file.module.clone(),
+                        })
+                    })
+                    .collect();
+                FileRoutes { routes, includes }
             });
             if let Some(part) = part {
-                routes.extend(part.iter().cloned());
+                routes.extend(part.routes.iter().cloned());
+                chain.push(file.path.clone());
+                for include in part.includes.iter() {
+                    if !chain.contains(&include.path) {
+                        queue.push((include.clone(), chain.clone()));
+                    }
+                }
             }
         }
         let mut middleware: Vec<MiddlewareDef> = DEFAULT_ALIASES
@@ -194,7 +246,9 @@ impl RouteTable {
                 declared: None,
             }))
             .collect();
-        let sources = [project.paths.bootstrap.join("app.php"), project.paths.app.join("Http").join("Kernel.php")];
+        let mut sources =
+            vec![project.paths.bootstrap.join("app.php"), project.paths.app.join("Http").join("Kernel.php")];
+        sources.extend(provider_files(project));
         for path in sources {
             let part = parts.part("middleware", &path, "", &|text| {
                 declared_middleware(&ParsedFile::parse("middleware.php", text.to_owned()), &path)
@@ -341,6 +395,31 @@ fn singular(word: &str) -> String {
     }
 }
 
+/// The first argument of a call.
+fn first_arg<'a>(link: &Link<'a>) -> Option<&'a Expression<'a>> {
+    link.args.first().copied()
+}
+
+/// The actions a resource registers, in Laravel's order (`ResourceRegistrar`):
+/// the seven of `resource`, five of `apiResource`; a singleton's `show`,
+/// `edit` and `update` (`create`, `store` and `destroy` too when creatable,
+/// `destroy` when destroyable; no `create` and `edit` for `apiSingleton`).
+fn resource_actions(resource: &Resource) -> Vec<&'static str> {
+    if !resource.singleton {
+        return if resource.api { API_RESOURCE_ACTIONS } else { RESOURCE_ACTIONS }.to_vec();
+    }
+    let all = ["create", "store", "show", "edit", "update", "destroy"];
+    all.into_iter()
+        .filter(|action| match *action {
+            "create" => resource.creatable && !resource.api,
+            "store" => resource.creatable,
+            "edit" => !resource.api,
+            "destroy" => resource.creatable || resource.destroyable,
+            _ => true,
+        })
+        .collect()
+}
+
 /// The attributes a group gives the routes in it.
 #[derive(Clone, Debug, Default)]
 struct Group {
@@ -349,6 +428,7 @@ struct Group {
     middleware: Vec<String>,
     namespace: Option<String>,
     controller: Option<String>,
+    domain: Option<String>,
 }
 
 impl Group {
@@ -359,6 +439,7 @@ impl Group {
             middleware: file.middleware.clone(),
             namespace: file.namespace.clone(),
             controller: None,
+            domain: file.domain.clone(),
         }
     }
 
@@ -391,10 +472,19 @@ struct Pending {
     name: Option<(String, u32, u32)>,
     middleware: Vec<String>,
     resource: Option<Resource>,
+    domain: Option<String>,
 }
 
 struct Resource {
     api: bool,
+    /// `singleton`/`apiSingleton`: no index and no `{parameter}`.
+    singleton: bool,
+    /// `->creatable()`: a singleton gets `create`, `store` and `destroy`.
+    creatable: bool,
+    /// `->destroyable()`: a singleton gets `destroy`.
+    destroyable: bool,
+    /// `->names('admin.posts')`: the prefix of every action's name.
+    name_prefix: Option<String>,
     /// The resource name as written, and its literal.
     name: (String, u32, u32),
     controller: Option<(String, u32, u32)>,
@@ -408,13 +498,46 @@ struct Reader<'a> {
     names: FileNames,
     path: PathBuf,
     out: Vec<RouteDef>,
+    includes: Vec<Include>,
 }
 
-/// The routes `parsed` (the route file `file`) registers.
+/// A file a route file includes: its path expression as written, the group
+/// around the include, and the path's range.
+type Include = (String, Group, Range);
+
+/// The routes of a route file, and the files it includes.
+struct FileRoutes {
+    routes: Vec<RouteDef>,
+    /// The included files, loaded in the group around the `require`.
+    includes: Vec<RouteFile>,
+}
+
+/// The routes `parsed` (the route file `file`) registers, without the
+/// files it includes.
 pub fn file_routes(parsed: &ParsedFile, file: &RouteFile) -> Vec<RouteDef> {
-    let mut reader = Reader { parsed, names: FileNames::resolve(parsed), path: file.path.clone(), out: Vec::new() };
+    read_route_file(parsed, file).0
+}
+
+fn read_route_file(parsed: &ParsedFile, file: &RouteFile) -> (Vec<RouteDef>, Vec<Include>) {
+    let mut reader = Reader {
+        parsed,
+        names: FileNames::resolve(parsed),
+        path: file.path.clone(),
+        out: Vec::new(),
+        includes: Vec::new(),
+    };
     reader.statements(parsed.program().statements.iter(), &Group::of_file(file));
-    reader.out
+    (reader.out, reader.includes)
+}
+
+/// The file an include of the route file `from` names: a path expression
+/// ([`path_expression`]), relative to `from`'s folder when it isn't
+/// absolute, as PHP falls back to the including file's folder.
+fn included_path(project: &LaravelProject, from: &Path, written: &str) -> Option<PathBuf> {
+    let path = path_expression(project, from, written)?;
+    let path = if path.is_absolute() { path } else { from.parent()?.join(path) };
+    let path = crate::project::normalize(&super::views::clean(&path));
+    path.is_file().then_some(path)
 }
 
 /// One call of a chain: its lower-case name, arguments and name's span.
@@ -441,12 +564,35 @@ impl<'a> Reader<'a> {
     fn statements(&mut self, statements: impl Iterator<Item = &'a Statement<'a>>, group: &Group) {
         for statement in statements {
             match statement {
+                Statement::Expression(statement) if self.include(statement.expression, group) => {}
                 Statement::Expression(statement) => self.expression(statement.expression, group),
                 Statement::Namespace(namespace) => self.statements(namespace.statements().iter(), group),
                 Statement::Block(block) => self.statements(block.statements.iter(), group),
                 _ => {}
             }
         }
+    }
+
+    /// `require 'file.php'` (or `include`, `…_once`), kept for
+    /// [`RouteTable::read_parts`] to read in `group`.
+    fn include(&mut self, expr: &'a Expression<'a>, group: &Group) -> bool {
+        let value = match expr {
+            Expression::Construct(Construct::Require(construct)) => construct.value,
+            Expression::Construct(Construct::RequireOnce(construct)) => construct.value,
+            Expression::Construct(Construct::Include(construct)) => construct.value,
+            Expression::Construct(Construct::IncludeOnce(construct)) => construct.value,
+            _ => return false,
+        };
+        self.included(value, group);
+        true
+    }
+
+    /// The path expression `value` of an included file.
+    fn included(&mut self, value: &'a Expression<'a>, group: &Group) {
+        let span = value.span();
+        let Some(written) = self.text().get(span.start.offset as usize..span.end.offset as usize) else { return };
+        let range = self.range(span.start.offset, span.end.offset);
+        self.includes.push((written.to_owned(), group.clone(), range));
     }
 
     /// The FQN of the class an identifier names.
@@ -543,6 +689,7 @@ impl<'a> Reader<'a> {
                 }
                 "middleware" => group.middleware.extend(first.map(|first| self.middleware(first)).unwrap_or_default()),
                 "controller" => group.controller = first.and_then(|first| self.class_arg(first)),
+                "domain" => group.domain = first.and_then(|first| literal(first, self.text())).map(|(d, ..)| d),
                 "namespace" => {
                     if let Some((namespace, ..)) = first.and_then(|first| literal(first, self.text())) {
                         group.namespace(&namespace);
@@ -559,9 +706,18 @@ impl<'a> Reader<'a> {
                     }
                     match callback {
                         Expression::Closure(closure) => self.statements(closure.body.statements.iter(), &group),
-                        Expression::ArrowFunction(arrow) => self.expression(arrow.expression, &group),
-                        _ => {}
+                        Expression::ArrowFunction(arrow) => {
+                            if !self.include(arrow.expression, &group) {
+                                self.expression(arrow.expression, &group);
+                            }
+                        }
+                        // `->group(__DIR__.'/admin.php')`: a file loaded in the group.
+                        _ => self.included(callback, &group),
                     }
+                    return;
+                }
+                "resources" | "apiresources" => {
+                    self.resources(link, &group, span);
                     return;
                 }
                 _ => match self.registration(link, &group) {
@@ -585,6 +741,7 @@ impl<'a> Reader<'a> {
                 "prefix" => group.prefix = join_uri(&group.prefix, &value.unwrap_or_default()),
                 "as" => group.name.push_str(&value.unwrap_or_default()),
                 "middleware" => group.middleware.extend(self.middleware(element.value)),
+                "domain" => group.domain = value,
                 "namespace" => {
                     if let Some(namespace) = value {
                         group.namespace(&namespace);
@@ -609,6 +766,7 @@ impl<'a> Reader<'a> {
             name: None,
             middleware: Vec::new(),
             resource: None,
+            domain: None,
         };
         let any = ["GET", "HEAD", "POST", "PUT", "PATCH", "DELETE", "OPTIONS"];
         Some(match link.name.as_str() {
@@ -634,39 +792,91 @@ impl<'a> Reader<'a> {
             "redirect" | "permanentredirect" => {
                 route(verb(&any), uri(0)?, RouteAction::Redirect(uri(1).unwrap_or_default()))
             }
-            "resource" | "apiresource" => {
+            // `Router::fallback`: the last route, matching any path.
+            "fallback" => {
+                route(verb(&["GET", "HEAD"]), "{fallbackPlaceholder}".to_owned(), self.action(first_arg(link), group))
+            }
+            "resource" | "apiresource" | "singleton" | "apisingleton" => {
                 let name = link.args.first().and_then(|arg| literal(arg, self.text()))?;
-                let controller = link.args.get(1).and_then(|arg| {
-                    let class = self.class_arg(arg)?;
-                    let span = arg.span();
-                    Some((class, span.start.offset, span.end.offset))
-                });
-                let mut resource = Resource {
-                    api: link.name == "apiresource",
-                    name,
-                    controller,
-                    only: None,
-                    except: Vec::new(),
-                    names: Vec::new(),
-                };
-                if let Some(options) = link.args.get(2) {
-                    for element in elements(options) {
-                        let ArrayElement::KeyValue(element) = element else { continue };
-                        let Some((key, ..)) = literal(element.key, self.text()) else { continue };
-                        match key.as_str() {
-                            "only" => resource.only = Some(self.middleware(element.value)),
-                            "except" => resource.except = self.middleware(element.value),
-                            "names" => resource.names.extend(self.names_map(element.value)),
-                            _ => {}
-                        }
-                    }
-                }
+                let resource = self.resource(link, name, link.args.get(1).copied(), link.args.get(2).copied());
                 let mut pending = route(Vec::new(), String::new(), RouteAction::Unknown);
                 pending.resource = Some(resource);
                 pending
             }
             _ => return None,
         })
+    }
+
+    /// A resource named `name` (as written, and its literal) of the
+    /// controller `controller`, with the `options` array.
+    fn resource(
+        &self,
+        link: &Link<'a>,
+        name: (String, u32, u32),
+        controller: Option<&Expression<'_>>,
+        options: Option<&Expression<'_>>,
+    ) -> Resource {
+        let controller = controller.and_then(|arg| {
+            let class = self.class_arg(arg)?;
+            let span = arg.span();
+            Some((class, span.start.offset, span.end.offset))
+        });
+        let mut resource = Resource {
+            api: link.name.starts_with("api"),
+            singleton: link.name.ends_with("singleton"),
+            creatable: false,
+            destroyable: false,
+            name_prefix: None,
+            name,
+            controller,
+            only: None,
+            except: Vec::new(),
+            names: Vec::new(),
+        };
+        for element in options.map(elements).unwrap_or_default() {
+            let ArrayElement::KeyValue(element) = element else { continue };
+            let Some((key, ..)) = literal(element.key, self.text()) else { continue };
+            match key.as_str() {
+                "only" => resource.only = Some(self.middleware(element.value)),
+                "except" => resource.except = self.middleware(element.value),
+                "names" => self.names(&mut resource, element.value),
+                _ => {}
+            }
+        }
+        resource
+    }
+
+    /// `->names([...])` or `->names('prefix')`.
+    fn names(&self, resource: &mut Resource, value: &Expression<'_>) {
+        match literal(value, self.text()) {
+            Some((prefix, ..)) => resource.name_prefix = Some(prefix),
+            None => resource.names.extend(self.names_map(value)),
+        }
+    }
+
+    /// `Route::resources(['photos' => PhotoController::class, …], $options)`:
+    /// a resource for each element.
+    fn resources(&mut self, link: &Link<'a>, group: &Group, span: Span) {
+        let Some(map) = link.args.first() else { return };
+        let options = link.args.get(1).copied();
+        let range = self.range(link.span.start.offset, link.span.end.offset);
+        let single = Link { name: link.name.trim_end_matches('s').to_owned(), args: Vec::new(), span: link.span };
+        for element in elements(map) {
+            let ArrayElement::KeyValue(element) = element else { continue };
+            let Some(name) = literal(element.key, self.text()) else { continue };
+            let resource = self.resource(&single, name, Some(element.value), options);
+            let pending = Pending {
+                methods: Vec::new(),
+                uri: String::new(),
+                action: RouteAction::Unknown,
+                range,
+                name: None,
+                middleware: Vec::new(),
+                resource: Some(resource),
+                domain: None,
+            };
+            self.emit(pending, group, span);
+        }
     }
 
     /// `['index' => 'posts.list']` (the names of a resource's actions).
@@ -697,9 +907,12 @@ impl<'a> Reader<'a> {
             }
             ("names", Some(resource)) => {
                 if let Some(first) = first {
-                    resource.names.extend(self.names_map(first));
+                    self.names(resource, first);
                 }
             }
+            ("creatable", Some(resource)) => resource.creatable = true,
+            ("destroyable", Some(resource)) => resource.destroyable = true,
+            ("domain", _) => route.domain = first.and_then(|first| literal(first, self.text())).map(|(d, ..)| d),
             ("only", Some(resource)) => resource.only = first.map(|first| self.middleware(first)),
             ("except", Some(resource)) => {
                 resource.except = first.map(|first| self.middleware(first)).unwrap_or_default()
@@ -759,6 +972,7 @@ impl<'a> Reader<'a> {
     fn emit(&mut self, route: Pending, group: &Group, span: Span) {
         let mut middleware = group.middleware.clone();
         middleware.extend(route.middleware);
+        let domain = route.domain.or_else(|| group.domain.clone());
         let (start, end) = (span.start.offset, span.end.offset);
         let Some(resource) = route.resource else {
             let name_decl = route.name.map(|(local, start, end)| NameDecl {
@@ -780,6 +994,7 @@ impl<'a> Reader<'a> {
                 range: route.range,
                 name_decl,
                 resource: None,
+                domain,
             });
             return;
         };
@@ -798,10 +1013,15 @@ impl<'a> Reader<'a> {
                 uri = join_uri(&uri, &format!("{{{}}}", singular(segment)));
             }
         }
-        let parameter = format!("{{{}}}", singular(segments.last().copied().unwrap_or_default()));
-        let actions = if resource.api { API_RESOURCE_ACTIONS } else { RESOURCE_ACTIONS };
+        // A singleton has no `{parameter}` of its own (`profile/edit`).
+        let parameter = if resource.singleton {
+            String::new()
+        } else {
+            format!("{{{}}}", singular(segments.last().copied().unwrap_or_default()))
+        };
+        let actions = resource_actions(&resource);
         let name_range = self.range(name_start, name_end);
-        for action in actions {
+        for action in &actions {
             if resource.only.as_ref().is_some_and(|only| !only.iter().any(|kept| kept == action))
                 || resource.except.iter().any(|left| left == action)
             {
@@ -816,9 +1036,10 @@ impl<'a> Reader<'a> {
                 "update" => (&["PUT", "PATCH"], join_uri(&uri, &parameter)),
                 _ => (&["DELETE"], join_uri(&uri, &parameter)),
             };
-            let name = match resource.names.iter().find(|(named, _)| named == action) {
-                Some((_, name)) => format!("{}{name}", group.name),
-                None => format!("{}{base}.{action}", group.name),
+            let name = match (resource.names.iter().find(|(named, _)| named == action), &resource.name_prefix) {
+                (Some((_, name)), _) => format!("{}{name}", group.name),
+                (None, Some(prefix)) => format!("{}{prefix}.{action}", group.name),
+                (None, None) => format!("{}{base}.{action}", group.name),
             };
             let action_target = match &resource.controller {
                 Some((class, start, end)) => RouteAction::Controller {
@@ -846,6 +1067,7 @@ impl<'a> Reader<'a> {
                     resource: true,
                 }),
                 resource: Some(resource.api),
+                domain: domain.clone(),
             });
         }
     }

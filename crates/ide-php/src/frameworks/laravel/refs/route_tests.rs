@@ -179,6 +179,88 @@ fn route_table_of_resources_groups_and_actions() {
     assert_eq!(routes.named("photos.comments.index").next().unwrap().resource, Some(true));
 }
 
+const MORE_ROUTES: &str = r#"<?php
+
+use App\Http\Controllers\PhotoController;
+use App\Http\Controllers\ProfileController;
+use Illuminate\Support\Facades\Route;
+
+Route::resources(['photos' => PhotoController::class, 'videos' => 'App\Http\Controllers\VideoController'], ['only' => ['index']]);
+Route::apiResources(['tags' => PhotoController::class]);
+Route::singleton('profile', ProfileController::class);
+Route::singleton('photos.thumbnail', PhotoController::class)->creatable();
+Route::apiSingleton('settings', ProfileController::class)->destroyable();
+Route::resource('posts', PhotoController::class)->only(['index', 'show'])->names('admin.articles');
+Route::domain('{account}.example.com')->group(function () {
+    Route::get('/home', fn () => 1)->name('account.home');
+});
+Route::group(['middleware' => ['auth', 'verified'], 'prefix' => 'account', 'as' => 'account.', 'domain' => 'my.test'], function () {
+    require __DIR__.'/account.php';
+});
+require 'shop.php';
+Route::get('/only', fn () => 1)->domain('only.test')->name('only');
+Route::fallback([PhotoController::class, 'missing']);
+"#;
+
+#[test]
+fn route_table_of_more_forms_and_included_files() {
+    let project = Project::new(&[
+        ("composer.json", COMPOSER),
+        (
+            "bootstrap/app.php",
+            "<?php
+return Application::configure(basePath: dirname(__DIR__))
+    ->withRouting(web: __DIR__.'/../routes/web.php')->create();
+",
+        ),
+        ("routes/web.php", MORE_ROUTES),
+        ("routes/account.php", "<?php\nRoute::get('orders', fn () => 1)->name('orders');\nrequire 'web.php';\n"),
+        ("routes/shop.php", "<?php\nRoute::prefix('shop')->group(__DIR__.'/../routes/cart.php');\n"),
+        ("routes/cart.php", "<?php\nRoute::get('cart', fn () => 1)->name('cart');\n"),
+    ]);
+    let routes = project.engine.laravel_routes().unwrap();
+    let all: Vec<_> = routes.routes().iter().map(describe).collect();
+    let photos = r"App\Http\Controllers\PhotoController";
+    let profile = r"App\Http\Controllers\ProfileController";
+    for expected in [
+        row("photos.index", "GET|HEAD", "photos", &format!("{photos}@index")),
+        row("videos.index", "GET|HEAD", "videos", r"App\Http\Controllers\VideoController@index"),
+        row("tags.store", "POST", "tags", &format!("{photos}@store")),
+        row("profile.show", "GET|HEAD", "profile", &format!("{profile}@show")),
+        row("profile.edit", "GET|HEAD", "profile/edit", &format!("{profile}@edit")),
+        row("profile.update", "PUT|PATCH", "profile", &format!("{profile}@update")),
+        row("photos.thumbnail.create", "GET|HEAD", "photos/{photo}/thumbnail/create", &format!("{photos}@create")),
+        row("photos.thumbnail.destroy", "DELETE", "photos/{photo}/thumbnail", &format!("{photos}@destroy")),
+        row("settings.show", "GET|HEAD", "settings", &format!("{profile}@show")),
+        row("settings.destroy", "DELETE", "settings", &format!("{profile}@destroy")),
+        row("admin.articles.index", "GET|HEAD", "posts", &format!("{photos}@index")),
+        row("admin.articles.show", "GET|HEAD", "posts/{post}", &format!("{photos}@show")),
+        row("account.home", "GET|HEAD", "home", "closure"),
+        row("account.orders", "GET|HEAD", "account/orders", "closure"),
+        row("cart", "GET|HEAD", "shop/cart", "closure"),
+        row("", "GET|HEAD", "{fallbackPlaceholder}", &format!("{photos}@missing")),
+    ] {
+        assert!(all.contains(&expected), "{expected:?} in {all:#?}");
+    }
+    let names: Vec<&str> = all.iter().map(|route| route.0.as_str()).collect();
+    for left_out in ["photos.store", "videos.show", "profile.create", "profile.destroy", "settings.edit", "posts.index"]
+    {
+        assert!(!names.contains(&left_out), "{left_out} in {names:?}");
+    }
+    // `account.php` including `routes/web.php` back is a cycle: not read.
+    assert_eq!(routes.named("profile.show").count(), 1, "{names:?}");
+
+    let route = |name: &'static str| routes.named(name).next().unwrap();
+    assert_eq!(route("account.home").domain.as_deref(), Some("{account}.example.com"));
+    assert_eq!(route("only").domain.as_deref(), Some("only.test"));
+    let orders = route("account.orders");
+    assert_eq!(orders.middleware, ["web", "auth", "verified"]);
+    assert_eq!(orders.domain.as_deref(), Some("my.test"));
+    assert_eq!(orders.path, project.root.join("routes").join("account.php"));
+    assert_eq!(route("cart").path, project.root.join("routes").join("cart.php"));
+    assert_eq!(route("profile.show").domain, None);
+}
+
 #[test]
 fn place_patterns_match_route_strings() {
     let mut project = Project::app();

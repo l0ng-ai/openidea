@@ -10,7 +10,8 @@
 //! views ([`views`]), Blade layouts, components and directives ([`blade`]),
 //! validation rules ([`validation`]), string references ([`refs`]), the
 //! parts read from single files that builds share ([`parts`]) and the
-//! `ide.json` files of the project and its packages ([`ide_json`]), and
+//! `ide.json` files of the project and its packages ([`ide_json`]), the
+//! service providers and what package providers register ([`providers`]), and
 //! Livewire components ([`livewire`]) and Inertia pages ([`inertia`]) when
 //! those packages are installed.
 //!
@@ -32,6 +33,7 @@ pub mod model_summary;
 pub mod model_view;
 pub mod parts;
 pub mod project;
+pub mod providers;
 pub mod refs;
 pub mod route_hints;
 pub mod routes;
@@ -56,6 +58,7 @@ pub use model_summary::LaravelModelSummary;
 pub use model_view::{ModelLens, ModelView, NewColumn};
 pub use parts::{Merged, PartReader, TextParts};
 pub use project::{LaravelPackages, LaravelPaths, LaravelProject, Module, ModuleKind, RouteFile};
+pub use providers::{PackageRegistrations, Published};
 pub use route_hints::{RouteHint, RouteInfo, RouteLens};
 pub use routes::{MiddlewareDef, NameDecl, RouteAction, RouteDef, RouteTable};
 pub use views::{ViewEntry, ViewNamespace, ViewTable};

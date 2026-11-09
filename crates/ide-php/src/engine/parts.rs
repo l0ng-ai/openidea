@@ -113,3 +113,7 @@ impl FileParts {
 /// The views found below one folder, kept for a disk generation.
 pub(crate) type FolderListings =
     HashMap<(PathBuf, Option<String>), (u64, Arc<Vec<crate::frameworks::laravel::ViewEntry>>)>;
+
+/// Other named file listings of folders (language folders), kept for a
+/// disk generation.
+pub(crate) type FileListings = HashMap<(&'static str, PathBuf), (u64, Arc<Vec<(String, PathBuf)>>)>;

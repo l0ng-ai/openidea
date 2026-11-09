@@ -180,6 +180,7 @@ struct Shared {
     /// ([`parts`]), and the views below each folder for a disk generation.
     parts: parts::FileParts,
     view_listings: Mutex<parts::FolderListings>,
+    file_listings: Mutex<parts::FileListings>,
     /// A `LanguageServer` event has been sent (the engine became active).
     announced: AtomicBool,
     /// The last `IndexState` sent said `indexing: true`.
@@ -285,6 +286,24 @@ impl PartReader for PhpEngine {
         self.shared.view_listings.lock().insert(key, (disk, found.clone()));
         found
     }
+
+    fn listing(
+        &self,
+        kind: &'static str,
+        dir: &Path,
+        list: &dyn Fn() -> Vec<(String, PathBuf)>,
+    ) -> Arc<Vec<(String, PathBuf)>> {
+        let disk = self.disk_generation();
+        let key = (kind, dir.to_path_buf());
+        if let Some((at, found)) = self.shared.file_listings.lock().get(&key)
+            && *at == disk
+        {
+            return found.clone();
+        }
+        let found = Arc::new(list());
+        self.shared.file_listings.lock().insert(key, (disk, found.clone()));
+        found
+    }
 }
 
 /// The variables passed to view files: by file, for a modification count.
@@ -324,6 +343,7 @@ impl PhpEngine {
             disk: AtomicU64::new(0),
             parts: parts::FileParts::default(),
             view_listings: Mutex::new(HashMap::new()),
+            file_listings: Mutex::new(HashMap::new()),
             announced: AtomicBool::new(false),
             indexing: AtomicBool::new(false),
             documents: Mutex::new(HashMap::new()),
@@ -703,6 +723,7 @@ impl PhpEngine {
     pub(crate) fn forget_laravel_parts(&self) {
         self.shared.parts.clear();
         self.shared.view_listings.lock().clear();
+        self.shared.file_listings.lock().clear();
         self.reset_laravel_cache();
     }
 
@@ -804,7 +825,7 @@ impl PhpEngine {
     /// policy folders (open buffers first), or `None` when the project isn't a
     /// Laravel project.
     pub fn laravel_auth(&self) -> Option<Arc<AuthFacts>> {
-        self.laravel_cached(&self.shared.laravel_auth, |project| AuthFacts::read(project, |path| self.text_of(path)))
+        self.laravel_cached(&self.shared.laravel_auth, |project| AuthFacts::read_parts(project, self))
     }
 
     /// The Artisan commands of the Laravel project (its command classes,
@@ -877,10 +898,7 @@ impl PhpEngine {
         }
         let project = self.laravel()?;
         let views = self.laravel_views()?;
-        let catalog = BladeCatalog::read(&project, &views, |path| match self.open_document(path) {
-            Some(document) if !document.embedded => Some(document.text.to_string()),
-            _ => std::fs::read_to_string(path).ok(),
-        });
+        let catalog = BladeCatalog::read_parts(&project, &views, self);
         let catalog = Arc::new(catalog.with_ide_json(&project.ide_json, |class| {
             self.class_targets(class).into_iter().next().map(|target| target.path)
         }));
@@ -1215,21 +1233,28 @@ fn is_yaml_path(path: &Path) -> bool {
     matches!(path.extension().and_then(|e| e.to_str()), Some("yaml" | "yml"))
 }
 
-/// A file the Laravel project model reads that isn't PHP (or `artisan`,
-/// which has no extension).
+/// A file the Laravel project model reads when it loads: files that
+/// aren't PHP (and `artisan`, which has no extension), and the PHP files
+/// listing service providers, or registering more (a service provider).
 fn is_laravel_input(path: &Path) -> bool {
-    matches!(
-        path.file_name().and_then(|n| n.to_str()),
-        Some(
-            "composer.json"
-                | "composer.lock"
-                | "installed.json"
-                | "module.json"
-                | "modules_statuses.json"
-                | "artisan"
-                | "ide.json"
+    let provider = path.file_name().and_then(|n| n.to_str()).is_some_and(|name| name.ends_with("Provider.php"))
+        || path.ends_with("bootstrap/providers.php")
+        || path.ends_with("config/app.php")
+        || path.ends_with("config/concord.php");
+    provider
+        || matches!(
+            path.file_name().and_then(|n| n.to_str()),
+            Some(
+                "composer.json"
+                    | "composer.lock"
+                    | "installed.json"
+                    | "module.json"
+                    | "modules_statuses.json"
+                    | "artisan"
+                    | "ide.json"
+            )
         )
-    ) || path.ends_with("config/modules.php")
+        || path.ends_with("config/modules.php")
 }
 
 /// Files that aren't PHP but feed Laravel string references: `.env`

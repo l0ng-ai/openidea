@@ -729,7 +729,7 @@ Runs after Plan 7. Before any 8.x phase, read [LARAVEL-ROADMAP.md](LARAVEL-ROADM
   - Unit tests: an edit to one config file doesn't re-read the others, and deleting a language file removes its keys.
   - The `php_laravel_real/model_warm` bench on Monica (`scripts/laravel-apps.sh`, `LARAVEL_APP_DIR`) under 200 ms, and `model_cold` still under 2 s. Record both in `laravel.md`.
 
-- [ ] Phase 8.23: Package registrations and routing coverage
+- [x] Phase 8.23: Package registrations and routing coverage
       Bagisto keeps most of the application in `packages/Webkul/*`. Its packages register routes, views, translations and migrations from service providers, so the model finds 0 views and only 72 routes, and the `route_hints` bench panics. Follow, in every service provider of the app and of `vendor/`:
   - `loadRoutesFrom`, `loadViewsFrom`, `loadTranslationsFrom`, `loadJsonTranslationsFrom`, `loadMigrationsFrom`, `mergeConfigFrom` and `publishes`, with package view and translation namespaces (`shop::`, `admin::`)
   - module systems that use them: `nwidart/laravel-modules` and `konekt/concord`, which Bagisto uses (count them as modules)

@@ -688,3 +688,282 @@ fn deleting_a_language_file_removes_its_keys() {
     assert!(locales("messages.bye") == ["en"]);
     assert!(reads_since(&engine, at).is_empty(), "the English file isn't read again");
 }
+
+// ------------------------------------------------- package registrations
+
+const SHOP_PROVIDER: &str = r#"<?php
+namespace Acme\Shop\Providers;
+
+use Illuminate\Routing\Router;
+use Illuminate\Support\Facades\Route;
+use Illuminate\Support\ServiceProvider;
+use Acme\Shop\Http\Middleware\Customer;
+
+class ShopServiceProvider extends ServiceProvider
+{
+    public function register(): void
+    {
+        $this->mergeConfigFrom(dirname(__DIR__).'/Config/shop.php', 'shop');
+    }
+
+    public function boot(Router $router): void
+    {
+        $router->aliasMiddleware('customer', Customer::class);
+        $router->middlewareGroup('shop', [Customer::class]);
+        Route::middleware(['web', 'shop'])->group(__DIR__.'/../Routes/web.php');
+        $this->loadMigrationsFrom(__DIR__.'/../Database/Migrations');
+        $this->loadTranslationsFrom(__DIR__.'/../Resources/lang', 'shop');
+        $this->loadJsonTranslationsFrom(__DIR__.'/../Resources/json');
+        $this->loadViewsFrom(__DIR__.'/../Resources/views', 'shop');
+        $this->publishes([dirname(__DIR__).'/Config/shop.php' => config_path('shop.php')], 'shop-config');
+        $this->app->register(EventServiceProvider::class);
+    }
+}
+"#;
+
+const SHOP_ROUTES: &str = r#"<?php
+use Illuminate\Support\Facades\Route;
+
+require 'store.php';
+Route::group(['middleware' => ['customer'], 'prefix' => 'account', 'as' => 'account.'], function () {
+    require __DIR__.'/account.php';
+});
+"#;
+
+const SHOP_STORE: &str = r#"<?php
+use Acme\Shop\Http\Controllers\HomeController;
+use Illuminate\Support\Facades\Route;
+
+Route::get('/', [HomeController::class, 'index'])->name('shop.home');
+"#;
+
+const SHOP_ACCOUNT: &str = r#"<?php
+use Acme\Shop\Http\Controllers\HomeController;
+use Illuminate\Support\Facades\Route;
+
+Route::get('orders', [HomeController::class, 'orders'])->name('orders');
+"#;
+
+const SHOP_CONTROLLER: &str = r#"<?php
+namespace Acme\Shop\Http\Controllers;
+
+class HomeController
+{
+    public function index() {}
+
+    public function orders() {}
+}
+"#;
+
+const EVENT_PROVIDER: &str = r#"<?php
+namespace Acme\Shop\Providers;
+
+class EventServiceProvider
+{
+    public function boot()
+    {
+        $this->loadViewsFrom(__DIR__.'/../Resources/emails', 'shop-mail');
+    }
+}
+"#;
+
+const PKG_PROVIDER: &str = r#"<?php
+namespace Acme\Pkg;
+
+class PkgServiceProvider
+{
+    public function boot()
+    {
+        $this->loadViewsFrom(__DIR__.'/../views', 'pkg');
+    }
+}
+"#;
+
+#[test]
+fn package_providers_register_views_translations_routes_and_modules() {
+    let dir = Dir::new();
+    dir.write(
+        "composer.json",
+        r#"{"require": {"laravel/framework": "^11.0", "konekt/concord": "^1.18"},
+            "autoload": {"psr-4": {"App\\": "app/", "Acme\\Shop\\": "packages/Acme/Shop/src/"}}}"#,
+    );
+    dir.write("bootstrap/app.php", BOOTSTRAP);
+    dir.write("routes/web.php", "<?php\n");
+    dir.write(
+        "bootstrap/providers.php",
+        r#"<?php
+use App\Providers\AppServiceProvider;
+use Acme\Shop\Providers\ShopServiceProvider;
+
+return [AppServiceProvider::class, ShopServiceProvider::class];
+"#,
+    );
+    dir.write(
+        "app/Providers/AppServiceProvider.php",
+        "<?php\nnamespace App\\Providers;\nclass AppServiceProvider {}\n",
+    );
+    dir.write(
+        "config/concord.php",
+        "<?php\nreturn ['modules' => [Acme\\Shop\\Providers\\ModuleServiceProvider::class]];\n",
+    );
+    let shop = "packages/Acme/Shop/src";
+    let at = |rel: &str| format!("{shop}/{rel}");
+    dir.write(&at("Providers/ShopServiceProvider.php"), SHOP_PROVIDER);
+    dir.write(
+        &at("Providers/ModuleServiceProvider.php"),
+        "<?php\nnamespace Acme\\Shop\\Providers;\nclass ModuleServiceProvider {}\n",
+    );
+    dir.write(&at("Providers/EventServiceProvider.php"), EVENT_PROVIDER);
+    dir.write(&at("Config/shop.php"), "<?php\nreturn ['currency' => 'EUR'];\n");
+    dir.write(&at("Database/Migrations/2024_01_01_000000_create_carts_table.php"), "<?php\n");
+    dir.write(&at("Resources/lang/en/app.php"), "<?php\nreturn ['title' => 'Shop'];\n");
+    dir.write(&at("Resources/json/fr.json"), "{\"Cart\": \"Panier\"}\n");
+    dir.write(&at("Resources/views/home.blade.php"), "home\n");
+    dir.write(&at("Resources/views/cart.blade.php"), "cart\n");
+    dir.write(&at("Resources/emails/order.blade.php"), "order\n");
+    dir.write("resources/views/vendor/shop/home.blade.php", "published home\n");
+    dir.write(&at("Routes/web.php"), SHOP_ROUTES);
+    let store = dir.write(&at("Routes/store.php"), SHOP_STORE);
+    dir.write(&at("Routes/account.php"), SHOP_ACCOUNT);
+    let controller = dir.write(&at("Http/Controllers/HomeController.php"), SHOP_CONTROLLER);
+    // A package found by package discovery.
+    dir.write(
+        "vendor/composer/installed.json",
+        r#"{"packages": [{"name": "acme/pkg", "install-path": "../acme/pkg",
+            "autoload": {"psr-4": {"Acme\\Pkg\\": "src/"}},
+            "extra": {"laravel": {"providers": ["Acme\\Pkg\\PkgServiceProvider"]}}}]}"#,
+    );
+    dir.write("vendor/acme/pkg/src/PkgServiceProvider.php", PKG_PROVIDER);
+    dir.write("vendor/acme/pkg/views/widget.blade.php", "widget\n");
+
+    let engine = open_engine(&dir);
+    let project = engine.laravel().expect("a Laravel project");
+    let providers: Vec<String> =
+        project.providers.iter().map(|path| path.file_name().unwrap().to_string_lossy().into_owned()).collect();
+    assert_eq!(
+        providers,
+        [
+            "AppServiceProvider.php",
+            "EventServiceProvider.php",
+            "ModuleServiceProvider.php",
+            "ShopServiceProvider.php",
+            "PkgServiceProvider.php"
+        ],
+        "the provider folders of the app and of the Concord module, then the discovered package's"
+    );
+    let modules: Vec<_> = project.modules.iter().map(|m| (m.name.as_str(), m.kind, m.namespace.as_deref())).collect();
+    assert_eq!(modules, [("Shop", ModuleKind::Concord, Some("Acme\\Shop\\"))]);
+    let files: Vec<String> = views::provider_files(&project)
+        .iter()
+        .map(|path| path.file_name().unwrap().to_string_lossy().into_owned())
+        .collect();
+    for provider in
+        ["AppServiceProvider.php", "ShopServiceProvider.php", "EventServiceProvider.php", "PkgServiceProvider.php"]
+    {
+        assert!(files.iter().any(|file| file == provider), "{provider} in {files:?}");
+    }
+    let nwidart = (*project).clone().with_module_system(ide_core::settings::LaravelModuleSystem::Nwidart);
+    assert!(nwidart.modules.is_empty(), "Concord modules are read in automatic mode only");
+
+    // Views: the package's, the published copy first, the ones of a
+    // provider the package registers, and a discovered package's.
+    let views = engine.laravel_views().unwrap();
+    assert_eq!(views.get("shop::home").unwrap().path, dir.path("resources/views/vendor/shop/home.blade.php"));
+    assert_eq!(views.get("shop::cart").unwrap().path, dir.path(&at("Resources/views/cart.blade.php")));
+    assert!(views.get("shop-mail::order").is_some());
+    assert!(views.get("pkg::widget").is_some());
+
+    // Translations and configuration.
+    let translations = engine.laravel_translations().unwrap();
+    assert!(translations.contains("shop::app.title"));
+    let cart: Vec<String> = translations.get("Cart").map(|entry| entry.locale.clone()).collect();
+    assert_eq!(cart, ["fr"]);
+    assert!(engine.laravel_config().unwrap().get("shop.currency").is_some());
+
+    // Routes the package's provider loads, through the files they include,
+    // and the middleware it declares.
+    let routes = engine.laravel_routes().unwrap();
+    let home = routes.named("shop.home").next().expect("shop.home");
+    assert_eq!(home.uri, "");
+    assert_eq!(home.middleware, ["web", "shop"]);
+    let orders = routes.named("account.orders").next().expect("account.orders");
+    assert_eq!(orders.uri, "account/orders");
+    assert_eq!(orders.middleware, ["web", "shop", "customer"]);
+    let customer = routes.middleware_named("customer").expect("the provider's alias");
+    assert_eq!(customer.class.as_deref(), Some("Acme\\Shop\\Http\\Middleware\\Customer"));
+    assert!(routes.middleware_named("shop").is_some_and(|m| m.group));
+
+    // Route hints in an included file, and lenses on the package's
+    // controller.
+    let doc = ide_core::DocId(7);
+    engine.document_opened(doc, &store, 1, SHOP_STORE);
+    let end = ide_core::Pos { line: 10, col: 0 };
+    let hints = engine.laravel_route_hints(doc, ide_core::Range { start: ide_core::Pos::default(), end }).unwrap();
+    assert_eq!(hints.iter().map(|hint| hint.label.as_str()).collect::<Vec<_>>(), ["/"]);
+    let doc = ide_core::DocId(8);
+    engine.document_opened(doc, &controller, 1, SHOP_CONTROLLER);
+    let lenses = engine.laravel_route_lenses(doc).unwrap();
+    let titles: Vec<String> = lenses.iter().map(|lens| lens.title()).collect();
+    assert_eq!(titles, ["GET / · shop.home", "GET /account/orders · account.orders"]);
+
+    let summary = engine.laravel_model().unwrap();
+    assert_eq!((summary.modules, summary.package_migrations, summary.published), (1, 1, 1));
+    assert_eq!(summary.providers, 5, "{summary:?}");
+}
+
+#[test]
+fn package_registrations_of_a_provider() {
+    let dir = Dir::new();
+    dir.write("composer.json", LARAVEL);
+    let project = LaravelProject::load(&dir.root).unwrap();
+    let provider = dir.path("packages/x/src/Providers/XServiceProvider.php");
+    let text = r#"<?php
+$this->loadTranslationsFrom(__DIR__.'/../lang');
+$this->loadMigrationsFrom([__DIR__.'/../a', __DIR__.'/../b']);
+$this->publishes([
+    __DIR__.'/../views' => resource_path('views/vendor/x'),
+    __DIR__.'/../x.php' => config_path('x.php'),
+], 'x');
+"#;
+    let found = PackageRegistrations::read(&project, &provider, text);
+    assert_eq!(found.translations, [(None, dir.path("packages/x/src/lang"))]);
+    assert_eq!(found.migrations, [dir.path("packages/x/src/a"), dir.path("packages/x/src/b")]);
+    let published: Vec<_> = found.publishes.iter().map(|p| (p.from.clone(), p.to.clone(), p.group.clone())).collect();
+    assert_eq!(
+        published,
+        [
+            (dir.path("packages/x/src/views"), dir.path("resources/views/vendor/x"), Some("x".to_owned())),
+            (dir.path("packages/x/src/x.php"), dir.path("config/x.php"), Some("x".to_owned())),
+        ]
+    );
+}
+
+#[test]
+fn a_changed_provider_reads_the_providers_again() {
+    let dir = Dir::new();
+    dir.write("composer.json", LARAVEL);
+    let provider = dir.write(
+        "app/Providers/AppServiceProvider.php",
+        "<?php\nnamespace App\\Providers;\nclass AppServiceProvider {}\n",
+    );
+    let engine = open_engine(&dir);
+    assert_eq!(engine.laravel().unwrap().providers, [dir.path("app/Providers/AppServiceProvider.php")]);
+    assert!(engine.laravel_views().unwrap().namespace("extra").is_none());
+
+    // The provider now registers another one, which adds views.
+    dir.write(
+        "app/Providers/AppServiceProvider.php",
+        "<?php\nnamespace App\\Providers;\nclass AppServiceProvider {\n    public function register() {\n        \
+         $this->app->register(\\App\\Extra\\ExtraServiceProvider::class);\n    }\n}\n",
+    );
+    let extra = dir.write(
+        "app/Extra/ExtraServiceProvider.php",
+        "<?php\nnamespace App\\Extra;\nclass ExtraServiceProvider {\n    public function boot() {\n        \
+         $this->loadViewsFrom(__DIR__.'/views', 'extra');\n    }\n}\n",
+    );
+    dir.write("app/Extra/views/panel.blade.php", "panel\n");
+    engine.files_changed(&[provider, extra], &[]);
+    assert!(engine.wait_idle(Duration::from_secs(60)));
+    assert_eq!(engine.laravel().unwrap().providers.len(), 2);
+    assert!(engine.laravel_views().unwrap().get("extra::panel").is_some());
+}

@@ -144,6 +144,58 @@ The parts live in memory, not in the index database. A new session builds them o
 
 The model's sizes are unchanged. The warm 95 ms is now mostly the parts built from PHP classes rather than from single files: Artisan commands (about 55 ms), Eloquent models (25 ms) and the project's route registrations (12 ms). Those follow the type resolver, which is rebuilt for each modification count.
 
+### Package registrations (phase 8.23, 2026-11-09)
+
+The model now follows the service providers that applications and packages register, not only `app/Providers` and the modules' own folders. The providers are listed once, when the project loads:
+
+- the ones in `bootstrap/providers.php` (Laravel 11) or the `providers` of `config/app.php`
+- the module providers in the `modules` of `config/concord.php` (`konekt/concord`)
+- the providers packages list for package discovery (`extra.laravel.providers` in `vendor/composer/installed.json`)
+- every provider those register with `$this->app->register(…)`
+
+Classes are found through the autoload rules of the project and its packages. Each Concord module provider becomes a module named after its namespace (`Webkul\Shop` is `Shop`). Saving a provider, `bootstrap/providers.php`, `config/app.php` or `config/concord.php` lists the providers again.
+
+From every provider the model reads:
+
+- views: `loadViewsFrom`, with `resources/views/vendor/<ns>` first
+- translations: `loadTranslationsFrom` (with or without a namespace) and `loadJsonTranslationsFrom`
+- configuration: `mergeConfigFrom`
+- middleware: `aliasMiddleware` and `middlewareGroup`
+- `loadMigrationsFrom` and `publishes`, which are counted in the model summary
+
+The gates, Blade directives and Livewire registrations of providers are now cached per file like the other parts, and so are the listings of language folders. Before, every build read each provider again.
+
+Route files can now `require` or `include` other route files. Each included file is read as a route file of its own, loaded in the group around the `require`, so hints and lenses work in it. Routing also covers:
+
+- `Route::resources()` and `apiResources()`
+- `singleton()` and `apiSingleton()`, with `creatable()` and `destroyable()`
+- `fallback()` and `->names('prefix')`
+- `domain()` on groups and routes. Hints show the domain, and the URL uses it.
+
+Bagisto's model before and after:
+
+| Part              | Before | After   |
+| ----------------- | ------ | ------- |
+| service providers | —      | 131     |
+| modules           | 0      | 35      |
+| routes            | 72     | 528     |
+| views             | 0      | 580     |
+| Blade components  | —      | 228     |
+| translations      | 3,519  | 184,945 |
+| config keys       | 936    | 1,145   |
+| middleware        | —      | 25      |
+
+The `route_hints` bench now opens `routes/web.php` when it has routes, and otherwise the route file with the most routes: on Bagisto that's `packages/Webkul/Admin/src/Routes/web/sales-routes.php`. Release build, 2026-11-09:
+
+| Bench                                | Budget | Bagisto | Monica  |
+| ------------------------------------ | ------ | ------- | ------- |
+| `php_laravel_real/model_cold`        | 2 s    | 1.09 s  | 358 ms  |
+| `php_laravel_real/model_warm`        | 200 ms | 151 ms  | 101 ms  |
+| `php_laravel_real/string_completion` | 50 ms  | 15.7 ms | 16.4 ms |
+| `php_laravel_real/route_hints`       | 100 ms | 16.0 ms | 14.8 ms |
+
+`real_app_checklist` now gets past the model check on Bagisto (it has routes, views and configuration keys). On both apps it still stops at `no completion for ["validationRule"]`, which phase 8.26 covers.
+
 ## Still missing
 
 These gaps are tracked as phases 8.22–8.29 in [ROADMAP.md](ROADMAP.md).
@@ -159,7 +211,7 @@ These are the gaps against the feature list in LARAVEL-ROADMAP.md, gathered from
    - Rename of translation keys.
    - Route-name and view usages inside closed Blade templates, so renaming a route also edits `{{ route('…') }}`.
    - Running the undefined-view inspection in Blade templates.
-3. **Routing coverage.**
+3. **Routing coverage.** Done in 8.23.
    - Route registrations:
      - `Route::resources()`, `singleton()` and `fallback()`
      - `->names('prefix')`

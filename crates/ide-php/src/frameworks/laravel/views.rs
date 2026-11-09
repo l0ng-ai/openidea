@@ -10,7 +10,11 @@
 //!   `loadViewsFrom(path, 'ns')` and `View::addNamespace('ns', path)` calls of
 //!   the service providers of the app and of the modules, whose path is made
 //!   of `__DIR__`, `dirname(__DIR__)`, string literals, `base_path()`,
-//!   `resource_path()`, `app_path()` and `module_path()`.
+//!   `resource_path()`, `app_path()` and `module_path()` (the service
+//!   providers [`provider_files`] lists: the app's, the modules', and the
+//!   ones the application and packages register). A namespace's
+//!   `resources/views/vendor/<ns>` folder comes first, as Laravel looks
+//!   there for published views.
 //! - **Data:** the variables a call passes to a view: the array after the
 //!   view's name (`view('x', ['user' => $u])`, `@include('x', [...])`), a
 //!   `compact('a', 'b')` there, and `->with('k', $v)` / `->with([...])` chained
@@ -26,6 +30,7 @@ use mago_syntax::walker::Walker;
 
 use super::LaravelProject;
 use super::parts::{PartReader, TextParts};
+use super::project::ModuleKind;
 use crate::project::normalize;
 use crate::syntax::ParsedFile;
 use crate::types::{ExprTypes, Type};
@@ -120,7 +125,7 @@ impl ViewTable {
                 None => namespaces.push(ViewNamespace { name, dirs: vec![dir] }),
             }
         };
-        for module in project.modules.iter().filter(|module| module.enabled) {
+        for module in project.modules.iter().filter(|module| module.enabled && module.kind != ModuleKind::Concord) {
             for sub in ["resources/views", "Resources/views", "Resources/Views"] {
                 let dir = module.path.join(sub);
                 if dir.is_dir() {
@@ -135,6 +140,9 @@ impl ViewTable {
             let part =
                 parts.part("view-namespaces", &path, &context, &|text| registered_namespaces(project, &path, text));
             for (name, dir) in part.iter().flat_map(|part| part.iter()) {
+                // `loadViewsFrom` looks in `resources/views/vendor/<ns>`
+                // first, where `vendor:publish` puts the package's views.
+                add(name.clone(), project.paths.views.join("vendor").join(name));
                 add(name.clone(), dir.clone());
             }
         }
@@ -274,14 +282,24 @@ pub fn valid_local_name(local: &str) -> bool {
         })
 }
 
-/// The service providers of the app and of its modules.
+/// The service providers of the app and of its modules, then the ones the
+/// application, Concord and package discovery register
+/// ([`LaravelProject::providers`], listed when the project was loaded).
 pub(crate) fn provider_files(project: &LaravelProject) -> Vec<PathBuf> {
-    let mut providers: Vec<PathBuf> = php_files(&project.paths.app.join("Providers"));
+    project.providers.clone()
+}
+
+/// The service providers in `app/Providers` and in the modules' provider
+/// folders.
+pub(crate) fn local_provider_files(project: &LaravelProject) -> Vec<PathBuf> {
+    let mut providers: Vec<PathBuf> =
+        php_files(&project.paths.app.join("Providers")).iter().map(|path| normalize(path)).collect();
     for module in &project.modules {
         for sub in ["Providers", "app/Providers", "src/Providers"] {
-            providers.extend(php_files(&module.path.join(sub)));
+            providers.extend(php_files(&module.path.join(sub)).iter().map(|path| normalize(path)));
         }
     }
+    providers.dedup();
     providers
 }
 
@@ -470,6 +488,11 @@ fn path_part(project: &LaravelProject, file: &Path, part: &str) -> Option<String
         "base_path" => joined(&project.root, args.first()),
         "resource_path" => joined(&project.paths.resources, args.first()),
         "app_path" => joined(&project.paths.app, args.first()),
+        "config_path" => joined(&project.paths.config, args.first()),
+        "database_path" => joined(&project.paths.database, args.first()),
+        "lang_path" => joined(&project.paths.lang, args.first()),
+        "public_path" => joined(&project.paths.public, args.first()),
+        "storage_path" => joined(&project.paths.storage, args.first()),
         "module_path" => {
             let module = match args.first().and_then(|name| string_literal(name)) {
                 Some(name) => project.module(&name),

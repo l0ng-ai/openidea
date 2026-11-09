@@ -31,6 +31,7 @@ use ide_core::{Diagnostic, Pos, Range};
 
 use super::ide_json::IdeJson;
 use super::livewire::{LivewireComponent, LivewireMember, MAGIC_ACTIONS, WireAt, WireValue, wire_value_at};
+use super::parts::{PartReader, TextParts};
 use super::views::{call_arguments, is_blade, provider_files};
 use super::{LaravelProject, ViewTable};
 use crate::blade::structure::{self, Name, NameKind, NameRole};
@@ -107,6 +108,12 @@ impl BladeCatalog {
     /// The components and custom directives of `project`; `text_of` reads a
     /// service provider (an open buffer first).
     pub fn read(project: &LaravelProject, views: &ViewTable, text_of: impl Fn(&Path) -> Option<String>) -> Self {
+        Self::read_parts(project, views, &TextParts(text_of))
+    }
+
+    /// [`read`](Self::read), each provider's directives from `parts`: only
+    /// the providers that changed are read again.
+    pub fn read_parts(project: &LaravelProject, views: &ViewTable, parts: &impl PartReader) -> Self {
         let mut components: Vec<BladeComponent> = Vec::new();
         let mut class_dirs = vec![(
             project.paths.app.join("View").join("Components"),
@@ -154,8 +161,8 @@ impl BladeCatalog {
 
         let mut directives = Vec::new();
         for path in provider_files(project) {
-            let Some(text) = text_of(&path) else { continue };
-            directives.extend(registered_directives(&path, &text));
+            let part = parts.part("blade-directives", &path, "", &|text| registered_directives(&path, text));
+            directives.extend(part.iter().flat_map(|part| part.iter().cloned()));
         }
         Self { components, directives }
     }

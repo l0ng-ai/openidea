@@ -16,6 +16,7 @@ use std::path::{Path, PathBuf};
 use ide_core::Range;
 
 use super::config::ConfigKeys;
+use super::parts::{PartReader, TextParts};
 use super::project::LaravelProject;
 use super::views::{call_arguments, php_files, provider_files, string_literal};
 use crate::names::{FileNames, NameKind, Resolution};
@@ -60,10 +61,23 @@ impl AuthFacts {
     /// The facts of `project`; `text_of` reads a provider (an open buffer
     /// first).
     pub fn read(project: &LaravelProject, text_of: impl Fn(&Path) -> Option<String>) -> Self {
+        Self::read_parts(project, &TextParts(text_of))
+    }
+
+    /// [`read`](Self::read), each provider's gates and policies from
+    /// `parts`: only the providers that changed are read again.
+    pub fn read_parts(project: &LaravelProject, parts: &impl PartReader) -> Self {
         let mut facts = Self::default();
         for path in provider_files(project) {
-            let Some(text) = text_of(&path) else { continue };
-            facts.read_provider(&path, &text);
+            let part = parts.part("auth", &path, "", &|text| {
+                let mut found = Self::default();
+                found.read_provider(&path, text);
+                found
+            });
+            if let Some(part) = part {
+                facts.gates.extend(part.gates.iter().cloned());
+                facts.policies.extend(part.policies.iter().cloned());
+            }
         }
         let mut dirs = vec![
             (project.paths.app.join("Policies"), format!("{}Policies\\", project.app_namespace)),

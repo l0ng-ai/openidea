@@ -15,7 +15,7 @@
 //! of their entries is its own (and is reused when no part changed).
 
 use std::cmp::Ordering;
-use std::path::Path;
+use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
 use super::ViewEntry;
@@ -41,6 +41,16 @@ pub trait PartReader {
         namespace: Option<&str>,
         list: &dyn Fn() -> Vec<ViewEntry>,
     ) -> Arc<Vec<ViewEntry>>;
+
+    /// The files below the folder `dir` that `list` finds, named (`kind`
+    /// tells listings of the same folder apart): what it listed before when
+    /// no file was created or removed since.
+    fn listing(
+        &self,
+        kind: &'static str,
+        dir: &Path,
+        list: &dyn Fn() -> Vec<(String, PathBuf)>,
+    ) -> Arc<Vec<(String, PathBuf)>>;
 }
 
 /// A [`PartReader`] that keeps nothing: every part is built again from the
@@ -64,6 +74,15 @@ impl<F: Fn(&Path) -> Option<String>> PartReader for TextParts<F> {
         _namespace: Option<&str>,
         list: &dyn Fn() -> Vec<ViewEntry>,
     ) -> Arc<Vec<ViewEntry>> {
+        Arc::new(list())
+    }
+
+    fn listing(
+        &self,
+        _kind: &'static str,
+        _dir: &Path,
+        list: &dyn Fn() -> Vec<(String, PathBuf)>,
+    ) -> Arc<Vec<(String, PathBuf)>> {
         Arc::new(list())
     }
 }
