@@ -144,6 +144,9 @@ html {
   --syn-python-predefined-usage: var(--syn-predefined);
   --syn-python-fstring: #a5c261;
   --syn-python-bytes: #a5c261;
+  --syn-python-docstring-tag: var(--syn-doc-comment-tag);
+  --syn-python-docstring-tag-effect: var(--syn-doc-comment-tag-effect);
+  --syn-python-docstring-keyword: var(--syn-doc-comment-tag-value);
   /* PhpStorm colours PHP variables and function calls on their own */
   --syn-php-variable: var(--syn-property);
   --syn-php-function-call: var(--syn-function);
@@ -557,6 +560,9 @@ html {
   --syn-python-predefined-usage: var(--syn-predefined);
   --syn-python-fstring: var(--syn-string);
   --syn-python-bytes: var(--syn-string);
+  --syn-python-docstring-tag: var(--syn-doc-comment-tag);
+  --syn-python-docstring-tag-effect: var(--syn-doc-comment-tag-effect);
+  --syn-python-docstring-keyword: var(--syn-doc-comment-tag-value);
   --syn-php-variable: var(--syn-property);
   --syn-php-function-call: var(--syn-function);
   --syn-builtin: #000080;
@@ -840,6 +846,9 @@ html {
   --syn-python-predefined-usage: var(--syn-predefined);
   --syn-python-fstring: var(--syn-string);
   --syn-python-bytes: var(--syn-string);
+  --syn-python-docstring-tag: var(--syn-doc-comment-tag);
+  --syn-python-docstring-tag-effect: var(--syn-doc-comment-tag-effect);
+  --syn-python-docstring-keyword: var(--syn-doc-comment-tag-value);
   --syn-php-variable: var(--syn-property);
   --syn-php-function-call: var(--syn-function);
   --syn-builtin: #b0b0f0;
@@ -1212,6 +1221,9 @@ html {
   --syn-python-predefined-usage: var(--syn-predefined);
   --syn-python-fstring: var(--syn-string);
   --syn-python-bytes: var(--syn-string);
+  --syn-python-docstring-tag: var(--syn-doc-comment-tag);
+  --syn-python-docstring-tag-effect: var(--syn-doc-comment-tag-effect);
+  --syn-python-docstring-keyword: var(--syn-doc-comment-tag-value);
   --syn-php-variable: var(--syn-property);
   --syn-php-function-call: var(--syn-function);
   --syn-builtin: var(--palette-cyan);
