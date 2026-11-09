@@ -349,6 +349,21 @@ describe("reStructuredText comment toggle", () => {
     commentLine(v);
     expect(v.state.doc.toString()).toBe("Some text\n");
   });
+
+  it.each(["..text", "...", "..中文"])("preserves the dots in ordinary text %s", (text) => {
+    const v = make(`|${text}\n`, restructuredtextLanguage);
+    commentLine(v);
+    expect(v.state.doc.toString()).toBe(`.. ${text}\n`);
+    v.dispatch({ selection: EditorSelection.cursor(0) });
+    commentLine(v);
+    expect(v.state.doc.toString()).toBe(`${text}\n`);
+  });
+
+  it.each(["..", ".. comment", "..\tcomment"])("uncomments a valid prefix in %s", (text) => {
+    const v = make(`|${text}\n`, restructuredtextLanguage);
+    commentLine(v);
+    expect(v.state.doc.toString()).toBe(`${text.slice(2).replace(/^ /, "")}\n`);
+  });
 });
 
 describe("Batch language mode and @REM comment toggle", () => {

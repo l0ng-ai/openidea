@@ -53,7 +53,7 @@ const WORD = /\w+/y;
 
 const adornment = (line: string) => (ADORNMENT.test(line) ? line.trimEnd() : null);
 /** docutils accepts a short adornment (with a warning) unless it is under 4 characters. */
-const fits = (title: string, adornment: string) => adornment.length >= Math.min(4, title.trim().length);
+const fits = (title: string, adornment: string) => adornment.length >= Math.min(4, [...title.trimEnd()].length);
 
 /** `[nodeId, from, to, 4]` for each token, in document order (a lezer tree buffer). */
 function tokenize(text: string): number[] {

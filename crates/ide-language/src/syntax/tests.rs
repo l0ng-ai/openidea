@@ -1701,3 +1701,28 @@ Underline only
     assert_eq!((install.range.start, install.range.end), (Pos::new(4, 0), Pos::new(23, 11)));
     assert!(syntax().outline(&lang("restructuredtext"), "Title\n\n").is_empty());
 }
+
+#[test]
+fn outline_restructuredtext_unicode_crlf_and_cached_edits() {
+    use ide_core::DocId;
+    use std::sync::Arc;
+
+    let src = "=========\r\n 中文😀\r\n=========\r\n\r\n子章节\r\n------\r\n\r\nBody\r\n\r\nOther\r\n------\r\n";
+    let id = DocId::next();
+    let language = lang("restructuredtext");
+    let cache = SyntaxCache::new(Arc::new(Syntax::new()));
+    cache.open(id, &language, 0);
+    let items = cache.outline(id, &language, 0, src);
+    assert_eq!(items, syntax().outline(&language, src));
+    assert_eq!(items[0].name, "中文😀");
+    assert_eq!(items[0].selection_range, Range::new(Pos::new(1, 1), Pos::new(1, 5)));
+    assert_eq!(items[0].children[0].name, "子章节");
+    assert_eq!(items[0].children[0].selection_range, Range::new(Pos::new(4, 0), Pos::new(4, 3)));
+    assert_eq!(items[0].children[0].range.end, Pos::new(7, 4));
+    assert_eq!(items[0].children[1].name, "Other");
+    let edited = src.replace("子章节", "新章节😀");
+    let updated = cache.outline(id, &language, 1, &edited);
+    assert_eq!(updated, syntax().outline(&language, &edited));
+    assert_eq!(updated[0].children[0].selection_range.end, Pos::new(4, 5));
+    assert_ne!(items, updated);
+}

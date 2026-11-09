@@ -220,6 +220,40 @@ describe("language modes", () => {
     ]);
   });
 
+  it("preserves Unicode heading offsets with CRLF and skips escaped markup", async () => {
+    const support = await loadSupport(findLanguageDescription("reStructuredText", "guide.rst")!);
+    const doc =
+      "=========\r\n 中文😀\r\n=========\r\n\r\n子章节\r\n------\r\n\r\n\\*plain* and \\`plain` and **strong**";
+    const highlighted: [string, string][] = [];
+    highlightTree(
+      support!.language.parser.parse(doc),
+      tagHighlighter([
+        { tag: t.heading, class: "heading" },
+        { tag: t.strong, class: "strong" },
+        { tag: t.emphasis, class: "emphasis" },
+        { tag: t.string, class: "string" },
+      ]),
+      (from, to, style) => highlighted.push([doc.slice(from, to), style]),
+    );
+    expect(highlighted).toEqual([
+      ["=========\r\n 中文😀\r\n=========", "heading"],
+      ["子章节\r\n------", "heading"],
+      ["**strong**", "strong"],
+    ]);
+  });
+
+  it("counts the indentation of short overlined titles", async () => {
+    const support = await loadSupport(findLanguageDescription("reStructuredText", "guide.rst")!);
+    const doc = "===\n  Hi\n===";
+    const headings: string[] = [];
+    highlightTree(
+      support!.language.parser.parse(doc),
+      tagHighlighter([{ tag: t.heading, class: "heading" }]),
+      (from, to) => headings.push(doc.slice(from, to)),
+    );
+    expect(headings).toEqual([]);
+  });
+
   it("styles `?.` like `.` in JavaScript and TypeScript", async () => {
     const highlighter = tagHighlighter([{ tag: t.derefOperator, class: "deref" }]);
     for (const [mode, path] of [
