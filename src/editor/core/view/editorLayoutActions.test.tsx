@@ -18,7 +18,7 @@ vi.mock("../controller", async (original) => ({
 vi.mock("./TextEditorHost", () => ({ TextEditorHost: () => <input aria-label="Source" /> }));
 vi.mock("./FindBar", () => ({ FindBar: () => null }));
 vi.mock("./Banner", () => ({ EditorBanners: () => null, VirtualBanner: () => null }));
-vi.mock("./StatusItems", () => ({ CodeBreadcrumbs: () => null }));
+vi.mock("./StatusItems", () => ({ CodeBreadcrumbs: () => null, FileBreadcrumbs: () => null }));
 
 const md = (id: string, path: string): Tab => ({
   id,

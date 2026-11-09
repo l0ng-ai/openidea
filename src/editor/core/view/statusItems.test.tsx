@@ -15,7 +15,7 @@ vi.mock("../controller", async () => {
 
 const { useEditorStatus } = await import("../controller");
 const { useOutline } = await import("../model/document");
-const { Breadcrumbs, CodeBreadcrumbs } = await import("./StatusItems");
+const { Breadcrumbs, CodeBreadcrumbs, FileBreadcrumbs } = await import("./StatusItems");
 const { NavBarPopup } = await import("./NavBarPopup");
 
 const PATH = "/p/Orders.ts";
@@ -90,6 +90,25 @@ it("shows the member and its directories in workspace breadcrumbs", async () => 
   useEditorStatus.setState({ status: { ...caret(0, 0), path: "/b/src/file.ts" } });
   const view = render(<Breadcrumbs />);
   expect(screen.getByRole("navigation", { name: "Breadcrumbs" }).textContent).toBe("bsrcfile.ts");
+  view.unmount();
+  useProject.setState({ project: null });
+});
+
+it("shows the project › dirs › file path above the editor", async () => {
+  const { useProject } = await import("@/platform/project");
+  useProject.setState({
+    project: {
+      root: "/workspace",
+      name: "Workspace",
+      settings: {},
+      trusted: true,
+      isGit: false,
+      workspace: { version: 1, name: "Workspace", projects: ["/a", "/b"] },
+    },
+  });
+  // No editor status needed: the bar follows its tab's file, like IDEA's navigation bar.
+  const view = render(<FileBreadcrumbs path="/b/src/deep/file.ts" />);
+  expect(screen.getByRole("navigation", { name: "File path" }).textContent).toBe("bsrcdeepfile.ts");
   view.unmount();
   useProject.setState({ project: null });
 });

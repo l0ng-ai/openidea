@@ -50,18 +50,8 @@ interface Crumb {
   run?: () => void;
 }
 
-/**
- * IDEA new UI navigation bar in the status bar: project › dirs › file ›
- * symbols, with icons; clicking a segment opens a popup of its children.
- */
-export function Breadcrumbs() {
-  const path = useEditorStatus((s) => s.status?.path ?? null);
-  const currentProject = useProject((s) => s.project);
-  const project = projectFolder(currentProject, path ?? "");
-  const outline = useOutline((s) => (path ? s[path] : undefined));
-  const chain = useCaretSymbols(path, outline) ?? NO_SYMBOLS;
-  const [popup, setPopup] = useState<{ nav: NavSegment; anchor: HTMLElement } | null>(null);
-  if (!path) return null;
+/** The project › dirs › file part of the navigation path (IDEA navigation bar). */
+function pathCrumbs(project: { root: string; name: string } | null, path: string): Crumb[] {
   const parent = dirname(path);
   const segments: Crumb[] = [];
   if (project)
@@ -97,22 +87,20 @@ export function Breadcrumbs() {
     }
   }
   const file = basename(path);
-  const stem = file.includes(".") ? file.slice(0, file.lastIndexOf(".")) || file : file;
   segments.push({
     label: file,
     icon: fileIconName(file),
     title: project ? relativePath(project.root, path) : path,
     nav: { kind: "file", path, label: file },
   });
-  for (const item of chain.filter((it, i) => i > 0 || it.name !== stem))
-    segments.push({
-      label: item.name,
-      icon: `symbol-${badgeKind(item.kind)}`,
-      title: item.detail ?? item.name,
-      nav: { kind: "symbol", path, label: item.name, item },
-    });
+  return segments;
+}
+
+/** A row of crumbs; a segment with `nav` opens a popup of its children. */
+function CrumbNav({ segments, className, ariaLabel }: { segments: Crumb[]; className?: string; ariaLabel?: string }) {
+  const [popup, setPopup] = useState<{ nav: NavSegment; anchor: HTMLElement } | null>(null);
   return (
-    <nav className={styles.status} aria-label={tx("Breadcrumbs")}>
+    <nav className={className} aria-label={ariaLabel}>
       {segments.map((s, i) => (
         <Fragment key={i}>
           {i > 0 && <Icon name="chevron-right" size={12} className={styles.statusSep} />}
@@ -134,6 +122,48 @@ export function Breadcrumbs() {
       ))}
       {popup && <NavChildrenPopup segment={popup.nav} anchor={popup.anchor} onClose={() => setPopup(null)} />}
     </nav>
+  );
+}
+
+/**
+ * IDEA new UI navigation bar in the status bar: project › dirs › file ›
+ * symbols, with icons; clicking a segment opens a popup of its children.
+ */
+export function Breadcrumbs() {
+  const path = useEditorStatus((s) => s.status?.path ?? null);
+  const currentProject = useProject((s) => s.project);
+  const project = projectFolder(currentProject, path ?? "");
+  const outline = useOutline((s) => (path ? s[path] : undefined));
+  const chain = useCaretSymbols(path, outline) ?? NO_SYMBOLS;
+  if (!path) return null;
+  const segments = pathCrumbs(project, path);
+  const file = basename(path);
+  const stem = file.includes(".") ? file.slice(0, file.lastIndexOf(".")) || file : file;
+  for (const item of chain.filter((it, i) => i > 0 || it.name !== stem))
+    segments.push({
+      label: item.name,
+      icon: `symbol-${badgeKind(item.kind)}`,
+      title: item.detail ?? item.name,
+      nav: { kind: "symbol", path, label: item.name, item },
+    });
+  return <CrumbNav segments={segments} className={styles.status} ariaLabel={tx("Breadcrumbs")} />;
+}
+
+/**
+ * IDEA's navigation bar above the editor: project › dirs › file of the shown
+ * tab; clicking a segment lists its children (JetBrains-style file path).
+ */
+export function FileBreadcrumbs({ path }: { path: string }) {
+  const currentProject = useProject((s) => s.project);
+  const project = projectFolder(currentProject, path);
+  const segments = pathCrumbs(project, path);
+  if (segments.length < 2) return null;
+  return (
+    <CrumbNav
+      segments={segments}
+      className={clsx(styles.codeCrumbs, styles.codeCrumbsTop)}
+      ariaLabel={tx("File path")}
+    />
   );
 }
 
