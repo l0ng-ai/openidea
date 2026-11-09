@@ -78,6 +78,13 @@ describe("External Libraries", () => {
     expect(touchesManifest(["/p/src/package.json.bak", "/p/README.md"])).toBe(false);
   });
 
+  it("refreshes when an applied Gradle script or properties file changes", () => {
+    expect(touchesManifest(["/p/gradle/dependencies.gradle"])).toBe(true);
+    expect(touchesManifest(["C:\\p\\gradle\\dependencies.gradle.kts"])).toBe(true);
+    expect(touchesManifest(["/p/gradle.properties"])).toBe(true);
+    expect(touchesManifest(["/p/node_modules/tool/dependencies.gradle"])).toBe(false);
+  });
+
   it("marks files below library roots for read-only editors", () => {
     dispose = setLibraryRoots("test", ["/py/lib/python3.12"]);
     expect(isLibraryPath("/py/lib/python3.12/os.py")).toBe(true);
