@@ -143,6 +143,8 @@ struct Meta {
     retry_at: Option<Instant>,
     /// The component exports `syntax-provider` (known once activated).
     has_syntax: bool,
+    /// Known before activation can publish target registrations.
+    has_run_target_validation: bool,
     /// Next `on-schedule` activation.
     next_schedule: Option<Instant>,
     /// The trusted publisher of a signed installed package.
@@ -164,6 +166,7 @@ impl Meta {
             failures: 0,
             retry_at: None,
             has_syntax: false,
+            has_run_target_validation: false,
             publisher: None,
             next_schedule: None,
         }
@@ -1432,6 +1435,20 @@ impl PluginHost {
         cancel: Option<&ide_core::CancellationToken>,
         f: impl Fn(&mut Runtime, Invocation) -> Result<R, CallError> + Clone + Send + 'static,
     ) -> IdeResult<R> {
+        self.code_call_with_budget(id, invocation, what, cancel, None, f)
+    }
+
+    fn code_call_with_budget<R: Send + 'static>(
+        &self,
+        id: &str,
+        invocation: Invocation,
+        what: &str,
+        cancel: Option<&ide_core::CancellationToken>,
+        budget: Option<Duration>,
+        f: impl Fn(&mut Runtime, Invocation) -> Result<R, CallError> + Clone + Send + 'static,
+    ) -> IdeResult<R> {
+        let deadline = budget.map(|budget| Instant::now() + budget);
+        let fallback = ide_core::CancellationToken::new();
         let plugin = self.get(id)?;
         let client = invocation.client.clone();
         {
@@ -1472,10 +1489,25 @@ impl PluginHost {
             }
             let started = Instant::now();
             let (call, inv) = (f.clone(), invocation.clone());
-            let result = match cancel {
-                Some(cancel) => actor.call_cancellable(cancel, Duration::from_millis(50), move |rt| call(rt, inv)),
-                None => actor.call(None, move |rt| call(rt, inv)),
+            let result = match (deadline, cancel) {
+                (Some(deadline), cancel) => actor.call_bounded(
+                    cancel.unwrap_or(&fallback),
+                    Duration::from_millis(50),
+                    deadline.saturating_duration_since(Instant::now()),
+                    move |rt| call(rt, inv),
+                ),
+                (None, Some(cancel)) => {
+                    actor.call_cancellable(cancel, Duration::from_millis(50), move |rt| call(rt, inv))
+                }
+                (None, None) => actor.call(None, move |rt| call(rt, inv)),
             };
+            if deadline.is_some() && matches!(result, Err(ActorError::SoftTimeout)) {
+                self.reap(&plugin, &actor, client.as_deref());
+                return Err(IdeError::new(
+                    ide_core::error::ErrorKind::TimedOut,
+                    format!("plugin {id:?} timed out while {what}"),
+                ));
+            }
             if matches!(result, Err(ActorError::Cancelled)) {
                 self.reap(&plugin, &actor, client.as_deref());
                 return Err(IdeError::cancelled());
@@ -2523,6 +2555,7 @@ impl PluginHost {
                 return Err(IdeError::internal(format!("plugin {:?} {e}", plugin.id())));
             }
         };
+        plugin.meta.lock().has_run_target_validation = rt.has_run_target_validation();
         let crash = match rt.activate() {
             Ok(_) => None,
             Err(CallError::Trap(e)) => Some(format!("activation {e}")),

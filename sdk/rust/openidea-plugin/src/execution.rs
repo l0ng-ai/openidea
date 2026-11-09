@@ -237,3 +237,25 @@ impl From<PluginRunTarget> for PluginRunTargetWithOverrides {
         }
     }
 }
+
+/// Operation about to launch through a plugin-owned run target (API 1.5).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum RunTargetOperation {
+    Run,
+    Debug,
+    Test,
+}
+
+/// Launch metadata available to a target validator; arguments and environment are omitted.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct RunTargetLaunch {
+    pub operation: RunTargetOperation,
+    pub program: String,
+    pub cwd: String,
+}
+
+/// Optional pre-launch validation; register with `run_target_validation`.
+pub trait RunTargetValidation {
+    /// Refuse with a user-facing explanation, or allow with `Ok(())`.
+    fn validate(&mut self, project: &str, target_id: &str, launch: &RunTargetLaunch) -> Result<(), String>;
+}

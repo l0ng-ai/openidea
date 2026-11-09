@@ -451,6 +451,17 @@ impl MockHost {
         self.state.borrow().diagnostics.clone()
     }
 
+    /// Calls a target validator with the mock project's root and launch metadata.
+    pub fn validate_run_target(
+        &self,
+        validator: &mut impl crate::RunTargetValidation,
+        target: &str,
+        launch: &crate::RunTargetLaunch,
+    ) -> Result<(), String> {
+        let project = self.invocation().project().expect("mock project").root().expect("mock root");
+        validator.validate(&project, target, launch)
+    }
+
     /// Snapshot supplied to optional language-feature and injection traits in native tests.
     pub fn provider_document(&self) -> Option<crate::providers::Document> {
         self.state.borrow().editor.as_ref().map(|e| crate::providers::Document {

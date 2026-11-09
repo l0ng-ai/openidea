@@ -396,7 +396,15 @@ async fn run_target_api15_overrides_and_frozen_api14_registration() {
         for (arg, expected) in cases {
             plugins.run_command(plugin, command, Some(arg), invocation()).unwrap();
             let target = plugins.run_targets(&f.root).into_iter().find(|t| t.plugin_id == plugin).unwrap();
-            let wrapped = plugins.prepare_run_target(&f.root, &target.id, &config).unwrap();
+            let wrapped = plugins
+                .prepare_run_target_launch(
+                    &f.root,
+                    &target.id,
+                    &config,
+                    ide_plugin::RunTargetOperation::Run,
+                    &Default::default(),
+                )
+                .unwrap();
             assert_eq!(wrapped.args, expected);
             assert_eq!(PathBuf::from(wrapped.command), tool);
             assert_eq!(wrapped.cwd.unwrap(), f.root);
@@ -419,5 +427,128 @@ async fn run_target_api15_overrides_and_frozen_api14_registration() {
         assert!(plugins.run_command(plugin, command, None, invocation()).unwrap_err().to_string().contains("trusted"));
         f.host.set_project_trust(&f.root, true, false).await.unwrap();
     }
+    plugins.shutdown();
+}
+
+#[cfg(unix)]
+#[tokio::test(flavor = "multi_thread")]
+async fn run_target_validation_gates_launches_and_preserves_selection() {
+    use ide_host::plugins::{Consent, PluginHost};
+    use ide_plugin::{Invocation, Limits, RunTargetOperation};
+    use std::os::unix::fs::PermissionsExt;
+    use std::time::Duration;
+    let f = Harness::new();
+    f.host.set_project_trust(&f.root, true, false).await.unwrap();
+    let plugins = Arc::new(
+        PluginHost::new(
+            f._tmp.path().join("plugins"),
+            Arc::new(|_: Option<&str>, _| {}),
+            Limits {
+                timeout: Duration::from_millis(200),
+                idle_timeout: Some(Duration::from_millis(20)),
+                restart_backoff: Duration::ZERO,
+                ..Default::default()
+            },
+        )
+        .unwrap(),
+    );
+    plugins.set_workspace(Some(Arc::new(f.workspace())));
+    f.host.set_plugin_host(&plugins);
+    let fixture = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../ide-plugin/tests/fixtures/execution");
+    plugins.install_from_dir(&fixture, &Consent::all()).unwrap();
+    let tool = f._tmp.path().join("wrapper");
+    std::fs::write(&tool, "#!/bin/sh\ntouch spawned\n").unwrap();
+    std::fs::set_permissions(&tool, std::fs::Permissions::from_mode(0o755)).unwrap();
+    plugins.choose_program("execution", "process:execution-tool", Some(&f.root), Some(&tool)).unwrap();
+    let invocation =
+        || Invocation { client: Some("main".into()), workspace_root: Some(f.root.clone()), ..Default::default() };
+    let config: ide_run::RunConfig = serde_json::from_value(serde_json::json!({
+        "id":"composer", "name":"Composer", "kind":"shell", "command":"/tools/composer", "args":["install"],
+        "env":{"SECRET":"not sent"}, "detected":false, "isTest":false,
+    }))
+    .unwrap();
+    for id in ["allow", "refuse", "long-refusal", "timeout", "trap"] {
+        plugins.run_command("execution", "target", Some(id), invocation()).unwrap();
+    }
+    let targets = plugins.run_targets(&f.root);
+    let id = |name: &str| targets.iter().find(|t| t.target.id == name).unwrap().id.clone();
+    for operation in [RunTargetOperation::Run, RunTargetOperation::Test, RunTargetOperation::Debug] {
+        plugins.prepare_run_target_launch(&f.root, &id("allow"), &config, operation, &Default::default()).unwrap();
+        let snapshot = plugins.run_command("execution", "validation", None, invocation()).unwrap().unwrap();
+        assert_eq!(snapshot, format!("{}|allow|{operation:?}|composer|{}", f.root.display(), f.root.display()));
+    }
+    tokio::time::sleep(Duration::from_millis(30)).await;
+    plugins.tick();
+    assert_eq!(plugins.info_of("execution").unwrap().status, ide_host::plugins::PluginStatus::Inactive);
+    plugins
+        .prepare_run_target_launch(&f.root, &id("allow"), &config, RunTargetOperation::Run, &Default::default())
+        .unwrap();
+    assert!(plugins.info_of("execution").unwrap().stats.reclaims > 0);
+    // Non-launch consumers (LSP and document reads) do not invoke validation.
+    assert!(plugins.prepare_run_target(&f.root, &id("refuse"), &config).is_ok());
+    let selected = id("refuse");
+    ide_host::plugins::run_targets::answer(&f.host, &plugins, "main", &selected, true).unwrap();
+    for is_test in [false, true] {
+        let mut config = config.clone();
+        config.is_test = is_test;
+        config.extras.target = Some(selected.clone());
+        let error = ide_host::ops::run::start(&f.host, "main", config, Arc::new(|_| {})).await.unwrap_err();
+        assert!(error.message.contains("Plugin execution tests: Project runtime is stopped"), "{error}");
+        assert!(f.host.processes.list().is_empty());
+        assert!(!f.root.join("spawned").exists());
+        assert_eq!(f.host.project("main").unwrap().settings.effective().run.default_target, selected);
+        assert_eq!(plugins.run_targets(&f.root).len(), targets.len());
+    }
+    for adapter in ["php-debug", "debugpy"] {
+        let launch = ide_dap::LaunchConfig {
+            name: "Refused debug".into(),
+            adapter: adapter.into(),
+            request: "launch".into(),
+            program: Some("app.php".into()),
+            args: Vec::new(),
+            cwd: Some(f.root.clone().into()),
+            env: Default::default(),
+            extra_json: Some(serde_json::json!({"__runTarget":selected, "__runTargetProgram":"php"}).to_string()),
+        };
+        let error = ide_host::ops::debug::debug_start(&f.host, "main", launch).await.unwrap_err();
+        assert!(error.message.contains("Project runtime is stopped"), "{adapter}: {error}");
+        assert!(f.host.debugger.sessions(None).is_empty());
+    }
+    let error = plugins
+        .prepare_run_target_launch(&f.root, &id("long-refusal"), &config, RunTargetOperation::Run, &Default::default())
+        .unwrap_err();
+    assert!(error.message.len() < 4200);
+    let request = ide_core::RequestId(2408);
+    let mut cfg = config.clone();
+    cfg.extras.target = Some(id("timeout"));
+    let worker = f.host.clone();
+    let pending = tokio::spawn(async move {
+        ide_host::ops::run::start_request(&worker, "main", cfg, Arc::new(|_| {}), Some(request)).await
+    });
+    tokio::time::sleep(Duration::from_millis(30)).await;
+    f.host.cancel_request(request);
+    assert_eq!(pending.await.unwrap().unwrap_err().kind, ide_core::error::ErrorKind::Cancelled);
+    for name in ["timeout", "trap"] {
+        let started = std::time::Instant::now();
+        let error = plugins
+            .prepare_run_target_launch(&f.root, &id(name), &config, RunTargetOperation::Run, &Default::default())
+            .unwrap_err();
+        assert!(error.message.contains("Plugin execution tests"), "{error}");
+        if name == "timeout" {
+            assert!(error.message.contains("timed out"), "{error}");
+            assert!(started.elapsed() < Duration::from_secs(2), "background tasks must not extend validation");
+        }
+        assert!(f.host.processes.list().is_empty());
+    }
+    // A cancelled launch never enters the wrapper.
+    let cancel = ide_core::CancellationToken::new();
+    cancel.cancel();
+    assert_eq!(
+        plugins
+            .prepare_run_target_launch(&f.root, &id("allow"), &config, RunTargetOperation::Run, &cancel)
+            .unwrap_err()
+            .kind,
+        ide_core::error::ErrorKind::Cancelled
+    );
     plugins.shutdown();
 }
