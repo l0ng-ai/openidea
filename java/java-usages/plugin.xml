@@ -4,6 +4,9 @@
     <delegateCommandHandler class="ai.openidea.usages.CoveredFilesCommand">
       <command id="openidea.workspace.coveredFiles"/>
     </delegateCommandHandler>
+    <delegateCommandHandler class="ai.openidea.usages.CoveredRootsCommand">
+      <command id="openidea.workspace.coveredRoots"/>
+    </delegateCommandHandler>
     <delegateCommandHandler class="ai.openidea.usages.UsagesCommand">
       <command id="openidea.java.usages"/>
     </delegateCommandHandler>
