@@ -259,3 +259,95 @@ class Box[T]:
     expect(classOf("MAX_SIZE")[0]).not.toContain("cm-sem-rainbow-");
   });
 });
+
+describe("Python docstring markup formats", () => {
+  async function markup(format: string, source: string) {
+    const state = await parse(source);
+    return pythonSyntaxRanges(state.tree, state.doc, undefined, format)
+      .filter((r) => r.className.startsWith("cm-sem-python-docstring-"))
+      .map((r) => [state.doc.sliceString(r.from, r.to), r.className]);
+  }
+
+  it("highlights reStructuredText fields and directives", async () => {
+    const styles = await markup(
+      "rest",
+      `"""Load things.
+
+:param x: name to load
+:returns: loaded value
+.. note:: results are cached
+"""`,
+    );
+    expect(styles).toContainEqual(["param", "cm-sem-python-docstring-tag"]);
+    expect(styles).toContainEqual(["x", "cm-sem-python-docstring-keyword"]);
+    expect(styles).toContainEqual(["returns", "cm-sem-python-docstring-tag"]);
+    expect(styles).toContainEqual(["note::", "cm-sem-python-docstring-tag"]);
+  });
+
+  it("highlights Epytext fields", async () => {
+    const styles = await markup(
+      "epytext",
+      `"""Load things.
+
+@param x: name to load
+@type x: str
+@return: loaded value
+"""`,
+    );
+    expect(styles).toContainEqual(["param", "cm-sem-python-docstring-tag"]);
+    expect(styles).toContainEqual(["x", "cm-sem-python-docstring-keyword"]);
+    expect(styles).toContainEqual(["type", "cm-sem-python-docstring-tag"]);
+    expect(styles).toContainEqual(["return", "cm-sem-python-docstring-tag"]);
+  });
+
+  it("highlights Google sections and entries", async () => {
+    const styles = await markup(
+      "google",
+      `"""Load things.
+
+Args:
+    x (int): first
+    y: second
+
+Returns:
+    Nothing.
+"""`,
+    );
+    expect(styles).toContainEqual(["Args", "cm-sem-python-docstring-tag"]);
+    expect(styles).toContainEqual(["x", "cm-sem-python-docstring-keyword"]);
+    expect(styles).toContainEqual(["y", "cm-sem-python-docstring-keyword"]);
+    expect(styles).toContainEqual(["Returns", "cm-sem-python-docstring-tag"]);
+  });
+
+  it("highlights NumPy sections and entries", async () => {
+    const styles = await markup(
+      "numpy",
+      `"""Load things.
+
+Parameters
+----------
+x : int
+    name to load
+
+Returns
+-------
+str
+    loaded value.
+"""`,
+    );
+    expect(styles).toContainEqual(["Parameters", "cm-sem-python-docstring-tag"]);
+    expect(styles).toContainEqual(["x", "cm-sem-python-docstring-keyword"]);
+    expect(styles).toContainEqual(["Returns", "cm-sem-python-docstring-tag"]);
+  });
+
+  it("leaves docstrings unmarked when the format is plain", async () => {
+    const styles = await markup(
+      "plain",
+      `"""Load things.
+
+:param x: name to load
+"""`,
+    );
+    expect(styles).toEqual([]);
+  });
+});
