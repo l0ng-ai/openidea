@@ -746,7 +746,7 @@ Runs after Plan 7. Before any 8.x phase, read [LARAVEL-ROADMAP.md](LARAVEL-ROADM
   - Bagisto's model has views, package routes and modules.
   - The `php_laravel_real/*` benches pass on Bagisto. Record the numbers in `laravel.md`.
 
-- [ ] Phase 8.24: Usages and rename from declarations and Blade
+- [x] Phase 8.24: Usages and rename from declarations and Blade
       Make find usages and rename work in both directions:
   - from a Livewire component class or its `Livewire::component` alias, an Inertia page file and a `.env` line
   - rename of translation keys, in every locale file and caller

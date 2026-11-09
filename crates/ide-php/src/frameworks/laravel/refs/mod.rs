@@ -54,6 +54,12 @@
 //! ([`crate::blade::compile`]), so the strings of their directives and echoes
 //! count too, at their places in the template.
 //!
+//! Usages that aren't string literals (`<livewire:counter />` tags) come
+//! from [`ReferenceKind::markup_usages`]; find usages and rename from files
+//! that aren't PHP (`.env`, Inertia pages) are in [`files`]. A rename edits
+//! every declaration of the value ([`RenameTarget::declarations`]: each
+//! locale's key, both `.env` files).
+//!
 //! Everything is off unless the project is a Laravel project
 //! ([`PhpEngine::laravel`]).
 
@@ -63,6 +69,7 @@ pub mod controller_action;
 pub mod db_table;
 pub mod eloquent;
 pub mod env_key;
+pub mod files;
 pub mod gate;
 pub mod inertia_page;
 pub mod intentions;
@@ -906,8 +913,9 @@ pub struct RenameTarget {
     pub key: String,
     /// The byte range of `key` that the new name replaces.
     pub range: (usize, usize),
-    /// The declaration renamed with it: its file and the range replaced.
-    pub declaration: Option<(PathBuf, Range)>,
+    /// The declarations renamed with it (every locale's key, both `.env`
+    /// files): their files and the ranges replaced.
+    pub declarations: Vec<(PathBuf, Range)>,
 }
 
 /// A kind of string reference; see the module documentation.
@@ -978,6 +986,25 @@ pub trait ReferenceKind: Send + Sync {
     /// Whether `name` can be the new name of a rename.
     fn valid_name(&self, name: &str) -> bool {
         !name.is_empty() && !name.contains(['\'', '"', '\\'])
+    }
+
+    /// Whether `name` can be the new name of a rename of `key` (by default
+    /// [`valid_name`](Self::valid_name)).
+    fn valid_name_for(&self, _key: &str, name: &str) -> bool {
+        self.valid_name(name)
+    }
+
+    /// Usages of `key` (a canonical value) that aren't string literals in
+    /// PHP (`<livewire:counter />` tags), as byte ranges of the value in
+    /// `text`, the text of the file at `path`.
+    fn markup_usages(&self, _cx: &RefContext<'_>, _path: &Path, _text: &str, _key: &str) -> Vec<(u32, u32)> {
+        Vec::new()
+    }
+
+    /// Words (lower case) a file holding a [`markup_usages`](Self::markup_usages)
+    /// usage of `key` has; empty when the kind has none.
+    fn markup_words(&self, _key: &str) -> Vec<String> {
+        Vec::new()
     }
 
     /// Whether `value` names something that exists (the "unknown …"
@@ -1392,7 +1419,7 @@ impl PhpEngine {
         // Only the kinds whose inspection the profile leaves on, as in PHP files.
         let enabled = self.inspections().ids();
         let kinds: Vec<&'static dyn ReferenceKind> =
-            [&ConfigKey as &'static dyn ReferenceKind, &EnvKey, &TranslationKey, &ViteAsset, &Gate]
+            [&ConfigKey as &'static dyn ReferenceKind, &EnvKey, &TranslationKey, &ViteAsset, &Gate, &ViewName]
                 .into_iter()
                 .filter(|kind| {
                     crate::inspect::laravel::inspection_id(kind.id()).is_some_and(|id| enabled.contains(&id))
@@ -1443,22 +1470,34 @@ impl PhpEngine {
     ) -> Option<IdeResult<Vec<Usage>>> {
         let (cx, subject) = self.ref_subject(parsed, path, offset)?;
         let key = if subject.declaration { subject.value.clone() } else { subject.kind.canonical(&cx, &subject.value) };
-        let kind = subject.kind;
-        let found = self.string_usages(kind, &key, &|value| kind.refers_to(value, &key), cancel);
-        Some(found.map(|sites| {
-            let mut usages: Vec<Usage> = Vec::new();
-            if include_declaration {
-                for target in kind.resolve(&cx, &subject.value, subject.value.len()) {
-                    usages.push(Usage { path: target.path, range: target.range, kind: UsageKind::Declaration });
-                }
+        Some(self.kind_usages(&cx, subject.kind, &subject.value, &key, include_declaration, cancel))
+    }
+
+    /// The usages of `key` (a canonical value) of `kind`, sorted, with the
+    /// declarations of `value` (what the caret's string says) first when
+    /// `include_declaration`.
+    pub(crate) fn kind_usages(
+        &self,
+        cx: &RefContext<'_>,
+        kind: &'static dyn ReferenceKind,
+        value: &str,
+        key: &str,
+        include_declaration: bool,
+        cancel: &CancellationToken,
+    ) -> IdeResult<Vec<Usage>> {
+        let sites = self.string_usages(kind, key, &|found| kind.refers_to(found, key), cancel)?;
+        let mut usages: Vec<Usage> = Vec::new();
+        if include_declaration {
+            for target in kind.resolve(cx, value, value.len()) {
+                usages.push(Usage { path: target.path, range: target.range, kind: UsageKind::Declaration });
             }
-            for site in sites {
-                usages.push(Usage { path: site.path, range: site.range, kind: UsageKind::String });
-            }
-            usages.sort_by(|a, b| (&a.path, a.range.start).cmp(&(&b.path, b.range.start)));
-            usages.dedup();
-            usages
-        }))
+        }
+        for site in sites {
+            usages.push(Usage { path: site.path, range: site.range, kind: UsageKind::String });
+        }
+        usages.sort_by(|a, b| (&a.path, a.range.start).cmp(&(&b.path, b.range.start)));
+        usages.dedup();
+        Ok(usages)
     }
 
     /// The range a rename at the caret changes, when the caret is on a
@@ -1499,14 +1538,24 @@ impl PhpEngine {
         let Some(target) = target else {
             return Some(Err(IdeError::invalid("this string can't be renamed")));
         };
-        if !kind.valid_name(new_name) {
-            return Some(Err(IdeError::invalid(format!("'{new_name}' is not a valid name"))));
-        }
+        Some(self.kind_rename(&cx, kind, target, new_name, cancel))
+    }
+
+    /// The edit renaming `target` of `kind` to `new_name`: its declarations,
+    /// every usage, and the files the kind moves with it.
+    pub(crate) fn kind_rename(
+        &self,
+        cx: &RefContext<'_>,
+        kind: &'static dyn ReferenceKind,
+        target: RenameTarget,
+        new_name: &str,
+        cancel: &CancellationToken,
+    ) -> IdeResult<WorkspaceEdit> {
         let key = target.key.clone();
-        let sites = match self.string_usages(kind, &key, &|value| kind.renames_with(value, &key), cancel) {
-            Ok(sites) => sites,
-            Err(e) => return Some(Err(e)),
-        };
+        if !kind.valid_name_for(&key, new_name) {
+            return Err(IdeError::invalid(format!("'{new_name}' is not a valid name")));
+        }
+        let sites = self.string_usages(kind, &key, &|value| kind.renames_with(value, &key), cancel)?;
         let mut files: Vec<(PathBuf, Vec<TextEdit>)> = Vec::new();
         let mut add = |path: PathBuf, range: Range| match files.iter_mut().find(|(known, _)| *known == path) {
             Some((_, edits)) => {
@@ -1516,7 +1565,7 @@ impl PhpEngine {
             }
             None => files.push((path, vec![TextEdit { range, new_text: new_name.to_owned() }])),
         };
-        if let Some((path, range)) = target.declaration.clone() {
+        for (path, range) in target.declarations.iter().cloned() {
             add(path, range);
         }
         for site in sites {
@@ -1529,8 +1578,8 @@ impl PhpEngine {
             edit.files.push(FileEdit::Edit { path: path.into(), edits, version: None });
         }
         let new_value = format!("{}{new_name}{}", &key[..target.range.0], &key[target.range.1..]);
-        edit.files.extend(kind.rename_files(&cx, &key, &new_value));
-        Some(Ok(edit))
+        edit.files.extend(kind.rename_files(cx, &key, &new_value));
+        Ok(edit)
     }
 
     /// The other places in the document of the string reference at `pos`:
@@ -1629,7 +1678,73 @@ impl PhpEngine {
                 out.push(FoundSite { path: path.clone(), range, start, lines: file.lines.clone() });
             }
         }
+        out.extend(self.markup_sites(kind, key, &open, cancel)?);
         Ok(out)
+    }
+
+    /// The [`ReferenceKind::markup_usages`] of `key` in the project's files
+    /// with every word of [`ReferenceKind::markup_words`] (and the open
+    /// documents), closed or open.
+    fn markup_sites(
+        &self,
+        kind: &'static dyn ReferenceKind,
+        key: &str,
+        open: &[crate::engine::OpenDocument],
+        cancel: &CancellationToken,
+    ) -> IdeResult<Vec<FoundSite>> {
+        let words = kind.markup_words(key);
+        if words.is_empty() {
+            return Ok(Vec::new());
+        }
+        let Some(cx) = self.ref_context() else { return Ok(Vec::new()) };
+        let mut candidates = self.files_with_words(words)?;
+        for document in open {
+            if !candidates.contains(&document.path) {
+                candidates.push(document.path.clone());
+            }
+        }
+        candidates.sort();
+        let mut out = Vec::new();
+        for path in candidates {
+            if cancel.is_cancelled() {
+                return Err(IdeError::cancelled());
+            }
+            if self.is_library(&path) {
+                continue;
+            }
+            let text: String = match open.iter().find(|document| document.path == path) {
+                Some(document) => document.text.to_string(),
+                None => match std::fs::read_to_string(&path) {
+                    Ok(text) => text.replace("\r\n", "\n"),
+                    Err(_) => continue,
+                },
+            };
+            let found = kind.markup_usages(&cx, &path, &text, key);
+            if found.is_empty() {
+                continue;
+            }
+            let lines = Arc::new(crate::syntax::LineIndex::new(&text));
+            for (start, end) in found {
+                out.push(FoundSite { path: path.clone(), range: lines.range(start, end), start, lines: lines.clone() });
+            }
+        }
+        Ok(out)
+    }
+
+    /// The indexed files with every one of `words` (lower case).
+    fn files_with_words(&self, mut words: Vec<String>) -> IdeResult<Vec<PathBuf>> {
+        let Some(index) = self.index() else { return Ok(Vec::new()) };
+        words.sort();
+        words.dedup();
+        let mut found: Option<HashSet<PathBuf>> = None;
+        for word in words {
+            let files: HashSet<PathBuf> = index.files_with_word(&word)?.into_iter().collect();
+            found = Some(match found {
+                Some(known) => known.intersection(&files).cloned().collect(),
+                None => files,
+            });
+        }
+        Ok(found.unwrap_or_default().into_iter().collect())
     }
 
     /// The candidate file `path` of a usage search for text `text`: the
@@ -1670,21 +1785,7 @@ impl PhpEngine {
     /// The files [`string_usages`](Self::string_usages) looks at for `key`
     /// of `kind`: the indexed files with every word, and the open documents.
     fn usage_candidates(&self, kind: &'static dyn ReferenceKind, key: &str) -> IdeResult<Vec<PathBuf>> {
-        let mut candidates: Vec<PathBuf> = Vec::new();
-        if let Some(index) = self.index() {
-            let mut words = kind.usage_words(key);
-            words.sort();
-            words.dedup();
-            let mut found: Option<HashSet<PathBuf>> = None;
-            for word in words {
-                let files: HashSet<PathBuf> = index.files_with_word(&word)?.into_iter().collect();
-                found = Some(match found {
-                    Some(known) => known.intersection(&files).cloned().collect(),
-                    None => files,
-                });
-            }
-            candidates.extend(found.unwrap_or_default());
-        }
+        let mut candidates: Vec<PathBuf> = self.files_with_words(kind.usage_words(key))?;
         for document in self.open_documents().into_iter().filter(|document| !document.embedded) {
             if !candidates.contains(&document.path) {
                 candidates.push(document.path.clone());

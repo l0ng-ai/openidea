@@ -315,6 +315,16 @@ impl Host {
             LanguageId::new("blade"),
             Arc::new(crate::blade::BladeService::new(&root, documents.clone(), php.clone())),
         );
+        // Laravel usages and renames from `.env` lines and Inertia pages.
+        services.register(
+            LanguageId::new("dotenv"),
+            Arc::new(crate::laravel_files::DotenvService { documents: documents.clone(), php: php.clone() }),
+        );
+        let pages =
+            Arc::new(crate::laravel_files::InertiaPageService { documents: documents.clone(), php: php.clone() });
+        for language in crate::laravel_files::PAGE_LANGUAGES {
+            services.register(LanguageId::new(language), pages.clone());
+        }
         let repos = Arc::new(RwLock::new(Repos::enclosing(&root)?));
         for repo in repos.read().all() {
             repo.set_execution_allowed(trusted.load(Ordering::Acquire));

@@ -203,7 +203,7 @@ These gaps are tracked as phases 8.22–8.29 in [ROADMAP.md](ROADMAP.md).
 These are the gaps against the feature list in LARAVEL-ROADMAP.md, gathered from the phases' own notes in PROGRESS.md. They are grouped as proposed follow-up phases.
 
 1. **Real-application measurements and an incremental model.** Done in 8.21 and 8.22, as described above.
-2. **Usages and rename from declarations and Blade.**
+2. **Usages and rename from declarations and Blade.** Done in 8.24. Route-name and view usages in closed templates were already found through the word index; what 8.24 added is listed in PROGRESS.md. A discovered Livewire name (not a registered alias) still can't be renamed on its own, and searches read open Blade templates from disk.
    - Find usages and rename from:
      - a Livewire component class or its `Livewire::component` alias
      - an Inertia page file

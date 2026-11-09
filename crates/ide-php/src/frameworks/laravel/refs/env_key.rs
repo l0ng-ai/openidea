@@ -8,10 +8,14 @@
 //! values. A key neither file sets is undefined, with a quick-fix adding
 //! it to `.env.example`; a key only `.env` sets is reported (as
 //! information) with the same fix, so the example stays complete.
+//!
+//! Renaming a key changes its lines in both files and every usage; find
+//! usages and rename also start from a line of `.env` or `.env.example`
+//! ([`PhpEngine::laravel_env_references`](crate::engine::PhpEngine::laravel_env_references)).
 
 use ide_core::Severity;
 
-use super::{CalleePattern, PlacePattern, RefContext, RefItem, ReferenceKind, Undefined};
+use super::{CalleePattern, PlacePattern, RefContext, RefItem, ReferenceKind, RenameTarget, Undefined};
 use crate::frameworks::laravel::env::EnvKeys;
 use crate::navigate::Target;
 
@@ -63,6 +67,22 @@ impl ReferenceKind for EnvKey {
 
     fn is_known(&self, cx: &RefContext<'_>, value: &str) -> bool {
         Self::keys(cx).contains(value)
+    }
+
+    /// The whole key, with its lines in `.env` and `.env.example`.
+    fn rename_target(&self, cx: &RefContext<'_>, value: &str, _at: usize) -> Option<RenameTarget> {
+        let declarations: Vec<_> = Self::keys(cx).get(value).map(|entry| (entry.path.clone(), entry.range)).collect();
+        if declarations.is_empty() {
+            return None;
+        }
+        Some(RenameTarget { key: value.to_owned(), range: (0, value.len()), declarations })
+    }
+
+    /// A name `vlucas/phpdotenv` reads: a letter or `_`, then letters,
+    /// digits, `_` and `.`.
+    fn valid_name(&self, name: &str) -> bool {
+        name.chars().next().is_some_and(|c| c.is_ascii_alphabetic() || c == '_')
+            && name.chars().all(|c| c.is_ascii_alphanumeric() || c == '_' || c == '.')
     }
 
     fn hover(&self, cx: &RefContext<'_>, value: &str) -> Option<String> {

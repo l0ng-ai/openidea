@@ -7,13 +7,15 @@
 //!
 //! Only plain string literals are checked, only while the indexes are ready
 //! and the project has some view, and a name in a namespace the engine
-//! doesn't know (a package's views) is never reported.
+//! doesn't know (a package's views) is never reported. The same check runs
+//! in Blade templates (`@include('…')`, `@extends('…')`,
+//! [`crate::engine::PhpEngine::blade_problems`]).
 
-use ide_core::{FileEdit, Severity, WorkspaceEdit};
+use ide_core::Severity;
 
 use super::{Inspection, InspectionContext, Problems, QuickFix};
 use crate::engine::{EngineState, is_meta_path};
-use crate::frameworks::laravel::refs::{ReferenceKind, ViewName, classify, prefixed, sites_with};
+use crate::frameworks::laravel::refs::ViewName;
 
 /// `PhpUndefinedView`.
 pub struct UndefinedView;
@@ -35,35 +37,11 @@ impl Inspection for UndefinedView {
         if views.is_empty() {
             return;
         }
-        let resolver = cx.resolver();
-        // The places of the `ide.json` rules too.
-        let project = cx.engine.laravel();
-        let rules = project.as_ref().map(|project| project.ide_json.completions.as_slice()).unwrap_or_default();
-        for site in sites_with(cx.parsed, &resolver, &[&ViewName], rules, None) {
-            if cx.is_cancelled() {
-                return;
-            }
-            // Only plain literals (no interpolation or escapes).
-            if site.value.is_empty() || site.value.contains(['$', '\\', '{']) {
-                continue;
-            }
-            let Some((kind, rule)) = classify(&site, &resolver, rules) else { continue };
-            let value = &prefixed(&site, rule);
-            if kind.id() != ViewName.id() || views.get(value).is_some() {
-                continue;
-            }
-            if let Some((namespace, _)) = value.split_once("::")
-                && views.namespace(namespace).is_none()
-            {
-                continue;
-            }
-            let problem = out.report(site.start, site.end, format!("View '{value}' is not defined"));
-            if let Some(path) = views.new_path(value) {
-                let edit = WorkspaceEdit {
-                    files: vec![FileEdit::Create { path: path.into(), overwrite: false }],
-                    ..WorkspaceEdit::default()
-                };
-                problem.with_fix(QuickFix { title: format!("Create view '{value}'"), edit, preferred: true });
+        // The places of the `ide.json` rules too ([`ViewName::undefined`]).
+        for found in cx.engine.undefined_references(cx.parsed, cx.path, &[&ViewName], cx.cancel) {
+            let problem = out.report(found.start, found.end, found.problem.message);
+            if let Some((title, edit)) = found.problem.fix {
+                problem.with_fix(QuickFix { title, edit, preferred: true });
             }
         }
     }

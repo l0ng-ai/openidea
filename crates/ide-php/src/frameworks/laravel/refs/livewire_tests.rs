@@ -513,3 +513,137 @@ fn the_livewire_generator_is_listed_when_livewire_is_installed() {
     let context = app.engine.laravel_generation_context().unwrap();
     assert!(!context.generators.iter().any(|generator| generator.id == "livewire"));
 }
+
+const TICKER_VIEW: &str = "resources/views/dashboard.blade.php";
+
+/// The fixture app with Livewire, the `clock` and `ticker` registrations and
+/// a template using `ticker` as a tag and a directive.
+fn with_ticker() -> Project {
+    Project::with_packages_and(&[
+        ("app/Http/Widgets/Clock.php", CLOCK),
+        ("app/Providers/LivewireServiceProvider.php", LIVEWIRE_PROVIDER),
+        ("resources/views/widgets/clock.blade.php", "<div>{{ $zone }}</div>\n"),
+        (
+            TICKER_VIEW,
+            "<div>\n    <livewire:ticker :start=\"1\" />\n    @livewire('ticker')\n    <livewire:tickers />\n</div>\n",
+        ),
+    ])
+}
+
+/// The string usages among `found`, as `(path, line, text)`.
+fn strings(found: Vec<(String, u32, String, UsageKind)>) -> Vec<(String, u32, String)> {
+    found.into_iter().filter(|usage| usage.3 == UsageKind::String).map(|usage| (usage.0, usage.1, usage.2)).collect()
+}
+
+#[test]
+fn finds_usages_of_livewire_components_from_aliases_and_classes() {
+    let mut project = with_ticker();
+    let expected = [
+        ("app/Http/Probe.php".to_owned(), 11, "ticker".to_owned()),
+        (TICKER_VIEW.to_owned(), 1, "ticker".to_owned()),
+        (TICKER_VIEW.to_owned(), 2, "ticker".to_owned()),
+    ];
+    // From a usage: tags count, `<livewire:tickers />` doesn't.
+    let found = strings(project.references(PROBE, &probe("Livewire::test('tic/*|*/ker');")));
+    assert_eq!(found, expected);
+
+    // From the alias of its registration.
+    project.open(PROBE, &probe("Livewire::test('ticker/*|*/');"));
+    let provider = LIVEWIRE_PROVIDER.replace("component('ticker'", "component('tic/*|*/ker'");
+    let found = project.references("app/Providers/LivewireServiceProvider.php", &provider);
+    assert_eq!(strings(found.clone()), expected);
+    assert!(
+        found.contains(&("app/Livewire/Counter.php".to_owned(), 6, "Counter".to_owned(), UsageKind::Declaration)),
+        "{found:?}"
+    );
+
+    // From the class: the usages of its names (`counter` and `ticker`) and
+    // the registration.
+    let counter = COUNTER.replace("class Counter", "class Coun/*|*/ter");
+    let found = strings(project.references("app/Livewire/Counter.php", &counter));
+    for usage in [
+        ("app/Http/Probe.php".to_owned(), 11, "ticker".to_owned()),
+        ("app/Providers/LivewireServiceProvider.php".to_owned(), 13, "ticker".to_owned()),
+        (TICKER_VIEW.to_owned(), 1, "ticker".to_owned()),
+        (TICKER_VIEW.to_owned(), 2, "ticker".to_owned()),
+    ] {
+        assert!(found.contains(&usage), "{usage:?} in {found:?}");
+    }
+}
+
+#[test]
+fn renames_a_registered_livewire_alias() {
+    let mut project = with_ticker();
+    let edits = project.rename(PROBE, &probe("Livewire::test('tic/*|*/ker');"), "clicker");
+    assert_eq!(
+        edits,
+        [
+            ("app/Http/Probe.php".to_owned(), 11, "ticker".to_owned()),
+            ("app/Providers/LivewireServiceProvider.php".to_owned(), 13, "ticker".to_owned()),
+            (TICKER_VIEW.to_owned(), 1, "ticker".to_owned()),
+            (TICKER_VIEW.to_owned(), 2, "ticker".to_owned()),
+        ]
+    );
+    // From the registration.
+    let provider = LIVEWIRE_PROVIDER.replace("component('ticker'", "component('tic/*|*/ker'");
+    let edits = project.rename("app/Providers/LivewireServiceProvider.php", &provider, "clicker");
+    assert_eq!(edits.len(), 3, "{edits:?}");
+    // A discovered name follows its class.
+    let (doc, pos) = project.open(PROBE, &probe("Livewire::test('coun/*|*/ter');"));
+    assert_eq!(project.engine.prepare_rename(doc, pos), Some(None));
+    assert!(!LivewireComponentKind.valid_name("a b") && LivewireComponentKind.valid_name("admin::stats-x"));
+}
+
+const PAGE_CONTROLLER: &str = r#"<?php
+
+namespace App\Http\Controllers;
+
+use Inertia\Inertia;
+
+class PageController
+{
+    public function index()
+    {
+        return Inertia::render('Posts/Index');
+    }
+}
+"#;
+
+#[test]
+fn finds_usages_of_and_renames_inertia_pages_from_their_files() {
+    let mut project = Project::with_packages_and(&[("app/Http/Controllers/PageController.php", PAGE_CONTROLLER)]);
+    let page = project.root.join("resources/js/Pages/Posts/Index.vue");
+    let cancel = CancellationToken::new();
+    assert_eq!(project.engine.laravel_inertia_page_name(&page).as_deref(), Some("Posts/Index"));
+    assert_eq!(project.engine.laravel_inertia_page_name(&project.root.join("resources/js/app.js")), None);
+
+    let found = project.engine.laravel_inertia_page_references(&page, true, &cancel).unwrap().unwrap();
+    let found: Vec<(String, u32, String)> =
+        found.iter().map(|usage| project.describe(&usage.path, usage.range)).collect();
+    assert_eq!(
+        found,
+        [
+            ("app/Http/Controllers/PageController.php".to_owned(), 10, "Posts/Index".to_owned()),
+            ("resources/js/Pages/Posts/Index.vue".to_owned(), 0, String::new()),
+        ]
+    );
+
+    // Renaming the page renames its file and the last segment of every usage.
+    let edit = project.engine.laravel_inertia_page_rename(&page, "List", &cancel).unwrap().unwrap();
+    let [FileEdit::Edit { path, edits, .. }, FileEdit::Rename { from, to }] = edit.files.as_slice() else {
+        panic!("{edit:?}")
+    };
+    assert_eq!(project.describe(&PathBuf::from(path.clone()), edits[0].range).2, "Index");
+    assert_eq!(edits[0].new_text, "List");
+    assert_eq!(PathBuf::from(from.clone()), page);
+    assert_eq!(PathBuf::from(to.clone()), project.root.join("resources/js/Pages/Posts/List.vue"));
+    assert!(project.engine.laravel_inertia_page_rename(&page, "A/B", &cancel).unwrap().is_err());
+
+    // The same from a usage in PHP.
+    let (doc, pos) = project.open(PROBE, &probe("Inertia::render('Posts/In/*|*/dex');"));
+    let range = project.engine.prepare_rename(doc, pos).unwrap().unwrap();
+    assert_eq!(range, Range::new(Pos::new(11, 27), Pos::new(11, 32)));
+    let edit = project.engine.rename(doc, pos, "List", &cancel).unwrap().unwrap();
+    assert!(edit.files.iter().any(|file| matches!(file, FileEdit::Rename { .. })), "{edit:?}");
+    assert_eq!(edit.files.iter().filter(|file| matches!(file, FileEdit::Edit { .. })).count(), 2);
+}

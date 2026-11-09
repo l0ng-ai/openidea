@@ -136,7 +136,7 @@ impl ReferenceKind for ConfigKey {
         Some(RenameTarget {
             key: key.to_owned(),
             range: (start, end),
-            declaration: Some((entry.path.clone(), entry.range)),
+            declarations: vec![(entry.path.clone(), entry.range)],
         })
     }
 

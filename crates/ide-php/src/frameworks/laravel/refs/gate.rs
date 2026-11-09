@@ -342,7 +342,7 @@ impl ReferenceKind for Gate {
         Some(RenameTarget {
             key: value.to_owned(),
             range: (0, value.len()),
-            declaration: Some((gate.path.clone(), gate.range)),
+            declarations: vec![(gate.path.clone(), gate.range)],
         })
     }
 

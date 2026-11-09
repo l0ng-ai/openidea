@@ -89,6 +89,10 @@ pub struct LivewireComponent {
     pub range: Range,
     /// The view's file, when it exists.
     pub view: Option<PathBuf>,
+    /// Where `Livewire::component('alias', …)` registers it: the provider
+    /// and the alias's range (inside the quotes); `None` for a discovered
+    /// component.
+    pub alias: Option<(PathBuf, Range)>,
 }
 
 /// The components of a project, sorted by name.
@@ -124,11 +128,11 @@ impl LivewireComponents {
         }
         let mut out: Vec<LivewireComponent> = Vec::new();
         let resolver = engine.resolver();
-        for path in provider_files(project) {
-            let Some(found) = engine.part("livewire-registrations", &path, "", &|text| registrations(text)) else {
+        for provider in provider_files(project) {
+            let Some(found) = engine.part("livewire-registrations", &provider, "", &|text| registrations(text)) else {
                 continue;
             };
-            for (alias, class) in found.iter().cloned() {
+            for (alias, class, at) in found.iter().cloned() {
                 let Some(model) = resolver.class_model(&class) else { continue };
                 if out.iter().any(|known| known.name == alias) || !model.is_subclass_of(COMPONENT) {
                     continue;
@@ -138,7 +142,9 @@ impl LivewireComponents {
                 };
                 let text = engine.text_of(&path).unwrap_or_default();
                 let view = rendered_view(&text).and_then(|view| views.get(&view).map(|view| view.path.clone()));
-                out.push(LivewireComponent { name: alias, class, path, range: model.class.name_loc.range, view });
+                let range = model.class.name_loc.range;
+                let alias_at = Some((crate::project::normalize(&provider), at));
+                out.push(LivewireComponent { name: alias, class, path, range, view, alias: alias_at });
             }
         }
         for model in subclasses(engine, COMPONENT) {
@@ -164,7 +170,8 @@ impl LivewireComponents {
                 }
                 (None, None) => views.get(&format!("livewire.{local}")).map(|view| view.path.clone()),
             };
-            out.push(LivewireComponent { name, class: fqn.to_owned(), path, range: model.class.name_loc.range, view });
+            let range = model.class.name_loc.range;
+            out.push(LivewireComponent { name, class: fqn.to_owned(), path, range, view, alias: None });
         }
         out.sort_by(|a, b| a.name.cmp(&b.name));
         Self { components: out }
@@ -190,8 +197,8 @@ impl LivewireComponents {
 }
 
 /// The `Livewire::component('alias', Counter::class)` registrations of a
-/// service provider's text: `(alias, class)`.
-fn registrations(text: &str) -> Vec<(String, String)> {
+/// service provider's text: `(alias, class, the alias's range)`.
+fn registrations(text: &str) -> Vec<(String, String, Range)> {
     if !text.contains("Livewire::component(") {
         return Vec::new();
     }
@@ -200,9 +207,9 @@ fn registrations(text: &str) -> Vec<(String, String)> {
     let lines = LineIndex::new(text);
     let mut out = Vec::new();
     for (open, args) in calls(text, "Livewire::component(") {
-        let Some((alias, _)) = first_string(text, open, &lines) else { continue };
+        let Some((alias, at)) = first_string(text, open, &lines) else { continue };
         let Some(class) = args.get(1).and_then(|arg| class_name(&names, arg, open)) else { continue };
-        out.push((alias, class));
+        out.push((alias, class, at));
     }
     out
 }
@@ -494,11 +501,20 @@ class AppServiceProvider
     }
 }
 "#;
+        let lines = LineIndex::new(text);
+        let found: Vec<(String, String, &str)> = registrations(text)
+            .into_iter()
+            .map(|(alias, class, at)| {
+                let (start, end) = lines.byte_range(at);
+                (alias, class, &text[start as usize..end as usize])
+            })
+            .collect();
+        // With the alias's range, inside the quotes.
         assert_eq!(
-            registrations(text),
+            found,
             [
-                ("clock".to_owned(), "App\\Http\\Widgets\\Clock".to_owned()),
-                ("admin.stats".to_owned(), "App\\Admin\\Stats".to_owned())
+                ("clock".to_owned(), "App\\Http\\Widgets\\Clock".to_owned(), "clock"),
+                ("admin.stats".to_owned(), "App\\Admin\\Stats".to_owned(), "admin.stats")
             ]
         );
         assert!(registrations("<?php Gate::define('x', fn () => true);").is_empty());

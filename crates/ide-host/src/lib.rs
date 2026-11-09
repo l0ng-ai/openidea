@@ -10,6 +10,7 @@ mod formatter;
 mod java_runtime;
 mod kotlin_bridge;
 pub mod language_service;
+mod laravel_files;
 pub mod notebook;
 pub mod ops;
 pub mod php;

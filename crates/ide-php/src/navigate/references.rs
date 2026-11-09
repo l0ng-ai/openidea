@@ -136,19 +136,26 @@ impl PhpEngine {
             return None;
         }
         let found = self.find_usages(&sought, &path, &here, include_declaration, cancel);
-        Some(found.map(|mut usages| {
-            // A controller method's routes count as its usages.
+        Some(found.and_then(|mut usages| {
+            // A controller method's routes count as its usages, and a
+            // Livewire component's names as the class's.
             let before = usages.len();
             for sought in &sought {
-                if let Sought::Member { kind: MemberKind::Method, name, declaring, .. } = sought {
-                    usages.extend(self.route_action_usages(declaring, name));
+                match sought {
+                    Sought::Member { kind: MemberKind::Method, name, declaring, .. } => {
+                        usages.extend(self.route_action_usages(declaring, name));
+                    }
+                    Sought::Name { kind: NameKind::ClassLike, fqn } => {
+                        usages.extend(self.livewire_class_usages(fqn, cancel)?);
+                    }
+                    _ => {}
                 }
             }
             if usages.len() > before {
                 usages.sort_by_key(|usage| (path_key(&usage.path), usage.range.start));
                 usages.dedup_by(|b, a| path_key(&a.path) == path_key(&b.path) && a.range == b.range);
             }
-            usages
+            Ok(usages)
         }))
     }
 

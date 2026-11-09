@@ -440,3 +440,6 @@ mod ide_json_tests;
 
 #[path = "livewire_tests.rs"]
 mod livewire_tests;
+
+#[path = "usages_tests.rs"]
+mod usages_tests;

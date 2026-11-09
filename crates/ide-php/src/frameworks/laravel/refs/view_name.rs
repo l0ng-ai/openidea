@@ -14,10 +14,10 @@
 //! Goto opens the view's file. Renaming changes the name after its
 //! namespace in every usage and moves the file.
 
-use ide_core::FileEdit;
+use ide_core::{FileEdit, WorkspaceEdit};
 
 use super::route_name::ROUTER;
-use super::{CalleePattern, PlacePattern, Position, RefContext, RefItem, ReferenceKind, RenameTarget};
+use super::{CalleePattern, PlacePattern, Position, RefContext, RefItem, ReferenceKind, RenameTarget, Undefined};
 use crate::frameworks::laravel::views::{ViewTable, normalize_name, relative_file, valid_local_name};
 use crate::navigate::Target;
 
@@ -153,7 +153,7 @@ impl ReferenceKind for ViewName {
         let views = Self::views(cx);
         views.get(value)?;
         let start = value.find("::").map_or(0, |colons| colons + 2);
-        Some(RenameTarget { key: normalize_name(value), range: (start, value.len()), declaration: None })
+        Some(RenameTarget { key: normalize_name(value), range: (start, value.len()), declarations: Vec::new() })
     }
 
     fn valid_name(&self, name: &str) -> bool {
@@ -174,5 +174,27 @@ impl ReferenceKind for ViewName {
 
     fn is_known(&self, cx: &RefContext<'_>, value: &str) -> bool {
         Self::views(cx).get(value).is_some()
+    }
+
+    /// `PhpUndefinedView` ([`crate::inspect::views`]): a name no view file
+    /// has, when the project has views and knows the name's namespace, with
+    /// the quick-fix "Create view".
+    fn undefined(&self, cx: &RefContext<'_>, value: &str) -> Option<Undefined> {
+        let views = Self::views(cx);
+        if views.is_empty() || views.get(value).is_some() {
+            return None;
+        }
+        if let Some((namespace, _)) = value.split_once("::")
+            && views.namespace(namespace).is_none()
+        {
+            return None;
+        }
+        let problem = Undefined::warning(format!("View '{value}' is not defined"));
+        let Some(path) = views.new_path(value) else { return Some(problem) };
+        let edit = WorkspaceEdit {
+            files: vec![FileEdit::Create { path: path.into(), overwrite: false }],
+            ..WorkspaceEdit::default()
+        };
+        Some(problem.with_fix(format!("Create view '{value}'"), edit))
     }
 }

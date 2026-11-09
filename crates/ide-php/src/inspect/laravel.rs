@@ -29,7 +29,8 @@ use ide_core::Severity;
 use super::{Inspection, InspectionContext, Problems, QuickFix};
 use crate::engine::{EngineState, is_meta_path};
 use crate::frameworks::laravel::refs::{
-    ConfigKey, EloquentField, EnvKey, Gate, InertiaPageKind, ReferenceKind, TranslationKey, ValidationRule, ViteAsset,
+    ConfigKey, EloquentField, EnvKey, Gate, InertiaPageKind, ReferenceKind, TranslationKey, ValidationRule, ViewName,
+    ViteAsset,
 };
 
 /// One "undefined …" inspection; see the module documentation.
@@ -59,6 +60,10 @@ impl UndefinedReference {
 
 /// The id of the inspection over the kind `kind` (`configKey`).
 pub fn inspection_id(kind: &str) -> Option<&'static str> {
+    // Views have their own inspection (`crate::inspect::views`).
+    if kind == ViewName.id() {
+        return Some("PhpUndefinedView");
+    }
     INSPECTIONS.iter().find(|(_, known)| known.id() == kind).map(|(id, _)| *id)
 }
 

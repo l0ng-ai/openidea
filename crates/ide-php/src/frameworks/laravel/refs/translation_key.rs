@@ -7,7 +7,9 @@
 //! Completion offers the group keys segment by segment (`messages.` then
 //! the keys of `messages.php`) and the JSON keys whole; goto opens the key
 //! in every locale; hover shows its text in each locale. Find usages also
-//! starts from a key of a group file. A key no locale has is undefined
+//! starts from a key of a group file. Renaming a JSON key changes it whole,
+//! a group key the segment at the caret (the keys below it follow), in
+//! every locale file and every caller (Blade templates too). A key no locale has is undefined
 //! (group keys always, whole strings when the project has JSON
 //! translations), with the quick-fix "Create translation key", which adds
 //! it to every locale.
@@ -22,9 +24,10 @@ use std::path::Path;
 
 use ide_core::{DocId, Pos};
 
-use super::{CalleePattern, Declared, PlacePattern, RefContext, RefItem, ReferenceKind, Undefined};
+use super::{CalleePattern, Declared, PlacePattern, RefContext, RefItem, ReferenceKind, RenameTarget, Undefined};
 use crate::blade::BladeDocument;
 use crate::engine::PhpEngine;
+use crate::frameworks::laravel::TransEntry;
 use crate::frameworks::laravel::config::declared_key_at;
 use crate::frameworks::laravel::lang::{Translations, is_group_key};
 use crate::navigate::Target;
@@ -150,6 +153,45 @@ impl ReferenceKind for TranslationKey {
 
     fn is_known(&self, cx: &RefContext<'_>, value: &str) -> bool {
         Self::translations(cx).contains(value)
+    }
+
+    /// A JSON key whole, or the segment of a group key at the caret (keys
+    /// below it follow), with the key in every locale file. Not a group's
+    /// name (its file's) nor a package's key.
+    fn rename_target(&self, cx: &RefContext<'_>, value: &str, at: usize) -> Option<RenameTarget> {
+        let translations = Self::translations(cx);
+        let ours = |entries: &[&TransEntry]| {
+            !entries.is_empty() && entries.iter().all(|entry| !entry.is_file && !cx.engine.is_library(&entry.path))
+        };
+        let declarations =
+            |entries: Vec<&TransEntry>| entries.into_iter().map(|entry| (entry.path.clone(), entry.range)).collect();
+        let json: Vec<&TransEntry> = translations.get(value).filter(|entry| entry.json).collect();
+        if !json.is_empty() {
+            return ours(&json).then(|| RenameTarget {
+                key: value.to_owned(),
+                range: (0, value.len()),
+                declarations: declarations(json),
+            });
+        }
+        let end = segment_end(value, at);
+        let key = &value[..end];
+        let entries: Vec<&TransEntry> = translations.get(key).filter(|entry| !entry.json).collect();
+        if !ours(&entries) {
+            return None;
+        }
+        let local = key.find("::").map_or(0, |colons| colons + 2);
+        let start = key[local..].rfind('.').map(|dot| local + dot + 1)?;
+        Some(RenameTarget { key: key.to_owned(), range: (start, end), declarations: declarations(entries) })
+    }
+
+    fn renames_with(&self, value: &str, key: &str) -> bool {
+        value == key || (is_group_key(key) && value.strip_prefix(key).is_some_and(|rest| rest.starts_with('.')))
+    }
+
+    /// A group key's segment has no `.`, `:` or white space.
+    fn valid_name_for(&self, key: &str, name: &str) -> bool {
+        self.valid_name(name)
+            && (!is_group_key(key) || (!name.contains(['.', ':']) && !name.contains(char::is_whitespace)))
     }
 
     fn hover(&self, cx: &RefContext<'_>, value: &str) -> Option<String> {

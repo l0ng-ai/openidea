@@ -117,7 +117,7 @@ impl ReferenceKind for RouteName {
         Some(RenameTarget {
             key: value.to_owned(),
             range: (start, value.len()),
-            declaration: Some((route.path.clone(), decl.range)),
+            declarations: vec![(route.path.clone(), decl.range)],
         })
     }
 
