@@ -351,6 +351,14 @@ pub async fn debug_attachable_processes(_host: &Host, _window: &str) -> IdeResul
         .map_err(|e| ide_core::IdeError::internal(format!("listing processes failed: {e}")))?
 }
 
+/// A loopback port that is free right now, for a debug agent the launch line starts
+/// (`address=127.0.0.1:<port>`) — used when its "Listening for transport" line never reaches
+/// the console (a Surefire fork holds it until the tests run, which `suspend=y` prevents).
+pub async fn debug_free_port(host: &Host, window: &str) -> IdeResult<u16> {
+    host.require_trust(window)?;
+    ide_dap::adapter::free_port().map_err(ide_core::IdeError::from)
+}
+
 /// Remote JVM Debug in listen mode: waits (cancellable through `request`) for the remote
 /// JVM to connect to `host:port`; returns the loopback port java-debug attaches to.
 pub async fn debug_listen_for_jvm(
@@ -492,6 +500,7 @@ pub(crate) fn register(d: &mut Dispatcher) {
         .await
     });
     d.add("debug_attachable_processes", |c| async move { debug_attachable_processes(&c.host, &c.window).await });
+    d.add("debug_free_port", |c| async move { debug_free_port(&c.host, &c.window).await });
     d.add("debug_listen_for_jvm", |c| async move {
         debug_listen_for_jvm(&c.host, &c.window, c.arg("request")?, c.arg("host")?, c.arg("port")?).await
     });
