@@ -170,3 +170,18 @@ describe("Debug console find", () => {
     expect(screen.getByText("Copy").closest("[aria-disabled]")).not.toBeNull();
   });
 });
+
+describe("Debug console links", () => {
+  it("renders file:line and URLs as links, system lines stay plain", () => {
+    const session = adoptSession(1);
+    appendConsole(1, "stdout", "panic at src/main.rs:42:7 see https://example.com/docs\n");
+    appendConsole(1, "system", "Process finished with exit code 1 at src/main.rs:9\n");
+    const { container } = render(<DebugConsole session={session} />);
+    const links = container.querySelectorAll("a[role='link']");
+    const hrefs = [...links].map((a) => a.textContent);
+    // The stdout line's file and URL are links; the system line's path is not.
+    expect(hrefs).toContain("src/main.rs:42:7");
+    expect(hrefs).toContain("https://example.com/docs");
+    expect(hrefs).not.toContain("src/main.rs:9");
+  });
+});

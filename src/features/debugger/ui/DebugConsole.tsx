@@ -1,4 +1,13 @@
-import { useEffect, useLayoutEffect, useMemo, useRef, useState, type KeyboardEvent, type MouseEvent } from "react";
+import {
+  memo,
+  useEffect,
+  useLayoutEffect,
+  useMemo,
+  useRef,
+  useState,
+  type KeyboardEvent,
+  type MouseEvent,
+} from "react";
 import clsx from "clsx";
 import { useVirtualizer } from "@tanstack/react-virtual";
 import { copySelectionOnKeyDown, copyText } from "@/ui/selectableText";
@@ -6,8 +15,11 @@ import { EmptyState, IconButton, showContextMenu, T, type MenuItem } from "@/ui"
 import { formatBinding, hasPrimaryModifier, hostBinding, registerKeyClaim } from "@/platform/keymap";
 import { tx } from "@/platform/i18n";
 import { useWorkflowSettings } from "@/platform/workflowSettings";
-import { spanStyle, type Span, type SpanStyle } from "@/ui/ansi";
+import { spanStyle, type Span } from "@/ui/ansi";
 import ansi from "@/ui/ansi.module.css";
+import { findOutputLinks, type OutputLink } from "@/features/run/links";
+import { openTarget, openUrl, runDirectory } from "@/features/run/navigate";
+import { segmentLine, type SegmentMark } from "@/features/run/segments";
 import { ConsoleFindBar } from "@/ui/ConsoleFindBar";
 import {
   DEFAULT_FIND_OPTIONS,
@@ -31,73 +43,81 @@ import { useExpressionCompletion } from "./ExpressionCompletion";
 import styles from "./DebugToolWindow.module.css";
 
 const EMPTY_FIND: FindResult = { matches: [], overflow: false, invalid: false };
+const EMPTY_MARKS: readonly ConsoleMatch[] = [];
 
 const MARK_COLOR = "var(--bg-search-match)";
 const CURRENT_MARK_COLOR = "var(--bg-search-match-current)";
 
-interface Segment {
-  text: string;
-  style: SpanStyle;
-  /** The piece is inside a find match. */
-  mark: boolean;
-  /** …and inside the current one. */
-  current: boolean;
-}
-
-/** Splits a line's styled spans at find-match boundaries (the Run console's `segmentLine`, without links). */
-function findSegments(spans: readonly Span[], marks: readonly ConsoleMatch[], active?: ConsoleMatch): Segment[] {
-  const out: Segment[] = [];
-  let pos = 0;
-  let mi = 0;
-  for (const span of spans) {
-    const { text, ...style } = span;
-    let offset = 0;
-    while (offset < text.length) {
-      const abs = pos + offset;
-      while (mi < marks.length && marks[mi]!.end <= abs) mi++;
-      const mark = marks[mi];
-      if (mark && mark.start <= abs) {
-        const take = Math.min(mark.end - abs, text.length - offset);
-        out.push({ text: text.slice(offset, offset + take), style, mark: true, current: mark === active });
-        offset += take;
-      } else if (mark && mark.start < pos + text.length) {
-        const take = Math.min(mark.start - abs, text.length - offset);
-        out.push({ text: text.slice(offset, offset + take), style, mark: false, current: false });
-        offset += take;
-      } else {
-        out.push({ text: text.slice(offset), style, mark: false, current: false });
-        offset = text.length;
-      }
-    }
-    pos += text.length;
-  }
-  return out;
-}
-
-/** A match keeps the span's colours but takes the search background (as IDEA does). */
-function segmentNode(seg: Segment, key: number) {
-  if (!seg.mark)
-    return (
-      <span key={key} style={spanStyle(seg.style)}>
-        {seg.text}
-      </span>
+/** One virtualized output row: spans split at links and find matches, memoized so scrolling stays light. */
+const ConsoleLineView = memo(
+  function ConsoleLineView({
+    spans,
+    text,
+    linkable,
+    marks,
+    current,
+    cwd,
+  }: {
+    spans: readonly Span[];
+    text: string;
+    /** System lines (exit status, IDE notices) get no links. */
+    linkable: boolean;
+    marks: readonly ConsoleMatch[];
+    current?: ConsoleMatch;
+    cwd: string;
+  }) {
+    const marksForLine: SegmentMark[] = useMemo(
+      () => marks.map((m) => ({ start: m.start, end: m.end, current: m === current })),
+      [marks, current],
     );
-  return (
-    <mark
-      key={key}
-      className={styles.findMatch}
-      style={{
-        ...spanStyle(seg.style),
-        backgroundColor: seg.current ? CURRENT_MARK_COLOR : MARK_COLOR,
-        color: "var(--fg-search-match)",
-      }}
-      data-find-match=""
-      data-find-current={seg.current ? "" : undefined}
-    >
-      {seg.text}
-    </mark>
-  );
-}
+    const segments = segmentLine(spans, linkable ? findOutputLinks(text) : [], marksForLine);
+    const activate = (e: MouseEvent, link: OutputLink) => {
+      e.preventDefault();
+      // Dragging out a selection (copying output) is not a click-through.
+      if (window.getSelection()?.toString()) return;
+      if (link.kind === "url") void openUrl(link.url);
+      else void openTarget(link.target, cwd);
+    };
+    if (segments.length === 0) return <>{"​"}</>;
+    return (
+      <>
+        {segments.map((seg, i) => {
+          const style = seg.mark
+            ? {
+                ...spanStyle(seg.style),
+                backgroundColor: seg.current ? CURRENT_MARK_COLOR : MARK_COLOR,
+                color: "var(--fg-search-match)",
+              }
+            : spanStyle(seg.style);
+          const marked = seg.mark ? { "data-find-match": "", "data-find-current": seg.current ? "" : undefined } : {};
+          return seg.link ? (
+            <a
+              key={i}
+              href={seg.link.kind === "url" ? seg.link.url : undefined}
+              className={styles.link}
+              style={style}
+              onClick={(e) => activate(e, seg.link!)}
+              role="link"
+              tabIndex={-1}
+              {...marked}
+            >
+              {seg.text}
+            </a>
+          ) : seg.mark ? (
+            <mark key={i} className={styles.findMatch} style={style} {...marked}>
+              {seg.text}
+            </mark>
+          ) : (
+            <span key={i} style={style}>
+              {seg.text}
+            </span>
+          );
+        })}
+      </>
+    );
+  },
+  (a, b) => a.spans === b.spans && a.marks === b.marks && a.current === b.current && a.cwd === b.cwd,
+);
 
 export function DebugServiceConsole({ sessionId }: { sessionId: number }) {
   const session = useDebug((s) => s.sessions[sessionId]);
@@ -128,6 +148,8 @@ export function DebugConsole({ session, interactive = true }: { session: DebugSe
   const completion = useExpressionCompletion(inputRef, input, setInput, session);
 
   const [findOpen, setFindOpen] = useState(false);
+  /** Relative paths in output resolve against the session's working directory. */
+  const cwd = runDirectory(session.launch?.cwd);
   const [query, setQuery] = useState("");
   const [findOptions, setFindOptions] = useState<FindOptions>(DEFAULT_FIND_OPTIONS);
   const [activeMatchIndex, setActiveMatchIndex] = useState(0);
@@ -462,7 +484,14 @@ export function DebugConsole({ session, interactive = true }: { session: DebugSe
                   className={clsx(styles.out, styles[`cat-${l.category}`])}
                   style={{ transform: `translateY(${item.start}px)` }}
                 >
-                  {findSegments(l.spans, marksByLine.get(item.index) ?? [], current).map(segmentNode)}
+                  <ConsoleLineView
+                    spans={l.spans}
+                    text={l.text}
+                    linkable={l.category !== "system"}
+                    marks={marksByLine.get(item.index) ?? EMPTY_MARKS}
+                    current={current}
+                    cwd={cwd}
+                  />
                 </span>
               );
             })}
