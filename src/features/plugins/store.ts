@@ -1,5 +1,6 @@
 /** Installed plugins, their UI contributions, the selected plugin theme, and the operations on them. */
 import { create } from "zustand";
+import { tx } from "@/platform/i18n";
 import type {
   ActiveTheme,
   CapabilityInfo,
@@ -189,6 +190,11 @@ export function setPluginCapability(id: string, capability: string, granted: boo
   return withBusy(id, `Could not change ${capability} of ${nameOf(id)}`, () =>
     pluginsBackend().setCapability(id, capability, granted),
   );
+}
+
+export function revokePluginNetHost(id: string, host: string): Promise<boolean> {
+  const name = nameOf(id);
+  return withBusy(id, tx`Could not revoke ${host} for ${name}`, () => pluginsBackend().revokeNetHost(id, host));
 }
 
 export async function refreshCatalog(): Promise<void> {

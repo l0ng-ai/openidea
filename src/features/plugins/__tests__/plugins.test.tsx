@@ -661,6 +661,7 @@ describe("plugin prompts", () => {
     ask("9");
     expect(screen.getByText("Allow Relay to connect to api.example.com?")).toBeDefined();
     expect(screen.getByText(/The host is not in the plugin's declared permissions\./)).toBeDefined();
+    expect(screen.getByRole("button", { name: "Deny" })).toHaveFocus();
     await user.click(screen.getByRole("button", { name: "Always allow" }));
     await waitFor(() => expect(answerPrompt).toHaveBeenCalledWith("9", ["always"]));
 
@@ -671,6 +672,54 @@ describe("plugin prompts", () => {
     ask("11");
     await user.click(await screen.findByRole("button", { name: "Deny" }));
     await waitFor(() => expect(answerPrompt).toHaveBeenCalledWith("11", null));
+  });
+
+  it("refuses network prompts in a hidden window and closes them when hidden", async () => {
+    const answerPrompt = vi.fn().mockResolvedValue(undefined);
+    setPluginsBackend({ ...createMemoryPluginsBackend(), answerPrompt });
+    render(<MessagesHost />);
+    const visibility = vi.spyOn(document, "visibilityState", "get");
+    const ask = (promptId: string) =>
+      act(() => {
+        handlePluginEvent({
+          type: "promptRequested",
+          pluginId: "p",
+          promptId,
+          prompt: { kind: "netPermission", host: "api.example.com" },
+        });
+      });
+    try {
+      visibility.mockReturnValue("hidden");
+      ask("hidden");
+      await waitFor(() => expect(answerPrompt).toHaveBeenCalledWith("hidden", null));
+      expect(screen.queryByRole("dialog")).toBeNull();
+      visibility.mockReturnValue("visible");
+      ask("visible");
+      expect(screen.getByRole("button", { name: "Deny" })).toHaveFocus();
+      visibility.mockReturnValue("hidden");
+      act(() => document.dispatchEvent(new Event("visibilitychange")));
+      await waitFor(() => expect(answerPrompt).toHaveBeenCalledWith("visible", null));
+      expect(screen.queryByRole("dialog")).toBeNull();
+    } finally {
+      visibility.mockRestore();
+    }
+  });
+
+  it("dismisses a network prompt without allowing the request", async () => {
+    const user = userEvent.setup();
+    const answerPrompt = vi.fn().mockResolvedValue(undefined);
+    setPluginsBackend({ ...createMemoryPluginsBackend(), answerPrompt });
+    render(<MessagesHost />);
+    act(() => {
+      handlePluginEvent({
+        type: "promptRequested",
+        pluginId: "p",
+        promptId: "dismissed-net",
+        prompt: { kind: "netPermission", host: "api.example.com" },
+      });
+    });
+    await user.keyboard("{Escape}");
+    await waitFor(() => expect(answerPrompt).toHaveBeenCalledWith("dismissed-net", null));
   });
 
   it("asks multi-line text and confirms on Ctrl+Enter", async () => {
@@ -1265,29 +1314,33 @@ describe("marketplace", () => {
     });
   });
 
-  it("lists net:ask hosts in the permissions and revokes them one by one", async () => {
-    const user = userEvent.setup();
-    const base = createMemoryPluginsBackend([
-      plugin({
-        id: "p",
-        name: "P",
-        netHosts: ["api.example.com", "relay.example.org"],
-        capabilities: [{ id: "net:ask", risk: "medium", description: "Ask to connect", optional: true, granted: true }],
-      }),
-    ]);
-    const setCapability = vi.fn((id: string, capability: string, granted: boolean) =>
-      base.setCapability(id, capability, granted),
-    );
-    setPluginsBackend({ ...base, setCapability });
-    render(<PluginsPage />);
-    expect(await screen.findByText("net:api.example.com")).toBeInTheDocument();
-    expect(screen.getByText("net:relay.example.org")).toBeInTheDocument();
-    const rows = screen.getAllByRole("button", { name: "Remove" });
-    await user.click(rows[0]!);
-    await waitFor(() => expect(setCapability).toHaveBeenCalledWith("p", "net:api.example.com", false));
-    await waitFor(() => expect(screen.queryByText("net:api.example.com")).toBeNull());
-    expect(screen.getByText("net:relay.example.org")).toBeInTheDocument();
-  });
+  it.each(["api.example.com", "::1", "ask"])(
+    "revokes remembered host %s separately from capabilities",
+    async (host) => {
+      const user = userEvent.setup();
+      const base = createMemoryPluginsBackend([
+        plugin({
+          id: "p",
+          name: "P",
+          netHosts: [host, "relay.example.org"],
+          capabilities: [
+            { id: "net:ask", risk: "medium", description: "Ask to connect", optional: true, granted: true },
+          ],
+        }),
+      ]);
+      const revokeNetHost = vi.fn((id: string, host: string) => base.revokeNetHost(id, host));
+      setPluginsBackend({ ...base, revokeNetHost });
+      render(<PluginsPage />);
+      await screen.findByText("net:relay.example.org");
+      expect(screen.getAllByText(`net:${host}`)).toHaveLength(host === "ask" ? 2 : 1);
+      expect(screen.getByText("net:relay.example.org")).toBeInTheDocument();
+      const rows = screen.getAllByRole("button", { name: "Remove" });
+      await user.click(rows[0]!);
+      await waitFor(() => expect(revokeNetHost).toHaveBeenCalledWith("p", host));
+      await waitFor(() => expect(screen.queryAllByText(`net:${host}`)).toHaveLength(host === "ask" ? 1 : 0));
+      expect(screen.getByText("net:relay.example.org")).toBeInTheDocument();
+    },
+  );
 
   it("offers to roll back an update", async () => {
     const base = createMemoryPluginsBackend([

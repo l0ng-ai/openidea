@@ -800,5 +800,9 @@
   "Loading library sources…": "Loading library sources…",
   "Sources not found": "Sources not found",
   "Cannot load library sources": "Cannot load library sources",
-  "Decompiled .class file: sources are not available.": "Decompiled .class file: sources are not available."
+  "Decompiled .class file: sources are not available.": "Decompiled .class file: sources are not available.",
+  "This allows this exact host on any port; subdomains need separate permission.": "This allows this exact host on any port; subdomains need separate permission.",
+  "Could not revoke {host} for {name}": "Could not revoke {host} for {name}",
+  "host is not remembered for this plugin": "host is not remembered for this plugin",
+  "URL must name one exact host": "URL must name one exact host"
 }

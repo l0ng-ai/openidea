@@ -10,22 +10,38 @@ import { usePlugins } from "./store";
 
 /** Asks about `host`; resolves with the answer keys the host understands (`once` allows one request, `always` remembers the host), or null when refused. */
 export async function askNetPermission(pluginId: string, host: string, signal: AbortSignal): Promise<string[] | null> {
+  if (document.visibilityState === "hidden") return null;
+  const controller = new AbortController();
+  const abort = () => controller.abort();
+  const visibilityChanged = () => {
+    if (document.visibilityState === "hidden") controller.abort();
+  };
+  signal.addEventListener("abort", abort);
+  document.addEventListener("visibilitychange", visibilityChanged);
+  if (signal.aborted) controller.abort();
   const name = usePlugins.getState().plugins.find((p) => p.id === pluginId)?.name ?? pluginId;
-  const r = await ask({
-    title: tx`Allow ${name} to connect to ${host}?`,
-    body: [
-      tx("The host is not in the plugin's declared permissions."),
-      " ",
-      tx`"Always allow" remembers ${host}; revoke it any time in the plugin's permissions.`,
-    ],
-    buttons: [
-      { id: "once", label: tx("Allow once"), primary: true },
-      { id: "always", label: tx("Always allow") },
-      { id: "deny", label: tx("Deny") },
-    ],
-    cancel: false,
-    icon: "question",
-    signal,
-  });
-  return r.button === "once" || r.button === "always" ? [r.button] : null;
+  try {
+    const r = await ask({
+      title: tx`Allow ${name} to connect to ${host}?`,
+      body: [
+        tx("The host is not in the plugin's declared permissions."),
+        " ",
+        tx("This allows this exact host on any port; subdomains need separate permission."),
+        " ",
+        tx`"Always allow" remembers ${host}; revoke it any time in the plugin's permissions.`,
+      ],
+      buttons: [
+        { id: "once", label: tx("Allow once") },
+        { id: "always", label: tx("Always allow") },
+        { id: "deny", label: tx("Deny"), primary: true },
+      ],
+      cancel: false,
+      icon: "question",
+      signal: controller.signal,
+    });
+    return r.button === "once" || r.button === "always" ? [r.button] : null;
+  } finally {
+    signal.removeEventListener("abort", abort);
+    document.removeEventListener("visibilitychange", visibilityChanged);
+  }
 }

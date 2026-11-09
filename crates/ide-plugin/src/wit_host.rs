@@ -324,11 +324,11 @@ impl StoreData {
 
     /// The user's answer for a request to `host` under `net:ask`:
     /// `Some(_)` allows it (`true`: the host is remembered). `None` when
-    /// nobody could be asked or the user refused. Commands and events pass
+    /// nobody could be asked or the user refused. Commands and view actions pass
     /// their window; background and scheduled calls ask nobody, so only an
     /// already-allowed host connects there.
     fn ask_net(&mut self, host: &str) -> Result<Option<bool>, wit::Error> {
-        let client = self.interactive.then(|| self.invocation.client.clone()).flatten();
+        let client = self.net_interactive.then(|| self.invocation.client.clone()).flatten();
         let subject = self.subject.clone();
         let started = Instant::now();
         let answer = self.host.net_ask(&subject, client.as_deref(), host, &self.cancel.token());
@@ -1289,7 +1289,7 @@ impl net::Host for StoreData {
         let mut grants = self.granted.clone();
         if let Err(e) = self.require(capability.clone()) {
             // `net:ask`: an HTTPS (or loopback) host the manifest does not list
-            // may ask the user — commands and events from a window only. Plain
+            // may ask the user — commands and view actions from a window only. Plain
             // HTTP elsewhere always needs `net.http:<host>`.
             let askable =
                 matches!(&capability, Capability::Net(_)) && self.granted.iter().any(|g| g.covers(&Capability::NetAsk));

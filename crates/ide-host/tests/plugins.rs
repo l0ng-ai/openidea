@@ -5753,9 +5753,14 @@ fn net_ask_asks_once_remembers_always_and_revokes() {
     use ide_plugin::Prompt;
     let f = fixture(Limits::default());
     f.host.install_from_dir(&sample("api14"), &Consent::default()).unwrap();
-    f.host.set_capability("api14", "net:ask", true).unwrap();
     let (port, seen) = http_server("relay ok", |_| Duration::ZERO);
     let url = format!("http://127.0.0.1:{port}/");
+
+    // Merely declaring an optional capability is not enough: the user must grant it.
+    let err = f.run("api14", "fetch", Some(&url)).unwrap_err();
+    assert!(err.contains("not granted"), "{err}");
+    assert!(!f.take_events().iter().any(|(_, e)| matches!(e, PluginEvent::PromptRequested { .. })));
+    f.host.set_capability("api14", "net:ask", true).unwrap();
 
     // Plain HTTP elsewhere stays out of the ask flow entirely.
     let err = f.run("api14", "fetch", Some("http://example.com/")).unwrap_err();
@@ -5792,12 +5797,21 @@ fn net_ask_asks_once_remembers_always_and_revokes() {
     assert_eq!(seen.lock().len(), 4);
 
     // The permissions list the host; revoking it asks again, and refusing denies.
-    f.host.set_capability("api14", "net:127.0.0.1", false).unwrap();
+    f.host.revoke_net_host("api14", "127.0.0.1").unwrap();
     assert_eq!(f.host.info_of("api14").unwrap().net_hosts, Vec::<String>::new());
     let (result, prompt) = net_ask_run_and_answer(&f, &url, None);
     assert_eq!(prompt, Prompt::NetPermission { host: "127.0.0.1".into() });
     let err = result.unwrap_err();
     assert!(err.contains("not granted"), "{err}");
+    // Refusal throttles even a different host, without making any connection.
+    let err = f.run("api14", "fetch", Some("https://other.example/")).unwrap_err();
+    assert!(err.contains("not granted"), "{err}");
+    assert!(!f.take_events().iter().any(|(_, e)| matches!(e, PluginEvent::PromptRequested { .. })));
+    assert_eq!(seen.lock().len(), 4);
+
+    f.host.uninstall("api14").unwrap();
+    let ledger = ide_extension::ledger::Ledger::load(&f.plugins_dir);
+    assert!(ledger.get(&ide_extension::ledger::Subject::Installed("api14".into())).is_none());
 }
 
 /// Runs api14's `fetch` in its window; once the `net:ask` question arrives,

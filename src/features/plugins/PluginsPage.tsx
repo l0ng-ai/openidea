@@ -49,6 +49,7 @@ import {
   reloadPlugin,
   setAllInstalledEnabled,
   setPluginCapability,
+  revokePluginNetHost,
   setPluginEnabled,
   uninstallPlugin,
   updateAllPlugins,
@@ -421,7 +422,7 @@ function NetHostRow({ plugin, host, disabled }: { plugin: PluginInfo; host: stri
         {tx("Allowed when the plugin asked at first use. Remove it to be asked again.")}
       </p>
       <div className={styles.programPermission}>
-        <Button disabled={disabled} onClick={() => void setPluginCapability(plugin.id, `net:${host}`, false)}>
+        <Button disabled={disabled} onClick={() => void revokePluginNetHost(plugin.id, host)}>
           {tx("Remove")}
         </Button>
       </div>

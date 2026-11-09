@@ -58,6 +58,7 @@ export interface PluginsBackend {
   program(pluginId: string, program: string, scope: "global" | "project"): Promise<string>;
   pickProgram(): Promise<string | null>;
   setCapability(id: string, capability: string, granted: boolean): Promise<PluginInfo>;
+  revokeNetHost(id: string, host: string): Promise<PluginInfo>;
   /** Validated assets (icon theme mapping and SVGs) whose id starts with `prefix`. */
   assets(pluginId: string, prefix: string): Promise<[string, string][]>;
   /** `language` / `file` / `view` activation events. */
@@ -216,6 +217,7 @@ export const tauriPluginsBackend: PluginsBackend = {
     return (Array.isArray(picked) ? picked[0] : picked) ?? null;
   },
   setCapability: (id, capability, granted) => call(commands.pluginSetCapability(id, capability, granted)),
+  revokeNetHost: (id, host) => call(commands.pluginRevokeNetHost(id, host)),
   assets: (pluginId, prefix) => call(commands.pluginAssets(pluginId, prefix)),
   activationEvent: async (kind, value) => {
     await call(commands.pluginActivationEvent(kind, value));
@@ -589,10 +591,14 @@ export function createMemoryPluginsBackend(
     setCapability: async (id, capability, granted) => {
       const p = find(id);
       p.capabilities = p.capabilities.map((c) => (c.id === capability ? { ...c, granted } : c));
-      // A `net:ask` host is not a declared capability: revoking removes the remembered host.
-      if (!granted && capability.startsWith("net:") && !p.capabilities.some((c) => c.id === capability))
-        p.netHosts = p.netHosts.filter((h) => `net:${h}` !== capability);
+      if (!granted && capability === "net:ask") p.netHosts = [];
       if (!granted && p.capabilities.some((c) => c.id === capability && !c.optional)) p.status = "needsConsent";
+      emit({ type: "commandsChanged" });
+      return { ...p };
+    },
+    revokeNetHost: async (id, host) => {
+      const p = find(id);
+      p.netHosts = p.netHosts.filter((h) => h !== host);
       emit({ type: "commandsChanged" });
       return { ...p };
     },

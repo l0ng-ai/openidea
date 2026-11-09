@@ -1219,13 +1219,24 @@ machine. A manifest using `net.http:` or `ipc:` declares `engines.openidea = "^1
 A plugin with `net:ask` (API 1.5) may reach an HTTPS (or loopback) host that is
 not in the manifest: the first request asks the user, naming the plugin and the
 full host, with **Allow once**, **Always allow** and **Deny**. "Always" is
-remembered per host in the grant ledger and never asks again; the allowed
+remembered per exact, normalized host in the grant ledger and never asks again; the allowed
 hosts are listed in the plugin's permissions (Settings › Plugins), where each
 can be removed to ask again. Unattended calls — scheduled or background work
 without an invoking window — are denied as before, without a dialog, so a
 plugin can only be waved through while the user is working with it. Plain HTTP
 to other hosts never goes through this flow: declare `net.http:<host>`. A
 manifest using `net:ask` declares `engines.openidea = "^1.5"`.
+
+A host answer covers all ports of that host, like `net:<host>`, and never
+covers subdomains or wildcard patterns. IDNs are shown in ASCII (punycode);
+IP literals use their canonical form. Redirects are checked against the
+request's grants and cannot open another permission dialog. Deny is the
+default button; dismissal refuses the request. Only one network question per
+plugin may be pending; a refusal or dismissal suppresses further questions
+for 30 seconds, even for other hosts. Hidden windows refuse new questions and
+close pending ones. Automatic event handlers and providers do not ask.
+Removing `net:ask` during an update or revoking it clears remembered hosts;
+uninstalling removes the plugin's ledger entry.
 
 `ipc:<path>` grants a local byte stream: an absolute Unix socket path (the host
 expands `~/`, `$TMPDIR/` and `$XDG_RUNTIME_DIR/`) or `\\.\pipe\<name>` on Windows.

@@ -1078,10 +1078,28 @@ impl PluginHost {
         self.info_of(id)
     }
 
-    /// Grants or revokes one capability (Settings › Plugins › Permissions).
+    /// Revokes one exact host remembered through `net:ask`.
+    pub fn revoke_net_host(&self, id: &str, host: &str) -> IdeResult<PluginInfo> {
+        let _guard = self.lifecycle.lock();
+        let plugin = self.get(id)?;
+        self.check_not_uninstalling(&plugin)?;
+        {
+            let mut ledger = self.ledger.lock();
+            if !ledger.forget_net_host(&plugin.subject(), host) {
+                return Err(IdeError::invalid("host is not remembered for this plugin"));
+            }
+            self.save_ledger(&ledger);
+        }
+        self.stop(&plugin);
+        if !self.state.lock().disabled.contains(id) {
+            self.start(&plugin);
+        }
+        self.changed();
+        self.info_of(id)
+    }
+
+    /// Grants or revokes one declared capability (Settings › Plugins › Permissions).
     /// Revoking a required one stops the plugin until consent is given again.
-    /// A host remembered through `net:ask` is not declared: revoking it is
-    /// still valid (`granted = false`).
     pub fn set_capability(&self, id: &str, capability: &str, granted: bool) -> IdeResult<PluginInfo> {
         let _guard = self.lifecycle.lock();
         let plugin = self.get(id)?;
@@ -1090,8 +1108,7 @@ impl PluginHost {
         {
             let mut ledger = self.ledger.lock();
             let subject = plugin.subject();
-            let declared = plugin.manifest().declares(&cap) || plugin.meta.lock().declared_extra.contains(&cap);
-            if !declared && (granted || ledger.get(&subject).is_none_or(|g| !g.granted.contains(&cap.to_string()))) {
+            if !plugin.manifest().declares(&cap) && !plugin.meta.lock().declared_extra.contains(&cap) {
                 return Err(IdeError::invalid(format!("plugin {id:?} does not declare {cap}")));
             }
             if ledger.get(&subject).is_none() {
@@ -2889,22 +2906,10 @@ impl PluginHost {
         }
         // Hosts remembered through `net:ask` are grants of their own: listed
         // separately so the user can revoke them one by one.
-        let net_hosts: Vec<String> = grant
+        let net_hosts = grant
             .as_ref()
-            .filter(|g| g.confirmed)
-            .map(|g| {
-                let extras = |cap: &Capability| m.declares(cap) || meta.declared_extra.contains(cap);
-                g.granted
-                    .iter()
-                    .filter_map(|s| s.parse::<Capability>().ok())
-                    .filter_map(|cap| match cap {
-                        Capability::Net(host) if !extras(&cap) => Some(host),
-                        _ => None,
-                    })
-                    .collect::<std::collections::BTreeSet<_>>()
-                    .into_iter()
-                    .collect()
-            })
+            .filter(|g| g.confirmed && g.has(&Capability::NetAsk) && m.declares(&Capability::NetAsk))
+            .map(|g| g.net_hosts.iter().cloned().collect())
             .unwrap_or_default();
         PluginInfo {
             id: m.id.clone(),

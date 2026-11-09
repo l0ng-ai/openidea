@@ -422,7 +422,7 @@ pub trait HostApi: Send + Sync {
     /// (`subject`): `Some(true)` allowed and remembered (a host the user
     /// already allowed connects without asking again, also in the background),
     /// `Some(false)` allowed for this request only, `None` refused — also when
-    /// nobody could be asked (`client` is `None` outside commands and events).
+    /// nobody could be asked (`client` is `None` outside commands and native view actions).
     fn net_ask(
         &self,
         subject: &ide_extension::ledger::Subject,
@@ -815,6 +815,7 @@ pub struct StoreData {
     pub(crate) invocation: Invocation,
     /// The running call is a command or an event.
     pub(crate) interactive: bool,
+    pub(crate) net_interactive: bool,
     /// Editor window for pick, pick-many, input and confirm during action resolution.
     pub(crate) action_prompt_client: Option<String>,
     /// Tasks begun by the running call and not ended yet.
@@ -1043,6 +1044,7 @@ impl Runtime {
             host: setup.host,
             invocation: Invocation::default(),
             interactive: false,
+            net_interactive: false,
             action_prompt_client: None,
             open_tasks: Vec::new(),
             last_report: None,
@@ -1620,6 +1622,7 @@ impl Runtime {
         let result = self.call(invocation, self.limits.timeout, |e, store| {
             let ctx = store.data_mut().new_invocation()?;
             store.data_mut().interactive = true;
+            store.data_mut().net_interactive = true;
             let r = e.plugin.openidea_plugin_commands().call_run(
                 &mut *store,
                 id,
@@ -1745,10 +1748,12 @@ impl Runtime {
         if self.exports.views.is_none() {
             return Err(CallError::missing_export("view-provider"));
         }
+        let net_interactive = !matches!(&event, ViewEvent::Message { .. });
         let event = event_to_wit_view(event);
         let result = self.call(invocation, self.limits.timeout, |e, store| {
             let ctx = store.data_mut().new_invocation()?;
             store.data_mut().interactive = true;
+            store.data_mut().net_interactive = net_interactive;
             let views = e.views.as_ref().expect("checked");
             let r = views.call_handle(&mut *store, view, &event, wasmtime::component::Resource::new_borrow(ctx.rep()));
             store.data_mut().drop_invocation(ctx);
@@ -1800,6 +1805,7 @@ impl Runtime {
         let data = self.store.data_mut();
         data.invocation = Invocation::default();
         data.interactive = false;
+        data.net_interactive = false;
         data.action_prompt_client = None;
         // Tasks don't outlive the call that began them.
         for id in std::mem::take(&mut data.open_tasks) {

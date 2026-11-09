@@ -502,6 +502,8 @@ pub(super) struct Shared {
     pub(super) prompts: Mutex<HashMap<u64, PromptEntry>>,
     /// Plugins being stopped: their calls may not open new prompts (taken before `prompts`).
     pub(super) prompts_blocked: Mutex<BTreeSet<String>>,
+    /// One network question per plugin; refusals throttle all hosts for 30 seconds.
+    net_prompts: Mutex<HashMap<String, Option<Instant>>>,
     pub(super) next_prompt: AtomicU64,
     pub(super) run_configurations: super::run_detectors::DynamicConfigurations,
     pub(super) run_targets: Mutex<super::run_targets::Targets>,
@@ -574,6 +576,7 @@ impl Shared {
             process_shutdowns: Mutex::default(),
             prompts: Mutex::default(),
             prompts_blocked: Mutex::default(),
+            net_prompts: Mutex::default(),
             next_prompt: AtomicU64::new(1),
             run_configurations: Arc::default(),
             run_targets: Mutex::default(),
@@ -805,6 +808,7 @@ impl Shared {
             self.sink.emit(None, PluginEvent::DecorationsChanged { plugin_id: plugin.into(), sets: Vec::new() });
         }
         self.withdraw_prompts(plugin);
+        self.net_prompts.lock().remove(plugin);
         let removed: Vec<(Option<String>, String)> = {
             let mut contexts = self.contexts.lock();
             let keys: Vec<_> = contexts.keys().filter(|(_, p, _)| p == plugin).cloned().collect();
@@ -2220,7 +2224,7 @@ impl HostApi for PluginApi {
     /// The `net:ask` answer: a host the user allowed with "always" is
     /// remembered in the ledger (no dialog again, background included); a new
     /// host is asked about in `client`'s window when there is one. Dismissal
-    /// and refusal both deny without remembering.
+    /// and refusal both deny and throttle further questions.
     fn net_ask(
         &self,
         subject: &Subject,
@@ -2228,13 +2232,19 @@ impl HostApi for PluginApi {
         host: &str,
         cancel: &CancellationToken,
     ) -> Result<Option<bool>, HostError> {
+        if cancel.is_cancelled() {
+            return Err(HostError::Cancelled);
+        }
+        if !self.pkg.manifest.declares(&Capability::NetAsk) {
+            return Ok(None);
+        }
         let host = host.trim_end_matches('.').to_ascii_lowercase();
-        let remembered = Capability::Net(host.clone());
         {
             let ledger = self.shared.ledger.lock();
             if let Some(grant) = ledger.get(subject)
                 && grant.confirmed
-                && grant.granted.contains(&remembered.to_string())
+                && grant.has(&Capability::NetAsk)
+                && grant.net_hosts.contains(&host)
             {
                 return Ok(Some(true));
             }
@@ -2249,20 +2259,42 @@ impl HostApi for PluginApi {
         if self.shared.prompts_blocked.lock().contains(self.id()) {
             return Ok(None);
         }
-        match self.ask(Some(client), Prompt::NetPermission { host }, cancel) {
-            Ok(Some(keys)) if keys.iter().any(|k| k == "always") => {
-                {
-                    let mut ledger = self.shared.ledger.lock();
-                    ledger.set(subject, &remembered, true);
+        {
+            let mut prompts = self.shared.net_prompts.lock();
+            if prompts.get(self.id()).is_some_and(|until| until.is_none_or(|until| until > Instant::now())) {
+                return Ok(None);
+            }
+            prompts.insert(self.id().to_owned(), None);
+        }
+        let answer = self.ask(Some(client), Prompt::NetPermission { host: host.clone() }, cancel);
+        let result = match answer {
+            Ok(Some(keys)) if keys == ["always"] => {
+                let mut ledger = self.shared.ledger.lock();
+                if cancel.is_cancelled() {
+                    Err(HostError::Cancelled)
+                } else if ledger.get(subject).is_some_and(|g| g.confirmed && g.has(&Capability::NetAsk)) {
+                    ledger.remember_net_host(subject, &host);
                     if let Err(e) = ledger.save() {
                         tracing::warn!("saving plugin grants: {e}");
                     }
+                    drop(ledger);
+                    self.shared.sink.emit(None, PluginEvent::CommandsChanged);
+                    Ok(Some(true))
+                } else {
+                    Ok(None)
                 }
-                Ok(Some(true))
             }
-            Ok(Some(keys)) if keys.iter().any(|k| k == "once") => Ok(Some(false)),
-            _ => Ok(None),
+            Ok(Some(keys)) if keys == ["once"] => Ok(Some(false)),
+            Ok(_) => Ok(None),
+            Err(e) => Err(e),
+        };
+        let mut prompts = self.shared.net_prompts.lock();
+        if matches!(result, Ok(Some(_))) {
+            prompts.remove(self.id());
+        } else {
+            prompts.insert(self.id().to_owned(), Some(Instant::now() + Duration::from_secs(30)));
         }
+        result
     }
 
     fn secret_is_set(&self, name: &str) -> bool {
@@ -3155,6 +3187,57 @@ mod tests {
         let sink: Arc<dyn PluginEventSink> = Arc::new(|_: Option<&str>, _: PluginEvent| {});
         let shared = Shared::new(sink, dir.join(".data"), pins, ide_extension::UiStore::new(), Arc::default());
         PluginApi { pkg: Package::new(manifest, dir.to_path_buf()), shared }
+    }
+
+    #[test]
+    fn net_questions_are_exclusive_throttled_and_cancelled() {
+        let dir = tempfile::tempdir().unwrap();
+        let mut api = api(dir.path(), Arc::default());
+        api.pkg = Package::new(
+            ide_extension::Manifest::parse(
+                "id = \"acme.lint\"\nname = \"Lint\"\nversion = \"1.0.0\"\nengines.openidea = \"^1.5\"\n[capabilities]\nrequired = [\"net:ask\"]\n",
+            ).unwrap(),
+            dir.path().to_path_buf(),
+        );
+        let subject = Subject::Installed(api.id().into());
+        api.shared.ledger.lock().confirm(
+            &ide_extension::ledger::Request {
+                subject: subject.clone(),
+                plugin_id: api.id(),
+                version: "1.0.0",
+                package_hash: "h",
+                required: vec![Capability::NetAsk],
+                optional: vec![],
+            },
+            &[],
+            BTreeMap::new(),
+        );
+        for answer in [Some(vec!["always".into(), "once".into()]), None] {
+            api.shared.net_prompts.lock().clear();
+            let cancel = CancellationToken::new();
+            std::thread::scope(|scope| {
+                let run = scope.spawn(|| api.net_ask(&subject, Some("main"), "::1", &cancel));
+                let deadline = Instant::now() + Duration::from_secs(5);
+                let id = loop {
+                    if let Some(id) = api.shared.prompts.lock().keys().next().copied() {
+                        break id;
+                    }
+                    assert!(Instant::now() < deadline);
+                    std::thread::sleep(Duration::from_millis(10));
+                };
+                assert_eq!(api.net_ask(&subject, Some("other"), "other.example", &cancel).unwrap(), None);
+                if let Some(answer) = answer {
+                    assert!(api.shared.answer_prompt(id, Some(answer)));
+                    assert_eq!(run.join().unwrap().unwrap(), None);
+                } else {
+                    cancel.cancel();
+                    assert!(matches!(run.join().unwrap(), Err(HostError::Cancelled)));
+                }
+            });
+            assert!(api.shared.prompts.lock().is_empty());
+            assert!(api.shared.ledger.lock().get(&subject).unwrap().net_hosts.is_empty());
+            assert_eq!(api.net_ask(&subject, Some("main"), "new.example", &CancellationToken::new()).unwrap(), None);
+        }
     }
 
     #[cfg(windows)]

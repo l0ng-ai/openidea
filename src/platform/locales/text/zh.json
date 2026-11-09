@@ -7133,5 +7133,9 @@
   "Source archives": "源代码归档",
   "Loading library sources…": "正在加载库源代码…",
   "Sources not found": "未找到源代码",
-  "Cannot load library sources": "无法加载库源代码"
+  "Cannot load library sources": "无法加载库源代码",
+  "This allows this exact host on any port; subdomains need separate permission.": "允许此确切主机的任意端口；子域名需要单独授权。",
+  "Could not revoke {host} for {name}": "无法撤销 {name} 对 {host} 的授权",
+  "host is not remembered for this plugin": "此插件没有记住该主机的授权",
+  "URL must name one exact host": "URL 必须指定一个确切主机"
 }
