@@ -553,6 +553,12 @@ function Stream({ task, entries, subagent, onOpenSubagent, finding, findFocus, o
   // Keep a process run intact so prepending never replaces the anchored row.
   while (entries && start > 0 && isProcessEntry(entries[start]!) && isProcessEntry(entries[start - 1]!)) start--;
   const dragging = useRef(false);
+  // When the user last scrolled the conversation (wheel, touch, keys, the scrollbar, Find):
+  // only that leaves the end. WebKit also moves the offset back on its own while rows lay out.
+  const userScrolled = useRef(-Infinity);
+  const markUserScroll = useCallback(() => {
+    userScrolled.current = performance.now();
+  }, []);
   // Earlier entries are prepended above the view: remember where the first painted row is
   // so the content stays put and the scrollbar doesn't jump under the pointer.
   const anchor = useRef<{ el: Element; top: number } | null>(null);
@@ -701,7 +707,13 @@ function Stream({ task, entries, subagent, onOpenSubagent, finding, findFocus, o
     [task, turns, replies, times, lastIndex, busy, onOpenSubagent, onDiagramDrawn],
   );
   return (
-    <div className={styles.streamArea}>
+    <div
+      className={styles.streamArea}
+      onWheel={markUserScroll}
+      onTouchMove={markUserScroll}
+      onKeyDown={markUserScroll}
+      onPointerDown={markUserScroll}
+    >
       {finding && <FindBar streamRef={ref} focus={findFocus} onClose={onCloseFind} />}
       <div
         ref={ref}
@@ -710,7 +722,12 @@ function Stream({ task, entries, subagent, onOpenSubagent, finding, findFocus, o
         tabIndex={-1}
         onScroll={(e) => {
           const el = e.currentTarget;
-          position.current = { top: el.scrollTop, stick: el.scrollHeight - el.scrollTop - el.clientHeight < 40 };
+          const atEnd = el.scrollHeight - el.scrollTop - el.clientHeight < 40;
+          const byUser = dragging.current || performance.now() - userScrolled.current < 500;
+          const stick = atEnd || (position.current.stick && !byUser);
+          // Still following: back to the end the offset was moved away from.
+          if (stick && !atEnd) el.scrollTop = el.scrollHeight;
+          position.current = { top: el.scrollTop, stick };
           positions.set(key, position.current);
           setAway(!position.current.stick);
           // Reached the top of what is painted: fetch the earlier entries, but only

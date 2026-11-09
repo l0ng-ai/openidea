@@ -491,17 +491,23 @@ const agentTabs: Scenario = {
       ).__openideaPerf.runAction("agents.openSampleConversations", { tasks: 2, turns: 150 }),
     );
     const shown = (n: number) => `[data-editor-focus] span[title="Sample task ${n}"]`;
-    // Each conversation shown until its earlier entries, painted in background batches, are all in.
+    // Both conversations get their earlier entries painted in background batches, also the
+    // first one, hidden behind the second as soon as it opened.
+    await h.page.waitForFunction(
+      () =>
+        [...document.querySelectorAll("[data-message]")]
+          .map((m) => m.parentElement!)
+          .filter((stream, i, all) => all.indexOf(stream) === i && stream.textContent!.includes("Turn 0:")).length ===
+        2,
+      undefined,
+      { timeout: 30_000, polling: 200 },
+    );
+    // Rows painted while hidden are laid out the first time their conversation shows.
     for (const n of [1, 2]) {
       await h.page.getByRole("tab", { name: `Sample task ${n}` }).click();
-      await h.page.waitForFunction(
-        (selector) =>
-          document.querySelector(selector)?.closest("[data-editor-focus]")?.textContent?.includes("Turn 0:"),
-        shown(n),
-        { timeout: 30_000, polling: 200 },
-      );
+      await h.page.locator(shown(n)).waitFor();
+      await h.page.waitForTimeout(300);
     }
-    await h.page.waitForTimeout(500);
     // WebKit restyles a hidden conversation in full when it is shown again (Chromium keeps its
     // style): what bounds that there is the history's DOM, and rows skipping rendering off screen.
     const { conversationNodes, rowsAlwaysRendered } = await h.page.evaluate((selector) => {
@@ -540,6 +546,8 @@ const agentTabs: Scenario = {
         const row = [...stream.children].find((r) => r.getBoundingClientRect().bottom > top + 200)!;
         const from = row.getBoundingClientRect().top;
         const scrolled = stream.scrollTop;
+        // A wheel step: the user scrolls, so the conversation stops following its end.
+        stream.dispatchEvent(new WheelEvent("wheel", { bubbles: true, deltaY: -120 }));
         stream.scrollTop -= 120;
         const by = scrolled - stream.scrollTop;
         await frame();
