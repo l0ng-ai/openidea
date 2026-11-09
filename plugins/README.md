@@ -2465,6 +2465,28 @@ DDEV, for example: `program = "ddev"`, `args = ["exec"]`,
 `commands = [("composer", ["composer"])]` runs `php x.php` as
 `ddev exec php x.php` and `composer install` as `ddev composer install`.
 
+API 1.5 adds `host::register_run_target_with_overrides(project, target)` and
+`PluginRunTargetWithOverrides`. Its `commands` are `PluginCommandOverride` records
+with `name`, replacement `args`, and optional `workdir_args`. `None` inherits the
+shared list; `Some(vec![])` omits it; `Some(args)` replaces it for that command.
+The original `PluginRunTarget` and registration function keep their API 1.4 behavior.
+
+For a target with `program = "ddev"`, `args = ["exec", "--raw"]`,
+`workdir_args = ["--dir={cwd}", "--"]` and `container_root = "/var/www/html"`, use:
+
+```rust
+PluginCommandOverride {
+    name: "composer".into(),
+    args: vec!["composer".into()],
+    workdir_args: Some(vec![]),
+}
+```
+
+With working directory `public`, `composer install` becomes `ddev composer install`,
+while `php x.php` becomes `ddev exec --raw --dir=/var/www/html/public -- php x.php`.
+Replacement lists have the same argument limits, placeholder substitution and
+working-directory restrictions as the shared list.
+
 Local absolute tool paths outside the project use the tool basename.
 When `container_root` is set, project paths in argv map under that root. Each
 `workdir_args` element may contain `{cwd}`; for example `["--dir", "{cwd}"]`.

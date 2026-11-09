@@ -352,3 +352,72 @@ async fn plugin_run_targets_register_prompt_route_revalidate_and_withdraw() {
     assert!(plugins.run_targets(&f.root).is_empty());
     plugins.shutdown();
 }
+
+#[cfg(unix)]
+#[tokio::test(flavor = "multi_thread")]
+async fn run_target_api15_overrides_and_frozen_api14_registration() {
+    use ide_host::plugins::{Consent, PluginHost};
+    use ide_plugin::{Invocation, Limits, PluginEngine};
+    use std::os::unix::fs::PermissionsExt;
+    let f = Harness::new();
+    f.host.set_project_trust(&f.root, true, false).await.unwrap();
+    let plugins = Arc::new(
+        PluginHost::new(f._tmp.path().join("plugins"), Arc::new(|_: Option<&str>, _| {}), Limits::default()).unwrap(),
+    );
+    plugins.set_workspace(Some(Arc::new(f.workspace())));
+    f.host.set_plugin_host(&plugins);
+    let fixtures = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../ide-plugin/tests/fixtures");
+    let engine = PluginEngine::new().unwrap();
+    let legacy = engine.compile(&fixtures.join("run-target-api14/dist/plugin.wasm")).unwrap();
+    assert_eq!(engine.check_component(&legacy).unwrap().unwrap().to_string(), "1.4.0");
+    let tool = f._tmp.path().join("wrapper");
+    std::fs::write(&tool, "#!/bin/sh\nexit 0\n").unwrap();
+    std::fs::set_permissions(&tool, std::fs::Permissions::from_mode(0o755)).unwrap();
+    let invocation =
+        || Invocation { client: Some("main".into()), workspace_root: Some(f.root.clone()), ..Default::default() };
+    let config: ide_run::RunConfig = serde_json::from_value(serde_json::json!({
+        "id":"composer", "name":"Composer", "kind":"shell", "command":"composer", "args":["install"],
+        "env":{}, "detected":false, "isTest":false,
+    }))
+    .unwrap();
+    for (plugin, command) in [("run-target-api14", "target"), ("execution", "target-overrides")] {
+        plugins.install_from_dir(&fixtures.join(plugin), &Consent::all()).unwrap();
+        assert!(plugins.run_command(plugin, command, Some("empty"), invocation()).is_err());
+        plugins.choose_program(plugin, "process:execution-tool", Some(&f.root), Some(&tool)).unwrap();
+        let cases = if plugin == "execution" {
+            vec![
+                ("empty", vec!["composer", "install"]),
+                ("own", vec!["composer", "--working-dir=/container", "install"]),
+                ("inherit", vec!["composer", "--cwd=/container", "install"]),
+            ]
+        } else {
+            vec![("inherit", vec!["composer", "--cwd=/container", "install"])]
+        };
+        for (arg, expected) in cases {
+            plugins.run_command(plugin, command, Some(arg), invocation()).unwrap();
+            let target = plugins.run_targets(&f.root).into_iter().find(|t| t.plugin_id == plugin).unwrap();
+            let wrapped = plugins.prepare_run_target(&f.root, &target.id, &config).unwrap();
+            assert_eq!(wrapped.args, expected);
+            assert_eq!(PathBuf::from(wrapped.command), tool);
+            assert_eq!(wrapped.cwd.unwrap(), f.root);
+            let php = ide_run::RunConfig { command: "php".into(), args: vec!["x.php".into()], ..config.clone() };
+            assert_eq!(
+                plugins.prepare_run_target(&f.root, &target.id, &php).unwrap().args,
+                ["wrapped", "--cwd=/container", "php", "x.php"]
+            );
+        }
+        if plugin == "execution" {
+            assert!(plugins.run_command(plugin, command, Some("invalid"), invocation()).is_err());
+            // A failed replacement retains the previous valid registration.
+            assert_eq!(plugins.run_targets(&f.root).iter().filter(|t| t.plugin_id == plugin).count(), 1);
+        }
+        plugins.set_capability(plugin, "process:execution-tool", false).unwrap();
+        assert!(plugins.run_targets(&f.root).iter().all(|t| t.plugin_id != plugin));
+        assert!(plugins.run_command(plugin, command, None, invocation()).is_err());
+        plugins.choose_program(plugin, "process:execution-tool", Some(&f.root), Some(&tool)).unwrap();
+        f.host.set_project_trust(&f.root, false, false).await.unwrap();
+        assert!(plugins.run_command(plugin, command, None, invocation()).unwrap_err().to_string().contains("trusted"));
+        f.host.set_project_trust(&f.root, true, false).await.unwrap();
+    }
+    plugins.shutdown();
+}

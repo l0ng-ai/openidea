@@ -761,6 +761,32 @@ mod imp {
         )
         .map_err(error)
     }
+    pub fn register_run_target_with_overrides(
+        project: &ProjectRes,
+        target: &crate::PluginRunTargetWithOverrides,
+    ) -> Result<(), Error> {
+        wit::run_targets::register_with_overrides(
+            project,
+            &wit::run_targets::RunTargetWithOverrides {
+                id: target.id.clone(),
+                name: target.name.clone(),
+                program: target.program.clone(),
+                args: target.args.clone(),
+                workdir_args: target.workdir_args.clone(),
+                container_root: target.container_root.clone(),
+                commands: target
+                    .commands
+                    .iter()
+                    .map(|c| wit::run_targets::CommandOverride {
+                        name: c.name.clone(),
+                        args: c.args.clone(),
+                        workdir_args: c.workdir_args.clone(),
+                    })
+                    .collect(),
+            },
+        )
+        .map_err(error)
+    }
     pub fn unregister_run_target(project: &ProjectRes, id: &str) {
         wit::run_targets::unregister(project, id);
     }
@@ -1712,6 +1738,14 @@ pub fn reply_content_tab(request: &str, reply: &crate::ContentTabReply) -> Resul
 /// Registers/replaces a read-only project target. Requires the program's process grant.
 pub fn register_run_target(project: &Project, target: &crate::PluginRunTarget) -> Result<(), Error> {
     imp::register_run_target(&project.inner, target)
+}
+/// Registers a target with per-command working-directory control (API 1.5).
+/// Requires the same process grant and project trust as register_run_target.
+pub fn register_run_target_with_overrides(
+    project: &Project,
+    target: &crate::PluginRunTargetWithOverrides,
+) -> Result<(), Error> {
+    imp::register_run_target_with_overrides(&project.inner, target)
 }
 /// Withdraws a target owned by this plugin.
 pub fn unregister_run_target(project: &Project, id: &str) {
