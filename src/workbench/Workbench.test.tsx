@@ -1,6 +1,7 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { act, fireEvent, render, screen } from "@testing-library/react";
 import { emitLocalIdeEvent } from "@/platform/ipc";
+import { setLocale } from "@/platform/i18n";
 import { registerStatusItem, registerToolWindow, type StatusItemContribution } from "./contributions";
 import { orderStatusItems, StatusBar, TaskStatus } from "./StatusBar";
 import { orderTitleItems } from "./TitleBar";
@@ -198,6 +199,27 @@ describe("notifications", () => {
     act(() => emitLocalIdeEvent({ type: "notify", level: "info", title: "From backend", body: null }));
     expect(useNotifications.getState().items.map((n) => n.title)).toEqual(["From backend", "LSP still missing"]);
     uninstall();
+  });
+
+  it.each(["en", "zh"])("adds Gradle JVM recovery before translating backend messages (%s)", async (locale) => {
+    await setLocale(locale);
+    const uninstall = installNotifyEvents();
+    try {
+      act(() =>
+        emitLocalIdeEvent({
+          type: "notify",
+          level: "error",
+          title: "jdtls",
+          body: "Can't use Java 27.0.1.0.3 and Gradle 9.7.1 to import Gradle project kotlin-gradle.",
+        }),
+      );
+      const item = useNotifications.getState().items[0]!;
+      expect(item.actions?.map((a) => a.label)).toEqual([locale === "zh" ? "选择 Gradle JVM" : "Choose Gradle JVM"]);
+      expect(item.body).toContain(locale === "zh" ? "下载 JDK" : "Download JDK");
+    } finally {
+      uninstall();
+      await setLocale("en");
+    }
   });
 
   it("the Notifications tool window lists history, marks it read and hides balloons", () => {

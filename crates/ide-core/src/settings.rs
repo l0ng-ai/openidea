@@ -898,6 +898,8 @@ pub struct JavaSettings {
     /// Extra JVM options for the Java language server (jdtls), space-separated
     /// (VS Code's `java.jdt.ls.vmargs`).
     pub jdtls_vm_args: String,
+    /// Share one JDT LS across builds in an ordinary project window; other windows remain separate.
+    pub jdtls_shared: bool,
     /// Build Tools › Maven.
     pub maven: MavenSettings,
     /// Build Tools › Gradle.
@@ -1476,6 +1478,26 @@ mod maven_linkage_tests {
         let encoded = serde_json::to_string(&settings).unwrap();
         assert!(encoded.contains("\"threads\":\"2C\""));
         assert_eq!(serde_json::from_str::<MavenSettings>(&encoded).unwrap(), settings);
+    }
+}
+
+#[cfg(test)]
+mod java_settings_tests {
+    use super::*;
+
+    #[test]
+    fn shared_jdtls_defaults_off_and_round_trips() {
+        for old in [r#"{}"#, r#"{"jdk":"/jdk"}"#] {
+            let java: JavaSettings = serde_json::from_str(old).unwrap();
+            assert!(!java.jdtls_shared);
+        }
+        for shared in [false, true] {
+            let java = JavaSettings { jdtls_shared: shared, ..JavaSettings::default() };
+            let json = serde_json::to_value(&java).unwrap();
+            assert_eq!(json["jdtlsShared"], serde_json::json!(shared));
+            assert_eq!(serde_json::from_value::<JavaSettings>(json).unwrap(), java);
+        }
+        assert!(serde_json::from_str::<JavaSettings>(r#"{"jdtlsShared":"true"}"#).is_err());
     }
 }
 

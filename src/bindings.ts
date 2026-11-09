@@ -3187,7 +3187,7 @@ export type DbRoutineInfo = {
  */
 export type DbRowEdit = { kind: "update"; key: DbCellValue[]; values: DbCellValue[] } | { kind: "insert"; values: DbCellValue[] } | { kind: "delete"; key: DbCellValue[] };
 
-/**  A schema's routines and sequences (the tree's `routines` / `sequences` folders). */
+/**  A schema's routines (procedures and functions) and sequences. */
 export type DbSchemaObjects = {
 	routines: DbRoutineInfo[],
 	sequences: DbSequenceInfo[],
@@ -5264,6 +5264,8 @@ export type JavaSettings = {
 	 *  (VS Code's `java.jdt.ls.vmargs`).
 	 */
 	jdtlsVmArgs?: string,
+	/**  Share one JDT LS across builds in an ordinary project window; other windows remain separate. */
+	jdtlsShared?: boolean,
 	/**  Build Tools › Maven. */
 	maven?: MavenSettings,
 	/**  Build Tools › Gradle. */
@@ -5545,7 +5547,7 @@ export type LaunchConfig = {
 export type LibraryGroup = {
 	/**  Display name, e.g. `Python 3.12 (.venv)`. */
 	name: string,
-	/**  `python` | `jdk` | `nodeModules` | `nodeCore` | `rust` | `cargo` | `go` | `goModules` | `maven` | `gradle`. */
+	/**  `python` | `jdk` | `nodeModules` | `nodeCore` | `rust` | `cargo` | `go` | `goModules` | `maven` | `gradle` | `classpath`. */
 	kind: string,
 	roots: LibraryRoot[],
 };

@@ -83,7 +83,7 @@ impl Host {
         let opening = self.opening(window);
         let _opening = opening.lock();
         // Reject a damaged manifest before replacing the currently open project.
-        ide_workspace::workspace::Workspace::load(&root)?;
+        let is_workspace = ide_workspace::workspace::Workspace::load(&root)?.is_some();
         // The window reloaded (or asked again) for the project it already has: keep
         // it, with its warm index, language servers and unsaved documents.
         if let Ok(current) = self.project(window)
@@ -137,6 +137,16 @@ impl Host {
         lsp.set_execution_allowed(trusted.load(Ordering::Acquire));
         lsp.set_content_roots(extra_roots.clone());
         let settings = Arc::new(settings);
+        {
+            let settings = settings.clone();
+            // Workspace members have independent settings; target servers have their own path mappings.
+            lsp.set_jdtls_shared_hook(Box::new(move || {
+                let effective = settings.effective();
+                !is_workspace
+                    && effective.languages.java.jdtls_shared
+                    && effective.language_server_targets.get("java").is_none_or(|target| target.target.is_empty())
+            }));
+        }
         {
             let settings = settings.clone();
             let root = root.clone();

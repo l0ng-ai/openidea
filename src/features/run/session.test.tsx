@@ -17,6 +17,7 @@ import { ConsoleView, type ConsoleInput } from "./ConsoleView";
 import { buildRows, mnemonics } from "./ConfigChooser";
 import { activate } from "./index";
 import {
+  onRunExited,
   closeSessionTab,
   resetRuns,
   runtime,
@@ -320,5 +321,26 @@ describe("plugin test selection launches", () => {
     } finally {
       dispose();
     }
+  });
+});
+
+describe("Go SDK recovery", () => {
+  it.each([
+    ["mise ERROR No version is set for shim: go", "go", 1, true],
+    ["No version is set for shim: go", "shell", 1, false],
+    ["compile error", "go", 1, false],
+    ["No version is set for shim: go", "go", 0, false],
+  ] as const)("offers Go settings for %s (%s, %s)", async (text, kind, code, expected) => {
+    const notify = vi.fn();
+    provideNotificationService({ notify });
+    const session = (await startRun(config("go", { kind })))!;
+    runtime(session.id)!.console.append({ kind: "stderr", text: text.slice(0, 12) });
+    runtime(session.id)!.console.append({ kind: "stderr", text: text.slice(12) + "\n" });
+    const runId = 4321 as NonNullable<RunSession["runId"]>;
+    useRun.setState((s) => ({ sessions: s.sessions.map((x) => ({ ...x, runId })) }));
+    onRunExited(runId, code);
+    await vi.waitFor(() => expect(useRun.getState().sessions[0]!.status).toBe("finished"));
+    expect(notify).toHaveBeenCalledTimes(expected ? 1 : 0);
+    if (expected) expect(notify.mock.calls[0]![0].actions[0].label).toBe("Go Settings…");
   });
 });
