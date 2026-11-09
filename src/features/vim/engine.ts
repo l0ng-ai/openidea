@@ -302,10 +302,65 @@ export function defineExCommands() {
   Vim.defineEx("action", "action", (_cm, params) => void runIdeAction(params.args?.[0]));
 }
 
+/**
+ * The first key of a mapping's lhs — `<Space>` / `,` / `x` and so on. Vim's own
+ * single-key built-ins occupy most of these: codemirror-vim prefers a full
+ * match over a partial one, so `<Space>` → `l` or `,` → repeat-find would fire
+ * before a `<leader>…` sequence can complete (#2337). The fix is to unmap the
+ * built-in while a user mapping starts with that key.
+ *
+ * codemirror-vim tells defaults from user mappings by count (`mapclear` and
+ * `noremap` treat the last N entries as defaults), so the default keymap must
+ * keep its size: the first time a key is shadowed, its built-in is swapped for a
+ * stand-in entry right after `mapclear`, before any user mapping, where it
+ * becomes part of the default region. Later applies only switch the stand-in's
+ * `keys` between the built-in key and one nothing can type.
+ */
+const LEADER_BUILTIN_DEFAULTS: Record<string, Record<string, unknown>> = {
+  "<Space>": { keys: "<Space>", type: "keyToKey", toKeys: "l" },
+  "<S-Space>": { keys: "<S-Space>", type: "keyToKey", toKeys: "w" },
+  "<C-Space>": { keys: "<C-Space>", type: "keyToKey", toKeys: "W" },
+  "<BS>": { keys: "<BS>", type: "keyToKey", toKeys: "h" },
+  "<S-BS>": { keys: "<S-BS>", type: "keyToKey", toKeys: "b" },
+  "<C-BS>": { keys: "<C-BS>", type: "keyToKey", toKeys: "B" },
+  "<Del>": { keys: "<Del>", type: "keyToKey", toKeys: "x" },
+  ",": { keys: ",", type: "motion", motion: "repeatLastCharacterSearch", motionArgs: { forward: false } },
+  ";": { keys: ";", type: "motion", motion: "repeatLastCharacterSearch", motionArgs: { forward: true } },
+};
+
+/** Stand-ins for the built-ins a leader has shadowed, by key. */
+const leaderStandIns = new Map<string, { keys: string }>();
+/** Keys of a shadowed stand-in: no key sequence starts with NUL. */
+const SHADOWED = "\u0000";
+
+function shadowLeaderBuiltins(commands: readonly RcCommand[]) {
+  const shadow = new Set<string>();
+  for (const c of commands) {
+    // Only the single-key motions a leader reuses: shadowing an operator or prefix
+    // (`d`, `c`, `y`, `<C-d>`…) would break every command built on it.
+    if ((c.kind === "map" || c.kind === "mapEx") && firstKey(c.lhs) in LEADER_BUILTIN_DEFAULTS) {
+      shadow.add(firstKey(c.lhs));
+    }
+  }
+  for (const [key, standIn] of leaderStandIns) standIn.keys = shadow.has(key) ? SHADOWED : key;
+  for (const key of shadow) {
+    // The builtins this shadows are context-less; `undefined` matches them.
+    if (leaderStandIns.has(key) || !Vim.unmap(key, undefined as unknown as string)) continue;
+    const standIn = { ...LEADER_BUILTIN_DEFAULTS[key], keys: SHADOWED };
+    Vim._mapCommand(standIn as never);
+    leaderStandIns.set(key, standIn);
+  }
+}
+
+function firstKey(lhs: string): string {
+  return /^<[^<>]+>|^./.exec(lhs)?.[0] ?? lhs;
+}
+
 /** Applies rc commands (replacing earlier rc mappings). Returns problems to report. */
 export function applyRcCommands(commands: readonly RcCommand[]): string[] {
   defineExCommands();
   Vim.mapclear();
+  shadowLeaderBuiltins(commands);
   const problems: string[] = [];
   for (const c of commands) {
     try {

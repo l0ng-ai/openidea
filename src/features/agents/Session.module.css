@@ -118,6 +118,11 @@
 }
 .conversationRow {
   min-width: 0;
+  contain-intrinsic-size: auto 120px;
+}
+/* Laid out once, an off-screen row skips rendering at its remembered size (`useOffscreenRows`). */
+.conversationRow[data-measured] {
+  content-visibility: auto;
 }
 /* Keep turns distinct and the work within a turn close to its author. */
 .stream > * + * {

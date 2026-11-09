@@ -27,7 +27,6 @@ import {
   type NotificationGroupValid,
   type NavigationBarPosition,
   type OpenProjectIn,
-  type UpdateSourceSetting,
 } from "../model/behaviorSchema";
 import { ACCENT_PRESETS, LIMITS, type ThemeId } from "../model/schema";
 import type { PageSpec } from "./spec";
@@ -55,6 +54,9 @@ function Indented({ children }: { children: ReactNode }) {
 // ---------------------------------------------------------------------------
 // Appearance
 
+/** Shows the theme picked in Settings in this window until Apply, or the selected one again. */
+const showPicked = (id: ConcreteTheme) => previewTheme(id !== currentThemeChoice() ? id : null);
+
 function ThemeRow() {
   const [theme, setTheme] = useSetting<ThemeId>("appearance.theme");
   const [sync, setSync] = useSetting<boolean>("appearance.syncWithOs");
@@ -74,11 +76,16 @@ function ThemeRow() {
     },
     [],
   );
+  // The staged theme can also change without the list, e.g. by Reset.
+  useEffect(() => {
+    if (previewed.current) showPicked(shown);
+  }, [shown]);
   const preview = (id: ConcreteTheme | null) => {
     previewed.current = true;
     if (id !== null) return picker.preview(id);
+    // The picker takes back only its own hover preview, not a theme picked here earlier.
     picker.restore();
-    if (shown !== currentThemeChoice()) previewTheme(shown);
+    showPicked(shown);
   };
   return (
     <Row label="Theme">
@@ -398,15 +405,8 @@ function ToolWindowsGrid() {
 
 const OPEN_IN: Array<{ value: OpenProjectIn; label: string }> = [
   { value: "new", label: "New window" },
-  { value: "attach", label: "Attach" },
   { value: "same", label: "Current window" },
   { value: "ask", label: "Ask" },
-];
-
-const UPDATE_SOURCES: SelectOption<UpdateSourceSetting>[] = [
-  { value: "auto", label: "Automatic" },
-  { value: "github", label: "GitHub" },
-  { value: "cnb", label: "CNB (China mirror)" },
 ];
 
 function OpenProjectInRow() {
@@ -707,7 +707,7 @@ export const BEHAVIOR_PAGES: PageSpec[] = [
           {
             kind: "custom",
             label: "Open project in",
-            keywords: ["New window", "Current window", "Attach", "Ask"],
+            keywords: ["New window", "Current window", "Ask"],
             component: OpenProjectInRow,
           },
           { kind: "custom", label: "Default directory", component: DefaultDirectoryRow },
@@ -754,18 +754,6 @@ export const BEHAVIOR_PAGES: PageSpec[] = [
             integer: true,
             step: 64,
             unit: "MB",
-          },
-        ],
-      },
-      {
-        title: "Updates",
-        options: [
-          {
-            kind: "select",
-            key: "general.updateSource",
-            label: "Update source",
-            hint: "Where updates are downloaded from. If it can't be reached, the other source is tried.",
-            options: UPDATE_SOURCES,
           },
         ],
       },

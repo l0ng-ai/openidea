@@ -14,8 +14,10 @@ const m = vi.hoisted(() => ({
     if (text.includes("bad")) throw new Error("Parse error on line 2:\nbad\n^");
     return {
       svg:
-        `<svg id="${id}"><defs><marker id="${id}-arrow" orient="auto"><path d="M0,0L8,4"/></marker></defs>` +
-        `<path d="M0,4" marker-end="url(#${id}-arrow)"/><text>${text.split("\n")[0]}</text></svg>`,
+        `<svg id="${id}"><style>#${id}{fill:#dad;}#${id} .cluster rect{fill:#2e2f30;}#${id} .flowchart-link{fill:none;}#${id} [id$="-arrow"] path{fill:#9fa2a8;}</style>` +
+        `<defs><marker id="${id}-arrow" orient="auto"><path d="M0,0L8,4"/></marker></defs>` +
+        `<g class="cluster" id="dad"><rect/></g>` +
+        `<path class="flowchart-link" d="M0,4" marker-end="url(#${id}-arrow)"/><text>${text.split("\n")[0]}</text></svg>`,
     };
   }),
 }));
@@ -33,6 +35,13 @@ function preview(md: string): HTMLElement {
 }
 
 const SEQ = "```mermaid\nsequenceDiagram\n    A->B:test\n```\n";
+
+async function renderedSvg(svg: string): Promise<SVGSVGElement> {
+  m.render.mockResolvedValueOnce({ svg });
+  const root = preview(SEQ);
+  await renderMermaidIn(root).done;
+  return root.querySelector("svg")!;
+}
 
 describe("mermaid in the markdown preview", () => {
   beforeEach(() => {
@@ -68,7 +77,7 @@ describe("mermaid in the markdown preview", () => {
     await renderMermaidIn(root).done;
     expect(m.loads).toBe(1);
     expect(m.initialize).toHaveBeenCalledWith(
-      expect.objectContaining({ startOnLoad: false, securityLevel: "strict", theme: "base" }),
+      expect.objectContaining({ startOnLoad: false, securityLevel: "strict", theme: "base", look: "classic" }),
     );
     const block = root.querySelector<HTMLElement>("[data-mermaid]")!;
     expect(block.getAttribute("data-mermaid-state")).toBe("ok");
@@ -106,7 +115,7 @@ describe("mermaid in the markdown preview", () => {
     const edited = preview(SEQ.replace("test", "edited"));
     const next = renderMermaidIn(edited, previous);
     expect(next.async).toBe(true);
-    expect(edited.querySelector(".mermaid-output svg")?.textContent).toBe("sequenceDiagram");
+    expect(edited.querySelector(".mermaid-output svg text")?.textContent).toBe("sequenceDiagram");
     await next.done;
     expect(m.render).toHaveBeenCalledTimes(2);
     ids.add(m.render.mock.calls[1]![0]);
@@ -128,15 +137,106 @@ describe("mermaid in the markdown preview", () => {
     const b = second.querySelector("svg")!;
     const idsA = idsOf(a);
     const idsB = idsOf(b);
-    expect(idsA).toHaveLength(2);
-    expect(idsB).toHaveLength(2);
+    expect(idsA).toHaveLength(3);
+    expect(idsB).toHaveLength(3);
     expect(idsA.filter((id) => idsB.includes(id))).toEqual([]);
-    // Every marker reference resolves within its own copy.
+    // Every marker reference, `<style>#<svg-id>` rule and `[id$="-arrow"]` suffix rule
+    // resolves within its own copy without touching hex colours (`#dad`) in `<style>`.
     for (const svg of [a, b]) {
       const own = new Set(idsOf(svg));
+      const rootId = svg.getAttribute("id")!;
       const ref = svg.querySelector("[marker-end]")!.getAttribute("marker-end")!;
       expect(own.has(/url\(#(.+)\)/.exec(ref)![1]!)).toBe(true);
+      const css = svg.querySelector("style")!.textContent!;
+      expect(css).toContain(`#${rootId}{fill:#dad;}`);
+      expect(css).toContain(`#${rootId} .cluster rect{fill:#2e2f30;}`);
+      expect(css).toContain(`#${rootId} .flowchart-link{fill:none;}`);
+      expect(svg.querySelector("defs [id$='-arrow'] path")).not.toBeNull();
     }
+  });
+
+  it.each(["", ".node", ":hover", ">g", "+g", "~g", "[role]", ", rect", " .cluster rect", "\nrect"])(
+    "rewrites style selectors followed by %j",
+    async (tail) => {
+      const svg = await renderedSvg(
+        `<svg id="openidea-mermaid-1"><style>#openidea-mermaid-1${tail}{fill:none;}</style></svg>`,
+      );
+      expect(svg.querySelector("style")!.textContent).toBe(`#${svg.id}${tail}{fill:none;}`);
+    },
+  );
+
+  it("rewrites fragment links, quoted URLs and marker ids while preserving suffix selectors", async () => {
+    const id = "openidea-mermaid-1";
+    const marker = `${id}_flowchart-pointEnd`;
+    const svg = await renderedSvg(
+      `<svg id="${id}" aria-labelledby="title desc" aria-describedby="desc">` +
+        `<style>#${id} [id$="-pointEnd"]{fill:#dad;}#${marker}{stroke:#dad;}</style>` +
+        `<title id="title">Title</title><desc id="desc">Description</desc>` +
+        `<marker id="${marker}"/><g id="dad"/>` +
+        `<use href="#${marker}"/><use xlink:href="#${marker}"/>` +
+        `<path marker-end="url(#${marker})"/>` +
+        `<path marker-end="url('#${marker}')"/>` +
+        `<path marker-end='url("#${marker}")'/>` +
+        `<path style="marker-end: url( '#${marker}' );"/>` +
+        `<style>#${id} path{marker-end:url("#${marker}");}</style></svg>`,
+    );
+    const markerId = svg.querySelector("marker")!.id;
+    expect(markerId).toBe(`${svg.id}_flowchart-pointEnd`);
+    expect(svg.querySelector("[id$='-pointEnd']")).not.toBeNull();
+    expect(
+      [...svg.querySelectorAll("use")].map((el) => el.getAttribute("href") ?? el.getAttribute("xlink:href")),
+    ).toEqual([`#${markerId}`, `#${markerId}`]);
+    expect([...svg.querySelectorAll("path[marker-end]")].map((el) => el.getAttribute("marker-end"))).toEqual([
+      `url(#${markerId})`,
+      `url('#${markerId}')`,
+      `url("#${markerId}")`,
+    ]);
+    expect(svg.querySelector("path[style]")!.getAttribute("style")).toBe(`marker-end: url( '#${markerId}' );`);
+    expect([...svg.querySelectorAll("style")].map((el) => el.textContent)).toEqual([
+      `#${svg.id} [id$="-pointEnd"]{fill:#dad;}#${markerId}{stroke:#dad;}`,
+      `#${svg.id} path{marker-end:url("#${markerId}");}`,
+    ]);
+    expect(svg.getAttribute("aria-labelledby")).toBe(
+      `${svg.querySelector("title")!.id} ${svg.querySelector("desc")!.id}`,
+    );
+    expect(svg.getAttribute("aria-describedby")).toBe(svg.querySelector("desc")!.id);
+  });
+
+  it("keeps ids with a shared prefix distinct and leaves unknown references unchanged", async () => {
+    const short = "openidea-mermaid-1";
+    const long = "openidea-mermaid-10";
+    const svg = await renderedSvg(
+      `<svg id="${short}"><g id="${long}"/>` +
+        `<style>#${short}>g,#${long}:hover{fill:none;}#${long}0{fill:none;}</style>` +
+        `<use href="#${short}"/><use href="#${long}"/><use href="#${long}0"/>` +
+        `<path marker-end="url('#${long}')"/></svg>`,
+    );
+    const longId = svg.querySelector("g")!.id;
+    expect(longId).toBe(`${svg.id}0`);
+    expect([...svg.querySelectorAll("use")].map((el) => el.getAttribute("href"))).toEqual([
+      `#${svg.id}`,
+      `#${longId}`,
+      `#${long}0`,
+    ]);
+    expect(svg.querySelector("style")!.textContent).toBe(
+      `#${svg.id}>g,#${longId}:hover{fill:none;}#${long}0{fill:none;}`,
+    );
+    expect(svg.querySelector("path")!.getAttribute("marker-end")).toBe(`url('#${longId}')`);
+  });
+
+  it("leaves ids in ordinary labels and unrelated attributes untouched", async () => {
+    const id = "openidea-mermaid-1";
+    const label = `#${id} ${id} id="${id}" href="#${id}" url(#${id})`;
+    const svg = await renderedSvg(
+      `<svg id="${id}"><text>${label}</text>` +
+        `<g data-id="${id}" data-label="#${id}" title="url(#${id})"/>` +
+        `<a href="https://example.com/#${id}">Link</a></svg>`,
+    );
+    expect(svg.querySelector("text")!.textContent).toBe(label);
+    expect(svg.querySelector("g")!.getAttribute("data-id")).toBe(id);
+    expect(svg.querySelector("g")!.getAttribute("data-label")).toBe(`#${id}`);
+    expect(svg.querySelector("g")!.getAttribute("title")).toBe(`url(#${id})`);
+    expect(svg.querySelector("a")!.getAttribute("href")).toBe(`https://example.com/#${id}`);
   });
 
   it("re-renders when switching between built-in palette themes of the same light / dark base", async () => {
@@ -179,6 +279,54 @@ describe("mermaid in the markdown preview", () => {
     } finally {
       off();
       delete root.dataset.pluginTheme;
+    }
+  });
+
+  it("lifts dark-theme shapes off the editor background and paints labels with the foreground", async () => {
+    const root = document.documentElement;
+    const previous = root.dataset.theme;
+    root.dataset.theme = "dark";
+    const values: Record<string, string> = {
+      "--bg-editor": "#191a1c",
+      "--bg-elev": "#212326",
+      "--bg-floating-toolbar": "#33353b",
+      "--bg-selected": "#2a4371",
+      "--border-strong": "#40434a",
+      "--fg-strong": "#dfe1e5",
+      "--fg": "#d1d3d9",
+      "--fg-secondary": "#9fa2a8",
+      "--accent": "#3871e1",
+      "--chart-series": "#e07a7c",
+      "--danger": "#f57e84",
+    };
+    const computed = vi
+      .spyOn(globalThis, "getComputedStyle")
+      .mockImplementation(
+        () => ({ getPropertyValue: (n: string) => values[n] ?? "" }) as unknown as CSSStyleDeclaration,
+      );
+    try {
+      await renderMermaidIn(preview(SEQ)).done;
+      expect(m.initialize).toHaveBeenCalledWith(
+        expect.objectContaining({
+          look: "classic",
+          themeVariables: expect.objectContaining({
+            darkMode: true,
+            useGradient: false,
+            background: "#191a1c",
+            mainBkg: "#33353b",
+            nodeBorder: "#dfe1e5",
+            primaryBorderColor: "#dfe1e5",
+            primaryColor: "#3871e1",
+            cScale0: "#3871e1",
+            lineColor: "#9fa2a8",
+            classText: "#dfe1e5",
+          }),
+        }),
+      );
+    } finally {
+      computed.mockRestore();
+      if (previous === undefined) delete root.dataset.theme;
+      else root.dataset.theme = previous;
     }
   });
 

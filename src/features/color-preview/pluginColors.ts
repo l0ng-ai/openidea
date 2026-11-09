@@ -1,7 +1,7 @@
 /** Plugin colors use the same native picker and provider-supplied replacement strings. */
 import { RangeSet, StateEffect, StateField, type Extension } from "@codemirror/state";
 import { GutterMarker, ViewPlugin, gutter, type EditorView, type ViewUpdate } from "@codemirror/view";
-import { type EditorDocContext } from "@/editor/api";
+import { shownAgain, type EditorDocContext } from "@/editor/api";
 import { rangeToOffsets } from "@/editor/lsp/positions";
 import { pluginVisuals } from "@/editor/lsp/pluginVisuals";
 import { onNavigationProvidersChanged } from "@/editor/navigationProviders";
@@ -118,6 +118,7 @@ export function pluginColorPreview(ctx: EditorDocContext): Extension {
         new (class {
           timer: ReturnType<typeof setTimeout> | undefined;
           generation = 0;
+          skipped = false;
           off: () => void;
           constructor() {
             this.off = onNavigationProvidersChanged(() => this.schedule());
@@ -129,15 +130,16 @@ export function pluginColorPreview(ctx: EditorDocContext): Extension {
             this.timer = setTimeout(() => void this.run(), 300);
           }
           update(u: ViewUpdate) {
-            if (u.docChanged) this.schedule();
+            if (u.docChanged || (this.skipped && shownAgain(u))) this.schedule();
           }
           async run() {
             const gen = this.generation;
             const text = view.state.doc;
             try {
               const r = await pluginVisuals(view, ctx);
-              if (gen === this.generation && view.state.doc === text && view.dom.isConnected)
-                view.dispatch({ effects: setColors.of(r.colors) });
+              if (gen !== this.generation || view.state.doc !== text) return;
+              this.skipped = !view.dom.isConnected;
+              if (!this.skipped) view.dispatch({ effects: setColors.of(r.colors) });
             } catch {
               if (gen === this.generation && view.dom.isConnected) view.dispatch({ effects: setColors.of([]) });
             }

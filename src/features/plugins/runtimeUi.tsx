@@ -4,7 +4,7 @@
  * workbench events it subscribed to (`events.subscribe`), reported in
  * batches.
  */
-import { providePluginTestParser } from "@/workbench/contributions";
+import { providePluginTestParser, providePluginTestSelector } from "@/workbench/contributions";
 import {
   contentTabData,
   contentTabKey,
@@ -639,6 +639,7 @@ export function startRuntimeUi(): () => void {
   const disposers = [
     startRunTargets(),
     stopParser,
+    providePluginTestSelector((config, tests) => pluginsBackend().selectTests(config, tests)),
     projectStatusItems(),
     trackWorkbenchEvents(),
     refreshOnProjectChange(),

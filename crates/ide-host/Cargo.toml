@@ -10,6 +10,7 @@ name = "openidea-server"
 path = "src/bin/server.rs"
 
 [dependencies]
+percent-encoding = "2"
 encoding_rs.workspace = true
 ide-core.workspace = true
 ide-mcp.workspace = true

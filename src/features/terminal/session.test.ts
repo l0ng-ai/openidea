@@ -5,6 +5,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { FIT_SETTLE_MS } from "./fit";
 import { findTerminalLinks, type TerminalLink } from "./links";
 import { openFileLink, resolveStartCwd, TerminalSession } from "./session";
+import { usePlatform } from "@/platform/platformInfo";
 
 const ipc = vi.hoisted(() => ({
   call: vi.fn(async (v: unknown) => v),
@@ -44,6 +45,37 @@ const fileLink = (text: string): Extract<TerminalLink, { kind: "file" }> => {
   if (!l || l.kind !== "file") throw new Error(`not a file link: ${text}`);
   return l;
 };
+
+describe("Windows PTY metadata", () => {
+  const initialPlatform = usePlatform.getState();
+  afterEach(() => usePlatform.setState(initialPlatform));
+
+  it.each([
+    ["windows", 19045, { backend: "conpty", buildNumber: 19045 }],
+    ["windows", 22631, { backend: "conpty", buildNumber: 22631 }],
+    ["windows", null, { backend: "conpty", buildNumber: undefined }],
+    ["macos", null, {}],
+    ["linux", null, {}],
+  ] as const)("configures %s build %s", (os, windowsBuildNumber, expected) => {
+    usePlatform.setState({ os, windowsBuildNumber });
+    const session = new TerminalSession({ key: "pty-options", cwd: "/repo", onChange() {}, onFocus() {} });
+    try {
+      expect(session.term.options.windowsPty).toEqual(expected);
+    } finally {
+      session.dispose();
+    }
+  });
+
+  it("updates a restored terminal when platform info arrives and unsubscribes on disposal", () => {
+    usePlatform.setState({ os: "windows", windowsBuildNumber: null });
+    const session = new TerminalSession({ key: "restored", cwd: "/repo", onChange() {}, onFocus() {} });
+    usePlatform.setState({ windowsBuildNumber: 22631 });
+    expect(session.term.options.windowsPty).toEqual({ backend: "conpty", buildNumber: 22631 });
+    session.dispose();
+    usePlatform.setState({ windowsBuildNumber: 19045 });
+    expect(session.term.options.windowsPty).toEqual({ backend: "conpty", buildNumber: 22631 });
+  });
+});
 
 describe("openFileLink", () => {
   beforeEach(() => vi.clearAllMocks());

@@ -12,7 +12,9 @@ import { call, commands, isTauri, type TerminalId } from "@/platform/ipc";
 import { tx } from "@/platform/i18n";
 import { editorService, notifications, registerFontZoomSurface } from "@/workbench/contributions";
 import { fitScheduler, settledResize } from "./fit";
+import { watchWindowsPty, windowsPty } from "./windowsPty";
 import { installTerminalDrop } from "./drop";
+import { installDomRowCache } from "./domRowCache";
 import { installTerminalPaste, pasteTerminalClipboard } from "./paste";
 import { ImeCommitGate } from "./imeCommit";
 import { ownTerminalInput } from "./imeInput";
@@ -248,6 +250,7 @@ export class TerminalSession {
     const settings = workflowSettings().terminal;
     const font = fontFor(settings);
     this.term = new Terminal({
+      windowsPty: windowsPty(),
       fontFamily: font.family,
       fontSize: font.size,
       lineHeight: font.lineHeight,
@@ -275,6 +278,7 @@ export class TerminalSession {
     this.term.loadAddon(this.searchAddon);
 
     this.disposables.push(
+      watchWindowsPty(this.term),
       this.searchAddon.onDidChangeResults((r) => {
         for (const l of this.searchListeners) l({ index: r.resultIndex, count: r.resultCount });
       }),
@@ -448,6 +452,7 @@ export class TerminalSession {
     // xterm's DOM renderer: the WebGL one rasterizes glyphs per background, so
     // selected text rendered at a visibly different weight than the rest.
     this.term.open(this.host);
+    installDomRowCache(this.term);
     this.opened = true;
     remeasureWhenFontsLoad(
       this.term,
@@ -516,7 +521,7 @@ export class TerminalSession {
 
   /** xterm's data event, with one IME commit's repeated emissions collapsed. */
   private fromTerminal(data: string) {
-    if (this.ime.accept()) this.input(data);
+    if (this.ime.accept(data)) this.input(data);
   }
 
   private doFit() {

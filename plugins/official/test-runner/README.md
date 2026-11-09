@@ -10,7 +10,7 @@ The gutter command appends the test name as a filter to `run.start`. The fake
 executable prints a deliberately tiny `start NAME` / `pass NAME` protocol;
 `test-results.parse` retains split lines and emits stable test ids. Replace
 that protocol/parser and executable to integrate a real framework. This is an
-API example, not a general test framework or a custom rerun-failed contract.
+API example for integrating a test framework.
 
 Build from the repository root:
 
@@ -23,3 +23,7 @@ cargo run -p ide-host --bin openidea-plugin -- check plugins/official/test-runne
 Install the built package folder through Settings › Plugins › Install from
 Disk. See the [plugin guide](../../README.md#api-14) and
 [official/community policy](../../README.md#81-official-and-community-plugins).
+
+`test-results.select-tests` returns the selected names as the complete argv for
+`openidea-example-tests`, enabling Rerun Failed Tests and Run from the test tree.
+It returns `None` for unknown configurations or paths this example cannot filter.

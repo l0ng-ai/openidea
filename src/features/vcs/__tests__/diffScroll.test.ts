@@ -3,6 +3,8 @@ import { Chunk, MergeView } from "@codemirror/merge";
 import { Text } from "@codemirror/state";
 import type { EditorView } from "@codemirror/view";
 import { bandAt, bandPath, transferY, UnalignedPanes, type Band } from "../diffScroll";
+import { readFileSync } from "node:fs";
+import { resolve } from "node:path";
 
 const doc = (s: string) => Text.of(s.split("\n"));
 const LINE = 20;
@@ -169,5 +171,45 @@ describe("animated synchronized scrolling", () => {
       frame.mockRestore();
       vi.useRealTimers();
     }
+  });
+});
+
+describe("divider arrows", () => {
+  const dividerOf = (arrows: { toA: boolean; toB: boolean } | undefined) => {
+    const root = document.createElement("div");
+    const wrapper = root.appendChild(document.createElement("div"));
+    const dom = wrapper.appendChild(document.createElement("div"));
+    const view = { dom, scrollDOM: dom.appendChild(document.createElement("div")) } as unknown as EditorView;
+    const controller = new UnalignedPanes({ sync: false, arrows: arrows && { ...arrows, apply: () => {} } });
+    controller.attach({ a: view, b: view, chunks: [] } as unknown as MergeView);
+    const divider = root.querySelector(".cm-diffDivider")!;
+    controller.destroy();
+    return divider;
+  };
+
+  it.each([
+    ["only the right pane is editable", { toA: false, toB: true }, true],
+    ["only the left pane is editable", { toA: true, toB: false }, true],
+    ["both panes are editable", { toA: true, toB: true }, false],
+    ["no pane is editable", { toA: false, toB: false }, false],
+    ["there are no arrows", undefined, false],
+  ])("centres a lone arrow only: %s", (_, arrows, lone) => {
+    expect(dividerOf(arrows).classList.contains("cm-diffDivider-lone")).toBe(lone);
+  });
+});
+
+describe("diff controls in the stylesheet", () => {
+  // jsdom has no layout, so the selectors that decide how the controls are centred are read from the source.
+  const css = readFileSync(resolve(import.meta.dirname, "../DiffEditor.module.css"), "utf8");
+
+  it("lets only the band layer fill the divider, not the chevrons inside the arrow buttons", () => {
+    expect(css).toMatch(/\.cm-diffDivider > svg\)\s*\{[^}]*position: absolute;[^}]*inset: 0;/);
+    expect(css).not.toMatch(/\.cm-diffDivider svg\)/);
+  });
+
+  it("centres the hover Revert button on the line's own height", () => {
+    const rule = css.match(/\.cm-diffHoverRevert\)\s*\{([^}]*)\}/)![1]!;
+    expect(rule).toContain("top: calc((var(--openidea-editor-line-height, var(--lh-code)) - var(--space-4)) / 2);");
+    expect(rule).not.toMatch(/top: 0;/);
   });
 });

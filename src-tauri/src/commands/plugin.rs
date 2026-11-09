@@ -963,6 +963,22 @@ pub fn plugin_content_tab_action(
     state.plugins.content_tab_action(window.label(), &plugin_id, action)
 }
 
+/// Selects test-tree paths in an owned plugin test configuration.
+#[tauri::command]
+#[specta::specta]
+pub async fn plugin_select_tests(
+    window: Window,
+    state: State<'_, AppState>,
+    config: String,
+    tests: Vec<Vec<String>>,
+) -> IdeResult<Option<Vec<String>>> {
+    let plugins = state.plugins.clone();
+    let client = window.label().to_owned();
+    tokio::task::spawn_blocking(move || plugins.select_tests(&client, &config, tests))
+        .await
+        .map_err(|e| ide_core::IdeError::internal(e.to_string()))?
+}
+
 /// Parses one batch of an owned test configuration's output.
 #[tauri::command]
 #[specta::specta]

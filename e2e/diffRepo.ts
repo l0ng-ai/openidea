@@ -61,6 +61,17 @@ const FUNCS = ["parse", "format", "validate", "render", "save"].map(
 const MINIFIED = Array.from({ length: 2_000 }, (_, i) => `var a${i}=f(${i},"k${i}");`).join("");
 
 export const CASES: readonly DiffCase[] = [
+  {
+    path: "src/soft-wrap.ts",
+    before:
+      `// ${"long original text ".repeat(100)}\n` +
+      lines(150, (i) => `const value${i} = ${i};`) +
+      `// ${"old tail ".repeat(100)}\n`,
+    after:
+      `// ${"long changed text ".repeat(160)}\n` +
+      lines(150, (i) => `const value${i} = ${i};`) +
+      `// ${"new changed tail ".repeat(180)}\n`,
+  },
   // A word edited and a comment added: one modified block (the reported case).
   { path: "src/options.ts", before: OPTIONS_BEFORE, after: OPTIONS_AFTER },
   {

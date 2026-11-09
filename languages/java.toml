@@ -43,6 +43,9 @@ contentProvider = { preferred = "fernflowerContentProvider" }
 maven = { downloadSources = true, updateSnapshots = false }
 eclipse = { downloadSources = true }
 references = { includeDecompiledSources = true }
+# The editor's usage lenses count usages; the server's own lenses would search every
+# declaration of the file again, all at once (on by default in JDT LS).
+referencesCodeLens = { enabled = false }
 signatureHelp = { enabled = true }
 symbols = { includeGeneratedCode = true }
 configuration = { updateBuildConfiguration = "automatic" }

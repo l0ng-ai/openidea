@@ -5,7 +5,7 @@
 import { createElement, Fragment } from "react";
 import { askUsagesDetected, fileUsages, viewUsages } from "@/editor/refactor";
 import { executeAction, getAction } from "@/platform/actions";
-import { fileManagerPath, revealInFileManager } from "@/platform/fileManager";
+import { fileManagerName, fileManagerPath, revealInFileManager } from "@/platform/fileManager";
 import { maybeEditorService, notifications } from "@/workbench/contributions";
 import { ask, confirmChecked } from "@/workbench/messages";
 import { osClipboard } from "./clipboard";
@@ -837,10 +837,8 @@ export async function revealInFinder(nodes: ProjectNode[] = selectedNodes()) {
   try {
     await revealInFileManager(nodes.map((n) => n.path));
   } catch (e) {
-    // Same names as contextMenu.revealLabel (kept local: contextMenu imports
-    // this module, so importing it back would be a cycle).
-    const desktop = usePlatform.getState().os;
-    fail(`Cannot reveal in ${desktop === "windows" ? "Explorer" : desktop === "linux" ? "Files" : "Finder"}`, e);
+    const fileManager = tx(fileManagerName());
+    fail(tx`Cannot reveal in ${fileManager}`, e);
   }
 }
 

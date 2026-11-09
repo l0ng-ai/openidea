@@ -5,6 +5,12 @@ while IFS= read -r line; do
     'test '*) name=${line#test } ;;
     *) continue ;;
   esac
-  [ -z "$1" ] || [ "$1" = "$name" ] || continue
+  if [ "$#" -gt 0 ]; then
+    selected=0
+    for test in "$@"; do
+      [ "$test" != "$name" ] || selected=1
+    done
+    [ "$selected" -eq 1 ] || continue
+  fi
   printf 'start %s\npass %s\n' "$name" "$name"
 done < example.tests

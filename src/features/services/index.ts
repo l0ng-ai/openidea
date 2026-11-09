@@ -12,6 +12,7 @@ import { registerActions } from "@/platform/actions";
 import { registerEditorContribution } from "@/editor/api";
 import {
   SERVICES_WINDOW,
+  registerEditorKind,
   registerOverlay,
   registerServiceProvider,
   registerServiceView,
@@ -22,6 +23,7 @@ import { dockerGutter } from "./dockerGutter";
 import { registerDockerRunTypes } from "./runTypes";
 import { ServicesDialogHost } from "./dialogs";
 import { dockerProvider, selectedTarget } from "./docker";
+import { DOCKER_LOG_EDITOR_KIND, DockerLogEditor, dockerLogEditorTitle, openContainerLogInEditor } from "./logEditor";
 import {
   canRemove,
   canStart,
@@ -37,7 +39,7 @@ import {
 } from "./ops";
 import { SERVICES_VIEW_FOCUS, ServicesTreeView, showAddServiceMenu } from "./ServicesTree";
 import { ServicesHeaderActions, ServicesHost, ServicesTabs } from "./ServicesHost";
-import { connections, refresh } from "./store";
+import { connections, refresh, setDockerFilters, useServices } from "./store";
 import { SERVICES_TREE_VIEW } from "./tree";
 import { isRunning } from "./model";
 import type { PruneTarget } from "@/platform/ipc";
@@ -68,6 +70,13 @@ export function activate(): () => void {
       component: ServicesTreeView,
     }),
     registerServiceProvider(dockerProvider),
+    registerEditorKind({
+      kind: DOCKER_LOG_EDITOR_KIND,
+      component: DockerLogEditor,
+      title: dockerLogEditorTitle,
+      icon: () => "file-log",
+      keepAlive: true,
+    }),
     registerOverlay({ id: "services.dialogs", component: ServicesDialogHost }),
     registerEditorContribution({ id: "services.dockerGutter", order: 56, extensions: dockerGutter }),
     registerDockerRunTypes(),
@@ -136,12 +145,56 @@ export function activate(): () => void {
         run: () => (canRemove(selectedTarget()) ? remove(selectedTarget()) : undefined),
       },
       {
+        id: "docker.showDashboard",
+        title: "Show Docker Dashboard",
+        category: "Docker",
+        icon: "layout",
+        when: PROJECT,
+        run: () => {
+          showDetail("dashboard");
+          showServiceView(SERVICES_TREE_VIEW, true);
+        },
+      },
+      {
         id: "docker.showLog",
         title: "Show Container Log",
         category: "Docker",
         when: PROJECT,
         run: () => {
           showDetail("log");
+          showServiceView(SERVICES_TREE_VIEW, true);
+        },
+      },
+      {
+        id: "docker.openLogInEditor",
+        title: "Open Container Log in Editor",
+        category: "Docker",
+        icon: "file-log",
+        when: PROJECT,
+        run: () => {
+          const t = selectedTarget();
+          if (t?.node.kind === "container") openContainerLogInEditor(t.conn, t.node.container);
+        },
+      },
+      {
+        id: "docker.showProcesses",
+        title: "Show Container Processes",
+        category: "Docker",
+        icon: "list",
+        when: PROJECT,
+        run: () => {
+          showDetail("processes");
+          showServiceView(SERVICES_TREE_VIEW, true);
+        },
+      },
+      {
+        id: "docker.showLayers",
+        title: "Show Image Layers",
+        category: "Docker",
+        icon: "list",
+        when: PROJECT,
+        run: () => {
+          showDetail("layers");
           showServiceView(SERVICES_TREE_VIEW, true);
         },
       },
@@ -155,6 +208,22 @@ export function activate(): () => void {
           showDetail("inspect");
           showServiceView(SERVICES_TREE_VIEW, true);
         },
+      },
+      {
+        id: "docker.toggleStoppedContainers",
+        title: "Toggle Stopped Containers",
+        category: "Docker",
+        icon: "filter",
+        when: PROJECT,
+        run: () => setDockerFilters({ showStoppedContainers: !useServices.getState().filters.showStoppedContainers }),
+      },
+      {
+        id: "docker.toggleUntaggedImages",
+        title: "Toggle Untagged Images",
+        category: "Docker",
+        icon: "filter",
+        when: PROJECT,
+        run: () => setDockerFilters({ showUntaggedImages: !useServices.getState().filters.showUntaggedImages }),
       },
       {
         id: "docker.execShell",
@@ -172,7 +241,7 @@ export function activate(): () => void {
         id: "docker.pullImage",
         title: "Pull Docker Image…",
         category: "Docker",
-        icon: "git-pull",
+        icon: "docker-pull",
         when: PROJECT,
         run: () => {
           const conn = currentConnection();

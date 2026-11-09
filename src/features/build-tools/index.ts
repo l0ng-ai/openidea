@@ -6,6 +6,7 @@
 import { onEditorEvent, registerEditorContribution } from "@/editor/api";
 import { executeAction, registerActions } from "@/platform/actions";
 import { setContext } from "@/platform/context";
+import { isGradleBuildInput } from "@/platform/buildFiles";
 import { onIdeEvent, type BuildModel, type BuildTool } from "@/platform/ipc";
 import { useProject } from "@/platform/project";
 import {
@@ -58,8 +59,8 @@ export const MAVEN_WHEN = "projectOpen && build.maven";
 export const GRADLE_WHEN = "projectOpen && build.gradle";
 
 /** Build files whose creation / change / removal re-reads the model. */
-const BUILD_FILE =
-  /(?:^|\/)(?:pom\.xml|(?:build|settings)\.gradle(?:\.kts)?|mvnw(?:\.cmd)?|gradlew(?:\.bat)?|gradle\.properties|gradle-wrapper\.properties|[^/]+\.versions\.toml)$/;
+const isBuildFile = (path: string) =>
+  isGradleBuildInput(path) || /(?:^|[\\/])(?:pom\.xml|mvnw(?:\.cmd)?|gradlew(?:\.bat)?)$/.test(path);
 
 function expandAll(tool: BuildTool) {
   const { model, configs } = useBuild.getState();
@@ -234,10 +235,10 @@ export function activate(): () => void {
       if (s.project) void loadModel();
     }),
     onEditorEvent((e) => {
-      if (e.type === "docSaved" && BUILD_FILE.test(e.path)) noteIdeSave(e.path);
+      if (e.type === "docSaved" && isBuildFile(e.path)) noteIdeSave(e.path);
     }),
     onIdeEvent("fsChanged", (e) => {
-      const changed = [...e.created, ...e.modified, ...e.removed].filter((p) => BUILD_FILE.test(p));
+      const changed = [...e.created, ...e.modified, ...e.removed].filter(isBuildFile);
       if (!changed.length) return;
       // Changes the IDE's own saves didn't make came from outside (a VCS update, another tool),
       // also for a build file open in a tab.

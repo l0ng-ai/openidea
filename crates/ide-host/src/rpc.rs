@@ -286,6 +286,10 @@ where
     let p = Peer::connect(reader, writer, handler);
     let _ = peer.set(p.clone());
     p.closed().await;
+    // Reports belong to the disconnected desktop, even while the host shuts down.
+    for window in host.projects.read().keys() {
+        host.mcp_reports.forget_window(window);
+    }
 }
 
 /// Sends a window's events to the client as `event` notifications.

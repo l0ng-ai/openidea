@@ -4,10 +4,12 @@ use std::collections::VecDeque;
 use std::io::{self, Write};
 use std::sync::{Arc, Condvar, Mutex};
 use std::thread::JoinHandle;
+#[cfg(any(not(unix), test))]
 use std::time::Duration;
 
 const MAX_BYTES: usize = 4 * 1024 * 1024;
 const MAX_WRITES: usize = 1024;
+#[cfg(any(not(unix), test))]
 const RETRY: Duration = Duration::from_millis(4);
 
 #[derive(Default)]
@@ -28,10 +30,11 @@ pub struct InputWriter {
 }
 
 impl InputWriter {
-    /// Unix writers must first be made nonblocking with `nonblocking`.
+    /// On Unix, pass the readiness hook returned by `nonblocking` for this writer.
     pub fn new(
         name: String,
         mut writer: Box<dyn Write + Send>,
+        #[cfg(unix)] mut wait_writable: impl FnMut() -> io::Result<()> + Send + 'static,
         on_error: impl FnOnce(io::Error) + Send + 'static,
     ) -> io::Result<Self> {
         let shared = Arc::new((Mutex::new(State::default()), Condvar::new()));
@@ -74,11 +77,19 @@ impl InputWriter {
                             Ok(()) => {}
                             Err(e) if e.kind() == io::ErrorKind::Interrupted => continue,
                             Err(e) if e.kind() == io::ErrorKind::WouldBlock => {
-                                let state = lock.lock().unwrap();
-                                if state.aborted {
-                                    return Ok(());
+                                #[cfg(unix)]
+                                match wait_writable() {
+                                    Err(e) if e.kind() == io::ErrorKind::Interrupted => {}
+                                    result => result?,
                                 }
-                                drop(wake.wait_timeout(state, RETRY).unwrap());
+                                #[cfg(not(unix))]
+                                {
+                                    let state = lock.lock().unwrap();
+                                    if state.aborted {
+                                        return Ok(());
+                                    }
+                                    drop(wake.wait_timeout(state, RETRY).unwrap());
+                                }
                             }
                             Err(e) => return Err(e),
                         }
@@ -168,14 +179,46 @@ impl Drop for InputWriter {
     }
 }
 
-/// PTY clones share file status flags, so readers must also handle WouldBlock.
+/// Make a writer nonblocking and return its readiness hook. PTY clones share file
+/// status flags, so readers must also handle WouldBlock.
 #[cfg(unix)]
-pub fn nonblocking(fd: std::os::fd::RawFd) -> io::Result<()> {
+pub fn nonblocking(fd: std::os::fd::RawFd) -> io::Result<impl FnMut() -> io::Result<()> + Send> {
+    let wait = readiness(fd, libc::POLLOUT)?;
     let flags = unsafe { libc::fcntl(fd, libc::F_GETFL) };
     if flags == -1 || unsafe { libc::fcntl(fd, libc::F_SETFL, flags | libc::O_NONBLOCK) } == -1 {
         return Err(io::Error::last_os_error());
     }
-    Ok(())
+    Ok(wait)
+}
+
+/// Wait for output from a nonblocking PTY without delaying the child's next read.
+#[cfg(unix)]
+pub fn readable(fd: std::os::fd::RawFd) -> io::Result<impl FnMut() -> io::Result<()> + Send> {
+    readiness(fd, libc::POLLIN)
+}
+
+#[cfg(unix)]
+fn readiness(fd: std::os::fd::RawFd, events: libc::c_short) -> io::Result<impl FnMut() -> io::Result<()> + Send> {
+    use std::os::fd::{AsRawFd, FromRawFd, OwnedFd};
+
+    // Own a duplicate so the hook remains valid if the caller closes its fd.
+    let duplicate = unsafe { libc::fcntl(fd, libc::F_DUPFD_CLOEXEC, 0) };
+    if duplicate == -1 {
+        return Err(io::Error::last_os_error());
+    }
+    // SAFETY: fcntl returned a new, owned descriptor.
+    let fd = unsafe { OwnedFd::from_raw_fd(duplicate) };
+    Ok(move || {
+        let mut pollfd = libc::pollfd { fd: fd.as_raw_fd(), events, revents: 0 };
+        // Readiness wakes immediately; the timeout only bounds abort latency.
+        if unsafe { libc::poll(&mut pollfd, 1, 50) } == -1 {
+            return Err(io::Error::last_os_error());
+        }
+        if pollfd.revents & libc::POLLNVAL != 0 {
+            return Err(io::Error::from_raw_os_error(libc::EBADF));
+        }
+        Ok(())
+    })
 }
 
 #[cfg(test)]
@@ -221,6 +264,11 @@ mod tests {
         let writer = InputWriter::new(
             "test-input".into(),
             Box::new(SlowWriter { ready: ready.clone(), output: output.clone(), dropped: tx }),
+            #[cfg(unix)]
+            || {
+                std::thread::sleep(RETRY);
+                Ok(())
+            },
             |e| panic!("{e}"),
         )
         .unwrap();
@@ -243,6 +291,11 @@ mod tests {
         let writer = InputWriter::new(
             "test-input".into(),
             Box::new(SlowWriter { ready: ready.clone(), output: output.clone(), dropped: tx }),
+            #[cfg(unix)]
+            || {
+                std::thread::sleep(RETRY);
+                Ok(())
+            },
             |e| panic!("{e}"),
         )
         .unwrap();
@@ -254,6 +307,26 @@ mod tests {
         ready.store(true, Ordering::Release);
         rx.recv_timeout(Duration::from_secs(1)).unwrap();
         assert_eq!(*output.lock().unwrap(), format!("{paste}tail").as_bytes());
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn readiness_errors_are_reported_and_reject_following_writes() {
+        let (dropped, _rx) = mpsc::channel();
+        let (errors, error) = mpsc::channel();
+        let writer = InputWriter::new(
+            "test-error-input".into(),
+            Box::new(SlowWriter { ready: Arc::new(AtomicBool::new(false)), output: Arc::default(), dropped }),
+            || Err(io::Error::from_raw_os_error(libc::EBADF)),
+            move |e| errors.send(e.raw_os_error()).unwrap(),
+        )
+        .unwrap();
+        writer.write(b"input").unwrap();
+        assert_eq!(error.recv_timeout(Duration::from_secs(1)).unwrap(), Some(libc::EBADF));
+        assert_eq!(writer.write(b"later").unwrap_err().kind(), io::ErrorKind::BrokenPipe);
+        let state = writer.shared.0.lock().unwrap();
+        assert!(state.queue.is_empty());
+        assert_eq!(state.bytes, 0);
     }
 
     #[test]
@@ -268,12 +341,57 @@ mod tests {
 
     #[cfg(unix)]
     #[test]
+    fn writable_input_resumes_without_timer_delays() {
+        use std::io::Read;
+        use std::os::fd::AsRawFd;
+        use std::os::unix::net::UnixStream;
+
+        let (pipe, mut peer) = UnixStream::pair().unwrap();
+        let capacity: libc::c_int = 1024;
+        // Keep the OS buffer small enough that a timer per buffer takes seconds.
+        assert_eq!(
+            unsafe {
+                libc::setsockopt(
+                    pipe.as_raw_fd(),
+                    libc::SOL_SOCKET,
+                    libc::SO_SNDBUF,
+                    (&capacity as *const libc::c_int).cast(),
+                    std::mem::size_of_val(&capacity) as libc::socklen_t,
+                )
+            },
+            0
+        );
+        peer.set_read_timeout(Some(Duration::from_secs(3))).unwrap();
+        let wait_writable = nonblocking(pipe.as_raw_fd()).unwrap();
+        let writer =
+            InputWriter::new("test-ready-input".into(), Box::new(pipe), wait_writable, |e| panic!("{e}")).unwrap();
+        let bytes = vec![b'x'; MAX_BYTES];
+        writer.write(&bytes).unwrap();
+        writer.finish();
+        // Start with a full buffer, then make the fd writable from another thread.
+        std::thread::sleep(Duration::from_millis(50));
+        let (tx, rx) = mpsc::channel();
+        let started = Instant::now();
+        let reader = std::thread::spawn(move || {
+            let mut output = Vec::new();
+            peer.read_to_end(&mut output).unwrap();
+            tx.send(output).unwrap();
+        });
+        let output = rx.recv_timeout(Duration::from_secs(1)).expect("input resumes as soon as the fd is writable");
+        assert_eq!(output, bytes);
+        reader.join().unwrap();
+        eprintln!("4 MiB input drained in {:?}", started.elapsed());
+    }
+
+    #[cfg(unix)]
+    #[test]
     fn close_interrupts_a_full_os_pipe_while_the_peer_stays_open() {
         use std::os::fd::AsRawFd;
         use std::os::unix::net::UnixStream;
         let (pipe, _peer) = UnixStream::pair().unwrap();
-        nonblocking(pipe.as_raw_fd()).unwrap();
-        let mut writer = InputWriter::new("test-pipe-input".into(), Box::new(pipe), |e| panic!("{e}")).unwrap();
+        let wait_writable = nonblocking(pipe.as_raw_fd()).unwrap();
+        let mut writer =
+            InputWriter::new("test-pipe-input".into(), Box::new(pipe), wait_writable, |e| panic!("{e}")).unwrap();
         writer.write(&vec![b'x'; MAX_BYTES]).unwrap();
         std::thread::sleep(Duration::from_millis(50));
         assert!(!writer.worker.as_ref().unwrap().is_finished());

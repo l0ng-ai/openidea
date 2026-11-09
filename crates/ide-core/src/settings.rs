@@ -48,6 +48,8 @@ pub struct Settings {
     /// Per language server, by name (`rust-analyzer`): launch and protocol
     /// options on top of the language definition, or a server defined here.
     pub language_servers: BTreeMap<String, LanguageServerSettings>,
+    /// Project language id → server and plugin target. Empty target uses the host.
+    pub language_server_targets: BTreeMap<String, LanguageServerTarget>,
     /// Editor › Inspections profiles.
     pub inspections: InspectionSettings,
     /// Editor › Natural Languages › Spelling.
@@ -137,6 +139,14 @@ impl Default for CMakeProfile {
 pub struct ToolSettings {
     /// Executable to launch instead of the managed / `PATH` one; empty = auto-detect.
     pub path: String,
+}
+
+#[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize, Type)]
+#[serde(default, rename_all = "camelCase")]
+pub struct LanguageServerTarget {
+    pub target: String,
+    /// Empty selects the first configured server for the language.
+    pub server: String,
 }
 
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize, Type)]
@@ -233,6 +243,7 @@ impl Default for Settings {
             external_tools: Vec::new(),
             tools: BTreeMap::new(),
             language_servers: BTreeMap::new(),
+            language_server_targets: BTreeMap::new(),
             inspections: InspectionSettings::default(),
             spelling: SpellingSettings::default(),
             ssh: SshSettings::default(),
@@ -281,6 +292,7 @@ pub struct GeneralSettings {
     pub project_name: String,
     /// Where updates come from: `auto` (the CNB mirror for the Chinese UI, else GitHub) | `github` | `cnb`.
     pub update_source: String,
+    pub auto_check_updates: bool,
 }
 
 impl Default for GeneralSettings {
@@ -296,6 +308,7 @@ impl Default for GeneralSettings {
             power_save_mode: false,
             project_name: String::new(),
             update_source: "auto".into(),
+            auto_check_updates: true,
         }
     }
 }
@@ -662,6 +675,7 @@ pub struct LanguagesSettings {
     pub java: JavaSettings,
     pub ruby: RubySettings,
     pub markdown: MarkdownSettings,
+    pub arduino: ArduinoSettings,
 }
 
 impl Default for LanguagesSettings {
@@ -683,8 +697,20 @@ impl Default for LanguagesSettings {
             java: JavaSettings::default(),
             ruby: RubySettings::default(),
             markdown: MarkdownSettings::default(),
+            arduino: ArduinoSettings::default(),
         }
     }
+}
+
+/// Arduino tool discovery paths and default board FQBN, configured in `settings.toml`.
+#[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize, Type)]
+#[serde(default, rename_all = "camelCase")]
+pub struct ArduinoSettings {
+    pub cli: String,
+    pub clangd: String,
+    pub language_server: String,
+    pub cli_config: String,
+    pub fqbn: String,
 }
 
 /// Languages & Frameworks › Markdown. Like IDEA's, it is application-level only.
@@ -904,6 +930,8 @@ pub struct JavaSettings {
     /// Extra JVM options for the Java language server (jdtls), space-separated
     /// (VS Code's `java.jdt.ls.vmargs`).
     pub jdtls_vm_args: String,
+    /// Share one JDT LS across builds in an ordinary project window; other windows remain separate.
+    pub jdtls_shared: bool,
     /// Build Tools › Maven.
     pub maven: MavenSettings,
     /// Build Tools › Gradle.
@@ -1484,6 +1512,26 @@ mod maven_linkage_tests {
         let encoded = serde_json::to_string(&settings).unwrap();
         assert!(encoded.contains("\"threads\":\"2C\""));
         assert_eq!(serde_json::from_str::<MavenSettings>(&encoded).unwrap(), settings);
+    }
+}
+
+#[cfg(test)]
+mod java_settings_tests {
+    use super::*;
+
+    #[test]
+    fn shared_jdtls_defaults_off_and_round_trips() {
+        for old in [r#"{}"#, r#"{"jdk":"/jdk"}"#] {
+            let java: JavaSettings = serde_json::from_str(old).unwrap();
+            assert!(!java.jdtls_shared);
+        }
+        for shared in [false, true] {
+            let java = JavaSettings { jdtls_shared: shared, ..JavaSettings::default() };
+            let json = serde_json::to_value(&java).unwrap();
+            assert_eq!(json["jdtlsShared"], serde_json::json!(shared));
+            assert_eq!(serde_json::from_value::<JavaSettings>(json).unwrap(), java);
+        }
+        assert!(serde_json::from_str::<JavaSettings>(r#"{"jdtlsShared":"true"}"#).is_err());
     }
 }
 

@@ -155,4 +155,12 @@ impl Plugin for Api14 {
         host::storage::set("events", &serde_json::to_string(&received).unwrap()).unwrap();
     }
 }
-register_plugin!(Api14);
+impl openidea_plugin::TestResults for Api14 {
+    fn parse(&mut self, _config: &str, _chunk: &str) -> Vec<openidea_plugin::PluginTestEvent> {
+        vec![]
+    }
+    fn select_tests(&mut self, config: &str, tests: &[Vec<String>]) -> Option<Vec<String>> {
+        (config == "tests").then(|| tests.iter().map(|p| p.join("::")).collect())
+    }
+}
+register_plugin!(Api14, test_results);

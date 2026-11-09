@@ -216,7 +216,7 @@ describe("EditorController", () => {
     expect(pane().tabs.map((t) => t.input.path)).toEqual(["/p/a.ts", "/p/c.ts"]);
   });
 
-  it("carries the plain project's editor tabs into its automatic workspace", async () => {
+  it("keeps editor tabs and unsaved documents through attach and detach", async () => {
     const settings = {};
     useProject.setState({
       project: { root: "/attach-a", name: "A", trusted: true, isGit: false, settings },
@@ -227,19 +227,31 @@ describe("EditorController", () => {
     ctrl.start();
     await ctrl.openFile("/attach-a/one.txt", { focus: false, preview: false });
     await ctrl.openFile("/attach-a/two.txt", { focus: false, preview: false });
+    const slot = ctrl.activeSlot!;
+    const host = document.createElement("div");
+    const view = slot.mount(host);
+    ctrl.onMounted(slot);
+    view.dispatch({ changes: { from: 0, insert: "unsaved " }, userEvent: "input.type" });
+    const tabs = useTabs.getState();
     useProject.setState({
       project: {
-        root: "/attach-workspace",
-        name: "A",
+        root: "/attach-a",
+        name: "A, attach-b",
         trusted: true,
         isGit: false,
         settings,
         workspace: { version: 1, name: "A", projects: ["/attach-a", "/attach-b"] },
       },
     });
-    await vi.waitFor(() =>
-      expect(openFilePaths(useTabs.getState())).toEqual(["/attach-a/one.txt", "/attach-a/two.txt"]),
-    );
+    expect(useTabs.getState()).toBe(tabs);
+    expect(ctrl.activeSlot).toBe(slot);
+    expect(view.state.doc.toString()).toContain("unsaved ");
+    expect(openFilePaths(useTabs.getState())).toEqual(["/attach-a/one.txt", "/attach-a/two.txt"]);
+    useProject.setState({ project: { root: "/attach-a", name: "A", trusted: true, isGit: false, settings } });
+    expect(useTabs.getState()).toBe(tabs);
+    expect(ctrl.activeSlot).toBe(slot);
+    expect(view.state.doc.toString()).toContain("unsaved ");
+    host.remove();
     useProject.setState({ project: null });
   });
 

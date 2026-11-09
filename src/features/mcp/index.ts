@@ -2,7 +2,7 @@
 import { activeEditor, onEditorEvent, openEditorPaths, useEditorRegistry } from "@/editor/api";
 import { commands, call, onIdeEvent, ideEventsReady } from "@/platform/ipc";
 import { useProject } from "@/platform/project";
-import { isRemoteWindow } from "@/platform/remote";
+import { isRemoteWindow, useRemote } from "@/platform/remote";
 
 import { registerOverlay } from "@/workbench/contributions";
 import { McpConfirmHost } from "./ConfirmDialog";
@@ -85,6 +85,13 @@ export function activate(): () => void {
       schedule();
     }
   });
+  const offRemote = useRemote.subscribe((s, prev) => {
+    if (s.session !== prev.session) {
+      lastPaths = undefined;
+      lastEditor = undefined;
+      schedule();
+    }
+  });
   window.addEventListener("focus", schedule);
   window.addEventListener("blur", schedule);
   return () => {
@@ -96,6 +103,7 @@ export function activate(): () => void {
     window.removeEventListener("beforeunload", unload);
     offRegistry();
     offEvents();
+    offRemote();
     offProject();
     window.removeEventListener("focus", schedule);
     window.removeEventListener("blur", schedule);

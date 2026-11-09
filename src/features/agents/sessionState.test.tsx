@@ -10,6 +10,7 @@ import { entriesKey, SESSION_KIND, sessionKey, type SubagentEntry } from "./mode
 import { disconnect, useAgents } from "./store";
 import { taskActions } from "./taskActions";
 import { replyActions } from "./replyActions";
+import { focusedSession } from "./sessionFocus";
 import styles from "./Session.module.css";
 import tagStyles from "@/ui/InlineTag.module.css";
 
@@ -243,8 +244,37 @@ describe("process folding", () => {
     useAgents.setState({ entries: new Map(backend.entries) });
     render(<SessionEditor input={input("A")} />);
     const summary = await screen.findByText("Reasoning · 2 tool calls");
+    const fold = summary.closest("details")!;
+    expect(fold.open).toBe(false);
+    // Folded content is rendered once opened, a level at a time.
+    const open = (details: HTMLDetailsElement) => {
+      details.open = true;
+      fireEvent(details, new Event("toggle"));
+    };
+    expect(screen.queryByText("Reasoning")).toBeNull();
+    open(fold);
+    const thought = (await screen.findAllByText("Reasoning"))[0]!.closest("details")!;
+    expect(screen.queryByText("think one")).toBeNull();
+    open(thought);
+    expect(await screen.findByText("think one")).toBeInTheDocument();
+  });
+});
+
+describe("folded content", () => {
+  it("is rendered for Find in Conversation, so its text is found", async () => {
+    backend.entries.set("A", [
+      tool("one", { output: "needle in a tool output" }),
+      tool("two"),
+      { type: "agent", text: "Answer A" },
+    ]);
+    useAgents.setState({ entries: new Map(backend.entries) });
+    render(<SessionEditor input={input("A")} />);
+    const summary = await screen.findByText("2 tool calls");
+    expect(screen.queryByText("needle in a tool output")).toBeNull();
+    fireEvent.focus(summary);
+    act(() => focusedSession()!.openFind());
+    expect(await screen.findByText("needle in a tool output")).toBeInTheDocument();
     expect(summary.closest("details")!.open).toBe(false);
-    expect(screen.getByText("think one")).toBeInTheDocument();
   });
 });
 
@@ -275,6 +305,7 @@ describe("scrolling", () => {
     let height = 1000;
     Object.defineProperty(el, "scrollHeight", { configurable: true, get: () => height });
     Object.defineProperty(el, "clientHeight", { configurable: true, value: 400 });
+    fireEvent.wheel(el);
     el.scrollTop = 100;
     fireEvent.scroll(el);
     expect(screen.getByRole("button", { name: "Jump to Latest" })).toBeInTheDocument();
@@ -324,12 +355,51 @@ describe("scrolling", () => {
     view.unmount();
   });
 
+  it("keeps following the end when the offset moves back without the user scrolling", async () => {
+    render(<SessionEditor input={input("A")} />);
+    expect(await screen.findByText("Answer A")).toBeInTheDocument();
+    const el = stream();
+    let height = 1000;
+    Object.defineProperty(el, "scrollHeight", { configurable: true, get: () => height });
+    Object.defineProperty(el, "clientHeight", { configurable: true, value: 400 });
+    el.scrollTop = 600;
+    fireEvent.scroll(el);
+    // The conversation grew after it was scrolled to the end, or WebKit moved the offset back
+    // while rows laid out: both change the content height.
+    height = 1300;
+    el.scrollTop = 600;
+    fireEvent.scroll(el);
+    expect(el.scrollTop).toBe(1300);
+    expect(screen.queryByRole("button", { name: "Jump to Latest" })).toBeNull();
+    // Scrolling up with the wheel leaves the end.
+    fireEvent.wheel(el);
+    el.scrollTop = 600;
+    fireEvent.scroll(el);
+    expect(el.scrollTop).toBe(600);
+    expect(await screen.findByRole("button", { name: "Jump to Latest" })).toBeInTheDocument();
+  });
+
+  it("leaves the end for a scroll that no layout caused, as dragging the scrollbar thumb", async () => {
+    render(<SessionEditor input={input("A")} />);
+    expect(await screen.findByText("Answer A")).toBeInTheDocument();
+    const el = stream();
+    Object.defineProperty(el, "scrollHeight", { configurable: true, value: 1000 });
+    Object.defineProperty(el, "clientHeight", { configurable: true, value: 400 });
+    el.scrollTop = 600;
+    fireEvent.scroll(el);
+    el.scrollTop = 0;
+    fireEvent.scroll(el);
+    expect(el.scrollTop).toBe(0);
+    expect(await screen.findByRole("button", { name: "Jump to Latest" })).toBeInTheDocument();
+  });
+
   it("offers one click back to the latest message after scrolling up", async () => {
     render(<SessionEditor input={input("A")} />);
     expect(await screen.findByText("Answer A")).toBeInTheDocument();
     const el = stream();
     Object.defineProperty(el, "scrollHeight", { configurable: true, value: 1000 });
     Object.defineProperty(el, "clientHeight", { configurable: true, value: 400 });
+    fireEvent.wheel(el);
     el.scrollTop = 100;
     fireEvent.scroll(el);
     const jump = await screen.findByRole("button", { name: "Jump to Latest" });
@@ -754,6 +824,7 @@ describe("session state across tasks and hosts", () => {
     });
     const view = render(<SessionEditor input={input("A")} />);
     await screen.findByText("Answer A");
+    fireEvent.wheel(stream());
     stream().scrollTop = stick ? height - viewport : 230;
     fireEvent.scroll(stream());
     expect(useAgents.getState().scrollPositions.get("A")).toEqual({ top: stick ? 1600 : 230, stick });

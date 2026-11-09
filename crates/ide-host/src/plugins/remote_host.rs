@@ -468,6 +468,16 @@ impl RemotePlugins {
             }
         });
         let h = host.clone();
+        d.add("plugin_select_tests", move |c| {
+            let h = h.clone();
+            async move {
+                let host = alive(&h)?;
+                let config = c.arg::<String>("config")?;
+                let tests = c.arg("tests")?;
+                blocking(move || host.select_tests(&c.window, &config, tests)).await
+            }
+        });
+        let h = host.clone();
         d.add("plugin_parse_test_results", move |c| {
             let h = h.clone();
             async move {
@@ -615,6 +625,11 @@ impl RemotePlugins {
         d.add("mcp_set_focused_editor", |c| async move {
             c.host.project(&c.window)?;
             c.host.mcp_reports.set_focused_editor(&c.window, c.arg("editor")?, c.arg("focused")?);
+            Ok(())
+        });
+        d.add("mcp_report_problems", |c| async move {
+            c.host.project(&c.window)?;
+            c.host.mcp_reports.report_problems(&c.window, c.arg("reset")?, c.arg("files")?);
             Ok(())
         });
         let h = host.clone();

@@ -37,7 +37,7 @@ sdk/rust/openidea-plugin/     # the Rust SDK (host API, Plugin trait, mock host)
 crates/ide-plugin/tests/fixtures/  # test plugins: hello, jobs, language-toy, misbehave, semantic-tokens, hover, commit, inlay-hints
 ```
 
-The plugin API is defined in [`wit/`](../wit/) (`openidea:plugin@1.4.0`, world
+The plugin API is defined in [`wit/`](../wit/) (`openidea:plugin@1.5.0`, world
 `plugin`).
 
 ## 1. Quick start
@@ -365,9 +365,19 @@ are always available. Calling a gated function without its capability returns
 
 ## 3. Writing code (Rust SDK)
 
+### API 1.5
+
+API 1.5.0 is planned for the next OpenIDEA release. Use
+`engines.openidea = "^1.5"` and the matching SDK. Released 1.4 plugins keep
+working. New in 1.5:
+
+- [Notifications for a project](#notifications-with-commands):
+  `Project::notify` shows a notification in a window of that project only,
+  also from scheduled or background work.
+
 ### API 1.4
 
-API 1.4.0 is planned for the next OpenIDEA release. Use
+API 1.4.0 shipped with OpenIDEA 0.1.40. Use
 `engines.openidea = "^1.4"` and the matching SDK. Released 1.3 plugins keep
 working. New in 1.4:
 
@@ -393,7 +403,7 @@ working. New in 1.4:
 - [Language features](#additional-language-features-api-14): formatting,
   signature help, highlights, links, code lenses, selection ranges, folds,
   colors/presentations, symbols, implementation, type definition and gutter
-  actions; [injections](#embedded-languages-api-14) route plugin providers to
+  actions; [injections](#embedded-languages-api-14) route providers and language servers to
   embedded virtual documents.
 - [Snippets](#snippets-api-14) and [menus](#additional-menu-locations-api-14):
   numbered placeholders and editor title, main toolbar, Problems and search
@@ -525,6 +535,7 @@ then run `openidea-plugin check`.
 | `host::output_append(channel, text)`, `output_clear`, `output_reveal`                                          | `output.{append,clear,reveal}`             | API 1.4: read-only Output tabs; 32 named channels per plugin, each a 1 MiB UTF-8 ring buffer. Reveal requires the invoking window.                                                                                                                                                                                                                        |
 | `host::set_context(key, value)`, `remove_context`                                                              | `ui.{set,remove}-context`                  | Sets `plugin.<id>.<key>` for `when` clauses in the window the call came from (`true`, `3.5`, `"text"`; `ContextValue`). Key 1–64 of `A-Za-z0-9_-`, 100 per plugin; gone when the plugin stops.                                                                                                                                                            |
 | `host::notify(level, title, body)`                                                                             | `ui.show-notification`                     | Balloon in the window the command or events came from (every window otherwise).                                                                                                                                                                                                                                                                           |
+| `Project::notify(level, title, body, actions)`                                                                 | `ui.notify-project`                        | API 1.5: balloon only in a window of that project (the most recently focused one), with or without an invoking window; see _Notifications with commands_.                                                                                                                                                                                                 |
 | `host::copy_to_clipboard(text)`                                                                                | `ui.copy-to-clipboard`                     | Copies `text` to the system clipboard. Needs `clipboard`.                                                                                                                                                                                                                                                                                                 |
 | `host::open_url(url)`                                                                                          | `ui.open-url`                              | Opens an `http://` or `https://` URL in the user's default browser.                                                                                                                                                                                                                                                                                       |
 | `host::pick(title, items)`, `pick_many`                                                                        | `ui.pick`, `ui.pick-many`                  | Picks key(s) from `PickItem`s, or `None` when dismissed. From a command/event or code-action resolution in its editor window (else `invalid`); waiting is excluded from the budget.                                                                                                                                                                       |
@@ -553,6 +564,7 @@ then run `openidea-plugin check`.
 | `host::reply_content_tab(request_id, reply)`                                                                   | `views.reply-content-tab`                  | API 1.4: reply to an owned action in the originating window. No capability; commands/events only.                                                                                                                                                                                                                                                         |
 | `RunConfigurations::configurations(root)`                                                                      | export `run-configurations.configurations` | API 1.4: optional `plugin-run-configurations` world; SDK registration `run_configurations`. Full project list, refreshed on configuration listing.                                                                                                                                                                                                        |
 | `TestResults::parse(config, chunk)`                                                                            | export `test-results.parse`                | API 1.4: optional `plugin-test-results` world; SDK registration `test_results`. Bounded output batches for `framework = "plugin"`; failures use built-in parsers.                                                                                                                                                                                         |
+| `TestResults::select_tests(config, tests)`                                                                     | export `test-results.select-tests`         | API 1.4: full replacement argv for test-tree name paths, or `None` when unsupported (the SDK default). Enables rerunning failed tests and running tree selections.                                                                                                                                                                                        |
 | `host::open_location(path, line, column)`                                                                      | `views.open-location`                      | Opens a file inside the project in an editor of the invoking window, the caret at `line`/`column` (0-based, UTF-16): a view's links to code. Needs `project.read`.                                                                                                                                                                                        |
 | `host::setting(key)`, `setting_bool`, `setting_string`, `setting_number`                                       | `settings.get`                             | The user's value (project over global) or the schema's default.                                                                                                                                                                                                                                                                                           |
 
@@ -1118,8 +1130,31 @@ At most 1,000 non-overlapping injection ranges and 32 embedded languages
 are routed per document. Earlier ranges in document order win overlaps.
 Documents over 2 MiB are excluded. Invalid ranges, self-injections and invalid
 language ids are ignored. Injections are not applied recursively. The same
-server-side plugin host handles remote editing. **Embedded LSP forwarding is
-future host-side work**, not part of 1.4, and needs no WIT change.
+server-side plugin host handles remote editing.
+
+When the embedded language has configured language servers, the host also
+routes completion (including resolve), hover, signature help, definition,
+declaration, type definition, implementation, references, document highlights
+and code actions to those servers inside the range. Each range gets its own
+masked document, even when several ranges share a language. At most 32 LSP
+documents are kept per host document; the same 2 MiB document limit applies.
+These documents use non-existent sibling paths with the embedded language's
+extension, so servers can discover project configuration. They are never
+written to disk. Servers start through the usual settings, project trust and
+installation flow; a missing server does not prompt again on each edit.
+
+Edits invalidate old ranges immediately. The host refreshes them after the
+300 ms debounce, or before a position request, synchronizes retained documents
+with `didChange`, and closes documents when their range disappears, the plugin
+is disabled or the host document closes. Results into these documents map back
+to the host path and are clipped to the range; locations in other files pass
+through. Replacement edits crossing a boundary and resource operations on
+virtual paths are dropped. Completion and code-action resolve keep their
+originating range/server, and stale results cannot resolve after an edit.
+Diagnostics are restricted to each range, labelled with the embedded server's
+name and merged with that server's other diagnostics for the host file. They
+clear when the range disappears. Formatting and rename use the host server.
+Remote projects use this same host-side LSP lifecycle and routing.
 
 ### Snippets (API 1.4)
 
@@ -1628,9 +1663,10 @@ test's parent must already exist. Locations use absolute project-contained paths
 zero-based lines and UTF-16 columns. Passed/failed durations are milliseconds.
 The host uses the editor-provider soft/hard budget per batch and bounds returned
 events to 10,000 / 4 MiB. A missing, failed or invalid parser switches that run to
-the built-in parsers; common framework commands retain their existing rerun-failed
-filters. Arbitrary frameworks have no failed-test selection protocol in this
-export and therefore cannot supply a custom rerun-failed filter.
+the built-in parsers. Implement `select_tests(config, tests)` to derive the full
+replacement argv for failed tests or test-tree selections; its default returns
+`None`. See [Selecting plugin tests](#selecting-plugin-tests-api-14-unreleased)
+for the name-path contract and unsupported cases.
 
 `host::open_terminal_session(key, title, &Command::new("tool"))` opens a normal
 Terminal tab in this window's project root. Reopening the same key focuses its
@@ -2229,8 +2265,8 @@ the API itself follows _Evolving the plugin API_ below.
 ## 10. Evolving the plugin API
 
 Released versions are frozen: 1.0.0 shipped with OpenIDEA 0.1.36, 1.1.0
-with 0.1.37, 1.2.0 with 0.1.38 and 1.3.0 with 0.1.39. API 1.4.0 is planned
-with the next release. wasmtime decides what stays compatible: it resolves interface names
+with 0.1.37, 1.2.0 with 0.1.38, 1.3.0 with 0.1.39 and 1.4.0 with 0.1.40.
+API 1.5.0 is planned with the next release. wasmtime decides what stays compatible: it resolves interface names
 by semver (a component importing `openidea:plugin/x@1.0.0` links against a
 host defining `@1.1.0`, and the host finds its exports the same way), but
 function types must match exactly — a record with another field count, or a
@@ -2357,6 +2393,48 @@ its normal editor and project context. No capability is needed. Invalid or
 undeclared actions reject the whole notification. Labels are limited to 256
 bytes and arguments to 64 KiB. Plain `host::notify` behaves as before.
 
+Both go to the window the command or event came from, or to every window when
+there is none (a scheduled call, for instance). To reach one project from such
+work, call `notify` on that [`Project`](#the-api) (API 1.5, `ui.notify-project`),
+with the same actions and limits:
+
+```rust
+for project in host::projects()? {
+    if let Some(update) = check_for_update(&project)? {
+        let disable = NotificationAction::new("Disable automatic checks", "disable-checks")
+            .argument(project.root()?);
+        project.notify(NotificationLevel::Info, "Update available", &update, &[disable])?;
+    }
+}
+```
+
+- It shows only in a window of that project: the most recently focused one
+  when the project is open in several.
+- A button runs its command with an invocation from that window, so
+  `ctx.project()` is the notification's project.
+- If the project has closed by the time of the call, the call fails with
+  `Error::NotFound` and shows nothing; it never falls back to another window.
+  A balloon already shown goes away with its window.
+
+### Selecting plugin tests (API 1.4, unreleased)
+
+A plugin using `framework = "plugin"` can implement `TestResults::select_tests`
+(`test-results.select-tests`) alongside `parse`. It receives the same plugin-local
+configuration id as `parse` and a list of test-tree paths: the names from the
+plugin's `test-start` events, from parent suite to test, exactly as shown in the
+tree. Return the **full replacement argument list**, including any required base
+arguments, to run only those tests. The call uses the 5-second command budget.
+`None` (the Rust SDK default), errors and call timeouts leave test selection
+unsupported. An empty argument list is a
+supported selection. The IDE preserves the configuration's command, environment,
+working directory and run target.
+
+This enables **Rerun Failed Tests** and the test tree's **Run** / **Debug** entries.
+Calls use the test parser's bounded background budget and run on the plugin's
+host, including remote projects. See `official/test-runner` for an example.
+This export is added to the existing interface while 1.4 is unreleased; released
+export interfaces remain frozen under the rules above.
+
 ### Plugin-provided run targets (API 1.4)
 
 `host::register_run_target(project, target)` registers or replaces a read-only,
@@ -2371,7 +2449,8 @@ A missing target fails the run rather than silently using the local tool.
 
 For each launch the host checks project trust and the wrapper's current process
 grant and executable pin, including per-project executable choices. Debugging on
-plugin targets returns `invalid`; language servers are not run in these targets.
+plugin targets returns `invalid`. Language servers can opt into targets with a
+`container_root` as described below.
 There are at most 32 targets per plugin/project, 64 unique command overrides and
 256 arguments per prefix (16 KiB each, 256 KiB metadata per registration).
 
@@ -2408,5 +2487,50 @@ or a named target). The `languages.php.runTarget` / `languages.node.runTarget`
 settings store a selector id, empty for the default, or `local` for local execution. Code-created PHP/Node runs,
 Composer/npm scripts, PHPUnit and Node tests use that choice through the normal
 Run flow. Explicit per-configuration targets take precedence. Choosing Local
-machine explicitly overrides defaults. Language servers, tool discovery/version
-probes and external analysis helpers remain local to the host.
+machine explicitly overrides defaults. Tool discovery/version probes and external
+analysis helpers remain local to the host.
+
+Language servers run on the host by default. In the PHP and Node interpreter
+pages, **Language server: run in target** selects a plugin target independently
+of runs. **Languages & Frameworks › Language server targets** offers the same
+choice for every language, including plugin languages. These are project-only
+`languageServerTargets.<language-id> = { target, server }` settings; an empty
+`target` uses the host and an empty `server` picks the first configured server.
+Only plugin targets with `container_root` are eligible. The selected configured
+server is used instead of the language's other servers while this option is on.
+Registration and the first run-target prompt never enable it automatically.
+
+Install that server and its runtime **inside the container**. The host wraps the
+language definition's command/arguments (or its Language Servers overrides) with
+the target's normal argv construction, using the project root as cwd. It uses
+stdio, rechecks the wrapper's process grant, pin and project trust, and does not
+substitute IDE-downloaded host binaries or host interpreter paths. A failed
+launch shows the exact argv and stderr tail in language-server status, without
+falling back. Changing the setting restarts the server; withdrawing the target
+returns it to the host. SSH projects use this same path on `openidea-server`.
+
+Protocol file URIs and paths under the project map bidirectionally to
+`container_root`, including workspace edits and configuration replies. Opaque
+`data` and command `arguments` remain untouched. File URIs outside the container
+project become read-only library documents, fetched with the granted wrapper's
+`cat -- <path>` command (no shell, at most 4 MiB of UTF-8 text, 10-second timeout).
+The virtual URI identifies its originating server, including for document links
+and diagnostic-related locations. Navigation inside these documents returns to
+that server; editing and saving
+are disabled. No WIT signature change is needed for this opt-in host setting.
+
+### Debugging run targets
+
+Plugin targets require `container-root` for debugging. PHP uses `connect-back`: the
+IDE runs php-debug on the host (on the SSH server for remote projects), listens on
+port 9003 unless configured otherwise, then starts the program through the normal
+target run path. The target must enable Xdebug debug mode and request startup, and
+set `xdebug.client_host` and `xdebug.client_port` to reach that listener. DDEV normally
+provides the host setting; enable its Xdebug support before debugging.
+
+Python uses `adapter-in-target`: the wrapper starts `python3 -m debugpy.adapter`
+over stdio. Install debugpy in that container interpreter; no host installation is
+used. The wrapper must preserve stdin/stdout and forward environment as needed.
+Project paths and DAP sources map between the project root and `container-root`.
+Other debuggers default to unsupported: Node and Go adapters currently require
+additional ports and have no supported stdio target configuration.
