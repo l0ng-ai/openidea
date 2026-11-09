@@ -202,6 +202,40 @@ describe("Diff toolbar", () => {
     localStorage.clear();
   });
 
+  it.each([
+    ["split", 2],
+    ["unified", 1],
+  ] as const)("enables soft wraps in the %s viewer and remembers the choice", async (mode, paneCount) => {
+    localStorage.setItem("openidea.vcs.diffOptions", JSON.stringify({ mode }));
+    const mounted = render(
+      <>
+        <DiffEditor input={input} />
+        <ContextMenuHost />
+      </>,
+    );
+    try {
+      await waitFor(() => expect(mounted.container.querySelectorAll(".cm-editor")).toHaveLength(paneCount));
+      expect(
+        [...mounted.container.querySelectorAll(".cm-content")].every((el) => el.classList.contains("cm-lineWrapping")),
+      ).toBe(false);
+      fireEvent.click(screen.getByRole("button", { name: "Settings" }));
+      const item = await screen.findByRole("menuitemcheckbox", { name: "Soft Wraps" });
+      expect(item).toHaveAttribute("aria-checked", "false");
+      fireEvent.click(item);
+      await waitFor(() =>
+        expect(
+          [...mounted.container.querySelectorAll(".cm-content")].every((el) =>
+            el.classList.contains("cm-lineWrapping"),
+          ),
+        ).toBe(true),
+      );
+      expect(JSON.parse(localStorage.getItem("openidea.vcs.diffOptions")!)).toMatchObject({ mode, softWrap: true });
+    } finally {
+      mounted.unmount();
+      localStorage.clear();
+    }
+  });
+
   it("has no Jump to Source when the file is gone from the working tree", async () => {
     probe.mockRejectedValue(new Error("no such file"));
     render(<DiffEditor input={input} />);

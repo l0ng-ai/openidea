@@ -19,6 +19,7 @@ export interface DiffViewOptions {
   ignore: IgnorePolicy;
   highlight: HighlightPolicy;
   collapse: boolean;
+  softWrap: boolean;
   /** Side-by-side panes scroll together. */
   syncScroll: boolean;
   /**
@@ -46,6 +47,7 @@ export const DEFAULT_DIFF_OPTIONS: DiffViewOptions = {
   ignore: "none",
   highlight: "words",
   collapse: true,
+  softWrap: false,
   syncScroll: true,
   alignChanges: false,
 };
@@ -64,6 +66,7 @@ export function parseDiffOptions(raw: unknown): DiffViewOptions {
     ignore: oneOf(o.ignore, IGNORE_OPTIONS, d.ignore),
     highlight: oneOf(o.highlight, HIGHLIGHT_OPTIONS, d.highlight),
     collapse: typeof o.collapse === "boolean" ? o.collapse : d.collapse,
+    softWrap: typeof o.softWrap === "boolean" ? o.softWrap : d.softWrap,
     syncScroll: typeof o.syncScroll === "boolean" ? o.syncScroll : d.syncScroll,
     alignChanges: typeof o.alignChanges === "boolean" ? o.alignChanges : d.alignChanges,
   };

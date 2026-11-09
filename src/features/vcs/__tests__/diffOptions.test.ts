@@ -30,6 +30,7 @@ describe("diff options", () => {
         ignore: "trim",
         highlight: "lines",
         collapse: false,
+        softWrap: true,
         syncScroll: false,
         alignChanges: false,
       }),
@@ -38,6 +39,7 @@ describe("diff options", () => {
       ignore: "trim",
       highlight: "lines",
       collapse: false,
+      softWrap: true,
       syncScroll: false,
       alignChanges: false,
     });
