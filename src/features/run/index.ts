@@ -3,7 +3,7 @@
  * test runner) and run/debug/stop actions.
  */
 import { registerEditorContribution } from "@/editor/api";
-import { executeAction, getAction, registerActions } from "@/platform/actions";
+import { executeAction, executeActionOrThrow, getAction, registerActions } from "@/platform/actions";
 import { getContext, setContext, useContextKeys } from "@/platform/context";
 import { call, commands, onIdeEvent, type RunConfig } from "@/platform/ipc";
 import { useProject } from "@/platform/project";
@@ -588,6 +588,28 @@ export function activate(): () => void {
         run: () => {
           clearRuntimeCache();
           return loadConfigs();
+        },
+      },
+      {
+        id: "run.pluginStart",
+        title: "Run Plugin Configuration",
+        category: "Run",
+        hidden: true,
+        when: "projectOpen",
+        run: async ({ arg }) => {
+          const a = arg as {
+            config: import("@/bindings").RunConfig;
+            debug: boolean;
+            onExit: (code: number | null, stopped: boolean) => void;
+          };
+          if (a.debug) {
+            if (!getAction("debug.pluginStart")) throw new Error("Debugger unavailable");
+            await executeActionOrThrow("debug.pluginStart", a);
+            return;
+          }
+          const session = await startRun(a.config, undefined, undefined, { onExit: a.onExit });
+          if (!session || session.status === "failed") throw new Error("Run did not start");
+          if (session.runId === null && session.status === "finished") a.onExit(session.exitCode, !!session.stopped);
         },
       },
       {

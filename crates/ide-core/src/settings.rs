@@ -629,6 +629,8 @@ impl Default for FileSettings {
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize, Type)]
 #[serde(default, rename_all = "camelCase")]
 pub struct LanguagesSettings {
+    /// Explicit plugin formatter, by language id. Empty entries use the normal formatter policy.
+    pub plugin_formatters: BTreeMap<String, String>,
     pub python: PythonSettings,
     pub node: NodeSettings,
     pub php: PhpSettings,
@@ -646,6 +648,7 @@ pub struct LanguagesSettings {
 impl Default for LanguagesSettings {
     fn default() -> Self {
         Self {
+            plugin_formatters: BTreeMap::new(),
             python: PythonSettings::default(),
             node: NodeSettings::default(),
             php: PhpSettings::default(),
@@ -767,6 +770,8 @@ impl Default for PythonSettings {
 pub struct PhpSettings {
     /// `php` CLI executable; empty = the one on `PATH`.
     pub interpreter: String,
+    /// Run PHP/Composer or Node/package-manager commands in this target; empty = project default, `local` = local.
+    pub run_target: String,
     /// PHP version the language server checks the code against (`7.4`); empty = from
     /// `composer.json` (`config.platform.php`, else the lowest version `require.php` allows).
     pub language_level: String,
@@ -794,6 +799,8 @@ pub struct RubySettings {
 pub struct NodeSettings {
     /// `node` executable; empty = the one on `PATH`.
     pub interpreter: String,
+    /// Run PHP/Composer or Node/package-manager commands in this target; empty = project default, `local` = local.
+    pub run_target: String,
     /// `npm` | `pnpm` | `yarn`; empty = detect from the lock file / `packageManager`.
     pub package_manager: String,
 }

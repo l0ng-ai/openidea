@@ -55,6 +55,8 @@ pub struct HostConfig {
 }
 
 pub struct Host {
+    pub(crate) mcp_executable: RwLock<Option<PathBuf>>,
+    plugin_host: RwLock<std::sync::Weak<plugins::PluginHost>>,
     pub mcp_reports: mcp::Reports,
     pub mcp_requests: mcp::Requests,
     pub trust: trust::TrustStore,
@@ -99,6 +101,14 @@ pub struct Host {
 const EXIT_SHUTDOWN_WAIT: std::time::Duration = std::time::Duration::from_secs(10);
 
 impl Host {
+    /// Windows whose current project has this root.
+    pub(crate) fn windows_for_root(&self, root: &std::path::Path) -> Vec<String> {
+        let mut windows: Vec<_> =
+            self.projects.read().iter().filter(|(_, p)| p.root == root).map(|(w, _)| w.clone()).collect();
+        windows.sort();
+        windows
+    }
+
     pub fn new(config: HostConfig) -> Self {
         let HostConfig {
             config_dir,
@@ -115,6 +125,8 @@ impl Host {
         let ssh = Arc::new(ide_ssh::SshManager::new(data_dir.join("ssh-passwords.json")));
         ssh.set_configs(global_settings.effective().ssh.configs);
         let host = Self {
+            plugin_host: RwLock::default(),
+            mcp_executable: RwLock::default(),
             mcp_reports: Default::default(),
             mcp_requests: Default::default(),
             trust: trust::TrustStore::load(&config_dir, &data_dir),
@@ -164,6 +176,19 @@ impl Host {
             let lsp = project.lsp.clone();
             self.runtime.spawn(async move { lsp.reconfigure().await });
         }
+    }
+
+    /// Associates the plugin runtime that executes this host's project operations.
+    /// Publishes only the executable of the running built-in MCP service.
+    pub fn set_mcp_executable(&self, executable: Option<PathBuf>) {
+        *self.mcp_executable.write() = executable;
+    }
+
+    pub fn set_plugin_host(&self, plugins: &Arc<plugins::PluginHost>) {
+        *self.plugin_host.write() = Arc::downgrade(plugins);
+    }
+    pub(crate) fn plugin_host(&self) -> Option<Arc<plugins::PluginHost>> {
+        self.plugin_host.read().upgrade()
     }
 
     /// Every open project (all windows).
@@ -231,6 +256,11 @@ impl Host {
             self.cancel_request(request);
         }
         let project = self.projects.write().remove(window)?;
+        if self.windows_for_root(&project.root).is_empty()
+            && let Some(plugins) = self.plugin_host()
+        {
+            plugins.withdraw_project_run_targets(&project.root);
+        }
         project.files_events_active.store(false, std::sync::atomic::Ordering::Release);
         project.plugin_diagnostics.close();
         if let Some(plugins) = plugins::editor_plugin_host() {

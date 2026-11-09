@@ -1,0 +1,137 @@
+id = "api14"
+name = "API 1.4 host tests"
+version = "0.1.0"
+engines.openidea = "^1.4"
+wasm = "dist/plugin.wasm"
+activation = ["on-command:*", "on-event:file-closed", "on-event:settings-changed", "on-event:input-mode-changed"]
+
+[capabilities]
+required = ["storage"]
+optional = ["ide.commands", "project.read", "vcs.read", "events", "events.input", "editor.read", "secrets", "net:localhost", "net.http:example.com", "ipc:$TMPDIR/api14-*"]
+
+[[contributes.secrets]]
+name = "token"
+label = "Token"
+
+[contributes.settings]
+schema = "settings.json"
+
+[[contributes.commands]]
+id = "ipc"
+title = "ipc"
+
+[[contributes.commands]]
+id = "fetch"
+title = "fetch"
+
+[[contributes.commands]]
+id = "window-status"
+title = "window-status"
+
+[[contributes.commands]]
+id = "remove-window-status"
+title = "remove-window-status"
+
+[[contributes.commands]]
+id = "global-status"
+title = "global-status"
+
+[[contributes.commands]]
+id = "execute"
+title = "execute"
+
+[[contributes.commands]]
+id = "oauth"
+title = "oauth"
+
+[[contributes.commands]]
+id = "secret"
+title = "secret"
+
+[[contributes.commands]]
+id = "delete-secret"
+title = "delete-secret"
+
+[[contributes.commands]]
+id = "undeclared-secret"
+title = "undeclared-secret"
+
+[[contributes.commands]]
+id = "output"
+title = "output"
+
+[[contributes.commands]]
+id = "events"
+title = "events"
+
+[[contributes.commands]]
+id = "process-run"
+title = "process-run"
+
+[[contributes.commands]]
+id = "process-run-command"
+title = "process-run-command"
+
+[[contributes.commands]]
+id = "process-start"
+title = "process-start"
+
+[[contributes.commands]]
+id = "terminal"
+title = "terminal"
+
+[[contributes.commands]]
+id = "log"
+title = "log"
+
+[[contributes.commands]]
+id = "open-editors"
+title = "open-editors"
+
+[[contributes.commands]]
+id = "open-editor"
+title = "open-editor"
+
+[[contributes.commands]]
+id = "set-selections"
+title = "set-selections"
+
+[[contributes.commands]]
+id = "reveal"
+title = "reveal"
+
+[[contributes.commands]]
+id = "search-text"
+title = "search-text"
+
+[[contributes.commands]]
+id = "problems"
+title = "problems"
+
+[[contributes.commands]]
+id = "decorations"
+title = "decorations"
+
+[[contributes.commands]]
+id = "clear-decorations"
+title = "clear-decorations"
+
+[[contributes.commands]]
+id = "file-decoration"
+title = "file-decoration"
+
+[[contributes.commands]]
+id = "clear-file-decorations"
+title = "clear-file-decorations"
+
+[[contributes.commands]]
+id = "vcs-log"
+title = "vcs-log"
+
+[[contributes.commands]]
+id = "vcs-blame"
+title = "vcs-blame"
+
+[[contributes.commands]]
+id = "vcs-diff"
+title = "vcs-diff"

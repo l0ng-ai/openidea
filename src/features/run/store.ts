@@ -3,6 +3,7 @@
  * (one Run tool window tab each). Output streams through a Channel into a
  * per-session `ConsoleModel`, batched per animation frame.
  */
+import { withRunTarget } from "@/platform/runTargetSelection";
 import { create } from "zustand";
 import { Channel } from "@tauri-apps/api/core";
 import {
@@ -42,6 +43,7 @@ import {
   type TestEvent,
   type TestOutputParser,
 } from "./testing";
+import { PluginTestOutput } from "./testing/plugin";
 import { GoTestOutput } from "./testing/go";
 import { moveToReportedClasses } from "./testing/jvm";
 import { RubyTestOutput } from "./testing/ruby";
@@ -96,6 +98,7 @@ interface SessionRuntime {
   console: ConsoleModel;
   tests: TestResults | null;
   parser: TestOutputParser | null;
+  pluginTests: PluginTestOutput | null;
   /** Machine-readable stdout (`go test -json`, `--teamcity`, the Ruby reporter): fed to the parser, shown decoded. */
   stdout: TestStdout | null;
   queue: OutputChunk[];
@@ -616,7 +619,15 @@ export function applyConsoleSettings() {
 
 function newRuntime(config: RunConfig): SessionRuntime {
   const tests = config.isTest ? new TestResults() : null;
-  const parser = config.isTest ? createTestParser(config) : null;
+  const builtIn = config.isTest ? createTestParser(config) : null;
+  const pluginTests =
+    tests && builtIn && config.params?.framework === "plugin"
+      ? new PluginTestOutput(config.id, builtIn, (events) => {
+          tests.apply(events);
+          for (const [id, rt] of runtimes) if (rt.tests === tests) bump(id);
+        })
+      : null;
+  const parser = pluginTests ? null : builtIn;
   const feed = (line: string) => {
     if (tests && parser) tests.apply(parser.feed(line));
   };
@@ -635,9 +646,11 @@ function newRuntime(config: RunConfig): SessionRuntime {
     stdout,
     tests,
     parser,
+    pluginTests,
     console: new ConsoleModel({
       maxChars: consoleCharLimit(),
       onLine: (text, kind) => {
+        if (pluginTests && kind !== "system") pluginTests.feed(text);
         if (parser && tests && kind !== "system" && !(kind === "stdout" && stdout)) tests.apply(parser.feed(text));
         if (kind !== "system") for (const l of runtime.lineListeners) l(text);
       },
@@ -712,6 +725,7 @@ export async function startRun(
     chain?: readonly string[];
   } = {},
 ): Promise<RunSession | null> {
+  config = withRunTarget(config);
   if (!options.launch && isCMakeBuild(config)) {
     await buildCMake(config.id, options.show !== false);
     return null;
@@ -1005,8 +1019,10 @@ function finishSession(sessionId: string, code: number | null) {
         if (text) rt.console.append({ kind: "stdout", text });
       }
       rt.console.flush();
-      if (rt.tests && rt.parser) {
-        rt.tests.apply(rt.parser.end?.() ?? []);
+      await rt.pluginTests?.end();
+      if (runtimes.get(sessionId) !== rt) return;
+      if (rt.tests && (rt.parser || rt.pluginTests)) {
+        rt.tests.apply(rt.parser?.end?.() ?? []);
         // Surefire / Gradle print only failures and class totals: per-test results come from the XML reports.
         if (frameworkFor(session.config) === "jvm") {
           const reports = await jvmReports(session);

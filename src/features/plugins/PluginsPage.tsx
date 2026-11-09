@@ -31,7 +31,7 @@ import {
   type MenuItem,
   T,
 } from "@/ui";
-import { RISK_LABEL, sortByRisk } from "./consent";
+import { RISK_LABEL, sortByRisk, capabilityDescription } from "./consent";
 import { pluginIconName } from "./pluginIcon";
 import { localizeContributions, usePluginCatalogs, usePluginT } from "./pluginText";
 import { itemsOf, uiPoint } from "./projection";
@@ -59,6 +59,8 @@ import { openExternalUrl } from "@/platform/openUrl";
 import { importIntellijTheme, showInstalledIntellijThemes } from "./intellijImport";
 import { promptInput } from "@/workbench/inputDialogs";
 import styles from "./PluginsPage.module.css";
+import { pluginsBackend } from "./backend";
+import { confirm } from "@/workbench/messages";
 import { tx } from "@/platform/i18n";
 
 const STATUS: Record<PluginStatus, { label: string; tone: "success" | "accent" | "neutral" | "danger" | "warning" }> = {
@@ -293,14 +295,83 @@ function PointSection({ plugin, point }: { plugin: PluginInfo; point: string }) 
   );
 }
 
-function CapabilityRow({ cap, children }: { cap: CapabilityInfo; children?: ReactNode }) {
+function CapabilityRow({ cap, children, program }: { cap: CapabilityInfo; children?: ReactNode; program?: ReactNode }) {
   return (
-    <li className={styles.item}>
-      {children}
-      <span className={styles.itemMain}>{tx(cap.description)}</span>
-      <span className={styles.mono}>{cap.id}</span>
-      <Badge tone={RISK_LABEL[cap.risk].tone}>{RISK_LABEL[cap.risk].label}</Badge>
+    <li className={styles.capabilityItem}>
+      <div className={styles.capabilityHeader}>
+        {children}
+        <span className={styles.mono}>{cap.id}</span>
+        <Badge tone={RISK_LABEL[cap.risk].tone}>{RISK_LABEL[cap.risk].label}</Badge>
+      </div>
+      <p className={styles.capabilityDescription}>{capabilityDescription(cap)}</p>
+      {program}
     </li>
+  );
+}
+
+function ProgramPermission({ plugin, cap, disabled }: { plugin: PluginInfo; cap: CapabilityInfo; disabled: boolean }) {
+  const project = useProject((s) => s.project);
+  const [scope, setScope] = useState<"global" | "project">("global");
+  const [path, setPath] = useState("");
+  const [error, setError] = useState("");
+  const [working, setWorking] = useState(false);
+  useEffect(() => {
+    let live = true;
+    void pluginsBackend()
+      .program(plugin.id, cap.id.slice(8), scope)
+      .then((p) => {
+        if (live) setPath(p);
+      })
+      .catch(() => {
+        if (live) setPath("");
+      });
+    return () => {
+      live = false;
+    };
+  }, [plugin, cap.id, scope, working]);
+  const choose = async (reset: boolean) => {
+    setError("");
+    setWorking(true);
+    try {
+      const selected = reset ? null : await pluginsBackend().pickProgram();
+      if (!reset && !selected) return;
+      const message = reset
+        ? tx("Revalidate the default executable? If it is unavailable, this permission will be revoked.")
+        : tx`Allow ${plugin.name} to run ${selected}? This is equivalent to running arbitrary code on this machine.`;
+      if (!(await confirm({ title: tx("Approve plugin executable"), message, ok: tx("Allow"), icon: "warning" })))
+        return;
+      await pluginsBackend().chooseProgram(plugin.id, cap.id, scope, selected);
+      await refreshPlugins();
+    } catch (e) {
+      setError(e instanceof Error ? e.message : String(e));
+    } finally {
+      setWorking(false);
+    }
+  };
+  return (
+    <div className={styles.programPermission}>
+      {path && <span className={clsx(styles.mono, styles.programPath)}>{path}</span>}
+      <Select
+        aria-label={tx("Executable scope")}
+        value={scope}
+        onChange={(value) => setScope(value as "global" | "project")}
+        options={[
+          { value: "global", label: tx("Global") },
+          ...(project ? [{ value: "project", label: tx("Project") }] : []),
+        ]}
+      />
+      <Button disabled={disabled || working} onClick={() => void choose(false)}>
+        {tx("Choose executable…")}
+      </Button>
+      <Button disabled={disabled || working} onClick={() => void choose(true)}>
+        {tx("Reset executable")}
+      </Button>
+      {error && (
+        <span role="alert" className={styles.error}>
+          {error}
+        </span>
+      )}
+    </div>
   );
 }
 
@@ -316,7 +387,13 @@ function CapabilityList({ plugin, busy }: { plugin: PluginInfo; busy: boolean })
   return (
     <ul className={styles.items} aria-label={tx("Permissions")}>
       {sortByRisk(plugin.capabilities).map((c) => (
-        <CapabilityRow key={c.id} cap={c}>
+        <CapabilityRow
+          key={c.id}
+          cap={c}
+          program={
+            c.id.startsWith("process:") && <ProgramPermission plugin={plugin} cap={c} disabled={busy || !confirmed} />
+          }
+        >
           <Checkbox
             checked={c.granted}
             disabled={busy || !confirmed}

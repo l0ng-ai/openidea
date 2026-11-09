@@ -56,7 +56,7 @@ pub async fn lsp_completion(
 }
 
 /// The plugin host and the document, when some plugin provides `kind`.
-fn plugin_providers(
+pub(crate) fn plugin_providers(
     host: &Host,
     window: &str,
     doc: DocId,
@@ -74,8 +74,46 @@ fn plugin_providers(
 }
 
 /// Plugin calls block (the plugin's actor thread does the work).
-async fn plugin_call<T: Send + 'static>(f: impl FnOnce() -> T + Send + 'static) -> Option<T> {
+pub(crate) async fn plugin_call<T: Send + 'static>(f: impl FnOnce() -> T + Send + 'static) -> Option<T> {
     tokio::task::spawn_blocking(f).await.ok()
+}
+
+fn provider_server<T: Default>(server: IdeResult<T>) -> IdeResult<T> {
+    match server {
+        Ok(v) => Ok(v),
+        Err(e) if matches!(e.kind, ErrorKind::NotFound | ErrorKind::Unavailable) => Ok(T::default()),
+        Err(e) => Err(e),
+    }
+}
+
+fn merge_language_locations(mut server: Vec<Location>, plugin: Vec<ide_plugin::Location>) -> Vec<Location> {
+    let mut seen: std::collections::HashSet<_> = server.iter().cloned().collect();
+    for l in plugin {
+        let loc = Location::file(l.path, l.range);
+        if seen.insert(loc.clone()) {
+            server.push(loc);
+        }
+    }
+    server
+}
+fn merge_language_highlights(
+    mut server: Vec<Highlight>,
+    plugin: Vec<ide_plugin::language_features::Highlight>,
+) -> Vec<Highlight> {
+    let mut seen: std::collections::HashSet<_> = server.iter().map(|h| h.range).collect();
+    for h in plugin {
+        if seen.insert(h.range) {
+            server.push(Highlight {
+                range: h.range,
+                kind: match h.kind.as_str() {
+                    "read" => HighlightKind::Read,
+                    "write" => HighlightKind::Write,
+                    _ => HighlightKind::Text,
+                },
+            });
+        }
+    }
+    server
 }
 
 /// Items from plugins carry no server: commands don't apply, and a code
@@ -222,7 +260,21 @@ pub async fn lsp_hover(
 }
 
 pub async fn lsp_signature_help(host: &Host, window: &str, doc: DocId, pos: Pos) -> IdeResult<Option<SignatureHelp>> {
-    host.project(window)?.lsp.signature_help(doc, pos).await
+    let server = host.project(window)?.lsp.signature_help(doc, pos).await;
+    if matches!(&server,Ok(Some(h)) if !h.signatures.is_empty()) {
+        return server;
+    }
+    let Some((plugins, d)) = plugin_providers(host, window, doc, ProviderKind::SignatureHelp) else {
+        return server;
+    };
+    let help = plugin_call(move || plugins.language_signature_help(&d, pos)).await.flatten();
+    match help {
+        Some(h) => {
+            let _ = provider_server(server)?;
+            Ok(Some(crate::plugins::language_features::signature_help(h)))
+        }
+        None => server,
+    }
 }
 
 pub async fn lsp_goto(host: &Host, window: &str, doc: DocId, pos: Pos, kind: GotoKind) -> IdeResult<Vec<Location>> {
@@ -238,6 +290,23 @@ pub async fn lsp_goto(host: &Host, window: &str, doc: DocId, pos: Pos, kind: Got
         }
     }
     let result = host.project(window)?.lsp.goto(doc, pos, kind).await;
+    if matches!(kind, GotoKind::Implementation | GotoKind::TypeDefinition) {
+        let k =
+            if kind == GotoKind::Implementation { ProviderKind::Implementation } else { ProviderKind::TypeDefinition };
+        let Some((plugins, d)) = plugin_providers(host, window, doc, k) else {
+            return result;
+        };
+        let locations = plugin_call(move || {
+            if kind == GotoKind::Implementation {
+                plugins.language_implementation(&d, pos)
+            } else {
+                plugins.language_type_definition(&d, pos)
+            }
+        })
+        .await
+        .unwrap_or_default();
+        return Ok(merge_language_locations(provider_server(result)?, locations));
+    }
     if kind != GotoKind::Definition {
         return result;
     }
@@ -358,6 +427,20 @@ pub async fn lsp_implementations(
     let cancel = host.begin_request(request);
     let result = lsp.implementations(doc, &positions, cancel).await;
     host.end_request(request);
+    if let Some((plugins, d)) = plugin_providers(host, window, doc, ProviderKind::Implementation) {
+        let count = positions.len();
+        let found = plugin_call(move || {
+            positions.into_iter().map(|pos| plugins.language_implementation(&d, pos)).collect::<Vec<_>>()
+        })
+        .await
+        .unwrap_or_default();
+        let mut out = provider_server(result)?;
+        out.resize_with(count, Vec::new);
+        for (items, found) in out.iter_mut().zip(found) {
+            *items = merge_language_locations(std::mem::take(items), found);
+        }
+        return Ok(out);
+    }
     result
 }
 
@@ -380,6 +463,10 @@ pub async fn lsp_goto_implementation(
         })
         .await;
     host.end_request(request);
+    if let Some((plugins, d)) = plugin_providers(host, window, doc, ProviderKind::Implementation) {
+        let found = plugin_call(move || plugins.language_implementation(&d, pos)).await.unwrap_or_default();
+        return Ok(merge_language_locations(provider_server(result)?, found));
+    }
     result
 }
 
@@ -505,10 +592,11 @@ fn validate_indexed_symbol(
         let stale = || {
             ide_core::IdeError::new(ErrorKind::OutOfSync, "indexed document changed; wait for indexing and try again")
         };
-        if ide_plugin::resolve_in_root(&project.root, &file.path.to_string_lossy()).ok().as_ref() != Some(&file.path) {
+        let path = dunce::simplified(&file.path);
+        if ide_plugin::resolve_in_root(&project.root, &path.to_string_lossy()).ok().as_deref() != Some(path) {
             return Err(stale());
         }
-        let text = if let Some(doc) = project.documents.by_path(&file.path) {
+        let text = if let Some(doc) = project.documents.by_path(path) {
             let snapshot = project.documents.text_snapshot(doc)?;
             if snapshot.large || file.version.is_some_and(|v| v != snapshot.version) {
                 return Err(stale());
@@ -517,7 +605,7 @@ fn validate_indexed_symbol(
         } else {
             let loaded = project
                 .documents
-                .load_file_bounded(&file.path, crate::plugins::navigation::MAX_DOCUMENT_BYTES)
+                .load_file_bounded(path, crate::plugins::navigation::MAX_DOCUMENT_BYTES)
                 .map_err(|_| stale())?;
             if loaded.binary || loaded.large {
                 return Err(stale());
@@ -555,7 +643,12 @@ fn merge_indexed_references(mut server: References, symbol: &crate::plugins::nav
 }
 
 pub async fn lsp_document_highlights(host: &Host, window: &str, doc: DocId, pos: Pos) -> IdeResult<Vec<Highlight>> {
-    host.project(window)?.lsp.document_highlights(doc, pos).await
+    let server = host.project(window)?.lsp.document_highlights(doc, pos).await;
+    let Some((plugins, d)) = plugin_providers(host, window, doc, ProviderKind::DocumentHighlights) else {
+        return server;
+    };
+    let items = plugin_call(move || plugins.language_document_highlights(&d, pos)).await.unwrap_or_default();
+    Ok(merge_language_highlights(provider_server(server)?, items))
 }
 
 pub async fn lsp_workspace_symbols(
@@ -597,7 +690,7 @@ pub async fn lsp_code_actions(
     let actions = if plugin_actions.is_empty() {
         result?
     } else {
-        let mut out = result.unwrap_or_default();
+        let mut out = provider_server(result)?;
         out.extend(plugin_actions);
         out
     };
@@ -1105,12 +1198,52 @@ pub async fn lsp_semantic_tokens(host: &Host, window: &str, doc: DocId) -> IdeRe
 }
 
 pub async fn lsp_code_lens(host: &Host, window: &str, doc: DocId) -> IdeResult<Vec<CodeLens>> {
-    host.project(window)?.lsp.code_lens(doc).await
+    let server = host.project(window)?.lsp.code_lens(doc).await;
+    let Some((plugins, d)) = plugin_providers(host, window, doc, ProviderKind::CodeLenses) else {
+        return server;
+    };
+    let items = plugin_call(move || plugins.language_code_lenses(&d)).await.unwrap_or_default();
+    let mut out = provider_server(server)?;
+    out.extend(items.into_iter().map(|(plugin, i)| CodeLens {
+        range: i.range,
+        command: Some(Command {
+            title: i.title,
+            command: format!("openidea.plugin-language:{plugin}:{}", i.command),
+            arguments: vec![serde_json::json!(serde_json::to_string(&i.argument).unwrap_or_default())],
+        }),
+    }));
+    Ok(out)
 }
 
 /// Links in a document (`href`s, Markdown links, `#include`s…) from its language servers.
 pub async fn lsp_document_links(host: &Host, window: &str, doc: DocId) -> IdeResult<Vec<DocumentLink>> {
-    host.project(window)?.lsp.document_links(doc).await
+    let server = host.project(window)?.lsp.document_links(doc).await;
+    let Some((plugins, d)) = plugin_providers(host, window, doc, ProviderKind::DocumentLinks) else {
+        return server;
+    };
+    let root = host.project(window)?.root.clone();
+    let items = plugin_call(move || plugins.language_document_links(&d)).await.unwrap_or_default();
+    let mut out = provider_server(server)?;
+    out.extend(items.into_iter().filter_map(|i| {
+        let url = i.target.starts_with("https://") || i.target.starts_with("http://");
+        if !url && ide_core::is_virtual_uri(&i.target) {
+            return None;
+        }
+        Some(DocumentLink {
+            range: i.range,
+            path: (!url).then(|| {
+                {
+                    let path = std::path::PathBuf::from(&i.target);
+                    if path.is_absolute() { path } else { root.join(path) }
+                }
+                .into()
+            }),
+            url: url.then_some(i.target),
+            fragment: None,
+            tooltip: None,
+        })
+    }));
+    Ok(out)
 }
 
 pub async fn lsp_call_hierarchy(
@@ -1200,6 +1333,34 @@ pub async fn redo_workspace_edit(host: &Host, window: &str, id: u32) -> IdeResul
 /// Runs a server command (`workspace/executeCommand`), e.g. a completion item's
 /// follow-up command. Edits the server requests arrive via `workspace/applyEdit`.
 pub async fn lsp_execute_command(host: &Host, window: &str, doc: DocId, command: Command) -> IdeResult<()> {
+    if let Some(rest) = command.command.strip_prefix("openidea.plugin-language:") {
+        let (plugin, command_id) =
+            rest.split_once(':').ok_or_else(|| ide_core::IdeError::invalid("Invalid plugin command"))?;
+        let plugins = crate::plugins::editor_plugin_host()
+            .ok_or_else(|| ide_core::IdeError::not_found("Plugin host unavailable"))?;
+        let argument = command
+            .arguments
+            .first()
+            .and_then(|a| a.as_str())
+            .and_then(|s| serde_json::from_str::<Option<String>>(s).ok())
+            .flatten();
+        let project = host.project(window)?;
+        let snap = project.documents.snapshot(doc)?;
+        let invocation = ide_plugin::Invocation {
+            client: Some(window.into()),
+            workspace_root: Some(project.root.clone()),
+            editor: Some(ide_plugin::EditorContext {
+                path: snap.path.0.clone(),
+                language: snap.language.0,
+                selections: vec![],
+            }),
+            selected_paths: vec![snap.path.0],
+            ..Default::default()
+        };
+        let (plugin, command_id) = (plugin.to_owned(), command_id.to_owned());
+        return blocking(move || plugins.run_language_command(&plugin, &command_id, argument.as_deref(), invocation))
+            .await;
+    }
     host.project(window)?.lsp.execute_command(doc, command).await
 }
 
@@ -1262,7 +1423,74 @@ pub async fn lsp_execute_code_action(
 }
 
 /// Commands of this module the remote server answers.
+/// Versioned plugin visuals, refreshed after the editor synchronizes its buffer.
+#[derive(Clone, Debug, serde::Serialize, serde::Deserialize, specta::Type)]
+#[serde(rename_all = "camelCase")]
+pub struct PluginLanguageVisuals {
+    pub version: u64,
+    pub injections: Vec<ide_plugin::language_features::Injection>,
+    pub colors: Vec<(String, ide_plugin::language_features::ColorInfo)>,
+    pub gutter_actions: Vec<(String, ide_plugin::language_features::GutterAction)>,
+}
+pub async fn plugin_language_visuals(host: &Host, window: &str, doc: DocId) -> IdeResult<PluginLanguageVisuals> {
+    let snap = host.project(window)?.documents.snapshot(doc)?;
+    blocking(move || {
+        let d = ProviderDocument {
+            path: snap.path.0,
+            language: snap.language.0,
+            version: u64::from(snap.version),
+            text: snap.text,
+        };
+        let mut out =
+            PluginLanguageVisuals { version: d.version, injections: vec![], colors: vec![], gutter_actions: vec![] };
+        if d.text.len() <= crate::plugins::navigation::MAX_DOCUMENT_BYTES
+            && let Some(plugins) = crate::plugins::editor_plugin_host()
+        {
+            out.injections = plugins.provide_injections(&d);
+            out.colors = plugins.language_colors(&d);
+            out.gutter_actions = plugins.language_gutter_actions(&d);
+        }
+        Ok(out)
+    })
+    .await
+}
+pub async fn plugin_color_presentations(
+    host: &Host,
+    window: &str,
+    doc: DocId,
+    plugin: String,
+    color: ide_plugin::language_features::ColorInfo,
+) -> IdeResult<Vec<String>> {
+    let snap = host.project(window)?.documents.snapshot(doc)?;
+    blocking(move || {
+        let d = ProviderDocument {
+            path: snap.path.0,
+            language: snap.language.0,
+            version: u64::from(snap.version),
+            text: snap.text,
+        };
+        if !crate::plugins::language_features::valid_range(&d, color.range) {
+            return Err(ide_core::IdeError::invalid("Invalid color range"));
+        }
+        Ok(crate::plugins::editor_plugin_host()
+            .map(|p| p.language_color_presentations(&plugin, &d, color))
+            .unwrap_or_default())
+    })
+    .await
+}
+pub fn plugin_formatters() -> Vec<crate::plugins::language_features::FormatterChoice> {
+    crate::plugins::editor_plugin_host().map(|p| p.formatter_choices()).unwrap_or_default()
+}
+
 pub(crate) fn register(d: &mut Dispatcher) {
+    d.add(
+        "plugin_language_visuals",
+        |c| async move { plugin_language_visuals(&c.host, &c.window, c.arg("doc")?).await },
+    );
+    d.add("plugin_color_presentations", |c| async move {
+        plugin_color_presentations(&c.host, &c.window, c.arg("doc")?, c.arg("plugin")?, c.arg("color")?).await
+    });
+    d.add("plugin_formatters", |_c| async move { Ok(plugin_formatters()) });
     d.add("lsp_completion", |c| async move {
         lsp_completion(&c.host, &c.window, c.arg("request")?, c.arg("doc")?, c.arg("pos")?, c.arg("trigger")?).await
     });
@@ -1408,6 +1636,32 @@ pub(crate) fn register(d: &mut Dispatcher) {
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn language_features_merge_without_overwriting_lsp_ranges_or_masking_errors() {
+        use super::*;
+        let range = Range::new(Pos::default(), Pos::new(0, 1));
+        let existing = Location::file("/p/a".into(), range);
+        let merged = merge_language_locations(
+            vec![existing.clone()],
+            vec![
+                ide_plugin::Location { path: "/p/a".into(), range },
+                ide_plugin::Location { path: "/p/b".into(), range },
+            ],
+        );
+        assert_eq!(merged.len(), 2);
+        assert_eq!(merged[0], existing);
+        let merged = merge_language_highlights(
+            vec![Highlight { range, kind: HighlightKind::Read }],
+            vec![ide_plugin::language_features::Highlight { range, kind: "write".into() }],
+        );
+        assert_eq!(merged.len(), 1);
+        assert_eq!(merged[0].kind, HighlightKind::Read);
+        assert!(
+            provider_server::<Vec<Location>>(Err(ide_core::IdeError::unavailable("no server"))).unwrap().is_empty()
+        );
+        assert!(provider_server::<Vec<Location>>(Err(ide_core::IdeError::cancelled())).is_err());
+    }
+
     use super::*;
 
     #[test]
@@ -1430,11 +1684,13 @@ mod tests {
         use crate::plugins::navigation::{IndexedAnchors, IndexedSymbol};
         use ide_core::{FileEdit, LanguageId};
         let tmp = tempfile::tempdir().unwrap();
-        let root = tmp.path().canonicalize().unwrap();
+        let root = dunce::canonicalize(tmp.path()).unwrap();
         let shared = root.join("shared.idx");
         let native = root.join("native.txt");
         std::fs::write(&shared, "old old").unwrap();
         std::fs::write(&native, "old").unwrap();
+        // Exercise legacy verbatim index paths alongside ordinary native URI paths.
+        let shared = std::fs::canonicalize(shared).unwrap();
         let range = Range::new(Pos::new(0, 0), Pos::new(0, 3));
         let other = Range::new(Pos::new(0, 4), Pos::new(0, 7));
         let symbol = IndexedSymbol {
@@ -1446,8 +1702,6 @@ mod tests {
                 ranges: vec![range, other],
             }],
         };
-        // Native file URIs have ordinary Windows paths; index snapshots retain
-        // canonical verbatim paths. Both identify the same file and edit batch.
         let server_shared = dunce::simplified(&shared).to_path_buf();
         let server_native = dunce::simplified(&native).to_path_buf();
         #[cfg(windows)]
@@ -1771,7 +2025,7 @@ mod tests {
         let tmp = tempfile::tempdir().unwrap();
         let root = tmp.path().join("proj");
         std::fs::create_dir_all(&root).unwrap();
-        let root = root.canonicalize().unwrap();
+        let root = dunce::canonicalize(&root).unwrap();
         let action = |operations: Vec<FileOperation>| ide_plugin::CodeAction {
             title: "Create view".into(),
             kind: Some("quickfix".into()),

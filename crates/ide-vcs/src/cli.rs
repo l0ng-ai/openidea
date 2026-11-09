@@ -382,9 +382,45 @@ fn run_cancellable_raw_stdin(
     stdin: Option<&[u8]>,
     cancel: &CancellationToken,
 ) -> IdeResult<Output> {
+    run_capture(root, args, stdin, cancel, usize::MAX)
+}
+
+/// Neutralizes repository clean/process filters for a read of working-tree bytes.
+/// Git still applies them with --no-ext-diff and --no-textconv.
+pub(crate) fn filter_overrides(root: &Path, cancel: &CancellationToken) -> IdeResult<Vec<String>> {
+    if crate::execution_allowed() {
+        return Ok(Vec::new());
+    }
+    let config = run_bounded(root, &["config", "--null", "--list"], cancel, 4 << 20)?;
+    let mut overrides = Vec::new();
+    for record in config.stdout_str().split('\0') {
+        let key = record.split('\n').next().unwrap_or_default();
+        if key.starts_with("filter.")
+            && (key.ends_with(".clean") || key.ends_with(".process") || key.ends_with(".required"))
+        {
+            overrides.push("-c".into());
+            overrides.push(format!("{key}={}", if key.ends_with(".required") { "false" } else { "" }));
+        }
+    }
+    Ok(overrides)
+}
+
+/// Cancellable capture with bounded stdout and stderr; stops git on overflow.
+pub(crate) fn run_bounded(root: &Path, args: &[&str], cancel: &CancellationToken, max: usize) -> IdeResult<Output> {
+    let out = run_capture(root, args, None, cancel, max)?;
+    if out.code == Some(0) { Ok(out) } else { Err(failure(args, &out.stderr, &out.stdout, out.code)) }
+}
+fn run_capture(
+    root: &Path,
+    args: &[&str],
+    stdin: Option<&[u8]>,
+    cancel: &CancellationToken,
+    max: usize,
+) -> IdeResult<Output> {
     if cancel.is_cancelled() {
         return Err(IdeError::cancelled());
     }
+    let overflow = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
     let mut cmd = command(root)?;
     cmd.args(args)
         .stdin(if stdin.is_some() { Stdio::piped() } else { Stdio::null() })
@@ -404,22 +440,32 @@ fn run_cancellable_raw_stdin(
         _ => None,
     };
     let capture = |mut pipe: Box<dyn Read + Send>| {
+        let overflow = overflow.clone();
         std::thread::spawn(move || {
             let mut bytes = Vec::new();
-            pipe.read_to_end(&mut bytes).map(|_| bytes)
+            (&mut pipe).take(max.saturating_add(1) as u64).read_to_end(&mut bytes)?;
+            if bytes.len() > max {
+                overflow.store(true, std::sync::atomic::Ordering::Release);
+                std::io::copy(&mut pipe, &mut std::io::sink())?;
+            }
+            Ok(bytes)
         })
     };
     let stdout = capture(Box::new(child.stdout.take().expect("piped stdout")));
     let stderr = capture(Box::new(child.stderr.take().expect("piped stderr")));
     let status = loop {
-        if cancel.is_cancelled() {
+        if cancel.is_cancelled() || overflow.load(std::sync::atomic::Ordering::Acquire) {
             terminate_tree(&mut child, KILL_GRACE);
             let _ = stdout.join();
             let _ = stderr.join();
             if let Some(w) = writer {
                 let _ = w.join();
             }
-            return Err(IdeError::cancelled());
+            return Err(if cancel.is_cancelled() {
+                IdeError::cancelled()
+            } else {
+                IdeError::invalid(format!("git output exceeds {max} bytes"))
+            });
         }
         if let Some(status) = child.try_wait()? {
             break status;
@@ -434,6 +480,9 @@ fn run_cancellable_raw_stdin(
     };
     let out = Output { stdout: join(stdout)?, stderr: join(stderr)?, code: status.code() };
     session.finish(status.success(), &String::from_utf8_lossy(&out.stderr));
+    if out.stdout.len() > max || out.stderr.len() > max {
+        return Err(IdeError::invalid(format!("git output exceeds {max} bytes")));
+    }
     Ok(out)
 }
 

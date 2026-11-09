@@ -11,7 +11,7 @@ use std::{path::Path, sync::Arc};
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn indexed_usages_rename_preview_staleness_and_grouped_undo() {
     let tmp = tempfile::tempdir().unwrap();
-    let root = tmp.path().canonicalize().unwrap();
+    let root = dunce::canonicalize(tmp.path()).unwrap();
     let first = root.join("definition.idx");
     let second = root.join("usage.idx");
     let source = "def 😀route\nref 😀route\n";
@@ -35,9 +35,7 @@ async fn indexed_usages_rename_preview_staleness_and_grouped_undo() {
         project_environment: false,
     });
     let project = host.open_light("main", &first).unwrap();
-    // Editors retain ordinary Windows paths; index snapshots use canonical
-    // (verbatim on Windows) paths and the host's own project-root identity.
-    let doc = project.documents.open(dunce::simplified(&first)).unwrap();
+    let doc = project.documents.open(&first).unwrap();
     let plugins =
         Arc::new(PluginHost::new(root.join("plugins"), Arc::new(|_: Option<&str>, _| {}), Limits::default()).unwrap());
     plugins.set_project_policy(Arc::new(|_| true));

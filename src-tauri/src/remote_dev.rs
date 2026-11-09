@@ -237,7 +237,9 @@ impl Handler for ClientHandler {
     }
 
     fn on_request(&self, method: &str, params: Value) -> Result<Value, (i64, String)> {
-        use ide_host::plugins::remote_host::{SECRET_REQUEST, SecretRequest};
+        use ide_host::plugins::remote_host::{
+            AUTH_REQUEST, AuthRequest, SECRET_REQUEST, SECRET_WRITE, SecretRequest, SecretWrite,
+        };
         match method {
             // A remote plugin's request header needs a secret from this machine's keychain.
             SECRET_REQUEST => {
@@ -245,6 +247,18 @@ impl Handler for ClientHandler {
                     serde_json::from_value(params).map_err(|e| (ide_jsonrpc::codes::INVALID_PARAMS, e.to_string()))?;
                 let state = self.app.state::<AppState>();
                 Ok(serde_json::to_value(state.plugins.declared_secret(&r.plugin, &r.name)).unwrap_or(Value::Null))
+            }
+            SECRET_WRITE => {
+                let request: SecretWrite =
+                    serde_json::from_value(params).map_err(|e| (ide_jsonrpc::codes::INVALID_PARAMS, e.to_string()))?;
+                Ok(serde_json::to_value(self.app.state::<AppState>().plugins.remote_secret_write(request))
+                    .unwrap_or(Value::Null))
+            }
+            AUTH_REQUEST => {
+                let request: AuthRequest =
+                    serde_json::from_value(params).map_err(|e| (ide_jsonrpc::codes::INVALID_PARAMS, e.to_string()))?;
+                Ok(serde_json::to_value(self.app.state::<AppState>().plugins.remote_auth(&self.window, request))
+                    .unwrap_or(Value::Null))
             }
             _ => Err((ide_jsonrpc::codes::METHOD_NOT_FOUND, format!("unhandled method {method}"))),
         }
@@ -537,8 +551,11 @@ pub async fn remote_connect(
     state.remote_dev.0.lock().insert(label.clone(), connection.clone());
     let weak = Arc::downgrade(&connection);
     let peer = connection.peer.clone();
+    let auth_plugins = state.plugins.clone();
+    let auth_window = label.clone();
     tauri::async_runtime::spawn(async move {
         peer.closed().await;
+        auth_plugins.forget_remote_loopbacks(&auth_window);
         if let Some(connection) = weak.upgrade() {
             connection.forwards.lock().clear();
         }

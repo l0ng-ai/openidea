@@ -76,8 +76,18 @@ pub const COMMIT_CHECKS: &str = "commitChecks";
 const VIEW_ITEM_MENU: &str = "viewItem.context";
 /// The toolbar above the commit message (Commit tool window and dialog).
 const COMMIT_MESSAGE_MENU: &str = "commit.message";
-const MENU_IDS: [&str; 6] =
-    ["editor.context", "projectView.context", "editorTab.context", "tools", VIEW_ITEM_MENU, COMMIT_MESSAGE_MENU];
+const MENU_IDS: [&str; 10] = [
+    "editor.context",
+    "projectView.context",
+    "editorTab.context",
+    "tools",
+    VIEW_ITEM_MENU,
+    COMMIT_MESSAGE_MENU,
+    "editor.title",
+    "mainToolbar",
+    "problems.context",
+    "searchResults.context",
+];
 const MAX_TITLE: usize = 256;
 const MAX_SETTINGS: usize = 200;
 const MAX_PATTERNS: usize = 16;
@@ -135,6 +145,9 @@ pub(super) fn menu(pkg: &Package, decl: toml::Value) -> Result<UiDecl, String> {
         return Err(format!("contributes.menus: unknown menu {:?} (one of {})", d.menu, MENU_IDS.join(", ")));
     }
     declared_command(pkg, MENUS, &d.command)?;
+    if ["editor.title", "mainToolbar", "problems.context", "searchResults.context"].contains(&d.menu.as_str()) {
+        pkg.manifest.needs_api("contributes.menus: language workbench menus", 4)?;
+    }
     if d.menu == COMMIT_MESSAGE_MENU {
         pkg.manifest.needs_api(&format!("contributes.menus: {COMMIT_MESSAGE_MENU}"), 3)?;
     }
@@ -964,6 +977,20 @@ pub(super) fn locales(pkg: &Package, _decl: toml::Value) -> Result<UiDecl, Strin
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn api4_menu_locations_require_api4_and_declared_commands() {
+        for location in ["editor.title", "mainToolbar", "problems.context", "searchResults.context"] {
+            for (api, valid) in [("^1.3", false), ("^1.4", true)] {
+                let manifest=ide_extension::Manifest::parse(&format!("id='test'\nname='Test'\nversion='1.0.0'\nengines.openidea='{api}'\n[[contributes.commands]]\nid='check'\ntitle='Check'")).unwrap();
+                let pkg = Package::new(manifest, std::path::PathBuf::from("/unused"));
+                let decl =
+                    toml::from_str(&format!("menu='{location}'\ncommand='check'\nwhen='editorLang == sql'")).unwrap();
+                assert_eq!(menu(&pkg, decl).is_ok(), valid, "{api}:{location}");
+                assert!(menu(&pkg, toml::from_str(&format!("menu='{location}'\ncommand='foreign'")).unwrap()).is_err());
+            }
+        }
+    }
 
     #[test]
     fn bindings_need_a_modifier() {

@@ -13,9 +13,11 @@ vi.mock("@/platform/ipc", () => ({
     sdkLocateTools: async () => ({ compileDir: "/tmp/run", tools: [] }),
   },
 }));
+import { useProject } from "@/platform/project";
 import { clearRuntimeCache, rootMarkers, toolEnv } from "./runtimes";
 
 beforeEach(() => {
+  useProject.setState({ settings: null });
   entries.clear();
   pythonNear.mockReset().mockResolvedValue("/env/python");
   clearRuntimeCache();
@@ -40,4 +42,15 @@ it("the production Python runtime query includes the source directory", async ()
   const env = await toolEnv(["python3"], "/repo/apps/python/src/main.py", "/repo", true);
   expect(pythonNear).toHaveBeenCalledWith("/repo/apps/python/src");
   expect(env.python).toBe("/env/python");
+});
+
+it("target PHP and Node runs do not require locally installed interpreters", async () => {
+  useProject.setState({
+    settings: { languages: { php: { runTarget: "plugin-target:php" }, node: { runTarget: "plugin-target:node" } } },
+  });
+  const env = await toolEnv(["php", "node", "npx", "tsx"], "/repo/main.php", "/repo", false, true);
+  expect(env.php).toBe("php");
+  expect(env.tool("node")).toBeUndefined();
+  expect(env.tool("npx")).toBeUndefined();
+  expect(env.tool("tsx")).toBeUndefined();
 });

@@ -1173,6 +1173,29 @@ fn add_maven_options(args: &mut Vec<String>, options: &[String], additive_profil
     args.splice(0..0, missing);
 }
 
+/// The interpreter target or project default; an explicit local choice returns an empty id.
+pub fn run_target<'a>(config: &RunConfig, settings: &'a Settings) -> Option<&'a str> {
+    let name = ide_run::wrap::program_name(&config.command);
+    let target = if matches!(name.as_str(), "php" | "composer" | "phpunit" | "pest")
+        || matches!(config.kind.as_str(), "php" | "composer" | "phpunit")
+    {
+        &settings.languages.php.run_target
+    } else if matches!(name.as_str(), "node" | "npm" | "npx" | "pnpm" | "yarn" | "bun")
+        || matches!(config.kind.as_str(), "node" | "npm" | "vitest" | "jest" | "mocha")
+    {
+        &settings.languages.node.run_target
+    } else {
+        return non_empty(&settings.run.default_target);
+    };
+    if target == "local" {
+        Some("")
+    } else if target.is_empty() {
+        non_empty(&settings.run.default_target)
+    } else {
+        Some(target)
+    }
+}
+
 /// Points run configurations at the selected toolchains: Python configs use the
 /// project interpreter, npm scripts the chosen package manager and Node.js,
 /// cargo / go configs the selected toolchain, Maven / Gradle their runner JDK
@@ -1210,6 +1233,19 @@ pub fn apply_to_run_configs(configs: &mut [RunConfig], root: &Path, s: &Settings
     };
 
     for c in configs.iter_mut() {
+        if let Some(pm) = pm
+            && c.kind == "npm"
+            && c.detected
+            && matches!(c.command.as_str(), "npm" | "pnpm" | "yarn" | "bun")
+        {
+            c.command = pm.to_owned();
+        }
+        if c.extras.target.is_none() {
+            c.extras.target = run_target(c, s).map(str::to_owned);
+        }
+        if c.extras.target.as_deref().is_some_and(|t| t.starts_with("plugin-target:")) {
+            continue;
+        }
         let owner = ide_run::scope::owner(root, c);
         resolve_run_command(c, root, s);
         let mut path_dirs: Vec<PathBuf> = Vec::new();
@@ -1243,13 +1279,6 @@ pub fn apply_to_run_configs(configs: &mut [RunConfig], root: &Path, s: &Settings
                 }
             }
             "npm" | "node" | "deno" | "bun" => {
-                if let Some(pm) = pm
-                    && c.kind == "npm"
-                    && c.detected
-                    && matches!(c.command.as_str(), "npm" | "pnpm" | "yarn" | "bun")
-                {
-                    c.command = pm.to_owned();
-                }
                 // The configuration's own Node interpreter, else the project's.
                 let own = c.extras.params.get("nodeInterpreter").and_then(|p| setting_path(root, p));
                 if let Some(dir) =
@@ -1367,6 +1396,9 @@ pub fn without_derived(config: &RunConfig, root: &Path, s: &Settings) -> RunConf
         c
     };
     let mut out = config.clone();
+    if out.extras.target.as_deref() == run_target(&out, s) {
+        out.extras.target = None;
+    }
     // Until nothing changes: some entries are derived only once others are gone
     // (the virtualenv's `PATH` is added only without `VIRTUAL_ENV`). An entry derived before
     // the configuration's own choice (an npm script's Node interpreter) is derived too.

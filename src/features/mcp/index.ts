@@ -30,7 +30,7 @@ export function activate(): () => void {
   let timer: ReturnType<typeof setTimeout> | null = null;
   const report = () => {
     timer = null;
-    if (isRemoteWindow() || !useProject.getState().project) return;
+    if (!useProject.getState().project) return;
     const paths = openEditorPaths();
     const editor = activeEditor();
     const focused = document.hasFocus();

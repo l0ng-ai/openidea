@@ -67,7 +67,7 @@ pub enum NotificationLevel {
 }
 
 /// 0-based line and UTF-16 code unit column (as in the editor and LSP).
-#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, PartialOrd, Ord, Hash)]
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, PartialOrd, Ord, Hash, serde::Serialize, serde::Deserialize)]
 pub struct Position {
     pub line: u32,
     pub character: u32,
@@ -80,7 +80,7 @@ impl Position {
 }
 
 /// Half-open range; a cursor is an empty range.
-#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, PartialOrd, Ord, Hash)]
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, PartialOrd, Ord, Hash, serde::Serialize, serde::Deserialize)]
 pub struct Range {
     pub start: Position,
     pub end: Position,
@@ -211,6 +211,12 @@ impl From<String> for ContextValue {
 #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
 #[non_exhaustive]
 pub enum EventKind {
+    FileClosed,
+    SettingsChanged,
+    InputModeChanged,
+    RunExited,
+    TerminalExited,
+    ContentTabAction,
     FileOpened,
     FileSaved,
     FilesChanged,
@@ -225,6 +231,12 @@ impl EventKind {
     /// The name the IDE knows it by.
     pub fn name(self) -> &'static str {
         match self {
+            Self::FileClosed => "file-closed",
+            Self::SettingsChanged => "settings-changed",
+            Self::InputModeChanged => "input-mode-changed",
+            Self::RunExited => "run-exited",
+            Self::TerminalExited => "terminal-exited",
+            Self::ContentTabAction => "content-tab-action",
             Self::FileOpened => "file-opened",
             Self::FileSaved => "file-saved",
             Self::FilesChanged => "files-changed",
@@ -365,7 +377,7 @@ pub struct CommitDraft {
 }
 
 /// A range in a file.
-#[derive(Clone, Debug, PartialEq, Eq)]
+#[derive(Clone, Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub struct Location {
     /// Absolute path.
     pub path: String,
@@ -516,4 +528,93 @@ impl Event {
         }
         Self::Other { kind, data }
     }
+}
+
+/// An editor in the invoking window.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct OpenEditor {
+    pub path: String,
+    pub language: String,
+    pub dirty: bool,
+    pub active: bool,
+}
+/// Find in Files options. Include and exclude are project-relative globs.
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct TextQuery {
+    pub pattern: String,
+    pub regex: bool,
+    pub case_sensitive: bool,
+    pub whole_word: bool,
+    pub include: Vec<String>,
+    pub exclude: Vec<String>,
+}
+/// A text search match with zero-based UTF-16 coordinates.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct TextMatch {
+    pub location: Location,
+    pub line: String,
+}
+/// Bounded text search result.
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct TextSearch {
+    pub matches: Vec<TextMatch>,
+    pub limit_hit: bool,
+}
+/// A file's Problems view diagnostics from one source.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct FileProblems {
+    pub path: String,
+    pub source: String,
+    pub diagnostics: Vec<Diagnostic>,
+}
+/// An editor annotation. Styles are fixed theme-token names; unknown names are ignored.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct Decoration {
+    pub range: Range,
+    pub style: String,
+    pub hover: Option<String>,
+    pub after: Option<String>,
+}
+/// A project-tree annotation. Badge is at most two Unicode characters.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct FileDecoration {
+    pub badge: Option<String>,
+    pub style: String,
+    pub tooltip: Option<String>,
+}
+/// Repository history metadata. Date is Unix seconds.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct CommitInfo {
+    pub id: String,
+    pub short_id: String,
+    pub author: String,
+    pub author_email: String,
+    pub date: i64,
+    pub subject: String,
+    pub body: String,
+    pub parents: Vec<String>,
+}
+/// Attribution for a zero-based document line. Date is Unix seconds.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct BlameLine {
+    pub line: u32,
+    pub commit: String,
+    pub author: String,
+    pub date: i64,
+    pub summary: String,
+}
+
+/// Non-secret settings of a plugin-owned project database source (API 1.4).
+#[derive(Clone, Debug, Default, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct PluginDataSource {
+    pub id: String,
+    pub name: String,
+    pub driver: String,
+    pub host: Option<String>,
+    pub port: Option<u16>,
+    pub database: Option<String>,
+    pub user: Option<String>,
+    pub url: Option<String>,
+    pub options: Vec<(String, String)>,
 }

@@ -248,7 +248,7 @@ impl Dispatcher {
         .add("term_is_busy", |c| async move { ops::term::is_busy(&c.host, c.arg("id")?) })
         .add("term_default_shell", |_| async move { Ok(ide_terminal::default_shell_path()) })
         .add("term_available_shells", |_| async move { Ok(ide_terminal::available_shells()) })
-        .add("run_configs", |c| async move { ops::run::configs(&c.host, &c.window) })
+        .add("run_configs", |c| async move { ops::doc::blocking(move || ops::run::configs(&c.host, &c.window)).await })
         .add("run_save_configs", |c| async move {
             ops::run::save_configs(
                 &c.host,

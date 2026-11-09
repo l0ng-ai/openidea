@@ -3,6 +3,8 @@
  * Build Tools › Maven: the toolchain each language's server and run configurations
  * use (applied by `ide-sdk` when language servers start and when run configurations load).
  */
+import { useRunTargets } from "@/platform/pluginRunTargets";
+import { tx } from "@/platform/i18n";
 import { useEffect, useId, useMemo, useState } from "react";
 import { call, commands, type Sdk } from "@/platform/ipc";
 import { IconButton, Input, type SelectOption, T } from "@/ui";
@@ -73,6 +75,23 @@ function SdkRow({
 // ---------------------------------------------------------------------------
 // Node.js
 
+function RunTargetRow({ language }: { language: "php" | "node" }) {
+  const [target, setTarget] = useSetting<string>(`languages.${language}.runTarget`);
+  const targets = useRunTargets();
+  const options = [
+    { value: "", label: "Default run target" },
+    { value: "local", label: "Local machine" },
+    ...targets.map((t) => ({ value: t.id, label: tx`Run in target ${t.name}` })),
+  ];
+  if (target && target !== "local" && !targets.some((t) => t.id === target))
+    options.push({ value: target, label: tx`Run in target ${target}` });
+  return (
+    <Row label="Run in target">
+      <Select value={target ?? ""} options={options} onChange={setTarget} aria-label="Run in target" />
+    </Row>
+  );
+}
+
 export function NodePage() {
   const [pm, setPm] = useSetting<string>("languages.node.packageManager");
   const { list } = useDetected("packageManager");
@@ -103,6 +122,7 @@ export function NodePage() {
           aria-label="Node interpreter"
           hint="Runs npm scripts and Node-based language servers (vtsls, eslint, pyright…)."
         />
+        <RunTargetRow language="node" />
         <Row label="Package manager" hint="Used by the npm run configurations detected from package.json scripts.">
           <Select value={pm} options={pmOptions} onChange={setPm} aria-label="Package manager" />
         </Row>
@@ -212,6 +232,7 @@ export function PhpPage() {
         />
       </Section>
       <Section title="CLI Interpreter">
+        <RunTargetRow language="php" />
         <SdkRow
           k="languages.php.interpreter"
           label="PHP interpreter"

@@ -106,10 +106,11 @@ describe("MCP editor reports", () => {
     expect(state.reportOpen).toHaveBeenCalledTimes(2);
     expect(state.reportFocused).toHaveBeenCalledTimes(2);
   });
-  it("does not report remote windows or after disposal", async () => {
+  it("forwards remote editor reports and stops after disposal", async () => {
     state.remote = true;
     await vi.advanceTimersByTimeAsync(300);
-    expect(state.reportOpen).not.toHaveBeenCalled();
+    expect(state.reportOpen).toHaveBeenCalledWith(["/p/a.txt"]);
+    state.reportOpen.mockClear();
     state.remote = false;
     state.registryChanged();
     stop();

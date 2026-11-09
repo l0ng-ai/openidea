@@ -20,7 +20,7 @@ impl Fixture {
     }
     fn with_manifest(edit: impl FnOnce(&Path)) -> Self {
         let tmp = tempfile::tempdir().unwrap();
-        let root = tmp.path().canonicalize().unwrap();
+        let root = dunce::canonicalize(tmp.path()).unwrap();
         let host = PluginHost::new(root.join("plugins"), Arc::new(|_: Option<&str>, _| {}), Limits::default()).unwrap();
         host.set_project_policy(Arc::new(|_| true));
         let fixture = Path::new(env!("CARGO_MANIFEST_DIR")).join("../ide-plugin/tests/fixtures/indexer");
@@ -147,6 +147,48 @@ fn permissions_and_paths_are_checked_before_indexing() {
     );
 }
 
+#[cfg(windows)]
+#[test]
+fn verbatim_snapshots_use_the_hosts_plain_document_identity() {
+    let f = Fixture::new();
+    let source = f.index("source.idx", SOURCE, &[method()], Some(1), "app");
+    let mapping = f.index("mapping.idx", MAPPING, &[], Some(1), "app");
+    let verbatim = std::fs::canonicalize(&source).unwrap();
+    assert_ne!(source, verbatim);
+    f.host
+        .index_navigation(
+            &f.root,
+            Snapshot { path: &verbatim, version: Some(2), text: SOURCE, symbols: &[method()], scope: "app" },
+            Invocation { workspace_root: Some(f.root.clone()), ..Default::default() },
+        )
+        .unwrap();
+    let result = f.host.navigation_at(&f.root, &mapping, 1, reference_pos(), None, |_| None).unwrap();
+    assert_eq!(result.targets.len(), 1, "a different prefix must replace the same document snapshot");
+    assert_eq!(result.targets[0].path.0, source);
+    assert!(f.host.indexed_symbol_at(&f.root, &source, Pos::new(0, 4), None).is_some());
+}
+
+#[cfg(unix)]
+#[test]
+fn snapshot_paths_still_reject_symlink_aliases_and_escapes() {
+    let f = Fixture::new();
+    let path = f.index("source.idx", SOURCE, &[method()], Some(1), "app");
+    let outside = tempfile::NamedTempFile::new().unwrap();
+    for (target, name) in [(path.as_path(), "alias.idx"), (outside.path(), "escape.idx")] {
+        let alias = f.root.join(name);
+        std::os::unix::fs::symlink(target, &alias).unwrap();
+        assert!(
+            f.host
+                .index_navigation(
+                    &f.root,
+                    Snapshot { path: &alias, version: None, text: SOURCE, symbols: &[], scope: "app" },
+                    Invocation::default(),
+                )
+                .is_err()
+        );
+    }
+}
+
 #[test]
 fn indexed_refactorings_drop_graphs_after_permission_revocation_or_lost_trust() {
     let f = Fixture::new();
@@ -194,6 +236,7 @@ fn two_windows_of_same_root_keep_unsaved_snapshots_isolated() {
                     &f.root,
                     Snapshot { path, version: Some(1), text, symbols: &symbols, scope: "" },
                     Invocation {
+                        command_chain: Vec::new(),
                         client: Some(client.into()),
                         workspace_root: Some(f.root.clone()),
                         editor: None,
