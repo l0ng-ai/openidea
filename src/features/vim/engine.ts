@@ -322,7 +322,30 @@ export function applyRcCommands(commands: readonly RcCommand[]): string[] {
       problems.push(`${c.kind === "set" ? c.name : c.lhs}: ${e instanceof Error ? e.message : String(e)}`);
     }
   }
+  fixSpaceLeader(commands);
   return problems;
+}
+
+/**
+ * vim-core always prefers a full keymap hit over a longer partial one, so its
+ * built-in `<Space>` → `l` swallows any `<Space>`-leader mapping (#2337).
+ * Rebuild that builtin on every apply: drop it while a user mapping uses
+ * `<Space>` as a prefix, restore it otherwise so bare Space keeps moving right.
+ */
+function fixSpaceLeader(commands: readonly RcCommand[]) {
+  const lhsList = commands.flatMap((c) => (c.kind === "map" || c.kind === "mapEx" ? [c.lhs] : []));
+  const firstToken = (lhs: string) => lhs.match(/<(?:[CSMA]-)*\w+>|./i)?.[0]?.toLowerCase();
+  const hasBareSpace = lhsList.some((lhs) => lhs.toLowerCase() === "<space>");
+  // A bare `<Space>` mapping already wins by itself (full match at the front).
+  if (hasBareSpace) return;
+  const usesSpacePrefix = lhsList.some((lhs) => lhs.length > "<Space>".length && firstToken(lhs) === "<space>");
+  // The builtin is context-less; `undefined` matches exactly that entry.
+  while (Vim.unmap("<Space>", undefined as unknown as string)) {
+    // Drop the builtin and any leftovers from earlier applies.
+  }
+  if (!usesSpacePrefix) {
+    Vim._mapCommand({ keys: "<Space>", type: "keyToKey", toKeys: "l" } as never);
+  }
 }
 
 /** Test hook: runs an Ex command line in `view`. */

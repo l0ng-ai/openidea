@@ -153,6 +153,27 @@ describe("Vim engine", () => {
     Vim.handleKey(cm as never, "k", "user");
     expect(cm.state.vim?.insertMode).toBe(true);
     expect(view.state.doc.toString()).toBe("<Esc>|\\one two\nthree");
+  });
+
+  it("fires <Space>-leader mappings instead of the builtin Space motion (#2337)", async () => {
+    const view = makeView();
+    const cm = getCM(view)!;
+    applyRcCommands(parseVimrc('let mapleader = " "\nnmap <leader>ff <Action>(GotoDeclaration)').commands);
+    for (const key of ["<Space>", "f", "f"]) Vim.handleKey(cm as never, key, "user");
+    await tick();
+    expect(ran).toEqual(["navigate.declaration"]);
+    view.destroy();
+  });
+
+  it("keeps bare Space moving right when no mapping uses it as a prefix", async () => {
+    const view = makeView();
+    const cm = getCM(view)!;
+    // A Space-prefix mapping first (removes the builtin), then a plain apply (restores it).
+    applyRcCommands(parseVimrc('let mapleader = " "\nnmap <leader>ff <Action>(GotoDeclaration)').commands);
+    applyRcCommands(parseVimrc("").commands);
+    Vim.handleKey(cm as never, "<Space>", "user");
+    expect(view.state.selection.main.head).toBe(1);
+    expect(ran).toEqual([]);
     view.destroy();
   });
 
