@@ -3,8 +3,10 @@
  * (Apache-2.0 / MIT, see THIRD_PARTY_LICENSES.md), vendored as-is under
  * `./expui/<group>/<name>.svg` with their `_dark` and `@20x20` variants. File types
  * whose JetBrains icons are not open source use OpenIDEA's own icons drawn in the same
- * style, under `./openidea/<group>/<name>.svg` (paths prefixed `openidea/`). Names are the
- * contract used by actions (`Action.icon`) and contributions (`ToolWindowContribution.icon`).
+ * style, under `./openidea/<group>/<name>.svg` (paths prefixed `openidea/`).
+ * Framework logos in `./brands/` come from Simple Icons (CC0-1.0) and JetBrains
+ * (Apache-2.0); see THIRD_PARTY_LICENSES.md. Names are the contract used by actions
+ * (`Action.icon`) and contributions (`ToolWindowContribution.icon`).
  *
  * Rendering: the SVG markup is bundled as raw strings and inlined, so there are no
  * extra requests and icons can be styled.
@@ -24,13 +26,32 @@ import clsx from "clsx";
 import { create } from "zustand";
 import styles from "./icons.module.css";
 
-const RAW = import.meta.glob<string>(["./expui/**/*.svg", "./openidea/**/*.svg"], {
+const RAW = import.meta.glob<string>(["./expui/**/*.svg", "./openidea/**/*.svg", "./brands/*.svg"], {
   query: "?raw",
   import: "default",
   eager: true,
 });
 
 const ICONS = {
+  "project-quarkus": "brands/quarkus",
+  "project-ktor": "brands/ktor",
+  "project-compose": "brands/compose",
+  "project-android": "brands/android",
+  "project-flutter": "brands/flutter",
+  "project-nextjs": "brands/nextjs",
+  "project-nuxt": "brands/nuxt",
+  "project-svelte": "brands/svelte",
+  "project-angular": "brands/angular",
+  "project-nestjs": "brands/nestjs",
+  "project-react": "brands/react",
+  "project-express": "brands/express",
+  "project-fastapi": "brands/fastapi",
+  "project-django": "brands/django",
+  "project-flask": "brands/flask",
+  "project-laravel": "brands/laravel",
+  "project-tauri": "brands/tauri",
+  "project-unity": "brands/unity",
+  "project-vite": "brands/vite",
   // Files & folders
   folder: "nodes/folder",
   "folder-open": "nodes/folder",
@@ -669,7 +690,7 @@ interface Prepared {
 
 function raw(path: string): string | undefined {
   if (path.startsWith(EXTERNAL_PREFIX)) return EXTERNAL.get(path);
-  return RAW[path.startsWith("openidea/") ? `./${path}.svg` : `./expui/${path}.svg`];
+  return RAW[path.startsWith("openidea/") || path.startsWith("brands/") ? `./${path}.svg` : `./expui/${path}.svg`];
 }
 
 function parse(svg: string): Variant {

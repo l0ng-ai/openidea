@@ -34,6 +34,7 @@ import {
   type TreeOptions,
 } from "./model";
 import { projectFs } from "./fs";
+import { PROJECT_TYPES, type ProjectType } from "./projectType";
 import { projectViewRoots, useProjectViewRoots, type ProjectViewRootContribution } from "@/workbench/contributions";
 import { ancestorsWithin, isSameOrInside, nameOf, type PackageKind } from "./paths";
 
@@ -102,6 +103,7 @@ interface ProjectTreeState {
   root: string | null;
   name: string;
   members: readonly string[] | null;
+  projectTypes: ReadonlyMap<string, ProjectType>;
   listings: ReadonlyMap<string, readonly FileEntry[]>;
   expanded: ReadonlySet<string>;
   selected: ReadonlySet<string>;
@@ -149,6 +151,7 @@ export const useProjectTree = create<ProjectTreeState>(() => ({
   root: null,
   name: "",
   members: null,
+  projectTypes: new Map(),
   listings: new Map(),
   expanded: new Set(),
   selected: new Set(),
@@ -180,6 +183,7 @@ let memo: {
   root: string | null;
   name: string;
   members: readonly string[] | null;
+  projectTypes: ProjectTreeState["projectTypes"];
   listings: ProjectTreeState["listings"];
   options: ViewOptions;
   editing: Editing | null;
@@ -206,6 +210,7 @@ export function selectModel(s: ProjectTreeState): TreeModel {
     memo.root === s.root &&
     memo.name === s.name &&
     memo.members === s.members &&
+    memo.projectTypes === s.projectTypes &&
     memo.listings === s.listings &&
     memo.options === s.options &&
     memo.editing === s.editing &&
@@ -221,7 +226,23 @@ export function selectModel(s: ProjectTreeState): TreeModel {
   const contributed = projectViewRoots(extras);
   const memberRoots = s.members
     ?.map((path) => ({ path, label: nameOf(path), icon: "", detail: path }))
-    .sort((a, b) => (a.path === s.root ? -1 : b.path === s.root ? 1 : compareNames(a.label, b.label)));
+    .sort((a, b) => {
+      if (s.options.sortBy === "type") {
+        const aType = s.projectTypes.get(a.path);
+        const bType = s.projectTypes.get(b.path);
+        const typeOrder =
+          aType && bType
+            ? compareNames(PROJECT_TYPES[aType].name, PROJECT_TYPES[bType].name)
+            : aType
+              ? -1
+              : bType
+                ? 1
+                : 0;
+        if (typeOrder) return typeOrder;
+        return compareNames(a.label, b.label);
+      }
+      return a.path === s.root ? -1 : b.path === s.root ? 1 : compareNames(a.label, b.label);
+    });
   const project = () =>
     memberRoots
       ? withExtraRoots(EMPTY_MODEL, memberRoots, s.listings, options, placeholder)
@@ -256,6 +277,7 @@ export function selectModel(s: ProjectTreeState): TreeModel {
     root: s.root,
     name: s.name,
     members: s.members,
+    projectTypes: s.projectTypes,
     listings: s.listings,
     options: s.options,
     editing: s.editing,
@@ -298,6 +320,7 @@ export function initProjectTree(
     root,
     name,
     members,
+    projectTypes: new Map(),
     listings: new Map(),
     expanded: initialExpanded(root, mode, members),
     selected: new Set(),

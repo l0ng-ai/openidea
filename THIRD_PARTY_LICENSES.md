@@ -1,5 +1,19 @@
 # Third-party licenses
 
+## Project framework logos
+
+`src/ui/brands/` contains the Android, Angular, Django, Express, FastAPI, Flask,
+Flutter, Ktor, Laravel, NestJS, Next.js, Nuxt, Quarkus, React, Svelte, Tauri and
+Unity and Vite logos from [Simple Icons](https://github.com/simple-icons/simple-icons),
+retrieved through Iconify (`simple-icons:<name>`). Licensed under
+[CC0 1.0 Universal](https://github.com/simple-icons/simple-icons/blob/develop/LICENSE.md).
+Their paths are unchanged; some use the brand color instead of `currentColor`.
+
+`src/ui/brands/compose.svg` is the Compose Multiplatform logo from
+[`JetBrains/compose-multiplatform/artwork/compose-logo.svg`](https://github.com/JetBrains/compose-multiplatform/blob/986ae65bdb403552b21f4fdaad47d9bd90cbcebc/artwork/compose-logo.svg),
+copied unmodified. Copyright JetBrains s.r.o. and contributors, Apache-2.0
+(full license text below).
+
 ## Project Lombok
 
 `java/lombok/lombok-1.18.48-openidea.3.jar` contains Project Lombok v1.18.48 with the Equinox
