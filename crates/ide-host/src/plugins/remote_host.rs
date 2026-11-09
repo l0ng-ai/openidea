@@ -22,15 +22,14 @@
 //! keychain and are asked for with a `plugin_secret` request
 //! ([`SecretRequest`]) when a request header needs one (rule 4).
 
-use super::{
-    Consent, HostWorkspace, PluginEditor, PluginEvent, PluginHost, PluginSource, PluginStatusItem, SecretStore,
-};
+use super::{Consent, HostWorkspace, PluginEditor, PluginEvent, PluginHost, PluginSource, SecretStore};
 use crate::rpc::Dispatcher;
 use base64::Engine as _;
 use ide_core::{IdeError, IdeResult};
 use ide_extension::{MANIFEST_FILE, ledger};
 use ide_jsonrpc::Peer;
 use ide_plugin::{Invocation, Limits};
+use ide_workspace::settings::SettingsScope;
 use parking_lot::Mutex;
 use serde::{Deserialize, Serialize};
 use std::collections::{BTreeMap, BTreeSet};
@@ -44,6 +43,32 @@ pub const SYNC_PACKAGES: &str = "plugin_sync_packages";
 pub const EVENT_NOTIFICATION: &str = "plugin";
 /// Server → client request ([`SecretRequest`] → `Option<String>`).
 pub const SECRET_REQUEST: &str = "plugin_secret";
+/// Mutations of declared secrets, kept on the desktop.
+pub const SECRET_WRITE: &str = "plugin_secret_write";
+/// OAuth listeners bound on the desktop, never the project server.
+pub const AUTH_REQUEST: &str = "plugin_auth";
+
+#[derive(Clone, Serialize, Deserialize)]
+pub struct SecretWrite {
+    pub plugin: String,
+    pub name: String,
+    pub value: Option<String>,
+}
+
+/// A remote plugin's operation on a desktop OAuth listener.
+#[derive(Clone, Serialize, Deserialize)]
+pub struct AuthRequest {
+    pub plugin: String,
+    pub operation: AuthOperation,
+}
+#[derive(Clone, Serialize, Deserialize)]
+pub enum AuthOperation {
+    Begin { path: String },
+    Wait { id: u64, timeout_ms: u32 },
+    Close { id: u64 },
+    Clear,
+}
+
 /// Under the server's data directory.
 pub const PLUGINS_DIR: &str = "remote-plugins";
 const INCOMING_DIR: &str = "remote-plugins.incoming";
@@ -60,6 +85,13 @@ pub struct RemotePackage {
     pub digest: String,
     /// Capabilities the user granted on the desktop.
     pub granted: Vec<String>,
+    /// Disabled packages remain installed so their persistent project data survives.
+    #[serde(default = "enabled_by_default")]
+    pub enabled: bool,
+}
+
+fn enabled_by_default() -> bool {
+    true
 }
 
 /// One file of a package (`path` relative to the package, `data` base64).
@@ -106,8 +138,18 @@ pub fn package_digest(dir: &Path, files: &[PathBuf]) -> IdeResult<String> {
 pub fn forwarded(event: &PluginEvent) -> bool {
     matches!(
         event,
-        PluginEvent::Notification { .. }
+        PluginEvent::RunTargetsChanged
+            | PluginEvent::WindowRequest { .. }
+            | PluginEvent::ContentTabReply { .. }
+            | PluginEvent::DecorationsChanged { .. }
+            | PluginEvent::EditorOpen { .. }
+            | PluginEvent::EditorRanges { .. }
+            | PluginEvent::Notification { .. }
             | PluginEvent::StatusItemChanged { .. }
+            | PluginEvent::WindowStatusItemChanged { .. }
+            | PluginEvent::ExecuteCommand { .. }
+            | PluginEvent::OutputChanged { .. }
+            | PluginEvent::RevealOutput { .. }
             | PluginEvent::ContextChanged { .. }
             | PluginEvent::TaskStarted { .. }
             | PluginEvent::TaskProgress { .. }
@@ -117,6 +159,7 @@ pub fn forwarded(event: &PluginEvent) -> bool {
             | PluginEvent::ViewMessage { .. }
             | PluginEvent::OpenTerminal { .. }
             | PluginEvent::OpenLocation { .. }
+            | PluginEvent::OpenLogTab { .. }
             | PluginEvent::CopyToClipboard { .. }
             | PluginEvent::OpenUrl { .. }
             | PluginEvent::OpenProject { .. }
@@ -142,12 +185,16 @@ impl PluginHost {
         plugins
             .iter()
             .filter(|p| p.dev_root.is_none() && !p.invalid && p.manifest().wasm.is_some())
-            .filter(|p| matches!(p.status(), super::PluginStatus::Active | super::PluginStatus::Inactive))
             .filter_map(|p| {
                 let files = self.package_files(p).ok()?;
                 let digest = package_digest(p.dir(), &files).ok()?;
                 let granted = p.meta.lock().granted.iter().map(ToString::to_string).collect();
-                Some(RemotePackage { id: p.id().to_owned(), digest, granted })
+                Some(RemotePackage {
+                    id: p.id().to_owned(),
+                    digest,
+                    granted,
+                    enabled: matches!(p.status(), super::PluginStatus::Active | super::PluginStatus::Inactive),
+                })
             })
             .collect()
     }
@@ -216,8 +263,19 @@ impl SecretStore for ClientSecrets {
         }
     }
 
-    fn set(&self, _: &str, _: &str, _: Option<&str>) -> Result<(), String> {
-        Err("secrets are stored on the desktop".into())
+    fn set(&self, plugin: &str, name: &str, value: Option<&str>) -> Result<(), String> {
+        let peer = self.peer.get().ok_or("desktop disconnected")?.clone();
+        let request = SecretWrite { plugin: plugin.into(), name: name.into(), value: value.map(str::to_owned) };
+        let ask = async {
+            tokio::time::timeout(SECRET_TIMEOUT, peer.request::<_, Result<(), String>>(SECRET_WRITE, request, None))
+                .await
+        };
+        let answer = if tokio::runtime::Handle::try_current().is_ok() {
+            tokio::task::block_in_place(|| self.runtime.block_on(ask))
+        } else {
+            self.runtime.block_on(ask)
+        };
+        answer.map_err(|_| "desktop timed out".to_owned())?.map_err(|e| e.to_string())?
     }
 }
 
@@ -234,8 +292,10 @@ impl RemotePlugins {
             }
         };
         let host = Arc::new(PluginHost::new(data_dir.join(PLUGINS_DIR), Arc::new(sink), Limits::default())?);
+        projects.set_plugin_host(&host);
         host.set_workspace(Some(Arc::new(HostWorkspace(Arc::downgrade(projects)))));
-        host.set_secret_store(Arc::new(ClientSecrets { peer, runtime: projects.runtime.clone() }));
+        host.set_secret_store(Arc::new(ClientSecrets { peer: peer.clone(), runtime: projects.runtime.clone() }));
+        *host.shared.loopbacks.write() = Arc::new(ClientLoopbacks { peer, runtime: projects.runtime.clone() });
         let trust = Arc::downgrade(projects);
         host.set_project_policy(Arc::new(move |root| {
             trust.upgrade().is_some_and(|h| h.trust.trusted(root).unwrap_or(false))
@@ -283,6 +343,14 @@ impl RemotePlugins {
                 report.failed.push(format!("{}: invalid plugin id", pkg.id));
                 continue;
             }
+            if !pkg.enabled {
+                if self.host.info_of(&pkg.id).is_ok()
+                    && let Err(e) = self.host.set_enabled(&pkg.id, false)
+                {
+                    report.failed.push(format!("{}: {e}", pkg.id));
+                }
+                continue;
+            }
             // The desktop asked the user, change of signer included.
             let consent = Consent { optional: pkg.granted.clone(), signer_change: true };
             if self.current_digest(&pkg.id).as_deref() == Some(pkg.digest.as_str()) {
@@ -317,6 +385,9 @@ impl RemotePlugins {
         let want: BTreeSet<&str> = pkg.granted.iter().map(String::as_str).collect();
         if have != want || info.status == super::PluginStatus::NeedsConsent {
             self.host.grant(&pkg.id, consent)?;
+        }
+        if info.status == super::PluginStatus::Disabled {
+            self.host.set_enabled(&pkg.id, true)?;
         }
         Ok(())
     }
@@ -376,11 +447,14 @@ impl RemotePlugins {
                 let arg: Option<String> = c.arg("arg")?;
                 let editor: Option<PluginEditor> = c.arg("editor")?;
                 let paths: Option<Vec<PathBuf>> = c.arg("paths")?;
+                let settings_scope: Option<SettingsScope> = c.arg("settingsScope")?;
                 let invocation = Invocation {
+                    command_chain: c.arg::<Option<Vec<String>>>("commandChain")?.unwrap_or_default(),
                     client: Some(c.window.clone()),
                     workspace_root: c.host.project(&c.window).ok().map(|p| p.root.clone()),
                     editor: editor.map(PluginEditor::context),
                     selected_paths: paths.unwrap_or_default(),
+                    global_settings: matches!(settings_scope, Some(SettingsScope::Global)),
                 };
                 blocking(move || host.run_command(&plugin_id, &command_id, arg.as_deref(), invocation)).await
             }
@@ -394,10 +468,69 @@ impl RemotePlugins {
             }
         });
         let h = host.clone();
+        d.add("plugin_select_tests", move |c| {
+            let h = h.clone();
+            async move {
+                let host = alive(&h)?;
+                let config = c.arg::<String>("config")?;
+                let tests = c.arg("tests")?;
+                blocking(move || host.select_tests(&c.window, &config, tests)).await
+            }
+        });
+        let h = host.clone();
+        d.add("plugin_parse_test_results", move |c| {
+            let h = h.clone();
+            async move {
+                let host = alive(&h)?;
+                let config = c.arg::<String>("config")?;
+                let chunk = c.arg("chunk")?;
+                blocking(move || host.parse_test_results(&c.window, &config, chunk)).await
+            }
+        });
+        let h = host.clone();
+        d.add("plugin_terminal_session_close", move |c| {
+            let h = h.clone();
+            async move { alive(&h)?.close_terminal_session(&c.window, &c.arg::<String>("operation")?) }
+        });
+        let h = host.clone();
+        d.add("plugin_terminal_session_spawn", move |c| {
+            let h = h.clone();
+            async move {
+                let plugins = alive(&h)?;
+                let operation: String = c.arg("operation")?;
+                let cols = c.arg("cols")?;
+                let rows = c.arg("rows")?;
+                let output = c.channel("onOutput")?;
+                blocking(move || plugins.spawn_terminal_session(&c.host, &c.window, &operation, cols, rows, output))
+                    .await
+            }
+        });
+        let h = host.clone();
+        d.add("plugin_prepare_debug_run", move |c| {
+            let h = h.clone();
+            async move {
+                let plugins = alive(&h)?;
+                let config = c.arg("config")?;
+                blocking(move || plugins.prepare_debug_run(&c.window, config)).await
+            }
+        });
+        let h = host.clone();
+        d.add("plugin_finish_operation", move |c| {
+            let h = h.clone();
+            async move {
+                Ok(alive(&h)?.finish_operation(&c.window, &c.arg::<String>("id")?, c.arg("status")?, c.arg("stopped")?))
+            }
+        });
+        let h = host.clone();
+        d.add("plugin_content_tab_action", move |c| {
+            let h = h.clone();
+            async move { alive(&h)?.content_tab_action(&c.window, &c.arg::<String>("pluginId")?, c.arg("action")?) }
+        });
+        let h = host.clone();
         d.add("plugin_post_events", move |c| {
             let h = h.clone();
             async move {
-                alive(&h)?.post_events(Some(&c.window), c.arg("events")?);
+                alive(&h)?.post_window_events(&c.window, c.arg("events")?, c.arg("editor")?);
                 Ok(())
             }
         });
@@ -407,15 +540,9 @@ impl RemotePlugins {
             async move { Ok(alive(&h)?.event_kinds().into_iter().collect::<Vec<_>>()) }
         });
         let h = host.clone();
-        d.add("plugin_status_items", move |_| {
+        d.add("plugin_status_items", move |c| {
             let h = h.clone();
-            async move {
-                Ok(alive(&h)?
-                    .status_items()
-                    .into_iter()
-                    .map(|(plugin_id, id, item)| PluginStatusItem { plugin_id, id, item })
-                    .collect::<Vec<_>>())
-            }
+            async move { Ok(alive(&h)?.status_snapshot(&c.window)) }
         });
         let h = host.clone();
         d.add("plugin_context_keys", move |c| {
@@ -431,6 +558,43 @@ impl RemotePlugins {
         d.add("plugin_answer_prompt", move |c| {
             let h = h.clone();
             async move { Ok(alive(&h)?.answer_prompt(&c.arg::<String>("promptId")?, c.arg("answer")?)) }
+        });
+        let h = host.clone();
+        d.add("plugin_choose_program", move |c| {
+            let h = h.clone();
+            async move {
+                let host = alive(&h)?;
+                let id: String = c.arg("pluginId")?;
+                let cap: String = c.arg("capability")?;
+                let scope: SettingsScope = c.arg("scope")?;
+                let path: Option<PathBuf> = c.arg("path")?;
+                let root = match scope {
+                    SettingsScope::Global => None,
+                    SettingsScope::Project => Some(c.host.project(&c.window)?.root.clone()),
+                };
+                blocking(move || host.choose_program(&id, &cap, root.as_deref(), path.as_deref())).await
+            }
+        });
+        let h = host.clone();
+        d.add("plugin_program", move |c| {
+            let h = h.clone();
+            async move {
+                let host = alive(&h)?;
+                let id: String = c.arg("pluginId")?;
+                let program: String = c.arg("program")?;
+                let scope: SettingsScope = c.arg("scope")?;
+                let root = match scope {
+                    SettingsScope::Global => None,
+                    SettingsScope::Project => Some(c.host.project(&c.window)?.root.clone()),
+                };
+                blocking(move || host.program_for_project(&id, &program, root.as_deref()).map(ide_core::IpcPath::from))
+                    .await
+            }
+        });
+        let h = host.clone();
+        d.add("plugin_answer_command", move |c| {
+            let h = h.clone();
+            async move { Ok(alive(&h)?.answer_command(&c.window, &c.arg::<String>("requestId")?, c.arg("answer")?)) }
         });
         let h = host.clone();
         d.add("plugin_answer_commit", move |c| {
@@ -451,6 +615,27 @@ impl RemotePlugins {
                 )
                 .await
             }
+        });
+        d.add("mcp_set_open_editors", |c| async move {
+            let paths: Vec<ide_core::IpcPath> = c.arg("paths")?;
+            c.host.project(&c.window)?;
+            c.host.mcp_reports.set_open_editors(&c.window, paths.into_iter().map(PathBuf::from).collect());
+            Ok(())
+        });
+        d.add("mcp_set_focused_editor", |c| async move {
+            c.host.project(&c.window)?;
+            c.host.mcp_reports.set_focused_editor(&c.window, c.arg("editor")?, c.arg("focused")?);
+            Ok(())
+        });
+        d.add("mcp_report_problems", |c| async move {
+            c.host.project(&c.window)?;
+            c.host.mcp_reports.report_problems(&c.window, c.arg("reset")?, c.arg("files")?);
+            Ok(())
+        });
+        let h = host.clone();
+        d.add("plugin_decoration_sets", move |_c| {
+            let h = h.clone();
+            async move { Ok(alive(&h)?.decoration_sets()) }
         });
         let h = host.clone();
         d.add("plugin_set_active_file", move |c| {
@@ -573,6 +758,21 @@ impl RemotePlugins {
             let h = h.clone();
             async move { super::index_ops::plugin_endpoints(&c.host, alive(&h)?, &c.window, c.arg("pluginId")?).await }
         });
+        let h = host.clone();
+        d.add("plugin_run_targets", move |c| {
+            let h = h.clone();
+            async move { super::run_targets::list(&c.host, alive(&h)?.as_ref(), &c.window) }
+        });
+        let h = host.clone();
+        d.add("plugin_answer_run_target", move |c| {
+            let h = h.clone();
+            async move {
+                let plugins = alive(&h)?;
+                let id: String = c.arg("id")?;
+                let use_target = c.arg("useTarget")?;
+                blocking(move || super::run_targets::answer(&c.host, &plugins, &c.window, &id, use_target)).await
+            }
+        });
         d.add("plugin_line_markers", |c| async move {
             crate::ops::lsp::plugin_line_markers(&c.host, &c.window, c.arg("doc")?).await
         });
@@ -615,6 +815,123 @@ fn safe_relative(path: &str) -> IdeResult<PathBuf> {
         return Err(IdeError::invalid(format!("invalid file path {path:?} in package")));
     }
     Ok(p.to_path_buf())
+}
+
+struct ClientLoopbacks {
+    peer: Arc<OnceLock<Peer>>,
+    runtime: tokio::runtime::Handle,
+}
+impl ClientLoopbacks {
+    fn request(
+        &self,
+        plugin: &str,
+        operation: AuthOperation,
+        cancel: Option<ide_core::CancellationToken>,
+    ) -> Result<serde_json::Value, ide_plugin::HostError> {
+        let peer = self.peer.get().ok_or(ide_plugin::HostError::Cancelled)?.clone();
+        let timeout = match &operation {
+            AuthOperation::Wait { timeout_ms, .. } => Duration::from_millis(u64::from(*timeout_ms)) + SECRET_TIMEOUT,
+            _ => SECRET_TIMEOUT,
+        };
+        let request = AuthRequest { plugin: plugin.into(), operation };
+        let ask = async {
+            tokio::time::timeout(
+                timeout,
+                peer.request::<_, Result<serde_json::Value, ide_plugin::HostError>>(AUTH_REQUEST, request, cancel),
+            )
+            .await
+            .map_err(|_| ide_plugin::HostError::Failed("desktop OAuth request timed out".into()))?
+            .map_err(|e| ide_plugin::HostError::Failed(e.to_string()))?
+        };
+        if tokio::runtime::Handle::try_current().is_ok() {
+            tokio::task::block_in_place(|| self.runtime.block_on(ask))
+        } else {
+            self.runtime.block_on(ask)
+        }
+    }
+}
+impl super::auth::Service for ClientLoopbacks {
+    fn begin(&self, plugin: &str, _window: &str, path: &str) -> Result<(u64, String), ide_plugin::HostError> {
+        serde_json::from_value(self.request(plugin, AuthOperation::Begin { path: path.into() }, None)?)
+            .map_err(|e| ide_plugin::HostError::Failed(e.to_string()))
+    }
+    fn wait(
+        &self,
+        plugin: &str,
+        id: u64,
+        timeout: Duration,
+        cancel: &ide_core::CancellationToken,
+    ) -> Result<Option<String>, ide_plugin::HostError> {
+        let result = self.request(
+            plugin,
+            AuthOperation::Wait { id, timeout_ms: timeout.as_millis().min(u128::from(u32::MAX)) as u32 },
+            Some(cancel.clone()),
+        );
+        if cancel.is_cancelled() {
+            self.close(plugin, id);
+            return Err(ide_plugin::HostError::Cancelled);
+        }
+        serde_json::from_value(result?).map_err(|e| ide_plugin::HostError::Failed(e.to_string()))
+    }
+    fn close(&self, plugin: &str, id: u64) {
+        let _ = self.request(plugin, AuthOperation::Close { id }, None);
+    }
+    fn clear(&self, plugin: &str) {
+        let _ = self.request(plugin, AuthOperation::Clear, None);
+    }
+    fn forget_window(&self, _: &str) {}
+}
+
+impl PluginHost {
+    /// A remote instance may mutate only declared secrets with a current grant.
+    pub fn remote_secret_write(&self, request: SecretWrite) -> Result<(), String> {
+        let plugin = self.get(&request.plugin).map_err(|e| e.message)?;
+        if !plugin.meta.lock().granted.iter().any(|g| g.covers(&ide_extension::Capability::Secrets)) {
+            return Err("secrets capability not granted".into());
+        }
+        if !self.ui.items(super::providers::SECRETS_POINT, Some(plugin.id())).iter().any(|s| s.key == request.name) {
+            return Err("undeclared secret".into());
+        }
+        if request.value.as_ref().is_some_and(|v| v.len() > 64 << 10) {
+            return Err("secret value too long".into());
+        }
+        self.shared.secrets.read().set(plugin.id(), &request.name, request.value.as_deref())
+    }
+    /// Serves a connected remote instance using this connection's actual window.
+    pub fn remote_auth(&self, window: &str, request: AuthRequest) -> Result<serde_json::Value, ide_plugin::HostError> {
+        if matches!(&request.operation, AuthOperation::Begin { .. } | AuthOperation::Wait { .. }) {
+            self.get(&request.plugin).map_err(|e| ide_plugin::HostError::NotFound(e.message))?;
+        }
+        let owner = format!("remote:{window}:{}", request.plugin);
+        let service = self.shared.loopbacks.read().clone();
+        let result = match request.operation {
+            AuthOperation::Begin { path } => {
+                if self.shared.client_closed(window) {
+                    return Err(ide_plugin::HostError::Cancelled);
+                }
+                serde_json::to_value(service.begin(&owner, window, &path)?)
+            }
+            AuthOperation::Wait { id, timeout_ms } => serde_json::to_value(service.wait(
+                &owner,
+                id,
+                Duration::from_millis(u64::from(timeout_ms)),
+                &ide_core::CancellationToken::new(),
+            )?),
+            AuthOperation::Close { id } => {
+                service.close(&owner, id);
+                Ok(serde_json::Value::Null)
+            }
+            AuthOperation::Clear => {
+                service.clear(&owner);
+                Ok(serde_json::Value::Null)
+            }
+        };
+        result.map_err(|e| ide_plugin::HostError::Failed(e.to_string()))
+    }
+    /// A remote transport closed; abandon its browser listeners.
+    pub fn forget_remote_loopbacks(&self, window: &str) {
+        self.shared.loopbacks.read().forget_window(window);
+    }
 }
 
 #[cfg(test)]

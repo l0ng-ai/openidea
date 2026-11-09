@@ -5,6 +5,7 @@
  */
 import { registerEndpointProvider, type EndpointEntry } from "@/workbench/contributions";
 import type { PluginInfo, ThemeDef } from "@/bindings";
+import { pluginIconName } from "./pluginIcon";
 import { registerAction } from "@/platform/actions";
 import { tx } from "@/platform/i18n";
 import { addContributedTheme, pluginThemeRef } from "@/platform/themes";
@@ -22,8 +23,15 @@ import styles from "./PluginsPage.module.css";
 /** Unpacks an action argument: a bare path, or a menu's `{ path, paths }`. */
 export function commandArgs(arg: unknown): [string | null, string[]] {
   if (typeof arg === "string") return [arg, []];
-  const { path, paths } = (arg ?? {}) as { path?: unknown; paths?: unknown };
+  const { path, paths, line, column } = (arg ?? {}) as {
+    path?: unknown;
+    paths?: unknown;
+    line?: unknown;
+    column?: unknown;
+  };
   if (typeof path !== "string" || !Array.isArray(paths)) return [null, []];
+  if (typeof line === "number" && typeof column === "number")
+    return [JSON.stringify({ path, line, column }), paths.filter((p): p is string => typeof p === "string")];
   return [path, paths.filter((p): p is string => typeof p === "string")];
 }
 
@@ -32,6 +40,7 @@ export const pluginActionId = (pluginId: string, commandId: string) => `plugin.$
 interface CommandDecl {
   id: string;
   title: string;
+  icon?: string | null;
   category?: string | null;
   when?: string | null;
 }
@@ -181,24 +190,47 @@ function providePluginEndpoints(pluginId: string): () => void {
 /** Registers the client side of every first-party UI point. */
 export function defineBuiltinUiPoints(): () => void {
   const disposers = [
+    defineUiPoint("mcpTools", {}),
     defineUiPoint("endpoints", { project: ({ pluginId }) => providePluginEndpoints(pluginId) }),
     defineUiPoint<CommandDecl>("commands", {
       title: "Commands",
-      project: ({ pluginId, decl }, { plugin }) =>
-        registerAction({
+      project: ({ pluginId, decl }, { plugin }) => {
+        let disposed = false;
+        const action = {
           id: pluginActionId(pluginId, decl.id),
           title: decl.title,
           category: decl.category ?? plugin.name,
-          icon: "package",
+          icon:
+            decl.icon && !decl.icon.endsWith(".svg")
+              ? decl.icon
+              : plugin.icon
+                ? pluginIconName(pluginId, plugin.icon)
+                : "package",
           when: decl.when ?? undefined,
           verbatim: true,
           keywords: ["plugin", plugin.name, pluginId],
           description: tx`From plugin ${plugin.name}`,
-          run: async ({ arg }) => {
+          run: async ({ arg }: { arg?: unknown }) => {
             const [path, paths] = commandArgs(arg);
             await runPluginCommand(pluginId, decl.id, path, paths);
           },
-        }),
+        };
+        let off = registerAction(action);
+        if (decl.icon?.endsWith(".svg"))
+          void pluginsBackend()
+            .assets(pluginId, `commandIcon/${decl.id}`)
+            .then((assets) => {
+              const svg = assets.find(([id]) => id === `commandIcon/${decl.id}`)?.[1];
+              if (!svg || disposed) return;
+              off();
+              off = registerAction({ ...action, icon: pluginIconName(pluginId, { light: svg, dark: null }) });
+            })
+            .catch(console.warn);
+        return () => {
+          disposed = true;
+          off();
+        };
+      },
       Details: CommandsDetails,
     }),
     // Offered by every theme picker while the plugin is live; `followThemeSetting` applies the selected one.

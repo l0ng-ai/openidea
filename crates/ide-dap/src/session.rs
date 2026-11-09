@@ -48,6 +48,8 @@ pub(crate) struct Session {
     /// Set once `configurationDone` was sent; breakpoint updates go out live after that.
     pub configured: AtomicBool,
     pub initialized: watch::Sender<bool>,
+    pub startup_cancel: ide_core::CancellationToken,
+    pub output_drained: watch::Sender<bool>,
     pub terminated: AtomicBool,
     /// Set by a second Stop: the one waiting for the program kills it instead.
     pub stop_force: AtomicBool,
@@ -103,6 +105,8 @@ impl Session {
             program: Mutex::new(None),
             configured: AtomicBool::new(false),
             initialized: watch::channel(false).0,
+            startup_cancel: ide_core::CancellationToken::new(),
+            output_drained: watch::channel(true).0,
             terminated: AtomicBool::new(false),
             stop_force: AtomicBool::new(false),
             debuggee_pid: AtomicI64::new(0),
@@ -275,6 +279,11 @@ impl Session {
     pub fn kill_processes(&self) {
         self.kotlin_relay.lock().take();
         if let Some(mut c) = self.adapter_process.lock().take() {
+            if self.adapter == "rdbg"
+                && let Some(pid) = c.id()
+            {
+                ide_core::process::kill_tree_of(pid);
+            }
             let _ = c.start_kill();
         }
         for mut c in std::mem::take(&mut *self.debuggees.lock()) {
@@ -448,6 +457,11 @@ pub(crate) async fn event_loop(
             Incoming::Closed => break,
         }
     }
+    // rdbg closes DAP before Ruby's remaining at_exit handlers print the test summary.
+    if session.adapter == "rdbg" && session.request == "launch" {
+        let mut drained = session.output_drained.subscribe();
+        let _ = tokio::time::timeout(DEBUGGEE_EXIT_WAIT, drained.wait_for(|done| *done)).await;
+    }
     if let Some(mgr) = manager.upgrade() {
         mgr.session_closed(&session);
     }
@@ -565,6 +579,10 @@ async fn on_event(mgr: &Arc<DebugManager>, s: &Arc<Session>, event: &str, mut bo
 }
 
 fn on_reverse_request(mgr: &Arc<DebugManager>, s: &Arc<Session>, seq: i64, command: &str, args: Value) {
+    if s.spec.target.is_some() {
+        let _ = s.conn.respond(seq, command, Err("This debugger does not support plugin run targets".into()));
+        return;
+    }
     match command {
         "runInTerminal" => {
             let result = run_in_terminal(s, &args);
@@ -588,15 +606,14 @@ fn on_reverse_request(mgr: &Arc<DebugManager>, s: &Arc<Session>, seq: i64, comma
 
 /// A `runInTerminal` program and the pseudo-terminal it runs in.
 pub(crate) struct ProgramTerminal {
-    writer: Box<dyn std::io::Write + Send>,
+    writer: ide_core::input::InputWriter,
     child: Box<dyn portable_pty::Child + Send + Sync>,
     _master: Box<dyn portable_pty::MasterPty + Send>,
 }
 
 impl ProgramTerminal {
     pub(crate) fn write(&mut self, text: &str) -> std::io::Result<()> {
-        self.writer.write_all(text.as_bytes())?;
-        self.writer.flush()
+        self.writer.write(text.as_bytes())
     }
 }
 
@@ -616,6 +633,16 @@ pub(crate) fn run_in_terminal(s: &Arc<Session>, args: &Value) -> Result<Value, S
     let pair = native_pty_system()
         .openpty(PtySize { rows: 24, cols: 200, pixel_width: 0, pixel_height: 0 })
         .map_err(|e| format!("cannot open a terminal for {program}: {e}"))?;
+    #[cfg(unix)]
+    let wait_writable = ide_core::input::nonblocking(
+        pair.master.as_raw_fd().ok_or_else(|| format!("terminal of {program}: PTY has no file descriptor"))?,
+    )
+    .map_err(|e| format!("terminal of {program}: {e}"))?;
+    #[cfg(unix)]
+    let wait_readable = ide_core::input::readable(
+        pair.master.as_raw_fd().ok_or_else(|| format!("terminal of {program}: PTY has no file descriptor"))?,
+    )
+    .map_err(|e| format!("terminal of {program}: {e}"))?;
     let mut cmd = CommandBuilder::new(program);
     // CodeLLDB's launcher clears the terminal first; the console keeps the session's earlier output.
     cmd.args(rest.iter().filter(|a| *a != "--clear-screen"));
@@ -641,12 +668,31 @@ pub(crate) fn run_in_terminal(s: &Arc<Session>, args: &Value) -> Result<Value, S
             };
         }
     }
-    let child = pair.slave.spawn_command(cmd).map_err(|e| format!("failed to start {program}: {e}"))?;
+    let mut child = pair.slave.spawn_command(cmd).map_err(|e| format!("failed to start {program}: {e}"))?;
     drop(pair.slave);
     let reader = pair.master.try_clone_reader().map_err(|e| format!("terminal of {program}: {e}"))?;
     let writer = pair.master.take_writer().map_err(|e| format!("terminal of {program}: {e}"))?;
+    let writer = ide_core::input::InputWriter::new(
+        format!("openidea-debug-input-{}", s.id.0),
+        writer,
+        #[cfg(unix)]
+        wait_writable,
+        |e| {
+            tracing::warn!("debug input: {e}");
+        },
+    )
+    .inspect_err(|_| {
+        let _ = child.kill();
+        let _ = child.wait();
+    })
+    .map_err(|e| format!("terminal input worker: {e}"))?;
     let pid = child.process_id();
-    forward_terminal_output(s, reader);
+    forward_terminal_output(
+        s,
+        reader,
+        #[cfg(unix)]
+        wait_readable,
+    );
     if let Some(mut previous) = s.program.lock().replace(ProgramTerminal { writer, child, _master: pair.master }) {
         let _ = previous.child.kill();
     }
@@ -655,7 +701,11 @@ pub(crate) fn run_in_terminal(s: &Arc<Session>, args: &Value) -> Result<Value, S
 }
 
 /// The program's terminal output, as stdout lines (`\r\n` as `\n`; colours are kept).
-fn forward_terminal_output(s: &Session, mut reader: Box<dyn std::io::Read + Send>) {
+fn forward_terminal_output(
+    s: &Session,
+    mut reader: Box<dyn std::io::Read + Send>,
+    #[cfg(unix)] mut wait_readable: impl FnMut() -> std::io::Result<()> + Send + 'static,
+) {
     let session = s.id;
     let sink = s.owner.sink.clone();
     let _ = std::thread::Builder::new().name(format!("openidea-debuggee-{}", session.0)).spawn(move || {
@@ -663,8 +713,27 @@ fn forward_terminal_output(s: &Session, mut reader: Box<dyn std::io::Read + Send
         let mut pending: Vec<u8> = Vec::new();
         loop {
             match reader.read(&mut buf) {
-                Ok(0) | Err(_) => break,
+                Ok(0) => break,
                 Ok(n) => pending.extend_from_slice(&buf[..n]),
+                Err(e) if e.kind() == std::io::ErrorKind::Interrupted => continue,
+                Err(e) if e.kind() == std::io::ErrorKind::WouldBlock => {
+                    #[cfg(unix)]
+                    if let Err(e) = wait_readable()
+                        && e.kind() != std::io::ErrorKind::Interrupted
+                    {
+                        tracing::warn!(%session, "debug terminal read: {e}");
+                        break;
+                    }
+                    #[cfg(not(unix))]
+                    std::thread::sleep(std::time::Duration::from_millis(4));
+                    continue;
+                }
+                #[cfg(unix)]
+                Err(e) if e.raw_os_error() == Some(libc::EIO) => break,
+                Err(e) => {
+                    tracing::warn!(%session, "debug terminal read: {e}");
+                    break;
+                }
             }
             // Keep incomplete UTF-8 sequences, and a `\r` that may start a `\r\n`, for the next chunk.
             let mut valid = match std::str::from_utf8(&pending) {
@@ -726,7 +795,6 @@ fn forward_output<R: AsyncRead + Unpin + Send + 'static>(s: &Session, mut stream
 /// Launch with the IDE's resolved runtime and classpath; the adapter only attaches.
 pub(crate) async fn start_kotlin_debuggee(s: &Arc<Session>, args: &mut Value) -> ide_core::IdeResult<()> {
     use tokio::io::{AsyncBufReadExt, BufReader};
-    let port = crate::adapter::free_port()?;
     let java = args.get("javaExec").and_then(Value::as_str).unwrap_or("java");
     let strings = |key: &str| -> Vec<String> {
         args.get(key)
@@ -739,7 +807,9 @@ pub(crate) async fn start_kotlin_debuggee(s: &Arc<Session>, args: &mut Value) ->
     let mut cmd = tokio::process::Command::new(java);
     ide_core::process::prepare(cmd.as_std_mut());
     cmd.args(strings("vmArguments"))
-        .arg(format!("-agentlib:jdwp=transport=dt_socket,server=y,suspend=y,address=127.0.0.1:{port}"))
+        // Let the JVM pick its own port (`:0`) and report it below: pre-picking a free
+        // port here races with other processes that may take it before the JVM binds.
+        .arg("-agentlib:jdwp=transport=dt_socket,server=y,suspend=y,address=127.0.0.1:0")
         .arg("-cp")
         .arg(classpath);
     let modules = strings("modulePaths");
@@ -772,14 +842,18 @@ pub(crate) async fn start_kotlin_debuggee(s: &Arc<Session>, args: &mut Value) ->
     }
     let mut stdout =
         BufReader::new(child.stdout.take().ok_or_else(|| ide_core::IdeError::internal("Missing JVM stdout"))?);
-    tokio::time::timeout(Duration::from_secs(15), async {
+    // The JVM chose the port (`:0` above) and reports it here; reading it back removes
+    // the free-port race window entirely.
+    let port = tokio::time::timeout(Duration::from_secs(15), async {
         loop {
             let mut line = String::new();
             if stdout.read_line(&mut line).await? == 0 {
                 return Err(ide_core::IdeError::unavailable("JVM exited before starting its debug listener"));
             }
             if line.contains("Listening for transport dt_socket") {
-                return Ok(());
+                return parse_jdwp_port(&line).ok_or_else(|| {
+                    ide_core::IdeError::unavailable(format!("JVM reported an unreadable debug port: {}", line.trim()))
+                });
             }
             s.emit(DebugEvent::Output { category: "stdout".into(), output: line });
         }
@@ -792,4 +866,23 @@ pub(crate) async fn start_kotlin_debuggee(s: &Arc<Session>, args: &mut Value) ->
     args["port"] = json!(port);
     args["timeout"] = json!(10000);
     Ok(())
+}
+
+/// The port a JVM chose, from `Listening for transport dt_socket at address: <port>`
+/// (some JVMs print `host:port` or `[::1]:port`, so take what follows the last colon).
+fn parse_jdwp_port(line: &str) -> Option<u16> {
+    line.rsplit_once("address:")?.1.trim().rsplit(':').next()?.trim().parse().ok()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::parse_jdwp_port;
+
+    #[test]
+    fn reads_the_port_the_jvm_chose() {
+        assert_eq!(parse_jdwp_port("Listening for transport dt_socket at address: 51234"), Some(51234));
+        assert_eq!(parse_jdwp_port("Listening for transport dt_socket at address: 127.0.0.1:51234"), Some(51234));
+        assert_eq!(parse_jdwp_port("Listening for transport dt_socket at address: [::1]:51234"), Some(51234));
+        assert_eq!(parse_jdwp_port("unrelated output"), None);
+    }
 }

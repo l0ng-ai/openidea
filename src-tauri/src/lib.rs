@@ -4,6 +4,7 @@
 //! adapter from IPC to a backend crate; no domain logic lives here.
 
 mod application_focus;
+mod cli;
 mod commands;
 #[cfg(debug_assertions)]
 mod dev;
@@ -22,6 +23,7 @@ mod page_swipe;
 mod plugin_web;
 #[cfg(target_os = "macos")]
 mod relaunch;
+mod remote_container;
 mod remote_dev;
 mod remote_wsl;
 
@@ -71,6 +73,14 @@ pub fn run() {
     let context = tauri::generate_context!();
     #[cfg(debug_assertions)]
     let context = dev::configure(context);
+    if let Some(project) = ide_mcp::stdio_request(&std::env::args().collect::<Vec<_>>()) {
+        let app_data = dirs::data_dir().unwrap_or_default().join(&context.config().identifier);
+        std::process::exit(ide_mcp::stdio::run(&ide_mcp::discovery_path(&app_data), project));
+    }
+    // The `openidea` command: answer and exit, no UI.
+    if let Some(code) = cli::run(&context.config().identifier) {
+        std::process::exit(code);
+    }
     // Before the first window: one taskbar identity for every launch path.
     jump_list::set_app_id(&context.config().identifier);
     logging::init(&context.config().identifier);
@@ -92,7 +102,7 @@ pub fn run() {
     #[cfg(debug_assertions)]
     export_bindings(&builder);
 
-    let app = tauri::Builder::default();
+    let app = tauri::Builder::default().manage(WindowsState::default());
     // Single instance first: a second launch focuses this one and opens its path argument.
     // Debug builds have a separate identifier per worktree.
     let app = app.plugin(tauri_plugin_single_instance::init(windows::on_second_instance));
@@ -166,42 +176,50 @@ pub fn run() {
     .setup(move |app| {
         builder.mount_events(app);
         let state = AppState::new(app.handle().clone())?;
-        let windows = WindowsState::default();
+        let windows = app.state::<WindowsState>();
         if let Ok(cwd) = std::env::current_dir() {
-            let args = std::env::args().collect::<Vec<_>>();
-            match windows::cli_launch(&args, &cwd) {
-                Some(windows::CliLaunch::Path(path)) => {
-                    windows::remember_cli_position(&windows, &args, &path);
-                    windows.set_launch("main", windows::path_launch(path));
-                }
-                // `openidea diff a.txt b.txt`: the main window opens the pair in the diff viewer.
-                Some(windows::CliLaunch::Diff(diff)) => {
-                    windows.set_launch("main", windows::Launch { diff: Some(Box::new(diff)), ..Default::default() });
-                }
-                None => {}
+            match windows::cli_launch(&std::env::args().collect::<Vec<_>>(), &cwd) {
+                Ok(Some(launch)) => windows.set_launch("main", launch),
+                Ok(None) => {}
+                Err(error) => windows::report_cli_error(app.handle(), error),
             }
         }
         let menu_state = menu::MenuState::default();
         menu::install(app.handle(), &menu_state, &state.recent.list());
         app.manage(state);
-        app.manage(windows);
+        commands::mcp::apply(&app.state::<AppState>());
+        #[cfg(windows)]
+        if let Err(error) = windows::allow_external_launches(app.handle()) {
+            windows::report_cli_error(app.handle(), error);
+        }
         app.manage(application_focus::ApplicationFocus::default());
         #[cfg(target_os = "macos")]
         macos::intercept_system_quit(app.handle());
         #[cfg(target_os = "macos")]
+        if let Some(mtm) = objc2::MainThreadMarker::new() {
+            macos::prepare_window_tabbing(mtm);
+        }
+        #[cfg(target_os = "macos")]
         application_focus::observe(app.handle());
         app.manage(menu_state);
+        cli::serve(app.handle(), &app.config().identifier);
         if let Some(paths) = setup_opens.lock().take() {
             windows::open_paths_at_launch(app.handle(), paths);
         }
         app.on_menu_event(on_menu_event);
         windows::create_main_window(app.handle())?;
+        windows::ready_for_cli(app.handle());
         jump_list::refresh(app.handle(), app.state::<AppState>().recent.list());
         Ok(())
     })
     .on_window_event(|window, event| match event {
-        #[cfg(target_os = "linux")]
-        tauri::WindowEvent::CloseRequested { .. } => linux_window_state::save_before_close(window.app_handle()),
+        tauri::WindowEvent::CloseRequested { .. } => {
+            #[cfg(target_os = "linux")]
+            linux_window_state::save_before_close(window.app_handle());
+            if let Some(w) = window.try_state::<WindowsState>() {
+                w.close_requested(window.label());
+            }
+        }
         tauri::WindowEvent::Focused(true) => {
             application_focus::changed(window.app_handle(), true);
             if let Some(w) = window.try_state::<WindowsState>() {
@@ -241,7 +259,7 @@ pub fn run() {
         #[cfg(target_os = "macos")]
         if let tauri::RunEvent::Opened { urls } = &event {
             let paths = windows::opened_paths(urls);
-            if app.try_state::<WindowsState>().is_some() {
+            if app.try_state::<AppState>().is_some() {
                 windows::open_paths(app, paths);
             } else {
                 early_opens.lock().get_or_insert_default().extend(paths);
@@ -252,6 +270,7 @@ pub fn run() {
         if let tauri::RunEvent::Exit = event {
             if let Some(state) = app.try_state::<AppState>() {
                 state.host.stop_processes_on_exit();
+                commands::mcp::stop(&state);
                 state.host.clear_workspace_edit_history_on_exit();
                 state.host.shutdown_notebooks_on_exit();
             }
@@ -283,7 +302,16 @@ fn window_state_flags() -> tauri_plugin_window_state::StateFlags {
 
 /// Routes IDE menu items to the focused window's frontend (`executeAction`).
 fn on_menu_event(app: &tauri::AppHandle, event: tauri::menu::MenuEvent) {
-    dispatch_menu_action(app, event.id().as_ref());
+    let id = event.id().as_ref();
+    menu::restore_check(app, &app.state::<menu::MenuState>(), id);
+    // A keymap accelerator only draws the shortcut: its key reached the menu because the keymap declined it.
+    #[cfg(target_os = "macos")]
+    if !menu::fires_natively(&menu::spec(menu::Os::Mac), id)
+        && (macos::handling_key_press() || macos::native_modal_open())
+    {
+        return;
+    }
+    dispatch_menu_action(app, id);
 }
 
 /// Runs menu item `id` as if it were chosen: in the focused window's frontend, or here without one.

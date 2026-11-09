@@ -292,7 +292,7 @@ export function DatabaseView() {
   const label = (n: Node): string => {
     switch (n.kind) {
       case "source":
-        return n.source.name ?? "";
+        return n.source.pluginOwner ? `${n.source.name} (${n.source.pluginOwner})` : (n.source.name ?? "");
       case "database":
         return n.name;
       case "schema":

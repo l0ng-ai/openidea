@@ -48,6 +48,8 @@ export function incompleteNote(reason: ReferencesIncomplete, word: string | null
       return word
         ? tx`May be incomplete: too many files mention '${word}' to search them all`
         : tx("May be incomplete: too many files mention the name to search them all");
+    case "serverFailed":
+      return tx("May be incomplete: the language server could not check this name");
     case "filesSkipped":
       return word
         ? tx`May be incomplete: some files that mention '${word}' are too large or unreadable`

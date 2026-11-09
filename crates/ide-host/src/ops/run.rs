@@ -9,14 +9,23 @@ use std::time::Duration;
 pub fn configs(host: &Host, window: &str) -> IdeResult<Vec<RunConfig>> {
     host.require_trust(window)?;
     let project = host.project(window)?;
-    let root = project.root.clone();
-    let user = ide_run::load_user_configs(&root)?;
-    let root_suppressed = ide_run::load_suppressed_config_ids(&root)?;
-    let settings = project.settings.effective();
-    let mut all = detected_and_saved(&root, &settings, &user, &root_suppressed);
-    if let Some(workspace) = ide_workspace::workspace::Workspace::load(&root)? {
+    if let Some(plugins) = host.plugin_host() {
+        plugins.refresh_run_configurations(&project.root);
+    }
+    project_configs(&project.root, &project.settings.effective(), &host.config_dir)
+}
+
+pub(super) fn project_configs(
+    root: &std::path::Path,
+    settings: &ide_core::settings::Settings,
+    config_dir: &std::path::Path,
+) -> IdeResult<Vec<RunConfig>> {
+    let user = ide_run::load_user_configs(root)?;
+    let root_suppressed = ide_run::load_suppressed_config_ids(root)?;
+    let mut all = detected_and_saved(root, settings, &user, &root_suppressed);
+    if let Some(workspace) = ide_workspace::workspace::Workspace::load(root)? {
         for member in workspace.projects.into_iter().filter(|p| p.is_dir()) {
-            let settings = ide_workspace::SettingsStore::load(&host.config_dir, Some(&member)).effective();
+            let settings = ide_workspace::SettingsStore::load(config_dir, Some(&member)).effective();
             let saved = ide_run::load_user_configs(&member)?;
             let suppressed = ide_run::load_suppressed_config_ids(&member)?;
             let configs = detected_and_saved(&member, &settings, &saved, &suppressed);
@@ -24,7 +33,7 @@ pub fn configs(host: &Host, window: &str) -> IdeResult<Vec<RunConfig>> {
             let name = member.file_name().unwrap_or_default().to_string_lossy();
             for mut config in configs {
                 for task in &mut config.extras.before_launch {
-                    if task.kind == "run" {
+                    if matches!(task.kind.as_str(), "run" | "build") && !task.target.is_empty() {
                         task.target = format!("workspace:{}:{}", key, task.target);
                     }
                 }
@@ -193,8 +202,48 @@ pub fn apply_settings(host: &Host, window: &str, configs: Vec<RunConfig>) -> Ide
 }
 
 pub async fn start(host: &Host, window: &str, config: RunConfig, on_output: Emit<OutputChunk>) -> IdeResult<RunInfo> {
+    let operation = config.extras.params.get("plugin.operation").cloned();
+    let result = start_inner(host, window, config, on_output).await;
+    if let (Ok(info), Some(operation), Some(plugins)) = (&result, operation, host.plugin_host()) {
+        plugins.run_operation_started(window, &operation, info.id);
+    }
+    result
+}
+
+async fn start_inner(
+    host: &Host,
+    window: &str,
+    mut config: RunConfig,
+    on_output: Emit<OutputChunk>,
+) -> IdeResult<RunInfo> {
     host.require_trust(window)?;
     let project = host.project(window)?;
+    if config.extras.target.is_none() {
+        config.extras.target = ide_sdk::apply::run_target(&config, &project.settings.effective()).map(str::to_owned);
+    }
+    if config.detected
+        && config.id.starts_with(ide_run::EXTERNAL_PREFIX)
+        && let Some(plugins) = host.plugin_host()
+    {
+        let provider = plugins.run_detection();
+        let binary =
+            provider.launch(&config).map_err(|e| IdeError::new(ide_core::error::ErrorKind::PermissionDenied, e))?;
+        config.command = if config.extras.target.as_ref().is_some_and(|t| !t.is_empty()) {
+            provider
+                .detect(&project.root)
+                .into_iter()
+                .find(|c| c.id == config.id)
+                .ok_or_else(|| IdeError::not_found("plugin configuration no longer available"))?
+                .command
+        } else {
+            binary.to_string_lossy().into_owned()
+        };
+        config.detected = false;
+    }
+    let mut sink = project.sink.clone();
+    if let Some(plugins) = host.plugin_host() {
+        sink = plugins.run_operation_sink(window, &mut config, sink)?;
+    }
     if config.command.is_empty() {
         return Err(IdeError::invalid("run configuration has no command"));
     }
@@ -204,6 +253,25 @@ pub async fn start(host: &Host, window: &str, config: RunConfig, on_output: Emit
     }
     if let Some(id) = config.extras.target.as_deref().filter(|t| !t.is_empty()) {
         let settings = project.settings.effective();
+        if id.starts_with("plugin-target:") {
+            let plugins =
+                host.plugin_host().ok_or_else(|| IdeError::not_found("plugin run target is no longer available"))?;
+            let root = project.root.clone();
+            let id = id.to_owned();
+            let config = host.blocking(move || plugins.prepare_run_target(&root, &id, &config)).await?;
+            project.require_trust()?;
+            return host.processes.start(
+                &project.root,
+                &config,
+                &StartOptions {
+                    encoding: Some(settings.console.encoding).filter(|e| !e.trim().is_empty()),
+                    python_paths: Vec::new(),
+                    ruby_reporter: None,
+                },
+                sink,
+                Box::new(move |c| on_output(c)),
+            );
+        }
         let target = ide_remote::service::run_target(&settings, id)?;
         if target.kind != RunTargetKind::Ssh {
             // A local run of the docker CLI: the command is resolved in the container, and
@@ -221,15 +289,12 @@ pub async fn start(host: &Host, window: &str, config: RunConfig, on_output: Emit
                 &project.root,
                 &config,
                 &options,
-                project.sink.clone(),
+                sink.clone(),
                 Box::new(move |c| on_output(c)),
             );
         }
         let out = on_output.clone();
-        return host
-            .remote
-            .run(&settings, &project.root, &config, project.sink.clone(), Box::new(move |c| out(c)))
-            .await;
+        return host.remote.run(&settings, &project.root, &config, sink.clone(), Box::new(move |c| out(c))).await;
     }
     let mut config = config;
     let (root, settings) = settings_for(host, &project, &mut config)?;
@@ -280,7 +345,6 @@ pub async fn start(host: &Host, window: &str, config: RunConfig, on_output: Emit
         ruby_reporter: ruby_reporter_dir(host, &config),
     };
     project.require_trust()?;
-    let mut sink = project.sink.clone();
     if config.kind == "go" && matches!(config.args.first().map(String::as_str), Some("mod" | "work")) {
         let previous = sink;
         let root = project.root.clone();
@@ -311,6 +375,9 @@ fn ruby_reporter_dir(host: &Host, config: &RunConfig) -> Option<std::path::PathB
 
 /// Stops a run (interrupt, then kill after Settings › Run's termination timeout).
 pub fn stop(host: &Host, window: &str, id: RunId) -> IdeResult<()> {
+    if let Some(plugins) = host.plugin_host() {
+        plugins.run_operation_stopped(id);
+    }
     let settings = match host.project(window) {
         Ok(p) => p.settings.effective(),
         Err(_) => host.global_settings.effective(),

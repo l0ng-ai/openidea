@@ -3,14 +3,11 @@
  * (opened by `openPullRequestFileDiff` / the details panel's commit diffs, context
  * `PULL_REQUEST_DIFF`) get their review threads as inlays, the gutter "+" with single- and
  * multi-line comments, Start Review / Add Single Comment, the review toolbar and the viewed
- * toggle, through the vcs diff viewer provider point. Also registers the editor actions and
- * Settings › Version Control › GitHub. The editor actions also serve review mode's editors.
+ * toggle, through the vcs diff viewer provider point. The editor actions also serve review mode's editors.
  */
 import { registerDiffViewerProvider } from "@/features/vcs/diffViewerProviders";
 import { registerActions } from "@/platform/actions";
 import { getContext } from "@/platform/context";
-import { lazyComponent } from "@/ui";
-import { registerSettingsPage } from "@/workbench/contributions";
 import { useGhRepository } from "../data/repository";
 import { activeReviewEditor } from "../reviewMode/editor";
 import { clearNewComments } from "./newComments";
@@ -82,13 +79,6 @@ export function activateReviewDiff(): () => void {
         run: () => reviewTarget()?.refresh(),
       },
     ]),
-    registerSettingsPage({
-      id: "vcs.github",
-      title: "GitHub",
-      order: 9,
-      keywords: ["pull request", "viewed", "review"],
-      component: lazyComponent(() => import("./GithubSettingsPage").then((m) => m.GithubSettingsPage)),
-    }),
     useGhRepository.subscribe((s, prev) => {
       const a = s.connection?.coordinates;
       const b = prev.connection?.coordinates;

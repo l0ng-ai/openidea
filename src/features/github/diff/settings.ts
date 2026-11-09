@@ -46,6 +46,10 @@ function load(): ReviewDiffSettings {
 
 export const useReviewDiffSettings = create<ReviewDiffSettings>(load);
 
+globalThis.addEventListener?.("storage", (event: StorageEvent) => {
+  if (event.key === KEY || event.key === null) useReviewDiffSettings.setState(load(), true);
+});
+
 export function setReviewDiffSettings(patch: Partial<ReviewDiffSettings>) {
   useReviewDiffSettings.setState(patch);
   try {

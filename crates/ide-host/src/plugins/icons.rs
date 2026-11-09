@@ -510,6 +510,8 @@ fn check_value(key: &str, value: &str) -> Result<(), String> {
     if lower.contains("javascript:")
         || lower.contains("expression(")
         || lower.contains("@import")
+        // These CSS image/URL functions accept bare strings, bypassing url().
+        || ["image(", "image-set(", "src("].iter().any(|function| lower.contains(function))
         || value.contains('\\')
     {
         return Err("unsafe value".into());
@@ -607,6 +609,10 @@ mod tests {
             r##"<svg><use xlink:href="data:image/svg+xml,..."/></svg>"##,
             r##"<svg><rect style="fill:url(https://evil)"/></svg>"##,
             r##"<svg><rect fill="url( 'http://x' )"/></svg>"##,
+            r##"<svg><rect style="background-image:image-set('https://evil/x.png' 1x)"/></svg>"##,
+            r##"<svg><rect style="background-image:-webkit-image-set('https://evil/x.png' 1x)"/></svg>"##,
+            r##"<svg><rect style="background-image:image('https://evil/x.png')"/></svg>"##,
+            r##"<svg><rect style="fill:src('https://evil/x.svg')"/></svg>"##,
             r##"<!DOCTYPE svg [<!ENTITY x "y">]><svg/>"##,
             r##"<svg><![CDATA[x]]></svg>"##,
             r##"<svg><a href="#x"/></svg>"##,

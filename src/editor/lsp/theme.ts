@@ -69,13 +69,14 @@ const markdown = {
   ".tok-invalid": { color: "var(--syn-invalid)" },
 };
 
-function pythonStyle(token: string, fallback: string) {
+function semanticStyle(token: string, fallback: string) {
   return {
     color: `var(--syn-${token}, var(--syn-${fallback}))`,
     fontWeight: `var(--syn-${token}-bold, inherit)`,
     fontStyle: `var(--syn-${token}-italic, inherit)`,
     backgroundColor: `var(--syn-${token}-bg, transparent)`,
     textDecoration: `var(--syn-${token}-effect, none)`,
+    WebkitTextDecoration: `var(--syn-${token}-effect, none)`,
   };
 }
 
@@ -358,44 +359,46 @@ export const lspTheme = EditorView.theme({
   ".cm-lsp-inlay-pl": { marginLeft: "4px" },
   ".cm-lsp-inlay-pr": { marginRight: "4px" },
 
-  ".cm-sem-python-method-call": pythonStyle("python-method-call", "function-call"),
-  ".cm-sem-python-annotation": pythonStyle("python-annotation", "type"),
-  ".cm-sem-python-parentheses": pythonStyle("python-parentheses", "punct"),
-  ".cm-sem-python-brackets": pythonStyle("python-brackets", "punct"),
-  ".cm-sem-python-braces": pythonStyle("python-braces", "punct"),
-  ".cm-sem-python-definition": pythonStyle("function", "function"),
-  ".cm-sem-python-nested": pythonStyle("python-nested-function", "function"),
-  ".cm-sem-python-predefined-definition": pythonStyle("python-predefined-definition", "predefined"),
-  ".cm-sem-python-predefined-usage": pythonStyle("python-predefined-usage", "predefined"),
-  ".cm-sem-python-docstring, .cm-sem-python-docstring *": pythonStyle("docstring", "string"),
-  ".cm-sem-python-bytes": pythonStyle("python-bytes", "string"),
-  ".cm-sem-python-fstring, .cm-sem-python-fstring .tok-string, .cm-sem-python-fstring .tok-string2": pythonStyle(
+  ".cm-sem-python-method-call": semanticStyle("python-method-call", "function-call"),
+  ".cm-sem-python-annotation": semanticStyle("python-annotation", "type"),
+  ".cm-sem-python-parentheses": semanticStyle("python-parentheses", "punct"),
+  ".cm-sem-python-brackets": semanticStyle("python-brackets", "punct"),
+  ".cm-sem-python-braces": semanticStyle("python-braces", "punct"),
+  ".cm-sem-python-definition": semanticStyle("function", "function"),
+  ".cm-sem-python-nested": semanticStyle("python-nested-function", "function"),
+  ".cm-sem-python-predefined-definition": semanticStyle("python-predefined-definition", "predefined"),
+  ".cm-sem-python-predefined-usage": semanticStyle("python-predefined-usage", "predefined"),
+  ".cm-sem-python-docstring, .cm-sem-python-docstring *": semanticStyle("docstring", "string"),
+  ".cm-sem-python-bytes": semanticStyle("python-bytes", "string"),
+  ".cm-sem-python-fstring, .cm-sem-python-fstring .tok-string, .cm-sem-python-fstring .tok-string2": semanticStyle(
     "python-fstring",
     "string",
   ),
-  ".cm-sem-python-escape": pythonStyle("escape", "escape"),
-  ".cm-sem-python-format": pythonStyle("python-format", "escape"),
-  ".cm-sem-python-keyword-arg": pythonStyle("keyword-arg", "param"),
+  ".cm-sem-python-escape": semanticStyle("escape", "escape"),
+  ".cm-sem-python-format": semanticStyle("python-format", "escape"),
+  ".cm-sem-python-keyword-arg": semanticStyle("keyword-arg", "param"),
   // --- semantic tokens -----------------------------------------------------
-  ".cm-sem-type, .cm-sem-typeParameter": { color: "var(--syn-type)" },
+  ".cm-sem-type, .cm-sem-typeParameter": semanticStyle("type", "type"),
   // IDEA colours declarations, calls stay (nearly) plain text.
-  ".cm-sem-function": { color: "var(--syn-function-call, var(--syn-function))" },
-  ".cm-sem-function.cm-sem-declaration": { color: "var(--syn-function)" },
-  ".cm-sem-function.cm-sem-builtin": { color: "var(--syn-builtin, var(--syn-function))" },
-  ".cm-sem-function.cm-sem-python-method-call": pythonStyle("python-method-call", "function-call"),
-  ".cm-sem-macro": { color: "var(--syn-annotation)" },
-  ".cm-sem-annotation": { color: "var(--syn-decorator, var(--syn-annotation))" },
-  ".cm-sem-constant": { color: "var(--syn-constant)" },
-  ".cm-sem-variable": { color: "var(--syn-variable)" },
-  ".cm-sem-property": { color: "var(--syn-property)" },
-  ".cm-sem-parameter": { color: "var(--syn-param, var(--syn-variable))" },
+  ".cm-sem-function": semanticStyle("function-call", "function"),
+  // Keep role selectors at one class so static/deprecated modifiers can override their styles.
+  ".cm-sem-function:where(.cm-sem-declaration)": semanticStyle("function", "function"),
+  ".cm-sem-function:where(.cm-sem-builtin)": semanticStyle("builtin", "function"),
+  ".cm-sem-function.cm-sem-python-method-call": semanticStyle("python-method-call", "function-call"),
+  ".cm-sem-macro": semanticStyle("annotation", "annotation"),
+  ".cm-sem-annotation": semanticStyle("decorator", "annotation"),
+  ".cm-sem-namespace": semanticStyle("namespace", "type"),
+  ".cm-sem-constant": { ...semanticStyle("constant", "constant"), fontStyle: "var(--syn-constant-italic, italic)" },
+  ".cm-sem-variable": semanticStyle("variable", "variable"),
+  ".cm-sem-property": semanticStyle("property", "property"),
+  ".cm-sem-parameter": semanticStyle("param", "variable"),
   ".cm-sem-parameter.cm-sem-unused": { color: "var(--fg-unused, var(--fg-faint))" },
-  ".cm-sem-self": { color: "var(--syn-self, var(--syn-keyword))" },
-  ".cm-sem-keyword": { color: "var(--syn-keyword)", fontWeight: "var(--syn-keyword-bold, inherit)" },
+  ".cm-sem-self": semanticStyle("self", "keyword"),
+  ".cm-sem-keyword": semanticStyle("keyword", "keyword"),
   // Before the builtin rule: library globals (`print`, `string`) keep the predefined colour.
-  ".cm-sem-global:not(.cm-sem-function)": { color: "var(--syn-global, inherit)" },
-  ".cm-sem-builtin:not(.cm-sem-function)": { color: "var(--syn-builtin, inherit)" },
-  ".cm-sem-builtin.cm-sem-python-builtin": pythonStyle("python-builtin", "builtin"),
+  ".cm-sem-global:where(:not(.cm-sem-function))": semanticStyle("global", "variable"),
+  ".cm-sem-builtin:where(:not(.cm-sem-function))": semanticStyle("builtin", "variable"),
+  ".cm-sem-builtin.cm-sem-python-builtin": semanticStyle("python-builtin", "builtin"),
   ".cm-sem-static": { fontStyle: "var(--syn-static-italic, italic)" },
   ".cm-sem-property.cm-sem-static, .cm-sem-property.cm-sem-static *": {
     color: "var(--syn-static-property, var(--syn-property))",
@@ -411,14 +414,15 @@ export const lspTheme = EditorView.theme({
     textDecorationColor: "var(--fg-faint)",
     textUnderlineOffset: "3px",
   },
-  ".cm-sem-deprecated": { textDecoration: "line-through" },
-  ".cm-sem-python-local-variable": pythonStyle("python-local-variable", "variable"),
-  ".cm-sem-global.cm-sem-python-global-variable": pythonStyle("python-global-variable", "global"),
-  ".cm-sem-python-instance-attribute": pythonStyle("python-instance-attribute", "property"),
-  ".cm-sem-python-class-attribute": pythonStyle("python-class-attribute", "property"),
-  ".cm-sem-python-constant": pythonStyle("python-constant", "constant"),
-  ".cm-sem-python-property": pythonStyle("python-property", "property"),
-  ".cm-sem-python-type-parameter": pythonStyle("python-type-parameter", "type"),
+  ".cm-sem-python-local-variable": semanticStyle("python-local-variable", "variable"),
+  ".cm-sem-global.cm-sem-python-global-variable": semanticStyle("python-global-variable", "global"),
+  ".cm-sem-python-instance-attribute": semanticStyle("python-instance-attribute", "property"),
+  ".cm-sem-python-class-attribute": semanticStyle("python-class-attribute", "property"),
+  ".cm-sem-python-constant": semanticStyle("python-constant", "constant"),
+  ".cm-sem-python-property": semanticStyle("python-property", "property"),
+  ".cm-sem-python-type-parameter": semanticStyle("python-type-parameter", "type"),
+  // Deprecation wins over role effects, including static fields.
+  ".cm-content .cm-sem-deprecated, .cm-content .cm-sem-deprecated *": { textDecoration: "line-through" },
   // Semantic highlighting: after the base classes so a parameter's colour gives way, and over the
   // syntax highlighter's span inside.
   ...Object.fromEntries(

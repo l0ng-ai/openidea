@@ -8,7 +8,7 @@ import { create } from "zustand";
 import type { ApplyOutcome, FileStatus, ShelvedChangeList, ShelfDiffFile } from "@/bindings";
 import { setContext } from "@/platform/context";
 import { shortcutLabel } from "@/platform/keymap";
-import { openDiff, withChain, type DiffData } from "./diffInput";
+import { openDiff, openVcsDiff, withChain, type DiffData } from "./diffInput";
 import { showCreatePatchForShelf } from "./patches";
 import { executeAction } from "@/platform/actions";
 import { call, commands } from "@/platform/ipc";
@@ -375,7 +375,10 @@ export async function showShelfDiff(arg?: unknown, local = false, newTab = false
     );
     items = items.filter((_, i) => supported[i]);
   }
-  if (items.length) await openDiff(withChain(items, 0), { preview: !newTab });
+  if (!items.length) return;
+  // "Show Diff in a New Tab" asks for an editor tab whatever the commit interface.
+  if (newTab) await openDiff(withChain(items, 0), { preview: false });
+  else await openVcsDiff(withChain(items, 0), { preview: true });
 }
 
 export async function importShelfPatches(paths?: string[]) {

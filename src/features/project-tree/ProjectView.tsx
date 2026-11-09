@@ -591,7 +591,9 @@ export function ProjectView() {
       startY = e.clientY;
     let active = false;
     let paths: string[] = [];
-    // Files (not folders) can also be dropped on an editor to open them there.
+    // Files and folders can be dropped on the agent composer as references; an
+    // editor opens only files, so folders carry the trailing slash `findDirs`
+    // uses and the editor leaves them out.
     let files: DragSession | null = null;
     const move = (ev: PointerEvent) => {
       // A press with no button held is a reordered macOS tap, not a drag (see pointerDrag.ts).
@@ -609,8 +611,10 @@ export function ProjectView() {
         const nodes = keys.map((k) => m.byKey.get(k)).filter((n): n is ProjectNode => !!n && !n.root && !n.placeholder);
         paths = nodes.map((n) => n.path);
         if (!paths.length) return cleanup();
-        const filePaths = nodes.filter((n) => !n.dir).map((n) => n.path);
-        if (filePaths.length) files = dragSession({ type: FILES_DRAG, payload: filePaths.join("\n") });
+        files = dragSession({
+          type: FILES_DRAG,
+          payload: nodes.map((n) => (n.dir ? `${n.path}/` : n.path)).join("\n"),
+        });
       }
       const target = folderAt(containerRef.current, ev.clientX, ev.clientY);
       const valid = target && !paths.some((p) => target.path === p || isInside(target.path, p));

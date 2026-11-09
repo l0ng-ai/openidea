@@ -4,6 +4,7 @@
  * there stay unbound here.
  */
 export const intellijWindows: Record<string, string[]> = {
+  "editor.addOrRemoveCaret": ["Alt+Shift+Button1"],
   // Navigate
   "navigate.searchEverywhere": ["Shift Shift"],
   "navigate.gotoClass": ["Ctrl+N"],
@@ -196,7 +197,8 @@ export const intellijWindows: Record<string, string[]> = {
   "window.previous": ["Ctrl+Alt+["],
   "file.reloadFromDisk": ["Ctrl+Alt+Y"],
   // Before the project view's Ctrl+Shift+C (Copy Absolute Path), which wins there.
-  "editor.copyPath": ["Ctrl+Shift+C"],
+  "editor.copyPath": [],
+  "editor.copyPathReference": ["Ctrl+Shift+C"],
 
   // Project view (when: projectViewFocus)
   "project.newFile": ["Alt+Insert"],
@@ -406,4 +408,6 @@ export const intellijWindows: Record<string, string[]> = {
   "find.openInWindow": ["Alt+F7"],
   "find.field.newLine": ["Ctrl+Shift+Enter"],
   "find.field.recentSearches": ["Alt+Down"],
+  "editor.pasteHistory.paste": ["Enter"],
+  "editor.pasteHistory.remove": ["Delete", "Backspace"],
 };

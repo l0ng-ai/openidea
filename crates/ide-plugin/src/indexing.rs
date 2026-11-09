@@ -35,7 +35,17 @@ pub struct Edges {
 pub struct FileMarkers {
     pub path: PathBuf,
     pub version: Option<u32>,
-    pub markers: Vec<NavigationResult>,
+    pub markers: Vec<IndexedMarker>,
+}
+
+#[derive(Clone, Debug, Serialize, Type)]
+#[serde(rename_all = "camelCase")]
+pub struct IndexedMarker {
+    pub range: Range,
+    pub targets: Vec<Location>,
+    pub plugin_id: String,
+    /// The `[[contributes.markerIcons]]` id whose `markers` prefix matches the marker's key.
+    pub icon: Option<String>,
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize, Type)]

@@ -1013,6 +1013,30 @@ impl Repo {
         let _scope = crate::ExecutionScope::enter(self.execution_allowed.load(std::sync::atomic::Ordering::Acquire));
         refs::stashes(self)
     }
+    /// Working tree against a revision, optionally restricted to a file. Bounded and cancellable.
+    pub fn working_tree_patch(
+        &self,
+        path: Option<&Path>,
+        against: Option<&str>,
+        max_bytes: usize,
+        cancel: &CancellationToken,
+    ) -> IdeResult<String> {
+        let _scope = crate::ExecutionScope::enter(self.execution_allowed.load(std::sync::atomic::Ordering::Acquire));
+        let rev = against.unwrap_or("HEAD");
+        if rev.is_empty() || rev.starts_with('-') || rev.contains('\0') {
+            return Err(ide_core::IdeError::invalid("invalid revision"));
+        }
+        let rel = path.map(|p| self.rel_path(p)).transpose()?;
+        let overrides = cli::filter_overrides(self.root(), cancel)?;
+        let mut args: Vec<&str> = overrides.iter().map(String::as_str).collect();
+        args.extend(["--literal-pathspecs", "--no-pager", "diff", "--no-ext-diff", "--no-textconv", rev, "--"]);
+        if let Some(rel) = &rel {
+            args.push(rel);
+        }
+        let out = cli::run_bounded(self.root(), &args, cancel, max_bytes)?;
+        Ok(out.stdout_str())
+    }
+
     /// Unified diff of a file: index↔worktree (`staged == false`, untracked files diff
     /// against /dev/null) or HEAD↔index (`staged == true`). Empty when unchanged.
     pub fn diff_text(&self, path: &Path, staged: bool, encoding: impl Into<TextEncoding>) -> IdeResult<String> {

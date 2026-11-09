@@ -257,6 +257,10 @@ pub fn unarchive(host: &Host, window: &str, task: String) -> IdeResult<()> {
     host.project(window)?.agents.unarchive(&task)
 }
 
+pub fn rename(host: &Host, window: &str, task: String, title: String) -> IdeResult<()> {
+    host.project(window)?.agents.rename(&task, &title)
+}
+
 pub async fn delete(host: &Host, window: &str, task: String, remove_worktree: bool) -> IdeResult<()> {
     host.require_trust(window)?;
     host.project(window)?.agents.delete(&task, remove_worktree).await
@@ -309,6 +313,7 @@ pub(crate) fn register(d: &mut Dispatcher) {
         respond(&c.host, &c.window, c.arg("task")?, c.arg("permission")?, c.arg("option")?)
     });
     d.add("agent_unarchive", |c| async move { unarchive(&c.host, &c.window, c.arg("task")?) });
+    d.add("agent_rename", |c| async move { rename(&c.host, &c.window, c.arg("task")?, c.arg("title")?) });
     d.add("agent_archive", |c| async move { archive(&c.host, &c.window, c.arg("task")?) });
     d.add(
         "agent_delete",

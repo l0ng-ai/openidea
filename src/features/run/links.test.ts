@@ -66,6 +66,21 @@ describe("findOutputLinks", () => {
       col: 2,
     });
     expect(files("src/App.tsx(14,3): error TS2322")[0]).toMatchObject({ path: "src/App.tsx", line: 14, col: 3 });
+    // Go module cache paths with @version and stack frames
+    expect(files("        /Users/user/go/pkg/mod/github.com/spf13/cobra@v1.10.2/command.go:1071")[0]).toMatchObject({
+      path: "/Users/user/go/pkg/mod/github.com/spf13/cobra@v1.10.2/command.go",
+      line: 1071,
+    });
+    // Go stack frames with trailing colon
+    expect(files("        /Users/user/projects/demo/pkg/api/server.go:42:")[0]).toMatchObject({
+      path: "/Users/user/projects/demo/pkg/api/server.go",
+      line: 42,
+    });
+    // Relative paths in loggers (e.g. zap/zerolog/slog)
+    expect(files("2026-01-01T12:00:00.000+0000\tDEBUG\tpkg/store/db.go:15\tfailed to connect")[0]).toMatchObject({
+      path: "pkg/store/db.go",
+      line: 15,
+    });
   });
 
   it("maven diagnostics [ERROR] path:[line,col]", () => {

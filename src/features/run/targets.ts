@@ -6,6 +6,8 @@
  * Line-based regex detection (cheap, no parser), plus the run configuration for
  * one target derived from the project's detected test configurations.
  */
+import { goTargets } from "./goTargets";
+import { csharpTargets } from "./csharpTargets";
 import { formatArgs } from "./configs";
 import type { RunConfig } from "@/platform/ipc";
 import { applicationConfig, jvmTestConfig } from "./application";
@@ -42,9 +44,10 @@ export interface RunTarget {
 /** Above this size we skip detection (generated / minified files). */
 export const MAX_SCAN = 400_000;
 
-type Lang = "rust" | "js" | "python" | "php" | "go" | "jvm" | "ruby" | null;
+type Lang = "rust" | "js" | "python" | "php" | "go" | "jvm" | "ruby" | "csharp" | null;
 
 export function targetLanguage(relPath: string): Lang {
+  if (/\.cs$/i.test(relPath)) return "csharp";
   if (/\.rs$/.test(relPath)) return "rust";
   if (/\.[cm]?[jt]sx?$/.test(relPath)) return "js";
   if (/\.py$/.test(relPath)) return "python";
@@ -286,77 +289,6 @@ function rubyTargets(lines: string[]): RunTarget[] {
   return out.filter((t) => t.kind !== "suite" || t.frame?.hasTests).map(({ frame: _frame, ...t }) => t);
 }
 
-/** `go test` reports subtest names with spaces as `_` (`t.Run("zero case")` → `TestX/zero_case`). */
-export const goSubtestName = (name: string) => name.replace(/\s/g, "_");
-
-function goTargets(lines: string[]): RunTarget[] {
-  const out: RunTarget[] = [];
-  const isMain = lines.some((l) => /^package\s+main\b/.test(l));
-  for (let i = 0; i < lines.length; i++) {
-    const line = lines[i]!;
-    if (/^\/\/go:generate[ \t]+\S/.test(line)) {
-      out.push({
-        line: i,
-        kind: "generate",
-        name: line.replace(/^\/\/go:generate[ \t]+/, "").trim(),
-        path: [String(i)],
-      });
-      continue;
-    }
-    const t = /^func\s+(Test\w*|Benchmark\w*|Example\w*|Fuzz\w*)\s*\(\s*(?:\w+\s+\*testing\.[TFB])?\s*\)?/.exec(line);
-    if (t && (/^Example/.test(t[1]!) || /\*testing\.[TFB]/.test(line))) {
-      out.push({ line: i, kind: "test", name: t[1]!, path: [t[1]!] });
-      if (/\*testing\.[TB]\b/.test(line)) out.push(...goSubtests(lines, i, t[1]!));
-      continue;
-    }
-    if (isMain && /^func\s+main\s*\(\s*\)/.test(line)) out.push({ line: i, kind: "main", name: "main", path: [] });
-  }
-  return out;
-}
-
-/**
- * Subtests of the test function at `start` (GoLand's gutter on subtests and
- * table-driven tests): `t.Run("name", …)`, and table entries run with
- * `t.Run(tt.name, …)` (`{name: "…", …}`) or keyed by name
- * (`for name, tc := range cases { t.Run(name, …) }` over `"…": {…}`).
- */
-function goSubtests(lines: string[], start: number, test: string): RunTarget[] {
-  if (/\}\s*(?:\/\/.*)?$/.test(lines[start]!)) return [];
-  let end = start;
-  while (end + 1 < lines.length && !/^}/.test(lines[end]!)) end++;
-  const body = lines.slice(start + 1, end);
-  const out: RunTarget[] = [];
-  const add = (offset: number, name: string) => {
-    const sub = goSubtestName(name.replace(/\\(.)/g, "$1"));
-    if (!out.some((t) => t.path[1] === sub))
-      out.push({ line: start + 1 + offset, kind: "test", name: `${test}/${sub}`, path: [test, sub] });
-  };
-  const fields = new Set<string>();
-  const keys = new Set<string>();
-  body.forEach((l, i) => {
-    const lit = /\b\w+\.Run\(\s*"((?:[^"\\]|\\.)*)"\s*,/.exec(l);
-    if (lit) add(i, lit[1]!);
-    const field = /\b\w+\.Run\(\s*\w+\.(\w+)\s*,/.exec(l);
-    if (field) fields.add(field[1]!);
-    const key = /\b\w+\.Run\(\s*(\w+)\s*,/.exec(l);
-    if (key && body.slice(0, i).some((b) => new RegExp(`\\bfor\\s+${key[1]}\\s*,\\s*\\w+\\s*:=\\s*range\\b`).test(b)))
-      keys.add(key[1]!);
-  });
-  if (fields.size || keys.size) {
-    body.forEach((l, i) => {
-      for (const f of fields) {
-        const m = new RegExp(`\\b${f}\\s*:\\s*"((?:[^"\\\\]|\\\\.)*)"`).exec(l);
-        if (m) add(i, m[1]!);
-      }
-      if (keys.size) {
-        const m = /^\s*"((?:[^"\\]|\\.)*)"\s*:\s*\{/.exec(l);
-        if (m) add(i, m[1]!);
-      }
-    });
-  }
-  return out.sort((a, b) => a.line - b.line);
-}
-
 /** Java / Kotlin: classes and methods with binary class names (see `jvmTargets.ts`). */
 function javaKotlinTargets(text: string, relPath: string): RunTarget[] {
   return scanJvmTargets(text, relPath, /\.kts?$/.test(relPath)).map((t): RunTarget => {
@@ -425,6 +357,8 @@ export function detectRunTargets(text: string, relPath: string, django = false):
   if (text.length > MAX_SCAN) return [];
   const lines = text.split("\n");
   switch (targetLanguage(relPath)) {
+    case "csharp":
+      return csharpTargets(text);
     case "rust":
       return rustTargets(lines, relPath);
     case "js":
@@ -441,7 +375,7 @@ export function detectRunTargets(text: string, relPath: string, django = false):
         ? [...phpTargets(lines), ...pestTargets(lines)].sort((a, b) => a.line - b.line)
         : [];
     case "go":
-      return goTargets(lines).filter((t) => t.kind === "main" || t.kind === "generate" || /_test\.go$/.test(relPath));
+      return goTargets(text).filter((t) => t.kind === "main" || t.kind === "generate" || /_test\.go$/.test(relPath));
     case "jvm":
       return /\.(java|kts?)$/.test(relPath) ? javaKotlinTargets(text, relPath) : jvmTargets(lines, relPath);
     case "ruby":
@@ -479,7 +413,7 @@ export function targetConfig(
       return applicationConfig({ className: target.className, spring: target.spring }, relPath, configs);
     return contextConfig(relPath, configs, content);
   }
-  const file = testConfigFor(relPath, configs, base);
+  const file = testConfigFor(relPath, configs, base, content);
   if (!file) return null;
   if (target.className && (file.kind === "maven" || file.kind === "gradle"))
     return jvmTestConfig(
@@ -497,6 +431,15 @@ export function targetConfig(
     detected: true,
   });
   switch (file.kind) {
+    case "dotnet-test": {
+      const methods =
+        target.kind === "suite" && content
+          ? csharpTargets(content)
+              .filter((t) => t.kind === "test" && t.path[0] === target.path[0])
+              .map((t) => t.path.join("."))
+          : [target.path.join(".")];
+      return { ...named(file.args), params: { ...file.params, testMethods: JSON.stringify(methods) } };
+    }
     case "npm":
     case "bun":
     case "deno":

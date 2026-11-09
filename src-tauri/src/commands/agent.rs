@@ -264,6 +264,12 @@ pub fn agent_unarchive(window: Window, state: State<'_, AppState>, task: String)
 
 #[tauri::command]
 #[specta::specta]
+pub fn agent_rename(window: Window, state: State<'_, AppState>, task: String, title: String) -> IdeResult<()> {
+    agent::rename(&state.host, window.label(), task, title)
+}
+
+#[tauri::command]
+#[specta::specta]
 pub async fn agent_delete(
     window: Window,
     state: State<'_, AppState>,

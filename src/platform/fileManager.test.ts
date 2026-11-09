@@ -1,0 +1,87 @@
+import { afterEach, describe, expect, it } from "vitest";
+import { fileManagerName, fileManagerPath, revealInFileManagerLabel, showInFileManagerLabel } from "./fileManager";
+import { _resetI18nForTests, setLocale, tx } from "./i18n";
+
+const raw = String.raw;
+
+afterEach(() => _resetI18nForTests());
+
+describe("file manager labels", () => {
+  it.each([
+    ["macos", "Finder", "Reveal in Finder"],
+    ["windows", "Explorer", "Show in Explorer"],
+    ["linux", "Files", "Show in Files"],
+    ["web", "Files", "Show in Files"],
+  ])("names the %s file manager in submenus and project actions", (os, name, label) => {
+    expect(fileManagerName(os)).toBe(name);
+    expect(revealInFileManagerLabel(os)).toBe(label);
+  });
+
+  it("translates the project action on every desktop platform", async () => {
+    await setLocale("zh");
+    expect(tx(revealInFileManagerLabel("macos"))).toBe("在访达中显示");
+    expect(tx(revealInFileManagerLabel("windows"))).toBe("在资源管理器中显示");
+    expect(tx(revealInFileManagerLabel("linux"))).toBe("在文件管理器中显示");
+  });
+});
+
+describe("showInFileManagerLabel", () => {
+  it("names the file manager of the platform instead of always Finder", () => {
+    expect(showInFileManagerLabel("macos")).toBe("Show in Finder");
+    expect(showInFileManagerLabel("windows")).toBe("Show in Explorer");
+    expect(showInFileManagerLabel("linux")).toBe("Show in Files");
+    expect(showInFileManagerLabel("web")).toBe("Show in Files");
+  });
+
+  it("is translated into the platform's file manager, not Finder", async () => {
+    await setLocale("zh");
+    expect(tx(showInFileManagerLabel("macos"))).toBe("在访达中显示");
+    expect(tx(showInFileManagerLabel("windows"))).toBe("在资源管理器中显示");
+    expect(tx(showInFileManagerLabel("linux"))).toBe("在文件管理器中显示");
+  });
+});
+
+describe("fileManagerPath", () => {
+  it("converts verbatim UNC paths to the form Windows Shell accepts", () => {
+    expect(
+      fileManagerPath(
+        raw`\\?\UNC\192.168.10.9\nas\apps\ignis\vaults\我的知识库\111health工作\生产日志分析`,
+        "windows",
+        null,
+      ),
+    ).toBe(raw`\\192.168.10.9\nas\apps\ignis\vaults\我的知识库\111health工作\生产日志分析`);
+    expect(
+      fileManagerPath(
+        "//?/UNC/192.168.10.9/nas/apps/ignis/vaults/我的知识库/111health工作/生产日志分析",
+        "windows",
+        null,
+      ),
+    ).toBe(raw`\\192.168.10.9\nas\apps\ignis\vaults\我的知识库\111health工作\生产日志分析`);
+    expect(fileManagerPath(raw`\\?\unc\server\share`, "windows", null)).toBe(raw`\\server\share`);
+  });
+
+  it("converts the UI's slash-separated Windows paths to native paths", () => {
+    expect(fileManagerPath("//server/share/my notes", "windows", null)).toBe(raw`\\server\share\my notes`);
+    expect(fileManagerPath("C:/work/my project", "windows", null)).toBe(raw`C:\work\my project`);
+    expect(fileManagerPath(raw`\\?\C:\work\my project`, "windows", null)).toBe(raw`C:\work\my project`);
+    expect(fileManagerPath("//?/C:/work/my project", "windows", null)).toBe(raw`C:\work\my project`);
+  });
+
+  it("leaves native Windows paths and non-Windows paths alone", () => {
+    expect(fileManagerPath(raw`\\server\share\my notes`, "windows", null)).toBe(raw`\\server\share\my notes`);
+    expect(fileManagerPath("/home/me/my notes", "linux", null)).toBe("/home/me/my notes");
+    expect(fileManagerPath("/Users/me/my notes", "macos", null)).toBe("/Users/me/my notes");
+  });
+
+  it("translates a WSL distro path to a shell-compatible share on Windows", () => {
+    expect(
+      fileManagerPath("/home/me/my app", "windows", {
+        target: { kind: "wsl", distro: "Ubuntu-24.04" },
+        root: "/p",
+        host: "Ubuntu",
+        os: "linux",
+        commands: [],
+      }),
+    ).toBe(raw`\\wsl.localhost\Ubuntu-24.04\home\me\my app`);
+  });
+});

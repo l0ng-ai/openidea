@@ -8,10 +8,12 @@ import styles from "./Build.module.css";
 /** Run configuration kinds a project build precedes; scripts (Python, shell, Node…) have nothing to compile. */
 const COMPILED_KINDS = new Set(["", "spring-boot", "application", "maven", "gradle"]);
 
-/** IDEA's main toolbar hammer, left of the run widget: Maven / Gradle projects, unless a script configuration is selected. */
+/** Main toolbar hammer, left of the run widget, for compiled project configurations. */
 export function BuildTitleItem() {
   const shown = useContextKeys(
-    (c) => (!!c["build.maven"] || !!c["build.gradle"]) && COMPILED_KINDS.has(String(c["run.selectedKind"] ?? "")),
+    (c) =>
+      !!c["run.cmakeBuild"] ||
+      ((!!c["build.maven"] || !!c["build.gradle"]) && COMPILED_KINDS.has(String(c["run.selectedKind"] ?? ""))),
   );
   const running = useContextKeys((c) => !!c[BUILD_RUNNING]);
   if (!shown) return null;

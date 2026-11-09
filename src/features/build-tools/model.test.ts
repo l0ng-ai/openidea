@@ -12,6 +12,7 @@ import {
   mavenChildren,
   mavenGoalConfig,
   mavenRoots,
+  mavenPomAtPath,
   nodeIcon,
   nodeLabel,
   parseGoalLine,
@@ -183,6 +184,19 @@ describe("Maven tree", () => {
 
 describe("Maven runs", () => {
   const core = maven.projects[1]!;
+
+  it.each([["-P", "prod"], ["-Pprod"], ["--activate-profiles", "prod"], ["--activate-profiles=prod"]])(
+    "keeps explicit Maven profiles %j",
+    (...profiles) => {
+      const goals = ["test", ...profiles];
+      const config = mavenGoalConfig(core, goals, maven, {
+        offline: false,
+        skipTests: false,
+        profiles: { ci: true, dev: false },
+      });
+      expect(config.args).toEqual(goals);
+    },
+  );
 
   it("passes goals, offline, skip tests and changed profiles", () => {
     expect(profilesArg(maven.profiles, {})).toBeNull();
@@ -381,4 +395,15 @@ describe("Gradle tree and runs", () => {
     expect(labelsOf).toEqual([":app:run"]);
     expect(taskCompletions("clean wr", gradle).map((c) => c.line)).toEqual(["clean wrapper"]);
   });
+});
+
+it.each([
+  ["pom.xml", "/workspace/pom.xml"],
+  ["module/pom.xml", "/workspace/module/pom.xml"],
+  ["/linked/pom.xml", "/linked/pom.xml"],
+  ["/workspace/member/pom.xml", "/workspace/member/pom.xml"],
+])("resolves the Maven model POM %s at %s", (pom, path) => {
+  const projects = [project({ pom })];
+  expect(mavenPomAtPath(projects, "/workspace", path)).toBe(pom);
+  expect(mavenPomAtPath(projects, "/workspace", "/other/pom.xml")).toBeNull();
 });

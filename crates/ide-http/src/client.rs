@@ -26,6 +26,11 @@ pub fn with_proxy(builder: reqwest::ClientBuilder, proxy: &ProxySettings) -> req
 
 /// A client for `proxy`.
 pub fn build(proxy: &ProxySettings) -> IdeResult<reqwest::Client> {
+    build_with_redirect(proxy, reqwest::redirect::Policy::default())
+}
+
+/// A client with an explicit redirect policy, for callers enforcing network grants.
+pub fn build_with_redirect(proxy: &ProxySettings, redirect: reqwest::redirect::Policy) -> IdeResult<reqwest::Client> {
     use rustls_platform_verifier::BuilderVerifierExt;
     let fail = |e: String| IdeError::internal(format!("HTTP client: {e}"));
     let provider = Arc::new(rustls::crypto::ring::default_provider());
@@ -44,6 +49,7 @@ pub fn build(proxy: &ProxySettings) -> IdeResult<reqwest::Client> {
     ];
     let builder = reqwest::Client::builder()
         .tls_backend_preconfigured(tls)
+        .redirect(redirect)
         .resolve_to_addrs("localhost", &loopback)
         .connect_timeout(Duration::from_secs(30))
         .user_agent(concat!("OpenIDEA-HttpClient/", env!("CARGO_PKG_VERSION")));

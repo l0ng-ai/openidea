@@ -86,8 +86,9 @@ import { logOptions, refLabels, useLogOptions, type LogOptions } from "./logOpti
 import { KIND_COLOR, baseName, dirName, fileCount, formatTime, relTo, type EffectiveKind } from "./model";
 import { clearConsole, useVcsConsole } from "./ops";
 import { currentRepo, currentRepoRoot, loadBranches, repoName, useVcs } from "./store";
-import { loadFavoriteBranches, useFavoriteBranches } from "./branchOps";
+import { canDeleteBranch, loadFavoriteBranches, useFavoriteBranches } from "./branchOps";
 import { branchMenu, inRepo, tagMenu } from "./branchMenu";
+import { BranchSync } from "./BranchSync";
 import {
   branchFolderKeys,
   branchGroupKeys,
@@ -99,7 +100,7 @@ import {
 } from "./branches";
 import { chooseDateRange, chooseMany } from "./dialogs";
 import { buildFileTree, dirKeys, type FileTreeNode } from "./fileTree";
-import { DIFF_KIND, diffInput } from "./diffInput";
+import { DIFF_KIND, diffInput, vcsDiffInFront } from "./diffInput";
 import {
   absolutePath,
   filesUnder,
@@ -110,7 +111,7 @@ import {
   withLineStats,
   type LogChange,
 } from "./logChanges";
-import { canDeleteBranch, canUpdateBranch, useBranchesPane, type BranchTarget } from "./logPaneActions";
+import { canUpdateBranch, useBranchesPane, type BranchTarget } from "./logPaneActions";
 import styles from "./GitLog.module.css";
 import { tx } from "@/platform/i18n";
 import { useWorkflowSettings } from "@/platform/workflowSettings";
@@ -348,11 +349,16 @@ export function LogView() {
 
 // --- branches ---------------------------------------------------------------
 
-function branchDetail(n: BranchTreeNode): string | undefined {
+function branchDetail(n: BranchTreeNode): ReactNode {
   const b = n.branch;
   if (!b) return undefined;
-  const sync = [b.behind > 0 ? `↓${b.behind}` : "", b.ahead > 0 ? `↑${b.ahead}` : ""].filter(Boolean).join(" ");
-  return [b.current ? tx("current") : "", sync].filter(Boolean).join("  ") || undefined;
+  if (!b.current && b.behind <= 0 && b.ahead <= 0) return undefined;
+  return (
+    <span className={styles.branchDetail}>
+      {b.current && <span>{tx("current")}</span>}
+      <BranchSync behind={b.behind} ahead={b.ahead} />
+    </span>
+  );
 }
 
 export function BranchesPanel() {
@@ -496,8 +502,8 @@ export function BranchesPanel() {
               size="small"
               title="Delete Branch"
               action="vcs.log.branches.delete"
-              actionArg={target}
-              disabled={!canDeleteBranch(target ?? null)}
+              actionArg={targets}
+              disabled={!targets.some((t) => canDeleteBranch(t))}
             />
             <IconButton
               icon="locate"
@@ -574,7 +580,7 @@ export function BranchesPanel() {
             const sel = selected.has(n.key) ? targets.filter((r) => r.repo === n.repo).map((r) => r.ref) : [n.ref];
             setLogFilters({ branches: sel, repositories: n.repo ? [n.repo] : [] });
           }}
-          onContextMenu={(n, _s, e) => {
+          onContextMenu={(n, _sel, e) => {
             if (readOnly) {
               if (!n?.ref) return;
               e.preventDefault();
@@ -584,14 +590,27 @@ export function BranchesPanel() {
               ]);
               return;
             }
+            // The menu acts on the whole selection when the right-clicked branch is part of it.
+            const picked: BranchTarget[] =
+              n && selected.has(n.key) ? targets : n?.ref ? [{ ref: n.ref, branch: n.branch, repo: n.repo }] : [];
             const menu = n?.branch
-              ? branchMenu(n.branch, n.repo ? (useVcs.getState().heads[n.repo]?.head ?? null) : current)
+              ? branchMenu(
+                  n.branch,
+                  n.repo ? (useVcs.getState().heads[n.repo]?.head ?? null) : current,
+                  () => {},
+                  picked,
+                )
               : n?.kind === "tag"
                 ? tagMenu(n.ref!)
                 : n?.kind === "remote" || (n?.kind === "group" && n.key.endsWith("g:remote"))
                   ? REMOTES_MENU
                   : [];
-            const items = n?.repo ? inRepo(n.repo, menu) : menu;
+            // Delete scopes each selected target itself and must preserve the original focus.
+            const items = n?.repo
+              ? menu.flatMap((item) =>
+                  n.branch && "label" in item && item.label === "Delete" ? [item] : inRepo(n.repo!, [item]),
+                )
+              : menu;
             if (!items.length) return;
             e.preventDefault();
             showContextMenu(e, items);
@@ -1709,17 +1728,7 @@ function CommitList() {
           );
         }}
       >
-        {opts.showColumnHeaders && (
-          <div className={clsx(styles.row, styles.columnHeader)} style={{ minWidth }}>
-            {opts.showRepository && useVcs.getState().roots.length > 1 && (
-              <span className={styles.colRepository}>{tx("Repository")}</span>
-            )}
-            <span className={styles.colSubject}>{tx("Commit")}</span>
-            {columns.map((column) => (
-              <LogColumnHeader key={column.id} column={column} columns={columns} options={opts} />
-            ))}
-          </div>
-        )}
+        {opts.showColumnHeaders && <ColumnHeaders columns={columns} options={opts} minWidth={minWidth} />}
         {!commits.length && !loading && finished && (
           <div className={styles.message}>{headCommit ? tx("No commits match the filters") : tx("No commits yet")}</div>
         )}
@@ -1770,102 +1779,226 @@ function CommitList() {
   );
 }
 
-function LogColumnHeader({
-  column,
+interface ColumnDrag {
+  id: string;
+  target: string | null;
+  after: boolean;
+}
+// The flexible "Commit" column shares the same order and can be dragged like the rest.
+const SUBJECT_COLUMN: LogColumn = { id: "subject", title: "Commit", width: 0, render: () => "" };
+// Until the user drags the commit column somewhere, it leads the row.
+const columnSequence = (columnOrder: string[], builtins: LogColumn[]): string[] => {
+  const ids = [...new Set([...columnOrder, ...builtins.map((c) => c.id)])];
+  return columnOrder.includes(SUBJECT_COLUMN.id) ? ids : [SUBJECT_COLUMN.id, ...ids];
+};
+function ColumnHeaders({
   columns,
   options,
+  minWidth,
 }: {
-  column: LogColumn;
   columns: LogColumn[];
   options: LogOptions;
+  minWidth: number;
 }) {
-  const drag = useRef<{ x: number; width: number } | null>(null);
+  const [drag, setDrag] = useState<ColumnDrag | null>(null);
+  const ids = columnSequence(options.columnOrder, columns);
+  const cancel = useCallback(() => setDrag(null), []);
+  const move = (source: string, target: string | null, after: boolean) => {
+    if (!target || source === target || !ids.includes(source) || !ids.includes(target)) return;
+    const reordered = ids.filter((id) => id !== source);
+    const to = reordered.indexOf(target);
+    reordered.splice(after ? to + 1 : to, 0, source);
+    updateLogOptions({ columnOrder: reordered });
+  };
+  const visibleIds = ids.filter((id) => id === SUBJECT_COLUMN.id || columns.some((column) => column.id === id));
+  return (
+    <div className={clsx(styles.row, styles.columnHeader)} style={{ minWidth }}>
+      {options.showRepository && useVcs.getState().roots.length > 1 && (
+        <span className={styles.colRepository}>{tx("Repository")}</span>
+      )}
+      {ids.map((cid) => {
+        const column = cid === SUBJECT_COLUMN.id ? SUBJECT_COLUMN : columns.find((c) => c.id === cid);
+        if (!column) return null;
+        return (
+          <LogColumnHeader
+            key={cid}
+            column={column}
+            subject={cid === SUBJECT_COLUMN.id}
+            ids={visibleIds}
+            options={options}
+            drag={drag}
+            onMove={move}
+            onDragOver={(id, target, after) =>
+              setDrag((d) => (d?.id === id && d.target === target && d.after === after ? d : { id, target, after }))
+            }
+            onDragCancel={cancel}
+          />
+        );
+      })}
+    </div>
+  );
+}
+
+// Column headers reorder by pointer capture: WebView2 blocks HTML5 drag events
+// while dragDropEnabled is on, so dragging must not rely on them.
+function LogColumnHeader({
+  column,
+  subject,
+  ids,
+  options,
+  drag,
+  onMove,
+  onDragOver,
+  onDragCancel,
+}: {
+  column: LogColumn;
+  subject?: boolean;
+  ids: string[];
+  options: LogOptions;
+  drag: ColumnDrag | null;
+  onMove(source: string, target: string | null, after: boolean): void;
+  onDragOver(id: string, target: string | null, after: boolean): void;
+  onDragCancel(): void;
+}) {
+  const press = useRef<{
+    x: number;
+    y: number;
+    active: boolean;
+    element: HTMLElement;
+    pointerId: number;
+  } | null>(null);
+  const resizeDrag = useRef<{ x: number; width: number; element: HTMLElement; pointerId: number } | null>(null);
+  const cancel = useCallback(() => {
+    const captures = [press.current, resizeDrag.current];
+    press.current = null;
+    resizeDrag.current = null;
+    for (const capture of captures)
+      if (capture?.element.hasPointerCapture?.(capture.pointerId))
+        capture.element.releasePointerCapture(capture.pointerId);
+    onDragCancel();
+  }, [onDragCancel]);
+  useEffect(() => {
+    const escape = (e: globalThis.KeyboardEvent) => {
+      if (e.key !== "Escape" || (!press.current && !resizeDrag.current)) return;
+      e.preventDefault();
+      e.stopPropagation();
+      cancel();
+    };
+    window.addEventListener("blur", cancel);
+    window.addEventListener("keydown", escape, true);
+    return () => {
+      window.removeEventListener("blur", cancel);
+      window.removeEventListener("keydown", escape, true);
+      cancel();
+    };
+  }, [cancel]);
   const width = options.columnWidths[column.id] ?? column.width ?? 120;
   const resize = (value: number) =>
     updateLogOptions({
       columnWidths: { ...logOptions().columnWidths, [column.id]: Math.max(40, Math.min(800, value)) },
     });
-  const move = (source: string, target: string) => {
-    const ids = columns.map((c) => c.id);
-    const from = ids.indexOf(source),
-      to = ids.indexOf(target);
-    if (from < 0 || to < 0 || from === to) return;
-    ids.splice(from, 1);
-    ids.splice(to, 0, source);
-    updateLogOptions({ columnOrder: ids });
+  const index = ids.indexOf(column.id);
+  const hitColumn = (x: number, y: number) => {
+    const el = document.elementFromPoint(x, y)?.closest?.("[data-log-column]");
+    if (!el || el.parentElement !== press.current?.element.parentElement) return null;
+    const rect = el.getBoundingClientRect();
+    return { id: el.getAttribute("data-log-column")!, after: x > rect.left + rect.width / 2 };
   };
-  const index = columns.findIndex((c) => c.id === column.id);
   return (
     <span
-      className={clsx(styles.columnCell, styles.columnHeading)}
-      style={{ width }}
-      draggable
-      onDragStart={(e) => {
-        e.dataTransfer.setData("application/x-openidea-log-column", column.id);
-        e.dataTransfer.effectAllowed = "move";
+      className={clsx(
+        styles.columnCell,
+        styles.columnHeading,
+        subject && styles.colSubject,
+        drag?.id === column.id && styles.dragSource,
+        drag &&
+          drag.target === column.id &&
+          drag.id !== column.id &&
+          (drag.after ? styles.dropAfter : styles.dropBefore),
+      )}
+      style={subject ? undefined : { width }}
+      data-log-column={column.id}
+      onPointerDown={(e) => {
+        if (e.button !== 0) return;
+        press.current = { x: e.clientX, y: e.clientY, active: false, element: e.currentTarget, pointerId: e.pointerId };
+        e.currentTarget.setPointerCapture?.(e.pointerId);
       }}
-      onDragOver={(e) => {
-        if (e.dataTransfer.types.includes("application/x-openidea-log-column")) e.preventDefault();
+      onPointerMove={(e) => {
+        const start = press.current;
+        if (!start || start.pointerId !== e.pointerId) return;
+        if (!start.active && Math.hypot(e.clientX - start.x, e.clientY - start.y) < 4) return;
+        start.active = true;
+        const target = hitColumn(e.clientX, e.clientY);
+        onDragOver(column.id, target?.id ?? null, target?.after ?? false);
       }}
-      onDrop={(e) => {
-        e.preventDefault();
-        move(e.dataTransfer.getData("application/x-openidea-log-column"), column.id);
+      onPointerUp={(e) => {
+        const start = press.current;
+        if (!start || start.pointerId !== e.pointerId) return;
+        const target = hitColumn(e.clientX, e.clientY);
+        if (start.active) onMove(column.id, target?.id ?? null, target?.after ?? false);
+        cancel();
       }}
+      onPointerCancel={cancel}
+      onLostPointerCapture={cancel}
       onContextMenu={(e) => {
         e.preventDefault();
         showContextMenu(e, [
           {
             label: "Move Left",
             disabled: index === 0,
-            run: () => move(column.id, columns[index - 1]?.id ?? column.id),
+            run: () => onMove(column.id, ids[index - 1] ?? null, false),
           },
           {
             label: "Move Right",
-            disabled: index === columns.length - 1,
-            run: () => move(column.id, columns[index + 1]?.id ?? column.id),
+            disabled: index === ids.length - 1,
+            run: () => onMove(column.id, ids[index + 1] ?? null, true),
           },
-          { label: "Reset Width", run: () => resize(column.width ?? 120) },
+          ...(subject ? [] : [{ label: "Reset Width", run: () => resize(column.width ?? 120) }]),
         ]);
       }}
     >
       {tx(column.title)}
-      <span
-        className={styles.columnResize}
-        role="separator"
-        aria-orientation="vertical"
-        aria-label={tx`Resize ${tx(column.title)} column`}
-        aria-valuemin={40}
-        aria-valuemax={800}
-        aria-valuenow={width}
-        tabIndex={0}
-        onPointerDown={(e) => {
-          e.preventDefault();
-          e.stopPropagation();
-          drag.current = { x: e.clientX, width };
-          e.currentTarget.setPointerCapture(e.pointerId);
-        }}
-        onPointerMove={(e) => {
-          if (drag.current && e.currentTarget.hasPointerCapture(e.pointerId))
-            resize(drag.current.width + e.clientX - drag.current.x);
-        }}
-        onPointerUp={(e) => {
-          drag.current = null;
-          if (e.currentTarget.hasPointerCapture(e.pointerId)) e.currentTarget.releasePointerCapture(e.pointerId);
-        }}
-        onPointerCancel={() => {
-          drag.current = null;
-        }}
-        onLostPointerCapture={() => {
-          drag.current = null;
-        }}
-        onKeyDown={(e) => {
-          if (e.key !== "ArrowLeft" && e.key !== "ArrowRight") return;
-          e.preventDefault();
-          e.stopPropagation();
-          if (e.altKey) move(column.id, columns[index + (e.key === "ArrowLeft" ? -1 : 1)]?.id ?? column.id);
-          else resize(width + (e.key === "ArrowLeft" ? -10 : 10));
-        }}
-      />
+      {!subject && (
+        <span
+          className={styles.columnResize}
+          role="separator"
+          aria-orientation="vertical"
+          aria-label={tx`Resize ${tx(column.title)} column`}
+          aria-valuemin={40}
+          aria-valuemax={800}
+          aria-valuenow={width}
+          tabIndex={0}
+          onPointerDown={(e) => {
+            if (e.button !== 0) return;
+            e.preventDefault();
+            e.stopPropagation();
+            resizeDrag.current = { x: e.clientX, width, element: e.currentTarget, pointerId: e.pointerId };
+            e.currentTarget.setPointerCapture(e.pointerId);
+          }}
+          onPointerMove={(e) => {
+            if (resizeDrag.current && e.currentTarget.hasPointerCapture(e.pointerId))
+              resize(resizeDrag.current.width + e.clientX - resizeDrag.current.x);
+          }}
+          onPointerUp={(e) => {
+            resizeDrag.current = null;
+            if (e.currentTarget.hasPointerCapture(e.pointerId)) e.currentTarget.releasePointerCapture(e.pointerId);
+          }}
+          onPointerCancel={() => {
+            resizeDrag.current = null;
+          }}
+          onLostPointerCapture={() => {
+            resizeDrag.current = null;
+          }}
+          onKeyDown={(e) => {
+            if (e.key !== "ArrowLeft" && e.key !== "ArrowRight") return;
+            e.preventDefault();
+            e.stopPropagation();
+            if (e.altKey)
+              onMove(column.id, ids[index + (e.key === "ArrowLeft" ? -1 : 1)] ?? null, e.key === "ArrowRight");
+            else resize(width + (e.key === "ArrowLeft" ? -10 : 10));
+          }}
+        />
+      )}
     </span>
   );
 }
@@ -1960,6 +2093,53 @@ function CommitRowView({
       left={opts.refsOnLeft}
     />
   );
+  const subjectCell = (
+    <span key={SUBJECT_COLUMN.id} className={styles.colSubject}>
+      {graph && (
+        <GraphCell
+          row={graph}
+          head={head}
+          activeColor={hoverColor}
+          highlighted={highlighted}
+          highlightedNodes={highlightedNodes}
+          onHover={onHover}
+          onNavigate={onNavigate}
+          targetTitle={targetTitle}
+          onFragment={(target, expand, source) => onFragment(source ?? commitKey(c), target, expand)}
+          onNode={() => onFragment(commitKey(c), commitKey(c), false)}
+          interactive={interactive}
+        />
+      )}
+      {bookmarked && <Icon name="bookmark" size={12} />}
+      {opts.refsOnLeft && refs}
+      <span
+        ref={subjectRef}
+        className={clsx(styles.subject, head && styles.headSubject, merge && styles.mergeSubject)}
+        onPointerEnter={enterTooltip}
+        onPointerLeave={leaveTooltip}
+        onPointerDown={() => {
+          clearTimeout(tooltipTimer.current);
+          setTooltip(false);
+        }}
+      >
+        <IssueText text={c.summary} />
+      </span>
+      {!opts.refsOnLeft && refs}
+      <Popup
+        open={tooltip}
+        anchor={subjectRef}
+        role="tooltip"
+        autoFocus={false}
+        restoreFocus={false}
+        onClose={() => setTooltip(false)}
+        className={styles.commitTooltip}
+      >
+        <div onPointerEnter={() => clearTimeout(tooltipTimer.current)} onPointerLeave={leaveTooltip}>
+          <CommitMessage commit={c} />
+        </div>
+      </Popup>
+    </span>
+  );
   return (
     <div
       id={id}
@@ -1981,66 +2161,26 @@ function CommitRowView({
           {repoName(commitRepo(c)!)}
         </span>
       )}
-      <span className={styles.colSubject}>
-        {graph && (
-          <GraphCell
-            row={graph}
-            head={head}
-            activeColor={hoverColor}
-            highlighted={highlighted}
-            highlightedNodes={highlightedNodes}
-            onHover={onHover}
-            onNavigate={onNavigate}
-            targetTitle={targetTitle}
-            onFragment={(target, expand, source) => onFragment(source ?? commitKey(c), target, expand)}
-            onNode={() => onFragment(commitKey(c), commitKey(c), false)}
-            interactive={interactive}
-          />
-        )}
-        {bookmarked && <Icon name="bookmark" size={12} />}
-        {opts.refsOnLeft && refs}
-        <span
-          ref={subjectRef}
-          className={clsx(styles.subject, head && styles.headSubject, merge && styles.mergeSubject)}
-          onPointerEnter={enterTooltip}
-          onPointerLeave={leaveTooltip}
-          onPointerDown={() => {
-            clearTimeout(tooltipTimer.current);
-            setTooltip(false);
-          }}
-        >
-          <IssueText text={c.summary} />
-        </span>
-        {!opts.refsOnLeft && refs}
-        <Popup
-          open={tooltip}
-          anchor={subjectRef}
-          role="tooltip"
-          autoFocus={false}
-          restoreFocus={false}
-          onClose={() => setTooltip(false)}
-          className={styles.commitTooltip}
-        >
-          <div onPointerEnter={() => clearTimeout(tooltipTimer.current)} onPointerLeave={leaveTooltip}>
-            <CommitMessage commit={c} />
-          </div>
-        </Popup>
-      </span>
-      {columns.map((column) => (
-        <span
-          key={column.id}
-          className={clsx(
-            styles.columnCell,
-            styles.muted,
-            column.id === "author" && mine && styles.mine,
-            column.id === "hash" && styles.hash,
-          )}
-          style={{ width: opts.columnWidths[column.id] ?? column.width ?? 120 }}
-          title={column.id === "author" ? `${c.author} <${c.email}>` : undefined}
-        >
-          {column.render(c)}
-        </span>
-      ))}
+      {columnSequence(opts.columnOrder, columns).map((cid) => {
+        if (cid === SUBJECT_COLUMN.id) return subjectCell;
+        const column = columns.find((col) => col.id === cid);
+        if (!column) return null;
+        return (
+          <span
+            key={cid}
+            className={clsx(
+              styles.columnCell,
+              styles.muted,
+              column.id === "author" && mine && styles.mine,
+              column.id === "hash" && styles.hash,
+            )}
+            style={{ width: opts.columnWidths[column.id] ?? column.width ?? 120 }}
+            title={column.id === "author" ? `${c.author} <${c.email}>` : undefined}
+          >
+            {column.render(c)}
+          </span>
+        );
+      })}
     </div>
   );
 }
@@ -2273,7 +2413,11 @@ export function CommitDetails({ commits }: { commits: Commit[] }) {
   const fromParents = useLogOptions((s) => s.changesFromParents);
   const onlyAffected = useLogOptions((s) => s.showOnlyAffected);
   const preview = useLogOptions((s) => s.diffPreview);
-  const diffLocation = useLogOptions((s) => s.diffLocation);
+  const savedLocation = useLogOptions((s) => s.diffLocation);
+  // The modal commit interface keeps diffs out of editor tabs (#1863): the "Editor"
+  // preview shows beside the changes instead.
+  const modal = useWorkflowSettings((s) => !s.vcs.commit.nonModal);
+  const diffLocation = modal && savedLocation === "editor" ? "right" : savedLocation;
   const showLineStats = useLogOptions((s) => s.showLineStats);
   const filters = useGitLog((s) => s.filters);
   const filesKey = JSON.stringify([idsKey, fromParents, parentIndex, commitRoot, showLineStats]);
@@ -2385,7 +2529,8 @@ export function CommitDetails({ commits }: { commits: Commit[] }) {
   const previewSelection = (sel: ReadonlySet<string>) => {
     clearTimeout(previewTimer.current);
     if (syncingDiff.current) return;
-    if (!logOptions().diffPreview || logOptions().diffLocation !== "editor" || sel.size !== 1) return;
+    if (!logOptions().diffPreview || logOptions().diffLocation !== "editor" || vcsDiffInFront() || sel.size !== 1)
+      return;
     const file = fileNodeAt(tree, [...sel][0]!)?.file;
     // A preview that cannot open (no editor yet, the file went away) is just skipped.
     if (file)
@@ -2456,7 +2601,7 @@ export function CommitDetails({ commits }: { commits: Commit[] }) {
         label: "Diff Preview Location",
         submenu: (["editor", "right", "bottom"] as const).map((location) => ({
           label: location === "editor" ? "Editor" : location === "right" ? "Right" : "Bottom",
-          checked: diffLocation === location,
+          checked: savedLocation === location,
           run: () => updateLogOptions({ diffLocation: location }),
         })),
       },

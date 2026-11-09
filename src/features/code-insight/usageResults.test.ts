@@ -31,6 +31,8 @@ vi.mock("@tauri-apps/api/core", async (orig) => ({
   },
 }));
 
+const { registerDocumentIndexSync } = await import("@/workbench/contributions");
+
 const { activeUsageSearch, findUsages, openUsageTab, pinUsageTab, resetUsages, showUsageResults, useUsages } =
   await import("./usages");
 
@@ -93,8 +95,9 @@ describe("findUsages", () => {
     const at = (line: number) => ({ path: "/p/b.rs", range: { start: { line, col: 4 }, end: { line, col: 8 } } });
     let resolve!: (refs: unknown) => void;
     referenceResponse.mockReturnValueOnce(new Promise((r) => (resolve = r)));
+    const requested = lspReferences.mock.calls.length;
     const search = findUsages();
-    await vi.waitFor(() => expect(channels).not.toHaveLength(0));
+    await vi.waitFor(() => expect(lspReferences).toHaveBeenCalledTimes(requested + 1));
     channels.at(-1)!.onmessage({ locations: [at(1)], incomplete: null });
     await vi.waitFor(() => expect(activeUsageSearch(useUsages.getState())!.groups).toHaveLength(1));
     expect(activeUsageSearch(useUsages.getState())).toMatchObject({ loading: true, error: null });
@@ -104,6 +107,46 @@ describe("findUsages", () => {
     expect(done.loading).toBe(false);
     expect(done.groups[0]!.usages.map((u) => u.line)).toEqual([1, 2]);
     resetUsages();
+  });
+
+  it("waits for the contributed index barrier, then preserves partial and final usage events", async () => {
+    let release!: () => void;
+    const sync = vi.fn(
+      () =>
+        new Promise<void>((resolve) => {
+          release = resolve;
+        }),
+    );
+    const off = registerDocumentIndexSync(sync);
+    let finish!: (refs: unknown) => void;
+    referenceResponse.mockReturnValueOnce(
+      new Promise((resolve) => {
+        finish = resolve;
+      }),
+    );
+    lspReferences.mockClear();
+    const allocated = channels.length;
+    const pending = findUsages();
+    const at = (line: number) => ({ path: "/p/b.rs", range: { start: { line, col: 4 }, end: { line, col: 8 } } });
+    try {
+      await vi.waitFor(() => expect(sync).toHaveBeenCalledWith("/p/a.rs"));
+      expect(lspReferences).not.toHaveBeenCalled();
+      expect(channels).toHaveLength(allocated);
+      release();
+      await vi.waitFor(() => expect(lspReferences).toHaveBeenCalledTimes(1));
+      channels.at(-1)!.onmessage({ locations: [at(1)], incomplete: null });
+      await vi.waitFor(() => expect(activeUsageSearch(useUsages.getState())!.groups).toHaveLength(1));
+      expect(activeUsageSearch(useUsages.getState())!.loading).toBe(true);
+      finish({ locations: [at(1), at(2)], incomplete: null });
+      await pending;
+      expect(activeUsageSearch(useUsages.getState())!.groups[0]!.usages.map((u) => u.line)).toEqual([1, 2]);
+    } finally {
+      off();
+      release?.();
+      finish?.({ locations: [], incomplete: null });
+      await pending;
+      resetUsages();
+    }
   });
 });
 

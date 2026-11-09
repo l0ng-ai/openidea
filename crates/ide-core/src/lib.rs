@@ -7,13 +7,17 @@
 pub mod editor_settings;
 pub mod error;
 pub mod event;
+pub mod go;
 pub mod ids;
 pub mod ignored;
+pub mod input;
 pub mod inspection_settings;
 pub mod ipc_path;
 pub mod java_runtime;
 pub mod jsonc;
 pub mod output_encoding;
+pub mod path_mapping;
+pub mod platform;
 pub mod process;
 pub mod project_dir;
 pub mod project_roots;

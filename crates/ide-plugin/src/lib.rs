@@ -23,3 +23,10 @@ pub use runtime::{
 pub use sandbox::{MAX_READ_BYTES, inside_root, read_text, resolve_in_root, resolve_new_in_root, resolve_real};
 pub use types::*;
 pub use wasmtime::component::Component;
+
+mod execution;
+pub use execution::*;
+
+pub use ide_core::remote_settings::PluginRunTarget;
+
+pub mod language_features;

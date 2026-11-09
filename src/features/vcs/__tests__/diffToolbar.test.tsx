@@ -11,6 +11,7 @@ const openFile = vi.fn();
 const openInput = vi.fn();
 const texts: Record<string, string> = { HEAD: "a\n", abc123: "a\n" };
 let working = "a\n";
+let workingEol = "lf";
 
 vi.mock("@/platform/ipc", async (importOriginal) => {
   const real = await importOriginal<typeof import("@/platform/ipc")>();
@@ -36,6 +37,7 @@ vi.mock("@/editor/api", async (importOriginal) => ({
     Promise.resolve({
       path,
       text: () => working,
+      lineEnding: () => workingEol,
       readOnly: false,
       extension: [],
       save: () => Promise.resolve(),
@@ -47,6 +49,7 @@ import { DiffEditor, mapLine } from "../DiffEditor";
 import { DiffEditorTab } from "../diff-editor-tab";
 import { diffInput, withChain, type DiffData } from "../diffInput";
 import { useToolWindowLayout } from "@/workbench/toolwindows/store";
+import { useProject } from "@/platform/project";
 
 /** Git Log opens a commit's file: both sides are revisions. */
 const input = {
@@ -63,6 +66,7 @@ const input = {
 const paths = (html: string) => [...html.matchAll(/ d="([^"]+)"/g)].map((m) => m[1]);
 
 beforeEach(() => {
+  workingEol = "lf";
   probe.mockReset();
   openFile.mockReset();
   openInput.mockReset();
@@ -92,6 +96,50 @@ describe("Diff toolbar", () => {
     probe.mockResolvedValue({ status: "ok", data: { size: 3, binary: false, tooLarge: false } });
     fireEvent.click(screen.getByRole("button", { name: "Refresh" }));
     await waitFor(() => expect(screen.queryByText("Binary files cannot be shown as text")).toBeNull());
+  });
+
+  it.each([
+    ["CRLF", "a\r\n", "a\n"],
+    ["CR", "a\r", "a\n"],
+    ["mixed with the same dominant ending", "a\r\nb\nc\n", "a\nb\nc\n"],
+    ["mixed with a different dominant ending", "a\r\nb\r\nc\n", "a\nb\nc\n"],
+  ])("reports %s line-separator-only differences", async (_name, a, b) => {
+    texts.HEAD = a;
+    texts.abc123 = b;
+    render(<DiffEditor input={input} />);
+    expect(await screen.findByText("Contents differ only in line separators")).toBeInTheDocument();
+    expect(screen.queryByText("No differences")).toBeNull();
+    expect(screen.queryByText("Contents are identical")).toBeNull();
+  });
+
+  it.each(["a\n", "a\r\n", "a\r\nb\n", ""])("recognizes identical contents %j", async (text) => {
+    texts.HEAD = texts.abc123 = text;
+    render(<DiffEditor input={input} />);
+    expect(await screen.findByText("Contents are identical")).toBeInTheDocument();
+    expect(screen.queryByText("Contents differ only in line separators")).toBeNull();
+  });
+
+  it("does not describe ignored whitespace as only line separators", async () => {
+    localStorage.setItem("openidea.vcs.diffOptions", JSON.stringify({ ignore: "whitespace" }));
+    texts.HEAD = "a \r\n";
+    texts.abc123 = "a\n";
+    const mounted = render(<DiffEditor input={input} />);
+    await waitFor(() => expect(mounted.container.querySelectorAll(".cm-editor")).toHaveLength(2));
+    expect(screen.queryByText("Contents differ only in line separators")).toBeNull();
+    mounted.unmount();
+    localStorage.removeItem("openidea.vcs.diffOptions");
+  });
+
+  it("compares a normalized live CRLF document with a raw CRLF revision", async () => {
+    texts.HEAD = "a\r\n";
+    workingEol = "crLf";
+    render(
+      <DiffEditor
+        input={diffInput({ path: "/p/a.ts", left: { type: "rev", rev: "HEAD" }, right: { type: "worktree" } })}
+      />,
+    );
+    expect(await screen.findByText("Contents are identical")).toBeInTheDocument();
+    expect(screen.queryByText("Contents differ only in line separators")).toBeNull();
   });
 
   it("puts Jump to Source right after Next Difference, in the navigation group", async () => {
@@ -153,6 +201,105 @@ describe("Diff toolbar", () => {
       syncScroll: false,
     });
     localStorage.clear();
+  });
+
+  describe("soft wraps", () => {
+    const wrapped = () =>
+      [...document.querySelectorAll(".cm-editor .cm-content")].map((c) => c.classList.contains("cm-lineWrapping"));
+    const editorSettings = (softWrap: boolean, softWrapFiles?: string) =>
+      useProject.setState({
+        settings: { editor: { softWrap, ...(softWrapFiles ? { general: { softWrapFiles } } : {}) } } as never,
+      });
+
+    beforeEach(() => {
+      localStorage.clear();
+      texts.HEAD = "a\nb\n";
+      texts.abc123 = "a\nnew\nb\n";
+    });
+
+    it.each([
+      { name: "the file matches Soft-wrap files", softWrap: true, files: "*.ts", mode: "split", expected: true },
+      { name: "the file matches, unified viewer", softWrap: true, files: "*.ts", mode: "unified", expected: true },
+      { name: "the file is not in Soft-wrap files", softWrap: true, files: undefined, mode: "split", expected: false },
+      { name: "soft wraps are off in the editor", softWrap: false, files: "*.ts", mode: "split", expected: false },
+    ] as const)("follow the editor's setting when $name", async ({ softWrap, files, mode, expected }) => {
+      editorSettings(softWrap, files);
+      localStorage.setItem("openidea.vcs.diffOptions", JSON.stringify({ mode }));
+      render(<DiffEditor input={input} />);
+      const panes = mode === "split" ? 2 : 1;
+      await waitFor(() => expect(document.querySelectorAll(".cm-editor")).toHaveLength(panes));
+      expect(wrapped()).toEqual(Array(panes).fill(expected));
+      useProject.setState({ settings: null as never });
+    });
+
+    it.each([
+      { mode: "split", alignChanges: false },
+      { mode: "split", alignChanges: true },
+      { mode: "unified", alignChanges: false },
+    ])("reconfigures $mode (aligned: $alignChanges) without losing selection", async ({ mode, alignChanges }) => {
+      editorSettings(true, "*.ts");
+      localStorage.setItem("openidea.vcs.diffOptions", JSON.stringify({ mode, alignChanges }));
+      const mounted = render(
+        <>
+          <DiffEditor input={input} />
+          <ContextMenuHost />
+        </>,
+      );
+      const count = mode === "split" ? 2 : 1;
+      await waitFor(() => expect(document.querySelectorAll(".cm-editor")).toHaveLength(count));
+      const views = [...document.querySelectorAll<HTMLElement>(".cm-editor")].map((dom) =>
+        EditorView.findFromDOM(dom)!,
+      );
+      for (const view of views) view.dispatch({ selection: { anchor: 1 } });
+      expect(wrapped()).toEqual(Array(count).fill(true));
+      // Settings changes still apply until an explicit viewer override is made.
+      editorSettings(false);
+      await waitFor(() => expect(wrapped()).toEqual(Array(count).fill(false)));
+      editorSettings(true, "*.ts");
+      await waitFor(() => expect(wrapped()).toEqual(Array(count).fill(true)));
+      fireEvent.click(screen.getByRole("button", { name: "Settings" }));
+      fireEvent.click(await screen.findByRole("menuitemcheckbox", { name: "Use Soft Wraps" }));
+      await waitFor(() => expect(wrapped()).toEqual(Array(count).fill(false)));
+      expect(JSON.parse(localStorage.getItem("openidea.vcs.diffOptions")!).softWrap).toBe(false);
+      editorSettings(true, "*");
+      await waitFor(() => expect(wrapped()).toEqual(Array(count).fill(false)));
+      for (const view of views) {
+        expect(view.dom.isConnected).toBe(true);
+        expect(EditorView.findFromDOM(view.dom)).toBe(view);
+        expect(view.state.selection.main.head).toBe(1);
+      }
+      mounted.unmount();
+      render(<DiffEditor input={input} />);
+      await waitFor(() => expect(document.querySelectorAll(".cm-editor")).toHaveLength(count));
+      expect(wrapped()).toEqual(Array(count).fill(false));
+      useProject.setState({ settings: null as never });
+      localStorage.clear();
+    });
+
+    it("turn on from the settings menu and stay on", async () => {
+      editorSettings(true);
+      const mounted = render(
+        <>
+          <DiffEditor input={input} />
+          <ContextMenuHost />
+        </>,
+      );
+      await waitFor(() => expect(document.querySelectorAll(".cm-mergeViewEditor .cm-editor")).toHaveLength(2));
+      expect(wrapped()).toEqual([false, false]);
+      (await screen.findByRole("button", { name: "Settings" })).click();
+      const item = await screen.findByRole("menuitemcheckbox", { name: "Use Soft Wraps" });
+      expect(item.getAttribute("aria-checked")).toBe("false");
+      item.click();
+      await waitFor(() => expect(wrapped()).toEqual([true, true]));
+      expect(JSON.parse(localStorage.getItem("openidea.vcs.diffOptions")!).softWrap).toBe(true);
+      // The next diff opens wrapped although the editor would not wrap this file.
+      mounted.unmount();
+      render(<DiffEditor input={input} />);
+      await waitFor(() => expect(document.querySelectorAll(".cm-mergeViewEditor .cm-editor")).toHaveLength(2));
+      expect(wrapped()).toEqual([true, true]);
+      useProject.setState({ settings: null as never });
+      localStorage.clear();
+    });
   });
 
   it("has no Jump to Source when the file is gone from the working tree", async () => {

@@ -120,7 +120,7 @@ pub(crate) static SPECS: &[Spec] = &[
         name: "kotlin",
         language: tree_sitter_kotlin_ng::LANGUAGE,
         outline: outline!("kotlin"),
-        highlights: None,
+        highlights: Some(Highlights { query: highlights!("kotlin"), first_wins: false }),
         fold_nodes: &["string_literal"],
         fold_bodies: NONE,
         imports: &["import"],

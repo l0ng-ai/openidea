@@ -11,11 +11,15 @@ import { goBuildType } from "./goTypes";
 import { isWindows } from "./jvmTypes";
 import { typeFor } from "./types";
 import { runTemplate } from "./runTemplates";
+import { appendScriptArgs } from "./scriptArgs";
+import { csharpTargets } from "./csharpTargets";
 
 export type FileRole = "test" | "main" | "script" | null;
 
 /** `django`: a Django project, whose default test module is `tests.py` (elsewhere a script). */
 export function fileRole(relPath: string, content?: string, windows = isWindows(), django = false): FileRole {
+  if (/\.cs$/i.test(relPath) && content && csharpTargets(content).some((target) => target.kind === "test"))
+    return "test";
   const name = relPath.split("/").pop() ?? relPath;
   if (
     /\.(test|spec)\.[cm]?[jt]sx?$/.test(name) ||
@@ -43,6 +47,7 @@ const stem = (p: string) => (p.split("/").pop() ?? p).replace(/\.[^.]+$/, "");
 
 /** Kinds whose test configs can run a file of this extension. */
 function testKinds(relPath: string): string[] {
+  if (/\.cs$/i.test(relPath)) return ["dotnet-test"];
   if (/\.[cm]?[jt]sx?$/.test(relPath)) return ["npm", "deno", "bun"];
   if (/\.py$/.test(relPath)) return ["pytest", "python", "django-test"];
   if (/\.php$/.test(relPath)) return ["phpunit"];
@@ -56,6 +61,8 @@ function testKinds(relPath: string): string[] {
 
 /** The module owning a configuration's targets, relative to the project root. */
 export function configScope(config: RunConfig): string {
+  if (config.kind === "dotnet" || config.kind === "dotnet-test")
+    return dirOf((config.params?.project || "").replace(/\\/g, "/"));
   return (
     config.kind === "go"
       ? (config.params?.module ?? config.module ?? config.cwd ?? "")
@@ -209,15 +216,29 @@ export function testBasesFor(relPath: string, configs: RunConfig[]): RunConfig[]
  * File-level test configuration for `relPath` (the closest matching test config,
  * or `base`, narrowed to the file).
  */
-export function testConfigFor(relPath: string, configs: RunConfig[], base?: RunConfig): RunConfig | null {
+export function testConfigFor(
+  relPath: string,
+  configs: RunConfig[],
+  base?: RunConfig,
+  content?: string,
+): RunConfig | null {
   base ??= testBasesFor(relPath, configs)[0];
   if (!base) return null;
   const file = relToCwd(relPath, base);
   switch (base.kind) {
+    case "dotnet-test": {
+      const methods = csharpTargets(content ?? "")
+        .filter((t) => t.kind === "test")
+        .map((t) => t.path.join("."));
+      return methods.length
+        ? derived(base, relPath, {
+            params: { ...base.params, testMethods: JSON.stringify(methods) },
+          })
+        : null;
+    }
     case "npm":
     case "bun": {
-      // `npm run test -- file` works for npm, pnpm, yarn and bun.
-      const args = base.args.includes("--") ? [...base.args, file] : [...base.args, "--", file];
+      const args = appendScriptArgs(base.command, base.args, [file]);
       return derived(base, relPath, { args });
     }
     case "deno":
@@ -409,7 +430,7 @@ export function contextConfig(
   windows = isWindows(),
 ): RunConfig | null {
   const role = fileRole(relPath, content, windows, hasDjangoTests(configs));
-  if (role === "test") return testConfigFor(relPath, configs);
+  if (role === "test") return testConfigFor(relPath, configs, undefined, content);
   if (role === "main") return mainConfigFor(relPath, configs) ?? scriptConfigFor(relPath, configs, windows, content);
   if (role === "script") return scriptConfigFor(relPath, configs, windows, content);
   return null;

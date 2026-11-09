@@ -1,7 +1,13 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { act, fireEvent, render, screen } from "@testing-library/react";
 import type { AgentEntry, AgentEvent, AgentTask } from "@/bindings";
-import { dropOnEditor, useContributions, type EditorInput, type OpenEditorTab } from "@/workbench/contributions";
+import {
+  dropOnEditor,
+  useContributions,
+  useEditorTabTitles,
+  type EditorInput,
+  type OpenEditorTab,
+} from "@/workbench/contributions";
 import { AgentsView } from "./AgentsView";
 import { AgentsStatus } from "./AgentsStatus";
 import { activate } from "./index";
@@ -109,6 +115,27 @@ afterEach(() => {
   visible.splice(0).forEach((hide) => hide());
   disconnect();
   vi.restoreAllMocks();
+});
+
+describe("agent tab titles", () => {
+  it("refreshes restored tab titles when tasks finish loading", async () => {
+    disconnect();
+    const revision = useEditorTabTitles.getState().revision;
+    backend.tasks = [{ ...task("one"), title: "Saved rename" }];
+    await connect();
+    expect(useAgents.getState().tasks.get("one")?.title).toBe("Saved rename");
+    expect(useEditorTabTitles.getState().revision).toBe(revision + 1);
+  });
+
+  it("refreshes titles for user and provider renames, but not unchanged task updates", () => {
+    const revision = useEditorTabTitles.getState().revision;
+    emit({ type: "task", task: { ...task("one"), title: "User rename" } });
+    expect(useEditorTabTitles.getState().revision).toBe(revision + 1);
+    emit({ type: "task", task: { ...task("one"), title: "User rename", updatedMs: 1 } });
+    expect(useEditorTabTitles.getState().revision).toBe(revision + 1);
+    emit({ type: "task", task: { ...task("two", "ready"), title: "Provider title" } });
+    expect(useEditorTabTitles.getState().revision).toBe(revision + 2);
+  });
 });
 
 describe("agent unread activity", () => {

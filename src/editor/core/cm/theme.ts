@@ -133,6 +133,7 @@ export const openideaTheme = EditorView.theme({
     "--editor-selection-inactive":
       "var(--bg-editor-selection-inactive, color-mix(in srgb, var(--accent) 14%, transparent))",
     "--editor-indent-guide": "var(--border-indent-guide, var(--border))",
+    "--openidea-guide": "linear-gradient(var(--editor-indent-guide), var(--editor-indent-guide))",
     ...findLocals,
     "--editor-brace": "var(--bg-matched-brace, color-mix(in srgb, var(--accent) 22%, transparent))",
     "--editor-fold-chip": "var(--bg-fold-placeholder, color-mix(in srgb, var(--fg-muted) 14%, transparent))",
@@ -152,7 +153,8 @@ export const openideaTheme = EditorView.theme({
     caretColor: "var(--caret, var(--fg-strong))",
     cursor: "text",
   },
-  ".cm-line": { padding: "0 16px 0 6px" },
+  // The right side also leaves room for the floating corner widgets (core/cm/cornerInset.ts).
+  ".cm-line": { padding: "0 calc(16px + var(--cm-corner-inset, 0px)) 0 6px" },
   ...caretStyles,
   "&.cm-openidea-ligatures .cm-scroller, &.cm-openidea-ligatures .cm-openidea-sticky": {
     fontVariantLigatures: "normal",
@@ -274,19 +276,18 @@ export const openideaTheme = EditorView.theme({
   },
   ".cm-foldPlaceholder:hover": { backgroundColor: "color-mix(in srgb, var(--fg-muted) 24%, transparent)" },
 
-  // Indent guides (cm/indentGuides.ts)
+  // Indent guides (cm/indentGuides.ts): one 1px strip per guide, positioned per guide.
   // Above the text so a selection, or a mark's background, never covers part of a guide.
-  ".cm-openidea-guides": { position: "relative" },
-  ".cm-openidea-guides::after": {
+  ".cm-openidea-guides, .cm-openidea-guidesOn .cm-openidea-lens": { position: "relative" },
+  ".cm-openidea-guides::after, .cm-openidea-guidesOn .cm-openidea-lens::after": {
     content: '""',
     position: "absolute",
     inset: "0",
     pointerEvents: "none",
-    backgroundImage:
-      "repeating-linear-gradient(to right, var(--editor-indent-guide) 0 1px, transparent 1px calc(var(--openidea-guide-step) * 1ch))",
-    backgroundSize: "calc(var(--openidea-guide-levels) * var(--openidea-guide-step) * 1ch) 100%",
+    backgroundImage: "var(--openidea-guide-images, none)",
+    backgroundPosition: "var(--openidea-guide-positions, 0 0)",
+    backgroundSize: "1px 100%",
     backgroundRepeat: "no-repeat",
-    backgroundPosition: "6px 0",
   },
 
   // Rainbow brackets (cm/rainbowBrackets.ts); `*` too: the syntax highlighter's span sits inside and would win.
@@ -370,5 +371,7 @@ export const openideaTheme = EditorView.theme({
   ".cm-openidea-stickyText": { flex: "1", overflow: "hidden" },
 
   // Soft-wrap: continuation rows indent slightly, like IDEA's wrap sign column.
-  "&.cm-lineWrapping .cm-line, .cm-lineWrapping .cm-line": { paddingRight: "24px" },
+  "&.cm-lineWrapping .cm-line, .cm-lineWrapping .cm-line": {
+    paddingRight: "calc(24px + var(--cm-corner-inset, 0px))",
+  },
 });

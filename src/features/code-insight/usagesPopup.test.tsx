@@ -236,8 +236,12 @@ it("opens with the usages found first and fills in the rest", async () => {
     }),
   );
   const before = calls.length;
+  const requested = lspReferences.mock.calls.length;
   const pending = showUsagesPopup();
-  await act(async () => channels.at(-1)!.onmessage({ locations: [at(1)], incomplete: null }));
+  await act(async () => {
+    await vi.waitFor(() => expect(lspReferences).toHaveBeenCalledTimes(requested + 1));
+    channels.at(-1)!.onmessage({ locations: [at(1)], incomplete: null });
+  });
   // Not before the rest had a moment to arrive.
   expect(useUsagesPopup.getState().open).toBe(false);
   await act(() => new Promise((r) => setTimeout(r, 350)));
@@ -268,8 +272,12 @@ it("jumps to a single usage when all arrive quickly, and otherwise stays open", 
     );
   respond();
   let before = calls.length;
+  let requested = lspReferences.mock.calls.length;
   let pending = showUsagesPopup();
-  await act(async () => channels.at(-1)!.onmessage({ locations: [loc], incomplete: null }));
+  await act(async () => {
+    await vi.waitFor(() => expect(lspReferences).toHaveBeenCalledTimes(requested + 1));
+    channels.at(-1)!.onmessage({ locations: [loc], incomplete: null });
+  });
   await act(async () => {
     resolve({ locations: [loc], incomplete: null });
     await pending;
@@ -278,8 +286,12 @@ it("jumps to a single usage when all arrive quickly, and otherwise stays open", 
   expect(calls.slice(before)).toEqual(["open /p/b.ts:1", "hint Only one usage in Project Files"]);
   respond();
   before = calls.length;
+  requested = lspReferences.mock.calls.length;
   pending = showUsagesPopup();
-  await act(async () => channels.at(-1)!.onmessage({ locations: [loc], incomplete: null }));
+  await act(async () => {
+    await vi.waitFor(() => expect(lspReferences).toHaveBeenCalledTimes(requested + 1));
+    channels.at(-1)!.onmessage({ locations: [loc], incomplete: null });
+  });
   await act(() => new Promise((r) => setTimeout(r, 350)));
   await act(async () => {
     resolve({ locations: [loc], incomplete: null });

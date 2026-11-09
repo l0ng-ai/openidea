@@ -67,6 +67,11 @@ impl BuildStep {
         }
     }
 
+    /// A CMake configure/build invocation, parsed as compiler output in the Build view.
+    pub fn cmake(program: &str, args: Vec<String>, cwd: PathBuf, env: BTreeMap<String, String>) -> Self {
+        Self { program: program.into(), args, cwd, env, format: Format::Gcc }
+    }
+
     /// The command line as echoed in the console.
     pub fn display(&self) -> String {
         let program = Path::new(&self.program).file_name().map_or(self.program.clone(), |n| n.to_string_lossy().into());
@@ -153,7 +158,7 @@ fn detect_dir(dir: &Path, model: &BuildModel, root: &Path) -> Option<BuildSystem
         Some(BuildSystem::Gradle)
     } else if has(dir, &["Cargo.toml"]) {
         Some(BuildSystem::Cargo)
-    } else if has(dir, &["go.mod"]) {
+    } else if has(dir, &["go.mod", "go.work"]) {
         Some(BuildSystem::Go)
     } else if has(dir, &["tsconfig.json", "package.json"]) {
         Some(BuildSystem::TypeScript)
@@ -227,7 +232,7 @@ pub fn plan(
         BuildSystem::Gradle => gradle_steps(root, model, kind, module_dir.as_deref())?,
         BuildSystem::Cargo => cargo_steps(&dir, kind),
         // Go builds the file's package (a module holds many).
-        BuildSystem::Go => go_steps(file.and_then(Path::parent).unwrap_or(&dir), kind),
+        BuildSystem::Go => go_steps(file.and_then(Path::parent).unwrap_or(&dir), kind)?,
         BuildSystem::TypeScript => ts_steps(&dir, kind),
         BuildSystem::CMake => cmake_steps(&dir, kind, cmake.and_then(<[_]>::first)),
     };
@@ -374,7 +379,33 @@ fn cmake_steps(dir: &Path, kind: BuildKind, profile: Option<&CMakeProfile>) -> V
     steps
 }
 
-fn go_steps(dir: &Path, kind: BuildKind) -> Vec<BuildStep> {
+fn go_steps(dir: &Path, kind: BuildKind) -> IdeResult<Vec<BuildStep>> {
+    if dir.join("go.work").is_file() {
+        let work_file = dunce::canonicalize(dir.join("go.work"))?;
+        let modules = ide_core::go::work_modules(&std::fs::read_to_string(dir.join("go.work"))?);
+        if modules.is_empty() {
+            return Err(IdeError::invalid("The Go workspace contains no modules"));
+        }
+        let mut steps = Vec::new();
+        for module in modules {
+            let module = dir.join(module);
+            if !module.join("go.mod").is_file() {
+                return Err(IdeError::not_found(format!("Go workspace module has no go.mod: {}", module.display())));
+            }
+            // Go compares workspace membership against cwd paths lexically.
+            let module = dunce::canonicalize(module)?;
+            let mut module_steps = go_module_steps(&module, kind);
+            for step in &mut module_steps {
+                step.env.insert("GOWORK".into(), work_file.to_string_lossy().into_owned());
+            }
+            steps.extend(module_steps);
+        }
+        return Ok(steps);
+    }
+    Ok(go_module_steps(dir, kind))
+}
+
+fn go_module_steps(dir: &Path, kind: BuildKind) -> Vec<BuildStep> {
     let module_root = dir.ancestors().find(|d| d.join("go.mod").is_file()).unwrap_or(dir);
     let target = if module_root == dir { "./...".to_owned() } else { format!("./{}/...", rel_str(module_root, dir)) };
     let mut args = vec!["build"];
@@ -741,13 +772,7 @@ pub fn launch_has_non_java_sources(root: &Path, model: &BuildModel, module: &Pat
     has_non_java_sources(module)
 }
 
-fn launch_plan(root: &Path, model: &BuildModel, module: &Path, test: bool) -> IdeResult<BuildPlan> {
-    let kind = if model.maven.as_ref().is_some_and(|m| m.projects.iter().any(|p| subdir(root, &p.dir) == module)) {
-        // JDT may have left newer error stubs in Maven's output directories.
-        BuildKind::Rebuild
-    } else {
-        BuildKind::Build
-    };
+fn launch_plan(root: &Path, model: &BuildModel, module: &Path, test: bool, kind: BuildKind) -> IdeResult<BuildPlan> {
     let mut plan = plan(root, model, kind, Some(module), None)?;
     if plan.system == BuildSystem::Maven && !test {
         for step in &mut plan.steps {
@@ -759,6 +784,12 @@ fn launch_plan(root: &Path, model: &BuildModel, module: &Path, test: bool) -> Id
     Ok(plan)
 }
 
+#[derive(Debug)]
+pub struct LaunchBuild {
+    pub class_dirs: Vec<PathBuf>,
+    pub failure: Option<String>,
+}
+
 /// Compiles the module at `module` with its build system before a JVM launch and
 /// returns the class directories it wrote, to put ahead of the jdtls classpath.
 pub fn build_for_launch(
@@ -766,11 +797,12 @@ pub fn build_for_launch(
     model: &BuildModel,
     module: &Path,
     test: bool,
+    kind: BuildKind,
     cancel: &CancellationToken,
-) -> IdeResult<Vec<PathBuf>> {
-    let plan = launch_plan(root, model, module, test)?;
+) -> IdeResult<LaunchBuild> {
+    let plan = launch_plan(root, model, module, test, kind)?;
     let result = run(root, &plan, cancel, &|_| {})?;
-    if !result.success {
+    let failure = if !result.success {
         let errors: Vec<String> = result
             .messages
             .iter()
@@ -781,17 +813,21 @@ pub fn build_for_launch(
                 _ => m.text.clone(),
             })
             .collect();
-        return Err(IdeError::internal(format!("Build failed:\n{}", errors.join("\n"))));
-    }
-    if plan.system == BuildSystem::Maven
+        Some(format!("Build failed:\n{}", errors.join("\n")))
+    } else {
+        None
+    };
+    let class_dirs = if plan.system == BuildSystem::Maven
         && let Some(m) = &model.maven
     {
-        return Ok(maven_launch_projects(root, m, module, test)
+        maven_launch_projects(root, m, module, test)
             .iter()
             .flat_map(|p| launch_class_dirs(plan.system, &subdir(root, &p.dir), test && subdir(root, &p.dir) == module))
-            .collect());
-    }
-    Ok(launch_class_dirs(plan.system, module, test))
+            .collect()
+    } else {
+        launch_class_dirs(plan.system, module, test)
+    };
+    Ok(LaunchBuild { class_dirs, failure })
 }
 
 fn launch_class_dirs(system: BuildSystem, module: &Path, test: bool) -> Vec<PathBuf> {
@@ -813,6 +849,79 @@ fn launch_class_dirs(system: BuildSystem, module: &Path, test: bool) -> Vec<Path
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn go_workspace_build_commands_compile_members_with_local_dependencies() {
+        let Some(go) = ide_core::process::find_executable("go", &ide_core::tool_path::search_path()) else {
+            return;
+        };
+        let tmp = tempfile::tempdir().unwrap();
+        let root = &tmp.path().join("workspace");
+        write(root, "go.work", "go 1.22\nuse (\n ./app\n ./lib\n ../external\n)\n");
+        write(root, "lib/go.mod", "module example.com/lib\ngo 1.22\n");
+        write(root, "lib/lib.go", "package lib\nfunc Value() int { return 1 }\n");
+        write(root, "app/go.mod", "module example.com/app\ngo 1.22\nrequire example.com/lib v0.0.0\n");
+        write(root, "app/main.go", "package main\nimport \"example.com/lib\"\nfunc main(){_ = lib.Value()}\n");
+        write(root, "../external/go.mod", "module example.com/external\ngo 1.22\nrequire example.com/lib v0.0.0\n");
+        write(root, "../external/main.go", "package main\nimport \"example.com/lib\"\nfunc main(){_ = lib.Value()}\n");
+        // std canonicalization also exercises verbatim paths on Windows.
+        for root in [root.to_path_buf(), std::fs::canonicalize(root).unwrap()] {
+            let plan = plan(&root, &BuildModel::default(), BuildKind::Build, None, None).unwrap();
+            for step in plan.steps {
+                let result = std::process::Command::new(&go)
+                    .args(&step.args)
+                    .envs(&step.env)
+                    .env("GOPROXY", "off")
+                    .current_dir(&step.cwd)
+                    .output()
+                    .unwrap();
+                assert!(result.status.success(), "{step:?}: {}", String::from_utf8_lossy(&result.stderr));
+            }
+        }
+    }
+
+    #[test]
+    fn go_workspace_builds_every_use_module() {
+        let tmp = tempfile::tempdir().unwrap();
+        let root = tmp.path().join("workspace");
+        write(&root, "go.work", "go 1.22\nuse (\n  ./api\n  \"./lib with spaces\"\n  ../shared\n)\n");
+        for module in ["api", "lib with spaces", "../shared"] {
+            write(&root.join(module), "go.mod", "module example.com/p\ngo 1.22\n");
+        }
+        // Cover native paths, Windows verbatim paths and non-normalized module paths.
+        let canonical = std::fs::canonicalize(&root).unwrap();
+        for root in [&root, &canonical, &canonical.join("..").join("workspace")] {
+            for kind in [BuildKind::Build, BuildKind::Rebuild, BuildKind::Artifacts] {
+                let p = plan(root, &BuildModel::default(), kind, None, None).unwrap();
+                assert_eq!(p.system, BuildSystem::Go);
+                assert_eq!(p.steps.len(), 3);
+                for (step, module) in p.steps.iter().zip(["api", "lib with spaces", "../shared"]) {
+                    assert_eq!(step.cwd, dunce::canonicalize(root.join(module)).unwrap());
+                    assert_eq!(
+                        step.env["GOWORK"],
+                        dunce::canonicalize(root.join("go.work")).unwrap().to_string_lossy()
+                    );
+                    let expected =
+                        if kind == BuildKind::Rebuild { vec!["build", "-a", "./..."] } else { vec!["build", "./..."] };
+                    assert_eq!(step.args, expected);
+                }
+            }
+        }
+        let member =
+            plan(&root, &BuildModel::default(), BuildKind::Build, Some(&root.join("api/pkg/a.go")), None).unwrap();
+        assert_eq!(member.steps.len(), 1);
+        assert_eq!(member.steps[0].cwd, root.join("api"));
+        assert_eq!(member.steps[0].args, ["build", "./pkg/..."]);
+        write(&root, "go.work", "use ./missing\n");
+        assert!(
+            plan(&root, &BuildModel::default(), BuildKind::Build, None, None)
+                .unwrap_err()
+                .to_string()
+                .contains("go.mod")
+        );
+        write(&root, "go.work", "go 1.22\n");
+        assert!(plan(&root, &BuildModel::default(), BuildKind::Build, None, None).is_err());
+    }
+
     #[test]
     fn independent_gradle_builds_keep_their_launchers_and_task_paths() {
         let wrapper = if cfg!(windows) { "gradlew.bat" } else { "gradlew" };
@@ -1205,13 +1314,17 @@ mod tests {
         write(root, "app/pom.xml", "<project/>");
         let model = reactor_model();
         for (test, goal) in [(false, "compile"), (true, "test-compile")] {
-            let plan = launch_plan(root, &model, &root.join("app"), test).unwrap();
+            // A normal launch is incremental: no `clean` (IDEA's Make, not Rebuild).
+            let plan = launch_plan(root, &model, &root.join("app"), test, BuildKind::Build).unwrap();
             let step = &plan.steps[0];
             assert_eq!(step.cwd, root);
             assert_eq!(step.program, "mvnw");
             assert_eq!(step.env["JAVA_HOME"], "/jdk");
+            assert_eq!(step.args, ["-B", "-Dstyle.color=never", "-s", "settings.xml", "-pl", "app", "-am", goal]);
+            // Rebuild cleans first, as IDEA's Rebuild does.
+            let plan = launch_plan(root, &model, &root.join("app"), test, BuildKind::Rebuild).unwrap();
             assert_eq!(
-                step.args,
+                plan.steps[0].args,
                 ["-B", "-Dstyle.color=never", "-s", "settings.xml", "-pl", "app", "-am", "clean", goal]
             );
         }
@@ -1233,9 +1346,10 @@ mod tests {
         std::fs::set_permissions(&wrapper, std::fs::Permissions::from_mode(0o755)).unwrap();
         let mut model = reactor_model();
         model.maven.as_mut().unwrap().projects[0].command = wrapper.to_string_lossy().into_owned();
-        let dirs = build_for_launch(root, &model, &root.join("app"), true, &CancellationToken::new()).unwrap();
+        let dirs = build_for_launch(root, &model, &root.join("app"), true, BuildKind::Build, &CancellationToken::new())
+            .unwrap();
         assert_eq!(
-            dirs,
+            dirs.class_dirs,
             ["app/target/test-classes", "app/target/classes", "middle/target/classes", "lib/target/classes"]
                 .map(|p| root.join(p))
         );
@@ -1244,12 +1358,16 @@ mod tests {
             "mvnw",
             "#!/bin/sh\necho '[ERROR] Kotlin compilation failed: unresolved reference broken' >&2\nexit 1\n",
         );
-        let error = build_for_launch(root, &model, &root.join("app"), false, &CancellationToken::new()).unwrap_err();
-        assert!(error.message.contains("Kotlin compilation failed"), "{}", error.message);
+        let error =
+            build_for_launch(root, &model, &root.join("app"), false, BuildKind::Build, &CancellationToken::new())
+                .unwrap()
+                .failure
+                .unwrap();
+        assert!(error.contains("Kotlin compilation failed"), "{error}");
         let cancel = CancellationToken::new();
         cancel.cancel();
         assert_eq!(
-            build_for_launch(root, &model, &root.join("app"), false, &cancel).unwrap_err().kind,
+            build_for_launch(root, &model, &root.join("app"), false, BuildKind::Build, &cancel).unwrap_err().kind,
             ide_core::error::ErrorKind::Cancelled
         );
     }

@@ -3,7 +3,8 @@ import { act, fireEvent, render, screen, waitFor } from "@testing-library/react"
 import userEvent from "@testing-library/user-event";
 import type { AgentEntry, AgentTask } from "@/bindings";
 
-const ipc = vi.hoisted(() => ({ rollback: vi.fn(), prompt: vi.fn(), cancel: vi.fn() }));
+const ipc = vi.hoisted(() => ({ rollback: vi.fn(), prompt: vi.fn(), cancel: vi.fn(), confirm: vi.fn() }));
+vi.mock("@/workbench/messages", () => ({ confirm: ipc.confirm }));
 const entries: AgentEntry[] = [
   { type: "user", text: "Original message", attachments: [], sentMs: 1, doneMs: 2, steered: false },
   { type: "agent", text: "Original answer" },
@@ -25,7 +26,8 @@ vi.mock("@tauri-apps/api/webview", () => ({
 }));
 
 import { SessionEditor } from "./SessionEditor";
-import { composerDraft, sendMessage, updateComposer, useAgents } from "./store";
+import { registerActions } from "@/platform/actions";
+import { composerDraft, retractFrom, rerunFrom, sendMessage, updateComposer, useAgents } from "./store";
 import { replyActions } from "./replyActions";
 
 const task: AgentTask = {
@@ -49,11 +51,97 @@ const task: AgentTask = {
   capabilities: { fork: true, rollback: true, steer: true, images: true },
 };
 
+let returnDispose: () => void;
+afterEach(() => returnDispose());
+
 beforeEach(() => {
+  const dispose = registerActions(replyActions);
+  returnDispose = dispose;
+  ipc.confirm.mockReset().mockResolvedValue(true);
   ipc.rollback.mockReset().mockResolvedValue({ status: "ok", data: null });
   ipc.prompt.mockReset().mockResolvedValue({ status: "ok", data: null });
   ipc.cancel.mockReset().mockResolvedValue({ status: "ok", data: null });
   useAgents.setState({ tasks: new Map([[task.id, task]]), entries: new Map(), composers: new Map(), focus: null });
+});
+
+it("keeps the transcript and running session when a fresh-session rerun is cancelled", async () => {
+  ipc.confirm.mockResolvedValue(false);
+  useAgents.setState({
+    tasks: new Map([[task.id, { ...task, status: "running" }]]),
+    entries: new Map([[task.id, entries]]),
+  });
+  await rerunFrom(task.id, 0, "Replacement");
+  expect(ipc.confirm).toHaveBeenCalledWith(
+    expect.objectContaining({
+      message: expect.stringContaining("clears the entire conversation"),
+    }),
+  );
+  expect(ipc.cancel).not.toHaveBeenCalled();
+  expect(ipc.rollback).not.toHaveBeenCalled();
+  expect(ipc.prompt).not.toHaveBeenCalled();
+  expect(useAgents.getState().entries.get(task.id)).toEqual(entries);
+});
+
+describe("retracting a turn", () => {
+  it.each([0, 1])("stops before rollback and restores text/images without sending (turn %s)", async (turn) => {
+    const image = { mimeType: "image/png", data: "AAA", name: "shot.png" };
+    useAgents.setState({ tasks: new Map([[task.id, { ...task, status: "running" }]]) });
+    updateComposer(task.id, { text: "Draft" });
+    const running = retractFrom(task.id, turn, "Original", [image]);
+    await waitFor(() => expect(ipc.cancel).toHaveBeenCalledTimes(1));
+    expect(ipc.rollback).not.toHaveBeenCalled();
+    useAgents.setState({ tasks: new Map([[task.id, task]]) });
+    await running;
+    expect(ipc.rollback).toHaveBeenCalledExactlyOnceWith(task.id, turn);
+    expect(ipc.prompt).not.toHaveBeenCalled();
+    expect(composerDraft(task.id)).toEqual({ text: "Original\nDraft", images: [image], files: [] });
+    expect(useAgents.getState().focus?.key).toBe(task.id);
+  });
+
+  it("keeps the draft and avoids rollback when the agent does not stop in time", async () => {
+    vi.useFakeTimers();
+    try {
+      useAgents.setState({ tasks: new Map([[task.id, { ...task, status: "running" }]]) });
+      const result = expect(retractFrom(task.id, 1, "Original")).rejects.toThrow("The agent is still stopping");
+      await vi.advanceTimersByTimeAsync(15_000);
+      await result;
+      expect(ipc.rollback).not.toHaveBeenCalled();
+      expect(composerDraft(task.id).text).toBe("Original");
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it("recovers the original prompt when rollback fails", async () => {
+    ipc.rollback.mockResolvedValue({ status: "error", error: { kind: "internal", message: "Rollback failed" } });
+    await expect(retractFrom(task.id, 1, "Original")).rejects.toThrow("Rollback failed");
+    expect(composerDraft(task.id).text).toBe("Original");
+    expect(ipc.prompt).not.toHaveBeenCalled();
+  });
+
+  it("confirms before retracting a turn with later messages and guards repeated clicks", async () => {
+    const transcript = [...entries, { ...entries[0]!, text: "Follow up" } as AgentEntry, entries[1]!];
+    useAgents.setState({ entries: new Map([[task.id, transcript]]) });
+    let answer!: (ok: boolean) => void;
+    ipc.confirm.mockReturnValue(
+      new Promise<boolean>((resolve) => {
+        answer = resolve;
+      }),
+    );
+    render(<SessionEditor input={{ kind: "agent-session", key: task.id, data: { task: task.id } }} />);
+    const user = userEvent.setup();
+    const retract = screen.getAllByRole("button", { name: "Retract Message" })[0]!;
+    await user.click(retract);
+    await user.click(retract);
+    expect(ipc.confirm).toHaveBeenCalledTimes(1);
+    expect(ipc.rollback).not.toHaveBeenCalled();
+    await act(async () => answer(false));
+    expect(useAgents.getState().entries.get(task.id)).toEqual(transcript);
+    ipc.confirm.mockResolvedValue(true);
+    await user.click(retract);
+    await waitFor(() => expect(ipc.rollback).toHaveBeenCalledExactlyOnceWith(task.id, 0));
+    expect(composerDraft(task.id).text).toBe("Original message");
+  });
 });
 
 async function edit() {

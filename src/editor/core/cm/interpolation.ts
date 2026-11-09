@@ -10,7 +10,15 @@ type Literal = {
   multiline: boolean;
   braces: number;
 };
-type Frame<S> = { code: S; literal?: Literal; depth: number; name?: boolean; close?: string };
+type Frame<S> = {
+  code: S;
+  literal?: Literal;
+  depth: number;
+  name?: boolean;
+  close?: string;
+  doc?: boolean;
+  commentDepth?: number;
+};
 type State<S> = { frames: Frame<S>[]; indentUnit: number };
 
 /** Preserve the stock code tokenizer while suspending strings around embedded code. */
@@ -25,7 +33,7 @@ export function interpolationParser<S>(base: StreamParser<S>, dialect: Interpola
   return {
     name: base.name,
     languageData: base.languageData,
-    tokenTable: { ...base.tokenTable, templateDelimiter: tags.special(tags.brace) },
+    tokenTable: { ...base.tokenTable, templateDelimiter: tags.special(tags.brace), stringRaw: tags.string },
     startState: (indentUnit) => ({ frames: [{ code: start(indentUnit), depth: 0 }], indentUnit }),
     copyState: (state) => ({
       ...state,
@@ -76,7 +84,7 @@ export function interpolationParser<S>(base: StreamParser<S>, dialect: Interpola
           if (stream.next() === "\\" && literal.escape) stream.next();
         }
         if (stream.eol() && !literal.multiline) frame.literal = undefined;
-        return "string";
+        return dialect === "Kotlin" && literal.quote.length > 1 ? "stringRaw" : "string";
       }
       // Probe with a copy so quotes/braces inside comments or characters stay opaque.
       const from = stream.pos;
@@ -118,7 +126,7 @@ export function interpolationParser<S>(base: StreamParser<S>, dialect: Interpola
             !(dialect === "Scala" && stream.string.slice(0, from).endsWith("raw")),
           multiline: quote.length >= 3 || verbatim,
         };
-        return "string";
+        return dialect === "Kotlin" && quote.length > 1 ? "stringRaw" : "string";
       }
       if (state.frames.length > 1 && style !== "comment" && !style?.startsWith("string") && end === from + 1) {
         if (frame.depth === 0 && stream.match(frame.close ?? "}")) {
@@ -129,7 +137,18 @@ export function interpolationParser<S>(base: StreamParser<S>, dialect: Interpola
         if (text[0] === "}") frame.depth--;
       }
       stream.pos = from;
-      return base.token(stream, frame.code);
+      const result = base.token(stream, frame.code);
+      if (dialect === "Kotlin" && result === "comment" && (frame.commentDepth || text.startsWith("/*"))) {
+        // Keep the doc flag in the incremental parser state, including through nested comments.
+        const doc = frame.commentDepth ? frame.doc : text.startsWith("/**") && !text.startsWith("/**/");
+        let depth = frame.commentDepth ?? 0;
+        for (const delimiter of stream.string.slice(from, stream.pos).matchAll(/\/\*|\*\//g))
+          depth += delimiter[0] === "/*" ? 1 : -1;
+        frame.commentDepth = depth;
+        frame.doc = depth > 0 && doc;
+        return doc ? "docComment" : result;
+      }
+      return result;
     },
   };
 }

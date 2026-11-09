@@ -165,6 +165,8 @@ export class UnalignedPanes {
     b: { top: null, left: null },
   };
   private sync: boolean;
+  private scrolling: Side | null = null;
+  private scrollTimer: ReturnType<typeof setTimeout> | undefined;
   private frame = -1;
   private resize: ResizeObserver | null = null;
   private readonly cleanup: (() => void)[] = [];
@@ -187,12 +189,20 @@ export class UnalignedPanes {
     for (const side of ["a", "b"] as const) {
       const el = this.view(side).scrollDOM;
       const onScroll = () => this.scrolled(side);
+      const onPointer = () => this.interruptScroll();
       el.addEventListener("scroll", onScroll, { passive: true });
-      this.cleanup.push(() => el.removeEventListener("scroll", onScroll));
+      el.addEventListener("wheel", onPointer, { passive: true });
+      el.addEventListener("pointerdown", onPointer);
+      this.cleanup.push(() => {
+        el.removeEventListener("scroll", onScroll);
+        el.removeEventListener("wheel", onPointer);
+        el.removeEventListener("pointerdown", onPointer);
+      });
     }
     // The divider scrolls the right pane (and, when synchronized, through it the left one).
     const onWheel = (e: WheelEvent) => {
       e.preventDefault();
+      this.interruptScroll();
       mv.b.scrollDOM.scrollBy(e.deltaX, e.deltaY);
     };
     this.divider.addEventListener("wheel", onWheel, { passive: false });
@@ -213,11 +223,35 @@ export class UnalignedPanes {
   /** Turns synchronized scrolling on (bringing the left pane in line) or off. */
   setSync(on: boolean) {
     if (on === this.sync) return;
+    this.interruptScroll();
     this.sync = on;
     this.resync();
   }
 
+  scrollTo(side: Side, options: ScrollToOptions) {
+    this.interruptScroll();
+    this.scrolling = this.sync && options.behavior === "smooth" ? side : null;
+    this.releaseScroll();
+    this.view(side).scrollDOM.scrollTo(options);
+  }
+
+  private releaseScroll() {
+    clearTimeout(this.scrollTimer);
+    if (this.scrolling) this.scrollTimer = setTimeout(() => (this.scrolling = null), 150);
+  }
+
+  private interruptScroll() {
+    const side = this.scrolling;
+    this.scrolling = null;
+    clearTimeout(this.scrollTimer);
+    if (side && this.mv) {
+      const el = this.view(side).scrollDOM;
+      el.scrollTo({ top: el.scrollTop, behavior: "instant" });
+    }
+  }
+
   destroy() {
+    clearTimeout(this.scrollTimer);
     if (this.frame >= 0) cancelAnimationFrame(this.frame);
     this.resize?.disconnect();
     for (const f of this.cleanup) f();
@@ -230,6 +264,13 @@ export class UnalignedPanes {
   }
 
   private scrolled(side: Side) {
+    if (this.scrolling) {
+      // A follower's delayed layout scroll must not cancel the leader's animation.
+      this.follow(this.scrolling);
+      this.releaseScroll();
+      this.schedule();
+      return;
+    }
     const el = this.view(side).scrollDOM;
     const moved = this.moved[side];
     const echo =

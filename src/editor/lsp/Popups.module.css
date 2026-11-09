@@ -427,3 +427,19 @@
   gap: 6px;
   font-size: var(--fs-ui);
 }
+
+.pasteImports {
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+  padding: 14px;
+  font-size: var(--fs-ui);
+}
+.pasteImportList {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  max-height: 280px;
+  overflow: auto;
+  overflow-wrap: anywhere;
+}

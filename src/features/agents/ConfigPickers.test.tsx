@@ -234,8 +234,24 @@ describe("model and effort button", () => {
     expect(slider).toHaveAttribute("aria-valuetext", "high");
     fireEvent.change(slider, { target: { value: "3" } });
     expect(onChange).toHaveBeenLastCalledWith("reasoning_effort", "xhigh");
-    fireEvent.click(within(dialog).getByRole("button", { name: "Model" }));
-    fireEvent.click(screen.getByRole("option", { name: /GPT-6 Sol/ }));
+    // The model list is in the popup itself, not behind a second dropdown.
+    expect(within(dialog).queryByRole("button", { name: "Model" })).not.toBeInTheDocument();
+    fireEvent.click(within(dialog).getByRole("option", { name: /GPT-6 Sol/ }));
+    expect(onChange).toHaveBeenLastCalledWith("model", "gpt-6-sol");
+    expect(screen.getByRole("dialog", { name: "Model & effort settings" })).toBeInTheDocument();
+  });
+
+  it("filters the model list and picks the highlighted model with the keyboard", () => {
+    const onChange = vi.fn();
+    render(<ConfigPickers config={copilotConfig()} onChange={onChange} />);
+    fireEvent.click(screen.getByRole("button", { name: "Model" }));
+    const dialog = screen.getByRole("dialog", { name: "Model & effort settings" });
+    const search = within(dialog).getByPlaceholderText("Search…");
+    expect(search).toHaveFocus();
+    fireEvent.change(search, { target: { value: "sol" } });
+    expect(within(dialog).getAllByRole("option")).toHaveLength(1);
+    fireEvent.keyDown(search, { key: "ArrowDown" });
+    fireEvent.keyDown(search, { key: "Enter" });
     expect(onChange).toHaveBeenLastCalledWith("model", "gpt-6-sol");
   });
 

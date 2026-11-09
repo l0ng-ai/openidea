@@ -253,6 +253,32 @@ pub fn inspect(ep: &DockerEndpoint, object: DockerObject, id: &str) -> IdeResult
     }
 }
 
+fn check_id(id: &str) -> IdeResult<&str> {
+    let id = id.trim();
+    if id.is_empty() || id.starts_with('-') { Err(IdeError::invalid("invalid Docker identifier")) } else { Ok(id) }
+}
+
+/// `docker image history --no-trunc --format '{{json .}}'` of one image.
+pub fn image_history(ep: &DockerEndpoint, id: &str) -> IdeResult<Vec<DockerImageLayer>> {
+    let id = check_id(id)?;
+    let out = run(ep, &["image", "history", "--no-trunc", "--format", "{{json .}}", id], QUICK)?;
+    Ok(parse_image_history(&out))
+}
+
+/// `docker top <id>` of a running container.
+pub fn container_top(ep: &DockerEndpoint, id: &str) -> IdeResult<DockerProcessList> {
+    let id = check_id(id)?;
+    let out = run(ep, &["top", id], QUICK)?;
+    Ok(parse_container_top(&out))
+}
+
+/// `docker stats --no-stream --no-trunc --format '{{json .}}' <id>` of a running container.
+pub fn container_stats(ep: &DockerEndpoint, id: &str) -> IdeResult<DockerContainerStats> {
+    let id = check_id(id)?;
+    let out = run(ep, &["stats", "--no-stream", "--no-trunc", "--format", "{{json .}}", id], QUICK)?;
+    parse_container_stats(&out).ok_or_else(|| IdeError::not_found("no container stats returned"))
+}
+
 /// Streams a container's logs (`tail` last lines, then follows while `follow`)
 /// until it ends or `cancel` fires.
 pub fn logs(
@@ -443,7 +469,7 @@ pub fn compose_op(
 
 /// Whether `ep` is a daemon on this machine, where a bind mount of the project
 /// is this machine's folder. The CLI's default daemon and a context are looked
-/// up (`DOCKER_HOST`, else the context's endpoint).
+/// up (`DOCKER_CONTEXT`, then `DOCKER_HOST`, else the current context).
 pub fn endpoint_is_local(ep: &DockerEndpoint) -> IdeResult<bool> {
     let url = match ep {
         DockerEndpoint::Socket { path } => path.trim().to_owned(),
@@ -451,15 +477,29 @@ pub fn endpoint_is_local(ep: &DockerEndpoint) -> IdeResult<bool> {
             let host = host.trim();
             if host.contains("://") { host.to_owned() } else { format!("tcp://{host}") }
         }
-        DockerEndpoint::Default => {
-            match ide_core::process::host_var_os("DOCKER_HOST").map(|v| v.to_string_lossy().trim().to_owned()) {
-                Some(url) if !url.is_empty() => url,
-                _ => context_host(ep, None)?,
-            }
-        }
+        DockerEndpoint::Default => default_daemon_url(
+            ide_core::process::host_var_os("DOCKER_CONTEXT").as_deref().and_then(|v| v.to_str()),
+            ide_core::process::host_var_os("DOCKER_HOST").as_deref().and_then(|v| v.to_str()),
+            |name| context_host(&DockerEndpoint::Default, name),
+        )?,
         DockerEndpoint::Context { name } => context_host(&DockerEndpoint::Default, Some(name.trim()))?,
     };
     Ok(daemon_url_is_local(&url))
+}
+
+fn default_daemon_url(
+    context: Option<&str>,
+    host: Option<&str>,
+    lookup: impl FnOnce(Option<&str>) -> IdeResult<String>,
+) -> IdeResult<String> {
+    let context = context.filter(|v| !v.is_empty());
+    if context.is_some() {
+        return lookup(context);
+    }
+    match host.filter(|v| !v.is_empty()) {
+        Some(host) => Ok(host.to_owned()),
+        None => lookup(None),
+    }
 }
 
 /// The daemon URL of context `name` (the current one with `None`).
@@ -505,6 +545,34 @@ pub fn compose_config(ep: &DockerEndpoint, dir: &Path, files: &[String]) -> IdeR
 #[cfg(test)]
 mod local_tests {
     use super::*;
+
+    #[test]
+    fn the_selected_context_overrides_docker_host() {
+        let local = "unix:///var/run/docker.sock";
+        let remote = "ssh://me@build";
+        for host in [None, Some(""), Some(local)] {
+            let url = default_daemon_url(Some("build"), host, |name| {
+                assert_eq!(name, Some("build"));
+                Ok(remote.into())
+            })
+            .unwrap();
+            assert!(!daemon_url_is_local(&url));
+        }
+        for context in [None, Some("")] {
+            assert_eq!(
+                default_daemon_url(context, Some(local), |_| panic!("host overrides current context")).unwrap(),
+                local
+            );
+            assert_eq!(
+                default_daemon_url(context, None, |name| {
+                    assert_eq!(name, None);
+                    Ok(remote.into())
+                })
+                .unwrap(),
+                remote
+            );
+        }
+    }
 
     #[test]
     fn local_daemon_urls() {

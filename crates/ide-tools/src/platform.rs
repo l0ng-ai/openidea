@@ -152,6 +152,25 @@ mod tests {
     }
 
     #[test]
+    fn laravel_lsp_assets() {
+        let names = [
+            "server-v0.0.32-arm64-darwin",
+            "server-v0.0.32-x64-darwin",
+            "server-v0.0.32-arm64-linux",
+            "server-v0.0.32-x64-linux",
+            "server-v0.0.32-x64-win32.exe",
+        ];
+        let rules = crate::registry::find("laravel-lsp").unwrap().asset_rules();
+        assert_eq!(select_asset(&names, rules, MAC_ARM), Some(names[0]));
+        assert_eq!(select_asset(&names, rules, MAC_X64), Some(names[1]));
+        assert_eq!(select_asset(&names, rules, LINUX_ARM), Some(names[2]));
+        assert_eq!(select_asset(&names, rules, LINUX_X64), Some(names[3]));
+        assert_eq!(select_asset(&names, rules, WIN), Some(names[4]));
+        // The composer-installed helper is not a release asset.
+        assert_eq!(select_asset(&["laravel-lsp"], rules, LINUX_X64), None);
+    }
+
+    #[test]
     fn kmp_lsp_assets_include_the_native_jar_indexer() {
         let names = [
             "kmp-lsp-darwin-aarch64.gz",

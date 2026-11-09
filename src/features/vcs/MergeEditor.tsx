@@ -30,7 +30,7 @@ import {
   type MergeControls,
 } from "./mergeGutters";
 import { COMPARISONS, showCompareMenu, showResultMenu, showSettingsMenu, showSideMenu } from "./mergeMenus";
-import { openDiff } from "./diffInput";
+import { openVcsDiff } from "./diffInput";
 import {
   clearFocusedMergeEditor,
   refreshMergeActions,
@@ -511,7 +511,7 @@ export function MergeEditor({ input }: { input: EditorInput }) {
           theirs: { text: state.theirs, label: txt(titles.theirs) },
         };
         const [a, b] = COMPARISONS[id as keyof typeof COMPARISONS];
-        await openDiff({ path, left: { type: "text", ...versions[a] }, right: { type: "text", ...versions[b] } });
+        await openVcsDiff({ path, left: { type: "text", ...versions[a] }, right: { type: "text", ...versions[b] } });
       }
     }
   };

@@ -14,6 +14,7 @@ use tauri::{Manager, State, Window};
 pub struct AppInfo {
     pub version: String,
     pub platform: String,
+    pub windows_build_number: Option<u32>,
     pub config_dir: ide_core::IpcPath,
     /// Linux on a Wayland display: GTK draws the frameless windows' shadow and resize edges.
     pub wayland: bool,
@@ -28,6 +29,7 @@ pub fn app_info(state: State<'_, AppState>) -> AppInfo {
     AppInfo {
         version: env!("CARGO_PKG_VERSION").into(),
         platform: std::env::consts::OS.into(),
+        windows_build_number: ide_core::platform::windows_build_number(),
         config_dir: state.config_dir.clone().into(),
         #[cfg(target_os = "linux")]
         wayland: crate::linux_window_state::is_wayland(),
@@ -179,6 +181,9 @@ pub fn settings_set(
     value: String,
 ) -> IdeResult<Settings> {
     let applied = ide_host::ops::project::set_settings(&state.host, window.label(), scope, &key, &value)?;
+    if key == "mcpServer" || key.starts_with("mcpServer.") {
+        crate::commands::mcp::apply(&state);
+    }
     // A project value concerns only that project's window (and its settings window).
     let event = ide_core::IdeEvent::SettingsChanged { key };
     if applied.project_scope {
@@ -231,6 +236,7 @@ pub async fn settings_import(window: Window, state: State<'_, AppState>, path: P
         tauri::async_runtime::spawn(async move { lsp.reconfigure().await });
     }
     crate::commands::ssh::apply_ssh_settings(&state);
+    crate::commands::mcp::apply(&state);
     state.host.apply_proxy();
     state.sink.emit(ide_core::IdeEvent::SettingsChanged { key: String::new() });
     let settings = ide_host::ops::project::settings(&state.host, window.label());

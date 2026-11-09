@@ -27,6 +27,7 @@
 /* Inline option groups, with custom font controls wrapping together. */
 .fontRow {
   display: flex;
+  flex-wrap: wrap;
   align-items: center;
   gap: 8px;
   min-height: 28px;
@@ -93,11 +94,14 @@
 
 .radios {
   display: flex;
+  flex-wrap: wrap;
   align-items: center;
   gap: 16px;
 }
 .radio {
   display: inline-flex;
+  flex: none;
+  white-space: nowrap;
   align-items: center;
   gap: 6px;
 }
@@ -111,6 +115,7 @@
   border-collapse: collapse;
 }
 .table th {
+  white-space: nowrap;
   text-align: left;
   font-weight: normal;
   color: var(--fg-muted);
@@ -119,6 +124,7 @@
   border-bottom: 1px solid var(--border);
 }
 .table td {
+  white-space: nowrap;
   height: 32px;
   padding: 0 8px;
 }

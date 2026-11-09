@@ -19,6 +19,7 @@ import { Button, Checkbox, IconButton, Input, Menu, type SelectOption, T } from 
 import { NumberInput, Row, SearchLabel, Section, Select } from "../components/Form";
 import { useLabelMatch, useSetting } from "../components/context";
 import { selectPage, setQuery } from "../model/staging";
+import { MCP_SERVER_PAGE } from "./mcpServer";
 import type { PageSpec } from "./spec";
 import { BoundToggle, Grid, Indented, PageLink, TableEditor } from "./workflowControls";
 import styles from "./Workflow.module.css";
@@ -480,8 +481,12 @@ function ExternalToolsEditor() {
                 checked={t.enabled}
                 onChange={(on) => setTools(tools.map((x) => (x.id === t.id ? { ...x, enabled: on } : x)))}
               />
-              <span>{t.name}</span>
-              <span className={styles.toolGroup}>{t.group}</span>
+              <span className={styles.toolName} title={t.name}>
+                {t.name}
+              </span>
+              <span className={styles.toolGroup} title={t.group}>
+                {t.group}
+              </span>
             </div>
           ))}
         </div>
@@ -678,4 +683,5 @@ export const TOOLS_PAGES: PageSpec[] = [
       },
     ],
   },
+  MCP_SERVER_PAGE,
 ];

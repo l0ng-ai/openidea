@@ -1,4 +1,4 @@
-package openidea:plugin@1.2.0;
+package openidea:plugin@1.3.0;
 
 /// Editor features a plugin provides for the languages it declares under
 /// `[[contributes.providers]]` (the host calls only declared kinds). They run
@@ -75,6 +75,9 @@ interface providers {
     code-actions: func(doc: document, selection: range) -> list<code-action>;
     /// The edits of an action `code-actions` returned with `data`, when the
     /// user picks it (the command budget applies, not the editor's 50 ms).
+    /// `ui.pick`, `pick-many`, `input` and `confirm` ask in the editor's window;
+    /// waiting is excluded from the budget. Other command/event-only APIs
+    /// remain unavailable.
     resolve-code-action: func(doc: document, action: code-action) -> result<code-action, error>;
     definition: func(doc: document, at: position) -> list<location>;
     line-markers: func(doc: document) -> list<line-marker>;

@@ -4,8 +4,8 @@ import { Decoration, EditorView, ViewPlugin, type DecorationSet, type ViewUpdate
 /**
  * `drawSelection` paints the selection in a layer behind the text, so any mark with its own
  * background (light-scheme warnings, find matches, usages, semantic backgrounds…) hides it.
- * This repaints selected text in the innermost span: higher-precedence marks nest closer to the
- * text, and the only other `Prec.highest` marks (LSP semantic tokens) set colour, not background.
+ * This repaints selected text in the innermost span. At equal precedence the earlier source
+ * nests inside, so this must precede find and semantic decorations at `Prec.highest`.
  */
 const selectedMark = Decoration.mark({ class: "cm-openidea-selected" });
 
