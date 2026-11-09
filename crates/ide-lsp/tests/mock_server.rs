@@ -1878,6 +1878,34 @@ async fn java_source_paths_reach_initialization_live_configuration_and_builds() 
 }
 
 #[tokio::test(flavor = "multi_thread")]
+async fn java_build_waits_for_a_reconfigured_server_to_restart() {
+    let h = harness_for("java", "java", &[("jdtls", incremental_caps())], &[]);
+    h.open("App.java", "class App {}\n");
+    h.wait_status("jdtls", ServerStatus::Ready).await;
+    let state = h.launcher.state("jdtls");
+    state.respond("java/buildWorkspace", json!(1));
+    let gate = Arc::new(Gate::default());
+    *state.held.lock() = Some(("exit".into(), gate.clone()));
+    h.mgr.set_config_hook(Box::new(|cfg, _| cfg.args.push("--new-configuration".into())));
+    let reconfigure = tokio::spawn({
+        let mgr = h.mgr.clone();
+        async move { mgr.reconfigure().await }
+    });
+    eventually(|| gate.entered()).await;
+    let mut build = tokio::spawn({
+        let (mgr, root) = (h.mgr.clone(), h.root.clone());
+        async move { mgr.java_build(&root, false, &Default::default()).await }
+    });
+    let early = tokio::time::timeout(Duration::from_millis(100), &mut build).await;
+    gate.open();
+    reconfigure.await.unwrap();
+    assert!(early.is_err(), "a planned restart must not fail a pending build: {early:?}");
+    assert_eq!(build.await.unwrap().unwrap(), ide_lsp::jdtls::JavaBuildStatus::Succeeded);
+    assert_eq!(state.launches.load(Ordering::SeqCst), 2);
+    h.mgr.shutdown_all().await;
+}
+
+#[tokio::test(flavor = "multi_thread")]
 async fn java_build_asks_for_a_full_build_when_rebuilding() {
     let h = harness_for("java", "java", &[("jdtls", incremental_caps())], &[]);
     let state = h.launcher.state("jdtls");
