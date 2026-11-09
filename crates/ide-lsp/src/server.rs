@@ -119,6 +119,8 @@ pub struct Server {
     phase_notify: Notify,
     transient: Mutex<HashMap<PathBuf, Transient>>,
     pub java_build_lock: Arc<tokio::sync::Mutex<()>>,
+    /// JDT retirement waits for launch and initialization cleanup, even before `Ready`.
+    pub startup_lock: Arc<tokio::sync::Mutex<()>>,
     pub java_autobuild_suspended: std::sync::atomic::AtomicBool,
     pub external_project: tokio::sync::Mutex<crate::external_project::State>,
     pub external_diagnostics: std::sync::atomic::AtomicBool,
@@ -158,6 +160,7 @@ impl Server {
             phase_notify: Notify::new(),
             transient: Mutex::new(HashMap::new()),
             java_build_lock: Arc::new(tokio::sync::Mutex::new(())),
+            startup_lock: Arc::new(tokio::sync::Mutex::new(())),
             java_autobuild_suspended: std::sync::atomic::AtomicBool::new(false),
             external_project: tokio::sync::Mutex::new(Default::default()),
             external_diagnostics: std::sync::atomic::AtomicBool::new(false),

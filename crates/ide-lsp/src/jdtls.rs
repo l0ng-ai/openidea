@@ -627,7 +627,11 @@ impl LspManager {
             .docs
             .lock()
             .values()
-            .filter(|d| d.language.as_str() == "java" && d.path.starts_with(&server.root))
+            .filter(|d| {
+                d.language.as_str() == "java"
+                    && d.path.is_absolute()
+                    && d.servers.iter().any(|a| a.server.id == server.id)
+            })
             .map(|d| crate::uri::path_to_uri_string(&d.path))
             .collect();
         if uris.is_empty() {
