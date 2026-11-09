@@ -215,12 +215,12 @@ async fn official_api_examples_install_and_render_real_component_contributions()
         version: 1,
         text: "TODO example\n".into(),
     };
-    assert!(
+    assert!(eventually(|| {
         f.plugins
             .language_code_lenses(&doc)
             .iter()
             .any(|(owner, lens)| owner == "openidea.blame-annotations" && lens.command == "annotate")
-    );
+    }));
     f.plugins.run_command("openidea.todo-finder", "find", None, f.invocation()).unwrap();
     let view = f.plugins.render_view("openidea.todo-finder", "todos", None, f.invocation()).unwrap();
     let ide_plugin::ViewBody::List(items) = view.body else { panic!("expected TODO list") };
@@ -236,14 +236,27 @@ async fn official_api_examples_install_and_render_real_component_contributions()
         std::fs::write(f.root.join("example.tests"), "test adds\n").unwrap();
         let doc =
             ide_plugin::ProviderDocument { path: f.root.join("example.tests"), text: "test adds\n".into(), ..doc };
-        let actions = f.plugins.language_gutter_actions(&doc);
-        assert!(
-            actions
+        assert!(eventually(|| {
+            f.plugins
+                .language_gutter_actions(&doc)
                 .iter()
                 .any(|(owner, action)| owner == "openidea.test-runner" && action.argument.as_deref() == Some("adds"))
-        );
+        }));
         f.plugins.refresh_run_configurations(&f.root);
         let configs = f.plugins.run_detection().detect(&f.root);
         assert!(configs.iter().any(|c| c.id == "plugin:openidea.test-runner:tests"));
     }
+}
+
+/// Editor-path calls drop a result that misses their budget, as the first call into a cold
+/// component can on a slow machine: ask again until it arrives.
+fn eventually(mut ready: impl FnMut() -> bool) -> bool {
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(20);
+    while std::time::Instant::now() < deadline {
+        if ready() {
+            return true;
+        }
+        std::thread::sleep(std::time::Duration::from_millis(100));
+    }
+    false
 }
