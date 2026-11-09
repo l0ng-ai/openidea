@@ -1,4 +1,9 @@
 {
+  "Unknown error": "未知错误",
+  "Retry Loading Conversation": "重新加载对话",
+  "No conversation history": "没有对话历史记录",
+  "Loading the conversation timed out. Try again.": "加载对话超时，请重试。",
+  "Couldn't load the conversation: {0}": "无法加载对话：{0}",
   "Astro Language Server": "Astro 语言服务器",
   "Astro Language Server needs Node.js. Install it or select its executable in Settings › Languages & Frameworks › Node.js.": "Astro 语言服务器需要 Node.js。请安装 Node.js，或在设置 › 语言和框架 › Node.js 中选择其可执行文件。",
   "Astro Language Server needs a TypeScript language-service library. Install typescript@6 in the project or select a TypeScript lib directory in Settings.": "Astro 语言服务器需要 TypeScript 语言服务库。请在项目中安装 typescript@6，或在设置中选择 TypeScript 的 lib 目录。",

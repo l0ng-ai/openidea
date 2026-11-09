@@ -1,4 +1,9 @@
 {
+  "Unknown error": "Unknown error",
+  "Retry Loading Conversation": "Retry Loading Conversation",
+  "No conversation history": "No conversation history",
+  "Loading the conversation timed out. Try again.": "Loading the conversation timed out. Try again.",
+  "Couldn't load the conversation: {0}": "Couldn't load the conversation: {0}",
   "Astro Language Server": "Astro Language Server",
   "Astro Language Server needs Node.js. Install it or select its executable in Settings › Languages & Frameworks › Node.js.": "Astro Language Server needs Node.js. Install it or select its executable in Settings › Languages & Frameworks › Node.js.",
   "Astro Language Server needs a TypeScript language-service library. Install typescript@6 in the project or select a TypeScript lib directory in Settings.": "Astro Language Server needs a TypeScript language-service library. Install typescript@6 in the project or select a TypeScript lib directory in Settings.",
