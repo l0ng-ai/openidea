@@ -752,7 +752,7 @@ pub fn scripts_of(root: &Path, project_dir: &Path, build_dir: &Path, build_file:
     out
 }
 
-/// Directory variables are project-scoped; relative targets start beside the applying script.
+/// Relative targets are project-scoped, with a lenient fallback beside the applying script.
 fn resolve_script(spec: &str, script: &Path, project_dir: &Path, build_dir: &Path) -> Option<PathBuf> {
     let spec = spec.trim();
     if spec.contains("://") {
@@ -767,7 +767,15 @@ fn resolve_script(spec: &str, script: &Path, project_dir: &Path, build_dir: &Pat
     if spec.contains('$') {
         return None;
     }
-    let path = normalize(&script.parent()?.join(spec));
+    let path = Path::new(&spec);
+    if path.is_absolute() {
+        return path.is_file().then(|| normalize(path));
+    }
+    let project_path = normalize(&project_dir.join(path));
+    if project_path.is_file() {
+        return Some(project_path);
+    }
+    let path = normalize(&script.parent()?.join(path));
     path.is_file().then_some(path)
 }
 
@@ -1304,17 +1312,43 @@ dependencies {
     }
 
     #[test]
-    fn applied_paths_are_relative_to_the_applying_script() {
+    fn applied_paths_prefer_the_project_directory() {
         let tmp = tempfile::tempdir().unwrap();
         let root = tmp.path();
         std::fs::create_dir_all(root.join("gradle")).unwrap();
         std::fs::write(root.join("build.gradle"), "apply from: 'gradle/deps.gradle'").unwrap();
         std::fs::write(root.join("gradle/deps.gradle"), "apply from: 'versions.gradle'").unwrap();
-        std::fs::write(root.join("versions.gradle"), "wrong").unwrap();
-        std::fs::write(root.join("gradle/versions.gradle"), "right").unwrap();
+        std::fs::write(root.join("versions.gradle"), "right").unwrap();
+        std::fs::write(root.join("gradle/versions.gradle"), "wrong").unwrap();
         let scripts = scripts_of(root, root, root, Path::new("build.gradle"));
         assert_eq!(scripts.len(), 3);
         assert_eq!(scripts[2].1, "right");
+    }
+
+    #[test]
+    fn nested_applied_paths_are_relative_to_the_project_directory() {
+        let tmp = tempfile::tempdir().unwrap();
+        let root = tmp.path();
+        std::fs::create_dir_all(root.join("gradle")).unwrap();
+        std::fs::write(root.join("build.gradle"), "apply from: 'gradle/a.gradle'").unwrap();
+        std::fs::write(root.join("gradle/a.gradle"), "apply from: 'gradle/b.gradle'").unwrap();
+        std::fs::write(root.join("gradle/b.gradle"), "").unwrap();
+        let scripts = scripts_of(root, root, root, Path::new("build.gradle"));
+        assert_eq!(scripts.len(), 3);
+        assert_eq!(scripts[2].0, root.join("gradle/b.gradle"));
+    }
+
+    #[test]
+    fn applied_paths_fall_back_to_the_applying_script_directory() {
+        let tmp = tempfile::tempdir().unwrap();
+        let root = tmp.path();
+        std::fs::create_dir_all(root.join("gradle")).unwrap();
+        std::fs::write(root.join("build.gradle"), "apply from: 'gradle/a.gradle'").unwrap();
+        std::fs::write(root.join("gradle/a.gradle"), "apply from: 'c.gradle'").unwrap();
+        std::fs::write(root.join("gradle/c.gradle"), "").unwrap();
+        let scripts = scripts_of(root, root, root, Path::new("build.gradle"));
+        assert_eq!(scripts.len(), 3);
+        assert_eq!(scripts[2].0, root.join("gradle/c.gradle"));
     }
 
     #[test]
