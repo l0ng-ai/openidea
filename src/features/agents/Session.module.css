@@ -118,6 +118,11 @@
 }
 .conversationRow {
   min-width: 0;
+  contain-intrinsic-size: auto 120px;
+}
+/* Laid out once, an off-screen row skips rendering at its remembered size (`useOffscreenRows`). */
+.conversationRow[data-measured] {
+  content-visibility: auto;
 }
 /* Keep turns distinct and the work within a turn close to its author. */
 .stream > * + * {
@@ -1273,6 +1278,32 @@
   background: var(--bg-elev);
   container: question-card / inline-size;
 }
+.questionTabCheck {
+  flex: none;
+  color: var(--accent);
+}
+/* All questions share one grid cell: the card keeps the tallest question's height. */
+.questionPanels {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr);
+  min-width: 0;
+}
+.questionPanelsPaged {
+  min-height: 0;
+  overflow-y: auto;
+}
+.questionPanel {
+  grid-area: 1 / 1;
+  min-width: 0;
+}
+.questionPanelHidden {
+  visibility: hidden;
+  pointer-events: none;
+}
+/* The shown preview re-enables visibility, which would escape the hidden panel. */
+.questionPanelHidden .questionPreviewActive {
+  visibility: hidden;
+}
 .question {
   display: flex;
   flex-direction: column;
@@ -1331,6 +1362,7 @@
 }
 .questionOption > :last-child {
   flex: 1;
+  min-width: 0;
 }
 .questionChoice {
   display: flex;
@@ -1345,6 +1377,8 @@
 }
 .questionLabel {
   flex: 1;
+  min-width: 0;
+  overflow-wrap: anywhere;
   color: var(--fg);
 }
 .questionDescription {
@@ -1421,6 +1455,19 @@
 }
 .questionActions {
   display: flex;
+  flex-wrap: wrap;
+  align-items: center;
   justify-content: flex-end;
   gap: 8px;
+}
+.questionPager {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+}
+.questionPage {
+  color: var(--fg-subtle);
+  font-size: var(--fs-small);
+  font-variant-numeric: tabular-nums;
+  white-space: nowrap;
 }

@@ -59,6 +59,8 @@ pub(crate) struct Session {
     /// adapter may report the launcher shell, whose child is the program).
     #[cfg_attr(not(unix), allow(dead_code))]
     pub stop_pids: parking_lot::Mutex<Vec<i32>>,
+    #[cfg(windows)]
+    pub stop_tree: Mutex<Option<ide_core::process::ProcessTree>>,
     /// Breakpoints replaced for run to cursor / force stepping, restored on the next stop.
     pub pending_restore: Mutex<PendingRestore>,
     /// Adapter breakpoint id → (file, index in the stored list).
@@ -111,6 +113,8 @@ impl Session {
             stop_force: AtomicBool::new(false),
             debuggee_pid: AtomicI64::new(0),
             stop_pids: parking_lot::Mutex::new(Vec::new()),
+            #[cfg(windows)]
+            stop_tree: Mutex::new(None),
             pending_restore: Mutex::default(),
             breakpoint_ids: Mutex::new(HashMap::new()),
             resolved_paths: Mutex::new(HashMap::new()),
@@ -298,6 +302,21 @@ impl Session {
 /// How long Stop waits for a launched program to exit before reporting the session ended.
 pub(crate) const DEBUGGEE_EXIT_WAIT: Duration = Duration::from_secs(10);
 
+pub(crate) async fn remember_debuggee(s: &Arc<Session>) {
+    #[cfg(windows)]
+    {
+        let Ok(pid) = u32::try_from(s.debuggee_pid.load(Ordering::Acquire)) else { return };
+        if s.request != "launch" || pid == 0 || s.stop_tree.lock().is_some() {
+            return;
+        }
+        if let Ok(tree) = tokio::task::spawn_blocking(move || ide_core::process::ProcessTree::capture(pid)).await {
+            s.stop_tree.lock().get_or_insert(tree);
+        }
+    }
+    #[cfg(not(windows))]
+    let _ = s;
+}
+
 /// The program and everything it started: an adapter may report the launcher shell, whose
 /// child is the debugged program, so stopping only the reported pid leaves the program alive.
 #[cfg(unix)]
@@ -349,12 +368,10 @@ pub(crate) fn signal_debuggee(s: &Arc<Session>, force: bool) {
     }
     #[cfg(windows)]
     {
-        let mut cmd = std::process::Command::new("taskkill");
-        cmd.args(["/PID", &pid.to_string(), "/T"]);
-        if force {
-            cmd.arg("/F");
+        // Console programs have no external graceful signal; the adapter gets its chance first.
+        if force && let Some(tree) = s.stop_tree.lock().as_ref() {
+            tree.terminate();
         }
-        let _ = cmd.status();
     }
     #[cfg(not(any(unix, windows)))]
     let _ = (pid, force);
@@ -391,7 +408,18 @@ pub(crate) async fn wait_for_debuggee(s: &Arc<Session>, terminate: bool) {
             tokio::time::sleep(Duration::from_millis(50)).await;
         }
     }
-    #[cfg(not(unix))]
+    #[cfg(windows)]
+    {
+        remember_debuggee(s).await;
+        let deadline = std::time::Instant::now() + DEBUGGEE_EXIT_WAIT;
+        while s.stop_tree.lock().as_ref().is_some_and(|tree| tree.is_running()) {
+            if s.stop_force.swap(false, Ordering::AcqRel) || std::time::Instant::now() >= deadline {
+                signal_debuggee(s, true);
+            }
+            tokio::time::sleep(Duration::from_millis(50)).await;
+        }
+    }
+    #[cfg(not(any(unix, windows)))]
     {
         let _ = pid;
     }
@@ -579,6 +607,10 @@ async fn on_event(mgr: &Arc<DebugManager>, s: &Arc<Session>, event: &str, mut bo
 }
 
 fn on_reverse_request(mgr: &Arc<DebugManager>, s: &Arc<Session>, seq: i64, command: &str, args: Value) {
+    if s.spec.target.is_some() {
+        let _ = s.conn.respond(seq, command, Err("This debugger does not support plugin run targets".into()));
+        return;
+    }
     match command {
         "runInTerminal" => {
             let result = run_in_terminal(s, &args);
@@ -791,7 +823,6 @@ fn forward_output<R: AsyncRead + Unpin + Send + 'static>(s: &Session, mut stream
 /// Launch with the IDE's resolved runtime and classpath; the adapter only attaches.
 pub(crate) async fn start_kotlin_debuggee(s: &Arc<Session>, args: &mut Value) -> ide_core::IdeResult<()> {
     use tokio::io::{AsyncBufReadExt, BufReader};
-    let port = crate::adapter::free_port()?;
     let java = args.get("javaExec").and_then(Value::as_str).unwrap_or("java");
     let strings = |key: &str| -> Vec<String> {
         args.get(key)
@@ -804,7 +835,9 @@ pub(crate) async fn start_kotlin_debuggee(s: &Arc<Session>, args: &mut Value) ->
     let mut cmd = tokio::process::Command::new(java);
     ide_core::process::prepare(cmd.as_std_mut());
     cmd.args(strings("vmArguments"))
-        .arg(format!("-agentlib:jdwp=transport=dt_socket,server=y,suspend=y,address=127.0.0.1:{port}"))
+        // Let the JVM pick its own port (`:0`) and report it below: pre-picking a free
+        // port here races with other processes that may take it before the JVM binds.
+        .arg("-agentlib:jdwp=transport=dt_socket,server=y,suspend=y,address=127.0.0.1:0")
         .arg("-cp")
         .arg(classpath);
     let modules = strings("modulePaths");
@@ -837,14 +870,18 @@ pub(crate) async fn start_kotlin_debuggee(s: &Arc<Session>, args: &mut Value) ->
     }
     let mut stdout =
         BufReader::new(child.stdout.take().ok_or_else(|| ide_core::IdeError::internal("Missing JVM stdout"))?);
-    tokio::time::timeout(Duration::from_secs(15), async {
+    // The JVM chose the port (`:0` above) and reports it here; reading it back removes
+    // the free-port race window entirely.
+    let port = tokio::time::timeout(Duration::from_secs(15), async {
         loop {
             let mut line = String::new();
             if stdout.read_line(&mut line).await? == 0 {
                 return Err(ide_core::IdeError::unavailable("JVM exited before starting its debug listener"));
             }
             if line.contains("Listening for transport dt_socket") {
-                return Ok(());
+                return parse_jdwp_port(&line).ok_or_else(|| {
+                    ide_core::IdeError::unavailable(format!("JVM reported an unreadable debug port: {}", line.trim()))
+                });
             }
             s.emit(DebugEvent::Output { category: "stdout".into(), output: line });
         }
@@ -857,4 +894,23 @@ pub(crate) async fn start_kotlin_debuggee(s: &Arc<Session>, args: &mut Value) ->
     args["port"] = json!(port);
     args["timeout"] = json!(10000);
     Ok(())
+}
+
+/// The port a JVM chose, from `Listening for transport dt_socket at address: <port>`
+/// (some JVMs print `host:port` or `[::1]:port`, so take what follows the last colon).
+fn parse_jdwp_port(line: &str) -> Option<u16> {
+    line.rsplit_once("address:")?.1.trim().rsplit(':').next()?.trim().parse().ok()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::parse_jdwp_port;
+
+    #[test]
+    fn reads_the_port_the_jvm_chose() {
+        assert_eq!(parse_jdwp_port("Listening for transport dt_socket at address: 51234"), Some(51234));
+        assert_eq!(parse_jdwp_port("Listening for transport dt_socket at address: 127.0.0.1:51234"), Some(51234));
+        assert_eq!(parse_jdwp_port("Listening for transport dt_socket at address: [::1]:51234"), Some(51234));
+        assert_eq!(parse_jdwp_port("unrelated output"), None);
+    }
 }

@@ -1,7 +1,7 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { EditorState } from "@codemirror/state";
 import { indentUnit, language as languageFacet } from "@codemirror/language";
-import { HEAVY_LIMIT, registerSaveParticipant, remoteChange } from "@/editor/api";
+import { HEAVY_LIMIT, registerSaveParticipant, remoteChange, shownAgain } from "@/editor/api";
 import { createMemoryBackend, type MemoryBackend } from "../backend";
 import { _resetLanguages } from "../cm/languages";
 import { DocumentManager, ModifiedRanges, saveCleanupChanges, useDocMeta } from "./document";
@@ -142,9 +142,10 @@ describe("DocumentManager + slots", () => {
     const a = new EditorSlot(model, "t1", host);
     const b = new EditorSlot(model, "t2", host);
     let sawRemote = false;
-    const spy = vi.spyOn(a, "applyExternal").mockImplementation(function (this: EditorSlot, changes, annotations) {
+    const applyExternal = a.applyExternal.bind(a);
+    const spy = vi.spyOn(a, "applyExternal").mockImplementation((changes, annotations) => {
       sawRemote = annotations.some((x) => x.type === remoteChange);
-      this.state = this.state.update({ changes, annotations }).state;
+      applyExternal(changes, annotations);
     });
     backend.patch(model.doc, [{ from: 3, to: 3, insert: "def" }]);
     expect(sawRemote).toBe(true);
@@ -300,6 +301,73 @@ describe("DocumentManager + slots", () => {
     } finally {
       manager.stop();
     }
+  });
+
+  it("keeps a hidden tab's view and shows it again instead of building a new one", async () => {
+    const { backend, manager } = setup({ "/p/a.txt": "abc" });
+    const model = await manager.acquire("/p/a.txt");
+    const slot = new EditorSlot(model, "t1", host);
+    const shown: boolean[] = [];
+    slot.listeners.add((u) => shown.push(shownAgain(u)));
+    const view = slot.mount(document.body);
+    slot.unmount();
+    expect(slot.view).toBeNull();
+    expect(view.dom.isConnected).toBe(false);
+    // Changes while hidden go to the kept view.
+    backend.patch(model.doc, [{ from: 3, to: 3, insert: "def" }]);
+    expect(view.state.doc.toString()).toBe("abcdef");
+    expect(slot.currentState()).toBe(view.state);
+    shown.length = 0;
+    expect(slot.mount(document.body)).toBe(view);
+    expect(view.dom.isConnected).toBe(true);
+    expect(shown).toContain(true);
+    slot.dispose();
+    manager.stop();
+  });
+
+  it("destroys the least recently hidden views beyond the kept ones, and kept views on dispose", async () => {
+    const { manager } = setup({ "/p/a.txt": "abc" });
+    const model = await manager.acquire("/p/a.txt");
+    const slots = Array.from({ length: 8 }, (_, i) => new EditorSlot(model, `t${i}`, host));
+    const views = slots.map((slot) => {
+      const view = slot.mount(document.body);
+      slot.unmount();
+      return view;
+    });
+    const destroyed = views.map((view) => vi.spyOn(view, "destroy"));
+    slots.push(new EditorSlot(model, "t8", host));
+    slots[8]!.mount(document.body);
+    slots[8]!.unmount();
+    expect(destroyed[0]).toHaveBeenCalled();
+    expect(destroyed[1]).not.toHaveBeenCalled();
+    // A destroyed view leaves its state behind; showing the tab builds a new view on it.
+    expect(slots[0]!.mount(document.body)).not.toBe(views[0]);
+    slots[1]!.dispose();
+    expect(destroyed[1]).toHaveBeenCalled();
+    for (const slot of slots) slot.dispose();
+    manager.stop();
+  });
+
+  it("restores a destroyed kept view at its exact scroll offset, not its top line", async () => {
+    const { manager } = setup({ "/p/a.txt": "line\n".repeat(500) });
+    const model = await manager.acquire("/p/a.txt");
+    const slot = new EditorSlot(model, "t0", host);
+    const view = slot.mount(document.body);
+    Object.defineProperty(view.scrollDOM, "scrollTop", { value: 137, configurable: true });
+    view.scrollDOM.dispatchEvent(new Event("scroll"));
+    slot.unmount();
+    const expected = view.scrollSnapshot().value as { range: unknown; yMargin: number; isSnapshot: boolean };
+    const others = Array.from({ length: 8 }, (_, i) => new EditorSlot(model, `t${i + 1}`, host));
+    for (const other of others) {
+      other.mount(document.body);
+      other.unmount();
+    }
+    const restored = (slot as unknown as { scroll: { value: typeof expected } }).scroll.value;
+    expect(restored.isSnapshot).toBe(true);
+    expect(restored.range).toEqual(expected.range);
+    expect(restored.yMargin).toBe(expected.yMargin);
+    for (const s of [slot, ...others]) s.dispose();
+    manager.stop();
   });
 });
 

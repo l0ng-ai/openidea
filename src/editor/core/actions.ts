@@ -6,6 +6,7 @@ import { foldEffect, syntaxTree, toggleFold } from "@codemirror/language";
 import { acceptCompletion, completionStatus } from "@codemirror/autocomplete";
 import { executeAction, registerActions, type Action } from "@/platform/actions";
 import { getContext } from "@/platform/context";
+import { focusedSoftWrapSurface } from "@/workbench/softWrap";
 import { resetSurfaceFontZoom, stepFocusedSurfaceFontZoom } from "@/workbench/contributions";
 import { editorController, useGotoLine, useTabs } from "./controller";
 import {
@@ -738,9 +739,13 @@ export function registerEditorActions(): () => void {
       category: "View",
       icon: "soft-wrap",
       keywords: ["word wrap", "line wrap"],
-      when: "textEditorActive",
-      toggled: () => activeSlot()?.model.softWrapOn() ?? false,
-      run: () => activeSlot()?.model.toggleSoftWrap(),
+      when: "textEditorActive || softWrapSurfaceFocus",
+      toggled: () => focusedSoftWrapSurface()?.enabled() ?? activeSlot()?.model.softWrapOn() ?? false,
+      run: () => {
+        const surface = focusedSoftWrapSurface();
+        if (surface) surface.toggle();
+        else activeSlot()?.model.toggleSoftWrap();
+      },
     },
     text("code.foldAll", "Collapse All", (v) => collapseAll(v), { category: "Folding", icon: "collapse-all" }),
     text("code.unfoldAll", "Expand All", (v) => expandAll(v), { category: "Folding", icon: "expand-all" }),

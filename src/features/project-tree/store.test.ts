@@ -233,3 +233,10 @@ describe("single-click expansion", () => {
     setViewOption("singleClickExpand", false);
   });
 });
+
+it("keeps the primary first and sorts attachments by name", () => {
+  initProjectTree("/z", "Z", ["/z", "/c", "/a"]);
+  expect(currentModel().roots.map((n) => n.path)).toEqual(["/z", "/a", "/c"]);
+  initProjectTree("/ws", "Workspace", ["/z", "/c", "/a"]);
+  expect(currentModel().roots.map((n) => n.path)).toEqual(["/a", "/c", "/z"]);
+});

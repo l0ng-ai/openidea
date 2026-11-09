@@ -93,6 +93,9 @@ async fn editor_ops_merge_the_fixture_format_selection_and_execute_owned_command
     let p = plugins(tmp.path());
     p.set_workspace(Some(Arc::new(HostWorkspace(Arc::downgrade(&host)))));
     set_editor_providers(Some(&p));
+    let generation = host.project("main").unwrap().lsp.injection_generation();
+    drop(plugins(&tmp.path().join("unrelated")));
+    assert_eq!(host.project("main").unwrap().lsp.injection_generation(), generation);
     let path = root.join("a.txt");
     std::fs::write(&path, "value\nnext\nend").unwrap();
     let doc = ops::doc::open(&host, "main", path.clone()).await.unwrap();
@@ -201,6 +204,7 @@ async fn editor_ops_merge_the_fixture_format_selection_and_execute_owned_command
     let visual = invoke(&peer, "plugin_language_visuals", serde_json::json!({"doc":doc.id})).await;
     assert_eq!(visual["gutterActions"].as_array().unwrap().len(), 1);
     set_editor_providers(Some(&p));
+    injected_lsp(&host, &p, &root, &peer).await;
     p.set_enabled(ID, false).unwrap();
     assert!(ops::lsp::plugin_formatters().is_empty());
     set_editor_providers(None);
@@ -231,4 +235,132 @@ fn formatting_uses_the_command_budget_while_editor_calls_can_expire() {
     );
     assert!(p.language_signature_help(&doc, Pos::default()).is_none());
     assert!(p.info_of(ID).unwrap().stats.slow_calls > 0);
+}
+
+// Same TCP fake-server pattern as plugin_refactoring; the real Wasm export supplies the range.
+async fn injected_lsp(host: &Host, plugins: &PluginHost, root: &Path, remote: &ide_jsonrpc::Peer) {
+    use ide_jsonrpc::{Handler, Peer};
+    use parking_lot::Mutex;
+    use serde_json::{Value, json};
+    #[derive(Default)]
+    struct Fake {
+        docs: Mutex<std::collections::HashMap<String, String>>,
+        requests: Mutex<Vec<(String, Value)>>,
+    }
+    impl Handler for Fake {
+        fn on_notification(&self, method: &str, p: Value) {
+            let uri = p["textDocument"]["uri"].as_str().unwrap_or_default().to_owned();
+            match method {
+                "textDocument/didOpen" => {
+                    self.docs.lock().insert(uri, p["textDocument"]["text"].as_str().unwrap().into());
+                }
+                "textDocument/didChange" => {
+                    self.docs.lock().insert(uri, p["contentChanges"][0]["text"].as_str().unwrap().into());
+                }
+                "textDocument/didClose" => {
+                    self.docs.lock().remove(&uri);
+                }
+                _ => {}
+            }
+        }
+        fn on_request(&self, method: &str, p: Value) -> Result<Value, (i64, String)> {
+            self.requests.lock().push((method.to_owned(), p.clone()));
+            Ok(match method {
+                "initialize" => {
+                    json!({"capabilities": {"textDocumentSync": {"openClose":true,"change":1}, "completionProvider":{"resolveProvider":true}, "hoverProvider":true, "definitionProvider":true}})
+                }
+                "textDocument/completion" => json!([{"label":"embedded-server", "data":{"identity":7}}]),
+                "completionItem/resolve" => {
+                    assert_eq!(p["data"], json!({"identity":7}));
+                    json!({"label":"embedded-server", "detail":"resolved"})
+                }
+                "textDocument/hover" => {
+                    json!({"contents":"embedded hover", "range":{"start":{"line":0,"character":0},"end":{"line":0,"character":99}}})
+                }
+                "textDocument/definition" => {
+                    json!({"uri":p["textDocument"]["uri"], "range":{"start":{"line":0,"character":0},"end":{"line":0,"character":99}}})
+                }
+                _ => Value::Null,
+            })
+        }
+    }
+    let listener = tokio::net::TcpListener::bind(("127.0.0.1", 0)).await.unwrap();
+    let port = listener.local_addr().unwrap().port();
+    let fake = Arc::new(Fake::default());
+    let peers = Arc::new(Mutex::new(Vec::<Peer>::new()));
+    let (accepted, state) = (peers.clone(), fake.clone());
+    let task = tokio::spawn(async move {
+        while let Ok((stream, _)) = listener.accept().await {
+            let (r, w) = stream.into_split();
+            accepted.lock().push(Peer::connect(r, w, state.clone()));
+        }
+    });
+    let cfg: ide_language::LanguageServerConfig =
+        toml::from_str(&format!("name='injected-sql'\ncommand='no-process-required'\nconnect='127.0.0.1:{port}'"))
+            .unwrap();
+    let project = host.project("main").unwrap();
+    project.lsp.set_servers_hook(Box::new(
+        move |language, _| if language.as_str() == "sql" { vec![cfg.clone()] } else { Vec::new() },
+    ));
+    let path = root.join("injection.txt");
+    std::fs::write(&path, "😀[[sql]] tail").unwrap();
+    let doc = ops::doc::open(host, "main", path.clone()).await.unwrap();
+    let items = ops::lsp::lsp_completion(host, "main", RequestId(91), doc.id, Pos::new(0, 5), None).await.unwrap();
+    let item = items.items.into_iter().find(|i| i.label == "embedded-server").unwrap();
+    assert_eq!(
+        ops::lsp::lsp_resolve_completion(host, "main", doc.id, item).await.unwrap().detail.as_deref(),
+        Some("resolved")
+    );
+    let opened = fake.docs.lock().clone();
+    assert_eq!(opened.len(), 1);
+    assert_eq!(opened.values().next().unwrap(), "    sql       ");
+    let virtual_uri = opened.keys().next().unwrap().clone();
+    assert!(!ide_lsp::uri_to_path(&virtual_uri).unwrap().exists());
+    let before = fake.requests.lock().iter().filter(|(m, _)| m == "textDocument/completion").count();
+    ops::lsp::lsp_completion(host, "main", RequestId(92), doc.id, Pos::new(0, 2), None).await.unwrap();
+    assert_eq!(fake.requests.lock().iter().filter(|(m, _)| m == "textDocument/completion").count(), before);
+    let defs = ops::lsp::lsp_goto(host, "main", doc.id, Pos::new(0, 5), ide_lsp::types::GotoKind::Declaration).await;
+    // Declaration isn't advertised; definition exercises mapping without a plugin definition provider.
+    assert!(defs.is_err());
+    let defs =
+        ops::lsp::lsp_goto(host, "main", doc.id, Pos::new(0, 5), ide_lsp::types::GotoKind::Definition).await.unwrap();
+    assert_eq!(defs[0].path.0, path);
+    assert_eq!(defs[0].range, Range::new(Pos::new(0, 4), Pos::new(0, 7)));
+    let hover: Value = remote
+        .request(
+            "invoke",
+            json!({"window":"main","cmd":"lsp_hover","args":{"request":93,"doc":doc.id,"pos":{"line":0,"col":5}}}),
+            None,
+        )
+        .await
+        .unwrap();
+    assert!(hover.to_string().contains("embedded hover"), "{hover}");
+    ops::doc::edit(
+        host,
+        "main",
+        doc.id,
+        doc.version,
+        ide_core::ChangeSet { changes: vec![ide_core::TextChange { from: 4, to: 7, insert: "SQL".into() }] },
+    )
+    .unwrap();
+    ops::lsp::lsp_completion(host, "main", RequestId(94), doc.id, Pos::new(0, 5), None).await.unwrap();
+    let deadline = tokio::time::Instant::now() + Duration::from_secs(5);
+    while fake.docs.lock().get(&virtual_uri).is_none_or(|s| s != "    SQL       ") {
+        assert!(tokio::time::Instant::now() < deadline);
+        tokio::time::sleep(Duration::from_millis(10)).await;
+    }
+    plugins.set_enabled(ID, false).unwrap();
+    while !fake.docs.lock().is_empty() {
+        assert!(tokio::time::Instant::now() < deadline);
+        tokio::time::sleep(Duration::from_millis(10)).await;
+    }
+    assert_eq!(project.lsp.injected_document(doc.id, Pos::new(0, 5)), doc.id);
+    ops::doc::close(host, "main", doc.id).unwrap();
+    project.lsp.shutdown_all().await;
+    project.lsp.set_servers_hook(Box::new(|_, _| Vec::new()));
+    task.abort();
+    let _ = task.await;
+    for peer in peers.lock().drain(..) {
+        peer.kill();
+    }
 }

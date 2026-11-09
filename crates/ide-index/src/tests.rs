@@ -57,6 +57,27 @@ fn files(idx: &ProjectIndex, q: &str) -> Vec<String> {
     idx.find_files(q, 20).into_iter().map(|m| m.rel_path).collect()
 }
 
+#[test]
+fn exact_file_names_keep_all_source_candidates() {
+    let f = Fixture::new(&[
+        ("src/OtherOrders.kt", "package other"),
+        ("src/Orders.kt.bak", "backup"),
+        ("target/Orders.kt", "excluded"),
+        ("src/orders.kt", "different case"),
+    ]);
+    for i in 0..65 {
+        f.write(&format!("module{i}/Orders.kt"), &format!("package module{i}"));
+    }
+    let source = f.write("service/src/Orders.kt", "package com.example.orders");
+    let idx = f.open();
+    let candidates = idx.files_named("Orders.kt");
+    assert_eq!(candidates.len(), 66);
+    assert!(candidates.contains(&source));
+    assert!(candidates.iter().all(|path| path.file_name().unwrap() == "Orders.kt"));
+    assert_eq!(candidates, idx.files_named("Orders.kt"));
+    assert!(idx.files_named("Missing.kt").is_empty());
+}
+
 fn symbols(idx: &ProjectIndex, q: &str, filter: SymbolFilter) -> Vec<String> {
     idx.find_symbols(q, filter, 20).into_iter().map(|m| m.name).collect()
 }

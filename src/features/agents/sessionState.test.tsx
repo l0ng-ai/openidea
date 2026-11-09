@@ -10,6 +10,7 @@ import { entriesKey, SESSION_KIND, sessionKey, type SubagentEntry } from "./mode
 import { disconnect, useAgents } from "./store";
 import { taskActions } from "./taskActions";
 import { replyActions } from "./replyActions";
+import { focusedSession } from "./sessionFocus";
 import styles from "./Session.module.css";
 import tagStyles from "@/ui/InlineTag.module.css";
 
@@ -243,8 +244,37 @@ describe("process folding", () => {
     useAgents.setState({ entries: new Map(backend.entries) });
     render(<SessionEditor input={input("A")} />);
     const summary = await screen.findByText("Reasoning · 2 tool calls");
+    const fold = summary.closest("details")!;
+    expect(fold.open).toBe(false);
+    // Folded content is rendered once opened, a level at a time.
+    const open = (details: HTMLDetailsElement) => {
+      details.open = true;
+      fireEvent(details, new Event("toggle"));
+    };
+    expect(screen.queryByText("Reasoning")).toBeNull();
+    open(fold);
+    const thought = (await screen.findAllByText("Reasoning"))[0]!.closest("details")!;
+    expect(screen.queryByText("think one")).toBeNull();
+    open(thought);
+    expect(await screen.findByText("think one")).toBeInTheDocument();
+  });
+});
+
+describe("folded content", () => {
+  it("is rendered for Find in Conversation, so its text is found", async () => {
+    backend.entries.set("A", [
+      tool("one", { output: "needle in a tool output" }),
+      tool("two"),
+      { type: "agent", text: "Answer A" },
+    ]);
+    useAgents.setState({ entries: new Map(backend.entries) });
+    render(<SessionEditor input={input("A")} />);
+    const summary = await screen.findByText("2 tool calls");
+    expect(screen.queryByText("needle in a tool output")).toBeNull();
+    fireEvent.focus(summary);
+    act(() => focusedSession()!.openFind());
+    expect(await screen.findByText("needle in a tool output")).toBeInTheDocument();
     expect(summary.closest("details")!.open).toBe(false);
-    expect(screen.getByText("think one")).toBeInTheDocument();
   });
 });
 
@@ -275,6 +305,7 @@ describe("scrolling", () => {
     let height = 1000;
     Object.defineProperty(el, "scrollHeight", { configurable: true, get: () => height });
     Object.defineProperty(el, "clientHeight", { configurable: true, value: 400 });
+    fireEvent.wheel(el);
     el.scrollTop = 100;
     fireEvent.scroll(el);
     expect(screen.getByRole("button", { name: "Jump to Latest" })).toBeInTheDocument();
@@ -324,12 +355,51 @@ describe("scrolling", () => {
     view.unmount();
   });
 
+  it("keeps following the end when the offset moves back without the user scrolling", async () => {
+    render(<SessionEditor input={input("A")} />);
+    expect(await screen.findByText("Answer A")).toBeInTheDocument();
+    const el = stream();
+    let height = 1000;
+    Object.defineProperty(el, "scrollHeight", { configurable: true, get: () => height });
+    Object.defineProperty(el, "clientHeight", { configurable: true, value: 400 });
+    el.scrollTop = 600;
+    fireEvent.scroll(el);
+    // The conversation grew after it was scrolled to the end, or WebKit moved the offset back
+    // while rows laid out: both change the content height.
+    height = 1300;
+    el.scrollTop = 600;
+    fireEvent.scroll(el);
+    expect(el.scrollTop).toBe(1300);
+    expect(screen.queryByRole("button", { name: "Jump to Latest" })).toBeNull();
+    // Scrolling up with the wheel leaves the end.
+    fireEvent.wheel(el);
+    el.scrollTop = 600;
+    fireEvent.scroll(el);
+    expect(el.scrollTop).toBe(600);
+    expect(await screen.findByRole("button", { name: "Jump to Latest" })).toBeInTheDocument();
+  });
+
+  it("leaves the end for a scroll that no layout caused, as dragging the scrollbar thumb", async () => {
+    render(<SessionEditor input={input("A")} />);
+    expect(await screen.findByText("Answer A")).toBeInTheDocument();
+    const el = stream();
+    Object.defineProperty(el, "scrollHeight", { configurable: true, value: 1000 });
+    Object.defineProperty(el, "clientHeight", { configurable: true, value: 400 });
+    el.scrollTop = 600;
+    fireEvent.scroll(el);
+    el.scrollTop = 0;
+    fireEvent.scroll(el);
+    expect(el.scrollTop).toBe(0);
+    expect(await screen.findByRole("button", { name: "Jump to Latest" })).toBeInTheDocument();
+  });
+
   it("offers one click back to the latest message after scrolling up", async () => {
     render(<SessionEditor input={input("A")} />);
     expect(await screen.findByText("Answer A")).toBeInTheDocument();
     const el = stream();
     Object.defineProperty(el, "scrollHeight", { configurable: true, value: 1000 });
     Object.defineProperty(el, "clientHeight", { configurable: true, value: 400 });
+    fireEvent.wheel(el);
     el.scrollTop = 100;
     fireEvent.scroll(el);
     const jump = await screen.findByRole("button", { name: "Jump to Latest" });
@@ -428,6 +498,7 @@ describe("a pending AskUserQuestion", () => {
     render(<SessionEditor input={input("A")} />);
     const card = await screen.findByRole("form", { name: "Which?" });
     fireEvent.click(within(card).getByRole("radio", { name: /^One/ }));
+    fireEvent.click(within(card).getByRole("tab", { name: "second" }));
     fireEvent.click(within(card).getByRole("radio", { name: /^Two/ }));
     fireEvent.click(within(card).getByRole("button", { name: "Submit" }));
     await waitFor(() =>
@@ -435,7 +506,7 @@ describe("a pending AskUserQuestion", () => {
     );
   });
 
-  it("shows every question with its descriptions in a card and sends all answers at once", async () => {
+  it("shows one question at a time with tabs and sends all answers at once", async () => {
     backend.entries.set("A", [
       {
         type: "permission",
@@ -470,14 +541,36 @@ describe("a pending AskUserQuestion", () => {
     render(<SessionEditor input={input("A")} />);
     const card = await screen.findByRole("form", { name: "Which layout?" });
     expect(screen.queryByRole("alert")).toBeNull();
+    const tabs = within(card).getAllByRole("tab");
+    expect(tabs.map((tab) => tab.textContent)).toEqual(["Layout", "Checks"]);
+    const panel = within(card).getByRole("tabpanel", { name: "Layout" });
+    expect(panel).toHaveAttribute("tabindex", "0");
+    expect(tabs[0]).toHaveAttribute("aria-controls", panel.id);
+    tabs[0]!.focus();
+    fireEvent.keyDown(tabs[0]!, { key: "ArrowLeft" });
+    expect(tabs[1]).toHaveFocus();
+    expect(tabs[1]).toHaveAttribute("aria-selected", "true");
+    fireEvent.keyDown(tabs[1]!, { key: "Home" });
+    expect(tabs[0]).toHaveFocus();
+    // Every question stays mounted (one grid cell), so switching tabs keeps the card's height.
+    expect(card.querySelectorAll('[role="tabpanel"]')).toHaveLength(2);
     expect(within(card).getByText("One row per check")).toBeTruthy();
     expect(within(card).getByText("Recommended")).toBeTruthy();
+    // Only the first question is on screen; the second waits behind its tab.
+    expect(within(card).queryByRole("checkbox", { name: /^Disk/ })).toBeNull();
     const submit = within(card).getByRole("button", { name: "Submit" });
     fireEvent.click(within(card).getByRole("radio", { name: /^List/ }));
     expect(submit).toHaveProperty("disabled", true);
+    // Paging moves between questions, without losing the answers already given.
+    expect(within(card).getByRole("button", { name: "Previous" })).toHaveProperty("disabled", true);
+    fireEvent.click(within(card).getByRole("button", { name: "Next" }));
+    expect(within(card).getByRole("tab", { name: "Checks" })).toHaveAttribute("aria-selected", "true");
+    expect(within(card).getByRole("tabpanel", { name: "Checks" })).toHaveFocus();
+    fireEvent.click(within(card).getByRole("tab", { name: "Layout" }));
+    expect(within(card).getByRole("radio", { name: /^List/ })).toHaveProperty("checked", true);
+    fireEvent.click(within(card).getByRole("tab", { name: "Checks" }));
     fireEvent.click(within(card).getByRole("checkbox", { name: /^Disk/ }));
-    const others = within(card).getAllByRole("checkbox", { name: /^Other/ });
-    fireEvent.click(others[0]!);
+    fireEvent.click(within(card).getByRole("checkbox", { name: /^Other/ }));
     expect(submit).toHaveProperty("disabled", true);
     fireEvent.change(within(card).getByPlaceholderText("Type your answer"), { target: { value: "GPU temps" } });
     fireEvent.click(submit);
@@ -513,6 +606,9 @@ describe("a pending AskUserQuestion", () => {
     useAgents.setState({ entries: new Map(backend.entries) });
     render(<SessionEditor input={input("A")} />);
     const card = await screen.findByRole("form", { name: "Which layout?" });
+    expect(within(card).queryByRole("tablist")).toBeNull();
+    expect(within(card).queryByRole("tabpanel")).toBeNull();
+    expect(within(card).queryByRole("button", { name: "Next" })).toBeNull();
     const table = within(card).getByRole("radio", { name: /^Table/ });
     const list = within(card).getByRole("radio", { name: /^List/ });
     fireEvent.focus(table);
@@ -754,6 +850,7 @@ describe("session state across tasks and hosts", () => {
     });
     const view = render(<SessionEditor input={input("A")} />);
     await screen.findByText("Answer A");
+    fireEvent.wheel(stream());
     stream().scrollTop = stick ? height - viewport : 230;
     fireEvent.scroll(stream());
     expect(useAgents.getState().scrollPositions.get("A")).toEqual({ top: stick ? 1600 : 230, stick });

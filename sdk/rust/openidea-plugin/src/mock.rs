@@ -96,6 +96,7 @@ struct State {
     selected_paths: Vec<String>,
     notifications: Vec<Notification>,
     action_notifications: Vec<ActionNotification>,
+    project_notifications: Vec<(String, ActionNotification)>,
     logs: Vec<(LogLevel, String)>,
     status: BTreeMap<String, StatusItem>,
     window_status: BTreeMap<String, StatusItem>,
@@ -339,6 +340,11 @@ impl MockHost {
     /// Notifications that carried command buttons, in publication order.
     pub fn notifications_with_actions(&self) -> Vec<ActionNotification> {
         self.state.borrow().action_notifications.clone()
+    }
+
+    /// Notifications sent to a project (`Project::notify`), with its root, in publication order.
+    pub fn project_notifications(&self) -> Vec<(String, ActionNotification)> {
+        self.state.borrow().project_notifications.clone()
     }
 
     pub fn logs(&self) -> Vec<(LogLevel, String)> {
@@ -773,6 +779,35 @@ pub mod current {
         body: &str,
         actions: &[NotificationAction],
     ) -> Result<(), Error> {
+        check_actions(actions)?;
+        with(|s| {
+            let notification = Notification { level, title: title.into(), body: body.into() };
+            s.notifications.push(notification.clone());
+            s.action_notifications.push(ActionNotification { notification, actions: actions.to_vec() });
+        });
+        Ok(())
+    }
+
+    /// The checks of `notify_with_actions`; a project no longer open is `NotFound`.
+    pub fn notify_project(
+        p: &ProjectRes,
+        level: NotificationLevel,
+        title: &str,
+        body: &str,
+        actions: &[NotificationAction],
+    ) -> Result<(), Error> {
+        let open = with(|s| s.root.iter().chain(&s.other_projects).any(|root| *root == p.root));
+        if !open {
+            return Err(Error::NotFound(format!("the project {} is not open", p.root)));
+        }
+        check_actions(actions)?;
+        let notification = Notification { level, title: title.into(), body: body.into() };
+        let sent = ActionNotification { notification, actions: actions.to_vec() };
+        with(|s| s.project_notifications.push((p.root.clone(), sent)));
+        Ok(())
+    }
+
+    fn check_actions(actions: &[NotificationAction]) -> Result<(), Error> {
         if actions.len() > 3 {
             return Err(Error::Invalid("a notification has at most 3 actions".into()));
         }
@@ -784,11 +819,6 @@ pub mod current {
                 return Err(Error::Invalid("an action argument is limited to 64 KiB".into()));
             }
         }
-        with(|s| {
-            let notification = Notification { level, title: title.into(), body: body.into() };
-            s.notifications.push(notification.clone());
-            s.action_notifications.push(ActionNotification { notification, actions: actions.to_vec() });
-        });
         Ok(())
     }
 
@@ -2369,6 +2399,24 @@ mod tests {
         let too_many: [_; 4] = std::array::from_fn(|_| action.clone());
         assert!(host::notify_with_actions(NotificationLevel::Info, "Done", "", &too_many).is_err());
         assert_eq!(mock.notifications().len(), 1);
+    }
+
+    #[test]
+    fn project_notifications_need_an_open_project() {
+        let mock = MockHost::install();
+        mock.add_project("/other");
+        let action = NotificationAction::new("Disable", "disable").argument("/other");
+        let other = host::project_of("/other/a.txt").unwrap();
+        other.notify(NotificationLevel::Info, "Update", "", std::slice::from_ref(&action)).unwrap();
+        let sent = mock.project_notifications();
+        assert_eq!((sent[0].0.as_str(), &sent[0].1.actions), ("/other", &vec![action.clone()]));
+        assert!(mock.notifications().is_empty() && mock.notifications_with_actions().is_empty());
+        let too_many: [_; 4] = std::array::from_fn(|_| action.clone());
+        assert!(matches!(other.notify(NotificationLevel::Info, "Update", "", &too_many), Err(Error::Invalid(_))));
+        let project = host::project_of("/project/a.txt").unwrap();
+        mock.set_project_root(None);
+        assert!(matches!(project.notify(NotificationLevel::Info, "Update", "", &[]), Err(Error::NotFound(_))));
+        assert_eq!(mock.project_notifications().len(), 1);
     }
 
     #[test]

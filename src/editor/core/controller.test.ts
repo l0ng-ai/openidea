@@ -7,6 +7,7 @@ import { resetDistractionFree, setDistractionFree } from "@/workbench/distractio
 import { registerTextEditorWrapper } from "@/workbench/contributions";
 import { registerActions } from "@/platform/actions";
 import { useProject } from "@/platform/project";
+import { useRemote } from "@/platform/remote";
 import { resolveMenuItems } from "@/ui";
 import { getContext } from "@/platform/context";
 import { installKeyboardDispatcher } from "@/platform/keymap";
@@ -216,7 +217,7 @@ describe("EditorController", () => {
     expect(pane().tabs.map((t) => t.input.path)).toEqual(["/p/a.ts", "/p/c.ts"]);
   });
 
-  it("carries the plain project's editor tabs into its automatic workspace", async () => {
+  it("keeps editor tabs and unsaved documents through attach and detach", async () => {
     const settings = {};
     useProject.setState({
       project: { root: "/attach-a", name: "A", trusted: true, isGit: false, settings },
@@ -227,19 +228,31 @@ describe("EditorController", () => {
     ctrl.start();
     await ctrl.openFile("/attach-a/one.txt", { focus: false, preview: false });
     await ctrl.openFile("/attach-a/two.txt", { focus: false, preview: false });
+    const slot = ctrl.activeSlot!;
+    const host = document.createElement("div");
+    const view = slot.mount(host);
+    ctrl.onMounted(slot);
+    view.dispatch({ changes: { from: 0, insert: "unsaved " }, userEvent: "input.type" });
+    const tabs = useTabs.getState();
     useProject.setState({
       project: {
-        root: "/attach-workspace",
-        name: "A",
+        root: "/attach-a",
+        name: "A, attach-b",
         trusted: true,
         isGit: false,
         settings,
         workspace: { version: 1, name: "A", projects: ["/attach-a", "/attach-b"] },
       },
     });
-    await vi.waitFor(() =>
-      expect(openFilePaths(useTabs.getState())).toEqual(["/attach-a/one.txt", "/attach-a/two.txt"]),
-    );
+    expect(useTabs.getState()).toBe(tabs);
+    expect(ctrl.activeSlot).toBe(slot);
+    expect(view.state.doc.toString()).toContain("unsaved ");
+    expect(openFilePaths(useTabs.getState())).toEqual(["/attach-a/one.txt", "/attach-a/two.txt"]);
+    useProject.setState({ project: { root: "/attach-a", name: "A", trusted: true, isGit: false, settings } });
+    expect(useTabs.getState()).toBe(tabs);
+    expect(ctrl.activeSlot).toBe(slot);
+    expect(view.state.doc.toString()).toContain("unsaved ");
+    host.remove();
     useProject.setState({ project: null });
   });
 
@@ -317,6 +330,15 @@ describe("EditorController", () => {
     const items = resolveMenuItems(ctrl.tabMenu(pane.id, pane.tabs[0]!));
     expect(items.find((i) => i.label === "Close Tabs to the Left")?.disabled).toBe(true);
     expect(items.find((i) => i.label === "Close Tabs to the Right")?.disabled).toBe(false);
+    const tabMenu = () => ctrl!.tabMenu(pane.id, pane.tabs[0]!);
+    const openIn = () => resolveMenuItems(resolveMenuItems(tabMenu()).find((i) => i.label === "Open In")!.submenu!);
+    const reveal = "project.revealInFinder|/p/a.ts";
+    expect(openIn().map((i) => i.key)).toContain(reveal);
+    useRemote.setState({
+      session: { target: { kind: "ssh", config: "box" }, root: "/p", host: "box", os: "linux", commands: [] },
+    });
+    expect(openIn().map((i) => i.key)).not.toContain(reveal);
+    useRemote.setState({ session: null });
     dispose();
     useProject.setState({ project: null, settings: null });
   });

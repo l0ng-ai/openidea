@@ -76,14 +76,27 @@ pub struct Providers {
 
 impl Providers {
     fn add(self: &Arc<Self>, plugin: String, decl: Decl) -> Disposable {
+        let injections = decl.kinds.contains(&ProviderKind::Injections);
         let seq = self.seq.fetch_add(1, Ordering::Relaxed);
         self.items.write().push((seq, plugin, decl.kinds, decl.languages));
+        if injections {
+            self.injections_changed();
+        }
         let weak = Arc::downgrade(self);
         Disposable::new(move || {
             if let Some(this) = weak.upgrade() {
                 this.items.write().retain(|(s, ..)| *s != seq);
+                if injections {
+                    this.injections_changed();
+                }
             }
         })
+    }
+
+    fn injections_changed(self: &Arc<Self>) {
+        if editor_plugin_host().is_some_and(|host| Arc::ptr_eq(&host.providers, self)) {
+            super::injections::providers_changed();
+        }
     }
 
     /// Plugins providing `kind` for `language`, in declaration order.
@@ -260,6 +273,7 @@ static EDITOR_PROVIDERS: RwLock<Option<Weak<PluginHost>>> = RwLock::new(None);
 /// definition and inline completion (`None` removes them).
 pub fn set_editor_providers(host: Option<&Arc<PluginHost>>) {
     *EDITOR_PROVIDERS.write() = host.map(Arc::downgrade);
+    super::injections::providers_changed();
 }
 
 /// The plugin host whose providers take part, when any declares `kind`.

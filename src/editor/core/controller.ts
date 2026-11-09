@@ -41,7 +41,7 @@ import { t } from "@/platform/i18n";
 import { call, commands } from "@/platform/ipc";
 import { isRemoteWindow } from "@/platform/remote";
 import { fileIconName, showContextMenu, type MenuItem } from "@/ui";
-import { usePlatform } from "@/platform/platformInfo";
+import { canRevealInFileManager, fileManagerName } from "@/platform/fileManager";
 import {
   activateTab,
   changeSplitOrientation,
@@ -56,6 +56,7 @@ import {
   enforceTabLimit,
   findTab,
   initialTabsState,
+  mergeSessionTabs,
   moveTab,
   moveTabToNewSplit,
   neighbourPane,
@@ -220,6 +221,8 @@ export class EditorController implements SlotHost {
   private disposers: Array<() => void> = [];
   /** Project root (or {@link LIGHT_EDIT_SESSION}) whose editor session is being tracked (null while switching). */
   private sessionRoot: string | null = null;
+  /** Session keys a window close dropped. Restoring one starts empty, and saves stay empty until then. */
+  private forgottenSessions = new Set<string>();
   private sessionTimer: ReturnType<typeof setTimeout> | undefined;
   /** Restored caret / scroll per path, applied when the file's first slot is created. */
   private restoredViews = new Map<string, FileViewState>();
@@ -306,15 +309,6 @@ export class EditorController implements SlotHost {
           prevRoot = root;
           prevLight = s.lightEdit;
           this.saveSession();
-          if (
-            root &&
-            previous.project &&
-            !previous.project.workspace &&
-            s.project?.workspace?.projects[0] === previous.project.root
-          ) {
-            const session = loadSession(previous.project.root);
-            if (session) storeSession(root, session);
-          }
           this.sessionRoot = null;
           const generation = ++this.projectGeneration;
           const documents = customDocuments(useTabs.getState(), useContributions.getState().editorKinds);
@@ -337,8 +331,8 @@ export class EditorController implements SlotHost {
             .catch((e) => this.documentError(e))
             .then(() => {
               if (generation !== this.projectGeneration) return;
-              if (root) this.restoreSession(root);
-              else if (s.lightEdit) this.restoreSession(LIGHT_EDIT_SESSION);
+              if (root) return this.restoreSession(root);
+              else if (s.lightEdit) return this.restoreSession(LIGHT_EDIT_SESSION);
             });
         } else if (previous.opening && !s.opening && this.closeCommitted) {
           // A failed project open returns to the same project.
@@ -353,7 +347,7 @@ export class EditorController implements SlotHost {
         this.upgradeWrappedImageTabs(wrappers);
       }),
     );
-    if (prevRoot) this.restoreSession(prevRoot);
+    if (prevRoot) this.projectTransition = this.restoreSession(prevRoot);
     if (this.manager.backend.onFsChanged)
       this.disposers.push(this.manager.backend.onFsChanged((e) => this.onFilesRemoved(e.removed)));
     const onWindowBlur = () => {
@@ -503,6 +497,10 @@ export class EditorController implements SlotHost {
     clearTimeout(this.sessionTimer);
     const root = this.sessionRoot;
     if (!root) return;
+    if (this.forgottenSessions.has(root)) {
+      storeSession(root, null);
+      return;
+    }
     const files: Record<string, FileViewState> = Object.fromEntries(this.restoredViews);
     for (const slot of this.slots.values()) {
       if (slot.disposed) continue;
@@ -518,24 +516,63 @@ export class EditorController implements SlotHost {
     );
   }
 
+  /** Drops this window's saved tabs. Later saves keep them dropped until the close is undone. */
+  forgetSavedTabs() {
+    const root = this.sessionRoot ?? this.openSessionKey();
+    if (!root) return;
+    this.forgottenSessions.add(root);
+    if (this.sessionRoot === root) this.saveSession();
+    else storeSession(root, null);
+  }
+
+  /** Writes the open tabs again after {@link forgetSavedTabs}, when the close did not happen. */
+  keepSavedTabs() {
+    const root = this.sessionRoot;
+    if (!root || !this.forgottenSessions.delete(root)) return;
+    this.saveSession();
+  }
+
+  private openSessionKey(): string | null {
+    const s = useProject.getState();
+    if (s.project?.root) return s.project.root;
+    if (s.lightEdit) return LIGHT_EDIT_SESSION;
+    return null;
+  }
+
   /** Reopens the tabs, splits and carets saved for `root` (after the project opened). */
-  restoreSession(root: string) {
+  async restoreSession(root: string) {
     this.sessionRoot = root;
+    // A window close dropped this session: the next open starts from the tabs opened now.
+    if (this.forgottenSessions.delete(root)) return;
     const session = loadSession(root);
     if (!session) return;
     const state = restoreTabsState(session, fileKey);
     const kinds = useContributions.getState().editorKinds;
     for (const pane of Object.values(state.panes))
       pane.tabs = pane.tabs.map((tab) => (documentLifecycle(tab.input, kinds) ? { ...tab, preview: false } : tab));
-    this.restoredViews = new Map(Object.entries(session.files));
+    const current = useTabs.getState();
+    const liveKeys = openKeys(current);
+    this.restoredViews = new Map(Object.entries(session.files).filter(([path]) => !liveKeys.has(fileKey(path))));
     this.restoredTabs = new Set(Object.values(state.panes).flatMap((p) => p.tabs.map((t) => t.id)));
     this.restoring = true;
     try {
-      useTabs.setState(state, true);
+      // A restore landing after tabs were already opened (e.g. a launched file
+      // admitted while the transition was still in flight) must not wipe them.
+      useTabs.setState(mergeSessionTabs(current, state), true);
     } finally {
       this.restoring = false;
     }
-    for (const pane of Object.values(state.panes)) if (pane.active) void this.ensureSlot(pane.active);
+    if (liveKeys.size)
+      for (const paneId of paneIds(useTabs.getState())) await this.enforcePaneTabLimit(paneId, undefined, liveKeys);
+    const next = useTabs.getState();
+    for (const pane of Object.values(next.panes)) if (pane.active) void this.ensureSlot(pane.active);
+    if (liveKeys.size) {
+      const active = this.activeTabOf(next);
+      if (active) {
+        await this.ensureSlot(active.id);
+        if (this.activeTabOf()?.id === active.id) this.focus();
+      }
+    }
   }
 
   private activeTabOf(s: TabsState = useTabs.getState()): Tab | null {
@@ -1128,24 +1165,7 @@ export class EditorController implements SlotHost {
         this.admitting = false;
       }
       const canFocus = () => this.isCurrentOpening(generation) && this.activeTabOf()?.id === tabId;
-      const tabPrefs = editorPrefs().tabs;
-      await this.removeGuarded(
-        (current) =>
-          current.panes[paneId]
-            ? enforceTabLimit(
-                current,
-                paneId,
-                tabPrefs.tabLimit,
-                tabPrefs.closingPolicy,
-                (tab) =>
-                  inputDirty(tab.input, useContributions.getState().editorKinds) ??
-                  !!(tab.input.path && useDocMeta.getState()[tab.input.path]?.dirty),
-                activate ? tabId : (current.panes[paneId]?.active ?? tabId),
-                (tab) => inputDirty(tab.input, useContributions.getState().editorKinds) === true,
-              )
-            : current,
-        { protect: (tab) => inputDirty(tab.input, useContributions.getState().editorKinds) === true },
-      );
+      await this.enforcePaneTabLimit(paneId, activate ? tabId : (useTabs.getState().panes[paneId]?.active ?? tabId));
       if (!isTextInput(input)) {
         if (o.focus !== false)
           requestAnimationFrame(() => {
@@ -1179,6 +1199,29 @@ export class EditorController implements SlotHost {
       this.navSuppress--;
       if (this.navSuppress === 0 && this.activeSlot) this.recordNav(this.activeSlot, true);
     }
+  }
+
+  private enforcePaneTabLimit(paneId: string, keep?: string, liveKeys?: ReadonlySet<string>) {
+    const prefs = editorPrefs().tabs;
+    const protect = (tab: Tab) =>
+      !!liveKeys?.has(tab.input.key) || inputDirty(tab.input, useContributions.getState().editorKinds) === true;
+    return this.removeGuarded(
+      (current) =>
+        current.panes[paneId]
+          ? enforceTabLimit(
+              current,
+              paneId,
+              prefs.tabLimit,
+              prefs.closingPolicy,
+              (tab) =>
+                inputDirty(tab.input, useContributions.getState().editorKinds) ??
+                !!(tab.input.path && useDocMeta.getState()[tab.input.path]?.dirty),
+              keep ?? current.panes[paneId]?.active ?? undefined,
+              protect,
+            )
+          : current,
+      { protect },
+    );
   }
 
   activate(paneId: string, tabId: string, focus = true) {
@@ -1898,7 +1941,9 @@ function openInMenu(path: string): MenuItem {
     label: "Open In",
     submenu: [
       { kind: "action", action: "navigate.selectIn", arg: { path }, label: "Project View" },
-      { kind: "action", action: "project.revealInFinder", arg: path, label: revealLabel() },
+      ...(canRevealInFileManager()
+        ? [{ kind: "action" as const, action: "project.revealInFinder", arg: path, label: fileManagerName() }]
+        : []),
       { kind: "action", action: "project.openInTerminal", arg: path, label: "Terminal" },
       { kind: "separator" },
       ...menuGroupItems("openIn", { paths: [path] }),
@@ -1981,12 +2026,6 @@ let controller: EditorController | null = null;
 
 export function editorController(): EditorController {
   return (controller ??= new EditorController());
-}
-
-/** "Finder" / "Explorer" / "Files", like IDEA's Open In submenu. */
-function revealLabel(): string {
-  const os = usePlatform.getState().os;
-  return os === "macos" ? "Finder" : os === "windows" ? "Explorer" : "Files";
 }
 
 function inPopup(target: EventTarget | null): boolean {

@@ -343,6 +343,14 @@ describe("debugging build tool configurations", () => {
     expect(merged.args[1]).toMatch(/^-Dspring-boot\.run\.jvmArguments=-Xmx1g -agentlib:jdwp=/);
     const test = jdwpLaunch(cfg({ id: "t", kind: "maven", args: ["test", "-Dtest=A#b"], isTest: true }))!;
     expect(test.args.some((a) => a.startsWith("-Dmaven.surefire.debug=-agentlib:jdwp="))).toBe(true);
+    // A fork's "Listening for transport" line stays buffered until tests run — which suspend=y
+    // prevents — so a Maven test's port is pinned and attached without the line.
+    const pinned = jdwpLaunch(cfg({ id: "t2", kind: "maven", args: ["test"], isTest: true }), 50123)!;
+    expect(pinned.args.some((a) => a.includes("address=127.0.0.1:50123"))).toBe(true);
+    const pinnedFailsafe = jdwpLaunch(cfg({ id: "t3", kind: "maven", args: ["verify"], isTest: true }), 50124)!;
+    expect(
+      pinnedFailsafe.args.some((a) => a.startsWith("-Dmaven.failsafe.debug=") && a.includes("address=127.0.0.1:50124")),
+    ).toBe(true);
     expect(jdwpLaunch(cfg({ id: "g", kind: "gradle", args: ["bootRun"] }))!.args).toContain(DELEGATED_DEBUG);
     const gradleTest = jdwpLaunch(cfg({ id: "gt", kind: "gradle", args: ["test"], isTest: true }))!;
     expect(gradleTest.args).toContain(DELEGATED_DEBUG);

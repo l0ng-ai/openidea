@@ -1,6 +1,6 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { act, fireEvent, render, screen, within } from "@testing-library/react";
-import type { RecentProject, Settings } from "@/platform/ipc";
+import type { RecentProject, RemoteTarget, Settings } from "@/platform/ipc";
 
 const settingsSet = vi.fn();
 const removeRecentProject = vi.fn();
@@ -26,18 +26,23 @@ vi.mock("@/platform/project", async (importOriginal) => {
   return { ...real, openProject: (path: string) => openProject(path) };
 });
 vi.mock("@tauri-apps/api/path", () => ({ homeDir: async () => "/Users/me" }));
+vi.mock("@tauri-apps/plugin-opener", () => ({ revealItemInDir: vi.fn() }));
 vi.mock("@tauri-apps/api/webview", () => ({
   getCurrentWebview: () => ({ onDragDropEvent: async () => () => {} }),
 }));
 
 import { registerActions } from "@/platform/actions";
+import { revealItemInDir } from "@tauri-apps/plugin-opener";
+import { usePlatform } from "@/platform/platformInfo";
 import { useProject } from "@/platform/project";
-import { ContextMenuHost } from "@/ui";
+import { remoteLocation, useRemote } from "@/platform/remote";
+import { ContextMenuHost, resolveMenuItems } from "@/ui";
 import { registerSettingsPage } from "@/workbench/contributions";
 import { MessagesHost } from "@/workbench/messages";
 import { projectInitials } from "@/workbench/projectColor";
 import { handleListKey } from "./ProjectsPage";
 import { customizeView } from "./CustomizePage";
+import { recentMenu } from "./RecentList";
 import { filterRecent, useRecent } from "./recent";
 import { WelcomeView } from "./WelcomeView";
 
@@ -126,9 +131,55 @@ describe("Welcome › Projects", () => {
     fireEvent.click(within(screen.getAllByRole("option")[0]!).getByRole("button", { name: "Project actions" }));
     const menu = await screen.findByRole("menu");
     expect(within(menu).getByText("Open in New Window")).toBeTruthy();
-    expect(within(menu).getByText("Show in Finder")).toBeTruthy();
     expect(within(menu).getByText("Remove from Recent Projects…")).toBeTruthy();
     dispose();
+  });
+
+  // Regression: the welcome menus are shared by the projects page and the two
+  // recent-project popups, and used to hardcode "Show in Finder" on every OS.
+  it("names the platform's file manager for the reveal action", () => {
+    const previous = usePlatform.getState().os;
+    const revealLabel = () => {
+      const items = recentMenu(p("acme-api", "/Users/me/repo/acme-api"));
+      return (items.find((i) => "id" in i && i.id === "reveal") as { label?: string } | undefined)?.label;
+    };
+    try {
+      usePlatform.setState({ os: "windows" });
+      expect(revealLabel()).toBe("Show in Explorer");
+      usePlatform.setState({ os: "linux" });
+      expect(revealLabel()).toBe("Show in Files");
+      usePlatform.setState({ os: "macos" });
+      expect(revealLabel()).toBe("Show in Finder");
+    } finally {
+      usePlatform.setState({ os: previous });
+    }
+  });
+
+  it.each<{ entry: string; target: RemoteTarget | null; shown: boolean }>([
+    { entry: "a local project", target: null, shown: true },
+    { entry: "an SSH project", target: { kind: "ssh", config: "box" }, shown: false },
+    {
+      entry: "a dev-container project",
+      target: { kind: "devContainer", folder: "/Users/me/app", config: "" },
+      shown: false,
+    },
+  ])("offers the file manager for $entry only when this desktop has its folder", ({ target, shown }) => {
+    const path = target ? remoteLocation(target, "/home/me/app") : "/Users/me/app";
+    const items = resolveMenuItems(recentMenu(p("app", path)));
+    expect(items.some((i) => i.key === "reveal")).toBe(shown);
+  });
+
+  it("reveals a local recent project from an SSH window's project switcher", async () => {
+    useRemote.setState({
+      session: { target: { kind: "ssh", config: "box" }, root: "/srv/app", host: "box", os: "linux", commands: [] },
+    });
+    try {
+      resolveMenuItems(recentMenu(p("app", "/Users/me/app"))).find((i) => i.key === "reveal")!.run!();
+      await act(async () => {});
+      expect(revealItemInDir).toHaveBeenCalledExactlyOnceWith("/Users/me/app");
+    } finally {
+      useRemote.setState({ session: null });
+    }
   });
 
   it("shows the landing page without recent projects", async () => {

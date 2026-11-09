@@ -2,6 +2,7 @@ import { useEffect, useRef, useState } from "react";
 import { create } from "zustand";
 import { call, commands, isCancelled, nextRequestId, type ProjectDiscovery, type RequestId } from "@/platform/ipc";
 import { invokeLocal } from "@/platform/tauriCore";
+import { confirmProjectTrust } from "@/platform/projectTrust";
 import { basename, dirname, useProject } from "@/platform/project";
 import { isRemoteWindow } from "@/platform/remote";
 import { tx } from "@/platform/i18n";
@@ -101,12 +102,21 @@ function WorkspaceDialog({ mode, onClose }: { mode: "create" | "manage"; onClose
         const root = await call(commands.workspaceCreate(path.trim(), name.trim(), included));
         await openProjectWithPolicy(root);
       } else {
+        for (const path of included.filter((p) => !workspace?.projects.includes(p))) {
+          await confirmProjectTrust(path);
+          if (!(await call(commands.projectTrustStatus(path))).trusted) {
+            setError(
+              tx`Cannot attach ${path} because it is restricted. Open it separately and choose Trust Project, then attach it again.`,
+            );
+            return;
+          }
+        }
         const updated = await call(commands.workspaceUpdate(name.trim(), included));
         useProject.setState({ project: updated, settings: updated.settings });
       }
       onClose();
     } catch (e) {
-      setError(e instanceof Error ? e.message : String(e));
+      if (!isCancelled(e)) setError(e instanceof Error ? e.message : String(e));
     } finally {
       setBusy(false);
     }

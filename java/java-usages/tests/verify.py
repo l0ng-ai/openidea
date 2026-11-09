@@ -136,6 +136,31 @@ try:
     line, text = next((i, t) for i, t in enumerate(source.splitlines()) if 'println' in t)
     evidence['jdkSources'] = assert_sources(line, text.index('println'))
     assert evidence['jdkSources'], 'no JDK method usages in the sources'
+    # Answers are reused until the sources change: an unsaved edit is seen at once, before its reconcile.
+    line, text = next((i, t) for i, t in enumerate(source.splitlines()) if 'private String name;' in t)
+    usages = lambda: request('workspace/executeCommand', {'command':'openidea.java.usages','arguments':[file.as_uri(),line,text.index('name'),False]})
+    getters = lambda rows: [r['kind'] for r in rows].count('getter')
+    first = usages()
+    assert usages() == first
+    edited = source.replace('    void calls(Bean b)', '    void more(Bean b) { b.getName(); }\n    void calls(Bean b)')
+    send({'jsonrpc':'2.0','method':'textDocument/didChange','params':{'textDocument':{'uri':file.as_uri(),'version':2},'contentChanges':[{'text':edited}]}})
+    changed = usages()
+    assert getters(changed) == getters(first) + 1, (first, changed)
+    send({'jsonrpc':'2.0','method':'textDocument/didChange','params':{'textDocument':{'uri':file.as_uri(),'version':3},'contentChanges':[{'text':source}]}})
+    assert usages() == first
+    # The source folder holds only covered files; the folder beside it does not.
+    roots = request('workspace/executeCommand', {'command':'openidea.workspace.coveredRoots','arguments':[]})
+    assert [pathlib.Path(r.replace('file:', '', 1)).resolve() for r in roots] == [(project / 'src').resolve()], roots
+    evidence['coveredRoots'] = roots
+    # A file outside the source folders, opened and closed to widen a search, leaves the answer as it was.
+    extra = project / 'other' / 'Extra.java'
+    extra.parent.mkdir()
+    extra.write_text('class Extra { void use(Bean b) { b.getName(); } }\n')
+    send({'jsonrpc':'2.0','method':'textDocument/didOpen','params':{'textDocument':{'uri':extra.as_uri(),'languageId':'java','version':1,'text':extra.read_text()}}})
+    widened = usages()
+    send({'jsonrpc':'2.0','method':'textDocument/didClose','params':{'textDocument':{'uri':extra.as_uri()}}})
+    assert usages() == first
+    evidence['cached'] = {'first':first, 'edited':changed, 'widened':widened}
     # Respect the existing global preference: the command must not switch it on.
     send({'jsonrpc':'2.0','method':'workspace/didChangeConfiguration','params':{'settings':{'java':{'references':{'includeAccessors':False}}}}})
     disabled = request('workspace/executeCommand', {'command':'openidea.java.usages','arguments':[file.as_uri(),3,19,False]})

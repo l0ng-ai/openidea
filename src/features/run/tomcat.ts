@@ -21,6 +21,7 @@ export const tomcatType: RunConfigTypeContribution = {
     deployment: "artifact",
     httpPort: "8080",
     jmxPort: "1099",
+    // Build before launch (IDEA default); skipped automatically when the built WAR is current.
     buildArtifact: "true",
     openBrowser: "true",
     ...updatePolicyDefaults,

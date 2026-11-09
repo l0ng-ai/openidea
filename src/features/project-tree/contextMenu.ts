@@ -1,5 +1,6 @@
 /** Context menu and "New" popup of the project view. */
 import { executeAction, getAction } from "@/platform/actions";
+import { canRevealInFileManager, fileManagerName } from "@/platform/fileManager";
 import { formatBinding, hostBinding, isMacHost, shortcutLabel } from "@/platform/keymap";
 import { relativePath, useProject } from "@/platform/project";
 import { currentDetectedRoots, currentRoots } from "@/platform/projectRoots";
@@ -152,8 +153,20 @@ export function contextMenuItems(nodes: ProjectNode[]): MenuItem[] {
   const items: MenuItem[] = [];
   const push = (...list: Entry[]) => list.forEach((i) => i && items.push(i));
 
-  if (single && project?.workspace && project.workspace.projects.includes(single.path)) {
-    push({ kind: "action", action: "workspace.removeProject", arg: single.path }, { kind: "separator" });
+  if (
+    single &&
+    project?.workspace &&
+    single.path !== project.root &&
+    project.workspace.projects.includes(single.path)
+  ) {
+    push(
+      {
+        kind: "action",
+        action: project.workspace.projects[0] === project.root ? "project.detach" : "workspace.removeProject",
+        arg: single.path,
+      },
+      { kind: "separator" },
+    );
   }
 
   push({ id: "new", label: "New", submenu: newMenuItems(folder) }, { kind: "separator" });
@@ -287,7 +300,12 @@ export function contextMenuItems(nodes: ProjectNode[]): MenuItem[] {
   // Open In ›
   push(
     submenu("openIn", "Open In", [
-      { id: "finder", label: revealLabel(), icon: "external-link", run: () => void revealInFinder(nodes) },
+      canRevealInFileManager() && {
+        id: "finder",
+        label: revealLabel(),
+        icon: "external-link",
+        run: () => void revealInFinder(nodes),
+      },
       folder && getAction("terminal.openAt")
         ? { id: "terminal", label: "Terminal", icon: "terminal", run: () => void delegate("terminal.openAt", folder) }
         : null,
@@ -445,7 +463,12 @@ function libraryMenuItems(nodes: ProjectNode[]): MenuItem[] {
     !!folder && delegated("find.inPath", { directory: folder }, "Find in Files…", { icon: "search" }),
     !!folder && { kind: "separator" },
     submenu("openIn", "Open In", [
-      { id: "finder", label: revealLabel(), icon: "external-link", run: () => void revealInFinder(nodes) },
+      canRevealInFileManager() && {
+        id: "finder",
+        label: revealLabel(),
+        icon: "external-link",
+        run: () => void revealInFinder(nodes),
+      },
     ]),
     single &&
       !single.dir &&
@@ -458,10 +481,7 @@ function libraryMenuItems(nodes: ProjectNode[]): MenuItem[] {
 }
 
 export function revealLabel() {
-  const ua = typeof navigator !== "undefined" ? navigator.userAgent : "";
-  if (/Win/i.test(ua)) return "Explorer";
-  if (/Linux/i.test(ua)) return "Files";
-  return "Finder";
+  return fileManagerName();
 }
 
 /** What contributed menu groups see: the selected (non-placeholder) paths. */

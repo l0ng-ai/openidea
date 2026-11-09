@@ -34,6 +34,7 @@ import { openideaHighlightStyle } from "./highlight";
 import { openideaTheme } from "./theme";
 import { caretRowHighlight } from "./caretRow";
 import { changeLane, overviewLane } from "./lanes";
+import { cornerInset } from "./cornerInset";
 import { foldingExtension } from "./folding";
 import { syntaxHighlightField } from "./syntaxHighlight";
 import { indentGuides } from "./indentGuides";
@@ -323,6 +324,13 @@ export interface SetupOptions {
  * below its top edge. WebKit positions them `absolute` within `.cm-editor`, so
  * a window-wide right bound makes CodeMirror skip the shift left and the
  * browser squeezes the box into the space left of the editor's edge.
+ *
+ * They are parented to the body (#2310): tooltips are `position: fixed` but
+ * appended inside the editor by default, whose `.content{isolation:isolate}`
+ * stacking context paints as one unit below the later bottom toolwindow — so
+ * completion popups got covered where they overflowed the editor's bottom
+ * edge. At the body level their z-index (500) sits above panels
+ * (`--z-panel: 10`) while staying below dialogs (`--z-dialog: 900`).
  */
 export function tooltipBounds(view: { scrollDOM: Element; dom: Element }) {
   const { top } = view.scrollDOM.getBoundingClientRect();
@@ -335,7 +343,10 @@ export function tooltipBounds(view: { scrollDOM: Element; dom: Element }) {
   };
 }
 
-const tooltipSpace = tooltips({ tooltipSpace: tooltipBounds });
+const tooltipSpace = tooltips({
+  parent: typeof document === "undefined" ? undefined : document.body,
+  tooltipSpace: tooltipBounds,
+});
 
 export function baseExtensions(o: SetupOptions): Extension {
   return [
@@ -370,6 +381,7 @@ export function baseExtensions(o: SetupOptions): Extension {
     methodLinesField,
     findExtension(),
     overviewLane,
+    cornerInset,
     codeLensExtension,
     EditorView.contentAttributes.of({
       spellcheck: "false",
