@@ -35,7 +35,7 @@ export function arrowButton(dir: "a-to-b" | "b-to-a", run: (chunkIndex: number) 
   const label = dir === "a-to-b" ? "Apply change to the right (Replace ›››)" : "Apply change to the left (‹‹‹ Replace)";
   btn.setAttribute("aria-label", label);
   btn.title = label;
-  btn.innerHTML = iconMarkup(dir === "a-to-b" ? "chevron-right" : "chevron-left", 12) ?? "";
+  btn.innerHTML = iconMarkup(dir === "a-to-b" ? "diff-arrow-right" : "diff-arrow-left", 14) ?? "";
   btn.addEventListener("mousedown", (e) => {
     // Handled here rather than by MergeView's own (one-directional) revert handler.
     e.preventDefault();

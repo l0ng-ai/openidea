@@ -7,6 +7,10 @@
  * still run and `run.confirmTerminate` is on, then Save All / Don't Save / Cancel
  * when documents have unsaved changes. Quit confirms once, then the backend
  * closes every window, each of which runs its own checks.
+ *
+ * The last project or LightEdit window returns to the Welcome screen unless
+ * `general.closeWithoutWelcome` is on, in which case it closes. When
+ * `general.closeTabsWithWindow` is on, that close drops the saved editor tabs.
  */
 import { commands, isTauri, onIdeEvent, type Settings } from "@/platform/ipc";
 import { t } from "@/platform/i18n";
@@ -32,6 +36,26 @@ export function dirtyCount(): number {
 
 export function confirmExitEnabled(settings: Settings | null | undefined): boolean {
   return settings?.general?.confirmExit === true;
+}
+
+/** Last window closes instead of showing Welcome. Only an explicit choice does. */
+export function closeWithoutWelcomeEnabled(settings: Settings | null | undefined): boolean {
+  return settings?.general?.closeWithoutWelcome === true;
+}
+
+/** A closed window does not restore its editor tabs next time. Only an explicit choice does. */
+export function closeTabsWithWindowEnabled(settings: Settings | null | undefined): boolean {
+  return settings?.general?.closeTabsWithWindow === true;
+}
+
+/** The last project or LightEdit window shows Welcome instead of closing. */
+export function returnsToWelcome(
+  quitting: boolean,
+  windows: number,
+  hasSession: boolean,
+  settings: Settings | null | undefined,
+): boolean {
+  return !quitting && windows <= 1 && hasSession && !closeWithoutWelcomeEnabled(settings);
 }
 
 export interface CloseInput {
@@ -175,9 +199,22 @@ async function processNames(deps: CloseDeps): Promise<string[]> {
 
 let closing = false;
 
+/** Drops saved tabs when that setting is on. The result says whether a cancelled close should put them back. */
+function forgetTabs(): boolean {
+  if (!closeTabsWithWindowEnabled(useProject.getState().settings)) return false;
+  maybeEditorService()?.forgetSavedTabs?.();
+  return true;
+}
+
 async function onCloseRequested(deps: CloseDeps): Promise<boolean> {
   if (closing) return false;
   closing = true;
+  let forgot = false;
+  const undoForget = () => {
+    if (!forgot) return;
+    forgot = false;
+    maybeEditorService()?.keepSavedTabs?.();
+  };
   try {
     const ctx = await commands.windowCloseContext();
     if (!(await closeDocumentWindows())) {
@@ -185,10 +222,19 @@ async function onCloseRequested(deps: CloseDeps): Promise<boolean> {
       return false;
     }
     const s = useProject.getState();
-    // Closing the last project (or LightEdit) window closes its project and shows the welcome
-    // screen (to open another one); closing the welcome screen, or quitting, closes the window.
-    if (!ctx.quitting && ctx.windows <= 1 && (s.project || s.lightEdit)) {
-      if (await confirmLeave(deps)) await closeProject();
+    // The last project or LightEdit window can return to Welcome. Otherwise it closes.
+    if (returnsToWelcome(ctx.quitting, ctx.windows, !!(s.project || s.lightEdit), s.settings)) {
+      if (await confirmLeave(deps)) {
+        forgot = forgetTabs();
+        try {
+          await closeProject();
+          // Welcome is showing; keep the tabs dropped.
+          forgot = false;
+        } catch (e) {
+          undoForget();
+          throw e;
+        }
+      }
       await commands.windowGroupCancelClose();
       return false;
     }
@@ -205,9 +251,15 @@ async function onCloseRequested(deps: CloseDeps): Promise<boolean> {
       },
       deps,
     );
-    if (!ok) await (ctx.quitting ? commands.appCancelQuit() : commands.windowGroupCancelClose());
-    return ok;
+    if (!ok) {
+      await (ctx.quitting ? commands.appCancelQuit() : commands.windowGroupCancelClose());
+      return false;
+    }
+    // The window is closing. Drop the tabs now so pagehide cannot write them back.
+    forgetTabs();
+    return true;
   } catch (e) {
+    undoForget();
     maybeEditorService()?.cancelClose?.();
     void commands.windowGroupCancelClose().catch(() => {});
     deps.onSaveFailed(e);

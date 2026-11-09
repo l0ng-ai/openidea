@@ -48,11 +48,12 @@ const REPLY = [
   "```",
 ].join("\n");
 
-async function openReply(page: Page, text: string, imageData?: string) {
+async function openReply(page: Page, text: string, imageData?: string, theme?: "dark" | "light") {
   await page.goto("/");
   await page.getByRole("tree", { name: "Project" }).waitFor();
   await page.evaluate(
-    async ({ task, text, imageData }) => {
+    async ({ task, text, imageData, theme }) => {
+      if (theme) document.documentElement.dataset.theme = theme;
       if (imageData) {
         const routePath = "/src/platform/tauriCore.ts";
         const { setInvokeRoute } = await import(routePath);
@@ -80,7 +81,7 @@ async function openReply(page: Page, text: string, imageData?: string) {
       });
       store.dockTask(task.id);
     },
-    { task: TASK, text, imageData },
+    { task: TASK, text, imageData, theme },
   );
   const reply = page.locator("[class*='_markdown_']").first();
   await reply.locator("h1, p").first().waitFor();
@@ -360,3 +361,88 @@ test("keeps mermaid `<style>` rules scoped to the rendered svg after id rewritin
   expect(await css(reply, ".cluster rect", "fill")).not.toBe("rgb(0, 0, 0)");
   expect(await css(reply, ".flowchart-link", "fill")).toBe("none");
 });
+
+test("keeps mermaid flowchart nodes and sequence control blocks off solid black", async ({ page }) => {
+  const flow = [
+    "```mermaid",
+    "flowchart LR",
+    '  subgraph Client["Client"]',
+    '    A["Local agent"]',
+    '    B["Voice input"]',
+    "  end",
+    '  subgraph Cloud["Cloud"]',
+    '    C["Cloud agent"]',
+    '    D["Memory service"]',
+    "  end",
+    "  B --> A",
+    "  A --> C",
+    "  C --> D",
+    "```",
+  ].join("\n");
+  const sequence = ["```mermaid", "sequenceDiagram", "  loop every minute", "    A->>B: ping", "  end", "```"].join(
+    "\n",
+  );
+  const reply = await openReply(page, `Flow:\n\n${flow}\n\nSequence:\n\n${sequence}`);
+  await expect(reply.locator("[data-mermaid-state='ok'] .mermaid-output svg")).toHaveCount(2);
+  expect(await css(reply, ".node rect", "fill")).not.toBe("rgb(0, 0, 0)");
+  expect(await css(reply, ".cluster rect", "fill")).not.toBe("rgb(0, 0, 0)");
+  expect(await css(reply, ".labelBox", "fill")).not.toBe("rgb(0, 0, 0)");
+});
+
+const DIAGRAMS = [
+  "flowchart LR\n  subgraph Client\n    A[Local agent] --> B[Voice input]\n  end",
+  "sequenceDiagram\n  loop every minute\n    A->>B: ping\n  end",
+  "classDiagram\n  class Agent {\n    +String name\n    +run()\n  }",
+  "stateDiagram-v2\n  [*] --> Ready\n  Ready --> Running\n  Running --> [*]",
+  'pie title Work\n  "Ready" : 40\n  "Running" : 35\n  "Done" : 25',
+  "gantt\n  dateFormat YYYY-MM-DD\n  section Delivery\n  Shipped :done, shipped, 2026-01-01, 5d\n  Building :active, building, after shipped, 5d\n  Next :next, after building, 5d\n  Critical :crit, critical, after next, 5d",
+]
+  .map((source) => `\`\`\`mermaid\n${source}\n\`\`\``)
+  .join("\n\n");
+
+for (const theme of ["dark", "light"] as const) {
+  test(`keeps Mermaid shapes, labels and chart series readable in ${theme} theme`, async ({ page }) => {
+    const reply = await openReply(page, `Diagrams:\n\n${DIAGRAMS}`, undefined, theme);
+    const svgs = reply.locator("[data-mermaid-state='ok'] .mermaid-output svg");
+    await expect(svgs).toHaveCount(6);
+    for (const [index, selector] of [
+      [0, ".node rect"],
+      [1, ".labelBox"],
+      [2, ".outer-path path"],
+      [3, ".node rect"],
+    ] as const) {
+      expect(await css(svgs.nth(index), selector, "fill")).not.toBe("rgb(0, 0, 0)");
+      expect(await css(svgs.nth(index), selector, "stroke")).not.toContain("url(");
+    }
+    expect(await css(svgs.nth(2), ".nodeLabel", "color")).not.toBe(await css(svgs.nth(2), ".outer-path path", "fill"));
+    const slices = await svgs
+      .nth(4)
+      .locator(".pieCircle")
+      .evaluateAll((els) => els.map((el) => getComputedStyle(el).fill));
+    expect(new Set(slices).size).toBe(3);
+    expect(slices).not.toContain("rgb(0, 0, 0)");
+    const contrasts = await svgs
+      .nth(5)
+      .locator("text.taskText")
+      .evaluateAll((els) => {
+        const luminance = (color: string) => {
+          const [r, g, b] = color
+            .match(/\d+/g)!
+            .map(Number)
+            .map((v) => {
+              const c = v / 255;
+              return c <= 0.04045 ? c / 12.92 : ((c + 0.055) / 1.055) ** 2.4;
+            });
+          return 0.2126 * r! + 0.7152 * g! + 0.0722 * b!;
+        };
+        return els.map((el) => {
+          const bar = document.getElementById(el.id.replace(/-text$/, ""))!;
+          const fg = luminance(getComputedStyle(el).fill);
+          const bg = luminance(getComputedStyle(bar).fill);
+          return { text: el.textContent, ratio: (Math.max(fg, bg) + 0.05) / (Math.min(fg, bg) + 0.05) };
+        });
+      });
+    expect(contrasts).toHaveLength(4);
+    for (const { text, ratio } of contrasts) expect(ratio, `${theme}: ${text}`).toBeGreaterThanOrEqual(4.5);
+  });
+}

@@ -139,7 +139,7 @@ export function recentMenu(project: RecentProject, onOpened?: () => void, onRemo
       id: "reveal",
       label: showInFileManagerLabel(),
       icon: "external-link",
-      run: () => void revealInFileManager(project.path).catch(() => undefined),
+      run: () => void revealInFileManager(project.path, null).catch(() => undefined),
     },
     {
       id: "copy",

@@ -46,6 +46,7 @@ async fn application_commands_work_in_restricted_projects_and_without_a_project(
         "clear_caches",
         "clipboard_file_list",
         "clipboard_has_files",
+        "clipboard_image",
         "clipboard_set_file_list",
         "jdk_download_vendors",
         "jdk_download_releases",

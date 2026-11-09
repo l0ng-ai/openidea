@@ -47,7 +47,8 @@ export function toCmCompletion(item: CompletionItem): Completion {
     type: completionSymbolKind(item.kind),
   };
   if (filter) c.displayLabel = item.label;
-  if (item.labelDetail) c.detail = item.labelDetail;
+  const suffix = signatureSuffix(item);
+  if (suffix) c.detail = suffix;
   if (item.sortText) c.sortText = item.sortText;
   if (item.preselect) c.boost = 99;
   else if (item.deprecated) c.boost = -20;
@@ -78,6 +79,7 @@ export function withoutDuplicates(items: readonly CompletionItem[]): CompletionI
       it.server,
       it.label,
       it.labelDetail,
+      it.labelDescription,
       it.detail,
       it.kind,
       it.insertText,
@@ -111,9 +113,27 @@ export function importSource(item: Pick<CompletionItem, "additionalEdits">): str
   return null;
 }
 
-/** Text of the right-aligned type column: the detail, with the import source when it lacks one. */
-export function typeColumnText(item: Pick<CompletionItem, "detail" | "additionalEdits">): string | null {
-  const detail = item.detail?.replace(/\s+/g, " ") || null;
+type LabelPresentation = Partial<Pick<CompletionItem, "labelDetail" | "labelDescription" | "kind">>;
+
+/** Only parameter suffixes belong beside the name; fields can have tuple or function types. */
+function signatureSuffix(item: LabelPresentation): string | null {
+  const suffix = item.labelDetail;
+  const callable = !item.kind || ["method", "function", "constructor"].includes(item.kind);
+  return callable && suffix && /^(?:<.*>)?\(/s.test(suffix.trimStart()) ? suffix : null;
+}
+
+/**
+ * Text of the right-aligned type column: the label description (`void`, `String`), else the
+ * non-signature label detail or detail, with the import source when it lacks one.
+ * JDT.LS sends the whole signature as `detail`
+ * (`PrintStream.print(Object obj) : void`), which would repeat the name and parameters already
+ * shown next to the label; the documentation panel still shows it.
+ */
+export function typeColumnText(
+  item: Pick<CompletionItem, "detail" | "additionalEdits"> & LabelPresentation,
+): string | null {
+  const labelType = signatureSuffix(item) ? null : item.labelDetail?.trim();
+  const detail = (item.labelDescription?.trim() || labelType || item.detail)?.replace(/\s+/g, " ") || null;
   const source = importSource(item);
   if (!source || detail?.includes(source)) return detail;
   return !detail || /^auto[- ]?import$/i.test(detail) ? source : `${detail} (${source})`;

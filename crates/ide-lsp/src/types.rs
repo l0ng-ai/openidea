@@ -49,7 +49,11 @@ pub struct CompletionItem {
     pub label: String,
     /// e.g. `(req: CreateOrderRequest)` shown right after the label.
     pub label_detail: Option<String>,
-    /// e.g. return type, shown right-aligned.
+    /// `labelDetails.description`: a return type or module path, shown right-aligned. Servers
+    /// such as JDT.LS also send the whole signature as `detail`, which would repeat the label.
+    pub label_description: Option<String>,
+    /// The signature or type when the server sent no `label_description`; the documentation panel
+    /// shows it either way.
     pub detail: Option<String>,
     pub kind: Option<CompletionKind>,
     pub documentation: Option<Markup>,

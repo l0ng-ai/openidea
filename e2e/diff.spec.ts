@@ -292,7 +292,9 @@ test.describe("10,000-line files", () => {
       await expectCount(page, path, 42);
       // The first change is a single edited identifier.
       await page.locator(".cm-editor.cm-merge-b .cm-content").first().click();
-      await page.keyboard.press("Meta+ArrowUp");
+      // ⌘↑ opens the Navigation Bar; ⌘Home keeps document navigation in the diff.
+      await page.keyboard.press("Meta+Home");
+      await expect(page.locator(".cm-editor.cm-merge-b .cm-content").first()).toBeFocused();
       await page.keyboard.press("F7");
       await expect(counter(page)).toHaveText("1 of 42 differences");
       if (opts.mode !== "unified") {
@@ -300,7 +302,7 @@ test.describe("10,000-line files", () => {
         await expect.poll(async () => (await rendered(page)).b.words).toContainEqual(["computeFast", "modified"]);
       }
       // The last difference is reachable and still highlighted.
-      await page.keyboard.press("Meta+ArrowDown");
+      await page.keyboard.press("Meta+End");
       await page.keyboard.press("Shift+F7");
       await expect(counter(page)).toHaveText("42 of 42 differences");
       if (opts.mode === "unified") {

@@ -7,6 +7,7 @@
 //! never `lsp-types`, so the IPC surface stays stable.
 
 mod angular;
+mod arduino;
 mod caps;
 mod clang_tidy;
 mod convert;
@@ -502,10 +503,12 @@ impl LspManager {
     fn server_for(&self, cfg: &LanguageServerConfig, language: &LanguageId, path: &Path) -> Arc<Server> {
         let shared = is_local_jdtls(cfg).then(|| self.jdtls_workspace_state());
         let mut servers = self.servers.lock();
+        let project = self.project_root_for(path);
+        let sketch = (cfg.name == arduino::SERVER).then(|| arduino::sketch_root(&project, path)).flatten();
         let root = if shared.as_ref().is_some_and(|state| state.shared) {
             self.project_root.clone()
         } else {
-            launch::find_root(&self.project_root_for(path), path, &cfg.root_markers).unwrap_or_else(|| {
+            sketch.or_else(|| launch::find_root(&project, path, &cfg.root_markers)).unwrap_or_else(|| {
                 // Outside the project (library sources, …): reuse a running instance.
                 servers
                     .iter()
@@ -530,6 +533,9 @@ impl LspManager {
     /// only while all servers listed before it are missing. One that requires a
     /// root marker serves only files below one, and stands in for no other.
     fn servers_for(&self, language: &LanguageId, path: &Path) -> Vec<Arc<Server>> {
+        if let Some(servers) = self.arduino_servers(language, path) {
+            return servers;
+        }
         let mut out = Vec::new();
         let mut available_before = false;
         for sc in &self.language_servers(language) {
@@ -775,7 +781,11 @@ impl LspManager {
                 if let Some(info) = result.get("serverInfo") {
                     tracing::info!("{} initialized: {info}", server.name);
                 }
-                let mut caps = ServerCaps::parse(result.get("capabilities").cloned().unwrap_or_else(|| json!({})));
+                let mut caps_val = result.get("capabilities").cloned().unwrap_or_else(|| json!({}));
+                if server.name == arduino::SERVER {
+                    arduino::sanitize_server_capabilities(&mut caps_val);
+                }
+                let mut caps = ServerCaps::parse(caps_val);
                 let cfg = server.effective_config();
                 caps.restrict(caps::Restriction::new(&server.name, &cfg.features, &cfg.code_action_kinds));
                 caps
@@ -921,6 +931,9 @@ impl LspManager {
             "capabilities": caps::client_capabilities(),
             "trace": "off",
         });
+        if server.name == arduino::SERVER {
+            arduino::configure_client_capabilities(&mut params["capabilities"]);
+        }
         if server.name == "gopls" {
             params["capabilities"]["experimental"]["interactiveResolve"] = json!({ "inputTypes": ["string"] });
         }
@@ -1560,6 +1573,7 @@ impl LspManager {
                     let locs = convert::goto_response(&self.conv(t.enc()), r);
                     let locs = library_sources(snap, pos, locs).await;
                     self.note_virtual(&t.server, locs.iter().map(|l| l.uri.as_deref()));
+                    self.note_arduino_sources(&t.server, &locs);
                     let locs = merge_locations(first, locs);
                     if !locs.is_empty() {
                         return Ok(locs);
@@ -1788,6 +1802,7 @@ impl LspManager {
                     .collect();
                 let locations: Vec<Location> = classified.iter().map(|r| r.location.clone()).collect();
                 self.note_virtual(&t.server, locations.iter().map(|l| l.uri.as_deref()));
+                self.note_arduino_sources(&t.server, &locations);
                 Ok(References { locations, classified, incomplete: widened.incomplete, libraries_skipped })
             }
             .await;
@@ -1855,6 +1870,7 @@ impl LspManager {
                         locs.retain(|l| !declarations.contains(l));
                     }
                     self.note_virtual(&t.server, locs.iter().map(|l| l.uri.as_deref()));
+                    self.note_arduino_sources(&t.server, &locs);
                     acc.locations.extend(locs);
                     acc.incomplete = acc.incomplete.or(w.incomplete);
                 }
@@ -2584,6 +2600,10 @@ impl LspManager {
             let watchers = run.watchers.read();
             let roots = self.server_workspace_roots(&s);
             let changes: Vec<(&PathBuf, Change)> = if watchers.is_empty() {
+                // Dart watches the filesystem itself and rejects this unregistered notification.
+                if s.name == "dart" {
+                    continue;
+                }
                 let languages = s.languages();
                 all.filter(|(p, change)| {
                     roots.iter().any(|root| p.starts_with(root))
@@ -3308,6 +3328,7 @@ impl LspManager {
                 .filter(|a| {
                     !wanted.iter().any(|w| w.id == a.server.id)
                         && (configs.iter().any(|c| c.fallback && c.name == a.server.name)
+                            || (a.server.name == "clangd" && wanted.iter().any(|s| s.name == arduino::SERVER))
                             || !configs
                                 .iter()
                                 .any(|c| c.name == a.server.name && c.target_key == a.server.config.target_key))
