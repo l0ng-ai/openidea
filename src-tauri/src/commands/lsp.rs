@@ -126,6 +126,25 @@ pub async fn lsp_virtual_document(
 
 #[tauri::command]
 #[specta::specta]
+pub async fn lsp_can_download_sources(window: Window, state: State<'_, AppState>, uri: String) -> IdeResult<bool> {
+    ide_host::ops::lsp::lsp_can_download_sources(&state.host, window.label(), uri).await
+}
+
+#[tauri::command]
+#[specta::specta]
+pub async fn lsp_library_sources(
+    window: Window,
+    state: State<'_, AppState>,
+    request: RequestId,
+    uri: String,
+    pos: Pos,
+    sources: Option<std::path::PathBuf>,
+) -> IdeResult<Option<Location>> {
+    ide_host::ops::lsp::lsp_library_sources(&state.host, window.label(), request, uri, pos, sources).await
+}
+
+#[tauri::command]
+#[specta::specta]
 pub async fn lsp_resolve_class_file(
     window: Window,
     state: State<'_, AppState>,

@@ -7114,5 +7114,11 @@
   "Gradle could not be started. Configure a local installation in Gradle settings, install Gradle on PATH, or use a project with a Gradle wrapper.": "无法启动 Gradle。请在 Gradle 设置中配置本地安装，将 Gradle 安装到 PATH，或使用带有 Gradle wrapper 的项目。",
   "Remote of {name}": "{name} 的远程",
   "Target branch of {name}": "{name} 的目标分支",
-  "Remote project files cannot be shown in {fileManager}": "无法在{fileManager}中显示远程项目的文件"
+  "Remote project files cannot be shown in {fileManager}": "无法在{fileManager}中显示远程项目的文件",
+  "Download Sources": "下载源代码",
+  "Choose Sources…": "选择源代码…",
+  "Source archives": "源代码归档",
+  "Loading library sources…": "正在加载库源代码…",
+  "Sources not found": "未找到源代码",
+  "Cannot load library sources": "无法加载库源代码"
 }
