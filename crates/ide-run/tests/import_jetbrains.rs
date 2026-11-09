@@ -877,3 +877,133 @@ fn file_url_working_directories_stay_inside_the_project() {
     assert_eq!(cwd(get(&r, "Gateway")), None);
     assert_eq!(cwd(get(&r, "Sub")), Some(PathBuf::from("gateway")));
 }
+
+#[test]
+fn file_urls_work_in_all_imported_path_fields() {
+    let dir = tempfile::tempdir().unwrap();
+    let root = dunce::canonicalize(dir.path()).unwrap();
+    let cases = [
+        (
+            "Python",
+            r#"<configuration name="NAME" type="PythonConfigurationType">
+          <option name="WORKING_DIRECTORY" value="{base}/jobs%20%E4%B8%AD" />
+          <option name="SDK_HOME" value="{base}/bin/python" />
+          <option name="SCRIPT_NAME" value="{base}/jobs%20%E4%B8%AD/run%20me.py" />
+          <option name="PARAMETERS" value="&quot;{base}/data%20file&quot; unchanged%20arg" />
+          <option name="ENV_FILES" value="{base}/.env%20dev{sep}{base}/.env%20local" />
+          <extension name="net.ashald.envfile">
+            <option name="IS_ENABLED" value="true" />
+            <ENTRIES><ENTRY PATH="{base}/.env%20plugin" PARSER="env" /></ENTRIES>
+          </extension>
+        </configuration>"#,
+        ),
+        (
+            "Django",
+            r#"<configuration name="NAME" type="DjangoTestsConfigurationType">
+          <option name="CUSTOM_SETTINGS" value="true" />
+          <option name="SETTINGS_FILE" value="{base}/settings/dev.py" />
+        </configuration>"#,
+        ),
+        (
+            "Pytest",
+            r#"<configuration name="NAME" type="tests" factoryName="pytest">
+          <option name="_new_targetType" value="&quot;PATH&quot;" />
+          <option name="_new_target" value="&quot;{base}/test%20file.py&quot;" />
+          <option name="_new_additionalArguments" value="&quot;'{base}/data%20file'&quot;" />
+        </configuration>"#,
+        ),
+        (
+            "Npm",
+            r#"<configuration name="NAME" type="js.build_tools.npm">
+          <package-json value="{base}/web%20app/package.json" />
+          <package-manager value="{base}/bin/pnpm" />
+          <node-interpreter value="{base}/bin/node" />
+          <command value="run" /><scripts><script value="start" /></scripts>
+        </configuration>"#,
+        ),
+        (
+            "Jest",
+            r#"<configuration name="NAME" type="JavaScriptTestRunnerJest">
+          <working-dir value="{base}/web%20app" />
+          <config-file value="{base}/web%20app/jest%20config.js" />
+          <scope-kind value="TEST_FILE" /><test-file value="{base}/web%20app/test%20file.js" />
+        </configuration>"#,
+        ),
+        (
+            "Vitest",
+            r#"<configuration name="NAME" type="JavaScriptTestRunnerVitest">
+          <scope-kind value="DIRECTORY" /><test-directory value="{base}/test%20dir" />
+        </configuration>"#,
+        ),
+        (
+            "Node",
+            r#"<configuration name="NAME" type="NodeJSConfigurationType"
+          working-dir="{base}/web%20app" path-to-js-file="{base}/web%20app/main%20file.js"
+          application-parameters="&quot;{base}/data%20file&quot;" />"#,
+        ),
+        (
+            "Shell",
+            r#"<configuration name="NAME" type="ShConfigurationType">
+          <option name="SCRIPT_WORKING_DIRECTORY" value="{base}/jobs%20%E4%B8%AD" />
+          <option name="SCRIPT_PATH" value="{base}/jobs%20%E4%B8%AD/run%20me.sh" />
+          <option name="INTERPRETER_PATH" value="{base}/bin/sh" />
+        </configuration>"#,
+        ),
+    ];
+    write(&root, "manage.py", "");
+    for (name, body) in cases {
+        write(
+            &root,
+            &format!(".run/{name}.run.xml"),
+            &run_file(name, &body.replace("{base}", "file://$PROJECT_DIR$").replace("{sep}", &SEP.to_string())),
+        );
+    }
+    let r = import_from(&root, &[]);
+    assert!(r.skipped.is_empty(), "{r:#?}");
+    let python = get(&r, "Python");
+    assert_eq!(cwd(python), Some(PathBuf::from("jobs 中")));
+    assert_eq!(python.command, "../bin/python");
+    assert_eq!(python.args, s(&["run me.py", "../data file", "unchanged%20arg"]));
+    assert_eq!(python.extras.env_files, s(&[".env dev", ".env local", ".env plugin"]));
+    assert_eq!(get(&r, "Django").args, s(&["manage.py", "test", "--settings", "settings.dev"]));
+    assert_eq!(get(&r, "Pytest").args, s(&["-m", "pytest", "test file.py", "data file"]));
+    let npm = get(&r, "Npm");
+    assert_eq!(cwd(npm), Some(PathBuf::from("web app")));
+    assert_eq!(npm.command, "pnpm");
+    assert_eq!(Path::new(&npm.extras.params["nodeInterpreter"]), root.join("bin/node"));
+    assert_eq!(get(&r, "Jest").args, s(&["jest", "--config", "jest config.js", "test file.js"]));
+    assert_eq!(get(&r, "Vitest").args, s(&["vitest", "run", "test dir"]));
+    assert_eq!(get(&r, "Node").args, s(&["main file.js", "../data file"]));
+    let shell = get(&r, "Shell");
+    assert_eq!(shell.command, "../bin/sh");
+    assert_eq!(shell.args, s(&["run me.sh"]));
+    assert_eq!(shell.extras.params["path"], "run me.sh");
+}
+
+#[test]
+fn file_urls_expand_module_and_home_macros() {
+    let dir = tempfile::tempdir().unwrap();
+    let root = dunce::canonicalize(dir.path()).unwrap();
+    write(
+        &root,
+        ".run/Home.run.xml",
+        &run_file(
+            "Home",
+            r#"<configuration name="NAME" type="PythonConfigurationType">
+          <option name="WORKING_DIRECTORY" value="file://$MODULE_DIR$/jobs%20dir" />
+          <option name="SCRIPT_NAME" value="file://$MODULE_WORKING_DIR$/jobs%20dir/main.py" />
+          <option name="SDK_HOME" value="file://$USER_HOME$/bin/python" />
+        </configuration>"#,
+        ),
+    );
+    let mut environment = env();
+    let home = root.join("home").to_string_lossy().into_owned();
+    environment.insert("HOME".into(), home.clone());
+    environment.insert("USERPROFILE".into(), home);
+    let r = import(&root, RunImportSource::Jetbrains, &[], &environment).unwrap();
+    let home = get(&r, "Home");
+    assert_eq!(home.command, "../home/bin/python");
+    assert_eq!(home.args, s(&["main.py"]));
+    assert_eq!(cwd(home), Some(PathBuf::from("jobs dir")));
+    assert!(home.extras.local);
+}
