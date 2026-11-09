@@ -17,6 +17,7 @@ import { installRepeatedDoubleClick } from "./platform/doubleClick";
 import { installErrorLogging, logError } from "./platform/errorLog";
 import { guessOs } from "./platform/platformInfo";
 import { installReorderedTapClick } from "./platform/reordered-tap-click";
+import { installWebKitClipboardGuard } from "./platform/webkitClipboard";
 import { installPageSwipeTracking } from "./platform/pageSwipe";
 import { installKeyboardDispatcher } from "./platform/keymap";
 import { installPointerFocus } from "./platform/pointerFocus";
@@ -37,6 +38,7 @@ installRepeatedDoubleClick();
 // second press like the release before it, which the shim would take for a reordered tap and
 // click twice.
 if (guessOs() === "macos" && !/Chrome|Firefox/.test(navigator.userAgent)) installReorderedTapClick();
+if (guessOs() === "linux" && isTauri()) installWebKitClipboardGuard();
 installWindowDrag();
 installPointerFocus();
 installErrorLogging();
