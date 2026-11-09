@@ -196,7 +196,7 @@ export async function connectRemote(target: RemoteTarget, path: string) {
     rememberRemote({
       target: r.target,
       path: r.root,
-      name: r.project.name,
+      name: r.project.displayName || r.project.name,
       host: r.host,
       openedAtMs: Date.now(),
     });

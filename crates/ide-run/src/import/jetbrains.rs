@@ -4,8 +4,8 @@
 //! than one place is taken from the first, in that order.
 //!
 //! Python, Django server, Django tests, pytest, npm, Jest, Vitest, Node.js, Shell Script,
-//! Application, Spring Boot and compound configurations become the matching kinds; other types
-//! are skipped with their type.
+//! Application, JAR Application, Spring Boot, Go Application / Go Test and compound configurations become the
+//! matching kinds; other types are skipped with their type.
 //! `$PROJECT_DIR$` (and `$MODULE_DIR$`, `$MODULE_WORKING_DIR$`, `$ContentRoot$`,
 //! `$ProjectFileDir$`, all the project directory here) and `$USER_HOME$` are replaced; another
 //! path variable skips the configuration.
@@ -164,7 +164,10 @@ const NODE: &str = "NodeJSConfigurationType";
 const SHELL: &str = "ShConfigurationType";
 const COMPOUND: &str = "CompoundRunConfigurationType";
 const APPLICATION: &str = "Application";
+const JAR_APPLICATION: &str = "JarApplication";
 const SPRING_BOOT: &str = "SpringBootApplicationConfigurationType";
+const GO_APPLICATION: &str = "GoApplicationRunConfiguration";
+const GO_TEST: &str = "GoTestRunConfiguration";
 
 type Res<T> = Result<T, SkipReason>;
 
@@ -342,7 +345,10 @@ impl Cx<'_> {
             NODE => self.node(name, c, &mut ignored)?,
             SHELL => self.shell(name, c)?,
             APPLICATION => self.java_app(name, c, false, &mut ignored)?,
+            JAR_APPLICATION => self.jar_app(name, c, &mut ignored)?,
             SPRING_BOOT => self.java_app(name, c, true, &mut ignored)?,
+            GO_APPLICATION => self.go_config(name, c, false, &mut ignored)?,
+            GO_TEST => self.go_config(name, c, true, &mut ignored)?,
             COMPOUND => {
                 members = c.children_named("toRun").filter_map(|t| t.attr("name")).map(str::to_owned).collect();
                 config(name, "compound", String::new(), Vec::new(), None)
@@ -351,6 +357,84 @@ impl Cx<'_> {
             other => return Err(SkipReason::UnsupportedType { type_: other.to_owned() }),
         };
         Ok(Found { config, members, ignored })
+    }
+
+    /// A Go Application (`GoApplicationRunConfiguration`) or Go Test configuration. Both share
+    /// the kind (package / file / directory), the target node, `go_parameters` (go tool
+    /// arguments) and envs; a test adds a `pattern` and program arguments go after `-args`.
+    fn go_config(&self, name: &str, c: &El, test: bool, _ignored: &mut Vec<String>) -> Res<RunConfig> {
+        let (dir, cwd) = self.cwd(c.value("working_directory"))?;
+        let scope = match c.value("kind").unwrap_or("PACKAGE") {
+            "FILE" => "file",
+            "DIRECTORY" => "directory",
+            _ => "package",
+        };
+        let path_target = |value: Option<&str>| -> Res<Option<String>> {
+            Ok(self.path(value)?.map(|p| path_from(self.root, p, &dir)).filter(|p| !p.is_empty()))
+        };
+        let target = match scope {
+            "file" => path_target(c.value("filePath"))?
+                .or(self.text(c.value("package"))?)
+                .filter(|t| !t.is_empty())
+                .unwrap_or_else(|| ".".to_owned()),
+            "directory" => path_target(c.value("directory"))?.unwrap_or_else(|| ".".to_owned()),
+            _ => self.text(c.value("package"))?.filter(|t| !t.is_empty()).unwrap_or_else(|| ".".to_owned()),
+        };
+        let raw_tool = self.text(c.value("go_parameters"))?.unwrap_or_default();
+        let tool_args = parse_params(&raw_tool, Quotes::Double);
+        let raw_program = self.text(c.value("parameters"))?.unwrap_or_default();
+        let program_args = parse_params(&raw_program, Quotes::Double);
+        let pattern = self.text(c.value("pattern"))?.unwrap_or_default();
+        let output_dir =
+            self.path(c.value("output_directory"))?.map(|p| path_from(self.root, p, self.root)).unwrap_or_default();
+        // The form's module is the working directory relative to the project root.
+        let module = cwd.as_ref().map(|d| d.to_string_lossy().replace('\\', "/")).unwrap_or_default();
+        let run_after_build = c.option("run") != Some("false");
+        let targets: Vec<String> = if scope == "file" {
+            target.split('|').map(|t| t.trim().to_owned()).filter(|t| !t.is_empty()).collect()
+        } else {
+            vec![target.clone()]
+        };
+        let mut args = vec![if test { "test".to_owned() } else { "build".to_owned() }];
+        args.extend(tool_args.clone());
+        if test {
+            if !pattern.is_empty() {
+                args.extend(["-run".to_owned(), pattern.clone()]);
+            }
+            args.extend(targets);
+            if !program_args.is_empty() {
+                args.push("-args".to_owned());
+                args.extend(program_args.clone());
+            }
+        } else {
+            args.extend(targets);
+        }
+        let mut rc = config(name, "go", "go".into(), args, Some("delve"));
+        rc.cwd = cwd.map(Into::into);
+        rc.is_test = test;
+        let mut params = BTreeMap::from([
+            ("goKind".to_owned(), if test { "test" } else { "build" }.to_owned()),
+            ("scope".to_owned(), scope.to_owned()),
+            ("target".to_owned(), target),
+            ("toolArgs".to_owned(), raw_tool),
+            ("programArgs".to_owned(), raw_program),
+            ("module".to_owned(), module),
+        ]);
+        if test {
+            if !pattern.is_empty() {
+                params.insert("pattern".to_owned(), pattern);
+            }
+        } else {
+            params.insert("outputDir".to_owned(), output_dir);
+            params.insert("runAfterBuild".to_owned(), run_after_build.to_string());
+        }
+        if !program_args.is_empty() {
+            params.insert("programArgv".to_owned(), serde_json::to_string(&program_args).unwrap_or_default());
+        }
+        params.retain(|_, value| !value.is_empty());
+        rc.extras.params = params;
+        self.envs(c, &mut rc);
+        Ok(rc)
     }
 
     // ------------------------------------------------------------- Python
@@ -710,6 +794,45 @@ impl Cx<'_> {
     }
 
     // ------------------------------------------------------------- Java
+
+    fn jar_app(&self, name: &str, c: &El, ignored: &mut Vec<String>) -> Res<RunConfig> {
+        let Some(jar) = self.path(c.option("JAR_PATH"))? else { return Err(SkipReason::NothingToRun) };
+        let (dir, cwd) = self.cwd(c.option("WORKING_DIRECTORY"))?;
+        let jar = path_from(self.root, jar, &dir);
+        let vm = self.words(c.option("VM_PARAMETERS"))?;
+        let program = self.words(c.option("PROGRAM_PARAMETERS"))?;
+        let mut params = BTreeMap::from([
+            ("jarPath".to_owned(), jar.clone()),
+            ("vmOptions".to_owned(), format_args(&vm)),
+            ("programArgs".to_owned(), format_args(&program)),
+        ]);
+        let mut command = "java".to_owned();
+        if c.flag("ALTERNATIVE_JRE_PATH_ENABLED")
+            && let Some(jre) = self.path(c.option("ALTERNATIVE_JRE_PATH"))?
+        {
+            // IDEA also stores SDK names here; those don't identify a JRE on this machine.
+            if jre.contains('/') || jre.contains('\\') {
+                let jre = jre.replace('\\', "/");
+                command = if jre.ends_with("/bin/java") || jre.to_ascii_lowercase().ends_with("/bin/java.exe") {
+                    jre.clone()
+                } else {
+                    format!("{}/bin/{}", jre.trim_end_matches('/'), if cfg!(windows) { "java.exe" } else { "java" })
+                };
+                params.insert("jre".to_owned(), jre);
+            } else {
+                ignored.push(format!("JRE {jre}"));
+            }
+        }
+        let mut args = vm;
+        args.extend(["-jar".to_owned(), jar]);
+        args.extend(program);
+        let mut rc = config(name, "jar-application", command, args, Some("java-debug"));
+        rc.cwd = cwd.map(Into::into);
+        rc.extras.params = params;
+        rc.extras.include_system_env = c.option("PASS_PARENT_ENVS") != Some("false");
+        self.envs(c, &mut rc);
+        Ok(rc)
+    }
 
     /// IDEA's Application and Spring Boot types, as the `application` / `spring-boot` forms run
     /// them: `java <vm options> -cp ${classpath} <main> [--spring.profiles.active=…] <arguments>`

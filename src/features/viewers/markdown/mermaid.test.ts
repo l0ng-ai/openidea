@@ -77,7 +77,7 @@ describe("mermaid in the markdown preview", () => {
     await renderMermaidIn(root).done;
     expect(m.loads).toBe(1);
     expect(m.initialize).toHaveBeenCalledWith(
-      expect.objectContaining({ startOnLoad: false, securityLevel: "strict", theme: "base" }),
+      expect.objectContaining({ startOnLoad: false, securityLevel: "strict", theme: "base", look: "classic" }),
     );
     const block = root.querySelector<HTMLElement>("[data-mermaid]")!;
     expect(block.getAttribute("data-mermaid-state")).toBe("ok");
@@ -279,6 +279,54 @@ describe("mermaid in the markdown preview", () => {
     } finally {
       off();
       delete root.dataset.pluginTheme;
+    }
+  });
+
+  it("lifts dark-theme shapes off the editor background and paints labels with the foreground", async () => {
+    const root = document.documentElement;
+    const previous = root.dataset.theme;
+    root.dataset.theme = "dark";
+    const values: Record<string, string> = {
+      "--bg-editor": "#191a1c",
+      "--bg-elev": "#212326",
+      "--bg-floating-toolbar": "#33353b",
+      "--bg-selected": "#2a4371",
+      "--border-strong": "#40434a",
+      "--fg-strong": "#dfe1e5",
+      "--fg": "#d1d3d9",
+      "--fg-secondary": "#9fa2a8",
+      "--accent": "#3871e1",
+      "--chart-series": "#e07a7c",
+      "--danger": "#f57e84",
+    };
+    const computed = vi
+      .spyOn(globalThis, "getComputedStyle")
+      .mockImplementation(
+        () => ({ getPropertyValue: (n: string) => values[n] ?? "" }) as unknown as CSSStyleDeclaration,
+      );
+    try {
+      await renderMermaidIn(preview(SEQ)).done;
+      expect(m.initialize).toHaveBeenCalledWith(
+        expect.objectContaining({
+          look: "classic",
+          themeVariables: expect.objectContaining({
+            darkMode: true,
+            useGradient: false,
+            background: "#191a1c",
+            mainBkg: "#33353b",
+            nodeBorder: "#dfe1e5",
+            primaryBorderColor: "#dfe1e5",
+            primaryColor: "#3871e1",
+            cScale0: "#3871e1",
+            lineColor: "#9fa2a8",
+            classText: "#dfe1e5",
+          }),
+        }),
+      );
+    } finally {
+      computed.mockRestore();
+      if (previous === undefined) delete root.dataset.theme;
+      else root.dataset.theme = previous;
     }
   });
 

@@ -323,10 +323,10 @@ export const intellijMacos: Record<string, string[]> = {
   "view.resetZoom": ["Ctrl+Alt+0"],
   "editor.increaseFontSize": ["Alt+Shift+."],
   "editor.decreaseFontSize": ["Alt+Shift+,"],
-  // Diff viewer (after Debug: F7 / ⇧F7 / F4 there win while a diff is focused)
+  // Diff viewer (after Debug: F7 / ⇧F7 / F4 / ⌘↓ there win while a diff is focused)
   "diff.nextDifference": ["F7"],
   "diff.prevDifference": ["Shift+F7"],
-  "diff.jumpToSource": ["F4"],
+  "diff.jumpToSource": ["F4", "Meta+Down"],
   "diff.applyLeftSide": ["Ctrl+Meta+Right"],
   "diff.applyRightSide": ["Ctrl+Meta+Left"],
   "diff.nextFile": ["Ctrl+Shift+Right"],
@@ -354,6 +354,12 @@ export const intellijMacos: Record<string, string[]> = {
   "http.runRequest": ["Meta+Enter"],
   "graphql.runQuery": ["Meta+Enter"],
   "http.runAll": [],
+  "db.toggleBooleanCell": ["Space"],
+  "db.setCellNull": ["Meta+Backspace"],
+  "db.setCellDefault": ["Meta+Shift+Backspace"],
+  "db.reformatValue": ["Meta+Alt+L"],
+  "db.openValueWindow": [],
+  "db.findInValue": ["Meta+F"],
   "db.execute": ["Meta+Enter"],
   // Table editor with pending changes (after `vcs.rollback`, so ⌥⌘Z reverts the table's edits there).
   "db.goToColumn": ["Meta+F12"],

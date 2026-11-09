@@ -1,5 +1,11 @@
 import { beforeEach, describe, expect, it, vi } from "vitest";
 
+const executeAction = vi.hoisted(() => vi.fn());
+vi.mock("@/platform/actions", async (importOriginal) => ({
+  ...(await importOriginal<typeof import("@/platform/actions")>()),
+  executeAction,
+}));
+
 const ipc = vi.hoisted(() => {
   const ok = <T>(data: T) => Promise.resolve({ status: "ok" as const, data });
   return {
@@ -18,7 +24,9 @@ vi.mock("@/platform/ipc", async (importOriginal) => {
   return { ...real, isTauri: () => true, commands: { ...real.commands, ...cmds } };
 });
 
-const notes = vi.hoisted(() => [] as Array<{ level: string; title: string; body?: unknown; actions?: unknown[] }>);
+const notes = vi.hoisted(
+  () => [] as Array<{ level: string; title: string; body?: unknown; actions?: { label: string; run: () => void }[] }>,
+);
 vi.mock("@/workbench/contributions", async (importOriginal) => {
   const real = await importOriginal<typeof import("@/workbench/contributions")>();
   return {
@@ -74,6 +82,7 @@ function session(id: number, hotCodeReplace: boolean): DebugSession {
 describe("HotSwap", () => {
   beforeEach(() => {
     notes.length = 0;
+    executeAction.mockClear();
     ipc.cancelRequest.mockClear();
     ipc.javaBuildWorkspace.mockClear();
     ipc.debugRedefineClasses.mockReset();
@@ -224,6 +233,110 @@ describe("HotSwap", () => {
     expect(hotSwapMessage(1, []).title).toBe("1 class reloaded");
     expect(hotSwapMessage(3, []).title).toBe("3 classes reloaded");
     expect(hotSwapMessage(3, ["boom"])).toMatchObject({ level: "error", body: "boom" });
+  });
+
+  it.each([0, 1, 3])("reports obsolete methods as a reload warning even with %s returned classes", (changed) => {
+    expect(hotSwapMessage(changed, ["JVM contains obsolete methods"])).toMatchObject({
+      level: "warning",
+      title: "Classes reloaded",
+      body: expect.stringContaining("Active frames keep running the old code"),
+    });
+    expect(hotSwapMessage(changed, ["JVM contains obsolete methods"], true).body).toContain(
+      "bottom frame cannot be reset",
+    );
+  });
+
+  it.each([
+    "Failed to redefine classes: add method not implemented",
+    "Failed to redefine classes: schema change not implemented",
+    "Failed to redefine classes: JVM contains obsolete methods",
+  ])("keeps a real failure even alongside obsolete methods: %s", (failure) => {
+    for (const errors of [[failure], ["JVM contains obsolete methods", failure]]) {
+      expect(hotSwapMessage(1, errors)).toMatchObject({ level: "error", title: "Hot Swap failed" });
+    }
+  });
+
+  function pausedFrames(names: string[], restartFrame = true): DebugSession {
+    return {
+      ...session(1, true),
+      status: "paused",
+      caps: { hotCodeReplace: true, restartFrame } as DebugCapabilities,
+      selectedThread: 1,
+      selectedFrame: 11,
+      frames: names.map((name, i) => ({
+        id: 11 + i,
+        name,
+        path: "/p/App.java",
+        line: 11,
+        column: 0,
+        presentationHint: null,
+      })),
+    };
+  }
+
+  it.each([
+    [true, ["App.main(String[])"], false],
+    [false, ["OrderBook.place()", "App.main(String[])"], false],
+    [true, ["OrderBook.place()", "Native.call()[native method]"], false],
+    [true, ["Native.call()[native method]", "App.main(String[])"], false],
+    [true, ["OrderBook.place()", "App.main(String[])"], true],
+  ])("offers Reset Frame only when supported and droppable (%s, %j)", async (supported, names, offered) => {
+    useDebug.setState({ sessions: { 1: pausedFrames(names, supported) } });
+    ipc.debugRedefineClasses.mockImplementationOnce(() =>
+      ipc.ok({ changedClasses: [], errorMessage: "JVM contains obsolete methods" }),
+    );
+    await reloadChangedClasses(false);
+    const note = notes.at(-1)!;
+    expect(note).toMatchObject({ level: "warning", title: "Classes reloaded" });
+    expect(note.actions).toHaveLength(offered ? 1 : 0);
+    if (offered) {
+      useDebug.setState({ active: 2 });
+      note.actions![0]!.run();
+      expect(executeAction).toHaveBeenCalledWith("debug.resetFrame");
+      expect(useDebug.getState().active).toBe(1);
+      expect(useDebug.getState().sessions[1]?.selectedFrame).toBe(11);
+    }
+  });
+
+  it("does not reset a stale frame from an earlier suspension", async () => {
+    const s = pausedFrames(["OrderBook.place()", "App.main(String[])"]);
+    useDebug.setState({ sessions: { 1: s } });
+    ipc.debugRedefineClasses.mockImplementationOnce(() =>
+      ipc.ok({ changedClasses: [], errorMessage: "JVM contains obsolete methods" }),
+    );
+    await reloadChangedClasses(false);
+    useDebug.setState({ sessions: { 1: { ...s, frames: [...s.frames] } } });
+    notes.at(-1)!.actions![0]!.run();
+    expect(executeAction).not.toHaveBeenCalled();
+  });
+
+  it("maps java-debug's obsolete-method ERROR event to the same warning", () => {
+    useDebug.setState({ sessions: { 1: pausedFrames(["App.main(String[])"]) } });
+    onHotCodeReplace(1 as DebugSessionId, {
+      kind: "hotCodeReplace",
+      changeType: "ERROR",
+      message: "JVM contains obsolete methods",
+    });
+    expect(notes.at(-1)).toMatchObject({
+      level: "warning",
+      title: "Classes reloaded",
+      body: expect.stringContaining("bottom frame cannot be reset"),
+      actions: [],
+    });
+  });
+
+  it("does not let the obsolete-method event replace the response's real failure", async () => {
+    ipc.debugRedefineClasses.mockImplementationOnce(async () => {
+      onHotCodeReplace(1 as DebugSessionId, {
+        kind: "hotCodeReplace",
+        changeType: "ERROR",
+        message: "JVM contains obsolete methods",
+      });
+      return ipc.ok({ changedClasses: [], errorMessage: "Failed to redefine classes: add method not implemented" });
+    });
+    await reloadChangedClasses(false);
+    expect(notes).toHaveLength(1);
+    expect(notes[0]).toMatchObject({ level: "error", title: "Hot Swap failed" });
   });
 
   it("translates the reload count with the sentence", async () => {

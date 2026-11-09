@@ -36,7 +36,7 @@ const MAIN: &str = "main";
 const PREFIX: &str = "project-";
 const CASCADE: f64 = 28.0;
 const SETTINGS_SIZE: (f64, f64) = (980.0, 720.0);
-const SETTINGS_MIN_SIZE: (f64, f64) = (640.0, 420.0);
+const SETTINGS_MIN_SIZE: (f64, f64) = (900.0, 700.0);
 const COMPARISON_SIZE: (f64, f64) = (1100.0, 720.0);
 const COMPARISON_MIN_SIZE: (f64, f64) = (640.0, 360.0);
 const DEPLOYMENT_SIZE: (f64, f64) = (1400.0, 900.0);
@@ -159,6 +159,9 @@ pub struct WindowsState {
     last_focused: Mutex<Option<String>>,
     /// Set by Quit while windows close one by one.
     quitting: AtomicBool,
+    /// The last closed project opted out of Welcome; macOS keeps its app in the Dock.
+    #[cfg(target_os = "macos")]
+    pub keep_alive: AtomicBool,
     /// Windows asked to close whose guards have not finished. AppKit closes a whole tab group at
     /// once, so its members ask together.
     close_requests: Mutex<Vec<String>>,
@@ -1601,10 +1604,12 @@ pub(super) fn place_over_parent(window: &WebviewWindow, parent: &WebviewWindow) 
     if (bounds.2, bounds.3) != (own.width, own.height) {
         // Sizes are set on the client area, and even an undecorated window has a resize frame.
         let (width, height) = ((bounds.2 - frame.0).max(1.0), (bounds.3 - frame.1).max(1.0));
-        window.set_min_size(Some(tauri::LogicalSize::new(
-            SETTINGS_MIN_SIZE.0.min(width),
-            SETTINGS_MIN_SIZE.1.min(height),
-        )))?;
+        let minimum = match auxiliary(window.label()) {
+            Some((AuxKind::Comparison, _)) => COMPARISON_MIN_SIZE,
+            Some((AuxKind::Deployment, _)) => DEPLOYMENT_MIN_SIZE,
+            _ => SETTINGS_MIN_SIZE,
+        };
+        window.set_min_size(Some(tauri::LogicalSize::new(minimum.0.min(width), minimum.1.min(height))))?;
         window.set_size(tauri::LogicalSize::new(width, height))?;
     }
     if maximized {

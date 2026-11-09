@@ -96,6 +96,7 @@ struct State {
     selected_paths: Vec<String>,
     notifications: Vec<Notification>,
     action_notifications: Vec<ActionNotification>,
+    project_notifications: Vec<(String, ActionNotification)>,
     logs: Vec<(LogLevel, String)>,
     status: BTreeMap<String, StatusItem>,
     window_status: BTreeMap<String, StatusItem>,
@@ -154,7 +155,7 @@ struct State {
     database_credentials: BTreeSet<(String, String)>,
     database_connections: Vec<(String, String)>,
     mcp_stdio: Option<Vec<String>>,
-    run_targets: BTreeMap<(String, String), crate::PluginRunTarget>,
+    run_targets: BTreeMap<(String, String), crate::PluginRunTargetWithOverrides>,
     run_configurations: BTreeMap<String, crate::PluginRunConfiguration>,
     configuration_runs: Vec<(String, String, Vec<String>, bool)>,
     log_tabs: Vec<MockLogTab>,
@@ -341,6 +342,11 @@ impl MockHost {
         self.state.borrow().action_notifications.clone()
     }
 
+    /// Notifications sent to a project (`Project::notify`), with its root, in publication order.
+    pub fn project_notifications(&self) -> Vec<(String, ActionNotification)> {
+        self.state.borrow().project_notifications.clone()
+    }
+
     pub fn logs(&self) -> Vec<(LogLevel, String)> {
         self.state.borrow().logs.clone()
     }
@@ -496,6 +502,26 @@ impl MockHost {
 
     /// Registered targets of this mock plugin, scoped by project root.
     pub fn run_targets(&self) -> BTreeMap<(String, String), crate::PluginRunTarget> {
+        self.run_targets_with_overrides()
+            .into_iter()
+            .map(|(key, t)| {
+                (
+                    key,
+                    crate::PluginRunTarget {
+                        id: t.id,
+                        name: t.name,
+                        program: t.program,
+                        args: t.args,
+                        workdir_args: t.workdir_args,
+                        container_root: t.container_root,
+                        commands: t.commands.into_iter().map(|c| (c.name, c.args)).collect(),
+                    },
+                )
+            })
+            .collect()
+    }
+    /// Registered targets including per-command working-directory arguments (API 1.5).
+    pub fn run_targets_with_overrides(&self) -> BTreeMap<(String, String), crate::PluginRunTargetWithOverrides> {
         self.state.borrow().run_targets.clone()
     }
     /// Configurations available to start_run in native tests.
@@ -773,6 +799,35 @@ pub mod current {
         body: &str,
         actions: &[NotificationAction],
     ) -> Result<(), Error> {
+        check_actions(actions)?;
+        with(|s| {
+            let notification = Notification { level, title: title.into(), body: body.into() };
+            s.notifications.push(notification.clone());
+            s.action_notifications.push(ActionNotification { notification, actions: actions.to_vec() });
+        });
+        Ok(())
+    }
+
+    /// The checks of `notify_with_actions`; a project no longer open is `NotFound`.
+    pub fn notify_project(
+        p: &ProjectRes,
+        level: NotificationLevel,
+        title: &str,
+        body: &str,
+        actions: &[NotificationAction],
+    ) -> Result<(), Error> {
+        let open = with(|s| s.root.iter().chain(&s.other_projects).any(|root| *root == p.root));
+        if !open {
+            return Err(Error::NotFound(format!("the project {} is not open", p.root)));
+        }
+        check_actions(actions)?;
+        let notification = Notification { level, title: title.into(), body: body.into() };
+        let sent = ActionNotification { notification, actions: actions.to_vec() };
+        with(|s| s.project_notifications.push((p.root.clone(), sent)));
+        Ok(())
+    }
+
+    fn check_actions(actions: &[NotificationAction]) -> Result<(), Error> {
         if actions.len() > 3 {
             return Err(Error::Invalid("a notification has at most 3 actions".into()));
         }
@@ -784,11 +839,6 @@ pub mod current {
                 return Err(Error::Invalid("an action argument is limited to 64 KiB".into()));
             }
         }
-        with(|s| {
-            let notification = Notification { level, title: title.into(), body: body.into() };
-            s.notifications.push(notification.clone());
-            s.action_notifications.push(ActionNotification { notification, actions: actions.to_vec() });
-        });
         Ok(())
     }
 
@@ -1851,15 +1901,24 @@ pub mod current {
     }
 
     pub fn register_run_target(project: &ProjectRes, target: &crate::PluginRunTarget) -> Result<(), Error> {
+        register_run_target_with_overrides(project, &target.clone().into())
+    }
+    pub fn register_run_target_with_overrides(
+        project: &ProjectRes,
+        target: &crate::PluginRunTargetWithOverrides,
+    ) -> Result<(), Error> {
         with(|s| {
             require(s, &format!("process:{}", target.program))?;
+            if s.restricted {
+                return Err(Error::Denied("project is not trusted".into()));
+            }
             if target.id.is_empty()
                 || target.name.is_empty()
                 || target
                     .args
                     .iter()
                     .chain(&target.workdir_args)
-                    .chain(target.commands.iter().flat_map(|(_, a)| a))
+                    .chain(target.commands.iter().flat_map(|c| c.args.iter().chain(c.workdir_args.iter().flatten())))
                     .any(|a| a.contains('\0'))
             {
                 return Err(Error::Invalid("invalid run target".into()));
@@ -2369,6 +2428,24 @@ mod tests {
         let too_many: [_; 4] = std::array::from_fn(|_| action.clone());
         assert!(host::notify_with_actions(NotificationLevel::Info, "Done", "", &too_many).is_err());
         assert_eq!(mock.notifications().len(), 1);
+    }
+
+    #[test]
+    fn project_notifications_need_an_open_project() {
+        let mock = MockHost::install();
+        mock.add_project("/other");
+        let action = NotificationAction::new("Disable", "disable").argument("/other");
+        let other = host::project_of("/other/a.txt").unwrap();
+        other.notify(NotificationLevel::Info, "Update", "", std::slice::from_ref(&action)).unwrap();
+        let sent = mock.project_notifications();
+        assert_eq!((sent[0].0.as_str(), &sent[0].1.actions), ("/other", &vec![action.clone()]));
+        assert!(mock.notifications().is_empty() && mock.notifications_with_actions().is_empty());
+        let too_many: [_; 4] = std::array::from_fn(|_| action.clone());
+        assert!(matches!(other.notify(NotificationLevel::Info, "Update", "", &too_many), Err(Error::Invalid(_))));
+        let project = host::project_of("/project/a.txt").unwrap();
+        mock.set_project_root(None);
+        assert!(matches!(project.notify(NotificationLevel::Info, "Update", "", &[]), Err(Error::NotFound(_))));
+        assert_eq!(mock.project_notifications().len(), 1);
     }
 
     #[test]

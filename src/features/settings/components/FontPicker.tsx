@@ -1,5 +1,5 @@
 import { useId, useRef, useState } from "react";
-import { Button, Input, Popup, T } from "@/ui";
+import { IconButton, Input, Popup, T } from "@/ui";
 import { useTx } from "@/platform/i18n";
 import { loadSystemFonts, useSystemFonts } from "@/platform/systemFonts";
 import styles from "./FontPicker.module.css";
@@ -100,13 +100,12 @@ export function FontPicker({
             }
           }}
         />
-        <Button
+        <IconButton
+          icon="refresh"
           disabled={disabled || status === "loading"}
           onClick={() => void loadSystemFonts(true)}
-          aria-label={tx("Refresh system fonts")}
-        >
-          <T>Refresh</T>
-        </Button>
+          title={tx("Refresh system fonts")}
+        />
       </span>
       <span id={`${listId}-status`} className={styles.hint} role="status">
         {tx(message)}

@@ -87,6 +87,26 @@ describe("LightEdit window", () => {
     dispose();
   });
 
+  it("updates workspace and policy context without replacing the project root", () => {
+    const dispose = activateWorkbench();
+    const project = { root: "/a", name: "A", trusted: true, isGit: false, settings: {} };
+    useProject.setState({ project, lightEdit: false, settings: { general: { openProjectIn: "new" } } } as never);
+    expect(evaluateWhen("projectLocal && !projectOpenAsk")).toBe(true);
+    expect(evaluateWhen("workspaceOpen")).toBe(false);
+    useProject.setState({ project: { ...project, workspace: { version: 1, name: "A", projects: ["/a", "/b"] } } });
+    expect(evaluateWhen("workspaceOpen")).toBe(true);
+    expect(evaluateWhen("workspaceContainer")).toBe(false);
+    expect(evaluateWhen("projectAttached")).toBe(true);
+    useProject.setState({ settings: { general: { openProjectIn: "attach" } } } as never);
+    expect(evaluateWhen("projectOpenAsk")).toBe(true);
+    useProject.setState({ project: { ...project, workspace: { version: 1, name: "A", projects: ["/b"] } } });
+    expect(evaluateWhen("workspaceContainer")).toBe(true);
+    expect(evaluateWhen("projectAttached")).toBe(false);
+    useProject.setState({ project });
+    expect(evaluateWhen("workspaceOpen")).toBe(false);
+    dispose();
+  });
+
   it("applies 'Open project in' when opening a project from it", async () => {
     useProject.setState({ settings: { general: { openProjectIn: "new" } } } as never);
     expect(await chooseProjectWindow("notes")).toBe("new");

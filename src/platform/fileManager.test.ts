@@ -1,7 +1,102 @@
-import { describe, expect, it } from "vitest";
-import { fileManagerPath } from "./fileManager";
+import { afterEach, describe, expect, it, vi } from "vitest";
+import { revealItemInDir } from "@tauri-apps/plugin-opener";
+import {
+  canRevealInFileManager,
+  fileManagerName,
+  fileManagerPath,
+  revealInFileManager,
+  revealInFileManagerLabel,
+  showInFileManagerLabel,
+} from "./fileManager";
+import { _resetI18nForTests, setLocale, tx } from "./i18n";
+import type { RemoteTarget } from "./ipc";
+import { usePlatform } from "./platformInfo";
+import { useRemote } from "./remote";
+
+vi.mock("@tauri-apps/plugin-opener", () => ({ revealItemInDir: vi.fn() }));
+vi.mock("./ipc", async (importOriginal) => ({
+  ...(await importOriginal<typeof import("./ipc")>()),
+  isTauri: () => true,
+}));
 
 const raw = String.raw;
+
+afterEach(() => _resetI18nForTests());
+
+describe("file manager labels", () => {
+  it.each([
+    ["macos", "Finder", "Reveal in Finder"],
+    ["windows", "Explorer", "Show in Explorer"],
+    ["linux", "Files", "Show in Files"],
+    ["web", "Files", "Show in Files"],
+  ])("names the %s file manager in submenus and project actions", (os, name, label) => {
+    expect(fileManagerName(os)).toBe(name);
+    expect(revealInFileManagerLabel(os)).toBe(label);
+  });
+
+  it("translates the project action on every desktop platform", async () => {
+    await setLocale("zh");
+    expect(tx(revealInFileManagerLabel("macos"))).toBe("在访达中显示");
+    expect(tx(revealInFileManagerLabel("windows"))).toBe("在资源管理器中显示");
+    expect(tx(revealInFileManagerLabel("linux"))).toBe("在文件管理器中显示");
+  });
+});
+
+describe("showInFileManagerLabel", () => {
+  it("names the file manager of the platform instead of always Finder", () => {
+    expect(showInFileManagerLabel("macos")).toBe("Show in Finder");
+    expect(showInFileManagerLabel("windows")).toBe("Show in Explorer");
+    expect(showInFileManagerLabel("linux")).toBe("Show in Files");
+    expect(showInFileManagerLabel("web")).toBe("Show in Files");
+  });
+
+  it("is translated into the platform's file manager, not Finder", async () => {
+    await setLocale("zh");
+    expect(tx(showInFileManagerLabel("macos"))).toBe("在访达中显示");
+    expect(tx(showInFileManagerLabel("windows"))).toBe("在资源管理器中显示");
+    expect(tx(showInFileManagerLabel("linux"))).toBe("在文件管理器中显示");
+  });
+});
+
+describe("revealInFileManager", () => {
+  const platform = usePlatform.getState();
+  afterEach(() => {
+    usePlatform.setState(platform);
+    useRemote.setState({ session: null });
+    vi.mocked(revealItemInDir).mockClear();
+  });
+
+  const ssh: RemoteTarget = { kind: "ssh", config: "box" };
+  const container: RemoteTarget = { kind: "devContainer", folder: "/Users/me/app", config: "" };
+  it.each<{ window: string; os: string; target: RemoteTarget | null; path: string; revealed: string | null }>([
+    { window: "a local window", os: "macos", target: null, path: "/Users/me/app/a.ts", revealed: "/Users/me/app/a.ts" },
+    {
+      window: "a WSL window on Windows",
+      os: "windows",
+      target: { kind: "wsl", distro: "Ubuntu" },
+      path: "/home/me/app/a.ts",
+      revealed: raw`\\wsl.localhost\Ubuntu\home\me\app\a.ts`,
+    },
+    { window: "an SSH window on macOS", os: "macos", target: ssh, path: "/srv/app/a.ts", revealed: null },
+    { window: "an SSH window on Windows", os: "windows", target: ssh, path: "/srv/app/a.ts", revealed: null },
+    { window: "a dev-container window", os: "macos", target: container, path: "/workspaces/app/a.ts", revealed: null },
+  ])("in $window passes only paths this desktop has to the OS", async ({ os, target, path, revealed }) => {
+    usePlatform.setState({ os });
+    useRemote.setState({ session: target && { target, root: "/p", host: "h", os: "linux", commands: [] } });
+    const shown = await revealInFileManager(path);
+    if (revealed) expect(revealItemInDir).toHaveBeenCalledExactlyOnceWith(revealed);
+    else expect(revealItemInDir).not.toHaveBeenCalled();
+    expect(shown).toBe(revealed !== null);
+    expect(canRevealInFileManager()).toBe(revealed !== null);
+  });
+
+  it("reveals this desktop's own files from a remote window", async () => {
+    usePlatform.setState({ os: "macos" });
+    useRemote.setState({ session: { target: ssh, root: "/p", host: "h", os: "linux", commands: [] } });
+    expect(await revealInFileManager("/Users/me/Library/Logs/openidea.log", null)).toBe(true);
+    expect(revealItemInDir).toHaveBeenCalledExactlyOnceWith("/Users/me/Library/Logs/openidea.log");
+  });
+});
 
 describe("fileManagerPath", () => {
   it("converts verbatim UNC paths to the form Windows Shell accepts", () => {
@@ -36,14 +131,8 @@ describe("fileManagerPath", () => {
   });
 
   it("translates a WSL distro path to a shell-compatible share on Windows", () => {
-    expect(
-      fileManagerPath("/home/me/my app", "windows", {
-        target: { kind: "wsl", distro: "Ubuntu-24.04" },
-        root: "/p",
-        host: "Ubuntu",
-        os: "linux",
-        commands: [],
-      }),
-    ).toBe(raw`\\wsl.localhost\Ubuntu-24.04\home\me\my app`);
+    expect(fileManagerPath("/home/me/my app", "windows", { kind: "wsl", distro: "Ubuntu-24.04" })).toBe(
+      raw`\\wsl.localhost\Ubuntu-24.04\home\me\my app`,
+    );
   });
 });

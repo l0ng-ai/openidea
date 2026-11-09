@@ -1,5 +1,8 @@
 import { beforeEach, describe, expect, it, vi } from "vitest";
 
+const projectTrustStatus = vi.fn();
+vi.mock("@/platform/projectTrust", () => ({ confirmProjectTrust: vi.fn(async () => {}) }));
+vi.mock("@/workbench/messages", () => ({ ask: vi.fn() }));
 const workspaceAttach = vi.fn();
 const workspaceUpdate = vi.fn();
 const projectCurrent = vi.fn();
@@ -35,6 +38,7 @@ vi.mock("@/platform/ipc", async (orig) => {
     isTauri: () => true,
     commands: {
       ...real.commands,
+      projectTrustStatus: (...a: unknown[]) => projectTrustStatus(...a),
       workspaceAttach: (...a: unknown[]) => workspaceAttach(...a),
       workspaceUpdate: (...a: unknown[]) => workspaceUpdate(...a),
       projectCurrent: () => projectCurrent(),
@@ -50,7 +54,7 @@ vi.mock("@/platform/ipc", async (orig) => {
 });
 vi.mock("@/platform/project", async (orig) => {
   const real = await orig<typeof import("@/platform/project")>();
-  return { ...real, openProject: (p: string) => openProject(p) };
+  return { ...real, confirmLeaveProject: vi.fn(real.confirmLeaveProject), openProject: (p: string) => openProject(p) };
 });
 const diffs: unknown[] = [];
 const openDiff = vi.fn(async (data: unknown) => void diffs.push(data));
@@ -66,9 +70,11 @@ const {
   openProjectWithPolicy,
   windowActions,
 } = await import("../windows");
-const { useProject, startupLaunchHandled } = await import("@/platform/project");
+const { useProject, startupLaunchHandled, confirmLeaveProject } = await import("@/platform/project");
 const { provideEditorService, provideNotificationService } = await import("@/workbench/contributions");
 const { isRemoteWindow, connectRemote } = await import("@/platform/remote");
+const { ask } = await import("@/workbench/messages");
+const { confirmProjectTrust } = await import("@/platform/projectTrust");
 const { IpcError } = await import("@/platform/ipc");
 provideNotificationService({ notify });
 
@@ -99,6 +105,12 @@ function deferred() {
 }
 
 beforeEach(() => {
+  vi.mocked(ask).mockReset().mockResolvedValue({ button: "attach", checked: false });
+  vi.mocked(confirmProjectTrust).mockReset().mockResolvedValue();
+  projectTrustStatus.mockReset().mockResolvedValue(ok({ trusted: true }));
+  workspaceAttach.mockReset();
+  workspaceUpdate.mockReset();
+  projectCurrent.mockReset();
   for (const f of [windowOpenProject, windowOpenFiles, windowTakeLaunch, wslResolve]) f.mockReset();
   windowTakeLaunch.mockResolvedValue(null);
   windowCompleteLaunch.mockReset().mockResolvedValue(ok(null));
@@ -106,6 +118,7 @@ beforeEach(() => {
   vi.mocked(connectRemote).mockClear();
   for (const f of [lightEditOpen, fsReadDir, openProject]) f.mockClear();
   cancelClose.mockClear();
+  vi.mocked(confirmLeaveProject).mockClear();
   notify.mockClear();
   listen.mockReset();
   openEditorFile.mockClear();
@@ -591,16 +604,53 @@ describe("launch", () => {
 });
 
 describe("Attach", () => {
-  it("switches a plain project to the automatic workspace in place", async () => {
+  it("attaches in place without reopening or asking to leave", async () => {
     useProject.setState({
       ...projectState("/p/a"),
       settings: { general: { openProjectIn: "attach" } },
     } as never);
-    workspaceAttach.mockResolvedValue(ok("/data/workspaces/a"));
-    await openProjectWithPolicy("/p/b");
+    const project = {
+      ...projectState("/p/a").project,
+      workspace: { version: 1, name: "a", projects: ["/p/a", "/p/b"] },
+    };
+    projectCurrent.mockResolvedValue(project);
+    workspaceAttach.mockResolvedValue(ok("/p/a"));
+    await openProjectWithPolicy("/p/b", ["/p/b/file.txt"]);
+    expect(confirmProjectTrust).toHaveBeenCalledWith("/p/b", "local");
     expect(workspaceAttach).toHaveBeenCalledWith("/p/b");
-    expect(openProject).toHaveBeenCalledWith("/data/workspaces/a");
+    expect(openProject).not.toHaveBeenCalled();
+    expect(cancelClose).not.toHaveBeenCalled();
+    expect(confirmLeaveProject).not.toHaveBeenCalled();
+    expect(useProject.getState().project).toEqual(project);
+    expect(opened).toEqual(["/p/b/file.txt (focus)"]);
+    expect(ask).toHaveBeenCalledTimes(1);
     expect(windowOpenProject).not.toHaveBeenCalled();
+  });
+  it("does not attach when trust is cancelled", async () => {
+    useProject.setState(projectState("/p/a"));
+    vi.mocked(confirmProjectTrust).mockRejectedValueOnce(new IpcError({ kind: "cancelled", message: "Cancelled" }));
+    await openProjectWithPolicy("/p/b");
+    expect(workspaceAttach).not.toHaveBeenCalled();
+    expect(openProject).not.toHaveBeenCalled();
+    expect(notify).not.toHaveBeenCalled();
+  });
+  it("does not attach a folder previewed in restricted mode", async () => {
+    useProject.setState(projectState("/p/a"));
+    projectTrustStatus.mockResolvedValueOnce(ok({ trusted: false }));
+    await openProjectWithPolicy("/p/b");
+    expect(workspaceAttach).not.toHaveBeenCalled();
+  });
+  it("explains how to attach a folder already decided as restricted", async () => {
+    useProject.setState(projectState("/p/a"));
+    projectTrustStatus.mockResolvedValueOnce(ok({ root: "/p/b", trusted: false, decided: true }));
+    await openProjectWithPolicy("/p/b");
+    expect(workspaceAttach).not.toHaveBeenCalled();
+    expect(notify).toHaveBeenCalledWith(
+      expect.objectContaining({
+        level: "warning",
+        body: "Cannot attach /p/b because it is restricted. Open it separately and choose Trust Project, then attach it again.",
+      }),
+    );
   });
   it("refreshes an existing workspace without reopening its editor session", async () => {
     const before = {
@@ -643,6 +693,25 @@ it("removes the first workspace member while retaining the workspace state root"
   expect(workspaceUpdate).toHaveBeenCalledWith("A", ["/b"]);
   expect(useProject.getState().project?.root).toBe("/workspace");
   expect(useProject.getState().project?.workspace?.projects).toEqual(["/b"]);
+});
+
+it("confirms detaching an attachment and never removes the primary", async () => {
+  const project = { ...projectState("/a").project, workspace: { version: 1, name: "A", projects: ["/a", "/b"] } };
+  useProject.setState({ project });
+  const action = windowActions().find((a) => a.id === "project.detach")!;
+  expect(action.title).toBe("Detach Project");
+  expect(action.when).toBe("projectAttached");
+  await action.run({ arg: "/a" } as never);
+  expect(ask).not.toHaveBeenCalled();
+  expect(workspaceUpdate).not.toHaveBeenCalled();
+  vi.mocked(ask).mockResolvedValueOnce({ button: "cancel", checked: false });
+  await action.run({ arg: "/b" } as never);
+  expect(workspaceUpdate).not.toHaveBeenCalled();
+  vi.mocked(ask).mockResolvedValueOnce({ button: "detach", checked: false });
+  workspaceUpdate.mockResolvedValueOnce(ok(projectState("/a").project));
+  await action.run({ arg: "/b" } as never);
+  expect(workspaceUpdate).toHaveBeenCalledWith("A", ["/a"]);
+  expect(useProject.getState().project?.workspace).toBeUndefined();
 });
 
 describe("explicit project-window requests", () => {

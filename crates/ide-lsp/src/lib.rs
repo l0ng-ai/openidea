@@ -7,6 +7,7 @@
 //! never `lsp-types`, so the IPC surface stays stable.
 
 mod angular;
+mod arduino;
 mod caps;
 mod clang_tidy;
 mod convert;
@@ -175,6 +176,20 @@ impl DocSnap {
 /// Receives the folders outside the project that servers want watched.
 pub type WatchRootsFn = dyn Fn(Vec<PathBuf>) + Send + Sync;
 
+pub type JdtlsSharedFn = dyn Fn() -> bool + Send + Sync;
+
+#[derive(Default)]
+struct JdtlsWorkspace {
+    initialized: bool,
+    shared: bool,
+    roots: Vec<PathBuf>,
+    transitioning: bool,
+}
+
+fn is_local_jdtls(config: &LanguageServerConfig) -> bool {
+    config.name == "jdtls" && config.target_key.is_none() && config.target.is_none()
+}
+
 pub struct LspManager {
     me: Weak<LspManager>,
     project_root: PathBuf,
@@ -195,6 +210,9 @@ pub struct LspManager {
     candidates_hook: RwLock<Option<Arc<CandidateFn>>>,
     excludes_hook: RwLock<Option<Arc<external_project::ExcludesFn>>>,
     watch_roots_hook: RwLock<Option<Arc<WatchRootsFn>>>,
+    jdtls_shared_hook: RwLock<Option<Arc<JdtlsSharedFn>>>,
+    jdtls_workspace: Mutex<JdtlsWorkspace>,
+    reconfigure_lock: tokio::sync::Mutex<()>,
     shutting_down: AtomicBool,
     execution_allowed: AtomicBool,
     java_usages_warned: AtomicBool,
@@ -402,6 +420,9 @@ impl LspManager {
             candidates_hook: RwLock::new(None),
             excludes_hook: RwLock::new(None),
             watch_roots_hook: RwLock::new(None),
+            jdtls_shared_hook: RwLock::new(None),
+            jdtls_workspace: Mutex::new(Default::default()),
+            reconfigure_lock: tokio::sync::Mutex::new(()),
             shutting_down: AtomicBool::new(false),
             execution_allowed: AtomicBool::new(true),
             java_usages_warned: AtomicBool::new(false),
@@ -416,7 +437,56 @@ impl LspManager {
     // ---- server lookup & lifecycle ----
 
     pub fn set_content_roots(&self, roots: Vec<PathBuf>) {
-        *self.content_roots.write() = roots;
+        let changed = {
+            let mut current = self.content_roots.write();
+            let changed = *current != roots;
+            *current = roots;
+            changed
+        };
+        if changed
+            && self.desired_jdtls_workspace().0
+            && let Some(me) = self.me.upgrade()
+        {
+            me.reconfigure_soon();
+        }
+    }
+
+    /// Shares JDT LS within this manager; callers reconfigure after the hook's value changes.
+    pub fn set_jdtls_shared_hook(&self, hook: Box<JdtlsSharedFn>) {
+        *self.jdtls_shared_hook.write() = Some(Arc::from(hook));
+    }
+
+    fn desired_jdtls_workspace(&self) -> (bool, Vec<PathBuf>) {
+        let shared = self.jdtls_shared_hook.read().as_ref().is_some_and(|hook| hook());
+        let mut roots = Vec::new();
+        if shared {
+            roots.push(self.project_root.clone());
+            for root in self.content_roots.read().iter() {
+                if root.is_absolute() && root.is_dir() && !roots.contains(root) {
+                    roots.push(root.clone());
+                }
+            }
+        }
+        (shared, roots)
+    }
+
+    fn jdtls_workspace_state(&self) -> parking_lot::MutexGuard<'_, JdtlsWorkspace> {
+        let mut state = self.jdtls_workspace.lock();
+        if !state.initialized {
+            (state.shared, state.roots) = self.desired_jdtls_workspace();
+            state.initialized = true;
+        }
+        state
+    }
+
+    fn server_workspace_roots(&self, server: &Server) -> Vec<PathBuf> {
+        if is_local_jdtls(&server.config) {
+            let state = self.jdtls_workspace_state();
+            if state.shared {
+                return state.roots.clone();
+            }
+        }
+        vec![server.root.clone()]
     }
 
     fn project_root_for(&self, path: &Path) -> PathBuf {
@@ -431,16 +501,23 @@ impl LspManager {
     }
 
     fn server_for(&self, cfg: &LanguageServerConfig, language: &LanguageId, path: &Path) -> Arc<Server> {
+        let shared = is_local_jdtls(cfg).then(|| self.jdtls_workspace_state());
         let mut servers = self.servers.lock();
-        let root = launch::find_root(&self.project_root_for(path), path, &cfg.root_markers).unwrap_or_else(|| {
-            // Outside the project (library sources, …): reuse a running instance.
-            servers
-                .iter()
-                .filter(|s| s.name == cfg.name && s.config.target_key == cfg.target_key)
-                .min_by_key(|s| s.root != self.project_root)
-                .map(|s| s.root.clone())
-                .unwrap_or_else(|| self.project_root.clone())
-        });
+        let project = self.project_root_for(path);
+        let sketch = (cfg.name == arduino::SERVER).then(|| arduino::sketch_root(&project, path)).flatten();
+        let root = if shared.as_ref().is_some_and(|state| state.shared) {
+            self.project_root.clone()
+        } else {
+            sketch.or_else(|| launch::find_root(&project, path, &cfg.root_markers)).unwrap_or_else(|| {
+                // Outside the project (library sources, …): reuse a running instance.
+                servers
+                    .iter()
+                    .filter(|s| s.name == cfg.name && s.config.target_key == cfg.target_key)
+                    .min_by_key(|s| s.root != self.project_root)
+                    .map(|s| s.root.clone())
+                    .unwrap_or_else(|| self.project_root.clone())
+            })
+        };
         if let Some(s) =
             servers.iter().find(|s| s.name == cfg.name && s.root == root && s.config.target_key == cfg.target_key)
         {
@@ -456,6 +533,9 @@ impl LspManager {
     /// only while all servers listed before it are missing. One that requires a
     /// root marker serves only files below one, and stands in for no other.
     fn servers_for(&self, language: &LanguageId, path: &Path) -> Vec<Arc<Server>> {
+        if let Some(servers) = self.arduino_servers(language, path) {
+            return servers;
+        }
         let mut out = Vec::new();
         let mut available_before = false;
         for sc in &self.language_servers(language) {
@@ -490,6 +570,7 @@ impl LspManager {
     /// to the open documents (and start them). Also attaches servers newly
     /// enabled in settings.
     fn attach_fallbacks(&self) {
+        let _gate = self.injections.gate.lock();
         let open: Vec<(DocId, LanguageId, PathBuf)> = self
             .docs
             .lock()
@@ -538,6 +619,27 @@ impl LspManager {
         if self.shutting_down.load(Ordering::Acquire) || !self.execution_allowed.load(Ordering::Acquire) {
             return;
         }
+        let workspace = is_local_jdtls(&server.config).then(|| self.jdtls_workspace_state());
+        if let Some(state) = &workspace {
+            if state.transitioning || !self.servers.lock().iter().any(|s| s.id == server.id) {
+                return;
+            }
+            let (shared, roots) = self.desired_jdtls_workspace();
+            if state.shared != shared || (shared && state.roots != roots) {
+                if let Some(me) = self.me.upgrade() {
+                    me.reconfigure_soon();
+                }
+                return;
+            }
+        }
+        let startup = if is_local_jdtls(&server.config) {
+            match server.startup_lock.clone().try_lock_owned() {
+                Ok(guard) => Some(guard),
+                Err(_) => return,
+            }
+        } else {
+            None
+        };
         // `begin_start` only claims Idle servers, so a claimed server is never a
         // live one. Its root is the process's working directory: starting with
         // one deleted from disk fails (`os error 267` on Windows). Such a
@@ -553,7 +655,10 @@ impl LspManager {
             return;
         }
         let server = server.clone();
-        self.runtime.spawn(async move { me.run_instance(server, generation).await });
+        self.runtime.spawn(async move {
+            let _startup = startup;
+            me.run_instance(server, generation).await;
+        });
     }
 
     async fn run_instance(self: Arc<Self>, server: Arc<Server>, generation: u64) {
@@ -561,6 +666,7 @@ impl LspManager {
         let handler = Arc::new(handler::ClientHandler::new(self.me.clone(), server.clone(), generation));
         let me = self.clone();
         let tail = server.clone();
+        let launch_cancel = cancel.clone();
         // The settings hook may touch the filesystem (e.g. scanning for JDKs); TCP
         // servers may take a while to start listening.
         let launched = tokio::task::spawn_blocking(move || {
@@ -568,17 +674,17 @@ impl LspManager {
                 return Err(LaunchError::Config("Project is in Restricted Mode".into()));
             }
             let mut cfg = me.configured(&tail);
-            if !me.execution_allowed.load(Ordering::Acquire) || cancel.is_cancelled() {
+            if !me.execution_allowed.load(Ordering::Acquire) || launch_cancel.is_cancelled() {
                 return Err(LaunchError::Config("Project is in Restricted Mode".into()));
             }
             tail.set_effective_config(generation, cfg.clone());
             let prepare = me.prepare_hook.read().clone();
             if cfg.target.is_none()
-                && !cancel.is_cancelled()
+                && !launch_cancel.is_cancelled()
                 && me.launcher.available(&cfg, &tail.root)
                 && let Some(prepare) = prepare
             {
-                prepare(&cfg, &tail.root, &cancel);
+                prepare(&cfg, &tail.root, &launch_cancel);
                 cfg = me.configured(&tail);
             }
             tail.set_effective_config(generation, cfg.clone());
@@ -588,7 +694,7 @@ impl LspManager {
                 let missing = cfg.target.is_none() && !me.launcher.available(&cfg, &root);
                 return Err(if missing { LaunchError::Missing } else { LaunchError::Config(message.clone()) });
             }
-            if !me.execution_allowed.load(Ordering::Acquire) || cancel.is_cancelled() {
+            if !me.execution_allowed.load(Ordering::Acquire) || launch_cancel.is_cancelled() {
                 return Err(LaunchError::Config("Project is in Restricted Mode".into()));
             }
             me.launcher.launch_resolved(
@@ -596,7 +702,7 @@ impl LspManager {
                 &root,
                 handler,
                 Box::new(move |line| tail.push_stderr(generation, line)),
-                &cancel,
+                &launch_cancel,
             )
         })
         .await
@@ -605,7 +711,7 @@ impl LspManager {
         let peer = match launched {
             Ok((peer, binary)) => {
                 if !server.set_resolved_binary(generation, binary) {
-                    peer.kill();
+                    Self::kill_peer(&server, &peer).await;
                     return;
                 }
                 peer
@@ -662,15 +768,24 @@ impl LspManager {
                 init["initializationOptions"]["triggerFiles"] = json!([uri::path_to_uri_string(&path)]);
             }
         }
-        let result = tokio::time::timeout(INITIALIZE_TIMEOUT, peer.request::<_, Value>("initialize", init, None))
-            .await
-            .unwrap_or(Err(RpcError::Timeout));
+        let result = tokio::select! {
+            biased;
+            () = cancel.cancelled() => {
+                Self::kill_peer(&server, &peer).await;
+                return;
+            }
+            result = tokio::time::timeout(INITIALIZE_TIMEOUT, peer.request::<_, Value>("initialize", init, Some(cancel.clone()))) => result.unwrap_or(Err(RpcError::Timeout)),
+        };
         let caps = match result {
             Ok(result) => {
                 if let Some(info) = result.get("serverInfo") {
                     tracing::info!("{} initialized: {info}", server.name);
                 }
-                let mut caps = ServerCaps::parse(result.get("capabilities").cloned().unwrap_or_else(|| json!({})));
+                let mut caps_val = result.get("capabilities").cloned().unwrap_or_else(|| json!({}));
+                if server.name == arduino::SERVER {
+                    arduino::sanitize_server_capabilities(&mut caps_val);
+                }
+                let mut caps = ServerCaps::parse(caps_val);
                 let cfg = server.effective_config();
                 caps.restrict(caps::Restriction::new(&server.name, &cfg.features, &cfg.code_action_kinds));
                 caps
@@ -681,7 +796,7 @@ impl LspManager {
                     // The server is exiting: let it, so the crash report has its exit code and last output.
                     let _ = tokio::time::timeout(Duration::from_secs(3), peer.closed()).await;
                 }
-                peer.kill();
+                Self::kill_peer(&server, &peer).await;
                 // Treated like a crash so transient failures retry with backoff.
                 self.spawn_supervisor(server, generation, peer);
                 return;
@@ -690,7 +805,7 @@ impl LspManager {
         let run =
             Running { generation, peer: peer.clone(), caps: Arc::new(RwLock::new(caps)), watchers: Default::default() };
         if !server.set_initializing(run.clone()) {
-            peer.kill();
+            Self::kill_peer(&server, &peer).await;
             return;
         }
         if let Err(e) = peer.notify("initialized", json!({})) {
@@ -709,24 +824,30 @@ impl LspManager {
 
         // Publish readiness and (re)open attached documents atomically w.r.t. did_change.
         let mut reopened = Vec::new();
-        {
+        let ready = {
             let mut docs = self.docs.lock();
             if !server.mark_ready(generation, run.clone()) {
-                drop(docs);
-                peer.kill();
-                return;
-            }
-            let open_close = run.caps.read().open_close;
-            for (id, d) in docs.iter_mut() {
-                let params = d.did_open_params();
-                for a in d.servers.iter_mut().filter(|a| a.server.id == server.id && a.opened_gen != Some(generation)) {
-                    if open_close && let Err(e) = peer.notify("textDocument/didOpen", params.clone()) {
-                        tracing::debug!("{}: didOpen: {e}", server.name);
+                false
+            } else {
+                let open_close = run.caps.read().open_close;
+                for (id, d) in docs.iter_mut() {
+                    let params = d.did_open_params();
+                    for a in
+                        d.servers.iter_mut().filter(|a| a.server.id == server.id && a.opened_gen != Some(generation))
+                    {
+                        if open_close && let Err(e) = peer.notify("textDocument/didOpen", params.clone()) {
+                            tracing::debug!("{}: didOpen: {e}", server.name);
+                        }
+                        a.opened_gen = Some(generation);
+                        reopened.push(*id);
                     }
-                    a.opened_gen = Some(generation);
-                    reopened.push(*id);
                 }
+                true
             }
+        };
+        if !ready {
+            Self::kill_peer(&server, &peer).await;
+            return;
         }
         for doc in reopened {
             self.schedule_pull(doc, Some(&server), Duration::ZERO);
@@ -767,7 +888,6 @@ impl LspManager {
 
     fn initialize_params(&self, server: &Server) -> Value {
         let root_uri = uri::path_to_uri(&server.root);
-        let name = server.root.file_name().map(|n| n.to_string_lossy().into_owned()).unwrap_or_else(|| "root".into());
         let cfg = server.effective_config();
         let mut init_options =
             cfg.initialization_options.as_ref().and_then(|v| serde_json::to_value(v).ok()).unwrap_or(Value::Null);
@@ -776,11 +896,24 @@ impl LspManager {
                 init_options = json!({});
             }
             init_options["settings"] = handler::all_settings(&cfg);
+            let shared = is_local_jdtls(&server.config) && self.jdtls_workspace_state().shared;
+            if shared {
+                init_options["workspaceFolders"] = json!(
+                    self.server_workspace_roots(server)
+                        .iter()
+                        .map(|root| uri::path_to_uri_string(root))
+                        .collect::<Vec<_>>()
+                );
+            }
             let triggers: Vec<_> = self
                 .docs
                 .lock()
                 .values()
-                .filter(|d| d.language.as_str() == "java" && d.path.starts_with(&server.root))
+                .filter(|d| {
+                    d.language.as_str() == "java"
+                        && d.path.is_absolute()
+                        && d.servers.iter().any(|a| a.server.id == server.id)
+                })
                 .map(|d| uri::path_to_uri_string(&d.path))
                 .collect();
             if !triggers.is_empty() && init_options.get("triggerFiles").is_none() {
@@ -794,10 +927,13 @@ impl LspManager {
             "locale": "en",
             "rootPath": server.root.to_string_lossy(),
             "rootUri": root_uri,
-            "workspaceFolders": [{ "uri": root_uri, "name": name }],
+            "workspaceFolders": self.workspace_folders(server),
             "capabilities": caps::client_capabilities(),
             "trace": "off",
         });
+        if server.name == arduino::SERVER {
+            arduino::configure_client_capabilities(&mut params["capabilities"]);
+        }
         if server.name == "gopls" {
             params["capabilities"]["experimental"]["interactiveResolve"] = json!({ "inputTypes": ["string"] });
         }
@@ -811,8 +947,16 @@ impl LspManager {
     }
 
     pub(crate) fn workspace_folders(&self, server: &Server) -> Value {
-        let name = server.root.file_name().map(|n| n.to_string_lossy().into_owned()).unwrap_or_else(|| "root".into());
-        json!([{ "uri": uri::path_to_uri(&server.root), "name": name }])
+        json!(
+            self.server_workspace_roots(server)
+                .iter()
+                .map(|root| {
+                    let name =
+                        root.file_name().map(|n| n.to_string_lossy().into_owned()).unwrap_or_else(|| "root".into());
+                    json!({"uri": uri::path_to_uri(root), "name": name})
+                })
+                .collect::<Vec<_>>()
+        )
     }
 
     pub(crate) fn sink(&self) -> &SharedSink {
@@ -862,6 +1006,7 @@ impl LspManager {
     /// Opens a read-only virtual document (`jdt://…`) on the server that
     /// returned its URI (`didOpen` only: it is never changed or saved).
     pub fn did_open_virtual(&self, doc: DocId, uri: &str, language: &LanguageId, version: u32, text: &str) {
+        let _gate = self.injections.gate.lock();
         if self.docs.lock().contains_key(&doc) {
             self.close_injections(doc);
             self.close_document(doc);
@@ -1428,6 +1573,7 @@ impl LspManager {
                     let locs = convert::goto_response(&self.conv(t.enc()), r);
                     let locs = library_sources(snap, pos, locs).await;
                     self.note_virtual(&t.server, locs.iter().map(|l| l.uri.as_deref()));
+                    self.note_arduino_sources(&t.server, &locs);
                     let locs = merge_locations(first, locs);
                     if !locs.is_empty() {
                         return Ok(locs);
@@ -1656,6 +1802,7 @@ impl LspManager {
                     .collect();
                 let locations: Vec<Location> = classified.iter().map(|r| r.location.clone()).collect();
                 self.note_virtual(&t.server, locations.iter().map(|l| l.uri.as_deref()));
+                self.note_arduino_sources(&t.server, &locations);
                 Ok(References { locations, classified, incomplete: widened.incomplete, libraries_skipped })
             }
             .await;
@@ -1723,6 +1870,7 @@ impl LspManager {
                         locs.retain(|l| !declarations.contains(l));
                     }
                     self.note_virtual(&t.server, locs.iter().map(|l| l.uri.as_deref()));
+                    self.note_arduino_sources(&t.server, &locs);
                     acc.locations.extend(locs);
                     acc.incomplete = acc.incomplete.or(w.incomplete);
                 }
@@ -1926,7 +2074,8 @@ impl LspManager {
                             .unwrap_or_default()
                             .into_iter()
                             .map(|a| {
-                                let mut action = convert::code_action(&conv, a, t.server.id);
+                                let mut action =
+                                    convert::code_action(&conv, &snap.path, a, t.server.id, &t.server.name);
                                 self.tag_injected_origin(doc, &mut action.data);
                                 self.tag_injected_command(doc, action.server, &mut action.command);
                                 action
@@ -2450,15 +2599,22 @@ impl LspManager {
                 .into_iter()
                 .flat_map(|(paths, change)| paths.iter().map(move |p| (p, change)));
             let watchers = run.watchers.read();
+            let roots = self.server_workspace_roots(&s);
             let changes: Vec<(&PathBuf, Change)> = if watchers.is_empty() {
+                // Dart watches the filesystem itself and rejects this unregistered notification.
+                if s.name == "dart" {
+                    continue;
+                }
                 let languages = s.languages();
                 all.filter(|(p, change)| {
-                    p.starts_with(&s.root) && languages.contains(&self.languages.detect(p, None)) && send(p, *change)
+                    roots.iter().any(|root| p.starts_with(root))
+                        && languages.contains(&self.languages.detect(p, None))
+                        && send(p, *change)
                 })
                 .collect()
             } else {
                 all.chain(excluded_dirs.iter().map(|p| (p, Change::Created)))
-                    .filter(|(p, change)| watchers.wants(&s.root, p, *change) && send(p, *change))
+                    .filter(|(p, change)| roots.iter().any(|root| watchers.wants(root, p, *change)) && send(p, *change))
                     .collect()
             };
             drop(watchers);
@@ -2796,6 +2952,64 @@ impl LspManager {
             .cloned()
     }
 
+    /// The binary archive behind a library document, never its displayed tab title.
+    pub fn library_archive(uri: &str) -> Option<PathBuf> {
+        if virtual_doc::scheme(uri) == "jar" {
+            return library_source::parse(uri).map(|e| e.jar);
+        }
+        virtual_doc::description(uri).filter(|p| p.ends_with(".jar") && Path::new(p).is_absolute()).map(PathBuf::from)
+    }
+
+    /// Open an attached archive at the declaration under the decompiled editor's caret.
+    pub async fn library_source_location(
+        &self,
+        uri: &str,
+        sources: PathBuf,
+        pos: Pos,
+        cancel: &CancellationToken,
+    ) -> IdeResult<Option<Location>> {
+        let previous = tokio::select! {
+            result = self.virtual_document(uri) => result?,
+            _ = cancel.cancelled() => return Err(IdeError::cancelled()),
+        };
+        let name = previous
+            .text
+            .lines()
+            .nth(pos.line as usize)
+            .and_then(|line| library_source::identifier_at(line, pos.col))
+            .map(str::to_owned);
+        let original = uri.to_owned();
+        let archive = sources.clone();
+        let found = tokio::task::spawn_blocking(move || {
+            library_source::source_in_archive(&original, &archive).map(|(uri, text)| {
+                let range = name.as_deref().map(|n| library_source::declaration_range(&text, n)).unwrap_or_default();
+                Location { path: uri.clone().into(), uri: Some(uri), range }
+            })
+        })
+        .await
+        .map_err(|e| IdeError::internal(e.to_string()))?;
+        if cancel.is_cancelled() {
+            return Err(IdeError::cancelled());
+        }
+        if found.is_some() {
+            if virtual_doc::scheme(uri) == "jdt" {
+                let result = self
+                    .jdtls_command_cancellable(
+                        &self.project_root,
+                        "java.project.updateSourceAttachment",
+                        vec![json!({ "classFileUri": uri, "attributes": { "sourceAttachmentPath": sources } })],
+                        cancel,
+                    )
+                    .await?;
+                if let Some(error) = result.get("errorMessage").and_then(Value::as_str).filter(|s| !s.is_empty()) {
+                    return Err(IdeError::unavailable(error));
+                }
+            }
+            self.virtual_docs.lock().remove(uri);
+        }
+        Ok(found)
+    }
+
     /// Contents of a virtual document, from the server that owns `uri`:
     /// `workspace/textDocumentContent` (LSP 3.18) when the server serves the
     /// scheme, jdtls' `java/classFileContents` for `jdt:` URIs. A `jar:` entry
@@ -3036,7 +3250,8 @@ impl LspManager {
             }
         }
         if allowed && !previous {
-            for server in self.servers.lock().iter() {
+            let servers = self.servers.lock().clone();
+            for server in &servers {
                 server.reset_for_restart();
                 self.ensure_started(server);
             }
@@ -3053,11 +3268,13 @@ impl LspManager {
     }
 
     pub async fn reconfigure(&self) {
+        let _reconfigure = self.reconfigure_lock.lock().await;
         if !self.execution_allowed.load(Ordering::Acquire) {
             let servers = self.servers.lock().clone();
             join_all(servers.iter().map(|s| self.stop_instance(s, true))).await;
             return;
         }
+        self.reconfigure_jdtls_workspace().await;
         self.stop_unlisted().await;
         let Some(me) = self.me.upgrade() else { return };
         let servers: Vec<Arc<Server>> = self.servers.lock().clone();
@@ -3120,6 +3337,39 @@ impl LspManager {
         self.injection_providers_changed();
     }
 
+    async fn reconfigure_jdtls_workspace(&self) {
+        let (shared, roots) = self.desired_jdtls_workspace();
+        let retired = {
+            // Opens attach atomically with root selection; no document can acquire an old
+            // instance between removing the registry entries and detaching its documents.
+            let _gate = self.injections.gate.lock();
+            let mut state = self.jdtls_workspace_state();
+            if state.shared == shared && (!shared || state.roots == roots) {
+                return;
+            }
+            state.transitioning = true;
+            state.shared = shared;
+            state.roots = roots;
+            let mut servers = self.servers.lock();
+            let retired: Vec<_> = servers.iter().filter(|s| is_local_jdtls(&s.config)).cloned().collect();
+            servers.retain(|s| !is_local_jdtls(&s.config));
+            for doc in self.docs.lock().values_mut() {
+                doc.servers.retain(|a| !is_local_jdtls(&a.server.config));
+            }
+            retired
+        };
+        for server in &retired {
+            self.stop_instance(server, true).await;
+        }
+        self.forget(&retired);
+        self.jdtls_workspace.lock().transitioning = false;
+        self.attach_fallbacks();
+        let pending: Vec<_> = self.servers.lock().iter().filter(|s| is_local_jdtls(&s.config)).cloned().collect();
+        for server in pending {
+            self.ensure_started(&server);
+        }
+    }
+
     /// Detaches fallbacks shadowed by enabled servers and instances whose target
     /// no longer matches the document's language. Stop them once unused.
     async fn detach_shadowed_servers(&self) {
@@ -3137,6 +3387,7 @@ impl LspManager {
                 .filter(|a| {
                     !wanted.iter().any(|w| w.id == a.server.id)
                         && (configs.iter().any(|c| c.fallback && c.name == a.server.name)
+                            || (a.server.name == "clangd" && wanted.iter().any(|s| s.name == arduino::SERVER))
                             || !configs
                                 .iter()
                                 .any(|c| c.name == a.server.name && c.target_key == a.server.config.target_key))
@@ -3255,6 +3506,7 @@ impl LspManager {
     }
 
     pub async fn restart(&self, server: ide_core::ServerId) -> IdeResult<()> {
+        let _reconfigure = self.reconfigure_lock.lock().await;
         let s = self
             .servers
             .lock()
@@ -3282,7 +3534,12 @@ impl LspManager {
 
     /// Gracefully stops the current instance (`shutdown` + `exit`, then kill).
     async fn stop_instance(&self, server: &Arc<Server>, final_stop: bool) {
-        let Some(run) = server.begin_stop(&self.sink, final_stop) else { return };
+        let Some(run) = server.begin_stop(&self.sink, final_stop) else {
+            if is_local_jdtls(&server.config) {
+                let _startup = server.startup_lock.lock().await;
+            }
+            return;
+        };
         let peer = run.peer.clone();
         // A server we connected to without starting it (an open Godot editor) is not
         // ours to shut down: only the connection closes.
@@ -3302,13 +3559,24 @@ impl LspManager {
             peer.kill();
             let _ = tokio::time::timeout(Duration::from_secs(2), peer.closed()).await;
         }
-        peer.kill();
+        Self::kill_peer(server, &peer).await;
+        if is_local_jdtls(&server.config) {
+            let _startup = server.startup_lock.lock().await;
+        }
         server.end_stop(run.generation, &self.sink);
         self.file_watch_roots_changed();
     }
 
+    async fn kill_peer(server: &Server, peer: &ide_jsonrpc::Peer) {
+        peer.kill();
+        if is_local_jdtls(&server.config) && peer.pid().is_some() {
+            peer.exited().await;
+        }
+    }
+
     pub async fn shutdown_all(&self) {
         self.shutting_down.store(true, Ordering::Release);
+        let _reconfigure = self.reconfigure_lock.lock().await;
         let servers: Vec<Arc<Server>> = self.servers.lock().clone();
         join_all(servers.iter().map(|s| self.stop_instance(s, true))).await;
     }

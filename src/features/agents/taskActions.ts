@@ -11,6 +11,7 @@ import {
   deleteTask,
   dockTask,
   forkTask,
+  loadEntries,
   openTask,
   openTaskInEditorLocation,
   renameTask,
@@ -72,6 +73,17 @@ async function confirmDelete(tasks: AgentTask[]) {
 }
 
 export const taskActions: Action[] = [
+  {
+    id: "agents.retryConversation",
+    title: "Retry Loading Conversation",
+    category: "Agents",
+    hidden: true,
+    run: ({ arg }) => {
+      const request = arg as { task?: unknown; subagent?: unknown } | null;
+      if (typeof request?.task === "string" && (request.subagent == null || typeof request.subagent === "string"))
+        return loadEntries(request.task, request.subagent ?? null);
+    },
+  },
   {
     id: "agents.useToolWindow",
     title: "Chat in Tool Window",

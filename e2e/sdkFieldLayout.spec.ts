@@ -66,19 +66,22 @@ test("Python interpreter controls stay separate and visible in a narrow settings
   await expect(interpreter).toBeVisible();
   for (const width of [1000, 800, 520]) {
     await page.setViewportSize({ width, height: 760 });
-    const combo = await interpreter.boundingBox();
-    const button = await add.boundingBox();
-    const row = await add.evaluate((el) => {
-      const r = el.parentElement!.getBoundingClientRect();
-      return { left: r.left, right: r.right };
-    });
-    expect(combo!.width).toBeGreaterThan(20);
-    expect(combo!.x).toBeGreaterThanOrEqual(row.left - 1);
-    expect(combo!.x + combo!.width).toBeLessThanOrEqual(row.right + 1);
-    expect(button!.x + button!.width).toBeLessThanOrEqual(row.right + 1);
-    const overlap =
-      Math.min(combo!.x + combo!.width, button!.x + button!.width) > Math.max(combo!.x, button!.x) &&
-      Math.min(combo!.y + combo!.height, button!.y + button!.height) > Math.max(combo!.y, button!.y);
-    expect(overlap).toBe(false);
+    await expect
+      .poll(() =>
+        add.evaluate((el) => {
+          const row = el.parentElement!;
+          const bounds = row.getBoundingClientRect();
+          const combo = row.querySelector('[aria-label="Python interpreter"]')!.getBoundingClientRect();
+          const button = el.getBoundingClientRect();
+          return {
+            comboFits: combo.width > 20 && combo.left >= bounds.left - 1 && combo.right <= bounds.right + 1,
+            buttonFits: button.left >= bounds.left - 1 && button.right <= bounds.right + 1,
+            overlaps:
+              Math.min(combo.right, button.right) > Math.max(combo.left, button.left) &&
+              Math.min(combo.bottom, button.bottom) > Math.max(combo.top, button.top),
+          };
+        }),
+      )
+      .toEqual({ comboFits: true, buttonFits: true, overlaps: false });
   }
 });

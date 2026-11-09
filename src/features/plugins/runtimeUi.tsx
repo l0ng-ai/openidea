@@ -4,6 +4,7 @@
  * workbench events it subscribed to (`events.subscribe`), reported in
  * batches.
  */
+import { writeClipboardText } from "@/platform/clipboard";
 import { providePluginTestParser, providePluginTestSelector } from "@/workbench/contributions";
 import {
   contentTabData,
@@ -589,7 +590,7 @@ export function handleRuntimeEvent(e: PluginEvent): boolean {
       void maybeEditorService()?.openFile(e.path, { selection: { line: e.line, col: e.column }, focus: true });
       return true;
     case "copyToClipboard":
-      void navigator.clipboard?.writeText(e.text);
+      void writeClipboardText(e.text);
       return true;
     case "openProject":
       void executeAction("file.openProjectPath", { path: e.path, newWindow: e.newWindow });

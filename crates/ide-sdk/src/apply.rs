@@ -3,7 +3,8 @@
 
 use crate::discover::{project_venv_python, workspace_tsdk};
 use crate::exec::{path_with, search_path, which};
-use crate::{angular, godot, pinned, vue};
+use crate::npm::{has_ts_api, own_typescript};
+use crate::{angular, astro, godot, pinned, vue};
 use crate::{bin_dir, exe, venv_of};
 use ide_core::settings::{InspectionLevel, InspectionSettings, LanguageServerSettings, Settings};
 use ide_core::version_managers::Tool;
@@ -128,6 +129,34 @@ pub(crate) fn rust_bin(root: &Path, s: &Settings) -> Option<(PathBuf, Option<Str
 pub(crate) fn goroot(root: &Path, s: &Settings) -> Option<PathBuf> {
     setting_path(root, &s.languages.go.goroot)
         .or_else(|| pinned::pinned_install(root, Tool::Go).and_then(|(dir, _)| pinned::goroot_in_install(&dir)))
+}
+
+/// Runtime choices for package-manager based IDE tool installs.
+#[derive(Default)]
+pub struct ToolInstallEnvironment {
+    pub commands: std::collections::BTreeMap<String, PathBuf>,
+    pub env: std::collections::BTreeMap<String, String>,
+}
+
+/// Uses the same configured / project-pinned SDKs as Run and language servers.
+/// Build tags and target OS settings intentionally do not apply to host tools.
+pub fn tool_install_environment(root: &Path, s: &Settings) -> ToolInstallEnvironment {
+    let mut runtime = ToolInstallEnvironment::default();
+    if let Some(go) = goroot(root, s) {
+        runtime.commands.insert("go".into(), go.join("bin").join(exe("go")));
+        runtime.env.insert("GOROOT".into(), go.to_string_lossy().into_owned());
+    }
+    if let Some(node) = node_dir(root, s) {
+        let node = setting_path(root, &s.languages.node.interpreter).unwrap_or_else(|| node.join(exe("node")));
+        runtime.commands.insert("node".into(), node);
+    }
+    if let Some(ruby) = ruby_interpreter(root, s) {
+        runtime.commands.insert("ruby".into(), ruby);
+    }
+    if let Some(python) = python_interpreter(root, s) {
+        runtime.commands.insert("python".into(), python);
+    }
+    runtime
 }
 
 /// A JDK setting: a JDK home, its `bin` or its `bin/java`.
@@ -1019,6 +1048,12 @@ pub fn configure_server(cfg: &mut LanguageServerConfig, root: &Path, server_root
     if name == angular::SERVER {
         configure_angular(cfg, root, server_root, s);
     }
+    if name == astro::SERVER {
+        astro::configure(cfg, root, server_root, s);
+    }
+    if name == crate::arduino::SERVER {
+        crate::arduino::configure(cfg, root, server_root, s);
+    }
 }
 
 /// The servers `language` uses after Settings › Language Servers: the
@@ -1106,7 +1141,13 @@ pub fn server_protocol_overrides(cfg: &mut LanguageServerConfig, s: &Settings) {
         cfg.code_action_kinds = kinds.clone();
     }
     if let Some(options) = &ls.initialization_options {
+        let astro_tsdk = (cfg.name == astro::SERVER)
+            .then(|| cfg.initialization_options.as_ref()?.get("typescript")?.get("tsdk")?.as_str().map(str::to_owned))
+            .flatten();
         merge_init_options(cfg, options.clone());
+        if let Some(tsdk) = astro_tsdk {
+            merge_init_options(cfg, json!({ "typescript": { "tsdk": tsdk } }));
+        }
     }
     if let Some(settings) = &ls.settings {
         let mut current = cfg.settings.take().filter(Value::is_object).unwrap_or_else(|| json!({}));
@@ -1119,10 +1160,10 @@ pub fn server_protocol_overrides(cfg: &mut LanguageServerConfig, s: &Settings) {
 /// `require('typescript')`): the selected version, else its own, else the
 /// project's — whichever still has the language-service API.
 fn configure_vue_typescript(cfg: &mut LanguageServerConfig, root: &Path, server_root: &Path, s: &Settings) {
-    let selected = tsdk(server_root, s).or_else(|| tsdk(root, s)).filter(|l| vue::has_ts_api(l));
+    let selected = tsdk(server_root, s).or_else(|| tsdk(root, s)).filter(|l| has_ts_api(l));
     let package = vue::server_package(&cfg.command, &search_path());
-    let own = package.as_deref().and_then(vue::own_typescript);
-    let workspace = || workspace_tsdk(server_root).or_else(|| workspace_tsdk(root)).filter(|l| vue::has_ts_api(l));
+    let own = package.as_deref().and_then(own_typescript);
+    let workspace = || workspace_tsdk(server_root).or_else(|| workspace_tsdk(root)).filter(|l| has_ts_api(l));
     let lib = match selected {
         Some(lib) => Some(lib),
         None if own.is_some() => None,

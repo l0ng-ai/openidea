@@ -301,6 +301,7 @@ pub fn completion_item(conv: &Conv, path: &Path, item: lsp::CompletionItem, serv
     let mut out = CompletionItem {
         label: item.label.clone(),
         label_detail: None,
+        label_description: None,
         detail: None,
         kind: None,
         documentation: None,
@@ -348,6 +349,9 @@ pub fn overlay_completion(conv: &Conv, path: &Path, out: &mut CompletionItem, it
     let description = label_details.as_ref().and_then(|d| d.description.clone());
     if let Some(d) = label_details.and_then(|d| d.detail) {
         out.label_detail = Some(d);
+    }
+    if let Some(d) = description.clone() {
+        out.label_description = Some(d);
     }
     if let Some(d) = detail.or(description) {
         out.detail = Some(d);
@@ -425,10 +429,12 @@ pub fn lsp_completion_item(text: &DocText, enc: Encoding, item: &CompletionItem)
     });
     lsp::CompletionItem {
         label: item.label.clone(),
-        label_details: item
-            .label_detail
-            .clone()
-            .map(|detail| lsp::CompletionItemLabelDetails { detail: Some(detail), description: None }),
+        label_details: (item.label_detail.is_some() || item.label_description.is_some()).then(|| {
+            lsp::CompletionItemLabelDetails {
+                detail: item.label_detail.clone(),
+                description: item.label_description.clone(),
+            }
+        }),
         kind: item.kind.map(lsp_completion_kind),
         detail: item.detail.clone(),
         documentation: item.documentation.as_ref().map(lsp_documentation),
@@ -562,10 +568,18 @@ pub fn lsp_command(c: &Command) -> lsp::Command {
     }
 }
 
-pub fn code_action(conv: &Conv, a: lsp::CodeActionOrCommand, server: ServerId) -> CodeAction {
+pub fn code_action(
+    conv: &Conv,
+    path: &Path,
+    a: lsp::CodeActionOrCommand,
+    server: ServerId,
+    server_name: &str,
+) -> CodeAction {
     match a {
         lsp::CodeActionOrCommand::Command(c) => CodeAction {
             title: c.title.clone(),
+            diagnostics: Vec::new(),
+            original_diagnostics: None,
             kind: None,
             is_preferred: false,
             disabled_reason: None,
@@ -576,6 +590,13 @@ pub fn code_action(conv: &Conv, a: lsp::CodeActionOrCommand, server: ServerId) -
         },
         lsp::CodeActionOrCommand::CodeAction(a) => CodeAction {
             title: a.title,
+            original_diagnostics: a.diagnostics.as_ref().and_then(|d| serde_json::to_string(d).ok()),
+            diagnostics: a
+                .diagnostics
+                .unwrap_or_default()
+                .into_iter()
+                .map(|d| diagnostic(conv, path, d, server_name))
+                .collect(),
             kind: a.kind.map(|k| k.as_str().to_owned()),
             is_preferred: a.is_preferred.unwrap_or(false),
             disabled_reason: a.disabled.map(|d| d.reason),
@@ -591,7 +612,7 @@ pub fn lsp_code_action(a: &CodeAction) -> lsp::CodeAction {
     lsp::CodeAction {
         title: a.title.clone(),
         kind: a.kind.clone().map(lsp::CodeActionKind::from),
-        diagnostics: None,
+        diagnostics: a.original_diagnostics.as_deref().and_then(|d| serde_json::from_str(d).ok()),
         edit: None,
         command: a.command.as_ref().map(lsp_command),
         is_preferred: a.is_preferred.then_some(true),
@@ -1068,6 +1089,66 @@ mod tests {
     use serde_json::json;
 
     #[test]
+    fn code_action_diagnostics_use_ide_coordinates_and_round_trip_for_resolve() {
+        let path = Path::new("/go.mod");
+        let conv = Conv::new(Encoding::Utf8, |_| Some(Arc::new(DocText::new("😀 dependency"))));
+        let raw: lsp::Diagnostic = serde_json::from_value(json!({
+            "range": { "start": { "line": 0, "character": 5 }, "end": { "line": 0, "character": 15 } },
+            "message": "github.com/sergi/go-diff is not used in this module",
+            "severity": 2,
+            "code": 123,
+            "source": "go mod tidy",
+            "data": { "fix": "remove" }
+        }))
+        .unwrap();
+        let incoming = lsp::CodeAction {
+            title: "Remove dependency: github.com/sergi/go-diff".into(),
+            diagnostics: Some(vec![raw.clone()]),
+            ..Default::default()
+        };
+        let action = code_action(&conv, path, lsp::CodeActionOrCommand::CodeAction(incoming), ServerId(1), "gopls");
+        assert_eq!(action.diagnostics, vec![diagnostic(&conv, path, raw.clone(), "gopls")]);
+        assert_eq!(action.diagnostics[0].range, Range::new(Pos::new(0, 3), Pos::new(0, 13)));
+        assert_eq!(action.diagnostics[0].code.as_deref(), Some("123"));
+        let action: CodeAction = serde_json::from_value(serde_json::to_value(action).unwrap()).unwrap();
+        assert_eq!(lsp_code_action(&action).diagnostics, Some(vec![raw.clone()]));
+        let resolved = merge_code_action(&conv, action, lsp::CodeAction::default());
+        assert_eq!(lsp_code_action(&resolved).diagnostics, Some(vec![raw]));
+        assert_eq!(resolved.diagnostics.len(), 1);
+    }
+
+    #[test]
+    fn code_actions_without_diagnostics_keep_them_absent_for_resolve() {
+        let conv = Conv::utf16();
+        for incoming in [
+            lsp::CodeActionOrCommand::CodeAction(lsp::CodeAction { title: "Fix".into(), ..Default::default() }),
+            lsp::CodeActionOrCommand::Command(lsp::Command {
+                title: "Fix".into(),
+                command: "fix".into(),
+                arguments: None,
+            }),
+        ] {
+            let action = code_action(&conv, Path::new("/a"), incoming, ServerId(1), "srv");
+            assert!(action.diagnostics.is_empty());
+            assert!(lsp_code_action(&action).diagnostics.is_none());
+        }
+        let raw = lsp::Diagnostic::new_simple(lsp::Range::default(), "problem".into());
+        let expected = diagnostic(&conv, Path::new("/a"), raw.clone(), "srv");
+        let action = code_action(
+            &conv,
+            Path::new("/a"),
+            lsp::CodeActionOrCommand::CodeAction(lsp::CodeAction {
+                diagnostics: Some(vec![raw]),
+                ..Default::default()
+            }),
+            ServerId(1),
+            "srv",
+        );
+        assert_eq!(action.diagnostics, vec![expected]);
+        assert_eq!(action.diagnostics[0].source.as_deref(), Some("srv"));
+    }
+
+    #[test]
     fn merged_rename_edits_keep_the_first_servers_ones() {
         let edit = |l: u32, c: u32, text: &str| TextEdit {
             range: Range::new(Pos::new(l, c), Pos::new(l, c + 5)),
@@ -1209,7 +1290,8 @@ mod tests {
         assert_eq!(a.insert_text, "println!($0)");
         assert!(a.is_snippet);
         assert_eq!(a.label_detail.as_deref(), Some("(…)"));
-        assert_eq!(a.detail.as_deref(), Some("std"));
+        assert_eq!(a.label_description.as_deref(), Some("std"));
+        assert_eq!(a.detail.as_deref(), Some("std"), "no `detail` from the server: the description stands in");
         assert_eq!(a.kind, Some(CompletionKind::Function));
         assert_eq!(a.replace_range, Some(Range::new(p(0, 4), p(0, 6))));
         assert_eq!(a.replace_range_tab, Some(Range::new(p(0, 4), p(0, 9))));
@@ -1225,6 +1307,9 @@ mod tests {
         let back = lsp_completion_item(&text, Encoding::Utf16, &a);
         assert_eq!(back.data, Some(json!({"k": 1})));
         assert!(matches!(back.text_edit, Some(lsp::CompletionTextEdit::InsertAndReplace(_))));
+        let details = back.label_details.expect("label details survive the resolve round trip");
+        assert_eq!(details.detail.as_deref(), Some("(…)"));
+        assert_eq!(details.description.as_deref(), Some("std"));
     }
 
     #[test]
@@ -1255,6 +1340,10 @@ mod tests {
             let item = completion_item(&Conv::utf16(), Path::new("/Main.java"), items[0].clone(), ServerId(1));
             assert_eq!(item.replace_range, Some(Range::new(p(2, 19), p(2, end))));
             assert_eq!(item.replace_range_tab, None);
+            // The list shows `print (Object obj)` and `void`; the long signature is only for the docs panel.
+            assert_eq!(item.label_detail.as_deref(), Some("(Object obj)"));
+            assert_eq!(item.label_description.as_deref(), Some("void"));
+            assert_eq!(item.detail.as_deref(), Some("PrintStream.print(Object obj) : void"));
             assert_eq!(item.filter_text.as_deref(), Some("print(Object obj) : void"));
             assert_eq!(item.insert_text, "print(${0});");
             assert!(item.is_snippet);

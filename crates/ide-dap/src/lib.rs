@@ -1130,6 +1130,9 @@ impl DebugManager {
 
     /// Ends a session: `terminate` (when asked and supported) → `disconnect` → kill.
     pub(crate) async fn shutdown(&self, s: &Arc<Session>, terminate: bool) {
+        if terminate {
+            crate::session::remember_debuggee(s).await;
+        }
         // java-debug runs the program itself and pipes its stdout over DAP. A `disconnect`
         // ends that DAP session, so every line the program writes while shutting down is lost.
         // Ask the program to exit ourselves and keep the adapter attached until it has drained
@@ -1157,7 +1160,7 @@ impl DebugManager {
         if own_terminate && !graceful {
             // Signal before anything else: waiting on a request the adapter may not answer
             // would delay the shutdown the console is supposed to show.
-            crate::session::signal_debuggee(s, false);
+            crate::session::signal_debuggee(s, false).await;
         }
         if graceful {
             // java-debug sends `terminated` only after it has drained the program's console

@@ -368,8 +368,9 @@ pub async fn vcs_rename_branch(
     repo: Option<PathBuf>,
     from: String,
     to: String,
+    unset_upstream: bool,
 ) -> IdeResult<()> {
-    ide_host::ops::vcs::vcs_rename_branch(&state.host, window.label(), repo, from, to).await
+    ide_host::ops::vcs::vcs_rename_branch(&state.host, window.label(), repo, from, to, unset_upstream).await
 }
 
 #[tauri::command]

@@ -3,6 +3,7 @@
  * grouped by Compose project, images, volumes, networks) and one per registry;
  * log / inspect of the selection in the detail pane.
  */
+import { writeClipboardText } from "@/platform/clipboard";
 import { copySelectionOnKeyDown } from "@/ui/selectableText";
 import { useEffect, useMemo, useState } from "react";
 import clsx from "clsx";
@@ -359,7 +360,7 @@ function InspectView({ text, error }: { text: string | null; error: string | nul
           size="small"
           title="Copy"
           disabled={!text}
-          onClick={() => text && void navigator.clipboard?.writeText(text)}
+          onClick={() => text && void writeClipboardText(text)}
         />
       </div>
       <pre

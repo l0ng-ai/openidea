@@ -104,6 +104,8 @@ export const eclipseMacos: Record<string, string[]> = {
   "code.quickDocumentation": ["F2"],
   "db.quickDoc": ["F2"],
   "localHistory.recentChanges": [],
+  "db.reformatValue": ["Shift+Meta+F"],
+  "db.findInValue": [],
   "code.reformat": ["Shift+Meta+F"],
   "project.reformatCode": ["Shift+Meta+F"],
   "code.unwrap": [],

@@ -584,7 +584,12 @@ export interface RefreshPlan {
 }
 
 export function planRefresh(
-  event: { created: readonly string[]; modified: readonly string[]; removed: readonly string[] },
+  event: {
+    created: readonly string[];
+    modified: readonly string[];
+    removed: readonly string[];
+    ignoreRules?: readonly string[];
+  },
   loaded: ReadonlySet<string>,
 ): RefreshPlan {
   const reload = new Set<string>();
@@ -605,6 +610,7 @@ export function planRefresh(
       drop.delete(p);
     }
   }
+  for (const dir of loadedList) if (event.ignoreRules?.some((root) => isSameOrInside(dir, root))) reload.add(dir);
   for (const d of drop) reload.delete(d);
   // A reloaded parent may report the folder as present again; keep its descendants then.
   return { reload: [...reload], drop: [...drop] };

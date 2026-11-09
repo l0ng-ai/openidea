@@ -4,7 +4,7 @@
  * results grids, and a table data editor. Connections, introspection and
  * statements run in Rust (`ide-db`).
  */
-import { lazyComponent, lazyWhen } from "@/ui";
+import { lazyComponent, lazyWhen, type MenuItem } from "@/ui";
 import { activeEditor, lazyEditorExtension, registerEditorContribution } from "@/editor/api";
 import { tx } from "@/platform/i18n";
 import { onIdeEvent } from "@/platform/ipc";
@@ -19,6 +19,8 @@ import {
   setFileDecorations,
   toolWindowService,
 } from "@/workbench/contributions";
+import { installCellActions } from "./cellActions";
+import { installValueEditorActions } from "./valueEditorActions";
 import { SQL_LANGUAGE } from "./sqlLanguage";
 import { TABLE_KIND, tableTitle } from "./tableInput";
 import { nodeTarget, type DbNode } from "./nodes";
@@ -41,6 +43,11 @@ import {
   watchIdleConnections,
 } from "./store";
 
+function useDatabaseHeaderMenu(): MenuItem[] {
+  const separate = useDatabase((s) => s.separateProceduresAndFunctions);
+  return [{ kind: "action", action: "db.separateProceduresAndFunctions", checked: separate }];
+}
+
 const useDialogOpen = () => useDatabase((s) => !!s.dialog);
 
 export function activate(): () => void {
@@ -55,6 +62,7 @@ export function activate(): () => void {
       anchor: "right",
       order: 20,
       component: lazyComponent(() => import("./DatabaseView").then((m) => m.DatabaseView)),
+      headerMenu: useDatabaseHeaderMenu,
       headerActions: lazyComponent(() => import("./DatabaseView").then((m) => m.DatabaseHeaderActions)),
     }),
     registerServiceView({
@@ -117,6 +125,8 @@ export function activate(): () => void {
     () => setFileDecorations("database", new Map()),
     watchIdleConnections(),
     installTableEditorFocus(),
+    installValueEditorActions(),
+    installCellActions(),
     registerDatabaseTreeActions(),
     registerActions([
       {
