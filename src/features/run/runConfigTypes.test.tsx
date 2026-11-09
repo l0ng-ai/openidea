@@ -91,6 +91,31 @@ it.each([undefined, false])(
 );
 
 describe("configuration types", () => {
+  it("shows the JAR fields, validates the path and edits shared working directory and environment", () => {
+    const type = typeFor("jar-application")!;
+    const config = newConfigOfType(type, []);
+    expect(missingParams(config)).toEqual({ jarPath: "Path to JAR is required" });
+    const edited = withParams(config, { jarPath: "app.jar", vmOptions: "-Xmx1g", programArgs: "hello" });
+    const change = vi.fn();
+    render(
+      <ConfigForm
+        config={{ ...edited, cwd: "server", env: { MODE: "test" } }}
+        all={[]}
+        type={type}
+        errors={{}}
+        onChange={change}
+        modifyRequest={0}
+      />,
+    );
+    expect(screen.getByLabelText("Path to JAR")).toHaveValue("app.jar");
+    expect(screen.getByLabelText("VM options")).toHaveValue("-Xmx1g");
+    expect(screen.getByLabelText("Program arguments")).toHaveValue("hello");
+    expect(screen.getByLabelText("Working directory")).toHaveValue("server");
+    expect(screen.getByLabelText("Environment variables")).toHaveValue("MODE=test");
+    fireEvent.change(screen.getByLabelText("Path to JAR"), { target: { value: "new.jar" } });
+    expect(change.mock.calls.at(-1)?.[0]).toMatchObject({ args: ["-Xmx1g", "-jar", "new.jar", "hello"] });
+  });
+
   it("runs an Application with the chosen JRE and the classpath of the chosen module", () => {
     const type = typeFor("application")!;
     const base = withParams(newConfigOfType(type, []), { ...newConfigOfType(type, []).params, mainClass: "a.Main" });
