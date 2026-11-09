@@ -69,7 +69,7 @@ the [official plugins](plugins/official). The plugin API is still a preview.
 ### Contributors
 
 <a href="https://github.com/l0ng-ai/openidea/graphs/contributors">
-  <img src="https://contrib.rocks/image?repo=l0ng-ai/openidea&max=100" alt="OpenIDEA contributors">
+  <img src="https://contrib.rocks/image?repo=l0ng-ai/openidea&max=500" alt="OpenIDEA contributors">
 </a>
 
 ## License
