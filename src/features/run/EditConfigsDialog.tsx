@@ -1,9 +1,10 @@
+/** Sidebar rows: type groups, their folders (first), then loose configurations; collapsed nodes hide their children. */
+import { useRunTargets } from "@/platform/pluginRunTargets";
 import { useEffect, useMemo, useRef, useState, type DragEvent, type KeyboardEvent } from "react";
 import clsx from "clsx";
 import { executeAction } from "@/platform/actions";
 import { call, commands, isTauri, type RunConfig, type RunImportSource } from "@/platform/ipc";
 import { letterOf } from "@/platform/keymap";
-import { useWorkflowSettings } from "@/platform/workflowSettings";
 import { Button, Dialog, Icon, IconButton, Input, T } from "@/ui";
 import {
   notifications,
@@ -29,6 +30,7 @@ import { importConfigs, importLabel } from "./importConfigs";
 import { targetName } from "./remote";
 import { saveEditedConfigs, selectConfig, useRun } from "./store";
 import { blankTemplate, COMPOUND, missingParams, newConfigOfType, templateId, typeFor } from "./types";
+import { cacheRunTemplates } from "./runTemplates";
 import styles from "./Run.module.css";
 import { tx } from "@/platform/i18n";
 
@@ -48,7 +50,6 @@ export type TreeRow =
   | { type: "folder"; key: string; kind: string; name: string }
   | { type: "config"; key: string; config: RunConfig; depth: 1 | 2 };
 
-/** Sidebar rows: type groups, their folders (first), then loose configurations; collapsed nodes hide their children. */
 export function treeRows(
   configs: readonly RunConfig[],
   extraFolders: ReadonlyArray<{ kind: string; name: string }> = [],
@@ -132,7 +133,7 @@ function EditConfigsDialog() {
   const [dirty, setDirty] = useState(() => useRun.getState().editDirty);
   const [removedDetectedIds, setRemovedDetectedIds] = useState<string[]>([]);
   const [saving, setSaving] = useState(false);
-  const runTargets = useWorkflowSettings((s) => s.runTargets);
+  const runTargets = useRunTargets();
   const [adding, setAdding] = useState<{ x: number; y: number } | null>(null);
   const [modifyRequest, setModifyRequest] = useState(0);
   const addRef = useRef<HTMLButtonElement>(null);
@@ -142,7 +143,11 @@ function EditConfigsDialog() {
     if (!isTauri()) return;
     let live = true;
     call(commands.runTemplates())
-      .then((t) => live && setTemplates(t))
+      .then((t) => {
+        if (!live) return;
+        setTemplates(t);
+        cacheRunTemplates(t);
+      })
       .catch(() => live && setTemplates([]));
     return () => {
       live = false;
@@ -305,7 +310,10 @@ function EditConfigsDialog() {
     setSaving(true);
     try {
       if (dirty) await saveEditedConfigs(draft, removedDetectedIds);
-      if (templatesDirty && templates) await call(commands.runSaveTemplates(templates));
+      if (templatesDirty && templates) {
+        await call(commands.runSaveTemplates(templates));
+        cacheRunTemplates(templates);
+      }
       setRemovedDetectedIds([]);
       setDirty(false);
       setTemplatesDirty(false);
@@ -496,7 +504,9 @@ function EditConfigsDialog() {
                       >
                         <Icon name={collapsed.has(r.key) ? "chevron-right" : "chevron-down"} size={12} />
                         <Icon name={r.icon} size={13} className={styles.chooserIcon} />
-                        <span className={clsx(styles.chooserName, styles.editGroupName)}>{r.label}</span>
+                        <span className={clsx(styles.chooserName, styles.editGroupName)}>
+                          <T>{r.label}</T>
+                        </span>
                       </button>
                     );
                   if (r.type === "folder") {
@@ -522,6 +532,12 @@ function EditConfigsDialog() {
                     );
                   }
                   const c = r.config;
+                  const isTomcat = c.kind === "tomcat";
+                  const tomcatNoArtifact =
+                    isTomcat &&
+                    ((c.params?.deployment ?? "artifact") === "artifact"
+                      ? !c.params?.artifact
+                      : !c.params?.deploymentPath?.trim());
                   return (
                     <button
                       key={r.key}
@@ -538,15 +554,22 @@ function EditConfigsDialog() {
                         e.dataTransfer.effectAllowed = "move";
                       }}
                     >
-                      <Icon
-                        name={configIcon(c)}
-                        size={13}
-                        className={clsx(styles.chooserIcon, temporary.includes(c.id) && styles.chooserTemporary)}
-                      />
+                      <span className={styles.tomcatTreeIconWrap}>
+                        <Icon
+                          name={configIcon(c)}
+                          size={13}
+                          className={clsx(styles.chooserIcon, temporary.includes(c.id) && styles.chooserTemporary)}
+                        />
+                        {tomcatNoArtifact && (
+                          <Icon name="close" size={9} className={styles.tomcatTreeErrorBadge} label="Invalid" />
+                        )}
+                      </span>
                       <span className={styles.chooserName}>{c.name || <T>Unnamed</T>}</span>
                       {c.target && <span className={styles.chooserMuted}>@ {targetName(c, runTargets)}</span>}
                       {errorsById[c.id] && <Icon name="error" size={12} className={styles.failed} label="Invalid" />}
-                      {!c.detected && <span className={styles.chooserMuted}>{c.local ? "local" : "user"}</span>}
+                      {!c.detected && !isTomcat && (
+                        <span className={styles.chooserMuted}>{c.local ? "local" : "user"}</span>
+                      )}
                     </button>
                   );
                 })}
@@ -623,7 +646,9 @@ function EditConfigsDialog() {
             </>
           )}
         </div>
-        <div className={styles.editForm}>
+        <div
+          className={clsx(styles.editForm, mode === "configs" && current?.kind === "tomcat" && styles.editFormTomcat)}
+        >
           {mode === "templates" ? (
             currentTemplate ? (
               <>

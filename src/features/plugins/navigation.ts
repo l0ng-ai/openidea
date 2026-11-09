@@ -7,7 +7,8 @@ import { docOf } from "@/editor/lsp/lsp";
 import { offsetToPos, rangeToOffsets } from "@/editor/lsp/positions";
 import { call, commands, isCancelled, isTauri, nextRequestId, onIdeEvent } from "@/platform/ipc";
 import { useProject } from "@/platform/project";
-import { notifications } from "@/workbench/contributions";
+import { notifications, registerDocumentIndexSync } from "@/workbench/contributions";
+import { tx } from "@/platform/i18n";
 import { pluginsBackend } from "./backend";
 import { invalidatePluginMarkers } from "./markerStore";
 import { usePlugins } from "./store";
@@ -53,7 +54,16 @@ export function startPluginNavigation(): () => void {
       );
   const notify = () => invalidateNavigationProviders();
 
-  async function flush() {
+  let flushing: Promise<void> | null = null;
+  function flush(): Promise<void> {
+    if (flushing) return flushing;
+    const task = runFlush().finally(() => {
+      if (flushing === task) flushing = null;
+    });
+    flushing = task;
+    return task;
+  }
+  async function runFlush() {
     timer = undefined;
     if (running || !ready() || !pending.size) return;
     running = true;
@@ -92,7 +102,16 @@ export function startPluginNavigation(): () => void {
     clearTimeout(timer);
     timer = setTimeout(() => void flush(), priority ? 150 : 30);
   }
-  async function discover() {
+  let discovery: Promise<void> | null = null;
+  function discover(): Promise<void> {
+    if (discovery) return discovery;
+    const task = runDiscovery().finally(() => {
+      if (discovery === task) discovery = null;
+    });
+    discovery = task;
+    return task;
+  }
+  async function runDiscovery() {
     if (!ready() || discovered || discovering) return;
     discovering = true;
     const at = generation;
@@ -123,6 +142,7 @@ export function startPluginNavigation(): () => void {
     known.clear();
     discovered = false;
     discovering = false;
+    discovery = null;
     reportedError = false;
     notify();
     if (ready())
@@ -131,6 +151,21 @@ export function startPluginNavigation(): () => void {
         .catch(() => {});
   }
   const offs = [
+    registerDocumentIndexSync(async (path) => {
+      if (!ready()) return;
+      const root = useProject.getState().project!.root;
+      if (!path.startsWith(root.endsWith("/") ? root : `${root}/`)) return;
+      const at = generation;
+      await discover();
+      if (!eligible(path)) return;
+      while (ready() && at === generation && (pending.size || flushing)) {
+        clearTimeout(timer);
+        await flush();
+      }
+      if (at !== generation || !discovered || dirty.size) {
+        throw new Error(tx`Plugin indexes are still updating; try again shortly`);
+      }
+    }),
     pluginsBackend().onEvent((event) => {
       if (event.type === "documentIndexesChanged") reset();
     }),

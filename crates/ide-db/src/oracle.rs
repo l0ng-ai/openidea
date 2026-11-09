@@ -181,7 +181,7 @@ impl OraclePool {
         .await
         .map_err(|e| IdeError::internal(format!("Oracle connect task: {e}")))?
         .map_err(oracle_err)?;
-        let _ = pool.add(OracleHandle { conn: Some(opened) });
+        let _ = pool.add(opened);
         Ok(Self { state, pool: Arc::new(pool) })
     }
 
@@ -208,6 +208,7 @@ fn pool_err(e: bb8::RunError<OracleError>) -> OracleError {
 /// discarded (a cancelled statement leaves it in the blocking task).
 pub struct OracleHandle {
     conn: Option<oracle::Connection>,
+    context: crate::conn::Context,
 }
 
 pub struct OracleConnectionManager(Arc<State>);
@@ -222,7 +223,7 @@ impl ManageConnection for OracleConnectionManager {
             .await
             .map_err(|e| OracleError::message(format!("Oracle connect task: {e}")))?;
         let conn = opened.map_err(OracleError::new)?;
-        Ok(OracleHandle { conn: Some(conn) })
+        Ok(conn)
     }
 
     async fn is_valid(&self, conn: &mut Self::Connection) -> Result<(), Self::Error> {
@@ -271,6 +272,10 @@ pub struct OracleConnection {
 }
 
 impl OracleConnection {
+    pub(crate) fn context(&mut self) -> &mut crate::conn::Context {
+        &mut self.pooled.context
+    }
+
     pub fn is_closed(&self) -> bool {
         self.pooled.conn.is_none()
     }
@@ -282,7 +287,7 @@ impl OracleConnection {
     }
 }
 
-fn open(state: &State) -> oracle::Result<oracle::Connection> {
+fn open(state: &State) -> oracle::Result<OracleHandle> {
     let mut connector = oracle::Connector::new(state.user.clone(), state.password.clone(), state.connect.clone());
     connector.driver_name("OpenIDEA");
     if let Some(n) = state.statement_cache {
@@ -293,7 +298,12 @@ fn open(state: &State) -> oracle::Result<oracle::Connection> {
     for sql in &state.init {
         statement(&mut conn, sql, 0, 0, Cells::Text).map_err(|e| message_error(&e.message))?;
     }
-    Ok(conn)
+    let user: String = conn.query_row_as("SELECT SYS_CONTEXT('USERENV', 'SESSION_USER') FROM DUAL", &[])?;
+    let default = crate::sql::use_schema(DbDriver::Oracle, &user);
+    let current: String = conn.query_row_as("SELECT SYS_CONTEXT('USERENV', 'CURRENT_SCHEMA') FROM DUAL", &[])?;
+    let mut context = crate::conn::Context::new(default);
+    context.set_current(crate::sql::use_schema(DbDriver::Oracle, &current));
+    Ok(OracleHandle { conn: Some(conn), context })
 }
 
 /// Runs `f` with the connection on the blocking pool. Cancelling drops the
@@ -558,7 +568,7 @@ mod tests {
             )
             .unwrap(),
         ));
-        let mut broken = OracleHandle { conn: None };
+        let mut broken = OracleHandle { conn: None, context: crate::conn::Context::new(None) };
         assert!(manager.has_broken(&mut broken));
         // A connection that cannot be opened reports the failure without panicking
         // (a client-load error, or ORA-12541 when a client is available).

@@ -106,6 +106,14 @@ def request(method, params):
             if 'error' in msg: raise RuntimeError(msg['error'])
             return msg.get('result')
     raise TimeoutError(method)
+def assert_sources(line, col, full=None):
+    """The "sources" scope finds what the full search finds in the workspace's sources."""
+    usages = lambda *scope: request('workspace/executeCommand', {'command':'openidea.java.usages','arguments':[file.as_uri(),line,col,False,*scope]})
+    full = usages() if full is None else full
+    sources = usages('sources')
+    key = lambda rows: sorted(json.dumps(r, sort_keys=True) for r in rows)
+    assert key(sources) == key(r for r in full if r['location']['uri'].startswith('file:')), (line, col, sources, full)
+    return sources
 try:
     init = request('initialize', {'processId':None, 'rootUri':project.as_uri(), 'workspaceFolders':[{'uri':project.as_uri(), 'name':'accessors'}], 'capabilities':{}, 'initializationOptions':{'bundles':[str(bundle)], 'settings':{'java':{'references':{'includeAccessors':True}, 'import':{'gradle':{'enabled':False}, 'maven':{'enabled':False}}}}}})
     send({'jsonrpc':'2.0','method':'initialized','params':{}})
@@ -123,6 +131,11 @@ try:
         assert kinds.count('getter') == expected[0], (field, kinds)
         assert kinds.count('setter') == expected[1], (field, kinds)
         assert kinds.count('field') == expected[2], (field, kinds)
+        assert_sources(line, col, after)
+    # A JDK method: in the sources, the same as the full search's sources part.
+    line, text = next((i, t) for i, t in enumerate(source.splitlines()) if 'println' in t)
+    evidence['jdkSources'] = assert_sources(line, text.index('println'))
+    assert evidence['jdkSources'], 'no JDK method usages in the sources'
     # Respect the existing global preference: the command must not switch it on.
     send({'jsonrpc':'2.0','method':'workspace/didChangeConfiguration','params':{'settings':{'java':{'references':{'includeAccessors':False}}}}})
     disabled = request('workspace/executeCommand', {'command':'openidea.java.usages','arguments':[file.as_uri(),3,19,False]})

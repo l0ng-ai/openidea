@@ -6,6 +6,7 @@ import { branchesByRepo, commitKey, commitRepo, graphCommit, type RepoCommit } f
 import { IssueText } from "./issueLinks";
 import { BranchFilterPopup } from "./BranchFilterPopup";
 import {
+  Fragment,
   memo,
   useCallback,
   useContext,
@@ -23,7 +24,7 @@ import { useVirtualizer } from "@tanstack/react-virtual";
 import type { Branch, ChangedFile, Commit } from "@/bindings";
 import { call, commands } from "@/platform/ipc";
 import { executeAction } from "@/platform/actions";
-import { maybeEditorService, type EditorInput } from "@/workbench/contributions";
+import { maybeEditorService, useGitLogChecks, type EditorInput } from "@/workbench/contributions";
 import {
   EmptyState,
   Icon,
@@ -43,7 +44,9 @@ import {
   type TreeHandle,
   T,
   copyText,
+  hideNativeScrollbar,
   lazyComponent,
+  Scrollbar,
 } from "@/ui";
 import { hasPrimaryModifier } from "@/platform/keymap";
 import { laneColor, reachableFrom, type GraphRow, type GraphSegment } from "./graph";
@@ -77,13 +80,15 @@ import {
   toggleRepository,
   updateLogOptions,
   useGitLog,
+  PAGE,
 } from "./logStore";
 import { logOptions, refLabels, useLogOptions, type LogOptions } from "./logOptions";
 import { KIND_COLOR, baseName, dirName, fileCount, formatTime, relTo, type EffectiveKind } from "./model";
 import { clearConsole, useVcsConsole } from "./ops";
-import { currentRepo, loadBranches, repoName, useVcs } from "./store";
-import { loadFavoriteBranches, useFavoriteBranches } from "./branchOps";
+import { currentRepo, currentRepoRoot, loadBranches, repoName, useVcs } from "./store";
+import { canDeleteBranch, loadFavoriteBranches, useFavoriteBranches } from "./branchOps";
 import { branchMenu, inRepo, tagMenu } from "./branchMenu";
+import { BranchSync } from "./BranchSync";
 import {
   branchFolderKeys,
   branchGroupKeys,
@@ -95,7 +100,7 @@ import {
 } from "./branches";
 import { chooseDateRange, chooseMany } from "./dialogs";
 import { buildFileTree, dirKeys, type FileTreeNode } from "./fileTree";
-import { DIFF_KIND, diffInput } from "./diffInput";
+import { DIFF_KIND, diffInput, vcsDiffInFront } from "./diffInput";
 import {
   absolutePath,
   filesUnder,
@@ -106,7 +111,7 @@ import {
   withLineStats,
   type LogChange,
 } from "./logChanges";
-import { canDeleteBranch, canUpdateBranch, useBranchesPane, type BranchTarget } from "./logPaneActions";
+import { canUpdateBranch, useBranchesPane, type BranchTarget } from "./logPaneActions";
 import styles from "./GitLog.module.css";
 import { tx } from "@/platform/i18n";
 import { useWorkflowSettings } from "@/platform/workflowSettings";
@@ -344,11 +349,16 @@ export function LogView() {
 
 // --- branches ---------------------------------------------------------------
 
-function branchDetail(n: BranchTreeNode): string | undefined {
+function branchDetail(n: BranchTreeNode): ReactNode {
   const b = n.branch;
   if (!b) return undefined;
-  const sync = [b.behind > 0 ? `↓${b.behind}` : "", b.ahead > 0 ? `↑${b.ahead}` : ""].filter(Boolean).join(" ");
-  return [b.current ? tx("current") : "", sync].filter(Boolean).join("  ") || undefined;
+  if (!b.current && b.behind <= 0 && b.ahead <= 0) return undefined;
+  return (
+    <span className={styles.branchDetail}>
+      {b.current && <span>{tx("current")}</span>}
+      <BranchSync behind={b.behind} ahead={b.ahead} />
+    </span>
+  );
 }
 
 export function BranchesPanel() {
@@ -492,8 +502,8 @@ export function BranchesPanel() {
               size="small"
               title="Delete Branch"
               action="vcs.log.branches.delete"
-              actionArg={target}
-              disabled={!canDeleteBranch(target ?? null)}
+              actionArg={targets}
+              disabled={!targets.some((t) => canDeleteBranch(t))}
             />
             <IconButton
               icon="locate"
@@ -570,7 +580,7 @@ export function BranchesPanel() {
             const sel = selected.has(n.key) ? targets.filter((r) => r.repo === n.repo).map((r) => r.ref) : [n.ref];
             setLogFilters({ branches: sel, repositories: n.repo ? [n.repo] : [] });
           }}
-          onContextMenu={(n, _s, e) => {
+          onContextMenu={(n, _sel, e) => {
             if (readOnly) {
               if (!n?.ref) return;
               e.preventDefault();
@@ -580,14 +590,27 @@ export function BranchesPanel() {
               ]);
               return;
             }
+            // The menu acts on the whole selection when the right-clicked branch is part of it.
+            const picked: BranchTarget[] =
+              n && selected.has(n.key) ? targets : n?.ref ? [{ ref: n.ref, branch: n.branch, repo: n.repo }] : [];
             const menu = n?.branch
-              ? branchMenu(n.branch, n.repo ? (useVcs.getState().heads[n.repo]?.head ?? null) : current)
+              ? branchMenu(
+                  n.branch,
+                  n.repo ? (useVcs.getState().heads[n.repo]?.head ?? null) : current,
+                  () => {},
+                  picked,
+                )
               : n?.kind === "tag"
                 ? tagMenu(n.ref!)
                 : n?.kind === "remote" || (n?.kind === "group" && n.key.endsWith("g:remote"))
                   ? REMOTES_MENU
                   : [];
-            const items = n?.repo ? inRepo(n.repo, menu) : menu;
+            // Delete scopes each selected target itself and must preserve the original focus.
+            const items = n?.repo
+              ? menu.flatMap((item) =>
+                  n.branch && "label" in item && item.label === "Delete" ? [item] : inRepo(n.repo!, [item]),
+                )
+              : menu;
             if (!items.length) return;
             e.preventDefault();
             showContextMenu(e, items);
@@ -1089,6 +1112,7 @@ export function viewOptionsMenu(o: LogOptions): MenuItem[] {
         toggle("Date", o, "showDate"),
         toggle("Hash", o, "showHash"),
         toggle("Signature", o, "showSignature"),
+        toggle("GitHub Commit Checks", o, "showGitHubChecks"),
         { kind: "separator" },
         toggle("Column Headers", o, "showColumnHeaders"),
       ],
@@ -1120,7 +1144,9 @@ export function commitMenu(c: Commit, selection: Commit[] = [c]): MenuItem[] {
       { label: "Browse Repository at Revision", run: () => browseRepositoryAt(c) },
     ];
   const many = selection.length > 1 && selection.some((x) => commitKey(x) === commitKey(c));
-  const head = (commitRepo(c) ? useVcs.getState().heads[commitRepo(c)!]?.head : useVcs.getState().branch?.head) ?? null;
+  const repo = commitRepo(c);
+  const vcs = useVcs.getState();
+  const head = (repo ? vcs.heads[repo]?.head : vcs.branch?.head) ?? null;
   const { outgoing } = useGitLog.getState();
   const pushed = (x: Commit) =>
     commitRepo(x) === undefined ? !!outgoing && !outgoing.has(x.id) : isPushed(commitKey(x));
@@ -1147,6 +1173,22 @@ export function commitMenu(c: Commit, selection: Commit[] = [c]): MenuItem[] {
     ((commitRepo(c) === undefined ? !!outgoing : useGitLog.getState().tracked.has(commitRepo(c) ?? ""))
       ? !!outgoing?.has(commitKey(c))
       : true);
+  const branches = ((c as RepoCommit).refBranches ?? []).filter((branch) => !branch.current);
+  const branchActions: MenuItem[] = branches.map((branch) => {
+    const menu = branchMenu(branch, head);
+    return {
+      label: tx`Branch '${branch.name}'`,
+      submenu: repo ? inRepo(repo, menu) : menu,
+    };
+  });
+  if (!branchActions.length)
+    branchActions.push({
+      kind: "action",
+      action: "vcs.log.rebaseOntoCommit",
+      arg: c,
+      label: tx`Rebase '${head ?? "HEAD"}' onto Selected Commit`,
+      disabled: !head,
+    });
   return [
     { kind: "action", action: "vcs.log.copyRevision", arg: c },
     {
@@ -1172,13 +1214,7 @@ export function commitMenu(c: Commit, selection: Commit[] = [c]): MenuItem[] {
     { kind: "action", action: "vcs.log.interactiveRebase", arg: c, disabled: pushedCommit },
     { kind: "action", action: "vcs.log.pushUpToHere", arg: c, disabled: !canPushHere },
     { kind: "separator" },
-    {
-      kind: "action",
-      action: "vcs.log.rebaseOntoCommit",
-      arg: c,
-      label: tx`Rebase '${head ?? "HEAD"}' onto Selected Commit`,
-      disabled: !head,
-    },
+    ...(branchActions.length > 2 ? [{ label: "Branches", submenu: branchActions }] : branchActions),
     { kind: "action", action: "vcs.log.newBranch", arg: c },
     { kind: "action", action: "vcs.log.newTag", arg: c },
     { kind: "separator" },
@@ -1214,6 +1250,7 @@ function CommitList() {
     });
   }, [all]);
   const opts = useLogOptions();
+  const ChecksCell = useGitLogChecks((s) => s.cell);
   const bookmarks = useGitLog((s) => s.bookmarks);
   const fragments = useGitLog((s) => s.fragments);
   const { expanded: expandedFragments, collapsed: collapsedFragments, merges: expandedMerges } = fragments;
@@ -1241,10 +1278,32 @@ function CommitList() {
       ...(opts.showSignature
         ? [{ id: "signature", title: "Signature", width: 100, render: (c: Commit) => <CommitSignature commit={c} /> }]
         : []),
+      ...(opts.showGitHubChecks && ChecksCell
+        ? [
+            {
+              id: "github-checks",
+              title: "GitHub Commit Checks",
+              width: 44,
+              render: (c: Commit) => {
+                const root = commitRepo(c) ?? currentRepoRoot();
+                return root && !(c as RepoCommit).readOnly ? <ChecksCell root={root} revision={c.id} /> : null;
+              },
+            },
+          ]
+        : []),
     ];
     const order = [...new Set([...opts.columnOrder, ...builtins.map((c) => c.id)])];
     return builtins.sort((a, b) => order.indexOf(a.id) - order.indexOf(b.id));
-  }, [opts.showAuthor, opts.showDate, opts.showHash, opts.showSignature, opts.commitTimestamp, opts.columnOrder]);
+  }, [
+    opts.showAuthor,
+    opts.showDate,
+    opts.showHash,
+    opts.showSignature,
+    opts.showGitHubChecks,
+    opts.commitTimestamp,
+    opts.columnOrder,
+    ChecksCell,
+  ]);
   const user = useGitLog((s) => s.user);
   const headCommit = useVcs((s) => s.branch?.headCommit ?? null);
   const branches = useVcs((s) => s.branches);
@@ -1361,17 +1420,22 @@ function CommitList() {
     count: commits.length + (finished ? 0 : 1),
     getScrollElement: () => scrollRef.current,
     estimateSize: () => ROW,
-    overscan: 20,
+    overscan: 8,
     scrollMargin: ROW,
   });
   const items = virtualizer.getVirtualItems();
   const last = items[items.length - 1];
 
+  // The next page is requested while a page of rows is still ahead, so scrolling
+  // quickly doesn't reach the end before `git log` answers.
   useEffect(() => {
-    if (!finished && !loading && last && last.index >= commits.length - 40) void loadMore(scope ?? undefined);
+    if (!finished && !loading && last && last.index >= commits.length - PAGE) void loadMore(scope ?? undefined);
   }, [last, commits.length, finished, loading, active, scope]);
 
-  const selectedIndex = selected ? commits.findIndex((c) => commitKey(c) === selected) : -1;
+  const selectedIndex = useMemo(
+    () => (selected ? commits.findIndex((c) => commitKey(c) === selected) : -1),
+    [commits, selected],
+  );
   useLayoutEffect(() => {
     if (selectedIndex >= 0) virtualizer.scrollToIndex(selectedIndex, { align: "center" });
     // Only on explicit reveal requests.
@@ -1388,6 +1452,28 @@ function CommitList() {
     else if (e.metaKey || e.ctrlKey) toggleCommitSelection(id);
     else selectCommit(id);
   }, []);
+  // CommitRow is memoized: rows get handlers that stay the same across renders and
+  // call this render's (assigned before rendering).
+  const rowEvents = useRef<RowEvents | null>(null);
+  const rowHandlers = useMemo<RowEvents>(
+    () => ({
+      onHover: (edge) => rowEvents.current?.onHover(edge),
+      onFragment: (from, target, expand) => rowEvents.current?.onFragment(from, target, expand),
+      onNavigate: (index, key) => rowEvents.current?.onNavigate(index, key),
+    }),
+    [],
+  );
+  // Called while a row renders its graph, so it changes with what it reads.
+  const targetTitle = useCallback(
+    (index: number, key?: string) => {
+      const target = commits[index];
+      return target
+        ? `${target.shortId} ${target.summary} — ${target.author}`
+        : (key && boundaryTitles.get(key)) ||
+            `${tx("Commit is outside the loaded history")} · ${key?.split("\0").at(-1)?.slice(0, 8) ?? ""}`;
+    },
+    [commits, boundaryTitles],
+  );
 
   const onKeyDown = (e: KeyboardEvent) => {
     if (!e.ctrlKey && !e.metaKey && !e.altKey && (e.key.length === 1 || e.key === "Backspace" || e.key === "Escape")) {
@@ -1559,6 +1645,38 @@ function CommitList() {
     }
   };
 
+  rowEvents.current = {
+    onHover: (edge) => {
+      setHoverColor(edge);
+      if (!edge) return;
+      const source = displayedGraph.find((c) => c.parents.some((p) => `${c.id}\0${p}` === edge));
+      const target = source?.parents.find((p) => `${source.id}\0${p}` === edge);
+      if (!source || !target || commits.some((c) => commitKey(c) === target) || boundaryRequests.current.has(target))
+        return;
+      const original = all.find((c) => commitKey(c) === source.id);
+      if (!original) return;
+      boundaryRequests.current.add(target);
+      const split = target.lastIndexOf("\0"),
+        id = target.slice(split + 1);
+      void loadLogDetails({ ...original, id })
+        .then((details) =>
+          setBoundaryTitles((current) =>
+            new Map(current).set(target, `${id.slice(0, 8)} ${details.message.split("\n")[0]}`),
+          ),
+        )
+        .catch(() => undefined);
+    },
+    onFragment: fragment,
+    onNavigate: (index, key) => {
+      const target = commits[index];
+      if (target) selectCommit(commitKey(target), true);
+      else if (key) {
+        const split = key.lastIndexOf("\0");
+        void goToRef(key.slice(split + 1), split >= 0 ? key.slice(0, split) : currentRepo());
+      }
+    },
+  };
+
   return (
     <div className={styles.listWrap}>
       {earlier && (
@@ -1576,9 +1694,10 @@ function CommitList() {
           {error}
         </div>
       )}
+      <Scrollbar target={scrollRef} contentHeight={virtualizer.getTotalSize()} />
       <div
         ref={scrollRef}
-        className={styles.list}
+        className={clsx(styles.list, hideNativeScrollbar)}
         role="listbox"
         aria-label={tx("Commits")}
         aria-multiselectable
@@ -1609,17 +1728,7 @@ function CommitList() {
           );
         }}
       >
-        {opts.showColumnHeaders && (
-          <div className={clsx(styles.row, styles.columnHeader)} style={{ minWidth }}>
-            {opts.showRepository && useVcs.getState().roots.length > 1 && (
-              <span className={styles.colRepository}>{tx("Repository")}</span>
-            )}
-            <span className={styles.colSubject}>{tx("Commit")}</span>
-            {columns.map((column) => (
-              <LogColumnHeader key={column.id} column={column} columns={columns} options={opts} />
-            ))}
-          </div>
-        )}
+        {opts.showColumnHeaders && <ColumnHeaders columns={columns} options={opts} minWidth={minWidth} />}
         {!commits.length && !loading && finished && (
           <div className={styles.message}>{headCommit ? tx("No commits match the filters") : tx("No commits yet")}</div>
         )}
@@ -1637,7 +1746,9 @@ function CommitList() {
               );
             return (
               <CommitRow
-                key={commitKey(c)}
+                // Keyed by slot, not commit: a scrollbar drag that jumps past every mounted
+                // row then updates the same DOM nodes instead of rebuilding them.
+                key={v.index % items.length}
                 id={`commit-${scope ?? "log"}-${v.index}`}
                 commit={c}
                 graph={rows[v.index]}
@@ -1647,54 +1758,18 @@ function CommitList() {
                 mine={opts.highlightMine && isMine(c, user)}
                 onBranch={!!onBranch?.has(commitKey(c))}
                 opts={opts}
-                remoteNames={new Set((c as RepoCommit).remoteNames ?? remoteNames)}
+                remoteNames={rowRemoteNames((c as RepoCommit).remoteNames, remoteNames)}
                 onPick={pick}
                 hoverColor={hoverColor}
                 highlighted={highlighted}
                 highlightedNodes={highlightedNodes}
-                onHover={(edge) => {
-                  setHoverColor(edge);
-                  if (!edge) return;
-                  const source = displayedGraph.find((c) => c.parents.some((p) => `${c.id}\0${p}` === edge));
-                  const target = source?.parents.find((p) => `${source.id}\0${p}` === edge);
-                  if (
-                    !source ||
-                    !target ||
-                    commits.some((c) => commitKey(c) === target) ||
-                    boundaryRequests.current.has(target)
-                  )
-                    return;
-                  const original = all.find((c) => commitKey(c) === source.id);
-                  if (!original) return;
-                  boundaryRequests.current.add(target);
-                  const split = target.lastIndexOf("\0"),
-                    id = target.slice(split + 1);
-                  void loadLogDetails({ ...original, id })
-                    .then((details) =>
-                      setBoundaryTitles((current) =>
-                        new Map(current).set(target, `${id.slice(0, 8)} ${details.message.split("\n")[0]}`),
-                      ),
-                    )
-                    .catch(() => undefined);
-                }}
-                onFragment={fragment}
-                onNavigate={(index, key) => {
-                  const target = commits[index];
-                  if (target) selectCommit(commitKey(target), true);
-                  else if (key) {
-                    const split = key.lastIndexOf("\0");
-                    void goToRef(key.slice(split + 1), split >= 0 ? key.slice(0, split) : currentRepo());
-                  }
-                }}
-                targetTitle={(index, key) => {
-                  const target = commits[index];
-                  return target
-                    ? `${target.shortId} ${target.summary} — ${target.author}`
-                    : (key && boundaryTitles.get(key)) ||
-                        `${tx("Commit is outside the loaded history")} · ${key?.split("\0").at(-1)?.slice(0, 8) ?? ""}`;
-                }}
+                onHover={rowHandlers.onHover}
+                onFragment={rowHandlers.onFragment}
+                onNavigate={rowHandlers.onNavigate}
+                targetTitle={targetTitle}
                 columns={columns}
                 bookmarked={!!bookmarks[commitKey(c)]}
+                interactive={!virtualizer.isScrolling}
               />
             );
           })}
@@ -1704,107 +1779,247 @@ function CommitList() {
   );
 }
 
-function LogColumnHeader({
-  column,
+interface ColumnDrag {
+  id: string;
+  target: string | null;
+  after: boolean;
+}
+// The flexible "Commit" column shares the same order and can be dragged like the rest.
+const SUBJECT_COLUMN: LogColumn = { id: "subject", title: "Commit", width: 0, render: () => "" };
+// Until the user drags the commit column somewhere, it leads the row.
+const columnSequence = (columnOrder: string[], builtins: LogColumn[]): string[] => {
+  const ids = [...new Set([...columnOrder, ...builtins.map((c) => c.id)])];
+  return columnOrder.includes(SUBJECT_COLUMN.id) ? ids : [SUBJECT_COLUMN.id, ...ids];
+};
+function ColumnHeaders({
   columns,
   options,
+  minWidth,
 }: {
-  column: LogColumn;
   columns: LogColumn[];
   options: LogOptions;
+  minWidth: number;
 }) {
-  const drag = useRef<{ x: number; width: number } | null>(null);
+  const [drag, setDrag] = useState<ColumnDrag | null>(null);
+  const ids = columnSequence(options.columnOrder, columns);
+  const cancel = useCallback(() => setDrag(null), []);
+  const move = (source: string, target: string | null, after: boolean) => {
+    if (!target || source === target || !ids.includes(source) || !ids.includes(target)) return;
+    const reordered = ids.filter((id) => id !== source);
+    const to = reordered.indexOf(target);
+    reordered.splice(after ? to + 1 : to, 0, source);
+    updateLogOptions({ columnOrder: reordered });
+  };
+  const visibleIds = ids.filter((id) => id === SUBJECT_COLUMN.id || columns.some((column) => column.id === id));
+  return (
+    <div className={clsx(styles.row, styles.columnHeader)} style={{ minWidth }}>
+      {options.showRepository && useVcs.getState().roots.length > 1 && (
+        <span className={styles.colRepository}>{tx("Repository")}</span>
+      )}
+      {ids.map((cid) => {
+        const column = cid === SUBJECT_COLUMN.id ? SUBJECT_COLUMN : columns.find((c) => c.id === cid);
+        if (!column) return null;
+        return (
+          <LogColumnHeader
+            key={cid}
+            column={column}
+            subject={cid === SUBJECT_COLUMN.id}
+            ids={visibleIds}
+            options={options}
+            drag={drag}
+            onMove={move}
+            onDragOver={(id, target, after) =>
+              setDrag((d) => (d?.id === id && d.target === target && d.after === after ? d : { id, target, after }))
+            }
+            onDragCancel={cancel}
+          />
+        );
+      })}
+    </div>
+  );
+}
+
+// Column headers reorder by pointer capture: WebView2 blocks HTML5 drag events
+// while dragDropEnabled is on, so dragging must not rely on them.
+function LogColumnHeader({
+  column,
+  subject,
+  ids,
+  options,
+  drag,
+  onMove,
+  onDragOver,
+  onDragCancel,
+}: {
+  column: LogColumn;
+  subject?: boolean;
+  ids: string[];
+  options: LogOptions;
+  drag: ColumnDrag | null;
+  onMove(source: string, target: string | null, after: boolean): void;
+  onDragOver(id: string, target: string | null, after: boolean): void;
+  onDragCancel(): void;
+}) {
+  const press = useRef<{
+    x: number;
+    y: number;
+    active: boolean;
+    element: HTMLElement;
+    pointerId: number;
+  } | null>(null);
+  const resizeDrag = useRef<{ x: number; width: number; element: HTMLElement; pointerId: number } | null>(null);
+  const cancel = useCallback(() => {
+    const captures = [press.current, resizeDrag.current];
+    press.current = null;
+    resizeDrag.current = null;
+    for (const capture of captures)
+      if (capture?.element.hasPointerCapture?.(capture.pointerId))
+        capture.element.releasePointerCapture(capture.pointerId);
+    onDragCancel();
+  }, [onDragCancel]);
+  useEffect(() => {
+    const escape = (e: globalThis.KeyboardEvent) => {
+      if (e.key !== "Escape" || (!press.current && !resizeDrag.current)) return;
+      e.preventDefault();
+      e.stopPropagation();
+      cancel();
+    };
+    window.addEventListener("blur", cancel);
+    window.addEventListener("keydown", escape, true);
+    return () => {
+      window.removeEventListener("blur", cancel);
+      window.removeEventListener("keydown", escape, true);
+      cancel();
+    };
+  }, [cancel]);
   const width = options.columnWidths[column.id] ?? column.width ?? 120;
   const resize = (value: number) =>
     updateLogOptions({
       columnWidths: { ...logOptions().columnWidths, [column.id]: Math.max(40, Math.min(800, value)) },
     });
-  const move = (source: string, target: string) => {
-    const ids = columns.map((c) => c.id);
-    const from = ids.indexOf(source),
-      to = ids.indexOf(target);
-    if (from < 0 || to < 0 || from === to) return;
-    ids.splice(from, 1);
-    ids.splice(to, 0, source);
-    updateLogOptions({ columnOrder: ids });
+  const index = ids.indexOf(column.id);
+  const hitColumn = (x: number, y: number) => {
+    const el = document.elementFromPoint(x, y)?.closest?.("[data-log-column]");
+    if (!el || el.parentElement !== press.current?.element.parentElement) return null;
+    const rect = el.getBoundingClientRect();
+    return { id: el.getAttribute("data-log-column")!, after: x > rect.left + rect.width / 2 };
   };
-  const index = columns.findIndex((c) => c.id === column.id);
   return (
     <span
-      className={clsx(styles.columnCell, styles.columnHeading)}
-      style={{ width }}
-      draggable
-      onDragStart={(e) => {
-        e.dataTransfer.setData("application/x-openidea-log-column", column.id);
-        e.dataTransfer.effectAllowed = "move";
+      className={clsx(
+        styles.columnCell,
+        styles.columnHeading,
+        subject && styles.colSubject,
+        drag?.id === column.id && styles.dragSource,
+        drag &&
+          drag.target === column.id &&
+          drag.id !== column.id &&
+          (drag.after ? styles.dropAfter : styles.dropBefore),
+      )}
+      style={subject ? undefined : { width }}
+      data-log-column={column.id}
+      onPointerDown={(e) => {
+        if (e.button !== 0) return;
+        press.current = { x: e.clientX, y: e.clientY, active: false, element: e.currentTarget, pointerId: e.pointerId };
+        e.currentTarget.setPointerCapture?.(e.pointerId);
       }}
-      onDragOver={(e) => {
-        if (e.dataTransfer.types.includes("application/x-openidea-log-column")) e.preventDefault();
+      onPointerMove={(e) => {
+        const start = press.current;
+        if (!start || start.pointerId !== e.pointerId) return;
+        if (!start.active && Math.hypot(e.clientX - start.x, e.clientY - start.y) < 4) return;
+        start.active = true;
+        const target = hitColumn(e.clientX, e.clientY);
+        onDragOver(column.id, target?.id ?? null, target?.after ?? false);
       }}
-      onDrop={(e) => {
-        e.preventDefault();
-        move(e.dataTransfer.getData("application/x-openidea-log-column"), column.id);
+      onPointerUp={(e) => {
+        const start = press.current;
+        if (!start || start.pointerId !== e.pointerId) return;
+        const target = hitColumn(e.clientX, e.clientY);
+        if (start.active) onMove(column.id, target?.id ?? null, target?.after ?? false);
+        cancel();
       }}
+      onPointerCancel={cancel}
+      onLostPointerCapture={cancel}
       onContextMenu={(e) => {
         e.preventDefault();
         showContextMenu(e, [
           {
             label: "Move Left",
             disabled: index === 0,
-            run: () => move(column.id, columns[index - 1]?.id ?? column.id),
+            run: () => onMove(column.id, ids[index - 1] ?? null, false),
           },
           {
             label: "Move Right",
-            disabled: index === columns.length - 1,
-            run: () => move(column.id, columns[index + 1]?.id ?? column.id),
+            disabled: index === ids.length - 1,
+            run: () => onMove(column.id, ids[index + 1] ?? null, true),
           },
-          { label: "Reset Width", run: () => resize(column.width ?? 120) },
+          ...(subject ? [] : [{ label: "Reset Width", run: () => resize(column.width ?? 120) }]),
         ]);
       }}
     >
       {tx(column.title)}
-      <span
-        className={styles.columnResize}
-        role="separator"
-        aria-orientation="vertical"
-        aria-label={tx`Resize ${tx(column.title)} column`}
-        aria-valuemin={40}
-        aria-valuemax={800}
-        aria-valuenow={width}
-        tabIndex={0}
-        onPointerDown={(e) => {
-          e.preventDefault();
-          e.stopPropagation();
-          drag.current = { x: e.clientX, width };
-          e.currentTarget.setPointerCapture(e.pointerId);
-        }}
-        onPointerMove={(e) => {
-          if (drag.current && e.currentTarget.hasPointerCapture(e.pointerId))
-            resize(drag.current.width + e.clientX - drag.current.x);
-        }}
-        onPointerUp={(e) => {
-          drag.current = null;
-          if (e.currentTarget.hasPointerCapture(e.pointerId)) e.currentTarget.releasePointerCapture(e.pointerId);
-        }}
-        onPointerCancel={() => {
-          drag.current = null;
-        }}
-        onLostPointerCapture={() => {
-          drag.current = null;
-        }}
-        onKeyDown={(e) => {
-          if (e.key !== "ArrowLeft" && e.key !== "ArrowRight") return;
-          e.preventDefault();
-          e.stopPropagation();
-          if (e.altKey) move(column.id, columns[index + (e.key === "ArrowLeft" ? -1 : 1)]?.id ?? column.id);
-          else resize(width + (e.key === "ArrowLeft" ? -10 : 10));
-        }}
-      />
+      {!subject && (
+        <span
+          className={styles.columnResize}
+          role="separator"
+          aria-orientation="vertical"
+          aria-label={tx`Resize ${tx(column.title)} column`}
+          aria-valuemin={40}
+          aria-valuemax={800}
+          aria-valuenow={width}
+          tabIndex={0}
+          onPointerDown={(e) => {
+            if (e.button !== 0) return;
+            e.preventDefault();
+            e.stopPropagation();
+            resizeDrag.current = { x: e.clientX, width, element: e.currentTarget, pointerId: e.pointerId };
+            e.currentTarget.setPointerCapture(e.pointerId);
+          }}
+          onPointerMove={(e) => {
+            if (resizeDrag.current && e.currentTarget.hasPointerCapture(e.pointerId))
+              resize(resizeDrag.current.width + e.clientX - resizeDrag.current.x);
+          }}
+          onPointerUp={(e) => {
+            resizeDrag.current = null;
+            if (e.currentTarget.hasPointerCapture(e.pointerId)) e.currentTarget.releasePointerCapture(e.pointerId);
+          }}
+          onPointerCancel={() => {
+            resizeDrag.current = null;
+          }}
+          onLostPointerCapture={() => {
+            resizeDrag.current = null;
+          }}
+          onKeyDown={(e) => {
+            if (e.key !== "ArrowLeft" && e.key !== "ArrowRight") return;
+            e.preventDefault();
+            e.stopPropagation();
+            if (e.altKey)
+              onMove(column.id, ids[index + (e.key === "ArrowLeft" ? -1 : 1)] ?? null, e.key === "ArrowRight");
+            else resize(width + (e.key === "ArrowLeft" ? -10 : 10));
+          }}
+        />
+      )}
     </span>
   );
 }
 
-const CommitRow = memo(function CommitRow({
+type RowEvents = {
+  onHover: (edge: string | null) => void;
+  onFragment: (from: string, target: string, expand: boolean) => void;
+  onNavigate: (index: number, key?: string) => void;
+};
+
+const remoteNameSets = new WeakMap<readonly string[], ReadonlySet<string>>();
+
+/** A commit's own remote names (multi-root logs) as one set per array, else the shared one. */
+function rowRemoteNames(own: readonly string[] | undefined, shared: ReadonlySet<string>): ReadonlySet<string> {
+  if (!own) return shared;
+  let set = remoteNameSets.get(own);
+  if (!set) remoteNameSets.set(own, (set = new Set(own)));
+  return set;
+}
+
+function CommitRowView({
   id,
   commit: c,
   graph,
@@ -1825,6 +2040,7 @@ const CommitRow = memo(function CommitRow({
   targetTitle,
   columns,
   bookmarked,
+  interactive,
 }: {
   id: string;
   commit: Commit;
@@ -1846,6 +2062,8 @@ const CommitRow = memo(function CommitRow({
   targetTitle: (index: number, key?: string) => string;
   columns: LogColumn[];
   bookmarked: boolean;
+  /** False for rows rendered mid-scroll: their graph is drawn without hit targets. */
+  interactive: boolean;
 }) {
   const merge = opts.highlightMerges && c.parents.length > 1;
   const subjectRef = useRef<HTMLSpanElement>(null);
@@ -1875,6 +2093,53 @@ const CommitRow = memo(function CommitRow({
       left={opts.refsOnLeft}
     />
   );
+  const subjectCell = (
+    <span key={SUBJECT_COLUMN.id} className={styles.colSubject}>
+      {graph && (
+        <GraphCell
+          row={graph}
+          head={head}
+          activeColor={hoverColor}
+          highlighted={highlighted}
+          highlightedNodes={highlightedNodes}
+          onHover={onHover}
+          onNavigate={onNavigate}
+          targetTitle={targetTitle}
+          onFragment={(target, expand, source) => onFragment(source ?? commitKey(c), target, expand)}
+          onNode={() => onFragment(commitKey(c), commitKey(c), false)}
+          interactive={interactive}
+        />
+      )}
+      {bookmarked && <Icon name="bookmark" size={12} />}
+      {opts.refsOnLeft && refs}
+      <span
+        ref={subjectRef}
+        className={clsx(styles.subject, head && styles.headSubject, merge && styles.mergeSubject)}
+        onPointerEnter={enterTooltip}
+        onPointerLeave={leaveTooltip}
+        onPointerDown={() => {
+          clearTimeout(tooltipTimer.current);
+          setTooltip(false);
+        }}
+      >
+        <IssueText text={c.summary} />
+      </span>
+      {!opts.refsOnLeft && refs}
+      <Popup
+        open={tooltip}
+        anchor={subjectRef}
+        role="tooltip"
+        autoFocus={false}
+        restoreFocus={false}
+        onClose={() => setTooltip(false)}
+        className={styles.commitTooltip}
+      >
+        <div onPointerEnter={() => clearTimeout(tooltipTimer.current)} onPointerLeave={leaveTooltip}>
+          <CommitMessage commit={c} />
+        </div>
+      </Popup>
+    </span>
+  );
   return (
     <div
       id={id}
@@ -1896,67 +2161,38 @@ const CommitRow = memo(function CommitRow({
           {repoName(commitRepo(c)!)}
         </span>
       )}
-      <span className={styles.colSubject}>
-        {graph && (
-          <GraphCell
-            row={graph}
-            head={head}
-            activeColor={hoverColor}
-            highlighted={highlighted}
-            highlightedNodes={highlightedNodes}
-            onHover={onHover}
-            onNavigate={onNavigate}
-            targetTitle={targetTitle}
-            onFragment={(target, expand, source) => onFragment(source ?? commitKey(c), target, expand)}
-            onNode={() => onFragment(commitKey(c), commitKey(c), false)}
-          />
-        )}
-        {bookmarked && <Icon name="bookmark" size={12} />}
-        {opts.refsOnLeft && refs}
-        <span
-          ref={subjectRef}
-          className={clsx(styles.subject, head && styles.headSubject, merge && styles.mergeSubject)}
-          onPointerEnter={enterTooltip}
-          onPointerLeave={leaveTooltip}
-          onPointerDown={() => {
-            clearTimeout(tooltipTimer.current);
-            setTooltip(false);
-          }}
-        >
-          <IssueText text={c.summary} />
-        </span>
-        {!opts.refsOnLeft && refs}
-        <Popup
-          open={tooltip}
-          anchor={subjectRef}
-          role="tooltip"
-          autoFocus={false}
-          restoreFocus={false}
-          onClose={() => setTooltip(false)}
-          className={styles.commitTooltip}
-        >
-          <div onPointerEnter={() => clearTimeout(tooltipTimer.current)} onPointerLeave={leaveTooltip}>
-            <CommitMessage commit={c} />
-          </div>
-        </Popup>
-      </span>
-      {columns.map((column) => (
-        <span
-          key={column.id}
-          className={clsx(
-            styles.columnCell,
-            styles.muted,
-            column.id === "author" && mine && styles.mine,
-            column.id === "hash" && styles.hash,
-          )}
-          style={{ width: opts.columnWidths[column.id] ?? column.width ?? 120 }}
-          title={column.id === "author" ? `${c.author} <${c.email}>` : undefined}
-        >
-          {column.render(c)}
-        </span>
-      ))}
+      {columnSequence(opts.columnOrder, columns).map((cid) => {
+        if (cid === SUBJECT_COLUMN.id) return subjectCell;
+        const column = columns.find((col) => col.id === cid);
+        if (!column) return null;
+        return (
+          <span
+            key={cid}
+            className={clsx(
+              styles.columnCell,
+              styles.muted,
+              column.id === "author" && mine && styles.mine,
+              column.id === "hash" && styles.hash,
+            )}
+            style={{ width: opts.columnWidths[column.id] ?? column.width ?? 120 }}
+            title={column.id === "author" ? `${c.author} <${c.email}>` : undefined}
+          >
+            {column.render(c)}
+          </span>
+        );
+      })}
     </div>
   );
+}
+
+// A row that is already interactive stays so when scrolling starts; only rows
+// whose content changes mid-scroll are drawn without hit targets.
+const CommitRow = memo(CommitRowView, (prev, next) => {
+  for (const key in next) {
+    const k = key as keyof typeof next;
+    if (prev[k] !== next[k] && !(k === "interactive" && prev.interactive)) return false;
+  }
+  return true;
 });
 
 function x(lane: number) {
@@ -1979,6 +2215,7 @@ export function GraphCell({
   onFragment,
   targetTitle,
   onNode,
+  interactive = true,
 }: {
   row: GraphRow;
   head?: boolean;
@@ -1990,9 +2227,27 @@ export function GraphCell({
   onFragment?: (target: string, expand: boolean, source?: string) => void;
   targetTitle?: (index: number, key?: string) => string;
   onNode?: () => void;
+  interactive?: boolean;
 }) {
   const cy = ROW / 2;
   const draw = (s: GraphSegment, i: number, up: boolean) => {
+    const fromX = x(s.fromX ?? s.from);
+    const toX = x(s.toX ?? s.to);
+    const path =
+      seg(fromX, up ? 0 : cy, toX, up ? cy : ROW) +
+      (s.arrow ? arrowHead(up ? fromX : toX, up ? 0 : ROW, up ? -1 : 1) : "");
+    const line = (
+      <path
+        key={interactive ? undefined : `${up ? "u" : "d"}${i}`}
+        d={path}
+        stroke={laneColor(s.color)}
+        strokeWidth={s.edge != null && (activeColor === s.edge || highlighted?.has(s.edge)) ? 2.8 : 1.4}
+        pointerEvents="none"
+        strokeLinecap={s.dashed ? "butt" : "square"}
+        strokeDasharray={s.dashed ? "2 2" : undefined}
+      />
+    );
+    if (!interactive) return line;
     const target = (up ? row.upTargets : row.downTargets)?.[i];
     const canFragment =
       !!target &&
@@ -2014,50 +2269,34 @@ export function GraphCell({
       if (canNavigate) onNavigate?.(s.targetRow!, target);
       else if (canFragment) onFragment?.(target!, !!s.dashed, s.source);
     };
-    const fromX = x(s.fromX ?? s.from);
-    const toX = x(s.toX ?? s.to);
-    const path =
-      seg(fromX, up ? 0 : cy, toX, up ? cy : ROW) +
-      (s.arrow ? arrowHead(up ? fromX : toX, up ? 0 : ROW, up ? -1 : 1) : "");
     return (
-      <g
-        key={`${up ? "u" : "d"}${i}`}
-        role={actionable ? "button" : undefined}
-        tabIndex={actionable ? 0 : undefined}
-        aria-label={actionable ? label : undefined}
-        onMouseEnter={() => onHover?.(s.edge ?? `${s.source ?? ""}\0${target ?? ""}`)}
-        onMouseDown={(e) => e.stopPropagation()}
-        onClick={(e) => {
-          e.stopPropagation();
-          activate();
-        }}
-        onKeyDown={(e) => {
-          if (actionable && (e.key === "Enter" || e.key === " ")) {
-            e.preventDefault();
-            e.stopPropagation();
-            activate();
-          }
-        }}
-      >
-        <title>{label}</title>
-        <rect
-          x={Math.min(fromX, toX) - 5}
-          y={up ? 0 : cy}
-          width={Math.max(10, Math.abs(fromX - toX) + 10)}
-          height={cy}
-          fill="transparent"
-          pointerEvents="none"
-        />
-        <path d={path} stroke="transparent" strokeWidth={10} style={{ pointerEvents: "stroke" }} />
+      <Fragment key={`${up ? "u" : "d"}${i}`}>
         <path
           d={path}
-          stroke={laneColor(s.color)}
-          strokeWidth={s.edge != null && (activeColor === s.edge || highlighted?.has(s.edge)) ? 2.8 : 1.4}
-          pointerEvents="none"
-          strokeLinecap={s.dashed ? "butt" : "square"}
-          strokeDasharray={s.dashed ? "2 2" : undefined}
-        />
-      </g>
+          stroke="transparent"
+          strokeWidth={10}
+          style={{ pointerEvents: "stroke" }}
+          role={actionable ? "button" : undefined}
+          tabIndex={actionable ? 0 : undefined}
+          aria-label={actionable ? label : undefined}
+          onMouseEnter={() => onHover?.(s.edge ?? `${s.source ?? ""}\0${target ?? ""}`)}
+          onMouseDown={(e) => e.stopPropagation()}
+          onClick={(e) => {
+            e.stopPropagation();
+            activate();
+          }}
+          onKeyDown={(e) => {
+            if (actionable && (e.key === "Enter" || e.key === " ")) {
+              e.preventDefault();
+              e.stopPropagation();
+              activate();
+            }
+          }}
+        >
+          <title>{label}</title>
+        </path>
+        {line}
+      </Fragment>
     );
   };
   return (
@@ -2174,7 +2413,11 @@ export function CommitDetails({ commits }: { commits: Commit[] }) {
   const fromParents = useLogOptions((s) => s.changesFromParents);
   const onlyAffected = useLogOptions((s) => s.showOnlyAffected);
   const preview = useLogOptions((s) => s.diffPreview);
-  const diffLocation = useLogOptions((s) => s.diffLocation);
+  const savedLocation = useLogOptions((s) => s.diffLocation);
+  // The modal commit interface keeps diffs out of editor tabs (#1863): the "Editor"
+  // preview shows beside the changes instead.
+  const modal = useWorkflowSettings((s) => !s.vcs.commit.nonModal);
+  const diffLocation = modal && savedLocation === "editor" ? "right" : savedLocation;
   const showLineStats = useLogOptions((s) => s.showLineStats);
   const filters = useGitLog((s) => s.filters);
   const filesKey = JSON.stringify([idsKey, fromParents, parentIndex, commitRoot, showLineStats]);
@@ -2286,7 +2529,8 @@ export function CommitDetails({ commits }: { commits: Commit[] }) {
   const previewSelection = (sel: ReadonlySet<string>) => {
     clearTimeout(previewTimer.current);
     if (syncingDiff.current) return;
-    if (!logOptions().diffPreview || logOptions().diffLocation !== "editor" || sel.size !== 1) return;
+    if (!logOptions().diffPreview || logOptions().diffLocation !== "editor" || vcsDiffInFront() || sel.size !== 1)
+      return;
     const file = fileNodeAt(tree, [...sel][0]!)?.file;
     // A preview that cannot open (no editor yet, the file went away) is just skipped.
     if (file)
@@ -2357,7 +2601,7 @@ export function CommitDetails({ commits }: { commits: Commit[] }) {
         label: "Diff Preview Location",
         submenu: (["editor", "right", "bottom"] as const).map((location) => ({
           label: location === "editor" ? "Editor" : location === "right" ? "Right" : "Bottom",
-          checked: diffLocation === location,
+          checked: savedLocation === location,
           run: () => updateLogOptions({ diffLocation: location }),
         })),
       },

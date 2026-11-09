@@ -66,8 +66,16 @@ export function UsagesTabs() {
   const tabs = useUsages((s) => s.tabs);
   const search = useUsages(activeUsageSearch);
   if (!search) return null;
-  const label = (t: (typeof tabs)[number]) =>
-    t.symbol ? formatMessage(tx("Usages of '{symbol}'"), { symbol: t.symbol }) : tx("Usages");
+  const label = (t: (typeof tabs)[number]) => {
+    if (!t.symbol) return tx("Usages");
+    const text =
+      t.scope === "project"
+        ? tx("Usages of '{symbol}' in Project Files")
+        : t.scope === "libraries"
+          ? tx("Usages of '{symbol}' in Project and Libraries")
+          : tx("Usages of '{symbol}'");
+    return formatMessage(text, { symbol: t.symbol });
+  };
   return (
     <Tabs
       variant="compact"
@@ -268,6 +276,16 @@ export function UsagesView() {
       </div>
       <div className={styles.body} onKeyDown={onKeyDown}>
         <UsageAccessFilter items={allUsages} />
+        {!search.loading && !search.error && search.scope === "project" && (
+          <div className={styles.summary}>
+            <T>Usages in Project Files</T>
+            {search.searchLibraries && (
+              <button type="button" className={styles.link} onClick={() => search.searchLibraries?.()}>
+                {tx("Search in Project and Libraries")}
+              </button>
+            )}
+          </div>
+        )}
         {(search.loading || search.error) && (
           <div className={styles.summary} role="status" aria-live="polite">
             {search.loading ? (

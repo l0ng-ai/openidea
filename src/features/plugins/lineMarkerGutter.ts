@@ -10,7 +10,8 @@ import type { EditorDocContext } from "@/editor/api";
 import { navigationButton } from "./navigationButton";
 import { pluginsBackend } from "./backend";
 import { commands, type LineMarkerInfo } from "@/platform/ipc";
-import { gutterIconMarkup } from "@/ui";
+import { gutterIconMarkup, isIconName } from "@/ui/icons";
+import { onMarkerIconsChanged, resolveMarkerIcon } from "./markerIcons";
 import styles from "@/editor/navigation/LineMarkers.module.css";
 
 const DEBOUNCE_MS = 400;
@@ -24,9 +25,10 @@ const ICONS: Record<string, string> = {
   navigate: "gutter-implementing",
 };
 
-/** Icon name for a plugin marker (`navigate` when unknown). */
+/** Legacy aliases and ordinary registered icon names; navigate when unknown. */
 export function markerIcon(icon: string | null): string {
-  return ICONS[icon ?? "navigate"] ?? ICONS.navigate!;
+  const name = icon ?? "navigate";
+  return Object.hasOwn(ICONS, name) ? ICONS[name]! : isIconName(name) ? name : ICONS.navigate!;
 }
 
 interface Placed {
@@ -85,13 +87,21 @@ class MarkersPlugin {
     private doc: number,
     private column: Compartment,
   ) {
-    this.off = pluginsBackend().onEvent((event) => {
+    const offBackend = pluginsBackend().onEvent((event) => {
       if (event.type !== "documentIndexesChanged") return;
       this.generation++;
       this.shown = false;
       this.view.dispatch({ effects: [setMarkers.of([]), this.column.reconfigure([])] });
       this.schedule();
     });
+    const offIcons = onMarkerIconsChanged(() => {
+      this.generation++;
+      this.schedule();
+    });
+    this.off = () => {
+      offBackend();
+      offIcons();
+    };
     this.schedule();
   }
 
@@ -112,7 +122,14 @@ class MarkersPlugin {
       const markers = await commands.pluginLineMarkers(this.doc);
       if (gen !== this.generation || this.view.state.doc !== text || !this.view.dom.isConnected) return;
       if (markers.status !== "ok") return;
-      const placed = placeMarkers(text, markers.data);
+      const resolved = await Promise.all(
+        markers.data.map(async (marker) => ({
+          ...marker,
+          icon: await resolveMarkerIcon(marker.pluginId, marker.icon),
+        })),
+      );
+      if (gen !== this.generation || this.view.state.doc !== text || !this.view.dom.isConnected) return;
+      const placed = placeMarkers(text, resolved);
       if (!placed.length && !this.view.state.field(markersField).length) return;
       const effects: StateEffect<unknown>[] = [setMarkers.of(placed)];
       if (placed.length > 0 !== this.shown) {

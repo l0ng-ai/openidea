@@ -25,7 +25,7 @@ import {
 import { loadPlatformInfo } from "@/platform/platformInfo";
 import { registerShellActions } from "./shellActions";
 import { MainToolbarDialogHost } from "./MainToolbarDialog";
-import { StatusInfo, TaskStatus } from "./StatusBar";
+import { BackgroundTasksHost, StatusInfo, TaskStatus } from "./StatusBar";
 import { installTaskEvents } from "./tasks";
 import { installToolWindowActions } from "./toolwindows/actions";
 import {
@@ -67,6 +67,7 @@ export function activateWorkbench(): () => void {
     installBrowserGuards(),
     installFileDrop(),
     registerOverlay({ id: "workbench.customizeToolbar", component: MainToolbarDialogHost }),
+    registerOverlay({ id: "workbench.backgroundTasks", component: BackgroundTasksHost }),
     registerStatusItem({ id: "workbench.tasks", align: "right", priority: 0, component: TaskStatus, lightEdit: true }),
     registerStatusItem({ id: "workbench.info", align: "left", priority: 5, component: StatusInfo, lightEdit: true }),
     registerToolWindow({

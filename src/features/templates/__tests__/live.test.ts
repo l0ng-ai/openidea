@@ -2,7 +2,7 @@ import { describe, expect, it } from "vitest";
 import { EditorState } from "@codemirror/state";
 import { snippet } from "@codemirror/autocomplete";
 import { languages } from "@codemirror/language-data";
-import { ensureSyntaxTree } from "@codemirror/language";
+import { completedSyntaxState } from "@/test/syntax";
 import {
   applicableTemplates,
   bodyVariables,
@@ -26,8 +26,7 @@ function apply(doc: string, tpl: string, from: number, to = from) {
 async function stateFor(lang: string, doc: string) {
   const desc = languages.find((l) => l.name === lang)!;
   const support = await desc.load();
-  const state = EditorState.create({ doc, extensions: [support] });
-  ensureSyntaxTree(state, state.doc.length, 5000);
+  const state = completedSyntaxState(EditorState.create({ doc, extensions: [support] }));
   return state;
 }
 

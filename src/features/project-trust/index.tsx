@@ -115,6 +115,18 @@ function TrustSettings() {
       setError(String(e));
     }
   };
+  const addLocation = async () => {
+    try {
+      const { open } = await import("@tauri-apps/plugin-dialog");
+      const picked = await open({ directory: true, multiple: false, title: "Add Trusted Location" });
+      const path = Array.isArray(picked) ? picked[0] : picked;
+      if (!path) return;
+      await call(commands.projectTrustAddLocation(path));
+      await refresh();
+    } catch (e) {
+      setError(String(e));
+    }
+  };
   return (
     <div className={styles.content}>
       <p>
@@ -132,9 +144,17 @@ function TrustSettings() {
           </Button>
         </div>
       ))}
-      <h3>
-        <T>Trusted locations</T>
-      </h3>
+      <div className={styles.sectionHead}>
+        <h3>
+          <T>Trusted locations</T>
+        </h3>
+        <Button onClick={() => void addLocation()}>
+          <T>Add folder…</T>
+        </Button>
+      </div>
+      <p className={styles.hint}>
+        <T>Every project inside a trusted location is trusted without asking.</T>
+      </p>
       {decisions?.locations.map((path) => (
         <div className={styles.row} key={path}>
           <span className={styles.path}>{path}</span>

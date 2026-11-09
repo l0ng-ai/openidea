@@ -237,16 +237,20 @@ function CustomFontRow() {
   const [size, setSize] = useSetting<number>("appearance.uiFontSize");
   const id = useId();
   const matched = useLabelMatch("Use custom font");
+  // Labels share one column (IDEA Appearance): the UI font, fallback and Size
+  // controls all start at the same x instead of drifting with flex wrapping.
   return (
-    <div className={clsx(styles.fontRow, styles.customFontRow, matched && styles.matched)}>
-      <span className={styles.fontOption}>
+    <div className={clsx(styles.customFontRow, matched && styles.matched)}>
+      <span className={styles.fontCheck}>
         <Checkbox checked={on} onChange={setOn} label={<SearchLabel text="Use custom font:" />} />
+      </span>
+      <span className={styles.fontControl}>
         <FontPicker label="UI font" disabled={!on} value={family} onChange={setFamily} />
       </span>
-      <span className={styles.fontOption}>
-        <label className={clsx(!on && styles.disabled)} htmlFor={`${id}-fallback`}>
-          <SearchLabel text="Fallback font:" />
-        </label>
+      <label className={clsx(styles.fontLabel, !on && styles.disabled)} htmlFor={`${id}-fallback`}>
+        <SearchLabel text="Fallback font:" />
+      </label>
+      <span className={styles.fontControl}>
         <FontPicker
           id={`${id}-fallback`}
           label="UI fallback font"
@@ -256,10 +260,10 @@ function CustomFontRow() {
           allowEmpty
         />
       </span>
-      <span className={styles.fontOption}>
-        <label className={clsx(!on && styles.disabled)} htmlFor={`${id}-size`}>
-          <SearchLabel text="Size:" />
-        </label>
+      <label className={clsx(styles.fontLabel, !on && styles.disabled)} htmlFor={`${id}-size`}>
+        <SearchLabel text="Size:" />
+      </label>
+      <span className={styles.fontControl}>
         {on ? (
           <NumberInput
             id={`${id}-size`}
@@ -334,7 +338,17 @@ function UiOptionsGrid() {
             label="Drag-and-drop with Alt pressed only"
             hint="Applies to editor tabs and tool window buttons"
           />
+          <BoundToggle
+            k="appearance.smallTreeIndents"
+            label="Use smaller indents in trees"
+            hint="Project, Structure, Commit and other tool window trees indent less per level"
+          />
           <BoundToggle k="appearance.menuIcons" label="Display icons in menu items" />
+          <BoundToggle
+            k="appearance.mainMenuAlt"
+            label="Open main menu with a lone Alt press"
+            hint="When off, Alt key combinations still work but pressing Alt alone does not focus the main menu"
+          />
         </>
       }
     />
@@ -628,6 +642,8 @@ export const BEHAVIOR_PAGES: PageSpec[] = [
       {
         title: "UI Options",
         options: [
+          { kind: "toggle", key: "appearance.showMainToolbar", label: "Show main toolbar" },
+          { kind: "toggle", key: "appearance.showStatusBar", label: "Show status bar" },
           {
             kind: "custom",
             label: "Main menu",
@@ -642,6 +658,8 @@ export const BEHAVIOR_PAGES: PageSpec[] = [
               "Use project colors in main toolbar",
               "Drag-and-drop with Alt pressed only",
               "Display icons in menu items",
+              "Use smaller indents in trees",
+              "tree indent",
             ],
             component: UiOptionsGrid,
           },

@@ -170,6 +170,10 @@ fn interchangeable_servers_list_their_alternatives() {
         assert_eq!(find(&list, name).alternatives, python);
     }
     assert_eq!(find(&list, "vtsls").alternatives, ["vtsls", "typescript-language-server"]);
+    for name in ["jdtls", "kmp-lsp"] {
+        assert_eq!(find(&list, name).alternatives, ["jdtls", "kmp-lsp"]);
+        assert_eq!(find(&list, name).languages, ["Java"]);
+    }
     // A regular server after a fallback starts no group with it.
     assert!(find(&list, "angular-language-server").alternatives.is_empty());
     assert!(find(&list, "ruff").alternatives.is_empty());

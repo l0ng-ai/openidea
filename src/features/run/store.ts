@@ -3,6 +3,7 @@
  * (one Run tool window tab each). Output streams through a Channel into a
  * per-session `ConsoleModel`, batched per animation frame.
  */
+import { withRunTarget } from "@/platform/runTargetSelection";
 import { create } from "zustand";
 import { Channel } from "@tauri-apps/api/core";
 import {
@@ -19,9 +20,9 @@ import {
   type TestCaseReport,
 } from "@/platform/ipc";
 import {
-  consoleVmArgs,
   findJavaModule,
   isJvmApplication,
+  JavaBuildFailedError,
   parseJavaArgs,
   prepareJavaLaunch,
 } from "@/platform/javaLaunch";
@@ -30,6 +31,7 @@ import { useProject } from "@/platform/project";
 import { executeAction } from "@/platform/actions";
 import { workflowSettings } from "@/platform/workflowSettings";
 import { maybeEditorService, notifications, toolWindowService, useDebugRunSessions } from "@/workbench/contributions";
+import { applyBuildPolicyToCommand } from "./buildCommand";
 import { ConsoleModel } from "./console";
 import { jvmFrameTarget } from "./links";
 import { confirmRerun, confirmTerminate } from "./dialogs";
@@ -41,28 +43,36 @@ import {
   type TestEvent,
   type TestOutputParser,
 } from "./testing";
+import { PluginTestOutput } from "./testing/plugin";
 import { GoTestOutput } from "./testing/go";
 import { moveToReportedClasses } from "./testing/jvm";
 import { RubyTestOutput } from "./testing/ruby";
 import { TeamcityOutput } from "./testing/teamcity";
 import type { TestStdout } from "./testing/types";
 import { recordTestStates } from "./testing/states";
-import { failedTestPaths, leafTestPaths, rerunFailedConfig, testsConfig } from "./testing/rerun";
+import { failedTestPaths, leafTestPaths, rerunFailedConfigs, testsConfigs } from "./testing/rerun";
+import { buildCMake, isCMakeBuild } from "./cmake";
 import { compoundChildren } from "./configs";
 import { remoteLabel, startWithRemedies } from "./remote";
 import { TerminalOutput } from "./terminalOutput";
 import { typeFor } from "./types";
+import { loadRunTemplates } from "./runTemplates";
 import { recordRun } from "./services";
-import { startedPort } from "./serverPort";
+import { startedPort } from "@/platform/serverPort";
 import { tomcatBrowserUrl } from "./tomcat";
-import { gradleDelegation, gradleTestLaunch } from "./gradleRun";
+import { gradleBootLaunch, gradleDelegation, gradleTestLaunch } from "./gradleRun";
 import { openUrl } from "./navigate";
 import { tx } from "@/platform/i18n";
 
 /** The permanent "Current File" pseudo-configuration of the chooser (runs the active file's context). */
 export const CURRENT_FILE = "current-file";
 
-export type SessionStatus = "starting" | "running" | "finished" | "failed";
+export type SessionStatus = "starting" | "running" | "stopping" | "finished" | "failed";
+
+/** Whether the process is alive: starting, running, or shutting down after Stop. */
+export function isLive(s: { status: SessionStatus }): boolean {
+  return s.status === "starting" || s.status === "running" || s.status === "stopping";
+}
 
 export interface RunSession {
   id: string;
@@ -88,11 +98,17 @@ interface SessionRuntime {
   console: ConsoleModel;
   tests: TestResults | null;
   parser: TestOutputParser | null;
+  pluginTests: PluginTestOutput | null;
   /** Machine-readable stdout (`go test -json`, `--teamcity`, the Ruby reporter): fed to the parser, shown decoded. */
   stdout: TestStdout | null;
   queue: OutputChunk[];
-  /** rAF id while the page is visible, timeout id while hidden (rAF pauses in background tabs). */
+  /**
+   * rAF id while the page is visible, timeout id while hidden (rAF pauses in
+   * background tabs) or while waiting out `FLUSH_INTERVAL`.
+   */
   flushHandle: { raf: number } | { timeout: number } | null;
+  /** When output was last shown (`performance.now()`). */
+  flushedAt: number;
   /** Bumped per start so output from a previous run in the same tab is ignored. */
   generation: number;
   /** Called with every complete output line (e.g. waiting for a JDWP agent). */
@@ -197,7 +213,7 @@ export async function loadConfigs(): Promise<void> {
     return;
   }
   try {
-    const saved = await call(commands.runConfigs());
+    const [saved] = await Promise.all([call(commands.runConfigs()), loadRunTemplates()]);
     if (useProject.getState().project?.root !== root) return;
     // Temporary configs survive reloads (and restarts) until saved or evicted; a saved one wins.
     // They are kept without what settings derived: today's toolchains apply to them, as to the others.
@@ -384,9 +400,7 @@ export function adoptTemporary(config: RunConfig): RunConfig {
     return existing;
   }
   let temporary = [...state.temporary.filter((id) => id !== config.id), config.id];
-  const busy = new Set(
-    state.sessions.filter((x) => x.status === "running" || x.status === "starting").map((x) => x.config.id),
-  );
+  const busy = new Set(state.sessions.filter(isLive).map((x) => x.config.id));
   for (const session of useDebugRunSessions.getState().sessions) if (session.configId) busy.add(session.configId);
   while (temporary.length > MAX_TEMPORARY) {
     const evict = temporary.find((id) => id !== config.id && !busy.has(id)) ?? temporary[0]!;
@@ -400,6 +414,32 @@ export function adoptTemporary(config: RunConfig): RunConfig {
   persistTemporary();
   selectConfig(config.id);
   return config;
+}
+
+/**
+ * A file removed (or moved away) takes the temporary context configurations its
+ * path produced (`context:file:` and the compiled `context:build:` partner), like
+ * IDEA deleting the context configuration with the file. Saved and detected
+ * configurations the user made stay.
+ */
+export function dropStaleContextConfigs(removed: readonly string[]) {
+  const { configs, temporary, selectedId } = useRun.getState();
+  const root = useProject.getState().project?.root;
+  if (!root || !removed.length || !temporary.length) return;
+  // Temporary ids carry the project-relative path (the full path outside the root).
+  const gone = new Set(removed.map((p) => (p.startsWith(`${root}/`) ? p.slice(root.length + 1) : p)));
+  const stale = (id: string) => {
+    const m = /^context:(?:file|build):(.+?)(?:#.+)?$/.exec(id);
+    return !!m && gone.has(m[1]!);
+  };
+  const dropped = temporary.filter(stale);
+  if (!dropped.length) return;
+  useRun.setState({
+    configs: configs.filter((c) => !dropped.includes(c.id)),
+    temporary: temporary.filter((id) => !stale(id)),
+  });
+  persistTemporary();
+  if (selectedId && dropped.includes(selectedId)) selectConfig(null);
 }
 
 /** "Save Configuration": a temporary configuration becomes a user configuration. */
@@ -495,6 +535,7 @@ function flush(sessionId: string) {
   if (!rt) return;
   cancelFlush(rt);
   if (rt.queue.length === 0) return;
+  rt.flushedAt = performance.now();
   const chunks = rt.queue.splice(0);
   for (const c of chunks) {
     const text = c.kind === "stdout" && rt.stdout ? rt.stdout.feed(c.text) : c.text;
@@ -515,11 +556,26 @@ function enqueue(sessionId: string, chunk: OutputChunk) {
     // rAF pauses in background tabs; a timeout keeps consuming output so it doesn't
     // pile up until the console is shown again (issue #319: the console "kept
     // scrolling" the previous run's backlog after switching back to it).
+    const wait = FLUSH_INTERVAL - (performance.now() - rt.flushedAt);
     rt.flushHandle = document.hidden
       ? { timeout: window.setTimeout(() => flush(sessionId), 100) }
-      : { raf: requestAnimationFrame(() => flush(sessionId)) };
+      : wait > 0
+        ? {
+            timeout: window.setTimeout(() => {
+              if (document.hidden) flush(sessionId);
+              else rt.flushHandle = { raf: requestAnimationFrame(() => flush(sessionId)) };
+            }, wait),
+          }
+        : { raf: requestAnimationFrame(() => flush(sessionId)) };
   }
 }
+
+/**
+ * Shortest time between console updates. A line after a quiet spell shows on the
+ * next frame; a flood is shown at ~20 Hz instead of every frame, which kept
+ * typing elsewhere from fitting in a frame (35% missed while 12k lines/s stream).
+ */
+const FLUSH_INTERVAL = 50;
 
 function cancelFlush(rt: SessionRuntime) {
   if (rt.flushHandle === null) return;
@@ -563,7 +619,15 @@ export function applyConsoleSettings() {
 
 function newRuntime(config: RunConfig): SessionRuntime {
   const tests = config.isTest ? new TestResults() : null;
-  const parser = config.isTest ? createTestParser(config) : null;
+  const builtIn = config.isTest ? createTestParser(config) : null;
+  const pluginTests =
+    tests && builtIn && config.params?.framework === "plugin"
+      ? new PluginTestOutput(config.id, builtIn, (events) => {
+          tests.apply(events);
+          for (const [id, rt] of runtimes) if (rt.tests === tests) bump(id);
+        })
+      : null;
+  const parser = pluginTests ? null : builtIn;
   const feed = (line: string) => {
     if (tests && parser) tests.apply(parser.feed(line));
   };
@@ -582,15 +646,18 @@ function newRuntime(config: RunConfig): SessionRuntime {
     stdout,
     tests,
     parser,
+    pluginTests,
     console: new ConsoleModel({
       maxChars: consoleCharLimit(),
       onLine: (text, kind) => {
+        if (pluginTests && kind !== "system") pluginTests.feed(text);
         if (parser && tests && kind !== "system" && !(kind === "stdout" && stdout)) tests.apply(parser.feed(text));
         if (kind !== "system") for (const l of runtime.lineListeners) l(text);
       },
     }),
     queue: [],
     flushHandle: null,
+    flushedAt: -Infinity,
     generation: 0,
     lineListeners: [],
     input: "",
@@ -601,7 +668,7 @@ function newRuntime(config: RunConfig): SessionRuntime {
 }
 
 /** Runs a configuration's before launch tasks; false aborts the launch. Installed by the feature. */
-export type BeforeLaunchRunner = (config: RunConfig, chain: readonly string[]) => Promise<boolean>;
+export type BeforeLaunchRunner = (config: RunConfig, chain: readonly string[], show?: boolean) => Promise<boolean>;
 let beforeLaunch: BeforeLaunchRunner | null = null;
 
 export function setBeforeLaunchRunner(runner: BeforeLaunchRunner | null) {
@@ -609,17 +676,25 @@ export function setBeforeLaunchRunner(runner: BeforeLaunchRunner | null) {
 }
 
 /** Runs `config`'s before launch tasks (none: true). `chain` holds the configurations already launching. */
-export async function prepareLaunch(config: RunConfig, chain: readonly string[] = []): Promise<boolean> {
+export async function prepareLaunch(
+  config: RunConfig,
+  chain: readonly string[] = [],
+  show?: boolean,
+): Promise<boolean> {
   if (!config.beforeLaunch?.length || !beforeLaunch) return true;
-  return beforeLaunch(config, [...chain, config.id]);
+  return beforeLaunch(config, [...chain, config.id], show);
 }
 
 /** Starts every configuration of a compound (after the compound's own before launch tasks). */
-export async function startCompound(config: RunConfig, chain: readonly string[] = []): Promise<RunSession[]> {
-  if (!(await prepareLaunch(config, chain))) return [];
+export async function startCompound(
+  config: RunConfig,
+  chain: readonly string[] = [],
+  show?: boolean,
+): Promise<RunSession[]> {
+  if (!(await prepareLaunch(config, chain, show))) return [];
   const children = compoundChildren(config, useRun.getState().configs);
   const sessions = await Promise.all(
-    children.map((c) => startRun(c, undefined, undefined, { chain: [...chain, config.id] })),
+    children.map((c) => startRun(c, undefined, undefined, { chain: [...chain, config.id], show })),
   );
   return sessions.filter((s): s is RunSession => !!s);
 }
@@ -650,8 +725,13 @@ export async function startRun(
     chain?: readonly string[];
   } = {},
 ): Promise<RunSession | null> {
+  config = withRunTarget(config);
+  if (!options.launch && isCMakeBuild(config)) {
+    await buildCMake(config.id, options.show !== false);
+    return null;
+  }
   if (config.kind === "compound") {
-    await startCompound(config, options.chain);
+    await startCompound(config, options.chain, options.show);
     return null;
   }
   // IDEA offers only Debug for Remote JVM Debug and the like: there is nothing to run.
@@ -666,9 +746,9 @@ export async function startRun(
     });
     return null;
   }
-  if (!options.launch && !options.prepared && !(await prepareLaunch(config, options.chain))) return null;
+  if (!options.launch && !options.prepared && !(await prepareLaunch(config, options.chain, options.show))) return null;
   const state = useRun.getState();
-  const busy = (s: RunSession) => s.status === "running" || s.status === "starting";
+  const busy = (s: RunSession) => isLive(s);
   let session = reuse ? state.sessions.find((s) => s.id === reuse) : undefined;
   // As in IDEA, a configuration that doesn't allow parallel
   // runs asks before stopping its running instances; rerunning a tab restarts it without asking.
@@ -689,8 +769,9 @@ export async function startRun(
     await stopSession(session.id);
     stopping.push(session.id);
   }
-  // The new process starts once the old one is gone (it may still hold a port or a lock).
-  await waitForExit(stopping);
+  // The new process starts once the old one is gone (it may still hold a port or a lock). As in
+  // IDEA there is no time limit: a first Stop waits for the shutdown, a second one kills it.
+  await waitForExit(stopping, null);
   session ??= state.sessions.find((s) => s.config.id === config.id && !busy(s));
 
   try {
@@ -762,7 +843,7 @@ export async function startRun(
   });
   rt.onExit = options.onExit;
   try {
-    if (config.focusToolWindow) toolWindowService().show("run", true);
+    if (options.show !== false && config.focusToolWindow) toolWindowService().show("run", true);
     else if (options.show ?? config.openToolWindow ?? workflowSettings().run.showOnStart)
       toolWindowService().show("run");
   } catch {
@@ -785,6 +866,8 @@ export async function startRun(
   };
   try {
     let launch = options.launch ?? config;
+    // A Maven/Gradle configuration's own command is its build; Rebuild adds clean.
+    if (!options.launch) launch = applyBuildPolicyToCommand(launch);
     // "Build and run using: Gradle": the module's Gradle build compiles and launches it.
     const delegated = isJvmApplication(launch) ? await gradleDelegation(launch) : null;
     if (runtimes.get(sessionId)?.generation !== generation) return getSession(sessionId) ?? null;
@@ -811,7 +894,7 @@ export async function startRun(
     if ((options.launch || launch.isTest) && launch.emulateTerminal) launch = { ...launch, emulateTerminal: false };
     if (launch.emulateTerminal) rt.terminal = new TerminalOutput();
     patchSession(sessionId, { terminal: !!launch.emulateTerminal });
-    const started = launch.isTest ? await gradleTestLaunch(withTestReporting(launch)) : launch;
+    const started = launch.isTest ? await gradleTestLaunch(withTestReporting(launch)) : await gradleBootLaunch(launch);
     if (runtimes.get(sessionId)?.generation !== generation) return getSession(sessionId) ?? null;
     const processStarted = performance.now();
     const info = await startWithRemedies(started, () => call(commands.runStart(started, channel)));
@@ -865,7 +948,8 @@ async function resolveJvmApplication(sessionId: string, config: RunConfig): Prom
     say(`No main class in '${config.name}': expected java [options] -cp \${classpath} <main class> [args]\n`, "stderr");
     return null;
   }
-  if (!parsed.classpath) return { ...config, args: [...consoleVmArgs(config), ...config.args] };
+  // Always prepare, exactly like Debug: even an explicit classpath needs the module, the
+  // project JDK and the selected build, and both modes must share the same result.
   const rt = runtime(sessionId)!;
   const request = { id: nextRequestId(), controller: new AbortController() };
   rt.resolveRequest = request;
@@ -874,6 +958,9 @@ async function resolveJvmApplication(sessionId: string, config: RunConfig): Prom
       request: request.id,
       signal: request.controller.signal,
       report: say,
+      saveAll: async () => {
+        await maybeEditorService()?.saveAll();
+      },
     });
     // No installed JDK is new enough for the module: offer to download one.
     const jdkHint = info.hints.find((h) => downloadJdkActions(h).length);
@@ -893,7 +980,7 @@ async function resolveJvmApplication(sessionId: string, config: RunConfig): Prom
       if (runtimes.get(sessionId) === rt && rt.resolveRequest === request) patchSession(sessionId, { stopped: true });
       return null;
     }
-    say(`Cannot resolve the classpath: ${message}\n`, "stderr");
+    say(e instanceof JavaBuildFailedError ? `${message}\n` : `Cannot resolve the classpath: ${message}\n`, "stderr");
     // jdtls can't start without a newer JDK: "Download JDK 25".
     const actions = downloadJdkActions(message);
     notifications().notify({
@@ -915,7 +1002,13 @@ const pendingExits = new Map<RunId, number | null>();
 function finishSession(sessionId: string, code: number | null) {
   const rt = runtimes.get(sessionId);
   const session = getSession(sessionId);
-  if (!rt || !session) return;
+  if (!session) return;
+  if (!rt) {
+    // Nothing to flush: the run's output runtime is gone already. The exit is still the
+    // authority on the process being over, so the tab must not stay "stopping" for ever.
+    patchSession(sessionId, { status: "finished", exitCode: code, endedAt: Date.now() });
+    return;
+  }
   // Output still on the channel lands before the exit is applied.
   setTimeout(() => {
     void (async () => {
@@ -926,8 +1019,10 @@ function finishSession(sessionId: string, code: number | null) {
         if (text) rt.console.append({ kind: "stdout", text });
       }
       rt.console.flush();
-      if (rt.tests && rt.parser) {
-        rt.tests.apply(rt.parser.end?.() ?? []);
+      await rt.pluginTests?.end();
+      if (runtimes.get(sessionId) !== rt) return;
+      if (rt.tests && (rt.parser || rt.pluginTests)) {
+        rt.tests.apply(rt.parser?.end?.() ?? []);
         // Surefire / Gradle print only failures and class totals: per-test results come from the XML reports.
         if (frameworkFor(session.config) === "jvm") {
           const reports = await jvmReports(session);
@@ -1035,11 +1130,14 @@ export async function stopSession(sessionId: string): Promise<void> {
     await commands.cancelRequest(request.id);
     return;
   }
-  if (session.runId === null || session.status !== "running") return;
-  patchSession(sessionId, { stopped: true });
+  if (session.runId === null || !isLive(session)) return;
+  // Stopping keeps the process live (IDEA: the Stop button stays until the process is gone);
+  // a second Stop meanwhile skips the grace period and kills it.
+  patchSession(sessionId, { stopped: true, status: "stopping" });
   try {
     await call(commands.runStop(session.runId));
   } catch (e) {
+    patchSession(sessionId, { status: "running" });
     notifications().notify({
       group: "run",
       level: "error",
@@ -1049,12 +1147,12 @@ export async function stopSession(sessionId: string): Promise<void> {
   }
 }
 
-/** Resolves once the given sessions' processes exited (or after `timeoutMs`). */
-export function waitForExit(sessionIds: readonly string[], timeoutMs = 10_000): Promise<void> {
+/** Resolves once the given sessions' processes exited (or after `timeoutMs`, unless `null`). */
+export function waitForExit(sessionIds: readonly string[], timeoutMs: number | null = 10_000): Promise<void> {
   const live = () =>
     sessionIds.some((id) => {
       const s = getSession(id);
-      return !!s && s.runId !== null && s.status === "running";
+      return !!s && s.runId !== null && isLive(s);
     });
   if (!live()) return Promise.resolve();
   return new Promise((resolve) => {
@@ -1063,7 +1161,7 @@ export function waitForExit(sessionIds: readonly string[], timeoutMs = 10_000): 
       unsubscribe();
       resolve();
     };
-    const timer = setTimeout(done, timeoutMs);
+    const timer = timeoutMs === null ? undefined : setTimeout(done, timeoutMs);
     const unsubscribe = useRun.subscribe(() => {
       if (!live()) done();
     });
@@ -1106,9 +1204,11 @@ export function rerunSession(sessionId: string) {
  * `run.debugConfig` entry the Services view and the editor context menu use
  * (`baseConfig` keeps the original configuration for derived launches).
  */
-export function debugSession(sessionId: string) {
+export function debugSession(sessionId: string, options: { show?: boolean } = {}) {
   const session = getSession(sessionId);
-  if (session) void executeAction("run.debugConfig", baseConfigOf(session));
+  if (!session) return;
+  const config = baseConfigOf(session);
+  void executeAction("run.debugConfig", options.show === false ? { config, show: false } : config);
 }
 
 /** Paths of the failed tests of a session's last run. */
@@ -1120,11 +1220,11 @@ export function failedTests(sessionId: string): string[][] {
 /** "Rerun Failed Tests": reruns only the failed tests in the same tab. Returns false when unsupported. */
 export function rerunFailed(sessionId: string): boolean {
   const session = getSession(sessionId);
-  if (!session || session.status === "running" || session.status === "starting") return false;
+  if (!session || isLive(session)) return false;
   const base = baseConfigOf(session);
-  const derived = rerunFailedConfig(base, failedTests(sessionId));
-  if (!derived) return false;
-  void startRun(derived, sessionId, base);
+  const derived = rerunFailedConfigs(base, failedTests(sessionId));
+  if (!derived.length) return false;
+  derived.forEach((config, index) => void startRun(config, index === 0 ? sessionId : undefined, base));
   return true;
 }
 
@@ -1144,14 +1244,16 @@ export async function runSelectedTests(
   const paths = leafTestPaths(nodes);
   const base = baseConfigOf(session);
   const name = nodes.length === 1 ? nodes[0]!.name : `${paths.length} tests`;
-  const derived = testsConfig(base, paths, name);
-  if (!derived) return false;
-  const config = adoptTemporary({
-    ...derived,
-    id: `context:tests:${base.id}:${paths.map((p) => p.join("/")).join("|")}`,
-  });
-  if (debug) await executeAction("run.debugConfig", config);
-  else await startRun(config);
+  const derived = testsConfigs(base, paths, name);
+  if (!derived.length) return false;
+  for (const [index, next] of derived.entries()) {
+    const config = adoptTemporary({
+      ...next,
+      id: `context:tests:${base.id}:${index}:${paths.map((p) => p.join("/")).join("|")}`,
+    });
+    if (debug) await executeAction("run.debugConfig", config);
+    else await startRun(config, undefined, base);
+  }
   return true;
 }
 
@@ -1178,7 +1280,7 @@ export async function sendStdin(sessionId: string, text: string): Promise<void> 
   } catch (e) {
     enqueue(sessionId, {
       kind: "system",
-      text: tx`Cannot write to stdin: ${e instanceof Error ? e.message : String(e)}\n`,
+      text: tx`Cannot write to stdin: ${e instanceof Error ? tx(e.message) : String(e)}\n`,
     });
   }
 }
@@ -1187,7 +1289,12 @@ export async function sendStdin(sessionId: string, text: string): Promise<void> 
 export function writeTerminal(sessionId: string, data: string) {
   const session = getSession(sessionId);
   if (!session || session.runId === null || session.status !== "running") return;
-  void call(commands.runStdin(session.runId, data)).catch(() => undefined);
+  void call(commands.runStdin(session.runId, data)).catch((e) => {
+    enqueue(sessionId, {
+      kind: "system",
+      text: tx`Cannot write to stdin: ${e instanceof Error ? tx(e.message) : String(e)}\n`,
+    });
+  });
 }
 
 /** The terminal console's size in cells; the process's terminal follows it. */
@@ -1221,7 +1328,7 @@ export function clearConsole(sessionId: string) {
 export async function closeSessionTab(sessionId: string): Promise<boolean> {
   const session = getSession(sessionId);
   if (!session) return false;
-  const running = session.status === "running" || session.status === "starting";
+  const running = isLive(session);
   if (running && workflowSettings().run.confirmTerminate && !(await confirmTerminate(session.config.name)))
     return false;
   closeSession(sessionId);
@@ -1231,7 +1338,7 @@ export async function closeSessionTab(sessionId: string): Promise<boolean> {
 export function closeSession(sessionId: string) {
   const session = getSession(sessionId);
   if (!session) return;
-  if (session.status === "running" || session.status === "starting") void stopSession(sessionId);
+  if (isLive(session)) void stopSession(sessionId);
   const rt = runtimes.get(sessionId);
   if (rt) cancelFlush(rt);
   runtimes.delete(sessionId);
@@ -1247,7 +1354,7 @@ export function closeSession(sessionId: string) {
 }
 
 export function runningSessions(): RunSession[] {
-  return useRun.getState().sessions.filter((s) => s.status === "running" || s.status === "starting");
+  return useRun.getState().sessions.filter(isLive);
 }
 
 /** Stops everything and forgets sessions (project closed). */
@@ -1299,4 +1406,60 @@ export function modifyTemporary(config: RunConfig) {
     editTarget: adopted.id,
     editDirty: adopted.detected === false,
   });
+}
+
+const SAMPLE_LINES = [
+  (i: number) =>
+    `2026-11-05 10:42:${String(i % 60).padStart(2, "0")}.${String(i % 1000).padStart(3, "0")}  INFO 4242 --- [nio-8080-exec-${i % 10}] c.a.orders.service.OrderService  : processed order #${i} in ${i % 97} ms`,
+  (i: number) => `\tat com.acme.orders.service.OrderService.process(OrderService.kt:${(i % 300) + 1})`,
+  (i: number) =>
+    `2026-11-05 10:42:01.${String(i % 1000).padStart(3, "0")} DEBUG 4242 --- [           main] o.s.web.servlet.DispatcherServlet        : GET "/api/orders/${i}", parameters={}`,
+];
+
+/**
+ * Development and the performance harness only: a session whose console gets
+ * `lines` generated log lines (stack frames among them), `perFrame` per
+ * animation frame, as from a chatty process. Resolves once all are shown.
+ */
+export async function startSampleOutput(lines: number, perFrame: number): Promise<void> {
+  const config: RunConfig = {
+    id: `sample-output-${sessionSeq + 1}`,
+    name: "Sample output",
+    kind: "shell",
+    command: "",
+    args: [],
+    cwd: null,
+    env: {},
+    detected: false,
+    isTest: false,
+    debugAdapter: null,
+  };
+  const session: RunSession = {
+    id: `run${++sessionSeq}`,
+    config,
+    runId: null,
+    status: "running",
+    exitCode: null,
+    startedAt: Date.now(),
+    endedAt: null,
+    stdinClosed: true,
+  };
+  runtimes.set(session.id, newRuntime(config));
+  useRun.setState((s) => ({ sessions: [...s.sessions, session], activeSession: session.id }));
+  bump(session.id);
+  try {
+    toolWindowService().show("run");
+  } catch {
+    /* no workbench (tests) */
+  }
+  for (let i = 0; i < lines;) {
+    await new Promise(requestAnimationFrame);
+    for (const end = Math.min(lines, i + perFrame); i < end; i++) {
+      const line = SAMPLE_LINES[i % 20 === 19 ? 1 : i % 7 === 6 ? 2 : 0]!(i);
+      enqueue(session.id, { kind: i % 101 === 100 ? "stderr" : "stdout", text: `${line}\n` });
+    }
+  }
+  await new Promise(requestAnimationFrame);
+  flush(session.id);
+  finishSession(session.id, 0);
 }

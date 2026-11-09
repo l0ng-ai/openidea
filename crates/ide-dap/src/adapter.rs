@@ -101,6 +101,7 @@ fn builtin(adapter: &str) -> Option<DebuggerConfig> {
         "lldb-dap" => {
             cfg("lldb-dap", &[], "stdio", "Install LLVM's lldb-dap (brew install llvm; on macOS `xcrun -f lldb-dap`)")
         }
+        "rdbg" => cfg("rdbg", &["-O", "--port", PORT_PLACEHOLDER, "-c"], "tcp", "gem install debug"),
         // A jdtls bundle: the session is started through jdtls and reached via `debugServer`.
         "java-debug" => cfg(
             "com.microsoft.java.debug.plugin.jar",
@@ -373,8 +374,8 @@ pub struct AdapterIo {
 pub type ProgramOutput = tokio::sync::mpsc::UnboundedReceiver<(&'static str, String)>;
 type ProgramSink = tokio::sync::mpsc::UnboundedSender<(&'static str, String)>;
 
-/// Delve's debuggee inherits its stdio; no DAP output event carries what the program prints.
-const SHARES_STDIO: &str = "delve";
+/// These debuggees inherit adapter stdio; no DAP event carries their output.
+const SHARES_STDIO: &[&str] = &["delve", "rdbg"];
 const DELVE_BANNER: &str = "DAP server listening at:";
 
 pub type LaunchFuture = Pin<Box<dyn Future<Output = IdeResult<AdapterIo>> + Send>>;
@@ -476,6 +477,9 @@ impl AdapterLauncher for ProcessLauncher {
                 cmd.env("PATH", path);
             }
             ide_core::process::prepare(cmd.as_std_mut());
+            if spec.adapter == "rdbg" {
+                ide_core::process::own_group(cmd.as_std_mut());
+            }
             cmd.args(&args)
                 .envs(spec.env.iter().map(|(k, v)| (k, v)))
                 .current_dir(&spec.cwd)
@@ -485,7 +489,7 @@ impl AdapterLauncher for ProcessLauncher {
                 .kill_on_drop(true);
             let mut child =
                 cmd.spawn().map_err(|e| IdeError::unavailable(format!("failed to start {}: {e}", binary.display())))?;
-            let (program_sink, program_output) = if spec.adapter == SHARES_STDIO {
+            let (program_sink, program_output) = if SHARES_STDIO.contains(&spec.adapter.as_str()) {
                 let (tx, rx) = tokio::sync::mpsc::unbounded_channel();
                 (Some(tx), Some(rx))
             } else {
@@ -515,6 +519,11 @@ impl AdapterLauncher for ProcessLauncher {
                     let stream = match connect_with_retries(LOOPBACK, port, Some(&mut child), timeout).await {
                         Ok(s) => s,
                         Err(e) => {
+                            if spec.adapter == "rdbg"
+                                && let Some(pid) = child.id()
+                            {
+                                ide_core::process::kill_tree_of(pid);
+                            }
                             let _ = child.start_kill();
                             let tail = stderr.lock().join("\n");
                             return Err(if tail.is_empty() {

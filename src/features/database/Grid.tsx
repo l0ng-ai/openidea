@@ -1,13 +1,13 @@
 /**
  * Result / table data grid: virtualised rows, resizable columns, rectangular
- * cell selection (click, ⇧-click, arrows, ⌘A), copy as TSV / CSV, `<null>`
- * rendering, sortable headers and in-place editing (table editor).
+ * cell selection (click, ⇧-click, arrows, ⌘A), copy as TSV / CSV / One-Row,
+ * `<null>` rendering, sortable headers and in-place editing (table editor).
  */
 import { useEffect, useMemo, useRef, useState, type ClipboardEvent, type KeyboardEvent, type MouseEvent } from "react";
 import { useVirtualizer } from "@tanstack/react-virtual";
 import clsx from "clsx";
 import { Dialog, Icon, showContextMenu, type MenuItem } from "@/ui";
-import { parseDelimited, toCsv, toTsv, type Cell } from "./model";
+import { parseDelimited, toCsv, toOneRow, toTsv, type Cell } from "./model";
 import styles from "./Database.module.css";
 import { tx } from "@/platform/i18n";
 import { CELL_PREVIEW_LIMIT, cellPreview, hasLineBreak } from "./cellPreview";
@@ -29,11 +29,16 @@ export function isNumericColumn(type: string, sample: readonly Cell[]): boolean 
   return values.length > 0 && values.every((v) => NUMBER.test(v));
 }
 
+/** The grid's own copy formats (the extractor drop-down chooses one for plain ⌘C). */
+export type CopyFormat = "tsv" | "csv" | "onerow";
+
 export interface GridProps {
   columns: readonly GridColumn[];
   rowCount: number;
   /** Displayed value (pending edits applied). */
   value: (row: number, col: number) => Cell;
+  /** The format plain ⌘C copies in (the toolbar's extractor; TSV by default). */
+  copyFormat?: CopyFormat;
   rowState?: (row: number) => "deleted" | "inserted" | null;
   isModified?: (row: number, col: number) => boolean;
   editable?: boolean;
@@ -117,7 +122,18 @@ function norm(s: Sel) {
 }
 
 export function Grid(props: GridProps) {
-  const { columns, rowCount, value, editable, onEdit, sort, onSort, rowMenu, firstRowNumber = 1 } = props;
+  const {
+    columns,
+    rowCount,
+    value,
+    editable,
+    onEdit,
+    sort,
+    onSort,
+    rowMenu,
+    firstRowNumber = 1,
+    copyFormat = "tsv",
+  } = props;
   const scrollRef = useRef<HTMLDivElement>(null);
   const [sel, setSel] = useState<Sel | null>(null);
   const dragging = useRef(false);
@@ -208,7 +224,7 @@ export function Grid(props: GridProps) {
     return Array.from({ length: n.bottom - n.top + 1 }, (_, i) => n.top + i);
   };
 
-  const copy = (format: "tsv" | "csv", header: boolean, wholeRows = false) => {
+  const copy = (format: CopyFormat, header: boolean, wholeRows = false) => {
     if (!sel) return;
     const n = norm(sel);
     const cols = wholeRows
@@ -216,7 +232,12 @@ export function Grid(props: GridProps) {
       : Array.from({ length: n.right - n.left + 1 }, (_, i) => n.left + i);
     const rows = selectedRows().map((r) => cols.map((c) => value(r, c)));
     const head = header ? cols.map((c) => columns[c]!.name) : null;
-    const text = format === "tsv" ? toTsv(head, rows) : toCsv(head, rows);
+    const text =
+      format === "onerow"
+        ? toOneRow(rows, (c) => !!numeric[cols[c]!])
+        : format === "tsv"
+          ? toTsv(head, rows)
+          : toCsv(head, rows);
     void navigator.clipboard?.writeText(text);
   };
 
@@ -247,7 +268,7 @@ export function Grid(props: GridProps) {
     const mod = e.metaKey || e.ctrlKey;
     if (mod && e.key.toLowerCase() === "c") {
       e.preventDefault();
-      copy("tsv", false);
+      copy(copyFormat, false);
       return;
     }
     if (mod && e.key.toLowerCase() === "f" && props.onFind) {
@@ -326,7 +347,15 @@ export function Grid(props: GridProps) {
     e.preventDefault();
     if (!sel) return;
     const items: MenuItem[] = [
-      { label: "Copy", shortcut: "⌘C", run: () => copy("tsv", false) },
+      { label: "Copy", shortcut: "⌘C", run: () => copy(copyFormat, false) },
+      {
+        label: "Copy as",
+        submenu: [
+          { label: "TSV", verbatim: true, run: () => copy("tsv", false) },
+          { label: "CSV", verbatim: true, run: () => copy("csv", false) },
+          { label: "One-Row", run: () => copy("onerow", false) },
+        ],
+      },
       { label: "Copy with Header", run: () => copy("tsv", true) },
       { label: "Copy Rows as TSV", run: () => copy("tsv", true, true) },
       { label: "Copy Rows as CSV", run: () => copy("csv", true, true) },

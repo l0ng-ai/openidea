@@ -59,6 +59,12 @@ pub struct Grant {
     /// `process:<program>` → the program confirmed for it.
     #[serde(default)]
     pub binaries: BTreeMap<String, BinaryGrant>,
+    /// Project root → process grant → the executable approved for that project.
+    #[serde(default)]
+    pub project_binaries: BTreeMap<PathBuf, BTreeMap<String, BinaryGrant>>,
+    /// Explicit global executable choices, retained for the next re-approval.
+    #[serde(default)]
+    pub program_choices: BTreeMap<String, PathBuf>,
     /// Migrated from 0.1: capabilities not granted yet are asked for on first
     /// use instead of blocking the plugin from loading.
     #[serde(default)]
@@ -248,6 +254,9 @@ impl Ledger {
         } else {
             if let Capability::Process(_) = cap {
                 grant.binaries.remove(&s);
+                for binaries in grant.project_binaries.values_mut() {
+                    binaries.remove(&s);
+                }
             }
             grant.granted.remove(&s)
         }
@@ -258,6 +267,58 @@ impl Ledger {
         if let Some(grant) = self.grants.get_mut(subject) {
             grant.binaries.insert(cap.to_string(), binary);
         }
+    }
+
+    /// The user's explicit global executable choice, if any.
+    pub fn program_choice(&self, subject: &Subject, cap: &Capability) -> Option<&Path> {
+        self.grants.get(subject)?.program_choices.get(&cap.to_string()).map(PathBuf::as_path)
+    }
+    /// Remembers or resets an explicit global executable choice after confirmation.
+    pub fn set_program_choice(&mut self, subject: &Subject, cap: &Capability, path: Option<&Path>) {
+        if let Some(grant) = self.grants.get_mut(subject) {
+            if let Some(path) = path {
+                grant.program_choices.insert(cap.to_string(), path.into());
+            } else {
+                grant.program_choices.remove(&cap.to_string());
+            }
+        }
+    }
+
+    /// Updates a project-specific program choice after user confirmation.
+    pub fn set_project_binary(
+        &mut self,
+        subject: &Subject,
+        cap: &Capability,
+        root: &Path,
+        binary: Option<BinaryGrant>,
+    ) {
+        if let Some(grant) = self.grants.get_mut(subject) {
+            if let Some(binary) = binary {
+                grant.project_binaries.entry(root.into()).or_default().insert(cap.to_string(), binary);
+            } else if let Some(binaries) = grant.project_binaries.get_mut(root) {
+                binaries.remove(&cap.to_string());
+            }
+        }
+    }
+    /// The project override when present, otherwise the global approved program.
+    pub fn check_binary_in_project(
+        &self,
+        subject: &Subject,
+        cap: &Capability,
+        root: Option<&Path>,
+    ) -> Result<PathBuf, String> {
+        let grant = self.grants.get(subject).ok_or_else(|| format!("{cap} was not granted"))?;
+        if !grant.has(cap) {
+            return Err(format!("{cap} was not granted"));
+        }
+        if let Some(bin) = root.and_then(|root| grant.project_binaries.get(root)).and_then(|b| b.get(&cap.to_string()))
+        {
+            return match file_hash(&bin.path) {
+                Ok(hash) if hash == bin.hash => Ok(bin.path.clone()),
+                _ => Err(format!("{} changed or is missing; confirm {cap} again", bin.path.display())),
+            };
+        }
+        self.check_binary(subject, cap)
     }
 
     /// Checks a `process:` grant at call time: the program confirmed for it,
@@ -306,8 +367,25 @@ pub fn by_risk(caps: &[Capability]) -> Vec<(Risk, Vec<Capability>)> {
     groups.into_iter().map(|(r, v)| (r.0, v)).collect()
 }
 
+/// Pins an explicitly selected executable, retaining a multicall shim's filename.
+pub fn approve_program(path: &Path) -> Result<BinaryGrant, String> {
+    if !path.is_absolute() || !is_executable(path) {
+        return Err("choose an absolute executable file".into());
+    }
+    let path = canonical_dir(path);
+    let hash = file_hash(&path).map_err(|e| e.to_string())?;
+    Ok(BinaryGrant { path, hash })
+}
+
 /// Resolves a `process:` program to an absolute path once, at grant time:
 /// absolute names are taken as is, others are looked up in `path_var`.
+/// The directory is canonicalized but the file name kept as found: `cargo`,
+/// `rustc` and friends are often links to a multicall shim (rustup, asdf,
+/// mise) that picks the tool by the name it was invoked under — resolving the
+/// link itself would start the shim with the tool's arguments. The grant
+/// still pins the target's content: a hash read through a link reads the file
+/// it points to, so relinking or replacing either still fails the
+/// approved-file check.
 pub fn resolve_program(name: &str, path_var: Option<&OsStr>) -> Result<PathBuf, String> {
     let candidate = Path::new(name);
     if candidate.is_absolute() {
@@ -325,15 +403,21 @@ pub fn resolve_program(name: &str, path_var: Option<&OsStr>) -> Result<PathBuf, 
         for ext in &exts {
             let p = dir.join(format!("{name}{ext}"));
             if is_executable(&p) {
-                return Ok(dunce_canonical(&p));
+                return Ok(canonical_dir(&p));
             }
         }
     }
     Err(format!("{name} was not found on PATH"))
 }
 
-fn dunce_canonical(p: &Path) -> PathBuf {
-    std::fs::canonicalize(p).unwrap_or_else(|_| p.to_path_buf())
+/// `p` with its parent canonicalized but the file name as found: PATH
+/// entries like `/var` → `/private/var` (macOS) or `~` links collapse to
+/// their real directory, while a linked program (`cargo` → rustup) keeps
+/// its link name so the shim still dispatches on argv[0].
+fn canonical_dir(p: &Path) -> PathBuf {
+    let Some(dir) = p.parent() else { return p.to_path_buf() };
+    let Some(name) = p.file_name() else { return p.to_path_buf() };
+    std::fs::canonicalize(dir).map(|d| d.join(name)).unwrap_or_else(|_| p.to_path_buf())
 }
 
 fn is_executable(p: &Path) -> bool {
@@ -471,6 +555,42 @@ mod tests {
         l.confirm(&r, &[], [(cap.to_string(), bin)].into());
         assert_eq!(l.check_binary(&r.subject, &cap).unwrap(), resolved);
         std::fs::write(&tool, "#!/bin/sh\necho evil\n").unwrap();
+        assert!(l.check_binary(&r.subject, &cap).unwrap_err().contains("changed"));
+    }
+
+    /// A program found as a link stays the link: multicall shims (rustup,
+    /// asdf, mise) pick the tool by the name they were invoked under, so
+    /// `Command::new` must see the link. The hash still covers the target —
+    /// reading through the link reads it — so replacing either still trips
+    /// the approved-file check.
+    #[cfg(unix)]
+    #[test]
+    fn linked_programs_resolve_to_the_link() {
+        use std::os::unix::fs::PermissionsExt;
+        let tmp = tempfile::tempdir().unwrap();
+        let bin_dir = tmp.path().join("bin");
+        let real_dir = tmp.path().join("real");
+        std::fs::create_dir(&bin_dir).unwrap();
+        std::fs::create_dir(&real_dir).unwrap();
+        let target = real_dir.join("shim");
+        std::fs::write(&target, "#!/bin/sh\necho v1\n").unwrap();
+        std::fs::set_permissions(&target, std::fs::Permissions::from_mode(0o755)).unwrap();
+        std::os::unix::fs::symlink(&target, bin_dir.join("cargo")).unwrap();
+
+        let path_var = std::env::join_paths([bin_dir.clone()]).unwrap();
+        let resolved = resolve_program("cargo", Some(&path_var)).unwrap();
+        // Directory canonicalized, file name kept — still the link.
+        let want = std::fs::canonicalize(&bin_dir).unwrap().join("cargo");
+        assert_eq!(resolved, want);
+        assert!(resolved.symlink_metadata().unwrap().file_type().is_symlink());
+
+        let mut l = Ledger::in_memory();
+        let r = req("1.0.0", "h", &["process:cargo"], &[]);
+        let cap: Capability = "process:cargo".parse().unwrap();
+        let bin = BinaryGrant { path: resolved.clone(), hash: file_hash(&resolved).unwrap() };
+        l.confirm(&r, &[], [(cap.to_string(), bin)].into());
+        assert_eq!(l.check_binary(&r.subject, &cap).unwrap(), resolved);
+        std::fs::write(&target, "#!/bin/sh\necho evil\n").unwrap();
         assert!(l.check_binary(&r.subject, &cap).unwrap_err().contains("changed"));
     }
 

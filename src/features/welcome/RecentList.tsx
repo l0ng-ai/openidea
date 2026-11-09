@@ -1,6 +1,7 @@
 import { useMemo, useState, type KeyboardEvent, type MouseEvent, type ReactNode } from "react";
 import clsx from "clsx";
 import { call, commands, type RecentProject, type RecentProjectGroup } from "@/platform/ipc";
+import { revealInFileManager } from "@/platform/fileManager";
 import { parseRemoteLocation } from "@/platform/remote";
 import {
   HighlightedText,
@@ -32,8 +33,13 @@ import {
 import styles from "./Welcome.module.css";
 import { tx } from "@/platform/i18n";
 
-/** IDEA's "Remove Recent Project" confirmation, then removes it from the list. */
-export async function askRemoveRecent(project: RecentProject) {
+/**
+ * IDEA's "Remove Recent Project" confirmation, then removes it from the list.
+ * `before` runs just before the confirmation opens: hosts above the dialog's
+ * layer (a popup) pass their closer so the confirmation is not covered (#1883).
+ */
+export async function askRemoveRecent(project: RecentProject, before?: () => void) {
+  before?.();
   const ok = await confirm({
     title: "Remove Recent Project",
     message: tx`Remove '${project.name}' from the list of recent projects?`,
@@ -108,7 +114,7 @@ export function groupMenu(group: RecentProjectGroup): MenuItem[] {
   ];
 }
 
-export function recentMenu(project: RecentProject, onOpened?: () => void): MenuItem[] {
+export function recentMenu(project: RecentProject, onOpened?: () => void, onRemove?: () => void): MenuItem[] {
   // A remote project has no local folder.
   const remote = parseRemoteLocation(project.path);
   const items: MenuItem[] = [
@@ -133,8 +139,7 @@ export function recentMenu(project: RecentProject, onOpened?: () => void): MenuI
       id: "reveal",
       label: "Show in Finder",
       icon: "external-link",
-      run: () =>
-        void import("@tauri-apps/plugin-opener").then((m) => m.revealItemInDir(project.path)).catch(() => undefined),
+      run: () => void revealInFileManager(project.path).catch(() => undefined),
     },
     {
       id: "copy",
@@ -150,7 +155,7 @@ export function recentMenu(project: RecentProject, onOpened?: () => void): MenuI
       label: "Remove from Recent Projects…",
       icon: "close",
       danger: true,
-      run: () => void askRemoveRecent(project),
+      run: () => void askRemoveRecent(project, onRemove),
     },
   ];
   return remote ? items.filter((i) => !("id" in i && i.id === "reveal")) : items;

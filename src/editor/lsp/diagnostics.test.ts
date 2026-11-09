@@ -1,7 +1,14 @@
-import { describe, expect, it } from "vitest";
+import { describe, expect, it, vi } from "vitest";
 import { Text } from "@codemirror/state";
 import type { Diagnostic } from "@/bindings";
-import { diagnosticsFor, setFileDiagnostics, subscribeDiagnostics, toLintDiagnostics } from "./diagnostics";
+import {
+  diagnosticsFor,
+  installDiagnosticsEvents,
+  setFileDiagnostics,
+  subscribeDiagnostics,
+  toLintDiagnostics,
+} from "./diagnostics";
+import { emitLocalIdeEvent } from "@/platform/ipc";
 
 const d = (
   line: number,
@@ -19,6 +26,20 @@ const d = (
 });
 
 describe("editor diagnostics store", () => {
+  it("identifies fresh backend publications, including empty replacements, separately from local inspections", () => {
+    const stop = installDiagnosticsEvents();
+    const listener = vi.fn();
+    const off = subscribeDiagnostics("/p/paste.java", listener);
+    const items = [d(0, 0, 4)];
+    setFileDiagnostics("/p/paste.java", "local", items);
+    expect(listener).toHaveBeenLastCalledWith(undefined);
+    emitLocalIdeEvent({ type: "diagnostics", path: "/p/paste.java", source: "jdtls", items });
+    expect(listener).toHaveBeenLastCalledWith({ source: "jdtls", items });
+    emitLocalIdeEvent({ type: "diagnostics", path: "/p/paste.java", source: "other-server", items: [] });
+    expect(listener).toHaveBeenLastCalledWith({ source: "other-server", items: [] });
+    off();
+    stop();
+  });
   it("keeps one list per source and notifies subscribers of the path", () => {
     let calls = 0;
     const off = subscribeDiagnostics("/p/x.rs", () => calls++);

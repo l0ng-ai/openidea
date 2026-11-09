@@ -41,6 +41,19 @@
 .error {
   color: var(--danger);
 }
+.link {
+  flex: none;
+  border: none;
+  background: none;
+  padding: 0;
+  font: inherit;
+  color: var(--link);
+  cursor: pointer;
+}
+.link:hover {
+  color: var(--link-hover);
+  text-decoration: underline;
+}
 .body {
   flex: 1;
   min-width: 0;

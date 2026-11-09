@@ -87,12 +87,19 @@ pub fn prepare(
     } else {
         with_scheme(&url)
     };
+    // Multipart bodies delimit parts with CRLF per RFC 2046 §5.1; joining
+    // with bare LF leaves servers (e.g. Tomcat) unable to find the boundary.
+    let is_multipart = headers
+        .iter()
+        .find(|(k, _)| k.eq_ignore_ascii_case("content-type"))
+        .is_some_and(|(_, v)| v.to_ascii_lowercase().starts_with("multipart/"));
+    let eol = if is_multipart { "\r\n" } else { "\n" };
     Ok(PreparedRequest {
         name: raw.block.name.clone(),
         method: raw.block.method.clone(),
         url,
         headers,
-        body: (!body_lines.is_empty()).then(|| body_lines.join("\n")),
+        body: (!body_lines.is_empty()).then(|| body_lines.join(eol)),
     })
 }
 
@@ -203,6 +210,22 @@ mod tests {
         let f = parse("GET https://{{host}}/x\n");
         let err = prepare(&f.requests[0], &f.variables, &Environments::default(), None, None).unwrap_err();
         assert!(err.message.contains("host"), "{}", err.message);
+    }
+
+    #[test]
+    fn multipart_bodies_join_lines_with_crlf() {
+        let f = parse(
+            "POST https://api.test/upload\nContent-Type: multipart/form-data; boundary=xyz\n\n--xyz\nfield\n--xyz--\n",
+        );
+        let p = prepare(&f.requests[0], &f.variables, &Environments::default(), None, None).unwrap();
+        assert_eq!(p.body.as_deref(), Some("--xyz\r\nfield\r\n--xyz--"));
+    }
+
+    #[test]
+    fn non_multipart_bodies_join_lines_with_lf() {
+        let f = parse("POST https://api.test/x\nContent-Type: application/json\n\n{\n\"a\": 1\n}\n");
+        let p = prepare(&f.requests[0], &f.variables, &Environments::default(), None, None).unwrap();
+        assert_eq!(p.body.as_deref(), Some("{\n\"a\": 1\n}"));
     }
 
     #[test]

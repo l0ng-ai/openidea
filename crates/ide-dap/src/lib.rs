@@ -282,7 +282,6 @@ impl SessionOwner {
 }
 
 const INIT_TIMEOUT: Duration = Duration::from_secs(20);
-const LAUNCH_TIMEOUT: Duration = Duration::from_secs(60);
 const REQUEST_TIMEOUT: Duration = Duration::from_secs(30);
 const SHUTDOWN_TIMEOUT: Duration = Duration::from_secs(3);
 /// Redefining many classes in a large JVM can take a while.
@@ -301,6 +300,65 @@ pub struct DebugManager {
     exception_choices: Mutex<BTreeMap<String, bool>>,
     function_breakpoints: Mutex<Vec<FunctionBreakpoint>>,
     data_breakpoints: Mutex<Vec<DataBreakpoint>>,
+    /// In-flight stops, by session: a second Stop sets `stop_force`, the waiting one kills.
+    stopping: Mutex<HashMap<DebugSessionId, Arc<Session>>>,
+}
+
+/// rdbg (Ruby's debug gem) starts the debuggee itself and ignores `launch`'s program,
+/// arguments and environment: they go on its command line after `--` and into its process.
+/// In a Bundler project it runs from the bundle, which must have `debug`: the debuggee then
+/// loads that version, and the gems rdbg needs (irb is not a default gem from Ruby 3.5).
+fn rdbg_command_line(spec: &mut AdapterSpec, config: &LaunchConfig, cwd: &Path) -> IdeResult<()> {
+    if config.request != "launch" {
+        return Ok(());
+    }
+    if spec.command == "rdbg"
+        && let Some(gemfile) = bundler_gemfile(cwd, &config.env)
+    {
+        if !bundles_debug(&gemfile) {
+            return Err(IdeError::unavailable(format!(
+                "the bundle of {} has no `debug` gem. Add `gem \"debug\"` to the Gemfile and run `bundle install`",
+                gemfile.display()
+            )));
+        }
+        spec.args.splice(0..0, ["exec".to_owned(), "rdbg".to_owned()]);
+        spec.command = "bundle".into();
+    }
+    spec.env.extend(config.env.iter().map(|(k, v)| (k.clone(), v.clone())));
+    spec.args.push("--".into());
+    // With only a command, Ruby's exec treats it as shell text. Ruby entry points
+    // without arguments go through -S so spaces and metacharacters stay literal.
+    if config.program.is_some() && config.args.is_empty() {
+        spec.args.extend(["ruby", "-S", "--"].map(str::to_owned));
+    }
+    spec.args.extend(config.program.iter().cloned());
+    spec.args.extend(config.args.iter().cloned());
+    Ok(())
+}
+
+/// The Gemfile Bundler uses in `dir`: `BUNDLE_GEMFILE`, else the closest `Gemfile` / `gems.rb` from `dir` up.
+fn bundler_gemfile(dir: &Path, env: &BTreeMap<String, String>) -> Option<PathBuf> {
+    let gemfile = env
+        .get("BUNDLE_GEMFILE")
+        .cloned()
+        .or_else(|| ide_core::process::host_var_os("BUNDLE_GEMFILE").map(|v| v.to_string_lossy().into_owned()));
+    match gemfile.filter(|g| !g.is_empty()) {
+        Some(gemfile) => Some(dir.join(gemfile)),
+        None => dir.ancestors().flat_map(|d| [d.join("gems.rb"), d.join("Gemfile")]).find(|g| g.is_file()),
+    }
+}
+
+/// Whether the lockfile of `gemfile` lists the `debug` gem.
+fn bundles_debug(gemfile: &Path) -> bool {
+    let lockfile = if gemfile.file_name().is_some_and(|n| n == "gems.rb") {
+        gemfile.with_file_name("gems.locked")
+    } else {
+        let mut name = gemfile.as_os_str().to_owned();
+        name.push(".lock");
+        PathBuf::from(name)
+    };
+    // The bundle's gems are the lines indented by four spaces: `    debug (1.9.2)`.
+    std::fs::read_to_string(lockfile).is_ok_and(|text| text.lines().any(|l| l.starts_with("    debug (")))
 }
 
 /// Whether the debugged project depends on the Flutter SDK, so it must go
@@ -530,6 +588,34 @@ fn unverified(enabled: impl Iterator<Item = bool>) -> Vec<BreakpointState> {
         .collect()
 }
 
+/// Delve compiles the debuggee to `__debug_bin` in the session's cwd (on Windows
+/// `__debug_bin.exe` plus `__debug_bin.exe<digits>` in DAP mode) and removes it on a
+/// graceful exit — a shutdown it doesn't always reach, so the files pile up. Sweep
+/// the leftovers once the session is down. Runs after `session_closed`, so Delve
+/// has already exited or been killed and holds no file locks; a leftover of a
+/// still-building run is removed on that run's own shutdown.
+fn remove_delve_binaries(cwd: &Path) {
+    let Ok(entries) = std::fs::read_dir(cwd) else { return };
+    for entry in entries.flatten() {
+        let name = entry.file_name();
+        let Some(name) = name.to_str() else { continue };
+        // Windows writes `__debug_bin.exe` (and `.exe<digits>` in DAP mode); other
+        // platforms keep the bare name. Suffixes like `.go` are user files.
+        let suffix = name.strip_prefix("__debug_bin");
+        let leftover = suffix.is_some_and(|s| {
+            s.is_empty()
+                || s == ".exe"
+                || (s.starts_with(".exe") && s[".exe".len()..].chars().all(|c| c.is_ascii_digit()))
+        });
+        if leftover
+            && entry.file_type().is_ok_and(|t| t.is_file())
+            && let Err(e) = std::fs::remove_file(entry.path())
+        {
+            tracing::debug!("could not remove Delve leftover {}: {e}", entry.path().display());
+        }
+    }
+}
+
 pub(crate) fn variable_from(v: &Value) -> Variable {
     let s = |k: &str| v.get(k).and_then(Value::as_str).map(str::to_owned);
     Variable {
@@ -559,6 +645,7 @@ impl DebugManager {
             exception_choices: Mutex::default(),
             function_breakpoints: Mutex::default(),
             data_breakpoints: Mutex::default(),
+            stopping: Mutex::default(),
         })
     }
 
@@ -619,6 +706,9 @@ impl DebugManager {
                 .and_then(|v| v.as_str().map(str::to_owned))
         {
             spec.env.push(("JAVA_HOME".into(), home));
+        }
+        if config.adapter == "rdbg" {
+            rdbg_command_line(&mut spec, &config, &cwd)?;
         }
         if let Some(command) = custom_command(&spec.command) {
             spec.command = command;
@@ -763,14 +853,23 @@ impl DebugManager {
             let stderr = stderr.clone();
             Connection::start_with_output(io.reader, io.writer, Box::new(move |line| adapter::push_line(&stderr, line)))
         };
+        let rdbg_pid = (adapter_name == "rdbg" && request == "launch")
+            .then(|| io.child.as_ref().and_then(tokio::process::Child::id))
+            .flatten();
         let session =
             Arc::new(Session::new(id, owner, name, adapter_name, parent, request, conn, spec, io.port, io.child));
+        // rdbg execs the debuggee in its own process and sends no DAP process event.
+        if let Some(pid) = rdbg_pid {
+            session.debuggee_pid.store(i64::from(pid), Ordering::Release);
+        }
         if let Some(mut output) = io.program_output {
+            session.output_drained.send_replace(false);
             let session = session.clone();
             tokio::spawn(async move {
                 while let Some((category, output)) = output.recv().await {
                     session.emit(ide_core::event::DebugEvent::Output { category: category.into(), output });
                 }
+                session.output_drained.send_replace(true);
             });
         }
         self.sessions.lock().insert(id, session.clone());
@@ -783,7 +882,12 @@ impl DebugManager {
         });
         tokio::spawn(session::event_loop(self.me.clone(), session.clone(), incoming));
 
-        match self.configure(&session, arguments).await {
+        let configured = tokio::select! {
+            biased;
+            _ = session.startup_cancel.cancelled() => return Err(IdeError::cancelled()),
+            result = self.configure(&session, arguments) => result,
+        };
+        match configured {
             Ok(()) => Ok(id),
             Err(e) => {
                 let e = if session.conn.is_closed() {
@@ -871,7 +975,9 @@ impl DebugManager {
             arguments["hostName"] = json!("127.0.0.1");
             arguments["port"] = json!(port);
         }
-        // Many adapters answer `launch` only after `configurationDone`, so don't wait for it yet.
+        // Launch/attach may wait for a slow runtime or a remote target. Let the adapter report
+        // failure; Stop cancels configuration and a closed connection fails the pending reply.
+        // Many adapters answer only after `configurationDone`, so don't wait for the reply yet.
         let launch = s.conn.send_request(request, arguments)?;
         let mut launch = Box::pin(async move { launch.await.unwrap_or(Err(DapError::Closed)) });
         let mut initialized = s.initialized.subscribe();
@@ -883,7 +989,6 @@ impl DebugManager {
                 launch_result = Some(());
                 false
             }
-            _ = tokio::time::sleep(LAUNCH_TIMEOUT) => return Err(DapError::Timeout(s.request.clone()).into()),
         };
         if !got_initialized {
             // Launched before `initialized`; give the adapter a moment to send it.
@@ -941,12 +1046,7 @@ impl DebugManager {
         }
         s.configured.store(true, Ordering::Release);
         if launch_result.is_none() {
-            match tokio::time::timeout(LAUNCH_TIMEOUT, launch).await {
-                Ok(r) => {
-                    r?;
-                }
-                Err(_) => return Err(DapError::Timeout(s.request.clone()).into()),
-            }
+            launch.await?;
         }
         if let Some(relay) = s.kotlin_relay.lock().as_mut() {
             relay.release();
@@ -966,21 +1066,74 @@ impl DebugManager {
 
     /// Ends a session: `terminate` (when asked and supported) → `disconnect` → kill.
     pub(crate) async fn shutdown(&self, s: &Arc<Session>, terminate: bool) {
+        // java-debug runs the program itself and pipes its stdout over DAP. A `disconnect`
+        // ends that DAP session, so every line the program writes while shutting down is lost.
+        // Ask the program to exit ourselves and keep the adapter attached until it has drained
+        // the console (`terminated`), as IDEA does with the process it owns.
+        let pid = s.debuggee_pid.load(Ordering::Acquire);
+        let own_terminate = terminate && s.request == "launch" && pid > 0;
+        // rdbg's terminate exits the Ruby process without terminating its children.
+        let graceful =
+            terminate && s.request == "launch" && s.adapter != "rdbg" && s.supports("supportsTerminateRequest");
         if !s.conn.is_closed() {
-            if terminate && s.request == "launch" && s.supports("supportsTerminateRequest") {
+            if graceful {
                 let _ = s.conn.request_timeout("terminate", json!({ "restart": false }), SHUTDOWN_TIMEOUT).await;
             }
+            if !graceful && !own_terminate {
+                let _ = s
+                    .conn
+                    .request_timeout(
+                        "disconnect",
+                        json!({ "restart": false, "terminateDebuggee": s.request == "launch" }),
+                        SHUTDOWN_TIMEOUT,
+                    )
+                    .await;
+            }
+        }
+        if own_terminate && !graceful {
+            // Signal before anything else: waiting on a request the adapter may not answer
+            // would delay the shutdown the console is supposed to show.
+            crate::session::signal_debuggee(s, false);
+        }
+        if graceful {
+            // java-debug sends `terminated` only after it has drained the program's console
+            // (it waits up to 5 s for the output pump). Close on the process id alone and the
+            // last shutdown lines are dropped, so wait for that event here.
+            let deadline = std::time::Instant::now() + crate::session::DEBUGGEE_EXIT_WAIT;
+            while !s.terminated.load(Ordering::Acquire) && std::time::Instant::now() < deadline {
+                tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+            }
+        }
+        // An adapter answers `disconnect` before the program it launched has exited, and that
+        // program keeps its port until it is gone. Reporting the session as terminated then
+        // lets Run start again into an occupied port, so wait for the program first — with the
+        // connection still open, so a second Stop can find the session and kill it.
+        crate::session::wait_for_debuggee(s, terminate).await;
+        if terminate && s.request == "launch" {
+            // The adapter reports `terminated` only after it has drained the program's console
+            // (java-debug waits up to 5 s for the pump): closing before that drops the last
+            // shutdown lines from the console.
+            let deadline = std::time::Instant::now() + std::time::Duration::from_secs(6);
+            while !s.terminated.load(Ordering::Acquire) && !s.conn.is_closed() && std::time::Instant::now() < deadline {
+                tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+            }
+        }
+        if graceful && !s.conn.is_closed() {
             let _ = s
                 .conn
                 .request_timeout(
                     "disconnect",
-                    json!({ "restart": false, "terminateDebuggee": s.request == "launch" }),
+                    json!({ "restart": false, "terminateDebuggee": false }),
                     SHUTDOWN_TIMEOUT,
                 )
                 .await;
         }
         s.conn.close();
         self.session_closed(s);
+        if s.adapter == "delve" && s.spec.server_host.is_none() {
+            let cwd = s.spec.cwd.clone();
+            tokio::task::spawn_blocking(move || remove_delve_binaries(&cwd));
+        }
     }
 
     /// Breakpoints are kept per file even without a session and sent on start.
@@ -1545,11 +1698,43 @@ impl DebugManager {
         }
     }
 
-    /// Stops a session and its child sessions.
+    /// Stops every debug session started from `root` or below — closing a project stops the
+    /// programs it launched even when the session's owner key does not name the window doing
+    /// the closing (window groups, auxiliary windows).
+    pub async fn stop_under(&self, root: &Path) {
+        let ids: Vec<DebugSessionId> =
+            self.live_sessions().into_iter().filter(|s| s.spec.cwd.starts_with(root)).map(|s| s.id).collect();
+        tracing::info!(root = %root.display(), sessions = ids.len(), "closing project: stopping debug sessions");
+        for id in ids {
+            if let Err(e) = self.stop(id).await {
+                tracing::debug!("debug session {id:?} did not stop: {e}");
+            }
+        }
+    }
+
+    /// Stops a session and its child sessions. A second Stop while the first one waits kills
+    /// the program instead of waiting for it — even after the adapter dropped the session.
     pub async fn stop(&self, s: DebugSessionId) -> IdeResult<()> {
+        {
+            let in_flight = self.stopping.lock();
+            if let Some(session) = in_flight.get(&s) {
+                session.stop_force.store(true, Ordering::Release);
+                return Ok(());
+            }
+        }
         let session = self.session(s)?;
-        let children: Vec<Arc<Session>> = self.live_sessions().into_iter().filter(|c| c.parent == Some(s)).collect();
+        self.stopping.lock().insert(s, session.clone());
+        let result = self.stop_tree(session).await;
+        self.stopping.lock().remove(&s);
+        result
+    }
+
+    async fn stop_tree(&self, session: Arc<Session>) -> IdeResult<()> {
+        session.startup_cancel.cancel();
+        let children: Vec<Arc<Session>> =
+            self.live_sessions().into_iter().filter(|c| c.parent == Some(session.id)).collect();
         for child in children {
+            child.startup_cancel.cancel();
             self.shutdown(&child, true).await;
         }
         self.shutdown(&session, true).await;

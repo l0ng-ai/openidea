@@ -181,8 +181,9 @@ pub async fn db_explain(
     request: RequestId,
     id: String,
     statement: String,
+    schema: Option<String>,
 ) -> IdeResult<Vec<ide_db::PlanNode>> {
-    ide_host::ops::db::explain(&state.host, window.label(), request, &id, &statement).await
+    ide_host::ops::db::explain(&state.host, window.label(), request, &id, &statement, schema.as_deref()).await
 }
 
 #[tauri::command]
@@ -244,6 +245,7 @@ pub fn db_statements(
 
 #[tauri::command]
 #[specta::specta]
+#[allow(clippy::too_many_arguments)]
 pub async fn db_execute(
     window: Window,
     state: State<'_, AppState>,
@@ -252,8 +254,10 @@ pub async fn db_execute(
     statements: Vec<SqlStatement>,
     skip: u32,
     max_rows: u32,
+    schema: Option<String>,
 ) -> IdeResult<Vec<StatementOutcome>> {
-    ide_host::ops::db::execute(&state.host, window.label(), request, &id, statements, skip, max_rows).await
+    ide_host::ops::db::execute(&state.host, window.label(), request, &id, statements, skip, max_rows, schema.as_deref())
+        .await
 }
 
 #[tauri::command]

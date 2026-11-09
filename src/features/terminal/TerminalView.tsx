@@ -66,7 +66,6 @@ function tabTooltip(tab: TerminalTab, sessions: Parameters<typeof tabTitle>[1]):
 function TerminalPane({ sessionKey, active, autofocus }: { sessionKey: string; active: boolean; autofocus: boolean }) {
   const ref = useRef<HTMLDivElement>(null);
   const status = useTerminals((s) => s.sessions[sessionKey]?.status);
-  const follow = useTerminals((s) => s.sessions[sessionKey]?.follow ?? true);
 
   // Hidden tabs stay unopened. xterm.open() under display:none measures a 0 cell
   // and the textarea never accepts input, even after the tab is shown.
@@ -90,17 +89,7 @@ function TerminalPane({ sessionKey, active, autofocus }: { sessionKey: string; a
         if (e.target === e.currentTarget) getSession(sessionKey)?.focus();
       }}
       onContextMenu={(e) => paneMenu(e, sessionKey)}
-    >
-      <div className={styles.paneActions} role="toolbar" aria-label="Terminal actions">
-        <IconButton
-          icon="arrow-down"
-          iconSize={14}
-          title="Scroll to End"
-          pressed={follow}
-          onClick={() => getSession(sessionKey)?.setFollow(!follow)}
-        />
-      </div>
-    </div>
+    />
   );
 }
 

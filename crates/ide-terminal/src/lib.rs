@@ -11,7 +11,7 @@ use portable_pty::{ChildKiller, CommandBuilder, MasterPty, PtySize, native_pty_s
 use serde::{Deserialize, Serialize};
 use specta::Type;
 use std::collections::{BTreeMap, HashMap};
-use std::io::{Read, Write};
+use std::io::Read;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
@@ -56,8 +56,9 @@ struct Session {
     /// The window that opened it: closing that window's project closes its terminals.
     key: String,
     info: TerminalInfo,
+    // Cancel input before dropping the master (ClosePseudoConsole on Windows).
+    writer: ide_core::input::InputWriter,
     master: Mutex<Box<dyn MasterPty + Send>>,
-    writer: Mutex<Box<dyn Write + Send>>,
     killer: Mutex<Box<dyn ChildKiller + Send + Sync>>,
     exited: Arc<AtomicBool>,
     started: Instant,
@@ -92,11 +93,44 @@ impl TerminalManager {
         sink: SharedSink,
         on_output: Box<dyn Fn(String) + Send>,
     ) -> IdeResult<TerminalInfo> {
+        self.spawn_impl(options, key, sink, on_output, false)
+    }
+
+    /// Runs an approved absolute executable with exact arguments and cwd.
+    /// A missing project directory fails instead of falling back to the home directory.
+    pub fn spawn_program(
+        &self,
+        options: TerminalOptions,
+        key: String,
+        sink: SharedSink,
+        on_output: Box<dyn Fn(String) + Send>,
+    ) -> IdeResult<TerminalInfo> {
+        if !options.shell.as_deref().is_some_and(|p| Path::new(p).is_absolute())
+            || !options.cwd.is_absolute()
+            || !options.cwd.is_dir()
+        {
+            return Err(IdeError::invalid("a program PTY requires an absolute executable and an existing cwd"));
+        }
+        self.spawn_impl(options, key, sink, on_output, true)
+    }
+
+    fn spawn_impl(
+        &self,
+        options: TerminalOptions,
+        key: String,
+        sink: SharedSink,
+        on_output: Box<dyn Fn(String) + Send>,
+        exact: bool,
+    ) -> IdeResult<TerminalInfo> {
         let size = pty_size(options.cols, options.rows);
         let pair = native_pty_system().openpty(size).map_err(|e| IdeError::internal(format!("openpty failed: {e}")))?;
 
-        let wsl = if cfg!(windows) { wsl_shell(&options) } else { None };
-        let (shell, mut args) = wsl.clone().unwrap_or_else(|| resolve_shell(options.shell.as_deref(), &options.args));
+        let wsl = if cfg!(windows) && !exact { wsl_shell(&options) } else { None };
+        let (shell, mut args) = if exact {
+            (options.shell.clone().expect("spawn_program checked the executable"), options.args.clone())
+        } else {
+            wsl.clone().unwrap_or_else(|| resolve_shell(options.shell.as_deref(), &options.args))
+        };
         let mut env = terminal_env(&options.env);
         if let Some(msystem) = default_msystem(&shell, &options.env, std::env::var("MSYSTEM").ok().as_deref()) {
             env.insert("MSYSTEM".to_owned(), msystem.to_owned());
@@ -104,13 +138,19 @@ impl TerminalManager {
         if default_chere_invoking(&shell, &options.env, std::env::var("CHERE_INVOKING").ok().as_deref()) {
             env.insert("CHERE_INVOKING".to_owned(), "1".to_owned());
         }
-        if options.shell_integration {
+        if options.shell_integration && !exact {
             integration::apply(&shell_title(&shell), &mut args, &mut env);
         }
         let mut cmd = CommandBuilder::new(&shell);
         cmd.args(&args);
         // wsl.exe takes the directory through `--cd`; a UNC share is no valid process cwd.
-        cmd.cwd(if wsl.is_some() { resolve_cwd(Path::new("")) } else { resolve_cwd(&options.cwd) });
+        cmd.cwd(if exact {
+            options.cwd.0.clone()
+        } else if wsl.is_some() {
+            resolve_cwd(Path::new(""))
+        } else {
+            resolve_cwd(&options.cwd)
+        });
         for (k, v) in ide_core::process::host_env_fixes() {
             match v {
                 Some(v) => cmd.env(k, v),
@@ -122,7 +162,16 @@ impl TerminalManager {
         }
         apply_powershell_env(&shell, &mut cmd);
 
-        let child = pair
+        #[cfg(unix)]
+        let wait_writable = ide_core::input::nonblocking(
+            pair.master.as_raw_fd().ok_or_else(|| std::io::Error::other("PTY has no file descriptor"))?,
+        )?;
+        #[cfg(unix)]
+        let wait_readable = ide_core::input::readable(
+            pair.master.as_raw_fd().ok_or_else(|| std::io::Error::other("PTY has no file descriptor"))?,
+        )?;
+
+        let mut child = pair
             .slave
             .spawn_command(cmd)
             .map_err(|e| IdeError::unavailable(format!("failed to start shell `{shell}`: {e}")))?;
@@ -135,11 +184,24 @@ impl TerminalManager {
         let id = TerminalId::next();
         let info = TerminalInfo { id, title: shell_title(&shell), pid: child.process_id() };
         let exited = Arc::new(AtomicBool::new(false));
+        let writer = ide_core::input::InputWriter::new(
+            format!("openidea-term-write-{}", id.0),
+            writer,
+            #[cfg(unix)]
+            wait_writable,
+            move |e| {
+                tracing::warn!(%id, "terminal input: {e}");
+            },
+        )
+        .inspect_err(|_| {
+            let _ = child.kill();
+            let _ = child.wait();
+        })?;
         let session = Arc::new(Session {
             key,
             info: info.clone(),
             master: Mutex::new(pair.master),
-            writer: Mutex::new(writer),
+            writer,
             killer: Mutex::new(child.clone_killer()),
             exited: exited.clone(),
             started: Instant::now(),
@@ -148,9 +210,15 @@ impl TerminalManager {
         self.sessions.lock().insert(id, session);
 
         let (tx, rx) = mpsc::channel::<Msg>();
-        let spawned = spawn_reader(id, reader, tx.clone())
-            .and_then(|_| spawn_waiter(id, child, tx))
-            .and_then(|_| spawn_pump(id, rx, on_output, exited, self.sessions.clone(), sink, Instant::now()));
+        let spawned = spawn_reader(
+            id,
+            reader,
+            tx.clone(),
+            #[cfg(unix)]
+            wait_readable,
+        )
+        .and_then(|_| spawn_waiter(id, child, tx))
+        .and_then(|_| spawn_pump(id, rx, on_output, exited, self.sessions.clone(), sink, Instant::now()));
         if let Err(e) = spawned {
             if let Some(s) = self.sessions.lock().remove(&id) {
                 let _ = s.killer.lock().kill();
@@ -170,9 +238,7 @@ impl TerminalManager {
             let ms = session.started.elapsed().as_millis();
             tracing::info!(%id, ms, bytes = data.len(), cursor_report, "terminal first input");
         }
-        let mut w = session.writer.lock();
-        w.write_all(data.as_bytes())?;
-        w.flush()?;
+        session.writer.write(data.as_bytes())?;
         Ok(())
     }
 
@@ -325,6 +391,7 @@ mod win {
 
 /// Hangs up the shell (and its process group), escalating to SIGKILL if it lingers.
 fn terminate(session: &Session) {
+    session.writer.close();
     if session.exited.load(Ordering::Acquire) {
         return;
     }
@@ -356,7 +423,12 @@ fn terminate(session: &Session) {
     }
 }
 
-fn spawn_reader(id: TerminalId, mut reader: Box<dyn Read + Send>, tx: mpsc::Sender<Msg>) -> std::io::Result<()> {
+fn spawn_reader(
+    id: TerminalId,
+    mut reader: Box<dyn Read + Send>,
+    tx: mpsc::Sender<Msg>,
+    #[cfg(unix)] mut wait_readable: impl FnMut() -> std::io::Result<()> + Send + 'static,
+) -> std::io::Result<()> {
     std::thread::Builder::new().name(format!("openidea-term-read-{}", id.0)).spawn(move || {
         let mut buf = vec![0u8; 16 * 1024];
         loop {
@@ -368,8 +440,24 @@ fn spawn_reader(id: TerminalId, mut reader: Box<dyn Read + Send>, tx: mpsc::Send
                     }
                 }
                 Err(e) if e.kind() == std::io::ErrorKind::Interrupted => continue,
+                Err(e) if e.kind() == std::io::ErrorKind::WouldBlock => {
+                    #[cfg(unix)]
+                    if let Err(e) = wait_readable()
+                        && e.kind() != std::io::ErrorKind::Interrupted
+                    {
+                        tracing::warn!(%id, "terminal read: {e}");
+                        break;
+                    }
+                    #[cfg(not(unix))]
+                    std::thread::sleep(BATCH_INTERVAL);
+                }
                 // EIO is how Linux/macOS report "slave side closed".
-                Err(_) => break,
+                #[cfg(unix)]
+                Err(e) if e.raw_os_error() == Some(libc::EIO) => break,
+                Err(e) => {
+                    tracing::warn!(%id, "terminal read: {e}");
+                    break;
+                }
             }
         }
     })?;
@@ -558,13 +646,15 @@ pub fn available_shells() -> Vec<String> {
 /// argument-less) POSIX shell is started as a login shell, like Terminal.app,
 /// the Git Bash shortcut and IDEA: login start-up is what loads the completions
 /// and prompts users expect (`/etc/profile`, Git for Windows' git-completion).
+/// `OPENIDEA_SKIP_SHELL_ENV` disables the implicit login argument; explicit
+/// arguments still take precedence, and interactive startup files still run.
 pub fn resolve_shell(shell: Option<&str>, args: &[String]) -> (String, Vec<String>) {
     let shell = shell.map(str::trim).filter(|s| !s.is_empty()).map(str::to_owned).unwrap_or_else(default_shell);
     if !args.is_empty() {
         return (shell, args.to_vec());
     }
-    let login =
-        matches!(shell_title(&shell).as_str(), "zsh" | "bash" | "sh" | "fish" | "ksh" | "dash" | "tcsh" | "csh");
+    let login = std::env::var_os("OPENIDEA_SKIP_SHELL_ENV").is_none()
+        && matches!(shell_title(&shell).as_str(), "zsh" | "bash" | "sh" | "fish" | "ksh" | "dash" | "tcsh" | "csh");
     let args = if login { vec!["-l".to_owned()] } else { Vec::new() };
     (shell, args)
 }
@@ -766,6 +856,56 @@ mod tests {
             }
         }
         all
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn blocked_input_returns_promptly_and_kill_does_not_wait_for_it() {
+        let h = harness();
+        let (info, output) = spawn_collect(&h, sh("stty raw -echo; printf READY; exec sleep 60"));
+        read_until(&output, "READY");
+        let started = Instant::now();
+        h.manager.write(info.id, &"x".repeat(512 * 1024)).unwrap();
+        h.manager.write(info.id, "\u{3}").unwrap();
+        assert!(started.elapsed() < Duration::from_millis(250));
+        std::thread::sleep(Duration::from_millis(50));
+        let started = Instant::now();
+        h.manager.kill(info.id).unwrap();
+        assert!(started.elapsed() < Duration::from_millis(250));
+        wait_exit(&h, info.id);
+        assert!(h.manager.write(info.id, "later").is_err());
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn input_keeps_large_pastes_and_following_keystrokes_in_order() {
+        let h = harness();
+        let (info, output) = spawn_collect(&h, sh("stty raw -echo; printf READY; sleep 1; exec cat"));
+        read_until(&output, "READY");
+        let paste = "abé".repeat(128 * 1024);
+        let started = Instant::now();
+        h.manager.write(info.id, &paste).unwrap();
+        h.manager.write(info.id, "END-OF-INPUT").unwrap();
+        assert!(started.elapsed() < Duration::from_millis(250));
+        let actual = read_until(&output, "END-OF-INPUT");
+        h.manager.kill(info.id).unwrap();
+        assert_eq!(actual, format!("{paste}END-OF-INPUT"));
+    }
+
+    #[test]
+    fn program_sessions_never_fall_back_to_another_executable_or_cwd() {
+        let h = harness();
+        let mut options = sh("exit 0");
+        options.shell = None;
+        assert!(h.manager.spawn_program(options, "test".into(), h.sink.clone(), Box::new(|_| {})).is_err());
+        let mut options = sh("exit 0");
+        options.shell = Some("sh".into());
+        assert!(h.manager.spawn_program(options, "test".into(), h.sink.clone(), Box::new(|_| {})).is_err());
+        let mut options = sh("exit 0");
+        options.cwd = std::env::temp_dir().join(format!("openidea-missing-{}", std::process::id())).into();
+        assert!(!options.cwd.exists());
+        assert!(h.manager.spawn_program(options, "test".into(), h.sink.clone(), Box::new(|_| {})).is_err());
+        assert!(h.manager.list().is_empty());
     }
 
     #[test]

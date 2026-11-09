@@ -1,7 +1,11 @@
 //! Repository version lookups for manifest inspections and completion.
 use crate::{Host, rpc::Dispatcher};
 use ide_core::{CancellationToken, DocId, IdeError, IdeResult, RequestId};
-use ide_workspace::dependencies::{DependencyVersionSource, DependencyVersions, cargo};
+use ide_workspace::dependencies::{DependencyVersionSource, DependencyVersions, cargo, go};
+use std::collections::BTreeMap;
+use std::hash::{DefaultHasher, Hash, Hasher};
+use std::path::{Path, PathBuf};
+use std::process::Command;
 
 struct CratesIo;
 impl DependencyVersionSource for CratesIo {
@@ -21,6 +25,76 @@ impl DependencyVersionSource for CratesIo {
     }
 }
 
+struct GoModules {
+    root: PathBuf,
+    env: BTreeMap<String, String>,
+}
+
+impl DependencyVersionSource for GoModules {
+    fn id(&self) -> &'static str {
+        "go-modules"
+    }
+
+    fn cache_key(&self, package: &str) -> Option<String> {
+        let mut hash = DefaultHasher::new();
+        (&self.root, &self.env, package).hash(&mut hash);
+        Some(format!("{}-{:016x}", self.id(), hash.finish()))
+    }
+
+    fn fetch(&self, package: &str, cancel: &CancellationToken) -> IdeResult<Vec<String>> {
+        let search =
+            self.env.get("PATH").map(std::ffi::OsString::from).unwrap_or_else(ide_core::tool_path::search_path);
+        let go = ide_core::tool_path::find_command("go", &search, &self.root)
+            .ok_or_else(|| IdeError::unavailable("Go SDK is unavailable"))?;
+        // A partially edited go.mod is often invalid. Query outside it while
+        // keeping the SDK and proxy/private module configuration.
+        let dir = tempfile::tempdir()?;
+        let mut cmd = Command::new(go);
+        cmd.current_dir(dir.path())
+            .env("PATH", search)
+            .envs(&self.env)
+            .env("GO111MODULE", "on")
+            .env("GOFLAGS", "")
+            .env("GOWORK", "off")
+            .env("GIT_TERMINAL_PROMPT", "0")
+            .args(["list", "-m", "-versions", "-f", "{{range .Versions}}{{println .}}{{end}}", "--", package]);
+        let query = cancel.child_token();
+        // Fetches run on Host::blocking's Tokio pool, which keeps a runtime current.
+        let deadline = tokio::spawn({
+            let query = query.clone();
+            async move {
+                tokio::time::sleep(std::time::Duration::from_secs(10)).await;
+                query.cancel();
+            }
+        });
+        let output = ide_tools::run_streamed(cmd, &query, &|_| {});
+        deadline.abort();
+        Ok(go::listed_versions(&output?))
+    }
+}
+
+#[cfg(all(test, unix))]
+#[path = "dependencies/go_tests.rs"]
+mod go_tests;
+
+fn go_source(project: &crate::Project, config_dir: &Path, path: &Path) -> IdeResult<GoModules> {
+    let member = ide_workspace::workspace::Workspace::load(&project.root)?.and_then(|workspace| {
+        workspace
+            .projects
+            .into_iter()
+            .filter(|root| path.starts_with(root))
+            .max_by_key(|root| root.components().count())
+    });
+    let settings = match &member {
+        Some(root) => ide_workspace::SettingsStore::load(config_dir, Some(root)).effective(),
+        None => project.settings.effective(),
+    };
+    let root = member.unwrap_or_else(|| project.root.clone());
+    let mut env = BTreeMap::new();
+    ide_sdk::go::configure_environment(&root, &settings, &mut env);
+    Ok(GoModules { root, env })
+}
+
 /// `offset` limits a completion request to its version string; inspections omit it.
 pub async fn dependency_versions(
     host: &Host,
@@ -31,11 +105,24 @@ pub async fn dependency_versions(
 ) -> IdeResult<Vec<DependencyVersions>> {
     let project = host.project(window)?;
     let cache = host.dependency_versions.clone();
-    let cancel = host.begin_request(request);
+    let config_dir = host.config_dir.clone();
+    let cancel = host.begin_project_read_request(window, request);
     let result = host
         .blocking(move || {
             let snap = project.documents.snapshot(doc)?;
-            if snap.large || snap.read_only || snap.path.file_name().is_none_or(|n| n != "Cargo.toml") {
+            if snap.large || snap.read_only {
+                return Ok(Vec::new());
+            }
+            if snap.path.file_name().is_some_and(|name| name == "go.mod") {
+                let Some(dependency) = offset.and_then(|offset| go::dependency_at(&snap.text, offset)) else {
+                    return Ok(Vec::new());
+                };
+                project.require_trust()?;
+                let source = go_source(&project, &config_dir, snap.path.as_ref())?;
+                let versions = cache.versions(&source, &dependency.package, &cancel)?;
+                return Ok(vec![DependencyVersions { dependency, versions, update: None }]);
+            }
+            if snap.path.file_name().is_none_or(|name| name != "Cargo.toml") {
                 return Ok(Vec::new());
             }
             let mut out = Vec::new();

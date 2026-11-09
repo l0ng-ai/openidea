@@ -5,7 +5,7 @@ import { usePlatform } from "@/platform/platformInfo";
 import { Button, IconButton } from "./Button";
 import { Icon } from "./icons";
 import { FOCUSABLE, onWindowDeactivate, openLayer, trapTab } from "./popupState";
-import { useTx } from "@/platform/i18n";
+import { tx, useGivenTx } from "@/platform/i18n";
 import { selectableText } from "./selectableText";
 import appIcon from "../../src-tauri/icons/128x128.png";
 import styles from "./Dialog.module.css";
@@ -74,7 +74,7 @@ export function DialogButtons({
   platform?: DialogPlatform;
 }) {
   const platform = useDialogPlatform(override);
-  const tx = useTx();
+  const given = useGivenTx();
   return (
     <div className={styles.buttons}>
       {orderDialogButtons(buttons, platform).map((b) => (
@@ -82,12 +82,12 @@ export function DialogButtons({
           key={b.label}
           variant={b.role === "default" ? "primary" : "secondary"}
           disabled={b.disabled}
-          title={tx(b.title)}
+          title={given(b.title)}
           data-autofocus={b.autoFocus ? "" : undefined}
           data-dialog-default={b.role === "default" ? "" : undefined}
           onClick={b.onClick ?? (b.role === "cancel" ? onCancel : undefined)}
         >
-          {tx(b.label)}
+          {given(b.label)}
         </Button>
       ))}
     </div>
@@ -225,8 +225,8 @@ function DialogInner({
 }: DialogProps) {
   const ref = useRef<HTMLDivElement>(null);
   const platform = useDialogPlatform(platformOverride);
-  const tx = useTx();
-  if (typeof title === "string") title = tx(title);
+  const given = useGivenTx();
+  if (typeof title === "string") title = given(title);
   // Choosers and untitled dialogs (Recent Files, About) are IDEA popups.
   const popup = position === "top" || (title == null && !icon);
   const onCloseRef = useRef(onClose);
@@ -438,7 +438,7 @@ function DialogInner({
             <div className={styles.messageText}>
               {title != null && <div className={clsx(styles.messageTitle, selectableText)}>{title}</div>}
               <div className={clsx(styles.messageBody, selectableText)}>
-                {typeof children === "string" ? tx(children) : children}
+                {typeof children === "string" ? given(children) : children}
               </div>
               {footerStart && <div className={styles.messageExtra}>{footerStart}</div>}
             </div>

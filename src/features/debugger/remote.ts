@@ -318,7 +318,7 @@ export function serverAddress(host: string, port: number): string {
 }
 
 function requestBase(
-  rc: RunConfig,
+  rc: Pick<RunConfig, "name">,
   adapter: string,
   root: string,
   request: "attach" | "launch",
@@ -334,6 +334,44 @@ function requestBase(
     env: {},
     extraJson: JSON.stringify(extra),
   };
+}
+
+/** Attach request for a process listening with `debugpy --listen`. */
+function debugpyAttach(
+  name: string,
+  root: string,
+  host: string,
+  port: number,
+  map: { local: string; remote: string } | null,
+): LaunchConfig {
+  return requestBase({ name }, "debugpy", root, "attach", {
+    debugServer: serverAddress(host, port),
+    justMyCode: workflowSettings().debugger.skipLibraryCode,
+    ...(map ? { pathMappings: [{ localRoot: map.local, remoteRoot: map.remote }] } : {}),
+  });
+}
+
+/** A Python program debugged in a run target's container, waiting for the debugger (Run's `debugInContainer`). */
+export interface PythonAttachTarget {
+  name: string;
+  adapter: "debugpy";
+  hostName: string;
+  port: number;
+  /** The project folder in the container. */
+  remoteRoot: string;
+}
+
+export function isPythonAttachTarget(
+  arg: unknown,
+): arg is PythonAttachTarget & { process?: number | null; runConfig?: RunConfig } {
+  if (!arg || typeof arg !== "object") return false;
+  const a = arg as Partial<PythonAttachTarget>;
+  return a.adapter === "debugpy" && typeof a.port === "number" && typeof a.remoteRoot === "string";
+}
+
+/** Attach request of a `PythonAttachTarget`: the project root maps onto the container's folder. */
+export function pythonAttachConfig(target: PythonAttachTarget, root: string): LaunchConfig {
+  return debugpyAttach(target.name, root, target.hostName, target.port, { local: root, remote: target.remoteRoot });
 }
 
 /**
@@ -356,11 +394,7 @@ export function remoteAttachConfig(rc: RunConfig, root: string): LaunchConfig | 
         ...(map ? { substitutePath: [{ from: map.local, to: map.remote }] } : {}),
       });
     case PYTHON_REMOTE:
-      return requestBase(rc, "debugpy", root, "attach", {
-        debugServer: serverAddress(host, portOf(p, 5678)),
-        justMyCode: skip,
-        ...(map ? { pathMappings: [{ localRoot: map.local, remoteRoot: map.remote }] } : {}),
-      });
+      return debugpyAttach(rc.name, root, host, portOf(p, 5678), map);
     case GODOT_ATTACH:
       return requestBase(rc, "godot", root, "attach", {
         debugServer: serverAddress(host, portOf(p, 6006)),

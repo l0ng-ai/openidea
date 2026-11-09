@@ -65,6 +65,12 @@ const showHint = vi.fn();
 vi.mock("@/editor/lsp/hint", () => ({ showHint }));
 const executeAction = vi.fn();
 vi.mock("@/platform/actions", () => ({ executeAction }));
+vi.mock("@tauri-apps/api/core", async (orig) => ({
+  ...(await orig<object>()),
+  Channel: class {
+    onmessage = () => {};
+  },
+}));
 let answer = "cancel";
 const ask = vi.fn(async (_request: MessageRequest) => ({ button: answer, checked: false }));
 let confirmAnswer: { checked: boolean } | null = { checked: false };

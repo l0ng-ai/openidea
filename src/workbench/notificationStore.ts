@@ -17,6 +17,8 @@ export interface IdeNotification {
   actions?: Array<{ label: string; run: () => void }>;
   time: number;
   read: boolean;
+  /** Text shown as written (see `NotificationService.notify`). */
+  verbatim?: boolean;
   /** Currently shown as a balloon. */
   balloon: boolean;
   sticky: boolean;
@@ -127,7 +129,8 @@ export function notify(n: Parameters<NotificationService["notify"]>[0]): number 
   const id = ++seq;
   const group = groupOf(n);
   const prefs = notificationPrefs(group);
-  const balloon = prefs.balloons && prefs.display !== "none";
+  // The answer to a command the user ran is not a notification they opted out of.
+  const balloon = n.userInitiated === true || (prefs.balloons && prefs.display !== "none");
   const sticky = prefs.display === "sticky" || (n.sticky ?? BALLOON_TIMEOUT[n.level] === null);
   // Neither shown nor listed: dropped, as IDEA's "No popup" + no log.
   if (!balloon && !prefs.log) return id;
@@ -138,6 +141,7 @@ export function notify(n: Parameters<NotificationService["notify"]>[0]): number 
     title: n.title,
     body: n.body,
     actions: n.actions,
+    verbatim: n.verbatim,
     time: Date.now(),
     read: false,
     balloon,

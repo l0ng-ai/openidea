@@ -3,11 +3,13 @@
  * SSH or in a Docker / Compose container. Labels, the debug and executor guards,
  * and the connection remedies of `runStart`.
  */
+import { withRunTarget } from "@/platform/runTargetSelection";
+import { useRunTargets, runTargets as allRunTargets, type RuntimeRunTarget } from "@/platform/pluginRunTargets";
 import { executeAction } from "@/platform/actions";
 import { tx, txTemplate } from "@/platform/i18n";
 import { call, commands, IpcError, type RunConfig } from "@/platform/ipc";
-import { inContainer, type RunTargetValid, type SshConfigValid } from "@/platform/remoteSettings";
-import { useWorkflowSettings, workflowSettings } from "@/platform/workflowSettings";
+import { inContainer, type SshConfigValid } from "@/platform/remoteSettings";
+import { workflowSettings } from "@/platform/workflowSettings";
 import { notifications } from "@/workbench/contributions";
 import { confirm } from "@/workbench/messages";
 import { promptSecret } from "./dialogs";
@@ -15,16 +17,17 @@ import { promptSecret } from "./dialogs";
 /** The run target `config` runs on; undefined when it runs locally or the target is gone. */
 export function targetOf(
   config: Pick<RunConfig, "target">,
-  targets: readonly RunTargetValid[] = workflowSettings().runTargets,
-): RunTargetValid | undefined {
+  targets: readonly RuntimeRunTarget[] = allRunTargets(),
+): RuntimeRunTarget | undefined {
   return config.target ? targets.find((t) => t.id === config.target) : undefined;
 }
 
 /** Display name of the target `config` runs on (its id when missing); null when local. */
 export function targetName(
   config: Pick<RunConfig, "target">,
-  targets: readonly RunTargetValid[] = workflowSettings().runTargets,
+  targets: readonly RuntimeRunTarget[] = allRunTargets(),
 ): string | null {
+  if ("command" in config) config = withRunTarget(config as RunConfig);
   if (!config.target) return null;
   const t = targetOf(config, targets);
   return t ? t.name.trim() || t.id : config.target;
@@ -33,7 +36,7 @@ export function targetName(
 /** `name @ target` for configurations on a run target, else the name. */
 export function remoteLabel(
   config: Pick<RunConfig, "name" | "target">,
-  targets: readonly RunTargetValid[] = workflowSettings().runTargets,
+  targets: readonly RuntimeRunTarget[] = allRunTargets(),
 ): string {
   const t = targetName(config, targets);
   return t ? `${config.name} @ ${t}` : config.name;
@@ -41,28 +44,42 @@ export function remoteLabel(
 
 /** `remoteLabel` that re-renders when the run targets change. */
 export function useRemoteLabel(): (config: Pick<RunConfig, "name" | "target">) => string {
-  const targets = useWorkflowSettings((s) => s.runTargets);
+  const targets = useRunTargets();
   return (config) => remoteLabel(config, targets);
 }
 
 /** `config` running on `target` (empty: this machine, the key is dropped). */
 export function withTarget(config: RunConfig, target: string): RunConfig {
   const { target: _previous, ...rest } = config;
-  return target ? { ...rest, target } : rest;
+  return target || workflowSettings().run.defaultTarget ? { ...rest, target } : rest;
+}
+
+/** A Python configuration on a Docker / Compose target: debugged in its container (`debugInContainer`). */
+export function containerDebuggable(
+  config: RunConfig,
+  targets: readonly RuntimeRunTarget[] = allRunTargets(),
+): boolean {
+  const target = targetOf(config, targets);
+  return !!target && inContainer(target) && config.debugAdapter === "debugpy";
 }
 
 /**
- * Debugging on run targets isn't supported: tells so (offering Run) and returns
- * true when `config` runs on a target.
+ * Debugging on run targets isn't supported, except Python in containers: tells so
+ * (offering Run) and returns true when `config` can't be debugged where it runs.
  */
-export function remoteDebugBlocked(config: RunConfig): boolean {
-  if (!config.target) return false;
-  const target = targetName(config) ?? config.target;
+export function remoteDebugBlocked(config: RunConfig, targets: readonly RuntimeRunTarget[] = allRunTargets()): boolean {
+  config = withRunTarget(config);
+  if (!config.target || containerDebuggable(config, targets)) return false;
+  const target = targetName(config, targets) ?? config.target;
+  const container = targetOf(config, targets);
   notifications().notify({
     group: "run",
     level: "warning",
     key: "run.remoteDebug",
-    title: "Debugging on run targets is not supported",
+    title:
+      container && inContainer(container)
+        ? "Only Python can be debugged in containers"
+        : "Debugging on run targets is not supported",
     body: txTemplate(
       `'${config.name}' runs on ${target}. Run it, or choose “Local machine” under “Run on” to debug it.`,
     ),
@@ -80,7 +97,7 @@ export function remoteDebugBlocked(config: RunConfig): boolean {
  */
 export function containerExecutorBlocked(
   config: RunConfig,
-  targets: readonly RunTargetValid[] = workflowSettings().runTargets,
+  targets: readonly RuntimeRunTarget[] = allRunTargets(),
 ): boolean {
   const target = targetOf(config, targets);
   if (!target || !inContainer(target)) return false;
@@ -116,7 +133,7 @@ export interface RemedyDeps {
   askSecret: (message: string, save: boolean) => Promise<{ secret: string; save: boolean } | null>;
   trustHost: (sshConfig: string) => Promise<unknown>;
   setSecret: (sshConfig: string, secret: string, save: boolean) => Promise<unknown>;
-  targets: () => readonly RunTargetValid[];
+  targets: () => readonly RuntimeRunTarget[];
   sshConfigs: () => readonly SshConfigValid[];
 }
 
@@ -131,7 +148,7 @@ const defaultDeps: RemedyDeps = {
   askSecret: (message, save) => promptSecret(message, save),
   trustHost: (id) => call(commands.sshTrustHost(id)),
   setSecret: (id, secret, save) => commands.sshSetSecret(id, secret, save),
-  targets: () => workflowSettings().runTargets,
+  targets: () => allRunTargets(),
   sshConfigs: () => workflowSettings().ssh.configs,
 };
 

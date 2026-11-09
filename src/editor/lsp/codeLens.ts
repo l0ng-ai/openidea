@@ -5,6 +5,7 @@
  * and symbol, and at most a few reference requests in flight. Beside each
  * count, the declaration's last author from VCS blame (`authorLens`).
  */
+import { Channel } from "@tauri-apps/api/core";
 import { EditorSelection, MapMode, StateEffect, StateField, type Extension, type Text } from "@codemirror/state";
 import { EditorView, ViewPlugin, type ViewUpdate } from "@codemirror/view";
 import { codeLenses, type CodeLens } from "@/editor/api";
@@ -195,7 +196,15 @@ class UsagesLensPlugin {
                 this.pending.add(request);
                 // Opening candidate files for each count triggers expensive server analysis.
                 // Only an explicit Find Usages should widen the server's scope.
-                return commands.lspReferences(request, doc.doc, { line: t.line, col: t.col }, false, false);
+                return commands.lspReferences(
+                  request,
+                  doc.doc,
+                  { line: t.line, col: t.col },
+                  false,
+                  false,
+                  false,
+                  new Channel(),
+                );
               }, wanted);
               if (wanted()) {
                 if (incomplete) this.incomplete = true;

@@ -1,0 +1,10 @@
+id = "arduino"
+name = "Arduino"
+# Sketches are C++ with an implicit `Arduino.h` and generated prototypes; clangd can't compile
+# them on its own, so they get C++ highlighting without a language server.
+extensions = ["ino"]
+line-comment = "//"
+block-comment = ["/*", "*/"]
+indent = { tab-size = 2, insert-spaces = true }
+ui-mode = "C++"
+tree-sitter = "cpp"

@@ -1,5 +1,6 @@
 .split {
   display: flex;
+  min-width: 640px;
   flex: none;
   min-height: 320px;
   border: 1px solid var(--border-strong);

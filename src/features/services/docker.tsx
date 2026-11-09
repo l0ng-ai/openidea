@@ -4,7 +4,7 @@
  * log / inspect of the selection in the detail pane.
  */
 import { copySelectionOnKeyDown } from "@/ui/selectableText";
-import { useEffect, useMemo, useRef, useState } from "react";
+import { useEffect, useMemo, useState } from "react";
 import clsx from "clsx";
 import { Channel } from "@tauri-apps/api/core";
 import type {
@@ -17,7 +17,7 @@ import type {
 } from "@/platform/ipc";
 import { tx, useTx, useTxTemplate } from "@/platform/i18n";
 import { call, commands, isCancelled, nextRequestId } from "@/platform/ipc";
-import { Button, EmptyState, IconButton, Spinner, Tabs, Toggle, T } from "@/ui";
+import { Button, EmptyState, IconButton, LogPane, Spinner, Tabs, T } from "@/ui";
 import type { MenuItem } from "@/ui";
 import {
   notifications,
@@ -274,107 +274,28 @@ export function DockerTaskBanner() {
   );
 }
 
-const ANSI = /\x1b\[[0-9;?]*[A-Za-z]/g; // eslint-disable-line no-control-regex
-const MAX_LINES = 5000;
-
 /** Follows a container's log while shown. */
 function LogView({ conn, id, running }: { conn: string; id: string; running: boolean }) {
-  const [timestamps, setTimestamps] = useState(false);
-  const [wrap, setWrap] = useState(true);
-  // A new stream (and buffer) per option set.
-  return (
-    <LogStream
-      key={`${running}:${timestamps}`}
-      endpoint={endpointOf(conn)}
-      id={id}
-      running={running}
-      timestamps={timestamps}
-      setTimestamps={setTimestamps}
-      wrap={wrap}
-      setWrap={setWrap}
-    />
-  );
-}
-
-function LogStream(props: {
-  endpoint: DockerEndpoint;
-  id: string;
-  running: boolean;
-  timestamps: boolean;
-  setTimestamps: (v: boolean) => void;
-  wrap: boolean;
-  setWrap: (v: boolean) => void;
-}) {
   const tx = useTx();
-  const { endpoint, id, running, timestamps, setTimestamps, wrap, setWrap } = props;
-  const [lines, setLines] = useState<DockerLogLine[]>([]);
-  const [error, setError] = useState<string | null>(null);
-  const scroller = useRef<HTMLDivElement>(null);
-  const stick = useRef(true);
-  const ep = useRef(endpoint);
-
-  useEffect(() => {
-    const request = nextRequestId();
-    const channel = new Channel<DockerLogLine>();
-    let buffer: DockerLogLine[] = [];
-    let frame = 0;
-    const flush = () => {
-      frame = 0;
-      const add = buffer;
-      buffer = [];
-      setLines((prev) => {
-        const next = prev.concat(add);
-        return next.length > MAX_LINES ? next.slice(next.length - MAX_LINES) : next;
-      });
-    };
-    channel.onmessage = (line) => {
-      buffer.push({ stderr: line.stderr, text: line.text.replace(ANSI, "") });
-      frame ||= requestAnimationFrame(flush);
-    };
-    call(commands.dockerLogs(request, ep.current, id, 1000, running, timestamps, channel)).catch((e) => {
-      if (!isCancelled(e)) setError(errorMessage(e));
-    });
-    return () => {
-      cancelAnimationFrame(frame);
-      void commands.cancelRequest(request);
-    };
-  }, [id, running, timestamps]);
-
-  useEffect(() => {
-    const el = scroller.current;
-    if (el && stick.current) el.scrollTop = el.scrollHeight;
-  }, [lines]);
-
   return (
     <div className={styles.detailBody}>
-      <div className={styles.subToolbar}>
-        <Toggle checked={timestamps} onChange={setTimestamps} label="Timestamps" />
-        <Toggle checked={wrap} onChange={setWrap} label="Soft-wrap" />
-        <span className={styles.flex} />
-        <IconButton icon="trash" size="small" title="Clear" onClick={() => setLines([])} />
-      </div>
-      <div
-        ref={scroller}
-        className={clsx(styles.log, wrap && styles.wrap)}
-        tabIndex={0}
-        role="log"
-        onKeyDown={copySelectionOnKeyDown}
-        aria-label={tx("Container log")}
-        onScroll={(e) => {
-          const el = e.currentTarget;
-          stick.current = el.scrollHeight - el.scrollTop - el.clientHeight < 24;
+      <LogPane
+        sourceKey={`${conn}:${id}:${running}`}
+        live={running}
+        toggles={[{ id: "timestamps", label: "Timestamps" }]}
+        ariaLabel={tx("Container log")}
+        start={(onLine, onError, on) => {
+          const request = nextRequestId();
+          const channel = new Channel<DockerLogLine>();
+          channel.onmessage = onLine;
+          call(commands.dockerLogs(request, endpointOf(conn), id, 1000, running, on.has("timestamps"), channel)).catch(
+            (e) => {
+              if (!isCancelled(e)) onError(errorMessage(e));
+            },
+          );
+          return () => void commands.cancelRequest(request);
         }}
-      >
-        {lines.map((l, i) => (
-          <div key={i} className={clsx(l.stderr && styles.stderr)}>
-            {l.text || " "}
-          </div>
-        ))}
-        {error && <div className={styles.stderr}>{error}</div>}
-        {!lines.length && !error && (
-          <div className={styles.dim}>{tx(running ? "Waiting for output…" : "No output")}</div>
-        )}
-      </div>
+      />
     </div>
   );
 }

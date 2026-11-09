@@ -1,0 +1,10 @@
+#!/bin/sh
+# A tiny deterministic protocol, not a test framework.
+while IFS= read -r line; do
+  case "$line" in
+    'test '*) name=${line#test } ;;
+    *) continue ;;
+  esac
+  [ -z "$1" ] || [ "$1" = "$name" ] || continue
+  printf 'start %s\npass %s\n' "$name" "$name"
+done < example.tests

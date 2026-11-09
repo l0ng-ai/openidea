@@ -34,13 +34,23 @@ export function dateFormatOptions(): DateFormatOptions {
 
 const pad = (n: number, w = 2) => String(n).padStart(w, "0");
 
+// `toLocale*String` with options builds a new `Intl.DateTimeFormat` on every call,
+// far too slow for lists that format a date per row.
+const formatters = new Map<string, Intl.DateTimeFormat>();
+function formatter(locale: string | undefined, options: Intl.DateTimeFormatOptions): Intl.DateTimeFormat {
+  const key = `${locale ?? ""}|${JSON.stringify(options)}`;
+  let f = formatters.get(key);
+  if (!f) formatters.set(key, (f = new Intl.DateTimeFormat(locale, options)));
+  return f;
+}
+
 /** Formats the date part with a `dd.MM.yyyy`-style pattern. */
 export function formatPattern(d: Date, pattern: string): string {
   const tokens: Record<string, () => string> = {
     yyyy: () => String(d.getFullYear()),
     yy: () => pad(d.getFullYear() % 100),
-    MMMM: () => d.toLocaleString("en", { month: "long" }),
-    MMM: () => d.toLocaleString("en", { month: "short" }),
+    MMMM: () => formatter("en", { month: "long" }).format(d),
+    MMM: () => formatter("en", { month: "short" }).format(d),
     MM: () => pad(d.getMonth() + 1),
     M: () => String(d.getMonth() + 1),
     dd: () => pad(d.getDate()),
@@ -50,7 +60,7 @@ export function formatPattern(d: Date, pattern: string): string {
 }
 
 export function formatClock(d: Date, o: DateFormatOptions = dateFormatOptions()): string {
-  if (!o.overrideSystem) return d.toLocaleTimeString(undefined, { hour: "2-digit", minute: "2-digit" });
+  if (!o.overrideSystem) return formatter(undefined, { hour: "2-digit", minute: "2-digit" }).format(d);
   if (o.use24Hour) return `${pad(d.getHours())}:${pad(d.getMinutes())}`;
   const h = d.getHours() % 12 || 12;
   return `${h}:${pad(d.getMinutes())} ${d.getHours() < 12 ? "AM" : "PM"}`;
@@ -60,8 +70,8 @@ export function formatClock(d: Date, o: DateFormatOptions = dateFormatOptions())
 export function formatDay(d: Date, o: DateFormatOptions = dateFormatOptions(), short = false): string {
   if (o.overrideSystem) return formatPattern(d, o.pattern);
   return short
-    ? d.toLocaleDateString(undefined, { year: "2-digit", month: "2-digit", day: "2-digit" })
-    : d.toLocaleDateString(undefined, { year: "numeric", month: "short", day: "numeric" });
+    ? formatter(undefined, { year: "2-digit", month: "2-digit", day: "2-digit" }).format(d)
+    : formatter(undefined, { year: "numeric", month: "short", day: "numeric" }).format(d);
 }
 
 /** Timestamp for lists: pretty ("Today 10:42", "5 min ago") when enabled, else date + time. */

@@ -15,6 +15,12 @@ vi.mock("@/platform/ipc", async (orig) => {
 });
 const executeAction = vi.hoisted(() => vi.fn(async () => true));
 vi.mock("@/platform/actions", () => ({ executeAction }));
+vi.mock("@tauri-apps/api/core", async (orig) => ({
+  ...(await orig<object>()),
+  Channel: class {
+    onmessage = () => {};
+  },
+}));
 
 const { lensTargets, usagesLensExtension } = await import("./codeLens");
 const { lspDoc } = await import("./lsp");
@@ -89,7 +95,15 @@ describe("background usage counts", () => {
   it("uses the server's existing scope and leaves full searches to the explicit action", async () => {
     const view = editor();
     await settle();
-    expect(ipc.lspReferences).toHaveBeenCalledWith(expect.any(Number), 7, { line: 0, col: 0 }, false, false);
+    expect(ipc.lspReferences).toHaveBeenCalledWith(
+      expect.any(Number),
+      7,
+      { line: 0, col: 0 },
+      false,
+      false,
+      false,
+      expect.anything(),
+    );
     expect(titles(view)).toEqual(["2 usages"]);
     view.state.facet(codeLenses)[0]!.run!(view, new MouseEvent("click"));
     expect(executeAction).toHaveBeenCalledWith("find.showUsages");

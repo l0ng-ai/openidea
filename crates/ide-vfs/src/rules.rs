@@ -81,6 +81,14 @@ fn exclude_path(root: &Path) -> PathBuf {
         .unwrap_or_else(|| root.join(".git/info/exclude"))
 }
 
+#[derive(Default)]
+struct NestedRepos {
+    /// Directory -> enclosing repository root when different from `GitignoreStack::repo_root`.
+    by_dir: HashMap<PathBuf, Option<PathBuf>>,
+    /// Repository root -> shared `GitignoreStack` for that nested repository.
+    by_root: HashMap<PathBuf, Arc<GitignoreStack>>,
+}
+
 /// Layered gitignore matching: per-directory `.gitignore` / `.ignore` from the
 /// path's directory up to the repository root (or the file system root when
 /// not in a repository), then `.git/info/exclude` and the global excludes file.
@@ -89,7 +97,7 @@ pub(crate) struct GitignoreStack {
     /// `.git/info/exclude` and the global excludes file, rooted at the repo root.
     repo_level: RwLock<Vec<Gitignore>>,
     cache: Mutex<HashMap<PathBuf, Option<Arc<Gitignore>>>>,
-    nested: Mutex<HashMap<PathBuf, Option<Arc<GitignoreStack>>>>,
+    nested: Mutex<NestedRepos>,
 }
 
 /// How long [`GitignoreStack::cached`] reuses the repository lookup of a directory.
@@ -191,13 +199,23 @@ impl GitignoreStack {
         if let (Some(root), Some(map)) = (&self.repo_root, REPO_LEVEL.lock().as_mut()) {
             map.retain(|dir, _| !dir.starts_with(root));
         }
-        self.nested.lock().clear();
+        self.nested.lock().by_root.values().for_each(|s| s.reload_repo_level());
         *self.repo_level.write() = Self::load_repo_level(self.repo_root.as_deref());
     }
 
     /// Forgets the cached rules of `dir` and every directory below it.
     pub fn invalidate_tree(&self, dir: &Path) {
-        self.nested.lock().clear();
+        {
+            let mut nested = self.nested.lock();
+            let target = if dir.file_name().is_some_and(|n| n == ".git") { dir.parent().unwrap_or(dir) } else { dir };
+            if nested.by_dir.contains_key(target) || nested.by_root.contains_key(target) {
+                nested.by_dir.retain(|k, _| !k.starts_with(target));
+                nested.by_root.retain(|k, _| !k.starts_with(target));
+            }
+            for stack in nested.by_root.values() {
+                stack.invalidate_tree(dir);
+            }
+        }
         let mut cache = self.cache.lock();
         // Lookups always populate every ancestor, so no key below `dir` exists without `dir`.
         if cache.contains_key(dir) {
@@ -211,8 +229,55 @@ impl GitignoreStack {
 
     /// Forgets the cached rules of `dir` (after its `.gitignore` changed).
     pub fn invalidate(&self, dir: &Path) {
-        self.nested.lock().clear();
+        for stack in self.nested.lock().by_root.values() {
+            stack.invalidate(dir);
+        }
         self.cache.lock().remove(dir);
+    }
+
+    /// Returns the shared `GitignoreStack` of the nested repository enclosing `dir`, if any.
+    fn nested_for(&self, dir: &Path) -> Option<Arc<GitignoreStack>> {
+        let mut nested = self.nested.lock();
+        let root = if let Some(cached) = nested.by_dir.get(dir) {
+            cached.clone()
+        } else {
+            let mut chain = Vec::new();
+            let mut found = None;
+            for anc in dir.ancestors() {
+                if let Some(cached) = nested.by_dir.get(anc) {
+                    found = cached.clone();
+                    break;
+                }
+                chain.push(anc.to_path_buf());
+                if self.repo_root.as_deref() == Some(anc) {
+                    found = None;
+                    break;
+                }
+                if anc.join(".git").exists() {
+                    found = Some(anc.to_path_buf());
+                    break;
+                }
+            }
+            for p in chain {
+                nested.by_dir.insert(p, found.clone());
+            }
+            found
+        }?;
+        Some(
+            nested
+                .by_root
+                .entry(root.clone())
+                .or_insert_with(|| {
+                    let repo_level = RwLock::new(Self::load_repo_level(Some(&root)));
+                    Arc::new(Self {
+                        repo_root: Some(root),
+                        repo_level,
+                        cache: Mutex::default(),
+                        nested: Mutex::default(),
+                    })
+                })
+                .clone(),
+        )
     }
 
     fn matcher_for(&self, dir: &Path) -> Option<Arc<Gitignore>> {
@@ -250,20 +315,10 @@ impl GitignoreStack {
     pub fn is_ignored(&self, path: &Path, is_dir: bool) -> bool {
         // A project's watcher can span independent nested repositories. Their local
         // excludes and ignore ancestry must stop at their own repository boundary.
-        if let Some(parent) = path.parent() {
-            let nested = self
-                .nested
-                .lock()
-                .entry(parent.to_path_buf())
-                .or_insert_with(|| {
-                    find_repo_root(parent)
-                        .filter(|root| self.repo_root.as_ref() != Some(root))
-                        .map(|_| Arc::new(Self::new(parent)))
-                })
-                .clone();
-            if let Some(nested) = nested {
-                return nested.is_ignored(path, is_dir);
-            }
+        if let Some(parent) = path.parent()
+            && let Some(nested) = self.nested_for(parent)
+        {
+            return nested.is_ignored(path, is_dir);
         }
         if self.repo_root.as_deref() == Some(path) {
             return false;
@@ -302,20 +357,10 @@ impl GitignoreStack {
     /// ignored) still emit its own create/remove so the tree can show it
     /// appearing marked as ignored, while files inside it stay filtered out.
     pub fn is_ignored_self(&self, path: &Path, is_dir: bool) -> bool {
-        if let Some(parent) = path.parent() {
-            let nested = self
-                .nested
-                .lock()
-                .entry(parent.to_path_buf())
-                .or_insert_with(|| {
-                    find_repo_root(parent)
-                        .filter(|root| self.repo_root.as_ref() != Some(root))
-                        .map(|_| Arc::new(Self::new(parent)))
-                })
-                .clone();
-            if let Some(nested) = nested {
-                return nested.is_ignored_self(path, is_dir);
-            }
+        if let Some(parent) = path.parent()
+            && let Some(nested) = self.nested_for(parent)
+        {
+            return nested.is_ignored_self(path, is_dir);
         }
         if self.repo_root.as_deref() == Some(path) {
             return false;
@@ -404,5 +449,50 @@ mod tests {
         assert!(Arc::ptr_eq(&entry, REPO_LEVEL.lock().as_ref().unwrap().get(&src).unwrap()));
         assert_eq!(first.repo_root(), again.repo_root());
         assert_eq!(again.repo_root(), Some(tmp.path()));
+    }
+
+    #[test]
+    fn nested_repository_shares_one_gitignore_stack_across_subdirectories() {
+        let tmp = tempfile::tempdir().unwrap();
+        let workspace = tmp.path();
+        let repo = workspace.join("yolo");
+        std::fs::create_dir_all(repo.join(".git")).unwrap();
+        std::fs::create_dir_all(repo.join("a/b/c")).unwrap();
+        std::fs::create_dir_all(repo.join("x/y/z")).unwrap();
+        std::fs::write(repo.join(".gitignore"), "*.ignored\n").unwrap();
+
+        let stack = GitignoreStack::new(workspace);
+        assert!(stack.is_ignored(&repo.join("a/b/c/file.ignored"), false));
+        assert!(stack.is_ignored(&repo.join("x/y/z/other.ignored"), false));
+        assert!(!stack.is_ignored(&repo.join("x/y/z/keep.rs"), false));
+
+        assert_eq!(stack.nested.lock().by_root.len(), 1);
+        let nested = stack.nested.lock().by_root.get(&repo).unwrap().clone();
+        assert!(nested.cache.lock().contains_key(&repo));
+
+        // Invalidating a leaf file or directory inside the nested repo keeps its shared stack.
+        stack.invalidate_tree(&repo.join("a/b/c/new.rs"));
+        assert_eq!(stack.nested.lock().by_root.len(), 1);
+        assert!(Arc::ptr_eq(&nested, stack.nested.lock().by_root.get(&repo).unwrap()));
+    }
+
+    #[test]
+    fn a_repository_created_inside_the_workspace_becomes_a_boundary() {
+        let tmp = tempfile::tempdir().unwrap();
+        let workspace = tmp.path();
+        std::fs::create_dir_all(workspace.join(".git")).unwrap();
+        std::fs::create_dir_all(workspace.join("sub/deep")).unwrap();
+        std::fs::write(workspace.join(".gitignore"), "*.tmp\n").unwrap();
+
+        let stack = GitignoreStack::new(workspace);
+        assert!(stack.is_ignored(&workspace.join("sub/deep/a.tmp"), false));
+
+        std::fs::create_dir(workspace.join("sub/.git")).unwrap();
+        stack.invalidate_tree(&workspace.join("sub/.git"));
+        assert!(!stack.is_ignored(&workspace.join("sub/deep/a.tmp"), false));
+
+        std::fs::remove_dir(workspace.join("sub/.git")).unwrap();
+        stack.invalidate_tree(&workspace.join("sub/.git"));
+        assert!(stack.is_ignored(&workspace.join("sub/deep/a.tmp"), false));
     }
 }

@@ -74,6 +74,7 @@ import { requestHover, showPhpConstructDocumentation } from "./hover";
 import { declarationSummary, renderCode } from "./markdown";
 import { editorPrefs } from "@/platform/editorSettings";
 import { isVirtualUri, virtualContainer } from "@/platform/virtualDocs";
+import { isAddCaretGesture } from "@/editor/core/cm/multiCaret";
 import { dispatchMouseShortcut, shortcutLabel } from "@/platform/keymap";
 import { isNavigationGesture, onNavigationModifier, navigationModifierHeld } from "@/platform/navigationModifier";
 import { create } from "zustand";
@@ -710,6 +711,7 @@ const linkPlugin = ViewPlugin.fromClass(
       },
       mousedown(e, view) {
         if (e.button !== 0 && e.button !== 1) return false;
+        if (isAddCaretGesture(e)) return false;
         if (
           dispatchMouseShortcut(e, () => {
             const pos = view.posAtCoords({ x: e.clientX, y: e.clientY }, false);

@@ -30,6 +30,23 @@ pub fn position(text: &str, at: usize) -> Position {
     Position { line, character }
 }
 
+/// The text as a JSON string literal's contents (`"`, `\`, control characters).
+pub fn escape_json(s: &str) -> String {
+    let mut out = String::with_capacity(s.len());
+    for c in s.chars() {
+        match c {
+            '"' => out.push_str("\\\""),
+            '\\' => out.push_str("\\\\"),
+            '\n' => out.push_str("\\n"),
+            '\r' => out.push_str("\\r"),
+            '\t' => out.push_str("\\t"),
+            c if c < ' ' => out.push_str(&format!("\\u{:04x}", c as u32)),
+            c => out.push(c),
+        }
+    }
+    out
+}
+
 /// The text of a JSON string literal's contents (`\"`, `\\`, `\n`, `\uXXXX`).
 pub fn unescape_json(s: &str) -> String {
     let mut out = String::with_capacity(s.len());

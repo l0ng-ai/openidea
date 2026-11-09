@@ -17,7 +17,7 @@ import { Button, EmptyState, Icon, IconButton, Select, Spinner, T, showContextMe
 import { notifications, type EditorInput } from "@/workbench/contributions";
 import { SqlFilterInput } from "./SqlFilterInput";
 import { ColumnsPopup } from "./ColumnsPopup";
-import { DataView, ExtractorSelect, PanelToggle, exportMenu, type DataPanel } from "./DataView";
+import { DataView, ExtractorSelect, PanelToggle, copyFormatOf, exportMenu, type DataPanel } from "./DataView";
 import type { ExportFormat } from "./export";
 import {
   buildRowEdits,
@@ -355,6 +355,7 @@ export function TableEditor({ input }: { input: EditorInput }) {
             value={value}
             panel={panel}
             onPanelChange={setPanel}
+            copyFormat={copyFormatOf(extractor)}
             searchOpen={searchOpen}
             onSearchOpenChange={setSearchOpen}
             firstRowNumber={offset + 1}

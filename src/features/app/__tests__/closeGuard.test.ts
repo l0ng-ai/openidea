@@ -60,6 +60,22 @@ describe("decideClose", () => {
     expect(asked).toHaveLength(0);
   });
 
+  it("stops the processes gracefully and waits for them before closing", async () => {
+    const { d } = deps([{ button: "terminate", checked: false }]);
+    d.terminate = vi.fn(async () => {});
+    d.waitForProcesses = vi.fn(async () => {});
+    await expect(decideClose({ ...base, confirmTerminate: true, processes: ["app"] }, d)).resolves.toBe(true);
+    expect(d.terminate).toHaveBeenCalledWith(false);
+    expect(d.waitForProcesses).toHaveBeenCalledOnce();
+  });
+
+  it("does not stop anything when the terminate prompt is cancelled", async () => {
+    const { d } = deps([{ button: "cancel", checked: false }]);
+    d.terminate = vi.fn(async () => {});
+    await expect(decideClose({ ...base, confirmTerminate: true, processes: ["app"] }, d)).resolves.toBe(false);
+    expect(d.terminate).not.toHaveBeenCalled();
+  });
+
   it("asks before terminating a running process", async () => {
     const { d, asked } = deps([{ button: "terminate", checked: false }]);
     await expect(decideClose({ ...base, confirmTerminate: true, processes: ["app"] }, d)).resolves.toBe(true);

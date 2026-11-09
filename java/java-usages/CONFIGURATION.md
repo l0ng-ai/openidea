@@ -9,6 +9,12 @@ connect to external configuration services.
 
 - **Go to Definition** on a YAML / properties key opens binding members and
   literal consumers in Java. Multiple matches use the existing location chooser.
+- **Go to Definition** inside a Spring `${name}` placeholder in YAML,
+  properties or Spring XML opens matching declarations: configuration keys in
+  other `.properties` / YAML files, properties declared by Spring XML wiring
+  (`<prop key="...">` values and placeholder-configurer `<property name="..."
+  value="...">` entries), and bound Java members. Ordinary YAML key definition
+  navigation remains native.
 - **Go to Definition** inside a Java `@Value` placeholder or a constant
   `Environment.getProperty` / `getRequiredProperty` argument opens matching
   configuration keys. Ordinary Java definition navigation remains native.
@@ -41,7 +47,14 @@ The Java command resolves annotation and method identities with JDT bindings:
 
 YAML key ranges come from the bundled tree-sitter grammar, including nested/flow
 mappings, sequences, quoted keys and multiple documents. Properties support
-escaped keys, Unicode escapes and logical-line continuations. Ranges crossing
+escaped keys, Unicode escapes and logical-line continuations. Spring XML wiring
+declares properties through `<prop key="...">` values and placeholder-configurer
+`<property name="..." value="...">` entries; XML is parsed with the bundled
+tree-sitter grammar and files without placeholder markers are skipped without
+parsing. Keys referenced by `<context:property-placeholder location="...">` or
+`<util:properties location="...">` live in the referenced files, which the
+configuration scan indexes directly — the XML element itself is not offered as a
+declaration. Ranges crossing
 IPC are UTF-16. No new IPC type or frontend provider is required.
 
 ## Scope and costs
@@ -78,7 +91,13 @@ changes; a fingerprint of working copies with unsaved changes covers edits befor
 they are saved. Opening or closing an editor, reconciling, building, and non-Java
 resource changes (configuration files are parsed by the client; metadata files are
 checked by timestamp) keep it. This is **snapshot invalidation**, not a fully
-incremental Java semantic index.
+incremental Java semantic index. A rebuild reuses each dependency JAR's metadata
+associations (up to 100,000 in all) while the JAR's timestamp and size and the project's
+classpath are unchanged: resolving a Spring Boot JAR's thousands of properties to library
+members takes seconds, and a source change cannot affect them.
+
+Find Usages shows the Java usages as soon as they are found, then adds the configuration
+ones when a rebuild of the snapshot takes longer.
 
 In YAML/properties, ⌘/Ctrl-hover underlines the whole key, hyphens and dots
 included, and doesn't open the documentation popup. Hover and Go to Definition share

@@ -1,7 +1,7 @@
 import { describe, expect, it } from "vitest";
 import { EditorState } from "@codemirror/state";
 import { EditorView } from "@codemirror/view";
-import { ensureSyntaxTree } from "@codemirror/language";
+import { completedSyntaxState } from "@/test/syntax";
 import { languages } from "@codemirror/language-data";
 import type { FileMatches } from "@/platform/ipc";
 import {
@@ -159,8 +159,7 @@ describe("editor highlighting", () => {
   it("decorates TODO comments only", async () => {
     const desc = languages.find((l) => l.name === "JavaScript")!;
     const doc = 'const TODO = "TODO";\n// TODO: refactor\n/* FIXME now */';
-    const state = EditorState.create({ doc, extensions: [await desc.load()] });
-    ensureSyntaxTree(state, doc.length, 5000);
+    const state = completedSyntaxState(EditorState.create({ doc, extensions: [await desc.load()] }));
     const view = new EditorView({ state, parent: document.body });
     const ranges: Array<[number, number, string]> = [];
     todoDecorations(view, S).between(0, doc.length, (from, to, d) => {

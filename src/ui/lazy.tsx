@@ -40,6 +40,24 @@ export function lazyComponent<P extends object>(load: () => Promise<ComponentTyp
 }
 
 /**
+ * A lazy component first mounted when `useShown()` holds (a dialog opens), so an
+ * always-registered overlay doesn't load its code at start-up. It stays mounted
+ * afterwards: the component still decides what to render when closed.
+ */
+export function lazyWhen<P extends object>(
+  useShown: () => boolean,
+  load: () => Promise<ComponentType<P>>,
+): ComponentType<P> {
+  const Lazy = lazyComponent(load);
+  let shown = false;
+  return function LazyWhen(props: P) {
+    const now = useShown();
+    shown ||= now;
+    return shown ? <Lazy {...props} /> : null;
+  };
+}
+
+/**
  * Loads every lazy component's code one at a time while the app is idle, so a
  * view opened later shows at once. Call after start-up.
  */

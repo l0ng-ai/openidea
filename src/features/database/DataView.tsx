@@ -8,7 +8,7 @@ import { useMemo, useRef, useState, type KeyboardEvent, type RefObject } from "r
 import clsx from "clsx";
 import { Button, Checkbox, Icon, IconButton, Input, Popup, SearchField, Select, Tabs, T, type MenuItem } from "@/ui";
 import { EXPORT_FORMATS, exportData, type ExportData, type ExportFormat } from "./export";
-import { Grid, type GridColumn, type GridProps, type GridRange } from "./Grid";
+import { Grid, type CopyFormat, type GridColumn, type GridProps, type GridRange } from "./Grid";
 import type { Cell } from "./model";
 import {
   aggregates,
@@ -55,6 +55,10 @@ export function ExtractorSelect({ value, onChange }: { value: ExportFormat; onCh
   );
 }
 
+/** The copy format plain ⌘C uses under a toolbar extractor (cell copies stay cell-shaped). */
+export const copyFormatOf = (extractor: ExportFormat): CopyFormat =>
+  extractor === "csv" ? "csv" : extractor === "onerow" ? "onerow" : "tsv";
+
 /** The Record / Value / Aggregates panel's toggle (IDEA's "Show Value Editor"). */
 export function PanelToggle({ panel, onChange }: { panel: DataPanel | null; onChange: (p: DataPanel | null) => void }) {
   return (
@@ -87,6 +91,8 @@ export interface DataViewProps extends Pick<
   /** The side panel shown (`null`: hidden). */
   panel: DataPanel | null;
   onPanelChange: (panel: DataPanel | null) => void;
+  /** Plain ⌘C's copy format (the toolbar's extractor; TSV by default). */
+  copyFormat?: CopyFormat;
   /** The search bar is shown (the toolbar's search button, ⌘F in the grid). */
   searchOpen?: boolean;
   onSearchOpenChange?: (open: boolean) => void;
@@ -214,6 +220,7 @@ export function DataView(props: DataViewProps) {
             onSort={onSort}
             rowMenu={props.rowMenu && ((rows) => props.rowMenu!(rows.map(at)))}
             rowNumber={(r) => (props.firstRowNumber ?? 1) + at(r)}
+            copyFormat={props.copyFormat}
             onSelectionChange={setRange}
             onFilter={(col, anchor) => setFilterAt({ col, anchor })}
             filtered={(col) => filter.has(col)}

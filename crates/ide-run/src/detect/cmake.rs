@@ -17,16 +17,57 @@ fn reply_file(reply: &Path, name: &str) -> Option<Value> {
 }
 
 fn before(config: &mut RunConfig, id: &str) {
-    config.extras.before_launch.push(BeforeLaunchTask { kind: "run".into(), target: id.into() });
+    config.extras.before_launch.push(BeforeLaunchTask { kind: "build".into(), target: id.into() });
+}
+
+#[derive(Default)]
+struct Names {
+    contexts: Vec<(String, String)>,
+}
+
+impl Names {
+    fn push(&mut self, out: &mut Vec<RunConfig>, config: RunConfig, dir: &str, profile: &str) {
+        self.contexts.push((dir.replace('\\', "/"), profile.into()));
+        out.push(config);
+    }
+
+    fn apply(self, configs: &mut [RunConfig]) {
+        let names: Vec<_> = configs.iter().map(|c| c.name.clone()).collect();
+        for (index, config) in configs.iter_mut().enumerate() {
+            let duplicates: Vec<_> = names.iter().enumerate().filter(|(_, name)| **name == names[index]).collect();
+            if duplicates.len() < 2 {
+                continue;
+            }
+            let (dir, profile) = &self.contexts[index];
+            let needs_dir = duplicates.iter().any(|(other, _)| *other != index && self.contexts[*other].1 == *profile);
+            let mut context = Vec::new();
+            if !profile.is_empty() {
+                context.push(profile.clone());
+            }
+            if needs_dir {
+                context.push(format!("{}/", dir.trim_end_matches('/')));
+            }
+            if !context.is_empty() {
+                config.name = format!("{} [{}]", config.name, context.join(" · "));
+            }
+        }
+    }
 }
 
 pub(super) fn detect(root: &Path, profiles: Option<&[CMakeProfile]>, out: &mut Vec<RunConfig>) {
+    let start = out.len();
+    let mut names = Names::default();
+    detect_configs(root, profiles, out, &mut names);
+    names.apply(&mut out[start..]);
+}
+
+fn detect_configs(root: &Path, profiles: Option<&[CMakeProfile]>, out: &mut Vec<RunConfig>, names: &mut Names) {
     if !root.join("CMakeLists.txt").is_file() {
         return;
     }
     if let Some(profiles) = profiles {
         for (index, profile) in profiles.iter().enumerate() {
-            detect_profile(root, profile, index, profiles.len() > 1, out);
+            detect_profile(root, profile, index, out, names);
         }
         return;
     }
@@ -62,35 +103,30 @@ pub(super) fn detect(root: &Path, profiles: Option<&[CMakeProfile]>, out: &mut V
         if !build.join("CMakeCache.txt").is_file() {
             args.push("-DCMAKE_BUILD_TYPE=Debug");
         }
-        let mut configure = config(&configure_id, format!("CMake Configure ({dir})"), "cmake", "cmake", &args);
+        let mut configure = config(&configure_id, "CMake Configure", "cmake", "cmake", &args);
         configure.extras.params.insert("buildDir".into(), dir.clone());
-        out.push(configure);
-        let mut all = config(
-            &build_id,
-            format!("CMake Build ({dir})"),
-            "cmake",
-            "cmake",
-            &["--build", &dir, "--config", &configuration],
-        );
+        names.push(out, configure, &dir, "");
+        let mut all =
+            config(&build_id, "CMake Build", "cmake", "cmake", &["--build", &dir, "--config", &configuration]);
         // `cmake --build` regenerates by itself once a build directory is configured.
         if !build.join("CMakeCache.txt").is_file() {
             before(&mut all, &configure_id);
         }
-        out.push(all);
+        names.push(out, all, &dir, "");
         let mut test = config(
             format!("{prefix}:test"),
-            format!("CTest ({dir})"),
+            "CTest",
             "cmake",
             "ctest",
             &["--test-dir", &dir, "-C", &configuration, "--output-on-failure"],
         );
         before(&mut test, &build_id);
-        out.push(test);
-        targets(root, &build, &dir, &prefix, None, out);
+        names.push(out, test, &dir, "");
+        targets(root, &build, &dir, &prefix, None, out, names);
     }
 }
 
-fn detect_profile(root: &Path, profile: &CMakeProfile, index: usize, multiple: bool, out: &mut Vec<RunConfig>) {
+fn detect_profile(root: &Path, profile: &CMakeProfile, index: usize, out: &mut Vec<RunConfig>, names: &mut Names) {
     let dir = if profile.build_dir.trim().is_empty() {
         format!("cmake-build-{}", profile.build_type.to_lowercase())
     } else {
@@ -101,8 +137,7 @@ fn detect_profile(root: &Path, profile: &CMakeProfile, index: usize, multiple: b
     let configure_id = format!("{prefix}:configure");
     let build_id = format!("{prefix}:build");
     let start = out.len();
-    let mut configure =
-        config(&configure_id, format!("CMake Configure ({dir})"), "cmake", "cmake", &["-S", ".", "-B", &dir]);
+    let mut configure = config(&configure_id, "CMake Configure", "cmake", "cmake", &["-S", ".", "-B", &dir]);
     if !profile.generator.trim().is_empty() {
         configure.args.extend(["-G".into(), profile.generator.clone()]);
     }
@@ -110,34 +145,26 @@ fn detect_profile(root: &Path, profile: &CMakeProfile, index: usize, multiple: b
     configure.args.push("-DCMAKE_EXPORT_COMPILE_COMMANDS=ON".into());
     configure.args.extend_from_slice(&profile.cmake_args);
     configure.extras.params.insert("buildDir".into(), dir.clone());
-    out.push(configure);
-    let mut all = config(
-        &build_id,
-        format!("CMake Build ({dir})"),
-        "cmake",
-        "cmake",
-        &["--build", &dir, "--config", &profile.build_type],
-    );
+    names.push(out, configure, &dir, &profile.name);
+    let mut all =
+        config(&build_id, "CMake Build", "cmake", "cmake", &["--build", &dir, "--config", &profile.build_type]);
     all.args.extend_from_slice(&profile.build_args);
     if !build.join("CMakeCache.txt").is_file() {
         before(&mut all, &configure_id);
     }
-    out.push(all);
+    names.push(out, all, &dir, &profile.name);
     let mut test = config(
         format!("{prefix}:test"),
-        format!("CTest ({dir})"),
+        "CTest",
         "cmake",
         "ctest",
         &["--test-dir", &dir, "-C", &profile.build_type, "--output-on-failure"],
     );
     before(&mut test, &build_id);
-    out.push(test);
-    targets(root, &build, &dir, &prefix, Some(profile), out);
+    names.push(out, test, &dir, &profile.name);
+    targets(root, &build, &dir, &prefix, Some(profile), out, names);
     for config in &mut out[start..] {
         config.env = profile.env.clone();
-        if multiple {
-            config.name = format!("{} [{}]", config.name, profile.name);
-        }
     }
 }
 
@@ -148,6 +175,7 @@ fn targets(
     prefix: &str,
     profile: Option<&CMakeProfile>,
     out: &mut Vec<RunConfig>,
+    names: &mut Names,
 ) {
     let reply = build.join(".cmake/api/v1/reply");
     let Some(index_path) = fs::read_dir(&reply).ok().and_then(|entries| {
@@ -198,8 +226,7 @@ fn targets(
             if !name.is_empty() {
                 args.extend(["--config", name]);
             }
-            let mut build_config =
-                config(&target_build_id, format!("Build {target_name} ({dir} {name})"), "cmake", "cmake", &args);
+            let mut build_config = config(&target_build_id, format!("Build {target_name}"), "cmake", "cmake", &args);
             if let Some(profile) = profile {
                 if name.is_empty() {
                     build_config.args.extend(["--config".into(), profile.build_type.clone()]);
@@ -209,11 +236,11 @@ fn targets(
                     before(&mut build_config, &format!("{prefix}:configure"));
                 }
             }
-            out.push(build_config);
+            let label = profile.map_or(name, |p| p.name.as_str());
+            names.push(out, build_config, dir, label);
             let binary = build.join(artifact);
             let mut run =
-                config(&id, format!("{target_name} ({dir} {name})"), "native", &binary.to_string_lossy(), &[])
-                    .debug("lldb-dap");
+                config(&id, target_name, "cmake-application", &binary.to_string_lossy(), &[]).debug("lldb-dap");
             before(&mut run, &target_build_id);
             let sources: Vec<String> = target["sources"]
                 .as_array()
@@ -231,13 +258,50 @@ fn targets(
                     .params
                     .insert("cmakeCanonicalSourceRoot".into(), source_root.to_string_lossy().replace('\\', "/"));
             }
-            out.push(run);
+            names.push(out, run, dir, label);
         }
     }
 }
 
-/// Request the codemodel only when the user runs a configure configuration.
-pub(crate) fn prepare(config: &RunConfig, cwd: &Path) -> crate::IdeResult<()> {
+/// Ordered configure/build commands for a CMake build configuration. Executables and CTest
+/// are never executed by Build; only their explicit build prerequisites are accepted.
+pub fn build_configs(configs: &[RunConfig], id: &str) -> crate::IdeResult<Vec<RunConfig>> {
+    fn visit(
+        configs: &[RunConfig],
+        id: &str,
+        chain: &mut Vec<String>,
+        out: &mut Vec<RunConfig>,
+    ) -> crate::IdeResult<()> {
+        if chain.iter().any(|entry| entry == id) {
+            return Err(ide_core::IdeError::invalid("The before launch tasks run in a cycle"));
+        }
+        let config = configs
+            .iter()
+            .find(|c| c.id == id)
+            .ok_or_else(|| ide_core::IdeError::not_found(format!("Configuration '{id}' no longer exists")))?;
+        if config.kind != "cmake" || !config.args.first().is_some_and(|a| a == "--build" || a == "-S") {
+            return Err(ide_core::IdeError::invalid("Not a CMake configure or build configuration"));
+        }
+        chain.push(id.into());
+        for task in &config.extras.before_launch {
+            if !matches!(task.kind.as_str(), "run" | "build") || task.target.is_empty() {
+                return Err(ide_core::IdeError::invalid("CMake builds require configure/build prerequisites"));
+            }
+            visit(configs, &task.target, chain, out)?;
+        }
+        chain.pop();
+        if !out.iter().any(|c| c.id == id) {
+            out.push(config.clone());
+        }
+        Ok(())
+    }
+    let mut out = Vec::new();
+    visit(configs, id, &mut Vec::new(), &mut out)?;
+    Ok(out)
+}
+
+/// Request the codemodel when executing a configure configuration.
+pub fn prepare(config: &RunConfig, cwd: &Path) -> crate::IdeResult<()> {
     if config.kind == "cmake"
         && config.args.first().is_some_and(|a| a == "-S")
         && let Some(dir) = config.extras.params.get("buildDir")
@@ -300,10 +364,10 @@ mod tests {
         };
         let mut configs = Vec::new();
         detect(root.path(), Some(std::slice::from_ref(&profile)), &mut configs);
-        let run = configs.iter().find(|c| c.kind == "native").unwrap();
+        let run = configs.iter().find(|c| c.kind == "cmake-application").unwrap();
         assert!(run.command.ends_with("release/app"));
         assert_eq!(run.env, profile.env);
-        assert_eq!(configs.iter().filter(|c| c.kind == "native").count(), 1);
+        assert_eq!(configs.iter().filter(|c| c.kind == "cmake-application").count(), 1);
         let build = configs.iter().find(|c| c.id == run.extras.before_launch[0].target).unwrap();
         assert_eq!(
             build.args,
@@ -318,6 +382,34 @@ mod tests {
             let build = configured.iter().find(|c| c.id == id).unwrap();
             assert!(build.extras.before_launch.is_empty(), "{id} should use CMake's automatic regeneration");
         }
+    }
+
+    #[test]
+    fn build_dependencies_are_scoped_and_reject_cycles_or_executables() {
+        let root = tempfile::tempdir().unwrap();
+        let nested = root.path().join("nested");
+        fs::create_dir_all(&nested).unwrap();
+        fs::write(nested.join("CMakeLists.txt"), "project(app)").unwrap();
+        let configs = crate::detect(root.path());
+        let build = configs.iter().find(|c| c.args.first().is_some_and(|a| a == "--build")).unwrap();
+        assert_eq!(build.extras.before_launch[0].kind, "build");
+        let ordered = build_configs(&configs, &build.id).unwrap();
+        assert_eq!(ordered.len(), 2);
+        assert_eq!(ordered[0].args[0], "-S");
+        assert_eq!(ordered[1].args[0], "--build");
+        assert_eq!(ordered[1].cwd, build.cwd);
+        assert!(build_configs(&configs, "missing").is_err());
+        let mut cycle = configs.clone();
+        let configure = cycle.iter_mut().find(|c| c.id == ordered[0].id).unwrap();
+        before(configure, &build.id);
+        assert!(build_configs(&cycle, &build.id).is_err());
+        for kind in ["native", "cmake-application", "shell"] {
+            let mut invalid = build.clone();
+            invalid.kind = kind.into();
+            assert!(build_configs(&[invalid.clone()], &invalid.id).is_err());
+        }
+        let test = configs.iter().find(|c| c.command == "ctest").unwrap();
+        assert!(build_configs(&configs, &test.id).is_err());
     }
 
     #[test]

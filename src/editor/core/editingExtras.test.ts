@@ -5,6 +5,7 @@ import { cyclicExpandWord, expandCandidates, prefixStart } from "./wordCompletio
 import type { OutlineItem } from "@/platform/ipc";
 import {
   copyReferenceToClipboard,
+  declaredName,
   pythonModulePath,
   qualifiedReference,
   referenceOffset,
@@ -103,6 +104,25 @@ describe("copy reference", () => {
     expect(
       qualifiedReference({ ...base, language: "java", path: "/p/src/A.java", text: "", chain: ["A", "B", "m"] }),
     ).toBe("A.B#m");
+  });
+
+  it("qualifies Kotlin and Scala members like IDEA", () => {
+    const text = "package com.acme.util";
+    expect(
+      qualifiedReference({ ...base, language: "kotlin", path: "/p/src/Svc.kt", text, chain: ["Svc", "get"] }),
+    ).toBe("com.acme.util.Svc#get");
+    expect(
+      qualifiedReference({ ...base, language: "scala", path: "/p/src/Svc.scala", text, chain: ["Svc", "get"] }),
+    ).toBe("com.acme.util.Svc#get");
+  });
+
+  it("strips a language server's signature from a callable's name", () => {
+    expect(declaredName({ name: "getUserById(int)", kind: "method" })).toBe("getUserById");
+    expect(declaredName({ name: "UserService(int)", kind: "constructor" })).toBe("UserService");
+    expect(declaredName({ name: "run()", kind: "function" })).toBe("run");
+    // No signature, or a non-callable kind: the name is kept as is.
+    expect(declaredName({ name: "trim", kind: "method" })).toBe("trim");
+    expect(declaredName({ name: "Strings", kind: "class" })).toBe("Strings");
   });
 
   it("builds Rust paths from the module tree", () => {

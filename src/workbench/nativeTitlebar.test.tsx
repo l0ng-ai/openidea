@@ -95,6 +95,18 @@ describe("native title bar alignment", () => {
     expect(disconnect).toHaveBeenCalledTimes(2);
   });
 
+  it("hands the window buttons back to the remaining bar when another bar goes away", () => {
+    zoom(100);
+    renderHook(() => useNativeTitlebar(titlebar(30).bar));
+    expect(setHeight).toHaveBeenLastCalledWith(30);
+    // The project-opening screen covers the frame with its own 40px bar.
+    const opening = renderHook(() => useNativeTitlebar(titlebar(40).bar));
+    expect(setHeight).toHaveBeenLastCalledWith(40);
+    opening.unmount();
+    expect(setHeight).toHaveBeenLastCalledWith(30);
+    expect(setHeight).toHaveBeenCalledTimes(3);
+  });
+
   it("leaves windows without native overlay buttons alone", () => {
     usePlatform.setState({ overlayTitleBar: false });
     const { bar } = titlebar(40);

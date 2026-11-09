@@ -8,7 +8,7 @@ import type { TestEvent, TestOutputParser } from "./types";
 
 /** `php_qn:///app/tests/FooTest.php::\App\FooTest::testBar` → the file. */
 function hintFile(hint: string | undefined): string | null {
-  const m = /^php_qn:\/\/(.+?\.php)(?:::|$)/.exec(hint ?? "");
+  const m = /^(?:php|pest)_qn:\/\/(.+?\.php)(?:::|$)/.exec(hint ?? "");
   return m ? m[1]! : null;
 }
 
@@ -153,6 +153,11 @@ export function withTeamcity(args: readonly string[]): string[] {
 
 const escapePattern = (s: string) => s.replace(/[.*+?^${}()|[\]\\/]/g, "\\$&");
 
+const CLASS_NAME = /^\\?[A-Z]\w*(?:\\\w+)*$/;
+
+const isTestName = (name: string, parent: string) =>
+  /^[a-z_]\w*$/.test(name) || !CLASS_NAME.test(name) || (CLASS_NAME.test(parent) && parent.includes("\\"));
+
 /**
  * `--filter` pattern selecting the tests at `paths` (`[suite, class, method]`, a data set under its method).
  * PHPUnit matches `Class::method with data set …`; a class or suite node selects by its name.
@@ -165,9 +170,16 @@ export function phpunitFilter(paths: readonly (readonly string[])[]): string {
     const method = last.replace(/ with data set .*$/, "");
     // A data set sits under a node named after its method (the data-provider suite).
     const cls = path[path.length - (dataSet ? 3 : 2)];
-    if (cls && /^[a-z_]\w*$/.test(method))
+    if (cls && isTestName(method, cls))
       parts.add(`${escapePattern(cls)}::${escapePattern(method)}( with data set .*)?`);
     else parts.add(`${escapePattern(last)}::.*`);
   }
   return `/(${[...parts].join("|")})$/`;
+}
+
+export function pestFilter(describes: readonly string[], name?: string): string {
+  const prefix = describes.map((d) => `\`${d}\` → `).join("");
+  return name === undefined
+    ? `/::${escapePattern(prefix)}/`
+    : `/::${escapePattern(prefix + name)}( with data set .*)?$/`;
 }

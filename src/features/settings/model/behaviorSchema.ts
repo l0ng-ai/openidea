@@ -30,17 +30,24 @@ export interface AppearanceExtras {
   redGreenVision: boolean;
   differentToolWindowBackground: boolean;
   compactMode: boolean;
+  /** IDEA "Use smaller indents in trees": tool window trees indent less per level. */
+  smallTreeIndents: boolean;
   fullPathInTitle: boolean;
   projectColorsInToolbar: boolean;
   dndWithAltOnly: boolean;
   menuIcons: boolean;
   mainMenuStyle: "hamburger" | "merged";
+  /** A lone Alt press focuses or opens the main menu (IDEA `ide.windows.main.menu.focus.on.alt`). */
+  mainMenuAlt: boolean;
   ideAntialiasing: Antialiasing;
   editorAntialiasing: Antialiasing;
   showToolWindowBars: boolean;
   showToolWindowNames: boolean;
   showToolWindowBadges: boolean;
   widescreenToolWindows: boolean;
+  /** View › Appearance › Toolbar; hidden leaves IDEA's compact window header. */
+  showMainToolbar: boolean;
+  showStatusBar: boolean;
 }
 
 export interface DateFormatValid {
@@ -88,17 +95,21 @@ export const DEFAULT_APPEARANCE_EXTRAS: AppearanceExtras = {
   redGreenVision: false,
   differentToolWindowBackground: false,
   compactMode: false,
+  smallTreeIndents: false,
   fullPathInTitle: false,
   projectColorsInToolbar: true,
   dndWithAltOnly: false,
   menuIcons: true,
   mainMenuStyle: "hamburger",
+  mainMenuAlt: true,
   ideAntialiasing: "greyscale",
   editorAntialiasing: "greyscale",
   showToolWindowBars: true,
   showToolWindowNames: false,
   showToolWindowBadges: true,
   widescreenToolWindows: false,
+  showMainToolbar: true,
+  showStatusBar: true,
 };
 
 export const DEFAULT_GENERAL_EXTRAS: GeneralExtras = {
@@ -144,17 +155,21 @@ export function validateAppearanceExtras(raw: unknown): AppearanceExtras {
     redGreenVision: b("redGreenVision"),
     differentToolWindowBackground: b("differentToolWindowBackground"),
     compactMode: b("compactMode"),
+    smallTreeIndents: b("smallTreeIndents"),
     fullPathInTitle: b("fullPathInTitle"),
     projectColorsInToolbar: b("projectColorsInToolbar"),
     dndWithAltOnly: b("dndWithAltOnly"),
     menuIcons: b("menuIcons"),
     mainMenuStyle: oneOf(a.mainMenuStyle, ["hamburger", "merged"], d.mainMenuStyle),
+    mainMenuAlt: b("mainMenuAlt"),
     ideAntialiasing: oneOf(a.ideAntialiasing, AA, d.ideAntialiasing),
     editorAntialiasing: oneOf(a.editorAntialiasing, AA, d.editorAntialiasing),
     showToolWindowBars: b("showToolWindowBars"),
     showToolWindowNames: b("showToolWindowNames"),
     showToolWindowBadges: b("showToolWindowBadges"),
     widescreenToolWindows: b("widescreenToolWindows"),
+    showMainToolbar: b("showMainToolbar"),
+    showStatusBar: b("showStatusBar"),
   };
 }
 

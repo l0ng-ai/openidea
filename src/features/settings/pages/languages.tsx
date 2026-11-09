@@ -1,3 +1,4 @@
+import { PluginFormattersPage } from "../languages/PluginFormattersPage";
 /**
  * PyCharm's top-level "Python" group (Interpreter), "Project Structure", and
  * Languages & Frameworks › Go / Java / Markdown / Node.js / PHP / Rust / TypeScript. Pages live in
@@ -15,6 +16,15 @@ import type { PageSpec } from "./spec";
 export const LANGUAGES_GROUP = "Languages & Frameworks";
 
 export const LANGUAGE_PAGES: PageSpec[] = [
+  {
+    id: "languages.pluginFormatters",
+    title: "Plugin Formatters",
+    group: LANGUAGES_GROUP,
+    projectScope: true,
+    order: 450,
+    keywords: ["format", "plugins"],
+    component: PluginFormattersPage,
+  },
   {
     id: "python.interpreter",
     projectScope: true,
@@ -42,7 +52,22 @@ export const LANGUAGE_PAGES: PageSpec[] = [
     title: "Project Structure",
     // IntelliJ IDEA order: … Version Control, Project Structure, Build, Execution, Deployment, Languages & Frameworks …
     order: 350,
-    keywords: ["content root", "sources root", "test sources", "resources", "excluded", "mark directory as"],
+    keywords: [
+      "project structure",
+      "content root",
+      "sources root",
+      "test sources",
+      "resources",
+      "excluded",
+      "mark directory as",
+      "project sdk",
+      "language level",
+      "modules",
+      "libraries",
+      "facets",
+      "artifacts",
+      "sdks",
+    ],
     component: ProjectStructurePage,
   },
   {
@@ -168,6 +193,7 @@ export const LANGUAGE_PAGES: PageSpec[] = [
       "cli interpreter",
       "language level",
       "php version",
+      "xdebug",
       "php",
       "composer",
       "phpunit",

@@ -84,16 +84,24 @@ impl WindowGroups {
         Ok(before)
     }
 
+    /// The member `detach(member)` will make active: the selection, or the selected member's neighbour.
+    pub fn successor(&self, member: &str) -> Option<String> {
+        let group = self.group(member)?;
+        if group.selected != member {
+            return Some(group.selected.clone());
+        }
+        let index = group.members.iter().position(|m| m == member)?;
+        let next = if index + 1 < group.members.len() { index + 1 } else { index.checked_sub(1)? };
+        Some(group.members[next].clone())
+    }
+
     /// Returns the remaining active member, including when the last pair dissolves.
     pub fn detach(&mut self, member: &str) -> Option<String> {
+        let selected = self.successor(member)?;
         let i = self.groups.iter().position(|g| g.members.iter().any(|m| m == member))?;
         let group = &mut self.groups[i];
-        let index = group.members.iter().position(|m| m == member).unwrap();
-        group.members.remove(index);
-        if group.selected == member {
-            group.selected = group.members[index.min(group.members.len() - 1)].clone();
-        }
-        let selected = group.selected.clone();
+        group.members.retain(|m| m != member);
+        group.selected = selected.clone();
         if group.members.len() < 2 {
             self.groups.remove(i);
         }
@@ -211,6 +219,19 @@ mod tests {
         assert_eq!(groups.group("a").unwrap().members, members(&["a", "b"]));
         assert_eq!(groups.detach("b"), Some("a".into()));
         assert!(groups.group("a").is_none());
+    }
+
+    #[test]
+    fn the_successor_is_the_member_detach_selects() {
+        let mut groups = WindowGroups::default();
+        groups.merge(members(&["a", "b", "c"]), "b").unwrap();
+        assert_eq!(groups.successor("a"), Some("b".into()));
+        assert_eq!(groups.successor("b"), Some("c".into()));
+        groups.select("a", "c").unwrap();
+        assert_eq!(groups.successor("c"), Some("b".into()));
+        assert_eq!(groups.successor("unrelated"), None);
+        assert_eq!(groups.detach("c"), Some("b".into()));
+        assert_eq!(groups.group("a").unwrap().selected, "b");
     }
 
     #[test]

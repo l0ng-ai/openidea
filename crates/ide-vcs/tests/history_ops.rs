@@ -150,6 +150,21 @@ fn merge_versions_put_the_users_work_on_the_left() {
 }
 
 #[test]
+fn rebase_conflict_names_the_remote_branch_without_its_symbolic_aliases() {
+    let fx = diverged();
+    let main = fx.git(&["rev-parse", "main"]);
+    fx.git(&["update-ref", "refs/remotes/origin/main", &main]);
+    fx.git(&["symbolic-ref", "refs/remotes/origin/HEAD", "refs/remotes/origin/main"]);
+    fx.git(&["symbolic-ref", "refs/remotes/origin/alias", "refs/remotes/origin/main"]);
+    fx.git(&["branch", "-D", "main"]);
+    let repo = fx.repo();
+    assert!(repo.rebase("origin/main").is_err());
+    assert_eq!(repo.merge_sides().unwrap().other_branch.as_deref(), Some("origin/main"));
+    let (cancel, out) = quiet();
+    repo.abort_operation(&cancel, &out).unwrap();
+}
+
+#[test]
 fn rebase_conflict_then_abort_and_skip() {
     let fx = diverged();
     let repo = fx.repo();

@@ -22,6 +22,7 @@
 use ide_extension::{Disposable, ExtensionPoint, Package, Placement, Prepared, UiDecl, decode, validate_item_id};
 use parking_lot::RwLock;
 use serde::{Deserialize, Serialize};
+use std::collections::{HashMap, HashSet};
 use std::sync::Arc;
 use std::sync::atomic::{AtomicU64, Ordering};
 
@@ -37,6 +38,23 @@ pub enum ProviderKind {
     CodeActions,
     Definition,
     LineMarkers,
+    SemanticTokens,
+    Hover,
+    InlayHints,
+    Diagnostics,
+    Formatting,
+    SignatureHelp,
+    DocumentHighlights,
+    DocumentLinks,
+    CodeLenses,
+    SelectionRanges,
+    Folding,
+    Colors,
+    DocumentSymbols,
+    Implementation,
+    TypeDefinition,
+    GutterActions,
+    Injections,
 }
 
 #[derive(Clone, Debug, Deserialize)]
@@ -70,15 +88,49 @@ impl Providers {
 
     /// Plugins providing `kind` for `language`, in declaration order.
     pub fn plugins_for(&self, kind: ProviderKind, language: &str) -> Vec<String> {
-        let mut out: Vec<String> = Vec::new();
-        for (_, plugin, kinds, languages) in self.items.read().iter() {
-            if kinds.contains(&kind) && languages.iter().any(|l| l == "*" || l == language) && !out.contains(plugin) {
-                out.push(plugin.clone());
-            }
-        }
-        out
+        self.matching::<Vec<_>>(kind, language).into_iter().map(|(plugin, _)| plugin).collect()
     }
 
+    /// One coherent declaration snapshot, preserving the first match per plugin.
+    fn matching<T: FromIterator<(String, u64)>>(&self, kind: ProviderKind, language: &str) -> T {
+        let items = self.items.read();
+        let mut seen = HashSet::new();
+        items
+            .iter()
+            .filter(|(_, plugin, kinds, languages)| {
+                kinds.contains(&kind)
+                    && languages.iter().any(|l| l == "*" || l == language)
+                    && seen.insert(plugin.as_str())
+            })
+            .map(|(seq, plugin, ..)| (plugin.clone(), *seq))
+            .collect()
+    }
+
+    pub(super) fn diagnostic_generations(&self, language: &str) -> HashMap<String, u64> {
+        if self.any(ProviderKind::Injections) {
+            let mut out = HashMap::new();
+            for (seq, plugin, kinds, _) in self.items.read().iter() {
+                if kinds.contains(&ProviderKind::Diagnostics) {
+                    out.entry(plugin.clone()).or_insert(*seq);
+                }
+            }
+            out
+        } else {
+            self.matching(ProviderKind::Diagnostics, language)
+        }
+    }
+
+    pub(super) fn injection_generations(&self, language: &str) -> HashMap<String, u64> {
+        self.matching(ProviderKind::Injections, language)
+    }
+    pub(super) fn formatter_declarations(&self) -> Vec<(String, Vec<String>)> {
+        self.items
+            .read()
+            .iter()
+            .filter(|(_, _, k, _)| k.contains(&ProviderKind::Formatting))
+            .map(|(_, p, _, l)| (p.clone(), l.clone()))
+            .collect()
+    }
     /// Whether any plugin provides `kind` (for any language).
     pub fn any(&self, kind: ProviderKind) -> bool {
         self.items.read().iter().any(|(_, _, kinds, _)| kinds.contains(&kind))
@@ -111,6 +163,38 @@ impl ExtensionPoint for ProvidersPoint {
         }
         if d.kinds.is_empty() || d.languages.is_empty() || d.languages.len() > 64 {
             return Err("contributes.providers: give `kinds` and 1–64 `languages`".into());
+        }
+        if d.kinds.contains(&ProviderKind::SemanticTokens) {
+            pkg.manifest.needs_api("contributes.providers: semantic-tokens", 3)?;
+        }
+        if d.kinds.contains(&ProviderKind::Diagnostics) {
+            pkg.manifest.needs_api("contributes.providers: diagnostics", 3)?;
+        }
+        if d.kinds.contains(&ProviderKind::Hover) {
+            pkg.manifest.needs_api("contributes.providers: hover", 3)?;
+        }
+        if d.kinds.contains(&ProviderKind::InlayHints) {
+            pkg.manifest.needs_api("contributes.providers: inlay-hints", 3)?;
+        }
+        if d.kinds.iter().any(|k| {
+            matches!(
+                k,
+                ProviderKind::Formatting
+                    | ProviderKind::SignatureHelp
+                    | ProviderKind::DocumentHighlights
+                    | ProviderKind::DocumentLinks
+                    | ProviderKind::CodeLenses
+                    | ProviderKind::SelectionRanges
+                    | ProviderKind::Folding
+                    | ProviderKind::Colors
+                    | ProviderKind::DocumentSymbols
+                    | ProviderKind::Implementation
+                    | ProviderKind::TypeDefinition
+                    | ProviderKind::GutterActions
+                    | ProviderKind::Injections
+            )
+        }) {
+            pkg.manifest.needs_api("contributes.providers: language features and injections", 4)?;
         }
         for l in &d.languages {
             if l != "*"
@@ -157,11 +241,11 @@ pub(super) fn secret(_pkg: &Package, decl: toml::Value) -> Result<UiDecl, String
 
 // ---- dispatch ---------------------------------------------------------------
 
-use super::{LoadedPlugin, PluginHost, PluginStatus};
+use super::{LoadedPlugin, PluginEvent, PluginHost, PluginStatus};
 use ide_core::CancellationToken;
 use ide_plugin::{
-    ActorError, CallError, CodeAction, CompletionItem, InlineSuggestion, LineMarker, Location, Pending,
-    ProviderDocument, Runtime,
+    ActorError, CallError, CodeAction, CompletionItem, InlineSuggestion, LineMarker, Location, Pending, PluginHover,
+    PluginInlayHint, ProviderDocument, Runtime, SemanticToken,
 };
 use std::sync::Weak;
 use std::time::{Duration, Instant};
@@ -181,7 +265,7 @@ pub fn set_editor_providers(host: Option<&Arc<PluginHost>>) {
 /// The plugin host whose providers take part, when any declares `kind`.
 pub(crate) fn editor_providers(kind: ProviderKind) -> Option<Arc<PluginHost>> {
     let host = editor_plugin_host()?;
-    host.providers.any(kind).then_some(host)
+    (host.providers.any(kind) || host.providers.any(ProviderKind::Injections)).then_some(host)
 }
 
 pub(crate) fn editor_plugin_host() -> Option<Arc<PluginHost>> {
@@ -190,7 +274,7 @@ pub(crate) fn editor_plugin_host() -> Option<Arc<PluginHost>> {
 
 impl PluginHost {
     /// Usable plugins declaring `kind` for `language`.
-    fn provider_plugins(&self, kind: ProviderKind, language: &str) -> Vec<Arc<LoadedPlugin>> {
+    pub(super) fn provider_plugins(&self, kind: ProviderKind, language: &str) -> Vec<Arc<LoadedPlugin>> {
         self.providers
             .plugins_for(kind, language)
             .into_iter()
@@ -206,15 +290,46 @@ impl PluginHost {
     /// declares `kind` for `language`, in plugin order, leaving out those that
     /// failed or were late. Each plugin runs on its own thread, so the calls
     /// run at the same time: the wait is the slowest plugin's, not the sum.
-    fn edit_calls<R: Send + 'static>(
+    pub(super) fn edit_calls<R: Send + 'static>(
         &self,
         kind: ProviderKind,
         language: &str,
         f: impl FnOnce(&mut Runtime, Duration) -> Result<R, CallError> + Clone + Send + 'static,
     ) -> Vec<(Arc<LoadedPlugin>, R)> {
+        self.edit_calls_plugins(self.provider_plugins(kind, language), f)
+    }
+
+    pub(super) fn document_calls<R: Send + 'static>(
+        &self,
+        kind: ProviderKind,
+        doc: &ProviderDocument,
+        f: impl FnOnce(&mut Runtime, Duration) -> Result<R, CallError> + Clone + Send + 'static,
+    ) -> Vec<(Arc<LoadedPlugin>, R)> {
+        self.document_calls_for(kind, doc, None, f)
+    }
+    pub(super) fn document_calls_for<R: Send + 'static>(
+        &self,
+        kind: ProviderKind,
+        doc: &ProviderDocument,
+        owner: Option<&str>,
+        f: impl FnOnce(&mut Runtime, Duration) -> Result<R, CallError> + Clone + Send + 'static,
+    ) -> Vec<(Arc<LoadedPlugin>, R)> {
+        let plugins = self
+            .provider_plugins(kind, &doc.language)
+            .into_iter()
+            .filter(|p| {
+                p.dev_root.as_ref().is_none_or(|r| doc.path.starts_with(r)) && owner.is_none_or(|id| p.id() == id)
+            })
+            .collect();
+        self.edit_calls_plugins(plugins, f)
+    }
+    fn edit_calls_plugins<R: Send + 'static>(
+        &self,
+        plugins: Vec<Arc<LoadedPlugin>>,
+        f: impl FnOnce(&mut Runtime, Duration) -> Result<R, CallError> + Clone + Send + 'static,
+    ) -> Vec<(Arc<LoadedPlugin>, R)> {
         let (soft, hard) = (self.limits.edit_soft, self.limits.edit_hard);
-        let queued: Vec<_> = self
-            .provider_plugins(kind, language)
+        let queued: Vec<_> = plugins
             .into_iter()
             .filter_map(|plugin| {
                 let (actor, activated) = self.ensure_active(&plugin, None).ok()?;
@@ -273,13 +388,24 @@ impl PluginHost {
         at: ide_core::Pos,
         trigger: Option<&str>,
     ) -> Vec<(String, CompletionItem)> {
-        let (d, t) = (Arc::new(doc.clone()), trigger.map(str::to_owned));
-        self.edit_calls(ProviderKind::Completion, &doc.language, move |rt, timeout| {
-            rt.provide_completion(&d, at, t.as_deref(), timeout)
-        })
-        .into_iter()
-        .flat_map(|(p, items)| items.into_iter().map(move |i| (p.id().to_owned(), i)))
-        .collect()
+        self.feature_documents(doc, Some(at))
+            .into_iter()
+            .flat_map(|(doc, bounds)| {
+                let (d, t) = (Arc::new(doc.clone()), trigger.map(str::to_owned));
+                self.document_calls(ProviderKind::Completion, &doc, move |rt, timeout| {
+                    rt.provide_completion(&d, at, t.as_deref(), timeout)
+                })
+                .into_iter()
+                .flat_map(|(p, items)| items.into_iter().map(move |i| (p.id().to_owned(), i)))
+                .filter_map(move |(p, mut i)| {
+                    if i.replace.is_some_and(|r| !bounds.contains(r)) {
+                        return None;
+                    }
+                    i.additional_edits.retain(|e| bounds.contains(e.range));
+                    Some((p, i))
+                })
+            })
+            .collect()
     }
 
     pub fn provide_code_actions(
@@ -303,12 +429,19 @@ impl PluginHost {
         plugin_id: &str,
         doc: &ProviderDocument,
         action: CodeAction,
+        invocation: ide_plugin::Invocation,
     ) -> ide_core::IdeResult<CodeAction> {
         let d = Arc::new(doc.clone());
         let timeout = self.limits.timeout;
-        self.code_call(plugin_id, ide_plugin::Invocation::default(), "resolving the code action", move |rt, _| {
-            rt.resolve_code_action(&d, &action, timeout)
+        self.code_call(plugin_id, invocation, "resolving the code action", move |rt, inv| {
+            rt.resolve_code_action(&d, &action, inv, timeout)
         })
+    }
+
+    /// Shows `path` in window `client` after a code action of `plugin_id` was applied.
+    pub fn open_file(&self, plugin_id: &str, client: &str, path: ide_core::IpcPath) {
+        let event = PluginEvent::OpenLocation { plugin_id: plugin_id.to_owned(), path, line: 0, column: 0 };
+        self.emit(Some(client), event);
     }
 
     pub fn provide_definition(&self, doc: &ProviderDocument, at: ide_core::Pos) -> Vec<Location> {
@@ -328,6 +461,126 @@ impl PluginHost {
         })
         .into_iter()
         .flat_map(|(p, markers)| markers.into_iter().map(move |m| (p.id().to_owned(), m)))
+        .collect()
+    }
+
+    pub fn provide_semantic_tokens(&self, doc: &ProviderDocument) -> Vec<SemanticToken> {
+        let d = Arc::new(doc.clone());
+        self.edit_calls(ProviderKind::SemanticTokens, &doc.language, move |rt, timeout| {
+            rt.provide_semantic_tokens(&d, timeout)
+        })
+        .into_iter()
+        .flat_map(|(_, tokens)| tokens)
+        .collect()
+    }
+
+    pub fn provide_diagnostics(
+        &self,
+        doc: &ProviderDocument,
+        cancel: &CancellationToken,
+    ) -> Vec<(String, Vec<ide_core::Diagnostic>)> {
+        self.provide_project_diagnostics(None, doc, cancel)
+    }
+
+    pub(super) fn diagnostic_plugins(
+        &self,
+        project: Option<&std::path::Path>,
+        language: &str,
+    ) -> Vec<Arc<LoadedPlugin>> {
+        let plugins = if self.providers.any(ProviderKind::Injections) {
+            self.providers
+                .diagnostic_generations(language)
+                .keys()
+                .filter_map(|id| self.get(id).ok())
+                .filter(|p| {
+                    let m = p.meta.lock();
+                    matches!(m.status, PluginStatus::Active | PluginStatus::Inactive) && m.pending.is_empty()
+                })
+                .collect()
+        } else {
+            self.provider_plugins(ProviderKind::Diagnostics, language)
+        };
+        plugins.into_iter().filter(|p| p.dev_root.is_none() || p.dev_root.as_deref() == project).collect()
+    }
+
+    pub(super) fn provide_project_diagnostics(
+        &self,
+        project: Option<&std::path::Path>,
+        doc: &ProviderDocument,
+        cancel: &CancellationToken,
+    ) -> Vec<(String, Vec<ide_core::Diagnostic>)> {
+        let mut out = std::collections::BTreeMap::<String, Vec<ide_core::Diagnostic>>::new();
+        for (d, bounds) in self.feature_documents(doc, None) {
+            if cancel.is_cancelled() {
+                break;
+            }
+            for (id, items) in self.provide_document_diagnostics(project, &d, cancel) {
+                out.entry(id).or_default().extend(items.into_iter().filter(|i| bounds.contains(i.range)));
+            }
+        }
+        out.into_iter()
+            .map(|(id, mut items)| {
+                items.truncate(5000);
+                (id, items)
+            })
+            .collect()
+    }
+
+    fn provide_document_diagnostics(
+        &self,
+        project: Option<&std::path::Path>,
+        doc: &ProviderDocument,
+        cancel: &CancellationToken,
+    ) -> Vec<(String, Vec<ide_core::Diagnostic>)> {
+        std::thread::scope(|scope| {
+            let calls: Vec<_> = self
+                .provider_plugins(ProviderKind::Diagnostics, &doc.language)
+                .into_iter()
+                .filter(|p| p.dev_root.is_none() || p.dev_root.as_deref() == project)
+                .map(|p| {
+                    scope.spawn(move || {
+                        if cancel.is_cancelled() {
+                            return None;
+                        }
+                        let (actor, activated) = self.ensure_active(&p, None).ok()?;
+                        if activated {
+                            self.changed();
+                        }
+                        let (d, timeout) = (doc.clone(), self.limits.edit_hard);
+                        let started = Instant::now();
+                        let result =
+                            actor.call_edit_cancellable(cancel, CANCEL_GRACE, self.limits.edit_soft, move |rt| {
+                                rt.provide_diagnostics(&d, timeout)
+                            });
+                        let items = self.finish_provider_call(&p, &actor, started, result)?;
+                        (!cancel.is_cancelled()).then(|| (p.id().to_owned(), items))
+                    })
+                })
+                .collect();
+            calls.into_iter().filter_map(|call| call.join().ok().flatten()).collect()
+        })
+    }
+
+    pub fn provide_hover(&self, doc: &ProviderDocument, at: ide_core::Pos) -> Vec<PluginHover> {
+        self.feature_documents(doc, Some(at))
+            .into_iter()
+            .flat_map(|(doc, bounds)| {
+                let d = Arc::new(doc.clone());
+                self.document_calls(ProviderKind::Hover, &doc, move |rt, timeout| rt.provide_hover(&d, at, timeout))
+                    .into_iter()
+                    .filter_map(|(_, h)| h)
+                    .filter(move |h| h.range.is_none_or(|r| bounds.contains(r)))
+            })
+            .collect()
+    }
+
+    pub fn provide_inlay_hints(&self, doc: &ProviderDocument, range: ide_core::Range) -> Vec<PluginInlayHint> {
+        let d = Arc::new(doc.clone());
+        self.edit_calls(ProviderKind::InlayHints, &doc.language, move |rt, timeout| {
+            rt.provide_inlay_hints(&d, range, timeout)
+        })
+        .into_iter()
+        .flat_map(|(_, hints)| hints)
         .collect()
     }
 
@@ -357,5 +610,43 @@ impl PluginHost {
             }
         }
         None
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn provider_snapshots_preserve_order_first_generation_and_language_matching() {
+        let providers = Arc::new(Providers::default());
+        let declare = |plugin: &str, kind, language: &str| {
+            providers.add(plugin.into(), Decl { kinds: vec![kind], languages: vec![language.into()] })
+        };
+        let mut declarations = Vec::new();
+        declarations.push(declare("unrelated", ProviderKind::Hover, "*"));
+        declarations.push(declare("other-language", ProviderKind::Diagnostics, "rust"));
+        for i in 0..256 {
+            let plugin = format!("plugin-{i}");
+            declarations.push(declare(&plugin, ProviderKind::Diagnostics, "text"));
+            declarations.push(declare(&plugin, ProviderKind::Diagnostics, "*"));
+        }
+        let expected: Vec<_> = (0..256).map(|i| format!("plugin-{i}")).collect();
+        assert_eq!(providers.plugins_for(ProviderKind::Diagnostics, "text"), expected);
+        let before = providers.diagnostic_generations("text");
+        assert_eq!(before.len(), 256);
+        assert_eq!(before["plugin-0"], 2);
+        assert_eq!(providers.diagnostic_generations("rust").len(), 257);
+        assert_eq!(providers.plugins_for(ProviderKind::Hover, "text"), ["unrelated"]);
+        // Removing the first matching declaration must invalidate its generation,
+        // even while a second declaration still provides the same language.
+        drop(declarations.remove(2));
+        let after = providers.diagnostic_generations("text");
+        assert_eq!(after["plugin-0"], 3);
+        assert_ne!(before["plugin-0"], after["plugin-0"]);
+        drop(declarations);
+        assert!(providers.diagnostic_generations("text").is_empty());
+        let _reloaded = declare("plugin-0", ProviderKind::Diagnostics, "text");
+        assert_ne!(providers.diagnostic_generations("text")["plugin-0"], after["plugin-0"]);
     }
 }

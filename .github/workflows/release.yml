@@ -166,6 +166,28 @@ jobs:
             xcrun stapler staple "$dmg"
             gh release upload "$TAG" "$dmg" --clobber
           done
+      # Portable Windows builds (#1857): on Windows Tauri embeds the
+      # frontend in the exe and WebView2 is a system component, so zipping
+      # the raw exe gives an unpack-and-run alternative to the installers.
+      - name: Portable zip
+        if: runner.os == 'Windows'
+        shell: pwsh
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          $target = "${{ matrix.target }}"
+          $arch = if ($target -like "x86_64*") { "x64" } else { "arm64" }
+          $version = $env:TAG -replace '^v', ''
+          $asset = "OpenIDEA_${version}_windows_${arch}_portable.zip"
+          $dir = "target/$target/release"
+          $files = @("$dir/openidea.exe")
+          if (Test-Path "$dir/WebView2Loader.dll") {
+            $files += "$dir/WebView2Loader.dll"
+          }
+          Compress-Archive -Path $files -DestinationPath $asset -Force
+          $hash = (Get-FileHash $asset -Algorithm SHA256).Hash.ToLower()
+          "$hash  $asset" | Out-File -Encoding ascii "$asset.sha256"
+          gh release upload $env:TAG $asset "$asset.sha256" --clobber
 
   # The remote development server, per host platform it can run on. The desktop
   # app downloads the one for the host (ide-tools `server`) and installs it over SSH.

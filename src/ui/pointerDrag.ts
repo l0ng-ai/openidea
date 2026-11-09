@@ -13,7 +13,7 @@ export interface DragData {
   payload: string;
 }
 
-/** Project files dragged from the Project view: `payload` is the paths joined by `\n`. */
+/** Project files dragged from the Project view: `payload` is the paths joined by `\n`, folders ending with `/`. */
 export const FILES_DRAG = "application/x-openidea-files";
 
 export interface DropTarget {

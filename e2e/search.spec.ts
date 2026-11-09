@@ -1,4 +1,4 @@
-import { doubleShift, expect, ipcCalls, stubDesktop, test } from "./fixtures";
+import { doubleShift, expect, ipcCalls, openFromTree, stubDesktop, test } from "./fixtures";
 
 test("double Shift opens Search Everywhere with its tabs; Escape closes it", async ({ workbench: page }) => {
   await doubleShift(page);
@@ -45,6 +45,8 @@ test("Search Everywhere finds a file and opens it", async ({ workbench: page }) 
 });
 
 test("Find in Files streams matches by file and opens the chosen one at its line", async ({ workbench: page }) => {
+  const other = await openFromTree(page, "settings.gradle.kts");
+  const originalOther = await other.locator(".cm-content").textContent();
   await stubDesktop(page);
   await page.evaluate(
     ({ root, service }) => {
@@ -92,11 +94,36 @@ test("Find in Files streams matches by file and opens the chosen one at its line
   await dialog.getByRole("textbox", { name: "Text to find" }).fill("OrderService");
   const matches = dialog.getByRole("listbox", { name: "Matches" });
   await expect(matches.getByRole("option")).toHaveCount(3);
+  // The TODO index scans the project through `search_start` too, on its own schedule.
   await expect
-    .poll(async () => (await ipcCalls(page, "search_start")).at(-1)?.query)
+    .poll(
+      async () =>
+        (await ipcCalls(page, "search_start")).filter((c) => !/\bTODO\b/.test(c.query?.pattern ?? "")).at(-1)?.query,
+    )
     .toMatchObject({
       pattern: "OrderService",
     });
+  const preview = dialog.getByRole("region", { name: "Preview", exact: true }).locator(".cm-content");
+  await expect(preview).toHaveAttribute("contenteditable", "true");
+  const originalPreview = await preview.textContent();
+  await preview.focus();
+  await page.keyboard.press("Meta+a");
+  await page.keyboard.insertText("OrderService preview edit");
+  await expect(preview).toHaveText("OrderService preview edit");
+  await expect(other.locator(".cm-content")).toHaveText(originalOther!);
+  await page.keyboard.press("Meta+Backspace");
+  await expect(preview).toHaveText("");
+  await expect(other.locator(".cm-content")).toHaveText(originalOther!);
+  await page.keyboard.press("Meta+z");
+  await expect(preview).toHaveText(originalPreview!);
+  await page.keyboard.press("Meta+a");
+  await page.keyboard.insertText("OrderService preview edit");
+  await page.keyboard.press("Enter");
+  await expect(dialog).toBeVisible();
+  await expect(preview.locator(".cm-line")).toHaveCount(2);
+  await page.keyboard.press("Meta+z");
+  await page.keyboard.press("Meta+z");
+  await expect(preview).toHaveText(originalPreview!);
   await matches.getByRole("option", { name: /import com\.acme\.orders\.service\.OrderService/ }).dblclick();
   await expect(page.getByRole("tab", { name: "build.gradle.kts" })).toHaveAttribute("aria-selected", "true");
   const caretLine = () =>

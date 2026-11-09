@@ -78,24 +78,32 @@ export function pythonModulePath(path: string, root: string | null): string {
 
 const declared = (text: string, re: RegExp) => re.exec(text)?.[1] ?? null;
 
+/** `method(int, String)` → `method`: a language server may bake the signature into a callable's name; IDEA's reference is the bare name. */
+export function declaredName(item: { name: string; kind: string }): string {
+  const n = item.name;
+  if (!["function", "method", "constructor"].includes(item.kind)) return n;
+  const paren = n.indexOf("(");
+  return paren > 0 ? n.slice(0, paren).trim() : n;
+}
+
+/** `pkg.Outer.Inner#member` (the last symbol is the member unless the caret is on a type's name), as IDEA's Copy Reference. */
+function jvmReference(pkg: string | null, chain: string[]): string {
+  const [type, ...rest] = chain;
+  const typePath = [pkg, type].filter(Boolean).join(".");
+  return rest.length ? `${[typePath, ...rest.slice(0, -1)].join(".")}#${rest[rest.length - 1]}` : typePath;
+}
+
 export function qualifiedReference(r: ReferenceInput): string {
   const fallback = `${relativePath(r.path, r.root)}:${r.line + 1}`;
   const chain = r.chain.filter(Boolean);
   if (!chain.length) return fallback;
   switch (r.language) {
     case "java":
-    case "groovy": {
-      const pkg = declared(r.text, /^\s*package\s+([\w.]+)\s*;?/m);
-      const [type, ...rest] = chain;
-      const typePath = [pkg, type].filter(Boolean).join(".");
-      // `pkg.Outer.Inner#member`: the last symbol is the member unless the caret is on a type's name.
-      return rest.length ? `${[typePath, ...rest.slice(0, -1)].join(".")}#${rest[rest.length - 1]}` : typePath;
-    }
+    case "groovy":
+      return jvmReference(declared(r.text, /^\s*package\s+([\w.]+)\s*;?/m), chain);
     case "kotlin":
-    case "scala": {
-      const pkg = declared(r.text, /^\s*package\s+([\w.]+)/m);
-      return [pkg, ...chain].filter(Boolean).join(".");
-    }
+    case "scala":
+      return jvmReference(declared(r.text, /^\s*package\s+([\w.]+)/m), chain);
     case "csharp":
       return chain.join(".");
     case "rust":

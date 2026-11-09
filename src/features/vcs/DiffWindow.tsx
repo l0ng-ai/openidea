@@ -175,7 +175,7 @@ export function activateDiffWindow(parent: string): () => void {
   void (async () => {
     await savingReady;
     await restoreRemote();
-    const launch = (await commands.windowTakeLaunch())?.diff;
+    const launch = (await commands.windowTakeLaunch())?.diffWindow;
     if (!launch) throw new Error("Missing diff request");
     const project = await commands.projectCurrent();
     if (!project) throw new Error("The diff's project is no longer open");

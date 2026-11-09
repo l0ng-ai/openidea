@@ -1,0 +1,75 @@
+package openidea:plugin@1.4.0;
+
+/// The commit being prepared in the window the current command or event came
+/// from (the Commit tool window, or the Commit dialog while it is open): the
+/// changes it holds and its message.
+interface commit {
+    use types.{error};
+
+    /// A file the commit changes.
+    record commit-change {
+        /// Absolute path of the working tree root of its repository.
+        repository: string,
+        /// Absolute path (after a rename, the new one).
+        path: string,
+        /// The path before a rename or copy.
+        old-path: option<string>,
+        /// `added`, `modified`, `deleted`, `renamed`, `copied` or
+        /// `type-changed` (more may be added).
+        status: string,
+        /// What the commit changes in the file, in `git diff` format against
+        /// HEAD: only the changed blocks included in the commit. `none` for
+        /// binary content.
+        diff: option<string>,
+        /// `diff` was cut at the size limit (1 MiB for all the changes).
+        truncated: bool,
+    }
+
+    /// What Commit would commit right now.
+    record commit-draft {
+        /// Changes whenever the message, the included changes or Amend do.
+        revision: u64,
+        message: string,
+        /// The commit replaces the last one (Amend); `changes` are still
+        /// against HEAD, so they don't include the last commit's own.
+        amend: bool,
+        changes: list<commit-change>,
+    }
+
+    /// The commit being prepared, as Commit would make it: the included
+    /// files and changed blocks only. Unsaved editors of the included files
+    /// are saved first, as Commit does; nothing is staged or committed.
+    /// `none` when the window's project has no repository. Fails with
+    /// `invalid` outside a command or event of a window, and in a project that
+    /// is not trusted. Requires `vcs.read`.
+    pending-commit: func() -> result<option<commit-draft>, error>;
+    /// Replaces the commit message, only if the draft is still at `revision`
+    /// (else `stale`, and nothing changes): text the user typed meanwhile is
+    /// never overwritten. The user reviews it and commits. Same windows as
+    /// `pending-commit`. Requires `vcs.write`.
+    set-commit-message: func(revision: u64, message: string) -> result<_, error>;
+}
+
+/// Before-commit checks (`[[contributes.commitChecks]]`), run when the user
+/// commits, after the IDE's own checks, for the checks enabled in Commit
+/// Options. Problems stop the commit and show beside the message until the
+/// user changes it or chooses Commit Anyway. Requires `vcs.read`.
+interface commit-checker {
+    use types.{error, location};
+    use invocation.{invocation};
+    use commit.{commit-draft};
+
+    /// Something the user should look at before committing.
+    record commit-problem {
+        /// One sentence, shown after the check's title.
+        message: string,
+        /// Where it is, opened from the problem; `none` for the commit as a
+        /// whole (its message, for instance).
+        location: option<location>,
+    }
+
+    /// Runs the declared check `check` on `draft`: no problems lets the commit
+    /// go on. A call that fails or runs out of time is reported as a problem
+    /// of the check.
+    check: func(check: string, draft: commit-draft, ctx: borrow<invocation>) -> result<list<commit-problem>, error>;
+}

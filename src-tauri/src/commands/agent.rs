@@ -225,6 +225,18 @@ pub fn agent_cancel(
     agent::cancel(&state.host, window.label(), task, subagent)
 }
 
+/// Stops one of the task's background tasks.
+#[tauri::command]
+#[specta::specta]
+pub async fn agent_stop_background(
+    window: Window,
+    state: State<'_, AppState>,
+    task: String,
+    background: String,
+) -> IdeResult<()> {
+    agent::stop_background(&state.host, window.label(), task, background).await
+}
+
 /// Answers a permission request; `option: null` cancels it.
 #[tauri::command]
 #[specta::specta]
@@ -248,6 +260,12 @@ pub fn agent_archive(window: Window, state: State<'_, AppState>, task: String) -
 #[specta::specta]
 pub fn agent_unarchive(window: Window, state: State<'_, AppState>, task: String) -> IdeResult<()> {
     agent::unarchive(&state.host, window.label(), task)
+}
+
+#[tauri::command]
+#[specta::specta]
+pub fn agent_rename(window: Window, state: State<'_, AppState>, task: String, title: String) -> IdeResult<()> {
+    agent::rename(&state.host, window.label(), task, title)
 }
 
 #[tauri::command]

@@ -113,6 +113,17 @@
   color: var(--fg-subtle);
   font-style: italic;
 }
+.link {
+  color: var(--link);
+  text-decoration: underline;
+  text-decoration-color: color-mix(in srgb, var(--link) 45%, transparent);
+  text-underline-offset: 2px;
+  cursor: pointer;
+}
+.link:hover {
+  color: var(--link-hover);
+  text-decoration-color: currentColor;
+}
 .titleButton {
   width: 30px;
   height: 30px;

@@ -294,18 +294,19 @@ test.describe("10,000-line files", () => {
       await page.keyboard.press("Meta+ArrowUp");
       await page.keyboard.press("F7");
       await expect(counter(page)).toHaveText("1 of 42 differences");
-      const first = await rendered(page);
       if (opts.mode !== "unified") {
-        expect(first.a.words).toContainEqual(["compute", "modified"]);
-        expect(first.b.words).toContainEqual(["computeFast", "modified"]);
+        await expect.poll(async () => (await rendered(page)).a.words).toContainEqual(["compute", "modified"]);
+        await expect.poll(async () => (await rendered(page)).b.words).toContainEqual(["computeFast", "modified"]);
       }
       // The last difference is reachable and still highlighted.
       await page.keyboard.press("Meta+ArrowDown");
       await page.keyboard.press("Shift+F7");
       await expect(counter(page)).toHaveText("42 of 42 differences");
-      const last = await rendered(page);
-      if (opts.mode === "unified") expect(last.b.lines).toContain("inserted");
-      else expect(last.b.words).toContainEqual(["computeFast", "modified"]);
+      if (opts.mode === "unified") {
+        await expect.poll(async () => (await rendered(page)).b.lines).toContain("inserted");
+      } else {
+        await expect.poll(async () => (await rendered(page)).b.words).toContainEqual(["computeFast", "modified"]);
+      }
       await scrollToEnd(page);
       if (opts.mode !== "unified") {
         const [a, b] = await topLines(page);

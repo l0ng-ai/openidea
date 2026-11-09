@@ -1,6 +1,7 @@
 import { describe, expect, it } from "vitest";
 import {
   DEFAULT_LANGUAGES,
+  JAVA_LANGUAGE_LEVELS,
   PHP_LANGUAGE_LEVELS,
   folderRole,
   markFolder,
@@ -17,6 +18,9 @@ import { validateSettings } from "../model/schema";
 describe("languages settings", () => {
   it("defaults and normalises malformed values", () => {
     expect(validateLanguages(undefined)).toEqual(DEFAULT_LANGUAGES);
+    expect(validateLanguages({ pluginFormatters: { sql: "example.formatter", text: 42 } }).pluginFormatters).toEqual({
+      sql: "example.formatter",
+    });
     const v = validateLanguages({
       python: { interpreter: " /usr/bin/python3 ", activateVirtualenv: "yes" },
       node: { packageManager: "pip" },
@@ -26,7 +30,13 @@ describe("languages settings", () => {
         jdtlsVmArgs: " -Xmx2g ",
         jdk: 21,
         jdtlsJdk: " /opt/jdk-25 ",
-        maven: { home: " /opt/maven ", daemon: "yes", mvndHome: " /opt/mvnd " },
+        maven: {
+          runnerJre: " /opt/jdk-21 ",
+          home: " /opt/maven ",
+          daemon: "yes",
+          mvndHome: " /opt/mvnd ",
+          threads: " 2C ",
+        },
       },
     });
     expect(v.python).toEqual({ interpreter: "/usr/bin/python3", activateVirtualenv: true });
@@ -38,15 +48,27 @@ describe("languages settings", () => {
     expect(v.java.jdk).toBe("");
     expect(v.java.jdtlsJdk).toBe("/opt/jdk-25");
     expect(v.java.maven).toEqual({
+      runnerJre: "/opt/jdk-21",
       home: "/opt/maven",
       userSettings: "",
+      toolchains: "",
       localRepository: "",
       unlinkedProjects: [],
       linkedProjects: [],
       daemon: false,
       mvndHome: "/opt/mvnd",
+      threads: "2C",
+      activeProfiles: "",
     });
     expect(validateSettings({}).languages).toEqual(DEFAULT_LANGUAGES);
+    expect(validateLanguages({ java: { maven: { threads: 4 } } }).java.maven.threads).toBe("");
+  });
+
+  it("defaults the Maven runner JRE to the project JDK and preserves a chosen JDK", () => {
+    expect(validateSettings({}).languages.java.maven.runnerJre).toBe("");
+    expect(validateLanguages({ java: { maven: { runnerJre: 21 } } }).java.maven.runnerJre).toBe("");
+    const settings = validateSettings({ languages: { java: { maven: { runnerJre: " ./jdks/21 " } } } });
+    expect(validateSettings(settings).languages.java.maven.runnerJre).toBe("./jdks/21");
   });
 
   it("keeps the Ruby interpreter through settings normalization and defaults to Auto", () => {
@@ -59,6 +81,7 @@ describe("languages settings", () => {
 
   it("defaults the PHP language level to Auto and keeps only known levels", () => {
     expect(validateSettings({}).languages.php).toEqual({
+      runTarget: "",
       interpreter: "",
       languageLevel: "",
       includePaths: [],
@@ -168,6 +191,101 @@ describe("languages settings", () => {
     ps = markFolder(ps, "src", null);
     expect(folderRole(ps, "src")).toBeNull();
   });
+
+  it("defaults Java language level to SDK default and keeps only supported levels", () => {
+    expect(validateLanguages({}).java.languageLevel).toBe("");
+    expect(validateLanguages({ java: { languageLevel: "8" } }).java.languageLevel).toBe("8");
+    expect(validateLanguages({ java: { languageLevel: "21" } }).java.languageLevel).toBe("21");
+    for (const invalid of ["6", "26", 17, null]) {
+      expect(validateLanguages({ java: { languageLevel: invalid } }).java.languageLevel).toBe("");
+    }
+    expect(JAVA_LANGUAGE_LEVELS[0]).toBe("");
+    expect(JAVA_LANGUAGE_LEVELS).toContain("8");
+    expect(JAVA_LANGUAGE_LEVELS).toContain("25");
+  });
+
+  it("normalizes project structure modules, libraries, facets, and artifacts", () => {
+    const ps = validateProjectStructure({
+      compilerOutput: " out/production ",
+      modules: {
+        " ./modules/core/ ": {
+          jdk: " /opt/jdk-21 ",
+          languageLevel: "17",
+          compilerOutput: " target/classes ",
+          testCompilerOutput: " target/test-classes ",
+          dependencies: [
+            { target: " common-lib ", kind: "library", scope: "provided", exported: true },
+            { target: " ", kind: "module", scope: "invalid" },
+          ],
+        },
+      },
+      libraries: [
+        {
+          name: " servlet-api ",
+          classes: [" lib/servlet-api.jar ", "lib/servlet-api.jar", ""],
+          sources: [" lib/servlet-api-sources.jar "],
+          javadocs: [],
+          scope: "provided",
+        },
+        { name: "  ", classes: [], sources: [] },
+      ],
+      facets: [
+        {
+          kind: "web",
+          module: " ./modules/web/ ",
+          descriptor: " src/main/webapp/WEB-INF/web.xml ",
+          webRoot: " src/main/webapp ",
+        },
+      ],
+      artifacts: [
+        {
+          name: " app:war exploded ",
+          kind: "warExploded",
+          module: " ./modules/web/ ",
+          outputDirectory: " target/app-exploded ",
+          mainClass: " com.example.Main ",
+          includeLibraries: [" servlet-api ", "servlet-api", ""],
+        },
+      ],
+    });
+    expect(ps.compilerOutput).toBe("out/production");
+    expect(ps.modules).toEqual({
+      "modules/core": {
+        jdk: "/opt/jdk-21",
+        languageLevel: "17",
+        compilerOutput: "target/classes",
+        testCompilerOutput: "target/test-classes",
+        dependencies: [{ target: "common-lib", kind: "library", scope: "provided", exported: true }],
+      },
+    });
+    expect(ps.libraries).toEqual([
+      {
+        name: "servlet-api",
+        classes: ["lib/servlet-api.jar"],
+        sources: ["lib/servlet-api-sources.jar"],
+        javadocs: [],
+        scope: "provided",
+      },
+    ]);
+    expect(ps.facets).toEqual([
+      {
+        kind: "web",
+        module: "modules/web",
+        descriptor: "src/main/webapp/WEB-INF/web.xml",
+        webRoot: "src/main/webapp",
+      },
+    ]);
+    expect(ps.artifacts).toEqual([
+      {
+        name: "app:war exploded",
+        kind: "warExploded",
+        module: "modules/web",
+        outputDirectory: "target/app-exploded",
+        mainClass: "com.example.Main",
+        includeLibraries: ["servlet-api"],
+      },
+    ]);
+  });
 });
 
 describe("language pages", () => {
@@ -188,6 +306,7 @@ describe("language pages", () => {
       "Ruby",
       "Rust",
       "TypeScript",
+      "Plugin Formatters",
     ]);
   });
 

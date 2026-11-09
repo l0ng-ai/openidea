@@ -13,6 +13,35 @@ test("opens a file from the project tree and types into it", async ({ workbench:
   await expect(editor.locator(".cm-content")).not.toContainText("// typed by e2e");
 });
 
+test("Delete edits text after the focused Project tree is remounted", async ({ workbench: page }) => {
+  const editor = await openFromTree(page, "README.md");
+  const content = editor.locator(".cm-content");
+  await content.press("Meta+End");
+  await page.keyboard.press("Enter");
+  await page.keyboard.insertText("delete probe abc");
+  const line = editor.locator(".cm-line", { hasText: "delete probe" });
+  await expect(line).toHaveText("delete probe abc");
+
+  const tree = page.getByRole("tree", { name: "Project" });
+  await tree.focus();
+  await page.evaluate(async () => {
+    const keymapModule = "/src/platform/keymap.ts";
+    const layoutModule = "/src/workbench/toolwindows/store.ts";
+    const { applyKeymapSettings } = await import(/* @vite-ignore */ keymapModule);
+    const { moveToolWindow } = await import(/* @vite-ignore */ layoutModule);
+    applyKeymapSettings("intellij-windows", {});
+    moveToolWindow("project", "right");
+  });
+  await expect(page.locator('[data-toolwindow="project"]')).toBeVisible();
+  await expect(tree).not.toBeFocused();
+
+  await content.press("ArrowLeft");
+  await page.keyboard.press("Delete");
+  await expect(line).toHaveText("delete probe ab");
+  await page.keyboard.press("Backspace");
+  await expect(line).toHaveText("delete probe a");
+});
+
 test("⌘F opens the find bar and highlights matches; Escape returns to the editor", async ({ workbench: page }) => {
   const editor = await openFromTree(page, "build.gradle.kts");
   await editor.locator(".cm-content").click();

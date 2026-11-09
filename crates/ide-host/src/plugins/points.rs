@@ -20,15 +20,23 @@ pub struct CommandDecl {
     pub id: String,
     pub title: String,
     #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub icon: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub category: Option<String>,
     /// Enablement, evaluated by the client against context keys (`editorLang == rust`).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub when: Option<String>,
 }
 
-fn command(_pkg: &Package, decl: toml::Value) -> Result<UiDecl, String> {
+fn command(pkg: &Package, decl: toml::Value) -> Result<UiDecl, String> {
     let c: CommandDecl = decode(COMMANDS, decl)?;
     validate_item_id(&c.id, "command id")?;
+    if let Some(icon) = &c.icon {
+        pkg.manifest.needs_api("contributes.commands.icon", 4)?;
+        if icon.is_empty() || icon.len() > 256 {
+            return Err("command icon: expected 1–256 bytes".into());
+        }
+    }
     if c.title.trim().is_empty() {
         return Err(format!("command {:?} has an empty title", c.id));
     }
@@ -40,7 +48,14 @@ fn command(_pkg: &Package, decl: toml::Value) -> Result<UiDecl, String> {
     }
     let c = CommandDecl { category: c.category.filter(|x| !x.trim().is_empty()), ..c };
     let json = serde_json::to_value(&c).map_err(|e| e.to_string())?;
-    Ok(UiDecl::new(c.id.clone(), c.title, json))
+    let mut out = UiDecl::new(c.id.clone(), c.title, json);
+    if let Some(icon) = c.icon.filter(|s| s.ends_with(".svg")) {
+        let path = std::path::PathBuf::from(icon);
+        let svg = super::icons::read_icon(pkg, &path, super::icons::MAX_SVG)?;
+        out.files.push(path);
+        out.assets.push((format!("commandIcon/{}", c.id), svg));
+    }
+    Ok(out)
 }
 
 /// Registers every first-party extension point.
@@ -59,6 +74,14 @@ pub fn register_builtin_points(
     registry.register(Arc::new(super::navigation::IndexersPoint))?;
     registry.register(Arc::new(super::providers::ProvidersPoint::new(providers.clone())))?;
     registry.register(Arc::new(UiPoint::new(super::providers::SECRETS_POINT, ui.clone(), super::providers::secret)))?;
+    registry.register(Arc::new(UiPoint::new(super::endpoints::POINT, ui.clone(), super::endpoints::declaration)))?;
+    registry.register(Arc::new(UiPoint::new(
+        "runConfigurations",
+        ui.clone(),
+        super::execution::configurations_declaration,
+    )))?;
+    registry.register(Arc::new(UiPoint::new("snippets", ui.clone(), super::snippets::declaration)))?;
+    registry.register(Arc::new(UiPoint::new(super::mcp::POINT, ui.clone(), super::mcp::declaration)))?;
     use super::ui_points as p;
     registry.register(Arc::new(UiPoint::new(p::MENUS, ui.clone(), p::menu)))?;
     registry.register(Arc::new(UiPoint::new(p::KEYMAPS, ui.clone(), p::keymap)))?;
@@ -66,7 +89,10 @@ pub fn register_builtin_points(
     registry.register(Arc::new(UiPoint::new(p::SETTINGS, ui.clone(), p::settings)))?;
     registry.register(Arc::new(UiPoint::new(p::VIEWS, ui.clone(), p::view)))?;
     registry.register(Arc::new(UiPoint::new(p::CUSTOM_EDITORS, ui.clone(), p::custom_editor)))?;
+    registry.register(Arc::new(UiPoint::new(p::MARKER_ICONS, ui.clone(), p::marker_icon)))?;
     registry.register(Arc::new(UiPoint::new(p::FILE_ICONS, ui.clone(), p::file_icon)))?;
     registry.register(Arc::new(UiPoint::new(p::FILE_TEMPLATES, ui.clone(), p::file_template)))?;
+    registry.register(Arc::new(UiPoint::new(p::COMMIT_CHECKS, ui.clone(), p::commit_check)))?;
+    registry.register(Arc::new(UiPoint::new(ide_extension::LOCALES_POINT, ui.clone(), p::locales)))?;
     Ok(())
 }

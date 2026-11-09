@@ -7,6 +7,7 @@ import {
   importExternal,
   paste,
   refreshOsClipboard,
+  revealablePath,
   selectionAfterDelete,
   transfer,
   topLevelPaths,
@@ -450,5 +451,45 @@ describe("project clipboard ownership", () => {
     await refreshing;
     expect(useProjectTree.getState().clipboard).toBe(newer);
     expect(canPaste()).toBe(true);
+  });
+});
+
+describe("revealablePath", () => {
+  const platform = usePlatform.getState();
+  afterEach(() => {
+    usePlatform.setState(platform);
+    useRemote.setState({ session: null });
+  });
+
+  it("translates distro paths to the \\\\wsl.localhost share for a WSL session on Windows", () => {
+    usePlatform.setState({ os: "windows" });
+    useRemote.setState({
+      session: {
+        target: { kind: "wsl", distro: "Ubuntu-24.04" },
+        root: "/p",
+        host: "Ubuntu",
+        os: "linux",
+        commands: [],
+      },
+    });
+    expect(revealablePath("/home/me/app/src/main.rs")).toBe(
+      "\\\\wsl.localhost\\Ubuntu-24.04\\home\\me\\app\\src\\main.rs",
+    );
+    expect(revealablePath("/")).toBe("\\\\wsl.localhost\\Ubuntu-24.04\\");
+  });
+
+  it("leaves paths alone for local projects, SSH sessions and non-Windows desktops", () => {
+    usePlatform.setState({ os: "windows" });
+    useRemote.setState({
+      session: { target: { kind: "ssh", config: "host" }, root: "/p", host: "host", os: "linux", commands: [] },
+    });
+    expect(revealablePath("/home/me/app")).toBe("/home/me/app");
+    useRemote.setState({ session: null });
+    expect(revealablePath("C:\\work\\app")).toBe("C:\\work\\app");
+    usePlatform.setState({ os: "macos" });
+    useRemote.setState({
+      session: { target: { kind: "wsl", distro: "Ubuntu" }, root: "/p", host: "Ubuntu", os: "linux", commands: [] },
+    });
+    expect(revealablePath("/home/me/app")).toBe("/home/me/app");
   });
 });

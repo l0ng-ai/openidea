@@ -112,12 +112,38 @@ function remember(k: string, r: Result) {
   cache.set(k, r);
 }
 
+const escapeRegExp = (s: string) => s.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+
+let applied = 0;
+/**
+ * A fresh render carries unique ids (mermaid draws under a unique root id), but a cache
+ * hit reapplies the first render's SVG string. Two copies in one document — the same
+ * diagram twice, or one drawn again while the first sits hidden (a closed details, an
+ * inactive tab) — collide on their marker ids, and Chromium resolves the `url(#…)`
+ * references against the hidden copy, losing arrowheads. Rewrites every id per
+ * application: longest first, so an id that extends a shorter one moves out of the way.
+ */
+function reid(svg: string): string {
+  const ids = [...new Set([...svg.matchAll(/\bid="([^"]+)"/g)].map((m) => m[1]!))];
+  if (!ids.length) return svg;
+  const suffix = `-c${++applied}`;
+  // References come as `id="…"`, `href="#…"` and `url(#…)`; the lookahead keeps
+  // an id that extends this one untouched.
+  for (const id of ids.sort((a, b) => b.length - a.length)) {
+    svg = svg.replace(
+      new RegExp(`(\\bid="|#|url\\(#)${escapeRegExp(id)}(?="|\\))`, "g"),
+      (_m, prefix: string) => `${prefix}${id}${suffix}`,
+    );
+  }
+  return svg;
+}
+
 function show(block: HTMLElement, result: Result | null, stale?: Node) {
   block.querySelector(`:scope > .${OUTPUT_CLASS}`)?.remove();
   const out = document.createElement("div");
   out.className = OUTPUT_CLASS;
   if (result && "svg" in result) {
-    out.innerHTML = result.svg;
+    out.innerHTML = reid(result.svg);
     block.setAttribute(RENDERED_ATTR, "ok");
   } else if (result) {
     out.setAttribute("role", "alert");

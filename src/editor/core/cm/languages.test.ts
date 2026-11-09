@@ -151,4 +151,18 @@ describe("language modes", () => {
       expect(derefs, mode).toEqual(["?.", ".", "?."]);
     }
   });
+
+  it("recognizes go.mod and go.work files by mode and filename", async () => {
+    for (const [mode, path] of [
+      ["GoMod", "/project/go.mod"],
+      [null, "/project/go.mod"],
+      ["GoMod", "/project/go.work"],
+      [null, "/project/go.work"],
+    ] as const) {
+      const desc = findLanguageDescription(mode, path);
+      expect(desc?.name).toBe("GoMod");
+      const support = await loadSupport(desc!);
+      expect(support?.language).toBeTruthy();
+    }
+  });
 });

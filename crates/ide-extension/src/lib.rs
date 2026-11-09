@@ -24,13 +24,13 @@ mod registry;
 mod ui;
 mod when;
 
-pub use capability::{Capability, CapabilityInfo, Risk, host_matches};
+pub use capability::{Capability, CapabilityInfo, Risk, expand_ipc_name, host_matches, validate_ipc_name};
 pub use index::ContributionIndex;
 pub use manifest::{
     ActivationEvent, CATEGORIES, Capabilities, ENGINE_VERSION, EVENT_KINDS, LEGACY_API, MANIFEST_FILE, MAX_CATEGORIES,
     Manifest, check_relative, engine_compatible, validate_item_id, validate_plugin_id, validate_point_id,
 };
 pub use point::{Commit, Disposable, ExtensionPoint, MAX_PACKAGE_FILE, Package, Placement, Prepared, decode};
-pub use registry::{ContributionInfo, ExtensionRegistry, PreparedSet};
+pub use registry::{ContributionInfo, ExtensionRegistry, LOCALES_DIR, LOCALES_POINT, PreparedSet};
 pub use ui::{UiContribution, UiDecl, UiPoint, UiStore, to_json};
 pub use when::validate_when;

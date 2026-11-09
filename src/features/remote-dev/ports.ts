@@ -1,4 +1,7 @@
-/** Remote ports forwarded to this machine, remembered per host and folder and forwarded again on reconnect. */
+/**
+ * Remote ports forwarded to this machine, remembered per host (or dev container) and folder and
+ * forwarded again on reconnect. A dev container also forwards its `forwardPorts` on its own.
+ */
 import { create } from "zustand";
 import type { ForwardedPort } from "@/bindings";
 import { tx } from "@/platform/i18n";
@@ -10,7 +13,14 @@ const SAVED_KEY = "openidea.remote.ports:";
 
 function savedKey(): string | null {
   const session = useRemote.getState().session;
-  return session?.target.kind === "ssh" ? `${SAVED_KEY}${session.target.config}:${session.root}` : null;
+  switch (session?.target.kind) {
+    case "ssh":
+      return `${SAVED_KEY}${session.target.config}:${session.root}`;
+    case "devContainer":
+      return `${SAVED_KEY}devcontainer:${JSON.stringify([session.target.folder, session.target.config])}`;
+    default:
+      return null;
+  }
 }
 
 export function savedPorts(): number[] {
@@ -39,7 +49,9 @@ export const usePorts = create<{ ports: ForwardedPort[] }>(() => ({ ports: [] })
 
 /** Reads the forwarded ports; `remember` keeps them for the next connection (after the user changed them). */
 export async function refreshPorts(remember = false): Promise<void> {
+  const session = useRemote.getState().session;
   const ports = await commands.remoteForwardedPorts().catch(() => []);
+  if (useRemote.getState().session !== session) return;
   usePorts.setState({ ports });
   if (remember) save(ports);
 }
@@ -83,7 +95,12 @@ export async function stopForwarding(port: number): Promise<void> {
 
 /** After (re)connecting: forwards the ports this host and folder had forwarded before. */
 export async function restorePorts(): Promise<void> {
+  const session = useRemote.getState().session;
   const saved = savedPorts();
-  for (const port of saved) await call(commands.remoteForwardPort(port)).catch(() => null);
-  usePorts.setState({ ports: await commands.remoteForwardedPorts().catch(() => []) });
+  for (const port of saved) {
+    if (useRemote.getState().session !== session) return;
+    await call(commands.remoteForwardPort(port)).catch(() => null);
+  }
+  const ports = await commands.remoteForwardedPorts().catch(() => []);
+  if (useRemote.getState().session === session) usePorts.setState({ ports });
 }

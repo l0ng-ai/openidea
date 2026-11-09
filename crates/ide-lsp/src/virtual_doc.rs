@@ -2,7 +2,68 @@
 //! URI (library classes from `jdt://`, disk classes from `file://`, or
 //! `workspace/textDocumentContent`).
 
-use percent_encoding::percent_decode_str;
+use percent_encoding::{AsciiSet, CONTROLS, percent_decode_str, utf8_percent_encode};
+
+const URI_ESCAPES: &AsciiSet = &CONTROLS
+    .add(b' ')
+    .add(b'"')
+    .add(b'<')
+    .add(b'>')
+    .add(b'[')
+    .add(b']')
+    .add(b'\\')
+    .add(b'^')
+    .add(b'`')
+    .add(b'{')
+    .add(b'|')
+    .add(b'}');
+
+/// csharp-ls uses .NET Uri.ToString(), which can leave spaces and Unicode unescaped.
+/// Normalize only document URI fields, before lsp-types' strict URI deserialization.
+pub(crate) fn normalize_csharp_uris(value: &mut serde_json::Value) {
+    match value {
+        serde_json::Value::Array(values) => values.iter_mut().for_each(normalize_csharp_uris),
+        serde_json::Value::Object(fields) => {
+            for (key, value) in fields {
+                // Opaque payloads must survive resolve/execute round trips unchanged.
+                if matches!(key.as_str(), "data" | "arguments") {
+                    continue;
+                }
+                if matches!(key.as_str(), "uri" | "targetUri")
+                    && let Some(uri) = value.as_str().filter(|s| s.starts_with("csharp:"))
+                {
+                    *value = utf8_percent_encode(uri, URI_ESCAPES).to_string().into();
+                } else {
+                    normalize_csharp_uris(value);
+                }
+            }
+        }
+        _ => {}
+    }
+}
+
+#[derive(serde::Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub(crate) struct CSharpMetadata {
+    pub source: String,
+    pub assembly_name: Option<String>,
+}
+
+/// csharp-ls serves both decompiled and source-generated documents through metadata.
+pub(crate) fn is_csharp_decompiled(uri: &str) -> bool {
+    if scheme(uri) != "csharp" {
+        return false;
+    }
+    let segs = segments(uri);
+    // The kind follows the project file, not a directory that happens to have this name.
+    if let Some(kind) = segs.windows(2).find_map(|s| {
+        (s[0].ends_with(".csproj") && matches!(s[1].as_str(), "decompiled" | "generated")).then_some(s[1].as_str())
+    }) {
+        return kind == "decompiled";
+    }
+    // Older csharp-ls versions used csharp:/metadata/... for decompiled symbols.
+    segs.first().is_some_and(|s| s == "metadata")
+}
 
 /// Recognize decompiler headers, without treating disassembler stubs as Java source.
 pub fn is_decompiled(text: &str) -> bool {
@@ -106,6 +167,48 @@ mod tests {
     use super::*;
 
     const JDT: &str = "jdt://contents/spring-boot-4.1.1.jar/org.springframework.boot/SpringApplication.class?=spring-demo/%5C/Users%5C/me%5C/.m2%5C/repository%5C/spring-boot-4.1.1.jar%3Corg.springframework.boot%28SpringApplication.class";
+
+    #[test]
+    fn csharp_metadata_titles_and_kinds() {
+        for (uri, expected) in [
+            ("csharp:/D:/My%20Game/Game.csproj/decompiled/UnityEngine.MonoBehaviour.cs", true),
+            ("csharp:/home/me/%E9%A1%B9%E7%9B%AE/App.csproj/decompiled/System.String.cs", true),
+            ("csharp:/metadata/projects/App/assemblies/System.Runtime/symbols/System.String.cs", true),
+            ("csharp:/work/App.csproj/generated/Generator/Player.g.cs", false),
+            ("csharp:/work/decompiled/App.csproj/generated/Generator/Player.g.cs", false),
+            ("csharp:/metadata/App.csproj/generated/Player.g.cs", false),
+            ("csharp:/work/App.csproj/generated/decompiled/Player.g.cs", false),
+            ("file:///work/App.csproj/decompiled/Player.cs", false),
+        ] {
+            assert_eq!(is_csharp_decompiled(uri), expected, "{uri}");
+        }
+        assert_eq!(
+            title("csharp:/D:/My%20Game/Game.csproj/decompiled/UnityEngine.MonoBehaviour.cs", true),
+            "UnityEngine.MonoBehaviour.cs"
+        );
+        assert_eq!(title("csharp:/home/me/App.csproj/decompiled/Example.%E7%B1%BB.cs", true), "Example.类.cs");
+    }
+
+    #[test]
+    fn csharp_uri_encoding_preserves_escapes_and_other_response_fields() {
+        let uri = "csharp:/D:/My Game/项目 [1]/App%23%25.csproj/decompiled/Example.C%601.cs";
+        let encoded = "csharp:/D:/My%20Game/%E9%A1%B9%E7%9B%AE%20%5B1%5D/App%23%25.csproj/decompiled/Example.C%601.cs";
+        let mut response = serde_json::json!([
+            { "uri": uri, "source": uri },
+            { "location": { "targetUri": uri } },
+            { "uri": encoded },
+            { "uri": "file:///D:/project/App.cs" },
+            { "uri": "jdt://contents/a.jar/p/C.class?=p/%5C/a.jar" },
+            { "data": { "uri": uri }, "command": { "arguments": [{ "targetUri": uri }] } }
+        ]);
+        let original = response.clone();
+        normalize_csharp_uris(&mut response);
+        assert_eq!(response[0]["uri"], encoded);
+        assert_eq!(response[0]["source"], uri);
+        assert_eq!(response[1]["location"]["targetUri"], encoded);
+        assert_eq!(response.as_array().unwrap()[2..], original.as_array().unwrap()[2..]);
+        assert!(encoded.parse::<lsp_types::Uri>().is_ok());
+    }
 
     #[test]
     fn jdt_titles() {

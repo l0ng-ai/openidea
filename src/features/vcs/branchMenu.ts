@@ -10,6 +10,7 @@ import {
   checkoutDetached,
   checkoutInRepos,
   deleteBranch,
+  deleteBranches,
   deleteInRepos,
   deleteRemoteBranch,
   deleteTag,
@@ -31,7 +32,7 @@ import { showCompareBranches } from "./CompareBranches";
 import { showDiffWithWorkingTree } from "./operations";
 import type { CommonBranch } from "./repoBranches";
 import { runRemote, saveAll } from "./ops";
-import { focusRepo, useVcs } from "./store";
+import { currentRepo, focusRepo, useVcs } from "./store";
 import { tx } from "@/platform/i18n";
 
 /** `git pull <remote> <branch>` into the current branch (`origin/feat/x` → origin, feat/x). */
@@ -46,7 +47,13 @@ async function pullInto(remoteBranch: string, rebase: boolean) {
   );
 }
 
-export function branchMenu(b: Branch, current: string | null, done: () => void = () => {}): MenuItem[] {
+/** The Branches pane's context menu: `selected` carries the multi-selection, which Delete acts on as a whole. */
+export function branchMenu(
+  b: Branch,
+  current: string | null,
+  done: () => void = () => {},
+  selected: readonly { repo?: string; branch?: Branch }[] = [],
+): MenuItem[] {
   const run = (fn: () => unknown) => () => {
     done();
     void fn();
@@ -110,7 +117,9 @@ export function branchMenu(b: Branch, current: string | null, done: () => void =
       label: "Delete",
       danger: true,
       icon: "trash",
-      run: run(() => (b.remote ? deleteRemoteBranch(b.name) : deleteBranch(b.name))),
+      run: run(() =>
+        selected.length ? deleteBranches(selected) : b.remote ? deleteRemoteBranch(b.name) : deleteBranch(b.name),
+      ),
     },
   );
   return items;
@@ -173,6 +182,10 @@ export function commonBranchMenu(b: CommonBranch, roots: readonly string[], done
 
 /** `items` acting on repository `root`: it is selected (with its branches loaded) before each entry runs. */
 export function inRepo(root: string, items: MenuItem[]): MenuItem[] {
+  const runInRepo = (run: () => unknown) => () =>
+    void focusRepo(root).then(() => {
+      if (currentRepo() === root) return run();
+    });
   return items.map((item): MenuItem => {
     if (item.kind === "separator" || item.kind === "header") return item;
     if (item.kind === "action")
@@ -180,12 +193,12 @@ export function inRepo(root: string, items: MenuItem[]): MenuItem[] {
         label: item.label ?? item.action,
         icon: item.icon,
         disabled: item.disabled,
-        run: () => void focusRepo(root).then(() => executeAction(item.action, item.arg)),
+        run: runInRepo(() => executeAction(item.action, item.arg)),
       };
     const run = item.run;
     return {
       ...item,
-      run: run && (() => void focusRepo(root).then(run)),
+      run: run && runInRepo(run),
       submenu: item.submenu && inRepo(root, item.submenu),
     };
   });

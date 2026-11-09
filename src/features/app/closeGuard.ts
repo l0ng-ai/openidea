@@ -16,8 +16,10 @@ import {
   maybeEditorService,
   notifications,
   runningProcesses as liveProcesses,
+  stopRunningProcesses,
   type EditorCloseSession,
 } from "@/workbench/contributions";
+import { beginTermination, endTermination } from "./termination";
 import { ask, type Ask } from "@/workbench/messages";
 import { AUX_CLOSED, auxiliaryWindow, closeDocumentWindows, type AuxCloseResult } from "@/platform/auxWindow";
 
@@ -50,6 +52,10 @@ export interface CloseDeps {
   disableConfirmTerminate: () => Promise<void>;
   /** Running Run/Debug process names in this window. */
   runningProcesses: () => Promise<readonly string[]>;
+  /** Stops them, gracefully first and SIGKILL when asked, as IDEA's close does. */
+  terminate?: (kill: boolean) => Promise<void>;
+  /** Resolves once no process of this window is left. */
+  waitForProcesses?: () => Promise<void>;
   onSaveFailed: (e: unknown) => void;
   /** Stops custom document edits/execution before reading their final dirty state. */
   prepareClose?: () => Promise<EditorCloseSession | undefined>;
@@ -67,6 +73,7 @@ export async function decideClose(input: CloseInput, deps: CloseDeps): Promise<b
     if (r.button !== "exit") return false;
     if (r.checked) await deps.disableConfirmExit().catch(() => {});
   }
+  let terminateNames: readonly string[] = [];
   if (input.confirmTerminate && input.processes.length > 0) {
     const names = input.processes;
     const r = await deps.ask({
@@ -84,6 +91,8 @@ export async function decideClose(input: CloseInput, deps: CloseDeps): Promise<b
     });
     if (r.button !== "terminate") return false;
     if (r.checked) await deps.disableConfirmTerminate().catch(() => {});
+    // Terminated after the save question below, so cancelling that keeps the processes alive.
+    terminateNames = names;
   }
   let session: EditorCloseSession | undefined;
   let authorized = false;
@@ -104,6 +113,9 @@ export async function decideClose(input: CloseInput, deps: CloseDeps): Promise<b
       else if (r.button === "discard") await session?.discard();
       else return false;
     }
+    // IDEA asks, then shows "Terminating 'X'" while the graceful shutdown runs; a Kill button
+    // there kills the processes and the close finishes once none is left.
+    if (terminateNames.length > 0) await terminateForClose(terminateNames, deps);
     session?.commit();
     authorized = true;
     return true;
@@ -130,6 +142,10 @@ const defaultDeps: CloseDeps = {
     if (r.status === "ok") useProject.setState({ settings: r.data });
   },
   runningProcesses: async () => (await liveProcesses()).map((p) => p.name),
+  terminate: (kill) => stopRunningProcesses(kill),
+  waitForProcesses: async () => {
+    while ((await liveProcesses()).length > 0) await new Promise((r) => setTimeout(r, 100));
+  },
   onSaveFailed: (e) =>
     notifications().notify({
       level: "error",
@@ -137,6 +153,20 @@ const defaultDeps: CloseDeps = {
       body: e instanceof Error ? e.message : String(e),
     }),
 };
+
+/** The close waits for the processes, with the progress panel and a Kill escape hatch. */
+async function terminateForClose(names: readonly string[], deps: CloseDeps): Promise<void> {
+  if (!deps.terminate) return;
+  beginTermination(names, () => {
+    void deps.terminate?.(true).catch(() => undefined);
+  });
+  try {
+    await deps.terminate(false);
+    await deps.waitForProcesses?.();
+  } finally {
+    endTermination();
+  }
+}
 
 /** Process names this close would terminate; an unavailable feature list never blocks closing. */
 async function processNames(deps: CloseDeps): Promise<string[]> {
@@ -159,6 +189,7 @@ async function onCloseRequested(deps: CloseDeps): Promise<boolean> {
     // screen (to open another one); closing the welcome screen, or quitting, closes the window.
     if (!ctx.quitting && ctx.windows <= 1 && (s.project || s.lightEdit)) {
       if (await confirmLeave(deps)) await closeProject();
+      await commands.windowGroupCancelClose();
       return false;
     }
     const confirmTerminate = workflowSettings().run.confirmTerminate;

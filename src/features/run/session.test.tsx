@@ -10,6 +10,7 @@ import {
   registerMenuGroup,
   type ToolWindowService,
 } from "@/workbench/contributions";
+import * as navigate from "./navigate";
 import { ConsoleModel } from "./console";
 import { ConsoleView, type ConsoleInput } from "./ConsoleView";
 import { buildRows, mnemonics } from "./ConfigChooser";
@@ -118,6 +119,38 @@ describe("HTTP port", () => {
     await startRun(app, session.id);
     expect(useRun.getState().sessions[0]!.httpPort).toBeUndefined();
   });
+});
+
+describe("Tomcat browser launch", () => {
+  it.each([
+    ["true", undefined, "http://localhost:18080/demo/"],
+    ["true", "https://example.test/custom", "https://example.test/custom"],
+    ["false", undefined, null],
+  ] as const)(
+    "opens the configured URL once after startup (openBrowser=%s)",
+    async (openBrowser, browserUrl, expected) => {
+      const open = vi.spyOn(navigate, "openUrl").mockResolvedValue();
+      try {
+        const app = config("tomcat", {
+          kind: "tomcat",
+          params: { openBrowser, httpPort: "18080", contextPath: "/demo", ...(browserUrl ? { browserUrl } : {}) },
+        });
+        const session = (await startRun(app))!;
+        const console = runtime(session.id)!.console;
+        console.append({ kind: "stdout", text: "Starting service Catalina\n" });
+        expect(open).not.toHaveBeenCalled();
+        console.append({ kind: "stdout", text: "Server startup in [800] milliseconds\n" });
+        console.append({ kind: "stdout", text: "Server startup in [900] milliseconds\n" });
+        expect(useRun.getState().sessions[0]!.httpPort).toBe(18080);
+        if (expected) {
+          expect(open).toHaveBeenCalledOnce();
+          expect(open).toHaveBeenCalledWith(expected);
+        } else expect(open).not.toHaveBeenCalled();
+      } finally {
+        open.mockRestore();
+      }
+    },
+  );
 });
 
 describe("closing a Run tab", () => {

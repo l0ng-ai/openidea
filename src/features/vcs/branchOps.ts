@@ -1,6 +1,6 @@
 /** Branch operations (checkout, create, merge, rebase, update, delete) with recents and favorites. */
 import { create } from "zustand";
-import type { Branch, BranchInfo, CheckoutOptions } from "@/bindings";
+import type { Branch, BranchInfo, CheckoutOptions, Worktree } from "@/bindings";
 import { executeAction } from "@/platform/actions";
 import { call, commands } from "@/platform/ipc";
 import { notifications } from "@/workbench/contributions";
@@ -9,9 +9,10 @@ import { isFavoriteBranch, pushRecent, shortRemoteName } from "./branches";
 import { showCommitRange } from "./CompareBranches";
 import { confirmDialog, promptText } from "./dialogs";
 import { cleanUpBranchNameOnTyping } from "@/platform/gitRefName";
-import { runOp, runRemote, saveAll } from "./ops";
+import { errorMessage, runOp, runRemote, saveAll } from "./ops";
 import { conflictedFiles, currentRepo, refreshNow, repoName, useVcs } from "./store";
 import { tx } from "@/platform/i18n";
+import { useProject } from "@/platform/project";
 
 const recentKey = () => `openidea.vcs.recentBranches:${useVcs.getState().root ?? ""}`;
 
@@ -35,15 +36,18 @@ function rememberBranch(name: string | null | undefined) {
 }
 
 /** Valid-enough git ref name check (mirrors `git check-ref-format` basics). */
-export function validateBranchName(name: string): string | null {
+export function validateBranchName(
+  name: string,
+  overwrite = false,
+  branches: readonly Branch[] = useVcs.getState().branches,
+): string | null {
   const n = name.trim();
   if (!n) return "Branch name must not be empty";
   if (/[\s~^:?*[\\\p{Cc}]/u.test(n)) return "Branch name contains invalid characters";
   if (n.startsWith("-") || n.startsWith("/") || n.endsWith("/") || n.endsWith(".") || n.endsWith(".lock"))
     return "Invalid branch name";
   if (n.includes("..") || n.includes("//") || n.includes("@{") || n === "@") return "Invalid branch name";
-  const exists = useVcs.getState().branches.some((b) => !b.remote && b.name === n);
-  if (exists) return `Branch '${n}' already exists`;
+  if (!overwrite && branches.some((b) => !b.remote && b.name === n)) return tx`Branch '${n}' already exists`;
   return null;
 }
 
@@ -154,16 +158,18 @@ export async function checkoutBranch(name: string) {
 }
 
 /** New Branch: creates a branch from HEAD (or `from`) and, by default, checks it out. */
-export async function newBranch(from?: string) {
-  const repo = currentRepo();
+export async function newBranch(from?: string, repo = currentRepo()) {
+  const state = useVcs.getState();
+  const selected = repo === state.repo;
+  const previous = selected ? state.branch?.head : repo ? state.heads[repo]?.head : null;
+  const branches =
+    selected && state.branchesLoaded
+      ? state.branches
+      : await call(commands.vcsBranches(repo)).catch(() => (selected ? state.branches : []));
   // IDEA opens the dialog with a suggestion instead of an empty field: a
   // remote's name without the prefix, the source ref as `-copy`, or the
   // current branch for a plain New Branch from HEAD.
-  const suggestion = from
-    ? from.includes("/")
-      ? shortRemoteName(from)
-      : `${from}-copy`
-    : (useVcs.getState().branch?.head ?? "");
+  const suggestion = from ? (from.includes("/") ? shortRemoteName(from) : `${from}-copy`) : (previous ?? "");
   const r = await promptText({
     title: from ? tx`Create New Branch from ${from}` : "Create New Branch",
     label: "New branch name:",
@@ -172,15 +178,15 @@ export async function newBranch(from?: string) {
     mono: true,
     okLabel: "Create",
     sanitize: cleanUpBranchNameOnTyping,
-    validate: validateBranchName,
+    validate: (name, overwrite) => validateBranchName(name, overwrite, branches),
+    overwriteBranch: (name) => branches.some((b) => !b.remote && b.name === name.trim()),
     validateInitial: true,
     checkbox: { label: "Checkout branch", initial: true },
   });
   if (!r) return;
   const checkout = r.checked;
-  const previous = useVcs.getState().branch?.head;
   if (checkout) await saveAll();
-  const create = () => call(commands.vcsCreateBranch(repo, r.value, from ?? null, checkout));
+  const create = () => call(commands.vcsCreateBranch(repo, r.value, from ?? null, checkout, r.overwrite ?? false));
   const ok = await runOp(tx`Create branch ${r.value}`, create, {
     success: checkout ? `Created and checked out ${r.value}` : `Created branch ${r.value}`,
   });
@@ -275,16 +281,62 @@ export async function renameBranch(name: string) {
 }
 
 /**
+ * A branch checked out in another worktree cannot be deleted: `git branch -d` refuses.
+ * Offers to delete such a worktree first (its folder goes with it); false when the user
+ * backed out. The main worktree cannot be removed, so it keeps git's own message on the
+ * branch deletion. A worktree containing this window's project cannot be removed either;
+ * worktrees below a project opened on a parent folder can still be offered.
+ */
+async function deleteHoldingWorktree(repo: string | null, name: string): Promise<boolean> {
+  let holding: Worktree | undefined;
+  try {
+    holding = (await call(commands.vcsWorktrees(repo))).find((w) => w.branch === name && !w.main);
+  } catch {
+    return true; // no worktree list: let the branch deletion speak for itself
+  }
+  if (!holding) return true;
+  const root = useProject.getState().project?.root.replace(/\/+$/, "");
+  const path = holding.path.replace(/\/+$/, "");
+  if (root !== undefined && (root === path || root.startsWith(path + "/"))) return true;
+  const ok = await confirmDialog({
+    title: "Delete Branch",
+    message: tx`Branch '${name}' is checked out in the worktree at ${holding.path}.\nDelete the worktree and the branch? Its folder is deleted.`,
+    okLabel: "Delete",
+    danger: true,
+  });
+  if (!ok) return false;
+  try {
+    await call(commands.vcsRemoveWorktree(repo, holding.path, false));
+  } catch (e) {
+    const force = await confirmDialog({
+      title: "Delete Branch",
+      message: tx`${errorMessage(e)}\n\nRemove it anyway, discarding its changes?`,
+      okLabel: "Force Remove",
+      danger: true,
+    });
+    if (!force) return false;
+    const removed = await runOp(tx`Delete branch ${name}`, async () => {
+      await call(commands.vcsRemoveWorktree(repo, holding.path, true));
+      return true;
+    });
+    if (!removed) return false;
+  }
+  return true;
+}
+
+/**
  * Delete Branch as IDEA does it: no confirmation; a branch that is not fully merged is
  * deleted anyway and the notification says so, offering View Commits. Restore recreates
  * the branch (with its upstream); Delete Tracked Branch removes the remote branch too.
  */
-export async function deleteBranch(name: string) {
-  const repo = currentRepo();
+export async function deleteBranch(name: string, repo = currentRepo()) {
+  if (!(await deleteHoldingWorktree(repo, name))) return;
   const deleted = await runOp(tx`Delete branch ${name}`, () => call(commands.vcsDeleteBranch(repo, name)));
   if (!deleted) return;
   const tracked = deleted.upstream;
-  const otherTracking = useVcs.getState().branches.some((b) => !b.remote && b.name !== name && b.upstream === tracked);
+  const branches = await call(commands.vcsBranches(repo)).catch(() => []);
+  if (repo === currentRepo()) useVcs.setState({ branches, branchesLoaded: true });
+  const otherTracking = branches.some((b) => !b.remote && b.name !== name && b.upstream === tracked);
   const key = `vcs.deleted.${name}`;
   const done = () => notifications().expire?.(key);
   notifications().notify({
@@ -304,7 +356,7 @@ export async function deleteBranch(name: string) {
         },
       },
       ...(deleted.unmerged
-        ? [{ label: "View Commits", run: () => showCommitRange(`Commits of ${name}`, "HEAD", deleted.tip) }]
+        ? [{ label: "View Commits", run: () => showCommitRange(`Commits of ${name}`, "HEAD", deleted.tip, repo) }]
         : []),
       ...(tracked && !otherTracking
         ? [
@@ -312,7 +364,7 @@ export async function deleteBranch(name: string) {
               label: "Delete Tracked Branch",
               run: () => {
                 done();
-                void deleteRemoteBranch(tracked);
+                void deleteRemoteBranch(tracked, repo);
               },
             },
           ]
@@ -381,7 +433,7 @@ export async function pushTag(tag: string, remote: string) {
 }
 
 /** Deletes a branch on its remote (`git push <remote> --delete <name>`); `name` is e.g. `origin/feature`. */
-export async function deleteRemoteBranch(name: string) {
+export async function deleteRemoteBranch(name: string, repo = currentRepo()) {
   const ok = await confirmDialog({
     title: "Delete Remote Branch",
     message: tx`Delete branch '${shortRemoteName(name)}' on the remote? The remote-tracking branch '${name}' is removed as well.`,
@@ -389,7 +441,45 @@ export async function deleteRemoteBranch(name: string) {
     danger: true,
   });
   if (!ok) return;
-  await runRemote({ op: "deleteBranch", branch: name }, name);
+  await runRemote({ op: "deleteBranch", branch: name }, name, [repo]);
+}
+
+/** Delete is offered for branches other than the current one in their repository. */
+export function canDeleteBranch(t: { ref?: string; repo?: string; branch?: Branch } | null): boolean {
+  return !!t?.branch && !t.branch.current;
+}
+
+async function confirmRemoteBranches(remote: readonly { branch: Branch }[]): Promise<boolean> {
+  if (remote.length === 1) {
+    const name = remote[0]!.branch.name;
+    return confirmDialog({
+      title: "Delete Remote Branch",
+      message: tx`Delete branch '${shortRemoteName(name)}' on the remote? The remote-tracking branch '${name}' is removed as well.`,
+      okLabel: "Delete",
+      danger: true,
+    });
+  }
+  const names = remote.map((t) => shortRemoteName(t.branch.name)).join("', '");
+  return confirmDialog({
+    title: "Delete Remote Branches",
+    message: tx`Delete the ${remote.length} branches '${names}' on the remote? The remote-tracking branches are removed as well.`,
+    okLabel: "Delete",
+    danger: true,
+  });
+}
+
+/** Deletes selected branches in their repositories without changing focus, skipping current branches. */
+export async function deleteBranches(targets: readonly { ref?: string; repo?: string; branch?: Branch }[]) {
+  const list = targets.filter((t): t is { repo?: string; branch: Branch } => canDeleteBranch(t));
+  if (!list.length) return;
+  const fallback = currentRepo();
+  const remote = list.filter((t) => t.branch.remote);
+  if (remote.length && !(await confirmRemoteBranches(remote))) return;
+  for (const t of list) {
+    const repo = t.repo ?? fallback;
+    if (t.branch.remote) await runRemote({ op: "deleteBranch", branch: t.branch.name }, t.branch.name, [repo]);
+    else await deleteBranch(t.branch.name, repo);
+  }
 }
 
 /** Checkout and Rebase onto Current: checks out `name`, then rebases it onto the branch that was current. */
@@ -525,9 +615,13 @@ export async function newBranchInRepos(roots: readonly string[], from?: string) 
   await eachRepo(
     roots,
     (root) =>
-      runOp(tx`Create branch ${name}`, () => call(commands.vcsCreateBranch(root, name, from ?? null, r.checked)), {
-        refresh: false,
-      }).then((done) => (done === undefined ? undefined : true)),
+      runOp(
+        tx`Create branch ${name}`,
+        () => call(commands.vcsCreateBranch(root, name, from ?? null, r.checked, false)),
+        {
+          refresh: false,
+        },
+      ).then((done) => (done === undefined ? undefined : true)),
     r.checked ? `Created and checked out ${name}` : `Created branch ${name}`,
     {
       undo: tx`delete branch ${name}`,

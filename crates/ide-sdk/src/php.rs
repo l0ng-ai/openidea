@@ -1,14 +1,16 @@
 //! The PHP language level: the one chosen in Settings › PHP, else the one the root
 //! `composer.json` declares (`config.platform.php`, else the lowest version `require.php` allows);
 //! the Intelephense storage that goes with it; the stub sets and include paths Intelephense indexes;
-//! and the PHPStan run that checks saved files.
+//! the PHPStan run that checks saved files; and whether an interpreter loads Xdebug.
 
 use crate::apply::{merge, merge_init_options, setting_path};
 use ide_core::settings::Settings;
+use ide_core::{IdeError, IdeResult};
 use ide_language::LanguageServerConfig;
 use serde_json::{Value, json};
 use std::path::{Path, PathBuf};
 use std::process::Command;
+use std::time::Duration;
 
 /// A PHP version and where it comes from.
 #[derive(Clone, Debug, PartialEq, Eq, serde::Serialize, specta::Type)]
@@ -203,6 +205,60 @@ pub fn phpstan_command(root: &Path, s: &Settings, files: &[PathBuf]) -> Option<C
         cmd.env("PATH", crate::exec::path_with(&[&dir]));
     }
     Some(cmd)
+}
+
+/// A PHP interpreter's version and the Xdebug it loads.
+#[derive(Clone, Debug, PartialEq, Eq, serde::Serialize, specta::Type)]
+#[serde(rename_all = "camelCase")]
+pub struct PhpXdebug {
+    pub php: ide_core::IpcPath,
+    /// `PHP_VERSION`.
+    pub php_version: String,
+    /// The Xdebug version; `None`: not loaded, so PHP ignores the `xdebug.*` options a debug session sets.
+    pub xdebug: Option<String>,
+}
+
+const XDEBUG_TIMEOUT: Duration = Duration::from_secs(4);
+
+/// `php` printing its version and the loaded Xdebug's (nothing without one), with Xdebug off: a
+/// php.ini with `xdebug.start_with_request=yes` would connect to a listening debugger. Xdebug stays
+/// loaded in mode `off`, so it still reports its version. Run in `cwd`, where a version manager's
+/// `php` shim (asdf, mise, phpenv) picks the PHP it starts.
+fn xdebug_command(php: &Path, cwd: Option<&Path>) -> Command {
+    let mut cmd = Command::new(php);
+    cmd.args(["-r", r#"echo PHP_VERSION, "\n", phpversion("xdebug") ?: "";"#]).env("XDEBUG_MODE", "off");
+    if let Some(cwd) = cwd {
+        cmd.current_dir(cwd);
+    }
+    cmd
+}
+
+/// The version of `php` and of the Xdebug it loads, run in `cwd`. An error when `php` doesn't run,
+/// times out or prints something else.
+pub fn xdebug(php: &Path, cwd: Option<&Path>) -> IdeResult<PhpXdebug> {
+    let out = crate::exec::query_command(xdebug_command(php, cwd), XDEBUG_TIMEOUT)
+        .ok_or_else(|| IdeError::unavailable(format!("cannot run {}", php.display())))?;
+    let (php_version, xdebug) = parse_xdebug(&out)
+        .ok_or_else(|| IdeError::invalid(format!("{} printed no PHP version: {out}", php.display())))?;
+    Ok(PhpXdebug { php: php.to_path_buf().into(), php_version, xdebug })
+}
+
+/// The PHP version, then the Xdebug version when one is loaded: the last lines of the output, after
+/// the startup warnings PHP prints first with `display_startup_errors` (as a broken Xdebug build does).
+fn parse_xdebug(out: &str) -> Option<(String, Option<String>)> {
+    let lines: Vec<&str> = out.lines().map(str::trim).collect();
+    match lines[..] {
+        [.., php, xdebug] if is_version(php) && is_version(xdebug) => Some((php.into(), Some(xdebug.into()))),
+        [.., php] if is_version(php) => Some((php.into(), None)),
+        _ => None,
+    }
+}
+
+/// `8.3.14`, `8.1.2-1ubuntu2.14`, `3.5.0alpha3`.
+fn is_version(s: &str) -> bool {
+    s.starts_with(|c: char| c.is_ascii_digit())
+        && s.contains('.')
+        && s.chars().all(|c| c.is_ascii_alphanumeric() || ".-+~_".contains(c))
 }
 
 type Version = (u32, u32, u32);
@@ -519,6 +575,43 @@ mod tests {
         assert_eq!(args(absolute)[4..6], ["--configuration", absolute]);
         // Empty: PHPStan finds phpstan.neon, phpstan.neon.dist or phpstan.dist.neon itself.
         assert!(!args(" ").iter().any(|a| a.starts_with("--configuration")));
+    }
+
+    #[test]
+    fn the_xdebug_probe_runs_with_xdebug_off() {
+        let php = Path::new("/opt/homebrew/opt/php@8.1/bin/php");
+        let project = Path::new("/work/app");
+        let cmd = xdebug_command(php, Some(project));
+        assert_eq!(cmd.get_program(), php.as_os_str());
+        assert_eq!(cmd.get_current_dir(), Some(project), "where a php shim picks the version");
+        assert_eq!(
+            cmd.get_args().map(text).collect::<Vec<_>>(),
+            ["-r", r#"echo PHP_VERSION, "\n", phpversion("xdebug") ?: "";"#]
+        );
+        assert_eq!(env(&cmd), [("XDEBUG_MODE".to_string(), Some("off".to_string()))]);
+        assert_eq!(xdebug_command(php, None).get_current_dir(), None);
+    }
+
+    #[test]
+    fn the_xdebug_probe_reads_both_versions() {
+        let found = |php: &str, xdebug: Option<&str>| Some((php.to_string(), xdebug.map(str::to_string)));
+        assert_eq!(parse_xdebug("8.3.14\n3.4.7"), found("8.3.14", Some("3.4.7")));
+        assert_eq!(parse_xdebug("8.1.33"), found("8.1.33", None));
+        assert_eq!(parse_xdebug("8.1.2-1ubuntu2.14\r\n3.5.0alpha3"), found("8.1.2-1ubuntu2.14", Some("3.5.0alpha3")));
+        assert_eq!(parse_xdebug("5.6.40\n2.5.5"), found("5.6.40", Some("2.5.5")));
+        // display_startup_errors prints startup warnings before the script's output.
+        let warning = "\nWarning: PHP Startup: Unable to load dynamic library 'xdebug.so' in Unknown on line 0";
+        assert_eq!(parse_xdebug(&format!("{warning}\n8.1.33")), found("8.1.33", None));
+        assert_eq!(parse_xdebug(&format!("{warning}\n8.3.14\n3.4.7")), found("8.3.14", Some("3.4.7")));
+    }
+
+    #[test]
+    fn the_xdebug_probe_fails_on_other_output() {
+        for out in ["", "  ", "Could not open input file: -r", "8.3.14\nnot a version", "PHP", "8"] {
+            assert_eq!(parse_xdebug(out), None, "{out:?}");
+        }
+        let missing = Path::new("/nonexistent/bin/php");
+        assert!(xdebug(missing, None).is_err(), "no PHP is an error, not a PHP without Xdebug");
     }
 
     #[test]

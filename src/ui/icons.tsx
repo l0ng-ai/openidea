@@ -57,6 +57,9 @@ const ICONS = {
   "gradle-project": "gradle/gradle",
   "gradle-module": "gradle/gradleSubproject",
   "spring-boot": "openidea/runConfigurations/springBoot",
+  tomcat: "openidea/runConfigurations/tomcat",
+  server: "openidea/runConfigurations/tomcat",
+  visualgc: "openidea/runConfigurations/visualgc",
   file: "fileTypes/text",
   "file-unknown": "fileTypes/unknown",
   "file-code": "fileTypes/anyType",
@@ -64,6 +67,7 @@ const ICONS = {
   "file-json": "fileTypes/json",
   "file-md": "fileTypes/markdown",
   "file-image": "fileTypes/image",
+  paperclip: "openidea/general/paperclip",
   "file-config": "fileTypes/config",
   "file-python": "fileTypes/python",
   "file-jupyter": "fileTypes/jupyter",
@@ -224,6 +228,7 @@ const ICONS = {
   "search-history": "inline/searchHistory",
   filter: "general/filter",
   refresh: "general/refresh",
+  quote: "openidea/general/quote",
   settings: "general/settings",
   help: "openidea/general/help",
   "page-first": "openidea/general/pageFirst",
@@ -560,8 +565,11 @@ function iconPath(name: string): string | undefined {
   const themed = fileIconTheme?.icon?.(name);
   if (themed && EXTERNAL.has(themed)) return themed;
   if (name.startsWith(EXTERNAL_PREFIX)) return EXTERNAL.has(name) ? name : undefined;
-  if (name.startsWith("symbol-")) return SYMBOL_ICONS[name.slice(7) as SymbolKind];
-  return (ICONS as Record<string, string>)[name];
+  if (name.startsWith("symbol-")) {
+    const kind = name.slice(7);
+    return Object.hasOwn(SYMBOL_ICONS, kind) ? SYMBOL_ICONS[kind as SymbolKind] : undefined;
+  }
+  return Object.hasOwn(ICONS, name) ? (ICONS as Record<string, string>)[name] : undefined;
 }
 
 // ---------------------------------------------------------------------------
@@ -688,6 +696,14 @@ function build(lightSrc: string, darkSrc: string | undefined, keepColours: boole
 }
 
 function prepare(path: string, large: boolean): Prepared | null {
+  if (path === ICONS.quote) {
+    return {
+      viewBox: "0 0 16 16",
+      html: '<path d="M3 3v10M6.5 4.5H13M6.5 8H13M6.5 11.5H11" stroke="currentColor" stroke-linecap="round" stroke-linejoin="round"/>',
+      hasIds: false,
+      mono: true,
+    };
+  }
   const key = `${path}|${large ? 20 : 16}`;
   let out = prepared.get(key);
   if (out !== undefined) return out;
@@ -990,7 +1006,7 @@ const EXT_ICONS = table({
   "file-perl": "pl pm pod psgi cgi",
   "file-c": "c",
   "file-h": "h hpp hh hxx h++",
-  "file-cpp": "cpp cc cxx c++ ipp tpp inl ixx cppm",
+  "file-cpp": "cpp cc cxx c++ ipp tpp inl ixx cppm ino",
   "file-objc": "m",
   "file-objcpp": "mm",
   "file-csharp": "cs csx",

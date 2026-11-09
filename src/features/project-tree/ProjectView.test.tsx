@@ -14,7 +14,8 @@ import { ProjectView } from "./ProjectView";
 import { beginNew, canPaste } from "./operations";
 import { initProjectTree, setViewOption, useProjectTree } from "./store";
 import type { OutlineItem } from "@/bindings";
-import { _emitEditorEvent } from "@/editor/api";
+import { _emitEditorEvent, useEditorRegistry } from "@/editor/api";
+import { ProjectHeaderActions } from "./HeaderActions";
 import { loadOutline } from "./store";
 
 const ipc = vi.hoisted(() => ({
@@ -218,6 +219,38 @@ describe("ProjectView", () => {
     fireEvent.click(content, { detail: 3 });
     expect(openFile).not.toHaveBeenCalled();
     act(() => setViewOption("previewTab", false));
+  });
+
+  it("follows tab switches with Always Select Opened File, hiding Select Opened File", async () => {
+    const focusEditor = (path: string) => act(() => useEditorRegistry.setState({ active: { ctx: { path } } } as never));
+    const selected = () =>
+      screen
+        .getAllByRole("treeitem")
+        .filter((r) => r.getAttribute("aria-selected") === "true")
+        .map((r) => r.textContent);
+    try {
+      render(<ProjectHeaderActions />);
+      const { rows } = setup();
+      await waitFor(() => expect(rows()).toContain("README.md"));
+      expect(screen.getByRole("button", { name: "Select Opened File" })).toBeTruthy();
+      focusEditor("/w/acme/src/Util.kt");
+      expect(rows()).not.toContain("Util.kt");
+
+      act(() => setViewOption("autoscrollFromSource", true));
+      await waitFor(() => expect(selected()).toEqual(["Util.kt"]));
+      expect(screen.queryByRole("button", { name: "Select Opened File" })).toBeNull();
+      focusEditor("/w/acme/README.md");
+      await waitFor(() => expect(selected()).toEqual(["README.md"]));
+      focusEditor("/w/acme/src/App.kt");
+      await waitFor(() => expect(selected()).toEqual(["App.kt"]));
+
+      act(() => setViewOption("autoscrollFromSource", false));
+      focusEditor("/w/acme/README.md");
+      expect(selected()).toEqual(["App.kt"]);
+      expect(screen.getByRole("button", { name: "Select Opened File" })).toBeTruthy();
+    } finally {
+      act(() => useEditorRegistry.setState({ active: null }));
+    }
   });
 
   it("expands and collapses folders on single click only when enabled", async () => {

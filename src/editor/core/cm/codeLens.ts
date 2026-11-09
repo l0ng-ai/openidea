@@ -4,7 +4,9 @@
  */
 import { EditorState, RangeSetBuilder, type Extension } from "@codemirror/state";
 import { Decoration, EditorView, WidgetType, type DecorationSet } from "@codemirror/view";
+import { getIndentUnit } from "@codemirror/language";
 import { codeLenses, type CodeLens } from "@/editor/api";
+import { guideVars } from "./indentGuides";
 
 /** Groups lenses by line start, ordered by line then `order`. Exported for tests. */
 export function groupLenses(
@@ -66,6 +68,7 @@ class LensWidget extends WidgetType {
   constructor(
     readonly lenses: CodeLens[],
     readonly indent: number,
+    readonly indentUnit: number,
   ) {
     super();
   }
@@ -73,6 +76,8 @@ class LensWidget extends WidgetType {
   private get key(): string {
     return (
       this.indent +
+      "\u0000" +
+      this.indentUnit +
       "\u0000" +
       this.lenses.map((l) => `${l.icon ?? ""}|${l.title}|${l.tooltip ?? ""}|${l.run ? 1 : 0}`).join("\u0001")
     );
@@ -97,6 +102,15 @@ class LensWidget extends WidgetType {
   private fill(dom: HTMLElement, view: EditorView) {
     dom.textContent = "";
     dom.style.paddingLeft = `${Math.round(this.indent * view.defaultCharacterWidth) + 6}px`;
+    // The guides of the annotated line continue through this row while indent guides are on.
+    const guides = guideVars(Math.floor(this.indent / this.indentUnit), this.indentUnit);
+    if (guides) {
+      dom.style.setProperty("--openidea-guide-images", guides.images);
+      dom.style.setProperty("--openidea-guide-positions", guides.positions);
+    } else {
+      dom.style.removeProperty("--openidea-guide-images");
+      dom.style.removeProperty("--openidea-guide-positions");
+    }
     dom.setAttribute("role", "group");
     dom.setAttribute("aria-label", "Code lens");
     this.lenses.forEach((lens, i) => {
@@ -154,7 +168,11 @@ function buildDecorations(state: EditorState): DecorationSet {
   const builder = new RangeSetBuilder<Decoration>();
   for (const group of groupLenses(state, lenses)) {
     const line = state.doc.lineAt(group.lineFrom);
-    const widget = new LensWidget(group.lenses, indentColumns(line.text, state.tabSize));
+    const widget = new LensWidget(
+      group.lenses,
+      indentColumns(line.text, state.tabSize),
+      Math.max(1, getIndentUnit(state)),
+    );
     builder.add(line.from, line.from, Decoration.widget({ widget, block: true, side: -1 }));
   }
   return builder.finish();
@@ -166,8 +184,6 @@ const lensTheme = EditorView.theme({
     alignItems: "center",
     gap: "6px",
     height: "16px",
-    fontFamily: "var(--font-ui)",
-    fontSize: "var(--fs-tiny)",
     color: "var(--fg-muted)",
     WebkitUserSelect: "none",
     userSelect: "none",
@@ -183,6 +199,11 @@ const lensTheme = EditorView.theme({
     background: "none",
     font: "inherit",
     color: "inherit",
+  },
+  // The row keeps the editor font so its `ch`-based indent guides line up with the code.
+  ".cm-openidea-lensItem, .cm-openidea-lensSep": {
+    fontFamily: "var(--font-ui)",
+    fontSize: "var(--fs-tiny)",
   },
   ".cm-openidea-lensAction": { cursor: "pointer" },
   ".cm-openidea-lensAction:hover": { color: "var(--accent)", textDecoration: "underline" },
