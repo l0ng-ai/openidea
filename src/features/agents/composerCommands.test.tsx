@@ -33,7 +33,7 @@ import { defaultTaskProject } from "./project";
 import { HomeEditor } from "./HomeEditor";
 import composerStyles from "./Composer.module.css";
 import tagStyles from "@/ui/InlineTag.module.css";
-import { HOME, updateComposer, useAgents } from "./store";
+import { HOME, savedDraft, startTask, updateComposer, useAgents } from "./store";
 import { emptyDraft } from "./composerModel";
 
 const command = (name: string, description: string, source: "command" | "skill" = "command"): AgentCommand => ({
@@ -262,5 +262,48 @@ describe("workspace task project", () => {
     expect(vcsBranchInfo).toHaveBeenLastCalledWith("/project-a");
     expect(vcsBranches).toHaveBeenLastCalledWith("/project-a");
     await vi.dynamicImportSettled();
+  });
+});
+
+describe("new task permissions", () => {
+  it.each([
+    ["claude", "mode", "default", "bypassPermissions"],
+    ["codex", "mode", "auto", "full-access"],
+    ["cursor", "approval", "ask", "bypass"],
+    ["copilot", "permissions", "off", "on"],
+    ["custom", "mode", "ask", "yolo"],
+  ])("keeps %s's offered default and sends an explicit Bypass choice", async (provider, category, safe, bypass) => {
+    const offered = {
+      ...claude,
+      id: provider,
+      config: [
+        {
+          id: category,
+          name: category,
+          description: null,
+          category,
+          current: safe,
+          via: "option" as const,
+          values: [safe, bypass].map((value) => ({ value, name: value, description: null })),
+        },
+      ],
+    };
+    const draft = savedDraft({ provider });
+    useAgents.setState({ providers: [offered], draft });
+    updateComposer(HOME, { text: "Create a note" });
+    await expect(startTask()).rejects.toThrow("stop here");
+    expect(agentCreate).toHaveBeenLastCalledWith(expect.objectContaining({ config: [{ id: category, value: safe }] }));
+    useAgents.setState({ providers: [{ ...offered, config: [{ ...offered.config[0]!, current: null }] }] });
+    await expect(startTask()).rejects.toThrow("stop here");
+    expect(agentCreate).toHaveBeenLastCalledWith(expect.objectContaining({ config: [] }));
+    // Reloading the saved draft preserves the user's explicit permission choice.
+    useAgents.setState({ draft: savedDraft(JSON.parse(JSON.stringify({ ...draft, config: { [category]: bypass } }))) });
+    await expect(startTask("worktree")).rejects.toThrow("stop here");
+    expect(agentCreate).toHaveBeenLastCalledWith(
+      expect.objectContaining({
+        isolation: "worktree",
+        config: [{ id: category, value: bypass }],
+      }),
+    );
   });
 });

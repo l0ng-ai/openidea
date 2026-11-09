@@ -1715,6 +1715,109 @@ fn usage_limits_and_cost_skip_what_is_malformed() {
 }
 
 #[tokio::test(flavor = "multi_thread")]
+async fn cached_bypass_is_dropped_on_load_read_and_report_without_changing_task_choices() {
+    for (provider, category, bypass, safe) in [
+        ("claude", "mode", "bypassPermissions", "default"),
+        ("codex", "mode", "full-access", "auto"),
+        ("cursor", "approval", "bypass", "ask"),
+        ("copilot", "permissions", "on", "off"),
+        ("custom", "mode", "https://example.com/modes#yolo", "ask"),
+    ] {
+        let tmp = tempfile::tempdir().unwrap();
+        let agent = Arc::new(FakeAgent::default());
+        let options = config::options_of(&json!({"configOptions": [{
+            "id": category, "category": category, "currentValue": bypass,
+            "options": [{"value": safe}, {"value": bypass}]
+        }]}));
+        let models = tmp.path().join("models.json");
+        std::fs::write(&models, serde_json::to_vec(&json!({provider: {"config": options}})).unwrap()).unwrap();
+        let mgr = manager(tmp.path(), agent);
+        assert_eq!(mgr.shared.known.lock()[provider].config[0].current, None, "load: {provider}");
+        // Also defend reads of in-memory data, without changing its offered values.
+        mgr.shared.known.lock().get_mut(provider).unwrap().config = options.clone();
+        let read = mgr.shared.known_config(provider);
+        assert_eq!(read[0].current, None, "read: {provider}");
+        assert_eq!(read[0].values, options[0].values);
+        mgr.shared.remember(provider, Some(&options), None, None);
+        assert_eq!(mgr.shared.known.lock()[provider].config[0].current, None, "report: {provider}");
+        let disk: HashMap<String, Known> = serde_json::from_slice(&std::fs::read(models).unwrap()).unwrap();
+        assert_eq!(disk[provider].config[0].current, None);
+        let mut safe_options = options.clone();
+        safe_options[0].current = Some(safe.into());
+        mgr.shared.remember(provider, Some(&safe_options), None, None);
+        assert_eq!(mgr.shared.known_config(provider)[0].current.as_deref(), Some(safe));
+        assert_eq!(options[0].current.as_deref(), Some(bypass), "the live report stays intact");
+    }
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn new_tasks_use_reported_modes_and_explicit_bypass_survives_restart() {
+    for (provider, safe, bypass) in [
+        ("claude", "default", "bypassPermissions"),
+        ("codex", "auto", "full-access"),
+        ("cursor", "agent", "yolo"),
+        ("copilot", "interactive", "yolo"),
+        ("claude-acp", "default", "bypassPermissions"),
+    ] {
+        let tmp = tempfile::tempdir().unwrap();
+        let agent = Arc::new(FakeAgent::default());
+        *agent.extra_options.lock() = vec![json!({
+            "id": "mode", "category": "mode", "currentValue": safe,
+            "options": [{"value": safe}, {"value": bypass}]
+        })];
+        let mgr = manager(tmp.path(), agent.clone());
+        let new = |config| NewAgentTask {
+            project_root: None,
+            prompt: text("again"),
+            provider: provider.into(),
+            config,
+            isolation: Isolation::Local,
+            base: None,
+        };
+        let fresh = mgr.create(new(vec![])).await.unwrap();
+        wait_for(&mgr, &fresh.id, AgentStatus::Ready).await;
+        let mode = |mgr: &AgentManager, id: &str| {
+            mgr.task(id).unwrap().state.lock().task.config.iter().find(|o| o.id == "mode").unwrap().current.clone()
+        };
+        assert_eq!(mode(&mgr, &fresh.id).as_deref(), Some(safe), "{provider}");
+        assert!(!config::bypass_approvals(&mgr.task(&fresh.id).unwrap().state.lock().task.config));
+        if provider == "cursor" {
+            assert_eq!(
+                mgr.task(&fresh.id)
+                    .unwrap()
+                    .state
+                    .lock()
+                    .task
+                    .config
+                    .iter()
+                    .find(|o| o.id == config::CURSOR_APPROVAL)
+                    .unwrap()
+                    .current
+                    .as_deref(),
+                Some("ask")
+            );
+        }
+        assert!(!agent.calls.lock().iter().any(|c| c.starts_with("session/set_")));
+        let explicit =
+            mgr.create(new(vec![AgentConfigChoice { id: "mode".into(), value: bypass.into() }])).await.unwrap();
+        wait_for(&mgr, &explicit.id, AgentStatus::Ready).await;
+        assert_eq!(mode(&mgr, &explicit.id).as_deref(), Some(bypass));
+        assert!(!config::bypass_approvals(&mgr.shared.known_config(provider)));
+        mgr.shutdown();
+        let restored = manager(tmp.path(), agent.clone());
+        assert_eq!(mode(&restored, &explicit.id).as_deref(), Some(bypass));
+        restored.prompt(&explicit.id, text("again"), false).await.unwrap();
+        wait_for(&restored, &explicit.id, AgentStatus::Ready).await;
+        assert_eq!(mode(&restored, &explicit.id).as_deref(), Some(bypass));
+        assert_eq!(mode(&restored, &fresh.id).as_deref(), Some(safe));
+        let next = restored.create(new(vec![])).await.unwrap();
+        wait_for(&restored, &next.id, AgentStatus::Ready).await;
+        assert_eq!(mode(&restored, &next.id).as_deref(), Some(safe));
+        restored.shutdown();
+    }
+}
+
+#[tokio::test(flavor = "multi_thread")]
 async fn cursor_approval_switch_resolves_pending_and_survives_restart() {
     let tmp = tempfile::tempdir().unwrap();
     let agent = Arc::new(FakeAgent::default());
@@ -1746,13 +1849,13 @@ async fn cursor_approval_switch_resolves_pending_and_survives_restart() {
     mgr.prompt(&task.id, text("Fix again"), false).await.unwrap();
     wait_for(&mgr, &task.id, AgentStatus::Ready).await;
     assert!(!agent.calls.lock().iter().any(|c| c.contains("bypass")));
-    assert!(config::bypass_approvals(&mgr.shared.known_config("cursor")));
+    assert!(!config::bypass_approvals(&mgr.shared.known_config("cursor")));
     mgr.set_config(&task.id, config::CURSOR_APPROVAL, "ask".into()).await.unwrap();
     mgr.prompt(&task.id, text("Fix once more"), false).await.unwrap();
     wait_for(&mgr, &task.id, AgentStatus::NeedsInput).await;
     mgr.cancel(&task.id, None).unwrap();
     wait_for(&mgr, &task.id, AgentStatus::Ready).await;
-    // A task created without choosing approvals still asks; the New Task page sends the default.
+    // A task created without choosing approvals still asks.
     let other = mgr.create(new()).await.unwrap();
     wait_for(&mgr, &other.id, AgentStatus::NeedsInput).await;
     mgr.cancel(&other.id, None).unwrap();

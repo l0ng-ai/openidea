@@ -39,19 +39,31 @@ pub(crate) fn add_client_options(provider: &str, config: &mut Vec<AgentConfigOpt
 /// Whether the current settings approve tool requests without asking: a bypass mode,
 /// an allow-all permissions option, or a bypass approval policy.
 pub(crate) fn bypass_approvals(config: &[AgentConfigOption]) -> bool {
-    let selected = |category: &str| {
-        config.iter().find(|o| o.category.as_deref() == Some(category)).and_then(|o| o.current.as_deref())
-    };
-    selected("mode").is_some_and(is_bypass_mode)
-        || selected("permissions").is_some_and(|v| matches!(v.to_ascii_lowercase().as_str(), "on" | "true"))
-        || selected("approval").is_some_and(|v| v.eq_ignore_ascii_case("bypass"))
+    ["mode", "permissions", "approval"].iter().any(|category| {
+        config
+            .iter()
+            .find(|o| o.category.as_deref() == Some(category))
+            .and_then(|o| o.current.as_deref())
+            .is_some_and(|v| is_bypass(Some(category), v))
+    })
 }
 
-/// The mode that approves everything without asking (`bypassPermissions`, `yolo`, `full-access`…), if the agent has one.
-pub(crate) fn bypass_mode(options: &[AgentConfigOption]) -> Option<(&AgentConfigOption, &AgentConfigValue)> {
-    let option = options.iter().find(|o| o.category.as_deref() == Some("mode"))?;
-    let value = option.values.iter().find(|v| is_bypass_mode(&v.value))?;
-    Some((option, value))
+fn is_bypass(category: Option<&str>, value: &str) -> bool {
+    match category {
+        Some("mode") => is_bypass_mode(value),
+        Some("permissions") => matches!(value.to_ascii_lowercase().as_str(), "on" | "true"),
+        Some("approval") => value.eq_ignore_ascii_case("bypass"),
+        _ => false,
+    }
+}
+
+/// Provider-wide offers are not user choices; a session's bypass belongs only to that session.
+pub(crate) fn clear_cached_bypass(options: &mut [AgentConfigOption]) {
+    for option in options {
+        if option.current.as_deref().is_some_and(|v| is_bypass(option.category.as_deref(), v)) {
+            option.current = None;
+        }
+    }
 }
 
 fn is_bypass_mode(mode: &str) -> bool {
@@ -295,7 +307,6 @@ mod tests {
             ]}
         }));
         assert!(bypass_approvals(&full_access));
-        assert_eq!(bypass_mode(&full_access).map(|(_, v)| v.value.as_str()), Some("full-access"));
 
         let asking = options_of(&json!({
             "modes": {"currentModeId": "ask", "availableModes": [
@@ -303,11 +314,13 @@ mod tests {
             ]}
         }));
         assert!(!bypass_approvals(&asking));
-        assert_eq!(
-            bypass_mode(&asking).map(|(_, v)| v.value.as_str()),
-            Some("full-access"),
-            "the offered bypass mode stays available"
-        );
+        let mut cached = full_access.clone();
+        clear_cached_bypass(&mut cached);
+        assert_eq!(cached[0].current, None);
+        assert_eq!(cached[0].values, full_access[0].values, "bypass stays available as an explicit choice");
+        let mut cached = asking.clone();
+        clear_cached_bypass(&mut cached);
+        assert_eq!(cached, asking);
 
         let permissions = |current: &str| {
             options_of(&json!({"configOptions": [{

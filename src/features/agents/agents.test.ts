@@ -3,7 +3,6 @@ import type { AgentConfigOption, AgentEntry, AgentStatus, AgentTask } from "@/bi
 import {
   applyCompletion,
   atEdgeLine,
-  bypassDefaults,
   canSend,
   completionAt,
   isPathQuery,
@@ -203,7 +202,8 @@ describe("agent composer", () => {
         "https://agentclientprotocol.com/protocol/session-modes#autopilot",
       ].map(modeIcon),
     ).toEqual(["lock", "edit", "todo", "run", "unlock", "edit", "eye", "lock", "run", "run"]);
-    expect(bypassDefaults([...config, permissions])).toEqual({ allow_all: "on" });
+    expect(permissions.current).toBe("off");
+    expect(approvals.current).toBe("ask");
     expect(usageLabel({ used: 24_000, size: 200_000 })).toEqual({
       short: "12%",
       detail: "24k / 200k tokens",
