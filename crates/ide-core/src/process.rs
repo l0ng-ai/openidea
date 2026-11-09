@@ -295,12 +295,12 @@ mod windows_job {
             // SAFETY: plain call; a non-null result is a process handle owned by the caller.
             // Assignment needs `SET_QUOTA | TERMINATE` on the process.
             let handle = unsafe { OpenProcess(PROCESS_SET_QUOTA | PROCESS_TERMINATE, 0, pid) };
-            (!handle.is_null())
-                .then(|| {
-                    // SAFETY: the handle was just opened and is owned here.
-                    Self::from_handle(handle)
-                })
-                .flatten()
+            if handle.is_null() {
+                return None;
+            }
+            // SAFETY: the handle was just opened and is owned here.
+            let handle = unsafe { OwnedHandle::from_raw_handle(handle) };
+            Self::from_handle(handle.as_raw_handle())
         }
 
         fn from_handle(handle: RawHandle) -> Option<Job> {

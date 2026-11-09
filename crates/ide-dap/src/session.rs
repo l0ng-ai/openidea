@@ -295,6 +295,12 @@ impl Session {
     /// Kills the adapter and every debuggee we started.
     pub fn kill_processes(&self) {
         self.kotlin_relay.lock().take();
+        #[cfg(unix)]
+        if self.request == "launch" {
+            for group in launch_groups(self) {
+                ide_core::process::kill_tree_of(group as u32);
+            }
+        }
         // The job first: it ends the adapter and everything it started (the program
         // java-debug launched is its child), members included that the stop's captured
         // tree never saw. An empty job is unaffected, and whatever survives this session
@@ -302,6 +308,10 @@ impl Session {
         #[cfg(windows)]
         if let Some(job) = self.job.lock().as_ref() {
             job.terminate();
+        }
+        #[cfg(windows)]
+        if let Some(tree) = self.stop_tree.lock().as_ref() {
+            tree.terminate();
         }
         if let Some(mut c) = self.adapter_process.lock().take() {
             if self.adapter == "rdbg"
@@ -316,6 +326,9 @@ impl Session {
         }
         if let Some(mut program) = self.program.lock().take() {
             let _ = program.child.kill();
+            let _ = std::thread::Builder::new().name("openidea-debug-reap".into()).spawn(move || {
+                let _ = program.child.wait();
+            });
         }
     }
 }
@@ -367,17 +380,20 @@ fn process_tree(pid: i32) -> Vec<i32> {
 /// Asks the program itself to exit (`force` = SIGKILL) without ending the adapter session:
 /// its output keeps flowing over DAP while it shuts down. The first call remembers the pid
 /// tree, because the reported pid may die before its program does.
-pub(crate) fn signal_debuggee(s: &Arc<Session>, force: bool) {
-    let pid = s.debuggee_pid.load(Ordering::Acquire);
-    if pid <= 0 {
+pub(crate) async fn signal_debuggee(s: &Arc<Session>, force: bool) {
+    if s.request != "launch" {
         return;
     }
+    #[cfg(not(windows))]
+    let pid = s.debuggee_pid.load(Ordering::Acquire);
     #[cfg(unix)]
     {
-        let mut known = s.stop_pids.lock();
-        if known.is_empty() {
-            *known = process_tree(pid as i32);
+        let needs_tree = pid > 0 && s.stop_pids.lock().is_empty();
+        if needs_tree {
+            let tree = tokio::task::spawn_blocking(move || process_tree(pid as i32)).await.unwrap_or_default();
+            *s.stop_pids.lock() = tree;
         }
+        let known = s.stop_pids.lock();
         let signal = if force { libc::SIGKILL } else { libc::SIGTERM };
         if force {
             // A forced stop kills the launch: every root the session spawned leads its own
@@ -408,8 +424,11 @@ pub(crate) fn signal_debuggee(s: &Arc<Session>, force: bool) {
         // first. The job ends the program and everything it started, members included
         // that the captured tree never saw.
         if force {
-            let swept = s.job.lock().as_ref().is_some_and(|job| job.terminate());
-            if !swept && let Some(tree) = s.stop_tree.lock().as_ref() {
+            if let Some(job) = s.job.lock().as_ref() {
+                job.terminate();
+            }
+            // A separately spawned program may have rejected assignment to the adapter's job.
+            if let Some(tree) = s.stop_tree.lock().as_ref() {
                 tree.terminate();
             }
         }
@@ -421,7 +440,7 @@ pub(crate) fn signal_debuggee(s: &Arc<Session>, force: bool) {
 /// The process groups the session spawned roots for: the adapter's (the program it
 /// launched is in it), the JVMs the session started itself, the `runInTerminal` program.
 #[cfg(unix)]
-fn launch_groups(s: &Arc<Session>) -> Vec<libc::pid_t> {
+fn launch_groups(s: &Session) -> Vec<libc::pid_t> {
     let mut groups = Vec::new();
     let mut push = |id: Option<u32>| {
         if let Ok(pid) = libc::pid_t::try_from(id.unwrap_or(0)) {
@@ -461,19 +480,19 @@ pub(crate) async fn wait_for_debuggee(s: &Arc<Session>, terminate: bool) {
     #[cfg(unix)]
     {
         use std::time::Instant;
-        let targets = {
-            let known = s.stop_pids.lock();
-            if known.is_empty() { process_tree(pid as i32) } else { known.clone() }
-        };
+        let mut targets = s.stop_pids.lock().clone();
+        if targets.is_empty() {
+            targets = tokio::task::spawn_blocking(move || process_tree(pid as i32)).await.unwrap_or_default();
+        }
         let alive = || targets.iter().any(|p| unsafe { libc::kill(*p, 0) } == 0);
         let deadline = Instant::now() + DEBUGGEE_EXIT_WAIT;
         while alive() {
             if s.stop_force.swap(false, Ordering::AcqRel) {
-                signal_debuggee(s, true);
+                signal_debuggee(s, true).await;
             }
             if Instant::now() >= deadline {
                 // The program ignored the terminate: do not leave it running.
-                signal_debuggee(s, true);
+                signal_debuggee(s, true).await;
                 break;
             }
             tokio::time::sleep(Duration::from_millis(50)).await;
@@ -488,7 +507,7 @@ pub(crate) async fn wait_for_debuggee(s: &Arc<Session>, terminate: bool) {
         // while the program still holds its port.
         while launch_running(s) {
             if s.stop_force.swap(false, Ordering::AcqRel) || std::time::Instant::now() >= deadline {
-                signal_debuggee(s, true);
+                signal_debuggee(s, true).await;
             }
             tokio::time::sleep(Duration::from_millis(50)).await;
         }

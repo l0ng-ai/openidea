@@ -715,18 +715,17 @@ impl ProcessManager {
         if entry.exited.load(Ordering::Acquire) && !group_alive(pid, &entry) {
             return Ok(());
         }
-        if already_stopping {
-            // Second stop request: don't wait out the grace period.
-            kill_tree(&entry, pid, true);
-            return Ok(());
-        }
-        if entry.stop.is_none() {
-            kill_tree(&entry, pid, false);
-        }
         let entry = entry.clone();
         std::thread::Builder::new()
             .name(format!("openidea-run-stop-{}", id.0))
             .spawn(move || {
+                if already_stopping {
+                    kill_tree(&entry, pid, true);
+                    return;
+                }
+                if entry.stop.is_none() {
+                    kill_tree(&entry, pid, false);
+                }
                 let exits_within = |limit: Duration| {
                     let deadline = Instant::now() + limit;
                     while Instant::now() < deadline {
@@ -1228,11 +1227,14 @@ fn spawn_pump(
         // then would let Run start into an occupied port. A second Stop kills the group
         // or the job, which ends this wait.
         #[cfg(unix)]
-        if entry.stopping.load(Ordering::Acquire)
-            && let Some(pid) = *entry.pid.lock()
         {
-            while group_alive(pid, &entry) {
-                std::thread::sleep(Duration::from_millis(50));
+            let pid = *entry.pid.lock();
+            if entry.stopping.load(Ordering::Acquire)
+                && let Some(pid) = pid
+            {
+                while group_alive(pid, &entry) {
+                    std::thread::sleep(Duration::from_millis(50));
+                }
             }
         }
         // Without a job the exited flag is the only probe, and it always reads "alive"
