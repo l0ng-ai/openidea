@@ -80,10 +80,13 @@ const truthy = (value: string) => !["", "false", "0"].includes(value.trim());
 const CLASS_NAME = /^[A-Za-z_][A-Za-z0-9_]*([\\/][A-Za-z_][A-Za-z0-9_]*)*$/;
 const VIEW_NAME = /^[A-Za-z0-9_-]+([./][A-Za-z0-9_-]+)*$/;
 const MIGRATION_NAME = /^[A-Za-z0-9_ -]+$/;
+/** `posts.create-post` or `Posts/CreatePost`, as `make:livewire` takes it. */
+const LIVEWIRE_NAME = /^[A-Za-z_][A-Za-z0-9_-]*([./\\][A-Za-z_][A-Za-z0-9_-]*)*$/;
 
 /** What the name of generator `id` is. */
-export function nameKind(id: string): "class" | "view" | "migration" | "none" {
+export function nameKind(id: string): "class" | "view" | "migration" | "livewire" | "none" {
   if (id === "view" || id === "anonymous-component") return "view";
+  if (id === "livewire") return "livewire";
   if (id === "migration") return "migration";
   if (id === "pivot-migration") return "none";
   return "class";
@@ -103,6 +106,7 @@ export function newClassError(id: string, form: NewClassForm, fields: LaravelGen
   if (kind === "view" && !VIEW_NAME.test(name.replace(/\.blade\.php$/, "")))
     return tx`'${name}' is not a valid view name`;
   if (kind === "migration" && !MIGRATION_NAME.test(name)) return tx`'${name}' is not a valid migration name`;
+  if (kind === "livewire" && !LIVEWIRE_NAME.test(name)) return tx`'${name}' is not a valid component name`;
   if (form.status.trim() && !/^\d{3}$/.test(form.status.trim())) return "The status is a three-digit HTTP status";
   for (const field of fields) {
     if (field.kind === "checkbox" || field.optional) continue;
@@ -156,6 +160,8 @@ function placeholder(id: string): string {
       return id === "view" ? "View name, e.g. posts.index" : "Component name, e.g. forms.input";
     case "migration":
       return "Migration name, e.g. add_votes_to_users_table";
+    case "livewire":
+      return "Component name, e.g. posts.create-post";
     default:
       return "Class name, e.g. Post";
   }

@@ -217,6 +217,36 @@ describe("Laravel class generators", () => {
     });
   });
 
+  it("lists the Livewire generator only when the engine knows it, and takes Livewire names", async () => {
+    const menu = (ctx: LaravelGenerationContext) =>
+      JSON.stringify(generateMenu(ctx)).includes(generatorAction("livewire"));
+    expect(menu(context)).toBe(false);
+    const withLivewire = { ...context, generators: [...context.generators, generator("livewire", [])] };
+    expect(menu(withLivewire)).toBe(true);
+    expect(nameKind("livewire")).toBe("livewire");
+    const named = (name: string) => ({ ...emptyClassForm(), name });
+    expect(newClassError("livewire", named("posts.create-post"))).toBeNull();
+    expect(newClassError("livewire", named("Posts/CreatePost"))).toBeNull();
+    expect(newClassError("livewire", named("posts..x"))).toBe("'posts..x' is not a valid component name");
+
+    ipc.phpLaravelGenerationContext.mockResolvedValue({ status: "ok", data: withLivewire });
+    ipc.phpLaravelGenerateClass.mockResolvedValue({ status: "ok", data: edit });
+    render(<NewClassDialog />);
+    act(() => openNewClass("livewire"));
+    const form = await screen.findByRole("form", { name: "New Livewire Component" });
+    const name = within(form).getByLabelText<HTMLInputElement>("Name");
+    expect(name.placeholder).toBe("Component name, e.g. posts.create-post");
+    fireEvent.change(name, { target: { value: "posts.create-post" } });
+    const create = screen.getByRole<HTMLButtonElement>("button", { name: "Create" });
+    await waitFor(() => expect(create.disabled).toBe(false));
+    fireEvent.click(create);
+    await waitFor(() => expect(ipc.applyWorkspaceEdit).toHaveBeenCalledWith(edit));
+    const [spec, templates] = ipc.phpLaravelGenerateClass.mock.calls[0]!;
+    expect(spec).toMatchObject({ generator: "livewire", name: "posts.create-post" });
+    const names = (templates as Array<{ name: string }>).map((t) => t.name);
+    expect(names).toEqual(expect.arrayContaining(["Laravel Livewire Component", "Laravel Livewire View"]));
+  });
+
   it("asks a pivot table for two models and no name", async () => {
     ipc.phpLaravelGenerationContext.mockResolvedValue({ status: "ok", data: context });
     render(<NewClassDialog />);

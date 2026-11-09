@@ -92,6 +92,11 @@ impl Project {
     /// The fixture app with Livewire and Inertia installed, two components,
     /// a form and two pages.
     fn with_packages() -> Self {
+        Self::with_packages_and(&[])
+    }
+
+    /// [`Self::with_packages`] with more files `(relative path, text)`.
+    fn with_packages_and(extra: &[(&str, &str)]) -> Self {
         let tmp = tempfile::tempdir().unwrap();
         let base = dunce::canonicalize(tmp.path()).unwrap();
         let root = base.join("project");
@@ -130,7 +135,7 @@ impl Project {
             ("resources/js/Pages/Dashboard.vue", "<template>\n    <div></div>\n</template>\n"),
             ("resources/js/Pages/Posts/Index.vue", "<template>\n    <div></div>\n</template>\n"),
         ];
-        for (rel, text) in files {
+        for (rel, text) in files.iter().chain(extra) {
             let path = root.join(rel);
             std::fs::create_dir_all(path.parent().unwrap()).unwrap();
             std::fs::write(path, text).unwrap();
@@ -352,4 +357,136 @@ fn reports_undefined_inertia_pages_with_a_create_fix() {
     let [TextEdit { new_text, .. }] = edits.as_slice() else { panic!("{edits:?}") };
     assert!(new_text.contains("<template>"), "{new_text}");
     project.engine.document_closed(doc);
+}
+
+const CLOCK: &str = r#"<?php
+
+namespace App\Http\Widgets;
+
+use Livewire\Component;
+
+class Clock extends Component
+{
+    public string $zone = 'UTC';
+
+    public function render()
+    {
+        return view('widgets.clock');
+    }
+}
+"#;
+
+const LIVEWIRE_PROVIDER: &str = r#"<?php
+
+namespace App\Providers;
+
+use App\Http\Widgets\Clock;
+use Illuminate\Support\ServiceProvider;
+use Livewire\Livewire;
+
+class LivewireServiceProvider extends ServiceProvider
+{
+    public function boot(): void
+    {
+        Livewire::component('clock', Clock::class);
+        Livewire::component('ticker', \App\Livewire\Counter::class);
+    }
+}
+"#;
+
+#[test]
+fn components_registered_in_a_provider() {
+    let mut project = Project::with_packages_and(&[
+        ("app/Http/Widgets/Clock.php", CLOCK),
+        ("app/Providers/LivewireServiceProvider.php", LIVEWIRE_PROVIDER),
+        ("resources/views/widgets/clock.blade.php", "<div>{{ $zone }}</div>\n"),
+    ]);
+    let components = project.engine.laravel_livewire().unwrap();
+    let names: Vec<(&str, &str)> =
+        components.components.iter().map(|component| (component.name.as_str(), component.class.as_str())).collect();
+    // Registered aliases, and the discovered names of the Livewire namespace.
+    assert_eq!(
+        names,
+        [
+            ("clock", "App\\Http\\Widgets\\Clock"),
+            ("counter", "App\\Livewire\\Counter"),
+            ("posts.create-post", "App\\Livewire\\Posts\\CreatePost"),
+            ("ticker", "App\\Livewire\\Counter"),
+        ]
+    );
+    let clock = components.get("clock").unwrap();
+    assert!(clock.view.as_ref().unwrap().ends_with("resources/views/widgets/clock.blade.php"));
+    // Found by class too: the first of its names.
+    assert_eq!(components.find("\\App\\Livewire\\Counter").map(|c| c.name.as_str()), Some("counter"));
+
+    assert_eq!(
+        sorted(project.complete_in(PROBE, &probe("Livewire::test('/*|*/');"))),
+        ["clock", "counter", "posts.create-post", "ticker"]
+    );
+    assert_eq!(
+        project.definition_in(PROBE, &probe("Livewire::test('clo/*|*/ck');")),
+        [
+            ("app/Http/Widgets/Clock.php".to_owned(), 6, "Clock".to_owned()),
+            ("resources/views/widgets/clock.blade.php".to_owned(), 0, String::new())
+        ]
+    );
+    // Tags of registered components.
+    assert_eq!(project.livewire_labels("resources/views/probe.blade.php", "<livewire:clock /*|*/ />"), ["zone"]);
+}
+
+#[test]
+fn livewire_parameter_keys() {
+    let mut project = Project::with_packages();
+    // The parameters of `mount()` and the public properties (sorted by the
+    // completion).
+    let expected = ["count", "label", "start"];
+    assert_eq!(project.template_php_labels("<div>@livewire('counter', ['/*|*/'])</div>\n"), expected);
+    assert_eq!(project.template_php_labels("<div>@livewire('counter', ['/*|*/' => 1])</div>\n"), expected);
+    assert_eq!(project.template_php_labels("<div>@livewire('posts.create-post', ['/*|*/'])</div>\n"), ["form"]);
+    // Not a value, nor an unknown component.
+    assert!(
+        !project
+            .template_php_labels("<div>@livewire('counter', ['start' => '/*|*/'])</div>\n")
+            .contains(&"count".to_owned())
+    );
+    assert!(project.template_php_labels("<div>@livewire('nothing', ['/*|*/'])</div>\n").is_empty());
+    assert_eq!(
+        project.complete_in(PROBE, &probe("Livewire::test(\\App\\Livewire\\Counter::class, ['/*|*/']);")),
+        expected
+    );
+    assert_eq!(project.complete_in(PROBE, &probe("Livewire::test('counter', ['/*|*/' => 2]);")), expected);
+
+    assert_eq!(
+        project.definition_in(PROBE, &probe("Livewire::test('counter', ['sta/*|*/rt' => 2]);")),
+        [("app/Livewire/Counter.php".to_owned(), 16, "$start".to_owned())]
+    );
+    assert_eq!(
+        project.definition_in(PROBE, &probe("Livewire::test('counter', ['lab/*|*/el' => 'x']);")),
+        [("app/Livewire/Counter.php".to_owned(), 10, "$label".to_owned())]
+    );
+}
+
+#[test]
+fn the_livewire_generator_is_listed_when_livewire_is_installed() {
+    let project = Project::with_packages();
+    let context = project.engine.laravel_generation_context().unwrap();
+    assert!(context.generators.iter().any(|generator| generator.id == "livewire"));
+    let spec = crate::frameworks::laravel::generate::NewClass {
+        generator: "livewire".to_owned(),
+        name: "posts.edit-post".to_owned(),
+        ..Default::default()
+    };
+    let files = project
+        .engine
+        .laravel_generate_class_files(&spec, &crate::frameworks::laravel::generate::TemplateSet::default(), "")
+        .unwrap();
+    let paths: Vec<String> = files
+        .iter()
+        .map(|file| file.path.strip_prefix(&project.root).unwrap().to_string_lossy().replace('\\', "/"))
+        .collect();
+    assert_eq!(paths, ["app/Livewire/Posts/EditPost.php", "resources/views/livewire/posts/edit-post.blade.php"]);
+
+    let app = Project::app();
+    let context = app.engine.laravel_generation_context().unwrap();
+    assert!(!context.generators.iter().any(|generator| generator.id == "livewire"));
 }

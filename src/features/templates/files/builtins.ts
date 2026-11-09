@@ -33,6 +33,8 @@ import LARAVEL_CHANNEL from "./laravel/channel.php.ft?raw";
 import LARAVEL_ENUM from "./laravel/enum.php.ft?raw";
 import LARAVEL_TEST from "./laravel/test.php.ft?raw";
 import LARAVEL_PEST_TEST from "./laravel/test.pest.php.ft?raw";
+import LARAVEL_LIVEWIRE from "./laravel/livewire.php.ft?raw";
+import LARAVEL_LIVEWIRE_VIEW from "./laravel/livewire.blade.php.ft?raw";
 
 /** Includes tab: fragments file templates pull in with `#parse("…")`. */
 export const BUILTIN_INCLUDES: readonly TemplateFragment[] = [{ name: "File Header", body: "" }];
@@ -132,6 +134,12 @@ function laravelCodeTemplates(): TemplateFragment[] {
     { name: "Laravel Enum", description: `${generate} › Enum`, body: LARAVEL_ENUM },
     { name: "Laravel Test", description: `${generate} › Feature/Unit Test (PHPUnit)`, body: LARAVEL_TEST },
     { name: "Laravel Pest Test", description: `${generate} › Feature/Unit Test (Pest)`, body: LARAVEL_PEST_TEST },
+    { name: "Laravel Livewire Component", description: `${generate} › Livewire Component`, body: LARAVEL_LIVEWIRE },
+    {
+      name: "Laravel Livewire View",
+      description: `${generate} › Livewire Component (view)`,
+      body: LARAVEL_LIVEWIRE_VIEW,
+    },
   ];
 }
 

@@ -154,7 +154,7 @@ impl AuthFacts {
 
 /// The `(` offsets and arguments of the calls starting with `call` (which
 /// ends in `(`).
-fn calls(text: &str, call: &str) -> Vec<(usize, Vec<String>)> {
+pub(super) fn calls(text: &str, call: &str) -> Vec<(usize, Vec<String>)> {
     let mut out = Vec::new();
     let mut from = 0;
     while let Some(at) = text[from..].find(call) {
@@ -169,7 +169,7 @@ fn calls(text: &str, call: &str) -> Vec<(usize, Vec<String>)> {
 
 /// The first argument of the call whose `(` is at `open` when it is a plain
 /// string: its content and range.
-fn first_string(text: &str, open: usize, lines: &LineIndex) -> Option<(String, Range)> {
+pub(super) fn first_string(text: &str, open: usize, lines: &LineIndex) -> Option<(String, Range)> {
     let start = open + 1 + (text[open + 1..].len() - text[open + 1..].trim_start().len());
     let quote = text[start..].chars().next().filter(|c| *c == '\'' || *c == '"')?;
     let len = text[start + 1..].find(quote)?;
@@ -182,7 +182,7 @@ fn first_string(text: &str, open: usize, lines: &LineIndex) -> Option<(String, R
 
 /// The class `written` names (`Post::class` or `'App\Models\Post'`), in the
 /// scope at `offset`.
-fn class_name(names: &FileNames, written: &str, offset: usize) -> Option<String> {
+pub(super) fn class_name(names: &FileNames, written: &str, offset: usize) -> Option<String> {
     let written = written.trim();
     if let Some(name) = written.strip_suffix("::class") {
         let name = name.trim();

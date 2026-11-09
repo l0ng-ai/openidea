@@ -9,7 +9,13 @@
 //!   `admin::users`). `App\Livewire\Posts\CreatePost` is
 //!   `posts.create-post`. A component's view is the one its `render()`
 //!   names (`view('livewire.counter')`), else `livewire.<name>` (or the
-//!   `ide.json` namespace's view folder).
+//!   `ide.json` namespace's view folder). Components registered in a
+//!   service provider with `Livewire::component('alias', Counter::class)`
+//!   are known by their alias too (and win over a discovered one of the
+//!   same name).
+//! - **Parameters:** what `@livewire('counter', [...])` and a tag's
+//!   attributes fill: the parameters of `mount()`, then the public
+//!   properties.
 //! - **Properties and actions:** what `wire:model` binds to (the public
 //!   properties a component declares, not Livewire's own; a property typed
 //!   with a `Livewire\Form` gives `form.title`) and what `wire:click` and
@@ -27,11 +33,14 @@ use std::sync::Arc;
 use ide_core::Range;
 
 use super::LaravelProject;
+use super::auth::{calls, class_name, first_string};
 use super::blade::kebab;
-use super::views::ViewTable;
+use super::views::{ViewTable, provider_files};
 use crate::engine::PhpEngine;
+use crate::names::FileNames;
 use crate::navigate::Target;
 use crate::summary::{ClassKind, FileSummary};
+use crate::syntax::{LineIndex, ParsedFile};
 use crate::types::ClassModel;
 
 /// Livewire's base component class.
@@ -113,6 +122,22 @@ impl LivewireComponents {
             }
         }
         let mut out: Vec<LivewireComponent> = Vec::new();
+        let resolver = engine.resolver();
+        for path in provider_files(project) {
+            let Some(text) = engine.text_of(&path) else { continue };
+            for (alias, class) in registrations(&text) {
+                let Some(model) = resolver.class_model(&class) else { continue };
+                if out.iter().any(|known| known.name == alias) || !model.is_subclass_of(COMPONENT) {
+                    continue;
+                }
+                let Some(path) = engine.class_path(&model.class, Path::new(""), &FileSummary::default()) else {
+                    continue;
+                };
+                let text = engine.text_of(&path).unwrap_or_default();
+                let view = rendered_view(&text).and_then(|view| views.get(&view).map(|view| view.path.clone()));
+                out.push(LivewireComponent { name: alias, class, path, range: model.class.name_loc.range, view });
+            }
+        }
         for model in subclasses(engine, COMPONENT) {
             let fqn = model.fqn().trim_start_matches('\\');
             let Some((prefix, rest, view_dir)) = namespaces.iter().find_map(|(prefix, namespace, view)| {
@@ -147,11 +172,36 @@ impl LivewireComponents {
         self.components.iter().find(|component| component.name == name)
     }
 
+    /// The component named `name`, else the first one of class `name`
+    /// (`App\Livewire\Counter`, with or without a leading `\`).
+    pub fn find(&self, name: &str) -> Option<&LivewireComponent> {
+        let class = name.trim_start_matches('\\');
+        self.get(name).or_else(|| self.components.iter().find(|c| c.class.eq_ignore_ascii_case(class)))
+    }
+
     /// The component whose view is `path`.
     pub fn of_view(&self, path: &Path) -> Option<&LivewireComponent> {
         let path = crate::project::normalize(path);
         self.components.iter().find(|component| component.view.as_deref() == Some(path.as_path()))
     }
+}
+
+/// The `Livewire::component('alias', Counter::class)` registrations of a
+/// service provider's text: `(alias, class)`.
+fn registrations(text: &str) -> Vec<(String, String)> {
+    if !text.contains("Livewire::component(") {
+        return Vec::new();
+    }
+    let parsed = ParsedFile::parse("provider.php", text);
+    let names = FileNames::resolve(&parsed);
+    let lines = LineIndex::new(text);
+    let mut out = Vec::new();
+    for (open, args) in calls(text, "Livewire::component(") {
+        let Some((alias, _)) = first_string(text, open, &lines) else { continue };
+        let Some(class) = args.get(1).and_then(|arg| class_name(&names, arg, open)) else { continue };
+        out.push((alias, class));
+    }
+    out
 }
 
 /// The non-abstract classes extending `parent`, directly or not.
@@ -281,26 +331,39 @@ impl PhpEngine {
         Some(form)
     }
 
-    /// The attributes a `<livewire:…>` tag of `component` takes: its public
-    /// properties and the parameters of its `mount()`, in kebab case.
-    pub fn livewire_tag_attributes(&self, component: &LivewireComponent) -> Vec<LivewireMember> {
+    /// The parameters component `class` takes (`@livewire('counter',
+    /// ['start' => 1])`): the parameters of its `mount()`, then its public
+    /// properties.
+    pub fn livewire_parameters(&self, class: &str) -> Vec<LivewireMember> {
         let mut out: Vec<LivewireMember> = Vec::new();
-        if let Some(model) = self.resolver().class_model(&component.class)
+        if let Some(model) = self.resolver().class_model(class)
             && let Some(mount) = model.method("mount")
             && let Some(declared) = mount.declared()
         {
             for param in &declared.params {
                 out.push(LivewireMember {
-                    name: kebab(&param.name),
+                    name: param.name.clone(),
                     detail: param.type_hint.as_ref().map(ToString::to_string).or_else(|| param.default.clone()),
                     target: self.member_target(&mount.declaring, param.name_loc.range),
                 });
             }
         }
-        for property in self.livewire_properties(&component.class) {
-            let name = kebab(&property.name);
+        for property in self.livewire_properties(class) {
+            if !out.iter().any(|known| known.name == property.name) {
+                out.push(property);
+            }
+        }
+        out
+    }
+
+    /// The attributes a `<livewire:…>` tag of `component` takes: its
+    /// parameters ([`Self::livewire_parameters`]) in kebab case.
+    pub fn livewire_tag_attributes(&self, component: &LivewireComponent) -> Vec<LivewireMember> {
+        let mut out: Vec<LivewireMember> = Vec::new();
+        for parameter in self.livewire_parameters(&component.class) {
+            let name = kebab(&parameter.name);
             if !out.iter().any(|known| known.name == name) {
-                out.push(LivewireMember { name, ..property });
+                out.push(LivewireMember { name, ..parameter });
             }
         }
         out
@@ -408,6 +471,34 @@ mod tests {
         assert_eq!(rendered_view(text).as_deref(), Some("livewire.posts.list"));
         assert_eq!(rendered_view("return $this->view(\"a\"); return preview('b');").as_deref(), None);
         assert_eq!(rendered_view("return view(\"a.b\");").as_deref(), Some("a.b"));
+    }
+
+    #[test]
+    fn reads_registrations_of_a_provider() {
+        let text = r#"<?php
+namespace App\Providers;
+
+use App\Http\Widgets\Clock;
+use Livewire\Livewire;
+
+class AppServiceProvider
+{
+    public function boot(): void
+    {
+        Livewire::component('clock', Clock::class);
+        \Livewire\Livewire::component('admin.stats', 'App\\Admin\\Stats');
+        Livewire::component($dynamic, Clock::class);
+    }
+}
+"#;
+        assert_eq!(
+            registrations(text),
+            [
+                ("clock".to_owned(), "App\\Http\\Widgets\\Clock".to_owned()),
+                ("admin.stats".to_owned(), "App\\Admin\\Stats".to_owned())
+            ]
+        );
+        assert!(registrations("<?php Gate::define('x', fn () => true);").is_empty());
     }
 
     #[test]

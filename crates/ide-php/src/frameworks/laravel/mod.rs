@@ -47,7 +47,7 @@ pub use env::{EnvEntry, EnvKeys};
 pub use ide_json::IdeJson;
 pub use inertia::{InertiaPage, InertiaPages};
 pub use lang::{TransEntry, Translations};
-pub use livewire::{LivewireComponent, LivewireComponents};
+pub use livewire::{LivewireComponent, LivewireComponents, LivewireMember};
 pub use model_view::{ModelLens, ModelView, NewColumn};
 pub use project::{LaravelPackages, LaravelPaths, LaravelProject, Module, ModuleKind, RouteFile};
 pub use route_hints::{RouteHint, RouteInfo, RouteLens};

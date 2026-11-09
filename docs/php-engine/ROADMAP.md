@@ -687,7 +687,7 @@ Runs after Plan 7. Before any 8.x phase, read [LARAVEL-ROADMAP.md](LARAVEL-ROADM
 
   Tests: caret fixtures with stub packages.
 
-- [ ] Phase 8.19.b: Livewire generator and the rest of Livewire
+- [x] Phase 8.19.b: Livewire generator and the rest of Livewire
       Phase 8.19 added `frameworks::laravel::livewire` (`LivewireComponents` from the subclasses of `Livewire\Component` below `App\Livewire`, `App\Http\Livewire` and the `ide.json` namespaces, with their views), the `livewireComponent` kind (`@livewire('…')`, `Livewire::test/visit`), `<livewire:…>` tags and `wire:model`/`wire:click` values in Blade, and `frameworks::laravel::inertia` with the `inertiaPage` kind and `PhpUndefinedInertiaPage`. Add the rest:
   - a **Create Livewire component** generator on the 8.13 framework (class below the Livewire namespace and its view below `livewire/`, Livewire 3 layout), listed in the Generate menu only when Livewire is installed; text in `en.json` and `zh.json`
   - components registered with `Livewire::component('alias', Class::class)` in service providers, and completion of the keys of `@livewire('counter', [...])` from the component's properties and `mount()` parameters

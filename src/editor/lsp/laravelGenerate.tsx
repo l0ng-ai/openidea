@@ -148,6 +148,13 @@ export const CLASS_GENERATORS: readonly ClassGeneratorEntry[] = [
     dialog: "New Unit Test",
     keywords: ["make:test", "phpunit", "pest", "unit"],
   },
+  // Listed by the engine (and so in the Generate menu) only when Livewire is installed.
+  {
+    id: "livewire",
+    title: "New Livewire Component…",
+    dialog: "New Livewire Component",
+    keywords: ["make:livewire", "livewire", "component"],
+  },
 ];
 
 /** The generators known to the front end, with their dialogs. */

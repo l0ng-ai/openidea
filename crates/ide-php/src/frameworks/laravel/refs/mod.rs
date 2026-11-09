@@ -17,7 +17,8 @@
 //! `validationRule` and `requestField` ([`validation_rule`]), and
 //! `eloquentField` and `eloquentRelation` ([`eloquent`]), and `gate`,
 //! `authGuard` and `passwordBroker` ([`gate`]), and `artisanCommand`
-//! ([`artisan_command`]), and `livewireComponent` ([`livewire`]) and
+//! ([`artisan_command`]), and `livewireComponent` and `livewireParameter`
+//! ([`livewire`]), and
 //! `inertiaPage` ([`inertia_page`]), and `staticStrings` and
 //! `directoryFiles` ([`rules`]).
 //!
@@ -111,7 +112,7 @@ pub use eloquent::{EloquentField, EloquentRelation};
 pub use env_key::EnvKey;
 pub use gate::{AuthGuard, Gate, PasswordBroker};
 pub use inertia_page::InertiaPageKind;
-pub use livewire::LivewireComponentKind;
+pub use livewire::{LivewireComponentKind, LivewireParameterKind};
 pub use middleware::Middleware;
 pub use route_name::RouteName;
 pub use rules::{DirectoryFiles, StaticStrings};
@@ -305,6 +306,10 @@ pub struct StringSite {
     /// element of an array), the class of `Post::class`, or the content of
     /// a string literal.
     pub next_argument: Vec<String>,
+    /// For a string of a later argument, the first positional argument when
+    /// it is a string literal (its content) or `Foo::class` (the class):
+    /// `counter` for the keys of `@livewire('counter', ['start' => 1])`.
+    pub first_argument: Option<String>,
 }
 
 /// Helpers that return a service when called without arguments, as
@@ -368,6 +373,8 @@ struct RawSite<'a> {
     /// The positional argument after the string's argument, when its call
     /// is named like a pattern of a kind using it.
     next: Option<&'a Expression<'a>>,
+    /// The first positional argument, for strings of later arguments.
+    first: Option<&'a Expression<'a>>,
 }
 
 struct Collect<'a, 'n> {
@@ -379,6 +386,8 @@ struct Collect<'a, 'n> {
     next_names: &'n HashSet<String>,
     /// The argument after the one being walked, for those calls.
     next: Option<&'a Expression<'a>>,
+    /// The first positional argument, while a later one is walked.
+    first: Option<&'a Expression<'a>>,
     out: Vec<RawSite<'a>>,
     /// The class-likes, functions and methods around the walker.
     frames: Vec<Frame>,
@@ -439,6 +448,7 @@ impl<'a> Collect<'a, '_> {
                         steps: steps.clone(),
                         class: class.cloned(),
                         next: self.next,
+                        first: self.first,
                     });
                 }
             }
@@ -592,8 +602,10 @@ impl<'a> Walker<'a, 'a, Collect<'a, '_>> for SiteWalker {
             match argument {
                 Argument::Positional(argument) => {
                     cx.next = if wants_next { positionals.get(positional + 1).copied() } else { None };
+                    cx.first = if positional > 0 { positionals.first().copied() } else { None };
                     cx.strings(&call, argument.value, (Some(positional), None), &mut steps, None);
                     cx.next = None;
+                    cx.first = None;
                     positional += 1;
                 }
                 Argument::Named(argument) => {
@@ -645,8 +657,15 @@ pub fn sites_with(
         .map(str::to_ascii_lowercase)
         .collect();
     next_names.extend(rule_names(true));
-    let mut collect =
-        Collect { want, names: &names, next_names: &next_names, next: None, out: Vec::new(), frames: Vec::new() };
+    let mut collect = Collect {
+        want,
+        names: &names,
+        next_names: &next_names,
+        next: None,
+        first: None,
+        out: Vec::new(),
+        frames: Vec::new(),
+    };
     SiteWalker.walk_program(parsed.program(), &mut collect);
     if collect.out.is_empty() {
         return Vec::new();
@@ -686,6 +705,7 @@ pub fn sites_with(
                 }
             });
             let next_argument = raw.next.map(|next| next_argument(&types, &file_names, next)).unwrap_or_default();
+            let first_argument = raw.first.and_then(|first| first_argument(&file_names, first));
             let start = raw.span.start.offset + 1;
             let end = raw.span.end.offset.saturating_sub(1).max(start);
             Some(StringSite {
@@ -699,9 +719,26 @@ pub fn sites_with(
                 class,
                 call,
                 next_argument,
+                first_argument,
             })
         })
         .collect()
+}
+
+/// See [`StringSite::first_argument`].
+fn first_argument(names: &FileNames, expr: &Expression<'_>) -> Option<String> {
+    if let Some((name, offset)) = class_constant(expr) {
+        return match names.scope_at(offset).resolve(NameKind::ClassLike, &name).resolution {
+            Resolution::Fqn(fqn) | Resolution::Fallback { namespaced: fqn, .. } => {
+                Some(fqn.trim_start_matches('\\').to_owned())
+            }
+            Resolution::Relative(_) => None,
+        };
+    }
+    match expr {
+        Expression::Literal(Literal::String(string)) => string.value.map(lossy),
+        _ => None,
+    }
 }
 
 /// See [`StringSite::next_argument`].
@@ -834,6 +871,8 @@ pub struct SiteInfo {
     pub key: Option<String>,
     /// [`StringSite::next_argument`].
     pub next_argument: Vec<String>,
+    /// [`StringSite::first_argument`].
+    pub first_argument: Option<String>,
     /// The `ide.json` rule the string was matched by, when no built-in
     /// pattern matched it.
     pub rule: Option<CompletionRule>,
@@ -1026,6 +1065,7 @@ pub fn kinds() -> &'static [&'static dyn ReferenceKind] {
         &PasswordBroker,
         &ArtisanCommandKind,
         &LivewireComponentKind,
+        &LivewireParameterKind,
         &InertiaPageKind,
         &StaticStrings,
         &DirectoryFiles,
@@ -1212,6 +1252,7 @@ impl PhpEngine {
             call: Some((site.target.clone(), site.call)),
             key,
             next_argument: site.next_argument.clone(),
+            first_argument: site.first_argument.clone(),
             rule: rule.cloned(),
         });
         Some(cx)

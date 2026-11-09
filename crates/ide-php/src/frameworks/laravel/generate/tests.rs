@@ -263,20 +263,19 @@ fn the_generation_context_lists_modules_and_models() {
     assert_eq!(context.models, ["App\\Models\\Comment", "App\\Models\\Post", "App\\Models\\Tag", "App\\Models\\User"]);
     let ids: Vec<&str> = context.generators.iter().map(|g| g.id.as_str()).collect();
     assert_eq!(ids[0], "model");
-    assert_eq!(ids[1..=CLASS_GENERATORS.len()], CLASS_GENERATORS.iter().map(|g| g.id).collect::<Vec<_>>()[..]);
+    // Livewire isn't installed in the fixture: no Livewire generator.
+    let class_ids: Vec<&str> = CLASS_GENERATORS.iter().map(|g| g.id).filter(|id| *id != LIVEWIRE_GENERATOR).collect();
+    assert_eq!(ids[1..=class_ids.len()], class_ids[..]);
     // Then the code generations of the fixture's ide.json.
-    assert_eq!(ids[CLASS_GENERATORS.len() + 1..], ["ide-json:acme.dto"]);
+    assert_eq!(ids[class_ids.len() + 1..], ["ide-json:acme.dto"]);
     assert_eq!(context.generators[0].templates.len(), 10);
     assert!(context.generators[0].options.is_empty());
     let listener = context.generators.iter().find(|g| g.id == "listener").unwrap();
     assert_eq!(listener.options, ["event", "queued"]);
     // Every template is rendered by some generator.
+    let all = generators();
     for template in BUILTIN_TEMPLATES {
-        assert!(
-            context.generators.iter().any(|g| g.templates.iter().any(|name| name == template.name)),
-            "{}",
-            template.name
-        );
+        assert!(all.iter().any(|g| g.templates.iter().any(|name| name == template.name)), "{}", template.name);
     }
 }
 
@@ -422,6 +421,16 @@ fn every_class_generator() {
         ("enum", NewClass { backing: "string".to_owned(), ..class_spec("enum", "Suit") }, &["app/Enums/Suit.php"]),
         ("feature_test", class_spec("feature-test", "UserTest"), &["tests/Feature/UserTest.php"]),
         ("unit_test", class_spec("unit-test", "Money/Parser"), &["tests/Unit/Money/ParserTest.php"]),
+        (
+            "livewire",
+            class_spec("livewire", "posts.create-post"),
+            &["app/Livewire/Posts/CreatePost.php", "resources/views/livewire/posts/create-post.blade.php"],
+        ),
+        (
+            "livewire_class_name",
+            class_spec("livewire", "Counter"),
+            &["app/Livewire/Counter.php", "resources/views/livewire/counter.blade.php"],
+        ),
     ];
     let mut covered: Vec<&str> = Vec::new();
     for (snapshot, spec, paths) in cases {

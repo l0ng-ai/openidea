@@ -10,6 +10,9 @@
 //!   HTTP exception, service provider (registered in
 //!   `bootstrap/providers.php`), console command, Blade component (class and
 //!   anonymous), view, view composer, broadcasting channel and enum.
+//! - **Livewire:** a Livewire 3 component (class below `Livewire\`, view
+//!   below `livewire/`, as `php artisan make:livewire` lays them out),
+//!   listed only when Livewire is installed ([`LIVEWIRE_GENERATOR`]).
 //! - **Tests:** feature and unit tests, in Pest's syntax when the project
 //!   has a `tests/Pest.php`; unit tests extend PHPUnit's `TestCase`, as
 //!   Laravel's do.
@@ -206,7 +209,25 @@ pub const CLASS_GENERATORS: &[ClassGenerator] = &[
         []
     ),
     generator!("unit-test", "Unit Test", "A unit test (PHPUnit or Pest)", [template::TEST, template::PEST_TEST], []),
+    generator!(
+        "livewire",
+        "Livewire Component",
+        "A Livewire component class and its view",
+        [template::LIVEWIRE, template::LIVEWIRE_VIEW],
+        []
+    ),
 ];
+
+/// The generator listed only when Livewire is installed.
+pub const LIVEWIRE_GENERATOR: &str = "livewire";
+
+/// A Livewire component name (`posts.create-post`, `Posts/CreatePost`) as
+/// a class name of the Livewire namespace (`Posts\CreatePost`), the way
+/// `make:livewire` reads it.
+fn livewire_class_name(name: &str) -> String {
+    let name = name.trim().trim_end_matches(".php");
+    name.split(['.', '/', '\\']).map(studly).collect::<Vec<_>>().join("\\")
+}
 
 /// The generator `id`.
 pub fn class_generator(id: &str) -> Option<&'static ClassGenerator> {
@@ -664,9 +685,11 @@ impl Generation<'_> {
             "view-composer" => ("View\\Composers", "Composer", false),
             "channel" => ("Broadcasting", "Channel", false),
             "enum" => ("Enums", "", false),
+            "livewire" => ("Livewire", "", false),
             other => return Err(format!("There is no generator '{other}'")),
         };
-        let (sub, class) = class_parts(&self.spec.name, suffix)?;
+        let name = if id == "livewire" { livewire_class_name(&self.spec.name) } else { self.spec.name.clone() };
+        let (sub, class) = class_parts(&name, suffix)?;
         let base_namespace =
             if database { self.target.database_namespace(relative) } else { self.target.class_namespace(relative) };
         let namespace = if sub.is_empty() { base_namespace } else { format!("{base_namespace}\\{}", sub.join("\\")) };
@@ -893,6 +916,17 @@ impl Generation<'_> {
                 extra.push((self.view_file(&segments), self.templates.render(template::COMPONENT_VIEW, &view)?));
                 template::COMPONENT
             }
+            "livewire" => {
+                imports.add("Livewire\\Component");
+                let mut segments: Vec<String> = sub.iter().map(|part| kebab(part)).collect();
+                segments.push(kebab(&class));
+                segments.insert(0, "livewire".to_owned());
+                vars.set("VIEW", self.view_name(&segments));
+                let mut view = Vars::new();
+                view.set("NAME", segments[1..].join("."));
+                extra.push((self.view_file(&segments), self.templates.render(template::LIVEWIRE_VIEW, &view)?));
+                template::LIVEWIRE
+            }
             "view-composer" => {
                 imports.add("Illuminate\\View\\View");
                 template::VIEW_COMPOSER
@@ -934,6 +968,9 @@ mod unit_tests {
             (vec!["Admin".to_owned()], "PostController".to_owned())
         );
         assert_eq!(class_parts("PostController", "Controller").unwrap().1, "PostController");
+        assert_eq!(livewire_class_name("posts.create-post"), "Posts\\CreatePost");
+        assert_eq!(livewire_class_name("Admin/ShowUsers"), "Admin\\ShowUsers");
+        assert_eq!(livewire_class_name("counter"), "Counter");
         assert!(class_parts("1Post", "").is_err());
         assert_eq!(view_segments("posts/index.blade.php").unwrap(), ["posts", "index"]);
         assert!(view_segments("posts..index").is_err());

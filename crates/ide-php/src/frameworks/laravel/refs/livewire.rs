@@ -6,10 +6,16 @@
 //! Completion lists the components, goto opens the class and the view.
 //! Nothing is answered unless Livewire is installed.
 //!
+//! The `livewireParameter` kind is the keys of the parameters array after
+//! the name (`@livewire('counter', ['start' => 1])`,
+//! `Livewire::test(Counter::class, [...])`): the parameters of the
+//! component's `mount()` and its public properties, which Livewire fills
+//! from them.
+//!
 //! `<livewire:counter />` tags are Blade's
 //! ([`crate::frameworks::laravel::blade`]).
 
-use super::{CalleePattern, PlacePattern, RefContext, RefItem, ReferenceKind};
+use super::{CalleePattern, PlacePattern, Position, RefContext, RefItem, ReferenceKind};
 use crate::frameworks::laravel::LivewireComponents;
 use crate::navigate::Target;
 
@@ -18,8 +24,18 @@ const LIVEWIRE: &[&str] = &["Livewire\\Livewire", "Livewire\\LivewireManager"];
 const DIRECTIVE: CalleePattern = CalleePattern::Function("__blade_livewire");
 const TEST: CalleePattern = CalleePattern::Method { classes: LIVEWIRE, names: &["test", "visit"] };
 
+const TEST_WITH_PARAMETERS: CalleePattern = CalleePattern::Method { classes: LIVEWIRE, names: &["test"] };
+
 static PATTERNS: [PlacePattern; 2] =
     [PlacePattern::argument(DIRECTIVE, 0, "name"), PlacePattern::argument(TEST, 0, "name")];
+
+// A key being typed is a list value until its `=>` is there.
+static PARAMETER_PATTERNS: [PlacePattern; 4] = [
+    PlacePattern::argument(DIRECTIVE, 1, "params").at(Position::ArrayKey),
+    PlacePattern::argument(DIRECTIVE, 1, "params").at(Position::ListValue),
+    PlacePattern::argument(TEST_WITH_PARAMETERS, 1, "params").at(Position::ArrayKey),
+    PlacePattern::argument(TEST_WITH_PARAMETERS, 1, "params").at(Position::ListValue),
+];
 
 /// See the module documentation.
 pub struct LivewireComponentKind;
@@ -74,5 +90,52 @@ impl ReferenceKind for LivewireComponentKind {
             out.push_str(&format!("\n\nView: `{}`", relative.to_string_lossy().replace('\\', "/")));
         }
         Some(out)
+    }
+}
+
+/// See the module documentation.
+pub struct LivewireParameterKind;
+
+impl LivewireParameterKind {
+    /// The parameters of the component the call names first.
+    fn parameters(cx: &RefContext<'_>) -> Vec<crate::frameworks::laravel::LivewireMember> {
+        let Some(first) = cx.site.as_ref().and_then(|site| site.first_argument.clone()) else { return Vec::new() };
+        let components = LivewireComponentKind::components(cx);
+        let class = match components.find(&first) {
+            Some(component) => component.class.clone(),
+            None => return Vec::new(),
+        };
+        cx.engine.livewire_parameters(&class)
+    }
+}
+
+impl ReferenceKind for LivewireParameterKind {
+    fn id(&self) -> &'static str {
+        "livewireParameter"
+    }
+
+    fn patterns(&self) -> &'static [PlacePattern] {
+        &PARAMETER_PATTERNS
+    }
+
+    fn complete(&self, cx: &RefContext<'_>, value: &str, _at: usize) -> Vec<RefItem> {
+        Self::parameters(cx)
+            .into_iter()
+            .map(|parameter| RefItem {
+                label: parameter.name.clone(),
+                insert: parameter.name,
+                detail: parameter.detail,
+                from: 0,
+                to: value.len(),
+            })
+            .collect()
+    }
+
+    fn resolve(&self, cx: &RefContext<'_>, value: &str, _at: usize) -> Vec<Target> {
+        Self::parameters(cx).into_iter().filter(|parameter| parameter.name == value).filter_map(|p| p.target).collect()
+    }
+
+    fn is_known(&self, _cx: &RefContext<'_>, _value: &str) -> bool {
+        true
     }
 }

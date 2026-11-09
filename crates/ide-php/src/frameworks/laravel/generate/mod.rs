@@ -38,7 +38,7 @@ use crate::frameworks::laravel::LaravelProject;
 use crate::summary::ClassKind;
 use crate::types::provider::laravel::{plural, snake, studly};
 
-pub use classes::{CLASS_GENERATORS, ClassGenerator, NewClass, class_generator};
+pub use classes::{CLASS_GENERATORS, ClassGenerator, LIVEWIRE_GENERATOR, NewClass, class_generator};
 pub use custom::{CodeGeneration, FieldOption, GeneratorField};
 pub use model::{ControllerKind, ModelField, ModelIndex, ModelRelation, NewModel};
 pub use template::{BUILTIN_TEMPLATES, TemplateSet, Vars};
@@ -63,7 +63,9 @@ pub struct GeneratorInfo {
     pub fields: Vec<GeneratorField>,
 }
 
-/// The generators, in menu order: New Model, then the class generators.
+/// The generators, in menu order: New Model, then the class generators
+/// (the Livewire one included; [`PhpEngine::laravel_generation_context`]
+/// leaves it out when Livewire isn't installed).
 pub fn generators() -> Vec<GeneratorInfo> {
     let mut out = vec![GeneratorInfo {
         id: "model".to_owned(),
@@ -413,6 +415,7 @@ impl PhpEngine {
             models: self.laravel_models(),
             generators: generators()
                 .into_iter()
+                .filter(|generator| project.packages.livewire || generator.id != LIVEWIRE_GENERATOR)
                 .chain(custom::code_generations(&project.ide_json).iter().map(code_generation_info))
                 .collect(),
         })

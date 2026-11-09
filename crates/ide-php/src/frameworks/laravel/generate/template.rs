@@ -74,6 +74,8 @@ pub const CHANNEL: &str = "Laravel Channel";
 pub const ENUM: &str = "Laravel Enum";
 pub const TEST: &str = "Laravel Test";
 pub const PEST_TEST: &str = "Laravel Pest Test";
+pub const LIVEWIRE: &str = "Laravel Livewire Component";
+pub const LIVEWIRE_VIEW: &str = "Laravel Livewire View";
 
 /// The default templates, by name.
 pub const BUILTIN_TEMPLATES: &[BuiltinTemplate] = &[
@@ -110,6 +112,8 @@ pub const BUILTIN_TEMPLATES: &[BuiltinTemplate] = &[
     builtin!("Laravel Enum", "enum.php.ft"),
     builtin!("Laravel Test", "test.php.ft"),
     builtin!("Laravel Pest Test", "test.pest.php.ft"),
+    builtin!("Laravel Livewire Component", "livewire.php.ft"),
+    builtin!("Laravel Livewire View", "livewire.blade.php.ft"),
 ];
 
 /// The templates a request uses: the user's edited bodies over the
