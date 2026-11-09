@@ -192,6 +192,74 @@ const consoleOutput: Scenario = {
   },
 };
 
+/**
+ * A full-screen agent TUI (Claude Code, Grok) repainting the terminal 10 times a second
+ * for 6 s — every row rewritten, only the spinner row changed — while the user types in
+ * an editor. Guards the terminal's unchanged-row skip: without it every frame restyles
+ * and lays out the whole screen.
+ */
+const TUI_FRAMES = 60;
+const terminalTui: Scenario = {
+  id: "terminalTui",
+  title: "Type while a full-screen TUI repaints the terminal",
+  async run(h) {
+    await h.openFile(SAMPLE);
+    const st = await h.editorState();
+    await h.setCursor(Math.floor((st?.length ?? 0) / 2));
+    // Open the terminal and let it settle before measuring.
+    await h.page.evaluate(() =>
+      (
+        window as never as { __openideaPerf: { runAction(id: string, arg?: unknown): Promise<boolean> } }
+      ).__openideaPerf.runAction("terminal.sampleTui", { frames: 1, fps: 10 }),
+    );
+    await h.page.waitForTimeout(300);
+    await h.setCursor((await h.editorState())?.head ?? 0);
+    const refresh = await h.refreshMs();
+    const t0 = await h.now();
+    const before = await h.counters();
+    // Row elements whose children were replaced; the rows of the visible screen.
+    await h.page.evaluate(() => {
+      const w = window as never as { __tuiRows: number; __tuiObserver: MutationObserver };
+      w.__tuiRows = 0;
+      w.__tuiObserver = new MutationObserver((records) => {
+        const rows = new Set<Node>();
+        for (const r of records) if (r.target.parentElement?.classList.contains("xterm-rows")) rows.add(r.target);
+        w.__tuiRows += rows.size;
+      });
+      const container = document.querySelector(".xterm .xterm-rows");
+      if (container) w.__tuiObserver.observe(container, { childList: true, subtree: true });
+    });
+    await h.inPage((p) => p.startFrames());
+    const stream = h.page.evaluate(
+      (frames) =>
+        (
+          window as never as { __openideaPerf: { runAction(id: string, arg?: unknown): Promise<boolean> } }
+        ).__openideaPerf.runAction("terminal.sampleTui", { frames, fps: 10 }),
+      TUI_FRAMES,
+    );
+    await h.page.waitForTimeout(200);
+    await h.setCursor((await h.editorState())?.head ?? 0);
+    const keys = await h.typeMeasured(TYPED.slice(0, 40), 70);
+    await stream;
+    const frames = await h.inPage((p) => p.stopFrames());
+    const work = Harness.delta(before, await h.counters());
+    const rebuilt = await h.page.evaluate(() => {
+      const w = window as never as { __tuiRows: number; __tuiObserver: MutationObserver };
+      w.__tuiObserver.disconnect();
+      return w.__tuiRows;
+    });
+    return {
+      // ~1 with unchanged rows left in place (only the spinner row changes), the screen height without.
+      rowsRebuiltPerTuiFrame: rebuilt / TUI_FRAMES,
+      styleLayoutMsPerTuiFrame: work.styleLayoutMs / TUI_FRAMES,
+      scriptMsPerTuiFrame: work.scriptMs / TUI_FRAMES,
+      ...frameSummary(frames, refresh),
+      ...keySummary(keys, refresh, "key"),
+      tbtMs: totalBlockingTime(await h.longTasksSince(t0)),
+    };
+  },
+};
+
 /** Held key: auto-repeat at ~30 Hz must never fall behind. */
 const keyRepeat: Scenario = {
   id: "keyRepeat",
@@ -600,6 +668,7 @@ export const SCENARIOS: Scenario[] = [
   typingAngular,
   completion,
   consoleOutput,
+  terminalTui,
   gitLog,
   gitLogScrollbar,
   resizePanels,
