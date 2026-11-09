@@ -306,7 +306,7 @@ function godotLaunch(rc: RunConfig, cwd: string): LaunchConfig {
   return { ...base(rc, "godot", project), extraJson: JSON.stringify({ project, scene: godotScene(rc.args) }) };
 }
 
-/** A native program under CodeLLDB or lldb-dap: program, args, cwd, env. */
+/** A native program under CodeLLDB, lldb-dap or GDB: program, args, cwd, env. */
 function nativeLaunch(rc: RunConfig, cwd: string, adapter: string): LaunchConfig {
   const out: LaunchConfig = { ...base(rc, adapter, cwd), program: resolveCommand(rc.command, cwd), args: [...rc.args] };
   // lldb-dap takes the environment as `KEY=VALUE` strings.
@@ -408,7 +408,7 @@ export function launchConfigFor(rc: RunConfig, root: string, php: string | null 
   if (adapter === "dart") {
     return rc.params?.request === "attach" ? flutterAttach(rc, cwd, adapter) : flutterLaunch(rc, cwd, adapter);
   }
-  if (adapter === "codelldb" || adapter === "lldb-dap") {
+  if (adapter === "codelldb" || adapter === "lldb-dap" || adapter === "gdb") {
     return rc.kind === "cargo" ? cargoLaunch(rc, cwd, adapter) : nativeLaunch(rc, cwd, adapter);
   }
   if (adapter === "debugpy") return debugpyLaunch(rc, cwd);

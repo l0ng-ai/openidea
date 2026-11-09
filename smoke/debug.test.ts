@@ -1,7 +1,9 @@
 /**
  * Debugging each language's `fixtures/` project the way the editor does: a breakpoint on the
- * entry point's "Set a breakpoint here" line, Debug from the file's context, then the paused
- * frame, its variables, evaluation, Step Over and Resume, with the debugger the IDE installs.
+ * entry point's "Set a breakpoint here" line, Debug from the file's context (or a saved
+ * configuration, when the debugger is an explicit choice), then the paused frame, its
+ * variables, evaluation, Step Over and Resume, with the debugger the IDE installs (GDB:
+ * the toolchain's own, 14+ for its DAP interpreter).
  */
 import { execFileSync } from "node:child_process";
 import { cpSync, mkdtempSync, readFileSync, realpathSync, rmSync } from "node:fs";
@@ -33,6 +35,10 @@ interface Case {
   setup?: (root: string) => void;
   /** The IDE's tool that debugs it. */
   debugger: string;
+  /** A system tool that ships with the toolchain (the IDE does not install it). */
+  system?: boolean;
+  /** A saved configuration to debug (the debugger is its explicit choice), instead of the file's context. */
+  configId?: string;
   /** The entry point, debugged from its context. */
   file: string;
   /** A variable of the paused frame. */
@@ -88,6 +94,28 @@ const CASES: Record<string, Case> = {
     file: "src/main/kotlin/com/example/library/App.kt",
     variable: "library",
     evaluate: ["library", /Library/],
+  },
+  // GDB's own DAP interpreter (GDB 14+), the configuration's explicit debugger choice:
+  // the C/C++ default stays lldb-dap. GDB 15.0.50.20240403-0ubuntu1 says `15`.
+  c: {
+    fixture: "c-app",
+    setup: (root) => execFileSync("make", ["app-c"], { cwd: root, stdio: "ignore" }),
+    debugger: "gdb",
+    system: true,
+    configId: "user:app-c",
+    file: "src/main.c",
+    variable: "value",
+    evaluate: ["print value", / = [0-9]/],
+  },
+  cpp: {
+    fixture: "c-app",
+    setup: (root) => execFileSync("make", ["app-cpp"], { cwd: root, stdio: "ignore" }),
+    debugger: "gdb",
+    system: true,
+    configId: "user:app-cpp",
+    file: "src/main.cpp",
+    variable: "line",
+    evaluate: ["print line", / = /],
   },
 };
 
@@ -205,7 +233,12 @@ const pausedOrEnded = () => {
 async function smoke(language: string) {
   const c = CASES[language]!;
   const root = await open(c);
-  await install(c.debugger);
+  if (c.system) {
+    // GDB ships with the toolchain (14+ for its DAP interpreter); the IDE does not install it.
+    execFileSync(c.debugger, ["--version"], { stdio: "pipe" });
+  } else {
+    await install(c.debugger);
+  }
 
   const path = join(root, c.file);
   const content = readFileSync(path, "utf8");
@@ -213,7 +246,13 @@ async function smoke(language: string) {
   const line = marker + 1;
   addBreakpoint(path, line);
 
-  await executeAction("run.debugContext", { path, content });
+  if (c.configId) {
+    const config = (await call(commands.runConfigs())).find((cfg) => cfg.id === c.configId);
+    expect(config, c.configId).toBeTruthy();
+    await executeAction("debug.startConfig", config);
+  } else {
+    await executeAction("run.debugContext", { path, content });
+  }
   if (c.request) void requestWhenListening(c.request);
   const s = await until("the breakpoint", pausedOrEnded, 5 * 60_000);
   expect(s.stopReason, `${s.stopDescription}\n${shown()}`).toBe("breakpoint");

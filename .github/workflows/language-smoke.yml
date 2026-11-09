@@ -54,8 +54,9 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        language: [typescript, python, rust, go, java, kotlin]
-    runs-on: ubuntu-22.04
+        language: [typescript, python, rust, go, java, kotlin, c, cpp]
+    # C/C++ debug with GDB, whose DAP interpreter needs 14+: 22.04 ships 12.1, 24.04 ships 15.
+    runs-on: ${{ (matrix.language == 'c' || matrix.language == 'cpp') && 'ubuntu-24.04' || 'ubuntu-22.04' }}
     timeout-minutes: 40
     steps:
       - uses: actions/checkout@v4
@@ -73,6 +74,12 @@ jobs:
         with: { node-version: 22, cache: pnpm }
       - if: matrix.language == 'typescript'
         run: npm install --global "@vtsls/language-server@$VTSLS" "typescript@$TYPESCRIPT"
+
+      # The smoke builds the c-app fixture and debugs it with GDB's own DAP interpreter.
+      - if: matrix.language == 'c' || matrix.language == 'cpp'
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y gdb
 
       - if: matrix.language == 'python'
         uses: actions/setup-python@v5

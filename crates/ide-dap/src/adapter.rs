@@ -103,6 +103,14 @@ fn builtin(adapter: &str) -> Option<DebuggerConfig> {
         "lldb-dap" => {
             cfg("lldb-dap", &[], "stdio", "Install LLVM's lldb-dap (brew install llvm; on macOS `xcrun -f lldb-dap`)")
         }
+        // GDB's own DAP interpreter, stdio transport. The DAP support it needs shipped in GDB 14
+        // (`prepare_gdb` refuses older ones with the required version in the message).
+        "gdb" => cfg(
+            "gdb",
+            &["-i", "dap"],
+            "stdio",
+            "Install GDB 14 or newer (apt install gdb, dnf install gdb, brew install gdb)",
+        ),
         "rdbg" => cfg("rdbg", &["-O", "--port", PORT_PLACEHOLDER, "-c"], "tcp", "gem install debug"),
         // A jdtls bundle: the session is started through jdtls and reached via `debugServer`.
         "java-debug" => cfg(
@@ -129,6 +137,7 @@ pub fn default_type(adapter: &str) -> Option<&'static str> {
         "delve" => "go",
         "netcoredbg" => "coreclr",
         "lldb-dap" => "lldb-dap",
+        "gdb" => "gdb",
         "java-debug" => "java",
         _ => return None,
     })
@@ -335,6 +344,94 @@ pub async fn prepare_debugpy(spec: &mut AdapterSpec) -> IdeResult<()> {
     )))
 }
 
+/// GDB's DAP interpreter (`-i dap`) shipped in GDB 14; older ones exit with
+/// "Interpreter `dap' unrecognized".
+const GDB_MIN_MAJOR: u32 = 14;
+
+/// `(major, minor)` of the first version number in the output of `gdb --version`
+/// (`GNU gdb (GDB) 14.2`, `GNU gdb (Ubuntu 12.1-0ubuntu1~22.04.2) 12.1`, `GNU gdb
+/// (GDB) 15.0.50.20240403-0ubuntu1`). `None` when no standalone version number is there.
+pub fn parse_gdb_version(output: &str) -> Option<(u32, u32)> {
+    let line = output.lines().next()?;
+    let b = line.as_bytes();
+    let mut i = 0;
+    while i < b.len() {
+        if !b[i].is_ascii_digit() {
+            i += 1;
+            continue;
+        }
+        let start = i;
+        while i < b.len() && b[i].is_ascii_digit() {
+            i += 1;
+        }
+        let major: u32 = line[start..i].parse().ok()?;
+        let mut minor = 0;
+        if i + 1 < b.len() && b[i] == b'.' && b[i + 1].is_ascii_digit() {
+            i += 1;
+            let ms = i;
+            while i < b.len() && b[i].is_ascii_digit() {
+                i += 1;
+            }
+            minor = line[ms..i].parse().unwrap_or(0);
+        }
+        // A version stands alone: `mingw32-gdb13.exe`'s embedded digits are part of a word.
+        if start > 0 && (b[start - 1].is_ascii_alphabetic() || b[start - 1] == b'_') {
+            continue;
+        }
+        return Some((major, minor));
+    }
+    None
+}
+
+/// `(major, minor)` of `command` (resolved like a launch), or `None` when the binary is
+/// missing, answers nothing or nothing version-like (the failed start reports that).
+async fn gdb_version(command: &str, cwd: &Path) -> IdeResult<Option<(u32, u32)>> {
+    let Some(binary) = tokio::task::spawn_blocking({
+        let (command, cwd) = (command.to_owned(), cwd.to_owned());
+        move || resolve_binary(&command, &cwd)
+    })
+    .await
+    .ok()
+    .flatten() else {
+        return Ok(None); // Reported as a missing adapter when it is started.
+    };
+    let mut probe = Command::new(&binary);
+    ide_core::process::prepare(probe.as_std_mut());
+    let probe = probe
+        .arg("--version")
+        .current_dir(cwd)
+        .stdin(Stdio::null())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::null())
+        .kill_on_drop(true)
+        .output();
+    let Ok(Ok(out)) = tokio::time::timeout(Duration::from_secs(15), probe).await else {
+        return Ok(None);
+    };
+    Ok(parse_gdb_version(&String::from_utf8_lossy(&out.stdout)))
+}
+
+/// Prepares a `gdb -i dap` launch: refuses a GDB without the DAP interpreter, naming
+/// the required version and the one installed. A missing binary is not an error here
+/// (reported as a missing adapter when the session is started).
+async fn prepare_gdb(spec: &AdapterSpec) -> IdeResult<()> {
+    let Some((major, minor)) = gdb_version(&spec.command, &spec.cwd).await? else {
+        return Ok(());
+    };
+    if major >= GDB_MIN_MAJOR {
+        return Ok(());
+    }
+    let mut msg = format!(
+        "debugging with GDB needs GDB {GDB_MIN_MAJOR} or newer (found {major}.{minor}): \
+         this one has no DAP interpreter (`gdb -i dap`)"
+    );
+    if let Some(hint) = &spec.install_hint {
+        msg.push_str(". ");
+        msg.push_str(hint);
+    }
+    Err(IdeError::unavailable(msg))
+}
+
 /// An adapter that is a plugin of another program (java-debug, a jdtls bundle) rather
 /// than a program: it has no process of its own and is reached through `debugServer`.
 pub fn is_plugin_bundle(command: &str) -> bool {
@@ -455,6 +552,9 @@ impl AdapterLauncher for ProcessLauncher {
             }
             if is_plugin_bundle(&spec.command) {
                 return Err(not_standalone(&spec));
+            }
+            if spec.adapter == "gdb" && spec.target.is_none() {
+                prepare_gdb(&spec).await?;
             }
             let binary = match spec.pinned.clone() {
                 Some(pin) => tokio::task::spawn_blocking(move || pin.verify().map(Path::to_path_buf))
@@ -739,13 +839,92 @@ mod tests {
 
     #[test]
     fn builtins_cover_common_adapters() {
-        for name in ["codelldb", "debugpy", "js-debug", "delve", "netcoredbg", "java-debug"] {
+        for name in ["codelldb", "debugpy", "js-debug", "delve", "netcoredbg", "java-debug", "gdb"] {
             let cfg = builtin(name).unwrap();
             assert!(cfg.install_hint.is_some());
         }
         let delve = resolve(&builtin("delve").unwrap(), PathBuf::from("/"));
         assert_eq!(delve.transport, Transport::Tcp);
+        // GDB's own DAP interpreter over stdio, with the required version in its hint.
+        let gdb = builtin("gdb").unwrap();
+        assert_eq!(gdb.command, "gdb");
+        assert_eq!(gdb.args, ["-i", "dap"]);
+        assert_eq!(gdb.transport, "stdio");
+        assert!(gdb.install_hint.as_deref().is_some_and(|h| h.contains("14")), "{gdb:?}");
+        assert_eq!(default_type("gdb"), Some("gdb"));
         assert!(builtin("nope").is_none());
+    }
+
+    /// The first version number of `gdb --version`'s first line, however the distro decorates it.
+    #[test]
+    fn parses_gdb_versions() {
+        for (out, want) in [
+            ("GNU gdb (GDB) 14.2\nCopyright (C) 2023 Free Software Foundation", Some((14, 2))),
+            ("GNU gdb (GDB) 15.0.50.20240403-0ubuntu1\n", Some((15, 0))),
+            ("GNU gdb (Ubuntu 12.1-0ubuntu1~22.04.2) 12.1", Some((12, 1))),
+            ("GNU gdb (Debian 13.1-3) 13.1", Some((13, 1))),
+            ("GNU gdb (GDB) Fedora Linux 16.3-1.fc41", Some((16, 3))),
+            ("mingw32-gdb13.exe (GDB) 13.2", Some((13, 2))),
+            ("GNU gdb 14", Some((14, 0))),
+            ("no version here", None),
+            ("", None),
+        ] {
+            assert_eq!(parse_gdb_version(out), want, "{out}");
+        }
+    }
+
+    /// A GDB without the DAP interpreter is refused with the required version in the message.
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn gdb_older_than_14_is_refused_with_the_required_version() {
+        use std::os::unix::fs::PermissionsExt;
+        let dir = std::env::temp_dir().join(format!("openidea-dap-gdb-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        let fake = dir.join("gdb");
+        std::fs::write(&fake, "#!/bin/sh\necho 'GNU gdb (GDB) 12.1'\n").unwrap();
+        std::fs::set_permissions(&fake, std::fs::Permissions::from_mode(0o755)).unwrap();
+
+        let mut spec = resolve(&builtin("gdb").unwrap(), dir.clone());
+        spec.command = fake.to_string_lossy().into_owned();
+        let err = prepare_gdb(&spec).await.unwrap_err();
+        assert_eq!(err.kind, ide_core::error::ErrorKind::Unavailable);
+        assert!(err.message.contains("GDB 14 or newer"), "{}", err.message);
+        assert!(err.message.contains("12.1"), "{}", err.message);
+        assert!(err.message.contains("Install GDB 14 or newer"), "{}", err.message);
+
+        // A DAP-capable one passes (and a missing binary does not block the start).
+        std::fs::write(&fake, "#!/bin/sh\necho 'GNU gdb (GDB) 15.1'\n").unwrap();
+        prepare_gdb(&spec).await.unwrap();
+        spec.command = "definitely-not-a-real-binary-openidea".into();
+        prepare_gdb(&spec).await.unwrap();
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// The same refusal on Windows, where the probe runs a `gdb.cmd` shim.
+    #[cfg(windows)]
+    #[tokio::test]
+    async fn gdb_older_than_14_is_refused_with_the_required_version() {
+        let dir = std::env::temp_dir().join(format!("openidea-dap-gdb-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        let fake = dir.join("gdb.cmd");
+        std::fs::write(&fake, "@echo off\r\necho GNU gdb (GDB) 12.1\r\n").unwrap();
+
+        let mut spec = resolve(&builtin("gdb").unwrap(), dir.clone());
+        spec.command = fake.to_string_lossy().into_owned();
+        let err = prepare_gdb(&spec).await.unwrap_err();
+        assert_eq!(err.kind, ide_core::error::ErrorKind::Unavailable);
+        assert!(err.message.contains("GDB 14 or newer"), "{}", err.message);
+        assert!(err.message.contains("12.1"), "{}", err.message);
+        assert!(err.message.contains("Install GDB 14 or newer"), "{}", err.message);
+
+        // A DAP-capable one passes (and a missing binary does not block the start).
+        std::fs::write(&fake, "@echo off\r\necho GNU gdb (GDB) 15.1\r\n").unwrap();
+        prepare_gdb(&spec).await.unwrap();
+        spec.command = "definitely-not-a-real-binary-openidea".into();
+        prepare_gdb(&spec).await.unwrap();
+        let _ = std::fs::remove_dir_all(&dir);
     }
 
     #[test]
