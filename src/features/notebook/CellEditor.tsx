@@ -80,7 +80,7 @@ export function CellEditor({
       language.of([]),
       readonly.current.of(EditorState.readOnly.of(session.getState().frozen)),
       EditorView.lineWrapping,
-      EditorView.theme({ "&": { height: "auto" }, ".cm-scroller": { maxHeight: "640px", overflow: "auto" } }),
+      EditorView.theme({ "&.cm-editor": { height: "auto" }, ".cm-scroller": { maxHeight: "640px", overflow: "auto" } }),
       EditorView.contentAttributes.of({
         "aria-label": tx(type === "code" ? "Python cell source" : "Markdown cell source"),
       }),
