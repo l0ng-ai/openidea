@@ -27,6 +27,7 @@ import {
   prepareJavaLaunch,
 } from "@/platform/javaLaunch";
 import { downloadJdkActions } from "@/platform/jdk";
+import { buildToolRecovery } from "@/platform/buildToolRecovery";
 import { useProject } from "@/platform/project";
 import { executeAction } from "@/platform/actions";
 import { workflowSettings } from "@/platform/workflowSettings";
@@ -930,7 +931,7 @@ export async function startRun(
       group: "run",
       level: "error",
       title: `Error running '${remoteLabel(config)}'`,
-      body: message,
+      ...buildToolRecovery(message),
     });
   }
   return getSession(sessionId) ?? null;

@@ -5606,6 +5606,39 @@ async fn jdtls_import_failure_names_reserved_device_files_on_windows() {
     let _ = std::fs::remove_file(&nul);
 }
 
+#[tokio::test(flavor = "multi_thread")]
+async fn gradle_incompatible_jdk_log_is_surfaced_once_across_message_channels() {
+    let h = harness_for("java", "java", &[("jdtls", incremental_caps())], &[]);
+    let s = h.launcher.state("jdtls");
+    h.open("A.java", "class A {}");
+    h.wait_status("jdtls", ServerStatus::Ready).await;
+    let failure = "Can't use Java 27.0.1.0.3 and Gradle 9.7.1 to import Gradle project kotlin-gradle.";
+    for _ in 0..2 {
+        s.peer()
+            .notify(
+                "window/logMessage",
+                json!({ "type": 1, "message": format!("{failure}\njava.lang.Exception: details stay in the log") }),
+            )
+            .unwrap();
+    }
+    eventually(|| h.events.lock().iter().any(|e| matches!(e, IdeEvent::Notify { body: Some(b), .. } if b == failure)))
+        .await;
+    s.peer().notify("window/showMessage", json!({ "type": 1, "message": failure })).unwrap();
+    s.peer().notify("window/logMessage", json!({ "type": 1, "message": "unrelated internal error" })).unwrap();
+    s.peer().notify("window/showMessage", json!({ "type": 2, "message": "after" })).unwrap();
+    eventually(|| h.events.lock().iter().any(|e| matches!(e, IdeEvent::Notify { body: Some(b), .. } if b == "after")))
+        .await;
+    let events = h.events.lock();
+    let messages: Vec<_> = events
+        .iter()
+        .filter_map(|e| match e {
+            IdeEvent::Notify { body: Some(body), .. } => Some(body.as_str()),
+            _ => None,
+        })
+        .collect();
+    assert_eq!(messages, vec![failure, "after"]);
+}
+
 /// Pull Members Up / Push Members Down: the extension's answers, refusals and edits.
 #[tokio::test(flavor = "multi_thread")]
 async fn java_hierarchy_refactorings_use_the_extension_commands() {
