@@ -2146,6 +2146,49 @@ async fn reload_providers_updates_registry_install_clears_stale_probes_and_notif
     assert!(probe.error.is_none());
 }
 
+/// A session report that changes the cached provider config notifies subscribers,
+/// so the composer re-lists models without waiting for the next task (#1490).
+/// Reports that change nothing stay silent.
+#[tokio::test(flavor = "multi_thread")]
+async fn remembered_config_changes_notify_subscribers_once() {
+    let tmp = tempfile::tempdir().unwrap();
+    let mgr = manager(tmp.path(), Arc::new(FakeAgent::default()));
+    let events = Arc::new(Mutex::new(Vec::new()));
+    let sink = events.clone();
+    mgr.subscribe(Arc::new(move |e| sink.lock().push(e)));
+    events.lock().clear();
+
+    let reported = config::options_of(&json!({ "configOptions": [
+        { "id": "model", "category": "model", "type": "select", "currentValue": "default",
+          "options": [{ "value": "default" }, { "value": "custom-opus" }] },
+    ] }));
+    mgr.shared.remember("claude", Some(&reported), None, Some("default"));
+    assert!(
+        events.lock().iter().any(|ev| matches!(ev, AgentEvent::Providers)),
+        "a first report changing the cache notifies subscribers"
+    );
+    events.lock().clear();
+
+    // The same report again: the cache is unchanged, so subscribers hear nothing.
+    mgr.shared.remember("claude", Some(&reported), None, Some("default"));
+    assert!(events.lock().is_empty(), "an unchanged report must stay silent");
+
+    // A changed model list notifies again, and providers() serves the new list.
+    let updated = config::options_of(&json!({ "configOptions": [
+        { "id": "model", "category": "model", "type": "select", "currentValue": "default",
+          "options": [{ "value": "default" }, { "value": "custom-opus" }, { "value": "custom-sonnet" }] },
+    ] }));
+    mgr.shared.remember("claude", Some(&updated), None, Some("default"));
+    assert!(
+        events.lock().iter().any(|ev| matches!(ev, AgentEvent::Providers)),
+        "a changed model list notifies subscribers"
+    );
+    let claude = mgr.providers().into_iter().find(|p| p.id == "claude").unwrap();
+    let model = claude.config.iter().find(|o| o.category.as_deref() == Some("model")).unwrap();
+    let values: Vec<_> = model.values.iter().map(|v| v.value.as_str()).collect();
+    assert_eq!(values, ["default", "custom-opus", "custom-sonnet"]);
+}
+
 #[tokio::test(flavor = "multi_thread")]
 async fn idle_agents_stop_and_resume_their_session_on_the_next_message() {
     let new = || NewAgentTask {

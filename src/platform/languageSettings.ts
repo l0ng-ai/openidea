@@ -164,6 +164,7 @@ export interface LanguagesValid {
     languageLevel: (typeof JAVA_LANGUAGE_LEVELS)[number];
     jdtlsJdk: string;
     jdtlsVmArgs: string;
+    jdtlsShared: boolean;
     gradle: {
       linkedProjects: string[] | null;
       jvm: string;
@@ -243,6 +244,7 @@ export const DEFAULT_LANGUAGES: LanguagesValid = {
     languageLevel: "",
     jdtlsJdk: "",
     jdtlsVmArgs: "",
+    jdtlsShared: false,
     gradle: { linkedProjects: null, jvm: "", distribution: "wrapper", home: "", userHome: "", runUsing: "gradle" },
     maven: {
       runnerJre: "",
@@ -401,6 +403,7 @@ export function validateLanguages(raw: unknown): LanguagesValid {
       languageLevel: oneOf(java.languageLevel, JAVA_LANGUAGE_LEVELS, d.java.languageLevel),
       jdtlsJdk: text(java.jdtlsJdk, d.java.jdtlsJdk),
       jdtlsVmArgs: text(java.jdtlsVmArgs, d.java.jdtlsVmArgs),
+      jdtlsShared: bool(java.jdtlsShared, d.java.jdtlsShared),
       gradle: {
         linkedProjects: Array.isArray(gradle.linkedProjects)
           ? gradle.linkedProjects.filter((p): p is string => typeof p === "string")

@@ -2,7 +2,7 @@ import { commitRepo } from "./multiRoot";
 /** Create Patch… (from local changes or commits) and Apply Patch… (file or clipboard, with a preview). */
 import { useEffect, useState } from "react";
 import type { Commit, FileStatus, PatchFile, PatchSource, ShelvedChangeList } from "@/bindings";
-import { revealInFileManager } from "@/platform/fileManager";
+import { fileManagerName, revealInFileManager } from "@/platform/fileManager";
 import { call, commands } from "@/platform/ipc";
 import { Button, Checkbox, Dialog, Icon, Input, List, Spinner, fileIconName, T } from "@/ui";
 import { workflowSettings } from "@/platform/workflowSettings";
@@ -82,14 +82,24 @@ async function browseSave(current: string): Promise<string | null> {
   }
 }
 
-/** Settings › Version Control › Confirmation › When patch is created: ask / no / show in Finder. */
+/** Whole sentences let each locale translate the patch question. */
+export function patchSavedBody(): string {
+  const name = fileManagerName();
+  return name === "Finder"
+    ? "Patch file created successfully. Show it in Finder?"
+    : name === "Explorer"
+      ? "Patch file created successfully. Show it in Explorer?"
+      : "Patch file created successfully. Show it in Files?";
+}
+
+/** Settings › Version Control › Confirmation › When patch is created: ask / no / show in the file manager. */
 async function afterPatchSaved(path: string) {
   const mode = workflowSettings().vcs.confirmation.onPatchCreated;
   if (mode === "no") return;
   if (mode === "ask") {
     const r = await ask({
       title: "Create Patch",
-      body: tx("Patch file created successfully. Show it in Finder?"),
+      body: tx(patchSavedBody()),
       checkbox: "Don't ask again",
       buttons: [{ id: "show", label: "Show", primary: true }],
     });

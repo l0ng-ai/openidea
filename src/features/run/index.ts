@@ -431,8 +431,8 @@ export function activate(): () => void {
     // Only while the same project stays open: closing it tears its runs down separately.
     useProject.subscribe((s, prev) => {
       if (!s.project || s.project.root !== prev.project?.root) return;
-      const before = prev.project.workspace?.projects ?? [];
-      const after = s.project.workspace?.projects ?? [];
+      const before = prev.project.workspace?.projects ?? [prev.project.root];
+      const after = s.project.workspace?.projects ?? [s.project.root];
       for (const root of before) if (!after.includes(root)) void cleanupRemovedProject(root);
     }),
     registerEditorContribution({ id: "run.targets", order: 55, extensions: runGutter }),
@@ -714,6 +714,7 @@ export function activate(): () => void {
       },
     ]),
     onIdeEvent("runExited", (e) => onRunExited(e.run, e.code)),
+    onIdeEvent("projectRootsChanged", scheduleReload),
     // Lets other title items follow the selected configuration (e.g. Build shows only for compiled ones).
     useRun.subscribe((s) => {
       const selected = s.configs.find((c) => c.id === s.selectedId);

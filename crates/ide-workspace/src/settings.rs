@@ -201,8 +201,9 @@ impl SettingsStore {
         let mut settings: Settings = serde_json::from_value(merged).unwrap_or_default();
         if let Some(root) = self.project_file.as_deref().and_then(Path::parent).and_then(Path::parent)
             && let Ok(Some(workspace)) = crate::workspace::Workspace::load(root)
+            && workspace.is_container(root)
         {
-            settings.general.project_name = workspace.name;
+            settings.general.project_name = workspace.name.clone();
             settings.project_structure.content_roots =
                 workspace.projects.iter().map(|p| ide_core::ipc_path::to_ipc(p)).collect();
         }

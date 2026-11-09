@@ -1,8 +1,38 @@
 //! Storage policy and best-effort migration of rebuildable desktop data.
 
+use std::ffi::OsString;
 use std::fs;
 use std::io;
 use std::path::{Path, PathBuf};
+
+/// Moves the rebuildable local data (tools, language servers, indexes, caches);
+/// configuration and roaming data keep following the OS.
+pub const LOCAL_DATA_ENV: &str = "OPENIDEA_LOCAL_DATA_DIR";
+
+/// `$OPENIDEA_LOCAL_DATA_DIR/<identifier>` when set, else the OS local data directory
+/// (Tauri's `app_local_data_dir`). The identifier keeps release and per-worktree
+/// debug builds apart under one root. A set but unusable path is an error, never a
+/// silent fallback to the OS location.
+pub fn local_data_dir(identifier: &str) -> Result<PathBuf, String> {
+    resolve_local(std::env::var_os(LOCAL_DATA_ENV), dirs::data_local_dir(), identifier)
+}
+
+fn resolve_local(var: Option<OsString>, os: Option<PathBuf>, identifier: &str) -> Result<PathBuf, String> {
+    let Some(root) = var.filter(|v| !v.is_empty()).map(PathBuf::from) else {
+        return os.map(|dir| dir.join(identifier)).ok_or_else(|| "cannot find the local data directory".into());
+    };
+    // The working directory depends on how the IDE was launched.
+    if !root.is_absolute() {
+        return Err(format!("{LOCAL_DATA_ENV} must be an absolute path: {}", root.display()));
+    }
+    let dir = root.join(identifier);
+    let probe = dir.join(".openidea-write-check");
+    fs::create_dir_all(&dir)
+        .and_then(|()| fs::write(&probe, b""))
+        .and_then(|()| fs::remove_file(&probe))
+        .map_err(|error| format!("{LOCAL_DATA_ENV}: cannot write to {}: {error}", dir.display()))?;
+    Ok(dir)
+}
 
 /// Unknown entries and recovery/user content deliberately stay in roaming data.
 pub fn is_local(entry: &Path) -> bool {
@@ -275,6 +305,55 @@ fn relative_wrapper(text: &str, source: &Path) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn local_dir_follows_the_os_unless_the_variable_is_set() {
+        let os = Some(PathBuf::from("/os-local"));
+        for var in [None, Some(OsString::new())] {
+            assert_eq!(
+                resolve_local(var, os.clone(), "ai.l0ng.openidea").unwrap(),
+                Path::new("/os-local/ai.l0ng.openidea")
+            );
+        }
+        assert!(resolve_local(None, None, "id").is_err());
+
+        let tmp = tempfile::tempdir().unwrap();
+        let root = tmp.path().join("missing/nested");
+        let dir = resolve_local(Some(root.clone().into()), os.clone(), "ai.l0ng.openidea").unwrap();
+        assert_eq!(dir, root.join("ai.l0ng.openidea"));
+        assert!(dir.is_dir());
+        assert_eq!(fs::read_dir(&dir).unwrap().count(), 0);
+        // Debug worktrees have their own identifiers and stay apart under one root.
+        assert_ne!(resolve_local(Some(root.clone().into()), None, "dev-a").unwrap(), dir);
+    }
+
+    #[test]
+    fn local_dir_rejects_relative_and_unwritable_paths() {
+        for relative in ["local", "./local", "../local"] {
+            let error = resolve_local(Some(relative.into()), Some("/os".into()), "id").unwrap_err();
+            assert!(error.contains(LOCAL_DATA_ENV) && error.contains("absolute"), "{error}");
+        }
+        let tmp = tempfile::tempdir().unwrap();
+        let blocker = tmp.path().join("file");
+        fs::write(&blocker, "").unwrap();
+        let error = resolve_local(Some(blocker.into()), Some("/os".into()), "id").unwrap_err();
+        assert!(error.contains("cannot write"), "{error}");
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn local_dir_rejects_an_existing_read_only_directory() {
+        use std::os::unix::fs::PermissionsExt;
+        let tmp = tempfile::tempdir().unwrap();
+        let dir = tmp.path().join("id");
+        fs::create_dir(&dir).unwrap();
+        fs::set_permissions(&dir, fs::Permissions::from_mode(0o555)).unwrap();
+        // Root ignores permission bits.
+        if fs::write(dir.join("probe"), "").is_err() {
+            assert!(resolve_local(Some(tmp.path().into()), None, "id").unwrap_err().contains("cannot write"));
+        }
+        fs::set_permissions(&dir, fs::Permissions::from_mode(0o755)).unwrap();
+    }
 
     #[test]
     fn wrappers_accept_mixed_separators_without_rewriting_neighbor_paths() {

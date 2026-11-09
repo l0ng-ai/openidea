@@ -62,7 +62,6 @@ export const KIND_CATEGORIES: Record<string, string> = {
   make: "Build Tools",
   just: "Build Tools",
   npm: "JavaScript",
-  vue: "JavaScript",
   node: "JavaScript",
   bun: "JavaScript",
   deno: "JavaScript",

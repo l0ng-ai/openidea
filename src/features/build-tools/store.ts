@@ -23,7 +23,7 @@ import {
   type RunConfig,
   type SyncProgress,
 } from "@/platform/ipc";
-import { downloadJdkActions } from "@/platform/jdk";
+import { buildToolRecovery } from "@/platform/buildToolRecovery";
 import { useBuildModel } from "@/platform/buildModel";
 import { useProject } from "@/platform/project";
 import { editorService, notifications } from "@/workbench/contributions";
@@ -454,9 +454,8 @@ export async function syncTool(tool: BuildTool, buildDir: string | null = null):
         group: "run",
         level: "warning",
         title: tool === "maven" ? "Maven sync finished with errors" : "Gradle sync failed",
-        body: error,
+        ...buildToolRecovery(error),
         key: `build-sync-${tool}`,
-        actions: downloadJdkActions(error),
       });
   } catch (e) {
     if (!isCancelled(e))
@@ -464,7 +463,7 @@ export async function syncTool(tool: BuildTool, buildDir: string | null = null):
         group: "run",
         level: "error",
         title: tool === "maven" ? "Cannot reload Maven projects" : "Cannot reload Gradle projects",
-        body: e instanceof Error ? e.message : String(e),
+        ...buildToolRecovery(e instanceof Error ? e.message : String(e)),
         key: `build-sync-${tool}`,
       });
   } finally {
