@@ -34,6 +34,7 @@ import { openideaHighlightStyle } from "./highlight";
 import { openideaTheme } from "./theme";
 import { caretRowHighlight } from "./caretRow";
 import { changeLane, overviewLane } from "./lanes";
+import { cornerInset } from "./cornerInset";
 import { foldingExtension } from "./folding";
 import { syntaxHighlightField } from "./syntaxHighlight";
 import { indentGuides } from "./indentGuides";
@@ -370,6 +371,7 @@ export function baseExtensions(o: SetupOptions): Extension {
     methodLinesField,
     findExtension(),
     overviewLane,
+    cornerInset,
     codeLensExtension,
     EditorView.contentAttributes.of({
       spellcheck: "false",
