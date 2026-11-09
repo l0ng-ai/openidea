@@ -369,6 +369,21 @@ impl Default for NotificationGroupSettings {
     }
 }
 
+/// Where the Navigation Bar (the file path breadcrumbs) is shown. Mirrors
+/// IDEA's `View | Appearance | Navigation Bar` (Top / Status Bar / Don't show).
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize, Type)]
+#[serde(rename_all = "camelCase")]
+pub enum NavigationBarPosition {
+    /// Above the editor, below the main menu / toolbar.
+    Top,
+    /// In the footer, next to the status bar widgets — the default, matching
+    /// where the bar lived before the three-state choice existed.
+    #[default]
+    StatusBar,
+    /// Not shown at all.
+    Hidden,
+}
+
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize, Type)]
 #[serde(default, rename_all = "camelCase")]
 pub struct AppearanceSettings {
@@ -417,6 +432,9 @@ pub struct AppearanceSettings {
     /// View › Appearance › Toolbar; hidden leaves IDEA's compact window header.
     pub show_main_toolbar: bool,
     pub show_status_bar: bool,
+    /// View › Appearance › Navigation Bar: the file path breadcrumbs, shown in
+    /// the status bar by default, above the editor, or not at all.
+    pub navigation_bar: NavigationBarPosition,
     /// Status bar widgets shown (`true`) or hidden (`false`) by the user
     /// (status bar context menu); widgets not listed use their default.
     pub status_bar_widgets: BTreeMap<String, bool>,
@@ -489,6 +507,7 @@ impl Default for AppearanceSettings {
             widescreen_tool_windows: false,
             show_main_toolbar: true,
             show_status_bar: true,
+            navigation_bar: NavigationBarPosition::StatusBar,
             status_bar_widgets: BTreeMap::new(),
             main_toolbar: None,
         }

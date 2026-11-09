@@ -14,6 +14,19 @@
 .content[inert] {
   visibility: hidden;
 }
+/* IDEA's navigation bar under the main toolbar: project › dirs › file › symbols.
+   Same surface as the toolbar above it (the editor island below provides the split). */
+.navigationBar {
+  flex: none;
+  display: flex;
+  align-items: center;
+  gap: 2px;
+  height: var(--h-navigationbar);
+  padding: 0 10px;
+  overflow: hidden;
+  color: var(--fg);
+  font-size: var(--fs-ui);
+}
 .opening {
   position: absolute;
   inset: 0;

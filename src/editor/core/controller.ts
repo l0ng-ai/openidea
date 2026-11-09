@@ -19,6 +19,7 @@ import {
   type NavigationLocation,
 } from "@/editor/api";
 import {
+  clearProjectViewLead,
   getFileDecoration,
   menuGroupItems,
   notifications,
@@ -448,6 +449,7 @@ export class EditorController implements SlotHost {
 
     // Active editor follows the active pane's active tab.
     const tab = this.activeTabOf(next);
+    if (prev.activePane !== next.activePane || this.activeTabOf(prev)?.id !== tab?.id) clearProjectViewLead();
     const slot = tab && isTextTab(tab) ? (this.slots.get(tab.id) ?? null) : null;
     if (slot !== this.activeSlot) this.setActiveSlot(slot, tab);
     this.publishContext();
@@ -671,7 +673,11 @@ export class EditorController implements SlotHost {
         path: slot?.model.path ?? nonTextTab?.input.path ?? null,
         doc: slot?.model.doc ?? null,
       });
-      if (slot) this.recordNav(slot, true);
+      if (slot) {
+        // The editor is the context again: the navigation bar leaves the project view's node.
+        clearProjectViewLead();
+        this.recordNav(slot, true);
+      }
     }
     this.scheduleStatus();
   }
@@ -680,6 +686,7 @@ export class EditorController implements SlotHost {
 
   onFocus(slot: EditorSlot) {
     slot.model.lastFocused = slot;
+    clearProjectViewLead();
     const loc = this.locateTab(slot.tabId);
     if (loc) {
       const s = useTabs.getState();
