@@ -14,6 +14,20 @@
 .content[inert] {
   visibility: hidden;
 }
+/* IDEA's navigation bar under the main toolbar: project › dirs › file › symbols. */
+.navigationBar {
+  flex: none;
+  display: flex;
+  align-items: center;
+  gap: 2px;
+  height: 26px;
+  padding: 0 10px;
+  overflow: hidden;
+  background: var(--bg-island);
+  color: var(--fg-muted);
+  font-size: var(--fs-small);
+  border-bottom: 1px solid var(--border-editor-tabs, var(--border));
+}
 .opening {
   position: absolute;
   inset: 0;

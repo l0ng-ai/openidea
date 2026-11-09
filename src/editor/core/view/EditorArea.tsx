@@ -55,7 +55,7 @@ import { disambiguateTitles } from "../model/tabTitles";
 import { TextEditorHost } from "./TextEditorHost";
 import { FindBar } from "./FindBar";
 import { EditorBanners, VirtualBanner } from "./Banner";
-import { CodeBreadcrumbs, FileBreadcrumbs } from "./StatusItems";
+import { CodeBreadcrumbs } from "./StatusItems";
 import styles from "./EditorArea.module.css";
 import { tx } from "@/platform/i18n";
 
@@ -406,7 +406,6 @@ function PaneContent({ paneId, tab, tabsVisible }: { paneId: string; tab: Tab; t
         ) : (
           <EditorBanners path={tab.input.path} />
         )}
-        {crumbs && tab.input.kind === "file" && <FileBreadcrumbs path={tab.input.path!} />}
         <FindBar paneId={paneId} />
         {crumbs && <CodeBreadcrumbs path={tab.input.path!} tabId={tab.id} position="top" />}
         {wrapper ? (

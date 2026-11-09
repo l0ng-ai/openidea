@@ -18,7 +18,7 @@ vi.mock("./Banner", () => ({
   EditorBanners: () => null,
   VirtualBanner: () => null,
 }));
-vi.mock("./StatusItems", () => ({ CodeBreadcrumbs: () => null, FileBreadcrumbs: () => null }));
+vi.mock("./StatusItems", () => ({ CodeBreadcrumbs: () => null }));
 
 const mounts: string[] = [];
 function Kept({ input }: { input: EditorInput }) {

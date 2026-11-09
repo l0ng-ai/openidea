@@ -12,7 +12,7 @@ vi.mock("../controller", async (original) => ({
 vi.mock("./TextEditorHost", () => ({ TextEditorHost: () => null }));
 vi.mock("./FindBar", () => ({ FindBar: () => null }));
 vi.mock("./Banner", () => ({ EditorBanners: () => null, VirtualBanner: () => null }));
-vi.mock("./StatusItems", () => ({ CodeBreadcrumbs: () => null, FileBreadcrumbs: () => null }));
+vi.mock("./StatusItems", () => ({ CodeBreadcrumbs: () => null }));
 
 /** The title a kind reports; changed behind the tab strip's back, like a renamed task. */
 let title = "Alpha";

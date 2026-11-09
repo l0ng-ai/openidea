@@ -8,6 +8,7 @@ import { basename, dirname, projectFolder, relativePath, useProject } from "@/pl
 import type { LineEnding, OutlineItem } from "@/platform/ipc";
 import { BarButton, Icon, Menu, badgeKind, fileIconName } from "@/ui";
 import { notifications } from "@/workbench/contributions";
+import { useDistractionFree } from "@/workbench/distractionFree";
 import { ENCODING_CHOICES, useEditorPrefs } from "@/platform/editorSettings";
 import { isVirtualUri } from "@/platform/virtualDocs";
 import { editorController, useEditorStatus, useGotoLine } from "../controller";
@@ -126,16 +127,19 @@ function CrumbNav({ segments, className, ariaLabel }: { segments: Crumb[]; class
 }
 
 /**
- * IDEA new UI navigation bar in the status bar: project › dirs › file ›
- * symbols, with icons; clicking a segment opens a popup of its children.
+ * IDEA new UI navigation bar (status bar footer, or the top of the workbench
+ * via `className`): project › dirs › file › symbols, with icons; clicking a
+ * segment opens a popup of its children.
  */
-export function Breadcrumbs() {
+export function Breadcrumbs({ className }: { className?: string }) {
   const path = useEditorStatus((s) => s.status?.path ?? null);
   const currentProject = useProject((s) => s.project);
   const project = projectFolder(currentProject, path ?? "");
   const outline = useOutline((s) => (path ? s[path] : undefined));
   const chain = useCaretSymbols(path, outline) ?? NO_SYMBOLS;
-  if (!path) return null;
+  const shown = useProject((s) => s.settings?.appearance?.showNavigationBar !== false);
+  const distractionFree = useDistractionFree((s) => s.active);
+  if (!path || !shown || distractionFree) return null;
   const segments = pathCrumbs(project, path);
   const file = basename(path);
   const stem = file.includes(".") ? file.slice(0, file.lastIndexOf(".")) || file : file;
@@ -146,26 +150,7 @@ export function Breadcrumbs() {
       title: item.detail ?? item.name,
       nav: { kind: "symbol", path, label: item.name, item },
     });
-  return <CrumbNav segments={segments} className={styles.status} ariaLabel={tx("Breadcrumbs")} />;
-}
-
-/**
- * IDEA's navigation bar above the editor: project › dirs › file of the shown
- * tab; clicking a segment lists its children (JetBrains-style file path).
- */
-export function FileBreadcrumbs({ path }: { path: string }) {
-  const shown = useProject((s) => s.settings?.appearance?.showNavigationBar !== false);
-  const currentProject = useProject((s) => s.project);
-  const project = projectFolder(currentProject, path);
-  const segments = pathCrumbs(project, path);
-  if (!shown || segments.length < 2) return null;
-  return (
-    <CrumbNav
-      segments={segments}
-      className={clsx(styles.codeCrumbs, styles.codeCrumbsTop)}
-      ariaLabel={tx("File path")}
-    />
-  );
+  return <CrumbNav segments={segments} className={className ?? styles.status} ariaLabel={tx("Breadcrumbs")} />;
 }
 
 /**

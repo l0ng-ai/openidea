@@ -23,14 +23,10 @@ import { GotoLineDialog } from "./view/GotoLineDialog";
 import { PasteHistoryDialogHost, registerPasteHistoryActions } from "./view/PasteHistoryDialog";
 import { NavBarPopup } from "./view/NavBarPopup";
 import { installClipboardTracking } from "./clipboardHistory";
-import {
-  Breadcrumbs,
-  CaretStatus,
-  EncodingStatus,
-  IndentStatus,
-  LineEndingStatus,
-  ReadOnlyStatus,
-} from "./view/StatusItems";
+import { CaretStatus, EncodingStatus, IndentStatus, LineEndingStatus, ReadOnlyStatus } from "./view/StatusItems";
+
+/** The workbench navigation bar (View › Appearance › Navigation Bar). */
+export { Breadcrumbs } from "./view/StatusItems";
 
 export function activate(): void | (() => void) {
   const ctrl = editorController();
@@ -72,13 +68,6 @@ export function activate(): void | (() => void) {
     registerOverlay({ id: "editor.pasteHistory", component: PasteHistoryDialogHost }),
     registerOverlay({ id: "editor.navigationBar", component: NavBarPopup }),
     installClipboardTracking(),
-    registerStatusItem({
-      id: "editor.breadcrumbs",
-      align: "left",
-      priority: 0,
-      component: Breadcrumbs,
-      title: "Navigation Bar",
-    }),
     registerStatusItem({
       id: "editor.caret",
       align: "right",
