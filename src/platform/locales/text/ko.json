@@ -5204,8 +5204,6 @@
   "Choose a WAR artifact": "WAR 아티팩트 선택",
   "Choose a Maven WAR module": "Maven WAR 모듈 선택",
   "Choose a Gradle WAR module": "Gradle WAR 모듈 선택",
-  "Build the selected WAR artifact before launching Tomcat": "Tomcat을 실행하기 전에 선택한 WAR 아티팩트 빌드",
-  "Build the WAR artifact before launching Tomcat": "Tomcat을 실행하기 전에 WAR 아티팩트 빌드",
   "The built WAR artifact does not exist: {path}": "빌드된 WAR 아티팩트가 없습니다: {path}",
   "Cannot resolve Maven WAR artifact: {details}": "Maven WAR 아티팩트를 해결할 수 없습니다: {details}",
   "Choose a WAR file or exploded directory": "WAR 파일 또는 exploded 디렉터리를 선택하세요",

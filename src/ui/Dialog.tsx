@@ -135,6 +135,11 @@ export interface DialogProps {
   dismissOnBackdrop?: boolean;
   /** Close when the app window loses focus (default: popups only; never modal dialogs). */
   closeOnDeactivate?: boolean;
+  /**
+   * Asked on close: give focus back to what had it before the dialog (default: always). False
+   * when what the dialog opens takes focus itself.
+   */
+  restoreFocus?: () => boolean;
   /** @deprecated Dialogs never dim the window behind them; kept for call sites. */
   transparentBackdrop?: boolean;
   /** @deprecated Every centred dialog has window chrome; kept for call sites. */
@@ -219,6 +224,7 @@ function DialogInner({
   className,
   dismissOnBackdrop,
   closeOnDeactivate,
+  restoreFocus,
   platform: platformOverride,
   icon,
   ...aria
@@ -231,9 +237,11 @@ function DialogInner({
   const popup = position === "top" || (title == null && !icon);
   const onCloseRef = useRef(onClose);
   const buttonsRef = useRef(buttons);
+  const restoreFocusRef = useRef(restoreFocus);
   useLayoutEffect(() => {
     onCloseRef.current = onClose;
     buttonsRef.current = buttons;
+    restoreFocusRef.current = restoreFocus;
   });
 
   const [offset, setOffset] = useState({ x: 0, y: 0 });
@@ -299,7 +307,7 @@ function DialogInner({
     return () => {
       document.removeEventListener("keydown", onKey);
       layer.release();
-      if (previous?.isConnected) previous.focus({ preventScroll: true });
+      if (previous?.isConnected && restoreFocusRef.current?.() !== false) previous.focus({ preventScroll: true });
     };
   }, []);
 

@@ -16,6 +16,7 @@ pub mod ipc_path;
 pub mod java_runtime;
 pub mod jsonc;
 pub mod output_encoding;
+pub mod path_mapping;
 pub mod platform;
 pub mod process;
 pub mod project_dir;

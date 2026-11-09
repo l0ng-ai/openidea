@@ -289,6 +289,13 @@ pub async fn debug_attachable_processes(state: State<'_, AppState>) -> IdeResult
     ide_host::ops::debug::debug_attachable_processes(&state.host, "").await
 }
 
+/// A loopback port that is free right now, for a debug agent the launch line starts.
+#[tauri::command]
+#[specta::specta]
+pub async fn debug_free_port(window: Window, state: State<'_, AppState>) -> IdeResult<u16> {
+    ide_host::ops::debug::debug_free_port(&state.host, window.label()).await
+}
+
 /// Remote JVM Debug in listen mode: waits (cancellable through `request`) for the remote
 /// JVM to connect to `host:port`; returns the loopback port java-debug attaches to.
 #[tauri::command]

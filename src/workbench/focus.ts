@@ -39,6 +39,9 @@ function dropEditorCaret(e: FocusEvent) {
   // The window lost focus and keeps the editor focused for its return.
   if (document.activeElement === editor) return;
   if (e.relatedTarget instanceof Node && editor.contains(e.relatedTarget)) return;
+  // Another editor takes the DOM selection itself; a hidden (detached) editor has none left.
+  // Dropping it would only lay out the window once more while switching editors.
+  if (!editor.isConnected || (e.relatedTarget instanceof Element && e.relatedTarget.matches(".cm-content"))) return;
   const selection = document.getSelection();
   if (selection?.anchorNode && editor.contains(selection.anchorNode)) selection.removeAllRanges();
 }

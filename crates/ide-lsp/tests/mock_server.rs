@@ -1,7 +1,9 @@
 //! Protocol tests against in-memory mock language servers.
 
 use ide_core::event::ServerStatus;
-use ide_core::{DocId, FileEdit, IdeEvent, LanguageId, Pos, Range, ServerId, Severity, WorkspaceEdit};
+use ide_core::{
+    CancellationToken, DocId, FileEdit, IdeEvent, LanguageId, Pos, Range, ServerId, Severity, WorkspaceEdit,
+};
 use ide_jsonrpc::{Handler, NoopHandler, Peer};
 use ide_language::{LanguageConfig, LanguageRegistry, LanguageServerConfig};
 use ide_lsp::types::*;
@@ -241,6 +243,8 @@ fn server_cfg(name: &str) -> LanguageServerConfig {
         tsserver_project_extras: Default::default(),
         resync_on_configuration: false,
         pinned: None,
+        target: None,
+        target_key: None,
     }
 }
 
@@ -3450,6 +3454,81 @@ async fn unavailable_scope_capability_keeps_widening_and_incomplete_signals() {
     }
 }
 
+/// A common name is mentioned by more files than a search opens, but a server that reports its
+/// analysis scope already covers most of them: only those beyond it count toward the limit.
+#[tokio::test(flavor = "multi_thread")]
+async fn covered_candidates_do_not_count_toward_the_open_limit() {
+    for covers_all in [true, false] {
+        let mut caps = incremental_caps();
+        caps["executeCommandProvider"]["commands"] = json!(["openidea.workspace.coveredFiles"]);
+        let h = harness(&[("mock", caps)]);
+        let s = h.launcher.state("mock");
+        let files: Vec<PathBuf> = (0..ide_lsp::MAX_CANDIDATES + 100)
+            .map(|i| {
+                let path = h.root.join(format!("f{i:03}.mk"));
+                std::fs::write(&path, "target\n").unwrap();
+                path
+            })
+            .collect();
+        let covered: Vec<String> = if covers_all { files.iter().map(|f| uri_of(f)).collect() } else { vec![] };
+        let responder = open_files_only(vec![]);
+        *s.responder.lock() = Some(Arc::new(move |s, method, params| {
+            if method == "workspace/executeCommand" {
+                return Some(json!(covered));
+            }
+            responder(s, method, params)
+        }));
+        let seen = grep_candidates(&h);
+        let (doc, _) = h.open("a.mk", "def target\n");
+        h.wait_status("mock", ServerStatus::Ready).await;
+        let refs = h.mgr.references(doc, Pos::new(0, 5), true, true, Default::default()).await.unwrap();
+        assert!(seen.lock().iter().all(|q| q.limit > ide_lsp::MAX_CANDIDATES));
+        let opened = s.notified("textDocument/didOpen").len() - 1;
+        if covers_all {
+            assert_eq!(refs.incomplete, None);
+            assert_eq!(opened, 0);
+            assert_eq!(s.requested("textDocument/references").len(), 1);
+        } else {
+            assert_eq!(refs.incomplete, Some(ReferencesIncomplete::TooManyFiles));
+            assert_eq!(opened, ide_lsp::MAX_CANDIDATES);
+        }
+    }
+}
+
+/// Files under the directories a server analyses fully are not read to find candidates.
+#[tokio::test(flavor = "multi_thread")]
+async fn candidates_skip_the_directories_the_server_covers() {
+    for (commands, reported) in [
+        (json!(["openidea.workspace.coveredFiles", "openidea.workspace.coveredRoots"]), json!(["src"])),
+        (json!(["openidea.workspace.coveredFiles", "openidea.workspace.coveredRoots"]), json!(null)),
+        (json!(["openidea.workspace.coveredFiles"]), json!(["src"])),
+    ] {
+        let mut caps = incremental_caps();
+        caps["executeCommandProvider"]["commands"] = commands.clone();
+        let h = harness(&[("mock", caps)]);
+        let s = h.launcher.state("mock");
+        let src = h.root.join("src");
+        let roots = reported.as_array().map(|r| r.iter().map(|_| json!(uri_of(&src))).collect::<Vec<_>>());
+        let responder = open_files_only(vec![]);
+        *s.responder.lock() = Some(Arc::new(move |s, method, params| {
+            if method == "workspace/executeCommand" {
+                return Some(match params["command"].as_str() {
+                    Some("openidea.workspace.coveredRoots") => roots.clone().map_or(json!(null), Value::Array),
+                    _ => json!([]),
+                });
+            }
+            responder(s, method, params)
+        }));
+        let seen = grep_candidates(&h);
+        let (doc, _) = h.open("a.mk", "def target\n");
+        h.wait_status("mock", ServerStatus::Ready).await;
+        h.mgr.references(doc, Pos::new(0, 5), true, true, Default::default()).await.unwrap();
+        let skipped: Vec<Vec<PathBuf>> = seen.lock().iter().map(|q| q.skip.clone()).collect();
+        let expected = if commands.as_array().unwrap().len() == 2 && reported.is_array() { vec![src] } else { vec![] };
+        assert_eq!(skipped, vec![expected], "{commands} {reported}");
+    }
+}
+
 #[tokio::test(flavor = "multi_thread")]
 async fn references_open_unopened_files_that_mention_the_name() {
     let (h, s) = scope_harness();
@@ -3746,6 +3825,32 @@ async fn classified_java_references_widen_without_losing_metadata() {
             Some(if limit_hit { ReferencesIncomplete::TooManyFiles } else { ReferencesIncomplete::FilesSkipped })
         );
     }
+}
+
+/// Usage counts probe many symbols at once: without `libraries` they search the sources alone.
+#[tokio::test(flavor = "multi_thread")]
+async fn scoped_java_usages_search_the_sources_unless_libraries_are_asked_for() {
+    let mut caps = incremental_caps();
+    caps["executeCommandProvider"] = json!({"commands": ["openidea.java.usages"]});
+    let h = harness_for("java", "java", &[("jdtls", caps)], &[]);
+    let s = h.launcher.state("jdtls");
+    s.respond("workspace/executeCommand", json!([]));
+    let (doc, _) = h.open("a.java", "int target;");
+    h.wait_status("jdtls", ServerStatus::Ready).await;
+    let seen = grep_candidates(&h);
+    for libraries in [false, true] {
+        let refs = h
+            .mgr
+            .references_streaming(doc, Pos::new(0, 5), false, false, libraries, Default::default(), None)
+            .await
+            .unwrap();
+        assert_eq!(refs.libraries_skipped, !libraries);
+        let requested = s.requested("workspace/executeCommand");
+        let arguments = requested.last().unwrap()["arguments"].as_array().unwrap().clone();
+        assert_eq!(arguments.get(4) == Some(&json!("sources")), !libraries);
+        assert_eq!(arguments.len(), if libraries { 4 } else { 5 });
+    }
+    assert!(seen.lock().is_empty());
 }
 
 /// A library method's usages in the sources are shown before the dependencies and the JDK
@@ -5305,4 +5410,76 @@ async fn missing_injected_server_uses_the_normal_single_install_notification() {
     assert_eq!(h.statuses("embedded").iter().filter(|s| **s == ServerStatus::Missing).count(), 1);
     h.mgr.did_close(host);
     h.mgr.shutdown_all().await;
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn languages_sharing_a_server_keep_independent_target_choices() {
+    let dir = tempfile::tempdir().unwrap();
+    let root = dunce::canonicalize(dir.path()).unwrap();
+    let language = |id: &str| {
+        let mut lang: LanguageConfig = toml::from_str(&format!("id='{id}'\nname='{id}'\nextensions=['{id}']")).unwrap();
+        lang.language_servers = vec![server_cfg("shared")];
+        lang
+    };
+    let registry = Arc::new(LanguageRegistry::from_configs(vec![language("one"), language("two")]));
+    struct ScopedLauncher(Arc<MockLauncher>);
+    impl Launcher for ScopedLauncher {
+        fn launch(
+            &self,
+            config: &LanguageServerConfig,
+            root: &Path,
+            handler: Arc<dyn Handler>,
+            stderr: Box<dyn Fn(String) + Send + Sync>,
+        ) -> Result<Peer, LaunchError> {
+            let mut config = config.clone();
+            if let Some(key) = &config.target_key {
+                config.name = format!("{}@{key}", config.name);
+            }
+            self.0.launch(&config, root, handler, stderr)
+        }
+    }
+    let launcher = Arc::new(MockLauncher::default());
+    for name in ["shared", "shared@container"] {
+        *launcher.state(name).caps.lock() = json!({"textDocumentSync":1,"hoverProvider":true});
+    }
+    let manager = LspManager::with_launcher(
+        root.clone(),
+        registry,
+        Arc::new(ide_core::NullSink),
+        Arc::new(ScopedLauncher(launcher.clone())),
+    );
+    let selected = Arc::new(std::sync::atomic::AtomicBool::new(false));
+    let selected_hook = selected.clone();
+    manager.set_servers_hook(Box::new(move |lang, defined| {
+        let mut configs = defined.to_vec();
+        if lang.as_str() == "one" && selected_hook.load(Ordering::Acquire) {
+            configs[0].target_key = Some("container".into());
+        }
+        configs
+    }));
+    let one = DocId::next();
+    let two = DocId::next();
+    manager.did_open(one, &root.join("a.one"), &LanguageId::new("one"), 1, "one");
+    manager.did_open(two, &root.join("b.two"), &LanguageId::new("two"), 1, "two");
+    eventually(|| manager.servers().iter().any(|s| s.status == ServerStatus::Ready)).await;
+    assert_eq!(manager.servers().len(), 1);
+    let host = manager.servers()[0].id;
+    selected.store(true, Ordering::Release);
+    manager.reconfigure().await;
+    eventually(|| manager.servers().iter().filter(|s| s.status == ServerStatus::Ready).count() == 2).await;
+    assert!(manager.servers().iter().any(|s| s.id == host));
+    // Each document has one server. Hover must not send to both after splitting.
+    let state = launcher.state("shared");
+    state.requests.lock().clear();
+    let target_state = launcher.state("shared@container");
+    target_state.requests.lock().clear();
+    let _ = manager.hover(one, Pos::new(0, 0), CancellationToken::new()).await;
+    let _ = manager.hover(two, Pos::new(0, 0), CancellationToken::new()).await;
+    assert_eq!(state.requested("textDocument/hover").len(), 1);
+    assert_eq!(target_state.requested("textDocument/hover").len(), 1);
+    selected.store(false, Ordering::Release);
+    manager.reconfigure().await;
+    assert_eq!(manager.servers().len(), 1);
+    assert_eq!(manager.servers()[0].id, host);
+    manager.shutdown_all().await;
 }

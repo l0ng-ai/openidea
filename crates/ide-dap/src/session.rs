@@ -579,6 +579,10 @@ async fn on_event(mgr: &Arc<DebugManager>, s: &Arc<Session>, event: &str, mut bo
 }
 
 fn on_reverse_request(mgr: &Arc<DebugManager>, s: &Arc<Session>, seq: i64, command: &str, args: Value) {
+    if s.spec.target.is_some() {
+        let _ = s.conn.respond(seq, command, Err("This debugger does not support plugin run targets".into()));
+        return;
+    }
     match command {
         "runInTerminal" => {
             let result = run_in_terminal(s, &args);

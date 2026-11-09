@@ -1,7 +1,7 @@
 /** Language-server and plugin lenses in the shared editor code-vision renderer. */
 import { StateEffect, StateField, type Extension } from "@codemirror/state";
 import { ViewPlugin, type ViewUpdate } from "@codemirror/view";
-import { codeLenses, whenSynced, type CodeLens, type EditorDocContext } from "@/editor/api";
+import { codeLenses, shownAgain, whenSynced, type CodeLens, type EditorDocContext } from "@/editor/api";
 import { call, commands } from "@/platform/ipc";
 import { onNavigationProvidersChanged } from "@/editor/navigationProviders";
 import { posToOffset } from "./positions";
@@ -24,6 +24,7 @@ export function serverCodeLenses(ctx: EditorDocContext): Extension {
         new (class {
           timer: ReturnType<typeof setTimeout> | undefined;
           generation = 0;
+          skipped = false;
           off: () => void;
           constructor() {
             const offs = [
@@ -40,7 +41,7 @@ export function serverCodeLenses(ctx: EditorDocContext): Extension {
             this.timer = setTimeout(() => void this.run(), 400);
           }
           update(u: ViewUpdate) {
-            if (u.docChanged) this.schedule();
+            if (u.docChanged || (this.skipped && shownAgain(u))) this.schedule();
           }
           async run() {
             const gen = this.generation;
@@ -48,7 +49,9 @@ export function serverCodeLenses(ctx: EditorDocContext): Extension {
             try {
               await whenSynced(view);
               const result = await call(commands.lspCodeLens(ctx.doc));
-              if (gen !== this.generation || text !== view.state.doc || !view.dom.isConnected) return;
+              if (gen !== this.generation || text !== view.state.doc) return;
+              this.skipped = !view.dom.isConnected;
+              if (this.skipped) return;
               view.dispatch({
                 effects: set.of(
                   result.flatMap((l) =>

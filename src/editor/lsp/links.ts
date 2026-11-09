@@ -10,6 +10,7 @@ import type { Text } from "@codemirror/state";
 import type { EditorView } from "@codemirror/view";
 import { whenSynced, type EditorDocContext } from "@/editor/api";
 import { call, commands, isTauri, type DocumentLink } from "@/platform/ipc";
+import { isVirtualUri } from "@/platform/virtualDocs";
 import { openExternalUrl } from "@/platform/openUrl";
 import { executeAction } from "@/platform/actions";
 import { editorService } from "@/workbench/contributions";
@@ -179,7 +180,11 @@ export async function followReference(ref: Reference): Promise<void> {
   if (ref.kind !== "file") return;
   let selection: { line: number; col: number } | undefined;
   if (ref.fragment) {
-    const text = await call(commands.fsReadText(ref.path)).catch(() => null);
+    const text = await (
+      isVirtualUri(ref.path)
+        ? call(commands.lspVirtualDocument(ref.path)).then((doc) => doc.text)
+        : call(commands.fsReadText(ref.path))
+    ).catch(() => null);
     const offset = text === null ? null : fragmentOffset(text, ref.path, ref.fragment);
     if (text !== null && offset !== null) {
       const before = text.slice(0, offset);
@@ -202,7 +207,7 @@ export async function referenceAt(view: EditorView, doc: EditorDocContext, offse
     if (!ref || doc.virtual) return ref?.kind === "url" ? ref : null;
     return resolvePath(ref, doc.path);
   }
-  if (await isFile(link.path)) return link;
+  if (isVirtualUri(link.path) || (await isFile(link.path))) return link;
   // Servers resolve `/x` against the file system or workspace root; web roots (`public/`) are ours.
   const own = ref && !doc.virtual ? await resolvePath(ref, doc.path) : null;
   if (own) return own;
