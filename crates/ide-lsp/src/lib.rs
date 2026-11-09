@@ -2451,6 +2451,10 @@ impl LspManager {
                 .flat_map(|(paths, change)| paths.iter().map(move |p| (p, change)));
             let watchers = run.watchers.read();
             let changes: Vec<(&PathBuf, Change)> = if watchers.is_empty() {
+                // Dart watches the filesystem itself and rejects this unregistered notification.
+                if s.name == "dart" {
+                    continue;
+                }
                 let languages = s.languages();
                 all.filter(|(p, change)| {
                     p.starts_with(&s.root) && languages.contains(&self.languages.detect(p, None)) && send(p, *change)
