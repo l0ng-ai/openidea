@@ -8,8 +8,7 @@ import { isPowerSaveMode } from "@/platform/editorSettings";
 import { call, commands, isTauri } from "@/platform/ipc";
 import { useProject } from "@/platform/project";
 import { notifications, registerEditorBanner } from "@/workbench/contributions";
-import { promptInput } from "@/workbench/inputDialogs";
-import { ask } from "@/workbench/messages";
+import { pickItems, promptInput } from "@/workbench/inputDialogs";
 import { importJetBrainsSettings } from "./jetbrainsSettings";
 import { showNewProject } from "./NewProject";
 import { tx } from "@/platform/i18n";
@@ -127,13 +126,12 @@ export async function importFromJetBrainsIde() {
       });
       return;
     }
-    const { button } = await ask({
+    const picked = await pickItems({
       title: tx("Import Settings from JetBrains IDE"),
-      body: tx("Choose the IDE to import settings from:"),
-      buttons: ides.map((ide, i) => ({ id: String(i), label: ide.ide, primary: i === 0 })),
+      items: ides.map((ide) => ({ key: ide.path, label: ide.ide })),
+      multiple: false,
     });
-    const chosen = ides[Number(button)];
-    if (chosen) await importJetBrainsSettings(chosen.path);
+    if (picked?.[0]) await importJetBrainsSettings(picked[0]);
   } catch (e) {
     notifications().notify({
       level: "error",
