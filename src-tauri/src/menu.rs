@@ -251,7 +251,11 @@ pub fn spec(os: Os) -> Vec<Entry> {
         sub(
             "manageIdeSettings",
             "Manage IDE Settings",
-            vec![act("file.exportSettings", "Export Settings…"), act("file.importSettings", "Import Settings…")],
+            vec![
+                act("file.exportSettings", "Export Settings…"),
+                act("file.importSettings", "Import Settings…"),
+                act("file.importJetBrainsSettings", "Import Settings from JetBrains IDE…"),
+            ],
         ),
         sub(
             "newProjectsSetup",
@@ -2220,6 +2224,7 @@ mod tests {
                 "file.reloadAllFromDisk",
                 "file.exportSettings",
                 "file.importSettings",
+                "file.importJetBrainsSettings",
                 "file.togglePowerSave",
                 "macro.startRecording",
                 "macro.stopRecording",

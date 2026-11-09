@@ -107,6 +107,7 @@ pub fn builder() -> tauri_specta::Builder<tauri::Wry> {
         app::settings_export,
         app::settings_import,
         app::settings_read_jetbrains,
+        app::settings_list_jetbrains_ides,
         app::project_rename,
         app::project_roots,
         app::cancel_request,

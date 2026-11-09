@@ -78,6 +78,25 @@ pub fn read_source(path: &Path) -> IdeResult<IntellijThemeSource> {
 /// The theme plugins of the JetBrains IDEs (and Android Studio) of this user,
 /// the themes their IDEs are set to first.
 pub fn installed_themes() -> Vec<InstalledIntellijTheme> {
+    find_installed(&local_ide_dirs())
+}
+
+/// The settings folder of a JetBrains IDE (or Android Studio) of this user.
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize, Type)]
+#[serde(rename_all = "camelCase")]
+pub struct InstalledIdeSettings {
+    /// The IDE and its version: `IntelliJ IDEA 2025.2`.
+    pub ide: String,
+    /// What Import Settings reads.
+    pub path: IpcPath,
+}
+
+/// The settings folders of the JetBrains IDEs of this user, newest first, one per product.
+pub fn installed_ide_settings() -> Vec<InstalledIdeSettings> {
+    settings_folders(&local_ide_dirs())
+}
+
+fn local_ide_dirs() -> Vec<IdeDir> {
     let Some(home) = dirs::home_dir() else { return Vec::new() };
     let layout = if cfg!(target_os = "macos") {
         Layout::Mac
@@ -86,7 +105,15 @@ pub fn installed_themes() -> Vec<InstalledIntellijTheme> {
     } else {
         Layout::Xdg
     };
-    find_installed(&ide_dirs(layout, &home, |key| std::env::var_os(key)))
+    ide_dirs(layout, &home, |key| std::env::var_os(key))
+}
+
+/// An IDE that was installed but never run has no `options/` yet: nothing to import.
+fn settings_folders(ides: &[IdeDir]) -> Vec<InstalledIdeSettings> {
+    ides.iter()
+        .filter(|ide| ide.config.join("options").is_dir())
+        .map(|ide| InstalledIdeSettings { ide: ide.label.clone(), path: ide.config.clone().into() })
+        .collect()
 }
 
 fn read(path: &Path) -> Result<IntellijThemeSource, String> {
@@ -880,5 +907,24 @@ mod tests {
         };
         assert_eq!(found, [theme("shallow-id", "Shallow", false, true), theme("deep-sea-id", "Deep Sea", true, false)]);
         assert!(find_installed(&[]).is_empty());
+    }
+
+    #[test]
+    fn lists_the_settings_folders_of_ides_that_have_been_run() {
+        let tmp = tempfile::tempdir().unwrap();
+        let ide = |label: &str, product: &str, version: (u32, u32)| {
+            let config = tmp.path().join(format!("{product}{}.{}", version.0, version.1));
+            IdeDir { label: label.into(), product: product.into(), version, config: config.clone(), plugins: config }
+        };
+        let used = ide("IntelliJ IDEA 2025.2", "IntelliJIdea", (2025, 2));
+        let fresh = ide("PyCharm 2025.1", "PyCharm", (2025, 1));
+        let used_config = used.config.clone();
+        write(&used_config.join("options/editor.xml"), b"<application/>");
+        std::fs::create_dir_all(&fresh.config).unwrap();
+        assert_eq!(
+            settings_folders(&[used, fresh]),
+            [InstalledIdeSettings { ide: "IntelliJ IDEA 2025.2".into(), path: used_config.into() }]
+        );
+        assert!(settings_folders(&[]).is_empty());
     }
 }

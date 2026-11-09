@@ -345,7 +345,57 @@ const JETBRAINS_OPTIONS: [&str; 4] =
     ["options/editor-font.xml", "options/colors.scheme.xml", "options/editor.xml", "options/ide.general.xml"];
 const JETBRAINS_MAX_TEXT: u64 = 4 << 20;
 
+/// The settings of a JetBrains IDE: an exported `settings.zip`, or the IDE's own settings folder
+/// (`options/`, `colors/`, … as an installed IDE keeps them).
 pub fn read_jetbrains_settings(path: &Path) -> IdeResult<JetBrainsSettings> {
+    if path.is_dir() { read_jetbrains_folder(path) } else { read_jetbrains_archive(path) }
+}
+
+fn is_mapped_jetbrains_file(name: &str) -> bool {
+    JETBRAINS_OPTIONS.contains(&name)
+        || name.strip_prefix("colors/").is_some_and(|n| !n.contains('/') && n.ends_with(".icls"))
+}
+
+/// Folders of the settings folder whose files are listed (their names say what the user customised).
+const JETBRAINS_LISTED_DIRS: [&str; 6] = ["options", "colors", "keymaps", "codestyles", "templates", "inspection"];
+
+fn read_jetbrains_folder(dir: &Path) -> IdeResult<JetBrainsSettings> {
+    use std::io::Read;
+    if !dir.join("options").is_dir() {
+        return Err(IdeError::invalid("not a JetBrains settings folder"));
+    }
+    let mut entries = Vec::new();
+    let mut files = BTreeMap::new();
+    for sub in JETBRAINS_LISTED_DIRS {
+        let mut names: Vec<String> = std::fs::read_dir(dir.join(sub))
+            .into_iter()
+            .flatten()
+            .flatten()
+            .filter(|e| e.file_type().is_ok_and(|t| t.is_file()))
+            .map(|e| e.file_name().to_string_lossy().into_owned())
+            .collect();
+        names.sort();
+        for file in names {
+            let name = format!("{sub}/{file}");
+            if is_mapped_jetbrains_file(&name) {
+                let mut text = String::new();
+                std::fs::File::open(dir.join(sub).join(&file))?
+                    .take(JETBRAINS_MAX_TEXT)
+                    .read_to_string(&mut text)
+                    .map_err(|e| IdeError::invalid(format!("{name}: {e}")))?;
+                files.insert(name.clone(), text);
+            }
+            entries.push(name);
+        }
+    }
+    // An exported archive lists `installed.txt` when plugins came along; here they sit in `plugins/`.
+    if std::fs::read_dir(dir.join("plugins")).is_ok_and(|mut d| d.next().is_some()) {
+        entries.push("installed.txt".into());
+    }
+    Ok(JetBrainsSettings { entries, files })
+}
+
+fn read_jetbrains_archive(path: &Path) -> IdeResult<JetBrainsSettings> {
     use std::io::Read;
     let not_jetbrains = || IdeError::invalid("not a JetBrains settings archive");
     let mut archive = zip::ZipArchive::new(std::fs::File::open(path)?).map_err(|_| not_jetbrains())?;
@@ -354,9 +404,7 @@ pub fn read_jetbrains_settings(path: &Path) -> IdeResult<JetBrainsSettings> {
     for i in 0..archive.len() {
         let entry = archive.by_index(i).map_err(|_| not_jetbrains())?;
         let name = entry.name().map_err(|_| not_jetbrains())?.into_owned();
-        let wanted = JETBRAINS_OPTIONS.contains(&name.as_str())
-            || name.strip_prefix("colors/").is_some_and(|n| !n.contains('/') && n.ends_with(".icls"));
-        if wanted {
+        if is_mapped_jetbrains_file(&name) {
             let mut text = String::new();
             entry
                 .take(JETBRAINS_MAX_TEXT)
@@ -632,6 +680,41 @@ mod tests {
         assert!(read_jetbrains_settings(&write("other.zip", &[("options/editor.xml", "")])).is_err());
         std::fs::write(tmp.path().join("plain.zip"), "not a zip").unwrap();
         assert!(read_jetbrains_settings(&tmp.path().join("plain.zip")).is_err());
+    }
+
+    #[test]
+    fn reads_a_jetbrains_ides_own_settings_folder_like_an_exported_archive() {
+        let tmp = tempfile::tempdir().unwrap();
+        let config = tmp.path().join("IntelliJIdea2025.2");
+        let put = |name: &str, text: &str| {
+            let path = config.join(name);
+            std::fs::create_dir_all(path.parent().unwrap()).unwrap();
+            std::fs::write(path, text).unwrap();
+        };
+        put("colors/_@user_Darcula.icls", "<scheme name=\"_@user_Darcula\"/>");
+        put("colors/nested/ignored.icls", "<scheme/>");
+        put("options/editor-font.xml", "<application/>");
+        put("options/vcs.xml", "<application/>");
+        put("keymaps/macOS.xml", "<keymap/>");
+        put("plugins/Tools/lib/tools.jar", "jar");
+
+        let read = read_jetbrains_settings(&config).unwrap();
+        assert_eq!(read.files.keys().collect::<Vec<_>>(), ["colors/_@user_Darcula.icls", "options/editor-font.xml"]);
+        assert_eq!(
+            read.entries,
+            [
+                "options/editor-font.xml",
+                "options/vcs.xml",
+                "colors/_@user_Darcula.icls",
+                "keymaps/macOS.xml",
+                "installed.txt"
+            ]
+        );
+
+        assert!(read_jetbrains_settings(&tmp.path().join("missing")).is_err());
+        let empty = tmp.path().join("empty");
+        std::fs::create_dir_all(&empty).unwrap();
+        assert!(read_jetbrains_settings(&empty).is_err(), "a folder without options/ is not a settings folder");
     }
 
     #[test]
