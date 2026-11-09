@@ -910,7 +910,18 @@ export async function startRun(
     }
     if (runtimes.get(sessionId)?.generation !== generation) return getSession(sessionId) ?? null;
     const processStarted = performance.now();
-    const info = await startWithRemedies(started, () => call(commands.runStart(started, channel)));
+    const request = { id: nextRequestId(), controller: new AbortController() };
+    rt.resolveRequest = request;
+    const info = await startWithRemedies(started, () => {
+      request.controller.signal.throwIfAborted();
+      return call(commands.runStart(started, channel, request.id));
+    }).finally(() => {
+      if (rt.resolveRequest === request) delete rt.resolveRequest;
+    });
+    if (request.controller.signal.aborted || getSession(sessionId)?.stopped) {
+      await call(commands.runStop(info.id)).catch(() => undefined);
+      return getSession(sessionId) ?? null;
+    }
     console.info("Run process started", { name: config.name, ms: performance.now() - processStarted });
     if (runtimes.get(sessionId)?.generation !== generation) return getSession(sessionId) ?? null;
     if (info.pty && rt.terminalSize) void commands.runResize(info.id, rt.terminalSize.cols, rt.terminalSize.rows);
@@ -923,6 +934,7 @@ export async function startRun(
       finishSession(sessionId, exited);
     }
   } catch (e) {
+    if (getSession(sessionId)?.stopped || isCancelled(e)) return getSession(sessionId) ?? null;
     const message = e instanceof Error ? e.message : String(e);
     enqueue(sessionId, { kind: "stderr", text: tx`Error running '${config.name}': ${message}\n` });
     flush(sessionId);

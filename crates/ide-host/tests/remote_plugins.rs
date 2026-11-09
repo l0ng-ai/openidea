@@ -634,6 +634,28 @@ async fn api14_stage3_remote_terminal_pins_and_exit_events_stay_on_the_execution
     .await
     .unwrap();
     assert_eq!(invoke(&peer, "plugin_run_targets", json!({})).await.unwrap(), json!([]));
+    invoke(
+        &peer,
+        "plugin_run_command",
+        json!({"pluginId":"execution", "commandId":"target", "arg":"refuse", "editor":null}),
+    )
+    .await
+    .unwrap();
+    let targets = invoke(&peer, "plugin_run_targets", json!({})).await.unwrap();
+    let refused = targets[0]["id"].as_str().unwrap();
+    std::fs::remove_file(project.join("wrapped.txt")).unwrap();
+    let config = json!({"id":"refused", "name":"Refused", "kind":"shell", "command":"php", "args":[], "env":{}, "detected":false, "isTest":false, "target":refused});
+    let error = invoke(&peer, "run_start", json!({"config":config, "onOutput":{"$channel":40}})).await.unwrap_err();
+    assert!(error.to_string().contains("Project runtime is stopped"), "{error}");
+    assert!(!project.join("wrapped.txt").exists());
+    assert!(desktop.run_targets(&project).is_empty());
+    invoke(
+        &peer,
+        "plugin_run_command",
+        json!({"pluginId":"execution", "commandId":"untarget", "arg":"refuse", "editor":null}),
+    )
+    .await
+    .unwrap();
     client.plugin_events.lock().clear();
     client.events.lock().clear();
     let runner = peer.clone();

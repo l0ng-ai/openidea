@@ -708,7 +708,7 @@ export const commands = {
 	runImportConfigs: (source: RunImportSource, existing: RunConfig_Deserialize[]) => typedError<RunImport_Serialize, IdeError>(__TAURI_INVOKE("run_import_configs", { source, existing })),
 	/**  The environment runs inherit when "Include system environment variables" is on. */
 	runSystemEnv: () => __TAURI_INVOKE<{ [key in string]: string }>("run_system_env"),
-	runStart: (config: RunConfig_Deserialize, onOutput: Channel<OutputChunk>) => typedError<RunInfo, IdeError>(__TAURI_INVOKE("run_start", { config, onOutput })),
+	runStart: (config: RunConfig_Deserialize, onOutput: Channel<OutputChunk>, request: number | null) => typedError<RunInfo, IdeError>(__TAURI_INVOKE("run_start", { config, onOutput, request })),
 	runStop: (id: RunId) => typedError<null, IdeError>(__TAURI_INVOKE("run_stop", { id })),
 	runStdin: (id: RunId, data: string) => typedError<null, IdeError>(__TAURI_INVOKE("run_stdin", { id, data })),
 	runList: () => __TAURI_INVOKE<RunInfo[]>("run_list"),
@@ -811,7 +811,7 @@ export const commands = {
 	/**  Incremental build of the jdtls workspace serving `module` (e.g. before HotSwap). */
 	javaBuildWorkspace: (module: string, request: number | null) => typedError<JavaBuildStatus, IdeError>(__TAURI_INVOKE("java_build_workspace", { module, request })),
 	/**  Starts a session owned by this window: its events (and those of child sessions) go here only. */
-	debugStart: (config: LaunchConfig) => typedError<DebugSessionId, IdeError>(__TAURI_INVOKE("debug_start", { config })),
+	debugStart: (config: LaunchConfig, request: number | null) => typedError<DebugSessionId, IdeError>(__TAURI_INVOKE("debug_start", { config, request })),
 	debugSetBreakpoints: (path: string, breakpoints: Breakpoint[]) => typedError<BreakpointState[], IdeError>(__TAURI_INVOKE("debug_set_breakpoints", { path, breakpoints })),
 	debugThreads: (session: DebugSessionId) => typedError<ThreadInfo[], IdeError>(__TAURI_INVOKE("debug_threads", { session })),
 	debugStackTrace: (session: DebugSessionId, threadId: number) => typedError<StackFrame[], IdeError>(__TAURI_INVOKE("debug_stack_trace", { session, threadId })),

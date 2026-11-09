@@ -2335,3 +2335,8 @@ pub(crate) mod mcp_bindings {
         },
     });
 }
+
+/// Optional API 1.5 run-target launch validation.
+pub(crate) mod run_target_validation_bindings {
+    wasmtime::component::bindgen!({ world: "run-target-validator", path: "../../wit" });
+}

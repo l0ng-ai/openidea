@@ -7,8 +7,8 @@ function rows(view: EditorView): DecorationSet {
   const out: Range<Decoration>[] = [];
   let last = -1;
   for (const r of view.state.selection.ranges) {
-    // IntelliJ drops the caret-row highlight under a selection; the opaque row would hide it.
-    if (!r.empty) continue;
+    // The caret's row stays highlighted under a selection too, as in IDEA; the row paints beneath the
+    // selection layer (theme.ts), so it does not hide the selection.
     const from = view.lineBlockAt(r.head).from;
     if (from > last) out.push(caretRow.range(from));
     last = from;
@@ -16,7 +16,7 @@ function rows(view: EditorView): DecorationSet {
   return Decoration.set(out, true);
 }
 
-/** `highlightActiveLine` that only marks lines holding an empty cursor. */
+/** `highlightActiveLine` that marks the line of each caret (the head of each selection range). */
 export const caretRowHighlight: Extension = ViewPlugin.fromClass(
   class {
     decorations: DecorationSet;
