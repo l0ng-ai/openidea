@@ -121,7 +121,7 @@ export function importSource(item: Pick<CompletionItem, "additionalEdits">): str
 export function typeColumnText(
   item: Pick<CompletionItem, "detail" | "additionalEdits"> & { labelDescription?: string | null },
 ): string | null {
-  const detail = (item.labelDescription || item.detail)?.replace(/\s+/g, " ") || null;
+  const detail = (item.labelDescription?.trim() || item.detail)?.replace(/\s+/g, " ") || null;
   const source = importSource(item);
   if (!source || detail?.includes(source)) return detail;
   return !detail || /^auto[- ]?import$/i.test(detail) ? source : `${detail} (${source})`;

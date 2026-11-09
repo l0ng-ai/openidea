@@ -511,6 +511,19 @@ describe("typeColumnText", () => {
     ).toBe("./money");
   });
 
+  it.each([
+    ["TypeScript", "(method) String.toUpperCase(): string"],
+    ["Python", "(value: object) -> str"],
+    ["Rust", "fn len(&self) -> usize"],
+    ["Go", "func() error"],
+  ])("keeps %s details unchanged without label details", (_language, detail) => {
+    expect(typeColumnText(item({ detail }))).toBe(detail);
+  });
+
+  it.each(["", " \n\t "])("falls back to the signature for a blank description (%j)", (labelDescription) => {
+    expect(typeColumnText(item({ labelDescription, detail: "Order" }))).toBe("Order");
+  });
+
   it("keeps a detail that already says where", () => {
     expect(
       typeColumnText({ detail: "java.util.ArrayList", additionalEdits: edit("import java.util.ArrayList;\n") }),
