@@ -1,0 +1,61 @@
+import { expect, test } from "./fixtures";
+
+for (const { width, split } of [{ width: 220 }, { width: 280 }, { width: 520 }, { width: 520, split: true }]) {
+  test(`terminal search fits a ${width}px ${split ? "split" : "panel"} and its buttons work from the keyboard`, async ({
+    workbench: page,
+  }) => {
+    await page.evaluate(async (width) => {
+      const path = "/src/workbench/toolwindows/store.ts";
+      const layout = await import(path);
+      layout.moveToolWindow("terminal", "right");
+      layout.setToolWindowSize("right", width);
+      layout.showToolWindow("terminal", true);
+    }, width);
+    const terminal = page.getByRole("region", { name: "Terminal", exact: true });
+    await expect(terminal.locator(".xterm-helper-textarea")).toBeFocused();
+    if (split) {
+      await page.evaluate(async () => {
+        const path = "/src/platform/actions.ts";
+        const { executeAction } = await import(path);
+        await executeAction("terminal.splitRight");
+      });
+      await expect(terminal.getByRole("tablist", { name: "Terminal sessions" })).toHaveCount(2);
+      await expect(terminal.locator(".xterm-helper-textarea:focus")).toHaveCount(1);
+    }
+    await page.evaluate(async () => {
+      const path = "/src/features/terminal/runtime.ts";
+      const { activeSession } = await import(path);
+      await new Promise<void>((resolve) => activeSession().term.write("\r\nalpha ALPHA alpha\r\n", resolve));
+    });
+    await page.keyboard.press("Meta+f");
+    const search = terminal.getByRole("search", { name: "Find in terminal" });
+    const input = search.getByRole("textbox", { name: "Find in terminal" });
+    await input.fill("alpha");
+    await expect(search.locator("[aria-live=polite]")).toHaveText(/\d+\/3/);
+    if (process.env.OPENIDEA_TERMINAL_SHOTS)
+      await terminal.screenshot({
+        path: `${process.env.OPENIDEA_TERMINAL_SHOTS}/terminal-${width}${split ? "-split" : ""}.png`,
+      });
+
+    const bounds = (await search.boundingBox())!;
+    for (const control of await search.locator("input, button, [aria-live]").all()) {
+      const rect = (await control.boundingBox())!;
+      expect(rect.x).toBeGreaterThanOrEqual(bounds.x);
+      expect(rect.x + rect.width).toBeLessThanOrEqual(bounds.x + bounds.width + 1);
+    }
+    expect((await input.boundingBox())!.width).toBeGreaterThan(40);
+
+    const matchCase = search.getByRole("button", { name: "Match Case", exact: true });
+    await matchCase.focus();
+    await page.keyboard.press("Enter");
+    await expect(matchCase).toHaveAttribute("aria-pressed", "true");
+    await expect(search.locator("[aria-live=polite]")).toHaveText(/\d+\/2/);
+    await input.fill("missing");
+    await expect(search.locator("[aria-live=polite]")).toHaveText("0 results");
+    await expect(search.getByRole("button", { name: "Next Occurrence", exact: true })).toBeDisabled();
+    await search.getByRole("button", { name: "Close", exact: true }).focus();
+    await page.keyboard.press("Enter");
+    await expect(search).toBeHidden();
+    await expect(terminal.locator(".xterm-helper-textarea:focus")).toHaveCount(1);
+  });
+}

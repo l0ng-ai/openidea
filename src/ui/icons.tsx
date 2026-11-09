@@ -224,6 +224,7 @@ const ICONS = {
   // General UI
   "chevron-right": "general/chevronRight",
   "chevron-down": "general/chevronDown",
+  "toolbar-expand": "general/chevronDownLarge",
   "chevron-up": "general/chevronUp",
   "chevron-left": "general/chevronLeft",
   close: "general/close",

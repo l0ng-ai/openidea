@@ -27,6 +27,7 @@
 
 /* A tab group: its header (while split) over its tabs' terminals. */
 .group {
+  container: terminal-group / inline-size;
   flex: 1;
   display: flex;
   flex-direction: column;
@@ -155,4 +156,18 @@
 }
 .findSpacer {
   flex: 1;
+}
+
+@container terminal-group (max-width: 360px) {
+  .find {
+    display: grid;
+    grid-template-columns: minmax(0, 1fr) repeat(3, 20px);
+  }
+  .findField {
+    grid-column: 1 / -1;
+    min-width: 0;
+  }
+  .findSpacer {
+    display: none;
+  }
 }
