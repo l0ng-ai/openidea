@@ -19,6 +19,7 @@ import {
   setFileDecorations,
   toolWindowService,
 } from "@/workbench/contributions";
+import { installCellActions } from "./cellActions";
 import { installValueEditorActions } from "./valueEditorActions";
 import { SQL_LANGUAGE } from "./sqlLanguage";
 import { TABLE_KIND, tableTitle } from "./tableInput";
@@ -125,6 +126,7 @@ export function activate(): () => void {
     watchIdleConnections(),
     installTableEditorFocus(),
     installValueEditorActions(),
+    installCellActions(),
     registerDatabaseTreeActions(),
     registerActions([
       {

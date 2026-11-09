@@ -2308,6 +2308,7 @@
   "Services actions": "服务操作",
   "Session finished": "会话已结束",
   "Set Active Changelist": "设置活动更改列表",
+  "Set DEFAULT": "设为默认值",
   "Set NULL": "设为 NULL",
   "Set Value…": "设置值…",
   "Set active": "设为活动",
@@ -7132,5 +7133,9 @@
   "Source archives": "源代码归档",
   "Loading library sources…": "正在加载库源代码…",
   "Sources not found": "未找到源代码",
-  "Cannot load library sources": "无法加载库源代码"
+  "Cannot load library sources": "无法加载库源代码",
+  "Toggle Boolean Cell": "切换布尔单元格",
+  "Toggle {name}": "切换 {name}",
+  "true": "真",
+  "false": "假"
 }
