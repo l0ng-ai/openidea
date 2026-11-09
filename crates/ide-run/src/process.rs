@@ -426,11 +426,16 @@ impl ProcessManager {
             Ok(match child.stdin.take() {
                 Some(pipe) if !redirected => {
                     #[cfg(unix)]
-                    {
+                    let wait_writable = {
                         use std::os::fd::AsRawFd;
-                        ide_core::input::nonblocking(pipe.as_raw_fd())?;
-                    }
-                    Some(input_writer(id, Box::new(pipe))?)
+                        ide_core::input::nonblocking(pipe.as_raw_fd())?
+                    };
+                    Some(input_writer(
+                        id,
+                        Box::new(pipe),
+                        #[cfg(unix)]
+                        wait_writable,
+                    )?)
                 }
                 _ => None,
             })
@@ -462,10 +467,24 @@ impl ProcessManager {
         let stderr = child.stderr.take();
         let result = (|| -> std::io::Result<()> {
             if let Some(out) = stdout {
-                spawn_reader(id, Stream::Stdout, out, tx.clone())?;
+                spawn_reader(
+                    id,
+                    Stream::Stdout,
+                    out,
+                    tx.clone(),
+                    #[cfg(unix)]
+                    None,
+                )?;
             }
             if let Some(err) = stderr {
-                spawn_reader(id, Stream::Stderr, err, tx.clone())?;
+                spawn_reader(
+                    id,
+                    Stream::Stderr,
+                    err,
+                    tx.clone(),
+                    #[cfg(unix)]
+                    None,
+                )?;
             }
             spawn_pump(rx, on_output.clone(), entry.clone(), sink, options.encoding.clone(), notice)?;
             Ok(())
@@ -538,9 +557,13 @@ impl ProcessManager {
             cmd.env(k, v);
         }
         #[cfg(unix)]
-        if let Some(fd) = pair.master.as_raw_fd() {
-            ide_core::input::nonblocking(fd)?;
-        }
+        let wait_writable = ide_core::input::nonblocking(
+            pair.master.as_raw_fd().ok_or_else(|| std::io::Error::other("PTY has no file descriptor"))?,
+        )?;
+        #[cfg(unix)]
+        let wait_readable = ide_core::input::readable(
+            pair.master.as_raw_fd().ok_or_else(|| std::io::Error::other("PTY has no file descriptor"))?,
+        )?;
         let mut child = pair.slave.spawn_command(cmd).map_err(|e| {
             let text = e.to_string();
             if text.contains("No such file") || text.contains("not found") {
@@ -555,7 +578,13 @@ impl ProcessManager {
         let writer = pair.master.take_writer().map_err(|e| IdeError::internal(format!("pty writer: {e}")))?;
 
         let id = RunId::next();
-        let writer = input_writer(id, writer).inspect_err(|_| {
+        let writer = input_writer(
+            id,
+            writer,
+            #[cfg(unix)]
+            wait_writable,
+        )
+        .inspect_err(|_| {
             let _ = child.kill();
             let _ = child.wait();
         })?;
@@ -577,8 +606,15 @@ impl ProcessManager {
         on_output(OutputChunk::System { text: format!("{}\n", inv.display) });
 
         let (tx, rx) = mpsc::channel();
-        let result = spawn_reader(id, Stream::Stdout, reader, tx.clone())
-            .and_then(|_| spawn_pump(rx, on_output, entry.clone(), sink, options.encoding.clone(), None));
+        let result = spawn_reader(
+            id,
+            Stream::Stdout,
+            reader,
+            tx.clone(),
+            #[cfg(unix)]
+            Some(Box::new(wait_readable)),
+        )
+        .and_then(|_| spawn_pump(rx, on_output, entry.clone(), sink, options.encoding.clone(), None));
         if let Err(e) = result {
             let _ = child.kill();
             let _ = child.wait();
@@ -789,11 +825,16 @@ fn run_followup(
         Ok(match child.stdin.take() {
             Some(pipe) => {
                 #[cfg(unix)]
-                {
+                let wait_writable = {
                     use std::os::fd::AsRawFd;
-                    ide_core::input::nonblocking(pipe.as_raw_fd())?;
-                }
-                Some(input_writer(entry.id, Box::new(pipe))?)
+                    ide_core::input::nonblocking(pipe.as_raw_fd())?
+                };
+                Some(input_writer(
+                    entry.id,
+                    Box::new(pipe),
+                    #[cfg(unix)]
+                    wait_writable,
+                )?)
             }
             None => None,
         })
@@ -805,10 +846,24 @@ fn run_followup(
     drop(pid);
     let readers = (|| {
         if let Some(out) = child.stdout.take() {
-            spawn_reader(entry.id, Stream::Stdout, out, tx.clone())?;
+            spawn_reader(
+                entry.id,
+                Stream::Stdout,
+                out,
+                tx.clone(),
+                #[cfg(unix)]
+                None,
+            )?;
         }
         if let Some(err) = child.stderr.take() {
-            spawn_reader(entry.id, Stream::Stderr, err, tx.clone())?;
+            spawn_reader(
+                entry.id,
+                Stream::Stderr,
+                err,
+                tx.clone(),
+                #[cfg(unix)]
+                None,
+            )?;
         }
         Ok::<_, std::io::Error>(())
     })();
@@ -982,6 +1037,7 @@ fn spawn_reader(
     stream: Stream,
     mut pipe: impl Read + Send + 'static,
     tx: Sender<Msg>,
+    #[cfg(unix)] mut wait_readable: Option<Box<dyn FnMut() -> std::io::Result<()> + Send>>,
 ) -> std::io::Result<()> {
     let label = if stream == Stream::Stdout { "out" } else { "err" };
     std::thread::Builder::new().name(format!("openidea-run-{label}-{}", id.0)).spawn(move || {
@@ -995,7 +1051,19 @@ fn spawn_reader(
                     }
                 }
                 Err(e) if e.kind() == std::io::ErrorKind::Interrupted => continue,
-                Err(e) if e.kind() == std::io::ErrorKind::WouldBlock => std::thread::sleep(BATCH_INTERVAL),
+                Err(e) if e.kind() == std::io::ErrorKind::WouldBlock => {
+                    #[cfg(unix)]
+                    if let Some(wait) = &mut wait_readable {
+                        if let Err(e) = wait()
+                            && e.kind() != std::io::ErrorKind::Interrupted
+                        {
+                            tracing::warn!(%id, "run read: {e}");
+                            break;
+                        }
+                        continue;
+                    }
+                    std::thread::sleep(BATCH_INTERVAL);
+                }
                 #[cfg(unix)]
                 Err(e) if e.raw_os_error() == Some(libc::EIO) => break,
                 Err(e) => {
@@ -1218,10 +1286,20 @@ fn signal_number(_description: &str) -> Option<i32> {
     None
 }
 
-fn input_writer(id: RunId, writer: Box<dyn std::io::Write + Send>) -> std::io::Result<ide_core::input::InputWriter> {
-    ide_core::input::InputWriter::new(format!("openidea-run-input-{}", id.0), writer, move |e| {
-        tracing::warn!(%id, "run input: {e}");
-    })
+fn input_writer(
+    id: RunId,
+    writer: Box<dyn std::io::Write + Send>,
+    #[cfg(unix)] wait_writable: impl FnMut() -> std::io::Result<()> + Send + 'static,
+) -> std::io::Result<ide_core::input::InputWriter> {
+    ide_core::input::InputWriter::new(
+        format!("openidea-run-input-{}", id.0),
+        writer,
+        #[cfg(unix)]
+        wait_writable,
+        move |e| {
+            tracing::warn!(%id, "run input: {e}");
+        },
+    )
 }
 
 #[cfg(test)]

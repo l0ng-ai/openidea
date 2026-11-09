@@ -163,9 +163,13 @@ impl TerminalManager {
         apply_powershell_env(&shell, &mut cmd);
 
         #[cfg(unix)]
-        if let Some(fd) = pair.master.as_raw_fd() {
-            ide_core::input::nonblocking(fd)?;
-        }
+        let wait_writable = ide_core::input::nonblocking(
+            pair.master.as_raw_fd().ok_or_else(|| std::io::Error::other("PTY has no file descriptor"))?,
+        )?;
+        #[cfg(unix)]
+        let wait_readable = ide_core::input::readable(
+            pair.master.as_raw_fd().ok_or_else(|| std::io::Error::other("PTY has no file descriptor"))?,
+        )?;
 
         let mut child = pair
             .slave
@@ -180,9 +184,15 @@ impl TerminalManager {
         let id = TerminalId::next();
         let info = TerminalInfo { id, title: shell_title(&shell), pid: child.process_id() };
         let exited = Arc::new(AtomicBool::new(false));
-        let writer = ide_core::input::InputWriter::new(format!("openidea-term-write-{}", id.0), writer, move |e| {
-            tracing::warn!(%id, "terminal input: {e}");
-        })
+        let writer = ide_core::input::InputWriter::new(
+            format!("openidea-term-write-{}", id.0),
+            writer,
+            #[cfg(unix)]
+            wait_writable,
+            move |e| {
+                tracing::warn!(%id, "terminal input: {e}");
+            },
+        )
         .inspect_err(|_| {
             let _ = child.kill();
             let _ = child.wait();
@@ -200,9 +210,15 @@ impl TerminalManager {
         self.sessions.lock().insert(id, session);
 
         let (tx, rx) = mpsc::channel::<Msg>();
-        let spawned = spawn_reader(id, reader, tx.clone())
-            .and_then(|_| spawn_waiter(id, child, tx))
-            .and_then(|_| spawn_pump(id, rx, on_output, exited, self.sessions.clone(), sink, Instant::now()));
+        let spawned = spawn_reader(
+            id,
+            reader,
+            tx.clone(),
+            #[cfg(unix)]
+            wait_readable,
+        )
+        .and_then(|_| spawn_waiter(id, child, tx))
+        .and_then(|_| spawn_pump(id, rx, on_output, exited, self.sessions.clone(), sink, Instant::now()));
         if let Err(e) = spawned {
             if let Some(s) = self.sessions.lock().remove(&id) {
                 let _ = s.killer.lock().kill();
@@ -407,7 +423,12 @@ fn terminate(session: &Session) {
     }
 }
 
-fn spawn_reader(id: TerminalId, mut reader: Box<dyn Read + Send>, tx: mpsc::Sender<Msg>) -> std::io::Result<()> {
+fn spawn_reader(
+    id: TerminalId,
+    mut reader: Box<dyn Read + Send>,
+    tx: mpsc::Sender<Msg>,
+    #[cfg(unix)] mut wait_readable: impl FnMut() -> std::io::Result<()> + Send + 'static,
+) -> std::io::Result<()> {
     std::thread::Builder::new().name(format!("openidea-term-read-{}", id.0)).spawn(move || {
         let mut buf = vec![0u8; 16 * 1024];
         loop {
@@ -419,7 +440,17 @@ fn spawn_reader(id: TerminalId, mut reader: Box<dyn Read + Send>, tx: mpsc::Send
                     }
                 }
                 Err(e) if e.kind() == std::io::ErrorKind::Interrupted => continue,
-                Err(e) if e.kind() == std::io::ErrorKind::WouldBlock => std::thread::sleep(BATCH_INTERVAL),
+                Err(e) if e.kind() == std::io::ErrorKind::WouldBlock => {
+                    #[cfg(unix)]
+                    if let Err(e) = wait_readable()
+                        && e.kind() != std::io::ErrorKind::Interrupted
+                    {
+                        tracing::warn!(%id, "terminal read: {e}");
+                        break;
+                    }
+                    #[cfg(not(unix))]
+                    std::thread::sleep(BATCH_INTERVAL);
+                }
                 // EIO is how Linux/macOS report "slave side closed".
                 #[cfg(unix)]
                 Err(e) if e.raw_os_error() == Some(libc::EIO) => break,

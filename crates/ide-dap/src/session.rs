@@ -630,9 +630,15 @@ pub(crate) fn run_in_terminal(s: &Arc<Session>, args: &Value) -> Result<Value, S
         .openpty(PtySize { rows: 24, cols: 200, pixel_width: 0, pixel_height: 0 })
         .map_err(|e| format!("cannot open a terminal for {program}: {e}"))?;
     #[cfg(unix)]
-    if let Some(fd) = pair.master.as_raw_fd() {
-        ide_core::input::nonblocking(fd).map_err(|e| format!("terminal of {program}: {e}"))?;
-    }
+    let wait_writable = ide_core::input::nonblocking(
+        pair.master.as_raw_fd().ok_or_else(|| format!("terminal of {program}: PTY has no file descriptor"))?,
+    )
+    .map_err(|e| format!("terminal of {program}: {e}"))?;
+    #[cfg(unix)]
+    let wait_readable = ide_core::input::readable(
+        pair.master.as_raw_fd().ok_or_else(|| format!("terminal of {program}: PTY has no file descriptor"))?,
+    )
+    .map_err(|e| format!("terminal of {program}: {e}"))?;
     let mut cmd = CommandBuilder::new(program);
     // CodeLLDB's launcher clears the terminal first; the console keeps the session's earlier output.
     cmd.args(rest.iter().filter(|a| *a != "--clear-screen"));
@@ -662,16 +668,27 @@ pub(crate) fn run_in_terminal(s: &Arc<Session>, args: &Value) -> Result<Value, S
     drop(pair.slave);
     let reader = pair.master.try_clone_reader().map_err(|e| format!("terminal of {program}: {e}"))?;
     let writer = pair.master.take_writer().map_err(|e| format!("terminal of {program}: {e}"))?;
-    let writer = ide_core::input::InputWriter::new(format!("openidea-debug-input-{}", s.id.0), writer, |e| {
-        tracing::warn!("debug input: {e}");
-    })
+    let writer = ide_core::input::InputWriter::new(
+        format!("openidea-debug-input-{}", s.id.0),
+        writer,
+        #[cfg(unix)]
+        wait_writable,
+        |e| {
+            tracing::warn!("debug input: {e}");
+        },
+    )
     .inspect_err(|_| {
         let _ = child.kill();
         let _ = child.wait();
     })
     .map_err(|e| format!("terminal input worker: {e}"))?;
     let pid = child.process_id();
-    forward_terminal_output(s, reader);
+    forward_terminal_output(
+        s,
+        reader,
+        #[cfg(unix)]
+        wait_readable,
+    );
     if let Some(mut previous) = s.program.lock().replace(ProgramTerminal { writer, child, _master: pair.master }) {
         let _ = previous.child.kill();
     }
@@ -680,7 +697,11 @@ pub(crate) fn run_in_terminal(s: &Arc<Session>, args: &Value) -> Result<Value, S
 }
 
 /// The program's terminal output, as stdout lines (`\r\n` as `\n`; colours are kept).
-fn forward_terminal_output(s: &Session, mut reader: Box<dyn std::io::Read + Send>) {
+fn forward_terminal_output(
+    s: &Session,
+    mut reader: Box<dyn std::io::Read + Send>,
+    #[cfg(unix)] mut wait_readable: impl FnMut() -> std::io::Result<()> + Send + 'static,
+) {
     let session = s.id;
     let sink = s.owner.sink.clone();
     let _ = std::thread::Builder::new().name(format!("openidea-debuggee-{}", session.0)).spawn(move || {
@@ -692,6 +713,14 @@ fn forward_terminal_output(s: &Session, mut reader: Box<dyn std::io::Read + Send
                 Ok(n) => pending.extend_from_slice(&buf[..n]),
                 Err(e) if e.kind() == std::io::ErrorKind::Interrupted => continue,
                 Err(e) if e.kind() == std::io::ErrorKind::WouldBlock => {
+                    #[cfg(unix)]
+                    if let Err(e) = wait_readable()
+                        && e.kind() != std::io::ErrorKind::Interrupted
+                    {
+                        tracing::warn!(%session, "debug terminal read: {e}");
+                        break;
+                    }
+                    #[cfg(not(unix))]
                     std::thread::sleep(std::time::Duration::from_millis(4));
                     continue;
                 }
