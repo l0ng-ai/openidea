@@ -5096,8 +5096,6 @@
   "Choose a WAR artifact": "Escolha um artefato WAR",
   "Choose a Maven WAR module": "Escolha um módulo WAR do Maven",
   "Choose a Gradle WAR module": "Escolha um módulo WAR do Gradle",
-  "Build the selected WAR artifact before launching Tomcat": "Compilar o artefato WAR selecionado antes de iniciar o Tomcat",
-  "Build the WAR artifact before launching Tomcat": "Compilar o artefato WAR antes de iniciar o Tomcat",
   "The built WAR artifact does not exist: {path}": "O artefato WAR compilado não existe: {path}",
   "Cannot resolve Maven WAR artifact: {details}": "Não é possível resolver o artefato WAR do Maven: {details}",
   "Choose a WAR file or exploded directory": "Escolha um arquivo WAR ou diretório exploded",
