@@ -593,6 +593,10 @@ export interface EditorService {
   prepareClose?(): Promise<EditorCloseSession>;
   /** Backend project/window transition failed after authorization: resume its prepared documents. */
   cancelClose?(): void;
+  /** Drops this window's saved editor tabs so the next open does not restore them. */
+  forgetSavedTabs?(): void;
+  /** Writes them again when a close is cancelled after {@link forgetSavedTabs}. */
+  keepSavedTabs?(): void;
   /** Edit › Undo / Redo for a focused custom editor that has its own history; false when none takes it. */
   documentHistory?(command: "undo" | "redo"): boolean;
 }

@@ -678,5 +678,9 @@
   "Untagged Images": "Untagged Images",
   "Show Processes": "Show Processes",
   "Open Log in Editor": "Open Log in Editor",
-  "Open Container Log in Editor": "Open Container Log in Editor"
+  "Open Container Log in Editor": "Open Container Log in Editor",
+  "Close the window instead of showing the Welcome screen": "Close the window instead of showing the Welcome screen",
+  "When this is the only window, closing a project or a file exits. Turn this off to return to the Welcome screen.": "When this is the only window, closing a project or a file exits. Turn this off to return to the Welcome screen.",
+  "Close all editor tabs when the window closes": "Close all editor tabs when the window closes",
+  "Files left open are not restored the next time that project or a standalone file is opened.": "Files left open are not restored the next time that project or a standalone file is opened."
 }

@@ -46,7 +46,14 @@ export interface CustomKeymapSettings {
 
 export interface ValidSettings extends WorkflowSettings {
   plugins: Record<string, Record<string, unknown>>;
-  general: { reopenLastProject: boolean; confirmExit: boolean } & GeneralExtras;
+  general: {
+    reopenLastProject: boolean;
+    confirmExit: boolean;
+    /** Last window exits instead of showing the Welcome screen. */
+    closeWithoutWelcome: boolean;
+    /** Closing a window drops its saved editor tabs. */
+    closeTabsWithWindow: boolean;
+  } & GeneralExtras;
   appearance: { theme: ThemeId; accent: string; uiFontSize: number; locale: Locale } & AppearanceExtras;
   editor: {
     fontFamily: string;
@@ -126,7 +133,13 @@ export { ACCENT_PRESETS } from "@/workbench/theme";
 
 export const DEFAULT_SETTINGS: ValidSettings = {
   plugins: {},
-  general: { reopenLastProject: true, confirmExit: true, ...DEFAULT_GENERAL_EXTRAS },
+  general: {
+    reopenLastProject: true,
+    confirmExit: true,
+    closeWithoutWelcome: true,
+    closeTabsWithWindow: true,
+    ...DEFAULT_GENERAL_EXTRAS,
+  },
   appearance: { theme: "light", accent: "#3871e1", uiFontSize: 13, locale: "en", ...DEFAULT_APPEARANCE_EXTRAS },
   editor: {
     fontFamily: "JetBrains Mono",
@@ -225,6 +238,8 @@ export function validateSettings(raw: Settings | unknown): ValidSettings {
       ...validateGeneralExtras(g),
       reopenLastProject: bool(g.reopenLastProject, d.general.reopenLastProject),
       confirmExit: bool(g.confirmExit, d.general.confirmExit),
+      closeWithoutWelcome: bool(g.closeWithoutWelcome, d.general.closeWithoutWelcome),
+      closeTabsWithWindow: bool(g.closeTabsWithWindow, d.general.closeTabsWithWindow),
     },
     appearance: {
       ...validateAppearanceExtras(a),

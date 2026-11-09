@@ -63,6 +63,21 @@ describe("appearance & behavior settings", () => {
     });
   });
 
+  it("closes the last window without Welcome and drops its tabs unless turned off", () => {
+    const fresh = validateSettings({});
+    expect(fresh.general.closeWithoutWelcome).toBe(true);
+    expect(fresh.general.closeTabsWithWindow).toBe(true);
+    const off = validateSettings({ general: { closeWithoutWelcome: false, closeTabsWithWindow: false } });
+    expect(off.general.closeWithoutWelcome).toBe(false);
+    expect(off.general.closeTabsWithWindow).toBe(false);
+    expect(
+      validateSettings({ general: { closeWithoutWelcome: "yes", closeTabsWithWindow: 1 } } as never).general,
+    ).toMatchObject({
+      closeWithoutWelcome: true,
+      closeTabsWithWindow: true,
+    });
+  });
+
   it("defaults Show tool window badges to on and honours the stored value", () => {
     expect(validateAppearanceExtras({}).showToolWindowBadges).toBe(true);
     expect(validateAppearanceExtras({ showToolWindowBadges: false }).showToolWindowBadges).toBe(false);

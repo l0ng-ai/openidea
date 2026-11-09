@@ -501,8 +501,9 @@ async function closeThisWindow(): Promise<void> {
 }
 
 /**
- * LightEdit: closing its last editor tab closes the window (through the close guard,
- * so the last window shows the Welcome screen instead).
+ * LightEdit: closing its last editor tab closes the window, through the close guard.
+ * The last window returns to Welcome unless "Close the window instead of showing the
+ * Welcome screen" is on.
  */
 export function installLightEditAutoClose(closeWindow: () => Promise<void> = closeThisWindow): () => void {
   const editor = maybeEditorService();

@@ -277,6 +277,10 @@ pub struct CustomKeymap {
 pub struct GeneralSettings {
     pub reopen_last_project: bool,
     pub confirm_exit: bool,
+    /// Last window: exit instead of showing the Welcome screen.
+    pub close_without_welcome: bool,
+    /// Closing a window drops its saved editor tabs, so they are not restored next time.
+    pub close_tabs_with_window: bool,
     /// Where Open… puts a project while one is open: `ask` | `new` | `same` | `attach`.
     pub open_project_in: String,
     /// Initial folder of the Open / Clone dialogs; empty = the OS default.
@@ -299,6 +303,8 @@ impl Default for GeneralSettings {
         Self {
             reopen_last_project: true,
             confirm_exit: true,
+            close_without_welcome: true,
+            close_tabs_with_window: true,
             open_project_in: "ask".into(),
             default_project_directory: String::new(),
             save_on_idle: false,

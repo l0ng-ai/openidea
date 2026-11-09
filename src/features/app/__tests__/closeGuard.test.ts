@@ -1,5 +1,13 @@
 import { describe, expect, it, vi } from "vitest";
-import { confirmExitEnabled, decideClose, type CloseDeps, type CloseInput } from "../closeGuard";
+import {
+  closeTabsWithWindowEnabled,
+  closeWithoutWelcomeEnabled,
+  confirmExitEnabled,
+  decideClose,
+  returnsToWelcome,
+  type CloseDeps,
+  type CloseInput,
+} from "../closeGuard";
 import type { MessageRequest as PromptRequest, MessageResult as PromptResult } from "@/workbench/messages";
 import type { EditorCloseSession } from "@/workbench/contributions";
 
@@ -143,6 +151,25 @@ describe("decideClose", () => {
     expect(confirmExitEnabled({ general: { confirmExit: true } })).toBe(true);
     expect(confirmExitEnabled({ general: {} })).toBe(false);
     expect(confirmExitEnabled(null)).toBe(false);
+  });
+
+  it("closes the last window instead of showing Welcome unless that is turned off", () => {
+    const off = { general: { closeWithoutWelcome: false } };
+    expect(closeWithoutWelcomeEnabled(null)).toBe(true);
+    expect(closeWithoutWelcomeEnabled({ general: {} })).toBe(true);
+    expect(closeWithoutWelcomeEnabled(off)).toBe(false);
+    expect(returnsToWelcome(false, 1, true, off)).toBe(true);
+    expect(returnsToWelcome(false, 1, true, null)).toBe(false);
+    expect(returnsToWelcome(false, 1, true, { general: { closeWithoutWelcome: true } })).toBe(false);
+    expect(returnsToWelcome(true, 1, true, off)).toBe(false);
+    expect(returnsToWelcome(false, 2, true, off)).toBe(false);
+    expect(returnsToWelcome(false, 1, false, off)).toBe(false);
+  });
+
+  it("drops editor tabs on close unless that is turned off", () => {
+    expect(closeTabsWithWindowEnabled(null)).toBe(true);
+    expect(closeTabsWithWindowEnabled({ general: {} })).toBe(true);
+    expect(closeTabsWithWindowEnabled({ general: { closeTabsWithWindow: false } })).toBe(false);
   });
 
   it("includes dirty changes produced while preparing a custom document", async () => {
