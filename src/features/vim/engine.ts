@@ -349,7 +349,8 @@ export function applyRcCommands(commands: readonly RcCommand[]): string[] {
   for (const c of commands) {
     if (c.kind !== "map" && c.kind !== "mapEx") continue;
     const key = firstKey(c.lhs);
-    if (!shadowedBuiltins.has(key) && Vim.unmap(key)) {
+    // The builtins this shadows are context-less; `undefined` matches them.
+    if (!shadowedBuiltins.has(key) && Vim.unmap(key, undefined as unknown as string)) {
       shadowedBuiltins.set(key, LEADER_BUILTIN_DEFAULTS[key] ?? null);
     }
   }
