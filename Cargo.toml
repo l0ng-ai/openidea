@@ -132,7 +132,9 @@ debug = false
 
 [profile.release]
 codegen-units = 1
-lto = true
+# Thin LTO: fat LTO's whole-program link outgrew the 16 GB release runners
+# (Linux arm64 was killed mid-link from v0.1.39 on).
+lto = "thin"
 opt-level = 3
 # Unwind, so a panic fails one task or command instead of quitting the IDE.
 panic = "unwind"
