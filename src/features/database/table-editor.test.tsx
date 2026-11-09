@@ -104,8 +104,8 @@ describe("table editor capabilities", () => {
 
       fireEvent.doubleClick(await screen.findByRole("gridcell", { name: "Ann" }));
       const input = screen.getByRole("textbox", { name: "Edit name" });
-      // A text field keeps ⌘↩ for its own edit.
-      expect(getContext().dbTableEditorFocus).toBe(false);
+      // The inline cell editor still counts as the grid: ⌘↩ confirms the cell, then submits (#2332).
+      expect(getContext().dbTableEditorFocus).toBe(true);
       fireEvent.change(input, { target: { value: "Bob" } });
       fireEvent.keyDown(input, { key: "Enter" });
       act(() => grid.focus());

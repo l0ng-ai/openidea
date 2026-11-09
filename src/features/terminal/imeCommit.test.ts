@@ -1,4 +1,5 @@
 import { describe, expect, it } from "vitest";
+import { Terminal } from "@xterm/xterm";
 import { IME_COMMIT_TIMEOUT_MS, ImeCommitGate, type ImeScheduler } from "./imeCommit";
 
 /** Runs queued callbacks in order, the way setTimeout(0) drains after the current event. */
@@ -34,15 +35,57 @@ function gateWithRebase() {
 /** Collects the emissions that reach the PTY, like `Session.fromTerminal`. */
 function emitter(gate: ImeCommitGate) {
   const sent: string[] = [];
-  return { sent, emit: (data: string) => gate.accept() && sent.push(data) };
+  return { sent, emit: (data: string) => gate.accept(data) && sent.push(data) };
 }
 
 describe("ImeCommitGate", () => {
+  it.each(["\x1b[<65;3;2M", "\x1b[A", "\x1b[200~paste\x1b[201~"])(
+    "keeps control input out of the commit's text quota: %j",
+    (control) => {
+      const { gate } = gateWithRebase();
+      const { sent, emit } = emitter(gate);
+      gate.begin();
+      emit(control);
+      emit("，");
+      emit(control);
+      emit("好，");
+      expect(sent).toEqual([control, "，", control]);
+    },
+  );
+
+  it("still drops a stale IME deletion but lets a real Backspace through", () => {
+    const { gate } = gateWithRebase();
+    const { sent, emit } = emitter(gate);
+    gate.begin();
+    emit("，");
+    emit("\x7f");
+    gate.keystroke();
+    emit("\x7f");
+    expect(sent).toEqual(["，", "\x7f"]);
+  });
+
+  it.each([true, false])("preserves terminal replies during an IME commit (text first: %s)", async (textFirst) => {
+    const { gate } = gateWithRebase();
+    const { sent, emit } = emitter(gate);
+    const term = new Terminal();
+    term.onData(emit);
+    try {
+      gate.begin();
+      if (textFirst) term.input("，");
+      await new Promise<void>((done) => term.write("\x1b[6n\x1b[c", done));
+      if (!textFirst) term.input("，");
+      term.input("好，");
+      expect(sent).toEqual(textFirst ? ["，", "\x1b[1;1R", "\x1b[?1;2c"] : ["\x1b[1;1R", "\x1b[?1;2c", "，"]);
+    } finally {
+      term.dispose();
+    }
+  });
+
   it("takes the first emission of a commit and drops the repeated one", () => {
     const { gate } = gateWithRebase();
     gate.begin();
-    expect(gate.accept()).toBe(true);
-    expect(gate.accept()).toBe(false);
+    expect(gate.accept("text")).toBe(true);
+    expect(gate.accept("text")).toBe(false);
   });
 
   it("keeps the real text of the pi case and drops the stale suffix", () => {
@@ -79,10 +122,10 @@ describe("ImeCommitGate", () => {
     // commit's still-running timeout.
     const { gate } = gateWithRebase();
     gate.begin();
-    expect(gate.accept()).toBe(true);
+    expect(gate.accept("text")).toBe(true);
     gate.begin();
-    expect(gate.accept()).toBe(true);
-    expect(gate.accept()).toBe(false);
+    expect(gate.accept("text")).toBe(true);
+    expect(gate.accept("text")).toBe(false);
   });
 
   it("drops the stale suffix of a WebKitGTK punctuation commit without compositionstart", () => {
@@ -106,23 +149,23 @@ describe("ImeCommitGate", () => {
     const { gate, run, rebases } = gateWithRebase();
     gate.begin();
     gate.compositionStart();
-    expect(gate.accept()).toBe(true);
-    expect(gate.accept()).toBe(true);
+    expect(gate.accept("text")).toBe(true);
+    expect(gate.accept("text")).toBe(true);
     gate.finish();
     run();
     expect(rebases()).toBe(1);
 
     gate.begin();
-    expect(gate.accept()).toBe(true);
-    expect(gate.accept()).toBe(false);
+    expect(gate.accept("text")).toBe(true);
+    expect(gate.accept("text")).toBe(false);
   });
 
   it("accepts every emission while composing", () => {
     const { gate } = gateWithRebase();
     gate.compositionStart();
-    expect(gate.accept()).toBe(true);
-    expect(gate.accept()).toBe(true);
-    expect(gate.accept()).toBe(true);
+    expect(gate.accept("text")).toBe(true);
+    expect(gate.accept("text")).toBe(true);
+    expect(gate.accept("text")).toBe(true);
   });
 
   it("rebases after a composition that xterm sent by itself", () => {
@@ -137,7 +180,7 @@ describe("ImeCommitGate", () => {
   it("rebases after a commit whose compositionend arrives, not before", () => {
     const { gate, run, rebases } = gateWithRebase();
     gate.begin();
-    expect(gate.accept()).toBe(true);
+    expect(gate.accept("text")).toBe(true);
     gate.finish();
     expect(rebases()).toBe(0);
     run();
@@ -147,11 +190,11 @@ describe("ImeCommitGate", () => {
   it("opens a commit from a composition input when no keydown preceded it", () => {
     const { gate } = gateWithRebase();
     gate.input();
-    expect(gate.accept()).toBe(true);
-    expect(gate.accept()).toBe(false);
+    expect(gate.accept("text")).toBe(true);
+    expect(gate.accept("text")).toBe(false);
     // A second input event belongs to the same commit and must not reopen it.
     gate.input();
-    expect(gate.accept()).toBe(false);
+    expect(gate.accept("text")).toBe(false);
   });
 
   it("closes a commit whose compositionend never arrives", () => {
@@ -161,7 +204,7 @@ describe("ImeCommitGate", () => {
     run();
     expect(IME_COMMIT_TIMEOUT_MS).toBeGreaterThan(0);
     expect(rebases()).toBe(1);
-    expect(gate.accept()).toBe(true);
+    expect(gate.accept("text")).toBe(true);
   });
 
   it("does not rebase into a composition that started before the close ran", () => {

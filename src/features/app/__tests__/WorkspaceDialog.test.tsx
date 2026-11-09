@@ -2,6 +2,7 @@ import { beforeEach, expect, it, vi } from "vitest";
 import { act, fireEvent, render, screen, waitFor } from "@testing-library/react";
 import { open } from "@tauri-apps/plugin-dialog";
 import { commands, type ProjectDiscovery } from "@/platform/ipc";
+import { provideProjectTrustPrompt } from "@/platform/projectTrust";
 import { invokeLocal } from "@/platform/tauriCore";
 import { useProject } from "@/platform/project";
 import { WorkspaceDialogHost, showWorkspaceDialog } from "../WorkspaceDialog";
@@ -19,6 +20,10 @@ beforeEach(() => {
   vi.restoreAllMocks();
   vi.mocked(openProjectWithPolicy).mockClear();
   vi.mocked(open).mockReset();
+  vi.spyOn(commands, "projectTrustStatus").mockResolvedValue({
+    status: "ok",
+    data: { root: "/work", trusted: true, decided: true },
+  });
   vi.mocked(invokeLocal).mockClear();
   useProject.setState({ project: null, settings: null, lightEdit: false });
 });
@@ -190,4 +195,40 @@ it("retains the form and linked folders when saving fails", async () => {
   expect(screen.getByLabelText("Project folder path")).toHaveValue("/work/missing");
   fireEvent.click(screen.getByRole("button", { name: /^Cancel$/ }));
   expect(screen.queryByRole("dialog")).not.toBeInTheDocument();
+});
+
+it.each(["restricted", "cancelled"])("retains Manage Workspace when project trust is %s", async (decision) => {
+  useProject.setState({
+    project: {
+      root: "/work/primary",
+      name: "primary",
+      trusted: true,
+      isGit: false,
+      settings: {},
+      workspace: { version: 1, name: "primary", projects: ["/work/primary"] },
+    },
+  } as never);
+  vi.mocked(commands.projectTrustStatus).mockResolvedValue({
+    status: "ok",
+    data: { root: "/work/restricted", trusted: false, decided: true },
+  });
+  const update = vi.spyOn(commands, "workspaceUpdate");
+  const dispose = provideProjectTrustPrompt(async () => decision !== "cancelled");
+  try {
+    showWorkspaceDialog("manage");
+    render(<WorkspaceDialogHost />);
+    fireEvent.change(screen.getByLabelText("Project folder path"), { target: { value: "/work/restricted" } });
+    fireEvent.click(screen.getByRole("button", { name: /^Apply$/ }));
+    await waitFor(() => expect(screen.getByRole("button", { name: /^Apply$/ })).toBeEnabled());
+    expect(update).not.toHaveBeenCalled();
+    if (decision === "restricted") {
+      expect(screen.getByRole("alert")).toHaveTextContent(
+        "Cannot attach /work/restricted because it is restricted. Open it separately and choose Trust Project, then attach it again.",
+      );
+    } else expect(screen.queryByRole("alert")).not.toBeInTheDocument();
+    expect(screen.getByLabelText("Project folder path")).toHaveValue("/work/restricted");
+    fireEvent.click(screen.getByRole("button", { name: /^Cancel$/ }));
+  } finally {
+    dispose();
+  }
 });

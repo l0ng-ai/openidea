@@ -12,13 +12,18 @@ pub(super) fn scopes(project: &Project, config: &Path) -> IdeResult<Vec<Scope>> 
 }
 
 fn scopes_at(root: &Path, cache: &Path, config: &Path, settings: Settings) -> IdeResult<Vec<Scope>> {
+    let window_root = root;
     Ok(match ide_workspace::workspace::Workspace::load(root)? {
         Some(workspace) => workspace
             .projects
             .into_iter()
             .filter(|p| p.is_dir())
             .map(|root| Scope {
-                cache: cache.join(crate::project::project_key(&root)),
+                cache: if root == window_root {
+                    cache.to_owned()
+                } else {
+                    cache.join(crate::project::project_key(&root))
+                },
                 settings: ide_workspace::SettingsStore::load(config, Some(&root)).effective(),
                 root,
             })
@@ -36,10 +41,12 @@ pub(super) fn load_scopes(root: &Path, scopes: &[Scope]) -> BuildModel {
     let mut combined = BuildModel::default();
     for scope in scopes {
         let mut model = load(&scope.root, &scope.cache, &scope.settings);
-        if scope.root == root {
+        if scopes.len() == 1 && scope.root == root {
             return model;
         }
-        if let Some(maven) = &mut model.maven {
+        if scope.root != root
+            && let Some(maven) = &mut model.maven
+        {
             let owner = ide_core::ipc_path::to_ipc(&scope.root);
             for p in &mut maven.projects {
                 p.project_root = Some(owner.clone());
@@ -73,7 +80,7 @@ pub(super) fn load_scopes(root: &Path, scopes: &[Scope]) -> BuildModel {
                 }
             }
         }
-        for g in &mut model.gradle {
+        for g in model.gradle.iter_mut().filter(|_| scope.root != root) {
             g.dir = absolute(&scope.root, &g.dir);
             for p in &mut g.projects {
                 p.dir = absolute(&scope.root, &p.dir);
@@ -144,6 +151,30 @@ pub(super) fn update_files(root: &Path, scopes: &[Scope], model: &BuildModel, to
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn attached_primary_keeps_its_cache_and_combines_build_models() {
+        let tmp = tempfile::tempdir().unwrap();
+        let base = dunce::canonicalize(tmp.path()).unwrap();
+        let root = base.join("primary");
+        let other = base.join("other");
+        for path in [&root, &other] {
+            std::fs::create_dir(path).unwrap();
+            std::fs::write(path.join("pom.xml"), "<project><artifactId>app</artifactId></project>").unwrap();
+        }
+        let cache = base.join("cache");
+        ide_build::save_maven_profiles(&cache, &["kept".into()]).unwrap();
+        ide_workspace::workspace::Workspace::attach(&root, "Primary", vec![root.clone(), other.clone()]).unwrap();
+        let scopes = scopes_at(&root, &cache, &base.join("config"), Settings::default()).unwrap();
+        assert_eq!(scopes[0].cache, cache);
+        assert_eq!(ide_build::maven_profiles(&scopes[0].cache), ["kept"]);
+        assert_eq!(scopes[1].cache, cache.join(crate::project::project_key(&other)));
+        let model = load_scopes(&root, &scopes);
+        let projects = model.maven.unwrap().projects;
+        assert_eq!(projects.len(), 2);
+        assert_eq!(projects[0].pom, "pom.xml");
+        assert_eq!(projects[1].pom, absolute(&other, "pom.xml"));
+    }
 
     #[test]
     fn workspace_models_use_member_settings_paths_and_caches() {
