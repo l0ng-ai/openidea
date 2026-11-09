@@ -640,6 +640,18 @@ describe("Attach", () => {
     await openProjectWithPolicy("/p/b");
     expect(workspaceAttach).not.toHaveBeenCalled();
   });
+  it("explains how to attach a folder already decided as restricted", async () => {
+    useProject.setState(projectState("/p/a"));
+    projectTrustStatus.mockResolvedValueOnce(ok({ root: "/p/b", trusted: false, decided: true }));
+    await openProjectWithPolicy("/p/b");
+    expect(workspaceAttach).not.toHaveBeenCalled();
+    expect(notify).toHaveBeenCalledWith(
+      expect.objectContaining({
+        level: "warning",
+        body: "Cannot attach /p/b because it is restricted. Open it separately and choose Trust Project, then attach it again.",
+      }),
+    );
+  });
   it("refreshes an existing workspace without reopening its editor session", async () => {
     const before = {
       root: "/workspace",

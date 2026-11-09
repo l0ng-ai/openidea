@@ -8,7 +8,7 @@
  * editor tabs only. One LightEdit window collects them all.
  */
 import { executeAction, type Action } from "@/platform/actions";
-import { t } from "@/platform/i18n";
+import { t, tx } from "@/platform/i18n";
 import { call, commands, isCancelled, isTauri } from "@/platform/ipc";
 import {
   basename,
@@ -177,7 +177,14 @@ export async function openProjectWithPolicy(path: string, files: readonly string
 async function attachProject(path: string, files: readonly string[] = []): Promise<void> {
   try {
     await confirmProjectTrust(path, "local");
-    if (!(await call(commands.projectTrustStatus(path))).trusted) return;
+    if (!(await call(commands.projectTrustStatus(path))).trusted) {
+      notifications().notify({
+        level: "warning",
+        title: tx("Project not attached"),
+        body: tx`Cannot attach ${path} because it is restricted. Open it separately and choose Trust Project, then attach it again.`,
+      });
+      return;
+    }
     await call(commands.workspaceAttach(path));
     const project = await commands.projectCurrent();
     if (project) useProject.setState({ project, settings: project.settings });

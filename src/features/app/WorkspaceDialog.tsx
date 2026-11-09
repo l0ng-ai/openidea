@@ -104,14 +104,19 @@ function WorkspaceDialog({ mode, onClose }: { mode: "create" | "manage"; onClose
       } else {
         for (const path of included.filter((p) => !workspace?.projects.includes(p))) {
           await confirmProjectTrust(path);
-          if (!(await call(commands.projectTrustStatus(path))).trusted) return;
+          if (!(await call(commands.projectTrustStatus(path))).trusted) {
+            setError(
+              tx`Cannot attach ${path} because it is restricted. Open it separately and choose Trust Project, then attach it again.`,
+            );
+            return;
+          }
         }
         const updated = await call(commands.workspaceUpdate(name.trim(), included));
         useProject.setState({ project: updated, settings: updated.settings });
       }
       onClose();
     } catch (e) {
-      setError(e instanceof Error ? e.message : String(e));
+      if (!isCancelled(e)) setError(e instanceof Error ? e.message : String(e));
     } finally {
       setBusy(false);
     }

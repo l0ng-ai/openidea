@@ -1,4 +1,6 @@
 {
+  "Project not attached": "未附加项目",
+  "Cannot attach {0} because it is restricted. Open it separately and choose Trust Project, then attach it again.": "无法附加 {0}，因为它处于受限模式。请单独打开它并选择“信任项目”，然后再次附加。",
   "The language server Java executable ({path}) cannot run on this machine. Choose a working JDK in {setting}, or set it to Auto.": "语言服务器的 Java 可执行文件（{path}）无法在此机器上运行。请在 {setting} 中选择可正常运行的 JDK，或设为自动。",
   "Input queue is full (4 MiB or 1024 writes); input was not sent.": "输入队列已满（4 MiB 或 1024 次写入）；本次输入未发送。",
   "Cannot write to terminal": "无法写入终端",
