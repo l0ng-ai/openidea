@@ -292,7 +292,7 @@ impl Cx<'_> {
     /// The working directory (absolute) and the configuration's `cwd`.
     fn cwd(&self, value: Option<&str>) -> Res<(PathBuf, Option<PathBuf>)> {
         Ok(match self.text(value)? {
-            Some(dir) => working_dir(self.root, &dir),
+            Some(dir) => working_dir(self.root, &file_url_path(&dir)),
             None => (self.root.to_path_buf(), None),
         })
     }
@@ -864,6 +864,28 @@ fn split_env_files(value: &str, separator: char) -> impl Iterator<Item = &str> {
     value.split(separator).filter(|f| !f.trim().is_empty())
 }
 
+/// The path a `file:` URL names, and `value` unchanged when it is not one.
+///
+/// IDEA writes path options as URLs (`file://$PROJECT_DIR$`), which expand to
+/// `file://C:/project` on Windows: the drive letter lands where a URL's authority
+/// belongs. Parsing that as a path yields `C:project`, a drive-relative path that
+/// then resolves against the project directory instead of replacing it.
+fn file_url_path(value: &str) -> String {
+    let Some(rest) = value.strip_prefix("file:") else {
+        return value.to_owned();
+    };
+    let body = rest.trim_start_matches('/');
+    let drive = matches!(body.as_bytes(), [d, b':', ..] if d.is_ascii_alphabetic());
+    if drive {
+        body.to_owned()
+    } else if rest.starts_with("//") && !rest.starts_with("///") {
+        // A real authority (`file://server/share`): a UNC path.
+        format!("//{body}")
+    } else {
+        format!("/{body}")
+    }
+}
+
 /// Keywords without the quotes around them (`"not slow"` → `not slow`).
 fn strip_quotes(s: &str) -> &str {
     let s = s.trim();
@@ -963,6 +985,20 @@ mod tests {
         assert_eq!(c.attr("name"), Some("a & b"));
         assert_eq!(c.option("SCRIPT_TEXT"), Some("echo 1\necho 2"));
         assert!(parse("<a><b></a>").is_err());
+    }
+
+    #[test]
+    fn file_urls_become_paths_whatever_the_drive_letter_looks_like() {
+        // IDEA on Windows: the drive letter sits where the authority belongs.
+        assert_eq!(file_url_path("file://C:/p"), "C:/p");
+        assert_eq!(file_url_path(r"file://C:\p"), r"C:\p");
+        assert_eq!(file_url_path("file:///C:/p"), "C:/p");
+        assert_eq!(file_url_path("file:///p/a"), "/p/a");
+        assert_eq!(file_url_path("file://server/share"), "//server/share");
+        // Not a URL: left alone, including a bare Windows path.
+        assert_eq!(file_url_path(r"C:\p"), r"C:\p");
+        assert_eq!(file_url_path("/p/a"), "/p/a");
+        assert_eq!(file_url_path(""), "");
     }
 
     #[test]

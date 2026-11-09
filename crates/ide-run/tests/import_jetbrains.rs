@@ -787,3 +787,51 @@ fn java_applications_and_spring_boot_keep_their_module() {
 
     assert_eq!(reason(&r, "NoMain"), &SkipReason::NothingToRun);
 }
+
+/// IDEA writes the working directory as a URL. On Windows `file://$PROJECT_DIR$`
+/// expands to `file://C:/project`, where the drive letter sits where the authority
+/// belongs; read as a path that is `C:project`, which resolves against the project
+/// directory instead of replacing it and the launch fails on the doubled path.
+#[test]
+fn file_url_working_directories_stay_inside_the_project() {
+    let dir = tempfile::tempdir().unwrap();
+    let root = dunce::canonicalize(dir.path()).unwrap();
+    write(&root, "pom.xml", "<project><artifactId>shop</artifactId><packaging>pom</packaging></project>");
+    write(
+        &root,
+        "gateway/pom.xml",
+        "<project><parent><artifactId>shop</artifactId></parent><artifactId>gateway</artifactId></project>",
+    );
+    write(
+        &root,
+        ".run/Gateway.run.xml",
+        &run_file(
+            "Gateway",
+            r#"<configuration name="NAME" type="SpringBootApplicationConfigurationType" factoryName="Spring Boot">
+      <module name="gateway" />
+      <option name="SPRING_BOOT_MAIN_CLASS" value="com.example.GatewayApplication" />
+      <option name="WORKING_DIRECTORY" value="file://$PROJECT_DIR$" />
+      <method v="2" />
+    </configuration>"#,
+        ),
+    );
+    write(
+        &root,
+        ".run/Sub.run.xml",
+        &run_file(
+            "Sub",
+            r#"<configuration name="NAME" type="SpringBootApplicationConfigurationType" factoryName="Spring Boot">
+      <module name="gateway" />
+      <option name="SPRING_BOOT_MAIN_CLASS" value="com.example.SubApplication" />
+      <option name="WORKING_DIRECTORY" value="file://$PROJECT_DIR$/gateway" />
+      <method v="2" />
+    </configuration>"#,
+        ),
+    );
+
+    let r = import_from(&root, &[]);
+
+    // The project directory itself: no `cwd` to store.
+    assert_eq!(cwd(get(&r, "Gateway")), None);
+    assert_eq!(cwd(get(&r, "Sub")), Some(PathBuf::from("gateway")));
+}
