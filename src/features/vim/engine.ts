@@ -302,11 +302,57 @@ export function defineExCommands() {
   Vim.defineEx("action", "action", (_cm, params) => void runIdeAction(params.args?.[0]));
 }
 
+/**
+ * The first key of a mapping's lhs — `<Space>` / `,` / `x` and so on. Vim's own
+ * single-key built-ins occupy most of these: codemirror-vim prefers a full
+ * match over a partial one, so `<Space>` → `l` or `,` → repeat-find would fire
+ * before a `<leader>…` sequence can complete (#2337). The fix is to unmap the
+ * built-in while a user mapping starts with that key.
+ *
+ * `Vim.unmap` splices the built-in out of the default keymap. To undo that when
+ * the rc file stops using the key, the removed default entry is re-added via
+ * `_mapCommand` on the next apply (it lands in the user region and mapclear
+ * drops it, so re-adding each round is idempotent).
+ */
+const LEADER_BUILTIN_DEFAULTS: Record<string, Record<string, unknown>> = {
+  "<Space>": { keys: "<Space>", type: "keyToKey", toKeys: "l" },
+  "<S-Space>": { keys: "<S-Space>", type: "keyToKey", toKeys: "w" },
+  "<C-Space>": { keys: "<C-Space>", type: "keyToKey", toKeys: "W" },
+  "<BS>": { keys: "<BS>", type: "keyToKey", toKeys: "h" },
+  "<S-BS>": { keys: "<S-BS>", type: "keyToKey", toKeys: "b" },
+  "<C-BS>": { keys: "<C-BS>", type: "keyToKey", toKeys: "B" },
+  "<Del>": { keys: "<Del>", type: "keyToKey", toKeys: "x" },
+  ",": { keys: ",", type: "motion", motion: "repeatLastCharacterSearch", motionArgs: { forward: false } },
+  ";": { keys: ";", type: "motion", motion: "repeatLastCharacterSearch", motionArgs: { forward: true } },
+};
+
+/** Built-ins unmapped to make room for a user mapping's first key, by key. */
+const shadowedBuiltins = new Map<string, Record<string, unknown> | null>();
+
+function firstKey(lhs: string): string {
+  return /^<[CSMA]-*\w+>|^./i.exec(lhs)?.[0] ?? lhs;
+}
+
 /** Applies rc commands (replacing earlier rc mappings). Returns problems to report. */
 export function applyRcCommands(commands: readonly RcCommand[]): string[] {
   defineExCommands();
   Vim.mapclear();
   const problems: string[] = [];
+  // Restore the built-ins the previous rc shadowed, then unmap whatever this
+  // one's first keys collide with. Restoring first keeps mapclear's
+  // user/default boundary honest — it assumes the default region never shrank.
+  for (const [key, entry] of shadowedBuiltins) {
+    if (entry) Vim._mapCommand(entry as never);
+    shadowedBuiltins.delete(key);
+  }
+
+  for (const c of commands) {
+    if (c.kind !== "map" && c.kind !== "mapEx") continue;
+    const key = firstKey(c.lhs);
+    if (!shadowedBuiltins.has(key) && Vim.unmap(key)) {
+      shadowedBuiltins.set(key, LEADER_BUILTIN_DEFAULTS[key] ?? null);
+    }
+  }
   for (const c of commands) {
     try {
       if (c.kind === "set") {
