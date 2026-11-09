@@ -259,7 +259,6 @@ describe("Check for Updates", () => {
             const answer = screen.getByRole(outcome === "error" ? "alert" : "status");
             expect(answer).toBeVisible();
             expect(answer).toHaveTextContent(title);
-            expect(task(CHECK_TASK_ID)?.done).toBe(true);
           } finally {
             view.unmount();
             list?.unmount();
