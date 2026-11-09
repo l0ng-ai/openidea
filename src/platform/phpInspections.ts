@@ -262,6 +262,13 @@ export const PHP_INSPECTIONS: readonly PhpInspection[] = [
     description:
       "Reports Laravel abilities, in Gate::allows(), $user->can(), authorize() or @can, that no gate defines and that aren't a method of the model's policy (of any policy when the model isn't known).",
   },
+  {
+    code: "PhpUndefinedInertiaPage",
+    name: "Undefined Inertia page",
+    group: "Frameworks",
+    description:
+      "Reports Inertia page names, in Inertia::render(), inertia() or Route::inertia(), that no file of the page folders has. The quick-fix creates the page.",
+  },
 ];
 
 const BY_ID = new Map(PHP_INSPECTIONS.map((i) => [phpInspectionId(i.code), i]));

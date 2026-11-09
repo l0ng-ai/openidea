@@ -68,13 +68,13 @@ fn the_fixture_apps_ide_json_files() {
         [project.root.join("ide.json"), crate::project::normalize(&project.root.join("vendor/acme/widgets/ide.json"))];
     assert_eq!(ide.files, files, "{:?}", ide.ignored);
     let kinds: Vec<&str> = ide.completions.iter().map(|rule| rule.kind.as_str()).collect();
-    assert_eq!(kinds, ["routeName", "configKey", "staticStrings", "directoryFiles", "viewName"]);
+    assert_eq!(kinds, ["routeName", "configKey", "staticStrings", "directoryFiles", "viewName", "inertiaPage"]);
     // `parameters` are 1-based in the file.
     assert_eq!(ide.completions[0].conditions[0].parameters, [1]);
     assert_eq!(ide.completions[1].options.prefix, "blog.");
     assert_eq!(ide.completions[3].options.directories, [project.root.join("resources/css")]);
-    // Unknown types and keys are ignored, and say so.
-    assert!(ide.ignored.iter().any(|line| line.contains("'inertiaPage' is not supported")), "{:?}", ide.ignored);
+    // Unknown keys are ignored, and say so.
+    assert!(!ide.ignored.iter().any(|line| line.contains("inertiaPage")), "{:?}", ide.ignored);
     assert!(ide.ignored.iter().any(|line| line.contains("helperCode")), "{:?}", ide.ignored);
     assert_eq!(ide.packages.disabled, ["livewire/livewire"]);
 }
@@ -91,8 +91,9 @@ fn rules_say_where_strings_of_a_kind_sit() {
         ("feed_options(['size' => '/*|*/']);", None),
         ("feed_options(['/*|*/' => 'x']);", None),
         ("stylesheet('/*|*/');", Some("directoryFiles")),
-        // Not supported: ignored.
-        ("inertia('/*|*/');", None),
+        // A built-in place of the rule's kind.
+        ("inertia('/*|*/');", Some("inertiaPage")),
+        ("page_link('/*|*/');", Some("inertiaPage")),
         // The built-in patterns still hold.
         ("config('/*|*/');", Some("configKey")),
         // While typing.

@@ -53,12 +53,25 @@ fn is_name(b: u8) -> bool {
 
 /// The component tag whose `<` is at `start`, if one starts there.
 pub fn tag_at(text: &str, start: usize) -> Option<ComponentTag> {
+    tag_at_with(text, start, BLADE_PREFIXES)
+}
+
+/// What a Blade component tag's name follows.
+const BLADE_PREFIXES: &[&str] = &["x-", "x:"];
+
+/// What a Livewire component tag's name follows (`<livewire:counter />`).
+pub const LIVEWIRE_PREFIXES: &[&str] = &["livewire:"];
+
+/// The tag whose `<` is at `start` and whose name follows one of
+/// `prefixes`, if one starts there.
+pub fn tag_at_with(text: &str, start: usize, prefixes: &[&str]) -> Option<ComponentTag> {
     let b = text.as_bytes();
     let n = b.len();
-    if b.get(start) != Some(&b'<') || !(b[start + 1..].starts_with(b"x-") || b[start + 1..].starts_with(b"x:")) {
+    if b.get(start) != Some(&b'<') {
         return None;
     }
-    let name_start = start + 3;
+    let prefix = prefixes.iter().find(|prefix| b[start + 1..].starts_with(prefix.as_bytes()))?;
+    let name_start = start + 1 + prefix.len();
     let name_end = (name_start..n).find(|&at| !is_name(b[at])).unwrap_or(n);
     let mut tag = ComponentTag {
         start: start as u32,
@@ -159,11 +172,17 @@ pub enum TagPlace {
 /// What the caret at `offset` is on in a component tag, if it is in one
 /// (and not in an attribute's value).
 pub fn tag_place(text: &str, offset: u32) -> Option<TagPlace> {
+    tag_place_with(text, offset, BLADE_PREFIXES)
+}
+
+/// [`tag_place`] in a tag whose name follows one of `prefixes`
+/// ([`LIVEWIRE_PREFIXES`]); the spans are the same.
+pub fn tag_place_with(text: &str, offset: u32, prefixes: &[&str]) -> Option<TagPlace> {
     let b = text.as_bytes();
     let offset = (offset as usize).min(b.len());
-    // The nearest `<x` before the caret, not closed before it.
-    let start = text[..offset].rfind("<x")?;
-    let tag = tag_at(text, start)?;
+    // The nearest tag opening before the caret, not closed before it.
+    let start = prefixes.iter().filter_map(|prefix| text[..offset].rfind(&format!("<{prefix}"))).max()?;
+    let tag = tag_at_with(text, start, prefixes)?;
     if tag.closed && offset >= tag.end as usize {
         return None;
     }

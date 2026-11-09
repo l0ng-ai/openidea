@@ -6,7 +6,7 @@
 use super::*;
 use crate::frameworks::laravel::{RouteAction, RouteDef, RouteLens};
 
-fn copy_dir(from: &Path, to: &Path) {
+pub(super) fn copy_dir(from: &Path, to: &Path) {
     std::fs::create_dir_all(to).unwrap();
     for entry in std::fs::read_dir(from).unwrap() {
         let entry = entry.unwrap();

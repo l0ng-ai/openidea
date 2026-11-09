@@ -17,8 +17,9 @@
 //! `validationRule` and `requestField` ([`validation_rule`]), and
 //! `eloquentField` and `eloquentRelation` ([`eloquent`]), and `gate`,
 //! `authGuard` and `passwordBroker` ([`gate`]), and `artisanCommand`
-//! ([`artisan_command`]), and `staticStrings` and `directoryFiles`
-//! ([`rules`]).
+//! ([`artisan_command`]), and `livewireComponent` ([`livewire`]) and
+//! `inertiaPage` ([`inertia_page`]), and `staticStrings` and
+//! `directoryFiles` ([`rules`]).
 //!
 //! Besides the built-in patterns, the completion rules of the project's
 //! `ide.json` files ([`crate::frameworks::laravel::ide_json`]) say where
@@ -62,7 +63,9 @@ pub mod db_table;
 pub mod eloquent;
 pub mod env_key;
 pub mod gate;
+pub mod inertia_page;
 pub mod intentions;
+pub mod livewire;
 pub mod middleware;
 pub mod route_name;
 pub mod rules;
@@ -107,6 +110,8 @@ pub use db_table::DbTable;
 pub use eloquent::{EloquentField, EloquentRelation};
 pub use env_key::EnvKey;
 pub use gate::{AuthGuard, Gate, PasswordBroker};
+pub use inertia_page::InertiaPageKind;
+pub use livewire::LivewireComponentKind;
 pub use middleware::Middleware;
 pub use route_name::RouteName;
 pub use rules::{DirectoryFiles, StaticStrings};
@@ -1020,6 +1025,8 @@ pub fn kinds() -> &'static [&'static dyn ReferenceKind] {
         &AuthGuard,
         &PasswordBroker,
         &ArtisanCommandKind,
+        &LivewireComponentKind,
+        &InertiaPageKind,
         &StaticStrings,
         &DirectoryFiles,
     ]

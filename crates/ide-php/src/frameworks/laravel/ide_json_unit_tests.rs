@@ -29,8 +29,8 @@ fn maps_complete_types_onto_reference_kinds() {
         ("environmentVariable", Some("envKey")),
         ("eloquentFields", Some("eloquentField")),
         ("viteAsset", Some("viteAsset")),
-        ("livewireComponent", None),
-        ("inertiaPage", None),
+        ("livewireComponent", Some("livewireComponent")),
+        ("inertiaPage", Some("inertiaPage")),
         ("nonsense", None),
     ];
     for (complete, kind) in table {

@@ -55,8 +55,8 @@ use ide_core::{CancellationToken, DocId, IdeError, IdeEvent, IdeResult, Pos, Ser
 use parking_lot::{Condvar, Mutex, RwLock};
 
 use crate::frameworks::laravel::{
-    ArtisanCommands, AuthFacts, BladeCatalog, ConfigKeys, EnvKeys, LaravelProject, LiveSchema, RouteTable,
-    Translations, ViewTable, ViteAssets,
+    ArtisanCommands, AuthFacts, BladeCatalog, ConfigKeys, EnvKeys, InertiaPages, LaravelProject, LiveSchema,
+    LivewireComponents, RouteTable, Translations, ViewTable, ViteAssets,
 };
 use crate::index::{IndexStats, PhpIndex};
 use crate::inspect::runner::Runner;
@@ -202,6 +202,8 @@ struct Shared {
     laravel_auth: Mutex<Option<(u64, Arc<AuthFacts>)>>,
     /// The Artisan commands, for a modification count.
     laravel_artisan: Mutex<Option<(u64, Arc<ArtisanCommands>)>>,
+    laravel_livewire: Mutex<Option<(u64, Arc<LivewireComponents>)>>,
+    laravel_inertia: Mutex<Option<(u64, Arc<InertiaPages>)>>,
     /// The Laravel routes, for a modification count.
     laravel_routes: Mutex<Option<(u64, Arc<RouteTable>)>>,
     /// The Laravel views, for a modification count.
@@ -268,6 +270,8 @@ impl PhpEngine {
             laravel_assets: Mutex::new(None),
             laravel_auth: Mutex::new(None),
             laravel_artisan: Mutex::new(None),
+            laravel_livewire: Mutex::new(None),
+            laravel_inertia: Mutex::new(None),
             laravel_routes: Mutex::new(None),
             laravel_views: Mutex::new(None),
             view_variables: Mutex::new(HashMap::new()),
@@ -675,6 +679,21 @@ impl PhpEngine {
     /// when the project isn't a Laravel project.
     pub fn laravel_artisan(&self) -> Option<Arc<ArtisanCommands>> {
         self.laravel_cached(&self.shared.laravel_artisan, |project| ArtisanCommands::read(self, project))
+    }
+
+    /// The Livewire components of the Laravel project (empty without
+    /// Livewire), or `None` when the project isn't a Laravel project.
+    pub fn laravel_livewire(&self) -> Option<Arc<LivewireComponents>> {
+        let views = self.laravel_views()?;
+        self.laravel_cached(&self.shared.laravel_livewire, |project| LivewireComponents::read(self, project, &views))
+    }
+
+    /// The Inertia pages of the Laravel project (empty without Inertia), or
+    /// `None` when the project isn't a Laravel project.
+    pub fn laravel_inertia(&self) -> Option<Arc<InertiaPages>> {
+        self.laravel_cached(&self.shared.laravel_inertia, |project| {
+            InertiaPages::read(project, self.text_of(&project.root.join("package.json")).as_deref())
+        })
     }
 
     /// The routes and middleware of the Laravel project (its route files,

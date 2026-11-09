@@ -6236,6 +6236,8 @@
   "Reports Laravel validation rules, in the rules of a Form Request, $request->validate() or Validator::make(), that are neither built in nor registered with Validator::extend().": "报告 Form Request 的规则、$request->validate() 或 Validator::make() 中既不是内置规则、也未通过 Validator::extend() 注册的 Laravel 验证规则。",
   "Unknown Eloquent column": "未知的 Eloquent 列",
   "Unknown ability": "未知的授权能力",
+  "Undefined Inertia page": "未定义的 Inertia 页面",
+  "Reports Inertia page names, in Inertia::render(), inertia() or Route::inertia(), that no file of the page folders has. The quick-fix creates the page.": "报告 Inertia::render()、inertia() 或 Route::inertia() 中在页面文件夹里没有对应文件的 Inertia 页面名称。快速修复会创建该页面。",
   "Reports Laravel abilities, in Gate::allows(), $user->can(), authorize() or @can, that no gate defines and that aren't a method of the model's policy (of any policy when the model isn't known).": "报告 Gate::allows()、$user->can()、authorize() 或 @can 中既没有 Gate 定义、也不是模型策略方法（未知模型时为任一策略）的 Laravel 授权能力。",
   "Reports column names in Eloquent queries (where(), orderBy(), select(), create([...]) and the like) and in a model's $fillable, $hidden, $casts or $appends that the model's table doesn't have. Only reported when the migrations say for certain which columns the table has.": "报告 Eloquent 查询（where()、orderBy()、select()、create([...]) 等）以及模型的 $fillable、$hidden、$casts 或 $appends 中模型数据表没有的列名。仅当迁移能确定数据表有哪些列时才会报告。",
   "Reports Laravel view names passed to view(), View::make(), Route::view(), response()->view() or a mailable's view() or markdown() that no view file has. The quick-fix creates the Blade template.": "报告传给 view()、View::make()、Route::view()、response()->view() 或 mailable 的 view()、markdown() 的 Laravel 视图名称中，没有对应视图文件的名称。快速修复会创建该 Blade 模板。",

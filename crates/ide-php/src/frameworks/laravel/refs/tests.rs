@@ -437,3 +437,6 @@ mod artisan_tests;
 
 #[path = "ide_json_tests.rs"]
 mod ide_json_tests;
+
+#[path = "livewire_tests.rs"]
+mod livewire_tests;

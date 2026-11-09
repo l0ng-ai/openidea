@@ -14,6 +14,13 @@
 //! - **Custom directives:** `Blade::directive('name', …)` and
 //!   `Blade::if('name', …)` (which also adds `@elsename`, `@endname` and
 //!   `@unlessname`) in the service providers of the app and its modules.
+//! - **Livewire** ([`super::livewire`]), when installed: `<livewire:…>`
+//!   tags (component names, and attributes from the component's public
+//!   properties and `mount()` parameters), and the values of `wire:model`
+//!   (the public properties of the component whose view the template is,
+//!   then those of a form object after `form.`) and `wire:click` and the
+//!   other event directives (its actions and Livewire's magic ones), with
+//!   goto to the class, view, property or method.
 //!
 //! Only Laravel's documentation and source (MIT) are design inputs.
 
@@ -23,10 +30,11 @@ use std::path::{Path, PathBuf};
 use ide_core::{Diagnostic, Pos, Range};
 
 use super::ide_json::IdeJson;
+use super::livewire::{LivewireComponent, LivewireMember, MAGIC_ACTIONS, WireAt, WireValue, wire_value_at};
 use super::views::{call_arguments, is_blade, provider_files};
 use super::{LaravelProject, ViewTable};
 use crate::blade::structure::{self, Name, NameKind, NameRole};
-use crate::blade::tags::{TagPlace, tag_at, tag_place};
+use crate::blade::tags::{LIVEWIRE_PREFIXES, TagPlace, tag_at, tag_at_with, tag_place, tag_place_with};
 use crate::blade::{BladeDocument, DIRECTIVES, directive_prefix};
 use crate::complete::{Completion, CompletionKind, Completions};
 use crate::engine::PhpEngine;
@@ -486,6 +494,9 @@ impl PhpEngine {
             }
             return Some(Completions { items, incomplete: false });
         }
+        if let Some(found) = self.livewire_completion(blade, offset, &lines) {
+            return Some(found);
+        }
         let catalog = self.laravel_blade()?;
         match tag_place(blade.text, offset)? {
             TagPlace::Name(span) => {
@@ -576,6 +587,9 @@ impl PhpEngine {
                 .collect();
             return Some(targets);
         }
+        if let Some(found) = self.livewire_definition(blade, offset) {
+            return Some(found);
+        }
         let catalog = self.laravel_blade()?;
         if let Some((_, range)) = directive_prefix(blade.text, pos) {
             let word = &blade.text[lines.byte(range.start) as usize..lines.byte(range.end) as usize];
@@ -602,6 +616,133 @@ impl PhpEngine {
                 let written = &blade.text[name.start as usize..name.end as usize];
                 let attribute =
                     self.laravel_component_attributes(component).into_iter().find(|known| known.name == written)?;
+                Some(attribute.target.into_iter().collect())
+            }
+        }
+    }
+}
+
+impl PhpEngine {
+    /// The members a `wire:` value at the caret can name: properties (of
+    /// the form object the value's path names) or actions.
+    fn wire_members(&self, blade: &BladeDocument, offset: u32) -> Option<(WireAt, Vec<LivewireMember>)> {
+        let wire = wire_value_at(blade.text, offset)?;
+        let components = self.laravel_livewire()?;
+        let component = components.of_view(blade.path)?;
+        let members = match wire.what {
+            WireValue::Property => {
+                let mut class = component.class.clone();
+                for segment in &wire.path {
+                    class = self.livewire_form_of(&class, segment)?;
+                }
+                self.livewire_properties(&class)
+            }
+            WireValue::Action => {
+                let mut members = self.livewire_actions(&component.class);
+                members.extend(MAGIC_ACTIONS.iter().map(|(name, detail)| LivewireMember {
+                    name: (*name).to_owned(),
+                    detail: Some((*detail).to_owned()),
+                    target: None,
+                }));
+                members
+            }
+        };
+        Some((wire, members))
+    }
+
+    /// The `<livewire:…>` tag at `offset` and its component, if it names one.
+    fn livewire_tag(&self, blade: &BladeDocument, offset: u32) -> Option<(TagPlace, Option<LivewireComponent>)> {
+        let place = tag_place_with(blade.text, offset, LIVEWIRE_PREFIXES)?;
+        let components = self.laravel_livewire()?;
+        let name = match &place {
+            TagPlace::Name(span) => &blade.text[span.start as usize..span.end as usize],
+            TagPlace::Attribute { component, .. } => component.as_str(),
+        };
+        let component = components.get(name).cloned();
+        Some((place, component))
+    }
+
+    /// Completion of Livewire tags and `wire:` values; `None` elsewhere.
+    fn livewire_completion(&self, blade: &BladeDocument, offset: u32, lines: &LineIndex) -> Option<Completions> {
+        if let Some((wire, members)) = self.wire_members(blade, offset) {
+            let replace = lines.range(wire.word.start, offset);
+            let tab = lines.range(wire.word.start, wire.word.end);
+            let kind = match wire.what {
+                WireValue::Property => CompletionKind::Property,
+                WireValue::Action => CompletionKind::Method,
+            };
+            let items =
+                members.into_iter().map(|member| item(member.name, member.detail, kind, replace, tab)).collect();
+            return Some(Completions { items, incomplete: false });
+        }
+        let (place, component) = self.livewire_tag(blade, offset)?;
+        match place {
+            TagPlace::Name(span) => {
+                let replace = lines.range(span.start, offset);
+                let tab = lines.range(span.start, span.end);
+                let components = self.laravel_livewire()?;
+                let items = components
+                    .components
+                    .iter()
+                    .map(|component| {
+                        item(component.name.clone(), Some(component.class.clone()), CompletionKind::Class, replace, tab)
+                    })
+                    .collect();
+                Some(Completions { items, incomplete: false })
+            }
+            TagPlace::Attribute { name, .. } => {
+                let component = component?;
+                let start = blade.text[..offset as usize].rfind("<livewire:")?;
+                let tag = tag_at_with(blade.text, start, LIVEWIRE_PREFIXES)?;
+                let present: Vec<&str> = tag
+                    .attributes
+                    .iter()
+                    .filter(|attribute| !(attribute.name.start <= offset && offset <= attribute.name.end))
+                    .map(|attribute| attribute.bare_name(blade.text))
+                    .collect();
+                let replace = lines.range(name.start, offset);
+                let tab = lines.range(name.start, name.end);
+                let has_value = blade.text.as_bytes().get(name.end as usize) == Some(&b'=');
+                let items = self
+                    .livewire_tag_attributes(&component)
+                    .into_iter()
+                    .filter(|attribute| !present.contains(&attribute.name.as_str()))
+                    .map(|attribute| {
+                        let mut found =
+                            item(attribute.name.clone(), attribute.detail, CompletionKind::Property, replace, tab);
+                        if !has_value {
+                            found.insert_text = format!("{}=\"$0\"", attribute.name);
+                            found.is_snippet = true;
+                        }
+                        found
+                    })
+                    .collect();
+                Some(Completions { items, incomplete: false })
+            }
+        }
+    }
+
+    /// Goto from a Livewire tag (to the class and view), a tag attribute
+    /// (to its property or `mount()` parameter) or a `wire:` value (to the
+    /// property or method); `None` elsewhere.
+    fn livewire_definition(&self, blade: &BladeDocument, offset: u32) -> Option<Vec<Target>> {
+        if let Some((wire, members)) = self.wire_members(blade, offset) {
+            let written = &blade.text[wire.word.start as usize..wire.word.end as usize];
+            let target = members.into_iter().find(|member| member.name == written).and_then(|member| member.target);
+            return Some(target.into_iter().collect());
+        }
+        let (place, component) = self.livewire_tag(blade, offset)?;
+        let component = component?;
+        match place {
+            TagPlace::Name(_) => {
+                let mut targets = vec![Target { path: component.path.clone(), range: component.range }];
+                targets.extend(component.view.clone().map(|path| Target { path, range: Range::default() }));
+                Some(targets)
+            }
+            TagPlace::Attribute { name, .. } => {
+                let written = &blade.text[name.start as usize..name.end as usize];
+                let attribute =
+                    self.livewire_tag_attributes(&component).into_iter().find(|known| known.name == written)?;
                 Some(attribute.target.into_iter().collect())
             }
         }

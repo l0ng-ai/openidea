@@ -23,6 +23,10 @@
 //!   like a module (routes, resources, providers or their own `composer.json`).
 //!
 //! - **`ide.json`:** the project's and its packages' ([`IdeJson`]).
+//! - **Packages:** whether Livewire and Inertia are installed
+//!   ([`LaravelPackages`]): required in `composer.json` or locked, unless
+//!   an `ide.json` lists them in `disabledPackages` (or in `enabledPackages`
+//!   even when they aren't).
 //!
 //! [`LaravelProject::load`] reads the files that aren't PHP;
 //! [`LaravelProject::with_routes`] adds what the PHP summaries in the index
@@ -55,6 +59,34 @@ pub struct LaravelProject {
     /// What the project's and its packages' `ide.json` files say.
     #[serde(default)]
     pub ide_json: IdeJson,
+    /// The packages the engine supports that are installed.
+    #[serde(default)]
+    pub packages: LaravelPackages,
+}
+
+/// The packages with support of their own; see the module documentation.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub struct LaravelPackages {
+    /// `livewire/livewire`.
+    pub livewire: bool,
+    /// `inertiajs/inertia-laravel`.
+    pub inertia: bool,
+}
+
+impl LaravelPackages {
+    pub const LIVEWIRE: &'static str = "livewire/livewire";
+    pub const INERTIA: &'static str = "inertiajs/inertia-laravel";
+
+    /// The packages `installed` says are installed, after the
+    /// `enabledPackages` and `disabledPackages` of the `ide.json` files.
+    pub fn detect(installed: impl Fn(&str) -> bool, ide: &IdeJson) -> Self {
+        let on = |name: &str| {
+            let settings = &ide.packages;
+            !settings.disabled.iter().any(|known| known == name)
+                && (installed(name) || settings.enabled.iter().any(|known| known == name))
+        };
+        Self { livewire: on(Self::LIVEWIRE), inertia: on(Self::INERTIA) }
+    }
 }
 
 /// Laravel's base paths.
@@ -175,6 +207,8 @@ impl LaravelProject {
         let nwidart = required("nwidart/laravel-modules")
             || locked("nwidart/laravel-modules").is_some()
             || root.join("modules_statuses.json").is_file();
+        let ide_json = IdeJson::load(&root, &vendor);
+        let packages = LaravelPackages::detect(|name| required(name) || locked(name).is_some(), &ide_json);
         let mut project = Self {
             root: root.clone(),
             version,
@@ -182,7 +216,8 @@ impl LaravelProject {
             paths,
             route_files: Vec::new(),
             modules: Vec::new(),
-            ide_json: IdeJson::load(&root, &vendor),
+            ide_json,
+            packages,
         };
         if nwidart {
             project.modules.extend(nwidart_modules(&root));

@@ -8,7 +8,9 @@ the MIT `laravel/laravel` skeleton; the rest is hand-written.
 It has no `vendor/`. Tests copy it to a temporary folder with
 [`../laravel-stubs`](../laravel-stubs) as its `vendor/`: a Composer vendor directory
 (`composer/installed.json` plus `laravel/framework` and `nwidart/laravel-modules`) with
-minimal stand-ins for the framework classes and helpers the app uses, so no network or Composer is needed. For
+minimal stand-ins for the framework classes and helpers the app uses, so no network or Composer is needed.
+It also holds stand-ins for `livewire/livewire` and `inertiajs/inertia-laravel`, which
+`installed.json` doesn't list: `refs/livewire_tests.rs` installs them in its own copy. For
 manual QA, do the same or run `composer install` on a copy.
 
 - `crates/ide-php/tests/laravel_app.rs` indexes it with the engine and inspects every

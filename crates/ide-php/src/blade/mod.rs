@@ -468,9 +468,22 @@ pub const VIEW_CALL_PREFIX: &str = "__blade_";
 /// Other directives compiled to `__blade_<directive>(…)` calls, so their
 /// strings are string references too: `@lang('key')` and `@choice('key',
 /// n)` (translation keys), `@vite([...])` (Vite assets), `@can('ability', $post)`
-/// and its kin (abilities), `@auth('admin')` and `@guest(…)` (guards).
-pub const CALL_DIRECTIVES: &[&str] =
-    &["lang", "choice", "vite", "can", "cannot", "canany", "elsecan", "elsecannot", "elsecanany", "auth", "guest"];
+/// and its kin (abilities), `@auth('admin')` and `@guest(…)` (guards),
+/// `@livewire('counter')` (Livewire components).
+pub const CALL_DIRECTIVES: &[&str] = &[
+    "lang",
+    "choice",
+    "vite",
+    "can",
+    "cannot",
+    "canany",
+    "elsecan",
+    "elsecannot",
+    "elsecanany",
+    "auth",
+    "guest",
+    "livewire",
+];
 
 /// Compiles `text` to PHP. `component`: the template is a component view
 /// (below `views/components/`), so `$attributes` and `$slot` are defined.

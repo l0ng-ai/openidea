@@ -322,6 +322,8 @@ pub fn completion_kind(complete: &str) -> Option<&'static str> {
         "environmentVariable" => "envKey",
         "eloquentFields" => "eloquentField",
         "viteAsset" => "viteAsset",
+        "livewireComponent" => "livewireComponent",
+        "inertiaPage" => "inertiaPage",
         _ => return None,
     })
 }

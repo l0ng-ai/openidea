@@ -31,7 +31,7 @@
     },
     {
       "complete": "inertiaPage",
-      "condition": [{ "functionNames": ["inertia"] }]
+      "condition": [{ "functionNames": ["page_link"] }]
     }
   ],
   "blade": {

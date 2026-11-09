@@ -8,7 +8,9 @@
 //! ([`routes`]), the Eloquent model view ([`model_view`]), the route hints and route search ([`route_hints`]), the
 //! views ([`views`]), Blade layouts, components and directives ([`blade`]),
 //! validation rules ([`validation`]), string references ([`refs`]) and the
-//! `ide.json` files of the project and its packages ([`ide_json`]).
+//! `ide.json` files of the project and its packages ([`ide_json`]), and
+//! Livewire components ([`livewire`]) and Inertia pages ([`inertia`]) when
+//! those packages are installed.
 //!
 //! Only Laravel's own source and documentation (MIT) are design inputs.
 
@@ -21,7 +23,9 @@ pub mod database;
 pub mod env;
 pub mod generate;
 pub mod ide_json;
+pub mod inertia;
 pub mod lang;
+pub mod livewire;
 pub mod model_view;
 pub mod project;
 pub mod refs;
@@ -41,9 +45,11 @@ pub use config::{ConfigEntry, ConfigKeys};
 pub use database::{LiveColumn, LiveSchema, LiveTable};
 pub use env::{EnvEntry, EnvKeys};
 pub use ide_json::IdeJson;
+pub use inertia::{InertiaPage, InertiaPages};
 pub use lang::{TransEntry, Translations};
+pub use livewire::{LivewireComponent, LivewireComponents};
 pub use model_view::{ModelLens, ModelView, NewColumn};
-pub use project::{LaravelPaths, LaravelProject, Module, ModuleKind, RouteFile};
+pub use project::{LaravelPackages, LaravelPaths, LaravelProject, Module, ModuleKind, RouteFile};
 pub use route_hints::{RouteHint, RouteInfo, RouteLens};
 pub use routes::{MiddlewareDef, NameDecl, RouteAction, RouteDef, RouteTable};
 pub use views::{ViewEntry, ViewNamespace, ViewTable};

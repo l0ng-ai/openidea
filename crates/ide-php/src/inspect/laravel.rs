@@ -18,6 +18,9 @@
 //! - `PhpUnknownAbility`: an ability (`Gate::allows`, `$user->can`, `@can`,
 //!   …) that no gate defines and that isn't a method of the policy of its
 //!   model (of any policy, without a model).
+//! - `PhpUndefinedInertiaPage`: an Inertia page (`Inertia::render`,
+//!   `inertia()`, `Route::inertia`) no page folder has (fix: create the
+//!   page).
 //!
 //! They run only while the indexes are ready, in Laravel projects.
 
@@ -26,7 +29,7 @@ use ide_core::Severity;
 use super::{Inspection, InspectionContext, Problems, QuickFix};
 use crate::engine::{EngineState, is_meta_path};
 use crate::frameworks::laravel::refs::{
-    ConfigKey, EloquentField, EnvKey, Gate, ReferenceKind, TranslationKey, ValidationRule, ViteAsset,
+    ConfigKey, EloquentField, EnvKey, Gate, InertiaPageKind, ReferenceKind, TranslationKey, ValidationRule, ViteAsset,
 };
 
 /// One "undefined …" inspection; see the module documentation.
@@ -36,7 +39,7 @@ pub struct UndefinedReference {
 }
 
 /// The inspections, as `(inspection id, kind)`.
-const INSPECTIONS: [(&str, &dyn ReferenceKind); 7] = [
+const INSPECTIONS: [(&str, &dyn ReferenceKind); 8] = [
     ("PhpUndefinedConfigKey", &ConfigKey),
     ("PhpUndefinedEnvKey", &EnvKey),
     ("PhpUndefinedTranslation", &TranslationKey),
@@ -44,6 +47,7 @@ const INSPECTIONS: [(&str, &dyn ReferenceKind); 7] = [
     ("PhpUnknownValidationRule", &ValidationRule),
     ("PhpUnknownEloquentColumn", &EloquentField),
     ("PhpUnknownAbility", &Gate),
+    ("PhpUndefinedInertiaPage", &InertiaPageKind),
 ];
 
 impl UndefinedReference {
