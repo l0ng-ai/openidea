@@ -177,6 +177,7 @@ impl Watcher {
             move |event: notify::Result<notify::Event>| {
                 let Some(state) = weak.upgrade() else { return };
                 match event {
+                    Ok(event) if !is_change_event(&event) => {}
                     Ok(event) if polled && is_dir_touch(&event) => {}
                     Ok(event) => {
                         state.queue.lock().push((event, Instant::now()));
@@ -223,6 +224,12 @@ impl Drop for Inner {
             let _ = t.join();
         }
     }
+}
+
+// Reads include our own ignore-rule loads and directory scans, so must never
+// schedule another reload or resync. Writes are reported as Modify events.
+fn is_change_event(event: &Event) -> bool {
+    !matches!(event.kind, EventKind::Access(_))
 }
 
 fn io_error(msg: String) -> IdeError {
@@ -621,8 +628,9 @@ impl EventFilter {
     /// The coalesced, filtered batch plus the directories whose ignore rules
     /// changed (their cached matchers have been rebuilt already).
     pub fn batch_detailed(&self, events: &[Event]) -> (FsBatch, Vec<PathBuf>) {
+        let events = events.iter().filter(|event| is_change_event(event));
         let mut changes: BTreeMap<PathBuf, Change> = BTreeMap::new();
-        for ev in events {
+        for ev in events.clone() {
             let paths = &ev.paths;
             match ev.kind {
                 EventKind::Access(_) => {}
@@ -660,7 +668,7 @@ impl EventFilter {
                 rule_dirs.insert(dir.to_path_buf());
             }
         }
-        if events.iter().flat_map(|e| &e.paths).any(|p| p.ends_with(".git/info/exclude")) {
+        if events.flat_map(|e| &e.paths).any(|p| p.ends_with(".git/info/exclude")) {
             self.gitignore.reload_repo_level();
             rule_dirs.insert(self.root.clone());
         }
@@ -728,7 +736,7 @@ impl EventFilter {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use notify::event::{CreateKind, DataChange, MetadataKind, RemoveKind};
+    use notify::event::{AccessKind, AccessMode, CreateKind, DataChange, MetadataKind, RemoveKind};
 
     fn ev(kind: EventKind, paths: Vec<PathBuf>) -> Event {
         Event { kind, paths, attrs: Default::default() }
@@ -1037,6 +1045,54 @@ mod tests {
         assert!(batch.modified.is_empty() && batch.vcs.is_empty(), "{batch:?}");
         assert_eq!(batch.ignored, vec![root.join("b.tmp")]);
         assert_eq!(rules, vec![root.clone()]);
+    }
+
+    #[test]
+    fn access_events_do_not_reload_rules_or_report_changes() {
+        for access in [
+            AccessKind::Any,
+            AccessKind::Read,
+            AccessKind::Open(AccessMode::Read),
+            AccessKind::Close(AccessMode::Read),
+            AccessKind::Close(AccessMode::Write),
+            AccessKind::Other,
+        ] {
+            for rel in [".git/info/exclude", ".gitignore", ".ignore", ".git/HEAD", "a.txt"] {
+                let tmp = tempfile::tempdir().unwrap();
+                let root = dunce::canonicalize(tmp.path()).unwrap();
+                std::fs::create_dir_all(root.join(".git/info")).unwrap();
+                std::fs::create_dir(root.join("generated")).unwrap();
+                let path = root.join(rel);
+                std::fs::write(&path, "").unwrap();
+                let filter = EventFilter::new(root.clone(), &[]);
+                assert!(filter.should_watch_dir(&root.join("generated")));
+                std::fs::write(&path, "generated/\n").unwrap();
+
+                let (batch, rules) = filter.batch_detailed(&[ev(EventKind::Access(access), vec![path.clone()])]);
+                assert!(batch.is_empty(), "{access:?} on {rel}: {batch:?}");
+                assert!(rules.is_empty(), "{access:?} on {rel}: {rules:?}");
+                assert!(filter.should_watch_dir(&root.join("generated")), "{access:?} on {rel} reloaded rules");
+
+                let (batch, rules) = filter.batch_detailed(&[ev(
+                    EventKind::Modify(ModifyKind::Data(DataChange::Content)),
+                    vec![path.clone()],
+                )]);
+                match rel {
+                    ".git/info/exclude" | ".gitignore" | ".ignore" => {
+                        assert_eq!(rules, vec![root.clone()], "{rel}");
+                        assert!(!filter.should_watch_dir(&root.join("generated")), "{rel} did not reload rules");
+                    }
+                    ".git/HEAD" => {
+                        assert_eq!(batch.vcs, vec![path]);
+                        assert!(rules.is_empty());
+                    }
+                    _ => {
+                        assert_eq!(batch.modified, vec![path]);
+                        assert!(rules.is_empty());
+                    }
+                }
+            }
+        }
     }
 
     #[test]
