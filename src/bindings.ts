@@ -1973,6 +1973,15 @@ export type ApplyOutcome = {
 	conflicts: string[],
 };
 
+/**  Languages & Frameworks › Arduino. Tool discovery paths and default board FQBN. */
+export type ArduinoSettings = {
+	cli?: string,
+	clangd?: string,
+	languageServer?: string,
+	cliConfig?: string,
+	fqbn?: string,
+};
+
 /**  Packaging artifact definition (Project Structure › Artifacts). */
 export type ArtifactConfig = {
 	name?: string,
@@ -5500,6 +5509,7 @@ export type LanguagesSettings = {
 	java?: JavaSettings,
 	ruby?: RubySettings,
 	markdown?: MarkdownSettings,
+	arduino?: ArduinoSettings,
 };
 
 /**  What a freshly opened window should do once its frontend is up. */
