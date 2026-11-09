@@ -1,5 +1,5 @@
-import { EditorView, RectangleMarker, layer } from "@codemirror/view";
-import type { Extension } from "@codemirror/state";
+import { BlockType, Direction, EditorView, RectangleMarker, layer, type BlockInfo } from "@codemirror/view";
+import type { Extension, SelectionRange } from "@codemirror/state";
 
 /** Rounds a CSS length to the nearest device pixel. */
 export function snapToDevicePixel(v: number, dpr: number): number {
@@ -19,7 +19,210 @@ export function snapMarkers(markers: readonly RectangleMarker[], className: stri
   });
 }
 
+/**
+ * Widens the rectangles that end at the lines' right padding (`rightSide`, where CodeMirror stops a selection
+ * that runs past a line end) by that padding (`pad`), so selected lines fill the editor to its right edge as in
+ * IDEA. Rectangles that end inside a line stay as they are.
+ */
+export function widenToRightEdge(
+  markers: readonly RectangleMarker[],
+  className: string,
+  rightSide: number,
+  pad: number,
+): RectangleMarker[] {
+  if (pad <= 0) return [...markers];
+  return markers.map((m) =>
+    m.width !== null && m.width > 0 && Math.abs(m.left + m.width - rightSide) < 0.5
+      ? new RectangleMarker(className, m.left, m.top, m.width + pad, m.height)
+      : m,
+  );
+}
+
+/** A visual row's line box, top and bottom, in layer coordinates. */
+export type RowBox = { top: number; bottom: number };
+
+/**
+ * Grows a selection's outer rectangles to whole line boxes (`rowAt(y)` gives the box of the row at `y`).
+ * CodeMirror sizes the first and last row of a selection to the text's glyph box, so the line's leading
+ * stayed unselected above and below it; IDEA fills the full line height.
+ */
+export function growToLineBoxes(
+  markers: readonly RectangleMarker[],
+  className: string,
+  rowAt: (y: number) => RowBox,
+): RectangleMarker[] {
+  if (!markers.length) return [];
+  const top = Math.min(...markers.map((m) => m.top));
+  const bottom = Math.max(...markers.map((m) => m.top + m.height));
+  return markers.map((m) => {
+    const end = m.top + m.height;
+    const t = Math.abs(m.top - top) < 0.5 ? Math.min(m.top, rowAt(m.top + 0.5).top) : m.top;
+    const b = Math.abs(end - bottom) < 0.5 ? Math.max(end, rowAt(end - 0.5).bottom) : end;
+    return t !== m.top || b !== end ? new RectangleMarker(className, m.left, t, m.width, b - t) : m;
+  });
+}
+
+/**
+ * Adds what is missing up to `right` on rows (`{ top, bottom }`, layer coordinates) the selection runs past the
+ * end of. CodeMirror skips folded ranges, so a selection starting on a folded line stopped at its visible text,
+ * short of the placeholder and the edge. Rows with no rectangle at all are left alone.
+ */
+export function fillRowEnds(
+  markers: readonly RectangleMarker[],
+  className: string,
+  rows: readonly RowBox[],
+  right: number,
+): RectangleMarker[] {
+  const out = [...markers];
+  for (const row of rows) {
+    // Only rectangles across the row's middle count (the one below may reach into its leading), and the fill
+    // takes their height: flush with them, and no overlap to darken a translucent selection colour.
+    const mid = (row.top + row.bottom) / 2;
+    let end = -Infinity;
+    let top = Infinity;
+    let bottom = -Infinity;
+    for (const m of markers) {
+      if (m.top >= mid || m.top + m.height <= mid) continue;
+      end = Math.max(end, m.width === null ? Infinity : m.left + m.width);
+      top = Math.min(top, m.top);
+      bottom = Math.max(bottom, m.top + m.height);
+    }
+    if (end === -Infinity || end >= right - 0.5) continue;
+    out.push(
+      new RectangleMarker(
+        className,
+        end,
+        Math.max(top, row.top),
+        right - end,
+        Math.min(bottom, row.bottom) - Math.max(top, row.top),
+      ),
+    );
+  }
+  return out;
+}
+
+/**
+ * Cuts the vertical spans in `gaps` (`{ top, bottom }`, layer coordinates) out of the rectangles. CodeMirror fills
+ * everything between a selection's first and last line with one rectangle, which runs over the block widgets
+ * (code lenses) in between, or over part of one.
+ */
+export function cutOutGaps(
+  markers: readonly RectangleMarker[],
+  className: string,
+  gaps: readonly RowBox[],
+): RectangleMarker[] {
+  if (!gaps.length) return [...markers];
+  const out: RectangleMarker[] = [];
+  for (const m of markers) {
+    let pieces: Array<[number, number]> = [[m.top, m.top + m.height]];
+    for (const g of gaps) {
+      pieces = pieces.flatMap(([t, b]): Array<[number, number]> =>
+        g.bottom <= t || g.top >= b
+          ? [[t, b]]
+          : (
+              [
+                [t, Math.min(b, g.top)],
+                [Math.max(t, g.bottom), b],
+              ] as Array<[number, number]>
+            ).filter(([pt, pb]) => pb - pt > 0.5),
+      );
+    }
+    if (pieces.length === 1 && pieces[0]![0] === m.top && pieces[0]![1] === m.top + m.height) out.push(m);
+    else for (const [t, b] of pieces) out.push(new RectangleMarker(className, m.left, t, m.width, b - t));
+  }
+  return out;
+}
+
+/** Adds one rectangle from `left` to `right` over each of `gaps` (layer coordinates). */
+export function fillGaps(
+  markers: readonly RectangleMarker[],
+  className: string,
+  gaps: readonly RowBox[],
+  left: number,
+  right: number,
+): RectangleMarker[] {
+  if (!gaps.length || !(right > left)) return [...markers];
+  return [...markers, ...gaps.map((g) => new RectangleMarker(className, left, g.top, right - left, g.bottom - g.top))];
+}
+
+/**
+ * A line block's parts. A line with block widgets attached (a code lens above it, say) comes back from
+ * `lineBlockAt*` and `viewportLineBlocks` as one block whose `type` lists the widgets and the text.
+ */
+const parts = (block: BlockInfo): readonly BlockInfo[] =>
+  Array.isArray(block.type) ? (block.type as readonly BlockInfo[]) : [block];
+
+/** The text part of a line block at document `y` (the one nearest to it when `y` is on a widget). */
+export function textBlock(block: BlockInfo, y: number): BlockInfo {
+  const texts = parts(block).filter((b) => b.type === BlockType.Text);
+  return (
+    texts.find((b) => y >= b.top && y < b.bottom) ??
+    texts.reduce<BlockInfo | null>(
+      (best, b) =>
+        !best || Math.abs(y - (b.top + b.bottom) / 2) < Math.abs(y - (best.top + best.bottom) / 2) ? b : best,
+      null,
+    ) ??
+    block
+  );
+}
+
+/** The text blocks among `blocks`, taken out of lines that carry block widgets. */
+export function textBlocks(blocks: readonly BlockInfo[]): BlockInfo[] {
+  return blocks.flatMap((b) => parts(b).filter((p) => p.type === BlockType.Text));
+}
+
 const CLASS = "cm-selectionBackground";
+
+/** Where CodeMirror ends a selection past the line end, in layer coordinates, and the lines' right padding (screen px). */
+function lineRightEdge(view: EditorView): { rightSide: number; pad: number } {
+  const line = view.contentDOM.querySelector(".cm-line");
+  const pad = (line ? parseFloat(getComputedStyle(line).paddingRight) || 0 : 0) * view.scaleX;
+  const scroller = view.scrollDOM.getBoundingClientRect();
+  const base = scroller.left - view.scrollDOM.scrollLeft * view.scaleX;
+  return { rightSide: view.contentDOM.getBoundingClientRect().right - pad - base, pad };
+}
+
+/** Layer y = document y + this offset. */
+function layerOffset(view: EditorView): number {
+  const scroller = view.scrollDOM.getBoundingClientRect();
+  return view.documentTop - (scroller.top - view.scrollDOM.scrollTop * view.scaleY);
+}
+
+/** The box of the visual row at layer `y`: its line's text, or for a wrapped line the row of it. */
+function rowAt(view: EditorView, offset: number, y: number): RowBox {
+  const block = textBlock(view.lineBlockAtHeight(y - offset), y - offset);
+  const lh = view.defaultLineHeight;
+  if (block.height < lh * 1.5) return { top: offset + block.top, bottom: offset + block.bottom };
+  const top = block.top + Math.min(Math.floor((y - offset - block.top) / lh), Math.round(block.height / lh) - 1) * lh;
+  return { top: offset + top, bottom: offset + top + lh };
+}
+
+/** The line boxes (layer coordinates) of the visible rows that `r` runs past the end of. */
+function rowsPastEnd(view: EditorView, offset: number, r: SelectionRange): RowBox[] {
+  return textBlocks(view.viewportLineBlocks)
+    .filter((b) => b.to >= r.from && b.to < r.to)
+    .map((b) => ({ top: offset + b.top, bottom: offset + b.bottom }));
+}
+
+/**
+ * The visible block widgets attached to lines (code lenses and the like, layer coordinates) around `r`. IDEA paints
+ * the ones the selection runs through (`fill`: it selects text on both sides) whole, and leaves the ones it stops at
+ * (`cut`: it ends at the start of the line below one, or starts at the end of the line above one) unpainted.
+ */
+function lineWidgets(view: EditorView, offset: number, r: SelectionRange): { cut: RowBox[]; fill: RowBox[] } {
+  const cut: RowBox[] = [];
+  const fill: RowBox[] = [];
+  for (const line of view.viewportLineBlocks) {
+    if (!Array.isArray(line.type) || line.to < r.from || line.from > r.to) continue;
+    for (const w of parts(line)) {
+      if (w.height <= 0 || (w.type !== BlockType.WidgetBefore && w.type !== BlockType.WidgetAfter)) continue;
+      // A widget before a line sits at the line's start, one after it at the line's end.
+      const at = w.type === BlockType.WidgetBefore ? line.from : line.to;
+      (r.from < at && r.to > at ? fill : cut).push({ top: offset + w.top, bottom: offset + w.bottom });
+    }
+  }
+  return { cut, fill };
+}
 
 const snappedSelectionLayer = layer({
   above: false,
@@ -27,9 +230,34 @@ const snappedSelectionLayer = layer({
   mount: (dom) => dom.classList.add("cm-openidea-selectionLayer"),
   markers(view) {
     const dpr = window.devicePixelRatio || 1;
+    const edge = view.textDirection === Direction.LTR ? lineRightEdge(view) : null;
+    const offset = layerOffset(view);
     const out: RectangleMarker[] = [];
-    for (const r of view.state.selection.ranges)
-      if (!r.empty) out.push(...snapMarkers(RectangleMarker.forRange(view, CLASS, r), CLASS, dpr));
+    for (const r of view.state.selection.ranges) {
+      if (r.empty) continue;
+      const lines = growToLineBoxes(RectangleMarker.forRange(view, CLASS, r), CLASS, (y) => rowAt(view, offset, y));
+      const full = edge
+        ? fillRowEnds(
+            widenToRightEdge(lines, CLASS, edge.rightSide, edge.pad),
+            CLASS,
+            rowsPastEnd(view, offset, r),
+            edge.rightSide + edge.pad,
+          )
+        : lines;
+      // Block widgets: cut them all out of CodeMirror's rectangles, then paint the ones the selection runs through
+      // with one rectangle each, so a translucent selection colour never doubles up over them.
+      const widgets = lineWidgets(view, offset, r);
+      const left = Math.min(...full.map((m) => m.left));
+      const right = edge ? edge.rightSide + edge.pad : Math.max(...full.map((m) => m.left + (m.width ?? 0)));
+      const painted = fillGaps(
+        cutOutGaps(full, CLASS, [...widgets.cut, ...widgets.fill]),
+        CLASS,
+        widgets.fill,
+        left,
+        right,
+      );
+      out.push(...snapMarkers(painted, CLASS, dpr));
+    }
     return out;
   },
   update: (u) => u.docChanged || u.selectionSet || u.viewportChanged,
@@ -43,6 +271,10 @@ export function seamlessSelection(): Extension {
       ".cm-selectionLayer:not(.cm-openidea-selectionLayer)": {
         display: "none",
       },
+      // drawSelection hides the native selection inside the lines only. WebKit also fills the gaps left of
+      // selected lines (the text inset) with the content's own ::selection colour, which showed as small
+      // blocks next to the gutter.
+      ".cm-content::selection": { backgroundColor: "transparent" },
     }),
   ];
 }

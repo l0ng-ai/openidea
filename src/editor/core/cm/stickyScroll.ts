@@ -10,6 +10,7 @@ import { foldNodeProp, syntaxTree } from "@codemirror/language";
 import { highlightTree } from "@lezer/highlight";
 import { backendFolds } from "./folding";
 import { openideaHighlightStyle } from "./highlight";
+import { LINE_INSET } from "./lineInset";
 
 /** Maximum number of sticky lines (Settings › Editor › Code Editing). */
 export const stickyMaxLines = Facet.define<number, number>({
@@ -97,6 +98,49 @@ export function offsetAtX(inner: HTMLElement, clientX: number): number {
   return offset;
 }
 
+/**
+ * The part of a line (`from`..`to`, document positions) that a selection covers, as offsets into the line, and
+ * whether the selection runs past its end (then it is painted to the right edge, as in the editor). Null when
+ * no range covers any of it.
+ */
+export function selectedSpan(
+  ranges: readonly { from: number; to: number }[],
+  from: number,
+  to: number,
+): { start: number; end: number; pastEnd: boolean } | null {
+  let span: { start: number; end: number; pastEnd: boolean } | null = null;
+  for (const r of ranges) {
+    if (r.from === r.to || r.to < from || r.from > to || (r.to === from && r.from < from)) continue;
+    const start = Math.max(r.from, from) - from;
+    const end = Math.min(r.to, to) - from;
+    const pastEnd = r.to > to;
+    if (end === start && !pastEnd) continue;
+    span = span
+      ? { start: Math.min(span.start, start), end: Math.max(span.end, end), pastEnd: span.pastEnd || pastEnd }
+      : { start, end, pastEnd };
+  }
+  return span;
+}
+
+/** Client x of the start of character `offset` in a rendered sticky line (its end past the last character). */
+function xAtOffset(inner: HTMLElement, offset: number): number {
+  const range = document.createRange();
+  const walker = document.createTreeWalker(inner, NodeFilter.SHOW_TEXT);
+  let last: Text | null = null;
+  for (let node = walker.nextNode() as Text | null; node; node = walker.nextNode() as Text | null) {
+    if (offset < node.length) {
+      range.setStart(node, offset);
+      range.setEnd(node, offset + 1);
+      return range.getBoundingClientRect().left;
+    }
+    offset -= node.length;
+    last = node;
+  }
+  if (!last) return inner.getBoundingClientRect().left + parseFloat(inner.style.paddingLeft || "0");
+  range.selectNodeContents(last);
+  return range.getBoundingClientRect().right;
+}
+
 class StickyScroll {
   dom: HTMLElement;
   private lines: number[] = [];
@@ -120,6 +164,8 @@ class StickyScroll {
   update(u: ViewUpdate) {
     if (
       u.docChanged ||
+      u.selectionSet ||
+      u.focusChanged ||
       u.viewportChanged ||
       u.geometryChanged ||
       syntaxTree(u.startState) !== syntaxTree(u.state) ||
@@ -205,7 +251,7 @@ class StickyScroll {
             const inner = document.createElement("span");
             inner.className = "cm-openidea-stickyInner";
             inner.style.display = "inline-block";
-            inner.style.paddingLeft = "6px";
+            inner.style.paddingLeft = `${LINE_INSET}px`;
             renderLineContent(this.view.state, n, inner);
             text.appendChild(inner);
             row.append(num, text);
@@ -215,8 +261,37 @@ class StickyScroll {
         }
         for (const inner of this.dom.querySelectorAll<HTMLElement>(".cm-openidea-stickyInner"))
           inner.style.transform = scrollLeft ? `translateX(${-scrollLeft}px)` : "";
+        this.paintSelection();
       },
     });
+  }
+
+  /** Shows the selection on the sticky rows: a header line that is selected looks selected while pinned too. */
+  private paintSelection() {
+    const state = this.view.state;
+    for (const row of this.dom.querySelectorAll<HTMLElement>(".cm-openidea-stickyLine")) {
+      const text = row.querySelector<HTMLElement>(".cm-openidea-stickyText");
+      const inner = text?.querySelector<HTMLElement>(".cm-openidea-stickyInner");
+      if (!text || !inner) continue;
+      let mark = text.querySelector<HTMLElement>(".cm-openidea-stickySelection");
+      const n = Math.min(Number(row.dataset.line), state.doc.lines);
+      const line = state.doc.line(n);
+      const span = selectedSpan(state.selection.ranges, line.from, line.to);
+      if (!span) {
+        mark?.remove();
+        continue;
+      }
+      const box = text.getBoundingClientRect();
+      const left = Math.max(0, xAtOffset(inner, span.start) - box.left);
+      const right = span.pastEnd ? box.width : Math.max(left, xAtOffset(inner, span.end) - box.left);
+      if (!mark) {
+        mark = document.createElement("span");
+        mark.className = "cm-openidea-stickySelection";
+        text.prepend(mark);
+      }
+      mark.style.left = `${left}px`;
+      mark.style.width = `${right - left}px`;
+    }
   }
 
   private onMouseDown = (e: MouseEvent) => {

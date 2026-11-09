@@ -7,6 +7,7 @@ import { Decoration, EditorView, WidgetType, type DecorationSet } from "@codemir
 import { getIndentUnit } from "@codemirror/language";
 import { codeLenses, type CodeLens } from "@/editor/api";
 import { guideVars } from "./indentGuides";
+import { LINE_INSET } from "./lineInset";
 
 /** Groups lenses by line start, ordered by line then `order`. Exported for tests. */
 export function groupLenses(
@@ -101,7 +102,7 @@ class LensWidget extends WidgetType {
 
   private fill(dom: HTMLElement, view: EditorView) {
     dom.textContent = "";
-    dom.style.paddingLeft = `${Math.round(this.indent * view.defaultCharacterWidth) + 6}px`;
+    dom.style.paddingLeft = `${Math.round(this.indent * view.defaultCharacterWidth) + LINE_INSET}px`;
     // The guides of the annotated line continue through this row while indent guides are on.
     const guides = guideVars(Math.floor(this.indent / this.indentUnit), this.indentUnit);
     if (guides) {
