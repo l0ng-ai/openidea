@@ -18,6 +18,7 @@ vi.mock("../controller", async () => {
 const { useEditorStatus, useTabs } = await import("../controller");
 const { useOutline } = await import("../model/document");
 const { useProject } = await import("@/platform/project");
+const { clearProjectViewLead, setProjectViewLead } = await import("@/workbench/contributions");
 const { Breadcrumbs, CodeBreadcrumbs } = await import("./StatusItems");
 const { NavBarPopup } = await import("./NavBarPopup");
 
@@ -170,6 +171,32 @@ it("shows the incoming tab's path while a tab switch is still loading", async ()
   expect(screen.getByRole("navigation", { name: "Breadcrumbs" }).textContent).toBe("bsrcfile.ts");
   view.unmount();
   useTabs.setState({ panes: {}, activePane: "" });
+  useProject.setState({ project: null, settings: null });
+});
+
+it("follows the project view's folder until the editor takes over", async () => {
+  useProject.setState({
+    project: {
+      root: "/workspace",
+      name: "Workspace",
+      settings: { appearance: { navigationBar: "top" } },
+      trusted: true,
+      isGit: false,
+      workspace: { version: 1, name: "Workspace", projects: ["/a", "/b"] },
+    },
+    settings: { appearance: { navigationBar: "top" } } as unknown as Settings,
+  });
+  useEditorStatus.setState({ status: { ...caret(0, 0), path: "/b/src/file.ts" } });
+  // The Project view holds the context: the bar shows its folder, not the editor's file.
+  setProjectViewLead({ path: "/b/src/lib", dir: true });
+  const view = render(<Breadcrumbs className="nav" />);
+  expect(screen.getByRole("navigation", { name: "Breadcrumbs" }).textContent).toBe("bsrclib");
+  view.unmount();
+  // Focusing the editor or switching tabs hands the context back.
+  clearProjectViewLead();
+  const back = render(<Breadcrumbs className="nav" />);
+  expect(screen.getByRole("navigation", { name: "Breadcrumbs" }).textContent).toBe("bsrcfile.ts");
+  back.unmount();
   useProject.setState({ project: null, settings: null });
 });
 

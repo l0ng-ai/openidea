@@ -1148,6 +1148,30 @@ export function provideProjectViewSelection(get: () => string[]): () => void {
 /** Selected project view paths (absolute); empty without a project view. */
 export const projectViewSelection = (): string[] => projectSelection?.() ?? [];
 
+/** The project view node the user last selected; `dir` decides the icon and popup of the last crumb. */
+export interface ProjectViewLead {
+  path: string;
+  dir: boolean;
+}
+
+/**
+ * The project view's current node, for the navigation bar: IDEA's bar shows the
+ * tree while that is the user's context and returns to the editor's file once the
+ * editor takes over (focus, tab switch). `null` = the editor is the context.
+ */
+export const useProjectViewLead = create<{ lead: ProjectViewLead | null }>(() => ({ lead: null }));
+
+export function setProjectViewLead(lead: ProjectViewLead | null) {
+  const prev = useProjectViewLead.getState().lead;
+  if (prev?.path === lead?.path && prev?.dir === lead?.dir) return;
+  useProjectViewLead.setState({ lead });
+}
+
+/** Hands the context back to the editor. */
+export function clearProjectViewLead() {
+  if (useProjectViewLead.getState().lead) useProjectViewLead.setState({ lead: null });
+}
+
 /** Runs the groups' `prepare` hooks, giving up after `timeoutMs` so the menu never waits long. */
 export async function prepareMenuGroups(menu: ContextMenuId, ctx: MenuGroupContext, timeoutMs = 200): Promise<void> {
   const pending = groupsFor(menu)

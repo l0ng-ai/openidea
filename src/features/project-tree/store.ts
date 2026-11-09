@@ -34,7 +34,12 @@ import {
   type TreeOptions,
 } from "./model";
 import { projectFs } from "./fs";
-import { projectViewRoots, useProjectViewRoots, type ProjectViewRootContribution } from "@/workbench/contributions";
+import {
+  projectViewRoots,
+  useProjectViewRoots,
+  type ProjectViewLead,
+  type ProjectViewRootContribution,
+} from "@/workbench/contributions";
 import { ancestorsWithin, isSameOrInside, nameOf, type PackageKind } from "./paths";
 
 export interface ViewOptions extends TreeOptions {
@@ -401,6 +406,14 @@ export function toggleExpanded(node: Pick<ProjectNode, "key" | "chain">) {
 
 export function setSelection(selected: ReadonlySet<string>, lead: string | null) {
   set({ selected, lead });
+}
+
+/** The selection's lead node, in the shape the navigation bar shows (IDEA's bar follows the tree). */
+export function leadSelection(): ProjectViewLead | null {
+  const { lead, selected } = get();
+  const node = currentModel().byKey.get(lead ?? [...selected][0] ?? "");
+  if (!node || node.placeholder || node.group) return null;
+  return { path: node.path, dir: node.dir };
 }
 
 export function setViewOption<K extends keyof ViewOptions>(key: K, value: ViewOptions[K]) {

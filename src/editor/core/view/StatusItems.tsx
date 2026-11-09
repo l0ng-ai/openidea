@@ -7,7 +7,7 @@ import { shortcutLabel } from "@/platform/keymap";
 import { basename, dirname, projectFolder, relativePath, useProject } from "@/platform/project";
 import type { LineEnding, OutlineItem } from "@/platform/ipc";
 import { BarButton, Icon, Menu, badgeKind, fileIconName } from "@/ui";
-import { notifications } from "@/workbench/contributions";
+import { notifications, useProjectViewLead } from "@/workbench/contributions";
 import { useDistractionFree } from "@/workbench/distractionFree";
 import { ENCODING_CHOICES, useEditorPrefs } from "@/platform/editorSettings";
 import { isVirtualUri } from "@/platform/virtualDocs";
@@ -75,13 +75,13 @@ function projectCrumb(project: { root: string; name: string }): Crumb {
 }
 
 /** The project › dirs › file part of the navigation path (IDEA navigation bar). */
-function pathCrumbs(project: { root: string; name: string } | null, path: string): Crumb[] {
-  const parent = dirname(path);
+function pathCrumbs(project: { root: string; name: string } | null, path: string, dir = false): Crumb[] {
+  const target = dir ? path : dirname(path);
   const segments: Crumb[] = [];
   if (project) segments.push(projectCrumb(project));
-  if (project && parent !== project.root && parent.startsWith(project.root + "/")) {
+  if (project && target !== project.root && target.startsWith(project.root + "/")) {
     // Every directory from the root to the file, eliding the middle of deep paths.
-    const dirs = relativePath(project.root, parent).split("/");
+    const dirs = relativePath(project.root, target).split("/");
     const shown = dirs.length > 4 ? [...dirs.slice(0, 1), "…", ...dirs.slice(-2)] : dirs;
     let consumed = 0;
     for (const label of shown) {
@@ -90,20 +90,21 @@ function pathCrumbs(project: { root: string; name: string } | null, path: string
         segments.push({
           label,
           title: dirs.join("/"),
-          run: () => void executeAction("navigate.selectIn", { path: parent }),
+          run: () => void executeAction("navigate.selectIn", { path: target }),
         });
         continue;
       }
       consumed += 1;
-      const dir = `${project.root}/${dirs.slice(0, consumed).join("/")}`;
+      const at = `${project.root}/${dirs.slice(0, consumed).join("/")}`;
       segments.push({
         label,
         icon: "folder",
-        title: relativePath(project.root, dir),
-        nav: { kind: "dir", path: dir, label },
+        title: relativePath(project.root, at),
+        nav: { kind: "dir", path: at, label },
       });
     }
   }
+  if (dir) return segments;
   const file = basename(path);
   segments.push({
     label: file,
@@ -151,7 +152,10 @@ function CrumbNav({ segments, className, ariaLabel }: { segments: Crumb[]; class
 export function Breadcrumbs({ className, inStatusBar = false }: { className?: string; inStatusBar?: boolean }) {
   const statusPath = useEditorStatus((s) => s.status?.path ?? null);
   const activeTabPath = useActiveTabPath();
-  const path = statusPath ?? activeTabPath;
+  // The project view's node wins while the tree is the user's context (IDEA's bar
+  // follows it, e.g. a folder selected there), then the editor's file.
+  const lead = useProjectViewLead((s) => s.lead);
+  const path = lead?.path ?? statusPath ?? activeTabPath;
   const currentProject = useProject((s) => s.project);
   const project = projectFolder(currentProject, path ?? "");
   const outline = useOutline((s) => (path ? s[path] : undefined));
@@ -165,17 +169,19 @@ export function Breadcrumbs({ className, inStatusBar = false }: { className?: st
   const distractionFree = useDistractionFree((s) => s.active);
   if (!shown || distractionFree) return null;
   const segments: Crumb[] = [];
+  const isDir = !!lead && lead.path === path && lead.dir;
   if (path) {
-    segments.push(...pathCrumbs(project, path));
+    segments.push(...pathCrumbs(project, path, isDir));
     const file = basename(path);
     const stem = file.includes(".") ? file.slice(0, file.lastIndexOf(".")) || file : file;
-    for (const item of chain.filter((it, i) => i > 0 || it.name !== stem))
-      segments.push({
-        label: item.name,
-        icon: `symbol-${badgeKind(item.kind)}`,
-        title: item.detail ?? item.name,
-        nav: { kind: "symbol", path, label: item.name, item },
-      });
+    if (!isDir)
+      for (const item of chain.filter((it, i) => i > 0 || it.name !== stem))
+        segments.push({
+          label: item.name,
+          icon: `symbol-${badgeKind(item.kind)}`,
+          title: item.detail ?? item.name,
+          nav: { kind: "symbol", path, label: item.name, item },
+        });
   } else if (!inStatusBar && currentProject) {
     // The top bar keeps its row: opening, closing or switching a tab clears the
     // active editor's status for a frame, and with no editor open IDEA still
