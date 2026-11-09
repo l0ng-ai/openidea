@@ -115,6 +115,18 @@ describe("Vim engine", () => {
     view.destroy();
   });
 
+  it("applies insert-mode mappings, accepting <esc> in any case", () => {
+    const view = makeView();
+    const cm = getCM(view)!;
+    applyRcCommands(parseVimrc("inoremap jk <esc>").commands);
+    Vim.handleKey(cm as never, "i", "user");
+    expect(cm.state.vim?.insertMode).toBe(true);
+    Vim.handleKey(cm as never, "j", "user");
+    Vim.handleKey(cm as never, "k", "user");
+    expect(cm.state.vim?.insertMode).toBe(false);
+    view.destroy();
+  });
+
   it("keeps an IME composition out of the document in Normal mode", async () => {
     const transient: boolean[] = [];
     const view = makeView([

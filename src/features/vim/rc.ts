@@ -40,6 +40,46 @@ const MAP_MODES: Record<string, MapMode> = {
   i: "insert",
   o: "operatorPending",
 };
+/**
+ * Vim special-key names are case-insensitive (`<esc>`, `<Esc>`, `<CR>`, `<cr>`…), but
+ * codemirror-vim compares the exact canonical spelling, so a lowercase `<esc>` in a mapping
+ * never matches and the mapping does nothing. Canonical names, keyed by lower-cased name.
+ */
+const SPECIAL_KEYS: Record<string, string> = {
+  esc: "Esc",
+  return: "CR",
+  enter: "CR",
+  cr: "CR",
+  bs: "BS",
+  backspace: "BS",
+  del: "Del",
+  delete: "Del",
+  ins: "Ins",
+  insert: "Ins",
+  space: "Space",
+  tab: "Tab",
+  left: "Left",
+  right: "Right",
+  up: "Up",
+  down: "Down",
+  home: "Home",
+  end: "End",
+  pageup: "PageUp",
+  pagedown: "PageDown",
+};
+
+/** Rewrites `<esc>`/`<cr>`/`<c-c>`… to the exact `<Esc>`/`<CR>`/`<C-c>` codemirror-vim matches. */
+function normalizeVimKeys(keys: string): string {
+  return keys.replace(/<([^<>]+)>/g, (whole, inner: string) => {
+    const m = /^((?:[csam]-)*)(.*)$/i.exec(inner)!;
+    const mods = m[1]!.toUpperCase();
+    const name = m[2]!;
+    if (!mods && name.toLowerCase() === "lt") return "<";
+    const canonical = SPECIAL_KEYS[name.toLowerCase()];
+    if (!canonical) return mods ? `<${mods}${name}>` : whole;
+    return `<${mods}${canonical}>`;
+  });
+}
 /** Options the Vim engine implements (others, e.g. IdeaVim's `ideajoin`, are reported as ignored). */
 const SUPPORTED_OPTIONS = new Set(["textwidth", "tw", "pcre", "insertModeEscKeysTimeout", "langmap", "lmap"]);
 const MAP_FLAGS = /^<(silent|unique|nowait|buffer|expr|script)>$/i;
@@ -149,12 +189,12 @@ export function parseVimrc(text: string, sources?: ReadonlyMap<string, string | 
       const args = splitArgs(rest).filter((a) => !MAP_FLAGS.test(a));
       if (args.length < 2) return ignore("mapping needs a left and right side");
       const withLeader = (keys: string) => keys.replace(/<leader>/gi, leader);
-      const lhs = withLeader(args[0]!);
-      const rhs = withLeader(args.slice(1).join(" "));
+      const lhs = normalizeVimKeys(withLeader(args[0]!));
+      const rawRhs = withLeader(args.slice(1).join(" "));
       const mode = MAP_MODES[map[1] ?? ""];
-      const ex = exOfRhs(rhs);
+      const ex = exOfRhs(rawRhs);
       if (ex) commands.push({ kind: "mapEx", mode, lhs, ex });
-      else commands.push({ kind: "map", mode, noremap: map[2] !== "map", lhs, rhs });
+      else commands.push({ kind: "map", mode, noremap: map[2] !== "map", lhs, rhs: normalizeVimKeys(rawRhs) });
       return;
     }
 

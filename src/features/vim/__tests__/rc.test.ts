@@ -49,6 +49,15 @@ describe("ideavimrc parsing", () => {
     ]);
   });
 
+  it("canonicalises special-key names in mappings, whatever their case", () => {
+    const { commands } = parseVimrc("inoremap jk <esc>\nmap <c-c> <C-C>\nimap <CR> <cr>");
+    expect(commands).toEqual([
+      { kind: "map", mode: "insert", noremap: true, lhs: "jk", rhs: "<Esc>" },
+      { kind: "map", mode: undefined, noremap: false, lhs: "<C-c>", rhs: "<C-C>" },
+      { kind: "map", mode: "insert", noremap: false, lhs: "<CR>", rhs: "<CR>" },
+    ]);
+  });
+
   it("reports everything else as ignored, never executed", () => {
     const reasons = ignored.map((i) => `${i.line}:${i.reason}`);
     expect(reasons).toContain("15:cannot read file");
