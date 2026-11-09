@@ -209,6 +209,53 @@ fn jdtls_honors_the_configured_maven_local_repository() {
 }
 
 #[test]
+fn jdtls_m2e_gets_effective_settings_with_local_repository() {
+    fn user_settings(cfg: &LanguageServerConfig) -> Option<std::path::PathBuf> {
+        let opts = serde_json::to_value(cfg.initialization_options.clone()?).ok()?;
+        opts.pointer("/settings/java/configuration/maven/userSettings")?.as_str().map(std::path::PathBuf::from)
+    }
+
+    // Configured repository, no user settings: a derived file is passed (#1739).
+    let tmp = tempfile::tempdir().unwrap();
+    let repo = tmp.path().join("m2-repo");
+    let mut s = Settings::default();
+    s.languages.java.maven.local_repository = repo.to_string_lossy().into_owned();
+    let mut cfg = server("jdtls");
+    configure_server(&mut cfg, tmp.path(), tmp.path(), &s);
+    let derived = tmp.path().join(".openidea").join("maven-settings.xml");
+    assert_eq!(user_settings(&cfg), Some(derived.clone()));
+    let text = std::fs::read_to_string(&derived).unwrap();
+    assert!(text.contains(&format!("<localRepository>{}</localRepository>", repo.to_string_lossy())));
+    // Stable across runs (no rewrite churn).
+    let mut cfg = server("jdtls");
+    configure_server(&mut cfg, tmp.path(), tmp.path(), &s);
+    assert_eq!(user_settings(&cfg), Some(derived.clone()));
+
+    // User settings without `<localRepository>`: the derived copy keeps the
+    // user's mirrors and gains the configured repository.
+    let settings = tmp.path().join("mine.xml");
+    std::fs::write(&settings, "<settings><mirrors><mirror><id>m</id></mirror></mirrors></settings>").unwrap();
+    s.languages.java.maven.user_settings = settings.to_string_lossy().into_owned();
+    let mut cfg = server("jdtls");
+    configure_server(&mut cfg, tmp.path(), tmp.path(), &s);
+    assert_eq!(user_settings(&cfg), Some(derived.clone()));
+    let text = std::fs::read_to_string(&derived).unwrap();
+    assert!(text.contains("<mirror><id>m</id></mirror>"));
+    assert!(text.contains(&format!("<localRepository>{}</localRepository>", repo.to_string_lossy())));
+
+    // User settings already declaring `<localRepository>`: passed through untouched.
+    std::fs::write(&settings, "<settings><localRepository>/user/repo</localRepository></settings>").unwrap();
+    let mut cfg = server("jdtls");
+    configure_server(&mut cfg, tmp.path(), tmp.path(), &s);
+    assert_eq!(user_settings(&cfg), Some(settings.clone()));
+
+    // Neither configured: no userSettings at all.
+    let mut cfg = server("jdtls");
+    configure_server(&mut cfg, tmp.path(), tmp.path(), &Settings::default());
+    assert_eq!(user_settings(&cfg), None);
+}
+
+#[test]
 fn rust_analyzer_check_command_and_toolchain() {
     if cfg!(windows) {
         return; // Unix paths and shells
