@@ -153,7 +153,8 @@ export const openideaTheme = EditorView.theme({
     caretColor: "var(--caret, var(--fg-strong))",
     cursor: "text",
   },
-  ".cm-line": { padding: "0 16px 0 6px" },
+  // The right side also leaves room for the floating corner widgets (core/cm/cornerInset.ts).
+  ".cm-line": { padding: "0 calc(16px + var(--cm-corner-inset, 0px)) 0 6px" },
   ...caretStyles,
   "&.cm-openidea-ligatures .cm-scroller, &.cm-openidea-ligatures .cm-openidea-sticky": {
     fontVariantLigatures: "normal",
@@ -370,5 +371,7 @@ export const openideaTheme = EditorView.theme({
   ".cm-openidea-stickyText": { flex: "1", overflow: "hidden" },
 
   // Soft-wrap: continuation rows indent slightly, like IDEA's wrap sign column.
-  "&.cm-lineWrapping .cm-line, .cm-lineWrapping .cm-line": { paddingRight: "24px" },
+  "&.cm-lineWrapping .cm-line, .cm-lineWrapping .cm-line": {
+    paddingRight: "calc(24px + var(--cm-corner-inset, 0px))",
+  },
 });
