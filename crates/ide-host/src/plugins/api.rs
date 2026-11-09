@@ -2062,10 +2062,7 @@ impl HostApi for PluginApi {
     fn vcs_remotes(&self, root: &Path) -> Result<Vec<(String, String)>, HostError> {
         let Some(repo) = ide_vcs::Repo::discover(root).map_err(failed)? else { return Ok(Vec::new()) };
         let remotes = repo.remotes().map_err(failed)?;
-        Ok(remotes
-            .into_iter()
-            .map(|r| (r.name, without_credentials(&ide_ssh::resolve_ssh_remote_url(&r.url))))
-            .collect())
+        Ok(remotes.into_iter().map(|r| (r.name, without_credentials(&r.url))).collect())
     }
 
     fn vcs_fetch(&self, root: &Path, cancel: &CancellationToken) -> Result<(), HostError> {
