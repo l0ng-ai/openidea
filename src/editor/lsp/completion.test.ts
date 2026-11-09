@@ -131,6 +131,45 @@ describe("toCmCompletion", () => {
   });
 });
 
+describe("completion label presentation", () => {
+  // gopls v0.24.0: labelDetails.detail includes a leading space for field types; description is absent.
+  it.each([
+    ["Cap", "field", " int", "int", null, null, "int"],
+    ["Array", "field", " []any", "[]any", null, null, "[]any"],
+    ["Add", "method", "() error", "func() error", null, "() error", "func() error"],
+    [
+      "MakeArray",
+      "function",
+      "(capacity int) *LRUArray",
+      "func(capacity int) *LRUArray",
+      null,
+      "(capacity int) *LRUArray",
+      "func(capacity int) *LRUArray",
+    ],
+    ["fmt", "module", ' "fmt"', '"fmt"', null, null, '"fmt"'],
+    ["count", "field", "int", null, null, null, "int"],
+    ["count", "field", null, "int", null, null, "int"],
+    ["pair", "field", "(i32, i32)", null, null, null, "(i32, i32)"],
+    ["callback", "property", "(value: string) => void", null, null, null, "(value: string) => void"],
+    ["print", "method", "(Object obj)", "PrintStream.print(Object obj) : void", "void", "(Object obj)", "void"],
+    ["map", "method", "<T>(value: T)", null, "T[]", "<T>(value: T)", "T[]"],
+    ["str", "function", "(value: object)", null, "str", "(value: object)", "str"],
+    ["println!", "function", "(…)", null, "std", "(…)", "std"],
+    ["size", "property", "number", "(property) size: number", "number", null, "number"],
+    ["value", "variable", "  ", "Order", " ", null, "Order"],
+  ] as const)(
+    "renders %s (%s) as name, signature suffix and type",
+    (label, kind, labelDetail, detail, labelDescription, suffix, type) => {
+      const source = item({ label, kind, labelDetail, detail, labelDescription });
+      const completion = toCmCompletion(source);
+      expect(completion.label).toBe(label);
+      expect(completion.detail ?? null).toBe(suffix);
+      expect(typeColumnText(source)).toBe(type);
+      expect(source.labelDetail).toBe(labelDetail);
+    },
+  );
+});
+
 describe("completion helpers", () => {
   it("detects trigger characters", () => {
     expect(triggerCharacter("a.")).toBe(".");
