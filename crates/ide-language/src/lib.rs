@@ -14,7 +14,7 @@ mod markers;
 pub mod plugin_point;
 mod registry;
 mod syntax;
-pub use markers::marked_root;
+pub use markers::{arduino_sketch_root, is_arduino_sketch_dir, marked_root};
 pub use plugin_point::PluginLanguages;
 pub use registry::{FileTypes, LanguageRegistry};
 pub use syntax::{
