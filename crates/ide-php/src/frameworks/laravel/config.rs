@@ -19,12 +19,14 @@
 //! casts and `env('…', default)` (the default's type).
 
 use std::path::{Path, PathBuf};
+use std::sync::Arc;
 
 use ide_core::Range;
 use mago_span::HasSpan;
 use mago_syntax::cst::{ArrayElement, Expression, Literal, Statement};
 
 use super::LaravelProject;
+use super::parts::{Merged, PartReader, TextParts};
 use super::views::{call_arguments, clean, path_expression, php_files, provider_files, string_literal};
 use crate::syntax::ParsedFile;
 
@@ -34,8 +36,9 @@ const MAX_VALUE: usize = 48;
 /// See the module documentation.
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub struct ConfigKeys {
-    /// Sorted by key; a file's entry comes before its keys.
-    entries: Vec<ConfigEntry>,
+    /// Sorted by key; a file's entry comes before its keys. One part per
+    /// file, shared with the engine's cache.
+    entries: Merged<ConfigEntry>,
 }
 
 /// One configuration key.
@@ -87,17 +90,31 @@ impl ConfigKeys {
     /// [`read`](Self::read), plus the files of `packages` (`(key, file)`)
     /// below the application's keys.
     pub fn read_with(dir: &Path, packages: &[(String, PathBuf)], text_of: impl Fn(&Path) -> Option<String>) -> Self {
+        Self::read_parts(dir, packages, &TextParts(text_of), None)
+    }
+
+    /// [`read_with`](Self::read_with), each file's keys from `parts`: only
+    /// the files that changed since `previous` are read again, and the
+    /// others' keys are shared rather than copied.
+    pub fn read_parts(
+        dir: &Path,
+        packages: &[(String, PathBuf)],
+        parts: &impl PartReader,
+        previous: Option<&Self>,
+    ) -> Self {
         let mut files = Vec::new();
         config_files(dir, dir, &mut files);
         files.sort();
         files.extend(packages.iter().cloned());
-        let mut entries = Vec::new();
+        let mut found = Vec::new();
         for (prefix, path) in files {
-            let Some(text) = text_of(&path) else { continue };
-            let parsed = ParsedFile::parse("config.php", text);
-            entries.extend(Self::file_entries(&prefix, &path, &parsed));
+            let part = parts.part("config", &path, &prefix, &|text| {
+                let parsed = ParsedFile::parse("config.php", text.to_owned());
+                Self::file_entries(&prefix, &path, &parsed)
+            });
+            found.extend(part);
         }
-        Self::from_entries(entries)
+        Self { entries: Merged::new(found, by_key, previous.map(|previous| &previous.entries)) }
     }
 
     /// The entries of one file whose keys start with `prefix` (the file's
@@ -119,14 +136,13 @@ impl ConfigKeys {
     }
 
     /// The entries sorted by key; of entries with one key, the first wins.
-    pub fn from_entries(mut entries: Vec<ConfigEntry>) -> Self {
-        entries.sort_by(|a, b| a.key.cmp(&b.key));
-        entries.dedup_by(|later, earlier| later.key == earlier.key);
-        Self { entries }
+    pub fn from_entries(entries: Vec<ConfigEntry>) -> Self {
+        Self { entries: Merged::new(vec![Arc::new(entries)], by_key, None) }
     }
 
-    pub fn entries(&self) -> &[ConfigEntry] {
-        &self.entries
+    /// Every entry, sorted by key.
+    pub fn entries(&self) -> impl ExactSizeIterator<Item = &ConfigEntry> + Clone + '_ {
+        self.entries.iter()
     }
 
     pub fn is_empty(&self) -> bool {
@@ -134,8 +150,8 @@ impl ConfigKeys {
     }
 
     pub fn get(&self, key: &str) -> Option<&ConfigEntry> {
-        let at = self.entries.binary_search_by(|entry| entry.key.as_str().cmp(key)).ok()?;
-        self.entries.get(at)
+        let at = self.entries.partition_point(|entry| entry.key.as_str() < key);
+        self.entries.get(at).filter(|entry| entry.key == key)
     }
 
     /// The entries directly below `parent`. `None` gives the files, whose
@@ -162,6 +178,10 @@ impl ConfigKeys {
             .filter(|entry| key == entry.key || key.starts_with(&format!("{}.", entry.key)))
             .max_by_key(|entry| entry.key.len())
     }
+}
+
+fn by_key(a: &ConfigEntry, b: &ConfigEntry) -> std::cmp::Ordering {
+    a.key.cmp(&b.key)
 }
 
 /// The dotted name (`services.mail`) of a configuration file below `dir`.
@@ -302,6 +322,13 @@ pub fn value_type(source: &str) -> Option<String> {
 /// The configuration files packages add, as `(key, file)`; see the module
 /// documentation. `text_of` reads a provider.
 pub fn package_configs(project: &LaravelProject, text_of: impl Fn(&Path) -> Option<String>) -> Vec<(String, PathBuf)> {
+    package_configs_with(project, &TextParts(text_of))
+}
+
+/// [`package_configs`], the providers `installed.json` lists and the
+/// `mergeConfigFrom` calls of each provider from `parts`: only what
+/// changed is read again.
+pub fn package_configs_with(project: &LaravelProject, parts: &impl PartReader) -> Vec<(String, PathBuf)> {
     let mut out: Vec<(String, PathBuf)> = Vec::new();
     let framework = project.root.join("vendor").join("laravel").join("framework").join("config");
     for path in php_files(&framework) {
@@ -310,32 +337,47 @@ pub fn package_configs(project: &LaravelProject, text_of: impl Fn(&Path) -> Opti
         }
     }
     let mut providers = provider_files(project);
-    providers.extend(vendor_providers(&project.root));
+    let composer = project.root.join("vendor").join("composer");
+    let installed = parts
+        .part("vendor-providers", &composer.join("installed.json"), "", &|text| vendor_providers(&project.root, text));
+    providers.extend(installed.iter().flat_map(|found| found.iter().cloned()));
+    // The files a provider names are relative to the project's folders.
+    let context = format!("{:?}", project.paths);
     for provider in providers {
-        let Some(text) = text_of(&provider) else { continue };
-        let call = "mergeConfigFrom(";
-        let mut from = 0;
-        while let Some(at) = text[from..].find(call) {
-            let open = from + at + call.len() - 1;
-            from = open + 1;
-            let Some(args) = call_arguments(&text, open) else { continue };
-            let (Some(file), Some(key)) = (args.first(), args.get(1)) else { continue };
-            let Some(key) = string_literal(key) else { continue };
-            let Some(file) = path_expression(project, &provider, file) else { continue };
-            if !out.iter().any(|(known, path)| *known == key && *path == file) {
-                out.push((key, file));
+        let found = parts.part("merged-config", &provider, &context, &|text| merged_configs(project, &provider, text));
+        for (key, file) in found.iter().flat_map(|found| found.iter()) {
+            if !out.iter().any(|(known, path)| known == key && path == file) {
+                out.push((key.clone(), file.clone()));
             }
         }
     }
     out
 }
 
+/// The `(key, file)` of each `mergeConfigFrom(file, 'key')` call in the
+/// provider `path`, whose text is `text`.
+fn merged_configs(project: &LaravelProject, path: &Path, text: &str) -> Vec<(String, PathBuf)> {
+    let mut out = Vec::new();
+    let call = "mergeConfigFrom(";
+    let mut from = 0;
+    while let Some(at) = text[from..].find(call) {
+        let open = from + at + call.len() - 1;
+        from = open + 1;
+        let Some(args) = call_arguments(text, open) else { continue };
+        let (Some(file), Some(key)) = (args.first(), args.get(1)) else { continue };
+        let Some(key) = string_literal(key) else { continue };
+        let Some(file) = path_expression(project, path, file) else { continue };
+        out.push((key, file));
+    }
+    out
+}
+
 /// The service provider files installed packages list under
-/// `extra.laravel.providers`, found through their PSR-4 autoload.
-fn vendor_providers(root: &Path) -> Vec<PathBuf> {
+/// `extra.laravel.providers` in `installed.json` (`text`), found through
+/// their PSR-4 autoload.
+fn vendor_providers(root: &Path, text: &str) -> Vec<PathBuf> {
     let composer = root.join("vendor").join("composer");
-    let Ok(text) = std::fs::read_to_string(composer.join("installed.json")) else { return Vec::new() };
-    let Ok(json) = serde_json::from_str::<serde_json::Value>(&text) else { return Vec::new() };
+    let Ok(json) = serde_json::from_str::<serde_json::Value>(text) else { return Vec::new() };
     let packages = json.get("packages").unwrap_or(&json).as_array().cloned().unwrap_or_default();
     let mut out = Vec::new();
     for package in packages {

@@ -245,7 +245,7 @@ fn nothing_outside_laravel_projects() {
 fn config_keys_are_read_from_the_config_folder() {
     let project = Project::laravel();
     let keys: Arc<ConfigKeys> = project.engine.laravel_config().unwrap();
-    let all: Vec<&str> = keys.entries().iter().map(|entry| entry.key.as_str()).collect();
+    let all: Vec<&str> = keys.entries().map(|entry| entry.key.as_str()).collect();
     assert_eq!(
         all,
         [

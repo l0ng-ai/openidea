@@ -57,7 +57,7 @@ impl PhpEngine {
             middleware: routes.middleware().len(),
             views: views.views().len(),
             blade_components: blade.components.len(),
-            config_keys: config.entries().iter().filter(|entry| !entry.is_file).count(),
+            config_keys: config.entries().filter(|entry| !entry.is_file).count(),
             translations: translations.entries().len(),
             env_keys: env.entries().len(),
             vite_entries: assets.entries().count(),
@@ -74,6 +74,6 @@ impl PhpEngine {
     /// (`composer.json`, `ide.json`, module manifests) included, as a
     /// watcher batch changing them does; the next request builds it again.
     pub fn forget_laravel_model(&self) {
-        self.reset_laravel_cache();
+        self.forget_laravel_parts();
     }
 }

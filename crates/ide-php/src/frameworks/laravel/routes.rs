@@ -39,6 +39,7 @@ use mago_syntax::cst::{
 use mago_syntax::walker::Walker;
 
 use super::LaravelProject;
+use super::parts::{PartReader, TextParts};
 use super::project::RouteFile;
 use crate::names::{FileNames, NameKind, Resolution};
 use crate::syntax::ParsedFile;
@@ -160,11 +161,23 @@ impl RouteTable {
     /// The routes of the HTTP route files of `project` and its middleware;
     /// `text_of` reads a file (an open buffer first).
     pub fn read(project: &LaravelProject, text_of: impl Fn(&Path) -> Option<String>) -> Self {
+        Self::read_parts(project, &TextParts(text_of))
+    }
+
+    /// [`read`](Self::read), each route file's routes (and each middleware
+    /// source's middleware) from `parts`: only the files that changed are
+    /// parsed again.
+    pub fn read_parts(project: &LaravelProject, parts: &impl PartReader) -> Self {
         let mut routes = Vec::new();
         for file in project.http_route_files() {
-            let Some(text) = text_of(&file.path) else { continue };
-            let parsed = ParsedFile::parse("routes.php", text);
-            routes.extend(file_routes(&parsed, file));
+            // The group the file is loaded in shapes its routes.
+            let context = format!("{file:?}");
+            let part = parts.part("routes", &file.path, &context, &|text| {
+                file_routes(&ParsedFile::parse("routes.php", text.to_owned()), file)
+            });
+            if let Some(part) = part {
+                routes.extend(part.iter().cloned());
+            }
         }
         let mut middleware: Vec<MiddlewareDef> = DEFAULT_ALIASES
             .iter()
@@ -183,9 +196,11 @@ impl RouteTable {
             .collect();
         let sources = [project.paths.bootstrap.join("app.php"), project.paths.app.join("Http").join("Kernel.php")];
         for path in sources {
-            let Some(text) = text_of(&path) else { continue };
-            let parsed = ParsedFile::parse("middleware.php", text);
-            for found in declared_middleware(&parsed, &path) {
+            let part = parts.part("middleware", &path, "", &|text| {
+                declared_middleware(&ParsedFile::parse("middleware.php", text.to_owned()), &path)
+            });
+            let Some(part) = part else { continue };
+            for found in part.iter().cloned() {
                 match middleware.iter_mut().find(|known| known.name == found.name && known.group == found.group) {
                     Some(known) => {
                         known.declared = found.declared;

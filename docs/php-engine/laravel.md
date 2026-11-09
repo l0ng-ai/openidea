@@ -108,7 +108,7 @@ Release build, the same machine as above:
 
 What the numbers say:
 
-- **The warm model build is the real problem.** On Monica, every keystroke rebuilds the whole model, most of it the 57,507 translations, and that takes 1.15 s, nearly 6× the budget. This is the incremental-model gap below, now measured.
+- **The warm model build was the real problem.** On Monica, every keystroke rebuilt the whole model, most of it the 57,507 translations, and that took 1.15 s, nearly 6× the budget. Phase 8.22 fixed it (see "Incremental model" below).
 - **Package-registered parts are missing.** Bagisto's views, routes and translations come from `loadViewsFrom`, `loadRoutesFrom` and `loadTranslationsFrom` in package service providers, and the model doesn't follow those yet. The route-hints bench also needs a route file that has routes.
 - **Completion and route hints are fast** on both apps, well under budget.
 
@@ -120,14 +120,29 @@ LARAVEL_APP_DIR=../php-corpus/apps/monica cargo bench -p ide-php --bench engine 
 LARAVEL_APP_DIR=../php-corpus/apps/monica cargo test -p ide-php --release --test laravel_parity -- --ignored --nocapture
 ```
 
-Warm builds cost about as much as cold ones. Most parts are read from disk again whenever the modification count moves:
+### Incremental model (phase 8.22, 2026-11-09)
 
-- routes
-- views
-- configuration
-- translations
+The parts read from single files are now kept per file (`crates/ide-php/src/engine/parts.rs`), next to the index in the engine's memory:
 
-They aren't stored in the index, as LARAVEL-ROADMAP.md plans. On large applications this is where the warm budget is most at risk.
+- configuration keys per `config/*.php`, per framework default and per `mergeConfigFrom` file, and the `mergeConfigFrom` calls of each provider
+- translations per language file, PHP or JSON
+- routes per route file, and middleware per `bootstrap/app.php` / `Kernel.php`
+- the view namespaces each provider registers, and the views below each folder
+
+A part is kept with the stamp of the text it was read from. For an open buffer, that's the BLAKE3 hash of its text, the hash the index uses for summaries. For a file on disk, it's the size and modification time, so checking it doesn't read the file. A watcher batch naming the file, or a folder above it, drops the part too. Folder listings, `.env`, the Vite files and the Inertia pages aren't PHP and are never open in the engine, so they're kept until the next watcher batch.
+
+A build after an edit reads and parses only the files whose stamp moved. The configuration keys and translations keep each file's part as the same `Arc` the cache holds (`frameworks::laravel::Merged`), plus a sorted index of their own. When no part changed, that index is reused as well, so the 57,507 translations aren't copied or sorted again. JSON language files are also read in one pass now. Before, finding each key's literal searched the file from the start, which was quadratic and most of the old 1.15 s.
+
+The parts live in memory, not in the index database. A new session builds them once, which the cold numbers below measure. `forget_laravel_model()` drops them too, so `model_cold` is a real cold build.
+
+| Bench                                | Budget | Monica before | Monica after |
+| ------------------------------------ | ------ | ------------- | ------------ |
+| `php_laravel_real/model_cold`        | 2 s    | 1.19 s        | 283 ms       |
+| `php_laravel_real/model_warm`        | 200 ms | **1.15 s ✗**  | 95 ms        |
+| `php_laravel_real/string_completion` | 50 ms  | 15.1 ms       | 14.7 ms      |
+| `php_laravel_real/route_hints`       | 100 ms | 13.2 ms       | 12.8 ms      |
+
+The model's sizes are unchanged. The warm 95 ms is now mostly the parts built from PHP classes rather than from single files: Artisan commands (about 55 ms), Eloquent models (25 ms) and the project's route registrations (12 ms). Those follow the type resolver, which is rebuilt for each modification count.
 
 ## Still missing
 
@@ -135,9 +150,7 @@ These gaps are tracked as phases 8.22–8.29 in [ROADMAP.md](ROADMAP.md).
 
 These are the gaps against the feature list in LARAVEL-ROADMAP.md, gathered from the phases' own notes in PROGRESS.md. They are grouped as proposed follow-up phases.
 
-1. **Real-application measurements and an incremental model.**
-   - Run `php_laravel_real/*` and `real_app_checklist` on a real application.
-   - Store the parts read from disk (config keys, translations, views, routes) in the index, keyed by content hash, so a keystroke only rebuilds what its file changed.
+1. **Real-application measurements and an incremental model.** Done in 8.21 and 8.22, as described above.
 2. **Usages and rename from declarations and Blade.**
    - Find usages and rename from:
      - a Livewire component class or its `Livewire::component` alias

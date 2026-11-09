@@ -16,6 +16,7 @@
 //! when missing), or into the JSON file.
 
 use std::path::{Path, PathBuf};
+use std::sync::Arc;
 
 use ide_core::{FileEdit, Range, TextEdit, WorkspaceEdit};
 use mago_span::HasSpan;
@@ -23,13 +24,15 @@ use mago_syntax::cst::{ArrayElement, Expression, Literal, Statement};
 
 use super::LaravelProject;
 use super::config::ConfigKeys;
+use super::parts::{Merged, PartReader, TextParts};
 use crate::syntax::{LineIndex, ParsedFile};
 
 /// See the module documentation.
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub struct Translations {
-    /// Sorted by key, then locale.
-    entries: Vec<TransEntry>,
+    /// Sorted by key, then locale. One part per language file, shared with
+    /// the engine's cache.
+    entries: Merged<TransEntry>,
     /// The locales found, sorted.
     locales: Vec<String>,
     /// The folders holding the locales: `None` for the application's, the
@@ -78,6 +81,13 @@ pub fn is_group_key(key: &str) -> bool {
 impl Translations {
     /// The translations of the project; `text_of` reads a file.
     pub fn read(project: &LaravelProject, text_of: impl Fn(&Path) -> Option<String>) -> Self {
+        Self::read_parts(project, &TextParts(text_of), None)
+    }
+
+    /// [`read`](Self::read), each language file's keys from `parts`: only
+    /// the files that changed since `previous` are read again, and the
+    /// others' keys are shared rather than copied.
+    pub fn read_parts(project: &LaravelProject, parts: &impl PartReader, previous: Option<&Self>) -> Self {
         let mut dirs: Vec<(Option<String>, PathBuf)> = vec![(None, project.paths.lang.clone())];
         if let Ok(vendor) = std::fs::read_dir(project.paths.lang.join("vendor")) {
             let mut packages: Vec<_> = vendor.flatten().filter(|e| e.path().is_dir()).collect();
@@ -96,19 +106,26 @@ impl Translations {
             }
         }
         let mut out = Self { dirs: Vec::new(), ..Self::default() };
+        let mut files = Vec::new();
         for (namespace, dir) in dirs {
             let dir = crate::project::normalize(&dir);
-            out.read_dir(namespace.as_deref(), &dir, &text_of);
+            out.read_dir(namespace.as_deref(), &dir, parts, &mut files);
             out.dirs.push((namespace, dir));
         }
-        out.entries.sort_by(|a, b| (&a.key, &a.locale).cmp(&(&b.key, &b.locale)));
-        out.entries.dedup_by(|later, earlier| later.key == earlier.key && later.locale == earlier.locale);
+        let by_key = |a: &TransEntry, b: &TransEntry| (&a.key, &a.locale).cmp(&(&b.key, &b.locale));
+        out.entries = Merged::new(files, by_key, previous.map(|previous| &previous.entries));
         out.locales.sort();
         out.locales.dedup();
         out
     }
 
-    fn read_dir(&mut self, namespace: Option<&str>, dir: &Path, text_of: &impl Fn(&Path) -> Option<String>) {
+    fn read_dir(
+        &mut self,
+        namespace: Option<&str>,
+        dir: &Path,
+        parts: &impl PartReader,
+        out: &mut Vec<Arc<Vec<TransEntry>>>,
+    ) {
         let Ok(found) = std::fs::read_dir(dir) else { return };
         let mut found: Vec<_> = found.flatten().map(|entry| entry.path()).collect();
         found.sort();
@@ -127,36 +144,47 @@ impl Translations {
                 php_files_below(&path, &path, &mut files);
                 files.sort();
                 for (group, file) in files {
-                    let Some(text) = text_of(&file) else { continue };
-                    let parsed = ParsedFile::parse("lang.php", text);
                     let file = crate::project::normalize(&file);
-                    for entry in ConfigKeys::file_entries(&prefix(&group), &file, &parsed) {
-                        let text = entry.value.as_deref().and_then(unquote);
-                        self.entries.push(TransEntry {
-                            key: entry.key,
-                            locale: name.clone(),
-                            path: entry.path,
-                            range: entry.range,
-                            text,
-                            is_group: entry.is_array,
-                            is_file: entry.is_file,
-                            json: false,
-                        });
-                    }
+                    let group = prefix(&group);
+                    let context = format!(
+                        "{group}
+{name}"
+                    );
+                    let part = parts.part("lang", &file, &context, &|text| {
+                        let parsed = ParsedFile::parse("lang.php", text.to_owned());
+                        ConfigKeys::file_entries(&group, &file, &parsed)
+                            .into_iter()
+                            .map(|entry| TransEntry {
+                                text: entry.value.as_deref().and_then(unquote),
+                                key: entry.key,
+                                locale: name.clone(),
+                                path: entry.path,
+                                range: entry.range,
+                                is_group: entry.is_array,
+                                is_file: entry.is_file,
+                                json: false,
+                            })
+                            .collect()
+                    });
+                    out.extend(part);
                 }
             } else if namespace.is_none()
                 && let Some(locale) = name.strip_suffix(".json")
             {
-                let Some(text) = text_of(&path) else { continue };
-                self.locales.push(locale.to_owned());
                 let path = crate::project::normalize(&path);
-                self.entries.extend(json_entries(locale, &path, &text));
+                let Some(part) = parts.part("lang-json", &path, locale, &|text| json_entries(locale, &path, text))
+                else {
+                    continue;
+                };
+                self.locales.push(locale.to_owned());
+                out.push(part);
             }
         }
     }
 
-    pub fn entries(&self) -> &[TransEntry] {
-        &self.entries
+    /// Every entry, sorted by key, then locale.
+    pub fn entries(&self) -> impl ExactSizeIterator<Item = &TransEntry> + Clone + '_ {
+        self.entries.iter()
     }
 
     pub fn locales(&self) -> &[String] {
@@ -175,7 +203,7 @@ impl Translations {
     /// The entries of `key`, one per locale that has it.
     pub fn get<'s>(&'s self, key: &'s str) -> impl Iterator<Item = &'s TransEntry> + 's {
         let start = self.entries.partition_point(|entry| entry.key.as_str() < key);
-        self.entries[start..].iter().take_while(move |entry| entry.key == key)
+        self.entries.iter_from(start).take_while(move |entry| entry.key == key)
     }
 
     pub fn contains(&self, key: &str) -> bool {
@@ -463,27 +491,50 @@ fn php_files_below(base: &Path, dir: &Path, out: &mut Vec<(String, PathBuf)>) {
     }
 }
 
+/// The keys of a JSON object's top level, decoded, with the byte range of
+/// each one's first literal (inside its quotes), found in one pass.
+fn top_level_keys(text: &str) -> std::collections::HashMap<String, (u32, u32)> {
+    let bytes = text.as_bytes();
+    let mut out = std::collections::HashMap::new();
+    let mut depth = 0usize;
+    let mut i = 0;
+    while i < bytes.len() {
+        match bytes[i] {
+            b'"' => {
+                let start = i;
+                i += 1;
+                while i < bytes.len() && bytes[i] != b'"' {
+                    i += if bytes[i] == b'\\' { 2 } else { 1 };
+                }
+                let close = i.min(bytes.len());
+                i = (close + 1).min(bytes.len());
+                if depth == 1
+                    && text[i..].trim_start().starts_with(':')
+                    && let Ok(key) = serde_json::from_str::<String>(&text[start..i])
+                {
+                    out.entry(key).or_insert((start as u32 + 1, close as u32));
+                }
+                continue;
+            }
+            b'{' | b'[' => depth += 1,
+            b'}' | b']' => depth = depth.saturating_sub(1),
+            _ => {}
+        }
+        i += 1;
+    }
+    out
+}
+
 /// The keys of a JSON translation file, with the ranges of their keys.
 fn json_entries(locale: &str, path: &Path, text: &str) -> Vec<TransEntry> {
     let Ok(serde_json::Value::Object(map)) = serde_json::from_str::<serde_json::Value>(text) else {
         return Vec::new();
     };
     let lines = LineIndex::new(text);
+    let literals = top_level_keys(text);
     let mut out = Vec::new();
     for (key, value) in map {
-        let quoted = serde_json::to_string(&key).unwrap_or_default();
-        // The key's literal: followed by a `:`.
-        let mut from = 0;
-        let mut range = Range::default();
-        while let Some(at) = text[from..].find(&quoted) {
-            let start = from + at;
-            let end = start + quoted.len();
-            if text[end..].trim_start().starts_with(':') {
-                range = lines.range(start as u32 + 1, end as u32 - 1);
-                break;
-            }
-            from = end;
-        }
+        let range = literals.get(&key).map_or_else(Range::default, |&(start, end)| lines.range(start, end));
         out.push(TransEntry {
             key,
             locale: locale.to_owned(),

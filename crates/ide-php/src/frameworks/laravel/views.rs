@@ -25,6 +25,7 @@ use mago_syntax::cst::{Argument, ArgumentList, ArrayElement, Call, ClassLikeMemb
 use mago_syntax::walker::Walker;
 
 use super::LaravelProject;
+use super::parts::{PartReader, TextParts};
 use crate::project::normalize;
 use crate::syntax::ParsedFile;
 use crate::types::{ExprTypes, Type};
@@ -99,6 +100,14 @@ impl ViewTable {
     /// The views of `project`; `text_of` reads a service provider (an open
     /// buffer first).
     pub fn read(project: &LaravelProject, text_of: impl Fn(&Path) -> Option<String>) -> Self {
+        Self::read_parts(project, &TextParts(text_of))
+    }
+
+    /// [`read`](Self::read), the namespaces each service provider registers
+    /// and the views below each folder from `parts`: only the providers
+    /// that changed are read again, and folders are listed again only when
+    /// files were created or removed.
+    pub fn read_parts(project: &LaravelProject, parts: &impl PartReader) -> Self {
         let mut namespaces: Vec<ViewNamespace> = Vec::new();
         let mut add = |name: String, dir: PathBuf| {
             if !dir.is_dir() {
@@ -120,10 +129,13 @@ impl ViewTable {
                 }
             }
         }
+        // The folders a provider names are relative to the project's.
+        let context = format!("{:?}", project.paths);
         for path in provider_files(project) {
-            let Some(text) = text_of(&path) else { continue };
-            for (name, dir) in registered_namespaces(project, &path, &text) {
-                add(name, dir);
+            let part =
+                parts.part("view-namespaces", &path, &context, &|text| registered_namespaces(project, &path, text));
+            for (name, dir) in part.iter().flat_map(|part| part.iter()) {
+                add(name.clone(), dir.clone());
             }
         }
         // `ide.json` view folders: namespaced ones, and more folders of the
@@ -140,13 +152,21 @@ impl ViewTable {
 
         let dir = project.paths.views.clone();
         let mut views = Vec::new();
-        collect_views(&dir, &dir, None, &mut views);
+        let mut below = |base: &Path, namespace: Option<&str>| {
+            let found = parts.views_below(base, namespace, &|| {
+                let mut found = Vec::new();
+                collect_views(base, base, namespace, &mut found);
+                found
+            });
+            views.extend(found.iter().cloned());
+        };
+        below(&dir, None);
         for extra in &extra_dirs {
-            collect_views(extra, extra, None, &mut views);
+            below(extra, None);
         }
         for namespace in &namespaces {
             for base in &namespace.dirs {
-                collect_views(base, base, Some(&namespace.name), &mut views);
+                below(base, Some(&namespace.name));
             }
         }
         // A `.blade.php` file wins over a `.php` one; the first folder of a

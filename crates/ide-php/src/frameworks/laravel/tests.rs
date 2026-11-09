@@ -599,3 +599,92 @@ fn copy_dir(from: &Path, to: &Path) {
         }
     }
 }
+
+/// The files of `kind` read into parts after the first `from` reads.
+fn reads_since(engine: &PhpEngine, from: usize) -> Vec<(&'static str, String)> {
+    let reads = engine.laravel_part_reads();
+    reads[from..].iter().map(|(kind, path)| (*kind, path.file_name().unwrap().to_string_lossy().into_owned())).collect()
+}
+
+#[test]
+fn an_edit_reads_again_only_the_files_it_touched() {
+    let dir = Dir::new();
+    dir.write("composer.json", LARAVEL);
+    dir.write("config/app.php", "<?php\nreturn ['name' => 'Blog'];\n");
+    dir.write("config/mail.php", "<?php\nreturn ['from' => 'blog@example.com'];\n");
+    dir.write("config/services.php", "<?php\nreturn ['stripe' => ['key' => 'k']];\n");
+    dir.write("lang/en/messages.php", "<?php\nreturn ['welcome' => 'Welcome'];\n");
+    let web = dir.write("routes/web.php", "<?php\nRoute::get('/', fn () => 1)->name('home');\n");
+    let engine = open_engine(&dir);
+    assert!(engine.laravel_config().unwrap().get("services.stripe.key").is_some());
+    assert!(engine.laravel_translations().unwrap().contains("messages.welcome"));
+    assert_eq!(engine.laravel_routes().unwrap().routes().len(), 1);
+    let first = engine.laravel_part_reads().len();
+    assert!(first >= 5, "every file read once: {:?}", engine.laravel_part_reads());
+
+    // A keystroke in the route file: its routes are read again, and nothing
+    // else.
+    let doc = ide_core::DocId(1);
+    let text = std::fs::read_to_string(&web).unwrap();
+    engine.document_opened(doc, &web, 1, &text);
+    engine.document_changed(doc, 2, &format!("{text}Route::get('/about', fn () => 2)->name('about');\n"));
+    assert!(engine.laravel_routes().unwrap().named("about").next().is_some());
+    assert!(engine.laravel_config().unwrap().get("app.name").is_some());
+    assert!(engine.laravel_translations().unwrap().contains("messages.welcome"));
+    assert_eq!(reads_since(&engine, first), [("routes", "web.php".to_owned())]);
+
+    // An edit to one configuration file (its open buffer) reads only it.
+    let app = dir.path("config/app.php");
+    let at = engine.laravel_part_reads().len();
+    engine.document_opened(ide_core::DocId(2), &app, 1, "<?php\nreturn ['name' => 'Blog', 'locale' => 'en'];\n");
+    let keys = engine.laravel_config().unwrap();
+    assert!(keys.get("app.locale").is_some());
+    assert!(keys.get("mail.from").is_some() && keys.get("services.stripe.key").is_some());
+    assert_eq!(reads_since(&engine, at), [("config", "app.php".to_owned())]);
+
+    // A file changed on disk, as a watcher batch reports it: only it.
+    let mail = dir.write("config/mail.php", "<?php\nreturn ['from' => 'blog@example.com', 'reply_to' => 'x'];\n");
+    engine.files_changed(&[mail], &[]);
+    assert!(engine.wait_idle(Duration::from_secs(60)));
+    let at = engine.laravel_part_reads().len();
+    let keys = engine.laravel_config().unwrap();
+    assert!(keys.get("mail.reply_to").is_some() && keys.get("app.locale").is_some());
+    assert_eq!(reads_since(&engine, at), [("config", "mail.php".to_owned())]);
+
+    // Forgetting the model reads everything again (a cold build).
+    engine.forget_laravel_model();
+    let at = engine.laravel_part_reads().len();
+    assert!(engine.laravel_config().unwrap().get("mail.reply_to").is_some());
+    assert_eq!(reads_since(&engine, at).len(), 3, "the three configuration files");
+}
+
+#[test]
+fn deleting_a_language_file_removes_its_keys() {
+    let dir = Dir::new();
+    dir.write("composer.json", LARAVEL);
+    dir.write("lang/en/messages.php", "<?php\nreturn ['welcome' => 'Welcome', 'bye' => 'Bye'];\n");
+    let fr = dir.write("lang/fr/messages.php", "<?php\nreturn ['welcome' => 'Bienvenue'];\n");
+    let json = dir.write("lang/de.json", "{\n    \"Read more\": \"Mehr\",\n    \"a \\\"quoted\\\" key\": \"x\"\n}\n");
+    let engine = open_engine(&dir);
+    let translations = engine.laravel_translations().unwrap();
+    let locales = |key: &str| -> Vec<String> {
+        engine.laravel_translations().unwrap().get(key).map(|entry| entry.locale.clone()).collect()
+    };
+    assert_eq!(locales("messages.welcome"), ["en", "fr"]);
+    assert_eq!(locales("Read more"), ["de"]);
+    // The JSON keys' literals, found in one pass over the file.
+    let quoted = translations.get("a \"quoted\" key").next().unwrap();
+    assert_eq!((quoted.range.start.line, quoted.range.start.col), (2, 5));
+    let read_more = translations.get("Read more").next().unwrap();
+    assert_eq!((read_more.range.start.line, read_more.range.start.col, read_more.range.end.col), (1, 5, 14));
+
+    std::fs::remove_file(&fr).unwrap();
+    std::fs::remove_file(&json).unwrap();
+    engine.files_changed(&[], &[fr, json]);
+    assert!(engine.wait_idle(Duration::from_secs(60)));
+    let at = engine.laravel_part_reads().len();
+    assert_eq!(locales("messages.welcome"), ["en"]);
+    assert!(locales("Read more").is_empty(), "the JSON file's keys are gone");
+    assert!(locales("messages.bye") == ["en"]);
+    assert!(reads_since(&engine, at).is_empty(), "the English file isn't read again");
+}

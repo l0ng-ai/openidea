@@ -715,7 +715,7 @@ Runs after Plan 7. Before any 8.x phase, read [LARAVEL-ROADMAP.md](LARAVEL-ROADM
 
   Record the results in `docs/php-engine/laravel.md`, along with what is still missing compared with the feature list, as follow-up phases. Tests: the checklist test and the benches.
 
-- [ ] Phase 8.22: Incremental Laravel model
+- [x] Phase 8.22: Incremental Laravel model
       Phase 8.21 measured the warm model build on a real application, and it misses its budget badly: Monica rebuilds its whole model after every keystroke in 1.15 s, against a 200 ms budget. Most of that time is its 57,507 translations, read again from disk (see `docs/php-engine/laravel.md`, "Real applications"). Make the model incremental:
   - Store the parts read from files in the PHP index, keyed by content hash like the file summaries:
     - configuration keys per `config/*.php`

@@ -37,8 +37,11 @@
 //! index for each modification count. Its configuration keys
 //! ([`PhpEngine::laravel_config`]) are read from `config/`, and its routes
 //! ([`PhpEngine::laravel_routes`]) from its route files, for each
-//! modification count.
+//! modification count. What it reads from single files (configuration
+//! keys, translations, routes, view folders) is kept per file ([`parts`]),
+//! so a build after an edit reads only the files the edit touched.
 
+pub(crate) mod parts;
 #[cfg(test)]
 mod tests;
 
@@ -56,7 +59,7 @@ use parking_lot::{Condvar, Mutex, RwLock};
 
 use crate::frameworks::laravel::{
     ArtisanCommands, AuthFacts, BladeCatalog, ConfigKeys, EnvKeys, InertiaPages, LaravelProject, LiveSchema,
-    LivewireComponents, RouteTable, Translations, ViewTable, ViteAssets,
+    LivewireComponents, PartReader, RouteTable, Translations, ViewEntry, ViewTable, ViteAssets,
 };
 use crate::index::{IndexStats, PhpIndex};
 use crate::inspect::runner::Runner;
@@ -169,6 +172,14 @@ struct Shared {
     status: Mutex<EngineStatus>,
     cancel: CancellationToken,
     modification: AtomicU64,
+    /// Goes up with every watcher batch, rescan and Laravel model reset:
+    /// what is read only from files on disk that aren't open (folder
+    /// listings, `.env`, Vite and Inertia files) is kept for it.
+    disk: AtomicU64,
+    /// The parts of the Laravel model read from single files
+    /// ([`parts`]), and the views below each folder for a disk generation.
+    parts: parts::FileParts,
+    view_listings: Mutex<parts::FolderListings>,
     /// A `LanguageServer` event has been sent (the engine became active).
     announced: AtomicBool,
     /// The last `IndexState` sent said `indexing: true`.
@@ -218,6 +229,64 @@ struct Shared {
     live_schema: RwLock<Option<Arc<LiveSchema>>>,
 }
 
+/// The engine keeps the parts of the Laravel model read from single files
+/// ([`parts`]): by the stamp of an open buffer's text (its hash) or of the
+/// file on disk (its size and modification time).
+impl PartReader for PhpEngine {
+    fn part<T: Send + Sync + 'static>(
+        &self,
+        kind: &'static str,
+        path: &Path,
+        context: &str,
+        build: &dyn Fn(&str) -> T,
+    ) -> Option<Arc<T>> {
+        let path = normalize(path);
+        let parts = &self.shared.parts;
+        let (stamp, text) = match self.open_document(&path) {
+            Some(document) if !document.embedded => {
+                (parts::Stamp::Buffer(*blake3::hash(document.text.as_bytes()).as_bytes()), Some(document.text))
+            }
+            _ => match std::fs::metadata(&path) {
+                Ok(meta) if meta.is_file() => {
+                    (parts::Stamp::Disk { len: meta.len(), modified: meta.modified().ok() }, None)
+                }
+                _ => {
+                    parts.remove(&path);
+                    return None;
+                }
+            },
+        };
+        if let Some(found) = parts.get::<T>(kind, &path, &stamp, context) {
+            return Some(found);
+        }
+        let text: Arc<str> = match text {
+            Some(text) => text,
+            None => Arc::from(std::fs::read_to_string(&path).ok()?),
+        };
+        let part = Arc::new(build(&text));
+        parts.insert(kind, &path, stamp, context, part.clone());
+        Some(part)
+    }
+
+    fn views_below(
+        &self,
+        base: &Path,
+        namespace: Option<&str>,
+        list: &dyn Fn() -> Vec<ViewEntry>,
+    ) -> Arc<Vec<ViewEntry>> {
+        let disk = self.disk_generation();
+        let key = (base.to_path_buf(), namespace.map(str::to_owned));
+        if let Some((at, found)) = self.shared.view_listings.lock().get(&key)
+            && *at == disk
+        {
+            return found.clone();
+        }
+        let found = Arc::new(list());
+        self.shared.view_listings.lock().insert(key, (disk, found.clone()));
+        found
+    }
+}
+
 /// The variables passed to view files: by file, for a modification count.
 type ViewVariables = HashMap<PathBuf, (u64, Arc<Vec<(String, String)>>)>;
 
@@ -252,6 +321,9 @@ impl PhpEngine {
             }),
             cancel: CancellationToken::new(),
             modification: AtomicU64::new(0),
+            disk: AtomicU64::new(0),
+            parts: parts::FileParts::default(),
+            view_listings: Mutex::new(HashMap::new()),
             announced: AtomicBool::new(false),
             indexing: AtomicBool::new(false),
             documents: Mutex::new(HashMap::new()),
@@ -420,6 +492,7 @@ impl PhpEngine {
     pub fn rescan(&self) {
         *self.shared.symfony_config.lock() = None;
         *self.shared.laravel.lock() = LaravelCache::default();
+        self.shared.disk.fetch_add(1, Ordering::SeqCst);
         self.shared.modification.fetch_add(1, Ordering::SeqCst);
         let mut q = self.shared.queue.lock();
         q.rescan = true;
@@ -432,6 +505,13 @@ impl PhpEngine {
     /// A watcher batch: files created or modified, and files or folders
     /// removed. Paths that can't matter (other languages) are dropped here.
     pub fn files_changed(&self, changed: &[PathBuf], removed: &[PathBuf]) {
+        if !changed.is_empty() || !removed.is_empty() {
+            // Files were written, created or removed: folders are listed
+            // again, and the parts read from these files are read again.
+            self.shared.disk.fetch_add(1, Ordering::SeqCst);
+            let touched: Vec<PathBuf> = changed.iter().chain(removed).map(|p| normalize(p)).collect();
+            self.shared.parts.forget_below(&touched);
+        }
         if changed.iter().chain(removed).any(|p| is_yaml_path(p) || p.ends_with("config")) {
             // The Symfony configuration is read again on next use.
             *self.shared.symfony_config.lock() = None;
@@ -614,7 +694,27 @@ impl PhpEngine {
     /// from it is built again.
     pub(crate) fn reset_laravel_cache(&self) {
         *self.shared.laravel.lock() = LaravelCache::default();
+        self.shared.disk.fetch_add(1, Ordering::SeqCst);
         self.shared.modification.fetch_add(1, Ordering::SeqCst);
+    }
+
+    /// [`reset_laravel_cache`](Self::reset_laravel_cache), and drops the
+    /// parts read from single files too: everything is read again.
+    pub(crate) fn forget_laravel_parts(&self) {
+        self.shared.parts.clear();
+        self.shared.view_listings.lock().clear();
+        self.reset_laravel_cache();
+    }
+
+    /// Goes up with every watcher batch, rescan and Laravel model reset.
+    pub fn disk_generation(&self) -> u64 {
+        self.shared.disk.load(Ordering::SeqCst)
+    }
+
+    /// The files read into parts of the Laravel model so far, as `(kind,
+    /// path)`, in order: tests check that a build reads only what changed.
+    pub fn laravel_part_reads(&self) -> Vec<(&'static str, PathBuf)> {
+        self.shared.parts.reads()
     }
 
     /// The configuration keys of the Laravel project (`config/*.php`, open
@@ -628,8 +728,9 @@ impl PhpEngine {
             return Some(keys.clone());
         }
         let project = self.laravel()?;
-        let packages = crate::frameworks::laravel::config::package_configs(&project, |path| self.text_of(path));
-        let keys = Arc::new(ConfigKeys::read_with(&project.paths.config, &packages, |path| self.text_of(path)));
+        let packages = crate::frameworks::laravel::config::package_configs_with(&project, self);
+        let previous = self.shared.laravel_config.lock().as_ref().map(|(_, keys)| keys.clone());
+        let keys = Arc::new(ConfigKeys::read_parts(&project.paths.config, &packages, self, previous.as_deref()));
         *self.shared.laravel_config.lock() = Some((modification, keys.clone()));
         Some(keys)
     }
@@ -650,22 +751,34 @@ impl PhpEngine {
         slot: &Mutex<Option<(u64, Arc<T>)>>,
         build: impl FnOnce(&LaravelProject) -> T,
     ) -> Option<Arc<T>> {
-        let modification = self.modification_count();
-        if let Some((at, found)) = &*slot.lock()
-            && *at == modification
-        {
-            return Some(found.clone());
-        }
+        self.laravel_cached_for(self.modification_count(), slot, |project, _| build(project))
+    }
+
+    /// [`laravel_cached`](Self::laravel_cached) for `generation` (a
+    /// modification count or a disk generation); `build` gets the model it
+    /// replaces, if any.
+    fn laravel_cached_for<T>(
+        &self,
+        generation: u64,
+        slot: &Mutex<Option<(u64, Arc<T>)>>,
+        build: impl FnOnce(&LaravelProject, Option<&T>) -> T,
+    ) -> Option<Arc<T>> {
+        let previous = match &*slot.lock() {
+            Some((at, found)) if *at == generation => return Some(found.clone()),
+            Some((_, found)) => Some(found.clone()),
+            None => None,
+        };
         let project = self.laravel()?;
-        let found = Arc::new(build(&project));
-        *slot.lock() = Some((modification, found.clone()));
+        let found = Arc::new(build(&project, previous.as_deref()));
+        *slot.lock() = Some((generation, found.clone()));
         Some(found)
     }
 
     /// The keys of the Laravel project's `.env` and `.env.example`, or
     /// `None` when the project isn't a Laravel project.
     pub fn laravel_env(&self) -> Option<Arc<EnvKeys>> {
-        self.laravel_cached(&self.shared.laravel_env, |project| {
+        // Only files on disk: read again after a watcher batch.
+        self.laravel_cached_for(self.disk_generation(), &self.shared.laravel_env, |project, _| {
             EnvKeys::read(&project.root, |path| std::fs::read_to_string(path).ok())
         })
     }
@@ -673,13 +786,16 @@ impl PhpEngine {
     /// The translation keys of the Laravel project (`lang/`, open buffers
     /// first), or `None` when the project isn't a Laravel project.
     pub fn laravel_translations(&self) -> Option<Arc<Translations>> {
-        self.laravel_cached(&self.shared.laravel_lang, |project| Translations::read(project, |path| self.text_of(path)))
+        self.laravel_cached_for(self.modification_count(), &self.shared.laravel_lang, |project, previous| {
+            Translations::read_parts(project, self, previous)
+        })
     }
 
     /// The Vite entry points, manifest and asset files of the Laravel
     /// project, or `None` when the project isn't a Laravel project.
     pub fn laravel_assets(&self) -> Option<Arc<ViteAssets>> {
-        self.laravel_cached(&self.shared.laravel_assets, |project| {
+        // Only files on disk: read again after a watcher batch.
+        self.laravel_cached_for(self.disk_generation(), &self.shared.laravel_assets, |project, _| {
             ViteAssets::read(&project.root, &project.paths.resources, |path| std::fs::read_to_string(path).ok())
         })
     }
@@ -708,7 +824,9 @@ impl PhpEngine {
     /// The Inertia pages of the Laravel project (empty without Inertia), or
     /// `None` when the project isn't a Laravel project.
     pub fn laravel_inertia(&self) -> Option<Arc<InertiaPages>> {
-        self.laravel_cached(&self.shared.laravel_inertia, |project| {
+        // Page files and `package.json` aren't PHP: read again after a
+        // watcher batch, or a settings change (which resets the model).
+        self.laravel_cached_for(self.disk_generation(), &self.shared.laravel_inertia, |project, _| {
             let dirs = self.laravel_settings().inertia_pages;
             InertiaPages::read_with(project, &dirs, self.text_of(&project.root.join("package.json")).as_deref())
         })
@@ -725,10 +843,7 @@ impl PhpEngine {
             return Some(routes.clone());
         }
         let project = self.laravel()?;
-        let routes = Arc::new(RouteTable::read(&project, |path| match self.open_document(path) {
-            Some(document) => Some(document.text.to_string()),
-            None => std::fs::read_to_string(path).ok(),
-        }));
+        let routes = Arc::new(RouteTable::read_parts(&project, self));
         *self.shared.laravel_routes.lock() = Some((modification, routes.clone()));
         Some(routes)
     }
@@ -745,10 +860,7 @@ impl PhpEngine {
             return Some(views.clone());
         }
         let project = self.laravel()?;
-        let views = Arc::new(ViewTable::read(&project, |path| match self.open_document(path) {
-            Some(document) if !document.embedded => Some(document.text.to_string()),
-            _ => std::fs::read_to_string(path).ok(),
-        }));
+        let views = Arc::new(ViewTable::read_parts(&project, self));
         *self.shared.laravel_views.lock() = Some((modification, views.clone()));
         Some(views)
     }
@@ -800,6 +912,7 @@ impl PhpEngine {
         };
         if model_changed {
             *self.shared.laravel.lock() = LaravelCache::default();
+            self.shared.disk.fetch_add(1, Ordering::SeqCst);
             self.shared.modification.fetch_add(1, Ordering::SeqCst);
             self.shared.inspect_open_documents();
         }
