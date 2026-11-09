@@ -1253,6 +1253,7 @@ function UserMessage({
             <IconButton
               size="small"
               icon="diff-revert"
+              iconSize={14}
               title="Retract Message"
               action="agents.retractMessage"
               actionArg={{ task: task.id, turn }}

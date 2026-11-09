@@ -51,6 +51,28 @@ beforeEach(() => {
   useAgents.setState({ tasks: new Map([[task.id, task]]), entries: new Map(), composers: new Map(), focus: null });
 });
 
+it("redraws a diagram when the theme changes", async () => {
+  mermaid.render.mockReset().mockResolvedValue({ svg: `<svg id="x"><style>#x .actor{fill:none}</style></svg>` });
+  const root = document.documentElement;
+  const previous = root.dataset.theme;
+  try {
+    const { container } = render(
+      <SessionEditor input={{ kind: "agent-session", key: task.id, data: { task: task.id } }} />,
+    );
+    await waitFor(() => {
+      const block = container.querySelector("[data-mermaid]");
+      expect(block).toHaveAttribute("data-mermaid-state", "ok");
+    });
+    expect(mermaid.render).toHaveBeenCalledTimes(1);
+
+    root.dataset.theme = previous === "dark" ? "light" : "dark";
+    await waitFor(() => expect(mermaid.render).toHaveBeenCalledTimes(2));
+  } finally {
+    if (previous === undefined) delete root.dataset.theme;
+    else root.dataset.theme = previous;
+  }
+});
+
 it("follows the end when a diagram draws after the last update", async () => {
   // The diagram is still rendering when the conversation arrives at its end.
   let draw!: () => void;

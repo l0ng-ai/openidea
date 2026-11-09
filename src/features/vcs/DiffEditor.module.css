@@ -278,10 +278,10 @@
   cursor: pointer;
 }
 .host :global(.cm-diffDivider button.cm-diffArrow-a-to-b) {
-  left: 1px;
+  left: 0;
 }
 .host :global(.cm-diffDivider button.cm-diffArrow-b-to-a) {
-  right: 1px;
+  right: 0;
 }
 /* With one direction there is no pair to keep apart: the arrow sits in the middle of the divider. */
 .host :global(.cm-diffDivider-lone button.cm-diffArrow) {

@@ -8,7 +8,8 @@ import { useEffect, useLayoutEffect, useMemo, useRef, useState, type KeyboardEve
 import clsx from "clsx";
 import { create } from "zustand";
 import { call, commands, isTauri, type OutlineItem } from "@/platform/ipc";
-import { useProject } from "@/platform/project";
+import { projectFolder, useProject } from "@/platform/project";
+import { useProjectViewLead } from "@/workbench/contributions";
 import { Icon, Popup, T } from "@/ui";
 import { editorController, useEditorStatus } from "../controller";
 import { useOutline } from "../model/document";
@@ -42,8 +43,13 @@ export function NavBarPopup() {
 function OpenNavBar() {
   const seq = useNavBarPopup((s) => s.seq);
   const status = useEditorStatus((s) => s.status);
-  if (!status) return null;
-  return <NavBar key={seq} path={status.path} line={status.line} col={status.col} />;
+  const project = useProject((s) => s.project);
+  const lead = useProjectViewLead((s) => s.lead);
+  const path = lead?.path ?? status?.path ?? project?.root;
+  if (!path) return null;
+  return (
+    <NavBar key={seq} path={path} line={status?.line ?? 0} col={status?.col ?? 0} directory={lead?.dir ?? !status} />
+  );
 }
 
 async function childrenOf(seg: NavSegment, outline: readonly OutlineItem[] | undefined): Promise<NavChild[]> {
@@ -58,22 +64,19 @@ function anchorPoint(): { x: number; y: number } {
   return r ? { x: r.left + 8, y: r.top + 4 } : { x: 80, y: 80 };
 }
 
-function NavBar({ path, line, col }: { path: string; line: number; col: number }) {
+function NavBar({ path, line, col, directory }: { path: string; line: number; col: number; directory: boolean }) {
   const project = useProject((s) => s.project);
   const outline = useOutline((s) => s[path]);
   const initial = useMemo(
-    () =>
-      navSegments(
-        project ? { root: project.root, name: project.name } : null,
-        path,
-        outline ? symbolChain(outline, line, col) : [],
-      ),
+    () => navSegments(projectFolder(project, path), path, outline ? symbolChain(outline, line, col) : [], directory),
     // The bar is a snapshot of where ⌘↑ was pressed.
     // eslint-disable-next-line react-hooks/exhaustive-deps
     [],
   );
   const [segments, setSegments] = useState<NavSegment[]>(initial);
-  const [active, setActive] = useState(() => initial.findIndex((s) => s.kind === "file"));
+  const [active, setActive] = useState(() =>
+    Math.max(0, directory ? initial.length - 1 : initial.findIndex((s) => s.kind === "file")),
+  );
   const [list, setList] = useState<{ seg: number; items: NavChild[]; active: number; left: number } | null>(null);
   const [anchor] = useState(anchorPoint);
   const buttons = useRef<Array<HTMLButtonElement | null>>([]);

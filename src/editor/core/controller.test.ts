@@ -4,12 +4,12 @@ import { createMemoryBackend } from "./backend";
 import { initialTabsState } from "./model/tabs";
 import { useDocMeta } from "./model/document";
 import { resetDistractionFree, setDistractionFree } from "@/workbench/distractionFree";
-import { registerTextEditorWrapper } from "@/workbench/contributions";
+import { registerTextEditorWrapper, setProjectViewLead, useProjectViewLead } from "@/workbench/contributions";
 import { registerActions } from "@/platform/actions";
 import { useProject } from "@/platform/project";
 import { useRemote } from "@/platform/remote";
-import { resolveMenuItems } from "@/ui";
-import { getContext } from "@/platform/context";
+import { hideContextMenu, resolveMenuItems, useContextMenuStore } from "@/ui";
+import { getContext, setContext } from "@/platform/context";
 import { installKeyboardDispatcher } from "@/platform/keymap";
 import { TEXT_WHEN } from "./actions";
 
@@ -23,6 +23,15 @@ afterEach(() => {
 });
 
 describe("EditorController", () => {
+  it("returns navigation context to the editor when activating a non-text tab", async () => {
+    ctrl = new EditorController(createMemoryBackend({ "/p/a.ts": "one\n" }));
+    ctrl.start();
+    await ctrl.openFile("/p/a.ts", { focus: false });
+    setProjectViewLead({ path: "/p/src", dir: true });
+    await ctrl.openInput({ kind: "agent-session", key: "task" });
+    expect(useProjectViewLead.getState().lead).toBeNull();
+  });
+
   it("autosaves on blur, but not while focus is in a popup over the editor", async () => {
     const backend = createMemoryBackend({ "/p/a.c": "int main() {\n    \n}\n" });
     const save = vi.spyOn(backend, "save");
@@ -342,6 +351,98 @@ describe("EditorController", () => {
     dispose();
     useProject.setState({ project: null, settings: null });
   });
+
+  it.each(["editor", "tab"])(
+    "offers grouped Git actions in the %s menu and preserves action enablement",
+    async (menu) => {
+      const groups = [
+        ["vcs.commit", "vcs.addToVcs"],
+        [
+          "vcs.annotate",
+          "vcs.showDiff",
+          "vcs.compareWithBranch",
+          "vcs.showHistory",
+          "vcs.showHistoryForSelection",
+          "vcs.rollback",
+        ],
+        ["vcs.push", "vcs.update", "vcs.fetch"],
+        ["vcs.merge", "vcs.rebase"],
+        ["vcs.branches", "vcs.newBranch", "vcs.newTag", "vcs.resetHead"],
+        ["vcs.stash", "vcs.unstash"],
+        ["GitHub", "vcs.manageRemotes", "vcs.clone"],
+      ];
+      const github = [
+        "github.pullRequests",
+        "github.createPullRequest",
+        "github.checkoutPullRequest",
+        "github.openInBrowser",
+      ];
+      const ids = [...groups.flat().filter((id) => id !== "GitHub"), ...github];
+      const dispose = registerActions(
+        ids.map((id) => ({
+          id,
+          title: id,
+          when: id === "vcs.clone" ? undefined : id.startsWith("github.") ? "projectOpen" : "vcsAvailable",
+          run: () => undefined,
+        })),
+      );
+      useProject.setState({ project: { name: "p", root: "/p", trusted: true, isGit: true, settings: {} } as never });
+      ctrl = new EditorController(createMemoryBackend({ "/p/a.ts": "one\n" }));
+      ctrl.start();
+      await ctrl.openFile("/p/a.ts", { focus: false });
+      const slot = ctrl.activeSlot!;
+      const host = document.createElement("div");
+      document.body.appendChild(host);
+      const view = slot.mount(host);
+      vi.spyOn(view, "posAtCoords").mockReturnValue(null);
+      const items = () => {
+        if (menu === "editor") {
+          ctrl!.onContextMenu(slot, new MouseEvent("contextmenu"));
+          return useContextMenuStore.getState().menu!.items;
+        }
+        const state = useTabs.getState();
+        const pane = state.panes[state.activePane]!;
+        return ctrl!.tabMenu(pane.id, pane.tabs[0]!);
+      };
+      const gitItems = () => resolveMenuItems(items()).find((item) => item.label === "Git")!.submenu!;
+      try {
+        setContext("projectOpen", true);
+        setContext("vcsAvailable", true);
+        expect(
+          gitItems().map((item) =>
+            item.kind === "separator" ? "-" : item.kind === "action" ? item.action : item.label,
+          ),
+        ).toEqual(groups.flatMap((group, i) => (i ? ["-", ...group] : group)));
+        const resolved = resolveMenuItems(gitItems());
+        expect(resolved.filter((item) => item.kind === "item").every((item) => !item.disabled)).toBe(true);
+        const githubItems = resolved.find((item) => item.label === "GitHub")!.submenu!;
+        expect(resolveMenuItems(githubItems).map((item) => item.key)).toEqual(github);
+        expect(gitItems()).toContainEqual({
+          kind: "action",
+          action: "vcs.compareWithBranch",
+          arg: { path: "/p/a.ts" },
+        });
+
+        setContext("vcsAvailable", false);
+        expect(
+          resolveMenuItems(gitItems())
+            .filter((item) => item.kind === "item" && item.key.startsWith("vcs.") && item.key !== "vcs.clone")
+            .every((item) => item.disabled),
+        ).toBe(true);
+        expect(resolveMenuItems(gitItems()).find((item) => item.key === "vcs.clone")?.disabled).toBe(false);
+        setContext("projectOpen", false);
+        expect(resolveMenuItems(githubItems).every((item) => item.disabled)).toBe(true);
+      } finally {
+        dispose();
+        hideContextMenu();
+        slot.unmount();
+        host.remove();
+        useProject.setState({ project: null, settings: null });
+        setContext("vcsAvailable", false);
+        setContext("projectOpen", false);
+      }
+    },
+  );
 
   it("switches an open image tab to a text tab when a matching text editor wrapper registers", async () => {
     ctrl = new EditorController(createMemoryBackend({ "/p/arch.diagram.svg": "<svg/>" }));

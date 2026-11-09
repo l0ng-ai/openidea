@@ -206,6 +206,7 @@ impl SyntaxCache {
                 // their trees join the cache.
                 .or_else(|| self.syntax.web_outline(lang, text))
                 .or_else(|| super::external::outline(lang, text))
+                .or_else(|| self.syntax.builtin_outline(lang, text))
             },
         )
     }
