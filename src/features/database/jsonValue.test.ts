@@ -1,10 +1,10 @@
 import { describe, expect, it } from "vitest";
-import { formatJson, isJsonColumn, isJsonValue, jsonErrorOf } from "./jsonValue";
+import { formatJson, initialJsonText, JSON_INLINE_LIMIT, isJsonColumn, isJsonValue, jsonErrorOf } from "./jsonValue";
 
 describe("JSON column detection", () => {
   it("matches json, jsonb and MySQL JSON types", () => {
-    for (const type of ["json", "jsonb", "JSON", "Json", "_json"]) expect(isJsonColumn(type)).toBe(true);
-    expect(isJsonColumn("text")).toBe(false);
+    for (const type of ["json", "jsonb", "JSON", "Json", "MYSQL_TYPE_JSON"]) expect(isJsonColumn(type)).toBe(true);
+    for (const type of ["text", "_json", "jsonb[]", "notjson", "json_config"]) expect(isJsonColumn(type)).toBe(false);
     expect(isJsonColumn("integer")).toBe(false);
     expect(isJsonColumn("")).toBe(false);
   });
@@ -28,12 +28,12 @@ describe("JSON column detection", () => {
 });
 
 describe("JSON validation", () => {
-  it("accepts valid and empty values without an error", () => {
+  it("accepts valid JSON and rejects blank values", () => {
     expect(jsonErrorOf('{"a": 1}')).toBeNull();
     expect(jsonErrorOf("[]")).toBeNull();
     expect(jsonErrorOf("true")).toBeNull();
-    expect(jsonErrorOf("")).toBeNull();
-    expect(jsonErrorOf("   ")).toBeNull();
+    expect(jsonErrorOf("")).not.toBeNull();
+    expect(jsonErrorOf("   ")).not.toBeNull();
   });
 
   it("reports the message and offset of the first syntax error", () => {
@@ -63,4 +63,21 @@ describe("formatJson", () => {
     const pretty = '{\n  "a": 1,\n  "b": [\n    2\n  ]\n}';
     expect(formatJson(pretty)).toBe(pretty);
   });
+});
+
+it("formats without changing large numbers, duplicate keys or number spelling", () => {
+  expect(formatJson('{"n":9007199254740993,"n":1e2}')).toBe('{\n  "n": 9007199254740993,\n  "n": 1e2\n}');
+});
+
+it("bounds automatic formatting and content detection for large values", () => {
+  const text = '{"large":"' + "x".repeat(5_000_000) + '"}';
+  expect(text.length).toBeGreaterThan(JSON_INLINE_LIMIT);
+  expect(initialJsonText(text)).toBe(text);
+  expect(isJsonValue("text", text)).toBe(false);
+  expect(isJsonValue("json", text)).toBe(true);
+});
+
+it("reformats a 5 MB string without dropping any of its content", () => {
+  const value = "x".repeat(5_000_000);
+  expect(formatJson('{"large":"' + value + '"}')).toBe('{\n  "large": "' + value + '"\n}');
 });

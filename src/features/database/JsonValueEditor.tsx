@@ -1,26 +1,17 @@
-/**
- * The JSON value editor (#2333): the IDE's code editor (highlighting, bracket
- * matching, folding, find) in place of the Value panel's plain textarea, with
- * pretty-printing and live validation. Shared by the Value panel and the
- * "Open in Window" dialog (also ⇧Enter on a JSON cell of an editable grid).
- * Phase 1 covers JSON only; XML and bytea modes are follow-ups.
- */
 import { useEffect, useRef, useState } from "react";
-import { Compartment, EditorState, type Extension } from "@codemirror/state";
-import { EditorView, keymap, lineNumbers } from "@codemirror/view";
-import { closeBrackets, closeBracketsKeymap } from "@codemirror/autocomplete";
-import { defaultKeymap, history, historyKeymap, indentWithTab } from "@codemirror/commands";
-import { bracketMatching, foldGutter, foldKeymap, indentOnInput, syntaxHighlighting } from "@codemirror/language";
-import { linter, type Diagnostic } from "@codemirror/lint";
-import { search, searchKeymap } from "@codemirror/search";
+import { EditorState, Prec } from "@codemirror/state";
+import { EditorView, keymap } from "@codemirror/view";
+import { foldKeymap } from "@codemirror/language";
+import { setDiagnostics } from "@codemirror/lint";
+import { openSearchPanel, searchKeymap } from "@codemirror/search";
 import { findLanguageDescription, loadSupport } from "@/editor/core/cm/languages";
-import { openideaHighlightStyle } from "@/editor/core/cm/highlight";
-import { openideaTheme } from "@/editor/core/cm/theme";
+import { baseExtensions, compartments } from "@/editor/core/cm/setup";
+import { tx } from "@/platform/i18n";
 import { Dialog, T, Button, type DialogButton } from "@/ui";
-import { formatJson, jsonErrorOf, type JsonError } from "./jsonValue";
+import { formatJson, jsonErrorOf, JSON_INLINE_LIMIT, type JsonError } from "./jsonValue";
+import { registerValueEditorActions } from "./valueEditorActions";
 import styles from "./Database.module.css";
 
-/** What the parent may ask the mounted editor to do (Reformat, opening focus). */
 export interface JsonEditorApi {
   reformat(): void;
   focus(): void;
@@ -28,121 +19,156 @@ export interface JsonEditorApi {
 
 const jsonLanguage = findLanguageDescription("JSON", "value.json");
 
-const reformatDoc = (view: EditorView): boolean => {
-  const doc = view.state.doc.toString();
-  if (jsonErrorOf(doc)) return false;
-  view.dispatch({ changes: { from: 0, to: view.state.doc.length, insert: formatJson(doc) } });
-  return true;
-};
-
-/** The IDE code editor over one JSON cell value. Mounts once per `initial`; the parent re-keys on another value. */
+/** A standalone value using the same editor setup and JSON support as file editors. */
 export function JsonValueEditor(props: {
-  /** The text to open with, already pretty-printed by the caller. */
   initial: string;
+  validate: boolean;
+  emptyIsNull?: boolean;
   readOnly?: boolean;
   ariaLabel: string;
-  /** Text and its syntax error after every change (drives Apply and the error line). */
-  onChange: (text: string, error: JsonError | null) => void;
-  /** The mounted editor's api (null once unmounted). */
+  onChange: (text: string, error: JsonError | null, pending: boolean) => void;
   onReady?: (api: JsonEditorApi | null) => void;
-  /** ⌘Enter inside the editor (the panel textarea's apply chord). */
   onSubmit?: () => void;
+  onOpenWindow?: () => void;
 }) {
   const hostRef = useRef<HTMLDivElement>(null);
-  const viewRef = useRef<EditorView | null>(null);
-  // Props read from the update listener and keymap stay current without rebuilding the view.
-  const changeRef = useRef(props.onChange);
-  changeRef.current = props.onChange;
-  const submitRef = useRef(props.onSubmit);
-  submitRef.current = props.onSubmit;
+  const current = useRef(props);
+  current.current = props;
 
   useEffect(() => {
     const host = hostRef.current;
     if (!host) return;
-    const language = new Compartment();
+    let alive = true;
+    let worker: Worker | null = null;
+    const report = (text: string, error: JsonError | null, pending = false) => {
+      current.current.onChange(text, current.current.validate ? error : null, pending && current.current.validate);
+      queueMicrotask(() => {
+        if (!alive || text !== view.state.doc.toString()) return;
+        const from = Math.min(error?.pos ?? 0, Math.max(view.state.doc.length - 1, 0));
+        view.dispatch(
+          setDiagnostics(
+            view.state,
+            error
+              ? [
+                  {
+                    from,
+                    to: Math.min(from + 1, view.state.doc.length),
+                    severity: current.current.validate ? "error" : "warning",
+                    message: error.message,
+                  },
+                ]
+              : [],
+          ),
+        );
+      });
+    };
+    const analyze = (text: string, format = false) => {
+      worker?.terminate();
+      worker = null;
+      if (text === "" && current.current.emptyIsNull) {
+        report(text, null);
+        return;
+      }
+      const done = (result: { text: string; error: JsonError | null }) => {
+        if (!alive || text !== view.state.doc.toString()) return;
+        if (format && result.text !== text && !current.current.readOnly)
+          view.dispatch({ changes: { from: 0, to: view.state.doc.length, insert: result.text } });
+        else report(text, result.error);
+      };
+      if (text.length <= JSON_INLINE_LIMIT) {
+        done({ text: format ? formatJson(text) : text, error: jsonErrorOf(text) });
+      } else {
+        report(text, null, true);
+        worker = new Worker(new URL("./jsonValue.worker.ts", import.meta.url), { type: "module" });
+        const task = worker;
+        worker.onmessage = (event: MessageEvent<{ text: string; error: JsonError | null }>) => {
+          if (worker !== task) return;
+          task.terminate();
+          worker = null;
+          done(event.data);
+        };
+        worker.onerror = () => {
+          if (worker !== task) return;
+          task.terminate();
+          worker = null;
+          report(text, { message: tx("JSON validation failed"), pos: 0 });
+        };
+        worker.postMessage({ text, format });
+      }
+    };
+    const reformat = () => {
+      if (!current.current.readOnly) analyze(view.state.doc.toString(), true);
+      return true;
+    };
     const view = new EditorView({
       parent: host,
       state: EditorState.create({
         doc: props.initial,
-        extensions: [
-          openideaTheme,
-          syntaxHighlighting(openideaHighlightStyle),
-          lineNumbers(),
-          foldGutter(),
-          bracketMatching(),
-          indentOnInput(),
-          closeBrackets(),
-          history(),
-          search({ top: true }),
-          keymap.of([
-            { key: "Mod-Alt-l", run: (v) => reformatDoc(v) },
-            {
-              key: "Mod-Enter",
-              run: () => {
-                if (!submitRef.current) return false;
-                submitRef.current();
-                return true;
-              },
-            },
-          ]),
-          keymap.of([
-            ...closeBracketsKeymap,
-            ...defaultKeymap,
-            ...historyKeymap,
-            ...searchKeymap,
-            ...foldKeymap,
-            indentWithTab,
-          ]),
-          language.of([]),
-          props.readOnly ? [EditorState.readOnly.of(true), EditorView.editable.of(false)] : ([] as Extension),
-          EditorView.lineWrapping,
-          linter(
-            (v) => {
-              const error = jsonErrorOf(v.state.doc.toString());
-              if (!error) return [];
-              // Mark the offending character; a position at the end marks the last one.
-              const from = Math.min(error.pos, Math.max(v.state.doc.length - 1, 0));
-              const diagnostic: Diagnostic = {
-                from,
-                to: Math.min(from + 1, v.state.doc.length),
-                severity: "error",
-                message: error.message,
-              };
-              return [diagnostic];
-            },
-            { delay: 150 },
-          ),
-          EditorView.contentAttributes.of({ "aria-label": props.ariaLabel }),
-          EditorView.updateListener.of((update) => {
-            if (update.docChanged) {
-              const doc = update.state.doc.toString();
-              changeRef.current(doc, jsonErrorOf(doc));
-            }
-          }),
-        ],
+        extensions: baseExtensions({
+          ctx: {
+            doc: -1,
+            path: "value.json",
+            language: "json",
+            uiMode: "JSON",
+            readOnly: !!props.readOnly,
+            virtual: true,
+          },
+          settings: undefined,
+          info: undefined,
+          language: null,
+          docLength: props.initial.length,
+          indent: { tabSize: 2, insertSpaces: true },
+          wrapOverride: false,
+          contributions: [],
+          extra: [
+            Prec.highest(
+              keymap.of([
+                {
+                  key: "Mod-Enter",
+                  run: () => {
+                    current.current.onSubmit?.();
+                    return true;
+                  },
+                },
+                ...searchKeymap,
+                ...foldKeymap,
+              ]),
+            ),
+            EditorView.editable.of(!props.readOnly),
+            Prec.highest(EditorView.contentAttributes.of({ "aria-label": props.ariaLabel, tabindex: "0" })),
+            EditorView.updateListener.of((update) => {
+              if (update.docChanged) analyze(update.state.doc.toString());
+            }),
+          ],
+        }),
       }),
     });
-    viewRef.current = view;
-    let alive = true;
     if (jsonLanguage)
       void loadSupport(jsonLanguage).then((support) => {
-        if (alive && support && viewRef.current) viewRef.current!.dispatch({ effects: language.reconfigure(support) });
+        if (alive && support) view.dispatch({ effects: compartments.language.reconfigure(support) });
       });
-    props.onReady?.({
-      reformat: () => void reformatDoc(view),
-      focus: () => view.focus(),
+    const unregisterActions = registerValueEditorActions(host, {
+      reformat,
+      find: () => {
+        openSearchPanel(view);
+      },
+      openWindow: props.onOpenWindow ? () => current.current.onOpenWindow?.() : undefined,
+      readOnly: !!props.readOnly,
     });
+    analyze(props.initial);
+    props.onReady?.({ reformat, focus: () => view.focus() });
     return () => {
       alive = false;
+      unregisterActions();
+      worker?.terminate();
       props.onReady?.(null);
       view.destroy();
-      viewRef.current = null;
     };
-    // The editor belongs to one cell value; the parent re-keys on another.
+    // The parent re-keys the editor when its cell value changes.
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [props.initial]);
 
-  return <div ref={hostRef} className={styles.valueEditor} />;
+  return <div ref={hostRef} className={styles.valueEditor} data-db-value-editor />;
 }
 
 const VALUE_WINDOW_SIZE_KEY = "openidea.database.valueWindowSize";
@@ -170,6 +196,9 @@ export function JsonValueWindow(props: {
   title: string;
   /** The text to open with, already pretty-printed by the caller. */
   initial: string;
+  baseline?: string;
+  validate: boolean;
+  emptyIsNull?: boolean;
   readOnly?: boolean;
   onClose: () => void;
   /** Applies the editor's text (the caller's pending-edit pipeline); omit for read-only. */
@@ -177,7 +206,12 @@ export function JsonValueWindow(props: {
   onSetNull?: () => void;
 }) {
   const [text, setText] = useState(props.initial);
-  const [error, setError] = useState<JsonError | null>(null);
+  const [error, setError] = useState<JsonError | null>(() =>
+    !props.emptyIsNull && props.validate && props.initial.length <= JSON_INLINE_LIMIT
+      ? jsonErrorOf(props.initial)
+      : null,
+  );
+  const [pending, setPending] = useState(props.initial.length > JSON_INLINE_LIMIT);
   const editor = useRef<JsonEditorApi | null>(null);
   const [initialSize] = useState(
     () =>
@@ -186,14 +220,16 @@ export function JsonValueWindow(props: {
         h: Math.min(520, globalThis.innerHeight - 64),
       },
   );
-  const dirty = text !== props.initial;
-  const apply = () => props.onApply?.(text);
+  const dirty = text !== (props.baseline ?? props.initial);
+  const apply = () => {
+    if (!props.readOnly && dirty && !error && !pending) props.onApply?.(text);
+  };
   const buttons: DialogButton[] = props.readOnly
     ? [{ label: "Close", role: "cancel", onClick: props.onClose }]
     : [
         ...(props.onSetNull ? [{ label: "Set NULL", onClick: props.onSetNull }] : []),
         { label: "Cancel", role: "cancel", onClick: props.onClose },
-        { label: "Apply", role: "default", disabled: !dirty || !!error, onClick: apply },
+        { label: "Apply", role: "default", disabled: !dirty || !!error || pending, onClick: apply },
       ];
   return (
     <Dialog
@@ -209,7 +245,7 @@ export function JsonValueWindow(props: {
       onResized={saveValueWindowSize}
       footerStart={
         props.readOnly ? undefined : (
-          <Button size="small" disabled={!!error} onClick={() => editor.current?.reformat()}>
+          <Button size="small" disabled={!!error || pending} onClick={() => editor.current?.reformat()}>
             <T>Reformat</T>
           </Button>
         )
@@ -218,15 +254,21 @@ export function JsonValueWindow(props: {
       <div className={styles.valueWindowBody}>
         <JsonValueEditor
           initial={props.initial}
+          validate={props.validate}
+          emptyIsNull={props.emptyIsNull}
           readOnly={props.readOnly}
           ariaLabel={props.title}
-          onChange={(t, e) => {
+          onChange={(t, e, busy) => {
             setText(t);
             setError(e);
+            setPending(busy);
           }}
-          onReady={(api) => (editor.current = api)}
+          onReady={(api) => {
+            editor.current = api;
+            api?.focus();
+          }}
           onSubmit={() => {
-            if (dirty && !error) apply();
+            apply();
           }}
         />
         {error && (

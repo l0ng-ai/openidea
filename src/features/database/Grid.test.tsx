@@ -3,6 +3,7 @@ import { registerActions } from "@/platform/actions";
 import { act, fireEvent, render, screen } from "@testing-library/react";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { useState } from "react";
+import { within } from "@testing-library/react";
 import { EditorView } from "@codemirror/view";
 import { DataView } from "./DataView";
 import { Grid } from "./Grid";
@@ -285,6 +286,29 @@ describe("JSON value editor (#2333)", () => {
     expect(screen.queryByRole("dialog")).toBeNull();
   });
 
+  it("opens SQL NULL without an error or a redundant pending edit", () => {
+    const onEdit = vi.fn();
+    render(<Grid columns={payload} rowCount={1} value={() => null} editable onEdit={onEdit} />);
+    openWindow();
+    expect(screen.queryByRole("status")).toBeNull();
+    fireEvent.click(screen.getByRole("button", { name: "Set NULL" }));
+    expect(onEdit).not.toHaveBeenCalled();
+  });
+
+  it("keeps an edited inline draft when maximizing and applies it unchanged", () => {
+    const onEdit = vi.fn();
+    render(<Grid columns={payload} rowCount={1} value={() => json} editable onEdit={onEdit} />);
+    fireEvent.doubleClick(screen.getByRole("gridcell"));
+    const input = screen.getByRole("textbox");
+    const draft = '{"name": "Grace", "n":9007199254740993}';
+    fireEvent.change(input, { target: { value: draft } });
+    fireEvent.keyDown(input, { key: "Enter", shiftKey: true });
+    expect(view().state.doc.toString()).toBe(draft);
+    expect(onEdit).not.toHaveBeenCalled();
+    fireEvent.click(screen.getByRole("button", { name: "Apply" }));
+    expect(onEdit).toHaveBeenCalledWith(0, 0, draft);
+  });
+
   it("marks invalid JSON and blocks Apply until it parses", () => {
     const onEdit = vi.fn();
     render(<Grid columns={payload} rowCount={1} value={() => json} editable onEdit={onEdit} />);
@@ -303,6 +327,27 @@ describe("JSON value editor (#2333)", () => {
     expect(onEdit).toHaveBeenCalledWith(0, 0, '{"ok": 1}');
   });
 
+  it("allows plain text after JSON highlighting was inferred from text content", () => {
+    const onEdit = vi.fn();
+    render(
+      <Grid columns={[{ name: "payload", type: "text" }]} rowCount={1} value={() => json} editable onEdit={onEdit} />,
+    );
+    openWindow();
+    editDoc("plain text now");
+    fireEvent.click(screen.getByRole("button", { name: "Apply" }));
+    expect(onEdit).toHaveBeenCalledWith(0, 0, "plain text now");
+  });
+
+  it("keeps the compact value unchanged after opening, applying and closing", () => {
+    const onEdit = vi.fn();
+    render(<Grid columns={payload} rowCount={1} value={() => json} editable onEdit={onEdit} />);
+    openWindow();
+    fireEvent.click(screen.getByRole("button", { name: "Apply" }));
+    fireEvent.keyDown(screen.getByRole("textbox"), { key: "Enter", metaKey: true });
+    fireEvent.click(screen.getByRole("button", { name: "Cancel" }));
+    expect(onEdit).not.toHaveBeenCalled();
+  });
+
   it("reformats the edited text in the window", () => {
     render(<Grid columns={payload} rowCount={1} value={() => json} editable onEdit={vi.fn()} />);
     openWindow();
@@ -311,6 +356,62 @@ describe("JSON value editor (#2333)", () => {
     expect(shown(screen.getByRole("textbox", { name: "Edit payload" }).textContent ?? "")).toBe(
       shown('{\n  "a": 1\n}'),
     );
+  });
+
+  it("carries the panel draft into the window and keeps typed text on Apply", () => {
+    const onEdit = vi.fn();
+    render(
+      <DataView
+        columns={payload}
+        rowCount={1}
+        value={() => json}
+        panel="value"
+        onPanelChange={() => {}}
+        editable
+        onEdit={onEdit}
+      />,
+    );
+    fireEvent.mouseDown(screen.getByRole("gridcell"), { button: 0 });
+    const draft = '{"name": "Grace", "n": 9007199254740993}';
+    editDoc(draft);
+    fireEvent.click(screen.getByRole("button", { name: "Open in Window" }));
+    const dialog = screen.getByRole("dialog");
+    const content = dialog.querySelector<HTMLElement>(".cm-content")!;
+    expect(EditorView.findFromDOM(content)!.state.doc.toString()).toBe(draft);
+    fireEvent.click(within(dialog).getByRole("button", { name: "Apply" }));
+    expect(onEdit).toHaveBeenCalledWith(0, 0, draft);
+  });
+
+  it("does not reformat or apply a read-only Value panel", () => {
+    const onEdit = vi.fn();
+    render(
+      <DataView
+        columns={payload}
+        rowCount={1}
+        value={() => json}
+        panel="value"
+        onPanelChange={() => {}}
+        onEdit={onEdit}
+      />,
+    );
+    fireEvent.mouseDown(screen.getByRole("gridcell"), { button: 0 });
+    expect((screen.getByRole("button", { name: "Reformat" }) as HTMLButtonElement).disabled).toBe(true);
+    const v = view();
+    act(() => v.contentDOM.dispatchEvent(new KeyboardEvent("keydown", { key: "Enter", metaKey: true, bubbles: true })));
+    expect(onEdit).not.toHaveBeenCalled();
+    fireEvent.click(screen.getByRole("button", { name: "Open in Window" }));
+    expect(within(screen.getByRole("dialog")).queryByRole("button", { name: "Apply" })).toBeNull();
+  });
+
+  it("treats blank text as invalid for typed JSON and restores the unchanged state when the original text is restored", () => {
+    const onEdit = vi.fn();
+    render(<Grid columns={payload} rowCount={1} value={() => json} editable onEdit={onEdit} />);
+    openWindow();
+    editDoc("");
+    expect((screen.getByRole("button", { name: "Apply" }) as HTMLButtonElement).disabled).toBe(true);
+    editDoc(pretty);
+    expect((screen.getByRole("button", { name: "Apply" }) as HTMLButtonElement).disabled).toBe(true);
+    expect(onEdit).not.toHaveBeenCalled();
   });
 
   it("shows formatted JSON in the Value panel with Reformat, Open in Window and guarded Apply", () => {

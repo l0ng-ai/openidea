@@ -9,7 +9,7 @@ import { useVirtualizer } from "@tanstack/react-virtual";
 import clsx from "clsx";
 import { Dialog, Icon, showContextMenu, type MenuItem } from "@/ui";
 import { parseDelimited, toCsv, toOneRow, toTsv, type Cell } from "./model";
-import { formatJson, isJsonValue } from "./jsonValue";
+import { initialJsonText, isJsonColumn, isJsonValue } from "./jsonValue";
 import { JsonValueWindow } from "./JsonValueEditor";
 import styles from "./Database.module.css";
 import { tx } from "@/platform/i18n";
@@ -268,7 +268,7 @@ export function Grid(props: GridProps) {
   /** The JSON value window's Apply / Set NULL: the same pending-edit pipeline as the inline editor. */
   const commitJsonWindow = (text: string | null) => {
     if (!editing) return;
-    if (text !== (value(editing.row, editing.col) ?? "")) onEdit?.(editing.row, editing.col, text);
+    if (text !== value(editing.row, editing.col)) onEdit?.(editing.row, editing.col, text);
     setEditing(null);
     scrollRef.current?.focus();
   };
@@ -282,6 +282,8 @@ export function Grid(props: GridProps) {
     const json = isJsonValue(columns[col]?.type ?? "", cell);
     setEditing({ row, col, text, json, dialog: maximized || text.length > CELL_PREVIEW_LIMIT || hasLineBreak(text) });
   };
+
+  const jsonWindowChanged = editing?.dialog && editing.json && editing.text !== (value(editing.row, editing.col) ?? "");
 
   const onKeyDown = (e: KeyboardEvent<HTMLDivElement>) => {
     if (editing) return;
@@ -430,7 +432,10 @@ export function Grid(props: GridProps) {
       {editing?.dialog && editing.json && (
         <JsonValueWindow
           title={tx`Edit ${columns[editing.col]!.name}`}
-          initial={formatJson(editing.text)}
+          initial={jsonWindowChanged ? editing.text : initialJsonText(editing.text)}
+          baseline={jsonWindowChanged ? (value(editing.row, editing.col) ?? "") : undefined}
+          validate={isJsonColumn(columns[editing.col]!.type)}
+          emptyIsNull={value(editing.row, editing.col) === null}
           onClose={() => {
             setEditing(null);
             scrollRef.current?.focus();

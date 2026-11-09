@@ -350,6 +350,9 @@ export const vscodeMacos: Record<string, string[]> = {
   "http.runRequest": ["Meta+Enter"],
   "graphql.runQuery": ["Meta+Enter"],
   "http.runAll": [],
+  "db.reformatValue": ["Alt+Shift+F"],
+  "db.openValueWindow": [],
+  "db.findInValue": ["Meta+F"],
   "db.execute": ["Meta+Enter"],
   "db.showToolWindow": [],
   // Database tool window (when the tree has focus).

@@ -1,45 +1,76 @@
-/**
- * JSON-aware cell editing (#2333): which cells edit as JSON, pretty-printing
- * and syntax validation. Phase 1 covers JSON (`json` / `jsonb`, MySQL `JSON`,
- * and text that parses as JSON); XML and bytea modes are follow-ups.
- */
 import type { Cell } from "./model";
 
-/** Columns of these types (`json`, `jsonb`, MySQL `JSON`) always edit as JSON. */
-export const isJsonColumn = (type: string) => /json/i.test(type);
+/** Automatic formatting and content detection are bounded on the UI thread. */
+export const JSON_INLINE_LIMIT = 256_000;
 
-/** The first syntax error of `text`: message and its offset; null when valid (empty counts as valid). */
+export const isJsonColumn = (type: string) => /^(json|jsonb|MYSQL_TYPE_JSON)$/i.test(type.trim());
+
 export interface JsonError {
   message: string;
   pos: number;
 }
 
 export function jsonErrorOf(text: string): JsonError | null {
-  if (!text.trim()) return null;
   try {
     JSON.parse(text);
     return null;
   } catch (e) {
     const message = e instanceof Error ? e.message : String(e);
-    // V8: "… is not valid JSON" / "Unexpected token … at position 3"; other engines differ.
     const at = /position (\d+)/i.exec(message);
     return { message, pos: at ? Math.min(Number(at[1]), text.length) : 0 };
   }
 }
 
-/** Whether the Value panel edits this cell as JSON: a JSON column's value, or a text value that is a JSON object or array (a bare number or quoted string does not need the code editor). */
+/** Content detection chooses highlighting, never the column's validation rules. */
 export function isJsonValue(columnType: string, cell: Cell): boolean {
-  if (cell === null) return isJsonColumn(columnType);
   if (isJsonColumn(columnType)) return true;
+  if (cell === null || cell.length > JSON_INLINE_LIMIT) return false;
   const text = cell.trim();
   return (text.startsWith("{") || text.startsWith("[")) && jsonErrorOf(text) === null;
 }
 
-/** Pretty-prints valid JSON with two spaces; invalid text passes through unchanged. */
+/** Change whitespace only: parsing/stringifying would round integers and discard duplicate keys. */
 export function formatJson(text: string): string {
-  try {
-    return JSON.stringify(JSON.parse(text), null, 2);
-  } catch {
-    return text;
+  if (jsonErrorOf(text)) return text;
+  const tokens: string[] = [];
+  // Scan strings directly: WebKit can stop a repeated regular expression on a large literal.
+  for (let i = 0; i < text.length;) {
+    const start = i;
+    const char = text[i++]!;
+    if (" \t\r\n".includes(char)) continue;
+    if (char === '"') {
+      while (i < text.length) {
+        const next = text[i++]!;
+        if (next === "\\") i++;
+        else if (next === '"') break;
+      }
+    } else if (!"{}[],:".includes(char)) {
+      while (i < text.length && !" \t\r\n{}[],:".includes(text[i]!)) i++;
+    }
+    tokens.push(text.slice(start, i));
   }
+  const parts: string[] = [];
+  let depth = 0;
+  let length = 0;
+  const line = () => "\n" + "  ".repeat(Math.min(depth, 100));
+  for (let i = 0; i < tokens.length; i++) {
+    const token = tokens[i]!;
+    let part = token;
+    if (token === "{" || token === "[") {
+      depth++;
+      if (tokens[i + 1] !== (token === "{" ? "}" : "]")) part += line();
+    } else if (token === "}" || token === "]") {
+      depth--;
+      if (tokens[i - 1] !== (token === "}" ? "{" : "[")) part = line() + token;
+    } else if (token === ",") part += line();
+    else if (token === ":") part += " ";
+    length += part.length;
+    if (length > 16_000_000) return text;
+    parts.push(part);
+  }
+  return parts.join("");
+}
+
+export function initialJsonText(text: string): string {
+  return text.length <= JSON_INLINE_LIMIT ? formatJson(text) : text;
 }
