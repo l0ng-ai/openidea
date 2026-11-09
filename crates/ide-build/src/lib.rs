@@ -178,9 +178,9 @@ pub fn dependency_coordinates(root: &Path, model: &BuildModel) -> Vec<Dependency
         }
     }
     for g in &model.gradle {
-        let build_dir = root.join(&g.dir);
         for p in &g.projects {
             let Some(build_file) = p.build_file.as_deref() else { continue };
+            let build_dir = gradle::project_build_dir(root, g, p);
             let scripts = gradle::scripts_of(root, &root.join(&p.dir), &build_dir, Path::new(build_file));
             // The script's own `ext` values win over the scripts it applies.
             let mut properties = std::collections::BTreeMap::new();

@@ -682,45 +682,58 @@ pub fn script_properties(text: &str) -> BTreeMap<String, String> {
 /// The build script of a project and, recursively, the scripts it applies with `apply from`,
 /// read from disk: absolute path and text. Targets that do not exist are skipped.
 pub fn scripts_of(root: &Path, project_dir: &Path, build_dir: &Path, build_file: &Path) -> Vec<(PathBuf, String)> {
+    const MAX_SCRIPTS: usize = 256;
+    const MAX_DEPTH: usize = 32;
     let mut out = Vec::new();
     let mut seen = std::collections::HashSet::new();
-    let mut stack = vec![root.join(build_file)];
-    while let Some(path) = stack.pop() {
-        if !seen.insert(path.clone()) {
-            continue;
-        }
+    let first = normalize(&root.join(build_file));
+    let Ok(identity) = dunce::canonicalize(&first) else { return out };
+    seen.insert(identity);
+    let mut stack = vec![(first, 0)];
+    while let Some((path, depth)) = stack.pop() {
         let Ok(text) = std::fs::read_to_string(&path) else { continue };
-        for spec in applied_scripts(&text) {
-            if let Some(target) = resolve_script(&spec, &path, project_dir, build_dir) {
-                stack.push(target);
+        if depth < MAX_DEPTH {
+            let mut targets = Vec::new();
+            for spec in applied_scripts(&text) {
+                if seen.len() >= MAX_SCRIPTS {
+                    break;
+                }
+                if let Some(target) = resolve_script(&spec, &path, project_dir, build_dir)
+                    && let Ok(identity) = dunce::canonicalize(&target)
+                    && seen.insert(identity)
+                {
+                    targets.push((target, depth + 1));
+                }
             }
+            stack.extend(targets.into_iter().rev());
         }
         out.push((path, text));
     }
     out
 }
 
-/// `spec` of an `apply from` in `script`: `$rootDir` starts at `build_dir`, other paths at the
-/// project directory (Gradle's rule), else at the folder of the script that applies it.
+/// Directory variables are project-scoped; relative targets start beside the applying script.
 fn resolve_script(spec: &str, script: &Path, project_dir: &Path, build_dir: &Path) -> Option<PathBuf> {
     let spec = spec.trim();
-    let path = match spec.strip_prefix("${rootDir}/").or_else(|| spec.strip_prefix("$rootDir/")) {
-        Some(rest) => build_dir.join(rest),
-        None => {
-            let path = Path::new(spec);
-            if path.is_absolute() {
-                path.to_path_buf()
-            } else {
-                let near_project = project_dir.join(path);
-                if near_project.is_file() {
-                    near_project
-                } else {
-                    script.parent().map_or(near_project, |dir| dir.join(path))
-                }
-            }
-        }
-    };
+    if spec.contains("://") {
+        return None;
+    }
+    let properties = BTreeMap::from([
+        ("rootDir".into(), build_dir.to_string_lossy().into_owned()),
+        ("rootProject.projectDir".into(), build_dir.to_string_lossy().into_owned()),
+        ("projectDir".into(), project_dir.to_string_lossy().into_owned()),
+    ]);
+    let spec = interpolate(spec, &properties);
+    if spec.contains('$') {
+        return None;
+    }
+    let path = normalize(&script.parent()?.join(spec));
     path.is_file().then_some(path)
+}
+
+pub(crate) fn project_build_dir(root: &Path, model: &GradleModel, project: &GradleProject) -> PathBuf {
+    let dir = project.build.as_ref().and_then(|build| model.projects.iter().find(|p| &p.path == build));
+    root.join(dir.map_or(&model.dir, |p| &p.dir))
 }
 
 /// `2.8.9` for `${gsonVersion}` / `$gsonVersion` / `${ext.gsonVersion}`; unknown names and
@@ -840,9 +853,8 @@ pub fn build_files(root: &Path, model: &GradleModel) -> Vec<PathBuf> {
     // Scripts a build script applies are build files too: editing one can change the model.
     for project in &model.projects {
         let Some(file) = project.build_file.as_deref() else { continue };
-        let script = root.join(file);
-        let project_dir = script.parent().map_or_else(|| root.to_path_buf(), Path::to_path_buf);
-        let applied = scripts_of(root, &project_dir, &dir, Path::new(file));
+        let build_dir = project_build_dir(root, model, project);
+        let applied = scripts_of(root, &root.join(&project.dir), &build_dir, Path::new(file));
         out.extend(applied.into_iter().skip(1).map(|(path, _)| path));
     }
     // The settings of each nested build (its root project's folder).
@@ -1067,12 +1079,18 @@ dependencies {
             apply from: 'gradle/dependencies.gradle'
             apply from: file('gradle/extra.gradle')
             apply(from = "gradle/kotlin.gradle.kts")
+            apply(from = file("gradle/kotlin-file.gradle.kts"))
             // apply from: 'commented.gradle'
             reapply from: 'not-a-call.gradle'
         "#;
         assert_eq!(
             applied_scripts(script),
-            ["gradle/dependencies.gradle", "gradle/extra.gradle", "gradle/kotlin.gradle.kts"]
+            [
+                "gradle/dependencies.gradle",
+                "gradle/extra.gradle",
+                "gradle/kotlin.gradle.kts",
+                "gradle/kotlin-file.gradle.kts"
+            ]
         );
     }
 
@@ -1122,6 +1140,121 @@ dependencies {
             .collect();
         assert_eq!(scripts, ["build.gradle", "gradle/deps.gradle", "gradle/more.gradle"]);
         assert_eq!(build_files(root, &load(root).unwrap()).len(), 3);
+    }
+
+    #[test]
+    fn applied_paths_are_relative_to_the_applying_script() {
+        let tmp = tempfile::tempdir().unwrap();
+        let root = tmp.path();
+        std::fs::create_dir_all(root.join("gradle")).unwrap();
+        std::fs::write(root.join("build.gradle"), "apply from: 'gradle/deps.gradle'").unwrap();
+        std::fs::write(root.join("gradle/deps.gradle"), "apply from: 'versions.gradle'").unwrap();
+        std::fs::write(root.join("versions.gradle"), "wrong").unwrap();
+        std::fs::write(root.join("gradle/versions.gradle"), "right").unwrap();
+        let scripts = scripts_of(root, root, root, Path::new("build.gradle"));
+        assert_eq!(scripts.len(), 3);
+        assert_eq!(scripts[2].1, "right");
+    }
+
+    #[test]
+    fn applied_paths_resolve_gradle_directory_variables() {
+        let tmp = tempfile::tempdir().unwrap();
+        let root = tmp.path();
+        let project = root.join("app");
+        let script = project.join("gradle/deps.gradle");
+        std::fs::create_dir_all(script.parent().unwrap()).unwrap();
+        std::fs::write(root.join("shared.gradle"), "").unwrap();
+        std::fs::write(project.join("local.gradle"), "").unwrap();
+        for prefix in ["$rootDir", "${rootDir}", "$rootProject.projectDir", "${rootProject.projectDir}"] {
+            assert_eq!(
+                resolve_script(&format!("{prefix}/shared.gradle"), &script, &project, root),
+                Some(root.join("shared.gradle")),
+                "{prefix}"
+            );
+        }
+        for prefix in ["$projectDir", "${projectDir}"] {
+            assert_eq!(
+                resolve_script(&format!("{prefix}/local.gradle"), &script, &project, root),
+                Some(project.join("local.gradle")),
+                "{prefix}"
+            );
+        }
+        assert_eq!(
+            resolve_script(root.join("shared.gradle").to_str().unwrap(), &script, &project, root),
+            Some(root.join("shared.gradle"))
+        );
+    }
+
+    #[test]
+    fn applied_scripts_skip_urls_and_missing_files() {
+        let tmp = tempfile::tempdir().unwrap();
+        let root = tmp.path();
+        // Even a local path resembling a URL must not be read.
+        for scheme in ["http", "https"] {
+            let local = root.join(format!("{scheme}:/example.com/deps.gradle"));
+            std::fs::create_dir_all(local.parent().unwrap()).unwrap();
+            std::fs::write(local, "implementation 'g:remote:1'").unwrap();
+        }
+        std::fs::write(root.join("build.gradle"), "apply from: 'http://example.com/deps.gradle'\napply(from = \"https://example.com/deps.gradle\")\napply from: 'missing.gradle'").unwrap();
+        assert_eq!(scripts_of(root, root, root, Path::new("build.gradle")).len(), 1);
+    }
+
+    #[test]
+    fn applied_scripts_deduplicate_self_application_and_path_aliases() {
+        let tmp = tempfile::tempdir().unwrap();
+        let root = tmp.path();
+        std::fs::create_dir_all(root.join("gradle")).unwrap();
+        std::fs::write(
+            root.join("build.gradle"),
+            "apply from: 'build.gradle'\napply from: 'gradle/../build.gradle'\napply from: 'gradle/a.gradle'",
+        )
+        .unwrap();
+        std::fs::write(root.join("gradle/a.gradle"), "apply from: '../build.gradle'").unwrap();
+        assert_eq!(scripts_of(root, root, root, Path::new("build.gradle")).len(), 2);
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn applied_scripts_deduplicate_symlink_cycles() {
+        let tmp = tempfile::tempdir().unwrap();
+        let root = tmp.path();
+        std::fs::write(root.join("build.gradle"), "apply from: 'alias/build.gradle'").unwrap();
+        std::os::unix::fs::symlink(root, root.join("alias")).unwrap();
+        assert_eq!(scripts_of(root, root, root, Path::new("build.gradle")).len(), 1);
+    }
+
+    #[test]
+    fn applied_script_traversal_bounds_depth_and_total_files() {
+        let tmp = tempfile::tempdir().unwrap();
+        let root = tmp.path();
+        for i in 0..300 {
+            std::fs::write(root.join(format!("{i}.gradle")), format!("apply from: '{}.gradle'", i + 1)).unwrap();
+        }
+        let chain = scripts_of(root, root, root, Path::new("0.gradle"));
+        assert_eq!(chain.len(), 33);
+        let fanout: String = (0..300).map(|i| format!("apply from: '{i}.gradle'\n")).collect();
+        std::fs::write(root.join("build.gradle"), fanout).unwrap();
+        assert_eq!(scripts_of(root, root, root, Path::new("build.gradle")).len(), 256);
+    }
+
+    #[test]
+    fn applied_scripts_use_their_composite_build_root() {
+        let tmp = tempfile::tempdir().unwrap();
+        let root = tmp.path();
+        std::fs::create_dir_all(root.join("included/app")).unwrap();
+        std::fs::write(root.join("build.gradle"), "").unwrap();
+        std::fs::write(root.join("included/build.gradle"), "").unwrap();
+        std::fs::write(root.join("included/app/build.gradle"), "apply from: \"${rootDir}/deps.gradle\"").unwrap();
+        std::fs::write(root.join("included/deps.gradle"), "implementation 'g:included:1'").unwrap();
+        let mut model = load(root).unwrap();
+        for (path, dir) in [(":included", "included"), (":included:app", "included/app")] {
+            let mut project = project_at(root, path.into(), path.into(), &root.join(dir));
+            project.build = Some(":included".into());
+            model.projects.push(project);
+        }
+        assert!(build_files(root, &model).contains(&root.join("included/deps.gradle")));
+        let model = crate::BuildModel { maven: None, gradle: vec![model] };
+        assert_eq!(crate::dependency_coordinates(root, &model)[0].artifact_id, "included");
     }
 
     use super::*;
