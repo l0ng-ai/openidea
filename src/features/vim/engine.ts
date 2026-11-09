@@ -327,10 +327,10 @@ const LEADER_BUILTIN_DEFAULTS: Record<string, Record<string, unknown>> = {
 };
 
 /** Built-ins unmapped to make room for a user mapping's first key, by key. */
-const shadowedBuiltins = new Map<string, Record<string, unknown> | null>();
+const shadowedBuiltins = new Map<string, Record<string, unknown>>();
 
 function firstKey(lhs: string): string {
-  return /^<[CSMA]-*\w+>|^./i.exec(lhs)?.[0] ?? lhs;
+  return /^<[^<>]+>|^./.exec(lhs)?.[0] ?? lhs;
 }
 
 /** Applies rc commands (replacing earlier rc mappings). Returns problems to report. */
@@ -342,17 +342,19 @@ export function applyRcCommands(commands: readonly RcCommand[]): string[] {
   // one's first keys collide with. Restoring first keeps mapclear's
   // user/default boundary honest — it assumes the default region never shrank.
   for (const [key, entry] of shadowedBuiltins) {
-    if (entry) Vim._mapCommand(entry as never);
+    Vim._mapCommand(entry as never);
     shadowedBuiltins.delete(key);
   }
 
   for (const c of commands) {
     if (c.kind !== "map" && c.kind !== "mapEx") continue;
     const key = firstKey(c.lhs);
+    // Only the single-key motions a leader reuses: unmapping an operator or prefix
+    // (`d`, `c`, `y`, `<C-d>`…) would break every command built on it.
+    const builtin = LEADER_BUILTIN_DEFAULTS[key];
+    if (!builtin || shadowedBuiltins.has(key)) continue;
     // The builtins this shadows are context-less; `undefined` matches them.
-    if (!shadowedBuiltins.has(key) && Vim.unmap(key, undefined as unknown as string)) {
-      shadowedBuiltins.set(key, LEADER_BUILTIN_DEFAULTS[key] ?? null);
-    }
+    if (Vim.unmap(key, undefined as unknown as string)) shadowedBuiltins.set(key, builtin);
   }
   for (const c of commands) {
     try {
