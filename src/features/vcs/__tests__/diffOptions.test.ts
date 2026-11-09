@@ -32,6 +32,7 @@ describe("diff options", () => {
         collapse: false,
         syncScroll: false,
         alignChanges: false,
+        softWrap: true,
       }),
     ).toEqual({
       mode: "split",
@@ -40,8 +41,18 @@ describe("diff options", () => {
       collapse: false,
       syncScroll: false,
       alignChanges: false,
+      softWrap: true,
     });
-    expect(parseDiffOptions({ ignore: "bogus", highlight: 3, collapse: "x" })).toEqual(DEFAULT_DIFF_OPTIONS);
+    expect(parseDiffOptions({ ignore: "bogus", highlight: 3, collapse: "x", softWrap: "yes" })).toEqual(
+      DEFAULT_DIFF_OPTIONS,
+    );
+    // Options saved before soft wraps existed follow the editor's setting.
+    expect(parseDiffOptions({ mode: "unified" }).softWrap).toBeNull();
+  });
+
+  it.each([true, false, null])("round-trips the soft-wrap override %s", (softWrap) => {
+    const options = { ...DEFAULT_DIFF_OPTIONS, softWrap };
+    expect(parseDiffOptions(JSON.parse(JSON.stringify(options)))).toEqual(options);
   });
 
   it("ignore whitespace policies", () => {

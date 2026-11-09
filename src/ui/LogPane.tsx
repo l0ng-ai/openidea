@@ -1,4 +1,4 @@
-import { useEffect, useRef, useState } from "react";
+import { useEffect, useRef, useState, type ReactNode } from "react";
 import clsx from "clsx";
 import { useTx } from "@/platform/i18n";
 import { IconButton } from "./Button";
@@ -29,6 +29,8 @@ export interface LogPaneProps {
   ): () => void;
   sourceKey: string;
   toggles?: LogToggle[];
+  /** Extra toolbar buttons placed before Clear. */
+  actions?: ReactNode;
   /** "Waiting for output…" rather than "No output" while empty. */
   live: boolean;
   ariaLabel: string;
@@ -118,6 +120,7 @@ function LogStream(
         ))}
         <Toggle checked={wrap} onChange={setWrap} label="Soft-wrap" />
         <span className={styles.flex} />
+        {props.actions}
         <IconButton icon="trash" size="small" title="Clear" onClick={() => setLines([])} />
       </div>
       <div

@@ -53,7 +53,7 @@ function TitleItem({ item }: { item: TitleItemContribution }) {
 }
 
 function ProjectButton() {
-  const name = useProject((s) => s.project?.name);
+  const name = useProject((s) => s.project?.displayName || s.project?.name);
   const root = useProject((s) => s.project?.root);
   const [open, setOpen] = useState(false);
   const ref = useRef<HTMLButtonElement>(null);

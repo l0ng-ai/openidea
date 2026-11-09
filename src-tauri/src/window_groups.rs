@@ -37,7 +37,7 @@ pub fn current(app: &AppHandle, caller: &str) -> Vec<WindowTab> {
             let project = host.project(label).ok();
             let name = project
                 .as_ref()
-                .map(|p| ide_host::ops::project::info(p).name)
+                .map(|p| ide_host::ops::project::info(p).display_name)
                 .unwrap_or_else(|| window.title().unwrap_or_default());
             Some(WindowTab {
                 label: label.clone(),
@@ -100,8 +100,9 @@ pub fn select(app: &AppHandle, caller: &str, target: &str) -> IdeResult<()> {
 #[cfg(target_os = "macos")]
 fn native_select(app: &AppHandle, group: &Group, to: &WebviewWindow) -> IdeResult<()> {
     let members = group.members.iter().filter_map(|m| app.get_webview_window(m)).collect();
+    let anchor = app.get_webview_window(&group.selected).unwrap_or_else(|| to.clone());
     to.unminimize().map_err(|e| IdeError::internal(e.to_string()))?;
-    crate::macos::sync_tab_group(members, to).map_err(|e| IdeError::internal(e.to_string()))
+    crate::macos::sync_tab_group(members, &anchor, to).map_err(|e| IdeError::internal(e.to_string()))
 }
 
 #[cfg(target_os = "macos")]

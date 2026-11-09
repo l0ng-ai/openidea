@@ -9,7 +9,7 @@ use std::sync::{Arc, Mutex, mpsc};
 use std::time::{Duration, Instant};
 
 const CONNECT_TIMEOUT: Duration = Duration::from_secs(10);
-const EOF_GRACE: Duration = Duration::from_secs(5);
+const EOF_GRACE: Duration = Duration::from_secs(10);
 
 /// `<host> <port>` from the arguments after `--connect`.
 pub fn parse_args(args: &[String]) -> Result<(String, u16), String> {
@@ -25,7 +25,7 @@ pub fn parse_args(args: &[String]) -> Result<(String, u16), String> {
 
 /// Connects to `host:port`, copies `input` to it and its replies to `output`, and returns when
 /// the target is done (the copy of `input` may still be blocked: the caller exits). Fails only
-/// when the connection can't be opened. An input EOF allows five idle seconds for a final reply.
+/// when the connection can't be opened. An input EOF allows ten idle seconds for a final reply.
 pub fn relay(host: &str, port: u16, mut input: impl Read + Send + 'static, mut output: impl Write) -> io::Result<()> {
     let mut from_target = connect(host, port)?;
     from_target.set_read_timeout(Some(Duration::from_millis(100)))?;
@@ -140,11 +140,11 @@ mod tests {
             let mut request = Vec::new();
             socket.read_to_end(&mut request).unwrap();
             // Remain open after seeing EOF, like an idle keep-alive server.
-            wait.recv_timeout(Duration::from_secs(10)).unwrap();
+            wait.recv_timeout(Duration::from_secs(15)).unwrap();
         });
         let start = Instant::now();
         relay("127.0.0.1", port, io::empty(), io::sink()).unwrap();
-        assert!(start.elapsed() < Duration::from_secs(8));
+        assert!(start.elapsed() < Duration::from_secs(13));
         done.send(()).unwrap();
         server.join().unwrap();
     }

@@ -9,6 +9,7 @@ import { call } from "@/platform/ipc";
 import { commands, type FileEntry, type OutlineItem } from "@/bindings";
 import { withDocument } from "@/editor/lsp/files";
 import { IpcError } from "@/platform/ipc";
+import { libraryEntryPaths } from "@/platform/virtualDocs";
 import {
   DEFAULT_TREE_OPTIONS,
   GROUP_PREFIX,
@@ -221,7 +222,7 @@ export function selectModel(s: ProjectTreeState): TreeModel {
   const contributed = projectViewRoots(extras);
   const memberRoots = s.members
     ?.map((path) => ({ path, label: nameOf(path), icon: "", detail: path }))
-    .sort((a, b) => compareNames(a.label, b.label));
+    .sort((a, b) => (a.path === s.root ? -1 : b.path === s.root ? 1 : compareNames(a.label, b.label)));
   const project = () =>
     memberRoots
       ? withExtraRoots(EMPTY_MODEL, memberRoots, s.listings, options, placeholder)
@@ -570,11 +571,15 @@ export function dropOutlines(paths: readonly string[]) {
 let revealSeq = 0;
 
 /** Expands the ancestors of `path` and selects it once visible. */
-export function revealPath(path: string, focus = false) {
+export function revealPath(requested: string, focus = false) {
   const { expanded } = get();
   const project = get().root;
-  const root = project ? (memberRootOf(path) ?? (isSameOrInside(path, project) ? project : extraRootOf(path))) : null;
-  if (!root) return false;
+  if (!project) return false;
+  const rootOf = (p: string) => memberRootOf(p) ?? (isSameOrInside(p, project) ? project : extraRootOf(p));
+  // Library documents (`jdt://`, `jar:` URIs) are shown as entries of their archive under External Libraries.
+  const path = [requested, ...libraryEntryPaths(requested)].find((p) => rootOf(p) !== null);
+  if (!path) return false;
+  const root = rootOf(path)!;
   // Library folders sit below group nodes (External Libraries › SDK), keyed in their own namespace.
   const model = currentModel();
   const rootKey = root === project ? root : (model.keyOfPath.get(root) ?? root);

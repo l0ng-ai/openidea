@@ -300,13 +300,15 @@ export function Composer(props: ComposerProps) {
     [id],
   );
 
+  const fitsLimit = (name: string, size: number) => {
+    if (size <= MAX_IMAGE_BYTES) return true;
+    notifications().notify({ level: "warning", title: "Image too large", body: tx`${name} is over 5 MB.` });
+    return false;
+  };
+
   const readImageFiles = (picked: Iterable<File>) => {
     for (const file of picked) {
-      if (!file.type.startsWith("image/")) continue;
-      if (file.size > MAX_IMAGE_BYTES) {
-        notifications().notify({ level: "warning", title: "Image too large", body: tx`${file.name} is over 5 MB.` });
-        continue;
-      }
+      if (!file.type.startsWith("image/") || !fitsLimit(file.name, file.size)) continue;
       const reader = new FileReader();
       reader.onload = () => {
         const image = typeof reader.result === "string" ? imageFromDataUrl(reader.result, file.name || "image") : null;
@@ -314,6 +316,12 @@ export function Composer(props: ComposerProps) {
       };
       reader.readAsDataURL(file);
     }
+  };
+
+  const pasteClipboardImage = async () => {
+    const url = await call(commands.clipboardImage());
+    const image = url ? imageFromDataUrl(url, "image") : null;
+    if (image && fitsLimit("image", (image.data.length * 3) / 4)) addImages([image]);
   };
 
   // Files dropped from the OS onto the box: images are attached, other files referenced.
@@ -571,6 +579,10 @@ export function Composer(props: ComposerProps) {
             if (pasted.length) {
               e.preventDefault();
               readImageFiles(pasted);
+            } else if (isTauri() && !e.clipboardData.types.length) {
+              pasteClipboardImage().catch((error: unknown) =>
+                notifications().notify({ level: "error", title: tx("Cannot insert image"), body: String(error) }),
+              );
             }
           }}
         />

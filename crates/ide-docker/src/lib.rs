@@ -253,6 +253,32 @@ pub fn inspect(ep: &DockerEndpoint, object: DockerObject, id: &str) -> IdeResult
     }
 }
 
+fn check_id(id: &str) -> IdeResult<&str> {
+    let id = id.trim();
+    if id.is_empty() || id.starts_with('-') { Err(IdeError::invalid("invalid Docker identifier")) } else { Ok(id) }
+}
+
+/// `docker image history --no-trunc --format '{{json .}}'` of one image.
+pub fn image_history(ep: &DockerEndpoint, id: &str) -> IdeResult<Vec<DockerImageLayer>> {
+    let id = check_id(id)?;
+    let out = run(ep, &["image", "history", "--no-trunc", "--format", "{{json .}}", id], QUICK)?;
+    Ok(parse_image_history(&out))
+}
+
+/// `docker top <id>` of a running container.
+pub fn container_top(ep: &DockerEndpoint, id: &str) -> IdeResult<DockerProcessList> {
+    let id = check_id(id)?;
+    let out = run(ep, &["top", id], QUICK)?;
+    Ok(parse_container_top(&out))
+}
+
+/// `docker stats --no-stream --no-trunc --format '{{json .}}' <id>` of a running container.
+pub fn container_stats(ep: &DockerEndpoint, id: &str) -> IdeResult<DockerContainerStats> {
+    let id = check_id(id)?;
+    let out = run(ep, &["stats", "--no-stream", "--no-trunc", "--format", "{{json .}}", id], QUICK)?;
+    parse_container_stats(&out).ok_or_else(|| IdeError::not_found("no container stats returned"))
+}
+
 /// Streams a container's logs (`tail` last lines, then follows while `follow`)
 /// until it ends or `cancel` fires.
 pub fn logs(

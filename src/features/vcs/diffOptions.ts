@@ -26,6 +26,8 @@ export interface DiffViewOptions {
    * keeps its own height and a curved divider joins the changes (IDEA's default).
    */
   alignChanges: boolean;
+  /** Long lines wrap; null follows Settings › Editor › General › Soft-wrap files for the file. */
+  softWrap: boolean | null;
 }
 
 export const IGNORE_OPTIONS: ReadonlyArray<{ value: IgnorePolicy; label: string }> = [
@@ -48,6 +50,7 @@ export const DEFAULT_DIFF_OPTIONS: DiffViewOptions = {
   collapse: true,
   syncScroll: true,
   alignChanges: false,
+  softWrap: null,
 };
 
 const KEY = "openidea.vcs.diffOptions";
@@ -66,6 +69,7 @@ export function parseDiffOptions(raw: unknown): DiffViewOptions {
     collapse: typeof o.collapse === "boolean" ? o.collapse : d.collapse,
     syncScroll: typeof o.syncScroll === "boolean" ? o.syncScroll : d.syncScroll,
     alignChanges: typeof o.alignChanges === "boolean" ? o.alignChanges : d.alignChanges,
+    softWrap: typeof o.softWrap === "boolean" ? o.softWrap : d.softWrap,
   };
 }
 

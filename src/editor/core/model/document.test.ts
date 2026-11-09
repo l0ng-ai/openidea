@@ -347,6 +347,28 @@ describe("DocumentManager + slots", () => {
     for (const slot of slots) slot.dispose();
     manager.stop();
   });
+
+  it("restores a destroyed kept view at its exact scroll offset, not its top line", async () => {
+    const { manager } = setup({ "/p/a.txt": "line\n".repeat(500) });
+    const model = await manager.acquire("/p/a.txt");
+    const slot = new EditorSlot(model, "t0", host);
+    const view = slot.mount(document.body);
+    Object.defineProperty(view.scrollDOM, "scrollTop", { value: 137, configurable: true });
+    view.scrollDOM.dispatchEvent(new Event("scroll"));
+    slot.unmount();
+    const expected = view.scrollSnapshot().value as { range: unknown; yMargin: number; isSnapshot: boolean };
+    const others = Array.from({ length: 8 }, (_, i) => new EditorSlot(model, `t${i + 1}`, host));
+    for (const other of others) {
+      other.mount(document.body);
+      other.unmount();
+    }
+    const restored = (slot as unknown as { scroll: { value: typeof expected } }).scroll.value;
+    expect(restored.isSnapshot).toBe(true);
+    expect(restored.range).toEqual(expected.range);
+    expect(restored.yMargin).toBe(expected.yMargin);
+    for (const s of [slot, ...others]) s.dispose();
+    manager.stop();
+  });
 });
 
 describe("save cleanup", () => {

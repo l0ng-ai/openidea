@@ -129,7 +129,7 @@ async function renameProject() {
   if (name === null) return;
   try {
     const info = await call(commands.projectRename(name));
-    useProject.setState((s) => ({ project: s.project && { ...s.project, name: info.name }, settings: info.settings }));
+    useProject.setState((s) => ({ project: s.project && info, settings: info.settings }));
     void commands.menuRefresh();
   } catch (e) {
     notifications().notify({ level: "error", title: "Cannot rename project", body: errorText(e) });

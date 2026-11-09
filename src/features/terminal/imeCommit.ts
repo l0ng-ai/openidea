@@ -16,8 +16,9 @@
  *   composition events, which xterm sends through its keydown path; the stale emission there
  *   carries the previous commit's text instead.
  *
- * One commit must send one chunk, so the gate lets the first emission through and drops the
- * rest until the commit closes. A commit is delimited by the IME's own keystroke (code 229)
+ * One commit must send one text chunk, so the gate lets the first emission through and drops
+ * the rest until the commit closes. Protocol replies and mouse reports bypass the gate.
+ * A commit is delimited by the IME's own keystroke (code 229)
  * outside a composition, or by a composition input when the platform sends no keydown.
  * Commits that really compose are left to xterm: `compositionstart` stands the gate down for
  * that commit only — it must not disable the gate for the session, because the very next
@@ -109,9 +110,9 @@ export class ImeCommitGate {
     if (this.open && !this.composing) this.close();
   }
 
-  /** Whether this emission should reach the PTY. */
-  accept(): boolean {
-    if (!this.open) return true;
+  /** Only text can be a duplicate commit; terminal replies and mouse reports must always reach the PTY. */
+  accept(data: string): boolean {
+    if (!this.open || data.startsWith("\x1b")) return true;
     if (this.sent) return false;
     this.sent = true;
     return true;
