@@ -24,9 +24,17 @@ import { WindowResizeHandles } from "./WindowResizeHandles";
 import { useContributions, useStandaloneEditor } from "./contributions";
 import styles from "./Workbench.module.css";
 
-/** View › Appearance switches (`appearance.showMainToolbar`, `appearance.showStatusBar`, `appearance.showNavigationBar`), shown by default. */
-function useAppearanceFlag(key: "showMainToolbar" | "showStatusBar" | "showNavigationBar"): boolean {
+/** View › Appearance switches (`appearance.showMainToolbar`, `appearance.showStatusBar`), shown by default. */
+function useAppearanceFlag(key: "showMainToolbar" | "showStatusBar"): boolean {
   return useProject((s) => s.settings?.appearance?.[key] !== false);
+}
+
+/** Where View › Appearance › Navigation Bar puts the file path breadcrumbs. */
+type NavigationBarPosition = "top" | "statusBar" | "hidden";
+function useNavigationBarPosition(): NavigationBarPosition {
+  const position = useProject((s) => s.settings?.appearance?.navigationBar);
+  // Nothing loaded yet, or a malformed value: match the backend default (`top`).
+  return position === "top" || position === "statusBar" || position === "hidden" ? position : "top";
 }
 
 /** LightEdit: editor tabs only; no tool windows, toolbar widgets or project status items. */
@@ -79,7 +87,7 @@ export function Workbench() {
   const distractionFree = useDistractionFree((s) => s.active);
   const mainToolbar = useAppearanceFlag("showMainToolbar");
   const statusBar = useAppearanceFlag("showStatusBar");
-  const navBar = useAppearanceFlag("showNavigationBar");
+  const navBarPosition = useNavigationBarPosition();
   const frame = project ? styles.framed : lightEdit || standaloneTitle ? styles.lightEditFrame : undefined;
 
   return (
@@ -91,7 +99,7 @@ export function Workbench() {
         {project ? (
           <>
             <TitleBar compact={distractionFree || !mainToolbar} />
-            {!distractionFree && navBar && <Breadcrumbs className={styles.navigationBar} />}
+            {!distractionFree && navBarPosition === "top" && <Breadcrumbs className={styles.navigationBar} />}
             {!distractionFree && <WindowGroupTabs />}
             {[...banners.values()].map(({ id, component: Banner }) => (
               <Banner key={id} />

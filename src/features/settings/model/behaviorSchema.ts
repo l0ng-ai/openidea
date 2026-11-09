@@ -12,6 +12,7 @@ import { validateIconThemeOptionsMap } from "@/platform/iconThemeOptions";
 export type Antialiasing = "subpixel" | "greyscale" | "none";
 export type OpenProjectIn = "ask" | "new" | "same" | "attach";
 export type NotificationDisplay = "balloon" | "sticky" | "none";
+export type NavigationBarPosition = "top" | "statusBar" | "hidden";
 /** Themes selectable as "preferred" when syncing with the OS. */
 export type ConcreteTheme = ThemeChoiceId;
 
@@ -48,8 +49,9 @@ export interface AppearanceExtras {
   /** View › Appearance › Toolbar; hidden leaves IDEA's compact window header. */
   showMainToolbar: boolean;
   showStatusBar: boolean;
-  /** View › Appearance › Navigation Bar: the file path breadcrumbs above the editor. */
-  showNavigationBar: boolean;
+  /** View › Appearance › Navigation Bar: the file path breadcrumbs, shown above
+   * the editor, in the status bar, or not at all. */
+  navigationBar: NavigationBarPosition;
 }
 
 export interface DateFormatValid {
@@ -112,8 +114,10 @@ export const DEFAULT_APPEARANCE_EXTRAS: AppearanceExtras = {
   widescreenToolWindows: false,
   showMainToolbar: true,
   showStatusBar: true,
-  showNavigationBar: true,
+  navigationBar: "top",
 };
+
+const NAV_BAR_POSITIONS: readonly NavigationBarPosition[] = ["top", "statusBar", "hidden"];
 
 export const DEFAULT_GENERAL_EXTRAS: GeneralExtras = {
   openProjectIn: "ask",
@@ -173,7 +177,13 @@ export function validateAppearanceExtras(raw: unknown): AppearanceExtras {
     widescreenToolWindows: b("widescreenToolWindows"),
     showMainToolbar: b("showMainToolbar"),
     showStatusBar: b("showStatusBar"),
-    showNavigationBar: b("showNavigationBar"),
+    // Legacy settings stored this as `showNavigationBar: bool` (`true` = they
+    // wanted it, so `top`); `navigationBar` is the three-state key.
+    navigationBar: (() => {
+      const legacy = a.showNavigationBar;
+      if (typeof legacy === "boolean") return legacy ? "top" : "hidden";
+      return oneOf(a.navigationBar, NAV_BAR_POSITIONS, d.navigationBar);
+    })(),
   };
 }
 

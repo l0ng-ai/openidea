@@ -137,7 +137,10 @@ export function Breadcrumbs({ className }: { className?: string }) {
   const project = projectFolder(currentProject, path ?? "");
   const outline = useOutline((s) => (path ? s[path] : undefined));
   const chain = useCaretSymbols(path, outline) ?? NO_SYMBOLS;
-  const shown = useProject((s) => s.settings?.appearance?.showNavigationBar !== false);
+  const position = useProject((s) => s.settings?.appearance?.navigationBar);
+  // Nothing loaded yet follows the frontend default (`top`); the status bar only
+  // renders the breadcrumbs when the user picked the status bar explicitly.
+  const shown = position === "statusBar";
   const distractionFree = useDistractionFree((s) => s.active);
   if (!path || !shown || distractionFree) return null;
   const segments = pathCrumbs(project, path);

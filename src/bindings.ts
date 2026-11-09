@@ -1943,8 +1943,11 @@ export type AppearanceSettings = {
 	/**  View › Appearance › Toolbar; hidden leaves IDEA's compact window header. */
 	showMainToolbar?: boolean,
 	showStatusBar?: boolean,
-	/**  View › Appearance › Navigation Bar: the file path breadcrumbs above the editor. */
-	showNavigationBar?: boolean,
+	/**
+	 *  View › Appearance › Navigation Bar: the file path breadcrumbs, shown above
+	 *  the editor, in the status bar, or not at all.
+	 */
+	navigationBar?: NavigationBarPosition,
 	/**
 	 *  Status bar widgets shown (`true`) or hidden (`false`) by the user
 	 *  (status bar context menu); widgets not listed use their default.
@@ -6002,6 +6005,18 @@ export type ModuleStructureSettings = {
 	/**  Additional module dependencies. */
 	dependencies?: ModuleDependency[],
 };
+
+/**
+ *  Where the Navigation Bar (the file path breadcrumbs) is shown. Mirrors
+ *  IDEA's `View | Appearance | Navigation Bar` (Top / Status Bar / Don't show).
+ */
+export type NavigationBarPosition = 
+/**  Above the editor, below the main menu / toolbar. */
+"top" | 
+/**  In the footer, next to the status bar widgets. */
+"statusBar" | 
+/**  Not shown at all. */
+"hidden";
 
 export type NavigationFiles = {
 	paths: IpcPath[],

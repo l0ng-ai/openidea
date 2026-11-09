@@ -14,7 +14,7 @@ vi.mock("@/platform/ipc", async (importOriginal) => {
 });
 
 import { useProject } from "@/platform/project";
-import { appearanceToggleActions } from "../appearanceRuntime";
+import { appearanceToggleActions, navigationBarActions } from "../appearanceRuntime";
 import { validateAppearanceExtras } from "../model/behaviorSchema";
 
 let appearance: Record<string, unknown>;
@@ -45,12 +45,31 @@ describe("View › Appearance toggles", () => {
     ["view.toggleToolbar", "showMainToolbar", true],
     ["view.toggleToolWindowBars", "showToolWindowBars", true],
     ["view.toggleStatusBar", "showStatusBar", true],
-    ["view.toggleNavigationBar", "showNavigationBar", true],
   ])("%s flips appearance.%s in the global settings", async (id, key, initial) => {
     const action = appearanceToggleActions().find((a) => a.id === id)!;
     expect(action.toggled?.()).toBe(initial);
     await action.run({ ctx: {} } as ActionContext);
     expect(settingsSet).toHaveBeenCalledWith("global", `appearance.${key}`, JSON.stringify(!initial));
     expect(action.toggled?.()).toBe(!initial);
+  });
+});
+
+describe("View › Appearance › Navigation Bar", () => {
+  it("marks only the chosen position and stores it", async () => {
+    // Nothing stored yet: the default is `top`.
+    const [top, statusBar, hidden] = navigationBarActions();
+    expect(top.toggled?.()).toBe(true);
+    expect(statusBar.toggled?.()).toBe(false);
+    expect(hidden.toggled?.()).toBe(false);
+
+    await statusBar.run({ ctx: {} } as ActionContext);
+    expect(settingsSet).toHaveBeenCalledWith("global", "appearance.navigationBar", JSON.stringify("statusBar"));
+    expect(top.toggled?.()).toBe(false);
+    expect(statusBar.toggled?.()).toBe(true);
+
+    await hidden.run({ ctx: {} } as ActionContext);
+    expect(settingsSet).toHaveBeenCalledWith("global", "appearance.navigationBar", JSON.stringify("hidden"));
+    expect(statusBar.toggled?.()).toBe(false);
+    expect(hidden.toggled?.()).toBe(true);
   });
 });

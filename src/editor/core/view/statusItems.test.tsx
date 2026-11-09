@@ -15,6 +15,7 @@ vi.mock("../controller", async () => {
 
 const { useEditorStatus } = await import("../controller");
 const { useOutline } = await import("../model/document");
+const { useProject } = await import("@/platform/project");
 const { Breadcrumbs, CodeBreadcrumbs } = await import("./StatusItems");
 const { NavBarPopup } = await import("./NavBarPopup");
 
@@ -43,6 +44,17 @@ const caret = (line: number, col: number): EditorStatus => ({
 
 describe("caret-driven status widgets", () => {
   it("re-render when the symbol at the caret changes, not on every caret move", () => {
+    useProject.setState({
+      project: {
+        root: "/workspace",
+        name: "Workspace",
+        settings: { appearance: { navigationBar: "statusBar" } },
+        trusted: true,
+        isGit: false,
+        workspace: { version: 1, name: "Workspace", projects: ["/a", "/b"] },
+      },
+      settings: { appearance: { navigationBar: "statusBar" } } as unknown as Settings,
+    });
     useOutline.setState({ [PATH]: [item("Orders", 0, 40, [item("place", 2, 10), item("cancel", 12, 20)])] });
     act(() => useEditorStatus.setState({ status: caret(3, 4) }));
     let commits = 0;
@@ -76,16 +88,16 @@ describe("caret-driven status widgets", () => {
 });
 
 it("shows the member and its directories in workspace breadcrumbs", async () => {
-  const { useProject } = await import("@/platform/project");
   useProject.setState({
     project: {
       root: "/workspace",
       name: "Workspace",
-      settings: {},
+      settings: { appearance: { navigationBar: "statusBar" } },
       trusted: true,
       isGit: false,
       workspace: { version: 1, name: "Workspace", projects: ["/a", "/b"] },
     },
+    settings: { appearance: { navigationBar: "statusBar" } } as unknown as Settings,
   });
   useEditorStatus.setState({ status: { ...caret(0, 0), path: "/b/src/file.ts" } });
   const view = render(<Breadcrumbs />);
@@ -95,16 +107,16 @@ it("shows the member and its directories in workspace breadcrumbs", async () => 
 });
 
 it("shows the project › dirs › file path above the editor", async () => {
-  const { useProject } = await import("@/platform/project");
   useProject.setState({
     project: {
       root: "/workspace",
       name: "Workspace",
-      settings: {},
+      settings: { appearance: { navigationBar: "statusBar" } },
       trusted: true,
       isGit: false,
       workspace: { version: 1, name: "Workspace", projects: ["/a", "/b"] },
     },
+    settings: { appearance: { navigationBar: "statusBar" } } as unknown as Settings,
   });
   useEditorStatus.setState({ status: { ...caret(0, 0), path: "/b/src/file.ts" } });
   const view = render(<Breadcrumbs className="nav" />);
@@ -114,7 +126,7 @@ it("shows the project › dirs › file path above the editor", async () => {
   view.unmount();
   // View › Appearance › Navigation Bar hides it.
   useProject.setState({
-    settings: { appearance: { showNavigationBar: false } } as unknown as Settings,
+    settings: { appearance: { navigationBar: "hidden" } } as unknown as Settings,
   });
   const hidden = render(<Breadcrumbs className="nav" />);
   expect(screen.queryByRole("navigation", { name: "Breadcrumbs" })).toBeNull();

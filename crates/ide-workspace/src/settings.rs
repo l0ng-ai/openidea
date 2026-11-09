@@ -61,6 +61,28 @@ fn parse_layer(text: &str) -> Result<Json, String> {
     serde_json::to_value(table).map_err(|e| e.to_string())
 }
 
+/// Older settings stored the navigation bar choice as a boolean (`showNavigationBar`,
+/// `true` = enabled). Remap it into the three-state `navigationBar` before
+/// deserialization, so a plain `navigationBar` field is all specta has to export.
+fn normalize_navigation_bar(mut layer: Json) -> Json {
+    let Some(appearance) = layer.get_mut("appearance").and_then(Json::as_object_mut) else {
+        return layer;
+    };
+    if appearance.contains_key("navigationBar") {
+        // Already migrated; leave invalid values alone so the layer is rejected as a whole.
+        return layer;
+    }
+    let Some(legacy) = appearance.remove("showNavigationBar") else {
+        return layer;
+    };
+    if let Some(on) = legacy.as_bool() {
+        appearance.insert("navigationBar".into(), Json::String(if on { "top" } else { "hidden" }.into()));
+    }
+    // Not a boolean: leave it out and let the default apply, rather than silently
+    // turning the navigation bar back on.
+    layer
+}
+
 /// Reads one layer; `None` when missing or invalid (logged).
 fn read_layer(file: &Path) -> Option<Json> {
     let text = match std::fs::read_to_string(file) {
@@ -82,6 +104,9 @@ fn read_layer(file: &Path) -> Option<Json> {
 
 /// Merges `layer` onto `merged` if the result still deserializes.
 fn try_merge(merged: &mut Json, layer: Json) -> Result<(), String> {
+    // Migrate the legacy boolean every layer carries it, before it can clobber
+    // the three-state key coming from a lower-priority layer.
+    let layer = normalize_navigation_bar(layer);
     let mut candidate = merged.clone();
     deep_merge(&mut candidate, layer);
     serde_json::from_value::<Settings>(candidate.clone()).map_err(|e| e.to_string())?;
@@ -657,6 +682,39 @@ mod tests {
         let s = store.set(SettingsScope::Global, "appearance.showStatusBar", json!(false)).unwrap();
         assert!(!s.appearance.show_status_bar);
         assert!(!store.reload().appearance.show_main_toolbar);
+    }
+
+    #[test]
+    fn legacy_navigation_bar_boolean_migrates_to_the_three_state_key() {
+        let tmp = tempfile::tempdir().unwrap();
+        // `true` → `top`, the default position.
+        std::fs::write(tmp.path().join("settings.toml"), "[appearance]\nshowNavigationBar = true\n").unwrap();
+        assert_eq!(
+            SettingsStore::load(tmp.path(), None).effective().appearance.navigation_bar,
+            ide_core::settings::NavigationBarPosition::Top
+        );
+        // `false` → `hidden`.
+        std::fs::write(tmp.path().join("settings.toml"), "[appearance]\nshowNavigationBar = false\n").unwrap();
+        assert_eq!(
+            SettingsStore::load(tmp.path(), None).effective().appearance.navigation_bar,
+            ide_core::settings::NavigationBarPosition::Hidden
+        );
+        // An explicit three-state value wins over the legacy key.
+        std::fs::write(
+            tmp.path().join("settings.toml"),
+            "[appearance]\nshowNavigationBar = true\nnavigationBar = \"statusBar\"\n",
+        )
+        .unwrap();
+        assert_eq!(
+            SettingsStore::load(tmp.path(), None).effective().appearance.navigation_bar,
+            ide_core::settings::NavigationBarPosition::StatusBar
+        );
+        // A non-boolean legacy value is dropped and the default is used.
+        std::fs::write(tmp.path().join("settings.toml"), "[appearance]\nshowNavigationBar = \"everywhere\"\n").unwrap();
+        assert_eq!(
+            SettingsStore::load(tmp.path(), None).effective().appearance.navigation_bar,
+            ide_core::settings::NavigationBarPosition::Top
+        );
     }
 
     #[test]

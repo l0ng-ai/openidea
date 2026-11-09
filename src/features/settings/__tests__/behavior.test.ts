@@ -69,6 +69,17 @@ describe("appearance & behavior settings", () => {
     expect(validateAppearanceExtras({ showToolWindowBadges: 1 }).showToolWindowBadges).toBe(true);
   });
 
+  it("defaults the Navigation Bar to the top and migrates the legacy boolean", () => {
+    expect(validateAppearanceExtras({}).navigationBar).toBe("top");
+    expect(validateAppearanceExtras({ navigationBar: "statusBar" }).navigationBar).toBe("statusBar");
+    expect(validateAppearanceExtras({ navigationBar: "hidden" }).navigationBar).toBe("hidden");
+    // Older settings stored the choice as `showNavigationBar: bool` (`true` meant on).
+    expect(validateAppearanceExtras({ showNavigationBar: true }).navigationBar).toBe("top");
+    expect(validateAppearanceExtras({ showNavigationBar: false }).navigationBar).toBe("hidden");
+    // Anything that is neither a position nor a boolean falls back to the default.
+    expect(validateAppearanceExtras({ navigationBar: "everywhere" }).navigationBar).toBe("top");
+  });
+
   it("defaults Use smaller indents in trees to off and applies the indent variable", () => {
     expect(validateAppearanceExtras({}).smallTreeIndents).toBe(false);
     expect(validateAppearanceExtras({ smallTreeIndents: true }).smallTreeIndents).toBe(true);

@@ -25,6 +25,7 @@ import {
   type DateFormatValid,
   type NotificationDisplay,
   type NotificationGroupValid,
+  type NavigationBarPosition,
   type OpenProjectIn,
   type UpdateSourceSetting,
 } from "../model/behaviorSchema";
@@ -361,6 +362,12 @@ const AA_OPTIONS: SelectOption<Antialiasing>[] = [
   { value: "none", label: "No antialiasing" },
 ];
 
+const NAV_BAR_OPTIONS: SelectOption<NavigationBarPosition>[] = [
+  { value: "top", label: "Top" },
+  { value: "statusBar", label: "Status Bar" },
+  { value: "hidden", label: "Don't show" },
+];
+
 function ToolWindowsGrid() {
   return (
     <Grid
@@ -644,7 +651,7 @@ export const BEHAVIOR_PAGES: PageSpec[] = [
         options: [
           { kind: "toggle", key: "appearance.showMainToolbar", label: "Show main toolbar" },
           { kind: "toggle", key: "appearance.showStatusBar", label: "Show status bar" },
-          { kind: "toggle", key: "appearance.showNavigationBar", label: "Show navigation bar" },
+          { kind: "select", key: "appearance.navigationBar", label: "Navigation bar", options: NAV_BAR_OPTIONS },
           {
             kind: "custom",
             label: "Main menu",
