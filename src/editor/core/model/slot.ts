@@ -259,6 +259,12 @@ export class EditorSlot {
 
   focus() {
     this.view?.focus();
+    if (this.view && !this.view.hasFocus && this.view.dom.offsetParent === null) {
+      this.view.dom
+        .closest("[data-pane-id]")
+        ?.querySelector<HTMLElement>('[role="document"]')
+        ?.focus({ preventScroll: true });
+    }
   }
 
   // --- transactions ---------------------------------------------------------
