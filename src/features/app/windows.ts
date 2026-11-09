@@ -65,10 +65,10 @@ async function openHere(path: string): Promise<boolean> {
   }
 }
 
-/** Opens `files` as editor tabs of this window, focusing the last. */
 /** Caret positions of files opened from the command line (`--line` / `--column`), 0-based. */
 type Positions = ReadonlyArray<{ path: string; line: number; column: number }>;
 
+/** Opens `files` as editor tabs of this window, focusing the last. */
 async function openInEditor(files: readonly string[], positions: Positions = []): Promise<void> {
   for (const [i, path] of files.entries()) {
     const at = positions.find((p) => p.path === path);
@@ -77,7 +77,7 @@ async function openInEditor(files: readonly string[], positions: Positions = [])
         focus: i === files.length - 1,
         ...(at ? { selection: { line: at.line, col: at.column } } : {}),
       })
-      .catch((e) => console.warn(`could not open ${path}`, e));
+      .catch((e) => openFailed(path, e));
   }
 }
 
@@ -213,25 +213,53 @@ async function pickFiles(title: string): Promise<string[]> {
 }
 
 /** Takes this window's pending launch (if any) and opens its project, files or diff pair. */
-export async function consumeLaunch(): Promise<void> {
+let launchQueue: Promise<void> = Promise.resolve();
+export function consumeLaunch(): Promise<void> {
+  const request = launchQueue.then(consumePendingLaunch);
+  launchQueue = request.catch(() => {});
+  return request;
+}
+
+async function consumePendingLaunch(): Promise<void> {
   if (!isTauri()) return;
   const launch = await commands.windowTakeLaunch().catch(() => null);
-  const files = launch?.files ?? [];
-  const positions = launch?.positions ?? [];
-  if (launch?.project) {
-    if (await openHere(launch.project)) await openInEditor(files, positions);
-  } else if (files.length) await openFilesHere(files, positions);
-  else if (launch?.diff) await openCliDiff(launch.diff);
-  else if (launch?.remote) {
-    const { target, path } = launch.remote;
-    await connectRemote(target, path).catch((e) =>
-      notifications().notify({
-        level: "error",
-        title: t("app.window.openFailed", { name: basename(path) }),
-        body: errorText(e),
-        key: `app.open:${path}`,
-      }),
-    );
+  if (!launch) return;
+  try {
+    // Session restoration may already be opening this window's project.
+    if (useProject.getState().opening) {
+      await new Promise<void>((resolve) => {
+        const off = useProject.subscribe((state) => {
+          if (!state.opening) {
+            off();
+            resolve();
+          }
+        });
+      });
+    }
+    const files = launch.files ?? [];
+    const positions = launch.positions ?? [];
+    if (launch.project && !(await openHere(launch.project))) return;
+    if (launch.diff && launch.diffBeforeFiles) {
+      const diff = launch.diff;
+      await openCliDiff(diff).catch((e) => openFailed(diff.right, e));
+    }
+    if (launch.project) {
+      await openInEditor(files, positions);
+    } else if (files.length) await openFilesHere(files, positions);
+    else if (launch.remote) {
+      const { target, path } = launch.remote;
+      await connectRemote(target, path).catch((e) =>
+        notifications().notify({
+          level: "error",
+          title: t("app.window.openFailed", { name: basename(path) }),
+          body: errorText(e),
+          key: `app.open:${path}`,
+        }),
+      );
+    }
+    if (launch.diff && !launch.diffBeforeFiles) await openCliDiff(launch.diff);
+  } finally {
+    await call(commands.windowCompleteLaunch());
   }
 }
 
@@ -517,14 +545,19 @@ export function installLaunchHandling(): () => void {
   if (!isTauri()) return () => {};
   let disposed = false;
   let unlisten: (() => void) | undefined;
-  const launch = consumeLaunch();
+  const launch = import("@tauri-apps/api/webviewWindow").then(async ({ getCurrentWebviewWindow }) => {
+    const off = await getCurrentWebviewWindow().listen(LAUNCH_EVENT, () => {
+      if (!disposed) void consumeLaunch().catch(console.warn);
+    });
+    if (disposed) off();
+    else {
+      unlisten = off;
+      // Subscribe before taking pending files so launches during startup aren't missed.
+      await consumeLaunch();
+    }
+  });
   provideStartupLaunch(launch);
   holdSplash(launch);
-  void import("@tauri-apps/api/webviewWindow").then(async ({ getCurrentWebviewWindow }) => {
-    const off = await getCurrentWebviewWindow().listen(LAUNCH_EVENT, () => void consumeLaunch());
-    if (disposed) off();
-    else unlisten = off;
-  });
   return () => {
     disposed = true;
     unlisten?.();

@@ -965,9 +965,13 @@ export const commands = {
 	comparison?: ComparisonLaunch | null,
 	/**  `openidea diff a.txt b.txt`: the two files to open in the diff viewer (boxed: most launches have none). */
 	diff?: DiffFilesLaunch | null,
+	/**  Files requested after the pending diff take focus after it opens. */
+	diffBeforeFiles?: boolean,
 	/**  Deployment windows: the server and local selection to compare. */
 	deployment?: DeploymentLaunch | null,
 } | null>("window_take_launch"),
+	/**  Release the opening window's reservation after navigation or cancellation. */
+	windowCompleteLaunch: () => typedError<null, IdeError>(__TAURI_INVOKE("window_complete_launch")),
 	windowCloseContext: () => __TAURI_INVOKE<CloseContext>("window_close_context"),
 	/**  Projects open in project windows, in window order (title bar project widget). */
 	windowOpenProjects: () => typedError<OpenProject[], IdeError>(__TAURI_INVOKE("window_open_projects")),
@@ -5517,6 +5521,8 @@ export type Launch = {
 	comparison?: ComparisonLaunch | null,
 	/**  `openidea diff a.txt b.txt`: the two files to open in the diff viewer (boxed: most launches have none). */
 	diff?: DiffFilesLaunch | null,
+	/**  Files requested after the pending diff take focus after it opens. */
+	diffBeforeFiles?: boolean,
 	/**  Deployment windows: the server and local selection to compare. */
 	deployment?: DeploymentLaunch | null,
 };
