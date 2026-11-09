@@ -5743,6 +5743,92 @@ fn api14_denies_new_privileges_and_requires_an_invoking_window() {
     assert_eq!(f.host.declared_secret("api14", "token"), None);
 }
 
+/// `net:ask`: a first request to a host outside the manifest asks the user
+/// from an invoking window ("once" allows this request, "always" remembers
+/// the host, refusal and dismissal deny). Background calls are denied without
+/// a dialog, plain HTTP still needs `net.http:<host>`, and a remembered host
+/// is listed in the permissions, where it can be revoked.
+#[test]
+fn net_ask_asks_once_remembers_always_and_revokes() {
+    use ide_plugin::Prompt;
+    let f = fixture(Limits::default());
+    f.host.install_from_dir(&sample("api14"), &Consent::default()).unwrap();
+    f.host.set_capability("api14", "net:ask", true).unwrap();
+    let (port, seen) = http_server("relay ok", |_| Duration::ZERO);
+    let url = format!("http://127.0.0.1:{port}/");
+
+    // Plain HTTP elsewhere stays out of the ask flow entirely.
+    let err = f.run("api14", "fetch", Some("http://example.com/")).unwrap_err();
+    assert!(err.contains("net.http:example.com") && err.contains("not granted"), "{err}");
+    assert!(!f.take_events().iter().any(|(_, e)| matches!(e, PluginEvent::PromptRequested { .. })));
+
+    // Background (no invoking window): denied like before, no dialog.
+    let err = f.host.run_command("api14", "fetch", Some(&url), Invocation::default()).unwrap_err();
+    assert!(err.message.contains("net:127.0.0.1") && err.message.contains("not granted"), "{err:?}");
+    assert!(!f.take_events().iter().any(|(_, e)| matches!(e, PluginEvent::PromptRequested { .. })));
+    assert!(seen.lock().is_empty(), "nothing connected");
+
+    // From a window: the question names the full host. "Allow once" lets
+    // this request through and remembers nothing.
+    let (result, prompt) = net_ask_run_and_answer(&f, &url, Some(&["once"]));
+    assert_eq!(result.unwrap().as_deref(), Some("relay ok"));
+    assert_eq!(prompt, Prompt::NetPermission { host: "127.0.0.1".into() });
+    assert_eq!(f.host.info_of("api14").unwrap().net_hosts, Vec::<String>::new());
+    assert_eq!(seen.lock().len(), 1);
+
+    // The next request asks again; "Always allow" remembers the host.
+    let (result, prompt) = net_ask_run_and_answer(&f, &url, Some(&["always"]));
+    assert_eq!(result.unwrap().as_deref(), Some("relay ok"));
+    assert_eq!(prompt, Prompt::NetPermission { host: "127.0.0.1".into() });
+    assert_eq!(f.host.info_of("api14").unwrap().net_hosts, ["127.0.0.1".to_owned()]);
+
+    // Remembered: connecting without a dialog from a window and in the background.
+    let result = f.host.run_command("api14", "fetch", Some(&url), f.inv()).map_err(|e| e.message).unwrap();
+    assert_eq!(result.as_deref(), Some("relay ok"));
+    let result =
+        f.host.run_command("api14", "fetch", Some(&url), Invocation::default()).map_err(|e| e.message).unwrap();
+    assert_eq!(result.as_deref(), Some("relay ok"));
+    assert!(!f.take_events().iter().any(|(_, e)| matches!(e, PluginEvent::PromptRequested { .. })));
+    assert_eq!(seen.lock().len(), 4);
+
+    // The permissions list the host; revoking it asks again, and refusing denies.
+    f.host.set_capability("api14", "net:127.0.0.1", false).unwrap();
+    assert_eq!(f.host.info_of("api14").unwrap().net_hosts, Vec::<String>::new());
+    let (result, prompt) = net_ask_run_and_answer(&f, &url, None);
+    assert_eq!(prompt, Prompt::NetPermission { host: "127.0.0.1".into() });
+    let err = result.unwrap_err();
+    assert!(err.contains("not granted"), "{err}");
+}
+
+/// Runs api14's `fetch` in its window; once the `net:ask` question arrives,
+/// answers it (`None`: dismisses). Returns the command's result and the prompt.
+fn net_ask_run_and_answer(
+    f: &Fixture,
+    url: &str,
+    answer: Option<&[&str]>,
+) -> (Result<Option<String>, String>, ide_plugin::Prompt) {
+    std::thread::scope(|scope| {
+        let running = scope.spawn(|| f.run("api14", "fetch", Some(url)));
+        let deadline = Instant::now() + Duration::from_secs(10);
+        let (client, prompt_id, prompt) = loop {
+            let asked = f.take_events().into_iter().find_map(|(client, e)| match e {
+                PluginEvent::PromptRequested { prompt_id, prompt, .. } => Some((client, prompt_id, prompt)),
+                _ => None,
+            });
+            if let Some(asked) = asked {
+                break asked;
+            }
+            assert!(Instant::now() < deadline && !running.is_finished(), "the fetch never asked");
+            std::thread::sleep(Duration::from_millis(10));
+        };
+        assert_eq!(client.as_deref(), Some("main"), "asks in the window that ran the command");
+        let answer = answer.map(|a| a.iter().map(|s| (*s).to_owned()).collect());
+        assert!(f.host.answer_prompt(&prompt_id, answer));
+        assert!(!f.host.answer_prompt(&prompt_id, None), "an answer counts once");
+        (running.join().unwrap(), prompt)
+    })
+}
+
 #[test]
 fn api14_window_status_overrides_fall_back_and_are_withdrawn() {
     let f = fixture(Limits::default());

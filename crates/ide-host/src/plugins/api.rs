@@ -6,6 +6,7 @@ use ide_core::ipc_path::to_ipc;
 use ide_core::{CancellationToken, TextEdit};
 use ide_extension::Capability;
 use ide_extension::Package;
+use ide_extension::ledger::{Ledger, Subject};
 use ide_language::ProgramPin;
 use ide_plugin::{
     CommitChange, CommitDraft, EventKind, HostApi, HostError, HttpRequest, HttpResponse, NotificationLevel,
@@ -524,6 +525,9 @@ pub(super) struct Shared {
     pub secrets: RwLock<Arc<dyn SecretStore>>,
     /// (plugin, `process:` capability) → the approved program.
     pub pins: Arc<RwLock<HashMap<(String, String), ProgramPin>>>,
+    /// The grant ledger, shared with the [`super::PluginHost`]: `net:ask`
+    /// looks up and records "always allow" hosts right where a request runs.
+    pub ledger: Arc<Mutex<Ledger>>,
     pub project_pins: ProjectPins,
     pub event_editors: RwLock<HashMap<String, ide_plugin::EditorContext>>,
     /// Validated UI declarations (settings schemas, declared views).
@@ -548,6 +552,7 @@ impl Shared {
         data_dir: PathBuf,
         pins: Arc<RwLock<HashMap<(String, String), ProgramPin>>>,
         ui: Arc<ide_extension::UiStore>,
+        ledger: Arc<Mutex<Ledger>>,
     ) -> Arc<Self> {
         Arc::new(Self {
             ui,
@@ -556,6 +561,7 @@ impl Shared {
             workspace: RwLock::new(None),
             secrets: RwLock::new(Arc::new(FileSecretStore { dir: data_dir.clone() })),
             pins,
+            ledger,
             project_pins: Arc::default(),
             event_editors: RwLock::default(),
             data_dir,
@@ -2211,6 +2217,54 @@ impl HostApi for PluginApi {
         })
     }
 
+    /// The `net:ask` answer: a host the user allowed with "always" is
+    /// remembered in the ledger (no dialog again, background included); a new
+    /// host is asked about in `client`'s window when there is one. Dismissal
+    /// and refusal both deny without remembering.
+    fn net_ask(
+        &self,
+        subject: &Subject,
+        client: Option<&str>,
+        host: &str,
+        cancel: &CancellationToken,
+    ) -> Result<Option<bool>, HostError> {
+        let host = host.trim_end_matches('.').to_ascii_lowercase();
+        let remembered = Capability::Net(host.clone());
+        {
+            let ledger = self.shared.ledger.lock();
+            if let Some(grant) = ledger.get(subject)
+                && grant.confirmed
+                && grant.granted.contains(&remembered.to_string())
+            {
+                return Ok(Some(true));
+            }
+        }
+        let Some(client) = client else { return Ok(None) };
+        {
+            let closed = self.shared.closed_clients.lock();
+            if closed.contains(client) {
+                return Ok(None);
+            }
+        }
+        if self.shared.prompts_blocked.lock().contains(self.id()) {
+            return Ok(None);
+        }
+        match self.ask(Some(client), Prompt::NetPermission { host }, cancel) {
+            Ok(Some(keys)) if keys.iter().any(|k| k == "always") => {
+                {
+                    let mut ledger = self.shared.ledger.lock();
+                    ledger.set(subject, &remembered, true);
+                    if let Err(e) = ledger.save() {
+                        tracing::warn!("saving plugin grants: {e}");
+                    }
+                }
+                Ok(Some(true))
+            }
+            Ok(Some(keys)) if keys.iter().any(|k| k == "once") => Ok(Some(false)),
+            _ => Ok(None),
+        }
+    }
+
     fn secret_is_set(&self, name: &str) -> bool {
         self.shared.secrets.read().get(self.id(), name).is_some()
     }
@@ -3099,7 +3153,7 @@ mod tests {
         )
         .unwrap();
         let sink: Arc<dyn PluginEventSink> = Arc::new(|_: Option<&str>, _: PluginEvent| {});
-        let shared = Shared::new(sink, dir.join(".data"), pins, ide_extension::UiStore::new());
+        let shared = Shared::new(sink, dir.join(".data"), pins, ide_extension::UiStore::new(), Arc::default());
         PluginApi { pkg: Package::new(manifest, dir.to_path_buf()), shared }
     }
 
@@ -3716,6 +3770,7 @@ mod workbench_tests {
             root.join(".data"),
             Arc::default(),
             ide_extension::UiStore::new(),
+            Arc::default(),
         );
         *shared.workspace.write() =
             Some(Arc::new(Workspace { root: root.into(), trusted, text: text.map(str::to_owned) }));

@@ -377,7 +377,7 @@ pub struct PluginHost {
     diagnostic_projects: Mutex<Vec<diagnostics::ProjectState>>,
     /// Validated UI declarations of installed packages (start-up reuses them).
     index: Arc<ContributionIndex>,
-    ledger: Mutex<Ledger>,
+    ledger: Arc<Mutex<Ledger>>,
     plugins: RwLock<BTreeMap<String, Arc<LoadedPlugin>>>,
     state: Mutex<PersistedState>,
     /// What every plugin's [`api::PluginApi`] shares: sink, registry,
@@ -449,7 +449,9 @@ impl PluginHost {
         languages.set_process_policy(Arc::new(move |plugin, cap| {
             policy_pins.read().get(&(plugin.to_owned(), cap.to_string())).cloned()
         }));
-        let shared = api::Shared::new(sink.clone(), plugins_dir.join(".data"), pins.clone(), ui.clone());
+        let ledger = Arc::new(Mutex::new(Ledger::load(&plugins_dir)));
+        let shared =
+            api::Shared::new(sink.clone(), plugins_dir.join(".data"), pins.clone(), ui.clone(), ledger.clone());
         let official_keys = market::built_in_official_keys();
         let market = RwLock::new(Self::load_market_index(&plugins_dir, &official_keys));
         let host = Self {
@@ -460,7 +462,7 @@ impl PluginHost {
             updates: Mutex::default(),
             project_policy: RwLock::new(Arc::new(|_| false)),
             engine: PluginEngine::new().map_err(IdeError::internal)?,
-            ledger: Mutex::new(Ledger::load(&plugins_dir)),
+            ledger,
             plugins_dir,
             sink,
             limits,
@@ -1078,17 +1080,20 @@ impl PluginHost {
 
     /// Grants or revokes one capability (Settings › Plugins › Permissions).
     /// Revoking a required one stops the plugin until consent is given again.
+    /// A host remembered through `net:ask` is not declared: revoking it is
+    /// still valid (`granted = false`).
     pub fn set_capability(&self, id: &str, capability: &str, granted: bool) -> IdeResult<PluginInfo> {
         let _guard = self.lifecycle.lock();
         let plugin = self.get(id)?;
         self.check_not_uninstalling(&plugin)?;
         let cap: Capability = capability.parse().map_err(IdeError::invalid)?;
-        if !plugin.manifest().declares(&cap) && !plugin.meta.lock().declared_extra.contains(&cap) {
-            return Err(IdeError::invalid(format!("plugin {id:?} does not declare {cap}")));
-        }
         {
             let mut ledger = self.ledger.lock();
             let subject = plugin.subject();
+            let declared = plugin.manifest().declares(&cap) || plugin.meta.lock().declared_extra.contains(&cap);
+            if !declared && (granted || ledger.get(&subject).is_none_or(|g| !g.granted.contains(&cap.to_string()))) {
+                return Err(IdeError::invalid(format!("plugin {id:?} does not declare {cap}")));
+            }
             if ledger.get(&subject).is_none() {
                 return Err(IdeError::invalid(format!("plugin {id:?} has not been confirmed yet")));
             }
@@ -2505,6 +2510,7 @@ impl PluginHost {
             plugin_id: plugin.id().to_owned(),
             version: plugin.manifest().version.clone(),
             granted,
+            subject: plugin.subject(),
             host: api,
             limits: self.limits,
         };
@@ -2881,6 +2887,25 @@ impl PluginHost {
                 capabilities.push(CapabilityInfo::new(extra, true, granted(extra)));
             }
         }
+        // Hosts remembered through `net:ask` are grants of their own: listed
+        // separately so the user can revoke them one by one.
+        let net_hosts: Vec<String> = grant
+            .as_ref()
+            .filter(|g| g.confirmed)
+            .map(|g| {
+                let extras = |cap: &Capability| m.declares(cap) || meta.declared_extra.contains(cap);
+                g.granted
+                    .iter()
+                    .filter_map(|s| s.parse::<Capability>().ok())
+                    .filter_map(|cap| match cap {
+                        Capability::Net(host) if !extras(&cap) => Some(host),
+                        _ => None,
+                    })
+                    .collect::<std::collections::BTreeSet<_>>()
+                    .into_iter()
+                    .collect()
+            })
+            .unwrap_or_default();
         PluginInfo {
             id: m.id.clone(),
             name: m.name.clone(),
@@ -2897,6 +2922,7 @@ impl PluginHost {
             error: meta.error.clone(),
             has_code: m.wasm.is_some(),
             capabilities,
+            net_hosts,
             contributions: self.registry.contributions(&m.id),
             activation: m.activation.iter().map(ToString::to_string).collect(),
             warnings: meta.warnings.clone(),

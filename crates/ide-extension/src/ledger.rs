@@ -510,6 +510,25 @@ mod tests {
         assert!(matches!(l.decide(&r3), Decision::NeedsConfirmation { .. }));
     }
 
+    /// `net:ask`'s "always allow" records a host in the granted set: it
+    /// survives a re-confirmation (an update), and revoking removes it.
+    #[test]
+    fn net_ask_grants_persist_in_the_granted_set() {
+        let mut l = Ledger::in_memory();
+        let r = req("1.0.0", "h", &["net:ask"], &[]);
+        l.confirm(&r, &[], BTreeMap::new());
+        let host: Capability = "net:api.example.com".parse().unwrap();
+        assert!(l.set(&r.subject, &host, true));
+        assert!(l.get(&r.subject).unwrap().has(&host));
+        // The host itself is not a declared capability, so it never appears in
+        // the decision's `granted` (the ask flow checks the ledger instead).
+        assert_eq!(l.decide(&r), Decision::Allowed { granted: caps(&["net:ask"]), pending: vec![] });
+        l.confirm(&r, &[], BTreeMap::new());
+        assert!(l.get(&r.subject).unwrap().has(&host), "re-confirming keeps ask-granted hosts");
+        assert!(l.set(&r.subject, &host, false));
+        assert!(!l.get(&r.subject).unwrap().has(&host));
+    }
+
     #[test]
     fn migration_grants_low_risk_only() {
         let tmp = tempfile::tempdir().unwrap();

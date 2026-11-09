@@ -420,6 +420,7 @@ function samplePlugins(): PluginInfo[] {
     enabled: true,
     error: null,
     capabilities: [],
+    netHosts: [],
     contributions: [],
     activation: [],
     warnings: [],
@@ -588,6 +589,9 @@ export function createMemoryPluginsBackend(
     setCapability: async (id, capability, granted) => {
       const p = find(id);
       p.capabilities = p.capabilities.map((c) => (c.id === capability ? { ...c, granted } : c));
+      // A `net:ask` host is not a declared capability: revoking removes the remembered host.
+      if (!granted && capability.startsWith("net:") && !p.capabilities.some((c) => c.id === capability))
+        p.netHosts = p.netHosts.filter((h) => `net:${h}` !== capability);
       if (!granted && p.capabilities.some((c) => c.id === capability && !c.optional)) p.status = "needsConsent";
       emit({ type: "commandsChanged" });
       return { ...p };

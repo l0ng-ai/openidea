@@ -418,6 +418,21 @@ pub trait HostApi: Send + Sync {
     fn publish_diagnostics(&self, path: &Path, items: Vec<ide_core::Diagnostic>) -> Result<(), HostError>;
     /// Performs `request` (its host is granted), filling in secret placeholders.
     fn fetch(&self, request: HttpRequest, cancel: &CancellationToken) -> Result<HttpResponse, HostError>;
+    /// The `net:ask` answer for a request to HTTPS host `host` of this plugin
+    /// (`subject`): `Some(true)` allowed and remembered (a host the user
+    /// already allowed connects without asking again, also in the background),
+    /// `Some(false)` allowed for this request only, `None` refused — also when
+    /// nobody could be asked (`client` is `None` outside commands and events).
+    fn net_ask(
+        &self,
+        subject: &ide_extension::ledger::Subject,
+        client: Option<&str>,
+        host: &str,
+        cancel: &CancellationToken,
+    ) -> Result<Option<bool>, HostError> {
+        let _ = (subject, client, host, cancel);
+        Ok(None)
+    }
     fn secret_is_set(&self, name: &str) -> bool;
 
     /// Stores or deletes a secret declared by this plugin; never returns its value.
@@ -795,6 +810,7 @@ pub struct StoreData {
     stderr_seen: usize,
     pub(crate) plugin_id: String,
     pub(crate) granted: Vec<Capability>,
+    pub(crate) subject: ide_extension::ledger::Subject,
     pub(crate) host: Arc<dyn HostApi>,
     pub(crate) invocation: Invocation,
     /// The running call is a command or an event.
@@ -912,6 +928,9 @@ pub struct RuntimeSetup {
     pub version: String,
     /// Capabilities granted to the plugin.
     pub granted: Vec<Capability>,
+    /// Whose grant this is (installed id, or the package directory of a
+    /// linked or project plugin): what `net:ask` answers are remembered for.
+    pub subject: ide_extension::ledger::Subject,
     pub host: Arc<dyn HostApi>,
     pub limits: Limits,
 }
@@ -1020,6 +1039,7 @@ impl Runtime {
             stderr_seen: 0,
             plugin_id: setup.plugin_id,
             granted: setup.granted,
+            subject: setup.subject,
             host: setup.host,
             invocation: Invocation::default(),
             interactive: false,

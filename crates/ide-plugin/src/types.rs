@@ -94,6 +94,10 @@ pub enum Prompt {
     Confirm { title: String, message: String },
     #[serde(rename_all = "camelCase")]
     PickDirectory { title: String, initial: Option<String> },
+    /// The host's own question under `net:ask` (never plugin-initiated): the
+    /// plugin reached an HTTPS host its manifest does not list.
+    #[serde(rename_all = "camelCase")]
+    NetPermission { host: String },
 }
 
 /// Kinds of workbench events a plugin can subscribe to (`on-event:<kind>`).
