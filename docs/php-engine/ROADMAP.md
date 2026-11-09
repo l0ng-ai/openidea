@@ -715,5 +715,95 @@ Runs after Plan 7. Before any 8.x phase, read [LARAVEL-ROADMAP.md](LARAVEL-ROADM
 
   Record the results in `docs/php-engine/laravel.md`, along with what is still missing compared with the feature list, as follow-up phases. Tests: the checklist test and the benches.
 
-- [ ] Phase 8.22: Documentation
-      Add a user guide, `docs/php-engine/laravel.md`, finishing the file started in 8.21. It covers each feature with a short example, the settings, `ide.json` support, and known limits. Update `THIRD_PARTY_LICENSES.md` if a phase bundled anything new (for example Laravel stubs). Tests: none beyond the usual gate.
+- [ ] Phase 8.22: Incremental Laravel model
+      Phase 8.21 measured the warm model build on a real application, and it misses its budget badly: Monica rebuilds its whole model after every keystroke in 1.15 s, against a 200 ms budget. Most of that time is its 57,507 translations, read again from disk (see `docs/php-engine/laravel.md`, "Real applications"). Make the model incremental:
+  - Store the parts read from files in the PHP index, keyed by content hash like the file summaries:
+    - configuration keys per `config/*.php`
+    - translations per language file
+    - views per directory
+    - routes per route file
+  - A watcher batch or an edit rebuilds only the parts of the files it touched.
+  - Merging the parts into `LaravelModel` must not copy the large tables. Share them, for example with `Arc` per file.
+
+  Tests:
+  - Unit tests: an edit to one config file doesn't re-read the others, and deleting a language file removes its keys.
+  - The `php_laravel_real/model_warm` bench on Monica (`scripts/laravel-apps.sh`, `LARAVEL_APP_DIR`) under 200 ms, and `model_cold` still under 2 s. Record both in `laravel.md`.
+
+- [ ] Phase 8.23: Package registrations and routing coverage
+      Bagisto keeps most of the application in `packages/Webkul/*`. Its packages register routes, views, translations and migrations from service providers, so the model finds 0 views and only 72 routes, and the `route_hints` bench panics. Follow, in every service provider of the app and of `vendor/`:
+  - `loadRoutesFrom`, `loadViewsFrom`, `loadTranslationsFrom`, `loadJsonTranslationsFrom`, `loadMigrationsFrom`, `mergeConfigFrom` and `publishes`, with package view and translation namespaces (`shop::`, `admin::`)
+  - module systems that use them: `nwidart/laravel-modules` and `konekt/concord`, which Bagisto uses (count them as modules)
+
+  Also cover the routing forms phase 8.21 listed as missing:
+  - `Route::resources()`, `singleton()`, `fallback()` and `->names('prefix')`
+  - the array form of `Route::group(['middleware' => …, 'prefix' => …])`
+  - `aliasMiddleware` and `middlewareAliases` in providers
+  - `domain()` in route hints
+  - code lenses for controllers routed through module and package providers
+
+  The `route_hints` bench picks a route file that has routes instead of assuming `routes/web.php`. Tests:
+  - Unit tests on snippets.
+  - Bagisto's model has views, package routes and modules.
+  - The `php_laravel_real/*` benches pass on Bagisto. Record the numbers in `laravel.md`.
+
+- [ ] Phase 8.24: Usages and rename from declarations and Blade
+      Make find usages and rename work in both directions:
+  - from a Livewire component class or its `Livewire::component` alias, an Inertia page file and a `.env` line
+  - rename of translation keys, in every locale file and caller
+
+  Index route-name and view references inside Blade templates that aren't open, so that renaming a route also edits `{{ route('…') }}` in closed templates and find usages lists them. Run the undefined-view inspection in Blade templates. Tests: rename and usages fixtures on the fixture app.
+
+- [ ] Phase 8.25: Blade components, complete
+      Complete the Blade component support:
+  - class components' public properties and methods as variables in their view
+  - `@aware`, `<x-slot>` / `<x-slot:name>` names, and `<x-dynamic-component>`
+  - `Blade::component()`, `componentNamespace()` and `anonymousComponentPath()` registrations, and components of `vendor/` packages (namespaced `<x-pkg::…>`)
+  - checking bound `:attr` values against the constructor parameter types
+  - quick-fixes for template problems: create the missing component or view, and add a missing prop
+
+  Tests: caret fixtures in Blade files, and quick-fix tests.
+
+- [ ] Phase 8.26: Auth and validation, complete
+      Fix the real-application gap first: `real_app_checklist` gets no validation-rule completion on Monica. Find why, for example the rule catalogue or the place patterns not matching Monica's Form Requests, and fix it. Then add:
+  - **Policies:** `#[UsePolicy]`, `Gate::guessPolicyNamesUsing`, inherited policies, and `Gate::define('x', [Policy::class, 'm'])` going to the method.
+  - **`can:` abilities:** checked in the unknown-ability inspection and listed in gate usages.
+  - **Inspections:** unknown-guard and unknown-broker.
+  - **Validation completion:** `in:` values (from enums and constants where they're simple) and `Rule::` arguments.
+  - **Generated rules:** use `Rule::enum()` for enum casts and `max:<length>` from string column lengths.
+
+  Tests: caret fixtures, plus the Monica check in `real_app_checklist`.
+
+- [ ] Phase 8.27: Eloquent, complete
+      Close the Eloquent gaps phase 8.21 listed:
+  - columns of the related model in the second argument of `whereRelation`, `withSum`, `withAvg` and similar
+  - `*_count` properties only after a matching `withCount`
+  - the model of a raw `Builder $query` scope parameter
+  - dropped and renamed columns in later migrations
+  - join and alias tables in `DB::table()` chains
+  - typed `Attribute::make(get: …)` accessors without `@return`
+
+  Check the model view and the unknown-column inspection against Monica's 70 models and Bagisto's 127, and fix any false positives. Tests: caret fixtures, plus an ignored real-application inspection count recorded in `laravel.md`.
+
+- [ ] Phase 8.28: Generators and Livewire, complete
+      **Generators:**
+  - register what they create: observers (`#[ObservedBy]`), events and listeners, module service providers
+  - pivot tables for `belongsToMany` in New Model
+  - Livewire 2 paths
+  - a grouped Generate submenu
+  - the user's edited templates for the in-model actions
+  - the `ide.json` generation features `inputFilter`/`regex`, `transformers` and `dataFile`
+
+  **Livewire:** an unknown-parameter inspection for `@livewire(…, [...])` and `<livewire:…>` attributes.
+
+  Tests: generator snapshot tests and inspection fixtures.
+
+- [ ] Phase 8.29: Real-application check
+      Run the real-application checks on Monica and Bagisto again (`scripts/laravel-apps.sh`):
+  - `real_app_checklist` passes on both
+  - every `php_laravel_real/*` budget passes on both
+  - batch Inspect Code over each app's own code (not `vendor/`) has no false positives in a reviewed sample of 100 diagnostics per app
+
+  Fix what fails. Anything too big to fix becomes a new follow-up phase right after this one. Record the final numbers and the review in `laravel.md`. Tests: the ignored real-application tests and benches. Their results go in `PROGRESS.md`.
+
+- [ ] Phase 8.30: Documentation
+      Add a user guide, `docs/php-engine/laravel.md`, finishing the file started in 8.21 and extended up to 8.29. It covers each feature with a short example, the settings, `ide.json` support, and known limits. Update `THIRD_PARTY_LICENSES.md` if a phase bundled anything new (for example Laravel stubs). Tests: none beyond the usual gate.

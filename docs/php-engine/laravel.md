@@ -1,6 +1,6 @@
 # Laravel support
 
-The native PHP engine's Laravel support (Plan 8 of [ROADMAP.md](ROADMAP.md), designed in [LARAVEL-ROADMAP.md](LARAVEL-ROADMAP.md)). Phase 8.22 turns this file into the user guide. For now it holds the parity and performance check of phase 8.21.
+The native PHP engine's Laravel support (Plan 8 of [ROADMAP.md](ROADMAP.md), designed in [LARAVEL-ROADMAP.md](LARAVEL-ROADMAP.md)). Phase 8.30 turns this file into the user guide. For now it holds the parity and performance check of phase 8.21.
 
 ## Parity check (phase 8.21)
 
@@ -77,11 +77,47 @@ The engine runs with no inspections, so nothing builds the model in the backgrou
 - 2 Vite entries, 2 gates and 87 Artisan commands
 - 4 models
 
-The real-application numbers haven't been measured yet. The machine that ran phase 8.21 has neither a Laravel application with `vendor/` nor PHP and Composer to install one. To measure them, run:
+### Real applications (2026-11-09)
+
+`scripts/laravel-apps.sh` fetches two large open-source Laravel applications at pinned commits into `../php-corpus/apps`, with their `vendor/`. Their dependencies are installed with `--no-scripts --no-plugins`, so no code from them runs. When there's no PHP on the machine, the script uses a portable PHP and `composer.phar`, both checked against their SHA-256 sums.
+
+- **Monica** (`monicahq/monica` `dab7427`, Laravel 12.22, AGPL-3.0): 1,656 PHP files of its own and 13,522 in `vendor/`. The model has:
+  - 9 route files and 388 routes
+  - 1,061 configuration keys and 57,507 translations
+  - 132 Inertia pages and 70 models
+  - 191 Artisan commands
+- **Bagisto** (`bagisto/bagisto` `b740b83`, v2.5.1, Laravel 13.39, MIT): 3,119 PHP files of its own and 21,328 in `vendor/`. Most of the app lives in `packages/Webkul/*`, in packages that register their own routes, views and translations from service providers. The model has:
+  - 14 route files and 72 routes
+  - **0 views and 0 modules**
+  - 936 configuration keys and 3,519 translations
+  - 127 models
+
+Release build, the same machine as above:
+
+| Bench                                | Budget | Monica       | Bagisto                      |
+| ------------------------------------ | ------ | ------------ | ---------------------------- |
+| `php_laravel_real/model_cold`        | 2 s    | 1.19 s       | 158 ms                       |
+| `php_laravel_real/model_warm`        | 200 ms | **1.15 s ✗** | 143 ms                       |
+| `php_laravel_real/string_completion` | 50 ms  | 15.1 ms      | 7.9 ms                       |
+| `php_laravel_real/route_hints`       | 100 ms | 13.2 ms      | **panics: "no route hints"** |
+
+`real_app_checklist` fails on both:
+
+- **Monica:** `no completion for ["validationRule"]`.
+- **Bagisto:** the model has no views, so the check that it has routes, views and configuration keys fails.
+
+What the numbers say:
+
+- **The warm model build is the real problem.** On Monica, every keystroke rebuilds the whole model, most of it the 57,507 translations, and that takes 1.15 s, nearly 6× the budget. This is the incremental-model gap below, now measured.
+- **Package-registered parts are missing.** Bagisto's views, routes and translations come from `loadViewsFrom`, `loadRoutesFrom` and `loadTranslationsFrom` in package service providers, and the model doesn't follow those yet. The route-hints bench also needs a route file that has routes.
+- **Completion and route hints are fast** on both apps, well under budget.
+
+To measure again (Git Bash):
 
 ```sh
-LARAVEL_APP_DIR=/path/to/app cargo bench -p ide-php --bench engine -- php_laravel_real
-LARAVEL_APP_DIR=/path/to/app cargo test -p ide-php --test laravel_parity -- --ignored
+bash scripts/laravel-apps.sh
+LARAVEL_APP_DIR=../php-corpus/apps/monica cargo bench -p ide-php --bench engine -- php_laravel_real
+LARAVEL_APP_DIR=../php-corpus/apps/monica cargo test -p ide-php --release --test laravel_parity -- --ignored --nocapture
 ```
 
 Warm builds cost about as much as cold ones. Most parts are read from disk again whenever the modification count moves:
@@ -94,6 +130,8 @@ Warm builds cost about as much as cold ones. Most parts are read from disk again
 They aren't stored in the index, as LARAVEL-ROADMAP.md plans. On large applications this is where the warm budget is most at risk.
 
 ## Still missing
+
+These gaps are tracked as phases 8.22–8.29 in [ROADMAP.md](ROADMAP.md).
 
 These are the gaps against the feature list in LARAVEL-ROADMAP.md, gathered from the phases' own notes in PROGRESS.md. They are grouped as proposed follow-up phases.
 

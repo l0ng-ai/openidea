@@ -76,4 +76,5 @@ Install these once per machine, then run `scripts/php-tools-check.sh`. It exits 
   Run tests with `cargo nextest run -p ide-php`. `cargo test` still works.
 
 - **cargo-sweep** (optional): `cargo install cargo-sweep --locked`. The loop uses it after each phase to delete stale build output from `target/`; without it, `target/` keeps growing.
+- **Real Laravel applications** (Plan 8's real-application checks): `scripts/laravel-apps.sh` fetches Monica and Bagisto, pinned, with `vendor/`, into `${PHP_CORPUS_DIR:-../php-corpus}/apps`. It never runs their code, and uses a portable PHP and Composer if none is installed. Point `LARAVEL_APP_DIR` at one of them for the ignored `real_app_checklist` and the `php_laravel_real/*` benches.
 - **Corpora:** `scripts/php-corpus.sh` needs only git. It shallow-clones laravel/framework, symfony/symfony and WordPress/WordPress at the tags pinned in the script into `${PHP_CORPUS_DIR:-../php-corpus}` and skips any that are already there. `--check` only verifies them. To move to a new tag, change the script and delete that corpus directory.
