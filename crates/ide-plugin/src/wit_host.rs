@@ -1878,31 +1878,72 @@ impl From<bindings::openidea::plugin::views::ContentTabReply> for crate::Content
     }
 }
 
+impl StoreData {
+    fn register_plugin_run_target(
+        &mut self,
+        project: Resource<ProjectRes>,
+        target: crate::PluginRunTarget,
+    ) -> Fallible<()> {
+        if let Err(e) = self.require(Capability::Process(target.program.clone())) {
+            return Ok(Err(e));
+        }
+        let root = self.table.get(&project)?.root.clone();
+        Ok(self.host.register_run_target(&root, target).map_err(to_wit))
+    }
+}
+
 impl bindings::openidea::plugin::run_targets::Host for StoreData {
     fn register(
         &mut self,
         project: Resource<ProjectRes>,
         target: bindings::openidea::plugin::run_targets::RunTarget,
     ) -> Fallible<()> {
-        if let Err(e) = self.require(Capability::Process(target.program.clone())) {
-            return Ok(Err(e));
-        }
-        let root = self.table.get(&project)?.root.clone();
-        Ok(self
-            .host
-            .register_run_target(
-                &root,
-                crate::PluginRunTarget {
-                    id: target.id,
-                    name: target.name,
-                    program: target.program,
-                    args: target.args,
-                    workdir_args: target.workdir_args,
-                    container_root: target.container_root,
-                    commands: target.commands,
-                },
-            )
-            .map_err(to_wit))
+        self.register_plugin_run_target(
+            project,
+            crate::PluginRunTarget {
+                id: target.id,
+                name: target.name,
+                program: target.program,
+                args: target.args,
+                workdir_args: target.workdir_args,
+                container_root: target.container_root,
+                commands: target
+                    .commands
+                    .into_iter()
+                    .map(|(name, args)| ide_core::remote_settings::PluginCommandOverride {
+                        name,
+                        args,
+                        workdir_args: None,
+                    })
+                    .collect(),
+            },
+        )
+    }
+    fn register_with_overrides(
+        &mut self,
+        project: Resource<ProjectRes>,
+        target: bindings::openidea::plugin::run_targets::RunTargetWithOverrides,
+    ) -> Fallible<()> {
+        self.register_plugin_run_target(
+            project,
+            crate::PluginRunTarget {
+                id: target.id,
+                name: target.name,
+                program: target.program,
+                args: target.args,
+                workdir_args: target.workdir_args,
+                container_root: target.container_root,
+                commands: target
+                    .commands
+                    .into_iter()
+                    .map(|c| ide_core::remote_settings::PluginCommandOverride {
+                        name: c.name,
+                        args: c.args,
+                        workdir_args: c.workdir_args,
+                    })
+                    .collect(),
+            },
+        )
     }
     fn unregister(&mut self, project: Resource<ProjectRes>, id: String) -> wasmtime::Result<()> {
         let root = self.table.get(&project)?.root.clone();

@@ -6422,6 +6422,14 @@ export type PickItem = {
 	description: string | null,
 };
 
+/**  Per-command argv prefix and optional replacement working-directory arguments. */
+export type PluginCommandOverride = {
+	name: string,
+	args: string[],
+	/**  None inherits the target's list; Some([]) suppresses it. */
+	workdirArgs?: string[] | null,
+};
+
 /**  A plugin's before-commit check to run (`[[contributes.commitChecks]]`). */
 export type PluginCommitCheckRef = {
 	pluginId: string,
@@ -6725,7 +6733,7 @@ export type PluginRunTarget = {
 	args: string[],
 	workdirArgs: string[],
 	containerRoot: string | null,
-	commands: ([string, string[]])[],
+	commands: PluginCommandOverride[],
 };
 
 /**  A secret a plugin declares, and whether the user stored it. */
