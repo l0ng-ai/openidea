@@ -33,6 +33,7 @@ import type { LanguageDescription } from "@codemirror/language";
 import type { LineEnding } from "@/platform/ipc";
 import { create } from "zustand";
 import { maybeEditorService } from "@/workbench/contributions";
+import { cornerInset } from "@/editor/core/cm/cornerInset";
 
 /** Documents above this size (UTF-16 units) skip per-line decorations. */
 export const HEAVY_LIMIT = 8_000_000;
@@ -358,6 +359,8 @@ export function editorCorner(view: EditorView): HTMLElement {
     gap: "4px",
   });
   view.dom.appendChild(el);
+  // The lines leave room for its measured width, so it never covers a line end.
+  view.plugin(cornerInset)?.track(el);
   return el;
 }
 
