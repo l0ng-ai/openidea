@@ -791,7 +791,6 @@ fn forward_output<R: AsyncRead + Unpin + Send + 'static>(s: &Session, mut stream
 /// Launch with the IDE's resolved runtime and classpath; the adapter only attaches.
 pub(crate) async fn start_kotlin_debuggee(s: &Arc<Session>, args: &mut Value) -> ide_core::IdeResult<()> {
     use tokio::io::{AsyncBufReadExt, BufReader};
-    let port = crate::adapter::free_port()?;
     let java = args.get("javaExec").and_then(Value::as_str).unwrap_or("java");
     let strings = |key: &str| -> Vec<String> {
         args.get(key)
@@ -804,7 +803,9 @@ pub(crate) async fn start_kotlin_debuggee(s: &Arc<Session>, args: &mut Value) ->
     let mut cmd = tokio::process::Command::new(java);
     ide_core::process::prepare(cmd.as_std_mut());
     cmd.args(strings("vmArguments"))
-        .arg(format!("-agentlib:jdwp=transport=dt_socket,server=y,suspend=y,address=127.0.0.1:{port}"))
+        // Let the JVM pick its own port (`:0`) and report it below: pre-picking a free
+        // port here races with other processes that may take it before the JVM binds.
+        .arg("-agentlib:jdwp=transport=dt_socket,server=y,suspend=y,address=127.0.0.1:0")
         .arg("-cp")
         .arg(classpath);
     let modules = strings("modulePaths");
@@ -837,14 +838,18 @@ pub(crate) async fn start_kotlin_debuggee(s: &Arc<Session>, args: &mut Value) ->
     }
     let mut stdout =
         BufReader::new(child.stdout.take().ok_or_else(|| ide_core::IdeError::internal("Missing JVM stdout"))?);
-    tokio::time::timeout(Duration::from_secs(15), async {
+    // The JVM chose the port (`:0` above) and reports it here; reading it back removes
+    // the free-port race window entirely.
+    let port = tokio::time::timeout(Duration::from_secs(15), async {
         loop {
             let mut line = String::new();
             if stdout.read_line(&mut line).await? == 0 {
                 return Err(ide_core::IdeError::unavailable("JVM exited before starting its debug listener"));
             }
             if line.contains("Listening for transport dt_socket") {
-                return Ok(());
+                return parse_jdwp_port(&line).ok_or_else(|| {
+                    ide_core::IdeError::unavailable(format!("JVM reported an unreadable debug port: {}", line.trim()))
+                });
             }
             s.emit(DebugEvent::Output { category: "stdout".into(), output: line });
         }
@@ -857,4 +862,23 @@ pub(crate) async fn start_kotlin_debuggee(s: &Arc<Session>, args: &mut Value) ->
     args["port"] = json!(port);
     args["timeout"] = json!(10000);
     Ok(())
+}
+
+/// The port a JVM chose, from `Listening for transport dt_socket at address: <port>`
+/// (some JVMs print `host:port` or `[::1]:port`, so take what follows the last colon).
+fn parse_jdwp_port(line: &str) -> Option<u16> {
+    line.rsplit_once("address:")?.1.trim().rsplit(':').next()?.trim().parse().ok()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::parse_jdwp_port;
+
+    #[test]
+    fn reads_the_port_the_jvm_chose() {
+        assert_eq!(parse_jdwp_port("Listening for transport dt_socket at address: 51234"), Some(51234));
+        assert_eq!(parse_jdwp_port("Listening for transport dt_socket at address: 127.0.0.1:51234"), Some(51234));
+        assert_eq!(parse_jdwp_port("Listening for transport dt_socket at address: [::1]:51234"), Some(51234));
+        assert_eq!(parse_jdwp_port("unrelated output"), None);
+    }
 }
