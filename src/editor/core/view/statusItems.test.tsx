@@ -10,10 +10,12 @@ vi.mock("../controller", async () => {
     editorController: () => ({ openFile: vi.fn(), slots: new Map() }),
     useEditorStatus: create<{ status: EditorStatus | null }>(() => ({ status: null })),
     useGotoLine: create(() => ({ open: false })),
+    useTabs: create(() => ({ panes: {}, activePane: "" })),
+    isTextInput: (input: { kind: string }) => input.kind === "file" || input.kind === "virtual",
   };
 });
 
-const { useEditorStatus } = await import("../controller");
+const { useEditorStatus, useTabs } = await import("../controller");
 const { useOutline } = await import("../model/document");
 const { useProject } = await import("@/platform/project");
 const { Breadcrumbs, CodeBreadcrumbs } = await import("./StatusItems");
@@ -105,6 +107,70 @@ it("shows the member and its directories in workspace breadcrumbs", async () => 
   expect(screen.getByRole("navigation", { name: "Breadcrumbs" }).textContent).toBe("bsrcfile.ts");
   view.unmount();
   useProject.setState({ project: null });
+});
+
+it("keeps the top bar on the project node when no editor is active", async () => {
+  useProject.setState({
+    project: {
+      root: "/workspace",
+      name: "Workspace",
+      settings: { appearance: { navigationBar: "top" } },
+      trusted: true,
+      isGit: false,
+      workspace: { version: 1, name: "Workspace", projects: ["/a", "/b"] },
+    },
+    settings: { appearance: { navigationBar: "top" } } as unknown as Settings,
+  });
+  // Switching tabs clears the active editor's status for a frame.
+  useEditorStatus.setState({ status: null });
+  const view = render(<Breadcrumbs className="nav" />);
+  expect(screen.getByRole("navigation", { name: "Breadcrumbs" }).textContent).toBe("Workspace");
+  view.unmount();
+  // The footer instance stays empty: the status bar itself reserves the row.
+  useProject.setState({ settings: {} as unknown as Settings });
+  const footer = render(<Breadcrumbs inStatusBar />);
+  expect(screen.queryByRole("navigation", { name: "Breadcrumbs" })).toBeNull();
+  footer.unmount();
+  useProject.setState({ project: null, settings: null });
+});
+
+it("shows the incoming tab's path while a tab switch is still loading", async () => {
+  useProject.setState({
+    project: {
+      root: "/workspace",
+      name: "Workspace",
+      settings: { appearance: { navigationBar: "top" } },
+      trusted: true,
+      isGit: false,
+      workspace: { version: 1, name: "Workspace", projects: ["/a", "/b"] },
+    },
+    settings: { appearance: { navigationBar: "top" } } as unknown as Settings,
+  });
+  // The tab is active, but its editor slot has not reported a status yet.
+  useEditorStatus.setState({ status: null });
+  useTabs.setState({
+    activePane: "p1",
+    panes: {
+      p1: {
+        id: "p1",
+        tabs: [
+          {
+            id: "t1",
+            input: { kind: "file", key: "file:/b/src/file.ts", path: "/b/src/file.ts" },
+            preview: false,
+            pinned: false,
+          },
+        ],
+        active: "t1",
+        mru: ["t1"],
+      },
+    },
+  });
+  const view = render(<Breadcrumbs className="nav" />);
+  expect(screen.getByRole("navigation", { name: "Breadcrumbs" }).textContent).toBe("bsrcfile.ts");
+  view.unmount();
+  useTabs.setState({ panes: {}, activePane: "" });
+  useProject.setState({ project: null, settings: null });
 });
 
 it("shows the project › dirs › file path above the editor", async () => {
