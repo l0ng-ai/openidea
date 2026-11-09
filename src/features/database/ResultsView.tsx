@@ -248,6 +248,20 @@ function Result({ tab }: { tab: ResultTab }) {
       eq,
     );
   }, [detailsValue, sources, resultNames, eq]);
+  // Nullability and defaults follow the table's details once they load (they gate Set NULL / Set DEFAULT).
+  const gridColumns = useMemo(
+    () =>
+      columns.map((c) => {
+        const d = detailsValue?.columns.find((x) => eq(x.name, c.name));
+        return {
+          ...c,
+          primaryKey: !!pk?.includes(c.name),
+          nullable: d?.nullable,
+          default: d?.default ?? null,
+        };
+      }),
+    [columns, pk, detailsValue, eq],
+  );
   const readOnlySource = source?.readOnly ?? false;
   const editable =
     editability.kind === "editable" &&
@@ -463,9 +477,10 @@ function Result({ tab }: { tab: ResultTab }) {
           )}
           <div className={clsx(styles.fill, styles.gridHost)}>
             <DataView
-              columns={columns.map((c) => ({ ...c, primaryKey: !!pk?.includes(c.name) }))}
+              columns={gridColumns}
               rowCount={rowCount}
               fixedRows={loaded}
+              driver={driver}
               value={value}
               panel={panel}
               onPanelChange={setPanel}

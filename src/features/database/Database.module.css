@@ -121,6 +121,11 @@
   outline: none;
 }
 
+.cellCheckbox {
+  flex-shrink: 0;
+  margin: 0 6px 0 0;
+}
+
 /* ---- Tool windows ------------------------------------------------------------ */
 .view {
   height: 100%;

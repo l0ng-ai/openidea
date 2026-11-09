@@ -99,12 +99,17 @@ export function TableEditor({ input }: { input: EditorInput }) {
   const rowCount = loaded + edits.inserts.length;
   const gridColumns = useMemo(
     () =>
-      columns.map((c) => ({
-        name: c.name,
-        type: c.typeName,
-        primaryKey: pk.includes(c.name),
-        foreignKey: fkColumns.has(c.name),
-      })),
+      columns.map((c) => {
+        const d = page?.details.columns.find((x) => x.name === c.name);
+        return {
+          name: c.name,
+          type: c.typeName,
+          primaryKey: pk.includes(c.name),
+          foreignKey: fkColumns.has(c.name),
+          nullable: d?.nullable,
+          default: d?.default ?? null,
+        };
+      }),
     // `pk` / `fkColumns` derive from `page`.
     // eslint-disable-next-line react-hooks/exhaustive-deps
     [page],
@@ -374,6 +379,7 @@ export function TableEditor({ input }: { input: EditorInput }) {
             isModified={(r, c) => !!edits.updates.get(r)?.has(names[c]!)}
             editable={editable}
             onEdit={onEdit}
+            driver={source?.driver}
             sort={sort}
             onSort={onSort}
             rowMenu={(rows) =>

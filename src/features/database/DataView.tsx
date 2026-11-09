@@ -81,7 +81,7 @@ interface Shaping {
 
 export interface DataViewProps extends Pick<
   GridProps,
-  "rowState" | "isModified" | "editable" | "onEdit" | "sort" | "onSort" | "rowMenu"
+  "rowState" | "isModified" | "editable" | "onEdit" | "driver" | "sort" | "onSort" | "rowMenu"
 > {
   columns: readonly GridColumn[];
   rowCount: number;
@@ -217,6 +217,7 @@ export function DataView(props: DataViewProps) {
             isModified={props.isModified && ((r, c) => props.isModified!(at(r), c))}
             editable={props.editable}
             onEdit={props.onEdit && ((r, c, v) => props.onEdit!(at(r), c, v))}
+            driver={props.driver}
             sort={sort}
             onSort={onSort}
             rowMenu={props.rowMenu && ((rows) => props.rowMenu!(rows.map(at)))}

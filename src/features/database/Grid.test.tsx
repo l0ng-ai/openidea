@@ -1,12 +1,14 @@
 import { installKeyboardDispatcher, useKeymap } from "@/platform/keymap";
 import { registerActions } from "@/platform/actions";
-import { fireEvent, render, screen } from "@testing-library/react";
+import { act, fireEvent, render, screen } from "@testing-library/react";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { useState } from "react";
+import { ContextMenuHost } from "@/ui";
 import { DataView } from "./DataView";
 import { Grid } from "./Grid";
 import { CELL_PREVIEW_LIMIT, cellPreview } from "./cellPreview";
 import { exportData } from "./export";
+import { NULL_INPUT } from "./cellEditors";
 
 vi.mock("@tanstack/react-virtual", () => ({
   useVirtualizer: ({ count }: { count: number }) => ({
@@ -299,5 +301,234 @@ describe("result grid search", () => {
     fireEvent.keyDown(input, { key: "Escape" });
     expect(screen.queryByRole("search")).toBeNull();
     expect(screen.getAllByRole("row").length - 1).toBe(4);
+  });
+});
+
+describe("boolean cells (issue #2331, phase 1)", () => {
+  const values = [null, "t", "f"];
+
+  it("shows a checkbox on editable boolean cells and toggles it, writing the driver's literals", () => {
+    const onEdit = vi.fn();
+    render(
+      <Grid
+        columns={[{ name: "ok", type: "boolean" }]}
+        rowCount={3}
+        value={(r) => values[r] ?? null}
+        editable
+        onEdit={onEdit}
+        driver="postgres"
+      />,
+    );
+    const boxes = screen.getAllByRole("checkbox") as HTMLInputElement[];
+    expect(boxes.map((b) => b.checked)).toEqual([false, true, false]);
+    expect(boxes[0]!.indeterminate).toBe(true); // NULL
+    fireEvent.click(boxes[2]!);
+    expect(onEdit).toHaveBeenCalledWith(2, 0, "t");
+    expect(onEdit).toHaveBeenCalledTimes(1); // the click toggles only, it doesn't open an editor
+  });
+
+  it("keeps read-only and deleted boolean cells as text without a checkbox", () => {
+    render(<Grid columns={[{ name: "ok", type: "boolean" }]} rowCount={1} value={() => "t"} />);
+    expect(screen.queryByRole("checkbox")).toBeNull();
+    expect(screen.getByRole("gridcell").textContent).toBe("t");
+    const onEdit = vi.fn();
+    render(
+      <Grid
+        columns={[{ name: "ok", type: "boolean" }]}
+        rowCount={2}
+        value={() => "f"}
+        editable
+        onEdit={onEdit}
+        rowState={(r) => (r === 0 ? "deleted" : null)}
+      />,
+    );
+    expect(screen.getAllByRole("checkbox").length).toBe(1);
+  });
+
+  it("toggles the lead boolean cell with Space", () => {
+    const onEdit = vi.fn();
+    render(
+      <Grid
+        columns={[{ name: "ok", type: "boolean" }]}
+        rowCount={3}
+        value={(r) => values[r] ?? null}
+        editable
+        onEdit={onEdit}
+        driver="postgres"
+      />,
+    );
+    // NULL flips to true, false flips back to true.
+    fireEvent.mouseDown(screen.getAllByRole("gridcell")[0]!, { button: 0 });
+    fireEvent.keyDown(screen.getByRole("grid"), { key: " " });
+    expect(onEdit).toHaveBeenCalledWith(0, 0, "t");
+    fireEvent.mouseDown(screen.getAllByRole("gridcell")[2]!, { button: 0 });
+    fireEvent.keyDown(screen.getByRole("grid"), { key: " " });
+    expect(onEdit).toHaveBeenCalledWith(2, 0, "t");
+    expect(onEdit).toHaveBeenCalledTimes(2);
+  });
+
+  it("edits a boolean cell in a true / false / NULL drop-down", () => {
+    const onEdit = vi.fn();
+    render(
+      <Grid
+        columns={[{ name: "ok", type: "boolean" }]}
+        rowCount={1}
+        value={() => "f"}
+        editable
+        onEdit={onEdit}
+        driver="postgres"
+      />,
+    );
+    fireEvent.doubleClick(screen.getByRole("gridcell"));
+    const select = screen.getByRole("combobox", { name: "Edit ok" }) as HTMLSelectElement;
+    expect([...select.options].map((o) => o.textContent)).toEqual(["t", "f", "NULL"]);
+    fireEvent.keyDown(select, { key: "Escape" });
+    expect(onEdit).not.toHaveBeenCalled();
+    expect(screen.queryByRole("combobox")).toBeNull();
+    fireEvent.doubleClick(screen.getByRole("gridcell"));
+    fireEvent.change(screen.getByRole("combobox", { name: "Edit ok" }), { target: { value: NULL_INPUT } });
+    expect(onEdit).toHaveBeenCalledWith(0, 0, null);
+    expect(screen.queryByRole("combobox")).toBeNull();
+  });
+
+  it("omits the NULL option for a NOT NULL boolean column", () => {
+    render(
+      <Grid
+        columns={[{ name: "ok", type: "tinyint(1)", nullable: false }]}
+        rowCount={1}
+        value={() => "0"}
+        editable
+        onEdit={vi.fn()}
+        driver="mysql"
+      />,
+    );
+    fireEvent.doubleClick(screen.getByRole("gridcell"));
+    const select = screen.getByRole("combobox", { name: "Edit ok" }) as HTMLSelectElement;
+    expect([...select.options].map((o) => o.textContent)).toEqual(["1", "0"]);
+  });
+});
+
+describe("enum cells (issue #2331, phase 1)", () => {
+  it("offers the type's values in a drop-down and commits the pick", () => {
+    const onEdit = vi.fn();
+    render(
+      <Grid
+        columns={[{ name: "mood", type: "enum('sad','ok','happy')" }]}
+        rowCount={1}
+        value={() => "sad"}
+        editable
+        onEdit={onEdit}
+      />,
+    );
+    fireEvent.doubleClick(screen.getByRole("gridcell"));
+    const select = screen.getByRole("combobox", { name: "Edit mood" }) as HTMLSelectElement;
+    expect([...select.options].map((o) => o.textContent)).toEqual(["sad", "ok", "happy", "NULL"]);
+    expect(select.value).toBe("sad");
+    fireEvent.change(select, { target: { value: "happy" } });
+    expect(onEdit).toHaveBeenCalledWith(0, 0, "happy");
+    expect(screen.queryByRole("combobox")).toBeNull();
+  });
+
+  it("keeps a value the drop-down doesn't know selectable and prefers explicit enumValues", () => {
+    const onEdit = vi.fn();
+    render(
+      <Grid
+        columns={[{ name: "mood", type: "mood", enumValues: ["calm", "angry"] }]}
+        rowCount={1}
+        value={() => "moody"}
+        editable
+        onEdit={onEdit}
+      />,
+    );
+    fireEvent.doubleClick(screen.getByRole("gridcell"));
+    const select = screen.getByRole("combobox", { name: "Edit mood" }) as HTMLSelectElement;
+    expect([...select.options].map((o) => o.textContent)).toEqual(["moody", "calm", "angry", "NULL"]);
+    expect(select.value).toBe("moody");
+    fireEvent.blur(select);
+    expect(onEdit).toHaveBeenCalledWith(0, 0, "moody"); // leaving without picking changes nothing
+  });
+
+  it("falls back to the text editor for a value-less type", () => {
+    render(
+      <Grid columns={[{ name: "mood", type: "mood" }]} rowCount={1} value={() => "ok"} editable onEdit={vi.fn()} />,
+    );
+    fireEvent.doubleClick(screen.getByRole("gridcell"));
+    expect(screen.getByRole("textbox").tagName).toBe("INPUT");
+  });
+});
+
+describe("Set NULL / Set DEFAULT (issue #2331, phase 1)", () => {
+  const columns = [
+    { name: "a", type: "text", default: "'x'::text" },
+    { name: "b", type: "int", nullable: false },
+    { name: "c", type: "text", default: "now()" },
+  ];
+
+  it("sets NULL on the selection from the context menu and ⌘⌫, skipping NOT NULL columns", async () => {
+    const onEdit = vi.fn();
+    render(
+      <>
+        <Grid columns={columns} rowCount={1} value={() => "old"} editable onEdit={onEdit} />
+        <ContextMenuHost />
+      </>,
+    );
+    const cells = screen.getAllByRole("gridcell");
+    fireEvent.mouseDown(cells[0]!, { button: 0 });
+    fireEvent.keyDown(screen.getByRole("grid"), { key: "Backspace", ctrlKey: true });
+    expect(onEdit).toHaveBeenCalledTimes(1); // only column a; b is NOT NULL
+    expect(onEdit).toHaveBeenCalledWith(0, 0, null);
+
+    fireEvent.mouseDown(cells[1]!, { button: 0 }); // column b, NOT NULL
+    fireEvent.contextMenu(screen.getByRole("grid"), { clientX: 5, clientY: 5 });
+    const entry = screen.getByRole("menuitem", { name: /Set NULL/ });
+    expect(entry.getAttribute("aria-disabled")).toBe("true");
+    await act(async () => void fireEvent.click(entry));
+    expect(onEdit).toHaveBeenCalledTimes(1); // the disabled item changes nothing
+  });
+
+  it("sets DEFAULT from the context menu and ⇧⌘⌫: literals, added rows, never expressions", async () => {
+    const onEdit = vi.fn();
+    render(
+      <>
+        <Grid
+          columns={columns}
+          rowCount={2}
+          value={() => "old"}
+          editable
+          onEdit={onEdit}
+          rowState={(r) => (r === 1 ? "inserted" : null)}
+        />
+        <ContextMenuHost />
+      </>,
+    );
+    const cells = screen.getAllByRole("gridcell");
+    // Row 1 is an added row: its cells drop their value so the DB default applies.
+    fireEvent.mouseDown(cells[4]!, { button: 0 }); // row 1, column b (no default of its own)
+    fireEvent.keyDown(screen.getByRole("grid"), { key: "Backspace", ctrlKey: true, shiftKey: true });
+    expect(onEdit).toHaveBeenCalledWith(1, 1, null);
+    expect(onEdit).toHaveBeenCalledTimes(1);
+
+    // Row 0: column a's default is a literal; column c's is an expression and stays.
+    fireEvent.mouseDown(cells[0]!, { button: 0 });
+    fireEvent.contextMenu(screen.getByRole("grid"), { clientX: 5, clientY: 5 });
+    await act(async () => void fireEvent.click(screen.getByRole("menuitem", { name: /Set DEFAULT/ })));
+    expect(onEdit).toHaveBeenCalledWith(0, 0, "x");
+    expect(onEdit).toHaveBeenCalledTimes(2);
+  });
+
+  it("disables Set DEFAULT when no selected column has a usable default", async () => {
+    const onEdit = vi.fn();
+    render(
+      <>
+        <Grid columns={[columns[2]!]} rowCount={1} value={() => "old"} editable onEdit={onEdit} />
+        <ContextMenuHost />
+      </>,
+    );
+    fireEvent.mouseDown(screen.getByRole("gridcell"), { button: 0 });
+    fireEvent.contextMenu(screen.getByRole("grid"), { clientX: 5, clientY: 5 });
+    const entry = screen.getByRole("menuitem", { name: /Set DEFAULT/ });
+    expect(entry.getAttribute("aria-disabled")).toBe("true");
+    await act(async () => void fireEvent.click(entry));
+    expect(onEdit).not.toHaveBeenCalled();
   });
 });
