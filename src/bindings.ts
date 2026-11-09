@@ -7032,8 +7032,6 @@ export type ProjectStructureSettings = {
 	unmarked?: string[],
 	/**  Content roots besides the project folder (absolute paths), shown and searched with it. */
 	contentRoots?: string[],
-	/**  Other projects (absolute paths) this project depends on; indexed and navigable like content roots. */
-	dependencies?: string[],
 	/**  "Exclude files": `;`-separated name patterns (`*.log;tmp*`) excluded at any depth. */
 	excludeFiles?: string,
 	/**  Project compiler output directory (relative to project root or absolute; empty = default). */

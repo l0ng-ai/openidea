@@ -1160,8 +1160,6 @@ pub struct ProjectStructureSettings {
     pub unmarked: Vec<String>,
     /// Content roots besides the project folder (absolute paths), shown and searched with it.
     pub content_roots: Vec<String>,
-    /// Other projects (absolute paths) this project depends on; indexed and navigable like content roots.
-    pub dependencies: Vec<String>,
     /// "Exclude files": `;`-separated name patterns (`*.log;tmp*`) excluded at any depth.
     pub exclude_files: String,
     /// Project compiler output directory (relative to project root or absolute; empty = default).
