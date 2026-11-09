@@ -523,6 +523,63 @@ pub fn maven_local_repository(root: &Path, s: &Settings) -> Option<PathBuf> {
     })
 }
 
+fn xml_escape(text: &str) -> String {
+    text.replace('&', "&amp;").replace('<', "&lt;").replace('>', "&gt;")
+}
+
+/// Inserts `<localRepository>` right after the `<settings>` open tag.
+fn inject_local_repository(settings_xml: &str, repo: &str) -> Option<String> {
+    let start = settings_xml.find("<settings")?;
+    let end = settings_xml[start..].find('>')? + start;
+    let mut out = String::with_capacity(settings_xml.len() + repo.len() + 40);
+    out.push_str(&settings_xml[..=end]);
+    out.push_str("<localRepository>");
+    out.push_str(&xml_escape(repo));
+    out.push_str("</localRepository>");
+    out.push_str(&settings_xml[end + 1..]);
+    Some(out)
+}
+
+fn write_m2e_settings(root: &Path, text: &str) -> Option<PathBuf> {
+    let file = ide_core::project_dir::path(root, "maven-settings.xml");
+    if let Some(parent) = file.parent() {
+        std::fs::create_dir_all(parent).ok()?;
+    }
+    match std::fs::read_to_string(&file) {
+        Ok(existing) if existing == text => {}
+        _ => std::fs::write(&file, text).ok()?,
+    }
+    Some(file)
+}
+
+/// The user settings file m2e (the JDTLS Maven import) should read: the
+/// configured `settings.xml` when it already declares `<localRepository>`,
+/// else a derived copy under `<root>/.openidea/` with the configured local
+/// repository injected. m2e resolves the local repository from the settings
+/// XML, not from `-Dmaven.repo.local`, so without this the import downloads
+/// into `~/.m2/repository` even when the IDE's own `mvn` runs honor the
+/// configured path (#1739). `None` = m2e's default applies.
+pub fn maven_user_settings_for_m2e(root: &Path, s: &Settings) -> Option<PathBuf> {
+    let m = &s.languages.java.maven;
+    if let Some(file) = setting_path(root, &m.user_settings) {
+        let text = std::fs::read_to_string(&file).ok()?;
+        if crate::java::xml_value(&crate::lombok::strip_xml_comments(&text), "localRepository").is_some() {
+            return Some(file);
+        }
+        if let Some(repo) = setting_path(root, &m.local_repository) {
+            let merged = inject_local_repository(&text, &repo.to_string_lossy())?;
+            if let Some(derived) = write_m2e_settings(root, &merged) {
+                return Some(derived);
+            }
+        }
+        return Some(file);
+    }
+    let repo = setting_path(root, &m.local_repository)?;
+    let minimal =
+        format!("<settings><localRepository>{}</localRepository></settings>", xml_escape(&repo.to_string_lossy()));
+    write_m2e_settings(root, &minimal)
+}
+
 /// TypeScript `lib` directory for the selected version; `None` = the server's bundled one.
 pub fn tsdk(root: &Path, s: &Settings) -> Option<PathBuf> {
     match s.languages.typescript.version.trim() {
@@ -861,18 +918,22 @@ pub fn configure_server(cfg: &mut LanguageServerConfig, root: &Path, server_root
         // The jdtls launcher forwards `--jvm-arg=` values to the JVM it starts.
         let args = s.languages.java.jdtls_vm_args.split_whitespace().map(|a| format!("--jvm-arg={a}"));
         cfg.args.extend(args);
-        // m2e (the Maven import) reads mirrors, servers and `<localRepository>` from it.
-        if let Some(file) = setting_path(root, &s.languages.java.maven.user_settings) {
+        // m2e (the Maven import) reads mirrors, servers and `<localRepository>`
+        // from the settings file — never from `-Dmaven.repo.local`. The
+        // derived file carries the configured local repository so the import
+        // downloads where the IDE's own `mvn` runs do (#1739).
+        if let Some(file) =
+            maven_user_settings_for_m2e(root, s).or_else(|| setting_path(root, &s.languages.java.maven.user_settings))
+        {
             let file = file.to_string_lossy();
             merge_init_options(
                 cfg,
                 json!({ "settings": { "java": { "configuration": { "maven": { "userSettings": file } } } } }),
             );
         }
-        // m2e resolves and downloads into `maven.repo.local`; without it the
-        // embedded Maven falls back to ~/.m2 even when the IDE's own `mvn`
-        // runs honor the configured local repository. A `-Dmaven.repo.local`
-        // the user put in their own jdtls VM options wins.
+        // The JVM system property is still forwarded for JVM-level consumers,
+        // but it is the settings file above that m2e honors. A
+        // `-Dmaven.repo.local` the user put in their own jdtls VM options wins.
         if let Some(repo) = maven_local_repository(root, s) {
             let arg = format!("-Dmaven.repo.local={}", repo.to_string_lossy());
             let taken = cfg.args.iter().enumerate().any(|(i, a)| {
