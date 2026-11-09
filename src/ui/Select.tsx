@@ -1,4 +1,4 @@
-import { useEffect, useRef, useState, type KeyboardEvent, type ReactNode } from "react";
+import { useCallback, useEffect, useLayoutEffect, useRef, useState, type KeyboardEvent, type ReactNode } from "react";
 import clsx from "clsx";
 import { Icon, type IconName } from "./icons";
 import { Popup } from "./Popup";
@@ -129,6 +129,10 @@ export function SelectListbox<V extends string = string>({
 
   const previewed = filtered[activeIndex]?.value ?? null;
   const lastPreview = useRef<V | null>(null);
+  const previewRef = useRef(onPreview);
+  useLayoutEffect(() => {
+    previewRef.current = onPreview;
+  });
   useEffect(() => {
     if (previewed === lastPreview.current) return;
     lastPreview.current = previewed;
@@ -137,9 +141,9 @@ export function SelectListbox<V extends string = string>({
   // The list is only mounted while open: closing it ends the preview.
   useEffect(
     () => () => {
-      if (lastPreview.current !== null) onPreview?.(null);
+      if (lastPreview.current !== null) previewRef.current?.(null);
+      lastPreview.current = null;
     },
-    // eslint-disable-next-line react-hooks/exhaustive-deps
     [],
   );
 
@@ -273,6 +277,12 @@ export function Select<V extends string = string>({
   const triggerRef = useRef<HTMLButtonElement>(null);
   const current = options.find((o) => !o.section && o.value === value);
   const openPopup = () => setOpen(true);
+  // Selection can update the callback as the list unmounts; use the committed trigger props.
+  const previewRef = useRef(onPreview);
+  useLayoutEffect(() => {
+    previewRef.current = onPreview;
+  });
+  const preview = useCallback((next: V | null) => previewRef.current?.(next), []);
 
   return (
     <>
@@ -317,7 +327,7 @@ export function Select<V extends string = string>({
           value={value}
           options={options}
           searchable={searchable}
-          onPreview={onPreview}
+          onPreview={preview}
           aria-label={aria["aria-label"]}
           onChoose={(v) => {
             onChange(v);
