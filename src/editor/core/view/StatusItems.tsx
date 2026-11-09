@@ -116,7 +116,7 @@ function CrumbNav({ segments, className, ariaLabel }: { segments: Crumb[]; class
               else s.run?.();
             }}
           >
-            {s.icon && <Icon name={s.icon} size={14} className={styles.crumbIcon} />}
+            {s.icon && <Icon name={s.icon} size={16} className={styles.crumbIcon} />}
             <span className={styles.crumbLabel}>{s.label}</span>
           </BarButton>
         </Fragment>
@@ -127,20 +127,21 @@ function CrumbNav({ segments, className, ariaLabel }: { segments: Crumb[]; class
 }
 
 /**
- * IDEA new UI navigation bar (status bar footer, or the top of the workbench
- * via `className`): project › dirs › file › symbols, with icons; clicking a
- * segment opens a popup of its children.
+ * IDEA new UI navigation bar (the top of the workbench, or the status bar
+ * footer via `inStatusBar`): project › dirs › file › symbols, with icons;
+ * clicking a segment opens a popup of its children.
  */
-export function Breadcrumbs({ className }: { className?: string }) {
+export function Breadcrumbs({ className, inStatusBar = false }: { className?: string; inStatusBar?: boolean }) {
   const path = useEditorStatus((s) => s.status?.path ?? null);
   const currentProject = useProject((s) => s.project);
   const project = projectFolder(currentProject, path ?? "");
   const outline = useOutline((s) => (path ? s[path] : undefined));
   const chain = useCaretSymbols(path, outline) ?? NO_SYMBOLS;
   const position = useProject((s) => s.settings?.appearance?.navigationBar);
-  // Nothing loaded yet follows the frontend default (`top`); the status bar only
-  // renders the breadcrumbs when the user picked the status bar explicitly.
-  const shown = position === "statusBar";
+  // The workbench top instance renders for anything but `hidden` (the caller
+  // gates on `top`); the status bar only renders it when the user picked the
+  // status bar explicitly.
+  const shown = inStatusBar ? position === "statusBar" : position !== "hidden";
   const distractionFree = useDistractionFree((s) => s.active);
   if (!path || !shown || distractionFree) return null;
   const segments = pathCrumbs(project, path);
@@ -154,6 +155,11 @@ export function Breadcrumbs({ className }: { className?: string }) {
       nav: { kind: "symbol", path, label: item.name, item },
     });
   return <CrumbNav segments={segments} className={className ?? styles.status} ariaLabel={tx("Breadcrumbs")} />;
+}
+
+/** The status bar instance of the navigation bar; renders only for `statusBar`. */
+export function StatusBarBreadcrumbs() {
+  return <Breadcrumbs inStatusBar />;
 }
 
 /**

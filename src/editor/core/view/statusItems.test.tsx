@@ -100,7 +100,7 @@ it("shows the member and its directories in workspace breadcrumbs", async () => 
     settings: { appearance: { navigationBar: "statusBar" } } as unknown as Settings,
   });
   useEditorStatus.setState({ status: { ...caret(0, 0), path: "/b/src/file.ts" } });
-  const view = render(<Breadcrumbs />);
+  const view = render(<Breadcrumbs inStatusBar />);
   expect(screen.getByRole("navigation", { name: "Breadcrumbs" }).textContent).toBe("bsrcfile.ts");
   view.unmount();
   useProject.setState({ project: null });
@@ -111,12 +111,12 @@ it("shows the project › dirs › file path above the editor", async () => {
     project: {
       root: "/workspace",
       name: "Workspace",
-      settings: { appearance: { navigationBar: "statusBar" } },
+      settings: { appearance: { navigationBar: "top" } },
       trusted: true,
       isGit: false,
       workspace: { version: 1, name: "Workspace", projects: ["/a", "/b"] },
     },
-    settings: { appearance: { navigationBar: "statusBar" } } as unknown as Settings,
+    settings: { appearance: { navigationBar: "top" } } as unknown as Settings,
   });
   useEditorStatus.setState({ status: { ...caret(0, 0), path: "/b/src/file.ts" } });
   const view = render(<Breadcrumbs className="nav" />);

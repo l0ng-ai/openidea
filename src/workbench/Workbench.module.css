@@ -14,7 +14,8 @@
 .content[inert] {
   visibility: hidden;
 }
-/* IDEA's navigation bar under the main toolbar: project › dirs › file › symbols. */
+/* IDEA's navigation bar under the main toolbar: project › dirs › file › symbols.
+   Same surface as the toolbar above it (the editor island below provides the split). */
 .navigationBar {
   flex: none;
   display: flex;
@@ -23,10 +24,8 @@
   height: 26px;
   padding: 0 10px;
   overflow: hidden;
-  background: var(--bg-island);
-  color: var(--fg-muted);
-  font-size: var(--fs-small);
-  border-bottom: 1px solid var(--border-editor-tabs, var(--border));
+  color: var(--fg);
+  font-size: var(--fs-ui);
 }
 .opening {
   position: absolute;
