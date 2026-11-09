@@ -358,7 +358,28 @@ export function editorCorner(view: EditorView): HTMLElement {
     gap: "4px",
   });
   view.dom.appendChild(el);
+  reserveCornerWidth(view, el);
   return el;
+}
+
+/**
+ * The corner row overlays the content: a long line's end slides under it at
+ * maximum horizontal scroll (#2280). Give the content a matching right padding
+ * — the line can then scroll far enough to clear the row, and a wrapped line
+ * wraps before it. The padding tracks the row's width (it grows when the
+ * widget shows counts and chevrons, and shrinks to nothing once emptied).
+ */
+function reserveCornerWidth(view: EditorView, corner: HTMLElement) {
+  const apply = () => {
+    view.contentDOM.style.paddingRight = corner.childElementCount ? `${corner.offsetWidth + 16}px` : "";
+  };
+  if (typeof ResizeObserver === "undefined") {
+    apply();
+    return;
+  }
+  const ro = new ResizeObserver(apply);
+  ro.observe(corner);
+  apply();
 }
 
 // --- language support without a language server ----------------------------------
