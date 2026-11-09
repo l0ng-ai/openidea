@@ -643,6 +643,22 @@ mod tests {
         let s = store.set(SettingsScope::Global, "appearance.mainToolbar", Json::Null).unwrap();
         assert_eq!(s.appearance.main_toolbar, None);
     }
+
+    #[test]
+    fn toolbar_and_status_bar_are_shown_until_hidden() {
+        let tmp = tempfile::tempdir().unwrap();
+        std::fs::write(tmp.path().join("settings.toml"), "[appearance]\ncompactMode = true\n").unwrap();
+        let store = SettingsStore::load(tmp.path(), None);
+        let s = store.effective();
+        assert!(s.appearance.show_main_toolbar);
+        assert!(s.appearance.show_status_bar);
+        let s = store.set(SettingsScope::Global, "appearance.showMainToolbar", json!(false)).unwrap();
+        assert!(!s.appearance.show_main_toolbar);
+        let s = store.set(SettingsScope::Global, "appearance.showStatusBar", json!(false)).unwrap();
+        assert!(!s.appearance.show_status_bar);
+        assert!(!store.reload().appearance.show_main_toolbar);
+    }
+
     #[test]
     fn mcp_server_is_default_off_and_cannot_be_enabled_by_a_project() {
         let tmp = tempfile::tempdir().unwrap();

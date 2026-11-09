@@ -102,6 +102,31 @@ describe("web view helpers", () => {
 });
 
 describe("frame bridge", () => {
+  it("accepts bounded zoom only from its parent with the bridge tag", () => {
+    const script = /<script>([\s\S]*)<\/script>/.exec(frameDocument("", { dark: true, vars: {} }))![1]!;
+    const parent = {};
+    const handlers = new Map<string, (e: { source: object; data: object }) => void>();
+    const root = document.createElement("html");
+    const frameWindow = {
+      parent,
+      addEventListener: (type: string, fn: (e: { source: object; data: object }) => void) => handlers.set(type, fn),
+    };
+    new Function("window", "document", script)(frameWindow, { documentElement: root });
+    const send = (source: object, data: object) => handlers.get("message")!({ source, data });
+    send({}, { tag: FRAME_TAG, fontZoomDelta: 1 });
+    send(parent, { tag: "other", fontZoomDelta: 1 });
+    send(parent, { tag: FRAME_TAG, fontZoomDelta: NaN });
+    send(parent, { tag: FRAME_TAG, fontZoomDelta: 100 });
+    expect(root.style.zoom).toBe("");
+    send(parent, { tag: FRAME_TAG, fontZoomDelta: 1 });
+    expect(root.style.zoom).toBe("1.08");
+    send(parent, { tag: FRAME_TAG, fontZoomDelta: -1 });
+    expect(root.style.zoom).toBe("");
+    send(parent, { tag: FRAME_TAG, fontZoomDelta: 1 });
+    send(parent, { tag: FRAME_TAG, fontZoomDelta: 0 });
+    expect(root.style.zoom).toBe("");
+  });
+
   it("asks the workbench for the document and edits it, and hears of changes made elsewhere", async () => {
     const script = /<script>([\s\S]*)<\/script>/.exec(frameDocument("", { dark: true, vars: {} }))![1]!;
     const sent: Array<{ call: number; op: string; args: unknown }> = [];

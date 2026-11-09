@@ -1,4 +1,5 @@
-import { useMemo, useRef, useState } from "react";
+import { create } from "zustand";
+import { useMemo } from "react";
 import clsx from "clsx";
 import { BarButton, IconButton, Popup, ProgressBar, showContextMenu, T, tooltipAttrs } from "@/ui";
 import { useContributions, useStatusInfo, type StatusItemContribution } from "./contributions";
@@ -86,11 +87,16 @@ function TaskCancel({ task: t }: { task: BackgroundTask }) {
   );
 }
 
+const useTaskPopup = create<{ open: boolean }>(() => ({ open: false }));
+
+export function showBackgroundTasks() {
+  useTaskPopup.setState({ open: true });
+}
+
 /** Built-in: background task progress; click lists all running tasks. */
 export function TaskStatus() {
   const tasks = useTasks((s) => s.tasks);
-  const [open, setOpen] = useState(false);
-  const ref = useRef<HTMLButtonElement>(null);
+  const open = useTaskPopup((s) => s.open);
   const running = tasks.filter((t) => !t.done);
   // A task that is working wins over the queued ones waiting behind it.
   const current = running.findLast((t) => !t.queued) ?? running[running.length - 1] ?? tasks[tasks.length - 1];
@@ -99,11 +105,11 @@ export function TaskStatus() {
   return (
     <>
       <BarButton
-        ref={ref}
+        data-background-tasks
         aria-expanded={open}
         aria-label={tx`Background tasks: ${current.title}`}
         tooltip={current.message ?? current.title}
-        onClick={() => setOpen((v) => !v)}
+        onClick={() => useTaskPopup.setState({ open: !open })}
         className={styles.task}
       >
         <span className={styles.taskTitle}>
@@ -116,33 +122,49 @@ export function TaskStatus() {
         />
         {more > 0 && <span className={styles.taskMore}>+{more}</span>}
       </BarButton>
-      <Popup
-        open={open && tasks.length > 0}
-        anchor={ref}
-        placement="top-end"
-        offset={6}
-        onClose={() => setOpen(false)}
-        aria-label="Background tasks"
-      >
-        <div className={styles.taskList}>
-          <div className={styles.taskListHeader}>
-            <T>Background Tasks</T>
-          </div>
-          {tasks.map((t) => (
-            <div key={t.id} className={styles.taskRow}>
-              <div className={styles.taskRowHead}>
-                <span className={styles.taskRowTitle}>
-                  <T>{t.title}</T>
-                </span>
-                {t.fraction != null && <span className={styles.taskPct}>{Math.round(t.fraction * 100)}%</span>}
-                <TaskCancel task={t} />
-              </div>
-              <ProgressBar value={t.done ? 1 : t.fraction} aria-label={t.title} />
-              {t.message && <div className={styles.taskMessage}>{t.message}</div>}
-            </div>
-          ))}
-        </div>
-      </Popup>
     </>
+  );
+}
+
+export function BackgroundTasksHost() {
+  const open = useTaskPopup((s) => s.open);
+  const tasks = useTasks((s) => s.tasks);
+  const anchor = document.querySelector("[data-background-tasks]") ?? {
+    x: window.innerWidth - 16,
+    y: window.innerHeight - 16,
+  };
+  return (
+    <Popup
+      open={open}
+      anchor={anchor}
+      placement="top-end"
+      offset={6}
+      onClose={() => useTaskPopup.setState({ open: false })}
+      aria-label="Background tasks"
+    >
+      <div className={styles.taskList}>
+        <div className={styles.taskListHeader}>
+          <T>Background Tasks</T>
+        </div>
+        {tasks.length === 0 && (
+          <div className={styles.taskRow}>
+            <T>No background tasks</T>
+          </div>
+        )}
+        {tasks.map((t) => (
+          <div key={t.id} className={styles.taskRow}>
+            <div className={styles.taskRowHead}>
+              <span className={styles.taskRowTitle}>
+                <T>{t.title}</T>
+              </span>
+              {t.fraction != null && <span className={styles.taskPct}>{Math.round(t.fraction * 100)}%</span>}
+              <TaskCancel task={t} />
+            </div>
+            <ProgressBar value={t.done ? 1 : t.fraction} aria-label={t.title} />
+            {t.message && <div className={styles.taskMessage}>{t.message}</div>}
+          </div>
+        ))}
+      </div>
+    </Popup>
   );
 }

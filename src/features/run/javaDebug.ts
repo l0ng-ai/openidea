@@ -11,6 +11,7 @@
 import { executeAction } from "@/platform/actions";
 import type { RunConfig } from "@/platform/ipc";
 import { isJvmApplication, JDWP_AGENT, jdwpListeningPort } from "@/platform/javaLaunch";
+import { applyBuildPolicyToCommand } from "./buildCommand";
 import { startRun, useRun } from "./store";
 import { DELEGATED_DEBUG, DELEGATED_MAIN } from "./gradleRun";
 
@@ -38,6 +39,7 @@ function withProperty(args: readonly string[], key: string, value: string): stri
 
 /** The configuration with a waiting JDWP agent, or null when it starts no debuggable JVM. */
 export function jdwpLaunch(config: RunConfig): RunConfig | null {
+  config = applyBuildPolicyToCommand(config);
   if (config.kind === "tomcat") return { ...config, params: { ...config.params, tomcatDebug: "true" } };
   const args = config.args;
   // A single source file (`java Hi.java`): the agent goes before the file. Compiled first

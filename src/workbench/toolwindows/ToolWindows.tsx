@@ -78,14 +78,18 @@ export function useToolWindows(): ToolWindowContribution[] {
 /** Visible window per area, ignoring ids that aren't registered (yet) or don't dock there. */
 export function useEffectiveVisible(windows: ToolWindowContribution[]): SlotRecord {
   const visible = useToolWindowLayout((s) => s.visible);
+  const maximized = useToolWindowLayout((s) => s.maximized);
   return useMemo(() => {
     const out = {} as SlotRecord;
     for (const slot of SLOTS) {
       const id = visible[slot];
-      out[slot] = id && windows.some((w) => w.id === id && slotOf(w) === slot) ? id : null;
+      out[slot] =
+        id && windows.some((w) => w.id === id && slotOf(w) === slot && (!maximized || w.anchor === maximized))
+          ? id
+          : null;
     }
     return out;
-  }, [visible, windows]);
+  }, [visible, windows, maximized]);
 }
 
 // ---------------------------------------------------------------------------
@@ -710,7 +714,10 @@ function HeaderRow({
   return (
     <header
       className={clsx(styles.header, tw.headerContent && styles.headerTabbed)}
-      onDoubleClick={(e) => e.target === e.currentTarget && toggleMaximizeToolWindow(tw.id)}
+      onDoubleClick={(e) => {
+        if (!(e.target as Element).closest('button, a, input, [role="tablist"], [role="separator"]'))
+          toggleMaximizeToolWindow(tw.id);
+      }}
       onMouseDown={(e) => {
         // A middle click on the header hides the window (like the Hide button).
         // Not a press on the header's tabs or buttons, which close and act
@@ -837,7 +844,6 @@ function ToolWindowView({ tw, hidden }: { tw: ToolWindowContribution; hidden: bo
 }
 
 const MIN: Record<ToolWindowAnchor, number> = { left: 140, right: 160, bottom: 90 };
-const MAXIMIZED: Record<ToolWindowAnchor, string> = { left: "82%", right: "82%", bottom: "88%" };
 /** The editor keeps at least this much room when a tool window is resized (see the grid template). */
 const EDITOR_MIN = { width: 200, height: 60 };
 /** Smallest area when a side is split: stacked (left / right) and side by side (bottom). */
@@ -960,7 +966,11 @@ function SidePanel({
     );
   };
   return (
-    <div className={clsx(styles.side, anchor === "bottom" && styles.sideRow)} data-anchor={anchor}>
+    <div
+      className={clsx(styles.side, anchor === "bottom" && styles.sideRow)}
+      data-anchor={anchor}
+      hidden={!sideVisible(visible, anchor)}
+    >
       {area(anchor, split ? ratio : 1)}
       <SplitHandle anchor={anchor} hidden={!split} />
       {area(`${anchor}-split`, split ? 1 - ratio : 1)}
@@ -980,7 +990,7 @@ function syncTracks(grid: HTMLElement, visible: SlotRecord) {
   const s = useToolWindowLayout.getState();
   for (const a of ["left", "right", "bottom"] as const) {
     const shown = sideVisible(visible, a);
-    const size = !shown ? "0px" : s.maximized === a ? MAXIMIZED[a] : `${s.sizes[a]}px`;
+    const size = !shown ? "0px" : `${s.sizes[a]}px`;
     grid.style.setProperty(`--tw-${a}`, size);
     grid.style.setProperty(`--gap-${a}`, shown ? "var(--island-gap)" : "0px");
   }
@@ -1005,6 +1015,7 @@ function GapHandle({
   sync: () => void;
 }) {
   const vertical = anchor !== "bottom";
+  const maximized = useToolWindowLayout((s) => s.maximized);
   const sign = anchor === "left" ? 1 : -1;
   const measure = () => {
     const island = gridRef.current?.querySelector<HTMLElement>(`[data-anchor="${anchor}"]`);
@@ -1070,7 +1081,7 @@ function GapHandle({
       aria-orientation={vertical ? "vertical" : "horizontal"}
       aria-label={`Resize ${anchor} tool window`}
       tabIndex={0}
-      hidden={!visibleIds.length}
+      hidden={!visibleIds.length || !!maximized}
       className={styles.gap}
       data-gap={anchor}
       onPointerDown={onPointerDown}
@@ -1151,6 +1162,11 @@ export function ToolWindowLayout({ editor }: { editor: ReactNode }) {
     if (gridRef.current) syncTracks(gridRef.current, visible);
   };
   useLayoutEffect(sync, [visible, sizes, maximized]);
+  useLayoutEffect(() => {
+    if (!maximized || !editorRef.current?.contains(document.activeElement)) return;
+    const id = visibleOn(visible, maximized)[0];
+    if (id) gridRef.current?.querySelector<HTMLElement>(`[data-toolwindow="${id}"]`)?.focus({ preventScroll: true });
+  }, [maximized, visible]);
 
   const gap = (anchor: ToolWindowAnchor) => (
     <GapHandle
@@ -1168,10 +1184,14 @@ export function ToolWindowLayout({ editor }: { editor: ReactNode }) {
     >
       {bars && stripe("left")}
       {bars && stripeHandle("left")}
-      <div ref={gridRef} className={clsx(styles.grid, widescreen && styles.widescreen)}>
+      <div
+        ref={gridRef}
+        className={clsx(styles.grid, widescreen && styles.widescreen)}
+        data-maximized={maximized ?? undefined}
+      >
         <SidePanel anchor="left" windows={windows} visible={visible} />
         {gap("left")}
-        <div ref={editorRef} className={clsx(styles.island, styles.editorIsland)}>
+        <div ref={editorRef} className={clsx(styles.island, styles.editorIsland)} hidden={!!maximized}>
           {editor}
         </div>
         {gap("right")}

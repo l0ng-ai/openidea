@@ -5315,6 +5315,55 @@ iconDark = "{dark}"
 }
 
 #[test]
+fn marker_icons_validate_indexed_marker_prefixes_and_tooltips() {
+    let f = fixture(Limits::default());
+    let tmp = tempfile::tempdir().unwrap();
+    let pkg = tmp.path().join("plugin");
+    std::fs::create_dir_all(pkg.join("icons")).unwrap();
+    std::fs::write(pkg.join("icons/usages.svg"), r#"<svg viewBox="0 0 16 16"><rect width="16" height="16"/></svg>"#)
+        .unwrap();
+    let manifest = |engine: &str, fields: &str| {
+        format!(
+            r#"
+id = "indexed-marker-icons"
+name = "Indexed Marker Icons"
+version = "1.0.0"
+engines.openidea = "{engine}"
+[[contributes.markerIcons]]
+id = "usages"
+icon = "icons/usages.svg"
+{fields}
+"#
+        )
+    };
+    let long = "k".repeat(257);
+    let many = format!("[{}]", (0..17).map(|i| format!("\"k{i}#\"")).collect::<Vec<_>>().join(", "));
+    for (engine, fields) in [
+        ("^1.0", r#"markers = ["usages#"]"#.to_owned()),
+        ("^1.3", r#"markers = [""]"#.to_owned()),
+        ("^1.3", format!(r#"markers = ["{long}"]"#)),
+        ("^1.3", format!("markers = {many}")),
+        ("^1.3", r#"markers = "usages#""#.to_owned()),
+        ("^1.3", r#"tooltip = "Usages""#.to_owned()),
+        ("^1.3", "markers = [\"usages#\"]\ntooltip = \" \"".to_owned()),
+        ("^1.3", format!("markers = [\"usages#\"]\ntooltip = \"{long}\"")),
+    ] {
+        std::fs::write(pkg.join("plugin.toml"), manifest(engine, &fields)).unwrap();
+        assert!(f.host.install_from_dir(&pkg, &Consent::all()).is_err(), "accepted {fields}");
+    }
+    std::fs::write(
+        pkg.join("plugin.toml"),
+        manifest("^1.3", "markers = [\"usages#\", \"scope#\"]\ntooltip = \"Usages\""),
+    )
+    .unwrap();
+    let info = f.install(&pkg);
+    assert!(info.error.is_none(), "{:?}", info.error);
+    let decl = &f.host.ui_items("markerIcons")[0].decl;
+    assert_eq!(decl["markers"], serde_json::json!(["usages#", "scope#"]));
+    assert_eq!(decl["tooltip"], "Usages");
+}
+
+#[test]
 fn marker_providers_preserve_names_and_package_paths() {
     let f = fixture(Limits::default());
     let tmp = tempfile::tempdir().unwrap();
@@ -5544,4 +5593,52 @@ fn view_header_none_needs_api_1_3_and_an_ungrouped_web_view() {
     let info = f.install(&pkg);
     assert_eq!(info.status, PluginStatus::Static, "{:?}", info.error);
     assert_eq!(f.host.ui_items("views")[0].decl["header"], "none");
+
+    std::fs::write(pkg.join("plugin.toml"), manifest("^1.2", "web = \"web/index.html\"\nsecondary = true")).unwrap();
+    let err = f.host.install_from_dir(&pkg, &Consent::all()).unwrap_err().message;
+    assert!(err.contains("new in plugin API 1.3"), "{err}");
+
+    std::fs::write(
+        pkg.join("plugin.toml"),
+        "id = \"headerless\"\nname = \"Headerless\"\nversion = \"1.0.0\"\nengines.openidea = \"^1.3\"\n[[contributes.views]]\nid = \"panel\"\ntitle = \"Panel\"\nlocation = \"right\"\nsecondary = true\nweb = \"web/index.html\"\nheader = \"none\"\n",
+    )
+    .unwrap();
+    let info = f.install(&pkg);
+    assert_eq!(info.status, PluginStatus::Static, "{:?}", info.error);
+    assert_eq!(f.host.ui_items("views")[0].decl["secondary"], true);
+}
+
+#[test]
+fn view_secondary_requires_api_1_3_and_a_boolean_tool_window_placement() {
+    let f = fixture(Limits::default());
+    for location in ["left", "right", "bottom"] {
+        for fields in ["", "secondary = false", "secondary = true", "group = \"g\"\nsecondary = true"] {
+            let tmp = tempfile::tempdir().unwrap();
+            let pkg = hello_variant(tmp.path(), |t| {
+                t.replace("engines.openidea = \"^1.0\"", "engines.openidea = \"^1.3\"")
+                    .replace("location = \"right\"", &format!("location = {location:?}\n{fields}"))
+            });
+            assert!(f.install(&pkg).error.is_none());
+            let decl = &f.host.ui_items("views")[0].decl;
+            assert_eq!(decl["location"], location);
+            let expected = if fields.is_empty() { None } else { Some(!fields.contains("false")) };
+            assert_eq!(decl.get("secondary").and_then(|v| v.as_bool()), expected);
+        }
+    }
+    for (api, location, value, message) in [
+        ("^1.0", "right", "true", "new in plugin API 1.3"),
+        ("^1.2", "right", "false", "new in plugin API 1.3"),
+        ("^1.3", "services", "true", "does not apply to a services view"),
+        ("^1.3", "services", "false", "does not apply to a services view"),
+        ("^1.3", "bottom", "\"yes\"", "boolean"),
+        ("^1.3", "left", "1", "boolean"),
+    ] {
+        let tmp = tempfile::tempdir().unwrap();
+        let pkg = hello_variant(tmp.path(), |t| {
+            t.replace("engines.openidea = \"^1.0\"", &format!("engines.openidea = {api:?}"))
+                .replace("location = \"right\"", &format!("location = {location:?}\nsecondary = {value}"))
+        });
+        let err = f.host.install_from_dir(&pkg, &Consent::all()).unwrap_err();
+        assert!(err.message.contains(message), "{api}, {location}, {value}: {err:?}");
+    }
 }

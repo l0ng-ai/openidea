@@ -71,6 +71,9 @@ pub struct MavenModel {
 #[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize, Type)]
 #[serde(rename_all = "camelCase")]
 pub struct MavenProject {
+    /// Owning project folder when displayed in a workspace.
+    #[specta(optional)]
+    pub project_root: Option<String>,
     /// Project-relative, `/`-separated (`pom.xml`, `core/pom.xml`).
     pub pom: String,
     /// Project-relative directory; `""` = the project root.
@@ -169,6 +172,9 @@ pub enum Omission {
 #[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize, Type)]
 #[serde(rename_all = "camelCase")]
 pub struct MavenProfile {
+    /// Owning project folder when displayed in a workspace.
+    #[specta(optional)]
+    pub project_root: Option<String>,
     pub id: String,
     pub active_by_default: bool,
 }
@@ -503,7 +509,7 @@ pub fn settings_profiles(settings: &Path) -> Vec<MavenProfile> {
             continue;
         }
         let by_default = profile.at("activation/activeByDefault").is_some_and(|e| e.text.trim() == "true");
-        profiles.push(MavenProfile { active_by_default: by_default || active.contains(&id), id });
+        profiles.push(MavenProfile { active_by_default: by_default || active.contains(&id), id, ..Default::default() });
     }
     profiles
 }
@@ -1212,11 +1218,12 @@ pub fn load_with_linked(
         // The project can activate the profiles of its own POM and its ancestors'.
         for (id, active) in &ctx.profiles {
             if !model.profiles.iter().any(|x| x.id == *id) {
-                model.profiles.push(MavenProfile { id: id.clone(), active_by_default: *active });
+                model.profiles.push(MavenProfile { id: id.clone(), active_by_default: *active, ..Default::default() });
             }
         }
         let artifact_id = i(&pom.artifact_id);
         model.projects.push(MavenProject {
+            project_root: None,
             pom: rel_path(root, &path),
             dir: rel_path(root, &dir),
             group_id: i(props.get("project.groupId").map(String::as_str).unwrap_or_default()),
@@ -1836,7 +1843,7 @@ mod tests {
 </settings>"#,
         )
         .unwrap();
-        let p = |id: &str, active| MavenProfile { id: id.into(), active_by_default: active };
+        let p = |id: &str, active| MavenProfile { id: id.into(), active_by_default: active, ..Default::default() };
         assert_eq!(settings_profiles(&file), [p("nexus", true), p("jdk21", true), p("release", false)]);
         assert!(settings_profiles(&tmp.path().join("missing.xml")).is_empty());
 

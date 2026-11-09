@@ -271,6 +271,26 @@ fn string_at(structure: &ide_syntax::StructureService, snap: &ide_syntax::Snapsh
     stringy(&at.node.kind) || (part(&at.node.kind) && at.ancestors.first().is_some_and(|parent| stringy(&parent.kind)))
 }
 
+fn identifier_at(
+    structure: &ide_syntax::StructureService,
+    snap: &ide_syntax::Snapshot,
+    range: Range,
+    cancel: &ide_core::CancellationToken,
+) -> bool {
+    let Ok(Some(at)) = structure.node_at(snap, range, cancel) else { return false };
+    at.node.kind.contains("identifier")
+        || matches!(
+            at.node.kind.as_str(),
+            "name"
+                | "constant"
+                | "label_name"
+                | "variable_name"
+                | "instance_variable"
+                | "class_variable"
+                | "global_variable"
+        )
+}
+
 fn definition_targets(
     server: IdeResult<Vec<Location>>,
     plugin: Vec<Location>,
@@ -788,6 +808,12 @@ async fn is_client_follow_up(
 pub async fn lsp_prepare_rename(host: &Host, window: &str, doc: DocId, pos: Pos) -> IdeResult<Option<Range>> {
     if let Some(symbol) = indexed_symbol(host, window, doc, pos).await? {
         let project = host.project(window)?;
+        if let Some(refusal) = indexed_code_identifier(host, window, doc, symbol.range, None).await?
+            && let Err(e) = project.lsp.prepare_rename(doc, pos).await
+            && indexed_lsp_error(e)?.is_none()
+        {
+            return Err(refusal);
+        }
         return blocking(move || {
             validate_indexed_symbol(&project, &symbol, None)?;
             Ok(Some(symbol.range))
@@ -883,7 +909,15 @@ pub async fn lsp_rename(
         let mut renamed = match result {
             Ok(renamed) => renamed,
             Err(e) if symbol.is_some() && !native_owned => {
-                Renamed { incomplete: indexed_lsp_error(e)?, ..Default::default() }
+                let incomplete = indexed_lsp_error(e)?;
+                if incomplete.is_none()
+                    && let Some(symbol) = &symbol
+                    && let Some(refusal) =
+                        indexed_code_identifier(host, window, doc, symbol.range, Some(cancel.clone())).await?
+                {
+                    return Err(refusal);
+                }
+                Renamed { incomplete, ..Default::default() }
             }
             Err(e) => return Err(e),
         };
@@ -919,6 +953,39 @@ pub async fn lsp_rename(
     .await;
     host.end_request(request);
     result
+}
+
+async fn indexed_code_identifier(
+    host: &Host,
+    window: &str,
+    doc: DocId,
+    range: Range,
+    cancel: Option<ide_core::CancellationToken>,
+) -> IdeResult<Option<ide_core::IdeError>> {
+    let project = host.project(window)?;
+    let cancel = cancel.unwrap_or_default();
+    blocking(move || {
+        if cancel.is_cancelled() {
+            return Err(ide_core::IdeError::cancelled());
+        }
+        let snap = project.documents.text_snapshot(doc)?;
+        if snap.large {
+            return Ok(None);
+        }
+        let s = ide_syntax::Snapshot::doc(doc, snap.version, &snap.language, &snap.text);
+        let identifier = identifier_at(&project.structure, &s, range, &cancel);
+        if cancel.is_cancelled() {
+            return Err(ide_core::IdeError::cancelled());
+        }
+        if !identifier {
+            return Ok(None);
+        }
+        let language = project.languages.get(&snap.language).map_or_else(|| snap.language.to_string(), |l| l.name);
+        Ok(Some(ide_core::IdeError::invalid(format!(
+            "The {language} language server can't rename this symbol; renaming only the plugin's indexed names would leave it half renamed"
+        ))))
+    })
+    .await
 }
 
 fn merge_indexed_rename(
@@ -1605,6 +1672,76 @@ mod tests {
         let snap = ide_syntax::Snapshot::text(&java, text);
         assert!(!string_at(&structure, &snap, Pos::new(1, 9)), "on a method name");
         assert!(string_at(&structure, &snap, Pos::new(1, 53)), "inside \"users\"");
+    }
+
+    #[test]
+    fn indexed_names_on_code_identifiers_are_told_apart_from_strings_and_comments() {
+        let syntax = std::sync::Arc::new(ide_language::Syntax::new());
+        let structure = ide_syntax::StructureService::new(std::sync::Arc::new(ide_language::SyntaxCache::new(syntax)));
+        let cancel = ide_core::CancellationToken::new();
+        let anchor = |text: &str, line: u32, name: &str| {
+            let col = text.lines().nth(line as usize).unwrap().find(name).unwrap() as u32;
+            Range::new(Pos::new(line, col), Pos::new(line, col + name.len() as u32))
+        };
+        for (language, text, name) in [
+            ("java", "class Order {}", "Order"),
+            ("kotlin", "class Order", "Order"),
+            ("typescript", "class Order {}", "Order"),
+            ("python", "class Order:\n    pass", "Order"),
+            ("go", "package app\ntype Order struct {}", "Order"),
+            ("rust", "struct Order {}", "Order"),
+            ("cpp", "class Order {};", "Order"),
+            ("go", "package app\nfunc f() { retry: goto retry }", "retry"),
+            ("ruby", "@order = 1", "@order"),
+            ("ruby", "@@order = 1", "@@order"),
+            ("ruby", "$order = 1", "$order"),
+            ("php", "<?php $order = 1;", "$order"),
+        ] {
+            let language = ide_core::LanguageId::new(language);
+            let snap = ide_syntax::Snapshot::text(&language, text);
+            let line = u32::from(text.starts_with("package"));
+            assert!(identifier_at(&structure, &snap, anchor(text, line, name), &cancel), "{language}: {name}");
+        }
+        for (language, text, name) in [
+            ("java", "class App { String route = \"orders.index\"; }", "orders.index"),
+            ("kotlin", "val route = \"orders.index\"", "orders.index"),
+            ("typescript", "const route = \"orders.index\";", "orders.index"),
+            ("python", "route = \"orders.index\"", "orders.index"),
+            ("go", "package app\nvar route = \"orders.index\"", "orders.index"),
+            ("rust", "const ROUTE: &str = \"orders.index\";", "orders.index"),
+            ("cpp", "const char* route = \"orders.index\";", "orders.index"),
+            ("json", "{\"orders.index\": \"orders.index\"}", "orders.index"),
+            ("yaml", "orders.index: orders.index", "orders.index"),
+            ("xml", "<select id=\"orders.index\" />", "id"),
+        ] {
+            let language = ide_core::LanguageId::new(language);
+            let snap = ide_syntax::Snapshot::text(&language, text);
+            let line = u32::from(text.starts_with("package"));
+            assert!(!identifier_at(&structure, &snap, anchor(text, line, name), &cancel), "{language}: {name}");
+        }
+        let php = ide_core::LanguageId::new("php");
+        let text = "<?php\nuse App\\Models\\Order;\nclass Order {}\n// Order is a model\n\
+                    return route('users.show', Order::query());\n";
+        let snap = ide_syntax::Snapshot::text(&php, text);
+        assert!(identifier_at(&structure, &snap, anchor(text, 1, "Order"), &cancel), "an imported class");
+        assert!(identifier_at(&structure, &snap, anchor(text, 2, "Order"), &cancel), "a class declaration");
+        assert!(identifier_at(&structure, &snap, anchor(text, 4, "Order"), &cancel), "a static call's class");
+        assert!(!identifier_at(&structure, &snap, anchor(text, 4, "users.show"), &cancel), "a route name");
+        assert!(!identifier_at(&structure, &snap, anchor(text, 3, "Order"), &cancel), "a comment");
+        let ruby = ide_core::LanguageId::new("ruby");
+        let text = "class Order\nend\nOrder.where(status: \"paid\")\n";
+        let snap = ide_syntax::Snapshot::text(&ruby, text);
+        assert!(identifier_at(&structure, &snap, anchor(text, 0, "Order"), &cancel), "a Ruby class name");
+        assert!(identifier_at(&structure, &snap, anchor(text, 2, "Order"), &cancel), "a Ruby constant reference");
+        assert!(!identifier_at(&structure, &snap, anchor(text, 2, "paid"), &cancel), "a Ruby string");
+        let xml = ide_core::LanguageId::new("xml");
+        let text = "<mapper>\n  <select id=\"selectById\">select 1</select>\n</mapper>\n";
+        let snap = ide_syntax::Snapshot::text(&xml, text);
+        assert!(!identifier_at(&structure, &snap, anchor(text, 1, "selectById"), &cancel), "a MyBatis statement id");
+        let idx = ide_core::LanguageId::new("idx");
+        let text = "def route\n";
+        let snap = ide_syntax::Snapshot::text(&idx, text);
+        assert!(!identifier_at(&structure, &snap, anchor(text, 0, "route"), &cancel), "a language without a grammar");
     }
 
     #[test]

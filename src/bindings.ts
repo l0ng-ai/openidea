@@ -772,15 +772,15 @@ export const commands = {
 	buildRun: (kind: BuildKind, file: string | null, cmake: string | null, request: RequestId, clear: string[], onEvent: Channel<BuildEvent>) => typedError<BuildResult, IdeError>(__TAURI_INVOKE("build_run", { kind, file, cmake, request, clear, onEvent })),
 	/**
 	 *  Cancellable with `cancel_request(request)`.
-	 *  Builds the workspace (when `build`), then resolves the runtime (or test)
+	 *  Builds according to `policy`, then resolves the runtime (or test)
 	 *  classpath and the JDK of the module at `module` (absolute, or relative to the project root).
 	 *  A module with Kotlin / Groovy / Scala sources is built by its build system, whose class directories come first.
 	 */
-	javaResolveLaunch: (module: string, test: boolean, build: boolean, request: RequestId) => typedError<JavaLaunchInfo, IdeError>(__TAURI_INVOKE("java_resolve_launch", { module, test, build, request })),
+	javaResolveLaunch: (module: string, test: boolean, policy: BuildPolicy, request: RequestId) => typedError<JavaLaunchInfo, IdeError>(__TAURI_INVOKE("java_resolve_launch", { module, test, policy, request })),
 	/**  Port of java-debug's DAP server inside the jdtls serving `module` (started on demand). */
 	javaDebugServer: (module: string) => typedError<number, IdeError>(__TAURI_INVOKE("java_debug_server", { module })),
 	/**  Incremental build of the jdtls workspace serving `module` (e.g. before HotSwap). */
-	javaBuildWorkspace: (module: string) => typedError<JavaBuildStatus, IdeError>(__TAURI_INVOKE("java_build_workspace", { module })),
+	javaBuildWorkspace: (module: string, request: number | null) => typedError<JavaBuildStatus, IdeError>(__TAURI_INVOKE("java_build_workspace", { module, request })),
 	/**  Starts a session owned by this window: its events (and those of child sessions) go here only. */
 	debugStart: (config: LaunchConfig) => typedError<DebugSessionId, IdeError>(__TAURI_INVOKE("debug_start", { config })),
 	debugSetBreakpoints: (path: string, breakpoints: Breakpoint[]) => typedError<BreakpointState[], IdeError>(__TAURI_INVOKE("debug_set_breakpoints", { path, breakpoints })),
@@ -1903,6 +1903,8 @@ export type AppearanceSettings = {
 	menuIcons?: boolean,
 	/**  `hamburger` | `merged`: main menu presentation in the frameless title bar. */
 	mainMenuStyle?: string,
+	/**  A lone Alt press focuses or opens the main menu (IDEA `ide.windows.main.menu.focus.on.alt`). */
+	mainMenuAlt?: boolean,
 	/**  `subpixel` | `greyscale` | `none` */
 	ideAntialiasing?: string,
 	editorAntialiasing?: string,
@@ -1910,6 +1912,9 @@ export type AppearanceSettings = {
 	showToolWindowNames?: boolean,
 	showToolWindowBadges?: boolean,
 	widescreenToolWindows?: boolean,
+	/**  View › Appearance › Toolbar; hidden leaves IDEA's compact window header. */
+	showMainToolbar?: boolean,
+	showStatusBar?: boolean,
 	/**
 	 *  Status bar widgets shown (`true`) or hidden (`false`) by the user
 	 *  (status bar context menu); widgets not listed use their default.
@@ -2129,6 +2134,22 @@ export type BuildModel = {
 	maven: MavenModel | null,
 	gradle?: GradleModel[],
 };
+
+/**  How a Java launch builds the project before starting (IDEA's Before launch › Build). */
+export type BuildPolicy = 
+/**  Build the way this project's backend does it: incremental when possible. */
+"automatic" | 
+/**  Incremental build (IDEA's "Build"/Make). */
+"make" | 
+/**  Clean the output, then build (IDEA's Rebuild). */
+"rebuild" | 
+/**  Do not build; still resolve the module, JDK and classpath. */
+"noBuild" | 
+/**
+ *  Incremental build; a project with compile errors may still start with its last
+ *  successfully compiled classes (IDEA's "Build, no error check").
+ */
+"makeAndContinueOnErrors";
 
 export type BuildResult = {
 	system: BuildSystem,
@@ -3531,6 +3552,8 @@ export type DynamicItem = {
 	action: string,
 	arg: string | null,
 	label: string,
+	/**  Drawn with a check mark in this state; `None` for a plain item. */
+	checked?: boolean | null,
 };
 
 /**  Editor › General › Appearance. */
@@ -3937,7 +3960,7 @@ export type FileLineStats = {
 export type FileMarkers = {
 	path: string,
 	version: number | null,
-	markers: NavigationResult[],
+	markers: IndexedMarker[],
 };
 
 export type FileMatch = {
@@ -4714,6 +4737,14 @@ export type IndexStatus = {
 	indexing: boolean,
 	files: number,
 	symbols: number,
+};
+
+export type IndexedMarker = {
+	range: Range,
+	targets: Location[],
+	pluginId: string,
+	/**  The `[[contributes.markerIcons]]` id whose `markers` prefix matches the marker's key. */
+	icon: string | null,
 };
 
 export type InlayHint = {
@@ -5564,11 +5595,15 @@ export type MavenPlugin = {
 };
 
 export type MavenProfile = {
+	/**  Owning project folder when displayed in a workspace. */
+	projectRoot?: string | null,
 	id: string,
 	activeByDefault: boolean,
 };
 
 export type MavenProject = {
+	/**  Owning project folder when displayed in a workspace. */
+	projectRoot?: string | null,
 	/**  Project-relative, `/`-separated (`pom.xml`, `core/pom.xml`). */
 	pom: string,
 	/**  Project-relative directory; `""` = the project root. */
@@ -5676,6 +5711,8 @@ export type MenuConfig = {
 	accelerators: { [key in string]: string },
 	/**  [`Entry::Dynamic`] slot → its items, already localised. */
 	dynamic?: { [key in string]: DynamicItem[] },
+	/**  Ids of the toggle actions currently on. */
+	checked?: string[],
 };
 
 /**
@@ -5683,8 +5720,13 @@ export type MenuConfig = {
  *  Labels are the English defaults; the frontend localises them like the native menu.
  */
 export type MenuNode = { kind: "submenu"; id: string; label: string; children: MenuNode[] } | 
-/**  Runs `id` with `arg`. Items with an `arg` (Open Recent) carry their final label. */
-{ kind: "action"; id: string; label: string; hint: string | null; arg: string | null } | 
+/**
+ *  Runs `id` with `arg`. Items with an `arg` (Open Recent) carry their final label.
+ *  `checked` is the state of a frontend-listed toggle (Status Bar Widgets). Spec toggles
+ *  leave it unset: the frontend menu reads their state from the action (`toggled`), the
+ *  source [`MenuConfig::checked`] is built from for the native menu.
+ */
+{ kind: "action"; id: string; label: string; hint: string | null; arg: string | null; checked: boolean | null } | 
 /**  A disabled placeholder such as "No Recent Projects". */
 { kind: "placeholder"; id: string; label: string } | { kind: "separator" };
 
@@ -7037,6 +7079,8 @@ export type RunExtras_Deserialize = {
 	/**  "Save console output to file" (overwritten on each run). */
 	outputFile?: string | null,
 	beforeLaunch?: BeforeLaunchTask[],
+	/**  Before launch build for JVM launches; unset keeps the project's default (incremental). */
+	buildPolicy?: BuildPolicy | null,
 	/**  Compound configurations: ids of the configurations started together. */
 	compound?: string[],
 	showOnStdout?: boolean,
@@ -7079,6 +7123,8 @@ export type RunExtras_Serialize = {
 	/**  "Save console output to file" (overwritten on each run). */
 	outputFile?: string | null,
 	beforeLaunch?: BeforeLaunchTask[],
+	/**  Before launch build for JVM launches; unset keeps the project's default (incremental). */
+	buildPolicy?: BuildPolicy | null,
 	/**  Compound configurations: ids of the configurations started together. */
 	compound?: string[],
 	showOnStdout?: boolean,

@@ -22,6 +22,7 @@ describe("Ruby file run", () => {
   it("puts Sources roots on the load path", () => {
     const p = produceContext(input("/work/app/test/integration/a_test.rb"), env);
     expect(p?.config?.args).toEqual(["-Ilib", "test/integration/a_test.rb"]);
+    expect(p?.config?.debugAdapter).toBe("rdbg");
   });
 
   it("adds none for files outside the project", () => {

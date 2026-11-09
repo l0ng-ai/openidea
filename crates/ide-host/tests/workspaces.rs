@@ -165,3 +165,44 @@ async fn php_language_level_follows_the_member_of_the_file() {
     assert_eq!(level_elsewhere.member, None);
     host.close_project("main");
 }
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn build_tool_availability_follows_workspace_members_and_trust() {
+    let temp = tempfile::tempdir().unwrap();
+    let base = dunce::canonicalize(temp.path()).unwrap();
+    let members: Vec<_> = ["first", "second"].into_iter().map(|name| base.join(name)).collect();
+    for member in &members {
+        std::fs::create_dir(member).unwrap();
+        std::fs::write(member.join("pom.xml"), "<project><artifactId>app</artifactId></project>").unwrap();
+        std::fs::write(member.join("build.gradle"), "").unwrap();
+    }
+    let root = base.join("workspace");
+    Workspace::save(&root, "Build tools", members.clone(), true).unwrap();
+    let host = Host::new(HostConfig {
+        config_dir: base.join("config"),
+        data_dir: base.join("data"),
+        local_data_dir: base.join("data"),
+        languages: Arc::new(ide_language::LanguageRegistry::load(None).unwrap()),
+        syntax: Arc::default(),
+        sink_for: Box::new(|_| Arc::new(NullSink)),
+        owner: |w| w,
+        runtime: tokio::runtime::Handle::current(),
+        project_environment: false,
+    });
+    for member in &members {
+        host.trust.decide(member, true, false).unwrap();
+    }
+    host.open_project("main", &root).unwrap();
+    assert!(ops::build::build_model(&host, "main").await.is_err());
+    host.close_project("main");
+    host.trust.decide(&root, true, false).unwrap();
+    host.open_project("main", &root).unwrap();
+    let model = ops::build::build_model(&host, "main").await.unwrap();
+    assert_eq!(model.maven.unwrap().projects.len(), 2);
+    assert_eq!(model.gradle.len(), 2);
+    ops::project::save_workspace(&host, "main", "One member", vec![members[1].clone()]).unwrap();
+    let model = ops::build::build_model(&host, "main").await.unwrap();
+    assert_eq!(model.maven.unwrap().projects[0].dir, ide_core::ipc_path::to_ipc(&members[1]));
+    assert_eq!(model.gradle.len(), 1);
+    host.close_project("main");
+}

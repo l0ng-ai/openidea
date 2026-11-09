@@ -31,6 +31,8 @@ export type MenuItem =
       action: string;
       arg?: unknown;
       label?: string;
+      /** A check mark in this state instead of the action's own `toggled` (one row per argument). */
+      checked?: boolean;
       icon?: IconName | (string & {});
       disabled?: boolean;
     }
@@ -82,12 +84,12 @@ export function resolveMenuItems(items: MenuItem[]): Resolved[] {
       if (!a) return;
       out.push({
         kind: "item",
-        key: item.action,
+        key: typeof item.arg === "string" ? `${item.action}|${item.arg}` : item.action,
         label: tx(item.label) ?? a.title,
         icon: item.icon ?? a.icon,
         shortcut: shortcutLabel(item.action),
         disabled: !!item.disabled || !isActionEnabled(a),
-        checked: actionToggled(a),
+        checked: item.checked ?? actionToggled(a),
         run: () => void executeActionFrom("menu", item.action, item.arg),
       });
       return;

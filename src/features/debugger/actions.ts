@@ -29,7 +29,7 @@ import { removeAllSpecial, specialAt, toggleFieldAt, toggleMethodAt } from "./br
 import { fieldAt, methodAt } from "./breakpoints/symbols";
 import { toggleBreakpointSmart } from "./breakpoints/toggle";
 import { isJavaAttachTarget, isJavaDebuggable, javaAttachConfig, javaLaunchConfig } from "./java";
-import { reloadChangedClasses } from "./hotswap";
+import { cancelHotSwapBuild, reloadChangedClasses } from "./hotswap";
 import { debugUnsupportedReason, launchConfigFor } from "./launch";
 import {
   isPythonAttachTarget,
@@ -266,11 +266,14 @@ async function startJavaConfig(config: RunConfig, root: string, origin: RunConfi
       };
       signal.addEventListener("abort", cancel, { once: true });
       try {
-        await maybeEditorService()
-          ?.saveAll()
-          .catch(() => undefined);
-        signal.throwIfAborted();
-        return await javaLaunchConfig(config, root, { request, signal, report });
+        return await javaLaunchConfig(config, root, {
+          request,
+          signal,
+          report,
+          saveAll: async () => {
+            await maybeEditorService()?.saveAll();
+          },
+        });
       } finally {
         signal.removeEventListener("abort", cancel);
       }
@@ -448,6 +451,15 @@ export function registerDebugActions(): () => void {
             ? arg.configId
             : undefined,
         ),
+    },
+    {
+      id: "debug.cancelHotSwap",
+      title: "Cancel Hot Swap Build",
+      description: "Stop the compile a Reload Changed Classes action is waiting on",
+      category: "Debug",
+      icon: "stop",
+      when: "debugHotSwapBuilding",
+      run: () => cancelHotSwapBuild(),
     },
     {
       id: "debug.rerun",

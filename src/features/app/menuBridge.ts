@@ -20,8 +20,10 @@ import {
   useKeymap,
 } from "@/platform/keymap";
 import { useProject } from "@/platform/project";
-import { useContributions, useMenuSlotItems } from "@/workbench/contributions";
+import { useContributions, useMenuSlotItems, useStandaloneEditor } from "@/workbench/contributions";
 import { isDistractionFree, useDistractionFree } from "@/workbench/distractionFree";
+import { orderStatusItems } from "@/workbench/StatusBar";
+import { statusWidgetRows } from "@/workbench/statusBarWidgets";
 import { useToolWindowLayouts } from "@/workbench/toolwindows/layouts";
 import { hostOs, type HostOs } from "./host";
 
@@ -77,10 +79,40 @@ export function buildMenuConfig(os: HostOs): MenuConfig {
     const accelerator = first && menuAccelerator(first);
     if (accelerator) accelerators[id] = accelerator;
   }
-  return { locale: useI18n.getState().locale, labels, accelerators, dynamic: dynamicMenuItems() };
+  return {
+    locale: useI18n.getState().locale,
+    labels,
+    accelerators,
+    dynamic: dynamicMenuItems(),
+    checked: toggledActions(),
+  };
 }
 
-/** View › Tool Windows (every registered window, by title) and Window › Tool Window Layouts. */
+/** Toggle actions that are on: their menu items show a check mark (View › Appearance). */
+function toggledActions(): string[] {
+  return [...useActions.getState().actions.values()]
+    .filter((a) => a.toggled?.())
+    .map((a) => a.id)
+    .sort();
+}
+
+/** View › Appearance › Status Bar Widgets: the status bar's context menu, in bar order. */
+function statusBarWidgetItems(): DynamicItem[] {
+  const { project, lightEdit, settings } = useProject.getState();
+  // A LightEdit window's status bar has only the items that apply there (Workbench.tsx).
+  const lightEditFrame = !project && (lightEdit || useStandaloneEditor.getState().title !== null);
+  const items = [...useContributions.getState().statusItems.values()].filter((i) => !lightEditFrame || i.lightEdit);
+  const { left, right } = orderStatusItems(items);
+  const overrides = settings?.appearance?.statusBarWidgets;
+  return statusWidgetRows([...left, ...right], overrides).map((row) => ({
+    action: "view.toggleStatusBarWidget",
+    arg: row.id,
+    label: row.verbatim ? row.title : tx(row.title),
+    checked: row.visible,
+  }));
+}
+
+/** View › Tool Windows (every registered window, by title), View › Appearance › Status Bar Widgets and Window › Tool Window Layouts. */
 export function dynamicMenuItems(): Record<string, DynamicItem[]> {
   const toolWindows = [...useContributions.getState().toolWindows.values()]
     .map((tw) => ({ action: `toolwindow.${tw.id}`, arg: null, label: tw.verbatim ? tw.title : tx(tw.title) }))
@@ -96,7 +128,7 @@ export function dynamicMenuItems(): Record<string, DynamicItem[]> {
         .sort((a, b) => a.label.localeCompare(b.label)),
     ]),
   );
-  return { ...slots, toolWindows, toolWindowLayouts: layouts };
+  return { ...slots, toolWindows, toolWindowLayouts: layouts, statusBarWidgets: statusBarWidgetItems() };
 }
 
 /** Action ids of every IDE item in a menu model. */
@@ -186,7 +218,7 @@ export function installMenuBridge(): () => void {
       if (s.active !== prev.active) push();
     }),
     useContributions.subscribe((s, prev) => {
-      if (s.toolWindows !== prev.toolWindows) push();
+      if (s.toolWindows !== prev.toolWindows || s.statusItems !== prev.statusItems) push();
     }),
     useToolWindowLayouts.subscribe(push),
     useMenuSlotItems.subscribe(push),
@@ -195,6 +227,9 @@ export function installMenuBridge(): () => void {
     // Opening / closing a project changes the Open Recent list.
     useProject.subscribe((s, prev) => {
       if (s.project?.root !== prev.project?.root) void commands.menuRefresh();
+      if (s.lightEdit !== prev.lightEdit) push();
+      // View › Appearance check marks and Status Bar Widgets.
+      if (s.settings?.appearance !== prev.settings?.appearance) push();
     }),
   ];
   return () => {

@@ -1,4 +1,5 @@
 import { describe, expect, it, vi } from "vitest";
+import { _resetI18nForTests, setLocale } from "@/platform/i18n";
 import { IpcError, type LaunchConfig } from "@/platform/ipc";
 import { provideNotificationService } from "@/workbench/contributions";
 import { startFailureMessage } from "../startFailure";
@@ -19,6 +20,21 @@ describe("debug start failures", () => {
     "launch failed: listen EADDRINUSE: address already in use 127.0.0.1:9003",
   ])("names the port another listener holds: %s", (message) => {
     expect(startFailureMessage(new IpcError({ kind: "invalidInput", message }))).toBe(PORT_IN_USE);
+  });
+
+  it("translates the missing Ruby debug gem instruction", async () => {
+    const message =
+      'the bundle of /app with spaces/Gemfile has no `debug` gem. Add `gem "debug"` to the Gemfile and run `bundle install`';
+    try {
+      await setLocale("en");
+      expect(startFailureMessage(new Error(message))).toBe(message);
+      await setLocale("zh");
+      expect(startFailureMessage(new Error(message))).toBe(
+        '/app with spaces/Gemfile 的 bundle 中没有 `debug` gem。请在 Gemfile 中添加 `gem "debug"`，然后运行 `bundle install`',
+      );
+    } finally {
+      _resetI18nForTests();
+    }
   });
 
   it("keeps other failures as they are", () => {

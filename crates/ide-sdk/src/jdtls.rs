@@ -292,8 +292,10 @@ pub fn launch_directly(cfg: &mut LanguageServerConfig) {
         }),
     };
     let Some((java, jdk)) = jdk.filter(|(java, _)| java.is_file()) else { return };
-    if !ide_core::java_runtime::supports_java_bundles(&jdk.home) {
-        cfg.launch_error = Some(crate::java::server_jdk_incomplete_message(&jdk, crate::java::jdtls_min_java(cfg)));
+    if let Some(error) = crate::java::server_jdk_metadata_error(&jdk, crate::java::jdtls_min_java(cfg))
+        .or_else(|| crate::java::java_execution_error(&java))
+    {
+        cfg.launch_error = Some(error);
         return;
     }
     cfg.args = java_args(&install, jdk.major, &cfg.args);
@@ -526,7 +528,7 @@ mod tests {
         )
         .unwrap();
         std::fs::write(jdk.join("bin/javac"), "").unwrap();
-        std::fs::write(jdk.join("bin/java"), "").unwrap();
+        crate::java::write_test_java(&jdk);
 
         let cfg = |command: &str| -> LanguageServerConfig {
             let mut cfg: LanguageServerConfig =
@@ -554,6 +556,25 @@ mod tests {
         overridden.args.push(format!("--java-executable={}", jre.join("bin/java").display()));
         launch_directly(&mut overridden);
         assert!(overridden.launch_error.unwrap().contains("jdk.jdi"));
+
+        let alternate = jdk.join("bin/alternate-java");
+        std::fs::write(&alternate, "#!/bin/sh\nexit 126\n").unwrap();
+        std::fs::set_permissions(&alternate, std::os::unix::fs::PermissionsExt::from_mode(0o755)).unwrap();
+        let mut overridden = cfg("jdtls");
+        overridden.args.push(format!("--java-executable={}", alternate.display()));
+        launch_directly(&mut overridden);
+        let error = overridden.launch_error.unwrap();
+        assert!(error.contains(alternate.to_string_lossy().as_ref()) && error.contains("cannot run"), "{error}");
+
+        let old = dir.path().join("jdk-17");
+        std::fs::create_dir_all(old.join("bin")).unwrap();
+        std::fs::write(old.join("release"), "JAVA_VERSION=\"17\"\n").unwrap();
+        crate::java::write_test_java(&old);
+        let mut overridden = cfg("jdtls");
+        overridden.args.push(format!("--java-executable={}", old.join("bin/java").display()));
+        launch_directly(&mut overridden);
+        let error = overridden.launch_error.unwrap();
+        assert!(error.contains(old.to_string_lossy().as_ref()) && error.contains("too old"), "{error}");
 
         // Someone's own wrapper, or no usable JDK: the command is kept.
         std::fs::write(home.join("bin/my-jdtls"), "#!/bin/sh\n").unwrap();
@@ -637,7 +658,7 @@ mod tests {
         )
         .unwrap();
         std::fs::write(jdk.join("bin").join(crate::exe("javac")), "").unwrap();
-        std::fs::write(jdk.join("bin").join(crate::exe("java")), "").unwrap();
+        crate::java::write_test_java(&jdk);
         let target = format!(
             "path = \"C:\\Python313\\python.exe\"\nargs = {}\n",
             home.join("bin").join("jdtls").to_string_lossy()

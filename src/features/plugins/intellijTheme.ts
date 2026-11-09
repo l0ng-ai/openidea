@@ -135,6 +135,12 @@ export const ICLS_ATTRIBUTES: Record<string, Array<[Part, string]>> = {
   DEFAULT_NUMBER: [["FOREGROUND", "--syn-number"]],
   DEFAULT_LINE_COMMENT: [["FOREGROUND", "--syn-comment"]],
   DEFAULT_DOC_COMMENT: [["FOREGROUND", "--syn-doc-comment"]],
+  DEFAULT_DOC_COMMENT_TAG: [["FOREGROUND", "--syn-doc-comment-tag"]],
+  DEFAULT_DOC_COMMENT_TAG_VALUE: [["FOREGROUND", "--syn-doc-comment-tag-value"]],
+  DEFAULT_DOC_MARKUP: [
+    ["FOREGROUND", "--syn-doc-markup"],
+    ["BACKGROUND", "--syn-doc-markup-bg"],
+  ],
   DEFAULT_FUNCTION_DECLARATION: [["FOREGROUND", "--syn-function"]],
   DEFAULT_FUNCTION_CALL: [["FOREGROUND", "--syn-function-call"]],
   DEFAULT_CLASS_NAME: [["FOREGROUND", "--syn-type"]],

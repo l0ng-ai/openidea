@@ -44,6 +44,7 @@ import { RunWidget } from "./RunWidget";
 import { runConfigsRunAnything } from "./runAnything";
 import { cleanupRemovedProject, recordRun, registerRunServiceActions, runServiceProvider } from "./services";
 import { liveServiceSession, serviceSessions } from "./serviceSessions";
+import { ServiceImportHost } from "./serviceImport";
 import { cmakeBuildId } from "./cmake";
 import { runBeforeLaunch } from "./beforeLaunch";
 import { compoundChildren } from "./configs";
@@ -136,7 +137,18 @@ async function debugConfig(config: RunConfig, chain: readonly string[] = [], sho
     return;
   }
   // "Build and run using: Gradle": the JavaExec JVM gets the agent, the debugger attaches to it.
-  const delegated = getAction("debug.attach") ? await gradleDelegation(config) : null;
+  let delegated: RunConfig | null;
+  try {
+    delegated = getAction("debug.attach") ? await gradleDelegation(config) : null;
+  } catch (error) {
+    notifications().notify({
+      group: "run",
+      level: "error",
+      title: `Cannot run '${config.name}'`,
+      body: error instanceof Error ? error.message : String(error),
+    });
+    return;
+  }
   if (delegated) {
     await debugWithAgent(delegated, show);
     return;
@@ -341,6 +353,8 @@ export function activate(): () => void {
       component: lazyWhen(useEditConfigsOpen, () => import("./EditConfigsDialog").then((m) => m.EditConfigsOverlay)),
     }),
     registerOverlay({ id: "run.dialogs", component: RunDialogsOverlay }),
+    registerOverlay({ id: "run.serviceImport", component: ServiceImportHost }),
+    registerOverlay({ id: "run.serviceImport", component: ServiceImportHost }),
     registerServiceProvider(runServiceProvider),
     registerRunServiceActions(),
     registerRunningProcessesProvider({
