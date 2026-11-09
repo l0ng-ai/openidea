@@ -82,7 +82,7 @@ fn go_source(project: &crate::Project, config_dir: &Path, path: &Path) -> IdeRes
         workspace
             .projects
             .into_iter()
-            .filter(|root| path.starts_with(root))
+            .filter(|root| **root != project.root && path.starts_with(root))
             .max_by_key(|root| root.components().count())
     });
     let settings = match &member {

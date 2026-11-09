@@ -224,9 +224,9 @@ export function installMenuBridge(): () => void {
     useMenuSlotItems.subscribe(push),
     useContextKeys.subscribe(() => pushEnablement()),
     useActions.subscribe(() => pushEnablement()),
-    // Opening / closing a project changes the Open Recent list.
+    // Project membership and names also change the Open Recent list.
     useProject.subscribe((s, prev) => {
-      if (s.project?.root !== prev.project?.root) void commands.menuRefresh();
+      if (s.project !== prev.project) void commands.menuRefresh();
       if (s.lightEdit !== prev.lightEdit) push();
       // View › Appearance check marks and Status Bar Widgets.
       if (s.settings?.appearance !== prev.settings?.appearance) push();

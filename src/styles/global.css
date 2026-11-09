@@ -20,6 +20,11 @@ body,
   margin: 0;
 }
 
+/* The page never scrolls: `clip` on the body leaves the viewport nothing to scroll into view. */
+html {
+  overflow: hidden;
+}
+
 body {
   background: var(--bg-frame);
   color: var(--fg);
@@ -27,7 +32,7 @@ body {
   font-size: var(--fs-ui);
   line-height: 1.4;
   -webkit-font-smoothing: antialiased;
-  overflow: hidden;
+  overflow: clip;
   -webkit-user-select: none;
   user-select: none;
   cursor: default;

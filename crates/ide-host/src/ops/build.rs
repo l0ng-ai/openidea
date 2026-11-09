@@ -552,7 +552,8 @@ pub async fn build_run(
             let mut combined: Option<compile::BuildPlan> = None;
             for member in workspace.projects.iter().filter(|p| file.as_ref().is_none_or(|f| f.starts_with(p))) {
                 let settings = ide_workspace::SettingsStore::load(&config_dir, Some(member)).effective();
-                let member_cache = cache.join(crate::project::project_key(member));
+                let member_cache =
+                    if member == &root { cache.clone() } else { cache.join(crate::project::project_key(member)) };
                 let model = with_profiles(load(member, &member_cache, &settings), &member_cache);
                 let plan = prepare_plan(
                     compile::plan(member, &model, kind, file.as_deref(), settings.cmake.profiles.as_deref())?,
