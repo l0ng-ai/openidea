@@ -29,6 +29,15 @@ export function fileManagerPath(
   return path;
 }
 
+/**
+ * "Show in Finder" / "Show in Explorer" / "Show in Files": the label of the
+ * action that reveals a path in the OS file manager. Written in English so the
+ * UI's text catalog translates it; the file manager named follows the platform.
+ */
+export function showInFileManagerLabel(os = usePlatform.getState().os): string {
+  return os === "macos" ? "Show in Finder" : os === "windows" ? "Show in Explorer" : "Show in Files";
+}
+
 /** Reveals files in Explorer, Finder or the Linux desktop's file manager. */
 export async function revealInFileManager(paths: string | readonly string[]): Promise<void> {
   if (!isTauri()) return;

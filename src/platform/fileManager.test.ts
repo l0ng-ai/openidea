@@ -1,7 +1,26 @@
-import { describe, expect, it } from "vitest";
-import { fileManagerPath } from "./fileManager";
+import { afterEach, describe, expect, it } from "vitest";
+import { fileManagerPath, showInFileManagerLabel } from "./fileManager";
+import { _resetI18nForTests, setLocale, tx } from "./i18n";
 
 const raw = String.raw;
+
+afterEach(() => _resetI18nForTests());
+
+describe("showInFileManagerLabel", () => {
+  it("names the file manager of the platform instead of always Finder", () => {
+    expect(showInFileManagerLabel("macos")).toBe("Show in Finder");
+    expect(showInFileManagerLabel("windows")).toBe("Show in Explorer");
+    expect(showInFileManagerLabel("linux")).toBe("Show in Files");
+    expect(showInFileManagerLabel("web")).toBe("Show in Files");
+  });
+
+  it("is translated into the platform's file manager, not Finder", async () => {
+    await setLocale("zh");
+    expect(tx(showInFileManagerLabel("macos"))).toBe("在访达中显示");
+    expect(tx(showInFileManagerLabel("windows"))).toBe("在资源管理器中显示");
+    expect(tx(showInFileManagerLabel("linux"))).toBe("在文件管理器中显示");
+  });
+});
 
 describe("fileManagerPath", () => {
   it("converts verbatim UNC paths to the form Windows Shell accepts", () => {
