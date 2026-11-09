@@ -601,5 +601,6 @@
   "Invalid data source id": "Invalid data source id",
   "Database connection failed": "Database connection failed",
   "Database service unavailable": "Database service unavailable",
-  "Trust this project to connect plugin data sources": "Trust this project to connect plugin data sources"
+  "Trust this project to connect plugin data sources": "Trust this project to connect plugin data sources",
+  "Use Soft Wraps": "Use Soft Wraps"
 }
