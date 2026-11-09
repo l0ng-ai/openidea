@@ -45,6 +45,7 @@ describe("View › Appearance toggles", () => {
     ["view.toggleToolbar", "showMainToolbar", true],
     ["view.toggleToolWindowBars", "showToolWindowBars", true],
     ["view.toggleStatusBar", "showStatusBar", true],
+    ["view.toggleNavigationBar", "showNavigationBar", true],
   ])("%s flips appearance.%s in the global settings", async (id, key, initial) => {
     const action = appearanceToggleActions().find((a) => a.id === id)!;
     expect(action.toggled?.()).toBe(initial);

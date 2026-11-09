@@ -391,6 +391,7 @@ pub fn spec(os: Os) -> Vec<Entry> {
                     SEP,
                     toggle("view.toggleToolbar", "Toolbar"),
                     toggle("view.toggleToolWindowBars", "Tool Window Bars"),
+                    toggle("view.toggleNavigationBar", "Navigation Bar"),
                     toggle("view.toggleStatusBar", "Status Bar"),
                     sub("statusBarWidgets", "Status Bar Widgets", vec![Entry::Dynamic(DYNAMIC_STATUS_BAR_WIDGETS)]),
                 ],

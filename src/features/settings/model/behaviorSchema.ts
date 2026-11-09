@@ -48,6 +48,8 @@ export interface AppearanceExtras {
   /** View › Appearance › Toolbar; hidden leaves IDEA's compact window header. */
   showMainToolbar: boolean;
   showStatusBar: boolean;
+  /** View › Appearance › Navigation Bar: the file path breadcrumbs above the editor. */
+  showNavigationBar: boolean;
 }
 
 export interface DateFormatValid {
@@ -110,6 +112,7 @@ export const DEFAULT_APPEARANCE_EXTRAS: AppearanceExtras = {
   widescreenToolWindows: false,
   showMainToolbar: true,
   showStatusBar: true,
+  showNavigationBar: true,
 };
 
 export const DEFAULT_GENERAL_EXTRAS: GeneralExtras = {
@@ -170,6 +173,7 @@ export function validateAppearanceExtras(raw: unknown): AppearanceExtras {
     widescreenToolWindows: b("widescreenToolWindows"),
     showMainToolbar: b("showMainToolbar"),
     showStatusBar: b("showStatusBar"),
+    showNavigationBar: b("showNavigationBar"),
   };
 }
 

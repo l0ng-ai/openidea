@@ -397,6 +397,7 @@
   "menu.view.toggleToolbar": "工具栏",
   "menu.view.toggleToolWindowBars": "工具窗口栏",
   "menu.view.toggleStatusBar": "状态栏",
+  "menu.view.toggleNavigationBar": "导航栏",
   "menu.statusBarWidgets": "状态栏微件",
   "menu.code.quickDefinition": "快速定义",
   "menu.code.quickTypeDefinition": "快速类型定义",

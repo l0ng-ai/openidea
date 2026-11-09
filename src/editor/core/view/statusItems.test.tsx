@@ -1,7 +1,7 @@
 import { Profiler } from "react";
 import { describe, expect, it, vi } from "vitest";
 import { act, render, screen } from "@testing-library/react";
-import type { OutlineItem } from "@/platform/ipc";
+import type { OutlineItem, Settings } from "@/platform/ipc";
 import type { EditorStatus } from "../controller";
 
 vi.mock("../controller", async () => {
@@ -110,5 +110,12 @@ it("shows the project › dirs › file path above the editor", async () => {
   const view = render(<FileBreadcrumbs path="/b/src/deep/file.ts" />);
   expect(screen.getByRole("navigation", { name: "File path" }).textContent).toBe("bsrcdeepfile.ts");
   view.unmount();
-  useProject.setState({ project: null });
+  // View › Appearance › Navigation Bar hides it.
+  useProject.setState({
+    settings: { appearance: { showNavigationBar: false } } as unknown as Settings,
+  });
+  const hidden = render(<FileBreadcrumbs path="/b/src/deep/file.ts" />);
+  expect(screen.queryByRole("navigation", { name: "File path" })).toBeNull();
+  hidden.unmount();
+  useProject.setState({ project: null, settings: null });
 });

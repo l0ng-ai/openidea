@@ -120,7 +120,7 @@ export function zoomActions(): Action[] {
 // ---------------------------------------------------------------------------
 // View › Appearance toggles over boolean appearance settings (IDEA's ToggleActions)
 
-type AppearanceFlag = "compactMode" | "showMainToolbar" | "showToolWindowBars" | "showStatusBar";
+type AppearanceFlag = "compactMode" | "showMainToolbar" | "showToolWindowBars" | "showStatusBar" | "showNavigationBar";
 
 const appearanceFlag = (key: AppearanceFlag) => validateSettings(useProject.getState().settings).appearance[key];
 
@@ -151,6 +151,11 @@ export function appearanceToggleActions(): Action[] {
       "hide",
     ]),
     appearanceToggle("view.toggleStatusBar", "Status Bar", "showStatusBar", ["hide"]),
+    appearanceToggle("view.toggleNavigationBar", "Navigation Bar", "showNavigationBar", [
+      "breadcrumbs",
+      "file path",
+      "hide",
+    ]),
   ];
 }
 

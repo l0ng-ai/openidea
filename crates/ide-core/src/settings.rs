@@ -398,6 +398,8 @@ pub struct AppearanceSettings {
     /// View › Appearance › Toolbar; hidden leaves IDEA's compact window header.
     pub show_main_toolbar: bool,
     pub show_status_bar: bool,
+    /// View › Appearance › Navigation Bar: the file path breadcrumbs above the editor.
+    pub show_navigation_bar: bool,
     /// Status bar widgets shown (`true`) or hidden (`false`) by the user
     /// (status bar context menu); widgets not listed use their default.
     pub status_bar_widgets: BTreeMap<String, bool>,
@@ -470,6 +472,7 @@ impl Default for AppearanceSettings {
             widescreen_tool_windows: false,
             show_main_toolbar: true,
             show_status_bar: true,
+            show_navigation_bar: true,
             status_bar_widgets: BTreeMap::new(),
             main_toolbar: None,
         }

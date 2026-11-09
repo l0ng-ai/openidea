@@ -1943,6 +1943,8 @@ export type AppearanceSettings = {
 	/**  View › Appearance › Toolbar; hidden leaves IDEA's compact window header. */
 	showMainToolbar?: boolean,
 	showStatusBar?: boolean,
+	/**  View › Appearance › Navigation Bar: the file path breadcrumbs above the editor. */
+	showNavigationBar?: boolean,
 	/**
 	 *  Status bar widgets shown (`true`) or hidden (`false`) by the user
 	 *  (status bar context menu); widgets not listed use their default.

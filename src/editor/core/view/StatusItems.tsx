@@ -154,10 +154,11 @@ export function Breadcrumbs() {
  * tab; clicking a segment lists its children (JetBrains-style file path).
  */
 export function FileBreadcrumbs({ path }: { path: string }) {
+  const shown = useProject((s) => s.settings?.appearance?.showNavigationBar !== false);
   const currentProject = useProject((s) => s.project);
   const project = projectFolder(currentProject, path);
   const segments = pathCrumbs(project, path);
-  if (segments.length < 2) return null;
+  if (!shown || segments.length < 2) return null;
   return (
     <CrumbNav
       segments={segments}
