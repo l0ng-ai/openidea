@@ -2467,6 +2467,7 @@
   "Stop to Edit": "停止以编辑",
   "Stopped after {count} matches": "匹配 {count} 处后停止",
   "Stream Sample Output": "流式输出示例日志",
+  "Stream Sample TUI": "流式全屏 TUI 示例",
   "Open Sample Conversations": "打开示例会话",
   "Strikeout": "删除线",
   "Struct": "结构体",
