@@ -5552,7 +5552,7 @@ export type LaunchConfig = {
 export type LibraryGroup = {
 	/**  Display name, e.g. `Python 3.12 (.venv)`. */
 	name: string,
-	/**  `python` | `jdk` | `nodeModules` | `nodeCore` | `rust` | `cargo` | `go` | `goModules` | `maven` | `gradle`. */
+	/**  `python` | `jdk` | `nodeModules` | `nodeCore` | `rust` | `cargo` | `go` | `goModules` | `maven` | `gradle` | `classpath`. */
 	kind: string,
 	roots: LibraryRoot[],
 };
