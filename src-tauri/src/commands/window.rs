@@ -163,6 +163,14 @@ pub fn window_take_launch(window: WebviewWindow, windows: State<'_, WindowsState
     windows.take_launch(window.label())
 }
 
+/// Release the opening window's reservation after navigation or cancellation.
+#[tauri::command]
+#[specta::specta]
+pub fn window_complete_launch(window: WebviewWindow, windows: State<'_, WindowsState>) -> IdeResult<()> {
+    windows.complete_launch(window.label());
+    Ok(())
+}
+
 #[derive(Serialize, Deserialize, Type)]
 #[serde(rename_all = "camelCase")]
 pub struct OpenProject {
