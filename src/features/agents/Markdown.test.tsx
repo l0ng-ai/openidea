@@ -33,8 +33,9 @@ beforeEach(() => {
     document.body.append(tmp);
     return {
       svg:
-        `<svg id="${id}"><defs><marker id="${id}-arrow" orient="auto"><path d="M0,0L8,4"/></marker></defs>` +
-        `<path d="M0,4" marker-end="url(#${id}-arrow)"/><text>${text.split("\n")[0]}</text></svg>`,
+        `<svg id="${id}"><style>#${id} .flowchart-link{fill:none;}#${id} [id$="-arrow"] path{fill:#9fa2a8;}</style>` +
+        `<defs><marker id="${id}-arrow" orient="auto"><path d="M0,0L8,4"/></marker></defs>` +
+        `<path class="flowchart-link" d="M0,4" marker-end="url(#${id}-arrow)"/><text>${text.split("\n")[0]}</text></svg>`,
     };
   });
   mockIPC((cmd, args) => (cmd === "fs_read_image" ? readImage((args as { path: string }).path) : null));
@@ -236,11 +237,15 @@ describe("mermaid diagrams in a reply", () => {
     expect(idsOne).toHaveLength(2);
     expect(idsTwo).toHaveLength(2);
     expect(idsOne.filter((id) => idsTwo.includes(id))).toEqual([]);
-    // Every marker reference resolves inside its own copy.
+    // Every marker reference and scoped `<style>` selector resolves inside its own copy.
     for (const root of [one.container, two.container]) {
       const svg = root.querySelector(".mermaid-output svg")!;
       const ref = svg.querySelector("[marker-end]")!.getAttribute("marker-end")!;
       expect(new Set(idsOf(root)).has(/url\(#(.+)\)/.exec(ref)![1]!)).toBe(true);
+      expect(svg.querySelector("style")!.textContent).toContain(
+        `#${svg.getAttribute("id")} .flowchart-link{fill:none;}`,
+      );
+      expect(svg.querySelector("defs [id$='-arrow'] path")).not.toBeNull();
     }
   });
 
