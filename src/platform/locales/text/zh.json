@@ -7075,5 +7075,6 @@
   "Choose Gradle JVM": "选择 Gradle JVM",
   "Choose a JDK compatible with this Gradle version in Gradle JVM. Download JDK is available in the JVM selector.": "请在 Gradle JVM 中选择与此 Gradle 版本兼容的 JDK。JVM 选择器中提供下载 JDK 选项。",
   "Maven could not be started. Configure Maven home in Maven settings, install Maven on PATH, or use a project with a Maven wrapper.": "无法启动 Maven。请在 Maven 设置中配置 Maven 主目录，将 Maven 安装到 PATH，或使用带有 Maven wrapper 的项目。",
-  "Gradle could not be started. Configure a local installation in Gradle settings, install Gradle on PATH, or use a project with a Gradle wrapper.": "无法启动 Gradle。请在 Gradle 设置中配置本地安装，将 Gradle 安装到 PATH，或使用带有 Gradle wrapper 的项目。"
+  "Gradle could not be started. Configure a local installation in Gradle settings, install Gradle on PATH, or use a project with a Gradle wrapper.": "无法启动 Gradle。请在 Gradle 设置中配置本地安装，将 Gradle 安装到 PATH，或使用带有 Gradle wrapper 的项目。",
+  "Remote project files cannot be shown in {fileManager}": "无法在{fileManager}中显示远程项目的文件"
 }

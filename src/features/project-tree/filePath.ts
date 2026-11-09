@@ -1,9 +1,10 @@
 /** Navigate › File Path (⌥⌘F12): the file and its folders, each revealed in the OS file manager. */
 import { openPopup } from "@/editor/lsp/popupStore";
-import { fileManagerName, revealInFileManager } from "@/platform/fileManager";
+import { canRevealInFileManager, fileManagerName, revealInFileManager } from "@/platform/fileManager";
 import { notifications } from "@/workbench/contributions";
 import { tx } from "@/platform/i18n";
 import { nameOf, parentOf } from "./paths";
+import { notifyRevealUnavailable } from "./operations";
 
 const DRIVE_ROOT = /^[A-Za-z]:\/?$/;
 
@@ -33,6 +34,7 @@ async function reveal(path: string) {
 }
 
 export function showFilePathPopup(path: string, isDir = false) {
+  if (!canRevealInFileManager()) return notifyRevealUnavailable();
   const items = filePathChain(path).map((p, i) => ({
     id: p,
     label: nameOf(p) || p,

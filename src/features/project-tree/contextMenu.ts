@@ -1,6 +1,6 @@
 /** Context menu and "New" popup of the project view. */
 import { executeAction, getAction } from "@/platform/actions";
-import { fileManagerName } from "@/platform/fileManager";
+import { canRevealInFileManager, fileManagerName } from "@/platform/fileManager";
 import { formatBinding, hostBinding, isMacHost, shortcutLabel } from "@/platform/keymap";
 import { relativePath, useProject } from "@/platform/project";
 import { currentDetectedRoots, currentRoots } from "@/platform/projectRoots";
@@ -288,7 +288,12 @@ export function contextMenuItems(nodes: ProjectNode[]): MenuItem[] {
   // Open In ›
   push(
     submenu("openIn", "Open In", [
-      { id: "finder", label: revealLabel(), icon: "external-link", run: () => void revealInFinder(nodes) },
+      canRevealInFileManager() && {
+        id: "finder",
+        label: revealLabel(),
+        icon: "external-link",
+        run: () => void revealInFinder(nodes),
+      },
       folder && getAction("terminal.openAt")
         ? { id: "terminal", label: "Terminal", icon: "terminal", run: () => void delegate("terminal.openAt", folder) }
         : null,
@@ -446,7 +451,12 @@ function libraryMenuItems(nodes: ProjectNode[]): MenuItem[] {
     !!folder && delegated("find.inPath", { directory: folder }, "Find in Files…", { icon: "search" }),
     !!folder && { kind: "separator" },
     submenu("openIn", "Open In", [
-      { id: "finder", label: revealLabel(), icon: "external-link", run: () => void revealInFinder(nodes) },
+      canRevealInFileManager() && {
+        id: "finder",
+        label: revealLabel(),
+        icon: "external-link",
+        run: () => void revealInFinder(nodes),
+      },
     ]),
     single &&
       !single.dir &&

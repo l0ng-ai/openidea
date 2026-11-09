@@ -110,7 +110,11 @@ function AboutDialog({ onClose }: { onClose: () => void }) {
               {t("app.action.showLog", { os: build?.os ?? guessOs() })}
             </button>
             {app && (
-              <button type="button" className={styles.link} onClick={() => void revealInFileManager(app.configDir)}>
+              <button
+                type="button"
+                className={styles.link}
+                onClick={() => void revealInFileManager(app.configDir, null)}
+              >
                 {t("app.about.showConfig")}
               </button>
             )}
