@@ -3,6 +3,7 @@
 
 use crate::discover::{project_venv_python, workspace_tsdk};
 use crate::exec::{path_with, search_path, which};
+use crate::npm::{has_ts_api, own_typescript};
 use crate::{angular, astro, godot, pinned, vue};
 use crate::{bin_dir, exe, venv_of};
 use ide_core::settings::{InspectionLevel, InspectionSettings, LanguageServerSettings, Settings};
@@ -1140,7 +1141,13 @@ pub fn server_protocol_overrides(cfg: &mut LanguageServerConfig, s: &Settings) {
         cfg.code_action_kinds = kinds.clone();
     }
     if let Some(options) = &ls.initialization_options {
+        let astro_tsdk = (cfg.name == astro::SERVER)
+            .then(|| cfg.initialization_options.as_ref()?.get("typescript")?.get("tsdk")?.as_str().map(str::to_owned))
+            .flatten();
         merge_init_options(cfg, options.clone());
+        if let Some(tsdk) = astro_tsdk {
+            merge_init_options(cfg, json!({ "typescript": { "tsdk": tsdk } }));
+        }
     }
     if let Some(settings) = &ls.settings {
         let mut current = cfg.settings.take().filter(Value::is_object).unwrap_or_else(|| json!({}));
@@ -1153,10 +1160,10 @@ pub fn server_protocol_overrides(cfg: &mut LanguageServerConfig, s: &Settings) {
 /// `require('typescript')`): the selected version, else its own, else the
 /// project's — whichever still has the language-service API.
 fn configure_vue_typescript(cfg: &mut LanguageServerConfig, root: &Path, server_root: &Path, s: &Settings) {
-    let selected = tsdk(server_root, s).or_else(|| tsdk(root, s)).filter(|l| vue::has_ts_api(l));
+    let selected = tsdk(server_root, s).or_else(|| tsdk(root, s)).filter(|l| has_ts_api(l));
     let package = vue::server_package(&cfg.command, &search_path());
-    let own = package.as_deref().and_then(vue::own_typescript);
-    let workspace = || workspace_tsdk(server_root).or_else(|| workspace_tsdk(root)).filter(|l| vue::has_ts_api(l));
+    let own = package.as_deref().and_then(own_typescript);
+    let workspace = || workspace_tsdk(server_root).or_else(|| workspace_tsdk(root)).filter(|l| has_ts_api(l));
     let lib = match selected {
         Some(lib) => Some(lib),
         None if own.is_some() => None,

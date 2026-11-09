@@ -1,7 +1,7 @@
 //! Astro (Volar) requires a TypeScript language-service library at initialize.
 
 use crate::apply::{merge_init_options, setting_path, tsdk};
-use crate::npm::package_dir;
+use crate::npm::{has_ts_api, own_typescript, package_dir};
 use ide_core::settings::Settings;
 use ide_core::tool_path::{find_command, search_path};
 use ide_language::LanguageServerConfig;
@@ -10,10 +10,6 @@ use std::ffi::OsString;
 use std::path::Path;
 
 pub(crate) const SERVER: &str = "astro-ls";
-
-fn has_typescript(lib: &Path) -> bool {
-    lib.join("typescript.js").is_file() || lib.join("tsserverlibrary.js").is_file()
-}
 
 pub(crate) fn configure(cfg: &mut LanguageServerConfig, root: &Path, server_root: &Path, s: &Settings) {
     let overrides = s.language_servers.get(SERVER);
@@ -37,7 +33,7 @@ pub(crate) fn configure(cfg: &mut LanguageServerConfig, root: &Path, server_root
     let node = setting_path(root, &s.languages.node.interpreter).filter(|p| p.is_file()).or_else(|| {
         s.languages.node.interpreter.trim().is_empty().then(|| find_command("node", &search, server_root)).flatten()
     });
-    if node.is_none() {
+    if node.is_none() || find_command("node", &search, server_root).is_none() {
         cfg.launch_error = Some(
             "Astro Language Server needs Node.js. Install it or select its executable in Settings › Languages & Frameworks › Node.js."
                 .into(),
@@ -65,22 +61,19 @@ pub(crate) fn configure(cfg: &mut LanguageServerConfig, root: &Path, server_root
     let lib = if let Some(lib) = selected {
         // An invalid explicit SDK is a settings error; silently using another
         // version would hide it. TypeScript 7 has no language-service API.
-        has_typescript(&lib).then_some(lib)
+        has_ts_api(&lib).then_some(lib)
     } else {
         server_root
             .ancestors()
             .take_while(|dir| dir.starts_with(root))
             .map(|dir| dir.join("node_modules/typescript/lib"))
-            .find(|lib| has_typescript(lib))
+            .find(|lib| has_ts_api(lib))
             .or_else(|| {
                 let package = package_dir(&bin, "@astrojs/language-server").or_else(|| {
                     crate::npm::shim_package(&bin, "@astrojs/language-server", &search, server_root, &cfg.env)
                 })?;
                 let real = dunce::canonicalize(&package).unwrap_or_else(|_| package.clone());
-                real.ancestors()
-                    .chain(package.ancestors())
-                    .map(|dir| dir.join("node_modules/typescript/lib"))
-                    .find(|lib| has_typescript(lib))
+                own_typescript(&real).or_else(|| own_typescript(&package))
             })
     };
     match lib {
@@ -97,7 +90,7 @@ pub(crate) fn configure(cfg: &mut LanguageServerConfig, root: &Path, server_root
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::apply::{configure_server, language_servers};
+    use crate::apply::{configure_server, language_servers, server_launch_overrides, server_protocol_overrides};
     use ide_core::LanguageId;
     use ide_language::LanguageRegistry;
     use std::path::PathBuf;
@@ -125,7 +118,9 @@ mod tests {
         let node = binary(&tmp.join("runtime"), "node");
         let mut settings = settings.clone();
         settings.languages.node.interpreter = node.to_string_lossy().into_owned();
+        server_launch_overrides(&mut cfg, &settings);
         configure_server(&mut cfg, &tmp.join("project"), &tmp.join("project/apps/web"), &settings);
+        server_protocol_overrides(&mut cfg, &settings);
         cfg
     }
 
@@ -153,7 +148,7 @@ mod tests {
         s.languages.typescript.version = managed.to_string_lossy().into_owned();
         assert_eq!(sdk(&configured(t, &bin, &s)), Some(managed));
         let custom = t.join("custom lib");
-        touch(&custom.join("tsserverlibrary.js"));
+        touch(&custom.join("typescript.js"));
         s.language_servers.entry(SERVER.into()).or_default().initialization_options =
             Some(json!({ "typescript": { "tsdk": custom }, "customOption": true }));
         assert_eq!(sdk(&configured(t, &bin, &s)), Some(custom));
@@ -201,5 +196,32 @@ mod tests {
         configure(&mut cfg, t, t, &Settings::default());
         assert!(cfg.launch_error.is_none());
         assert!(cfg.install_hint.unwrap().contains("@astrojs/language-server"));
+    }
+
+    #[test]
+    fn relative_sdk_settings_remain_resolved_after_protocol_overrides() {
+        let tmp = tempfile::tempdir().unwrap();
+        let t = tmp.path();
+        let bin = binary(&t.join("tools/node_modules/.bin"), SERVER);
+        let lib = t.join("project/apps/web/custom lib");
+        touch(&lib.join("typescript.js"));
+        let mut s = Settings::default();
+        s.language_servers.entry(SERVER.into()).or_default().initialization_options =
+            Some(json!({ "typescript": { "tsdk": "custom lib" }, "customOption": true }));
+        let cfg = configured(t, &bin, &s);
+        assert_eq!(sdk(&cfg), Some(lib));
+        assert_eq!(cfg.initialization_options.unwrap()["customOption"].as_bool(), Some(true));
+    }
+
+    #[test]
+    fn node_must_be_available_on_the_servers_effective_path() {
+        let tmp = tempfile::tempdir().unwrap();
+        let t = tmp.path();
+        let bin = binary(&t.join("tools/node_modules/.bin"), SERVER);
+        touch(&t.join("project/node_modules/typescript/lib/typescript.js"));
+        let mut s = Settings::default();
+        s.language_servers.entry(SERVER.into()).or_default().env.insert("PATH".into(), String::new());
+        let cfg = configured(t, &bin, &s);
+        assert!(cfg.launch_error.is_some_and(|e| e.contains("Node.js")));
     }
 }
