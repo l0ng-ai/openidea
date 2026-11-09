@@ -7141,5 +7141,10 @@
   "Toggle Boolean Cell": "切换布尔单元格",
   "Toggle {name}": "切换 {name}",
   "true": "真",
-  "false": "假"
+  "false": "假",
+  "This file was auto-detected as a Docker Compose configuration based on its content": "根据文件内容自动识别为 Docker Compose 配置",
+  "Not a Compose file": "不是 Compose 文件",
+  "Keep as Docker Compose": "保留为 Docker Compose",
+  "Compose Up": "Compose 启动",
+  "Start the service at the caret, or all services in the active Docker Compose file": "启动光标处的服务，或当前 Docker Compose 文件中的所有服务"
 }
