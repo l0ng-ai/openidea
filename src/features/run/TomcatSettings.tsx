@@ -1,3 +1,4 @@
+import { writeClipboardText } from "@/platform/clipboard";
 import { useEffect, useRef, useState } from "react";
 import clsx from "clsx";
 import { call, commands, isTauri, type RunConfig, type TomcatInstallation, type WebArtifact } from "@/platform/ipc";
@@ -889,7 +890,7 @@ export function TomcatSettings({ config, onChange }: { config: RunConfig; onChan
                   disabled={envRows.length === 0}
                   onClick={() => {
                     const row = envRows[selectedEnvIdx];
-                    if (row) void navigator.clipboard?.writeText(`${row.name}=${row.value}`);
+                    if (row) void writeClipboardText(`${row.name}=${row.value}`);
                   }}
                 />
                 <IconButton

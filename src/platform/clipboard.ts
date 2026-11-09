@@ -1,6 +1,12 @@
 import { call, commands, isTauri } from "./ipc";
 import { ipcPath } from "./paths";
 
+/** Native menu actions and async work can outlive WebKit's user activation. */
+export async function writeClipboardText(text: string): Promise<void> {
+  if (isTauri()) await call(commands.clipboardWriteText(text));
+  else await navigator.clipboard.writeText(text);
+}
+
 type FormatFiles = (paths: string[]) => string;
 const rawPaths: FormatFiles = (paths) => paths.join("\n");
 

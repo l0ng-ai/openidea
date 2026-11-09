@@ -21,6 +21,12 @@
 
 use std::path::PathBuf;
 
+/// Replaces every clipboard flavor with plain text. `owner` is the calling window
+/// handle on Windows, ignored elsewhere. Call on the main thread on macOS and Linux.
+pub fn set_text(text: &str, owner: usize) -> std::io::Result<()> {
+    imp::set_text(text, owner)
+}
+
 /// Size of `DROPFILES`: `pFiles`, `pt` (two `LONG`s), `fNC`, `fWide`.
 const HEADER: usize = 20;
 
@@ -165,8 +171,12 @@ mod imp {
     /// Opens the clipboard as its owner: the list is written in full, so no
     /// owning window is needed.
     fn open() -> bool {
+        open_for(ptr::null_mut())
+    }
+
+    fn open_for(owner: Handle) -> bool {
         for _ in 0..OPEN_ATTEMPTS {
-            if unsafe { OpenClipboard(ptr::null_mut()) } != 0 {
+            if unsafe { OpenClipboard(owner) } != 0 {
                 return true;
             }
             std::thread::sleep(OPEN_RETRY);
@@ -227,6 +237,29 @@ mod imp {
             ptr::copy_nonoverlapping(units.as_ptr() as *const u8, data as *mut u8, bytes);
             GlobalUnlock(memory);
             (memory, bytes)
+        }
+    }
+
+    pub fn set_text(text: &str, owner: usize) -> std::io::Result<()> {
+        let (memory, _) = global_text(text);
+        if memory.is_null() {
+            return Err(std::io::Error::last_os_error());
+        }
+        // SAFETY: ownership transfers only on success; otherwise we free the allocation.
+        unsafe {
+            if !open_for(owner as Handle) {
+                GlobalFree(memory);
+                return Err(std::io::Error::last_os_error());
+            }
+            let taken = EmptyClipboard() != 0 && !SetClipboardData(CF_UNICODETEXT, memory).is_null();
+            let error = std::io::Error::last_os_error();
+            CloseClipboard();
+            if taken {
+                Ok(())
+            } else {
+                GlobalFree(memory);
+                Err(error)
+            }
         }
     }
 
@@ -340,6 +373,19 @@ mod imp {
         })
     }
 
+    pub fn set_text(text: &str, _owner: usize) -> std::io::Result<()> {
+        debug_assert!(MainThreadMarker::new().is_some(), "NSPasteboard access requires the main thread");
+        autoreleasepool(|_| {
+            let board = NSPasteboard::generalPasteboard();
+            board.clearContents();
+            if board.setString_forType(&NSString::from_str(text), unsafe { NSPasteboardTypeString }) {
+                Ok(())
+            } else {
+                Err(std::io::Error::other("Cannot write clipboard text"))
+            }
+        })
+    }
+
     pub fn set_files(paths: &[PathBuf]) -> bool {
         debug_assert!(MainThreadMarker::new().is_some(), "NSPasteboard access requires the main thread");
         autoreleasepool(|_| {
@@ -369,6 +415,19 @@ mod imp {
 #[cfg(not(any(windows, target_os = "macos")))]
 mod imp {
     use std::path::PathBuf;
+
+    pub fn set_text(text: &str, _owner: usize) -> std::io::Result<()> {
+        #[cfg(target_os = "linux")]
+        {
+            gtk::Clipboard::get(&gtk::gdk::SELECTION_CLIPBOARD).set_text(text);
+            Ok(())
+        }
+        #[cfg(not(target_os = "linux"))]
+        {
+            let _ = text;
+            Err(std::io::Error::other("Clipboard text is unavailable on this platform"))
+        }
+    }
 
     pub fn has_files() -> bool {
         false

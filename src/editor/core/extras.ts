@@ -1,4 +1,5 @@
 /** Edit › Paste from History and Code › Unwrap/Remove: the parts that need popups or the backend. */
+import { writeClipboardText } from "@/platform/clipboard";
 import { EditorSelection } from "@codemirror/state";
 import type { EditorView } from "@codemirror/view";
 import { structure } from "@/editor/structure";
@@ -28,7 +29,7 @@ export function pasteFromHistory(view: EditorView) {
   }
   openPasteHistory(view, (text, linewise) => {
     recordClipboard(text, linewise);
-    void navigator.clipboard?.writeText(text).catch(() => {});
+    void writeClipboardText(text).catch(() => {});
     pasteText(view, text);
   });
 }
