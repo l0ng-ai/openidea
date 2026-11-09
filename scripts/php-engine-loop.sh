@@ -122,12 +122,27 @@ for ((i = 1; i <= MAX_ITER; i++)); do
         grep -E '^test .* \.\.\. FAILED$' "$check" | sed -E 's/^test (.*) \.\.\. FAILED$/\1/' |
             grep -vxF -f <(grep -v '^#' "$KNOWN" | tr -d '\r') || true
     }
+    # Timing tests (a p95 budget over a few samples) stall when hundreds of other tests share
+    # the CPU, so they run on their own after the main run, with their assertions unchanged.
+    TIMING_TESTS=(complete::tests::completion_on_the_fixture_is_fast)
+    skips=()
+    for t in "${TIMING_TESTS[@]}"; do skips+=(--skip "$t"); done
+    run_check() {
+        local ok=1
+        cargo test "${crates[@]}" --no-fail-fast -- "${skips[@]}" >"$check" 2>&1 || ok=0
+        if [[ -d crates/ide-php ]]; then
+            for t in "${TIMING_TESTS[@]}"; do
+                cargo test -p ide-php --lib -- --exact "$t" >>"$check" 2>&1 || ok=0
+            done
+        fi
+        ((ok))
+    }
     passed=0
-    cargo test "${crates[@]}" --no-fail-fast >"$check" 2>&1 && passed=1
+    run_check && passed=1
     if ((!passed)) && [[ -n "$(new_failures)" ]]; then
         # Some tests time warm calls and can miss their budget under load: run once more.
         say "new failures, running the tests once more: $(echo $(new_failures))"
-        cargo test "${crates[@]}" --no-fail-fast >"$check" 2>&1 && passed=1
+        run_check && passed=1
     fi
     if ((!passed)); then
         new=$(new_failures)
