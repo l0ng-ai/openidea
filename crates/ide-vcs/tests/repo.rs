@@ -980,15 +980,40 @@ fn checkout_create_detached_delete_rebase() {
     );
 
     repo.checkout("main", false).unwrap();
-    repo.rename_branch("topic", "topic2").unwrap();
+    repo.rename_branch("topic", "topic2", false).unwrap();
     assert!(repo.branches().unwrap().iter().any(|b| b.name == "topic2"));
-    assert!(repo.rename_branch("topic2", "main").is_err(), "existing name must be refused");
-    assert!(repo.rename_branch("topic2", " ").is_err());
-    repo.rename_branch("topic2", "topic").unwrap();
+    assert!(repo.rename_branch("topic2", "main", false).is_err(), "existing name must be refused");
+    assert!(repo.rename_branch("topic2", " ", false).is_err());
+    repo.rename_branch("topic2", "topic", false).unwrap();
     assert!(repo.delete_branch("topic", false).is_err(), "unmerged branch must need force");
     repo.delete_branch("topic", true).unwrap();
     assert!(!repo.branches().unwrap().iter().any(|b| b.name == "topic"));
     assert!(repo.checkout("does-not-exist", false).is_err());
+}
+
+#[test]
+fn renaming_a_branch_keeps_or_drops_its_upstream() {
+    let (fx, _bare) = with_remote();
+    let repo = fx.repo();
+    fx.git(&["branch", "--track", "topic", "origin/main"]);
+
+    let upstream = |name: &str| {
+        repo.branches().unwrap().into_iter().find(|b| b.name == name && !b.remote).and_then(|b| b.upstream)
+    };
+    assert_eq!(upstream("topic").as_deref(), Some("origin/main"));
+
+    // `git branch -m` moves the tracking with the name.
+    repo.rename_branch("topic", "topic2", false).unwrap();
+    assert_eq!(upstream("topic2").as_deref(), Some("origin/main"));
+
+    // Asked to drop it, the new branch tracks nothing.
+    repo.rename_branch("topic2", "topic3", true).unwrap();
+    assert_eq!(upstream("topic3"), None);
+
+    // A branch that tracks nothing has no upstream to drop; that is not an error.
+    fx.git(&["branch", "plain"]);
+    repo.rename_branch("plain", "plain2", true).unwrap();
+    assert!(repo.branches().unwrap().iter().any(|b| b.name == "plain2" && !b.remote));
 }
 
 #[test]

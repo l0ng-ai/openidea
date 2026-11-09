@@ -947,17 +947,22 @@ pub(crate) fn delete_branch(r: &Repo, branch: &str, force: bool) -> IdeResult<()
     run(r.root(), &["branch", if force { "-D" } else { "-d" }, "--", branch], None).map(|_| ())
 }
 
+/// The short name (`origin/main`) of the branch a local branch tracks, as the branch list shows it.
+pub(crate) fn upstream_name(r: &Repo, branch: &str) -> Option<String> {
+    let out =
+        cli::run_raw(r.root(), &["for-each-ref", "--format=%(upstream:short)", &format!("refs/heads/{branch}")], None)
+            .ok()?;
+    let upstream = out.stdout_str().trim().to_string();
+    (!upstream.is_empty()).then_some(upstream)
+}
+
 pub(crate) fn delete_branch_restorable(r: &Repo, branch: &str) -> IdeResult<DeletedBranch> {
     check_local_branch(r, branch)?;
     let tip = run(r.root(), &["rev-parse", "--verify", "-q", &format!("refs/heads/{branch}^{{commit}}")], None)?
         .stdout_str()
         .trim()
         .to_string();
-    let upstream =
-        cli::run_raw(r.root(), &["for-each-ref", "--format=%(upstream:short)", &format!("refs/heads/{branch}")], None)?
-            .stdout_str()
-            .trim()
-            .to_string();
+    let upstream = upstream_name(r, branch);
     let out = cli::run_raw(r.root(), &["branch", "-d", "--", branch], None)?;
     let unmerged = match out.code {
         Some(0) => false,
@@ -967,7 +972,7 @@ pub(crate) fn delete_branch_restorable(r: &Repo, branch: &str) -> IdeResult<Dele
         }
         code => return Err(cli::failure(&["branch"], &out.stderr, &out.stdout, code)),
     };
-    Ok(DeletedBranch { name: branch.to_string(), tip, upstream: (!upstream.is_empty()).then_some(upstream), unmerged })
+    Ok(DeletedBranch { name: branch.to_string(), tip, upstream, unmerged })
 }
 
 pub(crate) fn restore_branch(r: &Repo, deleted: &DeletedBranch) -> IdeResult<()> {
@@ -980,12 +985,19 @@ pub(crate) fn restore_branch(r: &Repo, deleted: &DeletedBranch) -> IdeResult<()>
     Ok(())
 }
 
-pub(crate) fn rename_branch(r: &Repo, from: &str, to: &str) -> IdeResult<()> {
+/// `unset_upstream` drops the tracking that `git branch -m` moves to the new name.
+pub(crate) fn rename_branch(r: &Repo, from: &str, to: &str, unset_upstream: bool) -> IdeResult<()> {
     let to = to.trim();
     if to.is_empty() {
         return Err(IdeError::invalid("branch name is empty"));
     }
-    run(r.root(), &["branch", "-m", "--", from, to], None).map(|_| ())
+    run(r.root(), &["branch", "-m", "--", from, to], None)?;
+    // Checked rather than tolerated: `--unset-upstream` fails on a branch that tracks nothing,
+    // which would report an error for a rename that did happen.
+    if unset_upstream && upstream_name(r, to).is_some() {
+        run(r.root(), &["branch", "--unset-upstream", "--", to], None)?;
+    }
+    Ok(())
 }
 
 fn check_rev(rev: &str) -> IdeResult<&str> {

@@ -9,6 +9,7 @@ const mocks = vi.hoisted(() => ({
   worktrees: vi.fn(),
   restoreBranch: vi.fn(),
   branches: vi.fn(),
+  rename: vi.fn(),
 }));
 vi.mock("../dialogs", async (original) => ({
   ...(await original<typeof import("../dialogs")>()),
@@ -27,6 +28,7 @@ vi.mock("@/platform/ipc", async (original) => {
       vcsDeleteBranch: mocks.deleteBranch,
       vcsRestoreBranch: mocks.restoreBranch,
       vcsBranches: mocks.branches,
+      vcsRenameBranch: mocks.rename,
     },
   };
 });
@@ -95,13 +97,39 @@ it.each([
   ["New Branch", () => newBranch()],
   ["New Branch from a revision", () => newBranch("origin/main")],
   ["New Branch in several repositories", () => newBranchInRepos(["/p/front", "/p/back"])],
-  ["Rename Branch", () => renameBranch("main")],
+  ["Rename Branch", () => renameBranch(local("main"))],
 ])("%s turns a typed space into a separator, as IDEA does", async (_name, open) => {
   await open();
   const { sanitize, validate } = mocks.prompt.mock.calls[0]![0];
   const typed: string = sanitize("fix login");
   expect(typed).toBe("fix-login");
   expect(validate(typed)).toBeNull();
+});
+
+const tracked = (name: string, upstream: string, current = false): Branch => ({ ...local(name, current), upstream });
+
+it("offers to drop the upstream only for a branch that tracks one", async () => {
+  await renameBranch(tracked("topic", "origin/topic"));
+  expect(mocks.prompt.mock.calls[0]?.[0]).toMatchObject({
+    initial: "topic",
+    checkbox: { label: "Unset upstream branch", initial: false },
+  });
+  await renameBranch(local("plain"));
+  expect(mocks.prompt.mock.calls[1]?.[0].checkbox).toBeUndefined();
+});
+
+it("renames with the tracking kept, or dropped when the box is ticked", async () => {
+  mocks.prompt.mockResolvedValue({ value: "renamed", checked: false });
+  await renameBranch(tracked("topic", "origin/topic"));
+  expect(mocks.rename).toHaveBeenLastCalledWith("/p/front", "topic", "renamed", false);
+
+  mocks.prompt.mockResolvedValue({ value: "renamed", checked: true });
+  await renameBranch(tracked("topic", "origin/topic"));
+  expect(mocks.rename).toHaveBeenLastCalledWith("/p/front", "topic", "renamed", true);
+
+  // Nothing to drop on a branch without an upstream, whatever the box says.
+  await renameBranch(local("plain"));
+  expect(mocks.rename).toHaveBeenLastCalledWith("/p/front", "plain", "renamed", false);
 });
 
 const worktree = (path: string, branchName: string | null, main = false): Worktree => ({

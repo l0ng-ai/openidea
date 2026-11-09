@@ -255,7 +255,12 @@ export async function rebaseOnto(branch: string, ref = branch) {
   });
 }
 
-export async function renameBranch(name: string) {
+/**
+ * Renames a local branch. `git branch -m` carries the upstream tracking to the new name;
+ * a branch that has one also offers to drop it, since the remote branch keeps its old name.
+ */
+export async function renameBranch(branch: Branch) {
+  const name = branch.name;
   const repo = currentRepo();
   const r = await promptText({
     title: tx`Rename Branch ${name}`,
@@ -265,12 +270,16 @@ export async function renameBranch(name: string) {
     okLabel: "Rename",
     sanitize: cleanUpBranchNameOnTyping,
     validate: (v) => (v.trim() === name ? "Enter a new name" : validateBranchName(v)),
+    checkbox: branch.upstream ? { label: "Unset upstream branch", initial: false } : undefined,
   });
   if (!r) return;
   const to = r.value.trim();
-  const ok = await runOp(tx`Rename branch ${name}`, () => call(commands.vcsRenameBranch(repo, name, to)), {
-    success: tx`Renamed branch ${name} to ${to}`,
-  });
+  const unsetUpstream = !!branch.upstream && r.checked;
+  const ok = await runOp(
+    tx`Rename branch ${name}`,
+    () => call(commands.vcsRenameBranch(repo, name, to, unsetUpstream)),
+    { success: tx`Renamed branch ${name} to ${to}` },
+  );
   if (ok !== undefined) {
     try {
       localStorage.setItem(recentKey(), JSON.stringify(recentBranches().map((b) => (b === name ? to : b))));
