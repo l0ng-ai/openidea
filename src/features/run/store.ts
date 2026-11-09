@@ -1136,6 +1136,8 @@ export function onRunExited(runId: RunId, code: number | null) {
   const session = useRun.getState().sessions.find((s) => s.runId === runId);
   if (!session) {
     pendingExits.set(runId, code);
+    // Background project queries also use the process host without attaching a Run tab.
+    if (pendingExits.size > 128) pendingExits.delete(pendingExits.keys().next().value!);
     return;
   }
   finishSession(session.id, code);

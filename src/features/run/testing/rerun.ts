@@ -221,6 +221,7 @@ function builtinTestsConfig(config: RunConfig, paths: string[][], name: string):
           env: { ...config.env },
           params: {
             ...config.params,
+            testMethods: JSON.stringify([...new Set(paths.map((p) => `${p[1]}.${p[2]}`))]),
             programArgs: formatArgs(dotnetArgs(parseArgs(config.params?.programArgs || ""), filter)),
           },
         };

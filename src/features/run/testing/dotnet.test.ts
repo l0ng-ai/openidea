@@ -7,6 +7,7 @@ import { dotnetTestType } from "../dotnetTypes";
 import xunitReport from "./fixtures/xunit.trx?raw";
 import nunitReport from "./fixtures/nunit.trx?raw";
 import mstestReport from "./fixtures/mstest.trx?raw";
+import mtpReport from "./fixtures/mtp.trx?raw";
 
 const config: RunConfig = {
   id: "dotnet:tests",
@@ -44,7 +45,15 @@ function report(adapter: string, source = "C:/My Project/bin/net9.0/Tests.dll") 
 }
 
 describe(".NET test reports", () => {
-  it.each([xunitReport, nunitReport, mstestReport])(
+  it("finds source locations in MTP stack traces without the VSTest line prefix", () => {
+    expect(trxEvents(mtpReport)).toContainEqual(
+      expect.objectContaining({
+        type: "location",
+        location: { path: "C:\\Fixture\\Native\\Test1.cs", line: 5, resolve: "path" },
+      }),
+    );
+  });
+  it.each([xunitReport, nunitReport, mstestReport, mtpReport])(
     "reads actual VSTest reports and selects failed methods",
     async (xml) => {
       const results = new TestResults();

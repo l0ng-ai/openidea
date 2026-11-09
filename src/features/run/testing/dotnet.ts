@@ -5,8 +5,17 @@ import type { TestEvent } from "./types";
 export class DotnetReports {
   readonly prefix = `openidea-${crypto.randomUUID()}`;
   private readonly paths = new Set<string>();
+  private mtp = false;
 
   launch(config: RunConfig): RunConfig {
+    this.mtp = config.params?.runner === "mtp" || config.params?.runner === "mtp-legacy";
+    if (this.mtp) {
+      if (config.params?.trx === "false") return config;
+      const args = [...config.args];
+      if (config.params?.runner === "mtp-legacy" && !args.includes("--")) args.push("--");
+      if (!args.includes("--report-trx")) args.push("--report-trx");
+      return { ...config, args };
+    }
     const boundary = config.args.indexOf("--");
     const at = boundary < 0 ? config.args.length : boundary;
     return {
@@ -18,7 +27,7 @@ export class DotnetReports {
   feed(line: string) {
     // Match the absolute report path, independently of VSTest's UI language.
     const path = /(?:[A-Za-z]:[\\/]|\/).*\.trx\s*$/i.exec(line)?.[0].trim();
-    if (path && path.replace(/\\/g, "/").split("/").at(-1)?.startsWith(this.prefix)) this.paths.add(path);
+    if (path && (this.mtp || path.replace(/\\/g, "/").split("/").at(-1)?.startsWith(this.prefix))) this.paths.add(path);
   }
 
   async read(readText: (path: string) => Promise<string>): Promise<TestEvent[]> {
@@ -43,7 +52,7 @@ export function trxEvents(xml: string): TestEvent[] {
     const method = definitions.get(attr(result, "testId"));
     if (!method) continue;
     const className = attr(method, "className").split(",")[0]!;
-    const name = attr(method, "name").replace(/\(.*$/s, "");
+    const name = attr(method, "name").replace(/\(.*$/s, "").trim();
     const source = attr(method, "codeBase").replace(/\\/g, "/");
     if (!className || !name || !source) continue;
     const display = (attr(result, "testName") || name).replace(
@@ -63,7 +72,7 @@ export function trxEvents(xml: string): TestEvent[] {
       for (const node of elements(result, tag)) {
         for (const line of (node.textContent ?? "").split(/\r?\n/).slice(0, 200)) {
           events.push({ type: "output", path, line });
-          const location = /\bin (.+\.(?:cs|fs|vb)):line (\d+)/.exec(line);
+          const location = /\bin (.+\.(?:cs|fs|vb)):(?:line )?(\d+)/.exec(line);
           if (location)
             events.push({
               type: "location",
