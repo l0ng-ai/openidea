@@ -455,7 +455,21 @@ const tabs: Scenario = {
         switches.push(await h.measure(() => tab.click(), ".cm-content", `// tab-${i}`));
       }
     }
-    return { openSmallMs, ...latencySummary(switches, "switch") };
+    // The Switcher (Ctrl+Tab) back and forth between the two most recent tabs.
+    const before = await h.counters();
+    const switcher: number[] = [];
+    for (let i = 0; i < 10; i++) {
+      const tag = i % 2 ? names.length - 1 : names.length - 2;
+      switcher.push(await h.measure(() => h.pressAction("navigate.switcher"), ".cm-content", `// tab-${tag}`));
+      await h.page.waitForTimeout(150);
+    }
+    const work = Harness.delta(before, await h.counters());
+    return {
+      openSmallMs,
+      ...latencySummary(switches, "switch"),
+      ...latencySummary(switcher, "switcher"),
+      switcherMainThreadMs: work.taskMs / switcher.length,
+    };
   },
 };
 

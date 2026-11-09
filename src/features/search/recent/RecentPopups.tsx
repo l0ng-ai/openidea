@@ -1,5 +1,6 @@
 import { useFilePresentation } from "@/platform/filePresentation";
 import { useEffect, useMemo, useRef, useState, type KeyboardEvent, type MouseEvent as ReactMouseEvent } from "react";
+import { flushSync } from "react-dom";
 import clsx from "clsx";
 import { editorsFor, getNavigationHistory } from "@/editor/api";
 import { call, commands, type OutlineItem } from "@/platform/ipc";
@@ -61,10 +62,13 @@ export function RecentPopupsOverlay() {
 
 const NAV_KEYS = ["ArrowDown", "ArrowUp", "PageDown", "PageUp"];
 
-/** Defers work until the dialog unmounted and restored focus. */
+/**
+ * Runs `fn` once the dialog has unmounted and given focus back, in the same frame: the
+ * popup closing and what it opens paint together, without a frame of the old editor between.
+ */
 const afterClose = (fn: () => void) => {
-  hideRecentPopup();
-  setTimeout(fn, 0);
+  flushSync(hideRecentPopup);
+  fn();
 };
 
 // ---------------------------------------------------------------------------

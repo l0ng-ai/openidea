@@ -72,10 +72,11 @@
 
     "tabs.openSmallMs": 100,
     "tabs.switchP95Ms": 33,
+    "tabs.switcherP50Ms": 33,
 
     "agentTabs.conversationNodes": 20000,
     "agentTabs.rowsAlwaysRendered": 0,
-    "agentTabs.switchP95Ms": 66,
+    "agentTabs.switchP95Ms": 50,
     "agentTabs.switchMainThreadMs": 50,
     "agentTabs.switchTbtMs": 50,
     "agentTabs.scrollJumps": 0,
