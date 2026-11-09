@@ -155,7 +155,7 @@ struct State {
     database_credentials: BTreeSet<(String, String)>,
     database_connections: Vec<(String, String)>,
     mcp_stdio: Option<Vec<String>>,
-    run_targets: BTreeMap<(String, String), crate::PluginRunTarget>,
+    run_targets: BTreeMap<(String, String), crate::PluginRunTargetWithOverrides>,
     run_configurations: BTreeMap<String, crate::PluginRunConfiguration>,
     configuration_runs: Vec<(String, String, Vec<String>, bool)>,
     log_tabs: Vec<MockLogTab>,
@@ -502,6 +502,26 @@ impl MockHost {
 
     /// Registered targets of this mock plugin, scoped by project root.
     pub fn run_targets(&self) -> BTreeMap<(String, String), crate::PluginRunTarget> {
+        self.run_targets_with_overrides()
+            .into_iter()
+            .map(|(key, t)| {
+                (
+                    key,
+                    crate::PluginRunTarget {
+                        id: t.id,
+                        name: t.name,
+                        program: t.program,
+                        args: t.args,
+                        workdir_args: t.workdir_args,
+                        container_root: t.container_root,
+                        commands: t.commands.into_iter().map(|c| (c.name, c.args)).collect(),
+                    },
+                )
+            })
+            .collect()
+    }
+    /// Registered targets including per-command working-directory arguments (API 1.5).
+    pub fn run_targets_with_overrides(&self) -> BTreeMap<(String, String), crate::PluginRunTargetWithOverrides> {
         self.state.borrow().run_targets.clone()
     }
     /// Configurations available to start_run in native tests.
@@ -1881,15 +1901,24 @@ pub mod current {
     }
 
     pub fn register_run_target(project: &ProjectRes, target: &crate::PluginRunTarget) -> Result<(), Error> {
+        register_run_target_with_overrides(project, &target.clone().into())
+    }
+    pub fn register_run_target_with_overrides(
+        project: &ProjectRes,
+        target: &crate::PluginRunTargetWithOverrides,
+    ) -> Result<(), Error> {
         with(|s| {
             require(s, &format!("process:{}", target.program))?;
+            if s.restricted {
+                return Err(Error::Denied("project is not trusted".into()));
+            }
             if target.id.is_empty()
                 || target.name.is_empty()
                 || target
                     .args
                     .iter()
                     .chain(&target.workdir_args)
-                    .chain(target.commands.iter().flat_map(|(_, a)| a))
+                    .chain(target.commands.iter().flat_map(|c| c.args.iter().chain(c.workdir_args.iter().flatten())))
                     .any(|a| a.contains('\0'))
             {
                 return Err(Error::Invalid("invalid run target".into()));

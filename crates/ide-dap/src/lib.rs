@@ -1160,7 +1160,7 @@ impl DebugManager {
         if own_terminate && !graceful {
             // Signal before anything else: waiting on a request the adapter may not answer
             // would delay the shutdown the console is supposed to show.
-            crate::session::signal_debuggee(s, false);
+            crate::session::signal_debuggee(s, false).await;
         }
         if graceful {
             // java-debug sends `terminated` only after it has drained the program's console

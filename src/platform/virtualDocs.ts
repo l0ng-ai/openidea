@@ -69,6 +69,10 @@ export function virtualContainer(uri: string): string {
 
 const cache = new Map<string, Promise<VirtualDocument>>();
 
+export function invalidateVirtualDocument(uri: string): void {
+  cache.delete(uri);
+}
+
 /** Contents of a virtual document (cached; failures are retried on the next call). */
 export function virtualDocument(uri: string): Promise<VirtualDocument> {
   let p = cache.get(uri);

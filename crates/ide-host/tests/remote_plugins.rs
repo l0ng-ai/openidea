@@ -548,7 +548,7 @@ async fn api14_stage3_remote_terminal_pins_and_exit_events_stay_on_the_execution
     let bin = tmp.path().join("bin");
     std::fs::create_dir(&bin).unwrap();
     let executable = bin.join("execution-tool");
-    std::fs::write(&executable, "#!/bin/sh\nif [ \"$1\" = wrapped ]; then printf '<%s>\\n' \"$@\" > \"$PWD/wrapped.txt\"; exit; fi\nread line\nprintf '%s\\n' \"$line\"\n").unwrap();
+    std::fs::write(&executable, "#!/bin/sh\nif [ \"$1\" = wrapped ]; then printf '<%s>\\n' \"$@\" > \"$PWD/wrapped.txt\"; exit; fi\nif [ \"$1\" = composer ]; then printf '<%s>\\n' \"$@\" > \"$PWD/composer.txt\"; exit; fi\nread line\nprintf '%s\\n' \"$line\"\n").unwrap();
     std::fs::set_permissions(&executable, std::fs::Permissions::from_mode(0o755)).unwrap();
     let path_var = {
         let bin = bin.clone();
@@ -599,9 +599,17 @@ async fn api14_stage3_remote_terminal_pins_and_exit_events_stay_on_the_execution
     )
     .await
     .unwrap();
+    invoke(
+        &peer,
+        "plugin_run_command",
+        json!({"pluginId":"execution", "commandId":"target-overrides", "arg":"empty", "editor":null}),
+    )
+    .await
+    .unwrap();
     let targets = invoke(&peer, "plugin_run_targets", json!({})).await.unwrap();
     assert_eq!(targets.as_array().unwrap().len(), 1);
     assert_eq!(targets[0]["pluginId"], "execution");
+    assert_eq!(targets[0]["target"]["commands"][0]["workdirArgs"], json!([]));
     assert!(desktop.run_targets(&project).is_empty());
     let id = targets[0]["id"].as_str().unwrap();
     let settings = invoke(&peer, "plugin_answer_run_target", json!({"id":id, "useTarget":false})).await.unwrap();
@@ -614,6 +622,10 @@ async fn api14_stage3_remote_terminal_pins_and_exit_events_stay_on_the_execution
         "<wrapped>\n<--cwd=/container>\n<php>\n<x.php>\n<literal ; $(touch bad)>\n"
     );
     assert!(!project.join("bad").exists());
+    let composer = json!({"id":"composer", "name":"Composer", "kind":"shell", "command":"composer", "args":["install"], "env":{}, "detected":false, "isTest":false, "target":id});
+    invoke(&peer, "run_start", json!({"config":composer, "onOutput":{"$channel":39}})).await.unwrap();
+    until("remote composer override", 5, || project.join("composer.txt").exists()).await;
+    assert_eq!(std::fs::read_to_string(project.join("composer.txt")).unwrap(), "<composer>\n<install>\n");
     invoke(
         &peer,
         "plugin_run_command",

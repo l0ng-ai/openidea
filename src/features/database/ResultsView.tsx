@@ -248,6 +248,21 @@ function Result({ tab }: { tab: ResultTab }) {
       eq,
     );
   }, [detailsValue, sources, resultNames, eq]);
+  // Nullability and defaults follow the table's details once they load (they gate Set NULL / Set DEFAULT).
+  const gridColumns = useMemo(
+    () =>
+      columns.map((c) => {
+        const d = detailsValue?.columns.find((x) => eq(x.name, c.name));
+        return {
+          ...c,
+          type: d?.dataType ?? c.type,
+          primaryKey: !!pk?.includes(c.name),
+          nullable: d?.nullable,
+          default: d?.default ?? null,
+        };
+      }),
+    [columns, pk, detailsValue, eq],
+  );
   const readOnlySource = source?.readOnly ?? false;
   const editable =
     editability.kind === "editable" &&
@@ -296,6 +311,16 @@ function Result({ tab }: { tab: ResultTab }) {
         else next.updates.delete(row);
       }
       return next;
+    });
+  };
+
+  const onResetCell = (row: number, col: number) => {
+    setEdits((e) => {
+      const inserts = [...e.inserts];
+      const ins = new Map(inserts[row - loaded]);
+      ins.delete(resultNames[col]!);
+      inserts[row - loaded] = ins;
+      return { ...e, inserts };
     });
   };
 
@@ -463,9 +488,10 @@ function Result({ tab }: { tab: ResultTab }) {
           )}
           <div className={clsx(styles.fill, styles.gridHost)}>
             <DataView
-              columns={columns.map((c) => ({ ...c, primaryKey: !!pk?.includes(c.name) }))}
+              columns={gridColumns}
               rowCount={rowCount}
               fixedRows={loaded}
+              driver={driver}
               value={value}
               panel={panel}
               onPanelChange={setPanel}
@@ -478,6 +504,7 @@ function Result({ tab }: { tab: ResultTab }) {
               isModified={(row, col) => !!edits.updates.get(row)?.has(resultNames[col]!)}
               editable={editable && !busy}
               onEdit={onEdit}
+              onResetCell={onResetCell}
               revealColumn={revealColumn}
               rowMenu={(rows) =>
                 editable && !busy

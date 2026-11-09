@@ -42,6 +42,10 @@ pub enum IdeEvent {
         created: Vec<crate::IpcPath>,
         modified: Vec<crate::IpcPath>,
         removed: Vec<crate::IpcPath>,
+        /// Subtrees whose ignore rules changed, after the matchers were rebuilt.
+        #[serde(default)]
+        #[specta(optional)]
+        ignore_rules: Vec<crate::IpcPath>,
     },
     /// Excluded or ignored folders whose contents changed; they stay out of `FsChanged`.
     ExcludedDirsChanged {
