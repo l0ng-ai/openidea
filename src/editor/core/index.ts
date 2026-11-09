@@ -24,13 +24,16 @@ import { PasteHistoryDialogHost, registerPasteHistoryActions } from "./view/Past
 import { NavBarPopup } from "./view/NavBarPopup";
 import { installClipboardTracking } from "./clipboardHistory";
 import {
-  Breadcrumbs,
   CaretStatus,
   EncodingStatus,
   IndentStatus,
   LineEndingStatus,
   ReadOnlyStatus,
+  StatusBarBreadcrumbs,
 } from "./view/StatusItems";
+
+/** The workbench navigation bar (View › Appearance › Navigation Bar). */
+export { Breadcrumbs } from "./view/StatusItems";
 
 export function activate(): void | (() => void) {
   const ctrl = editorController();
@@ -52,6 +55,8 @@ export function activate(): void | (() => void) {
     closeInput: (key) => ctrl.closeInput(key),
     prepareClose: () => ctrl.prepareClose(),
     cancelClose: () => ctrl.cancelClose(),
+    forgetSavedTabs: () => ctrl.forgetSavedTabs(),
+    keepSavedTabs: () => ctrl.keepSavedTabs(),
     documentHistory: (command) => ctrl.documentHistory(command),
     reformat: async (path) => {
       const handle = editorsFor(path)[0];
@@ -76,7 +81,7 @@ export function activate(): void | (() => void) {
       id: "editor.breadcrumbs",
       align: "left",
       priority: 0,
-      component: Breadcrumbs,
+      component: StatusBarBreadcrumbs,
       title: "Navigation Bar",
     }),
     registerStatusItem({

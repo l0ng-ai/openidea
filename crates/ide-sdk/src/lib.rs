@@ -7,6 +7,7 @@
 
 mod angular;
 pub mod apply;
+pub mod arduino;
 mod astro;
 mod discover;
 mod exec;

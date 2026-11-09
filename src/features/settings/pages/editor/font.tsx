@@ -4,7 +4,7 @@
  */
 
 import { FontPicker } from "../../components/FontPicker";
-import { useState } from "react";
+import { useId, useState } from "react";
 import { Checkbox, type SelectOption, T } from "@/ui";
 import { monoFontFamily } from "@/platform/fonts";
 import { NumberInput, Row, SearchLabel, Select } from "../../components/Form";
@@ -40,15 +40,24 @@ function FontRow() {
 function SizeRow() {
   const [size, setSize] = useSetting<number>("editor.fontSize");
   const [line, setLine] = useSetting<number>("editor.lineHeight");
+  const lineId = useId();
   return (
-    <>
-      <Row label="Size">
-        <NumberInput value={size} onChange={setSize} {...LIMITS.fontSize} aria-label="Size" unit="px" />
-      </Row>
-      <Row label="Line height">
-        <NumberInput value={line} onChange={setLine} {...LIMITS.lineHeight} aria-label="Line height" unit="px" />
-      </Row>
-    </>
+    <Row label="Size">
+      <NumberInput value={size} onChange={setSize} {...LIMITS.fontSize} aria-label="Size" unit="px" />
+      <span className={styles.inline}>
+        <label htmlFor={lineId} className={styles.inlineLabel}>
+          <SearchLabel text="Line height" />
+        </label>
+        <NumberInput
+          id={lineId}
+          value={line}
+          onChange={setLine}
+          {...LIMITS.lineHeight}
+          aria-label="Line height"
+          unit="px"
+        />
+      </span>
+    </Row>
   );
 }
 

@@ -87,6 +87,7 @@ export function TerminalFindBar({ sessionKey }: { sessionKey: string | null }) {
       e.stopPropagation();
       closeTerminalFind();
     } else if (e.key === "Enter") {
+      if ((e.target as Element).closest("button")) return;
       e.preventDefault();
       find(e.shiftKey ? "previous" : "next");
     } else if (e.key === "F3" || (hasPrimaryModifier(e) && e.key.toLowerCase() === "g")) {
@@ -155,7 +156,7 @@ export function TerminalFindBar({ sessionKey }: { sessionKey: string | null }) {
         title="Previous Occurrence"
         shortcut={formatBinding("Shift+Enter")}
         size="small"
-        disabled={!query}
+        disabled={!query || !result?.count}
         onClick={() => find("previous")}
       />
       <IconButton
@@ -163,7 +164,7 @@ export function TerminalFindBar({ sessionKey }: { sessionKey: string | null }) {
         title="Next Occurrence"
         shortcut="↵"
         size="small"
-        disabled={!query}
+        disabled={!query || !result?.count}
         onClick={() => find("next")}
       />
       <span className={styles.findSpacer} />

@@ -53,6 +53,7 @@ export function MergeToolbar({ summary }: ToolbarProps) {
       />
       <IconButton
         icon="diff-revert"
+        iconSize={14}
         title="Revert Conflict Resolution"
         size="small"
         disabled={!summary.revert}

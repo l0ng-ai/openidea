@@ -37,6 +37,7 @@ function item(over: Partial<CompletionItem> = {}): CompletionItem {
   return {
     label: "create",
     labelDetail: null,
+    labelDescription: null,
     detail: null,
     kind: "method",
     documentation: null,
@@ -128,6 +129,45 @@ describe("toCmCompletion", () => {
     expect(completionSymbolKind("typeParameter")).toBe("type");
     expect(completionSymbolKind(null)).toBe("text");
   });
+});
+
+describe("completion label presentation", () => {
+  // gopls v0.24.0: labelDetails.detail includes a leading space for field types; description is absent.
+  it.each([
+    ["Cap", "field", " int", "int", null, null, "int"],
+    ["Array", "field", " []any", "[]any", null, null, "[]any"],
+    ["Add", "method", "() error", "func() error", null, "() error", "func() error"],
+    [
+      "MakeArray",
+      "function",
+      "(capacity int) *LRUArray",
+      "func(capacity int) *LRUArray",
+      null,
+      "(capacity int) *LRUArray",
+      "func(capacity int) *LRUArray",
+    ],
+    ["fmt", "module", ' "fmt"', '"fmt"', null, null, '"fmt"'],
+    ["count", "field", "int", null, null, null, "int"],
+    ["count", "field", null, "int", null, null, "int"],
+    ["pair", "field", "(i32, i32)", null, null, null, "(i32, i32)"],
+    ["callback", "property", "(value: string) => void", null, null, null, "(value: string) => void"],
+    ["print", "method", "(Object obj)", "PrintStream.print(Object obj) : void", "void", "(Object obj)", "void"],
+    ["map", "method", "<T>(value: T)", null, "T[]", "<T>(value: T)", "T[]"],
+    ["str", "function", "(value: object)", null, "str", "(value: object)", "str"],
+    ["println!", "function", "(…)", null, "std", "(…)", "std"],
+    ["size", "property", "number", "(property) size: number", "number", null, "number"],
+    ["value", "variable", "  ", "Order", " ", null, "Order"],
+  ] as const)(
+    "renders %s (%s) as name, signature suffix and type",
+    (label, kind, labelDetail, detail, labelDescription, suffix, type) => {
+      const source = item({ label, kind, labelDetail, detail, labelDescription });
+      const completion = toCmCompletion(source);
+      expect(completion.label).toBe(label);
+      expect(completion.detail ?? null).toBe(suffix);
+      expect(typeColumnText(source)).toBe(type);
+      expect(source.labelDetail).toBe(labelDetail);
+    },
+  );
 });
 
 describe("completion helpers", () => {
@@ -484,6 +524,43 @@ describe("typeColumnText", () => {
       "std::collections",
     );
     expect(typeColumnText({ detail: null, additionalEdits: edit('import { a } from "./money";\n') })).toBe("./money");
+  });
+
+  it("shows the type, not the repeated signature, when the server sends both (JDT.LS `print`)", () => {
+    expect(
+      typeColumnText({
+        labelDescription: "void",
+        detail: "PrintStream.print(Object obj) : void",
+        additionalEdits: [],
+      }),
+    ).toBe("void");
+    expect(typeColumnText({ labelDescription: "String", detail: "Person.name : String", additionalEdits: [] })).toBe(
+      "String",
+    );
+  });
+
+  it("falls back to the detail when the server sends no description, and names the import source", () => {
+    expect(typeColumnText({ labelDescription: null, detail: "Order", additionalEdits: [] })).toBe("Order");
+    expect(
+      typeColumnText({
+        labelDescription: "Auto-import",
+        detail: "Auto import from './money'",
+        additionalEdits: edit('import { a } from "./money";\n'),
+      }),
+    ).toBe("./money");
+  });
+
+  it.each([
+    ["TypeScript", "(method) String.toUpperCase(): string"],
+    ["Python", "(value: object) -> str"],
+    ["Rust", "fn len(&self) -> usize"],
+    ["Go", "func() error"],
+  ])("keeps %s details unchanged without label details", (_language, detail) => {
+    expect(typeColumnText(item({ detail }))).toBe(detail);
+  });
+
+  it.each(["", " \n\t "])("falls back to the signature for a blank description (%j)", (labelDescription) => {
+    expect(typeColumnText(item({ labelDescription, detail: "Order" }))).toBe("Order");
   });
 
   it("keeps a detail that already says where", () => {

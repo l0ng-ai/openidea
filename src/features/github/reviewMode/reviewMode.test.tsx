@@ -158,6 +158,12 @@ describe("model", () => {
     expect(trackedBranch(".", "refs/heads/main", remotes)).toBeNull();
     const alias = [{ name: "origin", url: "git@work-github:o/r.git" }];
     expect(trackedBranch("origin", "refs/heads/x", alias)).toBeNull();
+    const resolved = [{ ...alias[0]!, resolvedUrl: "ssh://git@github.com:443/o/r.git" }];
+    expect(trackedBranch("origin", "refs/heads/x", resolved)).toEqual({
+      repository: { owner: "o", name: "r" },
+      branch: "x",
+      pullRequest: null,
+    });
     expect(trackedBranch("origin", "refs/heads/x", alias, { owner: "o", name: "r" })?.repository).toEqual({
       owner: "o",
       name: "r",

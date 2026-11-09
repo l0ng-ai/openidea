@@ -251,7 +251,11 @@ pub fn spec(os: Os) -> Vec<Entry> {
         sub(
             "manageIdeSettings",
             "Manage IDE Settings",
-            vec![act("file.exportSettings", "Export Settings…"), act("file.importSettings", "Import Settings…")],
+            vec![
+                act("file.exportSettings", "Export Settings…"),
+                act("file.importSettings", "Import Settings…"),
+                act("file.importJetBrainsSettings", "Import Settings from JetBrains IDE…"),
+            ],
         ),
         sub(
             "newProjectsSetup",
@@ -392,6 +396,15 @@ pub fn spec(os: Os) -> Vec<Entry> {
                     SEP,
                     toggle("view.toggleToolbar", "Toolbar"),
                     toggle("view.toggleToolWindowBars", "Tool Window Bars"),
+                    sub(
+                        "navigationBar",
+                        "Navigation Bar",
+                        vec![
+                            toggle("view.navigationBarTop", "Top"),
+                            toggle("view.navigationBarStatusBar", "Status Bar"),
+                            toggle("view.navigationBarHidden", "Don't Show"),
+                        ],
+                    ),
                     toggle("view.toggleStatusBar", "Status Bar"),
                     sub("statusBarWidgets", "Status Bar Widgets", vec![Entry::Dynamic(DYNAMIC_STATUS_BAR_WIDGETS)]),
                 ],
@@ -2220,6 +2233,7 @@ mod tests {
                 "file.reloadAllFromDisk",
                 "file.exportSettings",
                 "file.importSettings",
+                "file.importJetBrainsSettings",
                 "file.togglePowerSave",
                 "macro.startRecording",
                 "macro.stopRecording",

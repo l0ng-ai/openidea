@@ -197,6 +197,7 @@ fn plugin_completion(item: ide_plugin::CompletionItem) -> CompletionItem {
     CompletionItem {
         label: item.label,
         label_detail: None,
+        label_description: None,
         detail: item.detail,
         kind,
         documentation: item.documentation.map(|value| Markup { kind: "markdown".into(), value }),
@@ -822,6 +823,8 @@ fn plugin_code_action(plugin: &str, root: &Path, a: ide_plugin::CodeAction) -> C
         .and_then(|r| serde_json::to_value(r).ok());
     CodeAction {
         title: a.title,
+        diagnostics: Vec::new(),
+        original_diagnostics: None,
         kind: a.kind,
         is_preferred: a.preferred,
         disabled_reason,

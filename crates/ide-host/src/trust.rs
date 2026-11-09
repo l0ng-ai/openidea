@@ -247,6 +247,7 @@ pub fn restricted_command_allowed(cmd: &str) -> bool {
             | "clipboard_has_files"
             | "clipboard_image"
             | "clipboard_set_file_list"
+            | "clipboard_write_text"
             | "jdk_download_vendors"
             | "jdk_download_releases"
             | "jdk_download_location"
@@ -290,6 +291,7 @@ pub fn restricted_command_allowed(cmd: &str) -> bool {
             | "deploy_coverage"
             | "deploy_test_connection"
             | "find_files"
+            | "find_files_named"
             | "find_dirs"
             | "find_symbols"
             | "mark_recent"
@@ -451,5 +453,13 @@ impl TrustStore {
         let trusted = self.trusted(&root)?;
         let state = self.decisions()?;
         Ok(TrustStatus { decided: trusted || state.restricted.contains(&root), root: root.into(), trusted })
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    #[test]
+    fn restricted_mode_allows_clipboard_write_text() {
+        assert!(super::restricted_command_allowed("clipboard_write_text"));
     }
 }

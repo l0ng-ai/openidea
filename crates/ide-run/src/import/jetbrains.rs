@@ -4,7 +4,7 @@
 //! than one place is taken from the first, in that order.
 //!
 //! Python, Django server, Django tests, pytest, npm, Jest, Vitest, Node.js, Shell Script,
-//! Application, Spring Boot, Go Application / Go Test and compound configurations become the
+//! Application, JAR Application, Spring Boot, Go Application / Go Test and compound configurations become the
 //! matching kinds; other types are skipped with their type.
 //! `$PROJECT_DIR$` (and `$MODULE_DIR$`, `$MODULE_WORKING_DIR$`, `$ContentRoot$`,
 //! `$ProjectFileDir$`, all the project directory here) and `$USER_HOME$` are replaced; another
@@ -164,6 +164,7 @@ const NODE: &str = "NodeJSConfigurationType";
 const SHELL: &str = "ShConfigurationType";
 const COMPOUND: &str = "CompoundRunConfigurationType";
 const APPLICATION: &str = "Application";
+const JAR_APPLICATION: &str = "JarApplication";
 const SPRING_BOOT: &str = "SpringBootApplicationConfigurationType";
 const GO_APPLICATION: &str = "GoApplicationRunConfiguration";
 const GO_TEST: &str = "GoTestRunConfiguration";
@@ -344,6 +345,7 @@ impl Cx<'_> {
             NODE => self.node(name, c, &mut ignored)?,
             SHELL => self.shell(name, c)?,
             APPLICATION => self.java_app(name, c, false, &mut ignored)?,
+            JAR_APPLICATION => self.jar_app(name, c, &mut ignored)?,
             SPRING_BOOT => self.java_app(name, c, true, &mut ignored)?,
             GO_APPLICATION => self.go_config(name, c, false, &mut ignored)?,
             GO_TEST => self.go_config(name, c, true, &mut ignored)?,
@@ -792,6 +794,45 @@ impl Cx<'_> {
     }
 
     // ------------------------------------------------------------- Java
+
+    fn jar_app(&self, name: &str, c: &El, ignored: &mut Vec<String>) -> Res<RunConfig> {
+        let Some(jar) = self.path(c.option("JAR_PATH"))? else { return Err(SkipReason::NothingToRun) };
+        let (dir, cwd) = self.cwd(c.option("WORKING_DIRECTORY"))?;
+        let jar = path_from(self.root, jar, &dir);
+        let vm = self.words(c.option("VM_PARAMETERS"))?;
+        let program = self.words(c.option("PROGRAM_PARAMETERS"))?;
+        let mut params = BTreeMap::from([
+            ("jarPath".to_owned(), jar.clone()),
+            ("vmOptions".to_owned(), format_args(&vm)),
+            ("programArgs".to_owned(), format_args(&program)),
+        ]);
+        let mut command = "java".to_owned();
+        if c.flag("ALTERNATIVE_JRE_PATH_ENABLED")
+            && let Some(jre) = self.path(c.option("ALTERNATIVE_JRE_PATH"))?
+        {
+            // IDEA also stores SDK names here; those don't identify a JRE on this machine.
+            if jre.contains('/') || jre.contains('\\') {
+                let jre = jre.replace('\\', "/");
+                command = if jre.ends_with("/bin/java") || jre.to_ascii_lowercase().ends_with("/bin/java.exe") {
+                    jre.clone()
+                } else {
+                    format!("{}/bin/{}", jre.trim_end_matches('/'), if cfg!(windows) { "java.exe" } else { "java" })
+                };
+                params.insert("jre".to_owned(), jre);
+            } else {
+                ignored.push(format!("JRE {jre}"));
+            }
+        }
+        let mut args = vm;
+        args.extend(["-jar".to_owned(), jar]);
+        args.extend(program);
+        let mut rc = config(name, "jar-application", command, args, Some("java-debug"));
+        rc.cwd = cwd.map(Into::into);
+        rc.extras.params = params;
+        rc.extras.include_system_env = c.option("PASS_PARENT_ENVS") != Some("false");
+        self.envs(c, &mut rc);
+        Ok(rc)
+    }
 
     /// IDEA's Application and Spring Boot types, as the `application` / `spring-boot` forms run
     /// them: `java <vm options> -cp ${classpath} <main> [--spring.profiles.active=…] <arguments>`
