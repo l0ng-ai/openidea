@@ -602,6 +602,123 @@ async fn shared_java_waits_for_an_abandoned_launcher_before_replacing_the_worksp
 }
 
 #[tokio::test(flavor = "multi_thread")]
+async fn java_classpath_waits_for_a_config_restart_that_is_reaping_startup() {
+    for (shared, failed) in [(false, false), (true, false), (false, true)] {
+        let h = harness_for("java", "java", &[("jdtls", incremental_caps())], &[]);
+        let changed = Arc::new(std::sync::atomic::AtomicBool::new(false));
+        h.mgr.set_jdtls_shared_hook(Box::new({
+            let changed = changed.clone();
+            move || shared && changed.load(Ordering::SeqCst)
+        }));
+        h.mgr.set_config_hook(Box::new({
+            let changed = changed.clone();
+            move |cfg, _| {
+                let changed = changed.load(Ordering::SeqCst);
+                cfg.env.insert("MOCK_CONFIG_REVISION".into(), changed.to_string());
+                if failed && changed {
+                    cfg.launch_error = Some("restart configuration error".into());
+                }
+            }
+        }));
+        let state = h.launcher.state("jdtls");
+        let gate = Arc::new(Gate::default());
+        *state.launch_gate.lock() = Some(gate.clone());
+        let path = java_siblings(&h).remove(0);
+        h.mgr.did_open(DocId::next(), &path, &h.lang, 1, "class Main {}");
+        eventually(|| gate.entered()).await;
+        let old = h.mgr.servers()[0].id;
+        changed.store(true, Ordering::SeqCst);
+        let restarting = tokio::spawn({
+            let manager = h.mgr.clone();
+            async move { manager.reconfigure().await }
+        });
+        h.wait_status("jdtls", ServerStatus::Stopped).await;
+        let mut query = tokio::spawn({
+            let manager = h.mgr.clone();
+            async move { manager.java_classpath(path.parent().unwrap(), false, &Default::default()).await }
+        });
+        let early = tokio::time::timeout(Duration::from_millis(100), &mut query).await;
+        gate.open();
+        restarting.await.unwrap();
+        let result = match early {
+            Ok(result) => result.unwrap(),
+            Err(_) => query.await.unwrap(),
+        };
+        if failed {
+            assert!(result.unwrap_err().message.contains("restart configuration error"));
+        } else {
+            assert!(result.is_ok(), "a configuration restart is transient: {result:?}");
+            assert_eq!(state.launches.load(Ordering::SeqCst), 2);
+            assert_eq!(h.mgr.servers()[0].id != old, shared);
+        }
+        h.mgr.shutdown_all().await;
+    }
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn java_classpath_restart_barrier_wait_remains_cancellable() {
+    let h = harness_for("java", "java", &[("jdtls", incremental_caps())], &[]);
+    let changed = Arc::new(std::sync::atomic::AtomicBool::new(false));
+    h.mgr.set_config_hook(Box::new({
+        let changed = changed.clone();
+        move |cfg, _| {
+            cfg.env.insert("MOCK_CONFIG_REVISION".into(), changed.load(Ordering::SeqCst).to_string());
+        }
+    }));
+    let state = h.launcher.state("jdtls");
+    let gate = Arc::new(Gate::default());
+    *state.launch_gate.lock() = Some(gate.clone());
+    h.open("Main.java", "class Main {}");
+    eventually(|| gate.entered()).await;
+    changed.store(true, Ordering::SeqCst);
+    let restarting = tokio::spawn({
+        let manager = h.mgr.clone();
+        async move { manager.reconfigure().await }
+    });
+    h.wait_status("jdtls", ServerStatus::Stopped).await;
+    let cancel = CancellationToken::new();
+    let mut query = tokio::spawn({
+        let manager = h.mgr.clone();
+        let root = h.root.clone();
+        let cancel = cancel.clone();
+        async move { manager.java_classpath(&root, false, &cancel).await }
+    });
+    let early = tokio::time::timeout(Duration::from_millis(100), &mut query).await;
+    let waiting = early.is_err();
+    cancel.cancel();
+    let result = match early {
+        Ok(result) => Ok(result),
+        Err(_) => tokio::time::timeout(Duration::from_secs(1), query).await,
+    };
+    gate.open();
+    restarting.await.unwrap();
+    assert!(waiting, "the query must wait behind the restart barrier");
+    assert_eq!(result.unwrap().unwrap().unwrap_err().kind, ide_core::error::ErrorKind::Cancelled);
+    h.mgr.shutdown_all().await;
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn java_classpath_does_not_retry_permanently_unavailable_servers() {
+    for missing in [false, true] {
+        let h = harness_for("java", "java", &[("jdtls", incremental_caps())], &[]);
+        if missing {
+            h.launcher.state("jdtls").missing.store(true, Ordering::SeqCst);
+        } else {
+            h.mgr.set_config_hook(Box::new(|cfg, _| {
+                cfg.launch_error = Some("permanent mock configuration error".into())
+            }));
+        }
+        let result =
+            tokio::time::timeout(Duration::from_secs(1), h.mgr.java_classpath(&h.root, false, &Default::default()))
+                .await
+                .expect("permanent failures must not incur the Java readiness timeout");
+        let error = result.unwrap_err();
+        assert!(error.message.contains(if missing { "not installed" } else { "permanent mock configuration error" }));
+        h.mgr.shutdown_all().await;
+    }
+}
+
+#[tokio::test(flavor = "multi_thread")]
 async fn shared_java_external_roots_reach_initialization_queries_and_watches() {
     let h = harness_for("java", "java", &[("jdtls", incremental_caps())], &[]);
     h.mgr.set_jdtls_shared_hook(Box::new(|| true));

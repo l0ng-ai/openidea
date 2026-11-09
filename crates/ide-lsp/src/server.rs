@@ -272,6 +272,10 @@ impl Server {
         }
     }
 
+    pub fn is_starting(&self) -> bool {
+        matches!(self.state.lock().conn, Conn::Starting)
+    }
+
     /// The instance told `initialized`, ready or not.
     pub fn instance(&self) -> Option<Running> {
         self.running().or_else(|| self.initializing.lock().clone())

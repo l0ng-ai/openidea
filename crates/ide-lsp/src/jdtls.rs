@@ -656,26 +656,50 @@ impl LspManager {
     /// started if needed and waited for.
     async fn jdtls(&self, path: &Path, cancel: &CancellationToken) -> IdeResult<(Arc<Server>, Running)> {
         let java = LanguageId::new("java");
-        let server = self
-            .servers_for(&java, path)
-            .into_iter()
-            .find(|s| s.name == SERVER)
-            .ok_or_else(|| IdeError::unavailable("no Java language server (jdtls) is configured"))?;
-        self.ensure_started(&server);
-        match cancellable_wait(cancel, server.wait_ready(READY_TIMEOUT)).await? {
-            Some(run) => Ok((server, run)),
-            None => {
-                let status = server.status();
-                Err(IdeError::unavailable(match status {
-                    ide_core::event::ServerStatus::Missing => {
-                        "jdtls is not installed (Settings › Languages & Frameworks › Language Servers)".to_owned()
-                    }
-                    ide_core::event::ServerStatus::Misconfigured | ide_core::event::ServerStatus::Crashed => {
-                        server.status_message().unwrap_or_else(|| "jdtls cannot start".to_owned())
-                    }
-                    _ => format!("jdtls is not ready ({status:?})"),
-                }))
+        let deadline = tokio::time::Instant::now() + READY_TIMEOUT;
+        loop {
+            if cancel.is_cancelled() {
+                return Err(IdeError::cancelled());
             }
+            let server = self
+                .servers_for(&java, path)
+                .into_iter()
+                .find(|s| s.name == SERVER)
+                .ok_or_else(|| IdeError::unavailable("no Java language server (jdtls) is configured"))?;
+            self.ensure_started(&server);
+            let remaining = deadline.saturating_duration_since(tokio::time::Instant::now());
+            if let Some(run) = cancellable_wait(cancel, server.wait_ready(remaining)).await? {
+                return Ok((server, run));
+            }
+            let status = server.status();
+            if !matches!(
+                status,
+                ide_core::event::ServerStatus::Missing
+                    | ide_core::event::ServerStatus::Misconfigured
+                    | ide_core::event::ServerStatus::Crashed
+            ) && tokio::time::Instant::now() < deadline
+                && let Ok(_restart) =
+                    cancellable_wait(cancel, tokio::time::timeout_at(deadline, self.reconfigure_lock.lock())).await?
+            {
+                // A restart publishes Down while reaping its old JVM. Its successor may
+                // also have a new identity after changing the shared workspace.
+                if let Some(current) = self.servers_for(&java, path).into_iter().find(|s| s.name == SERVER)
+                    && current.root.is_dir()
+                    && (current.id != server.id || current.is_starting() || current.running().is_some())
+                {
+                    continue;
+                }
+            }
+            let status = server.status();
+            return Err(IdeError::unavailable(match status {
+                ide_core::event::ServerStatus::Missing => {
+                    "jdtls is not installed (Settings › Languages & Frameworks › Language Servers)".to_owned()
+                }
+                ide_core::event::ServerStatus::Misconfigured | ide_core::event::ServerStatus::Crashed => {
+                    server.status_message().unwrap_or_else(|| "jdtls cannot start".to_owned())
+                }
+                _ => format!("jdtls is not ready ({status:?})"),
+            }));
         }
     }
 
