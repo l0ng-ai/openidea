@@ -156,6 +156,35 @@ describe("Vim engine", () => {
     view.destroy();
   });
 
+  it.each([
+    ['let mapleader = " "', ["<Space>", "f", "f"]],
+    ['let mapleader = ","', [",", "f", "f"]],
+    ['let mapleader = "\\\\"', ["\\", "f", "f"]],
+  ])("runs a <leader> mapping whose first key shadows a built-in (%s)", async (leader, keys) => {
+    const ran: string[] = [];
+    const d = registerAction({ id: "navigate.gotoFile", title: "x", run: () => void ran.push("navigate.gotoFile") });
+    const view = makeView();
+    const cm = getCM(view)!;
+    applyRcCommands(parseVimrc(`${leader}\nnmap <leader>ff <Action>(GotoFile)`).commands);
+    for (const k of keys) Vim.handleKey(cm as never, k, "user");
+    await tick();
+    expect(ran).toEqual(["navigate.gotoFile"]);
+    view.destroy();
+    d();
+  });
+
+  it("restores the built-in key the leader shadowed once the rc stops using it (#2337)", async () => {
+    const view = makeView();
+    const cm = getCM(view)!;
+    applyRcCommands(parseVimrc('let mapleader = " "\nnmap <leader>ff <Action>(GotoFile)').commands);
+    // A later rc without the space leader puts <Space> → l back.
+    applyRcCommands(parseVimrc("nmap gd <Action>(GotoDeclaration)").commands);
+    Vim.handleKey(cm as never, "<Space>", "user");
+    await tick();
+    expect(view.state.selection.main.head).toBe(1);
+    view.destroy();
+  });
+
   it("keeps an IME composition out of the document in Normal mode", async () => {
     const transient: boolean[] = [];
     const view = makeView([
