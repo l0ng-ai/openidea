@@ -155,7 +155,7 @@ impl AppState {
             project.repos.read().primary().and_then(|r| r.branch_info().ok()).and_then(|b| b.head)
         };
         self.recent.touch(&project.root, branch)?;
-        self.recent.rename(&project.root, Some(&info.name))?;
+        self.recent.rename(&project.root, Some(&info.display_name))?;
         crate::jump_list::refresh(&self.app, self.recent.list());
         Ok(())
     }

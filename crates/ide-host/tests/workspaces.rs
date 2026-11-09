@@ -251,7 +251,17 @@ async fn attach_and_detach_preserve_the_primary_project_session() {
     );
     assert_eq!(project.content_roots(), vec![roots[1].clone()]);
     let attached = ops::project::info(&project);
-    assert_eq!(attached.name, "primary, other");
+    assert_eq!(attached.name, "primary");
+    assert_eq!(attached.display_name, "primary, other");
+    ops::project::set_settings(
+        &host,
+        "main",
+        ide_workspace::SettingsScope::Project,
+        "general.projectName",
+        &serde_json::to_string(&attached.name).unwrap(),
+    )
+    .unwrap();
+    assert_eq!(ops::project::info(&project).display_name, "primary, other");
     let restricted = base.join("restricted");
     std::fs::create_dir(&restricted).unwrap();
     host.trust.decide(&restricted, false, false).unwrap();
@@ -301,7 +311,7 @@ async fn attach_and_detach_preserve_the_primary_project_session() {
     std::fs::create_dir(&nested).unwrap();
     std::fs::write(nested.join("same.txt"), "needle").unwrap();
     host.trust.decide(&nested, true, false).unwrap();
-    Workspace::save(&nested, "Nested", vec![nested.clone()], true).unwrap();
+    Workspace::attach(&nested, "Nested", vec![nested.clone()]).unwrap();
     ops::project::attach_workspace(&host, "main", &nested).unwrap();
     assert!(project.content_roots().is_empty());
     let container = base.join("container");
@@ -310,7 +320,8 @@ async fn attach_and_detach_preserve_the_primary_project_session() {
     assert!(ops::project::attach_workspace(&host, "main", &container).is_err());
     host.close_project("main");
     let reopened = host.open_project("main", &roots[0]).unwrap();
-    assert_eq!(ops::project::info(&reopened).name, "primary, nested");
+    assert_eq!(ops::project::info(&reopened).name, "primary");
+    assert_eq!(ops::project::info(&reopened).display_name, "primary, nested");
     host.set_project_trust(&nested, false, false).await.unwrap();
     assert!(!reopened.is_trusted());
     host.close_project("main");

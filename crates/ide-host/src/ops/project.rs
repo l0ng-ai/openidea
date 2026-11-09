@@ -13,6 +13,8 @@ pub struct ProjectInfo {
     pub trusted: bool,
     pub root: ide_core::IpcPath,
     pub name: String,
+    #[serde(default)]
+    pub display_name: String,
     pub is_git: bool,
     pub settings: Settings,
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -32,7 +34,11 @@ pub fn info(project: &Project) -> ProjectInfo {
     let workspace = ide_workspace::workspace::Workspace::load(&project.root).ok().flatten();
     ProjectInfo {
         trusted: project.is_trusted(),
-        name: workspace.as_ref().map(|w| w.display_name(&project.root, &primary)).unwrap_or(primary),
+        display_name: workspace
+            .as_ref()
+            .map(|w| w.display_name(&project.root, &primary))
+            .unwrap_or_else(|| primary.clone()),
+        name: workspace.as_ref().filter(|w| w.is_container(&project.root)).map(|w| w.name.clone()).unwrap_or(primary),
         is_git: !project.repos.read().is_empty(),
         settings,
         root: project.root.clone().into(),
@@ -121,11 +127,10 @@ pub fn attach_workspace(host: &Host, window: &str, path: &Path) -> IdeResult<ide
             save_workspace(host, window, &workspace.name, workspace.projects)?;
         }
     } else {
-        let workspace = ide_workspace::workspace::Workspace::save(
+        let workspace = ide_workspace::workspace::Workspace::attach(
             &project.root,
             &info(&project).name,
             vec![project.root.clone(), path],
-            true,
         )?;
         keep_attachment_private(&project.root, &workspace)?;
         refresh_workspace(&project);

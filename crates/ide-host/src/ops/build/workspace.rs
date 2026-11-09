@@ -164,7 +164,7 @@ mod tests {
         }
         let cache = base.join("cache");
         ide_build::save_maven_profiles(&cache, &["kept".into()]).unwrap();
-        ide_workspace::workspace::Workspace::save(&root, "Primary", vec![root.clone(), other.clone()], true).unwrap();
+        ide_workspace::workspace::Workspace::attach(&root, "Primary", vec![root.clone(), other.clone()]).unwrap();
         let scopes = scopes_at(&root, &cache, &base.join("config"), Settings::default()).unwrap();
         assert_eq!(scopes[0].cache, cache);
         assert_eq!(ide_build::maven_profiles(&scopes[0].cache), ["kept"]);

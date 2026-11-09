@@ -46,6 +46,7 @@ export function activateWorkbench(): () => void {
     const project = useProject.getState().project;
     setContext("projectLocal", !!project && !isRemoteWindow() && !useProject.getState().lightEdit);
     setContext("workspaceOpen", !!project?.workspace);
+    setContext("projectAttached", !!project?.workspace && project.workspace.projects[0] === project.root);
     setContext("workspaceContainer", !!project?.workspace && project.workspace.projects[0] !== project.root);
     setContext("projectOpenAsk", openPolicy() === "ask");
   };

@@ -58,6 +58,15 @@ impl Workspace {
     }
 
     pub fn save(root: &Path, name: &str, projects: Vec<PathBuf>, create: bool) -> IdeResult<Self> {
+        Self::write(root, name, projects, create, false)
+    }
+
+    /// Creates private attachment metadata in an existing primary project.
+    pub fn attach(root: &Path, name: &str, projects: Vec<PathBuf>) -> IdeResult<Self> {
+        Self::write(root, name, projects, true, true)
+    }
+
+    fn write(root: &Path, name: &str, projects: Vec<PathBuf>, create: bool, attach: bool) -> IdeResult<Self> {
         let name = valid_name(name)?;
         let root = destination(root)?;
         let previous = Self::load(&root)?;
@@ -68,6 +77,15 @@ impl Workspace {
             return Err(IdeError::invalid("This folder is not a workspace"));
         }
         let projects = normalize_projects(&root, projects)?;
+        if !attach
+            && previous.as_ref().is_none_or(|w| w.is_container(&root))
+            && projects.iter().any(|p| root.starts_with(p))
+        {
+            return Err(IdeError::invalid("Store the workspace outside its linked project folders"));
+        }
+        if attach && projects.first() != Some(&root) {
+            return Err(IdeError::invalid("The primary project must be the first attached folder"));
+        }
         for path in &projects {
             if !path.is_dir() && !previous.as_ref().is_some_and(|w| w.projects.contains(path)) {
                 return Err(IdeError::invalid(format!("Project folder does not exist: {}", path.display())));
@@ -145,6 +163,29 @@ mod tests {
     use super::*;
 
     #[test]
+    fn update_cannot_turn_a_container_into_an_attachment() {
+        let tmp = tempfile::tempdir().unwrap();
+        let root = dunce::canonicalize(tmp.path()).unwrap();
+        Workspace::save(&root, "Container", vec![], true).unwrap();
+        let before = std::fs::read(root.join(FILE)).unwrap();
+        assert!(Workspace::save(&root, "Attached", vec![root.clone()], false).is_err());
+        assert_eq!(std::fs::read(root.join(FILE)).unwrap(), before);
+    }
+
+    #[test]
+    fn create_workspace_refuses_a_location_equal_to_any_member() {
+        let tmp = tempfile::tempdir().unwrap();
+        let root = dunce::canonicalize(tmp.path()).unwrap();
+        let other = root.join("other");
+        std::fs::create_dir(&other).unwrap();
+        for projects in [vec![root.clone(), other.clone()], vec![other, root.clone()]] {
+            let error = Workspace::save(&root, "Invalid", projects, true).unwrap_err();
+            assert_eq!(error.message, "Store the workspace outside its linked project folders");
+            assert!(!root.join(FILE).exists());
+        }
+    }
+
+    #[test]
     fn attachments_keep_the_primary_and_allow_attached_folders() {
         let tmp = tempfile::tempdir().unwrap();
         let root = dunce::canonicalize(tmp.path()).unwrap();
@@ -154,9 +195,9 @@ mod tests {
         for path in [&a, &b, &c] {
             std::fs::create_dir(path).unwrap();
         }
-        let nested = Workspace::save(&b, "B", vec![b.clone(), c.clone()], true).unwrap();
+        let nested = Workspace::attach(&b, "B", vec![b.clone(), c.clone()]).unwrap();
         assert!(!nested.is_container(&b));
-        let saved = Workspace::save(&a, "A", vec![a.clone(), b.clone()], true).unwrap();
+        let saved = Workspace::attach(&a, "A", vec![a.clone(), b.clone()]).unwrap();
         assert_eq!(Workspace::load(&a).unwrap(), Some(saved.clone()));
         assert_eq!(saved.display_name(&a, "Primary"), "Primary, b");
         assert!(Workspace::save(&a, "A", vec![b.clone()], false).is_err());

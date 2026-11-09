@@ -252,7 +252,8 @@ it("does not offer removal on the attached primary", () => {
   useProject.setState({
     project: {
       root: "/a",
-      name: "A, b",
+      name: "A",
+      displayName: "A, b",
       trusted: true,
       isGit: false,
       settings: {},
@@ -260,9 +261,9 @@ it("does not offer removal on the attached primary", () => {
     },
   });
   expect(contextMenuItems([node("/a", true, true)])).not.toContainEqual(
-    expect.objectContaining({ action: "workspace.removeProject" }),
+    expect.objectContaining({ action: "project.detach" }),
   );
   expect(contextMenuItems([node("/b", true, true)])).toContainEqual(
-    expect.objectContaining({ action: "workspace.removeProject" }),
+    expect.objectContaining({ action: "project.detach" }),
   );
 });

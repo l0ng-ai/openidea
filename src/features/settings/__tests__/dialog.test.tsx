@@ -690,3 +690,29 @@ describe("native Settings window background", () => {
     }
   });
 });
+
+it("uses the attached primary name for run-target paths", async () => {
+  useProject.setState({ project: { name: "primary", displayName: "primary, other", root: "/primary" } as never });
+  await openDialog("build.runTargets");
+  fireEvent.click(
+    within(screen.getByRole("toolbar", { name: "Run targets actions" })).getByRole("button", { name: "Add" }),
+  );
+  expect(screen.getByPlaceholderText("~/primary")).toBeInTheDocument();
+  fireEvent.click(screen.getByRole("button", { name: "Type" }));
+  fireEvent.click(screen.getByRole("option", { name: "Docker" }));
+  expect(screen.getByPlaceholderText("/workspaces/primary")).toBeInTheDocument();
+});
+
+it("uses the primary name for module labels and artifact defaults", async () => {
+  useProject.setState({ project: { name: "primary", displayName: "primary, other", root: "/primary" } as never });
+  render(<ProjectStructureDialog />);
+  await act(async () => executeAction("file.projectStructure", "modules"));
+  expect(screen.getByRole("button", { name: /primary\s*custom/ })).toBeInTheDocument();
+  expect(screen.getByRole("tree", { name: "Content root" })).toHaveTextContent("primary");
+  fireEvent.click(screen.getByRole("button", { name: "Artifacts" }));
+  // Packaging is pending, but its default generator must still use the primary name.
+  screen.getByRole("button", { name: "JAR" }).closest("fieldset")!.removeAttribute("disabled");
+  fireEvent.click(screen.getByRole("button", { name: "JAR" }));
+  expect(screen.getByLabelText("Name")).toHaveValue("primary:jar");
+  expect(screen.getByLabelText("Output directory")).toHaveValue("out/artifacts/primary_jar");
+});

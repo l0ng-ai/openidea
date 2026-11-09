@@ -96,10 +96,12 @@ describe("LightEdit window", () => {
     useProject.setState({ project: { ...project, workspace: { version: 1, name: "A", projects: ["/a", "/b"] } } });
     expect(evaluateWhen("workspaceOpen")).toBe(true);
     expect(evaluateWhen("workspaceContainer")).toBe(false);
+    expect(evaluateWhen("projectAttached")).toBe(true);
     useProject.setState({ settings: { general: { openProjectIn: "attach" } } } as never);
     expect(evaluateWhen("projectOpenAsk")).toBe(true);
     useProject.setState({ project: { ...project, workspace: { version: 1, name: "A", projects: ["/b"] } } });
     expect(evaluateWhen("workspaceContainer")).toBe(true);
+    expect(evaluateWhen("projectAttached")).toBe(false);
     useProject.setState({ project });
     expect(evaluateWhen("workspaceOpen")).toBe(false);
     dispose();

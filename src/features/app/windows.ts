@@ -292,6 +292,31 @@ function closeProjectTabs(side: "others" | "left" | "right"): Action["run"] {
   };
 }
 
+const removeProject: Action["run"] = async ({ arg }) => {
+  const current = useProject.getState().project;
+  const workspace = current?.workspace;
+  if (typeof arg !== "string" || !workspace || !workspace.projects.includes(arg)) return;
+  if (workspace.projects[0] === current.root) {
+    if (arg === current.root) return;
+    const result = await ask({
+      title: t("app.window.detachTitle"),
+      body: t("app.window.detachBody", { name: basename(arg) }),
+      buttons: [
+        { id: "cancel", label: t("common.cancel") },
+        { id: "detach", label: t("app.window.detach"), primary: true },
+      ],
+    });
+    if (result.button !== "detach") return;
+  }
+  const project = await call(
+    commands.workspaceUpdate(
+      workspace.name,
+      workspace.projects.filter((p) => p !== arg),
+    ),
+  );
+  useProject.setState({ project, settings: project.settings });
+};
+
 export function windowActions(): Action[] {
   return [
     {
@@ -310,31 +335,15 @@ export function windowActions(): Action[] {
       id: "workspace.removeProject",
       title: "Remove from Workspace",
       category: t("app.category.file"),
-      when: "workspaceOpen",
-      run: async ({ arg }) => {
-        const current = useProject.getState().project;
-        const workspace = current?.workspace;
-        if (typeof arg !== "string" || !workspace || !workspace.projects.includes(arg)) return;
-        if (workspace.projects[0] === current.root) {
-          if (arg === current.root) return;
-          const result = await ask({
-            title: t("app.window.detachTitle"),
-            body: t("app.window.detachBody", { name: basename(arg) }),
-            buttons: [
-              { id: "cancel", label: t("common.cancel") },
-              { id: "detach", label: t("app.window.detach"), primary: true },
-            ],
-          });
-          if (result.button !== "detach") return;
-        }
-        const project = await call(
-          commands.workspaceUpdate(
-            workspace.name,
-            workspace.projects.filter((p) => p !== arg),
-          ),
-        );
-        useProject.setState({ project, settings: project.settings });
-      },
+      when: "workspaceOpen && !projectAttached",
+      run: removeProject,
+    },
+    {
+      id: "project.detach",
+      title: "Detach Project",
+      category: t("app.category.file"),
+      when: "projectAttached",
+      run: removeProject,
     },
     {
       id: "workspace.create",

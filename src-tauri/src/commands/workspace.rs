@@ -45,7 +45,7 @@ pub async fn workspace_update(window: WebviewWindow, name: String, projects: Vec
     let state = window.state::<AppState>();
     let project = state.project(window.label())?;
     state.record_project(&project)?;
-    let _ = window.set_title(&info.name);
+    let _ = window.set_title(&info.display_name);
     window.state::<AppState>().sink.emit(ide_core::IdeEvent::WindowGroupsChanged);
     Ok(info)
 }
@@ -62,7 +62,7 @@ pub async fn workspace_attach(window: WebviewWindow, path: PathBuf) -> IdeResult
     let state = window.state::<AppState>();
     let project = state.project(window.label())?;
     state.record_project(&project)?;
-    let _ = window.set_title(&ide_host::ops::project::info(&project).name);
+    let _ = window.set_title(&ide_host::ops::project::info(&project).display_name);
     state.sink.emit(ide_core::IdeEvent::WindowGroupsChanged);
     Ok(root)
 }

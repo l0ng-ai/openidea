@@ -686,7 +686,9 @@ it("removes the first workspace member while retaining the workspace state root"
 it("confirms detaching an attachment and never removes the primary", async () => {
   const project = { ...projectState("/a").project, workspace: { version: 1, name: "A", projects: ["/a", "/b"] } };
   useProject.setState({ project });
-  const action = windowActions().find((a) => a.id === "workspace.removeProject")!;
+  const action = windowActions().find((a) => a.id === "project.detach")!;
+  expect(action.title).toBe("Detach Project");
+  expect(action.when).toBe("projectAttached");
   await action.run({ arg: "/a" } as never);
   expect(ask).not.toHaveBeenCalled();
   expect(workspaceUpdate).not.toHaveBeenCalled();
