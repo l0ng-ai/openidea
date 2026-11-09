@@ -1047,6 +1047,9 @@ pub fn configure_server(cfg: &mut LanguageServerConfig, root: &Path, server_root
     if name == angular::SERVER {
         configure_angular(cfg, root, server_root, s);
     }
+    if name == crate::arduino::SERVER {
+        crate::arduino::configure(cfg, root, server_root, s);
+    }
 }
 
 /// The servers `language` uses after Settings › Language Servers: the

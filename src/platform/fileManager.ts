@@ -1,11 +1,15 @@
-import type { RemoteSession } from "./ipc";
+import type { RemoteTarget } from "./ipc";
 import { isTauri } from "./ipc";
 import { usePlatform } from "./platformInfo";
 import { useRemote } from "./remote";
 
-function wslSharePath(path: string, session: RemoteSession | null): string {
-  if (session?.target.kind !== "wsl" || !path.startsWith("/")) return path;
-  return `\\\\wsl.localhost\\${session.target.distro}${path.replaceAll("/", "\\")}`;
+function wslSharePath(path: string, target: RemoteTarget | null): string {
+  if (target?.kind !== "wsl" || !path.startsWith("/")) return path;
+  return `\\\\wsl.localhost\\${target.distro}${path.replaceAll("/", "\\")}`;
+}
+
+function windowTarget(): RemoteTarget | null {
+  return useRemote.getState().session?.target ?? null;
 }
 
 /**
@@ -13,13 +17,9 @@ function wslSharePath(path: string, session: RemoteSession | null): string {
  * paths use `/` separators and may be Windows verbatim paths, but Explorer's
  * `ILCreateFromPathW` rejects `\\?\UNC\...`.
  */
-export function fileManagerPath(
-  path: string,
-  os = usePlatform.getState().os,
-  session = useRemote.getState().session,
-): string {
+export function fileManagerPath(path: string, os = usePlatform.getState().os, target = windowTarget()): string {
   if (os !== "windows") return path;
-  path = wslSharePath(path, session);
+  path = wslSharePath(path, target);
   if (/^\/\/\?\/unc\//i.test(path)) path = `\\\\${path.slice(8).replaceAll("/", "\\")}`;
   else if (path.startsWith("//?/")) path = path.slice(4);
   if (/^\\\\\?\\unc\\/i.test(path)) return `\\\\${path.slice(8)}`;
@@ -43,11 +43,27 @@ export function revealInFileManagerLabel(os = usePlatform.getState().os): string
   return os === "macos" ? "Reveal in Finder" : showInFileManagerLabel(os);
 }
 
-/** Reveals files in Explorer, Finder or the Linux desktop's file manager. */
-export async function revealInFileManager(paths: string | readonly string[]): Promise<void> {
-  if (!isTauri()) return;
-  const list = (typeof paths === "string" ? [paths] : paths).map((path) => fileManagerPath(path));
-  if (!list.length) return;
+/**
+ * Whether this desktop's file manager can show paths of `target` (default: this window's; `null`: this
+ * desktop's own). SSH and dev-container paths exist only on the server; WSL ones are reachable on
+ * Windows through their `\\wsl.localhost` share.
+ */
+export function canRevealInFileManager(target = windowTarget(), os = usePlatform.getState().os): boolean {
+  return target === null || (target.kind === "wsl" && os === "windows");
+}
+
+/**
+ * Reveals files in Explorer, Finder or the Linux desktop's file manager. `target` says where the paths
+ * live (default: this window's project host); `false` when this desktop cannot show them.
+ */
+export async function revealInFileManager(
+  paths: string | readonly string[],
+  target = windowTarget(),
+): Promise<boolean> {
+  if (!isTauri() || !canRevealInFileManager(target)) return false;
+  const list = (typeof paths === "string" ? [paths] : paths).map((path) => fileManagerPath(path, undefined, target));
+  if (!list.length) return false;
   const { revealItemInDir } = await import("@tauri-apps/plugin-opener");
   await revealItemInDir(list.length === 1 ? list[0]! : [...list]);
+  return true;
 }
