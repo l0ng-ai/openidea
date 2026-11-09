@@ -355,7 +355,7 @@ impl SettingsStore {
     }
 }
 
-/// A JetBrains IDE's File › Manage IDE Settings › Export Settings… archive: every
+/// A JetBrains IDE's settings folder or exported archive: every
 /// entry name, and the text of the entries OpenIDEA maps (the frontend does the mapping).
 #[derive(serde::Serialize, specta::Type)]
 #[serde(rename_all = "camelCase")]
@@ -386,12 +386,16 @@ const JETBRAINS_LISTED_DIRS: [&str; 6] = ["options", "colors", "keymaps", "codes
 
 fn read_jetbrains_folder(dir: &Path) -> IdeResult<JetBrainsSettings> {
     use std::io::Read;
-    if !dir.join("options").is_dir() {
+    let real_dir = |path: &Path| path.symlink_metadata().is_ok_and(|m| m.is_dir());
+    if !real_dir(dir) || !real_dir(&dir.join("options")) {
         return Err(IdeError::invalid("not a JetBrains settings folder"));
     }
     let mut entries = Vec::new();
     let mut files = BTreeMap::new();
     for sub in JETBRAINS_LISTED_DIRS {
+        if !real_dir(&dir.join(sub)) {
+            continue;
+        }
         let mut names: Vec<String> = std::fs::read_dir(dir.join(sub))
             .into_iter()
             .flatten()
@@ -414,7 +418,7 @@ fn read_jetbrains_folder(dir: &Path) -> IdeResult<JetBrainsSettings> {
         }
     }
     // An exported archive lists `installed.txt` when plugins came along; here they sit in `plugins/`.
-    if std::fs::read_dir(dir.join("plugins")).is_ok_and(|mut d| d.next().is_some()) {
+    if real_dir(&dir.join("plugins")) && std::fs::read_dir(dir.join("plugins")).is_ok_and(|mut d| d.next().is_some()) {
         entries.push("installed.txt".into());
     }
     Ok(JetBrainsSettings { entries, files })
@@ -740,6 +744,42 @@ mod tests {
         let empty = tmp.path().join("empty");
         std::fs::create_dir_all(&empty).unwrap();
         assert!(read_jetbrains_settings(&empty).is_err(), "a folder without options/ is not a settings folder");
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn jetbrains_folder_does_not_follow_symlinks() {
+        use std::os::unix::fs::symlink;
+
+        let tmp = tempfile::tempdir().unwrap();
+        let config = tmp.path().join("config");
+        let outside = tmp.path().join("outside");
+        std::fs::create_dir_all(&config).unwrap();
+        std::fs::create_dir_all(&outside).unwrap();
+        std::fs::write(outside.join("editor-font.xml"), "outside").unwrap();
+        std::fs::write(outside.join("theme.icls"), "outside").unwrap();
+        symlink(&outside, config.join("options")).unwrap();
+        assert!(read_jetbrains_settings(&config).is_err(), "options/ must be a real directory");
+
+        std::fs::remove_file(config.join("options")).unwrap();
+        std::fs::create_dir(config.join("options")).unwrap();
+        symlink(outside.join("editor-font.xml"), config.join("options/editor-font.xml")).unwrap();
+        for sub in ["colors", "keymaps", "codestyles", "templates", "inspection", "plugins"] {
+            symlink(&outside, config.join(sub)).unwrap();
+        }
+        let read = read_jetbrains_settings(&config).unwrap();
+        assert!(read.entries.is_empty());
+        assert!(read.files.is_empty());
+    }
+
+    #[test]
+    fn jetbrains_folder_bounds_mapped_text_like_an_archive() {
+        let tmp = tempfile::tempdir().unwrap();
+        std::fs::create_dir(tmp.path().join("options")).unwrap();
+        std::fs::write(tmp.path().join("options/editor-font.xml"), vec![b'x'; JETBRAINS_MAX_TEXT as usize + 1])
+            .unwrap();
+        let read = read_jetbrains_settings(tmp.path()).unwrap();
+        assert_eq!(read.files["options/editor-font.xml"].len(), JETBRAINS_MAX_TEXT as usize);
     }
 
     #[test]

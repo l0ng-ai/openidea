@@ -5338,7 +5338,7 @@ export type JdkVendor = {
 };
 
 /**
- *  A JetBrains IDE's File › Manage IDE Settings › Export Settings… archive: every
+ *  A JetBrains IDE's settings folder or exported archive: every
  *  entry name, and the text of the entries OpenIDEA maps (the frontend does the mapping).
  */
 export type JetBrainsSettings = {
