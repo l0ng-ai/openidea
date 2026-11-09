@@ -184,6 +184,18 @@ export function openFindBarResults(arg?: unknown) {
 /** Longest selection that becomes the query. */
 const MAX_QUERY = 10_000;
 
+/** Selected text in the pane outside `.cm-editor` and the find bar (e.g. Markdown preview). */
+function paneDomSelection(view: EditorView | null): string {
+  if (!view || typeof window === "undefined") return "";
+  const sel = window.getSelection();
+  if (!sel || sel.isCollapsed || !sel.rangeCount) return "";
+  const pane = view.dom.closest("[data-pane-id]");
+  const node = sel.getRangeAt(0).commonAncestorContainer;
+  const el = node instanceof Element ? node : node.parentElement;
+  if (!pane || !el || !pane.contains(el) || el.closest(".cm-editor, [role='search']")) return "";
+  return sel.toString();
+}
+
 /**
  * Opens (or refocuses) the bar, as in IDEA: the
  * selection becomes the query — multi-line too — and the search covers the
@@ -210,6 +222,18 @@ export function seedFind(target: FindTarget, replace: boolean) {
     else
       useFindSessions.setState({ [target.id]: { ...useFindOptions.getState(), ...patch(useFindOptions.getState()) } });
   };
+  const domText = paneDomSelection(view);
+  if (view && domText) {
+    view.dispatch({ effects: setFindScope.of(null) });
+    if (domText.length < MAX_QUERY) {
+      set((o) => ({ search: o.regexp ? domText.replace(/[.*+?^${}()|[\]\\]/g, "\\$&") : domText }));
+      setQuery(view, optionsOf(target.id));
+      findNext(view);
+    } else {
+      set(() => ({}));
+    }
+    return;
+  }
   if (view && sel && !sel.empty) {
     const text = view.state.sliceDoc(sel.from, sel.to);
     const multiline = text.includes("\n");
@@ -301,7 +325,18 @@ export function FindBar({ paneId }: { paneId: string }) {
       onReplaceShown={(replace) => setReplaceShown(tabId, replace)}
       onClose={() => {
         useFindBars.setState({ [tabId]: undefined });
-        target.view()?.focus();
+        const view = target.view();
+        if (view && view.dom.offsetParent !== null) {
+          view.focus();
+        } else {
+          if (view && !view.state.selection.main.empty) {
+            view.dispatch({ selection: { anchor: view.state.selection.main.head } });
+          }
+          view?.dom
+            .closest("[data-pane-id]")
+            ?.querySelector<HTMLElement>('[role="document"]')
+            ?.focus({ preventScroll: true });
+        }
       }}
     />
   );
