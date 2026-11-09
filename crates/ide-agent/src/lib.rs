@@ -169,13 +169,7 @@ impl Shared {
                             let commands = config::commands_of(&json!({ "availableCommands": commands }), &spec.id);
                             let options = config::options_of(&json!({ "configOptions": options }));
                             let _ = tokio::task::spawn_blocking(move || {
-                                if shared.known_commands(&spec.id).is_empty() {
-                                    shared.remember(&spec.id, None, Some(&commands), None);
-                                }
-                                // What a session has reported wins over this first guess.
-                                if !shared.has_config(&spec.id) {
-                                    shared.remember(&spec.id, Some(&options), None, model_of(&options).as_deref());
-                                }
+                                shared.remember_discovered(&spec.id, &options, &commands);
                                 shared.emit(AgentEvent::Providers);
                             })
                             .await;
@@ -209,37 +203,52 @@ impl Shared {
         commands: Option<&[AgentCommand]>,
         model: Option<&str>,
     ) {
-        let snapshot = {
-            let mut cache = self.known.lock();
-            let known = cache.entry(provider.to_owned()).or_default();
-            let mut changed = false;
-            if let Some(c) = config {
-                if let Some(model) = model {
-                    let levels: Vec<_> =
-                        c.iter().filter(|o| o.category.as_deref() == Some("thought_level")).cloned().collect();
-                    if known.thought_levels.get(model) != Some(&levels) {
-                        known.thought_levels.insert(model.to_owned(), levels);
-                        changed = true;
-                    }
-                }
-                if !c.is_empty() && known.config != c {
-                    known.config = c.to_vec();
+        self.remember_inner(provider, config, commands, model, false);
+    }
+
+    fn remember_discovered(&self, provider: &str, config: &[AgentConfigOption], commands: &[AgentCommand]) {
+        self.remember_inner(provider, Some(config), Some(commands), model_of(config).as_deref(), true);
+    }
+
+    fn remember_inner(
+        &self,
+        provider: &str,
+        config: Option<&[AgentConfigOption]>,
+        commands: Option<&[AgentCommand]>,
+        model: Option<&str>,
+        discovered: bool,
+    ) {
+        // Keep the update and its disk write ordered; a session report wins over discovery.
+        let mut cache = self.known.lock();
+        let known = cache.entry(provider.to_owned()).or_default();
+        let mut changed = false;
+        if let Some(c) = config.filter(|_| !discovered || known.config.is_empty()) {
+            if let Some(model) = model {
+                let levels: Vec<_> =
+                    c.iter().filter(|o| o.category.as_deref() == Some("thought_level")).cloned().collect();
+                if known.thought_levels.get(model) != Some(&levels) {
+                    known.thought_levels.insert(model.to_owned(), levels);
                     changed = true;
                 }
             }
-            let root = self.root_key();
-            if let Some(c) =
-                commands.filter(|c| !c.is_empty() && known.commands.get(&root).map(Vec::as_slice) != Some(c))
-            {
-                known.commands.insert(root, c.to_vec());
+            if !c.is_empty() && known.config != c {
+                known.config = c.to_vec();
                 changed = true;
             }
-            if !changed {
-                return;
-            }
-            serde_json::to_vec_pretty(&*cache)
-        };
-        if let Ok(bytes) = snapshot
+        }
+        let root = self.root_key();
+        if let Some(c) = commands.filter(|c| {
+            !c.is_empty()
+                && (!discovered || known.commands.get(&root).is_none_or(Vec::is_empty))
+                && known.commands.get(&root).map(Vec::as_slice) != Some(c)
+        }) {
+            known.commands.insert(root, c.to_vec());
+            changed = true;
+        }
+        if !changed {
+            return;
+        }
+        if let Ok(bytes) = serde_json::to_vec_pretty(&*cache)
             && let Err(e) = write_file(&self.paths.models_file, &bytes)
         {
             tracing::warn!("saving agent settings: {e}");

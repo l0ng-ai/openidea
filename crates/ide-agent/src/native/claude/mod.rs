@@ -114,16 +114,7 @@ async fn control(
     request: Value,
 ) -> Result<Option<Value>, String> {
     let line = json!({ "type": "control_request", "request_id": id, "request": request });
-    stdin
-        .write_all(
-            format!(
-                "{line}
-"
-            )
-            .as_bytes(),
-        )
-        .await
-        .map_err(|e| e.to_string())?;
+    stdin.write_all(format!("{line}\n").as_bytes()).await.map_err(|e| e.to_string())?;
     stdin.flush().await.map_err(|e| e.to_string())?;
     while let Some(line) = lines.next_line().await.map_err(|e| e.to_string())? {
         let Ok(msg) = serde_json::from_str::<Value>(&line) else { continue };
