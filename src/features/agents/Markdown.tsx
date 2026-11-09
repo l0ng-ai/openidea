@@ -6,7 +6,7 @@
  * the drawn diagram hides the code block, and `onDiagramDrawn` lets the conversation
  * follow the end when a diagram draws after the last streamed chunk.
  */
-import { useLayoutEffect, useMemo, useRef } from "react";
+import { useLayoutEffect, useMemo, useRef, useSyncExternalStore } from "react";
 import { Marked } from "marked";
 import DOMPurify from "dompurify";
 import { highlightInto } from "@/editor/lsp/markdown";
@@ -17,6 +17,7 @@ import { openExternalUrl } from "@/platform/openUrl";
 import { copyText } from "@/ui";
 import { editorService } from "@/workbench/contributions";
 import { hasMermaid, renderMermaidIn } from "@/features/viewers/markdown/mermaid";
+import { subscribeTheme, themeKey } from "@/platform/themeWatch";
 import { fileHref, pathLink, type PathLink } from "./conversation";
 import { loadImages } from "./markdownImages";
 import styles from "./Session.module.css";
@@ -198,6 +199,8 @@ export function Markdown({
   const images = useRef(new Map<string, Promise<string>>());
   /** The last drawing of each mermaid block, stood in while a changed one renders. */
   const diagrams = useRef<Node[]>([]);
+  // Diagrams are drawn in the active theme's colours: a theme change redraws them.
+  const theme = useSyncExternalStore(subscribeTheme, themeKey, () => "");
   useLayoutEffect(() => (ref.current ? enhance(ref.current, cwd, images.current) : undefined), [html, cwd]);
   // Mermaid diagrams: before paint, so cached ones don't flash their source. Only a
   // draw that lands after the render needs the follow — cached ones are in place by
@@ -212,7 +215,7 @@ export function Markdown({
       live = false;
       pass.cancel();
     };
-  }, [html, onDiagramDrawn]);
+  }, [html, theme, onDiagramDrawn]);
   return (
     <div
       ref={ref}
