@@ -88,6 +88,7 @@ export interface PluginsBackend {
   answerPrompt(promptId: string, answer: string[] | null): Promise<void>;
   /** This window's answer to a plugin's `commitRequested`. */
   answerCommand(requestId: string, answer: CommandAnswer): Promise<void>;
+  selectTests(config: string, tests: string[][]): Promise<string[] | null>;
   parseTestResults(config: string, chunk: string): Promise<import("@/bindings").PluginTestEvent[] | null>;
   closeTerminalSession(operation: string): Promise<void>;
   terminalSessionSpawn(
@@ -240,6 +241,7 @@ export const tauriPluginsBackend: PluginsBackend = {
   answerPrompt: async (promptId, answer) => {
     await commands.pluginAnswerPrompt(promptId, answer);
   },
+  selectTests: (config, tests) => call(commands.pluginSelectTests(config, tests)),
   parseTestResults: (config, chunk) => call(commands.pluginParseTestResults(config, chunk)),
   closeTerminalSession: async (operation) => {
     await call(commands.pluginTerminalSessionClose(operation));
@@ -666,6 +668,7 @@ export function createMemoryPluginsBackend(
       throw new Error("Terminal unavailable");
     },
     parseTestResults: async () => null,
+    selectTests: async () => null,
     contentTabAction: async () => {},
     answerCommit: async () => {},
     commitChecks: async () => [],

@@ -1,7 +1,7 @@
 import { useMemo, useState, type MouseEvent } from "react";
 import clsx from "clsx";
 import { executeAction } from "@/platform/actions";
-import { Icon, IconButton, showContextMenu, Spinner, Tree, type MenuItem } from "@/ui";
+import { Icon, IconButton, showContextMenu, useContextMenuStore, Spinner, Tree, type MenuItem } from "@/ui";
 import { openTarget } from "./navigate";
 import { nodeStatus, type TestNode, type TestResults, type TestStatus } from "./testing";
 import { parseComparison } from "./testing/comparison";
@@ -106,9 +106,19 @@ export interface TestTreeViewProps {
   running: boolean;
   /** Run / Debug the selected tests (context menu); absent when the configuration can't be narrowed. */
   onRunTests?: (ids: string[], debug: boolean) => void;
+  canRunTests?: (ids: string[]) => boolean | Promise<boolean>;
 }
 
-export function TestTreeView({ results, version, cwd, selected, onSelect, running, onRunTests }: TestTreeViewProps) {
+export function TestTreeView({
+  results,
+  version,
+  cwd,
+  selected,
+  onSelect,
+  running,
+  onRunTests,
+  canRunTests,
+}: TestTreeViewProps) {
   const [filters, setFilters] = useState(loadTestFilters);
   const { showPassed, showIgnored } = filters;
   const toggle = (key: keyof TestFilters) =>
@@ -134,25 +144,48 @@ export function TestTreeView({ results, version, cwd, selected, onSelect, runnin
     const ids = sel.has(node.id) ? [...sel] : [node.id];
     const name = ids.length === 1 ? (results.get(ids[0]!)?.name ?? node.name) : `${ids.length} tests`;
     const located = node.location ?? firstLocated(node)?.location;
-    const items: MenuItem[] = [];
-    if (onRunTests) {
-      items.push(
-        { label: tx`Run '${name}'`, verbatim: true, icon: "run", run: () => onRunTests(ids, false) },
-        { label: tx`Debug '${name}'`, verbatim: true, icon: "debug", run: () => onRunTests(ids, true) },
-        { kind: "separator" },
-      );
-    }
-    if (ids.length === 1 && nodeStatus(node) === "failed" && parseComparison(node.output))
-      items.push({ label: "Show Diff", icon: "diff", run: () => void showTestDiff(node) });
-    items.push({
-      label: "Jump to Source",
-      icon: "external-link",
-      shortcut: "F4",
-      disabled: !located,
-      run: () => jumpToSource(node),
-    });
     e.preventDefault();
-    showContextMenu(e, items);
+    const supported = onRunTests ? (canRunTests?.(ids) ?? true) : false;
+    const itemsFor = (enabled: boolean) => {
+      const items: MenuItem[] = [];
+      if (onRunTests) {
+        items.push(
+          {
+            label: tx`Run '${name}'`,
+            verbatim: true,
+            icon: "run",
+            disabled: !enabled,
+            run: () => onRunTests(ids, false),
+          },
+          {
+            label: tx`Debug '${name}'`,
+            verbatim: true,
+            icon: "debug",
+            disabled: !enabled,
+            run: () => onRunTests(ids, true),
+          },
+          { kind: "separator" },
+        );
+      }
+      if (ids.length === 1 && nodeStatus(node) === "failed" && parseComparison(node.output))
+        items.push({ label: "Show Diff", icon: "diff", run: () => void showTestDiff(node) });
+      items.push({
+        label: "Jump to Source",
+        icon: "external-link",
+        shortcut: "F4",
+        disabled: !located,
+        run: () => jumpToSource(node),
+      });
+      return items;
+    };
+    showContextMenu(e, itemsFor(supported === true));
+    if (supported instanceof Promise) {
+      const menu = useContextMenuStore.getState().menu;
+      void supported.then((enabled) => {
+        if (useContextMenuStore.getState().menu === menu && menu)
+          useContextMenuStore.setState({ menu: { ...menu, items: itemsFor(enabled) } });
+      });
+    }
   };
 
   const counts = useMemo(() => results.counts(), [results, version]); // eslint-disable-line react-hooks/exhaustive-deps

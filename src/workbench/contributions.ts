@@ -1749,6 +1749,19 @@ export function parsePluginTests(config: string, chunk: string) {
   return pluginTestParser?.(config, chunk) ?? Promise.resolve(null);
 }
 
+/** Optional selection support owned by the same host as the plugin test parser. */
+type PluginTestSelector = (config: string, tests: string[][]) => Promise<string[] | null>;
+let pluginTestSelector: PluginTestSelector | null = null;
+export function providePluginTestSelector(selector: PluginTestSelector): () => void {
+  pluginTestSelector = selector;
+  return () => {
+    if (pluginTestSelector === selector) pluginTestSelector = null;
+  };
+}
+export function selectPluginTests(config: string, tests: string[][]) {
+  return pluginTestSelector?.(config, tests) ?? Promise.resolve(null);
+}
+
 /** Read-only named snippets supplied by plugins. */
 export interface ContributedSnippet {
   id: string;

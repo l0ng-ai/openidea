@@ -1145,6 +1145,8 @@ export const commands = {
 	pluginTerminalSessionClose: (operation: string) => typedError<null, IdeError>(__TAURI_INVOKE("plugin_terminal_session_close", { operation })),
 	/**  Parses one batch of an owned test configuration's output. */
 	pluginParseTestResults: (config: string, chunk: string) => typedError<PluginTestEvent[] | null, IdeError>(__TAURI_INVOKE("plugin_parse_test_results", { config, chunk })),
+	/**  Selects test-tree paths in an owned plugin test configuration. */
+	pluginSelectTests: (config: string, tests: string[][]) => typedError<string[] | null, IdeError>(__TAURI_INVOKE("plugin_select_tests", { config, tests })),
 	/**  Dispatches a wasm content editor action through the owning plugin's event handler. */
 	pluginContentTabAction: (pluginId: string, action: ContentTabAction) => typedError<null, IdeError>(__TAURI_INVOKE("plugin_content_tab_action", { pluginId, action })),
 	/**  Re-approves a plugin's executable, globally or for this window's project. */

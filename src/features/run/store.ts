@@ -894,7 +894,12 @@ export async function startRun(
     if ((options.launch || launch.isTest) && launch.emulateTerminal) launch = { ...launch, emulateTerminal: false };
     if (launch.emulateTerminal) rt.terminal = new TerminalOutput();
     patchSession(sessionId, { terminal: !!launch.emulateTerminal });
-    const started = launch.isTest ? await gradleTestLaunch(withTestReporting(launch)) : await gradleBootLaunch(launch);
+    const started =
+      launch.params?.framework === "plugin"
+        ? launch
+        : launch.isTest
+          ? await gradleTestLaunch(withTestReporting(launch))
+          : await gradleBootLaunch(launch);
     if (runtimes.get(sessionId)?.generation !== generation) return getSession(sessionId) ?? null;
     const processStarted = performance.now();
     const info = await startWithRemedies(started, () => call(commands.runStart(started, channel)));
@@ -1178,7 +1183,7 @@ export function rerunConfig(session: Pick<RunSession, "config" | "baseConfig">):
 }
 
 /** The session's original configuration, as saved now (see {@link rerunConfig}). */
-function baseConfigOf(session: RunSession): RunConfig {
+export function baseConfigOf(session: RunSession): RunConfig {
   const base = session.baseConfig ?? session.config;
   return useRun.getState().configs.find((c) => c.id === base.id) ?? base;
 }
@@ -1218,11 +1223,13 @@ export function failedTests(sessionId: string): string[][] {
 }
 
 /** "Rerun Failed Tests": reruns only the failed tests in the same tab. Returns false when unsupported. */
-export function rerunFailed(sessionId: string): boolean {
+export async function rerunFailed(sessionId: string): Promise<boolean> {
   const session = getSession(sessionId);
   if (!session || isLive(session)) return false;
   const base = baseConfigOf(session);
-  const derived = rerunFailedConfigs(base, failedTests(sessionId));
+  const selection = rerunFailedConfigs(base, failedTests(sessionId));
+  const derived = selection instanceof Promise ? await selection : selection;
+  if (getSession(sessionId) !== session || isLive(session)) return false;
   if (!derived.length) return false;
   derived.forEach((config, index) => void startRun(config, index === 0 ? sessionId : undefined, base));
   return true;
@@ -1244,17 +1251,32 @@ export async function runSelectedTests(
   const paths = leafTestPaths(nodes);
   const base = baseConfigOf(session);
   const name = nodes.length === 1 ? nodes[0]!.name : `${paths.length} tests`;
-  const derived = testsConfigs(base, paths, name);
+  const selection = testsConfigs(base, paths, name);
+  const derived = selection instanceof Promise ? await selection : selection;
+  if (getSession(sessionId) !== session) return false;
   if (!derived.length) return false;
   for (const [index, next] of derived.entries()) {
-    const config = adoptTemporary({
-      ...next,
-      id: `context:tests:${base.id}:${index}:${paths.map((p) => p.join("/")).join("|")}`,
-    });
+    const config =
+      base.params?.framework === "plugin"
+        ? next
+        : adoptTemporary({
+            ...next,
+            id: `context:tests:${base.id}:${index}:${paths.map((p) => p.join("/")).join("|")}`,
+          });
     if (debug) await executeAction("run.debugConfig", config);
     else await startRun(config, undefined, base);
   }
   return true;
+}
+
+/** Whether this exact test-tree selection can be narrowed by its framework. */
+export function canRunSelectedTests(sessionId: string, nodeIds: readonly string[]): boolean | Promise<boolean> {
+  const session = getSession(sessionId);
+  const tests = runtimes.get(sessionId)?.tests;
+  if (!session || !tests) return false;
+  const nodes = nodeIds.map((id) => tests.get(id)).filter((n) => !!n);
+  const selection = testsConfigs(baseConfigOf(session), leafTestPaths(nodes), "");
+  return selection instanceof Promise ? selection.then((configs) => configs.length > 0) : selection.length > 0;
 }
 
 /** Whether the console takes typed input: the process runs and its stdin is open. */

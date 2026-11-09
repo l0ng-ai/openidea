@@ -76,11 +76,11 @@ impl TestWorkspace {
 
 impl PluginWorkspace for TestWorkspace {
     fn run_configuration(&self, _client: &str, plugin: &str, id: &str) -> Result<ide_run::RunConfig, HostError> {
-        if plugin != "execution" || !matches!(id, "detected" | "dynamic") {
+        if !(plugin == "execution" && matches!(id, "detected" | "dynamic") || plugin == "api14" && id == "tests") {
             return Err(HostError::NotFound(id.into()));
         }
         Ok(ide_run::RunConfig {
-            id: format!("plugin:execution:{id}"),
+            id: format!("plugin:{plugin}:{id}"),
             name: "Tests".into(),
             kind: "plugin".into(),
             command: "execution-tool".into(),
@@ -6016,6 +6016,50 @@ fn api14_stage3_configurations_test_results_and_content_actions_use_real_exports
         f.events.lock().iter().any(|(client, event)| client.as_deref() == Some("main") && matches!(event, PluginEvent::ContentTabReply { request_id, reply, .. } if request_id == "ct-1" && reply.saved == Some(true)))
     }));
     assert!(f.host.parse_test_results("main", "plugin:execution:dynamic", "trap".into()).unwrap().is_none());
+}
+
+#[test]
+fn api14_fixture_exports_test_selection() {
+    let f = fixture(Limits::default());
+    f.install(&sample("api14"));
+    assert_eq!(
+        f.host.select_tests("main", "plugin:api14:tests", vec![vec!["Suite".into(), "Test".into()]]).unwrap(),
+        Some(vec!["Suite::Test".into()])
+    );
+}
+
+#[cfg(unix)]
+#[test]
+fn api14_test_selection_uses_owned_config_ids_and_name_paths() {
+    let f = execution_fixture();
+    f.host.refresh_run_configurations(&f.project);
+    for id in ["dynamic", "detected"] {
+        assert_eq!(
+            f.host
+                .select_tests(
+                    "main",
+                    &format!("plugin:execution:{id}"),
+                    vec![vec!["Suite".into(), "Test".into()], vec!["Other".into()]]
+                )
+                .unwrap(),
+            Some(vec![id.into(), "Suite::Test".into(), "Other".into()])
+        );
+    }
+    assert_eq!(f.host.select_tests("main", "plugin:execution:dynamic", vec![vec!["none".into()]]).unwrap(), None);
+    assert_eq!(f.host.select_tests("main", "cargo:test", vec![vec!["Test".into()]]).unwrap(), None);
+    assert_eq!(f.host.select_tests("main", "plugin:execution:dynamic", vec![]).unwrap(), None);
+}
+
+#[cfg(unix)]
+#[test]
+fn api14_test_selection_traps_and_timeouts_are_unsupported() {
+    for failure in ["trap", "timeout"] {
+        let f = execution_fixture();
+        f.host.refresh_run_configurations(&f.project);
+        let started = Instant::now();
+        assert_eq!(f.host.select_tests("main", "plugin:execution:dynamic", vec![vec![failure.into()]]).unwrap(), None);
+        assert!(started.elapsed() < Duration::from_secs(5));
+    }
 }
 
 #[cfg(unix)]

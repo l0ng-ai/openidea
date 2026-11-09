@@ -553,6 +553,7 @@ then run `openidea-plugin check`.
 | `host::reply_content_tab(request_id, reply)`                                                                   | `views.reply-content-tab`                  | API 1.4: reply to an owned action in the originating window. No capability; commands/events only.                                                                                                                                                                                                                                                         |
 | `RunConfigurations::configurations(root)`                                                                      | export `run-configurations.configurations` | API 1.4: optional `plugin-run-configurations` world; SDK registration `run_configurations`. Full project list, refreshed on configuration listing.                                                                                                                                                                                                        |
 | `TestResults::parse(config, chunk)`                                                                            | export `test-results.parse`                | API 1.4: optional `plugin-test-results` world; SDK registration `test_results`. Bounded output batches for `framework = "plugin"`; failures use built-in parsers.                                                                                                                                                                                         |
+| `TestResults::select_tests(config, tests)`                                                                     | export `test-results.select-tests`         | API 1.4: full replacement argv for test-tree name paths, or `None` when unsupported (the SDK default). Enables rerunning failed tests and running tree selections.                                                                                                                                                                                        |
 | `host::open_location(path, line, column)`                                                                      | `views.open-location`                      | Opens a file inside the project in an editor of the invoking window, the caret at `line`/`column` (0-based, UTF-16): a view's links to code. Needs `project.read`.                                                                                                                                                                                        |
 | `host::setting(key)`, `setting_bool`, `setting_string`, `setting_number`                                       | `settings.get`                             | The user's value (project over global) or the schema's default.                                                                                                                                                                                                                                                                                           |
 
@@ -1628,9 +1629,10 @@ test's parent must already exist. Locations use absolute project-contained paths
 zero-based lines and UTF-16 columns. Passed/failed durations are milliseconds.
 The host uses the editor-provider soft/hard budget per batch and bounds returned
 events to 10,000 / 4 MiB. A missing, failed or invalid parser switches that run to
-the built-in parsers; common framework commands retain their existing rerun-failed
-filters. Arbitrary frameworks have no failed-test selection protocol in this
-export and therefore cannot supply a custom rerun-failed filter.
+the built-in parsers. Implement `select_tests(config, tests)` to derive the full
+replacement argv for failed tests or test-tree selections; its default returns
+`None`. See [Selecting plugin tests](#selecting-plugin-tests-api-14-unreleased)
+for the name-path contract and unsupported cases.
 
 `host::open_terminal_session(key, title, &Command::new("tool"))` opens a normal
 Terminal tab in this window's project root. Reopening the same key focuses its
@@ -2356,6 +2358,24 @@ one dismisses the balloon and runs the command in the receiving window with
 its normal editor and project context. No capability is needed. Invalid or
 undeclared actions reject the whole notification. Labels are limited to 256
 bytes and arguments to 64 KiB. Plain `host::notify` behaves as before.
+
+### Selecting plugin tests (API 1.4, unreleased)
+
+A plugin using `framework = "plugin"` can implement `TestResults::select_tests`
+(`test-results.select-tests`) alongside `parse`. It receives the same plugin-local
+configuration id as `parse` and a list of test-tree paths: the names from the
+plugin's `test-start` events, from parent suite to test, exactly as shown in the
+tree. Return the **full replacement argument list**, including any required base
+arguments, to run only those tests. `None` (the Rust SDK default), errors and
+call timeouts leave test selection unsupported. An empty argument list is a
+supported selection. The IDE preserves the configuration's command, environment,
+working directory and run target.
+
+This enables **Rerun Failed Tests** and the test tree's **Run** / **Debug** entries.
+Calls use the test parser's bounded background budget and run on the plugin's
+host, including remote projects. See `official/test-runner` for an example.
+This export is added to the existing interface while 1.4 is unreleased; released
+export interfaces remain frozen under the rules above.
 
 ### Plugin-provided run targets (API 1.4)
 

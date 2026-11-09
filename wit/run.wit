@@ -47,4 +47,7 @@ interface test-results {
     }
     /// Parses one bounded output batch; failures fall back to built-in parsers.
     parse: func(config: string, chunk: string) -> list<test-event>;
+    /// Selects test-tree name paths (parents then test), using the same config id as parse.
+    /// Returns the full replacement argument list, or none when filtering is unsupported.
+    select-tests: func(config: string, tests: list<list<string>>) -> option<list<string>>;
 }

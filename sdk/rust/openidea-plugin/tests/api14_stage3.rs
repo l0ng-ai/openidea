@@ -53,3 +53,14 @@ fn run_targets_require_a_program_grant_and_are_project_scoped() {
     host::unregister_run_target(&project, "ddev");
     assert!(mock.run_targets().is_empty());
 }
+
+#[test]
+fn parsers_can_keep_the_default_unsupported_test_selection() {
+    struct Parser;
+    impl TestResults for Parser {
+        fn parse(&mut self, _: &str, _: &str) -> Vec<PluginTestEvent> {
+            vec![]
+        }
+    }
+    assert_eq!(Parser.select_tests("tests", &[vec!["Suite".into(), "Test".into()]]), None);
+}
