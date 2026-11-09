@@ -26,4 +26,4 @@ features = [
   "rename",
   "code-action",
 ]
-install-hint = "Install Arduino IDE 2 (includes Arduino Language Server, Arduino CLI and clangd), or configure Languages & Frameworks > Arduino tool paths. Install the board's core in Arduino IDE and select its FQBN for this sketch."
+install-hint = "Install Arduino IDE 2 (includes Arduino Language Server, Arduino CLI and clangd) and the board's core. Configure the server command and arguments in Settings > Languages & Frameworks > Language Servers, or set languages.arduino.cli, languages.arduino.clangd, languages.arduino.languageServer and languages.arduino.cliConfig in settings.toml. Set the board FQBN in sketch.yaml or languages.arduino.fqbn in settings.toml."

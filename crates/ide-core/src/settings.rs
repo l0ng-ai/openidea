@@ -683,7 +683,7 @@ impl Default for LanguagesSettings {
     }
 }
 
-/// Languages & Frameworks › Arduino. Tool discovery paths and default board FQBN.
+/// Arduino tool discovery paths and default board FQBN, configured in `settings.toml`.
 #[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize, Type)]
 #[serde(default, rename_all = "camelCase")]
 pub struct ArduinoSettings {

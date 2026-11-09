@@ -78,8 +78,12 @@ the [official plugins](plugins/official). The plugin API is still a preview.
 
 Arduino sketches (`.ino`) have C++ syntax highlighting and code intelligence via Arduino
 Language Server. For completion, signature help, hover and definition navigation, install
-Arduino IDE 2 and the board's core (or configure tool paths in settings). OpenIDEA
+Arduino IDE 2 and the board's core. Configure the server command and arguments in
+Settings > Languages & Frameworks > Language Servers, or set tool paths in `settings.toml`
+using `languages.arduino.cli`, `languages.arduino.clangd`, `languages.arduino.languageServer`
+and `languages.arduino.cliConfig`. OpenIDEA
 automatically discovers the IDE's Arduino CLI, clangd and Arduino Language Server on
-Windows, macOS and Linux; board FQBN is read from `sketch.yaml` or settings.
+Windows, macOS and Linux; board FQBN is read from `sketch.yaml` or
+`languages.arduino.fqbn` in `settings.toml`.
 
 <sub>Not affiliated with JetBrains. IntelliJ IDEA is a trademark of JetBrains s.r.o.</sub>

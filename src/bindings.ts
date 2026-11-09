@@ -1973,7 +1973,7 @@ export type ApplyOutcome = {
 	conflicts: string[],
 };
 
-/**  Languages & Frameworks › Arduino. Tool discovery paths and default board FQBN. */
+/**  Arduino tool discovery paths and default board FQBN, configured in `settings.toml`. */
 export type ArduinoSettings = {
 	cli?: string,
 	clangd?: string,

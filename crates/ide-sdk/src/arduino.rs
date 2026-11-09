@@ -54,13 +54,13 @@ fn resolve_tool(root: &Path, configured: &str, name: &str) -> IdeResult<PathBuf>
             return Ok(path);
         }
         return Err(IdeError::unavailable(format!(
-            "Arduino tool '{configured}' was not found. Set an installed executable in settings."
+            "Arduino tool '{configured}' was not found. Set its path in Settings > Languages & Frameworks > Language Servers, or in settings.toml under languages.arduino."
         )));
     }
     which(name)
         .or_else(|| ide_resource_dirs().into_iter().map(|p| p.join(crate::exe(name))).find(|p| p.is_file()))
         .ok_or_else(|| IdeError::unavailable(format!(
-            "Arduino tool '{name}' was not found on PATH or in Arduino IDE. Install Arduino IDE 2 or set its path in settings."
+            "Arduino tool '{name}' was not found on PATH or in Arduino IDE. Install Arduino IDE 2, or set its path in Settings > Languages & Frameworks > Language Servers or settings.toml under languages.arduino."
         )))
 }
 
