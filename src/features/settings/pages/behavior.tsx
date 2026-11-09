@@ -757,7 +757,7 @@ export const BEHAVIOR_PAGES: PageSpec[] = [
             kind: "toggle",
             key: "general.closeWithoutWelcome",
             label: "Close the window instead of showing the Welcome screen",
-            hint: "When this is the only window, closing a project or a file exits instead of returning to the Welcome screen.",
+            hint: "When this is the only window, closing a project or a file closes the window. On macOS, the app stays in the Dock.",
           },
           {
             kind: "toggle",

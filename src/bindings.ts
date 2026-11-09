@@ -4388,7 +4388,7 @@ export type FunctionBreakpoint = {
 export type GeneralSettings = {
 	reopenLastProject?: boolean,
 	confirmExit?: boolean,
-	/**  When on, the last window exits instead of showing the Welcome screen. */
+	/**  When on, the last window closes instead of showing the Welcome screen. */
 	closeWithoutWelcome?: boolean,
 	/**  When on, closing a window drops its saved editor tabs, so they are not restored next time. */
 	closeTabsWithWindow?: boolean,

@@ -38,7 +38,7 @@ export function confirmExitEnabled(settings: Settings | null | undefined): boole
   return settings?.general?.confirmExit === true;
 }
 
-/** Last window exits instead of showing Welcome. Only an explicit choice does. */
+/** Last window closes instead of showing Welcome. Only an explicit choice does. */
 export function closeWithoutWelcomeEnabled(settings: Settings | null | undefined): boolean {
   return settings?.general?.closeWithoutWelcome === true;
 }

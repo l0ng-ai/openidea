@@ -2753,7 +2753,7 @@
   "When files are deleted": "删除文件时",
   "When the current tab is closed, activate": "关闭当前标签页时，激活",
   "When the tab limit is reached": "达到标签页限制时",
-  "When this is the only window, closing a project or a file exits instead of returning to the Welcome screen.": "当这是唯一的窗口时，关闭项目或文件会直接退出，而不是返回欢迎屏幕。",
+  "When this is the only window, closing a project or a file closes the window. On macOS, the app stays in the Dock.": "当这是唯一的窗口时，关闭项目或文件会关闭窗口。在 macOS 上，应用仍保留在程序坞中。",
   "Widescreen tool window layout": "宽屏工具窗口布局",
   "Window": "窗口",
   "Words": "单词",

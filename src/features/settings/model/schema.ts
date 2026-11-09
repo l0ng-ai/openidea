@@ -49,7 +49,7 @@ export interface ValidSettings extends WorkflowSettings {
   general: {
     reopenLastProject: boolean;
     confirmExit: boolean;
-    /** Last window exits instead of showing the Welcome screen. */
+    /** Last window closes instead of showing the Welcome screen. */
     closeWithoutWelcome: boolean;
     /** Closing a window drops its saved editor tabs. */
     closeTabsWithWindow: boolean;

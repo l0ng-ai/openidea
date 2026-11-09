@@ -718,7 +718,7 @@
   "Open Log in Editor": "Open Log in Editor",
   "Open Container Log in Editor": "Open Container Log in Editor",
   "Close the window instead of showing the Welcome screen": "Close the window instead of showing the Welcome screen",
-  "When this is the only window, closing a project or a file exits instead of returning to the Welcome screen.": "When this is the only window, closing a project or a file exits instead of returning to the Welcome screen.",
+  "When this is the only window, closing a project or a file closes the window. On macOS, the app stays in the Dock.": "When this is the only window, closing a project or a file closes the window. On macOS, the app stays in the Dock.",
   "Close all editor tabs when the window closes": "Close all editor tabs when the window closes",
   "Files left open are not restored the next time that project or a standalone file is opened.": "Files left open are not restored the next time that project or a standalone file is opened.",
   "Could not read .NET test results: {error}\n": "Could not read .NET test results: {error}\n",
