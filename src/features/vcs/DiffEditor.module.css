@@ -184,7 +184,9 @@
 .host :global(.cm-diffHoverRevert) {
   position: absolute;
   right: 8px;
-  top: 0;
+  /* Centred on the line's first row whatever the editor line height is; the fallback is for 22px. */
+  top: 3px;
+  top: calc((1lh - 16px) / 2);
   display: inline-flex;
   align-items: center;
   gap: 3px;
@@ -239,7 +241,8 @@
   border-left: 1px solid var(--border);
   border-right: 1px solid var(--border);
 }
-.host :global(.cm-diffDivider svg) {
+/* Only the band layer: the chevrons inside the arrow buttons are centred by the button's flex box. */
+.host :global(.cm-diffDivider > svg) {
   position: absolute;
   inset: 0;
 }
@@ -280,6 +283,11 @@
 }
 .host :global(.cm-diffDivider button.cm-diffArrow-b-to-a) {
   right: 1px;
+}
+/* With one direction there is no pair to keep apart: the arrow sits in the middle of the divider. */
+.host :global(.cm-diffDivider-lone button.cm-diffArrow) {
+  left: calc(50% - 7px);
+  right: auto;
 }
 .host :global(.cm-diffDivider button.cm-diffArrow:hover) {
   color: var(--fg-strong);
