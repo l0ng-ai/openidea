@@ -408,11 +408,16 @@ describe("pull request helpers", () => {
     expect(
       githubRemotes([
         { name: "origin", url: "git@github.com:me/r.git" },
+        {
+          name: "fork",
+          url: "git@github-personal:dengliu/r.git",
+          resolvedUrl: "git@github.com:dengliu/r.git",
+        },
         { name: "upstream", url: "https://github.com/org/r.git" },
         { name: "dup", url: "https://github.com/ORG/r" },
         { name: "other", url: "https://example.com/x/y" },
       ]).map((r) => `${r.remote}=${r.owner}/${r.name}`),
-    ).toEqual(["origin=me/r", "upstream=org/r"]);
+    ).toEqual(["origin=me/r", "fork=dengliu/r", "upstream=org/r"]);
   });
 });
 

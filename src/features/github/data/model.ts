@@ -416,7 +416,7 @@ export function repositoryDisplayName(
 /** `owner/name` of a github.com remote URL (https, ssh or scp-like), else null. */
 export function parseGitHubRemote(url: string): GHRepositoryCoordinates | null {
   const m =
-    /^(?:https?:\/\/(?:[^@/]+@)?|ssh:\/\/(?:[^@/]+@)?|git:\/\/|(?:[^@/]+@)?)(?:www\.)?github\.com(?::\d+(?=\/))?[:/]+([^/]+)\/([^/]+?)(?:\.git)?\/?$/i.exec(
+    /^(?:https?:\/\/(?:[^@/]+@)?|ssh:\/\/(?:[^@/]+@)?|git:\/\/|(?:[^@/]+@)?)(?:www\.|ssh\.)?github\.com(?::\d+(?=\/))?[:/]+([^/]+)\/([^/]+?)(?:\.git)?\/?$/i.exec(
       url.trim(),
     );
   return m ? { owner: m[1]!, name: m[2]! } : null;
