@@ -16,6 +16,7 @@ import { editorController } from "./controller";
 import { attachDocument } from "./model/attachment";
 import { previewExtensions } from "./cm/preview";
 import { registerEditorActions } from "./actions";
+import { registerLibrarySourcesActions } from "./librarySources";
 import { installColorScheme } from "./colorSchemeRuntime";
 import { documentBanner } from "./view/Banner";
 import { EditorAreaView } from "./view/EditorArea";
@@ -71,6 +72,7 @@ export function activate(): void | (() => void) {
     installColorScheme(),
     provideEditorArea(EditorAreaView),
     registerEditorActions(),
+    registerLibrarySourcesActions(),
     registerPasteHistoryActions(),
     registerEditorBanner(documentBanner),
     registerOverlay({ id: "editor.gotoLine", component: GotoLineDialog }),

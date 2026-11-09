@@ -36,6 +36,8 @@ export interface Action {
   icon?: string;
   /** Enablement; evaluated against context keys. */
   when?: string;
+  /** Additional enablement for a parameterised action or the current selection. */
+  enabled?: (c: ActionContext) => boolean;
   /**
    * Extra condition for keyboard shortcuts only (menus and Find Action ignore
    * it), e.g. to yield a shared shortcut to an editor action while typing.
@@ -142,13 +144,13 @@ export function allActions(): Action[] {
   return [...useActions.getState().actions.values()];
 }
 
-export function isActionEnabled(action: Action, ctx: ContextKeys = getContext()): boolean {
+export function isActionEnabled(action: Action, ctx: ContextKeys = getContext(), arg?: unknown): boolean {
   if (
     ctx.projectOpening &&
     !["app.quit", "window.next", "window.previous", "window.toggleFullScreen"].includes(action.id)
   )
     return false;
-  return evaluateWhen(action.when, ctx);
+  return evaluateWhen(action.when, ctx) && (action.enabled?.({ ctx, arg }) ?? true);
 }
 
 /** Whether a keyboard shortcut may run `action` (`when` and `keyWhen`). */
@@ -202,7 +204,7 @@ async function runAction(id: string, arg: unknown, propagateError: boolean): Pro
     return false;
   }
   const ctx = getContext();
-  if (!isActionEnabled(action, ctx)) return false;
+  if (!isActionEnabled(action, ctx, arg)) return false;
   if (nesting === 0)
     for (const l of listeners)
       try {

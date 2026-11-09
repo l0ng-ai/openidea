@@ -16,6 +16,8 @@ use std::io::Read;
 use std::path::{Path, PathBuf};
 use std::sync::{Mutex, OnceLock};
 
+pub mod sources;
+
 /// Phases shown under "Lifecycle" (IDEA's default list).
 pub const LIFECYCLE: &[&str] =
     &["clean", "validate", "compile", "test", "package", "verify", "install", "site", "deploy"];
