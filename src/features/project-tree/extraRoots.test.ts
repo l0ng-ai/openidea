@@ -102,3 +102,50 @@ describe("project view with a scratches root", () => {
     expect(scratchLabels()).toEqual(["scratch.py"]);
   });
 });
+
+describe("project view with External Libraries", () => {
+  const JAR = "/m2/spring-boot-4.1.1.jar";
+  const CLASS = `${JAR}!/org/springframework/boot/SpringApplication.class`;
+  let unregister = () => {};
+  beforeEach(() => {
+    localStorage.clear();
+    setProjectFsForTests(new MemoryFs({ "/p/pom.xml": "x", [CLASS]: "x" }, "/p"), "/p");
+    initProjectTree("/p", "proj");
+    unregister = registerProjectViewRoot({
+      id: "externalLibraries",
+      label: "External Libraries",
+      icon: "library",
+      readOnly: true,
+      children: [
+        {
+          label: "< Maven: spring-boot >",
+          icon: "maven-project",
+          children: [{ label: "spring-boot-4.1.1.jar", icon: "file-archive", path: `${JAR}!` }],
+        },
+      ],
+    });
+  });
+  afterEach(() => {
+    unregister();
+    setProjectFsForTests(null);
+    initProjectTree(null);
+  });
+
+  it.each([
+    ["the archive entry", CLASS],
+    [
+      "a jdtls class",
+      "jdt://contents/spring-boot-4.1.1.jar/org.springframework.boot/SpringApplication.class?=demo/%5C/m2%5C/spring-boot-4.1.1.jar%3Corg.springframework.boot%28SpringApplication.class",
+    ],
+    ["a Kotlin LSP class", `jar:///m2/spring-boot-4.1.1.jar!/org/springframework/boot/SpringApplication.class`],
+  ])("reveals %s inside its jar", (_, path) => {
+    expect(revealPath(path)).toBe(true);
+    const { expanded, revealRequest } = useProjectTree.getState();
+    expect(revealRequest?.path).toBe(CLASS);
+    expect([...expanded].some((k) => k.endsWith(`${JAR}!/org/springframework/boot`))).toBe(true);
+  });
+
+  it("leaves classes of unlisted jars alone", () => {
+    expect(revealPath("jar:///elsewhere/x.jar!/p/C.class")).toBe(false);
+  });
+});
