@@ -735,6 +735,9 @@ export function DiffEditor({
         state: v.state,
         dispatch: (tr) => {
           v.dispatch({ selection: tr.selection, userEvent: "select.byChunk" });
+          // CodeMirror draws the caret only in a focused editor, so a difference reached from
+          // the toolbar, a menu or F7 pressed after those would move an invisible caret.
+          v.focus();
           const scroller = views.merge && !views.panes ? views.merge.dom : v.scrollDOM;
           v.requestMeasure({
             key: step,
