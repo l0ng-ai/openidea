@@ -5271,6 +5271,8 @@ export type JavaSettings = {
 	 *  (VS Code's `java.jdt.ls.vmargs`).
 	 */
 	jdtlsVmArgs?: string,
+	/**  Share one JDT LS across builds in an ordinary project window; other windows remain separate. */
+	jdtlsShared?: boolean,
 	/**  Build Tools › Maven. */
 	maven?: MavenSettings,
 	/**  Build Tools › Gradle. */

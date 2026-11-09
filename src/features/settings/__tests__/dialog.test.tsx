@@ -514,6 +514,94 @@ describe("Settings dialog", () => {
       expect(settingsSet.mock.calls).toEqual([["global", "languages.java.jdtlsVmArgs", '"-Xmx2g"']]);
     });
 
+    it("stages shared JDT LS in the project and writes it on Apply", async () => {
+      const dialog = await openDialog("languages.java");
+      fireEvent.click(within(dialog).getByRole("radio", { name: "This project" }));
+      const checkbox = within(dialog).getByRole("checkbox", { name: "Share JDT LS across builds" });
+      expect(checkbox).not.toBeChecked();
+      fireEvent.click(checkbox);
+      expect(checkbox).toBeChecked();
+      expect(settingsSet).not.toHaveBeenCalled();
+      await act(async () => fireEvent.click(within(dialog).getByRole("button", { name: "Apply" })));
+      expect(settingsSet.mock.calls).toEqual([["project", "languages.java.jdtlsShared", "true"]]);
+    });
+
+    it("keeps the global shared JDT LS preference separate from the project's override", async () => {
+      global = setAt(global, "languages.java.jdtlsShared", true);
+      current = setAt(global, "languages.java.jdtlsShared", false);
+      useProject.setState({ settings: current });
+      const dialog = await openDialog("languages.java");
+      fireEvent.click(within(dialog).getByRole("radio", { name: "This project" }));
+      expect(within(dialog).getByRole("checkbox", { name: "Share JDT LS across builds" })).not.toBeChecked();
+      fireEvent.click(within(dialog).getByRole("radio", { name: "Global" }));
+      const checkbox = within(dialog).getByRole("checkbox", { name: "Share JDT LS across builds" });
+      expect(checkbox).toBeChecked();
+      fireEvent.click(checkbox);
+      await act(async () => fireEvent.click(within(dialog).getByRole("button", { name: "Apply" })));
+      expect(settingsSet.mock.calls).toEqual([["global", "languages.java.jdtlsShared", "false"]]);
+    });
+
+    it("discards a shared JDT LS toggle on Cancel", async () => {
+      const dialog = await openDialog("languages.java");
+      fireEvent.click(within(dialog).getByRole("radio", { name: "This project" }));
+      fireEvent.click(within(dialog).getByRole("checkbox", { name: "Share JDT LS across builds" }));
+      fireEvent.click(within(dialog).getByRole("button", { name: "Cancel" }));
+      expect(settingsSet).not.toHaveBeenCalled();
+      expect(current.languages?.java?.jdtlsShared).toBe(false);
+    });
+
+    it("disables shared JDT LS only in a native Workspace's project scope", async () => {
+      useProject.setState((s) => ({
+        project: { ...s.project!, workspace: { version: 1, name: "Workspace", projects: ["/p/member"] } },
+      }));
+      const dialog = await openDialog("languages.java");
+      fireEvent.click(within(dialog).getByRole("radio", { name: "This project" }));
+      expect(within(dialog).getByRole("checkbox", { name: "Share JDT LS across builds" })).toBeDisabled();
+      expect(within(dialog).getByText(/Open a workspace member as a project/)).toBeInTheDocument();
+      fireEvent.click(within(dialog).getByRole("radio", { name: "Global" }));
+      const checkbox = within(dialog).getByRole("checkbox", { name: "Share JDT LS across builds" });
+      expect(checkbox).toBeEnabled();
+      fireEvent.click(checkbox);
+      await act(async () => fireEvent.click(within(dialog).getByRole("button", { name: "Apply" })));
+      expect(settingsSet.mock.calls).toEqual([["global", "languages.java.jdtlsShared", "true"]]);
+    });
+
+    it("disables sharing for a Java language server target only in project scope", async () => {
+      current = setAt(current, "languageServerTargets", { java: { target: "docker:java", server: "jdtls" } });
+      useProject.setState({ settings: current });
+      const dialog = await openDialog("languages.java");
+      fireEvent.click(within(dialog).getByRole("radio", { name: "This project" }));
+      const checkbox = within(dialog).getByRole("checkbox", { name: "Share JDT LS across builds" });
+      expect(checkbox).toBeDisabled();
+      expect(within(dialog).getByText(/Select Local machine for the Java language server/)).toBeInTheDocument();
+      fireEvent.click(within(dialog).getByRole("radio", { name: "Global" }));
+      expect(checkbox).toBeEnabled();
+      fireEvent.click(checkbox);
+      await act(async () => fireEvent.click(within(dialog).getByRole("button", { name: "Apply" })));
+      expect(settingsSet.mock.calls).toEqual([["global", "languages.java.jdtlsShared", "true"]]);
+    });
+
+    it.each([{ java: { target: "", server: "jdtls" } }, { python: { target: "docker:python" } }])(
+      "keeps sharing available when Java runs locally: %j",
+      async (targets) => {
+        current = setAt(current, "languageServerTargets", targets);
+        useProject.setState({ settings: current });
+        const dialog = await openDialog("languages.java");
+        fireEvent.click(within(dialog).getByRole("radio", { name: "This project" }));
+        expect(within(dialog).getByRole("checkbox", { name: "Share JDT LS across builds" })).toBeEnabled();
+      },
+    );
+
+    it("uses a staged project Java language server target before Apply", async () => {
+      const dialog = await openDialog("languages.java");
+      fireEvent.click(within(dialog).getByRole("radio", { name: "This project" }));
+      const checkbox = within(dialog).getByRole("checkbox", { name: "Share JDT LS across builds" });
+      expect(checkbox).toBeEnabled();
+      act(() => stage("languages.servers", "project", "languageServerTargets.java.target", "docker:java"));
+      expect(checkbox).toBeDisabled();
+      expect(settingsSet).not.toHaveBeenCalled();
+    });
+
     it("Settings for New Projects edits the global layer on every page", async () => {
       render(<SettingsDialog />);
       await act(async () => {
