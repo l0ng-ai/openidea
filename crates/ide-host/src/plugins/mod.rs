@@ -19,6 +19,7 @@ mod api;
 mod auth;
 pub mod commit;
 mod database;
+mod dependencies;
 pub(crate) mod diagnostics;
 pub mod endpoints;
 mod event_paths;
@@ -369,6 +370,8 @@ pub struct PluginHost {
     sink: Arc<dyn PluginEventSink>,
     limits: Limits,
     registry: Arc<ExtensionRegistry>,
+    /// Extension points (declared by plugins) whose contributions changed, until their owners are told.
+    extension_changes: dependencies::PendingChanges,
     ui: Arc<UiStore>,
     languages: Arc<PluginLanguages>,
     run_detectors: Arc<run_detectors::RunDetectors>,
@@ -436,6 +439,11 @@ impl PluginHost {
             .and_then(|s| serde_json::from_str(&s).ok())
             .unwrap_or_default();
         let registry = Arc::new(ExtensionRegistry::new());
+        let extension_changes: dependencies::PendingChanges = Arc::default();
+        let changes = extension_changes.clone();
+        registry.set_change_listener(Arc::new(move |point, _owner| {
+            changes.lock().insert(point.to_owned());
+        }));
         let ui = UiStore::new();
         let index = Arc::new(ContributionIndex::new(
             plugins_dir.join(".cache").join("contributions"),
@@ -452,7 +460,8 @@ impl PluginHost {
         languages.set_process_policy(Arc::new(move |plugin, cap| {
             policy_pins.read().get(&(plugin.to_owned(), cap.to_string())).cloned()
         }));
-        let shared = api::Shared::new(sink.clone(), plugins_dir.join(".data"), pins.clone(), ui.clone());
+        let shared =
+            api::Shared::new(sink.clone(), plugins_dir.join(".data"), pins.clone(), ui.clone(), registry.clone());
         let official_keys = market::built_in_official_keys();
         let market = RwLock::new(Self::load_market_index(&plugins_dir, &official_keys));
         let host = Self {
@@ -468,6 +477,7 @@ impl PluginHost {
             sink,
             limits,
             registry,
+            extension_changes,
             ui,
             languages,
             run_detectors,
@@ -554,15 +564,21 @@ impl PluginHost {
         }
         let dirs = package_dirs(&self.plugins_dir);
         self.migrate_grants(&dirs);
+        // Every package is listed before any starts: a plugin's requirements are
+        // decided against all of them, and each starts after the plugins it needs.
+        let mut to_start = Vec::new();
         for dir in dirs {
             if !self.is_loaded_from(&dir) {
-                self.load_dir(&dir, PluginSource::Installed, None);
+                to_start.extend(self.register_dir(&dir, PluginSource::Installed, None).1);
             }
         }
         for dir in self.links().paths {
             if !self.is_loaded_from(&dir) && dir.join(MANIFEST_FILE).is_file() {
-                self.load_dir(&dir, PluginSource::Linked, None);
+                to_start.extend(self.register_dir(&dir, PluginSource::Linked, None).1);
             }
+        }
+        for plugin in self.in_start_order(to_start) {
+            self.start(&plugin);
         }
         let (done, cv) = &self.initial_load;
         *done.lock() = true;
@@ -740,6 +756,7 @@ impl PluginHost {
             }
         }
         if changed {
+            self.reconcile();
             self.changed();
         }
     }
@@ -834,6 +851,11 @@ impl PluginHost {
         } else {
             plugin.meta.lock().status = PluginStatus::Disabled;
         }
+        // Plugins that need this one stop or start with it.
+        self.reconcile();
+        if enabled {
+            self.restart_optional_dependents(id);
+        }
         self.changed();
         Ok(())
     }
@@ -846,6 +868,7 @@ impl PluginHost {
         let (dir, source, root) = (plugin.dir().to_path_buf(), plugin.source, plugin.dev_root.clone());
         self.unload(id);
         let new_id = self.load_dir(&dir, source, root);
+        self.settle_dependents(&new_id);
         self.changed();
         self.info_of(&new_id)
     }
@@ -964,6 +987,7 @@ impl PluginHost {
                 .map(|p| p.meta.lock().error.clone().unwrap_or_else(|| "it failed to load".into()));
             if let Some(reason) = failed {
                 self.roll_back(&id, &previous, &version, old_grant);
+                self.settle_dependents(&id);
                 self.changed();
                 return Err(IdeError::invalid(format!(
                     "{} {version} could not start ({reason}); version {previous} was restored",
@@ -976,6 +1000,7 @@ impl PluginHost {
             }
         }
         install::prune(&root);
+        self.settle_dependents(&id);
         self.changed();
         self.info_of(&id)
     }
@@ -1289,6 +1314,7 @@ impl PluginHost {
             return Err(e.into());
         }
         self.unload(id);
+        self.reconcile();
         self.changed();
         Ok(())
     }
@@ -1457,7 +1483,7 @@ impl PluginHost {
                 PluginStatus::Disabled => Some(format!("plugin {id:?} is disabled")),
                 PluginStatus::Static => Some(format!("plugin {id:?} has no code")),
                 PluginStatus::NeedsConsent => Some(format!("plugin {id:?} is waiting for your permission")),
-                PluginStatus::Failed => {
+                PluginStatus::Failed | PluginStatus::Blocked => {
                     Some(format!("plugin {id:?} is not running: {}", meta.error.as_deref().unwrap_or("failed")))
                 }
                 PluginStatus::Active | PluginStatus::Inactive => None,
@@ -1830,6 +1856,15 @@ impl PluginHost {
                     WorkbenchEvent::SettingsChanged(_) => {
                         let keys = self.shared.changed_settings(&p.pkg, client);
                         (!keys.is_empty()).then_some(WorkbenchEvent::SettingsChanged(keys))
+                    }
+                    // Only the plugin that declares a point hears about its contributions.
+                    WorkbenchEvent::ExtensionsChanged(points) => {
+                        let own: Vec<String> = points
+                            .iter()
+                            .filter(|point| self.registry.point_owner(point).as_deref() == Some(p.id()))
+                            .cloned()
+                            .collect();
+                        (!own.is_empty()).then_some(WorkbenchEvent::ExtensionsChanged(own))
                     }
                     _ => Some(e.clone()),
                 })
@@ -2361,6 +2396,21 @@ impl PluginHost {
 
     /// Loads one package and starts it unless disabled. Returns the plugin id.
     fn load_dir(&self, dir: &Path, source: PluginSource, dev_root: Option<PathBuf>) -> String {
+        let (id, to_start) = self.register_dir(dir, source, dev_root);
+        if let Some(plugin) = to_start {
+            self.start(&plugin);
+        }
+        id
+    }
+
+    /// Reads one package and lists it as a plugin. Returns its id and the plugin
+    /// when it is to be started (valid, enabled, not already loaded).
+    fn register_dir(
+        &self,
+        dir: &Path,
+        source: PluginSource,
+        dev_root: Option<PathBuf>,
+    ) -> (String, Option<Arc<LoadedPlugin>>) {
         let (manifest, error) = match Manifest::load(dir) {
             Ok(m) => (m, None),
             Err(e) => {
@@ -2403,7 +2453,7 @@ impl PluginHost {
                     dir.display(),
                     existing.dir().display()
                 );
-                return id;
+                return (id, None);
             }
             plugins.insert(id.clone(), plugin.clone());
         }
@@ -2412,10 +2462,10 @@ impl PluginHost {
             let mut meta = plugin.meta.lock();
             meta.status = PluginStatus::Failed;
             meta.error = Some(e);
-        } else if !self.state.lock().disabled.contains(&id) {
-            self.start(&plugin);
+            return (id, None);
         }
-        id
+        let enabled = !self.state.lock().disabled.contains(&id);
+        (id, enabled.then_some(plugin))
     }
 
     fn unload(&self, id: &str) {
@@ -2441,6 +2491,9 @@ impl PluginHost {
                 self.set_failed(plugin, e.message);
             }
             return;
+        }
+        if let Some(reason) = self.blocked_reason(plugin) {
+            return self.set_blocked(plugin, &reason);
         }
         self.registry.dispose_plugin(plugin.id());
         self.clear_provider_diagnostics(plugin.id());
@@ -2743,6 +2796,7 @@ impl PluginHost {
             self.refresh_pins(&ledger);
         }
         self.emit(None, PluginEvent::CommandsChanged);
+        self.flush_extension_changes();
         let languages = self.languages.revision();
         if self.announced_languages.swap(languages, Ordering::AcqRel) != languages {
             self.emit(None, PluginEvent::LanguagesChanged);
@@ -2901,6 +2955,8 @@ impl PluginHost {
     }
 
     fn info(&self, p: &LoadedPlugin) -> PluginInfo {
+        // Before `meta` below: this reads the other plugins' statuses.
+        let (depends, dependents, extension_points) = self.relations(p);
         let m = p.manifest();
         // The ledger before a plugin's `meta`, as everywhere (`refresh_pins` holds the
         // ledger and locks each plugin's): the other order deadlocks.
@@ -2938,6 +2994,9 @@ impl PluginHost {
             previous_version: (p.source == PluginSource::Installed)
                 .then(|| install::previous_version(&self.plugins_dir.join(&m.id)))
                 .flatten(),
+            depends,
+            dependents,
+            extension_points,
         }
     }
 }
@@ -3039,6 +3098,8 @@ fn placeholder_manifest(dir: &Path) -> Manifest {
         wasm: None,
         activation: Vec::new(),
         capabilities: Default::default(),
+        depends: Vec::new(),
+        extension_points: Vec::new(),
         contributes: Default::default(),
     }
 }

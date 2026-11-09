@@ -207,6 +207,23 @@ impl From<String> for ContextValue {
     }
 }
 
+/// What another plugin contributed to an extension point this plugin declares
+/// (`[[extension-points]]`).
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct Contribution {
+    /// The contributing plugin's id.
+    pub plugin: String,
+    /// The contribution as JSON, checked by the IDE against the point's fields.
+    pub data: String,
+}
+
+impl Contribution {
+    /// Decodes [`data`](Self::data) into the plugin's own type.
+    pub fn parse<T: serde::de::DeserializeOwned>(&self) -> Result<T, Error> {
+        serde_json::from_str(&self.data).map_err(|e| Error::Invalid(format!("contribution of {}: {e}", self.plugin)))
+    }
+}
+
 /// Kinds of workbench events; later SDKs add more.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
 #[non_exhaustive]
@@ -217,6 +234,8 @@ pub enum EventKind {
     RunExited,
     TerminalExited,
     ContentTabAction,
+    /// Contributions to a point this plugin declares changed: JSON array of point ids (`Event::Other`).
+    ExtensionsChanged,
     FileOpened,
     FileSaved,
     FilesChanged,
@@ -237,6 +256,7 @@ impl EventKind {
             Self::RunExited => "run-exited",
             Self::TerminalExited => "terminal-exited",
             Self::ContentTabAction => "content-tab-action",
+            Self::ExtensionsChanged => "extensions-changed",
             Self::FileOpened => "file-opened",
             Self::FileSaved => "file-saved",
             Self::FilesChanged => "files-changed",

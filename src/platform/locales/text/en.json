@@ -814,5 +814,20 @@
   "Set Docker Compose File Detection": "Set Docker Compose File Detection",
   "Could not save Docker Compose file detection": "Could not save Docker Compose file detection",
   "Compose Up": "Compose Up",
-  "Start the service at the caret, or all services in the active Docker Compose file": "Start the service at the caret, or all services in the active Docker Compose file"
+  "Start the service at the caret, or all services in the active Docker Compose file": "Start the service at the caret, or all services in the active Docker Compose file",
+  "Blocked": "Blocked",
+  "Wrong version": "Wrong version",
+  "Cannot run": "Cannot run",
+  "Requires": "Requires",
+  "Required plugins": "Required plugins",
+  "(optional)": "(optional)",
+  "Required by": "Required by",
+  "Plugins that require this one": "Plugins that require this one",
+  "Extension points": "Extension points",
+  "Extension points this plugin offers": "Extension points this plugin offers",
+  "Contributed by {join}": "Contributed by {join}",
+  "No contributions": "No contributions",
+  "Disable plugin": "Disable plugin",
+  "{names} need {name} and stop while it is disabled. Disable it anyway?": "{names} need {name} and stop while it is disabled. Disable it anyway?",
+  "{names} needs {name} and stops while it is disabled. Disable it anyway?": "{names} needs {name} and stops while it is disabled. Disable it anyway?"
 }

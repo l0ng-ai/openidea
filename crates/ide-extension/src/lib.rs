@@ -19,8 +19,10 @@ mod index;
 pub mod ledger;
 mod manifest;
 pub mod package;
+mod plugin_point;
 mod point;
 mod registry;
+mod resolve;
 mod ui;
 mod when;
 
@@ -30,7 +32,12 @@ pub use manifest::{
     ActivationEvent, CATEGORIES, Capabilities, ENGINE_VERSION, EVENT_KINDS, LEGACY_API, MANIFEST_FILE, MAX_CATEGORIES,
     Manifest, check_relative, engine_compatible, validate_item_id, validate_plugin_id, validate_point_id,
 };
+pub use plugin_point::{FieldType, PointDecl};
 pub use point::{Commit, Disposable, ExtensionPoint, MAX_PACKAGE_FILE, Package, Placement, Prepared, decode};
-pub use registry::{ContributionInfo, ExtensionRegistry, LOCALES_DIR, LOCALES_POINT, PreparedSet};
+pub use registry::{
+    ChangeListener, Contribution, ContributionInfo, DeclaredPoint, ExtensionRegistry, LOCALES_DIR, LOCALES_POINT,
+    PreparedSet,
+};
+pub use resolve::{Blocked, Dependency, DependencyState, Node, Plan, dependency_state, dependents, plan};
 pub use ui::{UiContribution, UiDecl, UiPoint, UiStore, to_json};
 pub use when::validate_when;

@@ -10,6 +10,7 @@ import { useProject } from "@/platform/project";
 import { pluginThemeRef, useContributedIconThemes } from "@/platform/themes";
 import { ContextMenuHost, hideContextMenu } from "@/ui";
 import { InputDialogsHost } from "@/workbench/inputDialogs";
+import { MessagesHost } from "@/workbench/messages";
 import {
   onEndpointsChanged,
   provideNotificationService,
@@ -90,6 +91,9 @@ function plugin(partial: Partial<PluginInfo> & Pick<PluginInfo, "id">): PluginIn
     },
     publisher: null,
     previousVersion: null,
+    depends: [],
+    dependents: [],
+    extensionPoints: [],
     ...partial,
   };
 }
@@ -1250,6 +1254,120 @@ describe("marketplace", () => {
     await user.click(await screen.findByRole("button", { name: "Roll Back to 1.0.0" }));
     await waitFor(() => expect(rolled).toEqual(["p"]));
     expect(notes.at(-1)).toMatchObject({ title: "Rolled back P to 1.0.0" });
+  });
+
+  describe("dependencies", () => {
+    const needing = [{ id: "plus", name: "Plus", enabled: true }];
+
+    it("shows what a plugin requires, who requires it, its extension points and why it is blocked", async () => {
+      setPluginsBackend(
+        createMemoryPluginsBackend([
+          plugin({
+            id: "plus",
+            name: "Plus",
+            status: "blocked",
+            error: "Requires base ^1.0, but version 2.0.0 is installed",
+            depends: [
+              { id: "base", name: "Base", version: "^1.0", optional: false, state: "version" },
+              { id: "extra", name: null, version: null, optional: true, state: "missing" },
+            ],
+            dependents: [{ id: "more", name: "More", enabled: false }],
+            extensionPoints: [
+              { id: "plus.things", description: "Things", contributors: ["more"] },
+              { id: "plus.other", description: "", contributors: [] },
+            ],
+          }),
+        ]),
+      );
+      render(<PluginsPage />);
+      expect(await screen.findByText("Blocked")).toBeInTheDocument();
+      expect(screen.getByRole("alert")).toHaveTextContent("Requires base ^1.0, but version 2.0.0 is installed");
+
+      const requires = within(screen.getByRole("list", { name: "Required plugins" }));
+      expect(requires.getByText("Base ^1.0")).toBeInTheDocument();
+      expect(requires.getByText("Wrong version")).toBeInTheDocument();
+      expect(requires.getByText("extra (optional)")).toBeInTheDocument();
+      expect(requires.getByText("Not installed")).toBeInTheDocument();
+
+      const requiredBy = within(screen.getByRole("list", { name: "Plugins that require this one" }));
+      expect(requiredBy.getByText("More")).toBeInTheDocument();
+      expect(requiredBy.getByText("Disabled")).toBeInTheDocument();
+
+      const points = within(screen.getByRole("list", { name: "Extension points this plugin offers" }));
+      expect(points.getByText("plus.things")).toBeInTheDocument();
+      expect(points.getByText("Contributed by more")).toBeInTheDocument();
+      expect(points.getByText("No contributions")).toBeInTheDocument();
+    });
+
+    it("asks before disabling a plugin that enabled plugins need", async () => {
+      const calls: [string, boolean][] = [];
+      setPluginsBackend({
+        ...createMemoryPluginsBackend([plugin({ id: "base", name: "Base", dependents: needing })]),
+        setEnabled: async (id, enabled) => void calls.push([id, enabled]),
+      });
+      const user = userEvent.setup();
+      render(
+        <>
+          <PluginsPage />
+          <MessagesHost />
+        </>,
+      );
+      await user.click(await screen.findByRole("button", { name: "Disable" }));
+      const dialog = await screen.findByRole("dialog");
+      expect(dialog).toHaveTextContent("Plus needs Base and stops while it is disabled");
+      await user.click(within(dialog).getByRole("button", { name: "Cancel" }));
+      expect(calls).toEqual([]);
+
+      await user.click(screen.getByRole("button", { name: "Disable" }));
+      await user.click(within(await screen.findByRole("dialog")).getByRole("button", { name: "Disable" }));
+      await waitFor(() => expect(calls).toEqual([["base", false]]));
+    });
+
+    it("names every enabled plugin that needs the one being disabled", async () => {
+      setPluginsBackend(
+        createMemoryPluginsBackend([
+          plugin({
+            id: "base",
+            name: "Base",
+            dependents: [
+              { id: "plus", name: "Plus", enabled: true },
+              { id: "extra", name: "Extra", enabled: true },
+            ],
+          }),
+        ]),
+      );
+      const user = userEvent.setup();
+      render(
+        <>
+          <PluginsPage />
+          <MessagesHost />
+        </>,
+      );
+      await user.click(await screen.findByRole("button", { name: "Disable" }));
+      expect(await screen.findByRole("dialog")).toHaveTextContent(
+        "Plus, Extra need Base and stop while it is disabled",
+      );
+    });
+
+    it("disables a plugin nothing enabled needs without asking", async () => {
+      const calls: [string, boolean][] = [];
+      setPluginsBackend({
+        ...createMemoryPluginsBackend([
+          plugin({ id: "base", name: "Base", dependents: [{ id: "plus", name: "Plus", enabled: false }] }),
+        ]),
+        setEnabled: async (id, enabled) => void calls.push([id, enabled]),
+      });
+      const user = userEvent.setup();
+      render(
+        <>
+          <PluginsPage />
+          <MessagesHost />
+        </>,
+      );
+      await user.click(await screen.findByRole("button", { name: "Disable" }));
+      await waitFor(() => expect(calls).toEqual([["base", false]]));
+      expect(screen.queryByRole("dialog")).toBeNull();
+    });
   });
 });
 

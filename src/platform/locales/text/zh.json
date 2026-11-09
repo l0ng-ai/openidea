@@ -7148,5 +7148,20 @@
   "Set Docker Compose File Detection": "设置 Docker Compose 文件识别",
   "Could not save Docker Compose file detection": "无法保存 Docker Compose 文件识别设置",
   "Compose Up": "Compose 启动",
-  "Start the service at the caret, or all services in the active Docker Compose file": "启动光标处的服务，或当前 Docker Compose 文件中的所有服务"
+  "Start the service at the caret, or all services in the active Docker Compose file": "启动光标处的服务，或当前 Docker Compose 文件中的所有服务",
+  "Blocked": "受阻",
+  "Wrong version": "版本不符",
+  "Cannot run": "无法运行",
+  "Requires": "依赖",
+  "Required plugins": "所需插件",
+  "(optional)": "（可选）",
+  "Required by": "被以下插件依赖",
+  "Plugins that require this one": "依赖此插件的插件",
+  "Extension points": "扩展点",
+  "Extension points this plugin offers": "此插件提供的扩展点",
+  "Contributed by {join}": "由 {join} 贡献",
+  "No contributions": "暂无贡献",
+  "Disable plugin": "禁用插件",
+  "{names} need {name} and stop while it is disabled. Disable it anyway?": "{names} 依赖 {name}，在其被禁用期间将停止运行。仍要禁用吗？",
+  "{names} needs {name} and stops while it is disabled. Disable it anyway?": "{names} 依赖 {name}，在其被禁用期间将停止运行。仍要禁用吗？"
 }

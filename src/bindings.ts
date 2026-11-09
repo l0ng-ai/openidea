@@ -3419,8 +3419,26 @@ export type DeletedTag = {
 	target: string,
 };
 
+/**  A plugin another one requires. */
+export type DependencyInfo = {
+	id: string,
+	/**  The installed plugin's name, when it is installed. */
+	name: string | null,
+	/**  The requirement as written (`^0.2`). */
+	version: string | null,
+	optional: boolean,
+	state: DependencyState,
+};
+
 /**  Dependency scope for a module dependency or project library (IDEA's Modules › Dependencies). */
 export type DependencyScope = "compile" | "test" | "runtime" | "provided";
+
+/**  How one dependency stands right now, for the plugin details page. */
+export type DependencyState = "satisfied" | "missing" | "disabled" | 
+/**  Installed, wrong version. */
+"version" | 
+/**  Installed and enabled, but cannot run itself. */
+"blocked";
 
 export type DependencyUpdate = {
 	latest: string,
@@ -3431,6 +3449,14 @@ export type DependencyVersions = {
 	dependency: ManifestDependency,
 	versions: string[],
 	update: DependencyUpdate | null,
+};
+
+/**  A plugin that needs another one. */
+export type DependentInfo = {
+	id: string,
+	name: string,
+	/**  Switched off by the user: disabling the plugin it needs changes nothing for it. */
+	enabled: boolean,
 };
 
 /**  Where a local file is deployed. */
@@ -4048,7 +4074,7 @@ export type ErrorKind = "notFound" | "alreadyExists" | "permissionDenied" | "inv
 "unavailable" | "io" | "protocol" | "internal";
 
 /**  Kinds of workbench events a plugin can subscribe to (`on-event:<kind>`). */
-export type EventKind = "file-closed" | "settings-changed" | "input-mode-changed" | "run-exited" | "terminal-exited" | "content-tab-action" | "file-opened" | "file-saved" | "files-changed" | "editor-focused" | "action-performed" | "vcs-changed" | "scheduled";
+export type EventKind = "file-closed" | "settings-changed" | "input-mode-changed" | "run-exited" | "terminal-exited" | "content-tab-action" | "extensions-changed" | "file-opened" | "file-saved" | "files-changed" | "editor-focused" | "action-performed" | "vcs-changed" | "scheduled";
 
 /**  An exception breakpoint filter offered by an adapter (`exceptionBreakpointFilters`). */
 export type ExceptionFilter = {
@@ -4094,6 +4120,14 @@ export type ExpressionAt = {
 export type ExtensionCount = {
 	extension: string,
 	files: number,
+};
+
+/**  An extension point a plugin declared. */
+export type ExtensionPointInfo = {
+	id: string,
+	description: string,
+	/**  Plugin ids contributing to it now. */
+	contributors: string[],
 };
 
 /**  A formatter that runs outside the language servers, with its own settings group. */
@@ -6705,6 +6739,12 @@ export type PluginInfo = {
 	publisher: string | null,
 	/**  The version an update replaced, to roll back to. */
 	previousVersion: string | null,
+	/**  `[[depends]]`, each with how it stands now. */
+	depends: DependencyInfo[],
+	/**  Plugins that need this one, directly or through others. */
+	dependents: DependentInfo[],
+	/**  `[[extension-points]]` this plugin declares while it is live. */
+	extensionPoints: ExtensionPointInfo[],
 };
 
 /**
@@ -6782,7 +6822,12 @@ export type PluginStatus =
 /**  Waiting for the user to confirm its permissions (project and new plugins). */
 "needsConsent" | 
 /**  Failed to load, or failed repeatedly and was stopped for this session (see `error`). */
-"failed";
+"failed" | 
+/**
+ *  A plugin it requires is missing, disabled, the wrong version or cannot run
+ *  (`error` says which); it starts when that is resolved.
+ */
+"blocked";
 
 /**  A plugin's status bar item. */
 export type PluginStatusItem = {
@@ -9089,7 +9134,9 @@ export type WindowTab = {
 };
 
 /**  A workbench event delivered to plugins. */
-export type WorkbenchEvent = { kind: "runExited"; value: RunExited } | { kind: "terminalExited"; value: TerminalExited } | { kind: "contentTabAction"; value: ContentTabAction } | { kind: "fileClosed"; value: string } | { kind: "settingsChanged"; value: string[] } | { kind: "inputModeChanged"; value: InputMode } | { kind: "fileOpened"; value: string } | { kind: "fileSaved"; value: string } | { kind: "filesChanged"; value: FilesChanged } | { kind: "editorFocused"; value: string | null } | { kind: "actionPerformed"; value: ActionPerformed } | { kind: "vcsChanged"; value: string } | { kind: "scheduled" };
+export type WorkbenchEvent = { kind: "runExited"; value: RunExited } | { kind: "terminalExited"; value: TerminalExited } | { kind: "contentTabAction"; value: ContentTabAction } | { kind: "fileClosed"; value: string } | { kind: "settingsChanged"; value: string[] } | 
+/**  Ids of extension points the receiving plugin declares whose contributions changed. */
+{ kind: "extensionsChanged"; value: string[] } | { kind: "inputModeChanged"; value: InputMode } | { kind: "fileOpened"; value: string } | { kind: "fileSaved"; value: string } | { kind: "filesChanged"; value: FilesChanged } | { kind: "editorFocused"; value: string | null } | { kind: "actionPerformed"; value: ActionPerformed } | { kind: "vcsChanged"; value: string } | { kind: "scheduled" };
 
 export type WorkingTreeChange = {
 	path: string,

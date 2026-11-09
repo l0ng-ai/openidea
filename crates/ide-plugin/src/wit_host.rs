@@ -64,6 +64,7 @@ pub(crate) mod syntax_bindings {
             "openidea:plugin/settings": super::bindings::openidea::plugin::settings,
             "openidea:plugin/database": super::bindings::openidea::plugin::database,
             "openidea:plugin/mcp": super::bindings::openidea::plugin::mcp,
+            "openidea:plugin/extensions": super::bindings::openidea::plugin::extensions,
         },
     });
 }
@@ -101,6 +102,7 @@ pub(crate) mod providers_bindings {
             "openidea:plugin/settings": super::bindings::openidea::plugin::settings,
             "openidea:plugin/database": super::bindings::openidea::plugin::database,
             "openidea:plugin/mcp": super::bindings::openidea::plugin::mcp,
+            "openidea:plugin/extensions": super::bindings::openidea::plugin::extensions,
         },
     });
 }
@@ -138,6 +140,7 @@ pub(crate) mod views_bindings {
             "openidea:plugin/settings": super::bindings::openidea::plugin::settings,
             "openidea:plugin/database": super::bindings::openidea::plugin::database,
             "openidea:plugin/mcp": super::bindings::openidea::plugin::mcp,
+            "openidea:plugin/extensions": super::bindings::openidea::plugin::extensions,
         },
     });
 }
@@ -1126,6 +1129,11 @@ impl events::Host for StoreData {
                 | EventKind::TerminalExited
                 | EventKind::ContentTabAction
         ) && let Err(e) = self.host.require_api(kind.name(), 4)
+        {
+            return Ok(Err(to_wit(e)));
+        }
+        if kind == EventKind::ExtensionsChanged
+            && let Err(e) = self.host.require_api(kind.name(), 5)
         {
             return Ok(Err(to_wit(e)));
         }
@@ -2319,6 +2327,19 @@ impl bindings::openidea::plugin::database::Host for StoreData {
         self.deadline += waited;
         self.call_started += waited;
         Ok(result.map_err(to_wit))
+    }
+}
+impl bindings::openidea::plugin::extensions::Host for StoreData {
+    fn contributions(&mut self, point: String) -> Fallible<Vec<bindings::openidea::plugin::extensions::Contribution>> {
+        Ok(self
+            .host
+            .extension_contributions(&clip(point, 128))
+            .map(|list| {
+                list.into_iter()
+                    .map(|(plugin, data)| bindings::openidea::plugin::extensions::Contribution { plugin, data })
+                    .collect()
+            })
+            .map_err(to_wit))
     }
 }
 impl bindings::openidea::plugin::mcp::Host for StoreData {

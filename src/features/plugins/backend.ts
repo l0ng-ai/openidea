@@ -436,6 +436,9 @@ function samplePlugins(): PluginInfo[] {
     },
     publisher: null,
     previousVersion: null,
+    depends: [],
+    dependents: [],
+    extensionPoints: [],
   };
   return [
     {
