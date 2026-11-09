@@ -54,6 +54,8 @@ fn view_table_of_the_fixture_app() {
             "posts.index",
             "posts.show",
             "welcome",
+            // `vendor/acme/widgets/ide.json`.
+            "widgets::panel",
         ]
     );
     let billing = views.get("billing::invoices.index").unwrap();

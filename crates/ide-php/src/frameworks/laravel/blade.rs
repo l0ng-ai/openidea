@@ -22,6 +22,7 @@ use std::path::{Path, PathBuf};
 
 use ide_core::{Diagnostic, Pos, Range};
 
+use super::ide_json::IdeJson;
 use super::views::{call_arguments, is_blade, provider_files};
 use super::{LaravelProject, ViewTable};
 use crate::blade::structure::{self, Name, NameKind, NameRole};
@@ -151,6 +152,61 @@ impl BladeCatalog {
         Self { components, directives }
     }
 
+    /// This catalog with the components and directives of the `ide.json`
+    /// files (the ones found already win): the anonymous components below
+    /// `blade.components.viewPaths`, the components of
+    /// `blade.components.list` (`class_file` finds a class's file), and the
+    /// directives of `blade.directives` and `blade.ifDirectives`.
+    pub fn with_ide_json(mut self, ide: &IdeJson, class_file: impl Fn(&str) -> Option<PathBuf>) -> Self {
+        for folder in &ide.component_paths {
+            let mut files = Vec::new();
+            class_files_with(&folder.path, &mut Vec::new(), &mut files, ".blade.php");
+            for (mut segments, path) in files {
+                let len = segments.len();
+                if len > 1 && (segments[len - 1] == "index" || segments[len - 1] == segments[len - 2]) {
+                    segments.pop();
+                }
+                let prefix = folder.prefix.as_ref().map(|prefix| format!("{prefix}::")).unwrap_or_default();
+                let tag = format!("{prefix}{}", segments.join("."));
+                if self.component(&tag).is_none() {
+                    self.components.push(BladeComponent { tag, class: None, view: Some(path) });
+                }
+            }
+        }
+        for declared in &ide.components {
+            if self.component(&declared.tag).is_some() {
+                continue;
+            }
+            let class = declared.class.as_ref().map(|class| {
+                let file = class_file(class).unwrap_or_else(|| declared.file.clone());
+                (class.clone(), file)
+            });
+            self.components.push(BladeComponent { tag: declared.tag.clone(), class, view: None });
+        }
+        self.components.sort_by(|a, b| a.tag.cmp(&b.tag));
+        for declared in &ide.directives {
+            if self.directive(&declared.name).is_some() {
+                continue;
+            }
+            let text = std::fs::read_to_string(&declared.file).unwrap_or_default();
+            let range = text
+                .find(&format!("\"{}\"", declared.name))
+                .or_else(|| text.find(&format!("\"@{}\"", declared.name)))
+                .map(|at| {
+                    let start = at + text[at + 1..].find(declared.name.as_str()).unwrap_or(0) + 1;
+                    LineIndex::new(&text).range(start as u32, (start + declared.name.len()) as u32)
+                })
+                .unwrap_or_default();
+            self.directives.push(CustomDirective {
+                name: declared.name.clone(),
+                path: declared.file.clone(),
+                range,
+                condition: declared.condition,
+            });
+        }
+        self
+    }
+
     /// The component with this tag.
     pub fn component(&self, tag: &str) -> Option<&BladeComponent> {
         self.components.iter().find(|component| component.tag == tag)
@@ -170,6 +226,12 @@ impl BladeCatalog {
 /// The `.php` files below `dir` with their path segments (`Forms`,
 /// `InputGroup`), sorted.
 fn class_files(dir: &Path, segments: &mut Vec<String>, out: &mut Vec<(Vec<String>, PathBuf)>) {
+    class_files_with(dir, segments, out, ".php");
+}
+
+/// The files below `dir` ending with `extension`, with their path segments
+/// (the last one without the extension), sorted.
+fn class_files_with(dir: &Path, segments: &mut Vec<String>, out: &mut Vec<(Vec<String>, PathBuf)>, extension: &str) {
     let Ok(entries) = std::fs::read_dir(dir) else { return };
     let mut entries: Vec<_> = entries.flatten().collect();
     entries.sort_by_key(|entry| entry.file_name());
@@ -178,9 +240,9 @@ fn class_files(dir: &Path, segments: &mut Vec<String>, out: &mut Vec<(Vec<String
         let name = entry.file_name().to_string_lossy().into_owned();
         if entry.file_type().is_ok_and(|kind| kind.is_dir()) {
             segments.push(name);
-            class_files(&path, segments, out);
+            class_files_with(&path, segments, out, extension);
             segments.pop();
-        } else if let Some(stem) = name.strip_suffix(".php") {
+        } else if let Some(stem) = name.strip_suffix(extension).filter(|stem| !stem.is_empty()) {
             let mut found = segments.clone();
             found.push(stem.to_owned());
             out.push((found, crate::project::normalize(&path)));

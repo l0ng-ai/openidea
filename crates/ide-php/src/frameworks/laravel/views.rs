@@ -126,11 +126,24 @@ impl ViewTable {
                 add(name, dir);
             }
         }
+        // `ide.json` view folders: namespaced ones, and more folders of the
+        // application's views.
+        let mut extra_dirs: Vec<PathBuf> = Vec::new();
+        for view_path in &project.ide_json.view_paths {
+            match &view_path.namespace {
+                Some(namespace) => add(namespace.clone(), view_path.path.clone()),
+                None if view_path.path.is_dir() => extra_dirs.push(view_path.path.clone()),
+                None => {}
+            }
+        }
         namespaces.sort_by(|a, b| a.name.cmp(&b.name));
 
         let dir = project.paths.views.clone();
         let mut views = Vec::new();
         collect_views(&dir, &dir, None, &mut views);
+        for extra in &extra_dirs {
+            collect_views(extra, extra, None, &mut views);
+        }
         for namespace in &namespaces {
             for base in &namespace.dirs {
                 collect_views(base, base, Some(&namespace.name), &mut views);

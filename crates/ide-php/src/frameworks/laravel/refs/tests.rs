@@ -434,3 +434,6 @@ mod auth_tests;
 
 #[path = "artisan_tests.rs"]
 mod artisan_tests;
+
+#[path = "ide_json_tests.rs"]
+mod ide_json_tests;

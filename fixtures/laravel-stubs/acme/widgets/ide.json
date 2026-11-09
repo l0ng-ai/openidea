@@ -1,0 +1,9 @@
+{
+  "view": { "paths": [{ "path": "resources/views", "namespace": "widgets" }] },
+  "blade": {
+    "components": {
+      "viewPaths": [{ "path": "resources/components", "prefix": "widgets" }],
+      "list": [{ "name": "chart", "namespace": "widgets", "className": "\\Acme\\Widgets\\Chart" }]
+    }
+  }
+}

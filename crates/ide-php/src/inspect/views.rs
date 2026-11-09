@@ -13,7 +13,7 @@ use ide_core::{FileEdit, Severity, WorkspaceEdit};
 
 use super::{Inspection, InspectionContext, Problems, QuickFix};
 use crate::engine::{EngineState, is_meta_path};
-use crate::frameworks::laravel::refs::{ReferenceKind, ViewName, kind_of, sites};
+use crate::frameworks::laravel::refs::{ReferenceKind, ViewName, classify, prefixed, sites_with};
 
 /// `PhpUndefinedView`.
 pub struct UndefinedView;
@@ -36,21 +36,25 @@ impl Inspection for UndefinedView {
             return;
         }
         let resolver = cx.resolver();
-        for site in sites(cx.parsed, &resolver, &[&ViewName], None) {
+        // The places of the `ide.json` rules too.
+        let project = cx.engine.laravel();
+        let rules = project.as_ref().map(|project| project.ide_json.completions.as_slice()).unwrap_or_default();
+        for site in sites_with(cx.parsed, &resolver, &[&ViewName], rules, None) {
             if cx.is_cancelled() {
                 return;
             }
-            let value = &site.value;
             // Only plain literals (no interpolation or escapes).
-            if value.is_empty() || value.contains(['$', '\\', '{']) || views.get(value).is_some() {
+            if site.value.is_empty() || site.value.contains(['$', '\\', '{']) {
+                continue;
+            }
+            let Some((kind, rule)) = classify(&site, &resolver, rules) else { continue };
+            let value = &prefixed(&site, rule);
+            if kind.id() != ViewName.id() || views.get(value).is_some() {
                 continue;
             }
             if let Some((namespace, _)) = value.split_once("::")
                 && views.namespace(namespace).is_none()
             {
-                continue;
-            }
-            if !kind_of(&site, &resolver).is_some_and(|kind| kind.id() == ViewName.id()) {
                 continue;
             }
             let problem = out.report(site.start, site.end, format!("View '{value}' is not defined"));

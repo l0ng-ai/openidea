@@ -21,7 +21,7 @@ use mago_syntax::walker::Walker;
 use super::{Inspection, InspectionContext, Problems};
 use crate::engine::{EngineState, is_meta_path};
 use crate::frameworks::laravel::RouteTable;
-use crate::frameworks::laravel::refs::{ReferenceKind, RouteName, kind_of, sites};
+use crate::frameworks::laravel::refs::{ReferenceKind, RouteName, classify, prefixed, sites_with};
 use crate::signature::{Callee, callee};
 use crate::types::Type;
 use crate::types::ops::literal_type;
@@ -137,16 +137,20 @@ fn laravel(cx: &InspectionContext<'_>, routes: &RouteTable, out: &mut Problems) 
         return;
     }
     let resolver = cx.resolver();
-    for site in sites(cx.parsed, &resolver, &[&RouteName], None) {
+    // The places of the `ide.json` rules too.
+    let project = cx.engine.laravel();
+    let rules = project.as_ref().map(|project| project.ide_json.completions.as_slice()).unwrap_or_default();
+    for site in sites_with(cx.parsed, &resolver, &[&RouteName], rules, None) {
         if cx.is_cancelled() {
             return;
         }
-        let value = &site.value;
         // Only plain literals (no interpolation or escapes).
-        if value.is_empty() || value.contains(['$', '\\', '{']) || routes.named(value).next().is_some() {
+        if site.value.is_empty() || site.value.contains(['$', '\\', '{']) {
             continue;
         }
-        if kind_of(&site, &resolver).is_some_and(|kind| kind.id() == RouteName.id()) {
+        let Some((kind, rule)) = classify(&site, &resolver, rules) else { continue };
+        let value = prefixed(&site, rule);
+        if kind.id() == RouteName.id() && routes.named(&value).next().is_none() {
             out.report(site.start, site.end, format!("Route '{value}' is not defined"));
         }
     }

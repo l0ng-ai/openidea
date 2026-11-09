@@ -17,7 +17,14 @@
 //! `validationRule` and `requestField` ([`validation_rule`]), and
 //! `eloquentField` and `eloquentRelation` ([`eloquent`]), and `gate`,
 //! `authGuard` and `passwordBroker` ([`gate`]), and `artisanCommand`
-//! ([`artisan_command`]).
+//! ([`artisan_command`]), and `staticStrings` and `directoryFiles`
+//! ([`rules`]).
+//!
+//! Besides the built-in patterns, the completion rules of the project's
+//! `ide.json` files ([`crate::frameworks::laravel::ide_json`]) say where
+//! strings of a kind sit ([`rules::rule_matches`]); the rule a string was
+//! matched by is part of its site ([`SiteInfo::rule`]), and its `prefix`
+//! option is put before the string's value ([`Subject::prefix`]).
 //!
 //! A place may also be the value a method returns
 //! ([`CalleePattern::Return`]: what a Form Request's `rules()` returns), or
@@ -58,6 +65,7 @@ pub mod gate;
 pub mod intentions;
 pub mod middleware;
 pub mod route_name;
+pub mod rules;
 #[cfg(test)]
 mod tests;
 pub mod translation_key;
@@ -81,6 +89,7 @@ use mago_syntax::cst::{
 use mago_syntax::walker::Walker;
 
 use super::LaravelProject;
+use super::ide_json::CompletionRule;
 use super::routes::RouteAction;
 use crate::complete::{Completion, CompletionKind, Completions};
 use crate::engine::PhpEngine;
@@ -100,6 +109,7 @@ pub use env_key::EnvKey;
 pub use gate::{AuthGuard, Gate, PasswordBroker};
 pub use middleware::Middleware;
 pub use route_name::RouteName;
+pub use rules::{DirectoryFiles, StaticStrings};
 pub use translation_key::TranslationKey;
 pub use validation_rule::{RequestField, ValidationRule};
 pub use view_name::ViewName;
@@ -599,17 +609,37 @@ pub fn sites(
     kinds: &[&dyn ReferenceKind],
     want: Option<u32>,
 ) -> Vec<StringSite> {
-    let names: HashSet<String> = kinds
+    sites_with(parsed, resolver, kinds, &[], want)
+}
+
+/// [`sites`], with the calls `rules` of `kinds` name too.
+pub fn sites_with(
+    parsed: &ParsedFile,
+    resolver: &Resolver<'_>,
+    kinds: &[&dyn ReferenceKind],
+    rules: &[CompletionRule],
+    want: Option<u32>,
+) -> Vec<StringSite> {
+    let rule_names = |next: bool| {
+        rules
+            .iter()
+            .filter(|rule| kinds.iter().any(|kind| kind.id() == rule.kind && (!next || kind.uses_next_argument())))
+            .flat_map(|rule| rule.conditions.iter().flat_map(|condition| condition.call_names()))
+            .collect::<Vec<String>>()
+    };
+    let mut names: HashSet<String> = kinds
         .iter()
         .flat_map(|kind| kind.patterns().iter().flat_map(PlacePattern::names))
         .map(str::to_ascii_lowercase)
         .collect();
-    let next_names: HashSet<String> = kinds
+    names.extend(rule_names(false));
+    let mut next_names: HashSet<String> = kinds
         .iter()
         .filter(|kind| kind.uses_next_argument())
         .flat_map(|kind| kind.patterns().iter().flat_map(PlacePattern::names))
         .map(str::to_ascii_lowercase)
         .collect();
+    next_names.extend(rule_names(true));
     let mut collect =
         Collect { want, names: &names, next_names: &next_names, next: None, out: Vec::new(), frames: Vec::new() };
     SiteWalker.walk_program(parsed.program(), &mut collect);
@@ -799,6 +829,9 @@ pub struct SiteInfo {
     pub key: Option<String>,
     /// [`StringSite::next_argument`].
     pub next_argument: Vec<String>,
+    /// The `ide.json` rule the string was matched by, when no built-in
+    /// pattern matched it.
+    pub rule: Option<CompletionRule>,
 }
 
 impl RefContext<'_> {
@@ -987,12 +1020,44 @@ pub fn kinds() -> &'static [&'static dyn ReferenceKind] {
         &AuthGuard,
         &PasswordBroker,
         &ArtisanCommandKind,
+        &StaticStrings,
+        &DirectoryFiles,
     ]
 }
 
 /// The kind whose patterns `site` matches.
 pub fn kind_of(site: &StringSite, resolver: &Resolver<'_>) -> Option<&'static dyn ReferenceKind> {
     kinds().iter().copied().find(|kind| kind.patterns().iter().any(|pattern| pattern.matches(site, resolver)))
+}
+
+/// The kind with id `id`.
+pub fn kind_by_id(id: &str) -> Option<&'static dyn ReferenceKind> {
+    kinds().iter().copied().find(|kind| kind.id() == id)
+}
+
+/// The kind of `site`: the one whose patterns match it, else the one of the
+/// first of `rules` matching it, with that rule.
+pub fn classify<'r>(
+    site: &StringSite,
+    resolver: &Resolver<'_>,
+    rules: &'r [CompletionRule],
+) -> Option<(&'static dyn ReferenceKind, Option<&'r CompletionRule>)> {
+    if let Some(kind) = kind_of(site, resolver) {
+        return Some((kind, None));
+    }
+    rules
+        .iter()
+        .find(|rule| rules::rule_matches(rule, site, resolver))
+        .and_then(|rule| Some((kind_by_id(&rule.kind)?, Some(rule))))
+}
+
+/// The value `site` stands for: its content, after the `prefix` option of
+/// the rule matching it.
+pub(crate) fn prefixed(site: &StringSite, rule: Option<&CompletionRule>) -> String {
+    match rule {
+        Some(rule) => format!("{}{}", rule.options.prefix, site.value),
+        None => site.value.clone(),
+    }
 }
 
 // ------------------------------------------------------------------ caret
@@ -1009,6 +1074,9 @@ pub struct Subject {
     pub end: u32,
     /// The caret is on a declaration, not a usage.
     pub declaration: bool,
+    /// The length of the text put before the literal's content in `value`
+    /// (an `ide.json` rule's `prefix`).
+    pub prefix: usize,
 }
 
 /// The string literal around `offset` (inside its quotes): the offset of
@@ -1033,10 +1101,20 @@ fn literal_around(text: &str, offset: usize) -> Option<(usize, usize, bool)> {
 /// The string site at `offset` of `parsed`, in its own parse or in a probe
 /// with the literal closed.
 pub fn site_at(parsed: &ParsedFile, resolver: &Resolver<'_>, offset: u32) -> Option<StringSite> {
+    site_at_with(parsed, resolver, &[], offset)
+}
+
+/// [`site_at`], with the calls of `rules` too.
+pub fn site_at_with(
+    parsed: &ParsedFile,
+    resolver: &Resolver<'_>,
+    rules: &[CompletionRule],
+    offset: u32,
+) -> Option<StringSite> {
     let text = parsed.text();
     let (quote, content_end, closed) = literal_around(text, offset as usize)?;
     let kinds = kinds();
-    if let Some(site) = sites(parsed, resolver, kinds, Some(quote as u32)).into_iter().next() {
+    if let Some(site) = sites_with(parsed, resolver, kinds, rules, Some(quote as u32)).into_iter().next() {
         return Some(site);
     }
     // Not a literal of the parse (being typed): a probe string in its place.
@@ -1051,7 +1129,7 @@ pub fn site_at(parsed: &ParsedFile, resolver: &Resolver<'_>, offset: u32) -> Opt
         let probe_value = "x".repeat(content_end - quote - 1);
         let probe =
             ParsedFile::parse("reference.php", format!("{}'{probe_value}'{close}{terminator}{rest}", &text[..quote]));
-        if let Some(mut site) = sites(&probe, resolver, kinds, Some(quote as u32)).into_iter().next() {
+        if let Some(mut site) = sites_with(&probe, resolver, kinds, rules, Some(quote as u32)).into_iter().next() {
             site.start = quote as u32 + 1;
             site.end = content_end as u32;
             site.value = text[quote + 1..content_end].to_owned();
@@ -1101,6 +1179,16 @@ impl PhpEngine {
 
     /// The reference context of `site` in the file at `path`.
     pub(crate) fn site_context(&self, path: &Path, site: &StringSite) -> Option<RefContext<'_>> {
+        self.rule_site_context(path, site, None)
+    }
+
+    /// [`site_context`](Self::site_context) of a site `rule` matched.
+    pub(crate) fn rule_site_context(
+        &self,
+        path: &Path,
+        site: &StringSite,
+        rule: Option<&CompletionRule>,
+    ) -> Option<RefContext<'_>> {
         let mut cx = self.ref_context()?;
         let class = site.class.clone().or_else(|| {
             let routes = self.laravel_routes()?;
@@ -1117,6 +1205,7 @@ impl PhpEngine {
             call: Some((site.target.clone(), site.call)),
             key,
             next_argument: site.next_argument.clone(),
+            rule: rule.cloned(),
         });
         Some(cx)
     }
@@ -1127,13 +1216,16 @@ impl PhpEngine {
         literal_around(parsed.text(), offset as usize)?;
         let cx = self.ref_context()?;
         let resolver = self.resolver();
-        if let Some(site) = site_at(parsed, &resolver, offset)
-            && let Some(kind) = kind_of(&site, &resolver)
+        let rules = &cx.project.ide_json.completions;
+        if let Some(site) = site_at_with(parsed, &resolver, rules, offset)
+            && let Some((kind, rule)) = classify(&site, &resolver, rules)
         {
-            let cx = self.site_context(path, &site)?;
-            let at = (offset.clamp(site.start, site.end) - site.start) as usize;
-            let subject = Subject { kind, value: site.value, at, start: site.start, end: site.end, declaration: false };
-            return Some((cx, subject));
+            let site_cx = self.rule_site_context(path, &site, rule)?;
+            let prefix = rule.map_or(0, |rule| rule.options.prefix.len());
+            let at = prefix + (offset.clamp(site.start, site.end) - site.start) as usize;
+            let value = prefixed(&site, rule);
+            let subject = Subject { kind, value, at, start: site.start, end: site.end, declaration: false, prefix };
+            return Some((site_cx, subject));
         }
         let declared = kinds().iter().find_map(|kind| Some((*kind, kind.declared_at(&cx, path, parsed, offset)?)));
         let (kind, declared) = declared?;
@@ -1144,6 +1236,7 @@ impl PhpEngine {
             start: declared.start,
             end: declared.end,
             declaration: true,
+            prefix: 0,
         };
         Some((cx, subject))
     }
@@ -1160,13 +1253,17 @@ impl PhpEngine {
         let mut items = Vec::new();
         let mut seen = HashSet::new();
         for item in subject.kind.complete(&cx, &subject.value, subject.at) {
+            // An item replacing the rule's prefix can't be inserted.
+            if item.from < subject.prefix {
+                continue;
+            }
             let prefix = typed.get(item.from..).unwrap_or_default();
             let Some(quality) = crate::complete::quality(&item.label, prefix) else { continue };
             if !seen.insert(item.label.clone()) {
                 continue;
             }
-            let from = subject.start + item.from as u32;
-            let to = subject.start + item.to.max(subject.at) as u32;
+            let from = subject.start + (item.from - subject.prefix) as u32;
+            let to = subject.start + (item.to.max(subject.at) - subject.prefix) as u32;
             items.push(Completion {
                 label: item.label.clone(),
                 label_detail: None,
@@ -1217,21 +1314,22 @@ impl PhpEngine {
             return Vec::new();
         }
         let resolver = self.resolver();
+        let project = self.laravel();
+        let rules = project.as_ref().map(|project| project.ide_json.completions.as_slice()).unwrap_or_default();
         let mut out = Vec::new();
-        for site in sites(parsed, &resolver, kinds, None) {
+        for site in sites_with(parsed, &resolver, kinds, rules, None) {
             if cancel.is_cancelled() {
                 break;
             }
-            let value = &site.value;
-            if value.is_empty() || value.contains(['$', '\\', '{']) {
+            if site.value.is_empty() || site.value.contains(['$', '\\', '{']) {
                 continue;
             }
-            let Some(kind) = kind_of(&site, &resolver) else { continue };
+            let Some((kind, rule)) = classify(&site, &resolver, rules) else { continue };
             if !kinds.iter().any(|wanted| wanted.id() == kind.id()) {
                 continue;
             }
-            let Some(cx) = self.site_context(path, &site) else { continue };
-            if let Some(problem) = kind.undefined(&cx, value) {
+            let Some(cx) = self.rule_site_context(path, &site, rule) else { continue };
+            if let Some(problem) = kind.undefined(&cx, &prefixed(&site, rule)) {
                 out.push(UndefinedSite { kind: kind.id(), start: site.start, end: site.end, problem });
             }
         }
@@ -1313,6 +1411,9 @@ impl PhpEngine {
         offset: u32,
     ) -> Option<Option<Range>> {
         let (cx, subject) = self.ref_subject(parsed, path, offset)?;
+        if subject.prefix > 0 {
+            return Some(None);
+        }
         let lines = parsed.line_index();
         Some(subject.kind.rename_target(&cx, &subject.value, subject.at).map(|target| {
             if subject.declaration {
@@ -1335,7 +1436,8 @@ impl PhpEngine {
     ) -> Option<IdeResult<WorkspaceEdit>> {
         let (cx, subject) = self.ref_subject(parsed, path, offset)?;
         let kind = subject.kind;
-        let Some(target) = kind.rename_target(&cx, &subject.value, subject.at) else {
+        let target = if subject.prefix > 0 { None } else { kind.rename_target(&cx, &subject.value, subject.at) };
+        let Some(target) = target else {
             return Some(Err(IdeError::invalid("this string can't be renamed")));
         };
         if !kind.valid_name(new_name) {
@@ -1389,11 +1491,13 @@ impl PhpEngine {
             }
         }
         let key = if subject.declaration { subject.value.clone() } else { subject.kind.canonical(&cx, &subject.value) };
-        for site in sites(&parsed, &resolver, &[subject.kind], None) {
-            if kind_of(&site, &resolver).is_some_and(|kind| kind.id() == subject.kind.id())
-                && self
-                    .site_context(&path, &site)
-                    .is_some_and(|cx| subject.kind.refers_to(&subject.kind.canonical(&cx, &site.value), &key))
+        let rules = &cx.project.ide_json.completions;
+        for site in sites_with(&parsed, &resolver, &[subject.kind], rules, None) {
+            let Some((kind, rule)) = classify(&site, &resolver, rules) else { continue };
+            if kind.id() == subject.kind.id()
+                && self.rule_site_context(&path, &site, rule).is_some_and(|cx| {
+                    subject.kind.refers_to(&subject.kind.canonical(&cx, &prefixed(&site, rule)), &key)
+                })
             {
                 out.push(StringHighlight { range: lines.range(site.start, site.end), write: false });
             }
@@ -1413,22 +1517,52 @@ impl PhpEngine {
         keep: &dyn Fn(&str) -> bool,
         cancel: &CancellationToken,
     ) -> IdeResult<Vec<FoundSite>> {
-        let candidates = self.usage_candidates(kind, key)?;
+        let mut candidates = self.usage_candidates(kind, key)?;
         let open: Vec<_> = self.open_documents().into_iter().filter(|document| !document.embedded).collect();
-        let text = kind.usage_text(key);
         let resolver = self.resolver();
+        let project = self.laravel();
+        let rules: Vec<CompletionRule> = project
+            .iter()
+            .flat_map(|project| project.ide_json.completions.iter())
+            .filter(|rule| rule.kind == kind.id())
+            .cloned()
+            .collect();
+        // A rule's prefix isn't written in the file.
+        let mut text = kind.usage_text(key);
+        for rule in &rules {
+            if !rule.options.prefix.is_empty()
+                && let Some(rest) = text.strip_prefix(rule.options.prefix.as_str())
+            {
+                text = rest;
+            }
+            // Its usages don't have the prefix's words either.
+            if !rule.options.prefix.is_empty()
+                && let Some(rest) = key.strip_prefix(rule.options.prefix.as_str())
+            {
+                for path in self.usage_candidates(kind, rest)? {
+                    if !candidates.contains(&path) {
+                        candidates.push(path);
+                    }
+                }
+            }
+        }
         let mut out = Vec::new();
         for path in candidates {
             if cancel.is_cancelled() {
                 return Err(IdeError::cancelled());
             }
             let Some(file) = self.usage_file(&path, &open, text) else { continue };
-            for site in sites(&file.parsed, &resolver, &[kind], None) {
-                if !kind.patterns().iter().any(|pattern| pattern.matches(&site, &resolver)) {
-                    continue;
-                }
-                let Some(cx) = self.site_context(&path, &site) else { continue };
-                if !keep(&kind.canonical(&cx, &site.value)) {
+            for site in sites_with(&file.parsed, &resolver, &[kind], &rules, None) {
+                let rule = if kind.patterns().iter().any(|pattern| pattern.matches(&site, &resolver)) {
+                    None
+                } else {
+                    match rules.iter().find(|rule| rules::rule_matches(rule, &site, &resolver)) {
+                        Some(rule) => Some(rule),
+                        None => continue,
+                    }
+                };
+                let Some(cx) = self.rule_site_context(&path, &site, rule) else { continue };
+                if !keep(&kind.canonical(&cx, &prefixed(&site, rule))) {
                     continue;
                 }
                 let Some((start, end)) = file.to_source(site.start, site.end) else { continue };

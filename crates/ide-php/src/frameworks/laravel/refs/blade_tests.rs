@@ -62,13 +62,29 @@ fn the_fixture_apps_components_and_directives() {
     let project = Project::app();
     let catalog = project.engine.laravel_blade().unwrap();
     let tags: Vec<&str> = catalog.components.iter().map(|component| component.tag.as_str()).collect();
-    assert_eq!(tags, ["alert", "badge"]);
+    // The last two from `vendor/acme/widgets/ide.json`.
+    assert_eq!(tags, ["alert", "badge", "widgets::chart", "widgets::stat"]);
     let alert = catalog.component("alert").unwrap();
     assert_eq!(alert.class.as_ref().map(|(class, _)| class.as_str()), Some("App\\View\\Components\\Alert"));
     assert!(alert.view.as_ref().unwrap().ends_with("resources/views/components/alert.blade.php"));
     let badge = catalog.component("badge").unwrap();
     assert!(badge.class.is_none() && badge.view.is_some());
-    assert_eq!(catalog.directive_names(), ["money", "admin", "elseadmin", "endadmin", "unlessadmin"]);
+    // The last ones from the app's `ide.json`.
+    assert_eq!(
+        catalog.directive_names(),
+        [
+            "money",
+            "admin",
+            "elseadmin",
+            "endadmin",
+            "unlessadmin",
+            "price",
+            "feature",
+            "elsefeature",
+            "endfeature",
+            "unlessfeature"
+        ]
+    );
     assert_eq!(catalog.directive("endadmin").map(|directive| directive.name.as_str()), Some("admin"));
 
     let attributes = |tag: &str| -> Vec<(String, Option<String>)> {
@@ -234,7 +250,11 @@ fn stacks_complete_and_go_across_views() {
 #[test]
 fn component_tags_and_attributes_complete() {
     let project = Project::app();
-    assert_eq!(project.blade_labels(PAGE, "<div>\n<x-/*|*/"), ["x-alert", "x-badge"]);
+    // The last two from `vendor/acme/widgets/ide.json`.
+    assert_eq!(
+        project.blade_labels(PAGE, "<div>\n<x-/*|*/"),
+        ["x-alert", "x-badge", "x-widgets::chart", "x-widgets::stat"]
+    );
     let template = Template::new(&project, PAGE, "<x-al/*|*/ert />");
     let found = project.engine.blade_laravel_completion(&template.blade(), template.pos).unwrap();
     let alert = found.items.iter().find(|item| item.label == "x-alert").unwrap();

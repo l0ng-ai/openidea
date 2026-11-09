@@ -728,9 +728,12 @@ impl PhpEngine {
         }
         let project = self.laravel()?;
         let views = self.laravel_views()?;
-        let catalog = Arc::new(BladeCatalog::read(&project, &views, |path| match self.open_document(path) {
+        let catalog = BladeCatalog::read(&project, &views, |path| match self.open_document(path) {
             Some(document) if !document.embedded => Some(document.text.to_string()),
             _ => std::fs::read_to_string(path).ok(),
+        });
+        let catalog = Arc::new(catalog.with_ide_json(&project.ide_json, |class| {
+            self.class_targets(class).into_iter().next().map(|target| target.path)
         }));
         *self.shared.laravel_blade.lock() = Some((modification, catalog.clone()));
         Some(catalog)
@@ -1054,7 +1057,13 @@ fn is_laravel_input(path: &Path) -> bool {
     matches!(
         path.file_name().and_then(|n| n.to_str()),
         Some(
-            "composer.json" | "composer.lock" | "installed.json" | "module.json" | "modules_statuses.json" | "artisan"
+            "composer.json"
+                | "composer.lock"
+                | "installed.json"
+                | "module.json"
+                | "modules_statuses.json"
+                | "artisan"
+                | "ide.json"
         )
     ) || path.ends_with("config/modules.php")
 }

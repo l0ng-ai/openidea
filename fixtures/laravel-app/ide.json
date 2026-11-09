@@ -1,0 +1,43 @@
+{
+  "$schema": "https://laravel-ide.com/schema/laravel-ide-v2.json",
+  "completions": [
+    {
+      "complete": "routeName",
+      "condition": [{ "functionNames": ["nav_link"], "parameters": [2] }]
+    },
+    {
+      "complete": "configKey",
+      "condition": [{ "functionNames": ["blog_setting"] }],
+      "options": { "prefix": "blog." }
+    },
+    {
+      "complete": "staticStrings",
+      "condition": [
+        { "functionNames": ["feed_theme"] },
+        { "place": "arrayValueWithKey", "keys": ["theme"], "functionNames": ["feed_options"] }
+      ],
+      "options": { "strings": ["light", "dark", "contrast"] }
+    },
+    {
+      "complete": "directoryFiles",
+      "condition": [{ "functionNames": ["stylesheet"] }],
+      "options": { "directory": "resources/css", "recursive": true, "suffixToClear": ".css" }
+    },
+    {
+      "complete": "viewName",
+      "condition": [
+        { "place": "returnString", "methodNames": ["template"], "classParentFqn": ["\\Illuminate\\View\\Component"] }
+      ]
+    },
+    {
+      "complete": "inertiaPage",
+      "condition": [{ "functionNames": ["inertia"] }]
+    }
+  ],
+  "blade": {
+    "directives": [{ "name": "price", "prefix": "<?php echo number_format(", "suffix": ", 2); ?>" }],
+    "ifDirectives": [{ "name": "feature", "prefix": "<?php if (feature(", "suffix": ")): ?>" }]
+  },
+  "packages": { "disabledPackages": ["livewire/livewire"] },
+  "helperCode": {}
+}

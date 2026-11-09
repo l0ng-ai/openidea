@@ -30,6 +30,11 @@ manual QA, do the same or run `composer install` on a copy.
 - `crates/ide-php/src/frameworks/laravel/refs/auth_tests.rs` checks gates, policies, guards and password
   brokers (completion, goto, hover, usages and rename of gates, the unknown-ability inspection,
   `can:`/`auth:` middleware parameters, `@can` in Blade).
+- `crates/ide-php/src/frameworks/laravel/refs/ide_json_tests.rs` checks `ide.json` support: the
+  app's `ide.json` (completion rules mapped onto route names, configuration keys with a prefix,
+  static strings, folder files and view names; Blade directives; an unsupported type and key that
+  are ignored) and the one of the stub package `vendor/acme/widgets` (a view namespace, a
+  component folder and a listed component).
 - `crates/ide-host/tests/language_smoke.rs` (`laravel`) checks hover and completion on a
   model attribute through the app's `ops`.
 
@@ -75,5 +80,6 @@ manual QA, do the same or run `composer install` on a copy.
 | `resources/views/components/alert.blade.php`, `badge.blade.php`                             | the class component's view, an anonymous component with `@props` and `@class`                                                                                                                                                                                 |
 | `resources/views/welcome.blade.php`, `about.blade.php`                                      | views named from a controller and from `Route::view`                                                                                                                                                                                                          |
 | `vite.config.js`, `resources/css/app.css`, `resources/js/app.js`                            | Vite entry points                                                                                                                                                                                                                                             |
+| `ide.json`                                                                                  | `ide.json` completion rules (`nav_link`, `blog_setting`, `feed_theme`, `feed_options`, `stylesheet`, `template()` of components), Blade directives `@price` and `@feature`, package settings, ignored entries |
 | `Modules/Billing/Providers/BillingServiceProvider.php`, `Modules/Billing/config/config.php` | a package-style config merged with `mergeConfigFrom` (`billing.*`)                                                                                                                                                                                            |
 | `.env.example`                                                                              | environment keys                                                                                                                                                                                                                                              |

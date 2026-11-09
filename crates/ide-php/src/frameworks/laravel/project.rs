@@ -22,6 +22,8 @@
 //!   `modules/`, `app-modules/`, `app/Modules/` or `src/Modules/` that look
 //!   like a module (routes, resources, providers or their own `composer.json`).
 //!
+//! - **`ide.json`:** the project's and its packages' ([`IdeJson`]).
+//!
 //! [`LaravelProject::load`] reads the files that aren't PHP;
 //! [`LaravelProject::with_routes`] adds what the PHP summaries in the index
 //! say. The engine keeps both ([`crate::engine::PhpEngine::laravel`]).
@@ -32,6 +34,7 @@ use ide_core::Range;
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 
+use super::ide_json::IdeJson;
 use crate::project::composer::RootManifest;
 use crate::project::normalize;
 use crate::summary::{LaravelFacts, RouteFileKind, RoutePath, RouteRegistration};
@@ -49,6 +52,9 @@ pub struct LaravelProject {
     pub route_files: Vec<RouteFile>,
     /// In path order.
     pub modules: Vec<Module>,
+    /// What the project's and its packages' `ide.json` files say.
+    #[serde(default)]
+    pub ide_json: IdeJson,
 }
 
 /// Laravel's base paths.
@@ -169,8 +175,15 @@ impl LaravelProject {
         let nwidart = required("nwidart/laravel-modules")
             || locked("nwidart/laravel-modules").is_some()
             || root.join("modules_statuses.json").is_file();
-        let mut project =
-            Self { root: root.clone(), version, app_namespace, paths, route_files: Vec::new(), modules: Vec::new() };
+        let mut project = Self {
+            root: root.clone(),
+            version,
+            app_namespace,
+            paths,
+            route_files: Vec::new(),
+            modules: Vec::new(),
+            ide_json: IdeJson::load(&root, &vendor),
+        };
         if nwidart {
             project.modules.extend(nwidart_modules(&root));
         }

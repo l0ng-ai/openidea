@@ -1,0 +1,258 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "$id": "openidea://schemas/laravel-ide-json.json",
+  "title": "ide.json",
+  "description": "Settings a Laravel project or package ships for Laravel tooling. OpenIDEA reads the keys described here.",
+  "type": "object",
+  "properties": {
+    "$schema": { "type": "string" },
+    "completions": {
+      "description": "Rules saying which strings complete what.",
+      "type": "array",
+      "items": { "$ref": "#/definitions/completion" }
+    },
+    "view": {
+      "type": "object",
+      "properties": {
+        "paths": {
+          "description": "More view folders.",
+          "type": "array",
+          "items": {
+            "type": "object",
+            "properties": {
+              "path": { "type": "string", "description": "Relative to this file's folder." },
+              "namespace": { "type": "string", "description": "Views named namespace::name." }
+            },
+            "required": ["path"]
+          }
+        }
+      }
+    },
+    "blade": {
+      "type": "object",
+      "properties": {
+        "components": {
+          "type": "object",
+          "properties": {
+            "viewPaths": {
+              "description": "Folders of anonymous components.",
+              "type": "array",
+              "items": {
+                "type": "object",
+                "properties": {
+                  "path": { "type": "string" },
+                  "prefix": { "type": "string", "description": "Tags written <x-prefix::name>." },
+                  "namespace": { "type": "string" }
+                },
+                "required": ["path"]
+              }
+            },
+            "list": {
+              "description": "Components, by name.",
+              "type": "array",
+              "items": {
+                "type": "object",
+                "properties": {
+                  "name": { "type": "string" },
+                  "namespace": { "type": "string" },
+                  "className": { "type": "string" }
+                },
+                "required": ["name"]
+              }
+            }
+          }
+        },
+        "directives": { "type": "array", "items": { "$ref": "#/definitions/directive" } },
+        "ifDirectives": { "type": "array", "items": { "$ref": "#/definitions/directive" } }
+      }
+    },
+    "codeGenerations": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "properties": {
+          "id": { "type": "string" },
+          "name": { "type": "string" },
+          "classSuffix": { "type": "string" },
+          "inputFilter": { "type": "string" },
+          "regex": { "type": "string" },
+          "parameters": {
+            "type": "array",
+            "items": {
+              "type": "object",
+              "properties": {
+                "id": { "type": "string" },
+                "name": { "type": "string" },
+                "type": { "type": "string" },
+                "variable": { "type": "string" },
+                "optional": { "type": "boolean" },
+                "defaultValue": { "type": "string" },
+                "options": { "type": "object" }
+              },
+              "required": ["id", "name", "type", "variable"]
+            }
+          },
+          "files": {
+            "type": "array",
+            "items": {
+              "type": "object",
+              "properties": {
+                "name": { "type": "string" },
+                "appNamespace": { "type": "string" },
+                "directory": { "type": "string" },
+                "baseClass": { "type": "string" },
+                "fallbackBaseClass": { "type": "string" },
+                "template": {
+                  "type": "object",
+                  "properties": {
+                    "type": { "type": "string" },
+                    "path": { "type": "string" },
+                    "fallbackPath": { "type": "string" },
+                    "parameters": { "type": "object" }
+                  },
+                  "required": ["path"]
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "packages": {
+      "type": "object",
+      "properties": {
+        "enabledPackages": { "type": "object" },
+        "disabledPackages": { "type": "array", "items": { "type": "string" } },
+        "livewire": {
+          "type": "object",
+          "properties": {
+            "namespaces": {
+              "type": "array",
+              "items": {
+                "type": "object",
+                "properties": {
+                  "tagPrefix": { "type": "string" },
+                  "classNamespace": { "type": "string" },
+                  "viewPath": { "type": "string" }
+                }
+              }
+            }
+          }
+        },
+        "inertia": {
+          "type": "object",
+          "properties": {
+            "pagePaths": {
+              "type": "array",
+              "items": {
+                "type": "object",
+                "properties": {
+                  "path": { "type": "string" },
+                  "prefix": { "type": "string" },
+                  "suffix": { "type": "string" }
+                },
+                "required": ["path"]
+              }
+            }
+          }
+        },
+        "passport": {
+          "type": "object",
+          "properties": {
+            "scopes": { "type": "object", "additionalProperties": { "type": "string" } }
+          }
+        }
+      }
+    }
+  },
+  "definitions": {
+    "completion": {
+      "type": "object",
+      "properties": {
+        "complete": {
+          "type": "string",
+          "enum": [
+            "routeName",
+            "routeAction",
+            "routeMiddleware",
+            "configKey",
+            "viewName",
+            "translationKey",
+            "validationRule",
+            "validationRules",
+            "staticStrings",
+            "directoryFiles",
+            "gate",
+            "artisanCommandName",
+            "environmentVariable",
+            "eloquentFields",
+            "viteAsset"
+          ]
+        },
+        "condition": {
+          "type": "array",
+          "items": { "$ref": "#/definitions/condition" }
+        },
+        "options": {
+          "type": "object",
+          "properties": {
+            "prefix": { "type": "string", "description": "Put before the string." },
+            "strings": { "type": "array", "items": { "type": "string" } },
+            "stringsWithLocation": { "type": "object", "additionalProperties": { "type": "string" } },
+            "directory": { "type": "string" },
+            "directories": { "type": "array", "items": { "type": "string" } },
+            "recursive": { "type": "boolean" },
+            "suffixToClear": { "type": "string" }
+          }
+        }
+      },
+      "required": ["complete", "condition"]
+    },
+    "condition": {
+      "type": "object",
+      "properties": {
+        "place": {
+          "type": "string",
+          "enum": [
+            "parameter",
+            "arrayKey",
+            "arrayOnlyKey",
+            "arrayValue",
+            "arrayValueWithKey",
+            "arrayValueWithKeyArray",
+            "arrayInArrayKey",
+            "arrayInArrayOnlyKey",
+            "arrayInArrayValue",
+            "returnString",
+            "returnArrayValue",
+            "returnArrayKey",
+            "returnArrayOnlyKey",
+            "returnArrayValueWithKey",
+            "returnInArrayValueWithKey"
+          ]
+        },
+        "keys": { "type": "array", "items": { "type": "string" } },
+        "functionNames": { "type": "array", "items": { "type": "string" } },
+        "functionFqn": { "type": "array", "items": { "type": "string" } },
+        "methodNames": { "type": "array", "items": { "type": "string" } },
+        "classNames": { "type": "array", "items": { "type": "string" } },
+        "classFqn": { "type": "array", "items": { "type": "string" } },
+        "classParentFqn": { "type": "array", "items": { "type": "string" } },
+        "newClassNames": { "type": "array", "items": { "type": "string" } },
+        "newClassFqn": { "type": "array", "items": { "type": "string" } },
+        "newClassParentFqn": { "type": "array", "items": { "type": "string" } },
+        "parameters": { "type": "array", "items": { "type": "integer", "minimum": 1 } },
+        "parameterNames": { "type": "array", "items": { "type": "string" } }
+      }
+    },
+    "directive": {
+      "type": "object",
+      "properties": {
+        "name": { "type": "string" },
+        "prefix": { "type": "string" },
+        "suffix": { "type": "string" }
+      },
+      "required": ["name"]
+    }
+  }
+}
