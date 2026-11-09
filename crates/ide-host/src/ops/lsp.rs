@@ -197,6 +197,7 @@ fn plugin_completion(item: ide_plugin::CompletionItem) -> CompletionItem {
     CompletionItem {
         label: item.label,
         label_detail: None,
+        label_description: None,
         detail: item.detail,
         kind,
         documentation: item.documentation.map(|value| Markup { kind: "markdown".into(), value }),

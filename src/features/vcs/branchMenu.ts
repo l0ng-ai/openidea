@@ -78,7 +78,7 @@ export function branchMenu(
       { label: "Update", icon: "git-pull", run: run(() => executeAction("vcs.update")) },
       { label: "Push…", icon: "git-push", run: run(() => executeAction("vcs.push")) },
       { kind: "separator" },
-      { label: "Rename…", run: run(() => renameBranch(b.name)) },
+      { label: "Rename…", run: run(() => renameBranch(b)) },
       favoriteItem,
       history,
     ];
@@ -111,7 +111,7 @@ export function branchMenu(
     );
   items.push(
     { kind: "separator" },
-    ...(b.remote ? [] : [{ label: "Rename…", run: run(() => renameBranch(b.name)) }]),
+    ...(b.remote ? [] : [{ label: "Rename…", run: run(() => renameBranch(b)) }]),
     favoriteItem,
     {
       label: "Delete",

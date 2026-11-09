@@ -2,6 +2,7 @@
  * IDEA's Export Data dialog: extractor (format) and its options on the left,
  * a live preview on the right; copies to the clipboard or writes a file.
  */
+import { writeClipboardText } from "@/platform/clipboard";
 import { useEffect, useMemo, useState } from "react";
 import { call, commands } from "@/platform/ipc";
 import { Checkbox, Dialog, IconButton, Input, Select, T } from "@/ui";
@@ -118,7 +119,7 @@ export function ExportDialog({
         {
           label: "Copy to Clipboard",
           onClick: () => {
-            void navigator.clipboard?.writeText(text());
+            void writeClipboardText(text());
             closeDialog();
           },
         },

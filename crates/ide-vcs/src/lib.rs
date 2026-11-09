@@ -1172,10 +1172,11 @@ impl Repo {
         let _scope = crate::ExecutionScope::enter(self.execution_allowed.load(std::sync::atomic::Ordering::Acquire));
         write::restore_branch(self, deleted)
     }
-    /// Renames a local branch (`git branch -m`); its upstream configuration moves with it.
-    pub fn rename_branch(&self, from: &str, to: &str) -> IdeResult<()> {
+    /// Renames a local branch (`git branch -m`); its upstream configuration moves with it,
+    /// unless `unset_upstream` drops the tracking instead.
+    pub fn rename_branch(&self, from: &str, to: &str, unset_upstream: bool) -> IdeResult<()> {
         let _scope = crate::ExecutionScope::enter(self.execution_allowed.load(std::sync::atomic::Ordering::Acquire));
-        write::rename_branch(self, from, to)
+        write::rename_branch(self, from, to, unset_upstream)
     }
     /// Merges `branch` into HEAD; local changes are stashed and restored around it. On
     /// conflicts an error is returned and the repository is left mid-merge

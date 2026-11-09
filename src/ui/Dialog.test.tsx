@@ -1,5 +1,9 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
-import { fireEvent, render, screen, within } from "@testing-library/react";
+import { act, fireEvent, render, screen, within } from "@testing-library/react";
+import userEvent from "@testing-library/user-event";
+import { useLayoutEffect, useRef } from "react";
+import { Popup } from "./Popup";
+import { openLayer } from "./popupState";
 import { usePlatform } from "@/platform/platformInfo";
 import { Dialog, dialogPlatformOf, orderDialogButtons, type DialogButton, type DialogPlatform } from "./Dialog";
 
@@ -304,4 +308,122 @@ describe("Dialog keyboard", () => {
     fireEvent.keyDown(document.activeElement!, { key: "Tab" });
     expect(document.activeElement).toBe(screen.getByRole("button", { name: "Cancel" }));
   });
+});
+
+describe("Dialog focus containment", () => {
+  it.each(["Enter", "Escape"])("keeps deferred editor focus out and restores it after %s", async (key) => {
+    const editor = document.createElement("textarea");
+    document.body.append(editor);
+    editor.focus();
+    const accepted = vi.fn();
+    const cancelled = vi.fn();
+    const { rerender, unmount } = render(
+      <Dialog
+        open
+        title="Add File to Git"
+        icon="question"
+        onClose={cancelled}
+        buttons={[
+          { label: "Add", role: "default", onClick: accepted },
+          { label: "Cancel", role: "cancel" },
+        ]}
+      >
+        <p>Do you want to add the following file to Git?</p>
+      </Dialog>,
+    );
+    await act(async () => {
+      await Promise.resolve();
+      editor.focus();
+    });
+    expect(document.activeElement).toBe(screen.getByRole("button", { name: "Add" }));
+    await userEvent.keyboard(`{${key}}`);
+    expect(accepted).toHaveBeenCalledTimes(key === "Enter" ? 1 : 0);
+    expect(cancelled).toHaveBeenCalledTimes(key === "Escape" ? 1 : 0);
+    rerender(
+      <Dialog open={false} onClose={cancelled}>
+        <p>closed</p>
+      </Dialog>,
+    );
+    expect(document.activeElement).toBe(editor);
+    unmount();
+    editor.remove();
+  });
+
+  it("lets nested dialogs own focus, then restores the last field in the parent", () => {
+    const { rerender } = render(
+      <Dialog open title="Parent" onClose={() => {}}>
+        <input aria-label="First" />
+        <input aria-label="Last" />
+      </Dialog>,
+    );
+    screen.getByLabelText("Last").focus();
+    const content = (child: boolean) => (
+      <>
+        <Dialog open title="Parent" onClose={() => {}}>
+          <input aria-label="First" />
+          <input aria-label="Last" />
+        </Dialog>
+        {child && (
+          <Dialog open title="Child" onClose={() => {}}>
+            <input aria-label="Child field" />
+          </Dialog>
+        )}
+      </>
+    );
+    rerender(content(true));
+    expect(document.activeElement).toBe(screen.getByLabelText("Child field"));
+    rerender(content(false));
+    expect(document.activeElement).toBe(screen.getByLabelText("Last"));
+  });
+});
+
+it("allows a menu above a dialog and remembers its last focused control", () => {
+  const { unmount } = render(
+    <Dialog open title="Parent" onClose={() => {}}>
+      <input aria-label="First" />
+      <input aria-label="Last" />
+    </Dialog>,
+  );
+  const last = screen.getByLabelText("Last");
+  last.focus();
+  const menu = document.createElement("button");
+  document.body.append(menu);
+  const layer = openLayer(() => menu);
+  menu.focus();
+  expect(document.activeElement).toBe(menu);
+  layer.release();
+  last.focus();
+  document.body.focus();
+  const outside = document.createElement("input");
+  document.body.append(outside);
+  outside.focus();
+  expect(document.activeElement).toBe(last);
+  unmount();
+  menu.remove();
+  outside.remove();
+});
+
+it("allows a newly mounted menu to focus before its popup layer registers", () => {
+  function MenuItem() {
+    const ref = useRef<HTMLButtonElement>(null);
+    useLayoutEffect(() => {
+      ref.current?.focus();
+    }, []);
+    return <button ref={ref}>Menu item</button>;
+  }
+  const show = (menu: boolean) => (
+    <>
+      <Dialog open title="Parent" onClose={() => {}}>
+        <input aria-label="Field" />
+      </Dialog>
+      {menu && (
+        <Popup open anchor={{ x: 0, y: 0 }} onClose={() => {}} autoFocus={false}>
+          <MenuItem />
+        </Popup>
+      )}
+    </>
+  );
+  const { rerender } = render(show(false));
+  rerender(show(true));
+  expect(document.activeElement).toBe(screen.getByRole("button", { name: "Menu item" }));
 });

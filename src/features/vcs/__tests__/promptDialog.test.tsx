@@ -62,3 +62,74 @@ describe("prompt dialog with a sanitizer (branch name)", () => {
     expect(input).toHaveValue("a-xb");
   });
 });
+
+describe("prompt dialog prefilled for replacement", () => {
+  it("selects the prefilled value so typing replaces it", async () => {
+    const user = userEvent.setup();
+    render(<VcsDialogHost />);
+    act(() => void open("feature/ui"));
+    const input = await screen.findByRole<HTMLInputElement>("textbox", { name: "New branch name:" });
+    await waitFor(() => expect(input.selectionEnd).toBe("feature/ui".length));
+    expect(input.selectionStart).toBe(0);
+    await user.keyboard("fix");
+    expect(input).toHaveValue("fix");
+  });
+
+  it("leaves an empty field alone", async () => {
+    render(<VcsDialogHost />);
+    act(() => void open());
+    const input = await screen.findByRole<HTMLInputElement>("textbox", { name: "New branch name:" });
+    expect(input.selectionStart).toBe(0);
+    expect(input.selectionEnd).toBe(0);
+  });
+
+  it("keeps the caret when an edited field is programmatically focused again", async () => {
+    const user = userEvent.setup();
+    render(<VcsDialogHost />);
+    act(() => void open("feature/ui"));
+    const input = await screen.findByRole<HTMLInputElement>("textbox", { name: "New branch name:" });
+    await waitFor(() => expect(input).toHaveFocus());
+    await user.keyboard("fix");
+    input.setSelectionRange(1, 1);
+    act(() => {
+      input.blur();
+      input.focus();
+    });
+    expect(input.selectionStart).toBe(1);
+    expect(input.selectionEnd).toBe(1);
+    await user.keyboard("x");
+    expect(input).toHaveValue("fxix");
+  });
+});
+
+describe("prompt dialog checkbox", () => {
+  const openWithUpstream = (checkbox: boolean) =>
+    promptText({
+      title: "Rename Branch topic",
+      label: "New branch name:",
+      initial: "topic",
+      okLabel: "Rename",
+      checkbox: checkbox ? { label: "Unset upstream branch", initial: false } : undefined,
+    });
+
+  it("is offered unchecked and reported back", async () => {
+    const user = userEvent.setup();
+    render(<VcsDialogHost />);
+    let result: ReturnType<typeof openWithUpstream> | undefined;
+    act(() => {
+      result = openWithUpstream(true);
+    });
+    const box = await screen.findByRole("checkbox", { name: "Unset upstream branch" });
+    expect(box).not.toBeChecked();
+    await user.click(box);
+    await user.click(screen.getByRole("button", { name: "Rename" }));
+    await expect(result).resolves.toEqual({ value: "topic", checked: true });
+  });
+
+  it("is missing when the branch tracks nothing", async () => {
+    render(<VcsDialogHost />);
+    act(() => void openWithUpstream(false));
+    await screen.findByRole("textbox", { name: "New branch name:" });
+    expect(screen.queryByRole("checkbox")).toBeNull();
+  });
+});

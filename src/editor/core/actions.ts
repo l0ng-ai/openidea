@@ -1,4 +1,5 @@
 /** Editor actions (ids from keymaps/intellij-macos.ts). */
+import { writeClipboardText } from "@/platform/clipboard";
 import { EditorSelection, type EditorState } from "@codemirror/state";
 import { EditorView } from "@codemirror/view";
 import { indentSelection, moveLineDown, moveLineUp } from "@codemirror/commands";
@@ -593,8 +594,7 @@ function copyPathReferencePopup(view: EditorView, slot: EditorSlot) {
 }
 
 function copyEditorPath(text: string) {
-  void navigator.clipboard
-    .writeText(text)
+  void writeClipboardText(text)
     .then(() => {
       recordClipboard(text);
       void executeAction("editor.showHint", { text: tx`Copied ${text}` });
@@ -1009,12 +1009,7 @@ export function registerEditorActions(): () => void {
       when: "projectOpen",
       // ⌘↑ / ⌘↓ inside a popup (Search Everywhere's previous / next group) stay with it.
       keyWhen: "!popupOpen",
-      run: () => {
-        if (activeSlot()) return openNavBarPopup();
-        // No editor: the status bar breadcrumbs (StatusItems › Breadcrumbs) take focus.
-        const crumbs = document.querySelectorAll<HTMLButtonElement>('nav[aria-label="Breadcrumbs"] button');
-        crumbs[crumbs.length - 1]?.focus();
-      },
+      run: () => openNavBarPopup(),
     },
     {
       id: "navigate.lastEditLocation",

@@ -1,4 +1,4 @@
-import { beforeEach, describe, expect, it, vi } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { fireEvent, render, screen, waitFor, within } from "@testing-library/react";
 import type { EditorInput } from "@/workbench/contributions";
 import { Chunk, getChunks } from "@codemirror/merge";
@@ -542,4 +542,73 @@ describe("Unified Revert", () => {
       }
     });
   }
+});
+
+describe("Diff navigation caret", () => {
+  // @codemirror/view hides `.cm-cursor` unless its editor carries `.cm-focused`, and that class
+  // follows `view.hasFocus`, false while the document itself is unfocused. jsdom reports a
+  // focused document only when told to, so the caret these tests are about is asserted the same way.
+  let documentFocused: ReturnType<typeof vi.spyOn>;
+  beforeEach(() => {
+    localStorage.clear();
+    documentFocused = vi.spyOn(document, "hasFocus").mockReturnValue(true);
+  });
+  afterEach(() => {
+    documentFocused.mockRestore();
+    localStorage.clear();
+  });
+
+  /** One change on line 2 of the right (or only) pane. */
+  const reveal = async (mode: "split" | "unified") => {
+    localStorage.setItem("openidea.vcs.diffOptions", JSON.stringify({ mode }));
+    texts.HEAD = "a\nb\nc\n";
+    texts.abc123 = "a\nB\nc\n";
+    const mounted = render(<DiffEditor input={input} />);
+    const panes = mode === "split" ? 2 : 1;
+    await waitFor(() => expect(document.querySelectorAll(".cm-editor")).toHaveLength(panes));
+    const view = () => EditorView.findFromDOM([...document.querySelectorAll<HTMLElement>(".cm-editor")][panes - 1]!)!;
+    return { mounted, view };
+  };
+
+  it.each([
+    ["Next Difference", "split", false],
+    ["Previous Difference", "split", true],
+    ["Next Difference", "unified", false],
+    ["Previous Difference", "unified", true],
+  ] as const)("keeps the caret visible for %s in the %s viewer", async (label, mode, fromEnd) => {
+    const { mounted, view } = await reveal(mode);
+    try {
+      const button = await screen.findByRole("button", { name: label });
+      if (fromEnd) view().dispatch({ selection: { anchor: view().state.doc.length } });
+      // A click leaves focus on the button, outside the panes.
+      button.focus();
+      expect(view().hasFocus).toBe(false);
+      fireEvent.click(button);
+      expect(view().state.doc.lineAt(view().state.selection.main.head).number).toBe(2);
+      expect(view().hasFocus).toBe(true);
+    } finally {
+      mounted.unmount();
+    }
+  });
+
+  it("keeps the caret visible when F7 runs while focus is outside the panes", async () => {
+    const keymap = useKeymap.getState();
+    applyKeymapSettings("intellij-macos", {});
+    const unregister = registerCompareActions();
+    const uninstall = installKeyboardDispatcher(window);
+    const { mounted, view } = await reveal("split");
+    try {
+      const next = await screen.findByRole("button", { name: "Next Difference" });
+      next.focus();
+      expect(view().hasFocus).toBe(false);
+      next.dispatchEvent(new KeyboardEvent("keydown", { key: "F7", code: "F7", bubbles: true, cancelable: true }));
+      await waitFor(() => expect(view().state.doc.lineAt(view().state.selection.main.head).number).toBe(2));
+      expect(view().hasFocus).toBe(true);
+    } finally {
+      mounted.unmount();
+      uninstall();
+      unregister();
+      useKeymap.setState(keymap);
+    }
+  });
 });
