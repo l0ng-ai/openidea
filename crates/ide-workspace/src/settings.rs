@@ -61,6 +61,28 @@ fn parse_layer(text: &str) -> Result<Json, String> {
     serde_json::to_value(table).map_err(|e| e.to_string())
 }
 
+/// Older settings stored the navigation bar choice as a boolean (`showNavigationBar`,
+/// `true` = enabled). Remap it into the three-state `navigationBar` before
+/// deserialization, so a plain `navigationBar` field is all specta has to export.
+fn normalize_navigation_bar(mut layer: Json) -> Json {
+    let Some(appearance) = layer.get_mut("appearance").and_then(Json::as_object_mut) else {
+        return layer;
+    };
+    if appearance.contains_key("navigationBar") {
+        // Already migrated; leave invalid values alone so the layer is rejected as a whole.
+        return layer;
+    }
+    let Some(legacy) = appearance.remove("showNavigationBar") else {
+        return layer;
+    };
+    if let Some(on) = legacy.as_bool() {
+        appearance.insert("navigationBar".into(), Json::String(if on { "statusBar" } else { "hidden" }.into()));
+    }
+    // Not a boolean: leave it out and let the default apply, rather than silently
+    // turning the navigation bar back on.
+    layer
+}
+
 /// Reads one layer; `None` when missing or invalid (logged).
 fn read_layer(file: &Path) -> Option<Json> {
     let text = match std::fs::read_to_string(file) {
@@ -82,6 +104,9 @@ fn read_layer(file: &Path) -> Option<Json> {
 
 /// Merges `layer` onto `merged` if the result still deserializes.
 fn try_merge(merged: &mut Json, layer: Json) -> Result<(), String> {
+    // Migrate the legacy boolean every layer carries it, before it can clobber
+    // the three-state key coming from a lower-priority layer.
+    let layer = normalize_navigation_bar(layer);
     let mut candidate = merged.clone();
     deep_merge(&mut candidate, layer);
     serde_json::from_value::<Settings>(candidate.clone()).map_err(|e| e.to_string())?;
@@ -665,6 +690,82 @@ mod tests {
         let s = store.set(SettingsScope::Global, "appearance.showStatusBar", json!(false)).unwrap();
         assert!(!s.appearance.show_status_bar);
         assert!(!store.reload().appearance.show_main_toolbar);
+    }
+
+    #[test]
+    fn legacy_navigation_bar_boolean_migrates_to_the_three_state_key() {
+        let tmp = tempfile::tempdir().unwrap();
+        // `true` → `statusBar`, where the bar lived before the three-state choice.
+        std::fs::write(tmp.path().join("settings.toml"), "[appearance]\nshowNavigationBar = true\n").unwrap();
+        assert_eq!(
+            SettingsStore::load(tmp.path(), None).effective().appearance.navigation_bar,
+            ide_core::settings::NavigationBarPosition::StatusBar
+        );
+        // `false` → `hidden`.
+        std::fs::write(tmp.path().join("settings.toml"), "[appearance]\nshowNavigationBar = false\n").unwrap();
+        assert_eq!(
+            SettingsStore::load(tmp.path(), None).effective().appearance.navigation_bar,
+            ide_core::settings::NavigationBarPosition::Hidden
+        );
+        // An explicit three-state value wins over the migrated legacy key.
+        std::fs::write(
+            tmp.path().join("settings.toml"),
+            "[appearance]\nshowNavigationBar = true\nnavigationBar = \"top\"\n",
+        )
+        .unwrap();
+        assert_eq!(
+            SettingsStore::load(tmp.path(), None).effective().appearance.navigation_bar,
+            ide_core::settings::NavigationBarPosition::Top
+        );
+        // A non-boolean legacy value is dropped and the default (status bar) is used.
+        std::fs::write(tmp.path().join("settings.toml"), "[appearance]\nshowNavigationBar = \"everywhere\"\n").unwrap();
+        assert_eq!(
+            SettingsStore::load(tmp.path(), None).effective().appearance.navigation_bar,
+            ide_core::settings::NavigationBarPosition::StatusBar
+        );
+    }
+
+    #[test]
+    fn navigation_bar_layers_migrate_without_rewriting_other_settings() {
+        use ide_core::settings::NavigationBarPosition::{Hidden, StatusBar, Top};
+
+        let tmp = tempfile::tempdir().unwrap();
+        let project = tmp.path().join("project");
+        std::fs::create_dir_all(project.join(".openidea")).unwrap();
+        let global_file = tmp.path().join("settings.toml");
+        let project_file = project.join(".openidea/settings.toml");
+        let global =
+            "# keep this comment\n[editor]\nfontSize = 17 # keep this too\n[appearance]\nnavigationBar = \"top\"\n";
+        std::fs::write(&global_file, global).unwrap();
+        let store = SettingsStore::load(tmp.path(), Some(&project));
+        assert_eq!(store.effective().appearance.navigation_bar, Top);
+        assert_eq!(std::fs::read_to_string(&global_file).unwrap(), global);
+
+        for (layer, expected) in [
+            ("[appearance]\nshowNavigationBar = false\n", Hidden),
+            ("[appearance]\nshowNavigationBar = true\n", StatusBar),
+            ("[appearance]\nnavigationBar = \"hidden\"\n", Hidden),
+            ("[editor]\nfontSize = 19\n", Top),
+        ] {
+            std::fs::write(&project_file, layer).unwrap();
+            assert_eq!(store.reload().appearance.navigation_bar, expected);
+            assert_eq!(std::fs::read_to_string(&project_file).unwrap(), layer);
+        }
+
+        std::fs::remove_file(&project_file).unwrap();
+        let legacy = global.replace("navigationBar = \"top\"", "showNavigationBar = false");
+        std::fs::write(&global_file, &legacy).unwrap();
+        assert_eq!(store.reload().appearance.navigation_bar, Hidden);
+        let updated = store.set(SettingsScope::Global, "appearance.navigationBar", serde_json::json!("top")).unwrap();
+        assert_eq!(updated.appearance.navigation_bar, Top);
+        assert_eq!(updated.editor.font_size, 17.0);
+        let written = std::fs::read_to_string(&global_file).unwrap();
+        assert!(written.starts_with(&legacy));
+        assert_eq!(
+            store.set(SettingsScope::Global, "appearance.navigationBar", Json::Null).unwrap().appearance.navigation_bar,
+            Hidden
+        );
+        assert_eq!(std::fs::read_to_string(&global_file).unwrap(), legacy);
     }
 
     #[test]

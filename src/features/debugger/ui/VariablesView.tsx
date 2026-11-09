@@ -1,4 +1,5 @@
 /** Lazy variables tree (scopes, locals, watches, evaluation results). */
+import { writeClipboardText } from "@/platform/clipboard";
 import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState, type KeyboardEvent } from "react";
 import clsx from "clsx";
 import { call, commands, type DebugSessionId, type Variable } from "@/platform/ipc";
@@ -287,7 +288,7 @@ export function VariablesView({
         return;
       }
     }
-    await navigator.clipboard?.writeText(text);
+    await writeClipboardText(text);
   };
 
   const onContextMenu = (node: VarNode | null, _sel: Set<string>, e: React.MouseEvent) => {
@@ -302,7 +303,7 @@ export function VariablesView({
     if (node.kind === "watch") items.push({ label: "Remove Watch", icon: "minus", run: () => removeWatch(node.name) });
     if (node.kind !== "scope") {
       items.push({ label: "Copy Value", icon: "copy", run: () => void copyValue(node) });
-      items.push({ label: "Copy Name", run: () => void navigator.clipboard?.writeText(node.name) });
+      items.push({ label: "Copy Name", run: () => void writeClipboardText(node.name) });
       if (node.kind === "var" && node.evaluateName)
         items.push({ label: "Add to Watches", icon: "eye", run: () => addWatch(node.evaluateName!) });
       if (canWatch(node))

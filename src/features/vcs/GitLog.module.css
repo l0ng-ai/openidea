@@ -239,6 +239,9 @@
 .row:hover {
   background: var(--bg-tree-hover);
 }
+.list[data-hover-paused] .row:not(.columnHeader):hover {
+  background: var(--log-row-bg, transparent);
+}
 .selected,
 .selected:hover {
   --log-row-bg: var(--bg-tree-selected-inactive);

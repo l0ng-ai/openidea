@@ -41,6 +41,11 @@ pub fn find_files(host: &Host, window: &str, query: String, limit: u32) -> IdeRe
     Ok(host.project(window)?.index.find_files(&query, limit as usize))
 }
 
+pub async fn find_files_named(host: &Host, window: &str, name: String) -> IdeResult<Vec<IpcPath>> {
+    let project = host.project(window)?;
+    blocking(move || Ok(project.index.files_named(&name).into_iter().map(Into::into).collect())).await
+}
+
 pub fn find_dirs(host: &Host, window: &str, query: String, limit: u32) -> IdeResult<Vec<FileMatch>> {
     Ok(host.project(window)?.index.find_dirs(&query, limit as usize))
 }
@@ -167,6 +172,7 @@ pub(crate) fn register(d: &mut Dispatcher) {
     d.add("index_status", |c| async move { index_status(&c.host, &c.window) });
     d.add("index_file_extensions", |c| async move { index_file_extensions(&c.host, &c.window) });
     d.add("find_files", |c| async move { find_files(&c.host, &c.window, c.arg("query")?, c.arg("limit")?) });
+    d.add("find_files_named", |c| async move { find_files_named(&c.host, &c.window, c.arg("name")?).await });
     d.add("find_dirs", |c| async move { find_dirs(&c.host, &c.window, c.arg("query")?, c.arg("limit")?) });
     d.add("find_symbols", |c| async move {
         find_symbols(&c.host, &c.window, c.arg("query")?, c.arg("filter")?, c.arg("limit")?)

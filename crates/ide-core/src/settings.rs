@@ -277,6 +277,10 @@ pub struct CustomKeymap {
 pub struct GeneralSettings {
     pub reopen_last_project: bool,
     pub confirm_exit: bool,
+    /// When on, the last window closes instead of showing the Welcome screen.
+    pub close_without_welcome: bool,
+    /// When on, closing a window drops its saved editor tabs, so they are not restored next time.
+    pub close_tabs_with_window: bool,
     /// Where Open… puts a project while one is open: `ask` | `new` | `same` | `attach`.
     pub open_project_in: String,
     /// Initial folder of the Open / Clone dialogs; empty = the OS default.
@@ -300,6 +304,8 @@ impl Default for GeneralSettings {
         Self {
             reopen_last_project: true,
             confirm_exit: true,
+            close_without_welcome: false,
+            close_tabs_with_window: false,
             open_project_in: "ask".into(),
             default_project_directory: String::new(),
             save_on_idle: false,
@@ -363,6 +369,21 @@ impl Default for NotificationGroupSettings {
     }
 }
 
+/// Where the Navigation Bar (the file path breadcrumbs) is shown. Mirrors
+/// IDEA's `View | Appearance | Navigation Bar` (Top / Status Bar / Don't show).
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize, Type)]
+#[serde(rename_all = "camelCase")]
+pub enum NavigationBarPosition {
+    /// Above the editor, below the main menu / toolbar.
+    Top,
+    /// In the footer, next to the status bar widgets — the default, matching
+    /// where the bar lived before the three-state choice existed.
+    #[default]
+    StatusBar,
+    /// Not shown at all.
+    Hidden,
+}
+
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize, Type)]
 #[serde(default, rename_all = "camelCase")]
 pub struct AppearanceSettings {
@@ -411,6 +432,9 @@ pub struct AppearanceSettings {
     /// View › Appearance › Toolbar; hidden leaves IDEA's compact window header.
     pub show_main_toolbar: bool,
     pub show_status_bar: bool,
+    /// View › Appearance › Navigation Bar: the file path breadcrumbs, shown in
+    /// the status bar by default, above the editor, or not at all.
+    pub navigation_bar: NavigationBarPosition,
     /// Status bar widgets shown (`true`) or hidden (`false`) by the user
     /// (status bar context menu); widgets not listed use their default.
     pub status_bar_widgets: BTreeMap<String, bool>,
@@ -483,6 +507,7 @@ impl Default for AppearanceSettings {
             widescreen_tool_windows: false,
             show_main_toolbar: true,
             show_status_bar: true,
+            navigation_bar: NavigationBarPosition::StatusBar,
             status_bar_widgets: BTreeMap::new(),
             main_toolbar: None,
         }
@@ -660,6 +685,7 @@ pub struct LanguagesSettings {
     pub java: JavaSettings,
     pub ruby: RubySettings,
     pub markdown: MarkdownSettings,
+    pub arduino: ArduinoSettings,
 }
 
 impl Default for LanguagesSettings {
@@ -681,8 +707,20 @@ impl Default for LanguagesSettings {
             java: JavaSettings::default(),
             ruby: RubySettings::default(),
             markdown: MarkdownSettings::default(),
+            arduino: ArduinoSettings::default(),
         }
     }
+}
+
+/// Arduino tool discovery paths and default board FQBN, configured in `settings.toml`.
+#[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize, Type)]
+#[serde(default, rename_all = "camelCase")]
+pub struct ArduinoSettings {
+    pub cli: String,
+    pub clangd: String,
+    pub language_server: String,
+    pub cli_config: String,
+    pub fqbn: String,
 }
 
 /// Languages & Frameworks › Markdown. Like IDEA's, it is application-level only.
@@ -1186,6 +1224,26 @@ impl Settings {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn window_close_settings_default_off_and_round_trip() {
+        for old in [r#"{}"#, r#"{"general":{"confirmExit":false}}"#] {
+            let settings: Settings = serde_json::from_str(old).unwrap();
+            assert!(!settings.general.close_without_welcome);
+            assert!(!settings.general.close_tabs_with_window);
+        }
+        for close_window in [false, true] {
+            for close_tabs in [false, true] {
+                let mut settings = Settings::default();
+                settings.general.close_without_welcome = close_window;
+                settings.general.close_tabs_with_window = close_tabs;
+                let json = serde_json::to_value(&settings).unwrap();
+                assert_eq!(json["general"]["closeWithoutWelcome"], close_window);
+                assert_eq!(json["general"]["closeTabsWithWindow"], close_tabs);
+                assert_eq!(serde_json::from_value::<Settings>(json).unwrap().general, settings.general);
+            }
+        }
+    }
 
     #[test]
     fn cmake_profile_argument_arrays_round_trip() {

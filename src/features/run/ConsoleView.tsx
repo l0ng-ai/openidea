@@ -1,3 +1,4 @@
+import { writeClipboardText } from "@/platform/clipboard";
 import { copySelectionOnKeyDown } from "@/ui/selectableText";
 import {
   memo,
@@ -408,10 +409,10 @@ export function ConsoleView({
         icon: "copy",
         shortcut: formatBinding(hostBinding("Meta+C")),
         disabled: !selection,
-        run: () => void navigator.clipboard?.writeText(selection).catch(() => undefined),
+        run: () => void writeClipboardText(selection).catch(() => undefined),
       },
       { label: "Select All", shortcut: formatBinding(hostBinding("Meta+A")), run: selectAll },
-      { label: "Copy All", run: () => void navigator.clipboard?.writeText(model.text()).catch(() => undefined) },
+      { label: "Copy All", run: () => void writeClipboardText(model.text()).catch(() => undefined) },
       {
         label: "Find…",
         icon: "search",
