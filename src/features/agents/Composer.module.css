@@ -180,15 +180,21 @@
   color: var(--fg-muted);
 }
 .modelEffortPopup {
-  width: min(300px, calc(100vw - 24px));
-  padding: 4px 12px 12px;
+  width: min(340px, calc(100vw - 24px));
+  padding: 12px 0 6px;
+}
+.effortBlock {
+  padding: 0 12px 8px;
+}
+/* The list takes the height of its models; with many it scrolls inside the popup. */
+.modelEffortPopup .modelList {
+  max-height: 216px;
 }
 .effortHeader {
   display: flex;
   align-items: baseline;
   justify-content: space-between;
   gap: 12px;
-  margin-top: 12px;
 }
 .effortValue {
   color: var(--fg-strong);
