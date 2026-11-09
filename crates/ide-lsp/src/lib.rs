@@ -2952,6 +2952,64 @@ impl LspManager {
             .cloned()
     }
 
+    /// The binary archive behind a library document, never its displayed tab title.
+    pub fn library_archive(uri: &str) -> Option<PathBuf> {
+        if virtual_doc::scheme(uri) == "jar" {
+            return library_source::parse(uri).map(|e| e.jar);
+        }
+        virtual_doc::description(uri).filter(|p| p.ends_with(".jar") && Path::new(p).is_absolute()).map(PathBuf::from)
+    }
+
+    /// Open an attached archive at the declaration under the decompiled editor's caret.
+    pub async fn library_source_location(
+        &self,
+        uri: &str,
+        sources: PathBuf,
+        pos: Pos,
+        cancel: &CancellationToken,
+    ) -> IdeResult<Option<Location>> {
+        let previous = tokio::select! {
+            result = self.virtual_document(uri) => result?,
+            _ = cancel.cancelled() => return Err(IdeError::cancelled()),
+        };
+        let name = previous
+            .text
+            .lines()
+            .nth(pos.line as usize)
+            .and_then(|line| library_source::identifier_at(line, pos.col))
+            .map(str::to_owned);
+        let original = uri.to_owned();
+        let archive = sources.clone();
+        let found = tokio::task::spawn_blocking(move || {
+            library_source::source_in_archive(&original, &archive).map(|(uri, text)| {
+                let range = name.as_deref().map(|n| library_source::declaration_range(&text, n)).unwrap_or_default();
+                Location { path: uri.clone().into(), uri: Some(uri), range }
+            })
+        })
+        .await
+        .map_err(|e| IdeError::internal(e.to_string()))?;
+        if cancel.is_cancelled() {
+            return Err(IdeError::cancelled());
+        }
+        if found.is_some() {
+            if virtual_doc::scheme(uri) == "jdt" {
+                let result = self
+                    .jdtls_command_cancellable(
+                        &self.project_root,
+                        "java.project.updateSourceAttachment",
+                        vec![json!({ "classFileUri": uri, "attributes": { "sourceAttachmentPath": sources } })],
+                        cancel,
+                    )
+                    .await?;
+                if let Some(error) = result.get("errorMessage").and_then(Value::as_str).filter(|s| !s.is_empty()) {
+                    return Err(IdeError::unavailable(error));
+                }
+            }
+            self.virtual_docs.lock().remove(uri);
+        }
+        Ok(found)
+    }
+
     /// Contents of a virtual document, from the server that owns `uri`:
     /// `workspace/textDocumentContent` (LSP 3.18) when the server serves the
     /// scheme, jdtls' `java/classFileContents` for `jdt:` URIs. A `jar:` entry
