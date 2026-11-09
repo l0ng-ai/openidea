@@ -74,6 +74,33 @@ fn cli_config(root: &Path, configured: &str) -> IdeResult<Option<PathBuf>> {
     Ok(user_home().map(|p| p.join(".arduinoIDE/arduino-cli.yaml")).filter(|p| p.is_file()))
 }
 
+fn yaml_scalar(value: &str) -> &str {
+    let value = value.trim();
+    let mut chars = value.char_indices();
+    if let Some((_, quote @ ('\'' | '"'))) = chars.next() {
+        while let Some((index, c)) = chars.next() {
+            if quote == '"' && c == '\\' {
+                chars.next();
+            } else if c == quote {
+                if quote == '\'' && chars.as_str().starts_with('\'') {
+                    chars.next();
+                } else {
+                    return &value[1..index];
+                }
+            }
+        }
+        return &value[1..];
+    }
+    let mut whitespace = true;
+    for (index, c) in value.char_indices() {
+        if c == '#' && whitespace {
+            return value[..index].trim_end();
+        }
+        whitespace = c.is_whitespace();
+    }
+    value
+}
+
 /// Parses `sketch.yaml` without external YAML parser dependencies.
 fn yaml_board(text: &str) -> Option<String> {
     let mut default_fqbn = None;
@@ -89,7 +116,7 @@ fn yaml_board(text: &str) -> Option<String> {
         let indent = line.chars().take_while(|c| c.is_whitespace()).count();
         if let Some((k, v)) = trimmed.split_once(':') {
             let key = k.trim();
-            let val = v.trim().trim_matches(|c| c == '\'' || c == '"');
+            let val = yaml_scalar(v);
             if indent == 0 {
                 if key == "default_fqbn" && !val.is_empty() {
                     default_fqbn = Some(val.to_owned());
@@ -245,6 +272,45 @@ mod tests {
     fn parses_sketch_yaml_default_fqbn() {
         let yaml = "default_fqbn: arduino:avr:nano\ndefault_port: COM3\n";
         assert_eq!(yaml_board(yaml), Some("arduino:avr:nano".into()));
+    }
+
+    #[test]
+    fn sketch_yaml_scalar_comments_preserve_quoted_hashes() {
+        for (scalar, expected) in [
+            ("arduino:avr:uno # board", Some("arduino:avr:uno")),
+            ("arduino:avr:uno   # board", Some("arduino:avr:uno")),
+            ("arduino:avr:uno\t# board", Some("arduino:avr:uno")),
+            ("arduino:avr:uno#board", Some("arduino:avr:uno#board")),
+            ("'arduino:avr:uno # board'", Some("arduino:avr:uno # board")),
+            ("\"arduino:avr:uno # board\"", Some("arduino:avr:uno # board")),
+            ("'arduino:avr:uno # board' # comment", Some("arduino:avr:uno # board")),
+            ("\"arduino:avr:uno # board\" # comment", Some("arduino:avr:uno # board")),
+            (r#""arduino:avr:uno \" # board" # comment"#, Some(r#"arduino:avr:uno \" # board"#)),
+            ("'arduino:avr:uno '' # board' # comment", Some("arduino:avr:uno '' # board")),
+            ("# no board", None),
+        ] {
+            assert_eq!(yaml_board(&format!("default_fqbn: {scalar}\n")), expected.map(str::to_owned), "{scalar}");
+        }
+    }
+
+    #[test]
+    fn sketch_yaml_profile_comments_preserve_selection() {
+        let yaml = r#"
+default_profile: esp32 # selected profile
+profiles:
+  uno: # other profile
+    fqbn: arduino:avr:uno # other board
+  esp32: # selected profile
+    fqbn: esp32:esp32:esp32 # selected board
+"#;
+        assert_eq!(yaml_board(yaml), Some("esp32:esp32:esp32".into()));
+        let yaml = r#"
+default_profile: "esp32#profile" # selected profile
+profiles:
+  esp32#profile:
+    fqbn: 'esp32:esp32:esp32 # board' # selected board
+"#;
+        assert_eq!(yaml_board(yaml), Some("esp32:esp32:esp32 # board".into()));
     }
 
     #[test]
