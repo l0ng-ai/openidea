@@ -242,7 +242,7 @@ fn range_to_wit(r: &ide_core::Range) -> wit::Range {
 }
 
 impl StoreData {
-    fn require(&self, cap: Capability) -> Result<(), wit::Error> {
+    pub(crate) fn require(&self, cap: Capability) -> Result<(), wit::Error> {
         if self.granted.iter().any(|g| g.covers(&cap)) { Ok(()) } else { Err(wit::Error::Denied(cap.to_string())) }
     }
 

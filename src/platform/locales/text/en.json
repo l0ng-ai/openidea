@@ -678,5 +678,9 @@
   "Untagged Images": "Untagged Images",
   "Show Processes": "Show Processes",
   "Open Log in Editor": "Open Log in Editor",
-  "Open Container Log in Editor": "Open Container Log in Editor"
+  "Open Container Log in Editor": "Open Container Log in Editor",
+  "Annotations unavailable": "Annotations unavailable",
+  "Annotations stale": "Annotations stale",
+  "Loading conversation…": "Loading conversation…",
+  "Conversation unavailable": "Conversation unavailable"
 }
