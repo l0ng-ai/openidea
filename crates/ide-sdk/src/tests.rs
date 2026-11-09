@@ -1,6 +1,6 @@
 use crate::apply::{
     apply_to_run_configs, configure_server, jdtls_jdk, maven_command, maven_options, project_jdk, python_interpreter,
-    ruff_configuration, terminal_activation, tsdk, without_derived,
+    ruff_configuration, terminal_activation, tool_install_environment, tsdk, without_derived,
 };
 use crate::python::parse_pip_list;
 use crate::{bin_dir, exe, venv_of};
@@ -2245,4 +2245,26 @@ fn plugin_interpreter_targets_route_all_php_node_command_families() {
         crate::apply::apply_to_run_configs(std::slice::from_mut(&mut config), Path::new("/project"), &settings);
         assert_eq!(config.extras.target.as_deref(), Some(""));
     }
+}
+
+#[test]
+fn tool_installs_resolve_project_relative_sdks_and_leave_path_fallback_unconfigured() {
+    let tmp = tempfile::tempdir().unwrap();
+    let root = tmp.path();
+    let mut s = Settings::default();
+    let defaults = tool_install_environment(root, &s);
+    assert!(!defaults.commands.contains_key("go"));
+    assert!(!defaults.commands.contains_key("node"));
+    assert!(!defaults.commands.contains_key("python"));
+    assert!(!defaults.env.contains_key("GOROOT"));
+    s.languages.go.goroot = "go-sdk".into();
+    s.languages.node.interpreter = "node-sdk/bin/node".into();
+    s.languages.python.interpreter = "python-sdk/bin/python3.14".into();
+    s.languages.ruby.interpreter = "ruby-sdk/bin/ruby".into();
+    let runtime = tool_install_environment(root, &s);
+    assert_eq!(runtime.commands["go"], root.join("go-sdk/bin").join(if cfg!(windows) { "go.exe" } else { "go" }));
+    assert_eq!(runtime.env["GOROOT"], root.join("go-sdk").to_string_lossy());
+    assert_eq!(runtime.commands["node"], root.join("node-sdk/bin/node"));
+    assert_eq!(runtime.commands["python"], root.join("python-sdk/bin/python3.14"));
+    assert_eq!(runtime.commands["ruby"], root.join("ruby-sdk/bin/ruby"));
 }
