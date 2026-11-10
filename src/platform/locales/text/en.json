@@ -807,5 +807,10 @@
   "Toggle Boolean Cell": "Toggle Boolean Cell",
   "Toggle {name}": "Toggle {name}",
   "true": "true",
-  "false": "false"
+  "false": "false",
+  "bun-dap (Bun)": "Bun DAP",
+  "Bun": "Bun",
+  "Run a typescript or javascript file with Bun": "Run a typescript or javascript file with Bun",
+  "Working Dir": "Working Dir",
+  "Script (.ts .js)": "Script (.ts .js)"
 }

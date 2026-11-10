@@ -232,12 +232,19 @@ fn push_scripts(pkg: &Json, pm: &str, prefix: Option<&str>, cwd: Option<PathBuf>
     let Some(scripts) = pkg.get("scripts").and_then(Json::as_object) else { return };
     let mut names: Vec<&String> = scripts.keys().collect();
     names.sort();
+    let kind = match pm {
+        "bun" => "bun",
+        _ => "npm", // Keep everything else as "npm"
+    };
     for script in names {
+        let base_name = if kind == "bun" { format!("{pm} run") } else { format!("{pm} run {script}") };
         let (id, name) = match prefix {
-            Some(p) => (format!("npm:{p}:{script}"), format!("{p}: {pm} run {script}")),
-            None => (format!("npm:{script}"), format!("{pm} run {script}")),
+            Some(p) => (format!("{kind}:{p}:{script}"), format!("{p}: {base_name}")),
+            None => (format!("{kind}:{script}"), base_name),
         };
-        let mut c = config(id, name, "npm", pm, &["run", script]).in_dir(cwd.clone()).debug("js-debug");
+        let debugger = if kind == "bun" { "bun-dap" } else { "js-debug" };
+        let run_script = if kind == "bun" { "index.ts" } else { script };
+        let mut c = config(id, name, kind, pm, &["run", run_script]).in_dir(cwd.clone()).debug(debugger);
         c.extras.module = cwd.as_deref().map(ide_core::ipc_path::to_ipc);
         if is_test_script(script) {
             c = c.test();

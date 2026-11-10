@@ -55,7 +55,8 @@ fn npm_scripts_with_lockfile_package_manager() {
 fn package_manager_selection() {
     for (lock, pm) in [("yarn.lock", "yarn"), ("bun.lockb", "bun"), ("bun.lock", "bun"), ("package-lock.json", "npm")] {
         let dir = project(&[("package.json", r#"{"scripts":{"start":"node ."}}"#), (lock, "")]);
-        assert_eq!(find(&detect(dir.path()), "npm:start").command, pm, "{lock}");
+        let expected_id = if pm == "bun" { "bun:start" } else { "npm:start" };
+        assert_eq!(find(&detect(dir.path()), expected_id).command, pm, "{lock}");
     }
     let dir = project(&[("package.json", r#"{"packageManager":"yarn@4.1.0","scripts":{"start":"x"}}"#)]);
     assert_eq!(find(&detect(dir.path()), "npm:start").command, "yarn");
