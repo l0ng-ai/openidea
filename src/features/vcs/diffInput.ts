@@ -142,6 +142,16 @@ export async function openDiff(data: DiffData, opts: { preview?: boolean; focus?
 export const vcsDiffInFront = () => !workflowSettings().vcs.commit.nonModal;
 
 /**
+ * Double-click / Enter on a change: IDEA's "Show on Double-Click" — the Commit tool
+ * window opens the diff, Local Changes and the Commit dialog the source file. An
+ * explicit Diff / Source in the changes view's View Options overrides both.
+ */
+export const opensDiffOnActivate = () => {
+  const commit = workflowSettings().vcs.commit;
+  return commit.doubleClickOpensDiff ?? commit.nonModal;
+};
+
+/**
  * Diffs the user opens (changed files, a log entry's file, Show Diff, Shelf, compare
  * with a revision, Compare actions): the modal commit interface shows them in the front
  * window (#1863), the non-modal one keeps editor tabs. Passive previews, diffs embedded
