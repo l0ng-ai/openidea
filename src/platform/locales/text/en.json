@@ -225,7 +225,6 @@
   "Couldn't copy the reply": "Couldn't copy the reply",
   "Quote Reply": "Quote Reply",
   "Regenerate Response": "Regenerate Response",
-  "Branch Conversation from Here": "Branch Conversation from Here",
   "Couldn't regenerate the response": "Couldn't regenerate the response",
   "Reasoning": "Reasoning",
   "Branch '{name}'": "Branch '{name}'",
@@ -861,5 +860,9 @@
   "Sign In": "Sign In",
   "New Tasks": "New Tasks",
   "Coding Agents": "Coding Agents",
-  "Install coding agents and configure how they launch, chat and connect to the IDE.": "Install coding agents and configure how they launch, chat and connect to the IDE."
+  "Install coding agents and configure how they launch, chat and connect to the IDE.": "Install coding agents and configure how they launch, chat and connect to the IDE.",
+  "Fork Agent Task": "Fork Agent Task",
+  "Fork Task": "Fork Task",
+  "Fork from Here": "Fork from Here",
+  "Couldn't fork the task": "Couldn't fork the task"
 }

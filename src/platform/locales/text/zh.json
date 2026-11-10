@@ -3807,7 +3807,6 @@
   "Ready to Review": "待审阅",
   "Archived": "已归档",
   "Archive": "归档",
-  "Copy Agent Task to a New Task": "将 Agent 任务复制为新任务",
   "Delete Agent Task": "删除 Agent 任务",
   "Also remove its worktree folder": "同时删除它的 worktree 目录",
   "needs input": "等待输入",
@@ -5294,9 +5293,6 @@
   "Usage limit": "用量已达上限",
   "{provider} didn't start: {error}": "{provider} 未能启动：{error}",
   "resets {resetsMs}": "{resetsMs} 重置",
-  "Copy to a New Task": "复制为新任务",
-  "Couldn't copy the task": "无法复制任务",
-  "Copy to a New Task From Here": "从此处复制为新任务",
   "Run Again From Here": "从此处重新运行",
   "The messages after this one are replaced. Files the agent changed stay as they are.": "这条之后的消息会被替换。Agent 改动过的文件保持不变。",
   "Cancelling…": "正在取消…",
@@ -6692,7 +6688,6 @@
   "Couldn't copy the reply": "无法复制回复",
   "Quote Reply": "引用回复",
   "Regenerate Response": "重新生成回复",
-  "Branch Conversation from Here": "从此处创建分支对话",
   "Couldn't regenerate the response": "无法重新生成回复",
   "Reasoning": "思考过程",
   "Cannot copy the value": "无法复制该值",
@@ -7182,5 +7177,9 @@
   "Sign In": "登录",
   "New Tasks": "新任务",
   "Coding Agents": "编程 Agent",
-  "Install coding agents and configure how they launch, chat and connect to the IDE.": "安装编程 Agent，并配置其启动方式、聊天行为以及与 IDE 的连接。"
+  "Install coding agents and configure how they launch, chat and connect to the IDE.": "安装编程 Agent，并配置其启动方式、聊天行为以及与 IDE 的连接。",
+  "Fork Agent Task": "Fork Agent 任务",
+  "Fork Task": "Fork 任务",
+  "Fork from Here": "从此处 Fork",
+  "Couldn't fork the task": "无法 Fork 任务"
 }

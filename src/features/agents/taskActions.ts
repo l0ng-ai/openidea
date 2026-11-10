@@ -162,13 +162,13 @@ export const taskActions: Action[] = [
   },
   {
     id: "agents.forkTask",
-    title: "Copy Agent Task to a New Task",
+    title: "Fork Agent Task",
     category: "Agents",
     hidden: true,
     run: ({ arg }) => {
       const task = resolveTasks([arg])[0];
       if (task && canFork(task))
-        return forkTask(task.id, null).catch((e: unknown) => showError(tx("Couldn't copy the task"), String(e)));
+        return forkTask(task.id, null).catch((e: unknown) => showError(tx("Couldn't fork the task"), String(e)));
     },
   },
   {
@@ -218,7 +218,7 @@ export function taskMenu(tasks: AgentTask[]): MenuItem[] {
                 {
                   kind: "action",
                   action: "agents.forkTask",
-                  label: "Copy to a New Task",
+                  label: "Fork Task",
                   icon: "branch",
                   arg: task.id,
                   disabled: !canFork(task),

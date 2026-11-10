@@ -132,7 +132,7 @@ export const replyActions: Action[] = [
   },
   {
     id: "agents.forkReply",
-    title: "Branch Conversation from Here",
+    title: "Fork from Here",
     category: "Agents",
     icon: "branch",
     hidden: true,
@@ -140,7 +140,7 @@ export const replyActions: Action[] = [
       const resolved = resolveReply(arg);
       if (!resolved?.operations.fork) return;
       const { task, reply } = resolved;
-      return runReplyOperation(task.id, "Couldn't copy the task", () => forkTask(task.id, reply.turn + 1));
+      return runReplyOperation(task.id, "Couldn't fork the task", () => forkTask(task.id, reply.turn + 1));
     },
   },
 ];

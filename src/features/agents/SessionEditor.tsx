@@ -1380,8 +1380,8 @@ function UserMessage({
             <IconButton
               size="small"
               icon="branch"
-              title="Copy to a New Task From Here"
-              onClick={() => void forkTask(task.id, turn + 1).catch(failed("Couldn't copy the task"))}
+              title="Fork from Here"
+              onClick={() => void forkTask(task.id, turn + 1).catch(failed("Couldn't fork the task"))}
             />
           )}
         </MessageActions>
