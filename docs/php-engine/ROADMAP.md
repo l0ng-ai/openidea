@@ -874,7 +874,7 @@ The gaps that the follow-ups in `PROGRESS.md`, the review in `differential.md` a
 
   Run the comparison harness on the three corpora again. Hover must not drop below 98.1% or definition below 98.5%, and the new numbers go in `differential.md`. Tests: caret fixtures per case.
 
-- [ ] Phase 9.2.b: Inaccessible properties and the corpus rerun
+- [x] Phase 9.2.b: Inaccessible properties and the corpus rerun
       What 9.2 left (it did the closure parameters, the array flow, `$this` in anonymous classes and literal callable parameters):
   - **Inaccessible properties:** the magic `@property` wins for goto and hover when the real property isn't accessible from the caller (Symfony's `FileValidator` `$maxSize`, SimplePie's `$scheme`).
   - **Closures passed to forwarded static calls:** `Post::whereHas('x', fn ($q) …)` goes through `Model::__callStatic`, so no signature binds the closure's parameter when the relation isn't known (the builder's `whereHas` does).

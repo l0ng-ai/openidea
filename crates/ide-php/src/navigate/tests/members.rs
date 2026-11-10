@@ -220,3 +220,37 @@ fn doc_text_renders_phpdoc_as_markdown() {
     assert_eq!(hover::doc_comment_before(text, text.find("#[Attr]").unwrap() as u32), Some("/** Doc. */"));
     assert_eq!(hover::doc_comment_before(text, text.find("function g").unwrap() as u32), None);
 }
+
+/// Symfony's `File` constraint: a protected property with a `@property`
+/// tag of the same name, served by `__get` to code outside the class.
+const SIZED: &str = "<?php\nnamespace App;\n\n/**\n * @property int $maxSize\n */\nclass Sized\n{\n    /** In bytes or with a suffix. */\n    protected int|string|null $maxSize = null;\n\n    public function __get(string $name) { return 0; }\n\n    public function own(): void { echo $this->maxSize; }\n}\n\nclass Sub extends Sized\n{\n    public function sub(): void { echo $this->maxSize; }\n}\n";
+
+#[test]
+fn the_magic_property_wins_where_the_real_one_is_inaccessible() {
+    let mut project = Project::new(&[("src/Sized.php", SIZED)]);
+    let file = "src/Sized.php";
+    let tag = at(file, 4);
+    let real = at(file, 9);
+
+    // From outside the class: the `@property` tag, with its type.
+    let outside = "<?php\nnamespace App;\n\nfunction f(Sized $s): void { echo $s->max/*|*/Size; }\n";
+    assert_eq!(lines(project.definition("bin/run.php", outside)), tag, "goto from outside");
+    let text = project.hover("bin/run.php", outside).expect("a hover");
+    assert!(text.contains("public int $maxSize"), "the tag's type from outside: {text}");
+    let typed = "<?php\nnamespace App;\n\nfunction f(Sized $s): void { $v/*|*/ = $s->maxSize; }\n";
+    let text = project.hover("bin/run.php", typed).expect("a hover");
+    assert!(text.contains("int $v"), "the expression's type from outside: {text}");
+
+    // Inside the class and a subclass: the real property.
+    let inside = SIZED.replace("echo $this->maxSize; }\n}\n\nclass Sub", "echo $this->max/*|*/Size; }\n}\n\nclass Sub");
+    assert_eq!(lines(project.definition(file, &inside)), real, "goto inside the class");
+    let text = project.hover(file, &inside).expect("a hover");
+    assert!(text.contains("protected int|string|null $maxSize"), "the real property inside: {text}");
+    let sub = SIZED.replace("sub(): void { echo $this->maxSize;", "sub(): void { echo $this->max/*|*/Size;");
+    assert_eq!(lines(project.definition(file, &sub)), real, "goto inside a subclass");
+
+    // A public property keeps the real declaration everywhere.
+    let public = SIZED.replace("protected int|string|null", "public int|string|null");
+    let mut project = Project::new(&[("src/Sized.php", &public)]);
+    assert_eq!(lines(project.definition("bin/run.php", outside)), real, "a public property");
+}

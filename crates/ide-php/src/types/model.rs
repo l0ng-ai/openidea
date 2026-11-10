@@ -26,7 +26,10 @@
 //!    diamond counted once): methods and constants not yet present. An
 //!    interface's parents are its `extends`.
 //! 6. **Magic members:** `@method` and `@property` of the class, its traits,
-//!    its parents and its interfaces, for names no real member has.
+//!    its parents and its interfaces, for names no real member has. A
+//!    `@property` whose name a real property has is kept apart
+//!    ([`ClassModel::shadowed_magic`]) for callers that can't access the
+//!    real one.
 //! 7. **`@mixin`:** the public members of each mixin class (and of the
 //!    parents' mixins), for names nothing else has. In them `static` and
 //!    `$this` are the mixin, not the receiver.
@@ -316,6 +319,10 @@ pub struct ClassModel {
     pub properties: Members<ModelProperty>,
     /// Class constants and enum cases.
     pub constants: Members<ModelConstant>,
+    /// `@property` tags (the class's, its traits' and ancestors') whose name
+    /// a real property already has. They apply where that property isn't
+    /// accessible: [`ClassModel::property_from`].
+    pub shadowed_magic: Members<ModelProperty>,
 }
 
 impl ClassModel {
@@ -335,6 +342,34 @@ impl ClassModel {
     /// The property with this name (with or without `$`).
     pub fn property(&self, name: &str) -> Option<&ModelProperty> {
         self.properties.get(name)
+    }
+
+    /// The property with this name as code in class `scope` (`None` outside
+    /// any class) reaches it: the real one, unless it isn't accessible there
+    /// and a `@property` tag of the same name exists, which `__get`/`__set`
+    /// then serve (as Intelephense and PhpStorm resolve it).
+    pub fn property_from(&self, name: &str, scope: Option<&ClassModel>) -> Option<&ModelProperty> {
+        let property = self.property(name)?;
+        if property.origin != Origin::Magic
+            && !self.shadowed_magic.is_empty()
+            && !self.is_accessible(property, scope)
+            && let Some(magic) = self.shadowed_magic.get(name)
+        {
+            return Some(magic);
+        }
+        Some(property)
+    }
+
+    /// This model with the `@property` tag of `name` in place of the real
+    /// property when [`ClassModel::property_from`] picks it from `scope`.
+    pub fn seen_from(&self, name: &str, scope: Option<&ClassModel>) -> Option<ClassModel> {
+        let magic = self.property_from(name, scope)?;
+        if magic.origin != Origin::Magic || self.property(name)?.origin == Origin::Magic {
+            return None;
+        }
+        let mut model = self.clone();
+        model.properties.replace(magic.clone());
+        Some(model)
     }
 
     /// The class constant or enum case with this name.
@@ -399,6 +434,7 @@ pub(super) fn build(class: ClassLike, model: &mut dyn FnMut(&str) -> Option<Arc<
             methods: Members::new(true),
             properties: Members::new(false),
             constants: Members::new(false),
+            shadowed_magic: Members::new(false),
         },
         magic_methods: Vec::new(),
         magic_properties: Vec::new(),
@@ -529,14 +565,17 @@ pub(super) fn build(class: ClassLike, model: &mut dyn FnMut(&str) -> Option<Arc<
         b.model.methods.add(method);
     }
     for property in std::mem::take(&mut b.magic_properties) {
-        b.model.properties.add(property);
+        b.add_magic_property(property);
     }
     for ancestor in &ancestors {
         for method in ancestor.methods.iter().filter(|m| m.origin == Origin::Magic) {
             b.model.methods.add(method.clone());
         }
         for property in ancestor.properties.iter().filter(|p| p.origin == Origin::Magic) {
-            b.model.properties.add(property.clone());
+            b.add_magic_property(property.clone());
+        }
+        for property in ancestor.shadowed_magic.iter() {
+            b.add_magic_property(property.clone());
         }
     }
 
@@ -601,6 +640,20 @@ struct Builder {
 }
 
 impl Builder {
+    /// Adds a `@property` tag, or keeps it apart when a real property has
+    /// the name (a magic one already there wins).
+    fn add_magic_property(&mut self, property: ModelProperty) {
+        match self.model.properties.get(&property.name) {
+            None => {
+                self.model.properties.add(property);
+            }
+            Some(existing) if existing.origin != Origin::Magic => {
+                self.model.shadowed_magic.add(property);
+            }
+            Some(_) => {}
+        }
+    }
+
     fn traits(&mut self, class: &Arc<ClassLike>, model: &mut dyn FnMut(&str) -> Option<Arc<ClassModel>>) {
         let me = class.fqn.as_str();
         let rules: Vec<&TraitRule> = class.trait_uses.iter().flat_map(|trait_use| &trait_use.rules).collect();
@@ -677,6 +730,9 @@ impl Builder {
                         self.model.properties.add(copy);
                     }
                 }
+            }
+            for property in tr.shadowed_magic.iter() {
+                self.magic_properties.push(ModelProperty { info: into_class(&property.info), ..property.clone() });
             }
             for constant in tr.constants.iter() {
                 self.model.constants.add(ModelConstant { info: into_class(&constant.info), ..constant.clone() });

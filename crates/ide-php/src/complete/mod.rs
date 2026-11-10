@@ -724,6 +724,9 @@ impl<'e, 'r> Collector<'e, 'r> {
                 }
             }
             for property in model.properties.iter() {
+                // An inaccessible property is still offered through a
+                // `@property` tag of its name.
+                let Some(property) = model.property_from(&property.name, scope.as_deref()) else { continue };
                 if property.is_static != is_static || !model.is_accessible(property, scope.as_deref()) {
                     continue;
                 }

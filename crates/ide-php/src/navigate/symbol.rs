@@ -501,6 +501,7 @@ impl<'a> Lookup<'a, '_> {
             MemberKind::Property => self.resolver.property_type(receiver, name, context),
             MemberKind::Constant => self.resolver.class_constant_type(receiver, name, context),
         });
+        let scope = context.self_class.as_deref().and_then(|fqn| self.resolver.class_model(fqn));
         let decls: Vec<Decl> = self
             .resolver
             .class_models(receiver, context)
@@ -509,6 +510,15 @@ impl<'a> Lookup<'a, '_> {
                 MemberKind::Method => model.method(name).is_some(),
                 MemberKind::Property => model.property(name).is_some(),
                 MemberKind::Constant => model.constant(name).is_some(),
+            })
+            .map(|model| match kind {
+                // A `@property` tag over a property this caller can't
+                // access (`__get` serves it).
+                MemberKind::Property => match model.seen_from(name, scope.as_deref()) {
+                    Some(seen) => Arc::new(seen),
+                    None => model,
+                },
+                _ => model,
             })
             .map(|model| {
                 Decl::Member(Member {

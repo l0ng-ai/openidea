@@ -222,6 +222,16 @@ fn types_relation_closures_collections_and_factories() {
             "Post::query()->whereHas('nothing', fn ($q) => $q/*|*/);",
             "Illuminate\\Database\\Eloquent\\Builder<Illuminate\\Database\\Eloquent\\Model>".to_owned(),
         ),
+        // The same through `Model::__callStatic`, which no signature of
+        // the model binds: the builder's `whereHas` is used.
+        (
+            "Post::whereHas('nothing', fn ($q) => $q/*|*/);",
+            "Illuminate\\Database\\Eloquent\\Builder<Illuminate\\Database\\Eloquent\\Model>".to_owned(),
+        ),
+        (
+            "Post::whereHas('nothing', function ($q) { $q/*|*/; });",
+            "Illuminate\\Database\\Eloquent\\Builder<Illuminate\\Database\\Eloquent\\Model>".to_owned(),
+        ),
         ("Post::all()/*|*/;", collection("Post")),
         ("$user->posts()->get()/*|*/;", collection("Post")),
         ("Post::where('status', 'draft')->get()/*|*/;", collection("Post")),

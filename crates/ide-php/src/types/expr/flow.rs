@@ -43,9 +43,10 @@ use mago_syntax::cst::{
     Variable, While, WhileBody,
 };
 
-use super::{ExprTypes, Frame, MAX_SHAPE_FIELDS, TOP_LEVEL, falsy_removed, shape_key};
+use super::{ExprTypes, Frame, MAX_SHAPE_FIELDS, TOP_LEVEL, falsy_removed, is_closure_value, shape_key};
 use crate::summary::{AssertWhen, type_hint};
 use crate::types::ops::{Op, is_float, is_int, op_type};
+use crate::types::provider::MagicTarget;
 use crate::types::resolve::{Bindings, substitute};
 use crate::types::{Shape, ShapeField, ShapeKey, Signature, Type};
 
@@ -1251,9 +1252,43 @@ impl<'t, 'a, 'r> Builder<'t, 'a, 'r> {
         selector: &ClassLikeMemberSelector<'_>,
         arguments: &'a ArgumentList<'a>,
     ) -> Option<(Signature, Bindings)> {
-        let signature = self.types.method_signature(receiver, selector, self.frames)?;
+        let Some(signature) = self.types.method_signature(receiver, selector, self.frames) else {
+            return self.forwarded_signature(receiver, selector, arguments);
+        };
         let bindings = if needs_bindings(&signature, arguments) {
             self.types.method_call_bindings(receiver, selector, arguments, self.frames)
+        } else {
+            Bindings::new()
+        };
+        Some((signature, bindings))
+    }
+
+    /// The signature of the method a call `receiver` doesn't declare is
+    /// forwarded to through `__call`/`__callStatic`, as the type providers
+    /// know it (`Post::whereHas(…)` is the Eloquent builder's `whereHas`),
+    /// on the raw target class, so its templates take their fallbacks.
+    fn forwarded_signature(
+        &self,
+        receiver: &Type,
+        selector: &ClassLikeMemberSelector<'_>,
+        arguments: &'a ArgumentList<'a>,
+    ) -> Option<(Signature, Bindings)> {
+        let ClassLikeMemberSelector::Identifier(name) = selector else { return None };
+        if arguments.arguments.iter().all(|argument| !is_closure_value(argument_value(argument))) {
+            return None;
+        }
+        let name = String::from_utf8_lossy(name.value);
+        let resolver = self.types.resolver;
+        let context = self.types.context(self.frames);
+        let member = resolver.providers().magic_member(receiver, &name, true, resolver, &context)?;
+        let MagicTarget::Method { class, method } = &member.target else { return None };
+        let target = Type::named(class);
+        let params = resolver.method_params_on(&target, method, &context)?;
+        let return_type = resolver.method_return(receiver, &name, &context);
+        let signature = Signature { params, return_type: Some(return_type) };
+        let bindings = if needs_bindings(&signature, arguments) {
+            let args = || self.types.template_args(arguments, self.frames);
+            resolver.method_call_bindings(&target, method, &args, &context)
         } else {
             Bindings::new()
         };

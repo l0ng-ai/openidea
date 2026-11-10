@@ -33,16 +33,18 @@ Raw agreement is what the harness computes. "Matches or beats" adds the differen
 | ----------------- | -------------- | ----: | -----: | ----------------: | ----------: | ------------: | -------------------------------------------------------------------------------: |
 | php-app           | definition     |   157 |      0 |                 0 |           1 |         99.4% |                                                                   158/158 = 100% |
 | php-app           | hover          |   156 |      1 |                 0 |           1 |         98.7% |                                                                  157/158 = 99.4% |
-| laravel-framework | definition     |   159 |      0 |                 1 |           2 |         98.1% |                                                                  161/162 = 99.4% |
-| laravel-framework | hover          |   158 |      1 |                 2 |           2 |         96.9% |                                                                  161/163 = 98.8% |
-| symfony           | definition     |   163 |      3 |                 0 |           3 |         96.4% |                                                                  167/169 = 98.8% |
-| symfony           | hover          |   163 |      3 |                 0 |           3 |         96.4% |                                                                  167/169 = 98.8% |
-| wordpress         | definition     |   191 |      5 |                 0 |           0 |         97.4% | 191/196 = 97.4% (194/196 = 99.0% counting the variable-definition design choice) |
-| wordpress         | hover          |   187 |      9 |                 0 |           0 |         95.4% |                                                                  190/196 = 96.9% |
-| **corpora**       | **definition** |   513 |      8 |                 1 |           5 |         97.3% |                                                              519/527 = **98.5%** |
-| **corpora**       | **hover**      |   508 |     13 |                 2 |           5 |         96.2% |                                                              518/528 = **98.1%** |
+| laravel-framework | definition     |   160 |      0 |                 0 |           6 |         96.4% |                                                                   166/166 = 100% |
+| laravel-framework | hover          |   158 |      2 |                 1 |           6 |         94.6% |                                                                   167/167 = 100% |
+| symfony           | definition     |   164 |      2 |                 0 |           3 |         97.0% |                                                                  168/169 = 99.4% |
+| symfony           | hover          |   165 |      1 |                 0 |           3 |         97.6% |                                                                   169/169 = 100% |
+| wordpress         | definition     |   192 |      4 |                 0 |           0 |         98.0% | 192/196 = 98.0% (195/196 = 99.5% counting the variable-definition design choice) |
+| wordpress         | hover          |   190 |      6 |                 0 |           0 |         96.9% |                                                                  194/196 = 99.0% |
+| **corpora**       | **definition** |   516 |      6 |                 0 |           9 |         97.2% |                                                              526/531 = **99.1%** |
+| **corpora**       | **hover**      |   513 |      9 |                 1 |           9 |         96.4% |                                                              530/532 = **99.6%** |
 
-Both reach the 98% bar over the corpora. Phase 6.2 left hover at 96.8%; phase 6.2.b closed seven of its gaps (the fixes are listed below) and reran the corpora with the same seed. The remaining gaps are listed under Follow-ups.
+The corpora rows are phase 9.2.b's rerun (2026-11-10, same seed, corpus tags and Intelephense version); the php-app rows are phase 6.2.b's. Both stay above the bars the roadmap sets (definition 98.5%, hover 98.1%). The sampled positions are not all phase 6.2.b's, because a corpus's candidate positions depend on the harness and engine of the day. Some gaps listed there were not sampled this time (Symfony's `FileValidator` `$maxSize`, SimplePie's `$scheme`, Laravel's `AuthGuardTest` destructuring and `EloquentCursorPaginateTest` closure parameter); caret fixtures cover them instead. Raw agreement is lower on Laravel because the engine now answers more positions Intelephense leaves empty (cast attributes, forwarded builder calls); each is checked by hand below.
+
+Phase 6.2 left hover at 96.8%; phase 6.2.b closed seven of its gaps, and phases 9.2 and 9.2.b closed more (the fixes are listed below). The remaining gaps are listed under Follow-ups.
 
 Before phase 6.2 the hover comparison was a text comparison, so nothing could agree. The first run with the structural comparison gave 92.6%, 93.5% and 77.6% hover agreement on laravel, symfony and WordPress. The engine fixes of phase 6.2 brought those to 95.7%, 96.4% and 92.9%, and those of phase 6.2.b to 96.9%, 96.4% and 95.4%.
 
@@ -68,51 +70,54 @@ Before phase 6.2 the hover comparison was a text comparison, so nothing could ag
 - **`match (true)`.** Each arm sees its conditions true and the earlier arms' false.
 - **By-reference arguments** keep the variable's type when it already fits the declared parameter type (`escape(string|array &$data)` on an `array`); literals and shapes still take the declared type, as `preg_match()`'s `$matches` does.
 
+## Engine fixes made in phases 9.2 and 9.2.b
+
+- **Closure parameters from a method's own templates.** In `whereHas('posts', fn ($q) …)`, the `TRelatedModel` of the expected `Closure(Builder<TRelatedModel>)` is bound to its bound, or to the relation's model when the provider knows it. A call forwarded through `__call`/`__callStatic` (`Post::whereHas(…)` goes through `Model::__callStatic`) uses the signature of the method the providers forward it to.
+- **Array flow:** by-reference aliases (`$x = &$a['k']`), `foreach` over elements written earlier, shapes of returned array literals through destructuring, and `reset()`/`end()`-style element functions.
+- **`$this` in anonymous classes** and **literal types in callable signatures** (`callable('out'|'err', string)`).
+- **Inaccessible properties.** When the caller can't access the real property and a `@property` tag of the same name exists (served by `__get`/`__set`), goto, hover, completion and the expression's type use the tag (`ClassModel::property_from`). Inside the class and its subclasses, the real property is used.
+
 ## Review of the remaining differences
 
 Legend: **E** means the engine's answer is right and Intelephense's is missing or wrong. **I** means Intelephense is right or more precise: an engine gap. **D** means a design difference where neither is wrong.
 
 ### laravel-framework
 
-| Position                                                           | Query | Intelephense                                 | Engine                         | Verdict                                                                                        |
-| ------------------------------------------------------------------ | ----- | -------------------------------------------- | ------------------------------ | ---------------------------------------------------------------------------------------------- |
-| `src/Illuminate/Session/Console/SessionTableCommand.php:10:15`     | hover | `unset $name`                                | —                              | E: an attribute's named argument; Intelephense's text is wrong                                 |
-| `tests/Auth/AuthGuardTest.php:47:56`                               | both  | `SessionGuard::getName` and `Store::getName` | —                              | I: the shape of a returned array literal is lost through `[$guard, …] = $this->getRealGuard()` |
-| `tests/Integration/Database/EloquentCursorPaginateTest.php:118:68` | hover | `Builder<Model> $query`                      | `mixed`                        | I: closure parameter from the expected `Closure(Builder): mixed`                               |
-| `tests/Queue/QueuePauseResumeTest.php:155:46`                      | both  | —                                            | `QueueManager::getApplication` | E                                                                                              |
-| `tests/Support/SupportFacadesHttpTest.php:79:42`                   | both  | —                                            | `Container::make`              | E                                                                                              |
+| Position                                                               | Query | Intelephense  | Engine                                        | Verdict                                                                   |
+| ---------------------------------------------------------------------- | ----- | ------------- | --------------------------------------------- | ------------------------------------------------------------------------- |
+| `src/Illuminate/Session/Console/SessionTableCommand.php:10:15`         | hover | `unset $name` | —                                             | E: an attribute's named argument; Intelephense's text is wrong            |
+| `tests/Database/DatabaseEloquentModelTest.php:3171:23`, `:3189:29`     | both  | —             | the `json` and `json:unicode` cast attributes | E: Eloquent attributes from the model's casts                             |
+| `tests/Database/DatabaseEloquentSoftDeletesIntegrationTest.php:852:86` | both  | —             | `BuildsQueries::first`                        | E: `SoftDeletesTestUser::where(…)->first()` through the forwarded builder |
+| `tests/Integration/Database/EloquentHasManyThroughTest.php:270:13`     | hover | `mixed`       | `Model`                                       | E: `updateOrCreate()` on the relation                                     |
+| `tests/Integration/Database/EloquentModelHashedCastingTest.php:65:31`  | hover | `mixed`       | `HashedCast`                                  | E: `HashedCast::create([…])`                                              |
+| `tests/Integration/Queue/ModelSerializationTest.php:231:33`            | both  | —             | `Builder::create`                             | E                                                                         |
+| `tests/Queue/QueuePauseResumeTest.php:155:46`                          | both  | —             | `QueueManager::getApplication`                | E                                                                         |
+| `tests/Support/SupportFacadesHttpTest.php:79:42`                       | both  | —             | `Container::make`                             | E                                                                         |
 
 ### symfony
 
-| Position                                                  | Query      | Intelephense                     | Engine                                         | Verdict                                                                                            |
-| --------------------------------------------------------- | ---------- | -------------------------------- | ---------------------------------------------- | -------------------------------------------------------------------------------------------------- |
-| `…/SecretsGenerateKeysCommandTest.php:166:23`             | hover      | `?string $dir`                   | `mixed`                                        | I: `$this->prop` inside an anonymous class                                                         |
-| `src/Symfony/Component/Cache/CacheItem.php:188:34`        | both       | —                                | `ValueWrapper`'s `$value` (class named `\xA9`) | E                                                                                                  |
-| `…/Cache/Traits/RedisClusterProxy.php:737:41`, `:1142:77` | both       | —                                | `RedisCluster` stub                            | E: Intelephense has no redis stubs by default                                                      |
-| `…/Builder/ArrayNodeDefinition.php:483:15`                | definition | this assignment                  | the first assignment                           | D: the engine goes to a variable's first assignment, as PhpStorm does                              |
-| `src/Symfony/Component/Process/Process.php:1376:33`       | definition | the method parameter             | the closure's `use ($callback)`                | E: inside the closure the variable is the capture                                                  |
-| `src/Symfony/Component/Process/Process.php:1376:33`       | hover      | `callable('out'\|'err', string)` | `callable(string, string)`                     | I: literal strings widened inside a callable signature                                             |
-| `…/Validator/Constraints/FileValidator.php:55:65`         | definition | `@property int $maxSize`         | `protected $maxSize`                           | I: from outside the class the protected property is inaccessible, so the magic `@property` applies |
-| `src/Symfony/Component/Workflow/Workflow.php:373:30`      | hover      | `mixed $arc`                     | `Arc\|string`                                  | E                                                                                                  |
+| Position                                                  | Query      | Intelephense         | Engine                                         | Verdict                                                               |
+| --------------------------------------------------------- | ---------- | -------------------- | ---------------------------------------------- | --------------------------------------------------------------------- |
+| `src/Symfony/Component/Cache/CacheItem.php:188:34`        | both       | —                    | `ValueWrapper`'s `$value` (class named `\xA9`) | E                                                                     |
+| `…/Cache/Traits/RedisClusterProxy.php:737:41`, `:1142:77` | both       | —                    | `RedisCluster` stub                            | E: Intelephense has no redis stubs by default                         |
+| `…/Builder/ArrayNodeDefinition.php:483:15`                | definition | this assignment      | the first assignment                           | D: the engine goes to a variable's first assignment, as PhpStorm does |
+| `src/Symfony/Component/Process/Process.php:1376:33`       | definition | the method parameter | the closure's `use ($callback)`                | E: inside the closure the variable is the capture                     |
+| `src/Symfony/Component/Workflow/Workflow.php:373:30`      | hover      | `mixed $arc`         | `Arc\|string`                                  | E                                                                     |
 
 ### wordpress
 
-| Position                                                   | Query      | Intelephense                | Engine               | Verdict                                                        |
-| ---------------------------------------------------------- | ---------- | --------------------------- | -------------------- | -------------------------------------------------------------- |
-| `wp-admin/includes/ajax-actions.php:4739:14`               | hover      | `array\|false`              | `mixed`              | I: `reset()`'s template through a by-reference array parameter |
-| `wp-admin/includes/image.php:118:38`                       | hover      | `mixed`                     | `int`                | E                                                              |
-| `wp-admin/includes/update.php:889:5`                       | hover      | `?string`                   | `string`             | E: both branches assign strings (`sprintf()`, `__()`)          |
-| `wp-admin/user-new.php:218:9`                              | definition | this assignment             | the first assignment | D                                                              |
-| `wp-includes/ID3/module.audio-video.asf.php:1350:60`       | hover      | a shape                     | `mixed`              | I: by-reference alias `$x = &$a['k']`                          |
-| `wp-includes/ID3/module.audio-video.quicktime.php:1974:15` | definition | the `foreach`               | the first assignment | D                                                              |
-| `wp-includes/ID3/module.audio-video.quicktime.php:1974:15` | hover      | `int\|string`               | `mixed`              | I: `foreach` over a nested array element                       |
-| `wp-includes/ID3/module.audio-video.riff.php:700:22`       | hover      | `array{raw: array}`         | `mixed`              | I: by-reference alias                                          |
-| `wp-includes/Requests/src/Cookie.php:289:31`               | hover      | `int\|string`               | `mixed`              | I: `foreach` keys over an untyped array property               |
-| `wp-includes/SimplePie/src/Misc.php:224:43`                | definition | `@property ?string $scheme` | `protected $scheme`  | I: as `maxSize` above                                          |
-| `wp-includes/class-wp-list-util.php:274:34`                | hover      | `int`                       | `int\|string`        | I                                                              |
-| `wp-includes/comment.php:699:18`                           | definition | built-in `$_COOKIE`         | a local write        | I: superglobals should go to the stubs                         |
-| `wp-login.php:595:10`                                      | definition | this assignment             | the first assignment | D                                                              |
-| `wp-login.php:595:10`                                      | hover      | `?string`                   | `string`             | E: `admin_url()` is documented `@return string`                |
+| Position                                                   | Query      | Intelephense        | Engine               | Verdict                                                            |
+| ---------------------------------------------------------- | ---------- | ------------------- | -------------------- | ------------------------------------------------------------------ |
+| `wp-admin/includes/image.php:118:38`                       | hover      | `mixed`             | `int`                | E                                                                  |
+| `wp-admin/includes/update.php:889:5`                       | hover      | `?string`           | `string`             | E: both branches assign strings (`sprintf()`, `__()`)              |
+| `wp-admin/user-new.php:218:9`                              | definition | this assignment     | the first assignment | D                                                                  |
+| `wp-includes/ID3/module.audio-video.quicktime.php:1974:15` | definition | the `foreach`       | the first assignment | D                                                                  |
+| `wp-includes/ID3/module.audio-video.quicktime.php:1974:15` | hover      | `int\|string`       | `non-negative-int`   | E: the keys of `$a['gps_toc']`, filled by `[] =` after `= array()` |
+| `wp-includes/Requests/src/Cookie.php:289:31`               | hover      | `int\|string`       | `mixed`              | I: `foreach` keys over an untyped array property                   |
+| `wp-includes/class-wp-list-util.php:274:34`                | hover      | `int`               | `int\|string`        | I                                                                  |
+| `wp-includes/comment.php:699:18`                           | definition | built-in `$_COOKIE` | a local write        | I: superglobals should go to the stubs                             |
+| `wp-login.php:595:10`                                      | definition | this assignment     | the first assignment | D                                                                  |
+| `wp-login.php:595:10`                                      | hover      | `?string`           | `string`             | E: `admin_url()` is documented `@return string`                    |
 
 ### php-app
 
@@ -123,14 +128,9 @@ Legend: **E** means the engine's answer is right and Intelephense's is missing o
 
 ## Follow-ups
 
-The hover gaps left, by how many samples each would fix:
+The gaps left after phase 9.2.b, by how many samples each would fix:
 
-1. Array flow:
-   - by-reference aliases (`$x = &$a['k']`), two WordPress samples;
-   - `foreach` over array elements written earlier (`$a['k'] = array(); foreach ($a['k'] as $key => …)`);
-   - shapes of returned array literals through destructuring (`[$guard, …] = $this->getRealGuard()`);
-   - templates bound through by-reference array parameters (`reset()`, `end()`: PhpStorm's stubs mark these `@meta`).
-2. Closure parameters whose expected type names a method template (`whereHas('posts', function ($query) …)` expects `Closure(Builder<TRelatedModel>)`): bind the template to its bound.
-3. Members of anonymous classes for `$this->…`; literal types inside callable signatures; `foreach` keys over `ArrayAccess&IteratorAggregate|array` unions.
-4. The magic `@property` wins when the real property isn't accessible from the caller, for goto and hover (two definition samples). Superglobal definitions going to the stubs.
-5. Decide whether variable definitions should go to the nearest reaching assignment (Intelephense) or keep the first one (PhpStorm). Five samples are this design difference; the engine keeps PhpStorm's behaviour.
+1. `foreach` keys over an untyped array property (`Cookie.php`), and over `ArrayAccess&IteratorAggregate|array` unions.
+2. A narrower key type where Intelephense has one (`class-wp-list-util.php`: `int` against `int|string`).
+3. Superglobal definitions going to the stubs.
+4. Decide whether variable definitions should go to the nearest reaching assignment (Intelephense) or keep the first one (PhpStorm). Four samples are this design difference; the engine keeps PhpStorm's behaviour.

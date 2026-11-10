@@ -51,7 +51,9 @@ use std::sync::Arc;
 
 use parking_lot::Mutex;
 
-use super::model::{self, ClassModel, EnumMethod, EnumProperty, MethodSource, ModelMethod, PropertySource};
+use super::model::{
+    self, ClassModel, EnumMethod, EnumProperty, MethodSource, ModelMethod, ModelProperty, Origin, PropertySource,
+};
 use super::provider::TypeProviders;
 use super::{Hierarchy, LazyType, Relative, SignatureParam, Type};
 use crate::meta::PhpStormMeta;
@@ -175,6 +177,9 @@ enum Key {
     Method(String, String),
     /// Lower-case class, property name as declared.
     Property(String, String),
+    /// A shadowed `@property` tag, for callers that can't access the real
+    /// property: lower-case class, property name.
+    MagicProperty(String, String),
     /// Lower-case class, constant name as declared.
     ClassConstant(String, String),
     /// Not a declaration: marks a chain cut by [`MAX_DEPTH`], so nothing
@@ -492,7 +497,7 @@ impl<'a> Resolver<'a> {
 
     /// The type of `$receiver->name` / `Receiver::$name` (name without `$`).
     pub fn property_type(&self, receiver: &Type, name: &str, context: &Context) -> Type {
-        let ty = self.on_members(receiver, context, &mut |receiver| self.property_at(receiver, name, 0));
+        let ty = self.on_members(receiver, context, &mut |receiver| self.property_at(receiver, name, context, 0));
         self.bind(&ty, context)
     }
 
@@ -612,7 +617,7 @@ impl<'a> Resolver<'a> {
             }
             LazyType::Property { receiver, name } => {
                 let receiver = self.lazy(receiver, context, next);
-                self.on_members(&receiver, context, &mut |receiver| self.property_at(receiver, name, next))
+                self.on_members(&receiver, context, &mut |receiver| self.property_at(receiver, name, context, next))
             }
             LazyType::ClassConstant { class, name } => {
                 let class = self.lazy(class, context, next);
@@ -867,13 +872,23 @@ impl<'a> Resolver<'a> {
             })
     }
 
-    fn property_at(&self, receiver: &Receiver<'_>, name: &str, depth: usize) -> Option<Type> {
+    /// The type of property `name` on `receiver`, as code in `scope`'s
+    /// class reaches it ([`ClassModel::property_from`]).
+    fn property_at(&self, receiver: &Receiver<'_>, name: &str, scope: &Context, depth: usize) -> Option<Type> {
         let name = name.trim_start_matches('$');
         let class = receiver.class;
-        let key = Key::Property(class.to_ascii_lowercase(), name.to_owned());
+        let magic = self.magic_wins(class, name, scope);
+        let key = if magic {
+            Key::MagicProperty(class.to_ascii_lowercase(), name.to_owned())
+        } else {
+            Key::Property(class.to_ascii_lowercase(), name.to_owned())
+        };
+        fn pick<'m>(model: &'m ClassModel, name: &str, magic: bool) -> Option<&'m ModelProperty> {
+            if magic { model.shadowed_magic.get(name) } else { model.property(name) }
+        }
         let mut ty = self.cached(key, || {
             let model = self.class_model(class)?;
-            let Some(property) = model.property(name) else {
+            let Some(property) = pick(&model, name, magic) else {
                 // Not declared: what a type provider says (Eloquent
                 // relation properties).
                 let ty = self.providers.magic_property(model.fqn(), name, self)?;
@@ -907,10 +922,22 @@ impl<'a> Resolver<'a> {
         })?;
         if is_generic(&ty) {
             let model = self.class_model(class)?;
-            let property = model.property(name)?;
+            let property = pick(&model, name, magic)?;
             ty = substitute(&ty, &self.receiver_bindings(receiver, &property.declaring));
         }
         Some(bind_static(&ty, receiver.this))
+    }
+
+    /// True when a `@property` tag shadowed by a real property of `class`
+    /// applies from `scope`, the real one being inaccessible there.
+    fn magic_wins(&self, class: &str, name: &str, scope: &Context) -> bool {
+        let Some(model) = self.class_model(class) else { return false };
+        if model.shadowed_magic.get(name).is_none() {
+            return false;
+        }
+        let scope = scope.self_class.as_deref().and_then(|fqn| self.class_model(fqn));
+        model.property_from(name, scope.as_deref()).is_some_and(|property| property.origin == Origin::Magic)
+            && model.property(name).is_some_and(|property| property.origin != Origin::Magic)
     }
 
     fn class_constant_at(&self, receiver: &Receiver<'_>, name: &str, depth: usize) -> Option<Type> {

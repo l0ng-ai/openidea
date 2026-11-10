@@ -924,9 +924,11 @@ impl<'a> Scan<'a, '_> {
             return;
         }
         let models = self.resolver.class_models(&receiver, &context);
+        let scope = context.self_class.as_deref().and_then(|fqn| self.resolver.class_model(fqn));
         let mut chosen = None;
         for model in &models {
-            let Some(property) = model.property(&name) else { return };
+            // A `@property` tag over an inaccessible property has no native type.
+            let Some(property) = model.property_from(&name, scope.as_deref()) else { return };
             let Some(declared) = property.declared() else { return };
             let Some(hint) = &declared.type_hint else { return };
             if declared.has_hooks {
