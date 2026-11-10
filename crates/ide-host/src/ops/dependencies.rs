@@ -1,7 +1,7 @@
 //! Repository version lookups for manifest inspections and completion.
 use crate::{Host, rpc::Dispatcher};
 use ide_core::{CancellationToken, DocId, IdeError, IdeResult, RequestId};
-use ide_workspace::dependencies::{DependencyVersionSource, DependencyVersions, cargo, go};
+use ide_workspace::dependencies::{DependencyVersionSource, DependencyVersions, cargo, go, npm};
 use std::collections::BTreeMap;
 use std::hash::{DefaultHasher, Hash, Hasher};
 use std::path::{Path, PathBuf};
@@ -22,6 +22,31 @@ impl DependencyVersionSource for CratesIo {
             cancel,
         )?;
         cargo::parse_index(&text).ok_or_else(|| IdeError::internal("invalid sparse index"))
+    }
+}
+
+struct NpmRegistry;
+impl DependencyVersionSource for NpmRegistry {
+    fn id(&self) -> &'static str {
+        "npm"
+    }
+
+    /// Scoped names (`@scope/name`) aren't file-name safe.
+    fn cache_key(&self, package: &str) -> Option<String> {
+        let mut hash = DefaultHasher::new();
+        package.hash(&mut hash);
+        Some(format!("{}-{:016x}", self.id(), hash.finish()))
+    }
+
+    fn fetch(&self, package: &str, cancel: &CancellationToken) -> IdeResult<Vec<String>> {
+        let path = npm::registry_path(package).ok_or_else(|| IdeError::internal("invalid package name"))?;
+        let search_path = std::env::var_os("PATH").unwrap_or_default();
+        // The abbreviated metadata: the full document of a large package runs to tens of megabytes.
+        let text = ide_tools::Http::new(&search_path)?
+            .https_only()
+            .accept("application/vnd.npm.install-v1+json")
+            .get_text_limited(&format!("https://registry.npmjs.org/{path}"), Some(32 * 1024 * 1024), cancel)?;
+        npm::registry_versions(&text).ok_or_else(|| IdeError::internal("invalid registry metadata"))
     }
 }
 
@@ -122,6 +147,13 @@ pub async fn dependency_versions(
                 let versions = cache.versions(&source, &dependency.package, &cancel)?;
                 return Ok(vec![DependencyVersions { dependency, versions, update: None }]);
             }
+            if snap.path.file_name().is_some_and(|name| name == "package.json") {
+                let Some(dependency) = offset.and_then(|offset| npm::dependency_at(&snap.text, offset)) else {
+                    return Ok(Vec::new());
+                };
+                let versions = cache.versions(&NpmRegistry, &dependency.package, &cancel)?;
+                return Ok(vec![DependencyVersions { dependency, versions, update: None }]);
+            }
             if snap.path.file_name().is_none_or(|name| name != "Cargo.toml") {
                 return Ok(Vec::new());
             }
@@ -206,6 +238,53 @@ mod tests {
         std::fs::write(&other, text).unwrap();
         let info = project.documents.open(&other).unwrap();
         assert!(dependency_versions(&host, "main", info.id, None, RequestId(414)).await.unwrap().is_empty());
+        host.close_project("main");
+    }
+
+    struct CachedNpm;
+    impl DependencyVersionSource for CachedNpm {
+        fn id(&self) -> &'static str {
+            "npm"
+        }
+        fn cache_key(&self, package: &str) -> Option<String> {
+            NpmRegistry.cache_key(package)
+        }
+        fn fetch(&self, _: &str, _: &CancellationToken) -> IdeResult<Vec<String>> {
+            Ok(vec!["20.11.0".into(), "18.19.3".into()])
+        }
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn package_json_completes_the_version_at_the_cursor() {
+        let temp = tempfile::tempdir().unwrap();
+        let base = dunce::canonicalize(temp.path()).unwrap();
+        let root = base.join("project");
+        std::fs::create_dir(&root).unwrap();
+        let text = "{\n  \"devDependencies\": { \"@types/node\": \"^20\" }\n}\n";
+        let path = root.join("package.json");
+        std::fs::write(&path, text).unwrap();
+        let host = Host::new(HostConfig {
+            config_dir: base.join("config"),
+            data_dir: base.join("data"),
+            local_data_dir: base.join("local"),
+            languages: Arc::new(ide_language::LanguageRegistry::load(None).unwrap()),
+            syntax: Arc::default(),
+            sink_for: Box::new(|_| Arc::new(|_| {})),
+            owner: |w| w,
+            runtime: tokio::runtime::Handle::current(),
+            project_environment: false,
+        });
+        let project = host.open_project("main", &root).unwrap();
+        let info = project.documents.open(&path).unwrap();
+        host.dependency_versions.versions(&CachedNpm, "@types/node", &CancellationToken::new()).unwrap();
+        let offset = text.find("^20").unwrap() as u32 + 2;
+        let found = dependency_versions(&host, "main", info.id, Some(offset), RequestId(420)).await.unwrap();
+        assert_eq!(found.len(), 1);
+        assert_eq!(found[0].dependency.package, "@types/node");
+        assert_eq!(found[0].versions, ["20.11.0", "18.19.3"]);
+        // Inspections (no offset) and positions outside a version ask nothing.
+        assert!(dependency_versions(&host, "main", info.id, None, RequestId(421)).await.unwrap().is_empty());
+        assert!(dependency_versions(&host, "main", info.id, Some(2), RequestId(422)).await.unwrap().is_empty());
         host.close_project("main");
     }
 }
