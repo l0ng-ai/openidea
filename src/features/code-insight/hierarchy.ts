@@ -73,6 +73,12 @@ export function resetHierarchy() {
   }));
 }
 
+/** Closes the hierarchy's content tab; with no content left the tool window hides. */
+export function closeHierarchy() {
+  resetHierarchy();
+  toolWindowService().hide("hierarchy");
+}
+
 /** The empty-result line of the hierarchy tree. */
 export function noneFoundLabel(mode: HierarchyMode, direction: HierarchyDirection): string {
   if (mode === "call") return direction === "incoming" ? tx`— no callers found` : tx`— no callees found`;
