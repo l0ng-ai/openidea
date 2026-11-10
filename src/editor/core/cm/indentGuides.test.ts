@@ -88,7 +88,7 @@ describe("rainbow indent guides", () => {
     expect(guideVars(1, 4, true)).toBeNull();
     expect(guideVars(3, 4, true)).toEqual({
       images: "var(--openidea-guide-1), var(--openidea-guide-2)",
-      positions: "calc(6px + 4ch) 0, calc(6px + 8ch) 0",
+      positions: "calc(2.5px + 4ch) 0, calc(2.5px + 8ch) 0",
     });
     const deep = guideVars(8, 2, true)!;
     expect(deep.images.split(", ")).toEqual([1, 2, 3, 4, 5, 1, 2].map((n) => `var(--openidea-guide-${n})`));
@@ -108,7 +108,7 @@ describe("rainbow indent guides", () => {
     expect(images(line(v, 2))).toBe("var(--openidea-guide-1)");
     expect(images(line(v, 3))).toBe("var(--openidea-guide-1), var(--openidea-guide-2)");
     expect(images(line(v, 4))).toBe("var(--openidea-guide-1), var(--openidea-guide-2)");
-    expect(positions(line(v, 4))).toBe("calc(6px + 4ch) 0, calc(6px + 8ch) 0");
+    expect(positions(line(v, 4))).toBe("calc(2.5px + 4ch) 0, calc(2.5px + 8ch) 0");
     expect(images(line(v, 6))).toBe("var(--openidea-guide-1)");
   });
 
@@ -122,7 +122,7 @@ describe("rainbow indent guides", () => {
     spaces.destroy();
     const tabs = mount(body("\t"), [EditorState.tabSize.of(4)], rainbowIndentGuides, "\t");
     expect(images(deepest(tabs))).toBe(expected);
-    expect(positions(deepest(tabs)).split(", ")[1]).toBe("calc(6px + 8ch) 0");
+    expect(positions(deepest(tabs)).split(", ")[1]).toBe("calc(2.5px + 8ch) 0");
   });
 
   it("does not count a partial indent unit as a level", () => {
@@ -163,7 +163,7 @@ describe("rainbow indent guides", () => {
     });
     const lens = () => view!.contentDOM.querySelector<HTMLElement>(".cm-openidea-lens")!;
     expect(images(lens())).toBe("var(--openidea-guide-1), var(--openidea-guide-2)");
-    expect(positions(lens())).toBe("calc(6px + 4ch) 0, calc(6px + 8ch) 0");
+    expect(positions(lens())).toBe("calc(2.5px + 4ch) 0, calc(2.5px + 8ch) 0");
     view.dispatch({ effects: guides.reconfigure(indentGuides) });
     expect(images(lens())).toBe("var(--openidea-guide), var(--openidea-guide)");
   });
