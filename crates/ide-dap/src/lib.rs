@@ -782,6 +782,18 @@ impl DebugManager {
         if let Some(server) = &debug_server {
             spec.server_host = server.host.clone();
         }
+        if config.adapter == "gdb" && config.request == "launch" && debug_server.is_none() {
+            // GDB's DAP env replaces the entire inferior environment. Ordinary run overrides
+            // instead belong on the adapter process, which the inferior inherits. Explicit
+            // launch JSON keeps GDB's replacement semantics.
+            let explicit_env = config.extra_json.as_deref().is_some_and(|extra| {
+                serde_json::from_str::<Value>(extra).is_ok_and(|extra| extra.get("env").is_some())
+            });
+            if !explicit_env {
+                spec.env.extend(config.env.iter().map(|(k, v)| (k.clone(), v.clone())));
+                arguments.as_object_mut().unwrap().remove("env");
+            }
+        }
         if let Some(cargo) = arguments.as_object_mut().and_then(|o| o.remove("cargo")) {
             let cargo_args: Vec<String> = cargo
                 .get("args")
@@ -897,6 +909,7 @@ impl DebugManager {
                 e
             }
         })?;
+        let launch_after_configuration = io.launch_after_configuration && request == "launch";
         let stderr = io.stderr.clone();
         let (conn, incoming) = {
             let stderr = stderr.clone();
@@ -939,7 +952,7 @@ impl DebugManager {
         let configured = tokio::select! {
             biased;
             _ = session.startup_cancel.cancelled() => return Err(IdeError::cancelled()),
-            result = self.configure(&session, arguments) => result,
+            result = self.configure(&session, arguments, launch_after_configuration) => result,
         };
         match configured {
             Ok(()) => Ok(id),
@@ -980,7 +993,7 @@ impl DebugManager {
         }
     }
 
-    async fn configure(&self, s: &Arc<Session>, mut arguments: Value) -> IdeResult<()> {
+    async fn configure(&self, s: &Arc<Session>, mut arguments: Value, launch_in_config: bool) -> IdeResult<()> {
         if s.adapter == kotlin::ADAPTER {
             let project = arguments
                 .get("projectRoot")
@@ -1046,16 +1059,28 @@ impl DebugManager {
         // Launch/attach may wait for a slow runtime or a remote target. Let the adapter report
         // failure; Stop cancels configuration and a closed connection fails the pending reply.
         // Many adapters answer only after `configurationDone`, so don't wait for the reply yet.
-        let launch = s.conn.send_request(request, arguments)?;
-        let mut launch = Box::pin(async move { launch.await.unwrap_or(Err(DapError::Closed)) });
+        // GDB 15 is the exception: its `launch` starts the program itself (14 runs at
+        // `configurationDone`, 16+ defers the launch there), so its launch waits below.
+        let mut launch = if launch_in_config {
+            None
+        } else {
+            let reply = s.conn.send_request(request, arguments.clone())?;
+            Some(Box::pin(async move { reply.await.unwrap_or(Err(DapError::Closed)) }))
+        };
         let mut initialized = s.initialized.subscribe();
         let mut launch_result = None;
-        let got_initialized = tokio::select! {
-            r = initialized.wait_for(|v| *v) => { r.map_err(|_| DapError::Closed)?; true }
-            r = &mut launch => {
-                r?;
-                launch_result = Some(());
-                false
+        let got_initialized = match launch.as_mut() {
+            Some(launch) => tokio::select! {
+                r = initialized.wait_for(|v| *v) => { r.map_err(|_| DapError::Closed)?; true }
+                r = launch => {
+                    r?;
+                    launch_result = Some(());
+                    false
+                }
+            },
+            None => {
+                initialized.wait_for(|v| *v).await.map_err(|_| DapError::Closed)?;
+                true
             }
         };
         if !got_initialized {
@@ -1113,8 +1138,17 @@ impl DebugManager {
             }
         }
         s.configured.store(true, Ordering::Release);
-        if launch_result.is_none() {
-            launch.await?;
+        match launch.as_mut() {
+            Some(launch) => {
+                if launch_result.is_none() {
+                    launch.await?;
+                }
+            }
+            None => {
+                // GDB 15: the breakpoints are in, so its `run` cannot miss them.
+                let reply = s.conn.send_request(request, arguments)?;
+                reply.await.unwrap_or(Err(DapError::Closed))?;
+            }
         }
         if let Some(relay) = s.kotlin_relay.lock().as_mut() {
             relay.release();

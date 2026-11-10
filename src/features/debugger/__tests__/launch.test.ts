@@ -305,7 +305,7 @@ describe("run config → launch config", () => {
     });
   });
 
-  it("native programs under CodeLLDB / lldb-dap: program, args, cwd, env", () => {
+  it("native programs under CodeLLDB / lldb-dap / GDB: program, args, cwd, env", () => {
     const run = rc({ command: "./build/app", args: ["-v"], cwd: "c", env: { K: "v" } });
     const lldb = launchConfigFor({ ...run, debugAdapter: "codelldb" }, "/p")!;
     expect(lldb).toMatchObject({
@@ -320,6 +320,16 @@ describe("run config → launch config", () => {
     expect(dap).toMatchObject({ adapter: "lldb-dap", program: "/p/c/build/app" });
     // lldb-dap takes `KEY=VALUE` strings.
     expect(extra(dap)).toEqual({ env: ["K=v"] });
+    // GDB's DAP launch takes the environment as an object, like the default flow.
+    const gdb = launchConfigFor({ ...run, debugAdapter: "gdb" }, "/p")!;
+    expect(gdb).toMatchObject({
+      adapter: "gdb",
+      program: "/p/c/build/app",
+      args: ["-v"],
+      cwd: "/p/c",
+      env: { K: "v" },
+    });
+    expect(gdb.extraJson).toBeNull();
   });
 
   it.each(["native", "cmake-application"])(

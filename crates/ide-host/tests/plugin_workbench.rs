@@ -250,7 +250,7 @@ async fn plugin_run_targets_register_prompt_route_revalidate_and_withdraw() {
     f.host.set_plugin_host(&plugins);
     let package = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../ide-plugin/tests/fixtures/execution");
     plugins.install_from_dir(&package, &Consent::all()).unwrap();
-    let tool = f._tmp.path().join("wrapper");
+    let tool = f.root.with_file_name("wrapper");
     std::fs::write(&tool, "#!/bin/sh\nprintf 'cwd=%s\\n' \"$PWD\"\nprintf '<%s>\\n' \"$@\"\n").unwrap();
     std::fs::set_permissions(&tool, std::fs::Permissions::from_mode(0o755)).unwrap();
     let invocation =
@@ -370,7 +370,7 @@ async fn run_target_api15_overrides_and_frozen_api14_registration() {
     let engine = PluginEngine::new().unwrap();
     let legacy = engine.compile(&fixtures.join("run-target-api14/dist/plugin.wasm")).unwrap();
     assert_eq!(engine.check_component(&legacy).unwrap().unwrap().to_string(), "1.4.0");
-    let tool = f._tmp.path().join("wrapper");
+    let tool = f.root.with_file_name("wrapper");
     std::fs::write(&tool, "#!/bin/sh\nexit 0\n").unwrap();
     std::fs::set_permissions(&tool, std::fs::Permissions::from_mode(0o755)).unwrap();
     let invocation =
@@ -457,7 +457,7 @@ async fn run_target_validation_gates_launches_and_preserves_selection() {
     f.host.set_plugin_host(&plugins);
     let fixture = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../ide-plugin/tests/fixtures/execution");
     plugins.install_from_dir(&fixture, &Consent::all()).unwrap();
-    let tool = f._tmp.path().join("wrapper");
+    let tool = f.root.with_file_name("wrapper");
     std::fs::write(&tool, "#!/bin/sh\ntouch spawned\n").unwrap();
     std::fs::set_permissions(&tool, std::fs::Permissions::from_mode(0o755)).unwrap();
     plugins.choose_program("execution", "process:execution-tool", Some(&f.root), Some(&tool)).unwrap();
