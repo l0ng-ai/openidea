@@ -324,6 +324,30 @@ describe("build feature", () => {
     });
   });
 
+  it("scopes Build Artifacts to the active file's module, or the whole project without one", async () => {
+    provideEditorService({
+      openFile,
+      saveAll: () => Promise.resolve(),
+      activePath: () => "/p/core/src/A.java",
+    } as unknown as EditorService);
+    await executeAction("build.buildArtifacts", { activate: false });
+    expect(fake.calls.at(-1)).toMatchObject({ kind: "artifacts", file: "/p/core/src/A.java" });
+    await act(async () => {
+      fake.resolve(result([], true));
+    });
+
+    provideEditorService({
+      openFile,
+      saveAll: () => Promise.resolve(),
+      activePath: () => null,
+    } as unknown as EditorService);
+    await executeAction("build.buildArtifacts", { activate: false });
+    expect(fake.calls.at(-1)).toMatchObject({ kind: "artifacts", file: null });
+    await act(async () => {
+      fake.resolve(result([], true));
+    });
+  });
+
   it("starts a build without a workbench", async () => {
     show.mockImplementation(() => {
       throw new Error("No workbench");
