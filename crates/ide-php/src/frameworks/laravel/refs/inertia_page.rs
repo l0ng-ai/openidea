@@ -137,7 +137,7 @@ impl ReferenceKind for InertiaPageKind {
         let problem = Undefined {
             message: format!("Inertia page '{value}' is not defined"),
             severity: Severity::Warning,
-            fix: None,
+            fixes: Vec::new(),
         };
         let Some(path) = pages.new_path(value) else { return Some(problem) };
         let extension = path.extension().map(|found| found.to_string_lossy().into_owned()).unwrap_or_default();

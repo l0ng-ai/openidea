@@ -11,7 +11,10 @@
 //! outside route files is looked up as written, then under the app's
 //! `Http\Controllers` namespace. Completion lists the controller's public
 //! methods, goto opens the method, and find usages compares class and
-//! method (the canonical value `Class@method`).
+//! method (the canonical value `Class@method`). A plain `'Foo'` route
+//! action outside a `controller()` group is an invokable controller (its
+//! `__invoke`). `PhpUndefinedController` reports actions naming a class or
+//! method that doesn't exist ([`super::controller_fixes`]).
 //!
 //! `resourceAction`: the actions in `Route::resource(…)->only([…])` and
 //! `->except([…])` (and the `only`/`except` options): completion of the
@@ -19,7 +22,8 @@
 //! method.
 
 use super::route_name::ROUTER;
-use super::{CalleePattern, PlacePattern, Position, RefContext, RefItem, ReferenceKind};
+use super::{CalleePattern, PlacePattern, Position, RefContext, RefItem, ReferenceKind, Undefined};
+use crate::frameworks::laravel::RouteAction;
 use crate::frameworks::laravel::routes::{API_RESOURCE_ACTIONS, RESOURCE_ACTIONS};
 use crate::names::{NameKind, fqn_eq};
 use crate::navigate::Target;
@@ -66,7 +70,7 @@ static PATTERNS: [PlacePattern; 10] = [
 /// The class `name` (as written in a `'Foo@bar'` action) means: the class
 /// of the site (the route's, resolved against its namespace), else `name`
 /// itself when it is a class, else under the app's controllers namespace.
-fn controller_class(cx: &RefContext<'_>, name: &str) -> Option<String> {
+pub(super) fn controller_class(cx: &RefContext<'_>, name: &str) -> Option<String> {
     let name = name.trim_start_matches('\\').replace("\\\\", "\\");
     if name.is_empty() {
         return None;
@@ -79,8 +83,30 @@ fn controller_class(cx: &RefContext<'_>, name: &str) -> Option<String> {
     known.or_else(|| candidates.into_iter().next())
 }
 
+/// The controller of a plain `'PhotoController'` route action (not in a
+/// `controller()` group): the route's class, which Laravel invokes.
+pub(super) fn invokable(cx: &RefContext<'_>, value: &str) -> Option<String> {
+    if value.contains('@') || value.eq_ignore_ascii_case("__invoke") {
+        return None;
+    }
+    let site = cx.site.as_ref()?;
+    let routes = cx.engine.laravel_routes()?;
+    match &routes.route_at(&site.path, site.start)?.action {
+        RouteAction::Controller { class, method, at: Some((start, _, _)) }
+            if *start == site.start && method == "__invoke" =>
+        {
+            Some(class.clone())
+        }
+        _ => None,
+    }
+}
+
 /// The class and method of a value, and the byte the method starts at.
 fn action_of(cx: &RefContext<'_>, value: &str) -> Option<(String, String, usize)> {
+    if let Some(class) = invokable(cx, value) {
+        let class = controller_class(cx, value).unwrap_or(class);
+        return Some((class, "__invoke".to_owned(), value.len()));
+    }
     match value.split_once('@') {
         Some((class, method)) => Some((controller_class(cx, class)?, method.to_owned(), class.len() + 1)),
         None => Some((cx.class()?.to_owned(), value.to_owned(), 0)),
@@ -131,6 +157,9 @@ impl ReferenceKind for ControllerAction {
     }
 
     fn complete(&self, cx: &RefContext<'_>, value: &str, at: usize) -> Vec<RefItem> {
+        if invokable(cx, value).is_some() {
+            return Vec::new();
+        }
         let Some((class, _, from)) = action_of(cx, &value[..at]) else { return Vec::new() };
         if at < from {
             return Vec::new();
@@ -149,6 +178,11 @@ impl ReferenceKind for ControllerAction {
 
     fn resolve(&self, cx: &RefContext<'_>, value: &str, at: usize) -> Vec<Target> {
         let Some((class, method, from)) = action_of(cx, value) else { return Vec::new() };
+        if invokable(cx, value).is_some() {
+            // The class's `__invoke`, else the class.
+            let method = method_target(cx, &class, &method);
+            return method.map_or_else(|| cx.engine.class_targets(&class), |target| vec![target]);
+        }
         if at + 1 < from && value.contains('@') {
             // On the class part of `'Foo@bar'`: the class.
             return cx.engine.class_targets(&class);
@@ -183,6 +217,11 @@ impl ReferenceKind for ControllerAction {
     fn is_known(&self, cx: &RefContext<'_>, value: &str) -> bool {
         let Some((class, method, _)) = action_of(cx, value) else { return false };
         cx.engine.resolver().class_model(&class).is_some_and(|model| model.method(&method).is_some())
+    }
+
+    /// `PhpUndefinedController` ([`super::controller_fixes`]).
+    fn undefined(&self, cx: &RefContext<'_>, value: &str) -> Option<Undefined> {
+        super::controller_fixes::undefined_action(cx, value)
     }
 }
 

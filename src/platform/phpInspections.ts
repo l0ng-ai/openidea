@@ -293,6 +293,13 @@ export const PHP_INSPECTIONS: readonly PhpInspection[] = [
     description: "Reports password brokers passed to Password::broker() that config/auth.php doesn't declare.",
   },
   {
+    code: "PhpUndefinedController",
+    name: "Undefined controller",
+    group: "Laravel",
+    description:
+      "Reports route actions naming a controller class or method that doesn't exist, in 'Controller@method', [Controller::class, 'method'] or a plain 'Controller'. The quick-fixes create the controller or add the method.",
+  },
+  {
     code: "BladeUnclosedSection",
     producer: BLADE_PRODUCER,
     name: "Unclosed Blade section",

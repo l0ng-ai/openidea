@@ -924,3 +924,49 @@ async fn inspect_code_over_the_laravel_fixture_app() {
     until("Laravel support to be turned off", || engine.laravel().is_none()).await;
     host.close_project("main");
 }
+
+/// `PhpUndefinedController` on the fixture app's route file: Alt+Enter on a
+/// plain action naming no class lists "Create invokable controller", and
+/// applying it creates the controller and rewrites the route.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn laravel_create_controller_quick_fix() {
+    use ide_core::{Pos, Range};
+    let tmp = tempfile::tempdir().unwrap();
+    let base = dunce::canonicalize(tmp.path()).unwrap();
+    let root = base.join("laravel-app");
+    let fixtures = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../fixtures");
+    copy_dir(&fixtures.join("laravel-app"), &root);
+    copy_dir(&fixtures.join("laravel-stubs"), &root.join("vendor"));
+    let web = root.join("routes/web.php");
+    let mut text = std::fs::read_to_string(&web).unwrap().replace("\r\n", "\n");
+    text.push_str("\nRoute::get('123', 'dream')->name('dream.come.true');\n");
+    write(&web, &text);
+    let events: Arc<Mutex<Vec<IdeEvent>>> = Arc::default();
+    let host = host(&base.join("app"), events.clone());
+    let project = host.open_project("main", &root).unwrap();
+    set_engine(&host, "native");
+    until("the engine to start", || project.php.engine().is_some()).await;
+    let engine = project.php.engine().unwrap();
+    assert!(engine.wait_idle(Duration::from_secs(120)));
+    assert!(engine.inspections().ids().contains(&"PhpUndefinedController"));
+
+    let doc = ops::doc::open(&host, "main", web.clone()).await.unwrap();
+    let line = text.lines().position(|line| line.contains("'dream'")).unwrap() as u32;
+    let pos = Pos::new(line, 21);
+    let actions =
+        ops::lsp::lsp_code_actions(&host, "main", doc.id, Range::new(pos, pos), vec!["quickfix".into()]).await.unwrap();
+    let titles: Vec<&str> = actions.iter().map(|action| action.title.as_str()).collect();
+    let create = actions
+        .iter()
+        .find(|action| action.title == "Create invokable controller 'DreamController'")
+        .unwrap_or_else(|| panic!("{titles:?}"));
+    let edit = create.edit.clone().expect("an edit");
+    ops::lsp::apply_workspace_edit(&host, "main", edit).await.unwrap();
+    let controller = root.join("app/Http/Controllers/DreamController.php");
+    let created = std::fs::read_to_string(&controller).unwrap();
+    assert!(created.contains("class DreamController extends Controller"), "{created}");
+    assert!(created.contains("public function __invoke(Request $request)"), "{created}");
+    let routes = project.documents.snapshot(doc.id).unwrap().text;
+    assert!(routes.contains("Route::get('123', DreamController::class)"), "{routes}");
+    host.close_project("main");
+}

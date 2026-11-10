@@ -24,7 +24,8 @@
 //!   that group.
 //! - **Actions:** `[Controller::class, 'method']`, an invokable
 //!   `Controller::class`, `'Controller@method'` (relative to the group's
-//!   namespace) and a method name inside a `controller()` group.
+//!   namespace), a method name inside a `controller()` group, and elsewhere
+//!   a plain `'Controller'` (invokable, relative to the group's namespace).
 //! - **Resources:** the seven actions (five for `apiResource`), their names
 //!   (`posts.index`), URIs (`posts/{post}/edit`) and methods, as Laravel's
 //!   `ResourceRegistrar` makes them.
@@ -1025,6 +1026,13 @@ impl<'a> Reader<'a> {
                         Some(class) => RouteAction::Controller {
                             class: class.clone(),
                             method: value,
+                            at: Some((start, end, self.range(start, end))),
+                        },
+                        // `'PhotoController'`: Laravel's `Route::parseAction` makes it an
+                        // invokable controller, under the group's namespace.
+                        None if !value.is_empty() => RouteAction::Controller {
+                            class: group.qualify(&value.replace("\\\\", "\\")),
+                            method: "__invoke".to_owned(),
                             at: Some((start, end, self.range(start, end))),
                         },
                         None => RouteAction::Unknown,

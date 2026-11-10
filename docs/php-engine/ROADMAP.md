@@ -812,7 +812,7 @@ Runs after Plan 7. Before any 8.x phase, read [LARAVEL-ROADMAP.md](LARAVEL-ROADM
 - [x] Phase 8.30: Documentation
       Add a user guide, `docs/php-engine/laravel.md`, finishing the file started in 8.21 and extended up to 8.29. It covers each feature with a short example, the settings, `ide.json` support, and known limits. Update `THIRD_PARTY_LICENSES.md` if a phase bundled anything new (for example Laravel stubs). Tests: none beyond the usual gate.
 
-- [ ] Phase 8.31: Undefined controller actions and "Create controller"
+- [x] Phase 8.31: Undefined controller actions and "Create controller"
       Reported from the running app: in `Route::get('123', 'dream')->name('dream.come.true')`, Alt+Enter on `'dream'` offers nothing. The `controllerAction` kind (`refs/controller_action.rs`) has completion, goto and usages, but no `undefined()` hook, so there is no inspection and no quick-fix. Add `PhpUndefinedController`, in the Laravel inspection group with en/zh text, through `ReferenceKind::undefined` like `PhpUndefinedView`. It reports:
   - **a missing class:** in `'Foo@bar'`, `[Foo::class, 'bar']` (only when the undefined-class inspection doesn't already report the same range) and a plain `'Foo'` action, which Laravel resolves as an invokable controller class under the group's namespace. A plain string that is no class at all, like `'dream'`, gets "Controller class 'dream' does not exist".
   - **a missing method:** in `'Foo@bar'` and `[Foo::class, 'bar']`. A plain `'Foo'` action needs `__invoke`.
@@ -831,3 +831,6 @@ Runs after Plan 7. Before any 8.x phase, read [LARAVEL-ROADMAP.md](LARAVEL-ROADM
   - Caret fixtures for each case, with the generated file compared as a snapshot.
   - A host test: Alt+Enter code actions on the fixture app's route file list the fixes, and applying one creates the controller.
   - No new diagnostics in `fixtures/laravel-app`, nor in Monica's or Bagisto's routes (`real_app_checklist`).
+
+- [ ] Phase 8.31.b: Open the created controller at its method
+      Phase 8.31's "Create controller …" and "Add method …" quick-fixes return plain `WorkspaceEdit`s, and the front end opens nothing after applying a quick-fix's edit (`runInteractiveCodeAction` only opens files a command reports created). Let a code action name the location to open after its edit (for example an optional `open: Location` on `CodeAction`, filled by the PHP engine's quick-fixes and kept through `lsp_execute_code_action`), and open the new or edited controller with the caret in the new method's body. Run `pnpm gen:bindings` for the changed type. Tests: an engine test that the fixes carry the method's location, a host test that applying one returns it, and a frontend test that `applyCodeAction` opens it.

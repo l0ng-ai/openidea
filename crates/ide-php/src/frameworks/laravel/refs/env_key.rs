@@ -108,9 +108,9 @@ impl ReferenceKind for EnvKey {
                 return None;
             }
             let message = format!("Environment variable '{value}' is missing from .env.example");
-            return Some(Undefined { message, severity: Severity::Info, fix: Some(fix) });
+            return Some(Undefined { message, severity: Severity::Info, fixes: vec![fix] });
         }
         let message = format!("Environment variable '{value}' is not defined in .env or .env.example");
-        Some(Undefined { message, severity: Severity::Warning, fix: Some(fix) })
+        Some(Undefined { message, severity: Severity::Warning, fixes: vec![fix] })
     }
 }

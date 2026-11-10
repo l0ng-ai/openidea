@@ -40,8 +40,8 @@ impl Inspection for UndefinedView {
         // The places of the `ide.json` rules too ([`ViewName::undefined`]).
         for found in cx.engine.undefined_references(cx.parsed, cx.path, &[&ViewName], cx.cancel) {
             let problem = out.report(found.start, found.end, found.problem.message);
-            if let Some((title, edit)) = found.problem.fix {
-                problem.with_fix(QuickFix { title, edit, preferred: true });
+            for (index, (title, edit)) in found.problem.fixes.into_iter().enumerate() {
+                problem.with_fix(QuickFix { title, edit, preferred: index == 0 });
             }
         }
     }

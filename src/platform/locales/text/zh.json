@@ -6241,6 +6241,8 @@
   "Reports Laravel abilities, in Gate::allows(), $user->can(), authorize(), @can or can: middleware, that no gate defines and that aren't a method of the model's policy (of any policy when the model isn't known).": "报告 Gate::allows()、$user->can()、authorize()、@can 或 can: 中间件中既没有 Gate 定义、也不是模型策略方法（未知模型时为任一策略）的 Laravel 授权能力。",
   "Unknown guard": "未知的认证守卫",
   "Unknown password broker": "未知的密码代理",
+  "Undefined controller": "未定义的控制器",
+  "Reports route actions naming a controller class or method that doesn't exist, in 'Controller@method', [Controller::class, 'method'] or a plain 'Controller'. The quick-fixes create the controller or add the method.": "报告路由动作中不存在的控制器类或方法，包括 'Controller@method'、[Controller::class, 'method'] 或单独的 'Controller'。快速修复会创建该控制器或添加该方法。",
   "Reports guards, in auth(), Auth::guard(), @auth, @guest or the auth: and guest: middleware, that config/auth.php doesn't declare.": "报告 auth()、Auth::guard()、@auth、@guest 或 auth: 与 guest: 中间件中 config/auth.php 未声明的守卫。",
   "Reports password brokers passed to Password::broker() that config/auth.php doesn't declare.": "报告传给 Password::broker() 的密码代理中 config/auth.php 未声明的代理。",
   "Reports column names in Eloquent queries (where(), orderBy(), select(), create([...]) and the like) and in a model's $fillable, $hidden, $casts or $appends that the model's table doesn't have. Only reported when the migrations say for certain which columns the table has.": "报告 Eloquent 查询（where()、orderBy()、select()、create([...]) 等）以及模型的 $fillable、$hidden、$casts 或 $appends 中模型数据表没有的列名。仅当迁移能确定数据表有哪些列时才会报告。",

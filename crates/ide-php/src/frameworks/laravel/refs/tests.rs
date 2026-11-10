@@ -446,3 +446,6 @@ mod livewire_tests;
 
 #[path = "usages_tests.rs"]
 mod usages_tests;
+
+#[path = "controller_tests.rs"]
+mod controller_tests;

@@ -87,6 +87,7 @@ describe("PHP engine inspections", () => {
       "lsp:php:PhpUndefinedInertiaPage",
       "lsp:php:PhpUnknownGuard",
       "lsp:php:PhpUnknownPasswordBroker",
+      "lsp:php:PhpUndefinedController",
       "lsp:blade:BladeUnclosedSection",
       "lsp:blade:BladeUnopenedSection",
       "lsp:blade:BladeUndefinedComponent",

@@ -587,6 +587,50 @@ fn real_app_checklist() {
     }
     assert!(missing.is_empty(), "no completion for {missing:?}");
 
+    // Phase 8.31: the app's route files name no missing controller class or method.
+    let route_files: BTreeSet<PathBuf> = engine
+        .laravel_routes()
+        .map(|routes| routes.routes().iter().map(|route| route.path.clone()).collect())
+        .unwrap_or_default();
+    let mut undefined = Vec::new();
+    for (index, path) in route_files.iter().enumerate() {
+        if path.to_string_lossy().replace('\\', "/").contains("/vendor/") {
+            continue;
+        }
+        let Ok(text) = std::fs::read_to_string(path) else { continue };
+        let doc = DocId(20_000 + index as u32);
+        engine.document_opened(doc, path, 1, &text);
+        let inspected = engine.inspect(doc, &CancellationToken::new());
+        engine.document_closed(doc);
+        for diagnostic in inspected.map(|found| found.diagnostics).unwrap_or_default() {
+            if diagnostic.code.as_deref() == Some("PhpUndefinedController") {
+                undefined.push(format!(
+                    "{}:{}: {}",
+                    path.display(),
+                    diagnostic.range.start.line + 1,
+                    diagnostic.message
+                ));
+            }
+        }
+    }
+    eprintln!("{} route files checked for undefined controllers", route_files.len());
+    // Reviewed: real dead routes of the pinned versions (the controllers have no such
+    // method), and the action of phase 8.31's report when it is added to Bagisto.
+    const REAL: &[&str] = &[
+        "Method 'show' does not exist in controller 'VaultCompanyController'",
+        "Method 'update' does not exist in controller 'VaultSettingsController'",
+        "Method 'index' does not exist in controller 'VaultSettingsLabelController'",
+        "Method 'index' does not exist in controller 'VaultSettingsTagController'",
+        "Method 'show' does not exist in controller 'UserController'",
+        "Method 'store' does not exist in controller 'PersonalizeModulesController'",
+        "Method 'update' does not exist in controller 'PersonalizeModulesController'",
+        "Method 'destroy' does not exist in controller 'PersonalizeModulesController'",
+        "Method 'massDestroy' does not exist in controller 'CurrencyController'",
+        "Method 'dream' does not exist in controller 'CartRuleController'",
+    ];
+    undefined.retain(|found| !REAL.iter().any(|real| found.ends_with(real)));
+    assert!(undefined.is_empty(), "undefined controllers:\n{}", undefined.join("\n"));
+
     let context = engine.laravel_generation_context().expect("generators");
     let mut failures = Vec::new();
     for generator in context.generators.iter().filter(|generator| generator.id != "model") {

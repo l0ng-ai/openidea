@@ -66,6 +66,7 @@
 pub mod artisan_command;
 pub mod config_key;
 pub mod controller_action;
+mod controller_fixes;
 pub mod db_table;
 pub mod eloquent;
 pub mod env_key;
@@ -1049,17 +1050,17 @@ pub trait ReferenceKind: Send + Sync {
 pub struct Undefined {
     pub message: String,
     pub severity: Severity,
-    /// A quick-fix: its title and edit.
-    pub fix: Option<(String, WorkspaceEdit)>,
+    /// The quick-fixes, the preferred one first: their titles and edits.
+    pub fixes: Vec<(String, WorkspaceEdit)>,
 }
 
 impl Undefined {
     pub fn warning(message: impl Into<String>) -> Self {
-        Self { message: message.into(), severity: Severity::Warning, fix: None }
+        Self { message: message.into(), severity: Severity::Warning, fixes: Vec::new() }
     }
 
     pub fn with_fix(mut self, title: impl Into<String>, edit: WorkspaceEdit) -> Self {
-        self.fix = Some((title.into(), edit));
+        self.fixes.push((title.into(), edit));
         self
     }
 }
@@ -1521,7 +1522,7 @@ impl PhpEngine {
                 deprecated: false,
                 server: None,
             };
-            out.push((diagnostic, found.problem.fix));
+            out.push((diagnostic, found.problem.fixes.into_iter().next()));
         }
         out
     }

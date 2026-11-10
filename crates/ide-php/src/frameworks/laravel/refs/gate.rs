@@ -299,7 +299,7 @@ pub(crate) fn ability_problem(cx: &RefContext<'_>, subjects: &[String], name: &s
         }
         _ => format!("Unknown ability '{name}': no gate or policy defines it"),
     };
-    Some(Undefined { message, severity: Severity::Warning, fix: None })
+    Some(Undefined { message, severity: Severity::Warning, fixes: Vec::new() })
 }
 
 /// Hover of ability `name`.

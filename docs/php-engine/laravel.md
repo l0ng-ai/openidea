@@ -198,23 +198,24 @@ Packages in `vendor/` are read through their service providers (package discover
 
 The Laravel inspections are in the inspection profile (Settings › PHP › Inspections, group "Laravel"; the route check is in "Frameworks"), each with an on/off switch and a severity. They run in the editor and in batch **Inspect Code**. Inspections that depend on a schema or a configuration file stay quiet when it isn't known for certain.
 
-| Inspection                                     | Reports                                                                                                              | Quick-fix              |
-| ---------------------------------------------- | -------------------------------------------------------------------------------------------------------------------- | ---------------------- |
-| `PhpUndefinedRoute`                            | route names no route defines                                                                                         |                        |
-| `PhpUndefinedView`                             | view names no template has (in PHP and Blade)                                                                        | create the view        |
-| `PhpUndefinedConfigKey`                        | configuration keys no known configuration array has                                                                  |                        |
-| `PhpUndefinedEnvKey`                           | `env()` keys neither `.env` nor `.env.example` sets, and keys missing from `.env.example`                            | add to `.env.example`  |
-| `PhpUndefinedTranslation`                      | translation keys no locale has                                                                                       | create in every locale |
-| `PhpUndefinedViteAsset`                        | `@vite` / `Vite::asset()` paths that are no file, entry point or manifest entry                                      |                        |
-| `PhpUnknownValidationRule`                     | rules neither built in nor registered with `Validator::extend()`                                                     |                        |
-| `PhpUnknownEloquentColumn`                     | columns the model's table doesn't have, when the migrations are certain                                              |                        |
-| `PhpUnknownAbility`                            | abilities no gate or policy defines, `can:` middleware included                                                      |                        |
-| `PhpUnknownGuard`                              | guards `config/auth.php` doesn't declare (`auth()`, `Auth::guard()`, `@auth`, `auth:` middleware)                    |                        |
-| `PhpUnknownPasswordBroker`                     | brokers `config/auth.php` doesn't declare                                                                            |                        |
-| `PhpUndefinedInertiaPage`                      | Inertia pages no page folder has                                                                                     | create the page        |
-| `BladeUnclosedSection`, `BladeUnopenedSection` | `@section` / `@push` blocks never closed, and closing directives with nothing open                                   |                        |
-| `BladeUndefinedComponent`                      | `<x-…>` tags no component defines                                                                                    | create the component   |
-| `BladeUnknownLivewireParameter`                | `@livewire(…, [...])` keys and `<livewire:…>` attributes that are neither `mount()` parameters nor public properties |                        |
+| Inspection                                     | Reports                                                                                                              | Quick-fix                     |
+| ---------------------------------------------- | -------------------------------------------------------------------------------------------------------------------- | ----------------------------- |
+| `PhpUndefinedRoute`                            | route names no route defines                                                                                         |                               |
+| `PhpUndefinedView`                             | view names no template has (in PHP and Blade)                                                                        | create the view               |
+| `PhpUndefinedConfigKey`                        | configuration keys no known configuration array has                                                                  |                               |
+| `PhpUndefinedEnvKey`                           | `env()` keys neither `.env` nor `.env.example` sets, and keys missing from `.env.example`                            | add to `.env.example`         |
+| `PhpUndefinedTranslation`                      | translation keys no locale has                                                                                       | create in every locale        |
+| `PhpUndefinedViteAsset`                        | `@vite` / `Vite::asset()` paths that are no file, entry point or manifest entry                                      |                               |
+| `PhpUnknownValidationRule`                     | rules neither built in nor registered with `Validator::extend()`                                                     |                               |
+| `PhpUnknownEloquentColumn`                     | columns the model's table doesn't have, when the migrations are certain                                              |                               |
+| `PhpUnknownAbility`                            | abilities no gate or policy defines, `can:` middleware included                                                      |                               |
+| `PhpUnknownGuard`                              | guards `config/auth.php` doesn't declare (`auth()`, `Auth::guard()`, `@auth`, `auth:` middleware)                    |                               |
+| `PhpUnknownPasswordBroker`                     | brokers `config/auth.php` doesn't declare                                                                            |                               |
+| `PhpUndefinedController`                       | route actions naming a missing controller class or method (`'dream'`, `'Foo@bar'`)                                   | create controller, add method |
+| `PhpUndefinedInertiaPage`                      | Inertia pages no page folder has                                                                                     | create the page               |
+| `BladeUnclosedSection`, `BladeUnopenedSection` | `@section` / `@push` blocks never closed, and closing directives with nothing open                                   |                               |
+| `BladeUndefinedComponent`                      | `<x-…>` tags no component defines                                                                                    | create the component          |
+| `BladeUnknownLivewireParameter`                | `@livewire(…, [...])` keys and `<livewire:…>` attributes that are neither `mount()` parameters nor public properties |                               |
 
 The engine's general PHP inspections (undefined classes and methods, argument types, unused variables and so on) use the Laravel model too: facades, container helpers, Eloquent forwarding and magic properties, and class aliases are all typed.
 
@@ -294,7 +295,7 @@ Not read: `helperCode` and any other key not listed here.
 
 ## Known limits
 
-- **Routes:** URLs copied or opened from a route hint keep their `{param}` placeholders. Route lenses show only in documents open in the engine. A route file path computed by `Config::get('…')` or `config()->get('…')`, rather than `config('…')`, isn't followed. Concord's convention-based registrations (views and routes of `BaseModuleServiceProvider` without explicit calls) aren't read.
+- **Routes:** URLs copied or opened from a route hint keep their `{param}` placeholders. Route lenses show only in documents open in the engine. A route file path computed by `Config::get('…')` or `config()->get('…')`, rather than `config('…')`, isn't followed. Concord's convention-based registrations (views and routes of `BaseModuleServiceProvider` without explicit calls) aren't read. `PhpUndefinedController` leaves a missing class written `[Foo::class, 'bar']` to `PhpUndefinedClass`, and skips action strings with escapes (`'Admin\FooController@bar'`); applying its "Create controller" fixes doesn't yet open the new class at the method (phase 8.31.b). On the pinned Monica and Bagisto it reports 9 actions, all real dead routes (methods the controllers don't have).
 - **Views and Blade:** variables passed to a template aren't carried through `@include` beyond one level, nor to `@each`'s item. A missing constructor parameter of a class component has no quick-fix (only a missing `@props` entry does), and `@aware` entries don't complete from the parent component. `Blade::component()` calls made outside a provider's code (`callAfterResolving`, `$blade->component`) aren't read.
 - **Livewire:** a component found by its class (not registered with an alias) can't be renamed by its name; renaming the class doesn't edit `<livewire:…>` tags.
 - **Translations:** Find Usages doesn't start from a JSON locale file.
@@ -339,7 +340,7 @@ Gaps go in the test's `GAPS` list. A gap that starts working fails the test unti
 | `translationKey`    | `__('messages.welcome')`                    | ✓          | ✓                  | ✓      | ✓ `PhpUndefinedTranslation`  |
 | `viteAsset`         | `Vite::asset('resources/js/app.js')`        | ✓          | ✓                  | ✓      | ✓ `PhpUndefinedViteAsset`    |
 | `routeName`         | `route('home')`                             | ✓          | ✓                  | ✓      | ✓ `PhpUndefinedRoute`        |
-| `controllerAction`  | `[PostController::class, 'index']`          | ✓          | ✓                  | ✓      | n/a                          |
+| `controllerAction`  | `[PostController::class, 'index']`          | ✓          | ✓                  | ✓      | ✓ `PhpUndefinedController`   |
 | `resourceAction`    | `Route::resource(…)->only(['show'])`        | ✓          | ✓                  | ✓      | n/a                          |
 | `middleware`        | `->middleware('author')`                    | ✓          | ✓                  | ✓      | n/a                          |
 | `viewName`          | `view('posts.index')`                       | ✓          | ✓                  | ✓      | ✓ `PhpUndefinedView`         |
