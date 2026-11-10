@@ -245,15 +245,18 @@ impl Cx<'_> {
             out.push_str(&rest[..start]);
             let name = &after[..len];
             let value = match name {
-                "PROJECT_DIR" | "ContentRoot" | "ProjectFileDir" => self.root.to_string_lossy().into_owned(),
+                "PROJECT_DIR" | "ContentRoot" | "ProjectFileDir" => self.root.to_string_lossy().replace('\\', "/"),
                 // Which module's directory is unknown here when there are several.
                 "MODULE_DIR" | "MODULE_WORKING_DIR" if self.modules > 1 => {
                     return Err(SkipReason::SeveralModules { variable: format!("${name}$") });
                 }
-                "MODULE_DIR" | "MODULE_WORKING_DIR" => self.root.to_string_lossy().into_owned(),
+                "MODULE_DIR" | "MODULE_WORKING_DIR" => self.root.to_string_lossy().replace('\\', "/"),
                 "USER_HOME" => {
                     self.machine_values.set(true);
-                    self.home.clone().ok_or(SkipReason::PathVariable { variable: format!("${name}$") })?
+                    self.home
+                        .as_ref()
+                        .ok_or(SkipReason::PathVariable { variable: format!("${name}$") })?
+                        .replace('\\', "/")
                 }
                 _ => match unknown {
                     Unknown::Skip => return Err(SkipReason::PathVariable { variable: format!("${name}$") }),
@@ -1243,6 +1246,25 @@ mod tests {
         assert_eq!(p("'a b'"), ["'a", "b'"]);
         assert_eq!(parse_params("-k 'a b' \"c d\"", Quotes::Single), ["-k", "a b", "c d"]);
         assert!(p("   ").is_empty());
+    }
+
+    #[test]
+    fn macro_paths_use_forward_slashes() {
+        let cx = Cx {
+            root: Path::new(r"C:\project dir"),
+            home: Some(r"C:\Users\me".into()),
+            modules: 1,
+            machine_values: Cell::new(false),
+        };
+        for name in ["PROJECT_DIR", "ContentRoot", "ProjectFileDir", "MODULE_DIR", "MODULE_WORKING_DIR"] {
+            assert_eq!(cx.expand(&format!("${name}$/config.yml")).unwrap(), "C:/project dir/config.yml");
+            assert_eq!(
+                cx.path(Some(&format!("file://${name}$/config.yml"))).unwrap().unwrap(),
+                "C:/project dir/config.yml"
+            );
+        }
+        assert_eq!(cx.expand("$USER_HOME$/.venvs").unwrap(), "C:/Users/me/.venvs");
+        assert_eq!(cx.expand(r"$PROJECT_DIR$/x C:\literal\path").unwrap(), r"C:/project dir/x C:\literal\path");
     }
 
     #[test]

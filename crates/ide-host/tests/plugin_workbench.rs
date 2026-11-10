@@ -406,7 +406,7 @@ async fn run_target_api15_overrides_and_frozen_api14_registration() {
                 )
                 .unwrap();
             assert_eq!(wrapped.args, expected);
-            assert_eq!(PathBuf::from(wrapped.command), tool);
+            assert_eq!(PathBuf::from(wrapped.command), dunce::canonicalize(&tool).unwrap());
             assert_eq!(wrapped.cwd.unwrap(), f.root);
             let php = ide_run::RunConfig { command: "php".into(), args: vec!["x.php".into()], ..config.clone() };
             assert_eq!(
