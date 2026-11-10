@@ -54,10 +54,16 @@ it.each(resizeObserverMessages)("still times out an unresolved startup after %s"
   expect(document.querySelector("textarea")?.value).toContain("Startup did not finish within 30 seconds.");
 });
 
-it.each(resizeObserverMessages)("keeps actual errors with the same message fatal: %s", (message) => {
-  window.dispatchEvent(new ErrorEvent("error", { message, error: new Error(message) }));
-  expect(document.getElementById("splash")).toBeNull();
-  expect(document.querySelector("textarea")?.value).toContain(message);
+it.each(resizeObserverMessages)("ignores the loop notification delivered as an Error: %s", (message) => {
+  // WebKit (Tauri on Linux) reports the loop with an Error object; Blink as a bare message.
+  // No genuine startup failure carries these engine-generated strings.
+  window.dispatchEvent(new ErrorEvent("error", { message, filename: "tauri://localhost", error: new Error(message) }));
+  expect(document.getElementById("splash")).not.toBeNull();
+  expect(document.getElementById("boot-error")).toBeNull();
+  expect(document.documentElement.dataset.boot).toBeUndefined();
+  window.dispatchEvent(new Event("openidea:boot-ready"));
+  vi.advanceTimersByTime(30_000);
+  expect(document.getElementById("boot-error")).toBeNull();
 });
 
 it.each(resizeObserverMessages)("keeps rejections with the same message fatal: %s", (message) => {
