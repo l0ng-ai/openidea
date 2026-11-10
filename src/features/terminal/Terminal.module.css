@@ -130,6 +130,9 @@
   outline: 1px solid color-mix(in srgb, var(--accent) 45%, transparent);
   outline-offset: -1px;
 }
+.pane :global(.xterm-decoration-container) {
+  pointer-events: none;
+}
 .pane :global(.xterm .xterm-scrollable-element > .scrollbar > .slider) {
   box-sizing: border-box;
   border: 2px solid transparent;

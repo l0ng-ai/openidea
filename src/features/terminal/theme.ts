@@ -96,15 +96,17 @@ export function buildTheme(read: TokenReader): ITheme {
 export function buildSearchDecorations(read: TokenReader) {
   const color = (name: string, fallback: string): Rgba => parseColor(read(name)) ?? parseColor(fallback)!;
   const bg = color("--bg-island", read("--bg-app") || FALLBACK["--bg-app"]!);
-  const match = parseColor(read("--bg-text-search-result"));
-  const active = parseColor(read("--bg-text-search-result-current"));
+  const match = parseColor(read("--bg-search-match")) ?? parseColor(read("--bg-text-search-result"));
+  const active = parseColor(read("--bg-search-match-current")) ?? parseColor(read("--bg-text-search-result-current"));
   if (match && active) {
+    const m = toHex(mix(bg, match, match[3]));
+    const a = toHex(mix(bg, active, active[3]));
     return {
-      matchBackground: toHex(match),
-      matchOverviewRuler: toHex(match),
-      activeMatchBackground: toHex(active),
-      activeMatchBorder: toHex(active),
-      activeMatchColorOverviewRuler: toHex(active),
+      matchBackground: m,
+      matchOverviewRuler: m,
+      activeMatchBackground: a,
+      activeMatchBorder: a,
+      activeMatchColorOverviewRuler: a,
     };
   }
   const legacyMatch = color("--match", FALLBACK["--accent"]!);

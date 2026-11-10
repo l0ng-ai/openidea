@@ -281,6 +281,34 @@ export class TerminalSession {
     });
     this.term.loadAddon(this.fit);
     this.term.loadAddon(this.searchAddon);
+    // Promote active search decorations to the top layer so xterm's DOM renderer
+    // keeps activeMatchBackground above `.xterm-selection` when FindBar holds focus.
+    const registerDecoration = this.term.registerDecoration.bind(this.term);
+    this.term.registerDecoration = (options) => {
+      const active = this.searchDecorations?.activeMatchBackground;
+      const isActive = !!active && options.backgroundColor?.toLowerCase() === active.toLowerCase();
+      const d = registerDecoration(isActive ? { ...options, layer: "top" } : options);
+      if (d && isActive) d.onRender((el) => el.classList.add("xterm-find-active-result-decoration"));
+      return d;
+    };
+    const runSearch =
+      <T extends unknown[]>(fn: (...args: T) => boolean) =>
+      (...args: T) => {
+        this.selectingSearchMatch = true;
+        try {
+          const found = fn(...args);
+          if (found) {
+            this.searchSelection = this.term.hasSelection();
+            this.selectionHighlights.clear();
+          }
+          return found;
+        } finally {
+          this.selectingSearchMatch = false;
+          if (this.term.rows > 0) this.term.refresh(0, this.term.rows - 1);
+        }
+      };
+    this.searchAddon.findNext = runSearch(this.searchAddon.findNext.bind(this.searchAddon));
+    this.searchAddon.findPrevious = runSearch(this.searchAddon.findPrevious.bind(this.searchAddon));
 
     this.disposables.push(
       watchWindowsPty(this.term),
@@ -421,6 +449,10 @@ export class TerminalSession {
 
   get hasSelection(): boolean {
     return this.term.hasSelection();
+  }
+
+  get isSearchSelection(): boolean {
+    return this.searchSelection;
   }
 
   private update(patch: Partial<SessionSnapshot>) {
@@ -775,7 +807,6 @@ export class TerminalSession {
       decorations: this.searchDecorations,
     };
     try {
-      this.selectingSearchMatch = true;
       return direction === "next"
         ? this.searchAddon.findNext(query, options)
         : this.searchAddon.findPrevious(query, options);
@@ -783,8 +814,6 @@ export class TerminalSession {
       // Invalid regular expression.
       this.clearSearch();
       return false;
-    } finally {
-      this.selectingSearchMatch = false;
     }
   }
 
