@@ -32,6 +32,7 @@ import { executeAction } from "@/platform/actions";
 import { call, commands, onIdeEvent } from "@/platform/ipc";
 import { basename, relativeDir, useProject } from "@/platform/project";
 import { notifications, useEditorShown, type EditorInput } from "@/workbench/contributions";
+import { confirm } from "@/workbench/messages";
 import {
   Button,
   Checkbox,
@@ -108,6 +109,7 @@ import {
   loadEntries,
   markVisible,
   refreshChanges,
+  rollbackChanges,
   editQueued,
   forkTask,
   rerunFrom,
@@ -2757,6 +2759,43 @@ function ChangesPane({
   const [selected, setSelected] = useState<Set<string>>(() => new Set());
   const added = changes?.reduce((n, c) => n + c.added, 0) ?? 0;
   const removed = changes?.reduce((n, c) => n + c.removed, 0) ?? 0;
+  const rollback = async () => {
+    const chosen = (changes ?? []).filter((c) => selected.has(c.path));
+    const count = chosen.length || changes?.length || 0;
+    if (!count) return;
+    const ok = await confirm({
+      title: "Rollback Changes",
+      message: (
+        <>
+          <p>
+            {count === 1
+              ? tx`Roll back the changes to ${basename((chosen[0] ?? changes![0]!).path)}?`
+              : tx`Roll back the changes to ${count} files?`}
+          </p>
+          <p>
+            {task.isolation === "worktree"
+              ? tx("They go back to how they were when the task started, in the task's worktree.")
+              : tx(
+                  "They go back to how they were when the task started. Edits of yours made to them since then are lost too; edits from before the task are kept.",
+                )}
+          </p>
+        </>
+      ),
+      ok: "Rollback",
+      icon: "warning",
+    });
+    if (!ok) return;
+    try {
+      await rollbackChanges(task.id, chosen.length ? chosen.map((c) => c.relPath) : null);
+      setSelected(new Set());
+    } catch (e) {
+      notifications().notify({
+        level: "error",
+        title: tx("Cannot roll back the changes"),
+        body: e instanceof Error ? e.message : String(e),
+      });
+    }
+  };
   return (
     <aside className={styles.changes} aria-label={tx("Changes")}>
       <div className={styles.changesHeader}>
@@ -2770,6 +2809,12 @@ function ChangesPane({
           </span>
         )}
         <span className={styles.bannerSpacer} />
+        <IconButton
+          icon="revert"
+          title={selected.size ? "Rollback Selected Changes…" : "Rollback All Changes…"}
+          disabled={!changes?.length || task.status === "starting" || task.status === "running"}
+          onClick={() => void rollback()}
+        />
         <IconButton icon="refresh" title="Refresh" onClick={() => void refreshChanges(task.id)} />
         {!docked && <IconButton icon="chevron-right" title={tx("Hide changes")} size="small" onClick={onHide} />}
       </div>

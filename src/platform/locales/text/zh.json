@@ -1,4 +1,11 @@
 {
+  "Roll back the changes to {path}?": "是否回滚对 {path} 的更改？",
+  "Roll back the changes to {count} files?": "是否回滚对 {count} 个文件的更改？",
+  "They go back to how they were when the task started, in the task's worktree.": "它们会在任务的工作树中恢复为任务开始时的内容。",
+  "They go back to how they were when the task started. Edits of yours made to them since then are lost too; edits from before the task are kept.": "它们会恢复为任务开始时的内容。任务开始后你对它们做的修改也会丢失；任务开始前的修改会保留。",
+  "Cannot roll back the changes": "无法回滚更改",
+  "Rollback Selected Changes…": "回滚所选更改…",
+  "Rollback All Changes…": "回滚全部更改…",
   "JUnit": "JUnit",
   "Run JUnit tests through the module's Maven or Gradle build": "通过模块的 Maven 或 Gradle 构建运行 JUnit 测试",
   "Test kind": "测试类型",

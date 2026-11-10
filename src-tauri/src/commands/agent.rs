@@ -325,6 +325,18 @@ pub async fn agent_changes(window: Window, state: State<'_, AppState>, task: Str
     agent::changes(&state.host, window.label(), task).await
 }
 
+/// Rollback: the task's changed files among `paths` (all without) back as they were when it started.
+#[tauri::command]
+#[specta::specta]
+pub async fn agent_rollback_changes(
+    window: Window,
+    state: State<'_, AppState>,
+    task: String,
+    paths: Option<Vec<String>>,
+) -> IdeResult<()> {
+    agent::rollback_changes(&state.host, window.label(), task, paths).await
+}
+
 /// Content of `path` when the task started (left side of its diff).
 #[tauri::command]
 #[specta::specta]

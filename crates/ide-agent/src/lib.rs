@@ -325,6 +325,9 @@ struct TaskFile {
     /// In the project's own checkout: files already changed when the task started.
     #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
     before: BTreeMap<String, worktree::Stamp>,
+    /// The folder (in the task store) with copies of the `before` files, for rolling back.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    saved: Option<String>,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     subagents: Vec<SavedSubagent>,
     /// Turns to drop from the session once it is loaded (a fork of an earlier point).
@@ -341,6 +344,7 @@ struct TaskState {
     conversation: Conversation,
     wanted: Vec<AgentConfigChoice>,
     before: Arc<BTreeMap<String, worktree::Stamp>>,
+    saved: Option<String>,
     pending_rollback: u32,
     /// The user named the task; see `TaskFile::title_renamed`.
     title_renamed: bool,
@@ -630,9 +634,24 @@ impl AgentManager {
             }));
         }
         let now = now_ms();
+        let id = uuid::Uuid::new_v4().simple().to_string();
+        // Copies of the files the user had changed already, for rolling back the task's changes to them.
+        let saved = if before.is_empty() {
+            None
+        } else {
+            let name = format!("{id}.before");
+            let (dir, at, files) = (self.shared.paths.store_dir.join(&name), cwd.clone(), before.clone());
+            match blocking(move || worktree::save_before(&at, &files, &dir)).await {
+                Ok(saved) => saved.then_some(name),
+                Err(e) => {
+                    tracing::warn!("saving the changed files of agent task {id}: {e}");
+                    None
+                }
+            }
+        };
         let task = AgentTask {
             project_root,
-            id: uuid::Uuid::new_v4().simple().to_string(),
+            id,
             title,
             provider: spec.id.clone(),
             model: model_of(&config),
@@ -660,6 +679,7 @@ impl AgentManager {
             entries: Vec::new(),
             wanted: req.config,
             before,
+            saved,
             subagents: Vec::new(),
             pending_rollback: 0,
             title_renamed: false,
@@ -870,6 +890,7 @@ impl AgentManager {
                 entries,
                 wanted: s.wanted.clone(),
                 before: (*s.before).clone(),
+                saved: s.saved.clone(),
                 subagents: s.conversation.saved_subagents(),
                 pending_rollback: total - keep,
                 title_renamed: s.title_renamed,
@@ -1133,6 +1154,12 @@ impl AgentManager {
         self.tasks.write().remove(id);
         *task.deleted.lock() = true;
         let _ = std::fs::remove_file(self.shared.paths.store_dir.join(format!("{id}.json")));
+        let saved = task.state.lock().saved.clone();
+        if let Some(saved) = saved
+            && !self.tasks.read().values().any(|t| t.state.lock().saved.as_ref() == Some(&saved))
+        {
+            let _ = std::fs::remove_dir_all(self.shared.paths.store_dir.join(saved));
+        }
         self.shared.emit(AgentEvent::Removed { id: id.to_owned() });
         Ok(())
     }
@@ -1149,6 +1176,41 @@ impl AgentManager {
     pub async fn base_text(&self, id: &str, path: PathBuf) -> IdeResult<Option<String>> {
         let (cwd, base) = self.task(id)?.cwd_and_base();
         blocking(move || worktree::file_at(&cwd, &path, &base)).await
+    }
+
+    /// Rollback: puts the task's changed files among `rel_paths` (all with `None`) back as they
+    /// were when it started (files the user had changed then, as the user left them).
+    pub async fn rollback_changes(&self, id: &str, rel_paths: Option<Vec<String>>) -> IdeResult<()> {
+        let task = self.task(id)?;
+        if task.state.lock().busy {
+            return Err(IdeError::invalid("the agent is working: stop it before rolling back its changes"));
+        }
+        let (cwd, base) = task.cwd_and_base();
+        let (before, saved) = {
+            let s = task.state.lock();
+            (s.before.clone(), s.saved.as_ref().map(|name| self.shared.paths.store_dir.join(name)))
+        };
+        let restamped = blocking(move || {
+            let changes = worktree::without_untouched(worktree::changes(&cwd, &base)?, &before);
+            let mut restamped = Vec::new();
+            for change in changes.iter().filter(|c| rel_paths.as_ref().is_none_or(|p| p.contains(&c.rel_path))) {
+                worktree::restore(&cwd, &base, change, &before, saved.as_deref())?;
+                // Back to the user's own edits: not a change of the task any more.
+                if before.contains_key(&change.rel_path) {
+                    restamped.push((change.rel_path.clone(), worktree::stamp(&change.path.0)));
+                }
+            }
+            Ok(restamped)
+        })
+        .await?;
+        if !restamped.is_empty() {
+            let mut s = task.state.lock();
+            let mut before = (*s.before).clone();
+            before.extend(restamped);
+            s.before = Arc::new(before);
+        }
+        task.persist();
+        Ok(())
     }
 
     /// Stops every agent (project closed).
@@ -1176,6 +1238,7 @@ impl Task {
                 conversation,
                 wanted: file.wanted,
                 before: Arc::new(file.before),
+                saved: file.saved,
                 pending_rollback: file.pending_rollback,
                 title_renamed: file.title_renamed,
                 busy: false,
@@ -1288,6 +1351,7 @@ impl Task {
                 entries: s.conversation.main.entries.clone(),
                 wanted: s.wanted.clone(),
                 before: (*s.before).clone(),
+                saved: s.saved.clone(),
                 subagents: s.conversation.saved_subagents(),
                 pending_rollback: s.pending_rollback,
                 title_renamed: s.title_renamed,
