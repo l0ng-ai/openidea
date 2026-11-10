@@ -834,3 +834,103 @@ Runs after Plan 7. Before any 8.x phase, read [LARAVEL-ROADMAP.md](LARAVEL-ROADM
 
 - [ ] Phase 8.31.b: Open the created controller at its method
       Phase 8.31's "Create controller …" and "Add method …" quick-fixes return plain `WorkspaceEdit`s, and the front end opens nothing after applying a quick-fix's edit (`runInteractiveCodeAction` only opens files a command reports created). Let a code action name the location to open after its edit (for example an optional `open: Location` on `CodeAction`, filled by the PHP engine's quick-fixes and kept through `lsp_execute_code_action`), and open the new or edited controller with the caret in the new method's body. Run `pnpm gen:bindings` for the changed type. Tests: an engine test that the fixes carry the method's location, a host test that applying one returns it, and a frontend test that `applyCodeAction` opens it.
+
+## Plan 9: Hardening
+
+The gaps that the follow-ups in `PROGRESS.md`, the review in `differential.md` and the known limits in `laravel.md` left after Plans 0–8, most important first: safety of refactorings, type inference that real Laravel code depends on, speed, the remaining Laravel gaps and fuller refactorings. The same rules apply. Every phase re-checks the corpora or the real applications it touches (`scripts/php-corpus.sh`, `scripts/laravel-apps.sh`) and records numbers in the document it names.
+
+- [ ] Phase 9.1: Safe rename
+      Rename (`navigate::rename`, phase 3.3) applies edits without checking that the new name is free. Add conflict checks, reported in `prepare_rename` or as a refusal with the reason (en/zh text):
+  - a method, property or constant of that name already in the class, its parents, children or used traits, with the right visibility
+  - a class, function or constant of that name already in the namespace
+  - an import in an affected file that already uses the short name, which is resolved by writing the name fully qualified there
+  - a variable of that name already in scope
+
+  Also:
+  - Find and rename `define('X', …)` constants.
+  - List dynamic uses that can't be renamed safely (`$o->$m`, `$f()`, `call_user_func('f')`, string callables) as "possible usages", without editing them.
+  - Scope the docblock `$name` scan to the function's own docblocks, not nested closures.
+
+  Tests: a fixture per conflict, define constants, dynamic uses, a nested closure with a same-named variable.
+
+- [ ] Phase 9.2: Closure parameters and array flow
+      Close the type-inference gaps listed under "Follow-ups" in `docs/php-engine/differential.md`:
+  - **Closure parameters:** typed from an expected callable whose type names a method template. In `whereHas('posts', function ($query) …)`, `Closure(Builder<TRelatedModel>)` binds `TRelatedModel` to its bound, or better to the relation's model when the provider knows it. This is the most common untyped variable in Laravel code.
+  - **By-reference aliases:** `$x = &$a['k']`.
+  - **`foreach` over array elements written earlier.**
+  - **Shapes through destructuring:** `[$a, $b] = $this->f()`.
+  - **By-reference templates:** `reset()`/`end()` style `@meta` templates bound through by-reference parameters.
+  - **`$this` in anonymous classes.**
+  - **Literal types inside callable signatures.**
+  - **Inaccessible properties:** the magic `@property` wins for goto and hover when the real property isn't accessible from the caller.
+
+  Run the comparison harness on the three corpora again. Hover must not drop below 98.1% or definition below 98.5%, and the new numbers go in `differential.md`. Tests: caret fixtures per case.
+
+- [ ] Phase 9.3: Type operators and mixins
+      The type model approximates (`PROGRESS.md` 2.1/2.6):
+  - `key-of`/`value-of`
+  - indexed access `T[K]`
+  - `int-mask`
+  - object shapes
+  - conditional return types (`($x is string ? A : B)`)
+  - type aliases (`@phpstan-type`, `@psalm-type`, `@phpstan-import-type`)
+  - `@mixin Foo<T>` arguments
+  - `@template` on closures
+
+  Evaluate them where their arguments are known. Keep the current widening when they aren't. Check against the corpora as in 9.2 and record the change. Tests: type unit tests and caret fixtures.
+
+- [ ] Phase 9.4: Speed: cold model and Inspect Code
+      Two speed items:
+  - **Monica's cold model build** rose from 358 ms (8.23) to 542 ms (8.29), and nobody looked into why. Profile it, fix what regressed, and store the per-file Laravel model parts of 8.22 in the index database (keyed by content hash), so a new session doesn't rebuild them.
+  - **Inspect Code** checks engine files one after another on a single blocking thread (4.10). Run it in parallel (rayon, respecting `CancellationToken`), with progress.
+
+  Add budgets to `perf/budgets.json`:
+  - cold model on Monica under 400 ms
+  - a warm start under 150 ms with stored parts
+  - Inspect Code over Monica's own code under 20 s in a release build
+
+  Record the numbers in `laravel.md` and `performance.md`.
+
+- [ ] Phase 9.5: Laravel gaps
+      From "Known limits" in `laravel.md`:
+  - **Artisan:**
+    - an "unknown Artisan command" inspection, only when `vendor/` is present so package commands are known
+    - completion of option keys in `Artisan::call('x', ['--opt' => …])`
+  - **Livewire:** renaming a component class or alias edits `<livewire:…>` tags and `@livewire(…)` names. Discovered (unaliased) names can be renamed.
+  - **Views:** variables passed to a template are carried through nested `@include` and to `@each`'s item variable.
+  - **Eloquent:** `*_count` properties follow the query that loaded the model (flow-sensitive), not project-wide `withCount` calls.
+  - **Translations:** find usages starting from a JSON locale file.
+  - **Blade components:** an "add constructor parameter" quick-fix for class components, and `@aware` completion from the parent.
+
+  Tests: caret, rename and inspection fixtures, plus `real_app_checklist` on Monica and Bagisto with no new false positives.
+
+- [ ] Phase 9.6: Extract method and inline, complete
+      Extract method (5.3):
+  - a dialog (frontend, en/zh) for name, parameters (rename, reorder, include or exclude), visibility, static and return type, built on an engine query in the style of the other refactoring dialogs
+  - detection of duplicates of the extracted code in the class, with an option to replace them
+  - closures and arrow functions as the enclosing scope
+
+  Inline (5.4): "inline all usages and remove the declaration" for variables, methods and functions, and inlining inside closures. Tests: refactoring fixtures, plus frontend dialog tests.
+
+- [ ] Phase 9.7: Change signature, move class and generate, complete
+      **Change signature (5.5):**
+  - update callable strings and arrays (`'f'`, `[$o, 'm']`, `[Foo::class, 'm']`), `new static`/`new self` and `$this->__construct()`
+  - reorder, add and remove `@param` lines
+  - visibility and name in the dialog
+
+  **Move class:** move one class out of a file that holds several into its own PSR-4 file, and check that the new path matches the class name.
+
+  **Generate (5.7):**
+  - a member chooser dialog for getters/setters, constructor and overrides
+  - `__toString` and equals generators
+  - accessors of untyped properties take their `@var` type
+
+  Tests: refactoring and generator snapshot fixtures, plus frontend tests.
+
+- [ ] Phase 9.8: Final verification
+      Run the checks that Plans 1–8 deferred, and fix what they find:
+  - `cargo nextest run --workspace`
+  - every ignored PHP test that the corpora and apps allow (`language_smoke php`, the comparison harness, `real_app_checklist`, the memory comparison)
+  - `pnpm test`, `pnpm e2e` for PHP flows if they exist, and `pnpm perf:rust`
+
+  Failures that come from this machine's `core.autocrlf` (`known-failures.txt`) are reported, not fixed here. Anything too large to fix becomes a follow-up phase. Record the results in `PROGRESS.md` and in a short "Status" section at the top of `laravel.md` and `performance.md`.
