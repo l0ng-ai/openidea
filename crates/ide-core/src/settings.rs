@@ -84,15 +84,25 @@ pub struct AgentSettings {
     pub fold_turns: bool,
     /// Streaming text is revealed at a steady pace rather than chunk by chunk.
     pub smooth_text: bool,
+    #[serde(deserialize_with = "or_default")]
+    #[specta(type = ThinkingDisplay)]
     pub thinking: ThinkingDisplay,
+    #[serde(deserialize_with = "or_default")]
+    #[specta(type = ToolCallDisplay)]
     pub tool_calls: ToolCallDisplay,
     /// A tool call's output (a command's, a diff) is shown without opening it.
     pub expand_tool_output: bool,
+    #[serde(deserialize_with = "or_default")]
+    #[specta(type = SendKey)]
     pub send_with: SendKey,
     /// What sending does while the agent works: queue the message for after the turn, or
     /// send it into the turn.
+    #[serde(deserialize_with = "or_default")]
+    #[specta(type = WhileRunning)]
     pub while_running: WhileRunning,
     /// Settings new tasks of an agent start with: agent id → option id → value.
+    #[serde(deserialize_with = "agent_defaults")]
+    #[specta(type = BTreeMap<String, BTreeMap<String, String>>)]
     pub defaults: BTreeMap<String, BTreeMap<String, String>>,
 }
 
@@ -113,6 +123,40 @@ impl Default for AgentSettings {
             defaults: BTreeMap::new(),
         }
     }
+}
+
+/// A hand-edited value these settings don't know reads as the default, rather than
+/// failing the whole settings file.
+fn or_default<'de, D, T>(d: D) -> Result<T, D::Error>
+where
+    D: serde::Deserializer<'de>,
+    T: serde::de::DeserializeOwned + Default,
+{
+    Ok(serde_json::from_value(serde_json::Value::deserialize(d)?).unwrap_or_default())
+}
+
+/// [`AgentSettings::defaults`], keeping only the text values of each agent's table.
+fn agent_defaults<'de, D>(d: D) -> Result<BTreeMap<String, BTreeMap<String, String>>, D::Error>
+where
+    D: serde::Deserializer<'de>,
+{
+    let serde_json::Value::Object(agents) = serde_json::Value::deserialize(d)? else { return Ok(BTreeMap::new()) };
+    Ok(agents
+        .into_iter()
+        .filter_map(|(agent, options)| match options {
+            serde_json::Value::Object(options) => Some((
+                agent,
+                options
+                    .into_iter()
+                    .filter_map(|(k, v)| match v {
+                        serde_json::Value::String(v) => Some((k, v)),
+                        _ => None,
+                    })
+                    .collect(),
+            )),
+            _ => None,
+        })
+        .collect())
 }
 
 /// How the agent's reasoning shows.
@@ -1414,6 +1458,22 @@ mod tests {
         assert_eq!(json["agents"]["showUsageLimits"], false);
         let restored: Settings = serde_json::from_value(json).unwrap();
         assert_eq!(restored.agents, settings.agents);
+    }
+
+    #[test]
+    fn hand_edited_agent_values_it_does_not_know_keep_the_rest() {
+        let settings: Settings = serde_json::from_str(
+            r#"{"editor":{"fontSize":17},"agents":{"thinking":"open","sendWith":"modEnter",
+                "defaults":{"claude":{"model":"opus","effort":3},"codex":"x"}}}"#,
+        )
+        .unwrap();
+        assert_eq!(settings.editor.font_size, 17.0);
+        assert_eq!(settings.agents.thinking, ThinkingDisplay::Auto);
+        assert_eq!(settings.agents.send_with, SendKey::ModEnter);
+        assert_eq!(
+            settings.agents.defaults,
+            BTreeMap::from([("claude".into(), BTreeMap::from([("model".into(), "opus".into())]))])
+        );
     }
 
     #[test]

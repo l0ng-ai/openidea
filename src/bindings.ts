@@ -1786,7 +1786,10 @@ export type AgentRetry = {
 };
 
 /**  Settings › Agents: what the conversation shows and how messages are sent. */
-export type AgentSettings = {
+export type AgentSettings = AgentSettings_Serialize | AgentSettings_Deserialize;
+
+/**  Settings › Agents: what the conversation shows and how messages are sent. */
+export type AgentSettings_Deserialize = {
 	/**  Context window use. */
 	showContextUsage?: boolean,
 	/**  Time the agent spent on the task. */
@@ -1811,6 +1814,34 @@ export type AgentSettings = {
 	whileRunning?: WhileRunning,
 	/**  Settings new tasks of an agent start with: agent id → option id → value. */
 	defaults?: { [key in string]: { [key in string]: string } },
+};
+
+/**  Settings › Agents: what the conversation shows and how messages are sent. */
+export type AgentSettings_Serialize = {
+	/**  Context window use. */
+	showContextUsage: boolean,
+	/**  Time the agent spent on the task. */
+	showWorkTime: boolean,
+	/**  The account's usage-limit windows (Claude's 5-hour and weekly limits). */
+	showUsageLimits: boolean,
+	/**  What the session has cost so far, as the agent reports it. */
+	showCost: boolean,
+	/**  A finished turn's work folds into one line under its message, leaving the reply. */
+	foldTurns: boolean,
+	/**  Streaming text is revealed at a steady pace rather than chunk by chunk. */
+	smoothText: boolean,
+	thinking: ThinkingDisplay,
+	toolCalls: ToolCallDisplay,
+	/**  A tool call's output (a command's, a diff) is shown without opening it. */
+	expandToolOutput: boolean,
+	sendWith: SendKey,
+	/**
+	 *  What sending does while the agent works: queue the message for after the turn, or
+	 *  send it into the turn.
+	 */
+	whileRunning: WhileRunning,
+	/**  Settings new tasks of an agent start with: agent id → option id → value. */
+	defaults: { [key in string]: { [key in string]: string } },
 };
 
 /**  Where an agent comes from. */
@@ -8060,7 +8091,7 @@ export type Settings_Deserialize = {
 	runTargets?: RunTarget[],
 	cmake?: CMakeSettings_Deserialize,
 	/**  Settings › Agents. */
-	agents?: AgentSettings,
+	agents?: AgentSettings_Deserialize,
 	/**  Agents › MCP Server (global only). */
 	mcpServer?: McpServerSettings,
 	/**  Plugin settings (`[contributes.settings]`): plugin id → its values by key. */
@@ -8122,7 +8153,7 @@ export type Settings_Serialize = {
 	runTargets: RunTarget[],
 	cmake: CMakeSettings_Serialize,
 	/**  Settings › Agents. */
-	agents: AgentSettings,
+	agents: AgentSettings_Serialize,
 	/**  Agents › MCP Server (global only). */
 	mcpServer: McpServerSettings,
 	/**  Plugin settings (`[contributes.settings]`): plugin id → its values by key. */
