@@ -262,6 +262,8 @@ const ICONS = {
   "preview-details": "general/previewHorizontally",
   "preview-only": "general/previewOnly",
   maximize: "image/fitContent",
+  fullscreen: "openidea/general/fullscreen",
+  download: "openidea/general/download",
   "zoom-in": "openidea/general/zoomIn",
   "zoom-out": "openidea/general/zoomOut",
   "actual-size": "openidea/general/actualZoom",
