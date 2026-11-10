@@ -961,7 +961,7 @@ const FILE_NAMES = table({
 /** Name patterns, tried in order (lower-case names). */
 const NAME_PATTERNS: readonly (readonly [RegExp, IconName])[] = [
   [/^(dockerfile|containerfile)[.-]/, "file-docker"],
-  [/^(?:(?:docker-)?compose(?:[._-][\w.-]+)?|[\w.-]+[._-]compose(?:[._-][\w.-]+)?)\.ya?ml$/, "file-docker"],
+  [/^.*compose.*\.ya?ml$/, "file-docker"],
   [/^\.env(\.|$)/, "file-dotenv"],
   [/^(licen[cs]e|copying)(-[\w.-]+|\.(md|txt|rst))?$/, "file-license"],
   [/^requirements([.-][\w.-]*)?\.(txt|in)$/, "file-requirements"],

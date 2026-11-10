@@ -468,6 +468,22 @@ mod tests {
     use serde_json::json;
 
     #[test]
+    fn compose_file_choices_are_project_settings_and_survive_reload() {
+        let tmp = tempfile::tempdir().unwrap();
+        let cfg = tmp.path().join("cfg");
+        let proj = tmp.path().join("proj");
+        std::fs::create_dir_all(proj.join(".openidea")).unwrap();
+        let store = SettingsStore::load(&cfg, Some(&proj));
+        let choices = json!({"docker/stack.yml": "kept", "manifest.yml": "excluded"});
+        store.set(SettingsScope::Project, "files.composeFileOverrides", choices.clone()).unwrap();
+        let loaded = SettingsStore::load(&cfg, Some(&proj)).effective();
+        assert_eq!(serde_json::to_value(&loaded.files.compose_file_overrides).unwrap(), choices);
+        assert!(SettingsStore::load(&cfg, None).effective().files.compose_file_overrides.is_empty());
+        assert!(store.set(SettingsScope::Project, "files.composeFileOverrides", json!({"bad.yml": "yes"})).is_err());
+        assert_eq!(serde_json::to_value(&store.effective().files.compose_file_overrides).unwrap(), choices);
+    }
+
+    #[test]
     fn custom_color_schemes_are_user_settings_and_survive_reload() {
         let tmp = tempfile::tempdir().unwrap();
         let cfg = tmp.path().join("cfg");

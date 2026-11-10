@@ -811,6 +811,8 @@
   "This file was auto-detected as a Docker Compose configuration based on its content": "This file was auto-detected as a Docker Compose configuration based on its content",
   "Not a Compose file": "Not a Compose file",
   "Keep as Docker Compose": "Keep as Docker Compose",
+  "Set Docker Compose File Detection": "Set Docker Compose File Detection",
+  "Could not save Docker Compose file detection": "Could not save Docker Compose file detection",
   "Compose Up": "Compose Up",
   "Start the service at the caret, or all services in the active Docker Compose file": "Start the service at the caret, or all services in the active Docker Compose file"
 }

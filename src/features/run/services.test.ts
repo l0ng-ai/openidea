@@ -384,7 +384,7 @@ describe("hidden configurations", () => {
     const items = runServiceItems(
       [compose, dockerfile, image],
       [session("s1", compose, "running", 1), session("s2", dockerfile, "finished", 2)],
-      DEFAULT_TYPES,
+      [...DEFAULT_TYPES, "docker-compose", "docker-dockerfile", "docker-image"],
       [compose.id, dockerfile.id, image.id],
     );
     expect(items).toEqual([]);

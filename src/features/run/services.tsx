@@ -327,7 +327,7 @@ export function runServiceItems(
 ): ServiceTreeItem[] {
   const executions = serviceSessions(sessions, debug);
   const latest = currentServiceSessions(executions);
-  const kinds = [...added];
+  const kinds = added.filter((kind) => !DOCKER_PROVIDER_KINDS.has(kind));
   const shown = (s: ServiceSession) => liveServiceSession(s) || !removed(s.config.id);
   for (const s of executions)
     if (shown(s) && !DOCKER_PROVIDER_KINDS.has(s.config.kind) && !kinds.includes(s.config.kind))

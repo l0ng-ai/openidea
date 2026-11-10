@@ -11,6 +11,8 @@ import { useProject } from "@/platform/project";
 import { gutterIconMarkup, showContextMenu, type MenuItem } from "@/ui";
 import {
   fileTargets,
+  COMPOSE_SCAN_LIMIT,
+  isComposeFile,
   isDockerfile,
   isYamlFile,
   noteComposeContent,
@@ -38,8 +40,10 @@ const targetsField = StateField.define<Placed[]>({
 });
 
 function place(state: EditorState, path: string): Placed[] {
+  const prefix = state.doc.sliceString(0, Math.min(state.doc.length, COMPOSE_SCAN_LIMIT));
+  noteComposeContent(path, prefix);
+  if (!isDockerfile(path) && !isComposeFile(path, prefix)) return [];
   const text = state.doc.toString();
-  noteComposeContent(path, text);
   return fileTargets(path, text)
     .filter((t) => t.line < state.doc.lines)
     .map((target) => ({ target, pos: state.doc.line(target.line + 1).from }));
@@ -81,12 +85,18 @@ class Marker extends GutterMarker {
     );
   }
   override toDOM(): Node {
-    const el = document.createElement("div");
+    const el = document.createElement("button");
+    el.type = "button";
     el.className = styles.marker ?? "";
     el.title = targetTitle(this.target, this.path);
-    el.setAttribute("role", "button");
     el.setAttribute("aria-label", el.title);
     el.innerHTML = gutterIconMarkup(this.target.kind === "composeAll" ? "gutter-run-all" : "gutter-run") ?? "";
+    el.onclick = (event) => {
+      event.preventDefault();
+      event.stopPropagation();
+      const rect = el.getBoundingClientRect();
+      showContextMenu({ x: rect.left, y: rect.bottom + 2 }, menu(this.target, this.path));
+    };
     return el;
   }
 }
@@ -101,17 +111,6 @@ function makeGutter(path: string): Extension {
         true,
       ),
     initialSpacer: () => new Marker({ kind: "composeAll", line: 0 }, path),
-    domEventHandlers: {
-      mousedown: (view, block, event) => {
-        const placed = view.state.field(targetsField).find((p) => p.pos === block.from);
-        if (!placed || (event as MouseEvent).button !== 0) return false;
-        const el = (event.target as HTMLElement).closest?.(`.${styles.marker}`) ?? (event.target as HTMLElement);
-        const rect = el.getBoundingClientRect();
-        event.preventDefault();
-        showContextMenu({ x: rect.left, y: rect.bottom + 2 }, menu(placed.target, path));
-        return true;
-      },
-    },
   });
 }
 

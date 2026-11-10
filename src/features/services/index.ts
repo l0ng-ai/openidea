@@ -22,7 +22,14 @@ import {
 } from "@/workbench/contributions";
 import { useProject } from "@/platform/project";
 import { addFileIconProvider } from "@/ui";
-import { composeAutoDetectBanner, composeFileIcon, composeTargetAtLine, isComposeFile } from "./compose";
+import {
+  activateComposeFiles,
+  composeAutoDetectBanner,
+  composeFileIcon,
+  composeTargetAtLine,
+  isComposeFile,
+  setComposeFileOverride,
+} from "./compose";
 import { dockerGutter } from "./dockerGutter";
 import { gutterActions, registerDockerRunTypes } from "./runTypes";
 import { ServicesDialogHost } from "./dialogs";
@@ -55,6 +62,7 @@ const currentConnection = () => selectedTarget()?.conn ?? connections()[0]?.id ?
 
 export function activate(): () => void {
   const disposers = [
+    activateComposeFiles(),
     registerToolWindow({
       id: SERVICES_WINDOW,
       title: "Services",
@@ -87,6 +95,16 @@ export function activate(): () => void {
     registerEditorContribution({ id: "services.dockerGutter", order: 56, extensions: dockerGutter }),
     registerDockerRunTypes(),
     registerActions([
+      {
+        id: "docker.setComposeFileOverride",
+        title: "Set Docker Compose File Detection",
+        category: "Docker",
+        hidden: true,
+        run: ({ arg }) => {
+          const { path, status } = (arg ?? {}) as { path?: string; status?: string };
+          if (path && (status === "kept" || status === "excluded")) return setComposeFileOverride(path, status);
+        },
+      },
       {
         id: "services.show",
         title: "Services",
