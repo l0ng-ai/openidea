@@ -20,7 +20,7 @@ pub enum DbDriver {
     /// Microsoft SQL Server.
     SqlServer,
     Clickhouse,
-    /// Oracle Database (via Oracle Instant Client).
+    /// Oracle Database (pure-Rust thin driver, no client library).
     Oracle,
 }
 
@@ -88,8 +88,6 @@ pub struct DbOptions {
     pub auto_disconnect_secs: Option<u32>,
     /// PostgreSQL: show only the configured database, its schemas right under the data source.
     pub single_database: bool,
-    /// Oracle: directory of the Oracle Instant Client (empty: `ORACLE_HOME` / system search path).
-    pub instant_client: String,
 }
 
 /// Schemas tab: the databases / schemas the tree shows. Names may use `*` and `?`.
@@ -190,6 +188,12 @@ pub struct DataSource {
     /// Stored app-wide and listed in every project. Implied by the file it is read from,
     /// so not written to it.
     pub global: bool,
+    /// Plugin id owning this source; absent for user-managed sources.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub plugin_owner: Option<String>,
+    /// Id private to the owner, never used as a connection target.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub plugin_source_id: Option<String>,
 }
 
 impl Default for DataSource {
@@ -219,6 +223,8 @@ impl Default for DataSource {
             introspection: DbIntrospection::default(),
             properties: Vec::new(),
             global: false,
+            plugin_owner: None,
+            plugin_source_id: None,
         }
     }
 }
@@ -262,7 +268,7 @@ pub fn scheme_driver(scheme: &str) -> Option<DbDriver> {
     match scheme.to_ascii_lowercase().as_str() {
         "postgres" | "postgresql" | "pgsql" | "redshift" | "cockroachdb" | "cockroach" | "yugabytedb"
         | "timescaledb" | "greenplum" => Some(DbDriver::Postgres),
-        "mysql" | "mariadb" | "tidb" | "singlestore" | "memsql" | "oceanbase" => Some(DbDriver::Mysql),
+        "mysql" | "mariadb" | "tidb" | "singlestore" | "memsql" | "oceanbase" | "starrocks" => Some(DbDriver::Mysql),
         "sqlserver" | "mssql" | "mssqlserver" => Some(DbDriver::SqlServer),
         "sqlite" | "sqlite3" => Some(DbDriver::Sqlite),
         "clickhouse" | "http" | "https" => Some(DbDriver::Clickhouse),
@@ -551,6 +557,7 @@ mod tests {
         assert_eq!((u.host.as_str(), u.port, u.user.as_str()), ("::1", None, "root"));
         assert_eq!(parse_url("jdbc:redshift://r:5439/dev").unwrap().driver, Some(DbDriver::Postgres));
         assert_eq!(parse_url("tidb://h:4000").unwrap().driver, Some(DbDriver::Mysql));
+        assert_eq!(parse_url("starrocks://h:9030").unwrap().driver, Some(DbDriver::Mysql));
         assert_eq!(parse_url("sqlite:/tmp/a.db").unwrap().file.as_deref(), Some("/tmp/a.db"));
         let u = parse_url("oracle://scott:tiger@db.local:1521/ORCLPDB1").unwrap();
         assert_eq!(u.driver, Some(DbDriver::Oracle));

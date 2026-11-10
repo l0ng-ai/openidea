@@ -3,7 +3,8 @@
  * (Apache-2.0 / MIT, see THIRD_PARTY_LICENSES.md), vendored as-is under
  * `./expui/<group>/<name>.svg` with their `_dark` and `@20x20` variants. File types
  * whose JetBrains icons are not open source use OpenIDEA's own icons drawn in the same
- * style, under `./openidea/<group>/<name>.svg` (paths prefixed `openidea/`). Names are the
+ * style, under `./openidea/<group>/<name>.svg` (paths prefixed `openidea/`). Project type
+ * logos under `./brands/` come from Simple Icons (CC0-1.0; see THIRD_PARTY_LICENSES.md). Names are the
  * contract used by actions (`Action.icon`) and contributions (`ToolWindowContribution.icon`).
  *
  * Rendering: the SVG markup is bundled as raw strings and inlined, so there are no
@@ -24,13 +25,15 @@ import clsx from "clsx";
 import { create } from "zustand";
 import styles from "./icons.module.css";
 
-const RAW = import.meta.glob<string>(["./expui/**/*.svg", "./openidea/**/*.svg"], {
+const RAW = import.meta.glob<string>(["./expui/**/*.svg", "./openidea/**/*.svg", "./brands/*.svg"], {
   query: "?raw",
   import: "default",
   eager: true,
 });
 
 const ICONS = {
+  "project-flutter": "brands/flutter",
+  "project-vite": "brands/vite",
   // Files & folders
   folder: "nodes/folder",
   "folder-open": "nodes/folder",
@@ -57,6 +60,9 @@ const ICONS = {
   "gradle-project": "gradle/gradle",
   "gradle-module": "gradle/gradleSubproject",
   "spring-boot": "openidea/runConfigurations/springBoot",
+  tomcat: "openidea/runConfigurations/tomcat",
+  server: "openidea/runConfigurations/tomcat",
+  visualgc: "openidea/runConfigurations/visualgc",
   file: "fileTypes/text",
   "file-unknown": "fileTypes/unknown",
   "file-code": "fileTypes/anyType",
@@ -64,6 +70,8 @@ const ICONS = {
   "file-json": "fileTypes/json",
   "file-md": "fileTypes/markdown",
   "file-image": "fileTypes/image",
+  paperclip: "openidea/general/paperclip",
+  image: "openidea/general/image",
   "file-config": "fileTypes/config",
   "file-python": "fileTypes/python",
   "file-jupyter": "fileTypes/jupyter",
@@ -147,6 +155,22 @@ const ICONS = {
   "file-latex": "openidea/fileTypes/latex",
   "file-rst": "fileTypes/rst",
   "file-docker": "fileTypes/docker",
+  "docker-connected": "docker/dockerConnected",
+  "docker-compose-running": "docker/containersRunning",
+  "docker-compose-stopped": "docker/composeProjectStopped",
+  "docker-compose-service-running": "docker/dockerComposeServiceUp",
+  "docker-compose-service-stopped": "docker/dockerComposeServiceStopped",
+  "docker-devcontainer": "docker/devContainers",
+  "docker-containers": "docker/containersList",
+  "docker-images": "docker/imagesList",
+  "docker-networks": "docker/network",
+  "docker-volumes": "docker/volume",
+  "docker-container-running": "docker/singleRunningContainer",
+  "docker-container-stopped": "docker/singleStoppedContainer",
+  "docker-image": "docker/singleImage",
+  "docker-registry": "docker/dockerRegistry",
+  "docker-pull": "docker/pullImage",
+  "docker-push": "docker/pushImage",
   "file-makefile": "fileTypes/makefile",
   "file-cmake": "openidea/fileTypes/cmake",
   "file-bazel": "fileTypes/bazel",
@@ -198,12 +222,14 @@ const ICONS = {
   "agent-auggie": "openidea/agents/auggie",
   "agent-kiro": "openidea/agents/kiro",
   "agent-vibe": "openidea/agents/vibe",
+  "agent-omp": "openidea/agents/omp",
   "toolwindow-maven": "toolwindows/maven",
   "toolwindow-gradle": "toolwindows/gradle",
   "toolwindow-build": "toolwindows/build",
   // General UI
   "chevron-right": "general/chevronRight",
   "chevron-down": "general/chevronDown",
+  "toolbar-expand": "general/chevronDownLarge",
   "chevron-up": "general/chevronUp",
   "chevron-left": "general/chevronLeft",
   close: "general/close",
@@ -224,6 +250,7 @@ const ICONS = {
   "search-history": "inline/searchHistory",
   filter: "general/filter",
   refresh: "general/refresh",
+  quote: "openidea/general/quote",
   settings: "general/settings",
   help: "openidea/general/help",
   "page-first": "openidea/general/pageFirst",
@@ -235,12 +262,16 @@ const ICONS = {
   "split-horizontal": "general/splitHorizontally",
   "editor-only": "general/editorOnly",
   "editor-preview": "general/editorPreview",
+  "preview-details": "general/previewHorizontally",
   "preview-only": "general/previewOnly",
   maximize: "image/fitContent",
+  fullscreen: "openidea/general/fullscreen",
+  download: "openidea/general/download",
   "zoom-in": "openidea/general/zoomIn",
   "zoom-out": "openidea/general/zoomOut",
   "actual-size": "openidea/general/actualZoom",
   chessboard: "openidea/general/chessboard",
+  eyedropper: "openidea/general/eyedropper",
   minimize: "general/openInToolWindow",
   "main-menu": "openidea/general/mainMenu",
   "window-minimize": "openidea/general/windowMinimize",
@@ -271,6 +302,7 @@ const ICONS = {
   "arrow-right": "general/right",
   "arrow-up": "general/up",
   "arrow-down": "general/down",
+  "scroll-to-end": "general/scrollDown",
   undo: "general/undo",
   redo: "general/redo",
   sun: "meetNewUi/lightTheme",
@@ -348,12 +380,19 @@ const ICONS = {
   success: "status/success",
   // Run / debug
   run: "run/run",
+  "test-passed": "run/testPassed",
+  "test-failed": "run/testFailed",
+  "test-ignored": "run/testIgnored",
+  "test-pending": "run/testNotRunYet",
+  "test-show-passed": "run/showPassed",
+  "test-show-ignored": "run/showIgnored",
   debug: "run/debug",
   "run-coverage": "run/runWithCoverage",
   profile: "run/profile",
   "toolwindow-coverage": "toolwindows/coverage",
   "toolwindow-profiler": "toolwindows/profiler",
   "toolwindow-logcat": "openidea/fileTypes/log",
+  "gutter-navigate": "general/autoscrollToSource",
   "gutter-run": "gutter/run",
   "gutter-run-all": "actions/runAll",
   "gutter-run-passed": "gutter/runSuccess",
@@ -424,6 +463,8 @@ const ICONS = {
   diff: "vcs/diff",
   revert: "vcs/revert",
   // The merge tool's own controls (IntelliJ's AllIcons.Diff)
+  "diff-side-by-side": "diff/sideBySide",
+  "diff-unified": "diff/unified",
   "diff-apply-left": "diff/applyNotConflictsLeft",
   "diff-apply-all": "diff/applyNotConflicts",
   "diff-apply-right": "diff/applyNotConflictsRight",
@@ -560,8 +601,11 @@ function iconPath(name: string): string | undefined {
   const themed = fileIconTheme?.icon?.(name);
   if (themed && EXTERNAL.has(themed)) return themed;
   if (name.startsWith(EXTERNAL_PREFIX)) return EXTERNAL.has(name) ? name : undefined;
-  if (name.startsWith("symbol-")) return SYMBOL_ICONS[name.slice(7) as SymbolKind];
-  return (ICONS as Record<string, string>)[name];
+  if (name.startsWith("symbol-")) {
+    const kind = name.slice(7);
+    return Object.hasOwn(SYMBOL_ICONS, kind) ? SYMBOL_ICONS[kind as SymbolKind] : undefined;
+  }
+  return Object.hasOwn(ICONS, name) ? (ICONS as Record<string, string>)[name] : undefined;
 }
 
 // ---------------------------------------------------------------------------
@@ -645,7 +689,7 @@ interface Prepared {
 
 function raw(path: string): string | undefined {
   if (path.startsWith(EXTERNAL_PREFIX)) return EXTERNAL.get(path);
-  return RAW[path.startsWith("openidea/") ? `./${path}.svg` : `./expui/${path}.svg`];
+  return RAW[path.startsWith("openidea/") || path.startsWith("brands/") ? `./${path}.svg` : `./expui/${path}.svg`];
 }
 
 function parse(svg: string): Variant {
@@ -688,6 +732,14 @@ function build(lightSrc: string, darkSrc: string | undefined, keepColours: boole
 }
 
 function prepare(path: string, large: boolean): Prepared | null {
+  if (path === ICONS.quote) {
+    return {
+      viewBox: "0 0 16 16",
+      html: '<path d="M3 3v10M6.5 4.5H13M6.5 8H13M6.5 11.5H11" stroke="currentColor" stroke-linecap="round" stroke-linejoin="round"/>',
+      hasIds: false,
+      mono: true,
+    };
+  }
   const key = `${path}|${large ? 20 : 16}`;
   let out = prepared.get(key);
   if (out !== undefined) return out;
@@ -925,7 +977,7 @@ const FILE_NAMES = table({
 /** Name patterns, tried in order (lower-case names). */
 const NAME_PATTERNS: readonly (readonly [RegExp, IconName])[] = [
   [/^(dockerfile|containerfile)[.-]/, "file-docker"],
-  [/^(docker-)?compose([.-][\w-]+)?\.ya?ml$/, "file-docker"],
+  [/^.*compose.*\.ya?ml$/, "file-docker"],
   [/^\.env(\.|$)/, "file-dotenv"],
   [/^(licen[cs]e|copying)(-[\w.-]+|\.(md|txt|rst))?$/, "file-license"],
   [/^requirements([.-][\w.-]*)?\.(txt|in)$/, "file-requirements"],
@@ -990,7 +1042,7 @@ const EXT_ICONS = table({
   "file-perl": "pl pm pod psgi cgi",
   "file-c": "c",
   "file-h": "h hpp hh hxx h++",
-  "file-cpp": "cpp cc cxx c++ ipp tpp inl ixx cppm",
+  "file-cpp": "cpp cc cxx c++ ipp tpp inl ixx cppm ino",
   "file-objc": "m",
   "file-objcpp": "mm",
   "file-csharp": "cs csx",
@@ -1039,15 +1091,20 @@ export function setFileIconOverride(resolve: ((fileName: string) => IconName | n
 }
 
 /** Icons for particular files (plugin `fileIcons`), newest first: after the user's, before the icon theme's. */
-let fileIconProviders: ReadonlyArray<(fileName: string) => string | null> = [];
+let fileIconProviders: ReadonlyArray<(fileName: string, path: string | null) => string | null> = [];
 
-/** Adds a file icon provider (an `ext:` icon name or null); the returned function removes it. */
-export function addFileIconProvider(resolve: (fileName: string) => string | null): () => void {
-  fileIconProviders = [resolve, ...fileIconProviders];
+/** Bumps the file-icon revision so mounted trees and editor tabs re-resolve icons. */
+export function bumpFileIconRevision() {
   useFileIconRevision.setState((n) => n + 1, true);
+}
+
+/** Adds a file icon provider (an `ext:` or built-in icon name or null); the returned function removes it. */
+export function addFileIconProvider(resolve: (fileName: string, path: string | null) => string | null): () => void {
+  fileIconProviders = [resolve, ...fileIconProviders];
+  bumpFileIconRevision();
   return () => {
     fileIconProviders = fileIconProviders.filter((p) => p !== resolve);
-    useFileIconRevision.setState((n) => n + 1, true);
+    bumpFileIconRevision();
   };
 }
 
@@ -1056,7 +1113,7 @@ export function fileIconName(fileName: string, path: string | null = null): Icon
   const custom = iconOverride?.(fileName);
   if (custom) return custom;
   for (const provide of fileIconProviders) {
-    const icon = provide(fileName);
+    const icon = provide(fileName, path);
     if (icon && iconPath(icon)) return icon as IconName;
   }
   const themed = fileIconTheme?.file(fileName, path);
@@ -1123,4 +1180,9 @@ export function folderIconName(kind: FolderKind = "plain"): IconName {
     default:
       return "folder";
   }
+}
+
+/** Validated built-in and registered, sanitized plugin icons. */
+export function isIconName(name: string): name is IconName {
+  return iconPath(name) !== undefined;
 }

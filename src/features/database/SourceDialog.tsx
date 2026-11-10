@@ -125,7 +125,6 @@ const blankOptions = (): DbOptions => ({
   keepAliveSecs: null,
   autoDisconnectSecs: null,
   singleDatabase: false,
-  instantClient: "",
 });
 
 const blankIntrospection = (): DbIntrospection => ({
@@ -672,19 +671,6 @@ export function SourceDialog({
             placeholder="HR (ALTER SESSION SET CURRENT_SCHEMA)"
             onChange={(e) => setOptions({ defaultSchema: e.target.value })}
           />
-          <label className={styles.formLabel} htmlFor="db-instant-client">
-            <T>Instant Client:</T>
-          </label>
-          <Input
-            id="db-instant-client"
-            value={options.instantClient ?? ""}
-            placeholder="/opt/oracle/instantclient_23_5"
-            onChange={(e) => setOptions({ instantClient: e.target.value })}
-          />
-          <span />
-          <span className={styles.formHint}>
-            <T>Directory of Oracle Instant Client 19 or later. Empty: ORACLE_HOME or the system library path.</T>
-          </span>
         </>
       )}
       {!sqlite && (
@@ -1110,7 +1096,12 @@ export function SourceDialog({
           />
           {/* IDEA's Make Global: stored with the IDE and listed in every project. */}
           <span title={tx("Available in all projects")}>
-            <Checkbox checked={!!s.global} onChange={(global) => set({ global })} label="Global" />
+            <Checkbox
+              checked={!!s.global}
+              disabled={!!s.pluginOwner}
+              onChange={(global) => set({ global })}
+              label="Global"
+            />
           </span>
         </div>
         <span />

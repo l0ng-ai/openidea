@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 import { EditorState } from "@codemirror/state";
-import { ensureSyntaxTree } from "@codemirror/language";
+import { completedSyntaxState } from "@/test/syntax";
 import { languages } from "@codemirror/language-data";
 import {
   candidatesFor,
@@ -22,8 +22,7 @@ const MODES: Record<string, string> = {
 
 async function target(language: string, doc: string) {
   const desc = languages.find((l) => l.name === MODES[language])!;
-  const state = EditorState.create({ doc, extensions: [await desc.load()] });
-  ensureSyntaxTree(state, state.doc.length, 5000);
+  const state = completedSyntaxState(EditorState.create({ doc, extensions: [await desc.load()] }));
   return findPostfixTarget(state, doc.length, language);
 }
 

@@ -80,69 +80,71 @@ export function ConsoleFindBar({
   };
 
   return (
-    <div
-      className={styles.find}
-      role="search"
-      aria-label={tx("Find in console")}
-      data-console-find=""
-      onKeyDown={onKeyDown}
-    >
-      <SearchField
-        ref={inputRef}
-        className={styles.findField}
-        value={query}
-        onChange={onChange}
-        placeholder="Find in console"
-        aria-label="Find in console"
-        invalid={invalid || none}
-        toggles={[
-          {
-            id: "case",
-            icon: "case",
-            title: "Match Case",
-            shortcut: formatBinding("Alt+C"),
-            pressed: options.caseSensitive,
-            onToggle: () => toggle("caseSensitive"),
-          },
-          {
-            id: "word",
-            icon: "word",
-            title: "Words",
-            shortcut: formatBinding("Alt+W"),
-            pressed: options.wholeWord,
-            onToggle: () => toggle("wholeWord"),
-          },
-          {
-            id: "regex",
-            icon: "regex",
-            title: "Regex",
-            shortcut: formatBinding("Alt+X"),
-            pressed: options.regex,
-            onToggle: () => toggle("regex"),
-          },
-        ]}
-      />
-      <span className={clsx(styles.findCount, (invalid || none) && styles.findCountNone)} aria-live="polite">
-        {counter}
-      </span>
-      <IconButton
-        icon="arrow-up"
-        title="Previous Occurrence"
-        shortcut={formatBinding("Shift+Enter")}
-        size="small"
-        disabled={count === 0}
-        onClick={onPrevious}
-      />
-      <IconButton
-        icon="arrow-down"
-        title="Next Occurrence"
-        shortcut="↵"
-        size="small"
-        disabled={count === 0}
-        onClick={onNext}
-      />
-      <span className={styles.findSpacer} />
-      <IconButton icon="close" title="Close" shortcut="⎋" size="small" onClick={onClose} />
+    <div className={styles.container}>
+      <div
+        className={styles.find}
+        role="search"
+        aria-label={tx("Find in console")}
+        data-console-find=""
+        onKeyDown={onKeyDown}
+      >
+        <SearchField
+          ref={inputRef}
+          className={styles.findField}
+          value={query}
+          onChange={onChange}
+          placeholder="Find in console"
+          aria-label="Find in console"
+          invalid={invalid || none}
+          toggles={[
+            {
+              id: "case",
+              icon: "case",
+              title: "Match Case",
+              shortcut: formatBinding("Alt+C"),
+              pressed: options.caseSensitive,
+              onToggle: () => toggle("caseSensitive"),
+            },
+            {
+              id: "word",
+              icon: "word",
+              title: "Words",
+              shortcut: formatBinding("Alt+W"),
+              pressed: options.wholeWord,
+              onToggle: () => toggle("wholeWord"),
+            },
+            {
+              id: "regex",
+              icon: "regex",
+              title: "Regex",
+              shortcut: formatBinding("Alt+X"),
+              pressed: options.regex,
+              onToggle: () => toggle("regex"),
+            },
+          ]}
+        />
+        <span className={clsx(styles.findCount, (invalid || none) && styles.findCountNone)} aria-live="polite">
+          {counter}
+        </span>
+        <IconButton
+          icon="arrow-up"
+          title="Previous Occurrence"
+          shortcut={formatBinding("Shift+Enter")}
+          size="small"
+          disabled={count === 0}
+          onClick={onPrevious}
+        />
+        <IconButton
+          icon="arrow-down"
+          title="Next Occurrence"
+          shortcut="↵"
+          size="small"
+          disabled={count === 0}
+          onClick={onNext}
+        />
+        <span className={styles.findSpacer} />
+        <IconButton icon="close" title="Close" shortcut="⎋" size="small" onClick={onClose} />
+      </div>
     </div>
   );
 }

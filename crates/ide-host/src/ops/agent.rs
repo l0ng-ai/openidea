@@ -6,7 +6,7 @@ use crate::rpc::Dispatcher;
 use ide_agent::registry::{AgentRegistry, RegistryPaths};
 use ide_agent::{
     AgentChange, AgentCommand, AgentEntry, AgentEvent, AgentProbe, AgentPrompt, AgentProvider, AgentQueued, AgentTask,
-    NewAgentTask,
+    McpScope, McpServer, McpServerInput, NewAgentTask,
 };
 use ide_core::error::ErrorKind;
 use ide_core::{IdeError, IdeEvent, IdeResult, IpcPath, RequestId, SharedSink, TaskId};
@@ -238,6 +238,11 @@ pub fn cancel(host: &Host, window: &str, task: String, subagent: Option<String>)
     host.project(window)?.agents.cancel(&task, subagent)
 }
 
+/// Stops one of the task's background tasks.
+pub async fn stop_background(host: &Host, window: &str, task: String, background: String) -> IdeResult<()> {
+    host.project(window)?.agents.stop_background(&task, &background).await
+}
+
 /// Answers a permission request; `option: None` cancels it.
 pub fn respond(host: &Host, window: &str, task: String, permission: u32, option: Option<String>) -> IdeResult<()> {
     host.require_trust(window)?;
@@ -250,6 +255,10 @@ pub fn archive(host: &Host, window: &str, task: String) -> IdeResult<()> {
 
 pub fn unarchive(host: &Host, window: &str, task: String) -> IdeResult<()> {
     host.project(window)?.agents.unarchive(&task)
+}
+
+pub fn rename(host: &Host, window: &str, task: String, title: String) -> IdeResult<()> {
+    host.project(window)?.agents.rename(&task, &title)
 }
 
 pub async fn delete(host: &Host, window: &str, task: String, remove_worktree: bool) -> IdeResult<()> {
@@ -268,6 +277,105 @@ pub async fn base_text(host: &Host, window: &str, task: String, path: IpcPath) -
     host.project(window)?.agents.base_text(&task, path.into_path_buf()).await
 }
 
+/// Rollback: the task's changed files among `paths` (all without) back as they were when it started.
+pub async fn rollback_changes(host: &Host, window: &str, task: String, paths: Option<Vec<String>>) -> IdeResult<()> {
+    host.require_trust(window)?;
+    host.project(window)?.agents.rollback_changes(&task, paths).await
+}
+
+type McpServerMap = std::collections::BTreeMap<String, ide_core::settings::AgentMcpServer>;
+
+fn mcp_maps(host: &Host, window: &str) -> (McpServerMap, McpServerMap, Option<std::sync::Arc<crate::Project>>) {
+    let user = host.global_settings.effective().agents.mcp_servers;
+    let project = host.project(window).ok().filter(|p| !p.light);
+    let workspace = project
+        .as_ref()
+        .map(|p| p.settings.layer(ide_workspace::settings::SettingsScope::Project).agents.mcp_servers)
+        .unwrap_or_default();
+    (user, workspace, project)
+}
+
+fn persist_mcp_map(
+    host: &Host,
+    project: Option<&std::sync::Arc<crate::Project>>,
+    scope: McpScope,
+    map: &McpServerMap,
+) -> IdeResult<()> {
+    let value = if map.is_empty() {
+        serde_json::Value::Null
+    } else {
+        serde_json::to_value(map).map_err(|e| IdeError::invalid(e.to_string()))?
+    };
+    let event = IdeEvent::SettingsChanged { key: "agents.mcpServers".into() };
+    match scope {
+        McpScope::User => {
+            host.global_settings.set(ide_workspace::settings::SettingsScope::Global, "agents.mcpServers", value)?;
+            for p in host.projects() {
+                p.settings.reload();
+                p.sink.emit(event.clone());
+            }
+        }
+        McpScope::Workspace => {
+            let p = project.ok_or_else(|| IdeError::invalid("Open a project to configure workspace MCP servers"))?;
+            p.settings.set(ide_workspace::settings::SettingsScope::Project, "agents.mcpServers", value)?;
+            p.sink.emit(event);
+        }
+    }
+    Ok(())
+}
+
+fn update_mcp_maps<F>(host: &Host, window: &str, f: F) -> IdeResult<Vec<McpServer>>
+where
+    F: FnOnce(&mut McpServerMap, &mut McpServerMap, Option<&std::path::Path>) -> Result<(), String>,
+{
+    let (mut user, mut workspace, project) = mcp_maps(host, window);
+    let prev_user = user.clone();
+    let prev_workspace = workspace.clone();
+    let project_root = project.as_ref().map(|p| p.root.as_path());
+    f(&mut user, &mut workspace, project_root).map_err(IdeError::invalid)?;
+    if workspace != prev_workspace {
+        persist_mcp_map(host, project.as_ref(), McpScope::Workspace, &workspace)?;
+    }
+    if user != prev_user {
+        persist_mcp_map(host, project.as_ref(), McpScope::User, &user)?;
+    }
+    Ok(ide_agent::mcp::servers_from_settings(&user, &workspace))
+}
+
+/// Lists configured MCP servers across User (`settings.toml`) and Workspace (`.openidea/settings.toml`) scopes.
+pub fn mcp_list(host: &Host, window: &str) -> IdeResult<Vec<McpServer>> {
+    let (user, workspace, _) = mcp_maps(host, window);
+    Ok(ide_agent::mcp::servers_from_settings(&user, &workspace))
+}
+
+/// Creates or updates a User or Workspace MCP server and returns the updated list.
+pub fn mcp_save(host: &Host, window: &str, input: McpServerInput) -> IdeResult<Vec<McpServer>> {
+    update_mcp_maps(host, window, |user, workspace, project_root| {
+        ide_agent::mcp::apply_save(user, workspace, project_root.is_some(), input)
+    })
+}
+
+/// Enables or disables an MCP server and returns the updated list.
+pub fn mcp_set_enabled(host: &Host, window: &str, id: String, enabled: bool) -> IdeResult<Vec<McpServer>> {
+    update_mcp_maps(host, window, |user, workspace, _| {
+        ide_agent::mcp::apply_set_enabled(user, workspace, &id, enabled).map(|_| ())
+    })
+}
+
+/// Removes a User or Workspace MCP server and returns the updated list.
+pub fn mcp_remove(host: &Host, window: &str, id: String) -> IdeResult<Vec<McpServer>> {
+    update_mcp_maps(host, window, |user, workspace, _| ide_agent::mcp::apply_remove(user, workspace, &id).map(|_| ()))
+}
+
+/// Copies MCP servers from `.mcp.json` and `.vscode/mcp.json` into the workspace settings once.
+pub fn mcp_import(host: &Host, window: &str) -> IdeResult<Vec<McpServer>> {
+    update_mcp_maps(host, window, |_, workspace, project_root| {
+        let root = project_root.ok_or_else(|| "Open a project to import workspace MCP servers".to_string())?;
+        ide_agent::mcp::apply_import(workspace, root);
+        Ok(())
+    })
+}
+
 /// Commands of this module the remote server answers.
 pub(crate) fn register(d: &mut Dispatcher) {
     d.add("agent_subscribe", |c| async move { subscribe(&c.host, &c.window, c.channel("onEvent")?) });
@@ -279,6 +387,14 @@ pub(crate) fn register(d: &mut Dispatcher) {
         registry_install(&c.host, &c.window, c.arg("id")?, c.arg("request")?, c.sender("onEvent")?).await
     });
     d.add("agent_registry_remove", |c| async move { registry_remove(&c.host, &c.window, c.arg("id")?).await });
+    d.add("agent_mcp_list", |c| async move { mcp_list(&c.host, &c.window) });
+    d.add("agent_mcp_save", |c| async move { mcp_save(&c.host, &c.window, c.arg("input")?) });
+    d.add(
+        "agent_mcp_set_enabled",
+        |c| async move { mcp_set_enabled(&c.host, &c.window, c.arg("id")?, c.arg("enabled")?) },
+    );
+    d.add("agent_mcp_remove", |c| async move { mcp_remove(&c.host, &c.window, c.arg("id")?) });
+    d.add("agent_mcp_import", |c| async move { mcp_import(&c.host, &c.window) });
     d.add("agent_commands", |c| async move { commands(&c.host, &c.window, c.arg("provider")?, c.arg("task")?).await });
     d.add("agent_entries", |c| async move { entries(&c.host, &c.window, c.arg("task")?, c.arg("subagent")?) });
     d.add("agent_create", |c| async move { create(&c.host, &c.window, c.arg("request")?).await });
@@ -297,10 +413,14 @@ pub(crate) fn register(d: &mut Dispatcher) {
     d.add("agent_rollback", |c| async move { rollback(&c.host, &c.window, c.arg("task")?, c.arg("turns")?).await });
     d.add("agent_probe", |c| async move { probe(&c.host, &c.window, c.arg("provider")?, c.arg("refresh")?).await });
     d.add("agent_cancel", |c| async move { cancel(&c.host, &c.window, c.arg("task")?, c.arg("subagent")?) });
+    d.add("agent_stop_background", |call| async move {
+        stop_background(&call.host, &call.window, call.arg("task")?, call.arg("background")?).await
+    });
     d.add("agent_respond", |c| async move {
         respond(&c.host, &c.window, c.arg("task")?, c.arg("permission")?, c.arg("option")?)
     });
     d.add("agent_unarchive", |c| async move { unarchive(&c.host, &c.window, c.arg("task")?) });
+    d.add("agent_rename", |c| async move { rename(&c.host, &c.window, c.arg("task")?, c.arg("title")?) });
     d.add("agent_archive", |c| async move { archive(&c.host, &c.window, c.arg("task")?) });
     d.add(
         "agent_delete",
@@ -308,6 +428,9 @@ pub(crate) fn register(d: &mut Dispatcher) {
     );
     d.add("agent_changes", |c| async move { changes(&c.host, &c.window, c.arg("task")?).await });
     d.add("agent_base_text", |c| async move { base_text(&c.host, &c.window, c.arg("task")?, c.arg("path")?).await });
+    d.add("agent_rollback_changes", |c| async move {
+        rollback_changes(&c.host, &c.window, c.arg("task")?, c.arg("paths")?).await
+    });
 }
 
 fn validate_project_root(root: &std::path::Path, requested: Option<&std::path::Path>) -> IdeResult<std::path::PathBuf> {

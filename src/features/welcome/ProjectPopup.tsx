@@ -100,7 +100,7 @@ export function ProjectPopup({ anchor, onClose }: ProjectPopupProps) {
       const entry = entries[current];
       if (entry?.kind === "project" && !entry.open) {
         e.preventDefault();
-        void askRemoveRecent(entry.m.project);
+        void askRemoveRecent(entry.m.project, onClose);
       }
     } else if (e.key.length === 1 && !e.metaKey && !e.ctrlKey && (query || e.key !== " ")) {
       e.preventDefault();
@@ -153,7 +153,7 @@ export function ProjectPopup({ anchor, onClose }: ProjectPopupProps) {
                 if (e.kind !== "project" || e.open) return;
                 ev.preventDefault();
                 setActive(i);
-                showContextMenu(ev, recentMenu(e.m.project, onClose));
+                showContextMenu(ev, recentMenu(e.m.project, onClose, onClose));
               }}
             >
               {e.kind === "action" ? (

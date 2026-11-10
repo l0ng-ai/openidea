@@ -1,11 +1,17 @@
 import { describe, expect, it } from "vitest";
 import { formatPattern, formatTimestamp } from "@/platform/dateFormat";
 import { resolveThemeId } from "@/workbench/theme";
-import { applyAppearanceOptions, nextZoom } from "../appearanceRuntime";
+import { applyAppearanceOptions, nextZoom, SMALL_TREE_INDENT } from "../appearanceRuntime";
 import { validateSettings } from "../model/schema";
-import { validateAppearanceExtras, validateNotifications } from "../model/behaviorSchema";
+import { validateGeneralExtras, validateAppearanceExtras, validateNotifications } from "../model/behaviorSchema";
 
 describe("appearance & behavior settings", () => {
+  it("defaults automatic update checks to on and respects an explicit opt-out", () => {
+    expect(validateSettings({}).general.autoCheckUpdates).toBe(true);
+    expect(validateSettings({ general: { autoCheckUpdates: false } }).general.autoCheckUpdates).toBe(false);
+    expect(validateSettings({ general: { autoCheckUpdates: "off" } }).general.autoCheckUpdates).toBe(true);
+  });
+
   it("steps zoom within 50–300%", () => {
     expect(nextZoom(100, 1)).toBe(110);
     expect(nextZoom(100, -1)).toBe(90);
@@ -63,10 +69,55 @@ describe("appearance & behavior settings", () => {
     });
   });
 
+  it("keeps Welcome and saved tabs unless the user turns the new close behaviour on", () => {
+    const fresh = validateSettings({});
+    expect(fresh.general.closeWithoutWelcome).toBe(false);
+    expect(fresh.general.closeTabsWithWindow).toBe(false);
+    const on = validateSettings({ general: { closeWithoutWelcome: true, closeTabsWithWindow: true } });
+    expect(on.general.closeWithoutWelcome).toBe(true);
+    expect(on.general.closeTabsWithWindow).toBe(true);
+    expect(
+      validateSettings({ general: { closeWithoutWelcome: "yes", closeTabsWithWindow: 1 } } as never).general,
+    ).toMatchObject({
+      closeWithoutWelcome: false,
+      closeTabsWithWindow: false,
+    });
+  });
+
   it("defaults Show tool window badges to on and honours the stored value", () => {
     expect(validateAppearanceExtras({}).showToolWindowBadges).toBe(true);
     expect(validateAppearanceExtras({ showToolWindowBadges: false }).showToolWindowBadges).toBe(false);
     expect(validateAppearanceExtras({ showToolWindowBadges: 1 }).showToolWindowBadges).toBe(true);
+  });
+
+  it("defaults the Navigation Bar to the status bar and migrates the legacy boolean", () => {
+    expect(validateAppearanceExtras({}).navigationBar).toBe("statusBar");
+    expect(validateAppearanceExtras({ navigationBar: "top" }).navigationBar).toBe("top");
+    expect(validateAppearanceExtras({ navigationBar: "hidden" }).navigationBar).toBe("hidden");
+    // Older settings stored the choice as `showNavigationBar: bool`
+    // (`true` meant shown, which was the status bar).
+    expect(validateAppearanceExtras({ showNavigationBar: true }).navigationBar).toBe("statusBar");
+    expect(validateAppearanceExtras({ showNavigationBar: false }).navigationBar).toBe("hidden");
+    expect(validateAppearanceExtras({ showNavigationBar: true, navigationBar: "top" }).navigationBar).toBe("top");
+    expect(validateAppearanceExtras({ showNavigationBar: false, navigationBar: "statusBar" }).navigationBar).toBe(
+      "statusBar",
+    );
+    // Anything that is neither a position nor a boolean falls back to the default.
+    expect(validateAppearanceExtras({ navigationBar: "everywhere" }).navigationBar).toBe("statusBar");
+  });
+
+  it("defaults Use smaller indents in trees to off and applies the indent variable", () => {
+    expect(validateAppearanceExtras({}).smallTreeIndents).toBe(false);
+    expect(validateAppearanceExtras({ smallTreeIndents: true }).smallTreeIndents).toBe(true);
+    expect(validateAppearanceExtras({ smallTreeIndents: "on" }).smallTreeIndents).toBe(false);
+    const root = document.createElement("div");
+    applyAppearanceOptions(validateSettings({ appearance: { smallTreeIndents: true } }), root);
+    expect(root.style.getPropertyValue("--tree-indent")).toBe(SMALL_TREE_INDENT);
+    // Off (or a stored non-boolean) restores the default indents.
+    applyAppearanceOptions(validateSettings({}), root);
+    expect(root.style.getPropertyValue("--tree-indent")).toBe("");
+    applyAppearanceOptions(validateSettings({ appearance: { smallTreeIndents: false } }), root);
+    expect(root.style.getPropertyValue("--tree-indent")).toBe("");
   });
 
   it("keeps the UI fallback font empty by default and trims a stored one", () => {
@@ -106,4 +157,8 @@ describe("appearance & behavior settings", () => {
       groups: { vcs: { display: "balloon", log: false } },
     });
   });
+});
+
+it("loads an old attach setting as ask", () => {
+  expect(validateGeneralExtras({ openProjectIn: "attach" }).openProjectIn).toBe("ask");
 });

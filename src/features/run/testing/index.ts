@@ -23,11 +23,13 @@ export function combinedParser(parsers: TestOutputParser[]): TestOutputParser {
   };
 }
 
-export type Framework = "cargo" | "js" | "pytest" | "unittest" | "phpunit" | "go" | "jvm" | "ruby" | "auto";
+export type Framework = "cargo" | "js" | "pytest" | "unittest" | "phpunit" | "go" | "jvm" | "ruby" | "dotnet" | "auto";
 
 export function frameworkFor(config: Pick<RunConfig, "kind" | "command" | "args">): Framework {
   const cmd = [config.command, ...config.args].join(" ");
   switch (config.kind) {
+    case "dotnet-test":
+      return "dotnet";
     case "cargo":
       return "cargo";
     case "npm":
@@ -53,11 +55,12 @@ export function frameworkFor(config: Pick<RunConfig, "kind" | "command" | "args"
     case "rspec":
       return "ruby";
   }
+  if (/(^|[/\\])dotnet(?:\.exe)?$/i.test(config.command) && config.args[0] === "test") return "dotnet";
   if (/\bcargo\b/.test(cmd)) return "cargo";
   if (/\b(jest|vitest|npm|pnpm|yarn|bun|npx|deno)\b/.test(cmd)) return "js";
   if (/\bpytest\b/.test(cmd)) return "pytest";
   if (/\bmanage\.py test\b/.test(cmd)) return "unittest";
-  if (/(^|[/\\\s])phpunit(\.phar|\.bat)?(\s|$)/.test(cmd)) return "phpunit";
+  if (/(^|[/\\\s])(phpunit|pest)(\.phar|\.bat)?(\s|$)/.test(cmd)) return "phpunit";
   if (/\bgo\s+test\b/.test(cmd)) return "go";
   if (/\b(gradlew?|mvnw?)\b/.test(cmd)) return "jvm";
   return "auto";
@@ -110,6 +113,8 @@ export function withTestReporting<T extends Pick<RunConfig, "kind" | "command" |
 
 export function createTestParser(config: Pick<RunConfig, "kind" | "command" | "args">): TestOutputParser {
   switch (frameworkFor(config)) {
+    case "dotnet":
+      return { feed: () => [] };
     case "cargo":
       return cargoParser();
     case "js":

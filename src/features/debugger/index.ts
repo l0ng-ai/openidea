@@ -3,7 +3,7 @@
  * backend), DAP sessions driven by `IdeEvent::Debug`, the Debug tool window,
  * execution point + inline values, Evaluate / View Breakpoints dialogs.
  */
-import { lazyComponent } from "@/ui";
+import { lazyComponent, lazyWhen } from "@/ui";
 import { onIdeEvent } from "@/platform/ipc";
 import { useProject } from "@/platform/project";
 import { selectionValueTooltip, valueTooltip } from "./editor/valueTooltip";
@@ -35,8 +35,12 @@ import {
   stopSession,
   useDebug,
 } from "./state";
-import { DebuggerOverlays } from "./ui/Overlays";
+import { useOverlays } from "./ui/popoverStore";
 import { REMOTE_TYPES } from "./remote";
+
+/** Whether a breakpoint popover, debugger dialog or chooser is open. */
+const useAnyOverlay = () =>
+  useOverlays((s) => !!(s.popover || s.evaluate || s.breakpoints || s.chooser || s.attach || s.smartStep));
 
 export function activate(): () => void {
   useDebugRunSessions.setState({
@@ -62,7 +66,10 @@ export function activate(): () => void {
       component: lazyComponent(() => import("./ui/DebugToolWindow").then((m) => m.DebugToolWindow)),
       headerContent: lazyComponent(() => import("./ui/DebugToolWindow").then((m) => m.DebugTabs)),
     }),
-    registerOverlay({ id: "debugger", component: DebuggerOverlays }),
+    registerOverlay({
+      id: "debugger",
+      component: lazyWhen(useAnyOverlay, () => import("./ui/Overlays").then((m) => m.DebuggerOverlays)),
+    }),
     registerMenuGroup({
       id: "debugger.evaluate",
       menus: ["editor"],

@@ -1,8 +1,9 @@
 import type { KnipConfig } from "knip";
 
 const config: KnipConfig = {
-  // Entries come from the Vite (index.html), Vitest, Playwright and package.json script plugins.
-  entry: ["e2e/pythonHighlight.fixture.ts"],
+  // Entries come from the Vite (index.html), Vitest, Playwright and package.json script plugins;
+  // standalone browser fixtures are loaded by their own HTML pages.
+  entry: ["e2e/*.fixture.{ts,tsx}"],
   project: [
     "src/**/*.{ts,tsx,css}",
     "!src/editor/core/cm/angular/parser.terms.ts",
@@ -16,8 +17,8 @@ const config: KnipConfig = {
   // Plugins' web pages are projects of their own (own package.json, checked by plugins/build.sh and CI).
   ignore: ["plugins/**/web-src/**"],
   ignoreExportsUsedInFile: true,
-  // lint-staged formats Rust files with the toolchain's rustfmt.
-  ignoreBinaries: ["rustfmt"],
+  // System tools used by formatting and language smoke fixtures.
+  ignoreBinaries: ["rustfmt", "composer", "make"],
   compilers: {
     // Fonts come in through `@import` in global.css.
     css: (text: string) => [...text.matchAll(/(?<=@)import[^;]+/g)].join("\n"),

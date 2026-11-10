@@ -1,0 +1,98 @@
+---
+title: "安装"
+description: "在 macOS、Windows 或 Linux 上下载并安装 OpenIDEA，以及如何保持更新。"
+---
+
+[GitHub Releases 页面](https://github.com/l0ng-ai/openidea/releases/latest)上的每个版本都提供 macOS、Windows 和 Linux 安装包，均有 x64 和 arm64 两种架构。所有版本也会同步到 [CNB](https://cnb.cool/l0ng-ai/openidea/-/releases)，国内下载通常更快。
+
+下文文件名中的 `<version>` 指版本号，例如 `0.1.40`。
+
+## macOS
+
+需要 macOS 11 或更高版本。
+
+| Mac        | 文件                             |
+| ---------- | -------------------------------- |
+| Apple 芯片 | `OpenIDEA_<version>_aarch64.dmg` |
+| Intel 芯片 | `OpenIDEA_<version>_x64.dmg`     |
+
+<Steps>
+  <Step title="打开磁盘映像">双击 `.dmg` 文件。</Step>
+  <Step title="拷贝应用">把 **OpenIDEA** 拖到 **应用程序** 文件夹。</Step>
+  <Step title="启动 OpenIDEA">
+    从“应用程序”或启动台打开。正式版已签名并经过 Apple 公证，macOS 可以直接打开，无需额外操作。
+  </Step>
+</Steps>
+
+<Tip>
+  安装 `openidea` 命令行之前，先把 OpenIDEA
+  移到“应用程序”文件夹：命令会链接到应用包内部，所以应用位置需要固定。参见[命令行](/zh/reference/cli)。
+</Tip>
+
+## Windows
+
+每种架构（`x64` 或 `arm64`）提供三种安装包：
+
+| 安装包     | 文件                                          | 说明                                                                 |
+| ---------- | --------------------------------------------- | -------------------------------------------------------------------- |
+| 安装程序   | `OpenIDEA_<version>_x64-setup.exe`            | 可以只为当前用户安装，也可以为所有用户安装。                         |
+| MSI        | `OpenIDEA_<version>_x64_en-US.msi`            | 适合统一管理或脚本化安装。                                           |
+| 便携版 zip | `OpenIDEA_<version>_windows_x64_portable.zip` | 无需安装：解压后运行 `openidea.exe`。同目录附带 `.sha256` 校验文件。 |
+
+OpenIDEA 依赖 Microsoft Edge WebView2 运行时，Windows 10 和 11 已自带。如果缺失，安装程序会自动安装。
+
+<Warning>
+  Windows 安装包目前还没有代码签名，首次运行时 Microsoft Defender SmartScreen 可能提示“未知发布者”。点击
+  **更多信息**，再点击 **仍要运行**。
+</Warning>
+
+## Linux
+
+每种架构提供三种安装包：
+
+| 安装包                   | x64                                 | arm64                                 |
+| ------------------------ | ----------------------------------- | ------------------------------------- |
+| Debian / Ubuntu          | `OpenIDEA_<version>_amd64.deb`      | `OpenIDEA_<version>_arm64.deb`        |
+| Fedora / RHEL / openSUSE | `OpenIDEA-<version>-1.x86_64.rpm`   | `OpenIDEA-<version>-1.aarch64.rpm`    |
+| AppImage                 | `OpenIDEA_<version>_amd64.AppImage` | `OpenIDEA_<version>_aarch64.AppImage` |
+
+<CodeGroup>
+
+```sh Debian / Ubuntu
+sudo apt install ./OpenIDEA_<version>_amd64.deb
+```
+
+```sh Fedora / RHEL
+sudo dnf install ./OpenIDEA-<version>-1.x86_64.rpm
+```
+
+```sh AppImage
+chmod +x OpenIDEA_<version>_amd64.AppImage
+./OpenIDEA_<version>_amd64.AppImage
+```
+
+</CodeGroup>
+
+应用需要 WebKitGTK 4.1，`.deb` 和 `.rpm` 包会把它作为依赖一起安装。
+
+<Note>AppImage 请放在固定位置。`openidea` 命令指向这个 AppImage 文件，移动之后需要重新安装命令。</Note>
+
+## 更新
+
+OpenIDEA 在启动时以及运行期间每 4 小时检查一次新版本，有新版本时弹出通知。点击通知中的 **安装并重启**：OpenIDEA 会在后台下载、安装更新，然后重启。如果某个窗口有未保存的更改而取消了重启，更新会在下次启动时生效。也可以手动检查：
+
+- macOS：**OpenIDEA › 检查更新…**
+- Windows 和 Linux：**帮助 › 检查更新…**
+
+更新相关选项在 **设置 › 外观与行为 › 系统设置 › 更新**：
+
+- **自动检查更新**：关闭后台检查。**立即检查** 按钮仍可使用。
+- **更新源**：**GitHub**、**CNB（国内镜像）** 或 **自动**。选“自动”时，界面语言为中文则使用 CNB，否则使用 GitHub。所选来源无法访问时会自动尝试另一个。
+
+便携版 Windows 要更新，请下载新的 zip 并替换 `openidea.exe`。
+
+更新下载会使用 **设置 › 外观与行为 › 系统设置 › HTTP 代理** 中配置的代理。
+
+## 从源码构建
+
+如需从源码构建并运行 OpenIDEA，参见[开发环境](/zh/contribute/setup)。

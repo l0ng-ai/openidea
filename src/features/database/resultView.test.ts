@@ -122,6 +122,7 @@ describe("export options", () => {
       "id\t1\t2\ncity\tShanghai\t",
     );
     expect(exportData("csv", data)).toBe("id,city\r\n1,Shanghai\r\n2,");
+    expect(exportData("onerow", data)).toBe("1, 'Shanghai', 2, NULL");
   });
 });
 

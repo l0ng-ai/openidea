@@ -27,9 +27,10 @@ vi.mock("@tauri-apps/api/core", async (orig) => ({
   },
 }));
 
+const files = await import("./files");
 const { gotoTargets } = await import("./navigation");
 const { lspDoc } = await import("./lsp");
-const { useLspPopup, closePopup } = await import("./popupStore");
+const { useLspPopup, closePopup, openPopup } = await import("./popupStore");
 const { provideEditorService } = await import("@/workbench/contributions");
 const openFile = vi.fn(async () => {});
 provideEditorService({ openFile } as never);
@@ -48,6 +49,7 @@ beforeEach(() => {
 });
 afterEach(() => {
   view.destroy();
+  vi.restoreAllMocks();
   vi.useRealTimers();
 });
 
@@ -141,6 +143,38 @@ describe("Go to Implementation while the search goes on", () => {
     await pending;
     expect(listPopup()).toBeNull();
     expect(document.querySelector(".cm-lsp-hint")).toBeNull();
+  });
+
+  it("does not let a superseded implementation search replace a newer popup", async () => {
+    const search = slowImplementations();
+    const pending = gotoTargets(view, "implementation");
+    await vi.waitFor(() => expect(lspGotoImplementation).toHaveBeenCalled());
+    search.first([at("/p/Own.java", 3)]);
+    await vi.waitFor(() => expect(listPopup()).not.toBeNull());
+    lspGoto.mockResolvedValueOnce({ status: "ok", data: [at("/p/New.java", 2)] });
+    await gotoTargets(view, "definition");
+    openPopup({ kind: "list", anchor: { x: 0, y: 0 }, title: "Newer popup", items: [] });
+    search.resolve({ status: "ok", data: [at("/p/Old.java", 8)] });
+    await pending;
+    expect(listPopup()?.title).toBe("Newer popup");
+  });
+
+  it("does not open a superseded chooser after its previews finish loading", async () => {
+    let finish!: (files: Map<string, string[]>) => void;
+    vi.spyOn(files, "readManyFileLines").mockImplementationOnce(() => new Promise((r) => (finish = r)));
+    const search = slowImplementations();
+    const pending = gotoTargets(view, "implementation");
+    await vi.waitFor(() => expect(lspGotoImplementation).toHaveBeenCalled());
+    search.first([at("/p/Own.java", 3)]);
+    lspGoto.mockResolvedValueOnce({ status: "ok", data: [at("/p/New.java", 2)] });
+    await gotoTargets(view, "definition");
+    openPopup({ kind: "list", anchor: { x: 0, y: 0 }, title: "Newer popup", items: [] });
+    finish(new Map());
+    await vi.advanceTimersByTimeAsync(0);
+    expect(listPopup()?.title).toBe("Newer popup");
+    search.resolve({ status: "ok", data: [at("/p/Old.java", 8)] });
+    await pending;
+    expect(listPopup()?.title).toBe("Newer popup");
   });
 
   it("goes to the only implementation when none came first", async () => {

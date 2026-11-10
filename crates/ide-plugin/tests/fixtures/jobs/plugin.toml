@@ -25,6 +25,31 @@ id = "follow"
 title = "Jobs: Follow Selected Job"
 category = "Jobs"
 
+[[contributes.commands]]
+id = "context"
+title = "Jobs: Set Context"
+category = "Jobs"
+
+[[contributes.commands]]
+id = "selection"
+title = "Jobs: Show Selected Paths"
+category = "Jobs"
+
 [contributes.settings]
 title = "Jobs"
 schema = "settings.schema.json"
+
+[[contributes.commands]]
+id = "notify-actions"
+title = "Jobs: Show Notification Actions"
+category = "Jobs"
+
+[[contributes.commands]]
+id = "pick-directory"
+title = "Pick directory"
+[[contributes.commands]]
+id = "open-project"
+title = "Open project"
+[[contributes.commands]]
+id = "open-project-new"
+title = "Open project in new window"

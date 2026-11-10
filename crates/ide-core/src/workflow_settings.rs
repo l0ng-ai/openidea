@@ -113,6 +113,15 @@ pub struct CommitSettings {
     pub body_limit: u32,
     pub show_right_margin: bool,
     pub wrap_at_margin: bool,
+    /// Plugin before-commit checks turned off (`<plugin id>/<check id>`); the rest run.
+    pub disabled_plugin_checks: Vec<String>,
+    /// Double-click / Enter in the changes view: `None` follows the interface (the
+    /// Commit tool window opens the diff, Local Changes the source file).
+    ///
+    /// No `skip_serializing_if`: an unset value must still appear in
+    /// `Settings::default()`, or `SettingsStore::set` rejects the key as unknown.
+    #[specta(optional)]
+    pub double_click_opens_diff: Option<bool>,
 }
 
 impl Default for CommitSettings {
@@ -132,6 +141,8 @@ impl Default for CommitSettings {
             body_limit: 72,
             show_right_margin: true,
             wrap_at_margin: false,
+            disabled_plugin_checks: Vec::new(),
+            double_click_opens_diff: None,
         }
     }
 }
@@ -269,6 +280,8 @@ impl Default for PythonDebuggerSettings {
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize, Type)]
 #[serde(default, rename_all = "camelCase")]
 pub struct RunSettings {
+    /// Target for configurations without an explicit target. Empty = local.
+    pub default_target: String,
     pub confirm_rerun: bool,
     /// Ask before closing a Run tab whose process is still running.
     pub confirm_terminate: bool,
@@ -279,7 +292,13 @@ pub struct RunSettings {
 
 impl Default for RunSettings {
     fn default() -> Self {
-        Self { confirm_rerun: true, confirm_terminate: true, show_on_start: true, termination_timeout_ms: 3000 }
+        Self {
+            default_target: String::new(),
+            confirm_rerun: true,
+            confirm_terminate: true,
+            show_on_start: true,
+            termination_timeout_ms: 3000,
+        }
     }
 }
 

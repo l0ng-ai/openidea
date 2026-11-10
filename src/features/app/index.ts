@@ -5,8 +5,10 @@
 import { registerOverlay, registerStatusItem } from "@/workbench/contributions";
 import { AboutOverlay } from "./AboutDialog";
 import { appActions, updateActions } from "./appActions";
-import { checkForUpdatesOnStartup } from "./updates";
+import { installUpdateChecks } from "./updates";
+import { cliActions } from "./cliCommand";
 import { installCloseGuard } from "./closeGuard";
+import { TerminationOverlay } from "./termination";
 import { InvalidateCachesOverlay, registerInvalidateCachesActions } from "./InvalidateCaches";
 import { buildInfo } from "./host";
 import { KeymapReferenceOverlay } from "./KeymapReference";
@@ -30,10 +32,12 @@ export function activate(): () => void {
   const disposers = [
     installLocaleSync(),
     registerLocalizedActions(() => [...appActions(), ...windowActions()]),
+    registerLocalizedActions(cliActions),
     registerOverlay({ id: "app.about", component: AboutOverlay }),
     registerOverlay({ id: "app.keymapReference", component: KeymapReferenceOverlay }),
     registerOverlay({ id: "app.invalidateCaches", component: InvalidateCachesOverlay }),
     registerOverlay({ id: "app.newProject", component: NewProjectOverlay }),
+    registerOverlay({ id: "app.termination", component: TerminationOverlay }),
     registerStatusItem({
       id: "app.lightEdit",
       align: "left",
@@ -56,7 +60,7 @@ export function activate(): () => void {
   void buildInfo().then((b) => {
     if (!b?.updates || disposed) return;
     disposers.push(registerLocalizedActions(updateActions));
-    void checkForUpdatesOnStartup();
+    disposers.push(installUpdateChecks());
   });
   return () => {
     disposed = true;

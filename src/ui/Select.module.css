@@ -91,13 +91,15 @@
   overflow: hidden;
 }
 .optionLabel {
-  flex: 1 0 auto;
+  flex: 1 1 auto;
+  min-width: 0;
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
 }
 /* The label keeps its width (up to most of the row); a long detail (a path) is cut instead. */
 .withDetail {
+  flex-shrink: 0;
   max-width: 70%;
 }
 .detail {

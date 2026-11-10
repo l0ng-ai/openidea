@@ -71,6 +71,9 @@ export type Banner = "binary" | "tooLarge" | "readOnly" | "library" | null;
 export interface DocAttachmentTarget {
   /** Applies changes that are already in the model (another view / the backend). */
   applyExternal(changes: ChangeSet, annotations: Annotation<unknown>[]): void;
+  /** Secondary views that share the text tab's undo history hand it over as tabs open/close. */
+  historyState?(): EditorState | null;
+  adoptHistory?(state: EditorState): void;
 }
 
 export interface DocMeta {
@@ -310,6 +313,8 @@ export class DocModel {
   }
 
   removeSlot(slot: EditorSlot) {
+    if (this.slots.size === 1)
+      for (const attachment of this.attachments) attachment.adoptHistory?.(slot.currentState());
     this.slots.delete(slot);
     if (this.lastFocused === slot) this.lastFocused = null;
     if (!this.inUse()) this.manager.release(this);
@@ -409,16 +414,14 @@ export class DocModel {
   }
 
   /**
-   * Indentation explicit reformat requests use (`formatIndentFacet`): with an
-   * explicit per-language Tabs and Indents override, the Code Style without the
-   * file's detected indents — the override must reach the formatter, or the
-   * language server keeps its own style. Without an override formatting keeps
-   * the editor's indent.
+   * Indentation explicit reformat requests use (`formatIndentFacet`): the Code Style
+   * (EditorConfig included) without the file's detected indents, as in IDEA, where
+   * detection only affects editing. Otherwise a file indented differently from the
+   * Code Style reformats to its own indent and other files to the Code Style's.
+   * An indent chosen for this file in the status bar still applies.
    */
   formatIndent() {
-    const lang = this.info ? prefsOf(this.settings()).codeStyle.languages[this.info.id] : undefined;
-    if (!lang || (lang.useTab === undefined && lang.tabSize === undefined && lang.indent === undefined)) return null;
-    return effectiveIndent(this.settings(), this.info, this.editorconfig, null);
+    return this.indentOverride ?? effectiveIndent(this.settings(), this.info, this.editorconfig, null);
   }
 
   /**
@@ -538,8 +541,8 @@ export class DocModel {
     const [folds, outline, highlights] = await Promise.allSettled([
       backend.folding(this.doc),
       backend.outline(this.doc),
-      // Without a CodeMirror mode, colours come from the grammar's tree-sitter query.
-      this.desc ? null : backend.highlights(this.doc),
+      // Kotlin's stream mode lacks declaration categories; the grammar supplements it.
+      !this.desc || this.meta.language === "kotlin" ? backend.highlights(this.doc) : null,
     ]);
     if (this.closed) return;
     if (counter !== this.changeCounter) {

@@ -168,7 +168,7 @@ function MethodList({ profile, query }: { profile: Profile; query: string }) {
   const header = (key: MethodSort, label: string) => (
     <th aria-sort={sort === key ? (key === "name" ? "ascending" : "descending") : "none"}>
       <button type="button" className={styles.headerCell} onClick={() => setSort(key)}>
-        {label}
+        {tx(label)}
       </button>
     </th>
   );

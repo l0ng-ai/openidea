@@ -15,6 +15,11 @@ pub(crate) struct Cache {
     repo: gix::ThreadSafeRepository,
     files: [PathBuf; 4],
     stamp: Vec<Option<(SystemTime, u64)>>,
+    /// `objects/pack` directory and its modification time. An external
+    /// `git fetch`/`pull`/`repack` adds packs without touching the `files`
+    /// above — watching the directory catches them (issue #1919).
+    pack_dir: PathBuf,
+    pack_stamp: Option<SystemTime>,
 }
 
 fn cache_files(git_dir: &Path, common_dir: &Path) -> [PathBuf; 4] {
@@ -34,6 +39,12 @@ fn stamp(files: &[PathBuf]) -> Vec<Option<(SystemTime, u64)>> {
             Some((metadata.modified().ok()?, metadata.len()))
         })
         .collect()
+}
+
+/// The pack directory's modification time: adding or removing a pack file
+/// updates it. `None` when the directory can't be read.
+fn pack_stamp(pack_dir: &Path) -> Option<SystemTime> {
+    std::fs::metadata(pack_dir).ok()?.modified().ok()
 }
 
 pub(crate) fn discover(path: &Path) -> IdeResult<Option<Repo>> {
@@ -57,7 +68,8 @@ pub(crate) fn discover(path: &Path) -> IdeResult<Option<Repo>> {
     let git_dir = absolute(repo.git_dir())?;
     let common_dir = absolute(repo.common_dir())?;
     let files = cache_files(&git_dir, &common_dir);
-    let cache = Cache { stamp: stamp(&files), files, repo: ts };
+    let pack_dir = common_dir.join("objects").join("pack");
+    let cache = Cache { stamp: stamp(&files), files, repo: ts, pack_stamp: pack_stamp(&pack_dir), pack_dir };
     Ok(Some(Repo {
         execution_allowed: std::sync::atomic::AtomicBool::new(true),
         root,
@@ -96,11 +108,13 @@ impl Repo {
         }
         let mut cache = self.inner.lock().unwrap_or_else(|p| p.into_inner());
         let now = stamp(&cache.files);
-        if now != cache.stamp {
+        let pack_now = pack_stamp(&cache.pack_dir);
+        if now != cache.stamp || pack_now != cache.pack_stamp {
             match gix::ThreadSafeRepository::open(&self.git_dir) {
                 Ok(fresh) => {
                     cache.repo = fresh;
                     cache.stamp = now;
+                    cache.pack_stamp = pack_now;
                 }
                 Err(e) => tracing::warn!("reopening repository failed: {e}"),
             }

@@ -1,10 +1,12 @@
 /** What the Services toolbar, context menu and `docker.*` actions do with a node of a connection. */
+import { writeClipboardText } from "@/platform/clipboard";
 import { tx, txTemplate } from "@/platform/i18n";
 import type { PruneTarget } from "@/platform/ipc";
 import { executeAction } from "@/platform/actions";
 import type { MenuItem } from "@/ui";
 import { confirm, confirmChecked } from "@/workbench/messages";
 import { promptText } from "./dialogs";
+import { openContainerLogInEditor } from "./logEditor";
 import { isRunning, nodeContainers, nodeLabel, shortId, type DockerTarget, type ServiceNode } from "./model";
 import {
   composeOp,
@@ -14,7 +16,9 @@ import {
   pullImage,
   refresh,
   removeObjects,
+  setDockerFilters,
   useServices,
+  type DetailTab,
 } from "./store";
 
 export function canStart(t: DockerTarget | null): boolean {
@@ -183,10 +187,26 @@ export function pruneMenu(conn: string): MenuItem[] {
   return PRUNE.map(([target, label]) => ({ label, run: () => void prunePrompt(conn, target) }));
 }
 
-const copy = (text: string) => void navigator.clipboard?.writeText(text);
+const copy = (text: string) => void writeClipboardText(text);
 
-export function showDetail(tab: "log" | "inspect") {
+export function showDetail(tab: DetailTab) {
   useServices.setState({ detailTab: tab });
+}
+
+export function viewFilterMenu(): MenuItem[] {
+  const { filters } = useServices.getState();
+  return [
+    {
+      label: "Stopped Containers",
+      checked: filters.showStoppedContainers,
+      run: () => setDockerFilters({ showStoppedContainers: !useServices.getState().filters.showStoppedContainers }),
+    },
+    {
+      label: "Untagged Images",
+      checked: filters.showUntaggedImages,
+      run: () => setDockerFilters({ showUntaggedImages: !useServices.getState().filters.showUntaggedImages }),
+    },
+  ];
 }
 
 /** Context menu of a node of a connection's subtree. */
@@ -212,7 +232,14 @@ export function nodeMenu(t: DockerTarget): MenuItem[] {
             run: () => void containerOp(conn, [n.container.id], "pause"),
           },
       { kind: "separator" },
+      { label: "Dashboard", icon: "layout", run: () => showDetail("dashboard") },
       { label: "Show Log", icon: "file-log", run: () => showDetail("log") },
+      {
+        label: "Open Log in Editor",
+        icon: "external-link",
+        run: () => openContainerLogInEditor(conn, n.container),
+      },
+      { label: "Show Processes", icon: "list", disabled: !running, run: () => showDetail("processes") },
       { label: "Inspect", icon: "info", run: () => showDetail("inspect") },
       { label: "Create Terminal", icon: "terminal", disabled: !running, run: () => execShell(t) },
       { kind: "separator" },
@@ -221,12 +248,16 @@ export function nodeMenu(t: DockerTarget): MenuItem[] {
     );
   }
   if (n.kind === "image" || n.kind === "volume" || n.kind === "network") {
+    items.push({ label: "Dashboard", icon: "layout", run: () => showDetail("dashboard") });
+    if (n.kind === "image") {
+      items.push({ label: "Show Layers", icon: "list", run: () => showDetail("layers") });
+    }
     items.push({ label: "Inspect", icon: "info", run: () => showDetail("inspect") });
     if (n.kind === "image")
       items.push(
         {
           label: "Pull Again",
-          icon: "git-pull",
+          icon: "docker-pull",
           disabled: n.image.repository === "<none>",
           run: () => void pullImage(conn, nodeLabel(n)),
         },
@@ -234,10 +265,25 @@ export function nodeMenu(t: DockerTarget): MenuItem[] {
       );
   }
   if (n.kind === "group" && n.group === "images")
-    items.push({ label: "Pull Image…", icon: "git-pull", run: () => void pullPrompt(conn) });
+    items.push({ label: "Pull Image…", icon: "docker-pull", run: () => void pullPrompt(conn) });
   if (n.kind === "group") {
+    if (n.group === "containers" || n.group === "devContainers") {
+      const { filters } = useServices.getState();
+      items.push({
+        label: "Stopped Containers",
+        checked: filters.showStoppedContainers,
+        run: () => setDockerFilters({ showStoppedContainers: !useServices.getState().filters.showStoppedContainers }),
+      });
+    } else if (n.group === "images") {
+      const { filters } = useServices.getState();
+      items.push({
+        label: "Untagged Images",
+        checked: filters.showUntaggedImages,
+        run: () => setDockerFilters({ showUntaggedImages: !useServices.getState().filters.showUntaggedImages }),
+      });
+    }
     const target: PruneTarget =
-      n.group === "containers"
+      n.group === "containers" || n.group === "devContainers"
         ? "containers"
         : n.group === "images"
           ? "images"
@@ -252,7 +298,8 @@ export function nodeMenu(t: DockerTarget): MenuItem[] {
   if (n.kind === "docker")
     items.push(
       { label: "Refresh", icon: "refresh", run: () => void refresh(conn) },
-      { label: "Pull Image…", icon: "git-pull", run: () => void pullPrompt(conn) },
+      { label: "Pull Image…", icon: "docker-pull", run: () => void pullPrompt(conn) },
+      { label: "View Options", icon: "filter", submenu: viewFilterMenu() },
       { label: "Prune", submenu: pruneMenu(conn) },
     );
   if (canRemove(t)) {

@@ -4,6 +4,8 @@
  * is a copy for the open project (keyed by its root), seeded from Default on
  * first use.
  */
+import { useContributedFileTemplates } from "@/workbench/contributions";
+export { addContributedFileTemplate } from "@/workbench/contributions";
 import { create } from "zustand";
 import { useProject } from "@/platform/project";
 import { loadJson, saveJson } from "../storage";
@@ -29,30 +31,21 @@ interface Customizations {
 const EMPTY: Customizations = { templates: {}, deleted: [], includes: {}, deletedIncludes: [], code: {} };
 
 /** Templates plugins contribute (`fileTemplates`): treated like built-ins (customised, reset, hidden). */
-let contributed: readonly FileTemplate[] = [];
+const contributed = () => useContributedFileTemplates.getState().templates;
 
-const isBase = (id: string) => BUILTIN_IDS.has(id) || contributed.some((t) => t.id === id);
+const isBase = (id: string) => BUILTIN_IDS.has(id) || contributed().some((t) => t.id === id);
 
 export function mergeFileTemplates(c: Pick<Customizations, "templates" | "deleted">): FileTemplate[] {
   const deleted = new Set(c.deleted);
-  const base = [...BUILTIN_FILE_TEMPLATES, ...contributed];
-  const out = base.filter((t) => !deleted.has(t.id)).map((t) => c.templates[t.id] ?? t);
+  const base = [...BUILTIN_FILE_TEMPLATES, ...contributed()];
+  const out = base
+    .filter((t) => !deleted.has(t.id))
+    .map((t) => {
+      const custom = c.templates[t.id];
+      return custom ? { ...t, ...custom } : t;
+    });
   for (const t of Object.values(c.templates)) if (!isBase(t.id) && !deleted.has(t.id)) out.push(t);
   return out;
-}
-
-/** Adds a plugin's template to the New menu until the returned function is called. */
-export function addContributedFileTemplate(t: FileTemplate): () => void {
-  contributed = [...contributed.filter((x) => x.id !== t.id), t];
-  refreshMerged();
-  return () => {
-    contributed = contributed.filter((x) => x !== t);
-    refreshMerged();
-  };
-}
-
-function refreshMerged() {
-  useFileTemplates.setState((s) => ({ templates: mergeFileTemplates(s.custom) }));
 }
 
 export function mergeIncludes(c: Pick<Customizations, "includes" | "deletedIncludes">): TemplateFragment[] {
@@ -103,6 +96,9 @@ function snapshot(root: string | null): FileTemplatesState {
 }
 
 export const useFileTemplates = create<FileTemplatesState>(() => snapshot(projectRoot()));
+useContributedFileTemplates.subscribe(() => {
+  useFileTemplates.setState((s) => ({ templates: mergeFileTemplates(s.custom) }));
+});
 
 function commit(custom: Customizations) {
   const { scheme, root } = useFileTemplates.getState();

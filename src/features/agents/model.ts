@@ -7,8 +7,12 @@ export const HOME_KEY = "agent:new";
 export const TOOL_WINDOW = "agents";
 /** MIME of a dragged agent task (a tree row or the docked conversation bar): the payload is the task id. */
 export const TASK_DRAG = "application/x-openidea-agent-task";
-/** Settings › Tools › Agents: the ACP Registry. */
-export const REGISTRY_PAGE = "tools.agents";
+/** Settings › Agents › Coding Agents: the agents this machine runs. */
+export const REGISTRY_PAGE = "agents.list";
+/** The Settings folder holding the agent pages. */
+export const AGENTS_GROUP = "Agents";
+/** Settings › Agents › Model Context Protocol (MCP): User and Workspace MCP configurations. */
+export const MCP_PAGE = "agents.mcpServers";
 
 export const sessionKey = (task: string) => `agent:${task}`;
 
@@ -54,6 +58,7 @@ const PROVIDER_ICONS = new Set([
   "auggie",
   "kiro",
   "vibe",
+  "omp",
 ]);
 
 /** The agent's logo; custom agents get the generic agents icon. */
@@ -95,6 +100,23 @@ export function upsertEntry(entries: AgentEntry[], index: number, entry: AgentEn
   return next;
 }
 
+/**
+ * `entries` with `text` appended to the message at `index`, which read its first `from`
+ * UTF-16 units when the backend last sent it; `null` when the copy here can't take it (a
+ * gap, or another kind of entry), so the conversation is loaded again. A copy loaded while
+ * the text streamed may already hold some of it.
+ */
+export function appendEntry(entries: AgentEntry[], index: number, from: number, text: string): AgentEntry[] | null {
+  const entry = entries[index];
+  if (!entry || (entry.type !== "agent" && entry.type !== "thought")) return null;
+  const have = entry.text.length;
+  if (have < from) return null;
+  if (have >= from + text.length) return entries;
+  const next = entries.slice();
+  next[index] = { ...entry, text: entry.text + text.slice(have - from) };
+  return next;
+}
+
 /** "agent/fix-lexer" → "fix-lexer". */
 export const branchLabel = (branch: string | null) => (branch ?? "").replace(/^agent\//, "");
 
@@ -124,6 +146,69 @@ export function turnNumbers(entries: AgentEntry[]): Map<number, number> {
     if (e.type === "user" && !e.steered) out.set(i, out.size);
   });
   return out;
+}
+
+export interface ReplyTurn {
+  turn: number;
+  prompt: Extract<AgentEntry, { type: "user" }>;
+  steered: boolean;
+}
+
+export interface ReplyTimes {
+  sentMs: number | null;
+  doneMs: number | null;
+}
+
+/** When the turn behind each agent reply was asked and finished, by entry index. */
+export function replyTimes(entries: AgentEntry[]): Map<number, ReplyTimes> {
+  const out = new Map<number, ReplyTimes>();
+  let current: Extract<AgentEntry, { type: "user" }> | null = null;
+  entries.forEach((entry, i) => {
+    if (entry.type === "user" && !entry.steered) current = entry;
+    else if (entry.type === "agent" && current)
+      out.set(i, {
+        sentMs: current.sentMs ?? null,
+        doneMs: current.doneMs ?? null,
+      });
+  });
+  return out;
+}
+
+/** Only the last reply of a turn offers actions that change the conversation. */
+export function replyTurns(entries: AgentEntry[]): Map<number, ReplyTurn> {
+  const out = new Map<number, ReplyTurn>();
+  let current: ReplyTurn | null = null;
+  let previous: number | null = null;
+  let turn = 0;
+  entries.forEach((entry, i) => {
+    if (entry.type === "user") {
+      if (!entry.steered) {
+        current = { turn: turn++, prompt: entry, steered: false };
+        previous = null;
+      } else if (current) current.steered = true;
+    } else if (entry.type === "agent" && entry.text.trim() && current) {
+      if (previous !== null) out.delete(previous);
+      out.set(i, current);
+      previous = i;
+    }
+  });
+  return out;
+}
+
+export function replyOperations(task: AgentTask, reply: ReplyTurn | undefined, turnCount: number) {
+  const idle = task.status !== "archived" && !isBusy(task.status) && !!reply;
+  const latest = reply?.turn === turnCount - 1;
+  const { fork = false, rollback = false } = task.capabilities ?? {};
+  return {
+    regenerate:
+      idle &&
+      latest &&
+      rollback &&
+      !reply.steered &&
+      !!reply.prompt.text.trim() &&
+      reply.prompt.attachments.length === (reply.prompt.images?.length ?? 0),
+    fork: idle && fork && (rollback || latest),
+  };
 }
 
 /** "3m", "2h", "5d" since `ms`. */

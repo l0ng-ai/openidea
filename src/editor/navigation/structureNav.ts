@@ -92,6 +92,8 @@ export function methodsInType(outline: readonly OutlineItem[], item: HierarchyIt
 
 export interface SuperDeps {
   supertypes: (path: string, pos: Pos) => Promise<HierarchyItem[]>;
+  /** Direct subtypes, when the type hierarchy answers it (fallback for implementation requests). */
+  subtypes?: (path: string, pos: Pos) => Promise<HierarchyItem[]>;
   outline: (path: string) => Promise<OutlineItem[]>;
 }
 

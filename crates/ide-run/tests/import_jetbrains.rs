@@ -60,6 +60,78 @@ fn cwd(c: &RunConfig) -> Option<PathBuf> {
     c.cwd.as_ref().map(|p| p.as_ref().to_path_buf())
 }
 
+// JarApplicationConfiguration.writeExternal serializes its bean as options and its environment as envs:
+// https://github.com/JetBrains/intellij-community/blob/master/java/execution/impl/src/com/intellij/execution/jar/JarApplicationConfiguration.java
+const JAR: &str = r#"<configuration default="false" name="NAME" type="JarApplication">
+    <option name="JAR_PATH" value="$PROJECT_DIR$/dist/server app.jar" />
+    <option name="VM_PARAMETERS" value="-Xmx1g -Dname=&quot;My Server&quot;" />
+    <option name="PROGRAM_PARAMETERS" value="--config &quot;$PROJECT_DIR$/server config.yml&quot; &quot;&quot;" />
+    <option name="WORKING_DIRECTORY" value="$PROJECT_DIR$/server" />
+    <option name="ALTERNATIVE_JRE_PATH_ENABLED" value="true" />
+    <option name="ALTERNATIVE_JRE_PATH" value="$PROJECT_DIR$/jdk" />
+    <option name="PASS_PARENT_ENVS" value="false" />
+    <envs><env name="MODE" value="production" /></envs>
+    <method v="2" />
+  </configuration>"#;
+
+#[test]
+fn jar_applications_from_every_configuration_location() {
+    for location in [".run/Server.run.xml", ".idea/runConfigurations/Server.xml", ".idea/workspace.xml"] {
+        let dir = tempfile::tempdir().unwrap();
+        let xml = if location.ends_with("workspace.xml") {
+            workspace(&JAR.replace("NAME", "Server"))
+        } else {
+            run_file("Server", JAR)
+        };
+        write(dir.path(), location, &xml);
+        let r = import_from(dir.path(), &[]);
+        let jar = get(&r, "Server");
+        let root = dir.path().to_string_lossy().replace('\\', "/");
+        assert_eq!(jar.kind, "jar-application");
+        let java = if cfg!(windows) { "java.exe" } else { "java" };
+        assert_eq!(jar.command, format!("{root}/jdk/bin/{java}"));
+        assert_eq!(
+            jar.args,
+            s(&[
+                "-Xmx1g",
+                "-Dname=My Server",
+                "-jar",
+                "../dist/server app.jar",
+                "--config",
+                &format!("{}/server config.yml", dir.path().to_string_lossy()),
+                ""
+            ])
+        );
+        assert_eq!(cwd(jar), Some(PathBuf::from("server")));
+        assert_eq!(jar.debug_adapter.as_deref(), Some("java-debug"));
+        assert_eq!(jar.env["MODE"], "production");
+        assert!(!jar.extras.include_system_env);
+        assert_eq!(jar.extras.params["jarPath"], "../dist/server app.jar");
+        assert_eq!(jar.extras.params["jre"], format!("{root}/jdk"));
+        assert!(ignored(&r, "Server").is_empty());
+    }
+}
+
+#[test]
+fn jar_application_defaults_and_invalid_targets() {
+    let dir = tempfile::tempdir().unwrap();
+    for (name, xml) in [
+        ("Default", JAR.replace("value=\"true\"", "value=\"false\"")),
+        ("Named", JAR.replace("$PROJECT_DIR$/jdk", "temurin-21")),
+        ("NoJar", JAR.replace("$PROJECT_DIR$/dist/server app.jar", "")),
+        ("UnknownMacro", JAR.replace("$PROJECT_DIR$/dist", "$JAR_HOME$")),
+    ] {
+        write(dir.path(), &format!(".run/{name}.run.xml"), &run_file(name, &xml));
+    }
+    let r = import_from(dir.path(), &[]);
+    assert_eq!(get(&r, "Default").command, "java");
+    assert!(!get(&r, "Default").extras.params.contains_key("jre"));
+    assert_eq!(get(&r, "Named").command, "java");
+    assert_eq!(ignored(&r, "Named"), ["JRE temurin-21"]);
+    assert_eq!(reason(&r, "NoJar"), &SkipReason::NothingToRun);
+    assert_eq!(reason(&r, "UnknownMacro"), &SkipReason::PathVariable { variable: "$JAR_HOME$".into() });
+}
+
 /// A Django project in `src/` with a root virtualenv.
 fn django_project() -> tempfile::TempDir {
     let dir = tempfile::tempdir().unwrap();
@@ -786,4 +858,295 @@ fn java_applications_and_spring_boot_keep_their_module() {
     assert_eq!(ignored(&r, "Gone"), ["module removed-module"]);
 
     assert_eq!(reason(&r, "NoMain"), &SkipReason::NothingToRun);
+}
+
+/// IDEA writes the working directory as a URL. On Windows `file://$PROJECT_DIR$`
+/// expands to `file://C:/project`, where the drive letter sits where the authority
+/// belongs; read as a path that is `C:project`, which resolves against the project
+/// directory instead of replacing it and the launch fails on the doubled path.
+#[test]
+fn file_url_working_directories_stay_inside_the_project() {
+    let dir = tempfile::tempdir().unwrap();
+    let root = dunce::canonicalize(dir.path()).unwrap();
+    write(&root, "pom.xml", "<project><artifactId>shop</artifactId><packaging>pom</packaging></project>");
+    write(
+        &root,
+        "gateway/pom.xml",
+        "<project><parent><artifactId>shop</artifactId></parent><artifactId>gateway</artifactId></project>",
+    );
+    write(
+        &root,
+        ".run/Gateway.run.xml",
+        &run_file(
+            "Gateway",
+            r#"<configuration name="NAME" type="SpringBootApplicationConfigurationType" factoryName="Spring Boot">
+      <module name="gateway" />
+      <option name="SPRING_BOOT_MAIN_CLASS" value="com.example.GatewayApplication" />
+      <option name="WORKING_DIRECTORY" value="file://$PROJECT_DIR$" />
+      <option name="ACTIVE_PROFILES" value="dev,local" />
+      <option name="VM_PARAMETERS" value="-Xmx512m" />
+      <option name="PROGRAM_PARAMETERS" value="--server.port=8081" />
+      <envs><env name="TZ" value="UTC" /></envs>
+      <method v="2"><option name="Make" enabled="true" /></method>
+    </configuration>"#,
+        ),
+    );
+    write(
+        &root,
+        ".run/Sub.run.xml",
+        &run_file(
+            "Sub",
+            r#"<configuration name="NAME" type="SpringBootApplicationConfigurationType" factoryName="Spring Boot">
+      <module name="gateway" />
+      <option name="SPRING_BOOT_MAIN_CLASS" value="com.example.SubApplication" />
+      <option name="WORKING_DIRECTORY" value="file://$PROJECT_DIR$/gateway" />
+      <method v="2" />
+    </configuration>"#,
+        ),
+    );
+
+    let local_root = root.to_string_lossy().replace('\\', "/");
+    for (name, working_directory) in [
+        ("Literal", "file://$PROJECT_DIR$/gateway é".to_owned()),
+        ("Localhost", format!("file://localhost/{}", local_root.trim_start_matches('/'))),
+    ] {
+        write(
+            &root,
+            &format!(".run/{name}.run.xml"),
+            &run_file(
+                name,
+                &format!(
+                    r#"
+          <configuration name="NAME" type="SpringBootApplicationConfigurationType" factoryName="Spring Boot">
+            <module name="gateway" />
+            <option name="SPRING_BOOT_MAIN_CLASS" value="com.example.GatewayApplication" />
+            <option name="WORKING_DIRECTORY" value="{working_directory}" />
+          </configuration>"#
+                ),
+            ),
+        );
+    }
+    let r = import_from(&root, &[]);
+    let boot = get(&r, "Gateway");
+    assert_eq!(boot.kind, "spring-boot");
+    assert_eq!(boot.extras.module.as_deref(), Some("gateway"));
+    assert_eq!(
+        boot.args,
+        s(&[
+            "-Xmx512m",
+            "-cp",
+            "${classpath}",
+            "com.example.GatewayApplication",
+            "--spring.profiles.active=dev,local",
+            "--server.port=8081"
+        ])
+    );
+    assert_eq!(boot.env["TZ"], "UTC");
+    assert_eq!(cwd(get(&r, "Literal")), Some(PathBuf::from("gateway é")));
+    assert_eq!(cwd(get(&r, "Localhost")), None);
+
+    // The project directory itself: no `cwd` to store.
+    assert_eq!(cwd(get(&r, "Gateway")), None);
+    assert_eq!(cwd(get(&r, "Sub")), Some(PathBuf::from("gateway")));
+}
+
+#[test]
+fn file_urls_work_in_all_imported_path_fields() {
+    let dir = tempfile::tempdir().unwrap();
+    let root = dunce::canonicalize(dir.path()).unwrap();
+    let cases = [
+        (
+            "Python",
+            r#"<configuration name="NAME" type="PythonConfigurationType">
+          <option name="WORKING_DIRECTORY" value="{base}/jobs 中" />
+          <option name="SDK_HOME" value="{base}/bin/python" />
+          <option name="SCRIPT_NAME" value="{base}/jobs 中/run me.py" />
+          <option name="PARAMETERS" value="&quot;{base}/data file&quot; unchanged%20arg" />
+          <option name="ENV_FILES" value="{base}/.env dev{sep}{base}/.env local" />
+          <extension name="net.ashald.envfile">
+            <option name="IS_ENABLED" value="true" />
+            <ENTRIES><ENTRY PATH="{base}/.env plugin" PARSER="env" /></ENTRIES>
+          </extension>
+        </configuration>"#,
+        ),
+        (
+            "Django",
+            r#"<configuration name="NAME" type="DjangoTestsConfigurationType">
+          <option name="CUSTOM_SETTINGS" value="true" />
+          <option name="SETTINGS_FILE" value="{base}/settings/dev.py" />
+        </configuration>"#,
+        ),
+        (
+            "Pytest",
+            r#"<configuration name="NAME" type="tests" factoryName="pytest">
+          <option name="_new_targetType" value="&quot;PATH&quot;" />
+          <option name="_new_target" value="&quot;{base}/test file.py&quot;" />
+          <option name="_new_additionalArguments" value="&quot;'{base}/data file'&quot;" />
+        </configuration>"#,
+        ),
+        (
+            "Npm",
+            r#"<configuration name="NAME" type="js.build_tools.npm">
+          <package-json value="{base}/web app/package.json" />
+          <package-manager value="{base}/bin/pnpm" />
+          <node-interpreter value="{base}/bin/node" />
+          <command value="run" /><scripts><script value="start" /></scripts>
+        </configuration>"#,
+        ),
+        (
+            "Jest",
+            r#"<configuration name="NAME" type="JavaScriptTestRunnerJest">
+          <working-dir value="{base}/web app" />
+          <config-file value="{base}/web app/jest config.js" />
+          <scope-kind value="TEST_FILE" /><test-file value="{base}/web app/test file.js" />
+        </configuration>"#,
+        ),
+        (
+            "Vitest",
+            r#"<configuration name="NAME" type="JavaScriptTestRunnerVitest">
+          <scope-kind value="DIRECTORY" /><test-directory value="{base}/test dir" />
+        </configuration>"#,
+        ),
+        (
+            "Node",
+            r#"<configuration name="NAME" type="NodeJSConfigurationType"
+          working-dir="{base}/web app" path-to-js-file="{base}/web app/main file.js"
+          application-parameters="&quot;{base}/data file&quot;" />"#,
+        ),
+        (
+            "Shell",
+            r#"<configuration name="NAME" type="ShConfigurationType">
+          <option name="SCRIPT_WORKING_DIRECTORY" value="{base}/jobs 中" />
+          <option name="SCRIPT_PATH" value="{base}/jobs 中/run me.sh" />
+          <option name="INTERPRETER_PATH" value="{base}/bin/sh" />
+        </configuration>"#,
+        ),
+    ];
+    write(&root, "manage.py", "");
+    for (name, body) in cases {
+        write(
+            &root,
+            &format!(".run/{name}.run.xml"),
+            &run_file(name, &body.replace("{base}", "file://$PROJECT_DIR$").replace("{sep}", &SEP.to_string())),
+        );
+    }
+    let r = import_from(&root, &[]);
+    assert!(r.skipped.is_empty(), "{r:#?}");
+    let python = get(&r, "Python");
+    assert_eq!(cwd(python), Some(PathBuf::from("jobs 中")));
+    assert_eq!(python.command, "../bin/python");
+    assert_eq!(python.args, s(&["run me.py", "../data file", "unchanged%20arg"]));
+    assert_eq!(python.extras.env_files, s(&[".env dev", ".env local", ".env plugin"]));
+    assert_eq!(get(&r, "Django").args, s(&["manage.py", "test", "--settings", "settings.dev"]));
+    assert_eq!(get(&r, "Pytest").args, s(&["-m", "pytest", "test file.py", "data file"]));
+    let npm = get(&r, "Npm");
+    assert_eq!(cwd(npm), Some(PathBuf::from("web app")));
+    assert_eq!(npm.command, "pnpm");
+    assert_eq!(Path::new(&npm.extras.params["nodeInterpreter"]), root.join("bin/node"));
+    assert_eq!(get(&r, "Jest").args, s(&["jest", "--config", "jest config.js", "test file.js"]));
+    assert_eq!(get(&r, "Vitest").args, s(&["vitest", "run", "test dir"]));
+    assert_eq!(get(&r, "Node").args, s(&["main file.js", "../data file"]));
+    let shell = get(&r, "Shell");
+    assert_eq!(shell.command, "../bin/sh");
+    assert_eq!(shell.args, s(&["run me.sh"]));
+    assert_eq!(shell.extras.params["path"], "run me.sh");
+}
+
+#[test]
+fn file_urls_expand_module_and_home_macros() {
+    let dir = tempfile::tempdir().unwrap();
+    let root = dunce::canonicalize(dir.path()).unwrap();
+    write(
+        &root,
+        ".run/Home.run.xml",
+        &run_file(
+            "Home",
+            r#"<configuration name="NAME" type="PythonConfigurationType">
+          <option name="WORKING_DIRECTORY" value="file://$MODULE_DIR$/jobs dir" />
+          <option name="SCRIPT_NAME" value="file://$MODULE_WORKING_DIR$/jobs dir/main.py" />
+          <option name="SDK_HOME" value="file://$USER_HOME$/bin/python" />
+        </configuration>"#,
+        ),
+    );
+    let mut environment = env();
+    let home = root.join("home").to_string_lossy().into_owned();
+    environment.insert("HOME".into(), home.clone());
+    environment.insert("USERPROFILE".into(), home);
+    let r = import(&root, RunImportSource::Jetbrains, &[], &environment).unwrap();
+    let home = get(&r, "Home");
+    assert_eq!(home.command, "../home/bin/python");
+    assert_eq!(home.args, s(&["main.py"]));
+    assert_eq!(cwd(home), Some(PathBuf::from("jobs dir")));
+    assert!(home.extras.local);
+}
+
+#[test]
+fn imports_go_application_and_test_configurations() {
+    let dir = tempfile::tempdir().unwrap();
+    write(
+        dir.path(),
+        ".run/build-linux-amd64.run.xml",
+        &run_file(
+            "build-linux-amd64",
+            r#"<configuration default="false" name="NAME" type="GoApplicationRunConfiguration" factoryName="Go Application" folderName="go-build">
+    <module name="goproject" />
+    <working_directory value="$PROJECT_DIR$" />
+    <go_parameters value="-ldflags &quot;-s -w&quot; -o bin/goproject.linux-amd64" />
+    <envs>
+      <env name="CGO_ENABLED" value="0" />
+      <env name="GOARCH" value="amd64" />
+      <env name="GOOS" value="linux" />
+    </envs>
+    <kind value="PACKAGE" />
+    <package value="goproject" />
+    <directory value="$PROJECT_DIR$" />
+    <filePath value="$PROJECT_DIR$/main.go" />
+    <output_directory value="$PROJECT_DIR$/bin" />
+    <option name="run" value="false" />
+    <method v="2" />
+  </configuration>"#,
+        ),
+    );
+    write(
+        dir.path(),
+        ".run/Test.run.xml",
+        &run_file(
+            "Run tests",
+            r#"<configuration default="false" name="NAME" type="GoTestRunConfiguration" factoryName="Go Test">
+    <module name="goproject" />
+    <working_directory value="$PROJECT_DIR$/pkg" />
+    <go_parameters value="-tags integration" />
+    <kind value="PACKAGE" />
+    <package value="example.com/pkg" />
+    <pattern value="TestLogin" />
+    <parameters value="-v -count=1" />
+    <method v="2" />
+  </configuration>"#,
+        ),
+    );
+    let r = import_from(dir.path(), &[]);
+
+    let app = get(&r, "build-linux-amd64");
+    assert_eq!(app.kind, "go");
+    assert_eq!(app.command, "go");
+    assert_eq!(app.args, s(&["build", "-ldflags", "-s -w", "-o", "bin/goproject.linux-amd64", "goproject"]));
+    assert_eq!(app.env["GOOS"], "linux");
+    assert_eq!(app.extras.params["goKind"], "build");
+    assert_eq!(app.extras.params["scope"], "package");
+    assert_eq!(app.extras.params["target"], "goproject");
+    assert_eq!(app.extras.params["outputDir"], "bin");
+    assert_eq!(app.extras.params["runAfterBuild"], "false");
+    assert_eq!(app.extras.folder.as_deref(), Some("go-build"));
+
+    let test = get(&r, "Run tests");
+    assert!(test.is_test);
+    assert_eq!(test.kind, "go");
+    assert_eq!(
+        test.args,
+        s(&["test", "-tags", "integration", "-run", "TestLogin", "example.com/pkg", "-args", "-v", "-count=1"])
+    );
+    assert_eq!(cwd(test), Some(PathBuf::from("pkg")));
+    assert_eq!(test.extras.params["goKind"], "test");
+    assert_eq!(test.extras.params["pattern"], "TestLogin");
+    assert_eq!(test.extras.params["module"], "pkg");
 }

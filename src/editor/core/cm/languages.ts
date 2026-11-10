@@ -20,6 +20,7 @@ import { languages as languageData } from "@codemirror/language-data";
 import type { DocBackend, LanguageInfo } from "../backend";
 import { _languageMode } from "@/editor/api";
 import { JS_TAGS } from "./jsTags";
+import { docCommentTags } from "./docCommentTags";
 
 let infos: Map<string, LanguageInfo> | null = null;
 let infosPromise: Promise<Map<string, LanguageInfo>> | null = null;
@@ -87,6 +88,11 @@ const OWN_MODES = [
     load: () => import("./asciidoc").then((m) => new LanguageSupport(m.asciidocLanguage)),
   }),
   LanguageDescription.of({
+    name: "reStructuredText",
+    extensions: ["rst"],
+    load: () => import("./restructuredtext").then((m) => new LanguageSupport(m.restructuredtextLanguage)),
+  }),
+  LanguageDescription.of({
     name: "Log",
     extensions: ["log"],
     load: () => import("./log").then((m) => new LanguageSupport(m.logLanguage)),
@@ -113,6 +119,10 @@ const OWN_MODES = [
       },
     }),
   ),
+  LanguageDescription.of({
+    name: "Angular TypeScript",
+    load: () => import("./angular/inline").then((m) => m.angularTypescript()),
+  }),
   LanguageDescription.of({ name: "Angular Template", load: () => import("./angular").then((m) => m.angular()) }),
   LanguageDescription.of({
     name: "ERB",
@@ -125,6 +135,12 @@ const OWN_MODES = [
     name: "Astro",
     extensions: ["astro"],
     load: () => import("./astro").then((m) => m.astro()),
+  }),
+  // Overrides the language-data Vue mode so `<style lang="scss">` highlights.
+  LanguageDescription.of({
+    name: "Vue",
+    extensions: ["vue"],
+    load: () => import("./vue").then((m) => m.vueLanguage()),
   }),
   LanguageDescription.of({
     name: "YAML",
@@ -140,6 +156,13 @@ const OWN_MODES = [
         support.support,
       );
     },
+  }),
+  LanguageDescription.of({
+    name: "GoMod",
+    alias: ["gomod", "gowork"],
+    extensions: ["mod", "work"],
+    filename: /^(?:go\.mod|go\.work)$/,
+    load: async () => new LanguageSupport((await import("./gomod")).goModLanguage),
   }),
 ];
 
@@ -224,9 +247,9 @@ export function findLanguageDescription(uiMode: string | null, path: string): La
     const loose = LanguageDescription.matchLanguageName(BUILTIN_MODES, uiMode, false);
     if (loose) return OWN_MODES.find((l) => l.name === loose.name) ?? loose;
   }
-  if (uiMode === null && infos) return null;
   const own = LanguageDescription.matchFilename(OWN_MODES, path.slice(path.lastIndexOf("/") + 1));
   if (own) return own;
+  if (uiMode === null && infos) return null;
   const matched = LanguageDescription.matchFilename(BUILTIN_MODES, path.slice(path.lastIndexOf("/") + 1));
   return OWN_MODES.find((l) => l.name === matched?.name) ?? matched;
 }
@@ -267,6 +290,7 @@ export const JAVA_TAGS: Parameters<typeof styleTags>[0] = {
 const EXTRA_TAGS: Record<string, Parameters<typeof styleTags>[0]> = {
   JavaScript: JS_TAGS,
   TypeScript: JS_TAGS,
+  "Angular TypeScript": JS_TAGS,
   JSX: JS_TAGS,
   TSX: JS_TAGS,
   Java: JAVA_TAGS,
@@ -291,6 +315,7 @@ function patchSupport(desc: LanguageDescription, support: LanguageSupport): Lang
       : support.language;
   const patched = new LanguageSupport(language, [
     support.support,
+    docCommentTags(desc.name),
     EditorView.editorAttributes.of({ "data-language": desc.name }),
   ]);
   // `loadedSupport` reads `desc.support` synchronously; keep it on the patched instance.
@@ -308,7 +333,16 @@ const DEDENT_STATEMENT = /^\s*(?:pass|break|continue|return)\b/;
 const KEYWORD_OPEN_LANGS = new Set(["elixir", "ruby", "lua"]);
 const KEYWORD_OPEN =
   /\b(?:do(?:\s*\|[^|]*\|)?|then|->)$|^\s*(?:def|defp|defmodule|class|module|function|local\s+function|if|unless|elsif|elseif|else|while|until|for|case|begin|cond|with|receive|try)\b/;
-const NO_INDENT_LANGS = new Set(["plaintext", "markdown", "asciidoc", "log", "diff", "ignore", "gitattributes"]);
+const NO_INDENT_LANGS = new Set([
+  "plaintext",
+  "markdown",
+  "asciidoc",
+  "restructuredtext",
+  "log",
+  "diff",
+  "ignore",
+  "gitattributes",
+]);
 
 function opensBlock(code: string, language: string | undefined): boolean {
   if (!code) return false;

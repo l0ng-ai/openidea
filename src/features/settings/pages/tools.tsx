@@ -7,6 +7,7 @@
 import { FontPicker } from "../components/FontPicker";
 import { useEffect, useId, useRef, useState, type ReactNode } from "react";
 import clsx from "clsx";
+import { quotePath } from "@/platform/commandLine";
 import { commands, isTauri } from "@/platform/ipc";
 import {
   DEFAULT_EXTERNAL_TOOL,
@@ -18,12 +19,31 @@ import { Button, Checkbox, IconButton, Input, Menu, type SelectOption, T } from 
 import { NumberInput, Row, SearchLabel, Section, Select } from "../components/Form";
 import { useLabelMatch, useSetting } from "../components/context";
 import { selectPage, setQuery } from "../model/staging";
+import { MCP_SERVER_PAGE } from "./mcpServer";
 import type { PageSpec } from "./spec";
 import { BoundToggle, Grid, Indented, PageLink, TableEditor } from "./workflowControls";
 import styles from "./Workflow.module.css";
 import { tx } from "@/platform/i18n";
 
 export const TOOLS_GROUP = "Tools";
+
+const SEND_KEY_OPTIONS = [
+  { value: "enter", label: "Enter" },
+  { value: "modEnter", label: "⌘Enter" },
+];
+const WHILE_RUNNING_OPTIONS = [
+  { value: "queue", label: "Queues the message for after the turn" },
+  { value: "steer", label: "Sends it into the turn" },
+];
+const TOOL_CALL_OPTIONS = [
+  { value: "grouped", label: "Grouped by what they did" },
+  { value: "each", label: "One per line" },
+];
+const THINKING_OPTIONS = [
+  { value: "auto", label: "Open while it streams" },
+  { value: "expanded", label: "Always open" },
+  { value: "collapsed", label: "Folded" },
+];
 
 const L = WORKFLOW_LIMITS;
 const isMac = typeof navigator !== "undefined" && /Mac/i.test(navigator.platform || navigator.userAgent);
@@ -110,7 +130,7 @@ function ShellPathRow() {
     const { open: pick } = await import("@tauri-apps/plugin-dialog");
     const picked = await pick({ multiple: false, title: "Shell Path" });
     const path = Array.isArray(picked) ? picked[0] : picked;
-    if (path) set(path);
+    if (path) set(quotePath(path));
   };
   return (
     <Row
@@ -142,7 +162,7 @@ function ShellPathRow() {
         anchor={menuRef}
         placement="bottom-end"
         aria-label="Installed shells"
-        items={shells.map((p) => ({ id: p, label: p, checked: p === value, run: () => set(p) }))}
+        items={shells.map((p) => ({ id: p, label: p, checked: quotePath(p) === value, run: () => set(quotePath(p)) }))}
       />
       <IconButton
         icon="folder-open"
@@ -479,8 +499,12 @@ function ExternalToolsEditor() {
                 checked={t.enabled}
                 onChange={(on) => setTools(tools.map((x) => (x.id === t.id ? { ...x, enabled: on } : x)))}
               />
-              <span>{t.name}</span>
-              <span className={styles.toolGroup}>{t.group}</span>
+              <span className={styles.toolName} title={t.name}>
+                {t.name}
+              </span>
+              <span className={styles.toolGroup} title={t.group}>
+                {t.group}
+              </span>
             </div>
           ))}
         </div>
@@ -624,13 +648,67 @@ export const TOOLS_PAGES: PageSpec[] = [
     ],
   },
   {
-    // Under Settings › Tools › Agents (the agents feature registers `tools.agents`).
-    id: "tools.agents.chat",
+    id: "agents.chat",
     title: "Chat",
-    group: TOOLS_GROUP,
-    order: 0,
-    keywords: ["agent", "claude", "codex", "usage", "quota", "rate limit", "cost", "tokens", "meter"],
+    group: "Agents",
+    order: 460,
+    keywords: [
+      "agent",
+      "claude",
+      "codex",
+      "usage",
+      "quota",
+      "rate limit",
+      "cost",
+      "tokens",
+      "meter",
+      "send",
+      "reasoning",
+    ],
     sections: [
+      {
+        title: "Sending",
+        options: [
+          { kind: "select", key: "agents.sendWith", label: "Send messages with", options: SEND_KEY_OPTIONS },
+          {
+            kind: "select",
+            key: "agents.whileRunning",
+            label: "While the agent works, sending",
+            options: WHILE_RUNNING_OPTIONS,
+            hint: "The other way is a modifier away: ⌘↵ with Enter, ⌘⇧↵ with ⌘↵",
+          },
+        ],
+      },
+      {
+        title: "Conversation",
+        options: [
+          {
+            kind: "toggle",
+            key: "agents.foldTurns",
+            label: "Fold a finished turn's work",
+            hint: "Reasoning and tool calls before the reply fold into one line under its message",
+          },
+          {
+            kind: "select",
+            key: "agents.toolCalls",
+            label: "Tool calls",
+            options: TOOL_CALL_OPTIONS,
+          },
+          {
+            kind: "select",
+            key: "agents.thinking",
+            label: "Reasoning",
+            options: THINKING_OPTIONS,
+          },
+          { kind: "toggle", key: "agents.expandToolOutput", label: "Show tool output without opening it" },
+          {
+            kind: "toggle",
+            key: "agents.smoothText",
+            label: "Reveal streaming text smoothly",
+            hint: "Text appears at a steady pace instead of in bursts",
+          },
+        ],
+      },
       {
         title: "Shown in the Task Header",
         options: [
@@ -677,4 +755,5 @@ export const TOOLS_PAGES: PageSpec[] = [
       },
     ],
   },
+  MCP_SERVER_PAGE,
 ];

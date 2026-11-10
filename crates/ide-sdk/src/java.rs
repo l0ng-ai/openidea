@@ -32,13 +32,78 @@ pub fn parse_release(release: &str) -> Option<u32> {
     if first == 1 { parts.next()?.parse().ok() } else { Some(first) }
 }
 
-/// The JDK at `home`, if it is one (a `release` file and `bin/java`).
+/// The JDK at `home` (or a macOS bundle), if it has a `release` file and `bin/java`.
 pub fn jdk_at(home: &Path) -> Option<Jdk> {
+    let bundle_home = home.join("Contents/Home");
+    let home = if bundle_home.is_dir() { bundle_home.as_path() } else { home };
     let release = std::fs::read_to_string(home.join("release")).ok()?;
     if !home.join("bin").join(crate::exe("java")).is_file() {
         return None;
     }
     Some(Jdk { major: parse_release(&release)?, home: crate::launch_path(home).unwrap_or_else(|_| home.to_path_buf()) })
+}
+
+struct JavaProbe {
+    modified: std::time::SystemTime,
+    len: u64,
+    permissions: std::fs::Permissions,
+    at: Instant,
+    runnable: bool,
+}
+
+static JAVA_PROBES: Mutex<BTreeMap<PathBuf, JavaProbe>> = Mutex::new(BTreeMap::new());
+
+/// Metadata can describe a JDK built for another architecture. Probe the executable
+/// before giving it to JDT, with a short cache shared by server and project selection.
+pub(crate) fn java_runs(java: &Path) -> bool {
+    let Ok(metadata) = java.metadata() else { return false };
+    let Ok(modified) = metadata.modified() else { return false };
+    {
+        let probes = JAVA_PROBES.lock().unwrap_or_else(|e| e.into_inner());
+        if let Some(probe) = probes.get(java)
+            && probe.modified == modified
+            && probe.len == metadata.len()
+            && probe.permissions == metadata.permissions()
+            && probe.at.elapsed() < RESCAN_AFTER
+        {
+            return probe.runnable;
+        }
+    }
+    let runnable = crate::exec::query(java, &["-version"], Duration::from_secs(5)).is_some();
+    JAVA_PROBES.lock().unwrap_or_else(|e| e.into_inner()).insert(
+        java.to_path_buf(),
+        JavaProbe { modified, len: metadata.len(), permissions: metadata.permissions(), at: Instant::now(), runnable },
+    );
+    runnable
+}
+
+fn project_jdk_is_usable(jdk: &Jdk) -> bool {
+    jdk.home.join("bin").join(crate::exe("javac")).is_file()
+        && (jdk.major < 9 || ide_core::java_runtime::supports_java_bundles(&jdk.home))
+        && java_runs(&java_executable(&jdk.home))
+}
+
+pub(crate) fn server_jdk_error(jdk: &Jdk, min_java: u32) -> Option<String> {
+    server_jdk_metadata_error(jdk, min_java).or_else(|| java_execution_error(&java_executable(&jdk.home)))
+}
+
+pub(crate) fn server_jdk_metadata_error(jdk: &Jdk, min_java: u32) -> Option<String> {
+    if jdk.major < min_java {
+        Some(server_jdk_too_old_message(jdk, min_java))
+    } else if !ide_core::java_runtime::supports_java_bundles(&jdk.home) {
+        Some(server_jdk_incomplete_message(jdk, min_java))
+    } else {
+        None
+    }
+}
+
+pub(crate) fn java_execution_error(java: &Path) -> Option<String> {
+    (!java_runs(java)).then(|| {
+        format!(
+            "The language server Java executable ({}) cannot run on this machine. Choose a working JDK in {SERVER_JDK_SETTING}, or set it to Auto.",
+            java.display()
+        )
+    })
 }
 
 fn children(dir: &Path) -> Vec<PathBuf> {
@@ -166,11 +231,14 @@ pub fn installed_jdks() -> Arc<[Jdk]> {
 /// the list is rescanned (at most every [`RESCAN_AFTER`]), so a JDK installed
 /// after startup is picked up when the server is restarted.
 pub fn jdtls_jdks(min_java: u32, data_dir: &Path) -> Arc<[Jdk]> {
-    let mut slot = JDKS.lock().unwrap_or_else(|e| e.into_inner());
-    let installed = match &*slot {
-        Some(s) if jdtls_runtime(&s.jdks, min_java).is_some() || s.at.elapsed() < RESCAN_AFTER => s.jdks.clone(),
-        _ => rescan(&mut slot),
+    let (installed, expired) = {
+        let mut slot = JDKS.lock().unwrap_or_else(|e| e.into_inner());
+        match &*slot {
+            Some(s) => (s.jdks.clone(), s.at.elapsed() >= RESCAN_AFTER),
+            None => (rescan(&mut slot), false),
+        }
     };
+    let installed = if expired && jdtls_runtime(&installed, min_java).is_none() { rescan_jdks() } else { installed };
     runtime_candidates(&installed, data_dir).into()
 }
 
@@ -203,7 +271,7 @@ pub const JDTLS_MIN_JAVA: u32 = 21;
 
 /// The JDK to run jdtls with: the first found that is new enough (`JAVA_HOME` wins).
 pub fn jdtls_runtime(jdks: &[Jdk], min_java: u32) -> Option<&Jdk> {
-    jdks.iter().find(|j| j.major >= min_java && ide_core::java_runtime::supports_java_bundles(&j.home))
+    jdks.iter().find(|j| server_jdk_error(j, min_java).is_none())
 }
 
 /// The Java version the jdtls that `cfg` launches needs: the highest any of its
@@ -211,11 +279,8 @@ pub fn jdtls_runtime(jdks: &[Jdk], min_java: u32) -> Option<&Jdk> {
 /// for 21, but the Eclipse platform it ships moves on (1.63 needs 25), and on
 /// an older JDK the server dies resolving its bundles.
 pub fn jdtls_min_java(cfg: &LanguageServerConfig) -> u32 {
-    let search = cfg.env.get("PATH").map(std::ffi::OsString::from).or_else(|| std::env::var_os("PATH"));
-    let required = search
-        .and_then(|s| ide_run::which::find_executable(&cfg.command, &s))
-        .and_then(|exe| dunce::canonicalize(exe).ok())
-        .and_then(|exe| Some(exe.parent()?.parent()?.to_path_buf()))
+    let required = crate::jdtls::script_for(cfg)
+        .and_then(|script| Some(script.parent()?.parent()?.to_path_buf()))
         .and_then(|home| bundles_min_java(&home));
     required.map_or(JDTLS_MIN_JAVA, |v| v.max(JDTLS_MIN_JAVA))
 }
@@ -290,7 +355,7 @@ fn manifest_min_java(manifest: &str) -> Option<u32> {
 /// jdtls itself runs on.
 pub fn runtimes(jdks: &[Jdk]) -> Vec<serde_json::Value> {
     let mut by_major: BTreeMap<u32, &Jdk> = BTreeMap::new();
-    for j in jdks {
+    for j in jdks.iter().filter(|jdk| project_jdk_is_usable(jdk)) {
         by_major.entry(j.major).or_insert(j);
     }
     by_major
@@ -372,7 +437,8 @@ pub fn configure_jdtls(
     // A Lombok agent from the user's JVM arguments wins.
     let own_agent = crate::lombok::agent_in_args(cfg.args.iter().map(String::as_str));
     let agent = own_agent.as_deref().or(lombok);
-    if !cfg.args.iter().any(|a| a == "-data") {
+    let generated_workspace = !cfg.args.iter().any(|a| a == "-data");
+    if generated_workspace {
         // ECJ builds incrementally: classes compiled without (or with another) Lombok
         // agent would be kept, so each agent gets its own workspace and a full build.
         let mut key = match agent {
@@ -383,6 +449,12 @@ pub fn configure_jdtls(
             // Invisible projects retain a cached resource tree across restarts.
             // A different source model needs a clean import, including new folders.
             key.push_str(&format!("-sources-{}", text_key(&paths.to_string())));
+        }
+        if let Some(output) = cfg.settings.as_ref().and_then(|s| s.pointer("/java/project/outputPath")) {
+            key.push_str(&format!("-out-{}", text_key(&output.to_string())));
+        }
+        if let Some(libs) = cfg.settings.as_ref().and_then(|s| s.pointer("/java/project/referencedLibraries")) {
+            key.push_str(&format!("-libs-{}", text_key(&libs.to_string())));
         }
         let dir = data_dir.join("lsp").join("jdtls").join(key);
         cfg.args.extend(["-data".to_owned(), dir.to_string_lossy().into_owned()]);
@@ -408,12 +480,22 @@ pub fn configure_jdtls(
     set_jvm_property(&mut cfg.args, ZIP64_LENIENCY);
     let managed = language_server_runtimes_dir(data_dir);
     let managed = dunce::canonicalize(&managed).unwrap_or(managed);
+    let mut excluded_jdks = Vec::new();
     let project_jdks: Vec<_> = project_jdk
         .into_iter()
         .chain(jdks)
         .filter(|jdk| !jdk.home.starts_with(&managed) || project_jdk == Some(*jdk))
+        .filter(|jdk| {
+            if project_jdk_is_usable(jdk) {
+                true
+            } else {
+                excluded_jdks.push(jdk.home.clone());
+                false
+            }
+        })
         .cloned()
         .collect();
+    let project_jdk = project_jdk.filter(|jdk| project_jdks.contains(jdk));
     let mut all: Vec<Jdk> = Vec::new();
     for j in project_jdk.into_iter().chain(jdks).chain(server_jdk) {
         if !all.contains(j) {
@@ -421,25 +503,31 @@ pub fn configure_jdtls(
         }
     }
     let jdks = all.as_slice();
-    if !cfg.env.contains_key("JAVA_HOME") {
-        let runtime = match server_jdk {
-            Some(jdk) if jdk.major < min_java => Err(server_jdk_too_old_message(jdk, min_java)),
-            Some(jdk) if !ide_core::java_runtime::supports_java_bundles(&jdk.home) => {
-                Err(server_jdk_incomplete_message(jdk, min_java))
+    if cfg.launch_error.is_none() {
+        // A `JAVA_HOME` the config inherits (e.g. the project's JDK 8 for
+        // compilation) must not run jdtls: a chosen `server_jdk`, else any
+        // usable JDK, replaces it when it probes as too old or incomplete for
+        // the server (issue #2227). A `JAVA_HOME` that cannot be probed is the
+        // user's call and is left untouched.
+        let env_jdk = cfg.env.get("JAVA_HOME").and_then(|home| jdk_at(Path::new(home)));
+        if cfg.env.contains_key("JAVA_HOME") && env_jdk.is_none() {
+            // Unresolvable explicit value: keep it, jdtls reports what it finds.
+        } else {
+            let existing = env_jdk.filter(|jdk| server_jdk_error(jdk, min_java).is_none());
+            let runtime = if let Some(jdk) = server_jdk {
+                server_jdk_error(jdk, min_java).map_or(Ok(jdk), Err)
+            } else if let Some(jdk) = existing.as_ref() {
+                Ok(jdk)
+            } else {
+                jdtls_runtime(jdks, min_java).ok_or_else(|| missing_runtime_message(jdks, min_java))
+            };
+            match runtime {
+                Ok(jdk) => {
+                    cfg.env.insert("JAVA_HOME".to_owned(), jdk.home.to_string_lossy().into_owned());
+                }
+                Err(e) => cfg.launch_error = Some(e),
             }
-            Some(jdk) => Ok(jdk),
-            None => jdtls_runtime(jdks, min_java).ok_or_else(|| missing_runtime_message(jdks, min_java)),
-        };
-        match runtime {
-            Ok(jdk) => {
-                cfg.env.insert("JAVA_HOME".to_owned(), jdk.home.to_string_lossy().into_owned());
-            }
-            Err(e) => cfg.launch_error = Some(e),
         }
-    } else if let Some(jdk) = cfg.env.get("JAVA_HOME").and_then(|home| jdk_at(Path::new(home)))
-        && !ide_core::java_runtime::supports_java_bundles(&jdk.home)
-    {
-        cfg.launch_error = Some(server_jdk_incomplete_message(&jdk, min_java));
     }
     let mut runtimes = runtimes(&project_jdks);
     if let Some(project) = project_jdk.or_else(|| pick_jdk(&project_jdks, project_java_version(server_root))) {
@@ -450,6 +538,14 @@ pub fn configure_jdtls(
                 r["default"] = json!(true);
             }
         }
+    }
+    if generated_workspace && !excluded_jdks.is_empty() {
+        // JDT retains VM installs in its workspace even after they leave the runtime list.
+        excluded_jdks.sort();
+        excluded_jdks.dedup();
+        let key = text_key(&json!(excluded_jdks).to_string());
+        let data = cfg.args.iter().position(|a| a == "-data").unwrap() + 1;
+        cfg.args[data].push_str(&format!("-runtimes-{key}"));
     }
     if !runtimes.is_empty() {
         merge_init_options(cfg, json!({ "settings": { "java": { "configuration": { "runtimes": runtimes } } } }));
@@ -540,10 +636,12 @@ pub fn project_java_version(module_dir: &Path) -> Option<u32> {
     }
     for name in ["build.gradle.kts", "build.gradle"] {
         let Some(text) = read(name) else { continue };
-        if let Some(i) = text.find("JavaLanguageVersion.of(") {
-            let rest = &text[i + "JavaLanguageVersion.of(".len()..];
-            if let Some(v) = parse_java_version(rest.split(')').next().unwrap_or_default()) {
-                return Some(v);
+        for key in ["JavaLanguageVersion.of(", "jvmToolchain("] {
+            if let Some(i) = text.find(key) {
+                let rest = &text[i + key.len()..];
+                if let Some(v) = parse_java_version(rest.split(')').next().unwrap_or_default()) {
+                    return Some(v);
+                }
             }
         }
         for key in ["sourceCompatibility", "targetCompatibility"] {
@@ -580,6 +678,37 @@ fn parse_java_version(v: &str) -> Option<u32> {
 }
 
 #[cfg(test)]
+pub(crate) fn write_test_java(home: &Path) {
+    let java = java_executable(home);
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        std::fs::write(&java, "#!/bin/sh\necho 'openjdk version 25'\n").unwrap();
+        std::fs::set_permissions(java, std::fs::Permissions::from_mode(0o755)).unwrap();
+    }
+    #[cfg(windows)]
+    {
+        static BINARY: std::sync::OnceLock<tempfile::TempDir> = std::sync::OnceLock::new();
+        let dir = BINARY.get_or_init(|| {
+            let dir = tempfile::tempdir().unwrap();
+            let source = dir.path().join("java.rs");
+            std::fs::write(&source, "fn main() {}\n").unwrap();
+            assert!(
+                std::process::Command::new("rustc")
+                    .arg(source)
+                    .arg("-o")
+                    .arg(dir.path().join("java.exe"))
+                    .status()
+                    .unwrap()
+                    .success()
+            );
+            dir
+        });
+        std::fs::copy(dir.path().join("java.exe"), java).unwrap();
+    }
+}
+
+#[cfg(test)]
 mod tests {
     use super::*;
 
@@ -591,8 +720,12 @@ mod tests {
             format!("JAVA_VERSION=\"{major}\"\nMODULES=\"java.base jdk.compiler jdk.jdi jdk.unsupported\"\n"),
         )
         .unwrap();
-        std::fs::write(java_executable(&home), "").unwrap();
+        write_test_java(&home);
         std::fs::write(home.join("bin").join(crate::exe("javac")), "").unwrap();
+        // `jdk_at` reports the canonical home; `configure_jdtls` writes it to
+        // JAVA_HOME, so tests compare against the same real path (macOS
+        // /var→/private/var, Windows 8.3 short names).
+        let home = dunce::canonicalize(home).unwrap();
         Jdk { major, home }
     }
 
@@ -627,7 +760,7 @@ mod tests {
             "JAVA_VERSION=\"21.0.1\"\nMODULES=\"java.base jdk.compiler jdk.jdi jdk.unsupported\"\n",
         )
         .unwrap();
-        std::fs::write(java_executable(&project_home), "").unwrap();
+        write_test_java(&project_home);
         std::fs::write(project_home.join("bin").join(crate::exe("javac")), "").unwrap();
         let project = jdk_at(&project_home).unwrap();
         let discover = || jdk_homes(&project_root).filter_map(|home| jdk_at(&home)).collect::<Vec<_>>();
@@ -641,7 +774,7 @@ mod tests {
             "JAVA_VERSION=\"25.0.1\"\nMODULES=\"java.base jdk.compiler jdk.jdi jdk.unsupported\"\n",
         )
         .unwrap();
-        std::fs::write(java_executable(&home), "").unwrap();
+        write_test_java(&home);
         std::fs::write(home.join("bin").join(crate::exe("javac")), "").unwrap();
         let candidates = runtime_candidates(&installed, data.path());
         assert_eq!(jdtls_runtime(&candidates, 25).unwrap().major, 25);
@@ -711,7 +844,7 @@ mod tests {
                 "name": "JavaSE-21", "path": pick_jdk(&installed, None).unwrap().home, "default": true
             }])
         );
-        assert_eq!(cfg.env["JAVA_HOME"], fixtures.path().join("custom-server-runtime").to_string_lossy());
+        assert_eq!(cfg.env["JAVA_HOME"], server.home.to_string_lossy());
     }
 
     #[test]
@@ -720,6 +853,131 @@ mod tests {
         assert_eq!(parse_release("JAVA_VERSION=\"1.8.0_372\""), Some(8));
         assert_eq!(parse_release("JAVA_VERSION=\"25\""), Some(25));
         assert_eq!(parse_release("OTHER=1"), None);
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn issue_1668_unrunnable_jdk_does_not_hide_valid_runtimes() {
+        use std::os::unix::fs::PermissionsExt;
+        let tmp = tempfile::tempdir().unwrap();
+        let broken = test_jdk(tmp.path(), 8, "jdk1.8.0_202.jdk/Contents/Home");
+        std::fs::write(broken.home.join("release"), "JAVA_VERSION=\"1.8.0_202\"\n").unwrap();
+        std::fs::write(java_executable(&broken.home), "#!/bin/sh\nexit 126\n").unwrap();
+        std::fs::set_permissions(java_executable(&broken.home), std::fs::Permissions::from_mode(0o755)).unwrap();
+        let working = test_jdk(tmp.path(), 8, "working8");
+        std::fs::write(working.home.join("release"), "JAVA_VERSION=\"1.8.0_372\"\n").unwrap();
+        let server = test_jdk(tmp.path(), 25, "jdk25");
+        let installed = [broken.clone(), working.clone(), server.clone()];
+        for project in [None, Some(&broken)] {
+            for explicit in [None, Some(&server)] {
+                let mut cfg: LanguageServerConfig = toml::from_str("name = 'jdtls'\ncommand = 'jdtls'").unwrap();
+                configure_jdtls(&mut cfg, tmp.path(), tmp.path(), &installed, project, explicit, 25, &[], None);
+                assert_eq!(cfg.launch_error, None);
+                assert_eq!(cfg.env["JAVA_HOME"], server.home.to_string_lossy());
+                let options = serde_json::to_value(cfg.initialization_options.unwrap()).unwrap();
+                let runtimes = options["settings"]["java"]["configuration"]["runtimes"].as_array().unwrap();
+                assert_eq!(runtimes[0]["path"], json!(working.home));
+                assert!(!runtimes.iter().any(|r| r["path"] == json!(broken.home)));
+            }
+        }
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn unusable_server_jdks_are_skipped_or_reported_without_losing_the_selected_path() {
+        use std::os::unix::fs::PermissionsExt;
+        let tmp = tempfile::tempdir().unwrap();
+        let server = test_jdk(tmp.path(), 25, "good25");
+        for failure in ["exit126", "not-executable", "missing-javac", "jre", "timeout"] {
+            let bad = test_jdk(tmp.path(), 25, failure);
+            let java = java_executable(&bad.home);
+            match failure {
+                "exit126" => std::fs::write(&java, "#!/bin/sh\nexit 126\n").unwrap(),
+                "not-executable" => std::fs::set_permissions(&java, std::fs::Permissions::from_mode(0o644)).unwrap(),
+                "missing-javac" => std::fs::remove_file(bad.home.join("bin/javac")).unwrap(),
+                "jre" => std::fs::write(bad.home.join("release"), "JAVA_VERSION=\"25\"\nIMAGE_TYPE=\"JRE\"\n").unwrap(),
+                "timeout" => std::fs::write(&java, "#!/bin/sh\nexec /bin/sleep 10\n").unwrap(),
+                _ => unreachable!(),
+            }
+            let installed = [bad.clone(), server.clone()];
+            assert_eq!(jdtls_runtime(&installed, 25), Some(&server), "{failure}");
+            assert_eq!(runtimes(&installed)[0]["path"], json!(server.home), "{failure}");
+            for env_override in [false, true] {
+                let mut cfg: LanguageServerConfig = toml::from_str("name = 'jdtls'\ncommand = 'jdtls'").unwrap();
+                if env_override {
+                    cfg.env.insert("JAVA_HOME".into(), bad.home.to_string_lossy().into_owned());
+                }
+                configure_jdtls(&mut cfg, tmp.path(), tmp.path(), &installed, None, Some(&bad), 25, &[], None);
+                let error = cfg.launch_error.unwrap();
+                assert!(error.contains(bad.home.to_string_lossy().as_ref()), "{error}");
+                assert!(!error.contains(server.home.to_string_lossy().as_ref()), "{error}");
+            }
+            write_test_java(&bad.home);
+            if matches!(failure, "exit126" | "not-executable" | "timeout") {
+                assert!(java_runs(&java), "a replaced or repaired executable is probed again");
+            }
+        }
+        let mut cfg: LanguageServerConfig = toml::from_str("name = 'jdtls'\ncommand = 'jdtls'").unwrap();
+        cfg.launch_error = Some("invalid selected JDK /outside/scan".into());
+        configure_jdtls(&mut cfg, tmp.path(), tmp.path(), &[], None, None, 25, &[], None);
+        assert_eq!(cfg.launch_error.as_deref(), Some("invalid selected JDK /outside/scan"));
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn slow_java_probe_does_not_hold_the_cache_lock() {
+        let tmp = tempfile::tempdir().unwrap();
+        let jdk = test_jdk(tmp.path(), 25, "slow25");
+        let ready = tmp.path().join("ready");
+        std::fs::write(
+            java_executable(&jdk.home),
+            format!("#!/bin/sh\ntouch '{}'\nexec /bin/sleep 2\n", ready.display()),
+        )
+        .unwrap();
+        std::thread::scope(|scope| {
+            let probe = scope.spawn(|| java_runs(&java_executable(&jdk.home)));
+            let started = Instant::now();
+            while !ready.exists() && started.elapsed() < Duration::from_secs(5) {
+                std::thread::sleep(Duration::from_millis(10));
+            }
+            assert!(ready.exists(), "the probe must start");
+            assert!(
+                JAVA_PROBES.try_lock().is_ok(),
+                "a running java -version must not lock out cached or unrelated probes"
+            );
+            assert!(probe.join().unwrap());
+        });
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn only_excluded_jdks_change_the_generated_workspace() {
+        let tmp = tempfile::tempdir().unwrap();
+        let project = test_jdk(tmp.path(), 8, "project8");
+        let server = test_jdk(tmp.path(), 25, "server25");
+        let other_server = test_jdk(tmp.path(), 26, "server26");
+        let workspace = |jdks: &[Jdk], server: &Jdk, custom: bool| {
+            let mut cfg: LanguageServerConfig = toml::from_str("name = 'jdtls'\ncommand = 'jdtls'").unwrap();
+            if custom {
+                cfg.args.extend(["-data".into(), "/own/workspace".into()]);
+            }
+            configure_jdtls(&mut cfg, tmp.path(), tmp.path(), jdks, Some(&project), Some(server), 25, &[], None);
+            cfg.args.windows(2).find(|a| a[0] == "-data").unwrap()[1].clone()
+        };
+        let installed = [project.clone(), server.clone()];
+        let before = workspace(&installed, &server, false);
+        let original = tmp.path().join("lsp/jdtls").join(path_key(tmp.path()));
+        assert_eq!(before, original.to_string_lossy(), "working JDKs retain the pre-existing workspace");
+        assert_eq!(before, workspace(&[], &other_server, false), "installing or removing working JDKs keeps the path");
+        std::fs::write(java_executable(&project.home), "#!/bin/sh\nexit 126\n").unwrap();
+        let after = workspace(&installed, &server, false);
+        assert_ne!(before, after, "the workspace holding the now-invalid JDK must not be reused");
+        assert_eq!(after, workspace(&installed, &server, false));
+        assert_eq!(after, workspace(std::slice::from_ref(&other_server), &other_server, false));
+        assert_eq!(after, workspace(&[server.clone(), project.clone(), project.clone()], &server, false));
+        assert_eq!(workspace(&installed, &server, true), "/own/workspace");
+        write_test_java(&project.home);
+        assert_eq!(before, workspace(&installed, &server, false), "repairing the JDK restores the original path");
     }
 
     #[test]
@@ -760,15 +1018,11 @@ mod tests {
         );
         let opts = serde_json::to_value(cfg.initialization_options.clone().unwrap()).unwrap();
         let rt = &opts["settings"]["java"]["configuration"]["runtimes"];
-        assert_eq!(rt[0], json!({ "name": "JavaSE-1.8", "path": fixtures.path().join("jdk8") }));
-        assert_eq!(rt[1], json!({ "name": "JavaSE-21", "path": fixtures.path().join("jdk21a") }));
-        assert_eq!(rt[2], json!({ "name": "JavaSE-25", "path": fixtures.path().join("jdk25"), "default": true }));
+        assert_eq!(rt[0], json!({ "name": "JavaSE-1.8", "path": jdks[3].home }));
+        assert_eq!(rt[1], json!({ "name": "JavaSE-21", "path": jdks[1].home }));
+        assert_eq!(rt[2], json!({ "name": "JavaSE-25", "path": jdks[0].home, "default": true }));
         assert_eq!(opts["bundles"], json!(["/tools/java-debug/bin/com.microsoft.java.debug.plugin.jar"]));
-        assert_eq!(
-            cfg.env["JAVA_HOME"],
-            fixtures.path().join("jdk25").to_string_lossy(),
-            "first JDK new enough to run jdtls"
-        );
+        assert_eq!(cfg.env["JAVA_HOME"], jdks[0].home.to_string_lossy(), "first JDK new enough to run jdtls");
         assert_eq!(cfg.launch_error, None);
 
         // Deterministic (reconfigure compares configs) and idempotent.
@@ -802,8 +1056,8 @@ mod tests {
         );
         let opts = serde_json::to_value(cfg.initialization_options.clone().unwrap()).unwrap();
         let rt = &opts["settings"]["java"]["configuration"]["runtimes"];
-        assert_eq!(rt[1], json!({ "name": "JavaSE-21", "path": fixtures.path().join("jdk21b"), "default": true }));
-        assert_eq!(cfg.env["JAVA_HOME"], fixtures.path().join("jdk21b").to_string_lossy());
+        assert_eq!(rt[1], json!({ "name": "JavaSE-21", "path": project.home, "default": true }));
+        assert_eq!(cfg.env["JAVA_HOME"], project.home.to_string_lossy());
 
         let mut other: LanguageServerConfig = toml::from_str("name = \"pyright\"\ncommand = \"x\"").unwrap();
         configure_jdtls(
@@ -880,7 +1134,7 @@ mod tests {
         configure_jdtls(&mut plain, Path::new("/p"), Path::new("/data"), &[], None, None, JDTLS_MIN_JAVA, &[], None);
         let data = |c: &LanguageServerConfig| c.args[c.args.iter().position(|a| a == "-data").unwrap() + 1].clone();
         assert_ne!(data(&cfg), data(&plain), "a separate workspace, so everything is rebuilt with the agent");
-        let patched = Path::new("/managed/lombok-1.18.48-openidea.2.jar");
+        let patched = Path::new("/managed/lombok-1.18.48-openidea.3.jar");
         let mut fixed = jdtls();
         configure_jdtls(
             &mut fixed,
@@ -894,6 +1148,23 @@ mod tests {
             Some(patched),
         );
         assert_ne!(data(&cfg), data(&fixed), "the patch must rebuild classes compiled with the official agent");
+        let mut previous = jdtls();
+        configure_jdtls(
+            &mut previous,
+            Path::new("/p"),
+            Path::new("/data"),
+            &[],
+            None,
+            None,
+            JDTLS_MIN_JAVA,
+            &[],
+            Some(Path::new("/managed/lombok-1.18.48-openidea.2.jar")),
+        );
+        assert_ne!(
+            data(&previous),
+            data(&fixed),
+            "the new patch must rebuild classes compiled with the previous bundle"
+        );
         let before = cfg.clone();
         configure_jdtls(&mut cfg, Path::new("/p"), Path::new("/data"), &[], None, None, JDTLS_MIN_JAVA, &[], Some(jar));
         assert_eq!(cfg, before, "idempotent");
@@ -958,11 +1229,71 @@ mod tests {
         assert!(err.contains("Download JDK 25"), "{err}");
 
         // Once a JDK 25 has been downloaded, Auto runs jdtls on it.
-        let downloaded = [installed.as_slice(), &[test_jdk(fixtures.path(), 25, "/tools/jdks/temurin-25")]].concat();
+        let temurin = test_jdk(fixtures.path(), 25, "/tools/jdks/temurin-25");
+        let downloaded = [installed.as_slice(), std::slice::from_ref(&temurin)].concat();
         let mut cfg = jdtls();
         configure_jdtls(&mut cfg, Path::new("/p"), Path::new("/data"), &downloaded, None, None, 25, &[], None);
         assert_eq!(cfg.launch_error, None);
-        assert_eq!(cfg.env["JAVA_HOME"], fixtures.path().join("tools/jdks/temurin-25").to_string_lossy());
+        assert_eq!(cfg.env["JAVA_HOME"], temurin.home.to_string_lossy());
+    }
+
+    #[test]
+    fn issue_2227_a_project_java_home_too_old_for_the_server_is_replaced() {
+        // A project's JAVA_HOME (JDK 8 for compilation) must not run jdtls when
+        // the chosen server_jdk — or any usable JDK — is new enough.
+        let fixtures = tempfile::tempdir().unwrap();
+        let jdtls = || -> LanguageServerConfig { toml::from_str("name = \"jdtls\"\ncommand = \"jdtls\"").unwrap() };
+        let project = test_jdk(fixtures.path(), 8, "/jdk8");
+        let server = test_jdk(fixtures.path(), 25, "/jdk25");
+
+        // The chosen server JDK overrides the project's JAVA_HOME.
+        let mut cfg = jdtls();
+        cfg.env.insert("JAVA_HOME".into(), project.home.to_string_lossy().into_owned());
+        configure_jdtls(
+            &mut cfg,
+            Path::new("/p"),
+            Path::new("/data"),
+            std::slice::from_ref(&project),
+            None,
+            Some(&server),
+            25,
+            &[],
+            None,
+        );
+        assert_eq!(cfg.launch_error, None);
+        assert_eq!(cfg.env["JAVA_HOME"], server.home.to_string_lossy());
+
+        // Auto picks any usable installed JDK over the stale JAVA_HOME.
+        let mut cfg = jdtls();
+        cfg.env.insert("JAVA_HOME".into(), project.home.to_string_lossy().into_owned());
+        let installed = [project.clone(), server.clone()];
+        configure_jdtls(&mut cfg, Path::new("/p"), Path::new("/data"), &installed, None, None, 25, &[], None);
+        assert_eq!(cfg.launch_error, None);
+        assert_eq!(cfg.env["JAVA_HOME"], server.home.to_string_lossy());
+
+        // A JAVA_HOME new enough for the server stays.
+        let mut cfg = jdtls();
+        cfg.env.insert("JAVA_HOME".into(), server.home.to_string_lossy().into_owned());
+        configure_jdtls(&mut cfg, Path::new("/p"), Path::new("/data"), &installed, None, None, 25, &[], None);
+        assert_eq!(cfg.launch_error, None);
+        assert_eq!(cfg.env["JAVA_HOME"], server.home.to_string_lossy());
+
+        // Nothing usable to replace it with: the too-old JAVA_HOME loses to the
+        // same missing-runtime error a missing JAVA_HOME gives.
+        let mut cfg = jdtls();
+        cfg.env.insert("JAVA_HOME".into(), project.home.to_string_lossy().into_owned());
+        configure_jdtls(
+            &mut cfg,
+            Path::new("/p"),
+            Path::new("/data"),
+            std::slice::from_ref(&project),
+            None,
+            None,
+            25,
+            &[],
+            None,
+        );
+        assert!(cfg.launch_error.unwrap().contains("JDK 25 or newer"), "auto must say what to install");
     }
 
     #[test]
@@ -1024,23 +1355,23 @@ mod tests {
         let cfg = run(Some(&jdk(21, "/jdk21")), JDTLS_MIN_JAVA);
         assert_eq!(
             (cfg.env["JAVA_HOME"].clone(), cfg.launch_error),
-            (fixtures.path().join("jdk21").to_string_lossy().into_owned(), None)
+            (jdk(21, "/jdk21").home.to_string_lossy().into_owned(), None)
         );
         let opts = serde_json::to_value(cfg.initialization_options.unwrap()).unwrap();
         let rt = &opts["settings"]["java"]["configuration"]["runtimes"];
         assert_eq!(
             rt[0],
-            json!({ "name": "JavaSE-17", "path": fixtures.path().join("jdk17"), "default": true }),
+            json!({ "name": "JavaSE-17", "path": project.home, "default": true }),
             "still compiles on 17"
         );
 
         // Not set: the first installed JDK new enough, as before.
-        assert_eq!(run(None, JDTLS_MIN_JAVA).env["JAVA_HOME"], fixtures.path().join("jdk25").to_string_lossy());
+        assert_eq!(run(None, JDTLS_MIN_JAVA).env["JAVA_HOME"], jdk(25, "/jdk25").home.to_string_lossy());
 
         // A chosen JDK outside the scanned locations.
         let own = jdk(25, "/opt/own-jdk");
         let cfg = run(Some(&own), 25);
-        assert_eq!(cfg.env["JAVA_HOME"], fixtures.path().join("opt/own-jdk").to_string_lossy());
+        assert_eq!(cfg.env["JAVA_HOME"], own.home.to_string_lossy());
 
         // Too old for this jdtls: the user's choice is not overridden, it is explained.
         let old = jdk(21, "/jdk21");
@@ -1121,6 +1452,14 @@ mod tests {
         assert_eq!(project_java_version(dir), Some(11));
         std::fs::write(dir.join("build.gradle.kts"), "sourceCompatibility = '1.8'").unwrap();
         assert_eq!(project_java_version(dir), Some(8));
+        for (script, version) in [
+            ("kotlin { jvmToolchain(21) }", Some(21)),
+            ("kotlin { jvmToolchain(17) }", Some(17)),
+            ("kotlin { jvmToolchain(projectVersion) }", None),
+        ] {
+            std::fs::write(dir.join("build.gradle.kts"), script).unwrap();
+            assert_eq!(project_java_version(dir), version);
+        }
     }
 }
 
@@ -1169,7 +1508,7 @@ mod kotlin_bridge_bundle_tests {
 
 /// Installs the app-owned JDT LS command bundle, falling back to ordinary LSP on IO failure.
 pub fn usages_bundle(data_dir: &Path) -> Option<PathBuf> {
-    let extension = data_dir.join("java-usages-1.5.0.jar");
+    let extension = data_dir.join("java-usages-1.12.0.jar");
     let bytes = include_bytes!("../../../java/java-usages/openidea-java-usages.jar");
     if std::fs::read(&extension).is_ok_and(|old| old == bytes) {
         clean_usages_bundles(data_dir, &extension);

@@ -2,7 +2,7 @@ import { afterEach, describe, expect, it, vi } from "vitest";
 import { EditorState } from "@codemirror/state";
 import { EditorView } from "@codemirror/view";
 import { setDiagnostics } from "@codemirror/lint";
-import type { CodeAction } from "@/bindings";
+import type { CodeAction, Diagnostic } from "@/bindings";
 
 const resolved: CodeAction = {
   title: "Introduce local variable",
@@ -23,13 +23,25 @@ const resolved: CodeAction = {
   data: null,
   server: 1,
 };
+const runInteractiveCodeAction = vi.fn(async () => false);
+vi.mock("./interactiveCommand", () => ({ runInteractiveCodeAction }));
+const lspCodeActions = vi.fn();
+const lspApplyCodeAction = vi.fn();
 const lspResolveCodeAction = vi.fn(async () => ({ status: "ok" as const, data: resolved }));
 vi.mock("@/platform/ipc", async (orig) => {
   const actual = await orig<typeof import("@/platform/ipc")>();
-  return { ...actual, isTauri: () => true, commands: { ...actual.commands, lspResolveCodeAction } };
+  return {
+    ...actual,
+    isTauri: () => true,
+    commands: { ...actual.commands, lspResolveCodeAction, lspCodeActions, lspApplyCodeAction },
+  };
 });
 
 const {
+  actionsForDiagnostic,
+  applyQuickFix,
+  quickFixesAt,
+  applyKindSilently,
   bulbLine,
   changedLines,
   indentUnderBrace,
@@ -39,7 +51,7 @@ const {
   listedIntentions,
   withInspectionControls,
 } = await import("./intentions");
-const { setFileDiagnostics } = await import("./diagnostics");
+const { setFileDiagnostics, toLintDiagnostics } = await import("./diagnostics");
 const { lspDoc } = await import("./lsp");
 
 const views: EditorView[] = [];
@@ -115,7 +127,49 @@ describe("inspection controls in ⌥↵ (issue #42)", () => {
   );
 });
 
+describe("silent code actions", () => {
+  it("does not run lazy plugin actions that could prompt during Actions on Save", async () => {
+    const view = new EditorView({
+      state: EditorState.create({
+        doc: "f(1);",
+        extensions: [lspDoc.of({ doc: 1, path: "/p/a.ts", language: "typescript", uiMode: null, readOnly: false })],
+      }),
+    });
+    views.push(view);
+    lspCodeActions.mockResolvedValueOnce({
+      status: "ok",
+      data: [{ ...resolved, kind: "source.fixAll", server: 0, edit: null }],
+    });
+    expect(await applyKindSilently(view, "source.fixAll")).toBe(false);
+    expect(lspApplyCodeAction).not.toHaveBeenCalled();
+    expect(lspResolveCodeAction).not.toHaveBeenCalled();
+  });
+});
+
 describe("intention preview", () => {
+  it("does not resolve lazy plugin actions while previewing", async () => {
+    const view = new EditorView({
+      state: EditorState.create({
+        doc: "f(1);",
+        extensions: [lspDoc.of({ doc: 1, path: "/p/a.ts", language: "typescript", uiMode: null, readOnly: false })],
+      }),
+    });
+    views.push(view);
+    const cache = new Map<CodeAction, Promise<CodeAction>>();
+    const preview = await intentionPreview(
+      view,
+      { ...resolved, server: 0, edit: null },
+      cache,
+      new AbortController().signal,
+    );
+    expect(preview).toEqual({ kind: "text", text: "Preview isn't available for this action" });
+    expect(lspResolveCodeAction).not.toHaveBeenCalled();
+    expect(cache.size).toBe(0);
+    expect(await intentionPreview(view, { ...resolved, server: 0 }, cache, new AbortController().signal)).toMatchObject(
+      { kind: "diff" },
+    );
+  });
+
   it("resolves the action once and shows its diff for this file", async () => {
     const view = new EditorView({
       state: EditorState.create({
@@ -208,5 +262,99 @@ describe("indentUnderBrace", () => {
   it("leaves code already indented, or not under a brace", () => {
     expect(indentUnderBrace(text("class A {\n    f()\n}"), 2, 2, "    ")).toEqual([]);
     expect(indentUnderBrace(text("class A:\npass\nx"), 2, 3, "    ")).toEqual([]);
+  });
+});
+
+describe("quick fixes for overlapping diagnostics", () => {
+  const unused: Diagnostic = {
+    range: { start: { line: 0, col: 1 }, end: { line: 0, col: 37 } },
+    severity: "warning",
+    message: "github.com/sergi/go-diff is not used in this module",
+    source: "go mod tidy",
+    code: null,
+    unnecessary: false,
+    deprecated: false,
+  };
+  const upgrade: Diagnostic = {
+    ...unused,
+    severity: "info",
+    message: "github.com/sergi/go-diff can be upgraded",
+    source: "upgrade available",
+  };
+  const remove: CodeAction = {
+    ...resolved,
+    title: "Remove dependency: github.com/sergi/go-diff",
+    kind: "quickfix",
+    isPreferred: true,
+    diagnostics: [unused],
+  };
+  const update: CodeAction = {
+    ...remove,
+    title: "Upgrade to v1.4.0",
+    isPreferred: false,
+    diagnostics: [upgrade],
+  };
+
+  it("keeps only actions for each problem even when another problem's fix is preferred", () => {
+    expect(actionsForDiagnostic([remove, update], unused)).toEqual([remove]);
+    expect(actionsForDiagnostic([remove, update], upgrade)).toEqual([update]);
+    expect(actionsForDiagnostic([remove], upgrade)).toEqual([]);
+    expect(actionsForDiagnostic([remove, { ...update, diagnostics: [] }], upgrade)).toEqual([]);
+    expect(actionsForDiagnostic([{ ...remove, diagnostics: [unused, upgrade] }], upgrade)).toHaveLength(1);
+  });
+
+  it("retains the range fallback only when every action omits diagnostics", () => {
+    const actions = [
+      { ...remove, diagnostics: [] },
+      { ...update, diagnostics: undefined },
+    ];
+    expect(actionsForDiagnostic(actions, unused)).toEqual(actions);
+    expect(actionsForDiagnostic(actions, upgrade)).toEqual(actions);
+  });
+
+  it.each([
+    { message: "another problem" },
+    { range: { ...unused.range, end: { line: 0, col: 38 } } },
+    { code: "other" },
+    { source: "other" },
+  ])("checks diagnostic identity: %j", (over) => {
+    const problem = { ...unused, code: "unused" };
+    expect(actionsForDiagnostic([{ ...remove, diagnostics: [{ ...problem, ...over }] }], problem)).toEqual([]);
+  });
+
+  it.each([unused, upgrade])("uses the matching fix for hover and Apply Quick Fix: $message", async (problem) => {
+    const view = new EditorView({
+      state: EditorState.create({
+        doc: " github.com/sergi/go-diff v1.3.1         ",
+        selection: { anchor: 3 },
+        extensions: [lspDoc.of({ doc: 1, path: "/p/go.mod", language: "go", uiMode: null, readOnly: false })],
+      }),
+    });
+    views.push(view);
+    view.dispatch(setDiagnostics(view.state, toLintDiagnostics(view.state.doc, [problem])));
+    const expected = problem === unused ? remove : update;
+    lspCodeActions.mockResolvedValue({ status: "ok", data: [remove, update] });
+    expect(await quickFixesAt(view, 1, 37, problem)).toEqual([expected]);
+    await applyQuickFix(view);
+    expect(runInteractiveCodeAction).toHaveBeenCalledWith(1, expected);
+  });
+
+  it("prefers a preferred matching fix and preserves empty ranges widened for display", async () => {
+    const problem = { ...upgrade, range: { start: { line: 0, col: 2 }, end: { line: 0, col: 2 } } };
+    const first = { ...update, diagnostics: [problem] };
+    const preferred = { ...first, title: "Preferred upgrade", isPreferred: true };
+    const view = new EditorView({
+      state: EditorState.create({
+        doc: " dependency",
+        selection: { anchor: 2 },
+        extensions: [lspDoc.of({ doc: 1, path: "/p/go.mod", language: "go", uiMode: null, readOnly: false })],
+      }),
+    });
+    views.push(view);
+    view.dispatch(setDiagnostics(view.state, toLintDiagnostics(view.state.doc, [problem])));
+    lspCodeActions.mockResolvedValue({ status: "ok", data: [remove, first, preferred] });
+    expect(await quickFixesAt(view, 2, 3, problem)).toEqual([preferred, first]);
+    await applyQuickFix(view);
+    expect(runInteractiveCodeAction).toHaveBeenCalledWith(1, preferred);
   });
 });

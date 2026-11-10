@@ -14,7 +14,7 @@ import { Icon, type IconName } from "./icons";
 import { IconButton } from "./Button";
 import styles from "./Input.module.css";
 import { setContext } from "@/platform/context";
-import { useTx } from "@/platform/i18n";
+import { useGivenTx } from "@/platform/i18n";
 import { shortcutLabel } from "@/platform/keymap";
 
 export interface InputProps extends Omit<InputHTMLAttributes<HTMLInputElement>, "size"> {
@@ -22,6 +22,8 @@ export interface InputProps extends Omit<InputHTMLAttributes<HTMLInputElement>, 
   mono?: boolean;
   /** `bare` drops the frame (for inputs embedded in popups / headers). */
   variant?: "framed" | "bare";
+  /** Select the prefilled value the first time the field takes focus, so typing replaces it. */
+  autoSelect?: boolean;
 }
 
 export const Input = forwardRef<HTMLInputElement, InputProps>(function Input(
@@ -29,16 +31,19 @@ export const Input = forwardRef<HTMLInputElement, InputProps>(function Input(
     invalid,
     mono,
     variant = "framed",
+    autoSelect,
     className,
     spellCheck = false,
     autoComplete = "off",
     placeholder,
+    onFocus,
     "aria-label": ariaLabel,
     ...rest
   },
   ref,
 ) {
-  const tx = useTx();
+  const tx = useGivenTx();
+  const selected = useRef(false);
   return (
     <input
       ref={ref}
@@ -49,6 +54,14 @@ export const Input = forwardRef<HTMLInputElement, InputProps>(function Input(
       aria-invalid={invalid || undefined}
       placeholder={tx(placeholder)}
       aria-label={tx(ariaLabel)}
+      // First focus only: coming back to a field the user already edited keeps its caret.
+      onFocus={(e) => {
+        if (autoSelect && !selected.current) {
+          selected.current = true;
+          e.currentTarget.select();
+        }
+        onFocus?.(e);
+      }}
       className={clsx(styles.input, variant === "bare" ? styles.bare : styles.framed, mono && styles.mono, className)}
       {...rest}
     />
@@ -125,7 +138,7 @@ export const SearchField = forwardRef<HTMLInputElement, SearchFieldProps>(functi
   },
   ref,
 ) {
-  const tx = useTx();
+  const tx = useGivenTx();
   const inner = useRef<HTMLInputElement | HTMLTextAreaElement | null>(null);
   const setRef = (el: HTMLInputElement | HTMLTextAreaElement | null) => {
     inner.current = el;

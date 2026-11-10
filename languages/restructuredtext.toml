@@ -1,0 +1,6 @@
+id = "restructuredtext"
+name = "reStructuredText"
+extensions = ["rst"]
+line-comment = ".."
+indent = { tab-size = 3, insert-spaces = true }
+ui-mode = "reStructuredText"

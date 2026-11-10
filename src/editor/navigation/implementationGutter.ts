@@ -15,7 +15,7 @@
  */
 import { RangeSet, StateEffect, StateField, type Extension, type Text } from "@codemirror/state";
 import { EditorView, GutterMarker, ViewPlugin, gutter, type ViewUpdate } from "@codemirror/view";
-import type { EditorDocContext } from "@/editor/api";
+import { shownAgain, type EditorDocContext } from "@/editor/api";
 import { docOf, debounce, isUnavailable, lspRequest } from "@/editor/lsp/lsp";
 import { featureBackoff, onServerSettled } from "@/editor/lsp/availability";
 import { readManyFileLines, withDocument } from "@/editor/lsp/files";
@@ -183,6 +183,22 @@ export async function fillMarkers(
       down.length = 0;
     }
   }
+  // Some servers (Pyrefly) answer implementation requests with nothing while their
+  // type hierarchy still knows the subtypes: use it for the ↓ markers of types.
+  const subtypes = deps.supers.subtypes;
+  if (subtypes) {
+    await Promise.all(
+      down.map(async (c, i) => {
+        if (c.method || (implementations[i]?.length ?? 0)) return;
+        try {
+          const found = await subtypes(path, { line: c.line, col: c.col });
+          implementations[i] = found.map((s) => ({ path: s.path, range: s.selectionRange }));
+        } catch (e) {
+          if (isCancelled(e)) throw e;
+        }
+      }),
+    );
+  }
   const supers: SuperMethod[][] = [];
   for (const c of up) supers.push(await superMethodTargets(path, c.owner!, c.symbol, deps.supers));
 
@@ -295,6 +311,7 @@ function markerSet(placed: readonly PlacedMarker[]): RangeSet<GutterMarker> {
 class MarkersPlugin {
   private refresh = debounce(() => void this.run(), DEBOUNCE_MS);
   private generation = 0;
+  private skipped = false;
   private request: RequestId | null = null;
   private offSettings: () => void;
 
@@ -316,7 +333,7 @@ class MarkersPlugin {
       // Other documents' markers may depend on this one.
       changes++;
       this.refresh();
-    } else if (u.viewportChanged) this.refresh();
+    } else if (u.viewportChanged || (this.skipped && shownAgain(u))) this.refresh();
     // Other files may have changed meanwhile (a new implementation).
     else if (u.focusChanged && u.view.hasFocus) {
       const ctx = docOf(u.view);
@@ -337,7 +354,8 @@ class MarkersPlugin {
 
   private async run() {
     const view = this.view;
-    if (!view.dom.isConnected) return;
+    this.skipped = !view.dom.isConnected;
+    if (this.skipped) return;
     const ctx = docOf(view);
     if (!ctx) return;
     const gen = ++this.generation;
@@ -387,8 +405,10 @@ class MarkersPlugin {
 /** LSP access for one pass: this document's outline as known, others' opened on demand, each asked once. */
 function markerDeps(ctx: EditorDocContext, items: OutlineItem[], request: RequestId, cache: MarkerCache): MarkerDeps {
   const supertypes = new Map<string, Promise<HierarchyItem[]>>();
+  const subtypes = new Map<string, Promise<HierarchyItem[]>>();
   const outlines = new Map<string, Promise<OutlineItem[]>>([[ctx.path, Promise.resolve(items)]]);
-  const hierarchy = (doc: number, pos: Pos) => lspRequest(() => commands.lspTypeHierarchy(doc, pos, "incoming"));
+  const hierarchy = (doc: number, pos: Pos, direction: "incoming" | "outgoing") =>
+    lspRequest(() => commands.lspTypeHierarchy(doc, pos, direction));
   return {
     implementations: (positions) => lspRequest(() => commands.lspImplementations(request, ctx.doc, positions)),
     supers: {
@@ -398,13 +418,25 @@ function markerDeps(ctx: EditorDocContext, items: OutlineItem[], request: Reques
         if (!p) {
           p =
             path === ctx.path
-              ? hierarchy(ctx.doc, pos).catch((e) => {
+              ? hierarchy(ctx.doc, pos, "incoming").catch((e) => {
                   // No type hierarchy for this file: no ↑ markers until the server changes.
                   if (isUnavailable(e)) cache.unsupported.add("supers");
                   throw e;
                 })
-              : withDocument(path, (doc) => hierarchy(doc, pos));
+              : withDocument(path, (doc) => hierarchy(doc, pos, "incoming"));
           supertypes.set(key, p);
+        }
+        return p;
+      },
+      subtypes: (path, pos) => {
+        const key = `${path}:${pos.line}:${pos.col}`;
+        let p = subtypes.get(key);
+        if (!p) {
+          p =
+            path === ctx.path
+              ? hierarchy(ctx.doc, pos, "outgoing")
+              : withDocument(path, (doc) => hierarchy(doc, pos, "outgoing"));
+          subtypes.set(key, p);
         }
         return p;
       },

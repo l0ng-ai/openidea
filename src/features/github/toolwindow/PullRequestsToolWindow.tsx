@@ -280,10 +280,8 @@ export function PullRequestsHeaderActions() {
 }
 
 /** The "⋮" menu's own items: Change Repository or Account… (connected, several GitHub remotes). */
-export function usePullRequestsHeaderMenu(): MenuItem[] {
-  const connected = useGhRepository((s) => !!s.connection);
-  const several = useGhRepository((s) => s.remotes.length > 1);
-  return connected && several ? CHANGE_REPOSITORY : NONE;
+export function headerMenu(s: Pick<ReturnType<typeof useGhRepository.getState>, "connection" | "remotes">): MenuItem[] {
+  return s.connection && s.remotes.length > 1 ? CHANGE_REPOSITORY : NONE;
 }
 
 const NONE: MenuItem[] = [];

@@ -13,11 +13,11 @@ import {
   type DbTablePage,
   type RequestId,
 } from "@/platform/ipc";
-import { Button, EmptyState, Icon, IconButton, Select, Spinner, T, showContextMenu } from "@/ui";
+import { Button, EmptyState, Icon, IconButton, Select, Spinner, T, showContextMenu, tooltipAttrs } from "@/ui";
 import { notifications, type EditorInput } from "@/workbench/contributions";
 import { SqlFilterInput } from "./SqlFilterInput";
 import { ColumnsPopup } from "./ColumnsPopup";
-import { DataView, ExtractorSelect, PanelToggle, exportMenu, type DataPanel } from "./DataView";
+import { DataView, ExtractorSelect, PanelToggle, copyFormatOf, exportMenu, type DataPanel } from "./DataView";
 import type { ExportFormat } from "./export";
 import {
   buildRowEdits,
@@ -99,12 +99,17 @@ export function TableEditor({ input }: { input: EditorInput }) {
   const rowCount = loaded + edits.inserts.length;
   const gridColumns = useMemo(
     () =>
-      columns.map((c) => ({
-        name: c.name,
-        type: c.typeName,
-        primaryKey: pk.includes(c.name),
-        foreignKey: fkColumns.has(c.name),
-      })),
+      columns.map((c) => {
+        const d = page?.details.columns.find((x) => x.name === c.name);
+        return {
+          name: c.name,
+          type: d?.dataType ?? c.typeName,
+          primaryKey: pk.includes(c.name),
+          foreignKey: fkColumns.has(c.name),
+          nullable: d?.nullable,
+          default: d?.default ?? null,
+        };
+      }),
     // `pk` / `fkColumns` derive from `page`.
     // eslint-disable-next-line react-hooks/exhaustive-deps
     [page],
@@ -142,6 +147,16 @@ export function TableEditor({ input }: { input: EditorInput }) {
         else next.updates.delete(row);
       }
       return next;
+    });
+  };
+
+  const onResetCell = (row: number, col: number) => {
+    setEdits((e) => {
+      const inserts = [...e.inserts];
+      const ins = new Map(inserts[row - loaded]);
+      ins.delete(names[col]!);
+      inserts[row - loaded] = ins;
+      return { ...e, inserts };
     });
   };
 
@@ -241,10 +256,21 @@ export function TableEditor({ input }: { input: EditorInput }) {
               title="Add Row"
               onClick={() => setEdits((e) => ({ ...e, inserts: [...e.inserts, new Map()] }))}
             />
-            <Button size="small" variant="primary" disabled={!dirty} onClick={() => void submit()}>
+            <Button
+              size="small"
+              variant="primary"
+              disabled={!dirty}
+              onClick={() => void submit()}
+              {...tooltipAttrs("Submit", shortcutLabel("db.submitChanges"))}
+            >
               <T>Submit</T>
             </Button>
-            <Button size="small" disabled={!dirty} onClick={() => setEdits(emptyEdits())}>
+            <Button
+              size="small"
+              disabled={!dirty}
+              onClick={() => setEdits(emptyEdits())}
+              {...tooltipAttrs("Revert", shortcutLabel("db.revertChanges"))}
+            >
               <T>Revert</T>
             </Button>
           </>
@@ -355,6 +381,7 @@ export function TableEditor({ input }: { input: EditorInput }) {
             value={value}
             panel={panel}
             onPanelChange={setPanel}
+            copyFormat={copyFormatOf(extractor)}
             searchOpen={searchOpen}
             onSearchOpenChange={setSearchOpen}
             firstRowNumber={offset + 1}
@@ -362,6 +389,8 @@ export function TableEditor({ input }: { input: EditorInput }) {
             isModified={(r, c) => !!edits.updates.get(r)?.has(names[c]!)}
             editable={editable}
             onEdit={onEdit}
+            onResetCell={onResetCell}
+            driver={source?.driver}
             sort={sort}
             onSort={onSort}
             rowMenu={(rows) =>

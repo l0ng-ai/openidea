@@ -33,6 +33,8 @@ const {
   phpRemoteType,
   jdwpAgentArgs,
   xdebugCommand,
+  isPythonAttachTarget,
+  pythonAttachConfig,
   remoteAttachConfig,
   remoteJvmTarget,
   remoteWaitingNote,
@@ -128,6 +130,18 @@ describe("remote attach requests", () => {
     });
     const plain = JSON.parse(remoteAttachConfig(configOf(goRemoteType), "/p")!.extraJson!);
     expect(plain).toEqual({ debugServer: "localhost:2345", mode: "remote" });
+  });
+
+  it("a Python program in a container: the project root maps onto its folder there", () => {
+    const target = { name: "app", adapter: "debugpy" as const, hostName: "127.0.0.1", port: 41234, remoteRoot: "/app" };
+    expect(isPythonAttachTarget({ ...target, process: 3 })).toBe(true);
+    expect(isPythonAttachTarget({ name: "app", module: "", hostName: "h", port: 5005 })).toBe(false);
+    const l = pythonAttachConfig(target, "/p");
+    expect(l).toMatchObject({ name: "app", adapter: "debugpy", request: "attach", cwd: "/p" });
+    expect(JSON.parse(l.extraJson!)).toMatchObject({
+      debugServer: "127.0.0.1:41234",
+      pathMappings: [{ localRoot: "/p", remoteRoot: "/app" }],
+    });
   });
 
   it("Python remote connects to debugpy --listen with pathMappings", () => {

@@ -1,0 +1,121 @@
+---
+title: "C and C++"
+description: "Code intelligence with clangd, CMake and Makefile run configurations, single-file runs and native debugging with lldb-dap, CodeLLDB or GDB."
+---
+
+OpenIDEA supports C, C++, Objective-C and Objective-C++ through [clangd](https://clangd.llvm.org). Highlighting, folding and the outline work without any setup. Completion, navigation, diagnostics and refactorings come from clangd, and how good they are depends on clangd knowing your compile flags. For the other languages, see the [support matrix](/en/languages/index).
+
+| Language      | Extensions                                                                                            | Language server | Debugger (default) |
+| ------------- | ----------------------------------------------------------------------------------------------------- | --------------- | ------------------ |
+| C             | `.c`, `.h`                                                                                            | clangd          | lldb-dap           |
+| C++           | `.cpp`, `.cc`, `.cxx`, `.c++`, `.hpp`, `.hh`, `.hxx`, `.h++`, `.ipp`, `.tpp`, `.inl`, `.ixx`, `.cppm` | clangd          | lldb-dap           |
+| Objective-C   | `.m`                                                                                                  | clangd          | lldb-dap           |
+| Objective-C++ | `.mm`                                                                                                 | clangd          | lldb-dap           |
+
+`.h` files open as C. To treat headers as C++, change the association in **Settings › Editor › File Types**.
+
+## Language server
+
+clangd starts with `--background-index --header-insertion=never` for C and C++, so it indexes the whole project in the background and never adds `#include` lines on its own.
+
+clangd finds the workspace root by looking up from the file for one of these files: `compile_commands.json`, `compile_flags.txt`, `.clangd`, `CMakeLists.txt`, `meson.build` or `Makefile`. Objective-C and Objective-C++ only use `compile_commands.json`, `compile_flags.txt` and `.clangd`.
+
+### Compile flags
+
+clangd needs the flags each file is compiled with. Without them it guesses, and you see false errors about missing headers or unknown macros. Provide one of:
+
+- **`compile_commands.json`**: a compilation database. CMake writes it into the build directory when `CMAKE_EXPORT_COMPILE_COMMANDS` is on, and the CMake configurations OpenIDEA creates always pass `-DCMAKE_EXPORT_COMPILE_COMMANDS=ON` (see [CMake](#cmake)). For Make-based projects, tools such as Bear can generate one.
+- **`compile_flags.txt`**: one flag per line, applied to every file. Good for small projects.
+- **`.clangd`**: clangd's own configuration file, for example to point `CompilationDatabase` at a build directory.
+
+<Tip>
+clangd looks for `compile_commands.json` in the file's parent directories and in a `build/` subdirectory of each. If your build directory has another name (for example `cmake-build-debug` from a CMake profile), add a `.clangd` file with `CompileFlags: { CompilationDatabase: cmake-build-debug }` or copy or link the file to the project root.
+</Tip>
+
+### Apple's clangd
+
+The `clangd` that ships with Xcode and the Command Line Tools does not run clang-tidy. When a project has a `.clang-tidy` file and the IDE is using Apple's clangd, it shows a warning with an **Install** button that installs the LLVM build instead.
+
+## Setup
+
+When clangd is missing, opening a C or C++ file shows a "clangd is not installed" notification with **Install**. You can also install it from **Settings › Languages & Frameworks › Language Servers**.
+
+| Tool     | How it is installed                                                             | Notes                                                                                                                          |
+| -------- | ------------------------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------ |
+| clangd   | Downloaded from the `clangd/clangd` GitHub releases into the IDE's tools folder | Prebuilt for macOS, Linux x64 and Windows x64. On other platforms, install clangd yourself (for example `apt install clangd`). |
+| CodeLLDB | Downloaded from the `vadimcn/codelldb` GitHub releases                          | Optional, see [Debugging](#debugging).                                                                                         |
+| lldb-dap | Not installed by the IDE                                                        | Comes with LLVM (`brew install llvm`). On macOS the IDE also finds Xcode's copy through `xcrun -f lldb-dap`.                   |
+| GDB      | Not installed by the IDE                                                        | Needs GDB 14 or newer.                                                                                                         |
+
+A clangd or debugger already on your `PATH` is used as is. To use a specific binary, select it on the tool's page in **Settings › Languages & Frameworks › Language Servers**.
+
+The compiler is not managed by the IDE. Single-file runs look for `clang`, `gcc` or `cc` (C) and `clang++`, `g++` or `c++` (C++) on `PATH`.
+
+## Build, run and test
+
+### CMake
+
+For every `CMakeLists.txt` project, OpenIDEA creates run configurations:
+
+- **CMake Configure**: `cmake -S . -B <build dir> -DCMAKE_EXPORT_COMPILE_COMMANDS=ON` (plus `-DCMAKE_BUILD_TYPE=Debug` for a new build directory).
+- **CMake Build**: `cmake --build <build dir>`. It runs the configure step first when the build directory is not configured yet.
+- **CTest**: `ctest --test-dir <build dir> --output-on-failure`, after a build.
+- **Build &lt;target&gt;** and one run configuration per executable target. Running a target builds it first.
+
+The executable targets come from CMake's File API, so they appear after the first configure. Nested CMake projects (for example in a folder that holds several repositories) get their own set of configurations.
+
+Without profiles, the IDE uses every subdirectory of the project that contains a `CMakeCache.txt`, or `build/` when there is none.
+
+#### CMake profiles
+
+To control the build directories yourself, add profiles in **Settings › Build, Execution, Deployment › CMake**. Each profile has:
+
+| Field                 | Meaning                                                                                                                                           |
+| --------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------- |
+| Name                  | Shown next to the configuration names.                                                                                                            |
+| Build type            | `Debug`, `Release`, `RelWithDebInfo` or `MinSizeRel` (passed as `CMAKE_BUILD_TYPE`).                                                              |
+| Generator             | Optional `-G` value, for example `Ninja`, `Unix Makefiles`, `Ninja Multi-Config`, `Visual Studio 17 2022` or `Xcode`. Empty uses CMake's default. |
+| CMake arguments       | Extra arguments for the configure step.                                                                                                           |
+| Build directory       | Empty means `cmake-build-<build type>`, for example `cmake-build-debug`.                                                                          |
+| Build arguments       | Extra arguments for `cmake --build`.                                                                                                              |
+| Environment variables | Set for configure, build, test and run.                                                                                                           |
+
+Once profiles exist, only they are used. Changing the generator of an existing build directory clears its CMake cache on the next configure.
+
+### Makefiles
+
+A `Makefile`, `makefile` or `GNUmakefile` gives one `make <target>` configuration per target. `test` and `check` targets are marked as tests.
+
+### Single files
+
+A C or C++ file with a `main` function can be run without a build system: use **Run Context Configuration** (`⌃⇧R` / `Ctrl+Shift+F10`) or **Debug Context Configuration** (`⌃⇧D` on macOS). The IDE compiles the file with debug info (`-g`, and `-std=c++17` for C++) into a temporary folder and runs it.
+
+See [Run configurations](/en/guide/run) and [Testing](/en/guide/testing) for the general workflow.
+
+## Debugging
+
+Debugging uses a DAP adapter. C and C++ configurations default to **lldb-dap**. To use another one, open the run configuration and change **Debug adapter**:
+
+- **lldb-dap (C, C++, Swift)**: LLVM's adapter, the default. The IDE does not install it.
+- **CodeLLDB (Rust, C, C++)**: the IDE can install it; if it is missing when you start debugging, a notification offers to install it.
+- **GDB (C, C++)**: GDB's own DAP mode (`gdb -i dap`). It needs GDB 14 or newer; older versions are refused with a message.
+
+**Attach to Process…** lists native processes too. It attaches with CodeLLDB when it is installed, otherwise with lldb-dap.
+
+See [Debugging](/en/guide/debugging) for breakpoints, stepping and the variables view.
+
+## Arduino
+
+`.ino` sketches use the Arduino Language Server, which drives clangd with Arduino's generated compile context. The IDE does not install it: install Arduino IDE 2 (it includes the Arduino Language Server, Arduino CLI and clangd) and the board's core. OpenIDEA finds those tools on `PATH` or inside Arduino IDE 2.
+
+To override the paths, set them in **Settings › Languages & Frameworks › Language Servers**, or set `languages.arduino.cli`, `languages.arduino.clangd`, `languages.arduino.languageServer` and `languages.arduino.cliConfig` in `settings.toml`. Set the board FQBN in `sketch.yaml` or `languages.arduino.fqbn`. Plain `.cpp` files next to a sketch are still served by clangd.
+
+There are no upload or serial monitor actions for Arduino.
+
+## Limitations
+
+- C and C++ code intelligence is only as good as clangd's compile flags. Without a `compile_commands.json` or `compile_flags.txt`, expect false errors.
+- The IDE does not generate a compilation database for Make, Meson or other build systems.
+- CTest runs as a single configuration and shows its console output; individual tests are not listed in a test tree.
+- There are no gutter run icons for C and C++ test frameworks (GoogleTest, Catch2 and so on).
+- lldb-dap and GDB are not installed by the IDE.

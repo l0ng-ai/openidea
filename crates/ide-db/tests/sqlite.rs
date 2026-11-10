@@ -132,16 +132,16 @@ async fn a_later_page_returns_only_its_rows() -> IdeResult<()> {
     let sql = "SELECT id FROM users ORDER BY id";
     let ids = |r: &QueryResult| r.rows.iter().map(|row| row[0].clone().unwrap()).collect::<Vec<_>>();
 
-    let second = db.execute_from("s1", sql, 1, 1, &c).await?;
+    let second = db.execute_from("s1", sql, 1, 1, &c, None).await?;
     assert_eq!(ids(&second), vec!["2"]);
     assert!(second.has_more);
     assert_eq!(second.columns.len(), 1);
 
-    let last = db.execute_from("s1", sql, 2, 5, &c).await?;
+    let last = db.execute_from("s1", sql, 2, 5, &c, None).await?;
     assert_eq!(ids(&last), vec!["3"]);
     assert!(!last.has_more);
 
-    let past = db.execute_from("s1", sql, 9, 5, &c).await?;
+    let past = db.execute_from("s1", sql, 9, 5, &c, None).await?;
     assert!(past.rows.is_empty() && !past.has_more);
     assert_eq!(past.columns.len(), 1, "columns of a page past the end come from the prepared statement");
     Ok(())
@@ -276,11 +276,11 @@ async fn ddl_of_tables_and_views() -> IdeResult<()> {
 async fn explains_queries_without_running_them() -> IdeResult<()> {
     let (_tmp, db) = setup().await;
     let c = CancellationToken::new();
-    let plan = db.explain("s1", "SELECT * FROM users WHERE id > 1 ORDER BY note;", &c).await?;
+    let plan = db.explain("s1", "SELECT * FROM users WHERE id > 1 ORDER BY note;", &c, None).await?;
     let ops: Vec<_> = plan.iter().map(|n| n.operation.as_str()).collect();
     assert_eq!(ops, vec!["Index Scan", "Order By"]);
     assert!(plan[0].params.starts_with("table: users;"), "{}", plan[0].params);
-    db.explain("s1", "DELETE FROM users", &c).await?;
+    db.explain("s1", "DELETE FROM users", &c, None).await?;
     assert_eq!(count(&db).await, "3");
     Ok(())
 }

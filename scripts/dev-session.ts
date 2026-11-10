@@ -68,7 +68,8 @@ export async function claimSession(
       });
       return { server };
     } catch (error) {
-      if ((error as NodeJS.ErrnoException).code !== "EADDRINUSE") throw error;
+      const code = (error as NodeJS.ErrnoException).code;
+      if (code !== "EADDRINUSE" && code !== "EACCES") throw error;
       const existing = await readSession(port);
       if (existing?.worktree === session.worktree && existing.identifier === session.identifier) {
         return { existing };

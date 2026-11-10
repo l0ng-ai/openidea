@@ -23,6 +23,10 @@ export interface CustomColorScheme {
 
 export type CustomColorSchemes = Record<string, CustomColorScheme>;
 
+/** Python docstring markup formats (PyCharm's Python Integrated Tools › Docstring format). */
+export const DOCSTRING_FORMATS = ["plain", "rest", "epytext", "google", "numpy"] as const;
+export type DocstringFormat = (typeof DOCSTRING_FORMATS)[number];
+
 export interface LanguageCodeStyle {
   /** Java formatter; relative XML paths start at the project root. */
   formatter?: "default" | "intellij" | "custom";
@@ -70,6 +74,8 @@ export const EDITOR_EXTRA_DEFAULTS = {
   colorOverrides: {} as Record<string, Record<string, TextAttributesOverride>>,
   /** Color Scheme › Language Defaults › Semantic highlighting (rainbow locals / parameters). */
   semanticHighlighting: false,
+  /** Docstring markup format the Python editor highlights (`plain` disables tag parsing). */
+  docstringFormat: "rest" as DocstringFormat,
   /** Color Scheme › Language Defaults › Rainbow brackets. */
   rainbowBrackets: false,
   ligatures: false,
@@ -104,6 +110,7 @@ export const EDITOR_EXTRA_DEFAULTS = {
     whitespaceInner: true,
     whitespaceTrailing: true,
     indentGuides: true,
+    rainbowIndentGuides: false,
     hardWrapGuides: true,
     intentionBulb: true,
     distractionFreeWidth: 80,
@@ -122,7 +129,7 @@ export const EDITOR_EXTRA_DEFAULTS = {
     parameterInfo: true,
     parameterInfoDelay: 1000,
   },
-  autoImport: { addUnambiguous: false, optimizeOnTheFly: false },
+  autoImport: { addUnambiguous: false, optimizeOnTheFly: false, importsOnPaste: "ask" as "ask" | "always" | "never" },
   folding: { showOutline: true, fileHeader: true, imports: true, docComments: false },
   tabs: {
     placement: "top",
@@ -151,6 +158,7 @@ export const EDITOR_EXTRA_DEFAULTS = {
     surroundSelection: true,
     tabOutOfPair: true,
     reformatOnPaste: "indentEachLine",
+    escapeOnPaste: true,
     smartIndent: true,
     insertDocStub: true,
     backspaceUnindent: "autoindent",
@@ -250,6 +258,8 @@ export function fontWeightVars(main: unknown, bold: unknown): Record<"--fw-code"
 
 export function validateEditorExtras(raw: unknown): EditorExtras {
   const out = coerceLike(raw, EDITOR_EXTRA_DEFAULTS);
+  if (!["ask", "always", "never"].includes(out.autoImport.importsOnPaste)) out.autoImport.importsOnPaste = "ask";
+  if (!DOCSTRING_FORMATS.includes(out.docstringFormat)) out.docstringFormat = "rest";
   out.fontWeight = fontWeightOf(out.fontWeight, EDITOR_EXTRA_DEFAULTS.fontWeight);
   out.boldFontWeight = fontWeightOf(out.boldFontWeight, EDITOR_EXTRA_DEFAULTS.boldFontWeight);
   return out;

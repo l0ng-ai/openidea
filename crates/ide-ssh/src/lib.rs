@@ -20,5 +20,5 @@ pub use manager::SshManager;
 pub use russh::Sig;
 pub use session::{ConnectError, ExecOutput, Output, RemoteProcess, Session, UnknownHostKey};
 pub use sftp::RemoteEntry;
-pub use target::{SshFiles, SshTarget, expand, openssh_args};
+pub use target::{SshFiles, SshTarget, expand, openssh_args, resolve_ssh_remote_url, resolve_ssh_remote_url_with};
 pub use tunnel::Tunnel;

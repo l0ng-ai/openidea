@@ -50,9 +50,21 @@ export function Section({ title, children, className }: { title?: string; childr
           <span className={styles.sectionRule} aria-hidden />
         </div>
       )}
-      <div className={styles.sectionBody}>{children}</div>
+      <FormGroup className={styles.sectionBody}>{children}</FormGroup>
     </section>
   );
+}
+
+export function FormGroup({
+  children,
+  indented,
+  className,
+}: {
+  children: ReactNode;
+  indented?: boolean;
+  className?: string;
+}) {
+  return <div className={clsx(styles.formGroup, indented && styles.indented, className)}>{children}</div>;
 }
 
 export interface RowProps {
@@ -172,10 +184,19 @@ export interface SelectProps<V extends string> {
   onChange: (value: V) => void;
   disabled?: boolean;
   onPreview?: (value: V | null) => void;
+  className?: string;
   "aria-label"?: string;
 }
 
-export function Select<V extends string>({ value, options, onChange, disabled, onPreview, ...aria }: SelectProps<V>) {
+export function Select<V extends string>({
+  value,
+  options,
+  onChange,
+  disabled,
+  onPreview,
+  className,
+  ...aria
+}: SelectProps<V>) {
   return (
     <UiSelect<V>
       value={value}
@@ -183,7 +204,7 @@ export function Select<V extends string>({ value, options, onChange, disabled, o
       onChange={onChange}
       disabled={disabled}
       onPreview={onPreview}
-      className={styles.select}
+      className={clsx(styles.select, className)}
       aria-label={aria["aria-label"]}
     />
   );

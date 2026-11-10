@@ -9,6 +9,16 @@ describe("validateWorkflow", () => {
     expect(validateWorkflow({ vcs: { git: { inlineBlame: "true" } } }).vcs.git.inlineBlame).toBe(false);
   });
 
+  it("keeps the double-click choice unset until it is made", () => {
+    expect(DEFAULT_WORKFLOW.vcs.commit.doubleClickOpensDiff).toBeNull();
+    expect(validateWorkflow(undefined).vcs.commit.doubleClickOpensDiff).toBeNull();
+    const commit = (doubleClickOpensDiff: unknown) =>
+      validateWorkflow({ vcs: { commit: { doubleClickOpensDiff } } }).vcs.commit.doubleClickOpensDiff;
+    expect(commit(true)).toBe(true);
+    expect(commit(false)).toBe(false);
+    expect(commit("yes")).toBeNull();
+  });
+
   it("falls back to defaults for missing or malformed values", () => {
     expect(validateWorkflow(undefined)).toEqual(DEFAULT_WORKFLOW);
     const v = validateWorkflow({

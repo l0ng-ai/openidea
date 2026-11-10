@@ -2,7 +2,7 @@
 import { onEditorEvent, openEditorPaths } from "@/editor/api";
 import { commands, isTauri, onIdeEvent } from "@/platform/ipc";
 import { useBuildModel } from "@/platform/buildModel";
-import { validateProjectStructure, type RootFolder } from "@/platform/languageSettings";
+import { effectiveContentRoots, validateProjectStructure, type RootFolder } from "@/platform/languageSettings";
 import { useProject } from "@/platform/project";
 import { initProjectRoots, useProjectRoots } from "@/platform/projectRoots";
 import { folderIconName } from "@/ui";
@@ -13,6 +13,7 @@ import {
   registerProjectViewRoot,
   registerToolWindow,
   registerUndoHandler,
+  setProjectViewLead,
   useLocalChanges,
   useProjectViewRoots,
 } from "@/workbench/contributions";
@@ -25,10 +26,12 @@ import { ProjectHeaderActions, useProjectHeaderMenu, useProjectTitleMenu } from 
 import { loadHomeDir } from "./home";
 import { selectedNodes, undoLastFileOperation } from "./operations";
 import { ProjectView } from "./ProjectView";
+import { initProjectTypes } from "./projectTypes";
 import {
   applyFsChange,
   dropOutlines,
   initProjectTree,
+  leadSelection,
   reloadAll,
   reloadLoadedDirs,
   setChangedFiles,
@@ -112,8 +115,8 @@ export function activate(): () => void {
   let shownRoots = "";
   const syncContentRoots = () => {
     const { project, settings } = useProject.getState();
-    const own = project && !project.workspace;
-    const paths = own ? validateProjectStructure(settings?.projectStructure).contentRoots : [];
+    const own = project && (!project.workspace || project.workspace.projects[0] === project.root);
+    const paths = own ? effectiveContentRoots(validateProjectStructure(settings?.projectStructure)) : [];
     // The Build tool window's model (one load per build change), not a load of our own.
     const build = useBuildModel.getState();
     const gradleBuilds = build.root === project?.root ? (build.model?.gradle ?? []) : [];
@@ -173,6 +176,14 @@ export function activate(): () => void {
     if (s.lists !== prev.lists) syncChanged();
   });
 
+  // IDEA's navigation bar shows the tree's current node while the tree is the
+  // user's context; the editor hands it back on focus or on a tab switch.
+  const publishLead = () => setProjectViewLead(leadSelection());
+  publishLead();
+  const unsubLead = useProjectTree.subscribe((s, prev) => {
+    if (s.selected !== prev.selected || s.lead !== prev.lead) publishLead();
+  });
+
   const disposers = [
     () => {
       clearTimeout(unityTimer);
@@ -182,6 +193,10 @@ export function activate(): () => void {
     () => clearTimeout(openTimer),
     unsubEditor,
     unsubDecorations,
+    () => {
+      unsubLead();
+      setProjectViewLead(null);
+    },
     unsubProject,
     unsubExtraRoots,
     unsubExcludes,
@@ -218,6 +233,7 @@ export function activate(): () => void {
         .filter((n) => !n.group)
         .map((n) => n.path),
     ),
+    initProjectTypes(),
     onIdeEvent("fsChanged", (e) => void applyFsChange(e)),
     onIdeEvent("excludedDirsChanged", (e) => void reloadLoadedDirs(e.dirs)),
   ];

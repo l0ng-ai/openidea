@@ -458,7 +458,14 @@ const LONG_EDGE_STUB = 2;
 
 const onLane = (i: number) => (s: GraphSegment) => s.from === i && s.to === i;
 
-const passes = (row: GraphRow, i: number) => row.lane !== i && row.up.some(onLane(i)) && row.down.some(onLane(i));
+/** Lanes a row's vertical lines pass straight through (other than its node's). */
+function passingLanes(row: GraphRow): Set<number> {
+  const out = new Set<number>();
+  for (const s of row.up)
+    if (s.from === s.to && s.from !== row.lane && row.down.some((d) => d.from === s.from && d.to === s.from))
+      out.add(s.from);
+  return out;
+}
 
 /**
  * Show Long Edges off: the middle of a straight run of a lane through `minLength` or
@@ -466,41 +473,41 @@ const passes = (row: GraphRow, i: number) => row.lane !== i && row.up.some(onLan
  */
 export function hideLongEdges(rows: readonly GraphRow[], minLength = LONG_EDGE): GraphRow[] {
   const out = rows.slice();
-  const width = rows.reduce((max, row) => Math.max(max, row.width), 0);
   const edit = (r: number, fn: (row: GraphRow) => GraphRow) => {
     out[r] = fn(out[r]!);
   };
-  for (let i = 0; i < width; i++) {
+  const hide = (i: number, start: number, end: number) => {
     const lane = onLane(i);
-    let start = -1;
-    for (let r = 0; r <= rows.length; r++) {
-      if (r < rows.length && passes(rows[r]!, i)) {
-        if (start < 0) start = r;
-        continue;
-      }
-      if (start >= 0 && r - start >= minLength) {
-        const from = start + LONG_EDGE_STUB;
-        const to = r - 1 - LONG_EDGE_STUB;
-        for (let k = from; k <= to; k++) {
-          edit(k, (row) => ({
-            ...row,
-            up: row.up.filter((s) => !lane(s)),
-            down: row.down.filter((s) => !lane(s)),
-            upTargets: row.upTargets?.filter((_, i) => !lane(row.up[i]!)),
-            downTargets: row.downTargets?.filter((_, i) => !lane(row.down[i]!)),
-          }));
-        }
-        edit(from - 1, (row) => ({
-          ...row,
-          down: row.down.map((s) => (lane(s) ? { ...s, arrow: "down", targetRow: r } : s)),
-        }));
-        edit(to + 1, (row) => ({
-          ...row,
-          up: row.up.map((s) => (lane(s) ? { ...s, arrow: "up", targetRow: start - 1 } : s)),
-        }));
-      }
-      start = -1;
+    const from = start + LONG_EDGE_STUB;
+    const to = end - 1 - LONG_EDGE_STUB;
+    for (let k = from; k <= to; k++) {
+      edit(k, (row) => ({
+        ...row,
+        up: row.up.filter((s) => !lane(s)),
+        down: row.down.filter((s) => !lane(s)),
+        upTargets: row.upTargets?.filter((_, i) => !lane(row.up[i]!)),
+        downTargets: row.downTargets?.filter((_, i) => !lane(row.down[i]!)),
+      }));
     }
+    edit(from - 1, (row) => ({
+      ...row,
+      down: row.down.map((s) => (lane(s) ? { ...s, arrow: "down", targetRow: end } : s)),
+    }));
+    edit(to + 1, (row) => ({
+      ...row,
+      up: row.up.map((s) => (lane(s) ? { ...s, arrow: "up", targetRow: start - 1 } : s)),
+    }));
+  };
+  // One pass over the rows, following every lane's current run at once.
+  const runs = new Map<number, number>();
+  for (let r = 0; r <= rows.length; r++) {
+    const through = r < rows.length ? passingLanes(rows[r]!) : new Set<number>();
+    for (const [lane, start] of runs) {
+      if (through.has(lane)) continue;
+      if (r - start >= minLength) hide(lane, start, r);
+      runs.delete(lane);
+    }
+    for (const lane of through) if (!runs.has(lane)) runs.set(lane, r);
   }
   return out;
 }

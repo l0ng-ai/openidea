@@ -5,7 +5,7 @@
 //! Agent tool use that launched them: their messages carry it as `parent_tool_use_id`.
 
 use super::tools;
-use crate::{LIMITS_UPDATE, RETRY_UPDATE};
+use crate::{BACKGROUND_TASKS_UPDATE, LIMITS_UPDATE, RETRY_UPDATE};
 use serde_json::{Value, json};
 use std::collections::{HashMap, VecDeque};
 use std::path::PathBuf;
@@ -457,6 +457,15 @@ impl Translator {
                 let summary = msg.get("summary").and_then(Value::as_str).map(str::to_owned);
                 let last = self.children.get(&tool_use).map(|c| c.last_text.clone()).filter(|t| !t.is_empty());
                 self.finish_child(&tool_use, stop, last.or(summary))
+            }
+            // A turn's background tasks (`run_in_background`) outlive it: the task keeps
+            // the list and stays up while it isn't empty (see `Task::release_when_idle`).
+            Some("background_tasks_changed") => {
+                let Some(tasks) = msg.get("tasks").and_then(Value::as_array).cloned() else { return Vec::new() };
+                vec![Update {
+                    session: self.root.clone(),
+                    update: json!({ "sessionUpdate": BACKGROUND_TASKS_UPDATE, "tasks": tasks }),
+                }]
             }
             _ => Vec::new(),
         }

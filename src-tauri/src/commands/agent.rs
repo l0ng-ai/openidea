@@ -4,7 +4,7 @@ use crate::state::AppState;
 use ide_agent::registry::AgentRegistry;
 use ide_agent::{
     AgentChange, AgentCommand, AgentEntry, AgentEvent, AgentProbe, AgentPrompt, AgentProvider, AgentQueued, AgentTask,
-    NewAgentTask,
+    McpServer, McpServerInput, NewAgentTask,
 };
 use ide_core::{IdeResult, IpcPath, RequestId};
 use ide_host::ops::agent;
@@ -93,6 +93,46 @@ pub async fn agent_registry_install(
 #[specta::specta]
 pub async fn agent_registry_remove(window: Window, state: State<'_, AppState>, id: String) -> IdeResult<()> {
     agent::registry_remove(&state.host, window.label(), id).await
+}
+
+/// Lists configured and discovered MCP servers across User, Workspace, Plugin, and Built-In scopes.
+#[tauri::command]
+#[specta::specta]
+pub fn agent_mcp_list(window: Window, state: State<'_, AppState>) -> IdeResult<Vec<McpServer>> {
+    agent::mcp_list(&state.host, window.label())
+}
+
+/// Creates or updates a User or Workspace MCP server and returns the updated list.
+#[tauri::command]
+#[specta::specta]
+pub fn agent_mcp_save(window: Window, state: State<'_, AppState>, input: McpServerInput) -> IdeResult<Vec<McpServer>> {
+    agent::mcp_save(&state.host, window.label(), input)
+}
+
+/// Enables or disables an MCP server and returns the updated list.
+#[tauri::command]
+#[specta::specta]
+pub fn agent_mcp_set_enabled(
+    window: Window,
+    state: State<'_, AppState>,
+    id: String,
+    enabled: bool,
+) -> IdeResult<Vec<McpServer>> {
+    agent::mcp_set_enabled(&state.host, window.label(), id, enabled)
+}
+
+/// Removes a User or Workspace MCP server and returns the updated list.
+#[tauri::command]
+#[specta::specta]
+pub fn agent_mcp_remove(window: Window, state: State<'_, AppState>, id: String) -> IdeResult<Vec<McpServer>> {
+    agent::mcp_remove(&state.host, window.label(), id)
+}
+
+/// Copies MCP servers from `.mcp.json` and `.vscode/mcp.json` into the workspace settings once.
+#[tauri::command]
+#[specta::specta]
+pub fn agent_mcp_import(window: Window, state: State<'_, AppState>) -> IdeResult<Vec<McpServer>> {
+    agent::mcp_import(&state.host, window.label())
 }
 
 /// Slash commands to complete for `provider` in `task`'s directory, or in the project
@@ -225,6 +265,18 @@ pub fn agent_cancel(
     agent::cancel(&state.host, window.label(), task, subagent)
 }
 
+/// Stops one of the task's background tasks.
+#[tauri::command]
+#[specta::specta]
+pub async fn agent_stop_background(
+    window: Window,
+    state: State<'_, AppState>,
+    task: String,
+    background: String,
+) -> IdeResult<()> {
+    agent::stop_background(&state.host, window.label(), task, background).await
+}
+
 /// Answers a permission request; `option: null` cancels it.
 #[tauri::command]
 #[specta::specta]
@@ -252,6 +304,12 @@ pub fn agent_unarchive(window: Window, state: State<'_, AppState>, task: String)
 
 #[tauri::command]
 #[specta::specta]
+pub fn agent_rename(window: Window, state: State<'_, AppState>, task: String, title: String) -> IdeResult<()> {
+    agent::rename(&state.host, window.label(), task, title)
+}
+
+#[tauri::command]
+#[specta::specta]
 pub async fn agent_delete(
     window: Window,
     state: State<'_, AppState>,
@@ -265,6 +323,18 @@ pub async fn agent_delete(
 #[specta::specta]
 pub async fn agent_changes(window: Window, state: State<'_, AppState>, task: String) -> IdeResult<Vec<AgentChange>> {
     agent::changes(&state.host, window.label(), task).await
+}
+
+/// Rollback: the task's changed files among `paths` (all without) back as they were when it started.
+#[tauri::command]
+#[specta::specta]
+pub async fn agent_rollback_changes(
+    window: Window,
+    state: State<'_, AppState>,
+    task: String,
+    paths: Option<Vec<String>>,
+) -> IdeResult<()> {
+    agent::rollback_changes(&state.host, window.label(), task, paths).await
 }
 
 /// Content of `path` when the task started (left side of its diff).

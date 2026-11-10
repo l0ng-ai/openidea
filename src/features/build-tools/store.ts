@@ -18,16 +18,24 @@ import {
   nextRequestId,
   type BuildModel,
   type BuildTool,
+  type MavenProfile,
   type RequestId,
   type RunConfig,
   type SyncProgress,
 } from "@/platform/ipc";
-import { downloadJdkActions } from "@/platform/jdk";
+import { buildToolRecovery } from "@/platform/buildToolRecovery";
 import { useBuildModel } from "@/platform/buildModel";
 import { useProject } from "@/platform/project";
 import { editorService, notifications } from "@/workbench/contributions";
 import { cancelTask, removeTask, upsertTask, useTasks } from "@/workbench/tasks";
-import { gradleRoots, profilesList, type GradleRunOptions, type MavenRunOptions } from "./model";
+import {
+  gradleRoots,
+  mavenGoalConfig,
+  profileKey,
+  profilesList,
+  type GradleRunOptions,
+  type MavenRunOptions,
+} from "./model";
 
 export interface BuildSettings {
   maven: MavenRunOptions;
@@ -126,15 +134,20 @@ export const toggleGradleOffline = () =>
 /** Delay before reloading Maven after a profile toggle, so a few toggles in a row reload once. */
 export const PROFILE_RELOAD_DELAY_MS = 800;
 let profileReload: ReturnType<typeof setTimeout> | undefined;
+const profileRoots = new Set<string | null>();
 
-export function setProfile(id: string, checked: boolean) {
+export function setProfile(profile: string | MavenProfile, checked: boolean) {
+  const id = typeof profile === "string" ? profile : profileKey(profile);
+  const projectRoot = typeof profile === "string" ? null : (profile.projectRoot ?? null);
   updateSettings((s) => ({ ...s, maven: { ...s.maven, profiles: { ...s.maven.profiles, [id]: checked } } }));
   // The Java language server and Build Project resolve the project with the profiles of the
   // last sync, so a new choice reloads it (IDEA re-imports on a profile change too).
+  profileRoots.add(projectRoot);
   clearTimeout(profileReload);
   profileReload = setTimeout(() => {
     profileReload = undefined;
-    requestSync("maven");
+    for (const root of profileRoots) requestSync("maven", root);
+    profileRoots.clear();
   }, PROFILE_RELOAD_DELAY_MS);
 }
 
@@ -240,7 +253,7 @@ const LINKED_PROJECTS = "languages.java.maven.linkedProjects";
  * reactor lists them), or removes them (a linked one is dropped, a discovered one unlinked).
  */
 async function setLinked(root: string, poms: string[], linked: boolean) {
-  if (useProject.getState().project?.root !== root) return;
+  if (useProject.getState().project?.root !== root || useProject.getState().project?.workspace) return;
   const settings = await commands.settingsGet();
   if (useProject.getState().project?.root !== root) return;
   const maven = settings.languages.java?.maven;
@@ -266,7 +279,7 @@ async function setLinked(root: string, poms: string[], linked: boolean) {
 export async function unlinkProjects(pom: string | null) {
   const { root, model } = useBuild.getState();
   const project = model?.maven?.projects.find((p) => p.pom === pom);
-  if (!root || !pom || !project) return;
+  if (!root || !pom || !project || useProject.getState().project?.workspace) return;
   if (
     !(await confirm({
       title: "Unlink Maven projects?",
@@ -295,7 +308,7 @@ function projectPoms(root: string, picked: readonly string[]): string[] {
 
 export async function addProjects() {
   const root = useProject.getState().project?.root;
-  if (!root || !isTauri()) return;
+  if (!root || useProject.getState().project?.workspace || !isTauri()) return;
   const { open } = await import("@tauri-apps/plugin-dialog");
   const picked = await open({
     title: tx`Add Maven Projects`,
@@ -392,7 +405,7 @@ export function requestSync(tool: BuildTool, buildDir: string | null = null) {
   } else void syncTool(tool, buildDir);
 }
 
-/** Reloads the build tool model; `buildDir` limits a Gradle reload to one linked build. */
+/** Reloads one Maven workspace member / linked Gradle build, or all builds when `buildDir` is null. */
 export async function syncTool(tool: BuildTool, buildDir: string | null = null): Promise<void> {
   const state = useBuild.getState();
   const gen = generation;
@@ -411,10 +424,27 @@ export async function syncTool(tool: BuildTool, buildDir: string | null = null):
     upsertTask({ id: taskId, title: TITLES[tool], message: p.message, fraction: p.fraction, done: false, cancel });
   };
   const { settings, model } = state;
-  const profiles = tool === "maven" && model?.maven ? profilesList(model.maven.profiles, settings.maven.profiles) : [];
   const offline = tool === "maven" ? settings.maven.offline : settings.gradle.offline;
   try {
-    const next = await call(commands.buildSync(tool, request, offline, profiles, buildDir, channel));
+    const roots =
+      tool === "maven" && useProject.getState().project?.workspace
+        ? [...new Set(model?.maven?.projects.map((p) => p.projectRoot ?? null))].filter(
+            (r) => !buildDir || r === buildDir,
+          )
+        : [buildDir];
+    let next = model;
+    for (const dir of roots) {
+      if (useBuild.getState().root !== root || useBuild.getState().syncing[tool]?.request !== request) return;
+      const profiles =
+        tool === "maven" && model?.maven
+          ? profilesList(
+              model.maven.profiles.filter((p) => (p.projectRoot ?? null) === dir),
+              settings.maven.profiles,
+            )
+          : [];
+      next = await call(commands.buildSync(tool, request, offline, profiles, dir, channel));
+    }
+    if (!next) return;
     if (useBuild.getState().root !== root || gen !== generation) return;
     const configs = await call(commands.runConfigs()).catch(() => useBuild.getState().configs);
     if (useBuild.getState().root !== root || gen !== generation) return;
@@ -431,9 +461,8 @@ export async function syncTool(tool: BuildTool, buildDir: string | null = null):
         group: "run",
         level: "warning",
         title: tool === "maven" ? "Maven sync finished with errors" : "Gradle sync failed",
-        body: error,
+        ...buildToolRecovery(error),
         key: `build-sync-${tool}`,
-        actions: downloadJdkActions(error),
       });
   } catch (e) {
     if (!isCancelled(e))
@@ -441,7 +470,7 @@ export async function syncTool(tool: BuildTool, buildDir: string | null = null):
         group: "run",
         level: "error",
         title: tool === "maven" ? "Cannot reload Maven projects" : "Cannot reload Gradle projects",
-        body: e instanceof Error ? e.message : String(e),
+        ...buildToolRecovery(e instanceof Error ? e.message : String(e)),
         key: `build-sync-${tool}`,
       });
   } finally {
@@ -472,6 +501,7 @@ export function resetBuild() {
   generation++;
   clearTimeout(profileReload);
   profileReload = undefined;
+  profileRoots.clear();
   queuedSyncs.clear();
   useAnalyzer.setState({ module: null });
   for (const tool of ["maven", "gradle"] as const) {
@@ -496,6 +526,35 @@ export function resetBuild() {
 
 export function runConfig(config: RunConfig, mode: "run" | "debug") {
   void executeAction(mode === "debug" ? "run.debugConfig" : "run.runConfig", { config, temporary: true });
+}
+
+/** Runs `config` in the Run tool window; resolves with its exit code (`null` when it didn't start or was stopped). */
+function runToExit(config: RunConfig): Promise<number | null> {
+  return new Promise((resolve) => {
+    const onExit = (code: number | null, stopped: boolean) => resolve(stopped ? null : code);
+    void executeAction("run.runConfig", { config, temporary: true, onExit }).then((ran) => {
+      if (!ran) resolve(null);
+    });
+  });
+}
+
+/**
+ * Generate Sources and Update Folders: runs `generate-sources` for the Maven project at `pom`, or
+ * for every top-level project, then reloads the Maven projects so folders created by the build
+ * (`target/generated-sources/...`) become source folders.
+ */
+export async function generateSources(pom?: string | null): Promise<void> {
+  const { model, settings } = useBuild.getState();
+  const maven = model?.maven;
+  if (!maven) return;
+  const projects = maven.projects.filter((p) => (pom ? p.pom === pom : !p.aggregated));
+  let ran = false;
+  for (const project of projects) {
+    const code = await runToExit(mavenGoalConfig(project, ["generate-sources"], maven, settings.maven));
+    if (code === null) return;
+    ran ||= code === 0;
+  }
+  if (ran) await syncTool("maven");
 }
 
 export async function createRunConfig(config: RunConfig) {

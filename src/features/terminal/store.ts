@@ -82,12 +82,13 @@ export function sessionForTerminalId(id: number): TerminalSession | undefined {
   return allSessions().find((s) => s.terminalId === id);
 }
 
-function createSession(cwd: string, command?: SessionOptions["command"]): TerminalSession {
+function createSession(cwd: string, command?: SessionOptions["command"], fallbackRoot?: string): TerminalSession {
   const key = `s${++seq}`;
   const session = new TerminalSession({
     key,
     cwd,
     command,
+    fallbackRoot,
     onChange: (k, snapshot) => useTerminals.setState((s) => ({ sessions: { ...s.sessions, [k]: snapshot } })),
     onFocus: (k) => {
       const tab = tabOfSession(k);
@@ -381,7 +382,7 @@ export function splitTab(id: string, orientation: SplitOrientation, move = false
     });
     return id;
   }
-  const session = createSession(sessions.get(tab.session)?.state.cwd ?? "/");
+  const session = createSession(sessions.get(tab.session)?.state.cwd ?? "/", undefined, boundProject ?? undefined);
   const copy: TerminalTab = {
     id: `t${seq}`,
     name: defaultTabName(),
@@ -560,7 +561,7 @@ function remapLayout(node: GroupLayout, mapGroup: (group: string) => string): Gr
 }
 
 /** Opens the saved tabs in fresh sessions. Group ids are new, so they don't collide with ones minted later. */
-function restore(saved: StoredTerminals) {
+function restore(saved: StoredTerminals, root: string) {
   const groupOf = new Map<string, string>();
   const mapGroup = (group: string) => {
     let mapped = groupOf.get(group);
@@ -574,6 +575,8 @@ function restore(saved: StoredTerminals) {
     const session = createSession(
       savedTab.cwd,
       savedTab.shell ? { program: savedTab.shell, args: [], shell: true } : undefined,
+      // A saved directory may have been deleted since the last run: start in the project root then.
+      root,
     );
     const id = `t${seq}`;
     idOf.set(savedTab.id, id);
@@ -611,7 +614,7 @@ export function syncTerminalProject(root: string | null) {
     closeAll();
     if (!root) return;
     const saved = readStored(root);
-    if (saved?.tabs.length) restore(saved);
+    if (saved?.tabs.length) restore(saved, root);
   } finally {
     restoring = false;
   }
@@ -626,5 +629,46 @@ export function unbindTerminals() {
     closeAll();
   } finally {
     restoring = false;
+  }
+}
+
+const pluginSessions = new Map<string, string>();
+
+/** Host-authorized plugin sessions use the same tabs and PTY controls as user terminals. */
+export async function pluginSession(a: {
+  kind: "terminal";
+  operation: string;
+  title?: string;
+  program?: string;
+  args?: string[];
+  cwd?: string;
+  env?: Record<string, string>;
+  spawn?: NonNullable<SessionOptions["command"]>["spawn"];
+  onExit: (code: number | null, closed: boolean) => void;
+}) {
+  const tab = useTerminals.getState().tabs.find((t) => t.id === pluginSessions.get(a.operation));
+  const session = tab && getSession(tab.session);
+  if (session && session.state.status === "running") {
+    selectTab(tab.id);
+    return;
+  }
+  if (!a.cwd || !a.program) throw new Error("Invalid terminal request");
+  const created = newTab(a.cwd, a.title, {
+    program: a.program,
+    args: a.args ?? [],
+    env: a.env,
+    spawn: a.spawn,
+    onExit: (code, closed) => {
+      pluginSessions.delete(a.operation);
+      a.onExit(code, closed);
+    },
+  });
+  pluginSessions.set(a.operation, created.id);
+  const started = getSession(created.session)!;
+  await started.start();
+  if (started.state.status === "error") {
+    closeTab(created.id);
+    pluginSessions.delete(a.operation);
+    throw new Error("Terminal did not start");
   }
 }

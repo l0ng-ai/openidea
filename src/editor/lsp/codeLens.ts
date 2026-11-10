@@ -5,9 +5,10 @@
  * and symbol, and at most a few reference requests in flight. Beside each
  * count, the declaration's last author from VCS blame (`authorLens`).
  */
+import { Channel } from "@tauri-apps/api/core";
 import { EditorSelection, MapMode, StateEffect, StateField, type Extension, type Text } from "@codemirror/state";
 import { EditorView, ViewPlugin, type ViewUpdate } from "@codemirror/view";
-import { codeLenses, type CodeLens } from "@/editor/api";
+import { codeLenses, shownAgain, type CodeLens } from "@/editor/api";
 import { executeAction } from "@/platform/actions";
 import { commands, nextRequestId, type OutlineItem, type RequestId, type SymbolKind } from "@/platform/ipc";
 import { useProject } from "@/platform/project";
@@ -34,7 +35,7 @@ const LENS_KINDS = new Set<SymbolKind>([
 const MAX_PER_PASS = 40;
 const CONCURRENCY = 4;
 /** Lines above/below the viewport that are counted too, so scrolling feels instant. */
-const MARGIN_LINES = 60;
+const MARGIN_LINES = 10;
 const usagesBackoff = featureBackoff();
 
 export interface LensTarget {
@@ -113,11 +114,13 @@ class UsagesLensPlugin {
   private outline: { doc: Text; targets: LensTarget[] } | null = null;
   private generation = 0;
   private pending = new Set<RequestId>();
-  private incomplete = false;
+  /** Keys whose count came back incomplete (the server was indexing): not shown, asked again once it settles. */
+  private incomplete = new Set<string>();
   private unsubscribe: () => void;
   private offReady: () => void;
   private offSettled: () => void;
   private offBlame: () => void;
+  private skipped = false;
 
   constructor(private view: EditorView) {
     this.refresh();
@@ -127,16 +130,19 @@ class UsagesLensPlugin {
     // Counts computed while the server was indexing may be incomplete.
     this.offReady = onLspRefresh("codeLens", () => {
       this.cache.clear();
+      this.incomplete.clear();
       this.refresh();
     });
     this.offSettled = onServerSettled(() => {
-      if (this.incomplete) this.refresh();
+      if (!this.incomplete.size) return;
+      this.incomplete.clear();
+      this.refresh();
     });
     this.offBlame = onBlameInvalidated(() => this.refresh());
   }
 
   update(u: ViewUpdate) {
-    if (u.docChanged || u.viewportChanged) this.refresh();
+    if (u.docChanged || u.viewportChanged || (this.skipped && shownAgain(u))) this.refresh();
   }
 
   private cancel() {
@@ -152,7 +158,8 @@ class UsagesLensPlugin {
 
   private async run() {
     const view = this.view;
-    if (!view.dom.isConnected) return;
+    this.skipped = !view.dom.isConnected;
+    if (this.skipped) return;
     const doc = docOf(view);
     if (!doc) return;
     const gen = this.generation;
@@ -164,11 +171,11 @@ class UsagesLensPlugin {
     }
     const text = view.state.doc;
     const wanted = () => gen === this.generation && view.state.doc === text;
-    this.incomplete = false;
     // Blame runs beside the reference requests; it never holds up the counts.
     const blame = authors ? blameFor(doc.path, text) : Promise.resolve(null);
     if (this.cacheDoc !== text) {
       this.cache = new Map();
+      this.incomplete = new Set();
       this.cacheDoc = text;
     }
     try {
@@ -184,7 +191,7 @@ class UsagesLensPlugin {
         .filter((t) => t.line >= firstLine && t.line <= lastLine)
         .slice(0, MAX_PER_PASS);
       const key = (t: LensTarget) => `${t.line}:${t.col}:${t.name}`;
-      const todo = usages ? visible.filter((t) => !this.cache.has(key(t))) : [];
+      const todo = usages ? visible.filter((t) => !this.cache.has(key(t)) && !this.incomplete.has(key(t))) : [];
       let unavailable = false;
       for (let i = 0; i < todo.length && !unavailable; i += CONCURRENCY) {
         await Promise.all(
@@ -195,10 +202,18 @@ class UsagesLensPlugin {
                 this.pending.add(request);
                 // Opening candidate files for each count triggers expensive server analysis.
                 // Only an explicit Find Usages should widen the server's scope.
-                return commands.lspReferences(request, doc.doc, { line: t.line, col: t.col }, false, false);
+                return commands.lspReferences(
+                  request,
+                  doc.doc,
+                  { line: t.line, col: t.col },
+                  false,
+                  false,
+                  false,
+                  new Channel(),
+                );
               }, wanted);
               if (wanted()) {
-                if (incomplete) this.incomplete = true;
+                if (incomplete) this.incomplete.add(key(t));
                 else this.cache.set(key(t), refs.length);
               }
             } catch (e) {

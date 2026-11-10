@@ -5,6 +5,7 @@ const ipc = vi.hoisted(() => ({
   javaResolveLaunch: vi.fn(),
   cancelRequest: vi.fn(async () => undefined),
   runStart: vi.fn(),
+  runStop: vi.fn(async () => ({ status: "ok", data: null })),
 }));
 vi.mock("@/platform/ipc", async (importOriginal) => {
   const real = await importOriginal<typeof import("@/platform/ipc")>();
@@ -107,5 +108,40 @@ describe("Java run host separator", () => {
       paths.join(separator),
       "Main",
     ]);
+  });
+});
+
+describe("Stop during target validation", () => {
+  it.each(["cancelled", "success"])("cancels startup and handles a late %s response", async (response) => {
+    let resolve!: (value: unknown) => void;
+    ipc.runStart.mockImplementationOnce(
+      () =>
+        new Promise((done) => {
+          resolve = done;
+        }),
+    );
+    const launch = startRun({
+      ...config,
+      kind: "shell",
+      command: "composer",
+      args: ["install"],
+      target: "plugin-target:fixture",
+    });
+    await vi.waitFor(() => expect(ipc.runStart).toHaveBeenCalledOnce());
+    const session = useRun.getState().sessions[0]!;
+    const request = ipc.runStart.mock.calls[0]![2];
+    expect(request).toEqual(expect.any(Number));
+    await stopSession(session.id);
+    expect(ipc.cancelRequest).toHaveBeenCalledExactlyOnceWith(request);
+    resolve(
+      response === "cancelled"
+        ? { status: "error", error: { kind: "cancelled", message: "cancelled" } }
+        : { status: "ok", data: { id: 42 } },
+    );
+    await launch;
+    if (response === "success") expect(ipc.runStop).toHaveBeenCalledWith(42);
+    expect(useRun.getState().sessions[0]).toMatchObject({ stopped: true, status: "finished", runId: null });
+    expect(runtime(session.id)!.resolveRequest).toBeUndefined();
+    expect(notify).not.toHaveBeenCalled();
   });
 });

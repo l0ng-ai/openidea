@@ -13,6 +13,13 @@
   align-items: flex-start;
   padding-top: 10vh;
 }
+/* macOS draws its window buttons over the page; keep dialogs out of that band. */
+.belowTitleBar {
+  padding-top: max(24px, var(--h-titlebar));
+}
+.belowTitleBar.top {
+  padding-top: max(10vh, var(--h-titlebar));
+}
 .dialog {
   display: flex;
   flex-direction: column;

@@ -82,7 +82,6 @@ beforeEach(() => {
     tab: "log",
     logTabs: [],
     commits: [],
-    rows: [],
     filters: emptyFilters(),
     selection: [],
     selected: null,
@@ -160,7 +159,113 @@ describe("log controls", () => {
     fireEvent.keyDown(author, { key: "ArrowRight" });
     expect(useLogOptions.getState().columnWidths.author).toBe(140);
     fireEvent.keyDown(author, { key: "ArrowRight", altKey: true });
-    expect(useLogOptions.getState().columnOrder).toEqual(["date", "author"]);
+    expect(useLogOptions.getState().columnOrder).toEqual(["subject", "date", "author", "hash"]);
+  });
+
+  it.each([{ order: [] }, { order: ["date"] }, { order: ["unknown", "date", "author", "date"] }])(
+    "restores an older column order safely: $order",
+    async ({ order }) => {
+      useLogOptions.setState({ showColumnHeaders: true, columnOrder: order });
+      render(<LogView />);
+      await screen.findByRole("separator", { name: "Resize Author column" });
+      const expected = order.includes("date") ? ["subject", "date", "author"] : ["subject", "author", "date"];
+      expect(
+        [...document.querySelectorAll<HTMLElement>("[data-log-column]")].map((el) => el.dataset.logColumn),
+      ).toEqual(expected);
+      const author = screen.getByRole("separator", { name: "Resize Author column" });
+      fireEvent.keyDown(author, { key: "ArrowLeft", altKey: true });
+      expect(useLogOptions.getState().columnOrder).not.toContain(undefined);
+    },
+  );
+
+  it("keeps pointer resizing separate from reordering and releases its capture on blur", async () => {
+    useLogOptions.setState({ showColumnHeaders: true });
+    render(<LogView />);
+    const author = await screen.findByRole("separator", { name: "Resize Author column" });
+    const release = vi.fn();
+    author.setPointerCapture = vi.fn();
+    author.hasPointerCapture = () => true;
+    author.releasePointerCapture = release;
+    fireEvent.pointerDown(author, { button: 0, pointerId: 1, clientX: 10 });
+    fireEvent.pointerMove(author, { pointerId: 1, clientX: 40 });
+    expect(useLogOptions.getState().columnWidths.author).toBe(160);
+    fireEvent.blur(window);
+    expect(release).toHaveBeenCalledWith(1);
+    fireEvent.pointerMove(author, { pointerId: 1, clientX: 100 });
+    expect(useLogOptions.getState().columnWidths.author).toBe(160);
+    expect(useLogOptions.getState().columnOrder).toEqual(DEFAULT_LOG_OPTIONS.columnOrder);
+  });
+
+  it.each(["Escape", "outside", "blur", "pointercancel", "lostpointercapture"])(
+    "cancels header dragging on %s",
+    async (reason) => {
+      useLogOptions.setState({ showColumnHeaders: true, columnOrder: ["subject", "author", "date"] });
+      render(<LogView />);
+      await screen.findByRole("separator", { name: "Resize Author column" });
+      const author = document.querySelector<HTMLElement>('[data-log-column="author"]')!;
+      const date = document.querySelector<HTMLElement>('[data-log-column="date"]')!;
+      const hit = vi.fn((): Element | null => date);
+      const original = document.elementFromPoint;
+      document.elementFromPoint = hit;
+      const release = vi.fn();
+      author.setPointerCapture = vi.fn();
+      author.hasPointerCapture = () => true;
+      author.releasePointerCapture = release;
+      try {
+        fireEvent.pointerDown(author, { button: 0, pointerId: 1, clientX: 10, clientY: 10 });
+        fireEvent.pointerMove(author, { pointerId: 1, clientX: 100, clientY: 10 });
+        fireEvent.pointerMove(author, { pointerId: 1, clientX: 110, clientY: 10 });
+        if (reason === "Escape") fireEvent.keyDown(window, { key: "Escape" });
+        else if (reason === "blur") fireEvent.blur(window);
+        else if (reason === "outside") hit.mockReturnValue(null);
+        else fireEvent(author, new PointerEvent(reason, { bubbles: true, pointerId: 1 }));
+        fireEvent.pointerUp(author, { pointerId: 1, clientX: 110, clientY: 10 });
+        expect(useLogOptions.getState().columnOrder).toEqual(["subject", "author", "date"]);
+        if (reason !== "lostpointercapture") expect(release).toHaveBeenCalledWith(1);
+      } finally {
+        document.elementFromPoint = original;
+      }
+    },
+  );
+
+  it("moves the commit cell and graph together, persists order, and keeps hidden columns", async () => {
+    useLogOptions.setState({ showColumnHeaders: true, columnOrder: ["subject", "hash", "author", "unknown", "date"] });
+    render(<LogView />);
+    const list = await screen.findByRole("listbox", { name: "Commits" });
+    const subject = document.querySelector<HTMLElement>('[data-log-column="subject"]')!;
+    const date = document.querySelector<HTMLElement>('[data-log-column="date"]')!;
+    const original = document.elementFromPoint;
+    document.elementFromPoint = () => date;
+    try {
+      fireEvent.pointerDown(subject, { button: 0, pointerId: 1, clientX: 10, clientY: 10 });
+      fireEvent.pointerMove(subject, { pointerId: 1, clientX: 12, clientY: 10 });
+      fireEvent.pointerUp(subject, { pointerId: 1, clientX: 12, clientY: 10 });
+      expect(useLogOptions.getState().columnOrder[0]).toBe("subject");
+      fireEvent.pointerDown(subject, { button: 0, pointerId: 1, clientX: 10, clientY: 10 });
+      fireEvent.pointerMove(subject, { pointerId: 1, clientX: 100, clientY: 10 });
+      fireEvent.pointerUp(subject, { pointerId: 1, clientX: 100, clientY: 10 });
+    } finally {
+      document.elementFromPoint = original;
+    }
+    expect(useLogOptions.getState().columnOrder).toEqual(["hash", "author", "unknown", "date", "subject"]);
+    expect(JSON.parse(localStorage.getItem("openidea.vcs.logOptions")!).columnOrder).toEqual(
+      useLogOptions.getState().columnOrder,
+    );
+    const row = within(list).getAllByRole("option")[0]!;
+    expect(row.lastElementChild).toContainElement(within(row).getByLabelText("Commit graph"));
+    expect(row.firstElementChild).toHaveTextContent("Author");
+    act(() => useLogOptions.setState({ showHash: true }));
+    expect([...document.querySelectorAll<HTMLElement>("[data-log-column]")].map((el) => el.dataset.logColumn)).toEqual([
+      "hash",
+      "author",
+      "date",
+      "subject",
+    ]);
+    const hash = screen.getByRole("separator", { name: "Resize Hash column" });
+    fireEvent.keyDown(hash, { key: "ArrowLeft", altKey: true });
+    expect(useLogOptions.getState().columnOrder).toEqual(["hash", "author", "unknown", "date", "subject"]);
+    fireEvent.keyDown(list, { key: "b" });
+    expect(useGitLog.getState().selected).toBe("/repo\0base");
   });
 });
 

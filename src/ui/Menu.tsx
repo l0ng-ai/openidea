@@ -21,6 +21,7 @@ import { Popup, type PopupAnchor } from "./Popup";
 import type { Placement } from "@floating-ui/react-dom";
 import styles from "./Menu.module.css";
 import { tx } from "@/platform/i18n";
+import { isSubmenuAim, type MenuPointer } from "./menuAim";
 
 export type MenuItem =
   | { kind: "separator" }
@@ -30,6 +31,8 @@ export type MenuItem =
       action: string;
       arg?: unknown;
       label?: string;
+      /** A check mark in this state instead of the action's own `toggled` (one row per argument). */
+      checked?: boolean;
       icon?: IconName | (string & {});
       disabled?: boolean;
     }
@@ -81,12 +84,12 @@ export function resolveMenuItems(items: MenuItem[]): Resolved[] {
       if (!a) return;
       out.push({
         kind: "item",
-        key: item.action,
+        key: typeof item.arg === "string" ? `${item.action}|${item.arg}` : item.action,
         label: tx(item.label) ?? a.title,
         icon: item.icon ?? a.icon,
         shortcut: shortcutLabel(item.action),
-        disabled: !!item.disabled || !isActionEnabled(a),
-        checked: actionToggled(a),
+        disabled: !!item.disabled || !isActionEnabled(a, undefined, item.arg),
+        checked: item.checked ?? actionToggled(a),
         run: () => void executeActionFrom("menu", item.action, item.arg),
       });
       return;
@@ -113,18 +116,42 @@ interface MenuListProps {
   "aria-label"?: string;
   /** Focus the first item on mount. */
   autoFocusFirst?: boolean;
+  /**
+   * Numeric mnemonics, like IDEA's Select In popup: label the first nine
+   * enabled rows 1–9 and activate one on that digit. Submenus never inherit it.
+   */
+  numbers?: boolean;
 }
 
-export function MenuList({ items, onDone, onCloseLevel, autoFocusFirst = true, ...aria }: MenuListProps) {
+export function MenuList({
+  items,
+  onDone,
+  onCloseLevel,
+  autoFocusFirst = true,
+  numbers = false,
+  ...aria
+}: MenuListProps) {
   // Action enablement follows the context keys: opening the menu moves focus
   // (e.g. editorTextFocus → popupOpen) right after the first render.
   useContextKeys();
   const resolved = resolveMenuItems(items);
+  // IDEA numeric mnemonics: the first nine selectable rows, in display order.
+  const numbersOf: Array<number | undefined> = [];
+  if (numbers) {
+    let n = 0;
+    resolved.forEach((r, i) => {
+      if (n < 9 && selectable(r)) numbersOf[i] = ++n;
+    });
+  }
   const [active, setActive] = useState(() => (autoFocusFirst ? resolved.findIndex(selectable) : -1));
   const [openSub, setOpenSubIndex] = useState<number | null>(null);
   const [subAnchor, setSubAnchor] = useState<HTMLElement | null>(null);
   const itemRefs = useRef<Array<HTMLButtonElement | null>>([]);
   const hoverTimer = useRef<ReturnType<typeof setTimeout> | undefined>(undefined);
+  const submenuRef = useRef<HTMLDivElement | null>(null);
+  const pointer = useRef<MenuPointer | null>(null);
+  const previousPointer = useRef<MenuPointer | null>(null);
+  const pendingAim = useRef<number | null>(null);
   // Pointer movement highlights a row without focusing it. Focusing on every
   // enter drops the hover paint in the Windows webview, so the menu looks frozen.
   const pointerHover = useRef(false);
@@ -163,6 +190,7 @@ export function MenuList({ items, onDone, onCloseLevel, autoFocusFirst = true, .
   };
 
   const activate = (i: number) => {
+    cancelHover();
     const item = resolved[i];
     if (!selectable(item)) return;
     if (item!.submenu) {
@@ -174,21 +202,85 @@ export function MenuList({ items, onDone, onCloseLevel, autoFocusFirst = true, .
     item!.run?.();
   };
 
-  const hover = (i: number) => {
-    const item = resolved[i];
-    if (!item || item.disabled || item.kind !== "item") return;
-    if (hovered.current !== i) {
-      hovered.current = i;
-      if (i !== active) {
-        pointerHover.current = true;
-        focusItem(i);
-      }
-    }
+  const cancelHover = () => {
     clearTimeout(hoverTimer.current);
-    hoverTimer.current = setTimeout(() => setOpenSub(item.submenu ? i : null), item.submenu ? 120 : 200);
+    pendingAim.current = null;
+  };
+
+  const applyHover = (i: number, immediate = false) => {
+    cancelHover();
+    if (i !== active) {
+      pointerHover.current = true;
+      focusItem(i);
+    }
+    const next = resolved[i]?.submenu ? i : null;
+    if (immediate) setOpenSub(next);
+    else hoverTimer.current = setTimeout(() => setOpenSub(next), next === null ? 200 : 120);
+  };
+
+  const recordPointer = (point: MenuPointer) => {
+    if (pointer.current?.x === point.x && pointer.current.y === point.y) return false;
+    previousPointer.current = pointer.current;
+    pointer.current = point;
+    return true;
+  };
+
+  const aiming = () => {
+    const rect = submenuRef.current?.parentElement?.getBoundingClientRect();
+    return !!rect && !!pointer.current && isSubmenuAim(previousPointer.current, pointer.current, rect);
+  };
+
+  const deferHover = (i: number) => {
+    cancelHover();
+    pendingAim.current = i;
+    hoverTimer.current = setTimeout(() => applyHover(i, true), 300);
+  };
+
+  const pointerMove = (point: MenuPointer) => {
+    if (!recordPointer(point) || pendingAim.current === null) return;
+    const i = pendingAim.current;
+    if (aiming()) deferHover(i);
+    else applyHover(i);
+  };
+
+  const enterSubmenu = () => {
+    cancelHover();
+    hovered.current = -1;
+    pointer.current = previousPointer.current = null;
+    if (openSub !== null && active !== openSub) {
+      pointerHover.current = true;
+      setActive(openSub);
+    }
+  };
+
+  // Track movement across the gap too; submenu portals are outside this level's DOM.
+  useEffect(() => {
+    if (openSub === null) return;
+    const onMove = (e: PointerEvent) => {
+      if (submenuRef.current?.parentElement?.contains(e.target as Node)) enterSubmenu();
+      else pointerMove({ x: e.clientX, y: e.clientY });
+    };
+    document.addEventListener("pointermove", onMove);
+    return () => document.removeEventListener("pointermove", onMove);
+  });
+
+  const hover = (i: number, point: MenuPointer) => {
+    const item = resolved[i];
+    if (!selectable(item) || hovered.current === i) return;
+    hovered.current = i;
+    recordPointer(point);
+    if (openSub !== null && openSub !== i && aiming()) deferHover(i);
+    else applyHover(i);
+  };
+
+  const leave = (i: number) => {
+    // A compatibility mouseleave can follow pointerenter on the next row.
+    if (hovered.current === i) hovered.current = -1;
   };
 
   const onKeyDown = (e: ReactKeyboardEvent) => {
+    cancelHover();
+    pointer.current = previousPointer.current = null;
     switch (e.key) {
       case "ArrowDown":
         move(1);
@@ -216,6 +308,15 @@ export function MenuList({ items, onDone, onCloseLevel, autoFocusFirst = true, .
         break;
       default:
         if (e.key.length === 1 && !e.metaKey && !e.ctrlKey && !e.altKey) {
+          if (numbers && /^[1-9]$/.test(e.key)) {
+            const n = Number(e.key);
+            for (let i = 0; i < resolved.length; i++)
+              if (numbersOf[i] === n) {
+                activate(i);
+                break;
+              }
+            return;
+          }
           const ch = e.key.toLowerCase();
           const n = resolved.length;
           for (let s = 1; s <= n; s++) {
@@ -235,7 +336,15 @@ export function MenuList({ items, onDone, onCloseLevel, autoFocusFirst = true, .
   };
 
   return (
-    <div role="menu" aria-label={aria["aria-label"]} className={styles.menu} onKeyDown={onKeyDown}>
+    <div
+      role="menu"
+      aria-label={aria["aria-label"]}
+      className={styles.menu}
+      onKeyDown={onKeyDown}
+      onPointerMove={(e) => {
+        if (e.currentTarget.contains(e.target as Node)) pointerMove({ x: e.clientX, y: e.clientY });
+      }}
+    >
       {resolved.map((r, i) => {
         if (r.kind === "separator") return <div key={r.key} role="separator" className={styles.separator} />;
         if (r.kind === "header")
@@ -264,16 +373,23 @@ export function MenuList({ items, onDone, onCloseLevel, autoFocusFirst = true, .
                 r.disabled && styles.disabled,
                 r.danger && styles.danger,
               )}
-              onPointerEnter={() => hover(i)}
-              onMouseEnter={() => hover(i)}
-              onPointerLeave={() => (hovered.current = -1)}
-              onMouseLeave={() => (hovered.current = -1)}
+              onPointerEnter={(e) => hover(i, { x: e.clientX, y: e.clientY })}
+              onMouseEnter={(e) => hover(i, { x: e.clientX, y: e.clientY })}
+              onPointerLeave={() => leave(i)}
+              onMouseLeave={() => leave(i)}
               onClick={() => activate(i)}
             >
+              {numbers && (
+                <span className={styles.mnemonic} data-menu-number={numbersOf[i]} aria-hidden={true}>
+                  {numbersOf[i] ?? ""}
+                </span>
+              )}
               <span className={styles.icon} data-menu-icon={!r.checked && r.icon ? "" : undefined}>
                 {r.checked ? <Icon name="check" size={13} /> : r.icon ? <Icon name={r.icon} size={14} /> : null}
               </span>
-              <span className={styles.label}>{r.label}</span>
+              <span className={styles.label} title={r.label}>
+                {r.label}
+              </span>
               {r.shortcut && <span className={styles.shortcut}>{r.shortcut}</span>}
               {hasSub && <Icon name="chevron-right" size={14} className={styles.subArrow} />}
             </button>
@@ -288,14 +404,16 @@ export function MenuList({ items, onDone, onCloseLevel, autoFocusFirst = true, .
                 onClose={() => setOpenSub(null)}
                 className={styles.popup}
               >
-                <MenuList
-                  items={r.submenu!}
-                  onDone={onDone}
-                  onCloseLevel={() => {
-                    setOpenSub(null);
-                    itemRefs.current[i]?.focus();
-                  }}
-                />
+                <div ref={submenuRef} onPointerEnter={enterSubmenu}>
+                  <MenuList
+                    items={r.submenu!}
+                    onDone={onDone}
+                    onCloseLevel={() => {
+                      setOpenSub(null);
+                      itemRefs.current[i]?.focus();
+                    }}
+                  />
+                </div>
               </Popup>
             )}
           </Fragment>
@@ -312,10 +430,12 @@ export interface MenuProps {
   items: MenuItem[];
   placement?: Placement;
   "aria-label"?: string;
+  /** Numeric mnemonics on the first nine rows; see `MenuList`. */
+  numbers?: boolean;
 }
 
 /** A dropdown menu anchored to an element or point. */
-export function Menu({ open, onClose, anchor, items, placement = "bottom-start", ...aria }: MenuProps) {
+export function Menu({ open, onClose, anchor, items, placement = "bottom-start", numbers, ...aria }: MenuProps) {
   return (
     <Popup
       open={open}
@@ -326,7 +446,7 @@ export function Menu({ open, onClose, anchor, items, placement = "bottom-start",
       autoFocus={false}
       className={styles.popup}
     >
-      <MenuList items={items} onDone={onClose} aria-label={aria["aria-label"]} />
+      <MenuList items={items} onDone={onClose} numbers={numbers} aria-label={aria["aria-label"]} />
     </Popup>
   );
 }
@@ -335,7 +455,7 @@ export function Menu({ open, onClose, anchor, items, placement = "bottom-start",
 // Context menus
 
 interface ContextMenuState {
-  menu: { x: number; y: number; items: MenuItem[]; id: number } | null;
+  menu: { x: number; y: number; items: MenuItem[]; numbers: boolean; id: number } | null;
 }
 
 export const useContextMenuStore = create<ContextMenuState>(() => ({ menu: null }));
@@ -344,10 +464,11 @@ let menuSeq = 0;
 export function showContextMenu(
   at: { clientX: number; clientY: number } | { x: number; y: number },
   items: MenuItem[],
+  options?: { numbers?: boolean },
 ) {
   const x = "clientX" in at ? at.clientX : at.x;
   const y = "clientY" in at ? at.clientY : at.y;
-  useContextMenuStore.setState({ menu: { x, y, items, id: ++menuSeq } });
+  useContextMenuStore.setState({ menu: { x, y, items, numbers: !!options?.numbers, id: ++menuSeq } });
 }
 
 export function hideContextMenu() {
@@ -370,7 +491,7 @@ export function ContextMenuHost() {
       onClose={hideContextMenu}
       className={styles.popup}
     >
-      <MenuList items={menu.items} onDone={hideContextMenu} aria-label="Context menu" />
+      <MenuList items={menu.items} numbers={menu.numbers} onDone={hideContextMenu} aria-label="Context menu" />
     </Popup>
   );
 }

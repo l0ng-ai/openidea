@@ -10,6 +10,7 @@
  * Files (project view): references to the file's top-level symbols from other
  * files, when the language server can answer (`fileUsages`).
  */
+import { Channel } from "@tauri-apps/api/core";
 import type { EditorView } from "@codemirror/view";
 import type { Text } from "@codemirror/state";
 import type { LocalSymbol, Location, OutlineItem, Pos, Range, SyntaxNode } from "@/bindings";
@@ -254,7 +255,7 @@ async function findUsages(ctx: EditorDocContext, target: SafeDeleteTarget): Prom
   if (target.local)
     return target.local.references.filter((r) => outside(ctx.path, r)).map((range) => ({ path: ctx.path, range }));
   const { locations: refs } = await lspRequest(() =>
-    commands.lspReferences(nextRequestId(), ctx.doc, target.at, false, true),
+    commands.lspReferences(nextRequestId(), ctx.doc, target.at, false, true, false, new Channel()),
   );
   return refs.filter((l) => outside(l.path, l.range));
 }
@@ -507,8 +508,19 @@ export type FileUsages =
   /** The language server can't tell (none running, no document symbols…). */
   | { status: "unsupported"; reason: string };
 
-/** At most this many top-level symbols per file are searched. */
+/** At most this many symbols per file are searched. */
 const MAX_SYMBOLS = 60;
+
+/**
+ * The symbols a file declares at its top level. Packages and namespaces are shared
+ * with other files (IDEA searches a Java file's classes, not its package), so their
+ * members stand in for them.
+ */
+function declaredSymbols(items: readonly OutlineItem[]): OutlineItem[] {
+  return items.flatMap((it) =>
+    it.kind === "package" || it.kind === "namespace" ? declaredSymbols(it.children) : [it],
+  );
+}
 
 async function withDoc<T>(path: string, fn: (doc: number) => Promise<T>): Promise<T> {
   const open = editorsFor(path)[0];
@@ -522,7 +534,7 @@ async function withDoc<T>(path: string, fn: (doc: number) => Promise<T>): Promis
 }
 
 /**
- * References from outside `paths` to the top-level symbols the files declare.
+ * References from outside `paths` to the symbols the files declare ({@link declaredSymbols}).
  * Unsupported when no reference search could run for any of them.
  */
 export async function fileUsages(paths: readonly string[], signal?: AbortSignal): Promise<FileUsages> {
@@ -536,14 +548,22 @@ export async function fileUsages(paths: readonly string[], signal?: AbortSignal)
     try {
       await withDoc(path, async (doc) => {
         const outline = await call(commands.docOutline(doc));
-        for (const item of outline.slice(0, MAX_SYMBOLS)) {
+        for (const item of declaredSymbols(outline).slice(0, MAX_SYMBOLS)) {
           if (signal?.aborted) return;
           let refs: Location[];
           try {
             // Every symbol of every file: the server's own scope (a project search each would be too slow).
             refs = (
               await lspRequest(() =>
-                commands.lspReferences(nextRequestId(), doc, item.selection_range.start, false, false),
+                commands.lspReferences(
+                  nextRequestId(),
+                  doc,
+                  item.selection_range.start,
+                  false,
+                  false,
+                  false,
+                  new Channel(),
+                ),
               )
             ).locations;
           } catch (e) {

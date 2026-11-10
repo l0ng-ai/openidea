@@ -1,0 +1,85 @@
+---
+title: "API reference"
+description: "Every interface of the openidea:plugin WIT package, with a one-line summary and a link to its source."
+---
+
+The plugin API is the WIT package `openidea:plugin@1.5.0` in [`wit/`](https://github.com/l0ng-ai/openidea/tree/main/wit). The WIT files are the reference: each interface, type and function is documented in comments there. 1.5.0 is the version on `main`; the latest released version is 1.4.0, whose WIT is kept in [`sdk/rust/openidea-plugin/tests/api/released/`](https://github.com/l0ng-ai/openidea/tree/main/sdk/rust/openidea-plugin/tests/api/released).
+
+<Info>
+  A generated API reference is planned. Until then, use the WIT files below, `cargo doc` for the Rust SDK
+  ([`sdk/rust/openidea-plugin`](https://github.com/l0ng-ai/openidea/tree/main/sdk/rust/openidea-plugin)), and the table
+  mapping every SDK function to its WIT function and capability in
+  [`plugins/README.md`](https://github.com/l0ng-ai/openidea/blob/main/plugins/README.md#the-api).
+</Info>
+
+## Worlds
+
+[`plugin.wit`](https://github.com/l0ng-ai/openidea/blob/main/wit/plugin.wit) defines the worlds: the base `plugin` world (every import, plus the `lifecycle`, `commands` and `event-handler` exports) and one optional world per extra export (`plugin-providers`, `plugin-views`, `plugin-hover`, …). See [Architecture and sandbox](/en/plugins/architecture#worlds-imports-and-exports).
+
+## Host interfaces (imports)
+
+The plugin calls these. Most are gated by a [capability](/en/plugins/capabilities).
+
+| Interface        | File                                                                                 | Summary                                                                                                                                                                      |
+| ---------------- | ------------------------------------------------------------------------------------ | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `types`          | [types.wit](https://github.com/l0ng-ai/openidea/blob/main/wit/types.wit)             | Shared types: positions (0-based lines, UTF-16 columns), ranges, errors, the `extension` carrier for later additions                                                         |
+| `log`            | [host.wit](https://github.com/l0ng-ai/openidea/blob/main/wit/host.wit)               | Writes to the IDE log, tagged with the plugin id                                                                                                                             |
+| `ui`             | [host.wit](https://github.com/l0ng-ai/openidea/blob/main/wit/host.wit)               | Notifications (also for one project, API 1.5), status bar items, context keys, pickers, input boxes, confirmations, folder chooser, clipboard, opening URLs, the UI language |
+| `storage`        | [host.wit](https://github.com/l0ng-ai/openidea/blob/main/wit/host.wit)               | The plugin's persistent key-value storage (64 MiB)                                                                                                                           |
+| `command-runner` | [host.wit](https://github.com/l0ng-ai/openidea/blob/main/wit/host.wit)               | Runs IDE actions and other plugins' commands (API 1.4, `ide.commands`)                                                                                                       |
+| `output`         | [host.wit](https://github.com/l0ng-ai/openidea/blob/main/wit/host.wit)               | Named, read-only Output tabs per plugin (API 1.4)                                                                                                                            |
+| `workspace`      | [workspace.wit](https://github.com/l0ng-ai/openidea/blob/main/wit/workspace.wit)     | Open projects: reading, writing, finding and searching files, symbols, the project of a path, opening a project                                                              |
+| `editor`         | [workspace.wit](https://github.com/l0ng-ai/openidea/blob/main/wit/workspace.wit)     | Text editors: document, selections, versioned edits, reveal; open editors and opening files                                                                                  |
+| `invocation`     | [workspace.wit](https://github.com/l0ng-ai/openidea/blob/main/wit/workspace.wit)     | Where a command or event came from: its project, editor and selected paths                                                                                                   |
+| `vcs`            | [workspace.wit](https://github.com/l0ng-ai/openidea/blob/main/wit/workspace.wit)     | Git for a project's repository: status, remotes, fetch, log, blame, diff                                                                                                     |
+| `fs`             | [fs.wit](https://github.com/l0ng-ai/openidea/blob/main/wit/fs.wit)                   | Files outside the open projects (`fs.read:` / `fs.write:`) and the plugin's private directory                                                                                |
+| `decorations`    | [decorations.wit](https://github.com/l0ng-ai/openidea/blob/main/wit/decorations.wit) | Editor annotations and project-tree badges (API 1.4)                                                                                                                         |
+| `commit`         | [commit.wit](https://github.com/l0ng-ai/openidea/blob/main/wit/commit.wit)           | The commit being prepared and its message                                                                                                                                    |
+| `events`         | [events.wit](https://github.com/l0ng-ai/openidea/blob/main/wit/events.wit)           | Subscribing to workbench events, optionally filtered by path                                                                                                                 |
+| `tasks`          | [events.wit](https://github.com/l0ng-ai/openidea/blob/main/wit/events.wit)           | Long-running work with a progress indicator and a longer time budget                                                                                                         |
+| `diagnostics`    | [io.wit](https://github.com/l0ng-ai/openidea/blob/main/wit/io.wit)                   | Publishing problems for files and reading the Problems view                                                                                                                  |
+| `net`            | [io.wit](https://github.com/l0ng-ai/openidea/blob/main/wit/io.wit)                   | HTTP(S) requests (`net:` / `net.http:` / `net:ask`)                                                                                                                          |
+| `secrets`        | [io.wit](https://github.com/l0ng-ai/openidea/blob/main/wit/io.wit)                   | Secrets in the OS keychain, used only through `{{secret:<name>}}` in requests                                                                                                |
+| `process`        | [io.wit](https://github.com/l0ng-ai/openidea/blob/main/wit/io.wit)                   | Running approved programs once, with an environment, or behind a handle                                                                                                      |
+| `ipc`            | [io.wit](https://github.com/l0ng-ai/openidea/blob/main/wit/io.wit)                   | Local sockets and named pipes on the project machine (API 1.4)                                                                                                               |
+| `auth`           | [io.wit](https://github.com/l0ng-ai/openidea/blob/main/wit/io.wit)                   | OAuth loopback redirects received on the desktop (API 1.4)                                                                                                                   |
+| `views`          | [views.wit](https://github.com/l0ng-ai/openidea/blob/main/wit/views.wit)             | Refreshing and revealing views, messages to web views, terminals, content tabs, opening locations                                                                            |
+| `view-types`     | [views.wit](https://github.com/l0ng-ai/openidea/blob/main/wit/views.wit)             | The declarative view model: trees, lists, forms, tables, messages, `html` bodies, view events                                                                                |
+| `settings`       | [views.wit](https://github.com/l0ng-ai/openidea/blob/main/wit/views.wit)             | The plugin's own settings, project over global, or the schema default                                                                                                        |
+| `run`            | [run.wit](https://github.com/l0ng-ai/openidea/blob/main/wit/run.wit)                 | Starting the plugin's run configurations in the Run tool window (API 1.4)                                                                                                    |
+| `run-targets`    | [run-targets.wit](https://github.com/l0ng-ai/openidea/blob/main/wit/run-targets.wit) | Project run targets that wrap commands, owned by the plugin (API 1.4)                                                                                                        |
+| `database`       | [database.wit](https://github.com/l0ng-ai/openidea/blob/main/wit/database.wit)       | The plugin's own project data sources and their credentials (API 1.4)                                                                                                        |
+| `mcp`            | [mcp.wit](https://github.com/l0ng-ai/openidea/blob/main/wit/mcp.wit)                 | The command line of the built-in MCP server's stdio bridge, never its URL or token (API 1.4)                                                                                 |
+| `detail-types`   | [details.wit](https://github.com/l0ng-ai/openidea/blob/main/wit/details.wit)         | What the pane beside the Services tree shows for a plugin's node                                                                                                             |
+
+## Plugin interfaces (exports)
+
+The IDE calls these. The first three are in every code plugin; the rest are optional and each comes with its own world.
+
+| Interface                  | File                                                                                             | Summary                                                                                                                |
+| -------------------------- | ------------------------------------------------------------------------------------------------ | ---------------------------------------------------------------------------------------------------------------------- |
+| `lifecycle`                | [exports.wit](https://github.com/l0ng-ai/openidea/blob/main/wit/exports.wit)                     | `activate` and `deactivate` of an instance                                                                             |
+| `commands`                 | [exports.wit](https://github.com/l0ng-ai/openidea/blob/main/wit/exports.wit)                     | Runs one of the plugin's declared commands                                                                             |
+| `event-handler`            | [exports.wit](https://github.com/l0ng-ai/openidea/blob/main/wit/exports.wit)                     | Receives batches of subscribed events                                                                                  |
+| `syntax-provider`          | [exports.wit](https://github.com/l0ng-ai/openidea/blob/main/wit/exports.wit)                     | Highlighting, outline and folding for plugin languages without a grammar                                               |
+| `run-target-validation`    | [exports.wit](https://github.com/l0ng-ai/openidea/blob/main/wit/exports.wit)                     | Checks a launch through one of the plugin's run targets before it starts (API 1.5)                                     |
+| `providers`                | [providers.wit](https://github.com/l0ng-ai/openidea/blob/main/wit/providers.wit)                 | Completion, inline completion, code actions, navigation and line markers for declared languages                        |
+| `language-features`        | [language-features.wit](https://github.com/l0ng-ai/openidea/blob/main/wit/language-features.wit) | Formatting, signature help, highlights, links, code lenses, folds, colours, symbols, gutter actions and more (API 1.4) |
+| `injections`               | [injections.wit](https://github.com/l0ng-ai/openidea/blob/main/wit/injections.wit)               | Ranges of embedded languages inside a document (API 1.4)                                                               |
+| `hover-provider`           | [hover.wit](https://github.com/l0ng-ai/openidea/blob/main/wit/hover.wit)                         | Markdown added to the hover of any language                                                                            |
+| `inlay-hints-provider`     | [inlay.wit](https://github.com/l0ng-ai/openidea/blob/main/wit/inlay.wit)                         | Inline hints in any language                                                                                           |
+| `semantic-tokens-provider` | [semantic.wit](https://github.com/l0ng-ai/openidea/blob/main/wit/semantic.wit)                   | Semantic colouring in any language                                                                                     |
+| `diagnostics-provider`     | [diagnostics.wit](https://github.com/l0ng-ai/openidea/blob/main/wit/diagnostics.wit)             | Problems in the current, possibly unsaved document                                                                     |
+| `file-actions`             | [file-actions.wit](https://github.com/l0ng-ai/openidea/blob/main/wit/file-actions.wit)           | Quick fixes and refactorings that create, rename or delete files                                                       |
+| `document-indexer`         | [indexing.wit](https://github.com/l0ng-ai/openidea/blob/main/wit/indexing.wit)                   | Cross-file definitions, references and gutter markers, indexed in the background                                       |
+| `endpoints-provider`       | [endpoints.wit](https://github.com/l0ng-ai/openidea/blob/main/wit/endpoints.wit)                 | A project's HTTP endpoints for Search Everywhere and the HTTP client                                                   |
+| `view-provider`            | [views.wit](https://github.com/l0ng-ai/openidea/blob/main/wit/views.wit)                         | Content and events of declared views and custom editors                                                                |
+| `detail-provider`          | [details.wit](https://github.com/l0ng-ai/openidea/blob/main/wit/details.wit)                     | The detail pane of the plugin's nodes in the Services tool window                                                      |
+| `commit-checker`           | [commit.wit](https://github.com/l0ng-ai/openidea/blob/main/wit/commit.wit)                       | Before-commit checks                                                                                                   |
+| `run-configurations`       | [run.wit](https://github.com/l0ng-ai/openidea/blob/main/wit/run.wit)                             | Dynamic run configurations for a project (API 1.4)                                                                     |
+| `test-results`             | [run.wit](https://github.com/l0ng-ai/openidea/blob/main/wit/run.wit)                             | Parsing test output and selecting tests to rerun (API 1.4)                                                             |
+| `mcp-provider`             | [mcp.wit](https://github.com/l0ng-ai/openidea/blob/main/wit/mcp.wit)                             | Tools the plugin contributes to the built-in MCP server (API 1.4)                                                      |
+
+## Other languages
+
+The SDK carries an identical copy of the WIT files in [`sdk/rust/openidea-plugin/wit`](https://github.com/l0ng-ai/openidea/tree/main/sdk/rust/openidea-plugin/wit). To write a plugin in another language, generate bindings for the `plugin` world (or an optional world) with your language's component-model tooling, build the component, and validate it with `openidea-plugin check`.

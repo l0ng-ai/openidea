@@ -50,6 +50,7 @@ describe("remote folder browser", () => {
 
 const ssh = (config: string) => ({ kind: "ssh", config }) as const;
 const wsl = (distro: string) => ({ kind: "wsl", distro }) as const;
+const container = (folder: string) => ({ kind: "devContainer", folder, config: "" }) as const;
 
 describe("remote project locations", () => {
   it("round-trip the configuration id and the path", () => {
@@ -64,6 +65,20 @@ describe("remote project locations", () => {
     expect(loc).toBe("wsl://Ubuntu-24.04/home/me/app");
     expect(parseRemoteLocation(loc)).toEqual({ target: wsl("Ubuntu-24.04"), path: "/home/me/app" });
     expect(parseRemoteLocation("wsl://Ubuntu")).toBeNull();
+  });
+
+  it("round-trip a dev container's local folder and the path in the container", () => {
+    const loc = remoteLocation(container("/Users/me/my app"), "/workspaces/my app");
+    expect(loc).toBe("devcontainer://%2FUsers%2Fme%2Fmy%20app/workspaces/my app");
+    expect(parseRemoteLocation(loc)).toEqual({ target: container("/Users/me/my app"), path: "/workspaces/my app" });
+  });
+
+  it("round-trips container configurations and Windows folders with reserved characters", () => {
+    const target = { ...container("C:\\work\\my app"), config: ".devcontainer/a:b?c/devcontainer.json" };
+    expect(parseRemoteLocation(remoteLocation(target, "/workspaces/app"))).toEqual({
+      target,
+      path: "/workspaces/app",
+    });
   });
 
   it("remembers recent remote projects most recent first, once each", () => {
@@ -83,6 +98,19 @@ describe("remote project locations", () => {
     expect(recentRemotes()).toHaveLength(2);
     forgetRemote(wsl("dev"), "/p");
     expect(recentRemotes().map((r) => r.target)).toEqual([ssh("dev")]);
+  });
+
+  it("keeps the dev containers of two configurations of a folder apart", () => {
+    localStorage.clear();
+    const python = { ...container("/w/app"), config: ".devcontainer/python/devcontainer.json" };
+    rememberRemote({ target: container("/w/app"), path: "/workspaces/app", name: "app", host: "app", openedAtMs: 1 });
+    rememberRemote({ target: python, path: "/workspaces/app", name: "app", host: "app", openedAtMs: 2 });
+    expect(recentRemotes()).toHaveLength(2);
+    const saved = remoteLocation(python, "/workspaces/app");
+    expect(saved).not.toBe(remoteLocation(container("/w/app"), "/workspaces/app"));
+    expect(parseRemoteLocation(saved)).toEqual({ target: python, path: "/workspaces/app" });
+    forgetRemote(parseRemoteLocation(saved)!.target, "/workspaces/app");
+    expect(recentRemotes().map((r) => r.target)).toEqual([container("/w/app")]);
   });
 
   it("reads recents saved before WSL support, which carried `sshConfig`", () => {
@@ -123,4 +151,5 @@ it("migrates a snapshot taken before WSL support, and never trusts a WSL distrib
 it("labels the status bar with the transport and where the project runs", () => {
   expect(remoteBadge({ target: wsl("Ubuntu"), host: "Ubuntu" })).toBe("WSL: Ubuntu");
   expect(remoteBadge({ target: ssh("a"), host: "me@a:22" })).toBe("SSH: me@a:22");
+  expect(remoteBadge({ target: container("/w/app"), host: "app" })).toBe("Dev Container: app");
 });

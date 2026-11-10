@@ -15,7 +15,16 @@ import {
   showContextMenu,
   startPointerDrag,
 } from "@/ui";
-import { SESSION_KIND, TASK_DRAG, age, branchLabel, groupTasks, sessionKey, type TaskGroup } from "./model";
+import {
+  SESSION_KIND,
+  TASK_DRAG,
+  age,
+  branchLabel,
+  groupTasks,
+  providerIcon,
+  sessionKey,
+  type TaskGroup,
+} from "./model";
 import { openHome, useAgents } from "./store";
 import { taskMenu } from "./taskActions";
 import { SessionEditor } from "./SessionEditor";
@@ -26,22 +35,11 @@ import { useTx } from "@/platform/i18n";
 import { executeAction } from "@/platform/actions";
 
 export function AgentsHeaderActions() {
-  return <IconButton icon="plus" action="agents.newTask" size="small" />;
-}
-
-export function AgentsLocationActions() {
-  const location = useAgents((s) => s.sessionLocation);
-  const tx = useTx();
   return (
-    <div role="group" aria-label={tx("Conversation location")} className={styles.location}>
-      <IconButton
-        icon="open-in-tool-window"
-        action="agents.useToolWindow"
-        pressed={location === "toolWindow"}
-        size="small"
-      />
-      <IconButton icon="editor-only" action="agents.useEditor" pressed={location === "editor"} size="small" />
-    </div>
+    <>
+      <IconButton icon="plus" action="agents.newTask" />
+      <IconButton icon="settings" action="agents.mcpServers" />
+    </>
   );
 }
 
@@ -64,7 +62,7 @@ const sessionPayloadTask = (payload: string): string | null => {
   }
 };
 
-export function TaskStatusIcon({ status }: { status: Status }) {
+function TaskStatusIcon({ status }: { status: Status }) {
   switch (status) {
     case "needsInput":
       return <Icon name="warning" size={13} label="Needs input" />;
@@ -200,10 +198,12 @@ export function AgentsView() {
                 if (inline && !e.metaKey && !e.ctrlKey && !e.shiftKey) showTask(n.task.id);
               }}
             >
-              <TaskStatusIcon status={n.task.status} />
+              <Icon name={providerIcon(n.task.provider)} size={16} label={providerName(n.task.provider)} />
               <span className={styles.title} data-unread={unread.has(n.task.id) || undefined}>
                 {n.task.title}
               </span>
+              {/* Ready tasks say so by their group; the others show what they're doing. */}
+              {n.task.status !== "ready" && <TaskStatusIcon status={n.task.status} />}
               {unread.has(n.task.id) && (
                 <span className={styles.unreadDot} role="img" aria-label={tx("Unread")} title={tx("Unread")} />
               )}
@@ -212,10 +212,7 @@ export function AgentsView() {
                   {basename(n.task.projectRoot ?? project.root)}
                 </span>
               )}
-              <span className={styles.detail}>
-                {providerName(n.task.provider)}
-                {n.task.isolation === "worktree" ? ` · ${branchLabel(n.task.branch)}` : ""}
-              </span>
+              {n.task.isolation === "worktree" && <span className={styles.detail}>{branchLabel(n.task.branch)}</span>}
               <span className={styles.age}>{age(n.task.updatedMs ?? 0)}</span>
             </span>
           )
@@ -242,7 +239,6 @@ export function AgentsView() {
                 ref={historyRef}
                 icon="history"
                 title="Agent sessions"
-                size="small"
                 aria-haspopup="dialog"
                 aria-expanded={historyOpen}
                 onClick={() => {

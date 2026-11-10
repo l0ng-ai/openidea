@@ -4,6 +4,7 @@
  * minute per directory. Without that command (an older backend) Node.js and
  * Rust come from SDK discovery and everything else resolves at launch.
  */
+import { withRunTarget } from "@/platform/runTargetSelection";
 import { call, commands, isTauri } from "@/platform/ipc";
 import { isWindows } from "./jvmTypes";
 import type { LocatedTool, ToolEnv } from "./producers";
@@ -78,9 +79,9 @@ export async function locateTools(
   return out;
 }
 
-async function projectPython(): Promise<string | null> {
+async function projectPython(file: string | null): Promise<string | null> {
   try {
-    return await call(commands.sdkPythonEffective());
+    return await call(commands.sdkPythonEffective(file ? dirOf(file) : null));
   } catch {
     return null;
   }
@@ -94,18 +95,23 @@ async function projectPhp(): Promise<string | null> {
   }
 }
 
-async function rootMarkers(root: string | null): Promise<{ deno: boolean; bun: boolean }> {
+export async function rootMarkers(root: string | null, file: string | null): Promise<{ deno: boolean; bun: boolean }> {
   if (!root) return { deno: false, bun: false };
-  try {
-    const entries = await call(commands.fsReadDir(root));
-    const names = new Set(entries.map((e) => e.name));
-    return {
-      deno: names.has("deno.json") || names.has("deno.jsonc"),
-      bun: names.has("bun.lockb") || names.has("bun.lock"),
-    };
-  } catch {
-    return { deno: false, bun: false };
+  let dir = file && file.startsWith(root + "/") ? dirOf(file) : root;
+  while (dir === root || dir.startsWith(root + "/")) {
+    try {
+      const entries = await call(commands.fsReadDir(dir));
+      const names = new Set(entries.map((e) => e.name));
+      const deno = names.has("deno.json") || names.has("deno.jsonc");
+      const bun = names.has("bun.lockb") || names.has("bun.lock");
+      if (deno || bun || names.has("package.json")) return { deno, bun };
+    } catch {
+      /* Unreadable ancestors contribute no runtime markers. */
+    }
+    if (dir === root) break;
+    dir = dirOf(dir);
   }
+  return { deno: false, bun: false };
 }
 
 /** The tool environment for running `file` with any of `names`. */
@@ -116,11 +122,26 @@ export async function toolEnv(
   python: boolean,
   php = false,
 ): Promise<ToolEnv> {
+  const targetFor = (command: string) =>
+    withRunTarget({ command, kind: command } as import("@/bindings").RunConfig).target;
+  const targetTools = new Set(
+    names.filter(
+      (n) =>
+        ["php", "node", "npm", "npx", "pnpm", "yarn", "bun", "tsx", "ts-node"].includes(n) &&
+        targetFor(n === "tsx" || n === "ts-node" ? "node" : n),
+    ),
+  );
+  const phpTarget = php && targetFor("php");
   const [tools, py, phpInterpreter, markers] = await Promise.all([
-    locateTools(names, file),
-    python ? projectPython() : Promise.resolve(null),
-    php ? projectPhp() : Promise.resolve(null),
-    names.includes("deno") || names.includes("bun") ? rootMarkers(root) : Promise.resolve({ deno: false, bun: false }),
+    locateTools(
+      names.filter((n) => !targetTools.has(n)),
+      file,
+    ),
+    python ? projectPython(file) : Promise.resolve(null),
+    phpTarget ? Promise.resolve("php") : php ? projectPhp() : Promise.resolve(null),
+    names.includes("deno") || names.includes("bun")
+      ? rootMarkers(root, file)
+      : Promise.resolve({ deno: false, bun: false }),
   ]);
   return {
     tool: (n) => tools.get(n),

@@ -5,6 +5,7 @@ import {
   buildChangeTree,
   checkOf,
   commitRepos,
+  changeFileNodes,
   ignoreTargets,
   initialCheck,
   hunkIncluded,
@@ -197,14 +198,14 @@ describe("commit inclusion", () => {
     expect(initialCheck(status[5]!)).toBe("none");
   });
 
-  it("plans staging so the index holds exactly the checked changes", () => {
+  it("plans which changes the commit takes and which staged ones it leaves out", () => {
     const checks = new Map<string, CheckState>([
       ["/r/README.md", "none"],
       ["/r/notes.txt", "all"],
     ]);
     const plan = planCommit(status, checks);
     expect(plan.stage.sort()).toEqual(["/r/notes.txt", "/r/src/main/kotlin/App.kt"]);
-    expect(plan.unstage).toEqual(["/r/README.md"]);
+    expect(plan.exclude).toEqual(["/r/README.md"]);
     expect(plan.included.map((f) => f.relPath).sort()).toEqual([
       "notes.txt",
       "src/main/kotlin/App.kt",
@@ -264,5 +265,35 @@ describe("commit inclusion", () => {
     expect(toggledHunk("hunks", new Set(["a", "b"]), all, "c").check).toBe("none");
     // Keys of blocks that no longer exist are dropped.
     expect(toggledHunk("hunks", new Set(["gone", "a"]), all, "b").excluded).toEqual(new Set(["a", "b"]));
+  });
+});
+
+describe("changeFileNodes", () => {
+  const file: ChangeNode = {
+    key: "/p/src/a.ts",
+    type: "file",
+    label: "a.ts",
+    group: "changes",
+    path: "/p/src/a.ts",
+    files: [],
+  };
+  const tree: ChangeNode[] = [
+    { key: "group:changes", type: "group", label: "Changes", group: "changes", children: [file], files: [] },
+  ];
+
+  it("lists the file nodes through nested groups, in tree order", () => {
+    expect(changeFileNodes(tree)).toEqual([file]);
+  });
+
+  it("lists a partially staged file under both staging groups", () => {
+    const fs = {
+      path: "/p/a.ts",
+      relPath: "a.ts",
+      staged: "modified",
+      unstaged: "modified",
+      renamedFrom: null,
+    } as const;
+    const nodes = changeFileNodes(buildChangeTree([fs], "/p", false, undefined, ["/p"], true));
+    expect(nodes.map((n) => n.group)).toEqual(["staged", "unstaged"]);
   });
 });

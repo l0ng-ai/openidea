@@ -9,7 +9,7 @@ vi.mock("@/platform/ipc", async (orig) => {
 
 const { emitLocalIdeEvent, isCancelled } = await import("@/platform/ipc");
 const { cancelTask, installTaskEvents, queueTask, setIndexing, upsertTask, useTasks } = await import("./tasks");
-const { TaskStatus } = await import("./StatusBar");
+const { BackgroundTasksHost, TaskStatus } = await import("./StatusBar");
 
 const task = (id: string) => useTasks.getState().tasks.find((t) => t.id === id);
 
@@ -78,6 +78,29 @@ describe("task queues", () => {
 });
 
 describe("cancelling", () => {
+  it.each([false, true])("keeps a replacement task when the old completion arrives (delayed: %s)", (delayed) => {
+    vi.useFakeTimers();
+    const uninstall = installTaskEvents();
+    const base = {
+      type: "task" as const,
+      title: "Finding references",
+      message: null,
+      fraction: null,
+      cancellable: false,
+    };
+    emitLocalIdeEvent({ ...base, id: 51, done: false });
+    if (delayed) vi.advanceTimersByTime(600);
+    emitLocalIdeEvent({ ...base, id: 52, done: false });
+    emitLocalIdeEvent({ ...base, id: 51, done: true });
+    vi.advanceTimersByTime(600);
+    expect(useTasks.getState().tasks.map((t) => t.id)).toEqual([52]);
+    emitLocalIdeEvent({ ...base, id: 52, done: true });
+    emitLocalIdeEvent({ ...base, id: 52, done: true });
+    vi.advanceTimersByTime(600);
+    expect(useTasks.getState().tasks).toEqual([]);
+    uninstall();
+  });
+
   it("shows Cancelling… until the task ends, then removes it without the finished bar", () => {
     vi.useFakeTimers();
     const cancel = vi.fn();
@@ -103,7 +126,12 @@ describe("cancelling", () => {
       done: false,
       uncancellable: "This step can't be cancelled",
     });
-    render(<TaskStatus />);
+    render(
+      <>
+        <TaskStatus />
+        <BackgroundTasksHost />
+      </>,
+    );
     fireEvent.click(screen.getByRole("button", { name: /Background tasks/ }));
     fireEvent.click(screen.getByRole("button", { name: "Cancel Downloading JDK 25" }));
     expect(cancel).toHaveBeenCalledOnce();
@@ -136,4 +164,20 @@ describe("cancelling", () => {
     });
     uninstall();
   });
+});
+
+it("shows progress and uncancellable tasks through an action without the status bar", async () => {
+  const { registerShellActions } = await import("./shellActions");
+  const { executeAction } = await import("@/platform/actions");
+  const dispose = registerShellActions();
+  try {
+    upsertTask({ id: "scan", title: "Scanning", message: "Reading files", fraction: 0.25, done: false });
+    render(<BackgroundTasksHost />);
+    await act(() => executeAction("view.backgroundTasks"));
+    expect(screen.getByRole("dialog", { name: "Background tasks" })).toHaveTextContent("25%");
+    expect(screen.getByText("Reading files")).toBeVisible();
+    fireEvent.keyDown(document, { key: "Escape" });
+  } finally {
+    dispose();
+  }
 });

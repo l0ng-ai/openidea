@@ -3,6 +3,7 @@
  * containers run configurations can run on (`RunConfig.target`). Consumed by
  * `ide-run`, `ide-remote` and the run feature.
  */
+import { usePluginRunTargets } from "@/platform/pluginRunTargets";
 import { useCallback, useEffect, useId, useState } from "react";
 import clsx from "clsx";
 import { call, commands, isTauri, type DockerConnection, type RemoteEntry } from "@/platform/ipc";
@@ -414,8 +415,17 @@ function ContainerFields({ target, update }: { target: RunTargetValid; update: (
 }
 
 function RunTargetsEditor() {
+  const plugins = usePluginRunTargets((s) => s.targets);
+  const [defaultTarget, setDefaultTarget] = useSetting<string>("run.defaultTarget");
   const [raw, setTargets] = useSetting<RunTargetValid[] | undefined>("runTargets");
   const targets = raw ?? [];
+  const allTargets = [...targets, ...plugins.map((t) => ({ id: t.id, name: `${t.target.name} (${t.pluginName})` }))];
+  const defaultOptions: SelectOption[] = [
+    { value: "", label: "Local machine" },
+    ...allTargets.map((t) => ({ value: t.id, label: t.name })),
+  ];
+  if (defaultTarget && !allTargets.some((t) => t.id === defaultTarget))
+    defaultOptions.push({ value: defaultTarget, label: tx`${defaultTarget} (missing)` });
   const sshConfigs = useSshConfigs();
   const [selected, setSelected] = useState<string | null>(targets[0]?.id ?? null);
   const current = targets.find((t) => t.id === selected) ?? null;
@@ -478,11 +488,19 @@ function RunTargetsEditor() {
           />
         </div>
         <div className={styles.toolList} role="listbox" aria-label={tx("Run targets")}>
-          {targets.length === 0 && (
+          {targets.length === 0 && plugins.length === 0 && (
             <div className={clsx(styles.toolRow, styles.empty)}>
               <T>No run targets. Click + to add one.</T>
             </div>
           )}
+          {plugins.map((t) => (
+            <div key={t.id} className={styles.toolRow} role="option" aria-selected={false}>
+              <span className={styles.toolName}>{t.target.name}</span>
+              <span className={styles.toolGroup}>
+                {t.pluginName} · <T>Read-only</T>
+              </span>
+            </div>
+          ))}
           {targets.map((t) => (
             <div
               key={t.id}
@@ -491,14 +509,29 @@ function RunTargetsEditor() {
               className={clsx(styles.toolRow, t.id === selected && styles.toolRowSelected)}
               onMouseDown={() => setSelected(t.id)}
             >
-              <span>{t.name || t.id}</span>
-              <span className={styles.toolGroup}>
+              <span className={styles.toolName} title={t.name || t.id}>
+                {t.name || t.id}
+              </span>
+              <span
+                className={styles.toolGroup}
+                title={t.kind === "ssh" ? (t.sshConfig ? sshName(t.sshConfig) : "") : containerSummary(t)}
+              >
                 {t.kind === "ssh" ? (t.sshConfig ? sshName(t.sshConfig) : "") : containerSummary(t)}
               </span>
             </div>
           ))}
         </div>
       </div>
+      <Section>
+        <Row label="Default run target">
+          <Select
+            value={defaultTarget ?? ""}
+            onChange={setDefaultTarget}
+            aria-label="Default run target"
+            options={defaultOptions}
+          />
+        </Row>
+      </Section>
       {current && (
         <Section title="Target Settings">
           <TextField label="Name" value={current.name} onChange={(name) => update({ name })} />
@@ -553,7 +586,7 @@ function RunTargetsEditor() {
         </T>{" "}
         <T>
           {
-            "Docker connections come from the Services tool window. Each run gets a new container, removed when it ends; debugging, coverage and profiling stay on this machine."
+            "Docker connections come from the Services tool window. Each run gets a new container, removed when it ends. Python configurations can be debugged there; coverage and profiling stay on this machine."
           }
         </T>
       </div>

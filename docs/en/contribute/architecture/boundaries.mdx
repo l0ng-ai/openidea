@@ -1,0 +1,56 @@
+---
+title: "Rust or UI?"
+description: "Which work belongs in the Rust backend and which in the frontend, how to decide for a new feature, and examples from the codebase."
+---
+
+The short rule: **the frontend presents and interacts; Rust owns data, I/O and anything that must also work on a remote machine.** The frontend never touches the disk, starts a process or opens a network connection itself; it asks the backend through typed commands.
+
+## What belongs in Rust
+
+| Kind of work                        | Why                                                                                     | Examples                                                                                                                                                                                             |
+| ----------------------------------- | --------------------------------------------------------------------------------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| File system access                  | One place for encodings, watching, ignore rules and remote projects.                    | `ide-vfs` ("The UI never touches the disk directly"): listing, loading/saving with encoding detection, watching.                                                                                     |
+| The authoritative copy of documents | Language servers, refactorings, search and plugins need the same text the editor shows. | `ide-text` keeps a rope per open document. The UI sends CodeMirror change sets tagged with their base version; a stale one is rejected with `ErrorKind::OutOfSync` and the UI resyncs.               |
+| Processes and protocols             | Child processes, pipes and JSON-RPC framing need a real OS.                             | `ide-lsp`, `ide-dap`, `ide-jsonrpc`, `ide-run`, `ide-terminal` (PTY), `ide-agent` (ACP).                                                                                                             |
+| Project-wide work                   | Walking thousands of files must not block a UI thread.                                  | `ide-index` (files and symbols, persisted in redb), `ide-search` (ripgrep engine crates), `ide-analysis` (duplicates, structural search), `ide-spell`.                                               |
+| VCS and external tools              | Behaviour has to match the command line.                                                | `ide-vcs`: gitoxide for reads, the `git` CLI for writes so hooks, credentials and signing behave as usual. `ide-docker`, `ide-android`, `ide-github` drive their CLIs.                               |
+| Security decisions                  | The UI can be bypassed; the backend can't.                                              | Project trust is checked for every command in the invoke handler; plugin capabilities and grants live in `ide-extension`; plugin UI contributions are validated in Rust before the client sees them. |
+| Anything a remote window needs      | The remote server has no webview.                                                       | The implementation lives in `ide-host::ops` so `openidea-server` runs the same code.                                                                                                                 |
+
+Work in Rust also follows the threading rules: long work never blocks the UI thread or a Tauri command thread. Use `spawn_blocking` or rayon and honour the request's `CancellationToken`.
+
+## What belongs in the frontend
+
+| Kind of work                       | Examples                                                                                                                                                                           |
+| ---------------------------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| Rendering, layout, focus           | Workbench, tool windows, popups, trees (`src/workbench/`, `src/ui/`).                                                                                                              |
+| Input and commands                 | The action registry, keymaps and the keyboard dispatcher, `when` clauses over context keys (`src/platform/`).                                                                      |
+| Editor state and editing behaviour | CodeMirror 6 views and state, CodeMirror language modes for highlighting, the Vim mode (`src/features/vim`), Emmet expansion (`src/features/templates/emmet`), merge views.        |
+| Presentation of backend results    | Merging and ranking for display: Search Everywhere merges the IDE's own symbol index with language-server workspace symbols (`mergeSymbols` in `src/features/search/everywhere/`). |
+| Rendering formats                  | Markdown and Mermaid rendering in viewers and the agent chat.                                                                                                                      |
+| Client preferences                 | Keymap, appearance, editor fonts and colour scheme stay on the client even in a remote window (`src/platform/clientSettings.ts`).                                                  |
+
+## Splitting one feature across both
+
+Many features have a cheap, I/O-heavy half in Rust and a light, data-shaping half in the UI. Spring request mappings in the HTTP Client are a good example:
+
+- Rust (`crates/ide-host/src/ops/routes.rs`): `spring_route_sources` walks the project with the usual ignore rules and returns the text of Java and Kotlin files that could declare a route, with file-count and byte caps. "The UI owns the annotation parser and the index it feeds, so this side stays a cheap scan."
+- UI (`src/features/http-client/spring/routeIndex.ts`): parses the annotations, builds the request-path index, registers it as an endpoint provider, and drops the cache on `fsChanged` events for `.java` / `.kt` files.
+
+Another: tree-sitter structure queries (`ide-syntax`) run in Rust against the cached syntax tree, while the editor decides when to use them as a fallback because the language server is unavailable.
+
+## Deciding for a new feature
+
+Put it in Rust if any of these is true:
+
+- it reads or writes files, starts a process, or talks to the network;
+- it must work in a remote window (the project and its tools are on the other machine);
+- it scans more than the open documents, or can take more than a frame;
+- it enforces a security property (trust, permissions, validation of untrusted input);
+- a plugin, the MCP server or another backend crate needs the result.
+
+Keep it in the frontend if it is about how something looks or responds to input, and works from data the backend already provides.
+
+When it lands in Rust, place it by domain: logic in the crate that owns the domain (or a new `crates/ide-<domain>`), the shared command implementation in `ide-host::ops`, and a thin adapter in `src-tauri/src/commands/<domain>.rs`. No domain logic in `src-tauri`.
+
+When it lands in the frontend, it is a feature folder under `src/features/<name>/` that registers actions and contributions. It must not import another feature; see [Frontend](/en/contribute/architecture/frontend).

@@ -30,6 +30,31 @@ export function sortByRisk(caps: readonly CapabilityInfo[]): CapabilityInfo[] {
   return [...caps].sort((a, b) => RISK_ORDER[a.risk] - RISK_ORDER[b.risk] || a.id.localeCompare(b.id));
 }
 
+/** Parameterised permission text, translated independently of the granted host/path. */
+export function capabilityDescription(cap: CapabilityInfo): string {
+  if (cap.id === "database.sources")
+    return tx("Manage its own database sources and store their passwords in trusted projects");
+  if (cap.id === "ide.commands") {
+    return tx(
+      "Run any IDE action or other plugins' commands as if you chose them, including running programs, committing and pushing",
+    );
+  }
+  if (cap.id === "net:ask") {
+    return tx(
+      "Ask to connect to a host that is not on the list the first time it tries; you allow or refuse each host, and can revoke the allowed ones",
+    );
+  }
+  if (cap.id.startsWith("net.http:")) {
+    const host = cap.id.slice(9);
+    return tx`Connect to ${host} over unencrypted HTTP (from the machine the project is on)`;
+  }
+  if (cap.id.startsWith("ipc:")) {
+    const path = cap.id.slice(4);
+    return tx`Connect to local socket ${path} — equivalent to running arbitrary code on the project machine`;
+  }
+  return tx(cap.description);
+}
+
 function ask(req: ConsentRequest): Promise<Consent | null> {
   return new Promise((resolve) => usePending.setState((s) => ({ queue: [...s.queue, { req, resolve }] })));
 }
@@ -84,28 +109,30 @@ function ConsentDialog({ pending, onDone }: { pending: Pending; onDone: () => vo
         ) : (
           <ul className={styles.items} aria-label={tx("Requested permissions")}>
             {caps.map((c) => (
-              <li key={c.id} className={styles.item}>
-                {c.optional ? (
-                  <Checkbox
-                    checked={accepted.has(c.id)}
-                    onChange={(on) =>
-                      setAccepted((s) => {
-                        const next = new Set(s);
-                        if (on) next.add(c.id);
-                        else next.delete(c.id);
-                        return next;
-                      })
-                    }
-                    aria-label={tx`Allow ${c.id}`}
-                  />
-                ) : (
-                  <span className={styles.consentRequired} title={tx("Required")}>
-                    •
-                  </span>
-                )}
-                <span className={styles.itemMain}>{c.description}</span>
-                <span className={styles.mono}>{c.id}</span>
-                <Badge tone={RISK_LABEL[c.risk].tone}>{RISK_LABEL[c.risk].label}</Badge>
+              <li key={c.id} className={styles.capabilityItem}>
+                <div className={styles.capabilityHeader}>
+                  {c.optional ? (
+                    <Checkbox
+                      checked={accepted.has(c.id)}
+                      onChange={(on) =>
+                        setAccepted((s) => {
+                          const next = new Set(s);
+                          if (on) next.add(c.id);
+                          else next.delete(c.id);
+                          return next;
+                        })
+                      }
+                      aria-label={tx`Allow ${c.id}`}
+                    />
+                  ) : (
+                    <span className={styles.consentRequired} title={tx("Required")}>
+                      •
+                    </span>
+                  )}
+                  <span className={styles.mono}>{c.id}</span>
+                  <Badge tone={RISK_LABEL[c.risk].tone}>{RISK_LABEL[c.risk].label}</Badge>
+                </div>
+                <p className={styles.capabilityDescription}>{capabilityDescription(c)}</p>
               </li>
             ))}
           </ul>

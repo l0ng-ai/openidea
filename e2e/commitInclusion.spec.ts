@@ -8,12 +8,11 @@ import { expect, ipcCalls, stubDesktop, test } from "./fixtures";
 const ROOT = "/dev/acme-api";
 const NAMES = Array.from({ length: 20 }, (_, i) => `src/f${i}.ts`);
 
-/** Twenty modified tracked files; `vcs_stage` + `vcs_commit` take the staged ones out of the status. */
+/** Twenty modified tracked files; `vcs_commit` takes the files it commits out of the status. */
 async function stubTwentyChanges(page: Page) {
   await stubDesktop(page);
   await page.evaluate(
     async ({ root, names }) => {
-      const staged = new Set<string>();
       const committed = new Set<string>();
       const all = names.map((rel) => ({
         path: `${root}/${rel}`,
@@ -33,14 +32,10 @@ async function stubTwentyChanges(page: Page) {
         operation: null,
       });
       h.vcs_status = () => all.filter((f) => !committed.has(f.path));
-      h.vcs_stage = (args) => {
-        for (const path of args.paths as string[]) staged.add(path);
-        return null;
-      };
+      h.vcs_stage = () => null;
       h.vcs_unstage = () => null;
-      h.vcs_commit = () => {
-        for (const path of staged) committed.add(path);
-        staged.clear();
+      h.vcs_commit = (args) => {
+        for (const path of (args.options as { stage: string[] }).stage) committed.add(path);
         return "2222222";
       };
       const vcsModule = "/src/features/vcs/store.ts";
@@ -71,7 +66,8 @@ test("changes left out of a commit stay unchecked (#1539)", async ({ workbench: 
   await panel.getByRole("textbox", { name: "Commit message" }).fill("Commit 5 of 20");
   await panel.getByRole("button", { name: "Commit", exact: true }).click();
   await expect(page.getByText(/5 files committed: Commit 5 of 20/)).toBeVisible();
-  expect((await ipcCalls(page, "vcs_stage")).flatMap((a) => a.paths as string[]).sort()).toEqual(
+  const [commit] = await ipcCalls(page, "vcs_commit");
+  expect([...(commit!.options as { stage: string[] }).stage].sort()).toEqual(
     NAMES.slice(0, 5)
       .map((rel) => `${ROOT}/${rel}`)
       .sort(),

@@ -1,6 +1,7 @@
 import { describe, expect, it } from "vitest";
 import { exportData, type ExportData } from "./export";
 import {
+  activeSchema,
   buildRowEdits,
   colorVar,
   connectRemedy,
@@ -9,6 +10,8 @@ import {
   idleTargets,
   matchesPattern,
   parseSourceUrl,
+  passesTreeFilter,
+  schemaSwitchable,
   shownNames,
   sourceLabel,
   splitTarget,
@@ -209,6 +212,14 @@ describe("data source types", () => {
     expect(labels).toEqual([...labels].sort((a, b) => a.localeCompare(b)));
   });
 
+  it("adds StarRocks on the MySQL driver with the 9030 preset (#2452)", () => {
+    expect(vendorPreset(vendorById("starrocks")!)).toEqual({ driver: "mysql", vendor: "starrocks", port: 9030 });
+    expect(sourceUrl({ driver: "mysql", vendor: "starrocks", host: "sr", port: 9030, database: "" })).toBe(
+      "jdbc:starrocks://sr:9030",
+    );
+    expect(parseSourceUrl("starrocks://root@sr.local:9030/test")?.source.vendor).toBe("starrocks");
+  });
+
   it("falls back to the driver for unknown or mismatched presets", () => {
     expect(vendorOf({ driver: "mysql", vendor: "tidb" }).label).toBe("TiDB");
     expect(vendorOf({ driver: "postgres", vendor: "tidb" }).id).toBe("postgres");
@@ -293,6 +304,33 @@ describe("Schemas tab", () => {
     expect(shownNames(names, true, ["billing"])).toEqual(names);
     expect(shownNames(names, false, ["app*"], "postgres")).toEqual(["app", "app_test", "postgres"]);
     expect(shownNames(names, false, [])).toEqual([]);
+  });
+
+  it("quick-filters tree objects by a case-insensitive substring", () => {
+    expect(passesTreeFilter("users", "user")).toBe(true);
+    expect(passesTreeFilter("Users", "user")).toBe(true);
+    expect(passesTreeFilter("order_items", "  IT  ")).toBe(true);
+    expect(passesTreeFilter("users", "orders")).toBe(false);
+    expect(passesTreeFilter("users", "")).toBe(true);
+    expect(passesTreeFilter("users", "   ")).toBe(true);
+    expect(passesTreeFilter("users", null)).toBe(true);
+  });
+});
+
+describe("active schema", () => {
+  it("follows the console's pick, then the connection default", () => {
+    expect(activeSchema("app", "public")).toBe("app");
+    expect(activeSchema(undefined, "public")).toBe("public");
+    expect(activeSchema("", "public")).toBe("public");
+    expect(activeSchema(undefined, undefined)).toBe("");
+    expect(activeSchema(null, null)).toBe("");
+  });
+
+  it("offers the schema dropdown to multi-schema drivers only", () => {
+    for (const driver of ["postgres", "mysql", "sqlServer", "oracle"] as const)
+      expect(schemaSwitchable(driver)).toBe(true);
+    for (const driver of ["sqlite", "clickhouse"] as const) expect(schemaSwitchable(driver)).toBe(false);
+    expect(schemaSwitchable(undefined)).toBe(false);
   });
 });
 

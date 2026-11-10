@@ -36,9 +36,11 @@ import {
   withCustomOverrides,
   type KeymapDraft,
 } from "../keymap/model";
-import { buildKeymapTree } from "../keymap/KeymapPage";
+import { buildKeymapTree, keymapSearchLabels } from "../keymap/KeymapPage";
 import { groupPath } from "../keymap/groups";
+import { registerEditorActions } from "@/editor/core/actions";
 import { registerLspActions } from "@/editor/lsp/actions";
+import { matchActions } from "@/features/search/everywhere/model";
 import { _resetI18nForTests, setLocale } from "@/platform/i18n";
 
 it("finds the translated declaration action by 声明 and its English title", async () => {
@@ -204,6 +206,27 @@ describe("conflicts", () => {
 });
 
 describe("shortcut search", () => {
+  it.each(Object.keys(PRESETS))("keeps the mouse-only caret action configurable in %s", (preset) => {
+    const dispose = registerEditorActions();
+    const originalKeymap = useKeymap.getState();
+    const id = "editor.addOrRemoveCaret";
+    const title = "Add or Remove Caret";
+    try {
+      expect(matchActions(allActions(), title, { isEnabled: () => true, recent: [id] })).toEqual([]);
+      const variants: KeymapDraft["overrides"][] = [{}, { [id]: ["Alt+Button1"] }, { [id]: [] }];
+      for (const overrides of variants) {
+        useKeymap.setState({ preset, overrides });
+        expect(keymapSearchLabels()).toContain(title);
+        const tree = buildKeymapTree(allActions(), { preset, overrides }, title, "");
+        const group = tree.find((node) => node.key === "grp:Editor Actions");
+        expect(group?.kind === "group" && group.children.map((node) => node.key)).toEqual([id]);
+      }
+    } finally {
+      useKeymap.setState(originalKeymap);
+      dispose();
+    }
+  });
+
   it("matches exact bindings and chord first strokes", () => {
     expect(bindingMatches(["Meta+K Meta+C"], "Meta+K")).toBe(true);
     expect(bindingMatches(["Shift+Meta+O"], "Meta+Shift+O")).toBe(true);

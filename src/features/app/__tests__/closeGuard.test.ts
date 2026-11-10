@@ -1,5 +1,13 @@
 import { describe, expect, it, vi } from "vitest";
-import { confirmExitEnabled, decideClose, type CloseDeps, type CloseInput } from "../closeGuard";
+import {
+  closeTabsWithWindowEnabled,
+  closeWithoutWelcomeEnabled,
+  confirmExitEnabled,
+  decideClose,
+  returnsToWelcome,
+  type CloseDeps,
+  type CloseInput,
+} from "../closeGuard";
 import type { MessageRequest as PromptRequest, MessageResult as PromptResult } from "@/workbench/messages";
 import type { EditorCloseSession } from "@/workbench/contributions";
 
@@ -58,6 +66,22 @@ describe("decideClose", () => {
     await decideClose({ ...base, confirmExit: true, windows: 2 }, d);
     await decideClose({ ...base, confirmExit: true, quitting: true }, d);
     expect(asked).toHaveLength(0);
+  });
+
+  it("stops the processes gracefully and waits for them before closing", async () => {
+    const { d } = deps([{ button: "terminate", checked: false }]);
+    d.terminate = vi.fn(async () => {});
+    d.waitForProcesses = vi.fn(async () => {});
+    await expect(decideClose({ ...base, confirmTerminate: true, processes: ["app"] }, d)).resolves.toBe(true);
+    expect(d.terminate).toHaveBeenCalledWith(false);
+    expect(d.waitForProcesses).toHaveBeenCalledOnce();
+  });
+
+  it("does not stop anything when the terminate prompt is cancelled", async () => {
+    const { d } = deps([{ button: "cancel", checked: false }]);
+    d.terminate = vi.fn(async () => {});
+    await expect(decideClose({ ...base, confirmTerminate: true, processes: ["app"] }, d)).resolves.toBe(false);
+    expect(d.terminate).not.toHaveBeenCalled();
   });
 
   it("asks before terminating a running process", async () => {
@@ -127,6 +151,25 @@ describe("decideClose", () => {
     expect(confirmExitEnabled({ general: { confirmExit: true } })).toBe(true);
     expect(confirmExitEnabled({ general: {} })).toBe(false);
     expect(confirmExitEnabled(null)).toBe(false);
+  });
+
+  it("returns to Welcome unless the user chooses to close the last window", () => {
+    const on = { general: { closeWithoutWelcome: true } };
+    expect(closeWithoutWelcomeEnabled(null)).toBe(false);
+    expect(closeWithoutWelcomeEnabled({ general: {} })).toBe(false);
+    expect(closeWithoutWelcomeEnabled(on)).toBe(true);
+    expect(returnsToWelcome(false, 1, true, null)).toBe(true);
+    expect(returnsToWelcome(false, 1, true, { general: {} })).toBe(true);
+    expect(returnsToWelcome(false, 1, true, on)).toBe(false);
+    expect(returnsToWelcome(true, 1, true, null)).toBe(false);
+    expect(returnsToWelcome(false, 2, true, null)).toBe(false);
+    expect(returnsToWelcome(false, 1, false, null)).toBe(false);
+  });
+
+  it("keeps editor tabs across a close unless the user chooses to drop them", () => {
+    expect(closeTabsWithWindowEnabled(null)).toBe(false);
+    expect(closeTabsWithWindowEnabled({ general: {} })).toBe(false);
+    expect(closeTabsWithWindowEnabled({ general: { closeTabsWithWindow: true } })).toBe(true);
   });
 
   it("includes dirty changes produced while preparing a custom document", async () => {

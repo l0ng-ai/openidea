@@ -22,6 +22,8 @@ env:
 
 jobs:
   merge:
+    # The schedule is for this repository's release; forks can still run it by hand.
+    if: github.event_name != 'schedule' || github.repository == 'l0ng-ai/openidea'
     runs-on: ubuntu-latest
     steps:
       - name: Merge the community index

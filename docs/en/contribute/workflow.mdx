@@ -1,0 +1,102 @@
+---
+title: "Contribution workflow"
+description: "How issues are triaged, what a pull request needs, how verification is checked, and how changes get merged."
+---
+
+These rules come from [`CONTRIBUTING.md`](https://github.com/l0ng-ai/openidea/blob/main/CONTRIBUTING.md) and apply to everyone, including coding agents working on someone's behalf. Coding rules, commands and checks are in [`AGENTS.md`](https://github.com/l0ng-ai/openidea/blob/main/AGENTS.md).
+
+## Issues
+
+- One problem or request per issue. Use the issue forms ([Bug report](https://github.com/l0ng-ai/openidea/issues/new?template=bug_report.yml) or [Feature request](https://github.com/l0ng-ai/openidea/issues/new?template=feature_request.yml)); blank issues are disabled.
+- **Bugs:** steps that reproduce the problem from a fresh start, on the [latest release](https://github.com/l0ng-ai/openidea/releases/latest). A minimal sample project is the fastest way to a fix.
+- **Features:** the problem and the acceptance criteria. A feature is ready to build once a maintainer labels it `planned`.
+
+Labels track status:
+
+| Label              | Meaning                                                                     |
+| ------------------ | --------------------------------------------------------------------------- |
+| `needs-info`       | Waiting on the reporter (or, on a PR, on a filled-in verification section). |
+| `needs-decision`   | Waiting on a maintainer's product decision.                                 |
+| `planned`          | Accepted; ready to build.                                                   |
+| `needs-acceptance` | A fix exists and is waiting to be checked.                                  |
+
+## Pull requests
+
+<Steps>
+  <Step title="Pick one problem">
+    One problem per PR. If it resolves an issue, link it with `Closes #123`. Unrelated refactors go in their own PR.
+  </Step>
+  <Step title="Reproduce first">Reproduce the problem, or write a test that fails before the fix.</Step>
+  <Step title="Fix the cause">
+    Fix the root cause, then check whether the same cause breaks anything nearby. Keep the diff focused.
+  </Step>
+  <Step title="Run the checks">
+    Run what CI runs for the parts you touched (below), and verify UI or runtime changes in the running app.
+  </Step>
+  <Step title="Open the PR">
+    Title in [Conventional Commits](https://www.conventionalcommits.org/) form, e.g. `fix(editor): keep the caret
+    visible after folding`. Fill in the template.
+  </Step>
+</Steps>
+
+Keep the description short and in plain words. If it doesn't fit in a few sentences, the PR is probably too big.
+
+### The template
+
+[`.github/pull_request_template.md`](https://github.com/l0ng-ai/openidea/blob/main/.github/pull_request_template.md) has three sections:
+
+| Section                 | What goes in it                                                                                                         |
+| ----------------------- | ----------------------------------------------------------------------------------------------------------------------- |
+| **What and why**        | 2–4 sentences: the change a user notices, and the root cause.                                                           |
+| **How it was verified** | Required. The commands you ran and their results; what else the change could affect and how you checked it still works. |
+| **Review focus**        | Optional. Anything reviewers should look at closely.                                                                    |
+
+### How it was verified
+
+This section is required. Include:
+
+- the commands you actually ran and their results (tests, clippy, `pnpm e2e`, a smoke test…);
+- what else the change could affect, and how you checked it;
+- **visible UI changes:** before/after screenshots; **multi-step interactions:** a recording;
+- **backend changes:** logs or command output.
+
+Screenshots are not needed for UI that goes away with a removed feature, copy-only changes or non-visual changes; say what you checked instead.
+
+A workflow (`.github/workflows/pr-check.yml`) reads each PR's description when it is opened or edited. If **How it was verified** is missing or empty, it comments and adds `needs-info`; once you fill it in, it removes its comment and the label. It only reads the title and description, never your code.
+
+### Checks to run
+
+| You touched             | Run                                                                                                                 |
+| ----------------------- | ------------------------------------------------------------------------------------------------------------------- |
+| Rust                    | `cargo fmt --all --check`, `cargo clippy --workspace --all-targets -- -D warnings`, `cargo nextest run --workspace` |
+| IPC types               | `pnpm gen:bindings`, and commit `src/bindings.ts`                                                                   |
+| Frontend                | `pnpm typecheck`, `pnpm lint`, `pnpm format:check`, `pnpm knip`, `pnpm test`, `pnpm build`; `pnpm e2e` for UI flows |
+| Plugins, SDK or `wit/`  | `plugins/build.sh`, `cargo test -p ide-host --test plugins`                                                         |
+| UI or runtime behaviour | Verify in the running app (`pnpm tauri dev`)                                                                        |
+
+See [Unit and E2E tests](/en/contribute/testing/unit-e2e) for details.
+
+### What CI runs
+
+`.github/workflows/ci.yml` first classifies the changed files, so a docs-only or frontend-only PR skips the jobs it can't affect:
+
+- **Rust** on macOS, Ubuntu 22.04 and Windows: `cargo fmt --check` (Linux), clippy with `-D warnings`, `cargo nextest run --workspace`, and a check that `src/bindings.ts` is up to date.
+- **Remote server**: a static Linux (musl) build of `openidea-server`.
+- **Plugins**: format, clippy (host and `wasm32-wasip2`) and tests of the SDK, the official plugins and the test fixtures; plugin web pages typechecked and tested; `plugins/build.sh --check`.
+- **Cargo deny**: `cargo deny check` (licences, advisories, sources).
+- **Frontend**: typecheck, lint, format check, knip, tests, build.
+- **E2E**: `pnpm e2e` in the Playwright container.
+
+`.github/workflows/language-smoke.yml` runs the [language smoke tests](/en/contribute/testing/smoke) when crates, `languages/`, `fixtures/`, the run/debugger features, `src/platform/` or `smoke/` change.
+
+## Product decisions
+
+If a change needs a product decision you can't make (behaviour users would notice, a trade-off between options, scope), ask in the issue and stop rather than guessing. The issue gets `needs-decision` until a maintainer answers.
+
+## Plugins
+
+PRs to this repository add or change the official plugins (`plugins/official/`) and the plugin API. Community plugins live in their authors' repositories and are listed through [l0ng-ai/openidea-plugins](https://github.com/l0ng-ai/openidea-plugins). See [Publishing](/en/plugins/publishing/marketplace).
+
+## Review and merge
+
+Maintainers review the PR against the rules above: one problem, root cause fixed, focused diff, verification that covers what the change affects. Expect requests to split a PR that does several things. On `main`, a merged PR's commit carries its Conventional Commits title and number, e.g. `fix(maven): recognize POMs with non-UTF-8 declared encodings (#2495)`, so write the title as the commit message you want in the history.

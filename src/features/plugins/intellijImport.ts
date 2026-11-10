@@ -5,7 +5,6 @@
  * here (`intellijTheme.ts`), installed through the usual install page. Its
  * themes join the others; which one to use is chosen in Settings › Appearance.
  */
-import { create } from "zustand";
 import { notifications } from "@/workbench/contributions";
 import { pluginsBackend } from "./backend";
 import { intellijThemePackage } from "./intellijTheme";
@@ -35,19 +34,8 @@ export async function importIntellijTheme(path?: string): Promise<string | null>
   return installFromDisk(dir);
 }
 
-interface DialogState {
-  open: boolean;
-  /** Called with the plugin id after an import from the dialog. */
-  onImported: ((id: string) => void) | null;
-}
-
-export const useIntellijThemesDialog = create<DialogState>(() => ({ open: false, onImported: null }));
-
-/** Shows the themes of the JetBrains IDEs on this machine to pick one to import. */
-export function showInstalledIntellijThemes(onImported?: (id: string) => void): void {
-  useIntellijThemesDialog.setState({ open: true, onImported: onImported ?? null });
-}
-
-export function closeInstalledIntellijThemes(): void {
-  useIntellijThemesDialog.setState({ open: false, onImported: null });
-}
+export {
+  closeInstalledIntellijThemes,
+  showInstalledIntellijThemes,
+  useIntellijThemesDialog,
+} from "./intellijThemesDialogStore";

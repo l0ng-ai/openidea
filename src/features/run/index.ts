@@ -3,19 +3,21 @@
  * test runner) and run/debug/stop actions.
  */
 import { registerEditorContribution } from "@/editor/api";
-import { executeAction, getAction, registerActions } from "@/platform/actions";
-import { getContext, setContext } from "@/platform/context";
-import { onIdeEvent, type RunConfig } from "@/platform/ipc";
+import { executeAction, executeActionOrThrow, getAction, registerActions } from "@/platform/actions";
+import { getContext, setContext, useContextKeys } from "@/platform/context";
+import { call, commands, onIdeEvent, type RunConfig } from "@/platform/ipc";
 import { useProject } from "@/platform/project";
 import { onWorkflowSettingsChange } from "@/platform/workflowSettings";
-import { showContextMenu, lazyComponent, type MenuItem } from "@/ui";
+import { showContextMenu, lazyComponent, lazyWhen, type MenuItem } from "@/ui";
 import {
   menuGroupItems,
   useDebugRunSessions,
   notifications,
+  provideRunOutput,
   registerMenuGroup,
   registerOverlay,
   registerRunAnythingProvider,
+  registerRunConfigType,
   registerRunningProcessesProvider,
   registerServiceProvider,
   registerTitleItem,
@@ -35,7 +37,6 @@ import { runWithExecutor } from "./executors";
 import { debugWithAgent, jdwpLaunch } from "./javaDebug";
 import { RunDialogsOverlay } from "./dialogs";
 import { registerExternalTools } from "./externalTools";
-import { EditConfigsOverlay } from "./EditConfigsDialog";
 import { openImport } from "./importConfigs";
 import { registerComposerInstall } from "./composerInstall";
 import { registerGoActions } from "./goActions";
@@ -43,12 +44,16 @@ import { invalidateGoModules } from "./goModules";
 import { invalidatePythonPackages } from "./pythonPackages";
 import { RunWidget } from "./RunWidget";
 import { runConfigsRunAnything } from "./runAnything";
-import { cleanupRemovedProject, recordRun, runServiceProvider } from "./services";
+import { cleanupRemovedProject, recordRun, registerRunServiceActions, runServiceProvider } from "./services";
 import { liveServiceSession, serviceSessions } from "./serviceSessions";
+import { ServiceImportHost } from "./serviceImport";
+import { cmakeBuildId } from "./cmake";
 import { runBeforeLaunch } from "./beforeLaunch";
 import { compoundChildren } from "./configs";
-import { remoteDebugBlocked } from "./remote";
+import { containerDebuggable, remoteDebugBlocked } from "./remote";
+import { debugInContainer } from "./containerDebug";
 import { isDebugOnly, registerBuiltinTypes } from "./types";
+import { junitType } from "./junitType";
 import { listenForApplicationDeactivation, showApplicationUpdate, updatableSessions } from "./applicationUpdate";
 import { npmGutter } from "./npmGutter";
 import { runGutter } from "./runGutter";
@@ -65,21 +70,60 @@ import {
   setBeforeLaunchRunner,
   loadConfigs,
   failedTests,
+  baseConfigOf,
   onRunExited,
   rerunFailed,
   rerunSession,
   resetRuns,
   runningSessions,
   saveUserConfigs,
+  dropStaleContextConfigs,
   selectConfig,
   selectedConfig,
   startRun,
+  startSampleOutput,
   stopSession,
+  subscribeOutput,
   trackRecentConfigurations,
   useRun,
+  isLive,
 } from "./store";
+import { rerunFailedConfigs } from "./testing/rerun";
 import { compoundTargets, selectedTarget } from "./sessionTargets";
 import { tx } from "@/platform/i18n";
+
+function trackFailedTestSelection(): () => void {
+  let signature = "";
+  let generation = 0;
+  const update = () => {
+    const state = useRun.getState();
+    const id =
+      (state.activeSession && failedTests(state.activeSession).length ? state.activeSession : null) ??
+      [...state.sessions].reverse().find((s) => failedTests(s.id).length > 0)?.id;
+    const session = state.sessions.find((s) => s.id === id);
+    const base = session && baseConfigOf(session);
+    const paths = id ? failedTests(id) : [];
+    const next = JSON.stringify([id, session?.status, base, paths]);
+    if (next === signature) return;
+    signature = next;
+    const request = ++generation;
+    setContext("run.canRerunFailed", false);
+    if (!session || isLive(session) || !base) return;
+    const selection = rerunFailedConfigs(base, paths);
+    if (selection instanceof Promise) {
+      void selection.then((configs) => {
+        if (request === generation) setContext("run.canRerunFailed", configs.length > 0);
+      });
+    } else setContext("run.canRerunFailed", selection.length > 0);
+  };
+  const stop = useRun.subscribe(update);
+  update();
+  return () => {
+    generation++;
+    stop();
+    setContext("run.canRerunFailed", false);
+  };
+}
 
 function hasProject() {
   return !!useProject.getState().project;
@@ -105,40 +149,56 @@ async function runSelected() {
   await startRun(config);
 }
 
-async function debugConfig(config: RunConfig, chain: readonly string[] = []) {
+async function debugConfig(config: RunConfig, chain: readonly string[] = [], show?: boolean) {
   if (config.kind === "compound") {
-    if (!(await prepareLaunch(config, chain))) return;
+    if (!(await prepareLaunch(config, chain, show))) return;
     const children = compoundChildren(config, useRun.getState().configs);
-    await Promise.all(children.map((c) => debugConfig(c, [...chain, config.id])));
+    await Promise.all(children.map((c) => debugConfig(c, [...chain, config.id], show)));
     return;
   }
   if (remoteDebugBlocked(config)) return;
-  if (!(await prepareLaunch(config, chain))) return;
+  if (!(await prepareLaunch(config, chain, show))) return;
   recordRun(config.id);
+  // Python on a Docker / Compose target: debugpy in the container, the debugger attaches.
+  if (containerDebuggable(config) && getAction("debug.attach")) {
+    await debugInContainer(config);
+    return;
+  }
   // Remote JVM Debug, Go Remote…: the debugger attaches, nothing is launched here.
   if (isDebugOnly(config) && getAction("debug.startConfig")) {
-    await executeAction("debug.startConfig", config);
+    await executeAction("debug.startConfig", show === false ? { config, show: false } : config);
     return;
   }
   // A single compiled file (rustc / clang): build with debug info, then debug the binary.
   const compiled = await compiledDebugPlan(config);
   if (compiled?.debug) {
-    await launchProduced(compiled, true);
+    await launchProduced(compiled, true, show);
     return;
   }
   // "Build and run using: Gradle": the JavaExec JVM gets the agent, the debugger attaches to it.
-  const delegated = getAction("debug.attach") ? await gradleDelegation(config) : null;
+  let delegated: RunConfig | null;
+  try {
+    delegated = getAction("debug.attach") ? await gradleDelegation(config) : null;
+  } catch (error) {
+    notifications().notify({
+      group: "run",
+      level: "error",
+      title: `Cannot run '${config.name}'`,
+      body: error instanceof Error ? error.message : String(error),
+    });
+    return;
+  }
   if (delegated) {
-    await debugWithAgent(delegated);
+    await debugWithAgent(delegated, show);
     return;
   }
   // Maven / Gradle: the build tool starts the JVM with a debug agent, the debugger attaches.
   if (jdwpLaunch(config) && getAction("debug.attach")) {
-    await debugWithAgent(config);
+    await debugWithAgent(config, show);
     return;
   }
   if (getAction("debug.startConfig")) {
-    await executeAction("debug.startConfig", config);
+    await executeAction("debug.startConfig", show === false ? { config, show: false } : config);
     return;
   }
   notifications().notify({
@@ -148,7 +208,7 @@ async function debugConfig(config: RunConfig, chain: readonly string[] = []) {
     body: tx`Running '${config.name}' without the debugger.`,
     key: "run-no-debugger",
   });
-  await startRun(config, undefined, undefined, { prepared: true });
+  await startRun(config, undefined, undefined, { prepared: true, show });
 }
 
 async function debugSelected() {
@@ -241,7 +301,22 @@ function stopAction(arg?: unknown) {
     })),
     ...menuGroupItems("stopProcess", { paths: [] }),
   ].filter((i): i is MenuItem & { run: () => void } => "run" in i && !!i.run);
-  if (items.length === 0) return;
+  // A Debug launch has no Run process: with nothing else to stop, the title-bar Stop reaches
+  // the debug session itself (the Debug window need not be focused).
+  if (items.length === 0) {
+    if (debug.length === 0) return;
+    if (debug.length === 1) {
+      debug[0]!.stop();
+      return;
+    }
+    const anchor = document.querySelector("[data-run-chooser]")?.getBoundingClientRect();
+    const at = anchor ? { x: anchor.left, y: anchor.bottom + 4 } : { x: window.innerWidth / 2 - 120, y: 44 };
+    showContextMenu(at, [
+      { kind: "header", label: "Stop Process" },
+      ...debug.map((s): MenuItem => ({ label: s.name, verbatim: true, icon: "debug", run: () => s.stop() })),
+    ]);
+    return;
+  }
   if (items.length === 1) {
     items[0]!.run();
     return;
@@ -264,7 +339,7 @@ function rerunActive() {
 }
 
 function useRunningCount(): number | null {
-  return useRun((s) => s.sessions.filter((x) => x.status === "running" || x.status === "starting").length || null);
+  return useRun((s) => s.sessions.filter(isLive).length || null);
 }
 
 const CONFIG_FILES =
@@ -276,8 +351,25 @@ function scheduleReload() {
   reloadTimer = setTimeout(() => void loadConfigs(), 300);
 }
 
+const useEditConfigsOpen = () => useRun((s) => s.editorOpen);
+
 export function activate(): () => void {
   const disposers: Array<() => void> = [
+    // The performance harness (`perf/`): a console streaming generated output.
+    import.meta.env.DEV || import.meta.env.MODE === "perf"
+      ? registerActions([
+          {
+            id: "run.sampleOutput",
+            title: "Stream Sample Output",
+            category: "Run",
+            hidden: true,
+            run: async ({ arg }) => {
+              const { lines = 20_000, perFrame = 200 } = (arg ?? {}) as { lines?: number; perFrame?: number };
+              await startSampleOutput(lines, perFrame);
+            },
+          },
+        ])
+      : () => {},
     registerToolWindow({
       id: "run",
       title: "Run",
@@ -292,32 +384,54 @@ export function activate(): () => void {
     registerTitleItem({ id: "run.widget", title: "Run Widget", align: "right", priority: 0, component: RunWidget }),
     registerRunAnythingProvider(runConfigsRunAnything),
     registerBuiltinTypes(),
+    registerRunConfigType(junitType),
     registerGoActions(),
     registerComposerInstall(),
     registerOverlay({ id: "run.chooser", component: ConfigChooserOverlay }),
-    registerOverlay({ id: "run.editConfigs", component: EditConfigsOverlay }),
+    registerOverlay({
+      id: "run.editConfigs",
+      component: lazyWhen(useEditConfigsOpen, () => import("./EditConfigsDialog").then((m) => m.EditConfigsOverlay)),
+    }),
     registerOverlay({ id: "run.dialogs", component: RunDialogsOverlay }),
+    registerOverlay({ id: "run.serviceImport", component: ServiceImportHost }),
+    registerOverlay({ id: "run.serviceImport", component: ServiceImportHost }),
     registerServiceProvider(runServiceProvider),
+    registerRunServiceActions(),
     registerRunningProcessesProvider({
       id: "run",
       running: () =>
         serviceSessions(useRun.getState().sessions, useDebugRunSessions.getState().serviceSessions)
           .filter(liveServiceSession)
           .map((s) => ({ name: s.config.name })),
+      // A closing window asks first, then shows the progress while these shut down; `kill`
+      // is the second Stop that SIGKILLs instead of waiting.
+      stop: (kill) => {
+        // The first call asks to stop; with `kill` the second one reaches the backend while
+        // the session is already stopping, which turns it into SIGKILL.
+        for (const s of useRun.getState().sessions.filter(isLive)) {
+          void stopSession(s.id);
+          if (kill) void stopSession(s.id);
+        }
+        for (const d of useDebugRunSessions.getState().sessions) {
+          d.stop();
+          if (kill) d.stop();
+        }
+      },
     }),
     onWorkflowSettingsChange((w) => w.console, applyConsoleSettings),
     registerExternalTools(),
     activateStackTrace(),
     listenForApplicationDeactivation(),
     trackRecentConfigurations(),
+    trackFailedTestSelection(),
     useDebugRunSessions.subscribe(() => setContext("run.updatableRunning", updatableSessions().length > 0)),
     // A removed workspace member (or a closed project) takes its sessions,
     // temporary configurations and Services groups with it.
     // Only while the same project stays open: closing it tears its runs down separately.
     useProject.subscribe((s, prev) => {
       if (!s.project || s.project.root !== prev.project?.root) return;
-      const before = prev.project.workspace?.projects ?? [];
-      const after = s.project.workspace?.projects ?? [];
+      const before = prev.project.workspace?.projects ?? [prev.project.root];
+      const after = s.project.workspace?.projects ?? [s.project.root];
       for (const root of before) if (!after.includes(root)) void cleanupRemovedProject(root);
     }),
     registerEditorContribution({ id: "run.targets", order: 55, extensions: runGutter }),
@@ -387,6 +501,18 @@ export function activate(): () => void {
         icon: "stop",
         when: "projectOpen",
         run: ({ arg }) => stopAction(arg),
+      },
+      {
+        id: "run.stopProcess",
+        title: "Stop",
+        category: "Run",
+        hidden: true,
+        run: async ({ arg }) => {
+          if (typeof arg !== "number") return;
+          const session = useRun.getState().sessions.find((s) => s.runId === arg);
+          if (session) await stopSession(session.id);
+          else await call(commands.runStop(arg));
+        },
       },
       {
         id: "run.rerun",
@@ -469,7 +595,8 @@ export function activate(): () => void {
         run: async ({ arg }) => {
           await ensureConfigs();
           const config = configFromArg(arg);
-          if (config) await debugConfig(config);
+          const show = arg && typeof arg === "object" && "show" in arg ? (arg as { show?: boolean }).show : undefined;
+          if (config) await debugConfig(config, [], show);
         },
       },
       {
@@ -477,14 +604,14 @@ export function activate(): () => void {
         title: "Rerun Failed Tests",
         category: "Run",
         icon: "rerun",
-        when: "projectOpen",
+        when: "projectOpen && run.canRerunFailed",
         keywords: ["failed tests", "rerun"],
-        run: () => {
+        run: async () => {
           const s = useRun.getState();
           const id =
             (s.activeSession && failedTests(s.activeSession).length ? s.activeSession : null) ??
             [...s.sessions].reverse().find((x) => failedTests(x.id).length > 0)?.id;
-          if (!id || !rerunFailed(id))
+          if (!id || !(await rerunFailed(id)))
             notifications().notify({
               group: "run",
               level: "info",
@@ -505,6 +632,28 @@ export function activate(): () => void {
         },
       },
       {
+        id: "run.pluginStart",
+        title: "Run Plugin Configuration",
+        category: "Run",
+        hidden: true,
+        when: "projectOpen",
+        run: async ({ arg }) => {
+          const a = arg as {
+            config: import("@/bindings").RunConfig;
+            debug: boolean;
+            onExit: (code: number | null, stopped: boolean) => void;
+          };
+          if (a.debug) {
+            if (!getAction("debug.pluginStart")) throw new Error("Debugger unavailable");
+            await executeActionOrThrow("debug.pluginStart", a);
+            return;
+          }
+          const session = await startRun(a.config, undefined, undefined, { onExit: a.onExit });
+          if (!session || session.status === "failed") throw new Error("Run did not start");
+          if (session.runId === null && session.status === "finished") a.onExit(session.exitCode, !!session.stopped);
+        },
+      },
+      {
         id: "run.runConfig",
         title: "Run Configuration",
         category: "Run",
@@ -513,7 +662,16 @@ export function activate(): () => void {
         run: async ({ arg }) => {
           await ensureConfigs();
           const config = configFromArg(arg);
-          if (config) await startRun(config);
+          if (!config) return;
+          // `{ config, onExit }`: told when the process exits, or right away when it didn't start.
+          const onExit = (arg as { onExit?: (code: number | null, stopped: boolean) => void } | null)?.onExit;
+          if (typeof onExit !== "function") {
+            await startRun(config);
+            return;
+          }
+          const session = await startRun(config, undefined, undefined, { onExit });
+          if (!session || session.status === "failed") onExit(null, false);
+          else if (session.runId === null && session.status === "finished") onExit(session.exitCode, !!session.stopped);
         },
       },
       {
@@ -564,9 +722,13 @@ export function activate(): () => void {
       },
     ]),
     onIdeEvent("runExited", (e) => onRunExited(e.run, e.code)),
+    onIdeEvent("projectRootsChanged", scheduleReload),
     // Lets other title items follow the selected configuration (e.g. Build shows only for compiled ones).
     useRun.subscribe((s) => {
-      setContext("run.selectedKind", s.configs.find((c) => c.id === s.selectedId)?.kind ?? "");
+      const selected = s.configs.find((c) => c.id === s.selectedId);
+      setContext("run.selectedKind", selected?.kind ?? "");
+      const cmake = selected ?? s.configs.find((c) => c.kind === "cmake" && c.args[0] === "--build");
+      setContext("run.cmakeBuild", cmakeBuildId(cmake, s.configs));
       setContext("run.updatableRunning", updatableSessions().length > 0);
     }),
     useProject.subscribe((s, prev) => {
@@ -579,15 +741,22 @@ export function activate(): () => void {
 
   setBeforeLaunchRunner(runBeforeLaunch);
   disposers.push(() => setBeforeLaunchRunner(null));
+  provideRunOutput({ subscribe: subscribeOutput });
+  disposers.push(() => provideRunOutput(undefined));
   if (hasProject()) void loadConfigs();
 
   // Reload when run.toml or build files change on disk (cheap; detection is fast).
   disposers.push(
     onIdeEvent("fsChanged", (e) => {
       const paths = [...e.created, ...e.modified, ...e.removed];
+      // A file that moved or was deleted leaves its context configuration behind.
+      dropStaleContextConfigs(e.removed);
       if (paths.some((p) => /(?:^|\/)go\.(?:mod|work)$/.test(p))) invalidateGoModules();
       if (paths.some((p) => p.endsWith("/__init__.py"))) invalidatePythonPackages();
       if (paths.some((p) => CONFIG_FILES.test(p))) scheduleReload();
+    }),
+    useContextKeys.subscribe((s, prev) => {
+      if (prev["build.running"] && !s["build.running"]) scheduleReload();
     }),
     onIdeEvent("runExited", (e) => {
       if (useRun.getState().sessions.some((s) => s.runId === e.run && s.config.kind === "cmake")) scheduleReload();

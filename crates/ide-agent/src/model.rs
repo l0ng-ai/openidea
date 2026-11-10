@@ -34,6 +34,8 @@ pub struct AgentCapabilities {
     pub rollback: bool,
     /// A message can join the running turn instead of waiting for it.
     pub steer: bool,
+    /// It reports its background tasks and stops them one by one.
+    pub background_tasks: bool,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize, Type)]
@@ -89,6 +91,22 @@ pub struct AgentTask {
     /// by its next output or any status change.
     #[serde(default)]
     pub retry: Option<AgentRetry>,
+    /// What the agent runs in the background (shells, subagents, monitors), oldest first.
+    // Boxed so that `AgentEvent::Task` stays within clippy's `large_enum_variant` bound on Windows.
+    #[serde(default)]
+    pub background: Box<Vec<AgentBackgroundTask>>,
+}
+
+/// A task the agent runs in the background while the conversation goes on.
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize, Type)]
+#[serde(rename_all = "camelCase")]
+pub struct AgentBackgroundTask {
+    pub id: String,
+    /// What it is, as the agent names it (`local_bash`, `local_agent`, `monitor`…).
+    pub kind: String,
+    pub description: String,
+    /// When the client first saw it (ms since the epoch).
+    pub started_ms: f64,
 }
 
 /// An API request the agent is about to retry.
@@ -138,6 +156,14 @@ pub struct AgentConfigOption {
     pub via: AgentConfigVia,
 }
 
+#[derive(Clone, Copy, Debug, Default, PartialEq, Serialize, Deserialize, Type)]
+#[serde(rename_all = "camelCase")]
+pub enum AgentCommandSource {
+    #[default]
+    Command,
+    Skill,
+}
+
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize, Type)]
 #[serde(rename_all = "camelCase")]
 pub struct AgentCommand {
@@ -146,6 +172,8 @@ pub struct AgentCommand {
     pub description: String,
     /// What to type after the command, when it takes input.
     pub hint: Option<String>,
+    #[serde(default)]
+    pub source: AgentCommandSource,
 }
 
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize, Type)]
@@ -260,6 +288,31 @@ pub struct AgentPermissionOption {
     pub kind: String,
 }
 
+/// A question the agent asks with `AskUserQuestion`, answered by picking options or typing.
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize, Type)]
+#[serde(rename_all = "camelCase")]
+pub struct AgentQuestion {
+    /// Stable answer identity when the provider supplies question ids.
+    #[serde(default)]
+    pub answer_key: Option<String>,
+    #[serde(default)]
+    pub header: String,
+    pub question: String,
+    #[serde(default)]
+    pub multi_select: bool,
+    pub options: Vec<AgentQuestionOption>,
+}
+
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize, Type)]
+#[serde(rename_all = "camelCase")]
+pub struct AgentQuestionOption {
+    pub label: String,
+    #[serde(default)]
+    pub description: String,
+    #[serde(default)]
+    pub preview: Option<String>,
+}
+
 /// One item of a task's conversation.
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize, Type)]
 #[serde(tag = "type", rename_all = "camelCase", rename_all_fields = "camelCase")]
@@ -332,6 +385,10 @@ pub enum AgentEntry {
         id: u32,
         title: String,
         options: Vec<AgentPermissionOption>,
+        /// Set when the request asks `AskUserQuestion`'s questions; answered with a JSON object
+        /// of question to answer instead of an option.
+        #[serde(default)]
+        questions: Vec<AgentQuestion>,
         /// Name of the chosen option, or `None` while pending. Cancelled requests read "Cancelled".
         chosen: Option<String>,
     },
@@ -362,6 +419,9 @@ pub struct AgentProvider {
     pub env: BTreeMap<String, String>,
     /// Settings (models, modes…) the agent offered last time it ran; empty before its first session.
     pub config: Vec<AgentConfigOption>,
+    /// Thinking-level options by model value; absent models have not reported their levels.
+    #[serde(default)]
+    pub thought_levels: BTreeMap<String, Vec<AgentConfigOption>>,
     /// Slash commands it offered last time.
     pub commands: Vec<AgentCommand>,
     pub source: AgentSource,
@@ -458,6 +518,15 @@ pub enum AgentEvent {
         index: u32,
         entry: AgentEntry,
     },
+    /// Text was appended to entry `index` (an agent message or a thought): it read the first
+    /// `from` UTF-16 units of its text when the previous event for it was sent.
+    Append {
+        task: String,
+        subagent: Option<String>,
+        index: u32,
+        from: u32,
+        text: String,
+    },
     /// An agent reported the usage limits of its account (shared by every task of `provider`).
     Limits {
         provider: String,
@@ -465,4 +534,71 @@ pub enum AgentEvent {
     },
     /// The installed or configured agent providers changed.
     Providers,
+}
+
+pub use ide_core::settings::{AgentMcpServer, McpTransport};
+
+/// Where an MCP server configuration is stored (`settings.toml` vs `.openidea/settings.toml`).
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize, Type)]
+#[serde(rename_all = "camelCase")]
+pub enum McpScope {
+    User,
+    Workspace,
+}
+
+/// A named environment variable or HTTP header for an MCP server.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, Type)]
+#[serde(rename_all = "camelCase")]
+pub struct McpKeyValue {
+    pub name: String,
+    pub value: String,
+}
+
+/// One configured Model Context Protocol (MCP) server.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, Type)]
+#[serde(rename_all = "camelCase")]
+pub struct McpServer {
+    pub id: String,
+    pub name: String,
+    pub scope: McpScope,
+    pub transport: McpTransport,
+    pub enabled: bool,
+    pub command: Option<String>,
+    pub args: Vec<String>,
+    pub env: Vec<McpKeyValue>,
+    pub url: Option<String>,
+    pub headers: Vec<McpKeyValue>,
+    /// Agent provider ids this server is enabled for; empty means enabled for all agents.
+    #[serde(default)]
+    pub agents: Vec<String>,
+}
+
+/// Payload for creating or updating a user or workspace MCP server.
+#[derive(Clone, Debug, Serialize, Deserialize, Type)]
+#[serde(rename_all = "camelCase")]
+pub struct McpServerInput {
+    #[serde(default)]
+    pub id: Option<String>,
+    pub name: String,
+    pub scope: McpScope,
+    pub transport: McpTransport,
+    #[serde(default = "default_true")]
+    pub enabled: bool,
+    #[serde(default)]
+    pub command: Option<String>,
+    #[serde(default)]
+    pub args: Vec<String>,
+    #[serde(default)]
+    pub env: Vec<McpKeyValue>,
+    #[serde(default)]
+    pub url: Option<String>,
+    #[serde(default)]
+    pub headers: Vec<McpKeyValue>,
+    /// Agent provider ids this server is enabled for; empty means enabled for all agents.
+    #[serde(default)]
+    pub agents: Vec<String>,
+}
+
+fn default_true() -> bool {
+    true
 }

@@ -19,12 +19,37 @@ pub fn marked_root(project_root: Option<&Path>, file: &Path, markers: &[String])
     best
 }
 
+/// `dir` contains at least one `.ino` regular file.
+pub fn is_arduino_sketch_dir(dir: &Path) -> bool {
+    std::fs::read_dir(dir).is_ok_and(|entries| {
+        entries.flatten().any(|entry| {
+            entry.path().extension().is_some_and(|ext| ext.eq_ignore_ascii_case("ino"))
+                && entry.file_type().is_ok_and(|kind| kind.is_file())
+        })
+    })
+}
+
+/// Nearest enclosing directory of `path` (including `path` when it is already a
+/// directory) within `project` that contains a `.ino` file.
+pub fn arduino_sketch_root(project: &Path, path: &Path) -> Option<PathBuf> {
+    let start = usize::from(!path.is_dir());
+    path.ancestors()
+        .skip(start)
+        .take_while(|dir| dir.starts_with(project))
+        .find(|dir| is_arduino_sketch_dir(dir))
+        .map(Path::to_path_buf)
+}
+
 /// `dir` contains `marker`: a relative path, a file name pattern with one
-/// `*` (`*.csproj`), or a TOML file name (no pattern) and a dotted table it
-/// must contain (`pyproject.toml#tool.ruff`).
+/// `*` (`*.csproj`), or a TOML or JSON file name (no pattern) and a dotted table
+/// it must contain (`pyproject.toml#tool.ruff`, `package.json#eslintConfig`).
 fn has_marker(dir: &Path, marker: &str) -> bool {
     if let Some((file, table)) = marker.split_once('#') {
-        return has_toml_table(&dir.join(file), table);
+        return if file.ends_with(".json") {
+            has_json_object(&dir.join(file), table)
+        } else {
+            has_toml_table(&dir.join(file), table)
+        };
     }
     let Some((prefix, suffix)) = marker.split_once('*') else {
         return dir.join(marker).exists();
@@ -45,6 +70,13 @@ fn has_toml_table(file: &Path, table: &str) -> bool {
         }
     };
     table.split('.').try_fold(&value, |v, key| v.get(key)).is_some_and(toml::Value::is_table)
+}
+
+/// `file` parses as JSON and has the dotted object `key` (`eslintConfig`).
+fn has_json_object(file: &Path, key: &str) -> bool {
+    let Ok(text) = std::fs::read_to_string(file) else { return false };
+    let Ok(value) = serde_json::from_str::<serde_json::Value>(&text) else { return false };
+    key.split('.').try_fold(&value, |v, key| v.get(key)).is_some_and(serde_json::Value::is_object)
 }
 
 /// `path` is (or, after its creation or removal, was) a root marker of the

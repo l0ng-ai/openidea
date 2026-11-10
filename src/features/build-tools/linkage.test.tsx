@@ -3,6 +3,7 @@ import { act, fireEvent, render, screen } from "@testing-library/react";
 import { executeAction, registerAction, allActions, isActionEnabled } from "@/platform/actions";
 import { setContext } from "@/platform/context";
 import type { BuildModel, GradleModel, ProjectInfo, RunConfig } from "@/platform/ipc";
+import { emitLocalIdeEvent } from "@/platform/ipc";
 import { useProject } from "@/platform/project";
 import { GradleView, MavenView } from "./BuildToolView";
 import { activate } from "./index";
@@ -110,6 +111,22 @@ afterEach(() => {
   dispose();
   useProject.setState({ project: null });
   setContext("projectOpen", false);
+});
+
+it("re-reads the build model when an applied Groovy or Kotlin script changes", async () => {
+  vi.useFakeTimers();
+  try {
+    for (const path of ["/p/gradle/dependencies.gradle", "/p/gradle/dependencies.gradle.kts"]) {
+      const calls = mocks.model.mock.calls.length;
+      await act(async () => {
+        emitLocalIdeEvent({ type: "fsChanged", created: [], modified: [path], removed: [] });
+        await vi.advanceTimersByTimeAsync(300);
+      });
+      expect(mocks.model).toHaveBeenCalledTimes(calls + 1);
+    }
+  } finally {
+    vi.useRealTimers();
+  }
 });
 
 it("offers unlink on a root's context menu and persists a confirmed project setting", async () => {
@@ -341,7 +358,8 @@ it("runs duplicate task paths with the selected build's wrapper, cwd and offline
       command: "/p/second/gradlew",
       cwd: "second",
       args: [":app:test", "--offline"],
-      env: { JAVA_HOME: "/second/jdk" },
+      // The build's `JAVA_HOME` follows Settings at launch instead of being frozen here (#2433).
+      env: {},
     });
 });
 

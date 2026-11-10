@@ -1,3 +1,4 @@
+import { registerNavigationProvider } from "../navigationProviders";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { EditorState } from "@codemirror/state";
 import { EditorView } from "@codemirror/view";
@@ -24,6 +25,7 @@ vi.mock("@tauri-apps/api/core", async (orig) => ({
 
 const { gotoTargets, navigationExtension } = await import("./navigation");
 const { lspDoc } = await import("./lsp");
+const { invalidateConfigurationNavigation } = await import("./configurationNavigation");
 const { provideEditorService } = await import("@/workbench/contributions");
 const openFile = vi.fn(async () => {});
 provideEditorService({ openFile } as never);
@@ -34,6 +36,7 @@ let removeAction: () => void;
 beforeEach(() => {
   usePlatform.setState({ os: "macos" });
   resetNavigationModifier();
+  invalidateConfigurationNavigation();
   vi.clearAllMocks();
   useKeymap.setState({
     preset: "intellij-macos",
@@ -79,6 +82,23 @@ function click(init: MouseEventInit) {
 }
 
 describe("mouse navigation", () => {
+  it("uses plugin navigation for clicks without asking the language server", async () => {
+    const off = registerNavigationProvider(async () => ({
+      from: 0,
+      to: 13,
+      targets: [{ path: "/p/Mapper.xml", range: { start: { line: 2, col: 4 }, end: { line: 2, col: 8 } } }],
+    }));
+    try {
+      click({ metaKey: true });
+      await vi.waitFor(() =>
+        expect(openFile).toHaveBeenCalledWith("/p/Mapper.xml", { selection: { line: 2, col: 4 }, focus: true }),
+      );
+      expect(lspGoto).not.toHaveBeenCalled();
+    } finally {
+      off();
+    }
+  });
+
   it("opens the implementation of the symbol clicked with Option+Command", async () => {
     const event = click({ metaKey: true, altKey: true });
     await vi.waitFor(() =>

@@ -60,8 +60,17 @@
   min-width: 60px;
 }
 .branchTree {
+  --tree-detail-flex-shrink: 0;
   flex: 1;
   min-height: 0;
+}
+.branchDetail {
+  min-width: 0;
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  line-height: 1;
+  vertical-align: middle;
 }
 
 /* filters */
@@ -161,6 +170,8 @@
   min-height: 0;
   overflow: auto;
   outline: none;
+  /* Rows coming and going while scrolling relay out the list alone, not the workbench. */
+  contain: strict;
 }
 .row {
   position: absolute;
@@ -196,13 +207,24 @@
   position: relative;
   padding-inline-end: 6px;
   cursor: grab;
+  touch-action: none;
+}
+.columnHeading.dragSource {
+  cursor: grabbing;
+  opacity: 0.6;
+}
+.columnHeading.dropBefore {
+  box-shadow: inset 2px 0 0 var(--accent);
+}
+.columnHeading.dropAfter {
+  box-shadow: inset -2px 0 0 var(--accent);
 }
 .columnResize {
   position: absolute;
   inset-block: 0;
   inset-inline-end: 0;
   width: 6px;
-  cursor: col-resize;
+  cursor: ew-resize;
   touch-action: none;
 }
 .columnResize:focus-visible {
@@ -216,6 +238,9 @@
 }
 .row:hover {
   background: var(--bg-tree-hover);
+}
+.list[data-hover-paused] .row:not(.columnHeader):hover {
+  background: var(--log-row-bg, transparent);
 }
 .selected,
 .selected:hover {
@@ -285,7 +310,9 @@
   display: inline-flex;
   align-items: center;
   gap: 8px;
-  max-width: 50%;
+  /* May use the whole subject cell when space allows (#2447); shrinks with
+     per-label ellipsis before crowding out the commit message. */
+  max-width: 100%;
   overflow: hidden;
   margin-left: auto;
 }
@@ -303,7 +330,8 @@
   overflow: hidden;
   text-overflow: ellipsis;
   min-width: 0;
-  max-width: 180px;
+  /* Sizes to content (#2447): truncates with ellipsis only when .refs runs
+     out of room; the full name stays available via the title tooltip. */
 }
 /* Outlined tag glyph in the ref's colour. */
 .ref::before {
@@ -599,7 +627,6 @@
 .worktreeList {
   flex: 1;
   min-height: 0;
-  overflow: auto;
 }
 
 .colRepository {

@@ -16,7 +16,7 @@ vi.mock("@/platform/workflowSettings", () => ({
 }));
 vi.mock("../store", async () => {
   const { create } = await import("zustand");
-  return { useVcs: create(() => ({})), refreshNow: mocks.refresh };
+  return { useVcs: create(() => ({})), refreshNow: mocks.refresh, beginGitWork: () => () => {} };
 });
 import { notifyFileOperation } from "@/platform/fileOps";
 import { useProject } from "@/platform/project";

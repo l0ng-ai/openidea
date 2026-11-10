@@ -1,5 +1,6 @@
-import { beforeEach, describe, expect, it, vi } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { decode } from "./persist";
+import { useProject } from "@/platform/project";
 import {
   closeAll,
   getSession,
@@ -15,19 +16,44 @@ import {
 vi.mock("./session", () => ({
   TerminalSession: class {
     key: string;
-    state: { cwd: string };
-    command: { program: string; args: string[]; shell?: boolean } | undefined;
-    constructor(opts: { key: string; cwd: string; command?: { program: string; args: string[]; shell?: boolean } }) {
+    state: { cwd: string; status: string };
+    command:
+      | { program: string; args: string[]; shell?: boolean; onExit?: (code: number | null, closed: boolean) => void }
+      | undefined;
+    fallbackRoot: string | undefined;
+    constructor(opts: {
+      key: string;
+      cwd: string;
+      command?: {
+        program: string;
+        args: string[];
+        shell?: boolean;
+        onExit?: (code: number | null, closed: boolean) => void;
+      };
+      fallbackRoot?: string;
+    }) {
       this.key = opts.key;
-      this.state = { cwd: opts.cwd };
+      this.state = { cwd: opts.cwd, status: "idle" };
       this.command = opts.command;
+      this.fallbackRoot = opts.fallbackRoot;
     }
-    dispose() {}
+    async start() {
+      this.state.status = "running";
+    }
+    dispose() {
+      this.command?.onExit?.(null, true);
+    }
   },
 }));
 
+vi.mock("./runtime", async () => await vi.importActual("./store"));
+
 const state = () => useTerminals.getState();
 const names = () => state().tabs.map((t) => t.customName ?? t.name);
+const sessionOf = (key: string) =>
+  getSession(key) as
+    | { state: { cwd: string }; command?: { program: string; args: string[]; shell?: boolean }; fallbackRoot?: string }
+    | undefined;
 
 beforeEach(() => {
   unbindTerminals();
@@ -35,7 +61,30 @@ beforeEach(() => {
   closeAll();
 });
 
+afterEach(() => useProject.setState({ project: null }));
+
 describe("terminal tab memory", () => {
+  it("keeps a plugin terminal opened before the terminal pane first mounts", async () => {
+    useProject.setState({ project: { root: "/lazy-project" } } as never);
+    const { loadTerminalRuntime } = await import("./loader");
+    const runtime = await loadTerminalRuntime();
+    const onExit = vi.fn();
+    await runtime.pluginSession({
+      kind: "terminal",
+      operation: "first-plugin-terminal",
+      title: "Wrapper",
+      program: "/approved/wrapper",
+      cwd: "/lazy-project",
+      onExit,
+    });
+    const tab = state().tabs[0]!;
+    const session = getSession(tab.session);
+    runtime.syncTerminalProject("/lazy-project");
+    expect(getSession(tab.session)).toBe(session);
+    expect(state().tabs).toContainEqual(tab);
+    expect(onExit).not.toHaveBeenCalled();
+  });
+
   it("rejects a stored value that is not this version", () => {
     expect(decode(null)).toBeNull();
     expect(decode({ v: 2, tabs: [], layout: "g" })).toBeNull();
@@ -98,5 +147,36 @@ describe("terminal tab memory", () => {
     syncTerminalProject("/repo");
     expect(names()).toEqual(["Ship"]);
     expect(getSession(state().tabs[0]!.session)?.state.cwd).toBe("/repo");
+  });
+
+  it("restored tabs fall back to the project root, fresh tabs do not", () => {
+    syncTerminalProject("/repo");
+    newTab("/repo/logs");
+    syncTerminalProject(null);
+    syncTerminalProject("/repo");
+    const restored = state().tabs[0]!;
+    expect(sessionOf(restored.session)?.fallbackRoot).toBe("/repo");
+
+    const fresh = newTab("/repo/app");
+    expect(sessionOf(fresh.session)?.fallbackRoot).toBeUndefined();
+
+    const side = splitTab(restored.id, "horizontal")!;
+    const sideTab = state().tabs.find((t) => t.id === side)!;
+    expect(sessionOf(sideTab.session)?.fallbackRoot).toBe("/repo");
+  });
+
+  it("restores a tab whose saved directory is gone with the project root as its fallback", () => {
+    syncTerminalProject("/repo");
+    const tab = newTab("/repo");
+    getSession(tab.session)!.state.cwd = "/repo/gone";
+    useTerminals.setState((s) => ({
+      sessions: { ...s.sessions, [tab.session]: { ...s.sessions[tab.session]!, cwd: "/repo/gone" } },
+    }));
+
+    syncTerminalProject(null);
+    syncTerminalProject("/repo");
+    const restored = sessionOf(state().tabs[0]!.session)!;
+    expect(restored.state.cwd).toBe("/repo/gone");
+    expect(restored.fallbackRoot).toBe("/repo");
   });
 });

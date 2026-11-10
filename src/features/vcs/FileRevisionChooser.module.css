@@ -1,0 +1,46 @@
+.search {
+  padding: 8px 10px;
+  border-bottom: 1px solid var(--border-popup);
+}
+.body {
+  height: 280px;
+  display: flex;
+  flex-direction: column;
+  padding: 4px 0;
+}
+.list {
+  flex: 1;
+  min-height: 0;
+}
+.error {
+  padding: 8px 10px;
+  color: var(--danger);
+}
+.row {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  min-width: 0;
+  width: 100%;
+}
+.hash {
+  font-family: var(--font-mono);
+  color: var(--accent);
+}
+.date {
+  color: var(--fg-subtle);
+  flex-shrink: 0;
+}
+.author {
+  flex: 0 0 110px;
+  color: var(--fg-secondary);
+}
+.author,
+.subject {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.subject {
+  flex: 1;
+}

@@ -12,6 +12,8 @@
   margin-bottom: 6px;
 }
 .presetLabel {
+  flex: none;
+  white-space: nowrap;
   color: var(--fg);
 }
 .presetSelect {

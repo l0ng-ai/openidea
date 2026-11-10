@@ -131,9 +131,25 @@ fn cargo_workspace() {
         ("cli/src/main.rs", ""),
     ]);
     let c = detect(dir.path());
-    assert_eq!(ids(&c), ["cargo:run:openidea-cli", "cargo:test", "cargo:build"]);
+    assert_eq!(
+        ids(&c),
+        [
+            "cargo:run:openidea-cli",
+            "cargo:test:core",
+            "cargo:test:openidea-cli",
+            "cargo:test",
+            "cargo:build",
+            "cargo:run:skip:crates/skip",
+            "cargo:test:crates/skip",
+            "cargo:build:crates/skip"
+        ]
+    );
     assert_eq!(cmdline(&c[0]), "cargo run -p openidea-cli --bin openidea-cli");
     assert_eq!(cmdline(find(&c, "cargo:test")), "cargo test --workspace");
+    let test = find(&c, "cargo:test:core");
+    assert_eq!(test.extras.module.as_deref(), Some("crates/core"));
+    assert_eq!(cmdline(test), "cargo test -p core");
+    assert_eq!(find(&c, "cargo:run:skip:crates/skip").cwd.as_deref(), Some(Path::new("crates/skip")));
 }
 
 #[test]
@@ -264,6 +280,32 @@ fn spring_boot_application_of_a_repository_nested_one_or_two_levels_down() {
 }
 
 #[test]
+fn a_large_common_module_does_not_starve_later_app_modules() {
+    // More source files than one scan budget in `a-common` (no app class): the app in `b-app` must still be found.
+    let mut files: Vec<(String, String)> = vec![
+        ("pom.xml".into(), "<project><modules><module>a-common</module><module>b-app</module></modules></project>".into()),
+        ("a-common/pom.xml".into(), BOOT_POM.into()),
+        ("b-app/pom.xml".into(), BOOT_POM.into()),
+        (
+            "b-app/src/main/java/demo/App.java".into(),
+            "package demo;\n@SpringBootApplication\npublic class App {\n  public static void main(String[] args) {}\n}\n".into(),
+        ),
+    ];
+    for i in 0..401 {
+        files.push((format!("a-common/src/main/java/demo/C{i}.java"), format!("package demo;\nclass C{i} {{}}\n")));
+    }
+    let dir = tempfile::tempdir().unwrap();
+    for (path, content) in &files {
+        let p = dir.path().join(path);
+        fs::create_dir_all(p.parent().unwrap()).unwrap();
+        fs::write(p, content).unwrap();
+    }
+    let configs = detect(dir.path());
+    let app = find(&configs, "application:b-app:demo.App");
+    assert_eq!(app.kind, "spring-boot");
+}
+
+#[test]
 fn nested_builds_of_every_kind_and_depth() {
     let dir = project(&[
         ("services/api/settings.gradle.kts", "include(\"app\")"),
@@ -300,7 +342,22 @@ fn nested_builds_of_every_kind_and_depth() {
     assert_eq!((billing.cwd.as_deref(), billing.extras.module.as_deref()), (None, Some("billing")));
     let builds: Vec<&str> =
         ids(&c).into_iter().filter(|id| id.starts_with("maven:package") || id.starts_with("gradle:build")).collect();
-    assert_eq!(builds, ["gradle:build:services/api", "maven:package:billing"]);
+    assert_eq!(builds, ["gradle:build:services/api", "maven:package:billing", "maven:package:tool/src"]);
+    let model = ide_build::load(dir.path(), &dir.path().join("cache"), None);
+    for config in c.iter().filter(|c| c.kind == "gradle") {
+        let cwd = config.cwd.as_deref().unwrap();
+        assert!(model.gradle.iter().any(|g| Path::new(&g.dir) == cwd), "{} has no build model", config.id);
+    }
+    let plan = ide_build::compile::plan(
+        dir.path(),
+        &model,
+        ide_build::compile::BuildKind::Build,
+        Some(&dir.path().join("services/api/app/src/main/kotlin/com/acme/Api.kt")),
+        None,
+    )
+    .unwrap();
+    assert_eq!(plan.steps[0].cwd, dir.path().join("services/api"));
+    assert_eq!(plan.steps[0].args, ["--console=plain", ":app:classes", ":app:testClasses"]);
 }
 
 #[test]
@@ -360,6 +417,49 @@ fn go_projects() {
 
     let dir = project(&[("go.mod", "module x\n"), ("lib.go", "package x\n")]);
     assert_eq!(ids(&detect(dir.path())), ["go:test"]);
+}
+
+#[test]
+fn nested_go_modules_keep_their_working_directories() {
+    let dir = project(&[
+        ("Cargo.toml", "[package]\nname = 'workspace'\n"),
+        ("fixtures/go-app/go.mod", "module example.com/openidea/notes\n"),
+        ("fixtures/go-app/cmd/server/main.go", "package main\nfunc main() {}\n"),
+        ("services/backend/api/go.mod", "module example.com/api\n"),
+        ("services/backend/api/main.go", "package main\nfunc main() {}\n"),
+        ("fixtures/go-app/nested/go.mod", "module ignored\n"),
+        ("vendor/ignored/go.mod", "module ignored\n"),
+        ("node_modules/ignored/go.mod", "module ignored\n"),
+        ("target/ignored/go.mod", "module ignored\n"),
+        ("build/ignored/go.mod", "module ignored\n"),
+        ("dist/ignored/go.mod", "module ignored\n"),
+        (".hidden/ignored/go.mod", "module ignored\n"),
+    ]);
+    let configs = detect(dir.path());
+    let go: Vec<_> = configs.iter().filter(|c| c.kind == "go").map(|c| c.id.as_str()).collect();
+    assert_eq!(
+        go,
+        [
+            "go:run:server:fixtures/go-app",
+            "go:test:fixtures/go-app",
+            "go:test:fixtures/go-app/nested",
+            "go:run:services/backend/api",
+            "go:test:services/backend/api",
+        ]
+    );
+    let run = find(&configs, "go:run:server:fixtures/go-app");
+    assert_eq!(cmdline(run), "go run ./cmd/server");
+    assert_eq!(run.cwd.as_deref(), Some(Path::new("fixtures/go-app")));
+    let test = find(&configs, "go:test:services/backend/api");
+    assert_eq!(test.cwd.as_deref(), Some(Path::new("services/backend/api")));
+}
+
+#[cfg(unix)]
+#[test]
+fn nested_go_discovery_does_not_follow_symlinks() {
+    let dir = project(&[("real/go.mod", "module real\n")]);
+    std::os::unix::fs::symlink(dir.path().join("real"), dir.path().join("alias")).unwrap();
+    assert_eq!(ids(&detect(dir.path())), ["go:test:real"]);
 }
 
 #[test]
@@ -545,7 +645,7 @@ fn nested_packages_in_polyglot_repo() {
 }
 
 #[test]
-fn root_package_disables_nested_scan() {
+fn independent_packages_remain_visible_under_a_root_package() {
     let dir = project(&[
         ("package.json", r#"{"scripts":{"build":"tsc"}}"#),
         ("tools/package.json", r#"{"scripts":{"gen":"x"}}"#),
@@ -553,9 +653,9 @@ fn root_package_disables_nested_scan() {
         ("svc/go.mod", "module y\n"),
     ]);
     let c = detect(dir.path());
-    assert!(!ids(&c).contains(&"npm:tools:gen"));
+    assert!(ids(&c).contains(&"npm:tools:gen"));
     assert!(ids(&c).contains(&"go:test"));
-    assert!(!ids(&c).contains(&"go:test:svc"));
+    assert!(ids(&c).contains(&"go:test:svc"));
 }
 
 #[test]
@@ -576,6 +676,130 @@ fn cmake_detection_is_read_only_and_preserves_existing_build_directories() {
     assert_eq!(test.extras.before_launch[0].target, build.id);
 }
 
+fn cmake_reply(root: &Path, dir: &str, configurations: &[(&str, &[&str])]) {
+    let reply = root.join(dir).join(".cmake/api/v1/reply");
+    fs::create_dir_all(&reply).unwrap();
+    fs::write(root.join(dir).join("CMakeCache.txt"), "").unwrap();
+    let write = |name: &str, value: serde_json::Value| fs::write(reply.join(name), value.to_string()).unwrap();
+    write(
+        "index-1.json",
+        serde_json::json!({
+            "objects": [{"kind": "codemodel", "version": {"major": 2}, "jsonFile": "model.json"}]
+        }),
+    );
+    let configurations: Vec<_> = configurations
+        .iter()
+        .map(|(configuration, targets)| {
+            let targets: Vec<_> = targets
+                .iter()
+                .map(|target| {
+                    let file = format!("{configuration}-{target}.json");
+                    write(
+                        &file,
+                        serde_json::json!({
+                            "name": target, "type": "EXECUTABLE", "artifacts": [{"path": target}]
+                        }),
+                    );
+                    serde_json::json!({"jsonFile": file})
+                })
+                .collect();
+            serde_json::json!({"name": configuration, "targets": targets})
+        })
+        .collect();
+    write("model.json", serde_json::json!({"paths": {"source": root}, "configurations": configurations}));
+}
+
+#[test]
+fn cmake_names_only_include_context_that_distinguishes_duplicates() {
+    for configuration in ["", "Debug"] {
+        let root = project(&[("CMakeLists.txt", "project(demo)")]);
+        cmake_reply(root.path(), "build", &[(configuration, &["hello", "other"])]);
+        let single = detect(root.path());
+        let expected = ["CMake Configure", "CMake Build", "CTest", "Build hello", "hello", "Build other", "other"];
+        assert_eq!(single.iter().map(|c| c.name.as_str()).collect::<Vec<_>>(), expected);
+        assert_eq!(find(&single, &format!("cmake:build:{configuration}:hello")).name, "hello");
+
+        cmake_reply(root.path(), "build-debug", &[(configuration, &["hello", "unique"])]);
+        let multiple = detect(root.path());
+        let context = if configuration.is_empty() { "build/" } else { "Debug · build/" };
+        assert_eq!(find(&multiple, &format!("cmake:build:{configuration}:hello")).name, format!("hello [{context}]"));
+        assert_eq!(
+            find(&multiple, &format!("cmake:build:{configuration}:hello:build")).name,
+            format!("Build hello [{context}]")
+        );
+        let context = if configuration.is_empty() { "build-debug/" } else { "Debug · build-debug/" };
+        assert_eq!(
+            find(&multiple, &format!("cmake:build-debug:{configuration}:hello")).name,
+            format!("hello [{context}]")
+        );
+        for (id, name) in [("configure", "CMake Configure"), ("build", "CMake Build"), ("test", "CTest")] {
+            for dir in ["build", "build-debug"] {
+                assert_eq!(find(&multiple, &format!("cmake:{dir}:{id}")).name, format!("{name} [{dir}/]"));
+            }
+        }
+        assert_eq!(find(&multiple, &format!("cmake:build:{configuration}:other")).name, "other");
+        assert_eq!(find(&multiple, &format!("cmake:build-debug:{configuration}:unique")).name, "unique");
+        for mut config in single {
+            let renamed = find(&multiple, &config.id);
+            config.name = renamed.name.clone();
+            assert_eq!(&config, renamed, "only names may change when another directory appears");
+        }
+    }
+}
+
+#[test]
+fn cmake_multiconfig_names_use_configuration_without_redundant_directory() {
+    let root = project(&[("CMakeLists.txt", "project(demo)")]);
+    cmake_reply(root.path(), "build", &[("Debug", &["hello"]), ("Release", &["hello"])]);
+    let configs = detect(root.path());
+    for configuration in ["Debug", "Release"] {
+        assert_eq!(
+            find(&configs, &format!("cmake:build:{configuration}:hello")).name,
+            format!("hello [{configuration}]")
+        );
+        assert_eq!(
+            find(&configs, &format!("cmake:build:{configuration}:hello:build")).name,
+            format!("Build hello [{configuration}]")
+        );
+    }
+    assert_eq!(find(&configs, "cmake:build:build").name, "CMake Build");
+}
+
+#[test]
+fn cmake_profile_names_disambiguate_before_adding_directory_locations() {
+    use ide_core::settings::CMakeProfile;
+    let root = project(&[("CMakeLists.txt", "project(demo)")]);
+    cmake_reply(root.path(), "out/debug", &[("Debug", &["hello"])]);
+    cmake_reply(root.path(), "out/release", &[("Release", &["hello"])]);
+    for same_name in [false, true] {
+        let profiles = [
+            CMakeProfile { name: "Development".into(), build_dir: "out/debug".into(), ..Default::default() },
+            CMakeProfile {
+                name: if same_name { "Development" } else { "Production" }.into(),
+                build_type: "Release".into(),
+                build_dir: "out/release".into(),
+                ..Default::default()
+            },
+        ];
+        let configs = ide_run::detect_with_profiles(root.path(), &[], Some(&profiles));
+        for (index, profile) in profiles.iter().enumerate() {
+            let context =
+                if same_name { format!("{} · {}/", profile.name, profile.build_dir) } else { profile.name.clone() };
+            for (id, name) in [("configure", "CMake Configure"), ("build", "CMake Build"), ("test", "CTest")] {
+                assert_eq!(find(&configs, &format!("cmake:profile:{index}:{id}")).name, format!("{name} [{context}]"));
+            }
+            assert_eq!(
+                find(&configs, &format!("cmake:profile:{index}:{}:hello", profile.build_type)).name,
+                format!("hello [{context}]")
+            );
+            assert_eq!(
+                find(&configs, &format!("cmake:profile:{index}:{}:hello:build", profile.build_type)).name,
+                format!("Build hello [{context}]")
+            );
+        }
+    }
+}
+
 #[test]
 fn cmake_configures_before_the_first_build() {
     let dir = project(&[("CMakeLists.txt", "project(demo)")]);
@@ -593,7 +817,7 @@ fn cmake_ignores_malformed_file_api_replies() {
     ]);
     let configs = detect(dir.path());
     assert_eq!(configs.iter().filter(|c| c.kind == "cmake").count(), 3);
-    assert!(!configs.iter().any(|c| c.kind == "native"));
+    assert!(!configs.iter().any(|c| c.kind == "cmake-application"));
 }
 
 #[test]
@@ -689,7 +913,7 @@ fn cmake_profiles_control_commands_names_and_environment() {
             "",
         ]);
         assert_eq!(configure.args, expected);
-        assert_eq!(configure.name, "CMake Configure (output dir)");
+        assert_eq!(configure.name, "CMake Configure");
         let build = find(&configs, "cmake:profile:0:build");
         assert_eq!(build.args, ["--build", "output dir", "--config", "Release", "-j", "8", "--", "VERBOSE=1"]);
         assert_eq!(build.extras.before_launch[0].target, configure.id);
@@ -751,6 +975,27 @@ fn php_phpunit_project() {
     assert_eq!(phpunit.debug_adapter.as_deref(), Some("php-debug"));
     assert!(find(&c, "composer:test").is_test);
     assert!(!find(&c, "composer:lint").is_test);
+}
+
+#[test]
+fn php_pest_project() {
+    let dir = project(&[
+        ("composer.json", r#"{"require-dev":{"pestphp/pest":"^3"}}"#),
+        ("phpunit.xml", "<phpunit/>"),
+        ("vendor/bin/phpunit", ""),
+        ("vendor/bin/phpunit.bat", ""),
+        ("vendor/bin/pest", ""),
+        ("vendor/bin/pest.bat", ""),
+    ]);
+    let c = detect(dir.path());
+    let pest = find(&c, "phpunit");
+    assert_eq!(pest.name, "Pest");
+    assert_eq!(cmdline(pest), if cfg!(windows) { "vendor/bin/pest.bat" } else { "vendor/bin/pest" });
+    assert_eq!(pest.kind, "phpunit");
+    assert!(pest.is_test);
+    assert_eq!(pest.debug_adapter.as_deref(), Some("php-debug"));
+    let dir = project(&[("composer.json", r#"{"require-dev":{"pestphp/pest":"^3"}}"#)]);
+    assert_eq!(find(&detect(dir.path()), "phpunit").name, "PHPUnit");
 }
 
 #[test]
@@ -818,6 +1063,7 @@ task default: :build
     assert_eq!(cmdline(find(&c, "rspec")), "bundle exec rspec");
     assert!(find(&c, "rspec").is_test);
     assert_eq!(find(&c, "rake:build").extras.folder.as_deref(), Some("Rake"));
+    assert!(c.iter().all(|c| c.debug_adapter.as_deref() == Some("rdbg")));
 }
 
 #[test]
@@ -832,6 +1078,7 @@ fn ruby_minitest_projects_get_a_test_runner() {
         ("bundle", &["exec", "ruby", "-Ilib", "-Itest"].map(String::from)[..])
     );
     assert_eq!(m.args.last().map(String::as_str), Some("test"));
+    assert_eq!(m.debug_adapter.as_deref(), Some("rdbg"));
     // A `test` Rake task or RSpec already runs the tests.
     let dir = project(&[("Rakefile", "task :test\n"), ("test/a_test.rb", "")]);
     assert!(!ids(&detect(dir.path())).contains(&"minitest"));
@@ -846,4 +1093,83 @@ fn ruby_without_bundler_runs_bare_tools() {
     assert_eq!(ids(&c), ["rake:test"]);
     assert_eq!(cmdline(&c[0]), "rake test");
     assert!(detect(project(&[("a.rb", "puts 1\n")]).path()).is_empty());
+}
+
+#[test]
+fn all_builtin_families_find_independent_nested_projects_and_keep_owners() {
+    let cases = [
+        ("package.json", r#"{"scripts":{"test":"vitest"}}"#, "npm"),
+        ("deno.json", r#"{"tasks":{"test":"deno test"}}"#, "deno"),
+        ("Cargo.toml", "[package]\nname='demo'\nversion='0.1.0'\n[workspace]", "cargo"),
+        ("go.mod", "module demo", "go"),
+        ("pom.xml", "<project/>", "maven"),
+        ("build.gradle.kts", "plugins { application }", "gradle"),
+        ("pyproject.toml", "[tool.pytest.ini_options]", "pytest"),
+        ("phpunit.xml", "<phpunit/>", "phpunit"),
+        ("Rakefile.rb", "task :test do\nend", "rake"),
+        ("CMakeLists.txt", "project(demo)", "cmake"),
+        ("Makefile", "test:\n\techo ok", "make"),
+        ("justfile", "test:\n    echo ok", "just"),
+        ("project.godot", "[application]\nrun/main_scene=\"res://main.tscn\"", "godot"),
+    ];
+    for (marker, text, kind) in cases {
+        let dir = project(&[
+            ("package.json", r#"{"scripts":{"build":"echo root"}}"#),
+            (&format!("packages/apps/demo/{marker}"), text),
+        ]);
+        let configs = detect(dir.path());
+        let found: Vec<_> = configs
+            .iter()
+            .filter(|c| c.kind == kind && c.cwd.as_deref() == Some(Path::new("packages/apps/demo")))
+            .collect();
+        assert!(!found.is_empty(), "{kind}: {configs:?}");
+        for c in found {
+            // JVM and Go configs already identify ownership through cwd / their typed model.
+            if !matches!(kind, "gradle" | "maven" | "go" | "godot") {
+                assert_eq!(c.extras.module.as_deref(), Some("packages/apps/demo"));
+            }
+        }
+    }
+}
+
+#[test]
+fn cmake_subdirectories_are_not_independent_builds() {
+    let dir = project(&[
+        ("CMakeLists.txt", "project(demo)\nadd_subdirectory(lib)"),
+        ("lib/CMakeLists.txt", "add_library(lib lib.cpp)"),
+    ]);
+    assert!(detect(dir.path()).iter().filter(|c| c.kind == "cmake").all(|c| c.cwd.is_none()));
+}
+
+#[cfg(unix)]
+#[test]
+fn a_django_project_in_src_uses_the_environment_next_to_it() {
+    let dir = project(&[("pyproject.toml", ""), (".venv/bin/python", ""), ("src/manage.py", "")]);
+    let c = detect(dir.path());
+    let python = dir.path().join(".venv/bin/python").to_string_lossy().into_owned();
+    let server = find(&c, "django:runserver:src");
+    assert_eq!(cmdline(server), format!("{python} manage.py runserver"));
+    assert_eq!(server.cwd.as_ref().map(|p| p.to_string_lossy().into_owned()).as_deref(), Some("src"));
+    assert_eq!(cmdline(find(&c, "django:test:src")), format!("{python} manage.py test"));
+
+    let dir = project(&[("pyproject.toml", ""), ("uv.lock", ""), ("src/manage.py", "")]);
+    assert_eq!(cmdline(find(&detect(dir.path()), "django:runserver:src")), "uv run python manage.py runserver");
+
+    // Its own environment wins, and nothing above the opened project is used.
+    let dir = project(&[(".venv/bin/python", ""), ("app/manage.py", ""), ("app/poetry.lock", "")]);
+    assert_eq!(cmdline(find(&detect(dir.path()), "django:runserver:app")), "poetry run python manage.py runserver");
+    let dir = project(&[(".venv/bin/python", ""), ("app/manage.py", "")]);
+    let c = detect(&dir.path().join("app"));
+    assert_eq!(cmdline(find(&c, "django:runserver")), "python3 manage.py runserver");
+
+    // A folder borrowing the root's environment isn't a pytest project because pytest is installed there.
+    let dir = project(&[
+        ("pyproject.toml", ""),
+        (".venv/bin/python", ""),
+        (".venv/bin/pytest", ""),
+        ("docs/requirements.txt", ""),
+    ]);
+    let c = detect(dir.path());
+    assert!(c.iter().any(|c| c.id == "pytest"));
+    assert!(!c.iter().any(|c| c.id.starts_with("pytest:")), "{:?}", c.iter().map(|c| &c.id).collect::<Vec<_>>());
 }

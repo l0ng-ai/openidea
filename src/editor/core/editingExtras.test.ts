@@ -5,13 +5,17 @@ import { cyclicExpandWord, expandCandidates, prefixStart } from "./wordCompletio
 import type { OutlineItem } from "@/platform/ipc";
 import {
   copyReferenceToClipboard,
+  declaredName,
   pythonModulePath,
   qualifiedReference,
   referenceOffset,
   rustImplType,
   rustModulePath,
 } from "./copyReference";
+import { writeClipboardText } from "@/platform/clipboard";
 import { declarationChain } from "./view/outline";
+
+vi.mock("@/platform/clipboard", () => ({ writeClipboardText: vi.fn(async () => {}) }));
 
 describe("cyclic expand word", () => {
   const text = "alphaOne x alphaTwo y al| alphaThree alphaOne";
@@ -59,37 +63,23 @@ describe("cyclic expand word", () => {
 describe("copy reference", () => {
   const base = { root: "/p", line: 4 };
 
-  it("starts the clipboard write before asynchronous symbol resolution completes", async () => {
+  it("writes the resolved reference through the shared clipboard helper", async () => {
+    vi.mocked(writeClipboardText).mockClear();
     let finish!: (value: string) => void;
     const reference = new Promise<string>((resolve) => {
       finish = resolve;
     });
-    let content: Promise<Blob> | undefined;
-    class Item {
-      constructor(data: Record<string, Promise<Blob>>) {
-        content = data["text/plain"];
-      }
-    }
-    let writes = 0;
-    const write = () => {
-      writes++;
-      return Promise.resolve();
-    };
-    const result = copyReferenceToClipboard(
-      reference,
-      { write } as unknown as Clipboard,
-      Item as unknown as typeof ClipboardItem,
-    );
-    expect(writes).toBe(1);
+    const result = copyReferenceToClipboard(reference);
+    expect(writeClipboardText).not.toHaveBeenCalled();
     finish("coordination_layer.db.key_scope.load_scoped");
-    expect(await (await content!).text()).toBe("coordination_layer.db.key_scope.load_scoped");
     await result;
+    expect(writeClipboardText).toHaveBeenCalledExactlyOnceWith("coordination_layer.db.key_scope.load_scoped");
   });
 
-  it("writes the resolved text where ClipboardItem is unavailable", async () => {
-    const writeText = vi.fn(() => Promise.resolve());
-    await copyReferenceToClipboard(Promise.resolve("pkg.mod.f"), { writeText } as unknown as Clipboard, null);
-    expect(writeText).toHaveBeenCalledExactlyOnceWith("pkg.mod.f");
+  it("does not overwrite the clipboard when reference resolution fails", async () => {
+    vi.mocked(writeClipboardText).mockClear();
+    await expect(copyReferenceToClipboard(Promise.reject(new Error("no symbol")))).rejects.toThrow("no symbol");
+    expect(writeClipboardText).not.toHaveBeenCalled();
   });
 
   it("qualifies Java members with the package", () => {
@@ -103,6 +93,25 @@ describe("copy reference", () => {
     expect(
       qualifiedReference({ ...base, language: "java", path: "/p/src/A.java", text: "", chain: ["A", "B", "m"] }),
     ).toBe("A.B#m");
+  });
+
+  it("qualifies Kotlin and Scala members like IDEA", () => {
+    const text = "package com.acme.util";
+    expect(
+      qualifiedReference({ ...base, language: "kotlin", path: "/p/src/Svc.kt", text, chain: ["Svc", "get"] }),
+    ).toBe("com.acme.util.Svc#get");
+    expect(
+      qualifiedReference({ ...base, language: "scala", path: "/p/src/Svc.scala", text, chain: ["Svc", "get"] }),
+    ).toBe("com.acme.util.Svc#get");
+  });
+
+  it("strips a language server's signature from a callable's name", () => {
+    expect(declaredName({ name: "getUserById(int)", kind: "method" })).toBe("getUserById");
+    expect(declaredName({ name: "UserService(int)", kind: "constructor" })).toBe("UserService");
+    expect(declaredName({ name: "run()", kind: "function" })).toBe("run");
+    // No signature, or a non-callable kind: the name is kept as is.
+    expect(declaredName({ name: "trim", kind: "method" })).toBe("trim");
+    expect(declaredName({ name: "Strings", kind: "class" })).toBe("Strings");
   });
 
   it("builds Rust paths from the module tree", () => {

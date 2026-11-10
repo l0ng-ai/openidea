@@ -103,7 +103,7 @@ async fn clickhouse_cloud_manager_catalogs_and_session_table() -> IdeResult<()> 
                 "completion columns differ from catalog",
             )?;
         }
-        let plan = db.explain("clickhouse", &format!("SELECT id FROM {table}"), &cancel).await?;
+        let plan = db.explain("clickhouse", &format!("SELECT id FROM {table}"), &cancel, None).await?;
         check(!plan.is_empty(), "query plan missing")?;
         let value = r"path\O'Brien";
         let result = db

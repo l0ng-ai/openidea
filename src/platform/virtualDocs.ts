@@ -69,6 +69,10 @@ export function virtualContainer(uri: string): string {
 
 const cache = new Map<string, Promise<VirtualDocument>>();
 
+export function invalidateVirtualDocument(uri: string): void {
+  cache.delete(uri);
+}
+
 /** Contents of a virtual document (cached; failures are retried on the next call). */
 export function virtualDocument(uri: string): Promise<VirtualDocument> {
   let p = cache.get(uri);
@@ -78,4 +82,71 @@ export function virtualDocument(uri: string): Promise<VirtualDocument> {
     cache.set(uri, p);
   }
   return p;
+}
+
+const decode = (s: string) => {
+  try {
+    return decodeURIComponent(s);
+  } catch {
+    return s;
+  }
+};
+
+/** `/C:/x` (a drive path inside a URI) → `C:/x`. */
+const uriFsPath = (p: string) => (/^\/[A-Za-z]:\//.test(p) ? p.slice(1) : p);
+
+const parentDir = (p: string, levels = 1) => p.split("/").slice(0, -levels).join("/");
+
+/** `(jar, entry without extension)` → the class in its jar (the binary jar for a `-sources.jar`). */
+const jarCandidates = (jar: string, stem: string, archives: readonly string[]) => {
+  const binary = jar.replace(/-sources\.jar$/, ".jar");
+  const candidates = [`${binary}!/${stem}.class`];
+  // Gradle caches binary and sources jars in separate hash directories of one version.
+  const gradle = /^(.*\/files-2\.1\/[^/]+\/[^/]+\/[^/]+)\/[^/]+\/[^/]+$/.exec(jar);
+  if (jar !== binary && gradle && !archives.includes(`${binary}!`)) {
+    const name = binary.slice(binary.lastIndexOf("/") + 1);
+    for (const root of archives)
+      if (root.endsWith(`/${name}!`) && parentDir(root, 2) === gradle[1]) candidates.push(`${root}/${stem}.class`);
+  }
+  // JDK 8: `<home>/jre/lib/rt.jar` with its sources in `<home>/src.zip`.
+  if (jar.endsWith("/rt.jar")) candidates.push(`${parentDir(jar, 3)}/src.zip!/${stem}.java`);
+  return candidates;
+};
+
+/**
+ * Where a library document URI lies in the Project view's External Libraries,
+ * as `<archive>!/<entry>` paths, most specific first: jdtls' `jdt://contents/…`
+ * classes (dependency jars, the JDK's modules in `lib/src.zip`), `jar:` entries
+ * (classes and sources jars) and decompiled `file:` classes. Empty for anything
+ * else; a missing entry still leads to its package folder.
+ */
+export function libraryEntryPaths(uri: string, archives: readonly string[] = []): string[] {
+  const base = uri.split(/[?#]/)[0]!;
+  const scheme = base.slice(0, Math.max(base.indexOf(":"), 0)).toLowerCase();
+  if (scheme === "file") return isClassFile(base) ? [uriFsPath(decode(base.replace(/^file:(\/\/)?/, "")))] : [];
+  if (scheme === "jar") {
+    const m = /^jar:(?:file:)?(?:\/\/)?(.*?)!\/(.*)$/.exec(base);
+    if (!m) return [];
+    const jar = uriFsPath(decode(m[1]!));
+    const entry = decode(m[2]!);
+    const exact = `${jar}!/${entry}`;
+    const stem = entry.replace(/\.[^./]*$/, "");
+    return [exact, ...jarCandidates(jar, stem, archives).filter((p) => p !== exact)];
+  }
+  if (scheme !== "jdt") return [];
+  // jdt://contents/<jar or module>/<package>/<Class.class>?=<project>/<escaped jar path><package(Class.class
+  const segs = base
+    .replace(/^jdt:\/\/contents\//, "")
+    .split("/")
+    .map(decode);
+  if (segs.length !== 3) return [];
+  const [module, pkg, file] = segs as [string, string, string];
+  const stem = [...(pkg ? pkg.split(".") : []), file.replace(/\.(class|java)$/, "")].join("/");
+  const query = decode(uri.split("?")[1] ?? "");
+  const rest = query.slice(query.indexOf("/") + 1);
+  const jar = query.includes("/") ? uriFsPath(rest.replace(/\\/g, "").split(/[<(`=]/)[0]!) : "";
+  if (!jar) return [];
+  // JDK 9+: `<home>/lib/jrt-fs.jar`, sources per module in `<home>/lib/src.zip`.
+  if (jar.endsWith("/jrt-fs.jar")) return [`${parentDir(jar)}/src.zip!/${module}/${stem}.java`];
+  return jarCandidates(jar, stem, archives);
 }

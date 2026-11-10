@@ -130,6 +130,38 @@ pub async fn format(
     let snap = project.documents.snapshot(doc)?;
     let settings = project.settings.effective();
     let language = project.languages.get(&snap.language);
+    if options.tool.is_none()
+        && let Some(id) = settings.languages.plugin_formatters.get(snap.language.as_str()).filter(|s| !s.is_empty())
+    {
+        if options.on_save && !settings.editor.format_on_save {
+            return Ok(Vec::new());
+        }
+        if snap.read_only {
+            return Err(IdeError::invalid("The file is read-only"));
+        }
+        let plugins = crate::plugins::editor_plugin_host()
+            .ok_or_else(|| IdeError::not_found("The selected plugin formatter is unavailable"))?;
+        let d = ide_plugin::ProviderDocument {
+            path: snap.path.0,
+            language: snap.language.0,
+            version: u64::from(snap.version),
+            text: snap.text,
+        };
+        let id = id.clone();
+        return tokio::task::spawn_blocking(move || {
+            plugins.language_format(
+                &id,
+                &d,
+                range,
+                ide_plugin::language_features::FormatOptions {
+                    tab_size: options.tab_size,
+                    insert_spaces: options.insert_spaces,
+                },
+            )
+        })
+        .await
+        .map_err(|e| IdeError::internal(e.to_string()))?;
+    }
     // A committed PHP-CS-Fixer configuration takes over Reformat Code for `.php` files.
     if options.tool.is_none()
         && snap.path.extension().is_some_and(|e| e == "php")

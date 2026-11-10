@@ -9,14 +9,23 @@ use std::time::Duration;
 pub fn configs(host: &Host, window: &str) -> IdeResult<Vec<RunConfig>> {
     host.require_trust(window)?;
     let project = host.project(window)?;
-    let root = project.root.clone();
-    let user = ide_run::load_user_configs(&root)?;
-    let root_suppressed = ide_run::load_suppressed_config_ids(&root)?;
-    let settings = project.settings.effective();
-    let mut all = detected_and_saved(&root, &settings, &user, &root_suppressed);
-    if let Some(workspace) = ide_workspace::workspace::Workspace::load(&root)? {
-        for member in workspace.projects.into_iter().filter(|p| p.is_dir()) {
-            let settings = ide_workspace::SettingsStore::load(&host.config_dir, Some(&member)).effective();
+    if let Some(plugins) = host.plugin_host() {
+        plugins.refresh_run_configurations(&project.root);
+    }
+    project_configs(&project.root, &project.settings.effective(), &host.config_dir)
+}
+
+pub(super) fn project_configs(
+    root: &std::path::Path,
+    settings: &ide_core::settings::Settings,
+    config_dir: &std::path::Path,
+) -> IdeResult<Vec<RunConfig>> {
+    let user = ide_run::load_user_configs(root)?;
+    let root_suppressed = ide_run::load_suppressed_config_ids(root)?;
+    let mut all = detected_and_saved(root, settings, &user, &root_suppressed);
+    if let Some(workspace) = ide_workspace::workspace::Workspace::load(root)? {
+        for member in workspace.projects.into_iter().filter(|p| p != root && p.is_dir()) {
+            let settings = ide_workspace::SettingsStore::load(config_dir, Some(&member)).effective();
             let saved = ide_run::load_user_configs(&member)?;
             let suppressed = ide_run::load_suppressed_config_ids(&member)?;
             let configs = detected_and_saved(&member, &settings, &saved, &suppressed);
@@ -24,13 +33,16 @@ pub fn configs(host: &Host, window: &str) -> IdeResult<Vec<RunConfig>> {
             let name = member.file_name().unwrap_or_default().to_string_lossy();
             for mut config in configs {
                 for task in &mut config.extras.before_launch {
-                    if task.kind == "run" {
+                    if matches!(task.kind.as_str(), "run" | "build") && !task.target.is_empty() {
                         task.target = format!("workspace:{}:{}", key, task.target);
                     }
                 }
+                for id in &mut config.extras.compound {
+                    *id = format!("workspace:{key}:{id}");
+                }
                 config.id = format!("workspace:{}:{}", key, config.id);
                 config.name = format!("{name} / {}", config.name);
-                config.cwd = Some(config.cwd.map(|p| member.join(&*p)).unwrap_or_else(|| member.clone()).into());
+                ide_run::scope::rebase(&mut config, &member, None);
                 config.detected = true;
                 if !user.iter().any(|u| u.id == config.id) && !root_suppressed.contains(&config.id) {
                     all.push(config);
@@ -51,16 +63,59 @@ fn detected_and_saved(
     suppressed: &[String],
 ) -> Vec<RunConfig> {
     let excluded_poms = crate::project::unlinked_maven_poms(root, settings);
+    let gradle = settings
+        .languages
+        .java
+        .gradle
+        .linked_projects
+        .as_ref()
+        .map(|_| ide_build::gradle::load_linked(root, &settings.languages.java.gradle));
     let mut all: Vec<RunConfig> =
         ide_run::detect_with_profiles(root, &excluded_poms, settings.cmake.profiles.as_deref())
             .into_iter()
             .filter(|d| !suppressed.contains(&d.id) && !saved.iter().any(|u| u.id == d.id))
+            .filter(|d| linked_config(root, gradle.as_deref(), &excluded_poms, d))
             .collect();
     all.extend(saved.iter().cloned());
     for config in all.iter_mut().filter(|c| !matches!(c.kind.as_str(), "gradle" | "maven")) {
         ide_sdk::apply::apply_to_run_configs(std::slice::from_mut(config), root, settings);
     }
     all
+}
+
+fn linked_config(
+    root: &std::path::Path,
+    gradle: Option<&[ide_build::GradleModel]>,
+    excluded_poms: &[std::path::PathBuf],
+    config: &RunConfig,
+) -> bool {
+    let module = config
+        .extras
+        .module
+        .as_deref()
+        .map(std::path::Path::new)
+        .or(config.cwd.as_deref())
+        .unwrap_or(std::path::Path::new(""));
+    let owner = ide_core::project_roots::resolve(root, module);
+    if matches!(config.kind.as_str(), "maven" | "application" | "spring-boot")
+        && excluded_poms.iter().any(|pom| ide_core::project_roots::resolve(root, pom).parent() == Some(owner.as_path()))
+    {
+        return false;
+    }
+    if gradle.is_some()
+        && (config.kind == "gradle"
+            || (matches!(config.kind.as_str(), "application" | "spring-boot")
+                && ["build.gradle", "build.gradle.kts"].iter().any(|name| owner.join(name).is_file())))
+    {
+        return gradle.unwrap_or_default().iter().any(|build| {
+            if config.kind == "gradle" {
+                root.join(&build.dir) == owner
+            } else {
+                build.projects.iter().any(|p| root.join(&p.dir) == owner)
+            }
+        });
+    }
+    true
 }
 
 /// Saves the user configurations. They come from [`configs`], toolchains applied, so what
@@ -87,12 +142,24 @@ pub fn save_configs(
 fn settings_for(
     host: &Host,
     project: &crate::project::Project,
-    config: &RunConfig,
+    config: &mut RunConfig,
 ) -> IdeResult<(std::path::PathBuf, ide_core::settings::Settings)> {
-    let member = ide_workspace::workspace::Workspace::load(&project.root)?.and_then(|workspace| {
-        let cwd = config.cwd.as_deref()?;
-        workspace.projects.into_iter().filter(|root| cwd.starts_with(root)).max_by_key(|root| root.components().count())
+    let workspace = ide_workspace::workspace::Workspace::load(&project.root)?;
+    let owner = ide_run::scope::owner(&project.root, config);
+    let member = workspace.as_ref().and_then(|workspace| {
+        workspace
+            .projects
+            .iter()
+            .filter(|root| **root != project.root && owner.starts_with(root))
+            .max_by_key(|root| root.components().count())
+            .cloned()
     });
+    if workspace.as_ref().is_some_and(|w| w.is_container(&project.root)) || member.is_some() {
+        if config.extras.module.is_none() && !matches!(config.kind.as_str(), "application" | "spring-boot") {
+            config.extras.module = config.cwd.as_deref().map(ide_core::ipc_path::to_ipc);
+        }
+        ide_run::scope::rebase(config, &project.root, None);
+    }
     Ok(match member {
         Some(root) => {
             let settings = ide_workspace::SettingsStore::load(&host.config_dir, Some(&root)).effective();
@@ -109,11 +176,11 @@ pub fn without_derived(host: &Host, window: &str, configs: Vec<RunConfig>) -> Id
     let project = host.project(window)?;
     configs
         .into_iter()
-        .map(|c| {
+        .map(|mut c| {
             if c.kind == "gradle" {
                 return Ok(c);
             }
-            let (root, settings) = settings_for(host, &project, &c)?;
+            let (root, settings) = settings_for(host, &project, &mut c)?;
             Ok(ide_sdk::apply::without_derived(&c, &root, &settings))
         })
         .collect()
@@ -127,7 +194,7 @@ pub fn apply_settings(host: &Host, window: &str, configs: Vec<RunConfig>) -> Ide
         .into_iter()
         .map(|mut c| {
             if c.kind != "gradle" {
-                let (root, settings) = settings_for(host, &project, &c)?;
+                let (root, settings) = settings_for(host, &project, &mut c)?;
                 ide_sdk::apply::apply_to_run_configs(std::slice::from_mut(&mut c), &root, &settings);
             }
             Ok(c)
@@ -136,8 +203,66 @@ pub fn apply_settings(host: &Host, window: &str, configs: Vec<RunConfig>) -> Ide
 }
 
 pub async fn start(host: &Host, window: &str, config: RunConfig, on_output: Emit<OutputChunk>) -> IdeResult<RunInfo> {
+    start_request(host, window, config, on_output, None).await
+}
+
+pub async fn start_request(
+    host: &Host,
+    window: &str,
+    config: RunConfig,
+    on_output: Emit<OutputChunk>,
+    request: Option<ide_core::RequestId>,
+) -> IdeResult<RunInfo> {
+    let cancel = request.map(|id| host.begin_request(id)).unwrap_or_default();
+    let operation = config.extras.params.get("plugin.operation").cloned();
+    let result = start_inner(host, window, config, on_output, &cancel).await;
+    if let Some(id) = request {
+        host.end_request(id);
+    }
+    if let (Ok(info), Some(operation), Some(plugins)) = (&result, operation, host.plugin_host()) {
+        plugins.run_operation_started(window, &operation, info.id);
+    }
+    result
+}
+
+async fn start_inner(
+    host: &Host,
+    window: &str,
+    mut config: RunConfig,
+    on_output: Emit<OutputChunk>,
+    cancel: &ide_core::CancellationToken,
+) -> IdeResult<RunInfo> {
+    if cancel.is_cancelled() {
+        return Err(IdeError::cancelled());
+    }
     host.require_trust(window)?;
     let project = host.project(window)?;
+    if config.extras.target.is_none() {
+        config.extras.target = ide_sdk::apply::run_target(&config, &project.settings.effective()).map(str::to_owned);
+    }
+    if config.detected
+        && config.id.starts_with(ide_run::EXTERNAL_PREFIX)
+        && let Some(plugins) = host.plugin_host()
+    {
+        let provider = plugins.run_detection();
+        let binary =
+            provider.launch(&config).map_err(|e| IdeError::new(ide_core::error::ErrorKind::PermissionDenied, e))?;
+        config.command = if config.extras.target.as_ref().is_some_and(|t| !t.is_empty()) {
+            provider
+                .detect(&project.root)
+                .into_iter()
+                .find(|c| c.id == config.id)
+                .ok_or_else(|| IdeError::not_found("plugin configuration no longer available"))?
+                .command
+        } else {
+            binary.to_string_lossy().into_owned()
+        };
+        config.detected = false;
+    }
+    let mut sink = project.sink.clone();
+    if let Some(plugins) = host.plugin_host() {
+        sink = plugins.run_operation_sink(window, &mut config, sink)?;
+    }
     if config.command.is_empty() {
         return Err(IdeError::invalid("run configuration has no command"));
     }
@@ -147,6 +272,38 @@ pub async fn start(host: &Host, window: &str, config: RunConfig, on_output: Emit
     }
     if let Some(id) = config.extras.target.as_deref().filter(|t| !t.is_empty()) {
         let settings = project.settings.effective();
+        if id.starts_with("plugin-target:") {
+            let plugins =
+                host.plugin_host().ok_or_else(|| IdeError::not_found("plugin run target is no longer available"))?;
+            let root = project.root.clone();
+            let id = id.to_owned();
+            let token = cancel.clone();
+            let config = host
+                .blocking(move || {
+                    let operation = if config.is_test {
+                        ide_plugin::RunTargetOperation::Test
+                    } else {
+                        ide_plugin::RunTargetOperation::Run
+                    };
+                    plugins.prepare_run_target_launch(&root, &id, &config, operation, &token)
+                })
+                .await?;
+            if cancel.is_cancelled() {
+                return Err(IdeError::cancelled());
+            }
+            project.require_trust()?;
+            return host.processes.start(
+                &project.root,
+                &config,
+                &StartOptions {
+                    encoding: Some(settings.console.encoding).filter(|e| !e.trim().is_empty()),
+                    python_paths: Vec::new(),
+                    ruby_reporter: None,
+                },
+                sink,
+                Box::new(move |c| on_output(c)),
+            );
+        }
         let target = ide_remote::service::run_target(&settings, id)?;
         if target.kind != RunTargetKind::Ssh {
             // A local run of the docker CLI: the command is resolved in the container, and
@@ -164,23 +321,20 @@ pub async fn start(host: &Host, window: &str, config: RunConfig, on_output: Emit
                 &project.root,
                 &config,
                 &options,
-                project.sink.clone(),
+                sink.clone(),
                 Box::new(move |c| on_output(c)),
             );
         }
         let out = on_output.clone();
-        return host
-            .remote
-            .run(&settings, &project.root, &config, project.sink.clone(), Box::new(move |c| out(c)))
-            .await;
+        return host.remote.run(&settings, &project.root, &config, sink.clone(), Box::new(move |c| out(c))).await;
     }
-    let (root, settings) = settings_for(host, &project, &config)?;
+    let mut config = config;
+    let (root, settings) = settings_for(host, &project, &mut config)?;
     let root = &root;
     // Configurations made in the UI name bare tools (`godot`) that may live outside PATH.
     // Maven re-applies too: a config listed before a settings change (daemon toggle,
     // Maven home) keeps the launcher that was current then; re-resolving at launch is
     // what makes the setting take effect without reopening the project.
-    let mut config = config;
     if config.kind == "maven" {
         ide_sdk::apply::prepare_maven_run(&mut config, root, &settings);
     } else if matches!(config.kind.as_str(), "gradle" | "tomcat") {
@@ -223,7 +377,6 @@ pub async fn start(host: &Host, window: &str, config: RunConfig, on_output: Emit
         ruby_reporter: ruby_reporter_dir(host, &config),
     };
     project.require_trust()?;
-    let mut sink = project.sink.clone();
     if config.kind == "go" && matches!(config.args.first().map(String::as_str), Some("mod" | "work")) {
         let previous = sink;
         let root = project.root.clone();
@@ -254,6 +407,9 @@ fn ruby_reporter_dir(host: &Host, config: &RunConfig) -> Option<std::path::PathB
 
 /// Stops a run (interrupt, then kill after Settings › Run's termination timeout).
 pub fn stop(host: &Host, window: &str, id: RunId) -> IdeResult<()> {
+    if let Some(plugins) = host.plugin_host() {
+        plugins.run_operation_stopped(id);
+    }
     let settings = match host.project(window) {
         Ok(p) => p.settings.effective(),
         Err(_) => host.global_settings.effective(),
@@ -295,3 +451,31 @@ pub fn list(host: &Host) -> Vec<RunInfo> {
 mod commands;
 mod container;
 pub use commands::*;
+
+#[cfg(test)]
+mod ownership_tests {
+    use super::*;
+    #[test]
+    fn unlinked_builds_do_not_reappear_as_detected_application_configs() {
+        let temp = tempfile::tempdir().unwrap();
+        let root = temp.path();
+        for name in ["maven", "gradle"] {
+            let dir = root.join(name);
+            std::fs::create_dir_all(dir.join("src/main/java")).unwrap();
+            std::fs::write(
+                dir.join("src/main/java/App.java"),
+                "@SpringBootApplication class App { public static void main(String[] a) {} }",
+            )
+            .unwrap();
+        }
+        std::fs::write(root.join("maven/pom.xml"), "<project><build><plugins><plugin><artifactId>spring-boot-maven-plugin</artifactId></plugin></plugins></build></project>").unwrap();
+        std::fs::write(root.join("gradle/build.gradle.kts"), "plugins { id(\"org.springframework.boot\") }").unwrap();
+        let defaults = detected_and_saved(root, &Default::default(), &[], &[]);
+        assert!(defaults.iter().any(|c| c.kind == "spring-boot"));
+        let mut settings = ide_core::settings::Settings::default();
+        settings.languages.java.maven.unlinked_projects = vec!["maven/pom.xml".into()];
+        settings.languages.java.gradle.linked_projects = Some(vec![]);
+        let configs = detected_and_saved(root, &settings, &[], &[]);
+        assert!(configs.is_empty(), "{configs:?}");
+    }
+}

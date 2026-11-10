@@ -52,6 +52,8 @@ fn search_dirs(file: Option<&Path>, root: Option<&Path>) -> Vec<PathBuf> {
 }
 
 fn parse_env(text: &str) -> IdeResult<EnvMap> {
+    // Editors on Windows (Notepad) save UTF-8 with a byte order mark, which serde_json rejects.
+    let text = text.strip_prefix('\u{feff}').unwrap_or(text);
     let value: serde_json::Value =
         serde_json::from_str(text).map_err(|e| IdeError::invalid(format!("invalid environment file: {e}")))?;
     let mut out = EnvMap::new();
@@ -82,6 +84,20 @@ fn read_first(dirs: &[PathBuf], name: &str) -> IdeResult<EnvMap> {
         }
     }
     Ok(EnvMap::new())
+}
+
+/// The public (or private) environment file that applies to `file`: the nearest existing one,
+/// else a new one next to `file` holding a sample environment to fill in.
+pub fn environment_file(file: &Path, root: Option<&Path>, private: bool) -> IdeResult<PathBuf> {
+    let name = if private { PRIVATE_FILE } else { PUBLIC_FILE };
+    if let Some(found) = search_dirs(Some(file), root).into_iter().map(|d| d.join(name)).find(|p| p.is_file()) {
+        return Ok(found);
+    }
+    let dir = file.parent().ok_or_else(|| IdeError::invalid("the request file has no folder"))?;
+    let path = dir.join(name);
+    std::fs::write(&path, "{\n  \"dev\": {\n    \"name\": \"value\"\n  }\n}\n")
+        .map_err(|e| IdeError::internal(format!("cannot create {}: {e}", path.display())))?;
+    Ok(path)
 }
 
 impl Environments {
@@ -261,5 +277,27 @@ mod tests {
         let other = tempfile::tempdir().unwrap();
         let envs = Environments::load(Some(&other.path().join("s.http")), Some(root)).unwrap();
         assert_eq!(envs.names(), vec!["dev"]);
+    }
+
+    #[test]
+    fn reads_env_files_saved_with_a_byte_order_mark() {
+        let tmp = tempfile::tempdir().unwrap();
+        std::fs::write(tmp.path().join(PUBLIC_FILE), "\u{feff}{\"dev\":{\"host\":\"h\"}}").unwrap();
+        let envs = Environments::load(Some(&tmp.path().join("a.http")), Some(tmp.path())).unwrap();
+        assert_eq!(envs.names(), vec!["dev"]);
+    }
+
+    #[test]
+    fn an_environment_file_is_found_up_the_tree_or_created_next_to_the_request() {
+        let tmp = tempfile::tempdir().unwrap();
+        let api = tmp.path().join("api");
+        std::fs::create_dir_all(&api).unwrap();
+        let request = api.join("a.http");
+        std::fs::write(tmp.path().join(PUBLIC_FILE), "{}").unwrap();
+        assert_eq!(environment_file(&request, Some(tmp.path()), false).unwrap(), tmp.path().join(PUBLIC_FILE));
+        let private = environment_file(&request, Some(tmp.path()), true).unwrap();
+        assert_eq!(private, api.join(PRIVATE_FILE));
+        let envs = Environments::load(Some(&request), Some(tmp.path())).unwrap();
+        assert_eq!(envs.names(), vec!["dev"], "the new file is a valid environment file");
     }
 }

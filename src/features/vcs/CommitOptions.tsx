@@ -7,7 +7,8 @@ import type { ReactNode, RefObject } from "react";
 import { executeAction } from "@/platform/actions";
 import { call, commands, isTauri } from "@/platform/ipc";
 import { loadSettings } from "@/platform/project";
-import { useWorkflowSettings } from "@/platform/workflowSettings";
+import { useWorkflowSettings, workflowSettings } from "@/platform/workflowSettings";
+import { useCommitCheckProviders } from "@/workbench/contributions";
 import { Checkbox, Input, Popup, T } from "@/ui";
 import { useCommit } from "./commitStore";
 import styles from "./CommitView.module.css";
@@ -18,6 +19,19 @@ async function setCheck(key: CommitCheck, value: boolean) {
   if (!isTauri()) return;
   try {
     await call(commands.settingsSet("global", `vcs.commit.${key}`, JSON.stringify(value)));
+    await loadSettings();
+  } catch {
+    // keep the previous value
+  }
+}
+
+async function setContributedCheck(key: string, on: boolean) {
+  if (!isTauri()) return;
+  const off = new Set(workflowSettings().vcs.commit.disabledPluginChecks);
+  if (on) off.delete(key);
+  else off.add(key);
+  try {
+    await call(commands.settingsSet("global", "vcs.commit.disabledPluginChecks", JSON.stringify([...off].sort())));
     await loadSettings();
   } catch {
     // keep the previous value
@@ -49,6 +63,7 @@ export function CommitOptionsBody() {
   const signOff = useCommit((s) => s.signOff);
   const runHooks = useCommit((s) => s.runHooks);
   const c = useWorkflowSettings((s) => s.vcs.commit);
+  const contributed = useCommitCheckProviders((s) => s.providers).flatMap((p) => p.checks());
   const check = (key: CommitCheck, label: string, extra?: ReactNode) => (
     <div className={styles.optRow}>
       <Checkbox checked={c[key]} onChange={(v) => void setCheck(key, v)} label={label} />
@@ -80,6 +95,15 @@ export function CommitOptionsBody() {
       <Section title="Advanced Commit Checks">
         {check("analyzeCode", "Analyze code")}
         {check("checkTodo", "Check TODO", <Configure />)}
+        {contributed.map((k) => (
+          <div key={k.key} className={styles.optRow}>
+            <Checkbox
+              checked={!c.disabledPluginChecks.includes(k.key)}
+              onChange={(v) => void setContributedCheck(k.key, v)}
+              label={k.title}
+            />
+          </div>
+        ))}
       </Section>
     </>
   );

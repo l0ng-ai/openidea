@@ -10,6 +10,7 @@ import { formatArgs, parseArgs, uid, uniqueName } from "./configs";
 import { commandName } from "./commandName";
 import {
   applicationType,
+  jarApplicationType,
   gradleForkedJvm,
   isWindows,
   mavenForkedJvm,
@@ -447,6 +448,7 @@ export const BUILTIN_TYPES: readonly RunConfigTypeContribution[] = [
   goBuildType,
   goTestType,
   applicationType,
+  jarApplicationType,
   springBootType,
   tomcatType,
   compound,
@@ -500,6 +502,7 @@ export function withParams(config: RunConfig, params: Record<string, string>, ty
     ...(config.kind === "dotnet-test" ||
     config.kind === "django-test" ||
     config.kind === "phpunit" ||
+    config.kind === "junit" ||
     config.kind === "rspec"
       ? { isTest: true }
       : {}),

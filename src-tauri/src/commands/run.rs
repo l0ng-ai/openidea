@@ -99,11 +99,12 @@ pub async fn run_start(
     state: State<'_, AppState>,
     config: RunConfig,
     on_output: Channel<OutputChunk>,
+    request: Option<ide_core::RequestId>,
 ) -> IdeResult<RunInfo> {
     let emit = std::sync::Arc::new(move |chunk| {
         let _ = on_output.send(chunk);
     });
-    ide_host::ops::run::start(&state.host, window.label(), config, emit).await
+    ide_host::ops::run::start_request(&state.host, window.label(), config, emit, request).await
 }
 
 #[tauri::command]
@@ -222,6 +223,14 @@ pub async fn run_tomcat_home(
     home: String,
 ) -> IdeResult<ide_run::tomcat::TomcatHome> {
     ide_host::ops::run::run_tomcat_home(&state.host, window.label(), home).await
+}
+#[tauri::command]
+#[specta::specta]
+pub async fn run_tomcat_installations(
+    window: Window,
+    state: State<'_, AppState>,
+) -> IdeResult<Vec<ide_run::tomcat::TomcatInstallation>> {
+    ide_host::ops::run::run_tomcat_installations(&state.host, window.label()).await
 }
 #[tauri::command]
 #[specta::specta]
