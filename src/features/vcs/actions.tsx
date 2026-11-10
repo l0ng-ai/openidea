@@ -61,6 +61,8 @@ import { refreshNow, repoName, useVcs } from "./store";
 import { tx } from "@/platform/i18n";
 
 import { addToIgnore } from "./ignore";
+import { hasFileHistory, showCurrentRevision, trackFileHistory } from "./fileRevisions";
+import { compareWithFileRevision } from "./FileRevisionChooser";
 
 const VCS = "vcsAvailable";
 const IN_COMMIT_WINDOW = "vcsAvailable && activeToolWindow == commit";
@@ -421,12 +423,13 @@ export function registerVcsActions(): () => void {
       when: VCS,
       keyWhen: "!editorTextFocus",
       run: ({ arg }) => {
-        const paths = selectedPaths(arg);
-        if (!paths.length) {
+        const requested = arg && typeof arg === "object" && "left" in arg && "right" in arg ? (arg as DiffData) : null;
+        const path = selectedPaths(arg)[0];
+        const data = requested ?? focusedDiffNavigator()?.viewer?.()?.data ?? (path ? workingDiffData(path) : null);
+        if (!data) {
           notifications().notify({ group: "vcs", level: "info", title: "Select a changed file to show its diff" });
           return;
         }
-        const data = workingDiffData(paths[0]!);
         showDiffWindow(data, () => void openDiff(data, { preview: true }));
       },
     },
@@ -444,6 +447,15 @@ export function registerVcsActions(): () => void {
         }
         await comparePathsWithRevision(paths);
       },
+    },
+    {
+      id: "vcs.compareWithRevision",
+      title: "Compare with Revision…",
+      category: "Git",
+      icon: "diff",
+      when: VCS,
+      enabled: ({ arg }) => hasFileHistory(argPath(arg) ?? maybeEditorService()?.activePath()),
+      run: ({ arg }) => compareWithFileRevision(argPath(arg) ?? maybeEditorService()?.activePath()),
     },
     {
       id: "vcs.nextChange",
@@ -556,6 +568,15 @@ export function registerVcsActions(): () => void {
       },
     },
     {
+      id: "vcs.showCurrentRevision",
+      title: "Show Current Revision",
+      category: "Git",
+      icon: "commit",
+      when: VCS,
+      enabled: ({ arg }) => hasFileHistory(argPath(arg) ?? maybeEditorService()?.activePath()),
+      run: ({ arg }) => showCurrentRevision(argPath(arg) ?? maybeEditorService()?.activePath()),
+    },
+    {
       id: "vcs.showHistoryForSelection",
       title: "Show History for Selection",
       category: "Git",
@@ -656,5 +677,10 @@ export function registerVcsActions(): () => void {
       run: () => void gotoConflict(-1),
     },
   ];
-  return registerActions(actions);
+  const stopTracking = trackFileHistory();
+  const unregister = registerActions(actions);
+  return () => {
+    unregister();
+    stopTracking();
+  };
 }

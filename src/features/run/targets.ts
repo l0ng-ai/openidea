@@ -7,6 +7,7 @@
  * one target derived from the project's detected test configurations.
  */
 import { goTargets } from "./goTargets";
+import { csharpTargets } from "./csharpTargets";
 import { formatArgs } from "./configs";
 import type { RunConfig } from "@/platform/ipc";
 import { applicationConfig, jvmTestConfig } from "./application";
@@ -43,9 +44,10 @@ export interface RunTarget {
 /** Above this size we skip detection (generated / minified files). */
 export const MAX_SCAN = 400_000;
 
-type Lang = "rust" | "js" | "python" | "php" | "go" | "jvm" | "ruby" | null;
+type Lang = "rust" | "js" | "python" | "php" | "go" | "jvm" | "ruby" | "csharp" | null;
 
 export function targetLanguage(relPath: string): Lang {
+  if (/\.cs$/i.test(relPath)) return "csharp";
   if (/\.rs$/.test(relPath)) return "rust";
   if (/\.[cm]?[jt]sx?$/.test(relPath)) return "js";
   if (/\.py$/.test(relPath)) return "python";
@@ -355,6 +357,8 @@ export function detectRunTargets(text: string, relPath: string, django = false):
   if (text.length > MAX_SCAN) return [];
   const lines = text.split("\n");
   switch (targetLanguage(relPath)) {
+    case "csharp":
+      return csharpTargets(text);
     case "rust":
       return rustTargets(lines, relPath);
     case "js":
@@ -409,7 +413,7 @@ export function targetConfig(
       return applicationConfig({ className: target.className, spring: target.spring }, relPath, configs);
     return contextConfig(relPath, configs, content);
   }
-  const file = testConfigFor(relPath, configs, base);
+  const file = testConfigFor(relPath, configs, base, content);
   if (!file) return null;
   if (target.className && (file.kind === "maven" || file.kind === "gradle"))
     return jvmTestConfig(
@@ -427,6 +431,15 @@ export function targetConfig(
     detected: true,
   });
   switch (file.kind) {
+    case "dotnet-test": {
+      const methods =
+        target.kind === "suite" && content
+          ? csharpTargets(content)
+              .filter((t) => t.kind === "test" && t.path[0] === target.path[0])
+              .map((t) => t.path.join("."))
+          : [target.path.join(".")];
+      return { ...named(file.args), params: { ...file.params, testMethods: JSON.stringify(methods) } };
+    }
     case "npm":
     case "bun":
     case "deno":

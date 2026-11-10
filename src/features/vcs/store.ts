@@ -301,7 +301,7 @@ export function installVcsStore(): () => void {
   // on those alone rewrites `.git/index` and re-triggers this handler.
   const offFs = onIdeEvent("fsChanged", (e) => {
     const worktree = [...e.created, ...e.modified, ...e.removed].some((p) => !/(^|[/\\])\.git([/\\]|$)/.test(p));
-    if (worktree) scheduleRefresh(250);
+    if (worktree || e.ignoreRules?.length) scheduleRefresh(250);
   });
   const offSettings = onWorkflowSettingsChange(
     (s) => s.vcs.showDirtyDirectories,

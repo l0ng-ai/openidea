@@ -31,6 +31,7 @@ mod state;
 mod theme_frame;
 #[cfg(target_os = "macos")]
 mod titlebar;
+mod updates;
 mod window_groups;
 #[cfg(any(windows, test))]
 mod window_work_area;
@@ -88,11 +89,15 @@ pub fn run() {
     linux_webkit::configure();
 
     let refresh_shell_path = ide_host::shell_env::inherit_login_shell_path(&context.config().identifier);
+    let local_data_dir = ide_host::data_dirs::local_data_dir(&context.config().identifier);
     // Managed LSP/DAP installs; must run before other threads start and before PATH is cached.
-    if let Some(data) = dirs::data_local_dir() {
-        ide_tools::extend_process_path(&data.join(&context.config().identifier));
-        ide_dap::adapter::set_tools_root(ide_tools::tools_dir(&data.join(&context.config().identifier)));
-        ide_sdk::java::add_jdk_root(&ide_tools::jdk::jdks_dir(&data.join(&context.config().identifier)));
+    match &local_data_dir {
+        Ok(data) => {
+            ide_tools::extend_process_path(data);
+            ide_dap::adapter::set_tools_root(ide_tools::tools_dir(data));
+            ide_sdk::java::add_jdk_root(&ide_tools::jdk::jdks_dir(data));
+        }
+        Err(error) => tracing::error!("{error}"),
     }
     if let Some(refresh) = refresh_shell_path {
         refresh();
@@ -102,7 +107,7 @@ pub fn run() {
     #[cfg(debug_assertions)]
     export_bindings(&builder);
 
-    let app = tauri::Builder::default();
+    let app = tauri::Builder::default().manage(WindowsState::default());
     // Single instance first: a second launch focuses this one and opens its path argument.
     // Debug builds have a separate identifier per worktree.
     let app = app.plugin(tauri_plugin_single_instance::init(windows::on_second_instance));
@@ -175,27 +180,36 @@ pub fn run() {
     })
     .setup(move |app| {
         builder.mount_events(app);
-        let state = AppState::new(app.handle().clone())?;
-        let windows = WindowsState::default();
+        let local_data_dir = match local_data_dir {
+            Ok(dir) => dir,
+            Err(error) => {
+                use tauri_plugin_dialog::DialogExt;
+                let handle = app.handle().clone();
+                app.dialog()
+                    .message(error)
+                    .title("OpenIDEA")
+                    .kind(tauri_plugin_dialog::MessageDialogKind::Error)
+                    .show(move |_| handle.exit(1));
+                return Ok(());
+            }
+        };
+        let state = AppState::new(app.handle().clone(), local_data_dir)?;
+        let windows = app.state::<WindowsState>();
         if let Ok(cwd) = std::env::current_dir() {
-            let args = std::env::args().collect::<Vec<_>>();
-            match windows::cli_launch(&args, &cwd) {
-                Some(windows::CliLaunch::Path(path)) => {
-                    windows::remember_cli_position(&windows, &args, &path);
-                    windows.set_launch("main", windows::path_launch(path));
-                }
-                // `openidea diff a.txt b.txt`: the main window opens the pair in the diff viewer.
-                Some(windows::CliLaunch::Diff(diff)) => {
-                    windows.set_launch("main", windows::Launch { diff: Some(Box::new(diff)), ..Default::default() });
-                }
-                None => {}
+            match windows::cli_launch(&std::env::args().collect::<Vec<_>>(), &cwd) {
+                Ok(Some(launch)) => windows.set_launch("main", launch),
+                Ok(None) => {}
+                Err(error) => windows::report_cli_error(app.handle(), error),
             }
         }
         let menu_state = menu::MenuState::default();
         menu::install(app.handle(), &menu_state, &state.recent.list());
         app.manage(state);
         commands::mcp::apply(&app.state::<AppState>());
-        app.manage(windows);
+        #[cfg(windows)]
+        if let Err(error) = windows::allow_external_launches(app.handle()) {
+            windows::report_cli_error(app.handle(), error);
+        }
         app.manage(application_focus::ApplicationFocus::default());
         #[cfg(target_os = "macos")]
         macos::intercept_system_quit(app.handle());
@@ -212,6 +226,7 @@ pub fn run() {
         }
         app.on_menu_event(on_menu_event);
         windows::create_main_window(app.handle())?;
+        windows::ready_for_cli(app.handle());
         jump_list::refresh(app.handle(), app.state::<AppState>().recent.list());
         Ok(())
     })
@@ -243,6 +258,12 @@ pub fn run() {
                 window_groups::destroyed(window.app_handle(), window.label());
                 windows::close_auxiliary_windows(window.app_handle(), window.label());
                 if let Some(state) = window.try_state::<AppState>() {
+                    #[cfg(target_os = "macos")]
+                    if let Some(w) = window.try_state::<WindowsState>() {
+                        let settings = ide_host::ops::project::settings(&state.host, window.label());
+                        w.keep_alive.store(settings.general.close_without_welcome, std::sync::atomic::Ordering::SeqCst);
+                    }
+                    state.updates.forget_window(window.label());
                     state.close_project(window.label());
                     state.plugins.forget_client(window.label());
                 }
@@ -260,9 +281,24 @@ pub fn run() {
     .expect("error while running OpenIDEA")
     .run(move |app, event| {
         #[cfg(target_os = "macos")]
+        match &event {
+            tauri::RunEvent::ExitRequested { code: None, api, .. }
+                if app.state::<WindowsState>().keep_alive.load(std::sync::atomic::Ordering::SeqCst)
+                    && !app.state::<WindowsState>().quitting() =>
+            {
+                api.prevent_exit();
+            }
+            tauri::RunEvent::Reopen { has_visible_windows: false, .. }
+                if windows::project_window_labels(app).is_empty() =>
+            {
+                windows::spawn_window(app, None);
+            }
+            _ => {}
+        }
+        #[cfg(target_os = "macos")]
         if let tauri::RunEvent::Opened { urls } = &event {
             let paths = windows::opened_paths(urls);
-            if app.try_state::<WindowsState>().is_some() {
+            if app.try_state::<AppState>().is_some() {
                 windows::open_paths(app, paths);
             } else {
                 early_opens.lock().get_or_insert_default().extend(paths);

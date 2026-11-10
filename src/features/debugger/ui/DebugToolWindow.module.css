@@ -273,6 +273,18 @@
   border-radius: 2px;
 }
 
+.link {
+  color: var(--link);
+  text-decoration: underline;
+  text-decoration-color: color-mix(in srgb, var(--link) 45%, transparent);
+  text-underline-offset: 2px;
+  cursor: pointer;
+}
+.link:hover {
+  color: var(--link-hover);
+  text-decoration-color: currentColor;
+}
+
 /* Soft-Wrap off: long lines scroll horizontally. */
 .noWrap {
   white-space: pre;

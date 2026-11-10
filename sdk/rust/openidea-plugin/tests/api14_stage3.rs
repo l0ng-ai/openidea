@@ -53,3 +53,43 @@ fn run_targets_require_a_program_grant_and_are_project_scoped() {
     host::unregister_run_target(&project, "ddev");
     assert!(mock.run_targets().is_empty());
 }
+
+#[test]
+fn parsers_can_keep_the_default_unsupported_test_selection() {
+    struct Parser;
+    impl TestResults for Parser {
+        fn parse(&mut self, _: &str, _: &str) -> Vec<PluginTestEvent> {
+            vec![]
+        }
+    }
+    assert_eq!(Parser.select_tests("tests", &[vec!["Suite".into(), "Test".into()]]), None);
+}
+
+#[test]
+fn run_target_overrides_preserve_optional_workdir_arguments_and_checks() {
+    let mock = MockHost::install();
+    let project = mock.invocation().project().unwrap();
+    let mut target = PluginRunTargetWithOverrides {
+        id: "ddev".into(),
+        name: "DDEV".into(),
+        program: "ddev".into(),
+        workdir_args: vec!["--dir={cwd}".into()],
+        commands: vec![PluginCommandOverride {
+            name: "composer".into(),
+            args: vec!["composer".into()],
+            workdir_args: Some(vec![]),
+        }],
+        ..Default::default()
+    };
+    assert!(matches!(host::register_run_target_with_overrides(&project, &target), Err(Error::Denied(_))));
+    let mock = mock.with_capabilities(&["process:ddev"]);
+    for workdir_args in [None, Some(vec![]), Some(vec!["--working-dir={cwd}".into()])] {
+        target.commands[0].workdir_args = workdir_args;
+        host::register_run_target_with_overrides(&project, &target).unwrap();
+        assert_eq!(mock.run_targets_with_overrides().values().next().unwrap(), &target);
+    }
+    target.commands[0].workdir_args = Some(vec!["bad\0arg".into()]);
+    assert!(matches!(host::register_run_target_with_overrides(&project, &target), Err(Error::Invalid(_))));
+    mock.set_restricted(true);
+    assert!(matches!(host::register_run_target_with_overrides(&project, &target), Err(Error::Denied(_))));
+}

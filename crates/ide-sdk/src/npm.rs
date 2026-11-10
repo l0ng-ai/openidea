@@ -5,6 +5,16 @@ use std::ffi::OsStr;
 use std::path::{Path, PathBuf};
 use std::time::Duration;
 
+/// TypeScript 7 ships only the native compiler, without the JS language-service API.
+pub(crate) fn has_ts_api(lib: &Path) -> bool {
+    lib.join("typescript.js").is_file()
+}
+
+/// The usable TypeScript library Node resolves from an installed server package.
+pub(crate) fn own_typescript(package: &Path) -> Option<PathBuf> {
+    package.ancestors().map(|a| a.join("node_modules/typescript/lib")).find(|l| has_ts_api(l))
+}
+
 /// `command` as given (a path) or found on `path`, npm shims included.
 pub(crate) fn find_command(command: &str, path: &OsStr) -> Option<PathBuf> {
     let p = Path::new(command);

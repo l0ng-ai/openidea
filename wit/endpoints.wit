@@ -1,4 +1,4 @@
-package openidea:plugin@1.4.0;
+package openidea:plugin@1.5.0;
 
 /// HTTP endpoints found in a project (`[[contributes.endpoints]]`).
 interface endpoints-provider {

@@ -3,6 +3,7 @@
  * lives in a detached host element owned by the session (not by React), so a
  * session survives its tool window being hidden or its pane being re-mounted.
  */
+import { writeClipboardText } from "@/platform/clipboard";
 import { Terminal, type IDisposable, type ILink, type ILinkHandler } from "@xterm/xterm";
 import { FitAddon } from "@xterm/addon-fit";
 import { SearchAddon, type ISearchOptions } from "@xterm/addon-search";
@@ -14,6 +15,7 @@ import { editorService, notifications, registerFontZoomSurface } from "@/workben
 import { fitScheduler, settledResize } from "./fit";
 import { watchWindowsPty, windowsPty } from "./windowsPty";
 import { installTerminalDrop } from "./drop";
+import { installDomRowCache } from "./domRowCache";
 import { installTerminalPaste, pasteTerminalClipboard } from "./paste";
 import { ImeCommitGate } from "./imeCommit";
 import { ownTerminalInput } from "./imeInput";
@@ -451,6 +453,7 @@ export class TerminalSession {
     // xterm's DOM renderer: the WebGL one rasterizes glyphs per background, so
     // selected text rendered at a visibly different weight than the rest.
     this.term.open(this.host);
+    installDomRowCache(this.term);
     this.opened = true;
     remeasureWhenFontsLoad(
       this.term,
@@ -519,7 +522,7 @@ export class TerminalSession {
 
   /** xterm's data event, with one IME commit's repeated emissions collapsed. */
   private fromTerminal(data: string) {
-    if (this.ime.accept()) this.input(data);
+    if (this.ime.accept(data)) this.input(data);
   }
 
   private doFit() {
@@ -708,7 +711,7 @@ export class TerminalSession {
   copySelection(): boolean {
     const text = this.term.getSelection();
     if (!text) return false;
-    void navigator.clipboard?.writeText(text).catch(() => undefined);
+    void writeClipboardText(text).catch(() => undefined);
     return true;
   }
 

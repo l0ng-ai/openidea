@@ -26,6 +26,7 @@ pub(crate) enum Job {
     SaveRecent,
     /// The roots or excludes changed: scan again (unchanged files are kept).
     Rescan,
+    IgnoreRules(Vec<PathBuf>),
     /// File types changed: re-parse the indexed files whose language under the
     /// previous registry differs from the current one.
     Reparse(std::sync::Arc<LanguageRegistry>),
@@ -212,6 +213,10 @@ impl Shared {
     }
 
     fn full_scan(&self) {
+        self.scan(None);
+    }
+
+    fn scan(&self, dirs: Option<&[PathBuf]>) {
         let started = Instant::now();
         self.indexing.store(true, Ordering::SeqCst);
         self.emit_state();
@@ -227,7 +232,11 @@ impl Shared {
 
         let filter = self.filter();
         let mut found = Vec::new();
-        for root in filter.roots() {
+        let roots: Vec<&Path> = match dirs {
+            Some(dirs) => dirs.iter().map(PathBuf::as_path).collect(),
+            None => filter.roots().collect(),
+        };
+        for root in roots {
             found.extend(filter.walk(root, &self.cancelled));
         }
         if self.is_cancelled() {
@@ -237,7 +246,12 @@ impl Shared {
         let (todo, stale): (Vec<&Found>, Vec<PathBuf>) = {
             let d = self.data.read();
             let todo = found.iter().filter(|f| d.get(&f.path).is_none_or(|e| e.stale_for(f))).collect();
-            let stale = d.paths().filter(|p| !seen.contains(p.as_path())).cloned().collect();
+            let stale = d
+                .paths()
+                .filter(|p| dirs.is_none_or(|dirs| dirs.iter().any(|dir| p.starts_with(dir))))
+                .filter(|p| !seen.contains(p.as_path()))
+                .cloned()
+                .collect();
             (todo, stale)
         };
         if !stale.is_empty() {
@@ -381,6 +395,7 @@ impl Shared {
         let mut removed: Vec<PathBuf> = Vec::new();
         let mut save_recent = false;
         let mut rescan = false;
+        let mut rule_dirs = Vec::new();
         let mut reparse: Vec<std::sync::Arc<LanguageRegistry>> = Vec::new();
         for job in jobs {
             match job {
@@ -388,7 +403,27 @@ impl Shared {
                 Job::Removed(p) => removed.extend(p),
                 Job::SaveRecent => save_recent = true,
                 Job::Rescan => rescan = true,
+                Job::IgnoreRules(dirs) => rule_dirs.extend(dirs),
                 Job::Reparse(before) => reparse.push(before),
+            }
+        }
+        if !rule_dirs.is_empty() {
+            {
+                let mut filter = self.filter.write();
+                *filter = std::sync::Arc::new(filter.reload());
+            }
+            rule_dirs.sort();
+            rule_dirs.dedup();
+            let mut roots: Vec<PathBuf> = Vec::new();
+            for dir in rule_dirs {
+                if !roots.iter().any(|root| dir.starts_with(root)) {
+                    roots.push(dir);
+                }
+            }
+            if !rescan {
+                self.scan(Some(&roots));
+                changed.retain(|p| !roots.iter().any(|root| p.starts_with(root)));
+                removed.retain(|p| !roots.iter().any(|root| p.starts_with(root)));
             }
         }
         if rescan {

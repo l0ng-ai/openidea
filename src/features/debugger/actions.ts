@@ -1,4 +1,5 @@
 /** Debugger actions (ids match `keymaps/intellij-macos.ts`). */
+import { withRunTarget } from "@/platform/runTargetSelection";
 import { executeAction, getAction, registerActions, type Action } from "@/platform/actions";
 import {
   call,
@@ -315,11 +316,12 @@ async function startConfig(arg: unknown) {
       return;
     }
   }
-  if (isRemoteConfig(config)) {
+  config = withRunTarget(config);
+  if (!config.target?.startsWith("plugin-target:") && isRemoteConfig(config)) {
     await startRemote(config, root, show);
     return;
   }
-  if (isJavaDebuggable(config)) {
+  if (!config.target?.startsWith("plugin-target:") && isJavaDebuggable(config)) {
     await startJavaConfig(config, root, origin ?? config, show);
     return;
   }
@@ -339,11 +341,27 @@ async function startConfig(arg: unknown) {
     });
     return;
   }
-  const xdebugCheck = config.debugAdapter === "php-debug" && isTauri() ? warnWithoutXdebug(launch) : null;
+  const pluginTarget = config.target?.startsWith("plugin-target:");
+  if (pluginTarget) {
+    const extra = JSON.parse(launch.extraJson ?? "{}");
+    extra.__runTarget = config.target;
+    extra.__runTargetProgram = config.command;
+    launch.extraJson = JSON.stringify(extra);
+  }
+  const xdebugCheck =
+    !pluginTarget && config.debugAdapter === "php-debug" && isTauri() ? warnWithoutXdebug(launch) : null;
   await maybeEditorService()
     ?.saveAll()
     .catch(() => undefined);
-  await startSession(launch, { runConfig: origin ?? config, show });
+  const started = pluginTarget
+    ? await startPreparedSession(origin ?? config, async () => launch, { show })
+    : await startSession(launch, { runConfig: origin ?? config, show });
+  if (started && pluginTarget && config.debugAdapter === "php-debug") {
+    await executeAction("run.runConfig", {
+      ...config,
+      params: { ...config.params, "plugin.targetOperation": "debug" },
+    });
+  }
   await xdebugCheck;
 }
 

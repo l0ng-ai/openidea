@@ -61,7 +61,7 @@ pub(crate) fn search_project(
         ide_search::SearchScope::FileSet { set } => Some(set),
         _ => None,
     };
-    let workspace = ide_workspace::workspace::Workspace::load(root)?.is_some();
+    let workspace = ide_workspace::workspace::Workspace::load(root)?.is_some_and(|w| w.is_container(root));
     let include_root = !workspace
         || matches!(query.scope, ide_search::SearchScope::Directory { .. } | ide_search::SearchScope::Files { .. });
     let content_roots = match query.scope {

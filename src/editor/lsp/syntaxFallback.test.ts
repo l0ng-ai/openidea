@@ -218,6 +218,21 @@ describe("declarationFallback", () => {
       kind: "unsupported",
     });
   });
+
+  it("answers a Vue component from the <script> region's shifted coordinates", async () => {
+    cmd.syntaxSupport.mockReturnValueOnce(ok({ tree: true, locals: true }));
+    // The backend answers a script region's local in document coordinates.
+    cmd.syntaxLocals.mockReturnValueOnce(ok(local({ name: "size", definition: r(9, 6, 10) })));
+    const res = await fb.declarationFallback({ ...doc, path: "/p/App.vue", language: "vue" }, text, {
+      line: 9,
+      col: 6,
+    });
+    expect(res).toEqual({
+      kind: "targets",
+      targets: [{ path: "/p/App.vue", range: r(9, 6, 10), name: "size" }],
+      ambiguous: false,
+    });
+  });
 });
 
 describe("rename helpers", () => {
@@ -266,6 +281,15 @@ describe("rename helpers", () => {
     expect(cmd.syntaxNodeAt).not.toHaveBeenCalled();
   });
 
+  it("plans a Vue component's local rename with shorthand detection", async () => {
+    cmd.syntaxLocals.mockReturnValueOnce(ok(local()));
+    const short = ok({ node: node("shorthand_property_identifier", r(1, 2, 3)), ancestors: [] });
+    cmd.syntaxNodeAt.mockReturnValueOnce(short);
+    cmd.syntaxNodeAt.mockReturnValueOnce(short);
+    const plan = await fb.planLocalRename({ doc: 7, language: "vue" }, { line: 1, col: 2 });
+    expect(plan.kind === "plan" && plan.plan.occurrences.map((o) => o.shorthand)).toEqual([true, true]);
+  });
+
   it("flags ambiguity and name clashes inside the scope", async () => {
     const plan = {
       symbol: (local({ certain: false, conflicts: [r(3, 0, 1)] }) as Extract<Locals, { status: "local" }>).symbol,
@@ -295,6 +319,21 @@ describe("rename helpers", () => {
 });
 
 describe("navigation wiring", () => {
+  it.each(["vue", "html", "svelte", "jsp"])("keeps %s server answers ahead of syntax", async (language) => {
+    const target = { path: `/p/a.${language}`, range: r(0, 6, 7), uri: null };
+    const view = editor("const x = 1;\nx;", language, 13, target.path);
+    cmd.lspGoto.mockReturnValueOnce(ok([target]));
+    await gotoTargets(view, "definition");
+    expect(openFile).toHaveBeenCalledWith(target.path, { selection: target.range.start, focus: true });
+    expect(cmd.syntaxLocals).not.toHaveBeenCalled();
+    expect(cmd.syntaxNodeAt).not.toHaveBeenCalled();
+    invalidateConfigurationNavigation();
+    cmd.lspGoto.mockReturnValueOnce(ok([]));
+    await gotoTargets(view, "definition");
+    expect(openFile).toHaveBeenCalledOnce();
+    expect(cmd.syntaxLocals).not.toHaveBeenCalled();
+  });
+
   it("respects an empty server answer", async () => {
     cmd.lspGoto.mockReturnValueOnce(ok([]));
     const view = editor("const x = 1;\nx;", "typescript", 13);
@@ -765,7 +804,7 @@ describe("modifier-hover navigation recovery", () => {
     expect(cmd.lspGoto).toHaveBeenCalledTimes(2);
   });
 
-  it("retries a stuck configuration probe without retaining the late response", async () => {
+  it("re-probes a stuck configuration lookup through the running request, without retaining its empty answer", async () => {
     let finish!: (value: Awaited<R<unknown>>) => void;
     cmd.lspGoto.mockReturnValueOnce(
       new Promise((resolve) => {
@@ -777,16 +816,16 @@ describe("modifier-hover navigation recovery", () => {
     try {
       move(view, 1);
       await vi.advanceTimersByTimeAsync(3001);
-      cmd.lspGoto.mockReturnValueOnce(ok([target]));
       move(view, 1);
       await vi.advanceTimersByTimeAsync(0);
-      expect(cmd.lspGoto).toHaveBeenCalledTimes(2);
+      expect(cmd.lspGoto).toHaveBeenCalledOnce();
     } finally {
       vi.useRealTimers();
     }
-    await vi.waitFor(() => expect(view.dom.querySelector(".cm-lsp-link")).not.toBeNull());
     finish({ status: "ok", data: [] });
     await new Promise((resolve) => setTimeout(resolve, 20));
+    expect(view.dom.querySelector(".cm-lsp-link")).toBeNull();
+    cmd.lspGoto.mockReturnValueOnce(ok([target]));
     await gotoTargets(view, "definition", 1);
     expect(cmd.lspGoto).toHaveBeenCalledTimes(2);
     expect(openFile).toHaveBeenCalledOnce();
@@ -814,7 +853,7 @@ describe("modifier-hover navigation recovery", () => {
     expect(cmd.lspGoto).toHaveBeenCalledTimes(2);
   });
 
-  it("retries a stuck probe and ignores its eventual response", async () => {
+  it("re-probes a stuck word through the running request", async () => {
     let finish!: (value: Awaited<R<unknown>>) => void;
     cmd.lspGoto.mockReturnValueOnce(
       new Promise((resolve) => {
@@ -826,17 +865,15 @@ describe("modifier-hover navigation recovery", () => {
     try {
       move(view);
       await vi.advanceTimersByTimeAsync(3001);
-      cmd.lspGoto.mockReturnValueOnce(ok([target]));
       move(view);
       await vi.advanceTimersByTimeAsync(0);
-      expect(cmd.lspGoto).toHaveBeenCalledTimes(2);
+      expect(cmd.lspGoto).toHaveBeenCalledOnce();
     } finally {
       vi.useRealTimers();
     }
+    finish(await ok([target]));
     await vi.waitFor(() => expect(view.dom.querySelector(".cm-lsp-link")?.textContent).toBe("foo"));
-    finish({ status: "ok", data: [] });
-    await new Promise((resolve) => setTimeout(resolve, 20));
-    expect(view.dom.querySelector(".cm-lsp-link")?.textContent).toBe("foo");
+    expect(cmd.lspGoto).toHaveBeenCalledOnce();
   });
 
   it("ignores a late probe after moving to a different word", async () => {

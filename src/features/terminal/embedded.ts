@@ -4,7 +4,9 @@
  * and size go to the owner instead of a terminal PTY (a Run console emulating
  * a terminal feeds its process).
  */
+import { writeClipboardText } from "@/platform/clipboard";
 import { installTerminalDrop } from "./drop";
+import { installDomRowCache } from "./domRowCache";
 import { installTerminalPaste } from "./paste";
 import { ownTerminalInput } from "./imeInput";
 import { Terminal, type IDisposable } from "@xterm/xterm";
@@ -61,7 +63,7 @@ export function createEmbeddedTerminal(host: HTMLElement, opts: EmbeddedTerminal
     if (action.kind === "send" && e.key === "Enter") {
       if (e.type === "keydown") term.input(action.data);
     } else if (action.kind === "copy") {
-      if (e.type === "keydown") void navigator.clipboard?.writeText(term.getSelection()).catch(() => undefined);
+      if (e.type === "keydown") void writeClipboardText(term.getSelection()).catch(() => undefined);
     } else {
       return true;
     }
@@ -104,6 +106,7 @@ export function createEmbeddedTerminal(host: HTMLElement, opts: EmbeddedTerminal
   const removePaste = installTerminalPaste(host, (text) => term.paste(text));
   const removeDrop = installTerminalDrop(host, (text) => term.paste(text));
   term.open(host);
+  installDomRowCache(term);
   if (opts["aria-label"]) term.textarea?.setAttribute("aria-label", opts["aria-label"]);
   // The same WKWebView input-method fixes as the terminal sessions.
   if (term.textarea && usePlatform.getState().os === "macos") {

@@ -4,10 +4,38 @@ use crate::apply_workspace_edit as apply_edit;
 use crate::plugins::{ProviderKind, editor_providers_for as editor_providers};
 use crate::rpc::Dispatcher;
 use ide_core::error::ErrorKind;
-use ide_core::{DocId, IdeResult, Location, Pos, Range, RequestId, ServerId, TextEdit, WorkspaceEdit};
+use ide_core::{DocId, IdeError, IdeResult, Location, Pos, Range, RequestId, ServerId, TextEdit, WorkspaceEdit};
 use ide_lsp::types::*;
 use ide_plugin::ProviderDocument;
 use std::path::Path;
+
+/// Select an embedded server only for point requests; formatting and rename keep the host.
+async fn position_document(host: &Host, window: &str, doc: DocId, pos: Pos) -> IdeResult<DocId> {
+    let lsp = host.project(window)?.lsp.clone();
+    lsp.refresh_injections(doc).await?;
+    Ok(lsp.injected_document(doc, pos))
+}
+
+async fn begin_position_request(
+    host: &Host,
+    window: &str,
+    request: RequestId,
+    doc: DocId,
+    pos: Pos,
+) -> IdeResult<(DocId, ide_core::CancellationToken)> {
+    let cancel = host.begin_request(request);
+    let target = tokio::select! {
+        result = position_document(host, window, doc, pos) => result,
+        _ = cancel.cancelled() => Err(ide_core::IdeError::cancelled()),
+    };
+    match target {
+        Ok(target) => Ok((target, cancel)),
+        Err(e) => {
+            host.end_request(request);
+            Err(e)
+        }
+    }
+}
 
 async fn prepare_actions(
     project: std::sync::Arc<crate::Project>,
@@ -41,8 +69,8 @@ pub async fn lsp_completion(
     trigger: Option<String>,
 ) -> IdeResult<CompletionList> {
     let lsp = host.project(window)?.lsp.clone();
-    let cancel = host.begin_request(request);
-    let result = lsp.completion(doc, pos, trigger.clone(), cancel).await;
+    let (target, cancel) = begin_position_request(host, window, request, doc, pos).await?;
+    let result = lsp.completion(target, pos, trigger.clone(), cancel).await;
     host.end_request(request);
     // Plugin providers (`[[contributes.providers]]`) add theirs.
     let Some((plugins, d)) = plugin_providers(host, window, doc, ProviderKind::Completion) else { return result };
@@ -169,6 +197,7 @@ fn plugin_completion(item: ide_plugin::CompletionItem) -> CompletionItem {
     CompletionItem {
         label: item.label,
         label_detail: None,
+        label_description: None,
         detail: item.detail,
         kind,
         documentation: item.documentation.map(|value| Markup { kind: "markdown".into(), value }),
@@ -238,14 +267,14 @@ pub async fn lsp_hover(
     pos: Pos,
 ) -> IdeResult<Option<Hover>> {
     let lsp = host.project(window)?.lsp.clone();
-    let cancel = host.begin_request(request);
+    let (target, cancel) = begin_position_request(host, window, request, doc, pos).await?;
     let Some((plugins, d)) = plugin_providers(host, window, doc, ProviderKind::Hover) else {
-        let result = lsp.hover(doc, pos, cancel).await;
+        let result = lsp.hover(target, pos, cancel).await;
         host.end_request(request);
         return result;
     };
     let (result, hovers) =
-        tokio::join!(lsp.hover(doc, pos, cancel), plugin_call(move || plugins.provide_hover(&d, pos)));
+        tokio::join!(lsp.hover(target, pos, cancel), plugin_call(move || plugins.provide_hover(&d, pos)));
     host.end_request(request);
     let hovers = hovers.unwrap_or_default();
     if hovers.is_empty() {
@@ -260,7 +289,8 @@ pub async fn lsp_hover(
 }
 
 pub async fn lsp_signature_help(host: &Host, window: &str, doc: DocId, pos: Pos) -> IdeResult<Option<SignatureHelp>> {
-    let server = host.project(window)?.lsp.signature_help(doc, pos).await;
+    let target = position_document(host, window, doc, pos).await?;
+    let server = host.project(window)?.lsp.signature_help(target, pos).await;
     if matches!(&server,Ok(Some(h)) if !h.signatures.is_empty()) {
         return server;
     }
@@ -278,7 +308,9 @@ pub async fn lsp_signature_help(host: &Host, window: &str, doc: DocId, pos: Pos)
 }
 
 pub async fn lsp_goto(host: &Host, window: &str, doc: DocId, pos: Pos, kind: GotoKind) -> IdeResult<Vec<Location>> {
-    if kind == GotoKind::Definition
+    let target = position_document(host, window, doc, pos).await?;
+    if target == doc
+        && kind == GotoKind::Definition
         && let Some(plugins) = crate::plugins::editor_plugin_host()
     {
         let project = host.project(window)?;
@@ -289,7 +321,7 @@ pub async fn lsp_goto(host: &Host, window: &str, doc: DocId, pos: Pos, kind: Got
             return Ok(found.targets);
         }
     }
-    let result = host.project(window)?.lsp.goto(doc, pos, kind).await;
+    let result = host.project(window)?.lsp.goto(target, pos, kind).await;
     if matches!(kind, GotoKind::Implementation | GotoKind::TypeDefinition) {
         let k =
             if kind == GotoKind::Implementation { ProviderKind::Implementation } else { ProviderKind::TypeDefinition };
@@ -424,8 +456,46 @@ pub async fn lsp_implementations(
     positions: Vec<Pos>,
 ) -> IdeResult<Vec<Vec<Location>>> {
     let lsp = host.project(window)?.lsp.clone();
-    let cancel = host.begin_request(request);
-    let result = lsp.implementations(doc, &positions, cancel).await;
+    let (_, cancel) =
+        begin_position_request(host, window, request, doc, positions.first().copied().unwrap_or_default()).await?;
+    let mut groups = std::collections::BTreeMap::<DocId, Vec<(usize, Pos)>>::new();
+    for (index, pos) in positions.iter().copied().enumerate() {
+        groups.entry(lsp.injected_document(doc, pos)).or_default().push((index, pos));
+    }
+    if groups.is_empty() {
+        groups.insert(doc, Vec::new());
+    }
+    let results = futures::future::join_all(groups.into_iter().map(|(target, entries)| {
+        let (lsp, cancel) = (lsp.clone(), cancel.clone());
+        async move {
+            let positions: Vec<_> = entries.iter().map(|(_, p)| *p).collect();
+            (entries, lsp.implementations(target, &positions, cancel).await)
+        }
+    }))
+    .await;
+    let mut out = vec![Vec::new(); positions.len()];
+    let mut error = None;
+    let mut succeeded = false;
+    for (entries, result) in results {
+        match result {
+            Ok(found) => {
+                succeeded = true;
+                for ((index, _), locations) in entries.into_iter().zip(found) {
+                    out[index] = locations;
+                }
+            }
+            Err(e) => {
+                error.get_or_insert(e);
+            }
+        }
+    }
+    let result = if cancel.is_cancelled() {
+        Err(ide_core::IdeError::cancelled())
+    } else if succeeded {
+        Ok(out)
+    } else {
+        Err(error.expect("at least one request"))
+    };
     host.end_request(request);
     if let Some((plugins, d)) = plugin_providers(host, window, doc, ProviderKind::Implementation) {
         let count = positions.len();
@@ -456,9 +526,9 @@ pub async fn lsp_goto_implementation(
     on_partial: super::Channel<Vec<Location>>,
 ) -> IdeResult<Vec<Location>> {
     let lsp = host.project(window)?.lsp.clone();
-    let cancel = host.begin_request(request);
+    let (target, cancel) = begin_position_request(host, window, request, doc, pos).await?;
     let result = lsp
-        .goto_implementation(doc, pos, cancel, &|locs| {
+        .goto_implementation(target, pos, cancel, &|locs| {
             let _ = on_partial.send(locs);
         })
         .await;
@@ -476,7 +546,119 @@ pub async fn lsp_virtual_document(host: &Host, window: &str, uri: String) -> Ide
     if uri.starts_with("git-revision:") {
         return crate::ops::vcs::revision_virtual_document(host, window, &uri).await;
     }
+    if uri.starts_with("openidea-target:") && uri.contains("/0/") {
+        host.require_trust(window)?;
+        let project = host.project(window)?;
+        let plugins =
+            host.plugin_host().ok_or_else(|| IdeError::unavailable("container document reader is unavailable"))?;
+        for registration in plugins.run_targets(&project.root) {
+            let prefix = format!(
+                "openidea-target://{}/0/",
+                percent_encoding::utf8_percent_encode(&registration.id, percent_encoding::NON_ALPHANUMERIC)
+            );
+            if let Some(suffix) = uri.strip_prefix(&prefix) {
+                let path = ide_core::path_mapping::file_path(&format!("file:///{suffix}"))
+                    .filter(|p| p.starts_with('/') && !p.split('/').any(|s| s == ".." || s == "."))
+                    .ok_or_else(|| IdeError::invalid("invalid container document URI"))?;
+                let container_root = registration
+                    .target
+                    .container_root
+                    .ok_or_else(|| IdeError::invalid("invalid container document URI"))?;
+                let target = ide_language::ServerTarget {
+                    id: registration.id,
+                    origin: None,
+                    project_root: project.root.clone(),
+                    mapping: ide_core::path_mapping::PathMapping::new(&project.root.to_string_lossy(), &container_root),
+                    container_root,
+                };
+                let title = std::path::Path::new(&path)
+                    .file_name()
+                    .map(|s| s.to_string_lossy().into_owned())
+                    .unwrap_or_default();
+                let language_id = host.languages.detect(std::path::Path::new(&path), None);
+                let text = host.blocking(move || super::lsp_target::read(&plugins, &target, &path)).await?;
+                return Ok(VirtualDocument { uri, text, title, language_id, description: None, decompiled: false });
+            }
+        }
+        return Err(IdeError::unavailable("plugin run target is no longer available"));
+    }
     host.project(window)?.lsp.virtual_document(&uri).await
+}
+
+/// Whether this class belongs to the project's Maven local repository.
+pub async fn lsp_can_download_sources(host: &Host, window: &str, uri: String) -> IdeResult<bool> {
+    let project = host.project(window)?;
+    if !project.is_trusted() {
+        return Ok(false);
+    }
+    let Some(jar) = ide_lsp::LspManager::library_archive(&uri) else { return Ok(false) };
+    host.blocking(move || {
+        let settings = project.settings.effective();
+        let repository = ide_sdk::apply::maven_local_repository(&project.root, &settings)
+            .or_else(ide_build::maven::default_local_repo);
+        Ok(repository.is_some_and(|repo| ide_build::maven::sources::artifact(&jar, &repo).is_some())
+            && ide_build::maven::has_projects(&project.root, &settings.languages.java.maven))
+    })
+    .await
+}
+
+/// Download with the project's Maven configuration, or attach an archive selected by the user.
+pub async fn lsp_library_sources(
+    host: &Host,
+    window: &str,
+    request: RequestId,
+    uri: String,
+    pos: Pos,
+    sources: Option<std::path::PathBuf>,
+) -> IdeResult<Option<Location>> {
+    host.require_trust(window)?;
+    let project = host.project(window)?;
+    let cancel = host.begin_project_request(window, request);
+    let result = async {
+        let sources = match sources {
+            Some(sources) => Some(sources),
+            None => {
+                let jar = ide_lsp::LspManager::library_archive(&uri)
+                    .ok_or_else(|| IdeError::invalid("not a library class"))?;
+                let project = project.clone();
+                let cancel = cancel.clone();
+                host.blocking(move || {
+                    let settings = project.settings.effective();
+                    let repository = ide_sdk::apply::maven_local_repository(&project.root, &settings)
+                        .or_else(ide_build::maven::default_local_repo)
+                        .ok_or_else(|| IdeError::unavailable("Maven local repository is unavailable"))?;
+                    let artifact = ide_build::maven::sources::artifact(&jar, &repository)
+                        .ok_or_else(|| IdeError::invalid("not an artifact in the Maven local repository"))?;
+                    let model = super::build::load(&project.root, &project.build_cache_dir(), &settings);
+                    let maven = model.maven.ok_or_else(|| IdeError::unavailable("no Maven project"))?;
+                    let owns = |p: &&ide_build::maven::MavenProject| {
+                        p.dependencies.iter().any(|d| d.group_id == artifact.group && d.artifact_id == artifact.name)
+                    };
+                    let mut owner = maven
+                        .projects
+                        .iter()
+                        .find(owns)
+                        .or_else(|| maven.projects.first())
+                        .cloned()
+                        .ok_or_else(|| IdeError::unavailable("no Maven project"))?;
+                    let profiles =
+                        settings.languages.java.maven.profiles(&ide_build::maven_profiles(&project.build_cache_dir()));
+                    if !profiles.is_empty() {
+                        owner.options.push(format!("-P{}", profiles.join(",")));
+                    }
+                    ide_build::maven::sources::download(&project.root, &owner, &artifact, &repository, &cancel)
+                })
+                .await?
+            }
+        };
+        match sources {
+            Some(sources) => project.lsp.library_source_location(&uri, sources, pos, &cancel).await,
+            None => Ok(None),
+        }
+    }
+    .await;
+    host.end_request(request);
+    result
 }
 
 /// Opens compiled classes through JDT, with project source taking priority on disk.
@@ -487,8 +669,8 @@ pub async fn lsp_resolve_class_file(host: &Host, window: &str, path: std::path::
 
 /// References of the symbol at `pos`. `project_wide` also searches project files
 /// outside the language server's analysis scope; bulk scans over many symbols
-/// leave it off. Java, `project_wide`: without `libraries`, the dependencies and the JDK
-/// are not searched; with it, those found in the sources arrive on `on_partial` before
+/// leave it off. Java: without `libraries`, the dependencies and the JDK are not
+/// searched; with it and `project_wide`, those found in the sources arrive on `on_partial` before
 /// the slower search for the rest, and the result has them all. Cancel with
 /// `cancel_request(request)`.
 #[allow(clippy::too_many_arguments)]
@@ -505,9 +687,9 @@ pub async fn lsp_references(
 ) -> IdeResult<References> {
     let project = host.project(window)?;
     let lsp = project.lsp.clone();
-    let cancel = host.begin_request(request);
+    let (target, cancel) = begin_position_request(host, window, request, doc, pos).await?;
     let result = async {
-        let symbol = indexed_symbol(host, window, doc, pos).await?;
+        let symbol = if target == doc { indexed_symbol(host, window, doc, pos).await? } else { None };
         if let Some(symbol) = &symbol {
             let project = project.clone();
             let snapshot = symbol.clone();
@@ -517,7 +699,7 @@ pub async fn lsp_references(
         }
         let result = lsp
             .references_streaming(
-                doc,
+                target,
                 pos,
                 include_declaration,
                 project_wide,
@@ -643,7 +825,8 @@ fn merge_indexed_references(mut server: References, symbol: &crate::plugins::nav
 }
 
 pub async fn lsp_document_highlights(host: &Host, window: &str, doc: DocId, pos: Pos) -> IdeResult<Vec<Highlight>> {
-    let server = host.project(window)?.lsp.document_highlights(doc, pos).await;
+    let target = position_document(host, window, doc, pos).await?;
+    let server = host.project(window)?.lsp.document_highlights(target, pos).await;
     let Some((plugins, d)) = plugin_providers(host, window, doc, ProviderKind::DocumentHighlights) else {
         return server;
     };
@@ -674,7 +857,9 @@ pub async fn lsp_code_actions(
     let project = host.project(window)?;
     let documents = project.documents.clone();
     let version = blocking(move || documents.version(doc)).await?;
-    let result = project.lsp.code_actions(doc, range, only.clone()).await;
+    let target = position_document(host, window, doc, range.start).await?;
+    let range = project.lsp.injected_request_range(target, range);
+    let result = project.lsp.code_actions(target, range, only.clone()).await;
     let plugin_actions = match plugin_providers(host, window, doc, ProviderKind::CodeActions) {
         Some((plugins, d)) => plugin_call(move || plugins.provide_code_actions(&d, range)).await.unwrap_or_default(),
         None => Vec::new(),
@@ -714,6 +899,8 @@ fn plugin_code_action(plugin: &str, root: &Path, a: ide_plugin::CodeAction) -> C
         .and_then(|r| serde_json::to_value(r).ok());
     CodeAction {
         title: a.title,
+        diagnostics: Vec::new(),
+        original_diagnostics: None,
         kind: a.kind,
         is_preferred: a.preferred,
         disabled_reason,
@@ -735,12 +922,13 @@ fn plugin_file_edits(
     use ide_plugin::FileOperation;
     let confine = !a.operations.is_empty() || a.open.is_some();
     let confined = |path: &Path| ide_plugin::resolve_new_in_root(root, &path.to_string_lossy());
+    let writable = |path: &Path| ide_plugin::resolve_writable_in_root(root, &path.to_string_lossy());
     let mut files = Vec::new();
     let mut created_with_text = Vec::new();
     for operation in &a.operations {
         match operation {
             FileOperation::Create { path, text, overwrite } => {
-                let path = confined(path)?;
+                let path = writable(path)?;
                 files.push(FileEdit::Create { path: path.clone().into(), overwrite: *overwrite });
                 if !text.is_empty() {
                     let start = Range::point(Pos::new(0, 0));
@@ -761,7 +949,7 @@ fn plugin_file_edits(
         }
     }
     for (path, edits) in &a.edits {
-        let path = if confine { confined(path)? } else { path.clone() };
+        let path = if confine { writable(path)? } else { path.clone() };
         if created_with_text.contains(&path) {
             return Err("put the text of a created file in its `create`, not in an edit".into());
         }
@@ -811,8 +999,9 @@ pub async fn lsp_code_action_query(
     let project = host.project(window)?;
     let documents = project.documents.clone();
     let version = blocking(move || documents.version(doc)).await?;
-    let cancel = host.begin_request(request);
-    let result = project.lsp.code_action_query(doc, range, only, cancel).await;
+    let (target, cancel) = begin_position_request(host, window, request, doc, range.start).await?;
+    let range = project.lsp.injected_request_range(target, range);
+    let result = project.lsp.code_action_query(target, range, only, cancel).await;
     host.end_request(request);
     let mut result = result?;
     result.actions = prepare_actions(project, doc, version, result.actions).await?;
@@ -1433,7 +1622,9 @@ pub struct PluginLanguageVisuals {
     pub gutter_actions: Vec<(String, ide_plugin::language_features::GutterAction)>,
 }
 pub async fn plugin_language_visuals(host: &Host, window: &str, doc: DocId) -> IdeResult<PluginLanguageVisuals> {
-    let snap = host.project(window)?.documents.snapshot(doc)?;
+    let project = host.project(window)?;
+    let snap = project.documents.snapshot(doc)?;
+    let generation = project.lsp.injection_generation();
     blocking(move || {
         let d = ProviderDocument {
             path: snap.path.0,
@@ -1450,6 +1641,18 @@ pub async fn plugin_language_visuals(host: &Host, window: &str, doc: DocId) -> I
             out.colors = plugins.language_colors(&d);
             out.gutter_actions = plugins.language_gutter_actions(&d);
         }
+        project.lsp.set_injections_at(
+            doc,
+            d.version as u32,
+            out.injections
+                .iter()
+                .map(|i| ide_lsp::InjectedRange {
+                    range: i.range,
+                    language: ide_core::LanguageId::new(i.language.clone()),
+                })
+                .collect(),
+            generation,
+        );
         Ok(out)
     })
     .await
@@ -1523,6 +1726,14 @@ pub(crate) fn register(d: &mut Dispatcher) {
         |c| async move { lsp_resolve_class_file(&c.host, &c.window, c.arg("path")?).await },
     );
     d.add("lsp_virtual_document", |c| async move { lsp_virtual_document(&c.host, &c.window, c.arg("uri")?).await });
+    d.add(
+        "lsp_can_download_sources",
+        |c| async move { lsp_can_download_sources(&c.host, &c.window, c.arg("uri")?).await },
+    );
+    d.add("lsp_library_sources", |c| async move {
+        lsp_library_sources(&c.host, &c.window, c.arg("request")?, c.arg("uri")?, c.arg("pos")?, c.arg("sources")?)
+            .await
+    });
     d.add("lsp_references", |c| async move {
         let on_partial = c.sender("onPartial")?;
         lsp_references(
@@ -2016,6 +2227,55 @@ mod tests {
             ["/app/_ide_helper_models.php", "/app/.phpstorm.meta.php"]
         );
         assert!(without_generated_helpers(Vec::new()).is_empty());
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn plugins_file_actions_confine_content_writes_and_preserve_link_entries() {
+        use ide_core::FileEdit;
+        use ide_plugin::{CodeAction, FileOperation};
+        let tmp = tempfile::tempdir().unwrap();
+        let root = tmp.path().join("proj");
+        std::fs::create_dir(&root).unwrap();
+        let root = dunce::canonicalize(root).unwrap();
+        let outside = tmp.path().join("outside.txt");
+        std::fs::write(&outside, "unchanged").unwrap();
+        std::fs::write(root.join("target.txt"), "inside").unwrap();
+        for (name, target) in [
+            ("outside", outside.clone()),
+            ("dangling", tmp.path().join("missing.txt")),
+            ("inside", root.join("target.txt")),
+        ] {
+            std::os::unix::fs::symlink(target, root.join(name)).unwrap();
+        }
+        let action = |operations, edits| CodeAction {
+            title: "Update files".into(),
+            kind: None,
+            preferred: false,
+            edits,
+            operations,
+            open: Some(root.join("target.txt")),
+            data: None,
+            file_action: true,
+        };
+        for name in ["outside", "dangling"] {
+            let create = FileOperation::Create { path: root.join(name), text: "text".into(), overwrite: true };
+            assert!(plugin_file_edits(&root, &action(vec![create], Vec::new())).is_err());
+            let edits = vec![(root.join(name), vec![TextEdit { range: Range::default(), new_text: "text".into() }])];
+            assert!(plugin_file_edits(&root, &action(Vec::new(), edits)).is_err());
+        }
+        let create = FileOperation::Create { path: root.join("inside"), text: "text".into(), overwrite: true };
+        let (files, _) = plugin_file_edits(&root, &action(vec![create], Vec::new())).unwrap();
+        assert!(matches!(&files[0], FileEdit::Create { path, .. } if **path == root.join("target.txt")));
+        let operations = vec![
+            FileOperation::Rename { from: root.join("outside"), to: root.join("dangling") },
+            FileOperation::Delete { path: root.join("outside") },
+        ];
+        let (files, _) = plugin_file_edits(&root, &action(operations, Vec::new())).unwrap();
+        assert!(matches!(&files[0], FileEdit::Rename { from, to }
+            if **from == root.join("outside") && **to == root.join("dangling")));
+        assert!(matches!(&files[1], FileEdit::Delete { path, .. } if **path == root.join("outside")));
+        assert_eq!(std::fs::read_to_string(outside).unwrap(), "unchanged");
     }
 
     #[test]

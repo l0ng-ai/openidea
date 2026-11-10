@@ -38,6 +38,21 @@ describe("focus after popups", () => {
     dispose();
   });
 
+  it("leaves the caret to the next editor when focus moves between editors", () => {
+    document.body.innerHTML = `<div class="cm-content" contenteditable="true" tabindex="0">first</div><div class="cm-content" contenteditable="true" tabindex="0">second</div>`;
+    const [first, second] = document.querySelectorAll<HTMLElement>(".cm-content");
+    const dispose = installFocusTracking(() => {});
+    first!.focus();
+    document.getSelection()!.collapse(first!.firstChild, 3);
+    let caretLeft: Node | null = null;
+    const probe = () => (caretLeft = document.getSelection()!.anchorNode);
+    document.addEventListener("focusout", probe);
+    second!.focus();
+    document.removeEventListener("focusout", probe);
+    expect(caretLeft).toBe(first!.firstChild);
+    dispose();
+  });
+
   it("drops the editor's caret when focus moves to a menu, so focusing the editor again cannot scroll to it", () => {
     document.body.innerHTML = `<div class="cm-content" contenteditable="true" tabindex="0">first line</div><button id="other">x</button>`;
     const editor = document.querySelector<HTMLElement>(".cm-content")!;

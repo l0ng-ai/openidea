@@ -366,6 +366,35 @@ fn manager_at(dir: &Path, models_file: &Path, agent: Arc<FakeAgent>) -> AgentMan
     )
 }
 
+#[tokio::test(flavor = "multi_thread")]
+async fn saved_conversation_reads_do_not_start_or_load_the_agent() {
+    let tmp = tempfile::tempdir().unwrap();
+    let agent = Arc::new(FakeAgent::default());
+    let mgr = manager(tmp.path(), agent.clone());
+    let task = mgr
+        .create(NewAgentTask {
+            project_root: None,
+            prompt: text("Review the saved conversation"),
+            provider: "claude".into(),
+            config: Vec::new(),
+            isolation: Isolation::Local,
+            base: None,
+        })
+        .await
+        .unwrap();
+    wait_for(&mgr, &task.id, AgentStatus::NeedsInput).await;
+    mgr.shutdown();
+    let restored_agent = Arc::new(FakeAgent::default());
+    let restored = manager(tmp.path(), restored_agent.clone());
+    assert!(!restored.entries(&task.id, None).unwrap().is_empty());
+    assert!(restored_agent.calls.lock().is_empty());
+    assert!(restored.entries("missing-task", None).is_err());
+    assert!(restored.entries(&task.id, Some("missing-subagent".into())).is_err());
+    restored.task(&task.id).unwrap().state.lock().conversation = Conversation::default();
+    assert!(restored.entries(&task.id, None).unwrap().is_empty());
+    restored.shutdown();
+}
+
 #[cfg(unix)]
 #[tokio::test(flavor = "multi_thread")]
 async fn claude_commands_before_session_are_fetched_once_and_saved() {
@@ -2144,6 +2173,49 @@ async fn reload_providers_updates_registry_install_clears_stale_probes_and_notif
 
     let probe = mgr.probe("copilot", false).await.unwrap();
     assert!(probe.error.is_none());
+}
+
+/// A session report that changes the cached provider config notifies subscribers,
+/// so the composer re-lists models without waiting for the next task (#1490).
+/// Reports that change nothing stay silent.
+#[tokio::test(flavor = "multi_thread")]
+async fn remembered_config_changes_notify_subscribers_once() {
+    let tmp = tempfile::tempdir().unwrap();
+    let mgr = manager(tmp.path(), Arc::new(FakeAgent::default()));
+    let events = Arc::new(Mutex::new(Vec::new()));
+    let sink = events.clone();
+    mgr.subscribe(Arc::new(move |e| sink.lock().push(e)));
+    events.lock().clear();
+
+    let reported = config::options_of(&json!({ "configOptions": [
+        { "id": "model", "category": "model", "type": "select", "currentValue": "default",
+          "options": [{ "value": "default" }, { "value": "custom-opus" }] },
+    ] }));
+    mgr.shared.remember("claude", Some(&reported), None, Some("default"));
+    assert!(
+        events.lock().iter().any(|ev| matches!(ev, AgentEvent::Providers)),
+        "a first report changing the cache notifies subscribers"
+    );
+    events.lock().clear();
+
+    // The same report again: the cache is unchanged, so subscribers hear nothing.
+    mgr.shared.remember("claude", Some(&reported), None, Some("default"));
+    assert!(events.lock().is_empty(), "an unchanged report must stay silent");
+
+    // A changed model list notifies again, and providers() serves the new list.
+    let updated = config::options_of(&json!({ "configOptions": [
+        { "id": "model", "category": "model", "type": "select", "currentValue": "default",
+          "options": [{ "value": "default" }, { "value": "custom-opus" }, { "value": "custom-sonnet" }] },
+    ] }));
+    mgr.shared.remember("claude", Some(&updated), None, Some("default"));
+    assert!(
+        events.lock().iter().any(|ev| matches!(ev, AgentEvent::Providers)),
+        "a changed model list notifies subscribers"
+    );
+    let claude = mgr.providers().into_iter().find(|p| p.id == "claude").unwrap();
+    let model = claude.config.iter().find(|o| o.category.as_deref() == Some("model")).unwrap();
+    let values: Vec<_> = model.values.iter().map(|v| v.value.as_str()).collect();
+    assert_eq!(values, ["default", "custom-opus", "custom-sonnet"]);
 }
 
 #[tokio::test(flavor = "multi_thread")]

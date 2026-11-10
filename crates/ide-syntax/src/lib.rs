@@ -33,7 +33,7 @@ pub use jvm::{JvmPresentation, JvmTypeKind, jvm_type_header};
 pub use types::*;
 
 use ide_core::{CancellationToken, DocId, IdeError, LanguageId, Pos, Range};
-use ide_language::{ParsedTree, SyntaxCache, TreeError};
+use ide_language::{ParsedTree, Syntax, SyntaxCache, TreeError, shift_range};
 use kinds::Kinds;
 use lines::Lines;
 use std::sync::Arc;
@@ -143,8 +143,15 @@ impl StructureService {
 
     /// What the service can answer for `language`.
     pub fn support(&self, language: &LanguageId) -> StructureSupport {
-        match self.cache.syntax().grammar_name(language) {
-            Some(g) => StructureSupport { tree: true, locals: kinds::locals_source(g).is_some() },
+        let syn = self.cache.syntax();
+        // Web containers (Vue SFC / Svelte / JSP have no grammar of their own)
+        // answer from the HTML tree; inline <script> regions add the block
+        // grammar's tables — TypeScript / JavaScript ship locals.scm — so both
+        // capabilities are on whenever HTML is.
+        let g =
+            syn.grammar_name(language).or_else(|| (syn.web_grammar_name(language) == Some("html")).then_some("html"));
+        match g {
+            Some(g) => StructureSupport { tree: true, locals: kinds::locals_source(g).is_some() || g == "html" },
             None => StructureSupport::default(),
         }
     }
@@ -157,6 +164,17 @@ impl StructureService {
         range: Range,
         cancel: &CancellationToken,
     ) -> StructureResult<Option<NodeAt>> {
+        let bytes = Lines::new(snap.text).bytes(range);
+        if let Some(at) = self.with_script_tree(snap, bytes, cancel, |cx, local, base| {
+            Ok(nodes::node_at(cx, local).map(|at| shift_node_at(at, base)))
+        })? {
+            return Ok(at);
+        }
+        // Outside any <script> region a web container (template markup) has no
+        // identifier to offer: an empty answer, not an error.
+        if self.web_container(snap.language) {
+            return Ok(None);
+        }
         self.run(snap, cancel, |cx| Ok(nodes::node_at(cx, range)))
     }
 
@@ -178,6 +196,17 @@ impl StructureService {
 
     /// Scope analysis for the identifier at `pos` (`locals.scm`).
     pub fn locals(&self, snap: &Snapshot, pos: Pos, cancel: &CancellationToken) -> StructureResult<Locals> {
+        let byte = Lines::new(snap.text).byte(pos);
+        if let Some(locals) = self.with_script_tree(snap, (byte, byte), cancel, |cx, local, base| {
+            locals::locals(cx, local.start).map(|l| shift_locals(l, base))
+        })? {
+            return Ok(locals);
+        }
+        if self.web_container(snap.language) {
+            // Template markup: no TypeScript identifier here; the frontend
+            // treats `noIdentifier` as "nothing at this position".
+            return Ok(Locals::NoIdentifier);
+        }
         self.run(snap, cancel, |cx| locals::locals(cx, pos))
     }
 
@@ -255,6 +284,62 @@ impl StructureService {
         Ok(ranges)
     }
 
+    /// Whether `language` is an HTML container without a grammar of its own
+    /// (Vue SFC / Svelte / JSP): structure answers come from the HTML tree
+    /// plus the inline `<script>` regions' block grammars.
+    fn web_container(&self, language: &LanguageId) -> bool {
+        let syn = self.cache.syntax();
+        syn.grammar_name(language).is_none() && syn.web_grammar_name(language) == Some("html")
+    }
+
+    /// Runs `f` on the block grammar's tree when one of the document's inline
+    /// `<script>` regions covers `bytes`; `f` sees the region's `Ctx`, the
+    /// query converted into region coordinates, and the region's document
+    /// `base`. `Ok(None)` when no region covers `bytes`.
+    fn with_script_tree<R>(
+        &self,
+        snap: &Snapshot,
+        bytes: (usize, usize),
+        cancel: &CancellationToken,
+        f: impl FnOnce(&Ctx, Range, Pos) -> StructureResult<R>,
+    ) -> StructureResult<Option<R>> {
+        if cancel.is_cancelled() {
+            return Err(StructureError::Cancelled);
+        }
+        let cancelled = || cancel.is_cancelled();
+        let syn = self.cache.syntax();
+        if syn.web_grammar_name(snap.language) != Some("html") {
+            return Ok(None);
+        }
+        let extract = |p: ParsedTree<'_>| Syntax::script_regions_of(p.tree, p.text);
+        let regions = match snap.doc {
+            Some(doc) if syn.grammar_name(snap.language).is_some() => {
+                self.cache.with_parsed(doc, snap.language, snap.version, snap.text, &cancelled, extract)
+            }
+            _ => syn.with_parsed(&LanguageId::new("html"), snap.text, &cancelled, extract),
+        };
+        let Some(region) = regions?.into_iter().find(|r| bytes.0 >= r.base && bytes.1 <= r.base + r.text.len()) else {
+            return Ok(None);
+        };
+        let base = Lines::new(snap.text).pos(region.base);
+        let (a, b) = (bytes.0 - region.base, bytes.1 - region.base);
+        syn.with_parsed(&region.language, &region.text, &cancelled, |p| {
+            let cx = Ctx {
+                grammar: p.grammar,
+                language: p.language,
+                tree: p.tree,
+                kinds: Kinds::for_grammar(p.grammar, p.language),
+                lines: Lines::new(p.text),
+                cancel,
+            };
+            let local = Range::new(cx.lines.pos(a), cx.lines.pos(b));
+            f(&cx, local, base)
+        })
+        .map_err(StructureError::from)
+        .and_then(|r| r)
+        .map(Some)
+    }
+
     fn run<R>(
         &self,
         snap: &Snapshot,
@@ -287,4 +372,29 @@ impl StructureService {
 fn utf16_offset(text: &str, pos: Pos) -> u32 {
     let lines = Lines::new(text);
     lines::utf16_len(&text[..lines.byte(pos)])
+}
+
+/// Shifts a `<script>` region's answer to document coordinates (`base` is the
+/// region start): the node and every ancestor move by [`shift_range`].
+fn shift_node_at(at: NodeAt, base: Pos) -> NodeAt {
+    let shift = |n: SyntaxNode| SyntaxNode { range: shift_range(n.range, base), ..n };
+    NodeAt { node: shift(at.node), ancestors: at.ancestors.into_iter().map(shift).collect() }
+}
+
+/// [`shift_node_at`] for a `locals` answer: every range moves (`NotLocal`'s,
+/// the symbol's definition, scope, references and conflicts), names stay.
+fn shift_locals(l: Locals, base: Pos) -> Locals {
+    match l {
+        Locals::NoIdentifier => Locals::NoIdentifier,
+        Locals::NotLocal { name, range, reason } => Locals::NotLocal { name, range: shift_range(range, base), reason },
+        Locals::Local { symbol } => Locals::Local {
+            symbol: LocalSymbol {
+                definition: shift_range(symbol.definition, base),
+                scope: shift_range(symbol.scope, base),
+                references: symbol.references.into_iter().map(|r| shift_range(r, base)).collect(),
+                conflicts: symbol.conflicts.into_iter().map(|r| shift_range(r, base)).collect(),
+                ..symbol
+            },
+        },
+    }
 }

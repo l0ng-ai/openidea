@@ -69,7 +69,8 @@ export function containerDebuggable(
  */
 export function remoteDebugBlocked(config: RunConfig, targets: readonly RuntimeRunTarget[] = allRunTargets()): boolean {
   config = withRunTarget(config);
-  if (!config.target || containerDebuggable(config, targets)) return false;
+  if (!config.target || config.target.startsWith("plugin-target:") || containerDebuggable(config, targets))
+    return false;
   const target = targetName(config, targets) ?? config.target;
   const container = targetOf(config, targets);
   notifications().notify({

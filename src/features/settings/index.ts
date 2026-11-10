@@ -37,7 +37,7 @@ import {
   settingsTitle,
   useSettingsDialog,
 } from "./model/staging";
-import { appearanceToggleActions, zoomActions } from "./appearanceRuntime";
+import { appearanceToggleActions, navigationBarActions, zoomActions } from "./appearanceRuntime";
 import { activateFileTypes } from "./fileTypesRuntime";
 import { trackRuntimeSettings } from "./runtime";
 import { installActionProxies, installSettingsHost } from "./window/bridge";
@@ -124,6 +124,7 @@ export function activate(): () => void {
     registerOverlay({ id: "settings.projectStructure", component: LazyProjectStructureDialog }),
     registerActions(zoomActions()),
     registerActions(appearanceToggleActions()),
+    registerActions(navigationBarActions()),
     registerActions(settingsActions((page, newProjects) => void showSettings(page, newProjects))),
     registerActions([
       {

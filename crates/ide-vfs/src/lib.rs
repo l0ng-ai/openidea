@@ -342,6 +342,8 @@ pub struct FsBatch {
     /// History, deployment or `fsChanged`), but the index lists them and open editors
     /// follow them, like IDEA, where only ignored folders leave the project.
     pub ignored: Vec<PathBuf>,
+    /// Subtrees whose ignore rules changed (including repository-level rules).
+    pub ignore_rules: Vec<PathBuf>,
 }
 
 impl FsBatch {
@@ -352,6 +354,7 @@ impl FsBatch {
             && self.vcs.is_empty()
             && self.excluded_dirs.is_empty()
             && self.ignored.is_empty()
+            && self.ignore_rules.is_empty()
     }
 }
 

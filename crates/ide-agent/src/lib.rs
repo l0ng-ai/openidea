@@ -169,8 +169,10 @@ impl Shared {
                             let commands = config::commands_of(&json!({ "availableCommands": commands }), &spec.id);
                             let options = config::options_of(&json!({ "configOptions": options }));
                             let _ = tokio::task::spawn_blocking(move || {
+                                // Notifies subscribers itself when the discovery
+                                // changed the cached config; unchanged results
+                                // stay silent.
                                 shared.remember_discovered(&spec.id, &options, &commands);
-                                shared.emit(AgentEvent::Providers);
                             })
                             .await;
                         }
@@ -253,6 +255,13 @@ impl Shared {
         {
             tracing::warn!("saving agent settings: {e}");
         }
+        // The cached provider config actually changed (a session report, discovery,
+        // or a turn update): tell subscribers to re-list, so a changed model list
+        // reaches the composer without waiting for the next task (#1490). Unchanged
+        // reports stay silent, so routine session traffic emits nothing. The cache
+        // lock is released first; the sink never runs under it.
+        drop(cache);
+        self.emit(AgentEvent::Providers);
     }
 }
 

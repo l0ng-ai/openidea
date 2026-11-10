@@ -48,6 +48,8 @@ pub struct Settings {
     /// Per language server, by name (`rust-analyzer`): launch and protocol
     /// options on top of the language definition, or a server defined here.
     pub language_servers: BTreeMap<String, LanguageServerSettings>,
+    /// Project language id → server and plugin target. Empty target uses the host.
+    pub language_server_targets: BTreeMap<String, LanguageServerTarget>,
     /// Editor › Inspections profiles.
     pub inspections: InspectionSettings,
     /// Editor › Natural Languages › Spelling.
@@ -137,6 +139,14 @@ impl Default for CMakeProfile {
 pub struct ToolSettings {
     /// Executable to launch instead of the managed / `PATH` one; empty = auto-detect.
     pub path: String,
+}
+
+#[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize, Type)]
+#[serde(default, rename_all = "camelCase")]
+pub struct LanguageServerTarget {
+    pub target: String,
+    /// Empty selects the first configured server for the language.
+    pub server: String,
 }
 
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize, Type)]
@@ -233,6 +243,7 @@ impl Default for Settings {
             external_tools: Vec::new(),
             tools: BTreeMap::new(),
             language_servers: BTreeMap::new(),
+            language_server_targets: BTreeMap::new(),
             inspections: InspectionSettings::default(),
             spelling: SpellingSettings::default(),
             ssh: SshSettings::default(),
@@ -266,6 +277,10 @@ pub struct CustomKeymap {
 pub struct GeneralSettings {
     pub reopen_last_project: bool,
     pub confirm_exit: bool,
+    /// When on, the last window closes instead of showing the Welcome screen.
+    pub close_without_welcome: bool,
+    /// When on, closing a window drops its saved editor tabs, so they are not restored next time.
+    pub close_tabs_with_window: bool,
     /// Where Open… puts a project while one is open: `ask` | `new` | `same` | `attach`.
     pub open_project_in: String,
     /// Initial folder of the Open / Clone dialogs; empty = the OS default.
@@ -281,6 +296,7 @@ pub struct GeneralSettings {
     pub project_name: String,
     /// Where updates come from: `auto` (the CNB mirror for the Chinese UI, else GitHub) | `github` | `cnb`.
     pub update_source: String,
+    pub auto_check_updates: bool,
 }
 
 impl Default for GeneralSettings {
@@ -288,6 +304,8 @@ impl Default for GeneralSettings {
         Self {
             reopen_last_project: true,
             confirm_exit: true,
+            close_without_welcome: false,
+            close_tabs_with_window: false,
             open_project_in: "ask".into(),
             default_project_directory: String::new(),
             save_on_idle: false,
@@ -296,6 +314,7 @@ impl Default for GeneralSettings {
             power_save_mode: false,
             project_name: String::new(),
             update_source: "auto".into(),
+            auto_check_updates: true,
         }
     }
 }
@@ -350,6 +369,21 @@ impl Default for NotificationGroupSettings {
     }
 }
 
+/// Where the Navigation Bar (the file path breadcrumbs) is shown. Mirrors
+/// IDEA's `View | Appearance | Navigation Bar` (Top / Status Bar / Don't show).
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize, Type)]
+#[serde(rename_all = "camelCase")]
+pub enum NavigationBarPosition {
+    /// Above the editor, below the main menu / toolbar.
+    Top,
+    /// In the footer, next to the status bar widgets — the default, matching
+    /// where the bar lived before the three-state choice existed.
+    #[default]
+    StatusBar,
+    /// Not shown at all.
+    Hidden,
+}
+
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize, Type)]
 #[serde(default, rename_all = "camelCase")]
 pub struct AppearanceSettings {
@@ -398,6 +432,9 @@ pub struct AppearanceSettings {
     /// View › Appearance › Toolbar; hidden leaves IDEA's compact window header.
     pub show_main_toolbar: bool,
     pub show_status_bar: bool,
+    /// View › Appearance › Navigation Bar: the file path breadcrumbs, shown in
+    /// the status bar by default, above the editor, or not at all.
+    pub navigation_bar: NavigationBarPosition,
     /// Status bar widgets shown (`true`) or hidden (`false`) by the user
     /// (status bar context menu); widgets not listed use their default.
     pub status_bar_widgets: BTreeMap<String, bool>,
@@ -470,6 +507,7 @@ impl Default for AppearanceSettings {
             widescreen_tool_windows: false,
             show_main_toolbar: true,
             show_status_bar: true,
+            navigation_bar: NavigationBarPosition::StatusBar,
             status_bar_widgets: BTreeMap::new(),
             main_toolbar: None,
         }
@@ -507,6 +545,9 @@ pub struct EditorSettings {
     /// Color Scheme › Language Defaults › Semantic highlighting: local variables and
     /// parameters get a colour derived from their name (IDEA's rainbow identifiers).
     pub semantic_highlighting: bool,
+    /// Docstring markup format whose tags and keywords the Python editor highlights
+    /// (`plain`, `rest`, `epytext`, `google`, `numpy`).
+    pub docstring_format: String,
     /// Color Scheme › Language Defaults › Rainbow brackets: `()`, `[]`, `{}` coloured by depth.
     pub rainbow_brackets: bool,
     pub ligatures: bool,
@@ -551,6 +592,7 @@ impl Default for EditorSettings {
             color_overrides: BTreeMap::new(),
             custom_schemes: BTreeMap::new(),
             semantic_highlighting: false,
+            docstring_format: "rest".into(),
             rainbow_brackets: false,
             ligatures: false,
             fallback_font: String::new(),
@@ -595,6 +637,15 @@ pub struct FileSettings {
     pub file_types: BTreeMap<String, FileTypeAssociation>,
     /// Override File Type: file (project-relative and `/`-separated, or absolute) → language id.
     pub file_type_overrides: BTreeMap<String, String>,
+    /// Compose detection choices, keyed by project-relative file path.
+    pub compose_file_overrides: BTreeMap<String, ComposeFileOverride>,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, Type)]
+#[serde(rename_all = "camelCase")]
+pub enum ComposeFileOverride {
+    Kept,
+    Excluded,
 }
 
 /// One language's file name and hashbang patterns on top of its definition.
@@ -622,6 +673,7 @@ impl Default for FileSettings {
             local_history_max_mb: 512,
             file_types: BTreeMap::new(),
             file_type_overrides: BTreeMap::new(),
+            compose_file_overrides: BTreeMap::new(),
         }
     }
 }
@@ -643,6 +695,7 @@ pub struct LanguagesSettings {
     pub java: JavaSettings,
     pub ruby: RubySettings,
     pub markdown: MarkdownSettings,
+    pub arduino: ArduinoSettings,
 }
 
 impl Default for LanguagesSettings {
@@ -664,8 +717,20 @@ impl Default for LanguagesSettings {
             java: JavaSettings::default(),
             ruby: RubySettings::default(),
             markdown: MarkdownSettings::default(),
+            arduino: ArduinoSettings::default(),
         }
     }
+}
+
+/// Arduino tool discovery paths and default board FQBN, configured in `settings.toml`.
+#[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize, Type)]
+#[serde(default, rename_all = "camelCase")]
+pub struct ArduinoSettings {
+    pub cli: String,
+    pub clangd: String,
+    pub language_server: String,
+    pub cli_config: String,
+    pub fqbn: String,
 }
 
 /// Languages & Frameworks › Markdown. Like IDEA's, it is application-level only.
@@ -885,6 +950,8 @@ pub struct JavaSettings {
     /// Extra JVM options for the Java language server (jdtls), space-separated
     /// (VS Code's `java.jdt.ls.vmargs`).
     pub jdtls_vm_args: String,
+    /// Share one JDT LS across builds in an ordinary project window; other windows remain separate.
+    pub jdtls_shared: bool,
     /// Build Tools › Maven.
     pub maven: MavenSettings,
     /// Build Tools › Gradle.
@@ -1169,6 +1236,26 @@ mod tests {
     use super::*;
 
     #[test]
+    fn window_close_settings_default_off_and_round_trip() {
+        for old in [r#"{}"#, r#"{"general":{"confirmExit":false}}"#] {
+            let settings: Settings = serde_json::from_str(old).unwrap();
+            assert!(!settings.general.close_without_welcome);
+            assert!(!settings.general.close_tabs_with_window);
+        }
+        for close_window in [false, true] {
+            for close_tabs in [false, true] {
+                let mut settings = Settings::default();
+                settings.general.close_without_welcome = close_window;
+                settings.general.close_tabs_with_window = close_tabs;
+                let json = serde_json::to_value(&settings).unwrap();
+                assert_eq!(json["general"]["closeWithoutWelcome"], close_window);
+                assert_eq!(json["general"]["closeTabsWithWindow"], close_tabs);
+                assert_eq!(serde_json::from_value::<Settings>(json).unwrap().general, settings.general);
+            }
+        }
+    }
+
+    #[test]
     fn cmake_profile_argument_arrays_round_trip() {
         let mut settings = Settings::default();
         assert!(settings.cmake.profiles.is_none());
@@ -1227,6 +1314,21 @@ mod tests {
             assert_eq!(json["appearance"]["uiFontFallback"], family);
             let restored: Settings = serde_json::from_value(json).unwrap();
             assert_eq!(restored.appearance.ui_font_fallback, family);
+        }
+    }
+
+    #[test]
+    fn docstring_format_defaults_and_round_trips() {
+        let old: Settings = serde_json::from_str(r#"{"editor":{"semanticHighlighting":true}}"#).unwrap();
+        assert_eq!(old.editor.docstring_format, "rest");
+        assert_eq!(Settings::default().editor.docstring_format, "rest");
+        for format in ["plain", "rest", "epytext", "google", "numpy"] {
+            let mut settings = Settings::default();
+            settings.editor.docstring_format = format.into();
+            let json = serde_json::to_value(&settings).unwrap();
+            assert_eq!(json["editor"]["docstringFormat"], format);
+            let restored: Settings = serde_json::from_value(json).unwrap();
+            assert_eq!(restored.editor.docstring_format, format);
         }
     }
 
@@ -1463,6 +1565,26 @@ mod maven_linkage_tests {
         let encoded = serde_json::to_string(&settings).unwrap();
         assert!(encoded.contains("\"threads\":\"2C\""));
         assert_eq!(serde_json::from_str::<MavenSettings>(&encoded).unwrap(), settings);
+    }
+}
+
+#[cfg(test)]
+mod java_settings_tests {
+    use super::*;
+
+    #[test]
+    fn shared_jdtls_defaults_off_and_round_trips() {
+        for old in [r#"{}"#, r#"{"jdk":"/jdk"}"#] {
+            let java: JavaSettings = serde_json::from_str(old).unwrap();
+            assert!(!java.jdtls_shared);
+        }
+        for shared in [false, true] {
+            let java = JavaSettings { jdtls_shared: shared, ..JavaSettings::default() };
+            let json = serde_json::to_value(&java).unwrap();
+            assert_eq!(json["jdtlsShared"], serde_json::json!(shared));
+            assert_eq!(serde_json::from_value::<JavaSettings>(json).unwrap(), java);
+        }
+        assert!(serde_json::from_str::<JavaSettings>(r#"{"jdtlsShared":"true"}"#).is_err());
     }
 }
 

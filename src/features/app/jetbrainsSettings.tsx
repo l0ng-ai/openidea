@@ -178,7 +178,7 @@ export async function importJetBrainsSettings(path: string) {
   if (!plan.writes.length) {
     notifications().notify({
       level: "warning",
-      title: "No settings OpenIDEA can import were found in this archive",
+      title: "No settings OpenIDEA can import were found",
       key: "app.settingsImport",
     });
     return;

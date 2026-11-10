@@ -1100,27 +1100,37 @@ async function pageUntil(find: () => boolean) {
 export async function revealCommit(id: string, repo = currentRepo(), tab = "log") {
   if (useGitLog.getState().logTabs.find((t) => t.id === tab)?.location === "editor") showLogView(tab);
   else selectGitTab(tab);
-  const f = useGitLog.getState().filters;
-  const filtered = hasFilters(f);
+  if (tab === "log") initLogBranchFilter();
+  const filtered = hasFilters(useGitLog.getState().filters);
+  if (filtered) useGitLog.setState({ filters: emptyFilters() });
+  const { filters, selected } = useGitLog.getState();
+  const root = useVcs.getState().root;
+  const valid = () => {
+    const state = useGitLog.getState();
+    return (
+      useVcs.getState().root === root &&
+      state.shownLog === tab &&
+      state.filters === filters &&
+      state.selected === selected
+    );
+  };
   const find = () =>
     useGitLog
       .getState()
       .commits.find((c) => (!commitRepo(c) || commitRepo(c) === repo) && (c.id === id || c.id.startsWith(id)));
-  if (filtered) {
-    useGitLog.setState({ filters: emptyFilters() });
-    const load = reloadLog();
-    const generation = useGitLog.getState().generation;
-    await load;
-    if (useGitLog.getState().generation !== generation) return;
-  } else if (!useGitLog.getState().commits.length) {
-    const load = reloadLog();
-    const generation = useGitLog.getState().generation;
-    await load;
-    if (useGitLog.getState().generation !== generation) return;
+  if (!useGitLog.getState().commits.length || filtered) {
+    await reloadLog();
+    // The log's first mount may replace this request with its own initial load.
+    while (valid()) {
+      const pending = loadPromises.get(tab);
+      if (!pending) break;
+      await pending;
+    }
+    if (!valid()) return;
   }
   const generation = useGitLog.getState().generation;
   await pageUntil(() => !!find());
-  if (useGitLog.getState().generation !== generation) return;
+  if (!valid() || useGitLog.getState().generation !== generation) return;
   const hit = find();
   if (hit) selectCommit(commitKey(hit), true);
 }

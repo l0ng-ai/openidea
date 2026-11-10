@@ -3,7 +3,8 @@
 
 use crate::discover::{project_venv_python, workspace_tsdk};
 use crate::exec::{path_with, search_path, which};
-use crate::{angular, godot, pinned, vue};
+use crate::npm::{has_ts_api, own_typescript};
+use crate::{angular, astro, godot, pinned, vue};
 use crate::{bin_dir, exe, venv_of};
 use ide_core::settings::{InspectionLevel, InspectionSettings, LanguageServerSettings, Settings};
 use ide_core::version_managers::Tool;
@@ -128,6 +129,34 @@ pub(crate) fn rust_bin(root: &Path, s: &Settings) -> Option<(PathBuf, Option<Str
 pub(crate) fn goroot(root: &Path, s: &Settings) -> Option<PathBuf> {
     setting_path(root, &s.languages.go.goroot)
         .or_else(|| pinned::pinned_install(root, Tool::Go).and_then(|(dir, _)| pinned::goroot_in_install(&dir)))
+}
+
+/// Runtime choices for package-manager based IDE tool installs.
+#[derive(Default)]
+pub struct ToolInstallEnvironment {
+    pub commands: std::collections::BTreeMap<String, PathBuf>,
+    pub env: std::collections::BTreeMap<String, String>,
+}
+
+/// Uses the same configured / project-pinned SDKs as Run and language servers.
+/// Build tags and target OS settings intentionally do not apply to host tools.
+pub fn tool_install_environment(root: &Path, s: &Settings) -> ToolInstallEnvironment {
+    let mut runtime = ToolInstallEnvironment::default();
+    if let Some(go) = goroot(root, s) {
+        runtime.commands.insert("go".into(), go.join("bin").join(exe("go")));
+        runtime.env.insert("GOROOT".into(), go.to_string_lossy().into_owned());
+    }
+    if let Some(node) = node_dir(root, s) {
+        let node = setting_path(root, &s.languages.node.interpreter).unwrap_or_else(|| node.join(exe("node")));
+        runtime.commands.insert("node".into(), node);
+    }
+    if let Some(ruby) = ruby_interpreter(root, s) {
+        runtime.commands.insert("ruby".into(), ruby);
+    }
+    if let Some(python) = python_interpreter(root, s) {
+        runtime.commands.insert("python".into(), python);
+    }
+    runtime
 }
 
 /// A JDK setting: a JDK home, its `bin` or its `bin/java`.
@@ -523,6 +552,63 @@ pub fn maven_local_repository(root: &Path, s: &Settings) -> Option<PathBuf> {
     })
 }
 
+fn xml_escape(text: &str) -> String {
+    text.replace('&', "&amp;").replace('<', "&lt;").replace('>', "&gt;")
+}
+
+/// Inserts `<localRepository>` right after the `<settings>` open tag.
+fn inject_local_repository(settings_xml: &str, repo: &str) -> Option<String> {
+    let start = settings_xml.find("<settings")?;
+    let end = settings_xml[start..].find('>')? + start;
+    let mut out = String::with_capacity(settings_xml.len() + repo.len() + 40);
+    out.push_str(&settings_xml[..=end]);
+    out.push_str("<localRepository>");
+    out.push_str(&xml_escape(repo));
+    out.push_str("</localRepository>");
+    out.push_str(&settings_xml[end + 1..]);
+    Some(out)
+}
+
+fn write_m2e_settings(root: &Path, text: &str) -> Option<PathBuf> {
+    let file = ide_core::project_dir::path(root, "maven-settings.xml");
+    if let Some(parent) = file.parent() {
+        std::fs::create_dir_all(parent).ok()?;
+    }
+    match std::fs::read_to_string(&file) {
+        Ok(existing) if existing == text => {}
+        _ => std::fs::write(&file, text).ok()?,
+    }
+    Some(file)
+}
+
+/// The user settings file m2e (the JDTLS Maven import) should read: the
+/// configured `settings.xml` when it already declares `<localRepository>`,
+/// else a derived copy under `<root>/.openidea/` with the configured local
+/// repository injected. m2e resolves the local repository from the settings
+/// XML, not from `-Dmaven.repo.local`, so without this the import downloads
+/// into `~/.m2/repository` even when the IDE's own `mvn` runs honor the
+/// configured path (#1739). `None` = m2e's default applies.
+pub fn maven_user_settings_for_m2e(root: &Path, s: &Settings) -> Option<PathBuf> {
+    let m = &s.languages.java.maven;
+    if let Some(file) = setting_path(root, &m.user_settings) {
+        let text = std::fs::read_to_string(&file).ok()?;
+        if crate::java::xml_value(&crate::lombok::strip_xml_comments(&text), "localRepository").is_some() {
+            return Some(file);
+        }
+        if let Some(repo) = setting_path(root, &m.local_repository) {
+            let merged = inject_local_repository(&text, &repo.to_string_lossy())?;
+            if let Some(derived) = write_m2e_settings(root, &merged) {
+                return Some(derived);
+            }
+        }
+        return Some(file);
+    }
+    let repo = setting_path(root, &m.local_repository)?;
+    let minimal =
+        format!("<settings><localRepository>{}</localRepository></settings>", xml_escape(&repo.to_string_lossy()));
+    write_m2e_settings(root, &minimal)
+}
+
 /// TypeScript `lib` directory for the selected version; `None` = the server's bundled one.
 pub fn tsdk(root: &Path, s: &Settings) -> Option<PathBuf> {
     match s.languages.typescript.version.trim() {
@@ -861,18 +947,22 @@ pub fn configure_server(cfg: &mut LanguageServerConfig, root: &Path, server_root
         // The jdtls launcher forwards `--jvm-arg=` values to the JVM it starts.
         let args = s.languages.java.jdtls_vm_args.split_whitespace().map(|a| format!("--jvm-arg={a}"));
         cfg.args.extend(args);
-        // m2e (the Maven import) reads mirrors, servers and `<localRepository>` from it.
-        if let Some(file) = setting_path(root, &s.languages.java.maven.user_settings) {
+        // m2e (the Maven import) reads mirrors, servers and `<localRepository>`
+        // from the settings file — never from `-Dmaven.repo.local`. The
+        // derived file carries the configured local repository so the import
+        // downloads where the IDE's own `mvn` runs do (#1739).
+        if let Some(file) =
+            maven_user_settings_for_m2e(root, s).or_else(|| setting_path(root, &s.languages.java.maven.user_settings))
+        {
             let file = file.to_string_lossy();
             merge_init_options(
                 cfg,
                 json!({ "settings": { "java": { "configuration": { "maven": { "userSettings": file } } } } }),
             );
         }
-        // m2e resolves and downloads into `maven.repo.local`; without it the
-        // embedded Maven falls back to ~/.m2 even when the IDE's own `mvn`
-        // runs honor the configured local repository. A `-Dmaven.repo.local`
-        // the user put in their own jdtls VM options wins.
+        // The JVM system property is still forwarded for JVM-level consumers,
+        // but it is the settings file above that m2e honors. A
+        // `-Dmaven.repo.local` the user put in their own jdtls VM options wins.
         if let Some(repo) = maven_local_repository(root, s) {
             let arg = format!("-Dmaven.repo.local={}", repo.to_string_lossy());
             let taken = cfg.args.iter().enumerate().any(|(i, a)| {
@@ -958,6 +1048,12 @@ pub fn configure_server(cfg: &mut LanguageServerConfig, root: &Path, server_root
     if name == angular::SERVER {
         configure_angular(cfg, root, server_root, s);
     }
+    if name == astro::SERVER {
+        astro::configure(cfg, root, server_root, s);
+    }
+    if name == crate::arduino::SERVER {
+        crate::arduino::configure(cfg, root, server_root, s);
+    }
 }
 
 /// The servers `language` uses after Settings › Language Servers: the
@@ -1014,6 +1110,8 @@ fn custom_server(name: &str, ls: &LanguageServerSettings) -> LanguageServerConfi
         tsserver_project_extras: Default::default(),
         resync_on_configuration: false,
         pinned: None,
+        target: None,
+        target_key: None,
     }
 }
 
@@ -1043,7 +1141,13 @@ pub fn server_protocol_overrides(cfg: &mut LanguageServerConfig, s: &Settings) {
         cfg.code_action_kinds = kinds.clone();
     }
     if let Some(options) = &ls.initialization_options {
+        let astro_tsdk = (cfg.name == astro::SERVER)
+            .then(|| cfg.initialization_options.as_ref()?.get("typescript")?.get("tsdk")?.as_str().map(str::to_owned))
+            .flatten();
         merge_init_options(cfg, options.clone());
+        if let Some(tsdk) = astro_tsdk {
+            merge_init_options(cfg, json!({ "typescript": { "tsdk": tsdk } }));
+        }
     }
     if let Some(settings) = &ls.settings {
         let mut current = cfg.settings.take().filter(Value::is_object).unwrap_or_else(|| json!({}));
@@ -1056,10 +1160,10 @@ pub fn server_protocol_overrides(cfg: &mut LanguageServerConfig, s: &Settings) {
 /// `require('typescript')`): the selected version, else its own, else the
 /// project's — whichever still has the language-service API.
 fn configure_vue_typescript(cfg: &mut LanguageServerConfig, root: &Path, server_root: &Path, s: &Settings) {
-    let selected = tsdk(server_root, s).or_else(|| tsdk(root, s)).filter(|l| vue::has_ts_api(l));
+    let selected = tsdk(server_root, s).or_else(|| tsdk(root, s)).filter(|l| has_ts_api(l));
     let package = vue::server_package(&cfg.command, &search_path());
-    let own = package.as_deref().and_then(vue::own_typescript);
-    let workspace = || workspace_tsdk(server_root).or_else(|| workspace_tsdk(root)).filter(|l| vue::has_ts_api(l));
+    let own = package.as_deref().and_then(own_typescript);
+    let workspace = || workspace_tsdk(server_root).or_else(|| workspace_tsdk(root)).filter(|l| has_ts_api(l));
     let lib = match selected {
         Some(lib) => Some(lib),
         None if own.is_some() => None,

@@ -139,3 +139,40 @@ it.each(["Trust Project", "Preview in Restricted Mode"])(
     expect(useProject.getState().project).toBe(project);
   },
 );
+
+it.each([false, true])("recovers an attached member whose trust is lost (decided=%s)", async (decided) => {
+  useProject.setState({
+    project: {
+      root: "/primary",
+      name: "primary",
+      trusted: false,
+      isGit: false,
+      settings: {},
+      workspace: { version: 1, name: "primary", projects: ["/primary", "/other"] },
+    },
+  });
+  status.mockImplementation(async (root: string) => ({
+    status: "ok",
+    data: {
+      root,
+      trusted: root === "/primary",
+      decided: root === "/primary" || decided,
+    },
+  }));
+  const Banner = useContributions.getState().workbenchBanners.get("project.restrictedMode")!.component;
+  render(
+    <>
+      <Banner />
+      <OverlayHost />
+    </>,
+  );
+  const button = await screen.findByRole("button", { name: "Trust Project" });
+  await screen.findByText("/other");
+  fireEvent.click(button);
+  const dialog = await screen.findByRole("dialog", { name: "Trust and Open Project?" });
+  expect(dialog).toHaveTextContent("/other");
+  expect(decide).not.toHaveBeenCalled();
+  fireEvent.click(screen.getAllByRole("button", { name: "Trust Project" }).at(-1)!);
+  await act(async () => {});
+  expect(decide).toHaveBeenCalledWith("/other", true, false);
+});

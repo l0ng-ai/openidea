@@ -26,8 +26,7 @@ import { TitleBar } from "@/workbench/TitleBar";
 import { WindowResizeHandles } from "@/workbench/WindowResizeHandles";
 import { useApplyTheme, windowBackgroundHex } from "@/workbench/theme";
 import { DiffEditor } from "./DiffEditor";
-import { DIFF_KIND, diffInput, type DiffData, type DiffSide } from "./diffInput";
-import { baseName } from "./model";
+import { DIFF_KIND, diffInput, diffTitle, type DiffData, type DiffSide } from "./diffInput";
 import { refreshNow, useVcs } from "./store";
 import styles from "./common.module.css";
 
@@ -52,11 +51,11 @@ function toDiffData(launch: DiffLaunch): DiffData {
   };
 }
 
-/** IDEA's caption for a diff opened from the Commit tool window. */
+/** The project, file and revisions shown in the native caption. */
 function diffCaption(data: DiffData): string {
   const project = useDiff.getState().project;
-  const file = baseName(data.path);
-  return tx`${project} - Commit: ${file}`;
+  const file = diffTitle(data);
+  return tx`${project} - Diff: ${file}`;
 }
 
 function showCaption(caption: string) {
@@ -176,9 +175,9 @@ export function activateDiffWindow(parent: string): () => void {
     await savingReady;
     await restoreRemote();
     const launch = (await commands.windowTakeLaunch())?.diffWindow;
-    if (!launch) throw new Error("Missing diff request");
+    if (!launch) throw new Error(tx("Missing diff request"));
     const project = await commands.projectCurrent();
-    if (!project) throw new Error("The diff's project is no longer open");
+    if (!project) throw new Error(tx("The diff’s project is no longer open"));
     // Settings only: restoring the project's editor session here would overwrite the main window's tabs.
     useProject.setState({ settings: project.settings });
     const roots = await call(commands.vcsRoots());

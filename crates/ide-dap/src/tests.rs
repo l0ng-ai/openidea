@@ -14,6 +14,93 @@ use tokio::io::{AsyncRead, AsyncWrite, AsyncWriteExt, BufReader};
 
 type Log = Arc<Mutex<Vec<Value>>>;
 
+#[cfg(windows)]
+#[test]
+#[ignore = "child process for Windows stop tests"]
+fn windows_debuggee_process() {
+    if std::env::var_os("OPENIDEA_TEST_DEBUGGEE").is_none() {
+        return;
+    }
+    if std::env::var("OPENIDEA_TEST_DEBUGGEE").unwrap() == "wrapper" {
+        let mut command = std::process::Command::new(std::env::current_exe().unwrap());
+        let mut child = ide_core::process::prepare(&mut command)
+            .args(["--exact", "tests::windows_debuggee_process", "--ignored", "--nocapture"])
+            .env("OPENIDEA_TEST_DEBUGGEE", "leaf")
+            .spawn()
+            .unwrap();
+        let _ = child.wait();
+        return;
+    }
+    let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+    println!("LISTENING {}", listener.local_addr().unwrap().port());
+    std::thread::sleep(Duration::from_secs(60));
+}
+
+#[cfg(windows)]
+#[tokio::test]
+async fn windows_stop_releases_the_debuggees_port_before_returning() {
+    use std::io::BufRead;
+    use std::sync::atomic::Ordering;
+
+    struct Child(std::process::Child, Option<ide_core::process::ProcessTree>);
+    impl Drop for Child {
+        fn drop(&mut self) {
+            if let Some(tree) = &self.1 {
+                tree.terminate();
+            }
+            let _ = self.0.kill();
+            let _ = self.0.wait();
+        }
+    }
+
+    for (second_stop, wrapper, supports_terminate) in
+        [(false, false, false), (true, false, false), (true, true, false), (true, true, true)]
+    {
+        let mut command = std::process::Command::new(std::env::current_exe().unwrap());
+        ide_core::process::prepare(&mut command)
+            .args(["--exact", "tests::windows_debuggee_process", "--ignored", "--nocapture"])
+            .env("OPENIDEA_TEST_DEBUGGEE", if wrapper { "wrapper" } else { "leaf" })
+            .stdout(std::process::Stdio::piped());
+        let mut child = Child(command.spawn().unwrap(), None);
+        let port: u16 = std::io::BufReader::new(child.0.stdout.take().unwrap())
+            .lines()
+            .map(Result::unwrap)
+            .find_map(|line| line.split("LISTENING ").nth(1).and_then(|p| p.parse().ok()))
+            .unwrap();
+        let pid = child.0.id();
+        child.1 = Some(ide_core::process::ProcessTree::capture(pid));
+        let h = harness(Script { debuggee_pid: Some(pid), supports_terminate, ..Default::default() });
+        let id = h.start(config()).await.unwrap();
+        let session = h.manager.session(id).unwrap();
+        while session.debuggee_pid.load(Ordering::Acquire) != i64::from(pid) {
+            tokio::time::sleep(Duration::from_millis(10)).await;
+        }
+        let stop = tokio::spawn({
+            let manager = h.manager.clone();
+            async move { manager.stop(id).await }
+        });
+        let deadline = std::time::Instant::now() + Duration::from_secs(5);
+        while session.stop_tree.lock().is_none() && !stop.is_finished() {
+            assert!(std::time::Instant::now() < deadline, "Stop did not capture the program tree");
+            tokio::time::sleep(Duration::from_millis(10)).await;
+        }
+        assert!(!stop.is_finished(), "Stop must wait for the live program");
+        if wrapper {
+            assert!(session.stop_tree.lock().is_some());
+            child.0.kill().unwrap();
+            child.0.wait().unwrap();
+            assert!(std::net::TcpListener::bind(("127.0.0.1", port)).is_err(), "the child still owns its port");
+        }
+        if second_stop {
+            h.manager.stop(id).await.unwrap();
+        }
+        let limit = if second_stop { 10 } else { 25 };
+        tokio::time::timeout(Duration::from_secs(limit), stop).await.unwrap().unwrap().unwrap();
+        assert!(child.0.try_wait().unwrap().is_some(), "Stop returned with the program alive");
+        let _listener = std::net::TcpListener::bind(("127.0.0.1", port)).expect("Stop returned with its port occupied");
+    }
+}
+
 #[derive(Clone)]
 struct Script {
     /// Send a `runInTerminal` reverse request when `launch` arrives.
@@ -953,6 +1040,39 @@ async fn connects_to_running_debug_server_over_tcp() {
     assert!(events.lock().iter().any(|e| matches!(e, IdeEvent::Debug { event: DebugEvent::Started { .. }, .. })));
 }
 
+#[tokio::test]
+async fn delve_adapter_inherits_the_selected_go_environment() {
+    struct CaptureLauncher {
+        inner: FakeLauncher,
+        env: Arc<Mutex<Vec<(String, String)>>>,
+    }
+    impl AdapterLauncher for CaptureLauncher {
+        fn launch(&self, spec: AdapterSpec, reuse: Option<u16>) -> LaunchFuture {
+            *self.env.lock() = spec.env.clone();
+            self.inner.launch(spec, reuse)
+        }
+    }
+    let env = Arc::new(Mutex::new(Vec::new()));
+    let launcher =
+        CaptureLauncher { inner: FakeLauncher { log: Arc::default(), script: Script::default() }, env: env.clone() };
+    let manager = DebugManager::with_launcher(Arc::new(LanguageRegistry::from_configs(Vec::new())), Arc::new(launcher));
+    let (owner, _) = recording_owner("main");
+    let config = LaunchConfig {
+        name: "Go".into(),
+        adapter: "delve".into(),
+        request: "launch".into(),
+        program: Some("/project".into()),
+        args: vec![],
+        cwd: None,
+        env: BTreeMap::from([("PATH".into(), "/chosen/go/bin".into()), ("GOROOT".into(), "/chosen/go".into())]),
+        extra_json: Some(json!({"mode":"debug"}).to_string()),
+    };
+    let id = manager.start(config, owner).await.unwrap();
+    assert!(env.lock().contains(&("PATH".into(), "/chosen/go/bin".into())));
+    assert!(env.lock().contains(&("GOROOT".into(), "/chosen/go".into())));
+    manager.stop(id).await.unwrap();
+}
+
 /// Go Remote / Python remote: the adapter runs on another machine (`dlv --headless`,
 /// `debugpy --listen`); `debugServer: "host:port"` connects there instead of spawning one.
 #[tokio::test]
@@ -1166,6 +1286,7 @@ fn godot_registry(port: u16, command: &str, args: &[&str]) -> Arc<LanguageRegist
         tree_sitter: None,
         language_servers: vec![],
         debugger: Some(ide_language::DebuggerConfig {
+            target_placement: None,
             adapter: "godot".into(),
             command: command.into(),
             args: args.iter().map(|a| (*a).to_owned()).collect(),
@@ -1874,4 +1995,56 @@ async fn rdbg_drains_test_output_after_dap_closes_before_killing_the_process() {
     assert!(events.lock().iter().any(|e| matches!(e,
         IdeEvent::Debug { event: DebugEvent::Output { output, .. }, .. } if output == "test summary\n"
     )));
+}
+
+#[cfg(unix)]
+#[tokio::test]
+async fn cleanup_ends_the_adapter_tree_without_a_process_event() {
+    use tokio::io::AsyncBufReadExt;
+
+    let h = harness(Script::default());
+    let id = h.start(config()).await.unwrap();
+    let session = h.manager.session(id).unwrap();
+    let mut command = tokio::process::Command::new("python3");
+    ide_core::process::own_group(command.as_std_mut());
+    command
+        .args([
+            "-u",
+            "-c",
+            "import subprocess,sys,time; subprocess.Popen([sys.executable, '-u', '-c', \
+             \"import socket,time; s=socket.socket(); s.bind(('127.0.0.1',0)); s.listen(); \
+             print(s.getsockname()[1],flush=True); time.sleep(60)\"]); time.sleep(60)",
+        ])
+        .stdout(std::process::Stdio::piped());
+    let mut child = command.spawn().unwrap();
+    let mut lines = BufReader::new(child.stdout.take().unwrap()).lines();
+    let port: u16 = lines.next_line().await.unwrap().unwrap().parse().unwrap();
+    assert!(std::net::TcpListener::bind(("127.0.0.1", port)).is_err(), "the descendant holds the port");
+    let pid = child.id().unwrap();
+    *session.adapter_process.lock() = Some(child);
+    session.kill_processes();
+    let deadline = Instant::now() + Duration::from_secs(3);
+    while std::net::TcpListener::bind(("127.0.0.1", port)).is_err() {
+        if Instant::now() >= deadline {
+            ide_core::process::kill_tree_of(pid);
+            panic!("adapter cleanup left its descendant holding the port");
+        }
+        tokio::time::sleep(Duration::from_millis(20)).await;
+    }
+    h.manager.stop(id).await.unwrap();
+}
+
+#[cfg(unix)]
+#[tokio::test]
+async fn stop_detaches_from_an_attached_program() {
+    let mut child = std::process::Command::new("sleep").arg("60").spawn().unwrap();
+    let h = harness(Script { debuggee_pid: Some(child.id()), ..Default::default() });
+    let id = h.start(LaunchConfig { request: "attach".into(), ..config() }).await.unwrap();
+    h.manager.stop(id).await.unwrap();
+    let alive = child.try_wait().unwrap().is_none();
+    let _ = child.kill();
+    let _ = child.wait();
+    assert!(alive, "Stop killed the attached program");
+    assert!(!h.commands().contains(&"terminate".to_owned()));
+    assert_eq!(h.request("disconnect")["arguments"]["terminateDebuggee"], false);
 }

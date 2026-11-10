@@ -22,6 +22,7 @@ import {
 } from "./vcs";
 import { activate as terminal } from "./terminal";
 import { activate as run } from "./run";
+import { activate as dotnet } from "./dotnet";
 import { activate as runAnything } from "./run-anything";
 import { activate as macros } from "./macros";
 import { activate as debuggerFeature } from "./debugger";
@@ -71,6 +72,7 @@ const features: Array<[string, Activate]> = [
   ["vcs", vcs],
   ["terminal", terminal],
   ["run", run],
+  ["dotnet", dotnet],
   ["run-anything", runAnything],
   ["macros", macros],
   ["debugger", debuggerFeature],

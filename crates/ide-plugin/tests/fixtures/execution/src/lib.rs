@@ -20,6 +20,32 @@ impl Plugin for Execution {
                 )?;
                 Ok(None)
             }
+            "target-overrides" => {
+                let project = ctx.project().ok_or_else(|| Error::Invalid("no project".into()))?;
+                let workdir_args = match arg {
+                    Some("empty") => Some(vec![]),
+                    Some("own") => Some(vec!["--working-dir={cwd}".into()]),
+                    Some("invalid") => Some(vec!["bad\0arg".into()]),
+                    _ => None,
+                };
+                host::register_run_target_with_overrides(
+                    &project,
+                    &PluginRunTargetWithOverrides {
+                        id: "wrapper".into(),
+                        name: "Execution target".into(),
+                        program: "execution-tool".into(),
+                        args: vec!["wrapped".into()],
+                        workdir_args: vec!["--cwd={cwd}".into()],
+                        container_root: Some("/container".into()),
+                        commands: vec![PluginCommandOverride {
+                            name: "composer".into(),
+                            args: vec!["composer".into()],
+                            workdir_args,
+                        }],
+                    },
+                )?;
+                Ok(None)
+            }
             "untarget" => {
                 host::unregister_run_target(&ctx.project().unwrap(), arg.unwrap_or("wrapper"));
                 Ok(None)
@@ -53,6 +79,7 @@ impl Plugin for Execution {
                 Ok(None)
             }
             "events" => host::storage::get("events"),
+            "validation" => host::storage::get("validation"),
             _ => Err(Error::NotFound(id.into())),
         }
     }
@@ -89,6 +116,17 @@ impl RunConfigurations for Execution {
     }
 }
 impl TestResults for Execution {
+    fn select_tests(&mut self, config: &str, tests: &[Vec<String>]) -> Option<Vec<String>> {
+        match tests.first()?.first()?.as_str() {
+            "none" => return None,
+            "trap" => panic!("selection failed"),
+            "timeout" => loop {
+                std::hint::spin_loop();
+            },
+            _ => {}
+        }
+        Some(std::iter::once(config.to_owned()).chain(tests.iter().map(|p| p.join("::"))).collect())
+    }
     fn parse(&mut self, _: &str, chunk: &str) -> Vec<PluginTestEvent> {
         if chunk == "trap" {
             panic!("parser failed");
@@ -110,4 +148,25 @@ impl TestResults for Execution {
         ]
     }
 }
-register_plugin!(Execution, run_configurations, test_results);
+impl RunTargetValidation for Execution {
+    fn validate(&mut self, project: &str, target: &str, launch: &RunTargetLaunch) -> Result<(), String> {
+        host::storage::set(
+            "validation",
+            &format!("{project}|{target}|{:?}|{}|{}", launch.operation, launch.program, launch.cwd),
+        )
+        .unwrap();
+        match target {
+            "refuse" => Err("Project runtime is stopped".into()),
+            "long-refusal" => Err("x".repeat(10000)),
+            "trap" => panic!("validator failed"),
+            "timeout" => {
+                let _task = host::begin_task("Validation", true);
+                loop {
+                    std::hint::spin_loop();
+                }
+            }
+            _ => Ok(()),
+        }
+    }
+}
+register_plugin!(Execution, run_configurations, test_results, run_target_validation);

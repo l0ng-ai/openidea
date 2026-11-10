@@ -15,8 +15,9 @@ pub async fn debug_start(
     window: Window,
     state: State<'_, AppState>,
     config: LaunchConfig,
+    request: Option<ide_core::RequestId>,
 ) -> IdeResult<DebugSessionId> {
-    ide_host::ops::debug::debug_start(&state.host, window.label(), config).await
+    ide_host::ops::debug::debug_start_request(&state.host, window.label(), config, request).await
 }
 
 #[tauri::command]
@@ -287,6 +288,13 @@ pub async fn debug_data_breakpoint_info(
 #[specta::specta]
 pub async fn debug_attachable_processes(state: State<'_, AppState>) -> IdeResult<Vec<attach::AttachableProcess>> {
     ide_host::ops::debug::debug_attachable_processes(&state.host, "").await
+}
+
+/// A loopback port that is free right now, for a debug agent the launch line starts.
+#[tauri::command]
+#[specta::specta]
+pub async fn debug_free_port(window: Window, state: State<'_, AppState>) -> IdeResult<u16> {
+    ide_host::ops::debug::debug_free_port(&state.host, window.label()).await
 }
 
 /// Remote JVM Debug in listen mode: waits (cancellable through `request`) for the remote

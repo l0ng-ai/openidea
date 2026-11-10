@@ -248,6 +248,7 @@ struct Inner {
     /// Fired by [`Peer::kill`]; stops tasks and kills the child.
     kill: CancellationToken,
     pid: Option<u32>,
+    transform: Option<Arc<dyn MessageTransform>>,
     /// Fired when the reader task has stopped (EOF, error or kill).
     reader_done: CancellationToken,
     /// Fired once the child process has exited and been reaped (after [`Peer::kill`],
@@ -255,11 +256,38 @@ struct Inner {
     exited: CancellationToken,
 }
 
+/// Translates protocol values before serialization and after parsing, including
+/// responses to requests initiated by the server.
+pub trait MessageTransform: Send + Sync + 'static {
+    fn outgoing(&self, value: &mut Value);
+    fn incoming(&self, value: &mut Value);
+}
+
+#[derive(Default)]
+pub struct TransportOptions {
+    pub framing: Framing,
+    pub transform: Option<Arc<dyn MessageTransform>>,
+}
+
+impl From<Framing> for TransportOptions {
+    fn from(framing: Framing) -> Self {
+        Self { framing, transform: None }
+    }
+}
+
 impl Inner {
     fn send_value(&self, value: &Value) -> Result<(), RpcError> {
         if self.transport_closed.load(Ordering::Acquire) {
             return Err(RpcError::Closed);
         }
+        let mut translated;
+        let value = if let Some(transform) = &self.transform {
+            translated = value.clone();
+            transform.outgoing(&mut translated);
+            &translated
+        } else {
+            value
+        };
         let body = serde_json::to_vec(value).map_err(|e| RpcError::Protocol(e.to_string()))?;
         tracing::trace!(target: "ide_jsonrpc::wire", "--> {}", String::from_utf8_lossy(&body));
         self.out.send(body).map_err(|_| RpcError::Closed)
@@ -388,6 +416,19 @@ impl Peer {
         on_stderr: Box<dyn Fn(String) + Send + Sync>,
         framing: Framing,
     ) -> std::io::Result<Self> {
+        Self::spawn_transport(command, args, cwd, env, handler, on_stderr, framing.into())
+    }
+
+    /// Starts a stdio peer with message translation installed before any IO.
+    pub fn spawn_transport(
+        command: &str,
+        args: &[String],
+        cwd: &std::path::Path,
+        env: &[(String, String)],
+        handler: Arc<dyn Handler>,
+        on_stderr: Box<dyn Fn(String) + Send + Sync>,
+        options: TransportOptions,
+    ) -> std::io::Result<Self> {
         use std::process::Stdio;
         // Windows resolves a bare name only as `.exe`; find the file a child
         // would (`PATH` × `PATHEXT`, e.g. `codex` → `codex.cmd`) first.
@@ -412,7 +453,7 @@ impl Peer {
         let pid = child.id();
 
         let on_output: Arc<dyn Fn(String) + Send + Sync> = Arc::from(on_stderr);
-        let peer = Self::start(stdout, stdin, handler, false, pid, framing, Some(on_output.clone()));
+        let peer = Self::start(stdout, stdin, handler, false, pid, options, Some(on_output.clone()));
 
         let stderr_task = stderr.map(|stderr| {
             let name = command.to_owned();
@@ -466,7 +507,7 @@ impl Peer {
         R: AsyncRead + Unpin + Send + 'static,
         W: AsyncWrite + Unpin + Send + 'static,
     {
-        Self::start(reader, writer, handler, true, None, Framing::ContentLength, None)
+        Self::start(reader, writer, handler, true, None, Framing::ContentLength.into(), None)
     }
 
     /// [`connect`](Self::connect) with the given wire framing.
@@ -475,7 +516,7 @@ impl Peer {
         R: AsyncRead + Unpin + Send + 'static,
         W: AsyncWrite + Unpin + Send + 'static,
     {
-        Self::start(reader, writer, handler, true, None, framing, None)
+        Self::start(reader, writer, handler, true, None, framing.into(), None)
     }
 
     /// [`Peer::connect`] over streams served by `child` (a server reached over a socket
@@ -492,7 +533,7 @@ impl Peer {
         R: AsyncRead + Unpin + Send + 'static,
         W: AsyncWrite + Unpin + Send + 'static,
     {
-        let peer = Self::start(reader, writer, handler, true, child.id(), Framing::ContentLength, None);
+        let peer = Self::start(reader, writer, handler, true, child.id(), Framing::ContentLength.into(), None);
         peer.supervise(child, None);
         peer
     }
@@ -503,13 +544,14 @@ impl Peer {
         handler: Arc<dyn Handler>,
         close_on_eof: bool,
         pid: Option<u32>,
-        framing: Framing,
+        options: TransportOptions,
         on_noise: Option<Arc<dyn Fn(String) + Send + Sync>>,
     ) -> Self
     where
         R: AsyncRead + Unpin + Send + 'static,
         W: AsyncWrite + Unpin + Send + 'static,
     {
+        let TransportOptions { framing, transform } = options;
         let (out_tx, mut out_rx) = mpsc::unbounded_channel::<Vec<u8>>();
         let (closed, _) = watch::channel(None);
         let inner = Arc::new(Inner {
@@ -520,6 +562,7 @@ impl Peer {
             closed,
             kill: CancellationToken::new(),
             pid,
+            transform,
             reader_done: CancellationToken::new(),
             exited: CancellationToken::new(),
         });
@@ -785,13 +828,16 @@ async fn handle_request(inner: Arc<Inner>, handler: Arc<dyn Handler>, id: Value,
 
 fn dispatch(inner: &Arc<Inner>, notif_tx: &std::sync::mpsc::Sender<Incoming>, body: &[u8]) {
     tracing::trace!(target: "ide_jsonrpc::wire", "<-- {}", String::from_utf8_lossy(body));
-    let msg: Value = match serde_json::from_slice(body) {
+    let mut msg: Value = match serde_json::from_slice(body) {
         Ok(v) => v,
         Err(e) => {
             tracing::warn!("jsonrpc: unparsable message: {e}");
             return;
         }
     };
+    if let Some(transform) = &inner.transform {
+        transform.incoming(&mut msg);
+    }
     let Value::Object(mut obj) = msg else {
         tracing::warn!("jsonrpc: ignoring non-object message");
         return;

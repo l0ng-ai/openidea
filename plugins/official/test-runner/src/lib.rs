@@ -48,6 +48,12 @@ impl LanguageFeatures for TestRunner {
     }
 }
 impl TestResults for TestRunner {
+    fn select_tests(&mut self, config: &str, tests: &[Vec<String>]) -> Option<Vec<String>> {
+        if config != "tests" || tests.is_empty() || tests.iter().any(|p| p.len() != 1) {
+            return None;
+        }
+        Some(tests.iter().map(|p| p[0].clone()).collect())
+    }
     fn parse(&mut self, _config: &str, chunk: &str) -> Vec<PluginTestEvent> {
         self.pending.push_str(chunk);
         let mut events = vec![];
@@ -92,6 +98,12 @@ mod tests {
         mock.set_run_configurations(plugin.configurations("/project"));
         plugin.run_command("test", &mock.invocation(), Some("adds")).unwrap();
         assert_eq!(mock.configuration_runs()[0].2, vec!["adds"]);
+        assert_eq!(
+            plugin.select_tests("tests", &[vec!["adds".into()], vec!["subs".into()]]),
+            Some(vec!["adds".into(), "subs".into()])
+        );
+        assert_eq!(plugin.select_tests("unknown", &[vec!["adds".into()]]), None);
+        assert_eq!(plugin.select_tests("tests", &[vec!["suite".into(), "adds".into()]]), None);
         assert!(plugin.parse("tests", "sta").is_empty());
         let events = plugin.parse("tests", "rt adds\npass adds\n");
         assert!(matches!(&events[..], [PluginTestEvent::TestStarted(_), PluginTestEvent::Passed(_)]));

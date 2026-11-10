@@ -83,16 +83,23 @@ fn same_group(a: &NSWindow, b: &NSWindow) -> bool {
     }
 }
 
-/// Puts `members` in one native tab group and shows `selected`.
-pub fn sync_tab_group(members: Vec<WebviewWindow>, selected: &WebviewWindow) -> tauri::Result<()> {
+/// Adds `members` to the existing anchor's native tab group and shows `selected`.
+pub fn sync_tab_group(
+    members: Vec<WebviewWindow>,
+    anchor: &WebviewWindow,
+    selected: &WebviewWindow,
+) -> tauri::Result<()> {
+    let anchor = anchor.clone();
     let target = selected.clone();
     on_main(selected, move || {
         let Some(shown) = native(&target) else { return };
-        for member in members.iter().filter(|m| m.label() != target.label()) {
+        let Some(anchor_window) = native(&anchor) else { return };
+        // Joining into a new tab's desktop window would take the existing group out of full screen.
+        for member in members.iter().filter(|m| m.label() != anchor.label()) {
             if let Some(window) = native(member)
-                && !same_group(shown, window)
+                && !same_group(anchor_window, window)
             {
-                shown.addTabbedWindow_ordered(window, objc2_app_kit::NSWindowOrderingMode::Above);
+                anchor_window.addTabbedWindow_ordered(window, objc2_app_kit::NSWindowOrderingMode::Above);
             }
         }
         if let Some(group) = shown.tabGroup() {
