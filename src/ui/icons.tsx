@@ -259,6 +259,7 @@ const ICONS = {
   "split-horizontal": "general/splitHorizontally",
   "editor-only": "general/editorOnly",
   "editor-preview": "general/editorPreview",
+  "preview-details": "general/previewHorizontally",
   "preview-only": "general/previewOnly",
   maximize: "image/fitContent",
   "zoom-in": "openidea/general/zoomIn",
