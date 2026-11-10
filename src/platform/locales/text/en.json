@@ -814,5 +814,19 @@
   "Set Docker Compose File Detection": "Set Docker Compose File Detection",
   "Could not save Docker Compose file detection": "Could not save Docker Compose file detection",
   "Compose Up": "Compose Up",
-  "Start the service at the caret, or all services in the active Docker Compose file": "Start the service at the caret, or all services in the active Docker Compose file"
+  "Start the service at the caret, or all services in the active Docker Compose file": "Start the service at the caret, or all services in the active Docker Compose file",
+  "Allow {name} to connect to {host}?": "Allow {name} to connect to {host}?",
+  "The host is not in the plugin's declared permissions.": "The host is not in the plugin's declared permissions.",
+  "\"Always allow\" remembers {host}; revoke it any time in the plugin's permissions.": "\"Always allow\" remembers {host}; revoke it any time in the plugin's permissions.",
+  "Allow once": "Allow once",
+  "Always allow": "Always allow",
+  "Remove": "Remove",
+  "Allowed when the plugin asked at first use. Remove it to be asked again.": "Allowed when the plugin asked at first use. Remove it to be asked again.",
+  "Ask to connect to a host that is not on the list the first time it tries; you allow or refuse each host, and can revoke the allowed ones": "Ask to connect to a host that is not on the list the first time it tries; you allow or refuse each host, and can revoke the allowed ones",
+  "This allows this exact host on any port; subdomains need separate permission.": "This allows this exact host on any port; subdomains need separate permission.",
+  "Could not revoke {host} for {name}": "Could not revoke {host} for {name}",
+  "host is not remembered for this plugin": "host is not remembered for this plugin",
+  "URL must name one exact host": "URL must name one exact host",
+  "Allow for this session": "Allow for this session",
+  "This allows {host} until the remote session ends.": "This allows {host} until the remote session ends."
 }
