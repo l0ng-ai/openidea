@@ -1036,6 +1036,31 @@ describe("secrets", () => {
 });
 
 describe("plugin line markers", () => {
+  it("groups related destinations on one line without hiding targets or run actions", () => {
+    const doc = EditorState.create({ doc: "class Post extends Model {}" }).doc;
+    const location = (path: string) => ({ path, range: { start: { line: 0, col: 0 }, end: { line: 0, col: 4 } } });
+    const marker = (path: string, icon: string | null = "navigate", pluginId = "laravel") => ({
+      pluginId,
+      line: 0,
+      icon,
+      tooltip: path,
+      target: location(path),
+    });
+    const placed = placeMarkers(doc, [
+      marker("/project/create_posts.php"),
+      marker("/project/PostFactory.php"),
+      marker("/project/PostFactory.php", null, "another-plugin"),
+      marker("/project/PostPolicy.php"),
+      marker("/project/run.php", "run"),
+    ]);
+    expect(placed).toHaveLength(2);
+    expect(placed[0]!.markers.map((entry) => entry.target?.path)).toEqual([
+      "/project/create_posts.php",
+      "/project/PostFactory.php",
+      "/project/PostPolicy.php",
+    ]);
+    expect(placed[1]!.icon).toBe("gutter-run");
+  });
   it("places markers on existing lines and maps their icons", () => {
     const doc = EditorState.create({ doc: "a\nbb\nccc" }).doc;
     const marker = (line: number, icon: string | null) => ({ pluginId: "m", line, icon, tooltip: "t", target: null });
@@ -1043,8 +1068,8 @@ describe("plugin line markers", () => {
     expect(markerIcon("database")).toBe("database");
     expect(markerIcon("run")).toBe("gutter-run");
     expect(markerIcon("implemented")).toBe("gutter-implemented");
-    expect(markerIcon(null)).toBe("gutter-implementing");
-    expect(markerIcon("unknown")).toBe("gutter-implementing");
+    expect(markerIcon(null)).toBe("gutter-navigate");
+    expect(markerIcon("unknown")).toBe("gutter-navigate");
   });
 });
 
