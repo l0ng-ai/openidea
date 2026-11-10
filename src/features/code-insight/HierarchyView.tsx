@@ -23,6 +23,7 @@ import {
   hierarchyTitle,
   hierarchyTarget,
   loadChildren,
+  prefetchLevels,
   refreshHierarchy,
   noneFoundLabel,
   setDirection,
@@ -222,6 +223,10 @@ export function HierarchyView() {
           getChildren={getChildren}
           isExpandable={isExpandable}
           loadChildren={(n) => (n.kind === "item" ? loadChildren(n.node) : undefined)}
+          onExpandedChange={(_expanded, n, open) => {
+            const shown = open ? children.get(n.id) : undefined;
+            if (shown) prefetchLevels(shown);
+          }}
           defaultExpanded={[ROOT_ID]}
           handleRef={tree}
           isOccurrence={() => true}
