@@ -338,12 +338,15 @@ fn sql_params(sql: &str) -> Vec<(String, usize, usize)> {
 
 const SQL_ANNOTATIONS: [&str; 4] = ["Select", "Insert", "Update", "Delete"];
 
+/// A string literal's value with its byte offsets (quotes excluded).
+type LitSpan = (String, usize, usize);
+
 /// The `#{…}` / `${…}` matches in one method's `@Select`/`@Insert`/`@Update`/
 /// `@Delete` SQL string literals: `(string start, string end, params)` with
 /// offsets in `head` (the declaration's annotations and signature). Array
 /// values (`@Select({…})`) and nested annotations in other arguments are
 /// skipped over, never read as SQL.
-fn annotation_sql_of(head: &str) -> Vec<(usize, usize, Vec<(String, usize, usize)>)> {
+fn annotation_sql_of(head: &str) -> Vec<(usize, usize, Vec<LitSpan>)> {
     let bytes = head.as_bytes();
     let mut out = Vec::new();
     let mut i = 0;
