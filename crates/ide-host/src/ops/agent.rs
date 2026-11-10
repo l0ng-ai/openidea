@@ -277,6 +277,12 @@ pub async fn base_text(host: &Host, window: &str, task: String, path: IpcPath) -
     host.project(window)?.agents.base_text(&task, path.into_path_buf()).await
 }
 
+/// Rollback: the task's changed files among `paths` (all without) back as they were when it started.
+pub async fn rollback_changes(host: &Host, window: &str, task: String, paths: Option<Vec<String>>) -> IdeResult<()> {
+    host.require_trust(window)?;
+    host.project(window)?.agents.rollback_changes(&task, paths).await
+}
+
 type McpServerMap = std::collections::BTreeMap<String, ide_core::settings::AgentMcpServer>;
 
 fn mcp_maps(host: &Host, window: &str) -> (McpServerMap, McpServerMap, Option<std::sync::Arc<crate::Project>>) {
@@ -422,6 +428,9 @@ pub(crate) fn register(d: &mut Dispatcher) {
     );
     d.add("agent_changes", |c| async move { changes(&c.host, &c.window, c.arg("task")?).await });
     d.add("agent_base_text", |c| async move { base_text(&c.host, &c.window, c.arg("task")?, c.arg("path")?).await });
+    d.add("agent_rollback_changes", |c| async move {
+        rollback_changes(&c.host, &c.window, c.arg("task")?, c.arg("paths")?).await
+    });
 }
 
 fn validate_project_root(root: &std::path::Path, requested: Option<&std::path::Path>) -> IdeResult<std::path::PathBuf> {

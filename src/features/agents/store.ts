@@ -516,6 +516,15 @@ export async function refreshChanges(task: string): Promise<void> {
   }
 }
 
+/** Rollback: the task's changed files `relPaths` (all with `null`) back as they were when it started. */
+export async function rollbackChanges(task: string, relPaths: string[] | null): Promise<void> {
+  try {
+    await call(commands.agentRollbackChanges(task, relPaths));
+  } finally {
+    await refreshChanges(task);
+  }
+}
+
 const pendingChanges = new Map<string, ReturnType<typeof setTimeout>>();
 function scheduleChanges(task: string) {
   if (pendingChanges.has(task)) return;

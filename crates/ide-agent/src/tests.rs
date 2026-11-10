@@ -2607,3 +2607,68 @@ fn error_messages_keep_the_agents_details() {
     assert_eq!(with_details("Internal error".into(), Some(&json!({ "other": 1 }))), "Internal error");
     assert_eq!(with_details("Internal error".into(), None), "Internal error");
 }
+
+#[tokio::test(flavor = "multi_thread")]
+async fn rolling_back_restores_the_start_of_the_task_and_keeps_the_users_own_edits() {
+    let tmp = tempfile::tempdir().unwrap();
+    let dir = dunce::canonicalize(tmp.path()).unwrap();
+    let git = |args: &[&str]| {
+        let ok = std::process::Command::new("git")
+            .args(["-c", "user.name=t", "-c", "user.email=t@t", "-c", "commit.gpgsign=false"])
+            .args(args)
+            .current_dir(&dir)
+            .status()
+            .unwrap()
+            .success();
+        assert!(ok, "{args:?}");
+    };
+    let write = |rel: &str, text: &str| std::fs::write(dir.join(rel), text).unwrap();
+    let read = |rel: &str| std::fs::read_to_string(dir.join(rel)).unwrap();
+    git(&["init", "-q", "-b", "main"]);
+    write(".gitignore", "store/\nworktrees/\nagents/\nmodels.json\n");
+    write("mine.txt", "base\n");
+    write("other.txt", "base\n");
+    git(&["add", "."]);
+    git(&["commit", "-q", "-m", "init"]);
+    // The user's own uncommitted edit, before the task starts.
+    write("mine.txt", "my edit\n");
+
+    let mgr = manager(&dir, Arc::new(FakeAgent::default()));
+    let task = mgr
+        .create(NewAgentTask {
+            project_root: None,
+            prompt: text("Hello"),
+            provider: "claude".into(),
+            config: Vec::new(),
+            isolation: Isolation::Local,
+            base: None,
+        })
+        .await
+        .unwrap();
+    wait_for(&mgr, &task.id, AgentStatus::NeedsInput).await;
+    mgr.cancel(&task.id, None).unwrap();
+    wait_for(&mgr, &task.id, AgentStatus::Ready).await;
+    // What the agent did.
+    write("mine.txt", "my edit\nand the agent's\n");
+    write("other.txt", "agent\n");
+    write("new.txt", "agent\n");
+    async fn changed(mgr: &AgentManager, id: &str) -> Vec<String> {
+        mgr.changes(id).await.unwrap().into_iter().map(|c| c.rel_path).collect()
+    }
+    assert_eq!(changed(&mgr, &task.id).await, ["mine.txt", "new.txt", "other.txt"]);
+
+    mgr.rollback_changes(&task.id, Some(vec!["other.txt".into()])).await.unwrap();
+    assert_eq!(read("other.txt"), "base\n");
+    assert_eq!(changed(&mgr, &task.id).await, ["mine.txt", "new.txt"]);
+
+    // After a restart, from the saved copy.
+    mgr.shutdown();
+    let mgr = manager(&dir, Arc::new(FakeAgent::default()));
+    mgr.rollback_changes(&task.id, None).await.unwrap();
+    assert_eq!(read("mine.txt"), "my edit\n", "the user's edit stays");
+    assert!(!dir.join("new.txt").exists());
+    assert!(changed(&mgr, &task.id).await.is_empty());
+
+    mgr.delete(&task.id, false).await.unwrap();
+    assert!(!dir.join("store").join(format!("{}.before", task.id)).exists());
+}
