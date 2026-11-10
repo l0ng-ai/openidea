@@ -134,6 +134,11 @@ describe("debug tool window", () => {
     expect(console.getAttribute("aria-selected")).toBe("true");
     act(() => useDebug.setState({ sessions: { 1: session } }));
     expect(variables.getAttribute("aria-selected")).toBe("true");
+    // Stepping from the Console keeps it in front.
+    fireEvent.click(console);
+    act(() => useDebug.setState({ sessions: { 1: { ...session, status: "running" } } }));
+    act(() => useDebug.setState({ sessions: { 1: { ...session, stopReason: "step" } } }));
+    expect(console.getAttribute("aria-selected")).toBe("true");
   });
 
   it("renders session tabs, views, frames and typed variables", async () => {
