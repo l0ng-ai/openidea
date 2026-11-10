@@ -26,20 +26,29 @@ import { formatTime } from "./model";
 import { allRepos, lastRemoteFailure, runRemote, saveAll } from "./ops";
 import { PushChanges, pushChangesKey } from "./PushChanges";
 import { pushOperation, splitTracked, type PushChoice } from "./pushTarget";
-import { currentRepo, refreshNow, repoName, useVcs } from "./store";
+import { currentRepo, currentRepoRoot, refreshNow, repoName, useVcs } from "./store";
 import styles from "./common.module.css";
 
-/** Update Project…: the options dialog, or (Confirmation › Show options before Update off) the default method right away. */
-export function showUpdateDialog() {
-  const { vcs } = workflowSettings();
-  if (!vcs.confirmation.showUpdateOptions) return void updateProject(vcs.git.updateMethod === "rebase");
-  openDialog((close) => <UpdateDialog onClose={close} />);
+/** Update Project… scope: one repository (`null`: the selected one), else every repository. */
+export interface UpdateTarget {
+  repo?: string | null;
 }
 
-async function updateProject(rebase: boolean) {
+export function updateRepos(target: UpdateTarget): Array<string | null> {
+  return target.repo === undefined ? allRepos() : [target.repo];
+}
+
+/** Update Project…: the options dialog, or (Confirmation › Show options before Update off) the default method right away. */
+export function showUpdateDialog(target: UpdateTarget = {}) {
+  const { vcs } = workflowSettings();
+  const repos = updateRepos(target);
+  if (!vcs.confirmation.showUpdateOptions) return void updateProject(vcs.git.updateMethod === "rebase", repos);
+  openDialog((close) => <UpdateDialog repos={repos} onClose={close} />);
+}
+
+async function updateProject(rebase: boolean, repos: Array<string | null>) {
   await saveAll();
   const branch = useVcs.getState().branch;
-  const repos = allRepos();
   const detail =
     repos.length > 1
       ? `${repos.length} repositories`
@@ -70,7 +79,12 @@ async function resetToRemoteBranch() {
   await runRemote({ op: "resetToUpstream" }, branch?.upstream ? `${branch.head} ← ${branch.upstream}` : undefined);
 }
 
-function UpdateDialog({ onClose }: { onClose: () => void }) {
+interface UpdateDialogProps {
+  repos: Array<string | null>;
+  onClose: () => void;
+}
+
+function UpdateDialog({ repos, onClose }: UpdateDialogProps) {
   const branch = useVcs((s) => s.branch);
   const single = useVcs((s) => s.roots.length <= 1);
   // Default from Settings › Version Control › Git › Update method; the choice is kept there.
@@ -81,7 +95,7 @@ function UpdateDialog({ onClose }: { onClose: () => void }) {
     const method = rebase ? "rebase" : "merge";
     if (method !== workflowSettings().vcs.git.updateMethod) await saveVcsSetting("vcs.git.updateMethod", method);
     if (hide) await saveVcsSetting("vcs.confirmation.showUpdateOptions", false);
-    await updateProject(rebase);
+    await updateProject(rebase, repos);
   };
   return (
     <Dialog
@@ -155,16 +169,27 @@ export function outgoingQuery(upstream: string | null): { branch: string; range:
 /**
  * Outgoing commits of one repository in the multi-repository Push dialog. `@{u}` no
  * longer resolves once the upstream branch was deleted on the remote (the tracking
- * config remains, `upstream_of` still reports it), so the range query falls back to
- * recent history and the repository stays in the list, pushable.
+ * config remains, `upstream_of` still reports it): the commits no remote branch has
+ * are listed instead, so the repository stays in the list, pushable.
  */
 export async function pushRepoCommits(root: string, branch: BranchInfo): Promise<Commit[]> {
   if (!branch.head) return [];
   const q = outgoingQuery(branch.upstream);
-  return logOf(q.branch, q.limit, q.range, root).catch(() => logOf(q.branch, 50, null, root));
+  return logOf(q.branch, q.limit, q.range, root).catch(() => unpushedCommits(root));
+}
+
+const RECENT_HISTORY_LIMIT = 50;
+const OUTGOING_LIMIT = 1000;
+
+async function unpushedCommits(root: string): Promise<Commit[]> {
+  const branches = await call(commands.vcsBranches(root)).catch(() => []);
+  const remotes = branches.filter((b) => b.remote).map((b) => `^refs/remotes/${b.name}`);
+  if (!remotes.length) return logOf("HEAD", RECENT_HISTORY_LIMIT, null, root);
+  return logOf("HEAD", OUTGOING_LIMIT, ["HEAD", ...remotes].join(" "), root);
 }
 
 export interface PushTarget {
+  repo?: string | null;
   /** Local branch to push (default: the current one). */
   branch?: string;
   /** Push only up to this commit of the branch (Push All up to Here). */
@@ -175,7 +200,10 @@ export async function showPushDialog(target: PushTarget = {}) {
   await refreshNow();
   // Several repositories: IDEA's dialog lists each one with outgoing commits.
   const multi = useVcs.getState().roots.length > 1 && !target.branch && !target.revision;
-  openDialog((close) => (multi ? <MultiPushDialog onClose={close} /> : <PushDialog target={target} onClose={close} />));
+  const only = target.repo === undefined ? undefined : (target.repo ?? currentRepoRoot() ?? undefined);
+  openDialog((close) =>
+    multi ? <MultiPushDialog only={only} onClose={close} /> : <PushDialog target={target} onClose={close} />,
+  );
 }
 
 /** Whether any of `roots` has a pre-push hook: the Push dialog then offers Run Git hooks. */
@@ -205,8 +233,16 @@ export function pushCandidates(repos: readonly RepoPush[]): RepoPush[] {
   return repos.filter((r) => r.branch.head && (r.branch.upstream ? r.commits.length > 0 : true));
 }
 
-/** Checked by default: repositories with outgoing commits (a new branch only in the selected one). */
-export function defaultPushChecked(repos: readonly RepoPush[], selected: string | null): Set<string> {
+/**
+ * Checked by default: repositories with outgoing commits (a new branch only in the selected
+ * one); with `onlySelected` (Push… from one repository's branch menu), only the selected one.
+ */
+export function defaultPushChecked(
+  repos: readonly RepoPush[],
+  selected: string | null,
+  onlySelected = false,
+): Set<string> {
+  if (onlySelected) return new Set(repos.filter((r) => r.root === selected).map((r) => r.root));
   return new Set(
     repos.filter((r) => (r.branch.upstream ? r.commits.length > 0 : r.root === selected)).map((r) => r.root),
   );
@@ -223,7 +259,12 @@ interface PushNode {
 // A long outgoing list scrolls inside the dialog instead of growing it to the screen (IDEA: 800×450 centre panel).
 const PUSH_DIALOG_MAX_HEIGHT = 720;
 
-function MultiPushDialog({ onClose }: { onClose: () => void }) {
+interface MultiPushDialogProps {
+  only?: string;
+  onClose: () => void;
+}
+
+function MultiPushDialog({ only, onClose }: MultiPushDialogProps) {
   const roots = useVcs((s) => s.roots);
   const [repos, setRepos] = useState<RepoPush[] | null>(null);
   const [checked, setChecked] = useState<Set<string>>(() => new Set());
@@ -264,12 +305,12 @@ function MultiPushDialog({ onClose }: { onClose: () => void }) {
       }
       const list = pushCandidates(loaded);
       setRepos(list);
-      setChecked(defaultPushChecked(list, currentRepo()));
+      setChecked(only === undefined ? defaultPushChecked(list, currentRepo()) : defaultPushChecked(list, only, true));
     });
     return () => {
       alive = false;
     };
-  }, [roots]);
+  }, [roots, only]);
 
   const toggle = (root: string) =>
     setChecked((prev) => {
