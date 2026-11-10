@@ -972,5 +972,6 @@
   "One Header=Value entry per line.": "One Header=Value entry per line.",
   "Leave empty to enable for all agents, or list agent IDs separated by commas.": "Leave empty to enable for all agents, or list agent IDs separated by commas.",
   "Model Context Protocol (MCP)…": "Model Context Protocol (MCP)…",
-  "Opens Settings › Agents › Model Context Protocol (MCP): configures User and Workspace MCP servers.": "Opens Settings › Agents › Model Context Protocol (MCP): configures User and Workspace MCP servers."
+  "Opens Settings › Agents › Model Context Protocol (MCP): configures User and Workspace MCP servers.": "Opens Settings › Agents › Model Context Protocol (MCP): configures User and Workspace MCP servers.",
+  "Change font size with Ctrl/Command+Mouse Wheel": "Change font size with Ctrl/Command+Mouse Wheel"
 }
