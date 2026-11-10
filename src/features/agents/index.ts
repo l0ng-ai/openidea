@@ -27,13 +27,13 @@ import { TaskStatusMark } from "./TaskStatusMark";
 import { taskActions } from "./taskActions";
 import { replyActions } from "./replyActions";
 
-/** Settings › Tools › Agents (also used by the Settings window). */
+/** Settings › Agents (also used by the Settings window). */
 export function activateSettingsPages(): () => void {
   return registerSettingsPage({
     id: REGISTRY_PAGE,
     title: "Agents",
-    group: "Tools",
-    order: 500,
+    // After Languages & Frameworks, before Tools.
+    order: 450,
     keywords: ["agent", "acp", "registry", "install", "update", "coding agent"],
     component: lazyComponent(() => import("./AgentRegistryPage").then((m) => m.AgentRegistryPage)),
   });

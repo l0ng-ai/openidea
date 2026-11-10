@@ -61,7 +61,7 @@ pub struct Settings {
     pub cmake: CMakeSettings,
     /// Settings › Agents.
     pub agents: AgentSettings,
-    /// Tools › MCP Server (global only).
+    /// Agents › MCP Server (global only).
     pub mcp_server: McpServerSettings,
     /// Plugin settings (`[contributes.settings]`): plugin id → its values by key.
     #[specta(type = BTreeMap<String, BTreeMap<String, specta_typescript::Unknown>>)]
@@ -154,7 +154,7 @@ pub enum WhileRunning {
     Steer,
 }
 
-/// Tools › MCP Server: agents use the IDE's built-in tools.
+/// Agents › MCP Server: agents use the IDE's built-in tools.
 #[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize, Type)]
 #[serde(default, rename_all = "camelCase")]
 pub struct McpServerSettings {

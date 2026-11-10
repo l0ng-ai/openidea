@@ -157,12 +157,23 @@ export function updateDraft(patch: Partial<Draft>) {
   save(DRAFT_KEY, draft);
 }
 
-/** Config for the selected model, with only supported draft choices applied. */
-export function draftConfig(provider: AgentProvider | undefined, draft: Draft): AgentConfigOption[] {
+/** What Settings › Agents says new tasks of `provider` start with, by option id. */
+export const providerDefaults = (provider: string | undefined): Record<string, string> =>
+  (provider && useProject.getState().settings?.agents?.defaults?.[provider]) || {};
+
+/**
+ * Config for the selected model, with only supported choices applied: the draft's, else
+ * the agent's defaults from Settings › Agents.
+ */
+export function draftConfig(
+  provider: AgentProvider | undefined,
+  draft: Draft,
+  defaults: Record<string, string> = providerDefaults(provider?.id),
+): AgentConfigOption[] {
   const config = (provider?.config ?? [])
     .filter((o) => o.category !== "thought_level")
     .map((o) => {
-      const choice = draft.config[o.id];
+      const choice = draft.config[o.id] ?? defaults[o.id];
       return {
         ...o,
         current: choice !== undefined && o.values.some((v) => v.value === choice) ? choice : o.current,
@@ -172,7 +183,7 @@ export function draftConfig(provider: AgentProvider | undefined, draft: Draft): 
   if (model) {
     config.push(
       ...(provider?.thoughtLevels?.[model] ?? []).map((o) => {
-        const choice = draft.thoughtLevels?.[model]?.[o.id];
+        const choice = draft.thoughtLevels?.[model]?.[o.id] ?? defaults[o.id];
         return {
           ...o,
           current: choice !== undefined && o.values.some((v) => v.value === choice) ? choice : o.current,
@@ -629,7 +640,7 @@ export async function startTask(
     providers.find((p) => p.id === draft.provider),
     draft,
   );
-  const defaults = bypassDefaults(options);
+  const defaults = { ...bypassDefaults(options), ...providerDefaults(draft.provider) };
   const config = options.flatMap((o) => {
     const value =
       o.category === "model" || o.category === "thought_level"

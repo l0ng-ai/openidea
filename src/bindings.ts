@@ -6015,13 +6015,13 @@ export type MavenSettings = {
 	activeProfiles?: string,
 };
 
-/**  Tools › MCP Server: agents use the IDE's built-in tools. */
+/**  Agents › MCP Server: agents use the IDE's built-in tools. */
 export type McpServerSettings = {
 	/**  Serve the tools on 127.0.0.1 while the IDE runs. */
 	enabled?: boolean,
 };
 
-/**  What Settings › Tools › MCP Server shows. */
+/**  What Settings › Agents › MCP Server shows. */
 export type McpServerStatus = {
 	running: boolean,
 	/**  Why it isn't running though turned on. */
@@ -8061,7 +8061,7 @@ export type Settings_Deserialize = {
 	cmake?: CMakeSettings_Deserialize,
 	/**  Settings › Agents. */
 	agents?: AgentSettings,
-	/**  Tools › MCP Server (global only). */
+	/**  Agents › MCP Server (global only). */
 	mcpServer?: McpServerSettings,
 	/**  Plugin settings (`[contributes.settings]`): plugin id → its values by key. */
 	plugins?: { [key in string]: { [key in string]: unknown } },
@@ -8123,7 +8123,7 @@ export type Settings_Serialize = {
 	cmake: CMakeSettings_Serialize,
 	/**  Settings › Agents. */
 	agents: AgentSettings,
-	/**  Tools › MCP Server (global only). */
+	/**  Agents › MCP Server (global only). */
 	mcpServer: McpServerSettings,
 	/**  Plugin settings (`[contributes.settings]`): plugin id → its values by key. */
 	plugins: { [key in string]: { [key in string]: unknown } },

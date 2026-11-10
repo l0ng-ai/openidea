@@ -11,6 +11,7 @@ import { useSettingsFormFor } from "@/features/settings/components/context";
 import { closeSettings, openSettings, selectPage } from "@/features/settings/model/staging";
 import { SettingsDialog } from "@/features/settings/dialog/SettingsDialog";
 import { REGISTRY_PAGE } from "./model";
+import { RegistryList } from "./RegistryList";
 import type { ComponentProps } from "react";
 
 function AgentRegistryPage(props: ComponentProps<typeof RegistryPage>) {
@@ -176,16 +177,12 @@ describe("agent picker", () => {
   });
 });
 
-describe("Agents settings page", () => {
-  const renderRegistry = (...args: Parameters<typeof render>) => {
-    const result = render(...args);
-    fireEvent.click(screen.getByRole("tab", { name: "ACP Registry" }));
-    return result;
-  };
+describe("Add Agent: the ACP Registry", () => {
+  const renderRegistry = render;
   it("shows the built-in Copilot name and icon in its registry row", async () => {
     const backend = new FakeBackend();
     backend.registry = { agents: [agent({ id: "copilot", name: "GitHub Copilot" })], warning: null };
-    renderRegistry(<AgentRegistryPage backend={backend} />);
+    renderRegistry(<RegistryList backend={backend} />);
     const copilot = await screen.findByRole("listitem", { name: "GitHub Copilot" });
     const expected = document.createElement("div");
     expected.innerHTML = iconMarkup("agent-copilot")!;
@@ -195,7 +192,7 @@ describe("Agents settings page", () => {
 
   it("lists registry agents, says they are third-party, and searches them", async () => {
     const backend = new FakeBackend();
-    renderRegistry(<AgentRegistryPage backend={backend} />);
+    renderRegistry(<RegistryList backend={backend} />);
     await waitFor(() => expect(row("Amp")).toBeInTheDocument());
     expect(screen.getByText(/third-party software/)).toBeInTheDocument();
     expect(within(row("Amp")).getByRole("button", { name: "Install" })).toBeEnabled();
@@ -214,7 +211,7 @@ describe("Agents settings page", () => {
   it("installs with progress, then reports the change", async () => {
     const backend = new FakeBackend();
     const onChanged = vi.fn();
-    renderRegistry(<AgentRegistryPage onChanged={onChanged} backend={backend} />);
+    renderRegistry(<RegistryList onChanged={onChanged} backend={backend} />);
     await waitFor(() => expect(row("Amp")).toBeInTheDocument());
     fireEvent.click(within(row("Amp")).getByRole("button", { name: "Install" }));
     expect(backend.installs).toEqual(["amp-acp"]);
@@ -235,7 +232,7 @@ describe("Agents settings page", () => {
     backend.registry = { agents: [{ ...AMP, noChecksum: true }], warning: null };
     renderRegistry(
       <>
-        <AgentRegistryPage backend={backend} />
+        <RegistryList backend={backend} />
         <MessagesHost />
       </>,
     );
@@ -259,7 +256,7 @@ describe("Agents settings page", () => {
     const backend = new FakeBackend();
     renderRegistry(
       <>
-        <AgentRegistryPage backend={backend} />
+        <RegistryList backend={backend} />
         <MessagesHost />
       </>,
     );
@@ -272,7 +269,7 @@ describe("Agents settings page", () => {
 
   it("shows why an install failed, cancels one on Cancel, and leaves it running when the page closes", async () => {
     const backend = new FakeBackend();
-    const { unmount } = renderRegistry(<AgentRegistryPage backend={backend} />);
+    const { unmount } = renderRegistry(<RegistryList backend={backend} />);
     await waitFor(() => expect(row("Cline")).toBeInTheDocument());
     fireEvent.click(within(row("Cline")).getByRole("button", { name: "Update" }));
     await act(async () => backend.fail(new IpcError({ kind: "unavailable", message: "npm is required" })));
@@ -296,7 +293,7 @@ describe("Agents settings page", () => {
     const backend = new FakeBackend();
     const onChanged = vi.fn();
     backend.registry = { agents: [{ ...AMP, installing: true }, CLINE], warning: null };
-    renderRegistry(<AgentRegistryPage onChanged={onChanged} backend={backend} />);
+    renderRegistry(<RegistryList onChanged={onChanged} backend={backend} />);
     await waitFor(() => expect(row("Amp")).toBeInTheDocument());
     expect(within(row("Amp")).getByText("Installing Amp in the background…")).toBeInTheDocument();
     // It is stopped from the background tasks, and nothing else starts meanwhile.
@@ -314,7 +311,7 @@ describe("Agents settings page", () => {
   it("removes an installed agent", async () => {
     const backend = new FakeBackend();
     const onChanged = vi.fn();
-    renderRegistry(<AgentRegistryPage onChanged={onChanged} backend={backend} />);
+    renderRegistry(<RegistryList onChanged={onChanged} backend={backend} />);
     await waitFor(() => expect(row("fast-agent")).toBeInTheDocument());
     fireEvent.click(within(row("fast-agent")).getByRole("button", { name: "Remove" }));
     await waitFor(() => expect(within(row("fast-agent")).getByRole("button", { name: "Install" })).toBeEnabled());
@@ -325,12 +322,12 @@ describe("Agents settings page", () => {
   it("falls back to the saved list with a warning, and reports a registry it cannot load", async () => {
     const backend = new FakeBackend();
     backend.registry = { agents: AGENTS, warning: "Could not reach the ACP Registry" };
-    const { unmount } = renderRegistry(<AgentRegistryPage backend={backend} />);
+    const { unmount } = renderRegistry(<RegistryList backend={backend} />);
     await waitFor(() => expect(screen.getByRole("status")).toHaveTextContent("Could not reach the ACP Registry"));
     unmount();
 
     backend.list.mockRejectedValueOnce(new IpcError({ kind: "io", message: "offline" }));
-    renderRegistry(<AgentRegistryPage backend={backend} />);
+    renderRegistry(<RegistryList backend={backend} />);
     await waitFor(() => expect(screen.getByRole("alert")).toHaveTextContent("Cannot load the ACP Registry: offline"));
   });
 });
@@ -397,12 +394,12 @@ describe("Built-in executable overrides", () => {
       component: () => <RegistryPage backend={backend} commandBackend={commands} onChanged={onChanged} />,
     });
     render(<SettingsDialog />);
-    return screen.findByRole("region", { name: "Claude Code executable" });
+    return screen.findByRole("region", { name: "Claude Code" });
   };
   const apply = () => screen.getByRole("button", { name: "Apply" });
   const field = () => screen.getByRole("textbox", { name: "Executable" });
 
-  it("follows locale changes in tabs and renders login commands as inline code", async () => {
+  it("follows locale changes and renders login commands as inline code", async () => {
     const commands = new FakeCommands();
     commands.list = [
       claudeProvider("claude"),
@@ -424,14 +421,12 @@ describe("Built-in executable overrides", () => {
         await setLocale("zh");
       });
       expect(screen.getByRole("option", { name: "Codex 未找到" })).toBeInTheDocument();
-      expect(screen.getByRole("tab", { name: "内置" })).toBeInTheDocument();
-      expect(screen.getByRole("tab", { name: "ACP 注册表" })).toBeInTheDocument();
+      expect(screen.getByRole("button", { name: "添加 Agent…" })).toBeInTheDocument();
       await act(async () => {
         await setLocale("en");
       });
       expect(screen.getByRole("option", { name: "Codex Not found" })).toBeInTheDocument();
-      expect(screen.getByRole("tab", { name: "Built-in" })).toBeInTheDocument();
-      expect(screen.getByRole("tab", { name: "ACP Registry" })).toBeInTheDocument();
+      expect(screen.getByRole("button", { name: "Add Agent…" })).toBeInTheDocument();
     } finally {
       await act(async () => {
         await setLocale("en");
@@ -651,5 +646,95 @@ describe("Built-in executable overrides", () => {
     expect(commands.saved).toEqual([]);
     await act(async () => fireEvent.click(apply()));
     expect(commands.saved).toEqual([["claude", "/chosen/agent"]]);
+  });
+});
+
+describe("the agent list", () => {
+  let dispose = () => {};
+  beforeEach(() => openSettings(REGISTRY_PAGE));
+  afterEach(() => {
+    closeSettings();
+    dispose();
+  });
+  const open = async (commands: FakeCommands, backend = new FakeBackend()) => {
+    dispose = registerSettingsPage({
+      id: REGISTRY_PAGE,
+      title: "Agents",
+      component: () => <RegistryPage backend={backend} commandBackend={commands} />,
+    });
+    render(
+      <>
+        <SettingsDialog />
+        <MessagesHost />
+      </>,
+    );
+    await screen.findByRole("region", { name: "Claude Code" });
+    return backend;
+  };
+  const model = {
+    id: "model",
+    name: "Model",
+    description: null,
+    category: "model",
+    current: "sonnet",
+    values: [
+      { value: "sonnet", name: "Sonnet", description: null },
+      { value: "opus", name: "Opus", description: null },
+    ],
+    via: "option",
+  } as AgentProvider["config"][number];
+
+  it("lists registry agents beside the built-ins, updates one and removes it", async () => {
+    const commands = new FakeCommands();
+    commands.list = [
+      claudeProvider("claude"),
+      {
+        ...claudeProvider("cline"),
+        id: "cline",
+        name: "Cline",
+        commandEditable: false,
+        commandReadOnlyReason: "registry",
+        source: { kind: "registry", version: "3.0.70", update: "3.0.74" },
+      },
+    ];
+    const backend = await open(commands);
+    fireEvent.mouseDown(screen.getByRole("option", { name: "Cline Update" }));
+    const details = await screen.findByRole("region", { name: "Cline" });
+    expect(within(details).getByText("ACP Registry · 3.0.70")).toBeInTheDocument();
+    fireEvent.click(within(details).getByRole("button", { name: "Update" }));
+    expect(backend.installs).toEqual(["cline"]);
+    await act(async () => backend.finish());
+    fireEvent.click(screen.getByRole("button", { name: "Remove" }));
+    const dialog = await screen.findByRole("dialog", { name: "Remove Cline" });
+    fireEvent.click(within(dialog).getByRole("button", { name: "Remove" }));
+    await waitFor(() => expect(backend.removed).toEqual(["cline"]));
+  });
+
+  it("adds agents from the ACP Registry in a dialog", async () => {
+    const commands = new FakeCommands();
+    commands.list = [claudeProvider("claude")];
+    await open(commands);
+    expect(screen.getByRole("button", { name: "Remove" })).toBeDisabled();
+    fireEvent.click(screen.getByRole("button", { name: "Add Agent…" }));
+    const dialog = await screen.findByRole("dialog", { name: "Add Agent" });
+    await waitFor(() => expect(within(dialog).getByRole("listitem", { name: "Amp" })).toBeInTheDocument());
+  });
+
+  it("stages the settings new tasks start with", async () => {
+    const commands = new FakeCommands();
+    commands.list = [{ ...claudeProvider("claude"), config: [model] }];
+    await open(commands);
+    const select = screen.getByRole("button", { name: "Model" });
+    expect(select).toHaveTextContent("Agent's default (Sonnet)");
+    fireEvent.click(select);
+    fireEvent.click(await screen.findByRole("option", { name: "Opus" }));
+    expect(screen.getByRole("button", { name: "Model" })).toHaveTextContent("Opus");
+  });
+
+  it("says when an agent's settings aren't known yet", async () => {
+    const commands = new FakeCommands();
+    commands.list = [claudeProvider("claude")];
+    await open(commands);
+    expect(screen.getByText(/after its first session/)).toBeInTheDocument();
   });
 });

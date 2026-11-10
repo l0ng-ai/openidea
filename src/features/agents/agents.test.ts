@@ -453,3 +453,30 @@ describe("typed path references", () => {
     expect(resolveTyped("C:\\r", "../../x")).toBe("C:/x");
   });
 });
+
+describe("new task defaults", () => {
+  it("start a draft with the agent's defaults until the draft picks", async () => {
+    const { draftConfig } = await import("./store");
+    const option = (id: string, current: string, values: string[]) =>
+      ({
+        id,
+        name: id,
+        description: null,
+        category: id,
+        current,
+        values: values.map((value) => ({ value, name: value, description: null })),
+        via: "option",
+      }) as AgentConfigOption;
+    const provider = {
+      id: "claude",
+      config: [option("model", "sonnet", ["sonnet", "opus"]), option("mode", "default", ["default", "plan"])],
+    } as unknown as Parameters<typeof draftConfig>[0];
+    const draft = { provider: "claude", config: {}, isolation: "local", base: null } as unknown as Parameters<
+      typeof draftConfig
+    >[1];
+    const current = (d: typeof draft, defaults: Record<string, string>) =>
+      draftConfig(provider, d, defaults).map((o) => o.current);
+    expect(current(draft, { model: "opus", mode: "nope" })).toEqual(["opus", "default"]);
+    expect(current({ ...draft, config: { model: "sonnet" } }, { model: "opus" })).toEqual(["sonnet", "default"]);
+  });
+});

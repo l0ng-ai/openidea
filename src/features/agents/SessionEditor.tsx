@@ -366,7 +366,7 @@ function SessionStatus({
 
 /**
  * Context use, usage limits and cost (when the agent reports them) and the time spent on
- * the task, each as Settings › Tools › Agents › Chat allows.
+ * the task, each as Settings › Agents › Chat allows.
  */
 function Meters({ task, entries }: { task: AgentTask; entries: AgentEntry[] | null }) {
   const tx = useTx();
