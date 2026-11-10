@@ -167,9 +167,8 @@ export function indentExtension(indent: EffectiveIndent, format: EffectiveIndent
 /**
  * Indentation explicit reformat requests use: the Code Style without the file's
  * detected indents (detection affects editing, reformatting uses the configured
- * style, as in IDEA). Set only when the language has an explicit Tabs and Indents
- * override — unset, formatting keeps the editor's indent, the status bar choice
- * included.
+ * style, as in IDEA), or the indent chosen for the file in the status bar.
+ * Unset (editors outside a document model), formatting keeps the editor's indent.
  */
 export const formatIndentFacet = Facet.define<EffectiveIndent | null>({
   combine: (values) => [values.find((v) => v !== null) ?? null],
