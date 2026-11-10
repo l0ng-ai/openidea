@@ -3,6 +3,7 @@
  * act on the node passed as the argument (context menus) or on the tree's
  * lead node (toolbar, shortcuts while the tree has focus).
  */
+import { writeClipboardText } from "@/platform/clipboard";
 import { call, commands, type DataSource, type DbDriver, type DbTableInfo } from "@/platform/ipc";
 import { registerActions, type Action } from "@/platform/actions";
 import { editorService, notifications, showServiceView, toolWindowService } from "@/workbench/contributions";
@@ -62,7 +63,7 @@ function sourceOf(n: DbNode | null): DataSource | undefined {
 /** Copies `text`; `failure` is the notification title when the clipboard refuses it. */
 async function copy(text: string, failure: string) {
   try {
-    await navigator.clipboard.writeText(text);
+    await writeClipboardText(text);
   } catch {
     notifications().notify({ level: "error", title: failure });
   }

@@ -7,10 +7,11 @@ import { shortcutLabel } from "@/platform/keymap";
 import { basename, dirname, projectFolder, relativePath, useProject } from "@/platform/project";
 import type { LineEnding, OutlineItem } from "@/platform/ipc";
 import { BarButton, Icon, Menu, badgeKind, fileIconName } from "@/ui";
-import { notifications } from "@/workbench/contributions";
+import { notifications, useProjectViewLead } from "@/workbench/contributions";
+import { useDistractionFree } from "@/workbench/distractionFree";
 import { ENCODING_CHOICES, useEditorPrefs } from "@/platform/editorSettings";
 import { isVirtualUri } from "@/platform/virtualDocs";
-import { editorController, useEditorStatus, useGotoLine } from "../controller";
+import { editorController, isTextInput, useEditorStatus, useGotoLine, useTabs } from "../controller";
 import { useDocMeta, useOutline } from "../model/document";
 import { symbolChain } from "./outline";
 import { NavChildrenPopup } from "./NavBarPopup";
@@ -25,6 +26,19 @@ function useActiveMeta() {
 }
 
 const NO_SYMBOLS: OutlineItem[] = [];
+
+/**
+ * The active tab's path, known as soon as the tab becomes active — before its
+ * editor slot reports a status. Switching to a file that is still loading (or
+ * replacing a preview tab) would otherwise leave the bar without a path.
+ */
+function useActiveTabPath(): string | null {
+  return useTabs((s) => {
+    const pane = s.panes[s.activePane];
+    const tab = pane?.tabs.find((t) => t.id === pane.active);
+    return tab && isTextInput(tab.input) ? tab.input.path : null;
+  });
+}
 
 /**
  * Symbols at the caret while `path` is the active editor, `null` otherwise. Selected
@@ -50,30 +64,29 @@ interface Crumb {
   run?: () => void;
 }
 
-/**
- * IDEA new UI navigation bar in the status bar: project › dirs › file ›
- * symbols, with icons; clicking a segment opens a popup of its children.
- */
-export function Breadcrumbs() {
-  const path = useEditorStatus((s) => s.status?.path ?? null);
-  const currentProject = useProject((s) => s.project);
-  const project = projectFolder(currentProject, path ?? "");
-  const outline = useOutline((s) => (path ? s[path] : undefined));
-  const chain = useCaretSymbols(path, outline) ?? NO_SYMBOLS;
-  const [popup, setPopup] = useState<{ nav: NavSegment; anchor: HTMLElement } | null>(null);
-  if (!path) return null;
-  const parent = dirname(path);
+/** The project (or workspace member) node: the first crumb of every navigation path. */
+function projectCrumb(project: { root: string; name: string }): Crumb {
+  return {
+    label: project.name,
+    icon: "module",
+    title: project.root,
+    nav: { kind: "dir", path: project.root, label: project.name, root: true },
+  };
+}
+
+/** The project › dirs › file part of the navigation path (IDEA navigation bar). */
+function pathCrumbs(project: { root: string; name: string } | null, path: string, dir = false): Crumb[] {
+  const target = dir ? path : dirname(path);
   const segments: Crumb[] = [];
-  if (project)
-    segments.push({
-      label: project.name,
-      icon: "module",
-      title: project.root,
-      nav: { kind: "dir", path: project.root, label: project.name, root: true },
-    });
-  if (project && parent !== project.root && parent.startsWith(project.root + "/")) {
+  if (project && target !== project.root && !target.startsWith(project.root + "/")) project = null;
+  if (project) segments.push(projectCrumb(project));
+  else {
+    const label = basename(target) || target;
+    segments.push({ label, icon: "folder", title: target, nav: { kind: "dir", path: target, label } });
+  }
+  if (project && target !== project.root && target.startsWith(project.root + "/")) {
     // Every directory from the root to the file, eliding the middle of deep paths.
-    const dirs = relativePath(project.root, parent).split("/");
+    const dirs = relativePath(project.root, target).split("/");
     const shown = dirs.length > 4 ? [...dirs.slice(0, 1), "…", ...dirs.slice(-2)] : dirs;
     let consumed = 0;
     for (const label of shown) {
@@ -82,37 +95,58 @@ export function Breadcrumbs() {
         segments.push({
           label,
           title: dirs.join("/"),
-          run: () => void executeAction("navigate.selectIn", { path: parent }),
+          run: () => void executeAction("navigate.selectIn", { path: target }),
         });
         continue;
       }
       consumed += 1;
-      const dir = `${project.root}/${dirs.slice(0, consumed).join("/")}`;
+      const at = `${project.root}/${dirs.slice(0, consumed).join("/")}`;
       segments.push({
         label,
         icon: "folder",
-        title: relativePath(project.root, dir),
-        nav: { kind: "dir", path: dir, label },
+        title: relativePath(project.root, at),
+        nav: { kind: "dir", path: at, label },
       });
     }
   }
+  if (dir) return segments;
   const file = basename(path);
-  const stem = file.includes(".") ? file.slice(0, file.lastIndexOf(".")) || file : file;
   segments.push({
     label: file,
     icon: fileIconName(file),
     title: project ? relativePath(project.root, path) : path,
     nav: { kind: "file", path, label: file },
   });
-  for (const item of chain.filter((it, i) => i > 0 || it.name !== stem))
-    segments.push({
-      label: item.name,
-      icon: `symbol-${badgeKind(item.kind)}`,
-      title: item.detail ?? item.name,
-      nav: { kind: "symbol", path, label: item.name, item },
-    });
+  return segments;
+}
+
+/** A row of crumbs; a segment with `nav` opens a popup of its children. */
+function CrumbNav({ segments, className, ariaLabel }: { segments: Crumb[]; className?: string; ariaLabel?: string }) {
+  const [popup, setPopup] = useState<{ nav: NavSegment; anchor: HTMLElement } | null>(null);
   return (
-    <nav className={styles.status} aria-label={tx("Breadcrumbs")}>
+    <nav
+      className={className}
+      aria-label={ariaLabel}
+      onKeyDown={(e) => {
+        const buttons = [...e.currentTarget.querySelectorAll<HTMLButtonElement>("button")];
+        const index = buttons.indexOf(e.target as HTMLButtonElement);
+        if (index < 0) return;
+        let next: number;
+        if (e.key === "ArrowLeft") next = Math.max(0, index - 1);
+        else if (e.key === "ArrowRight") next = Math.min(buttons.length - 1, index + 1);
+        else if (e.key === "Home") next = 0;
+        else if (e.key === "End") next = buttons.length - 1;
+        else if (e.key === "ArrowDown") {
+          e.preventDefault();
+          e.stopPropagation();
+          buttons[index]?.click();
+          return;
+        } else return;
+        e.preventDefault();
+        e.stopPropagation();
+        buttons[next]?.focus();
+      }}
+    >
       {segments.map((s, i) => (
         <Fragment key={i}>
           {i > 0 && <Icon name="chevron-right" size={12} className={styles.statusSep} />}
@@ -127,7 +161,7 @@ export function Breadcrumbs() {
               else s.run?.();
             }}
           >
-            {s.icon && <Icon name={s.icon} size={14} className={styles.crumbIcon} />}
+            {s.icon && <Icon name={s.icon} size={16} className={styles.crumbIcon} />}
             <span className={styles.crumbLabel}>{s.label}</span>
           </BarButton>
         </Fragment>
@@ -135,6 +169,59 @@ export function Breadcrumbs() {
       {popup && <NavChildrenPopup segment={popup.nav} anchor={popup.anchor} onClose={() => setPopup(null)} />}
     </nav>
   );
+}
+
+/**
+ * IDEA new UI navigation bar (the top of the workbench, or the status bar
+ * footer via `inStatusBar`): project › dirs › file › symbols, with icons;
+ * clicking a segment opens a popup of its children.
+ */
+export function Breadcrumbs({ className, inStatusBar = false }: { className?: string; inStatusBar?: boolean }) {
+  const statusPath = useEditorStatus((s) => s.status?.path ?? null);
+  const activeTabPath = useActiveTabPath();
+  // The project view's node wins while the tree is the user's context (IDEA's bar
+  // follows it, e.g. a folder selected there), then the editor's file.
+  const lead = useProjectViewLead((s) => s.lead);
+  const path = lead?.path ?? activeTabPath ?? statusPath;
+  const currentProject = useProject((s) => s.project);
+  const project = projectFolder(currentProject, path ?? "");
+  const outline = useOutline((s) => (path ? s[path] : undefined));
+  const chain = useCaretSymbols(path, outline) ?? NO_SYMBOLS;
+  const position = useProject((s) => s.settings?.appearance?.navigationBar);
+  // The status bar is the default (where the bar lived before the three-state
+  // choice), so the footer instance shows unless the user moved the bar to the
+  // top or hid it; the workbench top instance only renders for an explicit
+  // `top` (its caller gates the same way).
+  const shown = inStatusBar ? position !== "top" && position !== "hidden" : position === "top";
+  const distractionFree = useDistractionFree((s) => s.active);
+  if (!shown || distractionFree) return null;
+  const segments: Crumb[] = [];
+  const isDir = !!lead && lead.path === path && lead.dir;
+  if (path) {
+    segments.push(...pathCrumbs(project, path, isDir));
+    const file = basename(path);
+    const stem = file.includes(".") ? file.slice(0, file.lastIndexOf(".")) || file : file;
+    if (!isDir)
+      for (const item of chain.filter((it, i) => i > 0 || it.name !== stem))
+        segments.push({
+          label: item.name,
+          icon: `symbol-${badgeKind(item.kind)}`,
+          title: item.detail ?? item.name,
+          nav: { kind: "symbol", path, label: item.name, item },
+        });
+  } else if (!inStatusBar && currentProject) {
+    // The top bar keeps its row: opening, closing or switching a tab clears the
+    // active editor's status for a frame, and with no editor open IDEA still
+    // shows the project node instead of dropping the bar's height.
+    segments.push(projectCrumb(project ?? currentProject));
+  }
+  if (!segments.length) return null;
+  return <CrumbNav segments={segments} className={className ?? styles.status} ariaLabel={tx("Breadcrumbs")} />;
+}
+
+/** The status bar instance of the navigation bar; renders only for `statusBar`. */
+export function StatusBarBreadcrumbs() {
+  return <Breadcrumbs inStatusBar />;
 }
 
 /**

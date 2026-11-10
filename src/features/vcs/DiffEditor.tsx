@@ -734,14 +734,25 @@ export function DiffEditor({
       (dir === 1 ? goToNextChunk : goToPreviousChunk)({
         state: v.state,
         dispatch: (tr) => {
-          v.dispatch({ selection: tr.selection, userEvent: "select.byChunk" });
+          const selection = tr.selection ?? v.state.selection;
+          v.dispatch({
+            selection,
+            effects: EditorView.scrollIntoView(selection.main.head, { y: "center" }),
+            userEvent: "select.byChunk",
+          });
+          // CodeMirror draws the caret only in a focused editor, so a difference reached from
+          // the toolbar, a menu or F7 pressed after those would move an invisible caret.
+          v.focus();
           const scroller = views.merge && !views.panes ? views.merge.dom : v.scrollDOM;
           v.requestMeasure({
             key: step,
             read: () => {
               const documentTop = v.documentTop - scroller.getBoundingClientRect().top + scroller.scrollTop;
-              const lineTop = v.lineBlockAt(v.state.selection.main.head).top;
-              return documentTop + lineTop - scroller.clientHeight / 3;
+              const caret = v.coordsAtPos(v.state.selection.main.head);
+              const lineTop = caret
+                ? (caret.top + caret.bottom) / 2 - v.documentTop
+                : v.lineBlockAt(v.state.selection.main.head).top;
+              return documentTop + lineTop - scroller.clientHeight / 2;
             },
             write: (top) => {
               const options: ScrollToOptions = {
@@ -1133,14 +1144,14 @@ export function DiffEditor({
         )}
         <span className={styles.sep} />
         <IconButton
-          icon="split"
+          icon="diff-side-by-side"
           title="Side-by-side Viewer"
           size="small"
           pressed={opts.mode === "split"}
           onClick={() => setOpts({ mode: "split" })}
         />
         <IconButton
-          icon="list"
+          icon="diff-unified"
           title="Unified Viewer"
           size="small"
           pressed={opts.mode === "unified"}

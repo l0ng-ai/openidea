@@ -2,7 +2,6 @@
  * Run configurations, the title bar run widget, the Run tool window (console +
  * test runner) and run/debug/stop actions.
  */
-import { withRunTarget } from "@/platform/runTargetSelection";
 import { registerEditorContribution } from "@/editor/api";
 import { executeAction, executeActionOrThrow, getAction, registerActions } from "@/platform/actions";
 import { getContext, setContext, useContextKeys } from "@/platform/context";
@@ -14,6 +13,7 @@ import {
   menuGroupItems,
   useDebugRunSessions,
   notifications,
+  provideRunOutput,
   registerMenuGroup,
   registerOverlay,
   registerRunAnythingProvider,
@@ -81,6 +81,7 @@ import {
   startRun,
   startSampleOutput,
   stopSession,
+  subscribeOutput,
   trackRecentConfigurations,
   useRun,
   isLive,
@@ -147,7 +148,6 @@ async function runSelected() {
 }
 
 async function debugConfig(config: RunConfig, chain: readonly string[] = [], show?: boolean) {
-  config = withRunTarget(config);
   if (config.kind === "compound") {
     if (!(await prepareLaunch(config, chain, show))) return;
     const children = compoundChildren(config, useRun.getState().configs);
@@ -157,10 +157,6 @@ async function debugConfig(config: RunConfig, chain: readonly string[] = [], sho
   if (remoteDebugBlocked(config)) return;
   if (!(await prepareLaunch(config, chain, show))) return;
   recordRun(config.id);
-  if (config.target?.startsWith("plugin-target:")) {
-    await executeAction("debug.startConfig", show === false ? { config, show: false } : config);
-    return;
-  }
   // Python on a Docker / Compose target: debugpy in the container, the debugger attaches.
   if (containerDebuggable(config) && getAction("debug.attach")) {
     await debugInContainer(config);
@@ -663,7 +659,16 @@ export function activate(): () => void {
         run: async ({ arg }) => {
           await ensureConfigs();
           const config = configFromArg(arg);
-          if (config) await startRun(config);
+          if (!config) return;
+          // `{ config, onExit }`: told when the process exits, or right away when it didn't start.
+          const onExit = (arg as { onExit?: (code: number | null, stopped: boolean) => void } | null)?.onExit;
+          if (typeof onExit !== "function") {
+            await startRun(config);
+            return;
+          }
+          const session = await startRun(config, undefined, undefined, { onExit });
+          if (!session || session.status === "failed") onExit(null, false);
+          else if (session.runId === null && session.status === "finished") onExit(session.exitCode, !!session.stopped);
         },
       },
       {
@@ -733,6 +738,8 @@ export function activate(): () => void {
 
   setBeforeLaunchRunner(runBeforeLaunch);
   disposers.push(() => setBeforeLaunchRunner(null));
+  provideRunOutput({ subscribe: subscribeOutput });
+  disposers.push(() => provideRunOutput(undefined));
   if (hasProject()) void loadConfigs();
 
   // Reload when run.toml or build files change on disk (cheap; detection is fast).

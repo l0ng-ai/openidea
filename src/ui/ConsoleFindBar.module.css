@@ -1,4 +1,9 @@
 /* Find bar (⌘F) of the Run and Debug consoles. */
+.container {
+  container: console-find / inline-size;
+  flex: none;
+  min-width: 0;
+}
 .find {
   flex: none;
   display: flex;
@@ -25,4 +30,18 @@
 }
 .findSpacer {
   flex: 1;
+}
+
+@container console-find (max-width: 360px) {
+  .find {
+    display: grid;
+    grid-template-columns: minmax(0, 1fr) repeat(3, 20px);
+  }
+  .findField {
+    grid-column: 1 / -1;
+    min-width: 0;
+  }
+  .findSpacer {
+    display: none;
+  }
 }

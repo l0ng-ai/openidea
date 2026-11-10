@@ -22,6 +22,7 @@ import {
   openLogTab,
   PAGE,
   reloadLog,
+  revealCommit,
   selectCommit,
   selectedCommits,
   selectGitTab,
@@ -310,4 +311,38 @@ describe("Git log background refresh", () => {
     await refresh;
     expect(useGitLog.getState().commits.map((c) => c.id)).toEqual(["filtered"]);
   });
+});
+
+it("reveals the requested commit after the log's first mount replaces its initial load", async () => {
+  let finishInitial!: () => void;
+  log.mockImplementationOnce(
+    () =>
+      new Promise((resolve) => {
+        finishInitial = () => resolve({ status: "ok", data: [commit("target")] });
+      }),
+  );
+  const reveal = revealCommit("target", "/project/front");
+  await vi.waitFor(() => expect(finishInitial).toBeDefined());
+  log.mockResolvedValue({ status: "ok", data: [commit("target")] });
+  const mount = reloadLog();
+  finishInitial();
+  await Promise.all([reveal, mount]);
+  expect(useGitLog.getState().selection).toEqual([commitKey({ ...commit("target"), repo: "/project/front" })]);
+});
+
+it("does not replace a later filter choice with a pending commit reveal", async () => {
+  let finish!: () => void;
+  log.mockImplementationOnce(
+    () =>
+      new Promise((resolve) => {
+        finish = () => resolve({ status: "ok", data: [commit("target")] });
+      }),
+  );
+  const reveal = revealCommit("target", "/project/front");
+  await vi.waitFor(() => expect(finish).toBeDefined());
+  useGitLog.setState({ filters: { ...emptyFilters(), text: "chosen later" } });
+  finish();
+  await reveal;
+  expect(useGitLog.getState().selection).toEqual([]);
+  expect(useGitLog.getState().filters.text).toBe("chosen later");
 });

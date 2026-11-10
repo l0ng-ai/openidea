@@ -86,6 +86,8 @@ struct State {
     other_projects: Vec<String>,
     symbols: BTreeMap<String, Vec<SymbolInfo>>,
     files: BTreeMap<String, String>,
+    /// The same, for what `read_bytes` returns (binary content included).
+    file_bytes: BTreeMap<String, Vec<u8>>,
 
     /// Files outside every project, for `fs.read` (absolute paths).
     external: BTreeMap<String, String>,
@@ -155,7 +157,8 @@ struct State {
     database_credentials: BTreeSet<(String, String)>,
     database_connections: Vec<(String, String)>,
     mcp_stdio: Option<Vec<String>>,
-    run_targets: BTreeMap<(String, String), crate::PluginRunTarget>,
+    extension_points: BTreeMap<String, Vec<crate::Contribution>>,
+    run_targets: BTreeMap<(String, String), crate::PluginRunTargetWithOverrides>,
     run_configurations: BTreeMap<String, crate::PluginRunConfiguration>,
     configuration_runs: Vec<(String, String, Vec<String>, bool)>,
     log_tabs: Vec<MockLogTab>,
@@ -284,6 +287,12 @@ impl MockHost {
     /// A project file `read_file` can return (project-relative or absolute path).
     pub fn add_file(&self, path: &str, text: &str) {
         self.state.borrow_mut().files.insert(path.to_owned(), text.to_owned());
+    }
+
+    /// A project file `read_bytes` can return (project-relative or absolute
+    /// path): the bytes stand even where `read_file` would refuse them.
+    pub fn add_file_bytes(&self, path: &str, bytes: &[u8]) {
+        self.state.borrow_mut().file_bytes.insert(path.to_owned(), bytes.to_vec());
     }
 
     /// A project directory `exists` and `stat` report (project-relative or
@@ -451,6 +460,17 @@ impl MockHost {
         self.state.borrow().diagnostics.clone()
     }
 
+    /// Calls a target validator with the mock project's root and launch metadata.
+    pub fn validate_run_target(
+        &self,
+        validator: &mut impl crate::RunTargetValidation,
+        target: &str,
+        launch: &crate::RunTargetLaunch,
+    ) -> Result<(), String> {
+        let project = self.invocation().project().expect("mock project").root().expect("mock root");
+        validator.validate(&project, target, launch)
+    }
+
     /// Snapshot supplied to optional language-feature and injection traits in native tests.
     pub fn provider_document(&self) -> Option<crate::providers::Document> {
         self.state.borrow().editor.as_ref().map(|e| crate::providers::Document {
@@ -502,6 +522,26 @@ impl MockHost {
 
     /// Registered targets of this mock plugin, scoped by project root.
     pub fn run_targets(&self) -> BTreeMap<(String, String), crate::PluginRunTarget> {
+        self.run_targets_with_overrides()
+            .into_iter()
+            .map(|(key, t)| {
+                (
+                    key,
+                    crate::PluginRunTarget {
+                        id: t.id,
+                        name: t.name,
+                        program: t.program,
+                        args: t.args,
+                        workdir_args: t.workdir_args,
+                        container_root: t.container_root,
+                        commands: t.commands.into_iter().map(|c| (c.name, c.args)).collect(),
+                    },
+                )
+            })
+            .collect()
+    }
+    /// Registered targets including per-command working-directory arguments (API 1.5).
+    pub fn run_targets_with_overrides(&self) -> BTreeMap<(String, String), crate::PluginRunTargetWithOverrides> {
         self.state.borrow().run_targets.clone()
     }
     /// Configurations available to start_run in native tests.
@@ -512,6 +552,15 @@ impl MockHost {
     /// Configures only argv discovery; the mock has no token or URL.
     pub fn set_mcp_stdio_command(&self, command: Option<Vec<String>>) {
         self.state.borrow_mut().mcp_stdio = command;
+    }
+    /// Declares the extension point `point` for this plugin with the contributions
+    /// other plugins made to it (as (plugin id, JSON) pairs).
+    pub fn set_extension_contributions(&self, point: &str, contributions: Vec<(&str, &str)>) {
+        let list = contributions
+            .into_iter()
+            .map(|(plugin, data)| crate::Contribution { plugin: plugin.into(), data: data.into() })
+            .collect();
+        self.state.borrow_mut().extension_points.insert(point.into(), list);
     }
     pub fn set_run_configurations(&self, configs: Vec<crate::PluginRunConfiguration>) {
         self.state.borrow_mut().run_configurations = configs.into_iter().map(|c| (c.id.clone(), c)).collect();
@@ -1097,6 +1146,20 @@ pub mod current {
                 return Ok(e.text.clone());
             }
             s.files.get(rel).or_else(|| s.files.get(path)).cloned().ok_or_else(|| Error::NotFound(path.into()))
+        })
+    }
+
+    pub fn project_read_bytes(p: &ProjectRes, path: &str) -> Result<Vec<u8>, Error> {
+        with(|s| {
+            require(s, "project.read")?;
+            let rel = rel_in_root(p, path)?;
+            // The bytes on disk: an open editor's text does not apply.
+            s.file_bytes
+                .get(rel)
+                .or_else(|| s.file_bytes.get(path))
+                .cloned()
+                .or_else(|| s.files.get(rel).or_else(|| s.files.get(path)).map(|t| t.as_bytes().to_vec()))
+                .ok_or_else(|| Error::NotFound(path.into()))
         })
     }
 
@@ -1879,17 +1942,34 @@ pub mod current {
     pub fn mcp_stdio_command() -> Option<Vec<String>> {
         with(|s| s.mcp_stdio.clone())
     }
+    pub fn extension_contributions(point: &str) -> Result<Vec<crate::Contribution>, Error> {
+        with(|s| {
+            s.extension_points
+                .get(point)
+                .cloned()
+                .ok_or_else(|| Error::NotFound(format!("no running plugin declares {point}")))
+        })
+    }
 
     pub fn register_run_target(project: &ProjectRes, target: &crate::PluginRunTarget) -> Result<(), Error> {
+        register_run_target_with_overrides(project, &target.clone().into())
+    }
+    pub fn register_run_target_with_overrides(
+        project: &ProjectRes,
+        target: &crate::PluginRunTargetWithOverrides,
+    ) -> Result<(), Error> {
         with(|s| {
             require(s, &format!("process:{}", target.program))?;
+            if s.restricted {
+                return Err(Error::Denied("project is not trusted".into()));
+            }
             if target.id.is_empty()
                 || target.name.is_empty()
                 || target
                     .args
                     .iter()
                     .chain(&target.workdir_args)
-                    .chain(target.commands.iter().flat_map(|(_, a)| a))
+                    .chain(target.commands.iter().flat_map(|c| c.args.iter().chain(c.workdir_args.iter().flatten())))
                     .any(|a| a.contains('\0'))
             {
                 return Err(Error::Invalid("invalid run target".into()));
@@ -2258,11 +2338,18 @@ mod tests {
     fn records_and_enforces() {
         let mock = MockHost::install();
         mock.add_file("src/a.txt", "hello");
+        mock.add_file_bytes("src/a.bin", &[0x25, 0x50, 0x44, 0x46, 0x00, 0xff]);
         let ctx = mock.invocation();
         let project = ctx.project().unwrap();
         assert_eq!(project.read_file("/project/src/a.txt").unwrap(), "hello");
         assert_eq!(project.read_file("src/a.txt").unwrap(), "hello");
         assert!(matches!(project.read_file("../etc/passwd"), Err(Error::Invalid(_))));
+        // The exact bytes, root-relative or absolute; escape and missing behave like read_file.
+        assert_eq!(project.read_bytes("src/a.bin").unwrap(), [0x25, 0x50, 0x44, 0x46, 0x00, 0xff]);
+        assert_eq!(project.read_bytes("/project/src/a.bin").unwrap(), [0x25, 0x50, 0x44, 0x46, 0x00, 0xff]);
+        assert_eq!(project.read_bytes("src/a.txt").unwrap(), b"hello");
+        assert!(matches!(project.read_bytes("../etc/passwd"), Err(Error::Invalid(_))));
+        assert!(matches!(project.read_bytes("src/missing.bin"), Err(Error::NotFound(_))));
         host::notify(NotificationLevel::Info, "t", "b");
         assert_eq!(mock.notifications()[0].title, "t");
         host::storage::set("k", "v").unwrap();

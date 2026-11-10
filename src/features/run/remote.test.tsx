@@ -217,14 +217,6 @@ describe("remote debugging", () => {
     );
   });
 
-  it("dispatches plugin targets to the target-aware debugger", async () => {
-    const config = cfg("app", { target: "plugin-target:4:wrapper", debugAdapter: "debugpy" });
-    useRun.setState({ configs: [config], loaded: true });
-    await executeAction("run.debugConfig", config.id);
-    expect(startConfig).toHaveBeenCalledWith(config);
-    expect(remoteDebugBlocked(config)).toBe(false);
-  });
-
   describe("in containers", () => {
     const container: RunTargetValid = { ...DEFAULT_RUN_TARGET, kind: "docker", id: "py", name: "Python", image: "x" };
     const attach = vi.fn();
@@ -322,6 +314,7 @@ describe("remote debugging", () => {
       expect(ipc.runStart).toHaveBeenCalledWith(
         expect.objectContaining({ id: "app", params: { containerDebug: "true" } }),
         expect.anything(),
+        expect.any(Number),
       );
       const channel = ipc.runStart.mock.calls.at(-1)![1] as { onmessage: (m: unknown) => void };
       channel.onmessage({

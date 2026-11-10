@@ -248,6 +248,10 @@ mod imp {
         p.read_file(path).map_err(error)
     }
 
+    pub fn project_read_bytes(p: &ProjectRes, path: &str) -> Result<Vec<u8>, Error> {
+        p.read_bytes(path).map_err(error)
+    }
+
     pub fn project_write(p: &ProjectRes, path: &str, text: &str) -> Result<(), Error> {
         p.write_file(path, text).map_err(error)
     }
@@ -761,6 +765,32 @@ mod imp {
         )
         .map_err(error)
     }
+    pub fn register_run_target_with_overrides(
+        project: &ProjectRes,
+        target: &crate::PluginRunTargetWithOverrides,
+    ) -> Result<(), Error> {
+        wit::run_targets::register_with_overrides(
+            project,
+            &wit::run_targets::RunTargetWithOverrides {
+                id: target.id.clone(),
+                name: target.name.clone(),
+                program: target.program.clone(),
+                args: target.args.clone(),
+                workdir_args: target.workdir_args.clone(),
+                container_root: target.container_root.clone(),
+                commands: target
+                    .commands
+                    .iter()
+                    .map(|c| wit::run_targets::CommandOverride {
+                        name: c.name.clone(),
+                        args: c.args.clone(),
+                        workdir_args: c.workdir_args.clone(),
+                    })
+                    .collect(),
+            },
+        )
+        .map_err(error)
+    }
     pub fn unregister_run_target(project: &ProjectRes, id: &str) {
         wit::run_targets::unregister(project, id);
     }
@@ -803,6 +833,11 @@ mod imp {
 
     pub fn setting(key: &str) -> Option<String> {
         wit::settings::get(key)
+    }
+
+    pub fn extension_contributions(point: &str) -> Result<Vec<crate::Contribution>, Error> {
+        let list = wit::extensions::contributions(point).map_err(error)?;
+        Ok(list.into_iter().map(|c| crate::Contribution { plugin: c.plugin, data: c.data }).collect())
     }
 
     pub fn run_process(
@@ -986,6 +1021,14 @@ impl Project {
     /// Needs `project.read`.
     pub fn read_file(&self, path: &str) -> Result<String, Error> {
         imp::project_read(&self.inner, path)
+    }
+
+    /// Reads the bytes of a file inside the project (absolute or
+    /// root-relative) — images, archives, fonts — at most 16 MiB, the file on
+    /// disk. Paths leaving the root are rejected; a missing path is
+    /// `Error::NotFound`. Needs `project.read`.
+    pub fn read_bytes(&self, path: &str) -> Result<Vec<u8>, Error> {
+        imp::project_read_bytes(&self.inner, path)
     }
 
     /// Replaces the text of a file inside the project (absolute or
@@ -1713,6 +1756,14 @@ pub fn reply_content_tab(request: &str, reply: &crate::ContentTabReply) -> Resul
 pub fn register_run_target(project: &Project, target: &crate::PluginRunTarget) -> Result<(), Error> {
     imp::register_run_target(&project.inner, target)
 }
+/// Registers a target with per-command working-directory control (API 1.5).
+/// Requires the same process grant and project trust as register_run_target.
+pub fn register_run_target_with_overrides(
+    project: &Project,
+    target: &crate::PluginRunTargetWithOverrides,
+) -> Result<(), Error> {
+    imp::register_run_target_with_overrides(&project.inner, target)
+}
 /// Withdraws a target owned by this plugin.
 pub fn unregister_run_target(project: &Project, id: &str) {
     imp::unregister_run_target(&project.inner, id);
@@ -1721,4 +1772,14 @@ pub fn unregister_run_target(project: &Project, id: &str) {
 /// Stdio bridge argv for the invoking project, none while the built-in MCP server is off.
 pub fn mcp_stdio_command() -> Option<Vec<String>> {
     imp::mcp_stdio_command()
+}
+
+/// What other plugins contributed to `point`, an extension point this plugin
+/// declares in `[[extension-points]]`, in the order those plugins started.
+/// `Error::Denied` for another plugin's point, `Error::NotFound` while no
+/// running plugin declares it. Contributions change when plugins are enabled,
+/// disabled, updated or reloaded: subscribe to `EventKind::ExtensionsChanged`
+/// to refresh what was derived from them. Needs `engines.openidea = "^1.4"`.
+pub fn extension_contributions(point: &str) -> Result<Vec<crate::Contribution>, Error> {
+    imp::extension_contributions(point)
 }

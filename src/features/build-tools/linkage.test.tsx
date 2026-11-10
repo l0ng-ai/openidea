@@ -362,7 +362,8 @@ it("runs duplicate task paths with the selected build's wrapper, cwd and offline
       command: "/p/second/gradlew",
       cwd: "second",
       args: [":app:test", "--offline"],
-      env: { JAVA_HOME: "/second/jdk" },
+      // The build's `JAVA_HOME` follows Settings at launch instead of being frozen here (#2433).
+      env: {},
     });
 });
 

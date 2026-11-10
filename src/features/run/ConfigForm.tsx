@@ -3,6 +3,7 @@
  * common ones, the options added through "Modify options" (⌥M) and the
  * Before launch list.
  */
+import { writeClipboardText } from "@/platform/clipboard";
 import { isJvmApplication, parseJavaArgs } from "@/platform/javaLaunch";
 import { useRunTargets } from "@/platform/pluginRunTargets";
 import { useEffect, useMemo, useRef, useState, type KeyboardEvent, type ReactNode, type RefObject } from "react";
@@ -65,6 +66,7 @@ const ADAPTERS: ReadonlyArray<{ id: string; label: string }> = [
   { id: "delve", label: "Delve (Go)" },
   { id: "codelldb", label: "CodeLLDB (Rust, C, C++)" },
   { id: "lldb-dap", label: "lldb-dap (C, C++, Swift)" },
+  { id: "gdb", label: "GDB (C, C++)" },
   { id: "php-debug", label: "php-debug (PHP)" },
   { id: "rdbg", label: "rdbg (Ruby)" },
 ];
@@ -374,7 +376,7 @@ export function ConfigForm({ config, all, type, errors, template, onChange, modi
 
   const adapterOptions: SelectOption[] = [
     { value: "", label: "None" },
-    ...ADAPTERS.map((a) => ({ value: a.id, label: a.label })),
+    ...ADAPTERS.map((a) => ({ value: a.id, label: tx(a.label) })),
   ];
   if (config.debugAdapter && !ADAPTERS.some((a) => a.id === config.debugAdapter))
     adapterOptions.push({
@@ -405,7 +407,7 @@ export function ConfigForm({ config, all, type, errors, template, onChange, modi
   );
 
   return (
-    <>
+    <div className={clsx(styles.configFields, config.kind === "tomcat" && styles.configFieldsTomcat)}>
       {config.detected && !template && (
         <div className={styles.notice}>
           <T>Detected from the project. Changes are saved as a user configuration that overrides it.</T>
@@ -414,21 +416,23 @@ export function ConfigForm({ config, all, type, errors, template, onChange, modi
       {!template && (
         <div className={clsx(styles.formHeader, config.kind === "tomcat" && styles.formHeaderTomcat)}>
           <Field label={config.kind === "tomcat" ? "Name:" : "Name"} error={errors.name}>
-            <Input
-              value={config.name}
-              invalid={!!errors.name}
-              aria-label="Name"
-              onChange={(e) => update({ name: e.target.value })}
-            />
+            <div className={styles.nameControl}>
+              <Input
+                value={config.name}
+                invalid={!!errors.name}
+                aria-label="Name"
+                onChange={(e) => update({ name: e.target.value })}
+              />
+              <div className={styles.storeProjectGroup}>
+                <Checkbox
+                  checked={!config.local}
+                  onChange={(shared) => update({ local: !shared })}
+                  label="Store as project file"
+                  aria-label="Store as project file (.openidea/run.toml); otherwise in the workspace (.openidea/run.local.toml)"
+                />
+              </div>
+            </div>
           </Field>
-          <div className={styles.storeProjectGroup}>
-            <Checkbox
-              checked={!config.local}
-              onChange={(shared) => update({ local: !shared })}
-              label="Store as project file"
-              aria-label="Store as project file (.openidea/run.toml); otherwise in the workspace (.openidea/run.local.toml)"
-            />
-          </div>
         </div>
       )}
       {config.kind === "tomcat" ? (
@@ -702,31 +706,35 @@ export function ConfigForm({ config, all, type, errors, template, onChange, modi
                         }
                       />
                     ) : (
-                      <span className={styles.taskLabel}>{txTemplate(taskLabel(t, all))}</span>
+                      <span className={styles.taskLabel} title={txTemplate(taskLabel(t, all))}>
+                        {txTemplate(taskLabel(t, all))}
+                      </span>
                     )}
-                    <IconButton
-                      icon="arrow-up"
-                      size="small"
-                      iconSize={12}
-                      title="Move Up"
-                      disabled={i === 0}
-                      onClick={() => moveTask(i, -1)}
-                    />
-                    <IconButton
-                      icon="arrow-down"
-                      size="small"
-                      iconSize={12}
-                      title="Move Down"
-                      disabled={i === tasks.length - 1}
-                      onClick={() => moveTask(i, 1)}
-                    />
-                    <IconButton
-                      icon="minus"
-                      size="small"
-                      iconSize={12}
-                      title="Remove Task"
-                      onClick={() => setTasks(tasks.filter((_, j) => j !== i))}
-                    />
+                    <span className={styles.taskActions}>
+                      <IconButton
+                        icon="arrow-up"
+                        size="small"
+                        iconSize={12}
+                        title="Move Up"
+                        disabled={i === 0}
+                        onClick={() => moveTask(i, -1)}
+                      />
+                      <IconButton
+                        icon="arrow-down"
+                        size="small"
+                        iconSize={12}
+                        title="Move Down"
+                        disabled={i === tasks.length - 1}
+                        onClick={() => moveTask(i, 1)}
+                      />
+                      <IconButton
+                        icon="minus"
+                        size="small"
+                        iconSize={12}
+                        title="Remove Task"
+                        onClick={() => setTasks(tasks.filter((_, j) => j !== i))}
+                      />
+                    </span>
                   </div>
                 ))}
                 <Button
@@ -783,7 +791,7 @@ export function ConfigForm({ config, all, type, errors, template, onChange, modi
           )}
         </>
       )}
-    </>
+    </div>
   );
 }
 
@@ -887,8 +895,7 @@ function OutputField({ label, text }: { label: string; text: string }) {
   const tx = useTx();
   const [copied, setCopied] = useState(false);
   const copy = () => {
-    void navigator.clipboard
-      ?.writeText(text)
+    void writeClipboardText(text)
       .then(() => setCopied(true))
       .catch(() => undefined);
   };

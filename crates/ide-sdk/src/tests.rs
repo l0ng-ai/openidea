@@ -41,8 +41,6 @@ fn server(name: &str) -> LanguageServerConfig {
         tsserver_project_extras: Default::default(),
         resync_on_configuration: false,
         pinned: None,
-        target: None,
-        target_key: None,
     }
 }
 
@@ -476,6 +474,85 @@ fn maven_runner_jre_overrides_the_project_jdk() {
         let expected = crate::java::pick_jdk(&installed, Some(release));
         assert_eq!(crate::apply::maven_jdk(&root, &settings, Some(release)).as_ref(), expected);
     }
+}
+
+/// #2433: a `JAVA_HOME` an IDE-generated build-tool configuration carries came from Settings, so
+/// a corrected setting reaches the next run — also when an older version baked the value into a
+/// temporary configuration (and persisted it). A configuration of the user's own keeps its
+/// `JAVA_HOME`. Table-driven over the build-tool kinds and the state of the carried value.
+#[test]
+fn settings_win_over_a_generated_configurations_java_home() {
+    let tmp = tempfile::tempdir().unwrap();
+    let root = dunce::canonicalize(tmp.path()).unwrap();
+    for name in ["old-jdk", "new-jdk", "user-jdk", "runner-jdk"] {
+        fake_jdk(&root.join(name));
+    }
+    let old = root.join("old-jdk").to_string_lossy().into_owned();
+    let new = root.join("new-jdk").to_string_lossy().into_owned();
+    let user = root.join("user-jdk").to_string_lossy().into_owned();
+    let runner = root.join("runner-jdk").to_string_lossy().into_owned();
+    let gone = root.join("removed-jdk").to_string_lossy().into_owned(); // never created
+
+    let mut settings = Settings::default();
+    settings.languages.java.jdk = "new-jdk".into();
+    assert_eq!(crate::apply::maven_build_env(&root, &settings, None)["JAVA_HOME"], new);
+
+    let launch = |config: &RunConfig| {
+        let mut c = config.clone();
+        if c.kind == "maven" {
+            // The Maven launcher's own path (`run_start`).
+            crate::apply::prepare_maven_run(&mut c, &root, &settings);
+        } else {
+            apply_to_run_configs(std::slice::from_mut(&mut c), &root, &settings);
+        }
+        c
+    };
+
+    // (kind, id, carried JAVA_HOME, what it runs with, whether a save keeps it)
+    for (kind, id, carried, runs_with, kept) in [
+        // A Maven goal from the tool window: Settings win, whether the carried JDK still exists.
+        ("maven", "maven:goal:pom.xml:compile", Some(old.as_str()), new.as_str(), false),
+        ("maven", "maven:goal:pom.xml:compile", Some(gone.as_str()), new.as_str(), false),
+        ("maven", "maven:goal:pom.xml:compile", None, new.as_str(), false),
+        // A saved Maven configuration keeps the JDK it carries.
+        ("maven", "maven:test", Some(user.as_str()), user.as_str(), true),
+        ("maven", "my-goal", Some(user.as_str()), user.as_str(), true),
+        // A Gradle task from the tool window: the Gradle JVM / Project JDK decides.
+        ("gradle", "gradle:task:[\":\",\":app\"]:test", Some(user.as_str()), new.as_str(), false),
+        ("gradle", "gradle:task:[\":\",\":app\"]:test", Some(gone.as_str()), new.as_str(), false),
+        // A Gradle task of the user's own keeps its JDK.
+        ("gradle", "my-task", Some(user.as_str()), user.as_str(), true),
+        // Tomcat keeps the JDK it carries: it is a field of that configuration.
+        ("tomcat", "tomcat:local", Some(user.as_str()), user.as_str(), true),
+    ] {
+        let command = if kind == "tomcat" { "catalina" } else { "mvn" };
+        let mut config = run(kind, command, &["compile"]);
+        config.id = id.into();
+        config.detected = false;
+        if let Some(home) = carried {
+            config.env.insert("JAVA_HOME".into(), home.to_owned());
+        }
+        let case = format!("{kind} {id} carried={carried:?}");
+        assert_eq!(launch(&config).env.get("JAVA_HOME").map(String::as_str), Some(runs_with), "{case}");
+        // Saved: a derived value is dropped so a later settings change still reaches it; the
+        // user's own value survives the round trip.
+        let saved = without_derived(&config, &root, &settings);
+        assert_eq!(saved.env.contains_key("JAVA_HOME"), kept, "{case} (saved={saved:?})");
+        assert_eq!(launch(&saved).env.get("JAVA_HOME").map(String::as_str), Some(runs_with), "{case} (after a save)");
+    }
+    // A corrected setting reaches a goal configuration that was saved with the old JDK baked in,
+    // without reopening the project: the Maven runner JRE (the reporter's field, #2433) wins.
+    let mut goal = run("maven", "mvn", &["compile"]);
+    goal.id = "maven:goal:pom.xml:compile".into();
+    goal.detected = false;
+    goal.env.insert("JAVA_HOME".into(), old.clone());
+    let saved = without_derived(&goal, &root, &settings);
+    assert!(!saved.env.contains_key("JAVA_HOME"));
+    let mut moved = settings.clone();
+    moved.languages.java.maven.runner_jre = "runner-jdk".into();
+    let mut next = saved;
+    crate::apply::prepare_maven_run(&mut next, &root, &moved);
+    assert_eq!(next.env["JAVA_HOME"], runner);
 }
 
 #[test]

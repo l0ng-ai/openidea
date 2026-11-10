@@ -1,0 +1,192 @@
+---
+title: "Debugging"
+description: "Set breakpoints, step through code, inspect variables and evaluate expressions with the built-in Debug Adapter Protocol client."
+---
+
+OpenIDEA debugs programs through the [Debug Adapter Protocol](https://microsoft.github.io/debug-adapter-protocol/) (DAP). Each language names its debug adapter in its definition (`languages/<id>.toml`, `[debugger]` table), and the IDE starts that adapter when you debug a run configuration. Commands and shortcuts follow IntelliJ IDEA, so most of what you know from IDEA works the same way.
+
+## Start a debug session
+
+Any [run configuration](/en/guide/run) with a debug adapter can be debugged:
+
+- Click the gutter run icon next to a `main` function or test and choose **Debug**.
+- Pick a configuration in the run widget on the toolbar and click the debug button.
+- Use **Run › Debug** to debug the selected configuration, **Run › Debug…** to choose one, or **Run › Debug Context Configuration** to debug the program or test at the caret.
+
+The **Debug adapter** field in **Run › Edit Configurations…** decides which debugger a configuration uses. Set it to **None** to turn debugging off for that configuration.
+
+Before the session starts, OpenIDEA saves all open files. When the adapter is missing, the IDE says so and, for debuggers it can install, offers **Install and Debug**.
+
+The Debug tool window (`⌘5` / `Alt+5`) opens with one tab per session. It has two views:
+
+- **Threads & Variables**: the threads, the stack frames of the selected thread, and the variables of the selected frame. Library frames are folded; use **Show All Frames** to expand them.
+- **Console**: the program's output, plus an input line that evaluates expressions in the selected frame. Browse earlier expressions with **Browse Console History** (`⌘⌥E` / `Ctrl+Alt+E`).
+
+## Supported debuggers
+
+| Language                         | Debug adapter                             | How to get it                                                                           |
+| -------------------------------- | ----------------------------------------- | --------------------------------------------------------------------------------------- |
+| Java                             | Microsoft java-debug (runs inside JDT LS) | One-click install                                                                       |
+| Kotlin                           | kotlin-debug-adapter                      | One-click install                                                                       |
+| C, C++, Objective-C, Swift       | `lldb-dap`                                | Ships with LLVM, Xcode (`xcrun -f lldb-dap`) and Swift 6+ toolchains                    |
+| Rust, Zig                        | CodeLLDB                                  | One-click install                                                                       |
+| Go                               | Delve (`dlv`)                             | One-click install (runs `go install`, so Go must be installed)                          |
+| Python                           | debugpy                                   | One-click install of a private copy used by every interpreter, or `pip install debugpy` |
+| JavaScript, TypeScript (Node.js) | vscode-js-debug                           | One-click install                                                                       |
+| C#, F#                           | netcoredbg                                | One-click install                                                                       |
+| PHP                              | PHP Debug (Xdebug)                        | One-click install of the adapter; PHP itself needs the Xdebug 3 extension               |
+| Shell scripts                    | Bash Debug                                | One-click install                                                                       |
+| Ruby                             | rdbg                                      | `gem install debug`                                                                     |
+| Elixir                           | ElixirLS debugger                         | One-click install                                                                       |
+| Dart, Flutter                    | `dart debug_adapter`                      | Ships with the Dart / Flutter SDK                                                       |
+| OCaml                            | earlybird                                 | `opam install earlybird`                                                                |
+| GDScript                         | Godot editor                              | Godot 4                                                                                 |
+
+A configuration can also use GDB 14 or newer (`gdb -i dap`) for C and C++: choose **GDB (C, C++)** in its **Debug adapter** field. GDB is never installed by the IDE (`apt install gdb`, `dnf install gdb`, `brew install gdb`).
+
+One-click installs live in **Settings › Languages & Frameworks › Language Servers**, which lists debuggers next to language servers. You can install, update or point the IDE at your own copy there.
+
+<Warning>
+  On macOS, CodeLLDB and Delve may fail to start or attach until Developer Mode is enabled. Run `sudo DevToolsSecurity
+  -enable` once, then start the session again.
+</Warning>
+
+## Breakpoints
+
+Click a line number to add or remove a line breakpoint, or use **Toggle Line Breakpoint** (`⌘F8` / `Ctrl+F8`). In the gutter:
+
+- `⌥`-click (`Alt`-click) adds a temporary breakpoint, which is removed after it is hit once.
+- `⇧`-click (`Shift`-click) adds a logging breakpoint that does not suspend the program, and opens its properties.
+- Middle-click enables or disables an existing breakpoint.
+- Right-click a breakpoint to edit its properties.
+
+Blank and comment-only lines take no breakpoint. By default line breakpoints can only go into files of languages that have a debugger; turn on **Allow placing breakpoints in any file** in **Settings › Build, Execution, Deployment › Debugger** to lift that.
+
+### Breakpoint properties
+
+| Option                       | What it does                                                                                 |
+| ---------------------------- | -------------------------------------------------------------------------------------------- |
+| **Enabled**                  | Turns the breakpoint on or off without removing it.                                          |
+| **Suspend**                  | Off: the program keeps running when the breakpoint is hit (useful for logging).              |
+| **Condition**                | Stops only when the expression is true.                                                      |
+| **Hit count**                | Stops only when the hit count condition matches (adapter syntax, for example `5` or `>= 5`). |
+| **"Breakpoint hit" message** | Logs a message to the console each time the breakpoint is hit.                               |
+| **Evaluate and log**         | Logs the value of an expression each time the breakpoint is hit.                             |
+
+In the Breakpoints dialog the same options are available, plus **Remove once hit**, which makes the breakpoint temporary. Which of these work depends on the adapter: conditions, hit counts and log messages are DAP features that most, but not all, adapters support.
+
+### Other breakpoint kinds
+
+| Kind                      | How to add it                                                                                                                                                                                  |
+| ------------------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| Temporary line breakpoint | **Toggle Temporary Line Breakpoint** (`⌘⌥⇧F8` / `Ctrl+Alt+Shift+F8`) or `⌥`-click in the gutter                                                                                                |
+| Method breakpoint         | **Toggle Method Breakpoint** on a method declaration, or **Add Method Breakpoint** in the Breakpoints dialog                                                                                   |
+| Field watchpoint          | **Toggle Field Watchpoint** on a field declaration, or **Add Field Watchpoint** on a value in the Variables view. Choose whether it stops on **Field access**, **Field modification** or both. |
+| Exception breakpoints     | The **Exception Breakpoints** section of the Breakpoints dialog lists the exception filters the adapter offers (for example caught and uncaught exceptions).                                   |
+
+Method breakpoints and field watchpoints need an adapter that supports DAP function and data breakpoints. Filters for debugpy, java-debug, js-debug and CodeLLDB are listed right away; other adapters' filters appear after you have debugged with them once.
+
+### The Breakpoints dialog
+
+**View Breakpoints…** (`⌘⇧F8` / `Ctrl+Shift+F8`) lists every breakpoint in the project. From there you can enable, edit, remove and jump to breakpoints, toggle **Mute breakpoints** (skip all of them without removing them), and set exception filters. **Remove All Breakpoints** clears the list.
+
+Breakpoints are saved per project and kept across restarts. A breakpoint the adapter could not place is shown as unverified.
+
+## Step through code
+
+These commands are in the **Run** menu and on the Debug tool window toolbar.
+
+| Command                          | macOS         | Windows / Linux |
+| -------------------------------- | ------------- | --------------- |
+| Resume Program                   | `⌘⌥R` or `F9` | `F9`            |
+| Pause Program                    | —             | —               |
+| Step Over                        | `F8`          | `F8`            |
+| Step Into                        | `F7`          | `F7`            |
+| Smart Step Into                  | `⇧F7`         | `Shift+F7`      |
+| Step Out                         | `⇧F8`         | `Shift+F8`      |
+| Force Step Over                  | `⌥⇧F8`        | `Alt+Shift+F8`  |
+| Force Step Into                  | `⌥⇧F7`        | `Alt+Shift+F7`  |
+| Run to Cursor                    | `⌥F9`         | `Alt+F9`        |
+| Force Run to Cursor              | `⌘⌥F9`        | `Ctrl+Alt+F9`   |
+| Show Execution Point             | `⌥F10`        | `Alt+F10`       |
+| Reset Frame                      | —             | —               |
+| Stop                             | `⌘F2`         | `Ctrl+F2`       |
+| Rerun (in the Debug tool window) | `⌘R`          | `Ctrl+F5`       |
+
+- **Smart Step Into** lets you pick which call on the current line to step into, when the line has several.
+- The force variants ignore breakpoints on the way.
+- **Run to Cursor** is also offered as an inline button on a line while the program is suspended (**Show inlay Run to Cursor popup** in the Debugger settings).
+- **Reset Frame** returns to the start of the selected frame's method, when the adapter supports it.
+
+## Inspect and change values
+
+While the program is suspended:
+
+- The **Variables** view shows the variables of the selected frame. Right-click a value for **Set Value…** (`F2`), **Copy Value**, **Copy Name**, **Jump to Source** (`F4`) and **Add to Watches**.
+- **Watches** appear at the top of the Variables view and are re-evaluated on every stop and frame change. Add one with **Add to Watches**; remove it with **Remove Watch**.
+- Hovering a variable in the editor shows its value. `⌥`-click (`Alt`-click) or **Quick Evaluate Expression** (`⌘⌥F8` / `Ctrl+Alt+F8`) evaluates the expression under the mouse or the selection.
+- Values of local variables are shown inline after the lines that use them.
+- **Evaluate Expression…** (`⌥F8` / `Alt+F8`) opens a dialog that evaluates any expression in the selected frame, keeps a history, and can add the expression to watches.
+
+Expressions use the language of the program and are evaluated by the debug adapter, so what you can write depends on the adapter.
+
+## Attach to a running process
+
+**Run › Attach to Process…** (`⌥⇧F5` / `Ctrl+Alt+F5`) lists your processes that a debugger can attach to, grouped by debugger:
+
+| Group            | Processes                                                                  |
+| ---------------- | -------------------------------------------------------------------------- |
+| Java (JDWP)      | JVMs started with a JDWP agent                                             |
+| Node.js          | Node processes started with `--inspect`                                    |
+| Python (debugpy) | Python processes (debugpy is injected, or attached to its `--listen` port) |
+| Go (Delve)       | Go binaries                                                                |
+| Native (LLDB)    | Anything else, through CodeLLDB when installed, otherwise `lldb-dap`       |
+
+Type to filter by name, PID or command line.
+
+### Remote debug configurations
+
+To debug a process started elsewhere (another machine, a container), add one of these configurations in **Run › Edit Configurations…**. They only support Debug; they do not start a process.
+
+| Configuration                     | What it does                                                                                                                                                                                                              |
+| --------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| **Remote JVM Debug**              | Attaches to a JVM started with a JDWP agent, or listens for the JVM to connect (**Debugger mode**: **Attach to remote JVM** / **Listen to remote JVM**). The form shows the agent arguments to start the remote JVM with. |
+| **Go Remote**                     | Attaches to a Delve server started with `dlv --headless`.                                                                                                                                                                 |
+| **Python Remote Debug (debugpy)** | Attaches to a Python process listening with debugpy.                                                                                                                                                                      |
+| **Attach to Node.js**             | Attaches to a Node.js process started with `--inspect`.                                                                                                                                                                   |
+| **PHP Remote Debug (Xdebug)**     | Listens for Xdebug connections, for PHP served by php-fpm or a container.                                                                                                                                                 |
+| **Attach to Godot**               | Debugs the game the Godot editor is running.                                                                                                                                                                              |
+
+Each form has **Host** and **Port** fields and shows the command to start the remote side with. **Local root** and **Remote root** map source paths when the remote code lives in a different folder.
+
+## Language-specific features
+
+- **Java HotSwap**: **Run › Debugging Actions › Reload Changed Classes** compiles your changes and reloads the changed classes into the running Java debug session. Active frames keep running the old code until they return. When JDT LS finishes a build after a save, the IDE offers the reload.
+- **Maven and Gradle**: debugging a Maven or Gradle configuration starts the JVM with a JDWP agent and attaches java-debug to it.
+- **Dart / Flutter**: **Hot Reload** and **Hot Restart** are available while a Dart session is running.
+- **PHP**: if the PHP interpreter does not load Xdebug, breakpoints are skipped; the IDE warns about this when the session starts.
+- **Python**: **Settings › Build, Execution, Deployment › Python Debugger** has **Attach to subprocess automatically while debugging** and **Gevent compatible**.
+
+## Settings
+
+**Settings › Build, Execution, Deployment › Debugger**:
+
+- **Show debug window on breakpoint hit**, **Focus application on breakpoint**, **Hide debug window on process termination**.
+- **Breakpoints**: **Allow placing breakpoints in any file**, **Show inlay Run to Cursor popup**.
+- **Data Views**: **Show values inline**, **Sort values alphabetically**, **Show value tooltip on mouse hover**, **Show value tooltip on code selection**, **Value tooltip delay (ms)**.
+- **Stepping**: **Do not step into library scripts** (Python: only your code; JavaScript: skips `node_modules` and Node.js internals).
+
+## Shortcuts
+
+| Action                        | macOS  | Windows / Linux |
+| ----------------------------- | ------ | --------------- |
+| Debug                         | `⌃D`   | `Shift+F9`      |
+| Debug… (choose configuration) | `⌃⌥D`  | `Alt+Shift+F9`  |
+| Debug Context Configuration   | `⌃⇧D`  | —               |
+| Toggle Line Breakpoint        | `⌘F8`  | `Ctrl+F8`       |
+| View Breakpoints…             | `⌘⇧F8` | `Ctrl+Shift+F8` |
+| Evaluate Expression…          | `⌥F8`  | `Alt+F8`        |
+| Attach to Process…            | `⌥⇧F5` | `Ctrl+Alt+F5`   |
+| Debug tool window             | `⌘5`   | `Alt+5`         |
+
+All shortcuts are from the default keymap and can be changed in [Keymap](/en/guide/keymap) settings.

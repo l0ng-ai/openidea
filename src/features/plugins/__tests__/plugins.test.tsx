@@ -10,6 +10,7 @@ import { useProject } from "@/platform/project";
 import { pluginThemeRef, useContributedIconThemes } from "@/platform/themes";
 import { ContextMenuHost, hideContextMenu } from "@/ui";
 import { InputDialogsHost } from "@/workbench/inputDialogs";
+import { MessagesHost } from "@/workbench/messages";
 import {
   onEndpointsChanged,
   provideNotificationService,
@@ -74,6 +75,7 @@ function plugin(partial: Partial<PluginInfo> & Pick<PluginInfo, "id">): PluginIn
     error: null,
     hasCode: true,
     capabilities: [],
+    netHosts: [],
     contributions: [],
     activation: [],
     warnings: [],
@@ -90,6 +92,9 @@ function plugin(partial: Partial<PluginInfo> & Pick<PluginInfo, "id">): PluginIn
     },
     publisher: null,
     previousVersion: null,
+    depends: [],
+    dependents: [],
+    extensionPoints: [],
     ...partial,
   };
 }
@@ -640,6 +645,115 @@ describe("plugin prompts", () => {
     await waitFor(() => expect(answerPrompt).toHaveBeenCalledWith("2", null));
   });
 
+  it("asks about a net:ask host with allow once, always allow and deny", async () => {
+    const user = userEvent.setup();
+    const answerPrompt = vi.fn().mockResolvedValue(undefined);
+    setPluginsBackend({ ...createMemoryPluginsBackend(), answerPrompt });
+    usePlugins.setState({ plugins: [plugin({ id: "p", name: "Relay" })] });
+    render(<MessagesHost />);
+
+    const ask = (promptId: string) =>
+      act(() => {
+        handlePluginEvent({
+          type: "promptRequested",
+          pluginId: "p",
+          promptId,
+          prompt: { kind: "netPermission", host: "api.example.com", sessionOnly: false },
+        });
+      });
+    ask("9");
+    expect(screen.getByText("Allow Relay to connect to api.example.com?")).toBeDefined();
+    expect(screen.getByText(/The host is not in the plugin's declared permissions\./)).toBeDefined();
+    expect(screen.getByRole("button", { name: "Deny" })).toHaveFocus();
+    await user.click(screen.getByRole("button", { name: "Always allow" }));
+    await waitFor(() => expect(answerPrompt).toHaveBeenCalledWith("9", ["always"]));
+
+    ask("10");
+    await user.click(await screen.findByRole("button", { name: "Allow once" }));
+    await waitFor(() => expect(answerPrompt).toHaveBeenCalledWith("10", ["once"]));
+
+    ask("11");
+    await user.click(await screen.findByRole("button", { name: "Deny" }));
+    await waitFor(() => expect(answerPrompt).toHaveBeenCalledWith("11", null));
+  });
+
+  it("offers session permission and deny for a remote net:ask prompt", async () => {
+    const user = userEvent.setup();
+    const answerPrompt = vi.fn().mockResolvedValue(undefined);
+    setPluginsBackend({ ...createMemoryPluginsBackend(), answerPrompt });
+    render(<MessagesHost />);
+    const ask = (promptId: string) =>
+      act(() => {
+        handlePluginEvent({
+          type: "promptRequested",
+          pluginId: "p",
+          promptId,
+          prompt: { kind: "netPermission", host: "api.example.com", sessionOnly: true },
+        });
+      });
+    ask("session-net");
+    expect(screen.queryByRole("button", { name: "Always allow" })).toBeNull();
+    expect(screen.queryByRole("button", { name: "Allow once" })).toBeNull();
+    expect(screen.getAllByRole("button")).toHaveLength(2);
+    expect(screen.getByText(/This allows api.example.com until the remote session ends\./)).toBeDefined();
+    expect(screen.queryByText(/revoke it any time/)).toBeNull();
+    expect(screen.getByRole("button", { name: "Deny" })).toHaveFocus();
+    await user.click(screen.getByRole("button", { name: "Allow for this session" }));
+    await waitFor(() => expect(answerPrompt).toHaveBeenCalledWith("session-net", ["session"]));
+
+    ask("denied-session-net");
+    await user.click(await screen.findByRole("button", { name: "Deny" }));
+    await waitFor(() => expect(answerPrompt).toHaveBeenCalledWith("denied-session-net", null));
+  });
+
+  it("refuses network prompts in a hidden window and closes them when hidden", async () => {
+    const answerPrompt = vi.fn().mockResolvedValue(undefined);
+    setPluginsBackend({ ...createMemoryPluginsBackend(), answerPrompt });
+    render(<MessagesHost />);
+    const visibility = vi.spyOn(document, "visibilityState", "get");
+    const ask = (promptId: string) =>
+      act(() => {
+        handlePluginEvent({
+          type: "promptRequested",
+          pluginId: "p",
+          promptId,
+          prompt: { kind: "netPermission", host: "api.example.com", sessionOnly: false },
+        });
+      });
+    try {
+      visibility.mockReturnValue("hidden");
+      ask("hidden");
+      await waitFor(() => expect(answerPrompt).toHaveBeenCalledWith("hidden", null));
+      expect(screen.queryByRole("dialog")).toBeNull();
+      visibility.mockReturnValue("visible");
+      ask("visible");
+      expect(screen.getByRole("button", { name: "Deny" })).toHaveFocus();
+      visibility.mockReturnValue("hidden");
+      act(() => document.dispatchEvent(new Event("visibilitychange")));
+      await waitFor(() => expect(answerPrompt).toHaveBeenCalledWith("visible", null));
+      expect(screen.queryByRole("dialog")).toBeNull();
+    } finally {
+      visibility.mockRestore();
+    }
+  });
+
+  it("dismisses a network prompt without allowing the request", async () => {
+    const user = userEvent.setup();
+    const answerPrompt = vi.fn().mockResolvedValue(undefined);
+    setPluginsBackend({ ...createMemoryPluginsBackend(), answerPrompt });
+    render(<MessagesHost />);
+    act(() => {
+      handlePluginEvent({
+        type: "promptRequested",
+        pluginId: "p",
+        promptId: "dismissed-net",
+        prompt: { kind: "netPermission", host: "api.example.com", sessionOnly: false },
+      });
+    });
+    await user.keyboard("{Escape}");
+    await waitFor(() => expect(answerPrompt).toHaveBeenCalledWith("dismissed-net", null));
+  });
+
   it("asks multi-line text and confirms on Ctrl+Enter", async () => {
     const user = userEvent.setup();
     const answerPrompt = vi.fn().mockResolvedValue(undefined);
@@ -925,6 +1039,31 @@ describe("secrets", () => {
 });
 
 describe("plugin line markers", () => {
+  it("groups related destinations on one line without hiding targets or run actions", () => {
+    const doc = EditorState.create({ doc: "class Post extends Model {}" }).doc;
+    const location = (path: string) => ({ path, range: { start: { line: 0, col: 0 }, end: { line: 0, col: 4 } } });
+    const marker = (path: string, icon: string | null = "navigate", pluginId = "laravel") => ({
+      pluginId,
+      line: 0,
+      icon,
+      tooltip: path,
+      target: location(path),
+    });
+    const placed = placeMarkers(doc, [
+      marker("/project/create_posts.php"),
+      marker("/project/PostFactory.php"),
+      marker("/project/PostFactory.php", null, "another-plugin"),
+      marker("/project/PostPolicy.php"),
+      marker("/project/run.php", "run"),
+    ]);
+    expect(placed).toHaveLength(2);
+    expect(placed[0]!.markers.map((entry) => entry.target?.path)).toEqual([
+      "/project/create_posts.php",
+      "/project/PostFactory.php",
+      "/project/PostPolicy.php",
+    ]);
+    expect(placed[1]!.icon).toBe("gutter-run");
+  });
   it("places markers on existing lines and maps their icons", () => {
     const doc = EditorState.create({ doc: "a\nbb\nccc" }).doc;
     const marker = (line: number, icon: string | null) => ({ pluginId: "m", line, icon, tooltip: "t", target: null });
@@ -932,8 +1071,8 @@ describe("plugin line markers", () => {
     expect(markerIcon("database")).toBe("database");
     expect(markerIcon("run")).toBe("gutter-run");
     expect(markerIcon("implemented")).toBe("gutter-implemented");
-    expect(markerIcon(null)).toBe("gutter-implementing");
-    expect(markerIcon("unknown")).toBe("gutter-implementing");
+    expect(markerIcon(null)).toBe("gutter-navigate");
+    expect(markerIcon("unknown")).toBe("gutter-navigate");
   });
 });
 
@@ -1232,6 +1371,34 @@ describe("marketplace", () => {
     });
   });
 
+  it.each(["api.example.com", "::1", "ask"])(
+    "revokes remembered host %s separately from capabilities",
+    async (host) => {
+      const user = userEvent.setup();
+      const base = createMemoryPluginsBackend([
+        plugin({
+          id: "p",
+          name: "P",
+          netHosts: [host, "relay.example.org"],
+          capabilities: [
+            { id: "net:ask", risk: "medium", description: "Ask to connect", optional: true, granted: true },
+          ],
+        }),
+      ]);
+      const revokeNetHost = vi.fn((id: string, host: string) => base.revokeNetHost(id, host));
+      setPluginsBackend({ ...base, revokeNetHost });
+      render(<PluginsPage />);
+      await screen.findByText("net:relay.example.org");
+      expect(screen.getAllByText(`net:${host}`)).toHaveLength(host === "ask" ? 2 : 1);
+      expect(screen.getByText("net:relay.example.org")).toBeInTheDocument();
+      const rows = screen.getAllByRole("button", { name: "Remove" });
+      await user.click(rows[0]!);
+      await waitFor(() => expect(revokeNetHost).toHaveBeenCalledWith("p", host));
+      await waitFor(() => expect(screen.queryAllByText(`net:${host}`)).toHaveLength(host === "ask" ? 1 : 0));
+      expect(screen.getByText("net:relay.example.org")).toBeInTheDocument();
+    },
+  );
+
   it("offers to roll back an update", async () => {
     const base = createMemoryPluginsBackend([
       plugin({ id: "p", name: "P", version: "2.0.0", previousVersion: "1.0.0" }),
@@ -1250,6 +1417,120 @@ describe("marketplace", () => {
     await user.click(await screen.findByRole("button", { name: "Roll Back to 1.0.0" }));
     await waitFor(() => expect(rolled).toEqual(["p"]));
     expect(notes.at(-1)).toMatchObject({ title: "Rolled back P to 1.0.0" });
+  });
+
+  describe("dependencies", () => {
+    const needing = [{ id: "plus", name: "Plus", enabled: true }];
+
+    it("shows what a plugin requires, who requires it, its extension points and why it is blocked", async () => {
+      setPluginsBackend(
+        createMemoryPluginsBackend([
+          plugin({
+            id: "plus",
+            name: "Plus",
+            status: "blocked",
+            error: "Requires base ^1.0, but version 2.0.0 is installed",
+            depends: [
+              { id: "base", name: "Base", version: "^1.0", optional: false, state: "version" },
+              { id: "extra", name: null, version: null, optional: true, state: "missing" },
+            ],
+            dependents: [{ id: "more", name: "More", enabled: false }],
+            extensionPoints: [
+              { id: "plus.things", description: "Things", contributors: ["more"] },
+              { id: "plus.other", description: "", contributors: [] },
+            ],
+          }),
+        ]),
+      );
+      render(<PluginsPage />);
+      expect(await screen.findByText("Blocked")).toBeInTheDocument();
+      expect(screen.getByRole("alert")).toHaveTextContent("Requires base ^1.0, but version 2.0.0 is installed");
+
+      const requires = within(screen.getByRole("list", { name: "Required plugins" }));
+      expect(requires.getByText("Base ^1.0")).toBeInTheDocument();
+      expect(requires.getByText("Wrong version")).toBeInTheDocument();
+      expect(requires.getByText("extra (optional)")).toBeInTheDocument();
+      expect(requires.getByText("Not installed")).toBeInTheDocument();
+
+      const requiredBy = within(screen.getByRole("list", { name: "Plugins that require this one" }));
+      expect(requiredBy.getByText("More")).toBeInTheDocument();
+      expect(requiredBy.getByText("Disabled")).toBeInTheDocument();
+
+      const points = within(screen.getByRole("list", { name: "Extension points this plugin offers" }));
+      expect(points.getByText("plus.things")).toBeInTheDocument();
+      expect(points.getByText("Contributed by more")).toBeInTheDocument();
+      expect(points.getByText("No contributions")).toBeInTheDocument();
+    });
+
+    it("asks before disabling a plugin that enabled plugins need", async () => {
+      const calls: [string, boolean][] = [];
+      setPluginsBackend({
+        ...createMemoryPluginsBackend([plugin({ id: "base", name: "Base", dependents: needing })]),
+        setEnabled: async (id, enabled) => void calls.push([id, enabled]),
+      });
+      const user = userEvent.setup();
+      render(
+        <>
+          <PluginsPage />
+          <MessagesHost />
+        </>,
+      );
+      await user.click(await screen.findByRole("button", { name: "Disable" }));
+      const dialog = await screen.findByRole("dialog");
+      expect(dialog).toHaveTextContent("Plus needs Base and stops while it is disabled");
+      await user.click(within(dialog).getByRole("button", { name: "Cancel" }));
+      expect(calls).toEqual([]);
+
+      await user.click(screen.getByRole("button", { name: "Disable" }));
+      await user.click(within(await screen.findByRole("dialog")).getByRole("button", { name: "Disable" }));
+      await waitFor(() => expect(calls).toEqual([["base", false]]));
+    });
+
+    it("names every enabled plugin that needs the one being disabled", async () => {
+      setPluginsBackend(
+        createMemoryPluginsBackend([
+          plugin({
+            id: "base",
+            name: "Base",
+            dependents: [
+              { id: "plus", name: "Plus", enabled: true },
+              { id: "extra", name: "Extra", enabled: true },
+            ],
+          }),
+        ]),
+      );
+      const user = userEvent.setup();
+      render(
+        <>
+          <PluginsPage />
+          <MessagesHost />
+        </>,
+      );
+      await user.click(await screen.findByRole("button", { name: "Disable" }));
+      expect(await screen.findByRole("dialog")).toHaveTextContent(
+        "Plus, Extra need Base and stop while it is disabled",
+      );
+    });
+
+    it("disables a plugin nothing enabled needs without asking", async () => {
+      const calls: [string, boolean][] = [];
+      setPluginsBackend({
+        ...createMemoryPluginsBackend([
+          plugin({ id: "base", name: "Base", dependents: [{ id: "plus", name: "Plus", enabled: false }] }),
+        ]),
+        setEnabled: async (id, enabled) => void calls.push([id, enabled]),
+      });
+      const user = userEvent.setup();
+      render(
+        <>
+          <PluginsPage />
+          <MessagesHost />
+        </>,
+      );
+      await user.click(await screen.findByRole("button", { name: "Disable" }));
+      await waitFor(() => expect(calls).toEqual([["base", false]]));
+      expect(screen.queryByRole("dialog")).toBeNull();
+    });
   });
 });
 

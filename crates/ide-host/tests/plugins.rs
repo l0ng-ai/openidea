@@ -98,6 +98,44 @@ impl PluginWorkspace for TestWorkspace {
     fn projects(&self) -> Vec<PathBuf> {
         std::iter::once(self.root.clone()).chain(self.other_roots.lock().iter().cloned()).collect()
     }
+    /// Find in Files over the fixture's files on disk.
+    fn search_text(
+        &self,
+        _client: Option<&str>,
+        root: &Path,
+        query: ide_plugin::TextQuery,
+        limit: u32,
+        cancel: &ide_core::CancellationToken,
+    ) -> Result<ide_plugin::TextSearch, HostError> {
+        let query = ide_search::SearchQuery {
+            pattern: query.pattern,
+            is_regex: query.regex,
+            case_sensitive: query.case_sensitive,
+            whole_word: query.whole_word,
+            include: query.include,
+            exclude: query.exclude,
+            scope: ide_search::SearchScope::Project,
+            max_matches: limit,
+            context: Default::default(),
+        };
+        let files = Mutex::new(Vec::new());
+        let summary = ide_search::search(root, &query, &|_| None, cancel, &|file| files.lock().push(file))
+            .map_err(|e| HostError::Failed(e.to_string()))?;
+        let matches = files
+            .into_inner()
+            .into_iter()
+            .flat_map(|file| {
+                file.matches.into_iter().map(move |m| ide_plugin::TextMatch {
+                    location: ide_plugin::Location {
+                        path: PathBuf::from(&file.path.0),
+                        range: ide_core::Range::new(ide_core::Pos::new(m.line, 0), ide_core::Pos::new(m.line, 0)),
+                    },
+                    line: m.text,
+                })
+            })
+            .collect();
+        Ok(ide_plugin::TextSearch { matches, limit_hit: summary.limit_hit })
+    }
     fn buffer_text(&self, path: &Path) -> Option<String> {
         if path.ends_with("event-barrier.txt") {
             let gate = self.event_read_gate.lock().take();
@@ -451,6 +489,29 @@ fn read_file_is_confined_to_the_project() {
     assert_eq!(f.status("misbehave"), PluginStatus::Active);
 }
 
+/// `project.read-bytes` returns the exact bytes on disk, where `read-file`
+/// wants UTF-8, and follows `read-file`'s confinement rules.
+#[test]
+fn read_bytes_reads_the_project_file_exactly_and_stays_inside() {
+    let f = fixture(Limits::default());
+    f.install(&misbehave_pkg());
+    let binary = [0x25u8, 0x50, 0x44, 0x46, 0x00, 0xff, 0x1b, 0x7f];
+    std::fs::write(f.project.join("logo.bin"), binary).unwrap();
+    let hex = binary.iter().map(|b| format!("{b:02x}")).collect::<Vec<_>>().join(" ");
+    assert_eq!(f.run("misbehave", "read-bytes", Some("logo.bin")).unwrap().unwrap(), format!("8 {hex}"));
+    let abs = f.project.join("logo.bin");
+    assert_eq!(f.run("misbehave", "read-bytes", Some(abs.to_str().unwrap())).unwrap().unwrap(), format!("8 {hex}"));
+    // The same refusal and not-found behaviour as `read-file`; like every
+    // refusal, it is the plugin's to handle: it keeps running.
+    let err = f.run("misbehave", "read-bytes", Some("../secret.txt")).unwrap_err();
+    assert!(err.contains("outside the project root"), "{err}");
+    let err = f.run("misbehave", "read-bytes", Some("src/missing.bin")).unwrap_err();
+    assert!(err.contains("not found"), "{err}");
+    let err = f.run("misbehave", "read-bytes", Some("src")).unwrap_err();
+    assert!(err.contains("not a file"), "{err}");
+    assert_eq!(f.status("misbehave"), PluginStatus::Active);
+}
+
 /// `fs.read` reaches the granted paths and nothing else, through the real
 /// component: the same checks the runtime makes, against a real file system.
 #[test]
@@ -540,6 +601,30 @@ fn project_write_stays_inside_the_project() {
     assert!(err.contains("outside the project root"), "{err}");
     let info = f.host.info_of("misbehave").unwrap();
     assert_eq!((info.status, info.stats.crashes, info.stats.errors), (PluginStatus::Active, 0, 0), "{info:?}");
+}
+
+#[cfg(unix)]
+#[test]
+fn project_writes_confine_symlink_targets() {
+    use std::os::unix::fs::symlink;
+    let f = fixture(Limits::default());
+    f.install(&misbehave_with(f._tmp.path(), "misbehave-symlink-writer", "project.write"));
+    let outside = f._tmp.path().join("secret.txt");
+    let missing = f._tmp.path().join("missing.txt");
+    symlink(&outside, f.project.join("outside.txt")).unwrap();
+    symlink(&missing, f.project.join("dangling.txt")).unwrap();
+    for name in ["outside.txt", "dangling.txt"] {
+        let error = f.run("misbehave", "projwrite", Some(name)).unwrap_err();
+        assert!(error.contains("access outside the project root is not allowed"), "{error}");
+    }
+    assert_eq!(std::fs::read_to_string(outside).unwrap(), "top secret");
+    assert!(!missing.exists());
+    for (name, target) in [("inside.txt", "src/notes.txt"), ("new.txt", "new/deep.txt")] {
+        symlink(target, f.project.join(name)).unwrap();
+        f.run("misbehave", "projwrite", Some(name)).unwrap();
+        assert_eq!(std::fs::read_to_string(f.project.join(target)).unwrap(), "written inside the project\n");
+        assert!(std::fs::symlink_metadata(f.project.join(name)).unwrap().is_symlink());
+    }
 }
 
 /// `fs.write` replaces files the grant covers and nothing else, through the
@@ -2716,9 +2801,12 @@ fn official_mybatis_navigates_between_interface_and_xml() {
     let xml = "<mapper namespace=\"com.acme.UserMapper\">\n  <select id=\"findById\">select 1</select>\n</mapper>\n";
     std::fs::write(&java_path, java).unwrap();
     std::fs::write(&xml_path, xml).unwrap();
-    // Noise the index has to skip.
-    for i in 0..200 {
-        std::fs::write(f.project.join(format!("src/f{i}.xml")), "<beans/>").unwrap();
+    // Noise: other mappers, some large, that the lookup must not read one by one.
+    let filler = "  <select id=\"q\">select 1</select>\n".repeat(3000);
+    for i in 0..600 {
+        let body = if i % 50 == 0 { filler.as_str() } else { "" };
+        let other = format!("<mapper namespace=\"com.acme.Other{i}\">\n{body}</mapper>\n");
+        std::fs::write(f.project.join(format!("src/f{i}.xml")), other).unwrap();
     }
     let doc = |path: &Path, language: &str, text: &str| ide_plugin::ProviderDocument {
         path: path.to_path_buf(),
@@ -2727,9 +2815,9 @@ fn official_mybatis_navigates_between_interface_and_xml() {
         text: text.into(),
     };
     let jdoc = doc(&java_path, "java", java);
-    // The first call indexes the XML files; on a slow machine that runs past the
-    // edit-path budget, so the answer is dropped (the index is kept) and calls
-    // queued behind it are skipped. The editor asks again; so does this.
+    // The first call searches the XML files; on a slow machine that can run past the
+    // edit-path budget, so the answer is dropped and calls queued behind it are
+    // skipped. The editor asks again; so does this.
     let deadline = Instant::now() + Duration::from_secs(10);
     let markers = loop {
         let markers = f.host.provide_line_markers(&jdoc);
@@ -2758,7 +2846,7 @@ fn official_mybatis_navigates_between_interface_and_xml() {
         "not its language"
     );
 
-    // Warm (index cached): well inside the edit-path budget.
+    // Warm (lookup cached): well inside the edit-path budget.
     let slow = f.host.info_of("openidea.mybatis").unwrap().stats.slow_calls;
     let mut times = Vec::new();
     for _ in 0..20 {
@@ -3694,31 +3782,6 @@ fn listing_while_projects_change_does_not_deadlock() {
     }
 }
 
-/// Excalidraw: a web custom editor beside the text editor, with its fonts,
-/// file icon, template and language — no code.
-#[test]
-fn official_excalidraw_installs_and_serves_its_page() {
-    let tmp = tempfile::tempdir().unwrap();
-    let pkg = with_stand_in_page(&official("excalidraw"), tmp.path());
-    let f = fixture(Limits::default());
-    let info = f.install(&pkg);
-    assert_eq!(info.status, PluginStatus::Static, "{:?}", info.error);
-    let page = f.host.web_page("openidea.excalidraw", "canvas").unwrap();
-    let (rev, entry) = page.path.strip_prefix("openidea.excalidraw/").unwrap().split_once('/').unwrap();
-    assert_eq!(entry, "web/index.html");
-    let html = f.host.web_file("openidea.excalidraw", &format!("{rev}/{entry}")).unwrap();
-    let html = String::from_utf8(html.bytes).unwrap();
-    // Relative URLs only: the page is served from the package.
-    let script = html.split("src=\"").nth(1).unwrap().split('"').next().unwrap();
-    assert!(script.starts_with("./assets/"), "{script}");
-    assert!(f.host.web_file("openidea.excalidraw", &format!("{rev}/web/{}", &script[2..])).is_ok());
-    let font = f.host.web_file("openidea.excalidraw", &format!("{rev}/web/fonts/Virgil/Virgil-Regular.woff2")).unwrap();
-    assert_eq!(font.mime, "font/woff2");
-    assert_eq!(f.host.ui_items("customEditors")[0].decl["layout"], "preview");
-    assert!(f.host.languages().iter().any(|l| l.id.as_str() == "excalidraw"));
-    assert_eq!(f.host.assets("openidea.excalidraw", "fileIcon/excalidraw/").unwrap().len(), 2);
-}
-
 /// A copy of the official plugin at `src` in `dir`, with a stand-in for its
 /// built page (`web/` is built by plugins/build.sh, not checked in; build.sh
 /// checks what the build produces): an entry loading a script and a font by
@@ -3760,7 +3823,18 @@ fn official_graphviz_turns_its_pages_reports_into_problems() {
     assert_eq!(info.status, PluginStatus::Inactive, "{:?}", info.error);
     assert_eq!(f.host.ui_items("customEditors")[0].decl["layout"], "split");
     assert!(f.host.languages().iter().any(|l| l.id.as_str() == "dot"));
-    assert!(f.host.web_page("openidea.graphviz", "preview").is_ok());
+    assert_eq!(f.host.assets("openidea.graphviz", "fileIcon/graphviz/").unwrap().len(), 2);
+    let page = f.host.web_page("openidea.graphviz", "preview").unwrap();
+    let (rev, entry) = page.path.strip_prefix("openidea.graphviz/").unwrap().split_once('/').unwrap();
+    assert_eq!(entry, "web/index.html");
+    let html = f.host.web_file("openidea.graphviz", &format!("{rev}/{entry}")).unwrap();
+    let html = String::from_utf8(html.bytes).unwrap();
+    // Relative URLs only: the page is served from the package.
+    let script = html.split("src=\"").nth(1).unwrap().split('"').next().unwrap();
+    assert!(script.starts_with("./assets/"), "{script}");
+    assert!(f.host.web_file("openidea.graphviz", &format!("{rev}/web/{}", &script[2..])).is_ok());
+    let font = f.host.web_file("openidea.graphviz", &format!("{rev}/web/fonts/Virgil/Virgil-Regular.woff2")).unwrap();
+    assert_eq!(font.mime, "font/woff2");
 
     std::fs::write(f.project.join("flow.dot"), "digraph {\n  a -> \n}\n").unwrap();
     let editor = f.workspace.open("flow.dot", &[]);
@@ -5713,6 +5787,7 @@ fn api14_denies_new_privileges_and_requires_an_invoking_window() {
         ("open-editors", "", "editor.read"),
         ("open-editor", "a.txt", "project.read"),
         ("search-text", "needle", "project.read"),
+        ("read-bytes", "a.txt", "project.read"),
         ("problems", "", "project.read"),
         ("decorations", "a.txt", "project.read"),
         ("clear-decorations", "", "project.read"),
@@ -5741,6 +5816,158 @@ fn api14_denies_new_privileges_and_requires_an_invoking_window() {
     assert!(f.run("api14", "undeclared-secret", Some("value")).unwrap_err().contains("undeclared"));
     f.run("api14", "delete-secret", None).unwrap();
     assert_eq!(f.host.declared_secret("api14", "token"), None);
+}
+
+/// `net:ask`: a first request to a host outside the manifest asks the user
+/// from an invoking window ("once" allows this request, "always" remembers
+/// the host, refusal and dismissal deny). Background calls are denied without
+/// a dialog, plain HTTP still needs `net.http:<host>`, and a remembered host
+/// is listed in the permissions, where it can be revoked.
+#[test]
+fn net_ask_asks_once_remembers_always_and_revokes() {
+    use ide_plugin::Prompt;
+    let f = fixture(Limits::default());
+    f.host.install_from_dir(&sample("api14"), &Consent::default()).unwrap();
+    let (port, seen) = http_server("relay ok", |_| Duration::ZERO);
+    let url = format!("http://127.0.0.1:{port}/");
+
+    // Merely declaring an optional capability is not enough: the user must grant it.
+    let err = f.run("api14", "fetch", Some(&url)).unwrap_err();
+    assert!(err.contains("not granted"), "{err}");
+    assert!(!f.take_events().iter().any(|(_, e)| matches!(e, PluginEvent::PromptRequested { .. })));
+    f.host.set_capability("api14", "net:ask", true).unwrap();
+
+    // Plain HTTP elsewhere stays out of the ask flow entirely.
+    let err = f.run("api14", "fetch", Some("http://example.com/")).unwrap_err();
+    assert!(err.contains("net.http:example.com") && err.contains("not granted"), "{err}");
+    assert!(!f.take_events().iter().any(|(_, e)| matches!(e, PluginEvent::PromptRequested { .. })));
+
+    // Background (no invoking window): denied like before, no dialog.
+    let err = f.host.run_command("api14", "fetch", Some(&url), Invocation::default()).unwrap_err();
+    assert!(err.message.contains("net:127.0.0.1") && err.message.contains("not granted"), "{err:?}");
+    assert!(!f.take_events().iter().any(|(_, e)| matches!(e, PluginEvent::PromptRequested { .. })));
+    assert!(seen.lock().is_empty(), "nothing connected");
+
+    // From a window: the question names the full host. "Allow once" lets
+    // this request through and remembers nothing.
+    let (result, prompt) = net_ask_run_and_answer(&f, &url, Some(&["once"]));
+    assert_eq!(result.unwrap().as_deref(), Some("relay ok"));
+    assert_eq!(prompt, Prompt::NetPermission { host: "127.0.0.1".into(), session_only: false });
+    assert_eq!(f.host.info_of("api14").unwrap().net_hosts, Vec::<String>::new());
+    assert_eq!(seen.lock().len(), 1);
+
+    // The next request asks again; "Always allow" remembers the host.
+    let (result, prompt) = net_ask_run_and_answer(&f, &url, Some(&["always"]));
+    assert_eq!(result.unwrap().as_deref(), Some("relay ok"));
+    assert_eq!(prompt, Prompt::NetPermission { host: "127.0.0.1".into(), session_only: false });
+    assert_eq!(f.host.info_of("api14").unwrap().net_hosts, ["127.0.0.1".to_owned()]);
+
+    // Remembered: connecting without a dialog from a window and in the background.
+    let result = f.host.run_command("api14", "fetch", Some(&url), f.inv()).map_err(|e| e.message).unwrap();
+    assert_eq!(result.as_deref(), Some("relay ok"));
+    let result =
+        f.host.run_command("api14", "fetch", Some(&url), Invocation::default()).map_err(|e| e.message).unwrap();
+    assert_eq!(result.as_deref(), Some("relay ok"));
+    assert!(!f.take_events().iter().any(|(_, e)| matches!(e, PluginEvent::PromptRequested { .. })));
+    assert_eq!(seen.lock().len(), 4);
+
+    // The permissions list the host; revoking it asks again, and refusing denies.
+    f.host.revoke_net_host("api14", "127.0.0.1").unwrap();
+    assert_eq!(f.host.info_of("api14").unwrap().net_hosts, Vec::<String>::new());
+    let (result, prompt) = net_ask_run_and_answer(&f, &url, None);
+    assert_eq!(prompt, Prompt::NetPermission { host: "127.0.0.1".into(), session_only: false });
+    let err = result.unwrap_err();
+    assert!(err.contains("not granted"), "{err}");
+    // Refusal throttles even a different host, without making any connection.
+    let err = f.run("api14", "fetch", Some("https://other.example/")).unwrap_err();
+    assert!(err.contains("not granted"), "{err}");
+    assert!(!f.take_events().iter().any(|(_, e)| matches!(e, PluginEvent::PromptRequested { .. })));
+    assert_eq!(seen.lock().len(), 4);
+
+    f.host.uninstall("api14").unwrap();
+    let ledger = ide_extension::ledger::Ledger::load(&f.plugins_dir);
+    assert!(ledger.get(&ide_extension::ledger::Subject::Installed("api14".into())).is_none());
+}
+
+#[test]
+fn net_ask_session_hosts_are_ephemeral_and_cleared_with_plugin_grants() {
+    use ide_extension::ledger::{Ledger, Subject};
+    use ide_plugin::Prompt;
+    let f = fixture(Limits::default());
+    f.host.set_net_hosts_session_only();
+    f.host.install_from_dir(&sample("api14"), &Consent::all()).unwrap();
+    let (port, seen) = http_server("session ok", |_| Duration::ZERO);
+    let url = format!("http://127.0.0.1:{port}/");
+    let subject = Subject::Installed("api14".into());
+
+    for (answer, reset) in [("session", "disable"), ("always", "revoke"), ("session", "uninstall")] {
+        let err = f.host.run_command("api14", "fetch", Some(&url), Invocation::default()).unwrap_err();
+        assert!(err.message.contains("not granted"), "{err:?}");
+        assert!(!f.take_events().iter().any(|(_, e)| matches!(e, PluginEvent::PromptRequested { .. })));
+
+        let (result, prompt) = net_ask_run_and_answer(&f, &url, Some(&[answer]));
+        assert_eq!(prompt, Prompt::NetPermission { host: "127.0.0.1".into(), session_only: true });
+        assert_eq!(result.unwrap().as_deref(), Some("session ok"));
+        for invocation in [f.inv(), Invocation::default()] {
+            let result = f.host.run_command("api14", "fetch", Some(&url), invocation).unwrap();
+            assert_eq!(result.as_deref(), Some("session ok"));
+        }
+        let err =
+            f.host.run_command("api14", "fetch", Some("https://other.example/"), Invocation::default()).unwrap_err();
+        assert!(err.message.contains("not granted"), "{err:?}");
+        assert!(!f.take_events().iter().any(|(_, e)| matches!(e, PluginEvent::PromptRequested { .. })));
+        assert!(f.host.info_of("api14").unwrap().net_hosts.is_empty());
+        assert!(Ledger::load(&f.plugins_dir).get(&subject).unwrap().net_hosts.is_empty());
+
+        match reset {
+            "disable" => {
+                f.host.set_enabled("api14", false).unwrap();
+                f.host.set_enabled("api14", true).unwrap();
+            }
+            "revoke" => {
+                f.host.set_capability("api14", "net:ask", false).unwrap();
+                f.host.set_capability("api14", "net:ask", true).unwrap();
+            }
+            "uninstall" => {
+                f.host.uninstall("api14").unwrap();
+                assert!(Ledger::load(&f.plugins_dir).get(&subject).is_none());
+                f.host.install_from_dir(&sample("api14"), &Consent::all()).unwrap();
+            }
+            _ => unreachable!(),
+        }
+    }
+    let err = f.host.run_command("api14", "fetch", Some(&url), Invocation::default()).unwrap_err();
+    assert!(err.message.contains("not granted"), "{err:?}");
+    assert_eq!(seen.lock().len(), 9);
+}
+
+/// Runs api14's `fetch` in its window; once the `net:ask` question arrives,
+/// answers it (`None`: dismisses). Returns the command's result and the prompt.
+fn net_ask_run_and_answer(
+    f: &Fixture,
+    url: &str,
+    answer: Option<&[&str]>,
+) -> (Result<Option<String>, String>, ide_plugin::Prompt) {
+    std::thread::scope(|scope| {
+        let running = scope.spawn(|| f.run("api14", "fetch", Some(url)));
+        let deadline = Instant::now() + Duration::from_secs(10);
+        let (client, prompt_id, prompt) = loop {
+            let asked = f.take_events().into_iter().find_map(|(client, e)| match e {
+                PluginEvent::PromptRequested { prompt_id, prompt, .. } => Some((client, prompt_id, prompt)),
+                _ => None,
+            });
+            if let Some(asked) = asked {
+                break asked;
+            }
+            assert!(Instant::now() < deadline && !running.is_finished(), "the fetch never asked");
+            std::thread::sleep(Duration::from_millis(10));
+        };
+        assert_eq!(client.as_deref(), Some("main"), "asks in the window that ran the command");
+        let answer = answer.map(|a| a.iter().map(|s| (*s).to_owned()).collect());
+        assert!(f.host.answer_prompt(&prompt_id, answer));
+        assert!(!f.host.answer_prompt(&prompt_id, None), "an answer counts once");
+        (running.join().unwrap(), prompt)
+    })
 }
 
 #[test]

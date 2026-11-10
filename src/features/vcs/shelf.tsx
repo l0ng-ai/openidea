@@ -3,6 +3,7 @@
  * the Shelf tab of the Commit tool window, Unshelve (3-way, conflicts go to the
  * merge UI), rename and delete.
  */
+import { writeClipboardText } from "@/platform/clipboard";
 import { useEffect, useMemo, useState, type MouseEvent } from "react";
 import { create } from "zustand";
 import type { ApplyOutcome, FileStatus, ShelvedChangeList, ShelfDiffFile } from "@/bindings";
@@ -292,7 +293,7 @@ export async function renameShelf(entry: ShelvedChangeList) {
 
 export async function copyShelfPatch(entry: ShelvedChangeList, path?: string) {
   try {
-    await navigator.clipboard.writeText(await call(commands.vcsShelfPatch(entry.id, path ?? null)));
+    await writeClipboardText(await call(commands.vcsShelfPatch(entry.id, path ?? null)));
     notifications().notify({ group: "vcs", level: "info", title: "Patch copied to the clipboard" });
   } catch (e) {
     logConsole("err", errorMessage(e));

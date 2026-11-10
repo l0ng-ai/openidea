@@ -184,6 +184,30 @@ pub fn launch_fingerprint(
     Ok(Some(LaunchFingerprint { version: 2, parameters, files }))
 }
 
+impl LaunchFingerprint {
+    /// Relative paths whose content changed while `(length, mtime)` stayed the same
+    /// compared to `previous` (timestamp-preserving external edits, coarse-granularity
+    /// filesystems). Timestamp-incremental builders (Maven, the Kotlin plugin) would
+    /// skip these sources as "unchanged", so the rebuild the fingerprint triggers
+    /// compiles nothing and the stale outputs get re-recorded as fresh. Callers
+    /// re-stamp the returned paths before building. Inputs without a content hash
+    /// (directories, files outside the project) are never reported.
+    pub fn mtime_preserved_edits(&self, current: &Self) -> Vec<PathBuf> {
+        let mut edits = Vec::new();
+        for (path, current_stamp) in &current.files {
+            let Some(current_stamp) = current_stamp else { continue };
+            let Some(previous_stamp) = self.files.get(path).and_then(|stamp| stamp.as_ref()) else { continue };
+            let (len, mtime, Some(current_hash)) = current_stamp else { continue };
+            let (prev_len, prev_mtime, Some(prev_hash)) = previous_stamp else { continue };
+            if current_hash != prev_hash && len == prev_len && mtime == prev_mtime {
+                edits.push(path.clone());
+            }
+        }
+        edits.sort();
+        edits
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -280,6 +304,60 @@ mod tests {
         fs::File::options().write(true).open(&source).unwrap().set_modified(mtime).unwrap();
         let after = fingerprint(root, &model);
         assert_ne!(before, after, "a same-length, same-mtime content change must invalidate the fingerprint");
+    }
+
+    #[test]
+    fn mtime_preserved_edits_only_reports_lying_timestamps() {
+        fn stamp(len: u64, hash: &str) -> Option<Stamp> {
+            Some((len, SystemTime::UNIX_EPOCH + std::time::Duration::from_secs(42), Some(hash.into())))
+        }
+        fn prints(
+            previous: BTreeMap<PathBuf, Option<Stamp>>,
+            current: BTreeMap<PathBuf, Option<Stamp>>,
+        ) -> Vec<PathBuf> {
+            let previous = LaunchFingerprint { version: 2, parameters: String::new(), files: previous };
+            let current = LaunchFingerprint { version: 2, parameters: String::new(), files: current };
+            previous.mtime_preserved_edits(&current)
+        }
+        // Same length and mtime, different content: the builder would skip it.
+        assert_eq!(
+            prints([("a.java".into(), stamp(5, "old"))].into(), [("a.java".into(), stamp(5, "new"))].into()),
+            vec![PathBuf::from("a.java")]
+        );
+        // A normal edit bumps the mtime: the builder already sees it.
+        let mut touched = stamp(5, "new").unwrap();
+        touched.1 += std::time::Duration::from_secs(1);
+        assert!(
+            prints([("a.java".into(), stamp(5, "old"))].into(), [("a.java".into(), Some(touched))].into()).is_empty()
+        );
+        // Added, deleted, and hash-less inputs (directories, files outside the
+        // project) carry no comparable content: never reported.
+        assert!(
+            prints(
+                [("gone.java".into(), stamp(5, "old")), ("dir".into(), None)].into(),
+                [("new.java".into(), stamp(5, "new")), ("dir".into(), None)].into()
+            )
+            .is_empty()
+        );
+    }
+
+    #[test]
+    fn lying_source_is_found_against_a_real_fingerprint() {
+        let dir = tempfile::tempdir().unwrap();
+        let root = dir.path();
+        let model = fixture(root);
+        let source = root.join("lib/src/main/kotlin/Channel.kt");
+        let before = fingerprint(root, &model).unwrap();
+        let mtime = fs::metadata(&source).unwrap().modified().unwrap();
+        // Same 5-byte length, different content, preserved mtime.
+        write(root, "lib/src/main/kotlin/Channel.kt", "valve");
+        fs::File::options().write(true).open(&source).unwrap().set_modified(mtime).unwrap();
+        let after = fingerprint(root, &model).unwrap();
+        assert_eq!(before.mtime_preserved_edits(&after), [PathBuf::from("lib/src/main/kotlin/Channel.kt")]);
+        // A normal edit (mtime advances) needs no repair.
+        write(root, "lib/src/main/kotlin/Channel.kt", "valve!");
+        let normal = fingerprint(root, &model).unwrap();
+        assert!(before.mtime_preserved_edits(&normal).is_empty());
     }
 
     #[test]

@@ -10,6 +10,7 @@ import { selectableText } from "./selectableText";
 import appIcon from "../../src-tauri/icons/128x128.png";
 import styles from "./Dialog.module.css";
 import { isImeKey } from "@/platform/ime";
+import { lockDragCursor } from "./dragCursor";
 
 /**
  * `default`: filled accent button, triggered by Enter. `cancel`: Esc / close
@@ -231,6 +232,7 @@ function DialogInner({
 }: DialogProps) {
   const ref = useRef<HTMLDivElement>(null);
   const platform = useDialogPlatform(platformOverride);
+  const overlayTitleBar = usePlatform((s) => s.overlayTitleBar);
   const given = useGivenTx();
   if (typeof title === "string") title = given(title);
   // Choosers and untitled dialogs (Recent Files, About) are IDEA popups.
@@ -271,7 +273,7 @@ function DialogInner({
 
   useEffect(() => {
     const layer = openLayer(() => ref.current);
-    const previous = document.activeElement as HTMLElement | null;
+    let previous = document.activeElement as HTMLElement | null;
     const el = ref.current;
     // Content first (an alert's checkbox is not content), then the default button; never the title bar's close button.
     const target =
@@ -282,6 +284,22 @@ function DialogInner({
       el?.querySelector<HTMLElement>("[data-dialog-footer] [data-dialog-default]:not([disabled])") ??
       el?.querySelector<HTMLElement>(`[data-dialog-footer] :is(${FOCUSABLE})`) ??
       el;
+    let lastFocused = target;
+    const onFocusIn = (e: FocusEvent) => {
+      const focused = e.target;
+      if (!(focused instanceof HTMLElement)) return;
+      if (el?.contains(focused)) lastFocused = focused;
+      else if (!layer.containsFromHere(focused) && layer.isTop()) {
+        // A newly mounted portal can focus before its layer's effect registers it.
+        const overlay = focused.closest('[data-popup], [role="dialog"]');
+        if (overlay && el && el.compareDocumentPosition(overlay) & Node.DOCUMENT_POSITION_FOLLOWING) return;
+        // An editor opened behind this dialog may finish mounting on a later frame.
+        previous = focused;
+        (lastFocused?.isConnected ? lastFocused : target)?.focus({ preventScroll: true });
+        if (el && !el.contains(document.activeElement)) el.focus({ preventScroll: true });
+      }
+    };
+    document.addEventListener("focusin", onFocusIn);
     target?.focus({ preventScroll: true });
     const onKey = (e: KeyboardEvent) => {
       if (!layer.isTop() || !ref.current) return;
@@ -306,6 +324,7 @@ function DialogInner({
     document.addEventListener("keydown", onKey);
     return () => {
       document.removeEventListener("keydown", onKey);
+      document.removeEventListener("focusin", onFocusIn);
       layer.release();
       if (previous?.isConnected && restoreFocusRef.current?.() !== false) previous.focus({ preventScroll: true });
     };
@@ -324,6 +343,7 @@ function DialogInner({
     const start = { x: e.clientX - offset.x, y: e.clientY - offset.y };
     const rect = el.getBoundingClientRect();
     const base = { left: rect.left - offset.x, top: rect.top - offset.y };
+    const minTop = overlayTitleBar && el.parentElement ? parseFloat(getComputedStyle(el.parentElement).paddingTop) : 0;
     const move = (ev: globalThis.PointerEvent) => {
       if (!(ev.buttons & 1)) return up();
       // Keep the title bar reachable.
@@ -331,7 +351,7 @@ function DialogInner({
         Math.max(ev.clientX - start.x, -base.left - rect.width + 80),
         window.innerWidth - base.left - 80,
       );
-      const y = Math.min(Math.max(ev.clientY - start.y, -base.top), window.innerHeight - base.top - 28);
+      const y = Math.min(Math.max(ev.clientY - start.y, minTop - base.top), window.innerHeight - base.top - 28);
       setOffset({ x, y });
     };
     const up = () => {
@@ -351,6 +371,7 @@ function DialogInner({
     const el = ref.current;
     if (!el) return;
     e.preventDefault();
+    const releaseCursor = lockDragCursor("nwse-resize");
     const start = { x: e.clientX, y: e.clientY };
     const rect = el.getBoundingClientRect();
     const minW = minWidth ?? (typeof width === "number" ? width : 320);
@@ -376,6 +397,7 @@ function DialogInner({
     const up = () => {
       window.removeEventListener("pointermove", move);
       window.removeEventListener("pointerup", up);
+      releaseCursor();
       if (last) onResized?.(last);
     };
     window.addEventListener("pointermove", move);
@@ -384,7 +406,7 @@ function DialogInner({
 
   return createPortal(
     <div
-      className={clsx(styles.backdrop, position === "top" && styles.top)}
+      className={clsx(styles.backdrop, position === "top" && styles.top, overlayTitleBar && styles.belowTitleBar)}
       onPointerDown={(e) => {
         if ((dismissOnBackdrop ?? popup) && e.target === e.currentTarget) onClose();
       }}

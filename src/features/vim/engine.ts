@@ -13,6 +13,7 @@ import { showStatusInfo } from "@/workbench/contributions";
 import { VIM_EDITOR_ATTR } from "./conflicts";
 import { useVimMode, type VimModeState } from "./mode";
 import { resolveActionId, type RcCommand } from "./rc";
+import { mapFunctionTextObjects } from "./textObjects";
 
 /** Insert/Replace state as seen by transactions (mode changes are queued). */
 const setVimInsert = StateEffect.define<boolean>();
@@ -40,6 +41,12 @@ interface ImeComposition {
 }
 
 const imeCompositions = new WeakMap<EditorView, ImeComposition>();
+/** The last Normal-mode composition's end, until a keydown reaches the editor (see `imeNextKey`). */
+const imeEnded = new WeakMap<EditorView, { at: number; commit: string }>();
+/** CodeMirror's own window is 100ms; the text input follows its dropped keydown a little later. */
+const IME_NEXT_KEY_WINDOW_MS = 200;
+/** Text input as the `KeyboardEvent.key` Vim maps (`<Space>`, `<CR>`, `<Tab>`). */
+const TEXT_KEYS: Record<string, string> = { "\n": "Enter", "\t": "Tab" };
 /** Views with a Normal-mode IME composition in progress (`imeCompositions` can't be iterated). */
 const composingViews = new Set<EditorView>();
 
@@ -119,14 +126,54 @@ const imeHandlers = EditorView.domEventHandlers({
     // force-ends a composition; real ends (even cancelled ones) are trusted.
     if (!composition || (typeof e.data !== "string" && !e.isTrusted)) return false;
     composition.ended = typeof e.data === "string" ? e.data : "";
+    imeEnded.set(view, { at: Date.now(), commit: composition.ended });
     clearTimeout(composition.timer);
     composition.timer = setTimeout(() => finishImeComposition(view), 0);
     return false;
   },
 });
 
+/** A keydown CodeMirror didn't drop reaches Vim the usual way (observers run even after Vim's). */
+const imeKeydown = EditorView.domEventObservers({
+  keydown(_e, view) {
+    imeEnded.delete(view);
+  },
+});
+
+/**
+ * The key typed right after a Normal-mode composition. On WebKit (macOS, and WebKitGTK on
+ * Linux), CodeMirror drops the first keydown within 100ms of `compositionend`, meant for the
+ * IME's own Enter. Vim never sees that key, and a printable one arrives as text input that
+ * would be written to the document. Korean ends a composition implicitly, by the next key or
+ * an input source switch, so `ㄱ` then a quick `j` hits this; Japanese and Chinese can too.
+ * Run the key through Vim instead. Keys that type no text (Esc, arrows) are still dropped.
+ */
+function imeNextKey(view: EditorView, text: string): boolean {
+  const ended = imeEnded.get(view);
+  if (!ended || view.composing) return false;
+  if (Date.now() - ended.at > IME_NEXT_KEY_WINDOW_MS) {
+    imeEnded.delete(view);
+    return false;
+  }
+  const composition = imeCompositions.get(view);
+  if (composition?.ended === null) return false;
+  // The IME's own commit (or the part CodeMirror reports of it) belongs to the composition.
+  if (ended.commit.endsWith(text)) return false;
+  if (text.length !== 1 || text.charCodeAt(0) >= 0x80) return false;
+  const cm = getCM(view);
+  const vimState = cm?.state.vim;
+  if (!cm || !vimState || vimState.insertMode || cm.curOp?.isVimOp) return false;
+  imeEnded.delete(view);
+  if (composition) finishImeComposition(view);
+  // Through `vimKeyFromEvent` like a keydown, for `<Space>`/`<CR>` and 'langmap'.
+  const key = Vim.vimKeyFromEvent({ key: TEXT_KEYS[text] ?? text } as KeyboardEvent, vimState);
+  if (key) Vim.handleKey(cm, key, "user");
+  return true;
+}
+
 /** Let CodeMirror apply the composing text; it is removed when the IME ends. */
-const imeInput = EditorView.inputHandler.of((view) => {
+const imeInput = EditorView.inputHandler.of((view, _from, _to, text) => {
+  if (imeNextKey(view, text)) return true;
   const composition = imeCompositions.get(view);
   if (!composition) return false;
   const cm = getCM(view);
@@ -249,6 +296,7 @@ export function vimExtension(ctx?: EditorDocContext): Extension {
     Prec.highest([
       vimInsert,
       imeHandlers,
+      imeKeydown,
       imeInput,
       imeTracker,
       imeTransactions,
@@ -300,6 +348,7 @@ export function defineExCommands() {
   Vim.defineEx("wq", "wq", saveThenClose);
   Vim.defineEx("xit", "x", saveThenClose);
   Vim.defineEx("action", "action", (_cm, params) => void runIdeAction(params.args?.[0]));
+  mapFunctionTextObjects();
 }
 
 /**
@@ -361,6 +410,8 @@ export function applyRcCommands(commands: readonly RcCommand[]): string[] {
   defineExCommands();
   Vim.mapclear();
   shadowLeaderBuiltins(commands);
+  // `mapclear` drops them with the user mappings; before those, which may remap them.
+  mapFunctionTextObjects();
   const problems: string[] = [];
   for (const c of commands) {
     try {

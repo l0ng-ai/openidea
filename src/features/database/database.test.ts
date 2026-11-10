@@ -212,6 +212,14 @@ describe("data source types", () => {
     expect(labels).toEqual([...labels].sort((a, b) => a.localeCompare(b)));
   });
 
+  it("adds StarRocks on the MySQL driver with the 9030 preset (#2452)", () => {
+    expect(vendorPreset(vendorById("starrocks")!)).toEqual({ driver: "mysql", vendor: "starrocks", port: 9030 });
+    expect(sourceUrl({ driver: "mysql", vendor: "starrocks", host: "sr", port: 9030, database: "" })).toBe(
+      "jdbc:starrocks://sr:9030",
+    );
+    expect(parseSourceUrl("starrocks://root@sr.local:9030/test")?.source.vendor).toBe("starrocks");
+  });
+
   it("falls back to the driver for unknown or mismatched presets", () => {
     expect(vendorOf({ driver: "mysql", vendor: "tidb" }).label).toBe("TiDB");
     expect(vendorOf({ driver: "postgres", vendor: "tidb" }).id).toBe("postgres");

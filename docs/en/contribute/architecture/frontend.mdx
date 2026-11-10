@@ -1,0 +1,156 @@
+---
+title: "Frontend architecture"
+description: "How the React workbench is put together: features with activate(), the action registry, keymaps and the dispatcher, context keys and when clauses, contributions and services."
+---
+
+The frontend is React 19 with zustand stores and CodeMirror 6 for editors, bundled by Vite and run in the system webview.
+
+## Layout of `src/`
+
+| Path               | What it holds                                                                                                                                                                                                              |
+| ------------------ | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `platform/`        | App-wide infrastructure: `ipc.ts` (`call`, `onIdeEvent`, `nextRequestId`), the action registry, keymaps and the keyboard dispatcher, context keys, i18n, the project store, remote routing.                                |
+| `workbench/`       | The shell: title bar, tool window stripes, editor area, status bar, overlays, notifications, and `contributions.ts` — the extension points and cross-feature services.                                                     |
+| `ui/`              | Design-system primitives (`Button`, `Dialog`, `Menu`, `Popup`, `Tree`, `List`, `Select`, `Tooltip`, `T`…) and `icons.tsx`.                                                                                                 |
+| `editor/`          | `core` (EditorView creation, document sync with the backend, tabs and splits), `api.ts` (the contract other code extends editors through), `lsp` (language-server editor features), `refactor`, `navigation`, `structure`. |
+| `features/<name>/` | One feature each (`search`, `vcs`, `debugger`, `run`, `terminal`, `database`, `plugins`…), exporting `activate()`.                                                                                                         |
+| `bindings.ts`      | Generated IPC bindings. Never edit.                                                                                                                                                                                        |
+
+## Features and `activate()`
+
+Each feature exports `activate(): void | (() => void)`. It registers actions, tool windows, status items, editor contributions and services, and returns a disposer that undoes all of it. `src/features/index.ts` lists the features in activation order and activates each inside a `try`, so one feature that throws doesn't stop the others. `src/workbench/activate.ts` runs first and provides the shell services (tool windows, notifications) that features rely on.
+
+A whole feature can be this small:
+
+```ts src/features/logcat/index.ts
+export function activate(): () => void {
+  const dispose = registerToolWindow({
+    id: "logcat",
+    title: "Logcat",
+    icon: "toolwindow-logcat",
+    anchor: "bottom",
+    stripe: "onUse",
+    order: 26,
+    component: lazyComponent(() => import("./LogcatView").then((m) => m.LogcatView)),
+    requiresProject: false,
+  });
+  return () => {
+    dispose();
+    resetLogcat();
+  };
+}
+```
+
+Load heavy views lazily (`lazyComponent`) so they don't weigh on startup; `pnpm perf` budgets the initial bundle.
+
+## Feature isolation
+
+**Features never import each other.** They communicate through three channels:
+
+- **Actions:** `executeAction("project.dontOpen")` runs another feature's behaviour by its stable id, without importing it.
+- **Contributions:** a feature registers into an extension point in `src/workbench/contributions.ts` (or `src/editor/api.ts`); whoever renders that point doesn't know who contributed.
+- **Services:** cross-feature services are provided once and looked up by accessor (below).
+
+Shared code that several features need goes into `platform/`, `ui/`, `workbench/` or `editor/api`, not into one feature that the others import.
+
+## Actions
+
+Everything a user can invoke is an action with a stable, dotted id (`src/platform/actions.ts`). Menus, keybindings, toolbar buttons, context menus and the Actions tab of Search Everywhere all resolve to the same registry, so a feature registers its behaviour once:
+
+```ts
+registerAction({
+  id: "editor.formatDocument",
+  title: "Reformat Code",
+  category: "Code",
+  when: "editorFocus",
+  run: () => {
+    /* ... */
+  },
+});
+```
+
+Main fields:
+
+| Field                              | Meaning                                                                                                                                 |
+| ---------------------------------- | --------------------------------------------------------------------------------------------------------------------------------------- |
+| `id`                               | Stable dotted id, e.g. `navigate.searchEverywhere`. Keymaps, menus, plugins and tests refer to it, so don't rename it casually.         |
+| `title`, `category`, `description` | English; translated through `action.<id>` catalog keys or the source-text catalog (see [Localization](/en/contribute/guidelines/i18n)). |
+| `when`                             | Enablement, a `when` clause over context keys.                                                                                          |
+| `enabled`                          | Extra enablement for a parameterised action or the current selection.                                                                   |
+| `keyWhen`                          | Extra condition for keyboard shortcuts only, e.g. to yield a shared shortcut to the editor while typing.                                |
+| `toggled`                          | Marks a toggle action; Search Everywhere shows an ON/OFF switch.                                                                        |
+| `icon`                             | An icon name from `ui/icons`.                                                                                                           |
+| `hidden`                           | Hidden from Search Everywhere (internal or parameterised actions).                                                                      |
+
+Run actions with `executeAction(id, arg?)`. `registerAction` returns a disposer.
+
+## Keymaps and the dispatcher
+
+Default shortcuts live in `src/platform/keymaps/`, never on the action. A keymap maps action ids to bindings:
+
+```ts src/platform/keymaps/intellij-macos.ts
+export const intellijMacos: Record<string, string[]> = {
+  "navigate.searchEverywhere": ["Shift Shift"],
+  "navigate.gotoClass": ["Meta+O"],
+  "navigate.findAction": ["Meta+Shift+A"],
+  "navigate.back": ["Meta+[", "Meta+Alt+Left", "Button4", "SwipeRight"],
+  // ...
+};
+```
+
+Presets: `intellij-macos` (default on macOS), `intellij-windows` (default on Windows and Linux), `vscode-macos`, `vscode-windows`, `eclipse-macos`, `eclipse-windows`. When you add an action with a default shortcut, add it to both IntelliJ presets, and to the others where an equivalent exists.
+
+Binding syntax: modifiers `Meta Ctrl Alt Shift` joined with `+` to a key (`Meta+Shift+O`); a space separates chord strokes (`Meta+K Meta+C`); a doubled modifier is `Shift Shift`; mouse buttons are `Button1`…`Button5`. Keys are matched by physical position (`KeyboardEvent.code`).
+
+`installKeyboardDispatcher` listens to `keydown` in the capture phase so IDE shortcuts win over CodeMirror's defaults, resolves the stroke against the active keymap plus the user's overrides, and runs the first enabled action (`when` and `keyWhen`). A component that needs a keystroke for itself registers a key claim (`registerKeyClaim`), e.g. Vim mode for its shortcut conflicts.
+
+## Context keys and `when` clauses
+
+Components publish facts as context keys (`src/platform/context.ts`); actions and keybindings are enabled by a `when` expression over them.
+
+```ts
+// the debugger publishes its state
+setContext("debugSessionPaused", s?.status === "paused");
+
+// and its step actions are enabled only while paused
+{ id: "debug.stepOver", title: "Step Over", category: "Debug", when: "debugSessionPaused", run }
+```
+
+Grammar: `||`, `&&`, `!`, parentheses, and `key`, `key == value`, `key != value`. An empty clause is always true. Clauses are compiled once and cached. Plugin menu items use the same clauses.
+
+## Contributions
+
+`src/workbench/contributions.ts` holds the workbench's extension points. Each `register*` function returns a disposer.
+
+| Function                                                                                 | Contributes                                                                                            |
+| ---------------------------------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------ |
+| `registerToolWindow`                                                                     | A tool window; a `toolwindow.<id>` action that toggles it is registered automatically.                 |
+| `registerStatusItem`                                                                     | A status bar item.                                                                                     |
+| `registerOverlay`                                                                        | Popups and dialogs rendered above the workbench (Search Everywhere, Settings…).                        |
+| `registerEditorKind`, `registerFileEditorProvider`                                       | Editor tab types other than text files (diff viewer, settings, welcome…) and which files open in them. |
+| `registerTitleItem`                                                                      | A title bar widget (VCS branch, run configuration, run/debug buttons…).                                |
+| `registerServiceView`, `registerServiceProvider`                                         | Content of the Services tool window.                                                                   |
+| `registerWorkbenchBanner`                                                                | A banner component in the workbench.                                                                   |
+| `registerCommitCheckProvider`, `registerEditorDropHandler`, `registerTextEditorWrapper`… | Narrower points used by specific features.                                                             |
+
+Editors are extended through `src/editor/api.ts`: `registerEditorContribution({ id, extensions })` adds CodeMirror extensions per document. `editor/core` owns the views; LSP, VCS gutters, breakpoints and inline debug values are all contributions and never import editor internals.
+
+Plugin UI contributions reach these same functions: the backend validates them, and `src/features/plugins/projection.ts` maps each one onto an existing `register*` call. See [Plugin host](/en/contribute/architecture/plugin-host).
+
+## Services
+
+Services are cross-feature APIs with a single implementation, provided by whoever owns it:
+
+| Accessor                                   | Provided by                                  |
+| ------------------------------------------ | -------------------------------------------- |
+| `editorService()` / `maybeEditorService()` | `editor/core` (`provideEditorService`)       |
+| `toolWindowService()`                      | the workbench (`provideToolWindowService`)   |
+| `notifications()`                          | the workbench (`provideNotificationService`) |
+| `embeddedTerminal()`                       | the terminal feature                         |
+| `maybeCommitService()`                     | the VCS feature                              |
+
+The non-`maybe` accessors throw if nothing provided the service, so call them at use time, not at module load.
+
+## Talking to the backend
+
+Features call the backend only through `commands` from `@/platform/ipc` and listen with `onIdeEvent`; see [IPC](/en/contribute/architecture/ipc). Several features also keep an in-memory backend for the plain-browser mode (`pnpm dev`) that unit and E2E tests use, chosen by `isTauri()`.

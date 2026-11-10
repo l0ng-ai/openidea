@@ -89,6 +89,7 @@ export const ICLS_COLORS: Record<string, string[]> = {
   CARET_COLOR: ["--caret"],
   CARET_ROW_COLOR: ["--bg-current-line"],
   SELECTION_BACKGROUND: ["--bg-editor-selection"],
+  SELECTION_FOREGROUND: ["--fg-editor-selection"],
   LINE_NUMBERS_COLOR: ["--fg-line-number"],
   LINE_NUMBER_ON_CARET_ROW_COLOR: ["--fg-line-number-current"],
   // The new UI paints the gutter with this, else with the editor's background; `GUTTER_BACKGROUND` is the classic UI's.
@@ -187,6 +188,8 @@ export const ICLS_ATTRIBUTES: Record<string, Array<[Part, string]>> = {
   "PY.SELF_PARAMETER": [["FOREGROUND", "--syn-self"]],
   "PY.KEYWORD_ARGUMENT": [["FOREGROUND", "--syn-keyword-arg"]],
   "PY.DOC_COMMENT": [["FOREGROUND", "--syn-docstring"]],
+  "PY.DOC_COMMENT_TAG": [["FOREGROUND", "--syn-python-docstring-tag"]],
+  OPENIDEA_pyDocstringKeyword: [["FOREGROUND", "--syn-python-docstring-keyword"]],
   "PY.BUILTIN_NAME": [["FOREGROUND", "--syn-predefined"]],
   MARKDOWN_HEADER_LEVEL_1: [["FOREGROUND", "--syn-markup-heading"]],
   MARKDOWN_CODE_SPAN: [["FOREGROUND", "--syn-markup-code"]],

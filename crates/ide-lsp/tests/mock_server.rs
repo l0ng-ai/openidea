@@ -268,8 +268,6 @@ fn server_cfg(name: &str) -> LanguageServerConfig {
         tsserver_project_extras: Default::default(),
         resync_on_configuration: false,
         pinned: None,
-        target: None,
-        target_key: None,
     }
 }
 
@@ -832,52 +830,6 @@ async fn java_sharing_preserves_other_servers_and_marker_scoped_fallbacks() {
 }
 
 #[tokio::test(flavor = "multi_thread")]
-async fn java_sharing_keeps_target_instances_separate_and_preserves_them_on_toggle() {
-    let h = harness_for("java", "java", &[("jdtls", incremental_caps())], &[]);
-    let shared = Arc::new(std::sync::atomic::AtomicBool::new(true));
-    h.mgr.set_jdtls_shared_hook(Box::new({
-        let shared = shared.clone();
-        move || shared.load(Ordering::SeqCst)
-    }));
-    h.mgr.set_servers_hook(Box::new(|_, configs| {
-        let mut target = configs[0].clone();
-        target.target_key = Some("container".into());
-        target
-            .initialization_options
-            .as_mut()
-            .unwrap()
-            .as_table_mut()
-            .unwrap()
-            .insert("selectedTarget".into(), toml::Value::Boolean(true));
-        vec![configs[0].clone(), target]
-    }));
-    h.open("Main.java", "class Main {}");
-    for path in java_siblings(&h) {
-        h.mgr.did_open(DocId::next(), &path, &h.lang, 1, "class Main {}");
-    }
-    let state = h.launcher.state("jdtls");
-    eventually(|| h.mgr.servers().iter().filter(|s| s.status == ServerStatus::Ready).count() == 4).await;
-    let initial = state.requested("initialize");
-    assert_eq!(initial.len(), 4);
-    let targets: Vec<_> = initial.iter().filter(|v| v["initializationOptions"]["selectedTarget"] == true).collect();
-    assert_eq!(targets.len(), 3, "target roots retain their marker-based identity");
-    assert!(targets.iter().all(|v| v["initializationOptions"].get("workspaceFolders").is_none()));
-    let local = initial.iter().find(|v| v["initializationOptions"]["selectedTarget"] != true).unwrap();
-    assert_eq!(local["rootUri"], uri_of(&h.root));
-    assert_eq!(local["initializationOptions"]["workspaceFolders"], json!([uri_of(&h.root)]));
-    let old: HashSet<_> = h.mgr.servers().into_iter().map(|s| s.id).collect();
-    shared.store(false, Ordering::SeqCst);
-    h.mgr.reconfigure().await;
-    eventually(|| h.mgr.servers().iter().filter(|s| s.status == ServerStatus::Ready).count() == 6).await;
-    assert_eq!(
-        h.mgr.servers().iter().filter(|s| old.contains(&s.id)).count(),
-        3,
-        "local sharing does not retire targets"
-    );
-    h.mgr.shutdown_all().await;
-}
-
-#[tokio::test(flavor = "multi_thread")]
 async fn virtual_java_documents_opened_during_a_toggle_attach_to_the_successor() {
     let h = harness_for("java", "java", &[("jdtls", incremental_caps())], &[]);
     let shared = Arc::new(std::sync::atomic::AtomicBool::new(false));
@@ -1301,7 +1253,7 @@ async fn completion_mapping_merge_and_resolve() {
             "isIncomplete": false,
             "itemDefaults": { "data": { "from": "defaults" } },
             "items": [{
-                "label": "bar", "kind": 2, "detail": "fn() -> u8", "labelDetails": { "detail": "()" },
+                "label": "bar", "kind": 2, "detail": "fn() -> u8", "labelDetails": { "detail": "()", "description": "u8" },
                 "textEdit": { "newText": "bar()$0", "insert": {"start":{"line":0,"character":12},"end":{"line":0,"character":14}},
                               "replace": {"start":{"line":0,"character":12},"end":{"line":0,"character":15}} },
                 "insertTextFormat": 2, "sortText": "0001"
@@ -1322,6 +1274,7 @@ async fn completion_mapping_merge_and_resolve() {
     assert_eq!(bar.insert_text, "bar()$0");
     assert!(bar.is_snippet);
     assert_eq!(bar.label_detail.as_deref(), Some("()"));
+    assert_eq!(bar.label_description.as_deref(), Some("u8"));
     assert_eq!(bar.replace_range, Some(rng(0, 12, 0, 14)));
     assert_eq!(bar.replace_range_tab, Some(rng(0, 12, 0, 15)));
     assert_eq!(bar.data, Some(json!({ "from": "defaults" })));
@@ -1337,9 +1290,13 @@ async fn completion_mapping_merge_and_resolve() {
     assert_eq!(resolved.documentation.as_ref().unwrap().value, "**docs**");
     assert_eq!(resolved.additional_edits[0].new_text, "use foo;\n");
     assert_eq!(resolved.insert_text, "bar()$0", "fields absent from the resolve reply are kept");
+    assert_eq!(resolved.label_detail.as_deref(), Some("()"));
+    assert_eq!(resolved.label_description.as_deref(), Some("u8"));
+    assert_eq!(resolved.detail.as_deref(), Some("fn() -> u8"));
     assert_eq!(resolved.replace_range_tab, Some(rng(0, 12, 0, 15)));
     let sent = &a.requested("completionItem/resolve")[0];
     assert_eq!(sent["data"], json!({ "from": "defaults" }));
+    assert_eq!(sent["labelDetails"], json!({ "detail": "()", "description": "u8" }));
     assert_eq!(sent["textEdit"]["replace"]["end"]["character"], 15);
 
     // Server b has no resolve support: the item comes back unchanged.
@@ -1444,7 +1401,7 @@ async fn diagnostics_become_events_and_feed_code_actions() {
     s.respond(
         "textDocument/codeAction",
         json!([
-            { "title": "Remove", "kind": "quickfix", "isPreferred": true, "data": { "id": 7 } },
+            { "title": "Remove", "kind": "quickfix", "isPreferred": true, "data": { "id": 7 }, "diagnostics": [diag(0)] },
             { "title": "Run", "command": "mock.run", "arguments": [1] }
         ]),
     );
@@ -1459,6 +1416,9 @@ async fn diagnostics_become_events_and_feed_code_actions() {
     assert_eq!(actions.len(), 2);
     assert_eq!(actions[0].kind.as_deref(), Some("quickfix"));
     assert!(actions[0].is_preferred);
+    assert_eq!(actions[0].diagnostics[0].range, rng(0, 4, 0, 10));
+    assert_eq!(actions[0].diagnostics[0].message, "unused variable");
+    assert!(actions[1].diagnostics.is_empty());
     assert_eq!(actions[1].command.as_ref().unwrap().command, "mock.run");
     let req = &s.requested("textDocument/codeAction")[0];
     assert_eq!(req["context"]["only"], json!(["quickfix"]));
@@ -1468,6 +1428,8 @@ async fn diagnostics_become_events_and_feed_code_actions() {
 
     let resolved = h.mgr.resolve_code_action(doc, actions[0].clone()).await.unwrap();
     assert_eq!(s.requested("codeAction/resolve")[0]["data"], json!({ "id": 7 }));
+    assert_eq!(s.requested("codeAction/resolve")[0]["diagnostics"], json!([diag(0)]));
+    assert_eq!(resolved.diagnostics, actions[0].diagnostics);
     let edit = resolved.edit.unwrap();
     assert!(
         matches!(&edit.files[0], FileEdit::Edit { path: p, edits, .. } if p == &path && edits[0].range == rng(0, 0, 1, 0))
@@ -5980,76 +5942,4 @@ async fn missing_injected_server_uses_the_normal_single_install_notification() {
     assert_eq!(h.statuses("embedded").iter().filter(|s| **s == ServerStatus::Missing).count(), 1);
     h.mgr.did_close(host);
     h.mgr.shutdown_all().await;
-}
-
-#[tokio::test(flavor = "multi_thread")]
-async fn languages_sharing_a_server_keep_independent_target_choices() {
-    let dir = tempfile::tempdir().unwrap();
-    let root = dunce::canonicalize(dir.path()).unwrap();
-    let language = |id: &str| {
-        let mut lang: LanguageConfig = toml::from_str(&format!("id='{id}'\nname='{id}'\nextensions=['{id}']")).unwrap();
-        lang.language_servers = vec![server_cfg("shared")];
-        lang
-    };
-    let registry = Arc::new(LanguageRegistry::from_configs(vec![language("one"), language("two")]));
-    struct ScopedLauncher(Arc<MockLauncher>);
-    impl Launcher for ScopedLauncher {
-        fn launch(
-            &self,
-            config: &LanguageServerConfig,
-            root: &Path,
-            handler: Arc<dyn Handler>,
-            stderr: Box<dyn Fn(String) + Send + Sync>,
-        ) -> Result<Peer, LaunchError> {
-            let mut config = config.clone();
-            if let Some(key) = &config.target_key {
-                config.name = format!("{}@{key}", config.name);
-            }
-            self.0.launch(&config, root, handler, stderr)
-        }
-    }
-    let launcher = Arc::new(MockLauncher::default());
-    for name in ["shared", "shared@container"] {
-        *launcher.state(name).caps.lock() = json!({"textDocumentSync":1,"hoverProvider":true});
-    }
-    let manager = LspManager::with_launcher(
-        root.clone(),
-        registry,
-        Arc::new(ide_core::NullSink),
-        Arc::new(ScopedLauncher(launcher.clone())),
-    );
-    let selected = Arc::new(std::sync::atomic::AtomicBool::new(false));
-    let selected_hook = selected.clone();
-    manager.set_servers_hook(Box::new(move |lang, defined| {
-        let mut configs = defined.to_vec();
-        if lang.as_str() == "one" && selected_hook.load(Ordering::Acquire) {
-            configs[0].target_key = Some("container".into());
-        }
-        configs
-    }));
-    let one = DocId::next();
-    let two = DocId::next();
-    manager.did_open(one, &root.join("a.one"), &LanguageId::new("one"), 1, "one");
-    manager.did_open(two, &root.join("b.two"), &LanguageId::new("two"), 1, "two");
-    eventually(|| manager.servers().iter().any(|s| s.status == ServerStatus::Ready)).await;
-    assert_eq!(manager.servers().len(), 1);
-    let host = manager.servers()[0].id;
-    selected.store(true, Ordering::Release);
-    manager.reconfigure().await;
-    eventually(|| manager.servers().iter().filter(|s| s.status == ServerStatus::Ready).count() == 2).await;
-    assert!(manager.servers().iter().any(|s| s.id == host));
-    // Each document has one server. Hover must not send to both after splitting.
-    let state = launcher.state("shared");
-    state.requests.lock().clear();
-    let target_state = launcher.state("shared@container");
-    target_state.requests.lock().clear();
-    let _ = manager.hover(one, Pos::new(0, 0), CancellationToken::new()).await;
-    let _ = manager.hover(two, Pos::new(0, 0), CancellationToken::new()).await;
-    assert_eq!(state.requested("textDocument/hover").len(), 1);
-    assert_eq!(target_state.requested("textDocument/hover").len(), 1);
-    selected.store(false, Ordering::Release);
-    manager.reconfigure().await;
-    assert_eq!(manager.servers().len(), 1);
-    assert_eq!(manager.servers()[0].id, host);
-    manager.shutdown_all().await;
 }

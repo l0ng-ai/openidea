@@ -255,7 +255,12 @@ export async function rebaseOnto(branch: string, ref = branch) {
   });
 }
 
-export async function renameBranch(name: string) {
+/**
+ * Renames a local branch. `git branch -m` carries the upstream tracking to the new name;
+ * a branch that has one also offers to drop it, since the remote branch keeps its old name.
+ */
+export async function renameBranch(branch: Branch) {
+  const name = branch.name;
   const repo = currentRepo();
   const r = await promptText({
     title: tx`Rename Branch ${name}`,
@@ -265,12 +270,23 @@ export async function renameBranch(name: string) {
     okLabel: "Rename",
     sanitize: cleanUpBranchNameOnTyping,
     validate: (v) => (v.trim() === name ? "Enter a new name" : validateBranchName(v)),
+    checkbox: branch.upstream ? { label: "Unset upstream branch", initial: false } : undefined,
   });
   if (!r) return;
   const to = r.value.trim();
-  const ok = await runOp(tx`Rename branch ${name}`, () => call(commands.vcsRenameBranch(repo, name, to)), {
-    success: tx`Renamed branch ${name} to ${to}`,
-  });
+  const unsetUpstream = !!branch.upstream && r.checked;
+  const ok = await runOp(
+    tx`Rename branch ${name}`,
+    () => call(commands.vcsRenameBranch(repo, name, to, unsetUpstream)),
+    {
+      success: tx`Renamed branch ${name} to ${to}`,
+      onError: (message) => {
+        // Unsetting the upstream can fail after the rename has succeeded.
+        notifications().notify({ group: "vcs", level: "error", title: tx`Rename branch ${name}`, body: message });
+        return true;
+      },
+    },
+  );
   if (ok !== undefined) {
     try {
       localStorage.setItem(recentKey(), JSON.stringify(recentBranches().map((b) => (b === name ? to : b))));
@@ -494,10 +510,10 @@ export async function checkoutAndRebase(name: string) {
   await rebaseOnto(current, branchRef(current, false));
 }
 
-/** Update for a branch other than the current one: fast-forwards it to its upstream. */
+/** Update for a branch: the current one updates its repository, another fast-forwards to its upstream. */
 export async function updateBranch(name: string) {
   const b = useVcs.getState().branches.find((x) => !x.remote && x.name === name);
-  if (b?.current) return void executeAction("vcs.update");
+  if (b?.current) return void executeAction("vcs.update", { repo: currentRepo() });
   if (!b?.upstream) {
     notifications().notify({ group: "vcs", level: "warning", title: `Branch '${name}' has no tracked branch` });
     return;

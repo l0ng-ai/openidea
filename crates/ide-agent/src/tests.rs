@@ -366,6 +366,35 @@ fn manager_at(dir: &Path, models_file: &Path, agent: Arc<FakeAgent>) -> AgentMan
     )
 }
 
+#[tokio::test(flavor = "multi_thread")]
+async fn saved_conversation_reads_do_not_start_or_load_the_agent() {
+    let tmp = tempfile::tempdir().unwrap();
+    let agent = Arc::new(FakeAgent::default());
+    let mgr = manager(tmp.path(), agent.clone());
+    let task = mgr
+        .create(NewAgentTask {
+            project_root: None,
+            prompt: text("Review the saved conversation"),
+            provider: "claude".into(),
+            config: Vec::new(),
+            isolation: Isolation::Local,
+            base: None,
+        })
+        .await
+        .unwrap();
+    wait_for(&mgr, &task.id, AgentStatus::NeedsInput).await;
+    mgr.shutdown();
+    let restored_agent = Arc::new(FakeAgent::default());
+    let restored = manager(tmp.path(), restored_agent.clone());
+    assert!(!restored.entries(&task.id, None).unwrap().is_empty());
+    assert!(restored_agent.calls.lock().is_empty());
+    assert!(restored.entries("missing-task", None).is_err());
+    assert!(restored.entries(&task.id, Some("missing-subagent".into())).is_err());
+    restored.task(&task.id).unwrap().state.lock().conversation = Conversation::default();
+    assert!(restored.entries(&task.id, None).unwrap().is_empty());
+    restored.shutdown();
+}
+
 #[cfg(unix)]
 #[tokio::test(flavor = "multi_thread")]
 async fn claude_commands_before_session_are_fetched_once_and_saved() {
@@ -2492,14 +2521,89 @@ async fn session_settings_win_over_discovery_in_memory_and_on_disk() {
         let saved = options("saved", "low");
         let discovered = options("discovered", "high");
         if discovery_first {
-            mgr.shared.remember_discovered("claude", &discovered, &[]);
+            mgr.shared.remember_discovered("claude", &discovered, &[], &[]);
         }
         mgr.shared.remember("claude", Some(&saved), None, Some("saved"));
-        mgr.shared.remember_discovered("claude", &discovered, &[]);
+        mgr.shared.remember_discovered("claude", &discovered, &[], &[]);
         let restored = manager(tmp.path(), Arc::new(FakeAgent::default()));
         for mgr in [&mgr, &restored] {
             assert_eq!(model_of(&mgr.shared.known_config("claude")).as_deref(), Some("saved"));
             assert_eq!(mgr.shared.known.lock()["claude"].thought_levels["saved"], saved[1..]);
         }
     }
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn discovered_effort_levels_fill_models_no_session_has_reported() {
+    let tmp = tempfile::tempdir().unwrap();
+    let mgr = manager(tmp.path(), Arc::new(FakeAgent::default()));
+    let effort = |values: &[&str], current: &str| {
+        config::options_of(&json!({ "configOptions": [
+            { "id": "effort", "category": "thought_level", "type": "select", "currentValue": current,
+              "options": values.iter().map(|v| json!({ "value": v })).collect::<Vec<_>>() }
+        ] }))
+    };
+    let model = config::options_of(&json!({ "configOptions": [
+        { "id": "model", "category": "model", "type": "select", "currentValue": "sonnet",
+          "options": [{ "value": "sonnet" }, { "value": "opus" }] }
+    ] }));
+    // A session already reported sonnet's levels; discovery adds opus's.
+    let reported = [model.clone(), effort(&["low", "high"], "high")].concat();
+    mgr.shared.remember("claude", Some(&reported), None, Some("sonnet"));
+    let levels =
+        [("sonnet".to_owned(), effort(&["low"], "low")), ("opus".to_owned(), effort(&["low", "max"], "default"))];
+    mgr.shared.remember_discovered("claude", &model, &[], &levels);
+    let known = mgr.shared.known.lock();
+    assert_eq!(known["claude"].thought_levels["sonnet"], effort(&["low", "high"], "high"), "the session's report wins");
+    assert_eq!(known["claude"].thought_levels["opus"], effort(&["low", "max"], "default"));
+}
+
+#[test]
+fn streamed_text_is_sent_as_appends() {
+    let mut streamed = HashMap::new();
+    let agent = |t: &str| AgentEntry::Agent { text: t.into() };
+    let first = entry_event("t", &mut streamed, None, 3, &agent("Hé"));
+    assert!(matches!(first, AgentEvent::Entry { index: 3, .. }), "the first sight of a message is whole");
+    let next = entry_event("t", &mut streamed, None, 3, &agent("Hé 👋 there"));
+    assert!(
+        matches!(&next, AgentEvent::Append { subagent: None, index: 3, from: 2, text, .. } if text == " 👋 there"),
+        "{next:?}"
+    );
+    let sub = entry_event("t", &mut streamed, Some("s".into()), 3, &agent("Hé 👋 there!"));
+    assert!(matches!(sub, AgentEvent::Entry { .. }), "each session streams on its own");
+    let after = entry_event("t", &mut streamed, None, 3, &agent("Hé 👋 there."));
+    assert!(
+        matches!(&after, AgentEvent::Append { from: 11, text, .. } if text == "."),
+        "from counts UTF-16 units: {after:?}"
+    );
+    let replaced = entry_event("t", &mut streamed, None, 3, &agent("Other"));
+    assert!(matches!(replaced, AgentEvent::Entry { .. }), "text that doesn't extend the sent text is sent whole");
+    let thought = entry_event("t", &mut streamed, None, 4, &AgentEntry::Thought { text: "hmm…".into() });
+    assert!(matches!(thought, AgentEvent::Entry { index: 4, .. }), "a new message starts whole");
+    let tool = AgentEntry::Error { message: "x".into() };
+    entry_event("t", &mut streamed, None, 4, &tool);
+    let again = entry_event("t", &mut streamed, None, 4, &AgentEntry::Thought { text: "hmm… ok".into() });
+    assert!(matches!(again, AgentEvent::Entry { .. }), "an entry replaced by another kind forgets its text");
+
+    let long = "é".repeat(5000);
+    entry_event("t", &mut streamed, None, 5, &agent(&long));
+    assert!(streamed[&None].tail.len() <= 64, "only the end of what was sent is kept");
+    let on = entry_event("t", &mut streamed, None, 5, &agent(&format!("{long}!")));
+    assert!(matches!(&on, AgentEvent::Append { from: 5000, text, .. } if text == "!"), "{on:?}");
+    let rewritten = entry_event("t", &mut streamed, None, 5, &agent(&format!("{}x!??", "é".repeat(4999))));
+    assert!(matches!(rewritten, AgentEvent::Entry { .. }), "a rewritten end is sent whole");
+}
+
+#[test]
+fn error_messages_keep_the_agents_details() {
+    let details = json!({ "details": "spawn claude ENOENT" });
+    assert_eq!(with_details("Internal error".into(), Some(&details)), "Internal error: spawn claude ENOENT");
+    assert_eq!(
+        with_details("Internal error".into(), Some(&json!("model not found"))),
+        "Internal error: model not found"
+    );
+    assert_eq!(with_details(String::new(), Some(&details)), "spawn claude ENOENT");
+    assert_eq!(with_details("spawn claude ENOENT".into(), Some(&details)), "spawn claude ENOENT");
+    assert_eq!(with_details("Internal error".into(), Some(&json!({ "other": 1 }))), "Internal error");
+    assert_eq!(with_details("Internal error".into(), None), "Internal error");
 }

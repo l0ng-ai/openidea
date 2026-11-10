@@ -3,6 +3,7 @@
  * lives in a detached host element owned by the session (not by React), so a
  * session survives its tool window being hidden or its pane being re-mounted.
  */
+import { writeClipboardText } from "@/platform/clipboard";
 import { Terminal, type IDisposable, type ILink, type ILinkHandler } from "@xterm/xterm";
 import { FitAddon } from "@xterm/addon-fit";
 import { SearchAddon, type ISearchOptions } from "@xterm/addon-search";
@@ -710,7 +711,7 @@ export class TerminalSession {
   copySelection(): boolean {
     const text = this.term.getSelection();
     if (!text) return false;
-    void navigator.clipboard?.writeText(text).catch(() => undefined);
+    void writeClipboardText(text).catch(() => undefined);
     return true;
   }
 

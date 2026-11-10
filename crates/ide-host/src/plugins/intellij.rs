@@ -78,6 +78,25 @@ pub fn read_source(path: &Path) -> IdeResult<IntellijThemeSource> {
 /// The theme plugins of the JetBrains IDEs (and Android Studio) of this user,
 /// the themes their IDEs are set to first.
 pub fn installed_themes() -> Vec<InstalledIntellijTheme> {
+    find_installed(&latest_product_versions(local_ide_dirs()))
+}
+
+/// The settings folder of a JetBrains IDE (or Android Studio) of this user.
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize, Type)]
+#[serde(rename_all = "camelCase")]
+pub struct InstalledIdeSettings {
+    /// The IDE and its version: `IntelliJ IDEA 2025.2`.
+    pub ide: String,
+    /// What Import Settings reads.
+    pub path: IpcPath,
+}
+
+/// The settings folders of the JetBrains IDEs of this user, most recently used first.
+pub fn installed_ide_settings() -> Vec<InstalledIdeSettings> {
+    settings_folders(&local_ide_dirs())
+}
+
+fn local_ide_dirs() -> Vec<IdeDir> {
     let Some(home) = dirs::home_dir() else { return Vec::new() };
     let layout = if cfg!(target_os = "macos") {
         Layout::Mac
@@ -86,7 +105,65 @@ pub fn installed_themes() -> Vec<InstalledIntellijTheme> {
     } else {
         Layout::Xdg
     };
-    find_installed(&ide_dirs(layout, &home, |key| std::env::var_os(key)))
+    ide_dirs(layout, &home, |key| std::env::var_os(key))
+}
+
+fn settings_folders(ides: &[IdeDir]) -> Vec<InstalledIdeSettings> {
+    let mut used: Vec<_> =
+        ides.iter().filter_map(|ide| settings_modified(&ide.config).map(|time| (ide, time))).collect();
+    used.sort_by(|(a, at), (b, bt)| {
+        bt.cmp(at).then_with(|| a.label.cmp(&b.label)).then_with(|| a.config.cmp(&b.config))
+    });
+    used.into_iter()
+        .map(|(ide, _)| InstalledIdeSettings { ide: ide.label.clone(), path: ide.config.clone().into() })
+        .collect()
+}
+
+fn settings_modified(config: &Path) -> Option<std::time::SystemTime> {
+    let options = config.join("options");
+    // Match the folder reader: never count links or walk below the settings directories.
+    if !config.symlink_metadata().ok()?.is_dir() || !options.symlink_metadata().ok()?.is_dir() {
+        return None;
+    }
+    let mut modified = None;
+    let mut customised = false;
+    for entry in std::fs::read_dir(&options).ok()?.flatten() {
+        let path = entry.path();
+        if !entry.file_type().is_ok_and(|t| t.is_file())
+            || !path.extension().is_some_and(|e| e.eq_ignore_ascii_case("xml"))
+        {
+            continue;
+        }
+        let Ok(meta) = entry.metadata() else { continue };
+        modified = modified.max(meta.modified().ok());
+        // Startup bookkeeping can exist before the user has changed any settings.
+        let name = entry.file_name();
+        customised |= meta.len() > 0
+            && !matches!(
+                name.to_str(),
+                Some(
+                    "other.xml"
+                        | "nonRoamable.xml"
+                        | "early-access-registry.xml"
+                        | "applicationInfo.xml"
+                        | "updates.xml"
+                        | "usage.statistics.xml"
+                )
+            );
+    }
+    customised |= ["keymaps", "codestyles", "colors", "templates", "inspection"].iter().any(|sub| {
+        let dir = config.join(sub);
+        dir.symlink_metadata().is_ok_and(|m| m.is_dir())
+            && std::fs::read_dir(dir).into_iter().flatten().flatten().any(|entry| {
+                entry.file_type().is_ok_and(|t| t.is_file())
+                    && entry.metadata().is_ok_and(|m| m.len() > 0)
+                    && entry
+                        .path()
+                        .extension()
+                        .is_some_and(|e| e.eq_ignore_ascii_case("xml") || e.eq_ignore_ascii_case("icls"))
+            })
+    });
+    customised.then(|| modified.or_else(|| options.metadata().ok()?.modified().ok()).unwrap_or(std::time::UNIX_EPOCH))
 }
 
 fn read(path: &Path) -> Result<IntellijThemeSource, String> {
@@ -422,8 +499,7 @@ struct IdeDir {
     plugins: PathBuf,
 }
 
-/// The settings folders of JetBrains IDEs and Android Studio (2020.1 and later), newest first, one
-/// per product: its newest version's (an upgrade leaves the older ones behind).
+/// The settings folders of JetBrains IDEs and Android Studio (2020.1 and later), newest version first.
 fn ide_dirs(layout: Layout, home: &Path, env: impl Fn(&str) -> Option<OsString>) -> Vec<IdeDir> {
     let var = |key: &str| env(key).filter(|v| !v.is_empty()).map(PathBuf::from);
     let (config_root, data_root) = match layout {
@@ -463,9 +539,14 @@ fn ide_dirs(layout: Layout, home: &Path, env: impl Fn(&str) -> Option<OsString>)
         }
     }
     out.sort_by(|a, b| b.version.cmp(&a.version).then_with(|| a.label.cmp(&b.label)));
-    let mut products = std::collections::HashSet::new();
-    out.retain(|ide| products.insert(ide.product.clone()));
     out
+}
+
+/// Theme discovery only uses the newest version of each product.
+fn latest_product_versions(mut ides: Vec<IdeDir>) -> Vec<IdeDir> {
+    let mut products = std::collections::HashSet::new();
+    ides.retain(|ide| products.insert(ide.product.clone()));
+    ides
 }
 
 /// `IntelliJIdea2025.2` → (`IntelliJIdea`, (2025, 2), `2025.2`).
@@ -787,15 +868,16 @@ mod tests {
         };
         let mac = mk(home.join("Library/Application Support/JetBrains/IntelliJIdea2025.2"));
         mk(home.join("Library/Application Support/JetBrains/Toolbox"));
-        // An upgrade leaves the older version's folder behind: only the newest of a product counts.
+        // Settings import keeps every version; theme discovery uses only the newest.
         mk(home.join("Library/Application Support/JetBrains/IntelliJIdea2024.3"));
         mk(home.join("Library/Application Support/JetBrains/IntelliJIdea2025.10"));
         let dirs = ide_dirs(Layout::Mac, home, |_| None);
-        assert_eq!(dirs.len(), 1);
+        assert_eq!(dirs.len(), 3);
         assert_eq!(dirs[0].label, "IntelliJ IDEA 2025.10");
+        assert_eq!(latest_product_versions(dirs).len(), 1);
         std::fs::remove_dir(home.join("Library/Application Support/JetBrains/IntelliJIdea2025.10")).unwrap();
         let dirs = ide_dirs(Layout::Mac, home, |_| None);
-        assert_eq!(dirs.len(), 1);
+        assert_eq!(dirs.len(), 2);
         assert_eq!(dirs[0].label, "IntelliJ IDEA 2025.2");
         assert_eq!((dirs[0].config.clone(), dirs[0].plugins.clone()), (mac.clone(), mac.join("plugins")));
 
@@ -880,5 +962,110 @@ mod tests {
         };
         assert_eq!(found, [theme("shallow-id", "Shallow", false, true), theme("deep-sea-id", "Deep Sea", true, false)]);
         assert!(find_installed(&[]).is_empty());
+    }
+
+    #[test]
+    fn unused_newer_versions_do_not_hide_settings() {
+        let tmp = tempfile::tempdir().unwrap();
+        for (layout, root) in [
+            (Layout::Mac, "Library/Application Support"),
+            (Layout::Windows, "AppData/Roaming"),
+            (Layout::Xdg, ".config"),
+        ] {
+            let root = tmp.path().join(root).join("JetBrains");
+            let used = root.join("IntelliJIdea2024.3");
+            let fresh = root.join("IntelliJIdea2025.2");
+            write(&used.join("options/editor.xml"), b"<application><component name=\"EditorSettings\"/></application>");
+            std::fs::create_dir_all(&fresh).unwrap();
+            let expected = vec![InstalledIdeSettings { ide: "IntelliJ IDEA 2024.3".into(), path: used.into() }];
+            assert_eq!(settings_folders(&ide_dirs(layout, tmp.path(), |_| None)), expected);
+            write(&fresh.join("options/other.xml"), b"<application/>");
+            write(&fresh.join("options/early-access-registry.xml"), b"<application/>");
+            assert_eq!(settings_folders(&ide_dirs(layout, tmp.path(), |_| None)), expected);
+        }
+    }
+
+    #[test]
+    fn settings_candidates_keep_used_versions_and_sort_by_options_modification() {
+        let tmp = tempfile::tempdir().unwrap();
+        let root = tmp.path().join("Library/Application Support/JetBrains");
+        let put = |product: &str, file: &str, seconds| {
+            let path = root.join(product).join(file);
+            write(&path, b"<application/>");
+            std::fs::File::options()
+                .write(true)
+                .open(path)
+                .unwrap()
+                .set_modified(std::time::UNIX_EPOCH + std::time::Duration::from_secs(seconds))
+                .unwrap();
+        };
+        put("IntelliJIdea2025.2", "options/editor.xml", 100);
+        put("IntelliJIdea2024.3", "options/editor.xml", 200);
+        put("IntelliJIdea2024.3", "options/editor-font.xml", 400);
+        put("PyCharm2025.1", "options/editor.xml", 300);
+        // Directory times and unrelated files do not change options-file ordering.
+        write(&root.join("IntelliJIdea2025.2/options/README.txt"), b"recent");
+        let dirs = ide_dirs(Layout::Mac, tmp.path(), |_| None);
+        let found = settings_folders(&dirs);
+        assert_eq!(
+            found.iter().map(|s| s.ide.as_str()).collect::<Vec<_>>(),
+            ["IntelliJ IDEA 2024.3", "PyCharm 2025.1", "IntelliJ IDEA 2025.2"]
+        );
+        assert_eq!(found[0].path, root.join("IntelliJIdea2024.3"));
+        assert_eq!(latest_product_versions(dirs).len(), 2);
+    }
+
+    #[test]
+    fn skips_empty_and_startup_only_settings_but_keeps_custom_schemes() {
+        let tmp = tempfile::tempdir().unwrap();
+        let config = tmp.path();
+        assert!(settings_modified(config).is_none());
+        std::fs::create_dir(config.join("options")).unwrap();
+        assert!(settings_modified(config).is_none());
+        for file in ["other", "nonRoamable", "early-access-registry", "applicationInfo", "updates", "usage.statistics"]
+        {
+            write(
+                &config.join(format!("options/{file}.xml")),
+                b"<application><component name=\"Startup\"/></application>",
+            );
+        }
+        write(&config.join("options/editor.xml"), b"");
+        write(&config.join("options/nested/editor.xml"), b"<application/>");
+        for sub in ["keymaps", "codestyles", "colors", "templates", "inspection"] {
+            std::fs::create_dir(config.join(sub)).unwrap();
+            write(&config.join(sub).join("README.txt"), b"not settings");
+        }
+        assert!(settings_modified(config).is_none());
+        for (sub, file) in [
+            ("keymaps", "custom.xml"),
+            ("codestyles", "custom.xml"),
+            ("colors", "custom.icls"),
+            ("templates", "custom.xml"),
+            ("inspection", "custom.xml"),
+        ] {
+            let path = config.join(sub).join(file);
+            write(&path, b"<custom/>");
+            assert!(settings_modified(config).is_some(), "{sub} is a user setting");
+            std::fs::remove_file(path).unwrap();
+        }
+    }
+
+    #[test]
+    fn lists_the_settings_folders_of_ides_that_have_been_run() {
+        let tmp = tempfile::tempdir().unwrap();
+        let ide = |label: &str, product: &str, version: (u32, u32)| {
+            let config = tmp.path().join(format!("{product}{}.{}", version.0, version.1));
+            IdeDir { label: label.into(), product: product.into(), version, config: config.clone(), plugins: config }
+        };
+        let used = ide("IntelliJ IDEA 2025.2", "IntelliJIdea", (2025, 2));
+        let fresh = ide("PyCharm 2025.1", "PyCharm", (2025, 1));
+        let used_config = used.config.clone();
+        write(&used_config.join("options/editor.xml"), b"<application/>");
+        std::fs::create_dir_all(&fresh.config).unwrap();
+        assert_eq!(
+            settings_folders(&[used, fresh]),
+            [InstalledIdeSettings { ide: "IntelliJ IDEA 2025.2".into(), path: used_config.into() }]
+        );
+        assert!(settings_folders(&[]).is_empty());
     }
 }

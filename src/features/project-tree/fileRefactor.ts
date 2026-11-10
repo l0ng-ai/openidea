@@ -6,6 +6,7 @@
  */
 import type { FileMove, UndoOutcome, WorkspaceEdit } from "@/bindings";
 import { openEditorPaths } from "@/editor/api";
+import { notifyFilesMoved } from "@/platform/fileOps";
 import { call, commands, emitLocalIdeEvent, isCancelled, isTauri, nextRequestId } from "@/platform/ipc";
 import { maybeEditorService, notifications } from "@/workbench/contributions";
 import { projectFs } from "./fs";
@@ -190,6 +191,7 @@ async function withEditorsFollowing<T>(run: () => Promise<T>, done: (r: T) => Fi
   const active = editor?.activePath() ?? null;
   const result = await run();
   const applied = done(result);
+  await notifyFilesMoved(applied);
   const open = openBefore.filter((p) => applied.some((m) => isSameOrInside(p, m.from)));
   if (applied.length)
     emitLocalIdeEvent({

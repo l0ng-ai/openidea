@@ -33,6 +33,7 @@ import { tags as t } from "@lezer/highlight";
 import { scrollbarMarks, type ScrollbarMark } from "@/editor/api";
 import { findExtension } from "@/editor/core/cm/find";
 import { overviewLane, overviewLaneIn } from "@/editor/core/cm/lanes";
+import { LINE_INSET } from "@/editor/core/cm/lineInset";
 import { caretExtension } from "@/editor/core/cm/prefs";
 import { fontExtension } from "@/editor/core/cm/setup";
 import { caretStyles, findLocals, findStyles, overviewStyles } from "@/editor/core/cm/theme";
@@ -327,11 +328,19 @@ export const viewerTheme = EditorView.theme(
       fontVariantLigatures: "none",
     },
     "&.cm-openidea-ligatures .cm-scroller": { fontVariantLigatures: "normal" },
-    ".cm-content": { caretColor: "var(--caret, var(--fg-strong))", WebkitUserSelect: "text", userSelect: "text" },
+    ".cm-content": {
+      padding: "0 0 4px",
+      caretColor: "var(--caret, var(--fg-strong))",
+      WebkitUserSelect: "text",
+      userSelect: "text",
+    },
+    ".cm-line": { padding: `0 2px 0 ${LINE_INSET}px` },
     ...caretStyles,
     "&.cm-focused > .cm-scroller > .cm-selectionLayer .cm-selectionBackground, .cm-selectionBackground, ::selection, .cm-openidea-selected, &.cm-focused .cm-openidea-selected":
       {
         backgroundColor: "var(--bg-selected-strong)",
+        // Unset (the default `inherit`): the declaration drops and the syntax colours show through.
+        color: "var(--fg-editor-selection)",
       },
     ".cm-activeLine": { backgroundColor: "var(--bg-current-line)" },
     ".cm-gutters": {

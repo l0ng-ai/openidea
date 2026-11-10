@@ -168,6 +168,24 @@ test("⌘⇧F12 hides all tool windows and restores them", async ({ workbench: p
   await expect(page.getByRole("region", { name: "Problems" })).toBeVisible();
 });
 
+test("a tool window resize keeps its cursor over other controls until release", async ({ workbench: page }) => {
+  const gap = page.locator('[data-gap="left"]');
+  const box = (await gap.boundingBox())!;
+  const hide = page.getByRole("region", { name: "Project" }).getByRole("button", { name: "Hide", exact: true });
+  const cursor = () => hide.evaluate((el) => getComputedStyle(el).cursor);
+
+  await page.mouse.move(box.x + box.width / 2, box.y + box.height / 2);
+  await page.mouse.down();
+  await page.mouse.move(box.x + 80, box.y + box.height / 2, { steps: 4 });
+  // The pointer is over the Project tree now; the button's own arrow cursor must not win.
+  await expect.poll(cursor).toBe("ew-resize");
+  expect(await page.evaluate(() => document.documentElement.hasAttribute("data-drag-cursor"))).toBe(true);
+
+  await page.mouse.up();
+  await expect.poll(cursor).toBe("default");
+  expect(await page.evaluate(() => document.documentElement.hasAttribute("data-drag-cursor"))).toBe(false);
+});
+
 test("the Terminal sends typed commands to the shell and shows its output", async ({ workbench: page }) => {
   // The shell is stubbed at the IPC layer: it echoes input and answers `echo`.
   await stubDesktop(page);

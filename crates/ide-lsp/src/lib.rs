@@ -1,14 +1,16 @@
 //! Language server manager.
 //!
-//! Servers start lazily per `(server name, workspace root, target)` when a document of
+//! Servers start lazily per `(server name, workspace root)` when a document of
 //! a matching language opens. Several servers may serve one language (e.g.
 //! `vtsls` + `eslint`); results are merged. Every request takes positions in
 //! IDE coordinates (UTF-16, 0-based) and returns IDE types from [`types`],
 //! never `lsp-types`, so the IPC surface stays stable.
 
 mod angular;
+mod arduino;
 mod caps;
 mod clang_tidy;
+mod compose;
 mod convert;
 mod external_project;
 mod file_ops;
@@ -24,7 +26,6 @@ mod loading;
 mod pull;
 mod scope;
 mod server;
-mod target;
 mod tcp;
 mod text;
 mod ts_file_moves;
@@ -86,10 +87,6 @@ pub type ApplyEditHook = Arc<dyn Fn(WorkspaceEdit) -> bool + Send + Sync>;
 /// settings before each launch; receives the server's workspace root.
 pub type ConfigFn = dyn Fn(&mut LanguageServerConfig, &Path) + Send + Sync;
 pub type ConfigHook = Arc<ConfigFn>;
-/// Returns true when target configuration replaces host toolchain configuration.
-pub type TargetConfigFn = dyn Fn(&LanguageId, &mut LanguageServerConfig) -> bool + Send + Sync;
-/// Fetches a bounded read-only container document after rechecking grants and trust.
-pub type TargetReadFn = dyn Fn(&ide_language::ServerTarget, &str) -> IdeResult<String> + Send + Sync;
 /// Prepares dependencies on a blocking worker immediately before launching an installed server.
 pub type PrepareFn = dyn Fn(&LanguageServerConfig, &Path, &CancellationToken) + Send + Sync;
 /// The servers a language uses, from its definition's list (user settings
@@ -111,6 +108,8 @@ struct DocState {
     version: i32,
     text: Arc<DocText>,
     servers: Vec<Attached>,
+    /// Open YAML document whose filename does not match a Compose glob and whose content is Compose.
+    compose_detected: bool,
 }
 
 impl DocState {
@@ -186,7 +185,7 @@ struct JdtlsWorkspace {
 }
 
 fn is_local_jdtls(config: &LanguageServerConfig) -> bool {
-    config.name == "jdtls" && config.target_key.is_none() && config.target.is_none()
+    config.name == "jdtls"
 }
 
 pub struct LspManager {
@@ -202,8 +201,6 @@ pub struct LspManager {
     apply_edit_hook: RwLock<Option<ApplyEditHook>>,
     applied_edits: tokio::sync::broadcast::Sender<(ide_core::ServerId, WorkspaceEdit)>,
     config_hook: RwLock<Option<ConfigHook>>,
-    target_hook: RwLock<Option<Arc<TargetConfigFn>>>,
-    target_read_hook: RwLock<Option<Arc<TargetReadFn>>>,
     prepare_hook: RwLock<Option<Arc<PrepareFn>>>,
     servers_hook: RwLock<Option<Arc<ServersFn>>>,
     candidates_hook: RwLock<Option<Arc<CandidateFn>>>,
@@ -412,8 +409,6 @@ impl LspManager {
             apply_edit_hook: RwLock::new(None),
             applied_edits: tokio::sync::broadcast::channel(64).0,
             config_hook: RwLock::new(None),
-            target_hook: RwLock::new(None),
-            target_read_hook: RwLock::new(None),
             prepare_hook: RwLock::new(None),
             servers_hook: RwLock::new(None),
             candidates_hook: RwLock::new(None),
@@ -502,22 +497,22 @@ impl LspManager {
     fn server_for(&self, cfg: &LanguageServerConfig, language: &LanguageId, path: &Path) -> Arc<Server> {
         let shared = is_local_jdtls(cfg).then(|| self.jdtls_workspace_state());
         let mut servers = self.servers.lock();
+        let project = self.project_root_for(path);
+        let sketch = (cfg.name == arduino::SERVER).then(|| arduino::sketch_root(&project, path)).flatten();
         let root = if shared.as_ref().is_some_and(|state| state.shared) {
             self.project_root.clone()
         } else {
-            launch::find_root(&self.project_root_for(path), path, &cfg.root_markers).unwrap_or_else(|| {
+            sketch.or_else(|| launch::find_root(&project, path, &cfg.root_markers)).unwrap_or_else(|| {
                 // Outside the project (library sources, …): reuse a running instance.
                 servers
                     .iter()
-                    .filter(|s| s.name == cfg.name && s.config.target_key == cfg.target_key)
+                    .filter(|s| s.name == cfg.name)
                     .min_by_key(|s| s.root != self.project_root)
                     .map(|s| s.root.clone())
                     .unwrap_or_else(|| self.project_root.clone())
             })
         };
-        if let Some(s) =
-            servers.iter().find(|s| s.name == cfg.name && s.root == root && s.config.target_key == cfg.target_key)
-        {
+        if let Some(s) = servers.iter().find(|s| s.name == cfg.name && s.root == root) {
             s.add_language(language);
             return s.clone();
         }
@@ -530,6 +525,9 @@ impl LspManager {
     /// only while all servers listed before it are missing. One that requires a
     /// root marker serves only files below one, and stands in for no other.
     fn servers_for(&self, language: &LanguageId, path: &Path) -> Vec<Arc<Server>> {
+        if let Some(servers) = self.arduino_servers(language, path) {
+            return servers;
+        }
         let mut out = Vec::new();
         let mut available_before = false;
         for sc in &self.language_servers(language) {
@@ -565,13 +563,8 @@ impl LspManager {
     /// enabled in settings.
     fn attach_fallbacks(&self) {
         let _gate = self.injections.gate.lock();
-        let open: Vec<(DocId, LanguageId, PathBuf)> = self
-            .docs
-            .lock()
-            .iter()
-            .filter(|(_, d)| !d.uri.as_str().starts_with("openidea-target:"))
-            .map(|(id, d)| (*id, d.language.clone(), d.path.clone()))
-            .collect();
+        let open: Vec<(DocId, LanguageId, PathBuf)> =
+            self.docs.lock().iter().map(|(id, d)| (*id, d.language.clone(), d.path.clone())).collect();
         let wanted: Vec<(DocId, Vec<Arc<Server>>)> =
             open.into_iter().map(|(id, language, path)| (id, self.servers_for(&language, &path))).collect();
         let mut start = Vec::new();
@@ -673,8 +666,7 @@ impl LspManager {
             }
             tail.set_effective_config(generation, cfg.clone());
             let prepare = me.prepare_hook.read().clone();
-            if cfg.target.is_none()
-                && !launch_cancel.is_cancelled()
+            if !launch_cancel.is_cancelled()
                 && me.launcher.available(&cfg, &tail.root)
                 && let Some(prepare) = prepare
             {
@@ -685,7 +677,7 @@ impl LspManager {
             let root = tail.root.clone();
             if let Some(message) = &cfg.launch_error {
                 // A missing binary still asks to be installed first.
-                let missing = cfg.target.is_none() && !me.launcher.available(&cfg, &root);
+                let missing = !me.launcher.available(&cfg, &root);
                 return Err(if missing { LaunchError::Missing } else { LaunchError::Config(message.clone()) });
             }
             if !me.execution_allowed.load(Ordering::Acquire) || launch_cancel.is_cancelled() {
@@ -775,7 +767,11 @@ impl LspManager {
                 if let Some(info) = result.get("serverInfo") {
                     tracing::info!("{} initialized: {info}", server.name);
                 }
-                let mut caps = ServerCaps::parse(result.get("capabilities").cloned().unwrap_or_else(|| json!({})));
+                let mut caps_val = result.get("capabilities").cloned().unwrap_or_else(|| json!({}));
+                if server.name == arduino::SERVER {
+                    arduino::sanitize_server_capabilities(&mut caps_val);
+                }
+                let mut caps = ServerCaps::parse(caps_val);
                 let cfg = server.effective_config();
                 caps.restrict(caps::Restriction::new(&server.name, &cfg.features, &cfg.code_action_kinds));
                 caps
@@ -921,6 +917,9 @@ impl LspManager {
             "capabilities": caps::client_capabilities(),
             "trace": "off",
         });
+        if server.name == arduino::SERVER {
+            arduino::configure_client_capabilities(&mut params["capabilities"]);
+        }
         if server.name == "gopls" {
             params["capabilities"]["experimental"]["interactiveResolve"] = json!({ "inputTypes": ["string"] });
         }
@@ -1021,6 +1020,7 @@ impl LspManager {
         servers: Vec<Arc<Server>>,
     ) {
         let canonical = dunce::canonicalize(&path).unwrap_or_else(|_| path.clone());
+        let compose_detected = language.as_str() == "yaml" && compose::is_content_detected_compose_file(&path, text);
         let mut state = DocState {
             path,
             canonical,
@@ -1029,9 +1029,12 @@ impl LspManager {
             version: version as i32,
             text: Arc::new(DocText::new(text)),
             servers: servers.iter().map(|s| Attached { server: s.clone(), opened_gen: None }).collect(),
+            compose_detected,
         };
-        {
+        let compose_added = {
             let mut docs = self.docs.lock();
+            let already_detected =
+                compose_detected && docs.values().any(|d| d.compose_detected && d.path == state.path);
             let params = state.did_open_params();
             for a in &mut state.servers {
                 if let Some(run) = a.server.running() {
@@ -1042,13 +1045,17 @@ impl LspManager {
                 }
             }
             docs.insert(doc, state);
-        }
+            compose_detected && !already_detected
+        };
         self.schedule_pull(doc, None, Duration::ZERO);
         for s in &servers {
             self.ensure_started(s);
             if s.running().is_some()
                 && let Some(me) = self.me.upgrade()
             {
+                if s.name == compose::SERVER && compose_added {
+                    me.reconfigure_soon();
+                }
                 let server = s.clone();
                 self.runtime.spawn(async move { me.check_clang_tidy(&server).await });
             }
@@ -1119,7 +1126,18 @@ impl LspManager {
                 tracing::debug!("{}: didChange: {e}", server.name);
             }
         }
+        let compose_changed = if d.language.as_str() == "yaml" && !compose::is_named_compose_file(&d.path) {
+            let now = compose::is_compose_content(text.as_str());
+            let changed = std::mem::replace(&mut d.compose_detected, now) != now;
+            let closed_path = d.path.clone();
+            changed && !docs.iter().any(|(id, other)| *id != doc && other.compose_detected && other.path == closed_path)
+        } else {
+            false
+        };
         drop(docs);
+        if compose_changed && let Some(me) = self.me.upgrade() {
+            me.reconfigure_soon();
+        }
         self.schedule_pull(doc, None, pull::AFTER_EDIT);
         self.invalidate_injections(doc);
         self.schedule_injections(doc);
@@ -1179,7 +1197,16 @@ impl LspManager {
     }
 
     fn close_document(&self, doc: DocId) {
-        let Some(d) = self.docs.lock().remove(&doc) else { return };
+        let (d, compose_removed) = {
+            let mut docs = self.docs.lock();
+            let Some(d) = docs.remove(&doc) else { return };
+            let removed =
+                d.compose_detected && !docs.values().any(|other| other.compose_detected && other.path == d.path);
+            (d, removed)
+        };
+        if compose_removed && let Some(me) = self.me.upgrade() {
+            me.reconfigure_soon();
+        }
         for a in &d.servers {
             self.forget_pulled(&a.server, &d.path, a.server.running().as_ref());
             let Some(run) = a.server.running() else { continue };
@@ -1560,6 +1587,7 @@ impl LspManager {
                     let locs = convert::goto_response(&self.conv(t.enc()), r);
                     let locs = library_sources(snap, pos, locs).await;
                     self.note_virtual(&t.server, locs.iter().map(|l| l.uri.as_deref()));
+                    self.note_arduino_sources(&t.server, &locs);
                     let locs = merge_locations(first, locs);
                     if !locs.is_empty() {
                         return Ok(locs);
@@ -1788,6 +1816,7 @@ impl LspManager {
                     .collect();
                 let locations: Vec<Location> = classified.iter().map(|r| r.location.clone()).collect();
                 self.note_virtual(&t.server, locations.iter().map(|l| l.uri.as_deref()));
+                self.note_arduino_sources(&t.server, &locations);
                 Ok(References { locations, classified, incomplete: widened.incomplete, libraries_skipped })
             }
             .await;
@@ -1855,6 +1884,7 @@ impl LspManager {
                         locs.retain(|l| !declarations.contains(l));
                     }
                     self.note_virtual(&t.server, locs.iter().map(|l| l.uri.as_deref()));
+                    self.note_arduino_sources(&t.server, &locs);
                     acc.locations.extend(locs);
                     acc.incomplete = acc.incomplete.or(w.incomplete);
                 }
@@ -2058,7 +2088,8 @@ impl LspManager {
                             .unwrap_or_default()
                             .into_iter()
                             .map(|a| {
-                                let mut action = convert::code_action(&conv, a, t.server.id);
+                                let mut action =
+                                    convert::code_action(&conv, &snap.path, a, t.server.id, &t.server.name);
                                 self.tag_injected_origin(doc, &mut action.data);
                                 self.tag_injected_command(doc, action.server, &mut action.command);
                                 action
@@ -2924,15 +2955,66 @@ impl LspManager {
     }
 
     fn origin_server(&self, uri: &str) -> Option<Arc<Server>> {
-        let id = self.virtual_origins.lock().get(uri).copied();
-        self.servers
-            .lock()
-            .iter()
-            .find(|s| {
-                Some(s.id) == id
-                    || s.effective_config().target.as_ref().is_some_and(|t| target::external_path(t, uri).is_some())
+        let id = *self.virtual_origins.lock().get(uri)?;
+        self.servers.lock().iter().find(|s| s.id == id).cloned()
+    }
+
+    /// The binary archive behind a library document, never its displayed tab title.
+    pub fn library_archive(uri: &str) -> Option<PathBuf> {
+        if virtual_doc::scheme(uri) == "jar" {
+            return library_source::parse(uri).map(|e| e.jar);
+        }
+        virtual_doc::description(uri).filter(|p| p.ends_with(".jar") && Path::new(p).is_absolute()).map(PathBuf::from)
+    }
+
+    /// Open an attached archive at the declaration under the decompiled editor's caret.
+    pub async fn library_source_location(
+        &self,
+        uri: &str,
+        sources: PathBuf,
+        pos: Pos,
+        cancel: &CancellationToken,
+    ) -> IdeResult<Option<Location>> {
+        let previous = tokio::select! {
+            result = self.virtual_document(uri) => result?,
+            _ = cancel.cancelled() => return Err(IdeError::cancelled()),
+        };
+        let name = previous
+            .text
+            .lines()
+            .nth(pos.line as usize)
+            .and_then(|line| library_source::identifier_at(line, pos.col))
+            .map(str::to_owned);
+        let original = uri.to_owned();
+        let archive = sources.clone();
+        let found = tokio::task::spawn_blocking(move || {
+            library_source::source_in_archive(&original, &archive).map(|(uri, text)| {
+                let range = name.as_deref().map(|n| library_source::declaration_range(&text, n)).unwrap_or_default();
+                Location { path: uri.clone().into(), uri: Some(uri), range }
             })
-            .cloned()
+        })
+        .await
+        .map_err(|e| IdeError::internal(e.to_string()))?;
+        if cancel.is_cancelled() {
+            return Err(IdeError::cancelled());
+        }
+        if found.is_some() {
+            if virtual_doc::scheme(uri) == "jdt" {
+                let result = self
+                    .jdtls_command_cancellable(
+                        &self.project_root,
+                        "java.project.updateSourceAttachment",
+                        vec![json!({ "classFileUri": uri, "attributes": { "sourceAttachmentPath": sources } })],
+                        cancel,
+                    )
+                    .await?;
+                if let Some(error) = result.get("errorMessage").and_then(Value::as_str).filter(|s| !s.is_empty()) {
+                    return Err(IdeError::unavailable(error));
+                }
+            }
+            self.virtual_docs.lock().remove(uri);
+        }
+        Ok(found)
     }
 
     /// Contents of a virtual document, from the server that owns `uri`:
@@ -2941,29 +3023,6 @@ impl LspManager {
     /// is read from its archive, a `jar:` class shown as its library source
     /// (see [`library_source`]) or else decompiled by the server. Cached.
     pub async fn virtual_document(&self, uri: &str) -> IdeResult<VirtualDocument> {
-        if uri.starts_with("openidea-target:") {
-            let server = self
-                .origin_server(uri)
-                .ok_or_else(|| IdeError::unavailable("container language server is no longer available"))?;
-            let target = server
-                .effective_config()
-                .target
-                .ok_or_else(|| IdeError::unavailable("container language server is no longer available"))?;
-            let path = target::external_path(&target, uri)
-                .ok_or_else(|| IdeError::invalid("invalid container document URI"))?;
-            let read = self
-                .target_read_hook
-                .read()
-                .clone()
-                .ok_or_else(|| IdeError::unavailable("container document reader is unavailable"))?;
-            let languages = server.languages();
-            let title = Path::new(&path).file_name().map(|n| n.to_string_lossy().into_owned());
-            let description = Some(path.clone());
-            let text = tokio::task::spawn_blocking(move || read(&target, &path))
-                .await
-                .map_err(|e| IdeError::unavailable(e.to_string()))??;
-            return Ok(self.store_virtual(uri, text, title, description, &languages, Some(server.id)));
-        }
         if let Some(d) = self.virtual_docs.lock().get(uri) {
             return Ok(d.clone());
         }
@@ -3118,11 +3177,6 @@ impl LspManager {
 
     /// Called when a server sends `workspace/applyEdit`; installed by `src-tauri`
     /// so edits flow through `ide-workspace::Documents`.
-    pub fn set_target_hooks(&self, configure: Box<TargetConfigFn>, read: Box<TargetReadFn>) {
-        *self.target_hook.write() = Some(Arc::from(configure));
-        *self.target_read_hook.write() = Some(Arc::from(read));
-    }
-
     pub fn set_config_hook(&self, hook: Box<ConfigFn>) {
         *self.config_hook.write() = Some(Arc::from(hook));
     }
@@ -3143,24 +3197,21 @@ impl LspManager {
             cfg.launch_error = Some("Project is in Restricted Mode".into());
             return cfg;
         }
-        let in_target = self.target_hook.read().clone().is_some_and(|hook| {
-            server
-                .languages()
-                .iter()
-                .filter(|language| {
-                    self.language_servers(language)
-                        .iter()
-                        .any(|c| c.name == server.name && c.target_key == server.config.target_key)
-                })
-                .any(|language| hook(language, &mut cfg))
-        });
-        if !in_target && let Some(hook) = self.config_hook.read().clone() {
+        if let Some(hook) = self.config_hook.read().clone() {
             hook(&mut cfg, &server.root);
         }
-        if let Some(target) = &mut cfg.target {
-            target.origin = Some(server.id);
+        if cfg.name == compose::SERVER {
+            compose::configure_yaml_compose_schemas(&mut cfg, &self.open_compose_files());
         }
         cfg
+    }
+
+    fn open_compose_files(&self) -> Vec<PathBuf> {
+        let mut files: Vec<PathBuf> =
+            self.docs.lock().values().filter(|d| d.compose_detected).map(|d| d.path.clone()).collect();
+        files.sort();
+        files.dedup();
+        files
     }
 
     /// Restarts running servers whose settings-derived configuration changed
@@ -3233,11 +3284,6 @@ impl LspManager {
                 }
                 continue;
             }
-            if next.target != current.target {
-                for doc in self.docs.lock().values_mut().filter(|d| d.uri.as_str().starts_with("openidea-target:")) {
-                    doc.servers.retain(|a| a.server.id != s.id);
-                }
-            }
             match s.status() {
                 ide_core::event::ServerStatus::Ready
                 | ide_core::event::ServerStatus::Busy
@@ -3258,7 +3304,7 @@ impl LspManager {
             }
         }
         self.attach_fallbacks();
-        self.detach_shadowed_servers().await;
+        self.detach_shadowed_fallbacks().await;
         self.injection_providers_changed();
     }
 
@@ -3295,9 +3341,9 @@ impl LspManager {
         }
     }
 
-    /// Detaches fallbacks shadowed by enabled servers and instances whose target
-    /// no longer matches the document's language. Stop them once unused.
-    async fn detach_shadowed_servers(&self) {
+    /// A server enabled again shadows the fallbacks attached in its place: they
+    /// leave the open documents, and stop once no document uses them.
+    async fn detach_shadowed_fallbacks(&self) {
         let open: Vec<(DocId, LanguageId, PathBuf)> =
             self.docs.lock().iter().map(|(id, d)| (*id, d.language.clone(), d.path.clone())).collect();
         let mut shadowed: Vec<(DocId, Vec<ide_core::ServerId>)> = Vec::new();
@@ -3312,9 +3358,7 @@ impl LspManager {
                 .filter(|a| {
                     !wanted.iter().any(|w| w.id == a.server.id)
                         && (configs.iter().any(|c| c.fallback && c.name == a.server.name)
-                            || !configs
-                                .iter()
-                                .any(|c| c.name == a.server.name && c.target_key == a.server.config.target_key))
+                            || (a.server.name == "clangd" && wanted.iter().any(|s| s.name == arduino::SERVER)))
                 })
                 .map(|a| a.server.id)
                 .collect();
@@ -3370,11 +3414,7 @@ impl LspManager {
         let servers: Vec<Arc<Server>> = self.servers.lock().clone();
         let unlisted: Vec<Arc<Server>> = servers
             .into_iter()
-            .filter(|s| {
-                !s.languages().iter().any(|l| {
-                    self.language_servers(l).iter().any(|c| c.name == s.name && c.target_key == s.config.target_key)
-                })
-            })
+            .filter(|s| !s.languages().iter().any(|l| self.language_servers(l).iter().any(|c| c.name == s.name)))
             .collect();
         if unlisted.is_empty() {
             return;

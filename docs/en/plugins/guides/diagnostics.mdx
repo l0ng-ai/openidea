@@ -1,0 +1,206 @@
+---
+title: "Diagnostics and inspections"
+description: "Report problems in the editor and the Problems tool window, check unsaved text as the user types, and offer quick fixes."
+---
+
+A plugin reports problems in two ways, and both show as editor squiggles and in the
+**Problems** tool window next to the language servers' results:
+
+| Approach                 | How                                                    | When to use                                                                |
+| ------------------------ | ------------------------------------------------------ | -------------------------------------------------------------------------- |
+| **Publish**              | `host::publish_diagnostics(path, items)` from any code | Results of an external tool, a save, a project scan. Needs `project.read`. |
+| **Provide while typing** | `diagnostics` provider kind (API 1.3)                  | Fast checks of the current, unsaved text. No extra capability.             |
+
+Quick fixes for either come from the `code-actions` provider kind.
+
+## The diagnostic record
+
+Both approaches use the same record (WIT `diagnostics.diagnostic` in `io.wit`; Rust
+`openidea_plugin::Diagnostic`):
+
+| Field         | Notes                                                                      |
+| ------------- | -------------------------------------------------------------------------- |
+| `range`       | 0-based lines, UTF-16 columns.                                             |
+| `severity`    | `Error`, `Warning`, `Info`, `Hint`.                                        |
+| `message`     | Up to 4 KiB for providers.                                                 |
+| `code`        | Rule or check id (`LineLength`), up to 128 bytes for providers.            |
+| `source`      | The tool that found it when it is not the plugin itself (`checkstyle`).    |
+| `unnecessary` | Shown faded (WIT tag `unnecessary`).                                       |
+| `deprecated`  | Struck through (WIT tag `deprecated`).                                     |
+| `related`     | Other places that explain it (`RelatedInformation { location, message }`). |
+
+```rust
+use openidea_plugin::{Diagnostic, Range, Severity};
+
+let d = Diagnostic::new(range, Severity::Warning, "Line is longer than 100 characters").code("LineLength");
+```
+
+## Publish problems
+
+`host::publish_diagnostics(path, &items)` replaces this plugin's problems for one file
+(an absolute path in an open project); an empty list clears them. It needs `project.read`.
+
+[Checkstyle](https://github.com/l0ng-ai/openidea/tree/main/plugins/official/checkstyle) is
+the reference example: on `file-saved` it runs the `checkstyle` program inside a
+cancellable task, parses the XML report and publishes the result.
+
+```toml
+activation = ["on-event:file-saved", "on-command:*"]
+
+[capabilities]
+required = ["project.read", "events", "storage", "process:checkstyle"]
+
+[[contributes.providers]]
+kinds = ["code-actions"]
+languages = ["java"]
+```
+
+```rust
+fn check(&mut self, path: &str) -> Result<usize, Error> {
+    let project = host::project_of(path).ok_or_else(|| Error::NotFound(path.into()))?;
+    let task = host::begin_task("Checkstyle", true);
+    let args = vec!["-f".to_owned(), "xml".into(), "-c".into(), "/google_checks.xml".into(), path.to_owned()];
+    let out = project.run_process("checkstyle", &args, None)?;
+    if task.is_cancelled() {
+        return Err(Error::Cancelled);
+    }
+    let problems = parse_report(&out.stdout);
+    let text = project.read_file(path)?;
+    let diagnostics: Vec<Diagnostic> = problems.iter().map(|p| diagnostic(p, &text)).collect();
+    host::publish_diagnostics(path, &diagnostics)?;
+    self.problems.insert(path.to_owned(), problems); // kept for quick fixes
+    Ok(diagnostics.len())
+}
+```
+
+[License Header](https://github.com/l0ng-ai/openidea/tree/main/plugins/official/license-header)
+does the same on `file-opened` and `file-saved` without an external program.
+
+## Check unsaved text while typing
+
+The `diagnostics` kind (API 1.3) asks the plugin about the current document, unsaved
+edits included:
+
+```toml
+engines.openidea = "^1.3"
+
+[[contributes.providers]]
+kinds = ["diagnostics"]
+languages = ["text", "plaintext"]   # "*" matches any language
+```
+
+```rust
+use openidea_plugin::diagnostics::{DiagnosticsProvider, Document};
+use openidea_plugin::{Diagnostic, Range, Severity, register_plugin, text};
+
+impl DiagnosticsProvider for MyPlugin {
+    fn diagnostics(&mut self, doc: &Document) -> Vec<Diagnostic> {
+        doc.text
+            .match_indices("BAD")
+            .map(|(offset, _)| {
+                let range = Range { start: text::position(&doc.text, offset), end: text::position(&doc.text, offset + 3) };
+                Diagnostic::new(range, Severity::Warning, "Avoid BAD").code("bad-word")
+            })
+            .collect()
+    }
+}
+
+register_plugin!(MyPlugin, diagnostics);
+```
+
+The optional WIT export is `diagnostics-provider.diagnostics(document)`, in the worlds
+`plugin-diagnostics` / `editor-diagnostics`.
+
+How the host calls it:
+
+- About **300 ms** after a document opens or after its latest edit, under the editor
+  provider budget (50 ms soft, 500 ms hard). Superseded requests are cancelled and older
+  versions dropped.
+- Documents over 2 MiB and virtual library documents are skipped.
+- The returned list replaces what this provider reported for the document; an empty list
+  removes it. At most 5,000 diagnostics per document; messages are cut at 4 KiB, `source`
+  and `code` at 128 bytes.
+- Providers run without an interactive invocation: they can't open prompts or write to
+  the editor.
+
+Provider results and published results are separate producers (`plugin-provider:<plugin-id>`
+and `plugin:<plugin-id>`); each replaces only its own. Closing the document or project, or
+disabling, reloading or a failing plugin clears provider results. Results stay with the
+window and project that asked, even when two windows edit the same path differently.
+
+## Quick fixes
+
+Declare the `code-actions` kind and implement `Providers::code_actions`. The actions join
+the language servers' under **Show Context Actions** (`⌥⏎` / `Alt+Enter`). A code action
+carries edits for any files, applied as one undoable change.
+
+```rust
+use openidea_plugin::providers::{CodeAction, Document, Providers};
+use openidea_plugin::{Position, Range, TextEdit};
+
+impl Providers for Checkstyle {
+    fn code_actions(&mut self, doc: &Document, selection: Range) -> Vec<CodeAction> {
+        let Some(problems) = self.problems.get(&doc.path) else { return vec![] };
+        let lines: Vec<&str> = doc.text.split('\n').collect();
+        problems
+            .iter()
+            .filter(|p| p.check == "FileTabCharacter" && (selection.start.line..=selection.end.line).contains(&p.line))
+            .filter_map(|p| {
+                let line = lines.get(p.line as usize)?;
+                let whole = Range::new(Position::new(p.line, 0), Position::new(p.line, line.encode_utf16().count() as u32));
+                Some(CodeAction {
+                    title: "Checkstyle: Replace tabs with spaces".into(),
+                    kind: Some("quickfix".into()),
+                    preferred: true,
+                    edits: vec![(doc.path.clone(), vec![TextEdit { range: whole, text: line.replace('\t', "    ") }])],
+                    data: None,
+                })
+            })
+            .collect()
+    }
+}
+```
+
+`code_actions` runs under the 50 ms editor budget, which is why Checkstyle answers from
+the results of its last check kept in memory.
+
+### Computing the edits later
+
+An action can leave `edits` empty and set `data` (the plugin's own reference). The host
+then calls `resolve_code_action(doc, action)` only when the user picks it, under the
+5-second command budget instead of 50 ms. During resolution `host::pick`, `pick_many`,
+`input` and `confirm` ask in the editor's window, and the wait is not charged to the budget.
+Dismissal returns `None` (or `false` for `confirm`): return `Error::Cancelled` or an action
+without edits to abandon the fix. Lazy actions are never resolved for the intention
+preview or for Actions on Save. Other command-only APIs stay unavailable.
+
+### Fixes that create, rename or delete files
+
+Implement `file_actions::FileActions` alongside, and register both:
+`register_plugin!(MyPlugin, providers, file_actions)`. The same `code-actions` kind covers
+both. See [File actions](/en/plugins/guides/file-actions).
+
+## Reading the Problems view
+
+`host::problems(path)` (API 1.4, WIT `diagnostics.problems`) returns the current Problems
+reports of the invoking window's project, grouped by file and source, including language
+server and plugin diagnostics, optionally for one file. It needs `project.read` and an
+invoking window, and returns an empty list for remote projects.
+[TODO Finder](https://github.com/l0ng-ai/openidea/tree/main/plugins/official/todo-finder)
+counts them in a status bar item.
+
+## Testing
+
+```rust
+use openidea_plugin::mock::MockHost;
+
+let mock = MockHost::install();
+mock.open_editor("/project/a.txt", "text", "a BAD word", &[]);
+mock.refresh_diagnostics(&mut MyPlugin::default());
+assert_eq!(mock.provider_diagnostics()["/project/a.txt"][0].code.as_deref(), Some("bad-word"));
+```
+
+`refresh_diagnostics` runs a provider against the mock editor's current version;
+`provider_diagnostics()` holds its answers and `diagnostics()` what the plugin published.
+Debounce and cancellation are exercised only by the real host. See
+[Testing](/en/plugins/testing).

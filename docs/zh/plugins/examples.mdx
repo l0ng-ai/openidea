@@ -1,0 +1,60 @@
+---
+title: "示例插件"
+description: "逐个了解 plugins/official 中的插件：每个插件演示了什么、用到了哪部分 API。"
+---
+
+[`plugins/official/`](https://github.com/l0ng-ai/openidea/tree/main/plugins/official) 中的插件由 OpenIDEA 的发布流程构建并签名，以 `openidea.*` 的 id 列在插件市场中。它们会随 API 演进保持可用，定位是供人阅读的示例：每个插件演示 API 的一部分。自己的插件请放在自己的仓库里开发，把这些插件当作参考。
+
+每个文件夹都包含 `plugin.toml`、`src/` 下的 Rust 源码、原生测试，以及已提交到仓库的组件 `dist/plugin.wasm`。
+
+## 纯数据插件
+
+| 插件                                                                                            | 演示内容                                                                                          | 用到的 API                              |
+| ----------------------------------------------------------------------------------------------- | ------------------------------------------------------------------------------------------------- | --------------------------------------- |
+| [harbor-night](https://github.com/l0ng-ai/openidea/tree/main/plugins/official/harbor-night)     | 一个深色主题，包含 UI 主题和编辑器配色方案。`openidea-plugin new` 的 `theme` 模板就是从它复制的。 | `contributes.themes` 及 `editor-scheme` |
+| [material-icons](https://github.com/l0ng-ai/openidea/tree/main/plugins/official/material-icons) | 一套完整的文件和文件夹图标主题，100 多个图标。                                                    | `contributes.iconThemes`                |
+
+## 代码插件
+
+| 插件                                                                                            | 演示内容                                                                                                        | 用到的 API                                                                   |
+| ----------------------------------------------------------------------------------------------- | --------------------------------------------------------------------------------------------------------------- | ---------------------------------------------------------------------------- |
+| [string-tools](https://github.com/l0ng-ai/openidea/tree/main/plugins/official/string-tools)     | 26 个文本命令（大小写转换，Base64/URL/HTML/JSON 编码，行排序），同时作用于所有选区。                            | 命令、`editor.read`/`editor.write`、带版本号的多光标编辑                     |
+| [key-promoter](https://github.com/l0ng-ai/openidea/tree/main/plugins/official/key-promoter)     | 用鼠标执行操作后提示它的快捷键，并统计错过的次数。                                                              | `on-event:action-performed`、`events.input`、`storage`                       |
+| [git-toolbox](https://github.com/l0ng-ai/openidea/tree/main/plugins/official/git-toolbox)       | 在后台 fetch 仓库，在状态栏显示领先/落后上游的提交数。                                                          | `on-schedule`、事件、任务、`vcs.read`/`vcs.write`、状态栏项                  |
+| [checkstyle](https://github.com/l0ng-ai/openidea/tree/main/plugins/official/checkstyle)         | 保存时运行 Checkstyle，问题显示在编辑器和 问题 视图中，并提供快速修复。                                         | `process:checkstyle`、`on-event:file-saved`、诊断、`code-actions` provider   |
+| [license-header](https://github.com/l0ng-ai/openidea/tree/main/plugins/official/license-header) | 打开文件时报告缺少许可证头的文件，用快速修复补上，并在任务中扫描整个项目。                                      | 文件事件、`code-actions` provider、菜单、设置、任务                          |
+| [ai-completion](https://github.com/l0ng-ai/openidea/tree/main/plugins/official/ai-completion)   | 由本地 Ollama 模型或 OpenAI 提供的行内（灰色提示文本）补全。                                                    | `inline-completion` provider、`net:` 授权、`secrets`                         |
+| [mybatis](https://github.com/l0ng-ai/openidea/tree/main/plugins/official/mybatis)               | 在 MyBatis mapper 接口和 XML 之间跳转，装订区标记，跨文件补全。                                                 | `definition`、`line-markers`、`completion` provider，`project.read`          |
+| [csv-editor](https://github.com/l0ng-ai/openidea/tree/main/plugins/official/csv-editor)         | CSV/TSV 表格编辑器，与文本视图编辑同一个文本文档，撤销历史共享。                                                | 声明式表格的 `customEditors`、`view-provider` 导出                           |
+| [regex-tester](https://github.com/l0ng-ai/openidea/tree/main/plugins/official/regex-tester)     | 一个工具窗口，用编辑器中的选中文本测试正则表达式。                                                              | 带 `html` 内容并与代码通信的 `views`、设置、菜单                             |
+| [graphviz](https://github.com/l0ng-ai/openidea/tree/main/plugins/official/graphviz)             | DOT 语言，文本旁边实时预览；问题由渲染页面报告。                                                                | Web 视图自定义编辑器（`web = "web/index.html"`）、语言、文件图标和文件模板   |
+| [solidity](https://github.com/l0ng-ai/openidea/tree/main/plugins/official/solidity)             | Solidity 支持：文件识别，在没有 tree-sitter 语法的情况下提供高亮、结构视图和折叠，以及 Forge/Hardhat 运行配置。 | `languages`、`syntax-provider` 导出（world `plugin-syntax`）、`runDetectors` |
+
+<Note>
+  graphviz 的网页由 `plugins/build.sh` 从 `web-src/` 构建到 `web/`，不提交到仓库。从源码检出安装前，先运行
+  `plugins/build.sh official/graphviz`。
+</Note>
+
+## API 1.4 小示例
+
+下面四个是 API 1.4 扩展点的最小示例，不是功能型插件。它们声明 `engines.openidea = "^1.4"`；其中两个需要运行程序，附带了假的可执行文件，接入真实工具时替换掉即可。每个文件夹的 README 都写了试用方法。
+
+| 插件                                                                                                  | 演示内容                                                                             | 用到的 API                                                                            |
+| ----------------------------------------------------------------------------------------------------- | ------------------------------------------------------------------------------------ | ------------------------------------------------------------------------------------- |
+| [blame-annotations](https://github.com/l0ng-ai/openidea/tree/main/plugins/official/blame-annotations) | **Example: Show Blame Annotations** 在每行末尾显示 Git blame，也可以从代码透镜触发。 | `vcs.blame`、`decorations.set`、`code-lenses` 语言功能                                |
+| [container-runner](https://github.com/l0ng-ai/openidea/tree/main/plugins/official/container-runner)   | 注册一个包装命令的项目运行目标（类似 DDEV），打开带 key 的终端，写入 输出 通道。     | `run-targets.register`、终端会话、`output`、窗口状态栏项                              |
+| [test-runner](https://github.com/l0ng-ai/openidea/tree/main/plugins/official/test-runner)             | 针对一种玩具测试格式的动态运行配置、测试输出解析和装订区运行按钮。                   | `run-configurations` 和 `test-results` 导出、`run.start`、`gutter-actions`            |
+| [todo-finder](https://github.com/l0ng-ai/openidea/tree/main/plugins/official/todo-finder)             | **Example: Find TODOs** 在工具窗口中列出匹配项，也可以从搜索结果的右键菜单运行。     | `project.search-text`、`diagnostics.problems`、列表视图、`searchResults.context` 菜单 |
+
+## 测试 fixture
+
+[`crates/ide-plugin/tests/fixtures/`](https://github.com/l0ng-ai/openidea/tree/main/crates/ide-plugin/tests/fixtures) 里是宿主集成测试用的小插件，其中不少是某个功能最短的可用示例：`settings-pages`（带表格的多页设置）、`file-templates`、`indexer`（后台索引、查找用法和重命名）、`symbols`、`diagnostics`、`hover`、`inlay-hints`、`semantic-tokens`、`files-events`、`private-dir`、`web-pty`、`web-log` 和 `web-content`。
+
+## 从源码构建
+
+```sh
+plugins/build.sh official/string-tools
+cargo test --manifest-path plugins/official/string-tools/Cargo.toml
+```
+
+然后用 **设置 › 插件 › 从磁盘安装插件…** 安装该文件夹，或者用 `openidea-plugin link plugins/official/string-tools` 链接它。

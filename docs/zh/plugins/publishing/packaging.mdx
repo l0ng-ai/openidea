@@ -1,0 +1,78 @@
+---
+title: "打包与签名"
+description: "创建发布者密钥，把插件打成签名的 .oiplugin 包，以及插件包里包含什么。"
+---
+
+插件以**插件包**的形式分发：一个名为 `<id>-<version>.oiplugin` 的 zip 文件。用发布者密钥签名后，IDE 就能确认是谁发布的、发布后有没有被改动。
+
+## 创建发布者密钥
+
+```sh
+openidea-plugin keygen acme.key
+```
+
+`keygen` 把新的 Ed25519 密钥写入 `acme.key`（在 macOS 和 Linux 上文件权限只允许你本人读取），打印对应的**公钥**，并且不会覆盖已存在的文件。每个发布者只需执行一次，并妥善保管这个文件：拿到它的人就能以你的身份发布。
+
+公钥连同发布者 id 一起写进插件市场索引。发布者 id 拥有对应的插件 id 前缀：发布者 `acme` 只能签名 `acme.*` 的插件。
+
+## 打包
+
+```sh
+openidea-plugin pack                                         # 当前文件夹，不签名
+openidea-plugin pack path/to/plugin --key acme.key --publisher acme
+openidea-plugin pack --key acme.key --publisher acme --out dist/acme.tools.oiplugin
+```
+
+`pack` 会：
+
+1. 对文件夹运行 `openidea-plugin check`，失败则停止；
+2. 收集清单、清单及其贡献引用的所有文件，以及组件；
+3. 如果存在，加入 `LICENSE`、`LICENSE.md`、`LICENSE.txt`、`NOTICE`、`NOTICE.md`、`COPYING` 和 `README.md`；
+4. 传了 `--key` 和 `--publisher`（两者必须同时使用）时，先检查插件 id 以 `<publisher>.` 开头，然后签名；
+5. 写出 `<id>-<version>.oiplugin`，或 `--out` 指定的路径。
+
+打包前先运行 `openidea-plugin build`，确保 `dist/plugin.wasm` 是最新的。
+
+## 插件包的内容
+
+| 条目             | 内容                                                                  |
+| ---------------- | --------------------------------------------------------------------- |
+| `plugin.toml`    | 清单                                                                  |
+| 引用的文件       | 主题、图标、语言定义、schema、Web 视图目录等                          |
+| 组件             | `wasm` 指定的文件（如果有代码）                                       |
+| 许可证和 README  | 上面列出的文件（如果存在）                                            |
+| `SIGNATURE.json` | 签名时生成：`publisher`、`key`（base64 公钥）和 `signature`（base64） |
+
+签名是对插件 id、版本和插件包**摘要**的 Ed25519 签名。摘要是对清单和包内文件（路径和内容，排序后）计算的 BLAKE3 哈希。签名后改动任何文件都会使签名失效。
+
+安装时 IDE 最多解包 10,000 个条目、512 MiB。
+
+## 安装插件包
+
+- **设置 › 插件** › 齿轮菜单 › **从插件包文件安装…** 可以安装 `.oiplugin`、根目录或唯一子文件夹中包含插件包的 `.zip`，或者某个文件夹中的 `plugin.toml`。对应位置没有 `plugin.toml` 的 zip（例如 IntelliJ 插件）会被拒绝。
+- **从磁盘安装插件…** 安装解开的插件包文件夹。
+- 从插件市场安装时，会先下载插件包，并用索引条目和发布者密钥校验。
+
+授权对话框会显示插件包是否已签名。未签名的包从磁盘安装时会给出警告；签名无效的包会被拒绝。见 [审核规则与安全](/zh/plugins/publishing/policy)。
+
+## 检查插件包
+
+```sh
+openidea-plugin check acme.tools-1.0.0.oiplugin
+```
+
+`check` 按安装时的方式解包并校验。
+
+## 更换密钥
+
+更换新密钥时，让旧密钥为新密钥背书，这样已安装的插件在更新时不需要用户确认签名者变更：
+
+```sh
+openidea-plugin keygen acme-2026.key
+# 自己维护的索引：
+openidea-plugin index market/ --publisher acme --name "ACME" --key acme-2026.key --previous-key acme.key
+# 由他人维护的索引（例如社区登记仓库）：
+openidea-plugin endorse "<new public key>" --key acme.key --publisher acme
+```
+
+`endorse` 以 JSON 形式打印背书。见 [自建市场](/zh/plugins/publishing/self-hosted) 和 [审核规则与安全](/zh/plugins/publishing/policy)。

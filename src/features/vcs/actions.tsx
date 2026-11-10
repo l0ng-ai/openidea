@@ -45,7 +45,7 @@ import { showSelectionHistory } from "./selectionHistoryKind";
 import { openLogTab, revealCommit, selectGitTab, useGitLog } from "./logStore";
 import { isModalCommit, openCommit, pushAfterCommit } from "./commitUi";
 import { allRepos, runRemote } from "./ops";
-import { showPushDialog, showUpdateDialog, type PushTarget } from "./remoteUi";
+import { showPushDialog, showUpdateDialog, type PushTarget, type UpdateTarget } from "./remoteUi";
 import { comparePathsWithRevision, showDirectoryWorkingDiff } from "./comparePaths";
 import { showCloneDialog } from "./clone";
 import {
@@ -56,10 +56,12 @@ import {
   showRebaseDialog,
   showWorktrees,
 } from "./gitMenuDialogs";
-import { refreshNow, repoName, useVcs } from "./store";
+import { currentRepo, refreshNow, repoName, repoOf, useVcs } from "./store";
 import { tx } from "@/platform/i18n";
 
 import { addToIgnore } from "./ignore";
+import { hasFileHistory, showCurrentRevision, trackFileHistory } from "./fileRevisions";
+import { compareWithFileRevision } from "./FileRevisionChooser";
 
 const VCS = "vcsAvailable";
 const IN_COMMIT_WINDOW = "vcsAvailable && activeToolWindow == commit";
@@ -266,7 +268,7 @@ export function registerVcsActions(): () => void {
       icon: "git-pull",
       when: VCS,
       keywords: ["pull"],
-      run: showUpdateDialog,
+      run: ({ arg }) => showUpdateDialog(arg && typeof arg === "object" ? (arg as UpdateTarget) : {}),
     },
     {
       id: "vcs.pull",
@@ -428,6 +430,15 @@ export function registerVcsActions(): () => void {
       },
     },
     {
+      id: "vcs.compareWithRevision",
+      title: "Compare with Revision…",
+      category: "Git",
+      icon: "diff",
+      when: VCS,
+      enabled: ({ arg }) => hasFileHistory(argPath(arg) ?? maybeEditorService()?.activePath()),
+      run: ({ arg }) => compareWithFileRevision(argPath(arg) ?? maybeEditorService()?.activePath()),
+    },
+    {
       id: "vcs.nextChange",
       title: "Next Change",
       category: "Git",
@@ -538,6 +549,15 @@ export function registerVcsActions(): () => void {
       },
     },
     {
+      id: "vcs.showCurrentRevision",
+      title: "Show Current Revision",
+      category: "Git",
+      icon: "commit",
+      when: VCS,
+      enabled: ({ arg }) => hasFileHistory(argPath(arg) ?? maybeEditorService()?.activePath()),
+      run: ({ arg }) => showCurrentRevision(argPath(arg) ?? maybeEditorService()?.activePath()),
+    },
+    {
       id: "vcs.showHistoryForSelection",
       title: "Show History for Selection",
       category: "Git",
@@ -556,8 +576,10 @@ export function registerVcsActions(): () => void {
         const commit = arg && typeof arg === "object" && "id" in arg ? (arg as import("@/bindings").Commit) : null;
         const id = typeof arg === "string" ? arg : commit?.id;
         if (!id) return;
+        const active = maybeEditorService()?.activePath();
+        const repo = commit ? commitRepo(commit) : ((active ? repoOf(active) : null) ?? currentRepo());
         showGitWindow();
-        void revealCommit(id, commit ? commitRepo(commit) : undefined);
+        void revealCommit(id, repo);
       },
     },
     ...(["gitignore", "localExclude"] as const).map((destination): Action => ({
@@ -638,5 +660,10 @@ export function registerVcsActions(): () => void {
       run: () => void gotoConflict(-1),
     },
   ];
-  return registerActions(actions);
+  const stopTracking = trackFileHistory();
+  const unregister = registerActions(actions);
+  return () => {
+    unregister();
+    stopTracking();
+  };
 }

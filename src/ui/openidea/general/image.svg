@@ -1,0 +1,6 @@
+<!-- OpenIDEA: attach an image -->
+<svg width="16" height="16" viewBox="0 0 16 16" fill="none" xmlns="http://www.w3.org/2000/svg">
+<rect x="2.5" y="3.5" width="11" height="9" rx="1.5" stroke="#6C707E"/>
+<circle cx="10.25" cy="6.25" r="1.25" stroke="#6C707E"/>
+<path d="M2.5 11L6 7.5L10.5 12.5" stroke="#6C707E" stroke-linejoin="round"/>
+</svg>

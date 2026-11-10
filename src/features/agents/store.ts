@@ -27,6 +27,7 @@ import {
   HOME_KIND,
   SESSION_KIND,
   TOOL_WINDOW,
+  appendEntry,
   attentionChange,
   entriesKey,
   isBusy,
@@ -63,6 +64,7 @@ interface AgentsState {
   unread: Set<string>;
   /** Entries of the tasks (and subagents) opened in this window, by `entriesKey`. */
   entries: Map<string, AgentEntry[]>;
+  entryLoads: Map<string, { error: string | null }>;
   changes: Map<string, AgentChange[]>;
   /** Scroll position and follow-output preference by conversation, shared by both hosts. */
   scrollPositions: Map<string, { top: number; stick: boolean }>;
@@ -106,7 +108,12 @@ function save(key: string, value: unknown) {
   }
 }
 
-const fallbackDraft: Draft = { provider: "claude", config: {}, isolation: "local", base: null };
+const fallbackDraft: Draft = {
+  provider: "claude",
+  config: {},
+  isolation: "local",
+  base: null,
+};
 
 /**
  * The saved New Task settings. A worktree is used only when the user picked it: drafts
@@ -123,6 +130,7 @@ export const useAgents = create<AgentsState>(() => ({
   tasks: new Map(),
   unread: new Set(),
   entries: new Map(),
+  entryLoads: new Map(),
   changes: new Map(),
   providers: [],
   limits: new Map(),
@@ -149,20 +157,37 @@ export function updateDraft(patch: Partial<Draft>) {
   save(DRAFT_KEY, draft);
 }
 
-/** Config for the selected model, with only supported draft choices applied. */
-export function draftConfig(provider: AgentProvider | undefined, draft: Draft): AgentConfigOption[] {
+/** What Settings › Agents says new tasks of `provider` start with, by option id. */
+export const providerDefaults = (provider: string | undefined): Record<string, string> =>
+  (provider && useProject.getState().settings?.agents?.defaults?.[provider]) || {};
+
+/**
+ * Config for the selected model, with only supported choices applied: the draft's, else
+ * the agent's defaults from Settings › Agents.
+ */
+export function draftConfig(
+  provider: AgentProvider | undefined,
+  draft: Draft,
+  defaults: Record<string, string> = providerDefaults(provider?.id),
+): AgentConfigOption[] {
   const config = (provider?.config ?? [])
     .filter((o) => o.category !== "thought_level")
     .map((o) => {
-      const choice = draft.config[o.id];
-      return { ...o, current: choice !== undefined && o.values.some((v) => v.value === choice) ? choice : o.current };
+      const choice = draft.config[o.id] ?? defaults[o.id];
+      return {
+        ...o,
+        current: choice !== undefined && o.values.some((v) => v.value === choice) ? choice : o.current,
+      };
     });
   const model = config.find((o) => o.category === "model")?.current;
   if (model) {
     config.push(
       ...(provider?.thoughtLevels?.[model] ?? []).map((o) => {
-        const choice = draft.thoughtLevels?.[model]?.[o.id];
-        return { ...o, current: choice !== undefined && o.values.some((v) => v.value === choice) ? choice : o.current };
+        const choice = draft.thoughtLevels?.[model]?.[o.id] ?? defaults[o.id];
+        return {
+          ...o,
+          current: choice !== undefined && o.values.some((v) => v.value === choice) ? choice : o.current,
+        };
       }),
     );
   }
@@ -178,7 +203,10 @@ export function setDraftOption(id: string, value: string) {
   const model = config.find((o) => o.category === "model")?.current;
   if (model && config.find((o) => o.id === id)?.category === "thought_level") {
     updateDraft({
-      thoughtLevels: { ...draft.thoughtLevels, [model]: { ...draft.thoughtLevels?.[model], [id]: value } },
+      thoughtLevels: {
+        ...draft.thoughtLevels,
+        [model]: { ...draft.thoughtLevels?.[model], [id]: value },
+      },
     });
   } else {
     updateDraft({ config: { ...draft.config, [id]: value } });
@@ -189,7 +217,10 @@ export const composerDraft = (key: string) => useAgents.getState().composers.get
 
 export function updateComposer(key: string, patch: Partial<ComposerDraft>) {
   useAgents.setState((s) => ({
-    composers: new Map(s.composers).set(key, { ...(s.composers.get(key) ?? emptyDraft()), ...patch }),
+    composers: new Map(s.composers).set(key, {
+      ...(s.composers.get(key) ?? emptyDraft()),
+      ...patch,
+    }),
     lastComposer: key,
   }));
 }
@@ -249,7 +280,11 @@ export async function connect(): Promise<void> {
         : call(commands.agentProviders()),
     ]);
   } catch (e) {
-    if (gen === generation) useAgents.setState({ loaded: true, error: e instanceof Error ? e.message : String(e) });
+    if (gen === generation)
+      useAgents.setState({
+        loaded: true,
+        error: e instanceof Error ? e.message : String(e),
+      });
     return;
   }
   if (gen !== generation) return;
@@ -258,6 +293,7 @@ export async function connect(): Promise<void> {
     error: null,
     tasks: new Map(tasks.map((t) => [t.id, t])),
     entries: new Map(),
+    entryLoads: new Map(),
     changes: new Map(),
     providers,
   });
@@ -271,14 +307,53 @@ export async function connect(): Promise<void> {
   }
 }
 
+type EntryEvent = Extract<AgentEvent, { type: "entry" | "append" }>;
+
+/** Entry events that arrived while their conversation loaded, applied on top of the copy it loads. */
+const arrivedWhileLoading = new Map<string, EntryEvent[]>();
+/** Whether the message each task streams now is the agent's reply, known without its conversation. */
+const streamingReply = new Map<string, { index: number; reply: boolean }>();
+
+/** `entries` with the event applied; `null` when the copy can't take it. */
+function applyEntryEvent(entries: AgentEntry[], e: EntryEvent): AgentEntry[] | null {
+  if (e.type === "append") return appendEntry(entries, e.index, e.from, e.text);
+  const have = entries[e.index];
+  // Sent before the loaded copy was read: that copy already holds more of the message.
+  if (
+    have &&
+    (have.type === "agent" || have.type === "thought") &&
+    e.entry.type === have.type &&
+    have.text.length > e.entry.text.length &&
+    have.text.startsWith(e.entry.text)
+  )
+    return entries;
+  return upsertEntry(entries, e.index, e.entry);
+}
+
+function onEntryEvent(s: AgentsState, e: EntryEvent) {
+  const key = entriesKey(e.task, e.subagent);
+  if (s.entryLoads.get(key)?.error === null) {
+    arrivedWhileLoading.set(key, [...(arrivedWhileLoading.get(key) ?? []), e]);
+    return;
+  }
+  const current = s.entries.get(key);
+  if (!current) return;
+  const next = applyEntryEvent(current, e);
+  if (!next) void loadEntries(e.task, e.subagent);
+  else if (next !== current) useAgents.setState({ entries: new Map(s.entries).set(key, next) });
+}
+
 export function disconnect() {
   generation++;
+  arrivedWhileLoading.clear();
+  streamingReply.clear();
   useAgents.setState({
     loaded: false,
     error: null,
     tasks: new Map(),
     unread: new Set(),
     entries: new Map(),
+    entryLoads: new Map(),
     changes: new Map(),
     docked: null,
     lastTask: null,
@@ -293,7 +368,7 @@ function onEvent(e: AgentEvent) {
     case "task": {
       const prev = s.tasks.get(e.task.id);
       useAgents.setState({ tasks: new Map(s.tasks).set(e.task.id, e.task) });
-      if (prev && prev.title !== e.task.title) notifyTabTitlesChanged();
+      if (prev && (prev.title !== e.task.title || prev.status !== e.task.status)) notifyTabTitlesChanged();
       if (e.task.status === "archived") setUnread(e.task.id, false);
       else if (attentionChange(prev?.status, e.task.status)) markUnread(e.task.id);
       notifyChange(prev, e.task);
@@ -310,13 +385,21 @@ function onEvent(e: AgentEvent) {
       composers.delete(e.id);
       const unread = new Set(s.unread);
       unread.delete(e.id);
-      useAgents.setState({ tasks, composers, unread, ...(s.docked === e.id ? { docked: null } : {}) });
+      useAgents.setState({
+        tasks,
+        composers,
+        unread,
+        ...(s.docked === e.id ? { docked: null } : {}),
+      });
       void editorService().closeInput?.(sessionKey(e.id));
       break;
     }
     case "truncated": {
       const current = s.entries.get(e.task);
-      if (current) useAgents.setState({ entries: new Map(s.entries).set(e.task, current.slice(0, e.length)) });
+      if (current)
+        useAgents.setState({
+          entries: new Map(s.entries).set(e.task, current.slice(0, e.length)),
+        });
       scheduleChanges(e.task);
       break;
     }
@@ -325,7 +408,9 @@ function onEvent(e: AgentEvent) {
       break;
     }
     case "limits": {
-      useAgents.setState({ limits: new Map(s.limits).set(e.provider, e.limits) });
+      useAgents.setState({
+        limits: new Map(s.limits).set(e.provider, e.limits),
+      });
       break;
     }
     case "entry": {
@@ -337,15 +422,20 @@ function onEvent(e: AgentEvent) {
       ) {
         markUnread(e.task);
       }
-      const key = entriesKey(e.task, e.subagent);
-      const current = s.entries.get(key);
-      if (!current) return;
-      const next = upsertEntry(current, e.index, e.entry);
-      if (next) useAgents.setState({ entries: new Map(s.entries).set(key, next) });
-      else void loadEntries(e.task, e.subagent);
+      if (!e.subagent) streamingReply.set(e.task, { index: e.index, reply: e.entry.type === "agent" });
+      onEntryEvent(s, e);
       if (e.entry.type === "tool" && e.entry.status === "completed" && e.entry.diffs.length) {
         scheduleChanges(e.task);
       }
+      break;
+    }
+    case "append": {
+      if (!e.subagent && e.text.trim()) {
+        const shown = s.entries.get(entriesKey(e.task, null))?.[e.index];
+        const streaming = streamingReply.get(e.task);
+        if (shown ? shown.type === "agent" : streaming?.index === e.index && streaming.reply) markUnread(e.task);
+      }
+      onEntryEvent(s, e);
       break;
     }
   }
@@ -368,20 +458,58 @@ function notifyChange(prev: AgentTask | undefined, task: AgentTask) {
     key: `agent:${task.id}`,
     group: "tools",
     sticky: change !== "finished",
-    actions: [{ label: change === "finished" ? "Review" : "Open", run: () => openTask(task.id) }],
+    actions: [
+      {
+        label: change === "finished" ? "Review" : "Open",
+        run: () => openTask(task.id),
+      },
+    ],
   });
 }
 
 /** Loads the entries of the task's conversation, or of its subagent `subagent`'s. */
 export async function loadEntries(task: string, subagent: string | null = null): Promise<void> {
-  const entries = await call(commands.agentEntries(task, subagent));
-  useAgents.setState((s) => ({ entries: new Map(s.entries).set(entriesKey(task, subagent), entries) }));
+  const key = entriesKey(task, subagent);
+  if (useAgents.getState().entryLoads.get(key)?.error === null) return;
+  const load = { error: null };
+  useAgents.setState((s) => ({
+    entryLoads: new Map(s.entryLoads).set(key, load),
+  }));
+  let timer: ReturnType<typeof setTimeout> | undefined;
+  try {
+    const entries = await Promise.race([
+      call(commands.agentEntries(task, subagent)),
+      new Promise<never>((_, reject) => {
+        timer = setTimeout(() => reject(new Error(tx("Loading the conversation timed out. Try again."))), 35_000);
+      }),
+    ]);
+    if (useAgents.getState().entryLoads.get(key) !== load) return;
+    let loaded = entries;
+    for (const event of arrivedWhileLoading.get(key) ?? []) loaded = applyEntryEvent(loaded, event) ?? loaded;
+    arrivedWhileLoading.delete(key);
+    useAgents.setState((s) => {
+      const entryLoads = new Map(s.entryLoads);
+      entryLoads.delete(key);
+      return { entries: new Map(s.entries).set(key, loaded), entryLoads };
+    });
+  } catch (e) {
+    if (useAgents.getState().entryLoads.get(key) !== load) return;
+    arrivedWhileLoading.delete(key);
+    const error = (e instanceof Error ? e.message : String(e)).trim() || tx("Unknown error");
+    useAgents.setState((s) => ({
+      entryLoads: new Map(s.entryLoads).set(key, { error }),
+    }));
+  } finally {
+    clearTimeout(timer);
+  }
 }
 
 export async function refreshChanges(task: string): Promise<void> {
   try {
     const changes = await call(commands.agentChanges(task));
-    useAgents.setState((s) => ({ changes: new Map(s.changes).set(task, changes) }));
+    useAgents.setState((s) => ({
+      changes: new Map(s.changes).set(task, changes),
+    }));
   } catch {
     // The worktree is gone or not a repository: nothing to list.
     useAgents.setState((s) => ({ changes: new Map(s.changes).set(task, []) }));
@@ -418,7 +546,10 @@ export function useAgentCommands(
   task: string | null,
   offered: readonly AgentCommand[],
 ): readonly AgentCommand[] {
-  const [found, setFound] = useState<{ for: unknown[]; list: readonly AgentCommand[] } | null>(null);
+  const [found, setFound] = useState<{
+    for: unknown[];
+    list: readonly AgentCommand[];
+  } | null>(null);
   useEffect(() => {
     if (!provider || !isTauri()) return;
     let alive = true;
@@ -450,7 +581,12 @@ function openTaskInEditor(task: string) {
 }
 
 function showDockedTask(task: string) {
-  useAgents.setState({ docked: task, lastTask: task, homeOpen: false, lastComposer: task });
+  useAgents.setState({
+    docked: task,
+    lastTask: task,
+    homeOpen: false,
+    lastComposer: task,
+  });
   toolWindowService().show(TOOL_WINDOW, true);
   void editorService().closeInput?.(sessionKey(task));
 }
@@ -514,7 +650,10 @@ export function openHome(prompt?: string) {
   if (project?.workspace) {
     const previous = useAgents.getState().draft.projectRoot;
     const projectRoot = defaultTaskProject(project, editorService().activePath(), previous);
-    updateDraft({ projectRoot, ...(projectRoot !== previous ? { base: null } : {}) });
+    updateDraft({
+      projectRoot,
+      ...(projectRoot !== previous ? { base: null } : {}),
+    });
   }
   if (prompt !== undefined) updateComposer(HOME, { text: prompt });
   if (useAgents.getState().sessionLocation === "toolWindow") {
@@ -538,7 +677,7 @@ export async function startTask(
     providers.find((p) => p.id === draft.provider),
     draft,
   );
-  const defaults = bypassDefaults(options);
+  const defaults = { ...bypassDefaults(options), ...providerDefaults(draft.provider) };
   const config = options.flatMap((o) => {
     const value =
       o.category === "model" || o.category === "thought_level"
@@ -738,7 +877,10 @@ export function addReferences(refs: Array<{ path: string; rel: string; mention: 
   const current = composerDraft(key);
   // A worktree task sees the same files under its own directory.
   const root = task?.isolation === "worktree" ? task.cwd : null;
-  const files: FileRef[] = refs.map((r) => ({ path: root ? `${root}/${r.rel}` : r.path, rel: r.rel }));
+  const files: FileRef[] = refs.map((r) => ({
+    path: root ? `${root}/${r.rel}` : r.path,
+    rel: r.rel,
+  }));
   const mentions = refs.map((r) => r.mention).join(" ");
   const text =
     current.text && !/\s$/.test(current.text) ? `${current.text} ${mentions} ` : `${current.text}${mentions} `;

@@ -1,6 +1,8 @@
 import { act, fireEvent, render, screen } from "@testing-library/react";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import type { DbDriver, DbQueryResult, DbTableDetails } from "@/platform/ipc";
+import { installKeyboardDispatcher, useKeymap } from "@/platform/keymap";
+import { installCellActions } from "./cellActions";
 import { getContext } from "@/platform/context";
 import { ResultsView } from "./ResultsView";
 import { executeConsole, useDatabase, type ResultTab } from "./store";
@@ -360,4 +362,29 @@ describe("result grid keyboard Submit / Revert (#2332)", () => {
       uninstall();
     }
   });
+});
+
+it("omits a reset inserted cell from Submit instead of writing SQL NULL", async () => {
+  show("SELECT * FROM users", [{ name: "id" }, { name: "name" }], [["1", "Ann"]]);
+  useKeymap.setState({ preset: "intellij-macos", overrides: {} });
+  const disposeActions = installCellActions();
+  const disposeKeys = installKeyboardDispatcher();
+  try {
+    await act(async () => {
+      render(<ResultsView />);
+    });
+    fireEvent.click(screen.getByRole("button", { name: "Add Row" }));
+    const cells = screen.getAllByRole("gridcell");
+    fireEvent.mouseDown(cells[2]!, { button: 0 });
+    fireEvent.paste(screen.getByRole("grid"), { clipboardData: { getData: () => "3\tCara" } });
+    fireEvent.mouseDown(cells[3]!, { button: 0 });
+    fireEvent.keyDown(screen.getByRole("grid"), { key: "Backspace", metaKey: true, shiftKey: true });
+    await act(async () => {
+      fireEvent.click(screen.getByRole("button", { name: "Submit" }));
+    });
+    expect(backend.applyEdits.mock.calls[0]?.[3]).toEqual([{ kind: "insert", values: [{ column: "id", value: "3" }] }]);
+  } finally {
+    disposeKeys();
+    disposeActions();
+  }
 });

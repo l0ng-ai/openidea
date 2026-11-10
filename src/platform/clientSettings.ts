@@ -10,6 +10,8 @@ export const CLIENT_SETTINGS_KEYS = [
   "notifications",
   "general.reopenLastProject",
   "general.confirmExit",
+  "general.closeWithoutWelcome",
+  "general.closeTabsWithWindow",
   "general.openProjectIn",
   "general.updateSource",
   "general.autoCheckUpdates",
@@ -25,6 +27,7 @@ export const CLIENT_SETTINGS_KEYS = [
   "editor.colorOverrides",
   "editor.customSchemes",
   "editor.semanticHighlighting",
+  "editor.docstringFormat",
   "editor.rainbowBrackets",
   "editor.softWrap",
   "editor.showWhitespace",
@@ -84,6 +87,7 @@ export const CLIENT_SETTINGS_KEYS = [
   "vcs.git.pushDialogOnlyProtected",
   "vcs.git.combineStashAndShelf",
   "vcs.commit.nonModal",
+  "vcs.commit.doubleClickOpensDiff",
   "vcs.commit.showRightMargin",
 ] as const;
 

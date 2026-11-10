@@ -22,15 +22,34 @@
   background: var(--border);
 }
 .sectionBody {
-  display: flex;
-  flex-direction: column;
   padding-left: 18px;
+}
+.formGroup {
+  display: grid;
+  grid-template-columns: fit-content(45%) minmax(0, 1fr);
+  column-gap: var(--space-2);
+  min-width: 0;
+}
+.formGroup > * {
+  grid-column: 1 / -1;
+  min-width: 0;
+}
+.formGroup > .row,
+.formGroup > .formGroup {
+  grid-template-columns: subgrid;
+}
+.formGroup > .stacked,
+.formGroup > .toggleRow {
+  grid-template-columns: minmax(0, 1fr);
+}
+.indented {
+  padding-left: 20px;
 }
 
 .row {
   display: grid;
   grid-template-columns: max-content minmax(0, 1fr);
-  align-items: center;
+  align-items: start;
   column-gap: 8px;
   min-height: 28px;
   padding: 2px 6px;
@@ -49,7 +68,11 @@
 }
 .label {
   color: var(--fg);
+  padding-top: max(0px, calc((var(--h-field) - 1.4em) / 2));
   white-space: nowrap;
+}
+.stacked > .label {
+  padding-top: 0;
 }
 .row:not(.stacked) > .label::after {
   content: ":";
@@ -60,11 +83,16 @@
 .control {
   display: flex;
   align-items: center;
+  flex-wrap: wrap;
   gap: 8px;
   min-width: 0;
+  min-height: var(--h-field);
+}
+.control > * {
+  max-width: 100%;
 }
 .hint {
-  grid-column: 1 / -1;
+  grid-column: 2;
   color: var(--fg-subtle);
   font-size: var(--fs-small);
   line-height: 1.4;
@@ -75,7 +103,11 @@
   min-height: 26px;
 }
 .toggleHint {
+  grid-column: 1 / -1;
   padding-left: 20px;
+}
+.stacked > .hint {
+  grid-column: 1 / -1;
 }
 
 .number {
@@ -91,11 +123,17 @@
   color: var(--fg-subtle);
 }
 .select {
-  min-width: 180px;
-  max-width: 320px;
+  min-width: min(180px, 100%);
+  max-width: min(320px, 100%);
 }
 .text {
   width: 240px;
+}
+
+@container settings-content (max-width: 480px) {
+  .label {
+    white-space: normal;
+  }
 }
 
 .swatches {

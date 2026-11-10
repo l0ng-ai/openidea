@@ -197,6 +197,7 @@ fn plugin_completion(item: ide_plugin::CompletionItem) -> CompletionItem {
     CompletionItem {
         label: item.label,
         label_detail: None,
+        label_description: None,
         detail: item.detail,
         kind,
         documentation: item.documentation.map(|value| Markup { kind: "markdown".into(), value }),
@@ -545,43 +546,83 @@ pub async fn lsp_virtual_document(host: &Host, window: &str, uri: String) -> Ide
     if uri.starts_with("git-revision:") {
         return crate::ops::vcs::revision_virtual_document(host, window, &uri).await;
     }
-    if uri.starts_with("openidea-target:") && uri.contains("/0/") {
-        host.require_trust(window)?;
-        let project = host.project(window)?;
-        let plugins =
-            host.plugin_host().ok_or_else(|| IdeError::unavailable("container document reader is unavailable"))?;
-        for registration in plugins.run_targets(&project.root) {
-            let prefix = format!(
-                "openidea-target://{}/0/",
-                percent_encoding::utf8_percent_encode(&registration.id, percent_encoding::NON_ALPHANUMERIC)
-            );
-            if let Some(suffix) = uri.strip_prefix(&prefix) {
-                let path = ide_core::path_mapping::file_path(&format!("file:///{suffix}"))
-                    .filter(|p| p.starts_with('/') && !p.split('/').any(|s| s == ".." || s == "."))
-                    .ok_or_else(|| IdeError::invalid("invalid container document URI"))?;
-                let container_root = registration
-                    .target
-                    .container_root
-                    .ok_or_else(|| IdeError::invalid("invalid container document URI"))?;
-                let target = ide_language::ServerTarget {
-                    id: registration.id,
-                    origin: None,
-                    project_root: project.root.clone(),
-                    mapping: ide_core::path_mapping::PathMapping::new(&project.root.to_string_lossy(), &container_root),
-                    container_root,
-                };
-                let title = std::path::Path::new(&path)
-                    .file_name()
-                    .map(|s| s.to_string_lossy().into_owned())
-                    .unwrap_or_default();
-                let language_id = host.languages.detect(std::path::Path::new(&path), None);
-                let text = host.blocking(move || super::lsp_target::read(&plugins, &target, &path)).await?;
-                return Ok(VirtualDocument { uri, text, title, language_id, description: None, decompiled: false });
-            }
-        }
-        return Err(IdeError::unavailable("plugin run target is no longer available"));
-    }
     host.project(window)?.lsp.virtual_document(&uri).await
+}
+
+/// Whether this class belongs to the project's Maven local repository.
+pub async fn lsp_can_download_sources(host: &Host, window: &str, uri: String) -> IdeResult<bool> {
+    let project = host.project(window)?;
+    if !project.is_trusted() {
+        return Ok(false);
+    }
+    let Some(jar) = ide_lsp::LspManager::library_archive(&uri) else { return Ok(false) };
+    host.blocking(move || {
+        let settings = project.settings.effective();
+        let repository = ide_sdk::apply::maven_local_repository(&project.root, &settings)
+            .or_else(ide_build::maven::default_local_repo);
+        Ok(repository.is_some_and(|repo| ide_build::maven::sources::artifact(&jar, &repo).is_some())
+            && ide_build::maven::has_projects(&project.root, &settings.languages.java.maven))
+    })
+    .await
+}
+
+/// Download with the project's Maven configuration, or attach an archive selected by the user.
+pub async fn lsp_library_sources(
+    host: &Host,
+    window: &str,
+    request: RequestId,
+    uri: String,
+    pos: Pos,
+    sources: Option<std::path::PathBuf>,
+) -> IdeResult<Option<Location>> {
+    host.require_trust(window)?;
+    let project = host.project(window)?;
+    let cancel = host.begin_project_request(window, request);
+    let result = async {
+        let sources = match sources {
+            Some(sources) => Some(sources),
+            None => {
+                let jar = ide_lsp::LspManager::library_archive(&uri)
+                    .ok_or_else(|| IdeError::invalid("not a library class"))?;
+                let project = project.clone();
+                let cancel = cancel.clone();
+                host.blocking(move || {
+                    let settings = project.settings.effective();
+                    let repository = ide_sdk::apply::maven_local_repository(&project.root, &settings)
+                        .or_else(ide_build::maven::default_local_repo)
+                        .ok_or_else(|| IdeError::unavailable("Maven local repository is unavailable"))?;
+                    let artifact = ide_build::maven::sources::artifact(&jar, &repository)
+                        .ok_or_else(|| IdeError::invalid("not an artifact in the Maven local repository"))?;
+                    let model = super::build::load(&project.root, &project.build_cache_dir(), &settings);
+                    let maven = model.maven.ok_or_else(|| IdeError::unavailable("no Maven project"))?;
+                    let owns = |p: &&ide_build::maven::MavenProject| {
+                        p.dependencies.iter().any(|d| d.group_id == artifact.group && d.artifact_id == artifact.name)
+                    };
+                    let mut owner = maven
+                        .projects
+                        .iter()
+                        .find(owns)
+                        .or_else(|| maven.projects.first())
+                        .cloned()
+                        .ok_or_else(|| IdeError::unavailable("no Maven project"))?;
+                    let profiles =
+                        settings.languages.java.maven.profiles(&ide_build::maven_profiles(&project.build_cache_dir()));
+                    if !profiles.is_empty() {
+                        owner.options.push(format!("-P{}", profiles.join(",")));
+                    }
+                    ide_build::maven::sources::download(&project.root, &owner, &artifact, &repository, &cancel)
+                })
+                .await?
+            }
+        };
+        match sources {
+            Some(sources) => project.lsp.library_source_location(&uri, sources, pos, &cancel).await,
+            None => Ok(None),
+        }
+    }
+    .await;
+    host.end_request(request);
+    result
 }
 
 /// Opens compiled classes through JDT, with project source taking priority on disk.
@@ -822,6 +863,8 @@ fn plugin_code_action(plugin: &str, root: &Path, a: ide_plugin::CodeAction) -> C
         .and_then(|r| serde_json::to_value(r).ok());
     CodeAction {
         title: a.title,
+        diagnostics: Vec::new(),
+        original_diagnostics: None,
         kind: a.kind,
         is_preferred: a.preferred,
         disabled_reason,
@@ -843,12 +886,13 @@ fn plugin_file_edits(
     use ide_plugin::FileOperation;
     let confine = !a.operations.is_empty() || a.open.is_some();
     let confined = |path: &Path| ide_plugin::resolve_new_in_root(root, &path.to_string_lossy());
+    let writable = |path: &Path| ide_plugin::resolve_writable_in_root(root, &path.to_string_lossy());
     let mut files = Vec::new();
     let mut created_with_text = Vec::new();
     for operation in &a.operations {
         match operation {
             FileOperation::Create { path, text, overwrite } => {
-                let path = confined(path)?;
+                let path = writable(path)?;
                 files.push(FileEdit::Create { path: path.clone().into(), overwrite: *overwrite });
                 if !text.is_empty() {
                     let start = Range::point(Pos::new(0, 0));
@@ -869,7 +913,7 @@ fn plugin_file_edits(
         }
     }
     for (path, edits) in &a.edits {
-        let path = if confine { confined(path)? } else { path.clone() };
+        let path = if confine { writable(path)? } else { path.clone() };
         if created_with_text.contains(&path) {
             return Err("put the text of a created file in its `create`, not in an edit".into());
         }
@@ -1646,6 +1690,14 @@ pub(crate) fn register(d: &mut Dispatcher) {
         |c| async move { lsp_resolve_class_file(&c.host, &c.window, c.arg("path")?).await },
     );
     d.add("lsp_virtual_document", |c| async move { lsp_virtual_document(&c.host, &c.window, c.arg("uri")?).await });
+    d.add(
+        "lsp_can_download_sources",
+        |c| async move { lsp_can_download_sources(&c.host, &c.window, c.arg("uri")?).await },
+    );
+    d.add("lsp_library_sources", |c| async move {
+        lsp_library_sources(&c.host, &c.window, c.arg("request")?, c.arg("uri")?, c.arg("pos")?, c.arg("sources")?)
+            .await
+    });
     d.add("lsp_references", |c| async move {
         let on_partial = c.sender("onPartial")?;
         lsp_references(
@@ -2139,6 +2191,55 @@ mod tests {
             ["/app/_ide_helper_models.php", "/app/.phpstorm.meta.php"]
         );
         assert!(without_generated_helpers(Vec::new()).is_empty());
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn plugins_file_actions_confine_content_writes_and_preserve_link_entries() {
+        use ide_core::FileEdit;
+        use ide_plugin::{CodeAction, FileOperation};
+        let tmp = tempfile::tempdir().unwrap();
+        let root = tmp.path().join("proj");
+        std::fs::create_dir(&root).unwrap();
+        let root = dunce::canonicalize(root).unwrap();
+        let outside = tmp.path().join("outside.txt");
+        std::fs::write(&outside, "unchanged").unwrap();
+        std::fs::write(root.join("target.txt"), "inside").unwrap();
+        for (name, target) in [
+            ("outside", outside.clone()),
+            ("dangling", tmp.path().join("missing.txt")),
+            ("inside", root.join("target.txt")),
+        ] {
+            std::os::unix::fs::symlink(target, root.join(name)).unwrap();
+        }
+        let action = |operations, edits| CodeAction {
+            title: "Update files".into(),
+            kind: None,
+            preferred: false,
+            edits,
+            operations,
+            open: Some(root.join("target.txt")),
+            data: None,
+            file_action: true,
+        };
+        for name in ["outside", "dangling"] {
+            let create = FileOperation::Create { path: root.join(name), text: "text".into(), overwrite: true };
+            assert!(plugin_file_edits(&root, &action(vec![create], Vec::new())).is_err());
+            let edits = vec![(root.join(name), vec![TextEdit { range: Range::default(), new_text: "text".into() }])];
+            assert!(plugin_file_edits(&root, &action(Vec::new(), edits)).is_err());
+        }
+        let create = FileOperation::Create { path: root.join("inside"), text: "text".into(), overwrite: true };
+        let (files, _) = plugin_file_edits(&root, &action(vec![create], Vec::new())).unwrap();
+        assert!(matches!(&files[0], FileEdit::Create { path, .. } if **path == root.join("target.txt")));
+        let operations = vec![
+            FileOperation::Rename { from: root.join("outside"), to: root.join("dangling") },
+            FileOperation::Delete { path: root.join("outside") },
+        ];
+        let (files, _) = plugin_file_edits(&root, &action(operations, Vec::new())).unwrap();
+        assert!(matches!(&files[0], FileEdit::Rename { from, to }
+            if **from == root.join("outside") && **to == root.join("dangling")));
+        assert!(matches!(&files[1], FileEdit::Delete { path, .. } if **path == root.join("outside")));
+        assert_eq!(std::fs::read_to_string(outside).unwrap(), "unchanged");
     }
 
     #[test]

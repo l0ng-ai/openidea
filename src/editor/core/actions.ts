@@ -1,4 +1,5 @@
 /** Editor actions (ids from keymaps/intellij-macos.ts). */
+import { writeClipboardText } from "@/platform/clipboard";
 import { EditorSelection, type EditorState } from "@codemirror/state";
 import { EditorView } from "@codemirror/view";
 import { indentSelection, moveLineDown, moveLineUp } from "@codemirror/commands";
@@ -69,8 +70,7 @@ import { copyReferenceToClipboard, declaredName, qualifiedReference, referenceOf
 import { declarationChain } from "./view/outline";
 import { recordClipboard } from "./clipboardHistory";
 import { useDocMeta, useOutline } from "./model/document";
-import { fontZoom, setFontZoom, stepFontZoom } from "./cm/prefs";
-import { useEditorRegistry } from "@/editor/api";
+import { resetAllEditorsFontZoom, stepAllEditorsFontZoom } from "./cm/prefs";
 import { useProject } from "@/platform/project";
 import { call, commands } from "@/platform/ipc";
 import { editorPrefs } from "@/platform/editorSettings";
@@ -120,7 +120,7 @@ function stepSurfaceFontSize(delta: 1 | -1): void {
     if (cmEl) {
       const cmView = EditorView.findFromDOM(cmEl);
       if (cmView) {
-        stepFontZoom(cmView, delta);
+        stepAllEditorsFontZoom(cmView, delta);
         return;
       }
     }
@@ -128,7 +128,7 @@ function stepSurfaceFontSize(delta: 1 | -1): void {
 
   const slot = activeSlot();
   if (!slot?.view) return;
-  stepFontZoom(slot.view, delta);
+  stepAllEditorsFontZoom(slot.view, delta);
   if (!slot.view.hasFocus && !getContext().popupOpen) slot.view.focus();
 }
 
@@ -593,8 +593,7 @@ function copyPathReferencePopup(view: EditorView, slot: EditorSlot) {
 }
 
 function copyEditorPath(text: string) {
-  void navigator.clipboard
-    .writeText(text)
+  void writeClipboardText(text)
     .then(() => {
       recordClipboard(text);
       void executeAction("editor.showHint", { text: tx`Copied ${text}` });
@@ -898,8 +897,7 @@ export function registerEditorActions(): () => void {
       keywords: ["zoom", "font size", "mouse wheel"],
       when: "projectOpen",
       run: () => {
-        for (const ed of useEditorRegistry.getState().editors)
-          if (ed.view.state.field(fontZoom, false)) ed.view.dispatch({ effects: setFontZoom.of(0) });
+        resetAllEditorsFontZoom();
         if (typeof document !== "undefined") {
           resetSurfaceFontZoom();
         }
@@ -1009,12 +1007,7 @@ export function registerEditorActions(): () => void {
       when: "projectOpen",
       // ⌘↑ / ⌘↓ inside a popup (Search Everywhere's previous / next group) stay with it.
       keyWhen: "!popupOpen",
-      run: () => {
-        if (activeSlot()) return openNavBarPopup();
-        // No editor: the status bar breadcrumbs (StatusItems › Breadcrumbs) take focus.
-        const crumbs = document.querySelectorAll<HTMLButtonElement>('nav[aria-label="Breadcrumbs"] button');
-        crumbs[crumbs.length - 1]?.focus();
-      },
+      run: () => openNavBarPopup(),
     },
     {
       id: "navigate.lastEditLocation",

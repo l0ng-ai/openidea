@@ -1,6 +1,8 @@
+import { clearContext, setContext } from "@/platform/context";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import { registerActions } from "@/platform/actions";
 import { useProject } from "@/platform/project";
+import { useRemote } from "@/platform/remote";
 import { resolveMenuItems, type MenuItem } from "@/ui";
 import { registerMenuGroup } from "@/workbench/contributions";
 import { contextMenuItems, revealLabel } from "./contextMenu";
@@ -46,6 +48,8 @@ const OTHER_ACTIONS = [
   "vcs.annotate",
   "vcs.showDiff",
   "vcs.compareWithBranch",
+  "vcs.compareWithRevision",
+  "vcs.showCurrentRevision",
   "vcs.rollback",
   "vcs.push",
 ];
@@ -73,6 +77,7 @@ afterEach(() => {
   disposers.forEach((d) => d());
   useProject.setState({ project: null, settings: null });
   useProjectTree.setState({ root: null });
+  useRemote.setState({ session: null });
 });
 
 describe("project view context menu", () => {
@@ -82,6 +87,17 @@ describe("project view context menu", () => {
     const mixed = labels(contextMenuItems([node("/p/left", true), node("/p/a.txt")]));
     for (const label of ["Compare Directories", "Compare Files", "Compare With…"]) expect(mixed).not.toContain(label);
     expect(labels(contextMenuItems([node("/p/a.txt"), node("/p/b.txt")]))).toContain("Compare Files");
+  });
+
+  it("offers Git for repositories found below a non-Git project root", () => {
+    useProject.setState({ project: { name: "p", root: ROOT, trusted: true, isGit: false, settings: {} } as never });
+    expect(sub(contextMenuItems([node("/p/a.py")]), "Git")).toBeUndefined();
+    setContext("vcsAvailable", true);
+    try {
+      expect(sub(contextMenuItems([node("/p/a.py")]), "Git")).toContain("Commit File…");
+    } finally {
+      clearContext("vcsAvailable");
+    }
   });
 
   it("follows IDEA's order for a file", () => {
@@ -136,6 +152,29 @@ describe("project view context menu", () => {
       expect(sub(folder, "Mark Directory as")).toContain("Excluded");
     } finally {
       dispose();
+    }
+  });
+
+  it("hides the OS file manager in an SSH or dev-container window, whose files are not on this desktop", () => {
+    const library = { ...node("/root/.m2/lib.jar"), readOnly: true };
+    expect(sub(contextMenuItems([library]), "Open In")).toEqual([revealLabel()]);
+    for (const target of [
+      { kind: "ssh", config: "box" },
+      { kind: "devContainer", folder: "/Users/me/app", config: "" },
+    ] as const) {
+      useRemote.setState({ session: { target, root: ROOT, host: "h", os: "linux", commands: [] } });
+      expect(sub(contextMenuItems([node(`${ROOT}/src/a.py`)]), "Open In")).toEqual(["Terminal"]);
+      expect(labels(contextMenuItems([library]))).not.toContain("Open In");
+    }
+  });
+
+  it("offers file revision actions only for a single file", () => {
+    expect(sub(contextMenuItems([node("/p/a.py")]), "Git")).toEqual(
+      expect.arrayContaining(["Compare with Revision…", "Show Current Revision"]),
+    );
+    for (const nodes of [[node("/p/src", true)], [node("/p/a.py"), node("/p/b.py")]]) {
+      expect(sub(contextMenuItems(nodes), "Git")).not.toContain("Compare with Revision…");
+      expect(sub(contextMenuItems(nodes), "Git")).not.toContain("Show Current Revision");
     }
   });
 

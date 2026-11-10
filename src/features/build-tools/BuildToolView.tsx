@@ -1,4 +1,5 @@
 /** The Maven and Gradle tool windows: toolbar, status banner and the project tree. */
+import { writeClipboardText } from "@/platform/clipboard";
 import { useCallback, useEffect, useMemo, useState, type MouseEvent } from "react";
 import clsx from "clsx";
 import type { BuildTool, GradleModel, MavenModel, RunConfig } from "@/platform/ipc";
@@ -137,6 +138,7 @@ function Toolbar({ tool, selection }: { tool: BuildTool; selection: BuildNode[] 
       ) : (
         <IconButton icon="refresh" size="small" iconSize={16} action={`${tool}.reload`} />
       )}
+      {maven && <IconButton icon="folder-generated-source" size="small" iconSize={16} action="maven.generateSources" />}
       <IconButton icon="plus" size="small" iconSize={16} action={maven ? "maven.addProjects" : "gradle.linkProjects"} />
       <span className={styles.sep} />
       <IconButton
@@ -344,6 +346,12 @@ function BuildToolView({ tool }: { tool: BuildTool }) {
             void editorService().openFile(node.project.projectRoot ? node.project.pom : `${root}/${node.project.pom}`),
         },
         { kind: "action", action: "maven.reload", label: "Reload All Maven Projects" },
+        {
+          kind: "action",
+          action: "maven.generateSources",
+          arg: { pom: node.project.pom },
+          label: "Generate Sources and Update Folders",
+        },
         { kind: "action", action: "maven.executeGoal" },
         { kind: "action", action: "maven.analyzeDependencies", arg: { pom: node.project.pom } },
       );
@@ -377,7 +385,7 @@ function BuildToolView({ tool }: { tool: BuildTool }) {
     if (node.kind === "dependency") {
       const d = node.dependency;
       const coords = [d.groupId, d.artifactId, d.version].filter(Boolean).join(":");
-      items.push({ label: "Copy Coordinates", icon: "copy", run: () => void navigator.clipboard?.writeText(coords) });
+      items.push({ label: "Copy Coordinates", icon: "copy", run: () => void writeClipboardText(coords) });
     }
     if (items.length) showContextMenu({ x: e.clientX, y: e.clientY }, items);
   };

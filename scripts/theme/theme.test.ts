@@ -40,8 +40,8 @@ describe("theme token reference", () => {
     expect(() => themeTokenGroups(bad)).toThrow(/--b .*section comment/);
   });
 
-  it("is current in docs/plugins/themes.md (run pnpm gen:theme-docs)", () => {
-    const doc = read("docs/plugins/themes.md");
+  it("is current in plugins/themes.md (run pnpm gen:theme-docs)", () => {
+    const doc = read("plugins/themes.md");
     expect(withReference(doc, referenceMarkdown(groups))).toBe(doc);
   });
 });
@@ -80,6 +80,15 @@ describe("theme plugin template", () => {
 });
 
 describe("IntelliJ theme import", () => {
+  it("imports Python docstring tags and the OpenIDEA keyword extension", () => {
+    const scheme = convertIcls(`<scheme><attributes>
+      <option name="PY.DOC_COMMENT_TAG"><value><option name="FOREGROUND" value="123456"/></value></option>
+      <option name="OPENIDEA_pyDocstringKeyword"><value><option name="FOREGROUND" value="654321"/></value></option>
+      </attributes></scheme>`);
+    expect(scheme.tokens["--syn-python-docstring-tag"]).toBe("#123456");
+    expect(scheme.tokens["--syn-python-docstring-keyword"]).toBe("#654321");
+  });
+
   const themeJson = `{
     // comment
     "name": "Deep Sea",
@@ -148,6 +157,17 @@ describe("IntelliJ theme import", () => {
     expect(t.tokens["--border-tab-selected"]).toBe("#bd93f9");
     expect(t.tokens["--fg-completion-match"]).toBe("#ff79c6");
     expect(s).toBeNull();
+  });
+
+  it("maps the selection foreground colour (#2446)", () => {
+    const s = convertIcls(`<scheme name="Sel" version="142" parent_scheme="Default"><colors>
+      <option name="SELECTION_BACKGROUND" value="214283" />
+      <option name="SELECTION_FOREGROUND" value="112233" />
+    </colors></scheme>`);
+    expect(s.tokens).toMatchObject({
+      "--bg-editor-selection": "#214283",
+      "--fg-editor-selection": "#112233",
+    });
   });
 
   it("only targets tokens that exist in tokens.css", () => {

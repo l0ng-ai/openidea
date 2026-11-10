@@ -57,6 +57,27 @@ fn files(idx: &ProjectIndex, q: &str) -> Vec<String> {
     idx.find_files(q, 20).into_iter().map(|m| m.rel_path).collect()
 }
 
+#[test]
+fn exact_file_names_keep_all_source_candidates() {
+    let f = Fixture::new(&[
+        ("src/OtherOrders.kt", "package other"),
+        ("src/Orders.kt.bak", "backup"),
+        ("target/Orders.kt", "excluded"),
+        ("src/orders.kt", "different case"),
+    ]);
+    for i in 0..65 {
+        f.write(&format!("module{i}/Orders.kt"), &format!("package module{i}"));
+    }
+    let source = f.write("service/src/Orders.kt", "package com.example.orders");
+    let idx = f.open();
+    let candidates = idx.files_named("Orders.kt");
+    assert_eq!(candidates.len(), 66);
+    assert!(candidates.contains(&source));
+    assert!(candidates.iter().all(|path| path.file_name().unwrap() == "Orders.kt"));
+    assert_eq!(candidates, idx.files_named("Orders.kt"));
+    assert!(idx.files_named("Missing.kt").is_empty());
+}
+
 fn symbols(idx: &ProjectIndex, q: &str, filter: SymbolFilter) -> Vec<String> {
     idx.find_symbols(q, filter, 20).into_iter().map(|m| m.name).collect()
 }
@@ -508,6 +529,27 @@ fn css_selectors_are_found_by_exact_name() {
 }
 
 #[test]
+fn symbols_named_within_keeps_out_of_root_matches_from_evicting_a_root() {
+    let f = Fixture::new(&[
+        ("a/w.rs", "struct Decoder;\nstruct Decoder;\n"),
+        ("b/x.rs", "struct Decoder;\nstruct Decoder;\nstruct Decoder;\n"),
+        ("dep/b.rs", "struct Decoder;\n"),
+    ]);
+    let idx = f.open();
+    let own = f.root.join("a");
+    let dep = f.root.join("dep");
+    // Unfiltered, the cap fills in rel-path order — own root, then the out-of-root
+    // content root b/ — so dep/ is evicted before the caller's root filter runs.
+    let unfiltered = idx.symbols_named("Decoder", None, 3);
+    let unfiltered: Vec<&str> = unfiltered.iter().map(|m| m.rel_path.as_ref()).collect();
+    assert_eq!(unfiltered, vec!["a/w.rs", "a/w.rs", "b/x.rs"]);
+    let found: Vec<String> =
+        idx.symbols_named_within("Decoder", None, &[own, dep], 3).into_iter().map(|m| m.rel_path).collect();
+    assert_eq!(found, vec!["a/w.rs".to_string(), "a/w.rs".to_string(), "dep/b.rs".to_string()]);
+    assert!(idx.symbols_named_within("Decoder", None, &[f.root.join("none")], 3).is_empty());
+}
+
+#[test]
 fn content_roots_and_excludes_change_without_reopening() {
     let fx = Fixture::new(&[("src/main.rs", "fn alpha() {}\n"), ("src/gen/out.rs", "fn generated() {}\n")]);
     let shared = fx._dir.path().join("shared-lib");
@@ -728,4 +770,67 @@ fn persisted_symbols_do_not_load_through_escaping_symlink_ancestors() {
     assert!(idx.wait_idle(WAIT));
     assert!(symbols(&idx, "old_symbol", SymbolFilter::All).is_empty());
     assert_eq!(initial.lock()[0], 0, "unsafe cached symbols must never be published");
+}
+
+#[test]
+fn rule_changes_refresh_only_the_affected_index_subtree() {
+    for (rule, subtree) in [(".git/info/exclude", ""), ("sub/.gitignore", "sub"), ("sub/.ignore", "sub")] {
+        let fx = Fixture::new(&[
+            (".git/HEAD", "ref: refs/heads/main\n"),
+            ("sub/generated/file.ts", "export function generated() {}\n"),
+            ("sub/local.ts", "export function localOnly() {}\n"),
+            ("other/keep.ts", "export function keep() {}\n"),
+        ]);
+        fx.write(rule, "");
+        let idx = fx.open();
+        assert_eq!(files(&idx, "file.ts"), ["sub/generated/file.ts"]);
+        fx.write(rule, "generated/\nlocal.ts\n");
+        let dirs = [fx.root.join(subtree)];
+        idx.ignore_rules_changed(&dirs);
+        assert!(idx.wait_idle(WAIT));
+        assert!(files(&idx, "file.ts").is_empty(), "{rule}: ignored directory remained indexed");
+        assert_eq!(files(&idx, "local.ts"), ["sub/local.ts"]);
+        assert!(symbols(&idx, "localOnly", SymbolFilter::All).is_empty());
+        assert_eq!(files(&idx, "keep.ts"), ["other/keep.ts"]);
+
+        fx.write(rule, "");
+        idx.ignore_rules_changed(&dirs);
+        assert!(idx.wait_idle(WAIT));
+        assert_eq!(files(&idx, "file.ts"), ["sub/generated/file.ts"]);
+        assert_eq!(symbols(&idx, "localOnly", SymbolFilter::All), ["localOnly"]);
+        // The cached root matcher must also follow the rules for later watcher updates.
+        let fresh = fx.write("sub/generated/new.ts", "export function fresh() {}\n");
+        idx.update(&[fresh], &[]);
+        assert!(idx.wait_idle(WAIT));
+        assert_eq!(files(&idx, "new.ts"), ["sub/generated/new.ts"]);
+    }
+}
+
+#[test]
+fn repository_rule_changes_refresh_members_of_an_unindexed_container() {
+    let fx = Fixture::new(&[
+        (".git/HEAD", "ref: refs/heads/main\n"),
+        (".git/info/exclude", ""),
+        ("member/generated/item.txt", "x"),
+    ]);
+    let idx = ProjectIndex::open(
+        &fx.root,
+        &fx.cache,
+        IndexRoots { include_root: false, folders: vec![fx.root.join("member")] },
+        vec![],
+        Arc::new(LanguageRegistry::load(None).unwrap()),
+        Arc::new(Syntax::new()),
+        Arc::new(NullSink),
+    )
+    .unwrap();
+    assert!(idx.wait_idle(WAIT));
+    assert_eq!(files(&idx, "item.txt"), ["member/generated/item.txt"]);
+    fx.write(".git/info/exclude", "generated/\n");
+    idx.ignore_rules_changed(std::slice::from_ref(&fx.root));
+    assert!(idx.wait_idle(WAIT));
+    assert!(files(&idx, "item.txt").is_empty());
+    fx.write(".git/info/exclude", "");
+    idx.ignore_rules_changed(std::slice::from_ref(&fx.root));
+    assert!(idx.wait_idle(WAIT));
+    assert_eq!(files(&idx, "item.txt"), ["member/generated/item.txt"]);
 }

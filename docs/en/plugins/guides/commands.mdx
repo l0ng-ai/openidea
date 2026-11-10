@@ -1,0 +1,326 @@
+---
+title: "Commands and actions"
+description: "Declare commands, give them shortcuts, place them in menus and the status bar, and react to workbench events and commits."
+---
+
+A command is the basic unit of a code plugin: something the user can run. Every
+`[[contributes.commands]]` entry becomes an IDE action with the stable id
+`plugin.<plugin-id>.<command-id>`. Like a built-in action it shows in
+**Find Action** (`⌘⇧A` / `Ctrl+Shift+A`) and **Search Everywhere**, can be bound in
+**Settings › Keymap**, and can be placed in menus, toolbars and the status bar.
+
+Declared commands are live as soon as the plugin is enabled, **before** any plugin code
+loads. The code is instantiated the first time one of them runs (every command implies
+`on-command:<id>` activation), so a plugin with many commands costs nothing at start-up.
+See [Lifecycle](/en/plugins/lifecycle) for activation and idle reclaim.
+
+## Declare a command
+
+```toml
+[[contributes.commands]]
+id = "count"                          # [a-z0-9][a-z0-9._-]*
+title = "Word Tools: Count Words"
+category = "Word Tools"               # group in Find Action and the keymap editor
+when = "editorFocus"                  # optional enablement
+# icon = "run"                        # API 1.4: built-in icon name or a package SVG
+```
+
+| Field      | Required | Notes                                                                                                                                        |
+| ---------- | -------- | -------------------------------------------------------------------------------------------------------------------------------------------- |
+| `id`       | yes      | Unique in the plugin. The action id is `plugin.<plugin-id>.<id>`.                                                                            |
+| `title`    | yes      | 1–256 bytes. Translated through the plugin's `locales/<tag>.json`.                                                                           |
+| `category` | no       | Up to 256 bytes. Groups the command in Find Action and **Settings › Keymap**.                                                                |
+| `when`     | no       | A `when` clause (below). When it is false the command is disabled; menu entries show greyed out.                                             |
+| `icon`     | no       | API 1.4 (`engines.openidea = "^1.4"`). A built-in icon name or a package `.svg` path; used by toolbar menus (`editor.title`, `mainToolbar`). |
+
+### `when` clauses
+
+`when` uses the same expressions as built-in actions: `key`, `key == value`,
+`key != value`, `!`, `&&`, `||` and parentheses. Useful keys:
+
+- `editorFocus`: a text editor has focus.
+- `editorLangId == sql`: the focused editor's language id.
+- `workspaceContains:pom.xml`: the open project contains that exact path (relative to
+  the project root, no globs). In a workspace it is true when any project contains it,
+  and it updates as files change. An IDE that doesn't know the key treats it as false.
+- `plugin.<plugin-id>.<key>`: a key the plugin set itself with `host::set_context`
+  (below).
+
+## Run the command
+
+Implement [`Plugin::run_command`](https://github.com/l0ng-ai/openidea/blob/main/sdk/rust/openidea-plugin/src/lib.rs)
+(WIT export `commands.run`). `ctx` is the invoking window: `ctx.project()`,
+`ctx.editor()` and `ctx.selected_paths()`.
+
+```rust
+use openidea_plugin::{Error, Invocation, NotificationLevel, Plugin, host, register_plugin};
+
+#[derive(Default)]
+struct WordTools;
+
+impl Plugin for WordTools {
+    fn run_command(&mut self, id: &str, ctx: &Invocation, _arg: Option<&str>) -> Result<Option<String>, Error> {
+        let editor = ctx.editor().ok_or("no file is open")?;
+        match id {
+            "count" => {
+                let words = editor.document()?.text.split_whitespace().count();
+                host::notify(NotificationLevel::Info, "Word count", &format!("{words} words"));
+                Ok(None)
+            }
+            // Every selection (a cursor: empty) in one undoable change.
+            "shout" => {
+                editor.transform_selections(|s| s.to_uppercase())?;
+                Ok(None)
+            }
+            _ => Err(Error::NotFound(format!("command {id}"))),
+        }
+    }
+}
+
+register_plugin!(WordTools);
+```
+
+This needs `editor.read` and `editor.write` under `[capabilities]`
+([Capabilities](/en/plugins/capabilities)). The
+[String Tools](https://github.com/l0ng-ai/openidea/tree/main/plugins/official/string-tools)
+plugin is a complete example with 26 commands.
+
+What the result means:
+
+- `Ok(Some(text))` is shown to the user; `Ok(None)` shows nothing.
+- An error shows _"`<title>` failed: …"_ and the plugin keeps running. `"msg".into()` is
+  `Error::Failed`.
+- `Error::Cancelled` (the user gave up) and `Error::Denied` (a capability is missing) are
+  not counted as the plugin failing.
+
+### Arguments and selected files
+
+- `arg` is an optional string. It is `None` when the command runs from Find Action or a
+  shortcut, and set when another feature runs `plugin.<plugin-id>.<command-id>` with an
+  argument, or when a notification button, code lens or gutter action passes one.
+- `ctx.selected_paths()` lists the files and folders a Project view or editor tab menu ran
+  the command on (the argument is then the first of them); it is empty otherwise.
+- From `problems.context` and `searchResults.context` menus, `selected_paths()` holds the
+  problem's or match's file and `arg` is JSON `{"path": "…", "line": 0, "column": 0}`
+  (0-based line, UTF-16 column).
+
+### Limits
+
+A command call has a 5-second wall-clock budget and a CPU fuel budget. For longer work,
+open a task with `host::begin_task(title, cancellable)`: while it is open the call may run
+for 60 seconds, and each `report` or `is_cancelled` renews that budget. Dialogs
+(`host::pick`, `input`, `confirm`, …) don't count against the budget while they wait.
+
+## Keyboard shortcuts
+
+```toml
+[[contributes.keymaps]]
+command = "count"
+key = "Ctrl+Alt+C"
+mac = "Meta+Alt+C"        # optional; macOS uses `key` as written when it is missing
+```
+
+- Modifiers: `Meta`, `Ctrl`, `Alt`, `Shift`. Keys: `A`–`Z`, `0`–`9`, `F1`–`F24`, `Enter`,
+  `Escape`, `Tab`, `Space`, `Backspace`, `Delete`, `Insert`, `Home`, `End`, `PageUp`,
+  `PageDown`, `Up`, `Down`, `Left`, `Right`, `Minus`, `Equal`, `Comma`, `Period`, `Slash`,
+  `Semicolon`, `Quote`.
+- A chord is two strokes separated by a space: `Meta+K Meta+C`.
+- Every stroke except a function key needs `Ctrl`, `Alt` or `Meta`: plain keys are for typing.
+- Without `mac`, macOS gets `key` unchanged, so `Ctrl` stays `Ctrl`. Give `mac` with `Meta`
+  when you want `⌘`.
+- A plugin shortcut is a default below the IDE's: it is dropped when the keymap preset or
+  the user already uses that keystroke, or when the action already has a binding. The user
+  can rebind it in **Settings › Keymap**.
+
+## Menus
+
+```toml
+[[contributes.menus]]
+menu = "editor.context"
+command = "test-selection"
+when = "editorLangId == markdown"   # optional
+```
+
+| `menu`                  | Where                                                                         | API |
+| ----------------------- | ----------------------------------------------------------------------------- | --- |
+| `editor.context`        | Editor right-click menu                                                       | 1.0 |
+| `projectView.context`   | Project tool window right-click menu                                          | 1.0 |
+| `editorTab.context`     | Editor tab right-click menu                                                   | 1.0 |
+| `tools`                 | **Tools** in the main menu                                                    | 1.0 |
+| `viewItem.context`      | Right-click menu of the items of one of the plugin's own views (needs `view`) | 1.2 |
+| `commit.message`        | Toolbar above the commit message (Commit tool window and Commit dialog)       | 1.3 |
+| `editor.title`          | Actions area of the editor tab bar                                            | 1.4 |
+| `mainToolbar`           | Main toolbar                                                                  | 1.4 |
+| `problems.context`      | Right-click menu of a problem in the Problems tool window                     | 1.4 |
+| `searchResults.context` | Right-click menu of a search result                                           | 1.4 |
+
+Using a menu newer than 1.0 means declaring at least that API in `engines.openidea`.
+Every entry names a command the plugin declares. The menu's `when` applies alongside the
+command's own `when`.
+
+**Toolbar icons.** `editor.title`, `mainToolbar` and `commit.message` entries show an
+icon: the command's `icon`, else the plugin's manifest `icon`.
+
+**Submenus** (API 1.3). In a context menu (`*.context`), entries that name the same
+`submenu` are grouped under it in declaration order. A submenu with one visible entry
+shows it as a plain entry. The label is translated through the plugin's catalog.
+
+```toml
+[[contributes.menus]]
+menu = "editor.context"
+command = "arthas.watch"
+submenu = "Arthas"
+```
+
+**View item menus** (API 1.2). `viewItem.context` needs `view`, the id of one of the
+plugin's own views that its code renders as a `tree`, `list` or table (not a web view).
+Each command receives the item's key as its argument. Only the menu's `when` can test
+`viewItem` (the key) and `viewItemKind` (the key up to its first `:`, so `pod` for
+`pod:default/nginx`). For table rows the key is the decimal row index. See
+[Views and decorations](/en/plugins/guides/views).
+
+```toml
+[[contributes.menus]]
+menu = "viewItem.context"
+view = "pods"
+command = "kube.logs"
+when = "viewItemKind == pod"
+```
+
+## Status bar items
+
+```toml
+[[contributes.statusBar]]
+id = "branch"
+text = "main"              # 1–128 bytes; code can replace it
+tooltip = "Current branch" # up to 1 KiB
+command = "refresh"        # one of the plugin's commands, run on click
+align = "right"            # left or right (default right)
+priority = 100             # 0–1000
+```
+
+A declared item shows before the code runs. From code:
+
+- `host::set_status_item(id, &StatusItem { text, tooltip, command })` shows or updates an
+  item in every window (at most 8 per plugin; kept while the plugin is idle);
+  `remove_status_item(id)` removes it.
+- `host::set_window_status_item(id, item)` (API 1.4) overrides it in the invoking window
+  only; `remove_window_status_item(id)` falls back to the global item. Only valid from a
+  command or event of a window.
+
+## Context keys from code
+
+`host::set_context(key, value)` sets `plugin.<plugin-id>.<key>` for `when` clauses
+(`true`, a number or text up to 1024 bytes). Keys are 1–64 characters of
+`A-Za-z0-9_-`, at most 100 per plugin. A key set from a command or event applies to that
+window; one set outside any applies to every window, and a window's value wins. Keys
+survive a window reload and idle reclaim and are dropped when the plugin stops.
+
+```rust
+host::set_context("ready", true)?;   // when = "plugin.acme.word-tools.ready"
+```
+
+## Notifications with buttons
+
+`host::notify(level, title, body)` shows a balloon in the window the command or event
+came from (every window when there is none). `host::notify_with_actions` adds up to three
+buttons, each running one of the plugin's declared commands:
+
+```rust
+use openidea_plugin::{NotificationAction, NotificationLevel, host};
+
+let retry = NotificationAction::new("Retry", "check").argument("again");
+host::notify_with_actions(NotificationLevel::Warning, "Check failed", "The server did not answer.", &[retry])?;
+```
+
+API 1.5 adds `Project::notify(level, title, body, actions)`: a balloon only in a window of
+that project (the most recently focused one), also from scheduled or background work. If
+the project has closed it fails with `Error::NotFound`. Labels are at most 256 bytes and
+arguments 64 KiB; an undeclared command rejects the whole notification.
+
+## Running other commands
+
+`host::execute_command(id, arg)` (API 1.4, WIT `command-runner.execute`) runs a stable
+IDE action id or `plugin.<plugin-id>.<command-id>` in the invoking window. A plugin's own
+commands need no capability; IDE actions and other plugins' commands need the high-risk
+`ide.commands` capability. IDE actions return `None`; plugin commands return their result.
+Calls nest at most 8 deep and only from a command or event of a window.
+
+## Events
+
+Commands are one entry point; workbench events are the other. Subscribe with
+`host::subscribe(EventKind::FileSaved)` in `activate`, or declare
+`activation = ["on-event:file-saved"]` to be woken by the first one, then handle batches
+in `Plugin::handle_events(events, ctx)` (WIT `events.wit`, export `event-handler`).
+
+| Kind                 | Capability     | Delivered                                                              |
+| -------------------- | -------------- | ---------------------------------------------------------------------- |
+| `file-opened`        | `events`       | A file opens in an editor                                              |
+| `file-saved`         | `events`       | After the file is written                                              |
+| `file-closed`        | `events`       | API 1.4: an editor closes (JSON path string)                           |
+| `files-changed`      | `events`       | API 1.3: debounced created / modified / removed paths in open projects |
+| `editor-focused`     | `events`       | The focused editor changes                                             |
+| `vcs-changed`        | `events`       | A repository's state changed (commit, checkout, fetch…)                |
+| `settings-changed`   | `events`       | API 1.4: the plugin's changed setting keys                             |
+| `action-performed`   | `events.input` | An IDE action ran: id, title, source, shortcut                         |
+| `input-mode-changed` | `events.input` | API 1.4: Vim mode changes in the focused editor                        |
+| `scheduled`          | none           | The `on-schedule:<secs>` period elapsed                                |
+
+Events arrive in batches, oldest first, per window. An idle plugin collects them for 2
+seconds before it is woken. `host::subscribe_paths(kind, &["config/*.yaml"])` (API 1.3)
+filters `file-opened`, `file-saved` and `files-changed` by project-relative globs. Kinds
+newer than the SDK arrive as `Event::Other { kind, data }`; match the
+`#[non_exhaustive]` enum with a `_` arm. [Key Promoter](https://github.com/l0ng-ai/openidea/tree/main/plugins/official/key-promoter)
+(`action-performed`) and [Git Toolbox](https://github.com/l0ng-ai/openidea/tree/main/plugins/official/git-toolbox)
+(`on-schedule`, `vcs-changed`) are working examples.
+
+## Commits
+
+A plugin can act on the commit the user is preparing (API 1.3, `commit.wit`):
+
+- **A button above the message:** a `commit.message` menu entry.
+- **Read the draft:** `host::pending_commit()` (`vcs.read`) returns what Commit would
+  commit now: per file its repository, path, status and a `git diff` of only the included
+  changes (1 MiB in all, then `truncated`), plus the message, Amend and a `revision`.
+  Unsaved editors of those files are saved first; nothing is staged.
+- **Write the message:** `host::set_commit_message(revision, text)` (`vcs.write`) replaces
+  it only while the draft is still at `revision`; otherwise it fails with `Error::Stale`
+  and the user's text is kept.
+
+```rust
+let draft = host::pending_commit()?.ok_or("no repository")?;
+let message = ask_the_model(&draft.changes)?;
+host::set_commit_message(draft.revision, &message)?;
+```
+
+Both work from a command or event of a window in a trusted project.
+
+**Before-commit checks.** Each `[[contributes.commitChecks]]` (`id`, `title`) is listed in
+**Commit Options**, on by default. When the user commits, after the IDE's own checks, the
+IDE calls the `commit-checker` export. Register it with
+`register_plugin!(MyPlugin, commit_checks)` and implement
+`openidea_plugin::commit::CommitChecks`:
+
+```rust
+use openidea_plugin::commit::{CommitChecks, CommitProblem};
+use openidea_plugin::{CommitDraft, Error, Invocation};
+
+impl CommitChecks for MyPlugin {
+    fn check(&mut self, _check: &str, draft: &CommitDraft, _ctx: &Invocation) -> Result<Vec<CommitProblem>, Error> {
+        if draft.message.lines().next().is_some_and(|l| l.len() > 72) {
+            return Ok(vec![CommitProblem::new("The subject line is longer than 72 characters")]);
+        }
+        Ok(vec![])
+    }
+}
+```
+
+Problems stop the commit and show beside the message with the check's title until the
+user changes it or chooses **Commit Anyway**. A check that fails, times out or lacks
+`vcs.read` is reported as a problem too.
+
+## Related
+
+- [Manifest](/en/plugins/manifest) for the full `plugin.toml` reference.
+- [Views and decorations](/en/plugins/guides/views) for tool windows whose buttons run code.
+- [API reference](/en/plugins/api/index) for every host function.

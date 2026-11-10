@@ -43,7 +43,8 @@ export function EmptyEditor() {
                   <T>{h.label}</T>
                 )}
               </dt>
-              {keys && <dd className={styles.keys}>{keys}</dd>}
+              {/* Rendered even when unbound: the grid auto-places cells, so a missing one shifts every later row. */}
+              {h.action && <dd className={styles.keys}>{keys}</dd>}
             </div>
           );
         })}

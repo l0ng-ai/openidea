@@ -528,7 +528,17 @@ mod tests {
             for (step, name) in plan.steps.iter().zip(["java", "kotlin"]) {
                 assert_eq!(step.cwd, root.join(name));
                 assert_eq!(step.program, format!("{name}-mvnw"));
-                assert_eq!(step.args, ["-B", "-Dstyle.color=never", "-o", "-Peditor", "test-compile"]);
+                assert_eq!(
+                    step.args,
+                    [
+                        "-B",
+                        "-Dstyle.color=never",
+                        crate::maven::LOCAL_REPO_TRACKING_ARG,
+                        "-o",
+                        "-Peditor",
+                        "test-compile"
+                    ]
+                );
                 assert_eq!(step.env.get("JAVA_HOME").map(String::as_str), Some("/jdk"));
             }
         }

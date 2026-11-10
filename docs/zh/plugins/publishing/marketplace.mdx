@@ -1,0 +1,107 @@
+---
+title: "发布到市场"
+description: "默认插件市场如何构建，官方插件与社区插件的区别，以及如何通过社区登记仓库上架你的插件。"
+---
+
+IDE 默认的插件市场是最新 OpenIDEA release 附带的 `plugins-index.json`。用户在 **设置 › 插件 › 可用** 中浏览、按分类筛选，一键安装。其中有两类插件：
+
+|            | 官方插件                                                                                              | 社区插件                                                                         |
+| ---------- | ----------------------------------------------------------------------------------------------------- | -------------------------------------------------------------------------------- |
+| id         | `openidea.*`                                                                                          | 作者自己的发布者前缀，例如 `alice.*`                                             |
+| 源码       | OpenIDEA 仓库的 [`plugins/official/`](https://github.com/l0ng-ai/openidea/tree/main/plugins/official) | 作者自己的仓库                                                                   |
+| 构建与签名 | OpenIDEA 发布流程，使用官方密钥                                                                       | 作者本人，使用自己的密钥                                                         |
+| 上架方式   | 随每个版本发布                                                                                        | 登记仓库 [l0ng-ai/openidea-plugins](https://github.com/l0ng-ai/openidea-plugins) |
+| 定位       | 插件 API 的示例，随 API 演进保持可用                                                                  | 面向实际使用的插件                                                               |
+
+新的官方插件需要先开 issue 提议，它们要么满足通用需求，要么演示 API 的某一部分。如果一个插件需要新的扩展点，扩展点以单独的 pull request 提交到 OpenIDEA 仓库，插件本身则提交到登记仓库。
+
+## 社区索引如何到达用户
+
+1. 你在登记仓库开 pull request，新增或更新插件。
+2. 登记仓库的 CI 下载插件包、校验 SHA-256、用最新的 OpenIDEA release 运行 `openidea-plugin check`、用你的发布者公钥验证签名，然后发布它自己的 `index.json`。
+3. OpenIDEA 的 `plugins-index.yml` 工作流在一小时内把它合并进 release 的 `plugins-index.json`。
+4. IDE 每天读取一次索引（也可以在 **设置 › 插件** 的齿轮菜单中点 **重新扫描插件** 立即读取），并为每个插件提供它能加载的最新版本。
+
+## 上架插件
+
+<Steps>
+  <Step title="准备工具和密钥">
+    安装 `openidea-plugin`（见 [快速开始](/zh/plugins/quickstart)），并创建一次发布者密钥：
+
+    ```sh
+    openidea-plugin keygen alice.key
+    ```
+
+    它会打印你的公钥。妥善保管 `alice.key`。
+
+  </Step>
+  <Step title="命名、分类并签名">
+    在 `plugin.toml` 中把插件命名为 `<publisher>.<name>`，设置 `categories`，然后构建并签名：
+
+    ```sh
+    openidea-plugin build
+    openidea-plugin pack . --key alice.key --publisher alice
+    ```
+
+  </Step>
+  <Step title="发布插件包">
+    把 `alice.arthas-0.1.0.oiplugin` 附加到你仓库的某个 release，并记下它的 SHA-256：
+
+    ```sh
+    shasum -a 256 alice.arthas-0.1.0.oiplugin
+    ```
+
+  </Step>
+  <Step title="向登记仓库提交 pull request">
+    第一次需要在 `publishers/alice.toml` 中添加发布者：
+
+    ```toml
+    name = "Alice"
+    owners = ["alice"]                 # GitHub accounts that may change these entries
+    keys = ["<public key>"]            # add new keys here; older ones stay valid
+    revoked-keys = []                  # keys whose packages must no longer install
+    ```
+
+    再在 `plugins/alice.arthas.toml` 中添加插件：
+
+    ```toml
+    repository = "https://github.com/alice/openidea-arthas"
+
+    [[versions]]
+    version = "0.1.0"
+    package = "https://github.com/alice/openidea-arthas/releases/download/v0.1.0/alice.arthas-0.1.0.oiplugin"
+    sha256 = "<sha-256 of the package file>"
+    ```
+
+  </Step>
+</Steps>
+
+发布新版本就是再开一个 pull request，增加一个 `[[versions]]` 表。旧 IDE 还需要的旧版本请保留：每个版本都记录了它所需的插件 API，IDE 会安装它能加载的最新版本。索引对每种 API 要求只保留最新的一个版本。删除插件文件即下架，已安装的副本仍能继续使用。
+
+这些文件格式和规则以登记仓库的 [README](https://github.com/l0ng-ai/openidea-plugins#readme) 为准，规则摘要见 [审核规则与安全](/zh/plugins/publishing/policy)。
+
+## 分类
+
+在 `plugin.toml` 中最多设置三个：
+
+| 分类          | 适用于             |
+| ------------- | ------------------ |
+| `languages`   | 语言支持           |
+| `themes`      | 颜色主题           |
+| `icon-themes` | 文件图标主题       |
+| `linters`     | 检查器和格式化工具 |
+| `vcs`         | 版本控制           |
+| `ai`          | AI 功能            |
+| `frameworks`  | 框架支持           |
+| `tools`       | 其他工具           |
+| `other`       | 其他               |
+
+不写 `categories` 时，贡献了主题、图标主题或语言的插件归入对应分类，其他插件归入 `other`。
+
+## 图标
+
+在 `plugin.toml` 中设置 `icon`（以及可选的 `icon-dark`）：不超过 16 KiB 的 SVG，显示在 **设置 › 插件** 和插件市场中。生成索引时和 IDE 显示前都会净化（去掉脚本、外部引用和 `foreignObject`）。设置图标需要 `engines.openidea = "^1.2"`。不设置时使用通用插件图标。
+
+## 用户如何收到更新
+
+每日检查发现已安装插件有新版本时，IDE 会提示一次，并提供 **全部更新**。不要求新能力、且签名密钥相同（或由该密钥背书）的更新沿用已有授权直接安装；否则用户需要先确认。

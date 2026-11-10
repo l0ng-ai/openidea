@@ -18,6 +18,7 @@ use crate::types::{
 };
 use crate::wit_host::injections_bindings::exports::openidea::plugin::injections as wit_inj;
 use crate::wit_host::language_features_bindings::exports::openidea::plugin::language_features as wit_lf;
+use crate::wit_host::run_target_validation_bindings::exports::openidea::plugin::run_target_validation as wit_rtv;
 use crate::wit_host::{
     bindings, commit_checks_bindings, details_bindings, endpoints_bindings, file_actions_bindings, hover_bindings,
     indexing_bindings, inlay_bindings, providers_bindings, semantic_bindings, syntax_bindings, views_bindings,
@@ -102,6 +103,12 @@ pub trait HostApi: Send + Sync {
     fn mcp_stdio_command(&self, client: &str) -> Option<Vec<String>> {
         let _ = client;
         None
+    }
+    /// What other plugins contributed to `point`, as (plugin id, JSON). Only the
+    /// plugin that declares the point may read it.
+    fn extension_contributions(&self, point: &str) -> Result<Vec<(String, String)>, HostError> {
+        let _ = point;
+        Err(HostError::NotFound("extension points are unavailable on this host".into()))
     }
 
     /// Registers a project-scoped wrapper after validating its process grant and pin.
@@ -418,6 +425,21 @@ pub trait HostApi: Send + Sync {
     fn publish_diagnostics(&self, path: &Path, items: Vec<ide_core::Diagnostic>) -> Result<(), HostError>;
     /// Performs `request` (its host is granted), filling in secret placeholders.
     fn fetch(&self, request: HttpRequest, cancel: &CancellationToken) -> Result<HttpResponse, HostError>;
+    /// The `net:ask` answer for a request to HTTPS host `host` of this plugin
+    /// (`subject`): `Some(true)` allowed and remembered (a host the user
+    /// already allowed connects without asking again, also in the background),
+    /// `Some(false)` allowed for this request only, `None` refused — also when
+    /// nobody could be asked (`client` is `None` outside commands and native view actions).
+    fn net_ask(
+        &self,
+        subject: &ide_extension::ledger::Subject,
+        client: Option<&str>,
+        host: &str,
+        cancel: &CancellationToken,
+    ) -> Result<Option<bool>, HostError> {
+        let _ = (subject, client, host, cancel);
+        Ok(None)
+    }
     fn secret_is_set(&self, name: &str) -> bool;
 
     /// Stores or deletes a secret declared by this plugin; never returns its value.
@@ -795,10 +817,12 @@ pub struct StoreData {
     stderr_seen: usize,
     pub(crate) plugin_id: String,
     pub(crate) granted: Vec<Capability>,
+    pub(crate) subject: ide_extension::ledger::Subject,
     pub(crate) host: Arc<dyn HostApi>,
     pub(crate) invocation: Invocation,
     /// The running call is a command or an event.
     pub(crate) interactive: bool,
+    pub(crate) net_interactive: bool,
     /// Editor window for pick, pick-many, input and confirm during action resolution.
     pub(crate) action_prompt_client: Option<String>,
     /// Tasks begun by the running call and not ended yet.
@@ -912,6 +936,9 @@ pub struct RuntimeSetup {
     pub version: String,
     /// Capabilities granted to the plugin.
     pub granted: Vec<Capability>,
+    /// Whose grant this is (installed id, or the package directory of a
+    /// linked or project plugin): what `net:ask` answers are remembered for.
+    pub subject: ide_extension::ledger::Subject,
     pub host: Arc<dyn HostApi>,
     pub limits: Limits,
 }
@@ -925,6 +952,7 @@ pub struct Runtime {
 
 /// What the component exports: the `plugin` world, plus optional interfaces.
 struct Exports {
+    run_target_validation: Option<wit_rtv::Guest>,
     language_features: Option<wit_lf::Guest>,
     injections: Option<wit_inj::Guest>,
     plugin: bindings::Plugin,
@@ -971,6 +999,10 @@ fn event_to_wit(e: WorkbenchEvent) -> wit_events::Event {
         WorkbenchEvent::SettingsChanged(keys) => wit_events::Event::Other(wit_types::Extension {
             kind: "settings-changed".into(),
             data: serde_json::to_string(&keys).expect("keys serialize"),
+        }),
+        WorkbenchEvent::ExtensionsChanged(points) => wit_events::Event::Other(wit_types::Extension {
+            kind: "extensions-changed".into(),
+            data: serde_json::to_string(&points).expect("points serialize"),
         }),
         WorkbenchEvent::InputModeChanged(mode) => wit_events::Event::Other(wit_types::Extension {
             kind: "input-mode-changed".into(),
@@ -1020,9 +1052,11 @@ impl Runtime {
             stderr_seen: 0,
             plugin_id: setup.plugin_id,
             granted: setup.granted,
+            subject: setup.subject,
             host: setup.host,
             invocation: Invocation::default(),
             interactive: false,
+            net_interactive: false,
             action_prompt_client: None,
             open_tasks: Vec::new(),
             last_report: None,
@@ -1062,6 +1096,7 @@ impl Runtime {
         let endpoint_indices = wit_endpoints::GuestIndices::new(&pre).ok();
         let configs_indices = wit_configs::GuestIndices::new(&pre).ok();
         let tests_indices = wit_tests::GuestIndices::new(&pre).ok();
+        let validation_indices = wit_rtv::GuestIndices::new(&pre).ok();
         let lf_indices = wit_lf::GuestIndices::new(&pre).ok();
         let inj_indices = wit_inj::GuestIndices::new(&pre).ok();
         let mcp_indices =
@@ -1073,6 +1108,8 @@ impl Runtime {
         let test_results = tests_indices.map(|i| i.load(&mut store, &instance)).transpose().map_err(api_hint)?;
         let language_features = lf_indices.map(|i| i.load(&mut store, &instance)).transpose().map_err(api_hint)?;
         let injections = inj_indices.map(|i| i.load(&mut store, &instance)).transpose().map_err(api_hint)?;
+        let run_target_validation =
+            validation_indices.map(|i| i.load(&mut store, &instance)).transpose().map_err(api_hint)?;
         let plugin = plugin_indices.load(&mut store, &instance).map_err(api_hint)?;
         let syntax = match syntax_indices {
             Some(indices) => Some(indices.load(&mut store, &instance).map_err(api_hint)?),
@@ -1125,6 +1162,7 @@ impl Runtime {
         Ok(Self {
             store,
             exports: Exports {
+                run_target_validation,
                 language_features,
                 injections,
                 plugin,
@@ -1147,6 +1185,36 @@ impl Runtime {
             limits: setup.limits,
             version: setup.version,
         })
+    }
+
+    pub fn has_run_target_validation(&self) -> bool {
+        self.exports.run_target_validation.is_some()
+    }
+
+    /// Missing optional validators allow the launch without a guest call.
+    pub fn validate_run_target(
+        &mut self,
+        root: String,
+        target: String,
+        launch: crate::RunTargetLaunch,
+        timeout: Duration,
+    ) -> Result<Result<(), String>, CallError> {
+        if self.exports.run_target_validation.is_none() {
+            return Ok(Ok(()));
+        }
+        let invocation = Invocation { workspace_root: Some(root.clone().into()), ..Default::default() };
+        let launch = wit_rtv::LaunchInfo {
+            operation: match launch.operation {
+                crate::RunTargetOperation::Run => wit_rtv::Operation::Run,
+                crate::RunTargetOperation::Test => wit_rtv::Operation::Test,
+            },
+            program: launch.program,
+            cwd: launch.cwd,
+        };
+        self.call(invocation, timeout, |e, store| {
+            e.run_target_validation.as_ref().unwrap().call_validate(store, &root, &target, &launch)
+        })
+        .map(|r| r.map_err(|message| clip(message, 4096)))
     }
 
     /// Complete configurations from the optional API 1.4 export.
@@ -1600,6 +1668,7 @@ impl Runtime {
         let result = self.call(invocation, self.limits.timeout, |e, store| {
             let ctx = store.data_mut().new_invocation()?;
             store.data_mut().interactive = true;
+            store.data_mut().net_interactive = true;
             let r = e.plugin.openidea_plugin_commands().call_run(
                 &mut *store,
                 id,
@@ -1725,10 +1794,12 @@ impl Runtime {
         if self.exports.views.is_none() {
             return Err(CallError::missing_export("view-provider"));
         }
+        let net_interactive = !matches!(&event, ViewEvent::Message { .. });
         let event = event_to_wit_view(event);
         let result = self.call(invocation, self.limits.timeout, |e, store| {
             let ctx = store.data_mut().new_invocation()?;
             store.data_mut().interactive = true;
+            store.data_mut().net_interactive = net_interactive;
             let views = e.views.as_ref().expect("checked");
             let r = views.call_handle(&mut *store, view, &event, wasmtime::component::Resource::new_borrow(ctx.rep()));
             store.data_mut().drop_invocation(ctx);
@@ -1780,6 +1851,7 @@ impl Runtime {
         let data = self.store.data_mut();
         data.invocation = Invocation::default();
         data.interactive = false;
+        data.net_interactive = false;
         data.action_prompt_client = None;
         // Tasks don't outlive the call that began them.
         for id in std::mem::take(&mut data.open_tasks) {

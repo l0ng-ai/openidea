@@ -30,7 +30,8 @@
     "e2e": "playwright test",
     "perf": "node perf/run.ts",
     "perf:rust": "node perf/rust.ts",
-    "release:prepare": "node scripts/release-prepare.ts"
+    "release:prepare": "node scripts/release-prepare.ts",
+    "nightly:prepare": "node scripts/nightly-prepare.ts"
   },
   "simple-git-hooks": {
     "pre-commit": "pnpm lint-staged"
@@ -78,6 +79,7 @@
     "marked": "^18.1.1",
     "mermaid": "12.1.0",
     "react": "^19.1.0",
+    "react-colorful": "5.6.1",
     "react-dom": "^19.1.0",
     "react-resizable-panels": "^4.14.6",
     "zustand": "^5.0.15"

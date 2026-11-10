@@ -195,6 +195,7 @@ export function nodeMenu(n: DbNode | null): MenuItem[] {
     case "foreignKey":
       return [refresh, sep, { label: "Navigation", submenu: [act("db.goToReferencedTable", n), act("db.goToDdl", n)] }];
     case "routine":
+    case "package":
     case "sequence":
     case "trigger":
       return [

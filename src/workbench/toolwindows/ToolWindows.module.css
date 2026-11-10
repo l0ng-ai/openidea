@@ -133,10 +133,10 @@
   grid-area: gap-bottom;
 }
 .gap[aria-orientation="vertical"] {
-  cursor: col-resize;
+  cursor: ew-resize;
 }
 .gap[aria-orientation="horizontal"] {
-  cursor: row-resize;
+  cursor: ns-resize;
 }
 /* A slightly wider hit area than the gap itself. */
 .gap::before {
@@ -209,7 +209,7 @@
   flex: none;
   width: 0;
   outline: none;
-  cursor: col-resize;
+  cursor: ew-resize;
 }
 .stripeHandle::before {
   content: "";

@@ -1,0 +1,162 @@
+---
+title: "数据库"
+description: "连接 SQL 数据库、浏览架构、在查询控制台中执行查询，以及查看、编辑、导入和导出数据。"
+---
+
+**数据库** 工具窗口可以连接 SQLite、PostgreSQL、MySQL/MariaDB、Microsoft SQL Server、Oracle 和 ClickHouse，以及兼容这些协议的数据库。驱动内置在 IDE 中，不需要下载 JDBC 驱动。
+
+通过 **工具 › 数据库** 或 **视图 › 工具窗口 › 数据库** 打开。**工具** 菜单中还有 **新建数据源…** 和 **Open Query Console**（打开查询控制台）。
+
+## 支持的数据库
+
+**新建 › 数据源** 中提供以下预设：
+
+| 引擎       | 预设                                                                                         |
+| ---------- | -------------------------------------------------------------------------------------------- |
+| PostgreSQL | PostgreSQL、Amazon Redshift、CockroachDB、Greenplum、Neon、Supabase、TimescaleDB、YugabyteDB |
+| MySQL      | MySQL、MariaDB、Amazon Aurora MySQL、OceanBase (MySQL mode)、SingleStore、StarRocks、TiDB    |
+| SQL Server | Microsoft SQL Server                                                                         |
+| Oracle     | Oracle 19 及以上（内置 thin 驱动，无需客户端库）                                             |
+| ClickHouse | ClickHouse（通过 HTTP）                                                                      |
+| SQLite     | SQLite                                                                                       |
+
+预设会填好默认端口，必要时还会设置 SSL（例如 Redshift、Neon 和 Supabase 要求 SSL）。
+
+## 添加数据源
+
+在数据库工具窗口中点击 **+**（或在窗口内按 `⌘N` / `Alt+Insert`），然后选择：
+
+- **数据源 ›** 上表中的某个预设。
+- **从文件创建数据源…**：打开一个 SQLite 文件。
+- **从 URL 创建数据源…**：粘贴 `postgresql://user@localhost:5432/db` 这样的 URL。也接受 `mysql://`、`mariadb://`、`sqlserver://`、`oracle://`、`clickhouse://`、`sqlite:path` 以及 `jdbc:` 开头的 URL。
+- **从剪贴板导入**：从剪贴板读取连接 URL。
+
+数据源对话框顶部有名称、可选的 **颜色：**（给树节点和控制台标签上色）、**全局**（在所有项目中可用）和注释，下面是这些标签页：
+
+<AccordionGroup>
+  <Accordion title="常规">
+    **驱动程序：**、**主机：**、**端口:**、**用户：**、**密码：**（可勾选 **保存密码**）、**数据库：** 和 **URL：**。修改 URL 会同步填写上面的字段，反之亦然。把 **连接类型：** 设为 **仅 URL** 时只用 URL 连接。SQLite 改为 **文件：** 字段，文件必须已存在。
+
+    **测试连接** 会显示服务器版本或错误信息。
+
+  </Accordion>
+  <Accordion title="选项">
+    - **只读**：在数据库支持时于会话级别禁止写入（PostgreSQL、MySQL、SQLite、Oracle、ClickHouse），同时禁用表格编辑。
+    - **事务控制：** **自动** 或 **手动**（ClickHouse 只能自动）。
+    - **默认架构：**（PostgreSQL 的 `search_path`）或 **当前模式：**（Oracle）。
+    - **时区：**、保持活动查询的间隔，以及空闲多少秒后 **自动断开连接**。
+    - **单数据库模式**（PostgreSQL）：只显示配置的数据库。
+    - **启动脚本:**：每次新建连接时执行。
+  </Accordion>
+  <Accordion title="SSH/SSL">
+    **使用 SSH 隧道**：选择已保存的 SSH 配置，或自定义字段（主机或 `~/.ssh/config` 别名、端口、用户，以及 **OpenSSH 配置和身份验证代理**、**密码** 或 **密钥对** 认证）。
+
+    SSL **模式：** 可选 **禁用**、**首选**、**必需**、**验证 CA**、**完全验证**，并可指定 **CA 文件：**、**客户端证书文件：** 和 **客户端密钥文件：**。SQLite 没有这个标签页。
+
+  </Accordion>
+  <Accordion title="架构">
+    选择树中显示哪些数据库（PostgreSQL）和架构：全部、勾选的列表，或使用 `*` 和 `?` 的名称模式。**从服务器加载名称** 会获取列表。**对象筛选：** 按名称过滤表、视图、例程和序列。**显示内部系统架构** 和 **显示模板数据库**（PostgreSQL）默认关闭。
+  </Accordion>
+  <Accordion title="高级">
+    以名称/值形式设置驱动属性，例如 `statement_timeout`（PostgreSQL）、`sql_mode`（MySQL，作为会话变量设置）、`journal_mode`（SQLite pragma）、`NLS_DATE_FORMAT`（Oracle）、`max_threads`（ClickHouse）。所有驱动都支持 `connect_timeout`（秒）。
+  </Accordion>
+</AccordionGroup>
+
+### 配置和密码保存在哪里
+
+- 项目数据源：项目中的 `.openidea/data-sources.toml`。
+- 全局数据源：IDE 数据目录下的 `data-sources.toml`（见 [数据目录](/zh/reference/data-directories)）。
+- 密码从不写入这些文件。保存的密码放在操作系统凭据存储中（钥匙串、Windows 凭据管理器或 Secret Service）；未保存的密码只在本次会话的内存中，连接时会询问。
+
+## 浏览数据库
+
+树的结构为 数据源 › 数据库（PostgreSQL）› 架构 › `tables`、`views`、`materialized views`、`routines`、`sequences`。表下面有 `columns`、`keys`、`foreign keys`、`indexes` 和 `triggers`。节点在展开时才加载。在工具窗口的选项菜单中打开 **分别显示过程和函数** 可以把 `routines` 拆开。
+
+双击表会编辑其数据，双击数据源会打开它的控制台，双击例程、序列或触发器会显示 DDL。在 **过滤对象** 中输入文字可以过滤树。
+
+| 操作                            | macOS            | Windows/Linux      |
+| ------------------------------- | ---------------- | ------------------ |
+| 新建…（数据源、控制台、表、列） | `⌘N`             | `Alt+Insert`       |
+| 数据源属性…                     | `⇧Enter`         | `Shift+Enter`      |
+| 刷新                            | `⌘R`             | `Ctrl+F5`          |
+| 停用（断开连接）                | `⌘F2`            | `Ctrl+F2`          |
+| 编辑数据                        | `F4`             | `F4`               |
+| 转到 DDL                        | `⌘B`             | `Ctrl+B`           |
+| 快速文档                        | `F1`             | `Ctrl+Q`           |
+| 跳转到查询控制台…               | `⌘⇧F10`          | `Ctrl+Shift+F10`   |
+| 重命名…                         | `⇧F6`            | `Shift+F6`         |
+| 修改表…                         | `⌘F6`            | `Ctrl+F6`          |
+| 删除…                           | `Delete` 或 `⌘⌫` | `Delete`           |
+| 复制引用                        | `⌘⌥⇧C`           | `Ctrl+Alt+Shift+C` |
+| 复制（数据源）                  | `⌘D`             | `Ctrl+D`           |
+| 生成 DDL 到剪贴板               | `⌘⌥⇧G`           | `Ctrl+Alt+Shift+G` |
+| 生成 DDL 到查询控制台           | `⌘⌥⇧B`           | `Ctrl+Alt+Shift+B` |
+
+这些快捷键在数据库树获得焦点时生效。右键菜单中还有 **截断…**、**运行 SQL 脚本…**（执行某个 `.sql` 文件中的所有语句）、**从文件导入数据…**、**转到引用的表**（外键上）、SQL 模板（select、insert、update、delete）以及 **移除数据源…**。
+
+**修改表…** 和 **新建 › 表** 会打开一个对话框，可以添加、删除或修改列（名称、数据类型、非空、主键、默认值），并实时预览 SQL。SQLite 只能重命名或删除已有列。ClickHouse 表不能用这种方式修改。
+
+## 查询控制台
+
+每个数据源都有一个查询控制台，它是保存在 IDE 数据目录中的 `.sql` 文件。可以用 **查询控制台**（`⌘⇧L` / `Ctrl+Shift+Q`）、从树中或通过 **工具 › Open Query Console** 打开。项目中任何可写的 `.sql` 文件也有同样的工具栏，绑定数据源后即可执行。
+
+控制台工具栏：
+
+- **执行**（`⌘Enter` / `Ctrl+Enter`）：执行选中的语句，没有选区时执行光标处的语句。
+- **解释计划**：在 **Query Plan** 标签页中显示执行计划。
+- **取消正在运行的语句**。在手动事务中取消会回滚该事务。
+- **浏览查询历史记录**：每个数据源最近 500 条语句，可搜索并粘贴回控制台。
+- 行数上限（100 到 50,000，默认 500）。
+- **事务：自动** / **事务：手动**。手动模式下会出现 **提交** 和 **回滚**。
+- 架构选择器（PostgreSQL、MySQL、SQL Server、Oracle）和数据源选择器。
+
+语句按 `;` 拆分，会正确处理字符串、注释和 PostgreSQL 的美元引号。Oracle 的 PL/SQL 块保持完整，只有 `/` 的一行表示语句结束。`:id`、`?`、`$1`、`@name` 等参数会弹出 **参数** 对话框；值按 SQL 文本插入，字符串需要自己加引号。
+
+SQL 补全基于已连接的架构：`FROM`/`JOIN` 后补全表（并根据外键给出连接条件）、补全作用域内的列，以及各方言的关键字和函数。无法解析的表和列会被标出，控制台中可以使用转到声明、快速文档和重新格式化代码。一般 SQL 文件的支持见 [SQL](/zh/languages/sql)。
+
+## 结果与数据编辑
+
+结果显示在 **服务** 工具窗口的 **数据库** 标签页中：**输出** 标签页记录每条语句，每个结果集一个 **Result N** 标签页（最多 12 个）。
+
+- **表** 或 **图表** 视图（柱状图或折线图，可选 X/Y 列和聚合方式）。
+- 分页，每页 10 到 1,000 行；点击行数可以统计总行数。
+- **在结果中搜索**，以及按列对已加载行进行本地筛选。
+- 侧边面板：**记录**、**值** 和 **聚合**（计数、去重计数、空值数、求和、平均值、中位数、最小值、最大值）。
+- JSON 值使用 JSON 编辑器，支持 **重新格式化** 和 **在窗口中打开**。
+
+### 编辑数据
+
+**编辑数据**（`F4`）在编辑器标签页中打开表，服务器端分页（每页 100 到 5,000 行），并提供 `WHERE` 过滤和 `ORDER BY` 字段（都支持补全）。点击列标题排序，按住 `Shift` 点击可以追加排序列。
+
+- 双击、`Enter` 或 `F2` 编辑单元格；`Shift+Enter` 打开更大的编辑框。粘贴制表符分隔的文本可以一次填写多个单元格。
+- **添加行**、**删除行**、**设为 NULL**（`⌘⌫` / `Ctrl+Backspace`）、**设为默认值**（`⌘⇧⌫` / `Ctrl+Shift+Backspace`）。`Space` 切换布尔值。
+- **提交**（`⌘Enter` / `Ctrl+Enter`）在一个事务中提交所有待定更改；**还原**（`⌘⌥Z` / `Ctrl+Alt+Z`）放弃更改。
+
+如果控制台查询是对单表的简单 select 且包含主键，结果同样可以编辑。没有主键的表、连接查询、聚合、`UNION` 查询、只读数据源和 ClickHouse 的结果都是只读的。
+
+## 导出与导入
+
+导出按钮提供 **导出数据…** 以及快速复制：**Copy as CSV**、**Copy as TSV**、**Copy as JSON**、**Copy as SQL Inserts**、**Copy as Markdown** 和 **Copy as One-Row**。**导出数据** 对话框还支持 **转置**、列标题和行标题、预览、**复制到剪贴板** 和 **导出到文件**。导出范围是已加载的行（当前页）。
+
+**从文件导入数据…** 把 CSV、TSV 或 TXT 导入到表中：自动识别分隔符，第一行可作为标题并按名称匹配列，空值可以视为 `NULL`。导入在一个事务中完成。ClickHouse 不支持导入。
+
+## Oracle
+
+Oracle 连接使用内置的纯 Rust thin 驱动，不需要 Oracle 客户端库或 `ORACLE_HOME`。支持 Oracle Database 19 及以上版本。
+
+在 **常规** 中填写主机、端口（1521），并在 **数据库：** 中填写服务名（例如 `ORCLPDB1`）。也可以在这里填写完整的 TNS 描述符，或从 `tnsnames.ora`（`TNS_ADMIN` 或 `$ORACLE_HOME/network/admin`）解析的 TNS 别名。也支持 `oracle://scott@db.example.com:1521/ORCLPDB1`、`jdbc:oracle:thin:@//db.example.com:1521/ORCLPDB1` 这样的 URL。
+
+如果密码正确但登录报 `ORA-01017`，可能是该账号只有旧的 10G 密码校验值；把密码重新设置为同一个值（`ALTER USER … IDENTIFIED BY …`）即可生成新的校验值。
+
+树中在表、视图、例程和序列旁边显示包（其 DDL 为包规范和包体）。
+
+Oracle 的架构就是数据库用户；系统账户只在勾选 **显示内部系统架构** 后显示。
+
+## 暂不支持
+
+- MongoDB、Redis、Snowflake、BigQuery 等未列出的数据库，以及 JDBC 驱动。
+- SQL Server 的 `GO` 批处理分隔符。
+- “执行整个控制台”的操作（请选中后执行，或使用 **运行 SQL 脚本…**）。
+- 导出超出已加载页面的数据。
+- 表格中的日期选择器和外键查找。
+- SQL Server 的会话级只读模式（只会禁止表格编辑）。

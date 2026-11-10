@@ -116,6 +116,8 @@ interface SessionRuntime {
   generation: number;
   /** Called with every complete output line (e.g. waiting for a JDWP agent). */
   lineListeners: Array<(text: string) => void>;
+  /** Called with output as shown (the Debug console of a debugger attached to this process). */
+  outputListeners: Set<OutputListener>;
   /** Called once the process exited (run executors: collect a coverage report…). */
   onExit?: (exitCode: number | null, stopped: boolean) => void;
   /** User input typed into the console, not yet sent (IDEA: Enter sends the line). */
@@ -542,7 +544,9 @@ function flush(sessionId: string) {
   const chunks = rt.queue.splice(0);
   for (const c of chunks) {
     const text = c.kind === "stdout" && rt.stdout ? rt.stdout.feed(c.text) : c.text;
-    if (text) rt.console.append({ ...c, text });
+    if (!text) continue;
+    rt.console.append({ ...c, text });
+    for (const l of rt.outputListeners) l(c.kind, text);
   }
   bump(sessionId);
 }
@@ -552,6 +556,7 @@ function enqueue(sessionId: string, chunk: OutputChunk) {
   if (!rt) return;
   if (rt.terminal) {
     rt.terminal.append(chunk);
+    for (const l of rt.outputListeners) l(chunk.kind, chunk.text);
     return;
   }
   rt.queue.push(chunk);
@@ -664,6 +669,7 @@ function newRuntime(config: RunConfig): SessionRuntime {
     flushedAt: -Infinity,
     generation: 0,
     lineListeners: [],
+    outputListeners: new Set(),
     input: "",
     terminal: null,
     terminalSize: null,
@@ -910,7 +916,18 @@ export async function startRun(
     }
     if (runtimes.get(sessionId)?.generation !== generation) return getSession(sessionId) ?? null;
     const processStarted = performance.now();
-    const info = await startWithRemedies(started, () => call(commands.runStart(started, channel)));
+    const request = { id: nextRequestId(), controller: new AbortController() };
+    rt.resolveRequest = request;
+    const info = await startWithRemedies(started, () => {
+      request.controller.signal.throwIfAborted();
+      return call(commands.runStart(started, channel, request.id));
+    }).finally(() => {
+      if (rt.resolveRequest === request) delete rt.resolveRequest;
+    });
+    if (request.controller.signal.aborted || getSession(sessionId)?.stopped) {
+      await call(commands.runStop(info.id)).catch(() => undefined);
+      return getSession(sessionId) ?? null;
+    }
     console.info("Run process started", { name: config.name, ms: performance.now() - processStarted });
     if (runtimes.get(sessionId)?.generation !== generation) return getSession(sessionId) ?? null;
     if (info.pty && rt.terminalSize) void commands.runResize(info.id, rt.terminalSize.cols, rt.terminalSize.rows);
@@ -923,6 +940,7 @@ export async function startRun(
       finishSession(sessionId, exited);
     }
   } catch (e) {
+    if (getSession(sessionId)?.stopped || isCancelled(e)) return getSession(sessionId) ?? null;
     const message = e instanceof Error ? e.message : String(e);
     enqueue(sessionId, { kind: "stderr", text: tx`Error running '${config.name}': ${message}\n` });
     flush(sessionId);
@@ -1145,6 +1163,22 @@ function notifyExit(sessionId: string, code: number | null) {
       { label: "Rerun", run: () => void startRun(rerunConfig(session), sessionId, session.baseConfig) },
     ],
   });
+}
+
+type OutputListener = (kind: OutputChunk["kind"], text: string) => void;
+
+/**
+ * Follows the output of the session running `process`: the output so far, then
+ * each chunk as it is shown, until the returned function is called.
+ */
+export function subscribeOutput(process: RunId, listener: OutputListener): () => void {
+  const session = useRun.getState().sessions.find((s) => s.runId === process);
+  const rt = session && runtimes.get(session.id);
+  if (!rt) return () => {};
+  flush(session.id);
+  if (!rt.terminal) for (const c of rt.console.textChunks()) listener(c.kind, c.text);
+  rt.outputListeners.add(listener);
+  return () => void rt.outputListeners.delete(listener);
 }
 
 /** Handles the `runExited` backend event. */

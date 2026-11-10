@@ -71,7 +71,6 @@ pub enum Incoming {
 type Pending = HashMap<i64, (String, oneshot::Sender<Result<Value, DapError>>)>;
 
 struct Inner {
-    mapping: Option<crate::target::TargetMapping>,
     out: mpsc::UnboundedSender<Vec<u8>>,
     pending: Mutex<Pending>,
     seq: AtomicI64,
@@ -108,21 +107,8 @@ impl Connection {
     /// own output on stdout, decoded) to `on_output`.
     pub fn start_with_output<R, W>(
         reader: R,
-        writer: W,
-        on_output: Box<dyn Fn(String) + Send + Sync>,
-    ) -> (Self, mpsc::UnboundedReceiver<Incoming>)
-    where
-        R: AsyncRead + Unpin + Send + 'static,
-        W: AsyncWrite + Unpin + Send + 'static,
-    {
-        Self::start_with_target(reader, writer, on_output, None)
-    }
-
-    pub fn start_with_target<R, W>(
-        reader: R,
         mut writer: W,
         on_output: Box<dyn Fn(String) + Send + Sync>,
-        target: Option<crate::target::TargetMapping>,
     ) -> (Self, mpsc::UnboundedReceiver<Incoming>)
     where
         R: AsyncRead + Unpin + Send + 'static,
@@ -131,7 +117,6 @@ impl Connection {
         let (out_tx, mut out_rx) = mpsc::unbounded_channel::<Vec<u8>>();
         let (in_tx, in_rx) = mpsc::unbounded_channel();
         let inner = Arc::new(Inner {
-            mapping: target,
             out: out_tx,
             pending: Mutex::new(HashMap::new()),
             seq: AtomicI64::new(1),
@@ -202,11 +187,7 @@ impl Connection {
         if self.is_closed() {
             return Err(DapError::Closed);
         }
-        let mut value = value.clone();
-        if let Some(mapping) = self.inner.mapping.as_ref() {
-            mapping.rewrite(&mut value, ide_core::path_mapping::Direction::ToTarget);
-        }
-        let body = serde_json::to_vec(&value).map_err(|e| DapError::Protocol(e.to_string()))?;
+        let body = serde_json::to_vec(value).map_err(|e| DapError::Protocol(e.to_string()))?;
         tracing::trace!(target: "ide_dap::wire", "--> {}", String::from_utf8_lossy(&body));
         self.inner.out.send(body).map_err(|_| DapError::Closed)
     }
@@ -265,16 +246,7 @@ impl Connection {
 
 fn dispatch(inner: &Inner, incoming: &mpsc::UnboundedSender<Incoming>, body: &[u8]) {
     tracing::trace!(target: "ide_dap::wire", "<-- {}", String::from_utf8_lossy(body));
-    let mut msg: Value = match serde_json::from_slice(body) {
-        Ok(v) => v,
-        Err(e) => {
-            tracing::warn!("dap: unparsable message: {e}");
-            return;
-        }
-    };
-    if let Some(mapping) = inner.mapping.as_ref() {
-        mapping.rewrite(&mut msg, ide_core::path_mapping::Direction::ToHost);
-    }
+    let Some(msg) = parse_message(body) else { return };
     match msg.get("type").and_then(Value::as_str) {
         Some("response") => {
             let Some(request_seq) = msg.get("request_seq").and_then(Value::as_i64) else {
@@ -307,6 +279,25 @@ fn dispatch(inner: &Inner, incoming: &mpsc::UnboundedSender<Incoming>, body: &[u
     }
 }
 
+/// A message body as JSON. Some adapters pass the debuggee's output through as it was
+/// written: netcoredbg on Windows embeds console output in the ANSI code page (GBK on a
+/// Chinese system), which isn't valid UTF-8 and made the whole `output` event unparsable,
+/// so every line with non-ASCII text went missing. Such a body is decoded like other tool
+/// output (UTF-8, else the system code page) before parsing.
+fn parse_message(body: &[u8]) -> Option<Value> {
+    let error = match serde_json::from_slice(body) {
+        Ok(v) => return Some(v),
+        Err(e) => e,
+    };
+    if std::str::from_utf8(body).is_err()
+        && let Ok(v) = serde_json::from_str(&ide_core::output_encoding::decode_tool_output(body))
+    {
+        return Some(v);
+    }
+    tracing::warn!("dap: unparsable message: {error}");
+    None
+}
+
 /// `message`, or the formatted `body.error` (`{format, variables}`) when present.
 fn error_message(msg: &Value) -> String {
     if let Some(err) = msg.pointer("/body/error")
@@ -327,6 +318,22 @@ fn error_message(msg: &Value) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn parses_output_events_with_non_utf8_text() {
+        // "中文" in GBK inside an output event, as netcoredbg sends it on a Chinese Windows.
+        let mut body = br#"{"seq":5,"type":"event","event":"output","body":{"category":"stdout","output":""#.to_vec();
+        body.extend_from_slice(&[0xd6, 0xd0, 0xce, 0xc4]);
+        body.extend_from_slice(br#"\n"}}"#);
+        let msg = parse_message(&body).expect("parsed");
+        assert_eq!(msg["event"], "output");
+        let output = msg["body"]["output"].as_str().unwrap();
+        assert!(output.ends_with('\n'));
+        // Off Windows (UTF-8 code page) the bytes decode lossily; the line still arrives.
+        #[cfg(not(windows))]
+        assert!(output.starts_with(char::REPLACEMENT_CHARACTER));
+        assert!(parse_message(b"{not json").is_none());
+    }
 
     #[test]
     fn formats_structured_errors() {

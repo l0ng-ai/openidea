@@ -7,9 +7,10 @@
 import { isCancelled } from "@/platform/ipc";
 import { useCallback, useEffect, useMemo, useState, type KeyboardEvent, type MouseEvent } from "react";
 import clsx from "clsx";
-import { Button, IconButton, Input, Spinner, showContextMenu, T } from "@/ui";
+import { Button, IconButton, Input, Spinner, showContextMenu, T, type SelectOption } from "@/ui";
 import { useProject } from "@/platform/project";
-import { Section, Toggle } from "../components/Form";
+import { DOCSTRING_FORMATS, type DocstringFormat } from "@/platform/editorSettings";
+import { Section, SettingSelect, Toggle } from "../components/Form";
 import { effectivePython, listPackages, pip, useSdks, type PythonPackage } from "./api";
 import { AddInterpreterDialog } from "./AddInterpreterDialog";
 import { useSetting } from "../components/context";
@@ -18,6 +19,18 @@ import styles from "./Sdk.module.css";
 import { tx } from "@/platform/i18n";
 
 type Op = "install" | "upgrade" | "uninstall";
+
+const DOCSTRING_LABELS: Record<DocstringFormat, string> = {
+  plain: "Plain",
+  rest: "reStructuredText",
+  epytext: "Epytext",
+  google: "Google",
+  numpy: "NumPy",
+};
+const DOCSTRING_OPTIONS: readonly SelectOption<DocstringFormat>[] = DOCSTRING_FORMATS.map((value) => ({
+  value,
+  label: DOCSTRING_LABELS[value],
+}));
 
 interface Job {
   op: Op;
@@ -314,6 +327,15 @@ export function PythonInterpreterPage() {
           checked={activate}
           onChange={setActivate}
           hint="New terminal sessions run the interpreter's virtualenv activate script."
+        />
+      </Section>
+
+      <Section title="Docstrings">
+        <SettingSelect
+          k="editor.docstringFormat"
+          label="Documentation string format"
+          hint="Docstring tags and keywords are highlighted according to this markup format (Color Scheme › Python styles their colours)."
+          options={DOCSTRING_OPTIONS}
         />
       </Section>
 

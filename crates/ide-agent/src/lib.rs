@@ -163,16 +163,25 @@ impl Shared {
                     let shared = self.clone();
                     // Keep the lookup alive if a composer unmounts while it is waiting.
                     self.runtime.spawn(async move {
-                        if let Ok((commands, options)) =
+                        if let Ok(found) =
                             native::claude::discover(spec.clone(), shared.paths.project_root.clone()).await
                         {
-                            let commands = config::commands_of(&json!({ "availableCommands": commands }), &spec.id);
-                            let options = config::options_of(&json!({ "configOptions": options }));
+                            let commands =
+                                config::commands_of(&json!({ "availableCommands": found.commands }), &spec.id);
+                            let options = config::options_of(&json!({ "configOptions": found.options }));
+                            let levels: Vec<_> = found
+                                .efforts
+                                .into_iter()
+                                .map(|(model, o)| {
+                                    let options = o.map(|o| config::options_of(&json!({ "configOptions": [o] })));
+                                    (model, options.unwrap_or_default())
+                                })
+                                .collect();
                             let _ = tokio::task::spawn_blocking(move || {
                                 // Notifies subscribers itself when the discovery
                                 // changed the cached config; unchanged results
                                 // stay silent.
-                                shared.remember_discovered(&spec.id, &options, &commands);
+                                shared.remember_discovered(&spec.id, &options, &commands, &levels);
                             })
                             .await;
                         }
@@ -193,6 +202,18 @@ impl Shared {
         self.known.lock().get(provider).is_some_and(|k| !k.config.is_empty())
     }
 
+    /// Whether the thinking levels of every model the agent offers are known (#1686).
+    fn knows_all_levels(&self, provider: &str) -> bool {
+        let cache = self.known.lock();
+        let Some(known) = cache.get(provider) else { return false };
+        known
+            .config
+            .iter()
+            .filter(|o| o.category.as_deref() == Some("model"))
+            .flat_map(|o| &o.values)
+            .all(|v| known.thought_levels.contains_key(&v.value))
+    }
+
     fn root_key(&self) -> String {
         self.paths.project_root.to_string_lossy().into_owned()
     }
@@ -205,11 +226,19 @@ impl Shared {
         commands: Option<&[AgentCommand]>,
         model: Option<&str>,
     ) {
-        self.remember_inner(provider, config, commands, model, false);
+        self.remember_inner(provider, config, commands, model, &[], false);
     }
 
-    fn remember_discovered(&self, provider: &str, config: &[AgentConfigOption], commands: &[AgentCommand]) {
-        self.remember_inner(provider, Some(config), Some(commands), model_of(config).as_deref(), true);
+    /// `levels`: each model's thinking-level options, so a new task offers them for any model
+    /// it picks (#1686). A session's report for a model wins over these.
+    fn remember_discovered(
+        &self,
+        provider: &str,
+        config: &[AgentConfigOption],
+        commands: &[AgentCommand],
+        levels: &[(String, Vec<AgentConfigOption>)],
+    ) {
+        self.remember_inner(provider, Some(config), Some(commands), model_of(config).as_deref(), levels, true);
     }
 
     fn remember_inner(
@@ -218,12 +247,19 @@ impl Shared {
         config: Option<&[AgentConfigOption]>,
         commands: Option<&[AgentCommand]>,
         model: Option<&str>,
+        discovered_levels: &[(String, Vec<AgentConfigOption>)],
         discovered: bool,
     ) {
         // Keep the update and its disk write ordered; a session report wins over discovery.
         let mut cache = self.known.lock();
         let known = cache.entry(provider.to_owned()).or_default();
         let mut changed = false;
+        for (model, levels) in discovered_levels {
+            if !known.thought_levels.contains_key(model) {
+                known.thought_levels.insert(model.clone(), levels.clone());
+                changed = true;
+            }
+        }
         if let Some(c) = config.filter(|_| !discovered || known.config.is_empty()) {
             if let Some(model) = model {
                 let levels: Vec<_> =
@@ -345,6 +381,8 @@ struct Task {
     /// Settings already sent this session (`(option, value)`), so a refusal is not retried.
     config_sent: Mutex<HashSet<(String, String)>>,
     dirty: Mutex<BTreeSet<(Session, usize)>>,
+    /// How much of each session's streaming message was last sent, so the next flush sends the rest.
+    streamed: Mutex<HashMap<Session, Sent>>,
     flush_scheduled: AtomicBool,
     stderr: Mutex<VecDeque<String>>,
     /// Set by `delete`; held while saving.
@@ -486,7 +524,7 @@ impl AgentManager {
         // merged without duplicating what `availableCommands` or the disk offer.
         let mut offered = offered;
         if task.is_none()
-            && (offered.is_empty() || !self.shared.has_config(&provider))
+            && (offered.is_empty() || !self.shared.has_config(&provider) || !self.shared.knows_all_levels(&provider))
             && let Some(spec) = self.shared.spec(&provider).filter(|s| s.driver == provider::Driver::Claude)
         {
             self.shared.fetch_settings(spec).await;
@@ -852,6 +890,7 @@ impl AgentManager {
                 s.task.updated_ms = now_ms();
                 first
             };
+            task.streamed.lock().clear();
             task.persist();
             self.shared.emit(AgentEvent::Truncated { task: id.to_owned(), length: 0 });
             task.emit_task();
@@ -877,6 +916,7 @@ impl AgentManager {
             s.task.updated_ms = now_ms();
             first
         };
+        task.streamed.lock().clear();
         task.persist();
         self.shared.emit(AgentEvent::Truncated { task: id.to_owned(), length: cut as u32 });
         task.emit_task();
@@ -1129,6 +1169,7 @@ impl Task {
             idle_epoch: AtomicU64::new(0),
             config_sent: Mutex::new(HashSet::new()),
             dirty: Mutex::new(BTreeSet::new()),
+            streamed: Mutex::new(HashMap::new()),
             flush_scheduled: AtomicBool::new(false),
             stderr: Mutex::new(VecDeque::new()),
             deleted: Mutex::new(false),
@@ -1250,11 +1291,12 @@ impl Task {
         let indices = std::mem::take(&mut *self.dirty.lock());
         let events: Vec<AgentEvent> = {
             let s = self.state.lock();
+            let mut streamed = self.streamed.lock();
             indices
                 .into_iter()
                 .filter_map(|(subagent, i)| {
-                    let entry = s.conversation.timeline(&subagent)?.entries.get(i)?.clone();
-                    Some(AgentEvent::Entry { task: self.id.clone(), subagent, index: i as u32, entry })
+                    let entry = s.conversation.timeline(&subagent)?.entries.get(i)?;
+                    Some(entry_event(&self.id, &mut streamed, subagent, i, entry))
                 })
                 .collect()
         };
@@ -1716,7 +1758,7 @@ impl Task {
                     format!("The agent process exited:\n{}", tail.join("\n"))
                 }
             }
-            RpcError::Server { message, .. } => message,
+            RpcError::Server { message, data, .. } => with_details(message, data.as_ref()),
             e => e.to_string(),
         }
     }
@@ -2174,6 +2216,24 @@ fn usage_limit(e: &RpcError) -> Option<Option<f64>> {
         .then_some(None)
 }
 
+/// An error's message with the detail ACP agents put in `data` (`{"details": …}` or a string):
+/// generic codes such as "Internal error" say nothing without it.
+fn with_details(message: String, data: Option<&Value>) -> String {
+    let details = match data {
+        Some(Value::String(text)) => text.as_str(),
+        Some(data) => data.get("details").and_then(Value::as_str).unwrap_or_default(),
+        None => "",
+    }
+    .trim();
+    if details.is_empty() || message.contains(details) {
+        message
+    } else if message.trim().is_empty() {
+        details.to_owned()
+    } else {
+        format!("{message}: {details}")
+    }
+}
+
 fn client_info() -> Value {
     json!({ "name": "OpenIDEA", "version": env!("CARGO_PKG_VERSION") })
 }
@@ -2315,4 +2375,78 @@ fn stdio_mcp_servers(executable: Option<&std::path::Path>, supported: bool, root
     let Some(executable) = executable.filter(|_| supported) else { return Vec::new() };
     let command = ide_mcp::stdio_command(executable, root);
     vec![json!({ "name": "OpenIDEA", "command": command[0], "args": command[1..], "env": [] })]
+}
+
+/// What was sent of a streaming message: its first `bytes` (`utf16` UTF-16 units), which
+/// ended with `tail`. A message only grows while it streams, so its tail tells a message
+/// that went on from one that was replaced without comparing (or keeping) all of it.
+struct Sent {
+    index: usize,
+    bytes: usize,
+    utf16: usize,
+    tail: String,
+}
+
+const SENT_TAIL: usize = 64;
+
+impl Sent {
+    fn new(index: usize, text: &str) -> Self {
+        Self::after(index, text, 0, 0)
+    }
+
+    /// `text` as sent, of which the first `bytes` (`utf16` units) were sent before.
+    fn after(index: usize, text: &str, bytes: usize, utf16: usize) -> Self {
+        let mut start = text.len().saturating_sub(SENT_TAIL);
+        while !text.is_char_boundary(start) {
+            start -= 1;
+        }
+        let utf16 = utf16 + text[bytes..].encode_utf16().count();
+        Self { index, bytes: text.len(), utf16, tail: text[start..].to_owned() }
+    }
+
+    /// Whether `text` at `index` is this message, gone on.
+    fn extended_by(&self, index: usize, text: &str) -> bool {
+        self.index == index
+            && text.len() > self.bytes
+            && text.is_char_boundary(self.bytes)
+            && text[..self.bytes].ends_with(&self.tail)
+    }
+}
+
+/// The event that brings the UI's copy of entry `i` up to date: only the new text when
+/// it extends the message last sent for the session, else the whole entry.
+fn entry_event(
+    task: &str,
+    streamed: &mut HashMap<Session, Sent>,
+    subagent: Session,
+    i: usize,
+    entry: &AgentEntry,
+) -> AgentEvent {
+    let text = match entry {
+        AgentEntry::Agent { text } | AgentEntry::Thought { text } => Some(text),
+        _ => None,
+    };
+    let Some(text) = text else {
+        if streamed.get(&subagent).is_some_and(|sent| sent.index == i) {
+            streamed.remove(&subagent);
+        }
+        return AgentEvent::Entry { task: task.to_owned(), subagent, index: i as u32, entry: entry.clone() };
+    };
+    match streamed.get(&subagent).filter(|sent| sent.extended_by(i, text)) {
+        Some(sent) => {
+            let (bytes, from) = (sent.bytes, sent.utf16);
+            streamed.insert(subagent.clone(), Sent::after(i, text, bytes, from));
+            AgentEvent::Append {
+                task: task.to_owned(),
+                subagent,
+                index: i as u32,
+                from: from as u32,
+                text: text[bytes..].to_owned(),
+            }
+        }
+        None => {
+            streamed.insert(subagent.clone(), Sent::new(i, text));
+            AgentEvent::Entry { task: task.to_owned(), subagent, index: i as u32, entry: entry.clone() }
+        }
+    }
 }
