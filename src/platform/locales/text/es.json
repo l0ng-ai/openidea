@@ -1476,7 +1476,6 @@
   "Package manager": "Administrador de paquetes",
   "Package to install": "Paquete a instalar",
   "Packages": "Paquetes",
-  "Packages the project (mvn package, gradle assemble, cargo build --release, npm run build)": "Empaqueta el proyecto (mvn package, gradle assemble, cargo build --release, npm run build)",
   "Page size": "Tamaño de página",
   "Parameter Info": "Información de parámetros",
   "Parameter names": "Nombres de parámetros",
