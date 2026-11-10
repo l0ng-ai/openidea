@@ -109,11 +109,17 @@ fn parse_key(trimmed: &str) -> Option<&str> {
 /// Whether `path`'s filename already matches the Compose schema globs in `languages/yaml.toml`.
 pub fn is_named_compose_file(path: &Path) -> bool {
     let Some(name) = path.file_name().and_then(|n| n.to_str()) else { return false };
-    let lower = name.to_ascii_lowercase();
-    let Some(stem) = lower.strip_suffix(".yaml").or_else(|| lower.strip_suffix(".yml")) else {
+    let Some(stem) = name.strip_suffix(".yaml").or_else(|| name.strip_suffix(".yml")) else {
         return false;
     };
-    stem.contains("compose")
+    // `<head>` or `<head>.*`, where `<head>` is `compose`, `docker-compose`, `*-compose` or `*.compose`.
+    let is_head = |head: &str| {
+        head == "compose"
+            || head == "docker-compose"
+            || head.strip_suffix("-compose").is_some_and(|p| !p.is_empty())
+            || head.strip_suffix(".compose").is_some_and(|p| !p.is_empty())
+    };
+    is_head(stem) || stem.match_indices('.').any(|(i, _)| i + 1 < stem.len() && is_head(&stem[..i]))
 }
 
 /// Whether `path` is a YAML file whose name does not match a Compose glob, but whose content is Compose.
@@ -230,6 +236,19 @@ mod tests {
         assert!(is_named_compose_file(Path::new("/work/docker-compose.yml")));
         assert!(is_named_compose_file(Path::new("/work/playground-compose.yaml")));
         assert!(!is_named_compose_file(Path::new("/work/custom-stack.yml")));
+        for named in
+            ["compose.yaml", "compose.override.yml", "docker-compose.prod.yaml", "a.compose.yml", "x-compose.ci.yml"]
+        {
+            assert!(is_named_compose_file(Path::new(named)), "{named}");
+        }
+        for unnamed in ["docker-compose-dev.yml", "compose-prod.yaml", "composer.yml", "decompose.yaml", "-compose.yml"]
+        {
+            assert!(!is_named_compose_file(Path::new(unnamed)), "{unnamed}");
+        }
+        assert!(is_content_detected_compose_file(
+            Path::new("/work/docker-compose-dev.yml"),
+            "services:\n  db:\n    image: postgres:16\n"
+        ));
         assert!(!is_content_detected_compose_file(
             Path::new("/work/docker-compose.yml"),
             "services:\n  db:\n    image: postgres:16\n"
