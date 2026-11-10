@@ -248,6 +248,10 @@ mod imp {
         p.read_file(path).map_err(error)
     }
 
+    pub fn project_read_bytes(p: &ProjectRes, path: &str) -> Result<Vec<u8>, Error> {
+        p.read_bytes(path).map_err(error)
+    }
+
     pub fn project_write(p: &ProjectRes, path: &str, text: &str) -> Result<(), Error> {
         p.write_file(path, text).map_err(error)
     }
@@ -1012,6 +1016,14 @@ impl Project {
     /// Needs `project.read`.
     pub fn read_file(&self, path: &str) -> Result<String, Error> {
         imp::project_read(&self.inner, path)
+    }
+
+    /// Reads the bytes of a file inside the project (absolute or
+    /// root-relative) — images, archives, fonts — at most 16 MiB, the file on
+    /// disk. Paths leaving the root are rejected; a missing path is
+    /// `Error::NotFound`. Needs `project.read`.
+    pub fn read_bytes(&self, path: &str) -> Result<Vec<u8>, Error> {
+        imp::project_read_bytes(&self.inner, path)
     }
 
     /// Replaces the text of a file inside the project (absolute or

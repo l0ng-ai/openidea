@@ -696,6 +696,22 @@ impl workspace::HostProject for StoreData {
         Ok(sandbox::read_text(&real).map_err(wit::Error::Failed))
     }
 
+    fn read_bytes(&mut self, this: Resource<ProjectRes>, path: String) -> Fallible<Vec<u8>> {
+        if let Err(e) = self.require(Capability::ProjectRead) {
+            return Ok(Err(e));
+        }
+        let root = self.table.get(&this)?.root.clone();
+        let real = match sandbox::resolve_in_root(&root, &path) {
+            Ok(real) => real,
+            Err(e) => {
+                let e = if e.ends_with("no such file") { wit::Error::NotFound(e) } else { wit::Error::Invalid(e) };
+                return Ok(Err(e));
+            }
+        };
+        // The bytes on disk: an unsaved text buffer does not apply, binary files are the point.
+        Ok(sandbox::read_bytes(&real).map_err(wit::Error::Failed))
+    }
+
     fn exists(&mut self, this: Resource<ProjectRes>, path: String) -> Fallible<bool> {
         if let Err(e) = self.require(Capability::ProjectRead) {
             return Ok(Err(e));
