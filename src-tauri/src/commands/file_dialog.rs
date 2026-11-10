@@ -12,6 +12,7 @@ use std::path::PathBuf;
 
 #[derive(Deserialize, Type)]
 #[serde(rename_all = "camelCase")]
+#[cfg_attr(not(target_os = "linux"), allow(dead_code))]
 pub struct GtkFilter {
     pub name: String,
     pub extensions: Vec<String>,
@@ -19,6 +20,7 @@ pub struct GtkFilter {
 
 #[derive(Deserialize, Type)]
 #[serde(rename_all = "camelCase")]
+#[cfg_attr(not(target_os = "linux"), allow(dead_code))]
 pub struct GtkPickOptions {
     pub title: Option<String>,
     pub default_path: Option<PathBuf>,
