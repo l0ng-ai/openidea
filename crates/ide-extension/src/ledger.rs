@@ -420,7 +420,13 @@ pub fn resolve_program(name: &str, path_var: Option<&OsStr>) -> Result<PathBuf, 
         return if candidate.is_file() { Ok(candidate.to_path_buf()) } else { Err(format!("{name}: no such program")) };
     }
     let exts: Vec<String> = if cfg!(windows) {
-        std::env::var("PATHEXT").unwrap_or_else(|_| ".EXE;.CMD;.BAT".into()).split(';').map(str::to_owned).collect()
+        let pathext = std::env::var("PATHEXT").unwrap_or_else(|_| ".EXE;.CMD;.BAT".into());
+        let pathext: Vec<String> = pathext.split(';').filter(|e| !e.is_empty()).map(str::to_owned).collect();
+        // A name given with its extension (`cargo.exe`) is looked up as written.
+        let has_ext = candidate.extension().is_some_and(|e| {
+            pathext.iter().any(|x| x.trim_start_matches('.').eq_ignore_ascii_case(&e.to_string_lossy()))
+        });
+        if has_ext { vec![String::new()] } else { pathext }
     } else {
         vec![String::new()]
     };
