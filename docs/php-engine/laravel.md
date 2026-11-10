@@ -1,8 +1,315 @@
 # Laravel support
 
-The native PHP engine's Laravel support (Plan 8 of [ROADMAP.md](ROADMAP.md), designed in [LARAVEL-ROADMAP.md](LARAVEL-ROADMAP.md)). Phase 8.30 turns this file into the user guide. For now it holds the parity and performance check of phase 8.21.
+The native PHP engine understands Laravel applications: the strings that name routes, views, configuration keys, translations, validation rules, columns and the rest complete, go to their declaration, find their usages, rename, and are checked. It also generates code, runs Artisan commands and shows a model's schema. Everything is answered by the engine in `crates/ide-php` through the usual editor requests, so it works in PHP files and in Blade templates alike.
 
-## Parity check (phase 8.21)
+This file is the user guide (phases 8.1–8.29 of [ROADMAP.md](ROADMAP.md), designed in [LARAVEL-ROADMAP.md](LARAVEL-ROADMAP.md)). The second half, "Measurements", records the parity and performance checks on the fixture app and on two real applications.
+
+- [Turning it on](#turning-it-on)
+- [Features](#features)
+- [Inspections](#inspections)
+- [Settings](#settings)
+- [ide.json](#idejson)
+- [Known limits](#known-limits)
+- [Measurements](#measurements)
+
+## Turning it on
+
+Laravel support turns on by itself when the project is a Laravel project: `composer.json` requires `laravel/framework`, `composer.lock` lists it, or there's an `artisan` file at a content root. Settings › PHP › Laravel › Laravel support forces it on or off.
+
+It needs the native engine (Settings › PHP › Engine › Native, the default). It works without `vendor/`, but with `vendor/` installed it also knows the packages: their service providers, configuration, views, translations, Blade components, routes and `ide.json` files.
+
+Livewire and Inertia support turn on when the package is installed (`composer.lock` or `vendor/composer/installed.json`). An `ide.json` can turn a package's support off with `packages.disabledPackages`.
+
+What the engine reads to build its picture of the project (the "project model"):
+
+| Part                 | Read from                                                                                                                                     |
+| -------------------- | --------------------------------------------------------------------------------------------------------------------------------------------- |
+| Version, namespace   | `composer.lock`, the `composer.json` autoload rule for `app/`                                                                                 |
+| Service providers    | `bootstrap/providers.php` or `config/app.php`, `config/concord.php`, packages' `extra.laravel.providers`, and every `$this->app->register(…)` |
+| Routes               | `bootstrap/app.php` `withRouting(…)`, `RouteServiceProvider`, providers' `loadRoutesFrom`, files a route file `require`s, module route files  |
+| Middleware           | `bootstrap/app.php`, `app/Http/Kernel.php`, providers' `aliasMiddleware` / `middlewareGroup`                                                  |
+| Views and components | `resources/views`, providers' `loadViewsFrom`, `Blade::component()`, `componentNamespace()`, `anonymousComponentPath()`, `ide.json`           |
+| Configuration        | `config/*.php`, the framework's defaults, providers' `mergeConfigFrom`                                                                        |
+| Translations         | `lang/` (PHP and JSON, every locale), providers' `loadTranslationsFrom` / `loadJsonTranslationsFrom`                                          |
+| Environment          | `.env` and `.env.example`                                                                                                                     |
+| Assets               | `vite.config.*` inputs and `public/build/manifest.json`                                                                                       |
+| Gates and policies   | `Gate::define`, `Gate::policy`, `$policies`, `#[UsePolicy]`, `Gate::guessPolicyNamesUsing`, Laravel's naming conventions                      |
+| Guards and brokers   | `config/auth.php`, and guards providers set with `config([...])`                                                                              |
+| Artisan commands     | classes with `$signature` / `$name`, the framework's and the packages' commands                                                               |
+| Eloquent schema      | migrations (`create`, `table`, renames and drops), casts, accessors, relations, and optionally a live database                                |
+| Livewire, Inertia    | components below `App\Livewire` (`App\Http\Livewire` on Livewire 2) and `Livewire::component(…)`; page files below the Inertia page folders   |
+
+The model is rebuilt incrementally: an edit or a file change re-reads only the files it touched.
+
+## Features
+
+Most features work on string literals in known places. In each place the string completes, Ctrl+click (goto) opens its declaration, Find Usages lists every string naming the same thing, and where it makes sense, Rename edits the declaration and every caller. The examples below show one place each; the others are listed after them.
+
+### Routes
+
+```php
+Route::middleware('auth')->name('posts.')->group(function () {
+    Route::get('/posts/{post}', [PostController::class, 'show'])->name('show');
+});
+
+return redirect()->route('posts.show', $post);   // completes, goes to ->name('show'), renames
+```
+
+- **Route names** in `route()`, `to_route()`, `redirect()->route()`, `URL::route()`, `Route::has()` and `->name()`, with group name prefixes. Rename edits the route file and every caller, Blade templates included (open or not).
+- **Controller actions:** `[PostController::class, 'show']`, `'PostController@show'` and invokable controllers. A controller method's usages include the routes pointing at it.
+- **Middleware:** aliases and groups in `middleware()` chains and in `Route::middleware(…)`, including `can:` abilities.
+- **Resources:** the actions in `Route::resource(…)->only([...])` and `except([...])`.
+- Also understood: `Route::resources()`, `apiResources()`, `singleton()`, `apiSingleton()`, `fallback()`, `->names('prefix')`, `domain()`, the array form of `Route::group([...])`, groups with `withoutMiddleware`, routes registered inside `if` blocks, and route files at paths computed from `config('…')`.
+
+**Route hints.** A code lens above each controller method lists the routes that reach it (method, URI, name), and an inlay hint after each `Route::get(…)` shows the full URI with group prefixes and domain. Clicking one offers to go to the route, copy its URL, open it in the browser (using `APP_URL` from `.env`) or create an HTTP client request (`.http` file). Settings › PHP › Laravel › Hints turns them off.
+
+**Route search.** Search Everywhere has a **Routes** tab, searching by name or by part of the URI.
+
+### Views and Blade
+
+```php
+return view('posts.index', ['posts' => $posts]);  // completes as a path tree, opens the template
+```
+
+```blade
+@extends('layouts.app')
+@section('content')            {{-- sections and stacks complete from the parent layout --}}
+    @foreach ($posts as $post)  {{-- $posts is known here, typed from the controller --}}
+        <x-post-card :post="$post" />
+    @endforeach
+@endsection
+```
+
+- **View names** in `view()`, `View::make()`, `Route::view()`, `response()->view()`, mailables' `view()`/`markdown()`, `@include`, `@extends`, `@each` and namespaced views (`shop::home`). Renaming a view moves its file and updates the strings. The undefined-view problem has a **Create view** quick-fix.
+- **View variables:** what a controller passes (`view('x', [...])`, `compact()`, `with()`) completes and is typed inside the template.
+- **Sections and stacks:** `@section`/`@yield` and `@push`/`@stack` complete and go across layouts.
+- **Components:** `<x-…>` tags of class and anonymous components, of `Blade::component()` / `componentNamespace()` / `anonymousComponentPath()` registrations and of `vendor/` packages (`<x-pkg::alert>`). Tag and attribute completion, `@props`, `@aware`, `<x-slot>` / `<x-slot:name>`, `<x-dynamic-component>`. A class component's public properties and methods are variables in its view. The PHP in `:attr="…"` is analysed and checked against the constructor's parameter types.
+- **Directives:** completion of Blade directives, including custom ones from `Blade::directive()` and `ide.json`. Directives are case-insensitive, as in Laravel.
+- **Quick-fixes:** create a missing component or view, add a missing prop to `@props`.
+- **Intentions:** switch `{{ }}` and `{!! !!}`; turn a `class` attribute into `@class([...])` or wrap it in one.
+
+### Configuration, environment, translations and assets
+
+```php
+config('mail.mailers.smtp.host');   // completes segment by segment, goes to the array entry; hover shows the value's type
+env('APP_URL');                     // checked against .env and .env.example
+__('messages.welcome');             // hover shows the text in every locale
+Vite::asset('resources/js/app.js'); // vite.config.* inputs and the build manifest
+```
+
+- **Configuration keys** in `config()`, `Config::get()` and `config()->get()`, nested segment by segment, including package configuration merged with `mergeConfigFrom`. Keys a file sets with `config([...])` or `Config::set()` count as defined.
+- **Environment keys** in `env()`. A key missing from `.env.example` has a quick-fix that adds it. Find Usages and Rename also start from a `.env` line.
+- **Translation keys** in `__()`, `trans()`, `trans_choice()`, `Lang::get()` and `@lang`, for PHP and JSON files, every locale and package namespaces (`shop::app.title`). Rename edits every locale file and every caller. The **Create Translation Key** action (on any translation string, in PHP or Blade) asks for the text in each locale and writes the chosen locale files.
+- **Vite assets** in `@vite` and `Vite::asset()`.
+
+### Validation
+
+```php
+$request->validate([
+    'title'  => 'required|string|max:255|unique:posts,title',  // rules, parameters, tables and columns complete
+    'status' => ['required', Rule::in(['draft', 'published'])],
+]);
+$request->input('title');  // fields complete from the rules
+```
+
+- **Rules** in a Form Request's `rules()`, `$request->validate()`, `validateWithBag()`, `Validator::make()`, `validator()`, and methods a class passes as its rules (`Validator::make($data, $this->rules())`). Pipe strings and arrays both work.
+- **Parameters:** tables and columns of `exists:` and `unique:`, field names of `required_if:` and the like, the values of `in:` / `not_in:` (from the backing values of an enum the field is cast to, or constants like `STATUS_DRAFT`), and the arguments of `Rule::exists()`, `Rule::unique()` and `Rule::in()`.
+- **Request fields:** `$request->input('…')`, `validated('…')` and `$request->field` properties, typed from the rules.
+- **Intentions:** convert a rule string to an array (one or all), convert a rule to a `Rule::` object (`unique`, `exists`, `in`, `dimensions`), **Promote to Form Request** (moves a controller method's inline rules into a new Form Request and injects it), and **Generate rules** (rule entries from the model's columns, with `max:<length>` for string columns and `Rule::enum()` for enum casts).
+
+### Eloquent
+
+```php
+Post::where('published_at', '<', now())          // columns of the posts table
+    ->whereHas('comments', fn ($q) => $q->where('approved', true))  // $q is the Comment query
+    ->withCount('comments')
+    ->get()                                       // Collection<int, Post>
+    ->each(fn (Post $p) => $p->comments_count);   // known after withCount
+```
+
+- **Columns** in `where()`, `orderBy()`, `select()`, `pluck()`, `whereIn()`, `update([...])`, `create([...])`, `firstOrCreate()` and the like, in a model's `$fillable`, `$guarded`, `$hidden`, `$casts` and `$appends`, and in the second argument of `whereRelation()`, `withSum()`, `withAvg()` and the other aggregates (the related model's columns).
+- **Relations** in `with()`, `has()`, `whereHas()`, `load()` and dotted paths (`posts.comments`); the closure's query is typed with the related model.
+- **Types:** collections from `get()` and `all()`, factories (`Post::factory()->create()` is a `Post`, `count(3)` makes a collection), `*_count` properties after a `withCount()`, local scopes (including a raw `Builder $query` parameter), and `Attribute::make(get: fn (): string => …)` accessors.
+- **Query builder:** `DB::table('posts')` and `join()` tables, including aliases (`DB::table('posts as p')`, `p.title`).
+- **Schema:** read from the migrations, including later `table()` changes, renamed and dropped columns, `foreignId()`, `foreignIdFor()`, `morphs()`, `timestamps()` and `softDeletes()`. A live database can be added (see Settings); its columns win, and hover says where a column comes from.
+- **Model view:** a gutter icon and a code lens on a model class open a panel with the table, primary key, columns (type and source), relations, scopes, accessors, and the related factories, resources, policies, observers and migrations. Each item navigates, finds usages or renames. **Add columns** writes a migration for new columns and adds them to `$fillable`.
+
+### Gates, policies and auth
+
+```php
+Gate::allows('publish-posts');      // gates and policy methods complete and go to their definition
+$user->can('update', $post);        // the methods of PostPolicy
+auth('admin')->user();              // guards of config/auth.php
+Password::broker('users');          // brokers of config/auth.php
+```
+
+Abilities complete and resolve in `Gate::allows/denies/authorize`, `$user->can/cannot`, `authorize()`, `@can` and `can:` middleware. A policy is found the way Laravel finds it: registered for the model or a parent class, then `#[UsePolicy]`, then the `Gate::guessPolicyNamesUsing` callback, then the naming conventions. Inherited policy methods count. `Gate::define('x', [PostPolicy::class, 'publish'])` goes to the method.
+
+### Artisan
+
+- **Run Artisan Command…** lists the project's commands, with their arguments and options.
+- An **Artisan command run configuration** completes command names and options.
+- A run icon in the gutter of console command classes.
+- Command names complete and go to their class in `Artisan::call('…')` and `$this->call('…')`.
+
+### Livewire and Inertia
+
+```blade
+<livewire:counter :start="5" />          {{-- component names, mount() parameters and public properties --}}
+@livewire('counter', ['start' => 5])
+<input wire:model="count"> <button wire:click="increment">  {{-- public properties and methods --}}
+```
+
+```php
+return Inertia::render('Posts/Index', [...]);   // page files below resources/js/Pages, Vue, React or Svelte
+```
+
+- **Livewire:** components found below the Livewire namespace or registered with `Livewire::component('alias', Class::class)`, in `@livewire(…)`, `<livewire:…>`, `Livewire::test()` and `Livewire::visit()`. Goto opens the class or its view; Find Usages and Rename also start from the class or the alias.
+- **Inertia:** page names in `Inertia::render()`, `inertia()` and `Route::inertia()`. A missing page has a **Create page** quick-fix. Find Usages and Rename also start from a page file. The page folders come from the settings, else from `ide.json`, else `resources/js/Pages`.
+
+### Code generation
+
+The **Laravel › Generate** submenu (in the Project view, the editor and the New menus), the **Laravel Generators** tab of Search Everywhere and the **Laravel Generate…** action list the generators:
+
+- **New Eloquent Model:** fields with types and modifiers, relations, indexes, and checkboxes for a migration (plus the pivot-table migrations of `belongsToMany` relations), factory, seeder, controller (plain, resource or API), Form Requests, JSON resource and policy.
+- **Classes**, grouped in submenus: controller, resource controller, middleware, Form Request, JSON resource and collection, factory, seeder, migration (create or update a table), pivot-table migration, event, listener, job, mail, notification, observer, policy, rule, exception, HTTP exception, service provider, console command, Blade component (class or anonymous), view, view composer, broadcasting channel, enum, Livewire component (Livewire 2 or 3 layout), feature and unit tests.
+- **`ide.json` code generations** of the project and its packages, with their own input fields.
+
+Generators put files in the application or a chosen module, use the namespace and class suffixes of Settings › PHP › Laravel › Code generation, and register what they create: an observer in its model's `#[ObservedBy]`, a listener in the event service provider's `$listen`, a service provider in `bootstrap/providers.php` or the module's `module.json`.
+
+The file contents come from the **Laravel …** templates in Editor › File and Code Templates, which can be edited. Inside a model, Generate also offers **JSON resource from model**, **Factory from model** and **Add all fields** to `$fillable`, which use the same edited templates.
+
+### Intentions in PHP
+
+- Facade alias (`\Cache::get`) to a facade import.
+- Facade call to an injected dependency, through the constructor or the method.
+- Move a method dependency to the constructor (promoted property).
+- String controller reference (`'PostController@show'`) to `[PostController::class, 'show']`, one or all in the file.
+- `scopeX` method to a `#[Scope]` method, one or all.
+- The validation intentions listed under Validation.
+
+### Modules and packages
+
+Modules are read from `nwidart/laravel-modules` (`module.json`), from `konekt/concord` (`config/concord.php`, each module provider is a module) and from module folders (`modules/`, `app-modules/`, `app/Modules/`, `src/Modules/`). Their routes, views, translations, configuration and providers are part of the model, and generators can write into them.
+
+Packages in `vendor/` are read through their service providers (package discovery), their `ide.json` and the class aliases they declare (`extra.laravel.aliases`); the aliases of `config/app.php` count too.
+
+## Inspections
+
+The Laravel inspections are in the inspection profile (Settings › PHP › Inspections, group "Laravel"; the route check is in "Frameworks"), each with an on/off switch and a severity. They run in the editor and in batch **Inspect Code**. Inspections that depend on a schema or a configuration file stay quiet when it isn't known for certain.
+
+| Inspection                                     | Reports                                                                                                              | Quick-fix              |
+| ---------------------------------------------- | -------------------------------------------------------------------------------------------------------------------- | ---------------------- |
+| `PhpUndefinedRoute`                            | route names no route defines                                                                                         |                        |
+| `PhpUndefinedView`                             | view names no template has (in PHP and Blade)                                                                        | create the view        |
+| `PhpUndefinedConfigKey`                        | configuration keys no known configuration array has                                                                  |                        |
+| `PhpUndefinedEnvKey`                           | `env()` keys neither `.env` nor `.env.example` sets, and keys missing from `.env.example`                            | add to `.env.example`  |
+| `PhpUndefinedTranslation`                      | translation keys no locale has                                                                                       | create in every locale |
+| `PhpUndefinedViteAsset`                        | `@vite` / `Vite::asset()` paths that are no file, entry point or manifest entry                                      |                        |
+| `PhpUnknownValidationRule`                     | rules neither built in nor registered with `Validator::extend()`                                                     |                        |
+| `PhpUnknownEloquentColumn`                     | columns the model's table doesn't have, when the migrations are certain                                              |                        |
+| `PhpUnknownAbility`                            | abilities no gate or policy defines, `can:` middleware included                                                      |                        |
+| `PhpUnknownGuard`                              | guards `config/auth.php` doesn't declare (`auth()`, `Auth::guard()`, `@auth`, `auth:` middleware)                    |                        |
+| `PhpUnknownPasswordBroker`                     | brokers `config/auth.php` doesn't declare                                                                            |                        |
+| `PhpUndefinedInertiaPage`                      | Inertia pages no page folder has                                                                                     | create the page        |
+| `BladeUnclosedSection`, `BladeUnopenedSection` | `@section` / `@push` blocks never closed, and closing directives with nothing open                                   |                        |
+| `BladeUndefinedComponent`                      | `<x-…>` tags no component defines                                                                                    | create the component   |
+| `BladeUnknownLivewireParameter`                | `@livewire(…, [...])` keys and `<livewire:…>` attributes that are neither `mount()` parameters nor public properties |                        |
+
+The engine's general PHP inspections (undefined classes and methods, argument types, unused variables and so on) use the Laravel model too: facades, container helpers, Eloquent forwarding and magic properties, and class aliases are all typed.
+
+## Settings
+
+Settings › PHP › Laravel, stored under `languages.php.laravel` (the engine receives them as one `LaravelSettings` struct, `crates/ide-core/src/settings.rs`):
+
+| Setting              | Key                                                                                              | Default                                                 | What it does                                                                                                                         |
+| -------------------- | ------------------------------------------------------------------------------------------------ | ------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------ |
+| Laravel support      | `detection`                                                                                      | `auto`                                                  | `auto` (from `composer.json`, `composer.lock`, `artisan`), `enabled` or `disabled`                                                   |
+| Modules              | `modules`                                                                                        | `auto`                                                  | `auto` (nwidart modules when installed, and module folders), `nwidart`, `directory` or `none`                                        |
+| Show route hints     | `routeHints`                                                                                     | on                                                      | the route code lenses and URI inlay hints                                                                                            |
+| Database             | `database`                                                                                       | none                                                    | a data source of the Database tool window whose live schema is merged with the migrations; refreshed on demand and on schema changes |
+| Inertia page folders | `inertiaPages`                                                                                   | empty: `ide.json`, else `resources/js/Pages`            | folders of Inertia pages, relative to the project                                                                                    |
+| Code generation      | `generation.namespace`                                                                           | the `composer.json` namespace of `app/`                 | the application's root namespace                                                                                                     |
+|                      | `generation.module`                                                                              | the application                                         | the module new classes go to unless the dialog picks another                                                                         |
+|                      | `generation.controllerSuffix`, `requestSuffix`, `resourceSuffix`, `policySuffix`, `seederSuffix` | `Controller`, `Request`, `Resource`, `Policy`, `Seeder` | class name suffixes                                                                                                                  |
+|                      | `generation.constructorPromotion`                                                                | on                                                      | constructors promote their parameters                                                                                                |
+|                      | `generation.typeHints`                                                                           | on                                                      | generated methods declare return types                                                                                               |
+
+The inspections are set in the inspection profile, and the generator templates in Editor › File and Code Templates.
+
+## ide.json
+
+An `ide.json` file describes Laravel tooling for a project or a package, in the open format of `laravel-ide-v2.json`. The engine reads the project's own `ide.json` first, then every `vendor/*/*/ide.json`, so the project's rules win. Paths in a file are relative to its folder. Editing an `ide.json` file completes its keys: from the schema its `$schema` names, else from the schema the engine bundles. Keys the engine doesn't use are skipped with a log line (`ide.json ignored: …`).
+
+```json
+{
+  "$schema": "https://laravel-ide.com/schema/laravel-ide-v2.json",
+  "completions": [
+    {
+      "complete": "routeName",
+      "condition": [{ "functionNames": ["nav_link"], "parameters": [2] }]
+    },
+    {
+      "complete": "configKey",
+      "condition": [{ "functionNames": ["blog_setting"] }],
+      "options": { "prefix": "blog." }
+    },
+    {
+      "complete": "staticStrings",
+      "condition": [
+        {
+          "place": "arrayValueWithKey",
+          "keys": ["theme"],
+          "functionNames": ["feed_options"]
+        }
+      ],
+      "options": { "strings": ["light", "dark"] }
+    }
+  ],
+  "blade": {
+    "directives": [
+      {
+        "name": "price",
+        "prefix": "<?php echo number_format(",
+        "suffix": ", 2); ?>"
+      }
+    ]
+  }
+}
+```
+
+What is read:
+
+- **`completions`:** rules saying which strings complete what. The string then gets everything its kind has: completion, goto, usages and inspection.
+  - `complete`: `routeName`, `routeAction`, `routeMiddleware`, `configKey`, `viewName`, `translationKey`, `validationRule(s)`, `gate`, `artisanCommandName`, `environmentVariable`, `eloquentFields`, `viteAsset`, `livewireComponent`, `inertiaPage`, `staticStrings` and `directoryFiles`.
+  - `condition` (any one matches): `functionNames`, `functionFqn`, `methodNames`, `classNames`, `classFqn`, `classParentFqn`, `newClassNames`, `newClassFqn`, `newClassParentFqn`, `parameters` (1-based), `parameterNames`, `keys` and `place` (`parameter`, `arrayKey`, `arrayOnlyKey`, `arrayValue`, `arrayValueWithKey`, `arrayValueWithKeyArray`, `arrayInArrayKey`, `arrayInArrayOnlyKey`, `arrayInArrayValue`, `returnString`, `returnArrayValue`, `returnArrayKey`, `returnArrayOnlyKey`, `returnArrayValueWithKey`, `returnInArrayValueWithKey`).
+  - `options`: `prefix`; for `staticStrings`, `strings`, `stringsWithLocation` and `dataFile` (a JSON array, a JSON object of strings and their places, or one string per line); for `directoryFiles`, `directory`/`directories`, `recursive` and `suffixToClear`.
+  - `transformers` (`staticStrings` and `directoryFiles` only): the filters listed below.
+- **`view.paths`:** more view folders, with an optional namespace.
+- **`blade`:** `components.viewPaths` (with `prefix` and `namespace`), `components.list` (`name`, `namespace`, `className`), `directives` and `ifDirectives` (`name`, `prefix`, `suffix`).
+- **`codeGenerations`:** each entry is a generator in the Laravel › Generate menu. `id`, `name`, `classSuffix`, `inputFilter`, `regex`, `parameters` (`string`, `checkbox`, `select` with `options`; `variable`, `defaultValue`, `optional`) and `files` (`appNamespace` or `directory`, `name`, `baseClass`, `fallbackBaseClass`, and a `template` of type `stub` with `path`, `fallbackPath` and `parameters`, or of type `fileTemplate` naming a template of Editor › File and Code Templates). Names and contents use `${VARIABLE|filter}` expressions; the filters are `className`, `namespace`, `camelCase`, `lowerCamelCase`, `pascalCase`, `studlyCase`, `upperCamelCase`, `snakeCase`, `kebabCase`, `lowerCase`, `upperCase` and `plural`.
+- **`packages`:** `enabledPackages`, `disabledPackages`, `livewire.namespaces` (`classNamespace`, `viewPath`, `tagPrefix`), `inertia.pagePaths` (`path`, `prefix`, `suffix`) and `passport.scopes`.
+
+Not read: `helperCode` and any other key not listed here.
+
+## Known limits
+
+- **Routes:** URLs copied or opened from a route hint keep their `{param}` placeholders. Route lenses show only in documents open in the engine. A route file path computed by `Config::get('…')` or `config()->get('…')`, rather than `config('…')`, isn't followed. Concord's convention-based registrations (views and routes of `BaseModuleServiceProvider` without explicit calls) aren't read.
+- **Views and Blade:** variables passed to a template aren't carried through `@include` beyond one level, nor to `@each`'s item. A missing constructor parameter of a class component has no quick-fix (only a missing `@props` entry does), and `@aware` entries don't complete from the parent component. `Blade::component()` calls made outside a provider's code (`callAfterResolving`, `$blade->component`) aren't read.
+- **Livewire:** a component found by its class (not registered with an alias) can't be renamed by its name; renaming the class doesn't edit `<livewire:…>` tags.
+- **Translations:** Find Usages doesn't start from a JSON locale file.
+- **Validation:** `in:` values come from attributes named like the field, not from the Form Request's own model. `Rule::in()` with variadic strings isn't completed. `unique`/`exists` with more than two parameters aren't converted to `Rule::` objects. Only the common shapes of `Gate::guessPolicyNamesUsing` callbacks are followed.
+- **Eloquent:** `*_count` properties are offered once any `withCount()` of the project counts the relation, not along the query that loaded the model. Tables of a database schema other than the default one aren't used. A query builder's table is lost through a variable reassigned in a loop.
+- **Artisan:** there is no "unknown command" inspection, and option keys in `Artisan::call('x', ['--opt' => …])` don't complete.
+- **Generators:** a listener is registered only where an event service provider has a `$listen` array (Laravel 11 otherwise discovers listeners); a module provider only in a nwidart `module.json`. An `ide.json` `dataFile` is read again only when its `ide.json` is.
+- **Model view:** it doesn't refresh by itself when files change while it's open, and Add columns has no length, default or index modifiers.
+- **Analysis:** a file whose syntax tree is more than 1,500 levels deep isn't analysed (it gets one syntax error saying so); no hand-written code in the corpora comes near that.
+
+## Measurements
+
+The checks of phases 8.21–8.29, in the order they were made. Later sections supersede the numbers of earlier ones.
+
+### Parity check (phase 8.21)
 
 The checklist is `crates/ide-php/tests/laravel_parity.rs`. It runs on `fixtures/laravel-app`, copied with `fixtures/laravel-stubs` as its `vendor/` and with Livewire and Inertia installed, plus a Livewire component and an Inertia page. Outside route files, each goto probe is also written to `app/Parity/Uses.php` before indexing, so find usages has a usage in a second file to find.
 
@@ -53,7 +360,7 @@ Gaps go in the test's `GAPS` list. A gap that starts working fails the test unti
 
 All 33 generators produce files that parse: New Model, the 31 class generators and the fixture's `ide-json:acme.dto`.
 
-## Performance (phase 8.21)
+### Performance (phase 8.21)
 
 The criterion benches live in `crates/ide-php/benches/engine.rs` and run with `pnpm perf:rust`. Their budgets are in `perf/budgets.json`.
 
@@ -77,7 +384,7 @@ The engine runs with no inspections, so nothing builds the model in the backgrou
 - 2 Vite entries, 2 gates and 87 Artisan commands
 - 4 models
 
-### Real applications (2026-11-09)
+#### Real applications (2026-11-09)
 
 `scripts/laravel-apps.sh` fetches two large open-source Laravel applications at pinned commits into `../php-corpus/apps`, with their `vendor/`. Their dependencies are installed with `--no-scripts --no-plugins`, so no code from them runs. When there's no PHP on the machine, the script uses a portable PHP and `composer.phar`, both checked against their SHA-256 sums.
 
@@ -120,7 +427,7 @@ LARAVEL_APP_DIR=../php-corpus/apps/monica cargo bench -p ide-php --bench engine 
 LARAVEL_APP_DIR=../php-corpus/apps/monica cargo test -p ide-php --release --test laravel_parity -- --ignored --nocapture
 ```
 
-### Incremental model (phase 8.22, 2026-11-09)
+#### Incremental model (phase 8.22, 2026-11-09)
 
 The parts read from single files are now kept per file (`crates/ide-php/src/engine/parts.rs`), next to the index in the engine's memory:
 
@@ -144,7 +451,7 @@ The parts live in memory, not in the index database. A new session builds them o
 
 The model's sizes are unchanged. The warm 95 ms is now mostly the parts built from PHP classes rather than from single files: Artisan commands (about 55 ms), Eloquent models (25 ms) and the project's route registrations (12 ms). Those follow the type resolver, which is rebuilt for each modification count.
 
-### Package registrations (phase 8.23, 2026-11-09)
+#### Package registrations (phase 8.23, 2026-11-09)
 
 The model now follows the service providers that applications and packages register, not only `app/Providers` and the modules' own folders. The providers are listed once, when the project loads:
 
@@ -196,7 +503,7 @@ The `route_hints` bench now opens `routes/web.php` when it has routes, and other
 
 `real_app_checklist` now gets past the model check on Bagisto (it has routes, views and configuration keys). On both apps it still stops at `no completion for ["validationRule"]`, which phase 8.26 covers.
 
-### Validation on real applications (phase 8.26)
+#### Validation on real applications (phase 8.26)
 
 The missing validation-rule completion wasn't the rule catalogue: the checklist's probe typed `$request` as the fixture's `App\Http\Requests\StorePostRequest`, which no real application has, so the `validate()` call had no receiver class. The probe now uses `Illuminate\Http\Request` and `Validator::make`, which every application has. Both complete on Monica and Bagisto.
 
@@ -204,7 +511,7 @@ Monica does have a real gap, though: almost none of its rules sit in Form Reques
 
 `real_app_checklist` passes on Monica. On Bagisto it passed too, but at the time only with larger thread stacks (`RUST_MIN_STACK=67108864`): in a debug build an indexing thread overflowed its default 2 MB stack on one of Bagisto's files. Phase 8.29 fixed that (see below); no command needs `RUST_MIN_STACK` any more.
 
-### Eloquent on real applications (phase 8.27, 2026-11-10)
+#### Eloquent on real applications (phase 8.27, 2026-11-10)
 
 `real_app_eloquent_columns` (ignored, `LARAVEL_APP_DIR`) builds the model view of every model, then runs the inspections on the application's own PHP files (`app/`, `packages/`, `database/`, `routes/`) and prints every `PhpUnknownEloquentColumn` problem. Its first runs found these false positives, now fixed:
 
@@ -233,7 +540,7 @@ To run it again:
 LARAVEL_APP_DIR=../php-corpus/apps/monica cargo test -p ide-php --test laravel_parity -- --ignored real_app_eloquent_columns --nocapture
 ```
 
-### Real-application check (phase 8.29, 2026-11-10)
+#### Real-application check (phase 8.29, 2026-11-10)
 
 **The stack overflow.** Bagisto's `vendor/aws/aws-sdk-php` has clients whose docblocks hold a union of some 300 string literals (`@method … array{set?: 'a'|'b'|…}`). Mago's PHPDoc parser and the summary's walk over the parsed type recurse once per union member, and in a debug build that overflowed an indexing thread's 2 MB stack. Looking further found more of the same kind, on thousands of nested arrays, closures, `if` blocks, anonymous classes or matches, and on long `&&` chains and method chains:
 
@@ -294,56 +601,3 @@ To run them:
 LARAVEL_APP_DIR=../php-corpus/apps/bagisto cargo test -p ide-php --test laravel_parity -- --ignored real_app_checklist real_app_inspect_code --nocapture
 LARAVEL_APP_DIR=../php-corpus/apps/bagisto cargo bench -p ide-php --bench engine -- php_laravel_real
 ```
-
-## Still missing
-
-These gaps are tracked as phases 8.22–8.29 in [ROADMAP.md](ROADMAP.md).
-
-These are the gaps against the feature list in LARAVEL-ROADMAP.md, gathered from the phases' own notes in PROGRESS.md. They are grouped as proposed follow-up phases.
-
-1. **Real-application measurements and an incremental model.** Done in 8.21 and 8.22, as described above.
-2. **Usages and rename from declarations and Blade.** Done in 8.24. Route-name and view usages in closed templates were already found through the word index; what 8.24 added is listed in PROGRESS.md. A discovered Livewire name (not a registered alias) still can't be renamed on its own, and searches read open Blade templates from disk.
-   - Find usages and rename from:
-     - a Livewire component class or its `Livewire::component` alias
-     - an Inertia page file
-     - a `.env` line
-   - Rename of translation keys.
-   - Route-name and view usages inside closed Blade templates, so renaming a route also edits `{{ route('…') }}`.
-   - Running the undefined-view inspection in Blade templates.
-3. **Routing coverage.** Done in 8.23.
-   - Route registrations:
-     - `Route::resources()`, `singleton()` and `fallback()`
-     - `->names('prefix')`
-     - the array form of `Route::group(['middleware' => …])`
-   - `aliasMiddleware` in service providers.
-   - Route files of vendor packages.
-   - `domain()` in route hints, and lenses for controllers routed through module providers.
-4. **Blade components.** Done in 8.25. Adding a missing constructor parameter to a class component (rather than a `@props` entry) isn't offered, and `@aware` entries don't complete from the parent component.
-   - Class components' public properties as view variables.
-   - `@aware`, `<x-slot>` names and `<x-dynamic-component>`.
-   - `Blade::component()`, `componentNamespace()` and `anonymousComponentPath()` registrations.
-   - Vendor components.
-   - Checking bound attributes against parameter types.
-   - Quick-fixes for template problems.
-5. **Auth and validation.** Done in 8.26, along with the Monica validation gap described above.
-   - `#[UsePolicy]`, `Gate::guessPolicyNamesUsing` and inherited policies.
-   - `can:` abilities in the inspection and in gate usages.
-   - `Gate::define('x', [Policy::class, 'm'])` going to the method.
-   - Unknown-guard and unknown-broker inspections.
-   - Completion of `in:` values and `Rule::` arguments.
-   - Generated rules with `Rule::enum()` and `max:255`.
-6. **Eloquent.** Done in 8.27. A `*_count` property is offered once some `withCount()`, `loadCount()` or `$withCount` of the project counts that relation. This is project-wide, not tracked along the query that loads the model.
-   - Columns of the related model in the second argument of `whereRelation`/`withSum`.
-   - `*_count` only after `withCount`.
-   - A raw `Builder $query` scope's model.
-   - Dropped and renamed columns.
-   - Join and alias tables in `DB::table`.
-   - Typed `Attribute::make(get: …)` accessors without `@return`.
-7. **Generators.** Done in 8.28. A listener is registered only where an event service provider has a `$listen` array (Laravel 11 discovers listeners otherwise); a module's provider only in a `nwidart/laravel-modules` `module.json`. `ide.json` `inputFilter` is read as a chain of the `${…|filter}` filters, and `transformers` (the same filters) apply to `staticStrings` and `directoryFiles` rules only; a `dataFile` is read when the `ide.json` is.
-   - Register observers (`#[ObservedBy]`), events and listeners, and module service providers.
-   - Pivot tables for `belongsToMany` in New Model.
-   - Livewire 2 paths.
-   - A grouped Generate submenu.
-   - Edited templates for the in-model actions.
-   - `ide.json` `inputFilter`/`regex`, `transformers` and `dataFile`.
-8. **Livewire.** Done in 8.28 (`BladeUnknownLivewireParameter`, under Settings › PHP › Inspections › Laravel). An unknown-parameter inspection for `@livewire(…, [...])` and `<livewire:…>` attributes.

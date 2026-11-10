@@ -809,5 +809,5 @@ Runs after Plan 7. Before any 8.x phase, read [LARAVEL-ROADMAP.md](LARAVEL-ROADM
 - [x] Phase 8.29.b: Route files at computed paths
       Jetstream loads its routes with `$this->loadRoutesFrom(__DIR__.'/../routes/'.config('jetstream.stack').'.php')`. The summary keeps only paths made of literals and `__DIR__`, so Monica's `redirect()->route('profile.show')` is an undefined route (the one false positive of 8.29's review that isn't a limit of the analysis). Keep such a path with its `config('…')` parts, and fill them in from the project's configuration keys (with the call's default, else the key's value) when the route files are resolved, so a changed `config/jetstream.php` picks the other file. Tests: a provider fixture with a `config()` part in its route path, and `real_app_inspect_code` on Monica without `PhpUndefinedRoute` for `profile.show`.
 
-- [ ] Phase 8.30: Documentation
+- [x] Phase 8.30: Documentation
       Add a user guide, `docs/php-engine/laravel.md`, finishing the file started in 8.21 and extended up to 8.29. It covers each feature with a short example, the settings, `ide.json` support, and known limits. Update `THIRD_PARTY_LICENSES.md` if a phase bundled anything new (for example Laravel stubs). Tests: none beyond the usual gate.

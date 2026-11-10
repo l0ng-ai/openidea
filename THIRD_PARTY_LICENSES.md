@@ -151,6 +151,19 @@ The stubs' documentation comments contain material by the PHP Documentation Grou
 under [Creative Commons Attribution 3.0](https://www.php.net/manual/en/cc.license.php)
 (CC-BY 3.0).
 
+## Laravel framework generator stubs
+
+The Laravel code-generation templates in `src/features/templates/files/laravel/*.ft` (bundled
+in the frontend, and embedded in the native PHP engine as the generators' default templates)
+follow the shape and documentation comments of the `make:` command stubs of
+[laravel/framework](https://github.com/laravel/framework) (for example "Display a listing of
+the resource.", "Run the migrations." and the `ValidationRule` / middleware signatures),
+adapted to OpenIDEA's template variables. Copyright (c) Taylor Otwell, licensed under the
+[MIT License](https://github.com/laravel/framework/blob/12.x/LICENSE.md). The `ide.json`
+schema (`crates/ide-php/src/frameworks/laravel/ide-json.schema.json`) is written from the
+format's public description and contains no third-party text; the Laravel stubs under
+`fixtures/laravel-stubs` are test fixtures and are not shipped.
+
 ## Tools downloaded on request (not bundled)
 
 The tool installer (`crates/ide-tools`, Settings › Languages & Frameworks ›
