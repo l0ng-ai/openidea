@@ -675,11 +675,42 @@ export function toggleCommitBookmark(commit: Commit) {
   });
 }
 
+/**
+ * Identity of a remembered filter value (#2443). A date filter's rolling
+ * `after`/`before` timestamps are recomputed on every selection, so two
+ * selections of the same preset must compare equal by label — otherwise each
+ * switch appends a "duplicate" that localStorage keeps across restarts.
+ */
+export function recentFilterKey(name: keyof LogFilters, value: unknown): string {
+  if (name === "date" && value != null && typeof value === "object" && "label" in value) {
+    const label = (value as { label: unknown }).label;
+    if (typeof label === "string") return `date:${label}`;
+  }
+  return JSON.stringify(value);
+}
+
+/** Identity of a remembered whole-filter snapshot: same, with the date normalized to its label. */
+function recentFiltersKey(value: LogFilters): string {
+  return JSON.stringify(value.date ? { ...value, date: value.date.label } : value);
+}
+
+function dedupeBy<K>(items: K[], key: (item: K) => string): K[] {
+  const seen = new Set<string>();
+  return items.filter((item) => {
+    const k = key(item);
+    if (seen.has(k)) return false;
+    seen.add(k);
+    return true;
+  });
+}
+
 export function recentFilterValues<K extends keyof LogFilters>(name: K): LogFilters[K][] {
   try {
-    return JSON.parse(
+    const raw: unknown = JSON.parse(
       localStorage.getItem(`openidea.vcs.logRecent.v1:${useVcs.getState().root}:${name}`) ?? "[]",
-    ) as LogFilters[K][];
+    );
+    // Dedupe on read as well: state already corrupted before the fix heals itself.
+    return Array.isArray(raw) ? dedupeBy(raw as LogFilters[K][], (v) => recentFilterKey(name, v)).slice(0, 10) : [];
   } catch {
     return [];
   }
@@ -690,7 +721,7 @@ export function recentLogFilters(): LogFilters[] {
     const raw: unknown = JSON.parse(
       localStorage.getItem(`openidea.vcs.logFilters.v1:${useVcs.getState().root}`) ?? "[]",
     );
-    return Array.isArray(raw) ? raw.slice(0, 10).map(parseFilters) : [];
+    return Array.isArray(raw) ? dedupeBy(raw.slice(0, 10).map(parseFilters), recentFiltersKey).slice(0, 10) : [];
   } catch {
     return [];
   }
@@ -704,7 +735,10 @@ function rememberRecentFilters(before: LogFilters) {
       localStorage.setItem(
         `openidea.vcs.logRecent.v1:${useVcs.getState().root}:${name}`,
         JSON.stringify(
-          [value, ...recentFilterValues(name).filter((v) => JSON.stringify(v) !== JSON.stringify(value))].slice(0, 10),
+          [
+            value,
+            ...recentFilterValues(name).filter((v) => recentFilterKey(name, v) !== recentFilterKey(name, value)),
+          ].slice(0, 10),
         ),
       );
     } catch {
@@ -713,10 +747,10 @@ function rememberRecentFilters(before: LogFilters) {
   }
   if (hasFilters(before)) {
     try {
-      const recent = [before, ...recentLogFilters().filter((f) => JSON.stringify(f) !== JSON.stringify(before))].slice(
-        0,
-        10,
-      );
+      const recent = [
+        before,
+        ...recentLogFilters().filter((f) => recentFiltersKey(f) !== recentFiltersKey(before)),
+      ].slice(0, 10);
       localStorage.setItem(`openidea.vcs.logFilters.v1:${useVcs.getState().root}`, JSON.stringify(recent));
     } catch {
       /* Recent filters are optional session state. */
