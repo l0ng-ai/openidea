@@ -544,11 +544,17 @@ impl crate::language_service::LanguageService for PhpService {
         Some(Ok(engine.prepare_rename(doc, pos)?))
     }
 
-    /// The edit renames a class's file too when it is named after the class.
+    /// The edit renames a class's file too when it is named after the class;
+    /// dynamic uses it leaves alone come back as possible usages.
     fn rename(&self, doc: DocId, pos: Pos, new_name: &str, cancel: &CancellationToken) -> Answer<Renamed> {
         let engine = self.0.engine()?;
-        let edit = engine.rename(doc, pos, new_name, cancel)?;
-        Some(edit.map(|edit| Renamed { edit, incomplete: None }))
+        let outcome = engine.rename_with_possible_usages(doc, pos, new_name, cancel)?;
+        Some(outcome.map(|outcome| Renamed {
+            edit: outcome.edit,
+            incomplete: None,
+            possible_usages:
+                outcome.possible_usages.into_iter().map(|usage| Location::file(usage.path, usage.range)).collect(),
+        }))
     }
 
     /// The quick-fixes of the inspection problems at the range, auto-import

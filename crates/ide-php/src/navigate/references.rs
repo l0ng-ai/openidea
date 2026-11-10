@@ -21,17 +21,25 @@
 //!   capture or first write is the declaration);
 //! - class names in PHPDoc types (`@param Foo`, `@return list<Foo>`,
 //!   `@throws`, `@mixin`, …) and string literals naming the class
-//!   (`'App\\Foo'`), marked [`UsageKind::Doc`] and [`UsageKind::String`].
+//!   (`'App\\Foo'`), marked [`UsageKind::Doc`] and [`UsageKind::String`];
+//! - constant names in the strings of `define('X', …)`, `defined('X')` and
+//!   `constant('X')` ([`UsageKind::String`]).
+//!
+//! [`PhpEngine::possible_usages`] lists, in the same candidate files, the
+//! dynamic uses that may reach a function, method or property but that a
+//! rename can't follow: `$f()`, `$o->$m()`, `$o->$p`, `Foo::$$p`, and string
+//! callables (`'f'`, `'Foo::m'`, `[$o, 'm']`) passed where the callee's
+//! parameter is `callable` or `callable-string`.
 
 use std::collections::HashSet;
 use std::path::{Path, PathBuf};
 
 use ide_core::{CancellationToken, DocId, IdeError, IdeResult, Pos, Range};
-use mago_span::Span;
+use mago_span::{HasSpan, Span};
 use mago_syntax::cst::{
-    Access, AnonymousClass, Argument, ArgumentList, ArrowFunction, Call, Class, ClassLikeConstantSelector,
-    ClassLikeMemberSelector, Closure, DirectVariable, Enum, Expression, Function, Interface, LiteralString, Method,
-    PartialApplication, Trait, TriviaKind, Variable,
+    Access, AnonymousClass, Argument, ArgumentList, ArrayElement, ArrowFunction, Call, Class,
+    ClassLikeConstantSelector, ClassLikeMemberSelector, Closure, DirectVariable, Enum, Expression, Function, Interface,
+    Literal, LiteralString, Method, PartialApplication, Trait, TriviaKind, Variable,
 };
 use mago_syntax::walker::Walker;
 use rayon::prelude::*;
@@ -44,7 +52,7 @@ use crate::index::words::contains_word;
 use crate::names::{FileNames, NameKind, NameRole, fqn_eq};
 use crate::summary::{FileSummary, Visibility};
 use crate::syntax::ParsedFile;
-use crate::types::{ExprTypes, Frame};
+use crate::types::{ExprTypes, Frame, StringKind, Type};
 
 /// How a usage refers to the declaration.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
@@ -55,8 +63,13 @@ pub enum UsageKind {
     Code,
     /// A type in a PHPDoc comment.
     Doc,
-    /// A string literal naming the class.
+    /// A string literal naming the class, or the constant in
+    /// `define('X')`, `defined('X')` and `constant('X')`.
     String,
+    /// A dynamic use that may reach the declaration but can't be renamed
+    /// safely (`$f()`, `$o->$m()`, a string callable); only
+    /// [`PhpEngine::possible_usages`] gives these.
+    Possible,
 }
 
 /// One usage found by [`PhpEngine::references`].
@@ -207,35 +220,8 @@ impl PhpEngine {
         include_declaration: bool,
         cancel: &CancellationToken,
     ) -> IdeResult<Vec<Usage>> {
-        let here_key = path_key(path);
-        let mut files: Vec<String> = vec![here_key.clone()];
-        for sought in sought {
-            match sought {
-                Sought::Variable { file, .. } => files.push(file.clone()),
-                _ => {
-                    let word = sought.word().unwrap_or_default();
-                    files.extend(self.files_with_word(word)?.iter().map(|p| path_key(p)));
-                }
-            }
-        }
-        let mut seen = HashSet::new();
-        files.retain(|file| seen.insert(file.clone()));
-        let documents = self.open_documents();
         let stub_dir = path_key(&self.stub_dir());
-        let found: Vec<IdeResult<Vec<Usage>>> = files
-            .par_iter()
-            .filter(|file| !file.starts_with(&stub_dir))
-            .map(|file| {
-                if cancel.is_cancelled() {
-                    return Err(IdeError::cancelled());
-                }
-                Ok(self.usages_in(file, &documents, sought).unwrap_or_default())
-            })
-            .collect();
-        let mut out = Vec::new();
-        for usages in found {
-            out.extend(usages?);
-        }
+        let mut out = self.scan_candidates(sought, path, false, cancel)?;
         // Member and parameter declarations aren't occurrences the scan
         // visits; name declarations come from the name resolution too.
         for sought in sought {
@@ -276,6 +262,71 @@ impl PhpEngine {
         Ok(out)
     }
 
+    /// The dynamic uses that may reach the sought functions, methods or
+    /// properties (see the module docs), sorted by file and position;
+    /// library files left out.
+    pub(crate) fn possible_usages(
+        &self,
+        sought: &[Sought],
+        path: &Path,
+        cancel: &CancellationToken,
+    ) -> IdeResult<Vec<Usage>> {
+        let dynamic = sought.iter().any(|sought| match sought {
+            Sought::Name { kind, .. } => *kind == NameKind::Function,
+            Sought::Member { kind, .. } => *kind != MemberKind::Constant,
+            _ => false,
+        });
+        if !dynamic {
+            return Ok(Vec::new());
+        }
+        let mut out = self.scan_candidates(sought, path, true, cancel)?;
+        out.retain(|usage| !self.is_library(&usage.path));
+        out.sort_by_key(|usage| (path_key(&usage.path), usage.range.start, usage.range.end));
+        out.dedup_by(|b, a| path_key(&a.path) == path_key(&b.path) && a.range == b.range);
+        Ok(out)
+    }
+
+    /// Scans the files that may mention the sought declarations: for their
+    /// usages, or with `possible` for their possible usages.
+    fn scan_candidates(
+        &self,
+        sought: &[Sought],
+        path: &Path,
+        possible: bool,
+        cancel: &CancellationToken,
+    ) -> IdeResult<Vec<Usage>> {
+        let mut files: Vec<String> = vec![path_key(path)];
+        for sought in sought {
+            match sought {
+                Sought::Variable { file, .. } => files.push(file.clone()),
+                _ => {
+                    let word = sought.word().unwrap_or_default();
+                    files.extend(self.files_with_word(word)?.iter().map(|p| path_key(p)));
+                }
+            }
+        }
+        let mut seen = HashSet::new();
+        files.retain(|file| seen.insert(file.clone()));
+        let documents = self.open_documents();
+        let stub_dir = path_key(&self.stub_dir());
+        let mode = if possible { ScanMode::Possible } else { ScanMode::Usages };
+        let found: Vec<IdeResult<Vec<Usage>>> = files
+            .par_iter()
+            .filter(|file| !file.starts_with(&stub_dir))
+            .map(|file| {
+                if cancel.is_cancelled() {
+                    return Err(IdeError::cancelled());
+                }
+                Ok(self.scan_file(file, &documents, sought, mode).map(|(usages, _)| usages).unwrap_or_default())
+            })
+            .collect();
+        let mut out = Vec::new();
+        for usages in found {
+            out.extend(usages?);
+        }
+        Ok(out)
+    }
+
     /// The indexed files and open buffers containing `word`.
     pub(super) fn files_with_word(&self, word: &str) -> IdeResult<Vec<PathBuf>> {
         let mut out = match self.index() {
@@ -288,11 +339,6 @@ impl PhpEngine {
             }
         }
         Ok(out)
-    }
-
-    /// The usages in one file (its open buffer, else the file on disk).
-    fn usages_in(&self, file: &str, documents: &[OpenDocument], sought: &[Sought]) -> Option<Vec<Usage>> {
-        self.scan_file(file, documents, sought, None).map(|(usages, _)| usages)
     }
 
     /// Whether a variable named `name` (without `$`) is already declared in
@@ -309,19 +355,20 @@ impl PhpEngine {
             })
             .collect();
         files.dedup();
-        files
-            .into_iter()
-            .any(|file| self.scan_file(file, &documents, sought, Some(name.as_bytes())).is_some_and(|(_, taken)| taken))
+        files.into_iter().any(|file| {
+            self.scan_file(file, &documents, sought, ScanMode::Probe(name.as_bytes())).is_some_and(|(_, taken)| taken)
+        })
     }
 
-    /// The usages in one file and, with a `probe` name, whether a variable
-    /// by that name is declared where a sought variable is used.
+    /// The usages (or possible usages) in one file, its open buffer or else
+    /// the file on disk, and, when probing a name, whether a variable by
+    /// that name is declared where a sought variable is used.
     fn scan_file(
         &self,
         file: &str,
         documents: &[OpenDocument],
         sought: &[Sought],
-        probe: Option<&[u8]>,
+        mode: ScanMode<'_>,
     ) -> Option<(Vec<Usage>, bool)> {
         let path = crate::index::key_path(file);
         let open = documents.iter().find(|document| path_key(&document.path) == file);
@@ -338,8 +385,14 @@ impl PhpEngine {
         let here = FileSummary::extract(&parsed);
         let types = ExprTypes::new(&parsed, &names, &here, &resolver);
         let lookup = Lookup { parsed: &parsed, names: &names, here: &here, resolver: &resolver, types: &types };
-        let mut scan = Scan { lookup, file, sought, frames: Vec::new(), found: Vec::new(), probe, taken: false };
-        if probe.is_none() {
+        let probe = match mode {
+            ScanMode::Probe(name) => Some(name),
+            _ => None,
+        };
+        let possible = mode == ScanMode::Possible;
+        let mut scan =
+            Scan { lookup, file, sought, frames: Vec::new(), found: Vec::new(), probe, taken: false, possible };
+        if mode == ScanMode::Usages {
             scan.names();
             scan.doc_comments();
         }
@@ -397,6 +450,58 @@ fn same_member_name(kind: MemberKind, a: &str, b: &str) -> bool {
     }
 }
 
+/// What [`PhpEngine::scan_file`] looks for.
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum ScanMode<'s> {
+    Usages,
+    /// Whether a variable by this name is declared where a sought variable
+    /// is used.
+    Probe(&'s [u8]),
+    /// Possible usages ([`UsageKind::Possible`]).
+    Possible,
+}
+
+/// `define`, `defined` or `constant` as the callee (any case, with or
+/// without the leading `\`), and the string literal of its first argument
+/// when it names a global or namespaced constant (not `Foo::BAR`): the
+/// literal and the name without a leading `\`.
+pub(crate) fn constant_name_argument<'a>(
+    function: &Expression<'_>,
+    list: &'a ArgumentList<'a>,
+) -> Option<(&'a LiteralString<'a>, String)> {
+    let Expression::Identifier(identifier) = function else { return None };
+    let callee = identifier.value();
+    let callee = callee.strip_prefix(b"\\").unwrap_or(callee);
+    if !["define", "defined", "constant"].iter().any(|name| callee.eq_ignore_ascii_case(name.as_bytes())) {
+        return None;
+    }
+    let first = match list.arguments.first()? {
+        Argument::Positional(argument) => argument.value,
+        Argument::Named(argument) => argument.value,
+    };
+    let Expression::Literal(Literal::String(string)) = first else { return None };
+    let value = String::from_utf8_lossy(string.value?);
+    let name = value.strip_prefix('\\').unwrap_or(&value);
+    let valid = !name.is_empty() && name.split('\\').all(super::rename::is_identifier);
+    (valid && string.raw.len() >= 2).then(|| (string, name.to_owned()))
+}
+
+/// The string literal `expr` is, maybe parenthesized: its value.
+fn literal_string<'a>(expr: &'a Expression<'a>) -> Option<(&'a LiteralString<'a>, String)> {
+    match expr {
+        Expression::Parenthesized(inner) => literal_string(inner.expression),
+        Expression::Literal(Literal::String(string)) if string.raw.len() >= 2 => {
+            Some((string, String::from_utf8_lossy(string.value?).into_owned()))
+        }
+        _ => None,
+    }
+}
+
+/// The span inside a string literal's quotes.
+fn inside_quotes(string: &LiteralString<'_>) -> (u32, u32) {
+    (string.span.start.offset + 1, string.span.end.offset - 1)
+}
+
 /// The occurrences of the sought declarations in one file.
 struct Scan<'a, 'r, 's> {
     lookup: Lookup<'a, 'r>,
@@ -408,6 +513,8 @@ struct Scan<'a, 'r, 's> {
     probe: Option<&'s [u8]>,
     /// Whether `probe` is declared in one of them.
     taken: bool,
+    /// Only possible usages are collected.
+    possible: bool,
 }
 
 impl<'a> Scan<'a, '_, '_> {
@@ -520,6 +627,9 @@ impl<'a> Scan<'a, '_, '_> {
 
     /// A string literal naming a sought class.
     fn string(&mut self, string: &LiteralString<'_>) {
+        if self.possible {
+            return;
+        }
         let Some(value) = string.value else { return };
         let value = String::from_utf8_lossy(value);
         let value = value.trim_start_matches('\\');
@@ -581,7 +691,169 @@ impl<'a> Scan<'a, '_, '_> {
         }
     }
 
+    /// A constant named in `define('X')`, `defined('X')` or `constant('X')`.
+    fn constant_string(&mut self, function: &Expression<'_>, list: &'a ArgumentList<'a>) {
+        let Some((string, name)) = constant_name_argument(function, list) else { return };
+        if self.names_sought().any(|(kind, fqn)| kind == NameKind::Constant && fqn_eq(kind, fqn, &name)) {
+            let (start, end) = inside_quotes(string);
+            self.add_bytes(start, end, UsageKind::String);
+        }
+    }
+
+    fn functions_sought(&self) -> bool {
+        self.names_sought().any(|(kind, _)| kind == NameKind::Function)
+    }
+
+    fn member_kind_sought(&self, kind: MemberKind) -> bool {
+        self.sought.iter().any(|sought| matches!(sought, Sought::Member { kind: k, .. } if *k == kind))
+    }
+
+    /// A possible usage at `span`.
+    fn possible_at(&mut self, span: Span) {
+        self.add(span, UsageKind::Possible);
+    }
+
+    /// Possible usages: dynamic calls and accesses, and string callables
+    /// passed as arguments.
+    fn dynamic(&mut self, expr: &'a Expression<'a>) {
+        let dynamic_selector = |selector: &ClassLikeMemberSelector<'_>| {
+            !matches!(selector, ClassLikeMemberSelector::Identifier(_) | ClassLikeMemberSelector::Missing(_))
+        };
+        let methods = self.member_kind_sought(MemberKind::Method);
+        let properties = self.member_kind_sought(MemberKind::Property);
+        match expr {
+            Expression::Call(Call::Function(call)) => {
+                if !matches!(call.function, Expression::Identifier(_)) && self.functions_sought() {
+                    self.possible_at(call.function.span());
+                }
+                self.callable_arguments(expr, &call.argument_list);
+            }
+            Expression::Call(Call::Method(call)) => {
+                if methods && dynamic_selector(&call.method) {
+                    self.possible_at(call.method.span());
+                }
+                self.callable_arguments(expr, &call.argument_list);
+            }
+            Expression::Call(Call::NullSafeMethod(call)) => {
+                if methods && dynamic_selector(&call.method) {
+                    self.possible_at(call.method.span());
+                }
+                self.callable_arguments(expr, &call.argument_list);
+            }
+            Expression::Call(Call::StaticMethod(call)) => {
+                if methods && dynamic_selector(&call.method) {
+                    self.possible_at(call.method.span());
+                }
+                self.callable_arguments(expr, &call.argument_list);
+            }
+            Expression::Instantiation(instantiation) => {
+                if let Some(list) = &instantiation.argument_list {
+                    self.callable_arguments(expr, list);
+                }
+            }
+            Expression::Access(Access::Property(access)) if properties && dynamic_selector(&access.property) => {
+                self.possible_at(access.property.span());
+            }
+            Expression::Access(Access::NullSafeProperty(access))
+                if properties && dynamic_selector(&access.property) =>
+            {
+                self.possible_at(access.property.span());
+            }
+            Expression::Access(Access::StaticProperty(access))
+                if properties && !matches!(access.property, Variable::Direct(_)) =>
+            {
+                self.possible_at(access.property.span());
+            }
+            _ => {}
+        }
+    }
+
+    /// String callables naming a sought function or method (`'f'`,
+    /// `'Foo::m'`, `[$o, 'm']`) passed to a `callable` parameter of `call`.
+    fn callable_arguments(&mut self, call: &'a Expression<'a>, list: &'a ArgumentList<'a>) {
+        let functions: Vec<String> = self
+            .names_sought()
+            .filter(|(kind, _)| *kind == NameKind::Function)
+            .map(|(_, fqn)| fqn.trim_start_matches('\\').to_owned())
+            .collect();
+        let methods: Vec<String> = self
+            .sought
+            .iter()
+            .filter_map(|sought| match sought {
+                Sought::Member { kind: MemberKind::Method, name, .. } => Some(name.clone()),
+                _ => None,
+            })
+            .collect();
+        if functions.is_empty() && methods.is_empty() {
+            return;
+        }
+        let method_named = |name: &str| methods.iter().any(|method| method.eq_ignore_ascii_case(name));
+        let mut candidates: Vec<(usize, &LiteralString<'_>)> = Vec::new();
+        for (index, argument) in list.arguments.iter().enumerate() {
+            let value = match argument {
+                Argument::Positional(argument) => argument.value,
+                Argument::Named(argument) => argument.value,
+            };
+            if let Some((string, text)) = literal_string(value) {
+                let text = text.strip_prefix('\\').unwrap_or(&text);
+                let named = match text.split_once("::") {
+                    Some((_, method)) => method_named(method),
+                    None => functions.iter().any(|fqn| fqn_eq(NameKind::Function, fqn, text)),
+                };
+                if named {
+                    candidates.push((index, string));
+                }
+                continue;
+            }
+            let elements = match value {
+                Expression::Array(array) => &array.elements,
+                Expression::LegacyArray(array) => &array.elements,
+                _ => continue,
+            };
+            let values: Vec<&Expression<'_>> = elements
+                .iter()
+                .filter_map(|element| match element {
+                    ArrayElement::Value(element) => Some(element.value),
+                    _ => None,
+                })
+                .collect();
+            if let [_, method] = values.as_slice()
+                && elements.len() == 2
+                && let Some((string, text)) = literal_string(method)
+                && method_named(&text)
+            {
+                candidates.push((index, string));
+            }
+        }
+        if candidates.is_empty() {
+            return;
+        }
+        let lookup = &self.lookup;
+        let Some(callee) = crate::signature::callee(lookup.types, lookup.names, lookup.resolver, call, &self.frames)
+        else {
+            return;
+        };
+        let context = lookup.types.context(&self.frames);
+        let params = crate::signature::callee_params(lookup.resolver, lookup.here, &callee, &context);
+        for (index, string) in candidates {
+            let Some(param) = crate::signature::parameter_index(&params, list, index) else { continue };
+            let callable = params[param]
+                .ty
+                .members()
+                .iter()
+                .any(|member| matches!(member, Type::Callable(_) | Type::String(StringKind::Callable)));
+            if callable {
+                let (start, end) = inside_quotes(string);
+                self.add_bytes(start, end, UsageKind::Possible);
+            }
+        }
+    }
+
     fn expression(&mut self, expr: &'a Expression<'a>) {
+        if self.possible {
+            self.dynamic(expr);
+            return;
+        }
         let members = self.members_sought();
         match expr {
             Expression::Call(Call::Method(call)) => {
@@ -602,7 +874,10 @@ impl<'a> Scan<'a, '_, '_> {
                 }
                 self.arguments(expr, &call.argument_list);
             }
-            Expression::Call(Call::Function(call)) => self.arguments(expr, &call.argument_list),
+            Expression::Call(Call::Function(call)) => {
+                self.constant_string(call.function, &call.argument_list);
+                self.arguments(expr, &call.argument_list);
+            }
             Expression::Instantiation(instantiation) => {
                 if let Some(list) = &instantiation.argument_list {
                     self.arguments(expr, list);
@@ -639,6 +914,9 @@ impl<'a> Scan<'a, '_, '_> {
     }
 
     fn variable(&mut self, variable: &DirectVariable<'_>) {
+        if self.possible {
+            return;
+        }
         let name = variable.name.strip_prefix(b"$").unwrap_or(variable.name);
         let wanted: Vec<Range> = self
             .sought

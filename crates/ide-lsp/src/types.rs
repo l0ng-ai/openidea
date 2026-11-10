@@ -404,6 +404,11 @@ pub struct References {
 pub struct Renamed {
     pub edit: WorkspaceEdit,
     pub incomplete: Option<ReferencesIncomplete>,
+    /// Dynamic uses the edit leaves alone that may reach the renamed symbol
+    /// (`$f()`, `$o->$m()`, string callables), for the preview to warn about.
+    #[serde(default)]
+    #[specta(optional)]
+    pub possible_usages: Vec<Location>,
 }
 
 /// IDEA's class-hierarchy refactorings.

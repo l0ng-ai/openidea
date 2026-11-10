@@ -6544,6 +6544,11 @@ export type RemoteStage = "connecting" | "checking" | "downloading" | "uploading
 export type Renamed = {
 	edit: WorkspaceEdit,
 	incomplete: ReferencesIncomplete | null,
+	/**
+	 *  Dynamic uses the edit leaves alone that may reach the renamed symbol
+	 *  (`$f()`, `$o->$m()`, string callables), for the preview to warn about.
+	 */
+	possibleUsages?: Location[],
 };
 
 export type ReplaceEvent = 

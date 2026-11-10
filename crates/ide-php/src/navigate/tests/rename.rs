@@ -439,3 +439,161 @@ fn docblock_names_stay_in_their_own_function() {
         )
     );
 }
+
+#[test]
+fn renaming_a_define_constant_from_its_declaration_and_a_use() {
+    let config = r"<?php
+namespace App;
+
+define('APP_LIMIT', 10);
+define('APP_MAX', 20);
+
+if (!defined('APP_LIMIT')) { echo constant('\APP_LIMIT') . constant('Foo::APP_LIMIT'); }
+";
+    let user = r"<?php
+namespace Web;
+
+echo APP_LIMIT . \APP_LIMIT . 'APP_LIMIT';
+";
+    let mut project = Project::new(&[("src/config.php", config), ("src/user.php", user)]);
+    let renamed_config = config
+        .replace("define('APP_LIMIT'", "define('LIMIT'")
+        .replace("defined('APP_LIMIT')", "defined('LIMIT')")
+        .replace("constant('\\APP_LIMIT')", "constant('\\LIMIT')");
+    let renamed_user = "<?php\nnamespace Web;\n\necho LIMIT . \\LIMIT . 'APP_LIMIT';\n";
+
+    // From the declaration's string.
+    let source = config.replace("define('APP_LIMIT'", "define('APP_LI/*|*/MIT'");
+    assert_eq!(project.prepare("src/config.php", &source).as_deref(), Some("APP_LIMIT"));
+    let files = project.renamed("src/config.php", &source, "LIMIT");
+    assert_eq!(files["src/config.php"], renamed_config);
+    assert_eq!(files["src/user.php"], renamed_user);
+
+    // From a use, and from `defined()`.
+    let source = user.replace("echo APP_LIMIT", "echo APP_LI/*|*/MIT");
+    let files = project.renamed("src/user.php", &source, "LIMIT");
+    assert_eq!(files["src/config.php"], renamed_config);
+    assert_eq!(files["src/user.php"], renamed_user);
+    let source = config.replace("defined('APP_LIMIT')", "defined('APP_/*|*/LIMIT')");
+    assert_eq!(project.prepare("src/config.php", &source).as_deref(), Some("APP_LIMIT"));
+    assert_eq!(project.renamed("src/config.php", &source, "LIMIT")["src/config.php"], renamed_config);
+
+    // Another define() constant has the name.
+    assert_eq!(project.refused("src/config.php", &source, "APP_MAX"), "Constant 'APP_MAX' already exists");
+    // Not a constant name.
+    let other = config.replace("constant('Foo::APP_LIMIT')", "constant('Foo::APP_/*|*/LIMIT')");
+    assert_eq!(project.prepare("src/config.php", &other), None);
+}
+
+impl Project {
+    /// The possible usages a rename at the caret lists: (file, line, text).
+    fn possible(&mut self, rel: &str, source: &str, new_name: &str) -> Vec<(String, u32, String)> {
+        let (text, pos) = caret(source);
+        let doc = self.open(rel, &text);
+        let outcome = self
+            .engine
+            .rename_with_possible_usages(doc, pos, new_name, &CancellationToken::new())
+            .expect("the document is open")
+            .unwrap();
+        self.engine.document_closed(doc);
+        outcome
+            .possible_usages
+            .iter()
+            .map(|usage| {
+                let file = std::fs::read_to_string(&usage.path).unwrap();
+                let index = LineIndex::new(&file);
+                let (start, end) = index.byte_range(usage.range);
+                (self.rel(&usage.path), usage.range.start.line, file[start as usize..end as usize].to_owned())
+            })
+            .collect()
+    }
+}
+
+#[test]
+fn dynamic_uses_are_listed_as_possible_usages() {
+    let functions = r"<?php
+namespace App;
+
+function format_price(int $cents): string { return ''; }
+
+class Repo
+{
+    public string $title = '';
+    public function find(): void {}
+}
+";
+    let user = r"<?php
+namespace Web;
+
+use App\Repo;
+use function App\format_price;
+
+function run(Repo $repo, string $f, string $m, string $p, array $prices): void
+{
+    format_price(1);
+    $f(2);
+    call_user_func('App\format_price', 3);
+    array_map('\App\format_price', $prices);
+    echo strlen('App\format_price');
+    $repo->find();
+    $repo->$m();
+    $repo?->{$m . 'x'}();
+    call_user_func([$repo, 'find']);
+    call_user_func('App\Repo::find');
+    echo implode(',', [$repo, 'find']);
+    echo $repo->title . $repo->$p;
+}
+";
+    let mut project = Project::new(&[("src/functions.php", functions), ("src/user.php", user)]);
+    let user_line = |line: u32, text: &str| ("src/user.php".to_owned(), line, text.to_owned());
+
+    // A function: dynamic calls and string callables, not other strings.
+    let source = user.replace("    format_price(1);", "    format_pr/*|*/ice(1);");
+    assert_eq!(
+        project.possible("src/user.php", &source, "money"),
+        [user_line(9, "$f"), user_line(10, r"App\format_price"), user_line(11, r"\App\format_price")]
+    );
+    let files = project.renamed("src/user.php", &source, "money");
+    assert!(files["src/user.php"].contains(r"call_user_func('App\format_price', 3);"), "not edited");
+
+    // A method: dynamic calls, `[$o, 'm']` and `'Class::m'` callables.
+    let source = user.replace("$repo->find();", "$repo->fi/*|*/nd();");
+    assert_eq!(
+        project.possible("src/user.php", &source, "lookup"),
+        [user_line(14, "$m"), user_line(15, "{$m . 'x'}"), user_line(16, "find"), user_line(17, r"App\Repo::find"),]
+    );
+
+    // A property: dynamic accesses.
+    let source = user.replace("$repo->title", "$repo->ti/*|*/tle");
+    assert_eq!(project.possible("src/user.php", &source, "name"), [user_line(19, "$p")]);
+
+    // A class has none.
+    let source = user.replace("function run(Repo", "function run(Re/*|*/po");
+    assert_eq!(project.possible("src/user.php", &source, "Store"), []);
+}
+
+#[test]
+fn a_trait_methods_conflicts_include_the_classes_using_it() {
+    let named = "<?php\nnamespace App;\n\ntrait Named { public function label(): string { return ''; } }\n";
+    let titled = "<?php\nnamespace App;\n\ntrait Titled { use Named; }\n";
+    let book = "<?php\nnamespace App;\n\nclass Book { use Titled; private function title(): void {} }\n";
+    let novel = "<?php\nnamespace App;\n\nclass Novel extends Book { public function chapter(): void {} }\n";
+    let paper = "<?php\nnamespace App;\n\nclass Paper { use Named; public function page(): void {} }\n";
+    let mut project = Project::new(&[
+        ("src/Named.php", named),
+        ("src/Titled.php", titled),
+        ("src/Book.php", book),
+        ("src/Novel.php", novel),
+        ("src/Paper.php", paper),
+    ]);
+    let label = named.replace("function label", "function la/*|*/bel");
+    for (new, reason) in [
+        ("page", "Method 'page' already exists in App\\Paper"),
+        // Through another trait, the user's private method included.
+        ("title", "Method 'title' already exists in App\\Book"),
+        ("chapter", "Method 'chapter' already exists in App\\Novel"),
+    ] {
+        assert_eq!(project.refused("src/Named.php", &label, new), reason);
+    }
+    assert!(project.renamed("src/Named.php", &label, "caption")["src/Named.php"].contains("function caption()"));
+}

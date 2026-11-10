@@ -3371,6 +3371,7 @@
   "No type information found": "未找到类型信息",
   "Nothing to rename": "没有可重命名的内容",
   "Rename Anyway": "仍然重命名",
+  "Not renamed, check by hand: {count} possible usages (dynamic calls or string callables) at {places}": "未重命名，请手动检查：{count} 处可能的用法（动态调用或字符串回调），位于 {places}",
   "May be incomplete: the language server is still indexing": "结果可能不完整：语言服务器仍在建立索引",
   "May be incomplete: too many files mention '{word}' to search them all": "结果可能不完整：提及“{word}”的文件过多，无法全部搜索",
   "May be incomplete: too many files mention the name to search them all": "结果可能不完整：提及该名称的文件过多，无法全部搜索",

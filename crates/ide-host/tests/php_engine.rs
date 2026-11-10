@@ -366,6 +366,39 @@ async fn change_signature_is_resolved_by_the_native_engine() {
     host.close_project("main");
 }
 
+/// Rename through the dispatch: the native engine's edit renames the calls,
+/// and the dynamic uses it leaves alone come back as possible usages.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn rename_returns_the_possible_usages_of_the_native_engine() {
+    let tmp = tempfile::tempdir().unwrap();
+    let base = dunce::canonicalize(tmp.path()).unwrap();
+    let root = base.join("shop");
+    write(&root.join("composer.json"), r#"{"autoload":{"psr-4":{"App\\":"src/"}}}"#);
+    write(&root.join("src/util.php"), "<?php\nnamespace App;\n\nfunction total(int $qty): int { return $qty; }\n");
+    let cart = "<?php\nnamespace App;\n\necho total(2);\necho call_user_func('App\\total', 3);\n";
+    write(&root.join("src/Cart.php"), cart);
+    let events: Arc<Mutex<Vec<IdeEvent>>> = Arc::default();
+    let host = host(&base.join("app"), events.clone());
+    let project = host.open_project("main", &root).unwrap();
+    set_engine(&host, "native");
+    until("the engine to start", || project.php.engine().is_some()).await;
+    assert!(project.php.engine().unwrap().wait_idle(WAIT));
+
+    let doc = ops::doc::open(&host, "main", root.join("src/util.php")).await.unwrap();
+    let renamed =
+        ops::lsp::lsp_rename(&host, "main", ide_core::RequestId(4), doc.id, ide_core::Pos::new(3, 11), "sum".into())
+            .await
+            .unwrap();
+    assert_eq!(renamed.edit.files.len(), 2, "{:?}", renamed.edit);
+    let possible: Vec<(PathBuf, u32, u32)> = renamed
+        .possible_usages
+        .iter()
+        .map(|location| (PathBuf::from(location.path.clone()), location.range.start.line, location.range.start.col))
+        .collect();
+    assert_eq!(possible, [(root.join("src/Cart.php"), 4, 21)]);
+    host.close_project("main");
+}
+
 /// Pull Members Up through the hierarchy dispatch: the native engine lists
 /// the class's members and destinations, and computes the edit moving the
 /// chosen ones into the parent class in another file.

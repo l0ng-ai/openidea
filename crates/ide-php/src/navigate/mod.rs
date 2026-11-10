@@ -46,6 +46,7 @@ mod tests;
 pub use hierarchy::{Direction, HierarchyEntry};
 pub use hover::HoverInfo;
 pub use references::{Usage, UsageKind};
+pub use rename::RenameOutcome;
 
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};

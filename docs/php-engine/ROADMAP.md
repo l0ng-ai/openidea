@@ -853,7 +853,7 @@ The gaps that the follow-ups in `PROGRESS.md`, the review in `differential.md` a
 
   Tests: a fixture per conflict, define constants, dynamic uses, a nested closure with a same-named variable.
 
-- [ ] Phase 9.1.b: Rename of define() constants and possible usages
+- [x] Phase 9.1.b: Rename of define() constants and possible usages
       What 9.1 left (it did the conflict checks and the docblock scoping):
   - Find and rename `define('X', …)` constants: the name inside the string literal (without its quotes) at the declaration, `X` and `\X` uses, `defined('X')` and `constant('X')` strings; with 9.1's conflict check against existing constants.
   - List dynamic uses that can't be renamed safely (`$o->$m`, `$f()`, `call_user_func('f')`, string callables like `'f'` or `[$o, 'm']` passed where a callable is expected) as "possible usages", without editing them. Rename's result gets them (a new optional field next to `incomplete`, bindings regenerated), and the front end shows them in the rename preview as a warning (en/zh text).

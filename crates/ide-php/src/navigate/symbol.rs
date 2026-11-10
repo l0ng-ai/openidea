@@ -22,11 +22,12 @@ use std::sync::Arc;
 use mago_span::{HasSpan, Span};
 use mago_syntax::cst::{
     Access, AnonymousClass, Argument, ArgumentList, ArrowFunction, Call, Class, ClassLikeConstantSelector,
-    ClassLikeMemberSelector, Closure, DirectVariable, Enum, Expression, Function, FunctionLikeParameterList, Interface,
-    PartialApplication, Trait, Variable,
+    ClassLikeMemberSelector, Closure, DirectVariable, Enum, Expression, Function, FunctionCall,
+    FunctionLikeParameterList, Interface, PartialApplication, Trait, Variable,
 };
 use mago_syntax::walker::Walker;
 
+use super::references::constant_name_argument;
 use super::{Target, enclosing_class, find_declaration};
 use crate::engine::PhpEngine;
 use crate::index::path_key;
@@ -198,6 +199,9 @@ impl PhpEngine {
         if let Some(name) = name_at(offset) {
             return lookup.name(name);
         }
+        if let Some(found) = constant_string_at(parsed, here, offset) {
+            return Some(found);
+        }
         if let Some(found) = lookup.syntax(offset) {
             return Some(found);
         }
@@ -330,6 +334,40 @@ impl PhpEngine {
         }
         first.or_else(|| self.stub_declaration(kind, fqn).map(|target| target.path))
     }
+}
+
+/// The constant a caret at `offset` is on when it is inside the name string
+/// of `define('X', …)`, `defined('X')` or `constant('X')` (the range is the
+/// string's contents).
+fn constant_string_at(parsed: &ParsedFile, here: &FileSummary, offset: u32) -> Option<AtCaret> {
+    struct Find {
+        offset: u32,
+        found: Option<(Span, String)>,
+    }
+    struct FindWalker;
+    impl<'a> Walker<'a, 'a, Find> for FindWalker {
+        fn walk_in_function_call(&self, call: &'a FunctionCall<'a>, cx: &mut Find) {
+            if cx.found.is_none()
+                && let Some((string, name)) = constant_name_argument(call.function, &call.argument_list)
+                && string.span.start.offset < cx.offset
+                && cx.offset < string.span.end.offset
+            {
+                cx.found = Some((string.span, name));
+            }
+        }
+    }
+    // Only a caret inside a string literal can be on one.
+    let text = parsed.text().as_bytes();
+    let line_start = text[..(offset as usize).min(text.len())].iter().rposition(|b| *b == b'\n').map_or(0, |i| i + 1);
+    if !text[line_start..(offset as usize).min(text.len())].iter().any(|b| matches!(b, b'\'' | b'"')) {
+        return None;
+    }
+    let mut find = Find { offset, found: None };
+    FindWalker.walk_program(parsed.program(), &mut find);
+    let (span, name) = find.found?;
+    let range = parsed.line_index().range(span.start.offset + 1, span.end.offset - 1);
+    let context = enclosing_class(here, offset).map(|class| Context::in_class(&class.fqn)).unwrap_or_default();
+    Some(AtCaret { range, subject: Subject::Decls(vec![Decl::Constant(name)]), context })
 }
 
 /// The text of a file: its open buffer, else the file on disk.

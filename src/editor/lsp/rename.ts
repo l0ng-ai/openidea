@@ -2,7 +2,8 @@
  * Rename (⇧F6): `lsp_prepare_rename` → the name is edited in place with this
  * file's occurrences linked (`inplaceRename.ts`; ⇧F6 again opens the name
  * dialog) → `lsp_rename` → preview dialog when the edit spans several files
- * (or moves files) or may have missed usages, otherwise applied directly via
+ * (or moves files), may have missed usages or leaves possible usages (dynamic
+ * calls, string callables) alone, otherwise applied directly via
  * `apply_workspace_edit`.
  *
  * Dumb mode: when the server is not ready / failing, or answers nothing over
@@ -18,6 +19,7 @@ import {
   isNoServer,
   nextRequestId,
   unavailableText,
+  type Location,
   type Pos,
   type RequestId,
   type WorkspaceEdit,
@@ -242,6 +244,7 @@ async function finishRename(view: EditorView, doc: EditorDocContext, pos: Pos, o
   }
   const { edit, incomplete } = renamed;
   const note = incomplete && incompleteNote(incomplete, oldName);
+  const possible = possibleUsagesNote(renamed.possibleUsages ?? []);
   const summary = summarizeWorkspaceEdit(edit);
   if (!summary.files) {
     if (await hasSyntaxErrors(doc.doc)) {
@@ -256,7 +259,8 @@ async function finishRename(view: EditorView, doc: EditorDocContext, pos: Pos, o
     return;
   }
   // An edit that may leave usages behind is never applied unseen.
-  if (!note && !needsPreview(summary)) {
+  const warnings = [note, possible].filter((w): w is string => !!w);
+  if (!warnings.length && !needsPreview(summary)) {
     await applyEdit(view, edit);
     return;
   }
@@ -264,10 +268,27 @@ async function finishRename(view: EditorView, doc: EditorDocContext, pos: Pos, o
     kind: "preview",
     title: tx`Rename '${oldName}' to '${newName}'`,
     summary,
-    ...(note ? { warnings: [note] } : {}),
-    confirmLabel: note ? "Rename Anyway" : "Do Refactor",
+    ...(warnings.length ? { warnings } : {}),
+    confirmLabel: warnings.length ? "Rename Anyway" : "Do Refactor",
     onConfirm: () => void applyEdit(view, edit),
   });
+}
+
+/** The most possible usages named in the preview's warning. */
+const POSSIBLE_USAGES_SHOWN = 5;
+
+/**
+ * The warning about dynamic uses the rename leaves alone (`$f()`, `$o->$m()`,
+ * string callables), naming where the first ones are; null when there are none.
+ */
+export function possibleUsagesNote(locations: readonly Location[]): string | null {
+  if (!locations.length) return null;
+  const places = locations
+    .slice(0, POSSIBLE_USAGES_SHOWN)
+    .map((l) => `${l.path.split(/[\\/]/).pop()}:${l.range.start.line + 1}`)
+    .join(", ");
+  const more = locations.length > POSSIBLE_USAGES_SHOWN ? ", …" : "";
+  return tx`Not renamed, check by hand: ${locations.length} possible usages (dynamic calls or string callables) at ${places + more}`;
 }
 
 // ---------------------------------------------------------------------------

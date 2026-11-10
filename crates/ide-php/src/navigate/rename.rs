@@ -17,12 +17,22 @@
 //!   method (`@param T $name`) and in the docblocks inside it (`@var`), not
 //!   in those of closures, functions and classes nested in it.
 //!
+//! A `define('X', …)` constant is renamed from its declaration's string or
+//! from a use, with `X`, `\X` and the strings of `defined('X')` and
+//! `constant('X')`.
+//!
 //! A rename that would clash is refused with the reason
 //! ([`PhpEngine::rename_conflicts`]): a variable of the new name already in
 //! the scope of the renamed one; a class-like, function or constant of that
-//! name in the namespace; a method, property or constant of that name in a
-//! class declaring the renamed member (its used traits included) or, for a
-//! non-private one, in a subclass (a parent's private member is no clash).
+//! name in the namespace (`define()` ones included); a method, property or
+//! constant of that name in a class declaring the renamed member (its used
+//! traits included), in the classes using a trait declaring it, or, for a
+//! non-private one, in their subclasses (a parent's private member is no
+//! clash).
+//!
+//! Dynamic uses that may reach a renamed function, method or property
+//! (`$f()`, `$o->$m()`, string callables) aren't edited; they come back as
+//! possible usages ([`PhpEngine::rename_with_possible_usages`]).
 //! In a file where the new short name is already imported or declared for
 //! something else, the renamed class, function or constant is written fully
 //! qualified instead and its import there is dropped; a clash in the file
@@ -45,7 +55,7 @@ use mago_syntax::cst::{AnonymousClass, Class, Closure, Enum, Function, Interface
 use mago_syntax::walker::Walker;
 
 use super::hierarchy::Subtypes;
-use super::references::{Sought, UsageKind};
+use super::references::{Sought, Usage, UsageKind};
 use super::symbol::{Decl, MemberKind, Subject, file_text};
 use super::{namespace_of, short_name};
 use crate::engine::PhpEngine;
@@ -171,6 +181,17 @@ struct Place {
     /// Whether it is written with a namespace (`Model\Book`, `\App\Book`).
     qualified: bool,
     declaration: bool,
+    /// Inside a string literal (`'App\\Book'`, `defined('LIMIT')`).
+    string: bool,
+}
+
+/// What [`PhpEngine::rename_with_possible_usages`] gives.
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct RenameOutcome {
+    pub edit: WorkspaceEdit,
+    /// Dynamic uses the edit leaves alone that may reach the renamed
+    /// function, method or property (`$f()`, `$o->$m()`, string callables).
+    pub possible_usages: Vec<Usage>,
 }
 
 /// The imports of the renamed `fqn` (without an alias) in a file where the
@@ -276,10 +297,24 @@ impl PhpEngine {
         new_name: &str,
         cancel: &CancellationToken,
     ) -> Option<IdeResult<WorkspaceEdit>> {
+        let outcome = self.rename_with_possible_usages(doc, pos, new_name, cancel)?;
+        Some(outcome.map(|outcome| outcome.edit))
+    }
+
+    /// [`PhpEngine::rename`], with the possible usages the edit leaves
+    /// alone: the dynamic uses that may reach a renamed function, method or
+    /// property ([`PhpEngine::possible_usages`]).
+    pub fn rename_with_possible_usages(
+        &self,
+        doc: DocId,
+        pos: Pos,
+        new_name: &str,
+        cancel: &CancellationToken,
+    ) -> Option<IdeResult<RenameOutcome>> {
         let parsed = self.parsed_document(doc)?;
         let path = self.document_path(doc)?;
         if let Some(edit) = self.string_ref_rename(&parsed, &path, parsed.line_index().byte(pos), new_name, cancel) {
-            return Some(edit);
+            return Some(edit.map(|edit| RenameOutcome { edit, possible_usages: Vec::new() }));
         }
         let here = FileSummary::extract(&parsed);
         let Some(renaming) = self.renaming(&parsed, &path, &here, pos) else {
@@ -493,14 +528,15 @@ impl PhpEngine {
         here: &FileSummary,
         new_name: &str,
         cancel: &CancellationToken,
-    ) -> IdeResult<WorkspaceEdit> {
+    ) -> IdeResult<RenameOutcome> {
         let new = checked_name(renaming.kind, new_name)?;
         if new == renaming.old {
-            return Ok(WorkspaceEdit::default());
+            return Ok(RenameOutcome::default());
         }
         let sought = self.rename_sought(renaming.subject, path, here, cancel)?;
         self.rename_conflicts(&sought, &new, cancel)?;
         let usages = self.find_usages(&sought, path, here, true, cancel)?;
+        let possible_usages = self.possible_usages(&sought, path, cancel)?;
 
         // The places to change by file, in a stable order.
         let mut places: BTreeMap<String, (PathBuf, Vec<Place>)> = BTreeMap::new();
@@ -531,6 +567,7 @@ impl PhpEngine {
                 bare_start: start + bare_start as u32,
                 qualified: written.contains('\\'),
                 declaration,
+                string: usage.kind == UsageKind::String,
             };
             places.entry(key).or_insert_with(|| (usage.path.clone(), Vec::new())).1.push(place);
         }
@@ -566,7 +603,8 @@ impl PhpEngine {
                         if own_imports.iter().any(|import| import.start <= place.start && place.end <= import.end) {
                             continue;
                         }
-                        let (start, new_text) = if place.qualified {
+                        // A string names it fully already.
+                        let (start, new_text) = if place.qualified || place.string {
                             (place.bare_start, new.clone())
                         } else {
                             (place.start, qualified.clone())
@@ -618,7 +656,7 @@ impl PhpEngine {
                 }
             }
         }
-        Ok(edit)
+        Ok(RenameOutcome { edit, possible_usages })
     }
 
     /// Refuses a rename to `new` that would clash: with a variable already
@@ -669,9 +707,15 @@ impl PhpEngine {
                 continue;
             }
             classes.push((*kind, declaring.clone()));
-            if !private {
-                for subtype in subtypes.all(self, declaring, cancel)? {
-                    classes.push((*kind, subtype.class.fqn.clone()));
+            // A trait's members are copied into the classes using it.
+            let mut owners = vec![declaring.clone()];
+            owners.extend(self.trait_users(declaring, cancel)?);
+            for owner in owners {
+                classes.push((*kind, owner.clone()));
+                if !private {
+                    for subtype in subtypes.all(self, &owner, cancel)? {
+                        classes.push((*kind, subtype.class.fqn.clone()));
+                    }
                 }
             }
         }
@@ -691,6 +735,51 @@ impl PhpEngine {
             }));
         }
         Ok(())
+    }
+
+    /// The class-likes using trait `fqn`, directly or through other traits
+    /// (empty when `fqn` is no trait). The candidates are the files that
+    /// mention the trait's short name (the index's words and open buffers).
+    fn trait_users(&self, fqn: &str, cancel: &CancellationToken) -> IdeResult<Vec<String>> {
+        let is_trait =
+            |fqn: &str| self.class_model(fqn).is_some_and(|model| model.class.kind == crate::summary::ClassKind::Trait);
+        if !is_trait(fqn) {
+            return Ok(Vec::new());
+        }
+        let mut seen: HashSet<String> = HashSet::from([fqn.trim_start_matches('\\').to_ascii_lowercase()]);
+        let mut queue = vec![fqn.to_owned()];
+        let mut out = Vec::new();
+        while let Some(used) = queue.pop() {
+            if cancel.is_cancelled() {
+                return Err(IdeError::cancelled());
+            }
+            let mut files = self.files_with_word(short_name(&used))?;
+            let mut keys = HashSet::new();
+            files.retain(|file| keys.insert(path_key(file)));
+            for file in files {
+                let summary = match self.open_document(&file) {
+                    Some(document) => self.open_summary(&document),
+                    None => match self.shared_summary(&file)? {
+                        Some(summary) => summary,
+                        None => continue,
+                    },
+                };
+                for class in &summary.class_likes {
+                    let uses = class
+                        .trait_uses
+                        .iter()
+                        .flat_map(|trait_use| &trait_use.traits)
+                        .any(|name| fqn_eq(NameKind::ClassLike, name, &used));
+                    if uses && seen.insert(class.fqn.trim_start_matches('\\').to_ascii_lowercase()) {
+                        out.push(class.fqn.clone());
+                        if class.kind == crate::summary::ClassKind::Trait {
+                            queue.push(class.fqn.clone());
+                        }
+                    }
+                }
+            }
+        }
+        Ok(out)
     }
 
     /// Renames `file` (`Old.php` → `New.php`) when it is named after the

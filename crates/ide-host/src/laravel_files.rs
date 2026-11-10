@@ -67,7 +67,7 @@ impl LanguageService for DotenvService {
         let info = local(&self.documents, doc)?;
         let engine = self.php.engine()?;
         let edit = engine.laravel_env_rename(&info.path, &info.text, pos, new_name, cancel)?;
-        Some(edit.map(|edit| Renamed { edit, incomplete: None }))
+        Some(edit.map(|edit| Renamed { edit, ..Renamed::default() }))
     }
 }
 
@@ -141,7 +141,7 @@ impl LanguageService for InertiaPageService {
         Some(edit.map(|mut edit| {
             let word = TextEdit { range, new_text: new_name.to_owned() };
             edit.files.insert(0, FileEdit::Edit { path: info.path.clone(), edits: vec![word], version: None });
-            Renamed { edit, incomplete: None }
+            Renamed { edit, ..Renamed::default() }
         }))
     }
 }

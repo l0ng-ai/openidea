@@ -43,7 +43,7 @@ provideEditorService({ openFile } as never);
 
 const fb = await import("./syntaxFallback");
 const { gotoTargets, navigationExtension, highlightUsages } = await import("./navigation");
-const { startRename, renameNamePart } = await import("./rename");
+const { startRename, renameNamePart, possibleUsagesNote } = await import("./rename");
 const { lspDoc } = await import("./lsp");
 const { useLspPopup, closePopup } = await import("./popupStore");
 
@@ -490,6 +490,34 @@ describe("rename wiring", () => {
       if (popup?.kind === "preview") popup.onConfirm();
       await vi.waitFor(() => expect(cmd.applyWorkspaceEdit).toHaveBeenCalledWith(edit));
       closePopup();
+    });
+
+    it("shows the possible usages a rename leaves alone before applying it", async () => {
+      cmd.lspPrepareRename.mockReturnValueOnce(ok(r(0, 0, 12)));
+      const edit = {
+        files: [{ kind: "edit", path: "/p/a.php", edits: [{ range: r(0, 0, 12), new_text: "message_count" }] }],
+      };
+      const possibleUsages = [
+        { path: "/p/src/Cart.php", range: r(4, 21, 30) },
+        { path: "C:\\p\\src\\Shop.php", range: r(9, 2, 4) },
+      ];
+      cmd.lspRename.mockReturnValueOnce(ok({ edit, incomplete: null, possibleUsages }));
+      const view = editor("mesage_count = 1", "python", 0);
+      await renameNamePart(view, { from: 0, to: 6 }, "message");
+      expect(cmd.applyWorkspaceEdit).not.toHaveBeenCalled();
+      const popup = useLspPopup.getState().popup;
+      expect(popup?.kind === "preview" && popup.warnings).toEqual([
+        "Not renamed, check by hand: 2 possible usages (dynamic calls or string callables) at Cart.php:5, Shop.php:10",
+      ]);
+      expect(popup?.kind === "preview" && popup.confirmLabel).toBe("Rename Anyway");
+      if (popup?.kind === "preview") popup.onConfirm();
+      await vi.waitFor(() => expect(cmd.applyWorkspaceEdit).toHaveBeenCalledWith(edit));
+      closePopup();
+      const many = Array.from({ length: 7 }, (_, i) => ({ path: "/p/f.php", range: r(i, 0, 1) }));
+      expect(possibleUsagesNote(many)).toBe(
+        "Not renamed, check by hand: 7 possible usages (dynamic calls or string callables) at f.php:1, f.php:2, f.php:3, f.php:4, f.php:5, …",
+      );
+      expect(possibleUsagesNote([])).toBeNull();
     });
 
     it("says why when an incomplete search found nothing to rename", async () => {
