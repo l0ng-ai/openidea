@@ -7179,7 +7179,7 @@
   "Coding Agents": "编程 Agent",
   "Install coding agents and configure how they launch, chat and connect to the IDE.": "安装编程 Agent，并配置其启动方式、聊天行为以及与 IDE 的连接。",
   "Fork Agent Task": "Fork Agent 任务",
-  "Fork Task": "Fork 任务",
-  "Fork from Here": "从此处 Fork",
-  "Couldn't fork the task": "无法 Fork 任务"
+  "Couldn't fork the task": "无法 Fork 任务",
+  "Fork": "Fork",
+  "Fork Conversation from Here": "从此处 Fork 对话"
 }

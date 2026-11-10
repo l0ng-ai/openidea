@@ -132,7 +132,7 @@ export const replyActions: Action[] = [
   },
   {
     id: "agents.forkReply",
-    title: "Fork from Here",
+    title: "Fork Conversation from Here",
     category: "Agents",
     icon: "branch",
     hidden: true,

@@ -1380,7 +1380,7 @@ function UserMessage({
             <IconButton
               size="small"
               icon="branch"
-              title="Fork from Here"
+              title="Fork"
               onClick={() => void forkTask(task.id, turn + 1).catch(failed("Couldn't fork the task"))}
             />
           )}

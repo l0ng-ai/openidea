@@ -862,7 +862,7 @@
   "Coding Agents": "Coding Agents",
   "Install coding agents and configure how they launch, chat and connect to the IDE.": "Install coding agents and configure how they launch, chat and connect to the IDE.",
   "Fork Agent Task": "Fork Agent Task",
-  "Fork Task": "Fork Task",
-  "Fork from Here": "Fork from Here",
-  "Couldn't fork the task": "Couldn't fork the task"
+  "Couldn't fork the task": "Couldn't fork the task",
+  "Fork": "Fork",
+  "Fork Conversation from Here": "Fork Conversation from Here"
 }

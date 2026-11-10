@@ -218,7 +218,7 @@ export function taskMenu(tasks: AgentTask[]): MenuItem[] {
                 {
                   kind: "action",
                   action: "agents.forkTask",
-                  label: "Fork Task",
+                  label: "Fork",
                   icon: "branch",
                   arg: task.id,
                   disabled: !canFork(task),

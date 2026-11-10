@@ -257,6 +257,7 @@ describe("catalogs", () => {
   const SAME_AS_ENGLISH = new Set([
     "Docker",
     "⌘Enter",
+    "Fork",
     "Shell",
     "Java",
     "Python",
