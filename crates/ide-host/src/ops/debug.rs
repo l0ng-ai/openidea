@@ -1,5 +1,4 @@
 mod output;
-mod target;
 
 use crate::Host;
 use crate::rpc::Dispatcher;
@@ -9,42 +8,7 @@ use std::path::PathBuf;
 
 /// Starts a session owned by this window: its events (and those of child sessions) go here only.
 pub async fn debug_start(host: &Host, window: &str, config: LaunchConfig) -> IdeResult<DebugSessionId> {
-    debug_start_request(host, window, config, None).await
-}
-
-pub async fn debug_start_request(
-    host: &Host,
-    window: &str,
-    config: LaunchConfig,
-    request: Option<ide_core::RequestId>,
-) -> IdeResult<DebugSessionId> {
-    let cancel = request.map(|id| host.begin_request(id)).unwrap_or_default();
-    let result = debug_start_inner(host, window, config, &cancel).await;
-    if let Some(id) = request {
-        host.end_request(id);
-    }
-    result
-}
-
-async fn debug_start_inner(
-    host: &Host,
-    window: &str,
-    config: LaunchConfig,
-    cancel: &ide_core::CancellationToken,
-) -> IdeResult<DebugSessionId> {
-    if cancel.is_cancelled() {
-        return Err(ide_core::IdeError::cancelled());
-    }
     host.require_trust(window)?;
-    let target_id = config
-        .extra_json
-        .as_deref()
-        .and_then(|s| serde_json::from_str::<serde_json::Value>(s).ok())
-        .and_then(|v| v.get("__runTarget").and_then(|v| v.as_str()).map(str::to_owned));
-    if let Some(id) = target_id {
-        let owner = SessionOwner::new(host.owner_window(window), host.window_sink(window));
-        return target::start(host, window, config, owner, id, cancel).await;
-    }
     let mut config = match_java_debug_encoding(config, cfg!(windows));
     if config.adapter == "debugpy"
         && config.request == "launch"
@@ -419,9 +383,7 @@ pub async fn debug_redefine_classes(host: &Host, _window: &str, session: DebugSe
 
 /// Commands of this module the remote server answers.
 pub(crate) fn register(d: &mut Dispatcher) {
-    d.add("debug_start", |c| async move {
-        debug_start_request(&c.host, &c.window, c.arg("config")?, c.arg("request")?).await
-    });
+    d.add("debug_start", |c| async move { debug_start(&c.host, &c.window, c.arg("config")?).await });
     d.add("debug_set_breakpoints", |c| async move {
         debug_set_breakpoints(&c.host, &c.window, c.arg("path")?, c.arg("breakpoints")?).await
     });

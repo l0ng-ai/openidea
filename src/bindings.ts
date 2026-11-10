@@ -811,7 +811,7 @@ export const commands = {
 	/**  Incremental build of the jdtls workspace serving `module` (e.g. before HotSwap). */
 	javaBuildWorkspace: (module: string, request: number | null) => typedError<JavaBuildStatus, IdeError>(__TAURI_INVOKE("java_build_workspace", { module, request })),
 	/**  Starts a session owned by this window: its events (and those of child sessions) go here only. */
-	debugStart: (config: LaunchConfig, request: number | null) => typedError<DebugSessionId, IdeError>(__TAURI_INVOKE("debug_start", { config, request })),
+	debugStart: (config: LaunchConfig) => typedError<DebugSessionId, IdeError>(__TAURI_INVOKE("debug_start", { config })),
 	debugSetBreakpoints: (path: string, breakpoints: Breakpoint[]) => typedError<BreakpointState[], IdeError>(__TAURI_INVOKE("debug_set_breakpoints", { path, breakpoints })),
 	debugThreads: (session: DebugSessionId) => typedError<ThreadInfo[], IdeError>(__TAURI_INVOKE("debug_threads", { session })),
 	debugStackTrace: (session: DebugSessionId, threadId: number) => typedError<StackFrame[], IdeError>(__TAURI_INVOKE("debug_stack_trace", { session, threadId })),
@@ -5554,12 +5554,6 @@ export type LanguageServerSettings_Serialize = {
 	codeActionKinds?: string[] | null,
 };
 
-export type LanguageServerTarget = {
-	target?: string,
-	/**  Empty selects the first configured server for the language. */
-	server?: string,
-};
-
 export type LanguagesSettings = {
 	/**  Explicit plugin formatter, by language id. Empty entries use the normal formatter policy. */
 	pluginFormatters?: { [key in string]: string },
@@ -8030,8 +8024,6 @@ export type Settings_Deserialize = {
 	 *  options on top of the language definition, or a server defined here.
 	 */
 	languageServers?: { [key in string]: LanguageServerSettings_Deserialize },
-	/**  Project language id → server and plugin target. Empty target uses the host. */
-	languageServerTargets?: { [key in string]: LanguageServerTarget },
 	/**  Editor › Inspections profiles. */
 	inspections?: InspectionSettings,
 	/**  Editor › Natural Languages › Spelling. */
@@ -8094,8 +8086,6 @@ export type Settings_Serialize = {
 	 *  options on top of the language definition, or a server defined here.
 	 */
 	languageServers: { [key in string]: LanguageServerSettings_Serialize },
-	/**  Project language id → server and plugin target. Empty target uses the host. */
-	languageServerTargets: { [key in string]: LanguageServerTarget },
 	/**  Editor › Inspections profiles. */
 	inspections: InspectionSettings,
 	/**  Editor › Natural Languages › Spelling. */

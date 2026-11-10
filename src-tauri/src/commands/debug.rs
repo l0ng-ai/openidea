@@ -15,9 +15,8 @@ pub async fn debug_start(
     window: Window,
     state: State<'_, AppState>,
     config: LaunchConfig,
-    request: Option<ide_core::RequestId>,
 ) -> IdeResult<DebugSessionId> {
-    ide_host::ops::debug::debug_start_request(&state.host, window.label(), config, request).await
+    ide_host::ops::debug::debug_start(&state.host, window.label(), config).await
 }
 
 #[tauri::command]

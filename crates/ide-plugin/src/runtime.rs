@@ -1196,7 +1196,6 @@ impl Runtime {
         let launch = wit_rtv::LaunchInfo {
             operation: match launch.operation {
                 crate::RunTargetOperation::Run => wit_rtv::Operation::Run,
-                crate::RunTargetOperation::Debug => wit_rtv::Operation::Debug,
                 crate::RunTargetOperation::Test => wit_rtv::Operation::Test,
             },
             program: launch.program,
