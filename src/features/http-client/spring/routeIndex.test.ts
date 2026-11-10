@@ -1,6 +1,7 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { commands, emitLocalIdeEvent } from "@/platform/ipc";
 import { ipcPath } from "@/platform/paths";
+import { useProject } from "@/platform/project";
 import { searchEndpoints } from "@/workbench/contributions";
 import { clearRouteIndex, isRouteSource, registerSpringEndpointProvider, routeIndex } from "./routeIndex";
 
@@ -22,7 +23,21 @@ afterEach(() => {
   dispose = undefined;
   clearRouteIndex();
   scanSources.mockReset();
+  useProject.setState({ project: null });
 });
+
+function workspace(projects: string[]) {
+  useProject.setState({
+    project: {
+      root: "/workspace",
+      name: "Workspace",
+      settings: {},
+      trusted: true,
+      isGit: false,
+      workspace: { version: 1, name: "Workspace", projects },
+    },
+  });
+}
 
 describe("the request-path index follows the workspace", () => {
   it("is invalidated by a change to a mapping source", () => {
@@ -39,6 +54,43 @@ describe("the request-path index follows the workspace", () => {
 });
 
 describe("the Spring endpoint provider", () => {
+  it("includes linked members with member-relative paths and excludes files outside every member", async () => {
+    workspace(["/p", "/linked", "/linked/nested"]);
+    scanSources.mockResolvedValue({
+      status: "ok",
+      data: [
+        source(),
+        { ...source(), path: "/linked/src/Controller.kt" },
+        { ...source(), path: "/linked/nested/src/NestedController.java" },
+        { ...source(), path: "/linked-other/Outside.java" },
+        { ...source(), path: "/workspace/State.java" },
+      ],
+    });
+    expect(await routeIndex("/workspace")).toMatchObject([
+      { path: "/p/DeepLinkController.java", rel: "DeepLinkController.java", line: 4, col: 11 },
+      { path: "/linked/src/Controller.kt", rel: "src/Controller.kt", line: 4, col: 11 },
+      { path: "/linked/nested/src/NestedController.java", rel: "src/NestedController.java" },
+    ]);
+  });
+
+  it("rescans when members are added or removed without changing the workspace root", async () => {
+    scanSources.mockResolvedValue({
+      status: "ok",
+      data: [source(), { ...source(), path: "/linked/Controller.java" }],
+    });
+    workspace(["/p"]);
+    expect(await routeIndex("/workspace")).toHaveLength(1);
+    workspace(["/p", "/linked"]);
+    const both = await routeIndex("/workspace");
+    expect(both).toHaveLength(2);
+    expect(await routeIndex("/workspace")).toBe(both);
+    workspace(["/linked"]);
+    expect(await routeIndex("/workspace")).toMatchObject([{ path: "/linked/Controller.java" }]);
+    workspace([]);
+    expect(await routeIndex("/workspace")).toEqual([]);
+    expect(scanSources).toHaveBeenCalledTimes(4);
+  });
+
   it("scans once per root with method coordinates and rescans for another root", async () => {
     scanSources.mockResolvedValue({ status: "ok", data: [source()] });
     expect(await routeIndex(null)).toEqual([]);

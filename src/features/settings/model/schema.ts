@@ -8,7 +8,7 @@ import { validateCMake } from "@/platform/cmakeSettings";
 import { SUPPORTED_LOCALES, type Locale } from "@/platform/i18n";
 import { DEFAULT_IGNORED_NAMES } from "@/platform/ignoredNames";
 import { validateFileTypeOverrides, validateFileTypes, type FileTypeAssociations } from "@/platform/fileTypes";
-import type { AgentSettings, LanguageServerSettings, Settings } from "@/platform/ipc";
+import type { AgentSettings, LanguageServerSettings, LanguageServerTarget, Settings } from "@/platform/ipc";
 import {
   DEFAULT_LANGUAGES,
   DEFAULT_PROJECT_STRUCTURE,
@@ -46,7 +46,14 @@ export interface CustomKeymapSettings {
 
 export interface ValidSettings extends WorkflowSettings {
   plugins: Record<string, Record<string, unknown>>;
-  general: { reopenLastProject: boolean; confirmExit: boolean } & GeneralExtras;
+  general: {
+    reopenLastProject: boolean;
+    confirmExit: boolean;
+    /** Last window closes instead of showing the Welcome screen. */
+    closeWithoutWelcome: boolean;
+    /** Closing a window drops its saved editor tabs. */
+    closeTabsWithWindow: boolean;
+  } & GeneralExtras;
   appearance: { theme: ThemeId; accent: string; uiFontSize: number; locale: Locale } & AppearanceExtras;
   editor: {
     fontFamily: string;
@@ -94,8 +101,11 @@ export interface ValidSettings extends WorkflowSettings {
   tools: Record<string, { path: string }>;
   /** Settings › Language Servers, by server name (as the backend sends them). */
   languageServers: Record<string, LanguageServerEntry>;
+  languageServerTargets: Record<string, LanguageServerTarget>;
   /** Tools › Agents › Chat: the meters in an agent task's header. */
   agents: Required<AgentSettings>;
+  /** Tools › MCP Server (global). */
+  mcpServer: { enabled: boolean };
 }
 
 /** One `languageServers.<name>` entry; every field optional, like in settings.toml. */
@@ -123,7 +133,13 @@ export { ACCENT_PRESETS } from "@/workbench/theme";
 
 export const DEFAULT_SETTINGS: ValidSettings = {
   plugins: {},
-  general: { reopenLastProject: true, confirmExit: true, ...DEFAULT_GENERAL_EXTRAS },
+  general: {
+    reopenLastProject: true,
+    confirmExit: true,
+    closeWithoutWelcome: false,
+    closeTabsWithWindow: false,
+    ...DEFAULT_GENERAL_EXTRAS,
+  },
   appearance: { theme: "light", accent: "#3871e1", uiFontSize: 13, locale: "en", ...DEFAULT_APPEARANCE_EXTRAS },
   editor: {
     fontFamily: "JetBrains Mono",
@@ -163,7 +179,9 @@ export const DEFAULT_SETTINGS: ValidSettings = {
   spelling: { ideWords: [], projectWords: [], customDictionaries: [] },
   tools: {},
   languageServers: {},
+  languageServerTargets: {},
   agents: { showContextUsage: true, showWorkTime: true, showUsageLimits: true, showCost: false },
+  mcpServer: { enabled: false },
   ...DEFAULT_WORKFLOW,
 };
 
@@ -220,6 +238,8 @@ export function validateSettings(raw: Settings | unknown): ValidSettings {
       ...validateGeneralExtras(g),
       reopenLastProject: bool(g.reopenLastProject, d.general.reopenLastProject),
       confirmExit: bool(g.confirmExit, d.general.confirmExit),
+      closeWithoutWelcome: bool(g.closeWithoutWelcome, d.general.closeWithoutWelcome),
+      closeTabsWithWindow: bool(g.closeTabsWithWindow, d.general.closeTabsWithWindow),
     },
     appearance: {
       ...validateAppearanceExtras(a),
@@ -277,12 +297,25 @@ export function validateSettings(raw: Settings | unknown): ValidSettings {
     languageServers: Object.fromEntries(
       Object.entries(obj(root.languageServers)).map(([name, ls]) => [name, obj(ls) as LanguageServerEntry]),
     ),
+    languageServerTargets: Object.fromEntries(
+      Object.entries(obj(root.languageServerTargets)).map(([language, value]) => {
+        const entry = obj(value);
+        return [
+          language,
+          {
+            target: typeof entry.target === "string" ? entry.target : "",
+            server: typeof entry.server === "string" ? entry.server : "",
+          },
+        ];
+      }),
+    ),
     agents: {
       showContextUsage: bool(agents.showContextUsage, d.agents.showContextUsage),
       showWorkTime: bool(agents.showWorkTime, d.agents.showWorkTime),
       showUsageLimits: bool(agents.showUsageLimits, d.agents.showUsageLimits),
       showCost: bool(agents.showCost, d.agents.showCost),
     },
+    mcpServer: { enabled: bool(obj(root.mcpServer).enabled, d.mcpServer.enabled) },
     ...validateWorkflow(root),
   };
 }

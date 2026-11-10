@@ -36,6 +36,10 @@ pub struct MockTask {
     pub ended: bool,
 }
 
+type CommandHandler = dyn Fn(Option<&str>) -> Result<Option<String>, Error>;
+
+type SearchHandler = Box<dyn Fn(&TextQuery, u32) -> Result<TextSearch, Error>>;
+
 type NetHandler = Box<dyn Fn(&HttpRequest) -> Result<HttpResponse, Error>>;
 type ProcessHandler = Box<dyn Fn(&[String], Option<&str>) -> Result<ProcessOutput, Error>>;
 
@@ -92,8 +96,16 @@ struct State {
     selected_paths: Vec<String>,
     notifications: Vec<Notification>,
     action_notifications: Vec<ActionNotification>,
+    project_notifications: Vec<(String, ActionNotification)>,
     logs: Vec<(LogLevel, String)>,
     status: BTreeMap<String, StatusItem>,
+    window_status: BTreeMap<String, StatusItem>,
+    ipc: BTreeMap<u64, VecDeque<u8>>,
+    next_ipc: u64,
+    loopbacks: BTreeSet<u64>,
+    next_loopback: u64,
+    output: BTreeMap<String, String>,
+    revealed_output: Vec<String>,
     context: BTreeMap<String, ContextValue>,
     storage: BTreeMap<String, String>,
     subscriptions: BTreeSet<EventKind>,
@@ -112,6 +124,19 @@ struct State {
     diagnostics: BTreeMap<String, Vec<Diagnostic>>,
     provider_diagnostics: BTreeMap<String, Vec<Diagnostic>>,
     secrets: BTreeMap<String, String>,
+    declared_secrets: BTreeSet<String>,
+    commands: BTreeMap<String, Rc<CommandHandler>>,
+    command_depth: usize,
+    owned_commands: BTreeSet<String>,
+    search: Option<SearchHandler>,
+    commits: Vec<CommitInfo>,
+    blame: BTreeMap<String, Vec<BlameLine>>,
+    patch: Option<String>,
+    restricted: bool,
+    decorations: BTreeMap<(String, String), Vec<Decoration>>,
+    file_decorations: BTreeMap<(String, String), FileDecoration>,
+    revealed_ranges: Vec<Range>,
+    loopback_queries: VecDeque<Option<String>>,
     net: Option<NetHandler>,
     requests: Vec<HttpRequest>,
     processes: BTreeMap<String, ProcessHandler>,
@@ -122,6 +147,18 @@ struct State {
     refreshed: Vec<String>,
     view_messages: Vec<(String, String)>,
     terminals: Vec<MockTerminal>,
+    terminal_sessions: BTreeMap<String, (String, crate::host::Command, String)>,
+    terminal_writes: Vec<(String, String)>,
+    content_tabs: BTreeMap<String, crate::ContentTab>,
+    content_replies: Vec<(String, crate::ContentTabReply)>,
+    database_sources: BTreeMap<(String, String), PluginDataSource>,
+    database_credentials: BTreeSet<(String, String)>,
+    database_connections: Vec<(String, String)>,
+    mcp_stdio: Option<Vec<String>>,
+    run_targets: BTreeMap<(String, String), crate::PluginRunTargetWithOverrides>,
+    run_configurations: BTreeMap<String, crate::PluginRunConfiguration>,
+    configuration_runs: Vec<(String, String, Vec<String>, bool)>,
+    log_tabs: Vec<MockLogTab>,
     locations: Vec<(String, u32, u32)>,
     settings: BTreeMap<String, String>,
     locale: Option<String>,
@@ -133,6 +170,14 @@ pub struct MockTerminal {
     pub title: String,
     pub program: String,
     pub args: Vec<String>,
+}
+
+/// A log tab the plugin opened.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct MockLogTab {
+    pub key: String,
+    pub title: String,
+    pub log: crate::details::ProcessLog,
 }
 
 /// At most 8 programs a plugin may keep running, as the host allows.
@@ -149,6 +194,8 @@ pub struct MockHost {
 
 /// Every capability a plugin can hold, except `process:`/`net:`/`fs.read:`.
 const ALL: &[&str] = &[
+    "ide.commands",
+    "database.sources",
     "project.read",
     "editor.read",
     "editor.write",
@@ -161,6 +208,41 @@ const ALL: &[&str] = &[
 ];
 
 impl MockHost {
+    /// Registers one of this plugin's declared commands, callable without ide.commands.
+    pub fn on_own_command(&self, id: &str, handler: impl Fn(Option<&str>) -> Result<Option<String>, Error> + 'static) {
+        let stable = format!("plugin.mock.{id}");
+        self.on_command(&stable, handler);
+        self.state.borrow_mut().owned_commands.insert(stable);
+    }
+
+    /// Supplies search responses without duplicating the IDE search engine.
+    pub fn on_search(&self, handler: impl Fn(&TextQuery, u32) -> Result<TextSearch, Error> + 'static) {
+        self.state.borrow_mut().search = Some(Box::new(handler));
+    }
+    /// Supplies read-only repository data.
+    pub fn set_vcs_reads(&self, commits: Vec<CommitInfo>, path: &str, blame: Vec<BlameLine>, patch: Option<String>) {
+        let mut s = self.state.borrow_mut();
+        s.commits = commits;
+        s.blame.insert(path.into(), blame);
+        s.patch = patch;
+    }
+    /// Simulates Restricted Mode for new VCS read APIs.
+    pub fn set_restricted(&self, restricted: bool) {
+        self.state.borrow_mut().restricted = restricted;
+    }
+    /// Editor decoration snapshots keyed by (set id, absolute path).
+    pub fn decorations(&self) -> BTreeMap<(String, String), Vec<Decoration>> {
+        self.state.borrow().decorations.clone()
+    }
+    /// Tree decoration snapshots keyed by (set id, absolute path).
+    pub fn file_decorations(&self) -> BTreeMap<(String, String), FileDecoration> {
+        self.state.borrow().file_decorations.clone()
+    }
+    /// Ranges requested to scroll into view.
+    pub fn revealed_ranges(&self) -> Vec<Range> {
+        self.state.borrow().revealed_ranges.clone()
+    }
+
     /// Installs a mock granting the usual capabilities, with project `/project`.
     pub fn install() -> Self {
         let state = Rc::new(RefCell::new(State {
@@ -260,12 +342,18 @@ impl MockHost {
         self.state.borrow().action_notifications.clone()
     }
 
+    /// Notifications sent to a project (`Project::notify`), with its root, in publication order.
+    pub fn project_notifications(&self) -> Vec<(String, ActionNotification)> {
+        self.state.borrow().project_notifications.clone()
+    }
+
     pub fn logs(&self) -> Vec<(LogLevel, String)> {
         self.state.borrow().logs.clone()
     }
 
     pub fn status_items(&self) -> BTreeMap<String, StatusItem> {
-        self.state.borrow().status.clone()
+        let s = self.state.borrow();
+        s.status.iter().chain(&s.window_status).map(|(k, v)| (k.clone(), v.clone())).collect()
     }
 
     pub fn context_keys(&self) -> BTreeMap<String, ContextValue> {
@@ -363,6 +451,27 @@ impl MockHost {
         self.state.borrow().diagnostics.clone()
     }
 
+    /// Calls a target validator with the mock project's root and launch metadata.
+    pub fn validate_run_target(
+        &self,
+        validator: &mut impl crate::RunTargetValidation,
+        target: &str,
+        launch: &crate::RunTargetLaunch,
+    ) -> Result<(), String> {
+        let project = self.invocation().project().expect("mock project").root().expect("mock root");
+        validator.validate(&project, target, launch)
+    }
+
+    /// Snapshot supplied to optional language-feature and injection traits in native tests.
+    pub fn provider_document(&self) -> Option<crate::providers::Document> {
+        self.state.borrow().editor.as_ref().map(|e| crate::providers::Document {
+            path: e.path.clone(),
+            language: e.language.clone(),
+            version: e.version,
+            text: e.text.clone(),
+        })
+    }
+
     /// Runs a diagnostics provider against the current mock editor snapshot.
     /// This explicit call replaces the real host's debounce; it needs no capability.
     pub fn refresh_diagnostics(&self, provider: &mut impl crate::diagnostics::DiagnosticsProvider) {
@@ -402,9 +511,63 @@ impl MockHost {
         self.state.borrow().locations.clone()
     }
 
+    /// Registered targets of this mock plugin, scoped by project root.
+    pub fn run_targets(&self) -> BTreeMap<(String, String), crate::PluginRunTarget> {
+        self.run_targets_with_overrides()
+            .into_iter()
+            .map(|(key, t)| {
+                (
+                    key,
+                    crate::PluginRunTarget {
+                        id: t.id,
+                        name: t.name,
+                        program: t.program,
+                        args: t.args,
+                        workdir_args: t.workdir_args,
+                        container_root: t.container_root,
+                        commands: t.commands.into_iter().map(|c| (c.name, c.args)).collect(),
+                    },
+                )
+            })
+            .collect()
+    }
+    /// Registered targets including per-command working-directory arguments (API 1.5).
+    pub fn run_targets_with_overrides(&self) -> BTreeMap<(String, String), crate::PluginRunTargetWithOverrides> {
+        self.state.borrow().run_targets.clone()
+    }
+    /// Configurations available to start_run in native tests.
+    /// Run launches recorded as (operation id, configuration id, appended args, debug).
+    pub fn configuration_runs(&self) -> Vec<(String, String, Vec<String>, bool)> {
+        self.state.borrow().configuration_runs.clone()
+    }
+    /// Configures only argv discovery; the mock has no token or URL.
+    pub fn set_mcp_stdio_command(&self, command: Option<Vec<String>>) {
+        self.state.borrow_mut().mcp_stdio = command;
+    }
+    pub fn set_run_configurations(&self, configs: Vec<crate::PluginRunConfiguration>) {
+        self.state.borrow_mut().run_configurations = configs.into_iter().map(|c| (c.id.clone(), c)).collect();
+    }
+    /// Text written through write_terminal.
+    pub fn terminal_writes(&self) -> Vec<(String, String)> {
+        self.state.borrow().terminal_writes.clone()
+    }
+    /// Simulates exit, releasing the key for another operation.
+    pub fn finish_terminal(&self, key: &str) -> Option<crate::Event> {
+        let (id, _, _) = self.state.borrow_mut().terminal_sessions.remove(key)?;
+        Some(crate::Event::Other {
+            kind: "terminal-exited".into(),
+            data: serde_json::to_string(&crate::TerminalExited { id, key: key.into(), status: Some(0), closed: false })
+                .unwrap(),
+        })
+    }
     /// Terminals the plugin opened.
     pub fn terminals(&self) -> Vec<MockTerminal> {
         self.state.borrow().terminals.clone()
+    }
+
+    /// Log tabs the plugin opened, the latest of each key last.
+    pub fn log_tabs(&self) -> Vec<MockLogTab> {
+        self.state.borrow().log_tabs.clone()
     }
 
     /// The value of one of the plugin's settings, as JSON (`true`, `"text"`).
@@ -417,8 +580,29 @@ impl MockHost {
         self.state.borrow_mut().locale = Some(tag.into());
     }
 
+    /// Registers the result of a stable action or plugin command.
+    pub fn on_command(&self, id: &str, handler: impl Fn(Option<&str>) -> Result<Option<String>, Error> + 'static) {
+        let mut state = self.state.borrow_mut();
+        state.owned_commands.remove(id);
+        state.commands.insert(id.into(), Rc::new(handler));
+    }
+    /// Queues the raw browser query returned by the next loopback wait.
+    pub fn queue_loopback_query(&self, query: Option<&str>) {
+        self.state.borrow_mut().loopback_queries.push_back(query.map(str::to_owned));
+    }
+
+    /// Declares a secret the plugin is allowed to store (the mock has no manifest).
+    pub fn declare_secret(&self, name: &str) {
+        self.state.borrow_mut().declared_secrets.insert(name.into());
+    }
+    /// The plugin's read-only output buffers.
+    pub fn output(&self) -> BTreeMap<String, String> {
+        self.state.borrow().output.clone()
+    }
+
     /// A secret the user stored.
     pub fn set_secret(&self, name: &str, value: &str) {
+        self.state.borrow_mut().declared_secrets.insert(name.into());
         self.state.borrow_mut().secrets.insert(name.into(), value.into());
     }
 
@@ -626,6 +810,35 @@ pub mod current {
         body: &str,
         actions: &[NotificationAction],
     ) -> Result<(), Error> {
+        check_actions(actions)?;
+        with(|s| {
+            let notification = Notification { level, title: title.into(), body: body.into() };
+            s.notifications.push(notification.clone());
+            s.action_notifications.push(ActionNotification { notification, actions: actions.to_vec() });
+        });
+        Ok(())
+    }
+
+    /// The checks of `notify_with_actions`; a project no longer open is `NotFound`.
+    pub fn notify_project(
+        p: &ProjectRes,
+        level: NotificationLevel,
+        title: &str,
+        body: &str,
+        actions: &[NotificationAction],
+    ) -> Result<(), Error> {
+        let open = with(|s| s.root.iter().chain(&s.other_projects).any(|root| *root == p.root));
+        if !open {
+            return Err(Error::NotFound(format!("the project {} is not open", p.root)));
+        }
+        check_actions(actions)?;
+        let notification = Notification { level, title: title.into(), body: body.into() };
+        let sent = ActionNotification { notification, actions: actions.to_vec() };
+        with(|s| s.project_notifications.push((p.root.clone(), sent)));
+        Ok(())
+    }
+
+    fn check_actions(actions: &[NotificationAction]) -> Result<(), Error> {
         if actions.len() > 3 {
             return Err(Error::Invalid("a notification has at most 3 actions".into()));
         }
@@ -637,11 +850,6 @@ pub mod current {
                 return Err(Error::Invalid("an action argument is limited to 64 KiB".into()));
             }
         }
-        with(|s| {
-            let notification = Notification { level, title: title.into(), body: body.into() };
-            s.notifications.push(notification.clone());
-            s.action_notifications.push(ActionNotification { notification, actions: actions.to_vec() });
-        });
         Ok(())
     }
 
@@ -649,6 +857,85 @@ pub mod current {
         with(|s| s.status.insert(id.to_owned(), item.clone()));
     }
 
+    pub fn set_window_status_item(id: &str, item: &StatusItem) -> Result<(), Error> {
+        with(|s| {
+            s.window_status.insert(id.into(), item.clone());
+        });
+        Ok(())
+    }
+    pub fn remove_window_status_item(id: &str) -> Result<(), Error> {
+        with(|s| {
+            s.window_status.remove(id);
+        });
+        Ok(())
+    }
+    pub fn execute_command(id: &str, arg: Option<&str>) -> Result<Option<String>, Error> {
+        let handler = with(|s| {
+            if !s.owned_commands.contains(id) {
+                require(s, "ide.commands")?;
+            }
+            if s.command_depth >= 8 {
+                return Err(Error::Invalid("command nesting limit (8)".into()));
+            }
+            let handler = s.commands.get(id).cloned().ok_or_else(|| Error::NotFound(id.into()))?;
+            s.command_depth += 1;
+            Ok(handler)
+        })?;
+        let result = handler(arg);
+        with(|s| s.command_depth -= 1);
+        result
+    }
+    pub struct ConnectionRes {
+        id: u64,
+        owner: Rc<RefCell<State>>,
+    }
+    impl Drop for ConnectionRes {
+        fn drop(&mut self) {
+            self.owner.borrow_mut().ipc.remove(&self.id);
+        }
+    }
+    pub fn ipc_connect(name: &str) -> Result<ConnectionRes, Error> {
+        with(|s| {
+            let cap = format!("ipc:{name}");
+            let granted = s.capabilities.iter().any(|g| {
+                g == &cap
+                    || g.strip_prefix("ipc:").is_some_and(|pattern| {
+                        let Some((base, tail)) = pattern.rsplit_once('/') else { return false };
+                        let Some((parent, file)) = name.rsplit_once('/') else { return false };
+                        base == parent && tail.strip_suffix('*').is_some_and(|prefix| file.starts_with(prefix))
+                    })
+            });
+            if !granted {
+                return Err(Error::Denied(cap));
+            }
+            if s.ipc.len() >= 8 {
+                return Err(Error::Invalid("at most eight IPC connections".into()));
+            }
+            s.next_ipc += 1;
+            s.ipc.insert(s.next_ipc, VecDeque::new());
+            let owner = CURRENT.with(|c| c.borrow().as_ref().unwrap().clone());
+            Ok(ConnectionRes { id: s.next_ipc, owner })
+        })
+    }
+    pub fn ipc_write(c: &ConnectionRes, bytes: &[u8]) -> Result<(), Error> {
+        if bytes.len() > 1 << 20 {
+            return Err(Error::Invalid("at most 1 MiB".into()));
+        }
+        let mut s = c.owner.borrow_mut();
+        let data = s.ipc.get_mut(&c.id).ok_or_else(|| Error::NotFound("connection".into()))?;
+        data.extend(bytes);
+        Ok(())
+    }
+    pub fn ipc_read(c: &ConnectionRes, max: u32, _timeout: u32) -> Result<Vec<u8>, Error> {
+        let mut s = c.owner.borrow_mut();
+        let data = s.ipc.get_mut(&c.id).ok_or_else(|| Error::NotFound("connection".into()))?;
+        let count = data.len().min(max as usize).min(1 << 20);
+        Ok(data.drain(..count).collect())
+    }
+    pub fn ipc_close(c: &ConnectionRes) -> Result<(), Error> {
+        c.owner.borrow_mut().ipc.remove(&c.id);
+        Ok(())
+    }
     pub fn remove_status_item(id: &str) {
         with(|s| s.status.remove(id));
     }
@@ -1084,6 +1371,204 @@ pub mod current {
         })
     }
 
+    pub fn open_editors() -> Result<Vec<OpenEditor>, Error> {
+        with(|s| {
+            require(s, "editor.read")?;
+            Ok(s.editor
+                .iter()
+                .map(|e| OpenEditor {
+                    path: e.path.clone(),
+                    language: e.language.clone(),
+                    dirty: e.version > 1,
+                    active: true,
+                })
+                .collect())
+        })
+    }
+    pub fn editor_open(path: &str, selection: Option<Range>) -> Result<(), Error> {
+        let text = with(|s| {
+            if is_private_path(path) {
+                return s.external.get(path).cloned().ok_or_else(|| Error::NotFound(path.into()));
+            }
+            require(s, "project.read")?;
+            let p = MockProject { root: s.root.clone().ok_or_else(|| Error::Invalid("no project".into()))? };
+            let rel = rel_in_root(&p, path)?;
+            s.files.get(rel).or_else(|| s.files.get(path)).cloned().ok_or_else(|| Error::NotFound(path.into()))
+        })?;
+        with(|s| {
+            let path =
+                if path.starts_with('/') { path.into() } else { format!("{}/{path}", s.root.as_deref().unwrap()) };
+            s.editor = Some(Editor {
+                path,
+                language: "text".into(),
+                text,
+                version: 1,
+                selections: selection.into_iter().collect(),
+            });
+        });
+        Ok(())
+    }
+    fn valid_ranges(text: &str, ranges: &[Range]) -> bool {
+        ranges.iter().all(|r| matches!((crate::text::offset(text, r.start), crate::text::offset(text, r.end)), (Some(a), Some(b)) if a <= b))
+    }
+    pub fn editor_set_selections(_: &EditorRes, ranges: &[Range]) -> Result<(), Error> {
+        editor(|_, e| {
+            if ranges.is_empty() || ranges.len() > 1000 || !valid_ranges(&e.text, ranges) {
+                return Err(Error::Invalid("invalid selections".into()));
+            }
+            e.selections = ranges.to_vec();
+            Ok(())
+        })
+    }
+    pub fn editor_reveal(_: &EditorRes, range: Range) -> Result<(), Error> {
+        editor(|s, e| {
+            if !valid_ranges(&e.text, &[range]) {
+                return Err(Error::Invalid("invalid range".into()));
+            }
+            s.revealed_ranges.push(range);
+            Ok(())
+        })
+    }
+    pub fn project_search_text(_: &ProjectRes, query: &TextQuery, limit: u32) -> Result<TextSearch, Error> {
+        with(|s| {
+            require(s, "project.read")?;
+            if limit == 0 {
+                return Ok(TextSearch::default());
+            }
+            let mut result = match &s.search {
+                Some(f) => f(query, limit.min(10_000))?,
+                None => TextSearch::default(),
+            };
+            result.limit_hit |= result.matches.len() > limit.min(10_000) as usize;
+            result.matches.truncate(limit.min(10_000) as usize);
+            Ok(result)
+        })
+    }
+    pub fn problems(path: Option<&str>) -> Result<Vec<FileProblems>, Error> {
+        with(|s| {
+            require(s, "project.read")?;
+            let p = MockProject { root: s.root.clone().ok_or_else(|| Error::Invalid("no project".into()))? };
+            let wanted = path.map(|path| rel_in_root(&p, path).map(|rel| format!("{}/{rel}", p.root))).transpose()?;
+            Ok(s.diagnostics
+                .iter()
+                .chain(s.provider_diagnostics.iter())
+                .filter(|(path, _)| wanted.as_ref().is_none_or(|p| p == *path))
+                .map(|(path, diagnostics)| FileProblems {
+                    path: path.clone(),
+                    source: "mock".into(),
+                    diagnostics: diagnostics.clone(),
+                })
+                .collect())
+        })
+    }
+    fn decoration_path(s: &State, path: &str) -> Result<String, Error> {
+        let p = MockProject { root: s.root.clone().ok_or_else(|| Error::Invalid("no project".into()))? };
+        Ok(format!("{}/{}", p.root, rel_in_root(&p, path)?))
+    }
+    fn style(s: &str) -> bool {
+        matches!(
+            s,
+            "highlight"
+                | "search"
+                | "added"
+                | "modified"
+                | "removed"
+                | "warning"
+                | "error"
+                | "info"
+                | "underline"
+                | "strikethrough"
+                | "muted"
+        )
+    }
+    pub fn set_decorations(path: &str, set: &str, items: &[Decoration]) -> Result<(), Error> {
+        with(|s| {
+            require(s, "project.read")?;
+            let path = decoration_path(s, path)?;
+            let mut next = s.decorations.clone();
+            next.insert((set.into(), path.clone()), items.iter().filter(|d| style(&d.style)).cloned().collect());
+            let names: BTreeSet<_> = next.keys().map(|(set, _)| set).collect();
+            let count: usize = next.iter().filter(|((_, p), _)| *p == path).map(|(_, i)| i.len()).sum();
+            if set.is_empty() || set.len() > 128 || names.len() > 50 || count > 10_000 {
+                return Err(Error::Invalid("decoration limit".into()));
+            }
+            s.decorations = next;
+            Ok(())
+        })
+    }
+    pub fn clear_decorations(set: &str) -> Result<(), Error> {
+        with(|s| {
+            require(s, "project.read")?;
+            s.decorations.retain(|(id, _), _| id != set);
+            Ok(())
+        })
+    }
+    pub fn set_file_decoration(path: &str, set: &str, item: &FileDecoration) -> Result<(), Error> {
+        with(|s| {
+            require(s, "project.read")?;
+            let path = decoration_path(s, path)?;
+            let mut next = s.file_decorations.clone();
+            next.remove(&(set.into(), path.clone()));
+            if style(&item.style) {
+                next.insert((set.into(), path), item.clone());
+            }
+            let names: BTreeSet<_> = next.keys().map(|(set, _)| set).collect();
+            if set.is_empty()
+                || set.len() > 128
+                || names.len() > 50
+                || item.badge.as_ref().is_some_and(|b| b.chars().count() > 2)
+            {
+                return Err(Error::Invalid("file decoration limit".into()));
+            }
+            s.file_decorations = next;
+            Ok(())
+        })
+    }
+    pub fn clear_file_decorations(set: &str) -> Result<(), Error> {
+        with(|s| {
+            require(s, "project.read")?;
+            s.file_decorations.retain(|(id, _), _| id != set);
+            Ok(())
+        })
+    }
+    fn vcs_read(s: &State) -> Result<(), Error> {
+        require(s, "vcs.read")?;
+        if s.restricted {
+            return Err(Error::Failed("project is in Restricted Mode".into()));
+        }
+        Ok(())
+    }
+    pub fn vcs_log(p: &ProjectRes, path: Option<&str>, limit: u32) -> Result<Vec<CommitInfo>, Error> {
+        with(|s| {
+            vcs_read(s)?;
+            if let Some(path) = path {
+                rel_in_root(p, path)?;
+            }
+            Ok(s.commits.iter().take(limit.min(1000) as usize).cloned().collect())
+        })
+    }
+    pub fn vcs_blame(p: &ProjectRes, path: &str) -> Result<Vec<BlameLine>, Error> {
+        with(|s| {
+            vcs_read(s)?;
+            rel_in_root(p, path)?;
+            Ok(s.blame.get(path).cloned().unwrap_or_default())
+        })
+    }
+    pub fn vcs_diff(p: &ProjectRes, path: Option<&str>, against: Option<&str>) -> Result<Option<String>, Error> {
+        with(|s| {
+            vcs_read(s)?;
+            if let Some(path) = path {
+                rel_in_root(p, path)?;
+            }
+            if against.is_some_and(|r| r.is_empty() || r.starts_with('-') || r.contains('\0')) {
+                return Err(Error::Invalid("invalid revision".into()));
+            }
+            if s.patch.as_ref().is_some_and(|p| p.len() > 4 << 20) {
+                return Err(Error::Failed("diff exceeds 4 MiB".into()));
+            }
+            Ok(s.patch.clone())
+        })
+    }
     pub fn vcs_status(_: &ProjectRes) -> Result<Option<RepositoryStatus>, Error> {
         with(|s| {
             require(s, "vcs.read")?;
@@ -1167,8 +1652,11 @@ pub mod current {
     pub fn subscribe(kind: EventKind) -> Result<(), Error> {
         with(|s| {
             let cap = match kind {
-                EventKind::ActionPerformed => Some("events.input"),
-                EventKind::Scheduled => None,
+                EventKind::ActionPerformed | EventKind::InputModeChanged => Some("events.input"),
+                EventKind::Scheduled
+                | EventKind::RunExited
+                | EventKind::TerminalExited
+                | EventKind::ContentTabAction => None,
                 _ => Some("events"),
             };
             if let Some(cap) = cap {
@@ -1228,8 +1716,18 @@ pub mod current {
     pub fn fetch(req: &HttpRequest) -> Result<HttpResponse, Error> {
         with(|s| {
             let host = net_host(&req.url).ok_or_else(|| Error::Invalid(format!("{:?} is not a URL", req.url)))?;
-            let cap = format!("net:{host}");
-            if !s.capabilities.iter().any(|c| *c == cap || c == "net:*") {
+            let kind = if req.url.starts_with("http://") && !matches!(host.as_str(), "localhost" | "127.0.0.1" | "::1")
+            {
+                "net.http"
+            } else {
+                "net"
+            };
+            let cap = format!("{kind}:{host}");
+            if !s.capabilities.iter().any(|c| {
+                *c == cap
+                    || c == &format!("{kind}:*")
+                    || c.strip_prefix(&format!("{kind}:*.")).is_some_and(|suffix| host.ends_with(&format!(".{suffix}")))
+            }) {
                 return Err(Error::Denied(cap));
             }
             let mut sent = req.clone();
@@ -1251,6 +1749,87 @@ pub mod current {
         })
     }
 
+    pub fn secret_set(name: &str, value: &str) -> Result<(), Error> {
+        with(|s| {
+            require(s, "secrets")?;
+            if !s.declared_secrets.contains(name) {
+                return Err(Error::NotFound(name.into()));
+            }
+            s.secrets.insert(name.into(), value.into());
+            Ok(())
+        })
+    }
+    pub fn secret_delete(name: &str) -> Result<(), Error> {
+        with(|s| {
+            require(s, "secrets")?;
+            if !s.declared_secrets.contains(name) {
+                return Err(Error::NotFound(name.into()));
+            }
+            s.secrets.remove(name);
+            Ok(())
+        })
+    }
+    pub struct LoopbackRes {
+        id: u64,
+        owner: Rc<RefCell<State>>,
+        uri: String,
+    }
+    impl Drop for LoopbackRes {
+        fn drop(&mut self) {
+            self.owner.borrow_mut().loopbacks.remove(&self.id);
+        }
+    }
+    pub fn begin_loopback(path: &str) -> Result<LoopbackRes, Error> {
+        with(|s| {
+            if s.loopbacks.len() >= 2 {
+                return Err(Error::Invalid("at most two loopbacks".into()));
+            }
+            s.next_loopback += 1;
+            s.loopbacks.insert(s.next_loopback);
+            Ok(LoopbackRes {
+                id: s.next_loopback,
+                owner: CURRENT.with(|c| c.borrow().as_ref().unwrap().clone()),
+                uri: format!("http://127.0.0.1:{}/{}", 49152 + s.next_loopback, path.trim_start_matches('/')),
+            })
+        })
+    }
+    pub fn loopback_uri(l: &LoopbackRes) -> String {
+        l.uri.clone()
+    }
+    pub fn loopback_wait(l: &LoopbackRes, _timeout_ms: u32) -> Result<Option<String>, Error> {
+        if !l.owner.borrow_mut().loopbacks.remove(&l.id) {
+            return Err(Error::Invalid("loopback already awaited".into()));
+        }
+        Ok(l.owner.borrow_mut().loopback_queries.pop_front().flatten())
+    }
+    pub fn output_append(channel: &str, text: &str) -> Result<(), Error> {
+        with(|s| {
+            if channel.is_empty() || channel.len() > 128 || channel.chars().any(char::is_control) {
+                return Err(Error::Invalid("invalid channel".into()));
+            }
+            if !s.output.contains_key(channel) && s.output.len() >= 32 {
+                return Err(Error::Invalid("at most 32 channels".into()));
+            }
+            let buffer = s.output.entry(channel.into()).or_default();
+            buffer.push_str(text);
+            let mut remove = buffer.len().saturating_sub(1 << 20);
+            while !buffer.is_char_boundary(remove) {
+                remove += 1;
+            }
+            buffer.drain(..remove);
+            Ok(())
+        })
+    }
+    pub fn output_clear(channel: &str) -> Result<(), Error> {
+        output_append(channel, "")?;
+        with(|s| s.output.get_mut(channel).unwrap().clear());
+        Ok(())
+    }
+    pub fn output_reveal(channel: &str) -> Result<(), Error> {
+        output_append(channel, "")?;
+        with(|s| s.revealed_output.push(channel.into()));
+        Ok(())
+    }
     pub fn secret_is_set(name: &str) -> bool {
         with(|s| s.capabilities.iter().any(|c| c == "secrets") && s.secrets.contains_key(name))
     }
@@ -1264,10 +1843,174 @@ pub mod current {
         Ok(())
     }
 
+    pub fn database_upsert(project: &ProjectRes, source: &PluginDataSource) -> Result<(), Error> {
+        with(|s| {
+            require(s, "database.sources")?;
+            if s.restricted {
+                return Err(Error::Denied("project is not trusted".into()));
+            }
+            if source.id.is_empty() || source.id.len() > 128 || source.name.trim().is_empty() {
+                return Err(Error::Invalid("invalid data source".into()));
+            }
+            s.database_sources.insert((project.root.clone(), source.id.clone()), source.clone());
+            Ok(())
+        })
+    }
+    pub fn database_sources(project: &ProjectRes) -> Result<Vec<String>, Error> {
+        with(|s| {
+            require(s, "database.sources")?;
+            if s.restricted {
+                return Err(Error::Denied("project is not trusted".into()));
+            }
+            Ok(s.database_sources.keys().filter(|(r, _)| r == &project.root).map(|(_, id)| id.clone()).collect())
+        })
+    }
+    pub fn database_remove(project: &ProjectRes, id: &str) -> Result<(), Error> {
+        with(|s| {
+            require(s, "database.sources")?;
+            if s.restricted {
+                return Err(Error::Denied("project is not trusted".into()));
+            }
+            let key = (project.root.clone(), id.into());
+            s.database_sources
+                .remove(&key)
+                .ok_or_else(|| Error::NotFound("no owned data source with this id".into()))?;
+            s.database_credentials.remove(&key);
+            Ok(())
+        })
+    }
+    pub fn database_credential(project: &ProjectRes, id: &str, _password: &str) -> Result<(), Error> {
+        with(|s| {
+            require(s, "database.sources")?;
+            if s.restricted {
+                return Err(Error::Denied("project is not trusted".into()));
+            }
+            let key = (project.root.clone(), id.into());
+            if !s.database_sources.contains_key(&key) {
+                return Err(Error::NotFound("no owned data source with this id".into()));
+            }
+            s.database_credentials.insert(key);
+            Ok(())
+        })
+    }
+    pub fn database_connect(project: &ProjectRes, id: &str) -> Result<(), Error> {
+        with(|s| {
+            require(s, "database.sources")?;
+            if s.restricted {
+                return Err(Error::Denied("project is not trusted".into()));
+            }
+            let key = (project.root.clone(), id.into());
+            if !s.database_sources.contains_key(&key) {
+                return Err(Error::NotFound("no owned data source with this id".into()));
+            }
+            s.database_connections.push(key);
+            Ok(())
+        })
+    }
+    pub fn mcp_stdio_command() -> Option<Vec<String>> {
+        with(|s| s.mcp_stdio.clone())
+    }
+
+    pub fn register_run_target(project: &ProjectRes, target: &crate::PluginRunTarget) -> Result<(), Error> {
+        register_run_target_with_overrides(project, &target.clone().into())
+    }
+    pub fn register_run_target_with_overrides(
+        project: &ProjectRes,
+        target: &crate::PluginRunTargetWithOverrides,
+    ) -> Result<(), Error> {
+        with(|s| {
+            require(s, &format!("process:{}", target.program))?;
+            if s.restricted {
+                return Err(Error::Denied("project is not trusted".into()));
+            }
+            if target.id.is_empty()
+                || target.name.is_empty()
+                || target
+                    .args
+                    .iter()
+                    .chain(&target.workdir_args)
+                    .chain(target.commands.iter().flat_map(|c| c.args.iter().chain(c.workdir_args.iter().flatten())))
+                    .any(|a| a.contains('\0'))
+            {
+                return Err(Error::Invalid("invalid run target".into()));
+            }
+            s.run_targets.insert((project.root.clone(), target.id.clone()), target.clone());
+            Ok(())
+        })
+    }
+    pub fn unregister_run_target(project: &ProjectRes, id: &str) {
+        with(|s| {
+            s.run_targets.remove(&(project.root.clone(), id.into()));
+        });
+    }
+    pub fn start_run(config: &str, args: &[String], debug: bool) -> Result<String, Error> {
+        with(|s| {
+            let c = s.run_configurations.get(config).ok_or_else(|| Error::NotFound(config.into()))?;
+            require(s, &format!("process:{}", c.program))?;
+            if debug {
+                return Err(Error::Invalid("this configuration has no debugger".into()));
+            }
+            let id = format!("mock-run-{}", s.configuration_runs.len());
+            s.configuration_runs.push((id.clone(), config.into(), args.to_vec(), debug));
+            Ok(id)
+        })
+    }
+    pub fn open_terminal_session(key: &str, title: &str, cmd: &crate::host::Command) -> Result<String, Error> {
+        command_env(cmd)?;
+        with(|s| {
+            require(s, &format!("process:{}", cmd.program))?;
+            if key.is_empty() || key.len() > 128 || title.is_empty() || title.len() > 256 {
+                return Err(Error::Invalid("invalid terminal key or title".into()));
+            }
+            if let Some((id, _, _)) = s.terminal_sessions.get(key) {
+                return Ok(id.clone());
+            }
+            s.next_child += 1;
+            let id = format!("mock-terminal-{}", s.next_child);
+            s.terminal_sessions.insert(key.into(), (id.clone(), cmd.clone(), title.into()));
+            Ok(id)
+        })
+    }
+    pub fn write_terminal(key: &str, text: &str) -> Result<(), Error> {
+        with(|s| {
+            if !s.terminal_sessions.contains_key(key) {
+                return Err(Error::NotFound(key.into()));
+            }
+            s.terminal_writes.push((key.into(), text.into()));
+            Ok(())
+        })
+    }
+    pub fn open_content_tab(tab: &crate::ContentTab) -> Result<(), Error> {
+        if tab.key.is_empty() || tab.title.is_empty() || tab.content.contains('\0') {
+            return Err(Error::Invalid("invalid content tab".into()));
+        }
+        with(|s| {
+            s.content_tabs.insert(tab.key.clone(), tab.clone());
+        });
+        Ok(())
+    }
+    pub fn reply_content_tab(request: &str, reply: &crate::ContentTabReply) -> Result<(), Error> {
+        with(|s| s.content_replies.push((request.into(), reply.clone())));
+        Ok(())
+    }
     pub fn open_terminal(title: &str, program: &str, args: &[String]) -> Result<(), Error> {
         with(|s| {
             require(s, &format!("process:{program}"))?;
             s.terminals.push(MockTerminal { title: title.into(), program: program.into(), args: args.to_vec() });
+            Ok(())
+        })
+    }
+
+    pub fn open_log_tab(key: &str, title: &str, log: &crate::details::ProcessLog) -> Result<(), Error> {
+        with(|s| {
+            require(s, &format!("process:{}", log.program))?;
+            let line =
+                |t: &str, max: usize| !t.is_empty() && t.chars().count() <= max && !t.contains(['\0', '\r', '\n']);
+            if !line(key, 128) || !line(title, 256) || log.toggles.len() > 32 {
+                return Err(Error::Invalid("a log tab's key, title or toggles are over the limits".into()));
+            }
+            s.log_tabs.retain(|t| t.key != key);
+            s.log_tabs.push(MockLogTab { key: key.into(), title: title.into(), log: log.clone() });
             Ok(())
         })
     }
@@ -1699,6 +2442,24 @@ mod tests {
     }
 
     #[test]
+    fn project_notifications_need_an_open_project() {
+        let mock = MockHost::install();
+        mock.add_project("/other");
+        let action = NotificationAction::new("Disable", "disable").argument("/other");
+        let other = host::project_of("/other/a.txt").unwrap();
+        other.notify(NotificationLevel::Info, "Update", "", std::slice::from_ref(&action)).unwrap();
+        let sent = mock.project_notifications();
+        assert_eq!((sent[0].0.as_str(), &sent[0].1.actions), ("/other", &vec![action.clone()]));
+        assert!(mock.notifications().is_empty() && mock.notifications_with_actions().is_empty());
+        let too_many: [_; 4] = std::array::from_fn(|_| action.clone());
+        assert!(matches!(other.notify(NotificationLevel::Info, "Update", "", &too_many), Err(Error::Invalid(_))));
+        let project = host::project_of("/project/a.txt").unwrap();
+        mock.set_project_root(None);
+        assert!(matches!(project.notify(NotificationLevel::Info, "Update", "", &[]), Err(Error::NotFound(_))));
+        assert_eq!(mock.project_notifications().len(), 1);
+    }
+
+    #[test]
     fn files_outside_the_project_need_an_fs_read_grant() {
         let mock = MockHost::install().with_capabilities(&["fs.read:/opt/tool"]);
         mock.add_external_file("/opt/tool/conf/app.yaml", "port: 8080");
@@ -1822,6 +2583,25 @@ mod tests {
         assert!(host::fs::read_dir(&traversal).is_err());
         assert!(host::open_location(&file, 0, 0).is_err());
         assert_eq!(mock.opened_locations().len(), 2);
+    }
+
+    #[test]
+    fn log_tabs_need_the_program_grant() {
+        let log = crate::details::ProcessLog::new("kubectl", &["logs", "-f", "api"]).toggle(
+            "previous",
+            "Previous",
+            &["--previous"],
+        );
+        let _mock = MockHost::install();
+        assert_eq!(host::open_log_tab("api", "api logs", &log), Err(Error::Denied("process:kubectl".into())));
+
+        let mock = MockHost::install().with_capabilities(&["process:kubectl"]);
+        host::open_log_tab("api", "api logs", &log).unwrap();
+        // Reopening a key replaces that tab.
+        host::open_log_tab("api", "api logs again", &log).unwrap();
+        assert_eq!(mock.log_tabs().len(), 1);
+        assert_eq!((mock.log_tabs()[0].title.as_str(), &mock.log_tabs()[0].log), ("api logs again", &log));
+        assert!(matches!(host::open_log_tab("", "api logs", &log), Err(Error::Invalid(_))));
     }
 
     #[test]

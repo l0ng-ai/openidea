@@ -22,7 +22,18 @@ import { invokeLocal } from "@/platform/tauriCore";
 import { useTx } from "@/platform/i18n";
 import { basename } from "@/platform/project";
 import { notifications, OWNS_FILE_DROP } from "@/workbench/contributions";
-import { FILES_DRAG, Icon, IconButton, InlineTag, Popup, fileIconName, registerDropTarget } from "@/ui";
+import {
+  FILES_DRAG,
+  Icon,
+  IconButton,
+  InlineTag,
+  List,
+  Popup,
+  firstSelectable,
+  listNavigate,
+  fileIconName,
+  registerDropTarget,
+} from "@/ui";
 import {
   IMAGE_EXTENSIONS,
   MAX_IMAGE_BYTES,
@@ -52,7 +63,12 @@ import { isImeKey } from "@/platform/ime";
 const MAX_PROMPT_HEIGHT = 280;
 const MAX_ITEMS = 12;
 
-type Item = { kind: "file"; path: string; rel: string; dir?: boolean } | { kind: "command"; command: AgentCommand };
+type Item =
+  | { kind: "file"; path: string; rel: string; dir?: boolean }
+  | { kind: "command"; command: AgentCommand }
+  | { kind: "section"; source: "command" | "skill" };
+
+const isSection = (item: Item) => item.kind === "section";
 
 export interface ComposerProps {
   /** Store key of the draft. */
@@ -194,10 +210,19 @@ export function Composer(props: ComposerProps) {
   const items: Item[] = useMemo(() => {
     if (!completion) return [];
     if (completion.kind === "file") return files;
-    return matchCommands(props.commands, completion.query)
-      .slice(0, MAX_ITEMS)
-      .map((command) => ({ kind: "command", command }));
+    const out: Item[] = [];
+    let source: "command" | "skill" | undefined;
+    for (const command of matchCommands(props.commands, completion.query)) {
+      const next = command.source ?? "command";
+      if (source !== next) {
+        source = next;
+        out.push({ kind: "section", source });
+      }
+      out.push({ kind: "command", command });
+    }
+    return out;
   }, [completion, files, props.commands]);
+  const activeIndex = items[active] && !isSection(items[active]!) ? active : firstSelectable(items, isSection);
   const open = !!completion && items.length > 0;
   const completionAnchor = useCompletionAnchor(ref, open ? completion.to : null, text);
 
@@ -216,7 +241,7 @@ export function Composer(props: ComposerProps) {
 
   /** Enter or a click references the item; Tab on a folder keeps completing inside it. */
   const accept = (item: Item | undefined, descend = false) => {
-    if (!item || !completion) return;
+    if (!item || item.kind === "section" || !completion) return;
     if (item.kind === "file") {
       const rel = item.dir ? `${item.rel}/` : item.rel;
       // A folder stays referenced while its `@folder/` is left as typed (`toPrompt`).
@@ -275,13 +300,15 @@ export function Composer(props: ComposerProps) {
     [id],
   );
 
+  const fitsLimit = (name: string, size: number) => {
+    if (size <= MAX_IMAGE_BYTES) return true;
+    notifications().notify({ level: "warning", title: "Image too large", body: tx`${name} is over 5 MB.` });
+    return false;
+  };
+
   const readImageFiles = (picked: Iterable<File>) => {
     for (const file of picked) {
-      if (!file.type.startsWith("image/")) continue;
-      if (file.size > MAX_IMAGE_BYTES) {
-        notifications().notify({ level: "warning", title: "Image too large", body: tx`${file.name} is over 5 MB.` });
-        continue;
-      }
+      if (!file.type.startsWith("image/") || !fitsLimit(file.name, file.size)) continue;
       const reader = new FileReader();
       reader.onload = () => {
         const image = typeof reader.result === "string" ? imageFromDataUrl(reader.result, file.name || "image") : null;
@@ -289,6 +316,12 @@ export function Composer(props: ComposerProps) {
       };
       reader.readAsDataURL(file);
     }
+  };
+
+  const pasteClipboardImage = async () => {
+    const url = await call(commands.clipboardImage());
+    const image = url ? imageFromDataUrl(url, "image") : null;
+    if (image && fitsLimit("image", (image.data.length * 3) / 4)) addImages([image]);
   };
 
   // Files dropped from the OS onto the box: images are attached, other files referenced.
@@ -375,13 +408,13 @@ export function Composer(props: ComposerProps) {
     if (open) {
       if (e.key === "ArrowDown" || e.key === "ArrowUp") {
         e.preventDefault();
-        const d = e.key === "ArrowDown" ? 1 : -1;
-        setActive((a) => (a + d + items.length) % items.length);
+        const next = listNavigate(e.key, { items, active: activeIndex, isSection, wrap: true });
+        if (next !== null) setActive(next);
         return;
       }
       if (e.key === "Enter" || e.key === "Tab") {
         e.preventDefault();
-        accept(items[active], e.key === "Tab");
+        accept(items[activeIndex], e.key === "Tab");
         return;
       }
       if (e.key === "Escape") {
@@ -441,41 +474,45 @@ export function Composer(props: ComposerProps) {
           closeOnOutsideClick={false}
           onClose={() => setCompletion(null)}
           className={styles.popup}
-          role="listbox"
-          aria-label={tx(completion.kind === "file" ? "Files" : "Commands")}
+          role="presentation"
         >
-          <div className={styles.items}>
-            {items.map((item, i) => (
-              <div
-                key={item.kind === "file" ? item.path : item.command.name}
-                role="option"
-                aria-selected={i === active}
-                className={clsx(styles.item, i === active && styles.active)}
-                onMouseEnter={() => setActive(i)}
-                onMouseDown={(e) => {
-                  e.preventDefault();
-                  accept(item);
-                }}
-              >
-                {item.kind === "file" ? (
-                  <>
-                    <Icon name={item.dir ? "folder" : fileIconName(basename(item.rel), item.rel)} size={16} />
-                    <span className={styles.itemName}>
-                      {basename(item.rel)}
-                      {item.dir && "/"}
-                    </span>
-                    <span className={styles.itemDetail}>{item.rel}</span>
-                  </>
-                ) : (
-                  <>
-                    <span className={styles.itemName}>/{item.command.name}</span>
-                    {item.command.hint && <span className={styles.itemHint}>{item.command.hint}</span>}
-                    <span className={styles.itemDetail}>{item.command.description}</span>
-                  </>
-                )}
-              </div>
-            ))}
-          </div>
+          <List
+            items={items}
+            getKey={(item) =>
+              item.kind === "section"
+                ? `section:${item.source}`
+                : item.kind === "file"
+                  ? item.path
+                  : `${item.command.source ?? "command"}:${item.command.name}`
+            }
+            isSection={isSection}
+            renderSection={(item) => item.kind === "section" && tx(item.source === "skill" ? "Skills" : "Commands")}
+            activeIndex={activeIndex}
+            onActiveChange={setActive}
+            onActivate={(item) => accept(item)}
+            focusable={false}
+            hoverSelects
+            aria-label={tx(completion.kind === "file" ? "Files" : "Commands")}
+            className={styles.items}
+            renderItem={(item) =>
+              item.kind === "section" ? null : item.kind === "file" ? (
+                <>
+                  <Icon name={item.dir ? "folder" : fileIconName(basename(item.rel), item.rel)} size={16} />
+                  <span className={styles.itemName}>
+                    {basename(item.rel)}
+                    {item.dir && "/"}
+                  </span>
+                  <span className={styles.itemDetail}>{item.rel}</span>
+                </>
+              ) : (
+                <>
+                  <span className={styles.itemName}>/{item.command.name}</span>
+                  {item.command.hint && <span className={styles.itemHint}>{item.command.hint}</span>}
+                  <span className={styles.itemDetail}>{item.command.description}</span>
+                </>
+              )
+            }
+          />
         </Popup>
       )}
       {images.length > 0 && (
@@ -542,6 +579,10 @@ export function Composer(props: ComposerProps) {
             if (pasted.length) {
               e.preventDefault();
               readImageFiles(pasted);
+            } else if (isTauri() && !e.clipboardData.types.length) {
+              pasteClipboardImage().catch((error: unknown) =>
+                notifications().notify({ level: "error", title: tx("Cannot insert image"), body: String(error) }),
+              );
             }
           }}
         />

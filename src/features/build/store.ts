@@ -139,6 +139,7 @@ export async function startBuild(
   const cancel = () => backend.cancel(request);
   const previous = useBuildRun.getState().files;
   useBuildRun.setState({ ...INITIAL, request, kind, file, title: taskTitle, status: "running", files: previous });
+  setContext(BUILD_LAST_STATUS, null);
   setContext(BUILD_RUNNING, true);
   if (activate) {
     try {
@@ -280,5 +281,6 @@ export function resetBuildRun() {
   stopBuild();
   removeTask(BUILD_TASK_ID);
   setContext(BUILD_RUNNING, false);
+  setContext(BUILD_LAST_STATUS, null);
   useBuildRun.setState(INITIAL);
 }

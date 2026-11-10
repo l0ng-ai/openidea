@@ -2,6 +2,7 @@
 .button {
   --button-radius: var(--radius-control, 4px);
   display: inline-flex;
+  flex-shrink: 0;
   align-items: center;
   justify-content: center;
   gap: 6px;
@@ -96,6 +97,9 @@
 .iconButton:disabled {
   opacity: 0.4;
   cursor: default;
+}
+.iconButton[aria-busy="true"] {
+  cursor: progress;
 }
 .iconButton[aria-pressed="true"] {
   background: var(--bg-toolbar-selected, var(--bg-tree-selected));

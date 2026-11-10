@@ -11,7 +11,7 @@ use portable_pty::{ChildKiller, CommandBuilder, MasterPty, PtySize, native_pty_s
 use serde::{Deserialize, Serialize};
 use specta::Type;
 use std::collections::{BTreeMap, HashMap};
-use std::io::{Read, Write};
+use std::io::Read;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
@@ -56,8 +56,9 @@ struct Session {
     /// The window that opened it: closing that window's project closes its terminals.
     key: String,
     info: TerminalInfo,
+    // Cancel input before dropping the master (ClosePseudoConsole on Windows).
+    writer: ide_core::input::InputWriter,
     master: Mutex<Box<dyn MasterPty + Send>>,
-    writer: Mutex<Box<dyn Write + Send>>,
     killer: Mutex<Box<dyn ChildKiller + Send + Sync>>,
     exited: Arc<AtomicBool>,
     started: Instant,
@@ -161,7 +162,16 @@ impl TerminalManager {
         }
         apply_powershell_env(&shell, &mut cmd);
 
-        let child = pair
+        #[cfg(unix)]
+        let wait_writable = ide_core::input::nonblocking(
+            pair.master.as_raw_fd().ok_or_else(|| std::io::Error::other("PTY has no file descriptor"))?,
+        )?;
+        #[cfg(unix)]
+        let wait_readable = ide_core::input::readable(
+            pair.master.as_raw_fd().ok_or_else(|| std::io::Error::other("PTY has no file descriptor"))?,
+        )?;
+
+        let mut child = pair
             .slave
             .spawn_command(cmd)
             .map_err(|e| IdeError::unavailable(format!("failed to start shell `{shell}`: {e}")))?;
@@ -174,11 +184,24 @@ impl TerminalManager {
         let id = TerminalId::next();
         let info = TerminalInfo { id, title: shell_title(&shell), pid: child.process_id() };
         let exited = Arc::new(AtomicBool::new(false));
+        let writer = ide_core::input::InputWriter::new(
+            format!("openidea-term-write-{}", id.0),
+            writer,
+            #[cfg(unix)]
+            wait_writable,
+            move |e| {
+                tracing::warn!(%id, "terminal input: {e}");
+            },
+        )
+        .inspect_err(|_| {
+            let _ = child.kill();
+            let _ = child.wait();
+        })?;
         let session = Arc::new(Session {
             key,
             info: info.clone(),
             master: Mutex::new(pair.master),
-            writer: Mutex::new(writer),
+            writer,
             killer: Mutex::new(child.clone_killer()),
             exited: exited.clone(),
             started: Instant::now(),
@@ -187,9 +210,15 @@ impl TerminalManager {
         self.sessions.lock().insert(id, session);
 
         let (tx, rx) = mpsc::channel::<Msg>();
-        let spawned = spawn_reader(id, reader, tx.clone())
-            .and_then(|_| spawn_waiter(id, child, tx))
-            .and_then(|_| spawn_pump(id, rx, on_output, exited, self.sessions.clone(), sink, Instant::now()));
+        let spawned = spawn_reader(
+            id,
+            reader,
+            tx.clone(),
+            #[cfg(unix)]
+            wait_readable,
+        )
+        .and_then(|_| spawn_waiter(id, child, tx))
+        .and_then(|_| spawn_pump(id, rx, on_output, exited, self.sessions.clone(), sink, Instant::now()));
         if let Err(e) = spawned {
             if let Some(s) = self.sessions.lock().remove(&id) {
                 let _ = s.killer.lock().kill();
@@ -209,9 +238,7 @@ impl TerminalManager {
             let ms = session.started.elapsed().as_millis();
             tracing::info!(%id, ms, bytes = data.len(), cursor_report, "terminal first input");
         }
-        let mut w = session.writer.lock();
-        w.write_all(data.as_bytes())?;
-        w.flush()?;
+        session.writer.write(data.as_bytes())?;
         Ok(())
     }
 
@@ -364,6 +391,7 @@ mod win {
 
 /// Hangs up the shell (and its process group), escalating to SIGKILL if it lingers.
 fn terminate(session: &Session) {
+    session.writer.close();
     if session.exited.load(Ordering::Acquire) {
         return;
     }
@@ -395,7 +423,12 @@ fn terminate(session: &Session) {
     }
 }
 
-fn spawn_reader(id: TerminalId, mut reader: Box<dyn Read + Send>, tx: mpsc::Sender<Msg>) -> std::io::Result<()> {
+fn spawn_reader(
+    id: TerminalId,
+    mut reader: Box<dyn Read + Send>,
+    tx: mpsc::Sender<Msg>,
+    #[cfg(unix)] mut wait_readable: impl FnMut() -> std::io::Result<()> + Send + 'static,
+) -> std::io::Result<()> {
     std::thread::Builder::new().name(format!("openidea-term-read-{}", id.0)).spawn(move || {
         let mut buf = vec![0u8; 16 * 1024];
         loop {
@@ -407,8 +440,24 @@ fn spawn_reader(id: TerminalId, mut reader: Box<dyn Read + Send>, tx: mpsc::Send
                     }
                 }
                 Err(e) if e.kind() == std::io::ErrorKind::Interrupted => continue,
+                Err(e) if e.kind() == std::io::ErrorKind::WouldBlock => {
+                    #[cfg(unix)]
+                    if let Err(e) = wait_readable()
+                        && e.kind() != std::io::ErrorKind::Interrupted
+                    {
+                        tracing::warn!(%id, "terminal read: {e}");
+                        break;
+                    }
+                    #[cfg(not(unix))]
+                    std::thread::sleep(BATCH_INTERVAL);
+                }
                 // EIO is how Linux/macOS report "slave side closed".
-                Err(_) => break,
+                #[cfg(unix)]
+                Err(e) if e.raw_os_error() == Some(libc::EIO) => break,
+                Err(e) => {
+                    tracing::warn!(%id, "terminal read: {e}");
+                    break;
+                }
             }
         }
     })?;
@@ -807,6 +856,40 @@ mod tests {
             }
         }
         all
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn blocked_input_returns_promptly_and_kill_does_not_wait_for_it() {
+        let h = harness();
+        let (info, output) = spawn_collect(&h, sh("stty raw -echo; printf READY; exec sleep 60"));
+        read_until(&output, "READY");
+        let started = Instant::now();
+        h.manager.write(info.id, &"x".repeat(512 * 1024)).unwrap();
+        h.manager.write(info.id, "\u{3}").unwrap();
+        assert!(started.elapsed() < Duration::from_millis(250));
+        std::thread::sleep(Duration::from_millis(50));
+        let started = Instant::now();
+        h.manager.kill(info.id).unwrap();
+        assert!(started.elapsed() < Duration::from_millis(250));
+        wait_exit(&h, info.id);
+        assert!(h.manager.write(info.id, "later").is_err());
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn input_keeps_large_pastes_and_following_keystrokes_in_order() {
+        let h = harness();
+        let (info, output) = spawn_collect(&h, sh("stty raw -echo; printf READY; sleep 1; exec cat"));
+        read_until(&output, "READY");
+        let paste = "abé".repeat(128 * 1024);
+        let started = Instant::now();
+        h.manager.write(info.id, &paste).unwrap();
+        h.manager.write(info.id, "END-OF-INPUT").unwrap();
+        assert!(started.elapsed() < Duration::from_millis(250));
+        let actual = read_until(&output, "END-OF-INPUT");
+        h.manager.kill(info.id).unwrap();
+        assert_eq!(actual, format!("{paste}END-OF-INPUT"));
     }
 
     #[test]

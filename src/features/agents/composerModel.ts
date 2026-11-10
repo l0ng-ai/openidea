@@ -85,7 +85,7 @@ export function matchCommands(commands: readonly AgentCommand[], query: string):
   return commands
     .map((command) => ({ command, rank: rank(command.name) }))
     .filter((m) => m.rank >= 0)
-    .sort((a, b) => a.rank - b.rank)
+    .sort((a, b) => Number(a.command.source === "skill") - Number(b.command.source === "skill") || a.rank - b.rank)
     .map((m) => m.command);
 }
 

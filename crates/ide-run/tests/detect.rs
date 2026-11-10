@@ -1063,6 +1063,7 @@ task default: :build
     assert_eq!(cmdline(find(&c, "rspec")), "bundle exec rspec");
     assert!(find(&c, "rspec").is_test);
     assert_eq!(find(&c, "rake:build").extras.folder.as_deref(), Some("Rake"));
+    assert!(c.iter().all(|c| c.debug_adapter.as_deref() == Some("rdbg")));
 }
 
 #[test]
@@ -1077,6 +1078,7 @@ fn ruby_minitest_projects_get_a_test_runner() {
         ("bundle", &["exec", "ruby", "-Ilib", "-Itest"].map(String::from)[..])
     );
     assert_eq!(m.args.last().map(String::as_str), Some("test"));
+    assert_eq!(m.debug_adapter.as_deref(), Some("rdbg"));
     // A `test` Rake task or RSpec already runs the tests.
     let dir = project(&[("Rakefile", "task :test\n"), ("test/a_test.rb", "")]);
     assert!(!ids(&detect(dir.path())).contains(&"minitest"));

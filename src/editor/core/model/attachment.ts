@@ -111,14 +111,7 @@ export async function attachDocument(
     if (model.ctx().readOnly || released || model.closed) return false;
     const slot = model.primarySlot();
     if (slot?.view) return command(slot.view);
-    if (slot)
-      return command({
-        state: slot.state,
-        dispatch: (tr) => {
-          slot.state = tr.state;
-          if (tr.docChanged) model.onLocal(tr.changes, slot);
-        },
-      });
+    if (slot) return command({ state: slot.state, dispatch: (tr) => slot.dispatchLocal(tr) });
     return target.view ? command(target.view) : false;
   };
 
@@ -126,6 +119,7 @@ export async function attachDocument(
     path,
     doc: model.doc,
     text: () => model.sync.localText.toString(),
+    lineEnding: () => model.getMeta().lineEnding,
     uiMode: () => model.getMeta().uiMode,
     get readOnly() {
       return model.getMeta().readOnly || model.virtual;

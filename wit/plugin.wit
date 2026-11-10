@@ -8,7 +8,7 @@
 /// `fs` and `workspace`, and everything else goes through the imports below,
 /// gated by the capabilities granted in `plugin.toml` (a missing one returns
 /// `error::denied`).
-package openidea:plugin@1.3.0;
+package openidea:plugin@1.5.0;
 
 world plugin {
     import log;
@@ -17,6 +17,7 @@ world plugin {
     import fs;
     import workspace;
     import editor;
+    import decorations;
     import invocation;
     import vcs;
     import commit;
@@ -26,7 +27,15 @@ world plugin {
     import net;
     import secrets;
     import process;
+    import ipc;
+    import output;
+    import auth;
+    import command-runner;
     import views;
+    import run;
+    import run-targets;
+    import database;
+    import mcp;
     import settings;
 
     export lifecycle;
@@ -59,11 +68,13 @@ world plugin-indexing {
     export document-indexer;
 }
 
+/// A plugin with semantic tokens (`semantic-tokens` under `[[contributes.providers]]`).
 world plugin-semantic-tokens {
     include plugin;
     export semantic-tokens-provider;
 }
 
+/// A plugin adding to hovers (`hover` under `[[contributes.providers]]`).
 world plugin-hover {
     include plugin;
     export hover-provider;
@@ -115,10 +126,12 @@ world indexing {
     export document-indexer;
 }
 
+/// Only the `semantic-tokens-provider` export, generated next to `plugin` like `syntax`.
 world semantic-tokens {
     export semantic-tokens-provider;
 }
 
+/// Only the `hover-provider` export, generated next to `plugin` like `syntax`.
 world hover {
     export hover-provider;
 }
@@ -149,6 +162,7 @@ world plugin-endpoints {
     export endpoints-provider;
 }
 
+/// Only the `endpoints-provider` export, generated next to `plugin` like `syntax`.
 world endpoints {
     export endpoints-provider;
 }
@@ -163,3 +177,31 @@ world plugin-diagnostics {
 world editor-diagnostics {
     export diagnostics-provider;
 }
+
+/// A plugin that exports project run configurations.
+world plugin-run-configurations { include plugin; export run-configurations; }
+/// Export-only configurations world, composed with plugin by SDK macros.
+world configurations-provider { export run-configurations; }
+/// A plugin that parses its test output.
+world plugin-test-results { include plugin; export test-results; }
+/// Export-only test parser world, composed with plugin by SDK macros.
+world test-results-provider { export test-results; }
+
+/// A plugin with additional API 1.4 language features.
+world plugin-language-features { include plugin; export language-features; }
+/// Export-only language features, composed with the base plugin world.
+world editor-language-features { export language-features; }
+/// A plugin that identifies embedded language ranges.
+world plugin-injections { include plugin; export injections; }
+/// Export-only injections, composed with the base plugin world.
+world language-injections { export injections; }
+
+/// A plugin contributing tools to the built-in MCP server.
+world plugin-mcp { include plugin; export mcp-provider; }
+/// Export-only MCP tools, composed with the base plugin world.
+world mcp-tools { export mcp-provider; }
+
+/// A plugin that validates launches through its run targets (API 1.5).
+world plugin-run-target-validation { include plugin; export run-target-validation; }
+/// Export-only validation, composed with the base plugin world.
+world run-target-validator { export run-target-validation; }

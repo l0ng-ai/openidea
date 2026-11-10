@@ -33,6 +33,9 @@
   align-items: center;
   gap: 6px;
 }
+.inlineLabel::after {
+  content: ":";
+}
 .inlineNumber {
   width: 64px;
 }
@@ -120,10 +123,13 @@
 .fontFamily {
   display: flex;
   align-items: center;
+  flex-wrap: wrap;
   gap: 8px;
+  min-width: 0;
 }
 .fontSelect {
-  min-width: 240px;
+  width: 240px;
+  max-width: 100%;
 }
 .previewTitle {
   margin: 18px 0 6px;
@@ -176,7 +182,7 @@
 }
 .schemeBody {
   display: grid;
-  grid-template-columns: minmax(0, 1fr) minmax(220px, 260px);
+  grid-template-columns: minmax(180px, 1fr) minmax(220px, 260px);
   gap: 14px;
   min-height: 320px;
 }

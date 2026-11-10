@@ -75,6 +75,26 @@ impl TestWorkspace {
 }
 
 impl PluginWorkspace for TestWorkspace {
+    fn run_configuration(&self, _client: &str, plugin: &str, id: &str) -> Result<ide_run::RunConfig, HostError> {
+        if !(plugin == "execution" && matches!(id, "detected" | "dynamic") || plugin == "api14" && id == "tests") {
+            return Err(HostError::NotFound(id.into()));
+        }
+        Ok(ide_run::RunConfig {
+            id: format!("plugin:{plugin}:{id}"),
+            name: "Tests".into(),
+            kind: "plugin".into(),
+            command: "execution-tool".into(),
+            args: vec!["test".into()],
+            cwd: Some(self.root.clone().into()),
+            env: Default::default(),
+            detected: true,
+            is_test: true,
+            debug_adapter: None,
+            allow_parallel: false,
+            extras: ide_run::RunExtras { params: [("framework".into(), "plugin".into())].into(), ..Default::default() },
+        })
+    }
+
     fn projects(&self) -> Vec<PathBuf> {
         std::iter::once(self.root.clone()).chain(self.other_roots.lock().iter().cloned()).collect()
     }
@@ -105,6 +125,10 @@ impl PluginWorkspace for TestWorkspace {
     }
     fn trusted(&self, _root: &Path) -> bool {
         self.trusted
+    }
+    fn project_windows(&self, root: &Path) -> Vec<String> {
+        // `main` shows the fixture project; other open roots have no window left.
+        if root == self.root { vec!["closing".into(), "main".into()] } else { Vec::new() }
     }
     fn project_of(&self, _window: &str) -> Option<PathBuf> {
         if let Some(left) = self.project_queries_left.lock().as_mut() {
@@ -285,6 +309,7 @@ fn fixture(limits: Limits) -> Fixture {
 impl Fixture {
     fn inv(&self) -> Invocation {
         Invocation {
+            command_chain: Vec::new(),
             client: Some("main".into()),
             workspace_root: Some(self.project.clone()),
             editor: None,
@@ -515,6 +540,30 @@ fn project_write_stays_inside_the_project() {
     assert!(err.contains("outside the project root"), "{err}");
     let info = f.host.info_of("misbehave").unwrap();
     assert_eq!((info.status, info.stats.crashes, info.stats.errors), (PluginStatus::Active, 0, 0), "{info:?}");
+}
+
+#[cfg(unix)]
+#[test]
+fn project_writes_confine_symlink_targets() {
+    use std::os::unix::fs::symlink;
+    let f = fixture(Limits::default());
+    f.install(&misbehave_with(f._tmp.path(), "misbehave-symlink-writer", "project.write"));
+    let outside = f._tmp.path().join("secret.txt");
+    let missing = f._tmp.path().join("missing.txt");
+    symlink(&outside, f.project.join("outside.txt")).unwrap();
+    symlink(&missing, f.project.join("dangling.txt")).unwrap();
+    for name in ["outside.txt", "dangling.txt"] {
+        let error = f.run("misbehave", "projwrite", Some(name)).unwrap_err();
+        assert!(error.contains("access outside the project root is not allowed"), "{error}");
+    }
+    assert_eq!(std::fs::read_to_string(outside).unwrap(), "top secret");
+    assert!(!missing.exists());
+    for (name, target) in [("inside.txt", "src/notes.txt"), ("new.txt", "new/deep.txt")] {
+        symlink(target, f.project.join(name)).unwrap();
+        f.run("misbehave", "projwrite", Some(name)).unwrap();
+        assert_eq!(std::fs::read_to_string(f.project.join(target)).unwrap(), "written inside the project\n");
+        assert!(std::fs::symlink_metadata(f.project.join(name)).unwrap().is_symlink());
+    }
 }
 
 /// `fs.write` replaces files the grant covers and nothing else, through the
@@ -3669,31 +3718,6 @@ fn listing_while_projects_change_does_not_deadlock() {
     }
 }
 
-/// Excalidraw: a web custom editor beside the text editor, with its fonts,
-/// file icon, template and language — no code.
-#[test]
-fn official_excalidraw_installs_and_serves_its_page() {
-    let tmp = tempfile::tempdir().unwrap();
-    let pkg = with_stand_in_page(&official("excalidraw"), tmp.path());
-    let f = fixture(Limits::default());
-    let info = f.install(&pkg);
-    assert_eq!(info.status, PluginStatus::Static, "{:?}", info.error);
-    let page = f.host.web_page("openidea.excalidraw", "canvas").unwrap();
-    let (rev, entry) = page.path.strip_prefix("openidea.excalidraw/").unwrap().split_once('/').unwrap();
-    assert_eq!(entry, "web/index.html");
-    let html = f.host.web_file("openidea.excalidraw", &format!("{rev}/{entry}")).unwrap();
-    let html = String::from_utf8(html.bytes).unwrap();
-    // Relative URLs only: the page is served from the package.
-    let script = html.split("src=\"").nth(1).unwrap().split('"').next().unwrap();
-    assert!(script.starts_with("./assets/"), "{script}");
-    assert!(f.host.web_file("openidea.excalidraw", &format!("{rev}/web/{}", &script[2..])).is_ok());
-    let font = f.host.web_file("openidea.excalidraw", &format!("{rev}/web/fonts/Virgil/Virgil-Regular.woff2")).unwrap();
-    assert_eq!(font.mime, "font/woff2");
-    assert_eq!(f.host.ui_items("customEditors")[0].decl["layout"], "preview");
-    assert!(f.host.languages().iter().any(|l| l.id.as_str() == "excalidraw"));
-    assert_eq!(f.host.assets("openidea.excalidraw", "fileIcon/excalidraw/").unwrap().len(), 2);
-}
-
 /// A copy of the official plugin at `src` in `dir`, with a stand-in for its
 /// built page (`web/` is built by plugins/build.sh, not checked in; build.sh
 /// checks what the build produces): an entry loading a script and a font by
@@ -3735,7 +3759,18 @@ fn official_graphviz_turns_its_pages_reports_into_problems() {
     assert_eq!(info.status, PluginStatus::Inactive, "{:?}", info.error);
     assert_eq!(f.host.ui_items("customEditors")[0].decl["layout"], "split");
     assert!(f.host.languages().iter().any(|l| l.id.as_str() == "dot"));
-    assert!(f.host.web_page("openidea.graphviz", "preview").is_ok());
+    assert_eq!(f.host.assets("openidea.graphviz", "fileIcon/graphviz/").unwrap().len(), 2);
+    let page = f.host.web_page("openidea.graphviz", "preview").unwrap();
+    let (rev, entry) = page.path.strip_prefix("openidea.graphviz/").unwrap().split_once('/').unwrap();
+    assert_eq!(entry, "web/index.html");
+    let html = f.host.web_file("openidea.graphviz", &format!("{rev}/{entry}")).unwrap();
+    let html = String::from_utf8(html.bytes).unwrap();
+    // Relative URLs only: the page is served from the package.
+    let script = html.split("src=\"").nth(1).unwrap().split('"').next().unwrap();
+    assert!(script.starts_with("./assets/"), "{script}");
+    assert!(f.host.web_file("openidea.graphviz", &format!("{rev}/web/{}", &script[2..])).is_ok());
+    let font = f.host.web_file("openidea.graphviz", &format!("{rev}/web/fonts/Virgil/Virgil-Regular.woff2")).unwrap();
+    assert_eq!(font.mime, "font/woff2");
 
     std::fs::write(f.project.join("flow.dot"), "digraph {\n  a -> \n}\n").unwrap();
     let editor = f.workspace.open("flow.dot", &[]);
@@ -4781,6 +4816,40 @@ fn notification_actions_keep_commands_and_window_scope() {
 }
 
 #[test]
+fn project_notifications_go_to_a_window_of_that_project_only() {
+    let f = fixture(Limits::default());
+    f.install(&sample("jobs"));
+    f.host.set_capability("jobs", "project.read", false).unwrap();
+    f.host.forget_client("closing");
+    let other = f.project.parent().unwrap().join("other");
+    std::fs::create_dir(&other).unwrap();
+    f.workspace.other_roots.lock().push(other.clone());
+    f.take_events();
+    let notifications = |f: &Fixture| {
+        f.take_events()
+            .into_iter()
+            .filter_map(|(client, event)| match event {
+                PluginEvent::Notification { title, actions, .. } => Some((client, title, actions)),
+                _ => None,
+            })
+            .collect::<Vec<_>>()
+    };
+    // A scheduled call has no invoking window; a closing window is skipped.
+    let path = f.project.join("notes.txt").to_string_lossy().into_owned();
+    f.host.run_command("jobs", "notify-project", Some(&path), Invocation::default()).unwrap();
+    let sent = notifications(&f);
+    assert_eq!(sent.len(), 1);
+    assert_eq!((sent[0].0.as_deref(), sent[0].1.as_str()), (Some("main"), "Project update"));
+    assert_eq!((sent[0].2[0].command.as_str(), sent[0].2[0].argument.as_deref()), ("context", Some(path.as_str())));
+    // A project without a window fails without falling back to another one, even when invoked from one.
+    let path = other.join("notes.txt").to_string_lossy().into_owned();
+    let error = f.host.run_command("jobs", "notify-project", Some(&path), f.inv()).unwrap_err().message;
+    assert!(error.contains("not open"), "{error}");
+    assert!(notifications(&f).is_empty());
+    assert_eq!(f.status("jobs"), PluginStatus::Active);
+}
+
+#[test]
 fn directory_prompts_and_project_requests_use_the_calling_window_without_a_capability() {
     use ide_plugin::Prompt;
     let f = fixture(Limits { timeout: Duration::from_millis(500), ..Limits::default() });
@@ -5013,6 +5082,59 @@ fn web_log_tabs_use_the_web_pty_permission_boundary() {
         assert!(f.host.web_pty_options("web-log", "logs", "main", command("sh")).is_err());
         f.host.set_capability("web-log", "process:bash", false).unwrap();
         assert!(f.host.web_pty_options("web-log", "logs", "main", command("bash")).is_err());
+    }
+}
+
+/// `views.open-log-tab` from the plugin's code: the host remembers what the tab
+/// may run, and the tab starts it by key, through the same PTY checks.
+#[test]
+fn log_tabs_opened_by_code_run_only_what_the_host_approved() {
+    let f = fixture(Limits::default());
+    f.host.install_from_dir(&sample("web-log"), &Consent::default()).unwrap();
+    let err = f.run("web-log", "code", None).unwrap_err();
+    assert!(err.contains("process:bash"), "{err}");
+    let options = |key: &str, window: &str, on: &[&str]| {
+        let on: Vec<String> = on.iter().map(|s| s.to_string()).collect();
+        f.host.log_tab_pty_options("web-log", key, window, &on, (240, 40))
+    };
+    assert_eq!(options("code", "main", &[]).unwrap_err().kind, ErrorKind::NotFound);
+    #[cfg(unix)]
+    {
+        f.host.set_capability("web-log", "process:bash", true).unwrap();
+        f.take_events();
+        assert_eq!(f.run("web-log", "code", None).unwrap(), None);
+        let events = f.take_events();
+        let (client, log) = events
+            .iter()
+            .find_map(|(client, event)| match event {
+                PluginEvent::OpenLogTab { plugin_id, key, title, log }
+                    if plugin_id == "web-log" && key == "code" && title == "Probe logs (code)" =>
+                {
+                    Some((client.clone(), log.clone()))
+                }
+                _ => None,
+            })
+            .expect("an OpenLogTab event");
+        assert_eq!(client.as_deref(), Some("main"));
+        assert_eq!((log.program.as_str(), log.toggles[0].id.as_str()), ("bash", "verbose"));
+
+        let got = options("code", "main", &[]).unwrap();
+        assert_eq!(got.shell.as_deref(), f.host.program_for("web-log", "bash").unwrap().to_str());
+        assert_eq!(got.args, log.args);
+        assert_eq!(got.cwd.0, f.project);
+        assert!(got.env.is_empty() && !got.shell_integration);
+        // Toggles append their arguments; unknown ones add nothing.
+        let verbose = options("code", "main", &["verbose", "bogus"]).unwrap();
+        assert_eq!(verbose.args.last().map(String::as_str), Some("--verbose"));
+        assert_eq!(verbose.args.len(), log.args.len() + 1);
+        // Only the window it was opened in, and only that key.
+        assert_eq!(options("code", "other", &[]).unwrap_err().kind, ErrorKind::NotFound);
+        assert_eq!(options("probe", "main", &[]).unwrap_err().kind, ErrorKind::NotFound);
+        // A revoked grant stops it starting, and forgets the tab.
+        f.host.set_capability("web-log", "process:bash", false).unwrap();
+        assert!(options("code", "main", &[]).is_err());
+        f.host.set_capability("web-log", "process:bash", true).unwrap();
+        assert_eq!(options("code", "main", &[]).unwrap_err().kind, ErrorKind::NotFound);
     }
 }
 
@@ -5262,6 +5384,55 @@ iconDark = "{dark}"
 }
 
 #[test]
+fn marker_icons_validate_indexed_marker_prefixes_and_tooltips() {
+    let f = fixture(Limits::default());
+    let tmp = tempfile::tempdir().unwrap();
+    let pkg = tmp.path().join("plugin");
+    std::fs::create_dir_all(pkg.join("icons")).unwrap();
+    std::fs::write(pkg.join("icons/usages.svg"), r#"<svg viewBox="0 0 16 16"><rect width="16" height="16"/></svg>"#)
+        .unwrap();
+    let manifest = |engine: &str, fields: &str| {
+        format!(
+            r#"
+id = "indexed-marker-icons"
+name = "Indexed Marker Icons"
+version = "1.0.0"
+engines.openidea = "{engine}"
+[[contributes.markerIcons]]
+id = "usages"
+icon = "icons/usages.svg"
+{fields}
+"#
+        )
+    };
+    let long = "k".repeat(257);
+    let many = format!("[{}]", (0..17).map(|i| format!("\"k{i}#\"")).collect::<Vec<_>>().join(", "));
+    for (engine, fields) in [
+        ("^1.0", r#"markers = ["usages#"]"#.to_owned()),
+        ("^1.3", r#"markers = [""]"#.to_owned()),
+        ("^1.3", format!(r#"markers = ["{long}"]"#)),
+        ("^1.3", format!("markers = {many}")),
+        ("^1.3", r#"markers = "usages#""#.to_owned()),
+        ("^1.3", r#"tooltip = "Usages""#.to_owned()),
+        ("^1.3", "markers = [\"usages#\"]\ntooltip = \" \"".to_owned()),
+        ("^1.3", format!("markers = [\"usages#\"]\ntooltip = \"{long}\"")),
+    ] {
+        std::fs::write(pkg.join("plugin.toml"), manifest(engine, &fields)).unwrap();
+        assert!(f.host.install_from_dir(&pkg, &Consent::all()).is_err(), "accepted {fields}");
+    }
+    std::fs::write(
+        pkg.join("plugin.toml"),
+        manifest("^1.3", "markers = [\"usages#\", \"scope#\"]\ntooltip = \"Usages\""),
+    )
+    .unwrap();
+    let info = f.install(&pkg);
+    assert!(info.error.is_none(), "{:?}", info.error);
+    let decl = &f.host.ui_items("markerIcons")[0].decl;
+    assert_eq!(decl["markers"], serde_json::json!(["usages#", "scope#"]));
+    assert_eq!(decl["tooltip"], "Usages");
+}
+
+#[test]
 fn marker_providers_preserve_names_and_package_paths() {
     let f = fixture(Limits::default());
     let tmp = tempfile::tempdir().unwrap();
@@ -5491,4 +5662,459 @@ fn view_header_none_needs_api_1_3_and_an_ungrouped_web_view() {
     let info = f.install(&pkg);
     assert_eq!(info.status, PluginStatus::Static, "{:?}", info.error);
     assert_eq!(f.host.ui_items("views")[0].decl["header"], "none");
+
+    std::fs::write(pkg.join("plugin.toml"), manifest("^1.2", "web = \"web/index.html\"\nsecondary = true")).unwrap();
+    let err = f.host.install_from_dir(&pkg, &Consent::all()).unwrap_err().message;
+    assert!(err.contains("new in plugin API 1.3"), "{err}");
+
+    std::fs::write(
+        pkg.join("plugin.toml"),
+        "id = \"headerless\"\nname = \"Headerless\"\nversion = \"1.0.0\"\nengines.openidea = \"^1.3\"\n[[contributes.views]]\nid = \"panel\"\ntitle = \"Panel\"\nlocation = \"right\"\nsecondary = true\nweb = \"web/index.html\"\nheader = \"none\"\n",
+    )
+    .unwrap();
+    let info = f.install(&pkg);
+    assert_eq!(info.status, PluginStatus::Static, "{:?}", info.error);
+    assert_eq!(f.host.ui_items("views")[0].decl["secondary"], true);
+}
+
+#[test]
+fn view_secondary_requires_api_1_3_and_a_boolean_tool_window_placement() {
+    let f = fixture(Limits::default());
+    for location in ["left", "right", "bottom"] {
+        for fields in ["", "secondary = false", "secondary = true", "group = \"g\"\nsecondary = true"] {
+            let tmp = tempfile::tempdir().unwrap();
+            let pkg = hello_variant(tmp.path(), |t| {
+                t.replace("engines.openidea = \"^1.0\"", "engines.openidea = \"^1.3\"")
+                    .replace("location = \"right\"", &format!("location = {location:?}\n{fields}"))
+            });
+            assert!(f.install(&pkg).error.is_none());
+            let decl = &f.host.ui_items("views")[0].decl;
+            assert_eq!(decl["location"], location);
+            let expected = if fields.is_empty() { None } else { Some(!fields.contains("false")) };
+            assert_eq!(decl.get("secondary").and_then(|v| v.as_bool()), expected);
+        }
+    }
+    for (api, location, value, message) in [
+        ("^1.0", "right", "true", "new in plugin API 1.3"),
+        ("^1.2", "right", "false", "new in plugin API 1.3"),
+        ("^1.3", "services", "true", "does not apply to a services view"),
+        ("^1.3", "services", "false", "does not apply to a services view"),
+        ("^1.3", "bottom", "\"yes\"", "boolean"),
+        ("^1.3", "left", "1", "boolean"),
+    ] {
+        let tmp = tempfile::tempdir().unwrap();
+        let pkg = hello_variant(tmp.path(), |t| {
+            t.replace("engines.openidea = \"^1.0\"", &format!("engines.openidea = {api:?}"))
+                .replace("location = \"right\"", &format!("location = {location:?}\nsecondary = {value}"))
+        });
+        let err = f.host.install_from_dir(&pkg, &Consent::all()).unwrap_err();
+        assert!(err.message.contains(message), "{api}, {location}, {value}: {err:?}");
+    }
+}
+
+#[test]
+fn api14_denies_new_privileges_and_requires_an_invoking_window() {
+    let f = fixture(Limits::default());
+    f.host.install_from_dir(&sample("api14"), &Consent::default()).unwrap();
+    for (command, arg, capability) in [
+        ("execute", "test.action", "ide.commands"),
+        ("execute", "plugin.other.run", "ide.commands"),
+        ("execute", "plugin.api14.other.run", "ide.commands"),
+        ("open-editors", "", "editor.read"),
+        ("open-editor", "a.txt", "project.read"),
+        ("search-text", "needle", "project.read"),
+        ("problems", "", "project.read"),
+        ("decorations", "a.txt", "project.read"),
+        ("clear-decorations", "", "project.read"),
+        ("file-decoration", "a.txt", "project.read"),
+        ("clear-file-decorations", "", "project.read"),
+        ("vcs-log", "", "vcs.read"),
+        ("vcs-blame", "a.txt", "vcs.read"),
+        ("vcs-diff", "", "vcs.read"),
+        ("ipc", "/tmp/api14-no-grant", "ipc:"),
+        ("fetch", "http://example.com/", "net.http:"),
+        ("secret", "value", "secrets"),
+        ("delete-secret", "", "secrets"),
+    ] {
+        let error = f.run("api14", command, Some(arg)).unwrap_err();
+        assert!(error.contains(capability) && error.contains("not granted"), "{error}");
+    }
+    for command in ["window-status", "remove-window-status", "execute", "oauth", "output"] {
+        let error = f.host.run_command("api14", command, Some("value"), Invocation::default()).unwrap_err();
+        assert_eq!(error.kind, ErrorKind::InvalidInput, "{command}: {error:?}");
+    }
+    let own = f.run("api14", "execute", Some("plugin.api14.execute")).unwrap_err();
+    assert!(own.contains("recursive") && !own.contains("not granted"), "{own}");
+    f.host.set_capability("api14", "secrets", true).unwrap();
+    f.run("api14", "secret", Some(" raw value ")).unwrap();
+    assert_eq!(f.host.declared_secret("api14", "token"), Some(" raw value ".into()));
+    assert!(f.run("api14", "undeclared-secret", Some("value")).unwrap_err().contains("undeclared"));
+    f.run("api14", "delete-secret", None).unwrap();
+    assert_eq!(f.host.declared_secret("api14", "token"), None);
+}
+
+#[test]
+fn api14_window_status_overrides_fall_back_and_are_withdrawn() {
+    let f = fixture(Limits::default());
+    f.install(&sample("api14"));
+    f.run("api14", "global-status", Some("global")).unwrap();
+    f.run("api14", "window-status", Some("main")).unwrap();
+    let snapshot = f.host.status_snapshot("main");
+    assert!(snapshot.iter().any(|i| i.window && i.item.text == "main"));
+    assert!(!f.host.status_snapshot("other").iter().any(|i| i.window));
+    f.run("api14", "global-status", Some("updated")).unwrap();
+    f.run("api14", "remove-window-status", None).unwrap();
+    assert_eq!(f.host.status_snapshot("main").len(), 1);
+    assert_eq!(f.host.status_snapshot("main")[0].item.text, "updated");
+    f.run("api14", "window-status", Some("override")).unwrap();
+    f.host.forget_client("main");
+    assert!(!f.host.status_snapshot("main").iter().any(|i| i.window));
+    f.host.reopen_client("main");
+    f.run("api14", "window-status", Some("again")).unwrap();
+    f.host.set_enabled("api14", false).unwrap();
+    assert!(f.host.status_snapshot("main").is_empty());
+    assert!(f.take_events().iter().any(|(window, event)| window.as_deref() == Some("main")
+        && matches!(event, PluginEvent::WindowStatusItemChanged { item: None, .. })));
+}
+
+#[test]
+fn api14_command_requests_preserve_window_result_and_reject_cycles() {
+    let f = Arc::new(fixture(Limits::default()));
+    f.install(&sample("api14"));
+    assert!(f.run("api14", "execute", Some("plugin.api14.execute")).unwrap_err().contains("recursive"));
+    for answer in [CommandAnswer::Value(Some("result".into())), CommandAnswer::Value(None), CommandAnswer::NotFound] {
+        f.take_events();
+        let runner = f.clone();
+        let worker = std::thread::spawn(move || runner.run("api14", "execute", Some("test.action")));
+        let deadline = Instant::now() + Duration::from_secs(5);
+        let request = loop {
+            if let Some((window, PluginEvent::ExecuteCommand { request_id, arg, chain, .. })) =
+                f.events.lock().iter().find(|(_, e)| matches!(e, PluginEvent::ExecuteCommand { .. })).cloned()
+            {
+                assert_eq!(window.as_deref(), Some("main"));
+                assert_eq!(arg.as_deref(), Some("argument"));
+                assert_eq!(chain, ["api14"]);
+                break request_id;
+            }
+            assert!(Instant::now() < deadline);
+            std::thread::sleep(Duration::from_millis(5));
+        };
+        assert!(!f.host.answer_command("other", &request, answer.clone()));
+        assert!(f.host.answer_command("main", &request, answer.clone()));
+        let result = worker.join().unwrap();
+        match answer {
+            CommandAnswer::Value(value) => assert_eq!(result.unwrap(), value),
+            CommandAnswer::NotFound => assert!(result.unwrap_err().contains("test.action")),
+            _ => unreachable!(),
+        }
+    }
+}
+
+#[test]
+fn api14_settings_and_input_events_use_other_and_capture_the_editor() {
+    let f = fixture(Limits::default());
+    f.install(&sample("api14"));
+    use ide_plugin::WorkbenchEvent as E;
+    f.host.post_events(Some("main"), vec![E::SettingsChanged(Vec::new())]);
+    f.workspace
+        .settings
+        .lock()
+        .insert("api14".into(), serde_json::from_value(serde_json::json!({"enabled": true})).unwrap());
+    let path = to_ipc(&f.project.join("src/notes.txt"));
+    f.host.post_window_events(
+        "main",
+        vec![
+            E::SettingsChanged(vec!["another-plugin-key".into()]),
+            E::FileClosed(path.clone()),
+            E::InputModeChanged(ide_plugin::InputMode {
+                path: path.clone(),
+                mode: "visual".into(),
+                sub: Some("linewise".into()),
+            }),
+        ],
+        Some(PluginEditor {
+            path: path.clone(),
+            language: "text".into(),
+            selections: vec![ide_core::Range::default()],
+        }),
+    );
+    f.host.flush_events_at(Instant::now() + Duration::from_secs(2));
+    assert!(f.host.wait_events(Duration::from_secs(5)));
+    let received: serde_json::Value = serde_json::from_str(&f.run("api14", "events", None).unwrap().unwrap()).unwrap();
+    let events = received.as_array().unwrap();
+    assert_eq!(events.len(), 3, "{received}");
+    assert_eq!(events[0]["kind"], "settings-changed");
+    assert_eq!(events[0]["data"], "[\"enabled\"]");
+    assert_eq!(events[2]["kind"], "input-mode-changed");
+    assert_eq!(events[2]["editor"][0], path);
+    assert_eq!(events[2]["editor"][1][0], serde_json::json!([0, 0, 0, 0]));
+}
+
+#[cfg(unix)]
+#[test]
+fn api14_ipc_echo_checks_the_grant_in_the_wasm_binding() {
+    use std::io::{Read, Write};
+    let f = fixture(Limits::default());
+    let pkg = f._tmp.path().join("api14-package");
+    copy_dir(&sample("api14"), &pkg);
+    let path = f._tmp.path().join("echo.sock");
+    let manifest = pkg.join("plugin.toml");
+    let text = std::fs::read_to_string(&manifest)
+        .unwrap()
+        .replace("ipc:$TMPDIR/api14-*", &format!("ipc:{}", f._tmp.path().join("*.sock").display()));
+    std::fs::write(manifest, text).unwrap();
+    f.install(&pkg);
+    let listener = std::os::unix::net::UnixListener::bind(&path).unwrap();
+    let worker = std::thread::spawn(move || {
+        let (mut stream, _) = listener.accept().unwrap();
+        let mut bytes = [0; 4];
+        stream.read_exact(&mut bytes).unwrap();
+        stream.write_all(&bytes).unwrap();
+    });
+    assert_eq!(f.run("api14", "ipc", path.to_str()).unwrap().as_deref(), Some("echo"));
+    worker.join().unwrap();
+    f.host.set_capability("api14", &format!("ipc:{}", f._tmp.path().join("*.sock").display()), false).unwrap();
+    assert!(f.run("api14", "ipc", path.to_str()).unwrap_err().contains("not granted"));
+}
+
+#[test]
+fn api14_oauth_wait_excludes_the_call_budget_and_closes_after_redirect() {
+    use std::io::{Read, Write};
+    let f = Arc::new(fixture(Limits { timeout: Duration::from_millis(200), ..Limits::default() }));
+    f.install(&sample("api14"));
+    let runner = f.clone();
+    let worker = std::thread::spawn(move || runner.run("api14", "oauth", None));
+    let deadline = Instant::now() + Duration::from_secs(5);
+    let uri = loop {
+        if let Some((_, PluginEvent::OutputChanged { text: Some(text), .. })) = f
+            .events
+            .lock()
+            .iter()
+            .find(|(_, e)| matches!(e, PluginEvent::OutputChanged { channel, .. } if channel == "oauth"))
+            .cloned()
+        {
+            break text;
+        }
+        assert!(Instant::now() < deadline);
+        std::thread::sleep(Duration::from_millis(5));
+    };
+    assert!(uri.starts_with("http://127.0.0.1:"));
+    std::thread::sleep(Duration::from_millis(300));
+    let authority = uri.strip_prefix("http://").unwrap().split('/').next().unwrap();
+    let mut stream = std::net::TcpStream::connect(authority).unwrap();
+    stream.write_all(b"GET /oauth/callback?code=a%2Bb&state=test HTTP/1.1\r\nHost: localhost\r\n\r\n").unwrap();
+    let mut response = String::new();
+    stream.read_to_string(&mut response).unwrap();
+    assert!(response.contains("You can close this tab"));
+    assert_eq!(worker.join().unwrap().unwrap().as_deref(), Some("code=a%2Bb&state=test"));
+    assert!(std::net::TcpStream::connect(authority).is_err());
+    f.run("api14", "global-status", Some("still running")).unwrap();
+}
+
+#[cfg(unix)]
+#[test]
+fn api14_executable_choices_are_pinned_per_project_and_reset_revalidates() {
+    use std::os::unix::fs::PermissionsExt;
+    let f = fixture(Limits::default());
+    let package = f._tmp.path().join("api14-process");
+    copy_dir(&sample("api14"), &package);
+    let manifest = package.join("plugin.toml");
+    let text =
+        std::fs::read_to_string(&manifest).unwrap().replace("optional = [", "optional = [\"process:api14-tool\", ");
+    std::fs::write(manifest, text).unwrap();
+    f.install(&package);
+    let executable = |name: &str| {
+        let path = f._tmp.path().join(format!("{name}-bin"));
+        std::fs::write(&path, format!("#!/bin/sh\nprintf '{name}'\n")).unwrap();
+        std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o755)).unwrap();
+        path.canonicalize().unwrap()
+    };
+    let global = executable("global");
+    let project = executable("project");
+    f.host.choose_program("api14", "process:api14-tool", None, Some(&global)).unwrap();
+    f.host.choose_program("api14", "process:api14-tool", Some(&f.project), Some(&project)).unwrap();
+    assert_eq!(f.host.program_for("api14", "api14-tool").unwrap(), global);
+    assert_eq!(f.host.program_for_project("api14", "api14-tool", Some(&f.project)).unwrap(), project);
+    for command in ["process-run", "process-run-command", "process-start"] {
+        assert_eq!(f.run("api14", command, None).unwrap().as_deref(), Some("project"));
+        let invocation = Invocation { client: Some("global".into()), ..Invocation::default() };
+        assert_eq!(f.host.run_command("api14", command, None, invocation).unwrap().as_deref(), Some("global"));
+    }
+    f.run("api14", "terminal", None).unwrap();
+    assert!(
+        f.take_events().iter().any(
+            |(_, e)| matches!(e, PluginEvent::OpenTerminal { program, .. } if program.as_ref() == project.as_path())
+        )
+    );
+    f.run("api14", "log", None).unwrap();
+    assert!(
+        f.take_events()
+            .iter()
+            .any(|(_, e)| matches!(e, PluginEvent::OpenLogTab { log, .. } if log.program == "api14-tool"))
+    );
+    let unrelated = f._tmp.path().join("unrelated");
+    assert_eq!(f.host.program_for_project("api14", "api14-tool", Some(&unrelated)).unwrap(), global);
+    std::fs::write(&project, "changed").unwrap();
+    assert!(f.host.program_for_project("api14", "api14-tool", Some(&f.project)).is_err());
+    f.host.choose_program("api14", "process:api14-tool", Some(&f.project), None).unwrap();
+    assert_eq!(f.host.program_for_project("api14", "api14-tool", Some(&f.project)).unwrap(), global);
+    f.host.choose_program("api14", "process:api14-tool", Some(&f.project), Some(&project)).unwrap();
+    std::fs::write(&global, "changed").unwrap();
+    f.host.choose_program("api14", "process:api14-tool", Some(&f.project), None).unwrap();
+    assert!(
+        !f.host.info_of("api14").unwrap().capabilities.iter().find(|c| c.id == "process:api14-tool").unwrap().granted
+    );
+}
+
+#[cfg(unix)]
+fn execution_fixture() -> Arc<Fixture> {
+    use std::os::unix::fs::PermissionsExt;
+    let f = Arc::new(fixture(Limits { idle_timeout: Some(Duration::from_millis(50)), ..Limits::default() }));
+    f.install(&sample("execution"));
+    std::fs::write(f.project.join("execution.marker"), "").unwrap();
+    let executable = f._tmp.path().join("execution-bin");
+    std::fs::write(&executable, "#!/bin/sh\nprintf '%s\n' \"$@\"\n").unwrap();
+    std::fs::set_permissions(&executable, std::fs::Permissions::from_mode(0o755)).unwrap();
+    f.host.choose_program("execution", "process:execution-tool", Some(&f.project), Some(&executable)).unwrap();
+    f
+}
+
+#[cfg(unix)]
+fn execution_request(f: &Arc<Fixture>, command: &str) -> (String, WindowRequest) {
+    let command = command.to_owned();
+    let runner = f.clone();
+    let worker = std::thread::spawn(move || runner.run("execution", &command, None));
+    let mut request = None;
+    assert!(eventually(|| {
+        for (client, event) in f.take_events() {
+            if let PluginEvent::WindowRequest { request_id, request: r, .. } = event {
+                assert_eq!(client.as_deref(), Some("main"));
+                request = Some((request_id, r));
+            }
+        }
+        request.is_some()
+    }));
+    let (request_id, request) = request.unwrap();
+    assert!(!f.host.answer_command("second", &request_id, CommandAnswer::Value(None)));
+    if !request_id.is_empty() {
+        assert!(f.host.answer_command("main", &request_id, CommandAnswer::Value(None)));
+    }
+    let id = worker.join().unwrap().unwrap().unwrap_or_default();
+    (id, request)
+}
+
+#[cfg(unix)]
+#[test]
+fn api14_stage3_runs_and_terminals_deliver_exactly_one_exit_after_idle_reclamation() {
+    let f = execution_fixture();
+    let (run, request) = execution_request(&f, "run");
+    assert!(matches!(request, WindowRequest::Run { config, .. } if config.args == ["test", "appended"]));
+    assert!(f.run("execution", "debug", None).unwrap_err().contains("debugger"));
+    let (terminal, _) = execution_request(&f, "terminal");
+    assert_eq!(execution_request(&f, "terminal").0, terminal);
+    assert!(f.run("execution", "write", None).unwrap_err().contains("running terminal"));
+    std::thread::sleep(Duration::from_millis(100));
+    f.host.tick();
+    assert_eq!(f.host.instances(), 0);
+    assert!(!f.host.finish_operation("second", &run, Some(2), false));
+    assert!(f.host.finish_operation("main", &run, Some(2), true));
+    assert!(!f.host.finish_operation("main", &run, Some(2), true));
+    assert!(f.host.finish_operation("main", &terminal, None, true));
+    assert!(!f.host.finish_operation("main", &terminal, Some(0), false));
+    f.host.flush_events_at(Instant::now() + Duration::from_secs(3));
+    assert!(eventually(|| f.host.wait_events(Duration::from_secs(1))));
+    let events: serde_json::Value =
+        serde_json::from_str(&f.run("execution", "events", None).unwrap().unwrap()).unwrap();
+    let events = events.as_array().unwrap();
+    assert_eq!(events.len(), 2);
+    assert_eq!(events[0]["kind"], "run-exited");
+    let data: serde_json::Value = serde_json::from_str(events[0]["data"].as_str().unwrap()).unwrap();
+    assert_eq!(data["id"], run);
+    assert_eq!(data["killed"], true);
+    assert_eq!(events[1]["kind"], "terminal-exited");
+    assert!(f.run("execution", "write", None).unwrap_err().contains("running terminal"));
+}
+
+#[cfg(unix)]
+#[test]
+fn api14_stage3_configurations_test_results_and_content_actions_use_real_exports() {
+    let f = execution_fixture();
+    f.host.refresh_run_configurations(&f.project);
+    let configs = f.host.run_detection().detect(&f.project);
+    assert!(configs.iter().any(|c| c.id == "plugin:execution:dynamic"
+        && c.is_test
+        && c.extras.params.get("framework").map(String::as_str) == Some("plugin")));
+    assert_eq!(
+        f.host.parse_test_results("main", "plugin:execution:dynamic", "batch".into()).unwrap().unwrap().len(),
+        3
+    );
+    let (_, request) = execution_request(&f, "content");
+    assert!(matches!(request, WindowRequest::ContentTab { tab } if tab.key == "config"));
+    f.take_events();
+    let action = ide_plugin::ContentTabAction {
+        request_id: "ct-1".into(),
+        key: "config".into(),
+        action: "save".into(),
+        content: "edited".into(),
+    };
+    assert!(f.host.content_tab_action("second", "execution", action.clone()).is_err());
+    f.host.content_tab_action("main", "execution", action).unwrap();
+    f.host.flush_events_at(Instant::now() + Duration::from_secs(3));
+    assert!(eventually(|| {
+        f.events.lock().iter().any(|(client, event)| client.as_deref() == Some("main") && matches!(event, PluginEvent::ContentTabReply { request_id, reply, .. } if request_id == "ct-1" && reply.saved == Some(true)))
+    }));
+    assert!(f.host.parse_test_results("main", "plugin:execution:dynamic", "trap".into()).unwrap().is_none());
+}
+
+#[test]
+fn api14_fixture_exports_test_selection() {
+    let f = fixture(Limits::default());
+    f.install(&sample("api14"));
+    assert_eq!(
+        f.host.select_tests("main", "plugin:api14:tests", vec![vec!["Suite".into(), "Test".into()]]).unwrap(),
+        Some(vec!["Suite::Test".into()])
+    );
+}
+
+#[cfg(unix)]
+#[test]
+fn api14_test_selection_uses_owned_config_ids_and_name_paths() {
+    let f = execution_fixture();
+    f.host.refresh_run_configurations(&f.project);
+    for id in ["dynamic", "detected"] {
+        assert_eq!(
+            f.host
+                .select_tests(
+                    "main",
+                    &format!("plugin:execution:{id}"),
+                    vec![vec!["Suite".into(), "Test".into()], vec!["Other".into()]]
+                )
+                .unwrap(),
+            Some(vec![id.into(), "Suite::Test".into(), "Other".into()])
+        );
+    }
+    assert_eq!(f.host.select_tests("main", "plugin:execution:dynamic", vec![vec!["none".into()]]).unwrap(), None);
+    assert_eq!(f.host.select_tests("main", "cargo:test", vec![vec!["Test".into()]]).unwrap(), None);
+    assert_eq!(f.host.select_tests("main", "plugin:execution:dynamic", vec![]).unwrap(), None);
+}
+
+#[cfg(unix)]
+#[test]
+fn api14_test_selection_traps_and_timeouts_are_unsupported() {
+    for failure in ["trap", "timeout"] {
+        let f = execution_fixture();
+        f.host.refresh_run_configurations(&f.project);
+        let started = Instant::now();
+        assert_eq!(f.host.select_tests("main", "plugin:execution:dynamic", vec![vec![failure.into()]]).unwrap(), None);
+        // Selection is a user action: bounded by the command budget, not the edit path.
+        assert!(started.elapsed() < Limits::default().timeout + Duration::from_secs(2));
+    }
+}
+
+#[cfg(unix)]
+#[test]
+fn api14_stage3_terminal_calls_are_denied_without_process_grants() {
+    let f = execution_fixture();
+    f.host.set_capability("execution", "process:execution-tool", false).unwrap();
+    assert!(f.run("execution", "terminal", None).unwrap_err().contains("not granted"));
 }

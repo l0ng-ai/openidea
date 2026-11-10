@@ -33,6 +33,7 @@ import { tags as t } from "@lezer/highlight";
 import { scrollbarMarks, type ScrollbarMark } from "@/editor/api";
 import { findExtension } from "@/editor/core/cm/find";
 import { overviewLane, overviewLaneIn } from "@/editor/core/cm/lanes";
+import { LINE_INSET } from "@/editor/core/cm/lineInset";
 import { caretExtension } from "@/editor/core/cm/prefs";
 import { fontExtension } from "@/editor/core/cm/setup";
 import { caretStyles, findLocals, findStyles, overviewStyles } from "@/editor/core/cm/theme";
@@ -313,8 +314,8 @@ export const viewerHighlight = HighlightStyle.define([
 export const viewerTheme = EditorView.theme(
   {
     ...overviewStyles,
+    "&.cm-editor": { height: "100%" },
     "&": {
-      height: "100%",
       backgroundColor: "var(--bg-app)",
       color: "var(--fg)",
       fontSize: "var(--openidea-editor-font-size, var(--fs-code))",
@@ -327,7 +328,13 @@ export const viewerTheme = EditorView.theme(
       fontVariantLigatures: "none",
     },
     "&.cm-openidea-ligatures .cm-scroller": { fontVariantLigatures: "normal" },
-    ".cm-content": { caretColor: "var(--caret, var(--fg-strong))", WebkitUserSelect: "text", userSelect: "text" },
+    ".cm-content": {
+      padding: "0 0 4px",
+      caretColor: "var(--caret, var(--fg-strong))",
+      WebkitUserSelect: "text",
+      userSelect: "text",
+    },
+    ".cm-line": { padding: `0 2px 0 ${LINE_INSET}px` },
     ...caretStyles,
     "&.cm-focused > .cm-scroller > .cm-selectionLayer .cm-selectionBackground, .cm-selectionBackground, ::selection, .cm-openidea-selected, &.cm-focused .cm-openidea-selected":
       {

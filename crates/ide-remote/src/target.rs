@@ -109,6 +109,22 @@ fn interpreter<'a>(program: &str, target: &'a RunTarget) -> Option<&'a str> {
 
 /// Builds the remote command of `config`; `root` (the project) maps onto `remote_root`.
 pub fn remote_command(config: &RunConfig, target: &RunTarget, root: &Path, remote_root: &str) -> RemoteCommand {
+    target_command(config, target, root, remote_root, true)
+}
+
+/// Maps paths and interpreters while preserving argv, including a command containing spaces.
+/// Unlike SSH/container shell configurations, plugin wrappers never accept a shell line.
+pub fn argv_command(config: &RunConfig, target: &RunTarget, root: &Path, remote_root: &str) -> RemoteCommand {
+    target_command(config, target, root, remote_root, false)
+}
+
+fn target_command(
+    config: &RunConfig,
+    target: &RunTarget,
+    root: &Path,
+    remote_root: &str,
+    allow_shell: bool,
+) -> RemoteCommand {
     let root_str = root.to_string_lossy().into_owned();
     let map = |s: &str| -> String {
         if root_str.is_empty() {
@@ -129,7 +145,7 @@ pub fn remote_command(config: &RunConfig, target: &RunTarget, root: &Path, remot
     };
     let env = config.env.iter().map(|(k, v)| (k.clone(), map_text(v))).collect();
     let command = config.command.trim();
-    if config.args.is_empty() && command.contains(char::is_whitespace) {
+    if allow_shell && config.args.is_empty() && command.contains(char::is_whitespace) {
         return RemoteCommand {
             program: String::new(),
             args: Vec::new(),

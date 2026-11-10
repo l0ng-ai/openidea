@@ -80,6 +80,15 @@ describe("theme plugin template", () => {
 });
 
 describe("IntelliJ theme import", () => {
+  it("imports Python docstring tags and the OpenIDEA keyword extension", () => {
+    const scheme = convertIcls(`<scheme><attributes>
+      <option name="PY.DOC_COMMENT_TAG"><value><option name="FOREGROUND" value="123456"/></value></option>
+      <option name="OPENIDEA_pyDocstringKeyword"><value><option name="FOREGROUND" value="654321"/></value></option>
+      </attributes></scheme>`);
+    expect(scheme.tokens["--syn-python-docstring-tag"]).toBe("#123456");
+    expect(scheme.tokens["--syn-python-docstring-keyword"]).toBe("#654321");
+  });
+
   const themeJson = `{
     // comment
     "name": "Deep Sea",
@@ -182,6 +191,21 @@ describe("IntelliJ theme import", () => {
       "--syn-property": "#a9b7c6",
     });
     expect(s.tokens["--syn-constant"]).toBeUndefined();
+  });
+
+  it("maps doc comment tags, tag values and markup", () => {
+    const fg = (c: string) => `<value><option name="FOREGROUND" value="${c}"/></value>`;
+    const s = convertIcls(`<scheme name="Docs" parent_scheme="Darcula"><attributes>
+      <option name="DEFAULT_DOC_COMMENT_TAG">${fg("67a37c")}</option>
+      <option name="DEFAULT_DOC_COMMENT_TAG_VALUE">${fg("abadb3")}</option>
+      <option name="DEFAULT_DOC_MARKUP"><value><option name="FOREGROUND" value="68a67e"/><option name="BACKGROUND" value="e2ffe2"/></value></option>
+      </attributes></scheme>`);
+    expect(s.tokens).toMatchObject({
+      "--syn-doc-comment-tag": "#67a37c",
+      "--syn-doc-comment-tag-value": "#abadb3",
+      "--syn-doc-markup": "#68a67e",
+      "--syn-doc-markup-bg": "#e2ffe2",
+    });
   });
 
   it("produces an installable package", () => {

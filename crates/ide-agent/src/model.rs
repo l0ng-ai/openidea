@@ -156,6 +156,14 @@ pub struct AgentConfigOption {
     pub via: AgentConfigVia,
 }
 
+#[derive(Clone, Copy, Debug, Default, PartialEq, Serialize, Deserialize, Type)]
+#[serde(rename_all = "camelCase")]
+pub enum AgentCommandSource {
+    #[default]
+    Command,
+    Skill,
+}
+
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize, Type)]
 #[serde(rename_all = "camelCase")]
 pub struct AgentCommand {
@@ -164,6 +172,8 @@ pub struct AgentCommand {
     pub description: String,
     /// What to type after the command, when it takes input.
     pub hint: Option<String>,
+    #[serde(default)]
+    pub source: AgentCommandSource,
 }
 
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize, Type)]

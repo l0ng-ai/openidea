@@ -16,6 +16,7 @@ use ide_extension::{Package, check_relative};
 use serde::{Deserialize, Serialize};
 use specta::Type;
 use std::path::{Component, Path, PathBuf};
+use std::sync::Arc;
 
 /// Most files under one web root.
 const MAX_FILES: usize = 4096;
@@ -135,22 +136,67 @@ impl PluginHost {
         command: WebPtyCommand,
         output: crate::ops::Emit<String>,
     ) -> IdeResult<ide_terminal::TerminalInfo> {
+        self.spawn_plugin_pty(host, plugin_id, window, output, None, || {
+            self.web_pty_options(plugin_id, view, window, command)
+        })
+    }
+
+    /// Starts the program of the log tab `key` that the plugin's code opened
+    /// in `window` (`views.open-log-tab`), with the toggles in `on`: the UI
+    /// names the tab, never what runs.
+    #[allow(clippy::too_many_arguments)]
+    pub fn spawn_log_tab_pty(
+        &self,
+        host: &std::sync::Arc<crate::Host>,
+        plugin_id: &str,
+        key: &str,
+        window: &str,
+        on: &[String],
+        (cols, rows): (u16, u16),
+        output: crate::ops::Emit<String>,
+    ) -> IdeResult<ide_terminal::TerminalInfo> {
+        self.spawn_plugin_pty(host, plugin_id, window, output, None, || {
+            self.log_tab_pty_options(plugin_id, key, window, on, (cols, rows))
+        })
+    }
+
+    /// The PTY of a plugin, counted against its sessions and ended with its
+    /// window, project or permission; `options` authorizes it.
+    #[allow(clippy::too_many_arguments)]
+    pub(super) fn spawn_plugin_pty(
+        &self,
+        host: &std::sync::Arc<crate::Host>,
+        plugin_id: &str,
+        window: &str,
+        output: crate::ops::Emit<String>,
+        completion: Option<Arc<dyn Fn(Option<i32>) + Send + Sync>>,
+        options: impl FnOnce() -> IdeResult<ide_terminal::TerminalOptions>,
+    ) -> IdeResult<ide_terminal::TerminalInfo> {
         let _guard = self.lifecycle.lock();
         let mut sessions = self.web_ptys.lock();
         if self.shared.client_closed(window) {
             return Err(IdeError::cancelled());
         }
-        let options = self.web_pty_options(plugin_id, view, window, command)?;
+        let options = options()?;
         let entries = sessions.entry(plugin_id.to_owned()).or_default();
         entries.retain(|s| s.host.upgrade().is_some_and(|h| h.terminals.contains(s.id)));
         if entries.len() >= 8 {
             return Err(IdeError::invalid("a plugin may own at most 8 PTYs"));
         }
         let cwd = options.cwd.0.clone();
+        let previous = host.window_sink(window);
+        let sink: Arc<dyn ide_core::EventSink> = Arc::new(move |event: ide_core::IdeEvent| {
+            if let ide_core::IdeEvent::TerminalExited { code, .. } = &event
+                && let Some(completion) = &completion
+            {
+                completion(*code);
+            }
+            previous.emit(event);
+        });
         let info = host.terminals.spawn_program(
             options,
             host.owner_window(window).to_owned(),
-            host.window_sink(window),
+            sink,
             Box::new(move |data| output(data)),
         )?;
         if !self
@@ -166,6 +212,7 @@ impl PluginHost {
     }
 
     pub(super) fn forget_web_ptys(&self, window: &str) {
+        self.shared.forget_log_tabs(None, Some(window));
         for sessions in self.web_ptys.lock().values_mut() {
             sessions.retain(|session| {
                 if session.window != window {
@@ -180,6 +227,7 @@ impl PluginHost {
     }
 
     pub(super) fn stop_web_ptys(&self, plugin: &str) {
+        self.shared.forget_log_tabs(Some(plugin), None);
         if let Some(sessions) = self.web_ptys.lock().remove(plugin) {
             for session in sessions {
                 if let Some(host) = session.host.upgrade() {
@@ -198,8 +246,37 @@ impl PluginHost {
         command: WebPtyCommand,
     ) -> IdeResult<ide_terminal::TerminalOptions> {
         self.web_page(plugin_id, view)?;
+        self.get(plugin_id)?.pkg.manifest.needs_api("web view PTYs", 3).map_err(IdeError::invalid)?;
+        self.pty_options(plugin_id, window, command)
+    }
+
+    /// The options of the log tab `key`'s program, with the toggles in `on`.
+    pub fn log_tab_pty_options(
+        &self,
+        plugin_id: &str,
+        key: &str,
+        window: &str,
+        on: &[String],
+        (cols, rows): (u16, u16),
+    ) -> IdeResult<ide_terminal::TerminalOptions> {
+        let log = self.shared.log_tab(plugin_id, window, key).ok_or_else(|| {
+            IdeError::not_found(format!("plugin {plugin_id:?} opened no log tab {key:?} in this window"))
+        })?;
+        let toggled = log.toggles.into_iter().filter(|t| on.contains(&t.id)).flat_map(|t| t.args);
+        let args = log.args.into_iter().chain(toggled).collect();
+        let command = WebPtyCommand { program: log.program, args, env: Default::default(), cols, rows };
+        self.pty_options(plugin_id, window, command)
+    }
+
+    /// Checks `command` against the plugin's current grant, the limits and
+    /// the window's trusted project.
+    pub(super) fn pty_options(
+        &self,
+        plugin_id: &str,
+        window: &str,
+        command: WebPtyCommand,
+    ) -> IdeResult<ide_terminal::TerminalOptions> {
         let plugin = self.get(plugin_id)?;
-        plugin.pkg.manifest.needs_api("web view PTYs", 3).map_err(IdeError::invalid)?;
         let cap = ide_extension::Capability::Process(command.program.clone());
         if !plugin.meta.lock().granted.contains(&cap) {
             return Err(IdeError::new(
@@ -244,7 +321,7 @@ impl PluginHost {
         if !workspace.trusted(&cwd) {
             return Err(IdeError::new(ide_core::error::ErrorKind::PermissionDenied, "project is not trusted"));
         }
-        let program = self.program_for(plugin_id, &command.program)?;
+        let program = self.program_for_project(plugin_id, &command.program, Some(&cwd))?;
         Ok(ide_terminal::TerminalOptions {
             cwd: cwd.into(),
             shell: Some(program.to_string_lossy().into_owned()),

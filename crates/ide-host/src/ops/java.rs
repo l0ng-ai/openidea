@@ -8,6 +8,7 @@ use super::build::load;
 use ide_build::compile;
 use ide_core::{CancellationToken, IdeError, IdeResult, RequestId};
 use ide_lsp::jdtls::{JavaBuildStatus, JavaLaunchInfo};
+use ide_run::BuildPolicy;
 use std::path::PathBuf;
 
 /// Cancellable with `cancel_request(request)`.
@@ -19,12 +20,12 @@ pub async fn java_resolve_launch(
     window: &str,
     module: PathBuf,
     test: bool,
-    build: bool,
+    policy: BuildPolicy,
     request: RequestId,
 ) -> IdeResult<JavaLaunchInfo> {
     host.require_trust(window)?;
     let cancel = host.begin_project_request(window, request);
-    let result = resolve_launch(host, window, module, test, build, &cancel).await;
+    let result = resolve_launch(host, window, module, test, policy, &cancel).await;
     host.end_request(request);
     result
 }
@@ -34,13 +35,17 @@ async fn resolve_launch(
     window: &str,
     module: PathBuf,
     test: bool,
-    build: bool,
+    policy: BuildPolicy,
     cancel: &CancellationToken,
 ) -> IdeResult<JavaLaunchInfo> {
     let started = std::time::Instant::now();
     let project = host.project(window)?;
     let module = project.root.join(module);
     let settings = project.settings.effective();
+    // A launch builds incrementally unless the configuration asks for Rebuild or NoBuild.
+    let build = policy != BuildPolicy::NoBuild;
+    let full = policy == BuildPolicy::Rebuild;
+    let build_kind = if full { compile::BuildKind::Rebuild } else { compile::BuildKind::Build };
     let (model, external, delegated) = {
         let project = project.clone();
         let settings = settings.clone();
@@ -59,7 +64,7 @@ async fn resolve_launch(
         .map_err(|e| IdeError::internal(e.to_string()))?
     };
     let external_build = if delegated { Some(project.lsp.java_external_build(&module, cancel).await?) } else { None };
-    let mut info = project.lsp.java_launch(&module, test, build && !delegated, delegated, cancel).await?;
+    let mut info = project.lsp.java_launch(&module, test, build && !delegated, full, delegated, cancel).await?;
     let lsp_ms = started.elapsed().as_millis();
     let data_dir = host.local_data_dir.clone();
     let cancel = cancel.clone();
@@ -70,17 +75,23 @@ async fn resolve_launch(
                 &project.root,
                 &model,
                 &module,
-                test,
+                cache::BuildOptions { test, policy },
                 ide_sdk::apply::maven_local_repository(&project.root, &settings),
                 &cancel,
             )?;
             let copies = use_snapshot(&mut info, &outputs.originals, &outputs.snapshot);
-            info.build = Some(JavaBuildStatus::Succeeded);
-            info.errors.clear();
-            info.error_count = 0;
+            apply_external_build_result(&mut info, outputs.failure);
             copies
         } else if external {
-            compile::build_for_launch(&project.root, &model, &module, test, &cancel)?
+            let built = compile::build_for_launch(&project.root, &model, &module, test, build_kind, &cancel)?;
+            if let Some(failure) = built.failure {
+                if policy != BuildPolicy::MakeAndContinueOnErrors {
+                    return Err(IdeError::internal(failure));
+                }
+                info.build = Some(JavaBuildStatus::Failed);
+                info.hints.push(failure);
+            }
+            built.class_dirs
         } else {
             Vec::new()
         };
@@ -136,6 +147,18 @@ async fn resolve_launch(
     })
     .await
     .map_err(|e| IdeError::internal(e.to_string()))?
+}
+
+fn apply_external_build_result(info: &mut JavaLaunchInfo, failure: Option<String>) {
+    info.build = Some(if let Some(failure) = failure {
+        info.hints.push(failure);
+        JavaBuildStatus::Failed
+    } else if info.error_count > 0 {
+        // Incremental Maven compilation can accept error-stub classes written by JDT.
+        JavaBuildStatus::WithErrors
+    } else {
+        JavaBuildStatus::Succeeded
+    });
 }
 
 /// A classpath entry as a comparable key. Entries come from JDT LS and from our own
@@ -235,26 +258,62 @@ pub async fn java_build_workspace(
     host: &Host,
     window: &str,
     module: PathBuf,
+    request: Option<RequestId>,
 ) -> IdeResult<ide_lsp::jdtls::JavaBuildStatus> {
     host.require_trust(window)?;
     let project = host.project(window)?;
     let module = project.root.join(module);
-    project.lsp.java_build(&module, &CancellationToken::new()).await
+    // HotSwap may cancel the compile (the request id is allocated by the caller).
+    let cancel = request.map_or_else(CancellationToken::new, |id| host.begin_request(id));
+    let result = project.lsp.java_build(&module, false, &cancel).await;
+    if let Some(id) = request {
+        host.end_request(id);
+    }
+    result
 }
 
 /// Commands of this module the remote server answers.
 pub(crate) fn register(d: &mut Dispatcher) {
     d.add("java_resolve_launch", |c| async move {
-        java_resolve_launch(&c.host, &c.window, c.arg("module")?, c.arg("test")?, c.arg("build")?, c.arg("request")?)
+        java_resolve_launch(&c.host, &c.window, c.arg("module")?, c.arg("test")?, c.arg("policy")?, c.arg("request")?)
             .await
     });
     d.add("java_debug_server", |c| async move { java_debug_server(&c.host, &c.window, c.arg("module")?).await });
-    d.add("java_build_workspace", |c| async move { java_build_workspace(&c.host, &c.window, c.arg("module")?).await });
+    d.add("java_build_workspace", |c| async move {
+        java_build_workspace(&c.host, &c.window, c.arg("module")?, c.arg("request")?).await
+    });
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn successful_external_compilation_does_not_erase_scoped_jdt_errors() {
+        for (failure, expected) in
+            [(None, JavaBuildStatus::WithErrors), (Some("compile failed"), JavaBuildStatus::Failed)]
+        {
+            let mut info = JavaLaunchInfo {
+                error_count: 1,
+                errors: vec![ide_lsp::jdtls::JavaCompileError {
+                    path: "src/main/java/Main.java".into(),
+                    line: 4,
+                    column: 28,
+                    message: "missingName cannot be resolved to a variable".into(),
+                }],
+                ..Default::default()
+            };
+            let errors = info.errors.clone();
+            apply_external_build_result(&mut info, failure.map(str::to_owned));
+            assert_eq!(info.build, Some(expected));
+            assert_eq!(info.error_count, 1);
+            assert_eq!(info.errors, errors);
+            assert_eq!(info.hints, failure.into_iter().collect::<Vec<_>>());
+        }
+        let mut info = JavaLaunchInfo::default();
+        apply_external_build_result(&mut info, None);
+        assert_eq!(info.build, Some(JavaBuildStatus::Succeeded));
+    }
 
     #[test]
     fn library_scopes_filter_jdt_classpaths_and_module_paths() {

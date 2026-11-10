@@ -1,3 +1,4 @@
+import { serverCodeLenses } from "./serverCodeLens";
 /**
  * LSP-backed editor features: completion, diagnostics, hover / quick docs,
  * parameter info, navigation, document highlights, intentions, rename,
@@ -46,6 +47,7 @@ import { HierarchyDialog } from "@/editor/refactor";
 export function lspExtensions(ctx: EditorDocContext): Extension[] {
   return [
     lspDoc.of(ctx),
+    serverCodeLenses(ctx),
     lspTheme,
     hintExtension(),
     diagnosticsExtension(),

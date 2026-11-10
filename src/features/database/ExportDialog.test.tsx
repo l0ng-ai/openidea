@@ -5,7 +5,10 @@ import { ExportDialog } from "./ExportDialog";
 import { cellPreview } from "./cellPreview";
 
 vi.mock("./store", () => ({ closeDialog: vi.fn() }));
-vi.mock("@/workbench/contributions", () => ({ notifications: () => ({ notify: vi.fn() }) }));
+vi.mock("@/workbench/contributions", async (importOriginal) => ({
+  ...(await importOriginal<typeof import("@/workbench/contributions")>()),
+  notifications: () => ({ notify: vi.fn() }),
+}));
 vi.mock("@tauri-apps/api/path", () => ({ homeDir: async () => "/home/test" }));
 
 describe("large value export", () => {

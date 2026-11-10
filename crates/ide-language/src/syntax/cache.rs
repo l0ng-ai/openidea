@@ -195,9 +195,18 @@ impl SyntaxCache {
             || {
                 self.with_tree(doc, lang, version, text, |g, tree, text| {
                     let query = g.outline_query()?;
-                    Some(outline::outline(g, query, tree, text))
+                    // HTML documents answer from the cached tree, with nested
+                    // <script> declarations.
+                    Some(outline::outline_nested(g, query, tree, text, &|rl, rt| self.syntax.outline(rl, rt)))
                 })
+                // Web containers (Vue SFC / Svelte / JSP) have no grammar of their
+                // own, hence no cached tree: the syntax layer answers with a fresh
+                // HTML parse, which the memo covers per version.
+                // shortcut: no incremental re-parse for containers, upgrade when
+                // their trees join the cache.
+                .or_else(|| self.syntax.web_outline(lang, text))
                 .or_else(|| super::external::outline(lang, text))
+                .or_else(|| self.syntax.builtin_outline(lang, text))
             },
         )
     }
@@ -256,8 +265,11 @@ impl SyntaxCache {
         let Some(result) = compute() else { return Vec::new() };
         if let Some(e) = &entry {
             let mut e = e.lock();
-            // Not if the document moved on (or its tree was dropped) meanwhile.
-            if e.version == version && e.tree.is_some() {
+            // Containers without their own grammar memoize their web outline too.
+            // Never store an answer after the document moves on.
+            if e.version == version
+                && (e.tree.is_some() || (e.lang == *lang && self.syntax.web_grammar_name(lang) == Some("html")))
+            {
                 *slot(e.memo.at(version, lang)) = Some(Arc::new(result.clone()));
             }
         }
@@ -472,6 +484,35 @@ mod tests {
         assert_ne!(edited, outline);
         // Another language at the same version is not answered from the memo.
         assert!(cache.outline(id, &LanguageId::new("plaintext"), 1, &text).is_empty());
+    }
+
+    #[test]
+    fn web_outline_memo_tracks_versions_without_a_cached_tree() {
+        for language in ["html", "vue", "svelte", "jsp"] {
+            let cache = cache();
+            let id = DocId::next();
+            let lang = LanguageId::new(language);
+            let mut doc = Document::new("<script setup lang=ts>const first = 1;</script>");
+            cache.open(id, &lang, 0);
+            let first = cache.outline(id, &lang, 0, &doc.text());
+            let hits = cache.stats().hits;
+            assert_eq!(cache.outline(id, &lang, 0, &doc.text()), first);
+            assert_eq!(cache.stats().hits, hits + 1, "{language}: memo hit");
+
+            let edits = edit(&mut doc, 0, 0, "<script>const second = 2;</script>\n");
+            cache.edit(id, doc.version(), &edits);
+            let second = cache.outline(id, &lang, doc.version(), &doc.text());
+            assert_ne!(second, first);
+            assert_eq!(second, cache.syntax().outline(&lang, &doc.text()));
+            // An older query must not replace the current version's memo.
+            cache.outline(id, &lang, 0, "<script>const old = 0;</script>");
+            let hits = cache.stats().hits;
+            assert_eq!(cache.outline(id, &lang, doc.version(), &doc.text()), second);
+            assert_eq!(cache.stats().hits, hits + 1);
+            cache.clear();
+            assert!(cache.entries.lock().get(&id).unwrap().lock().memo.outline.is_none());
+            cache.close(id);
+        }
     }
 
     #[test]

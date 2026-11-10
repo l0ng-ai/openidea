@@ -1,7 +1,10 @@
 import { afterEach, describe, expect, it } from "vitest";
 import type { RunConfig } from "@/platform/ipc";
 import { usePlatform } from "@/platform/platformInfo";
+import { registerRunConfigType } from "@/workbench/contributions";
 import {
+  categoryOf,
+  kindLabel,
   commandLine,
   duplicateConfig,
   formatArgs,
@@ -17,6 +20,9 @@ import {
 import { contextConfig, fileRole } from "./context";
 import { cacheRunTemplates } from "./runTemplates";
 import { registerBuiltinTypes } from "./types";
+// After "./types": tomcat → buildUpdate → store → types is a cycle; importing tomcat first
+// would freeze tomcatType at undefined inside BUILTIN_TYPES.
+import { tomcatType } from "./tomcat";
 import { envFromRows } from "./EnvDialog";
 import { configRemoved, defaultSelection, rerunConfig, useRun, type RunSession } from "./store";
 
@@ -193,13 +199,32 @@ describe("context configuration", () => {
   it("runs a JS test file through the closest test script", () => {
     const c = contextConfig("web/src/cart.test.ts", configs)!;
     expect(c).toMatchObject({
-      args: ["run", "test", "--", "src/cart.test.ts"],
+      args: ["run", "test", "src/cart.test.ts"],
       cwd: "web",
       isTest: true,
       name: "cart.test.ts",
     });
     expect(c.id).toBe("context:npm:web:test:web/src/cart.test.ts");
-    expect(contextConfig("src/a.spec.js", configs)!.args).toEqual(["run", "test", "--", "src/a.spec.js"]);
+    expect(contextConfig("src/a.spec.js", configs)!.args).toEqual(["run", "test", "src/a.spec.js"]);
+  });
+
+  it.each([
+    ["npm", ["--"]],
+    ["pnpm", []],
+    ["/opt/bin/pnpm", []],
+    ["C:\\tools\\pnpm.CMD", []],
+    ["yarn", ["--"]],
+    ["bun", ["--"]],
+  ])("forwards test files through %s", (command, separator) => {
+    const base = cfg({ id: "js:test", kind: "npm", command, args: ["run", "test"], isTest: true });
+    expect(contextConfig("tests/cart.test.ts", [base])!.args).toEqual([
+      "run",
+      "test",
+      ...separator,
+      "tests/cart.test.ts",
+    ]);
+    const explicit = { ...base, args: ["run", "test", "--", "--reporter=verbose"] };
+    expect(contextConfig("tests/cart.test.ts", [explicit])!.args).toEqual([...explicit.args, "tests/cart.test.ts"]);
   });
 
   it("narrows rspec and rake test runs to the file", () => {
@@ -506,5 +531,32 @@ describe("rerunning a session after its configuration changed (#1497)", () => {
     useRun.setState({ configs: [base] });
     expect(rerunConfig(session(derived, base))).toBe(derived);
     useRun.setState({ configs: [] });
+  });
+});
+
+describe("categoryOf", () => {
+  it("maps kinds to their language categories and unlisted ones to Others", () => {
+    expect(categoryOf("spring-boot")).toBe("Java");
+    expect(categoryOf("maven")).toBe("Build Tools");
+    expect(categoryOf("npm")).toBe("JavaScript");
+    expect(categoryOf("cargo")).toBe("Rust");
+    expect(categoryOf("godot")).toBe("Others");
+  });
+
+  it("prefers a registered type's group (Servers, Docker) over the category map", () => {
+    const disposeTomcat = registerRunConfigType(tomcatType);
+    expect(categoryOf("tomcat")).toBe("Servers");
+    expect(kindLabel("tomcat")).toBe("Tomcat Server");
+    disposeTomcat();
+    const dispose = registerRunConfigType({
+      id: "fake-server",
+      label: "Fake",
+      icon: "server",
+      group: "Servers",
+      fields: [],
+      commandLine: () => null,
+    });
+    expect(categoryOf("fake-server")).toBe("Servers");
+    dispose();
   });
 });

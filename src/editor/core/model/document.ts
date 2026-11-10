@@ -543,8 +543,8 @@ export class DocModel {
     const [folds, outline, highlights] = await Promise.allSettled([
       backend.folding(this.doc),
       backend.outline(this.doc),
-      // Without a CodeMirror mode, colours come from the grammar's tree-sitter query.
-      this.desc ? null : backend.highlights(this.doc),
+      // Kotlin's stream mode lacks declaration categories; the grammar supplements it.
+      !this.desc || this.meta.language === "kotlin" ? backend.highlights(this.doc) : null,
     ]);
     if (this.closed) return;
     if (counter !== this.changeCounter) {

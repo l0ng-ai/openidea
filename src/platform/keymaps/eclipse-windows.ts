@@ -108,6 +108,8 @@ export const eclipseWindows: Record<string, string[]> = {
   "code.quickDocumentation": ["Shift+Ctrl+Space", "F2"],
   "db.quickDoc": ["Shift+Ctrl+Space", "F2"],
   "localHistory.recentChanges": [],
+  "db.reformatValue": ["Ctrl+Alt+L", "Shift+Ctrl+F"],
+  "db.findInValue": [],
   "code.reformat": ["Ctrl+Alt+L", "Shift+Ctrl+F"],
   "project.reformatCode": ["Ctrl+Alt+L", "Shift+Ctrl+F"],
   "code.unwrap": ["Alt+R"],

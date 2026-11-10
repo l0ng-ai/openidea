@@ -22,6 +22,7 @@ import { isMacHost, registerExtensionBindings } from "@/platform/keymap";
 import { addFileIconProvider, fileIconName, registerExternalIcons, type MenuItem } from "@/ui";
 import { addContributedFileTemplate } from "@/workbench/contributions";
 import {
+  addContributedSnippets,
   registerEditorKind,
   registerFileEditorProvider,
   registerCommitCheckProvider,
@@ -70,6 +71,10 @@ import { projectSettings, type SettingsDecl } from "./settings";
 
 interface MenuDecl {
   menu:
+    | "editor.title"
+    | "mainToolbar"
+    | "problems.context"
+    | "searchResults.context"
     | "editor.context"
     | "projectView.context"
     | "editorTab.context"
@@ -87,6 +92,8 @@ interface MenuDecl {
 
 const CONTEXT_MENUS: Record<string, ContextMenuId> = {
   "editor.context": "editor",
+  "problems.context": "problems",
+  "searchResults.context": "searchResults",
   "projectView.context": "projectView",
   "editorTab.context": "editorTab",
 };
@@ -127,7 +134,11 @@ function flattenSingleGroups(items: MenuItem[]): MenuItem[] {
 }
 
 /** Plugin items of a context menu: their command's action with the menu's file as argument. */
-export function pluginMenuItems(menu: ContextMenuId, paths: readonly string[]): MenuItem[] {
+export function pluginMenuItems(
+  menu: ContextMenuId,
+  paths: readonly string[],
+  position?: { line: number; column: number },
+): MenuItem[] {
   const out: MenuItem[] = [];
   const groups = new Map<string, MenuItem[]>();
   for (const { pluginId, decl } of contextItems.values()) {
@@ -138,7 +149,7 @@ export function pluginMenuItems(menu: ContextMenuId, paths: readonly string[]): 
     addGrouped(out, groups, pluginId, decl.submenu, {
       kind: "action",
       action,
-      arg: menu === "editor" ? undefined : { path: paths[0], paths: [...paths] },
+      arg: menu === "editor" ? undefined : { path: paths[0], paths: [...paths], ...(position ?? {}) },
     });
   }
   return flattenSingleGroups(out);
@@ -165,14 +176,14 @@ function projectMenu(pluginId: string, decl: MenuDecl, plugin: PluginInfo): () =
     const title = decl.commandTitle ?? getAction(action)?.title ?? `${plugin.name}: ${decl.command}`;
     return registerMenuSlotItem("pluginTools", { action, label: title, verbatim: true });
   }
-  if (decl.menu === "commit.message") {
+  if (decl.menu === "commit.message" || decl.menu === "editor.title" || decl.menu === "mainToolbar") {
     const action = pluginActionId(pluginId, decl.command);
     const label = getAction(action)?.title ?? `${plugin.name}: ${decl.command}`;
-    return registerMenuSlotItem("commitMessage", {
+    return registerMenuSlotItem(decl.menu === "commit.message" ? "commitMessage" : decl.menu, {
       action,
       label,
       verbatim: true,
-      icon: pluginIconName(pluginId, plugin.icon),
+      icon: getAction(action)?.icon ?? pluginIconName(pluginId, plugin.icon),
       when: decl.when ?? null,
     });
   }
@@ -487,6 +498,24 @@ export function defineViewUiPoints(): () => void {
       title: "Commit Checks",
       project: ({ pluginId, decl }) => projectCommitCheck(pluginId, decl),
     }),
+    defineUiPoint<{
+      source: string;
+      language: string;
+      entries: { name: string; prefixes: string[]; body: string; description: string }[];
+    }>("snippets", {
+      title: "Snippets",
+      project: ({ pluginId, decl }, { plugin }) =>
+        addContributedSnippets(
+          decl.entries.map((s, i) => ({
+            id: `plugin-snippet:${pluginId}:${decl.source}:${i}`,
+            pluginName: plugin.name,
+            language: decl.language,
+            prefixes: s.prefixes,
+            body: s.body,
+            description: s.description,
+          })),
+        ),
+    }),
     defineUiPoint<FileTemplateDecl>("fileTemplates", {
       title: "File Templates",
       project: ({ pluginId, decl }) =>
@@ -539,12 +568,16 @@ export function startViewUi(openInput: (input: ReturnType<typeof customEditorInp
     }),
     registerMenuGroup({
       id: "plugins",
-      menus: ["editor", "projectView", "editorTab"],
+      menus: ["editor", "projectView", "editorTab", "problems", "searchResults"],
       order: 90,
       items: (menu, ctx) => {
-        const items = pluginMenuItems(menu, ctx.paths);
+        const items = pluginMenuItems(
+          menu,
+          ctx.paths,
+          ctx.line === undefined ? undefined : { line: ctx.line, column: ctx.column ?? 0 },
+        );
         const path = ctx.paths[0];
-        if (menu !== "editor" && path && !ctx.dirs?.[0]) {
+        if ((menu === "projectView" || menu === "editorTab") && path && !ctx.dirs?.[0]) {
           const editors = [...openWith.values()].filter((e) => e.matches(path));
           if (editors.length)
             items.push({

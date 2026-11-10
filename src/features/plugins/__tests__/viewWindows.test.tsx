@@ -5,6 +5,7 @@ import userEvent from "@testing-library/user-event";
 import { setLocale, tx } from "@/platform/i18n";
 import { setContext, useContextKeys } from "@/platform/context";
 import { provideToolWindowService, useContributions } from "@/workbench/contributions";
+import { loadToolWindowLayout, moveToolWindow, resetToolWindowLayout, slotOfId } from "@/workbench/toolwindows/store";
 import { registerWindowView, revealWindowView, type WindowView } from "../views/viewWindows";
 
 const disposers: (() => void)[] = [];
@@ -171,6 +172,48 @@ it("retains an opened tab's local state while switching tabs", async () => {
   await userEvent.click(screen.getByRole("tab", { name: "Draft" }));
   expect(screen.getByRole("textbox", { name: "Plugin draft" })).toBe(input);
   expect(input).toHaveValue("retain this draft");
+});
+
+it("keeps views primary unless secondary is explicitly true in every dock", () => {
+  for (const location of ["left", "right", "bottom"] as const) {
+    for (const secondary of [undefined, false, true]) {
+      for (const header of [undefined, "none"] as const) {
+        const id = `${location}-${secondary}-${header}`;
+        add("split", { id, location, secondary, header });
+        expect(useContributions.getState().toolWindows.get(`plugin.split.${id}`)?.secondary).toBe(secondary === true);
+      }
+    }
+  }
+});
+
+it("uses the first group member's split even when hidden", () => {
+  add("spring", { id: "routes", group: "framework", secondary: true, when: "plugin.spring.ready" });
+  add("spring", { id: "beans", group: "framework", secondary: false });
+  expect(useContributions.getState().toolWindows.get(id)?.secondary).toBe(true);
+  setContext("plugin.spring.ready", true);
+  expect(useContributions.getState().toolWindows.get(id)?.secondary).toBe(true);
+});
+
+it("preserves a user's moved placement across registration and layout reload", () => {
+  localStorage.clear();
+  resetToolWindowLayout();
+  loadToolWindowLayout("/plugin-split-test");
+  try {
+    const view = add("split", { id: "panel", location: "right", secondary: true });
+    const id = "plugin.split.panel";
+    expect(slotOfId(id)).toBe("right-split");
+    moveToolWindow(id, "right");
+    view.setIcon("folder");
+    loadToolWindowLayout("/plugin-split-test");
+    expect(slotOfId(id)).toBe("right");
+    moveToolWindow(id, "bottom-split");
+    view.setIcon("plugin");
+    loadToolWindowLayout("/plugin-split-test");
+    expect(slotOfId(id)).toBe("bottom-split");
+  } finally {
+    resetToolWindowLayout();
+    localStorage.clear();
+  }
 });
 
 it("discards a conditionally hidden tab and keeps it lazy when it becomes available again", async () => {

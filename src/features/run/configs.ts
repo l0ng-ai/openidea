@@ -22,6 +22,7 @@ const KIND_LABELS: Record<string, string> = {
   program: "Program",
   compound: "Compound",
   application: "Application",
+  "jar-application": "JAR Application",
   "spring-boot": "Spring Boot",
   node: "Node.js",
   "java-file": "Java Single File",
@@ -43,11 +44,61 @@ const KIND_LABELS: Record<string, string> = {
 };
 
 export const KIND_OPTIONS = Object.entries(KIND_LABELS).map(([value, label]) => ({ value, label }));
+/**
+ * The menu category of a run configuration kind, for the Services "Add Service"
+ * menu (IDEA's template groups): a registered type's group (Docker, Servers),
+ * else its language/tool category, else "Others".
+ */
+export const KIND_CATEGORIES: Record<string, string> = {
+  "spring-boot": "Java",
+  application: "Java",
+  "jar-application": "Java",
+  native: "Java",
+  "java-file": "Java",
+  kotlin: "Java",
+  kotlinc: "Java",
+  "scala-cli": "Java",
+  maven: "Build Tools",
+  gradle: "Build Tools",
+  cmake: "Build Tools",
+  make: "Build Tools",
+  just: "Build Tools",
+  npm: "JavaScript",
+  node: "JavaScript",
+  bun: "JavaScript",
+  deno: "JavaScript",
+  python: "Python",
+  pytest: "Python",
+  cargo: "Rust",
+  rustc: "Rust",
+  go: "Go",
+  cc: "C/C++",
+  "cmake-application": "C/C++",
+  shell: "Shell",
+  program: "Shell",
+};
+
+/** Category order of the Add Service menu; unlisted categories (plugins) sort after, then "Others". */
+export const CATEGORY_ORDER: readonly string[] = [
+  "Java",
+  "Build Tools",
+  "JavaScript",
+  "Python",
+  "Rust",
+  "Go",
+  "C/C++",
+  "Shell",
+  "Servers",
+  "Docker",
+];
+
+export function categoryOf(kind: string): string {
+  return useRunConfigTypes.getState().types.get(kind)?.group ?? KIND_CATEGORIES[kind] ?? "Others";
+}
 
 export function kindLabel(kind: string): string {
   const type = useRunConfigTypes.getState().types.get(kind);
-  // A grouped type ("Tomcat Server › Local") is named by its group outside the Add menu.
-  return type?.group ?? type?.label ?? KIND_LABELS[kind] ?? (kind ? kind[0]!.toUpperCase() + kind.slice(1) : "Other");
+  return type?.label ?? KIND_LABELS[kind] ?? (kind ? kind[0]!.toUpperCase() + kind.slice(1) : "Other");
 }
 
 export function configIcon(config: Pick<RunConfig, "kind" | "isTest">): string {
@@ -56,6 +107,7 @@ export function configIcon(config: Pick<RunConfig, "kind" | "isTest">): string {
     case "compound":
       return "gutter-run-all";
     case "program":
+    case "jar-application":
       return "file-binary";
     case "spring-boot":
       return "spring-boot";
@@ -216,6 +268,12 @@ export function duplicateConfig(config: RunConfig, configs: readonly RunConfig[]
 /** Field errors: `name`, `command`, `env`, `cwd`, `compound`, `beforeLaunch` or a type param key. */
 export type ConfigErrors = Partial<Record<string, string>>;
 
+export function moduleTaskError(config: RunConfig, target: string): string | null {
+  if (config.module == null) return "Select a module for the Build Module task";
+  if (config.module !== target) return "The Build Module task uses a different module; remove it and add it again";
+  return null;
+}
+
 export function validateConfig(config: RunConfig, all: readonly RunConfig[] = []): ConfigErrors {
   const errors: ConfigErrors = {};
   if (!config.name.trim()) errors.name = "Name is required";
@@ -235,7 +293,16 @@ export function validateConfig(config: RunConfig, all: readonly RunConfig[] = []
       (t.target === config.id || !all.some((c) => c.id === t.target))
     )
       errors.beforeLaunch = "A before launch task runs a missing configuration or this one";
-    else if (t.kind !== "build" && t.kind !== "dotnetBuild" && t.kind !== "run" && !(t.target ?? "").trim())
+    else if (t.kind === "buildModule") {
+      const error = moduleTaskError(config, t.target ?? "");
+      if (error) errors.beforeLaunch = error;
+    } else if (
+      t.kind !== "build" &&
+      t.kind !== "buildArtifacts" &&
+      t.kind !== "dotnetBuild" &&
+      t.kind !== "run" &&
+      !(t.target ?? "").trim()
+    )
       errors.beforeLaunch = "A before launch task is incomplete";
   }
   for (const key of Object.keys(config.env)) {

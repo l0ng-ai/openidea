@@ -1,5 +1,11 @@
 import { afterEach, beforeEach, expect, it, vi } from "vitest";
-import { addBreakpoint, loadBreakpoints, removeAllBreakpoints, useBreakpoints } from "../breakpoints/store";
+import {
+  addBreakpoint,
+  flushBreakpoints,
+  loadBreakpoints,
+  removeAllBreakpoints,
+  useBreakpoints,
+} from "../breakpoints/store";
 import { handleDebugEvent, startPreparedSession, startSession, useDebug } from "../state";
 import type { LaunchConfig } from "@/platform/ipc";
 import { useProject } from "@/platform/project";
@@ -166,4 +172,49 @@ it("does not start if the initial breakpoint sync fails", async () => {
   addBreakpoint("/p/Main.java", 4);
   expect(await startSession(config("launch"))).toBeNull();
   expect(ipc.debugStart).not.toHaveBeenCalled();
+});
+
+it.each(["launch", "attach"])("shares the breakpoint drain between concurrent %s starts", async (request) => {
+  let release!: () => void;
+  ipc.debugSetBreakpoints.mockImplementation(() => {
+    // Bound the broken loop so a regression fails instead of hanging the test runner.
+    if (ipc.debugSetBreakpoints.mock.calls.length > 8) throw new Error("breakpoint flush did not settle");
+    if (ipc.debugSetBreakpoints.mock.calls.length === 1)
+      return new Promise((resolve) => {
+        release = () => resolve({ status: "ok", data: [] });
+      });
+    return Promise.resolve({ status: "ok", data: [] });
+  });
+  ipc.debugStart.mockResolvedValueOnce({ status: "ok", data: 42 }).mockResolvedValueOnce({ status: "ok", data: 43 });
+  addBreakpoint("/p/Main.java", 4);
+  const starting = Promise.all([startSession(config(request)), startSession(config(request))]);
+  await vi.advanceTimersByTimeAsync(0);
+  expect(ipc.debugStart).not.toHaveBeenCalled();
+  addBreakpoint("/p/Main.java", 7);
+  release();
+  expect(await starting).toEqual([42, 43]);
+  expect(ipc.debugSetBreakpoints).toHaveBeenCalledTimes(2);
+  expect(ipc.debugSetBreakpoints.mock.calls[1]![1]).toMatchObject([{ line: 4 }, { line: 7 }]);
+  await vi.advanceTimersByTimeAsync(120);
+  expect(ipc.debugSetBreakpoints).toHaveBeenCalledTimes(2);
+});
+
+it("does not resend unchanged breakpoints for concurrent flushes", async () => {
+  ipc.debugSetBreakpoints.mockImplementation(async () => {
+    if (ipc.debugSetBreakpoints.mock.calls.length > 8) throw new Error("breakpoint flush did not settle");
+    return { status: "ok", data: [] };
+  });
+  addBreakpoint("/p/Main.java", 4);
+  await Promise.all([flushBreakpoints(), flushBreakpoints(), flushBreakpoints()]);
+  expect(ipc.debugSetBreakpoints).toHaveBeenCalledOnce();
+});
+
+it("releases a failed shared drain so a later start can retry", async () => {
+  ipc.debugSetBreakpoints.mockRejectedValueOnce(new Error("breakpoint sync failed"));
+  addBreakpoint("/p/Main.java", 4);
+  expect(await Promise.all([startSession(config("launch")), startSession(config("attach"))])).toEqual([null, null]);
+  expect(ipc.debugStart).not.toHaveBeenCalled();
+  ipc.debugSetBreakpoints.mockResolvedValue({ status: "ok", data: [] });
+  expect(await startSession(config("launch"))).toBe(42);
+  expect(ipc.debugStart).toHaveBeenCalledOnce();
 });

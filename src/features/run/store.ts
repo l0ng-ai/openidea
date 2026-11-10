@@ -3,6 +3,7 @@
  * (one Run tool window tab each). Output streams through a Channel into a
  * per-session `ConsoleModel`, batched per animation frame.
  */
+import { withRunTarget } from "@/platform/runTargetSelection";
 import { create } from "zustand";
 import { Channel } from "@tauri-apps/api/core";
 import {
@@ -19,17 +20,19 @@ import {
   type TestCaseReport,
 } from "@/platform/ipc";
 import {
-  consoleVmArgs,
   findJavaModule,
   isJvmApplication,
+  JavaBuildFailedError,
   parseJavaArgs,
   prepareJavaLaunch,
 } from "@/platform/javaLaunch";
 import { downloadJdkActions } from "@/platform/jdk";
+import { buildToolRecovery } from "@/platform/buildToolRecovery";
 import { useProject } from "@/platform/project";
 import { executeAction } from "@/platform/actions";
 import { workflowSettings } from "@/platform/workflowSettings";
 import { maybeEditorService, notifications, toolWindowService, useDebugRunSessions } from "@/workbench/contributions";
+import { applyBuildPolicyToCommand } from "./buildCommand";
 import { ConsoleModel } from "./console";
 import { jvmFrameTarget } from "./links";
 import { confirmRerun, confirmTerminate } from "./dialogs";
@@ -41,7 +44,9 @@ import {
   type TestEvent,
   type TestOutputParser,
 } from "./testing";
+import { PluginTestOutput } from "./testing/plugin";
 import { GoTestOutput } from "./testing/go";
+import { DotnetReports } from "./testing/dotnet";
 import { moveToReportedClasses } from "./testing/jvm";
 import { RubyTestOutput } from "./testing/ruby";
 import { TeamcityOutput } from "./testing/teamcity";
@@ -57,7 +62,7 @@ import { loadRunTemplates } from "./runTemplates";
 import { recordRun } from "./services";
 import { startedPort } from "@/platform/serverPort";
 import { tomcatBrowserUrl } from "./tomcat";
-import { gradleDelegation, gradleTestLaunch } from "./gradleRun";
+import { gradleBootLaunch, gradleDelegation, gradleTestLaunch } from "./gradleRun";
 import { openUrl } from "./navigate";
 import { tx } from "@/platform/i18n";
 
@@ -91,10 +96,12 @@ export interface RunSession {
 }
 
 interface SessionRuntime {
+  dotnetReports?: DotnetReports;
   resolveRequest?: { id: RequestId; controller: AbortController };
   console: ConsoleModel;
   tests: TestResults | null;
   parser: TestOutputParser | null;
+  pluginTests: PluginTestOutput | null;
   /** Machine-readable stdout (`go test -json`, `--teamcity`, the Ruby reporter): fed to the parser, shown decoded. */
   stdout: TestStdout | null;
   queue: OutputChunk[];
@@ -615,7 +622,15 @@ export function applyConsoleSettings() {
 
 function newRuntime(config: RunConfig): SessionRuntime {
   const tests = config.isTest ? new TestResults() : null;
-  const parser = config.isTest ? createTestParser(config) : null;
+  const builtIn = config.isTest ? createTestParser(config) : null;
+  const pluginTests =
+    tests && builtIn && config.params?.framework === "plugin"
+      ? new PluginTestOutput(config.id, builtIn, (events) => {
+          tests.apply(events);
+          for (const [id, rt] of runtimes) if (rt.tests === tests) bump(id);
+        })
+      : null;
+  const parser = pluginTests ? null : builtIn;
   const feed = (line: string) => {
     if (tests && parser) tests.apply(parser.feed(line));
   };
@@ -634,11 +649,14 @@ function newRuntime(config: RunConfig): SessionRuntime {
     stdout,
     tests,
     parser,
+    pluginTests,
     console: new ConsoleModel({
       maxChars: consoleCharLimit(),
       onLine: (text, kind) => {
+        if (pluginTests && kind !== "system") pluginTests.feed(text);
         if (parser && tests && kind !== "system" && !(kind === "stdout" && stdout)) tests.apply(parser.feed(text));
         if (kind !== "system") for (const l of runtime.lineListeners) l(text);
+        if (kind !== "system") runtime.dotnetReports?.feed(text);
       },
     }),
     queue: [],
@@ -711,6 +729,7 @@ export async function startRun(
     chain?: readonly string[];
   } = {},
 ): Promise<RunSession | null> {
+  config = withRunTarget(config);
   if (!options.launch && isCMakeBuild(config)) {
     await buildCMake(config.id, options.show !== false);
     return null;
@@ -851,6 +870,8 @@ export async function startRun(
   };
   try {
     let launch = options.launch ?? config;
+    // A Maven/Gradle configuration's own command is its build; Rebuild adds clean.
+    if (!options.launch) launch = applyBuildPolicyToCommand(launch);
     // "Build and run using: Gradle": the module's Gradle build compiles and launches it.
     const delegated = isJvmApplication(launch) ? await gradleDelegation(launch) : null;
     if (runtimes.get(sessionId)?.generation !== generation) return getSession(sessionId) ?? null;
@@ -877,10 +898,30 @@ export async function startRun(
     if ((options.launch || launch.isTest) && launch.emulateTerminal) launch = { ...launch, emulateTerminal: false };
     if (launch.emulateTerminal) rt.terminal = new TerminalOutput();
     patchSession(sessionId, { terminal: !!launch.emulateTerminal });
-    const started = launch.isTest ? await gradleTestLaunch(withTestReporting(launch)) : launch;
+    let started =
+      launch.params?.framework === "plugin"
+        ? launch
+        : launch.isTest
+          ? await gradleTestLaunch(withTestReporting(launch))
+          : await gradleBootLaunch(launch);
+    if (launch.isTest && frameworkFor(launch) === "dotnet" && launch.params?.framework !== "plugin") {
+      rt.dotnetReports = new DotnetReports();
+      started = rt.dotnetReports.launch(started);
+    }
     if (runtimes.get(sessionId)?.generation !== generation) return getSession(sessionId) ?? null;
     const processStarted = performance.now();
-    const info = await startWithRemedies(started, () => call(commands.runStart(started, channel)));
+    const request = { id: nextRequestId(), controller: new AbortController() };
+    rt.resolveRequest = request;
+    const info = await startWithRemedies(started, () => {
+      request.controller.signal.throwIfAborted();
+      return call(commands.runStart(started, channel, request.id));
+    }).finally(() => {
+      if (rt.resolveRequest === request) delete rt.resolveRequest;
+    });
+    if (request.controller.signal.aborted || getSession(sessionId)?.stopped) {
+      await call(commands.runStop(info.id)).catch(() => undefined);
+      return getSession(sessionId) ?? null;
+    }
     console.info("Run process started", { name: config.name, ms: performance.now() - processStarted });
     if (runtimes.get(sessionId)?.generation !== generation) return getSession(sessionId) ?? null;
     if (info.pty && rt.terminalSize) void commands.runResize(info.id, rt.terminalSize.cols, rt.terminalSize.rows);
@@ -893,6 +934,7 @@ export async function startRun(
       finishSession(sessionId, exited);
     }
   } catch (e) {
+    if (getSession(sessionId)?.stopped || isCancelled(e)) return getSession(sessionId) ?? null;
     const message = e instanceof Error ? e.message : String(e);
     enqueue(sessionId, { kind: "stderr", text: tx`Error running '${config.name}': ${message}\n` });
     flush(sessionId);
@@ -901,7 +943,7 @@ export async function startRun(
       group: "run",
       level: "error",
       title: `Error running '${remoteLabel(config)}'`,
-      body: message,
+      ...buildToolRecovery(message),
     });
   }
   return getSession(sessionId) ?? null;
@@ -931,7 +973,8 @@ async function resolveJvmApplication(sessionId: string, config: RunConfig): Prom
     say(`No main class in '${config.name}': expected java [options] -cp \${classpath} <main class> [args]\n`, "stderr");
     return null;
   }
-  if (!parsed.classpath) return { ...config, args: [...consoleVmArgs(config), ...config.args] };
+  // Always prepare, exactly like Debug: even an explicit classpath needs the module, the
+  // project JDK and the selected build, and both modes must share the same result.
   const rt = runtime(sessionId)!;
   const request = { id: nextRequestId(), controller: new AbortController() };
   rt.resolveRequest = request;
@@ -940,6 +983,9 @@ async function resolveJvmApplication(sessionId: string, config: RunConfig): Prom
       request: request.id,
       signal: request.controller.signal,
       report: say,
+      saveAll: async () => {
+        await maybeEditorService()?.saveAll();
+      },
     });
     // No installed JDK is new enough for the module: offer to download one.
     const jdkHint = info.hints.find((h) => downloadJdkActions(h).length);
@@ -959,7 +1005,7 @@ async function resolveJvmApplication(sessionId: string, config: RunConfig): Prom
       if (runtimes.get(sessionId) === rt && rt.resolveRequest === request) patchSession(sessionId, { stopped: true });
       return null;
     }
-    say(`Cannot resolve the classpath: ${message}\n`, "stderr");
+    say(e instanceof JavaBuildFailedError ? `${message}\n` : `Cannot resolve the classpath: ${message}\n`, "stderr");
     // jdtls can't start without a newer JDK: "Download JDK 25".
     const actions = downloadJdkActions(message);
     notifications().notify({
@@ -998,8 +1044,19 @@ function finishSession(sessionId: string, code: number | null) {
         if (text) rt.console.append({ kind: "stdout", text });
       }
       rt.console.flush();
-      if (rt.tests && rt.parser) {
-        rt.tests.apply(rt.parser.end?.() ?? []);
+      await rt.pluginTests?.end();
+      if (runtimes.get(sessionId) !== rt) return;
+      if (rt.tests && (rt.parser || rt.pluginTests)) {
+        rt.tests.apply(rt.parser?.end?.() ?? []);
+        if (rt.dotnetReports) {
+          try {
+            const events = await rt.dotnetReports.read((path) => call(commands.fsReadText(path)));
+            if (runtimes.get(sessionId) !== rt) return;
+            rt.tests.apply(events);
+          } catch (e) {
+            rt.console.append({ kind: "system", text: tx`Could not read .NET test results: ${String(e)}\n` });
+          }
+        }
         // Surefire / Gradle print only failures and class totals: per-test results come from the XML reports.
         if (frameworkFor(session.config) === "jvm") {
           const reports = await jvmReports(session);
@@ -1059,6 +1116,21 @@ export function testReportEvents(reports: readonly TestCaseReport[]): TestEvent[
 function notifyExit(sessionId: string, code: number | null) {
   const session = getSession(sessionId);
   if (!session || session.stopped || code === 0 || code === null) return;
+  if (
+    session.config.kind === "go" &&
+    !useProject.getState().settings?.languages?.go?.goroot?.trim() &&
+    /No version (?:is )?set for (?:shim: )?go/i.test(runtimes.get(sessionId)?.console.text() ?? "")
+  ) {
+    notifications().notify({
+      group: "run",
+      level: "error",
+      key: `run-exit-${sessionId}`,
+      title: tx("Choose a Go SDK"),
+      body: tx("The Go version manager has no SDK selected. Choose an installed SDK in Go settings and run again."),
+      actions: [{ label: tx("Go Settings…"), run: () => void executeAction("file.settings", "languages.go") }],
+    });
+    return;
+  }
   let visible = true;
   try {
     visible = toolWindowService().isVisible("run");
@@ -1092,6 +1164,8 @@ export function onRunExited(runId: RunId, code: number | null) {
   const session = useRun.getState().sessions.find((s) => s.runId === runId);
   if (!session) {
     pendingExits.set(runId, code);
+    // Background project queries also use the process host without attaching a Run tab.
+    if (pendingExits.size > 128) pendingExits.delete(pendingExits.keys().next().value!);
     return;
   }
   finishSession(session.id, code);
@@ -1155,7 +1229,7 @@ export function rerunConfig(session: Pick<RunSession, "config" | "baseConfig">):
 }
 
 /** The session's original configuration, as saved now (see {@link rerunConfig}). */
-function baseConfigOf(session: RunSession): RunConfig {
+export function baseConfigOf(session: RunSession): RunConfig {
   const base = session.baseConfig ?? session.config;
   return useRun.getState().configs.find((c) => c.id === base.id) ?? base;
 }
@@ -1195,11 +1269,13 @@ export function failedTests(sessionId: string): string[][] {
 }
 
 /** "Rerun Failed Tests": reruns only the failed tests in the same tab. Returns false when unsupported. */
-export function rerunFailed(sessionId: string): boolean {
+export async function rerunFailed(sessionId: string): Promise<boolean> {
   const session = getSession(sessionId);
   if (!session || isLive(session)) return false;
   const base = baseConfigOf(session);
-  const derived = rerunFailedConfigs(base, failedTests(sessionId));
+  const selection = rerunFailedConfigs(base, failedTests(sessionId));
+  const derived = selection instanceof Promise ? await selection : selection;
+  if (getSession(sessionId) !== session || isLive(session)) return false;
   if (!derived.length) return false;
   derived.forEach((config, index) => void startRun(config, index === 0 ? sessionId : undefined, base));
   return true;
@@ -1221,17 +1297,32 @@ export async function runSelectedTests(
   const paths = leafTestPaths(nodes);
   const base = baseConfigOf(session);
   const name = nodes.length === 1 ? nodes[0]!.name : `${paths.length} tests`;
-  const derived = testsConfigs(base, paths, name);
+  const selection = testsConfigs(base, paths, name);
+  const derived = selection instanceof Promise ? await selection : selection;
+  if (getSession(sessionId) !== session) return false;
   if (!derived.length) return false;
   for (const [index, next] of derived.entries()) {
-    const config = adoptTemporary({
-      ...next,
-      id: `context:tests:${base.id}:${index}:${paths.map((p) => p.join("/")).join("|")}`,
-    });
+    const config =
+      base.params?.framework === "plugin"
+        ? next
+        : adoptTemporary({
+            ...next,
+            id: `context:tests:${base.id}:${index}:${paths.map((p) => p.join("/")).join("|")}`,
+          });
     if (debug) await executeAction("run.debugConfig", config);
     else await startRun(config, undefined, base);
   }
   return true;
+}
+
+/** Whether this exact test-tree selection can be narrowed by its framework. */
+export function canRunSelectedTests(sessionId: string, nodeIds: readonly string[]): boolean | Promise<boolean> {
+  const session = getSession(sessionId);
+  const tests = runtimes.get(sessionId)?.tests;
+  if (!session || !tests) return false;
+  const nodes = nodeIds.map((id) => tests.get(id)).filter((n) => !!n);
+  const selection = testsConfigs(baseConfigOf(session), leafTestPaths(nodes), "");
+  return selection instanceof Promise ? selection.then((configs) => configs.length > 0) : selection.length > 0;
 }
 
 /** Whether the console takes typed input: the process runs and its stdin is open. */
@@ -1257,7 +1348,7 @@ export async function sendStdin(sessionId: string, text: string): Promise<void> 
   } catch (e) {
     enqueue(sessionId, {
       kind: "system",
-      text: tx`Cannot write to stdin: ${e instanceof Error ? e.message : String(e)}\n`,
+      text: tx`Cannot write to stdin: ${e instanceof Error ? tx(e.message) : String(e)}\n`,
     });
   }
 }
@@ -1266,7 +1357,12 @@ export async function sendStdin(sessionId: string, text: string): Promise<void> 
 export function writeTerminal(sessionId: string, data: string) {
   const session = getSession(sessionId);
   if (!session || session.runId === null || session.status !== "running") return;
-  void call(commands.runStdin(session.runId, data)).catch(() => undefined);
+  void call(commands.runStdin(session.runId, data)).catch((e) => {
+    enqueue(sessionId, {
+      kind: "system",
+      text: tx`Cannot write to stdin: ${e instanceof Error ? tx(e.message) : String(e)}\n`,
+    });
+  });
 }
 
 /** The terminal console's size in cells; the process's terminal follows it. */

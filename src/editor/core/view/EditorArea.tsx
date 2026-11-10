@@ -1,3 +1,4 @@
+import { ContributedToolbar } from "@/workbench/ContributedToolbar";
 import { useFilePresentationIcons } from "@/platform/filePresentation";
 /**
  * The editor area: split layout of panes, each with IDEA-style tabs (preview
@@ -45,7 +46,15 @@ import {
   type TabItem,
   type TabsDnd,
 } from "@/ui";
-import { editorController, isTextInput, tabIcon, tabTitle, useTabs, type VirtualInputData } from "../controller";
+import {
+  editorController,
+  isTextInput,
+  tabIcon,
+  tabTitle,
+  tabTrailing,
+  useTabs,
+  type VirtualInputData,
+} from "../controller";
 import { useDocMeta } from "../model/document";
 import { inputDirty } from "../model/customDocuments";
 import type { LayoutNode, SplitEdge, Tab } from "../model/tabs";
@@ -192,6 +201,8 @@ function PaneView({ paneId }: { paneId: string }) {
           : names.filter((n) => n === name).length > 1 && t.input.path
             ? basename(dirname(t.input.path))
             : null;
+      const kindMark = tabTrailing(t.input, kinds);
+      const pin = t.pinned ? <Icon name="pin" size={11} className={styles.pin} label="Pinned" /> : null;
       return {
         id: t.id,
         label: (
@@ -212,7 +223,13 @@ function PaneView({ paneId }: { paneId: string }) {
         color: colors[i] || undefined,
         tint: tints[i] || undefined,
         tooltip: virtualTooltip(t.input) ?? (showFullPathOnHover ? (t.input.path ?? name) : undefined),
-        trailing: t.pinned ? <Icon name="pin" size={11} className={styles.pin} label="Pinned" /> : undefined,
+        trailing:
+          kindMark || pin ? (
+            <>
+              {kindMark}
+              {pin}
+            </>
+          ) : undefined,
       };
     });
   }, [
@@ -474,6 +491,7 @@ function EditorTabActions({ paneId, tab }: { paneId: string; tab: Tab }) {
   const moreRef = useRef<HTMLButtonElement>(null);
   return (
     <div className={styles.tabActions}>
+      <ContributedToolbar slot="editor.title" />
       {LayoutActions && <LayoutActions path={tab.input.path!} tabId={tab.id} />}
       <IconButton
         icon="split"

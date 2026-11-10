@@ -1,6 +1,6 @@
 import { afterEach, expect, it, vi } from "vitest";
 import { gutterIconMarkup } from "@/ui/icons";
-import { projectMarkerIcon, resolveMarkerIcon } from "./markerIcons";
+import { projectMarkerIcon, resolveIndexedMarkerIcon, resolveMarkerIcon } from "./markerIcons";
 import { markerIcon } from "./lineMarkerGutter";
 
 const mocks = vi.hoisted(() => ({ assets: vi.fn() }));
@@ -42,7 +42,22 @@ it("keeps a replacement when an older declaration is disposed", async () => {
   const removeNew = projectMarkerIcon("p", { id: "resource", icon: "icons/resource.svg" });
   removeOld();
   expect(await resolveMarkerIcon("p", "icons/resource.svg")).toMatch(/^ext:/);
+  expect((await resolveIndexedMarkerIcon("p", "resource"))?.icon).toMatch(/^ext:/);
   removeNew();
+  expect(await resolveIndexedMarkerIcon("p", "resource")).toBeUndefined();
+});
+
+it("preserves line-marker lookup with projected indexed-marker defaults", async () => {
+  mocks.assets.mockResolvedValue([["markerIcon/resource/light", svg('<rect width="16" height="16"/>')]]);
+  const declaration = { id: "resource", icon: "icons/resource.svg", markers: [], tooltip: null };
+  const remove = projectMarkerIcon("p", declaration);
+  try {
+    const icon = await resolveMarkerIcon("p", declaration.icon);
+    expect(icon).toMatch(/^ext:/);
+    expect(await resolveIndexedMarkerIcon("p", declaration.id)).toEqual({ icon, tooltip: null });
+  } finally {
+    remove();
+  }
 });
 
 it("falls back when an asset fails to load", async () => {

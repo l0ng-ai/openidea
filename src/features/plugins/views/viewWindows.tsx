@@ -17,6 +17,8 @@ export interface WindowView {
   id: string;
   title: string;
   location: ToolWindowAnchor;
+  secondary?: boolean;
+  header?: "default" | "none" | null;
   group?: string | null;
   when?: string | null;
 }
@@ -105,7 +107,9 @@ function refresh(id: string, group: WindowGroup) {
     members,
     selected: selected ?? members[0]?.decl.id ?? null,
   });
-  const signature = first && members.length ? JSON.stringify([first.decl.title, first.decl.location, first.icon]) : "";
+  const secondary = first?.decl.secondary === true;
+  const signature =
+    first && members.length ? JSON.stringify([first.decl.title, first.decl.location, secondary, first.icon]) : "";
   if (signature === group.signature) return;
   group.dispose();
   group.signature = signature;
@@ -116,6 +120,7 @@ function refresh(id: string, group: WindowGroup) {
           title: first.decl.title,
           verbatim: true,
           anchor: first.decl.location,
+          secondary,
           icon: first.icon,
           order: 900,
           component: first.decl.group ? group.component : first.component,

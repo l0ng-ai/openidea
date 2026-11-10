@@ -4,7 +4,7 @@ version = "0.1.0"
 description = "Test fixture for a capability-gated streaming editor tab."
 engines.openidea = "^1.3"
 wasm = "dist/plugin.wasm"
-activation = ["on-command:ping", "on-command:open", "on-command:denied"]
+activation = ["on-command:ping", "on-command:open", "on-command:denied", "on-command:code"]
 
 [capabilities]
 optional = ["process:bash"]
@@ -27,3 +27,7 @@ title = "Log Probe: Open Stream"
 [[contributes.commands]]
 id = "denied"
 title = "Log Probe: Try Undeclared Program"
+
+[[contributes.commands]]
+id = "code"
+title = "Log Probe: Open From Code"

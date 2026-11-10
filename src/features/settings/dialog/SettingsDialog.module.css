@@ -11,15 +11,12 @@
 }
 
 .sidebar {
-  flex: none;
-  width: 240px;
   display: flex;
   flex-direction: column;
   min-height: 0;
-  border-right: 1px solid var(--border);
 }
 .search {
-  margin: 10px;
+  margin: 7px 5px 6px;
 }
 .tree {
   flex: 1;
@@ -57,11 +54,11 @@
 }
 
 .main {
-  flex: 1;
   min-width: 0;
   display: flex;
   flex-direction: column;
   min-height: 0;
+  container: settings-content / inline-size;
 }
 .loading {
   flex: 1;
@@ -75,9 +72,10 @@
 .pageHeader {
   flex: none;
   display: flex;
+  flex-wrap: wrap;
   align-items: center;
   gap: 12px;
-  height: 40px;
+  min-height: 40px;
   padding: 0 12px 0 20px;
 }
 .history {
@@ -93,6 +91,13 @@
   white-space: nowrap;
   color: var(--fg-strong);
   font-weight: 600;
+}
+.crumb:last-child {
+  min-width: 0;
+}
+.crumb > span {
+  overflow: hidden;
+  text-overflow: ellipsis;
 }
 .crumb {
   display: inline-flex;
@@ -120,6 +125,7 @@
 }
 .scope {
   display: inline-flex;
+  flex: none;
   padding: 2px;
   border-radius: var(--radius-small);
   box-shadow: inset 0 0 0 1px var(--border-strong);
@@ -130,6 +136,7 @@
   border-radius: 3px;
   color: var(--fg-muted);
   font-size: var(--fs-small);
+  white-space: nowrap;
 }
 .scopeButton:hover {
   color: var(--fg-emphasis);

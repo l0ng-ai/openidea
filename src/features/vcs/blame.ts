@@ -1,4 +1,5 @@
 /** Annotate (git blame) gutter left of the line numbers. */
+import { writeClipboardText } from "@/platform/clipboard";
 import { Compartment, Prec, RangeSet, StateEffect, StateField, type Extension, type Text } from "@codemirror/state";
 import { EditorView, GutterMarker, ViewPlugin, gutter, type PluginValue, type ViewUpdate } from "@codemirror/view";
 import type { BlameLine } from "@/bindings";
@@ -181,7 +182,7 @@ function blameExtension(lines: BlameLine[], path: string, live: boolean): Extens
                     {
                       label: "Copy Revision Number",
                       icon: "copy",
-                      run: () => void navigator.clipboard?.writeText(l.commit),
+                      run: () => void writeClipboardText(l.commit),
                     },
                     { kind: "separator" as const },
                   ]

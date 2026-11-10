@@ -44,4 +44,12 @@ if (typeof window !== "undefined") {
   Range.prototype.getClientRects ??= () => Object.assign([], { item: () => null }) as unknown as DOMRectList;
   Range.prototype.getBoundingClientRect ??= () => new DOMRect();
   Element.prototype.scrollTo ??= function () {} as Element["scrollTo"];
+  if (!("Highlight" in globalThis)) {
+    class HighlightStub extends Set<AbstractRange> {
+      priority = 0;
+    }
+    (globalThis as unknown as { Highlight: unknown }).Highlight = HighlightStub;
+  }
+  const gCss = ((globalThis as unknown as { CSS?: Record<string, unknown> }).CSS ??= {});
+  gCss.highlights ??= new Map<string, Set<AbstractRange>>();
 }

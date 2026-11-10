@@ -1,6 +1,8 @@
-import { describe, expect, it } from "vitest";
+import { commands } from "@/platform/ipc";
+import { provideEditorService } from "@/workbench/contributions";
+import { describe, expect, it, vi } from "vitest";
 import { Text } from "@codemirror/state";
-import { fragmentOffset, linkReference, looksLikePath, resolvePath, textReference } from "./links";
+import { fragmentOffset, followReference, linkReference, looksLikePath, resolvePath, textReference } from "./links";
 
 const at = (src: string, marker = "|") => {
   const offset = src.indexOf(marker);
@@ -89,4 +91,31 @@ describe("links and fragments", () => {
     }
     expect(fragmentOffset("x", "/i.html", "nope")).toBeNull();
   });
+});
+
+it("opens a container document link in the editor and resolves its fragment through virtual content", async () => {
+  const uri = "openidea-target://target/7/usr/lib/library.php";
+  const openFile = vi.fn(async () => {});
+  provideEditorService({ openFile } as never);
+  const read = vi.spyOn(commands, "lspVirtualDocument").mockResolvedValue({
+    status: "ok",
+    data: {
+      uri,
+      text: "<?php\nfunction library() {}\n",
+      title: "library.php",
+      description: null,
+      languageId: "php",
+      decompiled: false,
+    },
+  });
+  const disk = vi.spyOn(commands, "fsReadText");
+  try {
+    await followReference({ kind: "file", path: uri, fragment: "L2", from: 0, to: 1 });
+    expect(read).toHaveBeenCalledWith(uri);
+    expect(disk).not.toHaveBeenCalled();
+    expect(openFile).toHaveBeenCalledWith(uri, { focus: true, selection: { line: 1, col: 0 } });
+  } finally {
+    read.mockRestore();
+    disk.mockRestore();
+  }
 });

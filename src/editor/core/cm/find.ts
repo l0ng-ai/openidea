@@ -199,7 +199,7 @@ export function findExtension(): Extension {
     findExcluded,
     findMarks,
     literalsExtension,
-    findHighlighter,
+    Prec.highest(findHighlighter),
   ];
 }
 

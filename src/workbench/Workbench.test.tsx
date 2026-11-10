@@ -1,6 +1,8 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { act, fireEvent, render, screen } from "@testing-library/react";
 import { emitLocalIdeEvent } from "@/platform/ipc";
+import { setLocale } from "@/platform/i18n";
+import { useProject } from "@/platform/project";
 import { registerStatusItem, registerToolWindow, type StatusItemContribution } from "./contributions";
 import { orderStatusItems, StatusBar, TaskStatus } from "./StatusBar";
 import { orderTitleItems } from "./TitleBar";
@@ -200,7 +202,30 @@ describe("notifications", () => {
     uninstall();
   });
 
+  it.each(["en", "zh"])("adds Gradle JVM recovery before translating backend messages (%s)", async (locale) => {
+    await setLocale(locale);
+    const uninstall = installNotifyEvents();
+    try {
+      act(() =>
+        emitLocalIdeEvent({
+          type: "notify",
+          level: "error",
+          title: "jdtls",
+          body: "Can't use Java 27.0.1.0.3 and Gradle 9.7.1 to import Gradle project kotlin-gradle.",
+        }),
+      );
+      const item = useNotifications.getState().items[0]!;
+      expect(item.actions?.map((a) => a.label)).toEqual([locale === "zh" ? "选择 Gradle JVM" : "Choose Gradle JVM"]);
+      expect(item.body).toContain(locale === "zh" ? "下载 JDK" : "Download JDK");
+    } finally {
+      uninstall();
+      await setLocale("en");
+    }
+  });
+
   it("the Notifications tool window lists history, marks it read and hides balloons", () => {
+    const previousProject = useProject.getState().project;
+    useProject.setState({ project: { root: "/notifications", name: "notifications" } as never });
     const dispose = registerToolWindow({
       id: NOTIFICATIONS_TOOL_WINDOW,
       title: "Notifications",
@@ -222,6 +247,26 @@ describe("notifications", () => {
     expect(screen.getAllByText("Hello")).toHaveLength(1);
     expect(useNotifications.getState().items.every((n) => n.read && !n.balloon)).toBe(true);
     dispose();
+    useProject.setState({ project: previousProject });
+  });
+
+  it("pops up the answer to a command the user ran even when balloons are off for its group", async () => {
+    const { useProject } = await import("@/platform/project");
+    useProject.setState({
+      settings: { notifications: { balloons: false, groups: { updates: { display: "none", log: true } } } } as never,
+    });
+    try {
+      act(() => {
+        notify({ level: "info", title: "Checking for updates…", key: "app.update", userInitiated: true });
+        notify({ level: "info", title: "Update available", key: "app.update.background" });
+      });
+      const balloon = (title: string) => useNotifications.getState().items.find((n) => n.title === title)?.balloon;
+      expect(balloon("Checking for updates…")).toBe(true);
+      // What the IDE raises on its own still follows the settings.
+      expect(balloon("Update available")).toBe(false);
+    } finally {
+      useProject.setState({ settings: null });
+    }
   });
 });
 

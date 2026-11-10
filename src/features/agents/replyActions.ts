@@ -1,3 +1,4 @@
+import { writeClipboardText } from "@/platform/clipboard";
 import type { Action } from "@/platform/actions";
 import { tx } from "@/platform/i18n";
 import { confirm } from "@/workbench/messages";
@@ -20,7 +21,7 @@ export const copyReplyAction: Action = {
     const reply = arg as CopyReply | undefined;
     if (!reply || typeof reply.text !== "string" || !reply.text.trim()) return;
     try {
-      await navigator.clipboard.writeText(reply.text);
+      await writeClipboardText(reply.text);
       reply.onCopied?.();
     } catch (e) {
       notifications().notify({ level: "error", title: "Couldn't copy the reply", body: String(e) });

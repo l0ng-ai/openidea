@@ -48,9 +48,18 @@ fn assert_still_running(events: &Receiver<IdeEvent>, timeout: Duration) {
 
 #[test]
 fn a_stopped_run_keeps_its_port_until_the_group_is_gone() {
+    stopped_launcher_with_descendant(false);
+}
+
+#[test]
+fn a_second_stop_reaches_descendants_after_the_launcher_exits() {
+    stopped_launcher_with_descendant(true);
+}
+
+fn stopped_launcher_with_descendant(force: bool) {
     let tmp = tempfile::tempdir().unwrap();
     let (sink, events) = channel_sink();
-    let pm = ProcessManager::new();
+    let pm = Arc::new(ProcessManager::new());
     // The `mvn`-starts-a-JVM shape: the direct child dies on SIGINT while the process it
     // started ignores it and keeps its socket open until the test releases it.
     let script = tmp.path().join("hold.py");
@@ -97,7 +106,20 @@ fn a_stopped_run_keeps_its_port_until_the_group_is_gone() {
     wait_for("the direct child to exit", || unsafe { libc::kill(pid, 0) != 0 });
     let exit = events.recv_timeout(Duration::from_secs(1));
     let port_held = std::net::TcpStream::connect(("127.0.0.1", port)).is_ok();
-    std::fs::write(&release_file, "").unwrap();
+    if force {
+        let (tx, rx) = mpsc::channel();
+        let pm = pm.clone();
+        std::thread::spawn(move || {
+            let _ = tx.send(pm.stop(info.id));
+        });
+        let result = rx.recv_timeout(Duration::from_secs(1));
+        if result.is_err() {
+            std::fs::write(&release_file, "").unwrap();
+        }
+        result.expect("second Stop blocked waiting for the run's pid lock").unwrap();
+    } else {
+        std::fs::write(&release_file, "").unwrap();
+    }
     assert!(
         matches!(exit, Err(mpsc::RecvTimeoutError::Timeout)),
         "run exited while its descendant held the port: {exit:?}"

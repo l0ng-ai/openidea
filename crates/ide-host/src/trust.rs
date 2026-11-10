@@ -56,6 +56,22 @@ impl TrustStore {
                 || self.inherited.lock().contains(&root)))
     }
 
+    pub fn window_trusted(&self, root: &Path) -> IdeResult<bool> {
+        if !self.trusted(root)? {
+            return Ok(false);
+        }
+        if let Some(workspace) = ide_workspace::workspace::Workspace::load(root)?
+            && !workspace.is_container(root)
+        {
+            for member in workspace.projects.iter().filter(|p| *p != root && p.exists()) {
+                if !self.trusted(member)? {
+                    return Ok(false);
+                }
+            }
+        }
+        Ok(true)
+    }
+
     /// Trusts `path` for this process without recording a decision (see [`TRUSTED_ROOT_ENV`]).
     pub fn inherit(&self, path: &Path) -> IdeResult<()> {
         let root = dunce::canonicalize(path)?;
@@ -134,7 +150,7 @@ impl crate::Host {
 
     pub async fn refresh_project_trust(&self) -> IdeResult<()> {
         for project in self.projects().into_iter().filter(|p| !p.light) {
-            let trusted = self.trust.trusted(&project.root).unwrap_or(false);
+            let trusted = self.trust.window_trusted(&project.root).unwrap_or(false);
             let previous = project.trusted.swap(trusted, std::sync::atomic::Ordering::AcqRel);
             if previous == trusted {
                 continue;
@@ -146,6 +162,9 @@ impl crate::Host {
                 phpstan.interrupt();
             }
             if !trusted {
+                if let Some(plugins) = self.plugin_host() {
+                    plugins.withdraw_project_run_targets(&project.root);
+                }
                 project.lsp.set_execution_allowed(false);
             }
             project.repos();
@@ -214,15 +233,21 @@ pub fn restricted_command_allowed(cmd: &str) -> bool {
         cmd,
         "app_info"
             | "app_build_info"
+            | "app_cli_install"
+            | "app_cli_uninstall"
             | "app_log_location"
             | "app_check_update"
-            | "app_startup_update_check"
+            | "app_update_window_ready"
+            | "app_update_status"
+            | "app_update_announcement"
             | "app_install_update"
             | "caches_schedule_invalidation"
             | "clear_caches"
             | "clipboard_file_list"
             | "clipboard_has_files"
+            | "clipboard_image"
             | "clipboard_set_file_list"
+            | "clipboard_write_text"
             | "jdk_download_vendors"
             | "jdk_download_releases"
             | "jdk_download_location"
@@ -266,6 +291,7 @@ pub fn restricted_command_allowed(cmd: &str) -> bool {
             | "deploy_coverage"
             | "deploy_test_connection"
             | "find_files"
+            | "find_files_named"
             | "find_dirs"
             | "find_symbols"
             | "mark_recent"
@@ -277,6 +303,7 @@ pub fn restricted_command_allowed(cmd: &str) -> bool {
             | "project_rename"
             | "light_edit_open"
             | "workspace_create"
+            | "workspace_discover_projects"
             | "workspace_update"
             | "workspace_attach"
             | "cancel_request"
@@ -393,6 +420,8 @@ pub fn projectless_command_allowed(cmd: &str) -> bool {
             | "plugin_set_enabled"
             | "plugin_grant"
             | "plugin_set_capability"
+            | "plugin_choose_program"
+            | "plugin_program"
             | "plugin_roll_back"
             | "plugin_reload"
     )
@@ -424,5 +453,13 @@ impl TrustStore {
         let trusted = self.trusted(&root)?;
         let state = self.decisions()?;
         Ok(TrustStatus { decided: trusted || state.restricted.contains(&root), root: root.into(), trusted })
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    #[test]
+    fn restricted_mode_allows_clipboard_write_text() {
+        assert!(super::restricted_command_allowed("clipboard_write_text"));
     }
 }

@@ -1,5 +1,4 @@
-import { useEffect, useState } from "react";
-import clsx from "clsx";
+import { useEffect, useState, type ReactNode } from "react";
 import type { AgentTask } from "@/bindings";
 import { IconButton } from "@/ui";
 import { Markdown } from "./Markdown";
@@ -22,7 +21,7 @@ export function AgentReply({
   reply?: ReplyTurn;
   turnCount?: number;
   onDiagramDrawn?: () => void;
-  /** False when the caller shows `ReplyActions` in the message's header row. */
+  /** False when the caller supplies the message footer. */
   actions?: boolean;
 }) {
   return (
@@ -37,7 +36,15 @@ export function AgentReply({
   );
 }
 
-/** Copy, quote, regenerate and branch for a reply; kept in its header row when it has one. */
+export function MessageActions({ children, copied = false }: { children: ReactNode; copied?: boolean }) {
+  return (
+    <span className={styles.messageActions} data-copied={copied || undefined}>
+      {children}
+    </span>
+  );
+}
+
+/** Shared action row for a reply in either the conversation or a subagent preview. */
 export function ReplyActions({
   text,
   task,
@@ -57,11 +64,11 @@ export function ReplyActions({
     return () => clearTimeout(timer);
   }, [copied]);
   return (
-    <span className={clsx(styles.messageActions, styles.replyActions)} data-copied={copied === text || undefined}>
+    <MessageActions copied={copied === text}>
       <IconButton
         icon={copied === text ? "check" : "copy"}
         title={copied === text ? "Copied" : "Copy Markdown"}
-        size="normal"
+        size="small"
         action={copyReplyAction.id}
         actionArg={{ text, onCopied: () => setCopied(text) } satisfies CopyReply}
       />
@@ -69,7 +76,7 @@ export function ReplyActions({
         <IconButton
           icon="quote"
           title="Quote Reply"
-          size="normal"
+          size="small"
           action="agents.quoteReply"
           actionArg={{ task: task.id, text }}
         />
@@ -78,7 +85,7 @@ export function ReplyActions({
         <IconButton
           icon="refresh"
           title="Regenerate Response"
-          size="normal"
+          size="small"
           action="agents.regenerateReply"
           actionArg={{ task: task.id, turn: reply.turn }}
         />
@@ -87,11 +94,11 @@ export function ReplyActions({
         <IconButton
           icon="branch"
           title="Branch Conversation from Here"
-          size="normal"
+          size="small"
           action="agents.forkReply"
           actionArg={{ task: task.id, turn: reply.turn }}
         />
       )}
-    </span>
+    </MessageActions>
   );
 }

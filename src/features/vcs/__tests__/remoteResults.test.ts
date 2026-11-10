@@ -69,6 +69,14 @@ describe("push result notification", () => {
     expect(await pushTitle()).toMatch(/successful$/);
   });
 
+  it("does not name the upstream when the push went to another remote", async () => {
+    // `ahead` counts against the upstream, so it says nothing about what another remote received.
+    branch = { upstream: "origin/main", ahead: 1 };
+    const op = { op: "pushBranch", branch: "main", remote: "fork", target: null } as never;
+    expect(await runRemote(op, undefined, ["/p"])).toBe(true);
+    expect(notes.at(-1)!.title).toMatch(/successful$/);
+  });
+
   it("is translated as a whole, count included", async () => {
     await setLocale("zh");
     branch = { upstream: "origin/main", ahead: 3 };

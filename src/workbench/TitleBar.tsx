@@ -1,3 +1,4 @@
+import { ContributedToolbar } from "./ContributedToolbar";
 import { useMemo, useRef, useState } from "react";
 import clsx from "clsx";
 import { useActions } from "@/platform/actions";
@@ -21,7 +22,7 @@ import {
   widgetTitle,
 } from "./mainToolbar";
 import { WindowControls } from "./WindowControls";
-import { MacWindowButtons } from "./MacWindowButtons";
+import { useFullscreen } from "./useFullscreen";
 import { usePlatform } from "@/platform/platformInfo";
 import { projectInitials } from "./projectColor";
 import { keymapItems, themeItems, themePreview, type ThemePreview, VIEW_MODE_ITEMS } from "./quickSwitch";
@@ -29,6 +30,7 @@ import { useContributedThemes } from "@/platform/themes";
 import { currentThemeChoice, useThemeOverride } from "./theme";
 import styles from "./TitleBar.module.css";
 import { useNativeTitlebar } from "./nativeTitlebar";
+import { useDocumentTitle } from "./documentTitle";
 import { windowDragRegion } from "./window-drag";
 
 export function orderTitleItems(items: Iterable<TitleItemContribution>) {
@@ -51,7 +53,7 @@ function TitleItem({ item }: { item: TitleItemContribution }) {
 }
 
 function ProjectButton() {
-  const name = useProject((s) => s.project?.name);
+  const name = useProject((s) => s.project?.displayName || s.project?.name);
   const root = useProject((s) => s.project?.root);
   const [open, setOpen] = useState(false);
   const ref = useRef<HTMLButtonElement>(null);
@@ -271,45 +273,65 @@ function ToolbarEntry({ id, items }: { id: string; items: ReadonlyMap<string, Ti
   );
 }
 
+/** IDEA's compact header: the window title in the middle of a 30px bar. */
+function CompactTitle({ title }: { title?: string }) {
+  const documentTitle = useDocumentTitle();
+  return (
+    <span className={styles.compactTitle} {...windowDragRegion}>
+      {title ?? documentTitle}
+    </span>
+  );
+}
+
 /**
  * 40px main toolbar. macOS: native traffic lights overlay its left edge.
  * Windows and Linux: the window is frameless, so the bar carries IDEA's main menu (☰) and
  * the caption buttons. `dialog`: a dialog window's bar (Settings), close button only.
  * `lightEdit`: a LightEdit window's bar, its title and the menu but no toolbar widgets.
+ * `compact`: IDEA's compact header (Distraction Free, View › Appearance › Toolbar off).
+ * `bare`: the window frame only, while a project opens.
  */
 export function TitleBar({
   minimal = false,
   bare = false,
+  compact = false,
   dialog = false,
   lightEdit = false,
   title,
 }: {
   minimal?: boolean;
   bare?: boolean;
+  compact?: boolean;
   dialog?: boolean;
   lightEdit?: boolean;
   title?: string;
 }) {
   const overlay = usePlatform((s) => s.overlayTitleBar);
+  const fullscreen = useFullscreen();
   const frameless = usePlatform((s) => s.framelessTitleBar);
   const { map, shown, menu } = useToolbar();
   const [menuExpanded, setMenuExpanded] = useState(false);
   const [bar, setBar] = useState<HTMLElement | null>(null);
   useNativeTitlebar(bar);
-  const className = clsx(styles.bar, overlay && styles.overlay, frameless && styles.frameless);
-  // Distraction Free Mode: the window frame only. Where the title bar carries the
-  // main menu (Windows, Linux) it stays, or nothing would lead back out of the mode.
-  if (bare)
+  const className = clsx(
+    styles.bar,
+    overlay && styles.overlay,
+    overlay && fullscreen && styles.overlayFullscreen,
+    frameless && styles.frameless,
+  );
+  // Where the title bar carries the main menu (Windows, Linux) it stays, or nothing
+  // would lead back out of Distraction Free Mode or bring the toolbar back.
+  if (bare || compact)
     return (
-      <header ref={setBar} className={className} {...windowDragRegion} data-titlebar="bare">
-        {overlay && <MacWindowButtons />}
-        {frameless && (
-          <>
-            <MainMenu />
-            <div className={styles.drag} {...windowDragRegion} />
-            <WindowControls />
-          </>
-        )}
+      <header
+        ref={setBar}
+        className={clsx(className, compact && styles.compactHeader)}
+        {...windowDragRegion}
+        data-titlebar={compact ? "compact" : "bare"}
+      >
+        {frameless && <MainMenu />}
+        {compact ? <CompactTitle title={title} /> : frameless && <div className={styles.drag} {...windowDragRegion} />}
+        {frameless && <WindowControls />}
       </header>
     );
   const entry = (id: string) => <ToolbarEntry key={id} id={id} items={map} />;
@@ -325,7 +347,6 @@ export function TitleBar({
         showContextMenu(e, menu);
       }}
     >
-      {overlay && <MacWindowButtons />}
       {frameless && !minimal && <MainMenu onExpandedChange={setMenuExpanded} />}
       {title && (
         <span className={styles.windowTitle} {...windowDragRegion}>
@@ -337,6 +358,7 @@ export function TitleBar({
       {!minimal && (
         <>
           {toolbar && !menuExpanded && shown.right.map(entry)}
+          {toolbar && !menuExpanded && <ContributedToolbar slot="mainToolbar" />}
           {!menuExpanded && (
             <div className={styles.tools}>
               <GearButton customize={menu} />

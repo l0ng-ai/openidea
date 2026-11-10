@@ -59,6 +59,7 @@ fn fixture() -> Fixture {
 
 fn inv() -> Invocation {
     Invocation {
+        command_chain: Vec::new(),
         client: Some("main".into()),
         workspace_root: None,
         editor: None,

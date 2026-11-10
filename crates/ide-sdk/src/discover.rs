@@ -106,6 +106,32 @@ fn is_python_name(name: &str) -> bool {
         || rest.strip_prefix("3.").is_some_and(|v| !v.is_empty() && v.chars().all(|c| c.is_ascii_digit()))
 }
 
+/// Prefixes named by `conda env list`: `base * /opt/conda`, `myenv  /opt/conda/envs/myenv`,
+/// a `--prefix` env shown as a bare path, comment lines skipped (#2240).
+fn conda_env_list_prefixes(output: &str) -> Vec<PathBuf> {
+    output
+        .lines()
+        .map(|l| l.trim_start_matches(['#', '*', ' ']).trim_end())
+        .filter(|l| !l.is_empty() && !l.starts_with('#'))
+        .filter_map(|l| {
+            // `name   /path` or a bare `/path` (a --prefix env shows no name): the path
+            // starts at the first rooted prefix — a drive letter, '/', '~' or '\\\\' —
+            // so names and the stripped "# conda environments:" header never leak, and
+            // paths with spaces (C:\\Program Files\\...) stay whole.
+            let bytes = l.as_bytes();
+            let drive = (0..bytes.len().saturating_sub(2))
+                .filter(|&i| {
+                    bytes[i].is_ascii_alphabetic()
+                        && bytes[i + 1] == b':'
+                        && (bytes[i + 2] == b'\\' || bytes[i + 2] == b'/')
+                })
+                .map(Some);
+            let start = [l.find(['/', '~']), l.find("\\\\")].into_iter().chain(drive).flatten().min();
+            start.map(|i| PathBuf::from(l[i..].trim()))
+        })
+        .collect()
+}
+
 fn python(root: Option<&Path>) -> Vec<Sdk> {
     let mut found: Vec<(PathBuf, &'static str)> = Vec::new();
     if let Some(root) = root {
@@ -155,10 +181,41 @@ fn python(root: Option<&Path>) -> Vec<Sdk> {
         if let Some(prefix) = std::env::var_os("CONDA_PREFIX") {
             conda_roots.push(PathBuf::from(prefix));
         }
+        // A conda on PATH reveals a non-default install root (Anaconda on D:\, Miniconda
+        // in ProgramData): the binary lives at <root>/Scripts/conda.exe (Windows) or
+        // <root>/bin/conda. Without this, an install outside the home-dir guesses keeps
+        // every `envs/` environment invisible (#2240).
+        if let Some(conda) = which("conda") {
+            if let Some(root) = conda.parent().and_then(Path::parent) {
+                conda_roots.push(root.to_path_buf());
+            }
+            // `conda env list` also names `--prefix` envs kept outside `envs/` and envs_dirs
+            // configured in .condarc — every env the user sees on the CLI shows up here.
+            if let Some(list) = query(&conda, &["env", "list"], VERSION_TIMEOUT) {
+                conda_roots.extend(conda_env_list_prefixes(&list));
+            }
+        }
+        let mut seen_roots = HashSet::new();
+        conda_roots.retain(|r| seen_roots.insert(r.clone()));
+        // Conda prefixes keep `python.exe` at the env root on Windows (`envs/x/python.exe`),
+        // not under Scripts/ like a virtualenv — probe every conventional location (#2240).
+        let conda_python = |prefix: &Path| -> Option<PathBuf> {
+            [
+                prefix.join(exe("python")),
+                prefix.join(bin_dir()).join(exe("python")),
+                prefix.join("bin").join(exe("python")),
+            ]
+            .into_iter()
+            .find(|p| p.is_file())
+        };
         for base in conda_roots {
-            found.push((base.join(bin_dir()).join(exe("python")), "conda"));
+            if let Some(p) = conda_python(&base) {
+                found.push((p, "conda"));
+            }
             for env in subdirs(&base.join("envs")) {
-                found.push((env.join(bin_dir()).join(exe("python")), "conda"));
+                if let Some(p) = conda_python(&env) {
+                    found.push((p, "conda"));
+                }
             }
         }
     }
@@ -197,16 +254,36 @@ fn python(root: Option<&Path>) -> Vec<Sdk> {
     par_map(&candidates, |(path, source)| python_sdk(path, source, root))
 }
 
-/// Interpreter `path` (one the project is set to, wherever it lives) as an SDK, named
-/// like the detected ones.
+/// A runnable Python executable or virtualenv folder, named like detected SDKs.
 pub fn python_interpreter_sdk(path: &Path, root: Option<&Path>) -> Option<Sdk> {
-    python_sdk(path, if venv_of(path).is_some() { "venv" } else { "system" }, root)
+    let path = if path.is_dir() && path.join("pyvenv.cfg").is_file() {
+        path.join(bin_dir()).join(exe("python"))
+    } else {
+        path.to_path_buf()
+    };
+    if !path.is_file() || !usable(&path) {
+        return None;
+    }
+    // Run Python code: --version and pyvenv.cfg can still work after the base
+    // installation (including its standard library) has been removed.
+    let version =
+        query(&path, &["-I", "-c", "import sys; print('.'.join(map(str, sys.version_info[:3])))"], VERSION_TIMEOUT)?;
+    if version.split('.').count() != 3
+        || !version.split('.').all(|p| !p.is_empty() && p.chars().all(|c| c.is_ascii_digit()))
+    {
+        return None;
+    }
+    Some(python_sdk_with_version(&path, if venv_of(&path).is_some() { "venv" } else { "system" }, root, version))
 }
 
 pub(crate) fn python_sdk(path: &Path, source: &str, root: Option<&Path>) -> Option<Sdk> {
     let version = query(path, &["--version"], VERSION_TIMEOUT)
         .and_then(|v| v.strip_prefix("Python ").map(str::to_owned))
         .or_else(|| pyvenv_version(path))?;
+    Some(python_sdk_with_version(path, source, root, version))
+}
+
+fn python_sdk_with_version(path: &Path, source: &str, root: Option<&Path>, version: String) -> Sdk {
     let short = version.split('.').take(2).collect::<Vec<_>>().join(".");
     let venv = venv_of(path);
     let label = match (&venv, source) {
@@ -236,7 +313,7 @@ pub(crate) fn python_sdk(path: &Path, source: &str, root: Option<&Path>) -> Opti
         (None, tool @ ("uv" | "mise" | "asdf")) => format!("Python {short} ({tool})"),
         _ => format!("Python {short}"),
     };
-    Some(Sdk {
+    Sdk {
         path: path.into(),
         name: label,
         version: Some(version),
@@ -246,7 +323,7 @@ pub(crate) fn python_sdk(path: &Path, source: &str, root: Option<&Path>) -> Opti
             .or_else(|| path.parent().and_then(Path::parent).map(Path::to_path_buf))
             .map(Into::into),
         extra: None,
-    })
+    }
 }
 
 /// `.pixi/envs/<env>` of a pixi interpreter (`<env>/python`, `<env>/bin/python`).
@@ -850,5 +927,43 @@ mod pixi_tests {
         assert_eq!(pixi_env_home(Path::new("/usr/bin/python3")), None);
         assert_eq!(pixi_env_home(Path::new("/p/.venv/bin/python")), None);
         assert_eq!(pixi_env_home(Path::new("/p/envs/x/bin/python")), None);
+    }
+}
+
+#[cfg(test)]
+mod conda_tests {
+    use super::*;
+
+    #[test]
+    fn conda_env_list_names_named_prefix_and_bare_prefix_envs() {
+        // `conda env list` on Windows with Anaconda on a second drive (#2240).
+        let output = "\
+# conda environments:
+#
+base                  *  D:\\soft\\anaconda3
+ml                       D:\\soft\\anaconda3\\envs\\ml
+                         D:\\envs\\scratchpad
+legacy                   C:\\Users\\dev\\.conda\\envs\\legacy
+";
+        let prefixes = conda_env_list_prefixes(output);
+        assert_eq!(
+            prefixes,
+            vec![
+                PathBuf::from("D:\\soft\\anaconda3"),
+                PathBuf::from("D:\\soft\\anaconda3\\envs\\ml"),
+                PathBuf::from("D:\\envs\\scratchpad"),
+                PathBuf::from("C:\\Users\\dev\\.conda\\envs\\legacy"),
+            ]
+        );
+    }
+
+    #[test]
+    fn conda_env_list_handles_unix_and_empty_output() {
+        assert!(conda_env_list_prefixes("").is_empty());
+        let output = "# conda environments:\n#\nbase  *  /opt/miniconda3\nprod     /opt/miniconda3/envs/prod\n";
+        assert_eq!(
+            conda_env_list_prefixes(output),
+            vec![PathBuf::from("/opt/miniconda3"), PathBuf::from("/opt/miniconda3/envs/prod")]
+        );
     }
 }

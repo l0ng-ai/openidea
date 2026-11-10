@@ -673,10 +673,11 @@ pub async fn vcs_rename_branch(
     repo: Option<PathBuf>,
     from: String,
     to: String,
+    unset_upstream: bool,
 ) -> IdeResult<()> {
     host.require_trust(window)?;
     let project = host.project(window)?;
-    blocking(move || project.with_repo_at(repo.as_deref(), |r| r.rename_branch(&from, &to))).await
+    blocking(move || project.with_repo_at(repo.as_deref(), |r| r.rename_branch(&from, &to, unset_upstream))).await
 }
 
 pub async fn vcs_merge(host: &Host, window: &str, repo: Option<PathBuf>, branch: String) -> IdeResult<()> {
@@ -995,7 +996,17 @@ pub async fn vcs_rebase_with(
 
 pub async fn vcs_remotes(host: &Host, window: &str, repo: Option<PathBuf>) -> IdeResult<Vec<Remote>> {
     let project = LogAccess::new(host, window, repo.as_deref());
-    blocking(move || project.with_log_repo_at(repo.as_deref(), |r| r.remotes())).await
+    blocking(move || {
+        let mut remotes = project.with_log_repo_at(repo.as_deref(), |r| r.remotes())?;
+        for r in &mut remotes {
+            let resolved = ide_ssh::resolve_ssh_remote_url(&r.url);
+            if resolved != r.url {
+                r.resolved_url = Some(resolved);
+            }
+        }
+        Ok(remotes)
+    })
+    .await
 }
 
 pub async fn vcs_edit_remote(host: &Host, window: &str, repo: Option<PathBuf>, edit: RemoteEdit) -> IdeResult<()> {
@@ -1041,6 +1052,12 @@ pub async fn vcs_remove_worktree(
     host.require_trust(window)?;
     let project = host.project(window)?;
     blocking(move || {
+        let path = if path.is_absolute() {
+            path
+        } else {
+            project.with_repo_at(repo.as_deref(), |r| Ok(r.root().join(&path)))?
+        };
+        check_worktree_removal(&project.root, &path)?;
         let result = project.with_repo_at(repo.as_deref(), |r| r.remove_worktree(&path, force));
         project.refresh_repositories();
         result
@@ -1373,7 +1390,8 @@ pub(crate) fn register(d: &mut Dispatcher) {
         vcs_restore_branch(&c.host, &c.window, c.arg("repo")?, c.arg("deleted")?).await
     });
     d.add("vcs_rename_branch", |c| async move {
-        vcs_rename_branch(&c.host, &c.window, c.arg("repo")?, c.arg("from")?, c.arg("to")?).await
+        vcs_rename_branch(&c.host, &c.window, c.arg("repo")?, c.arg("from")?, c.arg("to")?, c.arg("unset_upstream")?)
+            .await
     });
     d.add("vcs_merge", |c| async move { vcs_merge(&c.host, &c.window, c.arg("repo")?, c.arg("branch")?).await });
     d.add("vcs_rebase", |c| async move { vcs_rebase(&c.host, &c.window, c.arg("repo")?, c.arg("onto")?).await });

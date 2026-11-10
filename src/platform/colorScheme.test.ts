@@ -1,6 +1,7 @@
 import { readFileSync } from "node:fs";
 import { beforeAll, describe, expect, it } from "vitest";
 import {
+  ATTRIBUTES,
   CLEAR_COLOR,
   _setSchemeSource,
   resolvedAttribute,
@@ -28,6 +29,12 @@ describe("color schemes", () => {
     expect(dark.get("--syn-python-bytes")).toBe("#a5c261");
   });
 
+  it.each(["light", "dark"] as const)("inherits new doc tokens for older %s custom schemes", (parent) => {
+    const customs = { "custom-old": { name: "Old", parent, attributes: {} } };
+    for (const id of ["docCommentTag", "docCommentTagValue", "docCommentMarkup"])
+      expect(resolvedAttribute("custom-old", id, customs)).toEqual(resolvedAttribute(parent, id));
+  });
+
   it("gives PHP variables and function calls their own colours, as PhpStorm (#1532)", () => {
     expect(schemeTokens("dark").get("--syn-php-variable")).toBe("#c77dbb");
     expect(schemeTokens("dark").get("--syn-php-function-call")).toBe("#56a8f5");
@@ -42,6 +49,13 @@ describe("color schemes", () => {
       document.documentElement,
     );
     expect(imported).toMatch(/\.cm-editor\[data-language="PHP"\] \{\n {2}--syn-variable: #48d8ee !important;/);
+  });
+
+  it("offers a Go scheme page and scopes its overrides to Go editors", () => {
+    expect(ATTRIBUTES.find((a) => a.id === "go.constant")?.path).toEqual(["Go"]);
+    const css = schemeCss("dark", { dark: { "go.constant": { foreground: "#224466" } } });
+    expect(css).toContain('.cm-editor[data-language="Go"]');
+    expect(css).toContain("--syn-constant: #224466 !important");
   });
 
   it("resolves scheme attribute state and editor defaults", () => {
@@ -71,6 +85,15 @@ describe("color schemes", () => {
       italic: false,
       effect: "wave",
     });
+  });
+
+  it("resolves package references from the editor foreground and emits their overrides", () => {
+    for (const theme of ["light", "dark", "dark-hc"] as const) {
+      expect(resolvedAttribute(theme, "packageReference").foreground).toBe(schemeTokens(theme).get("--fg-editor"));
+    }
+    const css = schemeCss("dark", { dark: { packageReference: { foreground: "#446688", italic: true } } });
+    expect(css).toContain("--syn-namespace: #446688 !important");
+    expect(css).toContain("--syn-namespace-italic: italic !important");
   });
 
   it("emits scheme and override declarations", () => {

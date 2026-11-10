@@ -1,0 +1,39 @@
+.highlight {
+  background: var(--accent-soft);
+}
+.search {
+  background: var(--bg-search-match);
+  color: var(--fg-search-match);
+}
+.added {
+  background: color-mix(in srgb, var(--vcs-added) 18%, transparent);
+}
+.modified {
+  background: color-mix(in srgb, var(--vcs-modified) 18%, transparent);
+}
+.removed {
+  background: color-mix(in srgb, var(--vcs-deleted) 18%, transparent);
+}
+.warning {
+  text-decoration: underline wavy var(--warning);
+}
+.error {
+  text-decoration: underline wavy var(--danger);
+}
+.info {
+  text-decoration: underline dotted var(--info);
+}
+.underline {
+  text-decoration: underline;
+}
+.strikethrough {
+  text-decoration: line-through;
+}
+.muted {
+  color: var(--fg-muted);
+}
+.after {
+  white-space: pre;
+  margin-inline-start: calc(var(--space-2) / 2);
+  color: var(--fg-muted);
+}

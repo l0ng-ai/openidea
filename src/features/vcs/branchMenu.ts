@@ -10,6 +10,7 @@ import {
   checkoutDetached,
   checkoutInRepos,
   deleteBranch,
+  deleteBranches,
   deleteInRepos,
   deleteRemoteBranch,
   deleteTag,
@@ -46,7 +47,13 @@ async function pullInto(remoteBranch: string, rebase: boolean) {
   );
 }
 
-export function branchMenu(b: Branch, current: string | null, done: () => void = () => {}): MenuItem[] {
+/** The Branches pane's context menu: `selected` carries the multi-selection, which Delete acts on as a whole. */
+export function branchMenu(
+  b: Branch,
+  current: string | null,
+  done: () => void = () => {},
+  selected: readonly { repo?: string; branch?: Branch }[] = [],
+): MenuItem[] {
   const run = (fn: () => unknown) => () => {
     done();
     void fn();
@@ -71,7 +78,7 @@ export function branchMenu(b: Branch, current: string | null, done: () => void =
       { label: "Update", icon: "git-pull", run: run(() => executeAction("vcs.update")) },
       { label: "Push…", icon: "git-push", run: run(() => executeAction("vcs.push")) },
       { kind: "separator" },
-      { label: "Rename…", run: run(() => renameBranch(b.name)) },
+      { label: "Rename…", run: run(() => renameBranch(b)) },
       favoriteItem,
       history,
     ];
@@ -104,13 +111,15 @@ export function branchMenu(b: Branch, current: string | null, done: () => void =
     );
   items.push(
     { kind: "separator" },
-    ...(b.remote ? [] : [{ label: "Rename…", run: run(() => renameBranch(b.name)) }]),
+    ...(b.remote ? [] : [{ label: "Rename…", run: run(() => renameBranch(b)) }]),
     favoriteItem,
     {
       label: "Delete",
       danger: true,
       icon: "trash",
-      run: run(() => (b.remote ? deleteRemoteBranch(b.name) : deleteBranch(b.name))),
+      run: run(() =>
+        selected.length ? deleteBranches(selected) : b.remote ? deleteRemoteBranch(b.name) : deleteBranch(b.name),
+      ),
     },
   );
   return items;

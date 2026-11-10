@@ -3,15 +3,19 @@
  * lives in a detached host element owned by the session (not by React), so a
  * session survives its tool window being hidden or its pane being re-mounted.
  */
+import { writeClipboardText } from "@/platform/clipboard";
 import { Terminal, type IDisposable, type ILink, type ILinkHandler } from "@xterm/xterm";
 import { FitAddon } from "@xterm/addon-fit";
 import { SearchAddon, type ISearchOptions } from "@xterm/addon-search";
 import "@xterm/xterm/css/xterm.css";
 import { Channel } from "@tauri-apps/api/core";
 import { call, commands, isTauri, type TerminalId } from "@/platform/ipc";
-import { editorService, notifications } from "@/workbench/contributions";
+import { tx } from "@/platform/i18n";
+import { editorService, notifications, registerFontZoomSurface } from "@/workbench/contributions";
 import { fitScheduler, settledResize } from "./fit";
+import { watchWindowsPty, windowsPty } from "./windowsPty";
 import { installTerminalDrop } from "./drop";
+import { installDomRowCache } from "./domRowCache";
 import { installTerminalPaste, pasteTerminalClipboard } from "./paste";
 import { ImeCommitGate } from "./imeCommit";
 import { ownTerminalInput } from "./imeInput";
@@ -70,7 +74,14 @@ export interface SessionOptions {
    * Run this program instead of the configured shell (e.g. `docker exec -it <id> sh`).
    * `shell`: it is a shell (a predefined session), so shell integration still applies.
    */
-  command?: { program: string; args: string[]; shell?: boolean };
+  command?: {
+    program: string;
+    args: string[];
+    shell?: boolean;
+    env?: Record<string, string>;
+    spawn?: (cols: number, rows: number, output: Channel<string>) => Promise<import("@/bindings").TerminalInfo>;
+    onExit?: (status: number | null, closed: boolean) => void;
+  };
   /**
    * Restored tabs only: the project root, used when `cwd` no longer exists
    * (deleted since the last run, see `resolveStartCwd`).
@@ -211,6 +222,8 @@ export class TerminalSession {
   /** Keystrokes typed while the PTY is still starting; sent as soon as it exists. */
   private pendingInput = "";
   private lastSize = { cols: 0, rows: 0 };
+  /** Per-tab font size offset (px) relative to `workflowSettings().terminal.fontSize`. */
+  private fontZoom = 0;
   /** Bumped on restart so late output from a previous PTY is ignored. */
   private generation = 0;
   /** WebKitGTK delivers one IME commit' worth of text more than once; see `ImeCommitGate`. */
@@ -238,6 +251,7 @@ export class TerminalSession {
     const settings = workflowSettings().terminal;
     const font = fontFor(settings);
     this.term = new Terminal({
+      windowsPty: windowsPty(),
       fontFamily: font.family,
       fontSize: font.size,
       lineHeight: font.lineHeight,
@@ -265,6 +279,7 @@ export class TerminalSession {
     this.term.loadAddon(this.searchAddon);
 
     this.disposables.push(
+      watchWindowsPty(this.term),
       this.searchAddon.onDidChangeResults((r) => {
         for (const l of this.searchListeners) l({ index: r.resultIndex, count: r.resultCount });
       }),
@@ -308,6 +323,7 @@ export class TerminalSession {
       { dispose: installTerminalDrop(this.host, (text) => this.paste(text)) },
     );
     this.host.addEventListener("mousedown", this.onMiddleClick);
+    this.disposables.push({ dispose: registerFontZoomSurface(this.host, (delta) => this.stepFontSize(delta)) });
   }
 
   private onMiddleClick = (e: MouseEvent) => {
@@ -352,7 +368,8 @@ export class TerminalSession {
           () => this.scheduleFit(),
         );
     }
-    if (o.fontSize !== font.size) o.fontSize = font.size;
+    const targetSize = Math.max(8, Math.min(36, font.size + this.fontZoom));
+    if (o.fontSize !== targetSize) o.fontSize = targetSize;
     if (o.lineHeight !== font.lineHeight) o.lineHeight = font.lineHeight;
     if (o.letterSpacing !== font.letterSpacing) o.letterSpacing = font.letterSpacing;
     if (o.fontWeight !== font.weight) o.fontWeight = font.weight;
@@ -361,6 +378,22 @@ export class TerminalSession {
     o.cursorBlink = t.cursorBlink;
     o.macOptionIsMeta = t.optionAsMeta;
     this.scheduleFit();
+  }
+
+  /** Steps this terminal tab's font size by `delta` px (or resets to 0 when `delta === 0`). */
+  stepFontSize(delta: number) {
+    const base = fontFor(workflowSettings().terminal).size;
+    if (delta === 0) {
+      this.fontZoom = 0;
+    } else {
+      const nextSize = Math.max(8, Math.min(36, base + this.fontZoom + delta));
+      this.fontZoom = nextSize - base;
+    }
+    const targetSize = Math.max(8, Math.min(36, base + this.fontZoom));
+    if (this.term.options.fontSize !== targetSize) {
+      this.term.options.fontSize = targetSize;
+      this.refit();
+    }
   }
 
   get state(): SessionSnapshot {
@@ -420,6 +453,7 @@ export class TerminalSession {
     // xterm's DOM renderer: the WebGL one rasterizes glyphs per background, so
     // selected text rendered at a visibly different weight than the rest.
     this.term.open(this.host);
+    installDomRowCache(this.term);
     this.opened = true;
     remeasureWhenFontsLoad(
       this.term,
@@ -439,6 +473,7 @@ export class TerminalSession {
   }
 
   private scheduleFit() {
+    this.ptyResize.cancel();
     this.fitter.schedule();
   }
 
@@ -487,7 +522,7 @@ export class TerminalSession {
 
   /** xterm's data event, with one IME commit's repeated emissions collapsed. */
   private fromTerminal(data: string) {
-    if (this.ime.accept()) this.input(data);
+    if (this.ime.accept(data)) this.input(data);
   }
 
   private doFit() {
@@ -547,20 +582,22 @@ export class TerminalSession {
       const args = custom ? custom.args : shellArgs;
       const cwd = await resolveStartCwd(this.opts.cwd, this.opts.fallbackRoot);
       if (cwd !== this.opts.cwd) this.update({ cwd });
-      const info = await call(
-        commands.termSpawn(
-          {
-            cwd,
-            shell: shell ?? null,
-            args,
-            env: { ...t.env },
-            cols,
-            rows,
-            shellIntegration: (!custom || !!custom.shell) && t.shellIntegration,
-          },
-          channel,
-        ),
-      );
+      const info = custom?.spawn
+        ? await custom.spawn(cols, rows, channel)
+        : await call(
+            commands.termSpawn(
+              {
+                cwd,
+                shell: shell ?? null,
+                args,
+                env: custom?.onExit ? { ...custom.env } : { ...t.env, ...custom?.env },
+                cols,
+                rows,
+                shellIntegration: (!custom || !!custom.shell) && t.shellIntegration,
+              },
+              channel,
+            ),
+          );
       if (this.disposed || generation !== this.generation) {
         void commands.termKill(info.id);
         return;
@@ -571,7 +608,7 @@ export class TerminalSession {
     } catch (e) {
       this.pendingInput = "";
       this.term.writeln(`\x1b[31mFailed to start terminal: ${e instanceof Error ? e.message : String(e)}\x1b[0m`);
-      this.term.writeln(RESTART_HINT);
+      if (!custom?.onExit) this.term.writeln(RESTART_HINT);
       this.update({ status: "error" });
     }
   }
@@ -600,18 +637,21 @@ export class TerminalSession {
   exited(code: number | null) {
     if (this.disposed) return;
     this.ptyId = null;
+    this.opts.command?.onExit?.(code, false);
     this.pendingInput = "";
     this.update({ status: "exited", exitCode: code });
     // Let output still in flight on the channel land first.
     setTimeout(() => {
       if (this.disposed || this.snapshot.status !== "exited") return;
       const suffix = code !== null && code !== 0 ? ` (exit code ${code})` : "";
-      this.term.write(`\r\n\x1b[2m[Process completed${suffix}]\x1b[0m\r\n${RESTART_HINT}\r\n`);
+      const hint = this.opts.command?.onExit ? "" : `${RESTART_HINT}\r\n`;
+      this.term.write(`\r\n\x1b[2m[Process completed${suffix}]\x1b[0m\r\n${hint}`);
       this.opts.onExit?.(this.key);
     }, 60);
   }
 
   restart() {
+    if (this.opts.command?.onExit) return;
     if (this.snapshot.status === "running" || this.snapshot.status === "starting") return;
     this.term.write("\r\n");
     this.pendingInput = "";
@@ -627,7 +667,8 @@ export class TerminalSession {
     if (!data) return;
     const status = this.snapshot.status;
     if (status === "exited" || status === "error") {
-      if (data === "\r") this.restart();
+      // Shift+Enter sends Esc+Return.
+      if (data === "\r" || data === "\x1b\r") this.restart();
       return;
     }
     if (this.ptyId === null) {
@@ -636,14 +677,20 @@ export class TerminalSession {
       this.pendingInput += data;
       return;
     }
-    void commands.termWrite(this.ptyId, data);
+    void call(commands.termWrite(this.ptyId, data)).catch((error) => {
+      notifications().notify({
+        level: "error",
+        title: tx("Cannot write to terminal"),
+        body: error instanceof Error ? tx(error.message) : String(error),
+      });
+    });
   }
 
   /** Sends keystrokes buffered while the PTY was starting. */
   private flushPendingInput() {
     const queued = this.pendingInput;
     this.pendingInput = "";
-    if (queued && this.ptyId !== null) void commands.termWrite(this.ptyId, queued);
+    if (queued && this.ptyId !== null) this.input(queued);
   }
 
   /** Writes input immediately (shortcuts translated outside xterm). */
@@ -664,7 +711,7 @@ export class TerminalSession {
   copySelection(): boolean {
     const text = this.term.getSelection();
     if (!text) return false;
-    void navigator.clipboard?.writeText(text).catch(() => undefined);
+    void writeClipboardText(text).catch(() => undefined);
     return true;
   }
 
@@ -732,12 +779,14 @@ export class TerminalSession {
   dispose() {
     if (this.disposed) return;
     this.disposed = true;
+    if (this.snapshot.status === "running" || this.snapshot.status === "starting")
+      this.opts.command?.onExit?.(null, true);
     this.fitter.cancel();
     this.ptyResize.cancel();
     this.pendingInput = "";
     this.resizeObserver?.disconnect();
     this.host.removeEventListener("mousedown", this.onMiddleClick);
-    if (this.ptyId !== null) void commands.termKill(this.ptyId);
+    if (this.ptyId !== null && !this.opts.command?.spawn) void commands.termKill(this.ptyId);
     this.ptyId = null;
     this.disposables.forEach((d) => d.dispose());
     this.term.dispose();

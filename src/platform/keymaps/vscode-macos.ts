@@ -4,6 +4,7 @@
  * no binding so switching presets doesn't leak IntelliJ shortcuts.
  */
 export const vscodeMacos: Record<string, string[]> = {
+  "editor.addOrRemoveCaret": ["Alt+Shift+Button1"],
   // Navigate
   "navigate.searchEverywhere": ["Shift Shift"],
   "navigate.gotoClass": [],
@@ -349,6 +350,12 @@ export const vscodeMacos: Record<string, string[]> = {
   "http.runRequest": ["Meta+Enter"],
   "graphql.runQuery": ["Meta+Enter"],
   "http.runAll": [],
+  "db.toggleBooleanCell": ["Space"],
+  "db.setCellNull": ["Meta+Backspace"],
+  "db.setCellDefault": ["Meta+Shift+Backspace"],
+  "db.reformatValue": ["Alt+Shift+F"],
+  "db.openValueWindow": [],
+  "db.findInValue": ["Meta+F"],
   "db.execute": ["Meta+Enter"],
   "db.showToolWindow": [],
   // Database tool window (when the tree has focus).

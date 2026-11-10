@@ -70,6 +70,7 @@ const BUILTIN: &[(&str, &str)] = &[
     ("proto", include_str!("../../../languages/proto.toml")),
     ("python", include_str!("../../../languages/python.toml")),
     ("r", include_str!("../../../languages/r.toml")),
+    ("restructuredtext", include_str!("../../../languages/restructuredtext.toml")),
     ("ruby", include_str!("../../../languages/ruby.toml")),
     ("rust", include_str!("../../../languages/rust.toml")),
     ("sass", include_str!("../../../languages/sass.toml")),
@@ -562,6 +563,7 @@ mod tests {
         "R",
         "RPM Changes",
         "RPM Spec",
+        "reStructuredText",
         "Ruby",
         "SAS",
         "Scala",
@@ -628,6 +630,12 @@ mod tests {
         let asciidoc = reg.get(&LanguageId::new("asciidoc")).unwrap();
         assert_eq!(asciidoc.ui_mode.as_deref(), Some("AsciiDoc"));
         assert_eq!(asciidoc.line_comment.as_deref(), Some("//"));
+        for path in ["guide.rst", "README.RST"] {
+            assert_eq!(detect(&reg, path), "restructuredtext");
+        }
+        let rst = reg.get(&LanguageId::new("restructuredtext")).unwrap();
+        assert_eq!(rst.ui_mode.as_deref(), Some("reStructuredText"));
+        assert_eq!(rst.line_comment.as_deref(), Some(".."));
         assert_eq!(reg.detect(Path::new("script"), Some("#!/usr/bin/env python3")).as_str(), "python");
         assert_eq!(detect(&reg, "README"), "plaintext");
         assert_eq!(detect(&reg, "unknown.zzz"), "plaintext");
@@ -690,6 +698,27 @@ mod tests {
             assert_eq!(served("apps/web/src/main.ts"), Some(root.join("apps/web")), "{lang}");
             assert_eq!(served("apps/api/main.ts"), None, "{lang}");
         }
+    }
+
+    #[test]
+    fn laravel_lsp_serves_php_files_only_below_artisan() {
+        let reg = reg();
+        let cfg = reg.get(&LanguageId::new("php")).unwrap();
+        let names: Vec<&str> = cfg.language_servers.iter().map(|s| s.name.as_str()).collect();
+        // After the fallback: hover, rename and symbols stay with Intelephense.
+        assert_eq!(names, ["intelephense", "phpactor", "laravel-lsp"]);
+        let lsp = cfg.language_servers.iter().find(|s| s.name == "laravel-lsp").unwrap();
+        assert_eq!(lsp.command.as_str(), "laravel-lsp");
+        assert!(lsp.require_root_marker && !lsp.fallback);
+        let tmp = tempfile::tempdir().unwrap();
+        let root = tmp.path();
+        for dir in ["shop", "lib"] {
+            std::fs::create_dir_all(root.join(dir)).unwrap();
+        }
+        std::fs::write(root.join("shop/artisan"), "").unwrap();
+        let served = |file: &str| crate::marked_root(Some(root), &root.join(file), &lsp.root_markers);
+        assert_eq!(served("shop/app/Models/Order.php"), Some(root.join("shop")));
+        assert_eq!(served("lib/src/Parser.php"), None);
     }
 
     #[test]
@@ -964,11 +993,25 @@ mod tests {
     }
 
     #[test]
-    fn astro_server_reads_the_project_typescript() {
+    fn go_enables_semantic_tokens_when_the_server_initializes() {
+        let reg = reg();
+        let go = reg.get(&LanguageId::new("go")).unwrap();
+        assert_eq!(
+            go.language_servers[0]
+                .initialization_options
+                .as_ref()
+                .and_then(|options| options.get("semanticTokens"))
+                .and_then(toml::Value::as_bool),
+            Some(true)
+        );
+    }
+
+    #[test]
+    fn astro_server_leaves_typescript_sdk_resolution_to_the_launcher() {
         let reg = reg();
         let ls = &reg.get(&LanguageId::new("astro")).unwrap().language_servers[0];
         let tsdk = ls.initialization_options.as_ref().and_then(|o| o.get("typescript")?.get("tsdk")?.as_str());
-        assert_eq!(tsdk, Some("node_modules/typescript/lib"));
+        assert_eq!(tsdk, None);
     }
 
     #[test]

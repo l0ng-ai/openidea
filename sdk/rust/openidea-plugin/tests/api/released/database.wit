@@ -1,0 +1,34 @@
+package openidea:plugin@1.4.0;
+
+/// Plugin-owned project data sources. Requires database.sources and project trust.
+/// Runs on the Database subsystem's host, including on remote project servers.
+interface database {
+    use types.{error};
+    use workspace.{project};
+    /// Non-secret connection settings. Id is private to this plugin (1–128 bytes).
+    /// Drivers: sqlite, postgres, mysql, sqlServer, clickhouse, oracle.
+    /// SQLite uses database as its file path, or a sqlite: URL. Options are driver properties.
+    /// URLs and options must not contain passwords, tokens or other credentials.
+    record data-source {
+        id: string,
+        name: string,
+        driver: string,
+        host: option<string>,
+        port: option<u16>,
+        database: option<string>,
+        user: option<string>,
+        url: option<string>,
+        options: list<tuple<string, string>>,
+    }
+    /// Creates or replaces only this plugin's source; unrelated file entries are preserved.
+    upsert-source: func(project: borrow<project>, source: data-source) -> result<_, error>;
+    /// Removes an owned source and its credentials; not-found for every other id.
+    remove-source: func(project: borrow<project>, id: string) -> result<_, error>;
+    /// Lists only this plugin's private ids, never connection settings or credentials.
+    sources: func(project: borrow<project>) -> result<list<string>, error>;
+    /// Writes an owned source's password directly to the Database secure store. Never readable.
+    set-credential: func(project: borrow<project>, id: string, password: string) -> result<_, error>;
+    /// Requests the project's usual connection/introspection in the invoking window.
+    /// Invalid outside a command/event of that project's window.
+    connect: func(project: borrow<project>, id: string) -> result<_, error>;
+}

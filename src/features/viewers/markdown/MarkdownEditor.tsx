@@ -19,12 +19,26 @@ import {
 } from "react";
 import clsx from "clsx";
 import { call, commands, isTauri } from "@/platform/ipc";
+import { useEditorPrefs } from "@/platform/editorSettings";
 import { useMarkdownPreviewFontSize } from "@/platform/languageSettings";
 import { maybeEditorService } from "@/workbench/contributions";
 import { setShownLine } from "@/editor/api";
 import { highlightInto } from "@/editor/lsp/markdown";
 import { FloatingToolbar, selectableText } from "@/ui";
-import { publishPreviewTop, useLiveMarkdown } from "./live";
+import {
+  FIND_CURRENT_HIGHLIGHT,
+  FIND_HIGHLIGHT,
+  SELECTION_MATCH_HIGHLIGHT,
+  clearPreviewHighlights,
+  findPreviewMatches,
+  invalidatePreviewIndex,
+  openDetailsContaining,
+  previewSelectionOf,
+  revealPreviewRange,
+  selectionMatchesInNode,
+  setPreviewHighlight,
+} from "./highlight";
+import { publishPreviewSelection, publishPreviewTop, useLiveMarkdown } from "./live";
 import { subscribeTheme, themeKey } from "@/platform/themeWatch";
 import { hasMermaid, MERMAID_SELECTOR, renderMermaidIn } from "./mermaid";
 import { modeOf, useMarkdownModes } from "./modes";
@@ -100,6 +114,9 @@ function MarkdownPreview({ path, sync }: { path: string; sync: boolean }) {
   const scrollSeq = useLiveMarkdown((s) => s[path]?.scrollSeq ?? 0);
   const caretLine = useLiveMarkdown((s) => s[path]?.caretLine ?? 0);
   const caretSeq = useLiveMarkdown((s) => s[path]?.caretSeq ?? 0);
+  const find = useLiveMarkdown((s) => s[path]?.find ?? null);
+  const editorSelection = useLiveMarkdown((s) => s[path]?.editorSelection ?? "");
+  const highlightSelection = useEditorPrefs().codeEditing.highlightSelection;
   const deferred = useDeferredValue(text ?? "");
   const html = useMemo(() => renderMarkdown(deferred), [deferred]);
   const ref = useRef<HTMLDivElement>(null);
@@ -107,6 +124,7 @@ function MarkdownPreview({ path, sync }: { path: string; sync: boolean }) {
   const diagrams = useRef<Node[]>([]);
   const [diagramsDrawn, setDiagramsDrawn] = useState(0);
   const seenCaret = useRef(caretSeq);
+  const seenFindMatch = useRef<number | null>(null);
   /** scrollTop set by navigation, whose scroll event isn't the user's. */
   const scrolledTo = useRef<number | null>(null);
   const scrollFrame = useRef(0);
@@ -119,6 +137,10 @@ function MarkdownPreview({ path, sync }: { path: string; sync: boolean }) {
       const open = toggled.current.get(i);
       if (open !== undefined) d.open = open;
     });
+  }, [html]);
+
+  useLayoutEffect(() => {
+    if (ref.current) invalidatePreviewIndex(ref.current);
   }, [html]);
 
   // Mermaid diagrams: before paint, so cached ones don't flash their source.
@@ -200,10 +222,101 @@ function MarkdownPreview({ path, sync }: { path: string; sync: boolean }) {
     if (!root || caretSeq === seenCaret.current) return;
     seenCaret.current = caretSeq;
     if (sync) return;
+    if (find && find.currentMatchIndex >= 0) {
+      const { current } = findPreviewMatches(root, find);
+      if (current) {
+        openDetailsContaining(current, root, toggled.current);
+        if (revealPreviewRange(current, root)) {
+          scrolledTo.current = root.scrollTop;
+          setShownLine(path, caretLine);
+          return;
+        }
+      }
+    }
     root.scrollTop = previewOffsetForLine(blocksOf(root), caretLine, root.scrollHeight);
     scrolledTo.current = root.scrollTop;
     setShownLine(path, caretLine);
-  }, [caretSeq, caretLine, sync, path]);
+  }, [caretSeq, caretLine, sync, path, find]);
+
+  // Search (⌘F) and selection occurrence highlights in the preview.
+  useLayoutEffect(() => {
+    const root = ref.current;
+    if (!root) return;
+    const applyFind = () => {
+      if (!find) {
+        seenFindMatch.current = null;
+        setPreviewHighlight(FIND_HIGHLIGHT, root, []);
+        setPreviewHighlight(FIND_CURRENT_HIGHLIGHT, root, []);
+        return;
+      }
+      const { ranges, current } = findPreviewMatches(root, find);
+      if (current) {
+        openDetailsContaining(current, root, toggled.current);
+        if (seenFindMatch.current !== find.currentMatchIndex) {
+          seenFindMatch.current = find.currentMatchIndex;
+          if (revealPreviewRange(current, root) && !sync) {
+            scrolledTo.current = root.scrollTop;
+          }
+        }
+      } else {
+        seenFindMatch.current = find.currentMatchIndex;
+      }
+      setPreviewHighlight(FIND_HIGHLIGHT, root, current ? ranges.filter((r) => r !== current) : ranges);
+      setPreviewHighlight(FIND_CURRENT_HIGHLIGHT, root, current ? [current] : []);
+    };
+    const applySelection = () => {
+      if (!highlightSelection) {
+        publishPreviewSelection(path, "");
+        setPreviewHighlight(SELECTION_MATCH_HIGHLIGHT, root, []);
+        return;
+      }
+      const domSel = previewSelectionOf(root);
+      if (domSel) {
+        publishPreviewSelection(path, domSel.text);
+        setPreviewHighlight(SELECTION_MATCH_HIGHLIGHT, root, selectionMatchesInNode(root, domSel.text, domSel.range));
+        return;
+      }
+      publishPreviewSelection(path, "");
+      if (editorSelection) {
+        setPreviewHighlight(SELECTION_MATCH_HIGHLIGHT, root, selectionMatchesInNode(root, editorSelection, null));
+        return;
+      }
+      setPreviewHighlight(SELECTION_MATCH_HIGHLIGHT, root, []);
+    };
+    const applyAll = () => {
+      applySelection();
+      applyFind();
+    };
+    applyAll();
+
+    let timer: ReturnType<typeof setTimeout> | undefined;
+    const observer = new MutationObserver(() => {
+      invalidatePreviewIndex(root);
+      clearTimeout(timer);
+      timer = setTimeout(applyAll, 120);
+    });
+    observer.observe(root, { subtree: true, childList: true, characterData: true });
+    document.addEventListener("selectionchange", applySelection);
+    root.addEventListener("toggle", applyAll, true);
+    return () => {
+      if (observer.takeRecords().length) invalidatePreviewIndex(root);
+      observer.disconnect();
+      clearTimeout(timer);
+      document.removeEventListener("selectionchange", applySelection);
+      root.removeEventListener("toggle", applyAll, true);
+    };
+  }, [html, path, sync, find, editorSelection, highlightSelection]);
+
+  useEffect(() => {
+    const root = ref.current;
+    return () => {
+      if (root) {
+        clearPreviewHighlights(root);
+        invalidatePreviewIndex(root);
+      }
+      publishPreviewSelection(path, "");
+    };
+  }, [path]);
 
   // Preview only: the line on screen when shown, then as the user scrolls;
   // cleared when the editor is back or the preview goes away.

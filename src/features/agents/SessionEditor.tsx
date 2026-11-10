@@ -1,15 +1,19 @@
 /** An agent task as an editor tab: the conversation, a composer and the task's changed files. */
 import {
+  createContext,
   Fragment,
   memo,
   startTransition,
   useCallback,
+  useContext,
   useEffect,
+  useId,
   useLayoutEffect,
   useMemo,
   useRef,
   useState,
   type ReactElement,
+  type ReactNode,
   type RefObject,
 } from "react";
 import clsx from "clsx";
@@ -40,6 +44,7 @@ import {
   SearchField,
   Spinner,
   T,
+  Tabs,
   Tree,
   copyMenuFor,
   copyText,
@@ -67,7 +72,14 @@ import {
 import { ConfigPickers } from "./ConfigPickers";
 import { findRanges, formatDuration, formatSentAt } from "./conversation";
 import { ImagePreview, imageSrc } from "./ImagePreview";
-import { AgentReply, ReplyActions } from "./AgentReply";
+import { AgentReply, MessageActions, ReplyActions } from "./AgentReply";
+import {
+  commandPrefix,
+  permissionDetails,
+  permissionOption,
+  permissionResult,
+  type PermissionEntry,
+} from "./permission";
 import { Markdown } from "./Markdown";
 import { useAgentErrorText } from "./loginHint";
 import {
@@ -128,6 +140,7 @@ function TaskSession({ id, docked }: { id: string; docked: boolean }) {
   const [path, setPath] = useState<string[]>([]);
   const view = path.at(-1) ?? null;
   const viewEntries = useAgents((s) => s.entries.get(entriesKey(id, view)));
+  const loadError = useAgents((s) => s.entryLoads.get(entriesKey(id, view))?.error);
   // Each subagent's card, from its parent's conversation.
   const cards = useAgents(
     useShallow((s) => path.map((sub, i) => findSubagent(s.entries.get(entriesKey(id, path[i - 1] ?? null)), sub))),
@@ -182,17 +195,19 @@ function TaskSession({ id, docked }: { id: string; docked: boolean }) {
           docked={docked}
         />
         {view && <SubagentBar task={task} path={path} cards={cards} onNavigate={setPath} />}
-        <PermissionBanner task={task} entries={entries ?? null} />
-        <Stream
-          key={view ?? ""}
-          task={task}
-          entries={viewEntries ?? null}
-          subagent={view ? (cards.at(-1) ?? null) : null}
-          onOpenSubagent={openSubagent}
-          finding={finding && shown}
-          findFocus={findFocus}
-          onCloseFind={() => setFinding(false)}
-        />
+        <FoldedContent.Provider value={finding && shown}>
+          <Stream
+            key={view ?? ""}
+            task={task}
+            entries={viewEntries ?? null}
+            loadError={loadError}
+            subagent={view ? (cards.at(-1) ?? null) : null}
+            onOpenSubagent={openSubagent}
+            finding={finding && shown}
+            findFocus={findFocus}
+            onCloseFind={() => setFinding(false)}
+          />
+        </FoldedContent.Provider>
         {view ? (
           <div className={styles.readOnly}>
             <T>Subagents take their instructions from the agent that started them.</T>
@@ -451,9 +466,69 @@ function SubagentBar({
   );
 }
 
+/**
+ * Lets the rows of a long conversation skip rendering while off screen (`data-measured`, see
+ * the CSS), so showing the tab again or restyling it costs what is on screen, not the whole
+ * history. A row skips only once it was laid out: it keeps its real height, and scrolling up
+ * doesn't jump (WebKit has no scroll anchoring). A new width lays them out again once it
+ * settles; Find in Conversation (`enabled` false) needs every row laid out.
+ */
+function useOffscreenRows(ref: RefObject<HTMLElement | null>, visible: boolean, enabled: boolean) {
+  // The width the marked rows were laid out at.
+  const width = useRef(0);
+  useEffect(() => {
+    const el = ref.current;
+    if (!el) return;
+    const unmark = () => {
+      for (const row of el.querySelectorAll(`:scope > .${styles.conversationRow}[data-measured]`)) {
+        row.removeAttribute("data-measured");
+      }
+    };
+    if (!enabled) return unmark();
+    if (!visible) return;
+    let frame = 0;
+    let timer: number | undefined;
+    const mark = () => {
+      cancelAnimationFrame(frame);
+      // The next frame lays the new rows out (and remembers their size); mark them after it.
+      frame = requestAnimationFrame(() => {
+        frame = requestAnimationFrame(() => {
+          for (const row of el.querySelectorAll(`:scope > .${styles.conversationRow}:not([data-measured])`)) {
+            row.setAttribute("data-measured", "");
+          }
+        });
+      });
+    };
+    const remeasure = () => {
+      if (el.clientWidth === width.current) return;
+      width.current = el.clientWidth;
+      unmark();
+    };
+    remeasure();
+    mark();
+    const rows = new MutationObserver(mark);
+    rows.observe(el, { childList: true });
+    const resize = new ResizeObserver(() => {
+      window.clearTimeout(timer);
+      timer = window.setTimeout(() => {
+        remeasure();
+        mark();
+      }, 200);
+    });
+    resize.observe(el);
+    return () => {
+      cancelAnimationFrame(frame);
+      window.clearTimeout(timer);
+      rows.disconnect();
+      resize.disconnect();
+    };
+  }, [ref, visible, enabled]);
+}
+
 interface StreamProps {
   task: AgentTask;
   entries: AgentEntry[] | null;
+  loadError?: string | null;
   /** The card of the subagent whose conversation this is; `null`: the task's own. */
   subagent: SubagentEntry | null;
   onOpenSubagent: (id: string) => void;
@@ -466,7 +541,7 @@ interface StreamProps {
 /** Entries rendered at a time when a conversation opens at its end. */
 const ENTRY_BATCH = 40;
 
-function Stream({ task, entries, subagent, onOpenSubagent, finding, findFocus, onCloseFind }: StreamProps) {
+function Stream({ loadError, task, entries, subagent, onOpenSubagent, finding, findFocus, onCloseFind }: StreamProps) {
   const ref = useRef<HTMLDivElement>(null);
   useSelectionBoundary(ref);
   const key = entriesKey(task.id, subagent?.id ?? null);
@@ -483,6 +558,15 @@ function Stream({ task, entries, subagent, onOpenSubagent, finding, findFocus, o
   // Keep a process run intact so prepending never replaces the anchored row.
   while (entries && start > 0 && isProcessEntry(entries[start]!) && isProcessEntry(entries[start - 1]!)) start--;
   const dragging = useRef(false);
+  // When the user last scrolled the conversation (wheel, touch, keys, the scrollbar, Find):
+  // that leaves the end. WebKit also moves the offset back on its own while rows lay out,
+  // which comes with a change of the content height; a scroll without one is meant too (the
+  // scrollbar thumb, a jump), whatever moved it.
+  const userScrolled = useRef(-Infinity);
+  const seenHeight = useRef(0);
+  const markUserScroll = useCallback(() => {
+    userScrolled.current = performance.now();
+  }, []);
   // Earlier entries are prepended above the view: remember where the first painted row is
   // so the content stays put and the scrollbar doesn't jump under the pointer.
   const anchor = useRef<{ el: Element; top: number } | null>(null);
@@ -534,6 +618,7 @@ function Stream({ task, entries, subagent, onOpenSubagent, finding, findFocus, o
   }, [start]);
   // Hidden behind another tab, it has no layout to scroll; shown again, it follows the end again.
   const visible = useEditorShown();
+  useOffscreenRows(ref, visible, !finding);
   /** A diagram that drew after the last streamed chunk grows the conversation: keep following. */
   const onDiagramDrawn = useCallback(() => {
     const el = ref.current;
@@ -597,6 +682,21 @@ function Stream({ task, entries, subagent, onOpenSubagent, finding, findFocus, o
   const times = useMemo(() => (entries && !subagent ? replyTimes(entries) : null), [entries, subagent]);
   const busy = subagent ? subagentWorking(subagent.status) : isBusy(task.status);
   const lastIndex = entries ? entries.length - 1 : -1;
+  // Keep the row stable when earlier history is prepended; its author can move with the work.
+  const rows = useMemo(() => (entries ? conversationRows(entries, start) : []), [entries, start]);
+  const authorHeaders = useMemo(() => {
+    const headers = new Set<number>();
+    const byAgent = (row: ConversationRow) =>
+      row.kind === "process" ||
+      (row.entry.type !== "user" &&
+        row.entry.type !== "subagent" &&
+        !(row.entry.type === "message" && row.entry.incoming));
+    rows.forEach((row, i) => {
+      const previous = rows[i - 1];
+      if (byAgent(row) && (!previous || !byAgent(previous))) headers.add(row.index);
+    });
+    return headers;
+  }, [rows]);
   const renderRow = useCallback(
     (row: EntryRow) => (
       <Entry
@@ -614,10 +714,14 @@ function Stream({ task, entries, subagent, onOpenSubagent, finding, findFocus, o
     ),
     [task, turns, replies, times, lastIndex, busy, onOpenSubagent, onDiagramDrawn],
   );
-  // Only the tail is built while following the end; `start` moves earlier as batches load.
-  const rows = useMemo(() => (entries ? conversationRows(entries, start) : []), [entries, start]);
   return (
-    <div className={styles.streamArea}>
+    <div
+      className={styles.streamArea}
+      onWheel={markUserScroll}
+      onTouchMove={markUserScroll}
+      onKeyDown={markUserScroll}
+      onPointerDown={markUserScroll}
+    >
       {finding && <FindBar streamRef={ref} focus={findFocus} onClose={onCloseFind} />}
       <div
         ref={ref}
@@ -626,7 +730,14 @@ function Stream({ task, entries, subagent, onOpenSubagent, finding, findFocus, o
         tabIndex={-1}
         onScroll={(e) => {
           const el = e.currentTarget;
-          position.current = { top: el.scrollTop, stick: el.scrollHeight - el.scrollTop - el.clientHeight < 40 };
+          const atEnd = el.scrollHeight - el.scrollTop - el.clientHeight < 40;
+          const laidOut = el.scrollHeight !== seenHeight.current;
+          seenHeight.current = el.scrollHeight;
+          const byUser = dragging.current || performance.now() - userScrolled.current < 500 || !laidOut;
+          const stick = atEnd || (position.current.stick && !byUser);
+          // Still following: back to the end the offset was moved away from.
+          if (stick && !atEnd) el.scrollTop = el.scrollHeight;
+          position.current = { top: el.scrollTop, stick };
           positions.set(key, position.current);
           setAway(!position.current.stick);
           // Reached the top of what is painted: fetch the earlier entries, but only
@@ -646,23 +757,51 @@ function Stream({ task, entries, subagent, onOpenSubagent, finding, findFocus, o
           showContextMenu(e, items);
         }}
       >
+        {loadError && (
+          <div role="alert">
+            <EmptyState
+              title={tx`Couldn't load the conversation: ${loadError}`}
+              actions={
+                <Button
+                  onClick={() =>
+                    void executeAction("agents.retryConversation", { task: task.id, subagent: subagent?.id ?? null })
+                  }
+                >
+                  Retry
+                </Button>
+              }
+            />
+          </div>
+        )}
         {entries === null ? (
-          <Spinner />
+          !loadError && <Spinner />
+        ) : entries.length === 0 && !busy && !loadError ? (
+          <EmptyState title="No conversation history" />
         ) : (
-          rows.map((row) =>
-            row.kind === "process" ? (
-              <ProcessRun
-                key={`process:${row.index}`}
-                row={row}
-                task={task}
-                lastIndex={lastIndex}
-                busy={busy}
-                renderRow={renderRow}
-              />
-            ) : (
-              renderRow(row)
-            ),
-          )
+          rows.map((row) => (
+            <div
+              key={row.index}
+              className={styles.conversationRow}
+              data-message={
+                (row.kind === "entry" && (row.entry.type === "user" || row.entry.type === "agent")) || undefined
+              }
+              data-process={row.kind === "process" || row.entry.type !== "user" || undefined}
+            >
+              {authorHeaders.has(row.index) && (
+                <div className={styles.agentAuthor}>
+                  <div className={styles.role}>
+                    <Icon name={providerIcon(task.provider)} size={13} />
+                    <span>{providerName(task.provider)}</span>
+                  </div>
+                </div>
+              )}
+              {row.kind === "process" ? (
+                <ProcessRun row={row} task={task} lastIndex={lastIndex} busy={busy} renderRow={renderRow} />
+              ) : (
+                renderRow(row)
+              )}
+            </div>
+          ))
         )}
         {subagent && subagentWorking(subagent.status) && (
           <div className={styles.working}>
@@ -966,12 +1105,6 @@ const Entry = memo(function Entry({
     case "agent":
       return (
         <div className={styles.agentMessage}>
-          <div className={styles.messageHead}>
-            <div className={styles.role}>
-              <Icon name={providerIcon(task.provider)} size={13} />
-              <span>{providerName(task.provider)}</span>
-            </div>
-          </div>
           <div className={styles.agentCard}>
             <AgentReply
               text={entry.text}
@@ -984,27 +1117,31 @@ const Entry = memo(function Entry({
             />
           </div>
           <div className={styles.messageFooter}>
-            <ReplyActions text={entry.text} task={task} reply={reply} turnCount={turnCount} />
             <MessageTime sentMs={time?.sentMs ?? null} doneMs={time?.doneMs ?? null} at="done" />
+            <ReplyActions text={entry.text} task={task} reply={reply} turnCount={turnCount} />
           </div>
         </div>
       );
     case "thought":
       return (
         <div className={styles.process}>
-          <details className={styles.thought}>
-            <summary>
-              {working ? (
-                <Spinner size={12} />
-              ) : (
-                <Icon name="chevron-right" size={12} className={styles.thoughtChevron} />
-              )}
-              <T>{working ? "Thinking" : "Reasoning"}</T>
-            </summary>
+          <Fold
+            className={styles.thought}
+            summary={
+              <summary>
+                {working ? (
+                  <Spinner size={12} />
+                ) : (
+                  <Icon name="chevron-right" size={12} className={styles.thoughtChevron} />
+                )}
+                <T>{working ? "Thinking" : "Reasoning"}</T>
+              </summary>
+            }
+          >
             <div className={styles.thoughtBody}>
               <Markdown text={entry.text} cwd={task.cwd} onDiagramDrawn={onDiagramDrawn} />
             </div>
-          </details>
+          </Fold>
         </div>
       );
     case "tool":
@@ -1128,12 +1265,16 @@ function UserMessage({
         )}
       </div>
       <div className={styles.messageFooter}>
-        <span className={styles.messageActions}>
-          <IconButton icon="copy" title="Copy" onClick={() => void copyText(entry.text)} />
-          {inPlace && entry.text && <IconButton icon="edit" title="Edit" onClick={() => setEditing(true)} />}
+        <MessageActions>
+          <IconButton size="small" icon="copy" title="Copy" onClick={() => void copyText(entry.text)} />
+          {inPlace && entry.text && (
+            <IconButton size="small" icon="edit" title="Edit" onClick={() => setEditing(true)} />
+          )}
           {inPlace && (
             <IconButton
+              size="small"
               icon="diff-revert"
+              iconSize={14}
               title="Retract Message"
               action="agents.retractMessage"
               actionArg={{ task: task.id, turn }}
@@ -1141,6 +1282,7 @@ function UserMessage({
           )}
           {!archived && entry.text && entry.attachments.length === 0 && (
             <IconButton
+              size="small"
               icon="refresh"
               title={inPlace ? "Run Again From Here" : "Send Again"}
               onClick={() =>
@@ -1152,12 +1294,13 @@ function UserMessage({
           )}
           {canFork && (
             <IconButton
+              size="small"
               icon="branch"
               title="Copy to a New Task From Here"
               onClick={() => void forkTask(task.id, turn + 1).catch(failed("Couldn't copy the task"))}
             />
           )}
-        </span>
+        </MessageActions>
         <MessageTime sentMs={entry.sentMs ?? null} doneMs={entry.doneMs ?? null} />
       </div>
     </div>
@@ -1355,14 +1498,18 @@ const ProcessRun = memo(function ProcessRun({
     tools.length > 0 ? `${tools.length} ${tx(tools.length === 1 ? "tool call" : "tool calls")}` : null,
   ].filter(Boolean);
   return (
-    <details className={clsx(styles.processRun, styles.process)}>
-      <summary className={styles.processSummary}>
-        <Icon name="chevron-right" size={12} className={styles.processChevron} />
-        {working && <Spinner size={12} />}
-        <span>{parts.join(" · ")}</span>
-        {added > 0 && <span className={styles.added}>+{added}</span>}
-        {removed > 0 && <span className={styles.removed}>−{removed}</span>}
-      </summary>
+    <Fold
+      className={clsx(styles.processRun, styles.process)}
+      summary={
+        <summary className={styles.processSummary}>
+          <Icon name="chevron-right" size={12} className={styles.processChevron} />
+          {working && <Spinner size={12} />}
+          <span>{parts.join(" · ")}</span>
+          {added > 0 && <span className={styles.added}>+{added}</span>}
+          {removed > 0 && <span className={styles.removed}>−{removed}</span>}
+        </summary>
+      }
+    >
       <div className={styles.processBody}>
         {row.entries.map(({ index, entry }) =>
           entry.type === "tool" ? (
@@ -1372,9 +1519,37 @@ const ProcessRun = memo(function ProcessRun({
           ),
         )}
       </div>
-    </details>
+    </Fold>
   );
 });
+
+/** Set while Find in Conversation is open: folded sections render their content, so it is found. */
+const FoldedContent = createContext(false);
+
+/**
+ * A collapsed section that renders its content only once opened: most of a long conversation
+ * stays folded, and keeping it out of the DOM keeps showing and restyling the tab cheap.
+ */
+function Fold({
+  className,
+  open,
+  summary,
+  children,
+}: {
+  className?: string;
+  open?: boolean;
+  summary: ReactElement;
+  children: ReactNode;
+}) {
+  const always = useContext(FoldedContent);
+  const [expanded, setExpanded] = useState(!!open);
+  return (
+    <details className={className} open={open || undefined} onToggle={(e) => setExpanded(e.currentTarget.open)}>
+      {summary}
+      {(expanded || open || always) && children}
+    </details>
+  );
+}
 
 const ToolEntry = memo(function ToolEntry({
   task,
@@ -1386,7 +1561,9 @@ const ToolEntry = memo(function ToolEntry({
   const head = (
     <>
       <Icon name={TOOL_ICONS[entry.kind] ?? "run"} size={14} />
-      <span className={styles.toolTitle}>{shortTitle(task, entry.title || entry.kind)}</span>
+      <span className={styles.toolTitle} title={entry.title || entry.kind}>
+        {shortTitle(task, entry.title || entry.kind)}
+      </span>
       {entry.diffs.map((d) => (
         <button
           key={d.path}
@@ -1413,10 +1590,18 @@ const ToolEntry = memo(function ToolEntry({
     );
   return (
     <div className={styles.process}>
-      <details className={styles.toolDetails} open={liveTool(entry) || undefined}>
-        <summary className={styles.tool}>{head}</summary>
+      <Fold
+        className={styles.toolDetails}
+        open={liveTool(entry)}
+        summary={
+          <summary className={styles.tool}>
+            <Icon name="chevron-right" size={12} className={styles.toolChevron} />
+            {head}
+          </summary>
+        }
+      >
         <pre className={styles.output}>{entry.output}</pre>
-      </details>
+      </Fold>
     </div>
   );
 });
@@ -1499,22 +1684,30 @@ function SubagentCard({
         </div>
       )}
       {entry.prompt && (
-        <details className={styles.subagentSection}>
-          <summary>
-            <T>Task</T>
-          </summary>
+        <Fold
+          className={styles.subagentSection}
+          summary={
+            <summary>
+              <T>Task</T>
+            </summary>
+          }
+        >
           <div className={styles.thoughtText}>{entry.prompt}</div>
-        </details>
+        </Fold>
       )}
       {entry.reply && (
-        <details className={styles.subagentSection}>
-          <summary>
-            <T>Result</T>
-          </summary>
+        <Fold
+          className={styles.subagentSection}
+          summary={
+            <summary>
+              <T>Result</T>
+            </summary>
+          }
+        >
           <div className={styles.subagentReply}>
             <AgentReply text={entry.reply} cwd={task.cwd} task={task} onDiagramDrawn={onDiagramDrawn} />
           </div>
-        </details>
+        </Fold>
       )}
     </div>
   );
@@ -1546,8 +1739,6 @@ function WorkingSubagents({ entries, onOpen }: { entries: AgentEntry[] | null; o
 /** Agent-written titles with the task's own folder dropped from paths. */
 const shortTitle = (task: AgentTask, title: string) => title.replaceAll(`${task.cwd}/`, "");
 
-type PermissionEntry = Extract<AgentEntry, { type: "permission" }>;
-
 /**
  * The answers to an open permission request. A request without options (some agents send
  * none) can still be cancelled, so the agent doesn't wait for an answer it can't get.
@@ -1562,52 +1753,105 @@ function PermissionAnswers({
   className?: string;
 }) {
   const [busy, setBusy] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+  const pending = useRef(false);
+  const { command } = permissionDetails(entry);
   const answer = (option: string | null) => {
+    if (pending.current) return;
+    pending.current = true;
     setBusy(true);
-    void respond(task.id, entry.id, option).finally(() => setBusy(false));
+    setError(null);
+    void respond(task.id, entry.id, option)
+      .catch((e: unknown) => setError(String(e)))
+      .finally(() => {
+        pending.current = false;
+        setBusy(false);
+      });
   };
   return (
     <span className={className}>
       {entry.options.length ? (
-        entry.options.map((o) => (
-          <button key={o.id} type="button" className={styles.bannerLink} disabled={busy} onClick={() => answer(o.id)}>
-            {o.name}
-          </button>
-        ))
+        entry.options.map((o) => {
+          const { label, variant } = permissionOption(o, !!command);
+          return (
+            <Button
+              key={o.id}
+              variant={variant}
+              className={styles.permissionOption}
+              size="small"
+              aria-label={label}
+              title={o.name}
+              disabled={busy}
+              onClick={() => answer(o.id)}
+            >
+              <span className={styles.permissionOptionLabel}>{label}</span>
+            </Button>
+          );
+        })
       ) : (
-        <IconButton icon="close" title="Cancel" disabled={busy} onClick={() => answer(null)} />
+        <Button variant="ghost" disabled={busy} onClick={() => answer(null)}>
+          Cancel
+        </Button>
+      )}
+      {error && (
+        <span className={styles.error} role="alert">
+          {error}
+        </span>
       )}
     </span>
   );
 }
 
-/** A permission request in the conversation; while open, answered right there as in the banner. */
+/** A single inline decision, reduced to a compact record after it is answered. */
 function PermissionLine({ task, entry }: { task: AgentTask; entry: PermissionEntry }) {
+  const tx = useTx();
+  const ref = useRef<HTMLDivElement>(null);
+  const hadFocus = useRef(false);
+  const { title, detail, command } = permissionDetails(entry, providerName(task.provider));
+  const result = permissionResult(entry);
+  useLayoutEffect(() => {
+    if (entry.chosen && hadFocus.current && document.activeElement === document.body)
+      ref.current?.focus({ preventScroll: true });
+  }, [entry.chosen]);
   return (
-    <div className={clsx(styles.permissionLine, entry.chosen ? styles.permissionDone : styles.permissionAsking)}>
-      <Icon name={!entry.chosen ? "warning" : entry.chosen === "Cancelled" ? "minus" : "check"} size={13} />
+    <div
+      ref={ref}
+      role="region"
+      aria-label={title}
+      tabIndex={entry.chosen ? -1 : undefined}
+      onFocusCapture={() => {
+        hadFocus.current = true;
+      }}
+      onBlurCapture={(e) => {
+        if (e.relatedTarget && !e.currentTarget.contains(e.relatedTarget as Node)) hadFocus.current = false;
+      }}
+      className={clsx(styles.permissionLine, entry.chosen ? styles.permissionDone : styles.permissionAsking)}
+    >
+      <Icon name={!entry.chosen ? "warning" : result.allowed ? "check" : "minus"} size={14} />
       <div className={styles.permissionBody}>
-        <span className={styles.permissionTitle} title={shortTitle(task, entry.title)}>
-          {shortTitle(task, entry.title)}
-        </span>
-        <span className={styles.muted}>{entry.chosen ?? <T>Waiting for your answer</T>}</span>
-        {!entry.chosen && !entry.questions?.length && (
-          <PermissionAnswers task={task} entry={entry} className={styles.permissionAnswers} />
+        {entry.chosen ? (
+          <span className={styles.permissionRecord} title={detail}>
+            {result.label}:{" "}
+            <span className={command ? styles.permissionPrefix : undefined}>
+              {command ? commandPrefix(command) : shortTitle(task, detail)}
+            </span>
+          </span>
+        ) : (
+          <>
+            <span className={styles.permissionTitle}>{title}</span>
+            {command ? (
+              <pre className={styles.permissionCommand} tabIndex={0} aria-label={tx("Command")}>
+                <code>{command}</code>
+              </pre>
+            ) : (
+              <span className={styles.permissionDetail}>{shortTitle(task, detail)}</span>
+            )}
+            {!entry.questions?.length && (
+              <PermissionAnswers task={task} entry={entry} className={styles.permissionAnswers} />
+            )}
+          </>
         )}
       </div>
-    </div>
-  );
-}
-
-/** The open permission request, as an editor notification banner above the conversation. */
-function PermissionBanner({ task, entries }: { task: AgentTask; entries: AgentEntry[] | null }) {
-  const entry = entries?.find((e): e is PermissionEntry => e.type === "permission" && !e.chosen);
-  if (!entry || entry.questions?.length) return null;
-  return (
-    <div className={styles.banner} role="alert" aria-label={entry.title}>
-      <Icon name="warning" size={16} />
-      <span className={styles.bannerText}>{shortTitle(task, entry.title)}</span>
-      <PermissionAnswers task={task} entry={entry} className={styles.bannerActions} />
     </div>
   );
 }
@@ -1629,7 +1873,7 @@ const isRecommended = (label: string) => label.endsWith(RECOMMENDED_SUFFIX);
 
 const plainLabel = (label: string) => (isRecommended(label) ? label.slice(0, -RECOMMENDED_SUFFIX.length) : label);
 
-/** An open `AskUserQuestion` request, as a card above the composer that answers all its questions at once. */
+/** An open `AskUserQuestion` request, as a card above the composer; one question at a time. */
 function QuestionCard({ task, entries }: { task: AgentTask; entries: AgentEntry[] | null }) {
   const entry = entries?.find(
     (candidate): candidate is PermissionEntry =>
@@ -1652,10 +1896,23 @@ function QuestionForm({
   const [answers, setAnswers] = useState<QuestionAnswer[]>(() =>
     questions.map((question) => ({ question, picked: [], other: null })),
   );
-  const [focusedPosition, setFocusedPosition] = useState(0);
-  const [hovered, setHovered] = useState<{ position: number; label: string } | null>(null);
+  const [position, setPosition] = useState(0);
+  const [hovered, setHovered] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
+  const questionPrefix = useId();
+  const panelsRef = useRef<HTMLDivElement>(null);
+  const panelRef = useRef<HTMLDivElement>(null);
+  // Paging with the buttons lands the keyboard focus on the question itself.
+  const focusPanel = useRef(false);
+  const multiple = answers.length > 1;
   const complete = answers.every(isAnswered);
+  const questionId = (part: string, index: number) => `${questionPrefix}-${part}-${index}`;
+  useEffect(() => {
+    if (panelsRef.current) panelsRef.current.scrollTop = 0;
+    if (!focusPanel.current) return;
+    focusPanel.current = false;
+    panelRef.current?.focus();
+  }, [position]);
   const send = (option: string) => {
     setBusy(true);
     void respond(task.id, entry.id, option).finally(() => setBusy(false));
@@ -1686,11 +1943,17 @@ function QuestionForm({
       answer.question.multiSelect ? { ...answer, other: checked ? "" : null } : { ...answer, picked: [], other: "" },
     );
   const chooseByNumber = (number: number) => {
-    const answer = answers[focusedPosition];
+    const answer = answers[position];
     if (!answer) return;
     const option = answer.question.options[number - 1];
     if (option) choose(answer, option.label, !answer.picked.includes(option.label));
     else if (number === answer.question.options.length + 1) chooseOther(answer, answer.other === null);
+  };
+  const goTo = (next: number, moveFocus = false) => {
+    if (next < 0 || next >= answers.length) return;
+    focusPanel.current = moveFocus;
+    setPosition(next);
+    setHovered(null);
   };
   return (
     <form
@@ -1709,142 +1972,189 @@ function QuestionForm({
         }
       }}
     >
-      {answers.map((answer, position) => {
-        const { question } = answer;
-        const group = `question-${entry.id}-${position}`;
-        const hasPreviews = question.options.some((option) => option.preview);
-        const targetLabel =
-          (hovered?.position === position ? hovered.label : undefined) ??
-          answer.picked[0] ??
-          (answer.other !== null ? group : undefined);
-        const previewed =
-          targetLabel === undefined
-            ? question.options.find((option) => option.preview)
-            : question.options.find((option) => option.label === targetLabel);
-        const choices = [
-          ...question.options.map((option) => ({
-            key: option.label,
-            checked: answer.picked.includes(option.label),
-            onChange: (checked: boolean) => choose(answer, option.label, checked),
-            label: (
-              <span className={styles.questionOptionText}>
-                <span className={styles.questionLabel}>
-                  {plainLabel(option.label)}
-                  {isRecommended(option.label) && (
-                    <span className={styles.questionTag}>
-                      <T>Recommended</T>
-                    </span>
-                  )}
+      {multiple && (
+        <div inert={busy}>
+          <Tabs
+            variant="compact"
+            layout="squeeze"
+            aria-label={entry.title}
+            panelIdPrefix={questionPrefix}
+            activeId={String(position)}
+            onSelect={(id) => {
+              if (!busy) goTo(Number(id));
+            }}
+            items={answers.map((item, index) => ({
+              id: String(index),
+              label: <span>{item.question.header?.trim() || item.question.question}</span>,
+              text: item.question.header?.trim() || item.question.question,
+              tooltip: item.question.question,
+              trailing: isAnswered(item) ? (
+                <Icon name="check" size={12} className={styles.questionTabCheck} />
+              ) : undefined,
+            }))}
+          />
+        </div>
+      )}
+      {/* All questions stay mounted in one grid cell, so the card keeps the tallest one's height. */}
+      <div ref={panelsRef} className={clsx(styles.questionPanels, multiple && styles.questionPanelsPaged)}>
+        {answers.map((item, index) => {
+          const current = index === position;
+          const group = questionId("group", index);
+          const hasPreviews = item.question.options.some((option) => option.preview);
+          const targetLabel = (current ? hovered : null) ?? item.picked[0] ?? (item.other !== null ? group : undefined);
+          const previewed =
+            targetLabel === undefined
+              ? item.question.options.find((option) => option.preview)
+              : item.question.options.find((option) => option.label === targetLabel);
+          const choices = [
+            ...item.question.options.map((option) => ({
+              key: option.label,
+              checked: item.picked.includes(option.label),
+              onChange: (checked: boolean) => choose(item, option.label, checked),
+              label: (
+                <span className={styles.questionOptionText}>
+                  <span className={styles.questionLabel}>
+                    {plainLabel(option.label)}
+                    {isRecommended(option.label) && (
+                      <span className={styles.questionTag}>
+                        <T>Recommended</T>
+                      </span>
+                    )}
+                  </span>
+                  {option.description && <span className={styles.questionDescription}>{option.description}</span>}
                 </span>
-                {option.description && <span className={styles.questionDescription}>{option.description}</span>}
-              </span>
-            ),
-          })),
-          {
-            key: group,
-            checked: answer.other !== null,
-            onChange: (checked: boolean) => chooseOther(answer, checked),
-            label: (
-              <span className={styles.questionLabel}>
-                <T>Other</T>
-              </span>
-            ),
-          },
-        ];
-        return (
-          <fieldset
-            key={group}
-            className={styles.question}
-            disabled={busy}
-            onFocus={() => setFocusedPosition(position)}
-          >
-            <legend className={styles.questionText}>
-              {question.header && <span className={styles.questionTag}>{question.header}</span>}
-              {question.question}
-            </legend>
-            <div className={clsx(styles.questionBody, hasPreviews && styles.questionBodyWithPreview)}>
-              <div className={styles.questionChoices}>
-                {choices.map((choice, index) => {
-                  const label = (
-                    <span className={styles.questionChoice}>
-                      {choice.label}
-                      <span className={styles.questionKey}>{index + 1}</span>
-                    </span>
-                  );
-                  return (
-                    <div
-                      key={choice.key}
-                      onMouseEnter={() => setHovered({ position, label: choice.key })}
-                      onMouseLeave={() => setHovered(null)}
-                    >
-                      {question.multiSelect ? (
-                        <Checkbox
-                          className={styles.questionOption}
-                          checked={choice.checked}
-                          label={label}
-                          onChange={choice.onChange}
-                        />
-                      ) : (
-                        <Radio
-                          className={styles.questionOption}
-                          name={group}
-                          checked={choice.checked}
-                          label={label}
-                          onChange={() => choice.onChange(true)}
-                        />
-                      )}
-                    </div>
-                  );
-                })}
-                {answer.other !== null && (
-                  <Input
-                    autoFocus
-                    className={styles.questionOther}
-                    value={answer.other}
-                    placeholder="Type your answer"
-                    onChange={(event) => update(answer, { ...answer, other: event.target.value })}
-                    onKeyDown={(event) => {
-                      if (event.key === "Escape" && answer.other) {
-                        event.stopPropagation();
-                        update(answer, { ...answer, other: "" });
-                      }
-                    }}
-                  />
-                )}
-              </div>
-              {hasPreviews && (
-                <div className={styles.questionPreview}>
-                  {[...question.options, null].map((option) => {
-                    const active = option === (previewed ?? null);
-                    return (
-                      <div
-                        key={option?.label ?? group}
-                        className={clsx(styles.questionPreviewItem, active && styles.questionPreviewActive)}
-                        aria-hidden={!active}
-                      >
-                        <span className={styles.questionPreviewCaption}>
-                          {option ? plainLabel(option.label) : <T>Other</T>}
+              ),
+            })),
+            {
+              key: group,
+              checked: item.other !== null,
+              onChange: (checked: boolean) => chooseOther(item, checked),
+              label: (
+                <span className={styles.questionLabel}>
+                  <T>Other</T>
+                </span>
+              ),
+            },
+          ];
+          return (
+            <div
+              key={group}
+              ref={current ? panelRef : undefined}
+              role={multiple ? "tabpanel" : undefined}
+              id={questionId("panel", index)}
+              aria-labelledby={multiple ? questionId("tab", index) : undefined}
+              aria-hidden={!current}
+              inert={!current}
+              tabIndex={multiple && current ? 0 : -1}
+              className={clsx(styles.questionPanel, !current && styles.questionPanelHidden)}
+            >
+              <fieldset className={styles.question} disabled={busy}>
+                <legend className={styles.questionText}>
+                  {item.question.header && <span className={styles.questionTag}>{item.question.header}</span>}
+                  {item.question.question}
+                </legend>
+                <div className={clsx(styles.questionBody, hasPreviews && styles.questionBodyWithPreview)}>
+                  <div className={styles.questionChoices}>
+                    {choices.map((choice, choiceIndex) => {
+                      const label = (
+                        <span className={styles.questionChoice}>
+                          {choice.label}
+                          <span className={styles.questionKey}>{choiceIndex + 1}</span>
                         </span>
-                        {option?.preview ? (
-                          <pre className={styles.questionPreviewBody}>{option.preview}</pre>
-                        ) : (
-                          <span className={styles.questionPreviewEmpty}>
-                            <T>No preview</T>
-                          </span>
-                        )}
-                      </div>
-                    );
-                  })}
+                      );
+                      return (
+                        <div
+                          key={choice.key}
+                          onMouseEnter={() => setHovered(choice.key)}
+                          onMouseLeave={() => setHovered(null)}
+                        >
+                          {item.question.multiSelect ? (
+                            <Checkbox
+                              className={styles.questionOption}
+                              checked={choice.checked}
+                              label={label}
+                              onChange={choice.onChange}
+                            />
+                          ) : (
+                            <Radio
+                              className={styles.questionOption}
+                              name={group}
+                              checked={choice.checked}
+                              label={label}
+                              onChange={() => choice.onChange(true)}
+                            />
+                          )}
+                        </div>
+                      );
+                    })}
+                    {item.other !== null && (
+                      <Input
+                        autoFocus
+                        className={styles.questionOther}
+                        value={item.other}
+                        placeholder="Type your answer"
+                        onChange={(event) => update(item, { ...item, other: event.target.value })}
+                        onKeyDown={(event) => {
+                          if (event.key === "Escape" && item.other) {
+                            event.stopPropagation();
+                            update(item, { ...item, other: "" });
+                          }
+                        }}
+                      />
+                    )}
+                  </div>
+                  {hasPreviews && (
+                    <div className={styles.questionPreview}>
+                      {[...item.question.options, null].map((option) => {
+                        const shown = option === (previewed ?? null);
+                        return (
+                          <div
+                            key={option?.label ?? group}
+                            className={clsx(styles.questionPreviewItem, shown && styles.questionPreviewActive)}
+                            aria-hidden={!shown}
+                          >
+                            <span className={styles.questionPreviewCaption}>
+                              {option ? plainLabel(option.label) : <T>Other</T>}
+                            </span>
+                            {option?.preview ? (
+                              <pre className={styles.questionPreviewBody}>{option.preview}</pre>
+                            ) : (
+                              <span className={styles.questionPreviewEmpty}>
+                                <T>No preview</T>
+                              </span>
+                            )}
+                          </div>
+                        );
+                      })}
+                    </div>
+                  )}
                 </div>
-              )}
+              </fieldset>
             </div>
-          </fieldset>
-        );
-      })}
+          );
+        })}
+      </div>
       <div className={styles.questionActions}>
         <Button variant="ghost" disabled={busy} onClick={() => send("reject")}>
           Skip
         </Button>
+        {multiple && (
+          <div className={styles.questionPager}>
+            <Button size="small" disabled={busy || position === 0} onClick={() => goTo(position - 1, true)}>
+              Previous
+            </Button>
+            <span className={styles.questionPage}>
+              {position + 1} / {answers.length}
+            </span>
+            <Button
+              size="small"
+              disabled={busy || position === answers.length - 1}
+              onClick={() => goTo(position + 1, true)}
+            >
+              Next
+            </Button>
+          </div>
+        )}
         <Button type="submit" variant="primary" disabled={busy || !complete}>
           Submit
         </Button>

@@ -1,3 +1,4 @@
+import { writeClipboardText } from "@/platform/clipboard";
 import { copySelectionOnKeyDown } from "@/ui/selectableText";
 import {
   memo,
@@ -408,10 +409,10 @@ export function ConsoleView({
         icon: "copy",
         shortcut: formatBinding(hostBinding("Meta+C")),
         disabled: !selection,
-        run: () => void navigator.clipboard?.writeText(selection).catch(() => undefined),
+        run: () => void writeClipboardText(selection).catch(() => undefined),
       },
       { label: "Select All", shortcut: formatBinding(hostBinding("Meta+A")), run: selectAll },
-      { label: "Copy All", run: () => void navigator.clipboard?.writeText(model.text()).catch(() => undefined) },
+      { label: "Copy All", run: () => void writeClipboardText(model.text()).catch(() => undefined) },
       {
         label: "Find…",
         icon: "search",
@@ -498,6 +499,19 @@ export function ConsoleView({
   const items = virtualizer.getVirtualItems();
   return (
     <div className={styles.consoleWrap}>
+      {/* A console whose find bar is not driven by a toolbar (a stack-trace tab, say) still
+          needs a visible way in: the same Find the Run toolbar offers, over the output. */}
+      {controlledFindOpen === undefined && !findOpen && (
+        <button
+          type="button"
+          className={styles.consoleFindOpen}
+          title="Find…"
+          aria-label="Find in console"
+          onClick={() => setFindOpen(true)}
+        >
+          <Icon name="search" size={14} />
+        </button>
+      )}
       {findOpen && (
         <ConsoleFindBar
           query={query}

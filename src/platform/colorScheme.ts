@@ -125,6 +125,7 @@ const BASE_ATTRIBUTES: readonly AttributeDef[] = [
   syn("identifier", "Identifiers › Local variable", [LD], "variable"),
   syn("parameter", "Identifiers › Parameter", [LD], "param"),
   syn("globalVariable", "Identifiers › Global variable", [LD], "global"),
+  syn("packageReference", "Identifiers › Package reference", [LD], "namespace"),
   syn("constant", "Identifiers › Constant", [LD], "constant", { defaultItalic: true }),
   syn("field", "Identifiers › Instance field", [LD], "property"),
   { id: "staticSymbol", name: "Identifiers › Static symbol", path: [LD], token: "static", italicOnly: true },
@@ -136,7 +137,10 @@ const BASE_ATTRIBUTES: readonly AttributeDef[] = [
   syn("string", "String › String text", [LD], "string"),
   syn("escape", "String › Valid escape sequence", [LD], "escape"),
   syn("lineComment", "Comments › Line comment", [LD], "comment"),
-  syn("docComment", "Comments › Doc comment", [LD], "doc-comment", { defaultItalic: true }),
+  syn("docComment", "Comments › Doc comment › Text", [LD], "doc-comment", { defaultItalic: true }),
+  syn("docCommentTag", "Comments › Doc comment › Tag", [LD], "doc-comment-tag"),
+  syn("docCommentTagValue", "Comments › Doc comment › Tag value", [LD], "doc-comment-tag-value"),
+  { ...syn("docCommentMarkup", "Comments › Doc comment › Markup", [LD], "doc-markup"), bg: "--syn-doc-markup-bg" },
   syn("metadata", "Metadata", [LD], "decorator"),
   syn("operator", "Braces and Operators", [LD], "punct"),
   syn("markupTag", "Markup › Tag", [LD], "tag"),
@@ -166,6 +170,8 @@ const BASE_ATTRIBUTES: readonly AttributeDef[] = [
   },
   syn("pyKeywordArg", "Keyword argument", ["Python"], "keyword-arg"),
   syn("pyDocstring", "Docstring", ["Python"], "docstring", { defaultItalic: true }),
+  syn("pyDocstringTag", "Docstring › Tag", ["Python"], "python-docstring-tag"),
+  syn("pyDocstringKeyword", "Docstring › Keyword", ["Python"], "python-docstring-keyword"),
   syn("pyBuiltin", "Built-in name", ["Python"], "python-builtin"),
   syn("pyDecorator", "Decorator", ["Python"], "annotation"),
   syn("pyLocalVariable", "Local variable", ["Python"], "python-local-variable"),
@@ -181,7 +187,7 @@ const BASE_ATTRIBUTES: readonly AttributeDef[] = [
   syn("regexp", "Regular expression", ["RegExp"], "regexp"),
 ];
 
-const SCHEME_LANGUAGES = { java: "Java", kotlin: "Kotlin", php: "PHP" } as const;
+const SCHEME_LANGUAGES = { go: "Go", java: "Java", kotlin: "Kotlin", php: "PHP" } as const;
 
 export const ATTRIBUTES: readonly AttributeDef[] = [
   ...BASE_ATTRIBUTES,
@@ -207,6 +213,7 @@ export const ATTRIBUTES: readonly AttributeDef[] = [
 const SCHEME_VARS = new Set<string>([
   ...ATTRIBUTES.flatMap((a) => [a.fg, a.bg, a.effect].filter((v): v is string => !!v)),
   "--syn-comment-style",
+  "--syn-doc-comment-tag-effect",
   "--editor-error-decoration",
   "--editor-warning-decoration",
   "--editor-warning-background",
