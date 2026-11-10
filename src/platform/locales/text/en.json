@@ -906,5 +906,6 @@
   "No contributions": "No contributions",
   "Disable plugin": "Disable plugin",
   "{names} need {name} and stop while it is disabled. Disable it anyway?": "{names} need {name} and stop while it is disabled. Disable it anyway?",
-  "{names} needs {name} and stops while it is disabled. Disable it anyway?": "{names} needs {name} and stops while it is disabled. Disable it anyway?"
+  "{names} needs {name} and stops while it is disabled. Disable it anyway?": "{names} needs {name} and stops while it is disabled. Disable it anyway?",
+  "Show Root Paths": "Show Root Paths"
 }
