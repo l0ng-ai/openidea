@@ -338,6 +338,17 @@ class ScriptMarker extends GutterMarker {
   }
 }
 
+/** Width-reserving spacer for lines without a marker; never an interactive control. */
+class ScriptSpacer extends GutterMarker {
+  override toDOM(): Node {
+    const el = document.createElement("span");
+    el.className = styles.runMarker ?? "";
+    return el;
+  }
+}
+
+const scriptSpacer = new ScriptSpacer();
+
 const DEBOUNCE = 300;
 
 export function npmGutter(ctx: EditorDocContext): Extension {
@@ -380,8 +391,7 @@ export function npmGutter(ctx: EditorDocContext): Extension {
         ),
       // Reserve width only while the file has scripts, like the run gutter.
       initialSpacer: () => emptyGutterSpacer,
-      updateSpacer: (_spacer, update) =>
-        update.state.field(entriesField).length ? new ScriptMarker({ name: "", line: 0 }, path) : emptyGutterSpacer,
+      updateSpacer: (_spacer, update) => (update.state.field(entriesField).length ? scriptSpacer : emptyGutterSpacer),
       domEventHandlers: {
         mousedown: (view, block, event) => {
           const entry = view.state.field(entriesField).find((e) => e.pos === block.from);

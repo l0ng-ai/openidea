@@ -174,6 +174,17 @@ class RunMarker extends GutterMarker {
   }
 }
 
+/** Width-reserving spacer for lines without a marker; never an interactive control. */
+class RunSpacer extends GutterMarker {
+  override toDOM(): Node {
+    const el = document.createElement("span");
+    el.className = styles.runMarker ?? "";
+    return el;
+  }
+}
+
+const runSpacer = new RunSpacer();
+
 /** The gutter asks for markers on every update: rebuild only when targets or test results changed. */
 const markerCache = new WeakMap<readonly PlacedTarget[], { version: number; set: RangeSet<GutterMarker> }>();
 
@@ -265,10 +276,7 @@ export function runGutter(ctx: EditorDocContext): Extension {
       markers: (view) => markers(view.state, path),
       // One icon of width only while the file has run targets; other files keep a narrow gutter.
       initialSpacer: () => emptyGutterSpacer,
-      updateSpacer: (_spacer, update) =>
-        update.state.field(targetsField).length
-          ? new RunMarker({ line: 0, pos: 0, kind: "test", name: "", path: [] }, path)
-          : emptyGutterSpacer,
+      updateSpacer: (_spacer, update) => (update.state.field(targetsField).length ? runSpacer : emptyGutterSpacer),
       domEventHandlers: {
         mousedown: (view, block, event) => {
           const target = view.state.field(targetsField).find((t) => t.pos === block.from);

@@ -91,6 +91,17 @@ class EndpointMarker extends GutterMarker {
   }
 }
 
+/** Width-reserving spacer for lines without a marker; never an interactive control. */
+class EndpointSpacer extends GutterMarker {
+  override toDOM(): Node {
+    const el = document.createElement("span");
+    el.className = styles.runMarker ?? "";
+    return el;
+  }
+}
+
+const endpointSpacer = new EndpointSpacer();
+
 export function endpointEditorExtension(ctx: EditorDocContext): Extension {
   if (ctx.language === "http") return EditorState.languageData.of(() => [{ openideaCompletion: endpointCompletion }]);
   if (ctx.virtual) return [];
@@ -140,7 +151,7 @@ export function endpointEditorExtension(ctx: EditorDocContext): Extension {
         ),
       // One icon of width only while the file has endpoints; other files keep a narrow gutter.
       initialSpacer: () => emptyGutterSpacer,
-      updateSpacer: (_spacer, update) => (update.state.field(marks).length ? new EndpointMarker() : emptyGutterSpacer),
+      updateSpacer: (_spacer, update) => (update.state.field(marks).length ? endpointSpacer : emptyGutterSpacer),
       domEventHandlers: {
         mousedown: (view, line, event) => {
           if ((event as MouseEvent).button !== 0) return false;
