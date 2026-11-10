@@ -1659,6 +1659,12 @@ impl Runtime {
         .and_then(|r| r.map_err(|e| CallError::Guest(e.into())))
     }
 
+    /// Authorize host-supplied command data against this actor's grants before
+    /// it enters WASM. Revocation stops the actor and replaces its grant set.
+    pub fn require_capability(&self, capability: Capability) -> Result<(), CallError> {
+        self.store.data().require(capability).map_err(|e| CallError::Guest(e.into()))
+    }
+
     pub fn run_command(
         &mut self,
         id: &str,

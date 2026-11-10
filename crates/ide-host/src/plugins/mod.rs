@@ -1381,8 +1381,19 @@ impl PluginHost {
         invocation: Invocation,
         cancel: Option<&ide_core::CancellationToken>,
     ) -> IdeResult<Option<String>> {
+        // Use the manifest, not projected UI: revoked/disabled contributions
+        // may already have been withdrawn while a frontend request is queued.
+        let needs_editor_read = self
+            .get(id)?
+            .manifest()
+            .declarations(ui_points::EDITOR_ANNOTATIONS)
+            .iter()
+            .any(|d| d.get("command").and_then(toml::Value::as_str) == Some(command));
         let (cmd, arg) = (command.to_owned(), arg.map(str::to_owned));
         self.code_call_cancellable(id, invocation, "running the command", cancel, move |rt, inv| {
+            if needs_editor_read {
+                rt.require_capability(Capability::EditorRead)?;
+            }
             rt.run_command(&cmd, arg.as_deref(), inv)
         })
     }

@@ -6335,3 +6335,167 @@ fn api14_stage3_terminal_calls_are_denied_without_process_grants() {
     f.host.set_capability("execution", "process:execution-tool", false).unwrap();
     assert!(f.run("execution", "terminal", None).unwrap_err().contains("not granted"));
 }
+
+/// An annotation contribution uses existing declared commands and view invalidation.
+#[test]
+fn editor_annotations_publish_the_validated_command_contract() {
+    let f = fixture(Limits::default());
+    let tmp = tempfile::tempdir().unwrap();
+    let package = hello_variant(tmp.path(), |manifest| {
+        format!(
+            "{manifest}\n[[contributes.editorAnnotations]]\nid = \"blame\"\ncommand = \"word-count\"\nrefreshView = \"greetings\"\nprotocol = 1\n"
+        )
+    });
+    f.install(&package);
+    let annotations = f.host.ui_items("editorAnnotations");
+    assert_eq!(annotations.len(), 1, "the host must publish the annotation contribution");
+    assert_eq!(annotations[0].decl["command"], "word-count");
+    assert_eq!(annotations[0].decl["refreshView"], "greetings");
+    assert_eq!(annotations[0].decl["protocol"], 1);
+}
+
+/// A declaration cannot borrow another command, view, or unsupported protocol.
+#[test]
+fn editor_annotations_reject_unowned_or_unsupported_contracts() {
+    for (command, refresh_view, protocol, web, expected) in [
+        ("missing", "greetings", 1, false, "command"),
+        ("word-count", "missing", 1, false, "native view"),
+        ("word-count", "greetings", 2, false, "protocol"),
+        ("word-count", "greetings", 1, true, "native view"),
+    ] {
+        let f = fixture(Limits::default());
+        let tmp = tempfile::tempdir().unwrap();
+        let package = hello_variant(tmp.path(), |manifest| {
+            let manifest = if web {
+                manifest.replace("[[contributes.views]]", "[[contributes.views]]\nweb = \"web/index.html\"")
+            } else {
+                manifest.to_owned()
+            };
+            format!(
+                "{manifest}\n[[contributes.editorAnnotations]]\nid = \"blame\"\ncommand = \"{command}\"\nrefreshView = \"{refresh_view}\"\nprotocol = {protocol}\n"
+            )
+        });
+        if web {
+            std::fs::create_dir_all(package.join("web")).unwrap();
+            std::fs::write(package.join("web/index.html"), "<p>view</p>").unwrap();
+        }
+        let error = f.host.install_from_dir(&package, &Consent::all()).unwrap_err();
+        assert!(error.message.contains(expected), "{error:?}");
+        assert!(f.host.ui_items("editorAnnotations").is_empty());
+    }
+}
+
+/// Automatic command arguments are editor data too, even if the guest never
+/// calls editor.document. Check the live optional grant before invoking it.
+#[test]
+fn editor_annotations_require_live_read_consent_before_argument_delivery() {
+    let f = fixture(Limits::default());
+    let tmp = tempfile::tempdir().unwrap();
+    let package = hello_variant(tmp.path(), |manifest| {
+        let manifest = manifest
+            .replace("required = [\"editor.read\", \"editor.write\"]", "required = []\noptional = [\"editor.read\"]");
+        format!(
+            "{manifest}\n[[contributes.editorAnnotations]]\nid = \"blame\"\ncommand = \"word-count\"\nrefreshView = \"greetings\"\nprotocol = 1\n"
+        )
+    });
+    f.host.install_from_dir(&package, &Consent::default()).unwrap();
+    let denied = || {
+        // No editor handle: without the host gate, the guest sees the command
+        // argument and returns 'no file is open', NOT PermissionDenied.
+        let error = f.host.run_command("hello", "word-count", Some("private buffer"), f.inv()).unwrap_err();
+        assert_eq!(error.kind, ide_core::error::ErrorKind::PermissionDenied, "{error:?}");
+    };
+    denied();
+    f.host.set_capability("hello", "editor.read", true).unwrap();
+    std::fs::write(f.project.join("words.txt"), "one two").unwrap();
+    let editor = f.workspace.open("words.txt", &[]);
+    let invocation = Invocation { editor: Some(editor), ..f.inv() };
+    assert!(f.host.run_command("hello", "word-count", Some("private buffer"), invocation).unwrap().is_some());
+    f.host.set_capability("hello", "editor.read", false).unwrap();
+    denied();
+}
+
+#[test]
+fn editor_annotations_cannot_hide_the_read_capability_from_consent() {
+    let f = fixture(Limits::default());
+    let tmp = tempfile::tempdir().unwrap();
+    let package = hello_variant(tmp.path(), |manifest| {
+        let manifest = manifest.replace("required = [\"editor.read\", \"editor.write\"]", "required = []");
+        format!(
+            "{manifest}\n[[contributes.editorAnnotations]]\nid = \"blame\"\ncommand = \"word-count\"\nrefreshView = \"greetings\"\nprotocol = 1\n"
+        )
+    });
+    let error = f.host.install_from_dir(&package, &Consent::all()).unwrap_err();
+    assert!(error.message.contains("editor.read"), "{error:?}");
+    assert!(f.host.ui_items("editorAnnotations").is_empty());
+}
+
+/// Disposing projected contributions must not erase the manifest-based data gate.
+/// Exercise the public registry and command APIs, not Runtime's private helpers.
+#[test]
+fn editor_annotations_check_read_even_after_ui_projection_is_disposed() {
+    let f = fixture(Limits::default());
+    let tmp = tempfile::tempdir().unwrap();
+    let package = hello_variant(tmp.path(), |manifest| {
+        let manifest = manifest.replace(
+            "required = [\"editor.read\", \"editor.write\"]",
+            "required = []\noptional = [\"editor.read\", \"editor.write\"]",
+        );
+        format!(
+            "{manifest}\n[[contributes.editorAnnotations]]\nid = \"blame\"\ncommand = \"word-count\"\nrefreshView = \"greetings\"\nprotocol = 1\n"
+        )
+    });
+    f.host.install_from_dir(&package, &Consent::default()).unwrap();
+    f.host.registry().dispose_plugin("hello");
+    assert!(f.host.ui_items("editorAnnotations").is_empty());
+    let error = f.host.run_command("hello", "word-count", Some("private buffer"), f.inv()).unwrap_err();
+    assert_eq!(error.kind, ErrorKind::PermissionDenied, "guest must not receive the buffer: {error:?}");
+
+    f.host.set_capability("hello", "editor.read", true).unwrap();
+    let editor = f.workspace.open("src/notes.txt", &[]);
+    let inv = Invocation { editor: Some(editor), ..f.inv() };
+    assert!(f.host.run_command("hello", "word-count", None, inv).unwrap().is_some());
+    f.host.cancel("hello");
+    f.host.set_capability("hello", "editor.read", false).unwrap();
+    f.host.registry().dispose_plugin("hello");
+    assert!(f.host.ui_items("editorAnnotations").is_empty());
+    let error = f.host.run_command("hello", "word-count", Some("private buffer"), f.inv()).unwrap_err();
+    assert_eq!(error.kind, ErrorKind::PermissionDenied, "revocation survives cancellation: {error:?}");
+}
+
+/// The checked-in fixture declares the point and serves the protocol the editor expects.
+#[test]
+fn editor_annotations_fixture_serves_snapshot_and_conversation_requests() {
+    let f = fixture(Limits::default());
+    let info = f.install(&sample("annotations"));
+    assert_eq!(info.id, "annotations");
+    let annotation = f.host.ui_items("editorAnnotations").remove(0);
+    assert_eq!((annotation.key.as_str(), annotation.decl["command"].as_str()), ("fixture", Some("snapshot")));
+
+    let request = |operation: &str, prompt: Option<&str>| {
+        serde_json::json!({
+            "schemaVersion": 1,
+            "requestId": "fixture-request",
+            "operation": operation,
+            "promptId": prompt,
+            "path": "/project/src/notes.txt",
+            "documentText": "alpha\nbeta\n",
+        })
+        .to_string()
+    };
+    let run = |operation: &str, prompt: Option<&str>| {
+        let raw = f.run("annotations", "snapshot", Some(&request(operation, prompt))).unwrap().unwrap();
+        serde_json::from_str::<serde_json::Value>(&raw).unwrap()
+    };
+
+    let snapshot = run("snapshot", None);
+    assert_eq!(snapshot["requestId"], "fixture-request");
+    assert_eq!(snapshot["path"], "/project/src/notes.txt");
+    assert_eq!(snapshot["state"], "ready");
+    assert_eq!(snapshot["lines"][1], serde_json::json!({"line": 1, "promptId": "line"}));
+    assert_eq!(snapshot["prompts"][0]["hasMessages"], false);
+
+    let conversation = run("conversation", Some("line"));
+    assert_eq!(conversation["prompts"][0]["hasMessages"], true);
+    assert_eq!(conversation["prompts"][0]["markdown"], "**Conversation line**\n\nLoaded on demand.");
+}

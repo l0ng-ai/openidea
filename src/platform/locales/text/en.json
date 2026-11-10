@@ -985,5 +985,9 @@
   "Imported 1 MCP server from the project.": "Imported 1 MCP server from the project.",
   "Imported {count} MCP servers from the project.": "Imported {count} MCP servers from the project.",
   "Show branch and incoming/outgoing commits in the Project view": "Show branch and incoming/outgoing commits in the Project view",
-  "Up to date with {upstream}": "Up to date with {upstream}"
+  "Up to date with {upstream}": "Up to date with {upstream}",
+  "Annotations unavailable": "Annotations unavailable",
+  "Annotations stale": "Annotations stale",
+  "Loading conversation…": "Loading conversation…",
+  "Conversation unavailable": "Conversation unavailable"
 }
