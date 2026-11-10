@@ -22,9 +22,13 @@ use mago_syntax::cst::{
 use mago_syntax::walker::Walker;
 
 use crate::names::{NameKind, NameScope, Resolution};
+use crate::types::expr::shape_key;
 use crate::types::ops::{Op, is_int, is_string, literal_type, op_type, unary_type};
 use crate::types::provider::{CallKind, CallSite, NO_NEXT, site_args};
-use crate::types::{LazyType, Relative, Signature, Type, TypeProviders};
+use crate::types::{LazyType, Relative, Shape, ShapeField, ShapeKey, Signature, Type, TypeProviders};
+
+/// The most fields an inferred array shape keeps (as the flow does).
+const MAX_SHAPE_FIELDS: usize = 32;
 
 /// Infers types from expressions in one name scope.
 pub(super) struct Infer<'s> {
@@ -37,6 +41,9 @@ pub(super) struct Infer<'s> {
     /// Local variables (name without `$`) only written by plain
     /// assignments, and the union of the assigned values.
     pub locals: Vec<(String, LazyType)>,
+    /// Infer array literals as shapes ([`Self::array_shape`]); only for
+    /// returned values, not for property defaults or constants.
+    pub shapes: bool,
 }
 
 fn lossy(bytes: &[u8]) -> String {
@@ -147,6 +154,13 @@ impl Infer<'_> {
     }
 
     fn array<'a, 'b: 'a>(&self, elements: impl Iterator<Item = &'a ArrayElement<'b>>) -> LazyType {
+        let elements: Vec<&'a ArrayElement<'b>> = elements.collect();
+        if self.shapes
+            && !self.literals
+            && let Some(shape) = self.array_shape(&elements)
+        {
+            return known(shape);
+        }
         let mut keys = Vec::new();
         let mut values = Vec::new();
         let mut list = true;
@@ -183,6 +197,44 @@ impl Infer<'_> {
         } else {
             Type::Array { key: Box::new(Type::union(keys)), value, non_empty: true }
         })
+    }
+
+    /// An array literal whose keys are all literals (or PHP's numbering) as
+    /// a shape, so that destructuring a returned literal
+    /// (`[$guard, $provider] = $this->getRealGuard()`) types each variable.
+    /// An element only known with other files is `mixed` here. `None` for
+    /// other literals, empty or larger ones.
+    fn array_shape(&self, elements: &[&ArrayElement<'_>]) -> Option<Type> {
+        let mut fields: Vec<ShapeField> = Vec::new();
+        let mut next: i64 = 0;
+        for element in elements {
+            let (key, value) = match element {
+                ArrayElement::KeyValue(element) => {
+                    let key = match self.expr_inner(element.key) {
+                        LazyType::Known(key) => shape_key(&key)?,
+                        _ => return None,
+                    };
+                    (key, element.value)
+                }
+                ArrayElement::Value(element) => (ShapeKey::Int(next), element.value),
+                ArrayElement::Variadic(_) => return None,
+                ArrayElement::Missing(_) => continue,
+            };
+            if let ShapeKey::Int(int) = key {
+                next = next.max(int.saturating_add(1));
+            }
+            let ty = match self.expr_inner(value) {
+                LazyType::Known(ty) => ty.widen(),
+                _ => Type::Mixed,
+            };
+            fields.retain(|field| field.key != key);
+            fields.push(ShapeField { key, ty, optional: false });
+        }
+        if fields.is_empty() || fields.len() > MAX_SHAPE_FIELDS {
+            return None;
+        }
+        let list = fields.iter().enumerate().all(|(i, field)| field.key == ShapeKey::Int(i as i64));
+        Some(Type::Shape(Box::new(Shape { list, fields, rest: None })))
     }
 
     fn variable(&self, variable: &Variable<'_>) -> LazyType {
@@ -361,8 +413,13 @@ impl Infer<'_> {
 pub(super) fn body_return(infer: &Infer<'_>, body: &Block<'_>) -> LazyType {
     let mut writes = Writes::default();
     WriteWalker.walk_block(body, &mut writes);
-    let mut infer =
-        Infer { scope: infer.scope, params: infer.params.clone(), literals: infer.literals, locals: Vec::new() };
+    let mut infer = Infer {
+        scope: infer.scope,
+        params: infer.params.clone(),
+        literals: infer.literals,
+        locals: Vec::new(),
+        shapes: true,
+    };
     // Two rounds, so `$a = new A; $b = $a; return $b;` sees `$a` in `$b`.
     for _ in 0..2 {
         infer.locals = writes

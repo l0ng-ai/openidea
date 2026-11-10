@@ -37,15 +37,16 @@ use std::rc::Rc;
 use mago_span::HasSpan;
 use mago_syntax::cst::{
     Access, AnonymousClass, Argument, ArgumentList, ArrayElement, ArrowFunction, Assignment, Call, Class,
-    ClassLikeConstantSelector, ClassLikeMemberSelector, Closure, Construct, DirectVariable, Enum, Expression, Function,
-    FunctionLikeParameterList, Interface, MagicConstant, MatchArm, Method, PartialApplication, PartialArgument,
-    PartialArgumentList, Program, Return, Trait, Variable, Yield,
+    ClassLikeConstantSelector, ClassLikeMember, ClassLikeMemberSelector, Closure, Construct, DirectVariable, Enum,
+    Expression, Function, FunctionLikeParameterList, Hint, Interface, MagicConstant, MatchArm, Method,
+    PartialApplication, PartialArgument, PartialArgumentList, Program, Property, PropertyItem, Return, Trait, Variable,
+    Yield,
 };
 use mago_syntax::walker::Walker;
 
 use super::ops::{Op, literal_type, op_type, unary_type};
 use super::provider::{CallKind, CallSite, NO_NEXT, ParameterSite, site_args};
-use super::resolve::{CallArg, declared_params};
+use super::resolve::{Bindings, CallArg, declared_params};
 use super::{Context, LazyType, Relative, Resolver, Shape, ShapeField, ShapeKey, Signature, SignatureParam, Type};
 use crate::names::{FileNames, NameKind, NameScope, Resolution};
 use crate::summary::{ClassLike, DocBlock, FileSummary, FunctionDecl, Param, type_hint};
@@ -781,8 +782,13 @@ impl<'a, 'r> ExprTypes<'a, 'r> {
             },
             Call::Method(call) => match &call.method {
                 ClassLikeMemberSelector::Identifier(name) => {
-                    let receiver = self.expr(call.object, frames);
                     let name = lossy(name.value);
+                    if is_this(call.object)
+                        && let Some(class) = self.anonymous_class(frames)
+                    {
+                        return self.anonymous_method_return(class, &name);
+                    }
+                    let receiver = self.expr(call.object, frames);
                     let args = || self.call_args(&call.argument_list, frames);
                     let core = || self.resolver.method_call(&receiver, &name, &args, &context);
                     self.provided(CallKind::Method, &name, Some(&receiver), &call.argument_list, &core, frames)
@@ -935,6 +941,126 @@ impl<'a, 'r> ExprTypes<'a, 'r> {
         Some(Signature { params, return_type: Some(return_type) })
     }
 
+    /// The arguments of a call for inferring the callee's own templates; a
+    /// closure or arrow function counts as nothing (`never`), since its
+    /// parameters are what the templates then type.
+    fn template_args(&self, list: &'a ArgumentList<'a>, frames: &[Frame<'a>]) -> Vec<CallArg> {
+        list.arguments
+            .iter()
+            .map(|argument| {
+                let (name, value, spread) = match argument {
+                    Argument::Positional(argument) => (None, argument.value, argument.ellipsis.is_some()),
+                    Argument::Named(argument) => (Some(lossy(argument.name.value)), argument.value, false),
+                };
+                let ty = if is_closure_value(value) { Type::Never } else { self.expr(value, frames) };
+                CallArg { name, ty, spread }
+            })
+            .collect()
+    }
+
+    /// The own templates of method `selector` called on `receiver` with
+    /// `list` (see [`Self::template_args`]).
+    fn method_call_bindings(
+        &self,
+        receiver: &Type,
+        selector: &ClassLikeMemberSelector<'_>,
+        list: &'a ArgumentList<'a>,
+        frames: &[Frame<'a>],
+    ) -> Bindings {
+        let ClassLikeMemberSelector::Identifier(name) = selector else { return Bindings::new() };
+        let context = self.context(frames);
+        let args = || self.template_args(list, frames);
+        self.resolver.method_call_bindings(receiver, &lossy(name.value), &args, &context)
+    }
+
+    /// The anonymous class `$this` stands for inside `frames`: the innermost
+    /// class frame is anonymous and a method of it is the next frame.
+    /// Anonymous classes aren't in the summary, so their members are read
+    /// from the syntax tree.
+    fn anonymous_class(&self, frames: &[Frame<'a>]) -> Option<&'a AnonymousClass<'a>> {
+        let at = frames.iter().rposition(|frame| matches!(frame, Frame::Class(_)))?;
+        let (Frame::Class(None), Some(Frame::Method(method))) = (&frames[at], frames.get(at + 1)) else {
+            return None;
+        };
+        let start = method.span().start.offset;
+        let mut classes = Vec::new();
+        AnonymousClasses.walk_program(self.program(), &mut classes);
+        classes.into_iter().find(|class| {
+            class
+                .members
+                .iter()
+                .any(|member| matches!(member, ClassLikeMember::Method(own) if own.span().start.offset == start))
+        })
+    }
+
+    /// The class anonymous `class` extends, resolved.
+    fn anonymous_parent(&self, class: &AnonymousClass<'_>) -> Option<String> {
+        let parent = class.extends.as_ref()?.types.first()?;
+        let name = String::from_utf8_lossy(parent.value());
+        let resolved = self.scope(parent.span().start.offset).resolve(NameKind::ClassLike, &name);
+        resolved.resolution.candidates().next().map(str::to_owned)
+    }
+
+    /// The type of `$this->name` in anonymous `class`: its own property's
+    /// native type (promoted constructor parameters included), else the
+    /// parent's.
+    fn anonymous_property(&self, class: &'a AnonymousClass<'a>, name: &str) -> Type {
+        let variable = format!("${name}");
+        let hinted = |hint: Option<&Hint<'_>>, at: u32| {
+            hint.map_or(Type::Mixed, |hint| Type::from_hint(&type_hint(self.scope(at), hint)))
+        };
+        for member in class.members.iter() {
+            match member {
+                ClassLikeMember::Property(property) => {
+                    let (hint, items): (Option<&Hint<'_>>, Vec<&PropertyItem<'_>>) = match property {
+                        Property::Plain(plain) => (plain.hint.as_ref(), plain.items.iter().collect()),
+                        Property::Hooked(hooked) => (hooked.hint.as_ref(), vec![&hooked.item]),
+                    };
+                    if items.iter().any(|item| item.variable().name == variable.as_bytes()) {
+                        return hinted(hint, property.span().start.offset);
+                    }
+                }
+                ClassLikeMember::Method(method) if method.name.value.eq_ignore_ascii_case(b"__construct") => {
+                    let promoted = method.parameter_list.parameters.iter().find(|parameter| {
+                        !parameter.modifiers.is_empty() && parameter.variable.name == variable.as_bytes()
+                    });
+                    if let Some(parameter) = promoted {
+                        return hinted(parameter.hint.as_ref(), parameter.span().start.offset);
+                    }
+                }
+                _ => {}
+            }
+        }
+        match self.anonymous_parent(class) {
+            Some(parent) => self.resolver.property_type(&Type::named(&parent), name, &Context::in_class(&parent)),
+            None => Type::Mixed,
+        }
+    }
+
+    /// What `$this->name()` returns in anonymous `class`: its own method's
+    /// native return type, else the parent's.
+    fn anonymous_method_return(&self, class: &'a AnonymousClass<'a>, name: &str) -> Type {
+        let own = class.members.iter().find_map(|member| match member {
+            ClassLikeMember::Method(method) if method.name.value.eq_ignore_ascii_case(name.as_bytes()) => Some(method),
+            _ => None,
+        });
+        if let Some(method) = own {
+            return method.return_type_hint.as_ref().map_or(Type::Mixed, |hint| {
+                Type::from_hint(&type_hint(self.scope(hint.hint.span().start.offset), &hint.hint))
+            });
+        }
+        match self.anonymous_parent(class) {
+            Some(parent) => self.resolver.method_return(&Type::named(&parent), name, &Context::in_class(&parent)),
+            None => Type::Mixed,
+        }
+    }
+
+    /// The own templates of function `fqn` called with `list`.
+    fn function_call_bindings(&self, fqn: &str, list: &'a ArgumentList<'a>, frames: &[Frame<'a>]) -> Bindings {
+        let args = || self.template_args(list, frames);
+        self.resolver.function_call_bindings(fqn, &args)
+    }
+
     // ------------------------------------------------------------- access
 
     fn access(&self, access: &'a Access<'a>, frames: &[Frame<'a>]) -> Type {
@@ -942,6 +1068,11 @@ impl<'a, 'r> ExprTypes<'a, 'r> {
         match access {
             Access::Property(access) => match &access.property {
                 ClassLikeMemberSelector::Identifier(name) => {
+                    if is_this(access.object)
+                        && let Some(class) = self.anonymous_class(frames)
+                    {
+                        return self.anonymous_property(class, &lossy(name.value));
+                    }
                     let receiver = self.expr(access.object, frames);
                     self.resolver.property_type(&receiver, &lossy(name.value), &context)
                 }
@@ -996,6 +1127,33 @@ fn class_templates(class: &ClassLike) -> Vec<&str> {
 }
 
 /// `(...)`: the only argument is the variadic placeholder.
+/// A closure or arrow function, maybe parenthesized.
+/// `$this`, maybe parenthesized.
+fn is_this(expr: &Expression<'_>) -> bool {
+    match expr {
+        Expression::Parenthesized(inner) => is_this(inner.expression),
+        Expression::Variable(Variable::Direct(direct)) => direct.name == b"$this",
+        _ => false,
+    }
+}
+
+/// Collects a file's anonymous classes.
+struct AnonymousClasses;
+
+impl<'a> Walker<'a, 'a, Vec<&'a AnonymousClass<'a>>> for AnonymousClasses {
+    fn walk_in_anonymous_class(&self, node: &'a AnonymousClass<'a>, found: &mut Vec<&'a AnonymousClass<'a>>) {
+        found.push(node);
+    }
+}
+
+fn is_closure_value(expr: &Expression<'_>) -> bool {
+    match expr {
+        Expression::Parenthesized(inner) => is_closure_value(inner.expression),
+        Expression::Closure(_) | Expression::ArrowFunction(_) => true,
+        _ => false,
+    }
+}
+
 fn is_first_class_callable(arguments: &PartialArgumentList<'_>) -> bool {
     let mut arguments = arguments.arguments.iter();
     matches!((arguments.next(), arguments.next()), (Some(PartialArgument::VariadicPlaceholder(_)), None))
@@ -1003,7 +1161,7 @@ fn is_first_class_callable(arguments: &PartialArgumentList<'_>) -> bool {
 
 /// The shape key a literal key type stands for (PHP casts numeric strings
 /// such as `'1'` to ints, and bools to `0`/`1`).
-fn shape_key(key: &Type) -> Option<ShapeKey> {
+pub(crate) fn shape_key(key: &Type) -> Option<ShapeKey> {
     match key {
         Type::LiteralInt(value) => Some(ShapeKey::Int(*value)),
         Type::LiteralString(value) => match value.parse::<i64>() {

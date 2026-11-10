@@ -46,6 +46,7 @@ use mago_syntax::cst::{
 use super::{ExprTypes, Frame, MAX_SHAPE_FIELDS, TOP_LEVEL, falsy_removed, shape_key};
 use crate::summary::{AssertWhen, type_hint};
 use crate::types::ops::{Op, is_float, is_int, op_type};
+use crate::types::resolve::{Bindings, substitute};
 use crate::types::{Shape, ShapeField, ShapeKey, Signature, Type};
 
 /// How many passes a loop body gets before the variables still changing
@@ -258,6 +259,10 @@ pub(super) struct Builder<'t, 'a, 'r> {
     /// visited gives its variables: writes of those variables in it store
     /// the documented type.
     documented: Vec<(Vec<u8>, Type)>,
+    /// Variables bound by reference to an array element or a property of
+    /// unknown type (`$x = &$info['k']`): writes into them build a shape
+    /// from nothing, as if the element were new.
+    aliases: HashSet<Vec<u8>>,
 }
 
 fn name_of<'a>(variable: &DirectVariable<'a>) -> &'a [u8] {
@@ -274,6 +279,7 @@ impl<'t, 'a, 'r> Builder<'t, 'a, 'r> {
             loops: Vec::new(),
             tries: Vec::new(),
             documented: Vec::new(),
+            aliases: HashSet::new(),
         };
         builder.body();
         let mut flow = builder.flow.borrow_mut();
@@ -1010,6 +1016,14 @@ impl<'t, 'a, 'r> Builder<'t, 'a, 'r> {
                     } else {
                         self.types.assignment(assignment, self.frames)
                     };
+                    if let Expression::Variable(Variable::Direct(direct)) = assignment.lhs {
+                        let name = name_of(direct).to_vec();
+                        if ty == Type::Mixed && is_element_reference(assignment.rhs) {
+                            self.aliases.insert(name);
+                        } else {
+                            self.aliases.remove(&name);
+                        }
+                    }
                     self.assign_to(assignment.lhs, ty);
                 } else {
                     self.expr(assignment.lhs);
@@ -1122,7 +1136,8 @@ impl<'t, 'a, 'r> Builder<'t, 'a, 'r> {
         match base {
             Expression::Variable(Variable::Direct(direct)) => {
                 let state = self.env.get(name_of(direct));
-                (state.defined != Defined::No).then_some(state.ty)
+                let fresh = state.ty == Type::Mixed && self.aliases.contains(name_of(direct));
+                (state.defined != Defined::No && !fresh).then_some(state.ty)
             }
             Expression::ArrayAccess(access) => {
                 let outer = self.current(access.array)?;
@@ -1146,7 +1161,7 @@ impl<'t, 'a, 'r> Builder<'t, 'a, 'r> {
                 let signature = may_write(&call.argument_list, call.object).then(|| {
                     let receiver = self.type_of(call.object);
                     self.keyed_closures(&receiver, &call.method, &call.argument_list);
-                    self.types.method_signature(&receiver, &call.method, self.frames)
+                    self.method_signature(&receiver, &call.method, &call.argument_list)
                 });
                 (&call.argument_list, signature.flatten())
             }
@@ -1156,7 +1171,7 @@ impl<'t, 'a, 'r> Builder<'t, 'a, 'r> {
                 let signature = may_write(&call.argument_list, call.object).then(|| {
                     let receiver = self.type_of(call.object).without_null();
                     self.keyed_closures(&receiver, &call.method, &call.argument_list);
-                    self.types.method_signature(&receiver, &call.method, self.frames)
+                    self.method_signature(&receiver, &call.method, &call.argument_list)
                 });
                 (&call.argument_list, signature.flatten())
             }
@@ -1167,7 +1182,7 @@ impl<'t, 'a, 'r> Builder<'t, 'a, 'r> {
                 if may_write(&call.argument_list, call.class) {
                     self.keyed_closures(&class, &call.method, &call.argument_list);
                 }
-                (&call.argument_list, self.types.method_signature(&class, &call.method, self.frames))
+                (&call.argument_list, self.method_signature(&class, &call.method, &call.argument_list))
             }
         };
         self.arguments(arguments, signature.as_ref());
@@ -1204,7 +1219,15 @@ impl<'t, 'a, 'r> Builder<'t, 'a, 'r> {
                 let scope = self.types.scope(identifier.span().start.offset);
                 let name = String::from_utf8_lossy(identifier.value());
                 let resolved = scope.resolve(crate::names::NameKind::Function, &name);
-                resolved.resolution.candidates().find_map(|fqn| self.types.function_signature(fqn))
+                resolved.resolution.candidates().find_map(|fqn| {
+                    let signature = self.types.function_signature(fqn)?;
+                    let bindings = if needs_bindings(&signature, &call.argument_list) {
+                        self.types.function_call_bindings(fqn, &call.argument_list, self.frames)
+                    } else {
+                        Bindings::new()
+                    };
+                    Some((signature, bindings))
+                })
             }
             _ => None,
         };
@@ -1218,6 +1241,23 @@ impl<'t, 'a, 'r> Builder<'t, 'a, 'r> {
 
     fn selector(&mut self, selector: &'a ClassLikeMemberSelector<'a>) {
         self.node(Node::ClassLikeMemberSelector(selector));
+    }
+
+    /// Method `selector`'s signature on `receiver`, with its own templates
+    /// bound for this call when a closure passed to it needs them.
+    fn method_signature(
+        &self,
+        receiver: &Type,
+        selector: &ClassLikeMemberSelector<'_>,
+        arguments: &'a ArgumentList<'a>,
+    ) -> Option<(Signature, Bindings)> {
+        let signature = self.types.method_signature(receiver, selector, self.frames)?;
+        let bindings = if needs_bindings(&signature, arguments) {
+            self.types.method_call_bindings(receiver, selector, arguments, self.frames)
+        } else {
+            Bindings::new()
+        };
+        Some((signature, bindings))
     }
 
     /// The closures passed to method `selector` of `receiver` with a string
@@ -1269,7 +1309,13 @@ impl<'t, 'a, 'r> Builder<'t, 'a, 'r> {
 
     /// The arguments of a call; those passed to a by-reference parameter
     /// are written (`preg_match($p, $s, $matches)` creates `$matches`).
-    fn arguments(&mut self, arguments: &'a ArgumentList<'a>, signature: Option<&Signature>) {
+    /// `signature` comes with the callee's own templates bound for this
+    /// call, which type the parameters of closures passed to it.
+    fn arguments(&mut self, arguments: &'a ArgumentList<'a>, signature: Option<&(Signature, Bindings)>) {
+        let (signature, bindings) = match signature {
+            Some((signature, bindings)) => (Some(signature), Some(bindings)),
+            None => (None, None),
+        };
         for (position, argument) in arguments.arguments.iter().enumerate() {
             let value = argument_value(argument);
             let param = signature.and_then(|signature| match argument {
@@ -1282,9 +1328,13 @@ impl<'t, 'a, 'r> Builder<'t, 'a, 'r> {
                 }
             });
             if let (Some(param), Some(start)) = (param, function_start(value))
-                && let Some(expected) = expected_parameters(&param.ty)
+                && let Some(expected) = match bindings.filter(|bindings| !bindings.is_empty()) {
+                    Some(bindings) => expected_parameters(&substitute(&param.ty, bindings)),
+                    None => expected_parameters(&param.ty),
+                }
             {
-                self.types.expected.borrow_mut().insert(start, expected);
+                // A provider's answer (`whereHas('posts', fn ($q) …)`) wins.
+                self.types.expected.borrow_mut().entry(start).or_insert(expected);
             }
             match param {
                 Some(param) if param.by_ref && is_destination(value) => {
@@ -1831,6 +1881,21 @@ fn function_start(expr: &Expression<'_>) -> Option<u32> {
     }
 }
 
+/// True when a closure with an untyped parameter is passed where the
+/// signature names a template: binding the callee's templates may type it
+/// (`whereHas('posts', fn ($q) …)` expects `Closure(Builder<TRelatedModel>)`).
+fn needs_bindings(signature: &Signature, arguments: &ArgumentList<'_>) -> bool {
+    let generic = signature.params.iter().any(|param| {
+        let mut found = false;
+        param.ty.map(&mut |member| {
+            found |= matches!(member, Type::Template(_));
+            None
+        });
+        found
+    });
+    generic && arguments.arguments.iter().any(|argument| has_untyped_parameter(argument_value(argument)))
+}
+
 /// The parameter types of the callable a parameter of type `ty` expects
 /// (`callable(T): U`, `Closure(T): U`, either of them in a union); a type
 /// naming a template or a relative class is unknown (`mixed`) here.
@@ -1848,6 +1913,17 @@ fn expected_parameters(ty: &Type) -> Option<Vec<Type>> {
         if open { Type::Mixed } else { ty.clone() }
     };
     Some(signature.params.iter().map(|param| concrete(&param.ty)).collect())
+}
+
+/// `&$a['k']` or `&$o->p`: a reference to an array element or a property.
+fn is_element_reference(expr: &Expression<'_>) -> bool {
+    match expr {
+        Expression::Parenthesized(inner) => is_element_reference(inner.expression),
+        Expression::UnaryPrefix(UnaryPrefix { operator: UnaryPrefixOperator::Reference(_), operand }) => {
+            matches!(operand, Expression::ArrayAccess(_) | Expression::Access(_))
+        }
+        _ => false,
+    }
 }
 
 /// Something a value can be stored into.
@@ -1918,10 +1994,53 @@ fn is_empty_array(expr: &Expression<'_>) -> bool {
     }
 }
 
+/// Shapes with the same keys (and rest), and nothing else: one shape with
+/// each field [`generalized`], so an element growing in a loop
+/// (`$s['toc'][] = …`) keeps its key: `array{toc: list<V>}`.
+fn same_keys(ty: &Type) -> Option<Shape> {
+    let members = ty.members();
+    let mut shapes = members.iter().map(|member| match member {
+        Type::Shape(shape) if !shape.fields.is_empty() => Some(shape),
+        _ => None,
+    });
+    let first = shapes.next()??;
+    let keys = |shape: &Shape| {
+        let mut keys: Vec<ShapeKey> = shape.fields.iter().map(|field| field.key.clone()).collect();
+        keys.sort_by_key(|key| format!("{key:?}"));
+        keys
+    };
+    let expected = keys(first);
+    let mut all = vec![first];
+    for shape in shapes {
+        let shape = shape?;
+        if keys(shape) != expected || shape.rest != first.rest || shape.list != first.list {
+            return None;
+        }
+        all.push(shape);
+    }
+    let fields = first
+        .fields
+        .iter()
+        .map(|field| {
+            let same = all.iter().filter_map(|shape| shape.field(&field.key));
+            let ty = Type::union(same.clone().map(|other| other.ty.clone()));
+            ShapeField {
+                key: field.key.clone(),
+                ty: generalized(&ty),
+                optional: same.clone().any(|other| other.optional),
+            }
+        })
+        .collect();
+    Some(Shape { list: first.list, fields, rest: first.rest.clone() })
+}
+
 /// A type that changes from one loop pass to the next, made general so the
 /// passes converge: literals widened, shapes turned into `list<V>` or
 /// `array<K, V>` (possibly empty when `array{}` was among them).
 fn generalized(ty: &Type) -> Type {
+    if let Some(shape) = same_keys(ty) {
+        return Type::Shape(Box::new(shape));
+    }
     let mut out = Vec::new();
     let mut empty = false;
     for member in ty.widen().members() {
@@ -1990,7 +2109,18 @@ fn put_one(base: &Type, key: Option<&Type>, value: Type) -> Type {
                 Type::Array { key: Box::new(key_type(key)), value: Box::new(value.widen()), non_empty: true }
             }
         },
-        Type::Shape(shape) if shape.rest.is_none() => {
+        // A known key written into an array whose values aren't known is
+        // remembered (`$a['k'] = []; … foreach ($a['k'] as …)`), the rest
+        // kept as it was.
+        Type::Array { key: old_key, value: old, .. } if **old == Type::Mixed && literal.is_some() && key.is_some() => {
+            let literal = literal.unwrap_or(ShapeKey::Int(0));
+            Type::Shape(Box::new(Shape {
+                list: false,
+                fields: vec![ShapeField { key: literal, ty: value, optional: false }],
+                rest: Some(((**old_key).clone(), Type::Mixed)),
+            }))
+        }
+        Type::Shape(shape) => {
             let next = shape
                 .fields
                 .iter()
@@ -2002,6 +2132,8 @@ fn put_one(base: &Type, key: Option<&Type>, value: Type) -> Type {
                 .unwrap_or(0)
                 .max(0);
             let literal = match key {
+                // Past an unknown rest the next index isn't known.
+                None if shape.rest.is_some() => None,
                 None => Some(ShapeKey::Int(next)),
                 Some(_) => literal,
             };
@@ -2009,20 +2141,22 @@ fn put_one(base: &Type, key: Option<&Type>, value: Type) -> Type {
                 Some(literal) => {
                     let mut fields = shape.fields.clone();
                     let appended = !fields.iter().any(|field| field.key == literal);
-                    let list = (shape.list || shape.fields.is_empty()) && (!appended || literal == ShapeKey::Int(next));
+                    let list = (shape.list || shape.fields.is_empty())
+                        && (!appended || literal == ShapeKey::Int(next))
+                        && shape.rest.is_none();
                     match fields.iter_mut().find(|field| field.key == literal) {
                         Some(field) => *field = ShapeField { key: literal, ty: value, optional: false },
                         None => fields.push(ShapeField { key: literal, ty: value, optional: false }),
                     }
                     if fields.len() > MAX_SHAPE_FIELDS {
-                        let shape = Shape { list, fields, rest: None };
+                        let shape = Shape { list, fields, rest: shape.rest.clone() };
                         return Type::Array {
                             key: Box::new(shape.key_type().widen()),
                             value: Box::new(shape.value_type().widen()),
                             non_empty: true,
                         };
                     }
-                    Type::Shape(Box::new(Shape { list, fields, rest: None }))
+                    Type::Shape(Box::new(Shape { list, fields, rest: shape.rest.clone() }))
                 }
                 None => Type::Array {
                     key: Box::new(Type::union([shape.key_type().widen(), key.map_or(Type::Int, key_type)])),

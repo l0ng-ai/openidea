@@ -413,6 +413,9 @@ impl<'a> Resolver<'a> {
     /// inferred from the arguments; `None` when it doesn't exist.
     pub fn function_call(&self, fqn: &str, args: Args<'_>) -> Option<Type> {
         let ty = self.function_at(fqn, 0)?;
+        if let Some(ty) = element_call(fqn, args) {
+            return Some(ty);
+        }
         Some(self.function_generics(fqn, ty, Some(args)))
     }
 
@@ -449,6 +452,42 @@ impl<'a> Resolver<'a> {
             None
         });
         found
+    }
+
+    /// The method's own `@template`s on a call of `name` on `receiver`:
+    /// inferred from `args`, else their fallbacks (the default, the `of`
+    /// bound, else `mixed`).
+    pub fn method_call_bindings(&self, receiver: &Type, name: &str, args: Args<'_>, context: &Context) -> Bindings {
+        let mut found = None;
+        self.on_members(receiver, context, &mut |receiver| {
+            if found.is_none() {
+                let model = self.class_model(receiver.class)?;
+                let method = model.method(name)?;
+                let own = self.method_templates(method);
+                let mut bindings = self.receiver_bindings(receiver, &method.declaring);
+                if !own.is_empty() {
+                    let params = self.method_params(method, &bindings);
+                    self.bind_call(&own, &params, Some(args), &mut bindings);
+                }
+                bindings.retain(|template, _| own.iter().any(|param| param.name == *template));
+                found = Some(bindings);
+            }
+            None
+        });
+        found.unwrap_or_default()
+    }
+
+    /// Function `fqn`'s own `@template`s on a call: inferred from `args`,
+    /// else their fallbacks.
+    pub fn function_call_bindings(&self, fqn: &str, args: Args<'_>) -> Bindings {
+        let Some(function) = self.decls.function(fqn) else { return Bindings::new() };
+        let doc = function.doc.as_deref();
+        let scope: Vec<&str> = doc.iter().flat_map(|doc| doc.local_type_names()).collect();
+        let own = template_params(doc, &scope);
+        let params = generics::declared_params(&function.params, doc, &scope);
+        let mut bindings = Bindings::new();
+        self.bind_call(&own, &params, Some(args), &mut bindings);
+        bindings
     }
 
     /// The type of `$receiver->name` / `Receiver::$name` (name without `$`).
@@ -958,6 +997,34 @@ impl Hierarchy for Resolver<'_> {
 
 /// `static` and `$this` replaced by the receiver (left alone when the
 /// receiver is itself one of them).
+/// The functions phpstorm-stubs mark `@meta` because what they return is an
+/// element of the array passed first, which PhpStorm reads from the
+/// argument; and what they return when there is none.
+const ELEMENT_FUNCTIONS: [(&str, bool); 7] = [
+    ("reset", false),
+    ("end", false),
+    ("prev", false),
+    ("next", false),
+    ("current", false),
+    ("array_pop", true),
+    ("array_shift", true),
+];
+
+/// What a call of one of the [`ELEMENT_FUNCTIONS`] returns: an element of
+/// its first argument, or `false` (`null` for `array_pop()`/`array_shift()`);
+/// `None` for other functions or an argument whose elements aren't known.
+fn element_call(fqn: &str, args: Args<'_>) -> Option<Type> {
+    let fqn = fqn.trim_start_matches('\\');
+    let (_, null) = ELEMENT_FUNCTIONS.iter().find(|(name, _)| fqn.eq_ignore_ascii_case(name))?;
+    let first = args().into_iter().next().filter(|arg| arg.name.is_none() && !arg.spread)?;
+    let element = crate::types::expr::iterable_value(&first.ty);
+    if element == Type::Mixed || element == Type::Never {
+        return None;
+    }
+    let none = if *null { Type::Null } else { Type::LiteralBool(false) };
+    Some(Type::union([element, none]))
+}
+
 fn bind_static(ty: &Type, this: &Type) -> Type {
     if matches!(this, Type::Relative(Relative::Static | Relative::This)) {
         return ty.clone();

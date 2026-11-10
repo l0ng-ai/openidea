@@ -861,7 +861,7 @@ The gaps that the follow-ups in `PROGRESS.md`, the review in `differential.md` a
 
   Tests: a fixture renaming a `define()` constant from its declaration and from a use, a fixture per kind of dynamic use, a host test that the rename result carries them, and a frontend test that the preview shows them.
 
-- [ ] Phase 9.2: Closure parameters and array flow
+- [x] Phase 9.2: Closure parameters and array flow
       Close the type-inference gaps listed under "Follow-ups" in `docs/php-engine/differential.md`:
   - **Closure parameters:** typed from an expected callable whose type names a method template. In `whereHas('posts', function ($query) …)`, `Closure(Builder<TRelatedModel>)` binds `TRelatedModel` to its bound, or better to the relation's model when the provider knows it. This is the most common untyped variable in Laravel code.
   - **By-reference aliases:** `$x = &$a['k']`.
@@ -873,6 +873,14 @@ The gaps that the follow-ups in `PROGRESS.md`, the review in `differential.md` a
   - **Inaccessible properties:** the magic `@property` wins for goto and hover when the real property isn't accessible from the caller.
 
   Run the comparison harness on the three corpora again. Hover must not drop below 98.1% or definition below 98.5%, and the new numbers go in `differential.md`. Tests: caret fixtures per case.
+
+- [ ] Phase 9.2.b: Inaccessible properties and the corpus rerun
+      What 9.2 left (it did the closure parameters, the array flow, `$this` in anonymous classes and literal callable parameters):
+  - **Inaccessible properties:** the magic `@property` wins for goto and hover when the real property isn't accessible from the caller (Symfony's `FileValidator` `$maxSize`, SimplePie's `$scheme`).
+  - **Closures passed to forwarded static calls:** `Post::whereHas('x', fn ($q) …)` goes through `Model::__callStatic`, so no signature binds the closure's parameter when the relation isn't known (the builder's `whereHas` does).
+  - Run the comparison harness on the three corpora again with 9.2's changes. Hover must not drop below 98.1% or definition below 98.5%, and the new numbers go in `differential.md`, with the 9.2 gaps that closed taken off its Follow-ups.
+
+  Tests: caret fixtures for goto and hover on a protected property with a `@property` tag, from outside and inside the class.
 
 - [ ] Phase 9.3: Type operators and mixins
       The type model approximates (`PROGRESS.md` 2.1/2.6):

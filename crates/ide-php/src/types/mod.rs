@@ -290,6 +290,14 @@ pub struct SignatureParam {
     pub variadic: bool,
 }
 
+impl Signature {
+    /// The signature with its return type widened ([`Type::widen`]) and
+    /// its parameters as they are.
+    fn widen_return(&self) -> Self {
+        Self { params: self.params.clone(), return_type: self.return_type.as_ref().map(Type::widen) }
+    }
+}
+
 impl SignatureParam {
     /// A parameter a caller must pass.
     pub fn is_required(&self) -> bool {
@@ -443,13 +451,17 @@ impl Type {
     /// The type with literals widened to their base type (`1` → `int`,
     /// `'a'` → `string`, `true` → `bool`), everywhere inside it. In a union
     /// with other types `true`/`false` stay: `int|false` (`strpos()`, and
-    /// WordPress's `T|false` returns) says more than `int|bool`.
+    /// WordPress's `T|false` returns) says more than `int|bool`. The
+    /// parameters of a callable signature keep their literals: they are what
+    /// the callable accepts (`callable('out'|'err', string)`), not a value.
     pub fn widen(&self) -> Self {
         self.map(&mut |ty| match ty {
             Self::LiteralInt(_) => Some(Self::Int),
             Self::LiteralFloat(_) => Some(Self::Float),
             Self::LiteralString(_) => Some(Self::string()),
             Self::LiteralBool(_) => Some(Self::Bool),
+            Self::Callable(Some(signature)) => Some(Self::Callable(Some(Box::new(signature.widen_return())))),
+            Self::Closure(Some(signature)) => Some(Self::Closure(Some(Box::new(signature.widen_return())))),
             Self::Union(members) if members.iter().any(|m| matches!(m, Self::LiteralBool(_))) => {
                 Some(Self::union(members.iter().map(|m| match m {
                     Self::LiteralBool(_) => m.clone(),

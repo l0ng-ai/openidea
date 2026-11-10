@@ -851,7 +851,7 @@ function documented() { return 1; }
             r"~ returns: null | Lib\Repo->find()",
             // Static calls carry the Laravel provider's payload (facades, models).
             r"~ returns: laravel:call:create:::(Lib\Repo, Lib\Repo->create()) ?? Lib\Repo->create()",
-            "~ returns: non-empty-list",
+            r"~ returns: list{mixed, mixed, class-string<Lib\Repo>}",
             "~ returns: mixed",
             "~ returns: string",
             "~ returns: int",

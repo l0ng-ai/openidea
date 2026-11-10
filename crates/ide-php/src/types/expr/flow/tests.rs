@@ -419,3 +419,108 @@ fn by_reference_arguments_keep_a_type_that_fits() {
     let table: Vec<(&str, &str)> = cases.iter().map(String::as_str).zip(expected).collect();
     check(&table);
 }
+
+#[test]
+fn closure_parameters_from_the_callees_templates() {
+    let bounded =
+        "/**\n * @template T of Book\n * @param callable(T): void $f\n */\nfunction each_of(callable $f) {}\n";
+    let inferred = "/**\n * @template T\n * @param T $x\n * @param callable(T): void $f\n */\nfunction with_value($x, callable $f) {}\n";
+    let query = "/** @template TModel */\nclass Query {}\nclass Rel {\n    /**\n     * @template TRelated of Book\n     * @param (\\Closure(Query<TRelated>): mixed)|null $f\n     */\n    public function whereHas(string $relation, ?\\Closure $f = null) {}\n    /**\n     * @template TValue\n     * @param TValue $value\n     * @param callable(TValue): void $f\n     */\n    public static function when($value, callable $f) {}\n}\n";
+    let cases = [
+        // A template nothing else binds is its bound.
+        format!("{bounded}each_of(function ($b) {{ $b/*|*/; }});"),
+        // One bound by another argument.
+        format!("{inferred}with_value(new Author, fn ($a) => $a/*|*/);"),
+        format!("{inferred}with_value(f: fn ($a) => $a/*|*/, x: new Author);"),
+        // A method's own template inside a generic argument.
+        format!("{query}(new Rel)->whereHas('posts', function ($q) {{ $q/*|*/; }});"),
+        format!("{query}Rel::when(new Book, fn ($b) => $b/*|*/);"),
+    ];
+    let expected = [r"Lib\Book", r"Lib\Author", r"Lib\Author", r"App\Query<Lib\Book>", r"Lib\Book"];
+    let table: Vec<(&str, &str)> = cases.iter().map(String::as_str).zip(expected).collect();
+    check(&table);
+}
+
+#[test]
+fn literal_types_inside_callable_signatures_stay() {
+    let lit = "/** @param callable('out'|'err', string): void $f */\nfunction run(callable $f) { $f/*|*/; }";
+    check(&[
+        (lit, "callable('out'|'err', string): void"),
+        // A closure's inferred return is a value: widened.
+        ("$f = fn () => 'a';\n$f/*|*/;", "Closure(): string"),
+        // The closure's parameter shows its widened type.
+        (
+            "/** @param callable('out'|'err'): void $f */\nfunction run(callable $f) {}\nrun(function ($type) { $type/*|*/; });",
+            "string",
+        ),
+    ]);
+}
+
+#[test]
+fn array_flow_through_references_and_written_elements() {
+    check(&[
+        // A reference to a known element is that element.
+        ("$a = ['k' => new Book];\n$x = &$a['k'];\n$x/*|*/;", r"Lib\Book"),
+        // To an unknown one: what is written through it builds a shape.
+        (
+            "function f(array $info) { $x = &$info['asf']; $x['raw'] = []; $x['n'] = 1; return $x/*|*/; }",
+            "array{raw: array{}, n: int}",
+        ),
+        ("function f($o) { $x = &$o->data; $x['k'] = new Book; return $x['k']/*|*/; }", r"Lib\Book"),
+        // A plain assignment ends the alias.
+        ("function f(array $info, $m) { $x = &$info['asf']; $x = $m; $x['k'] = 1; return $x/*|*/; }", "mixed"),
+        // A key written into an array of unknown values is remembered.
+        ("function f(array $s) { $s['toc'] = [new Book]; return $s['toc']/*|*/; }", r"list{Lib\Book}"),
+        ("function f(array $s) { $s['toc'] = [new Book]; foreach ($s['toc'] as $k => $b) { $b/*|*/; } }", r"Lib\Book"),
+        (
+            "function f(array $s) { $s['toc'] = []; foreach ($rows as $r) { $s['toc'][] = new Book; } foreach ($s['toc'] as $k => $b) { $k/*|*/; } }",
+            "non-negative-int",
+        ),
+        ("function f(array $s) { $s['toc'] = 1; return $s/*|*/; }", "array{toc: int, ...}"),
+        // Typed values keep merging as before.
+        (
+            "/** @param array<string, int> $s */\nfunction f(array $s) { $s['k'] = 2; return $s/*|*/; }",
+            "non-empty-array<string, int>",
+        ),
+    ]);
+}
+
+#[test]
+fn destructuring_returned_array_literals() {
+    check(&[
+        ("function g() { return [new Book, new Author]; }\n[$b, $a] = g();\n$a/*|*/;", r"Lib\Author"),
+        (
+            "class G {\n    protected function pair() { return [new Book, new Author]; }\n    public function f() { [$b, $a] = $this->pair(); return $b/*|*/; }\n}",
+            r"Lib\Book",
+        ),
+        ("function g() { return ['a' => new Book, 'n' => 1]; }\n['n' => $n] = g();\n$n/*|*/;", "int"),
+        // An element only known with other files is `mixed` in the shape.
+        ("function g() { return [untyped(), new Book]; }\n[$u, $b] = g();\n$b/*|*/;", r"Lib\Book"),
+        // Other literals keep their array type.
+        ("function g($k) { return [$k => new Book]; }\ng()/*|*/;", r"non-empty-array<Lib\Book>"),
+    ]);
+}
+
+#[test]
+fn this_in_anonymous_classes() {
+    check(&[
+        ("$o = new class { public ?string $dir = null; public function f() { return $this->dir/*|*/; } };", "?string"),
+        (
+            "$o = new class(1) { public function __construct(private Book $book) {} public function f() { return $this->book/*|*/; } };",
+            r"Lib\Book",
+        ),
+        (
+            "$o = new class { public function b(): Book {} public function f() { return $this->b()/*|*/; } };",
+            r"Lib\Book",
+        ),
+        // Inherited members.
+        ("$o = new class extends Book { public function f() { return $this->author/*|*/; } };", r"?Lib\Author"),
+        ("$o = new class extends Book { public function f() { return $this->author()/*|*/; } };", r"?Lib\Author"),
+        (
+            "$o = new class extends Book { public function f() { if ($a = $this->author) { $a/*|*/; } } };",
+            r"Lib\Author",
+        ),
+        // A named class nested in nothing anonymous is unchanged.
+        ("class K { public Book $b; public function f() { return $this->b/*|*/; } }", r"Lib\Book"),
+    ]);
+}

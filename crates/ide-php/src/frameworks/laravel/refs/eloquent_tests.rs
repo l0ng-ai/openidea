@@ -216,6 +216,12 @@ fn types_relation_closures_collections_and_factories() {
         ("Post::whereHas('comments', function ($q) { $q/*|*/; });", builder("Comment")),
         ("Post::with(['comments.user' => fn ($q) => $q/*|*/]);", builder("User")),
         ("$user->posts()->whereHas('tags', fn ($q) => $q/*|*/);", builder("Tag")),
+        // An unknown relation: the callback's `Builder<TRelatedModel>` with
+        // the template's bound.
+        (
+            "Post::query()->whereHas('nothing', fn ($q) => $q/*|*/);",
+            "Illuminate\\Database\\Eloquent\\Builder<Illuminate\\Database\\Eloquent\\Model>".to_owned(),
+        ),
         ("Post::all()/*|*/;", collection("Post")),
         ("$user->posts()->get()/*|*/;", collection("Post")),
         ("Post::where('status', 'draft')->get()/*|*/;", collection("Post")),

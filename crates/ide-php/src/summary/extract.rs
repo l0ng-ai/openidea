@@ -334,12 +334,12 @@ impl Extractor<'_> {
                 (param.name.clone(), ty)
             })
             .collect();
-        Infer { scope: &self.scope, params, literals: false, locals: Vec::new() }
+        Infer { scope: &self.scope, params, literals: false, locals: Vec::new(), shapes: false }
     }
 
     /// The type of a constant value or property default.
     fn value_type(&self, value: &Expression<'_>, literals: bool) -> LazyType {
-        Infer { scope: &self.scope, params: Vec::new(), literals, locals: Vec::new() }.expr(value)
+        Infer { scope: &self.scope, params: Vec::new(), literals, locals: Vec::new(), shapes: false }.expr(value)
     }
 
     fn class_like(

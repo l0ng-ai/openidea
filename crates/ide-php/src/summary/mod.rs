@@ -65,9 +65,10 @@ use crate::types::LazyType;
 /// fields of `rules()` methods; 16: created and partial migration
 /// tables, inferred returns of raw Eloquent relations; 18: dropped and
 /// renamed columns, counted relations, inferred returns of raw
-/// `Attribute` accessors; 19: `config()` parts of route file paths), so
+/// `Attribute` accessors; 19: `config()` parts of route file paths; 20:
+/// shapes of inferred array literals), so
 /// stored summaries are rebuilt.
-pub const SCHEMA_VERSION: u32 = 19;
+pub const SCHEMA_VERSION: u32 = 20;
 
 /// A source location: byte offsets (end exclusive) and the IDE range.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Hash, Serialize, Deserialize)]

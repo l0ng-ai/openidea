@@ -505,6 +505,10 @@ namespace Illuminate\Database\Eloquent {
         public function select($columns = ['*']): static { return $this; }
         public function with($relations, $callback = null): static { return $this; }
         public function has($relation, $operator = '>=', $count = 1, $boolean = 'and', ?\Closure $callback = null): static { return $this; }
+        /**
+         * @template TRelatedModel of \Illuminate\Database\Eloquent\Model
+         * @param  (\Closure(\Illuminate\Database\Eloquent\Builder<TRelatedModel>): mixed)|null  $callback
+         */
         public function whereHas($relation, ?\Closure $callback = null, $operator = '>=', $count = 1): static { return $this; }
         public function withCount($relations): static { return $this; }
         public function join($table, $first, $operator = null, $second = null, $type = 'inner', $where = false): static { return $this; }

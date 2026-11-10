@@ -255,3 +255,28 @@ final class Expectation {
         assert!(r.class_model(pest).unwrap().method("toBe").is_some());
     }
 }
+
+/// phpstorm-stubs mark `reset()`, `end()`, `array_pop()` and the like
+/// `@meta`: they return an element of the array passed to them.
+#[test]
+fn element_functions_return_an_element_of_their_argument() {
+    let stubs = "<?php\n/** @meta */\nfunction reset(object|array &$array): mixed {}\n/** @meta */\nfunction end(object|array &$array): mixed {}\n/** @meta */\nfunction array_pop(array &$array): mixed {}\nfunction count(array $a): int {}\n";
+    let decls = summaries(&[stubs]);
+    let cache = TypeCache::new();
+    let r = Resolver::new(&decls, &cache, 1);
+    let call = |fqn: &str, arg: Type| {
+        let args = move || vec![CallArg::positional(arg.clone())];
+        r.function_call(fqn, &args)
+    };
+    let book = || named(r"App\Book");
+    let books = Type::list_of(book());
+    assert_eq!(call("reset", books.clone()), Some(Type::union([book(), Type::LiteralBool(false)])));
+    assert_eq!(call(r"\end", books.clone()), Some(Type::union([book(), Type::LiteralBool(false)])));
+    assert_eq!(call("array_pop", books.clone()), Some(book().nullable()));
+    let rows = Type::array_of(Type::string(), Type::array());
+    assert_eq!(call("reset", rows).map(|ty| ty.to_string()), Some("array|false".to_owned()));
+    // Unknown elements, and other functions, keep the declared type.
+    assert_eq!(call("reset", Type::array()), Some(Type::Mixed));
+    assert_eq!(call("reset", Type::Mixed), Some(Type::Mixed));
+    assert_eq!(call("count", books), Some(Type::Int));
+}
