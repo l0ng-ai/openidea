@@ -224,7 +224,7 @@
   inset-block: 0;
   inset-inline-end: 0;
   width: 6px;
-  cursor: col-resize;
+  cursor: ew-resize;
   touch-action: none;
 }
 .columnResize:focus-visible {

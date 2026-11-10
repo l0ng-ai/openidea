@@ -47,6 +47,7 @@ import {
   copyText,
   hideNativeScrollbar,
   lazyComponent,
+  lockDragCursor,
   Scrollbar,
 } from "@/ui";
 import { hasPrimaryModifier } from "@/platform/keymap";
@@ -1888,10 +1889,17 @@ function LogColumnHeader({
     element: HTMLElement;
     pointerId: number;
   } | null>(null);
-  const resizeDrag = useRef<{ x: number; width: number; element: HTMLElement; pointerId: number } | null>(null);
+  const resizeDrag = useRef<{
+    x: number;
+    width: number;
+    element: HTMLElement;
+    pointerId: number;
+    releaseCursor: () => void;
+  } | null>(null);
   const cancel = useCallback(() => {
     const captures = [press.current, resizeDrag.current];
     press.current = null;
+    resizeDrag.current?.releaseCursor();
     resizeDrag.current = null;
     for (const capture of captures)
       if (capture?.element.hasPointerCapture?.(capture.pointerId))
@@ -1993,7 +2001,13 @@ function LogColumnHeader({
             if (e.button !== 0) return;
             e.preventDefault();
             e.stopPropagation();
-            resizeDrag.current = { x: e.clientX, width, element: e.currentTarget, pointerId: e.pointerId };
+            resizeDrag.current = {
+              x: e.clientX,
+              width,
+              element: e.currentTarget,
+              pointerId: e.pointerId,
+              releaseCursor: lockDragCursor("ew-resize"),
+            };
             e.currentTarget.setPointerCapture(e.pointerId);
           }}
           onPointerMove={(e) => {
@@ -2001,13 +2015,16 @@ function LogColumnHeader({
               resize(resizeDrag.current.width + e.clientX - resizeDrag.current.x);
           }}
           onPointerUp={(e) => {
+            resizeDrag.current?.releaseCursor();
             resizeDrag.current = null;
             if (e.currentTarget.hasPointerCapture(e.pointerId)) e.currentTarget.releasePointerCapture(e.pointerId);
           }}
           onPointerCancel={() => {
+            resizeDrag.current?.releaseCursor();
             resizeDrag.current = null;
           }}
           onLostPointerCapture={() => {
+            resizeDrag.current?.releaseCursor();
             resizeDrag.current = null;
           }}
           onKeyDown={(e) => {
