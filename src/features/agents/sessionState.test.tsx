@@ -158,7 +158,8 @@ describe("conversation rows", () => {
     expect(author.parentElement?.nextElementSibling?.firstElementChild).toHaveClass(styles.agentMessage!);
     const quote = within(stream()).getAllByRole("button", { name: "Quote Reply" });
     const copy = within(stream()).getAllByRole("button", { name: "Copy Markdown" });
-    expect(quote).toHaveLength(3);
+    expect(quote).toHaveLength(2);
+    expect(copy).toHaveLength(2);
     for (const button of [...quote, ...copy]) {
       expect(button.textContent).toBe("");
       expect(button.querySelector("svg path")).not.toBeNull();
@@ -209,26 +210,27 @@ describe("conversation rows", () => {
     },
   );
 
-  it("anchors every agent footer with its time before the hover actions", async () => {
+  it("shows the turn time and actions only below its final nonempty reply", async () => {
     backend.entries.set("A", [
       { type: "user", text: "Question", attachments: [], steered: false, sentMs: 1000, doneMs: 13000 },
       { type: "agent", text: "First reply" },
       tool("read"),
       { type: "agent", text: "Final reply" },
+      { type: "agent", text: " " },
     ]);
     useAgents.setState({ entries: new Map(backend.entries) });
     render(<SessionEditor input={input("A")} />);
     await screen.findByText("Final reply");
     const messages = stream().querySelectorAll(`.${styles.agentMessage}`);
-    expect(messages).toHaveLength(2);
-    for (const message of messages) {
-      const [card, footer] = message.children;
-      expect(card).toHaveClass(styles.agentCard!);
-      expect(footer).toHaveClass(styles.messageFooter!);
-      expect(footer?.firstElementChild).toHaveClass(styles.messageTime!);
-      expect(footer?.firstElementChild).toHaveTextContent("12s");
-      expect(footer?.lastElementChild).toHaveClass(styles.messageActions!);
-    }
+    expect(messages).toHaveLength(3);
+    expect(messages[0]?.querySelector(`.${styles.messageFooter}`)).toBeNull();
+    expect(messages[2]?.querySelector(`.${styles.messageFooter}`)).toBeNull();
+    const [card, footer] = messages[1]!.children;
+    expect(card).toHaveClass(styles.agentCard!);
+    expect(footer).toHaveClass(styles.messageFooter!);
+    expect(footer?.firstElementChild).toHaveClass(styles.messageTime!);
+    expect(footer?.firstElementChild).toHaveTextContent("12s");
+    expect(footer?.lastElementChild).toHaveClass(styles.messageActions!);
     expect(stream().querySelector(`.${styles.userMessage} > .${styles.messageFooter}`)).not.toBeNull();
   });
 

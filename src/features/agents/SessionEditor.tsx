@@ -680,6 +680,7 @@ function Stream({ loadError, task, entries, subagent, onOpenSubagent, finding, f
   const turns = useMemo(() => (entries && !subagent ? turnNumbers(entries) : null), [entries, subagent]);
   const replies = useMemo(() => (entries && !subagent ? replyTurns(entries) : null), [entries, subagent]);
   const times = useMemo(() => (entries && !subagent ? replyTimes(entries) : null), [entries, subagent]);
+  const lastReply = useMemo(() => entries?.findLastIndex((e) => e.type === "agent" && e.text.trim()), [entries]);
   const busy = subagent ? subagentWorking(subagent.status) : isBusy(task.status);
   const lastIndex = entries ? entries.length - 1 : -1;
   // Keep the row stable when earlier history is prepended; its author can move with the work.
@@ -707,12 +708,13 @@ function Stream({ loadError, task, entries, subagent, onOpenSubagent, finding, f
         turnCount={turns?.size ?? 0}
         reply={replies?.get(row.index)}
         time={times?.get(row.index) ?? null}
+        showFooter={subagent ? row.index === lastReply : !!replies?.has(row.index)}
         working={row.index === lastIndex && busy}
         onOpenSubagent={onOpenSubagent}
         onDiagramDrawn={onDiagramDrawn}
       />
     ),
-    [task, turns, replies, times, lastIndex, busy, onOpenSubagent, onDiagramDrawn],
+    [task, turns, replies, times, subagent, lastReply, lastIndex, busy, onOpenSubagent, onDiagramDrawn],
   );
   return (
     <div
@@ -1083,6 +1085,7 @@ const Entry = memo(function Entry({
   turnCount,
   reply,
   time,
+  showFooter,
   working,
   onOpenSubagent,
   onDiagramDrawn,
@@ -1095,6 +1098,7 @@ const Entry = memo(function Entry({
   reply?: ReplyTurn;
   /** When the turn this reply answered was asked and finished. */
   time?: ReplyTimes | null;
+  showFooter: boolean;
   working: boolean;
   onOpenSubagent: (id: string) => void;
   onDiagramDrawn: () => void;
@@ -1116,10 +1120,12 @@ const Entry = memo(function Entry({
               actions={false}
             />
           </div>
-          <div className={styles.messageFooter}>
-            <MessageTime sentMs={time?.sentMs ?? null} doneMs={time?.doneMs ?? null} at="done" />
-            <ReplyActions text={entry.text} task={task} reply={reply} turnCount={turnCount} />
-          </div>
+          {showFooter && (
+            <div className={styles.messageFooter}>
+              <MessageTime sentMs={time?.sentMs ?? null} doneMs={time?.doneMs ?? null} at="done" />
+              <ReplyActions text={entry.text} task={task} reply={reply} turnCount={turnCount} />
+            </div>
+          )}
         </div>
       );
     case "thought":
