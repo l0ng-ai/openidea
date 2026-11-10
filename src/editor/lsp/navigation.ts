@@ -130,11 +130,11 @@ function tailPath(path: string, keep = 2): string {
   return parts.length <= keep ? path : `…/${parts.slice(-keep).join("/")}`;
 }
 
-/** The `path:line` shown after a chooser row's name (full or `…`-tail outside the project). */
-function chooserWhere(root: string, path: string, line: number, fullPaths: boolean): string {
+/** The `path:line` after a chooser row's name: project-relative, or a `…`-tail outside the project. */
+function chooserWhere(root: string, path: string, line: number): string {
   if (isVirtualUri(path)) return `${virtualContainer(path)}:${line}`;
   const p = relativePath(root, path);
-  return `${p === path && !fullPaths ? tailPath(p) : p}:${line}`;
+  return `${p === path ? tailPath(p) : p}:${line}`;
 }
 
 /**
@@ -176,34 +176,27 @@ async function indexContainers(
 
 const SYMBOL_LIMIT = 500;
 
-/** Popup items for locations, lean rows like IDEA's chooser (extras per Settings › Editor › Location Choosers). */
+/** Popup items for locations: icon + name, the container, and `path:line` (IDEA's chooser rows). */
 export async function locationItems(locs: readonly DeclarationTarget[]): Promise<ListPopupItem[]> {
   const files = await readManyFileLines(locs.map((l) => l.path));
   const root = useProject.getState().project?.root ?? "";
-  const extras = editorPrefs().chooser;
   const names = locs.map((l) => targetLabel(files.get(l.path)?.[l.range.start.line] ?? "", l.range.start.col));
-  const indexed = extras.container ? await indexContainers(locs, names) : new Map<number, string>();
+  const indexed = await indexContainers(locs, names);
   return locs.map((l, i) => {
-    const where = extras.path ? chooserWhere(root, l.path, l.range.start.line + 1, extras.fullPath) : "";
-    const preview = extras.signature ? files.get(l.path)?.[l.range.start.line]?.trim() : undefined;
-    // Index symbols (syntax fallback): "name  container · file:line", like IDEA's chooser.
+    const where = chooserWhere(root, l.path, l.range.start.line + 1);
+    // Index symbols carry their container; server targets take the index's answer or the enclosing type.
     if (l.kind && l.name)
       return {
         id: `${i}`,
         label: l.name,
-        detail: [l.container && extras.container ? l.container : "", where].filter(Boolean).join(" · "),
-        preview,
+        detail: [l.container, where].filter(Boolean).join(" · "),
         symbol: l.kind,
         run: () => navigateTo(l),
       };
-    // The index knows the container precisely; the enclosing-type scan covers what it misses.
-    const container = extras.container ? (indexed.get(i) ?? enclosingType(files.get(l.path), l)) : null;
     return {
       id: `${i}`,
       label: names[i] ?? basename(l.path),
-      // The file name only duplicates the label when the name itself was found.
-      detail: [container, names[i] && extras.fileName ? basename(l.path) : "", where].filter(Boolean).join(" · "),
-      preview,
+      detail: [indexed.get(i) ?? enclosingType(files.get(l.path), l), where].filter(Boolean).join(" · "),
       icon: fileIconName(basename(l.path), l.path),
       run: () => navigateTo(l),
     };

@@ -2384,23 +2384,6 @@ export type CheckoutOutcome = { kind: "done" } |
  */
 { kind: "conflicts"; files: string[] };
 
-/**
- *  Editor › General › Location Choosers: which extras the location chooser rows show.
- *  Defaults keep the rows as they were before the settings existed (seamless upgrade).
- */
-export type ChooserSettings = {
-	/**  The target line's source preview after the name. */
-	signature?: boolean,
-	/**  The file name before the path. */
-	fileName?: boolean,
-	/**  The `path:line` after the name. */
-	path?: boolean,
-	/**  The declaring container (class / file) before the path of index symbols. */
-	container?: boolean,
-	/**  Full paths outside the project (else `…`-truncated tails). */
-	fullPath?: boolean,
-};
-
 export type ClassifiedReference = {
 	/**  Optional for older Java extensions; missing means unclassified. */
 	access?: ReferenceAccess | null,
@@ -3947,8 +3930,6 @@ export type EditorSettings_Deserialize = {
 	showGutterIcons?: boolean,
 	codeStyle?: CodeStyleSettings_Deserialize,
 	encodings?: EncodingSettings,
-	/**  Location chooser rows (Choose Declaration / Implementation): which extras to show. */
-	chooser?: ChooserSettings,
 };
 
 export type EditorSettings_Serialize = {
@@ -4003,8 +3984,6 @@ export type EditorSettings_Serialize = {
 	showGutterIcons: boolean,
 	codeStyle: CodeStyleSettings_Serialize,
 	encodings: EncodingSettings,
-	/**  Location chooser rows (Choose Declaration / Implementation): which extras to show. */
-	chooser: ChooserSettings,
 };
 
 /**  Editor › General › Editor Tabs. */
