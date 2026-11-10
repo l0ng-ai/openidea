@@ -188,7 +188,7 @@ export function DebugToolWindow() {
               className={clsx(styles.tab, tab === id && styles.tabActive)}
               onClick={() => setView({ session: active.startedAt, status: active.status, tab: id })}
             >
-              {label}
+              {tx(label)}
             </button>
           ))}
         </div>

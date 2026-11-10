@@ -2,6 +2,7 @@
 import { Fragment, type ReactNode } from "react";
 import { create } from "zustand";
 import { executeAction } from "@/platform/actions";
+import { tx } from "@/platform/i18n";
 import { isTauri } from "@/platform/ipc";
 import { EDIT_SCOPES_ACTION, useCustomScopeList } from "@/platform/search";
 import { Button, IconButton, Input, Select, T } from "@/ui";
@@ -77,7 +78,7 @@ export function ScopeFields({
               onChange({ ...value, kind, custom: kind === "custom" ? (value.custom ?? scopes[0]?.name) : value.custom })
             }
           />
-          <span>{kind === "file" && file ? `File '${file.split("/").pop()}'` : SCOPE_LABELS[kind]}</span>
+          <span>{kind === "file" && file ? tx`File '${file.split("/").pop()}'` : tx(SCOPE_LABELS[kind])}</span>
         </label>
       ))}
       {value.kind === "directory" && (
