@@ -468,7 +468,7 @@ fn javascript_tests_node_shell_and_compounds() {
     // Script text is the shell's own: `$HOME$` there is not a macro.
     let clean = get(&r, "clean");
     // IDEA writes `$PROJECT_DIR$` into script text too; the shell's own `$HOME`, `$1`, `$HOME$PATH` stay.
-    let root = dir.path().to_string_lossy();
+    let root = dir.path().to_string_lossy().replace('\\', "/");
     let line = format!("cd {root}/web && npm run dev && echo $HOME$PATH $1 $HOME");
     assert_eq!(clean.command, line);
     assert_eq!(clean.extras.params["script"], line);
