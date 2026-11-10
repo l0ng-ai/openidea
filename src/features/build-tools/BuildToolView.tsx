@@ -138,6 +138,7 @@ function Toolbar({ tool, selection }: { tool: BuildTool; selection: BuildNode[] 
       ) : (
         <IconButton icon="refresh" size="small" iconSize={16} action={`${tool}.reload`} />
       )}
+      {maven && <IconButton icon="folder-generated-source" size="small" iconSize={16} action="maven.generateSources" />}
       <IconButton icon="plus" size="small" iconSize={16} action={maven ? "maven.addProjects" : "gradle.linkProjects"} />
       <span className={styles.sep} />
       <IconButton
@@ -345,6 +346,12 @@ function BuildToolView({ tool }: { tool: BuildTool }) {
             void editorService().openFile(node.project.projectRoot ? node.project.pom : `${root}/${node.project.pom}`),
         },
         { kind: "action", action: "maven.reload", label: "Reload All Maven Projects" },
+        {
+          kind: "action",
+          action: "maven.generateSources",
+          arg: { pom: node.project.pom },
+          label: "Generate Sources and Update Folders",
+        },
         { kind: "action", action: "maven.executeGoal" },
         { kind: "action", action: "maven.analyzeDependencies", arg: { pom: node.project.pom } },
       );

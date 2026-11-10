@@ -659,7 +659,16 @@ export function activate(): () => void {
         run: async ({ arg }) => {
           await ensureConfigs();
           const config = configFromArg(arg);
-          if (config) await startRun(config);
+          if (!config) return;
+          // `{ config, onExit }`: told when the process exits, or right away when it didn't start.
+          const onExit = (arg as { onExit?: (code: number | null, stopped: boolean) => void } | null)?.onExit;
+          if (typeof onExit !== "function") {
+            await startRun(config);
+            return;
+          }
+          const session = await startRun(config, undefined, undefined, { onExit });
+          if (!session || session.status === "failed") onExit(null, false);
+          else if (session.runId === null && session.status === "finished") onExit(session.exitCode, !!session.stopped);
         },
       },
       {
