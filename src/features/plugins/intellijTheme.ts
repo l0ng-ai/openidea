@@ -89,6 +89,7 @@ export const ICLS_COLORS: Record<string, string[]> = {
   CARET_COLOR: ["--caret"],
   CARET_ROW_COLOR: ["--bg-current-line"],
   SELECTION_BACKGROUND: ["--bg-editor-selection"],
+  SELECTION_FOREGROUND: ["--fg-editor-selection"],
   LINE_NUMBERS_COLOR: ["--fg-line-number"],
   LINE_NUMBER_ON_CARET_ROW_COLOR: ["--fg-line-number-current"],
   // The new UI paints the gutter with this, else with the editor's background; `GUTTER_BACKGROUND` is the classic UI's.

@@ -141,48 +141,10 @@ impl Host {
         let settings = Arc::new(settings);
         {
             let settings = settings.clone();
-            // Workspace members have independent settings; target servers have their own path mappings.
+            // Workspace members have independent settings.
             lsp.set_jdtls_shared_hook(Box::new(move || {
-                let effective = settings.effective();
-                !is_workspace
-                    && effective.languages.java.jdtls_shared
-                    && effective.language_server_targets.get("java").is_none_or(|target| target.target.is_empty())
+                !is_workspace && settings.effective().languages.java.jdtls_shared
             }));
-        }
-        {
-            let settings = settings.clone();
-            let root = root.clone();
-            let plugins = self.plugin_host.clone();
-            let reader_plugins = plugins.clone();
-            lsp.set_target_hooks(
-                Box::new(move |language, cfg| {
-                    let effective = settings.effective();
-                    let Some(selection) =
-                        effective.language_server_targets.get(language.as_str()).filter(|s| !s.target.is_empty())
-                    else {
-                        return false;
-                    };
-                    let Some(plugins) = plugins.read().upgrade() else { return false };
-                    // A withdrawn target returns the server to the host. An invalid active
-                    // target stays visibly failed; it must never silently fall back.
-                    if !plugins.run_targets(&root).iter().any(|t| t.id == selection.target) {
-                        return false;
-                    }
-                    ide_sdk::apply::server_launch_overrides(cfg, &effective);
-                    ide_sdk::apply::server_protocol_overrides(cfg, &effective);
-                    if let Err(e) = crate::ops::lsp_target::configure(&plugins, &root, &selection.target, cfg) {
-                        cfg.launch_error = Some(e.to_string());
-                    }
-                    true
-                }),
-                Box::new(move |target, path| {
-                    let plugins = reader_plugins
-                        .read()
-                        .upgrade()
-                        .ok_or_else(|| IdeError::unavailable("plugin host is unavailable"))?;
-                    crate::ops::lsp_target::read(&plugins, target, path)
-                }),
-            );
         }
         {
             let settings = settings.clone();
@@ -321,23 +283,7 @@ impl Host {
         {
             let settings = settings.clone();
             lsp.set_servers_hook(Box::new(move |language, defined| {
-                let effective = settings.effective();
-                let mut servers = ide_sdk::apply::language_servers(language.as_str(), defined, &effective);
-                if let Some(selection) =
-                    effective.language_server_targets.get(language.as_str()).filter(|s| !s.target.is_empty())
-                {
-                    let chosen = if selection.server.is_empty() {
-                        servers.first().map(|s| s.name.clone())
-                    } else {
-                        Some(selection.server.clone())
-                    };
-                    servers.retain(|s| Some(&s.name) == chosen.as_ref());
-                    for server in &mut servers {
-                        server.fallback = false;
-                        server.target_key = Some(selection.target.clone());
-                    }
-                }
-                servers
+                ide_sdk::apply::language_servers(language.as_str(), defined, &settings.effective())
             }));
         }
         {

@@ -62,6 +62,12 @@ const BASE_ATTRIBUTES: readonly AttributeDef[] = [
   { id: "caretRow", name: "Caret row", path: ["General", "Editor"], bg: "--bg-current-line" },
   { id: "selection", name: "Selection background", path: ["General", "Editor"], bg: "--bg-editor-selection" },
   {
+    id: "selectionForeground",
+    name: "Selection foreground",
+    path: ["General", "Editor"],
+    fg: "--fg-editor-selection",
+  },
+  {
     id: "selectionInactive",
     name: "Selection background (inactive)",
     path: ["General", "Editor"],

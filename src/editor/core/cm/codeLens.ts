@@ -6,7 +6,7 @@ import { EditorState, RangeSetBuilder, type Extension } from "@codemirror/state"
 import { Decoration, EditorView, WidgetType, type DecorationSet } from "@codemirror/view";
 import { getIndentUnit } from "@codemirror/language";
 import { codeLenses, type CodeLens } from "@/editor/api";
-import { guideVars } from "./indentGuides";
+import { guideVars, rainbowGuides } from "./indentGuides";
 import { LINE_INSET } from "./lineInset";
 
 /** Groups lenses by line start, ordered by line then `order`. Exported for tests. */
@@ -70,6 +70,7 @@ class LensWidget extends WidgetType {
     readonly lenses: CodeLens[],
     readonly indent: number,
     readonly indentUnit: number,
+    readonly rainbow: boolean,
   ) {
     super();
   }
@@ -79,6 +80,8 @@ class LensWidget extends WidgetType {
       this.indent +
       "\u0000" +
       this.indentUnit +
+      "\u0000" +
+      (this.rainbow ? 1 : 0) +
       "\u0000" +
       this.lenses.map((l) => `${l.icon ?? ""}|${l.title}|${l.tooltip ?? ""}|${l.run ? 1 : 0}`).join("\u0001")
     );
@@ -104,7 +107,7 @@ class LensWidget extends WidgetType {
     dom.textContent = "";
     dom.style.paddingLeft = `${Math.round(this.indent * view.defaultCharacterWidth) + LINE_INSET}px`;
     // The guides of the annotated line continue through this row while indent guides are on.
-    const guides = guideVars(Math.floor(this.indent / this.indentUnit), this.indentUnit);
+    const guides = guideVars(Math.floor(this.indent / this.indentUnit), this.indentUnit, this.rainbow);
     if (guides) {
       dom.style.setProperty("--openidea-guide-images", guides.images);
       dom.style.setProperty("--openidea-guide-positions", guides.positions);
@@ -173,6 +176,7 @@ function buildDecorations(state: EditorState): DecorationSet {
       group.lenses,
       indentColumns(line.text, state.tabSize),
       Math.max(1, getIndentUnit(state)),
+      state.facet(rainbowGuides),
     );
     builder.add(line.from, line.from, Decoration.widget({ widget, block: true, side: -1 }));
   }
@@ -213,4 +217,7 @@ const lensTheme = EditorView.theme({
 });
 
 /** Base extension (always installed): no cost until a provider contributes lenses. */
-export const codeLensExtension: Extension = [EditorView.decorations.compute([codeLenses], buildDecorations), lensTheme];
+export const codeLensExtension: Extension = [
+  EditorView.decorations.compute([codeLenses, rainbowGuides], buildDecorations),
+  lensTheme,
+];

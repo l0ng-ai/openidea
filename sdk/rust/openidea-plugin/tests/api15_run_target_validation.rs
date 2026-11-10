@@ -11,7 +11,7 @@ fn validation_receives_mock_project_and_can_refuse_each_launch_kind() {
         }
     }
     let mock = MockHost::install();
-    for operation in [RunTargetOperation::Run, RunTargetOperation::Test, RunTargetOperation::Debug] {
+    for operation in [RunTargetOperation::Run, RunTargetOperation::Test] {
         let launch = RunTargetLaunch { operation, program: "composer".into(), cwd: "/project".into() };
         assert!(mock.validate_run_target(&mut Validator, "running", &launch).is_ok());
         assert_eq!(

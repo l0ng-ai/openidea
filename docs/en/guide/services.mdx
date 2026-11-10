@@ -1,0 +1,164 @@
+---
+title: "Docker and services"
+description: "Manage run configurations, Docker containers, images and Compose projects in the Services tool window, and deploy files over SFTP."
+---
+
+The **Services** tool window (`⌘8` / `Alt+8`) gathers things that run: run configurations, Docker connections and registries. The HTTP client and database results also show up there as extra tabs once you use them (see [HTTP Client](/en/guide/http-client) and [Databases](/en/guide/database)).
+
+## The Services tool window
+
+The left side is a tree; the right side shows details of the selected item (a console, a log, a dashboard). The toolbar has **+** (**Add Service**, `⌘N` / `Alt+Insert` while the tree has focus), **Expand All**, **Collapse All**, **View Options**, and the actions of the selection. Select several rows to run an action on all of them; only actions they have in common are offered.
+
+**Add Service** (the **+** button, or right-click empty space) offers:
+
+- **Run Configuration Type**: adds a group for that configuration type.
+- **Docker Registry…**
+- **Docker Connection…**
+
+### Run configurations
+
+Spring Boot configurations appear by default. Other types appear when you add them with **Add Service › Run Configuration Type**, or once a configuration of that type has run. Each type is a group.
+
+- Group actions: **Run All**, **Restart All**, **Stop All**, **Open in Browser**.
+- Configuration actions: **Run** (or **Rerun**), **Debug**, **Stop**, **Open in Browser**, **Update Application** (for configurations that support it).
+- Context menu: **Show in Run Tool Window**, **Show in Debug Tool Window**, **Edit Configuration…**, **Remove from Services**.
+
+A configuration that ran shows its console in the detail pane. Reorder configurations within a group by dragging them or with **Move Up** / **Move Down**; the order is saved per project.
+
+## Docker
+
+OpenIDEA drives Docker through the `docker` CLI, so anything that provides a working `docker` command works: Docker Desktop, OrbStack, Colima, Rancher Desktop or a plain Docker Engine. It looks for `docker` in `OPENIDEA_DOCKER`, on `PATH`, and in the usual install folders of those tools.
+
+### Connections
+
+With nothing configured, Services shows one connection named **Docker** that uses the Docker CLI default (`DOCKER_HOST` or the current context). To add another, choose **Add Service › Docker Connection…**:
+
+| Field                              | Options                                                                                                                                                                                                                                                                                                                                                                    |
+| ---------------------------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| **Name:**                          | Shown in the tree.                                                                                                                                                                                                                                                                                                                                                         |
+| **Connect to Docker daemon with:** | **Docker CLI default (DOCKER_HOST / current context)**, **Unix socket** (a socket path or an Engine API URL such as `npipe://`), **TCP / SSH host** (`tcp://host:2376` or `ssh://user@host`, with an optional TLS certificates folder holding `ca.pem`, `cert.pem` and `key.pem`), or **Docker context** (a context name such as `desktop-linux`, `orbstack` or `colima`). |
+
+Right-click a connection for **Edit Connection…** and **Remove Connection**. Connections are app-wide, not per project. The tree updates live from `docker events`; when the daemon is not running, Services retries every 10 seconds.
+
+### Registries
+
+**Add Service › Docker Registry…** saves credentials for a registry (**Address:** such as `docker.io`, `ghcr.io` or `registry.example.com:5000`, **Username:**, **Password:**). Use **Test Connection** in the dialog or **Test Login** on the registry node. When you pull an image from that registry, OpenIDEA logs in with these credentials in a temporary Docker config, so your own `~/.docker/config.json` is not changed.
+
+### What the tree shows
+
+Under each connection:
+
+- Compose projects first (`Docker-compose: <project>`, with how many services are running), then **Dev Containers**, **Containers**, **Images**, **Networks** and **Volumes**.
+- **View Options** hides or shows **Stopped Containers** and **Untagged Images** (both shown by default).
+
+| Item            | Context menu                                                                                                                                                                                                                  |
+| --------------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| Container       | **Start**, **Stop**, **Restart**, **Pause** / **Unpause**, **Dashboard**, **Show Log**, **Open Log in Editor**, **Show Processes**, **Inspect**, **Create Terminal**, **Copy Container ID**, **Copy Image Name**, **Delete…** |
+| Compose project | **Start**, **Stop**, **Restart**, **Compose Down**                                                                                                                                                                            |
+| Image           | **Dashboard**, **Show Layers**, **Inspect**, **Pull Again**, **Copy Image ID**, **Delete…**                                                                                                                                   |
+| Volume, network | **Dashboard**, **Inspect**, **Delete…**                                                                                                                                                                                       |
+| Connection      | **Refresh**, **Pull Image…**, **View Options**, **Prune**                                                                                                                                                                     |
+
+**Create Terminal** opens a [terminal](/en/guide/terminal) tab inside a running container (`bash` if present, otherwise `sh`).
+
+**Prune** removes, after confirmation, **Stopped Containers**, **Dangling Images**, **Unused Images**, **Unused Volumes**, **Unused Networks** or **Everything Unused (System Prune)**. Each group node also has its own prune entry.
+
+Long operations (pull, prune, Compose) show progress at the top with a **Cancel** button. One Docker operation runs at a time.
+
+### Details
+
+Selecting an item shows tabs in the detail pane:
+
+- **Container**: **Dashboard** (overview, live resource usage, port bindings that open in the browser, mounts, networks, environment variables, labels), **Log** (last 1,000 lines, following while the container runs, with **Timestamps**), **Processes** (`docker top`) and **Inspect** (the raw JSON).
+- **Image**: **Dashboard** (tags, containers using it, environment, labels), **Layers** and **Inspect**.
+- **Volume** and **network**: **Dashboard** and **Inspect**.
+
+**Open Log in Editor** opens the log in an editor tab with **Timestamps**, **Soft-wrap**, **Find in Logs** and **Clear**.
+
+## Dockerfiles and Compose files
+
+OpenIDEA recognizes `Dockerfile`, `Containerfile`, `Dockerfile.<name>`, `*.dockerfile` and `*.containerfile`, and Compose files (YAML whose name contains `compose`, or whose content looks like a Compose file). For a file detected by content, a banner lets you choose **Not a Compose file** or **Keep as Docker Compose**.
+
+The gutter shows run icons:
+
+- On a Dockerfile `FROM` line: **Run '…'** (build, then run) and **Build Image '…'** for the final stage, or **Build Stage '…'** for a named intermediate stage.
+- In a Compose file: **Compose Up (All Services)** on `services:`, and **Compose Up '…'** on each service.
+- **Modify Run Configuration…** opens the generated configuration so you can save and change it.
+
+The image tag is derived from the folder name (`My App` becomes `my-app:latest`). Gutter runs use the first Docker connection. The **Compose Up** action does the same from the caret.
+
+## Docker run configurations
+
+**Run › Edit Configurations…** has a **Docker** group with three types. Each has a **Server** field that picks the Docker connection. Output goes to the Run tool window.
+
+<AccordionGroup>
+  <Accordion title="Dockerfile">
+    Builds an image and, with **Run built image** checked, runs a container from it.
+
+    **Dockerfile** (relative to the project root), **Context folder**, **Image tag**, **Build stage**, **Build args** (`KEY=value; OTHER=value`), **Build options** (for example `--no-cache --platform linux/amd64`), **Run built image**, **Command**, plus the container fields below.
+
+  </Accordion>
+  <Accordion title="Docker Image">
+    Runs a container from an image: **Image ID or name**, **Pull the image before running**, **Command**, plus the container fields below.
+  </Accordion>
+  <Accordion title="Docker Compose">
+    Starts Compose services: **Compose files** (separated by `;`), **Services** (empty for all), **Project name**, **Run in the background (-d)**, **Build images before starting (--build)**, **Up options**. Stopping an attached run runs `docker compose down`.
+  </Accordion>
+</AccordionGroup>
+
+Container fields: **Container name**, **Bind ports** (`8080:80, 5005:5005`), **Bind mounts** (`./data:/data; cache:/root/.cache`), **Container environment**, **Run options** (for example `--rm --network host`). Before each run, a previous container with the same name is removed; **Stop** runs `docker stop`.
+
+## Deployment (SFTP)
+
+Deployment copies project files to a server, or to a local or mounted folder. It is set up under **Settings › Build, Execution, Deployment › Deployment**, and its actions are under **Tools › Deployment** and the **Deployment** submenu of the Project view, editor and editor tab context menus.
+
+### Configure a server
+
+<Steps>
+  <Step title="Create an SSH configuration">
+    SFTP servers connect through an SSH configuration from **Settings › Tools › SSH Configurations** (host, port, user,
+    and password, key pair, or OpenSSH config and agent). See [SSH](/en/guide/remote/ssh).
+  </Step>
+  <Step title="Add the server">
+    In **Deployment**, click **Add**. On the **Connection** tab, set **Name**, **Type** (**SFTP** or **Local or mounted
+    folder**), **SSH configuration**, **Root path** and optionally **Web server URL**. Click **Test Connection**.
+  </Step>
+  <Step title="Map paths">
+    On **Mappings**, pair a **Local path** (relative to the project root; empty means the whole project) with a
+    **Deployment path** (relative to the root path) and an optional **Web path**. On **Excluded Paths**, list remote
+    paths that are never touched.
+  </Step>
+  <Step title="Set a default">
+    Select the server and click **Use as Default**. The "to default server" actions and automatic upload use it.
+  </Step>
+</Steps>
+
+The **Options** page under Deployment has:
+
+| Option                                                       | Default                                                     |
+| ------------------------------------------------------------ | ----------------------------------------------------------- |
+| **Exclude items by name**                                    | `.git;.svn;.hg;.idea;.openidea;.DS_Store;*.pyc;__pycache__` |
+| **Upload changed files automatically to the default server** | **Never** (or **On explicit save action**, **Always**)      |
+| **Delete remote files when local are deleted**               | off                                                         |
+| **Preserve files timestamps**                                | on                                                          |
+
+Automatic upload runs only in trusted projects. Failed automatic transfers are reported; successful ones are silent.
+
+### Transfer files
+
+The actions work on the selection in the Project view, or on the file in the active editor:
+
+- **Upload to Default Server**, **Upload to…**, **Download from Default Server**, **Download from…**
+- **Sync with Deployed to…**: opens a comparison window listing files that are only local, only remote, newer on one side, different or identical. Compare by **Size and Timestamp** or **Binary Content**, pick an operation per file (upload, download, delete, skip; `Space` cycles it), preview and edit the diff, then **Synchronize Selected** or **Synchronize All**.
+- **Delete from Server**
+- **Automatic Upload**: turns automatic upload on (Always) or off.
+- **Open in Browser (Deployed)**: opens the file's URL on the web server.
+- **Browse Remote Host**: opens the **Remote Host** tool window, a tree of the server's files with **Open** (edit a copy; saving uploads it back), **Download to Project**, **New Folder…**, **Rename…**, **Delete…**, **Refresh** and **Copy Path**.
+
+Unknown host keys are confirmed before connecting, and OpenIDEA asks for a password or passphrase when the SSH configuration doesn't save one.
+
+## Not supported
+
+- Kubernetes, and Podman-specific features.
+- Creating volumes or networks, browsing files inside containers, pushing images.
+- FTP, FTPS and WebDAV deployment servers (only SFTP and local folders).

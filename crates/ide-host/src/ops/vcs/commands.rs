@@ -426,7 +426,8 @@ pub async fn vcs_log_details_batch(
     let cancel = host.begin_project_read_request(window, request);
     let result = blocking(move || {
         project.with_log_repo_at(repo.as_deref(), |r| {
-            revisions.iter().map(|id| r.log_details_cancellable(id, &cancel)).collect()
+            r.enable_log_index(&project.cache);
+            r.log_details_batch_cancellable(&revisions, &cancel)
         })
     })
     .await;

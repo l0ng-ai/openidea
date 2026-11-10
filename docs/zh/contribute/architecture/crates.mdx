@@ -1,0 +1,97 @@
+---
+title: "Crate 一览"
+description: "workspace 中每个 Rust crate 的职责，以及它们之间的依赖规则。"
+---
+
+Cargo workspace 由 `crates/*` 加 `src-tauri` 组成（见根目录 `Cargo.toml`）。插件和插件端 SDK 面向 `wasm32-wasip2` 在各自的 workspace 中构建，不在其中。
+
+## 规则
+
+- **一个 crate 一个领域。** 功能 crate 端到端负责自己的领域：数据模型、I/O、协议，以及到 IPC 类型的转换。
+- **共享类型放在 `ide-core`。** 任何跨 crate 或跨 IPC 的类型（id、`Pos`/`Range`、`IdeError`、`IdeEvent`、设置类型）都在这里定义，并派生 `specta::Type`。
+- **不触碰其他 crate 的内部实现。** 只用它的公开 API，或者把共享类型挪进 `ide-core`。
+- **在 crate 边界把错误转换成** `IdeError`。
+- **`ide-host` 负责组装，`src-tauri` 负责适配。** `ide-host` 把各 crate 组装成不依赖 UI 的后端（`Host`、`Project`、`ops/`）；`src-tauri` 把它暴露为 Tauri 命令。属于功能 crate 的领域逻辑两者都不该放。
+
+每个 crate 的 `lib.rs` 开头都有一段模块文档注释，描述它的契约；改动之前先读一读。
+
+## 基础
+
+| Crate           | 职责                                                                                                                                                |
+| --------------- | --------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `ide-core`      | 所有 crate 的共享词汇：id、文本坐标（`text.rs`：行从 0 开始、列为 UTF-16）、`IdeError`/`IdeResult`、`IdeEvent` 与 `EventSink`、设置类型、任务取消。 |
+| `ide-text`      | 基于 rope 的文档（后端持有每个打开文档的权威副本）、带版本校验的变更集（`OutOfSync`）、UTF-16 与字节坐标的互相转换。                                |
+| `ide-vfs`       | 文件系统访问：目录列举、带编码检测的文本读写、文件监听、项目遍历。UI 从不直接访问磁盘。                                                             |
+| `ide-workspace` | 项目模型：打开的文档、分层设置、最近项目、会话状态、本地历史。                                                                                      |
+| `ide-jsonrpc`   | `Content-Length` 分帧传输和 JSON-RPC 2.0 peer，供 LSP、DAP 客户端共用；ACP 使用按行分隔的 JSON。                                                    |
+
+## 代码智能
+
+| Crate          | 职责                                                                                                                                                      |
+| -------------- | --------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `ide-language` | 来自 `languages/*.toml`（构建时嵌入）的语言注册表、语言识别、内置的 tree-sitter 语法和按文档的语法树缓存；基于 tree-sitter 的大纲、折叠、高亮和符号标签。 |
+| `ide-syntax`   | tree-sitter 结构服务：节点/表达式查找、语法错误、作用域与局部变量、标识符出现位置、结构化范围。在语言服务器不可用、未就绪或出错时使用。                   |
+| `ide-lsp`      | 语言服务器管理：按服务器和工作区根目录懒启动、文档同步、把各项请求映射为 IDE 类型、合并同一语言多个服务器的结果。包含 JDT LS 集成。                       |
+| `ide-index`    | 后台项目索引（文件与符号），持久化在 redb，用 nucleo 做模糊查询。查询基于已索引的部分立即应答；`IdeEvent::IndexState` 报告索引完成。                      |
+| `ide-search`   | 基于 ripgrep 引擎 crate 的 Find / Replace in Files。                                                                                                      |
+| `ide-analysis` | 基于语法树的项目级分析：Locate Duplicates 和结构化搜索/替换。                                                                                             |
+| `ide-spell`    | 拼写检查（注释、字符串、声明的名称）：内置 Hunspell en_US / en_GB 词典、编程术语表、用户词典。                                                            |
+
+## 运行、调试与构建
+
+| Crate          | 职责                                                                                                                                                                                                   |
+| -------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
+| `ide-run`      | 运行配置：检测、持久化、进程生命周期和输出流。                                                                                                                                                         |
+| `ide-dap`      | Debug Adapter Protocol 客户端：会话、断点、线程、栈帧、变量、求值。                                                                                                                                    |
+| `ide-build`    | Maven、Gradle 工具窗口的模型（POM 解析、Gradle 任务列表、后台同步），以及 Maven、Gradle、Cargo、Go、TypeScript 的 Build Project。                                                                      |
+| `ide-coverage` | Run with Coverage：各覆盖率工具的启动方案和报告解析（lcov、Go cover profile、JaCoCo XML）。                                                                                                            |
+| `ide-profiler` | Run with Profiler：采样分析器的启动方案，并把各种输出统一成一个调用树模型。                                                                                                                            |
+| `ide-sdk`      | SDK 与工具链：解释器发现（Python、Node.js、Rust、Go、TypeScript）、virtualenv、pip，把选中的工具链应用到语言服务器、运行配置和终端。嵌入 `java/` 中的 JDT LS 扩展包 `java-usages` 和 `kotlin-bridge`。 |
+| `ide-tools`    | 语言服务器和调试适配器的安装器：注册表、检测、下载解压到托管的工具目录，从不需要 `sudo`。嵌入为 JDT LS 打过补丁的 Lombok agent。                                                                       |
+| `ide-terminal` | 基于原生 PTY 的集成终端会话（UI 中用 xterm.js 渲染）。                                                                                                                                                 |
+
+## 工具与集成
+
+| Crate          | 职责                                                                                                  |
+| -------------- | ----------------------------------------------------------------------------------------------------- |
+| `ide-vcs`      | Git：读用 gitoxide，写用 git CLI。                                                                    |
+| `ide-github`   | 通过 `gh` CLI 处理 GitHub pull request。                                                              |
+| `ide-db`       | 数据库工具（SQLite、PostgreSQL、MySQL/MariaDB）：数据源、连接、元数据、查询、表编辑。                 |
+| `ide-http`     | HTTP Client：`.http` 请求文件、环境变量、执行、响应历史；后端所有 HTTP 客户端都在这里按代理设置构建。 |
+| `ide-docker`   | 通过 `docker` CLI 为 Services 工具窗口提供 Docker 支持。                                              |
+| `ide-android`  | 通过 `adb` CLI 提供 Android 设备和 logcat。                                                           |
+| `ide-notebook` | 原生 notebook 文档和自管的 Jupyter kernel 会话。                                                      |
+| `ide-agent`    | 基于 Agent Client Protocol 的编码 agent：任务、会话、worktree 及其时间线。                            |
+| `ide-mcp`      | 供 IDE 外部 AI agent 使用的 MCP 服务：`127.0.0.1` 上的 Streamable HTTP、发现文件和 stdio 桥接。       |
+| `ide-web`      | 在 `127.0.0.1` 上提供项目文件的内置静态 Web 服务，以及已安装浏览器的检测和启动。                      |
+
+## 远程
+
+| Crate        | 职责                                                                                                                                                                                                           |
+| ------------ | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `ide-ssh`    | 所有远程功能共用的 SSH：配置与 `~/.ssh/config` 主机、主机密钥信任、认证、远程命令、SFTP、端口转发、`ssh` / `git` 的 askpass。                                                                                  |
+| `ide-remote` | SFTP 部署（映射、上传、下载、同步）和运行目标（SSH、Docker、Compose）。它本身不是远程开发。                                                                                                                    |
+| `ide-host`   | 不依赖 UI 工具包的 IDE 后端：按窗口管理项目、终端、进程、设置、信任、插件、MCP，以及 `ops/` 里的命令实现。同时构建 `openidea-server` 二进制（远程开发）和 `openidea-plugin` CLI（插件模板在 `templates.rs`）。 |
+
+## 插件
+
+| Crate           | 职责                                                                                                                                   |
+| --------------- | -------------------------------------------------------------------------------------------------------------------------------------- |
+| `ide-extension` | 与 Wasm 运行时无关的插件系统内核：`plugin.toml` 清单、capability 与风险等级、扩展点和贡献注册表、UI 贡献、授权账本、包签名和市场索引。 |
+| `ide-plugin`    | WebAssembly 运行时：带组件模型和 WASI preview 2 的 wasmtime，每个插件一个沙箱 store 和 actor 线程，以及各项限制。                      |
+
+## 桌面与操作系统
+
+| Crate                          | 职责                                                                                                                                |
+| ------------------------------ | ----------------------------------------------------------------------------------------------------------------------------------- |
+| `ide-cli`                      | `openidea` 命令：参数解析、通过本地 socket 发给运行中应用的请求、安装到 `PATH`。                                                    |
+| `ide-clipboard`                | 操作系统剪贴板里的文件列表（Windows `CF_HDROP`、macOS `NSPasteboard` 文件 URL），用于 Project 视图与文件管理器之间复制文件。        |
+| `ide-fonts`                    | 已安装的字体族，供字体选择器使用，分别通过 CoreText、DirectWrite 或 fontconfig 获取。                                               |
+| `src-tauri`（包名 `openidea`） | 桌面外壳：`AppState`、Tauri 命令、事件 sink、窗口、菜单、远程开发客户端、插件 Web 视图用的 `openidea-plugin` URL scheme。只做胶水。 |
+
+## workspace 之外
+
+| 路径                       | 说明                                                                                                   |
+| -------------------------- | ------------------------------------------------------------------------------------------------------ |
+| `sdk/rust/openidea-plugin` | 插件端 SDK：类型化的宿主 API、插件 trait，以及供 `cargo test` 使用的 mock 宿主。内含一份 `wit/` 副本。 |
+| `plugins/official/*`       | 官方插件，每个都是面向 `wasm32-wasip2` 的独立 crate；构建好的组件提交在 `dist/` 下。                   |

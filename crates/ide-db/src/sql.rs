@@ -664,6 +664,32 @@ pub fn routines(driver: DbDriver, schema: &str) -> Option<String> {
     }
 }
 
+/// Rows: `name` of a schema's packages (Oracle only; their procedures and functions are not
+/// listed separately, as in IDEA).
+pub fn packages(driver: DbDriver, schema: &str) -> Option<String> {
+    match driver {
+        DbDriver::Oracle => Some(format!(
+            "SELECT object_name FROM all_objects WHERE owner = {} AND object_type = 'PACKAGE' \
+             AND object_name NOT LIKE 'BIN$%' ORDER BY 1",
+            quote_literal(driver, schema)
+        )),
+        _ => None,
+    }
+}
+
+/// The statement reading a package's specification (`body` false) or body as DDL.
+pub fn package_ddl(driver: DbDriver, schema: &str, name: &str, body: bool) -> Option<String> {
+    match driver {
+        DbDriver::Oracle => Some(format!(
+            "SELECT DBMS_METADATA.GET_DDL('{}', {}, {}) FROM DUAL",
+            if body { "PACKAGE_BODY" } else { "PACKAGE" },
+            quote_literal(driver, name),
+            quote_literal(driver, schema)
+        )),
+        _ => None,
+    }
+}
+
 /// Rows: `name, data type` of a schema's sequences (PostgreSQL, Oracle).
 pub fn sequences(driver: DbDriver, schema: &str) -> Option<String> {
     match driver {
@@ -963,6 +989,7 @@ mod tests {
         assert!(completion_columns(DbDriver::Oracle).contains("all_tab_columns"));
         assert!(triggers(DbDriver::Oracle, "hr", "t").contains("all_triggers"));
         assert!(routines(DbDriver::Oracle, "hr").unwrap().contains("all_objects"));
+        assert!(packages(DbDriver::Oracle, "hr").unwrap().contains("object_type = 'PACKAGE'"));
         assert!(sequences(DbDriver::Oracle, "hr").unwrap().contains("all_sequences"));
     }
 
@@ -984,6 +1011,17 @@ mod tests {
         let (q, col) = object_ddl(DbDriver::Oracle, "hr", K::Procedure, "p").unwrap();
         assert!(q.contains("DBMS_METADATA.GET_DDL('PROCEDURE'") && col == 0);
         assert!(object_ddl(DbDriver::Oracle, "hr", K::Sequence, "q").unwrap().0.contains("all_sequences"));
+        assert!(
+            package_ddl(DbDriver::Oracle, "hr", "pkg", false)
+                .unwrap()
+                .contains("DBMS_METADATA.GET_DDL('PACKAGE', 'pkg', 'hr')")
+        );
+        assert!(
+            package_ddl(DbDriver::Oracle, "hr", "pkg", true)
+                .unwrap()
+                .contains("DBMS_METADATA.GET_DDL('PACKAGE_BODY', 'pkg', 'hr')")
+        );
+        assert!(package_ddl(DbDriver::Postgres, "public", "pkg", false).is_none());
     }
 
     #[test]
@@ -1001,6 +1039,7 @@ mod tests {
     fn schema_objects_per_dialect() {
         use crate::DbObjectKind as K;
         assert!(routines(DbDriver::Sqlite, "main").is_none());
+        assert!(packages(DbDriver::Sqlite, "main").is_none());
         assert!(sequences(DbDriver::Mysql, "db").is_none());
         assert!(routines(DbDriver::Postgres, "public").unwrap().contains("n.nspname = 'public'"));
         assert_eq!(

@@ -76,6 +76,15 @@ export const VENDORS: readonly DbVendor[] = [
   },
   { id: "sqlite", label: "SQLite", driver: "sqlite", port: null, icon: "db-sqlite", scheme: "sqlite" },
   {
+    id: "starrocks",
+    label: "StarRocks",
+    driver: "mysql",
+    port: 9030,
+    // No dedicated glyph yet: StarRocks speaks the MySQL protocol, so reuse its icon.
+    icon: "db-mysql",
+    scheme: "starrocks",
+  },
+  {
     id: "supabase",
     label: "Supabase",
     driver: "postgres",
@@ -138,6 +147,7 @@ const SCHEMES: Record<string, string> = {
   singlestore: "singlestore",
   memsql: "singlestore",
   oceanbase: "oceanbase",
+  starrocks: "starrocks",
   oracle: "oracle",
   oracledb: "oracle",
   sqlserver: "sqlServer",

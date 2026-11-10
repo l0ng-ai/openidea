@@ -1,0 +1,443 @@
+{
+  "$schema": "https://mintlify.com/docs.json",
+  "theme": "mint",
+  "name": "OpenIDEA",
+  "description": "The IDE you know, rebuilt in Rust.",
+  "colors": {
+    "primary": "#3871E1",
+    "light": "#8FB3FF",
+    "dark": "#3871E1"
+  },
+  "favicon": "/favicon.svg",
+  "logo": {
+    "light": "/logo/light.svg",
+    "dark": "/logo/dark.svg"
+  },
+  "appearance": {
+    "default": "dark"
+  },
+  "navbar": {
+    "links": [
+      {
+        "label": "GitHub",
+        "href": "https://github.com/l0ng-ai/openidea"
+      }
+    ],
+    "primary": {
+      "type": "button",
+      "label": "Download",
+      "href": "https://github.com/l0ng-ai/openidea/releases/latest"
+    }
+  },
+  "navigation": {
+    "languages": [
+      {
+        "language": "en",
+        "default": true,
+        "tabs": [
+          {
+            "tab": "Guide",
+            "groups": [
+              {
+                "group": "Get started",
+                "pages": ["en/index", "en/guide/install", "en/guide/quickstart", "en/guide/migrate", "en/roadmap"]
+              },
+              {
+                "group": "Editing",
+                "pages": [
+                  "en/guide/editor",
+                  "en/guide/code-intelligence",
+                  "en/guide/refactoring",
+                  "en/guide/inspections",
+                  "en/guide/search",
+                  "en/guide/templates",
+                  "en/guide/vim",
+                  "en/guide/scratch-todo"
+                ]
+              },
+              {
+                "group": "Run and debug",
+                "pages": [
+                  "en/guide/run",
+                  "en/guide/build-tools",
+                  "en/guide/testing",
+                  "en/guide/debugging",
+                  "en/guide/coverage",
+                  "en/guide/profiler"
+                ]
+              },
+              {
+                "group": "Tools",
+                "pages": [
+                  "en/guide/vcs",
+                  "en/guide/github",
+                  "en/guide/terminal",
+                  "en/guide/database",
+                  "en/guide/http-client",
+                  "en/guide/services",
+                  "en/guide/notebook",
+                  "en/guide/android"
+                ]
+              },
+              {
+                "group": "AI",
+                "pages": ["en/guide/agents", "en/guide/mcp"]
+              },
+              {
+                "group": "Remote development",
+                "pages": ["en/guide/remote/ssh", "en/guide/remote/server", "en/guide/remote/containers"]
+              },
+              {
+                "group": "Customize",
+                "pages": ["en/guide/settings", "en/guide/keymap", "en/guide/themes", "en/guide/locale"]
+              },
+              {
+                "group": "Reference",
+                "pages": [
+                  "en/reference/cli",
+                  "en/reference/shortcuts",
+                  "en/reference/settings",
+                  "en/reference/data-directories",
+                  "en/reference/troubleshooting"
+                ]
+              }
+            ]
+          },
+          {
+            "tab": "Languages",
+            "groups": [
+              {
+                "group": "Overview",
+                "pages": ["en/languages/index"]
+              },
+              {
+                "group": "Languages",
+                "pages": [
+                  "en/languages/java",
+                  "en/languages/python",
+                  "en/languages/go",
+                  "en/languages/javascript",
+                  "en/languages/php",
+                  "en/languages/ruby",
+                  "en/languages/cpp",
+                  "en/languages/csharp",
+                  "en/languages/rust",
+                  "en/languages/sql"
+                ]
+              },
+              {
+                "group": "Game engines",
+                "pages": ["en/languages/unity", "en/languages/godot"]
+              },
+              {
+                "group": "Extend",
+                "pages": ["en/languages/adding"]
+              }
+            ]
+          },
+          {
+            "tab": "Plugins",
+            "groups": [
+              {
+                "group": "Get started",
+                "pages": ["en/plugins/index", "en/plugins/quickstart", "en/plugins/examples"]
+              },
+              {
+                "group": "Concepts",
+                "pages": [
+                  "en/plugins/architecture",
+                  "en/plugins/manifest",
+                  "en/plugins/capabilities",
+                  "en/plugins/lifecycle",
+                  "en/plugins/versioning"
+                ]
+              },
+              {
+                "group": "Extension points",
+                "pages": [
+                  "en/plugins/guides/commands",
+                  "en/plugins/guides/language-features",
+                  "en/plugins/guides/diagnostics",
+                  "en/plugins/guides/views",
+                  "en/plugins/guides/file-actions",
+                  "en/plugins/guides/run-targets",
+                  "en/plugins/guides/indexing",
+                  "en/plugins/guides/database",
+                  "en/plugins/guides/mcp",
+                  "en/plugins/guides/themes",
+                  "en/plugins/guides/icon-themes"
+                ]
+              },
+              {
+                "group": "Develop",
+                "pages": ["en/plugins/testing"]
+              },
+              {
+                "group": "Publish",
+                "pages": [
+                  "en/plugins/publishing/packaging",
+                  "en/plugins/publishing/marketplace",
+                  "en/plugins/publishing/self-hosted",
+                  "en/plugins/publishing/policy"
+                ]
+              },
+              {
+                "group": "Reference",
+                "pages": ["en/plugins/api/index"]
+              }
+            ]
+          },
+          {
+            "tab": "Contribute",
+            "groups": [
+              {
+                "group": "Get started",
+                "pages": ["en/contribute/setup", "en/contribute/workflow", "en/contribute/security"]
+              },
+              {
+                "group": "Architecture",
+                "pages": [
+                  "en/contribute/architecture/overview",
+                  "en/contribute/architecture/boundaries",
+                  "en/contribute/architecture/ipc",
+                  "en/contribute/architecture/crates",
+                  "en/contribute/architecture/frontend",
+                  "en/contribute/architecture/code-intelligence",
+                  "en/contribute/architecture/plugin-host",
+                  "en/contribute/architecture/remote"
+                ]
+              },
+              {
+                "group": "Guidelines",
+                "pages": [
+                  "en/contribute/guidelines/ui",
+                  "en/contribute/guidelines/i18n",
+                  "en/contribute/guidelines/code-style"
+                ]
+              },
+              {
+                "group": "Testing",
+                "pages": ["en/contribute/testing/unit-e2e", "en/contribute/testing/smoke", "en/contribute/testing/perf"]
+              }
+            ]
+          },
+          {
+            "tab": "Changelog",
+            "groups": [
+              {
+                "group": "Changelog",
+                "pages": ["en/changelog"]
+              }
+            ]
+          }
+        ]
+      },
+      {
+        "language": "zh",
+        "tabs": [
+          {
+            "tab": "指南",
+            "groups": [
+              {
+                "group": "开始",
+                "pages": ["zh/index", "zh/guide/install", "zh/guide/quickstart", "zh/guide/migrate", "zh/roadmap"]
+              },
+              {
+                "group": "编辑",
+                "pages": [
+                  "zh/guide/editor",
+                  "zh/guide/code-intelligence",
+                  "zh/guide/refactoring",
+                  "zh/guide/inspections",
+                  "zh/guide/search",
+                  "zh/guide/templates",
+                  "zh/guide/vim",
+                  "zh/guide/scratch-todo"
+                ]
+              },
+              {
+                "group": "运行与调试",
+                "pages": [
+                  "zh/guide/run",
+                  "zh/guide/build-tools",
+                  "zh/guide/testing",
+                  "zh/guide/debugging",
+                  "zh/guide/coverage",
+                  "zh/guide/profiler"
+                ]
+              },
+              {
+                "group": "工具",
+                "pages": [
+                  "zh/guide/vcs",
+                  "zh/guide/github",
+                  "zh/guide/terminal",
+                  "zh/guide/database",
+                  "zh/guide/http-client",
+                  "zh/guide/services",
+                  "zh/guide/notebook",
+                  "zh/guide/android"
+                ]
+              },
+              {
+                "group": "AI",
+                "pages": ["zh/guide/agents", "zh/guide/mcp"]
+              },
+              {
+                "group": "远程开发",
+                "pages": ["zh/guide/remote/ssh", "zh/guide/remote/server", "zh/guide/remote/containers"]
+              },
+              {
+                "group": "定制",
+                "pages": ["zh/guide/settings", "zh/guide/keymap", "zh/guide/themes", "zh/guide/locale"]
+              },
+              {
+                "group": "参考",
+                "pages": [
+                  "zh/reference/cli",
+                  "zh/reference/shortcuts",
+                  "zh/reference/settings",
+                  "zh/reference/data-directories",
+                  "zh/reference/troubleshooting"
+                ]
+              }
+            ]
+          },
+          {
+            "tab": "语言",
+            "groups": [
+              {
+                "group": "总览",
+                "pages": ["zh/languages/index"]
+              },
+              {
+                "group": "主要语言",
+                "pages": [
+                  "zh/languages/java",
+                  "zh/languages/python",
+                  "zh/languages/go",
+                  "zh/languages/javascript",
+                  "zh/languages/php",
+                  "zh/languages/ruby",
+                  "zh/languages/cpp",
+                  "zh/languages/csharp",
+                  "zh/languages/rust",
+                  "zh/languages/sql"
+                ]
+              },
+              {
+                "group": "游戏引擎",
+                "pages": ["zh/languages/unity", "zh/languages/godot"]
+              },
+              {
+                "group": "扩展",
+                "pages": ["zh/languages/adding"]
+              }
+            ]
+          },
+          {
+            "tab": "插件",
+            "groups": [
+              {
+                "group": "开始",
+                "pages": ["zh/plugins/index", "zh/plugins/quickstart", "zh/plugins/examples"]
+              },
+              {
+                "group": "概念",
+                "pages": [
+                  "zh/plugins/architecture",
+                  "zh/plugins/manifest",
+                  "zh/plugins/capabilities",
+                  "zh/plugins/lifecycle",
+                  "zh/plugins/versioning"
+                ]
+              },
+              {
+                "group": "扩展点",
+                "pages": [
+                  "zh/plugins/guides/commands",
+                  "zh/plugins/guides/language-features",
+                  "zh/plugins/guides/diagnostics",
+                  "zh/plugins/guides/views",
+                  "zh/plugins/guides/file-actions",
+                  "zh/plugins/guides/run-targets",
+                  "zh/plugins/guides/indexing",
+                  "zh/plugins/guides/database",
+                  "zh/plugins/guides/mcp",
+                  "zh/plugins/guides/themes",
+                  "zh/plugins/guides/icon-themes"
+                ]
+              },
+              {
+                "group": "开发",
+                "pages": ["zh/plugins/testing"]
+              },
+              {
+                "group": "发布与市场",
+                "pages": [
+                  "zh/plugins/publishing/packaging",
+                  "zh/plugins/publishing/marketplace",
+                  "zh/plugins/publishing/self-hosted",
+                  "zh/plugins/publishing/policy"
+                ]
+              },
+              {
+                "group": "参考",
+                "pages": ["zh/plugins/api/index"]
+              }
+            ]
+          },
+          {
+            "tab": "参与开发",
+            "groups": [
+              {
+                "group": "开始",
+                "pages": ["zh/contribute/setup", "zh/contribute/workflow", "zh/contribute/security"]
+              },
+              {
+                "group": "架构",
+                "pages": [
+                  "zh/contribute/architecture/overview",
+                  "zh/contribute/architecture/boundaries",
+                  "zh/contribute/architecture/ipc",
+                  "zh/contribute/architecture/crates",
+                  "zh/contribute/architecture/frontend",
+                  "zh/contribute/architecture/code-intelligence",
+                  "zh/contribute/architecture/plugin-host",
+                  "zh/contribute/architecture/remote"
+                ]
+              },
+              {
+                "group": "规范",
+                "pages": [
+                  "zh/contribute/guidelines/ui",
+                  "zh/contribute/guidelines/i18n",
+                  "zh/contribute/guidelines/code-style"
+                ]
+              },
+              {
+                "group": "测试",
+                "pages": ["zh/contribute/testing/unit-e2e", "zh/contribute/testing/smoke", "zh/contribute/testing/perf"]
+              }
+            ]
+          },
+          {
+            "tab": "更新日志",
+            "groups": [
+              {
+                "group": "更新日志",
+                "pages": ["zh/changelog"]
+              }
+            ]
+          }
+        ]
+      }
+    ]
+  },
+  "footer": {
+    "socials": {
+      "github": "https://github.com/l0ng-ai/openidea",
+      "discord": "https://discord.gg/2Zy4yn7gP"
+    }
+  }
+}

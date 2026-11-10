@@ -2,9 +2,10 @@ import { describe, expect, it, vi } from "vitest";
 import type { HierarchyItem, OutlineItem, ReferencesIncomplete, SymbolKind } from "@/bindings";
 
 const hint = vi.fn();
+const hide = vi.hoisted(() => vi.fn());
 vi.mock("@/workbench/contributions", async (orig) => ({
   ...(await orig<typeof import("@/workbench/contributions")>()),
-  toolWindowService: () => ({ show: () => undefined }),
+  toolWindowService: () => ({ show: () => undefined, hide }),
 }));
 
 const range = (l1: number, c1: number, l2: number, c2: number) => ({
@@ -54,6 +55,20 @@ const callHierarchy = vi.fn((): { items: HierarchyItem[]; incomplete: References
   incomplete: null,
 }));
 const cancelRequest = vi.fn(async () => undefined);
+// Subtypes by the line of the type asked about: the caret's type → Long (30), Striped64 (40); Striped64 → LongAdder (50).
+const typeItem = (name: string, line: number): HierarchyItem => ({
+  ...item(name),
+  kind: "class",
+  path: "/p/Types.java",
+  selectionRange: range(line, 0, line, name.length),
+});
+const typeHierarchy = vi.fn((pos: { line: number; col: number }): HierarchyItem[] =>
+  pos.line === 40
+    ? [typeItem("LongAdder", 50)]
+    : pos.line < 30
+      ? [typeItem("Long", 30), typeItem("Striped64", 40)]
+      : [],
+);
 // The positions a hierarchy request is answered at; anything else is "no symbol".
 let servedAt = (pos: { line: number; col: number }) => pos.line === 2 && pos.col === 7;
 
@@ -66,6 +81,7 @@ vi.mock("@/platform/ipc", async (orig) => {
       ...real.commands,
       docOutline: async () => OUTLINE,
       cancelRequest,
+      lspTypeHierarchy: async (_doc: number, pos: { line: number; col: number }) => typeHierarchy(pos),
       lspCallHierarchy: async (_request: number, _doc: number, pos: { line: number; col: number }) => {
         // The server prepares a hierarchy only on the method name.
         if (!servedAt(pos)) throw new real.IpcError({ kind: "notFound", message: "No symbol" });
@@ -165,5 +181,37 @@ describe("hierarchy", () => {
     } finally {
       servedAt = (pos) => pos.line === 2 && pos.col === 7;
     }
+  });
+});
+
+describe("type hierarchy", () => {
+  it("loads each shown type's level ahead, so a type without subtypes shows no expand arrow", async () => {
+    servedAt = () => true;
+    try {
+      useHierarchy.setState({ mode: "type", direction: "outgoing" });
+      await showHierarchy("type");
+      const [long, striped] = useHierarchy.getState().children.get(ROOT_ID) ?? [];
+      await vi.waitFor(() => {
+        const { children } = useHierarchy.getState();
+        expect(children.get(long!.id)).toEqual([]);
+        expect(children.get(striped!.id)?.map((n) => n.item.name)).toEqual(["LongAdder"]);
+      });
+      const { children } = useHierarchy.getState();
+      // Only the shown levels: LongAdder's subtypes wait until Striped64 is expanded.
+      expect(children.has(children.get(striped!.id)![0]!.id)).toBe(false);
+    } finally {
+      servedAt = (pos) => pos.line === 2 && pos.col === 7;
+      useHierarchy.setState({ mode: "call", direction: "incoming" });
+    }
+  });
+});
+
+describe("closing the hierarchy tab", () => {
+  it("clears the tree and hides the tool window", async () => {
+    const { closeHierarchy, useHierarchy } = await import("./hierarchy");
+    useHierarchy.setState({ root: { name: "Number", path: "/p/Number.java", line: 0, col: 0 } as never });
+    closeHierarchy();
+    expect(useHierarchy.getState().root).toBeNull();
+    expect(hide).toHaveBeenCalledWith("hierarchy");
   });
 });

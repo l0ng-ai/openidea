@@ -407,7 +407,7 @@ export function ConfigForm({ config, all, type, errors, template, onChange, modi
   );
 
   return (
-    <>
+    <div className={clsx(styles.configFields, config.kind === "tomcat" && styles.configFieldsTomcat)}>
       {config.detected && !template && (
         <div className={styles.notice}>
           <T>Detected from the project. Changes are saved as a user configuration that overrides it.</T>
@@ -416,21 +416,23 @@ export function ConfigForm({ config, all, type, errors, template, onChange, modi
       {!template && (
         <div className={clsx(styles.formHeader, config.kind === "tomcat" && styles.formHeaderTomcat)}>
           <Field label={config.kind === "tomcat" ? "Name:" : "Name"} error={errors.name}>
-            <Input
-              value={config.name}
-              invalid={!!errors.name}
-              aria-label="Name"
-              onChange={(e) => update({ name: e.target.value })}
-            />
+            <div className={styles.nameControl}>
+              <Input
+                value={config.name}
+                invalid={!!errors.name}
+                aria-label="Name"
+                onChange={(e) => update({ name: e.target.value })}
+              />
+              <div className={styles.storeProjectGroup}>
+                <Checkbox
+                  checked={!config.local}
+                  onChange={(shared) => update({ local: !shared })}
+                  label="Store as project file"
+                  aria-label="Store as project file (.openidea/run.toml); otherwise in the workspace (.openidea/run.local.toml)"
+                />
+              </div>
+            </div>
           </Field>
-          <div className={styles.storeProjectGroup}>
-            <Checkbox
-              checked={!config.local}
-              onChange={(shared) => update({ local: !shared })}
-              label="Store as project file"
-              aria-label="Store as project file (.openidea/run.toml); otherwise in the workspace (.openidea/run.local.toml)"
-            />
-          </div>
         </div>
       )}
       {config.kind === "tomcat" ? (
@@ -704,31 +706,35 @@ export function ConfigForm({ config, all, type, errors, template, onChange, modi
                         }
                       />
                     ) : (
-                      <span className={styles.taskLabel}>{txTemplate(taskLabel(t, all))}</span>
+                      <span className={styles.taskLabel} title={txTemplate(taskLabel(t, all))}>
+                        {txTemplate(taskLabel(t, all))}
+                      </span>
                     )}
-                    <IconButton
-                      icon="arrow-up"
-                      size="small"
-                      iconSize={12}
-                      title="Move Up"
-                      disabled={i === 0}
-                      onClick={() => moveTask(i, -1)}
-                    />
-                    <IconButton
-                      icon="arrow-down"
-                      size="small"
-                      iconSize={12}
-                      title="Move Down"
-                      disabled={i === tasks.length - 1}
-                      onClick={() => moveTask(i, 1)}
-                    />
-                    <IconButton
-                      icon="minus"
-                      size="small"
-                      iconSize={12}
-                      title="Remove Task"
-                      onClick={() => setTasks(tasks.filter((_, j) => j !== i))}
-                    />
+                    <span className={styles.taskActions}>
+                      <IconButton
+                        icon="arrow-up"
+                        size="small"
+                        iconSize={12}
+                        title="Move Up"
+                        disabled={i === 0}
+                        onClick={() => moveTask(i, -1)}
+                      />
+                      <IconButton
+                        icon="arrow-down"
+                        size="small"
+                        iconSize={12}
+                        title="Move Down"
+                        disabled={i === tasks.length - 1}
+                        onClick={() => moveTask(i, 1)}
+                      />
+                      <IconButton
+                        icon="minus"
+                        size="small"
+                        iconSize={12}
+                        title="Remove Task"
+                        onClick={() => setTasks(tasks.filter((_, j) => j !== i))}
+                      />
+                    </span>
                   </div>
                 ))}
                 <Button
@@ -785,7 +791,7 @@ export function ConfigForm({ config, all, type, errors, template, onChange, modi
           )}
         </>
       )}
-    </>
+    </div>
   );
 }
 

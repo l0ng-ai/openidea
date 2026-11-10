@@ -1,6 +1,7 @@
 import { describe, expect, it } from "vitest";
 import { PRESETS } from "@/platform/keymap";
-import { exOfRhs, IDEA_ACTIONS, parseVimrc, resolveActionId } from "../rc";
+import { exOfRhs, parseVimrc, resolveActionId } from "../rc";
+import { IDEA_ACTIONS } from "@/platform/ideaActions";
 import { readSourcedFiles } from "../rcFile";
 
 const RC = `

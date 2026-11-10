@@ -1,0 +1,79 @@
+---
+title: "本地化"
+description: "用户可见文本如何翻译：源文本目录、带键的消息目录、必须提供的英文和中文条目，以及强制检查它们的测试。"
+---
+
+所有用户可见的字符串都要经过目录。每条新字符串都必须有英文和简体中文；其他语言（`es`、`fr`、`ko`、`pl`、`pt`）可以缺条目，缺失时界面显示英文，等译者补上。
+
+## 两种目录
+
+| 目录                         | 文件                                      | 键                                               | 使用方式                              |
+| ---------------------------- | ----------------------------------------- | ------------------------------------------------ | ------------------------------------- |
+| **源文本**（大部分 UI 文本） | `src/platform/locales/text/<locale>.json` | 英文原文本身                                     | `tx("…")`、`useTx()` 以及 UI 基础组件 |
+| **消息**（菜单、应用级消息） | `src/platform/locales/<locale>.json`      | 带命名空间的键：`menu.*`、`app.*`、`common.*` 等 | `t("key", params)`、`useT()`          |
+
+### 源文本
+
+大部分文本直接在调用处用英文书写。UI 基础组件（标签、按钮、菜单、对话框、提示）会把收到的字符串送进源文本目录，所以下面这些都会自动翻译：
+
+```tsx
+<Button>Retry Loading Conversation</Button>;
+registerAction({ id: "project.trust", title: "Trust Project", category: "Project", run });
+notifications().notify({ title: "Plugin update available", body: names });
+```
+
+文本目录测试把直接到达翻译层的字符串视为可翻译文本：`tx` / `txTemplate` 的参数，`T`、`Button`、`Dialog` 的文本子节点，以及 `label`、`title`、`description`、`tooltip`、`placeholder`、`message`、`hint`、`aria-label` 等属性或对象键。
+
+运行时拼出来的文本用 `tx` 标签，它会查找带命名占位符的模板：
+
+```ts
+tx`Cannot open ${path}`; // 查找 "Cannot open {path}"
+```
+
+```json src/platform/locales/text/zh.json
+"Cannot open {path}": "无法打开 {path}"
+```
+
+action 的标题和分类也是这样翻译的（如果存在 `action.<id>` 消息键，则优先使用）。英文标题在 Find Action 中仍然可以搜索。
+
+### 消息
+
+带键的消息使用简化的 ICU 语法：
+
+```ts
+t("app.unsaved.body", { count: 3, project: "openidea" });
+```
+
+- `{name}` 参数（数字按语言区域格式化）；
+- `{n, plural, =0 {none} one {# file} other {# files}}`；
+- `{g, select, a {…} other {…}}`；
+- `{n, number}`。
+
+英文（`en.json`）随包内置，是缺失键的兜底；其他语言按需懒加载。
+
+## 规则
+
+- **每条新字符串都要同时加到 `en` 和 `zh`。** 源文本对应 `text/en.json`（英文映射到自身）和 `text/zh.json`；消息键对应 `en.json` 和 `zh.json`。
+- **改写措辞会丢掉翻译。** 源文本的键就是英文原文，所以在调用处改了措辞，也要同步更新目录条目。
+- **删掉不再使用的条目。** 如果某条目录条目的文本在 `src/`、Rust crate 或 `languages/` 中都找不到了，测试会失败。
+- **整句翻译。** 不要把英文单词拼进译文（`${kind.toLowerCase()}`、`${n === 1 ? "" : "s"}`）；每种变体写一条文本，或者用复数消息。
+- **精确查找时不要用未加标签的模板字符串**：`` `Cannot open ${path}` `` 永远无法被翻译，请用 `tx` 标签。
+- **后端文本**（错误消息等）只要字面量出现在源码中就算被使用；和其他文本一样补上翻译。
+- **中文术语**：同一概念沿用 `text/zh.json` 和 `zh.json` 中已有的译法，不要让一个英文术语出现两种译名。
+
+## 测试
+
+| 测试                                        | 何时失败                                                                                                                                                                                                    |
+| ------------------------------------------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `src/platform/locales/textCatalog.test.ts`  | 某条字面 UI 文本没有中文条目（`zh` 是必须完整的语言）；目录里有源码中已不存在的文本；两条模板条目只有占位符名不同；模板字符串进入了精确查找；拼接的文本中夹带单词；传给 `t` 的字面键在 `en.json` 中不存在。 |
+| `src/platform/locales/actionTitles.test.ts` | 某个字面 action 标题（包括 action 工厂函数的参数）没有中文条目。                                                                                                                                            |
+
+开发时可以单独运行：
+
+```sh
+pnpm vitest run src/platform/locales
+```
+
+## 插件
+
+插件在自己的包里携带翻译，机制在 `plugins/README.md` 的 _Translations_ 一节中面向插件作者说明。本页的规则针对 IDE 自身的 UI。

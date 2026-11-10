@@ -153,7 +153,14 @@ export function DebugToolWindow() {
     setView({
       session: active.startedAt,
       status: active.status,
-      tab: active.status === "starting" ? "console" : active.status === "paused" ? "variables" : view.tab,
+      // A breakpoint or exception brings Threads & Variables to the front; finishing a step keeps
+      // the tab the user is on (e.g. Console, to watch the output while stepping).
+      tab:
+        active.status === "starting"
+          ? "console"
+          : active.status === "paused" && active.stopReason !== "step"
+            ? "variables"
+            : view.tab,
     });
   const tab = view.tab;
 
@@ -188,7 +195,7 @@ export function DebugToolWindow() {
               className={clsx(styles.tab, tab === id && styles.tabActive)}
               onClick={() => setView({ session: active.startedAt, status: active.status, tab: id })}
             >
-              {label}
+              {tx(label)}
             </button>
           ))}
         </div>

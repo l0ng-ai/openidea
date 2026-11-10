@@ -33,6 +33,7 @@ beforeEach(() => {
           { name: "calculate", kind: "function", arguments: "text", returns: "text" },
           { name: "refresh_data", kind: "procedure", arguments: "", returns: null },
         ],
+        packages: [],
         sequences: [],
       },
     },

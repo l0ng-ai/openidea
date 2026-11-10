@@ -1,0 +1,79 @@
+---
+title: "API 版本与兼容"
+description: "engines.openidea、插件 API 从 1.0 到 1.5 的各个版本，以及让已发布插件在新 IDE 中继续加载的规则。"
+---
+
+插件 API 只有一个版本号：[`wit/`](https://github.com/l0ng-ai/openidea/tree/main/wit) 中 WIT 包的版本（`main` 上是 `openidea:plugin@1.5.0`）。宿主的引擎版本和 SDK 的 `API_VERSION` 始终与它一致，SDK 里也带着一份完全相同的 WIT 文件。
+
+<Note>插件系统目前是预览版。下面的兼容规则适用于已发布的 1.x 版本；`main` 上尚未发布的内容在发布前仍可能变化。</Note>
+
+## 版本历史
+
+| API   | 随哪个版本发布       | 主要内容                                                                                                                                                                                                                                                                                                                               |
+| ----- | -------------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| 1.0.0 | OpenIDEA 0.1.36      | 基础 API：命令、事件、存储、任务、项目和编辑器访问、VCS、诊断、网络与密钥、进程、声明式视图和自定义编辑器、设置、编辑器 provider、syntax provider                                                                                                                                                                                      |
+| 1.1.0 | OpenIDEA 0.1.37      | `vcs.remotes`、`ui.copy-to-clipboard`、`ui.open-url`，从视图中打开项目文件的指定行                                                                                                                                                                                                                                                     |
+| 1.2.0 | OpenIDEA 0.1.38      | 后台文档索引器；选择器、输入框和确认框；插件自定义的 `when` 上下文键；项目视图中选中的文件；清单 `icon`；`viewItem.context` 菜单                                                                                                                                                                                                       |
+| 1.3.0 | OpenIDEA 0.1.39      | 提交信息和提交前检查、Services 详情面板、输入时诊断、悬停、内嵌提示、语义 token、改动文件的代码操作、HTTP 端点、项目外文件（`fs.read`/`fs.write`、`project.write`、插件私有目录）、批量 `files-changed` 事件和路径过滤、工作区符号、长时间运行的进程、带按钮的通知、翻译、多页设置、文件模板变量、Web 视图 PTY、日志标签页和内容标签页 |
+| 1.4.0 | OpenIDEA 0.1.40      | `net.http:`、`ipc:`、`ide.commands` 和 `database.sources` 能力；编辑器与项目快照、装饰、文本搜索、问题视图、Git log/blame/diff；输出通道；OAuth 回环；运行、终端会话、运行配置、测试结果解析和运行目标；格式化等语言功能；嵌入语言；代码片段；更多菜单位置；数据库数据源；MCP 工具                                                     |
+| 1.5.0 | 计划随下一个版本发布 | `Project::notify`（只在某个项目的窗口中显示通知）、`net:ask` 能力、运行目标启动前校验、运行目标按命令设置工作目录参数                                                                                                                                                                                                                  |
+
+每个版本新增内容的完整列表见 [`plugins/README.md`](https://github.com/l0ng-ai/openidea/blob/main/plugins/README.md)。
+
+## 声明所需版本
+
+`plugin.toml` 中的 `engines.openidea` 是对插件 API 的 semver 版本要求：
+
+```toml
+engines.openidea = "^1.4"
+```
+
+- 要求与 IDE 自身的 API 版本不匹配时，IDE 拒绝安装或加载该插件包。
+- 选择能覆盖你所用功能的最低版本。`^1.0` 能在所有 1.x IDE 中加载。
+- 部分清单功能会强制最低版本：清单用了它们却仍兼容更旧的 API 时，安装和 `openidea-plugin check` 都会拒绝。
+
+| 功能                                                                                                                                                                                                                                                                                                                                       | 要求   |
+| ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ | ------ |
+| `icon`、`viewItem.context` 菜单                                                                                                                                                                                                                                                                                                            | `^1.2` |
+| `project.write`、`fs.write:`、`on-event:files-changed`；`endpoints`、`markerIcons`、`commitChecks`；provider kind `semantic-tokens`、`diagnostics`、`hover` 和 `inlay-hints`；设置的 `pages`、分组和数组；`commit.message` 菜单和子菜单；视图的 `group`、`when`、`header` 和 `location = "services"`；文件模板的 `fileName` 和 `variables` | `^1.3` |
+| `net.http:`、`ipc:`、`ide.commands`、`database.sources`；`file-closed`、`settings-changed`、`input-mode-changed`、`run-exited`、`terminal-exited` 和 `content-tab-action` 事件；`runConfigurations`、`snippets`、`mcpTools`、命令 `icon`、运行检测器的 `framework`；API 1.4 的 provider kind 和嵌入语言；API 1.4 新增的菜单位置            | `^1.4` |
+| `net:ask`                                                                                                                                                                                                                                                                                                                                  | `^1.5` |
+
+## 组件本身的版本
+
+除了清单，IDE 还会读取组件**构建时所针对**的 API 版本：组件所有 `openidea:plugin/*` 导入和导出中的最高版本，也就是编译时所用 SDK（或 WIT 文件）的版本。
+
+- 组件的主版本不同，或次版本比 IDE 实现的更新时，安装和 `openidea-plugin check` 会拒绝它，并提示更新 IDE 或用较旧的 SDK 重新构建。
+- 它们还会把组件与 IDE 实际链接一次。如果组件导入了 IDE 在同一版本下没有的函数（用未发布的 WIT 构建），同样会被拒绝。
+- `check` 会打印这个版本：`code: dist/plugin.wasm (…, plugin API 1.4)`。
+
+所以，请针对你想支持的最旧 IDE 版本的 SDK 来构建。`openidea-plugin new` 生成的插件依赖工具所在版本 tag 的 SDK：
+
+```toml
+openidea-plugin = { git = "https://github.com/l0ng-ai/openidea", tag = "v0.1.40" }
+```
+
+改 tag 就能针对更新的 API 构建。从 `main` 构建的组件使用的是未发布的 API，无法在已发布的 IDE 中加载。
+
+在插件市场索引中，每个版本的 `engine` 是清单的要求再收窄到组件的 API（例如 `^1.0, ^1.4`）。一个插件可以同时列出多个版本，每个 IDE 会得到它能加载的最新版本；一个都加载不了时，插件显示为不兼容，并说明所需的 API。
+
+## 兼容规则
+
+wasmtime 按 semver 链接组件：导入 `openidea:plugin/x@1.0.0` 的组件可以链接到定义了 `@1.4.0` 的宿主。但函数类型必须完全一致，所以已发布的 1.x 只能增加：
+
+1. **已发布的类型和签名永不改变。** 不加 record 字段、不加 variant 或 enum 分支、不改名、不加参数。新功能用新类型和新函数。会持续增长的集合（补全类型、图标、事件类型等）用字符串表示；会增长的 variant 都有一个 `other` 分支，携带类型名和 JSON 数据，让旧插件和旧 IDE 能原样传递。
+2. **宿主 interface（导入）可以增加函数和 interface。** 旧组件不会导入它们。
+3. **插件 interface（导出）一旦发布就不再增加函数。** 插件侧的新功能放进新 interface，对应新的可选 world。
+4. **宿主检查每个组件的 API 版本**，如上所述。
+5. **一个版本号**贯穿 `wit/`、宿主和 SDK。
+6. **1.x 调用是同步的，文档整体传递。** WASI 0.3 异步组件计划在 2.0 引入，宿主中的适配层会让 1.x 插件继续运行。
+
+这些规则有自动检查：
+
+- `sdk/rust/openidea-plugin/tests/api_frozen.rs` 把 `wit/` 与最新已发布版本的快照 [`sdk/rust/openidea-plugin/tests/api/released/`](https://github.com/l0ng-ai/openidea/tree/main/sdk/rust/openidea-plugin/tests/api/released)（当前为 1.4.0）比较，所有已发布的 interface、类型、函数和 world 都必须原样存在。
+- `crates/ide-plugin/tests/api_compat.rs` 检查各处版本一致、SDK 的 WIT 副本一致，以及模拟的下一个次版本宿主仍能链接所有已发布组件，而不同主版本的宿主不能。
+- 如果 `wit/` 的版本没有对应快照，发布流程会拒绝发布。
+
+## 旧清单
+
+0.1 格式的清单（`openidea-api = "0.1"`）中的贡献仍能加载，但 0.1 的代码不再运行，需要用 1.x SDK 重新构建。

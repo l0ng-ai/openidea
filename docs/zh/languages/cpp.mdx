@@ -1,0 +1,121 @@
+---
+title: "C 与 C++"
+description: "基于 clangd 的代码智能，CMake 与 Makefile 运行配置，单文件运行，以及通过 lldb-dap、CodeLLDB 或 GDB 进行原生调试。"
+---
+
+OpenIDEA 通过 [clangd](https://clangd.llvm.org) 支持 C、C++、Objective-C 和 Objective-C++。语法高亮、折叠和结构视图无需任何配置即可使用；补全、导航、诊断和重构由 clangd 提供，效果取决于 clangd 能否拿到正确的编译参数。其他语言见[语言支持总览](/zh/languages/index)。
+
+| 语言          | 扩展名                                                                                                | 语言服务器 | 默认调试器 |
+| ------------- | ----------------------------------------------------------------------------------------------------- | ---------- | ---------- |
+| C             | `.c`、`.h`                                                                                            | clangd     | lldb-dap   |
+| C++           | `.cpp`、`.cc`、`.cxx`、`.c++`、`.hpp`、`.hh`、`.hxx`、`.h++`、`.ipp`、`.tpp`、`.inl`、`.ixx`、`.cppm` | clangd     | lldb-dap   |
+| Objective-C   | `.m`                                                                                                  | clangd     | lldb-dap   |
+| Objective-C++ | `.mm`                                                                                                 | clangd     | lldb-dap   |
+
+`.h` 文件默认按 C 打开。如果希望头文件按 C++ 处理，在 **设置 › 编辑器 › 文件类型** 中修改关联。
+
+## 语言服务器
+
+C 和 C++ 的 clangd 以 `--background-index --header-insertion=never` 启动：在后台为整个项目建立索引，并且不会自行插入 `#include`。
+
+clangd 从当前文件向上查找以下文件来确定工作区根目录：`compile_commands.json`、`compile_flags.txt`、`.clangd`、`CMakeLists.txt`、`meson.build`、`Makefile`。Objective-C 和 Objective-C++ 只认 `compile_commands.json`、`compile_flags.txt` 和 `.clangd`。
+
+### 编译参数
+
+clangd 需要知道每个文件的编译参数，否则只能猜测，常见的表现是误报找不到头文件或宏未定义。可以提供以下任一文件：
+
+- **`compile_commands.json`**：编译数据库。打开 `CMAKE_EXPORT_COMPILE_COMMANDS` 后 CMake 会把它写到构建目录中，OpenIDEA 生成的 CMake 配置总是带上 `-DCMAKE_EXPORT_COMPILE_COMMANDS=ON`（见下文“CMake”一节）。基于 Make 的项目可以用 Bear 等工具生成。
+- **`compile_flags.txt`**：每行一个参数，对所有文件生效，适合小项目。
+- **`.clangd`**：clangd 自己的配置文件，例如用 `CompilationDatabase` 指向某个构建目录。
+
+<Tip>
+clangd 会在文件的各级父目录以及这些目录下的 `build/` 子目录里查找 `compile_commands.json`。如果构建目录叫别的名字（例如 CMake 配置生成的 `cmake-build-debug`），在项目根目录添加一个 `.clangd`，写上 `CompileFlags: { CompilationDatabase: cmake-build-debug }`，或者把该文件复制或链接到项目根目录。
+</Tip>
+
+### Apple 自带的 clangd
+
+Xcode 和 Command Line Tools 自带的 `clangd` 不运行 clang-tidy。如果项目里有 `.clang-tidy`，而 IDE 正在使用 Apple 的 clangd，会弹出提示并提供 **安装** 按钮，改装 LLVM 版本的 clangd。
+
+## 环境配置
+
+缺少 clangd 时，打开 C/C++ 文件会弹出“clangd 未安装”的通知，点 **安装** 即可。也可以在 **设置 › 语言和框架 › 语言服务器** 中安装。
+
+| 工具     | 安装方式                                                       | 说明                                                                                                      |
+| -------- | -------------------------------------------------------------- | --------------------------------------------------------------------------------------------------------- |
+| clangd   | 从 `clangd/clangd` 的 GitHub Release 下载到 IDE 自己的工具目录 | 提供 macOS、Linux x64 和 Windows x64 的预编译包。其他平台请自行安装（例如 `apt install clangd`）。        |
+| CodeLLDB | 从 `vadimcn/codelldb` 的 GitHub Release 下载                   | 可选，见下文“调试”一节。                                                                                  |
+| lldb-dap | IDE 不负责安装                                                 | 随 LLVM 提供（`brew install llvm`）。在 macOS 上 IDE 还会通过 `xcrun -f lldb-dap` 找到 Xcode 自带的版本。 |
+| GDB      | IDE 不负责安装                                                 | 需要 GDB 14 或更高版本。                                                                                  |
+
+`PATH` 上已有的 clangd 或调试器会直接使用。如需指定某个可执行文件，在 **设置 › 语言和框架 › 语言服务器** 中该工具的页面里选择。
+
+编译器不由 IDE 管理。单文件运行时，C 依次在 `PATH` 上查找 `clang`、`gcc`、`cc`，C++ 查找 `clang++`、`g++`、`c++`。
+
+## 构建、运行与测试
+
+### CMake
+
+对每个包含 `CMakeLists.txt` 的项目，OpenIDEA 会生成以下运行配置：
+
+- **CMake Configure**：`cmake -S . -B <构建目录> -DCMAKE_EXPORT_COMPILE_COMMANDS=ON`（新构建目录还会加上 `-DCMAKE_BUILD_TYPE=Debug`）。
+- **CMake Build**：`cmake --build <构建目录>`，构建目录尚未配置时会先执行配置步骤。
+- **CTest**：先构建，再执行 `ctest --test-dir <构建目录> --output-on-failure`。
+- **Build &lt;目标&gt;**，以及每个可执行目标各一个运行配置。运行目标前会先构建它。
+
+可执行目标来自 CMake 的 File API，因此要在第一次配置之后才会出现。嵌套的 CMake 项目（例如一个文件夹里放了多个仓库）各自生成一套配置。
+
+没有配置 CMake 配置文件时，IDE 使用项目中所有含 `CMakeCache.txt` 的子目录；一个都没有时使用 `build/`。
+
+#### CMake 配置
+
+如果想自己控制构建目录，在 **设置 › 构建、执行、部署 › CMake** 中添加配置（界面上叫“CMake 配置”）。每个配置包含：
+
+| 字段       | 含义                                                                                                                              |
+| ---------- | --------------------------------------------------------------------------------------------------------------------------------- |
+| 名称       | 显示在运行配置名称后面。                                                                                                          |
+| 构建类型   | `Debug`、`Release`、`RelWithDebInfo` 或 `MinSizeRel`（作为 `CMAKE_BUILD_TYPE` 传入）。                                            |
+| 生成器     | 可选的 `-G` 参数，例如 `Ninja`、`Unix Makefiles`、`Ninja Multi-Config`、`Visual Studio 17 2022`、`Xcode`。留空使用 CMake 默认值。 |
+| CMake 参数 | 配置步骤的额外参数。                                                                                                              |
+| 构建目录   | 留空表示 `cmake-build-<构建类型>`，例如 `cmake-build-debug`。                                                                     |
+| 构建参数   | `cmake --build` 的额外参数。                                                                                                      |
+| 环境变量   | 配置、构建、测试和运行时都会设置。                                                                                                |
+
+一旦添加了配置，就只使用这些配置。修改已有构建目录的生成器后，下次配置时会清掉它的 CMake 缓存。
+
+### Makefile
+
+`Makefile`、`makefile` 或 `GNUmakefile` 中的每个目标都会生成一个 `make <目标>` 配置，其中 `test` 和 `check` 目标标记为测试。
+
+### 单个文件
+
+带 `main` 函数的 C/C++ 文件不需要构建系统也能运行：使用 **运行上下文配置**（`⌃⇧R` / `Ctrl+Shift+F10`）或 **调试上下文配置**（macOS 上为 `⌃⇧D`）。IDE 会带调试信息（`-g`，C++ 另加 `-std=c++17`）把文件编译到临时目录再运行。
+
+通用用法见[运行配置](/zh/guide/run)和[测试](/zh/guide/testing)。
+
+## 调试
+
+调试通过 DAP 适配器完成。C 和 C++ 配置默认使用 **lldb-dap**，如需更换，打开运行配置修改 **调试适配器**：
+
+- **lldb-dap (C, C++, Swift)**：LLVM 提供的适配器，默认选项。IDE 不负责安装。
+- **CodeLLDB (Rust, C, C++)**：IDE 可以安装；开始调试时如果缺失，会弹出通知提供安装。
+- **GDB（C、C++）**：GDB 自带的 DAP 模式（`gdb -i dap`），需要 GDB 14 或更高版本，版本过低会提示并拒绝启动。
+
+**附加到进程…** 也会列出原生进程。已安装 CodeLLDB 时用它附加，否则用 lldb-dap。
+
+断点、单步和变量视图等内容见[调试](/zh/guide/debugging)。
+
+## Arduino
+
+`.ino` 草图使用 Arduino Language Server，它为 clangd 提供 Arduino 生成的编译上下文。IDE 不负责安装：请安装 Arduino IDE 2（其中包含 Arduino Language Server、Arduino CLI 和 clangd）以及对应开发板的核心。OpenIDEA 会在 `PATH` 或 Arduino IDE 2 的安装目录中查找这些工具。
+
+如需覆盖路径，可以在 **设置 › 语言和框架 › 语言服务器** 中设置，或在 `settings.toml` 中设置 `languages.arduino.cli`、`languages.arduino.clangd`、`languages.arduino.languageServer` 和 `languages.arduino.cliConfig`。开发板 FQBN 写在 `sketch.yaml` 或 `languages.arduino.fqbn` 中。草图旁边的普通 `.cpp` 文件仍由 clangd 处理。
+
+目前没有 Arduino 的上传或串口监视器功能。
+
+## 已知限制
+
+- C/C++ 代码智能的质量取决于 clangd 拿到的编译参数。没有 `compile_commands.json` 或 `compile_flags.txt` 时会有误报。
+- IDE 不会为 Make、Meson 等构建系统生成编译数据库。
+- CTest 作为一个整体配置运行，只显示控制台输出，不会在测试树中列出单个测试。
+- 没有针对 C/C++ 测试框架（GoogleTest、Catch2 等）的行号栏运行图标。
+- lldb-dap 和 GDB 不由 IDE 安装。

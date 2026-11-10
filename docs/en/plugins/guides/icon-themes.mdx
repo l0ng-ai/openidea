@@ -1,0 +1,183 @@
+---
+title: "Icon themes"
+description: "Write a file icon theme plugin that maps file names, extensions and folders to SVG icons, with optional patterns, variants and a settings page."
+---
+
+A file icon theme replaces the icons of files and folders in the Project tool window,
+editor tabs, Search Everywhere and other lists, and can override built-in IDE icons. Like a
+colour theme it is **data only**: no code and no capabilities.
+[Material Icons](https://github.com/l0ng-ai/openidea/tree/main/plugins/official/material-icons)
+is the complete example: 106 icons covering 189 extensions, 71 file names and 92 folder
+names.
+
+If a plugin only needs icons for the file types it adds, use `fileIcons` instead (see the
+end of this page): those show whatever icon theme is in use.
+
+## Start
+
+```sh
+openidea-plugin new my-icons --template icon-theme
+```
+
+This writes a manifest, `icons/theme.json` and four SVGs:
+
+```toml
+id = "acme.my-icons"
+name = "My Icons"
+version = "0.1.0"
+description = "File and folder icons."
+engines.openidea = "^1.0"
+
+[[contributes.iconThemes]]
+id = "my-icons"
+label = "My Icons"
+path = "icons/theme.json"
+```
+
+A plugin may contribute several icon themes. Install it like any plugin, then in
+**Settings › Plugins** select it and press **Apply** next to the icon theme (**Use Default
+Icons** switches back), or pick it as **File icon theme** in **Settings › Appearance &
+Behavior › Appearance**. The first icon theme of a plugin is selected automatically when the
+plugin is installed or enabled while no icon theme is selected.
+
+## The theme file
+
+`theme.json` maps names to SVG files (paths relative to the package):
+
+```json
+{
+  "iconDefinitions": { "rust": "icons/rust.svg", "folder-src": "icons/folder-src.svg" },
+  "file": "file",
+  "folder": "folder",
+  "folderExpanded": "folder-open",
+  "fileExtensions": { "rs": "rust", "d.ts": "typescript-def" },
+  "fileNames": { "cargo.toml": "cargo" },
+  "folderNames": { "src": "folder-src" }
+}
+```
+
+| Key                        | Meaning                                                                      |
+| -------------------------- | ---------------------------------------------------------------------------- |
+| `iconDefinitions`          | Icon id to SVG path (or `{ "light", "dark" }`, below).                       |
+| `file`                     | Icon for files nothing else matches.                                         |
+| `folder`, `folderExpanded` | Icons for closed and open folders nothing else matches.                      |
+| `fileExtensions`           | Extension (without the dot) to icon id. Multi-part extensions work (`d.ts`). |
+| `fileNames`                | Exact file name to icon id.                                                  |
+| `folderNames`              | Folder name to icon id.                                                      |
+
+Matching:
+
+- Files match by exact name, then the longest extension (`a.test.ts` tries `test.ts`, then
+  `ts`), then `file`.
+- Folders match by name, then `folder` / `folderExpanded`. Folders with a role (source
+  root, excluded, module) keep their built-in icons.
+- Names are case-insensitive.
+
+Limits: up to 5000 icons of at most 64 KiB each, and 20,000 mappings in all. Every SVG is
+sanitised on install: allow-listed elements and attributes only; no scripts, event
+handlers, external references, `url()` or entities.
+
+## Optional fields
+
+```json
+{
+  "iconDefinitions": { "rust": { "light": "icons/rust.svg", "dark": "icons/rust_dark.svg" } },
+  "folderOpen": "folder-open",
+  "patterns": [
+    { "pattern": "^.*\\.spec\\.ts$", "icon": "test-ts", "ignoreCase": true },
+    { "pattern": "/fixtures/", "icon": "fixture", "path": true, "group": "tests" },
+    { "pattern": "^src$", "icon": "folder-src", "target": "folder", "openIcon": "folder-src-open" }
+  ],
+  "overrides": { "chevron-right": "arrow-right", "symbol-class": "class" },
+  "groups": [{ "id": "tests", "name": "Tests", "enabled": false }],
+  "choices": [
+    {
+      "id": "arrows",
+      "name": "Arrows",
+      "default": "plain",
+      "options": [
+        { "id": "plain", "name": "Default" },
+        { "id": "plus", "name": "Plus-Minus", "overrides": { "chevron-right": "plus" } }
+      ]
+    }
+  ],
+  "accent": true
+}
+```
+
+- **Light and dark.** An `iconDefinitions` value may be `{ "light", "dark" }`; the dark SVG
+  is used with dark themes. Icon ids may not end in `_dark`.
+- **`patterns`** are regular expressions checked in order, before `fileNames` and
+  `fileExtensions`. `target` is `file` (default) or `folder`; with `path` a pattern matches
+  the whole path (with `/` separators) instead of the name; `ignoreCase` ignores case.
+  Patterns that could backtrack badly (a repeated group, too many ways to match one name),
+  lookaround, inline flags and named groups are refused.
+- **`openIcon`** (folder patterns) and **`folderOpen`** (other folders) are used for folders
+  that hold a file open in the editor, when the theme's hollow-folders option is on.
+- **`overrides`** replace built-in IDE icons by name (`chevron-right`, `folder-source`, …);
+  symbol icons (`symbol-<kind>`, `class`, `method`, …) are the code element icons.
+- **`groups`** are packs of patterns the user turns on or off; `enabled` is the default.
+- **`choices`** are variants the user picks one of; the chosen option's `overrides` win over
+  the top-level `overrides`.
+- **`accent: true`**: elements with `data-tint="true"` take the colour the user picks.
+- Elements with `data-themed="true"` take the accent colour of **Settings › Appearance &
+  Behavior › Appearance**, or the colour theme's custom accent.
+
+## A settings page
+
+`settings` describes the theme's page under **Settings › Plugins**, named after the theme's
+label. A theme without `settings` has no page.
+
+```json
+{
+  "settings": [
+    {
+      "title": "Icons",
+      "items": [
+        { "option": "hideFiles", "invert": true, "label": "Show file icons", "hint": "In trees, lists and tabs" },
+        { "option": "groups", "columns": 2 },
+        { "option": "choice", "choice": "arrows" },
+        { "option": "iconSize", "label": "Icon size", "default": 16 }
+      ]
+    }
+  ]
+}
+```
+
+Sections have a `title` and `items`. Each item names an `option` the IDE implements, with
+the theme's `label`, an optional `hint` and, where the option needs one, a `default`:
+
+| `option`                                                                            | Control              | Item fields                                          |
+| ----------------------------------------------------------------------------------- | -------------------- | ---------------------------------------------------- |
+| `hideFiles`, `hideFolders`, `hideUiIcons`, `hidePsiIcons`, `hollowFolders`          | Checkbox             | `invert`: checked means off                          |
+| `groups`                                                                            | A checkbox per group | `columns` (1–4), `label?` (group names are shown)    |
+| `choice`                                                                            | The choice's options | `choice` (its id), `label?` (default: its name)      |
+| `accent`, `monochrome`                                                              | Checkbox and colour  | `default` (`#rrggbb`); `accent` needs `accent: true` |
+| `saturation` (0–20), `opacity` (10–100), `iconSize` (12–32), `rowHeight` (16–48 px) | Checkbox and number  | `default` within the range                           |
+
+Values are kept per theme in the `appearance.fileIconThemeOptions` setting and apply while
+the theme is selected.
+
+## Icons for a plugin's own file types
+
+A plugin that adds a language or file type can ship icons for it without being an icon
+theme. They show whatever icon theme is in use:
+
+```toml
+[[contributes.fileIcons]]
+id = "graphviz"
+patterns = ["*.dot", "*.gv"]          # file name globs, no directories
+icon = "icons/graphviz.svg"
+iconDark = "icons/graphviz_dark.svg"  # optional
+```
+
+[Graphviz](https://github.com/l0ng-ai/openidea/tree/main/plugins/official/graphviz) uses it
+for `.dot` files. SVGs are sanitised like icon theme SVGs.
+
+## Tips
+
+- Material Icons generates its SVGs and `theme.json` with a script (`generate.py`, not part
+  of the package); for a large theme, generate rather than hand-edit.
+- Keep icons readable at 16 px and on both light and dark backgrounds, or provide `dark`
+  variants.
+- `openidea-plugin check` validates the theme file and every SVG as installing would.

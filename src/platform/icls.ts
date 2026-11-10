@@ -179,6 +179,7 @@ const COLOR_NAMES: Record<string, [string, "foreground" | "background"]> = {
   CARET_COLOR: ["caret", "foreground"],
   CARET_ROW_COLOR: ["caretRow", "background"],
   SELECTION_BACKGROUND: ["selection", "background"],
+  SELECTION_FOREGROUND: ["selectionForeground", "foreground"],
   INACTIVE_SELECTION_BACKGROUND: ["selectionInactive", "background"],
   GUTTER_BACKGROUND: ["gutter", "background"],
   LINE_NUMBERS_COLOR: ["lineNumber", "foreground"],

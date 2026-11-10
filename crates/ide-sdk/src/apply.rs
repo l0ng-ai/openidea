@@ -544,12 +544,28 @@ pub fn prepare_maven_run(config: &mut RunConfig, root: &Path, s: &Settings) {
 pub fn maven_local_repository(root: &Path, s: &Settings) -> Option<PathBuf> {
     let m = &s.languages.java.maven;
     setting_path(root, &m.local_repository).or_else(|| {
-        let text = std::fs::read_to_string(setting_path(root, &m.user_settings)?).ok()?;
-        let repo = crate::java::xml_value(&crate::lombok::strip_xml_comments(&text), "localRepository")?;
-        let home = crate::home_dir().map(|h| h.to_string_lossy().into_owned()).unwrap_or_default();
-        let repo = repo.replace("${user.home}", &home);
-        (!repo.is_empty() && !repo.contains("${")).then(|| PathBuf::from(repo))
+        let home = crate::home_dir().unwrap_or_default();
+        settings_local_repository(&setting_path(root, &m.user_settings)?, &home)
     })
+}
+
+/// The local repository a plain `mvn` uses when nothing is configured: `<localRepository>` of
+/// `~/.m2/settings.xml`, else `~/.m2/repository`.
+pub fn default_maven_repository() -> Option<PathBuf> {
+    default_maven_repository_in(&crate::home_dir()?)
+}
+
+pub(crate) fn default_maven_repository_in(home: &Path) -> Option<PathBuf> {
+    let m2 = home.join(".m2");
+    Some(settings_local_repository(&m2.join("settings.xml"), home).unwrap_or_else(|| m2.join("repository")))
+}
+
+/// `<localRepository>` of a Maven `settings.xml`, with `${user.home}` expanded.
+fn settings_local_repository(file: &Path, home: &Path) -> Option<PathBuf> {
+    let text = std::fs::read_to_string(file).ok()?;
+    let repo = crate::java::xml_value(&crate::lombok::strip_xml_comments(&text), "localRepository")?;
+    let repo = repo.replace("${user.home}", &home.to_string_lossy());
+    (!repo.is_empty() && !repo.contains("${")).then(|| PathBuf::from(repo))
 }
 
 fn xml_escape(text: &str) -> String {
@@ -1110,8 +1126,6 @@ fn custom_server(name: &str, ls: &LanguageServerSettings) -> LanguageServerConfi
         tsserver_project_extras: Default::default(),
         resync_on_configuration: false,
         pinned: None,
-        target: None,
-        target_key: None,
     }
 }
 
@@ -1300,6 +1314,45 @@ pub fn run_target<'a>(config: &RunConfig, settings: &'a Settings) -> Option<&'a 
     }
 }
 
+/// Whether the configuration's `JAVA_HOME` is the one Settings choose (the Maven runner JRE,
+/// the Gradle JVM) rather than a choice of its own: an IDE-generated build-tool configuration —
+/// a Maven goal or Gradle task from the tool window — carries the model's `JAVA_HOME`, which
+/// Settings derived when the model was built (IDEA has no JRE field on such a task either).
+/// Such a value is derived: Settings win, and [`without_derived`] drops it, so a corrected JDK
+/// applies to the next run, also across a restart (#2433). Every other configuration keeps its
+/// own `JAVA_HOME`, even one this build cannot parse.
+fn java_home_is_derived(c: &RunConfig) -> bool {
+    generated_maven_goal(c) || (c.id.starts_with("gradle:task:") && c.extras.params.is_empty())
+}
+
+/// Applies the `JAVA_HOME` of `env` (the one Settings resolved) to `c`. A derived value is
+/// replaced, also when Settings resolve none (a dead path must not outlive the setting it came
+/// from); an explicit `JAVA_HOME` of the configuration still wins.
+fn apply_java_home(c: &mut RunConfig, env: &std::collections::BTreeMap<String, String>, derived: bool) {
+    match env.get("JAVA_HOME") {
+        Some(value) if derived => {
+            c.env.insert("JAVA_HOME".into(), value.clone());
+        }
+        Some(value) => {
+            c.env.entry("JAVA_HOME".into()).or_insert_with(|| value.clone());
+        }
+        None if derived => {
+            c.env.remove("JAVA_HOME");
+        }
+        None => {}
+    }
+}
+
+/// The Maven environment from Settings (the runner JRE), applied to `c`: a derived `JAVA_HOME`
+/// is replaced, an explicit one stays (see [`apply_java_home`]).
+pub fn apply_maven_env(c: &mut RunConfig, root: &Path, s: &Settings) {
+    let env = maven_build_env(root, s, None);
+    apply_java_home(c, &env, java_home_is_derived(c));
+    for (key, value) in env {
+        c.env.entry(key).or_insert(value);
+    }
+}
+
 /// Points run configurations at the selected toolchains: Python configs use the
 /// project interpreter, npm scripts the chosen package manager and Node.js,
 /// cargo / go configs the selected toolchain, Maven / Gradle their runner JDK
@@ -1431,7 +1484,9 @@ pub fn apply_to_run_configs(configs: &mut [RunConfig], root: &Path, s: &Settings
                 if matches!(c.command.as_str(), "gradle" | "gradle.bat") {
                     c.command = resolve_gradle_command(root, &build_dir, s, false).to_string_lossy().into_owned();
                 }
-                for (key, value) in gradle_build_env(root, &build_dir, &c.command, s, None) {
+                let env = gradle_build_env(root, &build_dir, &c.command, s, None);
+                apply_java_home(c, &env, java_home_is_derived(c));
+                for (key, value) in env {
                     c.env.entry(key).or_insert(value);
                 }
             }
@@ -1461,9 +1516,7 @@ pub fn apply_to_run_configs(configs: &mut [RunConfig], root: &Path, s: &Settings
                 }
             }
             "maven" => {
-                for (key, value) in maven_build_env(root, s, None) {
-                    c.env.entry(key).or_insert(value);
-                }
+                apply_maven_env(c, root, s);
                 if let Some(mvn) = &mvn
                     && (c.detected
                         || generated_maven_goal(c)
@@ -1510,6 +1563,11 @@ pub fn without_derived(config: &RunConfig, root: &Path, s: &Settings) -> RunConf
         .env
         .iter()
         .find(|(key, value)| {
+            // Settings choose the `JAVA_HOME` of a generated build-tool configuration, also when
+            // a corrected setting no longer reproduces the value the model froze there (#2433).
+            if key.as_str() == "JAVA_HOME" && java_home_is_derived(&out) {
+                return true;
+            }
             let mut probe = out.clone();
             probe.env.remove(*key);
             let mut plain = probe.clone();
@@ -1759,6 +1817,26 @@ mod gradle_runtime_tests {
 #[cfg(test)]
 mod maven_linkage_tests {
     use super::*;
+
+    #[test]
+    fn default_maven_repository_reads_the_user_settings() {
+        let tmp = tempfile::tempdir().unwrap();
+        let home = tmp.path();
+        assert_eq!(default_maven_repository_in(home), Some(home.join(".m2/repository")));
+        std::fs::create_dir_all(home.join(".m2")).unwrap();
+        let settings = home.join(".m2/settings.xml");
+        std::fs::write(
+            &settings,
+            "<settings><!-- <localRepository>/old</localRepository> --><localRepository>/repo</localRepository></settings>",
+        )
+        .unwrap();
+        assert_eq!(default_maven_repository_in(home), Some(PathBuf::from("/repo")));
+        std::fs::write(&settings, "<settings><localRepository>${user.home}/m2repo</localRepository></settings>")
+            .unwrap();
+        assert_eq!(default_maven_repository_in(home), Some(home.join("m2repo")));
+        std::fs::write(&settings, "<settings><localRepository>${env.REPO}</localRepository></settings>").unwrap();
+        assert_eq!(default_maven_repository_in(home), Some(home.join(".m2/repository")));
+    }
 
     #[test]
     fn explicit_gradle_links_scope_jdt_import_and_unlink_all_disables_gradle() {

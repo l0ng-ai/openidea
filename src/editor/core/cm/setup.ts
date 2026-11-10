@@ -37,7 +37,7 @@ import { changeLane, overviewLane } from "./lanes";
 import { cornerInset } from "./cornerInset";
 import { foldingExtension } from "./folding";
 import { syntaxHighlightField } from "./syntaxHighlight";
-import { indentGuides } from "./indentGuides";
+import { indentGuides, rainbowIndentGuides } from "./indentGuides";
 import { rainbowBrackets } from "./rainbowBrackets";
 import { stickyMaxLines, stickyScroll } from "./stickyScroll";
 import { findExtension } from "./find";
@@ -167,9 +167,8 @@ export function indentExtension(indent: EffectiveIndent, format: EffectiveIndent
 /**
  * Indentation explicit reformat requests use: the Code Style without the file's
  * detected indents (detection affects editing, reformatting uses the configured
- * style, as in IDEA). Set only when the language has an explicit Tabs and Indents
- * override — unset, formatting keeps the editor's indent, the status bar choice
- * included.
+ * style, as in IDEA), or the indent chosen for the file in the status bar.
+ * Unset (editors outside a document model), formatting keeps the editor's indent.
  */
 export const formatIndentFacet = Facet.define<EffectiveIndent | null>({
   combine: (values) => [values.find((v) => v !== null) ?? null],
@@ -236,7 +235,7 @@ export function heavyExtension(docLength: number, settings?: EditorSettings): Ex
   const prefs = prefsOf(settings);
   return [
     prefs.codeEditing.highlightBraces ? bracketMatching({ renderMatch }) : [],
-    prefs.appearance.indentGuides ? indentGuides : [],
+    prefs.appearance.indentGuides ? (prefs.appearance.rainbowIndentGuides ? rainbowIndentGuides : indentGuides) : [],
     prefs.rainbowBrackets ? rainbowBrackets() : [],
     prefs.codeEditing.highlightSelection ? highlightSelectionMatches({ minSelectionLength: 2, maxMatches: 500 }) : [],
   ];

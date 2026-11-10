@@ -61,7 +61,7 @@ const entries: AgentEntry[] = [
 
 for (const theme of ["dark", "light"] as const) {
   for (const width of [760, 1400]) {
-    test(`approval stays inside the agent column at ${width}px in ${theme}`, async ({ page }) => {
+    test(`approval is asked above the composer at ${width}px in ${theme}`, async ({ page }) => {
       await page.setViewportSize({ width, height: 900 });
       await page.goto("/");
       await page.getByRole("tree", { name: "Project" }).waitFor();
@@ -85,43 +85,47 @@ for (const theme of ["dark", "light"] as const) {
       await expect(card.locator("pre")).toHaveText(command);
       await expect(card.getByRole("button")).toHaveText(["Allow Once", "Always Allow", "Decline", "Decline and Stop"]);
       const geometry = await card.evaluate((el) => {
-        const transcript = el.parentElement!.parentElement!;
+        // Asked above the composer, below the conversation.
+        const area = el.closest('[class*="_composerArea_"]')!;
+        const transcript = area.parentElement!.querySelector('[class*="_stream_"]')!;
         const prompt = transcript.querySelector('[class*="_user_"]')!;
         const reply = transcript.querySelector('[class*="_agentCard_"]')!;
         const rect = el.getBoundingClientRect();
-        const bounds = transcript.getBoundingClientRect();
+        const bounds = area.getBoundingClientRect();
         return {
-          scroll: transcript.scrollWidth,
-          client: transcript.clientWidth,
+          scroll: area.scrollWidth,
+          client: area.clientWidth,
+          inStream: transcript.contains(el),
           contained: rect.left >= bounds.left && rect.right <= bounds.right,
+          below: rect.top >= transcript.getBoundingClientRect().bottom - 1,
           promptRadius: parseFloat(getComputedStyle(prompt).borderRadius),
           replyBackground: getComputedStyle(reply).backgroundColor,
           replyBorder: getComputedStyle(reply).borderTopWidth,
           userOnRight: prompt.getBoundingClientRect().right > reply.getBoundingClientRect().right,
-          approvalAligned: Math.abs(rect.left - reply.getBoundingClientRect().left) < 1,
           authorBeforeWork:
             transcript.querySelector('[class*="_agentAuthor_"]')?.nextElementSibling?.matches("details") ?? false,
-          footerAligned:
-            Math.abs(prompt.getBoundingClientRect().right - prompt.nextElementSibling!.getBoundingClientRect().right) <
-            1,
+          headAligned:
+            Math.abs(
+              prompt.getBoundingClientRect().right - prompt.previousElementSibling!.getBoundingClientRect().right,
+            ) < 1,
           cardWidth: rect.width,
           available: bounds.width,
-          actionsVisible: getComputedStyle(reply.nextElementSibling!.querySelector('[class*="_messageActions_"]')!)
-            .opacity,
+          replyFooter: reply.nextElementSibling != null,
         };
       });
       expect(geometry.scroll).toBe(geometry.client);
+      expect(geometry.inStream).toBe(false);
       expect(geometry.contained).toBe(true);
+      expect(geometry.below).toBe(true);
       expect(geometry.promptRadius).toBeLessThanOrEqual(6);
       // Replies read as plain text on the panel.
       expect(geometry.replyBackground).toBe("rgba(0, 0, 0, 0)");
       expect(geometry.replyBorder).toBe("0px");
       expect(geometry.userOnRight).toBe(true);
-      expect(geometry.approvalAligned).toBe(true);
       expect(geometry.authorBeforeWork).toBe(true);
-      expect(geometry.footerAligned).toBe(true);
-      // The last message stays actionable even while an approval follows it.
-      expect(geometry.actionsVisible).toBe("1");
+      expect(geometry.headAligned).toBe(true);
+      // The turn waits on the approval: its interim message has no footer yet.
+      expect(geometry.replyFooter).toBe(false);
       if (width === 760) expect(geometry.cardWidth).toBeGreaterThan(geometry.available * 0.8);
       await card.locator("pre").focus();
       for (const label of ["Allow Once", "Always Allow", "Decline", "Decline and Stop"]) {

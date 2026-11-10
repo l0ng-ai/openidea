@@ -1,0 +1,85 @@
+---
+title: "Inspections"
+description: "Problems in the editor and the Problems tool window, quick fixes and intentions, inspection profiles, batch analysis and spell checking."
+---
+
+OpenIDEA treats every source of problems as an inspection: each language server (and, where the server reports codes, each of its diagnostic codes) plus a few built-in checks such as syntax errors, unresolved file references, unresolved merge conflict markers, build problems and spelling. All of them are shown the same way and can be configured in one place.
+
+## Problems in the editor
+
+Problems are underlined in the editor and marked in the scrollbar. The widget at the top-right of the editor shows the counts per severity (or a check mark when the file is clean); click it to open the **Problems** tool window. Hover over an underlined range to read the message.
+
+| Action                         | macOS | Windows / Linux |
+| ------------------------------ | ----- | --------------- |
+| **Next Highlighted Error**     | `F2`  | `F2`            |
+| **Previous Highlighted Error** | `⇧F2` | `Shift+F2`      |
+| **Error Description**          | `⌘F1` | `Ctrl+F1`       |
+| **Problems** tool window       | `⌘6`  | `Alt+6`         |
+
+The **Problems** tool window has two tabs: **File** (the current editor) and **Project Errors**. Its options menu sorts by severity or name, shows a preview and can autoscroll to the source.
+
+## Quick fixes and intentions
+
+| Action                   | macOS | Windows / Linux   |
+| ------------------------ | ----- | ----------------- |
+| **Show Context Actions** | `⌥↵`  | `Alt+Enter`       |
+| **Apply Quick Fix**      | `⌥⇧↵` | `Alt+Shift+Enter` |
+
+A light bulb appears on the caret line when something can be done there. **Show Context Actions** lists the quick fixes for problems at the caret first (the preferred one in bold), then intentions and refactorings the language server offers, and those contributed by plugins. Most entries show a preview of the change.
+
+**Apply Quick Fix** applies the preferred (or first) fix of the most severe problem at the caret or on the caret line, without opening the list.
+
+From the submenu of a problem's entry (`→`) you can also open the inspection's settings, disable the inspection, or change its severity. These changes are written to the inspection profile in effect.
+
+## Inspection profiles
+
+**Settings › Editor › Inspections** lists every inspection, grouped by language or area, with a checkbox to turn it off and a severity: **Error**, **Warning**, **Weak Warning** and others. Language servers appear here once they have reported something, and their diagnostic codes appear as separate entries as they are seen.
+
+- **Default** is stored with the IDE settings and applies to every project.
+- **Project Default** is stored in the project.
+- From the gear menu you can duplicate a profile, copy it to the IDE or project level, rename it or delete it.
+
+The selected profile filters what the editor, the Problems tool window and Inspect Code show.
+
+## Analyze a whole scope
+
+| Action                   | macOS | Windows / Linux |
+| ------------------------ | ----- | --------------- |
+| **Inspect Current File** | `⌥⇧I` | `Alt+Shift+I`   |
+
+These commands are in the **Code** menu:
+
+- **Code › Inspect Code…** runs the language servers' diagnostics over a scope and lists the results in the **Inspection Results** tool window, grouped by severity, inspection and file. The scope can be the whole project, a module or directory, the current file, the uncommitted files or a custom scope. Files whose language has no server are skipped.
+- **Code › Analyze Code › Inspect Current File** does the same for the open file.
+- **Code › Code Cleanup…** applies the language servers' automatic fixes, optimizes imports and reformats over a scope, file by file, and saves the files. Above 100 files it asks first. It can be cancelled from the background tasks popup.
+- **Code › Analyze Code › Locate Duplicates…** finds repeated code with a token-based clone detector. Set the minimum size in tokens and whether identifiers and literals are anonymized (so that code differing only in names still matches). Results open in the **Duplicates** tool window.
+
+## Structural search and replace
+
+**Edit › Find › Search Structurally…** and **Edit › Find › Replace Structurally…** match code by its syntax tree rather than its text. Choose the language and write a template using placeholders:
+
+- `$name$` or `$NAME` matches one syntax node;
+- `$$$NAME` matches any number of nodes (arguments, statements);
+- a placeholder used twice must match equal code.
+
+For example, in Rust the search template `$e$.unwrap()` with the replace template `$e$.expect("todo")` rewrites every `unwrap()` call and keeps its receiver. Search results open in the **Find Usages** tool window; replacements are previewed and applied as one change. Matching uses ast-grep's matcher over the bundled tree-sitter grammars.
+
+## Spell checking
+
+The **Proofreading › Typo** inspection checks words in comments, string literals and declared names against bundled English (US and UK) dictionaries and a list of programming terms. `camelCase` and `snake_case` names are split into words.
+
+On a typo, `⌥↵` / `Alt+Enter` offers:
+
+- **Typo: Change to…** (comments, strings, text) or **Typo: Rename to…** (a declared name, done through Rename so references follow);
+- saving the word to the project-level or application-level dictionary.
+
+Manage the project and application dictionaries, and add your own dictionary files, in **Settings › Editor › Natural Languages › Spelling**. Typo's severity and options are in **Settings › Editor › Inspections** like any other inspection.
+
+## Before committing
+
+The commit dialog can run **Analyze code** and **Check TODO** on the changed files before committing; see [Version control](/en/guide/vcs).
+
+## Limits
+
+- Inspections come from language servers and a few built-in checks. There is no large set of IDE-side inspections like IntelliJ IDEA's; what you see depends on the servers configured for the language.
+- Inspect Code and Code Cleanup skip files with no language server.
