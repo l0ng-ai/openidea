@@ -119,24 +119,27 @@ jobs:
           version='${{ needs.version.outputs.version }}'
           arch='${{ matrix.arch }}'
           bundle="target/${{ matrix.target }}/release/bundle"
-          mkdir -p dist
+          # Not "dist": that is Vite's frontend output directory.
+          out="kylin-dist"
+          rm -rf "$out"
+          mkdir -p "$out"
 
           shopt -s nullglob
           for f in "$bundle"/deb/*.deb; do
-            cp "$f" "dist/openidea_${version}_kylin_${arch}.deb"
+            cp "$f" "$out/openidea_${version}_kylin_${arch}.deb"
           done
           for f in "$bundle"/appimage/*.AppImage; do
-            cp "$f" "dist/OpenIDEA_${version}_kylin_${arch}.AppImage"
+            cp "$f" "$out/OpenIDEA_${version}_kylin_${arch}.AppImage"
           done
 
-          test -n "$(ls -A dist)" || { echo "::error::no deb or AppImage was produced"; exit 1; }
-          (cd dist && sha256sum * > SHA256SUMS)
-          ls -lh dist
+          test -n "$(ls -A "$out")" || { echo "::error::no deb or AppImage was produced"; exit 1; }
+          (cd "$out" && sha256sum -- *.deb *.AppImage > SHA256SUMS)
+          ls -lh "$out"
 
       - uses: actions/upload-artifact@v4
         with:
           name: openidea-kylin-${{ matrix.arch }}
-          path: dist/*
+          path: kylin-dist/*
           if-no-files-found: error
           retention-days: 30
 
