@@ -583,7 +583,7 @@ pub fn dependency_groups(root: &Path, s: &Settings, deps: &[BuildDependency]) ->
     if deps.is_empty() {
         return Vec::new();
     }
-    let maven_repo = crate::apply::maven_local_repository(root, s).or_else(default_maven_repository);
+    let maven_repo = crate::apply::maven_local_repository(root, s).or_else(crate::apply::default_maven_repository);
     // The home Gradle runs with, not just the one this process inherited.
     let gradle_home = crate::apply::setting_path(root, &s.languages.java.gradle.user_home).or_else(gradle_user_home);
     let files: Vec<PathBuf> = JAVA_MANIFESTS.iter().map(|n| root.join(n)).collect();
@@ -591,11 +591,6 @@ pub fn dependency_groups(root: &Path, s: &Settings, deps: &[BuildDependency]) ->
     cached(root, "buildDependencies", key, &files, || {
         dependency_libraries(deps, maven_repo.as_deref(), gradle_home.as_deref())
     })
-}
-
-/// `~/.m2/repository` (Settings › Maven › Local repository overrides it).
-fn default_maven_repository() -> Option<PathBuf> {
-    Some(crate::home_dir()?.join(".m2/repository"))
 }
 
 /// `$GRADLE_USER_HOME`, else `~/.gradle`: what Gradle uses when Settings › Gradle ›
@@ -654,7 +649,7 @@ pub fn published_version_catalog(root: &Path, s: &Settings, coordinates: &str) -
         found.into_iter().next()
     });
     cached.or_else(|| {
-        let repo = crate::apply::maven_local_repository(root, s).or_else(default_maven_repository)?;
+        let repo = crate::apply::maven_local_repository(root, s).or_else(crate::apply::default_maven_repository)?;
         let path = repo.join(d.group.replace('.', "/")).join(&d.artifact).join(&d.version).join(&file);
         path.is_file().then_some(path)
     })
