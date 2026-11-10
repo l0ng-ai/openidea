@@ -268,6 +268,7 @@ const ICONS = {
   "zoom-out": "openidea/general/zoomOut",
   "actual-size": "openidea/general/actualZoom",
   chessboard: "openidea/general/chessboard",
+  eyedropper: "openidea/general/eyedropper",
   minimize: "general/openInToolWindow",
   "main-menu": "openidea/general/mainMenu",
   "window-minimize": "openidea/general/windowMinimize",

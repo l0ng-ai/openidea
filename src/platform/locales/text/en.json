@@ -877,5 +877,16 @@
   "Couldn't fork the task": "Couldn't fork the task",
   "Fork": "Fork",
   "Fork Conversation from Here": "Fork Conversation from Here",
-  "Rainbow indent guides": "Rainbow indent guides"
+  "Rainbow indent guides": "Rainbow indent guides",
+  "Color picker": "Color picker",
+  "HEX": "HEX",
+  "Red": "Red",
+  "Green": "Green",
+  "Blue": "Blue",
+  "Alpha percent": "Alpha percent",
+  "Hexadecimal": "Hexadecimal",
+  "Pick screen color": "Pick screen color",
+  "Current color": "Current color",
+  "Recent colors": "Recent colors",
+  "Recent color": "Recent color"
 }

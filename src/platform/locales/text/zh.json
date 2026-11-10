@@ -7212,5 +7212,13 @@
   "Imported '{name}' (based on {parent}): {applied} actions.": "已导入 '{name}'（基于 {parent}）：{applied} 个操作。",
   "Not available in OpenIDEA ({length}): {join}.": "OpenIDEA 中不可用（{length}）：{join}。",
   "Skipped {skippedShortcuts} unsupported shortcuts.": "已跳过 {skippedShortcuts} 个不支持的快捷键。",
-  "Import IntelliJ IDEA Keymap…": "导入 IntelliJ IDEA 键盘映射…"
+  "Import IntelliJ IDEA Keymap…": "导入 IntelliJ IDEA 键盘映射…",
+  "Color picker": "颜色选择器",
+  "HEX": "十六进制",
+  "Alpha percent": "透明度百分比",
+  "Hexadecimal": "十六进制颜色值",
+  "Pick screen color": "提取屏幕颜色",
+  "Current color": "当前颜色",
+  "Recent colors": "最近使用的颜色",
+  "Recent color": "最近颜色"
 }
