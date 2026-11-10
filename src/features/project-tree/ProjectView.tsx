@@ -26,7 +26,12 @@ import { nativeDropPoint } from "@/platform/nativeDrop";
 import type { RootFolder } from "@/platform/languageSettings";
 import { useDetectedRoots, useEffectiveRoots } from "@/platform/projectRoots";
 import { macStroke, strokeOf } from "@/platform/keymap";
-import { OWNS_FILE_DROP, prepareMenuGroups, useFileDecoration } from "@/workbench/contributions";
+import {
+  OWNS_FILE_DROP,
+  prepareMenuGroups,
+  useFileDecoration,
+  type DecorationSegment,
+} from "@/workbench/contributions";
 import {
   FILES_DRAG,
   HighlightedText,
@@ -345,6 +350,7 @@ const Row = memo(function Row({
             indices={matches}
             tone="accent"
           />
+          {deco.suffix && <DecorationSuffix segments={deco.suffix} color={deco.suffixColor} />}
           {detail && <span className={styles.detail}>{detail}</span>}
           {deco.badge && <span className={styles.badge}>{deco.badge}</span>}
         </>
@@ -352,6 +358,33 @@ const Row = memo(function Row({
     </span>
   );
 });
+
+interface DecorationSuffixProps {
+  segments: readonly DecorationSegment[];
+  color?: string;
+}
+
+function DecorationSuffix({ segments, color }: DecorationSuffixProps) {
+  return (
+    <span className={styles.suffix} style={color ? { color } : undefined}>
+      {segments.map((s, i) => {
+        const text = s.strike ? <s>{s.text}</s> : s.text;
+        return (
+          <span
+            key={i}
+            className={styles.suffixSegment}
+            role={s.label ? "img" : undefined}
+            aria-label={s.label}
+            title={s.label}
+          >
+            {text}
+            {s.icon && <Icon name={s.icon} size={12} />}
+          </span>
+        );
+      })}
+    </span>
+  );
+}
 
 // ---------------------------------------------------------------------------
 // Member rows ("Show Members")

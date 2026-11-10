@@ -7306,5 +7306,7 @@
   "One Header=Value entry per line.": "每行一个 Header=Value 条目。",
   "Leave empty to enable for all agents, or list agent IDs separated by commas.": "留空则为所有代理启用，或用逗号分隔列出代理 ID。",
   "Model Context Protocol (MCP)…": "模型上下文协议 (MCP)…",
-  "Opens Settings › Agents › Model Context Protocol (MCP): configures User and Workspace MCP servers.": "打开“设置 › 智能体 › 模型上下文协议 (MCP)”：配置用户级和工作区级 MCP 服务器。"
+  "Opens Settings › Agents › Model Context Protocol (MCP): configures User and Workspace MCP servers.": "打开“设置 › 智能体 › 模型上下文协议 (MCP)”：配置用户级和工作区级 MCP 服务器。",
+  "Show branch and incoming/outgoing commits in the Project view": "在项目视图中显示分支及传入/传出提交",
+  "Up to date with {upstream}": "已与 {upstream} 同步"
 }
