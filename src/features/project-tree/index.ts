@@ -2,7 +2,7 @@
 import { onEditorEvent, openEditorPaths } from "@/editor/api";
 import { commands, isTauri, onIdeEvent } from "@/platform/ipc";
 import { useBuildModel } from "@/platform/buildModel";
-import { validateProjectStructure, type RootFolder } from "@/platform/languageSettings";
+import { effectiveContentRoots, validateProjectStructure, type RootFolder } from "@/platform/languageSettings";
 import { useProject } from "@/platform/project";
 import { initProjectRoots, useProjectRoots } from "@/platform/projectRoots";
 import { folderIconName } from "@/ui";
@@ -115,7 +115,7 @@ export function activate(): () => void {
   const syncContentRoots = () => {
     const { project, settings } = useProject.getState();
     const own = project && (!project.workspace || project.workspace.projects[0] === project.root);
-    const paths = own ? validateProjectStructure(settings?.projectStructure).contentRoots : [];
+    const paths = own ? effectiveContentRoots(validateProjectStructure(settings?.projectStructure)) : [];
     // The Build tool window's model (one load per build change), not a load of our own.
     const build = useBuildModel.getState();
     const gradleBuilds = build.root === project?.root ? (build.model?.gradle ?? []) : [];

@@ -526,11 +526,26 @@ pub(crate) fn find_symbols_until(
 
 /// Symbols named exactly `name` (and of `kind`, when given), by path then position.
 pub(crate) fn symbols_named(data: &IndexData, name: &str, kind: Option<SymbolKind>, limit: usize) -> Vec<SymbolMatch> {
+    symbols_named_within(data, name, kind, &[], limit)
+}
+
+/// Symbols named exactly `name` (and of `kind`, when given) whose file is inside one of
+/// `roots` (empty = every indexed file), by path then position. Filtering while walking
+/// entries keeps symbols outside the roots from materialising or filling the cap.
+pub(crate) fn symbols_named_within(
+    data: &IndexData,
+    name: &str,
+    kind: Option<SymbolKind>,
+    roots: &[PathBuf],
+    limit: usize,
+) -> Vec<SymbolMatch> {
     let mask = char_mask(name);
+    let within = |e: &FileEntry| roots.is_empty() || roots.iter().any(|root| e.path.starts_with(root));
     let mut out: Vec<SymbolMatch> = data
         .files
         .iter()
         .flatten()
+        .filter(|e| within(e))
         .flat_map(|e| {
             e.symbols.iter().filter(|s| s.mask == mask && &*s.name == name && kind.is_none_or(|k| s.kind == k)).map(
                 move |s| SymbolMatch {
