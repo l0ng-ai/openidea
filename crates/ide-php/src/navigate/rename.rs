@@ -14,7 +14,19 @@
 //!   `$o->x`) and the parameter (its variable in the constructor and the
 //!   named arguments of `new Foo(x: …)`), whichever the caret is on;
 //! - for a parameter or variable, `$name` in the PHPDoc of its function or
-//!   method (`@param T $name`) and in the docblocks inside it (`@var`).
+//!   method (`@param T $name`) and in the docblocks inside it (`@var`), not
+//!   in those of closures, functions and classes nested in it.
+//!
+//! A rename that would clash is refused with the reason
+//! ([`PhpEngine::rename_conflicts`]): a variable of the new name already in
+//! the scope of the renamed one; a class-like, function or constant of that
+//! name in the namespace; a method, property or constant of that name in a
+//! class declaring the renamed member (its used traits included) or, for a
+//! non-private one, in a subclass (a parent's private member is no clash).
+//! In a file where the new short name is already imported or declared for
+//! something else, the renamed class, function or constant is written fully
+//! qualified instead and its import there is dropped; a clash in the file
+//! declaring it is refused.
 //!
 //! Only the last segment of a qualified name is replaced (`use App\Book;`,
 //! `\App\Book`, `'App\\Book'`), and a usage written through an alias
@@ -28,13 +40,16 @@ use std::collections::{BTreeMap, HashSet};
 use std::path::{Path, PathBuf};
 
 use ide_core::{CancellationToken, DocId, FileEdit, IdeError, IdeResult, Pos, Range, TextEdit, WorkspaceEdit};
-use mago_syntax::cst::TriviaKind;
+use mago_span::HasSpan;
+use mago_syntax::cst::{AnonymousClass, Class, Closure, Enum, Function, Interface, Method, Trait, TriviaKind};
+use mago_syntax::walker::Walker;
 
 use super::hierarchy::Subtypes;
 use super::references::{Sought, UsageKind};
-use super::short_name;
 use super::symbol::{Decl, MemberKind, Subject, file_text};
+use super::{namespace_of, short_name};
 use crate::engine::PhpEngine;
+use crate::imports::{FileImport, file_imports};
 use crate::index::path_key;
 use crate::names::{NameKind, fqn_eq};
 use crate::summary::{FileSummary, Visibility};
@@ -144,6 +159,41 @@ struct Renaming {
     /// The name under the caret (without `$` or a namespace).
     range: Range,
     subject: Subject,
+}
+
+/// One usage to change, in bytes of its file.
+struct Place {
+    /// The name as written (`\App\Book`, `$x`).
+    start: u32,
+    end: u32,
+    /// Where the bare name starts.
+    bare_start: u32,
+    /// Whether it is written with a namespace (`Model\Book`, `\App\Book`).
+    qualified: bool,
+    declaration: bool,
+}
+
+/// The imports of the renamed `fqn` (without an alias) in a file where the
+/// new short name `new` already names something else: another import or a
+/// declaration of the file. `None` when it doesn't.
+fn short_name_clash(text: &str, file: &str, kind: NameKind, fqn: &str, new: &str) -> Option<Vec<FileImport>> {
+    let same = |name: &str| if kind == NameKind::Constant { name == new } else { name.eq_ignore_ascii_case(new) };
+    let parsed = ParsedFile::parse(file, text);
+    let imports: Vec<FileImport> = file_imports(&parsed).into_iter().filter(|import| import.kind == kind).collect();
+    let other_import = imports.iter().any(|import| same(&import.local) && !fqn_eq(kind, &import.fqn, fqn));
+    let other_declaration = || {
+        let summary = FileSummary::extract(&parsed);
+        let other = |declared: &str| same(short_name(declared)) && !fqn_eq(kind, declared, fqn);
+        match kind {
+            NameKind::ClassLike => summary.class_likes.iter().any(|class| other(&class.fqn)),
+            NameKind::Function => summary.functions.iter().any(|function| other(&function.fqn)),
+            _ => summary.constants.iter().any(|constant| other(&constant.fqn)),
+        }
+    };
+    if !other_import && !other_declaration() {
+        return None;
+    }
+    Some(imports.into_iter().filter(|import| !import.aliased && fqn_eq(kind, &import.fqn, fqn)).collect())
 }
 
 /// The byte range of the bare name in `written`: after the last `\`, without
@@ -449,10 +499,11 @@ impl PhpEngine {
             return Ok(WorkspaceEdit::default());
         }
         let sought = self.rename_sought(renaming.subject, path, here, cancel)?;
+        self.rename_conflicts(&sought, &new, cancel)?;
         let usages = self.find_usages(&sought, path, here, true, cancel)?;
 
-        // Edits by file, in a stable order.
-        let mut files: BTreeMap<String, (PathBuf, Vec<TextEdit>)> = BTreeMap::new();
+        // The places to change by file, in a stable order.
+        let mut places: BTreeMap<String, (PathBuf, Vec<Place>)> = BTreeMap::new();
         let mut texts: BTreeMap<String, Option<String>> = BTreeMap::new();
         let mut declared_in: Vec<PathBuf> = Vec::new();
         for usage in &usages {
@@ -470,12 +521,67 @@ impl PhpEngine {
             if !bare.eq_ignore_ascii_case(&renaming.old) {
                 continue;
             }
-            if usage.kind == UsageKind::Declaration && !declared_in.contains(&usage.path) {
+            let declaration = usage.kind == UsageKind::Declaration;
+            if declaration && !declared_in.contains(&usage.path) {
                 declared_in.push(usage.path.clone());
             }
-            let range = line_index.range(start + bare_start as u32, end);
-            let edits = &mut files.entry(key).or_insert_with(|| (usage.path.clone(), Vec::new())).1;
-            edits.push(TextEdit { range, new_text: new.clone() });
+            let place = Place {
+                start,
+                end,
+                bare_start: start + bare_start as u32,
+                qualified: written.contains('\\'),
+                declaration,
+            };
+            places.entry(key).or_insert_with(|| (usage.path.clone(), Vec::new())).1.push(place);
+        }
+
+        // A class, function or constant whose new short name another import
+        // or declaration of a file already has is written fully qualified
+        // there, and its own import is dropped.
+        let renamed_name = sought.iter().find_map(|sought| match sought {
+            Sought::Name { kind, fqn } => Some((*kind, fqn.trim_start_matches('\\').to_owned())),
+            _ => None,
+        });
+        let mut files: BTreeMap<String, (PathBuf, Vec<TextEdit>)> = BTreeMap::new();
+        for (key, (file, places)) in places {
+            let Some(text) = texts.get(&key).and_then(|text| text.as_deref()) else { continue };
+            let line_index = LineIndex::new(text);
+            let clash = renamed_name.as_ref().and_then(|(kind, fqn)| short_name_clash(text, &key, *kind, fqn, &new));
+            let mut edits = Vec::new();
+            match (clash, &renamed_name) {
+                (Some(own_imports), Some((_, fqn))) => {
+                    if places.iter().any(|place| place.declaration && !place.qualified) {
+                        let name =
+                            file.file_name().map_or_else(|| key.clone(), |name| name.to_string_lossy().into_owned());
+                        return Err(IdeError::invalid(format!("The name '{new}' is already used in {name}")));
+                    }
+                    let namespace = namespace_of(fqn);
+                    let qualified =
+                        if namespace.is_empty() { format!("\\{new}") } else { format!("\\{namespace}\\{new}") };
+                    for import in &own_imports {
+                        let range = line_index.range(import.remove.0, import.remove.1);
+                        edits.push(TextEdit { range, new_text: String::new() });
+                    }
+                    for place in &places {
+                        if own_imports.iter().any(|import| import.start <= place.start && place.end <= import.end) {
+                            continue;
+                        }
+                        let (start, new_text) = if place.qualified {
+                            (place.bare_start, new.clone())
+                        } else {
+                            (place.start, qualified.clone())
+                        };
+                        edits.push(TextEdit { range: line_index.range(start, place.end), new_text });
+                    }
+                }
+                _ => {
+                    for place in &places {
+                        let range = line_index.range(place.bare_start, place.end);
+                        edits.push(TextEdit { range, new_text: new.clone() });
+                    }
+                }
+            }
+            files.insert(key, (file, edits));
         }
 
         // `$name` in the docblocks of parameters' and variables' functions.
@@ -515,6 +621,78 @@ impl PhpEngine {
         Ok(edit)
     }
 
+    /// Refuses a rename to `new` that would clash: with a variable already
+    /// in the renamed one's scope, a class-like, function or constant of the
+    /// namespace, or a member of that name where the renamed members live
+    /// (their classes, used traits included, and their subclasses unless the
+    /// renamed one is private; a parent's private member isn't inherited).
+    fn rename_conflicts(&self, sought: &[Sought], new: &str, cancel: &CancellationToken) -> IdeResult<()> {
+        let resolver = self.resolver();
+        // Variables.
+        if sought.iter().any(|sought| matches!(sought, Sought::Variable { .. }))
+            && self.variable_name_taken(sought, new)
+        {
+            return Err(IdeError::invalid(format!("Variable '${new}' is already defined in this scope")));
+        }
+        // Class-likes, functions and constants of the namespace.
+        let declarations = resolver.declarations();
+        for sought in sought {
+            let Sought::Name { kind, fqn } = sought else { continue };
+            let fqn = fqn.trim_start_matches('\\');
+            let namespace = namespace_of(fqn);
+            let target = if namespace.is_empty() { new.to_owned() } else { format!("{namespace}\\{new}") };
+            // Only the case changes: the same declaration.
+            if fqn_eq(*kind, fqn, &target) {
+                continue;
+            }
+            let message = match kind {
+                NameKind::ClassLike if declarations.class_like(&target).is_some() => {
+                    format!("Class '{target}' already exists")
+                }
+                NameKind::Function if declarations.function(&target).is_some() => {
+                    format!("Function '{target}' already exists")
+                }
+                NameKind::Constant if declarations.constant(&target).is_some() => {
+                    format!("Constant '{target}' already exists")
+                }
+                _ => continue,
+            };
+            return Err(IdeError::invalid(message));
+        }
+        // Members.
+        let subtypes = Subtypes::new(self);
+        let mut classes: Vec<(MemberKind, String)> = Vec::new();
+        for sought in sought {
+            let Sought::Member { kind, name, declaring, private } = sought else { continue };
+            // A method whose name only changes case is still itself.
+            if *kind == MemberKind::Method && name.eq_ignore_ascii_case(new) {
+                continue;
+            }
+            classes.push((*kind, declaring.clone()));
+            if !private {
+                for subtype in subtypes.all(self, declaring, cancel)? {
+                    classes.push((*kind, subtype.class.fqn.clone()));
+                }
+            }
+        }
+        let mut seen = HashSet::new();
+        classes.retain(|(kind, class)| seen.insert((*kind, class.trim_start_matches('\\').to_ascii_lowercase())));
+        for (kind, class) in classes {
+            let Some(model) = resolver.class_model(&class) else { continue };
+            let Some(info) = member_info(&model, kind, new) else { continue };
+            if info.visibility == Visibility::Private && !fqn_eq(NameKind::ClassLike, &info.self_class, &class) {
+                continue;
+            }
+            let owner = info.declaring.fqn.trim_start_matches('\\');
+            return Err(IdeError::invalid(match kind {
+                MemberKind::Method => format!("Method '{new}' already exists in {owner}"),
+                MemberKind::Property => format!("Property '${new}' already exists in {owner}"),
+                MemberKind::Constant => format!("Constant '{new}' already exists in {owner}"),
+            }));
+        }
+        Ok(())
+    }
+
     /// Renames `file` (`Old.php` → `New.php`) when it is named after the
     /// class and declares no other class-like, function or constant.
     fn class_file_rename(
@@ -546,27 +724,39 @@ impl PhpEngine {
 /// The byte ranges of `name` (after its `$`) in the docblocks belonging to
 /// the scope of a variable declared at `declaration`: the docblock in front
 /// of its function or method (`@param T $name`) and those inside it
-/// (`@var T $name`). Nothing for a variable outside any function.
+/// (`@var T $name`), but not those of the closures, functions and classes
+/// nested in it, which have their own variables (arrow functions share their
+/// parent's). The scope is the innermost function, method or closure around
+/// the declaration. Nothing for a variable outside any function.
 pub(crate) fn doc_variable_names(text: &str, file: &str, name: &str, declaration: Range) -> Vec<(u32, u32)> {
     let parsed = ParsedFile::parse(file, text);
-    let summary = FileSummary::extract(&parsed);
     let at = parsed.line_index().byte(declaration.start);
-    let scopes = summary
-        .functions
+    let program = parsed.program();
+    let mut scopes = Scopes::default();
+    ScopeWalker.walk_program(program, &mut scopes);
+    let Some(&(scope_start, scope_end)) = scopes
+        .function_likes
         .iter()
-        .map(|function| function.loc)
-        .chain(summary.class_likes.iter().flat_map(|class| class.methods.iter().map(|method| method.loc)));
-    let Some(scope) = scopes.filter(|loc| loc.start <= at && at <= loc.end).min_by_key(|loc| loc.end - loc.start)
+        .filter(|(start, end)| *start <= at && at <= *end)
+        .min_by_key(|(start, end)| end - start)
     else {
         return Vec::new();
     };
+    // What is nested in the scope and has variables of its own.
+    let nested: Vec<(u32, u32)> = scopes
+        .function_likes
+        .iter()
+        .chain(&scopes.classes)
+        .copied()
+        .filter(|&(start, end)| scope_start <= start && end <= scope_end && (start, end) != (scope_start, scope_end))
+        .collect();
     let mut out = Vec::new();
-    let program = parsed.program();
     for trivia in program.trivia.iter().filter(|trivia| trivia.kind == TriviaKind::DocBlockComment) {
         let (start, end) = (trivia.span.start.offset, trivia.span.end.offset);
-        let inside = scope.start <= start && end <= scope.end;
+        let inside =
+            scope_start <= start && end <= scope_end && !nested.iter().any(|&(from, to)| from <= start && end <= to);
         let before =
-            end <= scope.start && text.get(end as usize..scope.start as usize).is_some_and(|gap| gap.trim().is_empty());
+            end <= scope_start && text.get(end as usize..scope_start as usize).is_some_and(|gap| gap.trim().is_empty());
         if !inside && !before {
             continue;
         }
@@ -585,6 +775,55 @@ pub(crate) fn doc_variable_names(text: &str, file: &str, name: &str, declaration
         }
     }
     out
+}
+
+/// The spans of a file's functions, methods and closures, and of its
+/// class-likes.
+#[derive(Default)]
+struct Scopes {
+    function_likes: Vec<(u32, u32)>,
+    classes: Vec<(u32, u32)>,
+}
+
+impl Scopes {
+    fn function_like(&mut self, node: &impl HasSpan) {
+        let span = node.span();
+        self.function_likes.push((span.start.offset, span.end.offset));
+    }
+
+    fn class(&mut self, node: &impl HasSpan) {
+        let span = node.span();
+        self.classes.push((span.start.offset, span.end.offset));
+    }
+}
+
+struct ScopeWalker;
+
+impl<'a> Walker<'a, 'a, Scopes> for ScopeWalker {
+    fn walk_in_function(&self, node: &'a Function<'a>, cx: &mut Scopes) {
+        cx.function_like(node);
+    }
+    fn walk_in_method(&self, node: &'a Method<'a>, cx: &mut Scopes) {
+        cx.function_like(node);
+    }
+    fn walk_in_closure(&self, node: &'a Closure<'a>, cx: &mut Scopes) {
+        cx.function_like(node);
+    }
+    fn walk_in_class(&self, node: &'a Class<'a>, cx: &mut Scopes) {
+        cx.class(node);
+    }
+    fn walk_in_interface(&self, node: &'a Interface<'a>, cx: &mut Scopes) {
+        cx.class(node);
+    }
+    fn walk_in_trait(&self, node: &'a Trait<'a>, cx: &mut Scopes) {
+        cx.class(node);
+    }
+    fn walk_in_enum(&self, node: &'a Enum<'a>, cx: &mut Scopes) {
+        cx.class(node);
+    }
+    fn walk_in_anonymous_class(&self, node: &'a AnonymousClass<'a>, cx: &mut Scopes) {
+        cx.class(node);
+    }
 }
 
 #[cfg(test)]

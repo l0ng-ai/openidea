@@ -839,7 +839,7 @@ Runs after Plan 7. Before any 8.x phase, read [LARAVEL-ROADMAP.md](LARAVEL-ROADM
 
 The gaps that the follow-ups in `PROGRESS.md`, the review in `differential.md` and the known limits in `laravel.md` left after Plans 0–8, most important first: safety of refactorings, type inference that real Laravel code depends on, speed, the remaining Laravel gaps and fuller refactorings. The same rules apply. Every phase re-checks the corpora or the real applications it touches (`scripts/php-corpus.sh`, `scripts/laravel-apps.sh`) and records numbers in the document it names.
 
-- [ ] Phase 9.1: Safe rename
+- [x] Phase 9.1: Safe rename
       Rename (`navigate::rename`, phase 3.3) applies edits without checking that the new name is free. Add conflict checks, reported in `prepare_rename` or as a refusal with the reason (en/zh text):
   - a method, property or constant of that name already in the class, its parents, children or used traits, with the right visibility
   - a class, function or constant of that name already in the namespace
@@ -852,6 +852,14 @@ The gaps that the follow-ups in `PROGRESS.md`, the review in `differential.md` a
   - Scope the docblock `$name` scan to the function's own docblocks, not nested closures.
 
   Tests: a fixture per conflict, define constants, dynamic uses, a nested closure with a same-named variable.
+
+- [ ] Phase 9.1.b: Rename of define() constants and possible usages
+      What 9.1 left (it did the conflict checks and the docblock scoping):
+  - Find and rename `define('X', …)` constants: the name inside the string literal (without its quotes) at the declaration, `X` and `\X` uses, `defined('X')` and `constant('X')` strings; with 9.1's conflict check against existing constants.
+  - List dynamic uses that can't be renamed safely (`$o->$m`, `$f()`, `call_user_func('f')`, string callables like `'f'` or `[$o, 'm']` passed where a callable is expected) as "possible usages", without editing them. Rename's result gets them (a new optional field next to `incomplete`, bindings regenerated), and the front end shows them in the rename preview as a warning (en/zh text).
+  - A trait method's conflict check also looks at the classes using the trait (9.1 checks the trait, the classes declaring the member and their subclasses).
+
+  Tests: a fixture renaming a `define()` constant from its declaration and from a use, a fixture per kind of dynamic use, a host test that the rename result carries them, and a frontend test that the preview shows them.
 
 - [ ] Phase 9.2: Closure parameters and array flow
       Close the type-inference gaps listed under "Follow-ups" in `docs/php-engine/differential.md`:

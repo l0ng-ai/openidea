@@ -280,3 +280,162 @@ fn what_cannot_be_renamed() {
     // The same name: nothing to change.
     assert_eq!(project.rename_edit("src/Book.php", &source, "Book").unwrap().0, WorkspaceEdit::default());
 }
+
+impl Project {
+    /// The reason a rename at the caret is refused.
+    fn refused(&mut self, rel: &str, source: &str, new_name: &str) -> String {
+        match self.rename_edit(rel, source, new_name) {
+            Ok((_, files)) => panic!("renamed to {new_name}: {files:?}"),
+            Err(error) => error.message,
+        }
+    }
+}
+
+#[test]
+fn member_conflicts_in_the_class_its_parents_traits_and_subclasses() {
+    let base = "<?php\nnamespace App;\n\nclass Base\n{\n    public function shared(): void {}\n    private function hidden(): void {}\n    public const LIMIT = 1;\n}\n";
+    let named = "<?php\nnamespace App;\n\ntrait Named { public function label(): string { return ''; } }\n";
+    let book = "<?php\nnamespace App;\n\nclass Book extends Base\n{\n    use Named;\n    public string $title = '';\n    protected int $pages = 0;\n    public function find(): void {}\n    public function load(): void {}\n    private function secret(): void {}\n    public const SIZE = 2;\n}\n";
+    let novel = "<?php\nnamespace App;\n\nclass Novel extends Book { public function chapter(): void {} private function store(): void {} }\n";
+    let mut project = Project::new(&[
+        ("src/Base.php", base),
+        ("src/Named.php", named),
+        ("src/Book.php", book),
+        ("src/Novel.php", novel),
+    ]);
+    let find = book.replace("function find", "function fi/*|*/nd");
+    for (new, reason) in [
+        ("load", "Method 'load' already exists in App\\Book"),
+        ("LOAD", "Method 'LOAD' already exists in App\\Book"),
+        ("shared", "Method 'shared' already exists in App\\Base"),
+        ("label", "Method 'label' already exists in App\\Named"),
+        ("chapter", "Method 'chapter' already exists in App\\Novel"),
+        ("store", "Method 'store' already exists in App\\Novel"),
+    ] {
+        assert_eq!(project.refused("src/Book.php", &find, new), reason);
+    }
+    // A parent's private method isn't inherited; a case change is the same method.
+    assert!(project.renamed("src/Book.php", &find, "hidden")["src/Book.php"].contains("function hidden()"));
+    assert!(project.renamed("src/Book.php", &find, "Find")["src/Book.php"].contains("function Find()"));
+    // A private method stays in its class: a subclass's method is no clash.
+    let secret = book.replace("function secret", "function sec/*|*/ret");
+    assert!(project.renamed("src/Book.php", &secret, "store")["src/Book.php"].contains("function store()"));
+    assert_eq!(project.refused("src/Book.php", &secret, "load"), "Method 'load' already exists in App\\Book");
+
+    // Properties are case-sensitive.
+    let title = book.replace("string $title", "string $ti/*|*/tle");
+    assert_eq!(project.refused("src/Book.php", &title, "pages"), "Property '$pages' already exists in App\\Book");
+    assert!(project.renamed("src/Book.php", &title, "Pages")["src/Book.php"].contains("string $Pages"));
+    // Constants, the parent's included.
+    let size = book.replace("const SIZE", "const SI/*|*/ZE");
+    assert_eq!(project.refused("src/Book.php", &size, "LIMIT"), "Constant 'LIMIT' already exists in App\\Base");
+    assert!(project.renamed("src/Book.php", &size, "WIDTH")["src/Book.php"].contains("const WIDTH = 2"));
+}
+
+#[test]
+fn name_conflicts_in_the_namespace() {
+    let functions = "<?php\nnamespace App;\n\nconst VERSION = '1.0';\nconst RELEASE = '2';\n\nfunction format_price(int $cents): string { return ''; }\nfunction money(): void {}\n";
+    let mut project =
+        Project::new(&[("src/Model/Book.php", BOOK), ("src/Model/Item.php", ITEM), ("src/functions.php", functions)]);
+    let book = BOOK.replace("final class Book", "final class Bo/*|*/ok");
+    assert_eq!(project.refused("src/Model/Book.php", &book, "Item"), "Class 'App\\Model\\Item' already exists");
+    assert_eq!(project.refused("src/Model/Book.php", &book, "ITEM"), "Class 'App\\Model\\ITEM' already exists");
+    // Only the case changes: the class itself.
+    assert!(project.renamed("src/Model/Book.php", &book, "BOOK")["src/Model/Book.php"].contains("class BOOK"));
+    let price = functions.replace("function format_price", "function format_pr/*|*/ice");
+    assert_eq!(project.refused("src/functions.php", &price, "Money"), "Function 'App\\Money' already exists");
+    let version = functions.replace("const VERSION", "const VERS/*|*/ION");
+    assert_eq!(project.refused("src/functions.php", &version, "RELEASE"), "Constant 'App\\RELEASE' already exists");
+    // Constant names are case-sensitive.
+    assert!(project.renamed("src/functions.php", &version, "Release")["src/functions.php"].contains("const Release"));
+}
+
+#[test]
+fn a_short_name_taken_by_an_import_is_written_fully_qualified() {
+    let novel = "<?php\nnamespace Lib;\n\nfinal class Novel {}\n";
+    let shelf = "<?php\nnamespace App;\n\nuse App\\Model\\Book;\nuse Lib\\Novel;\n\nclass Shelf\n{\n    /** @param list<Book> $books */\n    public function add(array $books, Novel $novel): Book { return new Book(); }\n}\n";
+    let user = "<?php\nnamespace App\\Model;\n\nfunction make(): Book { return new Book(); }\n";
+    let mut project = Project::new(&[
+        ("src/Model/Book.php", BOOK),
+        ("src/Model/Item.php", ITEM),
+        ("lib/Novel.php", novel),
+        ("src/Shelf.php", shelf),
+        ("src/user.php", user),
+    ]);
+    let source = BOOK.replace("final class Book", "final class Bo/*|*/ok");
+    let files = project.renamed("src/Model/Book.php", &source, "Novel");
+    assert_eq!(files["src/Model/Book.php"], BOOK.replace("class Book", "class Novel"));
+    assert_eq!(
+        files["src/Shelf.php"],
+        "<?php\nnamespace App;\n\nuse Lib\\Novel;\n\nclass Shelf\n{\n    /** @param list<\\App\\Model\\Novel> $books */\n    public function add(array $books, Novel $novel): \\App\\Model\\Novel { return new \\App\\Model\\Novel(); }\n}\n"
+    );
+    // No clash there.
+    assert_eq!(files["src/user.php"], user.replace("Book", "Novel"));
+
+    // A function: its `use function` goes, its calls are qualified.
+    let functions = "<?php\nnamespace App;\n\nfunction format_price(int $cents): string { return ''; }\n";
+    let other = "<?php\nnamespace Lib;\n\nfunction money(): void {}\n";
+    let web = "<?php\nnamespace Web;\n\nuse function App\\format_price;\nuse function Lib\\money;\n\necho format_price(3);\nmoney();\n";
+    let mut project = Project::new(&[("src/functions.php", functions), ("lib/money.php", other), ("src/web.php", web)]);
+    let source = functions.replace("function format_price", "function format_pr/*|*/ice");
+    let files = project.renamed("src/functions.php", &source, "money");
+    assert_eq!(
+        files["src/web.php"],
+        "<?php\nnamespace Web;\n\nuse function Lib\\money;\n\necho \\App\\money(3);\nmoney();\n"
+    );
+
+    // The file declaring the class can't be helped.
+    let clash = "<?php\nnamespace App\\Model;\n\nuse Lib\\Novel;\n\nfinal class Paper { public function n(): Novel { return new Novel(); } }\n";
+    let mut project = Project::new(&[("lib/Novel.php", novel), ("src/Model/Paper.php", clash)]);
+    let source = clash.replace("final class Paper", "final class Pa/*|*/per");
+    assert_eq!(
+        project.refused("src/Model/Paper.php", &source, "Novel"),
+        "The name 'Novel' is already used in Paper.php"
+    );
+}
+
+#[test]
+fn variable_conflicts_in_scope() {
+    let functions = "<?php\nnamespace App;\n\nfunction slugify(string $text, int $max): string\n{\n    $slug = strtolower($text);\n    $short = fn() => substr($slug, 0, $max);\n    $other = function () { $text = 'x'; return $text; };\n    return $short();\n}\n";
+    let mut project = Project::new(&[("src/functions.php", functions)]);
+    let slug = functions.replace("$slug = strtolower", "$sl/*|*/ug = strtolower");
+    assert_eq!(
+        project.refused("src/functions.php", &slug, "text"),
+        "Variable '$text' is already defined in this scope"
+    );
+    assert_eq!(
+        project.refused("src/functions.php", &slug, "$short"),
+        "Variable '$short' is already defined in this scope"
+    );
+    // An arrow function sees its parent's variables.
+    let max = functions.replace("int $max", "int $m/*|*/ax");
+    assert_eq!(project.refused("src/functions.php", &max, "slug"), "Variable '$slug' is already defined in this scope");
+    // A closure without `use` has its own.
+    let inner = functions.replace("$text = 'x'", "$te/*|*/xt = 'x'");
+    let files = project.renamed("src/functions.php", &inner, "slug");
+    assert!(files["src/functions.php"].contains("function () { $slug = 'x'; return $slug; }"), "{files:?}");
+    let files = project.renamed("src/functions.php", &slug, "lower");
+    assert_eq!(files["src/functions.php"], functions.replace("$slug", "$lower"));
+}
+
+#[test]
+fn docblock_names_stay_in_their_own_function() {
+    let functions = "<?php\nnamespace App;\n\n/** @param string $text the text */\nfunction slugify(string $text): string\n{\n    /** @var string $text */\n    $text = trim($text);\n    $each = function (array $items): array {\n        /** @var string $text */\n        $text = implode(',', $items);\n        return [$text];\n    };\n    /** @param string $text */\n    $mapped = static fn(string $other) => $other . $text;\n    return $text;\n}\n";
+    let mut project = Project::new(&[("src/functions.php", functions)]);
+    let source = functions.replace("$text = trim($text)", "$text = trim($te/*|*/xt)");
+    let files = project.renamed("src/functions.php", &source, "title");
+    assert_eq!(
+        files["src/functions.php"],
+        "<?php\nnamespace App;\n\n/** @param string $title the text */\nfunction slugify(string $title): string\n{\n    /** @var string $title */\n    $title = trim($title);\n    $each = function (array $items): array {\n        /** @var string $text */\n        $text = implode(',', $items);\n        return [$text];\n    };\n    /** @param string $title */\n    $mapped = static fn(string $other) => $other . $title;\n    return $title;\n}\n"
+    );
+    // From inside the closure: only its own docblock.
+    let source = functions.replace("return [$text]", "return [$te/*|*/xt]");
+    let files = project.renamed("src/functions.php", &source, "joined");
+    assert_eq!(
+        files["src/functions.php"],
+        functions.replace(
+            "        /** @var string $text */\n        $text = implode(',', $items);\n        return [$text];",
+            "        /** @var string $joined */\n        $joined = implode(',', $items);\n        return [$joined];"
+        )
+    );
+}

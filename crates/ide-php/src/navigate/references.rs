@@ -292,6 +292,37 @@ impl PhpEngine {
 
     /// The usages in one file (its open buffer, else the file on disk).
     fn usages_in(&self, file: &str, documents: &[OpenDocument], sought: &[Sought]) -> Option<Vec<Usage>> {
+        self.scan_file(file, documents, sought, None).map(|(usages, _)| usages)
+    }
+
+    /// Whether a variable named `name` (without `$`) is already declared in
+    /// the scope of some usage of the sought variables: a parameter, a
+    /// closure's `use`, or a variable written in the same function (arrow
+    /// functions see their parent's).
+    pub(crate) fn variable_name_taken(&self, sought: &[Sought], name: &str) -> bool {
+        let documents = self.open_documents();
+        let mut files: Vec<&str> = sought
+            .iter()
+            .filter_map(|sought| match sought {
+                Sought::Variable { file, .. } => Some(file.as_str()),
+                _ => None,
+            })
+            .collect();
+        files.dedup();
+        files
+            .into_iter()
+            .any(|file| self.scan_file(file, &documents, sought, Some(name.as_bytes())).is_some_and(|(_, taken)| taken))
+    }
+
+    /// The usages in one file and, with a `probe` name, whether a variable
+    /// by that name is declared where a sought variable is used.
+    fn scan_file(
+        &self,
+        file: &str,
+        documents: &[OpenDocument],
+        sought: &[Sought],
+        probe: Option<&[u8]>,
+    ) -> Option<(Vec<Usage>, bool)> {
         let path = crate::index::key_path(file);
         let open = documents.iter().find(|document| path_key(&document.path) == file);
         let parsed = match open {
@@ -307,12 +338,14 @@ impl PhpEngine {
         let here = FileSummary::extract(&parsed);
         let types = ExprTypes::new(&parsed, &names, &here, &resolver);
         let lookup = Lookup { parsed: &parsed, names: &names, here: &here, resolver: &resolver, types: &types };
-        let mut scan = Scan { lookup, file, sought, frames: Vec::new(), found: Vec::new() };
-        scan.names();
-        scan.doc_comments();
+        let mut scan = Scan { lookup, file, sought, frames: Vec::new(), found: Vec::new(), probe, taken: false };
+        if probe.is_none() {
+            scan.names();
+            scan.doc_comments();
+        }
         ScanWalker.walk_program(parsed.program(), &mut scan);
-        let found = scan.found;
-        Some(found.into_iter().map(|(range, kind)| Usage { path: path.clone(), range, kind }).collect())
+        let (found, taken) = (scan.found, scan.taken);
+        Some((found.into_iter().map(|(range, kind)| Usage { path: path.clone(), range, kind }).collect(), taken))
     }
 }
 
@@ -371,6 +404,10 @@ struct Scan<'a, 'r, 's> {
     sought: &'s [Sought],
     frames: Vec<Frame<'a>>,
     found: Vec<(Range, UsageKind)>,
+    /// A variable name to look for in the scopes of the sought variables.
+    probe: Option<&'s [u8]>,
+    /// Whether `probe` is declared in one of them.
+    taken: bool,
 }
 
 impl<'a> Scan<'a, '_, '_> {
@@ -620,6 +657,12 @@ impl<'a> Scan<'a, '_, '_> {
         let line_index = self.lookup.parsed.line_index();
         let declared = line_index.span_range(declared);
         if wanted.contains(&declared) {
+            if let Some(probe) = self.probe
+                && !self.taken
+                && self.lookup.variable_declaration(probe, &self.frames).is_some()
+            {
+                self.taken = true;
+            }
             let range = line_index.span_range(variable.span);
             let kind = if range == declared { UsageKind::Declaration } else { UsageKind::Code };
             self.found.push((range, kind));

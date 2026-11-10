@@ -38,7 +38,7 @@ use crate::types::provider::{AttributeOrigin, MagicMember, MagicTarget};
 use crate::types::{ClassModel, Context, ExprTypes, Frame, Resolver, Type};
 
 /// The kinds of class members.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
 pub(crate) enum MemberKind {
     Method,
     Property,

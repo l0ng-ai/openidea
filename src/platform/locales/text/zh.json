@@ -6512,5 +6512,13 @@
   "HTTP Layer": "HTTP 层",
   "Views": "视图",
   "Events and Jobs": "事件和任务",
-  "Authorization and Validation": "授权和验证"
+  "Authorization and Validation": "授权和验证",
+  "Variable '${new}' is already defined in this scope": "变量 '${new}' 已在此作用域中定义",
+  "Class '{target}' already exists": "类 '{target}' 已存在",
+  "Function '{target}' already exists": "函数 '{target}' 已存在",
+  "Constant '{target}' already exists": "常量 '{target}' 已存在",
+  "Method '{new}' already exists in {owner}": "{owner} 中已存在方法 '{new}'",
+  "Property '${new}' already exists in {owner}": "{owner} 中已存在属性 '${new}'",
+  "Constant '{new}' already exists in {owner}": "{owner} 中已存在常量 '{new}'",
+  "The name '{new}' is already used in {name}": "名称 '{new}' 已在 {name} 中使用"
 }

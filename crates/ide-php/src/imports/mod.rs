@@ -645,6 +645,57 @@ pub(crate) fn unused_imports(parsed: &ParsedFile, names: &FileNames) -> Vec<Unus
     out
 }
 
+/// One import of a file, as rename's conflict check sees it.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub(crate) struct FileImport {
+    pub(crate) kind: NameKind,
+    /// Without the leading `\`.
+    pub(crate) fqn: String,
+    /// The name the file uses for it (its alias, else its short name).
+    pub(crate) local: String,
+    /// Whether it has an explicit `as` alias.
+    pub(crate) aliased: bool,
+    /// The item's name (with its alias), bytes.
+    pub(crate) start: u32,
+    pub(crate) end: u32,
+    /// The bytes to delete to remove it: the whole statement with its line
+    /// when it is the statement's only item, else the item and its comma.
+    pub(crate) remove: (u32, u32),
+}
+
+/// Every import of the file, in source order.
+pub(crate) fn file_imports(parsed: &ParsedFile) -> Vec<FileImport> {
+    let text = parsed.text();
+    let program = parsed.program();
+    let mut out = Vec::new();
+    for region in regions(program, text.len() as u32) {
+        for statement in region.statements {
+            let Statement::Use(statement) = statement else { continue };
+            let items = use_items(statement);
+            let span = statement.span();
+            for (i, (import, start, end)) in items.iter().enumerate() {
+                let remove = if items.len() == 1 {
+                    removal(text, span.start.offset, span.end.offset)
+                } else if let Some(next) = items.get(i + 1) {
+                    (*start, next.1)
+                } else {
+                    (items[i - 1].2, *end)
+                };
+                out.push(FileImport {
+                    kind: import.kind,
+                    fqn: import.fqn.clone(),
+                    local: import.local().to_owned(),
+                    aliased: import.alias.is_some(),
+                    start: *start,
+                    end: *end,
+                    remove,
+                });
+            }
+        }
+    }
+    out
+}
+
 /// Each import of a `use` statement with the bytes of its name and alias.
 fn use_items(statement: &Use<'_>) -> Vec<(Import, u32, u32)> {
     let with_span = |import: Import, item: &UseItem<'_>| {
