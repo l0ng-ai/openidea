@@ -180,6 +180,12 @@ pub fn run() {
     })
     .setup(move |app| {
         builder.mount_events(app);
+        #[cfg(windows)]
+        tauri::async_runtime::spawn_blocking(|| {
+            if let Ok(exe) = tauri::utils::platform::current_exe() {
+                ide_tools::portable_update::cleanup(&exe);
+            }
+        });
         let local_data_dir = match local_data_dir {
             Ok(dir) => dir,
             Err(error) => {
