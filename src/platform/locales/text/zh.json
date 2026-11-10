@@ -7139,5 +7139,21 @@
   "host is not remembered for this plugin": "此插件没有记住该主机的授权",
   "URL must name one exact host": "URL 必须指定一个确切主机",
   "Allow for this session": "本次会话内允许",
-  "This allows {host} until the remote session ends.": "允许连接到 {host}，直到本次远程会话结束。"
+  "This allows {host} until the remote session ends.": "允许连接到 {host}，直到本次远程会话结束。",
+  "1 message": "1 条消息",
+  "{count} messages": "{count} 条消息",
+  "Edited 1 file": "编辑了 1 个文件",
+  "Edited {count} files": "编辑了 {count} 个文件",
+  "Ran 1 command": "运行了 1 条命令",
+  "Ran {count} commands": "运行了 {count} 条命令",
+  "Read 1 file": "读取了 1 个文件",
+  "Read {count} files": "读取了 {count} 个文件",
+  "Searched once": "搜索了 1 次",
+  "Searched {count} times": "搜索了 {count} 次",
+  "Fetched 1 page": "获取了 1 个网页",
+  "Fetched {count} pages": "获取了 {count} 个网页",
+  "1 subagent": "1 个子代理",
+  "{count} subagents": "{count} 个子代理",
+  "1 other tool call": "1 次其他工具调用",
+  "{count} other tool calls": "{count} 次其他工具调用"
 }

@@ -72,6 +72,8 @@ import {
 import { ConfigPickers } from "./ConfigPickers";
 import { findRanges, formatDuration, formatSentAt } from "./conversation";
 import { ImagePreview, imageSrc } from "./ImagePreview";
+import { useAgentSettings } from "./agentSettings";
+import { foldedTurns, summarizeWork, workParts, type FoldedTurn, type WorkSummary } from "./timeline";
 import { useRevealedText } from "./reveal";
 import { AgentReply, MessageActions, ReplyActions } from "./AgentReply";
 import {
@@ -684,11 +686,16 @@ function Stream({ loadError, task, entries, subagent, onOpenSubagent, finding, f
   const busy = subagent ? subagentWorking(subagent.status) : isBusy(task.status);
   const lastIndex = entries ? entries.length - 1 : -1;
   // Keep the row stable when earlier history is prepended; its author can move with the work.
-  const rows = useMemo(() => (entries ? conversationRows(entries, start) : []), [entries, start]);
+  const { foldTurns, toolCalls } = useAgentSettings();
+  const rows = useMemo(() => {
+    if (!entries) return [];
+    const rows = conversationRows(entries, start, toolCalls === "grouped");
+    return foldTurns && !finding ? foldTurnRows(rows, foldedTurns(entries, start, busy)) : rows;
+  }, [entries, start, busy, foldTurns, toolCalls, finding]);
   const authorHeaders = useMemo(() => {
     const headers = new Set<number>();
     const byAgent = (row: ConversationRow) =>
-      row.kind === "process" ||
+      row.kind !== "entry" ||
       (row.entry.type !== "user" &&
         row.entry.type !== "subagent" &&
         !(row.entry.type === "message" && row.entry.incoming));
@@ -715,6 +722,20 @@ function Stream({ loadError, task, entries, subagent, onOpenSubagent, finding, f
     ),
     [task, turns, replies, times, lastIndex, busy, onOpenSubagent, onDiagramDrawn],
   );
+  const renderConversationRow = (row: ConversationRow): ReactNode =>
+    row.kind === "turn" ? (
+      <TurnFold row={row} entries={entries ?? []}>
+        {row.rows.map((inner) => (
+          <div key={inner.index} className={styles.conversationRow}>
+            {renderConversationRow(inner)}
+          </div>
+        ))}
+      </TurnFold>
+    ) : row.kind === "process" ? (
+      <ProcessRun row={row} task={task} lastIndex={lastIndex} busy={busy} renderRow={renderRow} />
+    ) : (
+      renderRow(row)
+    );
   return (
     <div
       className={styles.streamArea}
@@ -794,7 +815,7 @@ function Stream({ loadError, task, entries, subagent, onOpenSubagent, finding, f
               data-message={
                 (row.kind === "entry" && (row.entry.type === "user" || row.entry.type === "agent")) || undefined
               }
-              data-process={row.kind === "process" || row.entry.type !== "user" || undefined}
+              data-process={row.kind !== "entry" || row.entry.type !== "user" || undefined}
             >
               {authorHeaders.has(row.index) && (
                 <div className={styles.agentAuthor}>
@@ -804,11 +825,7 @@ function Stream({ loadError, task, entries, subagent, onOpenSubagent, finding, f
                   </div>
                 </div>
               )}
-              {row.kind === "process" ? (
-                <ProcessRun row={row} task={task} lastIndex={lastIndex} busy={busy} renderRow={renderRow} />
-              ) : (
-                renderRow(row)
-              )}
+              {renderConversationRow(row)}
             </div>
           ))
         )}
@@ -1107,7 +1124,8 @@ function AgentMessage({
   working: boolean;
   onDiagramDrawn: () => void;
 }) {
-  const shown = useRevealedText(text, working);
+  const { smoothText } = useAgentSettings();
+  const shown = useRevealedText(text, working && smoothText);
   // The revealed text grows the conversation between its renders: keep following the end.
   useLayoutEffect(() => {
     if (working) onDiagramDrawn();
@@ -1129,6 +1147,44 @@ function AgentMessage({
         <MessageTime sentMs={time?.sentMs ?? null} doneMs={time?.doneMs ?? null} at="done" />
         <ReplyActions text={text} task={task} reply={reply} turnCount={turnCount} />
       </div>
+    </div>
+  );
+}
+
+/** The agent's reasoning: open while it streams, folded after, as Settings › Agents › Chat says. */
+function ThoughtEntry({
+  task,
+  text,
+  working,
+  onDiagramDrawn,
+}: {
+  task: AgentTask;
+  text: string;
+  working: boolean;
+  onDiagramDrawn: () => void;
+}) {
+  const { thinking } = useAgentSettings();
+  const open = thinking === "expanded" || (thinking === "auto" && working);
+  return (
+    <div className={styles.process}>
+      <Fold
+        className={clsx(styles.thought, thinking === "auto" && working && styles.thoughtLive)}
+        open={open}
+        summary={
+          <summary>
+            {working ? (
+              <Spinner size={12} />
+            ) : (
+              <Icon name="chevron-right" size={12} className={styles.thoughtChevron} />
+            )}
+            <T>{working ? "Thinking" : "Reasoning"}</T>
+          </summary>
+        }
+      >
+        <div className={styles.thoughtBody}>
+          <Markdown text={text} cwd={task.cwd} onDiagramDrawn={onDiagramDrawn} />
+        </div>
+      </Fold>
     </div>
   );
 }
@@ -1172,27 +1228,7 @@ const Entry = memo(function Entry({
         />
       );
     case "thought":
-      return (
-        <div className={styles.process}>
-          <Fold
-            className={styles.thought}
-            summary={
-              <summary>
-                {working ? (
-                  <Spinner size={12} />
-                ) : (
-                  <Icon name="chevron-right" size={12} className={styles.thoughtChevron} />
-                )}
-                <T>{working ? "Thinking" : "Reasoning"}</T>
-              </summary>
-            }
-          >
-            <div className={styles.thoughtBody}>
-              <Markdown text={entry.text} cwd={task.cwd} onDiagramDrawn={onDiagramDrawn} />
-            </div>
-          </Fold>
-        </div>
-      );
+      return <ThoughtEntry task={task} text={entry.text} working={working} onDiagramDrawn={onDiagramDrawn} />;
     case "tool":
       return <ToolEntry task={task} entry={entry} />;
     case "plan":
@@ -1490,7 +1526,9 @@ type IndexedEntry = { index: number; entry: AgentEntry };
 /** A row of the conversation: an entry, or a run of reasoning/tool calls folded together. */
 type ConversationRow =
   | { kind: "entry"; index: number; entry: AgentEntry }
-  | { kind: "process"; index: number; entries: IndexedEntry[] };
+  | { kind: "process"; index: number; entries: IndexedEntry[] }
+  /** A finished turn's work before its reply, folded into one line under its message. */
+  | { kind: "turn"; index: number; turn: FoldedTurn; rows: ConversationRow[] };
 
 type EntryRow = Extract<ConversationRow, { kind: "entry" }>;
 
@@ -1504,7 +1542,8 @@ const isProcessEntry = (entry: AgentEntry) => entry.type === "thought" || (entry
  * The conversation's rows from `from`: a run of reasoning and finished tool calls becomes
  * one folded row (the work behind a decision), so messages and decisions stay readable.
  */
-export function conversationRows(entries: readonly AgentEntry[], from: number): ConversationRow[] {
+export function conversationRows(entries: readonly AgentEntry[], from: number, group = true): ConversationRow[] {
+  if (!group) return entries.slice(from).map((entry, i) => ({ kind: "entry", index: from + i, entry }));
   const rows: ConversationRow[] = [];
   let run: IndexedEntry[] = [];
   const flush = () => {
@@ -1521,6 +1560,71 @@ export function conversationRows(entries: readonly AgentEntry[], from: number): 
   });
   flush();
   return rows;
+}
+
+/** `rows` with the work of each turn in `turns` (keyed by its message) folded into one row. */
+export function foldTurnRows(rows: ConversationRow[], turns: ReadonlyMap<number, FoldedTurn>): ConversationRow[] {
+  if (!turns.size) return rows;
+  const out: ConversationRow[] = [];
+  let open: Extract<ConversationRow, { kind: "turn" }> | null = null;
+  for (const row of rows) {
+    if (open && row.index < open.turn.reply) {
+      open.rows.push(row);
+      continue;
+    }
+    open = null;
+    out.push(row);
+    const turn = row.kind === "entry" ? turns.get(row.index) : undefined;
+    if (turn) {
+      open = { kind: "turn", index: row.index + 1, turn, rows: [] };
+      out.push(open);
+    }
+  }
+  return out;
+}
+
+/** "Edited 2 files · Read 4 files", or "Reasoning" for a run without tool calls. */
+function workSummaryText(work: WorkSummary, tx: ReturnType<typeof useTx>, toolCalls: number): string[] {
+  const parts = workParts(work).map((p) => tx(p.text).replace("{count}", String(p.count)));
+  if (!parts.length && toolCalls) parts.push(`${toolCalls} ${tx(toolCalls === 1 ? "tool call" : "tool calls")}`);
+  if (!parts.length && work.thoughts) parts.push(tx("Reasoning"));
+  return parts;
+}
+
+/** A finished turn's work, folded under its message: one line saying what it did and for how long. */
+function TurnFold({
+  row,
+  entries,
+  children,
+}: {
+  row: Extract<ConversationRow, { kind: "turn" }>;
+  entries: readonly AgentEntry[];
+  children: ReactNode;
+}) {
+  const tx = useTx();
+  const { turn } = row;
+  const work = summarizeWork(entries.slice(turn.user + 1, turn.reply));
+  const parts = workSummaryText(work, tx, 0);
+  if (work.thoughts && !parts.includes(tx("Reasoning"))) parts.unshift(tx("Reasoning"));
+  const messages = entries.slice(turn.user + 1, turn.reply).filter((e) => e.type === "agent").length;
+  if (messages) parts.push(tx(messages === 1 ? "1 message" : "{count} messages").replace("{count}", String(messages)));
+  const took = turn.sentMs != null && turn.doneMs != null ? formatDuration(turn.doneMs - turn.sentMs) : null;
+  return (
+    <Fold
+      className={clsx(styles.turnFold, styles.process)}
+      summary={
+        <summary className={styles.processSummary}>
+          <Icon name="chevron-right" size={12} className={styles.processChevron} />
+          <span>{parts.join(" · ")}</span>
+          {work.added > 0 && <span className={styles.added}>+{work.added}</span>}
+          {work.removed > 0 && <span className={styles.removed}>−{work.removed}</span>}
+          {took && <span className={styles.muted}>{took}</span>}
+        </summary>
+      }
+    >
+      <div className={styles.turnBody}>{children}</div>
+    </Fold>
+  );
 }
 
 /** Reasoning and tool calls between messages, folded into one row. */
@@ -1542,14 +1646,10 @@ const ProcessRun = memo(function ProcessRun({
   const tools = row.entries.filter(
     (item): item is IndexedEntry & { entry: ToolEntryData } => item.entry.type === "tool",
   );
-  const reasoning = row.entries.filter(({ entry }) => entry.type === "thought").length;
-  const added = tools.reduce((n, { entry }) => n + entry.diffs.reduce((sum, d) => sum + d.added, 0), 0);
-  const removed = tools.reduce((n, { entry }) => n + entry.diffs.reduce((sum, d) => sum + d.removed, 0), 0);
+  const work = summarizeWork(row.entries.map(({ entry }) => entry));
+  const { added, removed } = work;
   const working = busy && row.entries.some(({ index }) => index === lastIndex);
-  const parts = [
-    reasoning > 0 ? tx("Reasoning") : null,
-    tools.length > 0 ? `${tools.length} ${tx(tools.length === 1 ? "tool call" : "tool calls")}` : null,
-  ].filter(Boolean);
+  const parts = workSummaryText(work, tx, tools.length);
   return (
     <Fold
       className={clsx(styles.processRun, styles.process)}
@@ -1611,6 +1711,7 @@ const ToolEntry = memo(function ToolEntry({
   task: AgentTask;
   entry: Extract<AgentEntry, { type: "tool" }>;
 }) {
+  const { expandToolOutput } = useAgentSettings();
   const head = (
     <>
       <Icon name={TOOL_ICONS[entry.kind] ?? "run"} size={14} />
@@ -1645,7 +1746,7 @@ const ToolEntry = memo(function ToolEntry({
     <div className={styles.process}>
       <Fold
         className={styles.toolDetails}
-        open={liveTool(entry)}
+        open={liveTool(entry) || expandToolOutput}
         summary={
           <summary className={styles.tool}>
             <Icon name="chevron-right" size={12} className={styles.toolChevron} />

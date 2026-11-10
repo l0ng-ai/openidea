@@ -59,7 +59,7 @@ pub struct Settings {
     /// Build, Execution, Deployment › Run Targets.
     pub run_targets: Vec<RunTarget>,
     pub cmake: CMakeSettings,
-    /// Tools › Agents › Chat.
+    /// Settings › Agents.
     pub agents: AgentSettings,
     /// Tools › MCP Server (global only).
     pub mcp_server: McpServerSettings,
@@ -68,7 +68,7 @@ pub struct Settings {
     pub plugins: BTreeMap<String, serde_json::Map<String, serde_json::Value>>,
 }
 
-/// What the meters in an agent task's header show.
+/// Settings › Agents: what the conversation shows and how messages are sent.
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize, Type)]
 #[serde(default, rename_all = "camelCase")]
 pub struct AgentSettings {
@@ -80,12 +80,78 @@ pub struct AgentSettings {
     pub show_usage_limits: bool,
     /// What the session has cost so far, as the agent reports it.
     pub show_cost: bool,
+    /// A finished turn's work folds into one line under its message, leaving the reply.
+    pub fold_turns: bool,
+    /// Streaming text is revealed at a steady pace rather than chunk by chunk.
+    pub smooth_text: bool,
+    pub thinking: ThinkingDisplay,
+    pub tool_calls: ToolCallDisplay,
+    /// A tool call's output (a command's, a diff) is shown without opening it.
+    pub expand_tool_output: bool,
+    pub send_with: SendKey,
+    /// What sending does while the agent works: queue the message for after the turn, or
+    /// send it into the turn.
+    pub while_running: WhileRunning,
+    /// Settings new tasks of an agent start with: agent id → option id → value.
+    pub defaults: BTreeMap<String, BTreeMap<String, String>>,
 }
 
 impl Default for AgentSettings {
     fn default() -> Self {
-        Self { show_context_usage: true, show_work_time: true, show_usage_limits: true, show_cost: false }
+        Self {
+            show_context_usage: true,
+            show_work_time: true,
+            show_usage_limits: true,
+            show_cost: false,
+            fold_turns: true,
+            smooth_text: true,
+            thinking: ThinkingDisplay::Auto,
+            tool_calls: ToolCallDisplay::Grouped,
+            expand_tool_output: false,
+            send_with: SendKey::Enter,
+            while_running: WhileRunning::Queue,
+            defaults: BTreeMap::new(),
+        }
     }
+}
+
+/// How the agent's reasoning shows.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize, Type)]
+#[serde(rename_all = "camelCase")]
+pub enum ThinkingDisplay {
+    /// Open while it streams, folded once it ends.
+    #[default]
+    Auto,
+    Expanded,
+    Collapsed,
+}
+
+/// How tool calls between messages show.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize, Type)]
+#[serde(rename_all = "camelCase")]
+pub enum ToolCallDisplay {
+    /// A run of calls is one line saying what they did ("Read 4 files · Edited 2 files").
+    #[default]
+    Grouped,
+    /// Each call on its own line.
+    Each,
+}
+
+/// The key that sends a message; the other one starts a new line.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize, Type)]
+#[serde(rename_all = "camelCase")]
+pub enum SendKey {
+    #[default]
+    Enter,
+    ModEnter,
+}
+
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize, Type)]
+#[serde(rename_all = "camelCase")]
+pub enum WhileRunning {
+    #[default]
+    Queue,
+    Steer,
 }
 
 /// Tools › MCP Server: agents use the IDE's built-in tools.

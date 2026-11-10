@@ -1785,7 +1785,7 @@ export type AgentRetry = {
 	error: string | null,
 };
 
-/**  What the meters in an agent task's header show. */
+/**  Settings › Agents: what the conversation shows and how messages are sent. */
 export type AgentSettings = {
 	/**  Context window use. */
 	showContextUsage?: boolean,
@@ -1795,6 +1795,22 @@ export type AgentSettings = {
 	showUsageLimits?: boolean,
 	/**  What the session has cost so far, as the agent reports it. */
 	showCost?: boolean,
+	/**  A finished turn's work folds into one line under its message, leaving the reply. */
+	foldTurns?: boolean,
+	/**  Streaming text is revealed at a steady pace rather than chunk by chunk. */
+	smoothText?: boolean,
+	thinking?: ThinkingDisplay,
+	toolCalls?: ToolCallDisplay,
+	/**  A tool call's output (a command's, a diff) is shown without opening it. */
+	expandToolOutput?: boolean,
+	sendWith?: SendKey,
+	/**
+	 *  What sending does while the agent works: queue the message for after the turn, or
+	 *  send it into the turn.
+	 */
+	whileRunning?: WhileRunning,
+	/**  Settings new tasks of an agent start with: agent id → option id → value. */
+	defaults?: { [key in string]: { [key in string]: string } },
 };
 
 /**  Where an agent comes from. */
@@ -7904,6 +7920,9 @@ export type SemanticTokens = {
 	tokenModifiers: string[],
 };
 
+/**  The key that sends a message; the other one starts a new line. */
+export type SendKey = "enter" | "modEnter";
+
 /**  A running language server instance. */
 export type ServerId = number;
 
@@ -8040,7 +8059,7 @@ export type Settings_Deserialize = {
 	/**  Build, Execution, Deployment › Run Targets. */
 	runTargets?: RunTarget[],
 	cmake?: CMakeSettings_Deserialize,
-	/**  Tools › Agents › Chat. */
+	/**  Settings › Agents. */
 	agents?: AgentSettings,
 	/**  Tools › MCP Server (global only). */
 	mcpServer?: McpServerSettings,
@@ -8102,7 +8121,7 @@ export type Settings_Serialize = {
 	/**  Build, Execution, Deployment › Run Targets. */
 	runTargets: RunTarget[],
 	cmake: CMakeSettings_Serialize,
-	/**  Tools › Agents › Chat. */
+	/**  Settings › Agents. */
 	agents: AgentSettings,
 	/**  Tools › MCP Server (global only). */
 	mcpServer: McpServerSettings,
@@ -8678,6 +8697,11 @@ export type ThemeDef = {
 
 export type ThemeKind = "dark" | "light";
 
+/**  How the agent's reasoning shows. */
+export type ThinkingDisplay = 
+/**  Open while it streams, folded once it ends. */
+"auto" | "expanded" | "collapsed";
+
 export type ThreadInfo = {
 	id: number,
 	name: string,
@@ -8724,6 +8748,13 @@ export type TomcatInstallation_Serialize = {
 	base?: string | null,
 	tomee: boolean,
 };
+
+/**  How tool calls between messages show. */
+export type ToolCallDisplay = 
+/**  A run of calls is one line saying what they did ("Read 4 files · Edited 2 files"). */
+"grouped" | 
+/**  Each call on its own line. */
+"each";
 
 /**  UI-facing state of one tool. */
 export type ToolInfo = {
@@ -9070,6 +9101,8 @@ export type WebReferenceKind =
 "anchor" | 
 /**  `var(--name)`: the custom property's declarations. */
 "cssVariable";
+
+export type WhileRunning = "queue" | "steer";
 
 /**  A request that the invoking window acknowledges through plugin_answer_command. */
 export type WindowRequest = WindowRequest_Serialize | WindowRequest_Deserialize;

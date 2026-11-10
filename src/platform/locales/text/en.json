@@ -806,5 +806,21 @@
   "host is not remembered for this plugin": "host is not remembered for this plugin",
   "URL must name one exact host": "URL must name one exact host",
   "Allow for this session": "Allow for this session",
-  "This allows {host} until the remote session ends.": "This allows {host} until the remote session ends."
+  "This allows {host} until the remote session ends.": "This allows {host} until the remote session ends.",
+  "1 message": "1 message",
+  "{count} messages": "{count} messages",
+  "Edited 1 file": "Edited 1 file",
+  "Edited {count} files": "Edited {count} files",
+  "Ran 1 command": "Ran 1 command",
+  "Ran {count} commands": "Ran {count} commands",
+  "Read 1 file": "Read 1 file",
+  "Read {count} files": "Read {count} files",
+  "Searched once": "Searched once",
+  "Searched {count} times": "Searched {count} times",
+  "Fetched 1 page": "Fetched 1 page",
+  "Fetched {count} pages": "Fetched {count} pages",
+  "1 subagent": "1 subagent",
+  "{count} subagents": "{count} subagents",
+  "1 other tool call": "1 other tool call",
+  "{count} other tool calls": "{count} other tool calls"
 }

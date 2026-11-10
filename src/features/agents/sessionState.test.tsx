@@ -110,6 +110,7 @@ afterEach(() => {
 
 beforeEach(() => {
   disposeActions = registerActions([...replyActions, ...taskActions]);
+  useProject.setState({ settings: null });
   backend.entryError = null;
   backend.entryWait = null;
   disconnect();
@@ -131,6 +132,7 @@ beforeEach(() => {
 
 describe("conversation rows", () => {
   it("keeps authors above messages and their folded work with matching icon-only actions", async () => {
+    useProject.setState({ settings: { agents: { foldTurns: false } } as never });
     const user = (text: string): AgentEntry => ({
       type: "user",
       text,
@@ -210,6 +212,7 @@ describe("conversation rows", () => {
   );
 
   it("anchors every agent footer with its time before the hover actions", async () => {
+    useProject.setState({ settings: { agents: { foldTurns: false } } as never });
     backend.entries.set("A", [
       { type: "user", text: "Question", attachments: [], steered: false, sentMs: 1000, doneMs: 13000 },
       { type: "agent", text: "First reply" },
@@ -251,7 +254,7 @@ describe("process folding", () => {
     ]);
     useAgents.setState({ entries: new Map(backend.entries) });
     render(<SessionEditor input={input("A")} />);
-    const summary = await screen.findByText("Reasoning · 2 tool calls");
+    const summary = await screen.findByText("Read 2 files");
     const fold = summary.closest("details")!;
     expect(fold.open).toBe(false);
     // Folded content is rendered once opened, a level at a time.
@@ -268,6 +271,48 @@ describe("process folding", () => {
   });
 });
 
+describe("turn folding", () => {
+  it("folds a finished turn's work under its message and keeps the reply", async () => {
+    backend.entries.set("A", [
+      { type: "user", text: "Question", attachments: [], steered: false, sentMs: 1000, doneMs: 13000 },
+      { type: "thought", text: "think" },
+      tool("one"),
+      { type: "agent", text: "Interim note" },
+      tool("two", { kind: "execute" }),
+      { type: "agent", text: "Final reply" },
+    ]);
+    useAgents.setState({ entries: new Map(backend.entries) });
+    render(<SessionEditor input={input("A")} />);
+    await screen.findByText("Final reply");
+    const summary = screen.getByText("Reasoning · Ran 1 command · Read 1 file · 1 message");
+    const fold = summary.closest("details")!;
+    expect(fold).toHaveClass(styles.turnFold!);
+    expect(fold).toHaveTextContent("12s");
+    expect(screen.queryByText("Interim note")).toBeNull();
+    fold.open = true;
+    fireEvent(fold, new Event("toggle"));
+    expect(await screen.findByText("Interim note")).toBeInTheDocument();
+  });
+
+  it("leaves the turn the agent works on open", async () => {
+    backend.entries.set("A", [
+      { type: "user", text: "Question", attachments: [], steered: false, sentMs: 1000, doneMs: null },
+      tool("one"),
+      { type: "agent", text: "Interim note" },
+    ]);
+    useAgents.setState({
+      entries: new Map(backend.entries),
+      tasks: new Map(useAgents.getState().tasks).set("A", {
+        ...useAgents.getState().tasks.get("A")!,
+        status: "running",
+      }),
+    });
+    render(<SessionEditor input={input("A")} />);
+    expect(await screen.findByText("Interim note")).toBeInTheDocument();
+    expect(stream().querySelector(`.${styles.turnFold}`)).toBeNull();
+  });
+});
+
 describe("folded content", () => {
   it("is rendered for Find in Conversation, so its text is found", async () => {
     backend.entries.set("A", [
@@ -277,7 +322,7 @@ describe("folded content", () => {
     ]);
     useAgents.setState({ entries: new Map(backend.entries) });
     render(<SessionEditor input={input("A")} />);
-    const summary = await screen.findByText("2 tool calls");
+    const summary = await screen.findByText("Read 2 files");
     expect(screen.queryByText("needle in a tool output")).toBeNull();
     fireEvent.focus(summary);
     act(() => focusedSession()!.openFind());
@@ -432,7 +477,7 @@ describe("tool calls", () => {
       const output = await screen.findByText("Reading files…");
       expect(output.closest("details")!.open).toBe(true);
       expect(output.closest(`.${styles.processRun}`)).toBeNull();
-      expect(screen.getByText("2 tool calls").closest("details")!.open).toBe(false);
+      expect(screen.getByText("Read 2 files").closest("details")!.open).toBe(false);
     },
   );
 
@@ -441,7 +486,7 @@ describe("tool calls", () => {
     backend.entries.set("A", [edit("one"), edit("two"), { type: "agent", text: "Answer A" }]);
     useAgents.setState({ entries: new Map(backend.entries) });
     render(<SessionEditor input={input("A")} />);
-    const summary = await screen.findByText("2 tool calls");
+    const summary = await screen.findByText("Edited 1 file");
     expect(summary.closest("details")!.open).toBe(false);
     expect(screen.getByText("+4")).toBeInTheDocument();
     expect(screen.getByText("−2")).toBeInTheDocument();

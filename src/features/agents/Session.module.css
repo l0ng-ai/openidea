@@ -1471,3 +1471,32 @@
   font-variant-numeric: tabular-nums;
   white-space: nowrap;
 }
+
+/* Reasoning while it streams (auto): bounded, its tail in view. */
+.thoughtLive .thoughtBody {
+  max-height: calc(var(--h-row) * 4);
+  overflow: hidden;
+  display: flex;
+  flex-direction: column-reverse;
+  mask-image: linear-gradient(to bottom, transparent, black 40%);
+}
+
+/* A finished turn's work, folded under its message. */
+.turnFold > summary {
+  cursor: pointer;
+  list-style: none;
+}
+.turnFold > summary::-webkit-details-marker {
+  display: none;
+}
+.turnFold[open] .processChevron {
+  transform: rotate(90deg);
+}
+.turnBody {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-2);
+  margin-top: 2px;
+  padding-left: 10px;
+  border-left: 1px solid var(--border);
+}
