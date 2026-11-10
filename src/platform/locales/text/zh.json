@@ -7155,5 +7155,10 @@
   "1 subagent": "1 个子代理",
   "{count} subagents": "{count} 个子代理",
   "1 other tool call": "1 次其他工具调用",
-  "{count} other tool calls": "{count} 次其他工具调用"
+  "{count} other tool calls": "{count} 次其他工具调用",
+  "Plan {done}/{length}": "计划 {done}/{length}",
+  "1 changed file": "改动 1 个文件",
+  "{count} changed files": "改动 {count} 个文件",
+  "Send into the agent's turn": "发送到当前回合",
+  "Queue a message for when the agent is done (⌘⇧↵ sends it now)": "排队一条消息，agent 做完后发送（⌘⇧↵ 立即发送）"
 }

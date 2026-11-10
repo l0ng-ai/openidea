@@ -73,7 +73,7 @@ import { ConfigPickers } from "./ConfigPickers";
 import { findRanges, formatDuration, formatSentAt } from "./conversation";
 import { ImagePreview, imageSrc } from "./ImagePreview";
 import { useAgentSettings } from "./agentSettings";
-import { foldedTurns, summarizeWork, workParts, type FoldedTurn, type WorkSummary } from "./timeline";
+import { currentTool, foldedTurns, summarizeWork, workParts, type FoldedTurn, type WorkSummary } from "./timeline";
 import { useRevealedText } from "./reveal";
 import { AgentReply, MessageActions, ReplyActions } from "./AgentReply";
 import {
@@ -218,7 +218,15 @@ function TaskSession({ id, docked }: { id: string; docked: boolean }) {
         ) : (
           <>
             <QuestionCard task={task} entries={entries ?? null} />
-            <SessionComposer task={task} entries={entries ?? null} head={head} onOpenSubagent={openSubagent} />
+            <SessionComposer
+              task={task}
+              entries={entries ?? null}
+              head={head}
+              changes={changes ?? null}
+              changesOpen={changesOpen}
+              onToggleChanges={() => setChangesOpen(!changesOpen)}
+              onOpenSubagent={openSubagent}
+            />
           </>
         )}
       </div>
@@ -677,8 +685,6 @@ function Stream({ loadError, task, entries, subagent, onOpenSubagent, finding, f
     setAway(false);
     el.focus({ preventScroll: true });
   }, []);
-  const waiting = entries?.some((e) => e.type === "permission" && !e.chosen);
-  const lastUser = entries?.findLast((e): e is UserEntry => e.type === "user");
   // Forks and undo apply to the task's own turns, not a subagent's conversation.
   const turns = useMemo(() => (entries && !subagent ? turnNumbers(entries) : null), [entries, subagent]);
   const replies = useMemo(() => (entries && !subagent ? replyTurns(entries) : null), [entries, subagent]);
@@ -834,17 +840,6 @@ function Stream({ loadError, task, entries, subagent, onOpenSubagent, finding, f
             <Spinner size={12} />
             <T>{subagent.status === "needsInput" ? "Waiting for your answer…" : "Working…"}</T>
             {subagent.startedMs != null && <Elapsed since={subagent.startedMs} />}
-          </div>
-        )}
-        {!subagent && (task.status === "running" || task.status === "starting") && !waiting && (
-          <div className={styles.working}>
-            <Spinner size={12} />
-            {task.retry ? (
-              <Retrying retry={task.retry} />
-            ) : (
-              <T>{task.status === "starting" ? "Starting the agent…" : "Working…"}</T>
-            )}
-            {lastUser?.sentMs != null && !lastUser.doneMs && <Elapsed since={lastUser.sentMs} />}
           </div>
         )}
       </div>
@@ -1276,7 +1271,8 @@ const Entry = memo(function Entry({
         </div>
       );
     case "permission":
-      return <PermissionLine task={task} entry={entry} />;
+      // Waiting for an answer, it is asked above the composer; the conversation keeps the record.
+      return entry.chosen || entry.questions?.length ? <PermissionLine task={task} entry={entry} /> : null;
     case "error":
       return (
         <div className={styles.error} role="alert">
@@ -2317,17 +2313,166 @@ function QuestionForm({
   );
 }
 
+/**
+ * What needs the user or tells where the agent is, above the composer: an approval it
+ * waits for (answered with 1, 2, 3… when the focus isn't in a text field), the plan, the
+ * task's changes, then what runs and what is queued, and a line saying what it does now.
+ */
+function Tray({
+  task,
+  entries,
+  changes,
+  changesOpen,
+  onToggleChanges,
+  children,
+}: {
+  task: AgentTask;
+  entries: AgentEntry[] | null;
+  changes: AgentChange[] | null;
+  changesOpen: boolean;
+  onToggleChanges: () => void;
+  children: ReactNode;
+}) {
+  const tx = useTx();
+  const pending = entries?.find(
+    (e): e is PermissionEntry => e.type === "permission" && !e.chosen && !e.questions?.length,
+  );
+  const plan = entries?.findLast((e): e is Extract<AgentEntry, { type: "plan" }> => e.type === "plan");
+  const [planOpen, setPlanOpen] = useState(false);
+  const done = plan?.items.filter((i) => i.status === "completed").length ?? 0;
+  const planShown = plan && plan.items.length > 0 && done < plan.items.length;
+  const added = changes?.reduce((n, c) => n + c.added, 0) ?? 0;
+  const removed = changes?.reduce((n, c) => n + c.removed, 0) ?? 0;
+  const busy = task.status === "running" || task.status === "starting";
+  const tool = entries && busy ? currentTool(entries) : null;
+  const lastUser = entries?.findLast((e): e is UserEntry => e.type === "user");
+  return (
+    <div className={styles.tray}>
+      {pending && <PendingPermission task={task} entry={pending} />}
+      {(planShown || !!changes?.length) && (
+        <div className={styles.trayStrip}>
+          {planShown && (
+            <button
+              type="button"
+              className={styles.trayChip}
+              aria-expanded={planOpen}
+              onClick={() => setPlanOpen(!planOpen)}
+            >
+              <Icon name="todo" size={13} />
+              {tx`Plan ${done}/${plan.items.length}`}
+            </button>
+          )}
+          {!!changes?.length && (
+            <button type="button" className={styles.trayChip} aria-pressed={changesOpen} onClick={onToggleChanges}>
+              <Icon name="edit" size={13} />
+              {tx(changes.length === 1 ? "1 changed file" : "{count} changed files").replace(
+                "{count}",
+                String(changes.length),
+              )}
+              {added > 0 && <span className={styles.added}>+{added}</span>}
+              {removed > 0 && <span className={styles.removed}>−{removed}</span>}
+            </button>
+          )}
+        </div>
+      )}
+      {planShown && planOpen && (
+        <div className={styles.trayPlan}>
+          {plan.items.map((item, i) => (
+            <div
+              key={i}
+              className={clsx(
+                styles.planItem,
+                item.status === "completed" && styles.planDone,
+                item.status === "in_progress" && styles.planCurrent,
+              )}
+            >
+              <Icon
+                name={item.status === "completed" ? "check" : item.status === "in_progress" ? "run" : "minus"}
+                size={12}
+              />
+              {item.content}
+            </div>
+          ))}
+        </div>
+      )}
+      {children}
+      {busy && !pending && (
+        <div className={styles.working} role="status">
+          <Spinner size={12} />
+          {task.retry ? (
+            <Retrying retry={task.retry} />
+          ) : tool ? (
+            <span className={styles.trayActivity} title={tool.title}>
+              {shortTitle(task, tool.title || tool.kind)}
+            </span>
+          ) : (
+            <T>{task.status === "starting" ? "Starting the agent…" : "Working…"}</T>
+          )}
+          {lastUser?.sentMs != null && !lastUser.doneMs && <Elapsed since={lastUser.sentMs} />}
+        </div>
+      )}
+    </div>
+  );
+}
+
+/** The approval the agent waits for, with its answers on 1, 2, 3… */
+function PendingPermission({ task, entry }: { task: AgentTask; entry: PermissionEntry }) {
+  const ref = useRef<HTMLDivElement>(null);
+  const shown = useEditorShown();
+  useEffect(() => {
+    if (!shown) return;
+    const onKey = (e: KeyboardEvent) => {
+      const el = ref.current;
+      if (!el || e.metaKey || e.ctrlKey || e.altKey) return;
+      const target = e.target as HTMLElement | null;
+      if (target?.closest("input, textarea, [contenteditable='true'], .cm-editor")) return;
+      const n = Number(e.key);
+      if (!Number.isInteger(n) || n < 1) return;
+      const button = el.querySelectorAll<HTMLButtonElement>(`.${styles.permissionOption}`)[n - 1];
+      if (!button || button.disabled) return;
+      e.preventDefault();
+      button.click();
+    };
+    window.addEventListener("keydown", onKey);
+    return () => window.removeEventListener("keydown", onKey);
+  }, [shown]);
+  // Answered, the card goes: the focus it had moves on to the composer.
+  useLayoutEffect(() => {
+    const el = ref.current;
+    const area = el?.closest(`.${styles.composerArea}`);
+    return () => {
+      if (!el?.contains(document.activeElement) && document.activeElement !== document.body) return;
+      requestAnimationFrame(() => {
+        if (document.activeElement === document.body || !document.activeElement?.isConnected)
+          area?.querySelector<HTMLElement>("textarea")?.focus({ preventScroll: true });
+      });
+    };
+  }, []);
+  return (
+    <div ref={ref} className={styles.trayAsk}>
+      <PermissionLine task={task} entry={entry} />
+    </div>
+  );
+}
+
 function SessionComposer({
   task,
   entries,
   head,
+  changes,
+  changesOpen,
+  onToggleChanges,
   onOpenSubagent,
 }: {
   task: AgentTask;
   entries: AgentEntry[] | null;
   head: string | null;
+  changes: AgentChange[] | null;
+  changesOpen: boolean;
+  onToggleChanges: () => void;
   onOpenSubagent: (id: string) => void;
 }) {
+  const { sendWith, whileRunning } = useAgentSettings();
   const project = useProject((s) => s.project);
   const composer = useAgents((s) => s.composers.get(task.id)) ?? emptyDraft();
   const [sending, setSending] = useState(false);
@@ -2374,12 +2519,22 @@ function SessionComposer({
           />
         </div>
       )}
-      <WorkingSubagents entries={entries} onOpen={onOpenSubagent} />
-      <BackgroundTasks task={task} />
-      {task.queue.length > 0 && <Queue task={task} />}
+      <Tray task={task} entries={entries} changes={changes} changesOpen={changesOpen} onToggleChanges={onToggleChanges}>
+        <WorkingSubagents entries={entries} onOpen={onOpenSubagent} />
+        <BackgroundTasks task={task} />
+        {task.queue.length > 0 && <Queue task={task} />}
+      </Tray>
       <Composer
         id={task.id}
-        placeholder={busy ? "Queue a message for when the agent is done (⌘↵ sends it now)" : "Reply to the agent"}
+        placeholder={
+          !busy
+            ? "Reply to the agent"
+            : whileRunning === "steer"
+              ? "Send into the agent's turn"
+              : sendWith === "enter"
+                ? "Queue a message for when the agent is done (⌘↵ sends it now)"
+                : "Queue a message for when the agent is done (⌘⇧↵ sends it now)"
+        }
         root={task.cwd}
         projectRoot={project?.root ?? task.cwd}
         commands={agentCommands}

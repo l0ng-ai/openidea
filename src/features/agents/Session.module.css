@@ -1500,3 +1500,61 @@
   padding-left: 10px;
   border-left: 1px solid var(--border);
 }
+
+/* Above the composer: what waits for the user, the plan and changes, what runs now. */
+.tray {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+.tray:empty {
+  display: none;
+}
+.trayAsk {
+  border: 1px solid var(--border-strong);
+  border-radius: var(--radius-small);
+  background: var(--bg-elev);
+  padding: 4px var(--space-2);
+}
+.trayStrip {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 4px;
+}
+.trayChip {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  height: var(--h-row);
+  padding: 0 var(--space-2);
+  border: none;
+  border-radius: var(--radius-row);
+  background: none;
+  color: var(--fg-secondary);
+  font: inherit;
+  font-size: var(--fs-small);
+  cursor: pointer;
+}
+.trayChip:hover,
+.trayChip[aria-pressed="true"],
+.trayChip[aria-expanded="true"] {
+  background: var(--bg-hover);
+  color: var(--fg);
+}
+.trayPlan {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  padding: 2px var(--space-2) 4px calc(var(--space-2) * 2);
+  font-size: var(--fs-small);
+}
+.planCurrent {
+  color: var(--fg);
+}
+.trayActivity {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}

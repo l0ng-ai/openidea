@@ -685,7 +685,7 @@ describe("a pending AskUserQuestion", () => {
   });
 });
 
-describe("a pending permission request in the conversation", () => {
+describe("a pending permission request above the composer", () => {
   const command = 'python3 -c \'from pathlib import Path\np = Path("note.txt")\np.write_text("one\\ntwo")\'';
   const options = [
     { id: "opaque-once", name: "Allow Once", kind: "allow_once" },
@@ -713,7 +713,8 @@ describe("a pending permission request in the conversation", () => {
     const card = await screen.findByRole("region", { name: "codex wants to run a command" });
     expect(screen.getAllByRole("region", { name: "codex wants to run a command" })).toHaveLength(1);
     expect(screen.queryByRole("alert")).toBeNull();
-    expect(stream()).toContainElement(card);
+    expect(stream()).not.toContainElement(card);
+    expect(card.closest(`.${styles.tray}`)).not.toBeNull();
     expect(card.querySelector("pre")?.textContent).toBe(command);
     const buttons = within(card).getAllByRole("button");
     expect(buttons.map((b) => b.getAttribute("aria-label"))).toEqual([
@@ -727,7 +728,7 @@ describe("a pending permission request in the conversation", () => {
     expect(buttons[1]?.title).toBe(options[1]?.name);
   });
 
-  it.each(options)("sends the original $kind option id, then collapses the resolved card", async (option) => {
+  it.each(options)("sends the original $kind option id, then records it in the conversation", async (option) => {
     const pending: AgentEntry = { type: "permission", id: 12, title: `Run ${command}`, options, chosen: null };
     backend.answers = [];
     backend.entries.set("A", [pending]);
@@ -741,11 +742,26 @@ describe("a pending permission request in the conversation", () => {
     act(() =>
       useAgents.setState({ entries: new Map(backend.entries).set("A", [{ ...pending, chosen: option.name }]) }),
     );
-    expect(card.querySelector("pre")).toBeNull();
-    expect(within(card).queryByRole("button")).toBeNull();
-    expect(card.textContent).toContain("python3 …");
-    expect(card.textContent).not.toContain("write_text");
-    expect(card).toHaveFocus();
+    expect(card).not.toBeInTheDocument();
+    const record = within(stream()).getByRole("region", { name: "codex wants to run a command" });
+    expect(record.querySelector("pre")).toBeNull();
+    expect(within(record).queryByRole("button")).toBeNull();
+    expect(record.textContent).toContain("python3 …");
+    expect(record.textContent).not.toContain("write_text");
+    await waitFor(() => expect(document.activeElement?.tagName).toBe("TEXTAREA"));
+  });
+
+  it("is answered with a number key when the focus isn't in a text field", async () => {
+    const pending: AgentEntry = { type: "permission", id: 12, title: `Run ${command}`, options, chosen: null };
+    backend.answers = [];
+    backend.entries.set("A", [pending]);
+    useAgents.setState({ entries: new Map(backend.entries) });
+    render(<SessionEditor input={input("A")} />);
+    await screen.findByRole("region", { name: "codex wants to run a command" });
+    fireEvent.keyDown(document.querySelector("textarea")!, { key: "1" });
+    expect(backend.answers).toEqual([]);
+    fireEvent.keyDown(stream(), { key: "3" });
+    await waitFor(() => expect(backend.answers).toEqual([["A", 12, "opaque-no"]]));
   });
 
   it("is answered from its line too, and one without options can be cancelled", async () => {

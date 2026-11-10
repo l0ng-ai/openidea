@@ -822,5 +822,10 @@
   "1 subagent": "1 subagent",
   "{count} subagents": "{count} subagents",
   "1 other tool call": "1 other tool call",
-  "{count} other tool calls": "{count} other tool calls"
+  "{count} other tool calls": "{count} other tool calls",
+  "Plan {done}/{length}": "Plan {done}/{length}",
+  "1 changed file": "1 changed file",
+  "{count} changed files": "{count} changed files",
+  "Send into the agent's turn": "Send into the agent's turn",
+  "Queue a message for when the agent is done (⌘⇧↵ sends it now)": "Queue a message for when the agent is done (⌘⇧↵ sends it now)"
 }
