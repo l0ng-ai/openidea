@@ -439,7 +439,15 @@ fn updater(app: &AppHandle, source: UpdateSource) -> IdeResult<Option<tauri_plug
         .map(|u| u.parse().map_err(|e| IdeError::invalid(format!("update endpoint {u}: {e}"))))
         .collect::<IdeResult<Vec<_>>>()?;
     let proxy = ide_core::proxy_settings::proxy();
-    app.updater_builder()
+    let mut builder = app.updater_builder();
+    if let Some(target) = crate::updates::portable_target(
+        std::env::consts::OS,
+        std::env::consts::ARCH,
+        tauri::utils::platform::bundle_type(),
+    ) {
+        builder = builder.target(target);
+    }
+    builder
         .configure_client(move |b| ide_http::client::with_proxy(b, &proxy))
         .endpoints(endpoints)
         .map_err(|e| IdeError::invalid(e.to_string()))?
@@ -586,10 +594,16 @@ pub async fn app_install_update(
             _ = token.cancelled() => return Err(IdeError::cancelled()),
         };
         let _ = on_progress.send(UpdateProgress::Installing);
-        tauri::async_runtime::spawn_blocking(move || update.install(bytes))
-            .await
-            .map_err(|e| IdeError::internal(e.to_string()))?
-            .map_err(|e| IdeError::internal(e.to_string()))
+        tauri::async_runtime::spawn_blocking(move || {
+            #[cfg(windows)]
+            if update.target.ends_with("-portable") {
+                let exe = tauri::utils::platform::current_exe()?;
+                return ide_tools::portable_update::install(&exe, &bytes);
+            }
+            update.install(bytes).map_err(|e| IdeError::internal(e.to_string()))
+        })
+        .await
+        .map_err(|e| IdeError::internal(e.to_string()))?
     }
     .await;
     state.host.end_request(request);

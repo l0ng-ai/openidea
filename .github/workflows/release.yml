@@ -188,6 +188,12 @@ jobs:
           $hash = (Get-FileHash $asset -Algorithm SHA256).Hash.ToLower()
           "$hash  $asset" | Out-File -Encoding ascii "$asset.sha256"
           gh release upload $env:TAG $asset "$asset.sha256" --clobber
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          if ($env:TAURI_SIGNING_PRIVATE_KEY) {
+            pnpm exec tauri signer sign --app-version $version $asset
+            if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+            gh release upload $env:TAG "$asset.sig" --clobber
+          }
 
   # The remote development server, per host platform it can run on. The desktop
   # app downloads the one for the host (ide-tools `server`) and installs it over SSH.
@@ -337,6 +343,8 @@ jobs:
               [/_arm64-setup\.exe$/, ["windows-aarch64-nsis"]],
               [/_x64_en-US\.msi$/, ["windows-x86_64", "windows-x86_64-msi"]],
               [/_x64-setup\.exe$/, ["windows-x86_64-nsis"]],
+              [/_windows_arm64_portable\.zip$/, ["windows-aarch64-portable"]],
+              [/_windows_x64_portable\.zip$/, ["windows-x86_64-portable"]],
             ];
             const platforms = {};
             for (const sig of sigs) {

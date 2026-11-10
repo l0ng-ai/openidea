@@ -20,6 +20,8 @@ mod bundled;
 pub mod formatter;
 pub mod jdk;
 pub mod platform;
+#[cfg(any(windows, test))]
+pub mod portable_update;
 mod process;
 pub mod registry;
 pub mod server;
