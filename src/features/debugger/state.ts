@@ -24,7 +24,13 @@ import {
   type Variable,
 } from "@/platform/ipc";
 import { confirmTerminate } from "@/workbench/confirmTerminate";
-import { maybeEditorService, notifications, toolWindowService, useDebugRunSessions } from "@/workbench/contributions";
+import {
+  maybeEditorService,
+  notifications,
+  runOutput,
+  toolWindowService,
+  useDebugRunSessions,
+} from "@/workbench/contributions";
 import { startedPort } from "@/platform/serverPort";
 import { breakpointsOf, consumeTemporary, flushBreakpoints, refreshStates, resetStatuses } from "./breakpoints/store";
 import { interpolateLog, logParts, suspends } from "./breakpoints/model";
@@ -382,6 +388,21 @@ function republishForPorts() {
   if (published.some((d) => d.httpPort !== sessionHttpPort(d.id))) publishContext();
 }
 
+/** Sessions attached to a process Run started: their Console follows its output. */
+const processOutput = new Map<DebugSessionId, () => void>();
+
+/** Shows the output of the Run process `process` in the Console of `session`, as a launched program's. */
+function followProcessOutput(session: DebugSessionId, process: RunId) {
+  processOutput.get(session)?.();
+  const unsubscribe = runOutput()?.subscribe(process, (kind, text) => appendConsoleQueued(session, kind, text));
+  if (unsubscribe) processOutput.set(session, unsubscribe);
+}
+
+function unfollowProcessOutput(session: DebugSessionId) {
+  processOutput.get(session)?.();
+  processOutput.delete(session);
+}
+
 export function appendConsole(session: DebugSessionId, category: string, raw: string) {
   if (!raw) return;
   flushConsoleOutput();
@@ -615,6 +636,7 @@ export async function startSession(
       };
     });
     settleStart(id);
+    if (options.process != null) followProcessOutput(id, options.process);
     publishContext();
     void refreshExceptionFilters();
     void loadCapabilities(id);
@@ -739,7 +761,10 @@ export function removeSession(id: DebugSessionId) {
     active: st.active != null && sessions[st.active] ? st.active : neighbour,
     console,
   });
-  for (const goneId of gone) owned.delete(goneId);
+  for (const goneId of gone) {
+    owned.delete(goneId);
+    unfollowProcessOutput(goneId);
+  }
   updateExecutionPoint();
   publishContext();
 }
@@ -1130,6 +1155,7 @@ export function handleDebugEvent(id: DebugSessionId, event: DebugEvent) {
 export function resetSessions() {
   const { sessions } = useDebug.getState();
   for (const s of Object.values(sessions)) if (s.parent == null && isLive(s)) void stopSession(s.id);
+  for (const id of [...processOutput.keys()]) unfollowProcessOutput(id);
   pendingOutput.length = 0;
   cancelOutputFlush();
   ansiStreams.clear();

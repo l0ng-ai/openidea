@@ -297,14 +297,7 @@ fn python_sdk_with_version(path: &Path, source: &str, root: Option<&Path>, versi
                 _ => format!("Python {short} ({dir})"),
             }
         }
-        (None, "conda") => {
-            let env = path
-                .parent()
-                .and_then(Path::parent)
-                .and_then(|p| p.file_name())
-                .map(|n| n.to_string_lossy().into_owned());
-            format!("Python {short} (conda: {})", env.unwrap_or_default())
-        }
+        (None, "conda") => format!("Python {short} (conda: {})", conda_env_name(path).unwrap_or_default()),
         (None, "pixi") => {
             let env = pixi_env_name(path).unwrap_or_default();
             format!("Python {short} (pixi: {env})")
@@ -320,10 +313,28 @@ fn python_sdk_with_version(path: &Path, source: &str, root: Option<&Path>, versi
         source: source.to_owned(),
         home: venv
             .or_else(|| (source == "pixi").then(|| pixi_env_home(path)).flatten())
+            .or_else(|| (source == "conda").then(|| conda_env_home(path)).flatten())
             .or_else(|| path.parent().and_then(Path::parent).map(Path::to_path_buf))
             .map(Into::into),
         extra: None,
     }
+}
+
+/// The prefix of a conda interpreter: `<env>/bin/python` on Unix, `<env>/python.exe` on Windows.
+fn conda_env_home(python: &Path) -> Option<PathBuf> {
+    let dir = python.parent()?;
+    let bin = dir.file_name().is_some_and(|n| n == "bin" || n.eq_ignore_ascii_case("Scripts"));
+    Some(if bin { dir.parent()? } else { dir }.to_path_buf())
+}
+
+/// The name conda gives an environment: `base` for the installation itself (it holds
+/// `condabin/`), else the prefix's folder (`envs/<name>`, or a `--prefix` env's directory).
+fn conda_env_name(python: &Path) -> Option<String> {
+    let home = conda_env_home(python)?;
+    if home.join("condabin").is_dir() {
+        return Some("base".into());
+    }
+    home.file_name().map(|n| n.to_string_lossy().into_owned())
 }
 
 /// `.pixi/envs/<env>` of a pixi interpreter (`<env>/python`, `<env>/bin/python`).
@@ -933,6 +944,26 @@ mod pixi_tests {
 #[cfg(test)]
 mod conda_tests {
     use super::*;
+
+    #[test]
+    fn conda_envs_are_named_after_their_prefix_on_every_layout() {
+        let tmp = tempfile::tempdir().unwrap();
+        let root = tmp.path().join("anaconda3");
+        std::fs::create_dir_all(root.join("condabin")).unwrap();
+        let name = |python: PathBuf| super::conda_env_name(&python);
+        // Windows: python.exe at the prefix root.
+        assert_eq!(name(root.join("envs/agent-gateway/python.exe")).as_deref(), Some("agent-gateway"));
+        assert_eq!(name(root.join("python.exe")).as_deref(), Some("base"));
+        // Unix: <prefix>/bin/python.
+        assert_eq!(name(root.join("envs/ml/bin/python")).as_deref(), Some("ml"));
+        assert_eq!(name(root.join("bin/python")).as_deref(), Some("base"));
+        // A `--prefix` env outside envs/.
+        assert_eq!(name(tmp.path().join("work/.conda/python.exe")).as_deref(), Some(".conda"));
+        assert_eq!(
+            super::conda_env_home(&root.join("envs/agent-gateway/python.exe")),
+            Some(root.join("envs/agent-gateway"))
+        );
+    }
 
     #[test]
     fn conda_env_list_names_named_prefix_and_bare_prefix_envs() {

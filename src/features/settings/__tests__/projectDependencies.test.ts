@@ -30,18 +30,8 @@ describe("project dependencies", () => {
     ).toEqual(["/shared", "/deps/lib"]);
   });
 
-  it("builds the checklist of one root", () => {
-    const rows = dependencyCandidates("/p/root", ["/deps/lib"], {
-      recents: [
-        { path: "/w/other", name: "Other" },
-        { path: "/p/root", name: "Root" },
-        { path: "/p/root/sub", name: "Sub" },
-        { path: "/deps/lib", name: "lib" },
-      ],
-    });
-    expect(rows).toEqual([
-      { path: "/deps/lib", name: "lib", checked: true, disabled: false },
-      { path: "/w/other", name: "Other", checked: false, disabled: false },
-    ]);
+  it("builds the checklist of one root from its configured projects", () => {
+    const rows = dependencyCandidates("/p/root", ["/deps/lib", "/deps/lib", "/p/root", "/p/root/sub"]);
+    expect(rows).toEqual([{ path: "/deps/lib", name: "lib", checked: true, disabled: false }]);
   });
 });

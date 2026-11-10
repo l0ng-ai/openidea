@@ -1140,3 +1140,36 @@ fn cmake_subdirectories_are_not_independent_builds() {
     ]);
     assert!(detect(dir.path()).iter().filter(|c| c.kind == "cmake").all(|c| c.cwd.is_none()));
 }
+
+#[cfg(unix)]
+#[test]
+fn a_django_project_in_src_uses_the_environment_next_to_it() {
+    let dir = project(&[("pyproject.toml", ""), (".venv/bin/python", ""), ("src/manage.py", "")]);
+    let c = detect(dir.path());
+    let python = dir.path().join(".venv/bin/python").to_string_lossy().into_owned();
+    let server = find(&c, "django:runserver:src");
+    assert_eq!(cmdline(server), format!("{python} manage.py runserver"));
+    assert_eq!(server.cwd.as_ref().map(|p| p.to_string_lossy().into_owned()).as_deref(), Some("src"));
+    assert_eq!(cmdline(find(&c, "django:test:src")), format!("{python} manage.py test"));
+
+    let dir = project(&[("pyproject.toml", ""), ("uv.lock", ""), ("src/manage.py", "")]);
+    assert_eq!(cmdline(find(&detect(dir.path()), "django:runserver:src")), "uv run python manage.py runserver");
+
+    // Its own environment wins, and nothing above the opened project is used.
+    let dir = project(&[(".venv/bin/python", ""), ("app/manage.py", ""), ("app/poetry.lock", "")]);
+    assert_eq!(cmdline(find(&detect(dir.path()), "django:runserver:app")), "poetry run python manage.py runserver");
+    let dir = project(&[(".venv/bin/python", ""), ("app/manage.py", "")]);
+    let c = detect(&dir.path().join("app"));
+    assert_eq!(cmdline(find(&c, "django:runserver")), "python3 manage.py runserver");
+
+    // A folder borrowing the root's environment isn't a pytest project because pytest is installed there.
+    let dir = project(&[
+        ("pyproject.toml", ""),
+        (".venv/bin/python", ""),
+        (".venv/bin/pytest", ""),
+        ("docs/requirements.txt", ""),
+    ]);
+    let c = detect(dir.path());
+    assert!(c.iter().any(|c| c.id == "pytest"));
+    assert!(!c.iter().any(|c| c.id.starts_with("pytest:")), "{:?}", c.iter().map(|c| &c.id).collect::<Vec<_>>());
+}

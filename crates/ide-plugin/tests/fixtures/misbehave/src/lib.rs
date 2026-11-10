@@ -66,6 +66,13 @@ impl commands::Guest for Misbehave {
                 let project = ctx.project().ok_or_else(|| failed("no project is open"))?;
                 project.read_file(&arg.unwrap_or_default()).map(Some)
             }
+            // The bytes `project.read-bytes` returns, as "len hex hex …" so binary survives.
+            "read-bytes" => {
+                let project = ctx.project().ok_or_else(|| failed("no project is open"))?;
+                let bytes = project.read_bytes(&arg.unwrap_or_default())?;
+                let hex: Vec<String> = bytes.iter().map(|b| format!("{b:02x}")).collect();
+                Ok(Some(format!("{} {}", bytes.len(), hex.join(" "))))
+            }
             "root" => ctx.project().map(|p| p.root()).transpose(),
             // The `fs.read` grants: the text of `arg`, or the refusal naming what it needs.
             "fsread" => openidea::plugin::fs::read_file(&arg.unwrap_or_default()).map(Some),

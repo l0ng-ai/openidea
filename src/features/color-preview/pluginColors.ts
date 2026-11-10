@@ -1,4 +1,4 @@
-/** Plugin colors use the same native picker and provider-supplied replacement strings. */
+/** Plugin colors use the shared picker and provider-supplied replacement strings. */
 import { RangeSet, StateEffect, StateField, type Extension } from "@codemirror/state";
 import { GutterMarker, ViewPlugin, gutter, type EditorView, type ViewUpdate } from "@codemirror/view";
 import { shownAgain, type EditorDocContext } from "@/editor/api";
@@ -7,6 +7,7 @@ import { pluginVisuals } from "@/editor/lsp/pluginVisuals";
 import { onNavigationProvidersChanged } from "@/editor/navigationProviders";
 import { call, commands, type ColorInfo } from "@/platform/ipc";
 import { showContextMenu } from "@/ui";
+import { openColorPicker } from "./ColorPicker";
 import styles from "./ColorPreview.module.css";
 const setColors = StateEffect.define<[string, ColorInfo][]>();
 const colors = StateField.define<[string, ColorInfo][]>({
@@ -44,7 +45,7 @@ class Swatch extends GutterMarker {
     el.onclick = () => {
       if (this.view.state.readOnly) return;
       const rect = el.getBoundingClientRect();
-      pick(this.view, this.ctx, this.plugin, this.color, rect.left, rect.bottom + 2);
+      pick(this.view, this.ctx, this.plugin, this.color, rect.left, rect.bottom);
     };
     return el;
   }
@@ -52,52 +53,42 @@ class Swatch extends GutterMarker {
 function pick(view: EditorView, ctx: EditorDocContext, plugin: string, color: ColorInfo, x: number, y: number) {
   const text = view.state.doc;
   const { from, to } = rangeToOffsets(text, color.range);
-  const input = document.createElement("input");
-  input.type = "color";
-  input.className = styles.picker!;
-  input.style.left = `${x}px`;
-  input.style.top = `${y}px`;
-  input.value =
-    "#" +
-    [color.red, color.green, color.blue]
-      .map((c) =>
-        Math.round((c ?? 0) * 255)
-          .toString(16)
-          .padStart(2, "0"),
-      )
-      .join("");
-  document.body.append(input);
-  input.onchange = () => {
-    input.remove();
-    const hex = input.value;
-    const chosen = {
-      ...color,
-      red: parseInt(hex.slice(1, 3), 16) / 255,
-      green: parseInt(hex.slice(3, 5), 16) / 255,
-      blue: parseInt(hex.slice(5, 7), 16) / 255,
-    };
-    void call(commands.pluginColorPresentations(ctx.doc, plugin, chosen))
-      .then((list) => {
-        const apply = (insert: string) => {
-          if (view.state.doc === text && !view.state.readOnly)
-            view.dispatch({ changes: { from, to, insert }, userEvent: "input.color" });
-        };
-        if (view.state.doc !== text) return;
-        if (list.length === 1) apply(list[0]!);
-        else if (list.length)
-          showContextMenu(
-            { x, y },
-            list.map((label) => ({ label, verbatim: true, run: () => apply(label) })),
-          );
-      })
-      .catch(console.warn);
-  };
-  input.oncancel = () => input.remove();
-  try {
-    input.showPicker();
-  } catch {
-    input.click();
-  }
+  const initial = [
+    Math.round((color.red ?? 0) * 255),
+    Math.round((color.green ?? 0) * 255),
+    Math.round((color.blue ?? 0) * 255),
+    color.alpha ?? 1,
+  ] as const;
+  openColorPicker({
+    view,
+    anchor: { x, y },
+    value: [...initial],
+    onCommit: ([r, g, b, a]) => {
+      if (r === initial[0] && g === initial[1] && b === initial[2] && a === initial[3]) return;
+      const chosen = {
+        ...color,
+        red: r / 255,
+        green: g / 255,
+        blue: b / 255,
+        alpha: a,
+      };
+      void call(commands.pluginColorPresentations(ctx.doc, plugin, chosen))
+        .then((list) => {
+          const apply = (insert: string) => {
+            if (view.state.doc === text && !view.state.readOnly)
+              view.dispatch({ changes: { from, to, insert }, userEvent: "input.color" });
+          };
+          if (view.state.doc !== text) return;
+          if (list.length === 1) apply(list[0]!);
+          else if (list.length)
+            showContextMenu(
+              { x, y },
+              list.map((label) => ({ label, verbatim: true, run: () => apply(label) })),
+            );
+        })
+        .catch(console.warn);
+    },
+  });
 }
 export function pluginColorPreview(ctx: EditorDocContext): Extension {
   if (ctx.doc < 0) return [];

@@ -152,7 +152,11 @@ fn create_conda_env(
         }
     }
     stream(&conda, &args, None, &[], cancel, on_line)?;
-    let python = location.join(bin_dir()).join(exe("python"));
+    // Conda keeps `python.exe` at the prefix root on Windows, not under Scripts/.
+    let python = [location.join(exe("python")), location.join(bin_dir()).join(exe("python"))]
+        .into_iter()
+        .find(|p| p.is_file())
+        .unwrap_or_else(|| location.join(bin_dir()).join(exe("python")));
     crate::discover::python_sdk(&python, "conda", location.parent().and_then(Path::parent))
         .ok_or_else(|| IdeError::internal(format!("{} was not created", python.display())))
 }

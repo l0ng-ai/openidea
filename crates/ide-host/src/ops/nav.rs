@@ -149,9 +149,11 @@ pub async fn nav_resolve_module(host: &Host, window: &str, name: String, from: I
     .await
 }
 
-/// Index definitions named `name` within the roots `from` may navigate into (its own root
-/// plus its configured dependencies — see `navigation_roots`): the cross-root answer when
-/// the language server cannot resolve an import into an attached dependency project.
+/// Index definitions named `name` in the other roots `from` may navigate into (its configured
+/// dependencies and extra content roots — see `navigation_roots`): the cross-root answer when
+/// the language server cannot resolve an import into an attached dependency project. `from`'s
+/// own root is left out: the server sees it, so a name it could not resolve there is not
+/// answered by every declaration that happens to share it (any `save` for `repo.save()`).
 pub async fn nav_index_definitions(
     host: &Host,
     window: &str,
@@ -161,9 +163,13 @@ pub async fn nav_index_definitions(
     let project = host.project(window)?;
     blocking(move || {
         let roots = crate::project::navigation_roots(&project, &from);
+        let Some((_own, roots)) = roots.split_first() else { return Ok(Vec::new()) };
+        if roots.is_empty() {
+            return Ok(Vec::new());
+        }
         // Filter inside the index: a cap applied before the root filter can fill with
         // own-root matches and evict the dependency roots entirely.
-        Ok(project.index.symbols_named_within(&name, None, &roots, 500))
+        Ok(project.index.symbols_named_within(&name, None, roots, 500))
     })
     .await
 }

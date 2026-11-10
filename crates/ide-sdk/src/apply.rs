@@ -785,6 +785,18 @@ pub fn configure_java_compiler(cfg: &mut LanguageServerConfig, data_dir: &Path, 
     configure_java_compiler_with_level(cfg, data_dir, inspections, None);
 }
 
+/// A Java language level as (file-name tag, JDT compliance value): `6` / `1.6` → `("6", "1.6")`,
+/// `17` → `("17", "17")`. Levels 5–8 use JDT's `1.x` spelling; unknown values are ignored.
+fn java_compliance(level: &str) -> Option<(String, String)> {
+    let level = level.trim();
+    let major: u32 = level.strip_prefix("1.").unwrap_or(level).parse().ok()?;
+    match major {
+        5..=8 => Some((major.to_string(), format!("1.{major}"))),
+        9..=99 if !level.starts_with("1.") => Some((major.to_string(), major.to_string())),
+        _ => None,
+    }
+}
+
 /// Like [`configure_java_compiler`], also applying the Project Structure Java language level
 /// (`source`, `compliance`, `codegen.targetPlatform`) when configured.
 pub fn configure_java_compiler_with_level(
@@ -796,14 +808,7 @@ pub fn configure_java_compiler_with_level(
     const DEFAULTS: &str = "org.eclipse.jdt.core.compiler.problem.forbiddenReference=warning\n\
 org.eclipse.jdt.core.compiler.problem.discouragedReference=warning\n";
     let serial = missing_serial_version(inspections);
-    let normalized_level = language_level.map(str::trim).and_then(|l| match l {
-        "8" | "1.8" => Some(("8", "1.8")),
-        "11" => Some(("11", "11")),
-        "17" => Some(("17", "17")),
-        "21" => Some(("21", "21")),
-        "25" => Some(("25", "25")),
-        _ => None,
-    });
+    let normalized_level = language_level.and_then(java_compliance);
     let mut stem = "compiler-defaults".to_owned();
     let mut content = DEFAULTS.to_owned();
     if let Some(level) = serial {
@@ -1986,5 +1991,23 @@ mod ruby_lsp_tests {
         let dirs: Vec<PathBuf> = std::env::split_paths(path).collect();
         assert!(dirs.contains(&bindir), "{dirs:?}");
         assert!(!dirs.iter().any(|d| d.starts_with("/nonexistent")), "{dirs:?}");
+    }
+}
+
+#[cfg(test)]
+mod java_compliance_tests {
+    #[test]
+    fn maps_every_java_language_level_to_jdt_compliance() {
+        let c = |l: &str| super::java_compliance(l);
+        assert_eq!(c("6"), Some(("6".into(), "1.6".into())));
+        assert_eq!(c("1.7"), Some(("7".into(), "1.7".into())));
+        assert_eq!(c("8"), Some(("8".into(), "1.8".into())));
+        assert_eq!(c(" 1.8 "), Some(("8".into(), "1.8".into())));
+        assert_eq!(c("14"), Some(("14".into(), "14".into())));
+        assert_eq!(c("25"), Some(("25".into(), "25".into())));
+        assert_eq!(c("1.14"), None);
+        assert_eq!(c("4"), None);
+        assert_eq!(c(""), None);
+        assert_eq!(c("latest"), None);
     }
 }

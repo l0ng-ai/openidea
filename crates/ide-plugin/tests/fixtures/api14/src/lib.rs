@@ -25,6 +25,7 @@ impl Plugin for Api14 {
                     .search_text(&openidea_plugin::TextQuery { pattern: arg.into(), ..Default::default() }, 10)?;
                 Ok(Some(format!("{result:?}")))
             }
+            "read-bytes" => Ok(Some(format!("{:?}", ctx.project().unwrap().read_bytes(arg)?))),
             "problems" => Ok(Some(format!("{:?}", host::problems(if arg.is_empty() { None } else { Some(arg) })?))),
             "decorations" => {
                 host::set_decorations(

@@ -165,8 +165,12 @@ describe("marker candidates", () => {
 });
 
 /** A server answering implementation and type hierarchy requests over the files above. */
-function server(impls: Record<string, Location[]>, supers: Record<string, HierarchyItem[]>) {
-  const calls = { implementations: [] as Pos[][], supertypes: 0 };
+function server(
+  impls: Record<string, Location[]>,
+  supers: Record<string, HierarchyItem[]>,
+  subtypes: Record<string, HierarchyItem[]> = {},
+) {
+  const calls = { implementations: [] as Pos[][], supertypes: 0, subtypes: 0 };
   const outlines: Record<string, OutlineItem[]> = {
     [SHAPE_PATH]: SHAPE_OUTLINE,
     "/p/Circle.java": CIRCLE_OUTLINE,
@@ -181,6 +185,10 @@ function server(impls: Record<string, Location[]>, supers: Record<string, Hierar
       supertypes: async (p) => {
         calls.supertypes++;
         return supers[p] ?? [];
+      },
+      subtypes: async (p) => {
+        calls.subtypes++;
+        return subtypes[p] ?? [];
       },
       outline: async (p) => outlines[p] ?? [],
     },
@@ -234,6 +242,21 @@ describe("markers from server answers", () => {
       [0, "implemented", "Is implemented by Circle"],
       [2, "overridden", "Is overridden in Circle"],
     ]);
+  });
+
+  it("uses the type hierarchy's subtypes when implementation requests are empty", async () => {
+    const circle: HierarchyItem = {
+      ...hier("Circle", "class", "/p/Circle.java"),
+      selectionRange: { start: { line: 0, col: 13 }, end: { line: 0, col: 19 } },
+    };
+    const { deps, calls } = server({}, {}, { "/p/Base.java": [circle] });
+    const candidates = markerCandidates(BASE_OUTLINE, lines(BASE));
+    const cache = emptyCache();
+    await fillMarkers("/p/Base.java", candidates, ALL, deps("/p/Base.java"), cache);
+    const markers = cachedMarkers(candidates, ALL, cache);
+    // Pyrefly answers implementation requests with nothing; the hierarchy still knows Circle.
+    expect(markers.map((m) => [m.line, m.kind, m.tooltip])).toEqual([[0, "implemented", "Is implemented by Circle"]]);
+    expect(calls.subtypes).toBeGreaterThan(0);
   });
 
   it("marks implementing and overriding methods from the type hierarchy", async () => {
