@@ -29,6 +29,7 @@ import { pushOperation, splitTracked, type PushChoice } from "./pushTarget";
 import { currentRepo, currentRepoRoot, refreshNow, repoName, useVcs } from "./store";
 import styles from "./common.module.css";
 
+/** Update Project… scope: one repository (`null`: the selected one), else every repository. */
 export interface UpdateTarget {
   repo?: string | null;
 }
@@ -37,6 +38,7 @@ export function updateRepos(target: UpdateTarget): Array<string | null> {
   return target.repo === undefined ? allRepos() : [target.repo];
 }
 
+/** Update Project…: the options dialog, or (Confirmation › Show options before Update off) the default method right away. */
 export function showUpdateDialog(target: UpdateTarget = {}) {
   const { vcs } = workflowSettings();
   const repos = updateRepos(target);
@@ -164,6 +166,12 @@ export function outgoingQuery(upstream: string | null): { branch: string; range:
   return upstream ? { branch: "HEAD", range: "@{u}..HEAD", limit: 1000 } : { branch: "HEAD", range: null, limit: 50 };
 }
 
+/**
+ * Outgoing commits of one repository in the multi-repository Push dialog. `@{u}` no
+ * longer resolves once the upstream branch was deleted on the remote (the tracking
+ * config remains, `upstream_of` still reports it): the commits no remote branch has
+ * are listed instead, so the repository stays in the list, pushable.
+ */
 export async function pushRepoCommits(root: string, branch: BranchInfo): Promise<Commit[]> {
   if (!branch.head) return [];
   const q = outgoingQuery(branch.upstream);
@@ -225,6 +233,10 @@ export function pushCandidates(repos: readonly RepoPush[]): RepoPush[] {
   return repos.filter((r) => r.branch.head && (r.branch.upstream ? r.commits.length > 0 : true));
 }
 
+/**
+ * Checked by default: repositories with outgoing commits (a new branch only in the selected
+ * one); with `onlySelected` (Push… from one repository's branch menu), only the selected one.
+ */
 export function defaultPushChecked(
   repos: readonly RepoPush[],
   selected: string | null,
