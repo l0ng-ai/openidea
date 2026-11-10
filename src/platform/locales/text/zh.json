@@ -1,4 +1,5 @@
 {
+  "GDB (C, C++)": "GDB（C、C++）",
   "Unknown error": "未知错误",
   "Retry Loading Conversation": "重新加载对话",
   "No conversation history": "没有对话历史记录",
@@ -7140,5 +7141,18 @@
   "The root depends on {name}": "该根取决于 {name}",
   "No other roots.": "没有其他根。",
   "Add Project Dependency": "添加项目依赖",
-  "Every root is equal: pick a root on the left, then check the roots it depends on. Go to Declaration in it resolves only into its own code and its dependencies.": "所有根地位相同：先在左侧选择一个根，再勾选它依赖的根。该根中的“转到声明”只会解析它自身及其依赖中的代码。"
+  "Every root is equal: pick a root on the left, then check the roots it depends on. Go to Declaration in it resolves only into its own code and its dependencies.": "所有根地位相同：先在左侧选择一个根，再勾选它依赖的根。该根中的“转到声明”只会解析它自身及其依赖中的代码。",
+  "Allow {name} to connect to {host}?": "允许 {name} 连接到 {host}？",
+  "The host is not in the plugin's declared permissions.": "该主机不在插件声明的权限列表中。",
+  "\"Always allow\" remembers {host}; revoke it any time in the plugin's permissions.": "「一直允许」会记住 {host}；可随时在插件权限中撤销。",
+  "Allow once": "这次允许",
+  "Always allow": "一直允许",
+  "Allowed when the plugin asked at first use. Remove it to be asked again.": "在插件首次使用询问时允许。移除后下次会再次询问。",
+  "Ask to connect to a host that is not on the list the first time it tries; you allow or refuse each host, and can revoke the allowed ones": "首次连接清单之外的主机时询问；你可以逐个允许或拒绝，并可撤销已允许的主机",
+  "This allows this exact host on any port; subdomains need separate permission.": "允许此确切主机的任意端口；子域名需要单独授权。",
+  "Could not revoke {host} for {name}": "无法撤销 {name} 对 {host} 的授权",
+  "host is not remembered for this plugin": "此插件没有记住该主机的授权",
+  "URL must name one exact host": "URL 必须指定一个确切主机",
+  "Allow for this session": "本次会话内允许",
+  "This allows {host} until the remote session ends.": "允许连接到 {host}，直到本次远程会话结束。"
 }

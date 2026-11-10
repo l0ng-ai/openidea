@@ -403,6 +403,68 @@ describe("Check for Updates", () => {
   });
 });
 
+describe("automatic nightly update prompts", () => {
+  const DAY = 24 * 60 * 60 * 1000;
+  const update = (currentVersion: string): UpdateInfo => ({
+    version: "0.1.41",
+    currentVersion,
+    notes: null,
+    date: null,
+  });
+  const startupCheck = async (currentVersion: string) => {
+    notes = [];
+    await notifyUpdate(update(currentVersion));
+    return notes.length;
+  };
+
+  beforeEach(() => {
+    localStorage.clear();
+    vi.useFakeTimers({ toFake: ["Date"], now: 10 * DAY });
+  });
+  afterEach(() => vi.useRealTimers());
+
+  it("leaves stable prompts to the backend announcement policy", async () => {
+    expect(await startupCheck("0.1.40")).toBe(1);
+    expect(await startupCheck("0.1.40")).toBe(1);
+  });
+
+  it("asks a nightly build at most once a day", async () => {
+    const nightly = "0.1.41-nightly.202611081417";
+    expect(await startupCheck(nightly)).toBe(1);
+    vi.setSystemTime(11 * DAY - 1);
+    expect(await startupCheck(nightly)).toBe(0);
+    vi.setSystemTime(11 * DAY);
+    expect(await startupCheck(nightly)).toBe(1);
+  });
+
+  it("does not prompt twice a day for periodic nightly checks, but always answers a manual check", async () => {
+    const nightly = "0.1.41-nightly.202611081417";
+    const dispose = installUpdateChecks();
+    await tick();
+    try {
+      const available = updateListeners.get("updateAvailable")!;
+      available({ update: update(nightly) });
+      await tick();
+      expect(notes).toHaveLength(1);
+      vi.setSystemTime(10 * DAY + 4 * 60 * 60 * 1000);
+      available({ update: { ...update(nightly), version: "0.1.42-nightly.202611090200" } });
+      await tick();
+      expect(notes).toHaveLength(1);
+      const done = checkForUpdates();
+      check.resolve(ok({ enabled: true, update: update(nightly) }));
+      await done;
+      expect(notes.at(-1)).toMatchObject({ title: "OpenIDEA 0.1.41 is available", userInitiated: true });
+      notes = [];
+      vi.setSystemTime(11 * DAY);
+      available({ update: { ...update(nightly), version: "0.1.42-nightly.202611091400" } });
+      await tick();
+      expect(notes).toHaveLength(1);
+    } finally {
+      dispose();
+    }
+  });
+});
+
 describe("updateSource", () => {
   const withSettings = (updateSource: string | undefined, locale: string | undefined) =>
     useProject.setState({ settings: { general: { updateSource }, appearance: { locale } } as unknown as Settings });

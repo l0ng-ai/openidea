@@ -72,6 +72,9 @@ pub struct PluginInfo {
     pub has_code: bool,
     /// Declared capabilities with risk and grant state.
     pub capabilities: Vec<CapabilityInfo>,
+    /// HTTPS hosts the user allowed through `net:ask` ("always allow"),
+    /// none of them declared by the manifest; each can be revoked.
+    pub net_hosts: Vec<String>,
     /// What it contributes while live (point + label).
     pub contributions: Vec<ContributionInfo>,
     /// `activation` events of the manifest.
