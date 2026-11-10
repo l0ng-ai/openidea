@@ -296,11 +296,18 @@ pub fn parse_with(text: &str, custom: &[String]) -> Vec<Node> {
                 continue;
             }
             let name_end = (i + 1..n).find(|&at| !is_word(b[at])).unwrap_or(n);
-            let name = &text[i + 1..name_end];
-            if name.is_empty() || !is_directive(name) && !custom.iter().any(|known| known == name) {
+            let written = &text[i + 1..name_end];
+            // Blade compiles `@name` with `compile<Name>`, a method PHP finds
+            // whatever the case: `@endpushOnce` is `@endPushOnce`.
+            let name = if is_directive(written) || custom.iter().any(|known| known == written) {
+                Some(written)
+            } else {
+                DIRECTIVES.iter().copied().find(|known| known.eq_ignore_ascii_case(written))
+            };
+            let Some(name) = name.filter(|name| !name.is_empty()) else {
                 i = name_end.max(i + 1);
                 continue;
-            }
+            };
             if name == "verbatim" {
                 i = find(b, name_end, b"@endverbatim").map_or(n, |at| at + "@endverbatim".len());
                 continue;

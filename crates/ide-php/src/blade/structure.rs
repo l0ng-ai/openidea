@@ -284,16 +284,19 @@ pub fn inspect(text: &str, custom: &[String]) -> Vec<Diagnostic> {
     };
     for node in parse_with(text, custom) {
         let NodeKind::Directive { name } = &node.kind else { continue };
-        if let Some(at) = OPENERS.iter().position(|opener| opener.open.contains(&name.as_str())) {
+        // Blade calls `compile<Name>` for `@name`, and PHP method names are
+        // case-insensitive: `@endpushOnce` closes `@pushOnce`.
+        let is = |names: &[&str]| names.iter().any(|known| known.eq_ignore_ascii_case(name));
+        if let Some(at) = OPENERS.iter().position(|opener| is(opener.open)) {
             let opener = &OPENERS[at];
             let args = node.code.as_ref().map(|code| arguments(text, code)).unwrap_or_default();
             if opener.inline_args.is_some_and(|inline| args.len() >= inline) {
                 continue;
             }
-            let index = usize::from(name == "pushIf");
+            let index = usize::from(name.eq_ignore_ascii_case("pushIf"));
             let label = args.get(index).and_then(|arg| string_at(text, arg)).map_or_else(String::new, |(n, _)| n);
             open[at].push((label, node.span.clone()));
-        } else if let Some(at) = OPENERS.iter().position(|opener| opener.close.contains(&name.as_str()))
+        } else if let Some(at) = OPENERS.iter().position(|opener| is(opener.close))
             && open[at].pop().is_none()
         {
             let range = lines.range(node.span.start, node.span.end);

@@ -313,6 +313,12 @@ fn unclosed_sections_are_reported() {
 @section('title', 'Home')
 @push('s') @endpush @prepend('s') @endprepend";
     assert!(messages(fine).is_empty(), "{:?}", messages(fine));
+    // Blade's directive methods are found case-insensitively (Bagisto writes
+    // `@endpushOnce`).
+    let any_case = "@pushOnce('scripts') x @endpushOnce
+@prependOnce('s') @endprependonce
+@push('s') @endPush";
+    assert!(messages(any_case).is_empty(), "{:?}", messages(any_case));
     assert_eq!(
         messages(
             "@section('content')

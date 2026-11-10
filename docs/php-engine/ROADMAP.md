@@ -797,7 +797,7 @@ Runs after Plan 7. Before any 8.x phase, read [LARAVEL-ROADMAP.md](LARAVEL-ROADM
 
   Tests: generator snapshot tests and inspection fixtures.
 
-- [ ] Phase 8.29: Real-application check
+- [x] Phase 8.29: Real-application check
       Run the real-application checks on Monica and Bagisto again (`scripts/laravel-apps.sh`):
   - `real_app_checklist` passes on both
   - every `php_laravel_real/*` budget passes on both
@@ -805,6 +805,9 @@ Runs after Plan 7. Before any 8.x phase, read [LARAVEL-ROADMAP.md](LARAVEL-ROADM
 
   Also fix a crash risk first. In a debug build, an indexing thread overflows its default 2 MB stack on one of Bagisto's files (see `laravel.md`: the real-application tests run only with `RUST_MIN_STACK=67108864`). A stack overflow aborts the whole editor process, and a slightly deeper file could do the same in a release build. Find the file and the recursive walk that overflows. Make the walk iterative, or bound its depth (with a diagnostic past the bound), instead of only enlarging thread stacks. Add a unit test with deeply nested PHP (thousands of nested arrays, expressions and closures) that passes on a default 2 MB stack in a debug build. Then drop `RUST_MIN_STACK` from the real-application commands in `laravel.md`.
   Fix what fails. Anything too big to fix becomes a new follow-up phase right after this one. Record the final numbers and the review in `laravel.md`. Tests: the ignored real-application tests and benches. Their results go in `PROGRESS.md`.
+
+- [ ] Phase 8.29.b: Route files at computed paths
+      Jetstream loads its routes with `$this->loadRoutesFrom(__DIR__.'/../routes/'.config('jetstream.stack').'.php')`. The summary keeps only paths made of literals and `__DIR__`, so Monica's `redirect()->route('profile.show')` is an undefined route (the one false positive of 8.29's review that isn't a limit of the analysis). Keep such a path with its `config('…')` parts, and fill them in from the project's configuration keys (with the call's default, else the key's value) when the route files are resolved, so a changed `config/jetstream.php` picks the other file. Tests: a provider fixture with a `config()` part in its route path, and `real_app_inspect_code` on Monica without `PhpUndefinedRoute` for `profile.show`.
 
 - [ ] Phase 8.30: Documentation
       Add a user guide, `docs/php-engine/laravel.md`, finishing the file started in 8.21 and extended up to 8.29. It covers each feature with a short example, the settings, `ide.json` support, and known limits. Update `THIRD_PARTY_LICENSES.md` if a phase bundled anything new (for example Laravel stubs). Tests: none beyond the usual gate.

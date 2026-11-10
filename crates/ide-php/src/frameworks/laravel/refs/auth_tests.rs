@@ -437,6 +437,32 @@ fn reports_unknown_guards_and_brokers() {
 }
 
 #[test]
+fn guards_service_providers_configure_are_known() {
+    // Sanctum's provider runs `config(['auth.guards.sanctum' => …])`.
+    let provider = "<?php\nnamespace App\\Providers;\n\nuse Illuminate\\Support\\ServiceProvider;\n\nclass TokenServiceProvider extends ServiceProvider\n{\n    public function register(): void\n    {\n        config(['auth.guards.token' => array_merge(['driver' => 'token'], config('auth.guards.token', []))]);\n    }\n}\n";
+    let mut project = Project::app_with(&[("app/Providers/TokenServiceProvider.php", provider)]);
+    let guards = project.problems_of("auth('token');\n    auth('ghost');", "PhpUnknownGuard");
+    let lines: Vec<u32> = guards.iter().map(|(line, _)| *line).collect();
+    assert_eq!(lines, [15], "{guards:?}");
+}
+
+#[test]
+fn laravel_class_aliases_are_classes() {
+    // `config/app.php` adds an alias to Laravel's defaults.
+    let app = "<?php\n\nuse Illuminate\\Support\\Facades\\Facade;\n\nreturn [\n    'name' => 'Blog',\n    'aliases' => Facade::defaultAliases()->merge([\n        'Settings' => App\\Models\\Post::class,\n    ])->toArray(),\n];\n";
+    let mut project = Project::app_with(&[("config/app.php", app)]);
+    let body = "\\DB::table('posts');\n    \\Str::upper('a');\n    \\Settings::query();\n    \\Nope::query();";
+    let undefined = project.problems_of(body, "PhpUndefinedClass");
+    let lines: Vec<u32> = undefined.iter().map(|(line, _)| *line).collect();
+    assert_eq!(lines, [17], "{undefined:?}");
+    // The alias has the members of its class (the `@method` of the facade).
+    let (doc, pos) = project.open("app/Http/Probe.php", &probe("$x = \\DB::table('posts');\n    $x/*|*/;"));
+    let ty = project.engine.type_at(doc, pos).map(|ty| ty.to_string());
+    project.engine.document_closed(doc);
+    assert!(ty.as_deref().is_some_and(|ty| ty.contains("Query\\Builder")), "{ty:?}");
+}
+
+#[test]
 fn reads_policy_name_guesses() {
     use crate::frameworks::laravel::auth::{AuthFacts, PolicyGuess};
     let read = |callback: &str| {

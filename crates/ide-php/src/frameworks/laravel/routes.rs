@@ -42,7 +42,7 @@ use ide_core::Range;
 use mago_span::{HasSpan, Span};
 use mago_syntax::cst::{
     Access, Argument, ArgumentList, ArrayElement, Call, Class, ClassLikeConstantSelector, ClassLikeMember,
-    ClassLikeMemberSelector, Construct, Expression, Literal, Property, PropertyItem, Statement, Variable,
+    ClassLikeMemberSelector, Construct, Expression, If, IfBody, Literal, Property, PropertyItem, Statement, Variable,
 };
 use mago_syntax::walker::Walker;
 
@@ -310,6 +310,32 @@ fn lossy(bytes: &[u8]) -> String {
     String::from_utf8_lossy(bytes).into_owned()
 }
 
+/// The path a route registration's URI argument gives: the literal, or the
+/// default path of a call computing it (Fortify's `RoutePath::for('login',
+/// '/login')`: the last literal starting with `/`), else `{?}`. A route with
+/// a path the engine can't read still has its name.
+fn route_uri(expr: &Expression<'_>, text: &str) -> String {
+    if let Some((uri, ..)) = literal(expr, text) {
+        return uri;
+    }
+    let arguments = match expr {
+        Expression::Call(Call::StaticMethod(call)) => Some(&call.argument_list),
+        Expression::Call(Call::Function(call)) => Some(&call.argument_list),
+        _ => None,
+    };
+    arguments
+        .into_iter()
+        .flat_map(|list| list.arguments.iter())
+        .rev()
+        .filter_map(|argument| match argument {
+            Argument::Positional(argument) => literal(argument.value, text),
+            Argument::Named(argument) => literal(argument.value, text),
+        })
+        .map(|(uri, ..)| uri)
+        .find(|uri| uri.starts_with('/'))
+        .unwrap_or_else(|| "{?}".to_owned())
+}
+
 /// A string literal's content as written and its byte range (inside the
 /// quotes).
 fn literal(expr: &Expression<'_>, text: &str) -> Option<(String, u32, u32)> {
@@ -568,7 +594,35 @@ impl<'a> Reader<'a> {
                 Statement::Expression(statement) => self.expression(statement.expression, group),
                 Statement::Namespace(namespace) => self.statements(namespace.statements().iter(), group),
                 Statement::Block(block) => self.statements(block.statements.iter(), group),
+                // Routes registered under a condition (Fortify's
+                // `if (Features::enabled(…))`, `if ($enableViews)`) exist
+                // whenever it holds: every branch is read.
+                Statement::If(node) => self.r#if(node, group),
                 _ => {}
+            }
+        }
+    }
+
+    /// Every branch of an `if`.
+    fn r#if(&mut self, node: &'a If<'a>, group: &Group) {
+        match &node.body {
+            IfBody::Statement(body) => {
+                self.statements(std::iter::once(body.statement), group);
+                for clause in body.else_if_clauses.iter() {
+                    self.statements(std::iter::once(clause.statement), group);
+                }
+                if let Some(clause) = &body.else_clause {
+                    self.statements(std::iter::once(clause.statement), group);
+                }
+            }
+            IfBody::ColonDelimited(body) => {
+                self.statements(body.statements.iter(), group);
+                for clause in body.else_if_clauses.iter() {
+                    self.statements(clause.statements.iter(), group);
+                }
+                if let Some(clause) = &body.else_clause {
+                    self.statements(clause.statements.iter(), group);
+                }
             }
         }
     }
@@ -688,6 +742,16 @@ impl<'a> Reader<'a> {
                     }
                 }
                 "middleware" => group.middleware.extend(first.map(|first| self.middleware(first)).unwrap_or_default()),
+                // Bagisto's installer: `Route::prefix('install/api')
+                // ->withoutMiddleware([...])->group(...)`.
+                "withoutmiddleware" => {
+                    let without = first.map(|first| self.middleware(first)).unwrap_or_default();
+                    group.middleware.retain(|name| !without.contains(name));
+                }
+                // The other attributes of Laravel's `RouteRegistrar`: they
+                // change neither paths nor names.
+                "can" | "missing" | "scopebindings" | "withoutscopedbindings" => {}
+                name if name.starts_with("where") => {}
                 "controller" => group.controller = first.and_then(|first| self.class_arg(first)),
                 "domain" => group.domain = first.and_then(|first| literal(first, self.text())).map(|(d, ..)| d),
                 "namespace" => {
@@ -756,7 +820,8 @@ impl<'a> Reader<'a> {
     /// A registering call (`get`, `resource`, …).
     fn registration(&self, link: &Link<'a>, group: &Group) -> Option<Pending> {
         let verb = |methods: &[&str]| methods.iter().map(|method| (*method).to_owned()).collect::<Vec<_>>();
-        let uri = |index: usize| link.args.get(index).and_then(|arg| literal(arg, self.text())).map(|(uri, ..)| uri);
+        let uri = |index: usize| link.args.get(index).map(|arg| route_uri(arg, self.text()));
+        let text = |index: usize| link.args.get(index).and_then(|arg| literal(arg, self.text())).map(|(text, ..)| text);
         let range = self.range(link.span.start.offset, link.span.end.offset);
         let route = |methods: Vec<String>, uri: String, action: RouteAction| Pending {
             methods,
@@ -788,9 +853,9 @@ impl<'a> Reader<'a> {
                     .collect();
                 route(methods, uri(1)?, self.action(link.args.get(2).copied(), group))
             }
-            "view" => route(verb(&["GET", "HEAD"]), uri(0)?, RouteAction::View(uri(1).unwrap_or_default())),
+            "view" => route(verb(&["GET", "HEAD"]), uri(0)?, RouteAction::View(text(1).unwrap_or_default())),
             "redirect" | "permanentredirect" => {
-                route(verb(&any), uri(0)?, RouteAction::Redirect(uri(1).unwrap_or_default()))
+                route(verb(&any), uri(0)?, RouteAction::Redirect(text(1).unwrap_or_default()))
             }
             // `Router::fallback`: the last route, matching any path.
             "fallback" => {

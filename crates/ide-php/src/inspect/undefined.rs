@@ -130,9 +130,11 @@ fn check(cx: &InspectionContext<'_>, kind: NameKind, out: &mut Problems) {
                 NameKind::Constant => fqn.to_owned(),
                 _ => fqn.to_ascii_lowercase(),
             };
-            *known
-                .entry(key)
-                .or_insert_with(|| find_declaration(summary, kind, fqn).is_some() || cx.engine.declares(kind, fqn))
+            *known.entry(key).or_insert_with(|| {
+                find_declaration(summary, kind, fqn).is_some()
+                    || cx.engine.declares(kind, fqn)
+                    || (kind == NameKind::ClassLike && cx.engine.laravel_class_alias(fqn).is_some())
+            })
         });
         if defined || scan.guarded(kind, name) {
             continue;

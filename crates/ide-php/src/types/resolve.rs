@@ -45,7 +45,7 @@
 //! resolve step of their provider in the resolver's [`TypeProviders`]
 //! (the built-in ones unless [`Resolver::with_providers`] says otherwise).
 
-use std::cell::RefCell;
+use std::cell::{Cell, RefCell};
 use std::collections::HashMap;
 use std::sync::Arc;
 
@@ -324,6 +324,9 @@ pub struct Resolver<'a> {
     cuts: RefCell<Vec<Key>>,
     /// Class models being built (lower-case FQNs).
     building: RefCell<Vec<String>>,
+    /// The lowest index in `building` a cycle has led back to since the
+    /// current model build started (`usize::MAX` for none).
+    model_cycle: Cell<usize>,
 }
 
 impl<'a> Resolver<'a> {
@@ -338,6 +341,7 @@ impl<'a> Resolver<'a> {
             stack: RefCell::new(Vec::new()),
             cuts: RefCell::new(Vec::new()),
             building: RefCell::new(Vec::new()),
+            model_cycle: Cell::new(usize::MAX),
         }
     }
 
@@ -470,18 +474,33 @@ impl<'a> Resolver<'a> {
         }
         {
             let building = self.building.borrow();
-            if building.contains(&key) || building.len() >= MAX_MODEL_DEPTH {
+            if let Some(at) = building.iter().position(|known| *known == key) {
                 // A cycle in the hierarchy: this path contributes nothing.
+                self.model_cycle.set(self.model_cycle.get().min(at));
+                return None;
+            }
+            if building.len() >= MAX_MODEL_DEPTH {
                 return None;
             }
         }
-        let built = self.decls.class_like(fqn).map(|class| {
-            self.building.borrow_mut().push(key.clone());
-            let built = model::build(class, &mut |name| self.class_model(name));
-            self.building.borrow_mut().pop();
-            Arc::new(built)
-        });
-        self.cache.insert_model(self.generation, key, built.clone());
+        let Some(class) = self.decls.class_like(fqn) else {
+            self.cache.insert_model(self.generation, key, None);
+            return None;
+        };
+        let depth = self.building.borrow().len();
+        let outer_cycle = self.model_cycle.replace(usize::MAX);
+        self.building.borrow_mut().push(key.clone());
+        let built = Some(Arc::new(model::build(class, &mut |name| self.class_model(name))));
+        self.building.borrow_mut().pop();
+        let cycle = self.model_cycle.get();
+        self.model_cycle.set(outer_cycle.min(cycle));
+        // A cycle back to a class still being built below this one left out
+        // that class's members (two classes that `@mixin` each other, as
+        // Pest's expectations do): only that class's model is complete, so
+        // this one is built again when asked for on its own.
+        if cycle >= depth {
+            self.cache.insert_model(self.generation, key, built.clone());
+        }
         built
     }
 
@@ -685,7 +704,7 @@ impl<'a> Resolver<'a> {
             let doc = function.doc.as_deref();
             let templates: Vec<&str> = doc.iter().flat_map(|doc| doc.local_type_names()).collect();
             Some(match (doc.and_then(|doc| doc.return_type.as_ref()), &function.return_type) {
-                (Some(ty), _) => Type::from_doc(ty, &templates),
+                (Some(ty), hint) => documented(Type::from_doc(ty, &templates), hint.as_ref()),
                 (None, Some(hint)) => Type::from_hint(hint),
                 (None, None) => match &function.inferred_return {
                     Some(lazy) => self.lazy(lazy, &Context::default(), depth).widen(),
@@ -750,7 +769,7 @@ impl<'a> Resolver<'a> {
                 let doc = declared.doc.as_deref();
                 let templates = templates(&method.declaring, doc.into_iter().flat_map(|doc| doc.local_type_names()));
                 match (doc.and_then(|doc| doc.return_type.as_ref()), &declared.return_type) {
-                    (Some(ty), _) => Type::from_doc(ty, &templates),
+                    (Some(ty), hint) => documented(Type::from_doc(ty, &templates), hint.as_ref()),
                     // No `@return`: the overridden method's documented one
                     // (`all(): Collection` implementing `@return Collection<T>`).
                     (None, _) if let Some(inherited) = self.inherited_return(method, name, depth) => {
@@ -951,6 +970,29 @@ fn bind_static(ty: &Type, this: &Type) -> Type {
         }
         _ => None,
     })
+}
+
+/// A documented type, unless it contradicts the native `hint`: then the
+/// hint, which PHP enforces (PHPStan's rule for a PHPDoc type that isn't a
+/// subtype of the native one). Bagisto's `getAverageSales(): ?float` still
+/// says `@return array`. Types with template parameters or `static` are
+/// kept as documented, and any two classes count as related, so only plain
+/// contradictions (an array documented on a float) fall back.
+fn documented(doc: Type, hint: Option<&TypeHint>) -> Type {
+    struct AnyClass;
+    impl Hierarchy for AnyClass {
+        fn is_subclass(&self, _: &str, _: &str) -> bool {
+            true
+        }
+    }
+    let Some(hint) = hint else { return doc };
+    let mut generic = false;
+    doc.map(&mut |ty| {
+        generic |= matches!(ty, Type::Template(_) | Type::Relative(_) | Type::GenericRelative { .. });
+        None
+    });
+    let native = Type::from_hint(hint);
+    if generic || doc.is_subtype_of(&native, &AnyClass) { doc } else { native }
 }
 
 /// The template parameters in scope in a member of `class`: the class's and

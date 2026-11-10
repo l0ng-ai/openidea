@@ -34,6 +34,12 @@ impl std::error::Error for TypeParseError {}
 /// Parses a PHPDoc type expression. `templates` are the template parameter
 /// names in scope (matched case-sensitively, as PHPStan does).
 pub fn parse_doc_type(text: &str, templates: &[&str]) -> Result<Type, TypeParseError> {
+    // Mago's PHPDoc parser and the conversion recurse as deep as the type
+    // nests, up to Mago's limit.
+    crate::syntax::stack::parser_stack(|| parse_on_stack(text, templates))
+}
+
+fn parse_on_stack(text: &str, templates: &[&str]) -> Result<Type, TypeParseError> {
     let text = text.trim();
     if text.is_empty() {
         return Err(TypeParseError("empty type".to_owned()));

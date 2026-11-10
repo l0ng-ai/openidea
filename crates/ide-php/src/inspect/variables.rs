@@ -163,6 +163,7 @@ pub(crate) fn find(cx: &InspectionContext<'_>) -> Vec<Found> {
         frames: Vec::new(),
         scopes: Vec::new(),
         quiet: Vec::new(),
+        discarded: HashSet::new(),
         found: Vec::new(),
         subtypes: None,
         overridden: HashMap::new(),
@@ -208,6 +209,10 @@ struct Scan<'a, 'r> {
     scopes: Vec<Scope>,
     /// Byte ranges where a missing variable is fine (`isset`, `??`, `@`).
     quiet: Vec<(u32, u32)>,
+    /// Where the increments and decrements whose value is dropped start
+    /// (`$i++;`, the last part of a `for`): only they don't read the
+    /// variable.
+    discarded: HashSet<u32>,
     found: Vec<Found>,
     /// The subtype finder, made for the first method checked.
     subtypes: Option<Subtypes>,
@@ -370,11 +375,11 @@ impl<'a> Scan<'a, '_> {
                 UnaryPrefixOperator::ErrorControl(_) => self.quiet(unary.operand),
                 UnaryPrefixOperator::Reference(_) => self.bind(unary.operand),
                 UnaryPrefixOperator::PreIncrement(_) | UnaryPrefixOperator::PreDecrement(_) => {
-                    self.target(unary.operand)
+                    self.step(expr, unary.operand)
                 }
                 _ => {}
             },
-            Expression::UnaryPostfix(UnaryPostfix { operand, .. }) => self.target(operand),
+            Expression::UnaryPostfix(UnaryPostfix { operand, .. }) => self.step(expr, operand),
             Expression::Assignment(assignment) => self.assignment(assignment),
             Expression::Call(Call::Function(call)) => {
                 let Expression::Identifier(identifier) = call.function else { return };
@@ -390,6 +395,30 @@ impl<'a> Scan<'a, '_> {
                         self.compact(argument_value(argument));
                     }
                 }
+            }
+            _ => {}
+        }
+    }
+
+    /// `++$i` or `$i--` (`step`): it writes the variable, and reads it when
+    /// its value is used (`'position' => ++$position`).
+    fn step(&mut self, step: &'a Expression<'a>, operand: &'a Expression<'a>) {
+        if !self.discarded.contains(&step.span().start.offset)
+            && let Expression::Variable(Variable::Direct(variable)) = operand
+            && let Some(scope) = self.scopes.last_mut()
+        {
+            scope.reads.insert(name_of(variable).to_vec());
+        }
+        self.target(operand);
+    }
+
+    /// Marks `expr` as a value that is dropped, when it is an increment
+    /// or a decrement.
+    fn discard(&mut self, expr: &'a Expression<'a>) {
+        match expr {
+            Expression::Parenthesized(inner) => self.discard(inner.expression),
+            Expression::UnaryPostfix(_) | Expression::UnaryPrefix(_) => {
+                self.discarded.insert(expr.span().start.offset);
             }
             _ => {}
         }
@@ -498,6 +527,10 @@ impl<'a> Scan<'a, '_> {
 
     fn statement(&mut self, statement: &'a Statement<'a>) {
         match statement {
+            Statement::Expression(statement) => self.discard(statement.expression),
+            Statement::For(node) => {
+                node.initializations.iter().chain(node.increments.iter()).for_each(|expr| self.discard(expr))
+            }
             Statement::Global(global) => {
                 for variable in global.variables.iter() {
                     if let Variable::Direct(direct) = variable {

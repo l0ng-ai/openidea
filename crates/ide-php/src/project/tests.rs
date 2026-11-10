@@ -229,6 +229,48 @@ fn composer2_installed_packages_contribute_their_autoload_only() {
 }
 
 #[test]
+fn files_a_package_file_requires_belong_to_the_package() {
+    // thecodingmachine/safe: `generated/filesystem.php` loads the file of
+    // the running PHP version, which declares the functions.
+    let tmp = tempfile::tempdir().unwrap();
+    let installed = json!({
+        "packages": [{
+            "name": "thecodingmachine/safe",
+            "install-path": "../thecodingmachine/safe",
+            "autoload": { "files": ["generated/filesystem.php"] }
+        }]
+    });
+    let dispatcher = "<?php\nif (str_starts_with(PHP_VERSION, \"8.3.\")) {\n    require_once __DIR__ . '/8.3/filesystem.php';\n}\nrequire dirname(__FILE__) . \"/shared.php\";\ninclude __DIR__ . '/missing.php';\nrequire_once $dir . '/dynamic.php';\n";
+    write(
+        tmp.path(),
+        &[
+            ("composer.json", "{}"),
+            ("vendor/composer/installed.json", &installed.to_string()),
+            ("vendor/thecodingmachine/safe/generated/filesystem.php", dispatcher),
+            ("vendor/thecodingmachine/safe/generated/8.3/filesystem.php", "<?php\nrequire __DIR__ . '/../deep.php';\n"),
+            ("vendor/thecodingmachine/safe/generated/shared.php", PHP),
+            ("vendor/thecodingmachine/safe/generated/deep.php", PHP),
+            ("vendor/thecodingmachine/safe/generated/dynamic.php", PHP),
+            ("vendor/thecodingmachine/safe/generated/unused.php", PHP),
+        ],
+    );
+    let layout = layout(tmp.path(), &[], &[]);
+    let safe = Origin::Package("thecodingmachine/safe".into());
+    let mut found = files(&layout, tmp.path());
+    found.sort();
+    assert_eq!(
+        found,
+        [
+            ("vendor/thecodingmachine/safe/generated/8.3/filesystem.php".to_string(), safe.clone()),
+            ("vendor/thecodingmachine/safe/generated/deep.php".to_string(), safe.clone()),
+            ("vendor/thecodingmachine/safe/generated/filesystem.php".to_string(), safe.clone()),
+            ("vendor/thecodingmachine/safe/generated/shared.php".to_string(), safe.clone()),
+        ]
+    );
+    assert_origins_agree(&layout);
+}
+
+#[test]
 fn composer1_installed_json_and_a_custom_vendor_dir() {
     let tmp = tempfile::tempdir().unwrap();
     let installed = json!([

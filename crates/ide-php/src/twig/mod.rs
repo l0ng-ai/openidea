@@ -40,9 +40,11 @@ pub use templates::TemplatePaths;
 /// `text`; the repaired text may have end tags appended after its end.
 fn with_template<R>(text: &str, f: impl for<'a> FnOnce(&'a str, &'a Template<'a>) -> R) -> R {
     let text = recover::recovered(text);
-    let arena = LocalArena::new();
-    let template = parse_file_content(&arena, FileId::zero(), text.as_bytes());
-    f(&text, template)
+    crate::syntax::stack::parser_stack(|| {
+        let arena = LocalArena::new();
+        let template = parse_file_content(&arena, FileId::zero(), text.as_bytes());
+        f(&text, template)
+    })
 }
 
 fn utf8(bytes: &[u8]) -> String {

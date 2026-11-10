@@ -63,6 +63,10 @@ pub enum Recovery {
 
 /// Parses `source` and builds its outline. The arena is dropped on return.
 pub fn outline(source: &[u8], recovery: Recovery) -> Outline {
+    crate::syntax::stack::parser_stack(|| outline_on_stack(source, recovery))
+}
+
+fn outline_on_stack(source: &[u8], recovery: Recovery) -> Outline {
     let arena = LocalArena::new();
     let settings = ParserSettings { recover_incomplete: recovery == Recovery::Incomplete, ..ParserSettings::default() };
     let program = parse_file_content_with_settings(&arena, FileId::new(b"probe"), source, settings);

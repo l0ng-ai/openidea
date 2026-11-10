@@ -142,6 +142,50 @@ fn route_table_of_the_fixture_app() {
     assert!(routes.middleware_named("web").is_some_and(|m| m.group));
 }
 
+#[test]
+fn conditional_routes_and_computed_paths() {
+    // Fortify's route file: routes under `if`, with paths from
+    // `RoutePath::for('name', '/default')`.
+    let routes_file = r#"<?php
+
+use Illuminate\Support\Facades\Route;
+use Laravel\Fortify\RoutePath;
+
+Route::group(['middleware' => ['web']], function () {
+    $enableViews = config('fortify.views', true);
+    if ($enableViews) {
+        Route::get(RoutePath::for('login', '/login'), fn () => null)->name('login');
+    }
+    if (Features::enabled(Features::resetPasswords())) {
+        if ($enableViews) {
+            Route::get(RoutePath::for('password.request', '/forgot-password'), fn () => null)->name('password.request');
+        }
+    } elseif ($other) {
+        Route::get('/other', fn () => null)->name('other');
+    } else {
+        Route::get('/fallback', fn () => null)->name('fallback.page');
+    }
+    if ($legacy):
+        Route::get(path(), fn () => null)->name('computed');
+    endif;
+    // Bagisto's installer: group attributes that change no path or name.
+    Route::prefix('install/api')->withoutMiddleware(['web'])->scopeBindings()->whereNumber('id')->group(function () {
+        Route::post('run', fn () => null)->name('installer.run');
+    });
+});
+"#;
+    let project = Project::new(&[("composer.json", COMPOSER), ("routes/web.php", routes_file)]);
+    let routes = project.engine.laravel_routes().unwrap();
+    let all: Vec<_> = routes.routes().iter().map(|route| (route.name.clone().unwrap(), route.uri.clone())).collect();
+    let expected = [("login", "login"), ("password.request", "forgot-password"), ("other", "other")];
+    let expected = expected.into_iter().chain([("fallback.page", "fallback"), ("computed", "{?}")]);
+    let expected = expected.chain([("installer.run", "install/api/run")]);
+    let expected: Vec<_> = expected.map(|(name, uri)| (name.to_owned(), uri.to_owned())).collect();
+    assert_eq!(all, expected);
+    assert!(routes.named("login").next().unwrap().middleware.contains(&"web".to_owned()));
+    assert!(routes.named("installer.run").next().unwrap().middleware.is_empty());
+}
+
 const ROUTES: &str = r#"<?php
 
 use App\Http\Controllers\PhotoController;

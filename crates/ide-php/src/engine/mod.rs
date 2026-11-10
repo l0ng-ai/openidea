@@ -713,6 +713,21 @@ impl PhpEngine {
         project
     }
 
+    /// The class a Laravel global alias (`DB`, `\Str`) stands for, in a
+    /// Laravel project. Read from the project as loaded, without building
+    /// its routes.
+    pub(crate) fn laravel_class_alias(&self, name: &str) -> Option<String> {
+        if name.trim_start_matches('\\').contains('\\') {
+            return None;
+        }
+        let loaded = self.shared.laravel.lock().loaded.clone();
+        let project = match loaded {
+            Some(loaded) => loaded,
+            None => self.laravel(),
+        }?;
+        project.class_alias(name).map(str::to_owned)
+    }
+
     /// Drops the Laravel project model with what it read from files that
     /// aren't PHP, and moves the modification count so every part built
     /// from it is built again.
@@ -1135,9 +1150,16 @@ impl PhpEngine {
 /// Project declarations from the open buffers and the indexes, then the
 /// bundled stubs.
 impl Declarations for PhpEngine {
+    /// A Laravel global alias (`DB::table()` in a file without a namespace)
+    /// is the class it stands for.
     fn class_like(&self, fqn: &str) -> Option<ClassLike> {
         self.project_declaration(NameKind::ClassLike, fqn, |summary| summary.class_like(fqn).cloned())
             .or_else(|| self.stubs().class_like(fqn).map(|(_, class)| class.clone()))
+            .or_else(|| {
+                // Namespaced targets only, so aliases can't chain or loop.
+                let class = self.laravel_class_alias(fqn).filter(|class| class.contains('\\'))?;
+                self.class_like(&class)
+            })
     }
 
     /// When the project declares a function more than once (conditionally,

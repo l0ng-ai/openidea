@@ -79,6 +79,14 @@ pub struct LaravelProject {
     /// in turn, in registration order.
     #[serde(default)]
     pub providers: Vec<PathBuf>,
+    /// The global class aliases, `(alias, class)`: `DB` for
+    /// `Illuminate\Support\Facades\DB` ([`super::providers::class_aliases`]).
+    #[serde(default)]
+    pub class_aliases: Vec<(String, String)>,
+    /// Guards the service providers add to the configuration at runtime:
+    /// `config(['auth.guards.sanctum' => …])` in Sanctum's provider.
+    #[serde(default)]
+    pub provider_guards: Vec<String>,
 }
 
 /// The packages with support of their own; see the module documentation.
@@ -190,6 +198,15 @@ pub enum ModuleKind {
 const MODULE_ROOTS: &[&str] = &["modules", "Modules", "app-modules", "app/Modules", "src/Modules"];
 
 impl LaravelProject {
+    /// The class the global alias `name` (`DB`, `\DB`) stands for.
+    pub fn class_alias(&self, name: &str) -> Option<&str> {
+        let name = name.strip_prefix('\\').unwrap_or(name);
+        if name.contains('\\') {
+            return None;
+        }
+        self.class_aliases.iter().find(|(alias, _)| alias.eq_ignore_ascii_case(name)).map(|(_, class)| class.as_str())
+    }
+
     /// The project at `root` without its route files, or `None` when it
     /// isn't a Laravel project.
     pub fn load(root: &Path) -> Option<Self> {
@@ -255,6 +272,8 @@ impl LaravelProject {
             packages,
             livewire_major,
             providers: Vec::new(),
+            class_aliases: super::providers::class_aliases(&root, &vendor),
+            provider_guards: Vec::new(),
         };
         if nwidart {
             project.modules.extend(nwidart_modules(&root));
@@ -274,6 +293,7 @@ impl LaravelProject {
                 providers.push(provider);
             }
         }
+        project.provider_guards = provider_guards(&providers);
         project.providers = providers;
         project.modules.sort_by(|a, b| a.path.cmp(&b.path));
         Some(project)
@@ -437,6 +457,27 @@ impl LaravelProject {
             })
         })
     }
+}
+
+/// The guards `providers` set with a `'auth.guards.<name>'` configuration
+/// key.
+fn provider_guards(providers: &[PathBuf]) -> Vec<String> {
+    const KEY: &str = "auth.guards.";
+    let mut guards: Vec<String> = Vec::new();
+    for text in providers.iter().filter_map(|path| std::fs::read_to_string(path).ok()) {
+        for (at, _) in text.match_indices(KEY) {
+            let quoted = text[..at].ends_with(['\'', '"']);
+            let name: String = text[at + KEY.len()..]
+                .chars()
+                .take_while(|c| c.is_ascii_alphanumeric() || matches!(c, '_' | '-'))
+                .collect();
+            let closed = text[at + KEY.len() + name.len()..].starts_with(['\'', '"']);
+            if quoted && closed && !name.is_empty() && !guards.contains(&name) {
+                guards.push(name);
+            }
+        }
+    }
+    guards
 }
 
 /// The modules of `nwidart/laravel-modules`: the folders with a

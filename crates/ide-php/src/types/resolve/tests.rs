@@ -189,6 +189,26 @@ fn declared_types_win_over_inference() {
 }
 
 #[test]
+fn a_return_documented_against_the_native_type_gives_way() {
+    // Bagisto's `getAverageSales(): ?float` documented `@return array`.
+    let decls = summaries(&[
+        "<?php\nnamespace App;\n/** @template T */\nclass Sale {\n  /** @return array */\n  public function average(): ?float { return 1.0; }\n  /** @return list<string> */\n  public function names(): array { return []; }\n  /** @return Sale<int> */\n  public function typed(): object { return $this; }\n  /** @return T */\n  public function get(): mixed { return 1; }\n  /** @return \\Countable */\n  public function counted(): Sale { return $this; }\n}\n/** @return string */\nfunction total(): int { return 1; }\n/** @return positive-int */\nfunction count(): int { return 1; }\n",
+    ]);
+    let cache = TypeCache::new();
+    let r = Resolver::new(&decls, &cache, 1);
+    let cx = Context::default();
+    let sale = named("App\\Sale");
+    assert_eq!(r.method_return(&sale, "average", &cx), Type::Float.nullable());
+    assert_eq!(r.function_return("App\\total"), Some(Type::Int));
+    // Documented types the native one allows stay as documented.
+    assert_eq!(r.method_return(&sale, "names", &cx), Type::list_of(Type::string()));
+    assert_eq!(r.method_return(&sale, "typed", &cx), Type::generic("App\\Sale", vec![Type::Int]));
+    assert_eq!(r.method_return(&Type::generic("App\\Sale", vec![Type::Int]), "get", &cx), Type::Int);
+    assert_eq!(r.method_return(&sale, "counted", &cx), named("Countable"));
+    assert_eq!(r.function_return("App\\count").map(|ty| ty.to_string()).as_deref(), Some("positive-int"));
+}
+
+#[test]
 fn trait_members_see_the_using_class() {
     let decls = summaries(&[
         "<?php\ntrait Makes { public function make() { return new self(); } public function me() { return $this; } }\nclass Factory { use Makes; }\nclass Sub extends Factory {}\n",
@@ -198,4 +218,40 @@ fn trait_members_see_the_using_class() {
     let cx = Context::default();
     assert_eq!(r.method_return(&named("Sub"), "make", &cx), named("Factory"));
     assert_eq!(r.method_return(&named("Sub"), "me", &cx), named("Sub"));
+}
+
+#[test]
+fn classes_that_mix_each_other_in_see_each_others_members() {
+    // Pest's `Expectation` and `Mixins\Expectation` mix each other in:
+    // `expect($x)->toBe(1)->and($y)` calls `and()` on the mixin.
+    let decls = summaries(&[
+        r"<?php
+namespace Pest;
+/** @mixin Mixins\Expectation */
+final class Expectation {
+  public function and(mixed $value): Expectation { return $this; }
+}
+",
+        r"<?php
+namespace Pest\Mixins;
+/** @mixin \Pest\Expectation */
+final class Expectation {
+  /** @return self */
+  public function toBe(mixed $expected): self { return $this; }
+}
+",
+    ]);
+    let (pest, mixins) = (r"Pest\Expectation", r"Pest\Mixins\Expectation");
+    let cx = Context::default();
+    for first in [pest, mixins] {
+        // Whichever model is built first, through the other's mixin.
+        let cache = TypeCache::new();
+        let r = Resolver::new(&decls, &cache, 1);
+        assert!(r.class_model(first).is_some());
+        let mixin = r.method_return(&named(pest), "toBe", &cx);
+        assert_eq!(mixin, named(mixins));
+        assert_eq!(r.method_return(&mixin, "and", &cx), named(pest), "built {first} first");
+        assert!(r.class_model(mixins).unwrap().method("and").is_some());
+        assert!(r.class_model(pest).unwrap().method("toBe").is_some());
+    }
 }

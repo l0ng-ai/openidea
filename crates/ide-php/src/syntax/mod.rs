@@ -15,6 +15,7 @@
 
 mod cache;
 mod line_index;
+pub mod stack;
 
 pub use cache::ParseCache;
 pub use line_index::LineIndex;
@@ -86,27 +87,55 @@ pub struct ParsedFile {
 impl ParsedFile {
     /// Parses `text`. `logical_name` only seeds the [`FileId`] stamped on
     /// every span (a path or a document id; it is never read from disk).
+    ///
+    /// A tree deeper than [`stack::MAX_TREE_DEPTH`] is dropped: the file then
+    /// has an empty program and one error at the node past the bound, so no
+    /// recursive walk of the engine can overflow its stack on it.
     pub fn parse(logical_name: &str, text: impl Into<Arc<str>>) -> Self {
         let file_id = FileId::new(logical_name.as_bytes());
-        let owner = Owner { text: text.into(), arena: SharedArena::new() };
+        let text: Arc<str> = text.into();
         let settings = ParserSettings { recover_incomplete: true, ..ParserSettings::default() };
-        let cell = Cell::new(owner, |owner| {
-            parse_file_content_with_settings(&owner.arena, file_id, owner.text.as_bytes(), settings)
+        let (cell, too_deep) = stack::parser_stack(|| {
+            let owner = Owner { text: text.clone(), arena: SharedArena::new() };
+            let cell = Cell::new(owner, |owner| {
+                parse_file_content_with_settings(&owner.arena, file_id, owner.text.as_bytes(), settings)
+            });
+            match stack::too_deep(cell.borrow_dependent(), stack::MAX_TREE_DEPTH) {
+                None => (cell, None),
+                Some(span) => {
+                    drop(cell);
+                    // The text stays (offsets and lines still map); the
+                    // program is that of an empty file.
+                    let owner = Owner { text, arena: SharedArena::new() };
+                    let empty = Cell::new(owner, |owner| {
+                        parse_file_content_with_settings(&owner.arena, file_id, b"", settings)
+                    });
+                    (empty, Some(span))
+                }
+            }
         });
         let line_index = LineIndex::new(&cell.borrow_owner().text);
-        let errors = cell
+        let syntax_error = |start: u32, end: u32, message: String| {
+            // Errors at EOF can reach past the text (an expected token after
+            // the last one); clamp so byte slicing stays valid.
+            let end = end.min(line_index.len());
+            let start = start.min(end);
+            SyntaxError { message, start, end, range: line_index.range(start, end) }
+        };
+        let mut errors: Vec<SyntaxError> = cell
             .borrow_dependent()
             .errors
             .iter()
             .map(|error| {
                 let span = error.span();
-                // Errors at EOF can reach past the text (an expected token
-                // after the last one); clamp so byte slicing stays valid.
-                let end = span.end.offset.min(line_index.len());
-                let start = span.start.offset.min(end);
-                SyntaxError { message: error.to_string(), start, end, range: line_index.range(start, end) }
+                syntax_error(span.start.offset, span.end.offset, error.to_string())
             })
             .collect();
+        if let Some(span) = too_deep {
+            // Only the start: the node can span most of the file.
+            let end = line_index.len().min(span.start.offset + 1);
+            errors.push(syntax_error(span.start.offset, end, too_deep_message()));
+        }
         Self { cell, file_id, errors, line_index }
     }
 
@@ -147,6 +176,14 @@ impl ParsedFile {
     }
 }
 
+/// The error of a file whose syntax tree is deeper than the engine analyses.
+pub fn too_deep_message() -> String {
+    format!(
+        "Code nested more than {} levels deep: this file is not analysed (split the expression up)",
+        stack::MAX_TREE_DEPTH
+    )
+}
+
 impl std::fmt::Debug for ParsedFile {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.debug_struct("ParsedFile")
@@ -156,6 +193,9 @@ impl std::fmt::Debug for ParsedFile {
             .finish_non_exhaustive()
     }
 }
+
+#[cfg(test)]
+mod deep_nesting_tests;
 
 #[cfg(test)]
 mod tests {

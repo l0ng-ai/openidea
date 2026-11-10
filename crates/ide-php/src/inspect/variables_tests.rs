@@ -257,6 +257,34 @@ function f(array $rows, int $param)
 }
 
 #[test]
+fn increments_whose_value_is_used_read_the_variable() {
+    // Bagisto: `'position' => ++$position` in a loop.
+    let mut p = project();
+    let text = r#"<?php
+namespace App;
+
+function f(array $rows)
+{
+    $position = 0;
+    foreach ($rows as $row) {
+        g(['position' => ++$position, 'row' => $row]);
+    }
+    $count = 0;
+    $last = $count--;
+    $dropped = 0;
+    ($dropped++);
+    for ($i = 0, $n = 0; g(); $i++, ++$n) {}
+    return $last;
+}
+"#;
+    let found = p.inspect(text);
+    assert_eq!(
+        messages(&found),
+        [unused("dropped"), unused("dropped"), unused("i"), unused("n"), unused("i"), unused("n")]
+    );
+}
+
+#[test]
 fn top_level_methods_and_suppression() {
     let mut p = project();
     let found = p.inspect(

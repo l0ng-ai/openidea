@@ -186,6 +186,17 @@ impl ProjectLayout {
         }
         for file in &autoload.files {
             library(self, file, true);
+            // thecodingmachine/safe's `generated/filesystem.php` only
+            // `require_once`s `generated/8.3/filesystem.php`, which declares
+            // the functions.
+            if package.is_some() {
+                let package_dir = normalize(base);
+                for required in required_files(&normalize(&base.join(file))) {
+                    if let Ok(rel) = required.strip_prefix(&package_dir) {
+                        library(self, &rel.to_string_lossy(), true);
+                    }
+                }
+            }
         }
     }
 
@@ -355,6 +366,47 @@ pub fn is_php_path(path: &Path) -> bool {
     path.extension()
         .and_then(|e| e.to_str())
         .is_some_and(|ext| PHP_EXTENSIONS.iter().any(|known| known.eq_ignore_ascii_case(ext)))
+}
+
+/// The existing PHP files `file` loads with `require`/`include` (`_once` or
+/// not) of a path written as `__DIR__ . '/…'` or `dirname(__FILE__) . '/…'`,
+/// and the ones those load in turn, a few levels deep. Composer loads a
+/// package's `files` entries; what they load is the package's code too.
+fn required_files(file: &Path) -> Vec<PathBuf> {
+    const DEPTH: usize = 3;
+    let mut out: Vec<PathBuf> = Vec::new();
+    let mut todo = vec![(file.to_path_buf(), 0)];
+    while let Some((file, depth)) = todo.pop() {
+        let (Some(dir), Ok(text)) = (file.parent(), std::fs::read_to_string(&file)) else { continue };
+        for statement in text.split(';') {
+            let lower = statement.to_ascii_lowercase();
+            if !lower.contains("require") && !lower.contains("include") {
+                continue;
+            }
+            let Some(at) = ["__DIR__", "dirname(__FILE__)"].iter().find_map(|base| {
+                let at = statement.find(base)?;
+                Some(at + base.len())
+            }) else {
+                continue;
+            };
+            let rest = statement[at..].trim_start();
+            let Some(rest) = rest.strip_prefix('.').map(str::trim_start) else { continue };
+            let Some(quote) = rest.chars().next().filter(|c| matches!(c, '\'' | '"')) else { continue };
+            let Some(end) = rest[1..].find(quote) else { continue };
+            let rel = &rest[1..1 + end];
+            if rel.contains(['$', '{']) {
+                continue;
+            }
+            let path = normalize(&dir.join(rel.trim_start_matches(['/', '\\'])));
+            if is_php_path(&path) && path.is_file() && path != file && !out.contains(&path) {
+                out.push(path.clone());
+                if depth + 1 < DEPTH {
+                    todo.push((path, depth + 1));
+                }
+            }
+        }
+    }
+    out
 }
 
 /// Composer's `exclude-from-classmap` match: `**` is anything, `*` anything

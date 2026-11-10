@@ -202,7 +202,7 @@ The missing validation-rule completion wasn't the rule catalogue: the checklist'
 
 Monica does have a real gap, though: almost none of its rules sit in Form Requests. Its 250 or so services return them from `rules()` and validate in `App\Services\BaseService` with `Validator::make($data, $this->rules())->validate()`. The file summaries now record the methods a class passes as the rules of `Validator::make`, `validator()`, `validate()` or `validateWithBag()` (`$this->rules()`), and what those methods return in the class and its subclasses is a rules array. `real_app_checklist` checks a service's `rules()` when the app has `App\Services\BaseService`.
 
-`real_app_checklist` passes on Monica. On Bagisto it passes too, but only with larger thread stacks (`RUST_MIN_STACK=67108864`): in a debug build an indexing thread overflows its default 2 MB stack on one of Bagisto's files. That happens at the 8.25 commit as well, so it isn't new. Release builds and the benches are not affected.
+`real_app_checklist` passes on Monica. On Bagisto it passed too, but at the time only with larger thread stacks (`RUST_MIN_STACK=67108864`): in a debug build an indexing thread overflowed its default 2 MB stack on one of Bagisto's files. Phase 8.29 fixed that (see below); no command needs `RUST_MIN_STACK` any more.
 
 ### Eloquent on real applications (phase 8.27, 2026-11-10)
 
@@ -215,7 +215,7 @@ Monica does have a real gap, though: almost none of its rules sit in Form Reques
 - **Translatable models:** `$translatedAttributes` (astrotomic/laravel-translatable) are attributes.
 - **The model's own lists:** `$guarded = ['shipping_address']` names a method of the model. A method, or its snake case, is fine there.
 
-Debug build, with `RUST_MIN_STACK=67108864`:
+Debug build (then with `RUST_MIN_STACK=67108864`, which phase 8.29 made unnecessary):
 
 | Application | Models | Certain schema | Files inspected | Unknown-column problems |
 | ----------- | ------ | -------------- | --------------- | ----------------------- |
@@ -230,7 +230,69 @@ Every model has a model view on both. Every remaining problem names a column tha
 To run it again:
 
 ```sh
-LARAVEL_APP_DIR=../php-corpus/apps/monica RUST_MIN_STACK=67108864 cargo test -p ide-php --test laravel_parity -- --ignored real_app_eloquent_columns --nocapture
+LARAVEL_APP_DIR=../php-corpus/apps/monica cargo test -p ide-php --test laravel_parity -- --ignored real_app_eloquent_columns --nocapture
+```
+
+### Real-application check (phase 8.29, 2026-11-10)
+
+**The stack overflow.** Bagisto's `vendor/aws/aws-sdk-php` has clients whose docblocks hold a union of some 300 string literals (`@method … array{set?: 'a'|'b'|…}`). Mago's PHPDoc parser and the summary's walk over the parsed type recurse once per union member, and in a debug build that overflowed an indexing thread's 2 MB stack. Looking further found more of the same kind, on thousands of nested arrays, closures, `if` blocks, anonymous classes or matches, and on long `&&` chains and method chains:
+
+- Mago's parsers (PHP, PHPDoc, Twig) stop at their own limit of 512 nested levels, but in a debug build reaching it takes about 32 MB of stack. Every Mago parse now runs through `syntax::stack::parser_stack`, which moves to a fresh 64 MB stack segment (reserved, not committed) when less than 40 MB is left.
+- Binary operators and member chains are parsed in a loop, so the tree can be deeper than Mago's limit (`'a' . 'b' . …` ten thousand times). `ParsedFile::parse` measures the depth without recursing (`syntax::stack::too_deep`) and drops a tree deeper than `MAX_TREE_DEPTH` (1,500 nodes). The file keeps its text, has the program of an empty file, and gets one syntax error at the node past the bound: "Code nested more than 1500 levels deep: this file is not analysed (split the expression up)".
+- The bound comes from the corpora. The deepest tree among the 39,624 PHP files of Monica and Bagisto (`vendor/` included) has 334 nodes, Laravel's deepest 91 and WordPress's 346. Symfony's `FrameworkBundle/DependencyInjection/Configuration.php`, one fluent chain at three nodes per call, has 818, so an 800 bound would have dropped it. Only a generated fixture of Symfony's goes past 1,500 (a compiled URL matcher, 1,769).
+- Within the bound, the walks that recurse once per level, such as expression typing, the flow builder's statements, expressions and conditions, and the type of a long `&&` chain, run each level through `syntax::stack::deep` (`stacker::maybe_grow`, rustc's `ensure_sufficient_stack`). It adds a 4 MB segment when less than 256 KB is left. Flow conditions over `&&`/`||` chains are walked in a loop, and `refactor::visit` is iterative.
+- `deep_nesting_tests` runs on a 2 MB thread in a debug build. It parses and summarises 19 constructs 3,000 levels deep and at the deepest depth the engine accepts. It indexes them in a project, and asks for inspections, semantic tokens, symbols, inlay hints, types, hover, goto and completion at several places in each.
+
+The engine's own threads keep their default stack sizes. `real_app_checklist` and every other real-application command run without `RUST_MIN_STACK` now.
+
+**Checklist and benches.** `real_app_checklist` passes on Monica (51 s) and Bagisto (82 s) in a debug build. Release build, 2026-11-10:
+
+| Bench                                | Budget | Bagisto | Monica  |
+| ------------------------------------ | ------ | ------- | ------- |
+| `php_laravel_real/model_cold`        | 2 s    | 1.51 s  | 542 ms  |
+| `php_laravel_real/model_warm`        | 200 ms | 159 ms  | 106 ms  |
+| `php_laravel_real/string_completion` | 50 ms  | 16.4 ms | 18.2 ms |
+| `php_laravel_real/route_hints`       | 100 ms | 16.7 ms | 15.9 ms |
+
+**Inspect Code.** The new ignored `real_app_inspect_code` runs batch Inspect Code over the application's own PHP files (`app/`, `packages/`, `database/`, `routes/`) and Blade templates (`resources/`, `packages/`), never `vendor/`. It prints the count per inspection and an even sample of 100 diagnostics with their source lines. With `INSPECT_ALL=1` it prints every diagnostic instead. Every diagnostic of both applications was reviewed, not only a sample of 100. The first run found these false positives, now fixed:
+
+- **Routes under `if`.** Fortify registers `login`, `password.request`, `two-factor.login` and most of its other routes inside `if (Features::enabled(…))` / `if ($enableViews)`. The route reader skipped `if` statements; it now reads every branch. A path computed by a call (`RoutePath::for('login', '/login')`) takes the call's last literal starting with `/`, else `{?}`, so the route keeps its name.
+- **Group attributes.** `Route::prefix('install/api')->withoutMiddleware([...])->group(…)` (Bagisto's installer) dropped the whole group. `withoutMiddleware` now removes middleware from the group. `can`, `missing`, `scopeBindings`, `withoutScopedBindings` and `where…` are accepted, since they change no path or name.
+- **Configuration keys a file sets.** `config(['themes.shop.narrow' => …])` and `Config::set(…)` in Bagisto's tests were reported as undefined keys, and so were later reads of them. A key the file sets, and any key below it, is now defined in that file.
+- **Increments whose value is used.** `'position' => ++$position` in a loop was an unused variable, because an increment counted only as a write. It is now a read too, unless its value is dropped (`$i++;`, the update part of a `for`).
+- **A docblock that contradicts the native type.** `getAverageSales(): ?float` documented as `@return array` made `formatBasePrice($current)` an argument-type error. A documented return type that isn't a subtype of the native one now gives way to it (PHPStan's rule). Types with template parameters or `static` are kept, and any two classes count as related.
+- Fixed while getting the checklist through Bagisto: Blade directives are matched case-insensitively (`@endpushOnce` closes `@pushOnce`, as PHP finds `compileEndpushOnce`). Global class aliases (`DB`, `\Str`, the `aliases` of packages' `extra.laravel` and of `config/app.php`) are classes for the undefined-class check and for typing. Guards a service provider sets (`config(['auth.guards.sanctum' => …])`) are known. A package's `files` entries also index the files they `require` (thecodingmachine/safe). Two classes that `@mixin` each other (Pest's expectations) see each other's members.
+
+Debug build, own code only:
+
+| Application | Files inspected | Diagnostics before | Diagnostics after |
+| ----------- | --------------- | ------------------ | ----------------- |
+| Monica      | 896             | 200                | 194               |
+| Bagisto     | 2,983           | 227                | 181               |
+
+What remains, by inspection:
+
+- Monica: 175 `PhpUnusedParameter`, 7 `PhpUndefinedVariable`, 4 `PhpUndefinedTranslation`, 3 `PhpUnusedLocalVariable`, 2 `PhpUndefinedRoute`, 1 `PhpUnknownAbility`, 1 `PhpUnknownEloquentColumn`, 1 `PhpUnusedAlias`.
+- Bagisto: 51 `PhpUnusedParameter`, 44 `PhpUndefinedTranslation`, 24 `PhpUnusedLocalVariable`, 15 `PhpDeprecation`, 11 `PhpUnknownEloquentColumn`, 7 `PhpUnusedAlias`, 7 `PhpUndefinedVariable`, 5 `PhpUndefinedView`, 3 each of `PhpParams`, `PhpUndefinedClass` and `PhpUndefinedField`, 2 each of `PhpIncompatibleReturnType`, `PhpUndefinedMethod` and `PhpUndefinedConfigKey`, 1 each of `PhpUndefinedRoute` and `PhpUndefinedEnvKey`.
+
+Nearly all of them are real. Some examples:
+
+- Monica: route `post.choose_template` and gate `slice-owner`, which nothing defines; translation keys missing from `lang/en.json`; unused imports.
+- Bagisto: views that don't exist (`admin::catalog.products.create`, `shop::emails.customers.forget-password` next to `forgot-password`); `use Barryvdh\Debugbar\Facades\Debugbar`, which debugbar 4 renamed to `Fruitcake\LaravelDebugbar`; `\Swift_RfcComplianceException` from the removed SwiftMailer; `massDestroy(): JsonResponse` returning a redirect; `mail.mailers.smtp.encryption`, which `config/mail.php` doesn't have; `OMNIBUS_ENABLED`, which `.env.example` doesn't have; Symfony's deprecated `Request::get()`.
+- Unused parameters are controller actions' `Request $request` and methods that override nothing.
+
+The rest follow a wrong declaration or are limits of the analysis:
+
+- Seven Bagisto diagnostics come from `bagisto/laravel-datafaker`. `Helpers\Category::factory()` is documented `Factory<static>`, but it returns the model's factory, so `->create()` is typed as the helper.
+- `getOptionProductsPrices()` has no native return type and documents `@return float` while returning an array.
+- Monica's `$timestamp` (four diagnostics in the CalDAV and CardDAV backends) is read only when an earlier condition set it (`if ($data) { $timestamp = …; } if (empty($data) || $timestamp …)`). The analysis doesn't relate the two conditions, and neither does PhpStorm's.
+- Monica's `profile.show` is Jetstream's. Jetstream loads its routes from `__DIR__.'/../routes/'.config('jetstream.stack').'.php'`, a path the engine can't read without the configuration. Phase 8.29.b covers it.
+
+To run them:
+
+```sh
+LARAVEL_APP_DIR=../php-corpus/apps/bagisto cargo test -p ide-php --test laravel_parity -- --ignored real_app_checklist real_app_inspect_code --nocapture
+LARAVEL_APP_DIR=../php-corpus/apps/bagisto cargo bench -p ide-php --bench engine -- php_laravel_real
 ```
 
 ## Still missing

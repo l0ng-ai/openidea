@@ -36,8 +36,8 @@ use std::rc::Rc;
 
 use mago_span::HasSpan;
 use mago_syntax::cst::{
-    Access, Argument, ArgumentList, ArrayElement, Assignment, BinaryOperator, Call, ClassLikeMemberSelector, Construct,
-    DirectVariable, DoWhile, Expression, For, ForBody, Foreach, ForeachBody, ForeachTarget, FunctionCall,
+    Access, Argument, ArgumentList, ArrayElement, Assignment, Binary, BinaryOperator, Call, ClassLikeMemberSelector,
+    Construct, DirectVariable, DoWhile, Expression, For, ForBody, Foreach, ForeachBody, ForeachTarget, FunctionCall,
     FunctionLikeParameterList, If, IfBody, Literal, Match, MatchArm, MethodBody, Namespace, NamespaceBody, Node,
     Statement, StaticItem, Switch, SwitchBody, SwitchCase, Try, UnaryPostfix, UnaryPrefix, UnaryPrefixOperator,
     Variable, While, WhileBody,
@@ -438,6 +438,10 @@ impl<'t, 'a, 'r> Builder<'t, 'a, 'r> {
     }
 
     fn statement(&mut self, statement: &'a Statement<'a>) {
+        crate::syntax::stack::deep(|| self.statement_level(statement));
+    }
+
+    fn statement_level(&mut self, statement: &'a Statement<'a>) {
         match statement {
             Statement::Expression(statement) => {
                 self.expr(statement.expression);
@@ -769,7 +773,13 @@ impl<'t, 'a, 'r> Builder<'t, 'a, 'r> {
 
     // -------------------------------------------------------- expressions
 
+    /// Visits `expr`, one level of it per call of
+    /// [`crate::syntax::stack::deep`].
     fn expr(&mut self, expr: &'a Expression<'a>) {
+        crate::syntax::stack::deep(|| self.expr_level(expr));
+    }
+
+    fn expr_level(&mut self, expr: &'a Expression<'a>) {
         match expr {
             Expression::Parenthesized(inner) => self.expr(inner.expression),
             Expression::Variable(variable) => self.variable(variable),
@@ -901,7 +911,17 @@ impl<'t, 'a, 'r> Builder<'t, 'a, 'r> {
 
     /// The children of an expression, in source order.
     fn children(&mut self, expr: &'a Expression<'a>) {
-        Node::Expression(expr).visit_children(|child| self.node(child));
+        self.nodes(Node::Expression(expr));
+    }
+
+    /// Visits the children of `node`. They are collected first: recursing
+    /// from inside `visit_children` kept its large frame (a match over every
+    /// node kind) alive at each level, and fifteen nested array literals
+    /// overflowed a 2 MB debug-build stack.
+    fn nodes(&mut self, node: Node<'a, 'a>) {
+        for child in node.children() {
+            self.node(child);
+        }
     }
 
     fn node(&mut self, node: Node<'a, 'a>) {
@@ -916,7 +936,7 @@ impl<'t, 'a, 'r> Builder<'t, 'a, 'r> {
             | Node::Enum(_)
             | Node::Function(_)
             | Node::DirectVariable(_) => {}
-            other => other.visit_children(|child| self.node(child)),
+            other => self.nodes(other),
         }
     }
 
@@ -1315,9 +1335,50 @@ impl<'t, 'a, 'r> Builder<'t, 'a, 'r> {
 
     // --------------------------------------------------------- conditions
 
+    /// `a && b && …` or `a || b || …`: the operands left to right, each seen
+    /// where the ones before it let it run. The chain is a left-deep tree;
+    /// it is walked in a loop, not recursively, so a long chain keeps the
+    /// stack flat.
+    #[inline(never)]
+    fn logical(&mut self, binary: &'a Binary<'a>) -> (Env, Env) {
+        let is_and = |operator: &BinaryOperator<'_>| match operator {
+            BinaryOperator::And(_) | BinaryOperator::LowAnd(_) => Some(true),
+            BinaryOperator::Or(_) | BinaryOperator::LowOr(_) => Some(false),
+            _ => None,
+        };
+        let and = is_and(&binary.operator) == Some(true);
+        let mut rights = vec![binary.rhs];
+        let mut left = binary.lhs;
+        while let Expression::Binary(inner) = left
+            && is_and(&inner.operator) == Some(and)
+        {
+            rights.push(inner.rhs);
+            left = inner.lhs;
+        }
+        let (mut then, mut other) = self.condition(left);
+        for right in rights.into_iter().rev() {
+            if and {
+                self.env = then;
+                let (right_true, right_false) = self.condition(right);
+                then = right_true;
+                other = Env::merge([other, right_false]);
+            } else {
+                self.env = other;
+                let (right_true, right_false) = self.condition(right);
+                then = Env::merge([then, right_true]);
+                other = right_false;
+            }
+        }
+        (then, other)
+    }
+
     /// Visits a condition and returns the environments where it is true
     /// and where it is false.
     fn condition(&mut self, condition: &'a Expression<'a>) -> (Env, Env) {
+        crate::syntax::stack::deep(|| self.condition_level(condition))
+    }
+
+    fn condition_level(&mut self, condition: &'a Expression<'a>) -> (Env, Env) {
         match condition {
             Expression::Parenthesized(inner) => self.condition(inner.expression),
             Expression::UnaryPrefix(UnaryPrefix { operator: UnaryPrefixOperator::Not(_), operand }) => {
@@ -1327,18 +1388,10 @@ impl<'t, 'a, 'r> Builder<'t, 'a, 'r> {
             Expression::Literal(Literal::True(_)) => (self.env.clone(), self.env.clone().unreachable()),
             Expression::Literal(Literal::False(_)) => (self.env.clone().unreachable(), self.env.clone()),
             Expression::Binary(binary) => match &binary.operator {
-                BinaryOperator::And(_) | BinaryOperator::LowAnd(_) => {
-                    let (left_true, left_false) = self.condition(binary.lhs);
-                    self.env = left_true;
-                    let (then, right_false) = self.condition(binary.rhs);
-                    (then, Env::merge([left_false, right_false]))
-                }
-                BinaryOperator::Or(_) | BinaryOperator::LowOr(_) => {
-                    let (left_true, left_false) = self.condition(binary.lhs);
-                    self.env = left_false;
-                    let (right_true, other) = self.condition(binary.rhs);
-                    (Env::merge([left_true, right_true]), other)
-                }
+                BinaryOperator::And(_)
+                | BinaryOperator::LowAnd(_)
+                | BinaryOperator::Or(_)
+                | BinaryOperator::LowOr(_) => self.logical(binary),
                 BinaryOperator::Instanceof(_) => {
                     self.expr(binary.lhs);
                     self.expr(binary.rhs);

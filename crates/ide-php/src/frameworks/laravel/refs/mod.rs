@@ -1412,7 +1412,26 @@ impl PhpEngine {
         if parameters {
             walked.push(&Middleware);
         }
-        for site in sites_with(parsed, &resolver, &walked, rules, None) {
+        let sites = sites_with(parsed, &resolver, &walked, rules, None);
+        // Configuration keys the file sets (`config(['themes.shop.narrow' =>
+        // …])` in Bagisto's tests): setting a new key is fine, and so is
+        // reading it, or a key below it, afterwards.
+        let written: Vec<String> = if kinds.iter().any(|kind| kind.id() == ConfigKey.id()) {
+            sites
+                .iter()
+                .filter(|site| writes_config_key(site))
+                .filter(|site| classify(site, &resolver, rules).is_some_and(|(kind, _)| kind.id() == ConfigKey.id()))
+                .map(|site| site.value.clone())
+                .collect()
+        } else {
+            Vec::new()
+        };
+        let set_here = |value: &str| {
+            written.iter().any(|key| {
+                value.strip_prefix(key.as_str()).is_some_and(|rest| rest.is_empty() || rest.starts_with('.'))
+            })
+        };
+        for site in sites {
             if cancel.is_cancelled() {
                 break;
             }
@@ -1420,6 +1439,9 @@ impl PhpEngine {
                 continue;
             }
             let Some((kind, rule)) = classify(&site, &resolver, rules) else { continue };
+            if kind.id() == ConfigKey.id() && set_here(&site.value) {
+                continue;
+            }
             if parameters && kind.id() == Middleware.id() {
                 let Some(cx) = self.rule_site_context(path, &site, rule) else { continue };
                 for (id, from, to, problem) in middleware::parameter_problems(&cx, &site.value) {
@@ -1440,7 +1462,20 @@ impl PhpEngine {
         }
         out
     }
+}
 
+/// True when `site` sets a configuration key rather than reading it: a key
+/// of the array given to `config([...])` or `Config::set([...])`, or the
+/// key of `Config::set('key', …)`.
+fn writes_config_key(site: &StringSite) -> bool {
+    match &site.target {
+        CallTarget::Function(_) => matches!(site.steps.as_slice(), [ArrayStep::Key]),
+        CallTarget::Method { name, .. } => name.eq_ignore_ascii_case("set"),
+        _ => false,
+    }
+}
+
+impl PhpEngine {
     /// The undefined configuration keys, environment keys, translations, Vite
     /// assets and abilities of a Blade template, as diagnostics of the template.
     pub(crate) fn blade_reference_problems(&self, text: &str) -> Vec<Diagnostic> {

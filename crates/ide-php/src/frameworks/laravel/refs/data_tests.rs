@@ -172,6 +172,22 @@ fn reports_undefined_config_keys() {
     );
 }
 
+#[test]
+fn config_keys_the_file_sets_are_defined() {
+    // Bagisto's tests set new keys before reading them.
+    let mut project = Project::app();
+    let source = "<?php\nconfig(['blog.narrow' => ['vite' => 'x']]);\nconfig('blog.narrow');\nconfig('blog.narrow.vite');\n\\Illuminate\\Support\\Facades\\Config::set('blog.studio', 1);\nconfig('blog.studio');\nconfig('blog.narrowest');\nconfig('blog.nope', 1);\n";
+    let (_, found) = project.reference_problems(source);
+    let lines: Vec<(u32, String)> = found.into_iter().map(|(line, _, message, _)| (line, message)).collect();
+    assert_eq!(
+        lines,
+        [
+            (6, "Config key 'blog.narrowest' is not defined".to_owned()),
+            (7, "Config key 'blog.nope' is not defined".to_owned()),
+        ]
+    );
+}
+
 // ---------------------------------------------------------------- env
 
 #[test]

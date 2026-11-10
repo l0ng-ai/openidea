@@ -249,7 +249,13 @@ impl<'a, 'r> ExprTypes<'a, 'r> {
         self.resolver.resolve(&LazyType::Known(ty), &self.context(frames))
     }
 
+    /// The type of `expr`. It recurses once per level of the expression:
+    /// each level runs through [`crate::syntax::stack::deep`].
     fn expr(&self, expr: &'a Expression<'a>, frames: &[Frame<'a>]) -> Type {
+        crate::syntax::stack::deep(|| self.expr_level(expr, frames))
+    }
+
+    fn expr_level(&self, expr: &'a Expression<'a>, frames: &[Frame<'a>]) -> Type {
         match expr {
             Expression::Parenthesized(inner) => self.expr(inner.expression, frames),
             Expression::Literal(literal) => literal_type(literal),

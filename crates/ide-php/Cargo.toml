@@ -39,6 +39,9 @@ mago-formatter = "=1.59.0"
 mago-php-version = "=1.59.0"
 # Twig templates (`twig`): outline, completion and template goto.
 mago-twig-syntax = "=1.59.0"
+# Mago's parsers recurse up to their 512-level cap; `syntax::stack` runs them on a
+# stack segment large enough for it (phase 8.29).
+stacker.workspace = true
 
 [dev-dependencies]
 insta.workspace = true

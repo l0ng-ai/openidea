@@ -54,7 +54,7 @@ const ROUTING_CONTROLLER: &str = "Illuminate\\Routing\\Controller";
 
 /// Laravel's global class aliases (`Facade::defaultAliases()` of Laravel
 /// 11/12, MIT) and the classes they stand for.
-const ALIASES: &[(&str, &str)] = &[
+pub(crate) const ALIASES: &[(&str, &str)] = &[
     ("App", "Illuminate\\Support\\Facades\\App"),
     ("Arr", "Illuminate\\Support\\Arr"),
     ("Artisan", "Illuminate\\Support\\Facades\\Artisan"),

@@ -474,7 +474,14 @@ fn mentions_class(expr: &Expression<'_>) -> bool {
     found
 }
 
+/// Every node below `node`, `node` first. Iterative, so no nesting overflows
+/// the stack.
 fn visit<'ast, 'arena>(node: Node<'ast, 'arena>, f: &mut impl FnMut(Node<'ast, 'arena>)) {
-    f(node);
-    node.visit_children(|child| visit(child, f));
+    let mut stack = vec![node];
+    while let Some(node) = stack.pop() {
+        f(node);
+        let start = stack.len();
+        node.visit_children(|child| stack.push(child));
+        stack[start..].reverse();
+    }
 }

@@ -175,6 +175,83 @@ fn discovered_providers(vendor: &Path) -> Vec<String> {
         .collect()
 }
 
+/// The global class aliases of a Laravel application, `(alias, class)`:
+/// Laravel's defaults (`Facade::defaultAliases()`, which before Laravel 11
+/// sat in `config/app.php`), the `aliases` packages list under
+/// `extra.laravel` in `installed.json`, then the `aliases` of
+/// `config/app.php`. Later entries win.
+pub(crate) fn class_aliases(root: &Path, vendor: &Path) -> Vec<(String, String)> {
+    let mut aliases: Vec<(String, String)> = super::refs::intentions::ALIASES
+        .iter()
+        .map(|(alias, class)| ((*alias).to_owned(), (*class).to_owned()))
+        .collect();
+    if let Ok(text) = std::fs::read_to_string(vendor.join("composer").join("installed.json"))
+        && let Ok(json) = serde_json::from_str::<serde_json::Value>(&text)
+    {
+        let packages = json.get("packages").unwrap_or(&json).as_array().cloned().unwrap_or_default();
+        for package in &packages {
+            let Some(listed) = package.pointer("/extra/laravel/aliases").and_then(|a| a.as_object()) else { continue };
+            for (alias, class) in listed {
+                if let Some(class) = class.as_str() {
+                    aliases.push((alias.clone(), class.trim_start_matches('\\').to_owned()));
+                }
+            }
+        }
+    }
+    if let Ok(text) = std::fs::read_to_string(root.join("config").join("app.php")) {
+        let parsed = ParsedFile::parse("app.php", text);
+        if let Some(within) = KeyFinder::find(&parsed, "aliases") {
+            let mut collect = Aliases { names: FileNames::resolve(&parsed), within, aliases: Vec::new() };
+            AliasWalker.walk_program(parsed.program(), &mut collect);
+            aliases.extend(collect.aliases);
+        }
+    }
+    let mut out: Vec<(String, String)> = Vec::new();
+    for (alias, class) in aliases.into_iter().rev() {
+        if !alias.contains('\\') && !out.iter().any(|(known, _)| known.eq_ignore_ascii_case(&alias)) {
+            out.push((alias, class));
+        }
+    }
+    out.reverse();
+    out
+}
+
+struct Aliases {
+    names: FileNames,
+    within: (u32, u32),
+    aliases: Vec<(String, String)>,
+}
+
+struct AliasWalker;
+
+impl<'a> Walker<'a, 'a, Aliases> for AliasWalker {
+    fn walk_in_expression(&self, expr: &'a Expression<'a>, cx: &mut Aliases) {
+        let span = expr.span();
+        if span.start.offset < cx.within.0 || span.end.offset > cx.within.1 {
+            return;
+        }
+        let elements: Vec<&ArrayElement<'_>> = match expr {
+            Expression::Array(array) => array.elements.iter().collect(),
+            Expression::LegacyArray(array) => array.elements.iter().collect(),
+            _ => return,
+        };
+        for element in elements {
+            let ArrayElement::KeyValue(element) = element else { continue };
+            let Expression::Literal(Literal::String(key)) = element.key else { continue };
+            let Some(alias) = key.value.map(lossy) else { continue };
+            let class = resolve(&cx.names, element.value).or_else(|| match element.value {
+                Expression::Literal(Literal::String(string)) => {
+                    string.value.map(|value| lossy(value).trim_start_matches('\\').to_owned())
+                }
+                _ => None,
+            });
+            if let Some(class) = class {
+                cx.aliases.push((alias, class));
+            }
+        }
+    }
+}
+
 /// The Concord module whose module provider is `class` in `file`
 /// (`Webkul\Shop\Providers\ModuleServiceProvider`).
 fn concord_module(class: &str, file: &Path) -> Option<Module> {

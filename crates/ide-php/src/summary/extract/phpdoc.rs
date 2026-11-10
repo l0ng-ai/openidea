@@ -287,6 +287,13 @@ impl Extractor<'_> {
     pub(super) fn doc_at(&self, start: u32, outer: &[String]) -> Option<Box<DocBlock>> {
         let program = self.file.program();
         let trivia = get_docblock_before_position(program.trivia.as_slice(), start)?;
+        // The PHPDoc parser and the walks below recurse as deep as a type
+        // nests (up to Mago's limit): a union of 300 string literals in an AWS
+        // SDK client overflowed a 2 MB debug-build stack.
+        crate::syntax::stack::parser_stack(|| self.doc_block(trivia, outer))
+    }
+
+    fn doc_block(&self, trivia: &mago_syntax::cst::Trivia<'_>, outer: &[String]) -> Option<Box<DocBlock>> {
         let arena = LocalArena::new();
         let document = PHPDocParser::parse_with_span(&arena, trivia.value, trivia.span);
 

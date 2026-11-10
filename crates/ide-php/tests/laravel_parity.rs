@@ -671,3 +671,72 @@ fn real_app_eloquent_columns() {
     eprintln!("{} files inspected, {} unknown-column problems", files.len(), problems.len());
     engine.shutdown();
 }
+
+/// The application's own Blade templates (`resources/views`, and the views of `packages/`).
+fn app_blade_files(root: &Path) -> Vec<PathBuf> {
+    let mut out = Vec::new();
+    let mut stack: Vec<PathBuf> =
+        ["resources", "packages"].iter().map(|dir| root.join(dir)).filter(|d| d.is_dir()).collect();
+    while let Some(dir) = stack.pop() {
+        let Ok(entries) = std::fs::read_dir(&dir) else { continue };
+        for entry in entries.flatten() {
+            let path = entry.path();
+            let name = entry.file_name().to_string_lossy().into_owned();
+            if path.is_dir() {
+                if !["vendor", "node_modules", "storage", ".git"].contains(&name.as_str()) {
+                    stack.push(path);
+                }
+            } else if name.ends_with(".blade.php") {
+                out.push(path);
+            }
+        }
+    }
+    out.sort();
+    out
+}
+
+/// Phase 8.29: batch Inspect Code over the application's own PHP files and Blade templates
+/// (`LARAVEL_APP_DIR`, not `vendor/`). Prints the count of each inspection and an even sample
+/// of `SAMPLE` diagnostics with their source line, which `docs/php-engine/laravel.md` reviews
+/// for false positives.
+#[test]
+#[ignore = "needs a real Laravel application in LARAVEL_APP_DIR"]
+fn real_app_inspect_code() {
+    const SAMPLE: usize = 100;
+    let Some(root) = std::env::var_os("LARAVEL_APP_DIR").map(PathBuf::from) else {
+        eprintln!("LARAVEL_APP_DIR isn't set; skipped");
+        return;
+    };
+    let root = dunce::canonicalize(&root).expect("LARAVEL_APP_DIR exists");
+    let tmp = tempfile::tempdir().unwrap();
+    let engine = open_engine(&root, tmp.path());
+    let mut files = app_php_files(&root);
+    files.extend(app_blade_files(&root));
+    let mut found = Vec::new();
+    let mut counts = std::collections::BTreeMap::<String, usize>::new();
+    for path in &files {
+        let Ok(text) = std::fs::read_to_string(path) else { continue };
+        let lines: Vec<&str> = text.lines().collect();
+        for diagnostic in engine.inspect_file(path, &text, &CancellationToken::new()).unwrap_or_default() {
+            let code = diagnostic.code.clone().unwrap_or_else(|| "syntax".to_owned());
+            *counts.entry(code.clone()).or_default() += 1;
+            let rel = slashes(path.strip_prefix(&root).unwrap_or(path));
+            let line = diagnostic.range.start.line as usize;
+            let source = lines.get(line).map_or("", |l| l.trim());
+            let source: String = source.chars().take(160).collect();
+            found.push(format!("{rel}:{}: [{code}] {}\n      {source}", line + 1, diagnostic.message));
+        }
+    }
+    eprintln!("{} files inspected, {} diagnostics", files.len(), found.len());
+    for (code, count) in &counts {
+        eprintln!("{count:>6} {code}");
+    }
+    // `INSPECT_ALL=1` prints every diagnostic instead.
+    let all = std::env::var_os("INSPECT_ALL").is_some();
+    let step = if all { 1 } else { (found.len() / SAMPLE).max(1) };
+    eprintln!("sample (every {step}th):");
+    for diagnostic in found.iter().step_by(step).take(if all { usize::MAX } else { SAMPLE }) {
+        eprintln!("{diagnostic}");
+    }
+    engine.shutdown();
+}

@@ -478,9 +478,18 @@ fn entry_targets(entries: Vec<AuthEntry>, name: &str) -> Vec<Target> {
         .collect()
 }
 
-/// The guards of the project (`config/auth.php`, else Laravel's `web`).
+/// The guards of the project (`config/auth.php`, else Laravel's `web`),
+/// and the ones service providers add (Sanctum's `sanctum`).
 pub(crate) fn guard_entries(cx: &RefContext<'_>) -> Vec<AuthEntry> {
-    guards(&cx.engine.laravel_config().unwrap_or_default())
+    let mut entries = guards(&cx.engine.laravel_config().unwrap_or_default());
+    if let Some(project) = cx.engine.laravel() {
+        for name in &project.provider_guards {
+            if !entries.iter().any(|entry| entry.name == *name) {
+                entries.push(AuthEntry { name: name.clone(), detail: None, declared: None });
+            }
+        }
+    }
+    entries
 }
 
 /// What is wrong with `name` among `entries` (of `config/auth.php`): not

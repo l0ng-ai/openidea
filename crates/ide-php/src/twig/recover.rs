@@ -45,13 +45,15 @@ pub(super) fn recovered(text: &str) -> Cow<'_, str> {
 
 /// Where the first error is, when the parse kept no statement.
 fn fatal_error(text: &str) -> Option<usize> {
-    let arena = LocalArena::new();
-    let template = parse_file_content(&arena, FileId::zero(), text.as_bytes());
-    if !template.statements.is_empty() {
-        return None;
-    }
-    let first = template.errors.iter().map(|e| e.span().start.offset).min()?;
-    Some(first as usize)
+    crate::syntax::stack::parser_stack(|| {
+        let arena = LocalArena::new();
+        let template = parse_file_content(&arena, FileId::zero(), text.as_bytes());
+        if !template.statements.is_empty() {
+            return None;
+        }
+        let first = template.errors.iter().map(|e| e.span().start.offset).min()?;
+        Some(first as usize)
+    })
 }
 
 const OPENERS: [&str; 3] = ["{{", "{%", "{#"];
