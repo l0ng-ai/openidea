@@ -69,6 +69,7 @@ export const LANGUAGE_PAGES: PageSpec[] = [
       "project sdk",
       "language level",
       "modules",
+      "dependencies",
       "libraries",
       "facets",
       "artifacts",

@@ -2,7 +2,7 @@
 import { onEditorEvent, openEditorPaths } from "@/editor/api";
 import { commands, isTauri, onIdeEvent } from "@/platform/ipc";
 import { useBuildModel } from "@/platform/buildModel";
-import { validateProjectStructure, type RootFolder } from "@/platform/languageSettings";
+import { effectiveContentRoots, validateProjectStructure, type RootFolder } from "@/platform/languageSettings";
 import { useProject } from "@/platform/project";
 import { initProjectRoots, useProjectRoots } from "@/platform/projectRoots";
 import { folderIconName } from "@/ui";
@@ -26,6 +26,7 @@ import { ProjectHeaderActions, useProjectHeaderMenu, useProjectTitleMenu } from 
 import { loadHomeDir } from "./home";
 import { selectedNodes, undoLastFileOperation } from "./operations";
 import { ProjectView } from "./ProjectView";
+import { initProjectTypes } from "./projectTypes";
 import {
   applyFsChange,
   dropOutlines,
@@ -115,7 +116,7 @@ export function activate(): () => void {
   const syncContentRoots = () => {
     const { project, settings } = useProject.getState();
     const own = project && (!project.workspace || project.workspace.projects[0] === project.root);
-    const paths = own ? validateProjectStructure(settings?.projectStructure).contentRoots : [];
+    const paths = own ? effectiveContentRoots(validateProjectStructure(settings?.projectStructure)) : [];
     // The Build tool window's model (one load per build change), not a load of our own.
     const build = useBuildModel.getState();
     const gradleBuilds = build.root === project?.root ? (build.model?.gradle ?? []) : [];
@@ -232,6 +233,7 @@ export function activate(): () => void {
         .filter((n) => !n.group)
         .map((n) => n.path),
     ),
+    initProjectTypes(),
     onIdeEvent("fsChanged", (e) => void applyFsChange(e)),
     onIdeEvent("excludedDirsChanged", (e) => void reloadLoadedDirs(e.dirs)),
   ];

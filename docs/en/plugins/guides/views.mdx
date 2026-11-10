@@ -1,0 +1,398 @@
+---
+title: "Views and decorations"
+description: "Tool windows, custom editors, web views, Services nodes, editor tabs and terminals opened by code, and editor and project tree decorations."
+---
+
+A plugin can put UI in several places:
+
+| Where                                       | Declare                                              | Content                                                                 |
+| ------------------------------------------- | ---------------------------------------------------- | ----------------------------------------------------------------------- |
+| A tool window                               | `[[contributes.views]]`                              | Rendered by code (tree, list, form, table, message, HTML) or a web page |
+| The **Services** tool window                | `[[contributes.views]]` with `location = "services"` | A tree rendered by code, plus a detail pane                             |
+| An editor for certain files                 | `[[contributes.customEditors]]`                      | Rendered by code or a web page; shares the file's text document         |
+| Editor tabs and terminals                   | nothing (opened from code)                           | Content tabs, log tabs, terminal sessions, Output channels              |
+| Annotations in editors and the Project tree | nothing (set from code)                              | Decorations                                                             |
+
+Gutter markers and gutter buttons are editor providers: see
+[Language features](/en/plugins/guides/language-features). File icons are on
+[Icon themes](/en/plugins/guides/icon-themes).
+
+## Declare a tool window
+
+```toml
+[[contributes.views]]
+id = "todos"
+title = "TODO Example"
+icon = "search"            # an IDE icon name (up to 64 bytes) or a package SVG
+location = "right"         # left, right (default), bottom, services
+```
+
+| Field       | API | Notes                                                                                                                                    |
+| ----------- | --- | ---------------------------------------------------------------------------------------------------------------------------------------- |
+| `id`        | 1.0 | Unique in the plugin.                                                                                                                    |
+| `title`     | 1.0 | 1–256 bytes, translated through the plugin's catalog.                                                                                    |
+| `icon`      | 1.0 | Icon name or package `.svg` (at most 64 KiB, sanitised).                                                                                 |
+| `location`  | 1.0 | `left`, `right`, `bottom`; `services` needs API 1.3.                                                                                     |
+| `web`       | 1.0 | A page of the package (`web/index.html`) instead of content rendered by code. See _Web views_.                                           |
+| `group`     | 1.3 | Views of one plugin with the same group share a tool window, one tab each, in declaration order.                                         |
+| `when`      | 1.3 | A `when` clause; while false the view is removed from the stripe and its group's tabs, and is neither rendered nor activated.            |
+| `secondary` | 1.3 | `true` places it in the secondary split of its dock: **Left Bottom**, **Right Bottom** or **Bottom Right**. A saved user placement wins. |
+| `detail`    | 1.3 | `true` shows the selected tree or list item's detail tabs beside it (not with `web`).                                                    |
+| `header`    | 1.3 | `none` for an ungrouped tool-window web view that draws its own top bar (see _Web views_). Default `default`.                            |
+
+A view without `web` needs code (`wasm`). Showing a view activates the plugin
+(`on-view:<id>`).
+
+### Grouped and conditional views
+
+```toml
+engines.openidea = "^1.3"
+
+[[contributes.views]]
+id = "endpoints"
+title = "Spring"
+group = "spring"
+when = "workspaceContains:pom.xml || workspaceContains:build.gradle"
+
+[[contributes.views]]
+id = "beans"
+title = "Beans"
+group = "spring"
+when = "plugin.my-plugin.ready"
+```
+
+The first declaration of a group supplies the window's title, icon, location and
+`secondary`, even when that view is hidden; the window disappears when all its tabs are
+hidden. Tabs load on first selection and stay mounted while they apply, so web views keep
+their state when you switch tabs. `when` is evaluated again on context changes, file
+creation and removal, and project changes. These fields only control visibility; they
+grant no access.
+
+## Render a view
+
+Register `register_plugin!(MyPlugin, views)` and implement `openidea_plugin::views::Views`
+(WIT export `view-provider`). A view is data: a toolbar, a body and a status line. The IDE
+draws it with its own components (theme, keyboard, speed search) and sends back what the
+user does.
+
+From the [TODO Finder](https://github.com/l0ng-ai/openidea/tree/main/plugins/official/todo-finder)
+example:
+
+```rust
+use openidea_plugin::views::{Body, ListItem, View, ViewEvent, Viewport, Views};
+use openidea_plugin::{Error, Invocation, Location, TextQuery, host, register_plugin};
+
+fn query() -> TextQuery {
+    TextQuery { pattern: "TODO".into(), case_sensitive: true, ..Default::default() }
+}
+
+impl Views for TodoFinder {
+    fn render(&mut self, _view: &str, _viewport: Option<Viewport>, ctx: &Invocation) -> Result<View, Error> {
+        let found = ctx.project().ok_or("Open a project first")?.search_text(&query(), 500)?;
+        let items = found
+            .matches
+            .into_iter()
+            .map(|m| {
+                let detail = format!("{}:{}", m.location.path, m.location.range.start.line + 1);
+                ListItem::new(&serde_json::to_string(&m.location).unwrap(), &m.line).detail(&detail)
+            })
+            .collect();
+        Ok(View {
+            toolbar: vec![],
+            body: Body::List(items),
+            status: found.limit_hit.then(|| "Showing the first 500 matches".into()),
+        })
+    }
+
+    fn handle(&mut self, _view: &str, event: ViewEvent, _ctx: &Invocation) -> Result<(), Error> {
+        if let ViewEvent::Activate(key) = event {
+            let location: Location = serde_json::from_str(&key).map_err(|e| Error::Invalid(e.to_string()))?;
+            host::open_location(&location.path, location.range.start.line, location.range.start.character)?;
+        }
+        Ok(())
+    }
+}
+
+register_plugin!(TodoFinder, views);
+```
+
+When content changes, call `host::refresh_view(view)` and the IDE calls `render` again.
+`host::reveal_view(view)` brings one of the plugin's views to the front in the invoking
+window. For a tool window, `ctx.editor()` is the window's active text editor, so toolbar
+buttons can act on what the user is editing.
+
+### Bodies
+
+| Body                                 | Notes                                                                                                                                                                                 |
+| ------------------------------------ | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `Body::Message(text)`                | A centred message: empty states and errors. `View::message(text)` builds one.                                                                                                         |
+| `Body::Tree(items)`                  | A flat list of `TreeItem`s whose `parent` names an earlier key. `.expandable(expanded)` shows an expander before the children are known; `Expand` asks for them.                      |
+| `Body::List(items)`                  | `ListItem::new(key, label)` with `.icon()` and `.detail()` (grey text after the label).                                                                                               |
+| `Body::Form(fields)`                 | `Field::new(key, label, value)`: `Text`, `Multiline`, `Checkbox`, `Choice(options, chosen)`. API 1.3 adds `FieldValue::label(text)` and `FieldValue::readonly_text(text, multiline)`. |
+| `Body::Table(table)`                 | `columns`, `total_rows`, `first_row`, `rows`, `editable`. The IDE asks only for the rows it shows (`viewport`); `Viewport::range(viewport, total, default_rows)` clamps it.           |
+| `Body::sortable_table(&table, sort)` | A table with clickable headers. A click sends a column and direction (`ViewEvent::sort()`); sort your rows and render again.                                                          |
+| `Body::Html(html)`                   | HTML in a sandboxed frame (below).                                                                                                                                                    |
+
+Toolbar buttons: `View::new(body).button(Button::new("refresh", "Refresh").icon("refresh"))`
+and `.status("12 items")`.
+
+### Events
+
+`ViewEvent` carries `Button(id)`, `Activate(key)` (double click or Enter), `Select(key)`,
+`Expand(key)`, `Collapse(key)`, `Field(key, value)` (`true`/`false` for checkboxes),
+`Cell { row, column, value }`, `InsertRow(before)`, `DeleteRows(rows)` and `Message(text)`
+from an HTML body. Table row clicks and Space decode with `event.table_select()`;
+double click and Enter with `event.table_activate()` (API 1.3, absolute 0-based rows).
+
+Bodies, fields and events added by later APIs travel as `Other { kind, data }`: an IDE that
+doesn't know a body says it needs updating, and leaves out a field type it doesn't know.
+Item right-click menus use `viewItem.context` (see
+[Commands and actions](/en/plugins/guides/commands#menus)).
+
+## Custom editors
+
+A custom editor opens files matching its patterns and edits the file's text document:
+
+```toml
+[[contributes.customEditors]]
+id = "table"
+title = "Table"
+patterns = ["*.csv", "*.tsv"]   # 1–16 file name globs, no directories
+priority = "default"            # or "option": only through Open With
+layout = "tab"                  # or "split" / "preview": beside the text editor
+# web = "web/index.html"        # a web page instead of rendered content
+```
+
+- `priority = "default"` opens matching files in the plugin's editor; `option` makes it
+  available through **Open With**. **Open as Text** opens the text editor.
+- `layout = "split"` or `"preview"` opens the file in the text editor with the plugin's
+  editor beside it and the **Editor Only** / **Editor and Preview** / **Preview Only**
+  switch in the tab strip, as for Markdown; the value is the layout files start in.
+  `"tab"` (default) is a tab of its own.
+- In `render` and `handle`, `ctx.editor()` is the editor's document. Read it with
+  `document()` and change it with `apply_edits(version, edits)`. The text editor of the
+  same file follows, Undo/Redo is one history with it, and Save, the dirty mark and the
+  close prompts are the document's.
+
+[CSV Editor](https://github.com/l0ng-ai/openidea/tree/main/plugins/official/csv-editor)
+turns table edits into text edits:
+
+```rust
+fn handle(&mut self, _view: &str, event: ViewEvent, ctx: &Invocation) -> Result<(), Error> {
+    let editor = ctx.editor().ok_or_else(|| Error::Invalid("the table editor needs a document".into()))?;
+    let doc = editor.document()?;
+    let edits = edits_for(&doc.text, &event)?;
+    if !edits.is_empty() {
+        // Stale if the user typed in the text view meanwhile; the table renders again.
+        editor.apply_edits(doc.version, &edits)?;
+    }
+    Ok(())
+}
+```
+
+It needs `editor.read` and `editor.write`.
+
+## HTML bodies
+
+`Body::Html` runs in a sandboxed frame: an opaque origin under a CSP that allows only its
+inline scripts and styles and `data:` images, with no network and no IDE API. It talks to
+the plugin only through `openidea.postMessage(text)` and `openidea.onMessage(fn)`, which
+arrive as `ViewEvent::Message` and are answered with `host::post_view_message(view, text)`.
+[Regex Tester](https://github.com/l0ng-ai/openidea/tree/main/plugins/official/regex-tester)
+works this way. Rendering again reloads the frame, so let the page keep its own state.
+
+The frame follows the IDE theme without reloading. Its root carries
+`data-theme="light|dark"` and these CSS variables with concrete colour values:
+
+| Variable                                                                                                          | Meaning                                               |
+| ----------------------------------------------------------------------------------------------------------------- | ----------------------------------------------------- |
+| `--openidea-bg`, `--openidea-bg-elevated`, `--openidea-bg-hover`, `--openidea-bg-selected`, `--openidea-bg-input` | Surfaces (the frame itself is transparent)            |
+| `--openidea-fg`, `--openidea-fg-strong`, `--openidea-fg-muted`                                                    | Text                                                  |
+| `--openidea-border`, `--openidea-focus-ring`, `--openidea-link`                                                   | Lines, focus, links                                   |
+| `--openidea-accent`, `--openidea-fg-on-accent`                                                                    | Accent and text on it                                 |
+| `--openidea-danger`, `--openidea-warning`, `--openidea-success`, `--openidea-info`                                | Status colours                                        |
+| `--openidea-font-ui`, `--openidea-font-mono`, `--openidea-font-size`                                              | Fonts (the IDE's bundled web fonts are not available) |
+
+Scripts also get `openidea.theme` (`{ dark, vars }`) and `openidea.onThemeChange(fn)`.
+Variables are only ever added.
+
+## Web views
+
+A view or custom editor can be a web page shipped in the package, for UIs the declarative
+bodies can't express (a canvas, a diagram editor). It needs no code:
+
+```toml
+[[contributes.customEditors]]
+id = "preview"
+title = "Preview"
+patterns = ["*.dot", "*.gv"]
+layout = "split"
+web = "web/index.html"   # the page; its directory is what it can load
+```
+
+- The page's directory (never the package root) is part of the declaration: every file
+  under it is checked (at most 4096 files and 256 MiB, no links), installed and signed with
+  the package.
+- The page loads into an `<iframe sandbox="allow-scripts">` from the IDE's own URL scheme:
+  opaque origin, no network, no cookies or storage, only the page's own files. Build it
+  with relative paths (Vite: `base: "./"`).
+- The same `openidea` object as in HTML bodies is available before the page's scripts run,
+  plus:
+
+| `window.openidea`                    | What it does                                                                                                         |
+| ------------------------------------ | -------------------------------------------------------------------------------------------------------------------- |
+| `document.get()`                     | `{ version, text, readOnly, name }` of the custom editor's document (none in a tool window)                          |
+| `document.edit(version, edits)`      | Applies `[{ from, to, insert }]` (UTF-16 offsets) as one undoable change; rejects with `stale` when not at `version` |
+| `document.replace(version, text)`    | The same with the whole text                                                                                         |
+| `document.onChange(fn)`              | `{ version, text }` after changes made elsewhere (text editor, Undo, another window)                                 |
+| `saveFile({ name, data, filters? })` | The IDE's save dialog; returns the chosen path or `null`                                                             |
+| `openFile({ filters? })`             | The IDE's open dialog; `{ name, data }` or `null`                                                                    |
+| `postMessage` / `onMessage`          | To and from the plugin's code, when it has some                                                                      |
+
+IDE shortcuts the page doesn't handle (Save, Close, Find Action…) still work while it has
+focus; editing keys stay with the page. With the `clipboard` capability the page may use
+`navigator.clipboard`.
+
+**Custom header** (API 1.3). An ungrouped tool-window web view can declare
+`header = "none"`: once the page is ready, the IDE replaces the tool-window header with
+corner actions (**Options**, **Hide**) and sets `--openidea-corner-inset-width` (`64px`) and
+`--openidea-corner-inset-height` (`34px`) so the page can pad its own top bar:
+
+```css
+.toolbar {
+  min-height: var(--openidea-corner-inset-height, 0px);
+  padding-right: var(--openidea-corner-inset-width, 0px);
+}
+```
+
+[Graphviz](https://github.com/l0ng-ai/openidea/tree/main/plugins/official/graphviz) is a
+complete example: a Vite + React page in `web-src/`, built into `web/` by
+`plugins/build.sh official/graphviz`, whose code publishes the errors Graphviz reports as
+problems.
+
+### Page protocols (API 1.3)
+
+With `engines.openidea = "^1.3"`, a page can send JSON messages through
+`openidea.postMessage` to ask the IDE for more. All of them run only programs granted with
+`process:<program>`, in the window's trusted project root, never through a shell:
+
+| `op`                                                          | What it opens                                                                                                                |
+| ------------------------------------------------------------- | ---------------------------------------------------------------------------------------------------------------------------- |
+| `pty-spawn`, `pty-input`, `pty-resize`, `pty-kill`, `pty-ack` | An interactive PTY owned by the frame; output arrives as `pty-data`, `pty-exit`, `pty-error`. At most 8 sessions per plugin. |
+| `open-log-tab`                                                | A read-only editor tab following a program's output, with argument toggles.                                                  |
+| `open-content-tab`                                            | An editor tab on content the plugin supplies, with toolbar actions answered by `content-tab-reply`.                          |
+
+The message fields and limits are in the
+[plugin guide](https://github.com/l0ng-ai/openidea/blob/main/plugins/README.md#web-frame-ptys-api-13);
+the built fixtures `web-pty`, `web-log` and `web-content` under
+`crates/ide-plugin/tests/fixtures/` exercise them.
+
+## Services views and detail panes
+
+`location = "services"` (API 1.3) puts a view's tree in the **Services** tool window next
+to Docker and the run configurations, instead of a tool window of its own:
+
+```toml
+engines.openidea = "^1.3"
+
+[[contributes.views]]
+id = "kube"
+title = "Kubernetes"
+icon = "icons/kubernetes.svg"
+location = "services"
+
+[capabilities]
+optional = ["process:kubectl"]
+```
+
+The tree's items are Services nodes: `render`, `handle`, the toolbar (acting on the
+selected node) and `viewItem.context` menus work as in a tool window. The pane beside the
+tree comes from the `detail-provider` export: `register_plugin!(MyPlugin, views, details)`
+and implement `openidea_plugin::details::Details`:
+
+```rust
+use openidea_plugin::details::{Details, Pane, ProcessLog, Tab};
+
+impl Details for MyPlugin {
+    fn detail(&mut self, _view: &str, key: &str, _ctx: &Invocation) -> Result<Vec<Tab>, Error> {
+        let pod = key.trim_start_matches("pod:");
+        let log = ProcessLog::new("kubectl", &["logs", "-f", "--tail=1000", pod])
+            .toggle("ts", "Timestamps", &["--timestamps"]);
+        Ok(vec![Tab::new("log", "Log", log), Tab::new("inspect", "Inspect", Pane::Text(self.describe(pod)?))])
+    }
+}
+```
+
+A node has at most 8 tabs; the IDE switches them without calling the plugin and asks again
+after `host::refresh_view(view)`. A tab is a `Pane::Message`, a read-only `Pane::Text`
+(at most 1 MiB) or a `ProcessLog`: the IDE runs that program (it needs the
+`process:<program>` grant) in the project root and follows its output (ANSI stripped, the
+last 5000 lines, **Soft-wrap**, **Clear**, the exit code at the end). A toggle appends its
+`args` and restarts the program. It stops when the pane closes or Services is hidden.
+
+**List and detail views** (API 1.3). A tree or list view in any location can declare
+`detail = true` to show the same `Details` tabs beside the selected item, with a resizable
+divider. The host asks after the item's `select` event and again after `refresh_view`.
+
+## Tabs and terminals opened by code
+
+These are called from a command or event of a window:
+
+| Function                                        | Opens                                                                                                                                                       |
+| ----------------------------------------------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `host::open_location(path, line, column)`       | A project file in an editor, caret at the position (`project.read`; a file in the plugin's private directory also works).                                   |
+| `host::open_editor(path, selection)`            | API 1.4: open a project file and select a range.                                                                                                            |
+| `host::open_terminal(title, program, args)`     | A Terminal tab running an approved `process:<program>` in the project root.                                                                                 |
+| `host::open_terminal_session(key, title, &cmd)` | API 1.4: a keyed terminal; reopening the key focuses it. Write to it with `host::write_terminal(key, text)`; its exit arrives as a `terminal-exited` event. |
+| `host::open_log_tab(key, title, &log)`          | API 1.3: the read-only log tab, from a `ProcessLog`. At most 32 per window; not yet in remote projects.                                                     |
+| `host::open_content_tab(&ContentTab { .. })`    | API 1.4: a content editor tab without a web view; actions arrive as `content-tab-action` events, answered with `host::reply_content_tab`.                   |
+| `host::output_append(channel, text)`            | API 1.4: a read-only **Output** tab per channel (32 channels, 1 MiB each); `output_clear`, `output_reveal`.                                                 |
+
+```rust
+use openidea_plugin::{ContentAction, ContentTab, host};
+
+host::open_content_tab(&ContentTab {
+    key: "service-config".into(),
+    title: "service.toml".into(),
+    file_name: Some("service.toml".into()),
+    language: Some("toml".into()),
+    content: "name = \"demo\"\n".into(),
+    read_only: false,
+    actions: vec![ContentAction { id: "save".into(), label: "Apply".into(), primary: true, save: true, ..Default::default() }],
+})?;
+```
+
+## Decorations
+
+Decorations (API 1.4, WIT `decorations.wit`) annotate editors and the Project tree. They
+need `project.read`; paths must be inside an open project.
+
+```rust
+use openidea_plugin::{Decoration, FileDecoration, Position, Range, host};
+
+let at = Position::new(3, 20);
+host::set_decorations(&path, "blame", &[Decoration {
+    range: Range::new(at, at),
+    style: "muted".into(),
+    hover: Some("Fix the parser".into()),
+    after: Some("  Ada · 1a2b3c4d".into()),   // plain text shown after the range
+}])?;
+
+host::set_file_decoration(&path, "status", &FileDecoration {
+    badge: Some("M".into()),                  // at most two characters
+    style: "modified".into(),
+    tooltip: Some("Changed by the tool".into()),
+})?;
+```
+
+- Styles map to theme tokens: `highlight`, `search`, `added`, `modified`, `removed`,
+  `warning`, `error`, `info`, `underline`, `strikethrough`, `muted`. Unknown styles are
+  ignored.
+- A set (`set_id`) belongs to the plugin and project and is shared by all windows of that
+  project. Setting replaces the set's items for that file; `clear_decorations(set_id)` and
+  `clear_file_decorations(set_id)` remove a set everywhere.
+- Limits: 50 editor sets and 50 tree sets per plugin, 10,000 editor items per file, 4 MiB of
+  metadata. Disabling, unloading or a crash withdraws them; idle reclaim keeps them.
+
+[Blame Annotations](https://github.com/l0ng-ai/openidea/tree/main/plugins/official/blame-annotations)
+turns `Project::vcs_blame` into end-of-line decorations.

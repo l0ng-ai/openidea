@@ -319,7 +319,7 @@
   "menu.vcs.operations": "VCS 操作弹出窗口…",
   "menu.view": "视图",
   "menu.view.notifications": "通知",
-  "menu.view.toggleTheme": "切换亮色/暗色主题",
+  "menu.view.toggleTheme": "切换浅色/深色主题",
   "menu.welcome.recentProjects": "管理项目…",
   "menu.window": "窗口",
   "menu.tools": "工具",

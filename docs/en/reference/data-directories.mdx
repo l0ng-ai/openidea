@@ -1,0 +1,78 @@
+---
+title: "Data directories and logs"
+description: "Where OpenIDEA keeps its settings, user data, caches, downloaded tools and logs, and how to move the rebuildable data to another drive."
+---
+
+OpenIDEA's application id is `ai.l0ng.openidea`, and every directory below is named after it.
+
+## Locations
+
+|                          | macOS                                            | Windows                                | Linux                                  |
+| ------------------------ | ------------------------------------------------ | -------------------------------------- | -------------------------------------- |
+| Configuration            | `~/Library/Application Support/ai.l0ng.openidea` | `%APPDATA%\ai.l0ng.openidea`           | `~/.config/ai.l0ng.openidea`           |
+| User data                | `~/Library/Application Support/ai.l0ng.openidea` | `%APPDATA%\ai.l0ng.openidea`           | `~/.local/share/ai.l0ng.openidea`      |
+| Local data (rebuildable) | `~/Library/Application Support/ai.l0ng.openidea` | `%LOCALAPPDATA%\ai.l0ng.openidea`      | `~/.local/share/ai.l0ng.openidea`      |
+| Logs                     | `~/Library/Logs/ai.l0ng.openidea`                | `%LOCALAPPDATA%\ai.l0ng.openidea\logs` | `~/.local/share/ai.l0ng.openidea/logs` |
+
+On macOS and Linux some of these are the same folder. **About OpenIDEA** shows the configuration directory and has **Open Configuration Folder**.
+
+### Configuration
+
+- `settings.toml`: your global settings. See the [settings reference](/en/reference/settings).
+- `recent.json`, `recent-groups.json`: recent projects and their groups.
+- `languages/`: language definitions you added or overrode.
+
+### User data
+
+- `plugins/`: installed plugins.
+- `scratches/`: scratch files.
+- `history/`: Local History of every project.
+- `project-trust.json`: trusted projects and locations.
+
+### Local data
+
+Everything here can be downloaded or rebuilt, so it is safe to delete while OpenIDEA is closed:
+
+- `tools/`: language servers, debug adapters, formatters and JDKs that OpenIDEA installed.
+- `language-server-runtimes/`: runtimes the language servers run on.
+- `index/`: the symbol index of each project.
+- `cache/`: build tool sync results (Maven, Gradle) and other caches.
+- `lsp/`: language server workspaces, such as the Java server's import data.
+- `notebook-runtime/`, `server/`: the notebook runtime and remote-development server downloads.
+- `agents/tools/`, `agents/registry.json`: agent tools and the agent registry.
+
+To clear caches from inside the IDE, use **File › Invalidate Caches…**. The symbol index and syntax caches are always rebuilt; you can also check **Clear file system cache and Local History**, **Clear language server workspaces (Java import data and indexes)** and **Clear build tool caches (Maven / Gradle sync results)**. Choose **Invalidate and Restart**: the caches are removed at the next start, before any project opens.
+
+## Project folder
+
+Each project keeps its own files in `.openidea/` at the project root:
+
+- `settings.toml`: settings saved with **This project** selected.
+- `run.toml`: run configurations stored as project files, meant to be committed.
+- `run.local.toml`: run configurations kept to yourself. OpenIDEA adds it to `.openidea/.gitignore`.
+- `workspace.json`: the projects of a workspace.
+
+## Move the local data
+
+The local data can grow large (JDKs, language servers, indexes). To keep it on another drive, set `OPENIDEA_LOCAL_DATA_DIR` to an absolute path before starting OpenIDEA. The IDE then uses `<OPENIDEA_LOCAL_DATA_DIR>/ai.l0ng.openidea` and creates it if missing.
+
+On Windows, for example:
+
+```bat
+setx OPENIDEA_LOCAL_DATA_DIR "E:\OpenIDEA"
+```
+
+On macOS and Linux, set it in the environment OpenIDEA starts from.
+
+- If the path is relative or can't be written to, OpenIDEA shows an error and exits instead of falling back to the default location.
+- Configuration, user data and logs stay where they are. Logs are still written when the variable is wrong, so you can find out why.
+- Existing data is not moved. Either let OpenIDEA download and rebuild it, or quit OpenIDEA and move only `tools/`, `language-server-runtimes/`, `index/`, `cache/`, `lsp/`, `notebook-runtime/`, `server/`, `logs/`, `agents/tools/`, `agents/registry.json` and the top-level `java-usages-*.jar` / `java-usages-*.tmp` files, keeping their relative paths. Leave everything else in place.
+
+## Logs
+
+OpenIDEA writes one log file per day, `openidea.<date>.log`, and keeps the last 7. Panics are written to the current log too.
+
+- Open the folder with **Help › Show Log in Finder** (macOS), **Help › Show Log in Explorer** (Windows) or **Help › Show Log in Files** (Linux). The same link is in **About OpenIDEA**.
+- For more detail, start OpenIDEA with the `RUST_LOG` environment variable set, for example `RUST_LOG=debug`. The default is `info`, with debug output from the app itself.
+
+Attach the log when you [report a problem](/en/reference/troubleshooting#report-a-problem).

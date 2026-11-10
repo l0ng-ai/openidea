@@ -1,0 +1,112 @@
+---
+title: "自建市场"
+description: "搭建自己的插件市场：一个与插件包放在一起的静态 index.json，用 openidea-plugin 生成和维护。"
+---
+
+插件市场是**静态**的：一个 `index.json` 加上旁边的插件包，放在任意 Web 服务器上或直接从文件夹读取，不需要运行任何服务端程序。索引列出发布者及其公钥、插件及其插件包摘要，以及吊销记录。
+
+## 生成索引
+
+把签名好的插件包放进一个文件夹，让 `index` 为它们写出 `index.json`：
+
+```sh
+openidea-plugin pack plugins/acme-tools --key acme.key --publisher acme --out market/acme.tools-1.0.0.oiplugin
+openidea-plugin index market/ --publisher acme --name "ACME" --key acme.key
+```
+
+带上 `--publisher`、`--name` 和 `--key` 时，`index` 会：
+
+- 用该密钥的公钥注册（或更新）发布者 `acme`；
+- 把文件夹里的每个 `.oiplugin` 列为该发布者的插件，并逐个检查签名、清单和组件；
+- 保留该发布者旧 IDE 仍需要的旧版本，删除已不在文件夹中的插件；
+- 保留索引中已有的其他发布者、他们的插件和吊销记录。
+
+不带密钥时，`index` 列出文件夹中的所有插件包，每个都按索引中已有的发布者校验。发布者不在索引中的插件包会被拒绝。
+
+| 选项                  | 含义                                                                                                       |
+| --------------------- | ---------------------------------------------------------------------------------------------------------- |
+| `--out FILE`          | 写到 `<dir>/index.json` 以外的位置                                                                         |
+| `--download-base URL` | 写入绝对下载地址（`<URL>/<file>`），让每个版本始终留在首次发布的位置                                       |
+| `--previous-key F`    | 发布者之前的密钥，为新的 `--key` 背书（见 [审核规则与安全](/zh/plugins/publishing/policy) 中的“更换密钥”） |
+
+如果现有索引的格式比工具能写的更新，`index` 会拒绝改写，请先更新 `openidea-plugin`。
+
+## 合并其他索引
+
+```sh
+openidea-plugin merge market/index.json https://github.com/l0ng-ai/openidea/releases/latest/download/plugins-index.json --keep acme
+```
+
+`merge` 用另一个索引（路径或 URL）中的发布者、插件和吊销记录，替换你的索引中除 `--keep` 之外的所有发布者，并把它们的下载链接改为绝对地址。OpenIDEA 自己的 release 索引就是这样并入社区登记仓库的。想在自己的插件旁边同时提供官方和社区插件，就用这个命令。`--out FILE` 可以写到其他位置。
+
+## 让 IDE 使用它
+
+在 **设置 › 插件** 中打开齿轮菜单，选择 **插件仓库…**，在 **插件市场索引 URL：** 中填入 `https://…/index.json` 或一个文件夹路径；留空则恢复默认仓库。之后 **可用** 标签页列出的就是你的索引。
+
+IDE 只读取一个索引。如果希望用户仍能看到官方插件，请把官方索引合并进你的索引。
+
+<Note>
+  OpenIDEA 的 release 构建内置了官方发布者的公钥。`openidea.*` 的插件必须用它或它背书过的密钥签名，与你的索引为
+  `openidea` 列出什么密钥无关。
+</Note>
+
+## 索引格式
+
+```json
+{
+  "format": 1,
+  "publishers": [
+    {
+      "id": "acme",
+      "name": "ACME",
+      "keys": [{ "key": "<public key, base64>" }, { "key": "<older key>", "revoked": false }]
+    }
+  ],
+  "plugins": [
+    {
+      "id": "acme.tools",
+      "name": "ACME Tools",
+      "version": "1.0.0",
+      "description": "…",
+      "authors": ["ACME"],
+      "publisher": "acme",
+      "download": "acme.tools-1.0.0.oiplugin",
+      "digest": "<BLAKE3 digest of the package contents>",
+      "capabilities": ["project.read"],
+      "engine": "^1.0, ^1.4",
+      "categories": ["tools"],
+      "icon": { "light": "<svg …>", "dark": null }
+    }
+  ],
+  "revoked": [{ "id": "acme.old-tool", "versions": [], "reason": "Security problem" }]
+}
+```
+
+| 字段                           | 含义                                                                                                     |
+| ------------------------------ | -------------------------------------------------------------------------------------------------------- |
+| `format`                       | 索引格式，当前为 `1`                                                                                     |
+| `publishers[].id`              | 拥有插件 id `<id>.*`                                                                                     |
+| `publishers[].keys`            | Ed25519 公钥。`revoked: true` 表示不再信任用它签名的包；`endorsement` 记录之前的密钥对它的背书           |
+| `plugins[].download`           | 插件包，相对于索引的路径或绝对 URL                                                                       |
+| `plugins[].digest`             | 插件包内容的摘要，下载的文件必须与之匹配                                                                 |
+| `plugins[].engine`             | 该版本所需的 API：清单的 `engines.openidea` 收窄到组件构建时的 API。没有这个字段的条目不会提供给任何 IDE |
+| `plugins[].categories`、`icon` | 在 **可用** 中显示和筛选；图标会在 IDE 中再次净化                                                        |
+| `revoked`                      | 不得运行的插件版本（`versions` 为空表示所有版本），附带 `reason`                                         |
+| `moved`                        | 可选，替代本索引的新索引 URL                                                                             |
+
+`openidea-plugin` 没有吊销命令：请直接编辑 `index.json`，在 `revoked` 中添加条目，或把某个密钥设为 `"revoked": true`。`index` 和 `merge` 都会保留这些记录。
+
+## 格式兼容
+
+- 字段只增不减，IDE 会忽略不认识的字段。
+- 除非旧 IDE 无法读取改动，`format` 始终为 `1`。IDE 读到更新的格式时，仍会应用其中的吊销记录和 `moved`，但不列出任何插件，并提示用户更新。
+
+## 迁移市场
+
+带 `"moved": "<url>"` 的索引会把 IDE 引向该 URL 的索引（相对或绝对地址）。`https` 索引只能迁到另一个 `https` 地址。这样插件市场可以换主机，而已发布的 IDE 不用修改配置的地址。
+
+## IDE 如何使用索引
+
+- 每天读取一次索引，并保留最后一次读取的副本。
+- 安装时下载插件包，用索引条目的摘要和发布者密钥校验，然后显示授权对话框。
+- 被吊销的插件以及用被吊销密钥签名的插件，在已安装的地方会被禁用并显示原因；重启后也会在其代码运行之前生效。

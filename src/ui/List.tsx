@@ -25,6 +25,8 @@ export interface ListRowState {
 }
 
 export interface ListProps<T> {
+  /** Stable listbox/option ids for an external combobox. */
+  id?: string;
   items: readonly T[];
   getKey: (item: T, index: number) => string;
   renderItem: (item: T, state: ListRowState) => ReactNode;
@@ -117,6 +119,7 @@ export function List<T>({
   renderSection,
   activeIndex,
   defaultActiveIndex,
+  id,
   onActiveChange,
   onSelect,
   isSelected,
@@ -139,7 +142,8 @@ export function List<T>({
     onActiveChange?.(i);
   };
   const scrollRef = useRef<HTMLDivElement>(null);
-  const baseId = useId();
+  const generatedId = useId();
+  const baseId = id ?? generatedId;
   const virtualizer = useVirtualizer({
     count: items.length,
     getScrollElement: () => scrollRef.current,
@@ -148,9 +152,10 @@ export function List<T>({
     getItemKey: (i) => getKey(items[i]!, i),
   });
 
+  const viewportHeight = virtualizer.scrollRect?.height;
   useEffect(() => {
     if (active >= 0 && active < items.length) virtualizer.scrollToIndex(active, { align: "auto" });
-  }, [active, items.length, virtualizer]);
+  }, [active, items.length, viewportHeight, virtualizer]);
 
   // Options are virtualised: expose position / count of selectable rows to assistive tech.
   const optionIndex = useMemo(() => {
@@ -182,6 +187,7 @@ export function List<T>({
   return (
     <div
       ref={scrollRef}
+      id={id}
       role="listbox"
       aria-multiselectable={onSelect ? true : undefined}
       aria-label={aria["aria-label"]}

@@ -5,6 +5,7 @@ use crate::{ChangeKind, ChangedFile, Commit, LogOrder, LogQuery, Repo, RevisionC
 use gix::ObjectId;
 use gix::bstr::ByteSlice;
 use ide_core::{CancellationToken, IdeError, IdeResult};
+use redb::ReadableDatabase;
 use std::collections::{HashMap, HashSet};
 
 /// Log "Text or hash" filter: the message (substring or regex), or a hash prefix.
@@ -276,44 +277,60 @@ pub(crate) fn log(r: &Repo, q: &LogQuery, cancel: &CancellationToken) -> IdeResu
         all.retain_until = None;
         all.request = None;
         all.stop_at = None;
+        let repo = r.gix()?;
+        let decorations = decorations(&repo)?;
+        let shallow_vec =
+            repo.shallow_commits().map_err(gx)?.map(|ids| ids.iter().copied().collect::<Vec<_>>()).unwrap_or_default();
+        let shallow: HashSet<ObjectId> = shallow_vec.iter().copied().collect();
         let refs = r.log_refs()?;
-        let shallow = r
-            .gix()?
-            .shallow_commits()
-            .map_err(gx)?
-            .map(|ids| ids.iter().copied().collect::<Vec<_>>())
-            .unwrap_or_default();
-        let key = format!("{}:{refs:?}:{shallow:?}", serde_json::to_string(&all).map_err(gx)?);
+        let key = format!("{}:{refs:?}:{shallow_vec:?}", serde_json::to_string(&all).map_err(gx)?);
         let cached = index.views.get(&key).cloned();
         let view = if let Some(cached) = cached {
             cached
         } else {
             // Immutable metadata is reused across roots, filters, merges and ref changes.
             all.request = q.request;
-            let commits =
-                std::sync::Arc::new(crate::log_index::IndexedView::new(log_indexed(r, &all, cancel, &mut index)?));
+            let rows =
+                std::sync::Arc::new(crate::log_index::IndexedView::new(log_indexed_rows(r, &all, cancel, &mut index)?));
             if index.views.len() >= 4 {
                 index.views.clear();
             }
-            index.views.insert(key, commits.clone());
-            commits
+            index.views.insert(key, rows.clone());
+            rows
+        };
+        let find_pos = |id: &str| {
+            ObjectId::from_hex(id.as_bytes())
+                .ok()
+                .and_then(|oid| view.positions.get(&oid).copied())
+                .or_else(|| view.rows.iter().position(|row| row.id.to_string().starts_with(id)))
         };
         let start = q
             .seek
             .as_ref()
-            .and_then(|id| view.positions.get(id).copied())
+            .and_then(|id| find_pos(id))
             .map(|i| i.saturating_sub(if q.limit == 0 { 50 } else { 50.min(q.limit as usize / 2) }))
             .unwrap_or(q.skip as usize);
-        let retain = q.retain_until.as_ref().and_then(|id| view.positions.get(id).copied()).map(|i| i + 1).unwrap_or(0);
+        let retain = q.retain_until.as_ref().and_then(|id| find_pos(id)).map(|i| i + 1).unwrap_or(0);
         let limit = if q.limit == 0 { usize::MAX } else { (q.limit as usize).max(retain.saturating_sub(start)) };
+        let total = view.rows.len() as u32;
+        let db = index.db().cloned();
+        let txn = db.as_ref().and_then(|db| db.begin_read().ok());
+        let table = txn.as_ref().and_then(|t| t.open_table(crate::log_index::COMMITS).ok());
         let mut result = Vec::new();
-        for (i, c) in view.commits.iter().enumerate().skip(start).take(limit) {
+        for (i, row) in view.rows.iter().enumerate().skip(start).take(limit) {
             if cancel.is_cancelled() {
                 return Err(IdeError::cancelled());
             }
-            let mut c = c.clone();
-            c.log_position = Some(i as u32);
-            c.log_total = Some(view.commits.len() as u32);
+            let c = materialize_row(
+                &repo,
+                &mut index,
+                table.as_ref(),
+                row,
+                &shallow,
+                &decorations,
+                true,
+                Some((i as u32, total)),
+            )?;
             let stop = q.stop_at.as_ref() == Some(&c.id);
             result.push(c);
             if stop {
@@ -328,12 +345,186 @@ pub(crate) fn log(r: &Repo, q: &LogQuery, cancel: &CancellationToken) -> IdeResu
     result
 }
 
+#[allow(clippy::too_many_arguments)]
+fn materialize_row(
+    repo: &gix::Repository,
+    index: &mut crate::log_index::LogIndex,
+    table: Option<&redb::ReadOnlyTable<&str, &[u8]>>,
+    row: &crate::log_index::IndexedRow,
+    shallow: &HashSet<ObjectId>,
+    decorations: &HashMap<ObjectId, Vec<String>>,
+    summary_only: bool,
+    position: Option<(u32, u32)>,
+) -> IdeResult<Commit> {
+    let record = index.get_with_table(repo, row.id, table)?;
+    let mut commit = (*record).clone();
+    let parents =
+        commit.parents.iter().map(|p| ObjectId::from_hex(p.as_bytes()).map_err(gx)).collect::<IdeResult<Vec<_>>>()?;
+    commit.graph_dashed = row.graph_parents.iter().map(|p| !parents.contains(p)).collect();
+    commit.dashed = if commit.graph_dashed.iter().any(|d| *d) { commit.graph_dashed.clone() } else { Vec::new() };
+    commit.graph_parents = Some(row.graph_parents.iter().map(ToString::to_string).collect());
+    if shallow.contains(&row.id) {
+        commit.graph_boundary_parents = commit.parents.clone();
+    }
+    commit.on_current_branch = Some(row.on_current_branch);
+    commit.refs = decorations.get(&row.id).cloned().unwrap_or_default();
+    commit.history_path = row.history_path.clone();
+    if let Some((pos, total)) = position {
+        commit.log_position = Some(pos);
+        commit.log_total = Some(total);
+    }
+    if !summary_only {
+        commit.message = index.message(repo, row.id)?;
+        commit.message_truncated = false;
+    }
+    Ok(commit)
+}
+
+fn update_head_reachable(
+    repo: &gix::Repository,
+    index: &mut crate::log_index::LogIndex,
+    cancel: &CancellationToken,
+) -> IdeResult<()> {
+    let head = repo.head_id().ok().map(|id| id.detach());
+    let shallow_stamp =
+        repo.shallow_file().ok().and_then(|path| std::fs::metadata(path).ok()).and_then(|m| m.modified().ok());
+    let stamp = head.map(|id| (id, shallow_stamp));
+    if index.head == stamp {
+        return Ok(());
+    }
+    let mut additions = Vec::new();
+    let mut cursor = head;
+    let old_head = index.head;
+    if let (Some((old, old_shallow)), Some(_)) = (old_head, head)
+        && old_shallow == shallow_stamp
+    {
+        while let Some(id) = cursor {
+            if cancel.is_cancelled() {
+                return Err(IdeError::cancelled());
+            }
+            if id == old {
+                break;
+            }
+            let record = index.get(repo, id)?;
+            if record.parents.len() != 1 {
+                cursor = None;
+                break;
+            }
+            additions.push(id);
+            cursor = Some(ObjectId::from_hex(record.parents[0].as_bytes()).map_err(gx)?);
+        }
+    } else {
+        cursor = None;
+    }
+    if cursor.is_some() && cursor == old_head.map(|(id, _)| id) {
+        index.reachable.extend(additions);
+        index.head = stamp;
+    } else {
+        let mut reachable = HashSet::new();
+        if let Some(head) = head {
+            for item in repo.rev_walk([head]).all().map_err(gx)? {
+                if cancel.is_cancelled() {
+                    return Err(IdeError::cancelled());
+                }
+                reachable.insert(item.map_err(gx)?.id);
+            }
+        }
+        index.reachable = reachable;
+        index.head = stamp;
+    }
+    Ok(())
+}
+
 fn log_indexed(
     r: &Repo,
     q: &LogQuery,
     cancel: &CancellationToken,
     index: &mut crate::log_index::LogIndex,
 ) -> IdeResult<Vec<Commit>> {
+    let repo = r.gix()?;
+    let shallow: HashSet<ObjectId> =
+        repo.shallow_commits().map_err(gx)?.map(|ids| ids.iter().copied().collect()).unwrap_or_default();
+    let decorations = decorations(&repo)?;
+    let range = q.range.as_deref().map(str::trim).filter(|s| !s.is_empty());
+    let revs: Vec<&str> = q.branch.iter().chain(&q.branches).map(|b| b.trim()).filter(|b| !b.is_empty()).collect();
+    let ranges: Vec<_> = q.ranges.iter().map(|s| s.trim()).filter(|s| !s.is_empty()).collect();
+    let tips =
+        if range.is_some() || (!ranges.is_empty() && revs.is_empty()) { Vec::new() } else { tips(&repo, &revs)? };
+    let paths: Vec<String> = q
+        .path
+        .iter()
+        .chain(&q.paths)
+        .map(|p| r.rel_path(p))
+        .collect::<IdeResult<Vec<_>>>()?
+        .into_iter()
+        .filter(|p| !p.is_empty())
+        .collect();
+    let authors: Vec<_> =
+        q.author.iter().chain(&q.authors).map(|a| a.trim().to_lowercase()).filter(|a| !a.is_empty()).collect();
+    if !q.summary_only
+        && q.skip == 0
+        && q.limit == 1
+        && range.is_none()
+        && ranges.is_empty()
+        && tips.len() == 1
+        && paths.is_empty()
+        && authors.is_empty()
+        && q.text.as_deref().is_none_or(|t| t.trim().is_empty())
+        && q.speed_search.as_deref().is_none_or(|t| t.trim().is_empty())
+        && !q.no_merges
+        && q.since_ms.is_none()
+        && q.until_ms.is_none()
+    {
+        update_head_reachable(&repo, index, cancel)?;
+        let id = tips[0];
+        let record = index.get(&repo, id)?;
+        let mut commit = (*record).clone();
+        let shown_parents: Vec<String> = if shallow.contains(&id) {
+            Vec::new()
+        } else {
+            commit
+                .parents
+                .iter()
+                .take(if q.first_parent { 1 } else { usize::MAX })
+                .filter(|p| {
+                    ObjectId::from_hex(p.as_bytes())
+                        .ok()
+                        .is_some_and(|oid| index.has_cached(&oid) || repo.has_object(oid))
+                })
+                .cloned()
+                .collect()
+        };
+        commit.graph_dashed = vec![false; shown_parents.len()];
+        commit.graph_parents = Some(shown_parents);
+        if shallow.contains(&id) {
+            commit.graph_boundary_parents = commit.parents.clone();
+        }
+        commit.on_current_branch = Some(index.reachable.contains(&id));
+        commit.refs = decorations.get(&id).cloned().unwrap_or_default();
+        commit.message = index.message(&repo, id)?;
+        commit.message_truncated = false;
+        return Ok(vec![commit]);
+    }
+    let rows = log_indexed_rows(r, q, cancel, index)?;
+    let db = index.db().cloned();
+    let txn = db.as_ref().and_then(|db| db.begin_read().ok());
+    let table = txn.as_ref().and_then(|t| t.open_table(crate::log_index::COMMITS).ok());
+    let mut out = Vec::with_capacity(rows.len());
+    for row in &rows {
+        if cancel.is_cancelled() {
+            return Err(IdeError::cancelled());
+        }
+        out.push(materialize_row(&repo, index, table.as_ref(), row, &shallow, &decorations, q.summary_only, None)?);
+    }
+    Ok(out)
+}
+
+fn log_indexed_rows(
+    r: &Repo,
+    q: &LogQuery,
+    cancel: &CancellationToken,
+    index: &mut crate::log_index::LogIndex,
+) -> IdeResult<Vec<crate::log_index::IndexedRow>> {
     if cancel.is_cancelled() {
         return Err(IdeError::cancelled());
     }
@@ -410,29 +601,14 @@ fn log_indexed(
     };
     let authors: Vec<_> =
         q.author.iter().chain(&q.authors).map(|a| a.trim().to_lowercase()).filter(|a| !a.is_empty()).collect();
-    let mut visibility = Visibility {
-        speed_refs: &decorations,
-        query: q,
-        path_ids,
-        range_ids: range_ids.as_ref().map(|ids| ids.iter().copied().collect()),
-        authors,
-        text: q.text.as_deref().map(|t| TextFilter::new(r, &scopes, q, t, cancel)).transpose()?.flatten(),
-        matches: HashMap::new(),
-        projected: HashMap::new(),
-        cancel,
-        index,
-        shallow: shallow.clone(),
-    };
+    update_head_reachable(&repo, index, cancel)?;
+    let mut range_ids_set = range_ids.as_ref().map(|ids| ids.iter().copied().collect::<HashSet<_>>());
     type Walk<'a> = Box<dyn Iterator<Item = IdeResult<ObjectId>> + 'a>;
     let walk: Walk<'_> = if let Some(ids) = range_ids {
         Box::new(ids.into_iter().map(Ok))
     } else if q.summary_only {
-        let ids = visibility.index.graph(&repo, &tips, &shallow, q.first_parent, cancel)?;
-        Box::new(
-            sort_subset(&repo, ids, q.order, q.first_parent, &shallow, cancel, &visibility.index.nodes)?
-                .into_iter()
-                .map(Ok),
-        )
+        let ids = index.graph(&repo, &tips, &shallow, q.first_parent, cancel)?;
+        Box::new(sort_subset(&repo, ids, q.order, q.first_parent, &shallow, cancel, &index.nodes)?.into_iter().map(Ok))
     } else if repo.is_shallow().unwrap_or(false) || q.request.is_some() {
         // The process can be interrupted even during indegree preparation. Git also
         // respects shallow boundaries while retaining a topological order.
@@ -473,7 +649,7 @@ fn log_indexed(
             let mut boundary_args = vec!["rev-list".to_string()];
             let stdin = revision_args(&mut boundary_args, &revs, &[], None);
             let boundaries = run_log(r, boundary_args, stdin.as_deref(), cancel)?;
-            visibility.range_ids = Some(
+            range_ids_set = Some(
                 boundaries
                     .stdout_str()
                     .lines()
@@ -499,60 +675,30 @@ fn log_indexed(
     };
     let walk: Walk<'_> = if q.order == LogOrder::Standard {
         let ids = walk.collect::<IdeResult<Vec<_>>>()?;
-        Box::new(
-            sort_subset(&repo, ids, q.order, q.first_parent, &shallow, cancel, &visibility.index.nodes)?
-                .into_iter()
-                .map(Ok),
-        )
+        Box::new(sort_subset(&repo, ids, q.order, q.first_parent, &shallow, cancel, &index.nodes)?.into_iter().map(Ok))
     } else {
         walk
     };
-    let head = repo.head_id().ok().map(|id| id.detach());
-    let shallow_stamp =
-        repo.shallow_file().ok().and_then(|path| std::fs::metadata(path).ok()).and_then(|m| m.modified().ok());
-    let stamp = head.map(|id| (id, shallow_stamp));
-    if visibility.index.head != stamp {
-        let mut additions = Vec::new();
-        let mut cursor = head;
-        let old_head = visibility.index.head;
-        if let (Some((old, old_shallow)), Some(_)) = (old_head, head)
-            && old_shallow == shallow_stamp
-        {
-            while let Some(id) = cursor {
-                if cancel.is_cancelled() {
-                    return Err(IdeError::cancelled());
-                }
-                if id == old {
-                    break;
-                }
-                let record = visibility.index.get(&repo, id)?;
-                if record.parents.len() != 1 {
-                    cursor = None;
-                    break;
-                }
-                additions.push(id);
-                cursor = Some(ObjectId::from_hex(record.parents[0].as_bytes()).map_err(gx)?);
-            }
-        } else {
-            cursor = None;
-        }
-        if cursor.is_some() && cursor == old_head.map(|(id, _)| id) {
-            visibility.index.reachable.extend(additions);
-            visibility.index.head = stamp;
-        } else {
-            let mut reachable = HashSet::new();
-            if let Some(head) = head {
-                for item in repo.rev_walk([head]).all().map_err(gx)? {
-                    if cancel.is_cancelled() {
-                        return Err(IdeError::cancelled());
-                    }
-                    reachable.insert(item.map_err(gx)?.id);
-                }
-            }
-            visibility.index.reachable = reachable;
-            visibility.index.head = stamp;
-        }
-    }
+    let text = q.text.as_deref().map(|t| TextFilter::new(r, &scopes, q, t, cancel)).transpose()?.flatten();
+    let db = index.db().cloned();
+    let txn = db.as_ref().and_then(|db| db.begin_read().ok());
+    let table = txn.as_ref().and_then(|t| t.open_table(crate::log_index::COMMITS).ok());
+    let mut visibility = Visibility {
+        speed_refs: &decorations,
+        query: q,
+        path_ids,
+        range_ids: range_ids_set,
+        authors,
+        text,
+        matches: HashMap::new(),
+        projected: HashMap::new(),
+        cancel,
+        index,
+        table: table.as_ref(),
+        shallow: shallow.clone(),
+    };
+    let stop_id = q.stop_at.as_deref().and_then(|s| ObjectId::from_hex(s.as_bytes()).ok());
+    let unfiltered = visibility.is_unfiltered();
     let mut out = Vec::new();
     let mut skip = q.skip as usize;
     let limit = if q.limit == 0 { usize::MAX } else { q.limit as usize };
@@ -561,36 +707,44 @@ fn log_indexed(
             return Err(IdeError::cancelled());
         }
         let id = item?;
-        if !visibility.shows(&repo, id)? {
+        if !unfiltered && !visibility.shows(&repo, id)? {
             continue;
         }
         if skip > 0 {
             skip -= 1;
             continue;
         }
-        let record = visibility.index.get(&repo, id)?;
-        let parents = record
-            .parents
-            .iter()
-            .map(|p| ObjectId::from_hex(p.as_bytes()).map_err(gx))
-            .collect::<IdeResult<Vec<_>>>()?;
-        let shown_parents = if shallow.contains(&id) { Vec::new() } else { visibility.parents(&repo, &parents)? };
-        let mut commit = (*record).clone();
-        commit.graph_dashed = shown_parents.iter().map(|p| !parents.contains(p)).collect();
-        commit.dashed = if commit.graph_dashed.iter().any(|d| *d) { commit.graph_dashed.clone() } else { Vec::new() };
-        commit.graph_parents = Some(shown_parents.iter().map(ToString::to_string).collect());
-        if shallow.contains(&id) {
-            commit.graph_boundary_parents = commit.parents.clone();
-        }
-        commit.on_current_branch = Some(visibility.index.reachable.contains(&id));
-        commit.refs = decorations.get(&id).cloned().unwrap_or_default();
-        commit.history_path = history_paths.get(&id).cloned();
-        if !q.summary_only {
-            commit.message = visibility.index.message(&repo, id)?;
-            commit.message_truncated = false;
-        }
-        out.push(commit);
-        if out.len() >= limit || q.stop_at.as_deref() == Some(id.to_string().as_str()) {
+        let parents: Vec<ObjectId> = if shallow.contains(&id) {
+            Vec::new()
+        } else if let Some((ps, _)) = visibility.index.nodes.get(&id) {
+            ps.clone()
+        } else {
+            let record = visibility.index.get_with_table(&repo, id, visibility.table)?;
+            record
+                .parents
+                .iter()
+                .map(|p| ObjectId::from_hex(p.as_bytes()).map_err(gx))
+                .collect::<IdeResult<Vec<_>>>()?
+        };
+        let shown_parents = if shallow.contains(&id) {
+            Vec::new()
+        } else if unfiltered {
+            parents
+                .into_iter()
+                .take(if q.first_parent { 1 } else { usize::MAX })
+                .filter(|oid| visibility.index.has_cached(oid) || repo.has_object(*oid))
+                .collect()
+        } else {
+            visibility.parents(&repo, &parents)?
+        };
+        let on_current_branch = visibility.index.reachable.contains(&id);
+        out.push(crate::log_index::IndexedRow {
+            id,
+            graph_parents: shown_parents,
+            on_current_branch,
+            history_path: history_paths.get(&id).cloned(),
+        });
+        if out.len() >= limit || stop_id == Some(id) {
             break;
         }
     }
@@ -612,6 +766,7 @@ fn sort_subset(
     let mut parents = Vec::with_capacity(ids.len());
     let mut children = vec![0usize; ids.len()];
     let mut times = Vec::with_capacity(ids.len());
+    let mut projected: HashMap<ObjectId, Vec<usize>> = HashMap::new();
     for id in &ids {
         if cancel.is_cancelled() {
             return Err(IdeError::cancelled());
@@ -623,8 +778,7 @@ fn sort_subset(
             (commit.parent_ids().map(|p| p.detach()).collect(), commit.time().map(|t| t.seconds).unwrap_or(0))
         };
         times.push(time);
-        let mut ordered = Vec::new();
-        let mut pending: Vec<_> = all_parents
+        let direct: Vec<_> = all_parents
             .into_iter()
             .take(if shallow.contains(id) {
                 0
@@ -634,28 +788,70 @@ fn sort_subset(
                 usize::MAX
             })
             .collect();
-        let mut visited = HashSet::new();
-        while let Some(parent) = pending.pop() {
-            if !visited.insert(parent) {
-                continue;
-            }
-            if let Some(position) = positions.get(&parent) {
-                if !ordered.contains(position) {
-                    ordered.push(*position);
+        let mut ordered = Vec::with_capacity(direct.len());
+        if direct.iter().all(|p| positions.contains_key(p)) {
+            for p in direct {
+                let pos = positions[&p];
+                if !ordered.contains(&pos) {
+                    ordered.push(pos);
                 }
-            } else if !shallow.contains(&parent) && repo.has_object(parent) {
-                pending.extend(
-                    repo.find_commit(parent)
-                        .map_err(gx)?
-                        .parent_ids()
-                        .take(if first_parent { 1 } else { usize::MAX })
-                        .map(|p| p.detach()),
-                );
+            }
+        } else {
+            for parent in direct {
+                if let Some(&pos) = positions.get(&parent) {
+                    if !ordered.contains(&pos) {
+                        ordered.push(pos);
+                    }
+                    continue;
+                }
+                let mut stack = vec![(parent, false)];
+                while let Some((curr, expanded)) = stack.pop() {
+                    if cancel.is_cancelled() {
+                        return Err(IdeError::cancelled());
+                    }
+                    if projected.contains_key(&curr) {
+                        continue;
+                    }
+                    if let Some(&pos) = positions.get(&curr) {
+                        projected.insert(curr, vec![pos]);
+                    } else if shallow.contains(&curr) || (!nodes.contains_key(&curr) && !repo.has_object(curr)) {
+                        projected.insert(curr, Vec::new());
+                    } else {
+                        let ancestors: Vec<_> = if let Some((ps, _)) = nodes.get(&curr) {
+                            ps.iter().take(if first_parent { 1 } else { usize::MAX }).copied().collect()
+                        } else {
+                            repo.find_commit(curr)
+                                .map_err(gx)?
+                                .parent_ids()
+                                .take(if first_parent { 1 } else { usize::MAX })
+                                .map(|p| p.detach())
+                                .collect()
+                        };
+                        if !expanded {
+                            stack.push((curr, true));
+                            stack.extend(ancestors.iter().rev().map(|&p| (p, false)));
+                        } else {
+                            let mut combined = Vec::new();
+                            for a in ancestors {
+                                for &p in projected.get(&a).into_iter().flatten() {
+                                    if !combined.contains(&p) {
+                                        combined.push(p);
+                                    }
+                                }
+                            }
+                            projected.insert(curr, combined);
+                        }
+                    }
+                }
+                for &pos in projected.get(&parent).into_iter().flatten() {
+                    if !ordered.contains(&pos) {
+                        ordered.push(pos);
+                    }
+                }
             }
         }
-        ordered.reverse();
-        for p in &ordered {
-            children[*p] += 1;
+        for &p in &ordered {
+            children[p] += 1;
         }
         parents.push(ordered);
     }
@@ -749,10 +945,22 @@ struct Visibility<'a> {
     projected: HashMap<ObjectId, Vec<ObjectId>>,
     cancel: &'a CancellationToken,
     index: &'a mut crate::log_index::LogIndex,
+    table: Option<&'a redb::ReadOnlyTable<&'static str, &'static [u8]>>,
     shallow: HashSet<ObjectId>,
 }
 
 impl Visibility<'_> {
+    fn is_unfiltered(&self) -> bool {
+        self.path_ids.is_none()
+            && self.range_ids.is_none()
+            && !self.query.no_merges
+            && self.query.since_ms.is_none()
+            && self.query.until_ms.is_none()
+            && self.query.speed_search.is_none()
+            && self.authors.is_empty()
+            && self.text.is_none()
+    }
+
     fn shows(&mut self, repo: &gix::Repository, id: ObjectId) -> IdeResult<bool> {
         if self.cancel.is_cancelled() {
             return Err(IdeError::cancelled());
@@ -760,16 +968,23 @@ impl Visibility<'_> {
         if let Some(shown) = self.matches.get(&id) {
             return Ok(*shown);
         }
-        let shown = if !repo.has_object(id)
+        let shown = if (!self.index.has_cached(&id) && !repo.has_object(id))
             || self.path_ids.as_ref().is_some_and(|ids| !ids.contains(&id))
             || self.range_ids.as_ref().is_some_and(|ids| !ids.contains(&id))
         {
             false
+        } else if self.authors.is_empty()
+            && self.query.speed_search.is_none()
+            && self.text.is_none()
+            && let Some((parents, time_s)) = self.index.nodes.get(&id)
+        {
+            let time = (*time_s as f64) * 1000.0;
+            !(self.query.no_merges && parents.len() > 1)
+                && self.query.since_ms.is_none_or(|s| time >= s)
+                && self.query.until_ms.is_none_or(|u| time < u)
         } else {
-            let commit = self.index.get(repo, id)?;
+            let commit = self.index.get_with_table(repo, id, self.table)?;
             let time = commit.commit_time_ms;
-            let name = commit.author.to_lowercase();
-            let email = commit.email.to_lowercase();
             !(self.query.no_merges && commit.parents.len() > 1)
                 && self.query.since_ms.is_none_or(|s| time >= s)
                 && self.query.until_ms.is_none_or(|u| time < u)
@@ -794,14 +1009,17 @@ impl Visibility<'_> {
                         })
                     })
                 })
-                && (self.authors.is_empty()
-                    || self.authors.iter().any(|a| {
+                && (self.authors.is_empty() || {
+                    let name = commit.author.to_lowercase();
+                    let email = commit.email.to_lowercase();
+                    self.authors.iter().any(|a| {
                         if self.query.authors_exact {
                             crate::log_index::matches_user(a, &name, &email)
                         } else {
                             name.contains(a.as_str()) || email.contains(a.as_str())
                         }
-                    }))
+                    })
+                })
                 && match &self.text {
                     Some(text) => text.matches(repo, self.index, id)?,
                     None => true,
@@ -823,22 +1041,22 @@ impl Visibility<'_> {
                 }
                 if self.shows(repo, id)? {
                     self.projected.insert(id, vec![id]);
-                } else if !repo.has_object(id) {
+                } else if !self.index.has_cached(&id) && !repo.has_object(id) {
                     self.projected.insert(id, Vec::new());
                 } else {
-                    let commit = self.index.get(repo, id)?;
-                    let ancestors = commit
-                        .parents
-                        .iter()
-                        .take(if self.shallow.contains(&id) {
-                            0
-                        } else if self.query.first_parent {
-                            1
-                        } else {
-                            usize::MAX
-                        })
-                        .map(|p| ObjectId::from_hex(p.as_bytes()).map_err(gx))
-                        .collect::<IdeResult<Vec<_>>>()?;
+                    let ancestors = if self.shallow.contains(&id) {
+                        Vec::new()
+                    } else if let Some((ps, _)) = self.index.nodes.get(&id) {
+                        ps.iter().take(if self.query.first_parent { 1 } else { usize::MAX }).copied().collect()
+                    } else {
+                        let commit = self.index.get_with_table(repo, id, self.table)?;
+                        commit
+                            .parents
+                            .iter()
+                            .take(if self.query.first_parent { 1 } else { usize::MAX })
+                            .map(|p| ObjectId::from_hex(p.as_bytes()).map_err(gx))
+                            .collect::<IdeResult<Vec<_>>>()?
+                    };
                     if !expanded {
                         stack.push((id, true));
                         stack.extend(ancestors.iter().rev().map(|p| (*p, false)));

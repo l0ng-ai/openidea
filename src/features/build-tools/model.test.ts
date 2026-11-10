@@ -212,7 +212,7 @@ describe("Maven runs", () => {
       command: "/p/mvnw",
       args: ["clean", "test", "-o", "-Pci"],
       cwd: "core",
-      env: { JAVA_HOME: "/jdk21" },
+      env: {},
       isTest: true,
       detected: false,
     });
@@ -245,6 +245,15 @@ describe("Maven runs", () => {
         profiles: {},
       }).args,
     ).toEqual(["-s", "/own/settings.xml", "test"]);
+  });
+
+  // #2433: the model's `JAVA_HOME` is Settings-derived; freezing it in the configuration kept an
+  // outdated runner JRE even after the setting was corrected (also across a restart, since a
+  // temporary configuration persisted it). The launcher resolves it from Settings instead.
+  it("does not freeze the settings-derived JAVA_HOME into a generated configuration", () => {
+    expect(core.env).toEqual({ JAVA_HOME: "/jdk21" });
+    const goal = mavenGoalConfig(core, ["compile"], maven, { offline: false, skipTests: false, profiles: {} });
+    expect(goal.env).toEqual({});
   });
 
   it("parses typed command lines", () => {
@@ -322,6 +331,8 @@ describe("Gradle tree and runs", () => {
       command: "/p/gradlew",
       args: [":app:test", "--offline"],
       cwd: null,
+      // The build model's `JAVA_HOME` comes from Settings; a task must not freeze it (#2433).
+      env: {},
       isTest: true,
     });
     expect(gradleTaskConfig(gradle, gradle.projects[0]!, ["wrapper"], { offline: false }).args).toEqual(["wrapper"]);
@@ -355,7 +366,8 @@ describe("Gradle tree and runs", () => {
     expect(runs[1]).toMatchObject({
       command: "/p/second/gradlew",
       cwd: "second",
-      env: { JAVA_HOME: "/second/jdk" },
+      // The build's `JAVA_HOME` is Settings-derived and stays out of the configuration (#2433).
+      env: {},
       args: [":app:test", "--offline"],
     });
     expect(gradleProjectKey(builds[1]!, builds[1]!.projects[1]!)).toBe('gradle:["second",":app"]');

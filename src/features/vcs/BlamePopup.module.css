@@ -1,0 +1,45 @@
+.popup {
+  width: min(540px, calc(100vw - 32px));
+  max-height: min(480px, 65vh);
+  overflow: auto;
+  padding: 12px 14px;
+  white-space: normal;
+  -webkit-user-select: text;
+  user-select: text;
+  font-size: var(--fs-ui);
+  line-height: 1.5;
+}
+
+.header {
+  color: var(--fg);
+  line-height: 1.45;
+}
+
+.hashLink {
+  color: var(--link);
+  font-family: var(--font-mono);
+  font-size: inherit;
+  cursor: pointer;
+  word-break: break-all;
+  text-align: left;
+}
+
+.hashLink:hover {
+  color: var(--link-hover);
+  text-decoration: underline;
+}
+
+.subject {
+  margin-top: 10px;
+  color: var(--fg-strong);
+  font-weight: 600;
+  white-space: pre-wrap;
+  word-break: break-word;
+}
+
+.body {
+  margin-top: 8px;
+  color: var(--fg);
+  white-space: pre-wrap;
+  word-break: break-word;
+}

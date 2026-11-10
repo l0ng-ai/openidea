@@ -218,7 +218,8 @@ export function refreshNow(): Promise<void> {
       const repo = attentionRepo(shown, s.operations, operations) ?? shown;
       const heads = Object.fromEntries(vcsRoots.map((r) => [r.root, { head: r.head, headCommit: r.headCommit }]));
       useVcs.setState({ operations, heads });
-      if (repo !== s.repo || roots.join("\n") !== s.roots.join("\n")) useVcs.setState({ roots, repo });
+      const sameRoots = roots.join("\n") === s.roots.join("\n");
+      if (repo !== s.repo || !sameRoots) useVcs.setState({ roots: sameRoots ? s.roots : roots, repo });
       applyStatus(status, branch);
       useVcs.setState({ branches, stashes, error: null });
       // Branch info and branches above are of another repository: load the selected one's.

@@ -38,6 +38,14 @@ body {
   cursor: default;
 }
 
+/* A resize drag owns the cursor until release, even over the editor or a button. */
+html[data-drag-cursor],
+html[data-drag-cursor] *,
+html[data-drag-cursor] *::before,
+html[data-drag-cursor] *::after {
+  cursor: var(--drag-cursor) !important;
+}
+
 html[data-selection-lock] *:not([data-selection-scope], [data-selection-scope] *) {
   -webkit-user-select: none !important;
   user-select: none !important;

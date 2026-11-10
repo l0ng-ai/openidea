@@ -87,6 +87,7 @@ export const CLIENT_SETTINGS_KEYS = [
   "vcs.git.pushDialogOnlyProtected",
   "vcs.git.combineStashAndShelf",
   "vcs.commit.nonModal",
+  "vcs.commit.doubleClickOpensDiff",
   "vcs.commit.showRightMargin",
 ] as const;
 

@@ -1,0 +1,83 @@
+---
+title: "C# 与 .NET"
+description: "使用 csharp-ls 的 C#、使用 FsAutoComplete 的 F#，用于构建、NuGet 包和测试的 .NET 工具窗口，以及基于 netcoredbg 的调试。"
+---
+
+OpenIDEA 通过 [csharp-ls](https://github.com/razzmatazz/csharp-language-server) 支持 C#（`.cs`、`.csx`），通过 [FsAutoComplete](https://github.com/ionide/FsAutoComplete) 支持 F#（`.fs`、`.fsi`、`.fsx`）。两者都以 .NET 工具的形式安装，调试都使用 [netcoredbg](https://github.com/Samsung/netcoredbg)。构建、NuGet 包和测试统一走 `dotnet` 命令行。其他语言见[语言支持总览](/zh/languages/index)。
+
+## 语言服务器
+
+| 语言 | 服务器         | 工作区根目录标记                                                                                            |
+| ---- | -------------- | ----------------------------------------------------------------------------------------------------------- |
+| C#   | csharp-ls      | `*.sln`、`*.slnx`、`*.csproj`、`global.json`、`Directory.Build.props`、`ProjectSettings/ProjectVersion.txt` |
+| F#   | fsautocomplete | `*.sln`、`*.fsproj`、`global.json`                                                                          |
+
+语言服务器会加载根据这些标记找到的解决方案或项目。FsAutoComplete 启动时开启了 `AutomaticWorkspaceInit`，无需等待编辑器请求就会自动加载项目。
+
+跳转到类库类型的定义时，csharp-ls 返回反编译后的源码，以只读文档打开；源生成器生成的代码同样以只读方式打开。
+
+`ProjectSettings/ProjectVersion.txt` 这个标记是为 Unity 项目准备的。把 OpenIDEA 设为 Unity 外部编辑器的方法见 [Unity](/zh/languages/unity)。
+
+## 环境配置
+
+需要安装 [.NET SDK](https://dotnet.microsoft.com/download)，并确保 `dotnet` 在 `PATH` 上。IDE 的构建、测试和包管理命令都通过它执行，语言服务器也用它安装。
+
+缺少语言服务器时，打开 C# 或 F# 文件会弹出“csharp-ls 未安装”（或 FsAutoComplete）的通知，点 **安装** 即可。也可以在 **设置 › 语言和框架 › 语言服务器** 中安装。
+
+| 工具           | 安装方式                                                                                                       |
+| -------------- | -------------------------------------------------------------------------------------------------------------- |
+| csharp-ls      | `dotnet tool install --tool-path` 安装到 IDE 自己的工具目录（不是全局工具）                                    |
+| FsAutoComplete | `dotnet tool install --tool-path` 安装到 IDE 自己的工具目录                                                    |
+| netcoredbg     | 从 `Samsung/netcoredbg` 的 GitHub Release 下载。提供 macOS arm64、Linux x64 与 arm64、Windows x64 的预编译包。 |
+
+`PATH` 上已有的 `csharp-ls`、`fsautocomplete` 或 `netcoredbg`（例如通过 `dotnet tool install --global csharp-ls` 安装的全局工具）会直接使用。
+
+## .NET 工具窗口
+
+**.NET** 工具窗口（位于右侧）管理项目文件夹中的 `.csproj`、`.fsproj` 和 `.vbproj` 项目，包括 `.sln`、`.slnx` 解决方案中列出的项目及其项目引用。通过 **查找操作…**（`⌘⇧A` / `Ctrl+Shift+A`）执行 **.NET 工作区** 打开它；**重新加载 .NET 工作区** 会重新扫描文件夹。
+
+对选中的项目可以：
+
+- 选择 **配置**（默认 `Debug`）和 **目标框架**（多目标项目）。
+- **构建**、**恢复**、**清理**（也可以通过 **构建 .NET 项目**、**还原 .NET 项目**、**清理 .NET 项目** 这几个操作执行），输出显示在 **输出** 区域。
+- 浏览 **NuGet 包**（包括间接依赖），用 **搜索 NuGet 包** 在已配置的包源中搜索（`dotnet package search`），以及添加、更新或移除包（`dotnet add package` / `dotnet remove package`）。
+- 查看 **项目引用**。
+- 发现并运行测试（见下文）。
+
+项目信息由 MSBuild 求值得到，因此看到的目标框架、输出路径和包都是 MSBuild 实际计算的结果，包括导入的属性。
+
+## 运行
+
+对找到的每个 `.csproj`（包括通过 `.sln` / `.slnx` 找到的），如果输出类型是 `Exe` 或 `WinExe`，或者使用了 `Microsoft.NET.Sdk.Web`，OpenIDEA 会生成运行配置：
+
+- **&lt;项目&gt; (.NET Project)**：`dotnet run --project <路径> --no-launch-profile`。
+- **&lt;项目&gt;: &lt;启动配置&gt;**：`Properties/launchSettings.json` 中每个启动配置各一个，以 `--launch-profile` 运行，并应用该配置中的环境变量、工作目录、命令行参数以及 `applicationUrl`（作为 `ASPNETCORE_URLS`）。
+
+**.NET 项目** 运行配置类型包含项目、**目标框架**、**启动配置** 和 **程序实参** 等字段，运行前会先构建项目。
+
+运行配置的编辑与新建见[运行配置](/zh/guide/run)。
+
+## 测试
+
+引用了 `Microsoft.NET.Test.Sdk`、MSTest、NUnit 或 xUnit，或者设置了 `IsTestProject` 的项目被视为测试项目，每个都会生成一个 `dotnet test (<项目>)` 配置。
+
+- 在编辑器中，标注了 `[Fact]`、`[Theory]`、`[Test]`、`[TestCase]`、`[TestCaseSource]`、`[TestMethod]` 或 `[DataTestMethod]` 的测试方法在行号栏会显示运行图标。
+- 在 .NET 工具窗口中，**发现 .NET 测试** 会列出所有测试（`dotnet test --list-tests`），可以全部运行或只运行其中一个。
+
+结果显示在运行工具窗口的测试树中：IDE 让 VSTest 生成 TRX 报告并读取它。基于 Microsoft.Testing.Platform 的项目需要 `Microsoft.Testing.Extensions.TrxReport` 包才能生成报告，**安装 TRX 报告支持** 会按项目所用测试平台的版本添加它。
+
+测试树和重新运行失败测试等内容见[测试](/zh/guide/testing)。
+
+## 调试
+
+以 **调试** 方式运行 .NET 项目配置时，IDE 会先构建项目，再向 MSBuild 查询输出程序集（Debug 配置下的 `TargetPath`），然后在 netcoredbg 下启动。缺少 netcoredbg 时会弹出通知提供安装。
+
+详见[调试](/zh/guide/debugging)。
+
+## 已知限制
+
+- 只有 C# 项目（`.csproj`）会自动生成运行配置。F# 和 VB 项目可以在 .NET 工具窗口中构建和测试，但运行配置需要自己创建。
+- 测试配置不带调试器运行，.NET 测试没有调试入口。
+- 没有 Visual Basic 语言服务器。
+- netcoredbg 没有 Windows on Arm 的预编译包。
+- 没有 WinForms、WPF 或 XAML 设计器。

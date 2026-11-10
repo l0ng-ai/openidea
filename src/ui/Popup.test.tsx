@@ -4,7 +4,7 @@ import { act, fireEvent, render, screen } from "@testing-library/react";
 import { getContext, setContext } from "@/platform/context";
 import { registerAction } from "@/platform/actions";
 import { Popup } from "./Popup";
-import { ContextMenuHost, Menu, MenuList, hideContextMenu, showContextMenu } from "./Menu";
+import { ContextMenuHost, Menu, MenuList, hideContextMenu, showContextMenu, useContextMenuStore } from "./Menu";
 import menuStyles from "./Menu.module.css";
 import { Dialog } from "./Dialog";
 
@@ -321,5 +321,109 @@ describe("Menu action enablement", () => {
     act(() => setContext("qaMenuFlag", true));
     expect(screen.getByRole("menuitem", { name: /Needs Flag/ })).not.toHaveAttribute("aria-disabled", "true");
     dispose();
+  });
+
+  describe("numeric mnemonics", () => {
+    const rows = (n: number) => [...Array(n)].map((_, i) => ({ label: `Row ${i + 1}`, run: () => {} }));
+
+    it("numbers the selectable rows in display order and skips headers and disabled rows", () => {
+      render(
+        <MenuList
+          numbers
+          items={[
+            { kind: "header", label: "Select In" },
+            { label: "Project View", run: () => {} },
+            { label: "Disabled", disabled: true, run: () => {} },
+            ...rows(9),
+          ]}
+          onDone={() => {}}
+        />,
+      );
+      const digit = (name: string) =>
+        screen.getByRole("menuitem", { name }).querySelector("[data-menu-number]")?.getAttribute("data-menu-number") ??
+        null;
+      expect(digit("Project View")).toBe("1");
+      // The disabled row keeps the column but gets no digit.
+      expect(screen.getByRole("menuitem", { name: "Disabled" }).querySelector('[aria-hidden="true"]')).toBeTruthy();
+      expect(digit("Disabled")).toBeNull();
+      expect(digit("Row 1")).toBe("2");
+      expect(digit("Row 8")).toBe("9");
+      // IDEA caps numeric mnemonics at nine: the tenth row shows the column, unnumbered.
+      expect(digit("Row 9")).toBeNull();
+    });
+
+    it("activates the row of a digit without running speed search", () => {
+      const run = vi.fn();
+      const done = vi.fn();
+      render(
+        <MenuList
+          numbers
+          items={[
+            { label: "Project View", run: () => {} },
+            { label: "Terminal", run },
+          ]}
+          onDone={done}
+        />,
+      );
+      fireEvent.keyDown(screen.getByRole("menuitem", { name: "Terminal" }), { key: "2" });
+      expect(run).toHaveBeenCalledTimes(1);
+      expect(done).toHaveBeenCalledTimes(1);
+    });
+
+    it("leaves a digit that numbers no row alone", () => {
+      const run = vi.fn();
+      render(<MenuList numbers items={[{ label: "Project View", run }]} onDone={() => {}} />);
+      fireEvent.keyDown(screen.getByRole("menuitem", { name: "Project View" }), { key: "5" });
+      expect(run).not.toHaveBeenCalled();
+    });
+
+    it("keeps first-letter speed search for non-digit keys", () => {
+      const run = vi.fn();
+      render(
+        <MenuList
+          numbers
+          items={[
+            { label: "Project View", run },
+            { label: "Terminal", run: () => {} },
+          ]}
+          onDone={() => {}}
+        />,
+      );
+      fireEvent.keyDown(screen.getByRole("menuitem", { name: "Project View" }), { key: "t" });
+      expect(screen.getByRole("menuitem", { name: "Terminal" })).toHaveFocus();
+      fireEvent.keyDown(screen.getByRole("menuitem", { name: "Terminal" }), { key: "Enter" });
+      expect(run).not.toHaveBeenCalled();
+    });
+
+    it("does not number submenu rows", () => {
+      render(
+        <MenuList
+          numbers
+          items={[
+            { label: "One", run: () => {} },
+            { label: "Parent", submenu: [{ label: "Child", run: () => {} }] },
+          ]}
+          onDone={() => {}}
+        />,
+      );
+      const menu = screen.getByRole("menu");
+      fireEvent.keyDown(menu, { key: "ArrowDown" });
+      fireEvent.keyDown(menu, { key: "ArrowRight" });
+      const submenu = document.querySelectorAll('[role="menu"]')[1]!;
+      expect(submenu).toBeTruthy();
+      expect(screen.getByRole("menuitem", { name: "Child" })).toBeInTheDocument();
+      expect(submenu.querySelectorAll("[data-menu-number]")).toHaveLength(0);
+    });
+
+    it("carries the option through the context menu store", () => {
+      render(<ContextMenuHost />);
+      act(() => showContextMenu({ x: 0, y: 0 }, rows(3), { numbers: true }));
+      expect(screen.getByRole("menuitem", { name: "Row 1" })).toHaveFocus();
+      fireEvent.keyDown(screen.getByRole("menu"), { key: "3" });
+      expect(useContextMenuStore.getState().menu).toBeNull();
+      act(() => showContextMenu({ x: 0, y: 0 }, rows(3)));
+      expect(document.querySelectorAll("[data-menu-number]")).toHaveLength(0);
+      act(() => hideContextMenu());
+    });
   });
 });

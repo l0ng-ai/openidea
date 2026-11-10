@@ -1,5 +1,12 @@
 # Third-party licenses
 
+## Flutter and Vite project icons
+
+`src/ui/brands/flutter.svg` and `vite.svg` use the unmodified logo paths from
+[Simple Icons](https://github.com/simple-icons/simple-icons), retrieved through
+Iconify (`simple-icons:flutter`, `simple-icons:vite`) and filled with the project
+icon colors. Licensed under [CC0 1.0 Universal](https://github.com/simple-icons/simple-icons/blob/develop/LICENSE.md).
+
 ## Project Lombok
 
 `java/lombok/lombok-1.18.48-openidea.3.jar` contains Project Lombok v1.18.48 with the Equinox

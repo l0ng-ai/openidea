@@ -73,6 +73,12 @@ export function resetHierarchy() {
   }));
 }
 
+/** Closes the hierarchy's content tab; with no content left the tool window hides. */
+export function closeHierarchy() {
+  resetHierarchy();
+  toolWindowService().hide("hierarchy");
+}
+
 /** The empty-result line of the hierarchy tree. */
 export function noneFoundLabel(mode: HierarchyMode, direction: HierarchyDirection): string {
   if (mode === "call") return direction === "incoming" ? tx`— no callers found` : tx`— no callees found`;
@@ -171,6 +177,7 @@ async function loadRoot(quiet = false): Promise<RootResult> {
       request(s.mode, doc, root.line, root.col, s.direction),
     );
     setChildren(generation, ROOT_ID, [rootKey(root)], items, incomplete && incompleteNote(incomplete, root.name));
+    prefetchLevels(useHierarchy.getState().children.get(ROOT_ID) ?? []);
     return "loaded";
   } catch (e) {
     if (useHierarchy.getState().generation !== generation) return "stale";
@@ -214,7 +221,8 @@ async function enclosingRoot(c: CaretContext, mode: HierarchyMode): Promise<Hier
     return null;
   }
 }
-export async function loadChildren(node: HierarchyNode) {
+/** Loads `node`'s level. `ahead`: a look-ahead load (prefetchLevels), which reports nothing. */
+export async function loadChildren(node: HierarchyNode, ahead = false) {
   const { mode, direction, generation } = useHierarchy.getState();
   const at = node.item.selectionRange.start;
   try {
@@ -228,13 +236,48 @@ export async function loadChildren(node: HierarchyNode) {
       items,
       incomplete && incompleteNote(incomplete, node.item.name),
     );
+    if (!ahead) prefetchLevels(useHierarchy.getState().children.get(node.id) ?? []);
   } catch (e) {
-    if (useHierarchy.getState().generation !== generation) return;
+    if (ahead || useHierarchy.getState().generation !== generation) return;
     useHierarchy.setState((st) => ({
       failed: new Set(st.failed).add(node.id),
       children: new Map(st.children).set(node.id, []),
     }));
     reportError(e);
+  }
+}
+
+const AHEAD_CONCURRENCY = 4;
+const ahead: HierarchyNode[] = [];
+let aheadRunning = 0;
+let aheadGeneration = -1;
+
+/**
+ * IDEA's type hierarchy shows no expand arrow on a type without subtypes (or supertypes): the
+ * level below each shown node is loaded ahead, a few requests at a time. Call hierarchies stay
+ * lazy, as in IDEA.
+ */
+export function prefetchLevels(nodes: readonly HierarchyNode[]) {
+  const { mode, generation, children } = useHierarchy.getState();
+  if (mode !== "type") return;
+  if (aheadGeneration !== generation) {
+    ahead.length = 0;
+    aheadGeneration = generation;
+  }
+  for (const n of nodes) if (!n.recursion && !children.has(n.id) && !ahead.includes(n)) ahead.push(n);
+  pumpAhead();
+}
+
+function pumpAhead() {
+  while (aheadRunning < AHEAD_CONCURRENCY && ahead.length) {
+    const node = ahead.shift()!;
+    const { generation, children } = useHierarchy.getState();
+    if (generation !== aheadGeneration || children.has(node.id)) continue;
+    aheadRunning++;
+    void loadChildren(node, true).finally(() => {
+      aheadRunning--;
+      pumpAhead();
+    });
   }
 }
 

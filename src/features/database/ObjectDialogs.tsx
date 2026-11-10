@@ -68,6 +68,7 @@ const KIND_LABEL: Record<DbObjectRef["kind"], string> = {
   schema: "schema",
   function: "function",
   procedure: "procedure",
+  package: "package",
   trigger: "trigger",
   sequence: "sequence",
 };
@@ -633,6 +634,9 @@ function QuickDoc({ node, anchor }: { node: DbNode; anchor: { x: number; y: numb
       );
       if (node.routine.arguments) rows.push(["Arguments", node.routine.arguments]);
       if (node.routine.returns) rows.push(["Returns", node.routine.returns]);
+      break;
+    case "package":
+      rows.push(["Schema", node.schema], ["Package", node.package.name]);
       break;
     case "sequence":
       rows.push(["Schema", node.schema], ["Sequence", node.sequence.name], ["Type", node.sequence.dataType]);

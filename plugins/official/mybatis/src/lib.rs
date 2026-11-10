@@ -6,13 +6,16 @@
 
 use openidea_plugin::providers::{CompletionItem, CompletionKind, Document, LineMarker, Providers};
 use openidea_plugin::text::{offset, position};
-use openidea_plugin::{Error, Invocation, Location, Plugin, Position, Project, Range, host, register_plugin};
+use openidea_plugin::{
+    Error, Invocation, Location, Plugin, Position, Project, Range, TextQuery, host, register_plugin,
+};
 use std::collections::BTreeMap;
 use std::time::{Duration, Instant};
 
-/// How long the namespace → XML file index is trusted.
+/// How long a namespace → XML file lookup is trusted.
 const INDEX_TTL: Duration = Duration::from_secs(30);
-const MAX_XML: u32 = 5000;
+/// Files declaring one namespace that are tried (normally one).
+const MAX_MAPPERS: u32 = 64;
 const STATEMENTS: [&str; 4] = ["select", "insert", "update", "delete"];
 
 /// A named thing and where its name is.
@@ -41,6 +44,33 @@ pub struct MapperXml {
     pub include_refs: Vec<Named>,
 }
 
+/// A method parameter: its effective name (`@Param("…")` wins) and where that
+/// name is written (the `@Param("…")` string, or the parameter itself).
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct Param {
+    pub name: String,
+    pub range: Range,
+}
+
+/// `#{…}` / `${…}` inside one method's `@Select`/`@Insert`/`@Update`/`@Delete`
+/// SQL strings: `method` indexes `MapperJava::methods`, `strings` covers the
+/// SQL string literals, each `Named` in `params` covers one whole `#{…}` /
+/// `${…}` match.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct AnnotationSql {
+    pub method: usize,
+    pub strings: Vec<Range>,
+    pub params: Vec<Named>,
+}
+
+/// `@ResultMap("…")` on one method: `method` indexes `MapperJava::methods`,
+/// `name` covers the id string (quotes excluded).
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct ResultMapRef {
+    pub method: usize,
+    pub name: Named,
+}
+
 /// A Java interface.
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub struct MapperJava {
@@ -48,7 +78,11 @@ pub struct MapperJava {
     pub name: Option<String>,
     /// The interface's own name (for `<mapper namespace>` targets).
     pub decl: Option<Named>,
-    pub methods: Vec<(Named, Vec<String>)>,
+    pub methods: Vec<(Named, Vec<Param>)>,
+    pub annotation_sql: Vec<AnnotationSql>,
+    pub result_refs: Vec<ResultMapRef>,
+    /// `@Results(id = "…")` definitions: method index and the id string.
+    pub result_ids: Vec<(usize, Named)>,
 }
 
 fn range_of(text: &str, start: usize, end: usize) -> Range {
@@ -120,6 +154,10 @@ fn skip_string(bytes: &[u8], mut i: usize) -> usize {
     i += 1;
     while i < bytes.len() {
         match bytes[i] {
+            // Java string/char literals cannot span lines; an unterminated
+            // quote ends at the newline so one broken line cannot swallow
+            // the rest of the file (e.g. `@ResultMap("` while typing).
+            b'\n' | b'\r' => return i,
             b'\\' => i += 2,
             b if b == quote => return i + 1,
             _ => i += 1,
@@ -221,11 +259,32 @@ fn scan_declaration(stmt: &str) -> Option<Declaration> {
     None
 }
 
-/// The parameter names in a declaration's parameter list: `@Param("…")` wins,
-/// otherwise the parameter's last identifier. Split at commas outside nested
-/// parens, braces, brackets and strings, so `@Size(min = 1, max = 5) String n`
-/// stays one parameter and a `@Param("a,b")` keeps its whole name.
-fn params_of(list: &str) -> Vec<String> {
+/// The trailing identifier in `part` (byte offsets in `part`), or `None`.
+/// Char-based so a multibyte identifier never splits a code point.
+fn last_ident(part: &str) -> Option<(String, usize, usize)> {
+    let chars: Vec<(usize, char)> = part.char_indices().collect();
+    let mut end = chars.len();
+    while end > 0 && !ident(chars[end - 1].1) {
+        end -= 1;
+    }
+    if end == 0 {
+        return None;
+    }
+    let mut start = end;
+    while start > 0 && ident(chars[start - 1].1) {
+        start -= 1;
+    }
+    let (s, _) = chars[start];
+    let (e, c) = chars[end - 1];
+    Some((part[s..e + c.len_utf8()].to_owned(), s, e + c.len_utf8()))
+}
+
+/// The parameter names in a declaration's parameter list, with byte offsets in
+/// `list`: `@Param("…")` wins (its string, quotes excluded), otherwise the
+/// parameter's last identifier. Split at commas outside nested parens, braces,
+/// brackets and strings, so `@Size(min = 1, max = 5) String n` stays one
+/// parameter and a `@Param("a,b")` keeps its whole name.
+fn params_of(list: &str) -> Vec<(String, usize, usize)> {
     let bytes = list.as_bytes();
     let mut parts = Vec::new();
     let (mut depth, mut start) = (0usize, 0usize);
@@ -243,25 +302,238 @@ fn params_of(list: &str) -> Vec<String> {
                 i += 1;
             }
             b',' if depth == 0 => {
-                parts.push(&list[start..i]);
+                parts.push((start, i));
                 start = i + 1;
                 i += 1;
             }
             _ => i += 1,
         }
     }
-    parts.push(&list[start..]);
+    parts.push((start, list.len()));
     parts
         .into_iter()
-        .filter_map(|p| {
+        .filter_map(|(s, e)| {
+            let p = &list[s..e];
             // `@Param("id") long id` → the @Param name wins.
             if let Some(q) = p.find("@Param(\"") {
-                return p[q + 8..].split('"').next().map(str::to_owned);
+                let name_start = q + 8;
+                let name: String = p[name_start..].chars().take_while(|&c| c != '"').collect();
+                if !name.is_empty() {
+                    return Some((name.clone(), s + name_start, s + name_start + name.len()));
+                }
+                return None;
             }
-            p.split_whitespace().last().map(|n| n.trim_matches(|c: char| !ident(c)).to_owned())
+            last_ident(p).map(|(name, ps, pe)| (name, s + ps, s + pe))
         })
-        .filter(|n| !n.is_empty())
         .collect()
+}
+
+/// `(name, match start, match end)` of each `#{…}` / `${…}` in SQL text
+/// (offsets in `sql`); the name stops at `,`, `}` or whitespace, so
+/// `#{id, jdbcType=INTEGER}` names `id`. The match covers the closing `}`
+/// when present.
+fn sql_params(sql: &str) -> Vec<(String, usize, usize)> {
+    let bytes = sql.as_bytes();
+    let mut out = Vec::new();
+    let mut i = 0;
+    while i + 1 < bytes.len() {
+        if (bytes[i] == b'#' || bytes[i] == b'$') && bytes[i + 1] == b'{' {
+            let mut j = i + 2;
+            while j < bytes.len() && bytes[j] != b'}' && bytes[j] != b',' && !bytes[j].is_ascii_whitespace() {
+                j += 1;
+            }
+            if j > i + 2 {
+                let end = if bytes.get(j) == Some(&b'}') { j + 1 } else { j };
+                out.push((sql[i + 2..j].to_owned(), i, end));
+            }
+            i = j.max(i + 2);
+        } else {
+            i += 1;
+        }
+    }
+    out
+}
+
+const SQL_ANNOTATIONS: [&str; 4] = ["Select", "Insert", "Update", "Delete"];
+
+/// A string literal's value with its byte offsets (quotes excluded).
+type LitSpan = (String, usize, usize);
+
+/// Each `@Name(…)` in `head`: the simple annotation name and its arguments'
+/// byte range (offsets in `head`), minding nesting, strings and comments.
+/// Annotations nested inside another annotation's arguments are only reported
+/// when the outer one has no argument list scanned here.
+fn annotations_of(head: &str) -> Vec<(String, usize, usize)> {
+    let bytes = head.as_bytes();
+    let mut out = Vec::new();
+    let mut i = 0;
+    while i < bytes.len() {
+        match bytes[i] {
+            b'"' | b'\'' => i = skip_string(bytes, i),
+            b'/' if matches!(bytes.get(i + 1), Some(b'/' | b'*')) => i = skip_comment(bytes, i),
+            b'@' => {
+                let mut j = i + 1;
+                while j < bytes.len() && (ident(bytes[j] as char) || bytes[j] == b'.') {
+                    j += 1;
+                }
+                while !head.is_char_boundary(j) {
+                    j -= 1;
+                }
+                let simple = head[i + 1..j].rsplit('.').next().unwrap_or("").to_owned();
+                let mut k = j;
+                while k < bytes.len() && bytes[k].is_ascii_whitespace() {
+                    k += 1;
+                }
+                if bytes.get(k) == Some(&b'(') {
+                    // The annotation's arguments, minding nesting and strings.
+                    let (mut close, mut depth) = (k + 1, 1usize);
+                    while close < bytes.len() {
+                        match bytes[close] {
+                            b'"' | b'\'' => close = skip_string(bytes, close),
+                            b'/' if matches!(bytes.get(close + 1), Some(b'/' | b'*')) => {
+                                close = skip_comment(bytes, close)
+                            }
+                            b'(' | b'{' | b'[' => {
+                                depth += 1;
+                                close += 1;
+                            }
+                            b')' | b'}' | b']' => {
+                                depth -= 1;
+                                if depth == 0 {
+                                    break;
+                                }
+                                close += 1;
+                            }
+                            _ => close += 1,
+                        }
+                    }
+                    if depth == 0 {
+                        out.push((simple, k + 1, close));
+                    }
+                    i = close + 1;
+                } else {
+                    i = j;
+                }
+            }
+            _ => i += 1,
+        }
+    }
+    out
+}
+
+/// The string literals in annotation `args`: `(value, value start, value end)`
+/// with offsets in `args` (quotes excluded). Unterminated strings are skipped.
+fn string_literals(args: &str) -> Vec<(String, usize, usize)> {
+    let bytes = args.as_bytes();
+    let mut out = Vec::new();
+    let mut s = 0;
+    while s < bytes.len() {
+        if bytes[s] == b'"' {
+            let e = skip_string(bytes, s);
+            // Without the quotes; skip_string stops just past `"`.
+            if e > s + 1 && bytes[e - 1] == b'"' {
+                out.push((args[s + 1..e - 1].to_owned(), s + 1, e - 1));
+                s = e;
+            } else {
+                s += 1; // unterminated: not a string
+            }
+        } else {
+            s += 1;
+        }
+    }
+    out
+}
+
+/// The value of `key = "…"`: the first string-valued `key` at nesting depth 0
+/// in annotation `args`, with offsets in `args`. Strings are skipped while
+/// looking, so `property="id"` never matches `key = "id"`.
+fn annotation_string_arg(args: &str, key: &str) -> Option<(String, usize, usize)> {
+    let bytes = args.as_bytes();
+    let mut depth = 0usize;
+    let mut i = 0;
+    while i < bytes.len() {
+        match bytes[i] {
+            b'"' | b'\'' => i = skip_string(bytes, i),
+            b'/' if matches!(bytes.get(i + 1), Some(b'/' | b'*')) => i = skip_comment(bytes, i),
+            b'(' | b'{' | b'[' => {
+                depth += 1;
+                i += 1;
+            }
+            b')' | b'}' | b']' => {
+                depth = depth.saturating_sub(1);
+                i += 1;
+            }
+            _ if depth == 0 && ident(bytes[i] as char) => {
+                let mut j = i + 1;
+                while j < bytes.len() && ident(bytes[j] as char) {
+                    j += 1;
+                }
+                if &args[i..j] == key {
+                    let mut k = j;
+                    while k < bytes.len() && bytes[k].is_ascii_whitespace() {
+                        k += 1;
+                    }
+                    if bytes.get(k) == Some(&b'=') {
+                        k += 1;
+                        while k < bytes.len() && bytes[k].is_ascii_whitespace() {
+                            k += 1;
+                        }
+                        if bytes.get(k) == Some(&b'"') {
+                            let e = skip_string(bytes, k);
+                            if e > k + 1 && bytes[e - 1] == b'"' {
+                                return Some((args[k + 1..e - 1].to_owned(), k + 1, e - 1));
+                            }
+                        }
+                        i = k;
+                        continue;
+                    }
+                }
+                i = j;
+            }
+            _ => i += 1,
+        }
+    }
+    None
+}
+
+/// The `#{…}` / `${…}` matches in one method's `@Select`/`@Insert`/`@Update`/
+/// `@Delete` SQL string literals: `(string start, string end, params)` with
+/// offsets in `head` (the declaration's annotations and signature). Array
+/// values (`@Select({…})`) and nested annotations in other arguments are
+/// skipped over, never read as SQL.
+fn annotation_sql_of(head: &str) -> Vec<(usize, usize, Vec<LitSpan>)> {
+    let mut out = Vec::new();
+    for (simple, a, b) in annotations_of(head) {
+        if !SQL_ANNOTATIONS.contains(&simple.as_str()) {
+            continue;
+        }
+        let args = &head[a..b];
+        for (value, cs, ce) in string_literals(args) {
+            let params = sql_params(&value).into_iter().map(|(n, ps, pe)| (n, a + cs + ps, a + cs + pe)).collect();
+            out.push((a + cs, a + ce, params));
+        }
+    }
+    out
+}
+
+/// `@ResultMap("…")` references and `@Results(id = "…")` definitions in one
+/// method's head: `(id, id start, id end)` with offsets in `head` (quotes
+/// excluded). Every `@ResultMap` string counts, so `@ResultMap({"a", "b"})`
+/// yields both.
+fn result_map_of(head: &str) -> (Vec<LitSpan>, Vec<LitSpan>) {
+    let mut refs = Vec::new();
+    let mut defs = Vec::new();
+    for (simple, a, b) in annotations_of(head) {
+        let args = &head[a..b];
+        if simple == "ResultMap" {
+            refs.extend(string_literals(args).into_iter().map(|(v, s, e)| (v, a + s, a + e)));
+        } else if simple == "Results"
+            && let Some((v, s, e)) = annotation_string_arg(args, "id")
+        {
+            defs.push((v, a + s, a + e));
+        }
+    }
+    (refs, defs)
 }
 
 /// The interface's name and methods (with their parameter names).
@@ -280,34 +552,104 @@ pub fn parse_java(text: &str) -> MapperJava {
         Some(Named { name: simple.clone(), range: range_of(text, i + 10 + indent, i + 10 + indent + simple.len()) });
     let body_start = text[i..].find('{').map_or(text.len(), |b| i + b + 1);
     let mut methods = Vec::new();
+    let mut annotation_sql = Vec::new();
+    let mut result_refs = Vec::new();
+    let mut result_ids = Vec::new();
     let mut depth = 0;
+    let mut paren = 0usize;
     let mut stmt_start = body_start;
-    let bytes: Vec<(usize, char)> = text[body_start..].char_indices().map(|(k, c)| (body_start + k, c)).collect();
-    for (k, c) in bytes {
-        match c {
-            '{' => depth += 1,
-            '}' if depth == 0 => break,
-            '}' => {
+    // Strings and comments may hold `{`, `}`, `(`, `)` or `;` (notably the
+    // `#{…}` braces in annotation SQL), so skip them: braces inside
+    // parentheses (annotation arguments) are not structural, and only
+    // structural braces and semicolons split statements.
+    let body = &text[body_start..];
+    let body_bytes = body.as_bytes();
+    let mut i = 0;
+    while i < body.len() {
+        let k = body_start + i;
+        match body_bytes[i] {
+            b'"' | b'\'' => i = skip_string(body_bytes, i),
+            b'/' if matches!(body_bytes.get(i + 1), Some(b'/' | b'*')) => i = skip_comment(body_bytes, i),
+            b'(' => {
+                paren += 1;
+                i += 1;
+            }
+            b')' => {
+                paren = paren.saturating_sub(1);
+                i += 1;
+            }
+            b'{' if paren == 0 => {
+                depth += 1;
+                i += 1;
+            }
+            b'}' if depth == 0 && paren == 0 => break,
+            b'}' if paren == 0 => {
                 depth -= 1;
                 stmt_start = k + 1;
+                i += 1;
             }
-            ';' if depth == 0 => {
+            // At interface level `;` always ends the statement: field and
+            // method declarations cannot hold one inside parentheses, so an
+            // unbalanced `(` from a broken line (e.g. `@ResultMap("` while
+            // typing) resyncs here instead of swallowing the rest of the file.
+            b';' if depth == 0 => {
                 let stmt = &text[stmt_start..k];
                 if let Some(decl) = scan_declaration(stmt)
                     && !stmt[..decl.parens.0].contains(" default ")
                 {
                     let (s, e) = (stmt_start + decl.name.0, stmt_start + decl.name.1);
+                    let list_base = stmt_start + decl.parens.0 + 1;
+                    let params = params_of(&stmt[decl.parens.0 + 1..decl.parens.1])
+                        .into_iter()
+                        .map(|(name, ps, pe)| Param { name, range: range_of(text, list_base + ps, list_base + pe) })
+                        .collect();
+                    let method = methods.len();
                     methods.push((
                         Named { name: stmt[decl.name.0..decl.name.1].to_owned(), range: range_of(text, s, e) },
-                        params_of(&stmt[decl.parens.0 + 1..decl.parens.1]),
+                        params,
                     ));
+                    let mut strings = Vec::new();
+                    let mut sql_params = Vec::new();
+                    for (ss, se, ps) in annotation_sql_of(&stmt[..decl.parens.0]) {
+                        strings.push(range_of(text, stmt_start + ss, stmt_start + se));
+                        sql_params.extend(ps.into_iter().map(|(n, ms, me)| Named {
+                            name: n,
+                            range: range_of(text, stmt_start + ms, stmt_start + me),
+                        }));
+                    }
+                    if !strings.is_empty() {
+                        annotation_sql.push(AnnotationSql { method, strings, params: sql_params });
+                    }
+                    let (refs, defs) = result_map_of(&stmt[..decl.parens.0]);
+                    result_refs.extend(refs.into_iter().map(|(v, rs, re)| ResultMapRef {
+                        method,
+                        name: Named { name: v, range: range_of(text, stmt_start + rs, stmt_start + re) },
+                    }));
+                    result_ids.extend(defs.into_iter().map(|(v, ds, de)| {
+                        (method, Named { name: v, range: range_of(text, stmt_start + ds, stmt_start + de) })
+                    }));
                 }
                 stmt_start = k + 1;
+                paren = 0;
+                i += 1;
             }
-            _ => {}
+            _ => i += 1,
         }
     }
-    MapperJava { name, decl, methods }
+    MapperJava { name, decl, methods, annotation_sql, result_refs, result_ids }
+}
+
+/// `namespace="com.acme.UserMapper"` in an XML file, either quote.
+fn namespace_query(namespace: &str) -> TextQuery {
+    let escaped: String =
+        namespace.chars().flat_map(|c| matches!(c, '.' | '$').then_some('\\').into_iter().chain([c])).collect();
+    TextQuery {
+        pattern: format!(r#"namespace\s*=\s*["']{escaped}["']"#),
+        regex: true,
+        case_sensitive: true,
+        include: vec!["**/*.xml".into()],
+        ..Default::default()
+    }
 }
 
 fn project_of(path: &str) -> Option<Project> {
@@ -320,43 +662,36 @@ fn project_of(path: &str) -> Option<Project> {
 
 #[derive(Default)]
 pub struct Navigator {
-    /// project root → (namespace → XML path), with when it was built.
-    xml_index: BTreeMap<String, (Instant, BTreeMap<String, String>)>,
+    /// project root → namespace → (when it was looked up, the XML mapping it, if any).
+    xml_index: BTreeMap<String, BTreeMap<String, (Instant, Option<String>)>>,
 }
 
 impl Navigator {
-    /// The XML mapping `namespace`, (re)indexing the project when needed.
+    /// The XML mapping `namespace`: the cached path while it still maps it, else a
+    /// search for its `namespace="…"`, so the cost doesn't grow with the project's XML files.
     fn xml_for(&mut self, project: &Project, namespace: &str) -> Option<(String, MapperXml)> {
         let root = project.root().ok()?;
-        for attempt in 0..2 {
-            let fresh = self.xml_index.get(&root).is_some_and(|(at, _)| at.elapsed() < INDEX_TTL);
-            if !fresh || attempt == 1 {
-                let mut map = BTreeMap::new();
-                for path in project.find_files("**/*.xml", MAX_XML).ok()? {
-                    let Ok(text) = project.read_file(&path) else { continue };
-                    if !text.contains("<mapper") {
-                        continue;
-                    }
-                    if let Some(ns) = parse_xml(&text).namespace {
-                        map.insert(ns.name, path);
-                    }
-                }
-                self.xml_index.insert(root.clone(), (Instant::now(), map));
-            }
-            let path = self.xml_index.get(&root).and_then(|(_, m)| m.get(namespace)).cloned();
-            if let Some(path) = path
-                && let Ok(text) = project.read_file(&path)
-            {
-                let xml = parse_xml(&text);
-                if xml.namespace.as_ref().is_some_and(|n| n.name == namespace) {
-                    return Some((path, xml));
-                }
-            }
-            if !fresh {
-                break; // just rebuilt
+        let read = |path: &str| {
+            let xml = parse_xml(&project.read_file(path).ok()?);
+            xml.namespace.as_ref().is_some_and(|n| n.name == namespace).then_some(xml)
+        };
+        if let Some((at, path)) = self.xml_index.get(&root).and_then(|m| m.get(namespace))
+            && at.elapsed() < INDEX_TTL
+        {
+            let path = path.as_ref()?;
+            if let Some(xml) = read(path) {
+                return Some((path.clone(), xml));
             }
         }
-        None
+        let found = project.search_text(&namespace_query(namespace), MAX_MAPPERS).ok()?;
+        let mut paths: Vec<&str> = found.matches.iter().map(|m| m.location.path.as_str()).collect();
+        paths.dedup();
+        let hit = paths.into_iter().find_map(|path| Some((path.to_owned(), read(path)?)));
+        self.xml_index
+            .entry(root)
+            .or_default()
+            .insert(namespace.to_owned(), (Instant::now(), hit.as_ref().map(|(path, _)| path.clone())));
+        hit
     }
 
     /// The interface `namespace` names (`com.acme.UserMapper` → `**/com/acme/UserMapper.java`).
@@ -389,6 +724,52 @@ impl Navigator {
         }
         let (path, other) = self.xml_for(project, ns)?;
         pick(&other, path)
+    }
+
+    /// Inside `@ResultMap("…")`: the known result-map ids — `@Results(id =
+    /// "…")` in this file, plus the XML mapper's `<resultMap>` ids. `None`
+    /// when the cursor is not on a `@ResultMap` id.
+    fn result_map_completion(&mut self, doc: &Document, at: Position) -> Option<Vec<CompletionItem>> {
+        let cursor = offset(&doc.text, at)?;
+        let before = &doc.text[..cursor];
+        let java = parse_java(&doc.text);
+        // A closed string: the recorded id range. Otherwise (still typing) the
+        // `@ResultMap("` prefix on the cursor's line.
+        let typed: &str = if let Some(hit) = java.result_refs.iter().find(|r| contains(r.name.range, at)) {
+            &doc.text[offset(&doc.text, hit.name.range.start)?..cursor]
+        } else {
+            let line_start = before.rfind('\n').map_or(0, |i| i + 1);
+            let line = &before[line_start..];
+            let rel = line.rfind("ResultMap(\"")?;
+            let prev = line[..rel].chars().next_back()?;
+            if prev != '@' && prev != '.' {
+                return None;
+            }
+            let typed = &line[rel + 11..];
+            if !typed.chars().all(|c| ident(c) || c == '.' || c == '-') {
+                return None;
+            }
+            typed
+        };
+        let start = Position::new(at.line, at.character - typed.encode_utf16().count() as u32);
+        let mut ids: Vec<String> = java.result_ids.iter().map(|(_, d)| d.name.clone()).collect();
+        if let Some(project) = project_of(&doc.path)
+            && let Some(name) = &java.name
+            && let Some((_, xml)) = self.xml_for(&project, name)
+        {
+            ids.extend(xml.result_maps.iter().map(|m| m.name.clone()));
+        }
+        ids.sort();
+        ids.dedup();
+        Some(
+            ids.into_iter()
+                .filter(|id| id.starts_with(typed))
+                .map(|id| CompletionItem {
+                    replace: Some(Range::new(start, at)),
+                    ..CompletionItem::new(&id, CompletionKind::Value)
+                })
+                .collect(),
+        )
     }
 
     /// Pairs of (name in this document, target location) for `doc`.
@@ -430,16 +811,40 @@ impl Navigator {
             out
         } else {
             let java = parse_java(&doc.text);
-            let Some(name) = java.name else { return Vec::new() };
-            let Some((path, xml)) = self.xml_for(&project, &name) else { return Vec::new() };
-            let file = path.rsplit(['/', '\\']).next().unwrap_or(&path).to_owned();
-            java.methods
-                .into_iter()
-                .filter_map(|(m, _)| {
+            let Some(name) = java.name.clone() else { return Vec::new() };
+            let simple = name.rsplit('.').next().unwrap_or(&name).to_owned();
+            // `@ResultMap("…")`: the `@Results(id = "…")` in this file when
+            // present, else the XML mapper's `<resultMap>`. Needs no XML for
+            // pure-annotation mappers.
+            let xml = self.xml_for(&project, &name);
+            let mut out: Vec<(Named, Location, String)> = Vec::new();
+            for r in &java.result_refs {
+                if let Some((method, def)) = java.result_ids.iter().find(|(_, d)| d.name == r.name.name) {
+                    let (m, _) = &java.methods[*method];
+                    out.push((
+                        r.name.clone(),
+                        Location { path: doc.path.clone(), range: def.range },
+                        format!("{simple}.{}(): {}", m.name, def.name),
+                    ));
+                } else if let Some((path, xml)) = &xml
+                    && let Some(def) = xml.result_maps.iter().find(|m| m.name == r.name.name)
+                {
+                    let file = path.rsplit(['/', '\\']).next().unwrap_or(path).to_owned();
+                    out.push((
+                        r.name.clone(),
+                        Location { path: path.clone(), range: def.range },
+                        format!("{file}: {}", def.name),
+                    ));
+                }
+            }
+            if let Some((path, xml)) = xml {
+                let file = path.rsplit(['/', '\\']).next().unwrap_or(&path).to_owned();
+                out.extend(java.methods.into_iter().filter_map(|(m, _)| {
                     let s = xml.statements.iter().find(|s| s.name == m.name)?;
                     Some((m, Location { path: path.clone(), range: s.range }, format!("{file}: {}", s.name)))
-                })
-                .collect()
+                }));
+            }
+            out
         }
     }
 }
@@ -463,10 +868,35 @@ impl Providers for Navigator {
     }
 
     fn definition(&mut self, doc: &Document, at: Position) -> Vec<Location> {
-        self.links(doc).into_iter().filter(|(n, ..)| contains(n.range, at)).map(|(_, l, _)| l).collect()
+        let mut out: Vec<Location> =
+            self.links(doc).into_iter().filter(|(n, ..)| contains(n.range, at)).map(|(_, l, _)| l).collect();
+        // `#{…}` / `${…}` in an annotation's SQL: the method's `@Param` or
+        // parameter. Needs no XML: pure-annotation mappers work too. A dotted
+        // path (`#{user.name}`) resolves by its first segment.
+        if doc.language == "java" {
+            let java = parse_java(&doc.text);
+            for sql in &java.annotation_sql {
+                let (_, params) = &java.methods[sql.method];
+                for occ in &sql.params {
+                    let first = occ.name.split('.').next().unwrap_or("");
+                    if let Some(target) = params.iter().find(|p| p.name == first)
+                        && contains(occ.range, at)
+                    {
+                        out.push(Location { path: doc.path.clone(), range: target.range });
+                    }
+                }
+            }
+        }
+        out
     }
 
     fn completion(&mut self, doc: &Document, at: Position, _trigger: Option<&str>) -> Vec<CompletionItem> {
+        if doc.language == "java" {
+            if let Some(items) = self.result_map_completion(doc, at) {
+                return items;
+            }
+            return annotation_param_completion(doc, at);
+        }
         if doc.language != "xml" {
             return Vec::new();
         }
@@ -527,15 +957,54 @@ impl Providers for Navigator {
             let start = Position::new(at.line, at.character - typed.encode_utf16().count() as u32);
             return params
                 .iter()
-                .filter(|p| p.starts_with(typed))
+                .filter(|p| p.name.starts_with(typed))
                 .map(|p| CompletionItem {
                     replace: Some(Range::new(start, at)),
-                    ..CompletionItem::new(p, CompletionKind::Variable)
+                    ..CompletionItem::new(&p.name, CompletionKind::Variable)
                 })
                 .collect();
         }
         Vec::new()
     }
+}
+
+/// After `#{` / `${` inside an annotation SQL string: the method's parameters.
+fn annotation_param_completion(doc: &Document, at: Position) -> Vec<CompletionItem> {
+    let Some(cursor) = offset(&doc.text, at) else { return Vec::new() };
+    let java = parse_java(&doc.text);
+    for sql in &java.annotation_sql {
+        let (_, params) = &java.methods[sql.method];
+        for s in &sql.strings {
+            let (Some(start), Some(end)) = (offset(&doc.text, s.start), offset(&doc.text, s.end)) else {
+                continue;
+            };
+            if !(start <= cursor && cursor <= end) {
+                continue;
+            }
+            let seg = &doc.text[start..cursor];
+            let mut token: Option<usize> = None;
+            for t in ["#{", "${"] {
+                if let Some(i) = seg.rfind(t) {
+                    token = Some(token.map_or(i, |prev: usize| prev.max(i)));
+                }
+            }
+            let Some(i) = token else { continue };
+            let typed = &seg[i + 2..];
+            if typed.contains('}') || !typed.chars().all(|c| ident(c) || c == '.') {
+                continue;
+            }
+            let start = Position::new(at.line, at.character - typed.encode_utf16().count() as u32);
+            return params
+                .iter()
+                .filter(|p| p.name.starts_with(typed))
+                .map(|p| CompletionItem {
+                    replace: Some(Range::new(start, at)),
+                    ..CompletionItem::new(&p.name, CompletionKind::Variable)
+                })
+                .collect();
+        }
+    }
+    Vec::new()
 }
 
 impl Plugin for Navigator {
@@ -550,6 +1019,7 @@ register_plugin!(Navigator, providers);
 mod tests {
     use super::*;
     use openidea_plugin::mock::MockHost;
+    use openidea_plugin::{TextMatch, TextSearch};
 
     const JAVA: &str = "package com.acme;\n\nimport org.apache.ibatis.annotations.Param;\n\npublic interface UserMapper {\n    User findById(@Param(\"id\") long id);\n\n    int insert(User user);\n\n    default void helper() {}\n\n    List<User> search(String name, int limit);\n}\n";
     const XML: &str = "<?xml version=\"1.0\"?>\n<mapper namespace=\"com.acme.UserMapper\">\n  <select id=\"findById\" resultType=\"User\">\n    select * from users where id = #{id}\n  </select>\n  <insert id=\"insert\">\n    insert into users values (#{user})\n  </insert>\n  <select id=\"\">\n  </select>\n</mapper>\n";
@@ -558,7 +1028,11 @@ mod tests {
     fn parses_both_sides() {
         let java = parse_java(JAVA);
         assert_eq!(java.name.as_deref(), Some("com.acme.UserMapper"));
-        let names: Vec<_> = java.methods.iter().map(|(m, p)| (m.name.as_str(), p.clone())).collect();
+        let names: Vec<_> = java
+            .methods
+            .iter()
+            .map(|(m, p)| (m.name.as_str(), p.iter().map(|x| x.name.clone()).collect::<Vec<_>>()))
+            .collect();
         assert_eq!(
             names,
             [
@@ -590,10 +1064,31 @@ mod tests {
 
     const ANNOTATED_XML: &str = "<?xml version=\"1.0\"?>\n<mapper namespace=\"com.acme.UserMapper\">\n  <select id=\"selectAnnotated\" resultType=\"User\">SELECT (a, b) FROM users</select>\n  <select id=\"findAnnotated\">SELECT 1</select>\n</mapper>\n";
 
+    /// A mapper XML, found by the namespace search like the host's Find in Files would.
+    fn add_mapper(host: &MockHost, path: &'static str, text: &'static str) {
+        host.add_file(path, text);
+        host.on_search(move |query, _| {
+            assert!(query.regex && query.include == ["**/*.xml"], "{query:?}");
+            let namespace = query.pattern.split(r#"["']"#).nth(1).unwrap_or_default().replace('\\', "");
+            let line = text.lines().position(|l| l.contains(&format!("namespace=\"{namespace}\"")));
+            let matches = line
+                .map(|line| TextMatch {
+                    location: Location {
+                        path: format!("/project/{path}"),
+                        range: Range::new(Position::new(line as u32, 0), Position::new(line as u32, 0)),
+                    },
+                    line: String::new(),
+                })
+                .into_iter()
+                .collect();
+            Ok(TextSearch { matches, limit_hit: false })
+        });
+    }
+
     fn setup() -> MockHost {
         let host = MockHost::install();
         host.add_file("src/main/java/com/acme/UserMapper.java", JAVA);
-        host.add_file("src/main/resources/mapper/UserMapper.xml", XML);
+        add_mapper(&host, "src/main/resources/mapper/UserMapper.xml", XML);
         host.add_file("pom.xml", "<project/>");
         host
     }
@@ -601,7 +1096,7 @@ mod tests {
     fn annotated_setup() -> MockHost {
         let host = MockHost::install();
         host.add_file("src/main/java/com/acme/UserMapper.java", ANNOTATED);
-        host.add_file("src/main/resources/mapper/UserMapper.xml", ANNOTATED_XML);
+        add_mapper(&host, "src/main/resources/mapper/UserMapper.xml", ANNOTATED_XML);
         host.add_file("pom.xml", "<project/>");
         host
     }
@@ -612,7 +1107,11 @@ mod tests {
     #[test]
     fn parses_methods_with_annotations() {
         let java = parse_java(ANNOTATED);
-        let names: Vec<_> = java.methods.iter().map(|(m, p)| (m.name.as_str(), p.clone())).collect();
+        let names: Vec<_> = java
+            .methods
+            .iter()
+            .map(|(m, p)| (m.name.as_str(), p.iter().map(|x| x.name.clone()).collect::<Vec<_>>()))
+            .collect();
         assert_eq!(
             names,
             [
@@ -637,7 +1136,7 @@ mod tests {
         assert_eq!(java.methods[0].0.name, "find");
         // `"中文 😀 注释"` costs 10 UTF-16 units (😀 two); `find` starts at 4 + 8 + 1 + 10 + 1 + 11 = 35.
         assert_eq!(java.methods[0].0.range, Range::new(Position::new(3, 35), Position::new(3, 39)));
-        assert_eq!(java.methods[0].1, ["id".to_owned()]);
+        assert_eq!(java.methods[0].1.iter().map(|x| x.name.as_str()).collect::<Vec<_>>(), ["id"]);
     }
 
     /// Annotated methods still get both directions of navigation.
@@ -695,7 +1194,11 @@ mod tests {
         let java = parse_java(
             "package com.acme;\n\npublic interface SecuredMapper {\n    @DataPermission(column = \"id\", scope = (@Scope(\"self\")))\n    List<User> findAll(@Param(\"org\") String org);\n\n    @org.acme.Check(value = \"(nested)\")\n    int count();\n}\n",
         );
-        let names: Vec<_> = java.methods.iter().map(|(m, p)| (m.name.as_str(), p.clone())).collect();
+        let names: Vec<_> = java
+            .methods
+            .iter()
+            .map(|(m, p)| (m.name.as_str(), p.iter().map(|x| x.name.clone()).collect::<Vec<_>>()))
+            .collect();
         assert_eq!(names, [("findAll", vec!["org".to_owned()]), ("count", Vec::<String>::new())]);
     }
 
@@ -742,7 +1245,7 @@ mod tests {
             "src/main/java/com/acme/OrderMapper.java",
             "package com.acme;\npublic interface OrderMapper {\n}\n",
         );
-        host.add_file("src/main/resources/mapper/OrderMapper.xml", REFS_XML);
+        add_mapper(&host, "src/main/resources/mapper/OrderMapper.xml", REFS_XML);
         host.add_file("pom.xml", "<project/>");
         let mut n = Navigator::default();
         let xml = doc("/project/src/main/resources/mapper/OrderMapper.xml", "xml", REFS_XML);
@@ -785,5 +1288,193 @@ mod tests {
         let xml = doc("/project/src/main/resources/mapper/UserMapper.xml", "xml", &text);
         let params = n.completion(&xml, Position::new(3, 38), None);
         assert_eq!(params.iter().map(|c| c.label.as_str()).collect::<Vec<_>>(), ["id"]);
+    }
+
+    const ANNOTATED_SQL: &str = concat!(
+        "package com.acme;\n",
+        "import org.apache.ibatis.annotations.Param;\n",
+        "import org.apache.ibatis.annotations.Select;\n",
+        "public interface UserMapper {\n",
+        "    @Select(\"SELECT * FROM users WHERE id = #{id} AND name = #{name}\")\n",
+        "    User find(@Param(\"id\") Long id, String name);\n",
+        "}\n"
+    );
+
+    fn annotation_setup() -> MockHost {
+        let host = MockHost::install();
+        host.add_file("src/main/java/com/acme/UserMapper.java", ANNOTATED_SQL);
+        add_mapper(&host, "src/main/resources/mapper/UserMapper.xml", ANNOTATED_XML);
+        host.add_file("pom.xml", "<project/>");
+        host
+    }
+
+    /// `#{…}` inside an annotation's SQL jumps to the `@Param`/parameter, with
+    /// no XML statement involved (pure-annotation mappers work too).
+    #[test]
+    fn navigates_annotation_sql_params_to_params() {
+        let _host = annotation_setup();
+        let java = parse_java(ANNOTATED_SQL);
+        assert_eq!(java.annotation_sql.len(), 1);
+        assert_eq!(java.annotation_sql[0].params.iter().map(|o| o.name.as_str()).collect::<Vec<_>>(), ["id", "name"]);
+        let doc = doc("/project/src/main/java/com/acme/UserMapper.java", "java", ANNOTATED_SQL);
+        let mut n = Navigator::default();
+        let line = ANNOTATED_SQL.lines().nth(4).unwrap();
+        let col = line.find("#{id}").unwrap() + 3;
+        let got = n.definition(&doc, Position::new(4, col as u32));
+        let want = java.methods[0].1.iter().find(|p| p.name == "id").unwrap().range;
+        assert_eq!(got, vec![Location { path: doc.path.clone(), range: want }]);
+        // The second parameter resolves too.
+        let col = line.find("#{name}").unwrap() + 3;
+        let got = n.definition(&doc, Position::new(4, col as u32));
+        let want = java.methods[0].1.iter().find(|p| p.name == "name").unwrap().range;
+        assert_eq!(got, vec![Location { path: doc.path.clone(), range: want }]);
+    }
+
+    /// After `#{` inside an annotation's SQL string: the method's parameters.
+    #[test]
+    fn completes_annotation_sql_params() {
+        let _host = annotation_setup();
+        let mut n = Navigator::default();
+        let text = ANNOTATED_SQL.replacen("#{id}", "#{", 1);
+        let doc = doc("/project/src/main/java/com/acme/UserMapper.java", "java", &text);
+        let line = text.lines().nth(4).unwrap();
+        let col = line.find("#{").unwrap() + 2;
+        let items = n.completion(&doc, Position::new(4, col as u32), None);
+        assert_eq!(items.iter().map(|c| c.label.as_str()).collect::<Vec<_>>(), ["id", "name"]);
+        // Outside a SQL string there is nothing to complete.
+        let plain = n.completion(&doc, Position::new(5, 10), None);
+        assert!(plain.is_empty());
+    }
+
+    const RESULT_JAVA: &str = concat!(
+        "package com.acme;\n",
+        "import org.apache.ibatis.annotations.Result;\n",
+        "import org.apache.ibatis.annotations.ResultMap;\n",
+        "import org.apache.ibatis.annotations.Results;\n",
+        "import org.apache.ibatis.annotations.Select;\n",
+        "public interface UserMapper {\n",
+        "    @Select(\"SELECT * FROM users WHERE id = #{id}\")\n",
+        "    @ResultMap(\"userMap\")\n",
+        "    User findById(Long id);\n",
+        "\n",
+        "    @Results(\n",
+        "        id = \"orderMap\",\n",
+        "        value = {@Result(property = \"userName\", column = \"user_name\")}\n",
+        "    )\n",
+        "    @ResultMap(\"orderMap\")\n",
+        "    Order findOrder(Long id);\n",
+        "}\n"
+    );
+
+    const RESULT_XML: &str = concat!(
+        "<?xml version=\"1.0\"?>\n",
+        "<mapper namespace=\"com.acme.UserMapper\">\n",
+        "  <resultMap id=\"userMap\" type=\"User\">\n",
+        "    <id property=\"id\" column=\"user_id\"/>\n",
+        "  </resultMap>\n",
+        "  <resultMap id=\"extraMap\" type=\"User\"/>\n",
+        "  <select id=\"findById\" resultMap=\"userMap\">\n",
+        "    select * from users where id = #{id}\n",
+        "  </select>\n",
+        "</mapper>\n"
+    );
+
+    fn result_setup() -> MockHost {
+        let host = MockHost::install();
+        host.add_file("src/main/java/com/acme/UserMapper.java", RESULT_JAVA);
+        add_mapper(&host, "src/main/resources/mapper/UserMapper.xml", RESULT_XML);
+        host.add_file("pom.xml", "<project/>");
+        host
+    }
+
+    #[test]
+    fn parses_result_map_refs_and_ids() {
+        let java = parse_java(RESULT_JAVA);
+        let refs: Vec<_> =
+            java.result_refs.iter().map(|r| (java.methods[r.method].0.name.as_str(), r.name.name.as_str())).collect();
+        assert_eq!(refs, [("findById", "userMap"), ("findOrder", "orderMap")]);
+        let ids: Vec<_> =
+            java.result_ids.iter().map(|(m, d)| (java.methods[*m].0.name.as_str(), d.name.as_str())).collect();
+        assert_eq!(ids, [("findOrder", "orderMap")]);
+        let xml = parse_xml(RESULT_XML);
+        assert_eq!(xml.result_maps.iter().map(|m| m.name.as_str()).collect::<Vec<_>>(), ["userMap", "extraMap"]);
+        assert_eq!(xml.result_map_refs.iter().map(|m| m.name.as_str()).collect::<Vec<_>>(), ["userMap"]);
+    }
+
+    /// `@ResultMap("…")` jumps to the XML `<resultMap>`, or to the
+    /// `@Results(id = "…")` in the same file; `resultMap="…"` in XML jumps to
+    /// the `<resultMap>`. All three get gutter markers.
+    #[test]
+    fn navigates_result_map_refs() {
+        let _host = result_setup();
+        let mut n = Navigator::default();
+        let java = doc("/project/src/main/java/com/acme/UserMapper.java", "java", RESULT_JAVA);
+        let xml = doc("/project/src/main/resources/mapper/UserMapper.xml", "xml", RESULT_XML);
+
+        // `@ResultMap("userMap")` → the XML `<resultMap id="userMap">`.
+        let line = RESULT_JAVA.lines().nth(7).unwrap();
+        let col = line.find("\"userMap\"").unwrap() + 2;
+        let got = n.definition(&java, Position::new(7, col as u32));
+        let want = parse_xml(RESULT_XML).result_maps[0].range;
+        assert_eq!(got, vec![Location { path: xml.path.clone(), range: want }]);
+
+        // `@ResultMap("orderMap")` → the `@Results(id = "orderMap")` above.
+        let line = RESULT_JAVA.lines().nth(14).unwrap();
+        let col = line.find("\"orderMap\"").unwrap() + 2;
+        let got = n.definition(&java, Position::new(14, col as u32));
+        let want = parse_java(RESULT_JAVA).result_ids[0].1.range;
+        assert_eq!(got, vec![Location { path: java.path.clone(), range: want }]);
+
+        // `resultMap="userMap"` in XML → the `<resultMap>` in the same file.
+        let line = RESULT_XML.lines().nth(6).unwrap();
+        let col = line.find("resultMap=\"userMap\"").unwrap() + 12;
+        let got = n.definition(&xml, Position::new(6, col as u32));
+        let want = parse_xml(RESULT_XML).result_maps[0].range;
+        assert_eq!(got, vec![Location { path: xml.path.clone(), range: want }]);
+
+        let mut markers: Vec<_> = n.line_markers(&java).into_iter().map(|m| (m.line, m.tooltip)).collect();
+        markers.sort();
+        assert_eq!(
+            markers,
+            [
+                (7, "Go to UserMapper.xml: userMap".to_owned()),
+                (8, "Go to UserMapper.xml: findById".to_owned()),
+                (14, "Go to UserMapper.findOrder(): orderMap".to_owned())
+            ]
+        );
+        let markers = n.line_markers(&xml);
+        assert_eq!(
+            markers.iter().map(|m| (m.line, m.tooltip.as_str())).collect::<Vec<_>>(),
+            [(1, "Go to interface UserMapper"), (6, "Go to UserMapper.findById()"), (6, "Go to resultMap userMap")]
+        );
+    }
+
+    /// Inside `@ResultMap("…")`: annotation `@Results` ids and XML
+    /// `<resultMap>` ids, merged and sorted — even while the string is still
+    /// unterminated.
+    #[test]
+    fn completes_result_map_ids() {
+        let _host = result_setup();
+        let mut n = Navigator::default();
+        // Still typing: the string is unterminated.
+        let text = RESULT_JAVA.replace("@ResultMap(\"userMap\")", "@ResultMap(\"user");
+        let typing = doc("/project/src/main/java/com/acme/UserMapper.java", "java", &text);
+        let line = text.lines().nth(7).unwrap();
+        let col = line.find("\"user").unwrap() + 1 + 4;
+        let items = n.completion(&typing, Position::new(7, col as u32), None);
+        assert_eq!(items.iter().map(|c| c.label.as_str()).collect::<Vec<_>>(), ["userMap"]);
+        // Just opened the string: every known id.
+        let text = RESULT_JAVA.replace("@ResultMap(\"userMap\")", "@ResultMap(\"");
+        let opened = doc("/project/src/main/java/com/acme/UserMapper.java", "java", &text);
+        let line = text.lines().nth(7).unwrap();
+        let col = line.find("ResultMap(\"").unwrap() + 11;
+        let items = n.completion(&opened, Position::new(7, col as u32), None);
+        assert_eq!(items.iter().map(|c| c.label.as_str()).collect::<Vec<_>>(), ["extraMap", "orderMap", "userMap"]);
+        // Closed string, cursor inside: the recorded range.
+        let closed = doc("/project/src/main/java/com/acme/UserMapper.java", "java", RESULT_JAVA);
+        let line = RESULT_JAVA.lines().nth(7).unwrap();
+        let col = line.find("\"userMap\"").unwrap() + 1 + 2;
+        let items = n.completion(&closed, Position::new(7, col as u32), None);
+        assert_eq!(items.iter().map(|c| c.label.as_str()).collect::<Vec<_>>(), ["userMap"]);
     }
 }

@@ -1229,6 +1229,48 @@ mod tests {
         zip.finish().unwrap();
     }
     #[test]
+    fn explodes_wars_with_multibyte_path_components() {
+        let tmp = tempfile::tempdir().unwrap();
+        let war = tmp.path().join("app.war");
+        let entries = [
+            ("bdms300-front/dist/img/ZC机柜.jpg", "reported case"),
+            ("img/A机柜.jpg", "one ASCII byte"),
+            ("img/😀.jpg", "four-byte character"),
+            ("img/abé.jpg", "two-byte character"),
+            ("ZC机柜/index.jsp", "multibyte directory"),
+            ("img/普通.jpg", "character boundary"),
+        ];
+        archive(&war, &entries);
+        for resources_only in [false, true] {
+            let destination = tmp.path().join(format!("out-{resources_only}"));
+            explode(&war, &destination, resources_only).unwrap();
+            for (name, text) in entries {
+                assert_eq!(fs::read_to_string(destination.join(name)).unwrap(), text, "{name}");
+            }
+        }
+    }
+
+    #[test]
+    fn rejects_war_path_traversal() {
+        let tmp = tempfile::tempdir().unwrap();
+        let war = tmp.path().join("app.war");
+        archive(&war, &[("../escape.txt", "outside")]);
+        assert!(explode(&war, &tmp.path().join("out"), false).is_err());
+        assert!(!tmp.path().join("escape.txt").exists());
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn rejects_war_reserved_device_paths() {
+        let tmp = tempfile::tempdir().unwrap();
+        let war = tmp.path().join("app.war");
+        for name in ["CON.txt", "NUL", "COM1.txt", "LPT¹", "img/aux.jpg"] {
+            archive(&war, &[(name, "device")]);
+            assert!(explode(&war, &tmp.path().join("out"), false).is_err(), "{name}");
+        }
+    }
+
+    #[test]
     fn keeps_the_apps_own_context_descriptor() {
         let tmp = tempfile::tempdir().unwrap();
         let app = "<?xml version=\"1.0\" encoding=\"UTF-8\"?>\n<Context path=\"/old\" docBase=\"old\" reloadable=\"false\" antiResourceLocking=\"true\">\n  <!-- JNDI -->\n  <Resource name=\"jdbc/x\" auth=\"Container\" type=\"javax.sql.DataSource\" url=\"jdbc:h2:mem:a;b=&amp;c\"/>\n  <Environment name=\"mode\" value=\"dev\" type=\"java.lang.String\"/>\n</Context>\n";
