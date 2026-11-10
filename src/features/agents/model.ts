@@ -54,6 +54,7 @@ const PROVIDER_ICONS = new Set([
   "auggie",
   "kiro",
   "vibe",
+  "omp",
 ]);
 
 /** The agent's logo; custom agents get the generic agents icon. */
