@@ -19,12 +19,12 @@ import {
   toolWindowService,
 } from "@/workbench/contributions";
 import { AgentsStatus } from "./AgentsStatus";
-import { AGENTS_GROUP, HOME_KIND, REGISTRY_PAGE, SESSION_KIND, TASK_DRAG, TOOL_WINDOW } from "./model";
+import { AGENTS_GROUP, HOME_KIND, REGISTRY_PAGE, SESSION_KIND, TASK_DRAG, TOOL_WINDOW, providerIcon } from "./model";
 import { sendPaths, sendSelection } from "./references";
 import { focusedSession } from "./sessionFocus";
 import { connect, disconnect, openHome, useAgents } from "./store";
 import { TaskStatusMark } from "./TaskStatusMark";
-import { taskActions } from "./taskActions";
+import { taskActions, useAgentsHeaderMenu } from "./taskActions";
 import { replyActions } from "./replyActions";
 
 /** Settings › Agents › Coding Agents (also used by the Settings window). */
@@ -74,7 +74,7 @@ export function activate(): () => void {
       anchor: "right",
       order: 0.5,
       component: lazyComponent(() => import("./AgentsView").then((m) => m.AgentsView)),
-      headerContent: lazyComponent(() => import("./AgentsView").then((m) => m.AgentsLocationActions)),
+      headerMenu: useAgentsHeaderMenu,
       headerActions: lazyComponent(() => import("./AgentsView").then((m) => m.AgentsHeaderActions)),
       useBadge: () => {
         const n = useAgents(
@@ -90,7 +90,10 @@ export function activate(): () => void {
         const data = input.data as { task: string; title?: string };
         return useAgents.getState().tasks.get(data.task)?.title ?? data.title ?? "Agent Task";
       },
-      icon: () => "toolwindow-agents",
+      icon: (input) => {
+        const task = useAgents.getState().tasks.get((input.data as { task: string }).task);
+        return task ? providerIcon(task.provider) : "toolwindow-agents";
+      },
       // Busy / done marker in the tab's trailing slot (#2233).
       trailing: (input) => createElement(TaskStatusMark, { task: (input.data as { task: string }).task }),
       // Tabs of tasks deleted meanwhile are closed when the tasks load (`connect`).
@@ -102,7 +105,10 @@ export function activate(): () => void {
       kind: HOME_KIND,
       component: lazyComponent(() => import("./HomeEditor").then((m) => m.HomeEditor)),
       title: () => "New Agent Task",
-      icon: () => "toolwindow-agents",
+      icon: (input) => {
+        const task = useAgents.getState().tasks.get((input.data as { task: string }).task);
+        return task ? providerIcon(task.provider) : "toolwindow-agents";
+      },
       restorable: true,
     }),
     // An explicit editor drop sets the placement for subsequent sessions too.

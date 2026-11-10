@@ -20,6 +20,16 @@ import {
   useAgents,
 } from "./store";
 
+/** The Agents tool window's options menu: where conversations open. */
+export function useAgentsHeaderMenu(): MenuItem[] {
+  const location = useAgents((s) => s.sessionLocation);
+  return [
+    // A radio pair: check marks only, no action icons beside them.
+    { kind: "action", action: "agents.useToolWindow", icon: "", checked: location === "toolWindow" },
+    { kind: "action", action: "agents.useEditor", icon: "", checked: location === "editor" },
+  ];
+}
+
 const canArchive = (task: AgentTask) => !isBusy(task.status) && task.status !== "archived";
 const canFork = (task: AgentTask) => canArchive(task) && !!task.capabilities?.fork;
 
