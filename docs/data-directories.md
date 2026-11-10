@@ -20,5 +20,8 @@ setx OPENIDEA_LOCAL_DATA_DIR "E:\OpenIDEA"
 Settings, plugins, scratches and other user data stay in the operating system's
 data and configuration directories. Logs stay in their usual location, so they
 are still written when the variable is wrong. Existing data is not moved: quit
-OpenIDEA and move the old directory's contents to the new location, or let the
-IDE download tools and rebuild indexes again.
+OpenIDEA and move only `tools/`, `language-server-runtimes/`, `index/`, `cache/`,
+`lsp/`, `notebook-runtime/`, `server/`, `logs/`, `agents/tools/`,
+`agents/registry.json` and top-level `java-usages-*.jar` / `java-usages-*.tmp` to
+the new location, preserving their relative paths, or let the IDE download and
+rebuild them. Leave everything else in place.
