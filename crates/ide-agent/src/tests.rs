@@ -2568,3 +2568,17 @@ fn streamed_text_is_sent_as_appends() {
     let rewritten = entry_event("t", &mut streamed, None, 5, &agent(&format!("{}x!??", "é".repeat(4999))));
     assert!(matches!(rewritten, AgentEvent::Entry { .. }), "a rewritten end is sent whole");
 }
+
+#[test]
+fn error_messages_keep_the_agents_details() {
+    let details = json!({ "details": "spawn claude ENOENT" });
+    assert_eq!(with_details("Internal error".into(), Some(&details)), "Internal error: spawn claude ENOENT");
+    assert_eq!(
+        with_details("Internal error".into(), Some(&json!("model not found"))),
+        "Internal error: model not found"
+    );
+    assert_eq!(with_details(String::new(), Some(&details)), "spawn claude ENOENT");
+    assert_eq!(with_details("spawn claude ENOENT".into(), Some(&details)), "spawn claude ENOENT");
+    assert_eq!(with_details("Internal error".into(), Some(&json!({ "other": 1 }))), "Internal error");
+    assert_eq!(with_details("Internal error".into(), None), "Internal error");
+}

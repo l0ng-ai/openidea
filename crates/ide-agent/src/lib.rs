@@ -1722,7 +1722,7 @@ impl Task {
                     format!("The agent process exited:\n{}", tail.join("\n"))
                 }
             }
-            RpcError::Server { message, .. } => message,
+            RpcError::Server { message, data, .. } => with_details(message, data.as_ref()),
             e => e.to_string(),
         }
     }
@@ -2178,6 +2178,24 @@ fn usage_limit(e: &RpcError) -> Option<Option<f64>> {
         .iter()
         .any(|k| m.contains(k))
         .then_some(None)
+}
+
+/// An error's message with the detail ACP agents put in `data` (`{"details": …}` or a string):
+/// generic codes such as "Internal error" say nothing without it.
+fn with_details(message: String, data: Option<&Value>) -> String {
+    let details = match data {
+        Some(Value::String(text)) => text.as_str(),
+        Some(data) => data.get("details").and_then(Value::as_str).unwrap_or_default(),
+        None => "",
+    }
+    .trim();
+    if details.is_empty() || message.contains(details) {
+        message
+    } else if message.trim().is_empty() {
+        details.to_owned()
+    } else {
+        format!("{message}: {details}")
+    }
 }
 
 fn client_info() -> Value {
