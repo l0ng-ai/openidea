@@ -1300,6 +1300,45 @@ pub fn run_target<'a>(config: &RunConfig, settings: &'a Settings) -> Option<&'a 
     }
 }
 
+/// Whether the configuration's `JAVA_HOME` is the one Settings choose (the Maven runner JRE,
+/// the Gradle JVM) rather than a choice of its own: an IDE-generated build-tool configuration —
+/// a Maven goal or Gradle task from the tool window — carries the model's `JAVA_HOME`, which
+/// Settings derived when the model was built (IDEA has no JRE field on such a task either).
+/// Such a value is derived: Settings win, and [`without_derived`] drops it, so a corrected JDK
+/// applies to the next run, also across a restart (#2433). Every other configuration keeps its
+/// own `JAVA_HOME`, even one this build cannot parse.
+fn java_home_is_derived(c: &RunConfig) -> bool {
+    generated_maven_goal(c) || (c.id.starts_with("gradle:task:") && c.extras.params.is_empty())
+}
+
+/// Applies the `JAVA_HOME` of `env` (the one Settings resolved) to `c`. A derived value is
+/// replaced, also when Settings resolve none (a dead path must not outlive the setting it came
+/// from); an explicit `JAVA_HOME` of the configuration still wins.
+fn apply_java_home(c: &mut RunConfig, env: &std::collections::BTreeMap<String, String>, derived: bool) {
+    match env.get("JAVA_HOME") {
+        Some(value) if derived => {
+            c.env.insert("JAVA_HOME".into(), value.clone());
+        }
+        Some(value) => {
+            c.env.entry("JAVA_HOME".into()).or_insert_with(|| value.clone());
+        }
+        None if derived => {
+            c.env.remove("JAVA_HOME");
+        }
+        None => {}
+    }
+}
+
+/// The Maven environment from Settings (the runner JRE), applied to `c`: a derived `JAVA_HOME`
+/// is replaced, an explicit one stays (see [`apply_java_home`]).
+pub fn apply_maven_env(c: &mut RunConfig, root: &Path, s: &Settings) {
+    let env = maven_build_env(root, s, None);
+    apply_java_home(c, &env, java_home_is_derived(c));
+    for (key, value) in env {
+        c.env.entry(key).or_insert(value);
+    }
+}
+
 /// Points run configurations at the selected toolchains: Python configs use the
 /// project interpreter, npm scripts the chosen package manager and Node.js,
 /// cargo / go configs the selected toolchain, Maven / Gradle their runner JDK
@@ -1431,7 +1470,9 @@ pub fn apply_to_run_configs(configs: &mut [RunConfig], root: &Path, s: &Settings
                 if matches!(c.command.as_str(), "gradle" | "gradle.bat") {
                     c.command = resolve_gradle_command(root, &build_dir, s, false).to_string_lossy().into_owned();
                 }
-                for (key, value) in gradle_build_env(root, &build_dir, &c.command, s, None) {
+                let env = gradle_build_env(root, &build_dir, &c.command, s, None);
+                apply_java_home(c, &env, java_home_is_derived(c));
+                for (key, value) in env {
                     c.env.entry(key).or_insert(value);
                 }
             }
@@ -1461,9 +1502,7 @@ pub fn apply_to_run_configs(configs: &mut [RunConfig], root: &Path, s: &Settings
                 }
             }
             "maven" => {
-                for (key, value) in maven_build_env(root, s, None) {
-                    c.env.entry(key).or_insert(value);
-                }
+                apply_maven_env(c, root, s);
                 if let Some(mvn) = &mvn
                     && (c.detected
                         || generated_maven_goal(c)
@@ -1510,6 +1549,11 @@ pub fn without_derived(config: &RunConfig, root: &Path, s: &Settings) -> RunConf
         .env
         .iter()
         .find(|(key, value)| {
+            // Settings choose the `JAVA_HOME` of a generated build-tool configuration, also when
+            // a corrected setting no longer reproduces the value the model froze there (#2433).
+            if key.as_str() == "JAVA_HOME" && java_home_is_derived(&out) {
+                return true;
+            }
             let mut probe = out.clone();
             probe.env.remove(*key);
             let mut plain = probe.clone();
