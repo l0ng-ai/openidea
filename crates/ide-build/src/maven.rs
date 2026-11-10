@@ -499,7 +499,7 @@ pub fn user_settings_file(root: &Path, settings: &ide_core::settings::MavenSetti
 /// IDEA lists them): checked by default when `<activeProfiles>` names them or they are
 /// `activeByDefault`.
 pub fn settings_profiles(settings: &Path) -> Vec<MavenProfile> {
-    let Some(root) = std::fs::read_to_string(settings).ok().and_then(|text| xml::parse(&text)) else {
+    let Some(root) = xml::read_text(settings).as_deref().and_then(xml::parse) else {
         return Vec::new();
     };
     let active: Vec<String> =
@@ -519,7 +519,7 @@ pub fn settings_profiles(settings: &Path) -> Vec<MavenProfile> {
 /// `<localRepository>` of a settings file, when it names one: the repository a build
 /// with `-s <file>` resolves into, which is not necessarily the user's default.
 pub fn local_repository_of(settings: &Path) -> Option<PathBuf> {
-    let text = std::fs::read_to_string(settings).ok()?;
+    let text = xml::read_text(settings)?;
     let root = xml::parse(&text)?;
     let repo = root.text_of("localRepository")?.trim().to_owned();
     if repo.is_empty() {
@@ -545,7 +545,7 @@ impl Resolver {
     fn pom(&mut self, path: &Path) -> Option<RawPom> {
         self.poms
             .entry(path.to_path_buf())
-            .or_insert_with(|| std::fs::read_to_string(path).ok().and_then(|t| parse_pom(&t)))
+            .or_insert_with(|| xml::read_text(path).as_deref().and_then(parse_pom))
             .clone()
     }
 
@@ -736,7 +736,7 @@ pub(crate) fn launch_inputs(
                 return None;
             }
             out.push(path.clone());
-            let text = std::fs::read_to_string(&path).ok()?;
+            let text = xml::read_text(&path)?;
             roots(&xml::parse(&text)?, "", &dir, &mut out)?;
             let raw = resolver.pom(&path)?;
             let Some(parent) = raw.parent else { break };
@@ -1640,7 +1640,7 @@ fn parent_chain(path: &Path, text: &str, local_repo: Option<PathBuf>) -> Vec<(Pa
         let Some(parent) = pom.and_then(|p| p.parent) else { return chain };
         let Some(pp) = resolver.parent_path(&dir, &parent) else { return chain };
         let pp = dunce::canonicalize(&pp).unwrap_or(pp);
-        let Ok(next) = std::fs::read_to_string(&pp) else { return chain };
+        let Some(next) = xml::read_text(&pp) else { return chain };
         pom = resolver.pom(&pp);
         dir = pp.parent().unwrap_or(Path::new("")).to_path_buf();
         chain.push((pp, next));
@@ -2295,6 +2295,24 @@ mod tests {
         assert_eq!(names, ["a", "b"]);
         assert!(is_maven_project(root));
         assert!(!is_maven_project(&root.join("c")));
+    }
+
+    #[test]
+    fn non_utf8_pom_with_declared_encoding_is_a_build() {
+        // Issue #2439: a GBK `pom.xml` is not valid UTF-8; it must still load
+        // instead of vanishing as "No maven project".
+        let tmp = tempfile::tempdir().unwrap();
+        let root = tmp.path();
+        let (bytes, _, _) = encoding_rs::GBK.encode(
+            "<?xml version=\"1.0\" encoding=\"GBK\"?>\n<project><groupId>g</groupId>\
+             <artifactId>应用</artifactId><version>1</version><name>演示</name></project>",
+        );
+        std::fs::write(root.join("pom.xml"), bytes.as_ref()).unwrap();
+        let model = load_with_repo(root, None);
+        assert_eq!(model.projects.len(), 1);
+        assert_eq!(model.projects[0].artifact_id, "应用");
+        assert_eq!(model.projects[0].display_name, "演示");
+        assert!(is_maven_project(root));
     }
 
     #[test]
