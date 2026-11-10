@@ -4232,8 +4232,10 @@ name = "ide-build"
 version = "0.1.40"
 dependencies = [
  "blake3",
+ "chardetng",
  "dirs 6.0.0",
  "dunce",
+ "encoding_rs",
  "ide-core",
  "serde",
  "serde_json",
@@ -12150,14 +12152,15 @@ dependencies = [
 
 [[package]]
 name = "zip"
-version = "9.1.3"
+version = "9.2.3"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "1156b39d142a34b999c2310a50455e0cb3760bf7efad0122f796d813bee26ccb"
+checksum = "00fb4744e923442ecadfd3f85f51a5d24e03bf43d53813b81ebb4c91d02baa62"
 dependencies = [
  "crc32fast",
  "flate2",
  "getrandom 0.4.3",
  "indexmap 2.14.2",
+ "libc",
  "memchr",
  "nix 0.31.3",
  "typed-path",

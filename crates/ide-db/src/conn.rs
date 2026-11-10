@@ -594,6 +594,13 @@ fn is_identifier(name: &str) -> bool {
         && chars.all(|c| c.is_ascii_alphanumeric() || c == '_' || c == '.')
 }
 
+/// sqlx's handshake flags for `sql_mode`: with either enabled it sends
+/// `SET sql_mode=(SELECT CONCAT(...))`, a non-constant subquery that MySQL-protocol
+/// servers like StarRocks reject (#2452), so the StarRocks preset turns both off.
+fn mysql_mode_flags(vendor: &str) -> (bool, bool) {
+    if vendor == "starrocks" { (false, false) } else { (true, true) }
+}
+
 /// A MySQL `SET` value: numbers and keywords as they are, anything else quoted.
 fn mysql_value(v: &str) -> String {
     let keyword = ["ON", "OFF", "TRUE", "FALSE", "DEFAULT"].iter().any(|k| k.eq_ignore_ascii_case(v));
@@ -839,6 +846,8 @@ impl Pool {
                 if let Some(c) = &setup.collation {
                     opts = opts.collation(c);
                 }
+                let (pipes_as_concat, no_engine_substitution) = mysql_mode_flags(&source.vendor);
+                opts = opts.pipes_as_concat(pipes_as_concat).no_engine_substitution(no_engine_substitution);
                 if let Some(n) = setup.statement_cache {
                     opts = opts.statement_cache_capacity(n);
                 }
@@ -1463,6 +1472,15 @@ mod tests {
         assert!(Setup::of(&DataSource { properties: vec![prop("a; drop", "1")], ..s.clone() }).is_err());
         assert!(Setup::of(&DataSource { properties: vec![prop("connect_timeout", "0")], ..s.clone() }).is_err());
         assert!(Setup::of(&DataSource { properties: vec![prop("connect_timeout", "soon")], ..s }).is_err());
+    }
+
+    #[test]
+    fn starrocks_disables_the_non_constant_sql_mode_handshake() {
+        // MySQL and its other wire-compatible presets keep sqlx's defaults.
+        for vendor in ["", "mysql", "mariadb", "tidb"] {
+            assert_eq!(mysql_mode_flags(vendor), (true, true), "{vendor}");
+        }
+        assert_eq!(mysql_mode_flags("starrocks"), (false, false));
     }
 
     #[test]

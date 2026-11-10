@@ -345,6 +345,8 @@ struct Task {
     /// Settings already sent this session (`(option, value)`), so a refusal is not retried.
     config_sent: Mutex<HashSet<(String, String)>>,
     dirty: Mutex<BTreeSet<(Session, usize)>>,
+    /// How much of each session's streaming message was last sent, so the next flush sends the rest.
+    streamed: Mutex<HashMap<Session, Sent>>,
     flush_scheduled: AtomicBool,
     stderr: Mutex<VecDeque<String>>,
     /// Set by `delete`; held while saving.
@@ -852,6 +854,7 @@ impl AgentManager {
                 s.task.updated_ms = now_ms();
                 first
             };
+            task.streamed.lock().clear();
             task.persist();
             self.shared.emit(AgentEvent::Truncated { task: id.to_owned(), length: 0 });
             task.emit_task();
@@ -877,6 +880,7 @@ impl AgentManager {
             s.task.updated_ms = now_ms();
             first
         };
+        task.streamed.lock().clear();
         task.persist();
         self.shared.emit(AgentEvent::Truncated { task: id.to_owned(), length: cut as u32 });
         task.emit_task();
@@ -1129,6 +1133,7 @@ impl Task {
             idle_epoch: AtomicU64::new(0),
             config_sent: Mutex::new(HashSet::new()),
             dirty: Mutex::new(BTreeSet::new()),
+            streamed: Mutex::new(HashMap::new()),
             flush_scheduled: AtomicBool::new(false),
             stderr: Mutex::new(VecDeque::new()),
             deleted: Mutex::new(false),
@@ -1250,11 +1255,12 @@ impl Task {
         let indices = std::mem::take(&mut *self.dirty.lock());
         let events: Vec<AgentEvent> = {
             let s = self.state.lock();
+            let mut streamed = self.streamed.lock();
             indices
                 .into_iter()
                 .filter_map(|(subagent, i)| {
-                    let entry = s.conversation.timeline(&subagent)?.entries.get(i)?.clone();
-                    Some(AgentEvent::Entry { task: self.id.clone(), subagent, index: i as u32, entry })
+                    let entry = s.conversation.timeline(&subagent)?.entries.get(i)?;
+                    Some(entry_event(&self.id, &mut streamed, subagent, i, entry))
                 })
                 .collect()
         };
@@ -2315,4 +2321,78 @@ fn stdio_mcp_servers(executable: Option<&std::path::Path>, supported: bool, root
     let Some(executable) = executable.filter(|_| supported) else { return Vec::new() };
     let command = ide_mcp::stdio_command(executable, root);
     vec![json!({ "name": "OpenIDEA", "command": command[0], "args": command[1..], "env": [] })]
+}
+
+/// What was sent of a streaming message: its first `bytes` (`utf16` UTF-16 units), which
+/// ended with `tail`. A message only grows while it streams, so its tail tells a message
+/// that went on from one that was replaced without comparing (or keeping) all of it.
+struct Sent {
+    index: usize,
+    bytes: usize,
+    utf16: usize,
+    tail: String,
+}
+
+const SENT_TAIL: usize = 64;
+
+impl Sent {
+    fn new(index: usize, text: &str) -> Self {
+        Self::after(index, text, 0, 0)
+    }
+
+    /// `text` as sent, of which the first `bytes` (`utf16` units) were sent before.
+    fn after(index: usize, text: &str, bytes: usize, utf16: usize) -> Self {
+        let mut start = text.len().saturating_sub(SENT_TAIL);
+        while !text.is_char_boundary(start) {
+            start -= 1;
+        }
+        let utf16 = utf16 + text[bytes..].encode_utf16().count();
+        Self { index, bytes: text.len(), utf16, tail: text[start..].to_owned() }
+    }
+
+    /// Whether `text` at `index` is this message, gone on.
+    fn extended_by(&self, index: usize, text: &str) -> bool {
+        self.index == index
+            && text.len() > self.bytes
+            && text.is_char_boundary(self.bytes)
+            && text[..self.bytes].ends_with(&self.tail)
+    }
+}
+
+/// The event that brings the UI's copy of entry `i` up to date: only the new text when
+/// it extends the message last sent for the session, else the whole entry.
+fn entry_event(
+    task: &str,
+    streamed: &mut HashMap<Session, Sent>,
+    subagent: Session,
+    i: usize,
+    entry: &AgentEntry,
+) -> AgentEvent {
+    let text = match entry {
+        AgentEntry::Agent { text } | AgentEntry::Thought { text } => Some(text),
+        _ => None,
+    };
+    let Some(text) = text else {
+        if streamed.get(&subagent).is_some_and(|sent| sent.index == i) {
+            streamed.remove(&subagent);
+        }
+        return AgentEvent::Entry { task: task.to_owned(), subagent, index: i as u32, entry: entry.clone() };
+    };
+    match streamed.get(&subagent).filter(|sent| sent.extended_by(i, text)) {
+        Some(sent) => {
+            let (bytes, from) = (sent.bytes, sent.utf16);
+            streamed.insert(subagent.clone(), Sent::after(i, text, bytes, from));
+            AgentEvent::Append {
+                task: task.to_owned(),
+                subagent,
+                index: i as u32,
+                from: from as u32,
+                text: text[bytes..].to_owned(),
+            }
+        }
+        None => {
+            streamed.insert(subagent.clone(), Sent::new(i, text));
+            AgentEvent::Entry { task: task.to_owned(), subagent, index: i as u32, entry: entry.clone() }
+        }
+    }
 }

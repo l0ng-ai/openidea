@@ -15,7 +15,7 @@ import {
   type ReactNode,
 } from "react";
 import clsx from "clsx";
-import type { AgentCommand, AgentConfigOption, AgentImage } from "@/bindings";
+import type { AgentCommand, AgentConfigOption, AgentImage, SendKey, WhileRunning } from "@/bindings";
 import { call, commands, isTauri } from "@/platform/ipc";
 import { nativeDropPoint } from "@/platform/nativeDrop";
 import { invokeLocal } from "@/platform/tauriCore";
@@ -57,6 +57,7 @@ import {
 import { composerDraft, updateComposer, useAgents } from "./store";
 import { ImagePreview, imageSrc } from "./ImagePreview";
 import { useCompletionAnchor } from "./useCompletionAnchor";
+import { useAgentSettings } from "./agentSettings";
 import styles from "./Composer.module.css";
 import { isImeKey } from "@/platform/ime";
 
@@ -84,7 +85,7 @@ export interface ComposerProps {
   /** Settings; Shift+Tab cycles the mode one. */
   config: readonly AgentConfigOption[];
   onConfig?: (option: string, value: string) => void;
-  /** `now`: ⌘↵ (send even while the agent works, interrupting it). */
+  /** `now`: send even while the agent works, into its turn (by default ⌘↵). */
   onSubmit: (now: boolean) => void;
   disabled?: boolean;
   autoFocus?: boolean;
@@ -93,6 +94,29 @@ export interface ComposerProps {
   /** Right of the bottom row: send / stop buttons. */
   actions?: ReactNode;
   className?: string;
+}
+
+/**
+ * What a key press in the composer sends: "queue" waits for the turn to end, "now" goes into
+ * it. The send key sends the way Settings › Agents › Chat says, with Shift (or the
+ * modifier, when Enter sends) the other way; without the send key, Enter is a new line.
+ */
+export function sendKeyAction(
+  e: { key: string; shiftKey: boolean; metaKey: boolean; ctrlKey: boolean; altKey?: boolean },
+  sendWith: SendKey,
+  whileRunning: WhileRunning,
+): "queue" | "now" | null {
+  if (e.key !== "Enter" || e.altKey) return null;
+  const mod = e.metaKey || e.ctrlKey;
+  let other: boolean;
+  if (sendWith === "enter") {
+    if (e.shiftKey) return null;
+    other = mod;
+  } else {
+    if (!mod) return null;
+    other = e.shiftKey;
+  }
+  return (whileRunning === "steer") !== other ? "now" : "queue";
 }
 
 export function Composer(props: ComposerProps) {
@@ -112,6 +136,7 @@ export function Composer(props: ComposerProps) {
   const [active, setActive] = useState(0);
   const composing = useRef(false);
   const recalled = useRef<{ index: number; stash: string }>({ index: -1, stash: "" });
+  const { sendWith, whileRunning } = useAgentSettings();
 
   useEffect(() => {
     if (props.autoFocus) ref.current?.focus();
@@ -424,9 +449,10 @@ export function Composer(props: ComposerProps) {
         return;
       }
     }
-    if (e.key === "Enter" && !e.shiftKey) {
+    const send = sendKeyAction(e, sendWith, whileRunning);
+    if (send) {
       e.preventDefault();
-      if (!props.disabled) props.onSubmit(e.metaKey || e.ctrlKey);
+      if (!props.disabled) props.onSubmit(send === "now");
       recalled.current = { index: -1, stash: "" };
       return;
     }
@@ -600,7 +626,7 @@ export function Composer(props: ComposerProps) {
             }}
           />
           <IconButton
-            icon="file-image"
+            icon="image"
             title="Attach Image…"
             className={styles.composerButton}
             onClick={() => imageInput.current?.click()}

@@ -6,6 +6,7 @@
  * sync), Run Configurations and its modules. Gradle: the root project with
  * Tasks (grouped), Run Configurations and its subprojects.
  */
+import { tx } from "@/platform/i18n";
 import type {
   GradleModel,
   GradleProject,
@@ -343,17 +344,17 @@ export function gradleChildren(
 export function nodeLabel(node: BuildNode): string {
   switch (node.kind) {
     case "profiles":
-      return "Profiles";
+      return tx("Profiles");
     case "profile":
       return node.profile.id;
     case "mavenProject":
       return node.project.displayName;
     case "lifecycle":
-      return "Lifecycle";
+      return tx("Lifecycle");
     case "phase":
       return node.phase;
     case "plugins":
-      return "Plugins";
+      return tx("Plugins");
     case "plugin":
       return pluginLabel(node.plugin);
     case "goal":

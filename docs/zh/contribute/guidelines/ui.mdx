@@ -1,0 +1,52 @@
+---
+title: "UI 规范"
+description: "前端 UI 代码的规则：设计 token、CSS Modules、图标、UI 基础组件、无障碍以及 WebKit 兼容性。"
+---
+
+视觉风格是深色、低对比度的灰阶，加一种冷色强调色。一致性靠一小组适用于所有组件的规则来保证。
+
+## 设计 token
+
+[`src/styles/tokens.css`](https://github.com/l0ng-ai/openidea/blob/main/src/styles/tokens.css) 是颜色和尺寸（间距、大小、圆角、字重）的唯一来源。`:root` 是深色主题，`[data-theme="light"]` 和 `[data-theme="dark-hc"]`（高对比度）在其上覆盖。插件主题和配色设置在运行时改写的也是这些变量。
+
+- **组件里只用 token。** 组件的 CSS 或内联样式中不出现十六进制、`rgb()` 或颜色名字面量：写 `color: var(--fg-muted)`，不写 `color: #8c8c8c`。
+- **需要新的颜色或尺寸？** 在 `tokens.css` 里为每个主题变体都加上 token，名字说明用途，而不是描述外观。
+- **token 是主题 API 的一部分。** `plugins/themes.md` 里的 token 参考由 `tokens.css` 生成（`pnpm gen:theme-docs`），过期时 `scripts/theme/theme.test.ts` 会失败。新增或重命名 token 后要运行生成脚本。
+
+## CSS Modules
+
+组件用 CSS Modules 写样式：`Thing.module.css` 放在 `Thing.tsx` 旁边，以 `styles` 导入，配合 `clsx` 组合。`src/styles/global.css` 只放文档级规则，不要在功能里添加全局 class。
+
+## 图标
+
+- 图标是来自 [`src/ui/icons.tsx`](https://github.com/l0ng-ai/openidea/blob/main/src/ui/icons.tsx) 的内联 SVG：`<Icon name="folder" />`，或者 `Button`、action 的 `icon` 属性。
+- **永远不要用 emoji** 充当图标或装饰，UI 和用户可见的文本里都不行。
+- 不带 `label` 的 `Icon` 是装饰性的，渲染为 `aria-hidden`。只靠图标本身传达含义时，要给它 `label`。
+- SVG 文件位于 `src/ui/expui/<group>/`（引入的新 UI 图标，带 `_dark` 和 `@20x20` 变体）和 `src/ui/openidea/<group>/`（项目自绘、风格一致的图标），在 `icons.tsx` 中按名字注册。名字是 `Action.icon` 和各 contribution 使用的契约。新图标加在那里，不要在功能里内联临时的 SVG。单色图标以 `currentColor` 绘制，会随主题变化。
+
+## UI 基础组件
+
+先用 `src/ui/` 里的基础组件，再考虑自己写：`Button`、`BarButton`、`Input`、`Checkbox`、`Select`、`Dialog`、`Popup`、`Menu`、`Tooltip`、`List`、`Tree`、`Tabs`、`Splitter`、`Scrollbar`、`Spinner`、`Kbd`，以及用于翻译文本的 `T`。它们已经处理好焦点、键盘导航、主题和标签翻译。工作台级别的部件（工具窗口、状态栏项、浮层）来自 [contribution](/zh/contribute/architecture/frontend)，不要自己写布局。
+
+## 无障碍
+
+- 使用真正的 `<button>` 和 `<input>` 元素（或渲染它们的基础组件），不要用可点击的 `<div>`。
+- 每个只有图标的按钮都要有 `aria-label`。`aria-label` 是文本目录会翻译的属性之一，所以和其他标签一样用英文写。
+- 用户能做的每件事都是带稳定 id 的 [action](/zh/contribute/architecture/frontend)，因此可以通过键盘和 Find Action 访问，而不只是鼠标。
+- 焦点要可见、可预期：对话框和弹出框关闭后把焦点还给原来的位置。
+
+## 文本
+
+用户可见的文本在调用处用英文书写，经过文本目录翻译；每条字符串都必须有中文。见[本地化](/zh/contribute/guidelines/i18n)。
+
+## WebKit 兼容性
+
+在 macOS 和 Linux 上应用运行于 WebKit，最低支持 Safari 16（macOS 11 可以升级到这个版本）。`pnpm build` 会对产物运行 `scripts/check-webkit.ts`，`src/platform/webkitCompatibility.test.ts` 会检查应用中的正则。请避免：
+
+- 正则后行断言（`(?<=…)`、`(?<!…)`，需要 Safari 16.4）和正则 `v` 标志；
+- import attributes；
+- 在启动代码中使用较新的运行时 API，如 `Promise.withResolvers`、`Object.groupBy`、`Map.groupBy`、`Array.fromAsync`、`String.prototype.isWellFormed`。
+
+## 验证 UI 改动
+
+启动应用（`pnpm tauri dev`），在深色和浅色主题下都检查一遍。改变用户所见内容的 PR 需要前后对比截图，多步交互需要录屏；见[贡献流程](/zh/contribute/workflow)。

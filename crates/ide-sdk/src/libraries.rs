@@ -583,8 +583,9 @@ pub fn dependency_groups(root: &Path, s: &Settings, deps: &[BuildDependency]) ->
     if deps.is_empty() {
         return Vec::new();
     }
-    let maven_repo = crate::apply::maven_local_repository(root, s).or_else(default_maven_repository);
-    let gradle_home = gradle_user_home();
+    let maven_repo = crate::apply::maven_local_repository(root, s).or_else(crate::apply::default_maven_repository);
+    // The home Gradle runs with, not just the one this process inherited.
+    let gradle_home = crate::apply::setting_path(root, &s.languages.java.gradle.user_home).or_else(gradle_user_home);
     let files: Vec<PathBuf> = JAVA_MANIFESTS.iter().map(|n| root.join(n)).collect();
     let key = format!("{maven_repo:?}\n{gradle_home:?}\n{deps:?}");
     cached(root, "buildDependencies", key, &files, || {
@@ -592,12 +593,8 @@ pub fn dependency_groups(root: &Path, s: &Settings, deps: &[BuildDependency]) ->
     })
 }
 
-/// `~/.m2/repository` (Settings › Maven › Local repository overrides it).
-fn default_maven_repository() -> Option<PathBuf> {
-    Some(crate::home_dir()?.join(".m2/repository"))
-}
-
-/// `$GRADLE_USER_HOME`, else `~/.gradle`.
+/// `$GRADLE_USER_HOME`, else `~/.gradle`: what Gradle uses when Settings › Gradle ›
+/// user home is empty.
 fn gradle_user_home() -> Option<PathBuf> {
     std::env::var_os("GRADLE_USER_HOME").map(PathBuf::from).or_else(|| Some(crate::home_dir()?.join(".gradle")))
 }
@@ -652,7 +649,7 @@ pub fn published_version_catalog(root: &Path, s: &Settings, coordinates: &str) -
         found.into_iter().next()
     });
     cached.or_else(|| {
-        let repo = crate::apply::maven_local_repository(root, s).or_else(default_maven_repository)?;
+        let repo = crate::apply::maven_local_repository(root, s).or_else(crate::apply::default_maven_repository)?;
         let path = repo.join(d.group.replace('.', "/")).join(&d.artifact).join(&d.version).join(&file);
         path.is_file().then_some(path)
     })
@@ -1171,6 +1168,25 @@ mod go_cache_tests {
         for missing in ["com.acme:catalog:9", "com.acme:catalog", "a:b:c:d", "../x:y:z"] {
             assert_eq!(published_version_catalog(root, &s, missing), None, "{missing}");
         }
+    }
+
+    #[test]
+    fn dependency_jars_come_from_the_configured_gradle_home() {
+        let tmp = tempfile::tempdir().unwrap();
+        let root = tmp.path();
+        let mut s = Settings::default();
+        s.languages.java.gradle.user_home = root.join("gradle").to_string_lossy().into_owned();
+        // Only in the home Gradle runs with, not in `$GRADLE_USER_HOME` / `~/.gradle`.
+        let jar = root.join("gradle/caches/modules-2/files-2.1/com.acme/lib/1.0/abc123/lib-1.0.jar");
+        std::fs::create_dir_all(jar.parent().unwrap()).unwrap();
+        std::fs::write(&jar, b"jar").unwrap();
+
+        let deps =
+            [BuildDependency { gradle: true, group: "com.acme".into(), artifact: "lib".into(), version: "1.0".into() }];
+        let groups = dependency_groups(root, &s, &deps);
+        assert_eq!(groups.len(), 1, "{groups:?}");
+        assert_eq!(groups[0].name, "Gradle: com.acme:lib:1.0");
+        assert_eq!(groups[0].roots[0].name, "lib-1.0.jar");
     }
     #[test]
     fn vendor_roots_include_local_replacements_once() {

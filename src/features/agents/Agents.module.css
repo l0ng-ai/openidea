@@ -79,6 +79,7 @@
 }
 .age {
   flex: none;
+  margin-left: auto;
   padding-right: 8px;
   color: var(--fg-subtle);
   font-size: var(--fs-small);
@@ -185,13 +186,4 @@
   padding: 8px 12px;
   border-bottom: 1px solid var(--border);
   font-weight: 600;
-}
-
-.location {
-  display: flex;
-  align-items: center;
-  gap: 2px;
-  padding: 1px;
-  border: 1px solid var(--border);
-  border-radius: var(--radius-small);
 }

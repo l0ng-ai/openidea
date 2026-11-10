@@ -31,7 +31,13 @@
         const message = String(reason);
         return reason.stack.includes(message) ? reason.stack : `${message}\n${reason.stack}`;
       }
-      return (typeof reason === "string" ? reason : JSON.stringify(reason)) || String(reason);
+      if (typeof reason === "string") return reason;
+      // WebKit's fetch / network TypeErrors carry no stack and serialise to "{}".
+      if (reason instanceof Error || typeof reason?.message === "string") {
+        const name = typeof reason.name === "string" ? reason.name : "Error";
+        return `${name}: ${reason.message}`;
+      }
+      return JSON.stringify(reason) || String(reason);
     } catch {
       return "Unknown startup error";
     }
@@ -90,17 +96,24 @@
     if (target?.tagName === "SCRIPT" || (target?.tagName === "LINK" && target.rel === "modulepreload")) {
       show(`Could not load startup script: ${target.src || target.href}`);
     } else if (event.error || event.message) {
-      // ResizeObserver defers undelivered notifications to the next frame; startup can continue.
+      // ResizeObserver defers undelivered notifications to the next frame; startup can
+      // continue. Blink reports the loop as a bare message, WebKit (Tauri on Linux) as an
+      // Error object — ignore both. No genuine startup failure carries these engine strings.
+      const message = event.error?.message ?? event.message;
       if (
-        !event.error &&
-        (event.message === "ResizeObserver loop completed with undelivered notifications." ||
-          event.message === "ResizeObserver loop limit exceeded")
+        message === "ResizeObserver loop completed with undelivered notifications." ||
+        message === "ResizeObserver loop limit exceeded"
       )
         return;
       show(event.error || `${event.message}\n${event.filename || ""}:${event.lineno || 0}:${event.colno || 0}`);
     }
   };
-  const onRejection = (event) => show(event.reason);
+  // An unhandled rejection doesn't stop startup by itself (a failed background request
+  // rejects too); keep the first one for the timeout report instead of failing on it.
+  let rejection;
+  const onRejection = (event) => {
+    if (rejection === undefined) rejection = describe(event.reason);
+  };
   const onBootError = (event) => show(event.detail);
   const onReady = () => {
     ready = true;
@@ -110,7 +123,10 @@
     window.removeEventListener("openidea:boot-error", onBootError);
     window.removeEventListener("openidea:boot-ready", onReady);
   };
-  const timer = window.setTimeout(() => show(text.timeout), 30_000);
+  const timer = window.setTimeout(
+    () => show(rejection === undefined ? text.timeout : `${text.timeout}\n\nUnhandled rejection: ${rejection}`),
+    30_000,
+  );
   window.addEventListener("error", onError, true);
   window.addEventListener("unhandledrejection", onRejection);
   window.addEventListener("openidea:boot-error", onBootError);

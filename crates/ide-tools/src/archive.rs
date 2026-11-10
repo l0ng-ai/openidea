@@ -444,6 +444,24 @@ mod tests {
     }
 
     #[test]
+    fn extracts_zip_with_multibyte_path_components() {
+        let tmp = tempfile::tempdir().unwrap();
+        let archive = tmp.path().join("tool.zip");
+        let entries: &[(&str, &[u8], u32)] = &[
+            ("bdms300-front/dist/img/ZC机柜.jpg", b"reported case", 0o644),
+            ("A机柜/file", b"directory", 0o644),
+            ("abé.txt", b"two-byte character", 0o644),
+            ("😀.txt", b"four-byte character", 0o644),
+        ];
+        zip_file(&archive, entries);
+        let dest = tmp.path().join("out");
+        extract(&archive, ArchiveKind::Zip, &dest, "x", &CancellationToken::new()).unwrap();
+        for (name, data, _) in entries {
+            assert_eq!(fs::read(dest.join(name)).unwrap(), *data, "{name}");
+        }
+    }
+
+    #[test]
     fn extracts_zip_with_modes_and_nested_dirs() {
         let tmp = tempfile::tempdir().unwrap();
         let archive = tmp.path().join("codelldb.vsix");

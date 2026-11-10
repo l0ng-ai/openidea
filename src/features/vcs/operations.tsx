@@ -22,6 +22,7 @@ import { reloadLog, useGitLog } from "./logStore";
 import { conflictedFiles, currentRepo, currentRepoRoot, refreshNow, repoName, repoOf, useVcs } from "./store";
 import styles from "./common.module.css";
 import { ComparisonTree } from "./ComparisonTree";
+import { showWorktreeComparison } from "./compareTool";
 import { buildFileTree, type FileTreeNode } from "./fileTree";
 import { tx } from "@/platform/i18n";
 import { displayPath } from "./compareData";
@@ -507,9 +508,9 @@ export function showCompareWithLocal(commit: Commit) {
   showDiffWithWorkingTree(commit.id, short(commit.id));
 }
 
-/** Files that differ between `rev` (a commit or branch) and the working tree. */
+/** Files that differ between `rev` (a commit or branch) and the working tree, in the Compare tool window. */
 export function showDiffWithWorkingTree(rev: string, label = rev) {
-  showComparison({ rev, label }, null);
+  showWorktreeComparison(rev, label);
 }
 
 /** IDEA's Compare Versions of two Git Log commits: files that differ between them, older first. */
@@ -537,7 +538,7 @@ function showComparison(from: Revision, to: Revision | null, scope?: ScopedCompa
   );
 }
 
-interface Revision {
+export interface Revision {
   rev: string;
   label: string;
 }
@@ -547,11 +548,41 @@ interface ScopedComparison {
   repositories: string[] | null;
 }
 
-interface ComparisonFile extends ChangedFile {
+export interface ComparisonFile extends ChangedFile {
   root: string;
   revision: string;
   added?: number;
   removed?: number;
+}
+
+/**
+ * Diff content of one comparison file. `swapped` exchanges the two sides
+ * (the Compare tool window's Swap Sides), for worktree and revision diffs alike.
+ */
+export function comparisonDiffData(
+  file: ComparisonFile,
+  from: Revision,
+  to: Revision | null,
+  swapped: boolean,
+): DiffData {
+  const missing = (label: string): DiffSide => ({ type: "text", text: "", label });
+  const path = repositoryPath(file.root, file.path);
+  const left: DiffSide =
+    file.kind === "added" || file.kind === "untracked"
+      ? missing("(does not exist)")
+      : {
+          type: "rev",
+          rev: file.revision,
+          label: from.label,
+          path: file.oldPath ? repositoryPath(file.root, file.oldPath) : undefined,
+        };
+  const right: DiffSide =
+    file.kind === "deleted"
+      ? missing("(deleted)")
+      : !to
+        ? { type: "worktree" }
+        : { type: "rev", rev: to.rev, label: to.label };
+  return swapped ? { path, left: right, right: left } : { path, left, right };
 }
 
 export function comparisonEmpty(revision: string, repositories: number): string {
@@ -569,6 +600,8 @@ export function ChangesBetweenDialog({
   native = false,
   onCaption,
   onShowDiff,
+  swapped = false,
+  onSelect,
 }: {
   from: Revision;
   to: Revision | null;
@@ -578,13 +611,21 @@ export function ChangesBetweenDialog({
   native?: boolean;
   onCaption?: (caption: string) => void;
   onShowDiff?: (data: DiffData) => void;
+  /** Exchange the two sides (the Compare tool window's Swap Sides). */
+  swapped?: boolean;
+  /** Reports the selected file (the Compare tool window's Jump to Source / Swap Sides). */
+  onSelect?: (file: ComparisonFile | null) => void;
 }) {
   const [root] = useState(currentRepoRoot);
   const [repo] = useState(currentRepo);
   const [files, setFiles] = useState<ComparisonFile[] | null>(null);
   const [result, setResult] = useState<CompareResult | null>(null);
   const [error, setError] = useState<string | null>(null);
-  const [current, setCurrent] = useState<ComparisonFile | null>(null);
+  const [current, setCurrentState] = useState<ComparisonFile | null>(null);
+  const setCurrent = (file: ComparisonFile | null) => {
+    setCurrentState(file);
+    onSelect?.(file);
+  };
   const fromRev = from.rev;
   const toRev = to?.rev ?? null;
   useEffect(() => {
@@ -633,27 +674,7 @@ export function ChangesBetweenDialog({
       };
     });
   }, [files, result, scope]);
-  const diffFor = (f: ComparisonFile): DiffData => {
-    const missing = (label: string): DiffSide => ({ type: "text", text: "", label });
-    return {
-      path: repositoryPath(f.root, f.path),
-      left:
-        f.kind === "added" || f.kind === "untracked"
-          ? missing("(does not exist)")
-          : {
-              type: "rev",
-              rev: f.revision,
-              label: from.label,
-              path: f.oldPath ? repositoryPath(f.root, f.oldPath) : undefined,
-            },
-      right:
-        f.kind === "deleted"
-          ? missing("(deleted)")
-          : !to
-            ? { type: "worktree" }
-            : { type: "rev", rev: to.rev, label: to.label },
-    };
-  };
+  const diffFor = (f: ComparisonFile): DiffData => comparisonDiffData(f, from, to, swapped);
   const input = current ? diffInput(diffFor(current)) : null;
   const title = to
     ? tx`Changes between ${from.label} and ${to.label}`

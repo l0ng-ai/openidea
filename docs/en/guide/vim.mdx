@@ -1,0 +1,79 @@
+---
+title: "Vim mode"
+description: "Turn on Vim emulation, configure it with ~/.ideavimrc, map keys to IDE actions and resolve shortcut conflicts."
+---
+
+OpenIDEA has a built-in Vim emulation modelled on IntelliJ IDEA's IdeaVim plugin. The editing engine is [`@replit/codemirror-vim`](https://github.com/replit/codemirror-vim); OpenIDEA adds IDE integration on top: Ex commands that save and close tabs, `:action` to run IDE commands, IdeaVim-style rc files and a shortcut conflict table.
+
+## Turn it on
+
+Use any of these:
+
+- **Tools › Vim**, which turns it on or off.
+- The **Vim** widget in the status bar: click it and check **Enabled**.
+- **Settings › Editor › Vim** › **Enable Vim emulation**.
+
+The setting applies to every editor in every window right away and is remembered across restarts. While Vim mode is on, the status bar widget shows the current mode: `NORMAL`, `INSERT`, `VISUAL`, `V-LINE`, `V-BLOCK` or `REPLACE`.
+
+## What works
+
+The usual Vim editing model is available through codemirror-vim: Normal, Insert, Visual (characterwise, linewise and blockwise) and Replace modes, motions, operators and text objects with counts, registers, marks, `.` repeat, search with `/`, `?`, `*` and `#`, and its Ex commands such as `:s`, `:g` and `:sort`.
+
+OpenIDEA adds these Ex commands:
+
+| Command        | Does                     |
+| -------------- | ------------------------ |
+| `:w`, `:wa`    | **Save All**             |
+| `:q`           | Close the editor tab     |
+| `:qa`          | Close all editor tabs    |
+| `:wq`, `:x`    | Save, then close the tab |
+| `:action <id>` | Run an IDE action        |
+
+## The rc file
+
+When Vim mode turns on (including at startup, if it was on), OpenIDEA reads `~/.openideavimrc`, or `~/.ideavimrc` when the first does not exist. Use `~/.openideavimrc` for settings that should apply only to OpenIDEA and not to IntelliJ IDEA.
+
+After editing the file, run **Reload .ideavimrc** (from the status bar widget or Find Action), or click **Reload** in **Settings › Editor › Vim**. The settings page shows which file was read, how many mappings it has, and every line that was ignored with the reason.
+
+Supported lines:
+
+| Line                                                                              | Notes                                                                                                                                                              |
+| --------------------------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
+| `map`, `noremap` and their `n`, `v`, `x`, `i`, `o` variants (`nnoremap`, `vmap`…) | `<silent>`, `<unique>`, `<nowait>`, `<buffer>`, `<expr>` and `<script>` flags are accepted and ignored. Key names such as `<esc>` and `<CR>` are case-insensitive. |
+| `let mapleader = "…"`                                                             | Also `g:mapleader`. `"\<Space>"` and `" "` both mean Space. The default leader is `\`.                                                                             |
+| `set …`                                                                           | Only the options codemirror-vim implements: `textwidth` (`tw`), `pcre`, `insertModeEscKeysTimeout` and `langmap` (`lmap`). Other options are reported as ignored.  |
+| `source <file>`                                                                   | Reads another file by the same rules. `~` is your home directory.                                                                                                  |
+| `" comment`                                                                       | Ignored.                                                                                                                                                           |
+
+Anything else (functions, `if`, `autocmd`, plugin commands) is reported as ignored and never executed.
+
+### Map keys to IDE actions
+
+The right-hand side of a mapping can run an IDE action, written the IdeaVim way:
+
+```vim
+let mapleader = " "
+nnoremap <leader>r :action RenameElement<CR>
+nnoremap <leader>f <Action>(ReformatCode)
+nnoremap <leader>e :action SearchEverywhere<CR>
+nnoremap gi <Action>(GotoImplementation)
+```
+
+IdeaVim action ids such as `GotoDeclaration`, `GotoImplementation`, `FindUsages`, `ReformatCode`, `RenameElement`, `ShowIntentionActions`, `SearchEverywhere`, `RecentFiles`, `Run`, `Debug`, `ToggleLineBreakpoint`, `SplitVertically` and many others are translated to the matching OpenIDEA action. OpenIDEA's own action ids work too, for example `:action code.reformat`. To find an action's id, see the [shortcuts reference](/en/reference/shortcuts) or **Settings › Keymap**.
+
+When a leader mapping starts with `Space`, `,`, `;`, `Backspace` or `Delete`, the built-in Vim command on that key is disabled so the mapping can complete.
+
+## Shortcut conflicts
+
+Some keys are both Vim commands and IDE shortcuts, for example `Ctrl+R` (redo in Vim) or `Ctrl+E`. **Settings › Editor › Vim** › **Shortcut conflicts** lists every key Vim uses with the IDE action bound to it, and lets you choose the **Handler** for each:
+
+- **Vim**: the key goes to the editor while Vim mode is on and an editor has focus.
+- **IDE**: the IDE action runs first; Vim still gets the key when no IDE action is enabled.
+
+The defaults follow IdeaVim: `Esc`, `Ctrl+C`, `Ctrl+N`, `Ctrl+P`, `Ctrl+Q` and `Ctrl+T` go to the IDE, the others to Vim.
+
+## Limits
+
+- Only the rc file subset above is understood. IdeaVim's own options (for example `ideajoin`) and IdeaVim extensions such as `surround`, `commentary` or `easymotion` are not available.
+- Vim mode is an IDE-wide setting; it cannot be turned on for one project or one file type only.
+- `:q` and `:wq` close the editor tab, not the window.

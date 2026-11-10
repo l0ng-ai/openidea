@@ -2,9 +2,10 @@ import { describe, expect, it, vi } from "vitest";
 import type { HierarchyItem, OutlineItem, ReferencesIncomplete, SymbolKind } from "@/bindings";
 
 const hint = vi.fn();
+const hide = vi.hoisted(() => vi.fn());
 vi.mock("@/workbench/contributions", async (orig) => ({
   ...(await orig<typeof import("@/workbench/contributions")>()),
-  toolWindowService: () => ({ show: () => undefined }),
+  toolWindowService: () => ({ show: () => undefined, hide }),
 }));
 
 const range = (l1: number, c1: number, l2: number, c2: number) => ({
@@ -165,5 +166,15 @@ describe("hierarchy", () => {
     } finally {
       servedAt = (pos) => pos.line === 2 && pos.col === 7;
     }
+  });
+});
+
+describe("closing the hierarchy tab", () => {
+  it("clears the tree and hides the tool window", async () => {
+    const { closeHierarchy, useHierarchy } = await import("./hierarchy");
+    useHierarchy.setState({ root: { name: "Number", path: "/p/Number.java", line: 0, col: 0 } as never });
+    closeHierarchy();
+    expect(useHierarchy.getState().root).toBeNull();
+    expect(hide).toHaveBeenCalledWith("hierarchy");
   });
 });

@@ -85,7 +85,7 @@ pub fn lombok_agent(
         return LombokAgent::Found { jar, version: None };
     }
     let home = home_dir();
-    let maven_repo = maven_repo.or_else(|| maven_repository(home.as_deref()));
+    let maven_repo = maven_repo.or_else(|| home.as_deref().and_then(crate::apply::default_maven_repository_in));
     if !uses_lombok(root, maven_repo.as_deref()) {
         return LombokAgent::Unused;
     }
@@ -266,17 +266,6 @@ fn sources_import_lombok(root: &Path) -> bool {
         .filter(|e| e.file_type().is_some_and(|t| t.is_file()) && e.path().extension().is_some_and(|x| x == "java"))
         .take(MAX_FILES)
         .any(|e| imports_lombok(e.path()))
-}
-
-/// `<localRepository>` of `~/.m2/settings.xml`, else `~/.m2/repository`.
-fn maven_repository(home: Option<&Path>) -> Option<PathBuf> {
-    let m2 = home?.join(".m2");
-    let custom = std::fs::read_to_string(m2.join("settings.xml"))
-        .ok()
-        .and_then(|s| crate::java::xml_value(&strip_xml_comments(&s), "localRepository"))
-        .filter(|v| !v.is_empty() && !v.contains("${"))
-        .map(PathBuf::from);
-    Some(custom.unwrap_or_else(|| m2.join("repository")))
 }
 
 pub(crate) fn strip_xml_comments(text: &str) -> String {
@@ -559,19 +548,5 @@ mod tests {
         assert!(agent.outdated(), "its version is read from the file name");
         let plain = lombok_agent(tmp.path(), agent_in_args(["-javaagent:/opt/lombok.jar"]), None, None);
         assert_eq!(plain.problem(), None, "a user agent is never reported missing");
-    }
-
-    #[test]
-    fn maven_settings_local_repository() {
-        let tmp = tempfile::tempdir().unwrap();
-        let home = tmp.path();
-        assert_eq!(maven_repository(Some(home)), Some(home.join(".m2/repository")));
-        fs::create_dir_all(home.join(".m2")).unwrap();
-        fs::write(
-            home.join(".m2/settings.xml"),
-            "<settings><!-- <localRepository>/old</localRepository> --><localRepository>/repo</localRepository></settings>",
-        )
-        .unwrap();
-        assert_eq!(maven_repository(Some(home)), Some(PathBuf::from("/repo")));
     }
 }

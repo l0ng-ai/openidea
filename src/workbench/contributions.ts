@@ -58,6 +58,8 @@ export interface ToolWindowContribution {
    * present the header title also gets a "▾" opening just these items.
    */
   headerMenu?: MenuItem[] | ((id: string) => MenuItem[]);
+  /** `headerMenu` stays in "⋮" only: the title gets no "▾". */
+  plainTitle?: boolean;
   /**
    * The title as a view switcher (IDEA's "Project ▾" panes): a React hook
    * returning the current view's label and the items the title opens instead

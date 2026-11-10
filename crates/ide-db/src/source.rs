@@ -270,7 +270,7 @@ pub fn scheme_driver(scheme: &str) -> Option<DbDriver> {
     match scheme.to_ascii_lowercase().as_str() {
         "postgres" | "postgresql" | "pgsql" | "redshift" | "cockroachdb" | "cockroach" | "yugabytedb"
         | "timescaledb" | "greenplum" => Some(DbDriver::Postgres),
-        "mysql" | "mariadb" | "tidb" | "singlestore" | "memsql" | "oceanbase" => Some(DbDriver::Mysql),
+        "mysql" | "mariadb" | "tidb" | "singlestore" | "memsql" | "oceanbase" | "starrocks" => Some(DbDriver::Mysql),
         "sqlserver" | "mssql" | "mssqlserver" => Some(DbDriver::SqlServer),
         "sqlite" | "sqlite3" => Some(DbDriver::Sqlite),
         "clickhouse" | "http" | "https" => Some(DbDriver::Clickhouse),
@@ -559,6 +559,7 @@ mod tests {
         assert_eq!((u.host.as_str(), u.port, u.user.as_str()), ("::1", None, "root"));
         assert_eq!(parse_url("jdbc:redshift://r:5439/dev").unwrap().driver, Some(DbDriver::Postgres));
         assert_eq!(parse_url("tidb://h:4000").unwrap().driver, Some(DbDriver::Mysql));
+        assert_eq!(parse_url("starrocks://h:9030").unwrap().driver, Some(DbDriver::Mysql));
         assert_eq!(parse_url("sqlite:/tmp/a.db").unwrap().file.as_deref(), Some("/tmp/a.db"));
         let u = parse_url("oracle://scott:tiger@db.local:1521/ORCLPDB1").unwrap();
         assert_eq!(u.driver, Some(DbDriver::Oracle));

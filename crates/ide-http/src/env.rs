@@ -52,6 +52,8 @@ fn search_dirs(file: Option<&Path>, root: Option<&Path>) -> Vec<PathBuf> {
 }
 
 fn parse_env(text: &str) -> IdeResult<EnvMap> {
+    // Editors on Windows (Notepad) save UTF-8 with a byte order mark, which serde_json rejects.
+    let text = text.strip_prefix('\u{feff}').unwrap_or(text);
     let value: serde_json::Value =
         serde_json::from_str(text).map_err(|e| IdeError::invalid(format!("invalid environment file: {e}")))?;
     let mut out = EnvMap::new();
@@ -260,6 +262,14 @@ mod tests {
         // A scratch file outside the project still sees the project's environments.
         let other = tempfile::tempdir().unwrap();
         let envs = Environments::load(Some(&other.path().join("s.http")), Some(root)).unwrap();
+        assert_eq!(envs.names(), vec!["dev"]);
+    }
+
+    #[test]
+    fn reads_env_files_saved_with_a_byte_order_mark() {
+        let tmp = tempfile::tempdir().unwrap();
+        std::fs::write(tmp.path().join(PUBLIC_FILE), "\u{feff}{\"dev\":{\"host\":\"h\"}}").unwrap();
+        let envs = Environments::load(Some(&tmp.path().join("a.http")), Some(tmp.path())).unwrap();
         assert_eq!(envs.names(), vec!["dev"]);
     }
 }

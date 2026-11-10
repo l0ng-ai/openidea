@@ -208,7 +208,7 @@ authors = []
 engines.openidea = "^1.0"
 
 # One entry per theme. `editor-scheme` is optional: its tokens are merged over
-# the theme's (IntelliJ's .theme.json + .icls pair). Reference: docs/plugins/themes.md.
+# the theme's (IntelliJ's .theme.json + .icls pair). Reference: plugins/themes.md.
 [[contributes.themes]]
 path = "themes/__SLUG__.theme.json"
 editor-scheme = "themes/__SLUG__.scheme.json"

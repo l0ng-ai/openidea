@@ -239,6 +239,15 @@
   background: var(--bg-app);
   border-left: 1px solid var(--border);
   border-right: 1px solid var(--border);
+  cursor: ew-resize;
+  touch-action: none;
+}
+.host :global(.cm-diffDivider:hover) {
+  background: var(--bg-hover);
+}
+.host :global(.cm-diffDivider:focus-visible) {
+  outline: 1px solid var(--accent);
+  outline-offset: -1px;
 }
 /* Only the band layer: the chevrons inside the arrow buttons are centred by the button's flex box. */
 .host :global(.cm-diffDivider > svg) {

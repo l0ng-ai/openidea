@@ -121,7 +121,7 @@ async function prepare(config: RunConfig): Promise<ExecutorLaunch | null> {
 
 export const coverageExecutor: RunExecutorContribution = {
   id: "coverage",
-  label: (name) => `Run '${name}' with Coverage`,
+  label: (name) => tx`Run '${name}' with Coverage`,
   icon: "run-coverage",
   action: "run.coverage",
   order: 10,
