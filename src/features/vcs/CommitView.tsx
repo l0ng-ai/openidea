@@ -339,13 +339,15 @@ export function nodeMenu(
           },
         ]
       : []),
+    // Both destinations, as in the project view's Git menu.
     ...(toIgnore.length
       ? [
           {
-            kind: "action" as const,
-            action: "vcs.ignoreShared",
-            arg: toIgnore,
             label: "Add to .gitignore",
+            submenu: [
+              { kind: "action" as const, action: "vcs.ignoreShared", arg: toIgnore, label: ".gitignore" },
+              { kind: "action" as const, action: "vcs.ignoreLocal", arg: toIgnore, label: ".git/info/exclude" },
+            ],
           },
         ]
       : []),
