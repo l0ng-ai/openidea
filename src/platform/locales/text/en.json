@@ -826,5 +826,7 @@
   "This allows this exact host on any port; subdomains need separate permission.": "This allows this exact host on any port; subdomains need separate permission.",
   "Could not revoke {host} for {name}": "Could not revoke {host} for {name}",
   "host is not remembered for this plugin": "host is not remembered for this plugin",
-  "URL must name one exact host": "URL must name one exact host"
+  "URL must name one exact host": "URL must name one exact host",
+  "Allow for this session": "Allow for this session",
+  "This allows {host} until the remote session ends.": "This allows {host} until the remote session ends."
 }

@@ -1220,9 +1220,10 @@ not in the manifest: the first request asks the user, naming the plugin and the
 full host, with **Allow once**, **Always allow** and **Deny**. "Always" is
 remembered per exact, normalized host in the grant ledger and never asks again; the allowed
 hosts are listed in the plugin's permissions (Settings › Plugins), where each
-can be removed to ask again. Unattended calls — scheduled or background work
-without an invoking window — are denied as before, without a dialog, so a
-plugin can only be waved through while the user is working with it. Plain HTTP
+can be removed to ask again. Remote sessions offer **Allow for this session**
+and **Deny** instead: approval is kept only in memory until the remote connection ends.
+Unattended calls to a host that is not yet allowed return `denied` without a dialog,
+so the plugin should tell the user to run the action once interactively. Plain HTTP
 to other hosts never goes through this flow: declare `net.http:<host>`. A
 manifest using `net:ask` declares `engines.openidea = "^1.5"`.
 

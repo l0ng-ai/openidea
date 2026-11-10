@@ -808,6 +808,11 @@ impl PluginHost {
         Ok(self.ui.assets_with_prefix(id, prefix).into_iter().map(|(k, v)| (k, v.to_string())).collect())
     }
 
+    /// Keeps hosts allowed through `net:ask` in memory for this host's lifetime.
+    pub fn set_net_hosts_session_only(&self) {
+        self.shared.net_hosts_session_only.store(true, std::sync::atomic::Ordering::Relaxed);
+    }
+
     /// The UI language windows run in, as `locale()` reports it to plugin code.
     pub fn set_ui_locale(&self, tag: &str) {
         *self.shared.locale.write() = tag.to_owned();

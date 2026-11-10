@@ -7159,5 +7159,7 @@
   "This allows this exact host on any port; subdomains need separate permission.": "允许此确切主机的任意端口；子域名需要单独授权。",
   "Could not revoke {host} for {name}": "无法撤销 {name} 对 {host} 的授权",
   "host is not remembered for this plugin": "此插件没有记住该主机的授权",
-  "URL must name one exact host": "URL 必须指定一个确切主机"
+  "URL must name one exact host": "URL 必须指定一个确切主机",
+  "Allow for this session": "本次会话内允许",
+  "This allows {host} until the remote session ends.": "允许连接到 {host}，直到本次远程会话结束。"
 }

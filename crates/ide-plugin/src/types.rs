@@ -97,7 +97,7 @@ pub enum Prompt {
     /// The host's own question under `net:ask` (never plugin-initiated): the
     /// plugin reached an HTTPS host its manifest does not list.
     #[serde(rename_all = "camelCase")]
-    NetPermission { host: String },
+    NetPermission { host: String, session_only: bool },
 }
 
 /// Kinds of workbench events a plugin can subscribe to (`on-event:<kind>`).

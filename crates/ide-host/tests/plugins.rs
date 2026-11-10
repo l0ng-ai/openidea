@@ -5787,14 +5787,14 @@ fn net_ask_asks_once_remembers_always_and_revokes() {
     // this request through and remembers nothing.
     let (result, prompt) = net_ask_run_and_answer(&f, &url, Some(&["once"]));
     assert_eq!(result.unwrap().as_deref(), Some("relay ok"));
-    assert_eq!(prompt, Prompt::NetPermission { host: "127.0.0.1".into() });
+    assert_eq!(prompt, Prompt::NetPermission { host: "127.0.0.1".into(), session_only: false });
     assert_eq!(f.host.info_of("api14").unwrap().net_hosts, Vec::<String>::new());
     assert_eq!(seen.lock().len(), 1);
 
     // The next request asks again; "Always allow" remembers the host.
     let (result, prompt) = net_ask_run_and_answer(&f, &url, Some(&["always"]));
     assert_eq!(result.unwrap().as_deref(), Some("relay ok"));
-    assert_eq!(prompt, Prompt::NetPermission { host: "127.0.0.1".into() });
+    assert_eq!(prompt, Prompt::NetPermission { host: "127.0.0.1".into(), session_only: false });
     assert_eq!(f.host.info_of("api14").unwrap().net_hosts, ["127.0.0.1".to_owned()]);
 
     // Remembered: connecting without a dialog from a window and in the background.
@@ -5810,7 +5810,7 @@ fn net_ask_asks_once_remembers_always_and_revokes() {
     f.host.revoke_net_host("api14", "127.0.0.1").unwrap();
     assert_eq!(f.host.info_of("api14").unwrap().net_hosts, Vec::<String>::new());
     let (result, prompt) = net_ask_run_and_answer(&f, &url, None);
-    assert_eq!(prompt, Prompt::NetPermission { host: "127.0.0.1".into() });
+    assert_eq!(prompt, Prompt::NetPermission { host: "127.0.0.1".into(), session_only: false });
     let err = result.unwrap_err();
     assert!(err.contains("not granted"), "{err}");
     // Refusal throttles even a different host, without making any connection.
@@ -5822,6 +5822,58 @@ fn net_ask_asks_once_remembers_always_and_revokes() {
     f.host.uninstall("api14").unwrap();
     let ledger = ide_extension::ledger::Ledger::load(&f.plugins_dir);
     assert!(ledger.get(&ide_extension::ledger::Subject::Installed("api14".into())).is_none());
+}
+
+#[test]
+fn net_ask_session_hosts_are_ephemeral_and_cleared_with_plugin_grants() {
+    use ide_extension::ledger::{Ledger, Subject};
+    use ide_plugin::Prompt;
+    let f = fixture(Limits::default());
+    f.host.set_net_hosts_session_only();
+    f.host.install_from_dir(&sample("api14"), &Consent::all()).unwrap();
+    let (port, seen) = http_server("session ok", |_| Duration::ZERO);
+    let url = format!("http://127.0.0.1:{port}/");
+    let subject = Subject::Installed("api14".into());
+
+    for (answer, reset) in [("session", "disable"), ("always", "revoke"), ("session", "uninstall")] {
+        let err = f.host.run_command("api14", "fetch", Some(&url), Invocation::default()).unwrap_err();
+        assert!(err.message.contains("not granted"), "{err:?}");
+        assert!(!f.take_events().iter().any(|(_, e)| matches!(e, PluginEvent::PromptRequested { .. })));
+
+        let (result, prompt) = net_ask_run_and_answer(&f, &url, Some(&[answer]));
+        assert_eq!(prompt, Prompt::NetPermission { host: "127.0.0.1".into(), session_only: true });
+        assert_eq!(result.unwrap().as_deref(), Some("session ok"));
+        for invocation in [f.inv(), Invocation::default()] {
+            let result = f.host.run_command("api14", "fetch", Some(&url), invocation).unwrap();
+            assert_eq!(result.as_deref(), Some("session ok"));
+        }
+        let err =
+            f.host.run_command("api14", "fetch", Some("https://other.example/"), Invocation::default()).unwrap_err();
+        assert!(err.message.contains("not granted"), "{err:?}");
+        assert!(!f.take_events().iter().any(|(_, e)| matches!(e, PluginEvent::PromptRequested { .. })));
+        assert!(f.host.info_of("api14").unwrap().net_hosts.is_empty());
+        assert!(Ledger::load(&f.plugins_dir).get(&subject).unwrap().net_hosts.is_empty());
+
+        match reset {
+            "disable" => {
+                f.host.set_enabled("api14", false).unwrap();
+                f.host.set_enabled("api14", true).unwrap();
+            }
+            "revoke" => {
+                f.host.set_capability("api14", "net:ask", false).unwrap();
+                f.host.set_capability("api14", "net:ask", true).unwrap();
+            }
+            "uninstall" => {
+                f.host.uninstall("api14").unwrap();
+                assert!(Ledger::load(&f.plugins_dir).get(&subject).is_none());
+                f.host.install_from_dir(&sample("api14"), &Consent::all()).unwrap();
+            }
+            _ => unreachable!(),
+        }
+    }
+    let err = f.host.run_command("api14", "fetch", Some(&url), Invocation::default()).unwrap_err();
+    assert!(err.message.contains("not granted"), "{err:?}");
+    assert_eq!(seen.lock().len(), 9);
 }
 
 /// Runs api14's `fetch` in its window; once the `net:ask` question arrives,

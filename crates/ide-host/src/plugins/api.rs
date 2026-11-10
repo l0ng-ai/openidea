@@ -18,7 +18,7 @@ use std::io::Read;
 use std::path::{Path, PathBuf};
 use std::process::{Child, ChildStdin, Command as StdCommand, Stdio};
 use std::sync::Arc;
-use std::sync::atomic::{AtomicU64, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::time::{Duration, Instant};
 
 /// Largest storage of one plugin (keys + values).
@@ -498,6 +498,8 @@ pub(super) struct Shared {
     pub(super) prompts_blocked: Mutex<BTreeSet<String>>,
     /// One network question per plugin; refusals throttle all hosts for 30 seconds.
     net_prompts: Mutex<HashMap<String, Option<Instant>>>,
+    pub net_hosts_session_only: AtomicBool,
+    session_net_hosts: Mutex<HashMap<String, BTreeSet<String>>>,
     pub(super) next_prompt: AtomicU64,
     pub(super) run_configurations: super::run_detectors::DynamicConfigurations,
     pub(super) run_targets: Mutex<super::run_targets::Targets>,
@@ -571,6 +573,8 @@ impl Shared {
             prompts: Mutex::default(),
             prompts_blocked: Mutex::default(),
             net_prompts: Mutex::default(),
+            net_hosts_session_only: AtomicBool::new(false),
+            session_net_hosts: Mutex::default(),
             next_prompt: AtomicU64::new(1),
             run_configurations: Arc::default(),
             run_targets: Mutex::default(),
@@ -803,6 +807,7 @@ impl Shared {
         }
         self.withdraw_prompts(plugin);
         self.net_prompts.lock().remove(plugin);
+        self.session_net_hosts.lock().remove(plugin);
         let removed: Vec<(Option<String>, String)> = {
             let mut contexts = self.contexts.lock();
             let keys: Vec<_> = contexts.keys().filter(|(_, p, _)| p == plugin).cloned().collect();
@@ -2254,6 +2259,9 @@ impl HostApi for PluginApi {
                 return Ok(Some(true));
             }
         }
+        if self.shared.session_net_hosts.lock().get(self.id()).is_some_and(|hosts| hosts.contains(&host)) {
+            return Ok(Some(true));
+        }
         let Some(client) = client else { return Ok(None) };
         {
             let closed = self.shared.closed_clients.lock();
@@ -2271,16 +2279,21 @@ impl HostApi for PluginApi {
             }
             prompts.insert(self.id().to_owned(), None);
         }
-        let answer = self.ask(Some(client), Prompt::NetPermission { host: host.clone() }, cancel);
+        let session_only = self.shared.net_hosts_session_only.load(Ordering::Relaxed);
+        let answer = self.ask(Some(client), Prompt::NetPermission { host: host.clone(), session_only }, cancel);
         let result = match answer {
-            Ok(Some(keys)) if keys == ["always"] => {
+            Ok(Some(keys)) if keys == ["session"] || keys == ["always"] => {
                 let mut ledger = self.shared.ledger.lock();
                 if cancel.is_cancelled() {
                     Err(HostError::Cancelled)
                 } else if ledger.get(subject).is_some_and(|g| g.confirmed && g.has(&Capability::NetAsk)) {
-                    ledger.remember_net_host(subject, &host);
-                    if let Err(e) = ledger.save() {
-                        tracing::warn!("saving plugin grants: {e}");
+                    if session_only || keys == ["session"] {
+                        self.shared.session_net_hosts.lock().entry(self.id().into()).or_default().insert(host);
+                    } else {
+                        ledger.remember_net_host(subject, &host);
+                        if let Err(e) = ledger.save() {
+                            tracing::warn!("saving plugin grants: {e}");
+                        }
                     }
                     drop(ledger);
                     self.shared.sink.emit(None, PluginEvent::CommandsChanged);

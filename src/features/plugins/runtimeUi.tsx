@@ -420,7 +420,7 @@ async function answerPrompt(promptId: string, prompt: Prompt, pluginId: string) 
   openPrompts.set(promptId, controller);
   const answer =
     prompt.kind === "netPermission"
-      ? await askNetPermission(pluginId, prompt.host, controller.signal)
+      ? await askNetPermission(pluginId, prompt.host, prompt.sessionOnly, controller.signal)
       : await askUser(prompt, controller.signal);
   openPrompts.delete(promptId);
   if (controller.signal.aborted) return;

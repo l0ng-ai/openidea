@@ -655,7 +655,7 @@ describe("plugin prompts", () => {
           type: "promptRequested",
           pluginId: "p",
           promptId,
-          prompt: { kind: "netPermission", host: "api.example.com" },
+          prompt: { kind: "netPermission", host: "api.example.com", sessionOnly: false },
         });
       });
     ask("9");
@@ -674,6 +674,35 @@ describe("plugin prompts", () => {
     await waitFor(() => expect(answerPrompt).toHaveBeenCalledWith("11", null));
   });
 
+  it("offers session permission and deny for a remote net:ask prompt", async () => {
+    const user = userEvent.setup();
+    const answerPrompt = vi.fn().mockResolvedValue(undefined);
+    setPluginsBackend({ ...createMemoryPluginsBackend(), answerPrompt });
+    render(<MessagesHost />);
+    const ask = (promptId: string) =>
+      act(() => {
+        handlePluginEvent({
+          type: "promptRequested",
+          pluginId: "p",
+          promptId,
+          prompt: { kind: "netPermission", host: "api.example.com", sessionOnly: true },
+        });
+      });
+    ask("session-net");
+    expect(screen.queryByRole("button", { name: "Always allow" })).toBeNull();
+    expect(screen.queryByRole("button", { name: "Allow once" })).toBeNull();
+    expect(screen.getAllByRole("button")).toHaveLength(2);
+    expect(screen.getByText(/This allows api.example.com until the remote session ends\./)).toBeDefined();
+    expect(screen.queryByText(/revoke it any time/)).toBeNull();
+    expect(screen.getByRole("button", { name: "Deny" })).toHaveFocus();
+    await user.click(screen.getByRole("button", { name: "Allow for this session" }));
+    await waitFor(() => expect(answerPrompt).toHaveBeenCalledWith("session-net", ["session"]));
+
+    ask("denied-session-net");
+    await user.click(await screen.findByRole("button", { name: "Deny" }));
+    await waitFor(() => expect(answerPrompt).toHaveBeenCalledWith("denied-session-net", null));
+  });
+
   it("refuses network prompts in a hidden window and closes them when hidden", async () => {
     const answerPrompt = vi.fn().mockResolvedValue(undefined);
     setPluginsBackend({ ...createMemoryPluginsBackend(), answerPrompt });
@@ -685,7 +714,7 @@ describe("plugin prompts", () => {
           type: "promptRequested",
           pluginId: "p",
           promptId,
-          prompt: { kind: "netPermission", host: "api.example.com" },
+          prompt: { kind: "netPermission", host: "api.example.com", sessionOnly: false },
         });
       });
     try {
@@ -715,7 +744,7 @@ describe("plugin prompts", () => {
         type: "promptRequested",
         pluginId: "p",
         promptId: "dismissed-net",
-        prompt: { kind: "netPermission", host: "api.example.com" },
+        prompt: { kind: "netPermission", host: "api.example.com", sessionOnly: false },
       });
     });
     await user.keyboard("{Escape}");
