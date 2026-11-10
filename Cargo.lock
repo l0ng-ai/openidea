@@ -4446,6 +4446,7 @@ name = "ide-http"
 version = "0.1.40"
 dependencies = [
  "ide-core",
+ "ide-vfs",
  "parking_lot",
  "reqwest",
  "rustls",
