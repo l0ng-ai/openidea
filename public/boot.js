@@ -12,6 +12,10 @@
         manual: "无法复制。请选择下方详情并手动复制。",
         details: "启动错误详情",
         timeout: "启动未在 30 秒内完成。",
+        outdatedMac:
+          "这台 Mac 的 Safari 版本过旧：OpenIDEA 的界面使用系统的 Safari 网页引擎，需要 Safari 16 或更高版本。请在「系统偏好设置 › 软件更新」中更新 Safari，然后重新打开 OpenIDEA。",
+        outdated:
+          "系统的 WebKitGTK 版本过旧：OpenIDEA 需要较新的 WebKitGTK（webkit2gtk-4.1）。请通过系统的包管理器更新后重新打开 OpenIDEA。",
       }
     : {
         title: "OpenIDEA could not start",
@@ -22,7 +26,21 @@
         manual: "Could not copy. Select the details below and copy them.",
         details: "Startup error details",
         timeout: "Startup did not finish within 30 seconds.",
+        outdatedMac:
+          "Safari on this Mac is too old: OpenIDEA's interface runs on the system's Safari web engine and needs Safari 16 or later. Update Safari in System Preferences › Software Update, then open OpenIDEA again.",
+        outdated:
+          "The system's WebKitGTK is too old: OpenIDEA needs a recent WebKitGTK (webkit2gtk-4.1). Update it with your package manager, then open OpenIDEA again.",
       };
+  // The bundle targets Safari 16 (vite.config.ts); an older system web engine can't even
+  // parse it. Container queries came with Safari 16, and WebKit's user agent doesn't name
+  // its version. Unknown (no CSS.supports) counts as current.
+  const outdated = () => {
+    try {
+      return typeof window.CSS?.supports === "function" && !window.CSS.supports("container-type", "inline-size");
+    } catch {
+      return false;
+    }
+  };
   let failed = false;
   let ready = false;
   const describe = (reason) => {
@@ -55,7 +73,9 @@
       const title = document.createElement("h1");
       title.textContent = text.title;
       const hint = document.createElement("p");
-      hint.textContent = text.report;
+      hint.textContent = outdated()
+        ? `${/Mac/.test(navigator.userAgent) ? text.outdatedMac : text.outdated} ${text.report}`
+        : text.report;
       const details = document.createElement("textarea");
       details.readOnly = true;
       details.setAttribute("aria-label", text.details);

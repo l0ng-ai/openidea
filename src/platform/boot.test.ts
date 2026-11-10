@@ -190,3 +190,26 @@ it("preserves Safari error messages when its stack only lists locations", () => 
   expect(document.querySelector("textarea")?.value).toContain("SyntaxError: Unsupported regular expression");
   expect(document.querySelector("textarea")?.value).toContain(error.stack);
 });
+
+it("names an outdated system web engine as the cause", () => {
+  const supports = vi.fn(() => false);
+  vi.stubGlobal("CSS", { supports });
+  vi.spyOn(navigator, "userAgent", "get").mockReturnValue(
+    "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/605.1.15 (KHTML, like Gecko)",
+  );
+  window.dispatchEvent(new ErrorEvent("error", { error: new SyntaxError("Unexpected token '.'") }));
+  const hint = document.querySelector("#boot-error p")?.textContent;
+  expect(supports).toHaveBeenCalledWith("container-type", "inline-size");
+  expect(hint).toContain("needs Safari 16 or later");
+  expect(hint).toContain("Software Update");
+  vi.unstubAllGlobals();
+});
+
+it("keeps the plain report hint on a current engine", () => {
+  vi.stubGlobal("CSS", { supports: () => true });
+  window.dispatchEvent(new ErrorEvent("error", { error: new Error("startup failed") }));
+  expect(document.querySelector("#boot-error p")?.textContent).toBe(
+    "Copy the details below and include them in a GitHub issue.",
+  );
+  vi.unstubAllGlobals();
+});
