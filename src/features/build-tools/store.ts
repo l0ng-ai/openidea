@@ -28,7 +28,14 @@ import { useBuildModel } from "@/platform/buildModel";
 import { useProject } from "@/platform/project";
 import { editorService, notifications } from "@/workbench/contributions";
 import { cancelTask, removeTask, upsertTask, useTasks } from "@/workbench/tasks";
-import { gradleRoots, profileKey, profilesList, type GradleRunOptions, type MavenRunOptions } from "./model";
+import {
+  gradleRoots,
+  mavenGoalConfig,
+  profileKey,
+  profilesList,
+  type GradleRunOptions,
+  type MavenRunOptions,
+} from "./model";
 
 export interface BuildSettings {
   maven: MavenRunOptions;
@@ -519,6 +526,35 @@ export function resetBuild() {
 
 export function runConfig(config: RunConfig, mode: "run" | "debug") {
   void executeAction(mode === "debug" ? "run.debugConfig" : "run.runConfig", { config, temporary: true });
+}
+
+/** Runs `config` in the Run tool window; resolves with its exit code (`null` when it didn't start or was stopped). */
+function runToExit(config: RunConfig): Promise<number | null> {
+  return new Promise((resolve) => {
+    const onExit = (code: number | null, stopped: boolean) => resolve(stopped ? null : code);
+    void executeAction("run.runConfig", { config, temporary: true, onExit }).then((ran) => {
+      if (!ran) resolve(null);
+    });
+  });
+}
+
+/**
+ * Generate Sources and Update Folders: runs `generate-sources` for the Maven project at `pom`, or
+ * for every top-level project, then reloads the Maven projects so folders created by the build
+ * (`target/generated-sources/...`) become source folders.
+ */
+export async function generateSources(pom?: string | null): Promise<void> {
+  const { model, settings } = useBuild.getState();
+  const maven = model?.maven;
+  if (!maven) return;
+  const projects = maven.projects.filter((p) => (pom ? p.pom === pom : !p.aggregated));
+  let ran = false;
+  for (const project of projects) {
+    const code = await runToExit(mavenGoalConfig(project, ["generate-sources"], maven, settings.maven));
+    if (code === null) return;
+    ran ||= code === 0;
+  }
+  if (ran) await syncTool("maven");
 }
 
 export async function createRunConfig(config: RunConfig) {

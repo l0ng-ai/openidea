@@ -1,4 +1,8 @@
 {
+  "Generate Sources and Update Folders For All Projects": "Generate Sources and Update Folders For All Projects",
+  "Generate Sources and Update Folders": "Generate Sources and Update Folders",
+  "Runs generate-sources, then reloads the Maven projects so generated folders become source folders": "Runs generate-sources, then reloads the Maven projects so generated folders become source folders",
+  "Related targets": "Related targets",
   "GDB (C, C++)": "GDB (C, C++)",
   "Unknown error": "Unknown error",
   "Retry Loading Conversation": "Retry Loading Conversation",

@@ -1,4 +1,5 @@
 {
+  "Related targets": "相关目标",
   "GDB (C, C++)": "GDB（C、C++）",
   "Unknown error": "未知错误",
   "Retry Loading Conversation": "重新加载对话",
@@ -2011,6 +2012,9 @@
   "Reload": "重新加载",
   "Reload All Gradle Projects": "重新加载所有 Gradle 项目",
   "Reload All Maven Projects": "重新加载所有 Maven 项目",
+  "Generate Sources and Update Folders For All Projects": "为所有项目生成源代码并更新文件夹",
+  "Generate Sources and Update Folders": "生成源代码并更新文件夹",
+  "Runs generate-sources, then reloads the Maven projects so generated folders become source folders": "执行 generate-sources，然后重新加载 Maven 项目，使生成的文件夹成为源代码文件夹",
   "Reload Changed Classes": "重新加载已更改的类",
   "Reload Environments": "重新加载环境",
   "Reload History": "重新加载历史记录",

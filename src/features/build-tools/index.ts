@@ -48,6 +48,7 @@ import {
   resetBuild,
   setExpanded,
   setCurrentProject,
+  generateSources,
   syncTool,
   toggleGradleOffline,
   toggleMavenOffline,
@@ -300,6 +301,20 @@ export function activate(): () => void {
         when: MAVEN_WHEN,
         keywords: ["maven", "sync", "reimport", "refresh"],
         run: () => syncTool("maven"),
+      },
+      {
+        id: "maven.generateSources",
+        title: "Generate Sources and Update Folders For All Projects",
+        description:
+          "Runs generate-sources, then reloads the Maven projects so generated folders become source folders",
+        category: "Maven",
+        icon: "folder-generated-source",
+        when: MAVEN_WHEN,
+        keywords: ["maven", "generate", "sources", "generated", "update folders"],
+        run: ({ arg }) => {
+          const pom = (arg as { pom?: unknown } | null | undefined)?.pom;
+          return generateSources(typeof pom === "string" ? pom : null);
+        },
       },
       {
         id: "maven.cancelReload",

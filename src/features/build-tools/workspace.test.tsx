@@ -1,7 +1,7 @@
 import { afterEach, beforeEach, expect, it, vi } from "vitest";
 import { act, fireEvent, render, screen } from "@testing-library/react";
 import type { BuildModel, ProjectInfo, RunConfig } from "@/platform/ipc";
-import { registerAction } from "@/platform/actions";
+import { executeAction, registerAction } from "@/platform/actions";
 import { setContext } from "@/platform/context";
 import { useProject } from "@/platform/project";
 import { MavenView, GradleView } from "./BuildToolView";
@@ -211,4 +211,41 @@ it("refreshes availability after workspace membership changes and does not load 
   await loadModel();
   expect(mocks.model).not.toHaveBeenCalled();
   expect(useBuild.getState().model).toBeNull();
+});
+
+it("generates sources in each project, then reloads so generated folders become source folders", async () => {
+  const runs: { config: RunConfig; onExit: (code: number | null, stopped: boolean) => void }[] = [];
+  const off = registerAction({
+    id: "run.runConfig",
+    title: "Run",
+    hidden: true,
+    run: ({ arg }) => void runs.push(arg as (typeof runs)[number]),
+  });
+  try {
+    mocks.sync.mockClear();
+    const done = executeAction("maven.generateSources");
+    await vi.waitFor(() => expect(runs).toHaveLength(1));
+    expect(runs[0]!.config).toMatchObject({ args: ["generate-sources"], cwd: members[0] });
+    // One project at a time; the reload waits for the last one.
+    runs[0]!.onExit(0, false);
+    await vi.waitFor(() => expect(runs).toHaveLength(2));
+    expect(runs[1]!.config.cwd).toBe(members[1]);
+    expect(mocks.sync).not.toHaveBeenCalled();
+    runs[1]!.onExit(1, false);
+    await done;
+    await vi.waitFor(() => expect(mocks.sync).toHaveBeenCalledTimes(2));
+
+    // One project from its context menu; stopping it skips the reload.
+    runs.length = 0;
+    mocks.sync.mockClear();
+    const one = executeAction("maven.generateSources", { pom: `${members[1]}/pom.xml` });
+    await vi.waitFor(() => expect(runs).toHaveLength(1));
+    expect(runs[0]!.config.cwd).toBe(members[1]);
+    runs[0]!.onExit(null, true);
+    await one;
+    expect(runs).toHaveLength(1);
+    expect(mocks.sync).not.toHaveBeenCalled();
+  } finally {
+    off();
+  }
 });

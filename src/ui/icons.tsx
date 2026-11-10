@@ -392,6 +392,7 @@ const ICONS = {
   "toolwindow-coverage": "toolwindows/coverage",
   "toolwindow-profiler": "toolwindows/profiler",
   "toolwindow-logcat": "openidea/fileTypes/log",
+  "gutter-navigate": "general/autoscrollToSource",
   "gutter-run": "gutter/run",
   "gutter-run-all": "actions/runAll",
   "gutter-run-passed": "gutter/runSuccess",
