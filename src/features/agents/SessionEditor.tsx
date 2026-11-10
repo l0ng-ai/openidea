@@ -58,6 +58,7 @@ import { useTx, tx } from "@/platform/i18n";
 import { isImeKey } from "@/platform/ime";
 import { TaskStatusIcon } from "./AgentsView";
 import { Composer } from "./Composer";
+import { SelectionQuote, selectionIn } from "./SelectionQuote";
 import { SubmitButton } from "./SubmitButton";
 import {
   canSend,
@@ -723,6 +724,7 @@ function Stream({ loadError, task, entries, subagent, onOpenSubagent, finding, f
       onPointerDown={markUserScroll}
     >
       {finding && <FindBar streamRef={ref} focus={findFocus} onClose={onCloseFind} />}
+      <SelectionQuote task={task} streamRef={ref} />
       <div
         ref={ref}
         // The conversation is read and copied like a document; focusable so ⌘F reaches it.
@@ -755,13 +757,6 @@ function Stream({ loadError, task, entries, subagent, onOpenSubagent, finding, f
           if (!items.length) return;
           e.preventDefault();
           showContextMenu(e, items);
-        }}
-        // Selecting with the mouse gets that menu at once: the same handler, as a right-click.
-        onMouseUp={(e) => {
-          if (e.button !== 0 || !selectionIn(e.currentTarget).trim()) return;
-          e.currentTarget.dispatchEvent(
-            new MouseEvent("contextmenu", { bubbles: true, cancelable: true, clientX: e.clientX, clientY: e.clientY }),
-          );
         }}
       >
         {loadError && (
@@ -904,13 +899,6 @@ function Retrying({ retry }: { retry: AgentRetry }) {
 function Elapsed({ since }: { since: number }) {
   const now = useNow(1000);
   return <span className={styles.muted}>{formatDuration(now - since)}</span>;
-}
-
-/** Text selected in `stream`, or "" when the selection is elsewhere. */
-function selectionIn(stream: HTMLElement): string {
-  const sel = window.getSelection();
-  if (!sel || sel.isCollapsed || !sel.rangeCount) return "";
-  return stream.contains(sel.getRangeAt(0).commonAncestorContainer) ? sel.toString() : "";
 }
 
 interface RangeSet {

@@ -308,20 +308,55 @@ describe("message tags", () => {
   });
 });
 
-describe("the conversation selection menu", () => {
+describe("the conversation selection", () => {
   const labels = () =>
     (useContextMenuStore.getState().menu?.items ?? []).flatMap((item) => ("label" in item ? [item.label] : []));
-
-  it("opens where a mouse selection ends, Copy and Quote included", async () => {
-    render(<SessionEditor input={input("A")} />);
-    const answer = await screen.findByText("Answer A");
+  const select = (node: Node) => {
     const range = document.createRange();
-    range.selectNodeContents(answer);
+    range.selectNodeContents(node);
     const selection = window.getSelection()!;
     selection.removeAllRanges();
     selection.addRange(range);
+  };
+
+  it("shows a Quote button after a mouse selection ends", async () => {
+    render(<SessionEditor input={input("A")} />);
+    select(await screen.findByText("Answer A"));
     fireEvent.mouseUp(stream(), { button: 0, clientX: 120, clientY: 90 });
-    expect(labels()).toEqual(["Copy", "Quote"]);
+    expect(screen.getByRole("button", { name: "Quote" })).toBeInTheDocument();
+    expect(labels()).toEqual([]);
+  });
+
+  it("shows no button for an empty selection", async () => {
+    render(<SessionEditor input={input("A")} />);
+    await screen.findByText("Answer A");
+    window.getSelection()!.removeAllRanges();
+    fireEvent.mouseUp(stream(), { button: 0, clientX: 120, clientY: 90 });
+    expect(screen.queryByRole("button", { name: "Quote" })).toBeNull();
+  });
+
+  it("shows no button for a selection outside the conversation", async () => {
+    render(<SessionEditor input={input("A")} />);
+    await screen.findByText("Answer A");
+    const outside = document.createElement("p");
+    outside.textContent = "selected elsewhere";
+    document.body.appendChild(outside);
+    select(outside);
+    fireEvent.mouseUp(stream(), { button: 0, clientX: 120, clientY: 90 });
+    outside.remove();
+    expect(screen.queryByRole("button", { name: "Quote" })).toBeNull();
+  });
+
+  it("hides the button when the conversation scrolls or Escape is pressed", async () => {
+    render(<SessionEditor input={input("A")} />);
+    select(await screen.findByText("Answer A"));
+    fireEvent.mouseUp(stream(), { button: 0, clientX: 120, clientY: 90 });
+    fireEvent.scroll(stream());
+    expect(screen.queryByRole("button", { name: "Quote" })).toBeNull();
+    select(screen.getByText("Answer A"));
+    fireEvent.mouseUp(stream(), { button: 0, clientX: 120, clientY: 90 });
+    fireEvent.keyDown(document, { key: "Escape" });
+    expect(screen.queryByRole("button", { name: "Quote" })).toBeNull();
   });
 
   it("offers Copy alone on a right-click without a selection", async () => {
