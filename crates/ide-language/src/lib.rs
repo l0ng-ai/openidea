@@ -10,6 +10,10 @@ use specta::Type;
 use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
 
+/// Pinned Compose Specification JSON Schema URL associated with `yaml-language-server`.
+pub const COMPOSE_SCHEMA_URL: &str =
+    "https://raw.githubusercontent.com/compose-spec/compose-go/v2.16.2/schema/compose-spec.json";
+
 mod markers;
 pub mod plugin_point;
 mod registry;

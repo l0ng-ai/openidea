@@ -221,7 +221,10 @@ pub fn set_settings(
         || key == "editor.codeStyle"
         || key.starts_with("editor.codeStyle.")
         || key == "inspections"
-        || key.starts_with("inspections.");
+        || key.starts_with("inspections.")
+        || key == "files"
+        || key == "files.composeFileOverrides"
+        || key.starts_with("files.composeFileOverrides.");
     let toolchain = ["languages", "tools", "languageServers", "projectStructure"]
         .iter()
         .any(|k| key == *k || key.starts_with(&format!("{k}.")));
