@@ -409,6 +409,26 @@ describe("navigation wiring", () => {
     expect(executeAction).not.toHaveBeenCalledWith("find.showUsages");
   });
 
+  it("narrows a plain import with a trailing comment the same way", async () => {
+    cmd.lspGoto.mockReturnValueOnce(ok([{ path: "/p/a.py", range: r(0, 32, 39) }]));
+    cmd.navResolveModule
+      .mockImplementationOnce(() => ok(null)) // the segment click did not resolve: the answer came from the server
+      .mockImplementationOnce(() => ok(null)) // the name is not a submodule of the module
+      .mockImplementationOnce(() => ok("/deps/torchtitan/models/common/decoder.py"));
+    cmd.navIndexDefinitions.mockReturnValueOnce(
+      ok([sym("Decoder", "class", "/deps/torchtitan/models/common/decoder.py")]),
+    );
+    const view = editor("import torchtitan.models.common.decoder  # Decoder\n", "python", 36, "/p/a.py");
+    await gotoTargets(view, "definition");
+    // The plain import's name is the module segment itself: the index has no exact
+    // "decoder" symbol, so the narrowed answer is the module file.
+    expect(openFile).toHaveBeenCalledWith("/deps/torchtitan/models/common/decoder.py", {
+      selection: { line: 0, col: 0 },
+      focus: true,
+    });
+    expect(executeAction).not.toHaveBeenCalledWith("find.showUsages");
+  });
+
   it("narrows a self-pointed import answer to the module the import names", async () => {
     cmd.lspGoto.mockReturnValueOnce(ok([{ path: "/p/a.py", range: r(0, 45, 52) }]));
     cmd.navResolveModule

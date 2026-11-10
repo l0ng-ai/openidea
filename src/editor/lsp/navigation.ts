@@ -617,7 +617,7 @@ function importedModulePath(view: EditorView, offset: number): string | null {
   for (let hops = 0; ; hops++) {
     const from = /^\s*from\s+(\.*[\w.]*)\s+import\b/.exec(line.text);
     if (from?.[1]) return from[1];
-    const plain = /^\s*import\s+([\w.]+)(?:\s+as\s+\w+)?\s*$/.exec(line.text);
+    const plain = /^\s*import\s+([\w.]+)(?:\s+as\s+\w+)?\s*(?:#.*)?$/.exec(line.text);
     if (plain?.[1]) return plain[1];
     if (line.number === 1 || hops > 20) return null;
     const prev = doc.line(line.number - 1);
