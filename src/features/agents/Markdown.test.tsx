@@ -296,6 +296,21 @@ describe("streamed replies", () => {
     expect(markdownBlocks("See [docs][d].\n\n[d]: https://example.com")).toHaveLength(1);
   });
 
+  it("renders an HTML block that wraps Markdown whole", () => {
+    const text = "<details>\n<summary>Log</summary>\n\ntext\n\n</details>";
+    expect(markdownBlocks(text)).toEqual([text]);
+    const { container } = render(<Markdown text={text} cwd="/repo" />);
+    expect(container.querySelector("details p")?.textContent).toBe("text");
+  });
+
+  it("cuts only what streamed on after the blocks that ended", () => {
+    const before = markdownBlocks("One.\n\nTwo.\n\nThr");
+    const after = markdownBlocks("One.\n\nTwo.\n\nThree.\n\n- a", before);
+    expect(after).toEqual(["One.\n\n", "Two.\n\n", "Three.\n\n", "- a"]);
+    expect(after[0]).toBe(before[0]);
+    expect(markdownBlocks("Other.\n\nTwo.\n\nThree.", before)).toEqual(["Other.\n\n", "Two.\n\n", "Three."]);
+  });
+
   it("keeps the blocks a chunk didn't change", () => {
     const head = "Intro paragraph.\n\n```ts\nconst a = 1;\n```\n\n";
     const { container, rerender } = render(<Markdown text={`${head}Half a sen`} cwd="/repo" />);
