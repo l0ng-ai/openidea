@@ -25,7 +25,7 @@ import {
 import { SettingsFormContext } from "@/workbench/contributions";
 import { call, commands, isTauri, nextRequestId, type FileEntry } from "@/platform/ipc";
 import { mergeLibraryGroups } from "@/platform/libraries";
-import type { BuildModel, LibraryGroup, RecentProject, WebArtifact } from "@/bindings";
+import type { BuildModel, LibraryGroup, WebArtifact } from "@/bindings";
 import { relativePath, useProject } from "@/platform/project";
 import { PageContext, useSettingsFormFor } from "../components/context";
 import {
@@ -606,13 +606,10 @@ export interface DependencyCandidate {
 
 /**
  * Rows of the "project dependencies" checklist of a single root (the project folder, or a
- * workspace member): the configured dependencies first, then recent projects as candidates.
+ * workspace member): the configured dependencies. A workspace additionally lists the other
+ * roots attached to the window, in MemberDependencies.
  */
-export function dependencyCandidates(
-  root: string | null,
-  dependencies: readonly string[],
-  options: { recents?: ReadonlyArray<{ path: string; name: string }> } = {},
-): DependencyCandidate[] {
+export function dependencyCandidates(root: string | null, dependencies: readonly string[]): DependencyCandidate[] {
   const out: DependencyCandidate[] = [];
   const listed = new Set<string>();
   const nameOf = (p: string) => p.slice(p.lastIndexOf("/") + 1).replace(/[\\/]+$/, "") || p;
@@ -621,11 +618,6 @@ export function dependencyCandidates(
     if (listed.has(p) || !attachable(p)) continue;
     listed.add(p);
     out.push({ path: p, name: nameOf(p), checked: true, disabled: false });
-  }
-  for (const r of options.recents ?? []) {
-    if (listed.has(r.path) || !attachable(r.path)) continue;
-    listed.add(r.path);
-    out.push({ path: r.path, name: r.name || nameOf(r.path), checked: false, disabled: false });
   }
   return out;
 }
@@ -641,21 +633,9 @@ function ModuleDependenciesTab() {
 function ProjectDependencies() {
   const root = useProject((s) => s.project?.root ?? null);
   const [deps, setDeps] = useProjectSetting<string[] | undefined>("projectStructure.dependencies");
-  const [recents, setRecents] = useState<RecentProject[]>([]);
-
-  useEffect(() => {
-    let live = true;
-    void commands
-      .recentProjects()
-      .then((rs) => live && setRecents(rs))
-      .catch(() => {});
-    return () => {
-      live = false;
-    };
-  }, []);
-
   const list = deps ?? [];
-  const candidates = useMemo(() => dependencyCandidates(root, deps ?? [], { recents }), [root, deps, recents]);
+  // Only the configured projects: candidates come from Add Project…, not every recent project.
+  const candidates = useMemo(() => dependencyCandidates(root, deps ?? []), [root, deps]);
 
   const toggle = (path: string, checked: boolean) =>
     setDeps(checked ? [...list, path] : list.filter((x) => x !== path));
@@ -680,7 +660,7 @@ function ProjectDependencies() {
       <div className={styles.entryList} role="group" aria-label={tx("The project depends on these projects")}>
         {candidates.length === 0 && (
           <div className={styles.note}>
-            <T>No candidate projects. Recently opened projects appear here.</T>
+            <T>No candidate projects yet. Use Add Project… to pick one.</T>
           </div>
         )}
         {candidates.map((c) => (

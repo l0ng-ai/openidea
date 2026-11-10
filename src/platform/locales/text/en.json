@@ -872,7 +872,7 @@
   "The project depends on these projects": "The project depends on these projects",
   "The project depends on {name}": "The project depends on {name}",
   "Dependency projects are indexed and navigable together with this project: Go to Declaration, Find Usages and the Project view include them.": "Dependency projects are indexed and navigable together with this project: Go to Declaration, Find Usages and the Project view include them.",
-  "No candidate projects. Recently opened projects appear here.": "No candidate projects. Recently opened projects appear here.",
+  "No candidate projects yet. Use Add Project… to pick one.": "No candidate projects yet. Use Add Project… to pick one.",
   "Roots": "Roots",
   "Dependencies of {name}": "Dependencies of {name}",
   "The root depends on these projects": "The root depends on these projects",

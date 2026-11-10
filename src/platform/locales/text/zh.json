@@ -7207,7 +7207,7 @@
   "The project depends on these projects": "项目取决于这些项目",
   "The project depends on {name}": "项目取决于 {name}",
   "Dependency projects are indexed and navigable together with this project: Go to Declaration, Find Usages and the Project view include them.": "依赖项目将与本项目一起建立索引并参与导航：“转到声明”、查找用法和项目视图都会包含它们。",
-  "No candidate projects. Recently opened projects appear here.": "暂无候选项目。最近打开的项目会显示在这里。",
+  "No candidate projects yet. Use Add Project… to pick one.": "暂无候选项目。使用「添加项目…」选择。",
   "Add Project…": "添加项目…",
   "Roots": "根",
   "Dependencies of {name}": "{name} 的依赖项",
