@@ -380,7 +380,7 @@ pub struct PluginHost {
     diagnostic_projects: Mutex<Vec<diagnostics::ProjectState>>,
     /// Validated UI declarations of installed packages (start-up reuses them).
     index: Arc<ContributionIndex>,
-    ledger: Mutex<Ledger>,
+    ledger: Arc<Mutex<Ledger>>,
     plugins: RwLock<BTreeMap<String, Arc<LoadedPlugin>>>,
     state: Mutex<PersistedState>,
     /// What every plugin's [`api::PluginApi`] shares: sink, registry,
@@ -452,7 +452,9 @@ impl PluginHost {
         languages.set_process_policy(Arc::new(move |plugin, cap| {
             policy_pins.read().get(&(plugin.to_owned(), cap.to_string())).cloned()
         }));
-        let shared = api::Shared::new(sink.clone(), plugins_dir.join(".data"), pins.clone(), ui.clone());
+        let ledger = Arc::new(Mutex::new(Ledger::load(&plugins_dir)));
+        let shared =
+            api::Shared::new(sink.clone(), plugins_dir.join(".data"), pins.clone(), ui.clone(), ledger.clone());
         let official_keys = market::built_in_official_keys();
         let market = RwLock::new(Self::load_market_index(&plugins_dir, &official_keys));
         let host = Self {
@@ -463,7 +465,7 @@ impl PluginHost {
             updates: Mutex::default(),
             project_policy: RwLock::new(Arc::new(|_| false)),
             engine: PluginEngine::new().map_err(IdeError::internal)?,
-            ledger: Mutex::new(Ledger::load(&plugins_dir)),
+            ledger,
             plugins_dir,
             sink,
             limits,
@@ -806,6 +808,11 @@ impl PluginHost {
         Ok(self.ui.assets_with_prefix(id, prefix).into_iter().map(|(k, v)| (k, v.to_string())).collect())
     }
 
+    /// Keeps hosts allowed through `net:ask` in memory for this host's lifetime.
+    pub fn set_net_hosts_session_only(&self) {
+        self.shared.net_hosts_session_only.store(true, std::sync::atomic::Ordering::Relaxed);
+    }
+
     /// The UI language windows run in, as `locale()` reports it to plugin code.
     pub fn set_ui_locale(&self, tag: &str) {
         *self.shared.locale.write() = tag.to_owned();
@@ -1079,19 +1086,39 @@ impl PluginHost {
         self.info_of(id)
     }
 
-    /// Grants or revokes one capability (Settings › Plugins › Permissions).
+    /// Revokes one exact host remembered through `net:ask`.
+    pub fn revoke_net_host(&self, id: &str, host: &str) -> IdeResult<PluginInfo> {
+        let _guard = self.lifecycle.lock();
+        let plugin = self.get(id)?;
+        self.check_not_uninstalling(&plugin)?;
+        {
+            let mut ledger = self.ledger.lock();
+            if !ledger.forget_net_host(&plugin.subject(), host) {
+                return Err(IdeError::invalid("host is not remembered for this plugin"));
+            }
+            self.save_ledger(&ledger);
+        }
+        self.stop(&plugin);
+        if !self.state.lock().disabled.contains(id) {
+            self.start(&plugin);
+        }
+        self.changed();
+        self.info_of(id)
+    }
+
+    /// Grants or revokes one declared capability (Settings › Plugins › Permissions).
     /// Revoking a required one stops the plugin until consent is given again.
     pub fn set_capability(&self, id: &str, capability: &str, granted: bool) -> IdeResult<PluginInfo> {
         let _guard = self.lifecycle.lock();
         let plugin = self.get(id)?;
         self.check_not_uninstalling(&plugin)?;
         let cap: Capability = capability.parse().map_err(IdeError::invalid)?;
-        if !plugin.manifest().declares(&cap) && !plugin.meta.lock().declared_extra.contains(&cap) {
-            return Err(IdeError::invalid(format!("plugin {id:?} does not declare {cap}")));
-        }
         {
             let mut ledger = self.ledger.lock();
             let subject = plugin.subject();
+            if !plugin.manifest().declares(&cap) && !plugin.meta.lock().declared_extra.contains(&cap) {
+                return Err(IdeError::invalid(format!("plugin {id:?} does not declare {cap}")));
+            }
             if ledger.get(&subject).is_none() {
                 return Err(IdeError::invalid(format!("plugin {id:?} has not been confirmed yet")));
             }
@@ -2537,6 +2564,7 @@ impl PluginHost {
             plugin_id: plugin.id().to_owned(),
             version: plugin.manifest().version.clone(),
             granted,
+            subject: plugin.subject(),
             host: api,
             limits: self.limits,
         };
@@ -2914,6 +2942,13 @@ impl PluginHost {
                 capabilities.push(CapabilityInfo::new(extra, true, granted(extra)));
             }
         }
+        // Hosts remembered through `net:ask` are grants of their own: listed
+        // separately so the user can revoke them one by one.
+        let net_hosts = grant
+            .as_ref()
+            .filter(|g| g.confirmed && g.has(&Capability::NetAsk) && m.declares(&Capability::NetAsk))
+            .map(|g| g.net_hosts.iter().cloned().collect())
+            .unwrap_or_default();
         PluginInfo {
             id: m.id.clone(),
             name: m.name.clone(),
@@ -2930,6 +2965,7 @@ impl PluginHost {
             error: meta.error.clone(),
             has_code: m.wasm.is_some(),
             capabilities,
+            net_hosts,
             contributions: self.registry.contributions(&m.id),
             activation: m.activation.iter().map(ToString::to_string).collect(),
             warnings: meta.warnings.clone(),

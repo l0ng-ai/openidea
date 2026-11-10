@@ -1,0 +1,210 @@
+---
+title: "File actions"
+description: "Quick fixes that create, rename or delete files, reading and writing project files, and files outside the project."
+---
+
+This page covers how a plugin works with files:
+
+- **File actions** (`file-actions.wit`, API 1.3): quick fixes and refactorings that create,
+  rename or delete files, applied as one undoable workspace edit.
+- **Project files** (`workspace.wit`): read, write, find and search files inside the open
+  projects.
+- **Other files** (`fs.wit`, API 1.3): files outside the projects, under explicit grants,
+  and the plugin's own private directory.
+- **File templates**: entries of the **File › New…** menu, no code needed.
+
+## File actions
+
+A file action is a code action whose result is file operations plus text edits. Declare
+the `code-actions` provider kind (the same kind as text-only quick fixes), implement
+`openidea_plugin::file_actions::FileActions`, and register it together with `providers`:
+
+```toml
+engines.openidea = "^1.3"
+wasm = "dist/plugin.wasm"
+
+[[contributes.providers]]
+kinds = ["code-actions"]
+languages = ["markdown"]
+```
+
+```rust
+use openidea_plugin::file_actions::{FileAction, FileActions, FileOperation};
+use openidea_plugin::providers::{Document, Providers};
+use openidea_plugin::{Error, Invocation, Plugin, Range, register_plugin};
+
+#[derive(Default)]
+struct Notes;
+
+impl Plugin for Notes {
+    fn run_command(&mut self, id: &str, _ctx: &Invocation, _arg: Option<&str>) -> Result<Option<String>, Error> {
+        Err(Error::NotFound(id.into()))
+    }
+}
+
+impl Providers for Notes {}
+
+impl FileActions for Notes {
+    fn file_actions(&mut self, doc: &Document, _selection: Range) -> Vec<FileAction> {
+        let Some(stem) = doc.path.strip_suffix(".md") else { return vec![] };
+        let notes = format!("{stem}.notes.md");
+        vec![FileAction {
+            title: "Create a notes file".into(),
+            kind: Some("quickfix".into()),
+            operations: vec![FileOperation::Create { path: notes.clone(), text: "# Notes\n".into(), overwrite: false }],
+            open: Some(notes),
+            ..Default::default()
+        }]
+    }
+}
+
+register_plugin!(Notes, providers, file_actions);
+```
+
+The actions are listed with the text-only code actions under **Show Context Actions**
+(`⌥⏎` / `Alt+Enter`) and have the same 50 ms editor budget.
+
+### The `FileAction` record
+
+| Field        | Notes                                                                                                                     |
+| ------------ | ------------------------------------------------------------------------------------------------------------------------- |
+| `title`      | Shown in the menu.                                                                                                        |
+| `kind`       | `quickfix`, `refactor`, …                                                                                                 |
+| `preferred`  | Marks the preferred fix.                                                                                                  |
+| `operations` | Applied first, in order: `Create { path, text, overwrite }`, `Rename { from, to }`, `Delete { path }`.                    |
+| `edits`      | `(path, Vec<TextEdit>)` per file, applied after the operations; may target files they create.                             |
+| `open`       | A file opened once the action is applied.                                                                                 |
+| `data`       | The plugin's own reference; with it and no operations or edits, they are computed when the user picks the action (below). |
+
+Rules:
+
+- Operations and edits are one workspace edit: if any step fails nothing is applied, and
+  one Undo reverses all of it. Undoing a `Delete` restores the file.
+- `Create` fails when the file exists unless `overwrite`; missing parent directories are
+  created.
+- Paths are absolute or relative to the project root and must stay inside it; a path
+  outside disables the action.
+
+### Resolving on pick
+
+Return an action with `data` and empty `operations` and `edits` to defer the work. When the
+user picks it, the host calls `resolve_file_action(doc, action)` under the 5-second command
+budget instead of 50 ms. As with `resolve_code_action`, `host::pick`, `pick_many`, `input`
+and `confirm` ask in the editor's window and the wait doesn't count. Return
+`Error::Cancelled` or an action with nothing to apply to abandon it.
+
+```rust
+fn resolve_file_action(&mut self, _doc: &Document, mut action: FileAction) -> Result<FileAction, Error> {
+    let Some(name) = host::input("New file name", Some("notes.md"))? else { return Err(Error::Cancelled) };
+    action.operations = vec![FileOperation::Create { path: name.clone(), text: String::new(), overwrite: false }];
+    action.open = Some(name);
+    Ok(action)
+}
+```
+
+## Project files
+
+Inside the open projects, a plugin uses its `Project` handle (`ctx.project()` in commands
+and events, `host::project_of(path)` in providers, `host::projects()` for every open
+project). All of these need `project.read` except `write_file`:
+
+| Method                           | Notes                                                                                                                                                                                   |
+| -------------------------------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `root()`                         | Absolute path of the project root.                                                                                                                                                      |
+| `read_file(path)`                | UTF-8 text, at most 16 MiB; unsaved editor contents win; missing is `Error::NotFound`.                                                                                                  |
+| `write_file(path, text)`         | API 1.3, needs `project.write`: replaces or creates the file (and missing directories) in one step, keeping its encoding and BOM. Refused while an editor holds unsaved changes for it. |
+| `exists(path)`, `stat(path)`     | Existence (hidden and ignored files included) and kind, size, modified time.                                                                                                            |
+| `find_files(glob, limit)`        | Root-relative glob (`**/*Mapper.xml`); honours `.gitignore` and exclusions; absolute paths.                                                                                             |
+| `search_text(&TextQuery, limit)` | API 1.4: Find in Files with unsaved documents and project exclusions, at most 10,000 matches; `limit_hit` says there may be more.                                                       |
+| `symbols(query, limit)`          | API 1.3: fuzzy search of the in-memory symbol index (no language server); may be partial while indexing.                                                                                |
+
+Paths are absolute or relative to the root. `..` and symlinks that leave the root are
+refused. In a remote project these run on the server, next to the files.
+
+Two related calls need no capability and work only from a command or event of a window:
+`host::pick_directory(title, initial)` (API 1.3) opens the native folder chooser, and
+`host::open_project(path, new_window)` (API 1.3) runs the normal **File › Open…** flow,
+including the trust prompt. Paths belong to the UI machine.
+
+## Files outside the projects
+
+`host::fs` (WIT `fs.wit`, API 1.3) reads and writes files outside the open projects: the
+configuration of a tool the plugin integrates with, a licence file, a program installed
+elsewhere. Every call is checked against a grant:
+
+```toml
+engines.openidea = "^1.3"
+
+[capabilities]
+optional = ["fs.read:~/.config/mytool", "fs.write:~/.config/mytool/state.json"]
+```
+
+```rust
+use openidea_plugin::host::{self, fs};
+use openidea_plugin::LogLevel;
+
+let config = fs::read_file("~/.config/mytool/config.toml")?;
+for entry in fs::read_dir("~/.config/mytool")? {
+    host::log(LogLevel::Info, &format!("{} ({:?})", entry.name, entry.kind));
+}
+fs::write_file("~/.config/mytool/state.json", "{}")?;
+```
+
+| Function                   | Grant             | Notes                                                                                   |
+| -------------------------- | ----------------- | --------------------------------------------------------------------------------------- |
+| `read_file(path)`          | `fs.read:<path>`  | Text decoded as the editor decodes it, at most 16 MiB; unsaved editor contents win.     |
+| `read_bytes(path)`         | `fs.read:<path>`  | Bytes, at most 16 MiB. Files that are not text must be read this way.                   |
+| `stat(path)`               | `fs.read:<path>`  | Kind, size, modified time; missing is `Error::NotFound`.                                |
+| `read_dir(path)`           | `fs.read:<path>`  | Entries sorted by name, at most 4096.                                                   |
+| `write_file(path, text)`   | `fs.write:<path>` | Atomic replace or create, keeps encoding and BOM (new files are UTF-8), at most 16 MiB. |
+| `write_bytes(path, bytes)` | `fs.write:<path>` | The same for bytes.                                                                     |
+| `plugin_dir()`             | none              | The plugin's private directory (below).                                                 |
+
+- Paths are absolute or start with `~/`. A grant covers a directory (any depth) or one
+  file. The path is resolved to its real location before comparing, so a symlink out of the
+  granted directory is refused, and `/opt/see` doesn't cover `/opt/seeyon`.
+- Granting a whole file system (`/`, `C:\`) is refused when the manifest is read.
+- `fs.write` doesn't imply `fs.read`. Writes fail with `Error::Invalid` when the directory
+  is missing, the text can't be encoded, or an editor holds unsaved changes for the file.
+- Both are high-risk capabilities: the install page tells the user so.
+
+### The private directory
+
+`host::fs::plugin_dir()` returns a directory that belongs only to this plugin, separate
+from its installed code and its key-value `storage`. Reading and writing inside it needs no
+`fs.*` or `project.read` grant, even during activation or provider calls without a project.
+It is created owner-only (0700 on Unix, an owner-only ACL on Windows), survives idle
+reclaim, reloads, updates and restarts, and is removed on uninstall. Use it for generated
+content or caches larger than `storage`. A path in it works with `host::open_location` and
+as an argument to an approved process.
+
+## File templates
+
+`[[contributes.fileTemplates]]` adds entries to the **File › New…** menu. They need no code and grant
+no file access: files are created only when the user invokes a template, through the IDE's
+normal New File flow.
+
+```toml
+[[contributes.fileTemplates]]
+id = "graph"
+name = "Graphviz Graph"
+extension = "dot"
+path = "templates/graph.dot"
+```
+
+With `engines.openidea = "^1.3"`, `fileName` creates an exact file name (dotfiles too)
+without a name prompt, and `variables` add required text fields to the new-file dialog,
+inserted with `$NAME$` or `${NAME}`:
+
+```toml
+[[contributes.fileTemplates]]
+id = "ignore"
+name = "Docker ignore"
+fileName = ".dockerignore"
+path = "templates/dockerignore.txt"
+variables = [{ name = "OUTPUT", prompt = "Output folder" }]
+```
+
+Variable names are unique ASCII identifiers and can't replace built-in variables (`NAME`,
+`PACKAGE`, `END`, …). `$PACKAGE$` follows the built-in rules for the extension (source roots
+for Java and Kotlin, Composer PSR-4 for PHP, …).

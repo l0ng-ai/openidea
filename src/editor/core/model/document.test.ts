@@ -91,6 +91,16 @@ describe("DocumentManager + slots", () => {
       expect(formatOptionsOf(slot.currentState())).toEqual({ tabSize: 1, insertSpaces: false });
   });
 
+  it("reformats with the Code Style indent also without a language override (#2467)", async () => {
+    const settings = { editor: { codeStyle: { languages: {}, detectIndents: true, editorconfig: false } } };
+    const { manager } = setup({ "/p/A.java": "class A {\n  int x;\n}\n" }, settings);
+    const model = await manager.acquire("/p/A.java");
+    const slot = new EditorSlot(model, "t1", host);
+    // Editing follows the 2-space indent detected in the file; Reformat Code uses Java's 4.
+    expect(slot.currentState().facet(indentUnit)).toBe("  ");
+    expect(formatOptionsOf(slot.currentState())).toEqual({ tabSize: 4, insertSpaces: true });
+  });
+
   it("detects the indents again after Reformat Code rewrote them", async () => {
     const settings = {
       editor: {

@@ -133,6 +133,14 @@ describe("mermaid in the markdown preview", () => {
     expect(ids.size).toBe(2);
   });
 
+  it("leaves a diagram it already drew in place on the next pass", async () => {
+    const root = preview(SEQ);
+    await renderMermaidIn(root, []).done;
+    const svg = root.querySelector("svg");
+    expect(renderMermaidIn(root, []).async).toBe(false);
+    expect(root.querySelector("svg")).toBe(svg);
+  });
+
   it("applies a cached diagram with fresh SVG ids so copies don't share markers", async () => {
     const first = preview(SEQ);
     await renderMermaidIn(first, []).done;

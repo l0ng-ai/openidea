@@ -30,6 +30,7 @@ import {
   javaTypeFromHover,
   literalType,
   replacesBareStatement,
+  trailingName,
   variableDeclaration,
   type DeclContext,
   type DeclResult,
@@ -378,17 +379,17 @@ function usesSemicolons(doc: Text, statement: SyntaxNode): boolean {
 
 /** Return / declared type of a Java call or name from the server's hover, if it answers. */
 async function javaHoverType(p: Prepared, expr: SyntaxNode, text: string): Promise<string | null> {
-  const m = /([A-Za-z_$][\w$]*)\s*(\([\s\S]*\))?\s*$/.exec(text);
-  if (!m || !/method_invocation|identifier|field_access/.test(expr.kind)) return null;
+  const last = trailingName(text);
+  if (!last || !/method_invocation|identifier|field_access/.test(expr.kind)) return null;
   const { from } = rangeToOffsets(p.doc, expr.range);
-  const pos = p.doc.lineAt(from + m.index);
-  const at = { line: pos.number - 1, col: from + m.index - pos.from };
+  const pos = p.doc.lineAt(from + last.index);
+  const at = { line: pos.number - 1, col: from + last.index - pos.from };
   try {
     const hover = await Promise.race([
       call(commands.lspHover(nextRequestId(), p.ctx.doc, at)),
       new Promise<null>((resolve) => setTimeout(() => resolve(null), 1500)),
     ]);
-    return hover ? javaTypeFromHover(hover.contents.value, m[1]!) : null;
+    return hover ? javaTypeFromHover(hover.contents.value, last.name) : null;
   } catch {
     return null;
   }

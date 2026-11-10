@@ -23,6 +23,8 @@ let seq = 0;
 /** Results by theme + source, so edits elsewhere in the file don't re-render diagrams. */
 const cache = new Map<string, Result>();
 const CACHE_LIMIT = 64;
+/** What each placeholder shows (theme + source): a later pass leaves those it already drew alone. */
+const drawn = new WeakMap<HTMLElement, string>();
 /** mermaid's render isn't re-entrant across configuration changes: one at a time. */
 let queue: Promise<unknown> = Promise.resolve();
 
@@ -273,17 +275,23 @@ export function renderMermaidIn(root: HTMLElement, previous: Node[] = []): Merma
   blocks.forEach((block, i) => {
     const source = (block.querySelector("code")?.textContent ?? "").replace(/\n+$/, "");
     const k = `${key}\n${source}`;
-    const cached = cache.get(k);
     const keep = () => {
       const out = block.querySelector(`:scope > .${OUTPUT_CLASS}`);
       if (out && block.getAttribute(RENDERED_ATTR) === "ok")
         previous[i] = out.querySelector("svg") ?? out.firstChild ?? out;
     };
-    if (cached) {
-      show(block, cached);
+    if (drawn.get(block) === k && block.querySelector(`:scope > .${OUTPUT_CLASS}`)) {
       keep();
       return;
     }
+    const cached = cache.get(k);
+    if (cached) {
+      show(block, cached);
+      drawn.set(block, k);
+      keep();
+      return;
+    }
+    drawn.delete(block);
     show(block, null, previous[i]);
     pending.push(
       enqueue(source, key, () => live).then((r) => {
@@ -291,6 +299,7 @@ export function renderMermaidIn(root: HTMLElement, previous: Node[] = []): Merma
         remember(k, r);
         if (!live) return;
         show(block, r);
+        drawn.set(block, k);
         keep();
       }),
     );

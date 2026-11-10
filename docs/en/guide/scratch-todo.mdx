@@ -1,0 +1,63 @@
+---
+title: "Scratch files and TODO"
+description: "Keep throwaway files outside the project, and collect TODO and FIXME comments in the TODO tool window."
+---
+
+## Scratch files
+
+A scratch file is a throwaway file in any language: a place to try a snippet, keep notes or paste a response, without adding anything to the project.
+
+| Action                | macOS | Windows / Linux         |
+| --------------------- | ----- | ----------------------- |
+| **New Scratch File…** | `⇧⌘N` | `Ctrl+Alt+Shift+Insert` |
+
+<Steps>
+  <Step title="Create one">
+    Choose **File › New Scratch File…** (or **Scratch File** at the top of the Project view's **New** menu).
+  </Step>
+  <Step title="Pick a language">
+    Type to filter the language list and press `↵` / `Enter`.
+  </Step>
+  <Step title="Edit">
+    The file opens in a normal editor tab. It is named `scratch.<ext>`, then `scratch_1.<ext>`, `scratch_2.<ext>` and so on. For C, C++, Go, Java, Kotlin and Rust the file starts with an empty `main` function.
+  </Step>
+</Steps>
+
+Scratch files are saved in a `scratches` folder in OpenIDEA's application data directory, not in the project, so they are shared by all projects and are not seen by Git:
+
+| OS      | Folder                                                     |
+| ------- | ---------------------------------------------------------- |
+| macOS   | `~/Library/Application Support/ai.l0ng.openidea/scratches` |
+| Windows | `%APPDATA%\ai.l0ng.openidea\scratches`                     |
+| Linux   | `~/.local/share/ai.l0ng.openidea/scratches`                |
+
+They are listed under **Scratches** in the Project view, where you can open, rename and delete them like other files.
+
+Because a scratch file is outside every project, some language servers give it only syntax checks; completion and navigation may be limited. A banner at the top of the editor says so when the server reports it.
+
+## TODO
+
+OpenIDEA collects comments that contain `TODO`, `FIXME`, `HACK` or `XXX` in the **TODO** tool window and highlights them in the editor, each pattern in its own colour.
+
+### The TODO tool window
+
+Open it from **View › Tool Windows › TODO**, or with **Show TODO Items in Current File** in Find Action. Its tabs are:
+
+- **Project**: every TODO item in the project.
+- **Current File**: the items in the active editor, updated as you type.
+- **Scope Based**: the items in a scope you choose, including custom scopes (**Edit Scopes…**).
+- **Changes**: the items in files with uncommitted changes, optionally for one changelist.
+
+Items are grouped by file. Click one to jump to it. The toolbar has a pattern filter (**Filter TODO Items**), **Match Case** and **Refresh**; the options menu turns on a preview and autoscroll to the source. The list updates when files change on disk and when you save; **Refresh TODO Items** rescans the project. At most 10 000 matches are shown.
+
+### Patterns
+
+**Settings › Editor › TODO** controls what counts as a TODO item:
+
+- **Patterns**: add, remove, enable or recolour keywords. **Restore Defaults** brings back `TODO`, `FIXME`, `HACK` and `XXX`.
+- **Case sensitive**: on by default, so `todo` does not match `TODO`.
+- **Only in comments**: on by default; a match counts only when it follows a comment marker on its line.
+
+### Before committing
+
+The commit dialog's **Check TODO** option warns about `TODO` and `FIXME` comments in the lines you added or changed. See [Version control](/en/guide/vcs).

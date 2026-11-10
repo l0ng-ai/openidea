@@ -72,15 +72,15 @@ function totalDuration(node: TestNode): number | undefined {
 export function StatusIcon({ status }: { status: TestStatus | null }) {
   switch (status) {
     case "passed":
-      return <Icon name="check" size={13} className={styles.passed} label="Passed" />;
+      return <Icon name="test-passed" className={styles.testStatus} label="Passed" />;
     case "failed":
-      return <Icon name="close" size={13} className={styles.failed} label="Failed" />;
+      return <Icon name="test-failed" className={styles.testStatus} label="Failed" />;
     case "skipped":
-      return <Icon name="minus" size={13} className={styles.skipped} label="Ignored" />;
+      return <Icon name="test-ignored" className={styles.testStatus} label="Ignored" />;
     case "running":
-      return <Spinner size={11} />;
+      return <Spinner size={16} variant="spokes" className={styles.testStatus} />;
     default:
-      return <Icon name="clock" size={13} className={styles.skipped} label="Pending" />;
+      return <Icon name="test-pending" className={styles.testStatus} label="Pending" />;
   }
 }
 
@@ -225,17 +225,17 @@ export function TestTreeView({
         </span>
         <span className={styles.spacer} />
         <IconButton
-          icon="check"
+          icon="test-show-passed"
           size="small"
-          iconSize={13}
+          iconSize={16}
           title="Show Passed"
           pressed={showPassed}
           onClick={() => toggle("showPassed")}
         />
         <IconButton
-          icon="minus"
+          icon="test-show-ignored"
           size="small"
-          iconSize={13}
+          iconSize={16}
           title="Show Ignored"
           pressed={showIgnored}
           onClick={() => toggle("showIgnored")}

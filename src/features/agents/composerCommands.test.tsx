@@ -1,4 +1,5 @@
 import { beforeEach, describe, expect, it, vi } from "vitest";
+import { sendKeyAction } from "./Composer";
 import { act, fireEvent, render, screen, waitFor, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import type { AgentCommand, AgentProvider } from "@/bindings";
@@ -281,5 +282,25 @@ describe("workspace task project", () => {
     expect(vcsBranchInfo).toHaveBeenLastCalledWith("/project-a");
     expect(vcsBranches).toHaveBeenLastCalledWith("/project-a");
     await vi.dynamicImportSettled();
+  });
+});
+
+describe("sendKeyAction", () => {
+  const key = (k: Partial<{ shiftKey: boolean; metaKey: boolean; ctrlKey: boolean }> = {}) => ({
+    key: "Enter",
+    shiftKey: false,
+    metaKey: false,
+    ctrlKey: false,
+    ...k,
+  });
+  it("sends with Enter, or with the modifier, the way the settings say", () => {
+    expect(sendKeyAction(key(), "enter", "queue")).toBe("queue");
+    expect(sendKeyAction(key({ metaKey: true }), "enter", "queue")).toBe("now");
+    expect(sendKeyAction(key({ shiftKey: true }), "enter", "queue")).toBeNull();
+    expect(sendKeyAction(key(), "enter", "steer")).toBe("now");
+    expect(sendKeyAction(key(), "modEnter", "queue")).toBeNull();
+    expect(sendKeyAction(key({ ctrlKey: true }), "modEnter", "queue")).toBe("queue");
+    expect(sendKeyAction(key({ metaKey: true, shiftKey: true }), "modEnter", "queue")).toBe("now");
+    expect(sendKeyAction({ ...key(), key: "a" }, "enter", "queue")).toBeNull();
   });
 });

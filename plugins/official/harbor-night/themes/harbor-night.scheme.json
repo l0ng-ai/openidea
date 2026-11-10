@@ -79,6 +79,7 @@
     "--border-right-margin": "#2a313b",
     "--bg-editor-selection": "#2d7772",
     "--bg-editor-selection-inactive": "#255854",
+    "--fg-editor-selection": "inherit",
     "--bg-text-search-result": "#114957",
     "--bg-text-search-result-current": "#165e70",
     "--bg-matched-brace": "#38424f",

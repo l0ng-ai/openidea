@@ -72,6 +72,16 @@ test("plugin markers render names and package SVG variants and keep the indexed 
   await expect(markers.locator('[title="Database marker"] svg')).toHaveAttribute("data-icon", "database");
   const custom = markers.locator('[title="Package marker"] svg');
   await expect(custom).toHaveAttribute("data-icon", /^ext:pluginIcon\/hello\//);
+  // CodeMirror clips every gutter column to its width (`overflow: hidden`), so an icon wider than
+  // the column loses its edges: each line-marker icon stays inside the 14px column.
+  const outside = await markers.evaluate((column) => {
+    const bounds = column.getBoundingClientRect();
+    return [...column.querySelectorAll("svg")].filter((svg) => {
+      const box = svg.getBoundingClientRect();
+      return box.left < bounds.left - 0.5 || box.right > bounds.right + 0.5;
+    }).length;
+  });
+  expect(outside).toBe(0);
   await page.evaluate(async () => {
     const path = "/src/workbench/theme.ts";
     await (await import(path)).setTheme("dark");

@@ -8,7 +8,7 @@ import { validateCMake } from "@/platform/cmakeSettings";
 import { SUPPORTED_LOCALES, type Locale } from "@/platform/i18n";
 import { DEFAULT_IGNORED_NAMES } from "@/platform/ignoredNames";
 import { validateFileTypeOverrides, validateFileTypes, type FileTypeAssociations } from "@/platform/fileTypes";
-import type { AgentSettings, LanguageServerSettings, LanguageServerTarget, Settings } from "@/platform/ipc";
+import type { AgentSettings, LanguageServerSettings, Settings } from "@/platform/ipc";
 import {
   DEFAULT_LANGUAGES,
   DEFAULT_PROJECT_STRUCTURE,
@@ -101,7 +101,6 @@ export interface ValidSettings extends WorkflowSettings {
   tools: Record<string, { path: string }>;
   /** Settings › Language Servers, by server name (as the backend sends them). */
   languageServers: Record<string, LanguageServerEntry>;
-  languageServerTargets: Record<string, LanguageServerTarget>;
   /** Tools › Agents › Chat: the meters in an agent task's header. */
   agents: Required<AgentSettings>;
   /** Tools › MCP Server (global). */
@@ -179,8 +178,20 @@ export const DEFAULT_SETTINGS: ValidSettings = {
   spelling: { ideWords: [], projectWords: [], customDictionaries: [] },
   tools: {},
   languageServers: {},
-  languageServerTargets: {},
-  agents: { showContextUsage: true, showWorkTime: true, showUsageLimits: true, showCost: false },
+  agents: {
+    showContextUsage: true,
+    showWorkTime: true,
+    showUsageLimits: true,
+    showCost: false,
+    foldTurns: true,
+    smoothText: true,
+    thinking: "auto",
+    toolCalls: "grouped",
+    expandToolOutput: false,
+    sendWith: "enter",
+    whileRunning: "queue",
+    defaults: {},
+  },
   mcpServer: { enabled: false },
   ...DEFAULT_WORKFLOW,
 };
@@ -201,6 +212,16 @@ type Obj = Record<string, unknown>;
 const obj = (v: unknown): Obj => (v && typeof v === "object" && !Array.isArray(v) ? (v as Obj) : {});
 const bool = (v: unknown, d: boolean) => (typeof v === "boolean" ? v : d);
 const str = (v: unknown, d: string) => (typeof v === "string" && v.trim() ? v : d);
+/** Agent id → option id → value, keeping only string values. */
+function agentDefaults(v: unknown): Record<string, Record<string, string>> {
+  return Object.fromEntries(
+    Object.entries(obj(v)).map(([agent, options]) => [
+      agent,
+      Object.fromEntries(Object.entries(obj(options)).filter((e): e is [string, string] => typeof e[1] === "string")),
+    ]),
+  );
+}
+
 const oneOf = <T extends string>(v: unknown, allowed: readonly T[], d: T): T =>
   typeof v === "string" && (allowed as readonly string[]).includes(v) ? (v as T) : d;
 const num = (v: unknown, d: number, { min, max }: { min: number; max: number }, int = false) => {
@@ -297,23 +318,19 @@ export function validateSettings(raw: Settings | unknown): ValidSettings {
     languageServers: Object.fromEntries(
       Object.entries(obj(root.languageServers)).map(([name, ls]) => [name, obj(ls) as LanguageServerEntry]),
     ),
-    languageServerTargets: Object.fromEntries(
-      Object.entries(obj(root.languageServerTargets)).map(([language, value]) => {
-        const entry = obj(value);
-        return [
-          language,
-          {
-            target: typeof entry.target === "string" ? entry.target : "",
-            server: typeof entry.server === "string" ? entry.server : "",
-          },
-        ];
-      }),
-    ),
     agents: {
       showContextUsage: bool(agents.showContextUsage, d.agents.showContextUsage),
       showWorkTime: bool(agents.showWorkTime, d.agents.showWorkTime),
       showUsageLimits: bool(agents.showUsageLimits, d.agents.showUsageLimits),
       showCost: bool(agents.showCost, d.agents.showCost),
+      foldTurns: bool(agents.foldTurns, d.agents.foldTurns),
+      smoothText: bool(agents.smoothText, d.agents.smoothText),
+      thinking: oneOf(agents.thinking, ["auto", "expanded", "collapsed"] as const, d.agents.thinking),
+      toolCalls: oneOf(agents.toolCalls, ["grouped", "each"] as const, d.agents.toolCalls),
+      expandToolOutput: bool(agents.expandToolOutput, d.agents.expandToolOutput),
+      sendWith: oneOf(agents.sendWith, ["enter", "modEnter"] as const, d.agents.sendWith),
+      whileRunning: oneOf(agents.whileRunning, ["queue", "steer"] as const, d.agents.whileRunning),
+      defaults: agentDefaults(agents.defaults),
     },
     mcpServer: { enabled: bool(obj(root.mcpServer).enabled, d.mcpServer.enabled) },
     ...validateWorkflow(root),

@@ -1,0 +1,83 @@
+---
+title: "C# and .NET"
+description: "C# with csharp-ls, F# with FsAutoComplete, the .NET tool window for builds, NuGet packages and tests, and debugging with netcoredbg."
+---
+
+OpenIDEA supports C# (`.cs`, `.csx`) through [csharp-ls](https://github.com/razzmatazz/csharp-language-server) and F# (`.fs`, `.fsi`, `.fsx`) through [FsAutoComplete](https://github.com/ionide/FsAutoComplete). Both are installed as .NET tools, and both debug with [netcoredbg](https://github.com/Samsung/netcoredbg). Builds, NuGet packages and tests go through the `dotnet` CLI. For other languages, see the [support matrix](/en/languages/index).
+
+## Language server
+
+| Language | Server         | Workspace root markers                                                                                      |
+| -------- | -------------- | ----------------------------------------------------------------------------------------------------------- |
+| C#       | csharp-ls      | `*.sln`, `*.slnx`, `*.csproj`, `global.json`, `Directory.Build.props`, `ProjectSettings/ProjectVersion.txt` |
+| F#       | fsautocomplete | `*.sln`, `*.fsproj`, `global.json`                                                                          |
+
+The server loads the solution or project it finds from these markers. FsAutoComplete starts with `AutomaticWorkspaceInit` on, so it loads the projects without waiting for the editor to ask.
+
+When you go to the definition of a library type, csharp-ls returns decompiled source. It opens as a read-only document, and so does source-generated code.
+
+`ProjectSettings/ProjectVersion.txt` is there so that Unity projects work too. See [Unity](/en/languages/unity) for using OpenIDEA as Unity's external editor.
+
+## Setup
+
+You need the [.NET SDK](https://dotnet.microsoft.com/download) with `dotnet` on your `PATH`. The IDE runs every build, test and package command through it, and installs the language servers with it.
+
+When a server is missing, opening a C# or F# file shows a "csharp-ls is not installed" (or FsAutoComplete) notification with **Install**. You can also install the tools from **Settings › Languages & Frameworks › Language Servers**.
+
+| Tool           | How it is installed                                                                                                       |
+| -------------- | ------------------------------------------------------------------------------------------------------------------------- |
+| csharp-ls      | `dotnet tool install --tool-path` into the IDE's tools folder (not a global tool)                                         |
+| FsAutoComplete | `dotnet tool install --tool-path` into the IDE's tools folder                                                             |
+| netcoredbg     | Downloaded from the `Samsung/netcoredbg` GitHub releases. Prebuilt for macOS arm64, Linux x64 and arm64, and Windows x64. |
+
+A `csharp-ls`, `fsautocomplete` or `netcoredbg` already on your `PATH` (for example a global `dotnet tool install --global csharp-ls`) is used as is.
+
+## The .NET tool window
+
+The **.NET** tool window (on the right) works with the `.csproj`, `.fsproj` and `.vbproj` projects in the project folder, including the projects listed in `.sln` and `.slnx` solutions and their project references. Open it with the **.NET Workspace** action from **Find Action…** (`⌘⇧A` / `Ctrl+Shift+A`). **Reload .NET Workspace** scans the folder again.
+
+For the selected project you can:
+
+- Pick the **Configuration** (`Debug` by default) and **Target framework** (for multi-targeted projects).
+- **Build**, **Restore** and **Clean** it (also available as the **Build .NET Project**, **Restore .NET Project** and **Clean .NET Project** actions). Output appears in the **Output** section.
+- Browse its **NuGet packages**, including transitive ones, search your package sources with **Search NuGet packages** (`dotnet package search`), and add, update or remove packages (`dotnet add package` / `dotnet remove package`).
+- See its **Project references**.
+- Discover and run tests (see below).
+
+Project evaluation uses MSBuild, so the target frameworks, output paths and packages you see are the ones MSBuild computes, including imported properties.
+
+## Run
+
+OpenIDEA creates run configurations for every `.csproj` it finds (also through `.sln` / `.slnx`) whose output type is `Exe` or `WinExe`, or that uses `Microsoft.NET.Sdk.Web`:
+
+- **&lt;Project&gt; (.NET Project)**: `dotnet run --project <path> --no-launch-profile`.
+- **&lt;Project&gt;: &lt;profile&gt;**: one per profile in `Properties/launchSettings.json`, run with `--launch-profile`. The profile's environment variables, working directory, command-line arguments and `applicationUrl` (as `ASPNETCORE_URLS`) are applied.
+
+The **.NET Project** configuration type has fields for the project, **Target framework**, **Launch profile** and **Program arguments**. The project is built before it runs.
+
+See [Run configurations](/en/guide/run) for editing and creating configurations.
+
+## Tests
+
+Projects that reference `Microsoft.NET.Test.Sdk`, MSTest, NUnit or xUnit, or set `IsTestProject`, are test projects. Each gets a `dotnet test (<Project>)` configuration.
+
+- In the editor, test methods marked `[Fact]`, `[Theory]`, `[Test]`, `[TestCase]`, `[TestCaseSource]`, `[TestMethod]` or `[DataTestMethod]` get gutter run icons.
+- In the .NET tool window, **Discover .NET Tests** lists the tests (`dotnet test --list-tests`), and you can run all of them or one.
+
+Results appear in the test tree of the Run tool window. The IDE asks VSTest for a TRX report and reads it. Projects on Microsoft.Testing.Platform need the `Microsoft.Testing.Extensions.TrxReport` package for that; **Install TRX reporting** adds it in the version matching the project's testing platform.
+
+See [Testing](/en/guide/testing) for the test tree and rerunning failed tests.
+
+## Debugging
+
+Running a .NET Project configuration with **Debug** builds the project, asks MSBuild for its output assembly (`TargetPath`, in the Debug configuration) and launches it under netcoredbg. If netcoredbg is missing, a notification offers to install it.
+
+See [Debugging](/en/guide/debugging).
+
+## Limitations
+
+- Automatic run configurations are created only for C# projects (`.csproj`). F# and VB projects can be built and tested from the .NET tool window, but you create their run configurations yourself.
+- Test configurations run without a debugger; there is no Debug action for .NET tests.
+- There is no Visual Basic language server.
+- netcoredbg has no prebuilt download for Windows on Arm.
+- There is no designer for WinForms, WPF or XAML.

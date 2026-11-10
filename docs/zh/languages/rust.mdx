@@ -1,0 +1,80 @@
+---
+title: "Rust"
+description: "基于 rust-analyzer 的 Rust 代码智能、工具链与 Linter 设置、cargo run 和 cargo test 运行配置，以及基于 CodeLLDB 的调试。"
+---
+
+OpenIDEA 用 rust-analyzer 提供 Rust 代码智能，用 cargo 运行和测试 crate，用 CodeLLDB 调试，支持 Cargo 工作区。其他语言的情况见[支持矩阵](/zh/languages/index)。
+
+## 语言服务器
+
+rust-analyzer 负责 `.rs` 文件。工作区从最近的 `Cargo.toml` 或 `rust-project.json` 开始。
+
+rust-analyzer 加载项目期间暂时无法回答跳转请求。OpenIDEA 会等它加载完，而不是直接报“未找到”：刚打开项目就执行 **声明或用法**（`⌘B` / `Ctrl+B`），会在服务器就绪后跳转，最多等待 30 秒。
+
+诊断来自 rust-analyzer 自身的分析，以及每次保存后运行的 `cargo check`（或 Clippy）。
+
+### 安装 rust-analyzer
+
+缺少 rust-analyzer 时，OpenIDEA 会弹出 **rust-analyzer 未安装** 通知，点 **安装** 即可。也可以在 **设置 › 语言和框架 › 语言服务器** 中安装，或指定你自己的可执行文件。
+
+- `PATH` 上有 rustup 时，IDE 执行 `rustup component add rust-analyzer`。
+- 没有 rustup 时，IDE 从 Open VSX 下载 rust-analyzer 到自己的工具文件夹。
+
+`~/.cargo/bin/rust-analyzer` 是 rustup 的代理程序，当前工具链没有该组件时会启动失败。这种情况下 IDE 会改用已安装工具链中最新的、带有 rust-analyzer 的那个；如果都没有，就视为未安装并提示安装。
+
+## 环境配置
+
+**设置 › 语言和框架 › Rust** 提供以下选项：
+
+| 选项                        | 作用                                                                                                                                                                                                                                     |
+| --------------------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| **工具链位置**              | cargo 运行配置和 rust-analyzer 使用的工具链（通过 `PATH` 和 `RUSTUP_TOOLCHAIN` 设置）。**默认** 为 rustup 默认工具链或 `PATH`。列表中会显示 rustup 工具链（位于 `RUSTUP_HOME` 或 `~/.rustup`），以及 `PATH` 上不由 rustup 管理的 cargo。 |
+| **标准库**                  | 用于跳转和补全的 `std` 源码（`RUST_SRC_PATH`）。留空时从工具链自动识别。                                                                                                                                                                 |
+| **外部工具**（外部 Linter） | **Cargo Check** 或 **Clippy**。                                                                                                                                                                                                          |
+| **保存时运行外部 Linter**   | 每次保存后由 rust-analyzer 运行外部工具并报告其诊断，默认开启。                                                                                                                                                                          |
+| **附加实参**（Rustfmt）     | 格式化时传给 rustfmt 的参数，例如 `--edition 2024`。                                                                                                                                                                                     |
+
+**重新格式化代码**（`⌘⌥L` / `Ctrl+Alt+L`）通过 rust-analyzer 调用 rustfmt。
+
+依赖的 crate 和 Rust 标准库会出现在项目视图的 **外部库** 下。
+
+## 运行与测试
+
+OpenIDEA 读取 `Cargo.toml`（以及 `[workspace]` 的成员），自动识别以下配置：
+
+| 配置                   | 条件                                                                                       |
+| ---------------------- | ------------------------------------------------------------------------------------------ |
+| `cargo run <bin>`      | 每个二进制目标一个：`src/main.rs`、`src/bin/*` 和 `[[bin]]`（工作区中会带 `-p <package>`） |
+| `cargo test <package>` | 每个工作区成员一个                                                                         |
+| `cargo test`           | 总是生成（工作区中带 `--workspace`）                                                       |
+| `cargo build`          | 总是生成                                                                                   |
+
+编辑器左侧栏的图标可以运行或调试：
+
+- `src/main.rs`、`src/bin/*.rs` 和 `examples/*.rs` 中的 `fn main`；
+- 标注了 `#[test]`、`#[tokio::test]`、`#[async_std::test]`、`#[actix_rt::test]`、`#[rstest]` 或 `#[test_case]` 的函数；
+- `mod tests` 以及标注了 `#[cfg(test)]` 的模块，会运行其中所有测试。
+
+单个测试以 `cargo test -- <path> --exact` 运行。结果显示在测试树中，**重新运行失败的测试** 只重跑失败的用例。详见[运行配置](/zh/guide/run)和[测试](/zh/guide/testing)。
+
+| 操作           | macOS | Windows / Linux  |
+| -------------- | ----- | ---------------- |
+| 运行上下文配置 | `⌃⇧R` | `Ctrl+Shift+F10` |
+| 调试上下文配置 | `⌃⇧D` | 无               |
+| 构建项目       | `⌘F9` | `Ctrl+F9`        |
+
+**构建项目** 执行 `cargo build --all-targets`，**重新构建项目** 会先执行 `cargo clean`，**构建工件** 执行 `cargo build --release`。编译信息显示在构建工具窗口和编辑器中。
+
+**使用覆盖率运行** 对 `cargo test`、`cargo run` 和 `cargo nextest` 配置使用 `cargo llvm-cov`。缺少时 IDE 会给出 `cargo install cargo-llvm-cov` 命令（还需要 rustup 组件 `llvm-tools-preview`）。见[覆盖率](/zh/guide/coverage)。
+
+## 调试
+
+Rust 调试使用 CodeLLDB。开始调试时如果缺少 CodeLLDB，OpenIDEA 会提示安装，从 GitHub 下载 CodeLLDB 发行版到工具文件夹。cargo 运行 / 测试配置和左侧栏图标都可以调试：CodeLLDB 先用 cargo 构建目标，再启动生成的二进制文件。
+
+**附加到进程…**（`⌥⇧F5` / `Ctrl+Alt+F5`）会在 **Native (LLDB)** 分组下列出本机原生进程。详见[调试](/zh/guide/debugging)。
+
+## 限制
+
+- CodeLLDB 没有发布 Windows ARM64 版本，IDE 无法在该平台上安装它。
+- rust-analyzer 自己的扩展命令（如 Expand Macro、View Syntax Tree）没有作为 IDE 操作提供。
+- 性能分析器只在 Linux 上（借助 `perf`）支持 `cargo run`。见[性能分析](/zh/guide/profiler)。

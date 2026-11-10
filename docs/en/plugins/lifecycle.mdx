@@ -1,0 +1,120 @@
+---
+title: "Lifecycle and events"
+description: "When plugin code is loaded and unloaded, how events reach it, and how it keeps data, settings and state across reloads and updates."
+---
+
+## States
+
+**Settings › Plugins** shows each plugin's state:
+
+| Status               | Meaning                                                                                                                 |
+| -------------------- | ----------------------------------------------------------------------------------------------------------------------- |
+| **Enabled**          | Contributions are live. Code (if any) is not loaded right now.                                                          |
+| **Running**          | An instance of the code is active.                                                                                      |
+| **Disabled**         | Turned off by the user.                                                                                                 |
+| **Needs permission** | A linked or project plugin not yet allowed, or an update that asks for new capabilities. Click **Review Permissions…**. |
+| **Failed**           | It crashed three times in a row, or failed to start. The reason is shown; **Restart** tries again.                      |
+
+Declared contributions (commands, menus, themes, settings pages, …) are live as soon as the plugin is enabled, before any code is loaded.
+
+## Activation
+
+Code is instantiated lazily, when one of the plugin's commands runs or when an event listed in `activation` fires (see [Manifest › Activation](/en/plugins/manifest#activation)). On each new instance the IDE calls `Plugin::activate`; subscribe to events and restore state there. An error from `activate` fails the activation.
+
+An instance unused for **5 minutes** is reclaimed: `deactivate` runs and the plugin is not running again until its next event. `on-schedule` activates it when due but does not keep it alive. Keep nothing in memory you can't rebuild in `activate`.
+
+```rust
+use openidea_plugin::{Context, Error, EventKind, Plugin, host};
+
+impl Plugin for MyPlugin {
+    fn activate(&mut self, _ctx: &Context) -> Result<(), Error> {
+        host::subscribe(EventKind::FileSaved)?;
+        self.count = host::storage::get("count")?.and_then(|v| v.parse().ok()).unwrap_or(0);
+        Ok(())
+    }
+}
+```
+
+## Events
+
+| Kind                                                  | Capability     | Delivered when                                                                          |
+| ----------------------------------------------------- | -------------- | --------------------------------------------------------------------------------------- |
+| `file-opened`                                         | `events`       | A file opens in an editor                                                               |
+| `file-saved`                                          | `events`       | A file is written                                                                       |
+| `file-closed`                                         | `events`       | A file's editor closes (API 1.4)                                                        |
+| `files-changed`                                       | `events`       | Files are created, modified or removed in open projects, debounced (API 1.3)            |
+| `editor-focused`                                      | `events`       | The focused editor changes                                                              |
+| `vcs-changed`                                         | `events`       | A repository's state changed (commit, checkout, fetch…)                                 |
+| `settings-changed`                                    | `events`       | Some of this plugin's settings changed (API 1.4)                                        |
+| `action-performed`                                    | `events.input` | An IDE action ran: id, title, source (keyboard, menu, toolbar…), shortcut               |
+| `input-mode-changed`                                  | `events.input` | The focused editor's Vim mode changed (API 1.4)                                         |
+| `scheduled`                                           | none           | The `on-schedule` period elapsed                                                        |
+| `run-exited`, `terminal-exited`, `content-tab-action` | none           | A run, terminal or content tab this plugin started finished or sent an action (API 1.4) |
+
+Subscribe in code with `host::subscribe(EventKind::…)` (it lasts for the session, across idle reclaim) or declare `activation = ["on-event:<kind>"]` to receive events before first use. `host::subscribe_paths(kind, globs)` (API 1.3) narrows `file-opened`, `file-saved` and `files-changed` to project-relative globs; the host filters before waking the plugin.
+
+Events arrive in batches at `Plugin::handle_events`, oldest first, per window. A running plugin gets them within a fraction of a second; an idle one collects them for 2 seconds before it is woken, so frequent events don't keep it alive.
+
+Kinds are strings, so later IDEs can add kinds without changing the API. An IDE refuses a kind it doesn't know with `invalid`; a kind newer than the plugin's SDK arrives as `Event::Other { kind, data }` with JSON data. Match the SDK's event enums with a `_` arm.
+
+## Background work
+
+Commands, events and activation have 5 seconds. For longer work, open a task:
+
+```rust
+let task = host::begin_task("Scanning files", true);
+for (i, file) in files.iter().enumerate() {
+    if task.is_cancelled() { break; }
+    task.report(i as u32, Some(files.len() as u32), None);
+    // …
+}
+// dropping `task` ends it
+```
+
+While a task is open, the call may run for 60 seconds, and each `report` or `is_cancelled` renews that budget. The task shows with the IDE's background tasks.
+
+## Storage
+
+|                                                         | Survives idle reclaim | Survives restart and update | Removed on uninstall |
+| ------------------------------------------------------- | --------------------- | --------------------------- | -------------------- |
+| Instance memory (`self`)                                | No                    | No                          | —                    |
+| `host::storage` (key-value, needs `storage`)            | Yes                   | Yes                         | Yes                  |
+| `host::fs::plugin_dir()` (private files, no capability) | Yes                   | Yes                         | Yes                  |
+
+`host::storage` holds at most 64 MiB per plugin, counting the UTF-8 bytes of keys and values. Use `plugin_dir()` for caches or generated files larger than that. Storage is per plugin, not per version, so an update keeps it.
+
+## Settings
+
+A plugin declares its settings with a JSON schema; the IDE generates the page under **Settings › Plugins** (searchable, with project-level overrides):
+
+```toml
+[contributes.settings]
+schema = "settings.schema.json"
+```
+
+```json
+{
+  "properties": {
+    "context": { "type": "string", "title": "Context", "default": "" },
+    "tailLines": { "type": "integer", "title": "Log lines", "default": 200 },
+    "shell": { "type": "string", "enum": ["sh", "bash"], "default": "sh" }
+  }
+}
+```
+
+Types are `boolean`, `string` (optionally with `enum` or `multiline`), `number` and `integer`, each with a `default`. Read values with `host::setting`, `setting_bool`, `setting_string` or `setting_number`: you get the user's value (project over global) or the schema's default, and a stored value of the wrong type falls back to the default. Subscribe to `settings-changed` (API 1.4) to react to changes.
+
+API 1.3 adds multiple pages (`[[contributes.settings.pages]]`), groups, string lists, tables and action buttons that run one of the plugin's commands. See [`plugins/README.md`](https://github.com/l0ng-ai/openidea/blob/main/plugins/README.md#multiple-pages-groups-lists-and-tables-api-13) and the [`settings-pages` fixture](https://github.com/l0ng-ai/openidea/tree/main/crates/ide-plugin/tests/fixtures/settings-pages).
+
+Secrets are not settings: declare them with `[[contributes.secrets]]` (see [Permissions and capabilities](/en/plugins/capabilities#secrets)).
+
+## Reload, update and roll back
+
+- **Reload while developing:** select the plugin in **Settings › Plugins** and click **Reload from disk**, or run the **Reload Plugins** action. Linked plugins are read from their folder, so a rebuild plus reload picks up new code and manifest changes.
+- **Updates:** the IDE checks the marketplace daily. When it finds newer versions of installed plugins it says so once, with **Update All**; the gear menu has **Update All Plugins** too. An update that asks for nothing new keeps the existing grants.
+- **Versions on disk:** installed plugins live in `<app-data>/plugins/<id>/<version>/` with an `active` pointer that is switched only once the new version is in place. If an update's code fails to start the first time, the IDE rolls back to the previous version automatically and tells you why. **Roll Back to `<version>`** in the plugin's details does it by hand.
+- **Disable and uninstall:** disabling stops the code and withdraws its contributions; storage stays. Uninstalling removes the plugin, its storage and its private directory.
+
+## Crashes
+
+A panic, trap, permission violation or exceeded limit drops the instance. The plugin starts again the next time it is needed, after a pause that doubles with each crash in a row. After three crashes in a row it is **Failed** for the session. Calls that return normally reset the count. See [Architecture and sandbox](/en/plugins/architecture#threads-and-crashes).

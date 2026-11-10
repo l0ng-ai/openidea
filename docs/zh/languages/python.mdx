@@ -1,0 +1,133 @@
+---
+title: "Python"
+description: "基于 basedpyright 和 Ruff 的 Python 代码智能、解释器与虚拟环境识别、pytest 和 Django 运行，以及基于 debugpy 的调试。"
+---
+
+OpenIDEA 通过类型检查语言服务器（默认 basedpyright）提供 Python 代码智能；如果项目配置了 Ruff，还会同时启动 Ruff 服务器。IDE 会自动找到本机的解释器和虚拟环境，用项目解释器运行脚本、pytest 和 Django 测试，并用 debugpy 调试。其他语言的情况见[支持矩阵](/zh/languages/index)。
+
+## 语言服务器
+
+Python 文件（`.py`、`.pyi`、`.pyw`、`SConstruct`、`SConscript`，以及 shebang 中含 `python` 的文件）同一时间只由一个类型检查器提供服务，Ruff 另外并行：
+
+| 服务器       | 作用                                             | 安装方式                |
+| ------------ | ------------------------------------------------ | ----------------------- |
+| basedpyright | 默认类型检查器：补全、跳转、悬停提示、诊断、重构 | pip，装进独立的虚拟环境 |
+| Pyright      | 仅在未安装 basedpyright 时使用                   | npm                     |
+| ty           | 仅在以上两者都未安装时使用                       | pip，装进独立的虚拟环境 |
+| Pyrefly      | 仅在以上都未安装时使用                           | pip，装进独立的虚拟环境 |
+| Ruff         | 代码检查、格式化、整理导入、一键修复             | pip，装进独立的虚拟环境 |
+
+basedpyright 以 `standard` 类型检查模式启动，而不是它自带的更严格的默认模式。项目里的 `pyproject.toml` 中的 `[tool.basedpyright]` 或 `pyrightconfig.json` 仍然优先。
+
+Ruff 只为位于 Ruff 配置之下的文件启动：`ruff.toml`、`.ruff.toml`，或包含 `[tool.ruff]` 表的 `pyproject.toml`。basedpyright 本身不提供格式化，格式化由 Ruff 负责。
+
+想手动指定类型检查器，打开 **设置 › 语言和框架 › 语言服务器**，选中这四个服务器中的任意一个，修改 **Python 语言服务器**。**自动** 会按上表顺序使用第一个已安装的服务器；也可以固定选一个，或选 **无**。
+
+## 环境配置
+
+### 安装语言服务器
+
+打开 Python 文件时如果缺少服务器，OpenIDEA 会弹出类似 **basedpyright 未安装** 的通知，点 **安装** 即可。也可以在 **设置 › 语言和框架 › 语言服务器** 中安装、重新安装，或者指定你自己的可执行文件。
+
+- basedpyright、ty、Pyrefly 和 Ruff 会装进 IDE 工具文件夹里的独立虚拟环境。`PATH` 上有 uv 时用 uv，否则用 `python3 -m venv`。前提是本机装有 Python 3 或 uv。
+- Pyright 通过 npm 安装，需要 Node.js。
+- 不会往你项目的环境里装任何东西。
+
+工具文件夹位于本地数据目录下，见[数据目录与日志](/zh/reference/data-directories)。
+
+### 解释器与虚拟环境
+
+项目解释器按以下顺序确定：
+
+1. **设置 › 语言和框架 › Python 解释器** 中选定的解释器。
+2. 项目里的虚拟环境：`.venv`、`venv`、`env` 或 `.env`（含 `pyvenv.cfg` 的目录），或 `.pixi/envs/` 下的 pixi 环境。
+3. 项目通过 mise 或 asdf 固定的 Python 版本（`mise.toml`、`.tool-versions` 等 mise 配置文件）。
+
+该页面的解释器列表还会列出 IDE 在本机找到的解释器：当前激活的 `VIRTUAL_ENV`，virtualenvwrapper、pipenv 和 Poetry 创建的虚拟环境，pyenv 的各个版本，uv 安装的 Python，mise 和 asdf 的安装，conda 环境（Miniconda、Anaconda、Miniforge、Mambaforge、micromamba，以及 `conda env list` 能看到的所有环境），还有 `PATH` 上的 `python` 可执行文件。
+
+选定的解释器会传给 basedpyright 和 Pyright（`python.pythonPath`），其虚拟环境会作为 `VIRTUAL_ENV` 提供给语言服务器和运行配置。
+
+状态栏上的 **Python 解释器** 显示当前解释器，点击可以切换，也可以打开 **添加新的解释器…** 和 **解释器设置…**。
+
+### 创建环境
+
+在 **设置 › 语言和框架 › Python 解释器** 中选择 **添加 Python 解释器**，再选 **解释器类型**：
+
+- **Virtualenv 环境**：用你选的基础解释器执行 `python -m venv`。
+- **uv 环境**：执行 `uv venv <location> --python <base>`（`PATH` 上需要有 uv）。
+- **Poetry 环境**：在项目中执行 `poetry env use <base>`。
+- **Conda 环境**：执行 `conda create -p <location>`，Python 版本与基础解释器一致。
+
+也可以直接选择已有的解释器或环境目录。新解释器会成为项目解释器。
+
+### 软件包
+
+同一页面会列出所选解释器已安装的软件包，可以搜索、按名称 **安装**、**升级** 和 **卸载**。IDE 使用解释器自带的 pip；没有 pip 的环境（uv 创建的环境默认如此）改用 `uv pip`。
+
+页面上的其他选项：
+
+- **激活 virtualenv**（**终端** 分组）：新的终端会话会运行虚拟环境的激活脚本。
+- **文档字符串格式**（**文档字符串** 分组）：纯文本、reStructuredText、Epytext、NumPy 或 Google。文档字符串里的标签和关键字按该格式高亮。
+
+### 格式化
+
+**重新格式化代码**（`⌘⌥L` / `Ctrl+Alt+L`）使用 Ruff。在 **设置 › 语言和框架 › Ruff** 中可以设置 Ruff 路径、配置目录、**格式化工具**（**自动（优先语言服务器）** 或 Ruff）以及 **保存时运行**。不指定配置目录时，Ruff 读取最近的 `pyproject.toml`（`[tool.ruff]`）、`ruff.toml` 或 `.ruff.toml`。
+
+## 运行与测试
+
+在包含 `pyproject.toml`、`setup.py`、`setup.cfg`、`requirements.txt`、`pytest.ini`、`tox.ini`、`manage.py` 或项目虚拟环境的目录里，OpenIDEA 会自动识别这些运行配置：
+
+| 配置                  | 条件                                                                                                                                                                  |
+| --------------------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `python -m <package>` | 项目根目录或 `src/` 下有包含 `__main__.py` 的包                                                                                                                       |
+| `pytest`              | 项目使用 pytest：存在 `pytest.ini`、`tox.ini`、`conftest.py`，`setup.cfg` 中有 `[tool:pytest]`，`pyproject.toml` 或 requirements 文件提到 pytest，或环境中装有 pytest |
+| `manage.py runserver` | 存在 `manage.py`（Django）                                                                                                                                            |
+| `manage.py test`      | 存在 `manage.py`（Django 测试）                                                                                                                                       |
+
+工具会通过项目的包管理器运行：有 `uv.lock` 时用 `uv run`，有 `poetry.lock` 时用 `poetry run`，有 `pdm.lock` 时用 `pdm run`，否则用 `.venv` 或 `venv` 中的工具，pixi 环境则用 `pixi run`。如果在设置中选了解释器，运行配置会直接使用它。
+
+编辑器左侧栏的图标可以运行或调试：
+
+- 文件中的 `if __name__ == "__main__":` 代码块；
+- pytest 的 `test_*` 函数和 `Test*` 类；
+- `unittest.TestCase` 子类及其测试方法。
+
+即使项目没有声明任何测试配置，测试文件也可以用 pytest 运行（用项目解释器执行 `python -m pytest`，因此该解释器里要装有 pytest）。在 Django 项目中，`TestCase` 测试也可以用 `manage.py test` 运行。pytest 和 Django unittest 运行器的结果显示在测试树中，**重新运行失败的测试** 只重跑失败的用例。
+
+也可以在 **运行 › 编辑配置…** 中新建 **pytest** 和 **Django 测试** 配置。详见[运行配置](/zh/guide/run)和[测试](/zh/guide/testing)。
+
+| 操作           | macOS | Windows / Linux  |
+| -------------- | ----- | ---------------- |
+| 运行上下文配置 | `⌃⇧R` | `Ctrl+Shift+F10` |
+| 调试上下文配置 | `⌃⇧D` | 无               |
+
+**使用覆盖率运行** 使用项目解释器中的 coverage.py，**性能分析** 使用 py-spy。缺少时 IDE 会提示，并给出安装命令（例如 uv 项目中的 `uv add --dev coverage`）。详见[覆盖率](/zh/guide/coverage)和[性能分析](/zh/guide/profiler)。
+
+Jupyter Notebook（`.ipynb`）在 Python 解释器上运行，见 [Notebook](/zh/guide/notebook)。
+
+## 调试
+
+Python 调试使用 debugpy。开始调试时如果缺少 debugpy，OpenIDEA 会提示安装。IDE 在自己的工具文件夹里保存一份 debugpy，并把它加载到运行程序的解释器中，所以项目环境里不需要安装 debugpy。
+
+- 可以调试脚本、`python -m` 模块，以及 `pytest`、`uvicorn` 这类命令行入口。通过 `uv run`、`poetry run`、`pdm run`、`pipenv run`、`hatch run` 或 `rye run` 启动的程序会在对应管理器的环境中运行。
+- 调试 `manage.py` 时会开启 debugpy 的 Django 支持。
+- **附加到进程…**（`⌥⇧F5` / `Ctrl+Alt+F5`）会在 **Python (debugpy)** 分组下列出本机的 Python 进程。
+- **Python 远程调试 (debugpy)** 配置可以附加到用 `python -m debugpy --listen` 启动的进程，本机或远程机器都可以，并支持本地与远程根目录映射。
+
+相关选项：
+
+- **设置 › 构建、执行、部署 › Python 调试器**：**调试时自动附加到子进程** 和 **兼容 Gevent**。
+- **设置 › 构建、执行、部署 › 调试器 › 单步执行**：**不要步入库脚本**（即 debugpy 的 `justMyCode`）。
+
+断点、单步和调试工具窗口的用法见[调试](/zh/guide/debugging)。
+
+## 框架支持
+
+目前只有 Django 有专门支持：`manage.py runserver` 和 `manage.py test` 运行配置、**Django 测试** 配置类型（目标、settings 模块、选项）、在左侧栏运行单个 `TestCase` 测试，以及调试器的 Django 模式。Flask、FastAPI 等其他框架按普通脚本或命令行入口运行。
+
+## 限制
+
+- 同一时间只运行一个类型检查器。Ruff 只在有 Ruff 配置的项目中运行。
+- 代码智能和诊断都来自语言服务器，IDE 自身不做 Python 分析。
+- 覆盖率和性能分析需要你的环境中装有 coverage.py 和 py-spy，IDE 不自带这两个工具。
+- 左侧栏的运行图标基于逐行扫描，不常见的测试写法可能没有图标，但仍可以通过 pytest 配置运行。

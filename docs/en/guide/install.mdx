@@ -1,0 +1,102 @@
+---
+title: "Install"
+description: "Download and install OpenIDEA on macOS, Windows or Linux, and keep it up to date."
+---
+
+Every release on the [GitHub releases page](https://github.com/l0ng-ai/openidea/releases/latest) has builds for macOS, Windows and Linux, each for x64 and arm64. Releases are also mirrored to [CNB](https://cnb.cool/l0ng-ai/openidea/-/releases), which is usually faster from mainland China.
+
+In the file names below, `<version>` is the release version, for example `0.1.40`.
+
+## macOS
+
+macOS 11 or later.
+
+| Mac           | File                             |
+| ------------- | -------------------------------- |
+| Apple silicon | `OpenIDEA_<version>_aarch64.dmg` |
+| Intel         | `OpenIDEA_<version>_x64.dmg`     |
+
+<Steps>
+  <Step title="Open the disk image">Double-click the `.dmg` file.</Step>
+  <Step title="Copy the app">Drag **OpenIDEA** into **Applications**.</Step>
+  <Step title="Start OpenIDEA">
+    Open it from Applications or Launchpad. Release builds are signed and notarized, so macOS opens them without extra
+    steps.
+  </Step>
+</Steps>
+
+<Tip>
+  Move OpenIDEA to Applications before you install the `openidea` shell command: the command links into the app bundle,
+  so it must stay where it is. See [Command line](/en/reference/cli).
+</Tip>
+
+## Windows
+
+Three packages per architecture (`x64` or `arm64`):
+
+| Package       | File                                          | Notes                                                                                   |
+| ------------- | --------------------------------------------- | --------------------------------------------------------------------------------------- |
+| Setup program | `OpenIDEA_<version>_x64-setup.exe`            | Installs for the current user or for all users.                                         |
+| MSI           | `OpenIDEA_<version>_x64_en-US.msi`            | For managed or scripted installs.                                                       |
+| Portable zip  | `OpenIDEA_<version>_windows_x64_portable.zip` | No installer: unpack and run `openidea.exe`. A `.sha256` checksum file sits next to it. |
+
+OpenIDEA uses the Microsoft Edge WebView2 runtime, which Windows 10 and 11 include. The setup program installs it if it is missing.
+
+<Warning>
+  The Windows packages are not code-signed yet, so Microsoft Defender SmartScreen may warn about an unknown publisher
+  the first time you run one. Choose **More info**, then **Run anyway**.
+</Warning>
+
+## Linux
+
+Three packages per architecture:
+
+| Package                  | x64                                 | arm64                                 |
+| ------------------------ | ----------------------------------- | ------------------------------------- |
+| Debian / Ubuntu          | `OpenIDEA_<version>_amd64.deb`      | `OpenIDEA_<version>_arm64.deb`        |
+| Fedora / RHEL / openSUSE | `OpenIDEA-<version>-1.x86_64.rpm`   | `OpenIDEA-<version>-1.aarch64.rpm`    |
+| AppImage                 | `OpenIDEA_<version>_amd64.AppImage` | `OpenIDEA_<version>_aarch64.AppImage` |
+
+<CodeGroup>
+
+```sh Debian / Ubuntu
+sudo apt install ./OpenIDEA_<version>_amd64.deb
+```
+
+```sh Fedora / RHEL
+sudo dnf install ./OpenIDEA-<version>-1.x86_64.rpm
+```
+
+```sh AppImage
+chmod +x OpenIDEA_<version>_amd64.AppImage
+./OpenIDEA_<version>_amd64.AppImage
+```
+
+</CodeGroup>
+
+The app needs WebKitGTK 4.1; the `.deb` and `.rpm` packages pull it in as a dependency.
+
+<Note>
+  Keep an AppImage in a permanent location. The `openidea` shell command points at the AppImage file, so after moving
+  it, install the command again.
+</Note>
+
+## Updates
+
+OpenIDEA checks for a new version at startup and every 4 hours while it runs, and shows a notification when one is available. Choose **Install and Restart** in the notification: OpenIDEA downloads the update in the background, installs it and restarts. If a window has unsaved changes and cancels the restart, the update applies the next time you start OpenIDEA. You can also check by hand:
+
+- macOS: **OpenIDEA › Check for Updates…**
+- Windows and Linux: **Help › Check for Updates…**
+
+Configure updates in **Settings › Appearance & Behavior › System Settings › Updates**:
+
+- **Check for updates automatically**: turn off the background checks. **Check Now** still works.
+- **Update source**: **GitHub**, **CNB (China mirror)**, or **Automatic**, which uses CNB when the IDE language is Chinese and GitHub otherwise. When the chosen source can't be reached, the other one is tried.
+
+To update a portable Windows copy, download the newer zip and replace `openidea.exe`.
+
+Updates go through the proxy set in **Settings › Appearance & Behavior › System Settings › HTTP Proxy**.
+
+## Build from source
+
+To build and run OpenIDEA from a checkout, see [Development setup](/en/contribute/setup).

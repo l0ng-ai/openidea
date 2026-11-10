@@ -1,0 +1,88 @@
+---
+title: "PHP"
+description: "Intelephense, PHP interpreters and language level, Composer, PHPUnit and Pest, PHPStan, Xdebug debugging and Laravel support."
+---
+
+OpenIDEA highlights PHP files (`.php`, `.phtml`, `.phpt` and older `.php3`–`.php5`, plus files starting with `<?php` or a `php` shebang) out of the box. Completion, navigation, refactoring and diagnostics come from Intelephense. Composer scripts and PHPUnit/Pest suites are detected as run configurations, and Xdebug sessions run through the PHP Debug adapter. See the [support matrix](/en/languages/index) for other languages.
+
+## Language servers
+
+| Server         | When it runs                                                                                                                          |
+| -------------- | ------------------------------------------------------------------------------------------------------------------------------------- |
+| `intelephense` | Default. Workspace root: `composer.json`, `.phpactor.json` or `index.php`.                                                            |
+| `phpactor`     | Fallback: used only while Intelephense is not installed.                                                                              |
+| `laravel-lsp`  | Laravel projects only (below an `artisan` file): hover, definition and completion inside `config('…')`, `route('…')` and `view('…')`. |
+
+Intelephense checks code against the project's PHP version (see [Language level](#language-level)) and indexes the stubs and include paths you configure.
+
+## Setup
+
+### Installing the tools
+
+When a `.php` file opens and Intelephense is missing, a notification offers **Install**. The IDE installs it with npm into its own tools folder (needs `npm` or `pnpm` on `PATH`). Everything is also listed in **Settings › Languages & Frameworks › Language Servers**.
+
+| Tool               | Installed with                                                         |
+| ------------------ | ---------------------------------------------------------------------- |
+| Intelephense       | npm (`intelephense`)                                                   |
+| Laravel LSP        | GitHub release (`laravel/lsp`)                                         |
+| PHP Debug (Xdebug) | Open VSX (`xdebug.php-debug`); needs Node.js to run                    |
+| phpactor           | Not installable from the IDE; install it yourself and put it on `PATH` |
+
+### PHP interpreter
+
+**Settings › Languages & Frameworks › PHP**, section **CLI Interpreter**:
+
+- **PHP interpreter**: the `php` that runs scripts, PHPUnit, Composer, `artisan` and PHP-based servers such as phpactor. **Default** uses `php` on `PATH`. Its folder is put first on `PATH`, so `vendor/bin/phpunit` and other `#!/usr/bin/env php` scripts use the same PHP. The list includes PHP found on `PATH` (also versioned binaries like `php8.3`), Homebrew, phpbrew, phpenv, Laravel Herd, and on Windows XAMPP and Laragon.
+- **Run in target**: run PHP and Composer commands locally or in a run target from **Settings › Build, Execution, Deployment › Run Targets**.
+- The page shows the selected PHP's version and the loaded Xdebug version (or **Not installed**).
+
+### Language level
+
+**PHP language level** on the same page sets the version Intelephense checks against (5.6 to 8.5); newer syntax and functions are reported. **Auto** uses `config.platform.php` from `composer.json`, else the lowest version `require.php` allows. The status bar shows the current level; click it to switch.
+
+Also on this page:
+
+- **Include paths**: folders outside the project that Intelephense indexes too, such as a platform your module extends.
+- **Additional stubs**: Intelephense stub sets on top of its defaults (for example `wordpress`). Each `ext-*` in `require` / `require-dev` of `composer.json` adds its own stubs automatically.
+
+### Composer
+
+In a Composer project without `vendor/`, or whose installed packages differ from `composer.lock`, a banner "Composer dependencies are not installed" appears above PHP files and `composer.json`, with **Install** (runs `composer install` on the configured PHP) and **Ignore**.
+
+## Static analysis and formatting
+
+- **PHPStan**: when the project has `vendor/bin/phpstan`, saved files are checked with it and its findings appear as diagnostics. The **PHPStan › Configuration file** setting picks the config; empty uses `phpstan.neon`, `phpstan.neon.dist` or `phpstan.dist.neon` in the project root.
+- **PHP-CS-Fixer**: when a folder above the file has `.php-cs-fixer.php` or `.php-cs-fixer.dist.php` and the project has `vendor/bin/php-cs-fixer`, **Reformat Code** (`⌥⌘L` / `Ctrl+Alt+L`) uses PHP-CS-Fixer instead of the language server.
+
+## Run and test
+
+Detected when the project has `composer.json` or a PHPUnit configuration:
+
+- `composer <script>` for each script in `composer.json` (Composer event hooks are skipped); a script named `test` is a test configuration.
+- **PHPUnit** (or **Pest**, when `vendor/bin/pest` exists) when there is `phpunit.xml`, `phpunit.xml.dist`, `phpunit.dist.xml`, a `phpunit/phpunit` or `pestphp/pest` dependency, or a runner in `vendor/bin`.
+- `artisan serve` in Laravel projects.
+
+The PHPUnit run configuration type has **Target**, **Configuration file**, **Test filter** and **PHPUnit options** fields.
+
+**Run Context Configuration** (`⌃⇧R` / `Ctrl+Shift+F10`) runs a `*Test.php` file through the PHPUnit configuration, and any other PHP file with the selected interpreter. In `*Test.php` files and files under `test/` or `tests/`, gutter icons run a single test class or method, or a Pest test. Results appear in the test tree with **Rerun Failed Tests**. See [Testing](/en/guide/testing).
+
+## Debugging
+
+Debugging uses PHP Debug (vscode-php-debug) with Xdebug. The selected PHP must load the Xdebug extension; the PHP settings page shows whether it does.
+
+- **Debug** works on PHP files, PHPUnit/Pest and `artisan serve`. The IDE turns on Xdebug for the session with `-d` options and a free port, so you don't need to edit `php.ini`, and another IDE listening on 9003 doesn't conflict.
+- **PHP Remote Debug (Xdebug)** is a run configuration type that listens for incoming Xdebug connections (default port 9003), for requests served elsewhere such as php-fpm or a container. Its **Start the remote side with** field shows the matching `php -dxdebug.mode=debug …` command; for web requests use the `XDEBUG_SESSION` cookie or query parameter. Set **Local root** and **Remote root** to map paths.
+
+See [Debugging](/en/guide/debugging).
+
+## Framework support
+
+- **Laravel**: Laravel LSP for `config()`, `route()` and `view()` strings, and an `artisan serve` configuration.
+- **WordPress** and similar platforms: add their stubs under **Additional stubs** and the platform folder under **Include paths**.
+
+## Limitations
+
+- No Blade or Twig template support; only `.php` files get PHP code insight.
+- phpactor is not installed by the IDE.
+- Run with Coverage is not available for PHPUnit.
+- Debugging needs the Xdebug extension in your PHP; the IDE does not install it.

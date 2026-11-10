@@ -1,0 +1,52 @@
+---
+title: "UI guidelines"
+description: "Rules for frontend UI code: design tokens, CSS Modules, icons, the UI primitives, accessibility and WebKit compatibility."
+---
+
+The visual style is dark, low-contrast greys and one cool accent. Consistency comes from a small set of rules that apply to every component.
+
+## Design tokens
+
+[`src/styles/tokens.css`](https://github.com/l0ng-ai/openidea/blob/main/src/styles/tokens.css) is the source of truth for colours and metrics (spacing, sizes, radii, font weights). `:root` holds the dark theme; `[data-theme="light"]` and `[data-theme="dark-hc"]` (high contrast) override it. Themes from plugins and colour-scheme settings set the same variables at runtime.
+
+- **Use only tokens in components.** No hex, `rgb()` or named colour literals in a component's CSS or inline styles: `color: var(--fg-muted)`, not `color: #8c8c8c`.
+- **Need a new colour or metric?** Add a token to `tokens.css` for every theme variant, with a name that says what it is for, not what it looks like.
+- **Tokens are part of the theme API.** The token reference in `plugins/themes.md` is generated from `tokens.css` (`pnpm gen:theme-docs`), and `scripts/theme/theme.test.ts` fails when it is stale. Run the generator after adding or renaming a token.
+
+## CSS Modules
+
+Style components with CSS Modules: `Thing.module.css` next to `Thing.tsx`, imported as `styles` and combined with `clsx`. `src/styles/global.css` is only for document-level rules. Don't add global class names from a feature.
+
+## Icons
+
+- Icons are inline SVG from [`src/ui/icons.tsx`](https://github.com/l0ng-ai/openidea/blob/main/src/ui/icons.tsx): `<Icon name="folder" />`, or the `icon` prop of `Button` and actions.
+- **Never use emoji** as icons or decoration, in the UI or in user-visible text.
+- An `Icon` without `label` is decorative and rendered `aria-hidden`. Give it a `label` when the icon alone carries meaning.
+- The SVGs live in `src/ui/expui/<group>/` (vendored new-UI icons, with `_dark` and `@20x20` variants) and `src/ui/openidea/<group>/` (the project's own, drawn in the same style), and are registered by name in `icons.tsx`. Names are the contract used by `Action.icon` and contributions. Add new icons there; don't inline ad-hoc SVG in a feature. Monochrome icons are drawn in `currentColor`, so they follow the theme.
+
+## UI primitives
+
+Build from the primitives in `src/ui/` before writing your own: `Button`, `BarButton`, `Input`, `Checkbox`, `Select`, `Dialog`, `Popup`, `Menu`, `Tooltip`, `List`, `Tree`, `Tabs`, `Splitter`, `Scrollbar`, `Spinner`, `Kbd`, and `T` for translated text. They already handle focus, keyboard navigation, theming and translation of their labels. Workbench-level pieces (tool windows, status items, overlays) come from [contributions](/en/contribute/architecture/frontend#contributions), not from custom layout.
+
+## Accessibility
+
+- Use real `<button>` and `<input>` elements (or the primitives that render them), never clickable `<div>`s.
+- Every icon-only button has an `aria-label`. `aria-label` is one of the props the text catalog translates, so write it in English like any other label.
+- Everything a user can do is an [action](/en/contribute/architecture/frontend#actions) with a stable id, so it is reachable from the keyboard and Find Action, not only by mouse.
+- Keep focus visible and predictable: dialogs and popups return focus to where it came from.
+
+## Text
+
+User-visible text is written in English at the call site and goes through the text catalog; Chinese is required for every string. See [Localization](/en/contribute/guidelines/i18n).
+
+## WebKit compatibility
+
+On macOS and Linux the app runs in WebKit, and the supported floor is Safari 16 (macOS 11 can update to it). `pnpm build` runs `scripts/check-webkit.ts` on the bundle, and `src/platform/webkitCompatibility.test.ts` checks application regexes. Avoid:
+
+- regex lookbehind (`(?<=…)`, `(?<!…)`), which needs Safari 16.4, and the regex `v` flag;
+- import attributes;
+- newer runtime APIs in startup code, such as `Promise.withResolvers`, `Object.groupBy`, `Map.groupBy`, `Array.fromAsync`, `String.prototype.isWellFormed`.
+
+## Verifying UI changes
+
+Run the app (`pnpm tauri dev`) and check the change in both the dark and light themes. PRs that change what users see need before/after screenshots, and multi-step interactions a recording; see [Contribution workflow](/en/contribute/workflow).

@@ -5,7 +5,7 @@ import clsx from "clsx";
 import { executeAction } from "@/platform/actions";
 import { call, commands, isTauri, type RunConfig, type RunImportSource } from "@/platform/ipc";
 import { letterOf } from "@/platform/keymap";
-import { Button, Dialog, Icon, IconButton, Input, T } from "@/ui";
+import { Button, Dialog, Icon, IconButton, Input, SplitGroup, SplitHandle, SplitPanel, T } from "@/ui";
 import {
   notifications,
   useRunConfigTypes,
@@ -385,6 +385,7 @@ function EditConfigsDialog() {
       title="Run/Debug Configurations"
       width={860}
       resizable="both"
+      minWidth={640}
       className={styles.editDialog}
       footerStart={
         <span className={styles.footerRun}>
@@ -416,286 +417,306 @@ function EditConfigsDialog() {
       ]}
     >
       <div className={styles.editBody} onKeyDown={onKeyDown}>
-        <div className={styles.editSidebar}>
-          {mode === "configs" ? (
-            <>
-              <div className={styles.editToolbar} role="toolbar" aria-label={tx("Configurations")}>
-                <IconButton
-                  ref={addRef}
-                  icon="plus"
-                  size="small"
-                  iconSize={14}
-                  title="Add New Configuration"
-                  onClick={() => openAdd()}
-                />
-                <IconButton
-                  icon="minus"
-                  size="small"
-                  iconSize={14}
-                  title={
-                    selection?.type === "folder"
-                      ? "Remove Folder"
-                      : current && !current.detected && !current.id.startsWith("user:")
-                        ? "Remove Override (restore detected)"
-                        : "Remove Configuration"
-                  }
-                  disabled={!canRemove}
-                  onClick={remove}
-                />
-                <IconButton
-                  icon="copy"
-                  size="small"
-                  iconSize={13}
-                  title="Copy Configuration"
-                  disabled={!current}
-                  onClick={duplicate}
-                />
-                <IconButton
-                  icon="folder"
-                  size="small"
-                  iconSize={13}
-                  title="Create New Folder"
-                  disabled={!current && selection?.type !== "folder"}
-                  onClick={newFolder}
-                />
-                <IconButton
-                  icon="arrow-up"
-                  size="small"
-                  iconSize={13}
-                  title="Move Up"
-                  disabled={!current}
-                  onClick={() => move(-1)}
-                />
-                <IconButton
-                  icon="arrow-down"
-                  size="small"
-                  iconSize={13}
-                  title="Move Down"
-                  disabled={!current}
-                  onClick={() => move(1)}
-                />
-              </div>
-              <div
-                className={styles.editList}
-                role="tree"
-                tabIndex={0}
-                aria-label={tx("Run configurations")}
-                onKeyDown={(e) => {
-                  if (e.key === "Delete" && !e.altKey && !e.ctrlKey && !e.metaKey && !e.shiftKey && canRemove) {
-                    e.preventDefault();
-                    e.stopPropagation();
-                    remove();
-                  }
-                }}
-              >
-                {rows.map((r) => {
-                  if (r.type === "group")
-                    return (
-                      <button
-                        key={r.key}
-                        type="button"
-                        role="treeitem"
-                        aria-expanded={!collapsed.has(r.key)}
-                        className={styles.editItem}
-                        style={{ paddingLeft: 6 }}
-                        onClick={() => toggle(r.key)}
-                        onDragOver={(e) => e.preventDefault()}
-                        onDrop={(e) => onDrop(e, r.kind, null)}
-                      >
-                        <Icon name={collapsed.has(r.key) ? "chevron-right" : "chevron-down"} size={12} />
-                        <Icon name={r.icon} size={13} className={styles.chooserIcon} />
-                        <span className={clsx(styles.chooserName, styles.editGroupName)}>
-                          <T>{r.label}</T>
-                        </span>
-                      </button>
-                    );
-                  if (r.type === "folder") {
-                    const sel = selection?.type === "folder" && selection.kind === r.kind && selection.name === r.name;
-                    return (
-                      <button
-                        key={r.key}
-                        type="button"
-                        role="treeitem"
-                        aria-selected={sel}
-                        aria-expanded={!collapsed.has(r.key)}
-                        className={clsx(styles.editItem, sel && styles.editItemSelected)}
-                        style={{ paddingLeft: 22 }}
-                        onClick={() => setSelection({ type: "folder", kind: r.kind, name: r.name })}
-                        onDoubleClick={() => toggle(r.key)}
-                        onDragOver={(e) => e.preventDefault()}
-                        onDrop={(e) => onDrop(e, r.kind, r.name)}
-                      >
-                        <Icon name={collapsed.has(r.key) ? "chevron-right" : "chevron-down"} size={12} />
-                        <Icon name="folder" size={13} className={styles.chooserIcon} />
-                        <span className={styles.chooserName}>{r.name}</span>
-                      </button>
-                    );
-                  }
-                  const c = r.config;
-                  const isTomcat = c.kind === "tomcat";
-                  const tomcatNoArtifact =
-                    isTomcat &&
-                    ((c.params?.deployment ?? "artifact") === "artifact"
-                      ? !c.params?.artifact
-                      : !c.params?.deploymentPath?.trim());
-                  return (
-                    <button
-                      key={r.key}
-                      type="button"
-                      role="treeitem"
-                      aria-selected={current?.id === c.id}
-                      className={clsx(styles.editItem, current?.id === c.id && styles.editItemSelected)}
-                      style={{ paddingLeft: r.depth === 2 ? 50 : 34 }}
-                      onClick={() => setSelection({ type: "config", id: c.id })}
-                      title={commandLine(c)}
-                      draggable
-                      onDragStart={(e) => {
-                        dragged.current = c.id;
-                        e.dataTransfer.effectAllowed = "move";
-                      }}
-                    >
-                      <span className={styles.tomcatTreeIconWrap}>
-                        <Icon
-                          name={configIcon(c)}
-                          size={13}
-                          className={clsx(styles.chooserIcon, temporary.includes(c.id) && styles.chooserTemporary)}
-                        />
-                        {tomcatNoArtifact && (
-                          <Icon name="close" size={9} className={styles.tomcatTreeErrorBadge} label="Invalid" />
-                        )}
-                      </span>
-                      <span className={styles.chooserName}>{c.name || <T>Unnamed</T>}</span>
-                      {c.target && <span className={styles.chooserMuted}>@ {targetName(c, runTargets)}</span>}
-                      {errorsById[c.id] && <Icon name="error" size={12} className={styles.failed} label="Invalid" />}
-                      {!c.detected && !isTomcat && (
-                        <span className={styles.chooserMuted}>{c.local ? "local" : "user"}</span>
-                      )}
-                    </button>
-                  );
-                })}
-                {draft.length === 0 && (
-                  <div className={styles.editEmpty}>
-                    <T>No run configurations added.</T>
-                    <span>
-                      <button type="button" className={styles.noticeLink} onClick={(e) => openAdd(e.currentTarget)}>
-                        <T>Add new…</T>
-                      </button>{" "}
-                      <span className={styles.chooserMuted}>{isMac() ? "⌘N" : "Alt+Insert"}</span>
-                    </span>
-                  </div>
-                )}
-              </div>
-              <button
-                type="button"
-                className={clsx(styles.noticeLink, styles.editFooterLink)}
-                onClick={() => {
-                  setMode("templates");
-                  const first = templateTypes[0];
-                  setSelection(first ? { type: "template", kind: first.id } : null);
-                }}
-              >
-                <T>Edit configuration templates…</T>
-              </button>
-              {importSources.map((source) => (
-                <button
-                  key={source}
-                  type="button"
-                  className={clsx(styles.noticeLink, styles.editFooterLink, styles.editImportLink)}
-                  disabled={importing}
-                  onClick={() => void runImport(source, draft)}
-                >
-                  {importLabel(source)}
-                </button>
-              ))}
-            </>
-          ) : (
-            <>
-              <div className={styles.editToolbar}>
-                <span className={styles.formSectionTitle}>
-                  <T>Templates</T>
-                </span>
-              </div>
-              <div className={styles.editList} role="listbox" aria-label={tx("Configuration templates")}>
-                {templateTypes.map((t) => {
-                  const sel = selection?.type === "template" && selection.kind === t.id;
-                  return (
-                    <button
-                      key={t.id}
-                      type="button"
-                      role="option"
-                      aria-selected={sel}
-                      className={clsx(styles.editItem, sel && styles.editItemSelected)}
-                      onClick={() => setSelection({ type: "template", kind: t.id })}
-                    >
-                      <Icon name={t.icon} size={13} className={styles.chooserIcon} />
-                      <span className={styles.chooserName}>{t.label}</span>
-                    </button>
-                  );
-                })}
-              </div>
-              <button
-                type="button"
-                className={clsx(styles.noticeLink, styles.editFooterLink)}
-                onClick={() => {
-                  setMode("configs");
-                  setSelection(draft[0] ? { type: "config", id: draft[0].id } : null);
-                }}
-              >
-                <T>Back to configurations</T>
-              </button>
-            </>
-          )}
-        </div>
-        <div
-          className={clsx(styles.editForm, mode === "configs" && current?.kind === "tomcat" && styles.editFormTomcat)}
+        <SplitGroup
+          id="run-configurations"
+          orientation="horizontal"
+          storageKey="openidea.run-configurations.layout"
+          className={styles.editSplit}
         >
-          {mode === "templates" ? (
-            currentTemplate ? (
+          <SplitPanel
+            id="run-config-navigation"
+            defaultSize="30%"
+            minSize="160px"
+            maxSize="45%"
+            className={styles.editSidebar}
+          >
+            {mode === "configs" ? (
               <>
-                <div className={styles.notice}>
-                  <T>New configurations of this type start with these values.</T>
+                <div className={styles.editToolbar} role="toolbar" aria-label={tx("Configurations")}>
+                  <IconButton
+                    ref={addRef}
+                    icon="plus"
+                    size="small"
+                    iconSize={14}
+                    title="Add New Configuration"
+                    onClick={() => openAdd()}
+                  />
+                  <IconButton
+                    icon="minus"
+                    size="small"
+                    iconSize={14}
+                    title={
+                      selection?.type === "folder"
+                        ? "Remove Folder"
+                        : current && !current.detected && !current.id.startsWith("user:")
+                          ? "Remove Override (restore detected)"
+                          : "Remove Configuration"
+                    }
+                    disabled={!canRemove}
+                    onClick={remove}
+                  />
+                  <IconButton
+                    icon="copy"
+                    size="small"
+                    iconSize={13}
+                    title="Copy Configuration"
+                    disabled={!current}
+                    onClick={duplicate}
+                  />
+                  <IconButton
+                    icon="folder"
+                    size="small"
+                    iconSize={13}
+                    title="Create New Folder"
+                    disabled={!current && selection?.type !== "folder"}
+                    onClick={newFolder}
+                  />
+                  <IconButton
+                    icon="arrow-up"
+                    size="small"
+                    iconSize={13}
+                    title="Move Up"
+                    disabled={!current}
+                    onClick={() => move(-1)}
+                  />
+                  <IconButton
+                    icon="arrow-down"
+                    size="small"
+                    iconSize={13}
+                    title="Move Down"
+                    disabled={!current}
+                    onClick={() => move(1)}
+                  />
                 </div>
-                <ConfigForm
-                  key={`template:${currentTemplate.kind}`}
-                  config={currentTemplate}
-                  all={draft}
-                  type={typeFor(currentTemplate.kind)}
-                  errors={{}}
-                  template
-                  modifyRequest={modifyRequest}
-                  onChange={updateTemplate}
-                />
+                <div
+                  className={styles.editList}
+                  role="tree"
+                  tabIndex={0}
+                  aria-label={tx("Run configurations")}
+                  onKeyDown={(e) => {
+                    if (e.key === "Delete" && !e.altKey && !e.ctrlKey && !e.metaKey && !e.shiftKey && canRemove) {
+                      e.preventDefault();
+                      e.stopPropagation();
+                      remove();
+                    }
+                  }}
+                >
+                  {rows.map((r) => {
+                    if (r.type === "group")
+                      return (
+                        <button
+                          key={r.key}
+                          type="button"
+                          role="treeitem"
+                          aria-expanded={!collapsed.has(r.key)}
+                          className={styles.editItem}
+                          style={{ paddingLeft: 6 }}
+                          onClick={() => toggle(r.key)}
+                          onDragOver={(e) => e.preventDefault()}
+                          onDrop={(e) => onDrop(e, r.kind, null)}
+                        >
+                          <Icon name={collapsed.has(r.key) ? "chevron-right" : "chevron-down"} size={12} />
+                          <Icon name={r.icon} size={13} className={styles.chooserIcon} />
+                          <span className={clsx(styles.chooserName, styles.editGroupName)}>
+                            <T>{r.label}</T>
+                          </span>
+                        </button>
+                      );
+                    if (r.type === "folder") {
+                      const sel =
+                        selection?.type === "folder" && selection.kind === r.kind && selection.name === r.name;
+                      return (
+                        <button
+                          key={r.key}
+                          type="button"
+                          role="treeitem"
+                          aria-selected={sel}
+                          aria-expanded={!collapsed.has(r.key)}
+                          className={clsx(styles.editItem, sel && styles.editItemSelected)}
+                          style={{ paddingLeft: 22 }}
+                          onClick={() => setSelection({ type: "folder", kind: r.kind, name: r.name })}
+                          onDoubleClick={() => toggle(r.key)}
+                          onDragOver={(e) => e.preventDefault()}
+                          onDrop={(e) => onDrop(e, r.kind, r.name)}
+                        >
+                          <Icon name={collapsed.has(r.key) ? "chevron-right" : "chevron-down"} size={12} />
+                          <Icon name="folder" size={13} className={styles.chooserIcon} />
+                          <span className={styles.chooserName}>{r.name}</span>
+                        </button>
+                      );
+                    }
+                    const c = r.config;
+                    const isTomcat = c.kind === "tomcat";
+                    const tomcatNoArtifact =
+                      isTomcat &&
+                      ((c.params?.deployment ?? "artifact") === "artifact"
+                        ? !c.params?.artifact
+                        : !c.params?.deploymentPath?.trim());
+                    return (
+                      <button
+                        key={r.key}
+                        type="button"
+                        role="treeitem"
+                        aria-selected={current?.id === c.id}
+                        className={clsx(styles.editItem, current?.id === c.id && styles.editItemSelected)}
+                        style={{ paddingLeft: r.depth === 2 ? 50 : 34 }}
+                        onClick={() => setSelection({ type: "config", id: c.id })}
+                        title={commandLine(c)}
+                        draggable
+                        onDragStart={(e) => {
+                          dragged.current = c.id;
+                          e.dataTransfer.effectAllowed = "move";
+                        }}
+                      >
+                        <span className={styles.tomcatTreeIconWrap}>
+                          <Icon
+                            name={configIcon(c)}
+                            size={13}
+                            className={clsx(styles.chooserIcon, temporary.includes(c.id) && styles.chooserTemporary)}
+                          />
+                          {tomcatNoArtifact && (
+                            <Icon name="close" size={9} className={styles.tomcatTreeErrorBadge} label="Invalid" />
+                          )}
+                        </span>
+                        <span className={styles.chooserName}>{c.name || <T>Unnamed</T>}</span>
+                        {c.target && <span className={styles.chooserMuted}>@ {targetName(c, runTargets)}</span>}
+                        {errorsById[c.id] && <Icon name="error" size={12} className={styles.failed} label="Invalid" />}
+                        {!c.detected && !isTomcat && (
+                          <span className={styles.chooserMuted}>{c.local ? "local" : "user"}</span>
+                        )}
+                      </button>
+                    );
+                  })}
+                  {draft.length === 0 && (
+                    <div className={styles.editEmpty}>
+                      <T>No run configurations added.</T>
+                      <span>
+                        <button type="button" className={styles.noticeLink} onClick={(e) => openAdd(e.currentTarget)}>
+                          <T>Add new…</T>
+                        </button>{" "}
+                        <span className={styles.chooserMuted}>{isMac() ? "⌘N" : "Alt+Insert"}</span>
+                      </span>
+                    </div>
+                  )}
+                </div>
+                <button
+                  type="button"
+                  className={clsx(styles.noticeLink, styles.editFooterLink)}
+                  onClick={() => {
+                    setMode("templates");
+                    const first = templateTypes[0];
+                    setSelection(first ? { type: "template", kind: first.id } : null);
+                  }}
+                >
+                  <T>Edit configuration templates…</T>
+                </button>
+                {importSources.map((source) => (
+                  <button
+                    key={source}
+                    type="button"
+                    className={clsx(styles.noticeLink, styles.editFooterLink, styles.editImportLink)}
+                    disabled={importing}
+                    onClick={() => void runImport(source, draft)}
+                  >
+                    {importLabel(source)}
+                  </button>
+                ))}
               </>
             ) : (
-              <div className={styles.editEmpty}>
-                <T>Select a configuration type</T>
-              </div>
-            )
-          ) : current ? (
-            <ConfigForm
-              key={current.id}
-              config={current}
-              all={draft}
-              type={typeFor(current.kind)}
-              errors={errors}
-              modifyRequest={modifyRequest}
-              onChange={replace}
-            />
-          ) : selection?.type === "folder" ? (
-            <FolderName
-              key={`${selection.kind}:${selection.name}`}
-              name={selection.name}
-              onRename={(to) => renameFolder(selection.kind, selection.name, to)}
-            />
-          ) : (
-            <div className={styles.editEmpty}>
-              <button type="button" className={styles.noticeLink} onClick={(e) => openAdd(e.currentTarget)}>
-                <T>Add new run configuration…</T>
-              </button>
-              <T>or select run configuration to edit</T>
+              <>
+                <div className={styles.editToolbar}>
+                  <span className={styles.formSectionTitle}>
+                    <T>Templates</T>
+                  </span>
+                </div>
+                <div className={styles.editList} role="listbox" aria-label={tx("Configuration templates")}>
+                  {templateTypes.map((t) => {
+                    const sel = selection?.type === "template" && selection.kind === t.id;
+                    return (
+                      <button
+                        key={t.id}
+                        type="button"
+                        role="option"
+                        aria-selected={sel}
+                        className={clsx(styles.editItem, sel && styles.editItemSelected)}
+                        onClick={() => setSelection({ type: "template", kind: t.id })}
+                      >
+                        <Icon name={t.icon} size={13} className={styles.chooserIcon} />
+                        <span className={styles.chooserName}>{t.label}</span>
+                      </button>
+                    );
+                  })}
+                </div>
+                <button
+                  type="button"
+                  className={clsx(styles.noticeLink, styles.editFooterLink)}
+                  onClick={() => {
+                    setMode("configs");
+                    setSelection(draft[0] ? { type: "config", id: draft[0].id } : null);
+                  }}
+                >
+                  <T>Back to configurations</T>
+                </button>
+              </>
+            )}
+          </SplitPanel>
+          <SplitHandle aria-label={tx("Run configurations")} />
+          <SplitPanel id="run-config-content" minSize="55%" className={styles.editDetails}>
+            <div
+              className={clsx(
+                styles.editForm,
+                mode === "configs" && current?.kind === "tomcat" && styles.editFormTomcat,
+              )}
+            >
+              {mode === "templates" ? (
+                currentTemplate ? (
+                  <>
+                    <div className={styles.notice}>
+                      <T>New configurations of this type start with these values.</T>
+                    </div>
+                    <ConfigForm
+                      key={`template:${currentTemplate.kind}`}
+                      config={currentTemplate}
+                      all={draft}
+                      type={typeFor(currentTemplate.kind)}
+                      errors={{}}
+                      template
+                      modifyRequest={modifyRequest}
+                      onChange={updateTemplate}
+                    />
+                  </>
+                ) : (
+                  <div className={styles.editEmpty}>
+                    <T>Select a configuration type</T>
+                  </div>
+                )
+              ) : current ? (
+                <ConfigForm
+                  key={current.id}
+                  config={current}
+                  all={draft}
+                  type={typeFor(current.kind)}
+                  errors={errors}
+                  modifyRequest={modifyRequest}
+                  onChange={replace}
+                />
+              ) : selection?.type === "folder" ? (
+                <FolderName
+                  key={`${selection.kind}:${selection.name}`}
+                  name={selection.name}
+                  onRename={(to) => renameFolder(selection.kind, selection.name, to)}
+                />
+              ) : (
+                <div className={styles.editEmpty}>
+                  <button type="button" className={styles.noticeLink} onClick={(e) => openAdd(e.currentTarget)}>
+                    <T>Add new run configuration…</T>
+                  </button>
+                  <T>or select run configuration to edit</T>
+                </div>
+              )}
             </div>
-          )}
-        </div>
+          </SplitPanel>
+        </SplitGroup>
       </div>
       {adding && <AddConfigPopup anchor={adding} onPick={add} onClose={() => setAdding(null)} />}
     </Dialog>

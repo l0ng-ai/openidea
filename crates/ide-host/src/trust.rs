@@ -420,6 +420,7 @@ pub fn projectless_command_allowed(cmd: &str) -> bool {
             | "plugin_set_enabled"
             | "plugin_grant"
             | "plugin_set_capability"
+            | "plugin_revoke_net_host"
             | "plugin_choose_program"
             | "plugin_program"
             | "plugin_roll_back"

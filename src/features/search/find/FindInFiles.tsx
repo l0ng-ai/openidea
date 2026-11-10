@@ -621,7 +621,9 @@ function FindInFilesDialog() {
         <header className={styles.header} data-dialog-drag="">
           <span className={styles.title}>{s.replace ? tx("Replace in Files") : tx("Find in Files")}</span>
           <span className={styles.status} aria-live="polite">
-            {stale || state.status === "searching" || state.status === "validating" ? <Spinner size={12} /> : null}
+            {stale || state.status === "searching" || state.status === "validating" ? (
+              <Spinner size={16} variant="spokes" />
+            ) : null}
             {summary}
           </span>
           <span className={styles.spacer} />

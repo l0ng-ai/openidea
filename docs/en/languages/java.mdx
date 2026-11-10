@@ -1,0 +1,145 @@
+---
+title: "Java and Kotlin"
+description: "How OpenIDEA provides code insight, builds, runs, tests and debugs Java and Kotlin projects with JDT LS, Kotlin LSP, Maven and Gradle."
+---
+
+Java code insight comes from the Eclipse JDT Language Server (jdtls), extended with bundles that ship with OpenIDEA. Kotlin uses JetBrains Kotlin LSP. Maven and Gradle projects are imported automatically, and run, test and debug work through the same run configurations for both languages. See the [support matrix](/en/languages/index) for how this compares with other languages.
+
+## Language servers
+
+| Language               | Server                                    | Fallback                                                | Debugger                                |
+| ---------------------- | ----------------------------------------- | ------------------------------------------------------- | --------------------------------------- |
+| Java                   | Eclipse JDT Language Server (`jdtls`)     | `kmp-lsp`                                               | Microsoft java-debug, loaded into jdtls |
+| Kotlin                 | Kotlin LSP (JetBrains, `kotlin-lsp`)      | Kotlin Language Server (fwcd, `kotlin-language-server`) | Kotlin Debug Adapter (fwcd)             |
+| Groovy, Gradle scripts | `groovy-language-server` (you provide it) |                                                         |                                         |
+| JSP                    | none (highlighting only)                  |                                                         |                                         |
+
+A fallback starts only while the server listed before it is not installed. To pick one explicitly, open **Settings › Languages & Frameworks › Language Servers**, select either server and use **Language server for Java** (or Kotlin): **Automatic** uses the first one available, **None** turns code insight off. The choice can be global or for the current project.
+
+`kmp-lsp` gives syntax-based Java code insight without running a JVM. It has no JDT compiler analysis, no Lombok support and none of the JDT refactorings. Building and running Java Application configurations, classpath discovery and the Java debugger need jdtls.
+
+### What ships with the IDE
+
+On top of plain jdtls, OpenIDEA loads its own extension bundles from the [`java/`](https://github.com/l0ng-ai/openidea/tree/main/java) folder of the repository:
+
+- **java-usages**: Find Usages that tells reads from writes and, for a field, includes its getters, setters and builders (Lombok ones too). Find Usages searches project sources first (**Project Files**) and searches dependency jars only when you ask for **Project and Libraries**.
+- **Spring configuration navigation**: see [Spring](#spring).
+- **kotlin-bridge**: in Maven projects that mix Java and Kotlin, Java code sees the Kotlin classes. See [Kotlin in Maven projects](#kotlin-in-maven-projects).
+- **Lombok**: a patched Lombok agent (1.18.48 with fixes for current JDT LS) is built into the app, so no download is needed.
+
+Library classes without sources open as decompiled `jdt://` documents. jdtls downloads Maven and Eclipse sources for dependencies when they are available.
+
+## Setup
+
+### Installing the servers
+
+When you open a Java or Kotlin file and its server is missing, a notification offers **Install**. You can also install, reinstall or uninstall each tool in **Settings › Languages & Frameworks › Language Servers**. Everything goes into the IDE's own tools folder and never needs administrator rights:
+
+| Tool                                 | Installed from                                              |
+| ------------------------------------ | ----------------------------------------------------------- |
+| Eclipse JDT Language Server          | The latest milestone from download.eclipse.org              |
+| Java Debugger (Microsoft java-debug) | The `vscjava.vscode-java-debug` extension on Open VSX       |
+| Lombok (jdtls agent)                 | Bundled with the app                                        |
+| Kotlin LSP (JetBrains)               | GitHub release of `Kotlin/kotlin-lsp`                       |
+| Kotlin Language Server (fwcd)        | GitHub release of `fwcd/kotlin-language-server`; needs Java |
+| Kotlin Debug Adapter                 | GitHub release of `fwcd/kotlin-debug-adapter`; needs Java   |
+| kmp-lsp                              | GitHub release of `Hessesian/kmp-lsp`                       |
+
+A `jdtls` already on your `PATH` (Homebrew, Scoop or a release archive) is used too. OpenIDEA starts it on the JVM directly instead of through its Python launcher script, so Python is not required. When you start a debug session without java-debug, the IDE offers to install it and restarts jdtls with the bundle.
+
+Groovy has no installer: build [groovy-language-server](https://github.com/GroovyLanguageServer/groovy-language-server) yourself and put it on `PATH` as `groovy-language-server`, or set its executable in **Language Servers**.
+
+### JDK detection
+
+OpenIDEA looks for installed JDKs in `JAVA_HOME`, the `java` on `PATH`, `/Library/Java/JavaVirtualMachines` (system and user), `/usr/lib/jvm`, Homebrew, SDKMAN, mise, asdf, `~/.jdks` and the usual vendor folders under `Program Files` on Windows. JDKs it downloaded are found as well. Use **Detect again** next to a JDK list to rescan.
+
+Two JDK settings live in **Settings › Languages & Frameworks › Java**:
+
+- **Project JDK › SDK**: compiles and runs the project. It is the default runtime of jdtls, the JDK for Run/Debug, and `JAVA_HOME` for Maven and Gradle. **Auto** picks, per module, an installed JDK matching the Java version the module targets.
+- **Language Server › JDK**: runs jdtls only, so a project on Java 8 or 17 can still use a current jdtls. **Auto** uses the project JDK when it is new enough, else the first installed JDK that is. If none is, Eclipse Temurin is downloaded automatically into a separate language-server runtime folder.
+
+jdtls needs JDK 21 or newer, and some jdtls releases need a newer one. OpenIDEA reads the requirement from the installed jdtls. Every detected JDK is also registered with jdtls as a runtime (`JavaSE-17`, `JavaSE-21`…), so a module that targets Java 17 compiles against JDK 17, not against the JDK jdtls runs on.
+
+**Language level** sets the Java source and bytecode level when no build file sets it. Every JDK list also has **Download JDK…**, which downloads Eclipse Temurin of the version you choose into the IDE's JDK folder. The same download is offered when jdtls, a run configuration or a Maven or Gradle sync has no JDK that is new enough.
+
+Kotlin Language Server (fwcd) runs on Java 21 at most. When `JAVA_HOME` points to a newer JDK, the IDE starts the server on the newest installed JDK that fits.
+
+### Memory and JVM options
+
+Each project window starts its own jdtls, with its own workspace and index. jdtls runs with these JVM options by default:
+
+```text
+-XX:+UseG1GC -XX:G1PeriodicGCInterval=60000 -XX:MinHeapFreeRatio=10 -XX:MaxHeapFreeRatio=30 -Xmx2G -Xms100m
+```
+
+G1 with a periodic collection hands memory back to the system once an import or build is over. To change the limits, enter options in **Settings › Languages & Frameworks › Java › Language Server › JVM options**, for example `-Xmx1g` or `-Xmx4g`. An option you set replaces the default for the same setting, and choosing another collector (such as `-XX:+UseZGC`) drops the default collector options. The setting can be global or per project.
+
+**Share JDT LS across builds** runs one jdtls for all linked builds inside a local project window, instead of one per build. Separate project windows still use separate processes.
+
+The jdtls workspace is kept in the IDE's data directory (`lsp/jdtls/`), not in your project. jdtls writes no `.project`, `.classpath` or `.settings` files into the project. See [Data directories and logs](/en/reference/data-directories).
+
+### Lombok
+
+When the project uses Lombok (in its build file, an inherited parent POM or Gradle build, or its imports), OpenIDEA adds a Lombok agent to jdtls. It uses the agent from **Language Servers**, which is the bundled one by default. If that agent is missing, the IDE falls back to the newest Lombok in your Maven or Gradle caches. A `-javaagent` you put in **JVM options** takes precedence. Your project's own Lombok dependency is not changed.
+
+## Build tools
+
+jdtls imports Maven and Gradle projects (including the Gradle wrapper) automatically. A folder without a build file is opened as a plain Java project, and jars under `lib/` are added to its classpath. OpenIDEA also shows **Maven** and **Gradle** tool windows for running goals and tasks, reloading, profiles and dependency analysis. Their settings are in **Settings › Build, Execution, Deployment › Maven** and **Gradle**:
+
+- Maven: **JRE**, **Maven home path** (default: the project's `mvnw`, else `mvn` on `PATH`), **User settings file**, **Toolchains file**, **Local repository**, **Active profiles**, **Thread count** and **Use Maven Daemon (mvnd)**. The profiles you choose in the Maven tool window are passed to jdtls too, so the editor sees the same profile-specific dependencies.
+- Gradle: **Build and run using** (Gradle or OpenIDEA), **Gradle JVM**, **Distribution** (wrapper or local installation), **Gradle home** and **Gradle user home**.
+
+The IDE passes its proxy settings to jdtls, so dependency resolution works behind a proxy. See [Build tools](/en/guide/build-tools) for the tool windows.
+
+### Kotlin in Maven projects
+
+In a Maven project with Kotlin sources, OpenIDEA builds the Kotlin code in the background after you save. It uses the project's own Maven configuration and writes to a private output folder. The compiled Kotlin classes are then added to jdtls as libraries, so Java code can call Kotlin code from the same or another module. Errors from this build appear in **Problems** under `kotlin-bridge`. The last good build stays in use until the next build succeeds. The bridge covers compiled Kotlin APIs only. Navigating from Java into Kotlin sources, analysis of unsaved Kotlin edits and cross-language refactoring are not part of it.
+
+## Run and test
+
+| What                              | How it runs                                                                                                              |
+| --------------------------------- | ------------------------------------------------------------------------------------------------------------------------ |
+| `main` method                     | **Application** configuration on the module's runtime or test classpath. Java 25 instance `main` methods are recognized. |
+| `@SpringBootApplication` class    | **Spring Boot** configuration, with active profiles and update actions                                                   |
+| Executable jar                    | **JAR Application** configuration                                                                                        |
+| WAR                               | **Tomcat Server** configuration on a local Tomcat installation (the IDE never writes into it)                            |
+| JUnit 4, JUnit 5 and TestNG tests | Maven (Surefire `-Dtest=…`) or Gradle (`--tests …`) test configurations                                                  |
+
+Gutter icons on main methods, test classes and test methods create these configurations, and Maven and Gradle run configurations are detected from the build files. For Gradle, **Build and run using** decides whether an Application runs as a Gradle `JavaExec` task (the default) or is launched by OpenIDEA on the classpath reported by jdtls.
+
+Test results are read from the JUnit XML reports Maven and Gradle write, so passed tests are listed as well. The test tree supports rerunning failed tests. VM options of a Gradle run configuration are applied to the JVMs Gradle forks (`run`, `bootRun`, `test`). When a classpath is too long for the command line (common on Windows), it is moved into an argument file or a manifest-only jar.
+
+See [Run configurations](/en/guide/run) and [Testing](/en/guide/testing).
+
+## Debugging
+
+Java debugging uses Microsoft java-debug inside jdtls, and Kotlin debugging uses Kotlin Debug Adapter. You can debug:
+
+- Application, Spring Boot, JAR Application and Tomcat Server configurations.
+- Maven and Gradle configurations that start a JVM (tests, `spring-boot:run`, `bootRun`, `run`): the IDE adds a JDWP agent and attaches when the JVM is ready, while output and the test tree stay in the Run tool window.
+- Any process started elsewhere, with a **Remote JVM Debug** configuration.
+
+**Run › Debugging Actions › Reload Changed Classes** (HotSwap) compiles your edits and reloads them into the running session. Spring Boot and Tomcat configurations also offer **Run › Update Application** (`⌘F10` / `Ctrl+F10`) with the **On 'Update' action** choices.
+
+See [Debugging](/en/guide/debugging).
+
+## Frameworks
+
+### Spring
+
+- **Spring Boot run configurations** are created from `@SpringBootApplication` classes, and they are listed in the **Services** tool window by default.
+- **Configuration navigation**: Go to Definition on a key in `application.yml` or `.properties` opens the Java members bound to it (`@ConfigurationProperties`, `@Value`, `Environment.getProperty`). It also works the other way, from `${…}` placeholders in Java, YAML, properties or Spring XML. Keys described by `spring-configuration-metadata.json` in dependencies resolve to their source classes. **Find Usages** on a key lists configuration declarations and Java usages together.
+- **Spring Web endpoints**: request mappings in Java and Kotlin controllers get a gutter icon, plus **Generate Request in HTTP Client** and **Generate Requests for Controller** actions that write requests to a scratch `.http` file. Search Everywhere matches request paths in its **All** tab. See [HTTP Client](/en/guide/http-client).
+- **Facets** in **Project Structure** (`⌘;` / `Ctrl+Alt+Shift+S`) record the frameworks a module uses (Web, Spring, JPA). A Web facet also adds its `WEB-INF/lib/*.jar` to the jdtls classpath.
+
+### MyBatis
+
+Navigation between MyBatis mapper interfaces and their XML statements is available from the MyBatis Navigator plugin ([`plugins/official/mybatis`](https://github.com/l0ng-ai/openidea/tree/main/plugins/official/mybatis)). It is not part of the IDE itself.
+
+## Limitations
+
+- One jdtls runs per project window. With several large projects open at once, memory adds up. Lower `-Xmx` in **JVM options** or close windows you are not using. **Share JDT LS across builds** helps only within one window.
+- Without jdtls (for example with `kmp-lsp` only), Application configurations, classpath-based features and Java debugging are not available.
+- Java tests run through Maven or Gradle. A project without either build tool has no test runner.
+- The Kotlin bridge is Maven only and exposes compiled Kotlin classes to Java. It does not give Java-to-Kotlin source navigation or refactoring.
+- Groovy needs a `groovy-language-server` you build yourself, and JSP has syntax highlighting only.

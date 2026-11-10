@@ -21,15 +21,6 @@ fn selector(plugin: &str, id: &str) -> String {
     format!("plugin-target:{}:{plugin}{id}", plugin.len())
 }
 impl Shared {
-    fn targets_changed(&self) {
-        if let Some(host) = self.workspace().and_then(|w| w.database_host()) {
-            for project in host.projects() {
-                project.lsp.reconfigure_soon();
-            }
-        }
-        self.sink.emit(None, PluginEvent::RunTargetsChanged);
-    }
-
     fn target_answer_file(&self, root: &Path, id: &str) -> PathBuf {
         let key = format!("{}\0{id}", root.display());
         self.data_dir.join(".run-target-answers").join(blake3::hash(key.as_bytes()).to_hex().as_str())
@@ -40,7 +31,7 @@ impl Shared {
         targets.retain(|(r, _), t| !(plugin.is_none_or(|p| p == t.plugin_id) && root.is_none_or(|path| path == r)));
         if before != targets.len() {
             drop(targets);
-            self.targets_changed();
+            self.sink.emit(None, PluginEvent::RunTargetsChanged);
         }
     }
 }
@@ -79,12 +70,12 @@ impl PluginApi {
         );
         drop(targets);
         drop(blocked);
-        self.shared.targets_changed();
+        self.shared.sink.emit(None, PluginEvent::RunTargetsChanged);
         Ok(())
     }
     pub(super) fn unregister_target(&self, root: &Path, id: &str) {
         if self.shared.run_targets.lock().remove(&(root.into(), selector(self.pkg.id(), id))).is_some() {
-            self.shared.targets_changed();
+            self.shared.sink.emit(None, PluginEvent::RunTargetsChanged);
         }
     }
 }
@@ -96,15 +87,6 @@ impl PluginHost {
     pub fn run_targets(&self, root: &Path) -> Vec<RegisteredRunTarget> {
         self.shared.run_targets.lock().iter().filter(|((r, _), _)| r == root).map(|(_, t)| t.clone()).collect()
     }
-    pub fn prepare_run_target(
-        &self,
-        root: &Path,
-        id: &str,
-        config: &ide_run::RunConfig,
-    ) -> IdeResult<ide_run::RunConfig> {
-        self.prepare_target(root, id, config, None)
-    }
-
     /// Prepares a user launch, including the optional plugin validation gate.
     pub fn prepare_run_target_launch(
         &self,
@@ -113,16 +95,6 @@ impl PluginHost {
         config: &ide_run::RunConfig,
         operation: ide_plugin::RunTargetOperation,
         cancel: &ide_core::CancellationToken,
-    ) -> IdeResult<ide_run::RunConfig> {
-        self.prepare_target(root, id, config, Some((operation, cancel)))
-    }
-
-    fn prepare_target(
-        &self,
-        root: &Path,
-        id: &str,
-        config: &ide_run::RunConfig,
-        launch: Option<(ide_plugin::RunTargetOperation, &ide_core::CancellationToken)>,
     ) -> IdeResult<ide_run::RunConfig> {
         if !self.shared.workspace().is_some_and(|w| w.trusted(root)) {
             return Err(IdeError::new(ide_core::error::ErrorKind::PermissionDenied, "project is not trusted"));
@@ -136,10 +108,7 @@ impl PluginHost {
             .ok_or_else(|| IdeError::not_found("plugin run target is no longer available"))?;
         let program = self.program_for_project(&target.plugin_id, &target.target.program, Some(root))?;
         let wrapped = ide_remote::plugin_target::prepare(root, &target.target, &program, config)?;
-        let validates = self.get(&target.plugin_id)?.meta.lock().has_run_target_validation;
-        if let Some((operation, cancel)) = launch
-            && validates
-        {
+        if self.get(&target.plugin_id)?.meta.lock().has_run_target_validation {
             if cancel.is_cancelled() {
                 return Err(IdeError::cancelled());
             }

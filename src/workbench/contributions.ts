@@ -58,6 +58,8 @@ export interface ToolWindowContribution {
    * present the header title also gets a "▾" opening just these items.
    */
   headerMenu?: MenuItem[] | ((id: string) => MenuItem[]);
+  /** `headerMenu` stays in "⋮" only: the title gets no "▾". */
+  plainTitle?: boolean;
   /**
    * The title as a view switcher (IDEA's "Project ▾" panes): a React hook
    * returning the current view's label and the items the title opens instead
@@ -117,6 +119,8 @@ export interface EditorKindContribution {
   component: ComponentType<{ input: EditorInput }>;
   title: (input: EditorInput) => string;
   icon?: (input: EditorInput) => string;
+  /** Small marker rendered in the tab's trailing slot (a status dot for live state). */
+  trailing?: (input: EditorInput) => ReactNode;
   /**
    * Its tabs are saved with the editor session and reopened with the project (their
    * `data` must be plain JSON). The editor closes tabs whose target is gone itself.

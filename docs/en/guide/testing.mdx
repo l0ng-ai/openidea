@@ -1,0 +1,77 @@
+---
+title: "Testing"
+description: "Run tests from the gutter, read results in the test tree, rerun failed tests and jump between code and tests."
+---
+
+OpenIDEA runs tests with the project's own test tool (Cargo, Jest, pytest, Maven, Gradle, `go test`, `dotnet test`…) and reads its output into a test tree. There is nothing to install beyond what the project already uses.
+
+## Run tests
+
+<Steps>
+  <Step title="From the gutter">
+    Click the ▶ icon next to a test, a test class or a test module and choose **Run '…'** or **Debug '…'**. After a run,
+    the icon turns green or red to show that test's last result.
+  </Step>
+  <Step title="From the caret">
+    **Run › Run Context Configuration** (`⌃⇧R` / `Ctrl+Shift+F10`) runs the test at the caret, or all tests in the
+    current file.
+  </Step>
+  <Step title="A whole directory">
+    Right-click a test directory in the Project view and choose **Run '…'** to run the tests inside it.
+  </Step>
+  <Step title="Everything">
+    Run a detected test configuration such as `cargo test`, `go test ./...`, `pytest` or the `test` script of
+    `package.json` from the run widget.
+  </Step>
+</Steps>
+
+Running a single test creates a temporary run configuration based on the project's detected test configuration (for example the `test` script for Jest, or the Maven / Gradle build for JUnit). See [Run configurations](/en/guide/run) to save it or change its options.
+
+## Supported test frameworks
+
+| Language                    | Gutter icons on                                                                               | Runs with                                                      |
+| --------------------------- | --------------------------------------------------------------------------------------------- | -------------------------------------------------------------- |
+| Rust                        | `#[test]` functions, `mod tests`                                                              | `cargo test`, `cargo nextest`                                  |
+| JavaScript / TypeScript     | `test`, `it`, `describe`, `suite`, `context` (also `.each`, `.only`, `.skip`)                 | Jest or Vitest through the project's test script; Deno and Bun |
+| Python                      | pytest `def test_*` and `class Test*`, unittest `TestCase` subclasses                         | pytest, Django `manage.py test`                                |
+| Go                          | `func TestX(t *testing.T)`, benchmarks                                                        | `go test`                                                      |
+| Java, Kotlin, Scala, Groovy | JUnit `@Test`, `@ParameterizedTest`, `@RepeatedTest`, `@TestFactory`, `@TestTemplate`; TestNG | Maven Surefire (`-Dtest=`) or Gradle (`--tests`)               |
+| PHP                         | PHPUnit test classes and methods, Pest `test` / `it` / `describe`                             | PHPUnit, Pest                                                  |
+| Ruby                        | Minitest and Test::Unit classes, modules that hold them, `def test_*`                         | Minitest through `ruby` or `rake test`                         |
+| C#                          | xUnit `[Fact]` / `[Theory]`, NUnit `[Test]` / `[TestCase]`, MSTest `[TestMethod]`             | `dotnet test` (VSTest or Microsoft.Testing.Platform)           |
+
+RSpec has its own configuration type (**RSpec**) and a detected `rspec` configuration, but no gutter icons. Plugins can add test frameworks and report their results to the same test tree.
+
+<Note>
+  For .NET projects that use Microsoft.Testing.Platform, run **Install TRX reporting** from the .NET tool window so
+  results show in the test tree. See [Build tools](/en/guide/build-tools).
+</Note>
+
+## The test results view
+
+A test run opens a tab in the **Run** tool window with the test tree next to the console. Failed suites expand automatically.
+
+- Click a test to see its own output in the console.
+- Double-click, `Enter` or `F4` jumps to the test's source (**Jump to Source**).
+- **Show Passed** and **Show Ignored** filter the tree. Passed tests are hidden by default; the filters are remembered.
+- Right-click a test or a selection for **Run '…'**, **Debug '…'** and **Jump to Source**.
+- For an assertion failure with expected and actual values, **Show Diff** opens them side by side.
+
+Detected test configurations show results in the tree automatically. For your own configuration, turn on **Modify options › Show results in the test runner**.
+
+## Rerun tests
+
+| Action                             | macOS | Windows / Linux |
+| ---------------------------------- | ----- | --------------- |
+| **Rerun** (in the Run tool window) | `⌘R`  | `Ctrl+F5`       |
+| **Rerun Failed Tests**             | —     | —               |
+
+**Rerun Failed Tests** (in the Run tool window toolbar and Find Action) runs only the tests that failed in the last run, using each tool's filter syntax. It works for Cargo, Jest / Vitest, pytest, Django, PHPUnit, Go, Maven / Gradle and .NET runs, and for plugin test frameworks.
+
+## Navigate between code and tests
+
+**Navigate › Test** (`⌘⇧T` / `Ctrl+Shift+T`) jumps from a class to its tests and back, using common naming conventions (`FooTest`, `test_foo.py`, `foo.test.ts`…) and the project's source and test roots. With several matches it shows a chooser. With none, **Create New Test…** creates one from the file templates.
+
+## Coverage
+
+To see which lines the tests execute, run them with coverage. See [Coverage](/en/guide/coverage).

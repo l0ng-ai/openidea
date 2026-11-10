@@ -97,7 +97,7 @@ async function prepare(config: RunConfig): Promise<ExecutorLaunch | null> {
 
 export const profilerExecutor: RunExecutorContribution = {
   id: "profiler",
-  label: (name) => `Profile '${name}'`,
+  label: (name) => tx`Profile '${name}'`,
   icon: "profile",
   action: "run.profile",
   order: 20,

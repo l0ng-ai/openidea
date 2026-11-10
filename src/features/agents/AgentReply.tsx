@@ -93,7 +93,7 @@ export function ReplyActions({
       {task && reply && operations.fork && (
         <IconButton
           icon="branch"
-          title="Branch Conversation from Here"
+          title="Fork"
           size="small"
           action="agents.forkReply"
           actionArg={{ task: task.id, turn: reply.turn }}

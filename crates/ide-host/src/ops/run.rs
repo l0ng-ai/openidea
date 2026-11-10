@@ -280,14 +280,11 @@ async fn start_inner(
             let token = cancel.clone();
             let config = host
                 .blocking(move || {
-                    let operation =
-                        if config.extras.params.get("plugin.targetOperation").is_some_and(|op| op == "debug") {
-                            ide_plugin::RunTargetOperation::Debug
-                        } else if config.is_test {
-                            ide_plugin::RunTargetOperation::Test
-                        } else {
-                            ide_plugin::RunTargetOperation::Run
-                        };
+                    let operation = if config.is_test {
+                        ide_plugin::RunTargetOperation::Test
+                    } else {
+                        ide_plugin::RunTargetOperation::Run
+                    };
                     plugins.prepare_run_target_launch(&root, &id, &config, operation, &token)
                 })
                 .await?;
