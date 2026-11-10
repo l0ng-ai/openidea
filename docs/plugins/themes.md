@@ -1,6 +1,6 @@
 # Theme plugins
 
-OpenIDEA ships seven [built-in themes](../themes.md): Islands Light, Islands Dark,
+OpenIDEA ships seven built-in themes: Islands Light, Islands Dark,
 High Contrast, Solarized Light, Solarized Dark, One Light and One Dark. Additional
 themes come from **theme plugins**, the same model as
 IntelliJ IDEA, where most themes are plugins rather than part of the IDE.

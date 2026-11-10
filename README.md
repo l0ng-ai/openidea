@@ -64,7 +64,7 @@ the [official plugins](plugins/official). The plugin API is still a preview.
 - [Discord](https://discord.gg/2Zy4yn7gP) — questions, feedback and release news.
 - WeChat group — scan to join:
 
-  <img src="docs/assets/wechat-group.png" alt="WeChat group QR code" width="200">
+  <img src=".github/assets/wechat-group.png" alt="WeChat group QR code" width="200">
 
 ### Contributors
 
