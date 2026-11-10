@@ -66,6 +66,7 @@ const ADAPTERS: ReadonlyArray<{ id: string; label: string }> = [
   { id: "delve", label: "Delve (Go)" },
   { id: "codelldb", label: "CodeLLDB (Rust, C, C++)" },
   { id: "lldb-dap", label: "lldb-dap (C, C++, Swift)" },
+  { id: "gdb", label: "GDB (C, C++)" },
   { id: "php-debug", label: "php-debug (PHP)" },
   { id: "rdbg", label: "rdbg (Ruby)" },
   { id: "bun-dap", label: "bun-dap (Bun)" },
@@ -376,7 +377,7 @@ export function ConfigForm({ config, all, type, errors, template, onChange, modi
 
   const adapterOptions: SelectOption[] = [
     { value: "", label: "None" },
-    ...ADAPTERS.map((a) => ({ value: a.id, label: a.label })),
+    ...ADAPTERS.map((a) => ({ value: a.id, label: tx(a.label) })),
   ];
   if (config.debugAdapter && !ADAPTERS.some((a) => a.id === config.debugAdapter))
     adapterOptions.push({

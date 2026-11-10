@@ -1108,6 +1108,8 @@ export const commands = {
 	pluginGrant: (id: string, consent: Consent) => typedError<PluginInfo, IdeError>(__TAURI_INVOKE("plugin_grant", { id, consent })),
 	/**  Grants or revokes one declared capability. */
 	pluginSetCapability: (id: string, capability: string, granted: boolean) => typedError<PluginInfo, IdeError>(__TAURI_INVOKE("plugin_set_capability", { id, capability, granted })),
+	/**  Revokes one host remembered through net:ask. */
+	pluginRevokeNetHost: (id: string, host: string) => typedError<PluginInfo, IdeError>(__TAURI_INVOKE("plugin_revoke_net_host", { id, host })),
 	/**  Links a development plugin folder (`openidea-plugin link` does the same from a terminal). */
 	pluginLink: (path: string) => typedError<PluginInfo, IdeError>(__TAURI_INVOKE("plugin_link", { path })),
 	pluginUnlink: (id: string) => typedError<null, IdeError>(__TAURI_INVOKE("plugin_unlink", { id })),
@@ -2771,6 +2773,8 @@ export type CompletionSettings = {
 	parameterInfoDelay?: number,
 };
 
+export type ComposeFileOverride = "kept" | "excluded";
+
 export type ComposeOp = "start" | "stop" | "restart" | 
 /**  Stops and removes the project's containers and networks. */
 "down";
@@ -4307,6 +4311,8 @@ export type FileSettings = {
 	fileTypes?: { [key in string]: FileTypeAssociation },
 	/**  Override File Type: file (project-relative and `/`-separated, or absolute) → language id. */
 	fileTypeOverrides?: { [key in string]: string },
+	/**  Compose detection choices, keyed by project-relative file path. */
+	composeFileOverrides?: { [key in string]: ComposeFileOverride },
 };
 
 export type FileStamp = {
@@ -6689,6 +6695,11 @@ export type PluginInfo = {
 	hasCode: boolean,
 	/**  Declared capabilities with risk and grant state. */
 	capabilities: CapabilityInfo[],
+	/**
+	 *  HTTPS hosts the user allowed through `net:ask` ("always allow"),
+	 *  none of them declared by the manifest; each can be revoked.
+	 */
+	netHosts: string[],
 	/**  What it contributes while live (point + label). */
 	contributions: ContributionInfo[],
 	/**  `activation` events of the manifest. */
@@ -7108,7 +7119,12 @@ export type ProjectStructureSettings = {
  *  What a plugin asks the user (`ui.pick`, `ui.pick-many`, `ui.input`,
  *  `ui.input-multiline`, `ui.confirm`).
  */
-export type Prompt = { kind: "quickPick"; title: string; items: PickItem[]; multiple: boolean } | { kind: "input"; prompt: string; value: string | null; multiline: boolean } | { kind: "confirm"; title: string; message: string } | { kind: "pickDirectory"; title: string; initial: string | null };
+export type Prompt = { kind: "quickPick"; title: string; items: PickItem[]; multiple: boolean } | { kind: "input"; prompt: string; value: string | null; multiline: boolean } | { kind: "confirm"; title: string; message: string } | { kind: "pickDirectory"; title: string; initial: string | null } | 
+/**
+ *  The host's own question under `net:ask` (never plugin-initiated): the
+ *  plugin reached an HTTPS host its manifest does not list.
+ */
+{ kind: "netPermission"; host: string; sessionOnly: boolean };
 
 export type ProxyKind = "http" | "socks";
 

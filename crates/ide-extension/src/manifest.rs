@@ -338,6 +338,9 @@ impl Manifest {
             if matches!(cap, Capability::ProjectWrite | Capability::FsWrite(_)) {
                 self.needs_api(&format!("capability `{cap}`"), 3)?;
             }
+            if matches!(cap, Capability::NetAsk) {
+                self.needs_api(&format!("capability `{cap}`"), 5)?;
+            }
         }
         if let Some(dark) = &self.icon_dark {
             if self.icon.is_none() {
@@ -716,5 +719,26 @@ mod commands_api_tests {
         let manifest = "id = \"test\"\nname = \"Test\"\nversion = \"1.0.0\"\nengines.openidea = \"^1.3\"\n[capabilities]\nrequired = [\"ide.commands\"]\n";
         assert!(Manifest::parse(manifest).unwrap_err().contains("1.4"));
         assert!(Manifest::parse(&manifest.replace("^1.3", "^1.4")).is_ok());
+    }
+}
+
+#[cfg(test)]
+mod net_ask_api_tests {
+    use super::*;
+    #[test]
+    fn net_ask_requires_api_1_5() {
+        for declaration in ["[capabilities]\nrequired = [\"net:ask\"]", "[capabilities]\noptional = [\"net:ask\"]"] {
+            for engine in ["^1.4", "^1.5"] {
+                let manifest = format!(
+                    "id = 'test'\nname = 'Test'\nversion = '0.1.0'\nwasm = 'plugin.wasm'\nengines.openidea = '{engine}'\n{declaration}\n"
+                );
+                let parsed = Manifest::parse(&manifest);
+                if engine == "^1.5" {
+                    parsed.unwrap();
+                } else {
+                    assert!(parsed.unwrap_err().contains("new in plugin API 1.5"), "{engine}");
+                }
+            }
+        }
     }
 }

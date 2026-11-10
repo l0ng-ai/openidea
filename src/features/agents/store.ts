@@ -297,7 +297,7 @@ function onEvent(e: AgentEvent) {
     case "task": {
       const prev = s.tasks.get(e.task.id);
       useAgents.setState({ tasks: new Map(s.tasks).set(e.task.id, e.task) });
-      if (prev && prev.title !== e.task.title) notifyTabTitlesChanged();
+      if (prev && (prev.title !== e.task.title || prev.status !== e.task.status)) notifyTabTitlesChanged();
       if (e.task.status === "archived") setUnread(e.task.id, false);
       else if (attentionChange(prev?.status, e.task.status)) markUnread(e.task.id);
       notifyChange(prev, e.task);

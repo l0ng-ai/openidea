@@ -64,6 +64,7 @@ async fn debug_start_inner(
         let settings = settings.clone();
         config = host
             .blocking(move || {
+                ide_sdk::go::prepare_debug_compiler(&mut config.env, &config.extra_json)?;
                 ide_sdk::go::configure_environment(&root, &settings, &mut config.env);
                 ide_sdk::go::apply_to_debug(
                     &mut config.env,

@@ -126,6 +126,10 @@ struct Script {
     pending_startup: Option<bool>,
     startup_error: Option<&'static str>,
     close_during_startup: bool,
+    /// GDB 15 semantics: `initialized` right after `initialize`, the program starts at
+    /// `launch`, and a `configurationDone` sent while it runs is refused with `notStopped`.
+    gdb15_starts_at_launch: bool,
+    launch_after_configuration: bool,
 }
 
 impl Default for Script {
@@ -145,6 +149,8 @@ impl Default for Script {
             pending_startup: None,
             startup_error: None,
             close_during_startup: false,
+            gdb15_starts_at_launch: false,
+            launch_after_configuration: false,
         }
     }
 }
@@ -159,10 +165,12 @@ impl AdapterLauncher for FakeLauncher {
         let (client, server) = tokio::io::duplex(1 << 16);
         let log = self.log.clone();
         let script = self.script.clone();
+        let launch_after_configuration = script.launch_after_configuration;
         tokio::spawn(fake_adapter(server, log, script));
         let (r, w) = tokio::io::split(client);
         Box::pin(async move {
             Ok(AdapterIo {
+                launch_after_configuration,
                 reader: Box::new(r),
                 writer: Box::new(w),
                 child: None,
@@ -180,6 +188,7 @@ async fn fake_adapter<S: AsyncRead + AsyncWrite + Unpin + Send + 'static>(stream
     let mut seq = 1000;
     let mut pending_launch: Option<i64> = None;
     let mut held: Vec<Value> = Vec::new();
+    let mut running = false;
     macro_rules! send {
         ($v:expr) => {{
             let mut v: Value = $v;
@@ -200,24 +209,37 @@ async fn fake_adapter<S: AsyncRead + AsyncWrite + Unpin + Send + 'static>(stream
             continue;
         }
         match msg["command"].as_str().unwrap_or_default() {
-            "initialize" => ok!(
-                msg,
-                json!({
-                    "supportsConfigurationDoneRequest": true,
-                    "supportsCompletionsRequest": true,
-                    "supportsTerminateRequest": script.supports_terminate,
-                    "supportsSetVariable": true,
-                    "supportsFunctionBreakpoints": true,
-                    "supportsDataBreakpoints": true,
-                    "supportsStepInTargetsRequest": true,
-                    "supportsRestartFrame": true,
-                    "exceptionBreakpointFilters": [
-                        {"filter": "raised", "label": "Raised"},
-                        {"filter": "uncaught", "label": "Uncaught", "default": true, "description": "Uncaught exceptions"},
-                    ],
-                })
-            ),
+            "initialize" => {
+                ok!(
+                    msg,
+                    json!({
+                        "supportsConfigurationDoneRequest": true,
+                        "supportsCompletionsRequest": true,
+                        "supportsTerminateRequest": script.supports_terminate,
+                        "supportsSetVariable": true,
+                        "supportsFunctionBreakpoints": true,
+                        "supportsDataBreakpoints": true,
+                        "supportsStepInTargetsRequest": true,
+                        "supportsRestartFrame": true,
+                        "exceptionBreakpointFilters": [
+                            {"filter": "raised", "label": "Raised"},
+                            {"filter": "uncaught", "label": "Uncaught", "default": true, "description": "Uncaught exceptions"},
+                        ],
+                    })
+                );
+                if script.gdb15_starts_at_launch {
+                    // GDB 15 announces itself before it sees `launch` (which a client that
+                    // defers it sends late).
+                    send!(json!({"type": "event", "event": "initialized"}));
+                }
+            }
             "launch" | "attach" => {
+                if script.gdb15_starts_at_launch {
+                    // GDB 15 starts the program here and answers `launch` right away.
+                    running = true;
+                    ok!(msg, Value::Null);
+                    continue;
+                }
                 if script.close_during_startup {
                     return;
                 }
@@ -289,6 +311,14 @@ async fn fake_adapter<S: AsyncRead + AsyncWrite + Unpin + Send + 'static>(stream
                 ok!(msg, json!({"value": format!("{}!", msg["arguments"]["value"].as_str().unwrap()), "type": "int"}))
             }
             "configurationDone" => {
+                if script.gdb15_starts_at_launch && running {
+                    // GDB 15 answers `configurationDone` with `notStopped` while the program
+                    // it started at `launch` is still running.
+                    send!(
+                        json!({"type": "response", "request_seq": msg["seq"], "command": "configurationDone", "success": false, "message": "notStopped"})
+                    );
+                    continue;
+                }
                 if !script.ignore_configuration_done {
                     ok!(msg, Value::Null);
                 }
@@ -510,6 +540,60 @@ async fn stop_cancels_pending_launch_and_attach() {
     }
 }
 
+/// GDB 15 must receive breakpoints and configurationDone before launch.
+#[tokio::test(start_paused = true)]
+async fn gdb_15_launch_waits_for_the_configuration() {
+    for deferred in [false, true] {
+        let h =
+            harness(Script { gdb15_starts_at_launch: true, launch_after_configuration: deferred, ..Script::default() });
+        let result = h.start(LaunchConfig { adapter: "gdb".into(), ..config() }).await;
+        if deferred {
+            let id = result.expect("GDB 15 defers its launch past the configuration");
+            let commands = h.commands();
+            let pos = |c: &str| commands.iter().position(|x| x == c).unwrap();
+            assert!(pos("launch") > pos("configurationDone"), "{commands:?}");
+            h.manager.stop(id).await.unwrap();
+        } else {
+            let error = result.unwrap_err();
+            assert!(error.message.contains("configurationDone failed: notStopped"), "{}", error.message);
+        }
+    }
+}
+
+#[tokio::test(start_paused = true)]
+async fn gdb_attach_keeps_the_normal_configuration_order() {
+    let h = harness(Script { launch_after_configuration: true, ..Script::default() });
+    let id = h.start(LaunchConfig { adapter: "gdb".into(), request: "attach".into(), ..config() }).await.unwrap();
+    let commands = h.commands();
+    let pos = |c: &str| commands.iter().position(|x| x == c).unwrap();
+    assert!(pos("attach") < pos("configurationDone"), "{commands:?}");
+    h.manager.stop(id).await.unwrap();
+}
+
+#[tokio::test(start_paused = true)]
+async fn gdb_run_environment_overrides_preserve_inheritance() {
+    for explicit in [None, Some(r#"{"env":{"ONLY":"explicit"}}"#)] {
+        let h = harness(Script::default());
+        let id = h
+            .start(LaunchConfig { adapter: "gdb".into(), extra_json: explicit.map(str::to_owned), ..config() })
+            .await
+            .unwrap();
+        let session = h.manager.session(id).unwrap();
+        {
+            let log = h.log.lock();
+            let args = &log.iter().find(|m| m["command"] == "launch").unwrap()["arguments"];
+            if explicit.is_some() {
+                assert_eq!(args["env"], json!({"ONLY": "explicit"}));
+                assert!(session.spec.env.is_empty());
+            } else {
+                assert!(args.get("env").is_none(), "GDB must inherit its process environment");
+                assert!(session.spec.env.contains(&("A".into(), "1".into())));
+            }
+        }
+        h.manager.stop(id).await.unwrap();
+    }
+}
+
 #[tokio::test(start_paused = true)]
 async fn startup_still_reports_adapter_failure_and_connection_closure() {
     for request in ["launch", "attach"] {
@@ -517,7 +601,6 @@ async fn startup_still_reports_adapter_failure_and_connection_closure() {
         let error = h.start(LaunchConfig { request: request.into(), ..config() }).await.unwrap_err();
         assert_eq!(error.message, format!("{request} failed: interpreter could not start"));
         assert!(h.manager.sessions(None).is_empty());
-
         let h = harness(Script { close_during_startup: true, ..Script::default() });
         let error = h.start(LaunchConfig { request: request.into(), ..config() }).await.unwrap_err();
         assert!(error.message.contains("debug adapter `debugpy` exited during startup"), "{error}");
@@ -1038,6 +1121,39 @@ async fn connects_to_running_debug_server_over_tcp() {
     manager.stop(id).await.unwrap();
     assert!(manager.sessions(None).is_empty());
     assert!(events.lock().iter().any(|e| matches!(e, IdeEvent::Debug { event: DebugEvent::Started { .. }, .. })));
+}
+
+#[tokio::test]
+async fn delve_adapter_inherits_the_selected_go_environment() {
+    struct CaptureLauncher {
+        inner: FakeLauncher,
+        env: Arc<Mutex<Vec<(String, String)>>>,
+    }
+    impl AdapterLauncher for CaptureLauncher {
+        fn launch(&self, spec: AdapterSpec, reuse: Option<u16>) -> LaunchFuture {
+            *self.env.lock() = spec.env.clone();
+            self.inner.launch(spec, reuse)
+        }
+    }
+    let env = Arc::new(Mutex::new(Vec::new()));
+    let launcher =
+        CaptureLauncher { inner: FakeLauncher { log: Arc::default(), script: Script::default() }, env: env.clone() };
+    let manager = DebugManager::with_launcher(Arc::new(LanguageRegistry::from_configs(Vec::new())), Arc::new(launcher));
+    let (owner, _) = recording_owner("main");
+    let config = LaunchConfig {
+        name: "Go".into(),
+        adapter: "delve".into(),
+        request: "launch".into(),
+        program: Some("/project".into()),
+        args: vec![],
+        cwd: None,
+        env: BTreeMap::from([("PATH".into(), "/chosen/go/bin".into()), ("GOROOT".into(), "/chosen/go".into())]),
+        extra_json: Some(json!({"mode":"debug"}).to_string()),
+    };
+    let id = manager.start(config, owner).await.unwrap();
+    assert!(env.lock().contains(&("PATH".into(), "/chosen/go/bin".into())));
+    assert!(env.lock().contains(&("GOROOT".into(), "/chosen/go".into())));
+    manager.stop(id).await.unwrap();
 }
 
 /// Go Remote / Python remote: the adapter runs on another machine (`dlv --headless`,
@@ -1929,6 +2045,7 @@ async fn rdbg_drains_test_output_after_dap_closes_before_killing_the_process() {
                 });
                 let (reader, writer) = tokio::io::split(client);
                 Ok(AdapterIo {
+                    launch_after_configuration: false,
                     reader: Box::new(reader),
                     writer: Box::new(writer),
                     child: Some(child),

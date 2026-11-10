@@ -103,7 +103,7 @@ jobs:
         if: runner.os == 'Linux'
         run: git diff --exit-code src/bindings.ts
 
-  # The remote development server ships as a static Linux binary (release.yml):
+  # The remote development server ships as a static Linux binary (release-build.yml):
   # keep that build working.
   server:
     name: Remote server (linux musl)

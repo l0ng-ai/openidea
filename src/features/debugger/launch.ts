@@ -16,7 +16,7 @@ function join(base: string, p: string) {
 
 /** A command path with a directory part resolved against `cwd`; bare names stay for PATH lookup. */
 function resolveCommand(cmd: string, cwd: string) {
-  return cmd.includes("/") ? join(cwd, cmd) : cmd;
+  return /[\\/]/.test(cmd) ? join(cwd, cmd) : cmd;
 }
 
 function splitAtDashDash(args: readonly string[]): [string[], string[]] {
@@ -237,6 +237,9 @@ function delveLaunch(rc: RunConfig, cwd: string, root: string): LaunchConfig {
       dlvCwd: module,
       ...(p.scope === "file" ? { __goFiles: target.split("|").map((f) => join(module, f.trim())) } : {}),
       __goToolArgs: toolArgs,
+      ...(p.scope === "file" ? {} : { __goTargets: [target] }),
+      __goBuildDir: module,
+      __goExecutable: resolveCommand(rc.command, module),
       __goUseTags: p.useTags !== "false",
       ...(p.outputDir ? { output: join(root, `${p.outputDir}/go-debug`) } : {}),
     });
@@ -273,9 +276,11 @@ function delveLaunch(rc: RunConfig, cwd: string, root: string): LaunchConfig {
     }
     const selection =
       test &&
-      /^-(run|skip|bench|benchtime|count|timeout|parallel|cpu|list|fuzz|fuzztime|fuzzminimizetime)(?:=(.*))?$/.exec(a);
-    if (test && /^-(short|failfast|benchmem|fullpath|v)(?:=|$)/.test(a)) {
-      testFlags.push(a.replace(/^-/, "-test."));
+      /^-(?:test\.)?(run|skip|bench|benchtime|count|timeout|parallel|cpu|list|fuzz|fuzztime|fuzzminimizetime)(?:=(.*))?$/.exec(
+        a,
+      );
+    if (test && /^-(?:test\.)?(short|failfast|benchmem|fullpath|v)(?:=|$)/.test(a)) {
+      testFlags.push(a.startsWith("-test.") ? a : a.replace(/^-/, "-test."));
     } else if (selection) {
       const value = selection[2] ?? rest[++i];
       if (value !== undefined) testFlags.push(`-test.${selection[1]}`, value);
@@ -283,18 +288,25 @@ function delveLaunch(rc: RunConfig, cwd: string, root: string): LaunchConfig {
       if (test && (a === "-json" || a === "-c")) continue;
       flags.push(a);
       if (!a.includes("=") && !boolFlags.has(a) && rest[i + 1] !== undefined) flags.push(rest[++i]!);
-    } else if (!test && targets.length) {
+    } else if (
+      sub === "run" &&
+      targets.length &&
+      !(a.endsWith(".go") && targets.every((target) => target.endsWith(".go")))
+    ) {
       programArgs = rest.slice(i);
       break;
     } else targets.push(a);
   }
   const target = targets[0] ?? ".";
-  out.program = target.endsWith("/...") ? cwd : join(cwd, target);
+  out.program = !target.startsWith(".") && !isAbsolute(target) && !target.endsWith(".go") ? target : join(cwd, target);
   out.args = [...testFlags, ...programArgs];
   out.extraJson = JSON.stringify({
     mode: test ? "test" : "debug",
     ...(flags.length ? { buildFlags: formatArgs(flags) } : {}),
     __goToolArgs: flags,
+    __goTargets: targets.length ? targets : ["."],
+    __goBuildDir: cwd,
+    __goExecutable: resolveCommand(rc.command, cwd),
     __goUseTags: rc.params?.useTags !== "false",
   });
   return out;
@@ -318,7 +330,7 @@ function godotLaunch(rc: RunConfig, cwd: string): LaunchConfig {
   return { ...base(rc, "godot", project), extraJson: JSON.stringify({ project, scene: godotScene(rc.args) }) };
 }
 
-/** A native program under CodeLLDB or lldb-dap: program, args, cwd, env. */
+/** A native program under CodeLLDB, lldb-dap or GDB: program, args, cwd, env. */
 function nativeLaunch(rc: RunConfig, cwd: string, adapter: string): LaunchConfig {
   const out: LaunchConfig = { ...base(rc, adapter, cwd), program: resolveCommand(rc.command, cwd), args: [...rc.args] };
   // lldb-dap takes the environment as `KEY=VALUE` strings.
@@ -420,7 +432,7 @@ export function launchConfigFor(rc: RunConfig, root: string, php: string | null 
   if (adapter === "dart") {
     return rc.params?.request === "attach" ? flutterAttach(rc, cwd, adapter) : flutterLaunch(rc, cwd, adapter);
   }
-  if (adapter === "codelldb" || adapter === "lldb-dap") {
+  if (adapter === "codelldb" || adapter === "lldb-dap" || adapter === "gdb") {
     return rc.kind === "cargo" ? cargoLaunch(rc, cwd, adapter) : nativeLaunch(rc, cwd, adapter);
   }
   if (adapter === "debugpy") return debugpyLaunch(rc, cwd);

@@ -501,6 +501,7 @@ pub fn builder() -> tauri_specta::Builder<tauri::Wry> {
         plugin::plugin_install_dir,
         plugin::plugin_grant,
         plugin::plugin_set_capability,
+        plugin::plugin_revoke_net_host,
         plugin::plugin_link,
         plugin::plugin_unlink,
         plugin::plugin_assets,
