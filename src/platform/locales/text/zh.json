@@ -7210,7 +7210,7 @@
   "Pick screen color": "提取屏幕颜色",
   "Current color": "当前颜色",
   "Recent colors": "最近使用的颜色",
-  "Recent color": "最近颜色"
+  "Recent color": "最近颜色",
   "Project Dependencies": "项目依赖项",
   "The project depends on these projects": "项目取决于这些项目",
   "The project depends on {name}": "项目取决于 {name}",
