@@ -5,19 +5,21 @@
   gap: var(--space-2);
   height: 100%;
   min-height: 0;
+  overflow: hidden;
   padding: var(--space-3) var(--space-4) 0;
 }
 .split {
   display: flex;
   flex: 1;
-  min-height: 300px;
+  min-height: 0;
   border: 1px solid var(--border-strong);
   border-radius: var(--radius-control);
   overflow: hidden;
 }
 .master {
-  flex: 0 0 240px;
+  flex: 0 0 250px;
   min-height: 0;
+  overflow: auto;
   padding: 4px;
   border-right: 1px solid var(--border);
 }

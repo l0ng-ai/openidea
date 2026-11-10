@@ -142,7 +142,10 @@ export function AgentList({
         open={adding}
         onClose={() => setAdding(false)}
         title="Add Agent"
-        width={640}
+        width={680}
+        minHeight={360}
+        // A fixed size, as IntelliJ's choosers open: the list scrolls inside it.
+        initialSize={{ w: 680, h: 440 }}
         resizable="both"
         buttons={[{ label: "Done", role: "cancel" }]}
       >
