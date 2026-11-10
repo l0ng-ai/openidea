@@ -104,6 +104,12 @@ pub trait HostApi: Send + Sync {
         let _ = client;
         None
     }
+    /// What other plugins contributed to `point`, as (plugin id, JSON). Only the
+    /// plugin that declares the point may read it.
+    fn extension_contributions(&self, point: &str) -> Result<Vec<(String, String)>, HostError> {
+        let _ = point;
+        Err(HostError::NotFound("extension points are unavailable on this host".into()))
+    }
 
     /// Registers a project-scoped wrapper after validating its process grant and pin.
     fn register_run_target(&self, root: &Path, target: crate::PluginRunTarget) -> Result<(), HostError> {
@@ -993,6 +999,10 @@ fn event_to_wit(e: WorkbenchEvent) -> wit_events::Event {
         WorkbenchEvent::SettingsChanged(keys) => wit_events::Event::Other(wit_types::Extension {
             kind: "settings-changed".into(),
             data: serde_json::to_string(&keys).expect("keys serialize"),
+        }),
+        WorkbenchEvent::ExtensionsChanged(points) => wit_events::Event::Other(wit_types::Extension {
+            kind: "extensions-changed".into(),
+            data: serde_json::to_string(&points).expect("points serialize"),
         }),
         WorkbenchEvent::InputModeChanged(mode) => wit_events::Event::Other(wit_types::Extension {
             kind: "input-mode-changed".into(),

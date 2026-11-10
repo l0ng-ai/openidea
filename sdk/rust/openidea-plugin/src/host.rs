@@ -248,6 +248,10 @@ mod imp {
         p.read_file(path).map_err(error)
     }
 
+    pub fn project_read_bytes(p: &ProjectRes, path: &str) -> Result<Vec<u8>, Error> {
+        p.read_bytes(path).map_err(error)
+    }
+
     pub fn project_write(p: &ProjectRes, path: &str, text: &str) -> Result<(), Error> {
         p.write_file(path, text).map_err(error)
     }
@@ -831,6 +835,11 @@ mod imp {
         wit::settings::get(key)
     }
 
+    pub fn extension_contributions(point: &str) -> Result<Vec<crate::Contribution>, Error> {
+        let list = wit::extensions::contributions(point).map_err(error)?;
+        Ok(list.into_iter().map(|c| crate::Contribution { plugin: c.plugin, data: c.data }).collect())
+    }
+
     pub fn run_process(
         program: &str,
         args: &[String],
@@ -1012,6 +1021,14 @@ impl Project {
     /// Needs `project.read`.
     pub fn read_file(&self, path: &str) -> Result<String, Error> {
         imp::project_read(&self.inner, path)
+    }
+
+    /// Reads the bytes of a file inside the project (absolute or
+    /// root-relative) — images, archives, fonts — at most 16 MiB, the file on
+    /// disk. Paths leaving the root are rejected; a missing path is
+    /// `Error::NotFound`. Needs `project.read`.
+    pub fn read_bytes(&self, path: &str) -> Result<Vec<u8>, Error> {
+        imp::project_read_bytes(&self.inner, path)
     }
 
     /// Replaces the text of a file inside the project (absolute or
@@ -1755,4 +1772,14 @@ pub fn unregister_run_target(project: &Project, id: &str) {
 /// Stdio bridge argv for the invoking project, none while the built-in MCP server is off.
 pub fn mcp_stdio_command() -> Option<Vec<String>> {
     imp::mcp_stdio_command()
+}
+
+/// What other plugins contributed to `point`, an extension point this plugin
+/// declares in `[[extension-points]]`, in the order those plugins started.
+/// `Error::Denied` for another plugin's point, `Error::NotFound` while no
+/// running plugin declares it. Contributions change when plugins are enabled,
+/// disabled, updated or reloaded: subscribe to `EventKind::ExtensionsChanged`
+/// to refresh what was derived from them. Needs `engines.openidea = "^1.4"`.
+pub fn extension_contributions(point: &str) -> Result<Vec<crate::Contribution>, Error> {
+    imp::extension_contributions(point)
 }

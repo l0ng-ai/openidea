@@ -96,7 +96,9 @@ test("links independent Gradle roots, runs identical task paths in their own bui
       command: `/dev/acme-api/${dir}/gradlew`,
       cwd: dir,
       args: [":app:assemble", "--offline"],
-      env: { JAVA_HOME: `/${dir}/jdk` },
+      // The build's `JAVA_HOME` is Settings-derived: the launcher resolves it instead of the
+      // task configuration freezing the one the model had when the tree was built (#2433).
+      env: {},
     });
   }
 

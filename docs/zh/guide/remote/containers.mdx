@@ -1,0 +1,81 @@
+---
+title: "容器"
+description: "在开发容器中重新打开本地项目，以及在 Docker 或 Docker Compose 容器中执行运行配置。"
+---
+
+OpenIDEA 以两种方式使用容器：
+
+- **开发容器**：整个项目在其 `devcontainer.json` 描述的容器中打开，IDE 后端也运行在容器里。这属于远程开发，和
+  [SSH](/zh/guide/remote/ssh) 类似。
+- **Docker / Docker Compose 运行目标**：项目留在本地，只有某个运行配置在容器中执行。
+
+查看、启动、停止和检查容器、镜像以及 Compose 服务，请用[服务](/zh/guide/services)工具窗口。
+
+## 开发容器
+
+### 前提条件
+
+- 本机已安装 Docker，且当前 Docker 上下文的守护进程运行在本机。项目文件夹要绑定挂载进容器，所以其他机器上的守护进程不行。
+- Dev Containers CLI（`devcontainer`）。可以在**设置 › 语言和框架 › 语言服务器**中安装 **Dev Containers CLI**（需要 Node.js），
+  也可以自己把 `devcontainer` 放到 `PATH` 中。
+- 项目文件夹中有 `.devcontainer/devcontainer.json` 或 `.devcontainer.json`。
+- 项目必须已受信任：构建容器会执行项目自带的命令（`initializeCommand`、Dockerfile 构建）。
+- 容器为 x86_64 或 aarch64 上的 Linux。
+
+### 在容器中重新打开项目
+
+<Steps>
+  <Step title="在本地打开项目">打开包含 `devcontainer.json` 的文件夹，并信任它。</Step>
+  <Step title="在容器中重新打开">选择**文件 › 在容器中重新打开**，如有提示再选择**当前窗口**或**新窗口**。</Step>
+  <Step title="等待容器就绪">
+    OpenIDEA 会对该文件夹运行 `devcontainer up` 来构建或启动容器，首次构建可能需要一段时间。随后在容器中安装并启动
+    [`openidea-server`](/zh/guide/remote/server)，再打开容器里的项目文件夹。
+  </Step>
+</Steps>
+
+项目会以容器的 `remoteUser` 身份、在 `remoteWorkspaceFolder` 中打开。状态栏显示 **Dev Container: `<folder name>`**，
+该项目也会出现在欢迎页的最近项目列表中。
+
+如果失败（没有 `devcontainer.json`、未安装 Docker、构建出错等），会弹出**无法在容器中重新打开项目**通知，说明原因并附上 CLI 日志的末尾部分。
+
+### `devcontainer.json` 中哪些内容生效
+
+- `devcontainer up` 负责的一切：镜像、Dockerfile、features、挂载和生命周期命令。它们由 CLI 执行一次，服务端不会再次运行 `postStartCommand`。
+- `remoteEnv`：作用于容器内的终端、运行、语言服务器和工具。修改后选择**文件 › 重新加载环境**，新进程即可使用新值。
+- `forwardPorts`：自动转发到本机。需要更多端口时，在**端口**工具窗口中添加，用法与 [SSH 窗口](/zh/guide/remote/ssh#端口转发)相同。
+
+OpenIDEA 安装的语言服务器和调试器会装进容器，位于容器用户的 `~/.openidea/data` 下。
+
+### 限制
+
+- 只使用默认配置（先找 `.devcontainer/devcontainer.json`，再找 `.devcontainer.json`），不能在 `.devcontainer/` 子文件夹中的多个配置之间选择。
+- **在容器中重新打开**只适用于本地项目，在 SSH 或 WSL 窗口中不可用。
+- 没有附加到任意运行中容器的命令；容器总是来自项目的 `devcontainer.json`。
+
+## Docker 和 Docker Compose 运行目标
+
+运行目标让运行配置在本机以外的地方执行。容器类目标会把配置改写成本地的 `docker run --rm`（或 `docker compose run --rm`），
+并把项目绑定挂载进去，所以控制台、输入、**停止**和测试结果都和本地运行一样可用。
+
+<Steps>
+  <Step title="添加目标">
+    打开**设置 › 构建、执行、部署 › 运行目标**，点击 **+**，把**类型**设为 **Docker** 或 **Docker Compose**。
+  </Step>
+  <Step title="描述容器">
+    **Docker** 类型填写**图像**（例如 `python:3.12`）；**Docker Compose** 类型填写 **Compose
+    文件**（留空使用项目的默认文件）和**服务**。
+  </Step>
+  <Step title="使用目标">在运行配置的**运行于**中选择该目标，或把它设为**默认运行目标**。</Step>
+</Steps>
+
+容器目标的选项：
+
+| 选项                                                    | 含义                                                                                                              |
+| ------------------------------------------------------- | ----------------------------------------------------------------------------------------------------------------- |
+| **Docker 连接**                                         | 使用哪个 Docker 守护进程；**Docker CLI 默认值**沿用 Docker CLI 自身的默认设置。只有本机上的守护进程才能挂载项目。 |
+| **容器文件夹**                                          | 项目挂载到容器中的位置，路径和工作目录都会映射进去。Compose 留空表示使用服务自己挂载项目的位置。                  |
+| **发布的端口**                                          | 要发布的端口，例如 `8000:8000`。                                                                                  |
+| **运行选项**                                            | 额外的 `docker run` 参数，例如 `--network host`。                                                                 |
+| **以镜像的用户运行，而不是项目文件夹的所有者（Linux）** | 在 Linux 上，容器默认以项目文件夹所有者的身份运行，写出的文件仍归你所有。勾选后保留镜像自带的用户。               |
+
+运行目标的整体说明（包括 SSH 目标）见[运行配置](/zh/guide/run)。

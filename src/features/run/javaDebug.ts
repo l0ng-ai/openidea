@@ -3,7 +3,8 @@
  * build tool starts the JVM with a JDWP agent that waits for a debugger
  * (`spring-boot:run` → `-Dspring-boot.run.jvmArguments`, Surefire →
  * `-Dmaven.surefire.debug`, Gradle → `--debug-jvm`); when the agent reports
- * its port, the Java debugger attaches. Output and the test tree stay in the Run tab.
+ * its port, the Java debugger attaches. The test tree stays in the Run tab; the
+ * Debug console shows the output as well.
  * Maven goals that run the application inside Maven's JVM (`tomcat7:run`, `jetty:run`,
  * `exec:java`) get the agent through `MAVEN_OPTS`; any other configuration set to the Java
  * debugger (a script such as `catalina.sh run`) through `JAVA_TOOL_OPTIONS`, which every JVM reads.

@@ -1,0 +1,138 @@
+---
+title: "HTTP Client"
+description: "在 .http 文件中编写 HTTP 请求，在编辑器里直接运行并查看响应。"
+---
+
+HTTP 客户端运行写在 `.http` 和 `.rest` 文件里的请求，格式与 IntelliJ IDEA 的 HTTP 客户端相同。响应显示在 **服务** 工具窗口的 **HTTP 客户端** 标签页中。
+
+## 创建请求文件
+
+- **工具 › 新建 HTTP 请求** 会在 IDE 的草稿目录中创建草稿文件 `requests.http`（已存在时依次为 `requests_2.http` 等）。
+- 在项目工具窗口中，**新建 › HTTP 请求** 会在所选文件夹中创建 `.http` 文件。
+- 任何以 `.http` 或 `.rest` 结尾的文件都可以。
+
+## 语法
+
+```http
+@host = localhost:8080
+
+### Get a user
+GET http://{{host}}/users/1
+Accept: application/json
+
+### Create a user
+# @name createUser
+POST http://{{host}}/users
+Content-Type: application/json
+
+{ "name": "Ada", "id": "{{$uuid}}" }
+
+### Upload from a file
+POST http://{{host}}/import
+Content-Type: application/json
+
+< ./payload.json
+```
+
+| 元素      | 规则                                                                                                                                        |
+| --------- | ------------------------------------------------------------------------------------------------------------------------------------------- |
+| 分隔符    | 以 `###` 开头的行，后面的文字作为请求名。                                                                                                   |
+| 名称      | `# @name createUser` 或 `// @name createUser`（优先于分隔符后的文字）。                                                                     |
+| 注释      | 请求行之前以及请求头之间以 `#` 或 `//` 开头的行。请求体里的行会原样发送。                                                                   |
+| 请求行    | `METHOD URL [HTTP/版本]`，只写 URL 时为 `GET`。支持的方法：`GET`、`POST`、`PUT`、`DELETE`、`PATCH`、`HEAD`、`OPTIONS`、`TRACE`、`CONNECT`。 |
+| 长 URL    | 以 `?`、`&` 或 `/` 开头的缩进行会接到 URL 后面。                                                                                            |
+| 相对 URL  | `GET /path` 需要 `Host:` 请求头。没有协议的 URL 会补上 `http://`。                                                                          |
+| 请求头    | 第一个空行之前的 `Name: value` 行。                                                                                                         |
+| 请求体    | 空行之后的所有内容。`< ./file` 插入文件内容，路径相对于 `.http` 文件。                                                                      |
+| Multipart | `Content-Type` 为 `multipart/*` 时，请求体各行用 CRLF 连接。边界需要自己写。                                                                |
+
+## 变量
+
+在 URL、请求头或请求体中写 `{{name}}`。变量按以下顺序查找：
+
+1. 文件变量：`@name = value` 行。对整个文件生效，后定义的覆盖先定义的。
+2. `http-client.private.env.json` 中所选环境。
+3. `http-client.env.json` 中所选环境。
+4. 私有文件中的 `$shared`，然后是公共文件中的 `$shared`。
+
+变量可以引用其他变量。有未解析变量的请求不会发送，错误信息会列出缺少的变量名。用 `<` 插入的文件中的变量不会替换。
+
+动态变量：
+
+| 变量                                    | 值                                         |
+| --------------------------------------- | ------------------------------------------ |
+| `{{$uuid}}`、`{{$random.uuid}}`         | 随机 UUID                                  |
+| `{{$timestamp}}`                        | 当前 Unix 时间（秒）                       |
+| `{{$isoTimestamp}}`                     | 当前 UTC 时间，格式 `YYYY-MM-DDTHH:MM:SSZ` |
+| `{{$randomInt}}`、`{{$random.integer}}` | 0 到 999 的随机整数                        |
+
+### 环境
+
+环境写在 `http-client.env.json` 里，密钥等敏感信息写在 `http-client.private.env.json` 里（这个文件不要提交到版本库）：
+
+```json http-client.env.json
+{
+  "$shared": { "version": "v1" },
+  "dev": { "host": "localhost:8080" },
+  "prod": { "host": "api.example.com" }
+}
+```
+
+OpenIDEA 会从请求文件所在目录开始，逐级向上查找到项目根目录，每种文件取离得最近的那个，不同层级的文件不会合并。只使用字符串、数字和布尔值。
+
+在编辑器工具栏的 **运行环境：** 中选择环境（**无环境** 或某个环境名），选择按文件记住。修改环境文件后点击 **重新加载环境**。
+
+## 运行请求
+
+| 操作                       | macOS    | Windows/Linux |
+| -------------------------- | -------- | ------------- |
+| 运行光标处的 HTTP 请求     | `⌘Enter` | `Ctrl+Enter`  |
+| 运行文件中的所有 HTTP 请求 | 无       | 无            |
+
+也可以点击请求行旁边边栏中的运行图标。编辑器工具栏有 **运行文件中的所有请求**、**停止** 和 **运行环境：**。
+
+- “光标处的请求”是光标所在的请求块，光标不在请求块内时取上方最近的一个。
+- 未保存的修改也会一起发送。
+- 开始新的运行会取消正在进行的运行。
+- **运行全部** 按顺序执行。某个请求无法准备（例如有未解析的变量）时停止；网络错误会被记录下来，然后继续下一个请求。
+
+## 响应
+
+服务工具窗口的 **HTTP 客户端** 标签页左侧按时间倒序列出历史请求，显示状态、方法、名称和耗时。选中某条后显示：
+
+- 状态码、HTTP 版本、总耗时（悬停可看收到响应头的时间）和大小。
+- **响应**：响应体。JSON、XML 和 HTML 会自动格式化，可用 **显示原始内容** / **显示格式化内容** 切换。二进制响应只显示类型和大小。超过 16 MiB 的响应体会被截断。
+- **标头**：响应头。
+- **请求**：实际发出的请求（已替换变量）。
+
+工具栏有 **停止请求**、**重新加载历史记录** 和 **清除历史记录**。每个项目最多保留最近 100 条记录。
+
+## 连接行为
+
+- 支持 HTTP/1.1 和 HTTP/2，自动解码 gzip、deflate 和 brotli。
+- TLS 证书按系统信任库校验。
+- 自动跟随重定向。
+- 请求之间不保留 Cookie。
+- 连接超时为 30 秒，没有整体请求超时。
+- 代理使用 **设置 › 外观与行为 › 系统设置 › HTTP 代理** 中的配置。
+
+HTTP 客户端没有单独的设置页面。
+
+## 端点与 Spring
+
+OpenIDEA 会为 Java 和 Kotlin 中的 Spring Web 端点（带 `@RequestMapping`、`@GetMapping` 等注解的 `@RestController` / `@Controller` 类）建立索引：
+
+- 每个映射方法和控制器旁边都有边栏图标。**在 HTTP 客户端中生成请求** 和 **为控制器生成请求**（也在编辑器右键菜单和意图操作中）会把请求追加到草稿文件 `generated-requests.http` 并打开它。
+- 生成的请求使用 `http://localhost:<server.port>` 加上 `application.properties` 或 `application.yml` 中的上下文路径（端口默认 8080）。路径变量变成 `{{var}}`，并按 `@RequestBody` 类型填好 JSON 骨架。
+- 随处搜索中有 **端点** 标签页。
+- 在 `.http` 文件中，方法后面的 URL 补全会提示已知端点。
+
+插件可以提供其他框架的端点，这些端点旁会有 **在 HTTP 客户端中打开** 边栏图标。
+
+## 暂不支持
+
+- JavaScript 响应处理脚本（`> {% ... %}`、`> handler.js`）和请求前脚本。处理脚本行能被识别，但会跳过。
+- 用 `>>` / `>>!` 保存响应，以及 `<>` 引用之前的响应（会跳过）。
+- 在 `.http` 文件中发送 WebSocket、gRPC 和 GraphQL 请求。GraphQL 在 `.graphql` 文件中有单独的支持。
+- 按请求配置 SSL、客户端证书、关闭重定向和 Cookie 存储。
+- 与 cURL 互相转换。

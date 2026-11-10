@@ -93,3 +93,63 @@ test("service dragging scrolls across virtual rows without losing source identit
     )
     .toEqual(["app-99", "portal"]);
 });
+
+test("Docker Compose editor completes service references and navigates to declarations", async ({
+  workbench: page,
+}) => {
+  await page.evaluate(async () => {
+    const backendModule = "/src/editor/core/backend.ts";
+    const contribModule = "/src/workbench/contributions.ts";
+    const { docBackend } = await import(/* @vite-ignore */ backendModule);
+    const { editorService } = await import(/* @vite-ignore */ contribModule);
+    const compose = [
+      "services:",
+      "  postgres:",
+      "    image: postgres:16",
+      "    networks:",
+      "      - backend",
+      "  redis:",
+      "    image: redis:7",
+      "  api:",
+      "    build: .",
+      "    depends_on:",
+      "networks:",
+      "  backend:",
+      "    driver: bridge",
+      "",
+    ].join("\n");
+    docBackend().files.set("/dev/acme-api/docker-compose.yml", compose);
+    await editorService().openFile("/dev/acme-api/docker-compose.yml");
+  });
+
+  const editor = page.locator(".cm-editor");
+  await expect(editor).toContainText("postgres:16");
+
+  // Complete a service reference under `depends_on:`
+  await editor.locator(".cm-line", { hasText: "depends_on:" }).click();
+  await page.keyboard.press("End");
+  await page.keyboard.press("Enter");
+  await page.keyboard.type("- ");
+  await page.keyboard.press("Control+Space");
+  const popup = page.locator(".cm-tooltip-autocomplete");
+  await expect(popup.getByText("postgres", { exact: true })).toBeVisible();
+  await expect(popup.getByText("redis", { exact: true })).toBeVisible();
+  await expect(popup.getByText("api", { exact: true })).toHaveCount(0);
+  await page.keyboard.type("post");
+  await expect(popup.getByText("redis", { exact: true })).toBeHidden();
+  await page.keyboard.press("Enter");
+  await expect(popup).toBeHidden();
+  await expect(editor.locator(".cm-activeLine")).toHaveText("    - postgres");
+
+  // Go to Declaration (⌘B) on `- postgres` jumps to `  postgres:` declaration
+  await page.keyboard.press("ArrowLeft");
+  await page.keyboard.press("Meta+b");
+  await expect(editor.locator(".cm-activeLine")).toHaveText("  postgres:");
+
+  // Go to Declaration (⌘B) on `- backend` jumps to `  backend:` under `networks:`
+  await editor.locator(".cm-line", { hasText: "      - backend" }).click();
+  await page.keyboard.press("End");
+  await page.keyboard.press("ArrowLeft");
+  await page.keyboard.press("Meta+b");
+  await expect(editor.locator(".cm-activeLine")).toHaveText("  backend:");
+});

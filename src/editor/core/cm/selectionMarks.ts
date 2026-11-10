@@ -38,6 +38,8 @@ const plugin = ViewPlugin.fromClass(
 const theme = EditorView.baseTheme({
   ".cm-openidea-selected": {
     backgroundColor: "var(--editor-selection-inactive, var(--bg-editor-selection-inactive))",
+    // Unset (the default `inherit`): the declaration drops and the syntax colours show through.
+    color: "var(--fg-editor-selection)",
   },
   "&.cm-focused .cm-openidea-selected": {
     backgroundColor: "var(--editor-selection, var(--bg-editor-selection))",

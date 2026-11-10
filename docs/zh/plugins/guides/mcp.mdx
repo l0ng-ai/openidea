@@ -1,0 +1,112 @@
+---
+title: "MCP 工具"
+description: "为 IDE 内置的 MCP 服务器添加工具，由插件代码在插件自己的权限范围内实现。"
+---
+
+OpenIDEA 内置了一个 MCP 服务器，AI 代理通过它操作打开的项目（见 [MCP 服务器](/zh/guide/mcp)）。
+插件可以向它添加自己的工具：为每个工具声明描述输入的 JSON Schema，再用代码实现调用。
+这对应 `mcp-provider` 导出和 `mcp` 宿主接口（`mcp.wit`，API 1.4）。
+
+## 声明工具
+
+```toml
+engines.openidea = "^1.4"
+wasm = "dist/plugin.wasm"
+
+[capabilities]
+required = ["project.read"]
+
+[[contributes.mcpTools]]
+name = "find_notes"
+description = "Find notes in this project"
+inputSchema = "find-notes.schema.json"
+readOnly = true
+destructive = false
+```
+
+`find-notes.schema.json`：
+
+```json
+{
+  "type": "object",
+  "properties": { "text": { "type": "string" } },
+  "required": ["text"],
+  "additionalProperties": false
+}
+```
+
+| 字段          | 说明                                                                                                                                                |
+| ------------- | --------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `name`        | `[a-z0-9_]{1,40}`。注册名是：插件 id 中 `[a-z0-9_]` 以外的字符替换成 `_`，再接 `__` 和工具名，例如 `acme_notes__find_notes`。总长不能超过 64 字节。 |
+| `description` | 1–4096 字节。服务器列出工具时会标明它来自哪个插件。                                                                                                 |
+| `inputSchema` | 包内一个自包含的 JSON Schema 文件路径，必须描述一个 object，最大 256 KiB。支持本地 `$ref` 片段；网络和文件引用会被拒绝。                            |
+| `readOnly`    | 必填。为 `false` 的工具在受限模式下隐藏且无法调用。                                                                                                 |
+| `destructive` | 必填。为 `true` 时每次调用都会通过与内置运行工具相同的界面，请项目窗口确认。                                                                        |
+
+Schema 会在安装时和 `openidea-plugin check` 时校验。带工具的插件需要代码（`wasm`）。
+
+## 实现调用
+
+实现 `openidea_plugin::McpProvider` 并注册 `mcp` 导出：
+
+```rust
+use openidea_plugin::{Error, Invocation, McpProvider, Plugin, TextQuery, register_plugin};
+
+#[derive(Default)]
+struct Notes;
+
+impl Plugin for Notes {
+    fn run_command(&mut self, id: &str, _ctx: &Invocation, _arg: Option<&str>) -> Result<Option<String>, Error> {
+        Err(Error::NotFound(id.into()))
+    }
+}
+
+impl McpProvider for Notes {
+    fn call(&mut self, tool: &str, arguments: &str, ctx: &Invocation) -> Result<String, Error> {
+        match tool {
+            "find_notes" => {
+                let args: serde_json::Value = serde_json::from_str(arguments).map_err(|e| Error::Invalid(e.to_string()))?;
+                let text = args["text"].as_str().unwrap_or_default();
+                let project = ctx.project().ok_or("project required")?;
+                let found = project.search_text(&TextQuery { pattern: text.into(), ..Default::default() }, 100)?;
+                let lines: Vec<_> = found.matches.iter().map(|m| format!("{}:{}: {}", m.location.path, m.location.range.start.line + 1, m.line)).collect();
+                Ok(lines.join("\n"))
+            }
+            _ => Err(Error::NotFound(tool.into())),
+        }
+    }
+}
+
+register_plugin!(Notes, mcp);
+```
+
+示例用到了 `serde_json`，需要把它加进 `Cargo.toml`。
+
+- `tool` 是本地工具名（`find_notes`），`arguments` 是输入的 JSON 文本，已按 Schema 校验过（最大 1 MiB）。
+  `ctx` 是该项目的调用上下文。
+- 返回文本；需要结构化结果时，把 JSON 编码成文本返回。结果最大 4 MiB。
+- WIT 导出为 `mcp-provider.call(tool, arguments, ctx)`；world `plugin-mcp` 包含基础插件 world，
+  只含导出的 `mcp-tools` world 与之组合。
+
+## 调用如何执行
+
+- 每次请求都会列出已启用的工具，所以禁用或卸载插件会立即撤回它们。
+- 调用在插件自己的实例中执行，使用插件自己的授权、CPU 燃料和 5 秒命令预算。MCP 客户端不会带来额外权限：
+  插件没有权限的宿主函数照样返回 `Error::Denied`。
+- 工具拥有项目的调用上下文，但不算用户命令或事件：仅限命令和事件使用的 API（对话框、`start_run`、打开标签页等）
+  会返回 `invalid`。
+- `destructive` 调用如果被用户拒绝、取消，或者没有可以询问的窗口，都会失败。
+- 如果两个已启用插件的工具名规范化后相同，两个工具都不会提供。
+- 内置服务器目前只服务本地项目；远程项目的工具调用会得到“not supported for remote projects yet”的响应。
+
+## 让代理连接服务器
+
+`host::mcp_stdio_command()`（WIT `mcp.stdio-command`，无需权限）返回发起调用项目的 stdio 桥接命令行，例如
+`["/path/openidea", "--mcp-stdio", "--project", "/project"]`。启动或配置代理的插件可以把它传过去。
+服务器关闭、没有项目窗口，或远程宿主上没有自己运行的服务器时返回 `None`。它永远不会暴露服务器的 HTTP 地址或令牌。
+
+## 测试
+
+在 `cargo test` 中针对 SDK 的模拟宿主直接调用 `McpProvider::call` 即可。
+[`data-tools` 测试插件](https://github.com/l0ng-ai/openidea/tree/main/crates/ide-plugin/tests/fixtures/data-tools)
+声明了只读、写入和破坏性工具，宿主的测试会用到它。

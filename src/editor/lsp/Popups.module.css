@@ -319,7 +319,13 @@
   white-space: pre;
 }
 
+.previewDialog [data-dialog-body] {
+  display: flex;
+  flex-direction: column;
+  overflow: hidden;
+}
 .previewSummary {
+  flex: none;
   padding: 10px 14px 6px;
   font-size: var(--fs-ui);
   color: var(--fg-muted);
@@ -328,7 +334,8 @@
   list-style: none;
   margin: 0;
   padding: 0 0 8px;
-  max-height: 320px;
+  flex: 1 1 auto;
+  min-height: 0;
   overflow: auto;
 }
 .previewRow {
@@ -358,6 +365,7 @@
 }
 
 .previewWarning {
+  flex: none;
   display: flex;
   align-items: flex-start;
   gap: 6px;

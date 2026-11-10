@@ -37,6 +37,7 @@ world plugin {
     import database;
     import mcp;
     import settings;
+    import extensions;
 
     export lifecycle;
     export commands;

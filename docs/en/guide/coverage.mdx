@@ -1,0 +1,73 @@
+---
+title: "Coverage"
+description: "Run a configuration with coverage and see covered, partly covered and uncovered lines in the editor, the project view and the Coverage tool window."
+---
+
+**Run with Coverage** runs a [run configuration](/en/guide/run) under its runtime's coverage tool, then reads the report and shows it in three places:
+
+- **Editor gutter**: a stripe per line. Green is covered, yellow is partly covered (not every branch or block ran), red is not covered. Hover a stripe for the hit count and branch count.
+- **Project view**: a percentage of covered lines next to each file and folder.
+- **Coverage tool window**: a tree of folders and files with **Line, %** and **Branch, %** columns. Click a column header to sort; open a file from the tree.
+
+## Run with coverage
+
+<Steps>
+  <Step title="Pick a configuration">
+    Select a test or program configuration in the run widget, or put the caret in a test or `main` function.
+  </Step>
+  <Step title="Start the run">
+    Use **Run › Run with Coverage**, or choose **Run '…' with Coverage** from the gutter run icon menu or the run
+    widget's **More Actions** menu. **Run Context Configuration with Coverage** (in **Find Action…**, `⌘⇧A` /
+    `Ctrl+Shift+A`) covers the test or program at the caret.
+  </Step>
+  <Step title="Read the results">
+    When the run finishes, the Coverage tool window opens and a notification shows the share of covered lines.
+  </Step>
+</Steps>
+
+If the coverage tool is missing, a notification names it and offers **Install**, which runs the install command in the Run tool window. Configurations the IDE does not know how to cover get a notification that explains why.
+
+## Supported runtimes
+
+| Runtime                 | Configurations                                                             | Coverage tool                                                                                     |
+| ----------------------- | -------------------------------------------------------------------------- | ------------------------------------------------------------------------------------------------- |
+| Rust                    | `cargo test`, `cargo run`, `cargo nextest`                                 | `cargo llvm-cov` (install `cargo-llvm-cov` and the `llvm-tools-preview` rustup component)         |
+| Go                      | `go test`                                                                  | `go test -coverprofile`                                                                           |
+| Java / Kotlin (Maven)   | Maven configurations that run tests (`test`, `verify`)                     | JaCoCo Maven plugin goals                                                                         |
+| Java / Kotlin (Gradle)  | Gradle configurations that run tests (`test`, `check`)                     | JaCoCo, applied through an init script                                                            |
+| JavaScript / TypeScript | `package.json` test scripts that run vitest or jest (npm, pnpm, yarn, bun) | The runner's own `--coverage` (vitest needs `@vitest/coverage-v8` or `@vitest/coverage-istanbul`) |
+| Node.js                 | `node`, `npx`, `tsx`, `ts-node` programs                                   | `c8`                                                                                              |
+| Python                  | scripts, modules, pytest                                                   | coverage.py (`coverage run --branch`) in the project's interpreter                                |
+| Ruby                    | rspec, minitest, rake, rails and plain scripts                             | SimpleCov (in the Gemfile for Bundler projects)                                                   |
+
+Not supported:
+
+- Plain `java` applications: run a Maven or Gradle test configuration with coverage instead.
+- `go run`: Go coverage is collected by `go test`.
+- Deno tasks.
+
+<Note>
+  The IDE does not add anything to your project files. For Gradle it passes a temporary init script; for Ruby projects
+  without their own SimpleCov setup it preloads SimpleCov through the environment. Installing a missing tool (for
+  example `bundle add simplecov --group test` or `uv add --dev coverage`) does change the project, so the IDE only runs
+  it when you click **Install**.
+</Note>
+
+## Import a report from CI
+
+**Import a Coverage Report…** (in **Find Action…**, or the link in the empty Coverage tool window) shows a report collected elsewhere. The format is detected from the content:
+
+- lcov tracefile (`lcov.info`)
+- Go cover profile
+- JaCoCo XML report
+- SimpleCov `.resultset.json`
+
+File paths recorded on another machine are mapped into the project by their longest matching suffix.
+
+## Manage suites
+
+Each coverage run or imported report is a suite. The last five runs stay available as tabs in the Coverage tool window header.
+
+**Manage Coverage Reports…** (`⌘⌥F6` / `Ctrl+Alt+F6`) opens the **Coverage Reports** dialog: choose a suite and click **Show Selected**, **Delete** a suite, or **Import…** more reports. Imported reports are remembered per project.
+
+To remove the highlighting, use **Run › Hide Coverage** or the button in the Coverage tool window. **Show Coverage** brings the selected suite back. Editor stripes follow your edits until the next run.

@@ -1,0 +1,163 @@
+---
+title: "图标主题"
+description: "编写文件图标主题插件，把文件名、扩展名和文件夹映射到 SVG 图标，可选模式匹配、变体和设置页面。"
+---
+
+文件图标主题会替换项目工具窗口、编辑器标签页、随处搜索等列表中文件和文件夹的图标，还可以覆盖 IDE 的内置图标。
+和配色主题一样，它是**纯数据**插件：没有代码，也不需要权限。完整示例见
+[Material Icons](https://github.com/l0ng-ai/openidea/tree/main/plugins/official/material-icons)：106 个图标，覆盖 189 个扩展名、
+71 个文件名和 92 个文件夹名。
+
+如果插件只是想为自己新增的文件类型提供图标，请改用 `fileIcons`（见本页末尾）：无论用户使用哪个图标主题，这些图标都会显示。
+
+## 开始
+
+```sh
+openidea-plugin new my-icons --template icon-theme
+```
+
+这会生成清单、`icons/theme.json` 和四个 SVG：
+
+```toml
+id = "acme.my-icons"
+name = "My Icons"
+version = "0.1.0"
+description = "File and folder icons."
+engines.openidea = "^1.0"
+
+[[contributes.iconThemes]]
+id = "my-icons"
+label = "My Icons"
+path = "icons/theme.json"
+```
+
+一个插件可以贡献多个图标主题。像其他插件一样安装后，在 **设置 › 插件** 中选中它，点击图标主题旁的 **应用**
+（**使用默认图标** 可以切回），或者在 **设置 › 外观与行为 › 外观** 的 **文件图标主题** 中选择。
+安装或启用插件时如果当前没有选中任何图标主题，会自动选中该插件的第一个图标主题。
+
+## 主题文件
+
+`theme.json` 把名称映射到 SVG 文件（路径相对包目录）：
+
+```json
+{
+  "iconDefinitions": { "rust": "icons/rust.svg", "folder-src": "icons/folder-src.svg" },
+  "file": "file",
+  "folder": "folder",
+  "folderExpanded": "folder-open",
+  "fileExtensions": { "rs": "rust", "d.ts": "typescript-def" },
+  "fileNames": { "cargo.toml": "cargo" },
+  "folderNames": { "src": "folder-src" }
+}
+```
+
+| Key                        | 含义                                                          |
+| -------------------------- | ------------------------------------------------------------- |
+| `iconDefinitions`          | 图标 id 到 SVG 路径的映射（或 `{ "light", "dark" }`，见下）。 |
+| `file`                     | 没有其他规则匹配时的文件图标。                                |
+| `folder`、`folderExpanded` | 没有其他规则匹配时，文件夹折叠和展开的图标。                  |
+| `fileExtensions`           | 扩展名（不含点）到图标 id。支持多段扩展名（`d.ts`）。         |
+| `fileNames`                | 精确文件名到图标 id。                                         |
+| `folderNames`              | 文件夹名到图标 id。                                           |
+
+匹配规则：
+
+- 文件先按完整文件名匹配，再按最长扩展名（`a.test.ts` 先试 `test.ts`，再试 `ts`），最后用 `file`。
+- 文件夹先按名称匹配，再用 `folder` / `folderExpanded`。有特殊角色的文件夹（源码根目录、已排除、模块）保留内置图标。
+- 名称不区分大小写。
+
+限制：最多 5000 个图标，每个最大 64 KiB，映射总数最多 20,000 条。每个 SVG 在安装时都会被净化：只允许白名单内的元素和属性，
+不允许脚本、事件处理器、外部引用、`url()` 或实体。
+
+## 可选字段
+
+```json
+{
+  "iconDefinitions": { "rust": { "light": "icons/rust.svg", "dark": "icons/rust_dark.svg" } },
+  "folderOpen": "folder-open",
+  "patterns": [
+    { "pattern": "^.*\\.spec\\.ts$", "icon": "test-ts", "ignoreCase": true },
+    { "pattern": "/fixtures/", "icon": "fixture", "path": true, "group": "tests" },
+    { "pattern": "^src$", "icon": "folder-src", "target": "folder", "openIcon": "folder-src-open" }
+  ],
+  "overrides": { "chevron-right": "arrow-right", "symbol-class": "class" },
+  "groups": [{ "id": "tests", "name": "Tests", "enabled": false }],
+  "choices": [
+    {
+      "id": "arrows",
+      "name": "Arrows",
+      "default": "plain",
+      "options": [
+        { "id": "plain", "name": "Default" },
+        { "id": "plus", "name": "Plus-Minus", "overrides": { "chevron-right": "plus" } }
+      ]
+    }
+  ],
+  "accent": true
+}
+```
+
+- **浅色与深色。** `iconDefinitions` 的值可以是 `{ "light", "dark" }`，深色主题下使用 dark 版本。图标 id 不能以 `_dark` 结尾。
+- **`patterns`** 是按顺序检查的正则表达式，优先于 `fileNames` 和 `fileExtensions`。`target` 为 `file`（默认）或 `folder`；
+  设置 `path` 时匹配整个路径（以 `/` 分隔）而不是名称；`ignoreCase` 忽略大小写。可能严重回溯的模式（重复的分组、
+  同一名称有过多匹配方式）、环视、内联标志和命名分组都会被拒绝。
+- **`openIcon`**（文件夹模式）和 **`folderOpen`**（其他文件夹）用于包含已在编辑器中打开文件的文件夹，前提是开启了主题的空心文件夹选项。
+- **`overrides`** 按名称替换 IDE 的内置图标（`chevron-right`、`folder-source` 等）；符号图标（`symbol-<kind>`、`class`、`method` 等）
+  是代码元素图标。
+- **`groups`** 是用户可以整组开关的模式集合；`enabled` 为默认状态。
+- **`choices`** 是用户从中选一个的变体；所选选项的 `overrides` 优先于顶层的 `overrides`。
+- **`accent: true`**：带 `data-tint="true"` 的元素使用用户选择的颜色。
+- 带 `data-themed="true"` 的元素使用 **设置 › 外观与行为 › 外观** 中的强调色，或配色主题自定义的强调色。
+
+## 设置页面
+
+`settings` 描述主题在 **设置 › 插件** 下的页面，页面以主题的 label 命名。没有 `settings` 的主题没有设置页面。
+
+```json
+{
+  "settings": [
+    {
+      "title": "Icons",
+      "items": [
+        { "option": "hideFiles", "invert": true, "label": "Show file icons", "hint": "In trees, lists and tabs" },
+        { "option": "groups", "columns": 2 },
+        { "option": "choice", "choice": "arrows" },
+        { "option": "iconSize", "label": "Icon size", "default": 16 }
+      ]
+    }
+  ]
+}
+```
+
+每个分区有 `title` 和 `items`。每一项指定一个由 IDE 实现的 `option`，附上主题提供的 `label`、可选的 `hint`，以及该选项需要时的 `default`：
+
+| `option`                                                                                | 控件               | 字段                                                 |
+| --------------------------------------------------------------------------------------- | ------------------ | ---------------------------------------------------- |
+| `hideFiles`、`hideFolders`、`hideUiIcons`、`hidePsiIcons`、`hollowFolders`              | 复选框             | `invert`：勾选表示关闭                               |
+| `groups`                                                                                | 每个分组一个复选框 | `columns`（1–4）、`label?`（显示分组名）             |
+| `choice`                                                                                | 该变体的选项       | `choice`（其 id）、`label?`（默认为其名称）          |
+| `accent`、`monochrome`                                                                  | 复选框和颜色       | `default`（`#rrggbb`）；`accent` 需要 `accent: true` |
+| `saturation`（0–20）、`opacity`（10–100）、`iconSize`（12–32）、`rowHeight`（16–48 px） | 复选框和数字       | `default`，须在范围内                                |
+
+这些值按主题保存在 `appearance.fileIconThemeOptions` 设置中，在该主题被选中时生效。
+
+## 为插件自己的文件类型提供图标
+
+新增语言或文件类型的插件，不必做成图标主题也能附带图标。无论用户使用哪个图标主题，这些图标都会显示：
+
+```toml
+[[contributes.fileIcons]]
+id = "graphviz"
+patterns = ["*.dot", "*.gv"]          # 文件名通配符，不能含目录
+icon = "icons/graphviz.svg"
+iconDark = "icons/graphviz_dark.svg"  # 可选
+```
+
+[Graphviz](https://github.com/l0ng-ai/openidea/tree/main/plugins/official/graphviz) 用它为 `.dot` 文件提供图标。
+这些 SVG 与图标主题的 SVG 一样会被净化。
+
+## 建议
+
+- Material Icons 的 SVG 和 `theme.json` 由脚本生成（`generate.py`，不属于插件包）；图标很多时，生成比手工编辑更可靠。
+- 让图标在 16 px 下、浅色和深色背景上都清晰可辨，或者提供 `dark` 版本。
+- `openidea-plugin check` 会像安装时一样校验主题文件和每个 SVG。

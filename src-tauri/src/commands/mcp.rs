@@ -1,4 +1,4 @@
-//! Tools › MCP Server: runs `ide_mcp::McpServer` over built-in host tools
+//! Agents › MCP Server: runs `ide_mcp::McpServer` over built-in host tools
 //! while `mcpServer.enabled` is on, and reports where it listens.
 
 use crate::state::AppState;
@@ -63,7 +63,7 @@ pub fn stop(state: &AppState) {
     }
 }
 
-/// What Settings › Tools › MCP Server shows.
+/// What Settings › Agents › MCP Server shows.
 #[derive(Serialize, Type)]
 #[serde(rename_all = "camelCase")]
 pub struct McpServerStatus {

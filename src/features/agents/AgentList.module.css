@@ -1,0 +1,288 @@
+/* The agent list beside the selected agent, as in Settings › Plugins. */
+.split {
+  display: flex;
+  flex: 1;
+  min-width: 0;
+  min-height: 420px;
+  border-radius: var(--radius-small);
+  box-shadow: inset 0 0 0 1px var(--border);
+  overflow: hidden;
+}
+.master {
+  display: flex;
+  flex: 0 1 240px;
+  flex-direction: column;
+  min-width: 150px;
+  min-height: 0;
+  border-right: 1px solid var(--border);
+}
+.search {
+  margin: 8px;
+}
+.list {
+  flex: 1;
+  min-height: 0;
+  padding: 0 4px 4px;
+}
+.listSection {
+  display: flex;
+  align-items: flex-end;
+  height: 100%;
+  padding: 0 8px 4px;
+  color: var(--fg-subtle);
+  font-size: var(--fs-small);
+}
+.agentRow {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  width: 100%;
+  min-width: 0;
+  padding: 0 8px;
+}
+.agentName {
+  flex: 1;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.agentMissing .agentName {
+  color: var(--fg-muted);
+}
+.tag {
+  flex: none;
+  color: var(--fg-subtle);
+  font-size: var(--fs-small);
+}
+.tagAccent {
+  color: var(--accent);
+}
+.empty {
+  flex: 1;
+  margin: 0;
+  padding: 16px;
+  color: var(--fg-muted);
+  font-size: var(--fs-small);
+  text-align: center;
+}
+.registryState {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  padding: 6px 12px;
+  border-top: 1px solid var(--border);
+  color: var(--fg-muted);
+  font-size: var(--fs-small);
+  overflow-wrap: anywhere;
+}
+
+.details {
+  flex: 1;
+  min-width: 200px;
+  padding: 12px 16px 16px;
+  overflow: auto;
+}
+.header {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  min-width: 0;
+}
+.heading {
+  flex: 1;
+  min-width: 0;
+}
+.heading h3 {
+  margin: 0;
+  color: var(--fg-strong);
+  font-size: var(--fs-ui);
+  font-weight: 600;
+}
+.facts {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  min-width: 0;
+  margin-top: 2px;
+  color: var(--fg-muted);
+  font-size: var(--fs-small);
+}
+.facts > span:last-child {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.dot {
+  flex: none;
+  width: 6px;
+  height: 6px;
+  border-radius: 50%;
+  background: var(--fg-subtle);
+}
+.dotFound {
+  background: var(--success);
+}
+.dotCustom {
+  background: var(--accent);
+}
+.actions {
+  display: flex;
+  flex: none;
+  gap: 6px;
+}
+.progress {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  max-width: 360px;
+  margin: 10px 0 0 34px;
+}
+.notice,
+.description,
+.warning,
+.links,
+.error {
+  margin: 10px 0 0 34px;
+  overflow-wrap: anywhere;
+}
+.notice {
+  color: var(--accent);
+  font-size: var(--fs-small);
+}
+.description {
+  color: var(--fg);
+}
+.warning {
+  color: var(--warning);
+  font-size: var(--fs-small);
+}
+.registryState .warning,
+.registryState .error {
+  margin: 0;
+}
+.error {
+  color: var(--danger);
+  font-size: var(--fs-small);
+  white-space: pre-wrap;
+}
+.links {
+  display: flex;
+  gap: 12px;
+}
+.link {
+  padding: 0;
+  border: none;
+  background: none;
+  color: var(--link);
+  font: inherit;
+  font-size: var(--fs-small);
+  cursor: pointer;
+}
+.link:hover {
+  text-decoration: underline;
+}
+.thirdParty {
+  margin: 20px 0 0;
+  color: var(--fg-subtle);
+  font-size: var(--fs-small);
+}
+
+/* IDEA titled separator: "Launch ─────────", its rows indented under it. */
+.section {
+  margin-top: 18px;
+}
+.sectionTitle {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  height: 22px;
+  margin-bottom: 4px;
+  color: var(--fg-strong);
+}
+.sectionRule {
+  flex: 1;
+  height: 1px;
+  background: var(--border);
+}
+.sectionBody {
+  padding-left: 18px;
+}
+.sectionBody > .error {
+  margin-left: 0;
+}
+.text {
+  margin: 4px 0;
+  color: var(--fg);
+  overflow-wrap: anywhere;
+}
+.text code,
+.launch {
+  font-family: var(--font-mono);
+}
+.text code {
+  color: var(--fg-strong);
+}
+/* "Label: control" rows; a hint sits under its control. */
+.form {
+  display: grid;
+  /* Wide enough for the longest label, so the sections' controls line up. */
+  grid-template-columns: minmax(150px, max-content) minmax(0, 1fr);
+  align-items: center;
+  column-gap: 10px;
+  row-gap: 4px;
+  min-width: 0;
+}
+.label {
+  color: var(--fg);
+  white-space: nowrap;
+}
+.label::after {
+  content: ":";
+}
+.control {
+  display: flex;
+  align-items: center;
+  min-width: 0;
+  min-height: 28px;
+}
+.rowHint {
+  grid-column: 2;
+  margin: 0 0 6px;
+  color: var(--fg-subtle);
+  font-size: var(--fs-small);
+  overflow-wrap: anywhere;
+}
+.form > .rowHint:last-child {
+  margin-bottom: 0;
+}
+.field {
+  display: flex;
+  flex: 1;
+  align-items: center;
+  gap: 4px;
+  min-width: 0;
+  max-width: 480px;
+}
+.field > :first-child {
+  flex: 1;
+  min-width: 0;
+}
+.select {
+  display: flex;
+  width: 280px;
+  max-width: 100%;
+  min-width: 0;
+}
+/* Every select of a form is as wide as the others, as IDEA lays out combo boxes. */
+.select > button {
+  flex: 1;
+  min-width: 0;
+}
+.launch {
+  min-width: 0;
+  overflow: hidden;
+  color: var(--fg-muted);
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}

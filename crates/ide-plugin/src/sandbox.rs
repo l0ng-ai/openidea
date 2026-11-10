@@ -169,6 +169,19 @@ pub fn read_text(real: &Path) -> Result<String, String> {
     String::from_utf8(bytes).map_err(|_| format!("{}: not valid UTF-8 text", real.display()))
 }
 
+/// Reads the bytes of a file that `resolve_in_root` already approved: binary
+/// content is fine, the size cap is the same as [`read_text`]'s.
+pub fn read_bytes(real: &Path) -> Result<Vec<u8>, String> {
+    let meta = std::fs::metadata(real).map_err(|e| e.to_string())?;
+    if !meta.is_file() {
+        return Err(format!("{}: not a file", real.display()));
+    }
+    if meta.len() > MAX_READ_BYTES {
+        return Err(format!("{}: file is larger than {} MiB", real.display(), MAX_READ_BYTES >> 20));
+    }
+    std::fs::read(real).map_err(|e| e.to_string())
+}
+
 /// Why a read outside the project was refused.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum Refusal {
@@ -526,6 +539,25 @@ mod tests {
         std::fs::write(tmp.path().join("b.bin"), [0xff, 0xfe, 0x00]).unwrap();
         let p = resolve_in_root(tmp.path(), "b.bin").unwrap();
         assert!(read_text(&p).unwrap_err().contains("UTF-8"));
+    }
+
+    #[test]
+    fn read_bytes_returns_the_exact_bytes_up_to_the_cap() {
+        let tmp = tempfile::tempdir().unwrap();
+        // The bytes binary files carry survive, where read_text refuses them.
+        let binary = [0x25, 0x50, 0x44, 0x46, 0x00, 0xff, 0xfe, 0x1b];
+        std::fs::write(tmp.path().join("b.bin"), binary).unwrap();
+        let p = resolve_in_root(tmp.path(), "b.bin").unwrap();
+        assert_eq!(read_bytes(&p).unwrap(), binary);
+        // A directory is not a file; the size cap is read_text's.
+        assert!(read_bytes(&resolve_in_root(tmp.path(), ".").unwrap()).unwrap_err().contains("not a file"));
+        let big = tmp.path().join("big.bin");
+        std::fs::write(&big, vec![0u8; (MAX_READ_BYTES + 1) as usize]).unwrap();
+        let err = read_bytes(&big).unwrap_err();
+        assert!(err.contains("larger than"), "{err}");
+        let at_cap = tmp.path().join("at-cap.bin");
+        std::fs::write(&at_cap, vec![7u8; MAX_READ_BYTES as usize]).unwrap();
+        assert_eq!(read_bytes(&at_cap).unwrap().len(), MAX_READ_BYTES as usize);
     }
 
     /// The grant a manifest author would write for `dir`: the plain path, no

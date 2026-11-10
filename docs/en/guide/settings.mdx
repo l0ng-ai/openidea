@@ -1,0 +1,54 @@
+---
+title: "Settings"
+description: "Open and search the Settings window, choose between global and project values, and export, import or carry settings to new projects."
+---
+
+## Open Settings
+
+- macOS: **OpenIDEA › Settings…** or `⌘,`
+- Windows and Linux: **File › Settings…** or `Ctrl+Alt+S`
+
+Settings open in their own window. The tree on the left groups the pages as in IntelliJ IDEA: **Appearance & Behavior**, **Keymap**, **Editor**, **Plugins**, **Version Control**, **Build, Execution, Deployment**, **Languages & Frameworks**, **Tools** and **Security**. Installed plugins can add pages of their own.
+
+## Find a setting
+
+Type in the search field above the tree. The tree keeps only the pages that match, and matching option labels are highlighted on the page. Search works in English and in the current display language.
+
+You don't need the Settings window open to search: **Search Everywhere** (`⇧⇧` / `Shift Shift`) and **Find Action** (`⇧⌘A` / `Ctrl+Shift+A`) also list settings, and choosing one opens its page.
+
+## Apply changes
+
+Changes are collected until you click **Apply** or **OK**. **Cancel** discards them. Most changes take effect right away in every open window.
+
+## Global and project settings
+
+Settings have two levels:
+
+- **Global** values apply to every project.
+- **Project** values apply to one project and override the global value.
+
+Pages that can hold project values show a **Global** / **This project** switch at the top. With **This project** selected, your changes are saved to `.openidea/settings.toml` in the project and override the global value. Commit that file if your team should share the values.
+
+Some settings are global only, such as the MCP server and HTTP proxy. Project files can never mark a project as trusted; trust decisions stay in your user data (see [Quickstart](/en/guide/quickstart#trust-the-project)).
+
+## Settings for new projects
+
+**File › New Projects Setup › Settings for New Projects…** opens Settings on the global level only, starting at the Java page. New projects inherit these values. Use it for defaults such as the JDK, Maven or language servers that every project should start with.
+
+## Export and import
+
+Under **File › Manage IDE Settings**:
+
+- **Export Settings…** writes your global settings to a JSON file (`openidea-settings.json` by default), together with live templates, file templates, postfix templates, macros, tool window layouts and a few view options.
+- **Import Settings…** replaces your global settings with those in an exported file. Restart when asked to apply the imported templates, macros, layouts and view options. Choosing a JetBrains `settings.zip` here imports from a JetBrains IDE instead.
+- **Import Settings from JetBrains IDE…** imports from a JetBrains IDE installed on this computer. See [Migrate](/en/guide/migrate#import-settings).
+
+## Settings files
+
+Settings are stored as TOML: the global values in `settings.toml` in the configuration directory, the project values in `<project>/.openidea/settings.toml`. You can edit them by hand. See the [settings reference](/en/reference/settings) for the file format and keys, and [Data directories](/en/reference/data-directories) for where the global file lives.
+
+## Related pages
+
+- [Keymaps](/en/guide/keymap)
+- [Themes and fonts](/en/guide/themes)
+- [Display language](/en/guide/locale)

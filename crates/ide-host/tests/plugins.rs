@@ -98,6 +98,44 @@ impl PluginWorkspace for TestWorkspace {
     fn projects(&self) -> Vec<PathBuf> {
         std::iter::once(self.root.clone()).chain(self.other_roots.lock().iter().cloned()).collect()
     }
+    /// Find in Files over the fixture's files on disk.
+    fn search_text(
+        &self,
+        _client: Option<&str>,
+        root: &Path,
+        query: ide_plugin::TextQuery,
+        limit: u32,
+        cancel: &ide_core::CancellationToken,
+    ) -> Result<ide_plugin::TextSearch, HostError> {
+        let query = ide_search::SearchQuery {
+            pattern: query.pattern,
+            is_regex: query.regex,
+            case_sensitive: query.case_sensitive,
+            whole_word: query.whole_word,
+            include: query.include,
+            exclude: query.exclude,
+            scope: ide_search::SearchScope::Project,
+            max_matches: limit,
+            context: Default::default(),
+        };
+        let files = Mutex::new(Vec::new());
+        let summary = ide_search::search(root, &query, &|_| None, cancel, &|file| files.lock().push(file))
+            .map_err(|e| HostError::Failed(e.to_string()))?;
+        let matches = files
+            .into_inner()
+            .into_iter()
+            .flat_map(|file| {
+                file.matches.into_iter().map(move |m| ide_plugin::TextMatch {
+                    location: ide_plugin::Location {
+                        path: PathBuf::from(&file.path.0),
+                        range: ide_core::Range::new(ide_core::Pos::new(m.line, 0), ide_core::Pos::new(m.line, 0)),
+                    },
+                    line: m.text,
+                })
+            })
+            .collect();
+        Ok(ide_plugin::TextSearch { matches, limit_hit: summary.limit_hit })
+    }
     fn buffer_text(&self, path: &Path) -> Option<String> {
         if path.ends_with("event-barrier.txt") {
             let gate = self.event_read_gate.lock().take();
@@ -448,6 +486,29 @@ fn read_file_is_confined_to_the_project() {
     let err = f.host.run_command("misbehave", "read", Some("src/notes.txt"), inv).unwrap_err().message;
     assert!(err.contains("no project is open"), "{err}");
     assert_eq!(f.run("misbehave", "root", None).unwrap().unwrap(), to_ipc(&f.project));
+    assert_eq!(f.status("misbehave"), PluginStatus::Active);
+}
+
+/// `project.read-bytes` returns the exact bytes on disk, where `read-file`
+/// wants UTF-8, and follows `read-file`'s confinement rules.
+#[test]
+fn read_bytes_reads_the_project_file_exactly_and_stays_inside() {
+    let f = fixture(Limits::default());
+    f.install(&misbehave_pkg());
+    let binary = [0x25u8, 0x50, 0x44, 0x46, 0x00, 0xff, 0x1b, 0x7f];
+    std::fs::write(f.project.join("logo.bin"), binary).unwrap();
+    let hex = binary.iter().map(|b| format!("{b:02x}")).collect::<Vec<_>>().join(" ");
+    assert_eq!(f.run("misbehave", "read-bytes", Some("logo.bin")).unwrap().unwrap(), format!("8 {hex}"));
+    let abs = f.project.join("logo.bin");
+    assert_eq!(f.run("misbehave", "read-bytes", Some(abs.to_str().unwrap())).unwrap().unwrap(), format!("8 {hex}"));
+    // The same refusal and not-found behaviour as `read-file`; like every
+    // refusal, it is the plugin's to handle: it keeps running.
+    let err = f.run("misbehave", "read-bytes", Some("../secret.txt")).unwrap_err();
+    assert!(err.contains("outside the project root"), "{err}");
+    let err = f.run("misbehave", "read-bytes", Some("src/missing.bin")).unwrap_err();
+    assert!(err.contains("not found"), "{err}");
+    let err = f.run("misbehave", "read-bytes", Some("src")).unwrap_err();
+    assert!(err.contains("not a file"), "{err}");
     assert_eq!(f.status("misbehave"), PluginStatus::Active);
 }
 
@@ -2740,9 +2801,12 @@ fn official_mybatis_navigates_between_interface_and_xml() {
     let xml = "<mapper namespace=\"com.acme.UserMapper\">\n  <select id=\"findById\">select 1</select>\n</mapper>\n";
     std::fs::write(&java_path, java).unwrap();
     std::fs::write(&xml_path, xml).unwrap();
-    // Noise the index has to skip.
-    for i in 0..200 {
-        std::fs::write(f.project.join(format!("src/f{i}.xml")), "<beans/>").unwrap();
+    // Noise: other mappers, some large, that the lookup must not read one by one.
+    let filler = "  <select id=\"q\">select 1</select>\n".repeat(3000);
+    for i in 0..600 {
+        let body = if i % 50 == 0 { filler.as_str() } else { "" };
+        let other = format!("<mapper namespace=\"com.acme.Other{i}\">\n{body}</mapper>\n");
+        std::fs::write(f.project.join(format!("src/f{i}.xml")), other).unwrap();
     }
     let doc = |path: &Path, language: &str, text: &str| ide_plugin::ProviderDocument {
         path: path.to_path_buf(),
@@ -2751,9 +2815,9 @@ fn official_mybatis_navigates_between_interface_and_xml() {
         text: text.into(),
     };
     let jdoc = doc(&java_path, "java", java);
-    // The first call indexes the XML files; on a slow machine that runs past the
-    // edit-path budget, so the answer is dropped (the index is kept) and calls
-    // queued behind it are skipped. The editor asks again; so does this.
+    // The first call searches the XML files; on a slow machine that can run past the
+    // edit-path budget, so the answer is dropped and calls queued behind it are
+    // skipped. The editor asks again; so does this.
     let deadline = Instant::now() + Duration::from_secs(10);
     let markers = loop {
         let markers = f.host.provide_line_markers(&jdoc);
@@ -2782,7 +2846,7 @@ fn official_mybatis_navigates_between_interface_and_xml() {
         "not its language"
     );
 
-    // Warm (index cached): well inside the edit-path budget.
+    // Warm (lookup cached): well inside the edit-path budget.
     let slow = f.host.info_of("openidea.mybatis").unwrap().stats.slow_calls;
     let mut times = Vec::new();
     for _ in 0..20 {
@@ -5723,6 +5787,7 @@ fn api14_denies_new_privileges_and_requires_an_invoking_window() {
         ("open-editors", "", "editor.read"),
         ("open-editor", "a.txt", "project.read"),
         ("search-text", "needle", "project.read"),
+        ("read-bytes", "a.txt", "project.read"),
         ("problems", "", "project.read"),
         ("decorations", "a.txt", "project.read"),
         ("clear-decorations", "", "project.read"),

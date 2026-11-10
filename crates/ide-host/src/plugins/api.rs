@@ -530,6 +530,8 @@ pub(super) struct Shared {
     pub event_editors: RwLock<HashMap<String, ide_plugin::EditorContext>>,
     /// Validated UI declarations (settings schemas, declared views).
     pub ui: Arc<ide_extension::UiStore>,
+    /// Extension points plugins declare and what was contributed to them.
+    pub registry: Arc<ide_extension::ExtensionRegistry>,
     /// The UI language the windows report (BCP 47).
     pub locale: RwLock<String>,
     /// (plugin, window) → the log tabs its code opened there, oldest first:
@@ -551,9 +553,11 @@ impl Shared {
         pins: Arc<RwLock<HashMap<(String, String), ProgramPin>>>,
         ui: Arc<ide_extension::UiStore>,
         ledger: Arc<Mutex<Ledger>>,
+        registry: Arc<ide_extension::ExtensionRegistry>,
     ) -> Arc<Self> {
         Arc::new(Self {
             ui,
+            registry,
             locale: RwLock::new("en".into()),
             sink,
             workspace: RwLock::new(None),
@@ -1330,6 +1334,21 @@ impl HostApi for PluginApi {
         let host = self.shared.workspace()?.database_host()?;
         let root = host.project(client).ok()?.root.clone();
         host.mcp_executable.read().as_ref().map(|exe| ide_mcp::stdio_command(exe, &root))
+    }
+
+    fn extension_contributions(&self, point: &str) -> Result<Vec<(String, String)>, HostError> {
+        self.require_api("extension points", 5)?;
+        match self.shared.registry.point_owner(point) {
+            None => Err(HostError::NotFound(format!("no running plugin declares {point}"))),
+            Some(owner) if owner != self.id() => Err(HostError::Denied(format!("extension point {point}"))),
+            Some(_) => Ok(self
+                .shared
+                .registry
+                .contributions_to(point)
+                .into_iter()
+                .map(|c| (c.plugin, c.data.to_string()))
+                .collect()),
+        }
     }
 
     fn register_run_target(&self, root: &Path, target: ide_plugin::PluginRunTarget) -> Result<(), HostError> {
@@ -3217,7 +3236,14 @@ mod tests {
         )
         .unwrap();
         let sink: Arc<dyn PluginEventSink> = Arc::new(|_: Option<&str>, _: PluginEvent| {});
-        let shared = Shared::new(sink, dir.join(".data"), pins, ide_extension::UiStore::new(), Arc::default());
+        let shared = Shared::new(
+            sink,
+            dir.join(".data"),
+            pins,
+            ide_extension::UiStore::new(),
+            Arc::default(),
+            Arc::new(ide_extension::ExtensionRegistry::new()),
+        );
         PluginApi { pkg: Package::new(manifest, dir.to_path_buf()), shared }
     }
 
@@ -3952,6 +3978,7 @@ mod workbench_tests {
             Arc::default(),
             ide_extension::UiStore::new(),
             Arc::default(),
+            Arc::new(ide_extension::ExtensionRegistry::new()),
         );
         *shared.workspace.write() =
             Some(Arc::new(Workspace { root: root.into(), trusted, text: text.map(str::to_owned) }));

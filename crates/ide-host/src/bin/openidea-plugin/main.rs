@@ -368,7 +368,9 @@ fn check(dir: &Path) -> Result<(), String> {
         let manifest = Manifest::load(&dir)?;
         println!("{} {} — {}", preview.id, preview.version, preview.name);
         if manifest.legacy {
-            println!("  note: plugin.toml uses the 0.1 format (`openidea-api`); see plugins/README.md to move to 0.2");
+            println!(
+                "  note: plugin.toml uses the 0.1 format (`openidea-api`); its code no longer runs: rebuild it against the 1.x SDK and declare `engines.openidea` (see plugins/README.md)"
+            );
         }
         if let Some(wasm) = &manifest.wasm {
             let engine = PluginEngine::new()?;
