@@ -218,6 +218,8 @@ export interface BuiltinInspection {
   defaultLevel?: InspectionLevel;
   /** `false`: off until a profile turns it on. */
   defaultEnabled?: boolean;
+  /** Each diagnostic code is an inspection of its own (`<id>:<code>`), as a language server's are. */
+  byCode?: boolean;
   options?: readonly InspectionOptionSpec[];
 }
 
@@ -299,6 +301,16 @@ export const BUILTIN_INSPECTIONS: readonly BuiltinInspection[] = [
     defaultEnabled: false,
   },
   {
+    id: "builtin:phpstan",
+    producer: "phpstan",
+    name: "PHPStan",
+    group: "PHP",
+    description:
+      "Errors the project's vendor/bin/phpstan reports in a PHP file when it is saved, shown at their lines. PHPStan reads phpstan.neon, phpstan.neon.dist or phpstan.dist.neon from the project root, or the configuration file chosen in Settings › Languages & Frameworks › PHP. Each rule PHPStan has reported is listed below by its identifier and can be turned off or re-graded on its own.",
+    defaultLevel: "warning",
+    byCode: true,
+  },
+  {
     id: "builtin:sql",
     producer: "sql-inspections",
     name: "Unresolved database references",
@@ -346,9 +358,10 @@ export interface InspectionRef {
 export function diagnosticInspection(producer: string, d: Pick<Diagnostic, "code">): InspectionRef | null {
   if (!producer) return null;
   const builtin = BUILTIN_BY_PRODUCER.get(producer);
-  if (builtin) return { id: builtin.id, name: builtin.name };
+  if (builtin && !(builtin.byCode && d.code)) return { id: builtin.id, name: builtin.name };
   const base = producerInspectionId(producer);
-  return d.code ? { id: codeInspectionId(base, d.code), name: `${producer} ${d.code}` } : { id: base, name: producer };
+  const name = builtin?.name ?? producer;
+  return d.code ? { id: codeInspectionId(base, d.code), name: `${name} ${d.code}` } : { id: base, name };
 }
 
 /** Inspection id of everything a producer reports. */

@@ -8,6 +8,18 @@ use std::path::{Path, PathBuf};
 use std::process::Command;
 use std::time::Duration;
 
+/// A selection to format. Offsets are UTF-16 code units for Prettier; the
+/// one-based line and column values are Unicode code points for Ruff.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct FormatRange {
+    pub start_offset: u32,
+    pub end_offset: u32,
+    pub start_line: u32,
+    pub start_col: u32,
+    pub end_line: u32,
+    pub end_col: u32,
+}
+
 /// Walk from the file's directory upward, including workspace parents (monorepos).
 pub fn find_up(file: &Path, relative: &Path) -> Option<PathBuf> {
     file.parent()?.ancestors().map(|dir| dir.join(relative)).find(|p| p.is_file())
@@ -15,6 +27,24 @@ pub fn find_up(file: &Path, relative: &Path) -> Option<PathBuf> {
 
 pub fn display_name(tool: &str) -> &str {
     crate::registry::find(tool).map_or(tool, |t| t.display)
+}
+
+/// A project's PHP-CS-Fixer: its committed configuration and `vendor/bin/php-cs-fixer`.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct PhpCsFixer {
+    pub config: PathBuf,
+    pub bin: PathBuf,
+}
+
+/// PHP-CS-Fixer for `file`: the nearest folder above it with `.php-cs-fixer.php` (which wins, as
+/// PHP-CS-Fixer documents) or `.php-cs-fixer.dist.php`, and the nearest `vendor/bin/php-cs-fixer`.
+/// `None` without both: Reformat Code keeps the language server.
+pub fn php_cs_fixer(file: &Path) -> Option<PhpCsFixer> {
+    let config = file.parent()?.ancestors().find_map(|dir| {
+        [".php-cs-fixer.php", ".php-cs-fixer.dist.php"].iter().map(|name| dir.join(name)).find(|p| p.is_file())
+    })?;
+    let bin = find_up(file, &Path::new("vendor").join("bin").join("php-cs-fixer"))?;
+    Some(PhpCsFixer { config, bin })
 }
 
 fn package_bin(package: &Path, tool: &str) -> IdeResult<PathBuf> {
@@ -32,9 +62,13 @@ fn package_bin(package: &Path, tool: &str) -> IdeResult<PathBuf> {
     Ok(path)
 }
 
-/// Prettier formats a range for some languages (`config.range`); oxfmt formats whole files only.
+/// Prettier and Ruff format ranges for some languages (`config.range`); oxfmt formats whole files only.
 pub fn supports_range(tool: &str, config: &FormatterConfig) -> bool {
-    tool == "prettier" && config.range
+    matches!(tool, "prettier" | "ruff") && config.range
+}
+
+fn is_formatter(tool: &str) -> bool {
+    crate::registry::find(tool).is_some_and(|t| t.kind == crate::ToolKind::Formatter || t.name == "ruff")
 }
 
 impl Tools {
@@ -44,7 +78,7 @@ impl Tools {
     }
 
     fn resolve_formatter_command(&self, tool: &str, file: &Path, custom: Option<&Path>) -> IdeResult<Command> {
-        if crate::registry::find(tool).is_none_or(|t| t.kind != crate::ToolKind::Formatter) {
+        if !is_formatter(tool) {
             return Err(IdeError::unavailable(format!("Unknown external formatter: {tool}")));
         }
         let package = Path::new("node_modules").join(tool);
@@ -73,18 +107,36 @@ impl Tools {
     }
 }
 
-/// Both tools resolve their configuration and plugins themselves. Prettier's
-/// project configuration overrides the editor indentation passed here; oxfmt has
-/// no such flags and reads its configuration and `.editorconfig` only.
+/// Every tool resolves its configuration itself. Prettier's project configuration
+/// overrides the editor indentation passed here; oxfmt and Ruff read their own
+/// configuration files. Ruff also discovers the nearest `pyproject.toml`,
+/// `ruff.toml`, or `.ruff.toml` from the stdin filename.
 pub fn arguments(
     tool: &str,
     config: &FormatterConfig,
     file: &Path,
     tab_size: u32,
     insert_spaces: bool,
-    range: Option<(u32, u32)>,
+    range: Option<FormatRange>,
+    config_file: Option<&Path>,
 ) -> Vec<OsString> {
     let mut args: Vec<OsString> = Vec::new();
+    if tool == "ruff" {
+        args.push("format".into());
+        if let Some(config_file) = config_file {
+            args.extend(["--config".into(), config_file.as_os_str().to_owned()]);
+        }
+        args.extend(["--stdin-filename".into(), file.as_os_str().to_owned(), "-".into()]);
+        if supports_range(tool, config)
+            && let Some(range) = range
+        {
+            args.extend([
+                "--range".into(),
+                format!("{}:{}-{}:{}", range.start_line, range.start_col, range.end_line, range.end_col).into(),
+            ]);
+        }
+        return args;
+    }
     if tool == "prettier" {
         let parser = if config.parser == "markdown" && file.extension().is_some_and(|s| s == "mdx") {
             "mdx"
@@ -107,9 +159,14 @@ pub fn arguments(
     }
     args.extend(["--stdin-filepath".into(), file.as_os_str().to_owned()]);
     if supports_range(tool, config)
-        && let Some((start, end)) = range
+        && let Some(range) = range
     {
-        args.extend(["--range-start".into(), start.to_string().into(), "--range-end".into(), end.to_string().into()]);
+        args.extend([
+            "--range-start".into(),
+            range.start_offset.to_string().into(),
+            "--range-end".into(),
+            range.end_offset.to_string().into(),
+        ]);
     }
     // CLI defaults only find ignores in cwd; explicitly pass the nearest ancestor's files.
     for name in [".prettierignore", ".gitignore"] {
@@ -118,6 +175,33 @@ pub fn arguments(
         }
     }
     args
+}
+
+impl Tools {
+    /// `php vendor/bin/php-cs-fixer fix` of `target` with the project's configuration, from the
+    /// configuration's folder; `php` is the interpreter chosen in the settings, else the one on `PATH`.
+    pub fn php_cs_fixer_command(&self, php: Option<&Path>, fixer: &PhpCsFixer, target: &Path) -> IdeResult<Command> {
+        let php = match php {
+            Some(php) => php.to_path_buf(),
+            None => self.which("php").ok_or_else(|| IdeError::unavailable("PHP-CS-Fixer: PHP is not installed"))?,
+        };
+        let mut cmd = self.command(php);
+        cmd.arg(&fixer.bin)
+            .args(["fix", "--config"])
+            .arg(&fixer.config)
+            .args(["--using-cache=no", "--no-interaction", "--show-progress=none"])
+            .arg(target);
+        if let Some(dir) = fixer.config.parent() {
+            cmd.current_dir(dir);
+        }
+        Ok(cmd)
+    }
+}
+
+/// Runs a [`Tools::php_cs_fixer_command`], which rewrites its target file in place.
+pub fn run_php_cs_fixer(mut command: Command, cancel: &CancellationToken) -> IdeResult<String> {
+    crate::process::run_input(&mut command, "", Duration::from_secs(30), cancel)
+        .map_err(|e| IdeError::invalid(format!("PHP-CS-Fixer: {}", e.message.trim())))
 }
 
 pub fn run(tool: &str, mut command: Command, text: &str, cancel: &CancellationToken) -> IdeResult<String> {
@@ -181,8 +265,15 @@ mod tests {
             ("vue", true),
         ] {
             let config = FormatterConfig { tool: "prettier".into(), parser: parser.into(), range: supports_range };
-            let args =
-                arguments("prettier", &config, Path::new("/project with spaces/file.md"), 4, false, Some((3, 9)));
+            let range = Some(FormatRange {
+                start_offset: 3,
+                end_offset: 9,
+                start_line: 1,
+                start_col: 1,
+                end_line: 1,
+                end_col: 7,
+            });
+            let args = arguments("prettier", &config, Path::new("/project with spaces/file.md"), 4, false, range, None);
             let args: Vec<_> = args.iter().map(|a| a.to_string_lossy()).collect();
             assert!(args.windows(2).any(|a| a == ["--config-precedence", "file-override"]));
             assert!(args.windows(2).any(|a| a == ["--stdin-filepath", "/project with spaces/file.md"]));
@@ -217,7 +308,9 @@ mod tests {
         );
 
         let config = FormatterConfig { tool: "prettier".into(), parser: "typescript".into(), range: true };
-        let args = arguments("oxfmt", &config, &file, 4, false, Some((3, 9)));
+        let range =
+            Some(FormatRange { start_offset: 3, end_offset: 9, start_line: 1, start_col: 1, end_line: 1, end_col: 7 });
+        let args = arguments("oxfmt", &config, &file, 4, false, range, None);
         let ignore = root.join(".prettierignore").into_os_string();
         assert_eq!(
             args[..4],
@@ -228,5 +321,39 @@ mod tests {
 
         let unknown = tools.formatter_command("rust-analyzer", &file, None).unwrap_err();
         assert!(unknown.message.contains("Unknown external formatter"), "{}", unknown.message);
+    }
+
+    #[test]
+    fn ruff_formats_stdin_and_uses_its_config_and_range_flags() {
+        let config = FormatterConfig { tool: "ruff".into(), parser: "python".into(), range: true };
+        let file = Path::new("/project with spaces/src/example.py");
+        let range = Some(FormatRange {
+            start_offset: 10,
+            end_offset: 20,
+            start_line: 2,
+            start_col: 5,
+            end_line: 4,
+            end_col: 1,
+        });
+        let config_file = Path::new("/shared/config/ruff.toml");
+        let args: Vec<_> = arguments("ruff", &config, file, 4, true, range, Some(config_file))
+            .into_iter()
+            .map(|arg| arg.to_string_lossy().into_owned())
+            .collect();
+        assert_eq!(
+            args,
+            [
+                "format",
+                "--config",
+                "/shared/config/ruff.toml",
+                "--stdin-filename",
+                "/project with spaces/src/example.py",
+                "-",
+                "--range",
+                "2:5-4:1",
+            ]
+        );
+        assert!(supports_range("ruff", &config));
+        assert!(!args.iter().any(|arg| arg == "--stdin-filepath"));
     }
 }

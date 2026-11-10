@@ -83,7 +83,11 @@ export const buildToolsRunAnything: RunAnythingProvider = {
       .map((c): RunAnythingItem => ({
         key: `${c.detail === "recent" ? "h" : "c"}:${c.line}`,
         label: `${WORD[tool]} ${c.line}`,
-        detail: c.detail,
+        detail: c.detail === "recent" || c.detail === "phase" ? undefined : c.detail,
+        group:
+          c.detail === "recent"
+            ? { id: "recent", label: "Recent" }
+            : { id: tool, label: tool === "maven" ? "Maven Goals" : "Gradle Tasks" },
         icon: tool === "maven" ? "file-maven" : "file-gradle",
         completion: `${WORD[tool]} ${c.detail === "recent" ? c.line : `${c.line} `}`,
         run: () => void executeBuildLine(tool, c.line),

@@ -2,12 +2,14 @@
   display: inline-flex;
   flex-direction: column;
   gap: 4px;
-  max-width: 420px;
-  min-width: 200px;
+  width: 280px;
+  max-width: 100%;
+  min-width: 0;
 }
 .controls {
   display: flex;
   gap: 6px;
+  min-width: 0;
 }
 .controls input {
   min-width: 0;

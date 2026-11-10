@@ -6,6 +6,8 @@
  * reported as ignored, never executed.
  */
 
+import { IDEA_ACTIONS } from "@/platform/ideaActions";
+
 /** codemirror-vim mapping context; undefined = Normal, Visual and Operator-pending. */
 export type MapMode = "normal" | "insert" | "visual" | "operatorPending" | undefined;
 
@@ -40,6 +42,67 @@ const MAP_MODES: Record<string, MapMode> = {
   i: "insert",
   o: "operatorPending",
 };
+/**
+ * Vim special-key names are case-insensitive (`<esc>`, `<Esc>`, `<CR>`, `<cr>`…), but
+ * codemirror-vim compares the exact canonical spelling, so a lowercase `<esc>` in a mapping
+ * never matches and the mapping does nothing. Canonical names, keyed by lower-cased name.
+ */
+const SPECIAL_KEYS: Record<string, string> = {
+  esc: "Esc",
+  return: "CR",
+  enter: "CR",
+  cr: "CR",
+  bs: "BS",
+  backspace: "BS",
+  del: "Del",
+  delete: "Del",
+  ins: "Ins",
+  insert: "Ins",
+  space: "Space",
+  tab: "Tab",
+  lt: "lt",
+  bar: "|",
+  bslash: "\\",
+  left: "Left",
+  right: "Right",
+  up: "Up",
+  down: "Down",
+  home: "Home",
+  end: "End",
+  pageup: "PageUp",
+  pagedown: "PageDown",
+};
+
+/** Rewrites `<esc>`/`<cr>`/`<c-c>`… to the exact `<Esc>`/`<CR>`/`<C-c>` codemirror-vim matches. */
+function normalizeVimKeys(keys: string, rhs = false): string {
+  return keys.replace(/<([^<>\s]+)>/g, (whole, inner: string) => {
+    const m = /^((?:[csamd]-)*)(.+)$/i.exec(inner);
+    if (!m) return whole;
+    const prefixes = m[1]!.toUpperCase().split("-");
+    const name = m[2]!;
+    const lower = name.toLowerCase();
+    let canonical = Object.hasOwn(SPECIAL_KEYS, lower)
+      ? SPECIAL_KEYS[lower]!
+      : /^f(?:[1-9]|1[0-2])$/.test(lower)
+        ? name.toUpperCase()
+        : prefixes.length > 1 && name.length === 1
+          ? name
+          : null;
+    if (canonical === null) return whole;
+    if (canonical === "lt") canonical = rhs ? "<lt>" : "<";
+    // Vim's M- aliases Alt; D- is Command (the engine's M-).
+    const mods = [
+      prefixes.includes("C") ? "C-" : "",
+      prefixes.includes("A") || prefixes.includes("M") ? "A-" : "",
+      prefixes.includes("D") ? "M-" : "",
+    ].join("");
+    const shift = prefixes.includes("S");
+    if (shift && canonical.length === 1) canonical = canonical.toUpperCase();
+    if (!mods && canonical.length === 1) return canonical;
+    if (!mods && canonical === "<lt>") return canonical;
+    return `<${mods}${shift ? "S-" : ""}${canonical}>`;
+  });
+}
 /** Options the Vim engine implements (others, e.g. IdeaVim's `ideajoin`, are reported as ignored). */
 const SUPPORTED_OPTIONS = new Set(["textwidth", "tw", "pcre", "insertModeEscKeysTimeout", "langmap", "lmap"]);
 const MAP_FLAGS = /^<(silent|unique|nowait|buffer|expr|script)>$/i;
@@ -64,7 +127,7 @@ function splitArgs(s: string): string[] {
 export function exOfRhs(rhs: string): string | null {
   const action = /^<Action>\(([^)\s]+)\)$/i.exec(rhs);
   if (action) return `action ${action[1]}`;
-  const ex = /^:(?:<C-u>)?([^<]+)<CR>$/i.exec(rhs);
+  const ex = /^:(?:<C-u>)?([^<]+)<(?:CR|Enter|Return)>$/i.exec(rhs);
   return ex ? ex[1]!.trim() : null;
 }
 
@@ -148,13 +211,13 @@ export function parseVimrc(text: string, sources?: ReadonlyMap<string, string | 
     if (map) {
       const args = splitArgs(rest).filter((a) => !MAP_FLAGS.test(a));
       if (args.length < 2) return ignore("mapping needs a left and right side");
-      const withLeader = (keys: string) => keys.replace(/<leader>/gi, leader);
-      const lhs = withLeader(args[0]!);
-      const rhs = withLeader(args.slice(1).join(" "));
+      const withLeader = (keys: string) => keys.replace(/<leader>/gi, () => leader);
+      const lhs = normalizeVimKeys(withLeader(args[0]!));
+      const rawRhs = withLeader(args.slice(1).join(" "));
       const mode = MAP_MODES[map[1] ?? ""];
-      const ex = exOfRhs(rhs);
+      const ex = exOfRhs(rawRhs);
       if (ex) commands.push({ kind: "mapEx", mode, lhs, ex });
-      else commands.push({ kind: "map", mode, noremap: map[2] !== "map", lhs, rhs });
+      else commands.push({ kind: "map", mode, noremap: map[2] !== "map", lhs, rhs: normalizeVimKeys(rawRhs, true) });
       return;
     }
 
@@ -162,107 +225,6 @@ export function parseVimrc(text: string, sources?: ReadonlyMap<string, string | 
   });
   return { commands, ignored };
 }
-
-/**
- * IdeaVim (IntelliJ) action ids → OpenIDEA action ids, for `:action` and
- * `<Action>()`. Our own ids (`code.reformat`) work as well.
- */
-export const IDEA_ACTIONS: Readonly<Record<string, string>> = {
-  GotoDeclaration: "navigate.declaration",
-  GotoImplementation: "navigate.implementation",
-  GotoTypeDeclaration: "navigate.typeDeclaration",
-  GotoSuperMethod: "navigate.superMethod",
-  GotoTest: "navigate.gotoTest",
-  GotoClass: "navigate.gotoClass",
-  GotoFile: "navigate.gotoFile",
-  GotoSymbol: "navigate.gotoSymbol",
-  GotoAction: "navigate.findAction",
-  GotoLine: "navigate.gotoLine",
-  SearchEverywhere: "navigate.searchEverywhere",
-  RecentFiles: "navigate.recentFiles",
-  RecentLocations: "navigate.recentLocations",
-  Back: "navigate.back",
-  Forward: "navigate.forward",
-  FileStructurePopup: "navigate.fileStructure",
-  GotoNextError: "navigate.nextError",
-  GotoPreviousError: "navigate.prevError",
-  MethodDown: "navigate.nextMethod",
-  MethodUp: "navigate.previousMethod",
-  CallHierarchy: "navigate.callHierarchy",
-  TypeHierarchy: "navigate.typeHierarchy",
-  ToggleBookmark: "navigate.toggleBookmark",
-  ShowBookmarks: "navigate.showBookmarks",
-  SelectIn: "navigate.selectIn",
-  Find: "find.inFile",
-  Replace: "find.replaceInFile",
-  FindInPath: "find.inPath",
-  ReplaceInPath: "find.replaceInPath",
-  FindUsages: "find.usages",
-  ShowUsages: "find.showUsages",
-  HighlightUsagesInFile: "find.highlightUsages",
-  ReformatCode: "code.reformat",
-  OptimizeImports: "code.optimizeImports",
-  CommentByLineComment: "code.commentLine",
-  CommentByBlockComment: "code.commentBlock",
-  ShowIntentionActions: "code.showIntentions",
-  QuickJavaDoc: "code.quickDocumentation",
-  QuickImplementations: "code.quickDefinition",
-  ParameterInfo: "code.parameterInfo",
-  CodeCompletion: "code.completion",
-  Generate: "code.generate",
-  SurroundWith: "code.surroundWith",
-  EditorSelectWord: "code.extendSelection",
-  EditorUnSelectWord: "code.shrinkSelection",
-  CollapseRegion: "code.fold",
-  ExpandRegion: "code.unfold",
-  CollapseAllRegions: "code.foldAll",
-  ExpandAllRegions: "code.unfoldAll",
-  RenameElement: "refactor.rename",
-  "Refactorings.QuickListPopupAction": "refactor.thisMenu",
-  ChangeSignature: "refactor.changeSignature",
-  ExtractMethod: "refactor.extractMethod",
-  IntroduceVariable: "refactor.extractVariable",
-  IntroduceConstant: "refactor.extractConstant",
-  IntroduceField: "refactor.extractField",
-  IntroduceParameter: "refactor.extractParameter",
-  Inline: "refactor.inline",
-  Move: "refactor.move",
-  SafeDelete: "refactor.safeDelete",
-  MembersPullUp: "refactor.pullMembersUp",
-  MemberPushDown: "refactor.pushMembersDown",
-  Run: "run.run",
-  Debug: "run.debug",
-  RunClass: "run.runContext",
-  DebugClass: "run.debugContext",
-  Stop: "run.stop",
-  Rerun: "run.rerun",
-  ChooseRunConfiguration: "run.chooseConfig",
-  ToggleLineBreakpoint: "debug.toggleBreakpoint",
-  SaveAll: "file.save",
-  ShowSettings: "file.settings",
-  NewScratchFile: "file.newScratchFile",
-  CloseContent: "editor.closeTab",
-  CloseEditor: "editor.closeTab",
-  CloseAllEditors: "editor.closeAllTabs",
-  ReopenClosedTab: "editor.reopenClosedTab",
-  NextTab: "editor.nextTab",
-  PreviousTab: "editor.prevTab",
-  SplitVertically: "editor.splitRight",
-  SplitHorizontally: "editor.splitDown",
-  Unsplit: "editor.unsplit",
-  ToggleDistractionFreeMode: "editor.toggleZen",
-  ActivateProjectToolWindow: "toolwindow.project",
-  HideAllWindows: "toolwindow.hideAll",
-  "Vcs.QuickListPopupAction": "vcs.operations",
-  CheckinProject: "vcs.commit",
-  "Vcs.Push": "vcs.push",
-  "Vcs.UpdateProject": "vcs.update",
-  "Git.Branches": "vcs.branches",
-  Annotate: "vcs.annotate",
-  VcsShowNextChangeMarker: "vcs.nextChange",
-  VcsShowPrevChangeMarker: "vcs.prevChange",
-  "Compare.SameVersion": "vcs.showDiff",
-};
 
 /** The OpenIDEA action for an `:action` argument: an IdeaVim id, or one of ours as is. */
 export function resolveActionId(id: string): string {

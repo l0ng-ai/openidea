@@ -36,6 +36,8 @@ export interface Action {
   icon?: string;
   /** Enablement; evaluated against context keys. */
   when?: string;
+  /** Additional enablement for a parameterised action or the current selection. */
+  enabled?: (c: ActionContext) => boolean;
   /**
    * Extra condition for keyboard shortcuts only (menus and Find Action ignore
    * it), e.g. to yield a shared shortcut to an editor action while typing.
@@ -43,6 +45,8 @@ export interface Action {
   keyWhen?: string;
   /** Extra search terms for the Actions tab. */
   keywords?: string[];
+  /** The title comes from outside the IDE (a plugin) and is shown as written; the category still names an IDE group. */
+  verbatim?: boolean;
   /** Hidden from Search Everywhere (internal / parameterised actions). */
   hidden?: boolean;
   /**
@@ -50,6 +54,12 @@ export interface Action {
    * Search Everywhere shows an ON/OFF switch and keeps the popup open.
    */
   toggled?: () => boolean;
+  /**
+   * The run takes long enough to need feedback where it was clicked: toolbar buttons of this
+   * action show a spinner and ignore clicks until `run` settles. Only for actions that finish
+   * by themselves, not ones that wait on the user (a dialog).
+   */
+  indicatesRunning?: boolean;
   run: (c: ActionContext) => void | Promise<void>;
 }
 
@@ -58,6 +68,19 @@ interface ActionStore {
 }
 
 export const useActions = create<ActionStore>(() => ({ actions: new Map() }));
+
+/** Ids of `indicatesRunning` actions with a run in flight, with how many. */
+export const useRunningActions = create<{ running: ReadonlyMap<string, number> }>(() => ({ running: new Map() }));
+
+function trackRun(id: string, delta: 1 | -1) {
+  useRunningActions.setState(({ running }) => {
+    const next = new Map(running);
+    const count = (next.get(id) ?? 0) + delta;
+    if (count > 0) next.set(id, count);
+    else next.delete(id);
+    return { running: next };
+  });
+}
 
 /** Registered actions as written (English), by id; the store holds their localised copies. */
 const sources = new Map<string, Action>();
@@ -75,7 +98,7 @@ function localized(key: string, text: string | undefined): string | undefined {
 }
 
 function localize(action: Action): Action {
-  const title = localized(`action.${action.id}`, action.title);
+  const title = action.verbatim ? undefined : localized(`action.${action.id}`, action.title);
   const description = localized(`action.${action.id}.description`, action.description);
   const category = localized(`action.category.${action.category}`, action.category);
   if (!title && !description && !category) return action;
@@ -121,13 +144,13 @@ export function allActions(): Action[] {
   return [...useActions.getState().actions.values()];
 }
 
-export function isActionEnabled(action: Action, ctx: ContextKeys = getContext()): boolean {
+export function isActionEnabled(action: Action, ctx: ContextKeys = getContext(), arg?: unknown): boolean {
   if (
     ctx.projectOpening &&
     !["app.quit", "window.next", "window.previous", "window.toggleFullScreen"].includes(action.id)
   )
     return false;
-  return evaluateWhen(action.when, ctx);
+  return evaluateWhen(action.when, ctx) && (action.enabled?.({ ctx, arg }) ?? true);
 }
 
 /** Whether a keyboard shortcut may run `action` (`when` and `keyWhen`). */
@@ -165,14 +188,23 @@ export function onActionExecuted(listener: ActionListener): () => void {
 }
 
 /** Runs an action if registered and enabled. Returns whether it ran. */
-export async function executeAction(id: string, arg?: unknown): Promise<boolean> {
+export function executeAction(id: string, arg?: unknown): Promise<boolean> {
+  return runAction(id, arg, false);
+}
+
+/** Host requests need the launch error before acknowledging an operation. */
+export async function executeActionOrThrow(id: string, arg?: unknown): Promise<void> {
+  if (!(await runAction(id, arg, true))) throw new Error(`Action unavailable: ${id}`);
+}
+
+async function runAction(id: string, arg: unknown, propagateError: boolean): Promise<boolean> {
   const action = getAction(id);
   if (!action) {
     console.warn(`unknown action: ${id}`);
     return false;
   }
   const ctx = getContext();
-  if (!isActionEnabled(action, ctx)) return false;
+  if (!isActionEnabled(action, ctx, arg)) return false;
   if (nesting === 0)
     for (const l of listeners)
       try {
@@ -180,6 +212,7 @@ export async function executeAction(id: string, arg?: unknown): Promise<boolean>
       } catch (e) {
         console.error("action listener failed", e);
       }
+  if (action.indicatesRunning) trackRun(id, 1);
   try {
     let pending: void | Promise<void>;
     nesting++;
@@ -190,7 +223,10 @@ export async function executeAction(id: string, arg?: unknown): Promise<boolean>
     }
     await pending;
   } catch (e) {
+    if (propagateError) throw e;
     console.error(`action ${id} failed`, e);
+  } finally {
+    if (action.indicatesRunning) trackRun(id, -1);
   }
   return true;
 }

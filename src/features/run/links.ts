@@ -12,9 +12,11 @@ export interface FileTarget {
   /**
    * `path`: resolve against the run directory; `name`: a file name from a JVM
    * stack frame — look it up in the project (`path` then is the file under its
-   * package directory, `com/acme/OrderController.kt`, when the frame names the class).
+   * package directory, `com/acme/OrderController.kt`, when the frame names the class);
+   * `rubyTest`: a Minitest test with no file in its output — `className` is its class, `path` its
+   * method name — found by searching the project (`rubyTests.ts`).
    */
-  resolve: "path" | "name";
+  resolve: "path" | "name" | "rubyTest";
   /** JVM frames: the class's binary name (`com.acme.OrderController$Inner`). */
   className?: string;
 }
@@ -87,9 +89,10 @@ const PATTERNS: Pattern[] = [
       };
     },
   },
-  // Generic `path:line` (Go `file.go:12`, Rust `--> src/main.rs:10`, gcc, eslint…) and `path(line,col)`.
+  // Generic `path:line` (Go `file.go:12`, Rust `--> src/main.rs:10`, gcc, eslint…),
+  // `path(line,col)` (tsc) and Maven's `path:[line,col]` (`[ERROR] /p/A.java:[12,5] msg`).
   {
-    re: new RegExp(String.raw`(${PATH})(?::(\d+)(?::(\d+))?|\((\d+)(?:,(\d+))?\))`, "dg"),
+    re: new RegExp(String.raw`(${PATH})(?::\[?(\d+)(?::(\d+)|,(\d+)\])?|\((\d+)(?:,(\d+))?\))`, "dg"),
     build: (m) => {
       if (m.index! > 0 && /[\w/.~-]/.test(m.input![m.index! - 1]!)) return null;
       const [start, end] = [m.index!, m.index! + m[0].length];
@@ -97,7 +100,7 @@ const PATTERNS: Pattern[] = [
         kind: "file",
         start,
         end,
-        target: { path: m[1]!, line: num(m[2] ?? m[4]), col: num(m[3] ?? m[5]), resolve: "path" },
+        target: { path: m[1]!, line: num(m[2] ?? m[5]), col: num(m[3] ?? m[4] ?? m[6]), resolve: "path" },
       };
     },
   },

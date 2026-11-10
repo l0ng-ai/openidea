@@ -168,12 +168,25 @@ function extension(doc: EditorDocContext): Extension {
       },
     };
   });
+  return [
+    versionsField,
+    plugin,
+    intentionProviders.of((view) => {
+      const selection = view.state.selection.main;
+      return dependencyFixes(view, selection.from, selection.to);
+    }),
+    quickFixProviders.of(dependencyFixes),
+    versionCompletion(doc),
+  ];
+}
+
+function versionCompletion(doc: EditorDocContext): Extension {
   const completion = async (ctx: CompletionContext): Promise<CompletionResult | null> => {
     if (!isTauri()) return null;
     const id = nextRequestId();
     const text = ctx.state.doc;
     const root = useProject.getState().project?.root;
-    ctx.addEventListener("abort", () => void commands.cancelRequest(id));
+    ctx.addEventListener("abort", () => void commands.cancelRequest(id), { onDocChange: true });
     try {
       // The completion context is immutable; only use it while its document is current.
       const view = ctx.view;
@@ -188,21 +201,17 @@ function extension(doc: EditorDocContext): Extension {
       return null;
     }
   };
-  return [
-    versionsField,
-    plugin,
-    intentionProviders.of((view) => {
-      const selection = view.state.selection.main;
-      return dependencyFixes(view, selection.from, selection.to);
-    }),
-    quickFixProviders.of(dependencyFixes),
-    EditorState.languageData.of(() => [{ openideaCompletion: completion }]),
-  ];
+  return EditorState.languageData.of(() => [{ openideaCompletion: completion }]);
 }
 
 export function activate(): () => void {
   return registerEditorContribution({
     id: "dependency-versions",
-    extensions: (doc) => (!doc.virtual && !doc.readOnly && /(?:^|\/)Cargo\.toml$/.test(doc.path) ? extension(doc) : []),
+    extensions: (doc) => {
+      if (doc.virtual || doc.readOnly) return [];
+      if (/(?:^|\/)Cargo\.toml$/.test(doc.path)) return extension(doc);
+      if (/(?:^|\/)go\.mod$/.test(doc.path)) return versionCompletion(doc);
+      return [];
+    },
   });
 }

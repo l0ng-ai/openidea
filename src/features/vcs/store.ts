@@ -110,6 +110,28 @@ export function attentionRepo(
   return Object.keys(now).find((root) => !before[root]) ?? null;
 }
 
+let gitWork = 0;
+
+/** Marks a git command as running until the returned function is called. */
+export function beginGitWork(): () => void {
+  gitWork++;
+  let ended = false;
+  return () => {
+    if (!ended) gitWork--;
+    ended = true;
+  };
+}
+
+/**
+ * A git command is running or an operation is stopped in some repository: local
+ * changes may be put aside for the time being (merge, rebase, update), so files that
+ * look unchanged now may come back.
+ */
+export function localChangesMayBeAside(): boolean {
+  const s = useVcs.getState();
+  return gitWork > 0 || !!s.remoteBusy || Object.keys(s.operations).length > 0 || !!s.branch?.operation;
+}
+
 /** Selects the repository branch / log / remote operations act on. */
 export function selectRepo(root: string): Promise<void> {
   if (useVcs.getState().repo === root) return Promise.resolve();
@@ -196,7 +218,8 @@ export function refreshNow(): Promise<void> {
       const repo = attentionRepo(shown, s.operations, operations) ?? shown;
       const heads = Object.fromEntries(vcsRoots.map((r) => [r.root, { head: r.head, headCommit: r.headCommit }]));
       useVcs.setState({ operations, heads });
-      if (repo !== s.repo || roots.join("\n") !== s.roots.join("\n")) useVcs.setState({ roots, repo });
+      const sameRoots = roots.join("\n") === s.roots.join("\n");
+      if (repo !== s.repo || !sameRoots) useVcs.setState({ roots: sameRoots ? s.roots : roots, repo });
       applyStatus(status, branch);
       useVcs.setState({ branches, stashes, error: null });
       // Branch info and branches above are of another repository: load the selected one's.
@@ -279,7 +302,7 @@ export function installVcsStore(): () => void {
   // on those alone rewrites `.git/index` and re-triggers this handler.
   const offFs = onIdeEvent("fsChanged", (e) => {
     const worktree = [...e.created, ...e.modified, ...e.removed].some((p) => !/(^|[/\\])\.git([/\\]|$)/.test(p));
-    if (worktree) scheduleRefresh(250);
+    if (worktree || e.ignoreRules?.length) scheduleRefresh(250);
   });
   const offSettings = onWorkflowSettingsChange(
     (s) => s.vcs.showDirtyDirectories,

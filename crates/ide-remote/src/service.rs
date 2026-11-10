@@ -338,6 +338,9 @@ impl RemoteService {
     ) -> IdeResult<RunInfo> {
         let target_id = config.extras.target.as_deref().unwrap_or_default();
         let target = run_target(settings, target_id)?;
+        if target.kind != ide_core::remote_settings::RunTargetKind::Ssh {
+            return Err(IdeError::internal("container run targets start as local runs of the docker CLI"));
+        }
         let session = self.ssh.session(&target.ssh_config).await?;
         let fs = RemoteFs::new(session.sftp().await?);
         let folder = if target.project_root.trim().is_empty() {

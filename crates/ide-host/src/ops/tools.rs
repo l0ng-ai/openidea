@@ -24,7 +24,13 @@ fn tools(host: &Host, window: &str) -> IdeResult<Tools> {
         .collect();
     // Godot is usually an app bundle / Flatpak outside the search path.
     let found = ide_sdk::godot::find(None).map(|p| (ide_sdk::godot::COMMAND.to_owned(), p));
-    Ok(Tools::new(&data).with_custom_paths(custom).with_found_paths(found.into_iter().collect()))
+    let runtime = ide_sdk::apply::tool_install_environment(&root, &settings);
+    let work_dir = (!root.as_os_str().is_empty()).then_some(root);
+    Ok(Tools::new(&data)
+        .with_runtime(runtime.commands, runtime.env)
+        .with_custom_paths(custom)
+        .with_found_paths(found.into_iter().collect())
+        .with_work_dir(work_dir))
 }
 
 /// The language definitions plus the servers defined in the window's settings.

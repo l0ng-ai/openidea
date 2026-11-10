@@ -1,4 +1,5 @@
 import { beforeEach, describe, expect, it, vi } from "vitest";
+import { sendKeyAction } from "./Composer";
 import { act, fireEvent, render, screen, waitFor, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import type { AgentCommand, AgentProvider } from "@/bindings";
@@ -7,6 +8,7 @@ const agentCommands = vi.fn();
 const agentCreate = vi.fn();
 const vcsBranches = vi.fn();
 const vcsBranchInfo = vi.fn();
+const clipboardImage = vi.fn();
 
 vi.mock("@/platform/ipc", async (importOriginal) => {
   const real = await importOriginal<typeof import("@/platform/ipc")>();
@@ -17,6 +19,7 @@ vi.mock("@/platform/ipc", async (importOriginal) => {
       ...real.commands,
       agentCommands: (provider: string, task: string | null) => agentCommands(provider, task),
       agentCreate: (request: unknown) => agentCreate(request),
+      clipboardImage: () => clipboardImage(),
       vcsBranchInfo: (root: string | null) => vcsBranchInfo(root),
       vcsBranches: (root: string | null) => vcsBranches(root),
     },
@@ -31,10 +34,17 @@ import { useProject } from "@/platform/project";
 import type { ProjectInfo } from "@/bindings";
 import { defaultTaskProject } from "./project";
 import { HomeEditor } from "./HomeEditor";
-import { HOME, updateComposer, useAgents } from "./store";
+import composerStyles from "./Composer.module.css";
+import tagStyles from "@/ui/InlineTag.module.css";
+import { composerDraft, HOME, updateComposer, useAgents } from "./store";
 import { emptyDraft } from "./composerModel";
 
-const command = (name: string, description: string): AgentCommand => ({ name, description, hint: null });
+const command = (name: string, description: string, source: "command" | "skill" = "command"): AgentCommand => ({
+  name,
+  description,
+  hint: null,
+  source,
+});
 const claude: AgentProvider = {
   id: "claude",
   name: "Claude Code",
@@ -65,6 +75,7 @@ beforeEach(() => {
       Promise.resolve({ status: "ok", data: { head: root === "/project-b" ? "b-main" : "a-main" } }),
     );
   agentCommands.mockReset();
+  clipboardImage.mockReset().mockResolvedValue({ status: "ok", data: "data:image/png;base64,iVBORw0KGgo=" });
   agentCreate.mockReset().mockResolvedValue({ status: "error", error: { kind: "invalid", message: "stop here" } });
   useAgents.setState({
     providers: [claude],
@@ -74,6 +85,53 @@ beforeEach(() => {
 });
 
 describe("New Task composer commands", () => {
+  it("reaches commands after the first twelve with the keyboard", async () => {
+    agentCommands.mockResolvedValue({
+      status: "ok",
+      data: Array.from({ length: 30 }, (_, i) => command(`command-${i}`, "")),
+    });
+    render(<HomeEditor />);
+    await waitFor(() => expect(agentCommands).toHaveBeenCalled());
+    const box = screen.getByRole("textbox");
+    fireEvent.change(box, { target: { value: "/" } });
+    await screen.findByRole("listbox", { name: "Commands" });
+    for (let i = 0; i < 29; i++) fireEvent.keyDown(box, { key: "ArrowDown" });
+    fireEvent.keyDown(box, { key: "Enter" });
+    expect(box).toHaveValue("/command-29 ");
+  });
+
+  it("groups commands before skills, skips headers, wraps and hides empty groups", async () => {
+    agentCommands.mockResolvedValue({
+      status: "ok",
+      data: [command("triage", "", "skill"), command("compact", ""), command("review", "", "skill")],
+    });
+    render(<HomeEditor />);
+    await waitFor(() => expect(agentCommands).toHaveBeenCalled());
+    const box = screen.getByRole("textbox");
+    fireEvent.change(box, { target: { value: "/" } });
+    const list = await screen.findByRole("listbox", { name: "Commands" });
+    expect(
+      within(list)
+        .getAllByRole("option")
+        .map((o) => o.textContent),
+    ).toEqual(["/compact", "/triage", "/review"]);
+    expect(list.textContent).toBe("Commands/compactSkills/triage/review");
+    expect(within(list).getByRole("option", { selected: true })).toHaveTextContent("/compact");
+    fireEvent.keyDown(box, { key: "ArrowDown" });
+    expect(within(list).getByRole("option", { selected: true })).toHaveTextContent("/triage");
+    fireEvent.keyDown(box, { key: "ArrowUp" });
+    fireEvent.keyDown(box, { key: "ArrowUp" });
+    expect(within(list).getByRole("option", { selected: true })).toHaveTextContent("/review");
+    fireEvent.keyDown(box, { key: "ArrowDown" });
+    expect(within(list).getByRole("option", { selected: true })).toHaveTextContent("/compact");
+    fireEvent.change(box, { target: { value: "/tri" } });
+    expect(list.textContent).toBe("Skills/triage");
+    fireEvent.keyDown(box, { key: "Tab" });
+    expect(box).toHaveValue("/triage ");
+    fireEvent.change(box, { target: { value: "/com" } });
+    expect((await screen.findByRole("listbox", { name: "Commands" })).textContent).toBe("Commands/compact");
+  });
+
   it("names the icon-only Start action and disables it while starting", async () => {
     agentCommands.mockResolvedValue({ status: "ok", data: [] });
     let finish!: (value: unknown) => void;
@@ -123,6 +181,16 @@ describe("New Task composer commands", () => {
     expect(agentCreate.mock.calls[0]![0]).toMatchObject({ prompt: { text: "/triage dry-run" }, provider: "claude" });
   });
 
+  it("tags file references and skills where they stand", async () => {
+    agentCommands.mockResolvedValue({ status: "ok", data: [command("triage", "One pass over issues")] });
+    render(<HomeEditor />);
+    await waitFor(() => expect(agentCommands).toHaveBeenCalled());
+    fireEvent.change(screen.getByRole("textbox"), { target: { value: "12 @Cargo.toml and /triage" } });
+    const mirror = document.querySelector(`.${composerStyles.mirror}`)!;
+    expect(within(mirror as HTMLElement).getByText("@Cargo.toml")).toHaveClass(tagStyles.tag!);
+    expect(within(mirror as HTMLElement).getByText("/triage")).toHaveClass(tagStyles.accent!);
+  });
+
   it("offers nothing the project does not have", async () => {
     agentCommands.mockResolvedValue({ status: "ok", data: [command("compact", "Free up context")] });
     render(<HomeEditor />);
@@ -149,6 +217,33 @@ describe("New Task composer commands", () => {
     expect(box).toHaveValue("/compact keep this context");
     await waitFor(() => expect(screen.queryByRole("listbox", { name: "Commands" })).toBeNull());
     expect(agentCreate).not.toHaveBeenCalled();
+  });
+
+  it("completes a command typed after other text in place", async () => {
+    agentCommands.mockResolvedValue({ status: "ok", data: [command("triage", "One pass over open issues and PRs")] });
+    render(<HomeEditor />);
+    await waitFor(() => expect(agentCommands).toHaveBeenCalled());
+    const box = screen.getByRole("textbox");
+    fireEvent.change(box, { target: { value: "fix the failing build /tri" } });
+    await screen.findByRole("listbox", { name: "Commands" });
+    fireEvent.keyDown(box, { key: "Enter" });
+    expect(useAgents.getState().composers.get(HOME)?.text).toBe("fix the failing build /triage ");
+  });
+});
+
+describe("New Task composer paste", () => {
+  it("attaches the clipboard's image when WebKitGTK pastes an empty clipboardData", async () => {
+    render(<HomeEditor />);
+    fireEvent.paste(screen.getByRole("textbox"), { clipboardData: { types: [], files: [] } });
+    await waitFor(() =>
+      expect(composerDraft(HOME).images).toEqual([{ mimeType: "image/png", data: "iVBORw0KGgo=", name: "image" }]),
+    );
+  });
+
+  it("leaves a text paste to the text box", () => {
+    render(<HomeEditor />);
+    fireEvent.paste(screen.getByRole("textbox"), { clipboardData: { types: ["text/plain"], files: [] } });
+    expect(clipboardImage).not.toHaveBeenCalled();
   });
 });
 
@@ -187,5 +282,25 @@ describe("workspace task project", () => {
     expect(vcsBranchInfo).toHaveBeenLastCalledWith("/project-a");
     expect(vcsBranches).toHaveBeenLastCalledWith("/project-a");
     await vi.dynamicImportSettled();
+  });
+});
+
+describe("sendKeyAction", () => {
+  const key = (k: Partial<{ shiftKey: boolean; metaKey: boolean; ctrlKey: boolean }> = {}) => ({
+    key: "Enter",
+    shiftKey: false,
+    metaKey: false,
+    ctrlKey: false,
+    ...k,
+  });
+  it("sends with Enter, or with the modifier, the way the settings say", () => {
+    expect(sendKeyAction(key(), "enter", "queue")).toBe("queue");
+    expect(sendKeyAction(key({ metaKey: true }), "enter", "queue")).toBe("now");
+    expect(sendKeyAction(key({ shiftKey: true }), "enter", "queue")).toBeNull();
+    expect(sendKeyAction(key(), "enter", "steer")).toBe("now");
+    expect(sendKeyAction(key(), "modEnter", "queue")).toBeNull();
+    expect(sendKeyAction(key({ ctrlKey: true }), "modEnter", "queue")).toBe("queue");
+    expect(sendKeyAction(key({ metaKey: true, shiftKey: true }), "modEnter", "queue")).toBe("now");
+    expect(sendKeyAction({ ...key(), key: "a" }, "enter", "queue")).toBeNull();
   });
 });

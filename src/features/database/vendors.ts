@@ -64,6 +64,7 @@ export const VENDORS: readonly DbVendor[] = [
     icon: "db-oceanbase",
     scheme: "oceanbase",
   },
+  { id: "oracle", label: "Oracle", driver: "oracle", port: 1521, icon: "db-oracle", scheme: "oracle" },
   { id: "postgres", label: "PostgreSQL", driver: "postgres", port: 5432, icon: "db-postgres", scheme: "postgresql" },
   {
     id: "singlestore",
@@ -74,6 +75,15 @@ export const VENDORS: readonly DbVendor[] = [
     scheme: "singlestore",
   },
   { id: "sqlite", label: "SQLite", driver: "sqlite", port: null, icon: "db-sqlite", scheme: "sqlite" },
+  {
+    id: "starrocks",
+    label: "StarRocks",
+    driver: "mysql",
+    port: 9030,
+    // No dedicated glyph yet: StarRocks speaks the MySQL protocol, so reuse its icon.
+    icon: "db-mysql",
+    scheme: "starrocks",
+  },
   {
     id: "supabase",
     label: "Supabase",
@@ -137,6 +147,9 @@ const SCHEMES: Record<string, string> = {
   singlestore: "singlestore",
   memsql: "singlestore",
   oceanbase: "oceanbase",
+  starrocks: "starrocks",
+  oracle: "oracle",
+  oracledb: "oracle",
   sqlserver: "sqlServer",
   mssql: "sqlServer",
 };

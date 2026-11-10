@@ -1,0 +1,106 @@
+---
+title: "openidea-server"
+description: "The IDE backend that runs on the remote host: how the desktop app installs and starts it, where it keeps its files, and how to install it offline."
+---
+
+`openidea-server` is the OpenIDEA backend without a UI. In a remote window it runs where the project is (an SSH host,
+a WSL distribution or a dev container) and does the work the desktop app would do locally: file system, indexing,
+language servers, terminals, runs, debugging, build tools and Git. The desktop window only shows the UI and sends
+commands to it.
+
+You don't start it yourself. When you open a remote project ([SSH](/en/guide/remote/ssh),
+[Containers](/en/guide/remote/containers)), the desktop app installs the server on the host if needed, starts it as
+`openidea-server --stdio` over the SSH connection (or `wsl.exe` / `docker exec`) and talks to it over stdin and
+stdout. The server serves one desktop window and exits when that window disconnects.
+
+## Supported hosts
+
+Each release publishes a server build for:
+
+| OS    | Architectures                                                             |
+| ----- | ------------------------------------------------------------------------- |
+| Linux | `x86_64`, `aarch64` (static musl builds, independent of the host's glibc) |
+| macOS | `aarch64`, `x86_64`                                                       |
+
+The desktop app detects the host with `uname -sm`. Other platforms, including Windows hosts, are not supported.
+Dev containers must be Linux.
+
+## How it is installed
+
+On every connection the desktop app checks whether the host already has the server for its own version. If not:
+
+1. It looks for a server binary for the host's platform on your machine (see [Offline installation](#offline-installation)).
+2. Otherwise it downloads the release asset `openidea-server-<os>-<arch>.gz` for its version from
+   [GitHub releases](https://github.com/l0ng-ai/openidea/releases), verifies its SHA-256 checksum, and caches it in the
+   desktop's local data directory under `server/<version>/<os>-<arch>/`.
+3. It uploads the binary to the host and removes older builds of the same version.
+
+The desktop and the server always run the same version. After you update OpenIDEA, the next connection installs the
+new server next to the old one.
+
+## Files on the host
+
+| Path                                                   | Contents                                                                                     |
+| ------------------------------------------------------ | -------------------------------------------------------------------------------------------- |
+| `~/.openidea/server/<version>/<build>/openidea-server` | The installed server binaries, one folder per version and build.                             |
+| `~/.openidea/config/`                                  | The host's settings, including custom language definitions in `languages/`.                  |
+| `~/.openidea/data/`                                    | Tools OpenIDEA installs on the host (language servers, debuggers, JDKs), caches and indexes. |
+
+To free space, delete old version folders under `~/.openidea/server/`. After deleting `~/.openidea/data/`, OpenIDEA
+installs its tools again when they are needed.
+
+## Environment
+
+The server reads your login shell's environment when it starts, because an SSH command otherwise gets a minimal one.
+So `PATH` and other variables from your shell profile apply to terminals, runs and language servers. After changing
+them, use **File › Reload Environment** in the remote window instead of reconnecting.
+
+| Variable               | Effect                                                                                                                                                                                         |
+| ---------------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `OPENIDEA_SERVER_HOME` | Use this folder instead of `~/.openidea` for `config/` and `data/`. It must be set in the environment the server process starts with. The installed binaries stay under `~/.openidea/server/`. |
+| `OPENIDEA_LOG`         | Log filter for the server's log on stderr, for example `debug` or `ide_lsp=debug`. Default: `info`.                                                                                            |
+
+## Offline installation
+
+When the desktop machine can't reach GitHub, give it the server binary yourself. The desktop app looks for one in
+this order:
+
+1. The file named by the `OPENIDEA_SERVER_BINARY` environment variable, if it is set when OpenIDEA starts.
+2. `server/<os>-<arch>/openidea-server` in the desktop's [local data directory](/en/reference/data-directories), for
+   example `server/linux-x86_64/openidea-server`.
+3. An `openidea-server` next to the OpenIDEA executable, when the host has the same platform as the desktop.
+
+Download `openidea-server-<os>-<arch>.gz` from the release that matches your OpenIDEA version, unpack it with
+`gunzip`, and put it in one of these places. Use the same version as the desktop app; the desktop refuses a server
+that speaks a different protocol.
+
+If the host already has a build of the current version installed, the desktop uses it when nothing can be downloaded.
+
+### Build from source
+
+```bash
+cargo build --release -p ide-host --bin openidea-server
+```
+
+Build on, or cross-compile for, the host's platform, then point `OPENIDEA_SERVER_BINARY` at
+`target/release/openidea-server` (or the target-specific folder when cross-compiling).
+
+## Command line
+
+The flags are meant for the desktop app, but `--version` is handy for checking an installed build.
+
+| Flag                      | Meaning                                                                                                        |
+| ------------------------- | -------------------------------------------------------------------------------------------------------------- |
+| `--version`               | Print the server version and protocol version, then exit.                                                      |
+| `--stdio`                 | Serve one desktop client over stdin / stdout. Logs go to stderr.                                               |
+| `--connect <host> <port>` | Relay one TCP connection to `<host>:<port>` over stdin / stdout. Used for port forwarding into dev containers. |
+
+```bash
+ls ~/.openidea/server/*/*/openidea-server
+~/.openidea/server/<version>/<build>/openidea-server --version
+```
+
+## Plugins
+
+The desktop's code plugins and the languages they contribute are sent to the server when the window connects, and
+the plugins run there, next to the project.

@@ -1,0 +1,112 @@
+---
+title: "Self-hosted marketplace"
+description: "Run your own plugin marketplace: a static index.json next to the packages, built and maintained with openidea-plugin."
+---
+
+A marketplace is **static**: an `index.json` and the packages next to it, served from any web server or read from a folder. There is no server software to run. The index lists publishers and their public keys, the plugins with their package digests, and revocations.
+
+## Build an index
+
+Put your signed packages in a folder and let `index` write `index.json` for them:
+
+```sh
+openidea-plugin pack plugins/acme-tools --key acme.key --publisher acme --out market/acme.tools-1.0.0.oiplugin
+openidea-plugin index market/ --publisher acme --name "ACME" --key acme.key
+```
+
+With `--publisher`, `--name` and `--key`, `index`:
+
+- registers (or updates) the publisher `acme` with that key's public key;
+- lists every `.oiplugin` in the folder as that publisher's plugins, checking each package's signature, manifest and component;
+- keeps that publisher's earlier versions that older IDEs still need, and drops plugins no longer in the folder;
+- keeps the other publishers, their plugins and the revocations already in the index.
+
+Without a key, `index` lists every package in the folder, each checked against the publishers the index already has. A package from a publisher the index doesn't know is refused.
+
+| Option                | Meaning                                                                                                                      |
+| --------------------- | ---------------------------------------------------------------------------------------------------------------------------- |
+| `--out FILE`          | Write the index somewhere other than `<dir>/index.json`                                                                      |
+| `--download-base URL` | Write absolute download URLs (`<URL>/<file>`), so each version stays where it was first published                            |
+| `--previous-key F`    | The publisher's earlier key, which endorses the new `--key` (see [key rotation](/en/plugins/publishing/policy#key-rotation)) |
+
+`index` refuses to rewrite an index in a newer format than the tool writes; update `openidea-plugin` first.
+
+## Merge another index
+
+```sh
+openidea-plugin merge market/index.json https://github.com/l0ng-ai/openidea/releases/latest/download/plugins-index.json --keep acme
+```
+
+`merge` replaces every publisher in your index except `--keep` with the publishers, plugins and revocations of the other index (a path or URL), and makes their download links absolute. This is how OpenIDEA's own release index takes in the community registry. Use it to offer the official and community plugins next to your own. `--out FILE` writes the result elsewhere.
+
+## Point the IDE at it
+
+In **Settings › Plugins**, open the gear menu and choose **Plugin Repository…**. Enter the **Marketplace index URL** (`https://…/index.json` or a folder path); leave it empty to go back to the default repository. The **Available** tab then lists your index.
+
+The IDE reads one index. If you want users to keep seeing the official plugins, merge the official index into yours.
+
+<Note>
+  Release builds of OpenIDEA pin the official publisher's key. Plugins named `openidea.*` must be signed with it, or
+  with a key it endorsed, whatever keys your index lists for `openidea`.
+</Note>
+
+## Index format
+
+```json
+{
+  "format": 1,
+  "publishers": [
+    {
+      "id": "acme",
+      "name": "ACME",
+      "keys": [{ "key": "<public key, base64>" }, { "key": "<older key>", "revoked": false }]
+    }
+  ],
+  "plugins": [
+    {
+      "id": "acme.tools",
+      "name": "ACME Tools",
+      "version": "1.0.0",
+      "description": "…",
+      "authors": ["ACME"],
+      "publisher": "acme",
+      "download": "acme.tools-1.0.0.oiplugin",
+      "digest": "<BLAKE3 digest of the package contents>",
+      "capabilities": ["project.read"],
+      "engine": "^1.0, ^1.4",
+      "categories": ["tools"],
+      "icon": { "light": "<svg …>", "dark": null }
+    }
+  ],
+  "revoked": [{ "id": "acme.old-tool", "versions": [], "reason": "Security problem" }]
+}
+```
+
+| Field                          | Meaning                                                                                                                                                |
+| ------------------------------ | ------------------------------------------------------------------------------------------------------------------------------------------------------ |
+| `format`                       | Index format, currently `1`                                                                                                                            |
+| `publishers[].id`              | Owns plugin ids `<id>.*`                                                                                                                               |
+| `publishers[].keys`            | Ed25519 public keys. `revoked: true` stops trusting packages signed with it; `endorsement` records an earlier key vouching for this one                |
+| `plugins[].download`           | The package, relative to the index or an absolute URL                                                                                                  |
+| `plugins[].digest`             | Digest of the package contents; the download must match it                                                                                             |
+| `plugins[].engine`             | The API the version needs: the manifest's `engines.openidea` narrowed to the API its component was built for. An entry without it is offered to no IDE |
+| `plugins[].categories`, `icon` | Shown and filtered in **Available**; the icon is sanitised again by the IDE                                                                            |
+| `revoked`                      | Plugin versions (`versions` empty: all versions) that must not run, with a `reason`                                                                    |
+| `moved`                        | Optional URL of the index that replaces this one                                                                                                       |
+
+`openidea-plugin` has no command for revocations: add entries to `revoked`, or set `"revoked": true` on a key, by editing `index.json`. `index` and `merge` keep them.
+
+## Compatibility of the format
+
+- Fields are only ever added. An IDE ignores fields it doesn't know.
+- `format` stays `1` unless older IDEs can't read a change. An IDE reading a newer format still applies its revocations and `moved`, lists no plugins, and asks the user to update.
+
+## Moving a marketplace
+
+An index with `"moved": "<url>"` sends the IDE to the index at that URL (relative or absolute). An `https` index can only move to another `https` URL. This lets a marketplace change hosts while released IDEs keep the address they were configured with.
+
+## What the IDE does with it
+
+- It reads the index daily and keeps the last copy it read.
+- Installing downloads the package, checks it against the index entry's digest and the publisher's key, then shows the permission dialog.
+- Revoked plugins and plugins signed with revoked keys are disabled where they are installed, with the reason, also after a restart before their code could run.

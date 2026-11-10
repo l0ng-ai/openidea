@@ -126,11 +126,11 @@
 
 /* Beat the caret row (`.cm-activeLine`), as IDEA does; the suspended line wins over a breakpoint. */
 :global(.cm-editor) :global(.cm-line).bpLine {
-  background: var(--bg-breakpoint-line);
+  --openidea-line-bg: var(--bg-breakpoint-line);
 }
 
 :global(.cm-editor) :global(.cm-line).execLine {
-  background: var(--bg-debug-line);
+  --openidea-line-bg: var(--bg-debug-line);
 }
 
 .inlineValue {
@@ -142,6 +142,31 @@
   pointer-events: none;
   -webkit-user-select: none;
   user-select: none;
+}
+
+.inlineValuePart {
+  pointer-events: auto;
+  cursor: pointer;
+}
+
+.inlineValuePart:hover {
+  text-decoration: underline;
+}
+
+.inlineShow {
+  margin-left: 2px;
+  padding: 0;
+  border: 0;
+  background: none;
+  color: var(--link);
+  font: inherit;
+  cursor: pointer;
+  pointer-events: auto;
+}
+
+.inlineShow:hover {
+  color: var(--link-hover);
+  text-decoration: underline;
 }
 
 /* Data Views › Show value tooltip on mouse hover. */

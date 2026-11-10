@@ -181,6 +181,16 @@ pub async fn run_tomcat_home(host: &Host, window: &str, home: String) -> IdeResu
         .map_err(|e| IdeError::internal(e.to_string()))?
 }
 
+pub async fn run_tomcat_installations(
+    host: &Host,
+    window: &str,
+) -> IdeResult<Vec<ide_run::tomcat::TomcatInstallation>> {
+    host.require_trust(window)?;
+    tokio::task::spawn_blocking(ide_run::tomcat::detect_installations)
+        .await
+        .map_err(|e| IdeError::internal(e.to_string()))
+}
+
 pub async fn run_tomcat_artifacts(host: &Host, window: &str) -> IdeResult<Vec<ide_build::web::WebArtifact>> {
     host.require_trust(window)?;
     let project = host.project(window)?;
@@ -208,12 +218,13 @@ pub async fn run_tomcat_build(host: &Host, window: &str, config: RunConfig) -> I
             .filter(|s| !s.is_empty())
             .or_else(|| artifacts.first().map(|a| &a.id))
             .ok_or_else(|| IdeError::invalid("Choose a WAR artifact"))?;
-        let mut plan = ide_build::web::build(
-            &project.root,
-            &model,
-            id,
-            &ide_run::tomcat::base_dir(&project.cache_dir, &config.id),
-        )?;
+        let base = ide_run::tomcat::effective_base_dir(&project.root, &project.cache_dir, &config)?;
+        // "Build before launch" is skipped when the built WAR is already newer than the
+        // module's sources, so a repeated run does not rebuild (IDEA's up-to-date check).
+        if ide_run::tomcat::artifact_is_current(&project.root, &base, &config) {
+            return Ok(None);
+        }
+        let mut plan = ide_build::web::build(&project.root, &model, id, &base)?;
         plan.env.extend(config.env.clone());
         let mut build = RunConfig {
             id: format!("tomcat-build:{}", config.id),
@@ -278,7 +289,7 @@ pub async fn run_tomcat_sync(
         let module = dunce::canonicalize(project.root.join(module))?;
         let class_paths: Vec<_> =
             class_paths.iter().filter_map(|p| dunce::canonicalize(project.root.join(p)).ok()).collect();
-        let base = ide_run::tomcat::base_dir(&project.cache_dir, &config.id);
+        let base = ide_run::tomcat::effective_base_dir(&project.root, &project.cache_dir, &config)?;
         ide_run::tomcat::sync_outputs(&base, &module, &class_paths, resources_only)
     })
     .await
@@ -297,6 +308,7 @@ pub(crate) fn register(d: &mut Dispatcher) {
         run_application_publish(&c.host, &c.window, c.arg("config")?, c.arg("classPaths")?, c.arg("mainClass")?).await
     });
     d.add("run_tomcat_home", |c| async move { run_tomcat_home(&c.host, &c.window, c.arg("home")?).await });
+    d.add("run_tomcat_installations", |c| async move { run_tomcat_installations(&c.host, &c.window).await });
     d.add("run_tomcat_artifacts", |c| async move { run_tomcat_artifacts(&c.host, &c.window).await });
     d.add("run_tomcat_build", |c| async move { run_tomcat_build(&c.host, &c.window, c.arg("config")?).await });
     d.add("run_tomcat_sync", |c| async move {

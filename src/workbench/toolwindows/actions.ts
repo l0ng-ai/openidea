@@ -160,6 +160,7 @@ export function installToolWindowActions(): () => void {
       const dispose = registerAction({
         id: `toolwindow.${id}`,
         title: tw.title,
+        verbatim: tw.verbatim,
         category: "Tool Windows",
         icon: tw.icon,
         keywords: ["tool window", "show", "hide"],

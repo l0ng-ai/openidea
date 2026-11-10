@@ -1,0 +1,78 @@
+---
+title: "Command line"
+description: "Install the openidea shell command and use it to open projects, files at a line, and diffs from a terminal."
+---
+
+The `openidea` command opens folders and files in OpenIDEA from a terminal. It starts the app if it isn't running, hands over the request and returns.
+
+## Install the command
+
+| OS                | Menu                                      |
+| ----------------- | ----------------------------------------- |
+| macOS             | **OpenIDEA › Install 'openidea' Command** |
+| Windows and Linux | **Tools › Install 'openidea' Command**    |
+
+The action is also available in Find Action. Open a new terminal afterwards.
+
+<Tabs>
+  <Tab title="macOS">
+    Move OpenIDEA to Applications first: the command is a link to the launcher inside the app bundle. It goes into `~/.local/bin` when that directory is on `PATH`; otherwise into `/usr/local/bin`, which may ask for an administrator password.
+  </Tab>
+  <Tab title="Windows">
+    Installation creates `openidea.cmd` in `%LOCALAPPDATA%\OpenIDEA\bin` and adds that directory to your user `PATH`. It works for installed and portable copies and doesn't need administrator rights.
+  </Tab>
+  <Tab title="Linux">
+    Installation creates `~/.local/bin/openidea`. If that directory isn't on `PATH`, or another `openidea` comes first, the notification asks you to put it at the beginning of `PATH`:
+
+    - Bash and Zsh: add `export PATH="$HOME/.local/bin:$PATH"` to your shell profile.
+    - Fish: run `fish_add_path --prepend ~/.local/bin`.
+
+    For an AppImage, the command starts the AppImage file itself, so keep it in a permanent location.
+
+  </Tab>
+</Tabs>
+
+**Uninstall 'openidea' Command** in the same menu removes only OpenIDEA's own launcher (and on Windows its `PATH` entry). A command of the same name that belongs to another application is never overwritten or removed. After moving a portable copy or an AppImage, install the command again.
+
+## Usage
+
+```text
+openidea [options] [[--line <n>] [--column <n>] path[:line[:column]] ...]
+openidea diff <left> <right>
+```
+
+```sh
+openidea .                              # open the current folder as a project
+openidea src/main.rs README.md          # open files
+openidea --line 12 --column 5 src/main.rs
+openidea src/main.rs:12:5               # same, as path:line:column
+openidea diff before.txt after.txt      # compare two files
+openidea                                # bring OpenIDEA to the front
+```
+
+- Folders open as projects. Files open in the window of the project that contains them, or on their own when no open project does.
+- Lines and columns start at 1. `--line` and `--column` apply to the next path.
+- `path:line` and `path:line:column` are read as a position only when no file with that exact name exists.
+- Relative paths resolve against the current directory.
+- Use `--` before a file name that starts with `-`, or before a file named `diff`.
+
+## Options
+
+<ParamField path="--line <n>">Put the caret on line `n` of the next file.</ParamField>
+
+<ParamField path="--column <n>">Put the caret in column `n` of that line.</ParamField>
+
+<ParamField path="-h, --help">Print the usage.</ParamField>
+
+<ParamField path="-v, --version">Print the version, for example `OpenIDEA 0.1.40`.</ParamField>
+
+## Exit status
+
+The command exits with `0` once OpenIDEA has accepted the request, and with `1` on an unknown option, a missing file, or when the app can't be reached or doesn't start within 30 seconds. Errors are printed as `openidea: <message>`.
+
+The GUI executable and the operating system's file associations keep working without the command.
+
+## Other command-line tools
+
+- `openidea-server` runs OpenIDEA's backend on a remote machine for remote development. See [openidea-server](/en/guide/remote/server).
+- `openidea-plugin` creates, builds and packages plugins. See the [plugin quickstart](/en/plugins/quickstart).

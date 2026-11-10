@@ -28,6 +28,12 @@ pub fn find_files(window: Window, state: State<'_, AppState>, query: String, lim
     ide_host::ops::nav::find_files(&state.host, window.label(), query, limit)
 }
 
+#[tauri::command]
+#[specta::specta]
+pub async fn find_files_named(window: Window, state: State<'_, AppState>, name: String) -> IdeResult<Vec<IpcPath>> {
+    ide_host::ops::nav::find_files_named(&state.host, window.label(), name).await
+}
+
 /// Folders holding indexed files, for `@` references.
 #[tauri::command]
 #[specta::specta]
@@ -81,6 +87,32 @@ pub fn recent_files(window: Window, state: State<'_, AppState>) -> IdeResult<Vec
 #[specta::specta]
 pub async fn web_goto(window: Window, state: State<'_, AppState>, doc: DocId, pos: Pos) -> IdeResult<Option<WebGoto>> {
     ide_host::ops::nav::web_goto(&state.host, window.label(), doc, pos).await
+}
+
+/// The file a Python import path (`a.b.c`, or `.x` relative to `from`) names; `None` when
+/// no project or content root has it.
+#[tauri::command]
+#[specta::specta]
+pub async fn nav_resolve_module(
+    window: Window,
+    state: State<'_, AppState>,
+    name: String,
+    from: IpcPath,
+) -> IdeResult<Option<IpcPath>> {
+    ide_host::ops::nav::nav_resolve_module(&state.host, window.label(), name, from).await
+}
+
+/// Index definitions named `name` within the roots `from` may navigate into (its own root
+/// plus its configured dependencies).
+#[tauri::command]
+#[specta::specta]
+pub async fn nav_index_definitions(
+    window: Window,
+    state: State<'_, AppState>,
+    name: String,
+    from: IpcPath,
+) -> IdeResult<Vec<SymbolMatch>> {
+    ide_host::ops::nav::nav_index_definitions(&state.host, window.label(), name, from).await
 }
 
 /// The existing file or directory a path written in `from` names (`href`, `url()`, a string literal).

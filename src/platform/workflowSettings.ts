@@ -50,6 +50,8 @@ export interface CommitSettingsValid {
   bodyLimit: number;
   showRightMargin: boolean;
   wrapAtMargin: boolean;
+  /** Plugin before-commit checks turned off (`<plugin id>/<check id>`). */
+  disabledPluginChecks: string[];
 }
 
 export interface VcsSettingsValid {
@@ -93,6 +95,7 @@ export interface DebuggerSettingsValid {
 }
 
 export interface RunSettingsValid {
+  defaultTarget: string;
   confirmRerun: boolean;
   confirmTerminate: boolean;
   showOnStart: boolean;
@@ -215,6 +218,7 @@ export const DEFAULT_WORKFLOW: WorkflowSettings = {
       bodyLimit: 72,
       showRightMargin: true,
       wrapAtMargin: false,
+      disabledPluginChecks: [],
     },
     confirmation: {
       onCreate: "ask",
@@ -253,7 +257,7 @@ export const DEFAULT_WORKFLOW: WorkflowSettings = {
     skipLibraryCode: true,
     python: { attachSubprocess: true, gevent: false },
   },
-  run: { confirmRerun: true, confirmTerminate: true, showOnStart: true, terminationTimeoutMs: 3000 },
+  run: { defaultTarget: "", confirmRerun: true, confirmTerminate: true, showOnStart: true, terminationTimeoutMs: 3000 },
   terminal: {
     startDirectory: "",
     env: {},
@@ -342,6 +346,7 @@ export function validateVcs(raw: unknown): VcsSettingsValid {
       bodyLimit: num(c.bodyLimit, d.commit.bodyLimit, L.messageLimit, true),
       showRightMargin: bool(c.showRightMargin, d.commit.showRightMargin),
       wrapAtMargin: bool(c.wrapAtMargin, d.commit.wrapAtMargin),
+      disabledPluginChecks: strings(c.disabledPluginChecks, d.commit.disabledPluginChecks),
     },
     confirmation: {
       onCreate: oneOf(conf.onCreate, confirm, d.confirmation.onCreate),
@@ -399,6 +404,7 @@ export function validateRun(raw: unknown): RunSettingsValid {
   const d = DEFAULT_WORKFLOW.run;
   const v = obj(raw);
   return {
+    defaultTarget: text(v.defaultTarget, ""),
     confirmRerun: bool(v.confirmRerun, d.confirmRerun),
     confirmTerminate: bool(v.confirmTerminate, d.confirmTerminate),
     showOnStart: bool(v.showOnStart, d.showOnStart),

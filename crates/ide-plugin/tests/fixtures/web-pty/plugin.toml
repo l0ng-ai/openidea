@@ -1,0 +1,21 @@
+id = "web-pty"
+name = "Web PTY Probe"
+version = "0.1.0"
+description = "Test fixture for capability-gated web frame PTYs."
+engines.openidea = "^1.3"
+wasm = "dist/plugin.wasm"
+activation = ["on-command:ping"]
+
+[capabilities]
+optional = ["process:bash", "process:git"]
+
+[[contributes.views]]
+id = "terminal"
+title = "PTY Probe"
+icon = "toolwindow-terminal"
+location = "right"
+web = "web/index.html"
+
+[[contributes.commands]]
+id = "ping"
+title = "PTY Probe: Ping"

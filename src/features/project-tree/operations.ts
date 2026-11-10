@@ -2,9 +2,11 @@
  * File operations behind the project view's actions: new / rename / delete,
  * internal copy-cut-paste, drag & drop moves and OS file imports.
  */
+import { writeClipboardText } from "@/platform/clipboard";
 import { createElement, Fragment } from "react";
 import { askUsagesDetected, fileUsages, viewUsages } from "@/editor/refactor";
 import { executeAction, getAction } from "@/platform/actions";
+import { canRevealInFileManager, fileManagerName, fileManagerPath, revealInFileManager } from "@/platform/fileManager";
 import { maybeEditorService, notifications } from "@/workbench/contributions";
 import { ask, confirmChecked } from "@/workbench/messages";
 import { osClipboard } from "./clipboard";
@@ -20,7 +22,6 @@ import {
   nameOf,
   packageSegments,
   parentOf,
-  relativeTo,
   uniqueName,
   validateName,
   type PackageKind,
@@ -39,17 +40,17 @@ import {
   useProjectTree,
 } from "./store";
 import { tx } from "@/platform/i18n";
-import { isRemoteWindow } from "@/platform/remote";
+import { hostOs, isRemoteWindow } from "@/platform/remote";
+import { usePlatform } from "@/platform/platformInfo";
+import { pathToCopy, type PathKind } from "@/platform/copyPath";
+import { projectFolder, useProject } from "@/platform/project";
+export type { PathKind } from "@/platform/copyPath";
 
 /** Nodes that may be renamed, moved or deleted (not roots, groups or library sources). */
 const mutable = (n: ProjectNode) => !n.root && !n.placeholder && !n.readOnly;
 
 const get = () => useProjectTree.getState();
-
-const ua = typeof navigator !== "undefined" ? navigator.userAgent : "";
-const isWindows = /Win/i.test(ua);
-/** macOS and Windows file systems are case-insensitive by default. */
-const caseInsensitive = /Mac|Win/i.test(ua);
+const caseInsensitiveOs = (os: string) => os === "windows" || os === "macos";
 
 function errorMessage(e: unknown): string {
   return e instanceof Error ? e.message : String(e);
@@ -236,6 +237,9 @@ export function cancelEditing() {
 export function checkEditingName(name: string) {
   const { editing } = get();
   if (!editing) return { error: null };
+  const os = hostOs();
+  const isWindows = os === "windows";
+  const caseInsensitive = caseInsensitiveOs(os);
   if (editing.kind === "new" && editing.pkg) {
     const { segments, error } = packageSegments(name, editing.pkg);
     if (!segments) return { error };
@@ -563,7 +567,7 @@ export function copySelection(cut: boolean) {
   const remote = isRemoteWindow();
   const osWrite = (async () => {
     if (!remote) return osClipboard().setFiles(paths);
-    await navigator.clipboard.writeText(paths.join("\n"));
+    await writeClipboardText(paths.join("\n"));
     return true;
   })().catch(() => false);
   setClipboard({ paths, cut, remote, osWrite });
@@ -645,6 +649,7 @@ async function pasteFromOsClipboard(paths: string[], target: string) {
 /** The same files, as the clipboard keeps them (`/`-separated, any order). */
 function sameFiles(files: string[], paths: string[] | undefined): boolean {
   if (!paths || files.length !== paths.length) return false;
+  const caseInsensitive = caseInsensitiveOs(usePlatform.getState().os);
   const key = (list: string[]) =>
     list
       .map((p) => (caseInsensitive ? p.toLowerCase() : p))
@@ -687,6 +692,7 @@ export async function transfer(
   if (!root) return false;
   const fs = projectFs(root);
   await loadDir(target);
+  const caseInsensitive = caseInsensitiveOs(hostOs());
   const taken = new Set(siblingsOf(target).map((n) => (caseInsensitive ? n.toLowerCase() : n)));
   const hasName = (n: string) => taken.has(caseInsensitive ? n.toLowerCase() : n);
   const isTaken = (n: string) => hasName(n) || (isUnityAssetFolder(target) && hasName(`${n}.meta`));
@@ -744,6 +750,7 @@ export async function transfer(
 async function moveInto(paths: string[], target: string): Promise<boolean> {
   paths = assetPaths(paths);
   await loadDir(target);
+  const caseInsensitive = caseInsensitiveOs(hostOs());
   const taken = new Set(siblingsOf(target).map((n) => (caseInsensitive ? n.toLowerCase() : n)));
   const errors: string[] = [];
   const moves: { from: string; to: string }[] = [];
@@ -799,33 +806,47 @@ export async function importExternal(paths: string[], target: string) {
 // ---------------------------------------------------------------------------
 // Paths / external
 
-export type PathKind = "absolute" | "relative" | "name";
-
 export function pathsFor(kind: PathKind, nodes: ProjectNode[] = selectedNodes()): string[] {
   const { root } = get();
-  return nodes.map((n) =>
-    kind === "absolute" ? n.path : kind === "name" ? nameOf(n.path) : relativeTo(root ?? "", n.path) || ".",
-  );
+  const project = useProject.getState().project;
+  return nodes
+    .map((n) => pathToCopy(kind, n.path, project ? (projectFolder(project, n.path)?.root ?? null) : root))
+    .filter((p): p is string => p !== null);
 }
 
 export async function copyPaths(kind: PathKind, nodes: ProjectNode[] = selectedNodes()) {
   const text = pathsFor(kind, nodes).join("\n");
   if (!text) return;
   try {
-    await navigator.clipboard.writeText(text);
+    await writeClipboardText(text);
+    void executeAction("editor.showHint", { text: tx`Copied ${text}` });
   } catch (e) {
     fail(tx("Cannot access the clipboard"), e);
   }
 }
 
+/**
+ * The path the local OS's file manager can open: in a WSL session the node
+ * paths are inside the distro (`/home/…`), which `revealItemInDir` reads as
+ * local paths — translate them to `\\wsl.localhost\<distro>\…` UNC shares.
+ */
+export function revealablePath(path: string): string {
+  return fileManagerPath(path);
+}
+
+/** For a reveal invoked where the menus hide it (shortcut, Search Everywhere) in an SSH or dev-container window. */
+export function notifyRevealUnavailable() {
+  const fileManager = tx(fileManagerName());
+  notifications().notify({ level: "warning", title: tx`Remote project files cannot be shown in ${fileManager}` });
+}
+
 export async function revealInFinder(nodes: ProjectNode[] = selectedNodes()) {
-  const paths = nodes.map((n) => n.path);
-  if (!paths.length) return;
+  if (!canRevealInFileManager()) return notifyRevealUnavailable();
   try {
-    const { revealItemInDir } = await import("@tauri-apps/plugin-opener");
-    await revealItemInDir(paths.length === 1 ? paths[0]! : paths);
+    await revealInFileManager(nodes.map((n) => n.path));
   } catch (e) {
-    fail("Cannot reveal in Finder", e);
+    const fileManager = tx(fileManagerName());
+    fail(tx`Cannot reveal in ${fileManager}`, e);
   }
 }
 

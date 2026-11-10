@@ -114,6 +114,13 @@ fn next_presentation(window: &WebviewWindow) -> Option<std::sync::mpsc::Receiver
     let sent = window
         .with_webview(move |webview| unsafe {
             let view = webview.inner().cast::<AnyObject>();
+            // Private SPI: a WebKit without it would raise "unrecognized selector" and abort, so
+            // check first; dropping `tx` then makes the caller fall back to a fixed step.
+            let present = objc2::sel!(_doAfterNextPresentationUpdate:);
+            let responds: bool = objc2::msg_send![view, respondsToSelector: present];
+            if !responds {
+                return;
+            }
             let block = RcBlock::new(move || {
                 let _ = tx.try_send(());
             });
@@ -128,9 +135,8 @@ fn next_presentation(window: &WebviewWindow) -> Option<std::sync::mpsc::Receiver
 #[cfg(target_os = "macos")]
 fn wait_presentation(window: &WebviewWindow) {
     const PRESENT_TIMEOUT: Duration = Duration::from_millis(60);
-    if let Some(rx) = next_presentation(window) {
-        let _ = rx.recv_timeout(PRESENT_TIMEOUT);
-    } else {
+    let presented = next_presentation(window).map(|rx| rx.recv_timeout(PRESENT_TIMEOUT));
+    if !matches!(presented, Some(Ok(()) | Err(std::sync::mpsc::RecvTimeoutError::Timeout))) {
         std::thread::sleep(STEP);
     }
 }

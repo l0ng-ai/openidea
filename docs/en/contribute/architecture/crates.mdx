@@ -1,0 +1,97 @@
+---
+title: "Crates"
+description: "Every Rust crate in the workspace, what it owns, and the dependency rules between them."
+---
+
+The Cargo workspace is `crates/*` plus `src-tauri` (root `Cargo.toml`). Plugins and the guest SDK build for `wasm32-wasip2` in their own workspaces and are excluded.
+
+## Rules
+
+- **One domain per crate.** A feature crate owns its domain end to end: data model, I/O, protocol, and conversion to IPC types.
+- **Shared types live in `ide-core`.** Anything that crosses a crate boundary or IPC (ids, `Pos`/`Range`, `IdeError`, `IdeEvent`, settings types) is defined there and derives `specta::Type`.
+- **Never reach into another crate's internals.** Use its public API, or move the shared type into `ide-core`.
+- **Convert errors at the crate edge** to `IdeError`.
+- **`ide-host` assembles; `src-tauri` adapts.** `ide-host` wires the crates into a UI-less backend (`Host`, `Project`, `ops/`); `src-tauri` exposes it as Tauri commands. Neither is the place for domain logic that belongs in a feature crate.
+
+Each crate's `lib.rs` opens with a module doc comment describing its contract; read it before changing the crate.
+
+## Foundation
+
+| Crate           | Responsibility                                                                                                                                                                             |
+| --------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
+| `ide-core`      | Shared vocabulary of every crate: ids, text coordinates (`text.rs`: 0-based lines, UTF-16 columns), `IdeError`/`IdeResult`, `IdeEvent` and `EventSink`, settings types, task cancellation. |
+| `ide-text`      | Rope-backed documents (the backend's authoritative copy of every open document), change sets with version checks (`OutOfSync`), UTF-16 ↔ byte coordinate conversion.                       |
+| `ide-vfs`       | File system access: directory listing, text loading/saving with encoding detection, watching, project walking. The UI never touches the disk directly.                                     |
+| `ide-workspace` | The project model: open documents, settings layering, recent projects, session state, local history.                                                                                       |
+| `ide-jsonrpc`   | `Content-Length` framed transport and a JSON-RPC 2.0 peer, shared by the LSP and DAP clients; newline-delimited JSON for ACP.                                                              |
+
+## Code intelligence
+
+| Crate          | Responsibility                                                                                                                                                                                                    |
+| -------------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `ide-language` | Language registry from `languages/*.toml` (embedded at build time), language detection, bundled tree-sitter grammars and the per-document syntax cache; tree-sitter outline, folding, highlights and symbol tags. |
+| `ide-syntax`   | Tree-sitter structure service: node/expression lookup, syntax errors, scopes and locals, identifier occurrences, structural ranges. Used when the language server is unavailable, not ready or failing.           |
+| `ide-lsp`      | Language server manager: lazy start per server and workspace root, document sync, feature requests mapped to IDE types, merging results of several servers for one language. Includes the JDT LS integration.     |
+| `ide-index`    | Background project index of files and symbols, persisted in redb and fuzzy-queried with nucleo. Queries answer from what is indexed so far; `IdeEvent::IndexState` reports completion.                            |
+| `ide-search`   | Find / Replace in Files on ripgrep's engine crates.                                                                                                                                                               |
+| `ide-analysis` | Project-wide analyses over syntax trees: Locate Duplicates and Search / Replace Structurally.                                                                                                                     |
+| `ide-spell`    | Spell checking of comments, strings and declared names: bundled Hunspell en_US / en_GB, programming terms, user dictionaries.                                                                                     |
+
+## Run, debug and build
+
+| Crate          | Responsibility                                                                                                                                                                                                                                                     |
+| -------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
+| `ide-run`      | Run configurations: detection, persistence, process lifecycle and output streaming.                                                                                                                                                                                |
+| `ide-dap`      | Debug Adapter Protocol client: sessions, breakpoints, threads, frames, variables, evaluation.                                                                                                                                                                      |
+| `ide-build`    | Maven and Gradle tool-window models (POM parsing, Gradle task lists, background sync) and Build Project for Maven, Gradle, Cargo, Go and TypeScript.                                                                                                               |
+| `ide-coverage` | Run with Coverage: launch plans for coverage tools and report parsers (lcov, Go cover profiles, JaCoCo XML).                                                                                                                                                       |
+| `ide-profiler` | Run with Profiler: sampling-profiler launch plans and one call-tree model from their outputs.                                                                                                                                                                      |
+| `ide-sdk`      | SDKs and toolchains: interpreter discovery (Python, Node.js, Rust, Go, TypeScript), virtualenvs, pip, applying the selected toolchain to language servers, runs and terminals. Embeds the JDT LS extension bundles `java-usages` and `kotlin-bridge` from `java/`. |
+| `ide-tools`    | Installer for language servers and debug adapters: registry, detection, download/extract into the managed tools directory, never needing `sudo`. Embeds the patched Lombok agent for JDT LS.                                                                       |
+| `ide-terminal` | Integrated terminal sessions over a native PTY (rendered by xterm.js in the UI).                                                                                                                                                                                   |
+
+## Tools and integrations
+
+| Crate          | Responsibility                                                                                                                                    |
+| -------------- | ------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `ide-vcs`      | Git: gitoxide for fast reads, the git CLI for writes.                                                                                             |
+| `ide-github`   | GitHub pull requests through the `gh` CLI.                                                                                                        |
+| `ide-db`       | Database tools for SQLite, PostgreSQL and MySQL/MariaDB: data sources, connections, introspection, queries, table editing.                        |
+| `ide-http`     | HTTP Client: `.http` request files, environments, execution, response history; builds every HTTP client of the backend with the configured proxy. |
+| `ide-docker`   | Docker for the Services tool window through the `docker` CLI.                                                                                     |
+| `ide-android`  | Android devices and logcat through the `adb` CLI.                                                                                                 |
+| `ide-notebook` | Native notebook documents and owned Jupyter kernel sessions.                                                                                      |
+| `ide-agent`    | Coding agents over the Agent Client Protocol: tasks, sessions, worktrees and their timelines.                                                     |
+| `ide-mcp`      | The IDE's MCP server for AI agents outside the IDE: Streamable HTTP on `127.0.0.1`, its discovery file and the stdio bridge.                      |
+| `ide-web`      | The built-in static web server for project files on `127.0.0.1`, and detection / launching of installed browsers.                                 |
+
+## Remote
+
+| Crate        | Responsibility                                                                                                                                                                                                                                                                                   |
+| ------------ | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
+| `ide-ssh`    | SSH for every remote feature: configurations and `~/.ssh/config` hosts, host-key trust, authentication, remote commands, SFTP, port forwarding, askpass for `ssh` / `git`.                                                                                                                       |
+| `ide-remote` | SFTP deployment (mappings, upload, download, sync) and run targets (SSH, Docker, Compose). Not remote development itself.                                                                                                                                                                        |
+| `ide-host`   | The IDE backend without a UI toolkit: projects per window, terminals, processes, settings, trust, plugins, MCP and the `ops/` command implementations. Also builds the `openidea-server` binary (remote development) and the `openidea-plugin` CLI (plugin starter templates in `templates.rs`). |
+
+## Plugins
+
+| Crate           | Responsibility                                                                                                                                                                                                                                           |
+| --------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `ide-extension` | The plugin system's kernel, independent of the Wasm runtime: the `plugin.toml` manifest, capabilities and risk levels, extension points and the contribution registry, UI contributions, the grant ledger, package signatures and the marketplace index. |
+| `ide-plugin`    | The WebAssembly runtime: wasmtime with the component model and WASI preview 2, one sandboxed store and actor thread per plugin, limits.                                                                                                                  |
+
+## Desktop and OS
+
+| Crate                            | Responsibility                                                                                                                                                                  |
+| -------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `ide-cli`                        | The `openidea` command: argument parsing, the request it sends to a running app over a local socket, installing it on `PATH`.                                                   |
+| `ide-clipboard`                  | The OS clipboard's file list (Windows `CF_HDROP`, macOS `NSPasteboard` file URLs) for copying files between the Project view and the file manager.                              |
+| `ide-fonts`                      | Installed font families for the font pickers, via CoreText, DirectWrite or fontconfig.                                                                                          |
+| `src-tauri` (package `openidea`) | The desktop shell: `AppState`, Tauri commands, the event sink, windows, menus, the remote-development client, the `openidea-plugin` URL scheme for plugin web views. Glue only. |
+
+## Outside the workspace
+
+| Path                       | What it is                                                                                                           |
+| -------------------------- | -------------------------------------------------------------------------------------------------------------------- |
+| `sdk/rust/openidea-plugin` | The guest SDK for plugins: typed host API, plugin trait, and a mock host for `cargo test`. Carries a copy of `wit/`. |
+| `plugins/official/*`       | Official plugins, each its own crate built for `wasm32-wasip2`; their built components are checked in under `dist/`. |

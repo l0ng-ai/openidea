@@ -1,11 +1,13 @@
 //! An authenticated SSH connection (russh), optionally through `ProxyJump`
-//! hosts, and what runs over it: commands, processes, SFTP and TCP channels.
+//! hosts or a `ProxyCommand`, and what runs over it: commands, processes, SFTP
+//! and TCP channels.
 //!
 //! Host keys are checked against `known_hosts`; an unknown key fails the
-//! connection with [`ConnectError::UnknownHostKey`] so the UI can ask the user,
-//! and a changed key is always refused.
+//! connection with [`ConnectError::UnknownHostKey`] so the UI can ask the user
+//! (or is recorded silently under `StrictHostKeyChecking accept-new`), and a
+//! changed key is refused unless host key checking is off.
 
-use crate::target::{Hop, SshFiles, SshTarget, expand, home, resolve_hops};
+use crate::target::{Hop, HostKeyPolicy, SshFiles, SshTarget, expand, home, resolve_hops};
 use ide_core::remote_settings::SshAuth;
 use ide_core::{IdeError, IdeResult, error::ErrorKind};
 use parking_lot::Mutex;
@@ -27,6 +29,7 @@ pub struct UnknownHostKey {
     pub host: String,
     pub port: u16,
     pub key: PublicKey,
+    pub known_hosts: Option<PathBuf>,
 }
 
 impl UnknownHostKey {
@@ -37,6 +40,7 @@ impl UnknownHostKey {
 
     /// Records the key in `known_hosts` (blocking).
     pub fn trust(&self, known_hosts: &Path) -> IdeResult<()> {
+        let known_hosts = self.known_hosts.as_deref().unwrap_or(known_hosts);
         if let Some(dir) = known_hosts.parent() {
             std::fs::create_dir_all(dir)?;
         }
@@ -128,12 +132,18 @@ impl Session {
         secret: Option<&str>,
         files: &SshFiles,
     ) -> Result<Session, ConnectError> {
-        let hops = resolve_hops(target, files.config.as_deref())?;
+        // Resolving may run `Match exec` commands from the config.
+        let hops = {
+            let (target, config) = (target.clone(), files.config.clone());
+            tokio::task::spawn_blocking(move || resolve_hops(&target, config.as_deref()))
+                .await
+                .map_err(|e| io(format!("cannot read the SSH config: {e}")))??
+        };
         let mut sessions: Vec<Handle<Client>> = Vec::new();
         for (i, hop) in hops.iter().enumerate() {
             let last = i == hops.len() - 1;
             let mut handle = match sessions.last() {
-                None => connect::<tokio::net::TcpStream>(hop, &files.known_hosts, None).await?,
+                None => connect_first_hop(hop, &files.known_hosts).await?,
                 Some(prev) => {
                     let channel = prev
                         .channel_open_direct_tcpip(hop.host.as_str(), u32::from(hop.port), "127.0.0.1", 0)
@@ -366,6 +376,7 @@ pub struct Client {
     host: String,
     port: u16,
     known_hosts: PathBuf,
+    host_key_policy: HostKeyPolicy,
     issue: Arc<Mutex<Option<HostKeyIssue>>>,
 }
 
@@ -373,6 +384,9 @@ impl client::Handler for Client {
     type Error = russh::Error;
 
     async fn check_server_key(&mut self, key: &PublicKeyOrCertificate) -> Result<bool, Self::Error> {
+        if self.host_key_policy == HostKeyPolicy::Off {
+            return Ok(true);
+        }
         let key = match key {
             PublicKeyOrCertificate::PublicKey { key, .. } => key.clone(),
             PublicKeyOrCertificate::Certificate(cert) => PublicKey::from(cert.public_key().clone()),
@@ -380,10 +394,150 @@ impl client::Handler for Client {
         let issue = match known_hosts::check_known_hosts_path(&self.host, self.port, &key, &self.known_hosts) {
             Ok(true) => return Ok(true),
             Err(keys::Error::KeyChanged { line }) => HostKeyIssue::Changed(line),
+            Ok(false) | Err(_) if self.host_key_policy == HostKeyPolicy::AcceptNew && self.learn(&key) => {
+                return Ok(true);
+            }
             Ok(false) | Err(_) => HostKeyIssue::Unknown(key),
         };
         *self.issue.lock() = Some(issue);
         Ok(false)
+    }
+}
+
+impl Client {
+    fn learn(&self, key: &PublicKey) -> bool {
+        if let Some(dir) = self.known_hosts.parent() {
+            let _ = std::fs::create_dir_all(dir);
+        }
+        known_hosts::learn_known_hosts_path(&self.host, self.port, key, &self.known_hosts).is_ok()
+    }
+}
+
+struct ProxyStream {
+    child: tokio::process::Child,
+    stdin: Option<tokio::process::ChildStdin>,
+    stdout: Option<tokio::process::ChildStdout>,
+    stderr: Arc<Mutex<Vec<u8>>>,
+}
+
+impl Drop for ProxyStream {
+    fn drop(&mut self) {
+        if let Some(pid) = self.child.id() {
+            ide_core::process::kill_tree_of(pid);
+        }
+    }
+}
+
+impl tokio::io::AsyncRead for ProxyStream {
+    fn poll_read(
+        mut self: std::pin::Pin<&mut Self>,
+        cx: &mut std::task::Context<'_>,
+        buf: &mut tokio::io::ReadBuf<'_>,
+    ) -> std::task::Poll<std::io::Result<()>> {
+        match self.stdout.as_mut() {
+            Some(stdout) => std::pin::Pin::new(stdout).poll_read(cx, buf),
+            None => std::task::Poll::Ready(Ok(())),
+        }
+    }
+}
+
+impl tokio::io::AsyncWrite for ProxyStream {
+    fn poll_write(
+        mut self: std::pin::Pin<&mut Self>,
+        cx: &mut std::task::Context<'_>,
+        buf: &[u8],
+    ) -> std::task::Poll<std::io::Result<usize>> {
+        match self.stdin.as_mut() {
+            Some(stdin) => std::pin::Pin::new(stdin).poll_write(cx, buf),
+            None => std::task::Poll::Ready(Ok(0)),
+        }
+    }
+
+    fn poll_flush(
+        mut self: std::pin::Pin<&mut Self>,
+        cx: &mut std::task::Context<'_>,
+    ) -> std::task::Poll<std::io::Result<()>> {
+        match self.stdin.as_mut() {
+            Some(stdin) => std::pin::Pin::new(stdin).poll_flush(cx),
+            None => std::task::Poll::Ready(Ok(())),
+        }
+    }
+
+    fn poll_shutdown(
+        mut self: std::pin::Pin<&mut Self>,
+        cx: &mut std::task::Context<'_>,
+    ) -> std::task::Poll<std::io::Result<()>> {
+        if let Some(stdin) = self.stdin.as_mut()
+            && let std::task::Poll::Pending = std::pin::Pin::new(stdin).poll_shutdown(cx)
+        {
+            return std::task::Poll::Pending;
+        }
+        self.stdin = None;
+        std::task::Poll::Ready(Ok(()))
+    }
+}
+
+fn spawn_proxy_command(command: &str) -> Result<ProxyStream, std::io::Error> {
+    #[cfg(unix)]
+    let mut cmd = {
+        let mut c = tokio::process::Command::new("/bin/sh");
+        c.arg("-c").arg(command);
+        c
+    };
+    #[cfg(windows)]
+    let mut cmd = {
+        let mut c = tokio::process::Command::new("cmd");
+        c.arg("/C").arg(command);
+        c
+    };
+    ide_core::process::prepare(cmd.as_std_mut());
+    ide_core::process::own_group(cmd.as_std_mut());
+    cmd.stdin(std::process::Stdio::piped())
+        .stdout(std::process::Stdio::piped())
+        .stderr(std::process::Stdio::piped())
+        .kill_on_drop(true);
+    let mut child = cmd.spawn()?;
+    let stdin = child.stdin.take();
+    let stdout = child.stdout.take();
+    let stderr_buf = Arc::new(Mutex::new(Vec::new()));
+    if let Some(mut stderr) = child.stderr.take() {
+        let sink = stderr_buf.clone();
+        tokio::spawn(async move {
+            use tokio::io::AsyncReadExt;
+            let mut chunk = [0u8; 1024];
+            while let Ok(n) = stderr.read(&mut chunk).await {
+                if n == 0 {
+                    break;
+                }
+                let mut g = sink.lock();
+                if g.len() < 4096 {
+                    let take = (4096 - g.len()).min(n);
+                    g.extend_from_slice(&chunk[..take]);
+                }
+            }
+        });
+    }
+    Ok(ProxyStream { child, stdin, stdout, stderr: stderr_buf })
+}
+
+async fn connect_first_hop(hop: &Hop, known_hosts: &Path) -> Result<Handle<Client>, ConnectError> {
+    if let Some(command) = hop.proxy_command.as_deref() {
+        let stream = spawn_proxy_command(command).map_err(|e| {
+            ConnectError::Other(io(format!("cannot start ProxyCommand for {}:{}: {e}", hop.host, hop.port)))
+        })?;
+        let stderr = stream.stderr.clone();
+        connect(hop, known_hosts, Some(stream)).await.map_err(|e| match e {
+            ConnectError::Other(mut err) => {
+                let detail = String::from_utf8_lossy(&stderr.lock()).trim().to_owned();
+                if !detail.is_empty() {
+                    err.message = format!("{}: {detail}", err.message);
+                }
+                ConnectError::Other(err)
+            }
+            other => other,
+        })
+    } else {
+        connect::<tokio::net::TcpStream>(hop, known_hosts, None).await
     }
 }
 
@@ -399,16 +553,25 @@ where
         ..Default::default()
     });
     let issue = Arc::new(Mutex::new(None));
-    let handler =
-        Client { host: hop.host.clone(), port: hop.port, known_hosts: known_hosts.to_owned(), issue: issue.clone() };
+    let effective_known_hosts = hop.known_hosts.as_deref().unwrap_or(known_hosts).to_owned();
+    let handler = Client {
+        host: hop.host.clone(),
+        port: hop.port,
+        known_hosts: effective_known_hosts,
+        host_key_policy: hop.host_key_policy,
+        issue: issue.clone(),
+    };
     let result = match stream {
         None => client::connect(config, (hop.host.as_str(), hop.port), handler).await,
         Some(s) => client::connect_stream(config, s, handler).await,
     };
     result.map_err(|e| match issue.lock().take() {
-        Some(HostKeyIssue::Unknown(key)) => {
-            ConnectError::UnknownHostKey(Box::new(UnknownHostKey { host: hop.host.clone(), port: hop.port, key }))
-        }
+        Some(HostKeyIssue::Unknown(key)) => ConnectError::UnknownHostKey(Box::new(UnknownHostKey {
+            host: hop.host.clone(),
+            port: hop.port,
+            key,
+            known_hosts: hop.known_hosts.clone(),
+        })),
         Some(HostKeyIssue::Changed(line)) => ConnectError::Other(IdeError::new(
             ErrorKind::PermissionDenied,
             format!(
@@ -487,6 +650,9 @@ async fn authenticate(
             if with_key(handle, user, key).await? { Ok(()) } else { Err(failed()) }
         }
         SshAuth::OpenSsh => {
+            if handle.authenticate_none(user).await.map(|r| r.success()).unwrap_or(false) {
+                return Ok(());
+            }
             if with_agent(handle, user).await {
                 return Ok(());
             }

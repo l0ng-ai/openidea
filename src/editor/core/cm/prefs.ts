@@ -35,6 +35,8 @@ import {
 } from "@codemirror/commands";
 import { markdownImages } from "./markdownImages";
 import { selectionMarks } from "./selectionMarks";
+import { seamlessSelection } from "./selectionLayer";
+import { useEditorRegistry } from "@/editor/api";
 import type { EditorExtras } from "@/platform/editorSettings";
 import { openideaHighlightStyle } from "./highlight";
 import {
@@ -47,7 +49,11 @@ import {
   selectHumpRight,
 } from "./editing";
 import { enterInLineComment, lineCommentStyle, type LineCommentStyle } from "./comments";
+import { enterInDocComment } from "./docComment";
 import { skipClosingQuote, smartBackspace, smartBackspaceApplies, tabOut } from "./smartKeys";
+import { stringClipboard } from "./stringClipboard";
+import { filterCopiedText } from "./clipboard";
+import { LINE_INSET } from "./lineInset";
 
 // --- soft wraps ---------------------------------------------------------------
 
@@ -78,7 +84,9 @@ const wrapIndentCache = new Map<number, Decoration>();
 function wrapIndentDeco(cols: number) {
   let d = wrapIndentCache.get(cols);
   if (!d) {
-    d = Decoration.line({ attributes: { style: `padding-left: calc(6px + ${cols}ch); text-indent: -${cols}ch` } });
+    d = Decoration.line({
+      attributes: { style: `padding-left: calc(${LINE_INSET}px + ${cols}ch); text-indent: -${cols}ch` },
+    });
     wrapIndentCache.set(cols, d);
   }
   return d;
@@ -160,7 +168,7 @@ export function marginGuides(columns: readonly number[]): Extension {
   const image = cols
     .map(
       (c) =>
-        `linear-gradient(to right, transparent calc(6px + ${c}ch), var(--border-right-margin, var(--border)) calc(6px + ${c}ch), var(--border-right-margin, var(--border)) calc(7px + ${c}ch), transparent calc(7px + ${c}ch))`,
+        `linear-gradient(to right, transparent calc(${LINE_INSET}px + ${c}ch), var(--border-right-margin, var(--border)) calc(${LINE_INSET}px + ${c}ch), var(--border-right-margin, var(--border)) calc(${LINE_INSET + 1}px + ${c}ch), transparent calc(${LINE_INSET + 1}px + ${c}ch))`,
     )
     .join(", ");
   return EditorView.contentAttributes.of({ style: `background-image: ${image}` });
@@ -274,9 +282,11 @@ export function pasteReindentFilter(mode: "indentBlock" | "indentEachLine") {
     }
     const block = indentPastedText(text, targetCol, useTabs ? "\t" : " ", tabSize, unitCols);
     const out = prefix + (prefix ? block.trimStart() : block);
+    const formatted = start.changes({ from, to, insert: out });
     const first: TransactionSpec = {
-      changes: { from, to, insert: out },
-      selection: EditorSelection.cursor(from + out.length),
+      changes: formatted,
+      // Keep line-wise paste carets on their original text after reformatting.
+      selection: tr.newSelection.map(tr.changes.invertedDesc, 1).map(formatted, 1),
       userEvent: "input.paste",
       scrollIntoView: true,
     };
@@ -291,7 +301,7 @@ export function pasteReindentFilter(mode: "indentBlock" | "indentEachLine") {
     if (lineStart > lineEnd) return first;
     const reindent = indentRange(pasted, lineStart, lineEnd);
     if (reindent.empty) return first;
-    return [first, { changes: reindent, selection: EditorSelection.cursor(reindent.mapPos(end, 1)), sequential: true }];
+    return [first, { changes: reindent, selection: pasted.selection.map(reindent, 1), sequential: true }];
   });
 }
 
@@ -348,6 +358,8 @@ const richCopy = EditorView.domEventHandlers({
     const sel = view.state.selection;
     if (sel.ranges.length !== 1 || sel.main.empty || !e.clipboardData) return false;
     const { from, to } = sel.main;
+    const text = view.state.sliceDoc(from, to);
+    if (filterCopiedText(view.state, text) !== text) return false;
     try {
       const html = richTextHtml(view, from, to);
       e.clipboardData.clearData();
@@ -363,10 +375,16 @@ const richCopy = EditorView.domEventHandlers({
 
 // --- caret / scrolling / mouse ----------------------------------------------
 
+/**
+ * Font zoom new editors start from. ⌘/Ctrl+wheel keeps every open editor on the
+ * same value (#2480), so editors opened afterwards match the others.
+ */
+let sharedFontZoom = 0;
+
 /** Font zoom of one editor (⌘ + wheel), in px relative to the configured size. */
 export const setFontZoom = StateEffect.define<number>();
 export const fontZoom = StateField.define<number>({
-  create: () => 0,
+  create: () => sharedFontZoom,
   update: (v, tr) => tr.effects.reduce((acc, e) => (e.is(setFontZoom) ? e.value : acc), v),
   // Highest precedence: its style comes after the configured font size, which it scales.
   provide: (f) =>
@@ -389,11 +407,35 @@ export function stepFontZoom(view: EditorView, delta: number): void {
   if (next !== z) view.dispatch({ effects: setFontZoom.of(next) });
 }
 
-const wheelZoom = EditorView.domEventHandlers({
+/**
+ * Steps the font zoom of every open editor to the same value, so ⌘/Ctrl+wheel
+ * resizes all editor areas together (#2480) instead of only the focused one.
+ */
+export function stepAllEditorsFontZoom(origin: EditorView, delta: number): void {
+  const current = origin.state.field(fontZoom, false);
+  if (current === undefined) return;
+  const next = Math.max(-6, Math.min(36, current + delta));
+  if (next === current) return;
+  sharedFontZoom = next;
+  for (const ed of useEditorRegistry.getState().editors) {
+    if (ed.view.state.field(fontZoom, false) === undefined) continue;
+    if (ed.view.state.field(fontZoom) !== next) ed.view.dispatch({ effects: setFontZoom.of(next) });
+  }
+}
+
+/** Resets every open editor's font zoom, and the value new editors start from. */
+export function resetAllEditorsFontZoom(): void {
+  sharedFontZoom = 0;
+  for (const ed of useEditorRegistry.getState().editors)
+    if (ed.view.state.field(fontZoom, false)) ed.view.dispatch({ effects: setFontZoom.of(0) });
+}
+
+/** Exported for tests: the ⌘/Ctrl+wheel handler of the prefs compartment. */
+export const wheelZoom = EditorView.domEventHandlers({
   wheel(e, view) {
     if (!e.metaKey && !e.ctrlKey) return false;
     e.preventDefault();
-    stepFontZoom(view, e.deltaY < 0 ? 1 : -1);
+    stepAllEditorsFontZoom(view, e.deltaY < 0 ? 1 : -1);
     return true;
   },
 });
@@ -506,6 +548,7 @@ export function caretExtension(prefs: EditorExtras): Extension {
     a.smoothCaretMovement ? caretGlide : [],
     drawSelection({ cursorBlinkRate: a.caretBlinking ? Math.max(100, Math.min(5000, a.caretBlinkPeriod)) * 2 : 0 }),
     selectionMarks,
+    seamlessSelection(),
     classes.length ? EditorView.editorAttributes.of({ class: classes.join(" ") }) : [],
   ];
 }
@@ -540,6 +583,7 @@ export function prefsExtension(o: PrefsOptions): Extension {
   if (!g.dragAndDrop) out.push(noTextDrag);
   if (g.caretScroll === "center") out.push(centerCaret);
   if (g.richTextCopy) out.push(richCopy);
+  if (k.escapeOnPaste) out.push(stringClipboard(o.language));
   if (!o.readOnly && (k.reformatOnPaste === "indentBlock" || k.reformatOnPaste === "indentEachLine"))
     out.push(pasteReindentFilter(k.reformatOnPaste));
 
@@ -569,6 +613,7 @@ export function prefsExtension(o: PrefsOptions): Extension {
       { key: "Home", run: cursorLineStart, shift: selectLineStart, preventDefault: true },
       { mac: "Mod-ArrowLeft", run: cursorLineStart, shift: selectLineStart, preventDefault: true },
     );
+  if (!o.readOnly && k.insertDocStub) keys.push({ key: "Enter", run: enterInDocComment(o.language) });
   if (!o.readOnly) keys.push({ key: "Enter", run: enterInLineComment });
   if (!k.smartIndent) keys.push({ key: "Enter", run: insertNewlineKeepIndent });
   if (k.backspaceUnindent === "none") keys.push({ key: "Backspace", run: deleteCharBackwardStrict });

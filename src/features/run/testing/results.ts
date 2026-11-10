@@ -128,7 +128,9 @@ export class TestResults {
         }
         case "location": {
           const n = this.node(e.path);
-          n.location ??= e.location;
+          // The first location wins, except that a place to search for (Ruby tests) gives way to a real one.
+          if (!n.location || (n.location.resolve === "rubyTest" && e.location.resolve !== "rubyTest"))
+            n.location = e.location;
           break;
         }
         case "output": {

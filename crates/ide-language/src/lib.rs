@@ -14,14 +14,14 @@ mod markers;
 pub mod plugin_point;
 mod registry;
 mod syntax;
-pub use markers::marked_root;
+pub use markers::{arduino_sketch_root, is_arduino_sketch_dir, marked_root};
 pub use plugin_point::PluginLanguages;
 pub use registry::{FileTypes, LanguageRegistry};
 pub use syntax::{
     CSS_CLASS, CSS_ID, CSS_VARIABLE, ConfigurationKey, ExternalFold, ExternalSymbol, ExternalSyntax, ExternalToken,
     FileReference, Literal, LiteralKind, MAX_CACHED_TREES, MAX_PARSE_BYTES, ParsedTree, SpellingKind, SpellingRegion,
     Syntax, SyntaxCache, SyntaxCacheStats, SyntaxHighlightKind, SyntaxHighlights, TreeError, WebReference,
-    WebReferenceKind, merge_visibility, set_external_syntax,
+    WebReferenceKind, merge_visibility, set_external_syntax, shift_pos, shift_range,
 };
 
 /// Parsed form of `languages/<id>.toml`. Backend-only; the UI gets [`LanguageInfo`].
@@ -93,6 +93,16 @@ pub struct IndentConfig {
     pub insert_spaces: bool,
 }
 
+/// Additions to the tsserver project of a tree without `tsconfig.json` / `jsconfig.json`.
+#[derive(Clone, Debug, Default, PartialEq)]
+pub struct TsserverProjectExtras {
+    /// File extensions a tsserver plugin handles, registered with the sources (`vue`).
+    pub extensions: Vec<String>,
+    /// `compilerOptions.paths` with absolute targets: the bundler's module aliases
+    /// (`@/*` → `<root>/src/*` in a Vue CLI project).
+    pub paths: BTreeMap<String, Vec<String>>,
+}
+
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "kebab-case")]
 pub struct LanguageServerConfig {
@@ -155,6 +165,9 @@ pub struct LanguageServerConfig {
     /// Register source files with tsserver when no project configuration exists.
     #[serde(default)]
     pub tsserver_project: bool,
+    /// Set by the settings hook: what that registered project adds to its defaults.
+    #[serde(skip)]
+    pub tsserver_project_extras: TsserverProjectExtras,
     /// Re-sends the open documents (unchanged) once `workspace/configuration` is answered:
     /// the server (Intelephense) applies some settings, such as the PHP version, only when
     /// it parses a document.
@@ -299,4 +312,16 @@ pub struct SymbolTag {
     /// Enclosing symbol, e.g. class name for a method.
     pub container: Option<String>,
     pub range: Range,
+}
+
+/// One inline TS/JS `<script>` block of a Vue SFC / HTML document.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct ScriptRegion {
+    /// Document-absolute UTF-8 byte offset of `text`, for tree-sitter parsing.
+    /// Convert to UTF-16 positions before exposing ranges through IPC.
+    pub base: usize,
+    /// The language the block's `lang` attribute picks.
+    pub language: LanguageId,
+    /// The script text.
+    pub text: String,
 }

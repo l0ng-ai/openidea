@@ -1,0 +1,105 @@
+---
+title: "Databases"
+description: "Create and manage plugin-owned data sources in the Database tool window, store their passwords securely and connect them."
+---
+
+A plugin that starts or knows about a database (a local dev stack, a cloud tool, a
+container runner) can add a data source to the project's **Database** tool window, so the
+user doesn't have to type the connection settings. The plugin manages only the sources it
+created; it never sees user-created sources, other plugins' sources or any stored
+password. Once a source exists, the user works with it through the normal
+[Database tools](/en/guide/database).
+
+This is the `database` host interface (`database.wit`, API 1.4).
+
+## Manifest
+
+```toml
+engines.openidea = "^1.4"
+wasm = "dist/plugin.wasm"
+
+[capabilities]
+optional = ["database.sources"]   # medium risk
+```
+
+`database.sources` is needed for every call, and every call needs a trusted, open project.
+
+## Create a source and connect
+
+```rust
+use openidea_plugin::{Error, Invocation, PluginDataSource};
+
+fn run_command(&mut self, _id: &str, ctx: &Invocation, _arg: Option<&str>) -> Result<Option<String>, Error> {
+    let project = ctx.project().ok_or("Open a project first")?;
+    project.upsert_data_source(&PluginDataSource {
+        id: "local".into(),
+        name: "Local service".into(),
+        driver: "postgres".into(),
+        host: Some("127.0.0.1".into()),
+        port: Some(5432),
+        database: Some("app".into()),
+        user: Some("app".into()),
+        ..Default::default()
+    })?;
+    // If the plugin knows the password: project.set_data_source_credential("local", &password)?;
+    project.connect_data_source("local")?;
+    Ok(None)
+}
+```
+
+| Rust SDK (`Project`)                       | WIT                                              | Result                                                   |
+| ------------------------------------------ | ------------------------------------------------ | -------------------------------------------------------- |
+| `upsert_data_source(&PluginDataSource)`    | `database.upsert-source(project, source)`        | Creates or replaces one of the plugin's sources          |
+| `remove_data_source(id)`                   | `database.remove-source(project, id)`            | Removes the source and its credentials                   |
+| `data_sources()`                           | `database.sources(project)`                      | The plugin's own ids only, never settings or credentials |
+| `set_data_source_credential(id, password)` | `database.set-credential(project, id, password)` | Writes the password to the Database secure store         |
+| `connect_data_source(id)`                  | `database.connect(project, id)`                  | Asks this project's window to connect and introspect     |
+
+## The data source record
+
+`PluginDataSource` (WIT `database.data-source`) holds non-secret settings only:
+
+| Field                              | Notes                                                                                                    |
+| ---------------------------------- | -------------------------------------------------------------------------------------------------------- |
+| `id`                               | Private to the plugin, 1–128 bytes. The host allocates the real connection id.                           |
+| `name`                             | Shown in the Database tree, at most 256 bytes.                                                           |
+| `driver`                           | `sqlite`, `postgres`, `mysql` (MariaDB too), `sqlServer`, `clickhouse`, `oracle`.                        |
+| `host`, `port`, `database`, `user` | Optional. For SQLite, `database` is the file path (absolute or relative to the project).                 |
+| `url`                              | Optional. Selects URL-only connection settings; its driver must agree. A `sqlite:` URL works for SQLite. |
+| `options`                          | Up to 128 `(name, value)` pairs: the non-secret driver properties of the Database Advanced tab.          |
+
+Never put credentials in a settings field. URLs containing a password or credential query
+parameters, and password, token or secret options, are rejected. Use
+`set_data_source_credential` instead. There is no function that reads a credential back,
+not even one the plugin just wrote.
+
+## Where it is stored
+
+- Owned sources are written to the project's `.openidea/data-sources.toml` with
+  `pluginOwner` and `pluginSourceId`. Updates keep unrelated entries, comments and
+  formatting. The file must use the normal `[[data-source]]` table format; inline table
+  arrays are rejected. No password is written there.
+- The Database tree refreshes when sources change and labels owned sources with the
+  plugin id. Duplicating one creates a user-owned copy.
+- Disabling the plugin keeps its sources. Uninstalling removes them and their credentials,
+  also in closed projects the host remembers.
+
+## Connecting
+
+`connect_data_source` is valid only from a command or event of that project's window. It
+uses the usual Database connection flow, password prompt and introspection. Waiting for the
+window doesn't count against the plugin's call budget; the window must answer within 180
+seconds, and the call can be cancelled.
+
+## Limits and errors
+
+- At most 64 sources per plugin and project; each value or optional field at most 16 KiB;
+  a credential at most 64 KiB.
+- An unknown id, or one owned by someone else, returns `not-found` without revealing whether
+  another owner's source exists.
+- In remote projects, sources and credentials are stored where the Database subsystem runs,
+  on the project server. A host without that subsystem returns
+  `invalid("Database subsystem is unavailable on this host")`.
+
+The [`data-tools` fixture](https://github.com/l0ng-ai/openidea/tree/main/crates/ide-plugin/tests/fixtures/data-tools)
+calls every function from commands.

@@ -51,6 +51,61 @@ describe("Go JSON tests", () => {
     expect(results.roots[0]?.output).toContain("./main.go:3:1: undefined: missing");
   });
 
+  it("counts repeated test results once per start and preserves a failed attempt", () => {
+    const parser = goParser();
+    const results = new TestResults();
+    const lines = [
+      record("p", "run", "TestRepeated"),
+      record("p", "fail", "TestRepeated"),
+      record("p", "run", "TestRepeated"),
+      record("p", "pass", "TestRepeated"),
+      record("p", "pass", "TestRepeated"),
+      record("p", "fail"),
+    ];
+    lines.forEach((line) => results.apply(parser.feed(line)));
+    expect(results.counts()).toMatchObject({ passed: 1, failed: 1, running: 0, total: 2 });
+    expect(results.get("p\0TestRepeated")?.own).toBe("failed");
+  });
+
+  it("completes benchmark measurements and explicit bench events in interleaved packages", () => {
+    const parser = goParser();
+    const results = new TestResults();
+    const lines = [
+      record("one", "run", "BenchmarkQuiet"),
+      record("two", "run", "BenchmarkLogged"),
+      record("one", "output", "BenchmarkQuiet", { Output: "BenchmarkQuiet-4  \t  1\t  214 ns/op\n" }),
+      record("two", "output", "BenchmarkLogged", { Output: "    bench_test.go:4: logged\n" }),
+      record("two", "bench", "BenchmarkLogged-4"),
+      record("one", "output", undefined, { Output: "BenchmarkQuiet-8  \t  1\t  210 ns/op\n" }),
+      record("one", "run", "BenchmarkFails"),
+      record("one", "output", "BenchmarkFails", { Output: "BenchmarkFails-4  \t  1\t  220 ns/op\n" }),
+      record("one", "fail", "BenchmarkFails-8"),
+      record("one", "fail"),
+      record("two", "pass"),
+    ];
+    lines.forEach((line) => results.apply(parser.feed(line)));
+    expect(results.counts()).toMatchObject({ passed: 2, failed: 1, running: 0, total: 3 });
+    expect(results.get("one\0BenchmarkQuiet")?.own).toBe("passed");
+    expect(results.get("one\0BenchmarkFails")?.own).toBe("failed");
+    expect(results.get("two\0BenchmarkLogged")?.own).toBe("passed");
+  });
+
+  it("maps benchmark measurements without a Test field to the actual nested benchmark name", () => {
+    const parser = goParser();
+    const results = new TestResults();
+    const lines = [
+      record("p", "run", "BenchmarkNested"),
+      record("p", "run", "BenchmarkNested/deep-2"),
+      record("p", "output", undefined, { Output: "BenchmarkNested/deep-2  \t  1\t  214 ns/op\n" }),
+      record("p", "output", undefined, { Output: "BenchmarkNested/deep-2-4  \t  1\t  210 ns/op\n" }),
+      record("p", "pass"),
+    ];
+    lines.forEach((line) => results.apply(parser.feed(line)));
+    expect(results.counts()).toMatchObject({ passed: 1, failed: 0, running: 0, total: 1 });
+    expect(results.get("p\0BenchmarkNested")?.children.map((node) => node.name)).toEqual(["deep-2"]);
+    expect(results.get("p\0BenchmarkNested\0deep-2")?.own).toBe("passed");
+  });
+
   it("ignores malformed metadata and negative durations without throwing", () => {
     for (const line of [
       "{",

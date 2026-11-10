@@ -4,7 +4,10 @@ import java.net.URI;
 import java.nio.file.Files;
 import java.nio.file.Path;
 import java.util.*;
+import java.util.concurrent.ConcurrentHashMap;
+import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicLong;
+import java.util.concurrent.locks.ReentrantLock;
 import java.util.zip.ZipFile;
 import com.google.gson.*;
 import org.eclipse.core.resources.ResourcesPlugin;
@@ -29,6 +32,8 @@ public final class ConfigurationCommand implements IDelegateCommandHandler {
     private static final int MAX_UNITS = 20_000, MAX_ENTRIES = 100_000, MAX_BYTES = 2 * 1024 * 1024;
     private static final AtomicLong REVISION = new AtomicLong(), GENERATION = new AtomicLong();
     private static final Map<String, Index> CACHE = new LinkedHashMap<>();
+    /** One build per project at a time; waiting lookups stay cancellable. */
+    private static final Map<String, ReentrantLock> LOCKS = new ConcurrentHashMap<>();
     /** Unsaved edits are covered by the working-copy digest, so reconciles never
      * invalidate. Opening/closing a working copy (F_PRIMARY_WORKING_COPY) and
      * non-Java resources, reported as F_CONTENT on a project, root or package
@@ -36,7 +41,41 @@ public final class ConfigurationCommand implements IDelegateCommandHandler {
      * own stamps), do not change the index either. */
     private static final int IGNORED_FLAGS = IJavaElementDelta.F_CHILDREN | IJavaElementDelta.F_PRIMARY_WORKING_COPY
             | IJavaElementDelta.F_AST_AFFECTED | IJavaElementDelta.F_FINE_GRAINED;
-    static { JavaCore.addElementChangedListener(event -> { if (affects(event.getDelta())) REVISION.incrementAndGet(); }, ElementChangedEvent.POST_CHANGE); }
+    /** Entries read from each library's Spring metadata, by project and archive. They depend
+     * on the archive and the project's classpath only, so a source change rebuilds the index
+     * without reading every dependency's metadata again: resolving its thousands of properties
+     * to library members takes seconds. A changed archive stamp or classpath drops them. */
+    private static final Map<String, Archive> ARCHIVES = new HashMap<>();
+    private record Archive(FileStamp stamp, List<Entry> entries) {}
+    static {
+        JavaCore.addElementChangedListener(event -> {
+            if (affects(event.getDelta())) REVISION.incrementAndGet();
+            if (classpathChanged(event.getDelta())) synchronized (ARCHIVES) { ARCHIVES.clear(); }
+        }, ElementChangedEvent.POST_CHANGE);
+    }
+    /** A project or package fragment root added, removed or reconfigured (not a change of
+     * the sources or resources inside it). */
+    static boolean classpathChanged(IJavaElementDelta delta) {
+        if (delta.getElement().getElementType() > IJavaElement.PACKAGE_FRAGMENT_ROOT) return false;
+        int flags = delta.getFlags() & ~(IGNORED_FLAGS | IJavaElementDelta.F_CONTENT);
+        if (delta.getKind() != IJavaElementDelta.CHANGED || flags != 0) return true;
+        for (IJavaElementDelta child : delta.getAffectedChildren()) if (classpathChanged(child)) return true;
+        return false;
+    }
+    private static List<Entry> archive(String key, FileStamp stamp) {
+        synchronized (ARCHIVES) {
+            Archive known = ARCHIVES.get(key);
+            return known != null && known.stamp.equals(stamp) ? known.entries : null;
+        }
+    }
+    private static void remember(String key, FileStamp stamp, List<Entry> entries) {
+        synchronized (ARCHIVES) {
+            ARCHIVES.remove(key);
+            if (ARCHIVES.values().stream().mapToInt(known -> known.entries.size()).sum() + entries.size() > MAX_ENTRIES)
+                ARCHIVES.clear();
+            if (entries.size() <= MAX_ENTRIES) ARCHIVES.put(key, new Archive(stamp, entries));
+        }
+    }
     static boolean affects(IJavaElementDelta delta) {
         int flags = delta.getFlags() & ~IGNORED_FLAGS;
         if (delta.getElement().getElementType() < IJavaElement.COMPILATION_UNIT) flags &= ~IJavaElementDelta.F_CONTENT;
@@ -56,6 +95,7 @@ public final class ConfigurationCommand implements IDelegateCommandHandler {
 
     @Override
     public Object executeCommand(String command, List<Object> args, IProgressMonitor monitor) throws Exception {
+        if (command.equals("openidea.java.configuration.warmup")) return ConfigurationWarmup.request(args);
         String uri = (String) args.get(0);
         String key = args.get(1) instanceof String s ? s : null;
         int line = ((Number) args.get(2)).intValue(), column = ((Number) args.get(3)).intValue();
@@ -138,7 +178,7 @@ public final class ConfigurationCommand implements IDelegateCommandHandler {
                 (line < r.getEnd().getLine() || line == r.getEnd().getLine() && col < r.getEnd().getCharacter());
     }
     private static void check(IProgressMonitor monitor) { if (monitor.isCanceled()) throw new OperationCanceledException(); }
-    private static IJavaProject project(String uri) {
+    static IJavaProject project(String uri) {
         Path path;
         try { path = Path.of(URI.create(uri)).toFile().getCanonicalFile().toPath(); } catch (Exception e) { return null; }
         IJavaProject best = null;
@@ -163,7 +203,33 @@ public final class ConfigurationCommand implements IDelegateCommandHandler {
         return result;
     }
 
-    private static synchronized Index index(IJavaProject project, IProgressMonitor monitor) throws Exception {
+    /** Builds (or reuses) the project's index in the background; its generation. */
+    static long warm(IJavaProject project, IProgressMonitor monitor) throws Exception {
+        return index(project, monitor, true).generation;
+    }
+
+    /** Warming fills free cache room only; it never evicts an index a lookup built. */
+    static boolean hasWarmupCapacity(IJavaProject project) {
+        synchronized (CACHE) {
+            return CACHE.containsKey(project.getHandleIdentifier()) || (CACHE.size() < 8 &&
+                    CACHE.values().stream().mapToInt(value -> value.entries.size()).sum() < MAX_ENTRIES);
+        }
+    }
+
+    private static Index index(IJavaProject project, IProgressMonitor monitor) throws Exception {
+        return index(project, monitor, false);
+    }
+
+    private static Index index(IJavaProject project, IProgressMonitor monitor, boolean background) throws Exception {
+        ReentrantLock lock = LOCKS.computeIfAbsent(project.getHandleIdentifier(), ignored -> new ReentrantLock());
+        while (!lock.tryLock(50, TimeUnit.MILLISECONDS)) check(monitor);
+        try {
+            check(monitor);
+            return build(project, monitor, background);
+        } finally { lock.unlock(); }
+    }
+
+    private static Index build(IJavaProject project, IProgressMonitor monitor, boolean background) throws Exception {
         long revision = REVISION.get();
         String id = project.getHandleIdentifier();
         Map<String, ICompilationUnit> copies = new TreeMap<>();
@@ -181,7 +247,8 @@ public final class ConfigurationCommand implements IDelegateCommandHandler {
             if (source != null) digest.update(source.getBytes(java.nio.charset.StandardCharsets.UTF_8));
         }
         String workingCopies = HexFormat.of().formatHex(digest.digest());
-        Index cached = CACHE.get(id);
+        Index cached;
+        synchronized (CACHE) { cached = CACHE.get(id); }
         if (cached != null && cached.revision == revision && cached.workingCopies.equals(workingCopies)) {
             boolean valid = true;
             for (var entry : cached.files.entrySet()) {
@@ -227,11 +294,19 @@ public final class ConfigurationCommand implements IDelegateCommandHandler {
         roots.add(project.getProject().getLocationURI().toString());
         builder.metadataDirectory(project.getProject().getLocation().toFile().toPath().resolve("src/main/resources"), project);
         Index result = new Index(revision, workingCopies, List.copyOf(builder.entries), List.copyOf(roots), Map.copyOf(builder.files), builder.incomplete, builder.parsed, GENERATION.incrementAndGet());
-        CACHE.remove(id);
-        while (!CACHE.isEmpty() && (CACHE.size() >= 8 ||
-                CACHE.values().stream().mapToInt(value -> value.entries.size()).sum() + result.entries.size() > MAX_ENTRIES))
-            CACHE.remove(CACHE.keySet().iterator().next());
-        CACHE.put(id, result);
+        check(monitor);
+        // A warmed index that the model has already outdated is dropped, not published.
+        if (background && revision != REVISION.get()) throw new OperationCanceledException();
+        synchronized (CACHE) {
+            if (background && ((!CACHE.containsKey(id) && CACHE.size() >= 8) ||
+                    CACHE.entrySet().stream().filter(e -> !e.getKey().equals(id)).mapToInt(e -> e.getValue().entries.size()).sum()
+                            + result.entries.size() > MAX_ENTRIES)) throw new OperationCanceledException();
+            CACHE.remove(id);
+            while (!CACHE.isEmpty() && (CACHE.size() >= 8 ||
+                    CACHE.values().stream().mapToInt(value -> value.entries.size()).sum() + result.entries.size() > MAX_ENTRIES))
+                CACHE.remove(CACHE.keySet().iterator().next());
+            CACHE.put(id, result);
+        }
         return result;
     }
 
@@ -424,8 +499,18 @@ public final class ConfigurationCommand implements IDelegateCommandHandler {
             Path path = root.getPath().toFile().toPath();
             if (!root.isExternal() && root.getResource() != null && root.getResource().getLocation() != null)
                 path = root.getResource().getLocation().toFile().toPath();
-            files.put(path, stamp(path));
+            FileStamp stamp = stamp(path);
+            files.put(path, stamp);
             if (!Files.isRegularFile(path)) return;
+            String key = project.getHandleIdentifier() + '\n' + path;
+            List<Entry> known = archive(key, stamp);
+            if (known != null && entries.size() + known.size() <= MAX_ENTRIES) {
+                entries.addAll(known);
+                return;
+            }
+            int start = entries.size();
+            boolean before = incomplete;
+            incomplete = false;
             try (ZipFile zip = new ZipFile(path.toFile())) {
                 for (String filename : List.of("spring-configuration-metadata.json", "additional-spring-configuration-metadata.json")) {
                     var entry = zip.getEntry("META-INF/" + filename);
@@ -440,6 +525,9 @@ public final class ConfigurationCommand implements IDelegateCommandHandler {
                     metadataObject(metadata, project);
                 }
             } catch (Exception e) { if (e instanceof OperationCanceledException) throw (OperationCanceledException)e; incomplete = true; }
+            // Only a complete reading is reused; an incomplete one is read again next time.
+            if (!incomplete) remember(key, stamp, List.copyOf(entries.subList(start, entries.size())));
+            incomplete |= before;
         }
         void metadataObject(JsonObject metadata, IJavaProject project) throws JavaModelException {
             JsonArray groups = metadata.has("groups") ? metadata.getAsJsonArray("groups") : new JsonArray();

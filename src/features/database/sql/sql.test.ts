@@ -210,6 +210,19 @@ describe("completion candidates", () => {
     expect(labels(complete("select 1; ins|"))).toContain("insert into");
   });
 
+  it("offers Oracle vocabulary and quotes names the server folds to upper case", () => {
+    expect(statementStarters("oracle")).toEqual(expect.arrayContaining(["MERGE INTO", "TRUNCATE TABLE"]));
+    expect(statementStarters("oracle")).not.toContain("SET search_path TO");
+    expect(DATA_TYPES.oracle).toEqual(expect.arrayContaining(["VARCHAR2(255)", "NUMBER", "CLOB"]));
+    expect(complete("SELECT | FROM users", "oracle").find((c) => c.label === "NVL")).toMatchObject({
+      snippet: "NVL(${})",
+    });
+    // Upper-case names are plain; lower-case ones need quotes (the server folds unquoted names).
+    expect(quoteIdent("EMPLOYEES", "oracle")).toBe("EMPLOYEES");
+    expect(quoteIdent("employees", "oracle")).toBe('"employees"');
+    expect(quoteIdent('a"b', "oracle")).toBe('"a""b"');
+  });
+
   it("offers tables after FROM, with schema and data source", () => {
     const c = complete("select * from |");
     expect(labels(c, "table")).toEqual(expect.arrayContaining(["users", "orders", "order_items", "products"]));

@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { evaluateWhen } from "./context";
+import { clearContext, evaluateWhen, getContext, setContext } from "./context";
 
 describe("when clauses", () => {
   const ctx = { editorFocus: true, lang: "rust", count: 2, debug: false };
@@ -22,5 +22,22 @@ describe("when clauses", () => {
   it("rejects malformed clauses", () => {
     expect(() => evaluateWhen("a &&", ctx)).toThrow();
     expect(() => evaluateWhen("(a", ctx)).toThrow();
+  });
+});
+
+describe("clearContext", () => {
+  it("deletes the key and keeps the others", () => {
+    setContext("a.x", 1);
+    setContext("a.y", 2);
+    clearContext("a.x");
+    expect("a.x" in getContext()).toBe(false);
+    expect(getContext()["a.y"]).toBe(2);
+    clearContext("a.y");
+  });
+
+  it("does nothing for an absent key", () => {
+    const before = getContext();
+    clearContext("a.never");
+    expect(getContext()).toBe(before);
   });
 });

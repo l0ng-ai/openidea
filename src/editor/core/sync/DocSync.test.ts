@@ -226,7 +226,8 @@ describe("DocSync", () => {
     await server.processAll();
     await flushMicrotasks();
     expect(view.text.toString()).toBe("abc");
-    expect(host.onDiscarded).toHaveBeenCalled();
+    // The rejection reaches the host, which writes it to the log file.
+    expect(host.onDiscarded).toHaveBeenCalledWith(expect.objectContaining({ kind: "permissionDenied" }));
     expect(sync.idle).toBe(true);
   });
 

@@ -1,12 +1,11 @@
 /**
- * Import Theme from IntelliJ IDE: the theme plugins installed in the JetBrains
- * IDEs on this machine, each under its plugin's heading, the plugin of the
- * theme in use first. Importing a theme brings every theme of its plugin, as
- * installing the plugin in IntelliJ does, and applies the chosen one
- * (`importIntellijTheme`). A file can be chosen instead.
+ * Import Theme from JetBrains IDE: the theme plugins installed in the JetBrains
+ * IDEs (and Android Studio) on this machine, one row per plugin of each IDE, the
+ * plugins of the themes in use first. Importing installs the plugin with all its
+ * themes, as installing it in the IDE does (`importIntellijTheme`); which theme
+ * to use stays a choice in Settings › Appearance. A file can be chosen instead.
  */
 import { useEffect, useState } from "react";
-import clsx from "clsx";
 import type { InstalledIntellijTheme } from "@/bindings";
 import { tx } from "@/platform/i18n";
 import { Badge, Dialog, List, Spinner, T } from "@/ui";
@@ -15,28 +14,30 @@ import { closeInstalledIntellijThemes, importIntellijTheme, useIntellijThemesDia
 import { errorText } from "./store";
 import styles from "./PluginsPage.module.css";
 
-type Row =
-  | { kind: "plugin"; key: string; plugin: string; ide: string; count: number; first: boolean }
-  | { kind: "theme"; key: string; theme: InstalledIntellijTheme };
+interface PluginRow {
+  key: string;
+  plugin: string;
+  ide: string;
+  path: string;
+  themes: InstalledIntellijTheme[];
+}
 
-/** A heading per plugin (of an IDE) with its themes under it, in the order found (the one in use first). */
-function themeRows(themes: readonly InstalledIntellijTheme[]): Row[] {
-  const plugins = new Map<string, InstalledIntellijTheme[]>();
+/** A row per plugin (of an IDE), in the order found (the one in use first). */
+function pluginRows(themes: readonly InstalledIntellijTheme[]): PluginRow[] {
+  const plugins = new Map<string, PluginRow>();
   for (const t of themes) {
     const key = `${t.ide}\n${t.path}`;
-    plugins.set(key, [...(plugins.get(key) ?? []), t]);
+    const row = plugins.get(key) ?? { key, plugin: t.plugin, ide: t.ide, path: t.path, themes: [] };
+    plugins.set(key, row);
+    row.themes.push(t);
   }
-  return [...plugins].flatMap(([key, list], i): Row[] => [
-    { kind: "plugin", key, plugin: list[0]!.plugin, ide: list[0]!.ide, count: list.length, first: i === 0 },
-    ...list.map((theme): Row => ({ kind: "theme", key: `${key}\n${theme.themeId}`, theme })),
-  ]);
+  return [...plugins.values()];
 }
 
 function IntellijThemesDialog() {
   const [themes, setThemes] = useState<InstalledIntellijTheme[] | null>(null);
   const [error, setError] = useState<string | null>(null);
-  // The first theme, under the first heading.
-  const [active, setActive] = useState(1);
+  const [active, setActive] = useState(0);
   useEffect(() => {
     let live = true;
     pluginsBackend()
@@ -54,50 +55,48 @@ function IntellijThemesDialog() {
     };
   }, []);
 
-  const run = (theme?: InstalledIntellijTheme) => {
+  const run = (path?: string) => {
     const { onImported } = useIntellijThemesDialog.getState();
     closeInstalledIntellijThemes();
-    void importIntellijTheme(theme?.path, theme?.themeId).then((id) => id && onImported?.(id));
+    void importIntellijTheme(path).then((id) => id && onImported?.(id));
   };
-  const rows = themeRows(themes ?? []);
-  const row = rows[active];
-  const chosen = row?.kind === "theme" ? row.theme : undefined;
+  const rows = pluginRows(themes ?? []);
+  const chosen = rows[active];
 
   return (
     <Dialog
       open
-      title="Import Theme from IntelliJ IDE"
+      title="Import Theme from JetBrains IDE"
       width={640}
       onClose={closeInstalledIntellijThemes}
       buttons={[
         { label: "Choose File…", role: "extra", onClick: () => run() },
         { label: "Cancel", role: "cancel" },
-        { label: "Import", role: "default", disabled: !chosen, onClick: () => chosen && run(chosen) },
+        { label: "Import", role: "default", disabled: !chosen, onClick: () => chosen && run(chosen.path) },
       ]}
     >
       <div className={styles.intellijThemes}>
         <p className={styles.muted}>
           <T>
-            Theme plugins installed in the JetBrains IDEs on this computer. Importing a theme brings every theme of its
-            plugin and applies the chosen one. Colours without an OpenIDEA counterpart keep the default theme colours.
+            Theme plugins installed in the JetBrains IDEs on this computer. Importing one installs it with all its
+            themes; choose the theme to use in Settings › Appearance. Colours without an OpenIDEA counterpart keep the
+            default theme colours.
           </T>
         </p>
         {themes === null ? (
           <div className={styles.intellijThemesStatus}>
-            <Spinner size={14} label="Looking for IntelliJ themes" />
-            <T>Looking for IntelliJ themes…</T>
+            <Spinner size={14} label="Looking for JetBrains themes" />
+            <T>Looking for JetBrains themes…</T>
           </div>
         ) : (
           <List
             items={rows}
             getKey={(r) => r.key}
-            isSection={(r) => r.kind === "plugin"}
             activeIndex={chosen ? active : -1}
             onActiveChange={setActive}
-            rowHeight={28}
-            sectionHeight={30}
+            rowHeight={44}
             className={styles.intellijThemesList}
-            aria-label={tx("IntelliJ themes")}
+            aria-label={tx("JetBrains theme plugins")}
             empty={
               <div className={styles.intellijThemesStatus} role="note">
                 {error ?? (
@@ -108,24 +107,21 @@ function IntellijThemesDialog() {
                 )}
               </div>
             }
-            renderSection={(r) =>
-              r.kind === "plugin" && (
-                <div className={clsx(styles.intellijPlugin, !r.first && styles.intellijPluginNext)}>
-                  <span className={styles.intellijPluginName}>{r.plugin}</span>
-                  <span>{r.count === 1 ? tx("1 theme") : tx`${r.count} themes`}</span>
-                  <span className={styles.intellijPluginIde}>{r.ide}</span>
+            renderItem={(r) => {
+              const count = r.themes.length;
+              return (
+                <div className={styles.intellijPlugin}>
+                  <div className={styles.intellijPluginHead}>
+                    <span className={styles.itemMain}>{r.plugin}</span>
+                    {r.themes.some((t) => t.active) && <Badge tone="accent">{tx("In use")}</Badge>}
+                    <span className={styles.intellijPluginIde}>
+                      {count === 1 ? tx("1 theme") : tx`${count} themes`} · {r.ide}
+                    </span>
+                  </div>
+                  <span className={styles.intellijPluginThemes}>{r.themes.map((t) => t.themeName).join(", ")}</span>
                 </div>
-              )
-            }
-            renderItem={(r) =>
-              r.kind === "theme" && (
-                <div className={styles.intellijTheme}>
-                  <span className={styles.itemMain}>{r.theme.themeName}</span>
-                  {r.theme.active && <Badge tone="accent">{tx("In use")}</Badge>}
-                  <span className={styles.muted}>{r.theme.dark ? tx("Dark") : tx("Light")}</span>
-                </div>
-              )
-            }
+              );
+            }}
           />
         )}
       </div>

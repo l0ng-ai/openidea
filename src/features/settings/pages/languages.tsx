@@ -1,3 +1,4 @@
+import { PluginFormattersPage } from "../languages/PluginFormattersPage";
 /**
  * PyCharm's top-level "Python" group (Interpreter), "Project Structure", and
  * Languages & Frameworks › Go / Java / Markdown / Node.js / PHP / Rust / TypeScript. Pages live in
@@ -5,7 +6,7 @@
  */
 import { GoPage, JavaPage, NodePage, PhpPage, RubyPage, RustPage, TypeScriptPage } from "../languages/LanguagePages";
 import { MarkdownPage } from "../languages/MarkdownPage";
-import { OxfmtPage, PrettierPage } from "../languages/FormatterPage";
+import { OxfmtPage, PrettierPage, RuffPage } from "../languages/FormatterPage";
 import { ProjectStructurePage } from "../languages/ProjectStructurePage";
 import { PythonInterpreterPage } from "../languages/PythonInterpreterPage";
 import { GoBuildTagsPage, GO_BUILD_TAG_SECTIONS } from "../languages/GoBuildTags";
@@ -15,6 +16,15 @@ import type { PageSpec } from "./spec";
 export const LANGUAGES_GROUP = "Languages & Frameworks";
 
 export const LANGUAGE_PAGES: PageSpec[] = [
+  {
+    id: "languages.pluginFormatters",
+    title: "Plugin Formatters",
+    group: LANGUAGES_GROUP,
+    projectScope: true,
+    order: 450,
+    keywords: ["format", "plugins"],
+    component: PluginFormattersPage,
+  },
   {
     id: "python.interpreter",
     projectScope: true,
@@ -34,6 +44,12 @@ export const LANGUAGE_PAGES: PageSpec[] = [
       "install package",
       "add interpreter",
       "activate virtualenv",
+      "docstrings",
+      "documentation string format",
+      "reStructuredText",
+      "Epytext",
+      "NumPy",
+      "Google",
     ],
     component: PythonInterpreterPage,
   },
@@ -42,7 +58,23 @@ export const LANGUAGE_PAGES: PageSpec[] = [
     title: "Project Structure",
     // IntelliJ IDEA order: … Version Control, Project Structure, Build, Execution, Deployment, Languages & Frameworks …
     order: 350,
-    keywords: ["content root", "sources root", "test sources", "resources", "excluded", "mark directory as"],
+    keywords: [
+      "project structure",
+      "content root",
+      "sources root",
+      "test sources",
+      "resources",
+      "excluded",
+      "mark directory as",
+      "project sdk",
+      "language level",
+      "modules",
+      "dependencies",
+      "libraries",
+      "facets",
+      "artifacts",
+      "sdks",
+    ],
     component: ProjectStructurePage,
   },
   {
@@ -96,6 +128,9 @@ export const LANGUAGE_PAGES: PageSpec[] = [
       "lombok",
       "javaagent",
       "eclipse jdt",
+      "shared jdtls",
+      "linked builds",
+      "server process",
     ],
     component: JavaPage,
   },
@@ -139,6 +174,24 @@ export const LANGUAGE_PAGES: PageSpec[] = [
     component: OxfmtPage,
   },
   {
+    id: "languages.ruff",
+    projectScope: true,
+    defaultScope: "project",
+    title: "Ruff",
+    group: LANGUAGES_GROUP,
+    order: 403.7,
+    keywords: [
+      "formatter",
+      "ruff",
+      "python",
+      "configuration directory",
+      "pyproject.toml",
+      "ruff.toml",
+      "format on save",
+    ],
+    component: RuffPage,
+  },
+  {
     id: "languages.php",
     projectScope: true,
     defaultScope: "project",
@@ -150,9 +203,12 @@ export const LANGUAGE_PAGES: PageSpec[] = [
       "cli interpreter",
       "language level",
       "php version",
+      "xdebug",
       "php",
       "composer",
       "phpunit",
+      "phpstan",
+      "phpstan.neon",
       "xampp",
       "herd",
       "homebrew",

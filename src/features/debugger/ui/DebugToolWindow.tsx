@@ -1,4 +1,5 @@
 /** Debug tool window: toolbar, Threads & Variables (frames + variables), Console. */
+import { writeClipboardText } from "@/platform/clipboard";
 import { useEffect, useMemo, useRef, useState, type KeyboardEvent } from "react";
 import clsx from "clsx";
 import { executeAction, getAction } from "@/platform/actions";
@@ -26,15 +27,18 @@ import { frameLabel, groupFrames } from "../frames";
 import { blurDebugView, focusDebugView } from "./focusedView";
 import {
   addWatch,
+  closeSessionTab,
   evaluate,
   selectFrame,
   selectSession,
   selectThread,
   revealFrame,
+  rootOf,
   sessionSupports,
   useDebug,
   type DebugSession,
 } from "../state";
+import { remoteWaitingNote } from "../remote";
 import { DebugConsole } from "./DebugConsole";
 import { VariablesView, type VarRoot } from "./VariablesView";
 import { useExpressionCompletion } from "./ExpressionCompletion";
@@ -120,6 +124,7 @@ export function DebugTabs() {
     text: s.name,
     icon: "debug",
     italic: s.status === "terminated",
+    closable: true,
     tooltip: statusText(s),
   }));
   return (
@@ -130,6 +135,7 @@ export function DebugTabs() {
       items={items}
       activeId={active != null ? String(active) : null}
       onSelect={(id) => selectSession(+id)}
+      onClose={(id) => void closeSessionTab(+id)}
       panelIdPrefix="openidea-debug"
     />
   );
@@ -147,7 +153,14 @@ export function DebugToolWindow() {
     setView({
       session: active.startedAt,
       status: active.status,
-      tab: active.status === "starting" ? "console" : active.status === "paused" ? "variables" : view.tab,
+      // A breakpoint or exception brings Threads & Variables to the front; finishing a step keeps
+      // the tab the user is on (e.g. Console, to watch the output while stepping).
+      tab:
+        active.status === "starting"
+          ? "console"
+          : active.status === "paused" && active.stopReason !== "step"
+            ? "variables"
+            : view.tab,
     });
   const tab = view.tab;
 
@@ -182,7 +195,7 @@ export function DebugToolWindow() {
               className={clsx(styles.tab, tab === id && styles.tabActive)}
               onClick={() => setView({ session: active.startedAt, status: active.status, tab: id })}
             >
-              {label}
+              {tx(label)}
             </button>
           ))}
         </div>
@@ -197,6 +210,13 @@ export function DebugToolWindow() {
         <ToolButton action="debug.stepInto" icon="step-into" />
         <ToolButton action="debug.stepOut" icon="step-out" />
         <span className={styles.sep} aria-hidden />
+        {rootOf(active).adapter === "dart" && (
+          <>
+            <ToolButton action="debug.hotReload" icon="hot-reload" />
+            <ToolButton action="debug.hotRestart" icon="refresh" />
+            <span className={styles.sep} aria-hidden />
+          </>
+        )}
         <IconButton
           icon="view-breakpoints"
           action="debug.viewBreakpoints"
@@ -293,7 +313,11 @@ function FramesPane({ session }: { session: DebugSession }) {
         onBlur={() => blurDebugView("frames")}
       >
         {!paused && (
-          <div className={styles.note}>{session.status === "terminated" ? tx("Finished") : tx("Running…")}</div>
+          <div className={styles.note}>
+            {session.status === "terminated"
+              ? tx("Finished")
+              : (remoteWaitingNote(rootOf(session).runConfig) ?? tx("Running…"))}
+          </div>
         )}
         {items.map((item) =>
           item.kind === "hidden" ? (
@@ -342,7 +366,7 @@ function FramesPane({ session }: { session: DebugSession }) {
                     label: "Copy Stack",
                     icon: "copy",
                     run: () =>
-                      void navigator.clipboard?.writeText(
+                      void writeClipboardText(
                         session.frames
                           .map((f) => `${frameLabel(f)}${f.path ? `, ${basename(f.path)}` : ""}`)
                           .join("\n"),
@@ -495,7 +519,11 @@ function VariablesPane({ session }: { session: DebugSession }) {
     const e = expression.trim();
     if (!e) return;
     try {
-      setLastEval({ expression: e, result: await evaluate(e, "repl", session), error: null });
+      setLastEval({
+        expression: e,
+        result: await evaluate(e, session.adapter === "gdb" ? "watch" : "repl", session),
+        error: null,
+      });
     } catch (err) {
       setLastEval({ expression: e, result: null, error: err instanceof Error ? err.message : String(err) });
     }

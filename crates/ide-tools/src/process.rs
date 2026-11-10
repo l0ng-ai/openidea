@@ -263,6 +263,15 @@ fn curl_takes_revoke_best_effort(version: &str) -> bool {
     (major, minor) >= (7, 70) && first.split_whitespace().any(|w| w.eq_ignore_ascii_case("schannel"))
 }
 
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum Request {
+    Get,
+    /// Adoptium uses 404 as well as an empty array for absent platform builds.
+    GetOrEmptyOn404,
+    /// Headers, then the URL redirects ended at.
+    Head,
+}
+
 /// HTTP via the system `curl` (shipped with macOS, Windows 10+ and every
 /// mainstream Linux), so the IDE carries no TLS stack of its own.
 pub struct Http {
@@ -336,26 +345,39 @@ impl Http {
         self.get_text_limited(url, None, cancel)
     }
 
+    /// Where `url` ends up after redirects (a HEAD request).
+    pub fn effective_url(&self, url: &str, cancel: &CancellationToken) -> IdeResult<String> {
+        let out = self.get_text_response(url, None, Request::Head, cancel)?;
+        Ok(out.trim_end().rsplit('\n').next().unwrap_or_default().trim().to_owned())
+    }
+
     /// GETs `url` as text, failing when the response is larger than `max_bytes`.
     pub fn get_text_limited(&self, url: &str, max_bytes: Option<u64>, cancel: &CancellationToken) -> IdeResult<String> {
-        self.get_text_response(url, max_bytes, false, cancel)
+        self.get_text_response(url, max_bytes, Request::Get, cancel)
     }
 
     /// Adoptium uses 404 as well as an empty array for absent platform builds.
     pub fn get_text_or_empty_on_404(&self, url: &str, cancel: &CancellationToken) -> IdeResult<String> {
-        self.get_text_response(url, None, true, cancel)
+        self.get_text_response(url, None, Request::GetOrEmptyOn404, cancel)
     }
 
     fn get_text_response(
         &self,
         url: &str,
         max_bytes: Option<u64>,
-        empty_on_404: bool,
+        request: Request,
         cancel: &CancellationToken,
     ) -> IdeResult<String> {
         let (mut cmd, token) = self.base(url, cancel)?;
-        if empty_on_404 {
-            cmd.args(["--write-out", "\n%{http_code}"]);
+        let empty_on_404 = request == Request::GetOrEmptyOn404;
+        match request {
+            Request::Get => {}
+            Request::GetOrEmptyOn404 => {
+                cmd.args(["--write-out", "\n%{http_code}"]);
+            }
+            Request::Head => {
+                cmd.args(["--head", "--write-out", "\n%{url_effective}"]);
+            }
         }
         if let Some(max) = max_bytes {
             cmd.arg("--max-filesize").arg(max.to_string());
@@ -408,6 +430,9 @@ impl Http {
     }
 
     /// Downloads `url` to `dest`, reporting progress against `size` when known.
+    /// A `.url` sidecar ties partial bytes to their source. Matching partials
+    /// resume with `-C -`; untracked files or a changed URL start from zero.
+    /// Rejected ranges (curl exit 33 or HTTP 416) also restart from zero.
     pub fn download(
         &self,
         url: &str,
@@ -416,8 +441,67 @@ impl Http {
         cancel: &CancellationToken,
         emit: Emit,
     ) -> IdeResult<()> {
+        if cancel.is_cancelled() {
+            return Err(IdeError::cancelled());
+        }
+        let mut url_path = dest.as_os_str().to_owned();
+        url_path.push(".url");
+        let url_path = std::path::PathBuf::from(url_path);
+        if !std::fs::read_to_string(&url_path).is_ok_and(|previous| previous == url) {
+            match std::fs::remove_file(dest) {
+                Ok(()) => {}
+                Err(e) if e.kind() == std::io::ErrorKind::NotFound => {}
+                Err(e) => return Err(e.into()),
+            }
+        }
+        std::fs::write(&url_path, url)?;
+        let had_partial = std::fs::metadata(dest).map(|m| m.len()).unwrap_or(0) > 0;
+        let mut resume = true;
+        loop {
+            let attempt = self.fetch(url, dest, size, cancel, emit, resume);
+            if cancel.is_cancelled() {
+                let _ = std::fs::remove_file(&url_path);
+            }
+            let (status, http_code, stderr, token) = attempt?;
+            // Some curl versions return success for 416 even for oversized partials.
+            if resume && had_partial && (status.code() == Some(33) || http_code == 416) {
+                resume = false;
+                std::fs::remove_file(dest)?;
+                continue;
+            }
+            if status.success() && http_code != 416 {
+                break;
+            }
+            return Err(IdeError::new(
+                ErrorKind::Io,
+                format!("download of {url} failed: {}", redact_auth(stderr.trim(), token.as_deref())),
+            ));
+        }
+        std::fs::remove_file(url_path)?;
+        let bytes = std::fs::metadata(dest).map(|m| m.len()).unwrap_or(0);
+        emit(progress_event(bytes, size.or(Some(bytes))));
+        Ok(())
+    }
+
+    /// One curl download attempt: with `resume` it continues `dest`'s bytes,
+    /// without it starts over. Returns curl's exit status, HTTP code, stderr,
+    /// and auth token for redacting failures; spawn and cancellation failures
+    /// are errors.
+    fn fetch(
+        &self,
+        url: &str,
+        dest: &Path,
+        size: Option<u64>,
+        cancel: &CancellationToken,
+        emit: Emit,
+        resume: bool,
+    ) -> IdeResult<(std::process::ExitStatus, u16, String, Option<String>)> {
         let (mut cmd, token) = self.base(url, cancel)?;
-        cmd.arg("-o").arg(dest).arg(url).stdout(Stdio::null()).stderr(Stdio::piped());
+        if resume {
+            cmd.args(["-C", "-"]);
+        }
+        cmd.args(["--write-out", "%{http_code}"]).arg("-o").arg(dest).arg(url);
+        cmd.stdout(Stdio::piped()).stderr(Stdio::piped());
         let mut child = cmd.spawn().map_err(|e| IdeError::unavailable(format!("cannot run curl: {e}")))?;
         send_auth(&mut child, token.as_deref())?;
         let mut stderr = child.stderr.take().expect("piped");
@@ -447,18 +531,9 @@ impl Http {
                 }
             }
         };
-        if !status.success() {
-            return Err(IdeError::new(
-                ErrorKind::Io,
-                format!(
-                    "download of {url} failed: {}",
-                    redact_auth(err_t.join().unwrap_or_default().trim(), token.as_deref())
-                ),
-            ));
-        }
-        let bytes = std::fs::metadata(dest).map(|m| m.len()).unwrap_or(0);
-        emit(progress_event(bytes, size.or(Some(bytes))));
-        Ok(())
+        let mut http_code = String::new();
+        child.stdout.take().expect("piped").read_to_string(&mut http_code)?;
+        Ok((status, http_code.trim().parse().unwrap_or(0), err_t.join().unwrap_or_default(), token))
     }
 }
 
@@ -555,6 +630,9 @@ pub(crate) fn run_input(
     written.unwrap()?;
     String::from_utf8(output).map_err(|e| IdeError::invalid(e.to_string()))
 }
+
+#[cfg(test)]
+mod download_tests;
 
 #[cfg(test)]
 mod tests {
@@ -876,6 +954,46 @@ mod github_auth_tests {
             assert!(!error.contains("gho_fake_first"));
             let error = f.http.download(API, &dest, None, &CancellationToken::new(), &|_| {}).unwrap_err().to_string();
             assert!(!error.contains("gho_fake_first"));
+        }
+
+        #[test]
+        fn download_resumes_the_partial_file() {
+            let f = Fixture::new();
+            let dest = f.path("download");
+            fs::write(&dest, "partial").unwrap();
+            fs::write(f.path("download.url"), "https://example.test/file").unwrap();
+            f.curl(&format!("printf done > {}", quote(&dest)));
+            f.http.download("https://example.test/file", &dest, None, &CancellationToken::new(), &|_| {}).unwrap();
+            assert!(
+                fs::read_to_string(f.path("curl-args")).unwrap().contains("-C\n-\n"),
+                "curl resumes the partial file with `-C -`"
+            );
+        }
+
+        #[test]
+        fn download_restarts_when_the_server_has_no_byte_ranges() {
+            let f = Fixture::new();
+            let dest = f.path("download");
+            let count = f.path("attempts");
+            fs::write(&dest, "partial").unwrap();
+            fs::write(f.path("download.url"), "https://example.test/file").unwrap();
+            // First attempt: curl reports it cannot resume (exit 33). Second:
+            // a plain download from zero, which succeeds.
+            f.curl(&format!(
+                "n=$(cat {} 2>/dev/null || echo 0); echo $((n + 1)) > {}; \
+                 if [ \"$n\" = 0 ]; then echo 'curl: (33) no byte ranges' >&2; exit 33; fi; \
+                 printf done > {}",
+                quote(&count),
+                quote(&count),
+                quote(&dest)
+            ));
+            f.http.download("https://example.test/file", &dest, None, &CancellationToken::new(), &|_| {}).unwrap();
+            assert_eq!(fs::read_to_string(&dest).unwrap(), "done");
+            assert_eq!(fs::read_to_string(&count).unwrap().trim(), "2");
+            assert!(
+                !fs::read_to_string(f.path("curl-args")).unwrap().contains("-C\n-\n"),
+                "the restart downloads from zero, without `-C -`"
+            );
         }
 
         #[test]

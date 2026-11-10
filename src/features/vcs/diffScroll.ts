@@ -146,6 +146,27 @@ export interface UnalignedPanesOptions {
   sync: boolean;
   /** Divider arrows toward the editable sides; `apply` copies chunk `index` from `source`. */
   arrows?: { toA: boolean; toB: boolean; apply(index: number, source: Side): void };
+  /** Initial left-pane share (percent); defaults to the persisted value, then 50. */
+  initialRatio?: number;
+}
+
+/** localStorage key for the side-by-side pane split, shared by every diff viewer. */
+export const DIFF_SPLIT_STORAGE_KEY = "openidea:diff-pane-ratio";
+
+const MIN_RATIO = 10;
+const MAX_RATIO = 90;
+
+function loadRatio(fallback = 50): number {
+  try {
+    const raw = localStorage.getItem(DIFF_SPLIT_STORAGE_KEY);
+    if (raw != null) {
+      const n = Number(raw);
+      if (Number.isFinite(n)) return Math.min(MAX_RATIO, Math.max(MIN_RATIO, n));
+    }
+  } catch {
+    /* Storage may be unavailable (private mode, SSR). */
+  }
+  return fallback;
 }
 
 /**
@@ -165,14 +186,30 @@ export class UnalignedPanes {
     b: { top: null, left: null },
   };
   private sync: boolean;
+  private scrolling: Side | null = null;
+  private scrollTimer: ReturnType<typeof setTimeout> | undefined;
   private frame = -1;
   private resize: ResizeObserver | null = null;
   private readonly cleanup: (() => void)[] = [];
+  /** Left pane share (percent) of the side-by-side split; dragging the divider updates it. */
+  private ratio: number;
 
   constructor(private readonly opts: UnalignedPanesOptions) {
     this.sync = opts.sync;
+    this.ratio =
+      opts.initialRatio != null && Number.isFinite(opts.initialRatio)
+        ? Math.min(MAX_RATIO, Math.max(MIN_RATIO, opts.initialRatio))
+        : loadRatio();
     this.extension = [gapMarks, changedLineGutters, EditorView.updateListener.of(() => this.schedule())];
     this.divider.className = "cm-diffDivider";
+    // A lone arrow is centred in the divider; a pair keeps to the two edges.
+    this.divider.classList.toggle("cm-diffDivider-lone", !!opts.arrows && opts.arrows.toA !== opts.arrows.toB);
+    this.divider.setAttribute("data-wheel-scroll", "");
+    this.divider.setAttribute("role", "separator");
+    this.divider.setAttribute("aria-orientation", "vertical");
+    this.divider.setAttribute("aria-label", "Resize diff panes");
+    this.divider.setAttribute("title", "Drag to resize panes (double-click to reset)");
+    this.divider.tabIndex = 0;
     this.svg.setAttribute("aria-hidden", "true");
     this.svg.appendChild(this.bandLayer);
     this.divider.appendChild(this.svg);
@@ -186,12 +223,85 @@ export class UnalignedPanes {
     for (const side of ["a", "b"] as const) {
       const el = this.view(side).scrollDOM;
       const onScroll = () => this.scrolled(side);
+      const onPointer = () => this.interruptScroll();
       el.addEventListener("scroll", onScroll, { passive: true });
-      this.cleanup.push(() => el.removeEventListener("scroll", onScroll));
+      el.addEventListener("wheel", onPointer, { passive: true });
+      el.addEventListener("pointerdown", onPointer);
+      this.cleanup.push(() => {
+        el.removeEventListener("scroll", onScroll);
+        el.removeEventListener("wheel", onPointer);
+        el.removeEventListener("pointerdown", onPointer);
+      });
     }
+    this.applyRatio();
+    // Dragging the divider resizes the panes like IDEA's splitter (double-click resets).
+    let dragX: number | null = null;
+    let dragRatio = this.ratio;
+    const persist = () => {
+      try {
+        localStorage.setItem(DIFF_SPLIT_STORAGE_KEY, String(this.ratio));
+      } catch {
+        /* Storage may be unavailable. */
+      }
+    };
+    const onPointerDown = (e: PointerEvent) => {
+      if (e.button !== 0 || (e.target as HTMLElement | null)?.closest?.("button")) return;
+      e.preventDefault();
+      dragX = e.clientX;
+      dragRatio = this.ratio;
+      try {
+        this.divider.setPointerCapture(e.pointerId);
+      } catch {
+        /* jsdom / touch without capture support. */
+      }
+    };
+    const onPointerMove = (e: PointerEvent) => {
+      if (dragX === null || !this.mv) return;
+      const editors = this.divider.parentElement;
+      const total = (editors?.clientWidth ?? 0) - this.divider.offsetWidth || 1;
+      const next = dragRatio + ((e.clientX - dragX) / total) * 100;
+      this.ratio = Math.min(MAX_RATIO, Math.max(MIN_RATIO, next));
+      this.applyRatio();
+    };
+    const endDrag = () => {
+      if (dragX === null) return;
+      dragX = null;
+      persist();
+      this.schedule();
+    };
+    const onKeyDown = (e: KeyboardEvent) => {
+      if (e.key !== "ArrowLeft" && e.key !== "ArrowRight") return;
+      e.preventDefault();
+      this.ratio = Math.min(MAX_RATIO, Math.max(MIN_RATIO, this.ratio + (e.key === "ArrowRight" ? 2 : -2)));
+      this.applyRatio();
+      persist();
+      this.schedule();
+    };
+    const onDblClick = (e: MouseEvent) => {
+      if ((e.target as HTMLElement | null)?.closest?.("button")) return;
+      this.ratio = 50;
+      this.applyRatio();
+      persist();
+      this.schedule();
+    };
+    this.divider.addEventListener("pointerdown", onPointerDown);
+    this.divider.addEventListener("pointermove", onPointerMove);
+    this.divider.addEventListener("pointerup", endDrag);
+    this.divider.addEventListener("pointercancel", endDrag);
+    this.divider.addEventListener("keydown", onKeyDown);
+    this.divider.addEventListener("dblclick", onDblClick);
+    this.cleanup.push(() => {
+      this.divider.removeEventListener("pointerdown", onPointerDown);
+      this.divider.removeEventListener("pointermove", onPointerMove);
+      this.divider.removeEventListener("pointerup", endDrag);
+      this.divider.removeEventListener("pointercancel", endDrag);
+      this.divider.removeEventListener("keydown", onKeyDown);
+      this.divider.removeEventListener("dblclick", onDblClick);
+    });
     // The divider scrolls the right pane (and, when synchronized, through it the left one).
     const onWheel = (e: WheelEvent) => {
       e.preventDefault();
+      this.interruptScroll();
       mv.b.scrollDOM.scrollBy(e.deltaX, e.deltaY);
     };
     this.divider.addEventListener("wheel", onWheel, { passive: false });
@@ -212,11 +322,35 @@ export class UnalignedPanes {
   /** Turns synchronized scrolling on (bringing the left pane in line) or off. */
   setSync(on: boolean) {
     if (on === this.sync) return;
+    this.interruptScroll();
     this.sync = on;
     this.resync();
   }
 
+  scrollTo(side: Side, options: ScrollToOptions) {
+    this.interruptScroll();
+    this.scrolling = this.sync ? side : null;
+    this.releaseScroll();
+    this.view(side).scrollDOM.scrollTo(options);
+  }
+
+  private releaseScroll() {
+    clearTimeout(this.scrollTimer);
+    if (this.scrolling) this.scrollTimer = setTimeout(() => (this.scrolling = null), 150);
+  }
+
+  private interruptScroll() {
+    const side = this.scrolling;
+    this.scrolling = null;
+    clearTimeout(this.scrollTimer);
+    if (side && this.mv) {
+      const el = this.view(side).scrollDOM;
+      el.scrollTo({ top: el.scrollTop, behavior: "instant" });
+    }
+  }
+
   destroy() {
+    clearTimeout(this.scrollTimer);
     if (this.frame >= 0) cancelAnimationFrame(this.frame);
     this.resize?.disconnect();
     for (const f of this.cleanup) f();
@@ -224,11 +358,30 @@ export class UnalignedPanes {
     this.mv = null;
   }
 
+  /** Applies the current split to the two pane wrappers (flex-grow shares of the free width). */
+  private applyRatio() {
+    const mv = this.mv;
+    if (!mv) return;
+    const left = mv.a.dom.parentElement;
+    const right = mv.b.dom.parentElement;
+    if (!left || !right) return;
+    left.style.flex = `${this.ratio} 1 0`;
+    right.style.flex = `${100 - this.ratio} 1 0`;
+    this.divider.setAttribute("aria-valuenow", String(Math.round(this.ratio)));
+  }
+
   private view(side: Side): EditorView {
     return side === "a" ? this.mv!.a : this.mv!.b;
   }
 
   private scrolled(side: Side) {
+    if (this.scrolling) {
+      // A follower's delayed layout scroll must not pull back the navigation source.
+      this.follow(this.scrolling);
+      this.releaseScroll();
+      this.schedule();
+      return;
+    }
     const el = this.view(side).scrollDOM;
     const moved = this.moved[side];
     const echo =

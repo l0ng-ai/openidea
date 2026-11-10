@@ -70,6 +70,8 @@ const NOTIFY = new Set(["notify"]);
 
 /** Code templates shown as written, and the in-memory backends of plain-browser development. */
 const UNCHECKED_FILES = new Set([
+  // Pre-module failure UI carries its own English/Chinese text when catalogs cannot load.
+  "public/boot.js",
   "src/editor/core/backend.ts",
   "src/features/plugins/backend.ts",
   "src/features/tools/backend.ts",
@@ -86,12 +88,25 @@ const BUILT_AT_RUNTIME = new Set<string>([]);
 const UNTRANSLATED = new Set<string>([
   "dotnet test",
   "netcoredbg (.NET)",
+  "php-debug (PHP)",
+  "rdbg (Ruby)",
   // Product names
   "Cargo",
   "CMake",
   "Prettier",
   "oxfmt",
+  "Ruff",
   "IntelliJ IDEA",
+  "GitHub",
+  "PHPStan",
+  "Xdebug",
+  "Chrome",
+  "Safari",
+  "Firefox",
+  "JaCoCo",
+  // Docker run target placeholder values
+  "compose.yaml",
+  "python:3.12",
   // Go environment variables and placeholder values
   "CGO",
   "GOPROXY",
@@ -108,6 +123,7 @@ const UNTRANSLATED = new Set<string>([
   "loopvar,rangefunc",
   // SSH and run-target placeholders
   "SSH",
+  "WSL",
   "example.com",
   "java",
   "node",
@@ -134,10 +150,12 @@ const UNTRANSLATED = new Set<string>([
   "Eclipse (macOS)",
   "Eclipse Temurin",
   "EditorConfig",
+  "Epytext",
   "Git",
   "GitHub",
   "Go",
   "Godot",
+  "Google",
   "Gradle",
   "GraphQL",
   "Greenplum",
@@ -153,19 +171,24 @@ const UNTRANSLATED = new Set<string>([
   "MySQL",
   "Neon",
   "Node.js",
+  "NumPy",
   "PHP",
   "Python",
   "npm",
   "OpenIDEA",
+  "Oracle",
+  "Spring",
   "Spring Boot",
   "PostgreSQL",
   "Pyrefly",
   "Pyright",
   "pytest",
+  "reStructuredText",
   "Rust",
   "Rustfmt",
   "SingleStore",
   "SQLite",
+  "StarRocks",
   "Supabase",
   "TiDB",
   "TimescaleDB",
@@ -182,6 +205,7 @@ const UNTRANSLATED = new Set<string>([
   "Fixup",
   "Fixup…",
   "IDE",
+  "localhost",
   "mod tests",
   "Windows (\\r\\n)",
   // Terms, keywords and acronyms kept in English
@@ -190,9 +214,12 @@ const UNTRANSLATED = new Set<string>([
   "GOROOT",
   "HEAD",
   "HTTP",
+  "JAR",
   "JDK",
   "JDK 1.4.x",
   "JDK 5 - 8",
+  "JPA",
+  "JRE",
   "LTS",
   "NULL",
   "ORDER BY",
@@ -203,6 +230,8 @@ const UNTRANSLATED = new Set<string>([
   "TODO",
   "URL",
   "VCS",
+  "WAR",
+  "Web",
   "WHERE",
   "WIP",
   // Code, commands and example values
@@ -212,6 +241,7 @@ const UNTRANSLATED = new Set<string>([
   "build --info",
   "className()",
   "clean install -DskipTests",
+  "com.example.Main",
   "com.example.Service#process, main.run, parse",
   "docker-compose.yml; docker-compose.override.yml",
   "file:src//*&&!file:*test*",
@@ -224,11 +254,15 @@ const UNTRANSLATED = new Set<string>([
   "NAME",
   "NAME=value; OTHER=value",
   "node_modules/typescript",
+  "out",
   "PascalCase",
   "polls.tests",
   "CalculatorTest::testAdd",
   "phpunit.xml",
   "PHPUnit",
+  "src/main/webapp",
+  "target/classes",
+  "target/test-classes",
   "tests/Unit",
   "vendor/bin/phpunit",
   "pylyzer --server",
@@ -464,7 +498,10 @@ function scanTypeScript(): Scan {
   const spliced: Use[] = [];
   const keys: Use[] = [];
   const literals = new Set<string>();
-  const files = walk(`${ROOT}src`, (p) => /\.tsx?$/.test(p) && !isTest(p) && !p.endsWith("/bindings.ts"));
+  const files = [
+    ...walk(`${ROOT}src`, (p) => /\.tsx?$/.test(p) && !isTest(p) && !p.endsWith("/bindings.ts")),
+    `${ROOT}public/boot.js`,
+  ];
   for (const file of files) {
     const path = file.slice(ROOT.length);
     const source = readFileSync(file, "utf8");
@@ -508,6 +545,8 @@ function scanTypeScript(): Scan {
         for (const text of texts) {
           literals.add(shape(text));
           literals.add(shape(text.trim()));
+          // Color scheme trees display the individual segments of grouped attribute names.
+          for (const part of text.split(" › ")) literals.add(shape(part));
         }
         const sink = checked ? sinkOf(node, exact, template) : undefined;
         if (sink) {
@@ -531,7 +570,7 @@ function scanTypeScript(): Scan {
 /** Read strings without letting a Rust character literal open a string match. */
 function backendLiterals(source: string): string[] {
   const out: string[] = [];
-  for (const m of source.matchAll(/'(?:\\.|[^'\\\r\n])'|"((?:[^"\\]|\\.)*)"/g)) {
+  for (const m of source.matchAll(/'(?:\\.|[^'\\\r\n])'|"((?:[^"\\]|\\[\s\S])*)"/g)) {
     if (m[1] !== undefined) out.push(m[1]);
   }
   return out;
@@ -541,6 +580,13 @@ it("reads backend messages after quote character literals", () => {
   expect(
     backendLiterals(`let quote = '"'; let message = "Select a .NET project"; let detail = "Expected 'x'";`),
   ).toEqual(["Select a .NET project", "Expected 'x'"]);
+});
+
+it("reads backend messages continued over a line", () => {
+  expect(backendLiterals('let m = "can\'t rename; \\\n    half renamed"; let n = "Next";')).toEqual([
+    "can't rename; \\\n    half renamed",
+    "Next",
+  ]);
 });
 
 /** String literals of the Rust crates and language definitions (backend messages). */

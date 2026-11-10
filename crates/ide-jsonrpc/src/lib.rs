@@ -49,6 +49,10 @@ pub mod framing {
                 }
                 return Ok(None);
             }
+            // A UTF-16LE line break is `\n\0`: the cut after `\n` leaves a NUL at the start of the
+            // next line, which would turn the `Content-Length` after it into noise.
+            let nuls = line.iter().take_while(|&&b| b == 0).count();
+            line.drain(..nuls);
             if line.last() != Some(&b'\n') {
                 if n as u64 >= MAX_HEADER_LINE {
                     return Err(Error::new(ErrorKind::InvalidData, "header line too long"));
@@ -342,7 +346,7 @@ impl Drop for KillOnDrop {
 /// child's `PATH` (a caller's `env` PATH, else the login shell's, else ours), so
 /// that on Windows `PATHEXT` names (`codex` → `codex.cmd`) start; anything else
 /// is kept as given.
-fn resolve_spawn_program(command: &str, env: &[(String, String)]) -> std::path::PathBuf {
+pub fn resolve_spawn_program(command: &str, env: &[(String, String)]) -> std::path::PathBuf {
     let path = std::path::Path::new(command);
     if path.components().count() > 1 || path.is_absolute() {
         return path.to_path_buf();

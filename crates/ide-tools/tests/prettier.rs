@@ -19,7 +19,15 @@ fn format(
     };
     let mut cmd = tools.formatter_command("prettier", path, None)?;
     cmd.current_dir(path.parent().unwrap());
-    cmd.args(formatter::arguments("prettier", &config, path, 4, true, range));
+    let range = range.map(|(start_offset, end_offset)| formatter::FormatRange {
+        start_offset,
+        end_offset,
+        start_line: 1,
+        start_col: 1,
+        end_line: 1,
+        end_col: 1,
+    });
+    cmd.args(formatter::arguments("prettier", &config, path, 4, true, range, None));
     formatter::run("prettier", cmd, text, &CancellationToken::new())
 }
 

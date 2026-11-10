@@ -5,7 +5,7 @@
 //! and shown together.
 
 use crate::server::{Running, Server};
-use crate::{LspManager, convert};
+use crate::{LspManager, virtual_doc};
 use ide_core::{DocId, IdeEvent};
 use ide_jsonrpc::RpcError;
 use lsp_types as lsp;
@@ -43,6 +43,10 @@ impl LspManager {
         let targets: Vec<PullTarget> = {
             let docs = self.docs.lock();
             let Some(d) = docs.get(&doc) else { return };
+            // Decompiled C# is a source view, not compilable project code (e.g. Unity's older language version).
+            if virtual_doc::is_csharp_decompiled(d.uri.as_str()) {
+                return;
+            }
             d.servers
                 .iter()
                 .filter(|a| only.is_none_or(|s| s.id == a.server.id))
@@ -185,8 +189,8 @@ impl LspManager {
         items: Vec<lsp::Diagnostic>,
         enc: crate::text::Encoding,
     ) {
-        let conv = self.conv(enc);
-        let items = items.into_iter().map(|d| convert::diagnostic(&conv, &path, d, &server.name)).collect();
-        self.sink.emit(IdeEvent::Diagnostics { path: path.into(), source: server.name.clone(), items });
+        if let Some((path, items)) = self.injected_diagnostics(server, &path, enc, items) {
+            server.emit(&self.sink, IdeEvent::Diagnostics { path: path.into(), source: server.name.clone(), items });
+        }
     }
 }

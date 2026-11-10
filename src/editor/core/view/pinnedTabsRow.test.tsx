@@ -1,13 +1,14 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import { cleanup, render, screen, within } from "@testing-library/react";
+import { cleanup, fireEvent, render, screen, within } from "@testing-library/react";
 import { useProject } from "@/platform/project";
 import { useTabs } from "../controller";
 import type { Tab } from "../model/tabs";
 import { EditorAreaView } from "./EditorArea";
 
+const { closeTab } = vi.hoisted(() => ({ closeTab: vi.fn() }));
 vi.mock("../controller", async (original) => ({
   ...(await original<object>()),
-  editorController: () => ({ publishContext: vi.fn(), tabMenu: () => [] }),
+  editorController: () => ({ publishContext: vi.fn(), tabMenu: () => [], closeTab }),
 }));
 vi.mock("./TextEditorHost", () => ({ TextEditorHost: () => <input aria-label="Source" /> }));
 vi.mock("./FindBar", () => ({ FindBar: () => null }));
@@ -34,7 +35,10 @@ function seed(pinned: boolean[], tabs: Record<string, unknown>) {
   useProject.setState({ settings: { editor: { tabs } } as never });
 }
 
-beforeEach(() => cleanup());
+beforeEach(() => {
+  cleanup();
+  closeTab.mockClear();
+});
 afterEach(() => {
   cleanup();
   useTabs.setState(originalTabs, true);
@@ -68,5 +72,12 @@ describe("pinned tabs in a separate row", () => {
     seed(pinned, { placement: "top", multipleRows: true, pinnedSeparateRow: true });
     render(<EditorAreaView />);
     expect(screen.getAllByRole("tablist", { name: "Editor tabs" })).toHaveLength(1);
+  });
+
+  it("middle click closes an editor tab", () => {
+    seed([false, false, false], { placement: "top" });
+    render(<EditorAreaView />);
+    fireEvent.mouseDown(screen.getByRole("tab", { name: /f2/ }), { button: 1 });
+    expect(closeTab).toHaveBeenCalledWith("p1", "t2");
   });
 });

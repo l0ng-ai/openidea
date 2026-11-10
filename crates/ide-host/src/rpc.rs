@@ -248,7 +248,7 @@ impl Dispatcher {
         .add("term_is_busy", |c| async move { ops::term::is_busy(&c.host, c.arg("id")?) })
         .add("term_default_shell", |_| async move { Ok(ide_terminal::default_shell_path()) })
         .add("term_available_shells", |_| async move { Ok(ide_terminal::available_shells()) })
-        .add("run_configs", |c| async move { ops::run::configs(&c.host, &c.window) })
+        .add("run_configs", |c| async move { ops::doc::blocking(move || ops::run::configs(&c.host, &c.window)).await })
         .add("run_save_configs", |c| async move {
             ops::run::save_configs(
                 &c.host,
@@ -262,7 +262,7 @@ impl Dispatcher {
         .add("run_system_env", |_| async move { Ok(ide_run::system_env()) })
         .add("run_start", |c| async move {
             let on_output = c.channel("onOutput")?;
-            ops::run::start(&c.host, &c.window, c.arg("config")?, on_output).await
+            ops::run::start_request(&c.host, &c.window, c.arg("config")?, on_output, c.arg("request")?).await
         })
         .add("run_stop", |c| async move { ops::run::stop(&c.host, &c.window, c.arg("id")?) })
         .add("run_stdin", |c| async move { ops::run::stdin(&c.host, c.arg("id")?, &c.arg::<String>("data")?) })
@@ -286,6 +286,10 @@ where
     let p = Peer::connect(reader, writer, handler);
     let _ = peer.set(p.clone());
     p.closed().await;
+    // Reports belong to the disconnected desktop, even while the host shuts down.
+    for window in host.projects.read().keys() {
+        host.mcp_reports.forget_window(window);
+    }
 }
 
 /// Sends a window's events to the client as `event` notifications.

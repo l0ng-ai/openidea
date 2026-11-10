@@ -1,0 +1,73 @@
+package openidea:plugin@1.4.0;
+
+/// Shared types. Positions are 0-based lines and UTF-16 code unit columns,
+/// as in the editor and LSP.
+interface types {
+    /// Why a host call failed. A capability that is not granted is reported
+    /// as `denied`, so the plugin can degrade (0.1 trapped instead).
+    variant error {
+        /// Not granted; the payload names the capability (`editor.write`).
+        denied(string),
+        /// The document changed since the version the edit was made for.
+        stale,
+        not-found(string),
+        invalid(string),
+        /// Cancelled by the user, or the plugin is being stopped.
+        cancelled,
+        failed(string),
+    }
+
+    enum log-level {
+        trace,
+        debug,
+        info,
+        warn,
+        error,
+    }
+
+    enum notification-level {
+        info,
+        warning,
+        error,
+    }
+
+    record position {
+        line: u32,
+        character: u32,
+    }
+
+    record range {
+        start: position,
+        end: position,
+    }
+
+    record text-edit {
+        range: range,
+        text: string,
+    }
+
+    /// A range in a file (absolute path).
+    record location {
+        path: string,
+        range: range,
+    }
+
+    /// A case added after 1.0, carried by the `other` case of a variant that
+    /// grows (events, view bodies, view events, form fields): its kind and its
+    /// data as JSON. Whoever doesn't know the kind ignores it or shows a
+    /// fallback; the SDKs decode the kinds they know.
+    record extension {
+        kind: string,
+        data: string,
+    }
+
+    /// Passed to `lifecycle.activate`.
+    record context {
+        plugin-id: string,
+        plugin-version: string,
+        /// Version of this API the host implements, e.g. "1.0".
+        api-version: string,
+        /// Capabilities granted to the plugin (`editor.write`, `process:git`, …).
+        capabilities: list<string>,
+    }
+}

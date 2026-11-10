@@ -151,7 +151,7 @@ async fn change_commit_branch_stash_and_merge_a_conflict() {
     assert!(ops::vcs::vcs_line_hunks(&f.host, WINDOW, lib_path.clone()).await.unwrap().is_empty());
 
     // A branch changes the line its way.
-    ops::vcs::vcs_create_branch(&f.host, WINDOW, None, "feature".into(), None, true).await.unwrap();
+    ops::vcs::vcs_create_branch(&f.host, WINDOW, None, "feature".into(), None, true, None).await.unwrap();
     let theirs = "pub fn format_price(cents: u64) -> String { // feature";
     f.edit_line(lib, theirs).await;
     f.save(lib).await;

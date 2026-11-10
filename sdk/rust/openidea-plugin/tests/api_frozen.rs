@@ -3,11 +3,13 @@
 //! a field added to a record or a case added to a variant breaks every
 //! component built for the release.
 //!
-//! `tests/api/<version>/` is the WIT of each release, copied when it was
-//! frozen. Every interface, type and function in it must still exist in
-//! `wit/` with the same definition; additions are fine. When a version is
-//! released, copy `wit/` to `tests/api/<that version>/`. Until the first
-//! release there is no snapshot and the API may still change freely.
+//! `tests/api/released/` is the WIT of the latest released version. Every
+//! interface, type and function in it must still exist in `wit/` with the same
+//! definition. Additions need a newer version than the snapshot's: under the
+//! released version `wit/` must match it exactly. When a version ships, copy
+//! `wit/` over the snapshot (the release workflow refuses a tag whose `wit/`
+//! version differs from it). Each snapshot passed this check against the one
+//! before, so the latest one covers every earlier release.
 
 use std::collections::BTreeMap;
 use std::path::Path;
@@ -110,71 +112,83 @@ fn anonymous(r: &Resolve, id: TypeId) -> String {
     }
 }
 
-/// The frozen releases (`tests/api/<version>/`), none before the first release.
-fn releases(root: &Path) -> Vec<std::path::PathBuf> {
-    match std::fs::read_dir(root.join("tests/api")) {
-        Ok(dir) => dir.map(|e| e.unwrap().path()).filter(|p| p.is_dir()).collect(),
-        Err(e) if e.kind() == std::io::ErrorKind::NotFound => Vec::new(),
-        Err(e) => panic!("tests/api: {e}"),
-    }
+fn root() -> &'static Path {
+    Path::new(env!("CARGO_MANIFEST_DIR"))
+}
+
+/// The latest released version's WIT.
+fn released() -> std::path::PathBuf {
+    root().join("tests/api/released")
+}
+
+/// The `package openidea:plugin@x.y.z` version of a WIT directory.
+fn version(dir: &Path) -> Vec<u64> {
+    let src = std::fs::read_to_string(dir.join("plugin.wit")).unwrap_or_else(|e| panic!("{}: {e}", dir.display()));
+    let v = src.lines().find_map(|l| l.trim().strip_prefix("package openidea:plugin@")).unwrap();
+    v.trim_end_matches(';').split('.').map(|p| p.parse().unwrap()).collect()
 }
 
 #[test]
 fn the_surface_covers_the_whole_api() {
-    // Keeps the check below meaningful while there is no release to compare.
-    let current = surface(&Path::new(env!("CARGO_MANIFEST_DIR")).join("wit"));
-    assert!(current.len() > 50, "only {} items: did wit/ load?", current.len());
-    assert!(current.keys().any(|k| k.starts_with("world ")));
-    assert!(current.keys().any(|k| k.contains("/func ")));
-    assert!(current.keys().any(|k| k.contains("/type ")));
-}
-
-#[test]
-fn released_apis_are_unchanged() {
-    let root = Path::new(env!("CARGO_MANIFEST_DIR"));
-    let current = surface(&root.join("wit"));
-    for dir in releases(root) {
-        let release = surface(&dir);
-        let version = dir.file_name().unwrap().to_string_lossy().into_owned();
-        let mut broken = Vec::new();
-        for (key, was) in &release {
-            match current.get(key) {
-                None => broken.push(format!("{key}: removed (was {was})")),
-                // A world may gain imports and exports; everything else stays as it was.
-                Some(now) if key.starts_with("world ") => {
-                    let had = |s: &str, part: &str| -> Vec<String> {
-                        let start = s.find(part).unwrap() + part.len();
-                        let end = s[start..].find(']').unwrap() + start;
-                        s[start..end].split(", ").filter(|x| !x.is_empty()).map(str::to_owned).collect()
-                    };
-                    for part in ["imports [", "exports ["] {
-                        let now = had(now, part);
-                        for item in had(was, part) {
-                            if !now.contains(&item) {
-                                broken.push(format!("{key}: no longer has {item}"));
-                            }
-                        }
-                    }
-                }
-                Some(now) if now != was => broken.push(format!("{key}:\n      was {was}\n      now {now}")),
-                Some(_) => {}
-            }
-        }
-        assert!(broken.is_empty(), "plugin API {version} changed incompatibly:\n  {}", broken.join("\n  "));
-        assert!(release.len() > 50, "{version}: only {} items: did the snapshot load?", release.len());
+    for dir in [root().join("wit"), released()] {
+        let items = surface(&dir);
+        assert!(items.len() > 50, "{}: only {} items: did it load?", dir.display(), items.len());
+        assert!(items.keys().any(|k| k.starts_with("world ")));
+        assert!(items.keys().any(|k| k.contains("/func ")));
+        assert!(items.keys().any(|k| k.contains("/type ")));
     }
 }
 
 #[test]
-fn the_current_api_is_a_release_or_newer_than_all() {
-    // `wit/` is either a frozen release or the next one; never older.
-    let root = Path::new(env!("CARGO_MANIFEST_DIR"));
-    let src = std::fs::read_to_string(root.join("wit/plugin.wit")).unwrap();
-    let current = src.lines().find_map(|l| l.trim().strip_prefix("package openidea:plugin@")).unwrap();
-    let current: Vec<u64> = current.trim_end_matches(';').split('.').map(|p| p.parse().unwrap()).collect();
-    for dir in releases(root) {
-        let name = dir.file_name().unwrap().to_string_lossy().into_owned();
-        let release: Vec<u64> = name.split('.').map(|p| p.parse().unwrap()).collect();
-        assert!(release <= current, "tests/api/{name} is newer than wit/ ({current:?})");
+fn the_released_api_is_unchanged() {
+    let current = surface(&root().join("wit"));
+    let release = surface(&released());
+    let mut broken = Vec::new();
+    for (key, was) in &release {
+        match current.get(key) {
+            None => broken.push(format!("{key}: removed (was {was})")),
+            // A world may gain imports and exports; everything else stays as it was. Items are
+            // compared without their `@version`: a later minor names them `@1.2.0`, and wasmtime
+            // resolves the release's `@1.1.0` to it.
+            Some(now) if key.starts_with("world ") => {
+                let had = |s: &str, part: &str| -> Vec<String> {
+                    let start = s.find(part).unwrap() + part.len();
+                    let end = s[start..].find(']').unwrap() + start;
+                    s[start..end]
+                        .split(", ")
+                        .filter(|x| !x.is_empty())
+                        .map(|x| x.split('@').next().unwrap_or(x).to_owned())
+                        .collect()
+                };
+                for part in ["imports [", "exports ["] {
+                    let now = had(now, part);
+                    for item in had(was, part) {
+                        if !now.contains(&item) {
+                            broken.push(format!("{key}: no longer has {item}"));
+                        }
+                    }
+                }
+            }
+            Some(now) if now != was => broken.push(format!("{key}:\n      was {was}\n      now {now}")),
+            Some(_) => {}
+        }
+    }
+    assert!(broken.is_empty(), "the released plugin API changed incompatibly:\n  {}", broken.join("\n  "));
+}
+
+#[test]
+fn additions_need_a_newer_version() {
+    // A component built from `wit/` imports what `wit/` declares; under a released version an
+    // IDE of that release would lack the additions and refuse it.
+    let (current, release) = (version(&root().join("wit")), version(&released()));
+    assert!(current >= release, "wit/ ({current:?}) is older than the released API ({release:?})");
+    if current == release {
+        let (now, was) = (surface(&root().join("wit")), surface(&released()));
+        let added: Vec<_> = now.keys().filter(|k| now.get(*k) != was.get(*k)).collect();
+        assert!(
+            added.is_empty(),
+            "wit/ adds to the released version {release:?}; bump the package version in wit/ \
+             (and the SDK's copy, ENGINE_VERSION, API_VERSION) first:\n  {added:?}"
+        );
     }
 }

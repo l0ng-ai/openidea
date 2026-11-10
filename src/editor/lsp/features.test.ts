@@ -35,6 +35,14 @@ describe("semanticRanges", () => {
     expect(semanticRanges(doc, input, false, "java")[0]?.className).toBe("cm-sem-property cm-sem-static");
   });
 
+  it("routes Python library symbols through its built-in name colour", () => {
+    const input = { tokenTypes: ["function"], tokenModifiers: ["defaultLibrary"], data: [0, 0, 3, 0, 1] };
+    expect(semanticRanges(doc, input, false, "python")[0]?.className).toBe(
+      "cm-sem-function cm-sem-builtin cm-sem-python-builtin",
+    );
+    expect(semanticRanges(doc, input, false, "java")[0]?.className).toBe("cm-sem-function cm-sem-builtin");
+  });
+
   it("ignores type and modifier names that only exist on Object.prototype", () => {
     const input = {
       tokenTypes: ["method", "toString"],

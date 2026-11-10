@@ -3,6 +3,7 @@ import type { Action } from "@/platform/actions";
 import { tx } from "@/platform/i18n";
 import type { MenuItem } from "@/ui";
 import { showError, confirmChecked } from "@/workbench/messages";
+import { promptInput } from "@/workbench/inputDialogs";
 import { isBusy } from "./model";
 import {
   archiveTask,
@@ -10,12 +11,24 @@ import {
   deleteTask,
   dockTask,
   forkTask,
+  loadEntries,
   openTask,
   openTaskInEditorLocation,
+  renameTask,
   setSessionLocation,
   undockTask,
   useAgents,
 } from "./store";
+
+/** The Agents tool window's options menu: where conversations open. */
+export function useAgentsHeaderMenu(): MenuItem[] {
+  const location = useAgents((s) => s.sessionLocation);
+  return [
+    // A radio pair: check marks only, no action icons beside them.
+    { kind: "action", action: "agents.useToolWindow", icon: "", checked: location === "toolWindow" },
+    { kind: "action", action: "agents.useEditor", icon: "", checked: location === "editor" },
+  ];
+}
 
 const canArchive = (task: AgentTask) => !isBusy(task.status) && task.status !== "archived";
 const canFork = (task: AgentTask) => canArchive(task) && !!task.capabilities?.fork;
@@ -71,6 +84,17 @@ async function confirmDelete(tasks: AgentTask[]) {
 
 export const taskActions: Action[] = [
   {
+    id: "agents.retryConversation",
+    title: "Retry Loading Conversation",
+    category: "Agents",
+    hidden: true,
+    run: ({ arg }) => {
+      const request = arg as { task?: unknown; subagent?: unknown } | null;
+      if (typeof request?.task === "string" && (request.subagent == null || typeof request.subagent === "string"))
+        return loadEntries(request.task, request.subagent ?? null);
+    },
+  },
+  {
     id: "agents.useToolWindow",
     title: "Chat in Tool Window",
     category: "Agents",
@@ -119,14 +143,32 @@ export const taskActions: Action[] = [
     run: () => undockTask(),
   },
   {
+    id: "agents.renameTask",
+    title: "Rename Agent Task",
+    category: "Agents",
+    hidden: true,
+    run: async ({ arg }) => {
+      const task = resolveTasks([arg])[0];
+      if (!task) return;
+      const title = await promptInput({
+        title: "Rename Agent Task",
+        label: "Name",
+        initial: task.title,
+        okLabel: "Rename",
+      });
+      if (title !== null)
+        await renameTask(task.id, title).catch((e: unknown) => showError(tx("Couldn't rename the task"), String(e)));
+    },
+  },
+  {
     id: "agents.forkTask",
-    title: "Copy Agent Task to a New Task",
+    title: "Fork Agent Task",
     category: "Agents",
     hidden: true,
     run: ({ arg }) => {
       const task = resolveTasks([arg])[0];
       if (task && canFork(task))
-        return forkTask(task.id, null).catch((e: unknown) => showError(tx("Couldn't copy the task"), String(e)));
+        return forkTask(task.id, null).catch((e: unknown) => showError(tx("Couldn't fork the task"), String(e)));
     },
   },
   {
@@ -168,14 +210,14 @@ export function taskMenu(tasks: AgentTask[]): MenuItem[] {
   return [
     ...(!multiple
       ? ([
-          { kind: "action", action: "agents.openTask", label: "Open", arg: task.id },
-          { kind: "action", action: "terminal.openAt", label: "Open in Terminal", icon: "terminal", arg: task.cwd },
+          { kind: "action", action: "agents.renameTask", label: "Rename…", icon: "edit", arg: task.id },
+          { kind: "action", action: "terminal.openAt", label: "Terminal", icon: "terminal", arg: task.cwd },
           ...(task.capabilities?.fork && task.status !== "archived"
             ? ([
                 {
                   kind: "action",
                   action: "agents.forkTask",
-                  label: "Copy to a New Task",
+                  label: "Fork",
                   icon: "branch",
                   arg: task.id,
                   disabled: !canFork(task),

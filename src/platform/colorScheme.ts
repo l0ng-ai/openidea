@@ -31,17 +31,26 @@ export interface AttributeDef {
   token?: string;
   /** A semantic modifier whose only configurable attribute is italic. */
   italicOnly?: boolean;
+  defaultBold?: boolean;
   defaultItalic?: boolean;
+  defaultEffect?: TextAttributesOverride["effect"];
   /** CodeMirror language name; unset attributes are language defaults. */
   language?: string;
 }
 
-const syn = (id: string, name: string, path: string[], token: string): AttributeDef => ({
+const syn = (
+  id: string,
+  name: string,
+  path: string[],
+  token: string,
+  defaults: Pick<AttributeDef, "defaultBold" | "defaultItalic" | "defaultEffect"> = {},
+): AttributeDef => ({
   id,
   name,
   path,
   token,
   fg: `--syn-${token}`,
+  ...defaults,
 });
 
 const LD = "Language Defaults";
@@ -52,6 +61,12 @@ const BASE_ATTRIBUTES: readonly AttributeDef[] = [
   { id: "caret", name: "Caret", path: ["General", "Editor"], fg: "--caret" },
   { id: "caretRow", name: "Caret row", path: ["General", "Editor"], bg: "--bg-current-line" },
   { id: "selection", name: "Selection background", path: ["General", "Editor"], bg: "--bg-editor-selection" },
+  {
+    id: "selectionForeground",
+    name: "Selection foreground",
+    path: ["General", "Editor"],
+    fg: "--fg-editor-selection",
+  },
   {
     id: "selectionInactive",
     name: "Selection background (inactive)",
@@ -116,7 +131,8 @@ const BASE_ATTRIBUTES: readonly AttributeDef[] = [
   syn("identifier", "Identifiers › Local variable", [LD], "variable"),
   syn("parameter", "Identifiers › Parameter", [LD], "param"),
   syn("globalVariable", "Identifiers › Global variable", [LD], "global"),
-  syn("constant", "Identifiers › Constant", [LD], "constant"),
+  syn("packageReference", "Identifiers › Package reference", [LD], "namespace"),
+  syn("constant", "Identifiers › Constant", [LD], "constant", { defaultItalic: true }),
   syn("field", "Identifiers › Instance field", [LD], "property"),
   { id: "staticSymbol", name: "Identifiers › Static symbol", path: [LD], token: "static", italicOnly: true },
   syn("functionDeclaration", "Identifiers › Function declaration", [LD], "function"),
@@ -127,7 +143,10 @@ const BASE_ATTRIBUTES: readonly AttributeDef[] = [
   syn("string", "String › String text", [LD], "string"),
   syn("escape", "String › Valid escape sequence", [LD], "escape"),
   syn("lineComment", "Comments › Line comment", [LD], "comment"),
-  syn("docComment", "Comments › Doc comment", [LD], "doc-comment"),
+  syn("docComment", "Comments › Doc comment › Text", [LD], "doc-comment", { defaultItalic: true }),
+  syn("docCommentTag", "Comments › Doc comment › Tag", [LD], "doc-comment-tag"),
+  syn("docCommentTagValue", "Comments › Doc comment › Tag value", [LD], "doc-comment-tag-value"),
+  { ...syn("docCommentMarkup", "Comments › Doc comment › Markup", [LD], "doc-markup"), bg: "--syn-doc-markup-bg" },
   syn("metadata", "Metadata", [LD], "decorator"),
   syn("operator", "Braces and Operators", [LD], "punct"),
   syn("markupTag", "Markup › Tag", [LD], "tag"),
@@ -135,6 +154,17 @@ const BASE_ATTRIBUTES: readonly AttributeDef[] = [
   ...[1, 2, 3, 4, 5].map((n) => syn(`semantic${n}`, `Semantic highlighting › Color ${n}`, [LD], `rainbow-${n}`)),
   ...[1, 2, 3].map((n) => syn(`bracket${n}`, `Rainbow brackets › Level ${n}`, [LD], `bracket-${n}`)),
 
+  syn("pyMethodCall", "Method call", ["Python"], "python-method-call"),
+  syn("pyAnnotation", "Type annotation", ["Python"], "python-annotation"),
+  syn("pyParentheses", "Parentheses", ["Python"], "python-parentheses"),
+  syn("pyBrackets", "Brackets", ["Python"], "python-brackets"),
+  syn("pyBraces", "Braces", ["Python"], "python-braces"),
+  syn("pyNestedFunction", "Nested function definition", ["Python"], "python-nested-function"),
+  syn("pyBytes", "Byte string", ["Python"], "python-bytes"),
+  syn("pyFString", "F-string", ["Python"], "python-fstring"),
+  syn("pyPredefinedDefinition", "Predefined function definition", ["Python"], "python-predefined-definition"),
+  syn("pyPredefinedUsage", "Predefined name usage", ["Python"], "python-predefined-usage"),
+  syn("pyFormat", "Format specifier", ["Python"], "python-format"),
   syn("pySelf", "Self parameter", ["Python"], "self"),
   {
     id: "pyStaticSymbol",
@@ -145,16 +175,25 @@ const BASE_ATTRIBUTES: readonly AttributeDef[] = [
     defaultItalic: false,
   },
   syn("pyKeywordArg", "Keyword argument", ["Python"], "keyword-arg"),
-  syn("pyDocstring", "Docstring", ["Python"], "docstring"),
-  syn("pyBuiltin", "Built-in name", ["Python"], "predefined"),
+  syn("pyDocstring", "Docstring", ["Python"], "docstring", { defaultItalic: true }),
+  syn("pyDocstringTag", "Docstring › Tag", ["Python"], "python-docstring-tag"),
+  syn("pyDocstringKeyword", "Docstring › Keyword", ["Python"], "python-docstring-keyword"),
+  syn("pyBuiltin", "Built-in name", ["Python"], "python-builtin"),
   syn("pyDecorator", "Decorator", ["Python"], "annotation"),
-  syn("mdHeading", "Heading", ["Markdown"], "markup-heading"),
+  syn("pyLocalVariable", "Local variable", ["Python"], "python-local-variable"),
+  syn("pyGlobalVariable", "Global variable", ["Python"], "python-global-variable"),
+  syn("pyInstanceAttribute", "Instance attribute", ["Python"], "python-instance-attribute"),
+  syn("pyClassAttribute", "Class attribute", ["Python"], "python-class-attribute"),
+  syn("pyConstant", "Constant", ["Python"], "python-constant"),
+  syn("pyProperty", "Property", ["Python"], "python-property"),
+  syn("pyTypeParameter", "Type parameter", ["Python"], "python-type-parameter"),
+  syn("mdHeading", "Heading", ["Markdown"], "markup-heading", { defaultBold: true }),
   syn("mdCode", "Code span", ["Markdown"], "markup-code"),
-  syn("mdLink", "Link", ["Markdown"], "link"),
+  syn("mdLink", "Link", ["Markdown"], "link", { defaultEffect: "underline" }),
   syn("regexp", "Regular expression", ["RegExp"], "regexp"),
 ];
 
-const SCHEME_LANGUAGES = { java: "Java", kotlin: "Kotlin", php: "PHP" } as const;
+const SCHEME_LANGUAGES = { go: "Go", java: "Java", kotlin: "Kotlin", php: "PHP" } as const;
 
 export const ATTRIBUTES: readonly AttributeDef[] = [
   ...BASE_ATTRIBUTES,
@@ -180,6 +219,7 @@ export const ATTRIBUTES: readonly AttributeDef[] = [
 const SCHEME_VARS = new Set<string>([
   ...ATTRIBUTES.flatMap((a) => [a.fg, a.bg, a.effect].filter((v): v is string => !!v)),
   "--syn-comment-style",
+  "--syn-doc-comment-tag-effect",
   "--editor-error-decoration",
   "--editor-warning-decoration",
   "--editor-warning-background",
@@ -323,6 +363,11 @@ const EFFECT_CSS: Record<string, (c: string) => string> = {
   none: () => "none",
 };
 
+/** Explicitly removes a scheme colour; unlike an unset field, this must survive as an override. */
+export const CLEAR_COLOR = "transparent";
+
+const setOrCleared = (value: string | undefined) => isHexColor(value) || value === CLEAR_COLOR;
+
 /** Declarations for the overrides of one scheme. */
 export function overrideDeclarations(
   overrides: Record<string, TextAttributesOverride> | undefined,
@@ -334,10 +379,10 @@ export function overrideDeclarations(
     if (attr.language !== language) continue;
     const o = overrides[attr.id];
     if (!o) continue;
-    if (isHexColor(o.foreground) && attr.fg) out.push([attr.fg, o.foreground]);
-    if (isHexColor(o.background) && attr.bg) out.push([attr.bg, o.background]);
-    if (isHexColor(o.effectColor) && attr.effect) out.push([attr.effect, o.effectColor]);
-    if (attr.effect && isHexColor(o.effectColor)) {
+    if (setOrCleared(o.foreground) && attr.fg) out.push([attr.fg, o.foreground]);
+    if (setOrCleared(o.background) && attr.bg) out.push([attr.bg, o.background]);
+    if (setOrCleared(o.effectColor) && attr.effect) out.push([attr.effect, o.effectColor]);
+    if (attr.effect && setOrCleared(o.effectColor)) {
       if (attr.id === "error") out.push(["--editor-error-decoration", `underline wavy ${o.effectColor}`]);
       if (attr.id === "warning") out.push(["--editor-warning-decoration", `underline wavy ${o.effectColor}`]);
     }
@@ -348,11 +393,11 @@ export function overrideDeclarations(
         out.push([`--syn-${t}-italic`, o.italic ? "italic" : "normal"]);
         if (t === "comment") out.push(["--syn-comment-style", o.italic ? "italic" : "normal"]);
       }
-      if (isHexColor(o.background)) out.push([`--syn-${t}-bg`, o.background]);
+      if (setOrCleared(o.background)) out.push([`--syn-${t}-bg`, o.background]);
       if (o.effect)
         out.push([
           `--syn-${t}-effect`,
-          EFFECT_CSS[o.effect]?.(isHexColor(o.effectColor) ? o.effectColor : "currentColor") ?? "none",
+          EFFECT_CSS[o.effect]?.(setOrCleared(o.effectColor) ? o.effectColor! : "currentColor") ?? "none",
         ]);
     }
   }
@@ -398,6 +443,74 @@ export function resolvedSchemeTokens(id: string, customs: CustomColorSchemes = {
   const tokens = new Map(schemeTokens(base));
   for (const [key, value] of overrideDeclarations(custom?.attributes)) tokens.set(key, value);
   return tokens;
+}
+
+const hexIn = (value: string | undefined): string | undefined =>
+  value?.match(/#(?:[0-9a-f]{3}|[0-9a-f]{6})\b/i)?.[0]?.toLowerCase();
+
+const effectFromCss = (value: string | undefined): TextAttributesOverride["effect"] => {
+  if (!value) return undefined;
+  if (/line-through/i.test(value)) return "strikeout";
+  if (/wavy/i.test(value)) return "wave";
+  if (/underline/i.test(value)) return "underline";
+  if (/none/i.test(value)) return "none";
+  return undefined;
+};
+
+const boldFromCss = (value: string | undefined): boolean | undefined => {
+  if (!value) return undefined;
+  if (/bold|[6-9]00/i.test(value)) return true;
+  if (/normal|[1-5]00/i.test(value)) return false;
+  return undefined;
+};
+
+const italicFromCss = (value: string | undefined): boolean | undefined => {
+  if (!value) return undefined;
+  if (/italic|oblique/i.test(value)) return true;
+  if (/normal/i.test(value)) return false;
+  return undefined;
+};
+
+/**
+ * The attributes an editor shows for a scheme before user overrides: imported
+ * values where the scheme sets them, otherwise the theme token and the editor's
+ * built-in defaults.
+ */
+export function resolvedAttribute(
+  id: string,
+  attrId: string,
+  customs: CustomColorSchemes = {},
+): TextAttributesOverride {
+  const attr = ATTRIBUTES.find((a) => a.id === attrId);
+  if (!attr) return {};
+  const custom = customSchemes(customs)[id];
+  const own = custom?.attributes[attr.id];
+  const vars = resolvedSchemeTokens(id, customs);
+  if (attr.language)
+    for (const [key, value] of overrideDeclarations(custom?.attributes, attr.language)) vars.set(key, value);
+
+  const token = attr.token;
+  const foreground = attr.fg ? vars.get(attr.fg) : undefined;
+  const background = attr.bg ? vars.get(attr.bg) : token ? vars.get(`--syn-${token}-bg`) : undefined;
+  const effectCss = attr.effect ? vars.get(attr.effect) : token ? vars.get(`--syn-${token}-effect`) : undefined;
+  const effect = own?.effect ?? effectFromCss(effectCss) ?? attr.defaultEffect;
+  const out: TextAttributesOverride = {};
+  if (isHexColor(foreground)) out.foreground = foreground.toLowerCase();
+  if (isHexColor(background)) out.background = background.toLowerCase();
+  if (own?.effectColor && isHexColor(own.effectColor)) out.effectColor = own.effectColor.toLowerCase();
+  else {
+    const effectColor = hexIn(effectCss);
+    if (effectColor) out.effectColor = effectColor;
+  }
+  if (token) {
+    if (!attr.italicOnly)
+      out.bold = own?.bold ?? boldFromCss(vars.get(`--syn-${token}-bold`)) ?? attr.defaultBold ?? false;
+    const italicCss =
+      vars.get(`--syn-${token}-italic`) ?? (token === "comment" ? vars.get("--syn-comment-style") : undefined);
+    out.italic = own?.italic ?? italicFromCss(italicCss) ?? attr.defaultItalic ?? false;
+  } else if (effect) out.effect = effect;
+  if (token && effect) out.effect = effect;
+  return out;
 }
 
 const SAFE = /^[^;{}<>]*$/;

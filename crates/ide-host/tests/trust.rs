@@ -32,16 +32,23 @@ async fn application_commands_work_in_restricted_projects_and_without_a_project(
     assert!(!host.open_project("main", &root).unwrap().is_trusted());
     for command in [
         "app_info",
+        "workspace_discover_projects",
         "app_build_info",
+        "app_cli_install",
+        "app_cli_uninstall",
         "app_log_location",
         "app_check_update",
-        "app_startup_update_check",
+        "app_update_window_ready",
+        "app_update_status",
+        "app_update_announcement",
         "app_install_update",
         "caches_schedule_invalidation",
         "clear_caches",
         "clipboard_file_list",
         "clipboard_has_files",
+        "clipboard_image",
         "clipboard_set_file_list",
+        "clipboard_write_text",
         "jdk_download_vendors",
         "jdk_download_releases",
         "jdk_download_location",
@@ -211,6 +218,24 @@ fn persists_user_decisions_locations_revocation_and_one_time_migration() {
     assert!(TrustStore::load(&config, &data).trusted(&a).is_err(), "corruption fails closed");
 }
 
+#[test]
+fn an_inherited_folder_is_trusted_for_this_process_only() {
+    let tmp = tempfile::tempdir().unwrap();
+    let (config, data) = (tmp.path().join("config"), tmp.path().join("data"));
+    let root = tmp.path().join("workspaces/app");
+    std::fs::create_dir_all(&root).unwrap();
+    let trust = TrustStore::load(&config, &data);
+    assert!(!trust.trusted(&root).unwrap());
+    trust.inherit(&root).unwrap();
+    assert!(trust.trusted(&root).unwrap());
+    assert!(!trust.trusted(root.parent().unwrap()).unwrap(), "only that folder");
+    assert!(trust.status(&root).unwrap().decided, "the trust prompt doesn't ask again");
+    assert!(trust.decisions().unwrap().projects.is_empty(), "no decision is recorded");
+    assert!(!TrustStore::load(&config, &data).trusted(&root).unwrap(), "not persisted");
+    trust.decide(&root, false, false).unwrap();
+    assert!(!trust.trusted(&root).unwrap(), "a decision to restrict it still wins");
+}
+
 #[cfg(unix)]
 fn script(root: &Path, name: &str, marker: &str) {
     use std::os::unix::fs::PermissionsExt;
@@ -349,6 +374,29 @@ fn trusted_locations_use_canonical_directory_boundaries() {
     assert_eq!(trust.status(&alias).unwrap().root.as_ref(), dunce::canonicalize(&other).unwrap());
 }
 
+#[test]
+fn add_location_trusts_every_project_under_it() {
+    let tmp = tempfile::tempdir().unwrap();
+    let location = tmp.path().join("projects");
+    let inside = location.join("nested/deep/app");
+    let outside = tmp.path().join("projects-other/app");
+    std::fs::create_dir_all(&inside).unwrap();
+    std::fs::create_dir_all(&outside).unwrap();
+    let file = tmp.path().join("not-a-dir");
+    std::fs::write(&file, "x").unwrap();
+    let trust = TrustStore::load(&tmp.path().join("config"), &tmp.path().join("data"));
+    trust.add_location(&location).unwrap();
+    assert!(trust.trusted(&inside).unwrap());
+    assert!(!trust.trusted(&outside).unwrap());
+    assert_eq!(trust.decisions().unwrap().locations.len(), 1);
+    trust.add_location(&location).unwrap();
+    assert_eq!(trust.decisions().unwrap().locations.len(), 1, "re-adding is a no-op");
+    assert!(trust.add_location(&file).is_err(), "a file is not a location");
+    assert!(trust.add_location(&tmp.path().join("missing")).is_err(), "a missing path is not a location");
+    let reloaded = TrustStore::load(&tmp.path().join("config"), &tmp.path().join("data"));
+    assert!(reloaded.trusted(&inside).unwrap());
+}
+
 #[cfg(unix)]
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn restricted_git_views_ignore_project_executables_and_mutations_cannot_run_hooks() {
@@ -403,4 +451,34 @@ async fn revocation_still_applies_when_a_project_folder_was_removed() {
     host.set_project_trust(&project.root, false, false).await.unwrap();
     assert!(!project.is_trusted());
     host.shutdown().await;
+}
+
+#[test]
+fn attached_member_trust_is_required_after_restart_and_revocation() {
+    let tmp = tempfile::tempdir().unwrap();
+    let (config, data) = (tmp.path().join("config"), tmp.path().join("data"));
+    let base = dunce::canonicalize(tmp.path()).unwrap();
+    let root = base.join("primary");
+    let other = base.join("other");
+    for path in [&root, &other] {
+        std::fs::create_dir(path).unwrap();
+    }
+    ide_workspace::workspace::Workspace::attach(&root, "Primary", vec![root.clone(), other.clone()]).unwrap();
+    let trust = TrustStore::load(&config, &data);
+    trust.decide(&root, true, false).unwrap();
+    trust.inherit(&other).unwrap();
+    assert!(trust.window_trusted(&root).unwrap());
+    let trust = TrustStore::load(&config, &data);
+    assert!(trust.status(&root).unwrap().trusted);
+    assert!(!trust.window_trusted(&root).unwrap());
+    assert!(!trust.status(&other).unwrap().decided);
+    trust.decide(&root, true, false).unwrap();
+    assert!(!trust.window_trusted(&root).unwrap(), "trusting only the root does not recover the window");
+    trust.decide(&other, true, false).unwrap();
+    assert!(trust.window_trusted(&root).unwrap());
+    trust.decide(&other, false, false).unwrap();
+    assert!(trust.status(&other).unwrap().decided);
+    assert!(!trust.window_trusted(&root).unwrap());
+    trust.decide(&other, true, false).unwrap();
+    assert!(trust.window_trusted(&root).unwrap());
 }

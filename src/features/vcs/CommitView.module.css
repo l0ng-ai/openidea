@@ -71,7 +71,6 @@
 }
 .groupLabel {
   color: var(--fg-strong);
-  font-weight: 600;
 }
 .detail {
   flex: 0 10000 auto;

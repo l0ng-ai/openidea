@@ -59,16 +59,15 @@ struct Checks {
     hover: (At, &'static str),
     /// Completion at the end of the typed line offers this item.
     completion: (Typed, &'static str),
-    /// The typed line is reported with this diagnostic; the quick fix with this title makes the
-    /// file contain the last text.
+    /// The typed line is reported with a diagnostic, and its quick fix applies.
     quick_fix: QuickFix,
     /// With the word selected, this intention is offered with an edit or command.
-    intention: (At, &'static str),
+    intention: Option<(At, &'static str)>,
     /// Formatting turns the typed line into the expected one.
     format: (Typed, &'static str),
     indent: Indent,
     /// Renaming the symbol to the new name edits these files.
-    rename: (At, &'static str, &'static [&'static str]),
+    rename: Option<(At, &'static str, &'static [&'static str])>,
     /// Parameter info in a call being typed: a signature naming this parameter.
     signature: (Typed, &'static str),
     /// The Structure view of a file: these symbols, at any depth.
@@ -104,8 +103,8 @@ enum Imports {
 struct QuickFix {
     typed: Typed,
     diagnostic: &'static str,
-    title: &'static str,
-    result: &'static str,
+    /// The quick fix with this title makes the file contain this text.
+    fix: Option<(&'static str, &'static str)>,
 }
 
 /// The editor's indentation, sent with a format request.
@@ -135,7 +134,7 @@ fn copy_dir(from: &Path, to: &Path) {
     for entry in std::fs::read_dir(from).unwrap() {
         let entry = entry.unwrap();
         let name = entry.file_name();
-        if matches!(name.to_str(), Some("node_modules" | "target" | "build" | ".gradle" | ".venv")) {
+        if matches!(name.to_str(), Some("node_modules" | "target" | "build" | ".gradle" | ".venv" | "vendor")) {
             continue;
         }
         let target = to.join(&name);
@@ -303,7 +302,18 @@ impl Smoke {
         let (doc, pos) = self.locate(of).await;
         let want: BTreeSet<String> = files.iter().map(|f| f.to_string()).collect();
         self.retry("find usages", self.warm_up, || async {
-            let found = ops::lsp::lsp_references(&self.host, WINDOW, RequestId(1), doc, pos, true, true).await;
+            let found = ops::lsp::lsp_references(
+                &self.host,
+                WINDOW,
+                RequestId(1),
+                doc,
+                pos,
+                true,
+                true,
+                false,
+                ops::Channel::new(|_| {}),
+            )
+            .await;
             match &found {
                 Ok(r) if want.is_subset(&self.files(r.locations.iter().map(|l| l.path.clone()))) => Ok(()),
                 _ => Err(found.map(|r| self.files(r.locations.into_iter().map(|l| l.path)))),
@@ -381,19 +391,21 @@ impl Smoke {
             .unwrap_or_else(|e| self.fail(check, format_args!("resolving {title:?}: {e}")))
     }
 
-    async fn quick_fix(&self, fix: QuickFix) {
-        let (doc, _, before) = self.type_line(fix.typed).await;
-        assert!(!before.contains(fix.result), "{fix:?}: the file already contains the result");
-        let range = self.diagnostic(fix.typed.file, fix.diagnostic).await;
-        let action = self.action("quick fix", doc, range, fix.title).await;
-        ops::lsp::lsp_execute_code_action(&self.host, WINDOW, RequestId(4), doc, action, vec![])
-            .await
-            .unwrap_or_else(|e| self.fail("quick fix", format_args!("applying {:?}: {e}", fix.title)));
-        self.retry("quick fix", Duration::from_secs(10), || async {
-            let text = self.doc(fix.typed.file).await.1;
-            if text.contains(fix.result) { Ok(()) } else { Err(text) }
-        })
-        .await;
+    async fn quick_fix(&self, q: QuickFix) {
+        let (doc, _, before) = self.type_line(q.typed).await;
+        let range = self.diagnostic(q.typed.file, q.diagnostic).await;
+        if let Some((title, result)) = q.fix {
+            assert!(!before.contains(result), "{q:?}: the file already contains the result");
+            let action = self.action("quick fix", doc, range, title).await;
+            ops::lsp::lsp_execute_code_action(&self.host, WINDOW, RequestId(4), doc, action, vec![])
+                .await
+                .unwrap_or_else(|e| self.fail("quick fix", format_args!("applying {title:?}: {e}")));
+            self.retry("quick fix", Duration::from_secs(10), || async {
+                let text = self.doc(q.typed.file).await.1;
+                if text.contains(result) { Ok(()) } else { Err(text) }
+            })
+            .await;
+        }
         self.restore(doc, &before).await;
     }
 
@@ -608,7 +620,9 @@ impl Smoke {
         self.hover(c.hover.0, c.hover.1).await;
         self.completion(c.completion.0, c.completion.1).await;
         self.quick_fix(c.quick_fix).await;
-        self.intention(c.intention.0, c.intention.1).await;
+        if let Some((on, title)) = c.intention {
+            self.intention(on, title).await;
+        }
         self.format(c.format.0, c.indent, c.format.1).await;
         self.signature(c.signature.0, c.signature.1).await;
         self.outline(c.outline.0, c.outline.1).await;
@@ -616,7 +630,9 @@ impl Smoke {
         if let Some((import, expect)) = c.organize_imports {
             self.organize_imports(import, expect).await;
         }
-        self.rename(c.rename.0, c.rename.1, c.rename.2).await;
+        if let Some((symbol, to, files)) = c.rename {
+            self.rename(symbol, to, files).await;
+        }
         // Last: it moves a file the other checks use.
         if let Some((from, to, referencing, result)) = c.file_move {
             self.file_move(from, to, referencing, result).await;
@@ -645,21 +661,20 @@ const TYPESCRIPT: Checks = Checks {
     quick_fix: QuickFix {
         typed: typed("src/index.ts", "const total = cart.total();", "  console.log(addMoney(total, total));"),
         diagnostic: "Cannot find name 'addMoney'",
-        title: "import from \"./money.ts\"",
-        result: "import { addMoney, cents, formatMoney } from \"./money.ts\";",
+        fix: Some(("import from \"./money.ts\"", "import { addMoney, cents, formatMoney } from \"./money.ts\";")),
     },
-    intention: (at("src/index.ts", "const total = cart.total();", "cart.total()"), "Extract to constant"),
+    intention: Some((at("src/index.ts", "const total = cart.total();", "cart.total()"), "Extract to constant")),
     format: (
         typed("src/index.ts", "const total = cart.total();", "  const  shown={total,count:cart.count}"),
         "  const shown = { total, count: cart.count }",
     ),
     indent: Indent::Spaces(2),
-    rename: (
+    rename: Some((
         // From a usage in another file: the declaration is renamed too, not aliased in the import.
         at("src/index.ts", "Total: ${formatMoney(total)}", "formatMoney"),
         "formatPrice",
         &["src/index.ts", "src/money.ts"],
-    ),
+    )),
     signature: (typed("src/index.ts", "const total = cart.total();", "  cart.add("), "product"),
     outline: ("src/cart.ts", &["Cart", "add", "total"]),
     auto_import: AutoImport {
@@ -702,21 +717,20 @@ const PYTHON: Checks = Checks {
     quick_fix: QuickFix {
         typed: typed("src/tasks/cli.py", "tasks = build_demo()", "    print(Task)"),
         diagnostic: "\"Task\" is not defined",
-        title: "from .models import Task",
-        result: "from .models import Priority, Task, TaskList",
+        fix: Some(("from .models import Task", "from .models import Priority, Task, TaskList")),
     },
     // basedpyright has no refactorings; Ruff's fixes are the Python intentions.
-    intention: (at("src/tasks/models.py", "import os", "os"), "Remove unused import"),
+    intention: Some((at("src/tasks/models.py", "import os", "os"), "Remove unused import")),
     format: (
         typed("src/tasks/cli.py", "tasks = build_demo()", "    shown2 = {'a':1,'b':  2}"),
         "    shown2 = {\"a\": 1, \"b\": 2}",
     ),
     indent: Indent::Spaces(4),
-    rename: (
+    rename: Some((
         at("src/tasks/models.py", "class TaskList:", "TaskList"),
         "TaskBoard",
         &["src/tasks/cli.py", "src/tasks/models.py"],
-    ),
+    )),
     signature: (typed("src/tasks/cli.py", "tasks = build_demo()", "    tasks.add("), "title"),
     outline: ("src/tasks/models.py", &["Priority", "Task", "TaskList", "pending"]),
     auto_import: AutoImport {
@@ -757,16 +771,22 @@ const RUST: Checks = Checks {
             "    let _blank = parser::ParseError { line: 1 };",
         ),
         diagnostic: "missing structure fields",
-        title: "Fill struct fields",
-        result: "ParseError { line: 1, message",
+        fix: Some(("Fill struct fields", "ParseError { line: 1, message")),
     },
-    intention: (at("src/main.rs", "match parser::parse(SAMPLE)", "parser::parse(SAMPLE)"), "Extract into variable"),
+    intention: Some((
+        at("src/main.rs", "match parser::parse(SAMPLE)", "parser::parse(SAMPLE)"),
+        "Extract into variable",
+    )),
     format: (
         typed("src/main.rs", "let mut inventory = Inventory::new();", "    let  _spaced=( 1,2 );"),
         "    let _spaced = (1, 2);",
     ),
     indent: Indent::Spaces(4),
-    rename: (at("src/parser.rs", "pub fn parse(text: &str)", "parse"), "parse_all", &["src/main.rs", "src/parser.rs"]),
+    rename: Some((
+        at("src/parser.rs", "pub fn parse(text: &str)", "parse"),
+        "parse_all",
+        &["src/main.rs", "src/parser.rs"],
+    )),
     signature: (typed("src/main.rs", "let mut inventory = Inventory::new();", "    inventory.take("), "sku"),
     outline: ("src/lib.rs", &["Inventory", "Item", "take"]),
     auto_import: AutoImport {
@@ -805,17 +825,16 @@ const GO: Checks = Checks {
     quick_fix: QuickFix {
         typed: typed("cmd/server/main.go", "s := store.New()", "\tfmt.Println(s)"),
         diagnostic: "undefined: fmt",
-        title: "\"fmt\"",
-        result: "\t\"fmt\"",
+        fix: Some(("\"fmt\"", "\t\"fmt\"")),
     },
-    intention: (at("cmd/server/main.go", "s := store.New()", "store.New()"), "Extract"),
+    intention: Some((at("cmd/server/main.go", "s := store.New()", "store.New()"), "Extract")),
     format: (typed("cmd/server/main.go", "s := store.New()", "\t_ =  []int{1,2}"), "\t_ = []int{1, 2}"),
     indent: Indent::Tabs,
-    rename: (
+    rename: Some((
         at("internal/store/store.go", "func New() *Store", "New"),
         "Open",
         &["cmd/server/main.go", "internal/store/store.go"],
-    ),
+    )),
     signature: (typed("cmd/server/main.go", "s := store.New()", "\ts.Create("), "title"),
     outline: ("internal/store/store.go", &["Store", "New", "(*Store).Create"]),
     auto_import: AutoImport {
@@ -861,13 +880,12 @@ const JAVA: Checks = Checks {
             "        List<Order> all = book.byCustomer(\"alice\");",
         ),
         diagnostic: "List cannot be resolved to a type",
-        title: "Import 'List' (java.util)",
-        result: "import java.util.List;",
+        fix: Some(("Import 'List' (java.util)", "import java.util.List;")),
     },
-    intention: (
+    intention: Some((
         at("src/main/java/com/example/orders/App.java", "long revenue = book.revenueCents();", "book.revenueCents()"),
         "Extract to local variable",
-    ),
+    )),
     format: (
         typed(
             "src/main/java/com/example/orders/App.java",
@@ -877,11 +895,11 @@ const JAVA: Checks = Checks {
         "        long doubled = revenue * 2;",
     ),
     indent: Indent::Spaces(4),
-    rename: (
+    rename: Some((
         at("src/main/java/com/example/orders/OrderBook.java", "public Order place(", "place"),
         "submit",
         &["src/main/java/com/example/orders/App.java", "src/main/java/com/example/orders/OrderBook.java"],
-    ),
+    )),
     signature: (
         typed(
             "src/main/java/com/example/orders/App.java",
@@ -948,23 +966,22 @@ const KOTLIN: Checks = Checks {
             "    val stamp = LocalDateTime.now()",
         ),
         diagnostic: "Unresolved reference",
-        title: "Import",
-        result: "import java.time.LocalDateTime",
+        fix: Some(("Import", "import java.time.LocalDateTime")),
     },
-    intention: (
+    intention: Some((
         at("src/main/kotlin/com/example/library/Library.kt", "fun giveBack(isbn: String): Boolean", "giveBack"),
         "block body",
-    ),
+    )),
     format: (
         typed("src/main/kotlin/com/example/library/App.kt", "val library = Library()", "    val  pair=listOf(1,2)"),
         "    val pair = listOf(1, 2)",
     ),
     indent: Indent::Spaces(4),
-    rename: (
+    rename: Some((
         at("src/main/kotlin/com/example/library/Library.kt", "fun search(query: String)", "search"),
         "find",
         &["src/main/kotlin/com/example/library/App.kt", "src/main/kotlin/com/example/library/Library.kt"],
-    ),
+    )),
     signature: (
         typed("src/main/kotlin/com/example/library/App.kt", "val library = Library()", "    library.lend("),
         "isbn",
@@ -991,4 +1008,52 @@ const KOTLIN: Checks = Checks {
 #[ignore = "language smoke: needs kotlin-lsp, a JDK and Gradle"]
 async fn kotlin() {
     smoke("kotlin", KOTLIN).await;
+}
+
+const PHP: Checks = Checks {
+    fixture: "php-app",
+    files: &[],
+    warm_up: Duration::from_secs(60),
+    definition: (
+        at("bin/quote.php", "$customs = new ThresholdCustoms", "ThresholdCustoms"),
+        at("src/Shipping/ThresholdCustoms.php", "final class ThresholdCustoms", "ThresholdCustoms"),
+    ),
+    references: (
+        at("src/Shipping/Parcel.php", "public function billableGrams", "billableGrams"),
+        &["bin/quote.php", "src/Shipping/Parcel.php", "src/Shipping/Shipment.php", "src/Shipping/Tariff.php"],
+    ),
+    hover: (
+        at("bin/quote.php", "$parcel->billableGrams($shipment->route)", "billableGrams"),
+        "public function billableGrams(Route $route): int",
+    ),
+    completion: (typed("bin/quote.php", "$freightCents += $cents;", "        $parcel->"), "billableGrams"),
+    // Intelephense declares no code actions and no rename without a licence key.
+    quick_fix: QuickFix {
+        typed: typed("bin/quote.php", "$freightCents += $cents;", "        $tariff->weigh($parcel);"),
+        diagnostic: "Undefined method 'weigh'",
+        fix: None,
+    },
+    intention: None,
+    format: (
+        typed("bin/quote.php", "$freightCents += $cents;", "        $pair=[1,2 ,3];"),
+        "        $pair = [1, 2, 3];",
+    ),
+    indent: Indent::Spaces(4),
+    rename: None,
+    signature: (typed("bin/quote.php", "$freightCents += $cents;", "        $tariff->freightCents("), "parcel"),
+    outline: ("src/Shipping/Shipment.php", &["Shipment", "add", "heaviest", "byStore"]),
+    auto_import: AutoImport {
+        typed: typed("bin/quote.php", "$freightCents += $cents;", "        $status = ParcelSta"),
+        label: "ParcelStatus",
+        result: "use App\\Shipping\\ParcelStatus;",
+    },
+    organize_imports: None,
+    // Intelephense has no `workspace/willRenameFiles`.
+    file_move: None,
+};
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+#[ignore = "language smoke: needs intelephense"]
+async fn php() {
+    smoke("php", PHP).await;
 }

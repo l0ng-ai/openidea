@@ -1,0 +1,96 @@
+<?xml version="1.0" encoding="utf-8"?>
+<TestRun id="90ac1e90-367b-4ef0-9626-f509a293b66f" name="user@host 2026-11-09 15:29:36" runUser="host\user" xmlns="http://microsoft.com/schemas/VisualStudio/TeamTest/2010">
+  <Times creation="2026-11-09T15:29:36.6222274+08:00" queuing="2026-11-09T15:29:36.6222276+08:00" start="2026-11-09T15:29:35.9112000+08:00" finish="2026-11-09T15:29:36.6258453+08:00" />
+  <TestSettings name="default" id="c4a8bf0e-5e08-4b32-a8fc-8bac196f28bf">
+    <Deployment runDeploymentRoot="user_host_2026-11-09_15_29_36" />
+  </TestSettings>
+  <Results>
+    <UnitTestResult executionId="3a5c8c54-b5a7-4b63-99c5-6aa007b68f06" testId="02a81555-5865-e7f8-12f4-5fc78b67a49c" testName="Parameterized(2)" computerName="host" duration="00:00:00.0003440" startTime="2026-11-09T15:29:36.5471392+08:00" endTime="2026-11-09T15:29:36.5474827+08:00" testType="13cdc9d9-ddb5-4fa4-a97d-d965ccfc6d4b" outcome="Failed" testListId="8c84fa94-04c1-424b-9868-57a2d4851a1d" relativeResultsDirectory="3a5c8c54-b5a7-4b63-99c5-6aa007b68f06">
+      <Output>
+        <ErrorInfo>
+          <Message>  Assert.That(value, NUnit.Framework.Is.EqualTo(1))&#xD;
+  Expected: 1&#xD;
+  But was:  2&#xD;
+</Message>
+          <StackTrace>   at Sample.CalculatorTests.Parameterized(Int32 value) in C:\fixtures\Nunit\UnitTest1.cs:line 6&#xD;
+   at InvokeStub_CalculatorTests.Parameterized(Object, Span`1)&#xD;
+
+1)    at Sample.CalculatorTests.Parameterized(Int32 value) in C:\fixtures\Nunit\UnitTest1.cs:line 6&#xD;
+   at InvokeStub_CalculatorTests.Parameterized(Object, Span`1)&#xD;
+
+</StackTrace>
+        </ErrorInfo>
+      </Output>
+    </UnitTestResult>
+    <UnitTestResult executionId="cd0ce076-d902-4bc5-8eb6-efac66f22f76" testId="4662c40d-3831-20b9-b93f-3d46f4c3745e" testName="Fails" computerName="host" duration="00:00:00.0197860" startTime="2026-11-09T15:29:36.5267595+08:00" endTime="2026-11-09T15:29:36.5465230+08:00" testType="13cdc9d9-ddb5-4fa4-a97d-d965ccfc6d4b" outcome="Failed" testListId="8c84fa94-04c1-424b-9868-57a2d4851a1d" relativeResultsDirectory="cd0ce076-d902-4bc5-8eb6-efac66f22f76">
+      <Output>
+        <ErrorInfo>
+          <Message>  Assert.That(1 + 1, NUnit.Framework.Is.EqualTo(3))&#xD;
+  Expected: 3&#xD;
+  But was:  2&#xD;
+</Message>
+          <StackTrace>   at Sample.CalculatorTests.Fails() in C:\fixtures\Nunit\UnitTest1.cs:line 4&#xD;
+
+1)    at Sample.CalculatorTests.Fails() in C:\fixtures\Nunit\UnitTest1.cs:line 4&#xD;
+
+</StackTrace>
+        </ErrorInfo>
+      </Output>
+    </UnitTestResult>
+    <UnitTestResult executionId="08316b31-c9f2-4e05-82d9-a6ac58f1bc7c" testId="2025c34d-a3f9-811e-8437-7eef0caa4776" testName="Passes" computerName="host" duration="00:00:00.0000550" startTime="2026-11-09T15:29:36.5479936+08:00" endTime="2026-11-09T15:29:36.5480483+08:00" testType="13cdc9d9-ddb5-4fa4-a97d-d965ccfc6d4b" outcome="Passed" testListId="8c84fa94-04c1-424b-9868-57a2d4851a1d" relativeResultsDirectory="08316b31-c9f2-4e05-82d9-a6ac58f1bc7c" />
+    <UnitTestResult executionId="41afb0d9-6a86-4345-b814-57bbe8e235a6" testId="c67f2006-84d4-f2e9-b3a1-3d8a46e07d6c" testName="Parameterized(1)" computerName="host" duration="00:00:00.0001110" startTime="2026-11-09T15:29:36.5470161+08:00" endTime="2026-11-09T15:29:36.5471267+08:00" testType="13cdc9d9-ddb5-4fa4-a97d-d965ccfc6d4b" outcome="Passed" testListId="8c84fa94-04c1-424b-9868-57a2d4851a1d" relativeResultsDirectory="41afb0d9-6a86-4345-b814-57bbe8e235a6" />
+    <UnitTestResult executionId="cab1aa72-f4f8-418d-b66a-353c4d14cbc9" testId="09a0e53e-a28a-d7cb-4241-5e576bbe92bd" testName="Skipped" computerName="host" duration="00:00:00.0000780" startTime="2026-11-09T15:29:36.5480515+08:00" endTime="2026-11-09T15:29:36.5481298+08:00" testType="13cdc9d9-ddb5-4fa4-a97d-d965ccfc6d4b" outcome="NotExecuted" testListId="8c84fa94-04c1-424b-9868-57a2d4851a1d" relativeResultsDirectory="cab1aa72-f4f8-418d-b66a-353c4d14cbc9">
+      <Output>
+        <StdOut>demonstration</StdOut>
+        <ErrorInfo>
+          <Message>demonstration</Message>
+        </ErrorInfo>
+      </Output>
+    </UnitTestResult>
+  </Results>
+  <TestDefinitions>
+    <UnitTest name="Skipped" storage="C:\fixtures\nunit\bin\debug\net9.0\openidea.nunit.tests.dll" id="09a0e53e-a28a-d7cb-4241-5e576bbe92bd">
+      <Execution id="cab1aa72-f4f8-418d-b66a-353c4d14cbc9" />
+      <TestMethod codeBase="C:\fixtures\Nunit\bin\Debug\net9.0\OpenIdea.Nunit.Tests.dll" adapterTypeName="executor://nunit3testexecutor/" className="Sample.CalculatorTests" name="Skipped" />
+    </UnitTest>
+    <UnitTest name="Parameterized(1)" storage="C:\fixtures\nunit\bin\debug\net9.0\openidea.nunit.tests.dll" id="c67f2006-84d4-f2e9-b3a1-3d8a46e07d6c">
+      <Execution id="41afb0d9-6a86-4345-b814-57bbe8e235a6" />
+      <TestMethod codeBase="C:\fixtures\Nunit\bin\Debug\net9.0\OpenIdea.Nunit.Tests.dll" adapterTypeName="executor://nunit3testexecutor/" className="Sample.CalculatorTests" name="Parameterized(1)" />
+    </UnitTest>
+    <UnitTest name="Parameterized(2)" storage="C:\fixtures\nunit\bin\debug\net9.0\openidea.nunit.tests.dll" id="02a81555-5865-e7f8-12f4-5fc78b67a49c">
+      <Execution id="3a5c8c54-b5a7-4b63-99c5-6aa007b68f06" />
+      <TestMethod codeBase="C:\fixtures\Nunit\bin\Debug\net9.0\OpenIdea.Nunit.Tests.dll" adapterTypeName="executor://nunit3testexecutor/" className="Sample.CalculatorTests" name="Parameterized(2)" />
+    </UnitTest>
+    <UnitTest name="Fails" storage="C:\fixtures\nunit\bin\debug\net9.0\openidea.nunit.tests.dll" id="4662c40d-3831-20b9-b93f-3d46f4c3745e">
+      <Execution id="cd0ce076-d902-4bc5-8eb6-efac66f22f76" />
+      <TestMethod codeBase="C:\fixtures\Nunit\bin\Debug\net9.0\OpenIdea.Nunit.Tests.dll" adapterTypeName="executor://nunit3testexecutor/" className="Sample.CalculatorTests" name="Fails" />
+    </UnitTest>
+    <UnitTest name="Passes" storage="C:\fixtures\nunit\bin\debug\net9.0\openidea.nunit.tests.dll" id="2025c34d-a3f9-811e-8437-7eef0caa4776">
+      <Execution id="08316b31-c9f2-4e05-82d9-a6ac58f1bc7c" />
+      <TestMethod codeBase="C:\fixtures\Nunit\bin\Debug\net9.0\OpenIdea.Nunit.Tests.dll" adapterTypeName="executor://nunit3testexecutor/" className="Sample.CalculatorTests" name="Passes" />
+    </UnitTest>
+  </TestDefinitions>
+  <TestEntries>
+    <TestEntry testId="02a81555-5865-e7f8-12f4-5fc78b67a49c" executionId="3a5c8c54-b5a7-4b63-99c5-6aa007b68f06" testListId="8c84fa94-04c1-424b-9868-57a2d4851a1d" />
+    <TestEntry testId="4662c40d-3831-20b9-b93f-3d46f4c3745e" executionId="cd0ce076-d902-4bc5-8eb6-efac66f22f76" testListId="8c84fa94-04c1-424b-9868-57a2d4851a1d" />
+    <TestEntry testId="2025c34d-a3f9-811e-8437-7eef0caa4776" executionId="08316b31-c9f2-4e05-82d9-a6ac58f1bc7c" testListId="8c84fa94-04c1-424b-9868-57a2d4851a1d" />
+    <TestEntry testId="c67f2006-84d4-f2e9-b3a1-3d8a46e07d6c" executionId="41afb0d9-6a86-4345-b814-57bbe8e235a6" testListId="8c84fa94-04c1-424b-9868-57a2d4851a1d" />
+    <TestEntry testId="09a0e53e-a28a-d7cb-4241-5e576bbe92bd" executionId="cab1aa72-f4f8-418d-b66a-353c4d14cbc9" testListId="8c84fa94-04c1-424b-9868-57a2d4851a1d" />
+  </TestEntries>
+  <TestLists>
+    <TestList name="Results Not in a List" id="8c84fa94-04c1-424b-9868-57a2d4851a1d" />
+    <TestList name="All Loaded Results" id="19431567-8539-422a-85d7-44ee4e166bda" />
+  </TestLists>
+  <ResultSummary outcome="Failed">
+    <Counters total="5" executed="4" passed="2" failed="2" error="0" timeout="0" aborted="0" inconclusive="0" passedButRunAborted="0" notRunnable="0" notExecuted="0" disconnected="0" warning="0" completed="0" inProgress="0" pending="0" />
+    <Output>
+      <StdOut>NUnit Adapter 4.6.0.0: Test execution started&#xD;
+Running all tests in C:\fixtures\Nunit\bin\Debug\net9.0\OpenIdea.Nunit.Tests.dll&#xD;
+   NUnit3TestExecutor discovered 5 of 5 NUnit test cases using Current Discovery mode, Non-Explicit run&#xD;
+Skipped: demonstration&#xD;
+NUnit Adapter 4.6.0.0: Test execution complete&#xD;
+Test 'Skipped' was skipped in the test run.&#xD;
+</StdOut>
+    </Output>
+  </ResultSummary>
+</TestRun>

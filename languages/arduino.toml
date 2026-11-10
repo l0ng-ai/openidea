@@ -1,0 +1,29 @@
+id = "arduino"
+name = "Arduino"
+# Arduino Language Server supplies Arduino's generated compile context to clangd.
+extensions = ["ino"]
+line-comment = "//"
+block-comment = ["/*", "*/"]
+indent = { tab-size = 2, insert-spaces = true }
+ui-mode = "C++"
+tree-sitter = "cpp"
+
+[[language-servers]]
+name = "arduino-language-server"
+command = "arduino-language-server"
+root-markers = ["*.ino", "sketch.yaml"]
+require-root-marker = true
+features = [
+  "diagnostics",
+  "completion",
+  "hover",
+  "signature-help",
+  "definition",
+  "type-definition",
+  "implementation",
+  "document-highlight",
+  "formatting",
+  "rename",
+  "code-action",
+]
+install-hint = "Install Arduino IDE 2 (includes Arduino Language Server, Arduino CLI and clangd) and the board's core. Configure the server command and arguments in Settings > Languages & Frameworks > Language Servers, or set languages.arduino.cli, languages.arduino.clangd, languages.arduino.languageServer and languages.arduino.cliConfig in settings.toml. Set the board FQBN in sketch.yaml or languages.arduino.fqbn in settings.toml."

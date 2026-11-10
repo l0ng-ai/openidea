@@ -5,6 +5,7 @@ import type {
   DbForeignKey,
   DbIndexInfo,
   DbObjectKind as DbSchemaObjectKind,
+  DbPackageInfo,
   DbRoutineInfo,
   DbSequenceInfo,
   DbTableInfo,
@@ -15,12 +16,26 @@ import type { DbObjectRef } from "./objects";
 
 export type Group = "columns" | "keys" | "foreignKeys" | "indexes" | "triggers";
 
-/** Folders under a schema: IDEA's `tables`, `views`, `materialized views`, `routines`, `sequences`. */
-export type Folder = "tables" | "views" | "materializedViews" | "routines" | "sequences";
+/** Schema folders; routines can optionally be separated into procedures and functions. */
+export type Folder =
+  | "tables"
+  | "views"
+  | "materializedViews"
+  | "routines"
+  | "procedures"
+  | "functions"
+  | "packages"
+  | "sequences";
 
 /** The folder a table, view or materialized view is listed in. */
 export function tableFolder(kind: DbTableKind): Folder {
   return kind === "view" ? "views" : kind === "materializedView" ? "materializedViews" : "tables";
+}
+
+/** IDEA's *Separate Procedures and Functions* option: the folder a routine is listed in. */
+export function routineFolder(kind: DbRoutineInfo["kind"], separate = false): "routines" | "procedures" | "functions" {
+  if (!separate) return "routines";
+  return kind === "procedure" ? "procedures" : "functions";
 }
 
 /** Where a table-level node lives: connection target, schema, table. */
@@ -38,6 +53,7 @@ export type DbNode =
   | { kind: "folder"; key: string; id: string; schema: string; folder: Folder }
   | { kind: "table"; key: string; id: string; schema: string; table: DbTableInfo }
   | { kind: "routine"; key: string; id: string; schema: string; routine: DbRoutineInfo }
+  | { kind: "package"; key: string; id: string; schema: string; package: DbPackageInfo }
   | { kind: "sequence"; key: string; id: string; schema: string; sequence: DbSequenceInfo }
   | ({ kind: "group"; key: string; group: Group } & InTable)
   | ({ kind: "column"; key: string; column: DbColumnInfo; foreignKey: boolean } & InTable)
@@ -65,11 +81,12 @@ export function tableOf(
   return null;
 }
 
-/** A routine, trigger or sequence node: what Go to DDL / Quick Documentation read. */
+/** A routine, package, trigger or sequence node: what Go to DDL / Quick Documentation read. */
 export function schemaObjectOf(
   n: DbNode,
 ): { id: string; schema: string; kind: DbSchemaObjectKind; name: string } | null {
   if (n.kind === "routine") return { id: n.id, schema: n.schema, kind: n.routine.kind, name: n.routine.name };
+  if (n.kind === "package") return { id: n.id, schema: n.schema, kind: "package", name: n.package.name };
   if (n.kind === "sequence") return { id: n.id, schema: n.schema, kind: "sequence", name: n.sequence.name };
   if (n.kind === "trigger") return { id: n.id, schema: n.schema, kind: "trigger", name: n.trigger.name };
   return null;
@@ -88,6 +105,8 @@ export function objectOf(n: DbNode): DbObjectRef | null {
       return { kind: "index", schema: n.schema, name: n.index.name, table: n.table };
     case "routine":
       return { kind: n.routine.kind, schema: n.schema, name: n.routine.name, arguments: n.routine.arguments };
+    case "package":
+      return { kind: "package", schema: n.schema, name: n.package.name };
     case "sequence":
       return { kind: "sequence", schema: n.schema, name: n.sequence.name };
     case "trigger":

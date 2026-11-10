@@ -9,7 +9,7 @@ use std::{
     time::{Duration, Instant},
 };
 
-use ide_core::{IdeError, IdeResult, error::ErrorKind};
+use ide_core::{IdeError, IdeResult, IpcPath, error::ErrorKind};
 use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
 use specta::Type;
@@ -22,7 +22,7 @@ use crate::kernel::KernelOutput;
 #[serde(rename_all = "camelCase")]
 pub struct NotebookSnapshot {
     pub id: String,
-    pub path: String,
+    pub path: IpcPath,
     pub version: u32,
     pub dirty: bool,
     pub can_undo: bool,
@@ -188,7 +188,7 @@ impl NotebookDocument {
     pub fn snapshot(&self) -> NotebookSnapshot {
         NotebookSnapshot {
             id: self.id.clone(),
-            path: self.path.to_string_lossy().into_owned(),
+            path: self.path.clone().into(),
             version: self.version,
             dirty: self.is_dirty(),
             can_undo: !self.execution_active && !self.undo.is_empty(),

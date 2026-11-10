@@ -20,6 +20,11 @@ body,
   margin: 0;
 }
 
+/* The page never scrolls: `clip` on the body leaves the viewport nothing to scroll into view. */
+html {
+  overflow: hidden;
+}
+
 body {
   background: var(--bg-frame);
   color: var(--fg);
@@ -27,10 +32,18 @@ body {
   font-size: var(--fs-ui);
   line-height: 1.4;
   -webkit-font-smoothing: antialiased;
-  overflow: hidden;
+  overflow: clip;
   -webkit-user-select: none;
   user-select: none;
   cursor: default;
+}
+
+/* A resize drag owns the cursor until release, even over the editor or a button. */
+html[data-drag-cursor],
+html[data-drag-cursor] *,
+html[data-drag-cursor] *::before,
+html[data-drag-cursor] *::after {
+  cursor: var(--drag-cursor) !important;
 }
 
 html[data-selection-lock] *:not([data-selection-scope], [data-selection-scope] *) {
@@ -236,6 +249,10 @@ a:hover {
 ::-webkit-scrollbar-track,
 ::-webkit-scrollbar-corner {
   background: transparent;
+}
+/* An outer scroller whose scrollbar the editor's overview lane draws (cm/lanes.ts `overviewLaneIn`). */
+.cm-openidea-overviewScroller::-webkit-scrollbar:vertical {
+  width: 0;
 }
 
 /* Settings › Appearance › Antialiasing (IDE / Editor). */

@@ -2,12 +2,12 @@
   "name": "openidea",
   "private": true,
   "description": "An open-source IDE inspired by IntelliJ IDEA",
-  "version": "0.1.36",
+  "version": "0.1.40",
   "license": "Apache-2.0",
   "type": "module",
   "scripts": {
     "dev": "vite",
-    "build": "tsc --noEmit && vite build",
+    "build": "tsc --noEmit && vite build && node scripts/check-webkit.ts",
     "preview": "vite preview",
     "tauri": "node scripts/tauri.ts",
     "test": "vitest run",
@@ -22,13 +22,16 @@
     "gen:windows-icons": "node scripts/gen-windows-icons.ts",
     "gen:angular-grammar": "lezer-generator src/editor/core/cm/angular/angular.grammar --typeScript -o src/editor/core/cm/angular/parser.ts",
     "gen:jsp-grammar": "lezer-generator src/editor/core/cm/jsp/jsp.grammar --typeScript -o src/editor/core/cm/jsp/parser.ts",
+    "gen:astro-grammar": "lezer-generator src/editor/core/cm/astro/astro.grammar --typeScript -o src/editor/core/cm/astro/parser.ts",
     "gen:theme-docs": "node scripts/theme/gen-docs.ts",
     "theme:import-intellij": "node scripts/theme/import-intellij-theme.ts",
     "dev:app": "node scripts/tauri.ts dev --config src-tauri/tauri.dev.conf.json",
     "dev:status": "node scripts/dev-status.ts",
     "e2e": "playwright test",
     "perf": "node perf/run.ts",
-    "perf:rust": "node perf/rust.ts"
+    "perf:rust": "node perf/rust.ts",
+    "release:prepare": "node scripts/release-prepare.ts",
+    "nightly:prepare": "node scripts/nightly-prepare.ts"
   },
   "simple-git-hooks": {
     "pre-commit": "pnpm lint-staged"
@@ -44,6 +47,8 @@
     "@codemirror/lang-html": "^6.4.12",
     "@codemirror/lang-java": "^6.0.2",
     "@codemirror/lang-javascript": "^6.2.5",
+    "@codemirror/lang-sass": "^6.0.2",
+    "@codemirror/lang-vue": "^0.1.3",
     "@codemirror/language": "^6.13.1",
     "@codemirror/language-data": "^6.5.2",
     "@codemirror/legacy-modes": "^6.5.5",

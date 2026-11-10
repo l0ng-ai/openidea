@@ -162,7 +162,8 @@ pub fn client_capabilities() -> Value {
             "callHierarchy": { "dynamicRegistration": false },
             "typeHierarchy": { "dynamicRegistration": false }
         },
-        "experimental": {}
+        // rust-analyzer: report when the project has loaded (`quiescent`).
+        "experimental": { "serverStatusNotification": true }
     })
 }
 
@@ -467,6 +468,25 @@ impl ServerCaps {
             self.restriction = restriction;
             return;
         }
+        // JDT LS registers the commands of bundles that were not loaded when it initialized.
+        if method == "workspace/executeCommand"
+            && let Some(added) = options.and_then(|o| o.get("commands")).and_then(Value::as_array)
+        {
+            if !self.raw.get("executeCommandProvider").is_some_and(Value::is_object) {
+                self.raw["executeCommandProvider"] = json!({ "commands": [] });
+            }
+            let provider = &mut self.raw["executeCommandProvider"];
+            if !provider.get("commands").is_some_and(Value::is_array) {
+                provider["commands"] = json!([]);
+            }
+            let commands = provider["commands"].as_array_mut().expect("commands");
+            for command in added {
+                if !commands.contains(command) {
+                    commands.push(command.clone());
+                }
+            }
+            return;
+        }
         if method == "textDocument/didSave" {
             let include = options.and_then(|o| o.get("includeText")).and_then(Value::as_bool).unwrap_or(false);
             self.save = Some(include);
@@ -565,6 +585,13 @@ mod tests {
         assert!(c.file_operation("willRename").is_some());
         c.unregister("workspace/willRenameFiles");
         assert!(c.file_operation("willRename").is_none());
+        // Commands registered later join those announced at initialization.
+        let mut c = ServerCaps::parse(json!({ "executeCommandProvider": { "commands": ["a"] } }));
+        c.register("workspace/executeCommand", Some(&json!({ "commands": ["b", "a"] })));
+        assert_eq!(c.commands(), vec!["a", "b"]);
+        let mut c = ServerCaps::parse(json!({}));
+        c.register("workspace/executeCommand", Some(&json!({ "commands": ["b"] })));
+        assert_eq!(c.commands(), vec!["b"]);
     }
 
     fn restriction(features: &[&str], kinds: &[&str]) -> Restriction {

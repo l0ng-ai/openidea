@@ -27,20 +27,39 @@ export interface ComposerDraft {
 
 export const emptyDraft = (): ComposerDraft => ({ text: "", files: [], images: [] });
 
+export type MessageToken = { kind: "text" | "file" | "command"; value: string };
+
+/**
+ * A message's text split into plain runs, `@file` references and `/command` skills. A
+ * command is a `/word` at the start or after whitespace; a reference likewise after `@`.
+ */
+export function messageTokens(text: string): MessageToken[] {
+  const out: MessageToken[] = [];
+  let last = 0;
+  for (const match of text.matchAll(/(^|\s)([@/][^\s@]+)/g)) {
+    const token = match[2]!;
+    const start = match.index! + match[1]!.length;
+    const command = /^\/[A-Za-z][\w:.-]*$/.test(token);
+    if (token.startsWith("/") && !command) continue;
+    if (start > last) out.push({ kind: "text", value: text.slice(last, start) });
+    out.push({ kind: command ? "command" : "file", value: token });
+    last = start + token.length;
+  }
+  if (last < text.length) out.push({ kind: "text", value: text.slice(last) });
+  return out;
+}
+
 export type Completion =
   | { kind: "file"; query: string; from: number; to: number }
   | { kind: "command"; query: string; from: number; to: number };
 
-/** The `@file` or leading `/command` being typed at `caret`, if any. */
+/** The `@file` or `/command` being typed at `caret`, if any; both may follow other text. */
 export function completionAt(text: string, caret: number): Completion | null {
   const before = text.slice(0, caret);
   const word = /(^|\s)([@/])([^\s@]*)$/.exec(before);
   if (!word) return null;
   const from = caret - word[3]!.length - 1;
-  // Commands only as the message's first word.
-  if (word[2] === "/")
-    return before.slice(0, from).trim() === "" ? { kind: "command", query: word[3]!, from, to: caret } : null;
-  return { kind: "file", query: word[3]!, from, to: caret };
+  return { kind: word[2] === "/" ? "command" : "file", query: word[3]!, from, to: caret };
 }
 
 /** Replaces the completion with `insert` plus a space; returns the text and the caret after it. */
@@ -66,7 +85,7 @@ export function matchCommands(commands: readonly AgentCommand[], query: string):
   return commands
     .map((command) => ({ command, rank: rank(command.name) }))
     .filter((m) => m.rank >= 0)
-    .sort((a, b) => a.rank - b.rank)
+    .sort((a, b) => Number(a.command.source === "skill") - Number(b.command.source === "skill") || a.rank - b.rank)
     .map((m) => m.command);
 }
 
@@ -152,9 +171,9 @@ export function atEdgeLine(text: string, caret: number, dir: -1 | 1): boolean {
   return dir < 0 ? !text.slice(0, caret).includes("\n") : !text.slice(caret).includes("\n");
 }
 
-/** The settings shown as dropdowns: model, mode, approvals, thinking effort, in that order. */
+/** The settings shown in the composer: model, mode, permissions, approvals, effort. */
 export function mainOptions(config: readonly AgentConfigOption[]): AgentConfigOption[] {
-  const order = ["model", "mode", "approval", "thought_level"];
+  const order = ["model", "mode", "permissions", "approval", "thought_level"];
   return order.flatMap((c) => config.filter((o) => o.category === c).slice(0, 1));
 }
 
@@ -165,12 +184,17 @@ export const modeOption = (config: readonly AgentConfigOption[]) => config.find(
  * Claude `acceptEdits`, Gemini `auto_edit`, Codex `full-access`…). Unknown modes ask.
  */
 export function modeIcon(mode: string): string {
-  const m = mode.toLowerCase().replace(/[^a-z]/g, "");
+  const m =
+    mode
+      .toLowerCase()
+      .split(/[#/]/)
+      .at(-1)
+      ?.replace(/[^a-z]/g, "") ?? "";
   if (m.includes("plan") || m === "architect") return "todo";
   if (m.includes("bypass") || m === "yolo" || m.includes("fullaccess") || m === "dangerous") return "unlock";
   if (m.includes("readonly") || m === "ask" || m === "chat") return "eye";
   if (m.includes("edit") || m === "code") return "edit";
-  if (m === "auto" || m === "agent") return "run";
+  if (m === "auto" || m === "agent" || m.includes("autopilot")) return "run";
   return "lock";
 }
 
@@ -180,6 +204,9 @@ export function bypassDefaults(config: readonly AgentConfigOption[]): Record<str
   const mode = modeOption(config);
   const unlock = mode?.values.find((v) => modeIcon(v.value) === "unlock");
   if (mode && unlock) out[mode.id] = unlock.value;
+  const permissions = config.find((o) => o.category === "permissions");
+  const allowAll = permissions?.values.find((v) => /^(on|true)$/i.test(v.value));
+  if (permissions && allowAll) out[permissions.id] = allowAll.value;
   const approval = config.find((o) => o.category === "approval");
   if (approval?.values.some((v) => v.value === "bypass")) out[approval.id] = "bypass";
   return out;

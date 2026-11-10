@@ -1,6 +1,6 @@
 import type { RunConfig } from "@/platform/ipc";
 import type { DebugServiceSession } from "@/workbench/contributions";
-import { stopSession, useRun, waitForExit, type RunSession } from "./store";
+import { stopSession, useRun, waitForExit, type RunSession, isLive } from "./store";
 
 /** One execution: a Run process and its attached debuggers, or a direct debug launch. */
 export interface ServiceSession {
@@ -10,7 +10,7 @@ export interface ServiceSession {
   debug: DebugServiceSession[];
 }
 
-const running = (s: RunSession) => s.status === "running" || s.status === "starting";
+const running = (s: RunSession) => isLive(s);
 const debugging = (s: DebugServiceSession) => s.status !== "terminated";
 
 export function serviceSessions(runs: readonly RunSession[], debug: readonly DebugServiceSession[]): ServiceSession[] {

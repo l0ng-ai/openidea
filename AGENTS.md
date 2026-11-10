@@ -21,11 +21,13 @@ Visual style: dark, low-contrast greys, one cool accent
 - `crates/ide-host` — the `openidea-server` binary for remote development and the
   `openidea-plugin` CLI (plugin starter templates live in its `templates.rs`).
 - `wit/` — plugin interface definitions; `plugins/` — sample and bundled plugins.
-  Plugin docs: `plugins/README.md`, `docs/plugins/themes.md`.
+  Plugin docs: `plugins/README.md`, `plugins/themes.md`.
 - `java/` — JDT LS extension bundles (`java-usages`, `kotlin-bridge`) and the patched
   Lombok agent, embedded into the app by `ide-sdk` / `ide-tools`.
 - `e2e/` — Playwright UI tests (`pnpm e2e`). `fixtures/` — sample projects per language
   for manual and automated testing.
+- `docs/` — the Mintlify documentation site (`docs.json` navigation, `en/` and `zh/` pages);
+  preview with `npx mint dev` in `docs/`.
 
 ## Rules
 
@@ -51,7 +53,8 @@ Visual style: dark, low-contrast greys, one cool accent
 
 Follow `CONTRIBUTING.md` and `.github/pull_request_template.md`: one problem per PR
 (`Closes #<n>` when it resolves an issue), reproduce first, keep the diff focused, short plain description, and a
-**How it was verified** section with commands run, results and (for UI) before/after screenshots.
+**How it was verified** section with commands run, results and, when the change alters what users
+see, before/after screenshots (not for UI removed along with a feature, copy-only or non-visual changes).
 Unclear product decisions → `needs-decision` and stop.
 
 ## Skills
@@ -78,6 +81,8 @@ Shared agent skills live in `.agents/skills/` (`.claude/skills/` links to them):
   `pnpm gen:bindings`.
 - `pnpm perf` (UI interaction latency / frames / leaks), `pnpm perf:rust` (criterion
   benches vs budgets). Budgets: `perf/budgets.json`.
+- `pnpm release:prepare <version>` — the release commit's changes: app version everywhere,
+  `Cargo.lock`, and the plugin API snapshot when `wit/` moved to a new version.
 
 ## Before opening a PR
 

@@ -48,3 +48,22 @@ describe("Mouse Shortcut dialog", () => {
     expect(onSubmit).toHaveBeenCalledWith("Alt+Button4", [], false);
   });
 });
+
+describe("Page swipe shortcut recording", () => {
+  it.each(["SwipeLeft", "SwipeRight"])("records and submits %s from the focused recorder", (stroke) => {
+    const onSubmit = vi.fn();
+    render(
+      <RecordShortcutDialog
+        action={action}
+        actions={[action]}
+        draft={{ preset: "intellij-macos", overrides: {} }}
+        onCancel={() => {}}
+        onSubmit={onSubmit}
+      />,
+    );
+    screen.getByRole("textbox", { name: "First stroke" }).focus();
+    fireEvent(window, new CustomEvent("ide:page-swipe", { detail: stroke }));
+    fireEvent.click(screen.getByRole("button", { name: "OK" }));
+    expect(onSubmit).toHaveBeenCalledWith(stroke, [], false);
+  });
+});

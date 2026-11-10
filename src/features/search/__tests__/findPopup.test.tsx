@@ -62,6 +62,7 @@ vi.mock("@/platform/ipc", async (orig) => ({
   isTauri: () => true,
 }));
 
+const { emitLocalIdeEvent } = await import("@/platform/ipc");
 const { FindInFilesOverlay } = await import("../find/FindInFiles");
 const {
   findHistory,
@@ -111,6 +112,19 @@ afterEach(() => {
 });
 
 describe("Find in Files popup", () => {
+  it("reruns the current search once when ignore rules change", async () => {
+    render(<FindInFilesOverlay />);
+    act(() => showFindPopup(false, { query: "order" }));
+    await settle();
+    expect(screen.getByRole("listbox", { name: "Matches" })).toHaveTextContent("a.kt");
+    const run = vi.fn(async () => null);
+    search = run;
+    act(() => emitLocalIdeEvent({ type: "fsChanged", created: [], modified: [], removed: [], ignoreRules: ["/p"] }));
+    await settle();
+    expect(run).toHaveBeenCalledTimes(1);
+    expect(screen.queryByText("a.kt")).not.toBeInTheDocument();
+  });
+
   it("⇧↓ extends the selection; ↵ in Replace mode replaces the selected rows", async () => {
     render(<FindInFilesOverlay />);
     act(() => showFindPopup(true, { query: "order" }));

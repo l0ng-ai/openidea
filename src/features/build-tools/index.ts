@@ -6,6 +6,7 @@
 import { onEditorEvent, registerEditorContribution } from "@/editor/api";
 import { executeAction, registerActions } from "@/platform/actions";
 import { setContext } from "@/platform/context";
+import { isGradleBuildInput } from "@/platform/buildFiles";
 import { onIdeEvent, type BuildModel, type BuildTool } from "@/platform/ipc";
 import { useProject } from "@/platform/project";
 import {
@@ -19,9 +20,18 @@ import {
 import { lazyComponent } from "@/ui";
 import { GradleView, MavenView } from "./BuildToolView";
 import { ExecutePopupHost } from "./ExecutePopup";
+import { pomNavigationExtension } from "./pomNavigation";
 import { buildToolsRunAnything } from "./runAnything";
 import { versionCatalogExtension } from "./versionCatalog";
-import { expandableKeys, gradleChildren, gradleRoots, mavenChildren, mavenRoots, gradleProjectKey } from "./model";
+import {
+  expandableKeys,
+  gradleChildren,
+  gradleRoots,
+  mavenChildren,
+  mavenRoots,
+  mavenPomAtPath,
+  gradleProjectKey,
+} from "./model";
 import {
   ANALYZER_KIND,
   addProjects,
@@ -49,8 +59,8 @@ export const MAVEN_WHEN = "projectOpen && build.maven";
 export const GRADLE_WHEN = "projectOpen && build.gradle";
 
 /** Build files whose creation / change / removal re-reads the model. */
-const BUILD_FILE =
-  /(?:^|\/)(?:pom\.xml|(?:build|settings)\.gradle(?:\.kts)?|mvnw(?:\.cmd)?|gradlew(?:\.bat)?|gradle\.properties|gradle-wrapper\.properties|[^/]+\.versions\.toml)$/;
+const isBuildFile = (path: string) =>
+  isGradleBuildInput(path) || /(?:^|[\\/])(?:pom\.xml|mvnw(?:\.cmd)?|gradlew(?:\.bat)?)$/.test(path);
 
 function expandAll(tool: BuildTool) {
   const { model, configs } = useBuild.getState();
@@ -80,8 +90,8 @@ function analyzerPom(arg: unknown): string | null {
   const a = (arg ?? {}) as { pom?: unknown; path?: unknown };
   if (typeof a.pom === "string") return a.pom;
   if (typeof a.path === "string" && root) {
-    const rel = a.path.startsWith(`${root}/`) ? a.path.slice(root.length + 1) : a.path;
-    if (projects.some((p) => p.pom === rel)) return rel;
+    const pom = mavenPomAtPath(projects, root, a.path);
+    if (pom) return pom;
   }
   return current.maven ?? null;
 }
@@ -142,10 +152,12 @@ function apply(model: BuildModel | null, registered: Partial<Record<BuildTool, (
   }
   // Import each independent build once; linking another build must not be hidden by the first sync.
   const root = useBuild.getState().root;
-  const mavenKey = `maven:${root}`;
-  if (model?.maven?.projects.length && model.maven.syncedAt == null && !synced.has(mavenKey)) {
-    synced.add(mavenKey);
-    requestSync("maven");
+  for (const member of new Set(model?.maven?.projects.map((p) => p.projectRoot ?? null))) {
+    const key = JSON.stringify(["maven", root, member]);
+    if (model?.maven?.syncedAt == null && !synced.has(key)) {
+      synced.add(key);
+      requestSync("maven", member);
+    }
   }
   for (const build of model?.gradle ?? []) {
     const key = JSON.stringify([root, build.dir]);
@@ -177,6 +189,7 @@ export function activate(): () => void {
   const disposers: Array<() => void> = [
     registerOverlay({ id: "build-tools.execute", component: ExecutePopupHost }),
     registerEditorContribution({ id: "build-tools.versionCatalog", extensions: versionCatalogExtension }),
+    registerEditorContribution({ id: "build-tools.pomNavigation", extensions: pomNavigationExtension }),
     registerRunAnythingProvider(buildToolsRunAnything),
     registerEditorKind({
       kind: ANALYZER_KIND,
@@ -207,8 +220,8 @@ export function activate(): () => void {
         const path = paths.length === 1 && !dirs?.[0] ? paths[0]! : null;
         if (!path || !path.endsWith("/pom.xml")) return [];
         const { model, root } = useBuild.getState();
-        const pom = root && path.startsWith(`${root}/`) ? path.slice(root.length + 1) : null;
-        if (!pom || !model?.maven?.projects.some((p) => p.pom === pom)) return [];
+        const pom = mavenPomAtPath(model?.maven?.projects ?? [], root, path);
+        if (!pom) return [];
         return [{ kind: "action", action: "maven.analyzeDependencies", arg: { pom }, label: "Analyze Dependencies…" }];
       },
     }),
@@ -222,10 +235,10 @@ export function activate(): () => void {
       if (s.project) void loadModel();
     }),
     onEditorEvent((e) => {
-      if (e.type === "docSaved" && BUILD_FILE.test(e.path)) noteIdeSave(e.path);
+      if (e.type === "docSaved" && isBuildFile(e.path)) noteIdeSave(e.path);
     }),
     onIdeEvent("fsChanged", (e) => {
-      const changed = [...e.created, ...e.modified, ...e.removed].filter((p) => BUILD_FILE.test(p));
+      const changed = [...e.created, ...e.modified, ...e.removed].filter(isBuildFile);
       if (!changed.length) return;
       // Changes the IDE's own saves didn't make came from outside (a VCS update, another tool),
       // also for a build file open in a tab.
@@ -267,7 +280,7 @@ export function activate(): () => void {
         title: "Add Maven Projects",
         category: "Maven",
         icon: "plus",
-        when: "projectOpen",
+        when: "projectOpen && !workspaceOpen",
         run: () => addProjects(),
       },
       {
@@ -275,7 +288,7 @@ export function activate(): () => void {
         title: "Unlink Maven Projects",
         category: "Maven",
         hidden: true,
-        when: MAVEN_WHEN,
+        when: `${MAVEN_WHEN} && !workspaceOpen`,
         run: ({ arg }) => unlinkProjects(analyzerPom(arg)),
       },
       {

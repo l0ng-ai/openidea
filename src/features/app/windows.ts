@@ -8,7 +8,7 @@
  * editor tabs only. One LightEdit window collects them all.
  */
 import { executeAction, type Action } from "@/platform/actions";
-import { t } from "@/platform/i18n";
+import { t, tx } from "@/platform/i18n";
 import { call, commands, isCancelled, isTauri } from "@/platform/ipc";
 import {
   basename,
@@ -19,6 +19,8 @@ import {
   provideStartupLaunch,
   useProject,
 } from "@/platform/project";
+import { confirmProjectTrust } from "@/platform/projectTrust";
+import { ask } from "@/workbench/messages";
 import { connectRemote, isRemoteWindow } from "@/platform/remote";
 import { holdSplash } from "@/platform/splash";
 import { editorService, maybeEditorService, notifications } from "@/workbench/contributions";
@@ -53,7 +55,10 @@ async function openHere(path: string): Promise<boolean> {
   if (!isRemoteWindow() && useProject.getState().project?.root === path) return true;
   if (!(await confirmLeaveProject())) return false;
   try {
-    await openProject(path);
+    // A folder of a WSL distro runs there, not as a network folder.
+    const wsl = await commands.wslResolve(path).catch(() => null);
+    if (wsl) await connectRemote(wsl.target, wsl.path);
+    else await openProject(path);
     return true;
   } catch (e) {
     maybeEditorService()?.cancelClose?.();
@@ -62,10 +67,10 @@ async function openHere(path: string): Promise<boolean> {
   }
 }
 
-/** Opens `files` as editor tabs of this window, focusing the last. */
 /** Caret positions of files opened from the command line (`--line` / `--column`), 0-based. */
 type Positions = ReadonlyArray<{ path: string; line: number; column: number }>;
 
+/** Opens `files` as editor tabs of this window, focusing the last. */
 async function openInEditor(files: readonly string[], positions: Positions = []): Promise<void> {
   for (const [i, path] of files.entries()) {
     const at = positions.find((p) => p.path === path);
@@ -74,7 +79,7 @@ async function openInEditor(files: readonly string[], positions: Positions = [])
         focus: i === files.length - 1,
         ...(at ? { selection: { line: at.line, col: at.column } } : {}),
       })
-      .catch((e) => console.warn(`could not open ${path}`, e));
+      .catch((e) => openFailed(path, e));
   }
 }
 
@@ -157,22 +162,7 @@ export async function openProjectWithPolicy(path: string, files: readonly string
   if (!mode) return;
   if (mode === "new") return openProjectInWindow(path, true, files);
   if (mode === "attach") {
-    try {
-      if (!current?.workspace && !(await confirmLeaveProject())) return;
-      const root = await call(commands.workspaceAttach(path));
-      if (root === current?.root) {
-        if (!current.workspace) maybeEditorService()?.cancelClose?.();
-        const project = await commands.projectCurrent();
-        if (project) useProject.setState({ project, settings: project.settings });
-      } else {
-        await openProject(root);
-      }
-      await executeAction("project.reveal", path);
-      await openInEditor(files);
-    } catch (e) {
-      maybeEditorService()?.cancelClose?.();
-      openFailed(path, e);
-    }
+    await attachProject(path, files);
     return;
   }
   try {
@@ -181,6 +171,27 @@ export async function openProjectWithPolicy(path: string, files: readonly string
     if (outcome.kind === "current" && (await openHere(path))) await openInEditor(files);
   } catch {
     if (await openHere(path)) await openInEditor(files);
+  }
+}
+
+async function attachProject(path: string, files: readonly string[] = []): Promise<void> {
+  try {
+    await confirmProjectTrust(path, "local");
+    if (!(await call(commands.projectTrustStatus(path))).trusted) {
+      notifications().notify({
+        level: "warning",
+        title: tx("Project not attached"),
+        body: tx`Cannot attach ${path} because it is restricted. Open it separately and choose Trust Project, then attach it again.`,
+      });
+      return;
+    }
+    await call(commands.workspaceAttach(path));
+    const project = await commands.projectCurrent();
+    if (project) useProject.setState({ project, settings: project.settings });
+    await executeAction("project.reveal", path);
+    await openInEditor(files);
+  } catch (e) {
+    openFailed(path, e);
   }
 }
 
@@ -209,26 +220,69 @@ async function pickFiles(title: string): Promise<string[]> {
   return picked === null ? [] : Array.isArray(picked) ? picked : [picked];
 }
 
-/** Takes this window's pending launch (if any) and opens its project and files. */
-export async function consumeLaunch(): Promise<void> {
+/** Takes this window's pending launch (if any) and opens its project, files or diff pair. */
+let launchQueue: Promise<void> = Promise.resolve();
+export function consumeLaunch(): Promise<void> {
+  const request = launchQueue.then(consumePendingLaunch);
+  launchQueue = request.catch(() => {});
+  return request;
+}
+
+async function consumePendingLaunch(): Promise<void> {
   if (!isTauri()) return;
   const launch = await commands.windowTakeLaunch().catch(() => null);
-  const files = launch?.files ?? [];
-  const positions = launch?.positions ?? [];
-  if (launch?.project) {
-    if (await openHere(launch.project)) await openInEditor(files, positions);
-  } else if (files.length) await openFilesHere(files, positions);
-  else if (launch?.remote) {
-    const { sshConfig, path } = launch.remote;
-    await connectRemote(sshConfig, path).catch((e) =>
-      notifications().notify({
-        level: "error",
-        title: t("app.window.openFailed", { name: basename(path) }),
-        body: errorText(e),
-        key: `app.open:${path}`,
-      }),
-    );
+  if (!launch) return;
+  try {
+    // Session restoration may already be opening this window's project.
+    if (useProject.getState().opening) {
+      await new Promise<void>((resolve) => {
+        const off = useProject.subscribe((state) => {
+          if (!state.opening) {
+            off();
+            resolve();
+          }
+        });
+      });
+    }
+    const files = launch.files ?? [];
+    const positions = launch.positions ?? [];
+    if (launch.project && !(await openHere(launch.project))) return;
+    if (launch.diff && launch.diffBeforeFiles) {
+      const diff = launch.diff;
+      await openCliDiff(diff).catch((e) => openFailed(diff.right, e));
+    }
+    if (launch.project) {
+      await openInEditor(files, positions);
+    } else if (files.length) await openFilesHere(files, positions);
+    else if (launch.remote) {
+      const { target, path } = launch.remote;
+      await connectRemote(target, path).catch((e) =>
+        notifications().notify({
+          level: "error",
+          title: t("app.window.openFailed", { name: basename(path) }),
+          body: errorText(e),
+          key: `app.open:${path}`,
+        }),
+      );
+    }
+    if (launch.diff && !launch.diffBeforeFiles) await openCliDiff(launch.diff);
+  } finally {
+    await call(commands.windowCompleteLaunch());
   }
+}
+
+/**
+ * `openidea diff a.txt b.txt`: the two files side by side in the diff viewer (both editable).
+ * Without a project or LightEdit session the right file opens one first, like a launched file does.
+ */
+async function openCliDiff(diff: { left: string; right: string }): Promise<void> {
+  const s = useProject.getState();
+  if (!s.project && !s.lightEdit) await openLightEdit(diff.right).catch(() => {});
+  const [{ openVcsDiff }, { compareFilesData }] = await Promise.all([
+    import("@/features/vcs/diffInput"),
+    import("@/features/vcs/compareData"),
+  ]);
+  await openVcsDiff(compareFilesData(diff.left, diff.right));
 }
 
 /** Closes the project tabs on `side` of the `arg` tab (default: the current one), keeping that tab. */
@@ -245,24 +299,58 @@ function closeProjectTabs(side: "others" | "left" | "right"): Action["run"] {
   };
 }
 
+const removeProject: Action["run"] = async ({ arg }) => {
+  const current = useProject.getState().project;
+  const workspace = current?.workspace;
+  if (typeof arg !== "string" || !workspace || !workspace.projects.includes(arg)) return;
+  if (workspace.projects[0] === current.root) {
+    if (arg === current.root) return;
+    const result = await ask({
+      title: t("app.window.detachTitle"),
+      body: t("app.window.detachBody", { name: basename(arg) }),
+      buttons: [
+        { id: "cancel", label: t("common.cancel") },
+        { id: "detach", label: t("app.window.detach"), primary: true },
+      ],
+    });
+    if (result.button !== "detach") return;
+  }
+  const project = await call(
+    commands.workspaceUpdate(
+      workspace.name,
+      workspace.projects.filter((p) => p !== arg),
+    ),
+  );
+  useProject.setState({ project, settings: project.settings });
+};
+
 export function windowActions(): Action[] {
   return [
+    {
+      id: "project.attach",
+      title: t("app.action.attachProject"),
+      category: t("app.category.file"),
+      icon: "folder-open",
+      when: "projectLocal && !projectOpenAsk",
+      run: async () => {
+        if (desktopOnly()) return;
+        const path = await pickFolder(t("app.action.attachProject"));
+        if (path) await attachProject(path);
+      },
+    },
     {
       id: "workspace.removeProject",
       title: "Remove from Workspace",
       category: t("app.category.file"),
-      when: "workspaceOpen",
-      run: async ({ arg }) => {
-        const workspace = useProject.getState().project?.workspace;
-        if (typeof arg !== "string" || !workspace || !workspace.projects.includes(arg)) return;
-        const project = await call(
-          commands.workspaceUpdate(
-            workspace.name,
-            workspace.projects.filter((p) => p !== arg),
-          ),
-        );
-        useProject.setState({ project, settings: project.settings });
-      },
+      when: "workspaceOpen && !projectAttached",
+      run: removeProject,
+    },
+    {
+      id: "project.detach",
+      title: "Detach Project",
+      category: t("app.category.file"),
+      when: "projectAttached",
+      run: removeProject,
     },
     {
       id: "workspace.create",
@@ -288,7 +376,7 @@ export function windowActions(): Action[] {
       id: "workspace.manage",
       title: "Manage Workspace…",
       category: t("app.category.file"),
-      when: "workspaceOpen",
+      when: "workspaceContainer",
       run: () => showWorkspaceDialog("manage"),
     },
     {
@@ -427,7 +515,15 @@ export function windowActions(): Action[] {
       category: t("app.category.file"),
       hidden: true,
       run: async (c) => {
-        if (typeof c.arg === "string") await openProjectWithPolicy(c.arg);
+        if (typeof c.arg === "string") return openProjectWithPolicy(c.arg);
+        const arg = c.arg as { path?: unknown; newWindow?: unknown } | null;
+        if (!arg || typeof arg.path !== "string" || typeof arg.newWindow !== "boolean") return;
+        try {
+          const outcome = await call(commands.windowOpenProject(arg.path, arg.newWindow, []));
+          if (outcome.kind === "current") await openHere(arg.path);
+        } catch (error) {
+          openFailed(arg.path, error);
+        }
       },
     },
     {
@@ -475,8 +571,9 @@ async function closeThisWindow(): Promise<void> {
 }
 
 /**
- * LightEdit: closing its last editor tab closes the window (through the close guard,
- * so the last window shows the Welcome screen instead).
+ * LightEdit: closing its last editor tab closes the window, through the close guard.
+ * The last window returns to Welcome unless "Close the window instead of showing the
+ * Welcome screen" is on.
  */
 export function installLightEditAutoClose(closeWindow: () => Promise<void> = closeThisWindow): () => void {
   const editor = maybeEditorService();
@@ -491,14 +588,19 @@ export function installLaunchHandling(): () => void {
   if (!isTauri()) return () => {};
   let disposed = false;
   let unlisten: (() => void) | undefined;
-  const launch = consumeLaunch();
+  const launch = import("@tauri-apps/api/webviewWindow").then(async ({ getCurrentWebviewWindow }) => {
+    const off = await getCurrentWebviewWindow().listen(LAUNCH_EVENT, () => {
+      if (!disposed) void consumeLaunch().catch(console.warn);
+    });
+    if (disposed) off();
+    else {
+      unlisten = off;
+      // Subscribe before taking pending files so launches during startup aren't missed.
+      await consumeLaunch();
+    }
+  });
   provideStartupLaunch(launch);
   holdSplash(launch);
-  void import("@tauri-apps/api/webviewWindow").then(async ({ getCurrentWebviewWindow }) => {
-    const off = await getCurrentWebviewWindow().listen(LAUNCH_EVENT, () => void consumeLaunch());
-    if (disposed) off();
-    else unlisten = off;
-  });
   return () => {
     disposed = true;
     unlisten?.();

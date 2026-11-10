@@ -1,0 +1,201 @@
+---
+title: "UI 与 Rust 的通信"
+description: "通信约定：返回 IdeResult 的类型化命令、生成的绑定、文本坐标、流式 channel、可取消请求以及后端事件总线。"
+---
+
+前端与后端通过 Tauri IPC 通信，有三种机制：
+
+| 机制                                         | 方向                          | 用途                                                 |
+| -------------------------------------------- | ----------------------------- | ---------------------------------------------------- |
+| **命令**                                     | UI → Rust，一次应答           | 所有请求。返回 `IdeResult<T>`。                      |
+| **Channel**（`tauri::ipc::Channel<T>`）      | Rust → UI，一个请求对应多个值 | 流式结果：搜索命中、进程输出、终端字节流、进度。     |
+| **事件**（经 `EventSink` 发出的 `IdeEvent`） | Rust → UI，主动推送           | 通知：磁盘文件变化、诊断、索引状态、调试会话暂停等。 |
+
+三者端到端都是类型化的：Rust 类型派生 `specta::Type`，由 tauri-specta 生成 `src/bindings.ts`。
+
+## 命令
+
+命令是 `src-tauri/src/commands/<domain>.rs` 里的一层薄适配：从调用它的窗口解析出项目，调用共享实现（通常在 `ide_host::ops`），返回 `IdeResult<T>`：
+
+```rust src-tauri/src/commands/app.rs
+#[tauri::command]
+#[specta::specta]
+pub async fn project_trust_set(
+    state: State<'_, AppState>,
+    path: PathBuf,
+    trusted: bool,
+    folder: bool,
+) -> IdeResult<()> {
+    state.host.set_project_trust(&path, trusted, folder).await?;
+    // ...
+}
+```
+
+新命令要加到 `commands::builder()`（`src-tauri/src/commands/mod.rs`）的 `collect_commands!` 列表里。该模块的约定：
+
+- 每个命令都返回 `IdeResult<T>`（在 JS 里以 `IdeError` reject）；
+- 项目相关的命令从调用窗口解析项目；
+- 流式结果用 `Channel<T>` 参数；可取消的请求接收 UI 分配的 `RequestId`，通过 `cancel_request` 取消。
+
+任何命令执行前，`src-tauri/src/lib.rs` 里的 invoke handler 都会检查[项目信任](/zh/contribute/security)，远程窗口的命令则会被路由到服务端。
+
+### 调用命令
+
+前端从 `@/platform/ipc` 导入 `commands`（它转导出了绑定），用 `call` 解包结果：
+
+```ts
+import { call, commands } from "@/platform/ipc";
+
+await call(commands.projectTrustSet(path, trusted, folder));
+```
+
+生成的函数返回 `{ status: "ok", data } | { status: "error", error }`。`call` 把它变成一个 promise，出错时以 `IpcError` reject，其中带有错误的 `kind` 和 `data`。辅助函数：`isCancelled(e)`、`isNoServer(e)`、`unavailableText(e)`。
+
+## 错误
+
+`IdeError`（`crates/ide-core/src/error.rs`）是唯一跨 IPC 的错误类型：
+
+```rust
+pub type IdeResult<T> = Result<T, IdeError>;
+
+pub struct IdeError {
+    pub kind: ErrorKind,
+    pub message: String,
+    /// Structured detail for errors the UI acts on; `null` for plain errors.
+    pub data: Option<ErrorData>,
+}
+```
+
+`ErrorKind` 取值：`notFound`、`alreadyExists`、`permissionDenied`、`invalidInput`、`outOfSync`（文档版本不一致，UI 必须重新同步全文）、`cancelled`、`timedOut`、`unavailable`（缺少必需的工具，如语言服务器、git 或调试器）、`io`、`protocol`、`internal`。
+
+各 crate 内部可以保留丰富的错误类型，但要**在公开边界处转换**；UI 根据 `kind` 分支处理，并展示 `message`。不要让 `anyhow` 或 crate 私有的错误穿过命令。
+
+## 生成的绑定
+
+`src/bindings.ts` 由 tauri-specta 根据已注册的命令和 `IdeEvent` 生成，**禁止手改**。
+
+- `pnpm gen:bindings` 不启动应用即可重新生成（`cargo test -p openidea --test export_bindings`）。
+- 每次 debug 启动也会重新导出，内容有变化才写文件。
+- CI 的 Rust 任务会重新生成并在与提交的文件不同时失败。改了命令签名或 IPC 类型后，要提交 `src/bindings.ts`。
+
+命令和类型上的 Rust 文档注释会变成绑定里的 JSDoc，所以请在 Rust 端写好命令文档。64 位整数导出为 `number`。
+
+## 文本坐标
+
+所有跨 IPC 的数据使用同一套坐标（`crates/ide-core/src/text.rs`）：
+
+- **行号从 0 开始。**
+- **列和偏移量是 UTF-16 码元**，与 JavaScript 字符串、CodeMirror 和 LSP 的默认编码一致。
+- `Pos { line, col }`；`Range { start, end }` 是左闭右开区间。
+
+与字节偏移之间的转换在 `ide-text` 里。请在自己 crate 的边界处转换：tree-sitter 的字节偏移，或其他编码的 LSP 位置，绝不能出现在命令结果里。
+
+## 用 channel 流式传输
+
+数据量大或增量产生的结果走 `Channel<T>` 参数，而不是事件总线。以 Find in Files 为例：
+
+```rust src-tauri/src/commands/search.rs
+/// Find in Files. Results stream through `on_event`; ends with `Done`.
+/// Cancel with `cancel_request(request)`.
+#[tauri::command]
+#[specta::specta]
+pub async fn search_start(
+    window: Window,
+    state: State<'_, AppState>,
+    request: RequestId,
+    query: SearchQuery,
+    on_event: Channel<SearchEvent>,
+) -> IdeResult<()> {
+    let emit = std::sync::Arc::new(move |e| {
+        let _ = on_event.send(e);
+    });
+    ide_host::ops::search::start(&state.host, window.label(), request, query, emit).await
+}
+```
+
+UI 端创建 `Channel`、设置 `onmessage`，作为参数传入：
+
+```ts src/platform/textSearch.ts
+const channel = new Channel<SearchEvent>();
+channel.onmessage = (ev) => {
+  if (ev.type === "file") onFile(ev.file);
+  else finish(ev.summary);
+};
+call(commands.searchStart(request, query, channel));
+```
+
+让流自己带上结束标记（最后发一个 `Done` 值），这样 UI 才知道它何时结束。
+
+## 可取消的请求
+
+id 由 UI 分配，后端为它注册一个 token：
+
+```ts
+import { commands, nextRequestId } from "@/platform/ipc";
+
+const request = nextRequestId();
+const summary = streamSearch(request, query, onFile);
+// 之后用户取消时：
+void commands.cancelRequest(request);
+```
+
+```rust crates/ide-host/src/ops/search.rs
+let cancel = host.begin_request(request);
+let events = on_event.clone();
+let syntax = host.syntax();
+let summary = host
+    .blocking(move || {
+        search_project(&project, &syntax, &query, &cancel, &|file| events(SearchEvent::File { file }))
+    })
+    .await;
+host.end_request(request);
+on_event(SearchEvent::Done { summary: summary? });
+```
+
+需要注意的细节：
+
+- 后端所有窗口共用一套 id，所以每个页面从一个随机起点开始计数。
+- 在命令**开始之前**到达的取消会被记住 120 秒，请求开始时就处于已取消状态（`crates/ide-host/src/requests.rs`）。
+- 长任务要检查 `CancellationToken`，及时返回 `ErrorKind::Cancelled`（或部分结果）。
+- 后端自己发起的任务（比如语言服务器的 work-done progress）以带 `TaskId` 的 `IdeEvent::Task` 上报，用 `cancel_task` 取消，而不是 `cancel_request`。
+
+## 事件
+
+`IdeEvent`（`crates/ide-core/src/event.rs`）是一个枚举，涵盖后端主动告诉 UI 的所有事情，序列化为 `{ type: "<camelCase 名称>", ... }`。功能 crate 通过 `EventSink` 发出：
+
+```rust
+pub trait EventSink: Send + Sync + 'static {
+    fn emit(&self, event: IdeEvent);
+}
+
+project.sink.emit(IdeEvent::ProjectTrustChanged { root: project.root.clone().into(), trusted });
+```
+
+`src-tauri/src/events.rs` 用 `TauriSink` 实现它：把事件作为唯一的 Tauri 事件 `ide://event` 发给某一个窗口（及其辅助窗口）或所有窗口。各 crate 只拿 `SharedSink`，从不依赖 Tauri；测试里用 `NullSink`。
+
+UI 按类型订阅，回调拿到的是收窄后的变体：
+
+```ts src/features/project-trust/index.tsx
+onIdeEvent("projectTrustChanged", (e) => {
+  const project = useProject.getState().project;
+  if (project?.root === e.root) useProject.setState({ project: { ...project, trusted: e.trusted } });
+});
+```
+
+`onIdeEvent` 返回一个取消订阅函数，把它放进功能的 disposer 里返回。监听是按窗口隔离的。
+
+## 线程
+
+长任务绝不阻塞 UI 线程或 Tauri 命令线程。把命令写成 `async`，CPU 密集或阻塞的工作放到 `spawn_blocking` 或 rayon 上，并响应 `CancellationToken`。同步命令在主线程上运行，必须非常轻量。
+
+## 远程窗口
+
+远程开发不需要写任何特殊代码。在远程窗口里，`src/platform/remote.ts` 会把服务端能处理的命令经 `remote_invoke` 路由过去；每个 `Channel` 参数被替换成 `{ "$channel": id }`，其值带着 id 传回。事件以 `event` 通知到达，再在本地重新发出。你需要做的是：把实现放在 `ide-host::ops`，并注册到服务端的 `Dispatcher`（`crates/ide-host/src/rpc.rs` 和各 `ops` 模块里的 `d.add("search_start", ...)` 列表），这样服务端才能运行它。见[远程开发](/zh/contribute/architecture/remote)。
+
+## 清单：新增一个命令
+
+1. 逻辑放在所属的 crate 里；在其边界把错误转成 `IdeError`；使用 IPC 坐标。
+2. 如果涉及项目，把共享实现加到 `ide-host::ops::<domain>`；远程窗口需要的话，注册到远程 dispatcher。
+3. 在 `src-tauri/src/commands/<domain>.rs` 添加 `#[tauri::command] #[specta::specta]` 适配函数，并加入 `collect_commands!`。
+4. 如果它会执行任何东西，不要把它加进受限模式白名单（未受信任的项目里默认拒绝）。
+5. 运行 `pnpm gen:bindings`，然后用 `call(commands.yourCommand(...))` 调用。

@@ -1,5 +1,6 @@
 id = "python"
 name = "Python"
+formatter = { tool = "ruff", parser = "python", range = true }
 extensions = ["py", "pyi", "pyw"]
 filenames = ["SConstruct", "SConscript"]
 first-line = "^#!.*\\bpython[0-9.]*\\b"

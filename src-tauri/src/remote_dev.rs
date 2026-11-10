@@ -28,26 +28,68 @@ pub async fn remote_bootstrap_list(
     state.remote.list(&ide_ssh::FsConnection::Sftp { ssh }, &path).await
 }
 
+/// Where a remote project lives and how the server there is reached.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, Type)]
+#[serde(tag = "kind", rename_all = "camelCase")]
+pub enum RemoteTarget {
+    /// The host of SSH configuration `config`.
+    Ssh { config: String },
+    /// A WSL distribution on this machine.
+    Wsl { distro: String },
+    /// The dev container of local folder `folder`, built and started with the Dev Containers CLI;
+    /// `config` is its `devcontainer.json`, relative to the folder (empty = the default one).
+    DevContainer { folder: String, config: String },
+}
+
 /// Where the server is installed on the remote host (per version).
 fn install_dir(version: &str) -> String {
-    format!("~/.openidea/server/{version}")
+    format!("~/{SERVER_DIR}/{version}")
 }
+
+/// Under the remote home: where the server builds are kept, one folder per version.
+pub(crate) const SERVER_DIR: &str = ".openidea/server";
+
+/// File name of the server binary on every host.
+pub(crate) const SERVER_BIN: &str = "openidea-server";
+
+/// Printed before a probe's answer: shell start-up files and `wsl.exe` may print first.
+pub(crate) const PROBE_MARK: &str = "__OPENIDEA_PROBE__";
 
 /// One remote window's connection.
 pub struct Connection {
     peer: Peer,
-    pub ssh_config: String,
+    pub target: RemoteTarget,
     pub root: String,
     pub host: String,
+    /// The server's `std::env::consts::OS`: where the project's commands run.
+    pub os: String,
     pub commands: Vec<String>,
     /// Streaming arguments by connection-wide id: the frontend channel and the id
     /// it expects (each webview numbers its own, and a settings window shares this
     /// connection with its parent).
     channels: Channels,
     next_channel: std::sync::atomic::AtomicU64,
-    session: Arc<ide_ssh::Session>,
+    /// Keeps the SSH connection alive; `None` for WSL and dev containers.
+    session: Option<Arc<ide_ssh::Session>>,
+    /// How to reach a dev container's ports; `None` for SSH and WSL.
+    exec: Option<Arc<ide_remote::container_tunnel::Exec>>,
     /// Remote ports forwarded to this machine (Ports tool window), by remote port.
-    forwards: Mutex<Vec<(u16, ide_ssh::Tunnel)>>,
+    forwards: Mutex<Vec<(u16, Forward)>>,
+}
+
+/// A forwarded port: through the SSH connection, or `docker exec` in a dev container.
+enum Forward {
+    Ssh(ide_ssh::Tunnel),
+    Container(ide_remote::container_tunnel::Tunnel),
+}
+
+impl Forward {
+    fn port(&self) -> u16 {
+        match self {
+            Self::Ssh(t) => t.port(),
+            Self::Container(t) => t.port(),
+        }
+    }
 }
 
 type Channels = Arc<Mutex<HashMap<u64, (Channel<ChannelFrame>, u64)>>>;
@@ -82,13 +124,17 @@ impl Connections {
         self.0.lock().get(window).cloned()
     }
 
-    /// The window connected to folder `root` on the host of SSH configuration `ssh_config`.
-    pub fn window_of(&self, ssh_config: &str, root: &str) -> Option<String> {
+    /// The window connected to folder `root` of `target`.
+    pub fn window_of(&self, target: &RemoteTarget, root: &str) -> Option<String> {
         let root = root.trim_end_matches('/');
         self.0
             .lock()
             .iter()
-            .find(|(_, c)| c.ssh_config == ssh_config && c.root.trim_end_matches('/') == root)
+            // A dev container is one project: its folder there is only known once connected.
+            .find(|(_, c)| {
+                c.target == *target
+                    && (matches!(target, RemoteTarget::DevContainer { .. }) || c.root.trim_end_matches('/') == root)
+            })
             .map(|(label, _)| label.clone())
     }
 
@@ -100,6 +146,7 @@ impl Connections {
     pub fn disconnect(&self, window: &str) {
         if let Some(c) = self.0.lock().remove(window) {
             c.peer.kill();
+            c.forwards.lock().clear();
         }
     }
 }
@@ -109,6 +156,8 @@ impl Connections {
 #[serde(rename_all = "camelCase")]
 pub enum RemoteStage {
     Connecting,
+    /// `devcontainer up`: building or starting the container.
+    Container,
     Checking,
     Downloading,
     Uploading,
@@ -123,7 +172,7 @@ pub struct RemoteProgress {
     pub fraction: Option<f64>,
 }
 
-type Progress = dyn Fn(RemoteStage, Option<f64>) + Send + Sync;
+pub(crate) type Progress = dyn Fn(RemoteStage, Option<f64>) + Send + Sync;
 
 /// A value for one streaming argument of a remote command (`data`: JSON text).
 #[derive(Clone, Serialize, Deserialize, Type)]
@@ -136,9 +185,9 @@ pub struct ChannelFrame {
 #[derive(Serialize, Deserialize, Type)]
 #[serde(rename_all = "camelCase")]
 pub struct RemoteProject {
-    pub ssh_config: String,
+    pub target: RemoteTarget,
     pub root: String,
-    /// `user@host:port` of the SSH configuration.
+    /// `user@host:port` of the SSH configuration; the distribution name for WSL.
     pub host: String,
     pub server_version: String,
     pub os: String,
@@ -188,7 +237,9 @@ impl Handler for ClientHandler {
     }
 
     fn on_request(&self, method: &str, params: Value) -> Result<Value, (i64, String)> {
-        use ide_host::plugins::remote_host::{SECRET_REQUEST, SecretRequest};
+        use ide_host::plugins::remote_host::{
+            AUTH_REQUEST, AuthRequest, SECRET_REQUEST, SECRET_WRITE, SecretRequest, SecretWrite,
+        };
         match method {
             // A remote plugin's request header needs a secret from this machine's keychain.
             SECRET_REQUEST => {
@@ -196,6 +247,18 @@ impl Handler for ClientHandler {
                     serde_json::from_value(params).map_err(|e| (ide_jsonrpc::codes::INVALID_PARAMS, e.to_string()))?;
                 let state = self.app.state::<AppState>();
                 Ok(serde_json::to_value(state.plugins.declared_secret(&r.plugin, &r.name)).unwrap_or(Value::Null))
+            }
+            SECRET_WRITE => {
+                let request: SecretWrite =
+                    serde_json::from_value(params).map_err(|e| (ide_jsonrpc::codes::INVALID_PARAMS, e.to_string()))?;
+                Ok(serde_json::to_value(self.app.state::<AppState>().plugins.remote_secret_write(request))
+                    .unwrap_or(Value::Null))
+            }
+            AUTH_REQUEST => {
+                let request: AuthRequest =
+                    serde_json::from_value(params).map_err(|e| (ide_jsonrpc::codes::INVALID_PARAMS, e.to_string()))?;
+                Ok(serde_json::to_value(self.app.state::<AppState>().plugins.remote_auth(&self.window, request))
+                    .unwrap_or(Value::Null))
             }
             _ => Err((ide_jsonrpc::codes::METHOD_NOT_FOUND, format!("unhandled method {method}"))),
         }
@@ -244,7 +307,7 @@ async fn download_server(
 }
 
 /// `uname -sm` → (`linux` | `macos`, `x86_64` | `aarch64`), as Rust names them.
-fn platform(uname: &str) -> (String, String) {
+pub(crate) fn platform(uname: &str) -> (String, String) {
     let mut parts = uname.split_whitespace();
     let os = match parts.next().unwrap_or_default().to_ascii_lowercase().as_str() {
         "darwin" => "macos".to_owned(),
@@ -258,29 +321,30 @@ fn platform(uname: &str) -> (String, String) {
     (os, arch)
 }
 
-/// Makes sure this version of the server is installed on the host; returns its path.
-async fn ensure_server(state: &AppState, session: &ide_ssh::Session, progress: Arc<Progress>) -> IdeResult<String> {
-    progress(RemoteStage::Checking, None);
-    let version = env!("CARGO_PKG_VERSION");
-    let dir = install_dir(version);
-    let q = ide_ssh::shell::tilde_quote;
-    // Between markers: shell start-up files may print to stdout too.
-    const MARK: &str = "__OPENIDEA_PROBE__";
-    let probe = session
-        .exec(&format!("echo {MARK}; uname -sm; ls -d {}/*/openidea-server 2>/dev/null", q(&dir)), None)
-        .await?
-        .stdout_str();
-    let probe = probe.split_once(MARK).map_or(probe.as_str(), |(_, rest)| rest);
-    let mut lines = probe.lines().map(str::trim).filter(|l| !l.is_empty());
-    let (os, arch) = platform(lines.next().unwrap_or_default());
-    let installed: Vec<&str> = lines.collect();
-    let local = match local_server_binary(state, &os, &arch) {
+/// What [`local_server`] settled on.
+pub(crate) enum LocalServer {
+    /// A server binary on this machine and its [`build_id`].
+    Binary(std::path::PathBuf, String),
+    /// No binary available (offline): this build of the version already on the host.
+    Installed(String),
+}
+
+/// The server binary to put on a host of `os`/`arch` whose `installed` builds are known.
+pub(crate) async fn local_server(
+    state: &AppState,
+    version: &str,
+    os: &str,
+    arch: &str,
+    installed: &[String],
+    progress: Arc<Progress>,
+) -> IdeResult<LocalServer> {
+    let local = match local_server_binary(state, os, arch) {
         Some(local) => local,
-        None => match download_server(state, version, &os, &arch, progress.clone()).await {
+        None => match download_server(state, version, os, arch, progress).await {
             Ok(local) => local,
             // Offline: any build of this version already on the host will do.
             Err(e) => {
-                return installed.first().map(|b| b.to_string()).ok_or_else(|| {
+                return installed.first().cloned().map(LocalServer::Installed).ok_or_else(|| {
                     IdeError::unavailable(format!(
                         "no openidea-server {version} for {os}-{arch} ({}). Build it with \
                          `cargo build --release -p ide-host --bin openidea-server` for that platform and put it at {} \
@@ -304,6 +368,27 @@ async fn ensure_server(state: &AppState, session: &ide_ssh::Session, progress: A
     })
     .await
     .map_err(|e| IdeError::internal(e.to_string()))??;
+    Ok(LocalServer::Binary(local, build))
+}
+
+/// Makes sure this version of the server is installed on the host; returns its path.
+async fn ensure_server(state: &AppState, session: &ide_ssh::Session, progress: Arc<Progress>) -> IdeResult<String> {
+    progress(RemoteStage::Checking, None);
+    let version = env!("CARGO_PKG_VERSION");
+    let dir = install_dir(version);
+    let q = ide_ssh::shell::tilde_quote;
+    let probe = session
+        .exec(&format!("echo {PROBE_MARK}; uname -sm; ls -d {}/*/openidea-server 2>/dev/null", q(&dir)), None)
+        .await?
+        .stdout_str();
+    let probe = probe.split_once(PROBE_MARK).map_or(probe.as_str(), |(_, rest)| rest);
+    let mut lines = probe.lines().map(str::trim).filter(|l| !l.is_empty());
+    let (os, arch) = platform(lines.next().unwrap_or_default());
+    let installed: Vec<String> = lines.map(str::to_owned).collect();
+    let (local, build) = match local_server(state, version, &os, &arch, &installed, progress.clone()).await? {
+        LocalServer::Installed(bin) => return Ok(bin),
+        LocalServer::Binary(local, build) => (local, build),
+    };
     if let Some(bin) = installed.iter().find(|b| b.ends_with(&format!("/{build}/openidea-server"))) {
         return Ok(bin.to_string());
     }
@@ -359,15 +444,16 @@ fn build_id(path: &std::path::Path) -> IdeResult<String> {
     Ok(id)
 }
 
-/// File › Remote Development: opens `path` on the host of SSH configuration
-/// `ssh_config` in this window (installs / starts the server as needed).
+/// File › Remote Development: opens `path` on `target` (an SSH host, a WSL distribution, or a
+/// dev container, whose project folder is the container's own) in this window (installs /
+/// starts the server as needed).
 #[tauri::command]
 #[specta::specta]
 pub async fn remote_connect(
     window: Window,
     state: State<'_, AppState>,
-    ssh_config: String,
-    path: String,
+    target: RemoteTarget,
+    mut path: String,
     on_progress: Channel<RemoteProgress>,
 ) -> IdeResult<RemoteProject> {
     let progress: Arc<Progress> = Arc::new(move |stage, fraction| {
@@ -375,25 +461,50 @@ pub async fn remote_connect(
     });
     progress(RemoteStage::Connecting, None);
     let label = AppState::owner_window(window.label()).to_owned();
-    state.remote_dev.disconnect(&label);
-    state.host.close_project(&label);
-    let config = state.ssh.config(&ssh_config)?;
-    let session = state.ssh.session(&ssh_config).await?;
-    let bin = ensure_server(&state, &session, progress.clone()).await?;
-    progress(RemoteStage::Starting, None);
-    let stream = session
-        .exec_stream(&format!("{} --stdio", ide_ssh::shell::tilde_quote(&bin)))
-        .await
-        .map_err(|e| IdeError::unavailable(format!("cannot start openidea-server: {e}")))?;
-    let (reader, writer) = tokio::io::split(stream);
     let channels: Channels = Arc::default();
     let handler =
         Arc::new(ClientHandler { app: window.app_handle().clone(), window: label.clone(), channels: channels.clone() });
-    let peer = Peer::connect(reader, writer, handler);
+    let tail = crate::remote_wsl::Tail::default();
+    let mut exec = None;
+    let (peer, session, host, title_tag) = match &target {
+        RemoteTarget::Ssh { config: id } => {
+            let config = state.ssh.config(id)?;
+            let session = state.ssh.session(id).await?;
+            let bin = ensure_server(&state, &session, progress.clone()).await?;
+            progress(RemoteStage::Starting, None);
+            let stream = session
+                .exec_stream(&format!("{} --stdio", ide_ssh::shell::tilde_quote(&bin)))
+                .await
+                .map_err(|e| IdeError::unavailable(format!("cannot start openidea-server: {e}")))?;
+            let (reader, writer) = tokio::io::split(stream);
+            (Peer::connect(reader, writer, handler), Some(session), config.label(), config.label())
+        }
+        RemoteTarget::Wsl { distro } => {
+            let bin = crate::remote_wsl::ensure_server(&state, distro, progress.clone()).await?;
+            progress(RemoteStage::Starting, None);
+            let peer = crate::remote_wsl::spawn(distro, &bin, handler, &tail)?;
+            (peer, None, distro.clone(), format!("WSL: {distro}"))
+        }
+        RemoteTarget::DevContainer { folder, config } => {
+            let (peer, root, run) =
+                crate::remote_container::connect(&state, folder, config, handler, &tail, &progress).await?;
+            path = root;
+            exec = Some(Arc::new(run));
+            let name = std::path::Path::new(folder)
+                .file_name()
+                .map_or_else(|| folder.clone(), |n| n.to_string_lossy().into_owned());
+            (peer, None, name.clone(), format!("Dev Container: {name}"))
+        }
+    };
+    // A server that dies on start-up says why on stderr (`wsl.exe` prints its own errors too).
+    let with_output = |e: IdeError| match tail.text() {
+        t if t.is_empty() => e,
+        t => IdeError::unavailable(format!("{}: {t}", e.message)),
+    };
     let info: ServerInfo = peer
         .request("initialize", serde_json::json!({ "version": ide_host::rpc::PROTOCOL_VERSION }), None)
         .await
-        .map_err(ide_host::rpc::error_from_reply)?;
+        .map_err(|e| with_output(ide_host::rpc::error_from_reply(e)))?;
     if info.protocol != ide_host::rpc::PROTOCOL_VERSION {
         return Err(IdeError::unavailable(format!(
             "openidea-server {} speaks protocol {}, this app {}",
@@ -417,33 +528,44 @@ pub async fn remote_connect(
         peer.request("invoke", call, None).await.map_err(ide_host::rpc::error_from_reply)?;
     // As the server resolved it (symlinks, a trailing `/`): the frontend compares it with the project's.
     let root = serde_json::to_value(&project.root).ok().and_then(|v| v.as_str().map(str::to_owned)).unwrap_or(root);
-    let _ = window.set_title(&format!("{} [{}]", project.name, config.label()));
+    let _ = window.set_title(&format!("{} [{title_tag}]", project.display_name));
     let connection = Arc::new(Connection {
         peer,
-        ssh_config: ssh_config.clone(),
+        target: target.clone(),
         root: root.clone(),
-        host: config.label(),
+        host: host.clone(),
+        os: info.os.clone(),
         commands: commands.clone(),
         channels,
         next_channel: std::sync::atomic::AtomicU64::new(1),
         session,
         forwards: Mutex::new(Vec::new()),
+        exec,
     });
+    if let RemoteTarget::DevContainer { folder, config } = &target {
+        forward_configured_ports(&connection, folder, config).await;
+    }
+    state.remote_dev.disconnect(&label);
+    state.host.close_project(&label);
+    state.host.mcp_reports.set_remote(&label, std::path::PathBuf::from(&connection.root));
     state.remote_dev.0.lock().insert(label.clone(), connection.clone());
+    let weak = Arc::downgrade(&connection);
+    let peer = connection.peer.clone();
+    let auth_plugins = state.plugins.clone();
+    let auth_window = label.clone();
+    tauri::async_runtime::spawn(async move {
+        peer.closed().await;
+        auth_plugins.forget_remote_loopbacks(&auth_window);
+        if let Some(connection) = weak.upgrade() {
+            connection.forwards.lock().clear();
+        }
+    });
     let plugins = state.plugins.clone();
     tauri::async_runtime::spawn(async move {
         sync_plugin_languages(&plugins, &connection, &label).await;
         sync_plugin_packages(&plugins, &connection, &label).await;
     });
-    Ok(RemoteProject {
-        ssh_config,
-        root,
-        host: config.label(),
-        server_version: info.version,
-        os: info.os,
-        commands,
-        project,
-    })
+    Ok(RemoteProject { target, root, host, server_version: info.version, os: info.os, commands, project })
 }
 
 /// Sends the desktop's plugin languages, with the programs granted to them, to
@@ -523,9 +645,11 @@ pub async fn sync_plugin_packages(plugins: &Arc<ide_host::plugins::PluginHost>, 
 #[derive(Serialize, Deserialize, Type)]
 #[serde(rename_all = "camelCase")]
 pub struct RemoteSession {
-    pub ssh_config: String,
+    pub target: RemoteTarget,
     pub root: String,
     pub host: String,
+    /// `linux`, `macos` or `windows`: the OS the project's commands run on.
+    pub os: String,
     pub commands: Vec<String>,
 }
 
@@ -535,9 +659,10 @@ pub struct RemoteSession {
 pub fn remote_current(window: Window, state: State<'_, AppState>) -> Option<RemoteSession> {
     let c = state.remote_dev.get(AppState::owner_window(window.label()))?;
     Some(RemoteSession {
-        ssh_config: c.ssh_config.clone(),
+        target: c.target.clone(),
         root: c.root.clone(),
         host: c.host.clone(),
+        os: c.os.clone(),
         commands: c.commands.clone(),
     })
 }
@@ -584,9 +709,12 @@ pub async fn remote_forward_port(
     if let Some(p) = forwarded(&c).into_iter().find(|p| p.remote_port == remote_port) {
         return Ok(p);
     }
-    let tunnel = ide_ssh::Tunnel::listen_on(c.session.clone(), Some(remote_port), "localhost", remote_port).await?;
+    let tunnel = open_forward(&c, remote_port).await?;
     let port = ForwardedPort { remote_port, local_port: tunnel.port() };
     let mut forwards = c.forwards.lock();
+    if c.peer.is_closed() {
+        return Err(IdeError::cancelled());
+    }
     if let Some(existing) = forwards.iter().find(|(remote, _)| *remote == remote_port) {
         return Ok(ForwardedPort { remote_port, local_port: existing.1.port() });
     }
@@ -594,17 +722,67 @@ pub async fn remote_forward_port(
     Ok(port)
 }
 
+/// Forwards `remote_port` to the same local port when it is free, else to a free one.
+async fn open_forward(c: &Connection, remote_port: u16) -> IdeResult<Forward> {
+    if let Some(session) = c.session.clone() {
+        let tunnel = ide_ssh::Tunnel::listen_on(session, Some(remote_port), "localhost", remote_port).await?;
+        return Ok(Forward::Ssh(tunnel));
+    }
+    if let Some(exec) = c.exec.clone() {
+        return Ok(Forward::Container(
+            ide_remote::container_tunnel::Tunnel::listen(exec, remote_port, remote_port).await?,
+        ));
+    }
+    Err(IdeError::unavailable("Forwarding ports is not supported in a WSL project yet"))
+}
+
+/// Forwards the `forwardPorts` of the dev container's configuration (the local folder's).
+async fn forward_configured_ports(c: &Connection, folder: &str, config: &str) {
+    let local = std::path::PathBuf::from(folder);
+    let config = config.to_owned();
+    let ports = tokio::task::spawn_blocking(move || {
+        let path = match config.trim() {
+            "" => ide_workspace::devcontainer::find(&local),
+            config => Some(local.join(config)),
+        };
+        path.map(|path| ide_workspace::devcontainer::load_file(&path).map(|c| c.forward_ports)).transpose()
+    })
+    .await;
+    let ports = match ports {
+        Ok(Ok(Some(ports))) => ports,
+        Ok(Ok(None)) => return,
+        result => return tracing::warn!("{}: forwardPorts: {result:?}", c.host),
+    };
+    for remote_port in ports {
+        if c.forwards.lock().iter().any(|(remote, _)| *remote == remote_port) {
+            continue;
+        }
+        match open_forward(c, remote_port).await {
+            Ok(tunnel) => c.forwards.lock().push((remote_port, tunnel)),
+            Err(e) => tracing::warn!("{}: cannot forward port {remote_port}: {e}", c.host),
+        }
+    }
+}
+
 /// Stops forwarding `remote_port`.
 #[tauri::command]
 #[specta::specta]
-pub fn remote_stop_forwarding(window: Window, state: State<'_, AppState>, remote_port: u16) -> IdeResult<()> {
-    connection(&window, &state)?.forwards.lock().retain(|(remote, _)| *remote != remote_port);
+pub async fn remote_stop_forwarding(window: Window, state: State<'_, AppState>, remote_port: u16) -> IdeResult<()> {
+    let c = connection(&window, &state)?;
+    let tunnel = {
+        let mut forwards = c.forwards.lock();
+        forwards.iter().position(|(remote, _)| *remote == remote_port).map(|index| forwards.remove(index).1)
+    };
+    if let Some(Forward::Container(tunnel)) = tunnel {
+        tunnel.close().await;
+    }
     Ok(())
 }
 
 #[tauri::command]
 #[specta::specta]
 pub fn remote_disconnect(window: Window, state: State<'_, AppState>) {
+    state.host.mcp_reports.remove_remote(AppState::owner_window(window.label()));
     state.remote_dev.disconnect(AppState::owner_window(window.label()));
 }
 
@@ -653,7 +831,7 @@ pub async fn remote_invoke(
         None
     };
     let call = Invoke { window: label, cmd, args };
-    let result: Value = c.peer.request("invoke", call, None).await.map_err(ide_host::rpc::error_from_reply)?;
+    let result = invoke_reply(&c.peer, call, std::time::Duration::from_secs(30)).await?;
     if let (Some((peers, edit)), Some(version)) =
         (mirrored, result.as_u64().and_then(|version| u32::try_from(version).ok()))
     {
@@ -681,10 +859,13 @@ pub async fn remote_import_local(
 ) -> IdeResult<Vec<String>> {
     let label = AppState::owner_window(window.label());
     let c = state.remote_dev.get(label).ok_or_else(|| IdeError::unavailable("Remote project is disconnected"))?;
+    let Some(session) = c.session.clone() else {
+        return Err(IdeError::unavailable("Importing local files is not supported in a WSL project yet"));
+    };
     c.authorize_command(label, "fs_copy").await?;
     let cancel = state.host.begin_request(request);
     let result = async {
-        let fs = ide_ssh::RemoteFs::new(c.session.sftp().await?);
+        let fs = ide_ssh::RemoteFs::new(session.sftp().await?);
         let result = ide_remote::import::import_local(&fs, &from, &to, &cancel).await;
         fs.close().await;
         result
@@ -694,14 +875,51 @@ pub async fn remote_import_local(
     result
 }
 
+// Conversation reads are snapshots; a silent host must not leave them pending forever.
+async fn invoke_reply(peer: &Peer, call: Invoke, entries_timeout: std::time::Duration) -> IdeResult<Value> {
+    let reply = peer.request("invoke", &call, None);
+    if call.cmd == "agent_entries" {
+        tokio::time::timeout(entries_timeout, reply)
+            .await
+            .map_err(|_| IdeError::unavailable("Loading the conversation timed out. Try again."))?
+            .map_err(ide_host::rpc::error_from_reply)
+    } else {
+        reply.await.map_err(ide_host::rpc::error_from_reply)
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[tokio::test]
+    async fn conversation_read_times_out_when_the_host_never_replies() {
+        let (client, _silent_host) = tokio::io::duplex(4096);
+        let (reader, writer) = tokio::io::split(client);
+        let peer = Peer::connect(reader, writer, Arc::new(ide_jsonrpc::NoopHandler));
+        let call = Invoke {
+            window: "main".into(),
+            cmd: "agent_entries".into(),
+            args: serde_json::json!({"task": "saved-codex-task", "subagent": null}),
+        };
+        let error = invoke_reply(&peer, call, std::time::Duration::from_millis(10)).await.unwrap_err();
+        assert_eq!(error.kind, ide_core::error::ErrorKind::Unavailable);
+        assert_eq!(error.message, "Loading the conversation timed out. Try again.");
+        peer.kill();
+    }
 
     #[test]
     fn maps_uname_to_rust_platform_names() {
         assert_eq!(platform("Linux x86_64"), ("linux".into(), "x86_64".into()));
         assert_eq!(platform("Darwin arm64"), ("macos".into(), "aarch64".into()));
         assert_eq!(platform("Linux aarch64"), ("linux".into(), "aarch64".into()));
+    }
+
+    #[test]
+    fn a_dev_container_target_is_its_local_folder_and_configuration() {
+        let target = RemoteTarget::DevContainer { folder: "/Users/me/app".into(), config: String::new() };
+        let json = serde_json::to_value(&target).unwrap();
+        assert_eq!(json, serde_json::json!({ "kind": "devContainer", "folder": "/Users/me/app", "config": "" }));
+        assert_eq!(serde_json::from_value::<RemoteTarget>(json).unwrap(), target);
     }
 }

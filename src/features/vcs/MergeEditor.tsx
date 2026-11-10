@@ -21,6 +21,7 @@ import { syncMergeScroll } from "./mergeScroll";
 import { mergeTitles } from "./conflicts";
 import {
   mergeChanged,
+  mergeStripe,
   mergeTheme,
   resultControls,
   resultMarks,
@@ -29,7 +30,7 @@ import {
   type MergeControls,
 } from "./mergeGutters";
 import { COMPARISONS, showCompareMenu, showResultMenu, showSettingsMenu, showSideMenu } from "./mergeMenus";
-import { openDiff } from "./diffInput";
+import { openVcsDiff } from "./diffInput";
 import {
   clearFocusedMergeEditor,
   refreshMergeActions,
@@ -176,6 +177,7 @@ export function MergeEditor({ input }: { input: EditorInput }) {
       }),
       state.base !== null ? unifiedMergeView({ original: state.base, mergeControls: false, gutter: true }) : [],
       sideControls(which, controls),
+      mergeStripe(which),
       mergeTheme,
     ];
     const ours = new EditorView({ doc: state.ours, parent: oursRef.current, extensions: side("left") });
@@ -192,6 +194,7 @@ export function MergeEditor({ input }: { input: EditorInput }) {
         embeddedEditorExtensions(path),
         lang,
         resultMarks,
+        mergeStripe("result"),
         resultControls(controls),
         mergeTheme,
         EditorView.updateListener.of((u) => {
@@ -228,9 +231,14 @@ export function MergeEditor({ input }: { input: EditorInput }) {
     };
   }, [state, lang, path, actionHost]);
 
-  /** Puts the caret at a change and brings it into view. */
-  const moveTo = (view: EditorView, at: number) =>
+  /**
+   * Puts the caret at a change, brings it into view and focuses the pane: CodeMirror draws the
+   * caret only in a focused editor, so a move made by a toolbar button would be invisible.
+   */
+  const moveTo = (view: EditorView, at: number) => {
     view.dispatch({ selection: { anchor: at }, effects: EditorView.scrollIntoView(at, { y: "center" }) });
+    view.focus();
+  };
 
   const goto = (dir: 1 | -1) => {
     const v = resultView.current;
@@ -243,7 +251,6 @@ export function MergeEditor({ input }: { input: EditorInput }) {
         ? (open.find((c) => c.from > head) ?? open[0]!)
         : ([...open].reverse().find((c) => c.from < head) ?? open[open.length - 1]!);
     moveTo(v, target.from);
-    v.focus();
   };
 
   /** Runs a command on the result; `reveal` then moves to what is left to decide. */
@@ -508,7 +515,7 @@ export function MergeEditor({ input }: { input: EditorInput }) {
           theirs: { text: state.theirs, label: txt(titles.theirs) },
         };
         const [a, b] = COMPARISONS[id as keyof typeof COMPARISONS];
-        await openDiff({ path, left: { type: "text", ...versions[a] }, right: { type: "text", ...versions[b] } });
+        await openVcsDiff({ path, left: { type: "text", ...versions[a] }, right: { type: "text", ...versions[b] } });
       }
     }
   };

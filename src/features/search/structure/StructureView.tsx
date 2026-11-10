@@ -319,7 +319,8 @@ function StructureToolbar() {
 // ---------------------------------------------------------------------------
 // ⌘F12 File Structure popup
 
-export const useFileStructurePopup = create<{ open: boolean }>(() => ({ open: false }));
+import { useFileStructurePopup } from "./popupStore";
+export { useFileStructurePopup };
 
 export function FileStructureOverlay() {
   const open = useFileStructurePopup((s) => s.open);

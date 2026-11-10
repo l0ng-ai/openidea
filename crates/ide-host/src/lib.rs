@@ -8,11 +8,14 @@ pub mod environment;
 mod formatter;
 mod java_runtime;
 mod kotlin_bridge;
+pub mod mcp;
 pub mod notebook;
 pub mod ops;
+mod phpstan;
 pub mod plugins;
 mod project;
 mod proxy;
+pub mod relay;
 mod requests;
 pub mod rpc;
 pub mod shell_env;
@@ -52,6 +55,10 @@ pub struct HostConfig {
 }
 
 pub struct Host {
+    pub(crate) mcp_executable: RwLock<Option<PathBuf>>,
+    plugin_host: RwLock<std::sync::Weak<plugins::PluginHost>>,
+    pub mcp_reports: mcp::Reports,
+    pub mcp_requests: mcp::Requests,
     pub trust: trust::TrustStore,
     pub config_dir: PathBuf,
     /// Persistent user state, including credentials and recovery history.
@@ -86,12 +93,22 @@ pub struct Host {
     project_requests: RwLock<HashMap<String, Vec<RequestId>>>,
     /// Shutdowns of projects closed with [`Host::close_project_detached`].
     closing: parking_lot::Mutex<Vec<std::thread::JoinHandle<()>>>,
+    /// One open at a time per window (see [`Host::opening`]).
+    open_locks: parking_lot::Mutex<HashMap<String, Arc<parking_lot::Mutex<()>>>>,
 }
 
 /// How long exit waits for project shutdown before giving up.
 const EXIT_SHUTDOWN_WAIT: std::time::Duration = std::time::Duration::from_secs(10);
 
 impl Host {
+    /// Windows whose current project has this root.
+    pub(crate) fn windows_for_root(&self, root: &std::path::Path) -> Vec<String> {
+        let mut windows: Vec<_> =
+            self.projects.read().iter().filter(|(_, p)| p.root == root).map(|(w, _)| w.clone()).collect();
+        windows.sort();
+        windows
+    }
+
     pub fn new(config: HostConfig) -> Self {
         let HostConfig {
             config_dir,
@@ -108,6 +125,10 @@ impl Host {
         let ssh = Arc::new(ide_ssh::SshManager::new(data_dir.join("ssh-passwords.json")));
         ssh.set_configs(global_settings.effective().ssh.configs);
         let host = Self {
+            plugin_host: RwLock::default(),
+            mcp_executable: RwLock::default(),
+            mcp_reports: Default::default(),
+            mcp_requests: Default::default(),
             trust: trust::TrustStore::load(&config_dir, &data_dir),
             proxy_password: ide_ssh::secrets::SecretFile::new(data_dir.join("proxy-password.json")),
             proxy_session_password: Mutex::default(),
@@ -135,6 +156,7 @@ impl Host {
             requests: Default::default(),
             project_requests: RwLock::default(),
             closing: Default::default(),
+            open_locks: Default::default(),
         };
         host.apply_proxy();
         host
@@ -154,6 +176,19 @@ impl Host {
             let lsp = project.lsp.clone();
             self.runtime.spawn(async move { lsp.reconfigure().await });
         }
+    }
+
+    /// Associates the plugin runtime that executes this host's project operations.
+    /// Publishes only the executable of the running built-in MCP service.
+    pub fn set_mcp_executable(&self, executable: Option<PathBuf>) {
+        *self.mcp_executable.write() = executable;
+    }
+
+    pub fn set_plugin_host(&self, plugins: &Arc<plugins::PluginHost>) {
+        *self.plugin_host.write() = Arc::downgrade(plugins);
+    }
+    pub(crate) fn plugin_host(&self) -> Option<Arc<plugins::PluginHost>> {
+        self.plugin_host.read().upgrade()
     }
 
     /// Every open project (all windows).
@@ -214,16 +249,32 @@ impl Host {
     /// so the window can open another project at once. Returns the thread that
     /// finishes shutting down its workers.
     fn begin_close(&self, window: &str) -> Option<std::thread::JoinHandle<()>> {
+        self.mcp_reports.forget_window(window);
+        self.mcp_requests.forget_window(window);
         self.external_logs.write().remove(self.owner_window(window));
         for request in self.project_requests.write().remove(self.owner_window(window)).unwrap_or_default() {
             self.cancel_request(request);
         }
         let project = self.projects.write().remove(window)?;
+        if self.windows_for_root(&project.root).is_empty()
+            && let Some(plugins) = self.plugin_host()
+        {
+            plugins.withdraw_project_run_targets(&project.root);
+        }
+        project.files_events_active.store(false, std::sync::atomic::Ordering::Release);
+        project.plugin_diagnostics.close();
+        if let Some(plugins) = plugins::editor_plugin_host() {
+            plugins.invalidate_client_navigation(&project.root, Some(window), None);
+            plugins.set_active_file(window, None);
+        }
         if !project.light {
             self.environment.project_closed();
         }
         if let Some(bridge) = &project.kotlin_bridge {
             bridge.stop();
+        }
+        if let Some(phpstan) = &project.phpstan {
+            phpstan.stop();
         }
         project.documents.clear_workspace_edit_history();
         project.agents.shutdown();
@@ -237,7 +288,8 @@ impl Host {
             vec![project.notebooks.clone()],
             project.kotlin_bridge.iter().cloned().collect(),
             Some(project.lsp.clone()),
-            Some((self.debugger.clone(), window.to_owned())),
+            Some((self.debugger.clone(), window.to_owned(), project.root.clone())),
+            Some(project),
         ))
     }
 
@@ -249,7 +301,8 @@ impl Host {
         notebooks: Vec<Arc<notebook::NotebookService>>,
         bridges: Vec<Arc<kotlin_bridge::KotlinBridge>>,
         lsp: Option<Arc<ide_lsp::LspManager>>,
-        debug: Option<(Arc<ide_dap::DebugManager>, String)>,
+        debug: Option<(Arc<ide_dap::DebugManager>, String, std::path::PathBuf)>,
+        retired: Option<Arc<Project>>,
     ) -> std::thread::JoinHandle<()> {
         for bridge in &bridges {
             bridge.stop();
@@ -259,6 +312,10 @@ impl Host {
         }
         let runtime = self.runtime.clone();
         std::thread::spawn(move || {
+            // Dropping the project stops its file watcher and index worker, which first finish the
+            // batch they are applying (many file events while a build writes its output), so it
+            // isn't done on the closing caller's thread (the UI thread for a window close).
+            let retired = retired.map(|project| std::thread::spawn(move || drop(project)));
             runtime.block_on(async move {
                 for bridge in bridges {
                     bridge.shutdown().await;
@@ -269,10 +326,14 @@ impl Host {
                 if let Some(lsp) = lsp {
                     lsp.shutdown_all().await;
                 }
-                if let Some((debug, key)) = debug {
+                if let Some((debug, key, root)) = debug {
                     debug.stop_key(&key).await;
+                    debug.stop_under(&root).await;
                 }
             });
+            if let Some(retired) = retired {
+                let _ = retired.join();
+            }
         })
     }
 
@@ -312,6 +373,7 @@ impl Host {
             projects.iter().filter_map(|project| project.kotlin_bridge.clone()).collect(),
             None,
             None,
+            None,
         ));
         let deadline = std::time::Instant::now() + EXIT_SHUTDOWN_WAIT;
         while pending.iter().any(|handle| !handle.is_finished()) {
@@ -326,6 +388,14 @@ impl Host {
                 tracing::error!("project shutdown thread failed: {error:?}");
             }
         }
+    }
+
+    /// Called on desktop exit: kills the runs and terminal shells still alive. Closing a
+    /// window stops what it started, but a quit from the Dock, the app menu or a logout
+    /// exits without closing the windows, and the process trees would outlive the app.
+    pub fn stop_processes_on_exit(&self) {
+        self.processes.kill_all();
+        self.terminals.kill_all();
     }
 
     /// Called before desktop exit, which may bypass document destructors.
@@ -343,8 +413,15 @@ impl Host {
         self.terminals.kill_all();
         let projects: Vec<_> = self.projects.write().drain().map(|(_, p)| p).collect();
         for project in &projects {
+            project.files_events_active.store(false, std::sync::atomic::Ordering::Release);
+        }
+        for project in &projects {
+            project.plugin_diagnostics.close();
             if let Some(bridge) = &project.kotlin_bridge {
                 bridge.stop();
+            }
+            if let Some(phpstan) = &project.phpstan {
+                phpstan.stop();
             }
             project.documents.clear_workspace_edit_history();
             project.notebooks.stop_admission();
@@ -401,7 +478,48 @@ impl Host {
         self.requests.cancel(id);
     }
 
+    /// The lock an open of `window` holds from its check for the current project to its
+    /// insert: two opens racing (a double click, a launch path and a restore) would each start
+    /// an index, language servers and watchers, and the second would replace the first unclosed.
+    pub(crate) fn opening(&self, window: &str) -> Arc<parking_lot::Mutex<()>> {
+        self.open_locks.lock().entry(window.to_owned()).or_default().clone()
+    }
+
     pub(crate) fn insert_project(&self, window: &str, project: Arc<Project>) {
         self.projects.write().insert(window.to_owned(), project);
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn detached_close_releases_the_project_before_a_reopen() {
+        let temp = tempfile::tempdir().unwrap();
+        let base = dunce::canonicalize(temp.path()).unwrap();
+        let root = base.join("project");
+        std::fs::create_dir(&root).unwrap();
+        std::fs::write(root.join("main.rs"), "fn main() {}\n").unwrap();
+        let host = Host::new(HostConfig {
+            config_dir: base.join("config"),
+            data_dir: base.join("data"),
+            local_data_dir: base.join("local"),
+            languages: Arc::new(ide_language::LanguageRegistry::load(None).unwrap()),
+            syntax: Arc::default(),
+            sink_for: Box::new(|_| Arc::new(|_| {})),
+            owner: |w| w,
+            runtime: tokio::runtime::Handle::current(),
+            project_environment: false,
+        });
+        let project = Arc::downgrade(&host.open_project("main", &root).unwrap());
+        host.close_project_detached("main");
+        assert!(host.project("main").is_err());
+        // The project (its file watcher and index database) is dropped off the closing thread, but
+        // before opening a project waits out the close.
+        host.wait_detached_closes();
+        assert!(project.upgrade().is_none(), "the closed project is dropped");
+        host.open_project("main", &root).unwrap();
+        host.close_project("main");
     }
 }

@@ -59,4 +59,4 @@ adapter = "js-debug"
 command = "js-debug-adapter"
 args = ["${port}", "127.0.0.1"]
 transport = "tcp"
-install-hint = "Install vscode-js-debug's DAP server (js-debug-dap-*.tar.gz from https://github.com/microsoft/vscode-js-debug/releases) as `js-debug-adapter`"
+install-hint = "Install JavaScript Debugger (vscode-js-debug) in Settings › Languages & Frameworks › Language Servers"

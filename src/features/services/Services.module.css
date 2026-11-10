@@ -4,8 +4,7 @@
   flex-direction: column;
   min-height: 0;
 }
-.toolbar,
-.subToolbar {
+.toolbar {
   height: 32px;
   flex: none;
   display: flex;
@@ -13,19 +12,11 @@
   gap: 2px;
   padding: 0 6px;
 }
-.subToolbar {
-  gap: 12px;
-  padding: 0 10px;
-  border-bottom: 1px solid var(--border);
-}
 .sep {
   width: 1px;
   height: 16px;
   margin: 0 4px;
   background: var(--border);
-}
-.flex {
-  flex: 1;
 }
 .banner {
   flex: none;
@@ -133,10 +124,6 @@
 .log > div {
   cursor: text;
 }
-.wrap {
-  white-space: pre-wrap;
-  overflow-wrap: anywhere;
-}
 .json {
   white-space: pre;
 }
@@ -165,6 +152,10 @@
   justify-content: center;
 }
 .marker {
+  padding: 0;
+  border: 0;
+  background: transparent;
+  color: inherit;
   width: 14px;
   height: 14px;
   display: flex;
@@ -172,9 +163,6 @@
   justify-content: center;
   border-radius: var(--radius-small);
   cursor: pointer;
-}
-.marker:hover {
-  background: var(--bg-hover);
 }
 
 .fieldRow {
@@ -243,4 +231,281 @@
   min-width: 0;
   border: 0;
   background: none;
+}
+
+/* Dashboards, Layers & Processes (Phase 1) */
+.dashboard {
+  flex: 1;
+  min-height: 0;
+  overflow: auto;
+  padding-bottom: 12px;
+  -webkit-user-select: text;
+  user-select: text;
+}
+.dashboardActions {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 6px;
+  padding: 8px 12px;
+  border-bottom: 1px solid var(--border);
+}
+.sectionBanner {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 5px 12px;
+  font-size: var(--fs-small);
+  font-weight: 600;
+  color: var(--fg-secondary);
+  background: var(--bg-elev);
+  border-top: 1px solid var(--border);
+  border-bottom: 1px solid var(--border);
+}
+.propList {
+  display: flex;
+  flex-direction: column;
+}
+.propRow {
+  display: grid;
+  grid-template-columns: 140px 1fr;
+  gap: 8px;
+  align-items: baseline;
+  padding: 5px 12px;
+  border-bottom: 1px solid var(--border);
+}
+.propName {
+  color: var(--fg-secondary);
+  font-size: var(--fs-small);
+}
+.propVal {
+  min-width: 0;
+  overflow-wrap: anywhere;
+  color: var(--fg);
+}
+.inlineRow {
+  display: inline-flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 6px;
+}
+.mono {
+  font-family: var(--font-mono);
+  font-size: var(--fs-code);
+}
+.codeInline {
+  display: inline-block;
+  padding: 1px 6px;
+  border-radius: var(--radius-small);
+  background: var(--bg-elev);
+  font-family: var(--font-mono);
+  font-size: var(--fs-code);
+  overflow-wrap: anywhere;
+}
+.mutedMeta {
+  color: var(--fg-subtle);
+  font-size: var(--fs-small);
+}
+.statusBadge {
+  display: inline-flex;
+  align-items: center;
+  padding: 1px 6px;
+  border-radius: var(--radius-small);
+  font-size: var(--fs-small);
+  font-family: var(--font-mono);
+}
+.badgeOk {
+  color: var(--success);
+  background: color-mix(in srgb, var(--success) 16%, transparent);
+}
+.badgeWarn {
+  color: var(--warning);
+  background: color-mix(in srgb, var(--warning) 16%, transparent);
+}
+.badgeDanger {
+  color: var(--danger);
+  background: color-mix(in srgb, var(--danger) 16%, transparent);
+}
+.badgeMuted {
+  color: var(--fg-secondary);
+  background: var(--bg-elev);
+}
+.statusDot {
+  width: 7px;
+  height: 7px;
+  border-radius: 50%;
+  flex: none;
+}
+.dotOk {
+  background: var(--success);
+}
+.dotMuted {
+  background: var(--fg-subtle);
+}
+.metricBlock {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  max-width: 320px;
+}
+.lineProgress {
+  height: 5px;
+  width: 100%;
+  border-radius: 3px;
+  background: var(--bg-elev);
+  overflow: hidden;
+}
+.lineProgressFill {
+  height: 100%;
+  border-radius: 3px;
+}
+.progressNormal {
+  background: var(--accent);
+}
+.progressWarning {
+  background: var(--warning);
+}
+.progressDanger {
+  background: var(--danger);
+}
+.chipGroup {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+  padding: 8px 12px;
+}
+.chipGroupInline {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+}
+.entityChip {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  padding: 2px 8px;
+  border-radius: var(--radius-small);
+  border: 1px solid var(--border-strong);
+  background: var(--bg-elev);
+  color: var(--fg);
+  font: inherit;
+  font-size: var(--fs-small);
+  cursor: pointer;
+}
+.entityChip:disabled {
+  cursor: default;
+}
+span.entityChip {
+  cursor: default;
+}
+button.entityChip:not(:disabled):hover {
+  background: var(--bg-hover);
+  border-color: var(--accent);
+}
+.portChipLink {
+  color: var(--link);
+}
+.chipMeta {
+  color: var(--fg-subtle);
+  font-size: var(--fs-small);
+}
+.emptySection {
+  padding: 8px 12px;
+  color: var(--fg-subtle);
+  font-size: var(--fs-small);
+  display: flex;
+  align-items: center;
+  gap: 6px;
+}
+.kvTable {
+  display: flex;
+  flex-direction: column;
+}
+.kvRow {
+  display: grid;
+  grid-template-columns: minmax(140px, 240px) 1fr;
+  gap: 10px;
+  padding: 4px 12px;
+  border-bottom: 1px solid var(--border);
+  font-family: var(--font-mono);
+  font-size: var(--fs-code);
+}
+.kvKey {
+  color: var(--fg-secondary);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.kvVal {
+  color: var(--fg);
+  overflow-wrap: anywhere;
+}
+.dataTable {
+  display: flex;
+  flex-direction: column;
+}
+.dataRow {
+  display: grid;
+  grid-template-columns: 72px minmax(120px, 1fr) minmax(140px, 1.3fr) 56px;
+  gap: 8px;
+  align-items: center;
+  padding: 4px 12px;
+  border-bottom: 1px solid var(--border);
+  font-size: var(--fs-small);
+}
+.dataHeader {
+  color: var(--fg-secondary);
+  font-weight: 600;
+}
+.subToolbar {
+  height: 28px;
+  flex: none;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 0 8px 0 12px;
+  border-bottom: 1px solid var(--border);
+}
+.subToolbarTitle {
+  color: var(--fg-secondary);
+  font-size: var(--fs-small);
+  font-weight: 600;
+}
+.tableScroll {
+  flex: 1;
+  min-height: 0;
+  overflow: auto;
+  -webkit-user-select: text;
+  user-select: text;
+}
+.gridTable {
+  width: 100%;
+  border-collapse: collapse;
+  font-size: var(--fs-small);
+}
+.gridTable th {
+  position: sticky;
+  top: 0;
+  text-align: left;
+  padding: 5px 10px;
+  color: var(--fg-secondary);
+  background: var(--bg-elev);
+  border-bottom: 1px solid var(--border);
+  font-weight: 600;
+  white-space: nowrap;
+}
+.gridTable td {
+  padding: 4px 10px;
+  border-bottom: 1px solid var(--border);
+  vertical-align: top;
+}
+.layerCmd {
+  max-width: 520px;
+  overflow-wrap: anywhere;
+  font-family: var(--font-mono);
+  font-size: var(--fs-code);
+}
+.layerSizeCell {
+  min-width: 96px;
+  white-space: nowrap;
 }

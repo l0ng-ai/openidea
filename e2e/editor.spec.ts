@@ -13,6 +13,35 @@ test("opens a file from the project tree and types into it", async ({ workbench:
   await expect(editor.locator(".cm-content")).not.toContainText("// typed by e2e");
 });
 
+test("Delete edits text after the focused Project tree is remounted", async ({ workbench: page }) => {
+  const editor = await openFromTree(page, "README.md");
+  const content = editor.locator(".cm-content");
+  await content.press("Meta+End");
+  await page.keyboard.press("Enter");
+  await page.keyboard.insertText("delete probe abc");
+  const line = editor.locator(".cm-line", { hasText: "delete probe" });
+  await expect(line).toHaveText("delete probe abc");
+
+  const tree = page.getByRole("tree", { name: "Project" });
+  await tree.focus();
+  await page.evaluate(async () => {
+    const keymapModule = "/src/platform/keymap.ts";
+    const layoutModule = "/src/workbench/toolwindows/store.ts";
+    const { applyKeymapSettings } = await import(/* @vite-ignore */ keymapModule);
+    const { moveToolWindow } = await import(/* @vite-ignore */ layoutModule);
+    applyKeymapSettings("intellij-windows", {});
+    moveToolWindow("project", "right");
+  });
+  await expect(page.locator('[data-toolwindow="project"]')).toBeVisible();
+  await expect(tree).not.toBeFocused();
+
+  await content.press("ArrowLeft");
+  await page.keyboard.press("Delete");
+  await expect(line).toHaveText("delete probe ab");
+  await page.keyboard.press("Backspace");
+  await expect(line).toHaveText("delete probe a");
+});
+
 test("⌘F opens the find bar and highlights matches; Escape returns to the editor", async ({ workbench: page }) => {
   const editor = await openFromTree(page, "build.gradle.kts");
   await editor.locator(".cm-content").click();
@@ -143,4 +172,41 @@ test("⌘R replaces every match in the file", async ({ workbench: page }) => {
   await content.click();
   await page.keyboard.press("Meta+z");
   await expect(editor.locator(".cm-line", { hasText: "OrderDto" })).toHaveCount(2);
+});
+
+test("Markdown preview highlights ⌘F matches and selected word occurrences", async ({ workbench: page }) => {
+  const editor = await openFromTree(page, "README.md");
+  const content = editor.locator(".cm-content");
+  await content.click();
+  await page.keyboard.press("Meta+a");
+  await page.keyboard.insertText("# Order Service\n\nManage **Order** items and `Order` status.\n");
+
+  const preview = page.getByRole("document", { name: "Markdown preview" });
+  await expect(preview).toContainText("Manage Order items");
+
+  // Selecting a word in the preview auto-highlights its other occurrences in the preview and the split editor.
+  await preview.locator("strong").dblclick();
+
+  await expect
+    .poll(() =>
+      page.evaluate(() => {
+        const set = CSS.highlights.get("markdown-selection-match");
+        return set ? [...set].map((r) => (r as Range).toString()) : [];
+      }),
+    )
+    .toEqual(["Order", "Order"]);
+  await expect(editor.locator(".cm-selectionMatch")).toHaveCount(3);
+
+  // Pressing ⌘F seeds from the preview selection and highlights current + other matches in the preview.
+  await page.keyboard.press("Meta+f");
+  const find = page.getByRole("textbox", { name: "Find" });
+  await expect(find).toHaveValue("Order");
+  await expect
+    .poll(() =>
+      page.evaluate(() => ({
+        current: [...(CSS.highlights.get("markdown-find-current") ?? [])].map((r) => (r as Range).toString()),
+        other: [...(CSS.highlights.get("markdown-find") ?? [])].map((r) => (r as Range).toString()),
+      })),
+    )
+    .toEqual({ current: ["Order"], other: ["Order", "Order"] });
 });

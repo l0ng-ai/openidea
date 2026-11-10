@@ -27,7 +27,10 @@ pub enum SettingsScope {
     Project,
 }
 
-fn remove_custom_schemes(layer: &mut Json) {
+fn remove_global_settings(layer: &mut Json) {
+    if let Some(layer) = layer.as_object_mut() {
+        layer.remove("mcpServer");
+    }
     if let Some(editor) = layer.get_mut("editor").and_then(Json::as_object_mut) {
         editor.remove("customSchemes");
     }
@@ -58,6 +61,28 @@ fn parse_layer(text: &str) -> Result<Json, String> {
     serde_json::to_value(table).map_err(|e| e.to_string())
 }
 
+/// Older settings stored the navigation bar choice as a boolean (`showNavigationBar`,
+/// `true` = enabled). Remap it into the three-state `navigationBar` before
+/// deserialization, so a plain `navigationBar` field is all specta has to export.
+fn normalize_navigation_bar(mut layer: Json) -> Json {
+    let Some(appearance) = layer.get_mut("appearance").and_then(Json::as_object_mut) else {
+        return layer;
+    };
+    if appearance.contains_key("navigationBar") {
+        // Already migrated; leave invalid values alone so the layer is rejected as a whole.
+        return layer;
+    }
+    let Some(legacy) = appearance.remove("showNavigationBar") else {
+        return layer;
+    };
+    if let Some(on) = legacy.as_bool() {
+        appearance.insert("navigationBar".into(), Json::String(if on { "statusBar" } else { "hidden" }.into()));
+    }
+    // Not a boolean: leave it out and let the default apply, rather than silently
+    // turning the navigation bar back on.
+    layer
+}
+
 /// Reads one layer; `None` when missing or invalid (logged).
 fn read_layer(file: &Path) -> Option<Json> {
     let text = match std::fs::read_to_string(file) {
@@ -79,6 +104,9 @@ fn read_layer(file: &Path) -> Option<Json> {
 
 /// Merges `layer` onto `merged` if the result still deserializes.
 fn try_merge(merged: &mut Json, layer: Json) -> Result<(), String> {
+    // Migrate the legacy boolean every layer carries it, before it can clobber
+    // the three-state key coming from a lower-priority layer.
+    let layer = normalize_navigation_bar(layer);
     let mut candidate = merged.clone();
     deep_merge(&mut candidate, layer);
     serde_json::from_value::<Settings>(candidate.clone()).map_err(|e| e.to_string())?;
@@ -187,7 +215,7 @@ impl SettingsStore {
         for (scope, file) in self.layers() {
             let Some(mut layer) = read_layer(&file) else { continue };
             if scope == SettingsScope::Project {
-                remove_custom_schemes(&mut layer);
+                remove_global_settings(&mut layer);
             }
             if let Err(e) = try_merge(&mut merged, layer) {
                 tracing::warn!("{} has invalid settings, ignoring it: {e}", file.display());
@@ -196,8 +224,9 @@ impl SettingsStore {
         let mut settings: Settings = serde_json::from_value(merged).unwrap_or_default();
         if let Some(root) = self.project_file.as_deref().and_then(Path::parent).and_then(Path::parent)
             && let Ok(Some(workspace)) = crate::workspace::Workspace::load(root)
+            && workspace.is_container(root)
         {
-            settings.general.project_name = workspace.name;
+            settings.general.project_name = workspace.name.clone();
             settings.project_structure.content_roots =
                 workspace.projects.iter().map(|p| ide_core::ipc_path::to_ipc(p)).collect();
         }
@@ -219,6 +248,9 @@ impl SettingsStore {
                 || (key == "editor" && value.get("customSchemes").is_some()))
         {
             return Err(IdeError::invalid("custom color schemes belong to user settings"));
+        }
+        if scope == SettingsScope::Project && (key == "mcpServer" || key.starts_with("mcpServer.")) {
+            return Err(IdeError::invalid("MCP server belongs to user settings"));
         }
         let file = self.file(scope).ok_or_else(|| IdeError::invalid("no project is open"))?.to_path_buf();
         let segments: Vec<&str> = key.split('.').collect();
@@ -259,7 +291,7 @@ impl SettingsStore {
             let layer = if is_target { parse_layer(&new_text).ok() } else { read_layer(&layer_file) };
             let Some(mut layer) = layer else { continue };
             if layer_scope == SettingsScope::Project {
-                remove_custom_schemes(&mut layer);
+                remove_global_settings(&mut layer);
             }
             if let Err(e) = try_merge(&mut merged, layer)
                 && is_target
@@ -316,6 +348,100 @@ impl SettingsStore {
     }
 }
 
+/// A JetBrains IDE's settings folder or exported archive: every
+/// entry name, and the text of the entries OpenIDEA maps (the frontend does the mapping).
+#[derive(serde::Serialize, specta::Type)]
+#[serde(rename_all = "camelCase")]
+pub struct JetBrainsSettings {
+    pub entries: Vec<String>,
+    /// Entry name → text, for `colors/*.icls` and the `options/*.xml` files OpenIDEA reads.
+    pub files: BTreeMap<String, String>,
+}
+
+const JETBRAINS_MARKER: &str = "IntelliJ IDEA Global Settings";
+const JETBRAINS_OPTIONS: [&str; 4] =
+    ["options/editor-font.xml", "options/colors.scheme.xml", "options/editor.xml", "options/ide.general.xml"];
+const JETBRAINS_MAX_TEXT: u64 = 4 << 20;
+
+/// The settings of a JetBrains IDE: an exported `settings.zip`, or the IDE's own settings folder
+/// (`options/`, `colors/`, … as an installed IDE keeps them).
+pub fn read_jetbrains_settings(path: &Path) -> IdeResult<JetBrainsSettings> {
+    if path.is_dir() { read_jetbrains_folder(path) } else { read_jetbrains_archive(path) }
+}
+
+fn is_mapped_jetbrains_file(name: &str) -> bool {
+    JETBRAINS_OPTIONS.contains(&name)
+        || name.strip_prefix("colors/").is_some_and(|n| !n.contains('/') && n.ends_with(".icls"))
+}
+
+/// Folders of the settings folder whose files are listed (their names say what the user customised).
+const JETBRAINS_LISTED_DIRS: [&str; 6] = ["options", "colors", "keymaps", "codestyles", "templates", "inspection"];
+
+fn read_jetbrains_folder(dir: &Path) -> IdeResult<JetBrainsSettings> {
+    use std::io::Read;
+    let real_dir = |path: &Path| path.symlink_metadata().is_ok_and(|m| m.is_dir());
+    if !real_dir(dir) || !real_dir(&dir.join("options")) {
+        return Err(IdeError::invalid("not a JetBrains settings folder"));
+    }
+    let mut entries = Vec::new();
+    let mut files = BTreeMap::new();
+    for sub in JETBRAINS_LISTED_DIRS {
+        if !real_dir(&dir.join(sub)) {
+            continue;
+        }
+        let mut names: Vec<String> = std::fs::read_dir(dir.join(sub))
+            .into_iter()
+            .flatten()
+            .flatten()
+            .filter(|e| e.file_type().is_ok_and(|t| t.is_file()))
+            .map(|e| e.file_name().to_string_lossy().into_owned())
+            .collect();
+        names.sort();
+        for file in names {
+            let name = format!("{sub}/{file}");
+            if is_mapped_jetbrains_file(&name) {
+                let mut text = String::new();
+                std::fs::File::open(dir.join(sub).join(&file))?
+                    .take(JETBRAINS_MAX_TEXT)
+                    .read_to_string(&mut text)
+                    .map_err(|e| IdeError::invalid(format!("{name}: {e}")))?;
+                files.insert(name.clone(), text);
+            }
+            entries.push(name);
+        }
+    }
+    // An exported archive lists `installed.txt` when plugins came along; here they sit in `plugins/`.
+    if real_dir(&dir.join("plugins")) && std::fs::read_dir(dir.join("plugins")).is_ok_and(|mut d| d.next().is_some()) {
+        entries.push("installed.txt".into());
+    }
+    Ok(JetBrainsSettings { entries, files })
+}
+
+fn read_jetbrains_archive(path: &Path) -> IdeResult<JetBrainsSettings> {
+    use std::io::Read;
+    let not_jetbrains = || IdeError::invalid("not a JetBrains settings archive");
+    let mut archive = zip::ZipArchive::new(std::fs::File::open(path)?).map_err(|_| not_jetbrains())?;
+    let mut entries = Vec::with_capacity(archive.len());
+    let mut files = BTreeMap::new();
+    for i in 0..archive.len() {
+        let entry = archive.by_index(i).map_err(|_| not_jetbrains())?;
+        let name = entry.name().map_err(|_| not_jetbrains())?.into_owned();
+        if is_mapped_jetbrains_file(&name) {
+            let mut text = String::new();
+            entry
+                .take(JETBRAINS_MAX_TEXT)
+                .read_to_string(&mut text)
+                .map_err(|e| IdeError::invalid(format!("{name}: {e}")))?;
+            files.insert(name.clone(), text);
+        }
+        entries.push(name);
+    }
+    if !entries.iter().any(|e| e == JETBRAINS_MARKER) {
+        return Err(not_jetbrains());
+    }
+    Ok(JetBrainsSettings { entries, files })
+}
+
 const BUNDLE_FORMAT: &str = "openidea-settings";
 const BUNDLE_VERSION: u32 = 1;
 
@@ -333,6 +459,22 @@ struct SettingsBundle {
 mod tests {
     use super::*;
     use serde_json::json;
+
+    #[test]
+    fn compose_file_choices_are_project_settings_and_survive_reload() {
+        let tmp = tempfile::tempdir().unwrap();
+        let cfg = tmp.path().join("cfg");
+        let proj = tmp.path().join("proj");
+        std::fs::create_dir_all(proj.join(".openidea")).unwrap();
+        let store = SettingsStore::load(&cfg, Some(&proj));
+        let choices = json!({"docker/stack.yml": "kept", "manifest.yml": "excluded"});
+        store.set(SettingsScope::Project, "files.composeFileOverrides", choices.clone()).unwrap();
+        let loaded = SettingsStore::load(&cfg, Some(&proj)).effective();
+        assert_eq!(serde_json::to_value(&loaded.files.compose_file_overrides).unwrap(), choices);
+        assert!(SettingsStore::load(&cfg, None).effective().files.compose_file_overrides.is_empty());
+        assert!(store.set(SettingsScope::Project, "files.composeFileOverrides", json!({"bad.yml": "yes"})).is_err());
+        assert_eq!(serde_json::to_value(&store.effective().files.compose_file_overrides).unwrap(), choices);
+    }
 
     #[test]
     fn custom_color_schemes_are_user_settings_and_survive_reload() {
@@ -479,6 +621,10 @@ mod tests {
         let text = std::fs::read_to_string(added.join("settings.toml")).unwrap();
         assert_eq!(text, "[languageServers.ruff]\nargs = [\"server\"]\ncommand = \"ruff\"\nlanguages = [\"python\"]\n");
 
+        let s =
+            store.set(SettingsScope::Global, "languages.ruff.configurationDirectory", json!("shared/ruff")).unwrap();
+        assert_eq!(s.languages.ruff.configuration_directory, "shared/ruff");
+
         // Project layer is created on demand and wins.
         let s = store.set(SettingsScope::Project, "editor.fontSize", json!(12)).unwrap();
         assert_eq!(s.editor.font_size, 12.0);
@@ -543,6 +689,109 @@ mod tests {
     }
 
     #[test]
+    fn reads_jetbrains_settings_archives() {
+        use std::io::Write;
+        let tmp = tempfile::tempdir().unwrap();
+        let write = |name: &str, entries: &[(&str, &str)]| {
+            let path = tmp.path().join(name);
+            let mut zip = zip::ZipWriter::new(std::fs::File::create(&path).unwrap());
+            for (entry, text) in entries {
+                zip.start_file(*entry, zip::write::SimpleFileOptions::default()).unwrap();
+                zip.write_all(text.as_bytes()).unwrap();
+            }
+            zip.finish().unwrap();
+            path
+        };
+        let ok = write(
+            "settings.zip",
+            &[
+                (JETBRAINS_MARKER, ""),
+                ("colors/_@user_Darcula.icls", "<scheme name=\"_@user_Darcula\"/>"),
+                ("options/editor-font.xml", "<application/>"),
+                ("options/vcs.xml", "<application/>"),
+                ("keymaps/macOS.xml", "<keymap/>"),
+            ],
+        );
+        let read = read_jetbrains_settings(&ok).unwrap();
+        assert_eq!(read.entries.len(), 5);
+        assert_eq!(read.files.keys().collect::<Vec<_>>(), ["colors/_@user_Darcula.icls", "options/editor-font.xml"]);
+        assert!(read_jetbrains_settings(&write("other.zip", &[("options/editor.xml", "")])).is_err());
+        std::fs::write(tmp.path().join("plain.zip"), "not a zip").unwrap();
+        assert!(read_jetbrains_settings(&tmp.path().join("plain.zip")).is_err());
+    }
+
+    #[test]
+    fn reads_a_jetbrains_ides_own_settings_folder_like_an_exported_archive() {
+        let tmp = tempfile::tempdir().unwrap();
+        let config = tmp.path().join("IntelliJIdea2025.2");
+        let put = |name: &str, text: &str| {
+            let path = config.join(name);
+            std::fs::create_dir_all(path.parent().unwrap()).unwrap();
+            std::fs::write(path, text).unwrap();
+        };
+        put("colors/_@user_Darcula.icls", "<scheme name=\"_@user_Darcula\"/>");
+        put("colors/nested/ignored.icls", "<scheme/>");
+        put("options/editor-font.xml", "<application/>");
+        put("options/vcs.xml", "<application/>");
+        put("keymaps/macOS.xml", "<keymap/>");
+        put("plugins/Tools/lib/tools.jar", "jar");
+
+        let read = read_jetbrains_settings(&config).unwrap();
+        assert_eq!(read.files.keys().collect::<Vec<_>>(), ["colors/_@user_Darcula.icls", "options/editor-font.xml"]);
+        assert_eq!(
+            read.entries,
+            [
+                "options/editor-font.xml",
+                "options/vcs.xml",
+                "colors/_@user_Darcula.icls",
+                "keymaps/macOS.xml",
+                "installed.txt"
+            ]
+        );
+
+        assert!(read_jetbrains_settings(&tmp.path().join("missing")).is_err());
+        let empty = tmp.path().join("empty");
+        std::fs::create_dir_all(&empty).unwrap();
+        assert!(read_jetbrains_settings(&empty).is_err(), "a folder without options/ is not a settings folder");
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn jetbrains_folder_does_not_follow_symlinks() {
+        use std::os::unix::fs::symlink;
+
+        let tmp = tempfile::tempdir().unwrap();
+        let config = tmp.path().join("config");
+        let outside = tmp.path().join("outside");
+        std::fs::create_dir_all(&config).unwrap();
+        std::fs::create_dir_all(&outside).unwrap();
+        std::fs::write(outside.join("editor-font.xml"), "outside").unwrap();
+        std::fs::write(outside.join("theme.icls"), "outside").unwrap();
+        symlink(&outside, config.join("options")).unwrap();
+        assert!(read_jetbrains_settings(&config).is_err(), "options/ must be a real directory");
+
+        std::fs::remove_file(config.join("options")).unwrap();
+        std::fs::create_dir(config.join("options")).unwrap();
+        symlink(outside.join("editor-font.xml"), config.join("options/editor-font.xml")).unwrap();
+        for sub in ["colors", "keymaps", "codestyles", "templates", "inspection", "plugins"] {
+            symlink(&outside, config.join(sub)).unwrap();
+        }
+        let read = read_jetbrains_settings(&config).unwrap();
+        assert!(read.entries.is_empty());
+        assert!(read.files.is_empty());
+    }
+
+    #[test]
+    fn jetbrains_folder_bounds_mapped_text_like_an_archive() {
+        let tmp = tempfile::tempdir().unwrap();
+        std::fs::create_dir(tmp.path().join("options")).unwrap();
+        std::fs::write(tmp.path().join("options/editor-font.xml"), vec![b'x'; JETBRAINS_MAX_TEXT as usize + 1])
+            .unwrap();
+        let read = read_jetbrains_settings(tmp.path()).unwrap();
+        assert_eq!(read.files["options/editor-font.xml"].len(), JETBRAINS_MAX_TEXT as usize);
+    }
+
+    #[test]
     fn main_toolbar_can_be_set_and_reset() {
         let tmp = tempfile::tempdir().unwrap();
         let store = SettingsStore::load(tmp.path(), None);
@@ -558,5 +807,115 @@ mod tests {
         assert_eq!(toolbar.hidden, ["vcs.branch"]);
         let s = store.set(SettingsScope::Global, "appearance.mainToolbar", Json::Null).unwrap();
         assert_eq!(s.appearance.main_toolbar, None);
+    }
+
+    #[test]
+    fn toolbar_and_status_bar_are_shown_until_hidden() {
+        let tmp = tempfile::tempdir().unwrap();
+        std::fs::write(tmp.path().join("settings.toml"), "[appearance]\ncompactMode = true\n").unwrap();
+        let store = SettingsStore::load(tmp.path(), None);
+        let s = store.effective();
+        assert!(s.appearance.show_main_toolbar);
+        assert!(s.appearance.show_status_bar);
+        let s = store.set(SettingsScope::Global, "appearance.showMainToolbar", json!(false)).unwrap();
+        assert!(!s.appearance.show_main_toolbar);
+        let s = store.set(SettingsScope::Global, "appearance.showStatusBar", json!(false)).unwrap();
+        assert!(!s.appearance.show_status_bar);
+        assert!(!store.reload().appearance.show_main_toolbar);
+    }
+
+    #[test]
+    fn legacy_navigation_bar_boolean_migrates_to_the_three_state_key() {
+        let tmp = tempfile::tempdir().unwrap();
+        // `true` → `statusBar`, where the bar lived before the three-state choice.
+        std::fs::write(tmp.path().join("settings.toml"), "[appearance]\nshowNavigationBar = true\n").unwrap();
+        assert_eq!(
+            SettingsStore::load(tmp.path(), None).effective().appearance.navigation_bar,
+            ide_core::settings::NavigationBarPosition::StatusBar
+        );
+        // `false` → `hidden`.
+        std::fs::write(tmp.path().join("settings.toml"), "[appearance]\nshowNavigationBar = false\n").unwrap();
+        assert_eq!(
+            SettingsStore::load(tmp.path(), None).effective().appearance.navigation_bar,
+            ide_core::settings::NavigationBarPosition::Hidden
+        );
+        // An explicit three-state value wins over the migrated legacy key.
+        std::fs::write(
+            tmp.path().join("settings.toml"),
+            "[appearance]\nshowNavigationBar = true\nnavigationBar = \"top\"\n",
+        )
+        .unwrap();
+        assert_eq!(
+            SettingsStore::load(tmp.path(), None).effective().appearance.navigation_bar,
+            ide_core::settings::NavigationBarPosition::Top
+        );
+        // A non-boolean legacy value is dropped and the default (status bar) is used.
+        std::fs::write(tmp.path().join("settings.toml"), "[appearance]\nshowNavigationBar = \"everywhere\"\n").unwrap();
+        assert_eq!(
+            SettingsStore::load(tmp.path(), None).effective().appearance.navigation_bar,
+            ide_core::settings::NavigationBarPosition::StatusBar
+        );
+    }
+
+    #[test]
+    fn navigation_bar_layers_migrate_without_rewriting_other_settings() {
+        use ide_core::settings::NavigationBarPosition::{Hidden, StatusBar, Top};
+
+        let tmp = tempfile::tempdir().unwrap();
+        let project = tmp.path().join("project");
+        std::fs::create_dir_all(project.join(".openidea")).unwrap();
+        let global_file = tmp.path().join("settings.toml");
+        let project_file = project.join(".openidea/settings.toml");
+        let global =
+            "# keep this comment\n[editor]\nfontSize = 17 # keep this too\n[appearance]\nnavigationBar = \"top\"\n";
+        std::fs::write(&global_file, global).unwrap();
+        let store = SettingsStore::load(tmp.path(), Some(&project));
+        assert_eq!(store.effective().appearance.navigation_bar, Top);
+        assert_eq!(std::fs::read_to_string(&global_file).unwrap(), global);
+
+        for (layer, expected) in [
+            ("[appearance]\nshowNavigationBar = false\n", Hidden),
+            ("[appearance]\nshowNavigationBar = true\n", StatusBar),
+            ("[appearance]\nnavigationBar = \"hidden\"\n", Hidden),
+            ("[editor]\nfontSize = 19\n", Top),
+        ] {
+            std::fs::write(&project_file, layer).unwrap();
+            assert_eq!(store.reload().appearance.navigation_bar, expected);
+            assert_eq!(std::fs::read_to_string(&project_file).unwrap(), layer);
+        }
+
+        std::fs::remove_file(&project_file).unwrap();
+        let legacy = global.replace("navigationBar = \"top\"", "showNavigationBar = false");
+        std::fs::write(&global_file, &legacy).unwrap();
+        assert_eq!(store.reload().appearance.navigation_bar, Hidden);
+        let updated = store.set(SettingsScope::Global, "appearance.navigationBar", serde_json::json!("top")).unwrap();
+        assert_eq!(updated.appearance.navigation_bar, Top);
+        assert_eq!(updated.editor.font_size, 17.0);
+        let written = std::fs::read_to_string(&global_file).unwrap();
+        assert!(written.starts_with(&legacy));
+        assert_eq!(
+            store.set(SettingsScope::Global, "appearance.navigationBar", Json::Null).unwrap().appearance.navigation_bar,
+            Hidden
+        );
+        assert_eq!(std::fs::read_to_string(&global_file).unwrap(), legacy);
+    }
+
+    #[test]
+    fn mcp_server_is_default_off_and_cannot_be_enabled_by_a_project() {
+        let tmp = tempfile::tempdir().unwrap();
+        let config = tmp.path().join("config");
+        let project = tmp.path().join("project");
+        std::fs::create_dir_all(project.join(".openidea")).unwrap();
+        std::fs::write(project.join(".openidea/settings.toml"), "[mcpServer]\nenabled = true\n").unwrap();
+        let settings = SettingsStore::load(&config, Some(&project));
+        assert!(!settings.effective().mcp_server.enabled);
+        assert!(settings.set(SettingsScope::Project, "mcpServer.enabled", serde_json::json!(true)).is_err());
+        assert!(
+            settings
+                .set(SettingsScope::Global, "mcpServer.enabled", serde_json::json!(true))
+                .unwrap()
+                .mcp_server
+                .enabled
+        );
     }
 }

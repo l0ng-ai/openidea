@@ -13,6 +13,7 @@ import { bracketMatching, indentOnInput, syntaxHighlighting } from "@codemirror/
 import { openideaTheme } from "@/editor/core/cm/theme";
 import { openideaHighlightStyle } from "@/editor/core/cm/highlight";
 import { selectionMarks } from "@/editor/core/cm/selectionMarks";
+import { seamlessSelection } from "@/editor/core/cm/selectionLayer";
 import { findLanguageDescription, loadSupport } from "@/editor/core/cm/languages";
 import { tx } from "@/platform/i18n";
 import type { NotebookSession } from "./session";
@@ -45,6 +46,7 @@ export function CellEditor({
       lineNumbers(),
       drawSelection(),
       selectionMarks,
+      seamlessSelection(),
       highlightActiveLine(),
       highlightSpecialChars(),
       bracketMatching(),
@@ -78,7 +80,7 @@ export function CellEditor({
       language.of([]),
       readonly.current.of(EditorState.readOnly.of(session.getState().frozen)),
       EditorView.lineWrapping,
-      EditorView.theme({ "&": { height: "auto" }, ".cm-scroller": { maxHeight: "640px", overflow: "auto" } }),
+      EditorView.theme({ "&.cm-editor": { height: "auto" }, ".cm-scroller": { maxHeight: "640px", overflow: "auto" } }),
       EditorView.contentAttributes.of({
         "aria-label": tx(type === "code" ? "Python cell source" : "Markdown cell source"),
       }),

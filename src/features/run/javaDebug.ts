@@ -9,8 +9,9 @@
  * debugger (a script such as `catalina.sh run`) through `JAVA_TOOL_OPTIONS`, which every JVM reads.
  */
 import { executeAction } from "@/platform/actions";
-import type { RunConfig } from "@/platform/ipc";
+import { call, commands, type RunConfig } from "@/platform/ipc";
 import { isJvmApplication, JDWP_AGENT, jdwpListeningPort } from "@/platform/javaLaunch";
+import { applyBuildPolicyToCommand } from "./buildCommand";
 import { startRun, useRun } from "./store";
 import { DELEGATED_DEBUG, DELEGATED_MAIN } from "./gradleRun";
 
@@ -36,10 +37,15 @@ function withProperty(args: readonly string[], key: string, value: string): stri
   return out;
 }
 
-/** The configuration with a waiting JDWP agent, or null when it starts no debuggable JVM. */
-export function jdwpLaunch(config: RunConfig): RunConfig | null {
+/** The configuration with a waiting JDWP agent, or null when it starts no debuggable JVM.
+ *  `jdwpPort`: pin a Surefire / Failsafe fork to this port — its "Listening for transport"
+ *  line stays buffered until the tests run, which `suspend=y` prevents, so the port must be
+ *  known without it. */
+export function jdwpLaunch(config: RunConfig, jdwpPort?: number): RunConfig | null {
+  config = applyBuildPolicyToCommand(config);
   if (config.kind === "tomcat") return { ...config, params: { ...config.params, tomcatDebug: "true" } };
   const args = config.args;
+  if (config.kind === "jar-application") return { ...config, args: [JDWP_AGENT, ...args] };
   // A single source file (`java Hi.java`): the agent goes before the file. Compiled first
   // (`javac … && java -cp …`): through `JDK_JAVA_OPTIONS`, which only the `java` launcher reads.
   if (config.kind === "java-file")
@@ -51,8 +57,9 @@ export function jdwpLaunch(config: RunConfig): RunConfig | null {
       return { ...config, args: withProperty(args, "spring-boot.run.jvmArguments", JDWP_AGENT) };
     if (config.isTest || args.some(isMavenTestGoal)) {
       const failsafe = args.some((a) => /integration-test|verify|failsafe/.test(a));
-      let out = withProperty(args, "maven.surefire.debug", JDWP_AGENT);
-      if (failsafe) out = withProperty(out, "maven.failsafe.debug", JDWP_AGENT);
+      const agent = jdwpPort ? JDWP_AGENT.replace("address=127.0.0.1:0", `address=127.0.0.1:${jdwpPort}`) : JDWP_AGENT;
+      let out = withProperty(args, "maven.surefire.debug", agent);
+      if (failsafe) out = withProperty(out, "maven.failsafe.debug", agent);
       return { ...config, args: out };
     }
     if (JVM_ADAPTERS.includes(config.debugAdapter ?? "") || args.some(isMavenInProcessGoal))
@@ -63,6 +70,12 @@ export function jdwpLaunch(config: RunConfig): RunConfig | null {
     // A delegated Application: its init script adds the agent (port 0) to the JavaExec JVM.
     if (args.some((a) => a.startsWith(DELEGATED_MAIN)))
       return args.includes(DELEGATED_DEBUG) ? config : { ...config, args: [...args, DELEGATED_DEBUG] };
+    // Gradle Test forks test workers: the init script gives them a dynamic JDWP port.
+    if (config.isTest || args.some((a) => /(^|:)(test|integrationTest)$/.test(a)))
+      return args.includes(DELEGATED_DEBUG) ? config : { ...config, args: [...args, DELEGATED_DEBUG] };
+    // BootRun's init script gives the forked application JVM a dynamic port.
+    if (args.some((a) => /(^|:)bootRun$/.test(a)))
+      return args.includes(DELEGATED_DEBUG) ? config : { ...config, args: [...args, DELEGATED_DEBUG] };
     if (!args.some(isGradleJvmTask)) return null;
     return args.includes("--debug-jvm") ? config : { ...config, args: [...args, "--debug-jvm"] };
   }
@@ -72,13 +85,23 @@ export function jdwpLaunch(config: RunConfig): RunConfig | null {
   return null;
 }
 
+/** A Maven test launch: its Surefire / Failsafe fork holds the "Listening" line, so pin its JDWP port. */
+function needsPinnedPort(config: RunConfig): boolean {
+  if (config.kind !== "maven" && !/(^|\/)mvnw?(\.cmd)?$/.test(config.command)) return false;
+  return config.isTest || config.args.some(isMavenTestGoal);
+}
+
 /** Runs `config` with a JDWP agent and attaches the Java debugger to every JVM it starts. */
-export async function debugWithAgent(config: RunConfig): Promise<boolean> {
-  const launch = jdwpLaunch(config);
+export async function debugWithAgent(config: RunConfig, show?: boolean): Promise<boolean> {
+  const pinned = needsPinnedPort(config) ? await call(commands.debugFreePort()).catch(() => null) : null;
+  const launch = jdwpLaunch(config, pinned ?? undefined);
   if (!launch) return false;
   let sessionId: string | null = null;
   const waiting: number[] = [];
+  const attached = new Set<number>();
   const attach = (port: number) => {
+    if (attached.has(port)) return;
+    attached.add(port);
     const runId = useRun.getState().sessions.find((s) => s.id === sessionId)?.runId ?? null;
     void executeAction("debug.attach", {
       name: config.name,
@@ -88,10 +111,12 @@ export async function debugWithAgent(config: RunConfig): Promise<boolean> {
       port,
       process: runId,
       runConfig: config,
+      show,
     });
   };
   const session = await startRun(config, undefined, undefined, {
     launch,
+    show,
     onLine: (line) => {
       const port = jdwpListeningPort(line);
       if (port === null) return;
@@ -101,6 +126,8 @@ export async function debugWithAgent(config: RunConfig): Promise<boolean> {
   });
   if (!session) return true;
   sessionId = session.id;
+  // The pinned port needs no output line: java-debug retries the attach while the fork starts.
+  if (pinned !== null) attach(pinned);
   waiting.splice(0).forEach(attach);
   return true;
 }

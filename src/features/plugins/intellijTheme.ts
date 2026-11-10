@@ -89,6 +89,7 @@ export const ICLS_COLORS: Record<string, string[]> = {
   CARET_COLOR: ["--caret"],
   CARET_ROW_COLOR: ["--bg-current-line"],
   SELECTION_BACKGROUND: ["--bg-editor-selection"],
+  SELECTION_FOREGROUND: ["--fg-editor-selection"],
   LINE_NUMBERS_COLOR: ["--fg-line-number"],
   LINE_NUMBER_ON_CARET_ROW_COLOR: ["--fg-line-number-current"],
   // The new UI paints the gutter with this, else with the editor's background; `GUTTER_BACKGROUND` is the classic UI's.
@@ -109,7 +110,7 @@ export const ICLS_COLORS: Record<string, string[]> = {
   DELETED_LINES_COLOR: ["--gutter-deleted"],
 };
 
-type Part = "FOREGROUND" | "BACKGROUND" | "EFFECT_COLOR";
+type Part = "FOREGROUND" | "BACKGROUND" | "EFFECT_COLOR" | "ERROR_STRIPE_COLOR";
 
 /** `.icls` `<attributes>` options → [part, token] pairs. */
 export const ICLS_ATTRIBUTES: Record<string, Array<[Part, string]>> = {
@@ -117,14 +118,30 @@ export const ICLS_ATTRIBUTES: Record<string, Array<[Part, string]>> = {
     ["FOREGROUND", "--fg-editor"],
     ["BACKGROUND", "--bg-editor"],
   ],
-  DIFF_MODIFIED: [["BACKGROUND", "--diff-modified"]],
-  DIFF_INSERTED: [["BACKGROUND", "--diff-inserted"]],
-  DIFF_DELETED: [["BACKGROUND", "--diff-deleted"]],
+  DIFF_MODIFIED: [
+    ["BACKGROUND", "--diff-modified"],
+    ["ERROR_STRIPE_COLOR", "--diff-modified-stripe"],
+  ],
+  DIFF_INSERTED: [
+    ["BACKGROUND", "--diff-inserted"],
+    ["ERROR_STRIPE_COLOR", "--diff-inserted-stripe"],
+  ],
+  DIFF_DELETED: [
+    ["BACKGROUND", "--diff-deleted"],
+    ["ERROR_STRIPE_COLOR", "--diff-deleted-stripe"],
+  ],
+  DIFF_CONFLICT: [["ERROR_STRIPE_COLOR", "--diff-conflict-stripe"]],
   DEFAULT_KEYWORD: [["FOREGROUND", "--syn-keyword"]],
   DEFAULT_STRING: [["FOREGROUND", "--syn-string"]],
   DEFAULT_NUMBER: [["FOREGROUND", "--syn-number"]],
   DEFAULT_LINE_COMMENT: [["FOREGROUND", "--syn-comment"]],
   DEFAULT_DOC_COMMENT: [["FOREGROUND", "--syn-doc-comment"]],
+  DEFAULT_DOC_COMMENT_TAG: [["FOREGROUND", "--syn-doc-comment-tag"]],
+  DEFAULT_DOC_COMMENT_TAG_VALUE: [["FOREGROUND", "--syn-doc-comment-tag-value"]],
+  DEFAULT_DOC_MARKUP: [
+    ["FOREGROUND", "--syn-doc-markup"],
+    ["BACKGROUND", "--syn-doc-markup-bg"],
+  ],
   DEFAULT_FUNCTION_DECLARATION: [["FOREGROUND", "--syn-function"]],
   DEFAULT_FUNCTION_CALL: [["FOREGROUND", "--syn-function-call"]],
   DEFAULT_CLASS_NAME: [["FOREGROUND", "--syn-type"]],
@@ -171,6 +188,8 @@ export const ICLS_ATTRIBUTES: Record<string, Array<[Part, string]>> = {
   "PY.SELF_PARAMETER": [["FOREGROUND", "--syn-self"]],
   "PY.KEYWORD_ARGUMENT": [["FOREGROUND", "--syn-keyword-arg"]],
   "PY.DOC_COMMENT": [["FOREGROUND", "--syn-docstring"]],
+  "PY.DOC_COMMENT_TAG": [["FOREGROUND", "--syn-python-docstring-tag"]],
+  OPENIDEA_pyDocstringKeyword: [["FOREGROUND", "--syn-python-docstring-keyword"]],
   "PY.BUILTIN_NAME": [["FOREGROUND", "--syn-predefined"]],
   MARKDOWN_HEADER_LEVEL_1: [["FOREGROUND", "--syn-markup-heading"]],
   MARKDOWN_CODE_SPAN: [["FOREGROUND", "--syn-markup-code"]],
@@ -384,8 +403,6 @@ export interface ThemePackage {
   id: string;
   name: string;
   files: { path: string; text: string }[];
-  /** The package's themes: their id here and in the IntelliJ plugin (`sourceId`). */
-  themes: { id: string; sourceId: string; name: string }[];
 }
 
 /** `2.3` → `2.3.0`; IntelliJ plugin versions are not always semver. */
@@ -397,16 +414,15 @@ function semver(version: string | null): string {
 /** An OpenIDEA theme plugin (`intellij.<plugin>`) with every theme of an IntelliJ theme plugin. */
 export function intellijThemePackage(source: IntellijThemeSource): ThemePackage {
   const ids = new Set<string>();
-  const converted = source.themes.map((t) => {
+  const themes = source.themes.map((t) => {
     const c = convertIntellijTheme(t.theme, t.editorScheme ?? undefined);
     let id = c.theme.id;
     for (let n = 2; ids.has(id); n++) id = `${c.theme.id.slice(0, 44)}-${n}`;
     ids.add(id);
     c.theme.id = id;
-    return { sourceId: t.id, converted: c };
+    return c;
   });
-  if (converted.length === 0) throw new Error("The plugin has no themes");
-  const themes = converted.map((c) => c.converted);
+  if (themes.length === 0) throw new Error("The plugin has no themes");
   // Package metadata, not UI text: the plugin list shows it as written.
   const description = `${source.name}, imported from an IntelliJ theme plugin.`;
   const info: ThemePackageInfo = {
@@ -427,6 +443,5 @@ export function intellijThemePackage(source: IntellijThemeSource): ThemePackage 
         ...(c.scheme ? [{ path: `themes/${c.theme.id}.scheme.json`, text: json(c.scheme) }] : []),
       ]),
     ],
-    themes: converted.map(({ sourceId, converted: c }) => ({ id: c.theme.id, sourceId, name: c.theme.name })),
   };
 }

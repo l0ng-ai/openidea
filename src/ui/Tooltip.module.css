@@ -34,6 +34,18 @@
   flex-shrink: 0;
 }
 
+.stripe {
+  color: var(--fg-stripe-tooltip, var(--fg-tooltip));
+  padding: 8px 12px;
+  border-radius: 4px;
+  background: var(--bg-stripe-tooltip, var(--bg-tooltip));
+  border-color: var(--border-stripe-tooltip, var(--border-tooltip));
+  box-shadow: var(--shadow-stripe-tooltip, var(--shadow-tooltip));
+  line-height: 18px;
+}
+.stripe .shortcut {
+  color: color-mix(in srgb, var(--fg-stripe-tooltip, var(--fg-tooltip)) 80%, transparent);
+}
 @media (prefers-reduced-motion: reduce) {
   .tooltip[data-placed] {
     transition: none;

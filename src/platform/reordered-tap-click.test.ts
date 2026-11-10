@@ -87,6 +87,35 @@ describe("installReorderedTapClick", () => {
     expect(log.filter((l) => l.startsWith("click"))).toEqual(["click:1", "click:1"]);
   });
 
+  it("leaves a quick double-click alone when its second press shares the first release's timestamp", () => {
+    // Fast input (automation, a quick double-click) stamps both at the same time step.
+    el.dispatchEvent(ev("pointerdown", 5900.9));
+    el.dispatchEvent(ev("mousedown", 5900.9, { detail: 1 }));
+    el.dispatchEvent(ev("pointerup", 5901));
+    el.dispatchEvent(ev("mouseup", 5901));
+    el.dispatchEvent(ev("click", 5901, { detail: 1 }));
+    el.dispatchEvent(ev("pointerdown", 5901));
+    el.dispatchEvent(ev("mousedown", 5901, { detail: 2 }));
+    el.dispatchEvent(ev("pointerup", 5901));
+    el.dispatchEvent(ev("mouseup", 5901));
+    el.dispatchEvent(ev("click", 5901, { detail: 2 }));
+    el.dispatchEvent(ev("dblclick", 5912, { detail: 2 }));
+    vi.runAllTimers();
+    expect(log.filter((l) => /^(click|dblclick)/.test(l))).toEqual(["click:1", "click:2", "dblclick:2"]);
+  });
+
+  it("finishes nothing when the engine releases the press before the tick", () => {
+    el.dispatchEvent(ev("pointerup", 1393));
+    el.dispatchEvent(ev("pointerdown", 1386));
+    el.dispatchEvent(ev("mousedown", 1386, { detail: 1 }));
+    el.dispatchEvent(ev("pointerup", 1400));
+    el.dispatchEvent(ev("mouseup", 1400));
+    el.dispatchEvent(ev("click", 1400, { detail: 1 }));
+    vi.runAllTimers();
+    expect(log.filter((l) => l.startsWith("click"))).toEqual(["click:1"]);
+    expect(log.filter((l) => l.startsWith("pointerup"))).toHaveLength(2);
+  });
+
   it("repeats the double-click detail of the stale press", () => {
     reversedTap(1393, 1386, 2);
     expect(log).toContain("click:2");

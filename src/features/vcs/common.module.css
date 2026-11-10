@@ -111,6 +111,10 @@
   border-radius: var(--radius-small);
 }
 /* Push dialogs: the list fills the body so a resizable window shows more rows. */
+.pushDialog > [data-dialog-body] {
+  display: flex;
+  flex-direction: column;
+}
 .pushTreeWrap {
   flex: 1;
   min-height: 220px;
@@ -125,14 +129,32 @@
   flex-direction: column;
   padding: 0 14px 14px;
 }
+/* Push dialog: commits above their changed files, split by a draggable divider; the pair fills the body. */
+.pushSplit {
+  flex: 1;
+  min-height: min(540px, 60vh);
+}
+/* The panel's own `height: 100%` doesn't resolve against a flex-basis height in WebKit: stretch instead. */
+.pushSplit .pushSplitPanel {
+  height: auto;
+  align-self: stretch;
+}
+.pushSplitPanel > .pushListWrap {
+  min-height: 0;
+  padding-bottom: 8px;
+}
 /* Push dialogs: the outgoing commits' changed files below the commits, the diff beside them. */
 .pushChanges {
+  flex: 1;
   display: flex;
   flex-direction: column;
   min-height: 0;
+  padding-top: 8px;
 }
 .pushChanges .comparison {
-  height: min(360px, 45vh);
+  flex: 1;
+  height: auto;
+  min-height: 0;
   padding: 0 14px 14px;
 }
 .pushChangesTitle {
@@ -253,6 +275,29 @@
   width: 220px;
   margin-left: 6px;
 }
+/* Fits the remote and target fields into a 22px tree row. */
+.pushRowTarget {
+  --h-field: var(--h-control-small);
+  --h-control: var(--h-control-small);
+  display: inline-flex;
+  align-items: center;
+  gap: 2px;
+  min-width: 0;
+  font-size: var(--fs-small);
+}
+.pushRowTarget button {
+  font-size: var(--fs-small);
+}
+.pushRowSeparator {
+  color: var(--fg-faint);
+}
+.pushRowInput {
+  min-width: 0;
+  font-size: var(--fs-small);
+}
+.pushRowInput[data-changed]:not(:focus-visible) {
+  box-shadow: inset 0 0 0 1px var(--accent);
+}
 .choiceList {
   max-height: 240px;
   overflow: auto;
@@ -299,6 +344,31 @@
 .manageRowSelected,
 .manageRowSelected:hover {
   background: var(--bg-list-selected);
+}
+/* Worktrees dialog: the tree needs a height of its own inside the auto-sized body. */
+.worktreeListDialog {
+  height: 340px;
+  min-height: 0;
+}
+/* Worktrees tree rows: the worktree name keeps its width, the path is what gets cut short. */
+.worktreeIcon {
+  flex: none;
+  margin-right: 2px;
+  color: var(--fg-muted);
+}
+.worktreeLabel {
+  flex: none;
+  max-width: 45%;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.worktreeDetail {
+  min-width: 0;
+  margin-left: 4px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  color: var(--fg-muted);
 }
 
 .comparisonDialog > [data-dialog-body] {

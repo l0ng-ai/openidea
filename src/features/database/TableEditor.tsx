@@ -3,7 +3,7 @@
  * a WHERE filter, and pending cell edits / added / deleted rows submitted
  * together in one transaction. Tables without a primary key are read-only.
  */
-import { useCallback, useEffect, useMemo, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import {
   call,
   commands,
@@ -13,10 +13,11 @@ import {
   type DbTablePage,
   type RequestId,
 } from "@/platform/ipc";
-import { Button, EmptyState, Icon, IconButton, Select, Spinner, T, showContextMenu } from "@/ui";
+import { Button, EmptyState, Icon, IconButton, Select, Spinner, T, showContextMenu, tooltipAttrs } from "@/ui";
 import { notifications, type EditorInput } from "@/workbench/contributions";
 import { SqlFilterInput } from "./SqlFilterInput";
-import { DataView, ExtractorSelect, PanelToggle, exportMenu, type DataPanel } from "./DataView";
+import { ColumnsPopup } from "./ColumnsPopup";
+import { DataView, ExtractorSelect, PanelToggle, copyFormatOf, exportMenu, type DataPanel } from "./DataView";
 import type { ExportFormat } from "./export";
 import {
   buildRowEdits,
@@ -30,6 +31,7 @@ import {
 import { openDialog, sourceById, withConnection } from "./store";
 import type { TableRef } from "./tableInput";
 import styles from "./Database.module.css";
+import { registerTableEditor, tableEditorChanged, type TableEditorHandle } from "./tableEditorFocus";
 import { tx } from "@/platform/i18n";
 import { shortcutLabel } from "@/platform/keymap";
 
@@ -97,12 +99,17 @@ export function TableEditor({ input }: { input: EditorInput }) {
   const rowCount = loaded + edits.inserts.length;
   const gridColumns = useMemo(
     () =>
-      columns.map((c) => ({
-        name: c.name,
-        type: c.typeName,
-        primaryKey: pk.includes(c.name),
-        foreignKey: fkColumns.has(c.name),
-      })),
+      columns.map((c) => {
+        const d = page?.details.columns.find((x) => x.name === c.name);
+        return {
+          name: c.name,
+          type: d?.dataType ?? c.typeName,
+          primaryKey: pk.includes(c.name),
+          foreignKey: fkColumns.has(c.name),
+          nullable: d?.nullable,
+          default: d?.default ?? null,
+        };
+      }),
     // `pk` / `fkColumns` derive from `page`.
     // eslint-disable-next-line react-hooks/exhaustive-deps
     [page],
@@ -143,6 +150,16 @@ export function TableEditor({ input }: { input: EditorInput }) {
     });
   };
 
+  const onResetCell = (row: number, col: number) => {
+    setEdits((e) => {
+      const inserts = [...e.inserts];
+      const ins = new Map(inserts[row - loaded]);
+      ins.delete(names[col]!);
+      inserts[row - loaded] = ins;
+      return { ...e, inserts };
+    });
+  };
+
   const deleteRows = (rows: number[]) =>
     setEdits((e) => {
       const deletes = new Set(e.deletes);
@@ -179,9 +196,30 @@ export function TableEditor({ input }: { input: EditorInput }) {
     });
 
   const dirty = hasEdits(edits);
+  // Submit / Revert actions (⌘↩ / ⌥⌘Z) reach the latest state through the handle.
+  const viewRef = useRef<HTMLDivElement>(null);
+  const handle = useRef<TableEditorHandle>({
+    dirty: false,
+    submit: () => {},
+    revert: () => {},
+    showColumns: () => {},
+  }).current;
+  handle.dirty = editable && dirty;
+  handle.submit = () => {
+    if (editable && dirty) void submit();
+  };
+  handle.revert = () => setEdits(emptyEdits());
+  const [columnsAt, setColumnsAt] = useState<{ x: number; y: number } | null>(null);
+  const [revealColumn, setRevealColumn] = useState<{ col: number } | null>(null);
+  handle.showColumns = () => {
+    const r = viewRef.current?.getBoundingClientRect();
+    if (page && r) setColumnsAt({ x: r.left + r.width / 2, y: r.top + 48 });
+  };
+  useEffect(() => registerTableEditor(viewRef.current!, handle), [handle]);
+  useEffect(() => tableEditorChanged(handle), [handle, dirty, editable]);
   const orderInvalid = orderDraft !== null && !parseOrderBy(orderDraft, names);
   return (
-    <div className={styles.view}>
+    <div className={styles.view} ref={viewRef} data-db-table-editor="">
       <div className={styles.toolbar}>
         <IconButton icon="refresh" title="Reload Page" onClick={reload} disabled={loading} />
         <div className={styles.pager}>
@@ -218,10 +256,21 @@ export function TableEditor({ input }: { input: EditorInput }) {
               title="Add Row"
               onClick={() => setEdits((e) => ({ ...e, inserts: [...e.inserts, new Map()] }))}
             />
-            <Button size="small" variant="primary" disabled={!dirty} onClick={() => void submit()}>
+            <Button
+              size="small"
+              variant="primary"
+              disabled={!dirty}
+              onClick={() => void submit()}
+              {...tooltipAttrs("Submit", shortcutLabel("db.submitChanges"))}
+            >
               <T>Submit</T>
             </Button>
-            <Button size="small" disabled={!dirty} onClick={() => setEdits(emptyEdits())}>
+            <Button
+              size="small"
+              disabled={!dirty}
+              onClick={() => setEdits(emptyEdits())}
+              {...tooltipAttrs("Revert", shortcutLabel("db.revertChanges"))}
+            >
               <T>Revert</T>
             </Button>
           </>
@@ -328,9 +377,11 @@ export function TableEditor({ input }: { input: EditorInput }) {
             columns={gridColumns}
             rowCount={rowCount}
             fixedRows={loaded}
+            revealColumn={revealColumn}
             value={value}
             panel={panel}
             onPanelChange={setPanel}
+            copyFormat={copyFormatOf(extractor)}
             searchOpen={searchOpen}
             onSearchOpenChange={setSearchOpen}
             firstRowNumber={offset + 1}
@@ -338,6 +389,8 @@ export function TableEditor({ input }: { input: EditorInput }) {
             isModified={(r, c) => !!edits.updates.get(r)?.has(names[c]!)}
             editable={editable}
             onEdit={onEdit}
+            onResetCell={onResetCell}
+            driver={source?.driver}
             sort={sort}
             onSort={onSort}
             rowMenu={(rows) =>
@@ -354,6 +407,18 @@ export function TableEditor({ input }: { input: EditorInput }) {
             }
           />
         </div>
+      )}
+      {columnsAt && (
+        <ColumnsPopup
+          anchor={columnsAt}
+          table={ref.table}
+          columns={gridColumns}
+          onPick={(col) => {
+            setColumnsAt(null);
+            setRevealColumn({ col });
+          }}
+          onClose={() => setColumnsAt(null)}
+        />
       )}
     </div>
   );

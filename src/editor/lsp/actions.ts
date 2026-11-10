@@ -14,7 +14,8 @@ import { expressionTypeInfo } from "./typeInfo";
 import { gotoHighlightedUsage, gotoTargets, highlightUsages } from "./navigation";
 import { gotoDiagnostic, showErrorDescription } from "./diagnostics";
 import { applyKindSilently, applyQuickFix, runKindAction, showIntentions } from "./intentions";
-import { implementPythonAbstractMethods } from "./pythonMembers";
+import { docOf } from "./lsp";
+import { languageSemantics } from "./semantic";
 import { workflowSettings, type ActionsOnSaveValid } from "@/platform/workflowSettings";
 import { startRename } from "./rename";
 import { formatDocument, reformatDialog } from "./format";
@@ -124,12 +125,12 @@ function editorAction(
   return { id, title, category, when: EDITOR_WHEN, run: withEditor(run), ...extra };
 }
 
-/** Whether saving a `language` file formats it: Format on save, or Run on save of Prettier or oxfmt. */
+/** Whether saving a `language` file formats it: Format on save, or Run on save of an external formatter. */
 export function formatsOnSave(settings: Settings | null, language: string): boolean {
-  const { prettier, oxfmt } = validateLanguages(settings?.languages);
+  const { prettier, oxfmt, ruff } = validateLanguages(settings?.languages);
   return (
     !!settings?.editor?.formatOnSave ||
-    [prettier, oxfmt].some((formatter) => formatter.runOnSave && formatter.languages.includes(language))
+    [prettier, oxfmt, ruff].some((formatter) => formatter.runOnSave && formatter.languages.includes(language))
   );
 }
 
@@ -205,6 +206,13 @@ export function registerLspActions(): () => void {
       "Code",
       (v) => formatDocument(v, { explicit: true, tool: "oxfmt" }),
       { keywords: ["format", "oxfmt", "oxc"] },
+    ),
+    editorAction(
+      "code.reformatWithRuff",
+      "Reformat with Ruff",
+      "Code",
+      (v) => formatDocument(v, { explicit: true, tool: "ruff" }),
+      { keywords: ["format", "ruff", "python"] },
     ),
     editorAction("code.reformatDialog", "Reformat File…", "Code", (v) =>
       reformatDialog(v, (view) => applyKindSilently(view, "source.organizeImports")),
@@ -333,7 +341,7 @@ export function registerLspActions(): () => void {
         title: IMPLEMENT_TITLE,
         none: "Nothing to implement",
         label: "Implement Members",
-        fallback: () => implementPythonAbstractMethods(v),
+        fallback: () => languageSemantics(docOf(v)?.language)?.implementMethods?.(v) ?? Promise.resolve(false),
       }),
     ),
     editorAction("code.overrideMethods", "Override Methods…", "Code", (v) =>

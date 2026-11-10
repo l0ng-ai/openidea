@@ -58,16 +58,20 @@ fn bundled_lombok_replaces_legacy_installs_on_every_platform_without_downloads()
             fs::create_dir_all(legacy.parent().unwrap()).unwrap();
             fs::write(&legacy, b"old official agent").unwrap();
             fs::write(env.root.join("lombok").join(MANIFEST), r#"{"version":"1.18.48"}"#).unwrap();
+            let previous = env.root.join("lombok/bin/lombok-1.18.48-openidea.2.jar");
+            fs::write(&previous, b"previous bundled agent").unwrap();
             let tools = Tools::with_paths(env.root.clone(), OsString::new(), Platform { os, arch });
             let info = tools.info("lombok", &[]).unwrap();
             let path = managed_bundle(env.root.parent().unwrap(), "lombok").unwrap();
             assert_eq!(info.status, ToolStatus::Installed);
-            assert_eq!(info.version.as_deref(), Some("1.18.48-openidea.2"));
+            assert_eq!(info.version.as_deref(), Some("1.18.48-openidea.3"));
             assert_eq!(info.path, Some(path.clone().into()));
-            assert_eq!(path.file_name().unwrap(), "lombok-1.18.48-openidea.2.jar");
+            assert_eq!(path.file_name().unwrap(), "lombok-1.18.48-openidea.3.jar");
             assert!(!info.can_install && !info.can_uninstall);
             assert_eq!(tools.unavailable_reason(registry::find("lombok").unwrap()), None);
             assert_eq!(fs::read(&legacy).unwrap(), b"old official agent", "other windows may still use it");
+            assert_ne!(path, previous, "new agent path must invalidate the JDT LS workspace");
+            assert_eq!(fs::read(&previous).unwrap(), b"previous bundled agent", "other windows may still use it");
         }
     }
 }
@@ -145,6 +149,11 @@ fn everything_missing_on_an_empty_system() {
     assert_eq!(angular.command, "ngserver");
     assert_eq!(angular.install_method.as_deref(), Some("npm"));
     assert_eq!(angular.languages, ["HTML", "TypeScript"]);
+    let astro = find(&list, "astro-ls");
+    assert_eq!(astro.display_name, "Astro Language Server");
+    assert_eq!(astro.install_method.as_deref(), Some("npm"));
+    assert_eq!(astro.languages, ["Astro"]);
+    assert_eq!(astro.default_args, ["--stdio"]);
     // Servers without an installer are listed with their manual hint.
     let hls = find(&list, "haskell-language-server");
     assert_eq!(hls.install_method, None);
@@ -166,6 +175,10 @@ fn interchangeable_servers_list_their_alternatives() {
         assert_eq!(find(&list, name).alternatives, python);
     }
     assert_eq!(find(&list, "vtsls").alternatives, ["vtsls", "typescript-language-server"]);
+    for name in ["jdtls", "kmp-lsp"] {
+        assert_eq!(find(&list, name).alternatives, ["jdtls", "kmp-lsp"]);
+        assert_eq!(find(&list, name).languages, ["Java"]);
+    }
     // A regular server after a fallback starts no group with it.
     assert!(find(&list, "angular-language-server").alternatives.is_empty());
     assert!(find(&list, "ruff").alternatives.is_empty());
@@ -430,12 +443,15 @@ esac"#,
 #[test]
 fn npm_install_uses_tools_prefix() {
     let env = Env::new();
+    let sdk = env._tmp.path().join("selected-sdk/bin");
+    fs::create_dir_all(&sdk).unwrap();
     let log = env.root.parent().unwrap().join("npm-args.txt");
     env.script(
-        &env.sys,
+        &sdk,
         "npm",
         &format!(
-            r#"echo "$@" > '{log}'
+            r#"node --version >/dev/null || exit 98
+echo "$@" > '{log}'
 prefix=""; while [ $# -gt 0 ]; do [ "$1" = "--prefix" ] && prefix="$2"; shift; done
 /bin/mkdir -p "$prefix/node_modules/.bin" "$prefix/node_modules/bash-language-server"
 printf '#!/bin/sh\necho 5.4.0\n' > "$prefix/node_modules/.bin/bash-language-server"
@@ -445,7 +461,14 @@ echo "added 1 package""#,
             log = log.display()
         ),
     );
-    let info = env.tools().install("bash-language-server", &langs(), &CancellationToken::new(), &|_| {}).unwrap();
+    env.script(&sdk, "node", "exit 0");
+    env.script(&env.sys, "node", "exit 99");
+    env.script(&env.sys, "npm", "exit 99");
+    let tools = env.tools().with_runtime(
+        BTreeMap::from([("node".into(), sdk.join("node")), ("ruby".into(), env.sys.join("ruby"))]),
+        BTreeMap::new(),
+    );
+    let info = tools.install("bash-language-server", &langs(), &CancellationToken::new(), &|_| {}).unwrap();
     assert_eq!(info.status, ToolStatus::Installed);
     assert_eq!(info.version.as_deref(), Some("5.4.0"));
     let args = fs::read_to_string(&log).unwrap();
@@ -462,6 +485,7 @@ echo "added 1 package""#,
 fn npm_typescript_is_pinned_and_shared() {
     let env = Env::new();
     let log = env.root.parent().unwrap().join("npm-args.txt");
+    env.script(&env.sys, "node", "exit 0");
     env.script(
         &env.sys,
         "npm",
@@ -473,6 +497,7 @@ prefix=""; for a in "$@"; do [ "$prev" = "--prefix" ] && prefix="$a"; prev="$a";
 for a in "$@"; do case "$a" in
   typescript-language-server@latest) n=typescript-language-server;;
   @vue/language-server@latest) n=vue-language-server; d=@vue/language-server;;
+  @astrojs/language-server@latest) n=astro-ls; d=@astrojs/language-server;;
   *) continue;;
 esac
 d="${{d:-$n}}"; /bin/mkdir -p "$prefix/node_modules/$d"
@@ -483,7 +508,7 @@ done"#,
         ),
     );
     let tools = env.tools();
-    for name in ["vue-language-server", "typescript-language-server"] {
+    for name in ["vue-language-server", "typescript-language-server", "astro-ls"] {
         assert_eq!(
             tools.install(name, &langs(), &CancellationToken::new(), &|_| {}).unwrap().status,
             ToolStatus::Installed
@@ -494,6 +519,7 @@ done"#,
         assert!(line.contains("typescript@6") && !line.contains("typescript@latest"), "{line}");
     }
     assert!(installs.contains("@vue/language-server@latest"), "{installs}");
+    assert!(installs.contains("@astrojs/language-server@latest"), "{installs}");
 
     fs::write(&log, "").unwrap();
     tools.uninstall("vue-language-server", &langs()).unwrap();
@@ -573,14 +599,19 @@ fn elixir_ls_needs_elixir_and_lists_its_debugger() {
 #[test]
 fn gem_install_wraps_stubs_with_gem_home() {
     let env = Env::new();
+    let sdk = env._tmp.path().join("selected-sdk/bin");
+    fs::create_dir_all(&sdk).unwrap();
     // `gem install --no-document --install-dir <home> --bindir <bin> solargraph`
     env.script(
-        &env.sys,
+        &sdk,
         "gem",
         r#"home="$4"; bin="$6"; /bin/mkdir -p "$home/gems/solargraph-0.50.0" "$bin"
 printf '#!/bin/sh\necho "$GEM_HOME"\n' > "$bin/solargraph"; /bin/chmod +x "$bin/solargraph""#,
     );
-    let tools = env.tools();
+    env.script(&sdk, "ruby", "exit 0");
+    env.script(&env.sys, "ruby", "exit 99");
+    env.script(&env.sys, "gem", "exit 99");
+    let tools = env.tools().with_runtime(BTreeMap::from([("ruby".into(), sdk.join("ruby"))]), BTreeMap::new());
     let info = tools.install("solargraph", &langs(), &CancellationToken::new(), &|_| {}).unwrap();
     assert_eq!(info.status, ToolStatus::Installed);
     assert_eq!(info.version.as_deref(), Some("0.50.0"));
@@ -588,6 +619,56 @@ printf '#!/bin/sh\necho "$GEM_HOME"\n' > "$bin/solargraph"; /bin/chmod +x "$bin/
     assert_eq!(info.path.as_deref(), Some(wrapper.as_path()));
     let out = std::process::Command::new(&wrapper).output().unwrap();
     assert_eq!(String::from_utf8_lossy(&out.stdout).trim(), env.root.join("solargraph/gems").to_string_lossy());
+}
+
+#[cfg(unix)]
+#[test]
+fn ruby_lsp_installs_into_the_project_ruby_not_a_private_gem_home() {
+    let env = Env::new();
+    let sdk = env._tmp.path().join("selected-sdk/bin");
+    fs::create_dir_all(&sdk).unwrap();
+    let project = env._tmp.path().join("project");
+    fs::create_dir_all(&project).unwrap();
+    let marker = env._tmp.path().join("installed");
+    // Homebrew's Ruby: the gem bindir is not on the search path; only the Ruby knows it.
+    let bindir = env._tmp.path().join("gems/bin");
+    fs::create_dir_all(&bindir).unwrap();
+    env.script(&sdk, "ruby", &format!("echo '{}'", bindir.display()));
+    // `gem list --exact ruby-lsp` knows the gem once `gem install ruby-lsp` ran, in the cwd it was given.
+    env.script(
+        &sdk,
+        "gem",
+        &format!(
+            r#"case "$1" in
+install) echo "$PWD $@" > '{m}'; printf '#!/bin/sh\n' > '{b}/ruby-lsp'; /bin/chmod +x '{b}/ruby-lsp' ;;
+list) [ -f '{m}' ] && echo "ruby-lsp (0.26.11)" ;;
+uninstall) /bin/rm -f '{m}' ;;
+esac"#,
+            m = marker.display(),
+            b = bindir.display()
+        ),
+    );
+    env.script(&env.sys, "ruby", "exit 99");
+    env.script(&env.sys, "gem", "exit 99");
+    let tools = env.tools().with_runtime(BTreeMap::from([("ruby".into(), sdk.join("ruby"))]), BTreeMap::new());
+    let tools = tools.with_work_dir(Some(project.clone()));
+    assert_eq!(find(&tools.list(&langs()), "ruby-lsp").status, ToolStatus::Missing);
+    let info = tools.install("ruby-lsp", &langs(), &CancellationToken::new(), &|_| {}).unwrap();
+    assert_eq!(info.status, ToolStatus::OnPath);
+    assert_eq!(info.version.as_deref(), Some("0.26.11"));
+    // Found in the Ruby's own bindir, not reported as the `gem` command.
+    assert_eq!(info.path.as_deref(), Some(bindir.join("ruby-lsp").as_path()));
+    // Run in the project (so a version manager picks its Ruby), into the Ruby's own gem home.
+    let log = fs::read_to_string(&marker).unwrap();
+    assert!(log.starts_with(&*project.canonicalize().unwrap().to_string_lossy()), "{log}");
+    assert!(log.contains("install --no-document ruby-lsp") && !log.contains("--install-dir"), "{log}");
+    // No private gem home, no wrapper directory on the search path.
+    assert!(!env.root.join("ruby-lsp").exists());
+    // Uninstalling removes the gem, and an older managed copy.
+    fs::create_dir_all(env.root.join("ruby-lsp/gems")).unwrap();
+    let info = tools.uninstall("ruby-lsp", &langs()).unwrap();
+    assert_eq!(info.status, ToolStatus::Missing);
+    assert!(!env.root.join("ruby-lsp").exists());
 }
 
 #[cfg(unix)]
@@ -746,4 +827,89 @@ fn python_probes_run_in_an_empty_private_directory() {
     let out = String::from_utf8(out.stdout).unwrap();
     let dir = env.root.join(".python-cwd");
     assert_eq!(out.trim(), dir.canonicalize().unwrap().to_string_lossy());
+}
+
+#[cfg(unix)]
+#[test]
+fn go_installers_use_selected_sdk_instead_of_broken_mise_shim() {
+    for spec in registry::TOOLS.iter().filter(|s| matches!(s.method, registry::Method::Go { .. })) {
+        let env = Env::new();
+        env.script(&env.sys, "go", "echo 'mise ERROR No version is set for shim: go' >&2; exit 1");
+        let sdk = env._tmp.path().join("selected go");
+        let log = env._tmp.path().join("go.log");
+        env.script(
+            &sdk.join("bin"),
+            "go",
+            &format!(
+                r#"
+[ "$GOROOT" = '{sdk}' ] || exit 99
+echo "$@" >> '{log}'
+case "$1" in
+install) printf '#!/bin/sh\necho 1.2.3\n' > "$GOBIN/{command}"; /bin/chmod +x "$GOBIN/{command}" ;;
+version) echo 'mod example.com/tool v1.2.3' ;;
+esac
+"#,
+                sdk = sdk.display(),
+                log = log.display(),
+                command = spec.commands[0]
+            ),
+        );
+        let tools = env.tools().with_runtime(
+            BTreeMap::from([("go".into(), sdk.join("bin/go"))]),
+            BTreeMap::from([("GOROOT".into(), sdk.to_string_lossy().into_owned())]),
+        );
+        let info = tools.install(spec.name, &langs(), &CancellationToken::new(), &|_| {}).unwrap();
+        assert_eq!(info.status, ToolStatus::Installed, "{}", spec.name);
+        assert_eq!(info.version.as_deref(), Some("1.2.3"));
+        let log = fs::read_to_string(log).unwrap();
+        assert!(log.contains("install -v ") && log.contains("version -m"), "{log}");
+        tools.uninstall(spec.name, &langs()).unwrap();
+        assert!(
+            env.tools()
+                .install(spec.name, &langs(), &CancellationToken::new(), &|_| {})
+                .unwrap_err()
+                .message
+                .contains("failed")
+        );
+    }
+}
+
+#[cfg(unix)]
+#[test]
+fn selected_python_is_used_for_pip_and_uv_even_with_a_versioned_filename() {
+    let env = Env::new();
+    env.script(&env.sys, "python3", "exit 99");
+    let sdk = env._tmp.path().join("python-sdk");
+    let pip_log = env._tmp.path().join("pip.log");
+    env.script(
+        &sdk,
+        "python3.14",
+        &format!(
+            r#"
+echo "$@" >> '{log}'
+[ "$1" = "-c" ] && exit 1
+while [ $# -gt 0 ]; do
+    if [ "$1" = "--target" ]; then
+        /bin/mkdir -p "$2/debugpy" "$2/debugpy-1.2.3.dist-info"
+        /usr/bin/touch "$2/debugpy/__init__.py"
+        exit 0
+    fi
+    shift
+done
+exit 1
+"#,
+            log = pip_log.display()
+        ),
+    );
+    let tools = env.tools().with_runtime(BTreeMap::from([("python".into(), sdk.join("python3.14"))]), BTreeMap::new());
+    assert_eq!(tools.python(), Some(sdk.join("python3.14")));
+    let info = tools.install("debugpy", &langs(), &CancellationToken::new(), &|_| {}).unwrap();
+    assert_eq!(info.status, ToolStatus::Installed);
+    assert_eq!(info.version.as_deref(), Some("1.2.3"));
+    assert!(fs::read_to_string(pip_log).unwrap().contains("-m pip install"));
+    let log = env._tmp.path().join("uv.log");
+    env.script(&env.sys, "uv", &format!("echo \"$@\" >> '{}'; exit 1", log.display()));
+    let _ = tools.install("ruff", &langs(), &CancellationToken::new(), &|_| {});
+    let args = fs::read_to_string(log).unwrap();
+    assert!(args.contains(&format!("--python {}", sdk.join("python3.14").display())), "{args}");
 }

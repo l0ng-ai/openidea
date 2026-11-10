@@ -247,11 +247,37 @@ fn approvals_offer_what_codex_offers_and_always_a_decline() {
     assert_eq!(
         command_approval_title(
             &json!({"command": "/bin/zsh -lc 'ls'", "commandActions": [{"type": "unknown", "command": "touch b"}]}),
-            None,
             None
         ),
-        "Run touch b"
+        "Run ls"
     );
+}
+
+#[test]
+fn approval_title_shows_the_script_inside_a_shell_wrapper() {
+    let title = |command: &str| command_approval_title(&json!({ "command": command }), None);
+    assert_eq!(
+        title(r#"/bin/zsh -lc "python3 -c 'import pathlib\np = pathlib.Path(\"a.txt\")'""#),
+        "Run python3 -c 'import pathlib\\np = pathlib.Path(\"a.txt\")'"
+    );
+    assert_eq!(title(r#"bash -lc 'echo '\''hi'\'''"#), "Run echo 'hi'");
+    assert_eq!(title("/bin/zsh -lc ls"), "Run /bin/zsh -lc ls");
+    assert_eq!(title("/bin/zsh -lc 'ls' && rm x"), "Run /bin/zsh -lc 'ls' && rm x");
+    assert_eq!(title("python3 -c 'print(1)'"), "Run python3 -c 'print(1)'");
+}
+
+#[test]
+fn approval_command_uses_its_request_and_matching_item_only() {
+    let command = "python3 -c 'import pathlib\np = pathlib.Path(\"note.txt\")\np.write_text(\"hi\\n\")'";
+    let pending_read = json!({"id": "read", "type": "commandExecution", "command": "ls",
+        "commandActions": [{"type": "listFiles", "path": "."}]});
+    let request = json!({"itemId": "write", "command": command});
+    assert_eq!(command_approval_title(&request, Some(&pending_read)), format!("Run {command}"));
+    let item = json!({"id": "write", "command": command});
+    let request = json!({"itemId": "write"});
+    assert_eq!(command_approval_title(&request, Some(&item)), format!("Run {command}"));
+    assert_eq!(command_approval_title(&request, Some(&pending_read)), "Run a command");
+    assert_eq!(command_approval_title(&request, None), "Run a command");
 }
 
 #[test]
@@ -314,6 +340,39 @@ impl Client {
             .filter_map(|u| u.pointer("/content/text").and_then(Value::as_str).map(str::to_owned))
             .collect()
     }
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn questions_share_one_card_and_keep_their_ids() {
+    let client = Arc::new(Client::default());
+    client.answers.lock().extend([Some(r#"{"first":["One"],"second":["Two","Custom"]}"#), None, Some("invalid")]);
+    let (ours, theirs) = tokio::io::duplex(1 << 16);
+    let (read, write) = tokio::io::split(theirs);
+    let codex = Peer::connect_framed(read, write, Arc::new(ide_jsonrpc::NoopHandler), Framing::Lines);
+    let acp = attach(client.clone(), |events| {
+        let (read, write) = tokio::io::split(ours);
+        Ok(Peer::connect_framed(read, write, events, Framing::Lines))
+    })
+    .unwrap();
+    let params = json!({"threadId": "s", "itemId": "q", "questions": [
+        {"id": "first", "question": "Which?", "options": [{"label": "One", "description": "First"}]},
+        {"id": "second", "question": "Which?", "multiSelect": true, "options": [{"label": "Two"}]}
+    ]});
+    for expected in
+        [json!({"first": {"answers": ["One"]}, "second": {"answers": ["Two", "Custom"]}}), json!({}), json!({})]
+    {
+        let reply: Value = codex.request("item/tool/requestUserInput", params.clone(), None).await.unwrap();
+        assert_eq!(reply, json!({"answers": expected}));
+    }
+    let asked = client.asked.lock();
+    assert_eq!(asked.len(), 3);
+    let questions = &asked[0]["toolCall"]["_meta"]["questions"];
+    assert_eq!(questions.as_array().unwrap().len(), 2);
+    assert_eq!(questions[0]["answerKey"], "first");
+    assert_eq!(questions[1]["answerKey"], "second");
+    assert_eq!(questions[0]["options"][0]["description"], "First");
+    acp.kill();
+    codex.kill();
 }
 
 #[derive(Clone, Copy, Debug, PartialEq)]
@@ -469,12 +528,21 @@ async fn play<R: AsyncRead + Unpin, W: AsyncWrite + Unpin>(
     let mut sent = Vec::new();
     for (out, frame) in &t.frames {
         if *out {
-            let line = tokio::time::timeout(Duration::from_secs(10), lines.next_line())
-                .await
-                .unwrap_or_else(|_| panic!("the shim didn't send {frame}"))
-                .unwrap()
-                .unwrap_or_else(|| panic!("the shim closed before {frame}"));
-            let actual: Value = serde_json::from_str(&line).unwrap();
+            let actual: Value = loop {
+                let line = tokio::time::timeout(Duration::from_secs(10), lines.next_line())
+                    .await
+                    .unwrap_or_else(|_| panic!("the shim didn't send {frame}"))
+                    .unwrap()
+                    .unwrap_or_else(|| panic!("the shim closed before {frame}"));
+                let actual: Value = serde_json::from_str(&line).unwrap();
+                // Older recordings predate skill discovery; play an unsupported server.
+                if actual["method"] == "skills/list" && frame["method"] != "skills/list" {
+                    let reply = json!({ "id": actual["id"], "error": { "code": -32601, "message": "unsupported" } });
+                    write.write_all(format!("{reply}\n").as_bytes()).await.unwrap();
+                    continue;
+                }
+                break actual;
+            };
             match frame.get("method") {
                 Some(method) => {
                     assert_eq!(actual.get("method"), Some(method), "expected {frame}, got {actual}");
@@ -562,6 +630,23 @@ async fn auth_failure_names_auth() {
     assert!(start["params"]["approvalPolicy"].is_string() && start["params"]["sandboxPolicy"].is_object());
     assert_eq!(start["params"]["input"], json!([{"type": "text", "text": "Reply with the single word: hi"}]));
     assert!(start.get("jsonrpc").is_some(), "codex accepts the jsonrpc field");
+}
+
+#[test]
+fn request_errors_classify_authentication_without_matching_author_or_protocol_errors() {
+    for (code, message, expected) in [
+        (codes::INTERNAL_ERROR, "Missing author field", codes::INTERNAL_ERROR),
+        (codes::INTERNAL_ERROR, "Unknown authority", codes::INTERNAL_ERROR),
+        (codes::INTERNAL_ERROR, "Authentication failed: expired token", AUTH_REQUIRED),
+        (codes::INTERNAL_ERROR, "Unauthorized", AUTH_REQUIRED),
+        (codes::METHOD_NOT_FOUND, "authentication method not found", codes::METHOD_NOT_FOUND),
+        (AUTH_REQUIRED, "Account is not eligible", AUTH_REQUIRED),
+    ] {
+        let response = from_codex(RpcError::Server { code, message: message.into(), data: Some(json!({"detail": 1})) });
+        assert_eq!(response.code, expected, "{message}");
+        assert_eq!(response.message, message);
+        assert_eq!(response.data, Some(json!({"detail": 1})));
+    }
 }
 
 #[tokio::test(flavor = "multi_thread")]
@@ -967,4 +1052,130 @@ fn scrub(line: &str, paths: &[(&str, &str)]) -> String {
 fn v_method(line: &str) -> Option<&str> {
     let at = line.find("\"method\":\"")? + 10;
     line[at..].split('"').next()
+}
+
+#[test]
+fn session_mcp_servers_become_thread_configuration() {
+    assert!(mcp_config(&json!({"mcpServers":[]})).is_none());
+    assert_eq!(
+        mcp_config(&json!({"mcpServers":[{"name":"OpenIDEA","command":"/app/openidea",
+        "args":["--mcp-stdio","--project","/project"],"env":[{"name":"K","value":"V"}]}]})),
+        Some(
+            json!({"mcp_servers":{"OpenIDEA":{"command":"/app/openidea","args":["--mcp-stdio","--project","/project"],"env":{"K":"V"}}}})
+        )
+    );
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn skills_are_listed_for_sessions_and_refreshed_on_change() {
+    for (method, native) in
+        [("session/new", "thread/start"), ("session/load", "thread/resume"), ("session/fork", "thread/fork")]
+    {
+        for initial in [
+            json!({"result": {"data": [{"cwd": "/work", "errors": [], "skills": [
+                {"name": "review", "enabled": true, "description": "Review", "path": "/work/SKILL.md", "scope": "repo"}
+            ]}]}}),
+            json!({"error": {"code": -32601, "message": "unsupported"}}),
+            json!({"result": {}}),
+        ] {
+            let listed = initial.pointer("/result/data").is_some();
+            let mut initial = initial;
+            initial["id"] = json!(4);
+            let transcript = Transcript {
+                meta: Value::Null,
+                frames: vec![
+                    (true, json!({"id": 1, "method": "initialize"})),
+                    (false, json!({"id": 1, "result": {}})),
+                    (true, json!({"method": "initialized"})),
+                    (true, json!({"id": 2, "method": "model/list"})),
+                    (false, json!({"id": 2, "result": {"data": []}})),
+                    (true, json!({"id": 3, "method": native})),
+                    (
+                        false,
+                        json!({"id": 3, "result": {"thread": {"id": "s", "cwd": "/work", "turns": []}, "cwd": "/work"}}),
+                    ),
+                    (true, json!({"id": 4, "method": "skills/list"})),
+                    (false, initial),
+                    (true, json!({"id": 5, "method": "turn/start"})),
+                    (false, json!({"id": 5, "error": {"code": -32602, "message": "no model in this test"}})),
+                    (false, json!({"method": "skills/changed", "params": {}})),
+                    (true, json!({"id": 6, "method": "skills/list"})),
+                    (false, json!({"id": 6, "result": {"data": [{"cwd": "/work", "skills": [], "errors": []}]}})),
+                    (false, json!({"method": "skills/changed", "params": {}})),
+                    (true, json!({"id": 7, "method": "skills/list"})),
+                    (false, json!({"id": 7, "error": {"code": -32603, "message": "listing failed"}})),
+                    (false, json!({"method": "skills/changed", "params": {}})),
+                    (true, json!({"id": 8, "method": "skills/list"})),
+                    (false, json!({"id": 8, "result": {"data": []}})),
+                ],
+            };
+            let (ours, theirs) = tokio::io::duplex(1 << 16);
+            let client = Arc::new(Client::default());
+            let acp = attach(client.clone(), |events| {
+                let (read, write) = tokio::io::split(ours);
+                Ok(Peer::connect_framed(read, write, events, Framing::Lines))
+            })
+            .unwrap();
+            let (read, write) = tokio::io::split(theirs);
+            let player = tokio::spawn(async move { play(&transcript, read, write).await });
+            request(&acp, "initialize", json!({})).await.unwrap();
+            request(&acp, method, json!({"sessionId": "s", "cwd": "/work"})).await.unwrap();
+            let initial_updates = client.of("s");
+            assert_eq!(initial_updates.len(), usize::from(listed), "{method}");
+            if listed {
+                assert_eq!(initial_updates[0]["availableCommands"][0]["name"], "$review");
+                assert_eq!(initial_updates[0]["availableCommands"][0]["source"], "skill");
+            }
+            assert!(
+                request(&acp, "session/prompt", json!({"sessionId": "s", "prompt": text("/$review check this")}))
+                    .await
+                    .is_err()
+            );
+            let (frames, _read, _write) = player.await.unwrap();
+            for frame in sent(&frames, "skills/list") {
+                assert_eq!(frame["params"], json!({"cwds": ["/work"]}));
+            }
+            assert_eq!(
+                sent(&frames, "turn/start")[0]["params"]["input"],
+                json!([{"type": "text", "text": "/$review check this"}])
+            );
+            tokio::time::timeout(Duration::from_secs(5), async {
+                while client.of("s").len() < usize::from(listed) + 2 {
+                    tokio::task::yield_now().await;
+                }
+            })
+            .await
+            .unwrap();
+            let updates = client.of("s");
+            assert_eq!(updates.len(), usize::from(listed) + 2);
+            assert_eq!(updates.last().unwrap()["availableCommands"], json!([]));
+            acp.kill();
+        }
+    }
+}
+
+#[test]
+fn skills_become_commands_with_their_invocation_names() {
+    let update = skill_commands(&json!({"data": [{"skills": [
+        {"name": "review", "enabled": true, "description": "Long", "shortDescription": "Short"},
+        {"name": "review", "enabled": true, "description": "Duplicate"},
+        {"name": "hidden", "enabled": false, "description": "Disabled"},
+        {"name": "modern", "enabled": true, "description": "Long", "interface": {"shortDescription": "Modern"}},
+        {"name": "full", "enabled": true, "description": "Full description"},
+        {"name": "", "enabled": true}, {"description": "No name"}
+    ]}]}))
+    .unwrap();
+    assert_eq!(
+        update,
+        json!({"sessionUpdate": "available_commands_update", "availableCommands": [
+            {"name": "$review", "description": "Short", "source": "skill", "input": null},
+            {"name": "$modern", "description": "Modern", "source": "skill", "input": null},
+            {"name": "$full", "description": "Full description", "source": "skill", "input": null}
+        ]})
+    );
+    let commands = crate::config::commands_of(&update, "codex");
+    assert!(commands.iter().all(|c| c.source == crate::AgentCommandSource::Skill));
+    assert_eq!(commands[0].name, "$review");
+    assert!(skill_commands(&json!({"data": []})).unwrap()["availableCommands"].as_array().unwrap().is_empty());
+    assert!(skill_commands(&json!({})).is_none());
 }

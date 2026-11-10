@@ -1,5 +1,5 @@
 import { expect, it, vi } from "vitest";
-import { registerRunningProcessesProvider, runningProcesses } from "./contributions";
+import { registerRunningProcessesProvider, runningProcesses, stopRunningProcesses } from "./contributions";
 
 it("collects live processes from every provider, one entry per name", async () => {
   const first = vi.fn(async () => [{ name: "app" }, { name: "worker" }]);
@@ -32,4 +32,18 @@ it("keeps a replacement provider registered when its predecessor is disposed", a
     disposeNew();
   }
   expect(await runningProcesses()).toEqual([]);
+});
+
+it("asks every provider to stop, gracefully and then killed", async () => {
+  const stop = vi.fn(async () => {});
+  const dispose = registerRunningProcessesProvider({ id: "test.stop", running: () => [{ name: "app" }], stop });
+  try {
+    await stopRunningProcesses(false);
+    expect(stop).toHaveBeenLastCalledWith(false);
+    await stopRunningProcesses(true);
+    expect(stop).toHaveBeenLastCalledWith(true);
+    expect(stop).toHaveBeenCalledTimes(2);
+  } finally {
+    dispose();
+  }
 });

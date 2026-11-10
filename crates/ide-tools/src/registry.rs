@@ -13,6 +13,8 @@ pub enum ToolKind {
     /// Loaded into another tool's process, e.g. a jdtls agent.
     Plugin,
     Formatter,
+    /// A command the IDE itself runs, e.g. the Dev Containers CLI.
+    Cli,
 }
 
 /// Where release archives come from.
@@ -49,6 +51,11 @@ pub enum Method {
     PipTarget { package: &'static str, module: &'static str },
     /// `gem install` into `<tools>/<name>/gems`, launched through `GEM_HOME` wrappers in `bin/`.
     Gem { gem: &'static str },
+    /// `gem install <gem>` into the active Ruby (the project's, installed from a project window),
+    /// launched through that Ruby's own executables. For tools that re-launch themselves under
+    /// Bundler (ruby-lsp), which breaks in a gem home under a path with spaces
+    /// (`~/Library/Application Support`: Bundler `exec`s a lone path string, and Ruby splits it).
+    GemActive { gem: &'static str },
     /// `dotnet tool install --tool-path <tools>/<name>/tool <package>`, launched
     /// through `DOTNET_ROOT` wrappers in `bin/`.
     DotnetTool { package: &'static str },
@@ -64,6 +71,7 @@ impl Method {
             Method::Npm { .. } => "npm",
             Method::Go { .. } => "go install",
             Method::Gem { .. } => "gem",
+            Method::GemActive { .. } => "gem (project Ruby)",
             Method::DotnetTool { .. } => "dotnet tool",
             Method::PipVenv { .. } => "pip (virtualenv)",
             Method::PipUser { .. } => "pip --user",
@@ -106,7 +114,7 @@ impl ToolSpec {
 
 use Arch::{Arm64, X64};
 use Os::{Linux, Mac, Windows};
-use ToolKind::{Debugger, Formatter, LanguageServer, Plugin};
+use ToolKind::{Cli, Debugger, Formatter, LanguageServer, Plugin};
 
 const V: Option<(&str, &[&str])> = None;
 const JAVA: &[(&str, &str)] = &[("java", "Java is required (https://adoptium.net)")];
@@ -133,6 +141,17 @@ pub static TOOLS: &[ToolSpec] = &[
         version: ver("prettier"),
         needs: NODE,
         homepage: "https://prettier.io",
+    },
+    ToolSpec {
+        name: "devcontainer",
+        display: "Dev Containers CLI",
+        kind: Cli,
+        commands: &["devcontainer"],
+        method: Method::Npm { packages: &["@devcontainers/cli"] },
+        fallback: None,
+        version: ver("devcontainer"),
+        needs: NODE,
+        homepage: "https://github.com/devcontainers/cli",
     },
     ToolSpec {
         name: "oxfmt",
@@ -322,6 +341,17 @@ pub static TOOLS: &[ToolSpec] = &[
         needs: &[],
     },
     ToolSpec {
+        name: "astro-ls",
+        display: "Astro Language Server",
+        kind: LanguageServer,
+        commands: &["astro-ls"],
+        method: Method::Npm { packages: &["@astrojs/language-server", TYPESCRIPT] },
+        fallback: None,
+        version: V,
+        homepage: "https://github.com/withastro/astro/tree/main/packages/language-tools",
+        needs: NODE,
+    },
+    ToolSpec {
         name: "svelte-language-server",
         display: "Svelte Language Server",
         kind: LanguageServer,
@@ -375,6 +405,35 @@ pub static TOOLS: &[ToolSpec] = &[
         fallback: None,
         version: V,
         homepage: "https://intelephense.com",
+        needs: &[],
+    },
+    ToolSpec {
+        name: "laravel-lsp",
+        display: "Laravel LSP",
+        kind: LanguageServer,
+        commands: &["laravel-lsp"],
+        // Plain binaries per platform (`server-v*-<arch>-<os>[.exe]`).
+        method: Method::Release {
+            source: ReleaseSource::GitHub { repo: "laravel/lsp" },
+            assets: &[
+                rule(Mac, Arm64, "server-v*-arm64-darwin"),
+                rule(Mac, X64, "server-v*-x64-darwin"),
+                rule(Linux, Arm64, "server-v*-arm64-linux"),
+                rule(Linux, X64, "server-v*-x64-linux"),
+                rule(Windows, X64, "server-v*-x64-win32.exe"),
+            ],
+            locate: &[
+                "laravel-lsp",
+                "server-v*-arm64-darwin",
+                "server-v*-x64-darwin",
+                "server-v*-arm64-linux",
+                "server-v*-x64-linux",
+                "server-v*-x64-win32",
+            ],
+        },
+        fallback: None,
+        version: ver("laravel-lsp"),
+        homepage: "https://github.com/laravel/lsp",
         needs: &[],
     },
     ToolSpec {
@@ -613,6 +672,30 @@ pub static TOOLS: &[ToolSpec] = &[
         needs: &[],
     },
     ToolSpec {
+        name: "kmp-lsp",
+        display: "kmp-lsp",
+        kind: LanguageServer,
+        commands: &["kmp-lsp"],
+        method: Method::Release {
+            source: ReleaseSource::GitHub { repo: "Hessesian/kmp-lsp" },
+            // These distributions include the native JAR indexer next to the server.
+            // The single-binary .gz and Windows .zip assets do not.
+            assets: &[
+                rule(Mac, Arm64, "kmp-lsp-darwin-aarch64.tar.gz"),
+                rule(Mac, X64, "kmp-lsp-darwin-x86_64.tar.gz"),
+                rule(Linux, Arm64, "kmp-lsp-linux-aarch64.tar.gz"),
+                rule(Linux, X64, "kmp-lsp-linux-x86_64.tar.gz"),
+                rule(Windows, Arm64, "kmp-lsp-win32-arm64-*.vsix"),
+                rule(Windows, X64, "kmp-lsp-win32-x64-*.vsix"),
+            ],
+            locate: &["kmp-lsp"],
+        },
+        fallback: None,
+        version: ver("kmp-lsp"),
+        homepage: "https://github.com/Hessesian/kmp-lsp",
+        needs: &[],
+    },
+    ToolSpec {
         name: "java-debug",
         display: "Java Debugger (Microsoft java-debug)",
         kind: Debugger,
@@ -640,12 +723,13 @@ pub static TOOLS: &[ToolSpec] = &[
         // Equinox removed getModuleClassLoader(boolean), breaking lombok.config lookup (lombok#4059);
         // ECJ 3.46.200 keeps the constructor call in a constructor's statements, which
         // @SneakyThrows / @NonNull must not wrap or precede (lombok#4089).
-        // Return to Maven Central once an official release includes both.
+        // Builders on compact record constructors need the patch in java/lombok/patches.
+        // Return to Maven Central once an official release includes all of these fixes.
         // Source commit, build instructions and checksum: java/lombok/README.md.
         method: Method::Bundled {
-            filename: "lombok-1.18.48-openidea.2.jar",
-            version: "1.18.48-openidea.2",
-            bytes: include_bytes!("../../../java/lombok/lombok-1.18.48-openidea.2.jar"),
+            filename: "lombok-1.18.48-openidea.3.jar",
+            version: "1.18.48-openidea.3",
+            bytes: include_bytes!("../../../java/lombok/lombok-1.18.48-openidea.3.jar"),
         },
         fallback: None,
         version: V,
@@ -940,7 +1024,7 @@ pub static TOOLS: &[ToolSpec] = &[
         display: "Ruby LSP (Shopify)",
         kind: LanguageServer,
         commands: &["ruby-lsp"],
-        method: Method::Gem { gem: "ruby-lsp" },
+        method: Method::GemActive { gem: "ruby-lsp" },
         fallback: None,
         version: V,
         homepage: "https://shopify.github.io/ruby-lsp",
@@ -1013,8 +1097,8 @@ mod tests {
                 known.insert((d.adapter.clone(), d.command.clone()));
             }
         }
-        // The host selects the formatter of each file (Prettier or oxfmt).
-        for t in TOOLS.iter().filter(|t| !matches!(t.kind, Plugin | Formatter)) {
+        // The host selects the formatter of each file (Prettier or oxfmt) and runs its own CLIs.
+        for t in TOOLS.iter().filter(|t| !matches!(t.kind, Plugin | Formatter | Cli)) {
             assert!(
                 known.contains(&(t.name.to_string(), t.commands[0].to_string())),
                 "{} / {} is not referenced by languages/*.toml",

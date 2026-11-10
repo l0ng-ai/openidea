@@ -12,11 +12,13 @@
 <p align="center">
   <a href="https://github.com/l0ng-ai/openidea/releases/latest"><b>Download</b></a>
   &nbsp;·&nbsp;
+  <a href="https://openidea.sh">Docs</a>
+  &nbsp;·&nbsp;
   <a href="#benchmark">Benchmark</a>
   &nbsp;·&nbsp;
   <a href="#plugins">Plugins</a>
   &nbsp;·&nbsp;
-  <a href="https://discord.gg/2Zy4yn7gP">Discord</a>
+  <a href="#community">Community</a>
 </p>
 
 https://github.com/user-attachments/assets/234dd54c-1255-4b3a-b35c-533d78d737c0
@@ -54,8 +56,17 @@ themes, file icons and languages. They run as sandboxed WebAssembly components;
 themes, icon themes and languages need no code at all.
 
 Install them from Settings › Plugins, or start your own with
-`openidea-plugin new` — see [Writing OpenIDEA plugins](plugins/README.md) and
+`openidea-plugin new` — see [Writing OpenIDEA plugins](https://openidea.sh/en/plugins) and
 the [official plugins](plugins/official). The plugin API is still a preview.
+
+## Community
+
+- [Discord](https://discord.gg/2Zy4yn7gP) — questions, feedback and release news.
+- WeChat group — scan to join:
+
+  <img src=".github/assets/wechat-group.png" alt="WeChat group QR code" width="200">
+
+- Contributing: see [CONTRIBUTING.md](CONTRIBUTING.md) and the [contributor docs](https://openidea.sh/en/contribute/setup).
 
 ## License
 

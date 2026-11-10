@@ -1,13 +1,12 @@
 /**
  * Database tool window (IDEA's layout): data source → database (PostgreSQL) → schema → `tables` /
- * `views` / `materialized views` / `routines` / `sequences` folders → table → `columns` / `keys` /
- * `foreign keys` / `indexes` / `triggers`,
+ * `views` / `materialized views` / `routines` (optionally `procedures` / `functions`) / `packages` /
+ * `sequences` folders → table → `columns` / `keys` / `foreign keys` / `indexes` / `triggers`,
  * with counts and column types, loaded lazily. Double-click a table to open its data, a data
  * source to open its query console.
  */
 import { useEffect, useMemo, useRef, type CSSProperties } from "react";
 import type { DbDatabases, DbTableDetails } from "@/platform/ipc";
-import { setContext } from "@/platform/context";
 import { executeAction } from "@/platform/actions";
 import { shortcutLabel } from "@/platform/keymap";
 import {
@@ -16,14 +15,32 @@ import {
   Icon,
   IconButton,
   Menu,
+  SearchField,
   Tree,
   showContextMenu,
   tooltipAttrs,
   type TreeHandle,
   T,
 } from "@/ui";
-import { colorVar, databaseKey, passesObjectFilter, shownNames, sourceIcon, splitTarget, targetOf } from "./model";
-import { nodeTarget, schemaObjectOf, tableFolder, type DbNode as Node, type Folder, type Group } from "./nodes";
+import {
+  colorVar,
+  databaseKey,
+  passesObjectFilter,
+  passesTreeFilter,
+  shownNames,
+  sourceIcon,
+  splitTarget,
+  targetOf,
+} from "./model";
+import {
+  nodeTarget,
+  routineFolder,
+  schemaObjectOf,
+  tableFolder,
+  type DbNode as Node,
+  type Folder,
+  type Group,
+} from "./nodes";
 import {
   connect,
   detailsKey,
@@ -57,10 +74,22 @@ const FOLDER_LABELS: Record<Folder, string> = {
   views: "views",
   materializedViews: "materialized views",
   routines: "routines",
+  procedures: "procedures",
+  functions: "functions",
+  packages: "packages",
   sequences: "sequences",
 };
 
-const FOLDERS: readonly Folder[] = ["tables", "views", "materializedViews", "routines", "sequences"];
+const FOLDERS: readonly Folder[] = ["tables", "views", "materializedViews", "routines", "packages", "sequences"];
+const SEPARATE_FOLDERS: readonly Folder[] = [
+  "tables",
+  "views",
+  "materializedViews",
+  "procedures",
+  "functions",
+  "packages",
+  "sequences",
+];
 
 function status<T>(key: string, l: Loaded<T> | undefined, map: (v: T) => Node[]): Node[] | undefined {
   if (!l) return undefined;
@@ -92,6 +121,7 @@ function groupSize(d: DbTableDetails, g: Group): number {
 
 export function DatabaseView() {
   const st = useDatabase();
+  const folders = st.separateProceduresAndFunctions ? SEPARATE_FOLDERS : FOLDERS;
   const tree = useRef<TreeHandle>(null);
   useEffect(() => {
     if (!st.loaded) void loadSources();
@@ -112,10 +142,25 @@ export function DatabaseView() {
     [st.sources],
   );
 
-  /** Schemas tab › Object filter of the data source of target `id`. */
+  // While a quick filter is on, the schemas of expanded sources load their objects, so
+  // tables / routines matching the filter show up without expanding every schema node.
+  useEffect(() => {
+    if (!st.treeFilter.trim()) return;
+    const s = useDatabase.getState();
+    for (const [target, list] of Object.entries(s.schemas)) {
+      if (list.status !== "ok") continue;
+      const { id, database } = splitTarget(target);
+      if (!s.treeExpanded.has(database ? databaseKey(id, database) : id)) continue;
+      for (const schema of list.value) {
+        if (!s.tables[tablesKey(target, schema)]) void loadTables(target, schema);
+      }
+    }
+  }, [st.treeFilter, st.treeExpanded, st.schemas]);
+
+  /** Schemas tab › Object filter, plus the toolbar's quick filter, of the data source of target `id`. */
   const shown = (id: string) => {
     const filter = sourceOf(id)?.introspection?.objectFilter;
-    return (o: { name: string }) => passesObjectFilter(o.name, filter);
+    return (o: { name: string }) => passesObjectFilter(o.name, filter) && passesTreeFilter(o.name, st.treeFilter);
   };
   const tablesOf = (id: string, schema: string) => {
     const t = st.tables[tablesKey(id, schema)];
@@ -125,9 +170,15 @@ export function DatabaseView() {
     (st.objects[tablesKey(id, schema)]?.routines ?? []).filter(shown(id));
   const sequencesOf = (id: string, schema: string) =>
     (st.objects[tablesKey(id, schema)]?.sequences ?? []).filter(shown(id));
-  /** Members of a schema folder: tables / views / materialized views, routines or sequences. */
+  const packagesOf = (id: string, schema: string) =>
+    (st.objects[tablesKey(id, schema)]?.packages ?? []).filter(shown(id));
+  /** Members of a schema folder, after object and quick filtering. */
   const folderSize = (id: string, schema: string, folder: Folder): number => {
-    if (folder === "routines") return routinesOf(id, schema).length;
+    if (folder === "routines" || folder === "procedures" || folder === "functions")
+      return routinesOf(id, schema).filter(
+        (routine) => routineFolder(routine.kind, st.separateProceduresAndFunctions) === folder,
+      ).length;
+    if (folder === "packages") return packagesOf(id, schema).length;
     if (folder === "sequences") return sequencesOf(id, schema).length;
     return (tablesOf(id, schema) ?? []).filter((t) => tableFolder(t.kind) === folder).length;
   };
@@ -147,9 +198,19 @@ export function DatabaseView() {
     return shownNames(v.names, i?.allDatabases, i?.databases, v.current);
   };
 
+  /** Under a quick filter a schema shows when its name matches, or its loaded objects do. */
+  const schemaVisible = (id: string, schema: string) =>
+    passesTreeFilter(schema, st.treeFilter) ||
+    !!tablesOf(id, schema)?.length ||
+    routinesOf(id, schema).length > 0 ||
+    packagesOf(id, schema).length > 0 ||
+    sequencesOf(id, schema).length > 0;
+
   const schemasOf = (key: string, id: string) =>
     status(key, st.schemas[id], (v) =>
-      shownSchemas(id, v).map((schema) => ({ kind: "schema", key: `${id}/${schema}`, id, schema }) as Node),
+      shownSchemas(id, v)
+        .filter((schema) => schemaVisible(id, schema))
+        .map((schema) => ({ kind: "schema", key: `${id}/${schema}`, id, schema }) as Node),
     );
 
   const children = (n: Node): readonly Node[] | undefined => {
@@ -172,22 +233,33 @@ export function DatabaseView() {
         return schemasOf(n.key, n.id);
       case "schema":
         return status(n.key, st.tables[tablesKey(n.id, n.schema)], () =>
-          FOLDERS.filter((f) => folderSize(n.id, n.schema, f) > 0).map((folder): Node => ({
-            kind: "folder",
-            key: `${n.key}/${folder}`,
-            id: n.id,
-            schema: n.schema,
-            folder,
-          })),
+          folders
+            .filter((f) => folderSize(n.id, n.schema, f) > 0)
+            .map((folder): Node => ({
+              kind: "folder",
+              key: `${n.key}/${folder}`,
+              id: n.id,
+              schema: n.schema,
+              folder,
+            })),
         );
       case "folder": {
         const at = { id: n.id, schema: n.schema };
-        if (n.folder === "routines")
+        if (n.folder === "routines" || n.folder === "procedures" || n.folder === "functions")
           // Overloads share a name: the key tells them apart by their arguments.
-          return routinesOf(n.id, n.schema).map((routine) => ({
-            kind: "routine",
-            key: `${n.key}/${routine.name}(${routine.arguments})`,
-            routine,
+          return routinesOf(n.id, n.schema)
+            .filter((routine) => routineFolder(routine.kind, st.separateProceduresAndFunctions) === n.folder)
+            .map((routine) => ({
+              kind: "routine",
+              key: `${n.key}/${routine.name}(${routine.arguments})`,
+              routine,
+              ...at,
+            }));
+        if (n.folder === "packages")
+          return packagesOf(n.id, n.schema).map((pkg) => ({
+            kind: "package" as const,
+            key: `${n.key}/${pkg.name}`,
+            package: pkg,
             ...at,
           }));
         if (n.folder === "sequences")
@@ -259,7 +331,7 @@ export function DatabaseView() {
   const label = (n: Node): string => {
     switch (n.kind) {
       case "source":
-        return n.source.name ?? "";
+        return n.source.pluginOwner ? `${n.source.name} (${n.source.pluginOwner})` : (n.source.name ?? "");
       case "database":
         return n.name;
       case "schema":
@@ -268,6 +340,8 @@ export function DatabaseView() {
         return FOLDER_LABELS[n.folder];
       case "routine":
         return n.routine.name;
+      case "package":
+        return n.package.name;
       case "sequence":
         return n.sequence.name;
       case "trigger":
@@ -346,6 +420,8 @@ export function DatabaseView() {
         return n.table.kind === "view" ? "db-view" : n.table.kind === "materializedView" ? "db-matview" : "db-table";
       case "routine":
         return "db-routine";
+      case "package":
+        return "db-routine";
       case "sequence":
         return "db-sequence";
       case "trigger":
@@ -378,13 +454,10 @@ export function DatabaseView() {
   return (
     <div className={styles.dbView}>
       <DatabaseToolbar />
-      <div
-        className={styles.treeHost}
-        onFocus={(e) => setContext(DB_VIEW_FOCUS, (e.target as HTMLElement).getAttribute("role") === "tree")}
-        onBlur={() => setContext(DB_VIEW_FOCUS, false)}
-      >
+      <div className={styles.treeHost}>
         <Tree<Node>
           aria-label="Data sources"
+          focusContext={DB_VIEW_FOCUS}
           roots={roots}
           handleRef={tree}
           expanded={st.treeExpanded}
@@ -488,6 +561,7 @@ function DatabaseToolbar() {
   const node = useDatabase((s) => s.selectedNode);
   const connected = useDatabase((s) => s.connected);
   const sources = useDatabase((s) => s.sources);
+  const treeFilter = useDatabase((s) => s.treeFilter);
   const plus = useRef<HTMLButtonElement>(null);
   const newOpen = useDatabase((s) => s.newMenuOpen);
   const setNewOpen = (v: boolean) => useDatabase.setState({ newMenuOpen: v });
@@ -533,6 +607,13 @@ function DatabaseToolbar() {
       >
         <T>DDL</T>
       </button>
+      <SearchField
+        className={styles.treeFilter}
+        value={treeFilter}
+        onChange={(treeFilter) => useDatabase.setState({ treeFilter })}
+        placeholder={tx("Filter objects")}
+        aria-label={tx("Filter objects")}
+      />
     </div>
   );
 }

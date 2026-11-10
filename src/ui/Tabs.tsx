@@ -5,6 +5,7 @@
  */
 import {
   createContext,
+  useCallback,
   useContext,
   useEffect,
   useLayoutEffect,
@@ -21,9 +22,9 @@ import { IconButton } from "./Button";
 import { Menu, type MenuItem } from "./Menu";
 import { tooltipAttrs } from "./Tooltip";
 import { isOutsideWindow, registerDropTarget, startPointerDrag } from "./pointerDrag";
-import { T } from "./T";
+import { Given } from "./T";
 import styles from "./Tabs.module.css";
-import { tx } from "@/platform/i18n";
+import { tx, useGivenTx } from "@/platform/i18n";
 
 export interface TabItem {
   id: string;
@@ -151,6 +152,7 @@ export function Tabs({
   ...aria
 }: TabsProps) {
   const vertical = orientation === "vertical";
+  const given = useGivenTx();
   const scrollRef = useRef<HTMLDivElement>(null);
   const tabRefs = useRef(new Map<string, HTMLButtonElement>());
   const [overflow, setOverflow] = useState(false);
@@ -213,24 +215,64 @@ export function Tabs({
     });
   }, [dndType]);
 
+  // Tab slots wholly in view as last observed, which needs no layout read: switching to one of
+  // them doesn't measure the strip (a forced layout of the window, mid-switch).
+  const inView = useRef(new Set<Element>());
+  // Bring a tab's whole slot (label + close button) into view. Narrowing the strip clips
+  // the active tab's close button (#1740), and clicking the already-active tab doesn't
+  // change `activeId`, so the strip must also reveal on clicks and resizes.
+  const revealTab = useCallback(
+    (id: string | null, always = false) => {
+      const scroller = scrollRef.current;
+      const tab = id ? tabRefs.current.get(id)?.parentElement : null;
+      if (!scroller || !tab || (!always && inView.current.has(tab))) return;
+      (vertical ? revealVertically : revealHorizontally)(scroller, tab);
+    },
+    [vertical],
+  );
+
+  const tabIds = items.map((it) => it.id).join("\n");
+  useEffect(() => {
+    const root = scrollRef.current;
+    if (!root || typeof IntersectionObserver === "undefined") return;
+    const seen = inView.current;
+    const io = new IntersectionObserver(
+      (entries) => {
+        for (const e of entries) {
+          if (e.intersectionRatio >= 1) seen.add(e.target);
+          else seen.delete(e.target);
+        }
+      },
+      { root, threshold: 1 },
+    );
+    for (const tab of tabRefs.current.values()) if (tab.parentElement) io.observe(tab.parentElement);
+    return () => {
+      io.disconnect();
+      seen.clear();
+    };
+  }, [tabIds]);
+
   useLayoutEffect(() => {
     const el = scrollRef.current;
     if (!el) return;
     // A vertical strip shows its scrollbar instead of the overflow dropdown.
-    const measure = () => setOverflow(!vertical && el.scrollWidth > el.clientWidth + 1);
+    const measure = () => {
+      setOverflow(!vertical && el.scrollWidth > el.clientWidth + 1);
+      // A resize (e.g. the editor area narrowing) must scroll the active tab back
+      // into view instead of leaving its close button clipped until a tab switch.
+      revealTab(latest.current.activeId, true);
+    };
     measure();
     if (typeof ResizeObserver === "undefined") return;
     const ro = new ResizeObserver(measure);
     ro.observe(el);
     return () => ro.disconnect();
-  }, [items.length, vertical]);
+  }, [items.length, revealTab, vertical]);
 
   useEffect(() => {
     // The whole tab (label + close button) into view, without scrolling any outer container.
-    const tab = activeId ? tabRefs.current.get(activeId)?.parentElement : null;
-    const scroller = scrollRef.current;
-    if (tab && scroller) (vertical ? revealVertically : revealHorizontally)(scroller, tab);
-  }, [activeId, vertical]);
+    revealTab(activeId);
+  }, [activeId, revealTab]);
 
   const focusTab = (index: number) => {
     const item = items[(index + items.length) % items.length];
@@ -267,7 +309,7 @@ export function Tabs({
 
   const menuItems: MenuItem[] = items.map((t) => ({
     id: t.id,
-    label: tx(t.text ?? (typeof t.label === "string" ? t.label : t.id)),
+    label: given(t.text ?? (typeof t.label === "string" ? t.label : t.id)),
     icon: t.icon,
     checked: t.id === activeId ? true : undefined,
     run: () => onSelect(t.id),
@@ -300,7 +342,7 @@ export function Tabs({
       <div
         ref={scrollRef}
         role="tablist"
-        aria-label={tx(aria["aria-label"])}
+        aria-label={given(aria["aria-label"])}
         aria-orientation={vertical ? "vertical" : undefined}
         className={styles.scroller}
         onWheel={(e) => {
@@ -389,14 +431,17 @@ export function Tabs({
                     return;
                   }
                   onSelect(item.id);
+                  // Revealing on every click: re-selecting the active tab doesn't change
+                  // `activeId`, so the reveal effect wouldn't re-run (#1740).
+                  revealTab(item.id);
                 }}
                 onDoubleClick={onDoubleClick ? () => onDoubleClick(item.id) : undefined}
                 onKeyDown={(e) => onKeyDown(e, index, item)}
-                {...tooltipAttrs(item.tooltip)}
+                {...tooltipAttrs(given(item.tooltip), undefined, true)}
               >
                 {item.icon && <Icon name={item.icon} size={14} className={styles.tabIcon} />}
                 <span className={clsx(styles.tabLabel, item.italic && styles.italic)}>
-                  {typeof item.label === "string" ? <T>{item.label}</T> : item.label}
+                  {typeof item.label === "string" ? <Given>{item.label}</Given> : item.label}
                 </span>
                 {item.trailing}
                 {item.modified && !closable && <span className={styles.modified} aria-label={tx("Modified")} />}

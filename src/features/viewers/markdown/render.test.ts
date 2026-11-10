@@ -101,6 +101,87 @@ describe("markdown preview rendering", () => {
     expect(root.querySelector("input[type='checkbox']")).not.toBeNull();
   });
 
+  const blocks = (md: string) => {
+    const root = document.createElement("div");
+    root.innerHTML = renderMarkdown(md);
+    const lines = [...root.querySelectorAll<HTMLElement>(":scope > [data-line]")].map((e) => [
+      e.dataset.line,
+      e.firstElementChild?.tagName,
+    ]);
+    return { root, lines };
+  };
+
+  it("keeps Markdown between a container's tags inside it (#1524)", () => {
+    const { root, lines } = blocks("<details>\n<summary>Summary</summary>\n\nContent\n\n</details>\n\nAfter\n");
+    const details = root.querySelector("details")!;
+    expect(details.open).toBe(false);
+    expect(details.querySelector(":scope > summary")?.textContent).toBe("Summary");
+    expect(details.querySelector(":scope > p")?.textContent).toBe("Content");
+    expect(root.querySelector(":scope > [data-line] > p")?.textContent).toBe("After");
+    expect(lines).toEqual([
+      ["0", "DETAILS"],
+      ["7", "P"],
+    ]);
+  });
+
+  it.each([
+    ["close right after the text", "<details>\n<summary>S</summary>\n\nContent\n</details>\n", "details > p"],
+    ["kept open", "<details open>\n<summary>S</summary>\n\n- a\n- b\n\n</details>\n", "details[open] > ul > li"],
+    ["a centred README header", '<div align="center">\n\n# Title\n\n</div>\n', "div[align='center'] > h1"],
+    ["a section", "<section>\n\n```js\nx\n```\n\n</section>\n", "section > pre > code"],
+    ["upper case", "<DETAILS>\n<SUMMARY>S</SUMMARY>\n\nContent\n\n</DETAILS>\n", "details > p"],
+    ["a list item", "- item\n  <details>\n  <summary>S</summary>\n\n  body\n\n  </details>\n", "li details"],
+  ])("renders the content of a container: %s", (_, md, selector) => {
+    expect(blocks(md).root.querySelector(selector)).not.toBeNull();
+  });
+
+  it("nests containers and ends each at its own close", () => {
+    const { root, lines } = blocks(
+      "<details>\n<summary>A</summary>\n\n<details>\n<summary>B</summary>\n\ninner\n\n</details>\n\nouter\n\n</details>\n\nafter\n",
+    );
+    const [outer, inner] = [...root.querySelectorAll("details")];
+    expect(inner!.parentElement).toBe(outer);
+    expect(inner!.querySelector(":scope > p")?.textContent).toBe("inner");
+    expect(outer!.querySelector(":scope > p")?.textContent).toBe("outer");
+    expect(lines).toEqual([
+      ["0", "DETAILS"],
+      ["14", "P"],
+    ]);
+  });
+
+  it("leaves blocks alone when the container is closed in its own block or only mentioned", () => {
+    expect(blocks("<details><summary>S</summary>x</details>\n\nNext\n").lines).toEqual([
+      ["0", "DETAILS"],
+      ["2", "P"],
+    ]);
+    expect(blocks("<!-- <details> -->\n\nOne\n\nTwo\n").lines.map(([l]) => l)).toEqual(["0", "2", "4"]);
+    expect(blocks("```html\n<details>\n```\n\nOne\n\n`<div>` code\n\nTwo\n").lines.map(([l]) => l)).toEqual([
+      "0",
+      "4",
+      "6",
+      "8",
+    ]);
+    expect(blocks('<img src="a.png" alt="<div>">\n\n<br/>\n\nOne\n').lines.map(([l]) => l)).toEqual(["0", "2", "4"]);
+  });
+
+  it("keeps everything after a container that's never closed inside it", () => {
+    const { root, lines } = blocks("Intro\n\n<details>\n<summary>S</summary>\n\nOne\n\nTwo\n");
+    expect([...root.querySelectorAll("details > p")].map((p) => p.textContent)).toEqual(["One", "Two"]);
+    expect(lines).toEqual([
+      ["0", "P"],
+      ["2", "DETAILS"],
+    ]);
+  });
+
+  it("ignores a stray close", () => {
+    expect(blocks("One\n\n</div>\n\nTwo\n").lines.map(([l]) => l)).toEqual(["0", "2", "4"]);
+    expect(blocks("</details>\n\n<details>\n<summary>S</summary>\n\nIn\n\n</details>\n\nOut\n").lines).toEqual([
+      ["0", undefined],
+      ["2", "DETAILS"],
+      ["9", "P"],
+    ]);
+  });
+
   it("dedupes heading anchors", () => {
     const root = document.createElement("div");
     root.innerHTML = renderMarkdown("## Same\n\n## Same\n");

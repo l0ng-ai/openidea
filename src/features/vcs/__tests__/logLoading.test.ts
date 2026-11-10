@@ -35,6 +35,7 @@ import {
   selectGitTab,
   PAGE,
   reloadLog,
+  revealCommit,
   setLogBranches,
   toggleCommitSelection,
   updateLogOptions,
@@ -67,7 +68,6 @@ beforeEach(() => {
     logTabs: [],
     filters: emptyFilters(),
     commits: [],
-    rows: [],
     selection: [],
     selected: null,
     done: false,
@@ -275,5 +275,24 @@ describe("commit navigation", () => {
     expect(await navigate).toBe(false);
     expect(useGitLog.getState().selected).toBeNull();
     expect(useGitLog.getState().commits[0]!.id).toBe("filtered");
+  });
+
+  it("reveals a commit directly via seek while keeping branch filter and showDetails preference", async () => {
+    const history = Array.from({ length: PAGE * 20 + 5 }, (_, i) => c(`sha-${i}`));
+    const target = history.at(-1)!;
+    useLogOptions.setState({ ...DEFAULT_LOG_OPTIONS, showDetails: false });
+    useGitLog.setState({ filters: { ...emptyFilters(), branches: ["HEAD"] }, branchScope: "/repo" });
+    api.log.mockImplementation(async (_repo: string, q: LogQuery) => {
+      if (q.seek === target.id) {
+        return ok(history.slice(-50));
+      }
+      return ok(history.slice(q.skip, q.skip + q.limit));
+    });
+    await revealCommit(target.id, "/repo");
+    expect(useLogOptions.getState().showDetails).toBe(false);
+    expect(useGitLog.getState().filters.branches).toEqual(["HEAD"]);
+    expect(useGitLog.getState().selected).toBe(commitKey({ ...target, repo: "/repo" }));
+    expect(api.log).toHaveBeenCalledTimes(1);
+    expect(api.log.mock.calls[0]?.[1]).toMatchObject({ seek: target.id, branches: ["HEAD"] });
   });
 });

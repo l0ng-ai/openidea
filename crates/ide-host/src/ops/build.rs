@@ -1,27 +1,21 @@
 //! Maven / Gradle tool windows (the build model and its background sync) and
 //! Build › Build Project (compiling with the project's build system).
+mod workspace;
+
 use crate::ops::Channel;
 use crate::rpc::Dispatcher;
 use crate::{Host, Project, apply_workspace_edit};
 
 use ide_build::compile::{self, BuildEvent, BuildKind, BuildResult};
+use ide_build::maven::PomGoto;
 use ide_build::pom_edit::{ArtifactKey, Exclusion};
 use ide_build::{BuildModel, BuildTool, SyncOptions, SyncProgress};
 use ide_core::settings::Settings;
-use ide_core::{FileEdit, IdeError, IdeEvent, IdeResult, Location, Range, RequestId, WorkspaceEdit};
-use std::collections::BTreeMap;
+use ide_core::{FileEdit, IdeError, IdeEvent, IdeResult, Location, Pos, Range, RequestId, WorkspaceEdit};
 use std::path::Path;
 
 fn join_err(e: tokio::task::JoinError) -> IdeError {
     IdeError::internal(e.to_string())
-}
-
-/// `JAVA_HOME`: the project JDK, else the installed JDK matching `release` (none
-/// when the project names no version).
-fn java_env(project_jdk: Option<&ide_sdk::java::Jdk>, release: Option<u32>) -> BTreeMap<String, String> {
-    let jdks = ide_sdk::java::installed_jdks();
-    let jdk = project_jdk.or_else(|| release.and_then(|r| ide_sdk::java::pick_jdk(&jdks, Some(r))));
-    jdk.map(|j| BTreeMap::from([("JAVA_HOME".to_owned(), j.home.to_string_lossy().into_owned())])).unwrap_or_default()
 }
 
 /// The build model with the launch settings applied: the JDK (`JAVA_HOME`), and
@@ -39,7 +33,7 @@ pub fn load(root: &Path, cache: &Path, settings: &Settings) -> BuildModel {
         let mvn = ide_sdk::apply::maven_command(root, settings);
         let options = ide_sdk::apply::maven_options(root, settings);
         for p in &mut m.projects {
-            p.env = java_env(jdk.as_ref(), p.java_version);
+            p.env = ide_sdk::apply::maven_build_env(root, settings, p.java_version);
             if let Some(mvn) = &mvn {
                 p.command = mvn.to_string_lossy().into_owned();
             }
@@ -47,8 +41,8 @@ pub fn load(root: &Path, cache: &Path, settings: &Settings) -> BuildModel {
         }
     }
     for g in &mut model.gradle {
-        g.env = ide_sdk::apply::gradle_env(root, settings, java_env(jdk.as_ref(), g.java_version));
         g.command = ide_sdk::apply::gradle_command(root, &root.join(&g.dir), settings).to_string_lossy().into_owned();
+        g.env = ide_sdk::apply::gradle_build_env(root, &root.join(&g.dir), &g.command, settings, g.java_version);
     }
     // A failed sync of a project no installed JDK can build says so first (with a Download JDK action).
     let missing = |release: Option<u32>| match jdk {
@@ -63,7 +57,11 @@ pub fn load(root: &Path, cache: &Path, settings: &Settings) -> BuildModel {
     if let Some(m) = &mut model.maven
         && m.sync_error.is_some()
     {
-        let hint = m.projects.iter().find_map(|p| missing(p.java_version));
+        let hint = if settings.languages.java.maven.runner_jre.trim().is_empty() {
+            m.projects.iter().find_map(|p| missing(p.java_version))
+        } else {
+            None
+        };
         explain(&mut m.sync_error, hint);
     }
     for g in &mut model.gradle {
@@ -74,6 +72,42 @@ pub fn load(root: &Path, cache: &Path, settings: &Settings) -> BuildModel {
         }
     }
     model
+}
+
+/// Build and Run use the same selected toolchain and module-local runtime discovery.
+fn prepare_plan(mut plan: compile::BuildPlan, root: &Path, settings: &Settings) -> compile::BuildPlan {
+    let kind = match plan.system {
+        compile::BuildSystem::Cargo => "cargo",
+        compile::BuildSystem::Go => "go",
+        compile::BuildSystem::TypeScript => "npm",
+        _ => return plan,
+    };
+    for step in &mut plan.steps {
+        let mut config = ide_run::RunConfig {
+            id: String::new(),
+            name: String::new(),
+            kind: kind.into(),
+            command: step.program.clone(),
+            args: step.args.clone(),
+            cwd: Some(step.cwd.clone().into()),
+            env: step.env.clone(),
+            detected: true,
+            is_test: false,
+            debug_adapter: None,
+            allow_parallel: false,
+            extras: Default::default(),
+        };
+        config.extras.module = Some(ide_core::ipc_path::to_ipc(&step.cwd));
+        ide_sdk::apply::apply_to_run_configs(std::slice::from_mut(&mut config), root, settings);
+        if kind == "go" {
+            config.extras.params.insert("useTags".into(), "true".into());
+            ide_sdk::go::apply_to_run(&mut config, &settings.languages.go.build_tags);
+        }
+        step.program = config.command;
+        step.args = config.args;
+        step.env = config.env;
+    }
+    plan
 }
 
 /// `model` building with the Maven profiles of the last sync (`-P`), as Maven runs from
@@ -92,8 +126,8 @@ fn with_profiles(mut model: BuildModel, cache: &Path) -> BuildModel {
 pub async fn build_model(host: &Host, window: &str) -> IdeResult<BuildModel> {
     host.require_trust(window)?;
     let project = host.project(window)?;
-    let (root, cache, settings) = (project.root.clone(), project.build_cache_dir(), project.settings.effective());
-    tokio::task::spawn_blocking(move || load(&root, &cache, &settings)).await.map_err(join_err)
+    let config = host.config_dir.clone();
+    tokio::task::spawn_blocking(move || workspace::load_project(&project, &config)).await.map_err(join_err)?
 }
 
 fn linked_gradle_paths(
@@ -137,7 +171,8 @@ fn linked_gradle_paths(
             }
         }
     } else {
-        linked.retain(|path| !paths.contains(path));
+        let unlinked: Vec<String> = paths.iter().map(|p| ide_build::gradle::linked_project_key(root, p)).collect();
+        linked.retain(|path| !paths.contains(path) && !unlinked.contains(path));
     }
     Ok(linked)
 }
@@ -190,83 +225,88 @@ pub async fn build_sync(
 ) -> IdeResult<BuildModel> {
     host.require_trust(window)?;
     let project = host.project(window)?;
-    let (root, cache, settings) = (project.root.clone(), project.build_cache_dir(), project.settings.effective());
-    let bridge_profiles = profiles.clone();
-    // What the Java language server and Build Project resolve the project with from now on.
-    let profiles_changed = tool == BuildTool::Maven
-        && ide_build::save_maven_profiles(&cache, &profiles).unwrap_or_else(|e| {
-            tracing::warn!("Maven profiles not saved: {e}");
-            false
-        });
-    if profiles_changed {
-        // The modules of the chosen profiles are read from the POMs with them from now on (the
-        // project tree's module folders too), whether or not Maven itself can run.
-        project.sink.emit(ide_core::IdeEvent::ProjectRootsChanged { root: project.root.clone().into() });
-    }
     let token = host.begin_project_request(window, request);
     let completion_token = token.clone();
-    let original_links = settings.languages.java.gradle.linked_projects.clone();
+    let bridge_profiles = profiles.clone();
+    let p = project.clone();
+    let config = host.config_dir.clone();
     let result = tokio::task::spawn_blocking(move || {
-        let current = load(&root, &cache, &settings);
-        let env = match tool {
-            BuildTool::Maven => current
+        let scopes = workspace::scopes(&p, &config)?;
+        let selected: Vec<_> =
+            scopes.iter().filter(|scope| workspace::selected(scope, &p.root, tool, build_dir.as_deref())).collect();
+        if selected.is_empty() {
+            return Err(IdeError::not_found("Build project is no longer linked"));
+        }
+        let mut profiles_changed = false;
+        for scope in selected {
+            if token.is_cancelled() {
+                return Err(IdeError::cancelled());
+            }
+            let (root, cache, settings) = (&scope.root, &scope.cache, &scope.settings);
+            let current = load(root, cache, settings);
+            if tool == BuildTool::Maven && current.maven.is_some() {
+                let changed = ide_build::save_maven_profiles(cache, &profiles).unwrap_or_else(|e| {
+                    tracing::warn!("Maven profiles not saved: {e}");
+                    false
+                });
+                if changed {
+                    p.sink.emit(IdeEvent::ProjectRootsChanged { root: p.root.clone().into() });
+                }
+                profiles_changed |= changed;
+            }
+            let env = current
                 .maven
                 .as_ref()
                 .and_then(|m| m.projects.iter().find(|p| !p.env.is_empty()))
                 .map(|p| p.env.clone())
-                .unwrap_or_default(),
-            BuildTool::Gradle => BTreeMap::new(),
-        };
-        let options = SyncOptions {
-            offline,
-            profiles,
-            env,
-            maven_command: ide_sdk::apply::maven_command(&root, &settings).map(|p| p.to_string_lossy().into_owned()),
-            maven_options: ide_sdk::apply::maven_options(&root, &settings),
-            maven_settings: settings.languages.java.maven.clone(),
-            gradle_command: None,
-        };
-        let progress = |p: SyncProgress| {
-            let _ = on_progress.send(p);
-        };
-        match tool {
-            BuildTool::Maven => ide_build::sync_maven(&root, &cache, &options, &token, &progress)?,
-            BuildTool::Gradle => {
-                if let Some(dir) = &build_dir
-                    && !current.gradle.iter().any(|g| &g.dir == dir)
-                {
-                    return Err(IdeError::not_found("Gradle project is no longer linked"));
+                .unwrap_or_default();
+            let options = SyncOptions {
+                offline,
+                profiles: profiles.clone(),
+                env,
+                maven_command: ide_sdk::apply::maven_command(root, settings).map(|p| p.to_string_lossy().into_owned()),
+                maven_options: ide_sdk::apply::maven_options(root, settings),
+                maven_settings: settings.languages.java.maven.clone(),
+                gradle_command: None,
+            };
+            let progress = |p: SyncProgress| {
+                let _ = on_progress.send(p);
+            };
+            match tool {
+                BuildTool::Maven if current.maven.is_some() => {
+                    ide_build::sync_maven(root, cache, &options, &token, &progress)?
                 }
-                for g in current.gradle.iter().filter(|g| build_dir.as_ref().is_none_or(|dir| dir == &g.dir)) {
-                    if token.is_cancelled() {
-                        return Err(IdeError::cancelled());
+                BuildTool::Maven => {}
+                BuildTool::Gradle => {
+                    for g in current
+                        .gradle
+                        .iter()
+                        .filter(|g| build_dir.as_ref().is_none_or(|dir| p.root.join(dir) == root.join(&g.dir)))
+                    {
+                        if token.is_cancelled() {
+                            return Err(IdeError::cancelled());
+                        }
+                        let options = SyncOptions {
+                            env: g.env.clone(),
+                            gradle_command: Some(g.command.clone()),
+                            ..options.clone()
+                        };
+                        ide_build::sync_gradle_model(root, cache, g, &options, &token, &progress)?;
                     }
-                    let options =
-                        SyncOptions { env: g.env.clone(), gradle_command: Some(g.command.clone()), ..options.clone() };
-                    ide_build::sync_gradle_model(&root, &cache, g, &options, &token, &progress)?;
-                }
-                if token.is_cancelled() {
-                    return Err(IdeError::cancelled());
                 }
             }
         }
-        Ok::<BuildModel, IdeError>(load(&root, &cache, &settings))
+        let scopes = workspace::scopes(&p, &config)?;
+        let model = workspace::load_scopes(&p.root, &scopes);
+        let updates = workspace::update_files(&p.root, &scopes, &model, tool);
+        Ok::<_, IdeError>((model, profiles_changed, updates))
     })
     .await
     .map_err(join_err);
     host.end_request(request);
-    let model = result??;
+    let (model, profiles_changed, updates) = result??;
     if completion_token.is_cancelled() {
         return Err(IdeError::cancelled());
-    }
-    if tool == BuildTool::Gradle && original_links != project.settings.effective().languages.java.gradle.linked_projects
-    {
-        // A late sync must not re-import a build that was unlinked while it ran.
-        return tokio::task::spawn_blocking(move || {
-            load(&project.root, &project.build_cache_dir(), &project.settings.effective())
-        })
-        .await
-        .map_err(join_err);
     }
     if tool == BuildTool::Gradle {
         // The sync may report project folders outside the project (`includeFlat`): index and list them.
@@ -286,30 +326,17 @@ pub async fn build_sync(
     // to update the project configurations re-resolves them (#436). The same
     // holds for Gradle: it reuses its cached classpath on restart, so a
     // dependency added to `build.gradle` stays unresolved until told to sync.
-    let build_files: Vec<String> = match tool {
-        BuildTool::Maven => model.maven.iter().flat_map(|m| m.projects.iter().map(|p| p.pom.clone())).collect(),
-        BuildTool::Gradle => {
-            model.gradle.iter().flat_map(|g| g.projects.iter().filter_map(|p| p.build_file.clone())).collect()
-        }
-    };
     let lsp = project.lsp.clone();
-    // With a module of a reactor unlinked, jdtls imports the other modules one by one and
-    // not the reactor: naming the reactor here would import it again, all modules included.
-    let imported = match tool {
-        BuildTool::Maven => crate::project::jdtls_maven_import(&project.root, &project.settings.effective()).1,
-        BuildTool::Gradle => None,
-    };
-    let uris = match imported {
-        Some(files) => files.into_iter().filter(|f| f.ends_with("/pom.xml")).collect(),
-        None => build_files.iter().map(|f| ide_lsp::path_to_uri_string(&project.root.join(f))).collect(),
-    };
     tokio::spawn(async move {
         if profiles_changed {
             // jdtls takes the profiles from its Maven settings (see `ide_sdk::maven_profiles`).
             lsp.reconfigure().await;
         }
-        if let Err(e) = lsp.java_update_project_configs(&project.root, uris).await {
-            tracing::debug!("java/projectConfigurationsUpdate: {e}");
+        for file in updates {
+            let uri = ide_lsp::path_to_uri_string(&file);
+            if let Err(e) = lsp.java_update_project_configs(&file, vec![uri]).await {
+                tracing::debug!("java/projectConfigurationsUpdate: {e}");
+            }
         }
     });
     Ok(model)
@@ -319,12 +346,25 @@ pub async fn build_sync(
 /// module's own, else its nearest parent in the project; its path, text and declaration.
 fn declaring_pom(
     project: &Project,
+    config: &Path,
     pom: &str,
     dependency: &ArtifactKey,
 ) -> IdeResult<(std::path::PathBuf, String, Range)> {
-    let model = ide_build::maven::load(&project.root);
-    for rel in ide_build::pom_edit::declaring_poms(&model, pom) {
-        let path = project.root.join(&rel);
+    let scopes = workspace::scopes(project, config)?;
+    let path = project.root.join(pom);
+    let scope = scopes
+        .iter()
+        .filter(|s| path.starts_with(&s.root))
+        .max_by_key(|s| s.root.components().count())
+        .ok_or_else(|| IdeError::not_found("Maven project is no longer linked"))?;
+    let model = load(&scope.root, &scope.cache, &scope.settings).maven.unwrap_or_default();
+    let pom = model
+        .projects
+        .iter()
+        .find(|p| scope.root.join(&p.pom) == path)
+        .ok_or_else(|| IdeError::not_found("Maven project is no longer linked"))?;
+    for rel in ide_build::pom_edit::declaring_poms(&model, &pom.pom) {
+        let path = scope.root.join(&rel);
         let text = project.text_of(&path)?;
         if let Some(range) = ide_build::pom_edit::declaration(&text, dependency) {
             return Ok((path, text, range));
@@ -364,14 +404,19 @@ pub async fn gradle_dependencies(
 ) -> IdeResult<Vec<ide_build::GradleDependency>> {
     host.require_trust(window)?;
     let project = host.project(window)?;
-    let (root, cache, settings) = (project.root.clone(), project.build_cache_dir(), project.settings.effective());
+    let config = host.config_dir.clone();
     let token = host.begin_project_request(window, request);
     let result = tokio::task::spawn_blocking(move || {
-        let model = load(&root, &cache, &settings);
+        let scopes = workspace::scopes(&project, &config)?;
+        let scope = scopes
+            .iter()
+            .find(|s| workspace::selected(s, &project.root, BuildTool::Gradle, build_dir.as_deref()))
+            .ok_or_else(|| IdeError::not_found("Gradle project is no longer linked"))?;
+        let model = load(&scope.root, &scope.cache, &scope.settings);
         let gradle = model
             .gradle
             .iter()
-            .find(|g| build_dir.as_ref().is_none_or(|dir| &g.dir == dir))
+            .find(|g| build_dir.as_ref().is_none_or(|dir| project.root.join(dir) == scope.root.join(&g.dir)))
             .ok_or_else(|| IdeError::not_found("Gradle project is no longer linked"))?;
         let options = SyncOptions {
             offline,
@@ -379,7 +424,7 @@ pub async fn gradle_dependencies(
             gradle_command: Some(gradle.command.clone()),
             ..Default::default()
         };
-        ide_build::gradle_dependencies(&root, gradle, &options, &gradle_path, &configuration, &token)
+        ide_build::gradle_dependencies(&scope.root, gradle, &options, &gradle_path, &configuration, &token)
     })
     .await
     .map_err(join_err);
@@ -395,9 +440,31 @@ pub async fn maven_dependency_declaration(
     dependency: ArtifactKey,
 ) -> IdeResult<Location> {
     let project = host.project(window)?;
+    let config = host.config_dir.clone();
     tokio::task::spawn_blocking(move || {
-        let (path, _, range) = declaring_pom(&project, &pom, &dependency)?;
+        let (path, _, range) = declaring_pom(&project, &config, &pom, &dependency)?;
         Ok(Location::file(path, range))
+    })
+    .await
+    .map_err(join_err)?
+}
+
+/// The go-to-declaration target at `pos` of the Maven POM `pom` (project-relative, or
+/// absolute for a parent POM opened from the local repository): the definition of the
+/// `${property}` at the caret, or the `<dependencyManagement>` / `<pluginManagement>`
+/// entry providing the dependency's / plugin's version, along the parent chain (into
+/// the local repository when a parent is not in the project). `None` when nothing
+/// resolvable is under the caret.
+pub async fn maven_goto_declaration(host: &Host, window: &str, pom: String, pos: Pos) -> IdeResult<Option<PomGoto>> {
+    let project = host.project(window)?;
+    tokio::task::spawn_blocking(move || {
+        let given = Path::new(&pom);
+        let path = if given.is_absolute() { given.to_path_buf() } else { project.root.join(given) };
+        let text = project.text_of(&path)?;
+        let settings = project.settings.effective();
+        let repo = ide_sdk::apply::maven_local_repository(&project.root, &settings)
+            .or_else(ide_build::maven::default_local_repo);
+        Ok(ide_build::maven::goto_declaration(&text, &path, pos, repo))
     })
     .await
     .map_err(join_err)?
@@ -414,8 +481,9 @@ pub async fn maven_exclude_dependency(
     exclusion: ArtifactKey,
 ) -> IdeResult<Location> {
     let project = host.project(window)?;
+    let config = host.config_dir.clone();
     tokio::task::spawn_blocking(move || {
-        let (path, text, range) = declaring_pom(&project, &pom, &dependency)?;
+        let (path, text, range) = declaring_pom(&project, &config, &pom, &dependency)?;
         match ide_build::pom_edit::add_exclusion(&text, &dependency, &exclusion) {
             Some(Exclusion::Edit(edit)) => {
                 let edit = WorkspaceEdit {
@@ -433,15 +501,32 @@ pub async fn maven_exclude_dependency(
     .map_err(join_err)?
 }
 
+fn cmake_plan(root: &Path, kind: BuildKind, configs: &[ide_run::RunConfig], id: &str) -> IdeResult<compile::BuildPlan> {
+    let commands = ide_run::cmake_build_configs(configs, id)?;
+    let title = commands.last().map(|c| c.name.clone()).unwrap_or_default();
+    let mut steps = Vec::new();
+    for mut config in commands {
+        let cwd = ide_core::project_roots::resolve(root, config.cwd.as_deref().unwrap_or(Path::new("")));
+        ide_run::prepare_cmake(&config, &cwd)?;
+        if kind == BuildKind::Rebuild && config.args.first().is_some_and(|a| a == "--build") {
+            config.args.insert(2, "--clean-first".into());
+        }
+        steps.push(compile::BuildStep::cmake(&config.command, config.args, cwd, config.env));
+    }
+    Ok(compile::BuildPlan { system: compile::BuildSystem::CMake, title, steps })
+}
+
 /// Build › Build Project / Rebuild Project / Build Module (`file`: a file or folder of the
 /// module) / Build Artifacts, streaming the console and messages on `on_event`; cancellable
 /// with `cancel_request(request)`. Diagnostics of `clear` (the files of the previous build)
 /// are cleared first; the new messages are published as `build` diagnostics.
+#[allow(clippy::too_many_arguments)]
 pub async fn build_run(
     host: &Host,
     window: &str,
     kind: BuildKind,
     file: Option<std::path::PathBuf>,
+    cmake: Option<String>,
     request: RequestId,
     clear: Vec<std::path::PathBuf>,
     on_event: Channel<BuildEvent>,
@@ -460,13 +545,21 @@ pub async fn build_run(
                 items: Vec::new(),
             });
         }
-        let plan = if let Some(workspace) = ide_workspace::workspace::Workspace::load(&root)? {
+        let plan = if let Some(id) = cmake {
+            let configs = super::run::project_configs(&root, &settings, &config_dir)?;
+            cmake_plan(&root, kind, &configs, &id)?
+        } else if let Some(workspace) = ide_workspace::workspace::Workspace::load(&root)? {
             let mut combined: Option<compile::BuildPlan> = None;
             for member in workspace.projects.iter().filter(|p| file.as_ref().is_none_or(|f| f.starts_with(p))) {
                 let settings = ide_workspace::SettingsStore::load(&config_dir, Some(member)).effective();
-                let member_cache = cache.join(crate::project::project_key(member));
+                let member_cache =
+                    if member == &root { cache.clone() } else { cache.join(crate::project::project_key(member)) };
                 let model = with_profiles(load(member, &member_cache, &settings), &member_cache);
-                let plan = compile::plan(member, &model, kind, file.as_deref(), settings.cmake.profiles.as_deref())?;
+                let plan = prepare_plan(
+                    compile::plan(member, &model, kind, file.as_deref(), settings.cmake.profiles.as_deref())?,
+                    member,
+                    &settings,
+                );
                 match &mut combined {
                     Some(combined) => combined.steps.extend(plan.steps),
                     None => combined = Some(plan),
@@ -476,13 +569,17 @@ pub async fn build_run(
             plan.title = workspace.name;
             plan
         } else {
-            compile::plan(
+            prepare_plan(
+                compile::plan(
+                    &root,
+                    &with_profiles(load(&root, &cache, &settings), &cache),
+                    kind,
+                    file.as_deref(),
+                    settings.cmake.profiles.as_deref(),
+                )?,
                 &root,
-                &with_profiles(load(&root, &cache, &settings), &cache),
-                kind,
-                file.as_deref(),
-                settings.cmake.profiles.as_deref(),
-            )?
+                &settings,
+            )
         };
         let result = compile::run(&root, &plan, &token, &|e| {
             let _ = on_event.send(e);
@@ -537,6 +634,9 @@ pub(crate) fn register(d: &mut Dispatcher) {
     d.add("maven_dependency_declaration", |c| async move {
         maven_dependency_declaration(&c.host, &c.window, c.arg("pom")?, c.arg("dependency")?).await
     });
+    d.add("maven_goto_declaration", |c| async move {
+        maven_goto_declaration(&c.host, &c.window, c.arg("pom")?, c.arg("pos")?).await
+    });
     d.add("maven_exclude_dependency", |c| async move {
         maven_exclude_dependency(&c.host, &c.window, c.arg("pom")?, c.arg("dependency")?, c.arg("exclusion")?).await
     });
@@ -546,6 +646,7 @@ pub(crate) fn register(d: &mut Dispatcher) {
             &c.window,
             c.arg("kind")?,
             c.arg("file")?,
+            c.arg("cmake")?,
             c.arg("request")?,
             c.arg("clear")?,
             c.sender("onEvent")?,
@@ -555,8 +656,84 @@ pub(crate) fn register(d: &mut Dispatcher) {
 }
 
 #[cfg(test)]
-mod gradle_settings_tests {
+mod build_tool_settings_tests {
     use super::*;
+
+    #[test]
+    fn cmake_builds_keep_target_configuration_environment_and_directory() {
+        let root = tempfile::tempdir().unwrap();
+        let member = root.path().join("nested project");
+        std::fs::create_dir_all(&member).unwrap();
+        let config = |id: &str, args: &[&str]| -> ide_run::RunConfig {
+            serde_json::from_value(serde_json::json!({
+                "id":id,"name":id,"kind":"cmake","command":"custom-cmake",
+                "args":args,"cwd":"nested project","env":{"PROFILE":"release"},
+                "detected":true,"isTest":false,"debugAdapter":null
+            }))
+            .unwrap()
+        };
+        let configure = config("configure", &["-S", ".", "-B", "release", "-G", "Ninja"]);
+        let mut build =
+            config("target", &["--build", "release", "--target", "hello", "--config", "Release", "-j", "8"]);
+        build.extras.before_launch.push(ide_run::BeforeLaunchTask { kind: "build".into(), target: "configure".into() });
+        let configs = [configure, build];
+        for kind in [BuildKind::Build, BuildKind::Rebuild] {
+            let plan = cmake_plan(root.path(), kind, &configs, "target").unwrap();
+            assert_eq!(plan.system, compile::BuildSystem::CMake);
+            assert_eq!(plan.steps.len(), 2);
+            assert_eq!(plan.steps[0].args, configs[0].args);
+            let mut args = configs[1].args.clone();
+            if kind == BuildKind::Rebuild {
+                args.insert(2, "--clean-first".into());
+            }
+            assert_eq!(plan.steps[1].args, args);
+            for step in plan.steps {
+                assert_eq!(step.program, "custom-cmake");
+                assert_eq!(step.cwd, member);
+                assert_eq!(step.env["PROFILE"], "release");
+            }
+        }
+    }
+
+    #[test]
+    fn builds_apply_the_same_explicit_toolchains_as_runs() {
+        let temp = tempfile::tempdir().unwrap();
+        let root = temp.path();
+        let tool = |name: &str| format!("{name}{}", std::env::consts::EXE_SUFFIX);
+        for name in ["cargo", "go"] {
+            let path = root.join("sdk").join("bin").join(tool(name));
+            std::fs::create_dir_all(path.parent().unwrap()).unwrap();
+            std::fs::write(path, "").unwrap();
+        }
+        let mut settings = Settings::default();
+        settings.languages.rust.toolchain = "sdk".into();
+        settings.languages.go.goroot = "sdk".into();
+        settings.languages.go.build_tags.custom = "integration".into();
+        settings.languages.node.package_manager = "yarn".into();
+        for (marker, source, program) in [
+            (
+                "Cargo.toml",
+                "[package]\nname='demo'\nversion='0.1.0'",
+                root.join("sdk").join("bin").join(tool("cargo")).to_string_lossy().into_owned(),
+            ),
+            ("go.mod", "module demo", root.join("sdk").join("bin").join(tool("go")).to_string_lossy().into_owned()),
+            ("package.json", r#"{"scripts":{"build":"echo built"},"packageManager":"pnpm@10"}"#, "yarn".into()),
+        ] {
+            let dir = root.join(marker.replace('.', "-"));
+            std::fs::create_dir_all(&dir).unwrap();
+            std::fs::write(dir.join(marker), source).unwrap();
+            let plan = prepare_plan(
+                compile::plan(&dir, &Default::default(), BuildKind::Artifacts, None, None).unwrap(),
+                root,
+                &settings,
+            );
+            assert_eq!(plan.steps[0].program, program);
+            assert_eq!(plan.steps[0].cwd, dir);
+            if marker == "go.mod" {
+                assert!(plan.steps[0].args.contains(&"-tags=integration".into()));
+            }
+        }
+    }
 
     #[test]
     fn linking_retains_the_implicit_build_and_unlinking_all_stays_empty() {
@@ -597,6 +774,34 @@ mod gradle_settings_tests {
         assert_eq!(model.gradle.len(), 2);
         for g in model.gradle {
             assert_eq!(g.command, root.join(&g.dir).join(executable).to_string_lossy());
+        }
+    }
+
+    #[test]
+    fn model_for_maven_sync_goals_and_compile_uses_runner_jre() {
+        let tmp = tempfile::tempdir().unwrap();
+        let root = dunce::canonicalize(tmp.path()).unwrap();
+        std::fs::write(root.join("pom.xml"),
+            r#"<project><modelVersion>4.0.0</modelVersion><groupId>test</groupId><artifactId>app</artifactId><version>1</version></project>"#
+        ).unwrap();
+        for name in ["project-jdk", "runner-jdk"] {
+            let home = root.join(name);
+            std::fs::create_dir_all(home.join("bin")).unwrap();
+            std::fs::write(home.join("bin").join(if cfg!(windows) { "java.exe" } else { "java" }), "").unwrap();
+            std::fs::write(home.join("release"), "JAVA_VERSION=\"21\"\n").unwrap();
+        }
+        let mut settings = Settings::default();
+        settings.languages.java.jdk = "project-jdk".into();
+        for runner in ["", "runner-jdk"] {
+            settings.languages.java.maven.runner_jre = runner.into();
+            let expected = root.join(if runner.is_empty() { "project-jdk" } else { runner });
+            let model = load(&root, &root.join("cache"), &settings);
+            assert_eq!(model.maven.as_ref().unwrap().projects[0].env["JAVA_HOME"], expected.to_string_lossy());
+            let plan = compile::plan(&root, &model, BuildKind::Build, None, None).unwrap();
+            assert!(!plan.steps.is_empty());
+            for step in plan.steps {
+                assert_eq!(step.env["JAVA_HOME"], expected.to_string_lossy());
+            }
         }
     }
 

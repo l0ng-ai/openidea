@@ -6,6 +6,7 @@ import { ToolWindowHeader, useOwnToolWindowHeader } from "@/workbench/toolwindow
 import { usePlatform } from "@/platform/platformInfo";
 import { commands, isTauri } from "@/platform/ipc";
 import {
+  Badge,
   dropZoneAt,
   IconButton,
   Input,
@@ -13,6 +14,7 @@ import {
   Popup,
   registerDropTarget,
   showContextMenu,
+  Spinner,
   SplitGroup,
   SplitHandle,
   SplitPanel,
@@ -32,6 +34,8 @@ import {
   moveTabToSplit,
   newTab,
   publishFocus,
+  refitSessions,
+  syncTerminalProject,
   renameTab,
   requestCloseSession,
   requestCloseTab,
@@ -61,18 +65,20 @@ function tabTooltip(tab: TerminalTab, sessions: Parameters<typeof tabTitle>[1]):
   return cwd ? `${full}\n${cwd}` : full;
 }
 
-function TerminalPane({ sessionKey, autofocus }: { sessionKey: string; autofocus: boolean }) {
+function TerminalPane({ sessionKey, active, autofocus }: { sessionKey: string; active: boolean; autofocus: boolean }) {
   const ref = useRef<HTMLDivElement>(null);
   const status = useTerminals((s) => s.sessions[sessionKey]?.status);
-  const follow = useTerminals((s) => s.sessions[sessionKey]?.follow ?? true);
 
+  // Hidden tabs stay unopened. xterm.open() under display:none measures a 0 cell
+  // and the textarea never accepts input, even after the tab is shown.
   useLayoutEffect(() => {
+    if (!active) return;
     const el = ref.current;
     const session = getSession(sessionKey);
     if (!el || !session) return;
     session.attach(el);
     return () => session.detach(el);
-  }, [sessionKey]);
+  }, [sessionKey, active]);
 
   return (
     <div
@@ -85,17 +91,7 @@ function TerminalPane({ sessionKey, autofocus }: { sessionKey: string; autofocus
         if (e.target === e.currentTarget) getSession(sessionKey)?.focus();
       }}
       onContextMenu={(e) => paneMenu(e, sessionKey)}
-    >
-      <div className={styles.paneActions} role="toolbar" aria-label="Terminal actions">
-        <IconButton
-          icon="arrow-down"
-          iconSize={14}
-          title="Scroll to End"
-          pressed={follow}
-          onClick={() => getSession(sessionKey)?.setFollow(!follow)}
-        />
-      </div>
-    </div>
+    />
   );
 }
 
@@ -231,7 +227,7 @@ function TabGroup({ group, corners }: { group: string; corners: Corners | null }
             className={styles.panel}
             hidden={t.id !== selected}
           >
-            <TerminalPane sessionKey={t.session} autofocus={t.id === activeTab} />
+            <TerminalPane sessionKey={t.session} active={t.id === selected} autofocus={t.id === activeTab} />
           </div>
         ))}
       </div>
@@ -278,7 +274,13 @@ export function TerminalView() {
     const el = rootRef.current;
     if (!root || !el) return;
     const ensureTab = () => {
-      if (el.clientHeight > 0 && useTerminals.getState().tabs.length === 0) newTab(root);
+      if (el.clientHeight <= 0) return;
+      // Restore this project's tabs once the pane is actually visible. A project
+      // switch while the runtime is loaded restores from the project subscription.
+      syncTerminalProject(root);
+      if (useTerminals.getState().tabs.length === 0) newTab(root);
+      // Sessions created while this window was hidden open once it actually has a box.
+      refitSessions();
     };
     ensureTab();
     if (typeof ResizeObserver === "undefined") return;
@@ -356,8 +358,19 @@ function GroupTabs({ group }: { group: string }) {
   const focusRaf = useRef(0);
 
   const items: TabItem[] = tabs.map((t) => {
-    const status = sessions[t.session]?.status;
+    const session = sessions[t.session];
+    const status = session?.status;
     const dead = status === "exited" || status === "error";
+    // Running / done marker (#2233): a command at work spins, a finished one
+    // shows a filled dot, an idle shell at the prompt shows none.
+    const busy = !!session?.commandRunning || status === "starting";
+    const mark = busy ? (
+      <Spinner size={10} variant="spokes" label="Running" />
+    ) : dead ? (
+      <Badge dot tone={status === "error" ? "danger" : "neutral"}>
+        {status === "error" ? "Failed" : "Exited"}
+      </Badge>
+    ) : null;
     return {
       id: t.id,
       label: tabTitle(t, sessions),
@@ -365,6 +378,7 @@ function GroupTabs({ group }: { group: string }) {
       italic: dead,
       color: dead ? "var(--fg-subtle)" : undefined,
       tooltip: tabTooltip(t, sessions),
+      trailing: mark ?? undefined,
     };
   });
 
@@ -459,7 +473,7 @@ function GroupTabs({ group }: { group: string }) {
             />
             <IconButton
               ref={menuRef}
-              icon="chevron-down"
+              icon="toolbar-expand"
               size="small"
               title="More Terminal Options"
               aria-haspopup="menu"
