@@ -2384,7 +2384,10 @@ export type CheckoutOutcome = { kind: "done" } |
  */
 { kind: "conflicts"; files: string[] };
 
-/**  Editor › General › Location Choosers: which extras the location chooser rows show. */
+/**
+ *  Editor › General › Location Choosers: which extras the location chooser rows show.
+ *  Defaults keep the rows as they were before the settings existed (seamless upgrade).
+ */
 export type ChooserSettings = {
 	/**  The target line's source preview after the name. */
 	signature?: boolean,
@@ -2392,6 +2395,8 @@ export type ChooserSettings = {
 	fileName?: boolean,
 	/**  The `path:line` after the name. */
 	path?: boolean,
+	/**  The declaring container (class / file) before the path of index symbols. */
+	container?: boolean,
 	/**  Full paths outside the project (else `…`-truncated tails). */
 	fullPath?: boolean,
 };

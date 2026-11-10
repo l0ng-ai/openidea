@@ -621,6 +621,7 @@ impl Default for EditorSettings {
 }
 
 /// Editor › General › Location Choosers: which extras the location chooser rows show.
+/// Defaults keep the rows as they were before the settings existed (seamless upgrade).
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize, Type)]
 #[serde(default, rename_all = "camelCase")]
 pub struct ChooserSettings {
@@ -630,13 +631,15 @@ pub struct ChooserSettings {
     pub file_name: bool,
     /// The `path:line` after the name.
     pub path: bool,
+    /// The declaring container (class / file) before the path of index symbols.
+    pub container: bool,
     /// Full paths outside the project (else `…`-truncated tails).
     pub full_path: bool,
 }
 
 impl Default for ChooserSettings {
     fn default() -> Self {
-        Self { signature: false, file_name: false, path: true, full_path: false }
+        Self { signature: true, file_name: true, path: true, container: true, full_path: true }
     }
 }
 

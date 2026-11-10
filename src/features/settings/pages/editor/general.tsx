@@ -780,6 +780,7 @@ const CHOOSER = editorPage({
       title: "Row Details",
       items: [
         { t: "check", key: `${P}.chooser.signature`, label: "Show signature preview" },
+        { t: "check", key: `${P}.chooser.container`, label: "Show container" },
         { t: "check", key: `${P}.chooser.fileName`, label: "Show file name" },
         { t: "check", key: `${P}.chooser.path`, label: "Show path" },
         { t: "check", key: `${P}.chooser.fullPath`, label: "Show full paths outside the project" },

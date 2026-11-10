@@ -1,7 +1,7 @@
 /**
- * Chooser rows (`locationItems`): lean `name  path:line` by default, like IDEA's
- * chooser; the signature preview, file name, path and full paths outside the
- * project come from Settings › Editor › Location Choosers.
+ * Chooser rows (`locationItems`): every extra the pre-settings rows showed is on
+ * by default (seamless upgrade); Settings › Editor › Location Choosers turns the
+ * signature preview, file name, path and full outside paths off for lean rows.
  */
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
@@ -22,12 +22,17 @@ const target = (path: string, line: string): Parameters<typeof locationItems>[0]
   range: { start: { line: 1, col: line.indexOf("_StatefulDataset") }, end: { line: 1, col: line.length } },
 });
 
-/** Sets the project root and the chooser extras for one test. */
+/** Sets the project root and the chooser extras for one test (unset keys fall back to the defaults). */
 function project(chooser: Record<string, boolean>) {
   useProject.setState({
     project: { root: "/p" } as never,
     settings: { editor: { chooser } } as never,
   });
+}
+
+/** The lean row: extras off except the (truncatable) path. */
+function lean() {
+  return project({ signature: false, fileName: false, fullPath: false });
 }
 
 beforeEach(() => {
@@ -39,10 +44,21 @@ afterEach(() => {
 });
 
 describe("locationItems", () => {
-  it("shows name and project-relative path:line only", async () => {
+  it("keeps the pre-settings rows by default (seamless upgrade)", async () => {
+    const line = "class _StatefulDataset(Base):";
+    const path = "B:/Program/Open/torchitan/tests/unit_tests/test_data.py";
+    readManyFileLines.mockResolvedValue(new Map([[path, ["", line]]]));
+    project({});
+    const item = (await locationItems([target(path, line)]))[0]!;
+    expect(item.label).toBe("_StatefulDataset");
+    expect(item.detail).toBe(`${path.split("/").pop()} · ${path}:2`);
+    expect(item.preview).toBe(line);
+  });
+
+  it("shows name and project-relative path:line with the extras off", async () => {
     const line = "class _StatefulDataset(Base):";
     readManyFileLines.mockResolvedValue(new Map([["/p/src/mod.py", ["", line]]]));
-    project({});
+    lean();
     const item = (await locationItems([target("/p/src/mod.py", line)]))[0]!;
     expect(item.label).toBe("_StatefulDataset");
     expect(item.detail).toBe("src/mod.py:2");
@@ -53,7 +69,7 @@ describe("locationItems", () => {
     const line = "class _StatefulDataset(Base):";
     const path = "B:/Program/Open/torchitan/tests/unit_tests/test_data.py";
     readManyFileLines.mockResolvedValue(new Map([[path, ["", line]]]));
-    project({});
+    lean();
     const item = (await locationItems([target(path, line)]))[0]!;
     expect(item.detail).toBe("…/unit_tests/test_data.py:2");
   });
@@ -94,7 +110,26 @@ describe("locationItems", () => {
     expect(item.detail).toBe("config");
   });
 
+  it("drops the container of index symbols when the container is off", async () => {
+    readManyFileLines.mockResolvedValue(new Map());
+    project({ container: false });
+    const item = (
+      await locationItems([
+        {
+          path: "/p/src/mod.py",
+          uri: null,
+          range: { start: { line: 0, col: 0 }, end: { line: 0, col: 3 } },
+          name: "Configurable",
+          kind: "class" as never,
+          container: "config",
+        },
+      ])
+    )[0]!;
+    expect(item.detail).toBe("src/mod.py:1");
+  });
+
   it("keeps index symbols' container detail", async () => {
+    readManyFileLines.mockResolvedValue(new Map());
     project({});
     const item = (
       await locationItems([

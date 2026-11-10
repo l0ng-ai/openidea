@@ -148,7 +148,7 @@ export async function locationItems(locs: readonly DeclarationTarget[]): Promise
       return {
         id: `${i}`,
         label: l.name,
-        detail: [l.container, where].filter(Boolean).join(" · "),
+        detail: [l.container && extras.container ? l.container : "", where].filter(Boolean).join(" · "),
         preview,
         symbol: l.kind,
         run: () => navigateTo(l),
