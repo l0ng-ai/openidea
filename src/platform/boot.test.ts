@@ -66,20 +66,39 @@ it.each(resizeObserverMessages)("ignores the loop notification delivered as an E
   expect(document.getElementById("boot-error")).toBeNull();
 });
 
-it.each(resizeObserverMessages)("keeps rejections with the same message fatal: %s", (message) => {
+const reject = (reason: unknown) => {
   const event = new Event("unhandledrejection");
-  Object.defineProperty(event, "reason", { value: message });
+  Object.defineProperty(event, "reason", { value: reason });
   window.dispatchEvent(event);
-  expect(document.getElementById("splash")).toBeNull();
-  expect(document.querySelector("textarea")?.value).toContain(message);
+};
+
+it("keeps starting after an unhandled rejection", () => {
+  reject(new TypeError("Load failed"));
+  expect(document.getElementById("splash")).not.toBeNull();
+  expect(document.getElementById("boot-error")).toBeNull();
+  expect(document.documentElement.dataset.boot).toBeUndefined();
+  window.dispatchEvent(new Event("openidea:boot-ready"));
+  vi.advanceTimersByTime(30_000);
+  expect(document.getElementById("boot-error")).toBeNull();
 });
 
-it("handles startup rejections and preserves the first failure", () => {
-  const event = new Event("unhandledrejection");
-  Object.defineProperty(event, "reason", { value: { message: "startup rejected" } });
-  window.dispatchEvent(event);
+it("reports the first rejection when startup then times out", () => {
+  const error = new TypeError("Load failed");
+  // WebKit's network TypeErrors have no stack; JSON.stringify turns them into "{}".
+  Object.defineProperty(error, "stack", { value: undefined });
+  reject(error);
+  reject({ message: "later rejection" });
+  vi.advanceTimersByTime(30_000);
+  const details = document.querySelector("textarea")?.value;
+  expect(details).toContain("Startup did not finish within 30 seconds.");
+  expect(details).toContain("TypeError: Load failed");
+  expect(details).not.toContain("later rejection");
+});
+
+it("preserves the first failure", () => {
+  window.dispatchEvent(new ErrorEvent("error", { error: new Error("startup failed") }));
   window.dispatchEvent(new ErrorEvent("error", { message: "later failure" }));
-  expect(document.querySelector("textarea")?.value).toContain("startup rejected");
+  expect(document.querySelector("textarea")?.value).toContain("startup failed");
   expect(document.querySelector("textarea")?.value).not.toContain("later failure");
 });
 
