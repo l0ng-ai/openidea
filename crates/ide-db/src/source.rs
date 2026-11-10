@@ -20,7 +20,7 @@ pub enum DbDriver {
     /// Microsoft SQL Server.
     SqlServer,
     Clickhouse,
-    /// Oracle Database (via Oracle Instant Client).
+    /// Oracle Database (pure-Rust thin driver, no client library).
     Oracle,
 }
 
@@ -88,8 +88,6 @@ pub struct DbOptions {
     pub auto_disconnect_secs: Option<u32>,
     /// PostgreSQL: show only the configured database, its schemas right under the data source.
     pub single_database: bool,
-    /// Oracle: directory of the Oracle Instant Client (empty: `ORACLE_HOME` / system search path).
-    pub instant_client: String,
 }
 
 /// Schemas tab: the databases / schemas the tree shows. Names may use `*` and `?`.

@@ -16,7 +16,7 @@ Open it from **Tools › Database** or **View › Tool Windows › Database**. T
 | PostgreSQL | PostgreSQL, Amazon Redshift, CockroachDB, Greenplum, Neon, Supabase, TimescaleDB, YugabyteDB |
 | MySQL      | MySQL, MariaDB, Amazon Aurora MySQL, OceanBase (MySQL mode), SingleStore, StarRocks, TiDB    |
 | SQL Server | Microsoft SQL Server                                                                         |
-| Oracle     | Oracle (needs Oracle Instant Client, see below)                                              |
+| Oracle     | Oracle 19 or later (built-in thin driver, no client library)                                 |
 | ClickHouse | ClickHouse (over HTTP)                                                                       |
 | SQLite     | SQLite                                                                                       |
 
@@ -44,7 +44,6 @@ The data source dialog has a name, an optional **Color:** (tints the tree and co
     - **Read-only**: blocks writes at the session level where the database supports it (PostgreSQL, MySQL, SQLite, Oracle, ClickHouse) and disables grid editing.
     - **Transaction control:** **Auto** or **Manual** (ClickHouse is always Auto).
     - **Default schema:** (PostgreSQL `search_path`) or **Current schema:** (Oracle).
-    - **Instant Client:** (Oracle).
     - **Time zone:**, a keep-alive query interval, and **Auto-disconnect after** a number of idle seconds.
     - **Single database mode** (PostgreSQL): show only the configured database.
     - **Startup script:** runs on every new connection.
@@ -141,28 +140,20 @@ The export button offers **Export Data…** and quick copies: **Copy as CSV**, *
 
 **Import Data from File…** loads CSV, TSV or TXT into a table: the separator is detected, the first row can be a header matched to columns by name, and empty values can become `NULL`. The import runs in one transaction. It is not available for ClickHouse.
 
-## Oracle Instant Client
+## Oracle
 
-Oracle support uses the Oracle client libraries, which OpenIDEA does not bundle.
+Oracle connections use a built-in pure-Rust thin driver, so no Oracle client library or `ORACLE_HOME` is needed. It
+supports Oracle Database 19 or later.
 
-<Steps>
-  <Step title="Install Instant Client">
-    Download the Basic (or Basic Light) package of Oracle Instant Client 19 or later for your OS and architecture, and
-    unpack it in a stable place.
-  </Step>
-  <Step title="Point the data source at it">
-    In the data source's **Options** tab, set **Instant Client:** to that directory. If you leave it empty,
-    `ORACLE_HOME` or the system library path is used.
-  </Step>
-  <Step title="Connect">
-    On **General**, set host, port (1521) and the service name (for example `ORCLPDB1`) in **Database:**. A TNS
-    descriptor or alias in **Database:** is passed through as is. URLs such as
-    `oracle://scott@db.example.com:1521/ORCLPDB1` and `jdbc:oracle:thin:@//db.example.com:1521/ORCLPDB1` also work.
-  </Step>
-</Steps>
+On **General**, set host, port (1521) and the service name (for example `ORCLPDB1`) in **Database:**. A full TNS
+descriptor, or a TNS alias resolved from `tnsnames.ora` (`TNS_ADMIN` or `$ORACLE_HOME/network/admin`), also works there.
+URLs such as `oracle://scott@db.example.com:1521/ORCLPDB1` and `jdbc:oracle:thin:@//db.example.com:1521/ORCLPDB1` are
+accepted too.
 
-If the libraries can't be loaded, Test Connection fails with `DPI-1047` and a hint to set the Instant Client directory. On macOS, remove the quarantine flag if the libraries are blocked: `xattr -dr com.apple.quarantine /path/to/instantclient`.
+If login fails with `ORA-01017` although the password is right, the account may only have old 10G password verifiers;
+setting the same password again (`ALTER USER … IDENTIFIED BY …`) creates the newer ones.
 
+The tree shows packages (their DDL is the specification and body) next to tables, views, routines and sequences.
 Oracle schemas are database users; system accounts appear only with **Show internal system schemas**.
 
 ## Not supported

@@ -3172,7 +3172,7 @@ export type DbDriver = "sqlite" | "postgres" |
 "mysql" | 
 /**  Microsoft SQL Server. */
 "sqlServer" | "clickhouse" | 
-/**  Oracle Database (via Oracle Instant Client). */
+/**  Oracle Database (pure-Rust thin driver, no client library). */
 "oracle";
 
 /**  `schema.table (columns) REFERENCES ref_schema.ref_table (ref_columns)`. */
@@ -3215,7 +3215,7 @@ export type DbIntrospection = {
 };
 
 /**  Schema objects other than tables and columns (Go to DDL, Drop). */
-export type DbObjectKind = "function" | "procedure" | "trigger" | "sequence";
+export type DbObjectKind = "function" | "procedure" | "package" | "trigger" | "sequence";
 
 /**  Options tab: session settings applied to every connection. */
 export type DbOptions = {
@@ -3232,8 +3232,11 @@ export type DbOptions = {
 	autoDisconnectSecs?: number | null,
 	/**  PostgreSQL: show only the configured database, its schemas right under the data source. */
 	singleDatabase?: boolean,
-	/**  Oracle: directory of the Oracle Instant Client (empty: `ORACLE_HOME` / system search path). */
-	instantClient?: string,
+};
+
+/**  An Oracle package (its procedures and functions are not listed separately). */
+export type DbPackageInfo = {
+	name: string,
 };
 
 /**  One operation of a plan; `parent` indexes the plan's node list (roots: `None`). */
@@ -3295,9 +3298,10 @@ export type DbRoutineInfo = {
  */
 export type DbRowEdit = { kind: "update"; key: DbCellValue[]; values: DbCellValue[] } | { kind: "insert"; values: DbCellValue[] } | { kind: "delete"; key: DbCellValue[] };
 
-/**  A schema's routines (procedures and functions) and sequences. */
+/**  A schema's routines (procedures and functions), packages and sequences. */
 export type DbSchemaObjects = {
 	routines: DbRoutineInfo[],
+	packages: DbPackageInfo[],
 	sequences: DbSequenceInfo[],
 };
 

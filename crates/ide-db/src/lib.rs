@@ -57,6 +57,7 @@ impl DbTableKind {
 pub enum DbObjectKind {
     Function,
     Procedure,
+    Package,
     Trigger,
     Sequence,
 }
@@ -92,12 +93,21 @@ pub struct SequenceInfo {
     pub data_type: String,
 }
 
-/// A schema's routines (procedures and functions) and sequences.
+/// An Oracle package (its procedures and functions are not listed separately).
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, Type)]
+#[serde(rename_all = "camelCase")]
+#[serde(rename = "DbPackageInfo")]
+pub struct PackageInfo {
+    pub name: String,
+}
+
+/// A schema's routines (procedures and functions), packages and sequences.
 #[derive(Debug, Clone, PartialEq, Eq, Default, Serialize, Deserialize, Type)]
 #[serde(rename_all = "camelCase")]
 #[serde(rename = "DbSchemaObjects")]
 pub struct SchemaObjects {
     pub routines: Vec<RoutineInfo>,
+    pub packages: Vec<PackageInfo>,
     pub sequences: Vec<SequenceInfo>,
 }
 
@@ -296,7 +306,7 @@ fn through_tunnel(e: IdeError, source: &DataSource, via: Option<&str>) -> IdeErr
 
 /// Options › Run keep-alive query: pings the pool until it is closed or dropped
 /// (a dropped SSH tunnel or an idle-killing proxy stays alive meanwhile).
-fn keep_alive(pool: &Arc<Pool>, every: Duration) {
+pub(crate) fn keep_alive(pool: &Arc<Pool>, every: Duration) {
     let pool = Arc::downgrade(pool);
     tokio::spawn(async move {
         let mut tick = tokio::time::interval(every);
@@ -853,6 +863,14 @@ impl DbManager {
                 })
                 .collect();
         }
+        if let Some(q) = sql::packages(driver, schema) {
+            out.packages = pool
+                .rows(&q, MAX_META_ROWS)
+                .await?
+                .into_iter()
+                .filter_map(|r| Some(PackageInfo { name: r.into_iter().next().flatten()? }))
+                .collect();
+        }
         if let Some(q) = sql::sequences(driver, schema) {
             out.sequences = pool
                 .rows(&q, MAX_META_ROWS)
@@ -870,9 +888,29 @@ impl DbManager {
         Ok(out)
     }
 
-    /// The definition of a routine (every overload), trigger or sequence.
+    /// The definition of a routine (every overload), package (spec and body), trigger or sequence.
     pub async fn object_ddl(&self, id: &str, schema: &str, kind: DbObjectKind, name: &str) -> IdeResult<String> {
         let pool = self.pool(id).await?;
+        if kind == DbObjectKind::Package {
+            let mut defs: Vec<String> = Vec::new();
+            for body in [false, true] {
+                let Some(q) = sql::package_ddl(pool.driver(), schema, name, body) else { continue };
+                match pool.rows(&q, MAX_META_ROWS).await {
+                    Ok(rows) => defs.extend(rows.into_iter().filter_map(|r| r.into_iter().next().flatten())),
+                    // A spec-only package has no body: the spec alone still opens.
+                    Err(e) if body => tracing::warn!("package body {schema}.{name}: {}", e.message),
+                    Err(e) => return Err(e),
+                }
+            }
+            if defs.is_empty() {
+                return Err(IdeError::not_found(format!("{schema}.{name}")));
+            }
+            return Ok(defs
+                .iter()
+                .map(|d| format!("{};\n", d.trim_end().trim_end_matches(';')))
+                .collect::<Vec<_>>()
+                .join("\n"));
+        }
         let (q, column) = sql::object_ddl(pool.driver(), schema, kind, name)
             .ok_or_else(|| IdeError::invalid(format!("no {kind:?} objects in this database")))?;
         let defs: Vec<String> = pool

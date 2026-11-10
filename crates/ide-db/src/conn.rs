@@ -417,7 +417,7 @@ fn binary_type(name: &str, text: bool) -> bool {
 }
 
 /// Bytes as text: UTF-8, else hex (grids) or with invalid sequences replaced (catalog names).
-fn bytes_text(bytes: Vec<u8>, mode: Cells) -> String {
+pub(crate) fn bytes_text(bytes: Vec<u8>, mode: Cells) -> String {
     match (String::from_utf8(bytes), mode) {
         (Ok(s), _) => s,
         (Err(e), Cells::Display) => hex(e.as_bytes()),
@@ -1042,7 +1042,7 @@ pub enum Held {
     Mysql(Box<bb8::PooledConnection<'static, MysqlManager>>),
     SqlServer(Box<bb8::PooledConnection<'static, MssqlConnectionManager>>),
     Clickhouse(crate::clickhouse::ClickhousePool),
-    Oracle(crate::oracle::OracleConnection),
+    Oracle(Box<crate::oracle::OracleConnection>),
 }
 
 impl Held {
@@ -1058,7 +1058,7 @@ impl Held {
                 }
                 Held::Clickhouse(p.clone())
             }
-            Pool::Oracle(p) => Held::Oracle(p.get().await?),
+            Pool::Oracle(p) => Held::Oracle(Box::new(p.get().await?)),
         })
     }
 

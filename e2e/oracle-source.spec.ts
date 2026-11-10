@@ -1,6 +1,6 @@
 import { expect, test } from "./fixtures";
 
-test("configures an Oracle source with its Instant Client directory", async ({ workbench: page }, info) => {
+test("configures an Oracle source without a client library", async ({ workbench: page }, info) => {
   await page.evaluate(async () => {
     const storePath = "/src/features/database/store.ts";
     const bindingsPath = "/src/bindings.ts";
@@ -20,7 +20,7 @@ test("configures an Oracle source with its Instant Client directory", async ({ w
   await expect(dialog.locator("#db-port")).toHaveValue("1521");
   await expect(dialog.locator("#db-url")).toHaveValue("jdbc:oracle://localhost:1521");
 
-  // The client libraries are not bundled: the Options tab names their directory (empty: ORACLE_HOME).
+  // Pure-Rust thin driver: no client library to point at, just the service name.
   const testButton = dialog.getByRole("button", { name: "Test Connection", exact: true });
   await dialog.locator("#db-url").fill("oracle://scott:tiger@db.example:1521/ORCLPDB1");
   await expect(dialog.locator("#db-host")).toHaveValue("db.example");
@@ -29,8 +29,6 @@ test("configures an Oracle source with its Instant Client directory", async ({ w
   await expect(dialog.locator("#db-database")).toHaveValue("ORCLPDB1");
   await expect(testButton).toBeEnabled();
 
-  await dialog.getByRole("tab", { name: "Options", exact: true }).click();
-  await dialog.locator("#db-instant-client").fill("/opt/oracle/instantclient_23_5");
   await testButton.click();
   await expect(dialog.getByRole("status")).toHaveText(/^Succeeded: Oracle Database 23ai/);
   expect(await page.evaluate(() => JSON.parse(document.documentElement.dataset.testedSource!))).toMatchObject({
@@ -39,7 +37,6 @@ test("configures an Oracle source with its Instant Client directory", async ({ w
     port: 1521,
     user: "scott",
     database: "ORCLPDB1",
-    options: { instantClient: "/opt/oracle/instantclient_23_5" },
   });
-  await dialog.screenshot({ path: info.outputPath("oracle-source-options.png") });
+  await dialog.screenshot({ path: info.outputPath("oracle-source.png") });
 });

@@ -50,6 +50,7 @@ export type DbObjectKind =
   | "schema"
   | "function"
   | "procedure"
+  | "package"
   | "trigger"
   | "sequence";
 
@@ -136,6 +137,10 @@ export function dropSql(driver: DbDriver, o: DbObjectRef, opts: DropOptions): st
       const args = driver === "postgres" ? `(${o.arguments ?? ""})` : "";
       return `drop ${o.kind} ${ifExists}${qualifiedName(driver, o.schema, o.name)}${args}${cascade};`;
     }
+    // Oracle has no DROP PACKAGE IF EXISTS before 23ai, and dropping the
+    // specification drops the body with it.
+    case "package":
+      return `drop package ${qualifiedName(driver, o.schema, o.name)};`;
     case "trigger":
       if (driver === "postgres")
         return `drop trigger ${ifExists}${ident(driver, o.name)} on ${qualifiedName(driver, o.schema, o.table ?? "")}${cascade};`;

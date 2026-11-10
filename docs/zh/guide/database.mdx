@@ -16,7 +16,7 @@ description: "连接 SQL 数据库、浏览架构、在查询控制台中执行�
 | PostgreSQL | PostgreSQL、Amazon Redshift、CockroachDB、Greenplum、Neon、Supabase、TimescaleDB、YugabyteDB |
 | MySQL      | MySQL、MariaDB、Amazon Aurora MySQL、OceanBase (MySQL mode)、SingleStore、StarRocks、TiDB    |
 | SQL Server | Microsoft SQL Server                                                                         |
-| Oracle     | Oracle（需要 Oracle Instant Client，见下文）                                                 |
+| Oracle     | Oracle 19 及以上（内置 thin 驱动，无需客户端库）                                             |
 | ClickHouse | ClickHouse（通过 HTTP）                                                                      |
 | SQLite     | SQLite                                                                                       |
 
@@ -44,7 +44,6 @@ description: "连接 SQL 数据库、浏览架构、在查询控制台中执行�
     - **只读**：在数据库支持时于会话级别禁止写入（PostgreSQL、MySQL、SQLite、Oracle、ClickHouse），同时禁用表格编辑。
     - **事务控制：** **自动** 或 **手动**（ClickHouse 只能自动）。
     - **默认架构：**（PostgreSQL 的 `search_path`）或 **当前模式：**（Oracle）。
-    - **Instant Client：**（Oracle）。
     - **时区：**、保持活动查询的间隔，以及空闲多少秒后 **自动断开连接**。
     - **单数据库模式**（PostgreSQL）：只显示配置的数据库。
     - **启动脚本:**：每次新建连接时执行。
@@ -141,25 +140,15 @@ SQL 补全基于已连接的架构：`FROM`/`JOIN` 后补全表（并根据外�
 
 **从文件导入数据…** 把 CSV、TSV 或 TXT 导入到表中：自动识别分隔符，第一行可作为标题并按名称匹配列，空值可以视为 `NULL`。导入在一个事务中完成。ClickHouse 不支持导入。
 
-## Oracle Instant Client
+## Oracle
 
-Oracle 支持依赖 Oracle 客户端库，OpenIDEA 不自带。
+Oracle 连接使用内置的纯 Rust thin 驱动，不需要 Oracle 客户端库或 `ORACLE_HOME`。支持 Oracle Database 19 及以上版本。
 
-<Steps>
-  <Step title="安装 Instant Client">
-    下载与操作系统和架构匹配的 Oracle Instant Client 19 或更高版本的 Basic（或 Basic Light）包，解压到一个固定位置。
-  </Step>
-  <Step title="在数据源中指定目录">
-    在数据源的 **选项** 标签页中，把 **Instant Client：** 设为该目录。留空时使用 `ORACLE_HOME` 或系统库路径。
-  </Step>
-  <Step title="连接">
-    在 **常规** 中填写主机、端口（1521），并在 **数据库：** 中填写服务名（例如 `ORCLPDB1`）。在 **数据库：** 中填写 TNS
-    描述符或别名时会原样传给客户端。也可以使用 `oracle://scott@db.example.com:1521/ORCLPDB1` 或
-    `jdbc:oracle:thin:@//db.example.com:1521/ORCLPDB1` 这样的 URL。
-  </Step>
-</Steps>
+在 **常规** 中填写主机、端口（1521），并在 **数据库：** 中填写服务名（例如 `ORCLPDB1`）。也可以在这里填写完整的 TNS 描述符，或从 `tnsnames.ora`（`TNS_ADMIN` 或 `$ORACLE_HOME/network/admin`）解析的 TNS 别名。也支持 `oracle://scott@db.example.com:1521/ORCLPDB1`、`jdbc:oracle:thin:@//db.example.com:1521/ORCLPDB1` 这样的 URL。
 
-如果客户端库加载失败，测试连接会报 `DPI-1047` 并提示设置 Instant Client 目录。在 macOS 上如果库文件被系统拦截，可以去掉隔离标记：`xattr -dr com.apple.quarantine /path/to/instantclient`。
+如果密码正确但登录报 `ORA-01017`，可能是该账号只有旧的 10G 密码校验值；把密码重新设置为同一个值（`ALTER USER … IDENTIFIED BY …`）即可生成新的校验值。
+
+树中在表、视图、例程和序列旁边显示包（其 DDL 为包规范和包体）。
 
 Oracle 的架构就是数据库用户；系统账户只在勾选 **显示内部系统架构** 后显示。
 
