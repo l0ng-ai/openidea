@@ -303,11 +303,7 @@ function Header({
         </span>
       )}
       <span className={styles.headerSpacer} />
-      <IconButton
-        icon="terminal"
-        title="Open in Terminal"
-        onClick={() => void executeAction("terminal.openAt", task.cwd)}
-      />
+      <IconButton icon="terminal" title="Terminal" onClick={() => void executeAction("terminal.openAt", task.cwd)} />
       {task.status === "archived" && (
         <IconButton icon="undo" title="Unarchive Task" action="agents.unarchiveTasks" actionArg={[task.id]} />
       )}
