@@ -426,6 +426,7 @@ impl PhpEngine {
                 Some(render(Some(&container), &param, docs))
             }
             Decl::Magic(magic) => self.describe_magic(magic, resolver, here, summary),
+            Decl::ShapeProperty { name, ty, .. } => Some(render(None, &format!("{ty} ${name}"), None)),
         }
     }
 
@@ -658,6 +659,7 @@ impl PhpEngine {
                     MagicTarget::Attribute { ty, .. } if magic.ty == Type::Mixed => ty.clone(),
                     _ => magic.ty.clone(),
                 },
+                Some(Decl::ShapeProperty { ty, .. }) => ty.clone(),
             },
         };
         let mut out: Vec<super::Target> = Vec::new();

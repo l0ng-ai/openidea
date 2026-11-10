@@ -52,7 +52,15 @@ pub(super) fn extract(file: &ParsedFile) -> FileSummary {
 /// The `@var` tags of the docblock directly in front of a statement starting
 /// at `start` (`/** @var Foo $x */`), as `(variable name, type)`, class names
 /// resolved in `scope`. Empty when there is no such docblock.
-pub(crate) fn inline_vars(file: &ParsedFile, scope: &NameScope, start: u32) -> Vec<(Option<String>, DocType)> {
+///
+/// `outer` lists the names the docblock sees that aren't classes (the type
+/// aliases of the enclosing class), which stay unresolved.
+pub(crate) fn inline_vars(
+    file: &ParsedFile,
+    scope: &NameScope,
+    start: u32,
+    outer: &[String],
+) -> Vec<(Option<String>, DocType)> {
     let trivia = file.program().trivia.as_slice();
     let has_var = mago_syntax::comments::docblock::get_docblock_before_position(trivia, start)
         .is_some_and(|doc| doc.value.windows(4).any(|w| w == b"@var" || w == b"-var"));
@@ -67,8 +75,25 @@ pub(crate) fn inline_vars(file: &ParsedFile, scope: &NameScope, start: u32) -> V
         classes: Vec::new(),
         in_down: false,
     };
-    let Some(doc) = cx.doc_at(start, &[]) else { return Vec::new() };
+    let Some(doc) = cx.doc_at(start, outer) else { return Vec::new() };
     doc.vars.into_iter().map(|var| (var.name, var.ty)).collect()
+}
+
+/// The docblock directly in front of whatever starts at `start` (a closure
+/// or the statement holding it), class names resolved in `scope` and the
+/// names in `outer` left as written.
+pub(crate) fn doc_before(file: &ParsedFile, scope: &NameScope, start: u32, outer: &[String]) -> Option<Box<DocBlock>> {
+    let trivia = file.program().trivia.as_slice();
+    mago_syntax::comments::docblock::get_docblock_before_position(trivia, start)?;
+    let cx = Extractor {
+        file,
+        scope: scope.clone(),
+        summary: FileSummary::default(),
+        repository_scope: None,
+        classes: Vec::new(),
+        in_down: false,
+    };
+    cx.doc_at(start, outer)
 }
 
 fn lossy(bytes: &[u8]) -> String {

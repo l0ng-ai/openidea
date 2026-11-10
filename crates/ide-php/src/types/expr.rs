@@ -18,7 +18,8 @@
 //!   `::class`, and array access on shapes, arrays, lists, strings and
 //!   `ArrayAccess` objects (`offsetGet`);
 //! - closures and arrow functions as `Closure(…): T` signatures, their
-//!   return type from the hint or from the body;
+//!   types from their own docblock (`@template`s staying templates, bound
+//!   when the closure is called or passed), the hint or the body;
 //! - variables: `$this`, and everything else from the [`Flow`] of the
 //!   enclosing function-like ([`flow`]): parameters (`@param` first, as the
 //!   summaries do), closure `use` captures and the enclosing scope of arrow
@@ -49,7 +50,7 @@ use super::provider::{CallKind, CallSite, NO_NEXT, ParameterSite, site_args};
 use super::resolve::{Bindings, CallArg, declared_params};
 use super::{Context, LazyType, Relative, Resolver, Shape, ShapeField, ShapeKey, Signature, SignatureParam, Type};
 use crate::names::{FileNames, NameKind, NameScope, Resolution};
-use crate::summary::{ClassLike, DocBlock, FileSummary, FunctionDecl, Param, type_hint};
+use crate::summary::{ClassLike, DocBlock, DocType, FileSummary, FunctionDecl, Param, type_hint};
 use crate::syntax::ParsedFile;
 
 mod flow;
@@ -239,6 +240,17 @@ impl<'a, 'r> ExprTypes<'a, 'r> {
         }
     }
 
+    /// The named class-like of this file whose body `frames` are in (`None`
+    /// outside one or in an anonymous class).
+    fn frame_class(&self, frames: &[Frame<'a>]) -> Option<&'a ClassLike> {
+        let fqn = frames.iter().rev().find_map(|frame| match frame {
+            Frame::Class(fqn) => Some(fqn),
+            _ => None,
+        })?;
+        let fqn = fqn.as_deref()?;
+        self.summary.class_likes.iter().find(|class| class.fqn == fqn)
+    }
+
     fn scope(&self, offset: u32) -> &'a NameScope {
         self.names.scope_at(offset)
     }
@@ -330,7 +342,8 @@ impl<'a, 'r> ExprTypes<'a, 'r> {
             Expression::Access(access) => self.access(access, frames),
             Expression::Pipe(pipe) => {
                 let callable = self.expr(pipe.callable, frames);
-                self.invoke(&callable, frames)
+                let args = || vec![CallArg { name: None, ty: self.expr(pipe.input, frames), spread: false }];
+                self.invoke(&callable, &args, frames)
             }
             _ => Type::Mixed,
         }
@@ -379,7 +392,7 @@ impl<'a, 'r> ExprTypes<'a, 'r> {
             }
             Some(state) => state.ty,
             // Somewhere the flow doesn't visit (a parameter's default value).
-            None => scope.last().and_then(|frame| self.parameter(frame, name)).unwrap_or(Type::Mixed),
+            None => self.parameter(scope, name).unwrap_or(Type::Mixed),
         }
     }
 
@@ -479,8 +492,10 @@ impl<'a, 'r> ExprTypes<'a, 'r> {
         }
     }
 
-    /// The declared type of parameter `$name` of a function-like.
-    fn parameter(&self, frame: &Frame<'a>, name: &[u8]) -> Option<Type> {
+    /// The declared type of parameter `$name` of the function-like ending
+    /// `frames`.
+    fn parameter(&self, frames: &[Frame<'a>], name: &[u8]) -> Option<Type> {
+        let frame = frames.last()?;
         let name = String::from_utf8_lossy(name);
         let declared = |params: &[Param], doc: Option<&DocBlock>, templates: Vec<&str>| {
             let param = params.iter().find(|param| param.name == name)?;
@@ -524,10 +539,31 @@ impl<'a, 'r> ExprTypes<'a, 'r> {
                 let site = ParameterSite { class: &class.fqn, method: decl, index, declared: &ty };
                 Some(self.resolver.providers().parameter(&site, self.resolver).unwrap_or(ty))
             }
-            Frame::Closure(closure) => self.function_parameter(&closure.parameter_list, frame.key(), &name),
-            Frame::Arrow(arrow) => self.function_parameter(&arrow.parameter_list, frame.key(), &name),
+            Frame::Closure(closure) => self.function_parameter(&closure.parameter_list, frames, &name),
+            Frame::Arrow(arrow) => self.function_parameter(&arrow.parameter_list, frames, &name),
             Frame::Class(_) => None,
         }
+    }
+
+    /// The docblock of the closure or arrow function starting at `start`
+    /// inside `frames` (which don't include it), when it has `@template`,
+    /// `@param` or `@return` tags: the one directly in front of it, else the
+    /// one in front of the statement `$f = function …` or `return fn …`
+    /// holding it (Psalm and PHPStan read both).
+    fn closure_doc(&self, start: u32, frames: &[Frame<'a>]) -> Option<ClosureDoc<'a>> {
+        let class = self.frame_class(frames);
+        let outer: Vec<String> = class.iter().flat_map(|class| class_templates(class)).map(str::to_owned).collect();
+        let scope = self.scope(start);
+        let doc = crate::summary::doc_before(self.file, scope, start, &outer).or_else(|| {
+            let at = statement_start(self.file.text(), start as usize)?;
+            crate::summary::doc_before(self.file, scope, at as u32, &outer)
+        })?;
+        if doc.templates.is_empty() && doc.params.is_empty() && doc.return_type.is_none() {
+            return None;
+        }
+        let mut names = outer;
+        names.extend(doc.local_type_names().map(str::to_owned));
+        Some(ClosureDoc { doc, names, class, context: self.context(frames) })
     }
 
     fn function_decl(&self, function: &Function<'_>) -> Option<&'a FunctionDecl> {
@@ -538,12 +574,27 @@ impl<'a, 'r> ExprTypes<'a, 'r> {
     /// A closure or arrow function parameter's type: its native type, else
     /// the type the callable it is passed to expects there (bidirectional
     /// inference, as PHPStan and Psalm do for closures passed as arguments).
-    fn function_parameter(&self, list: &FunctionLikeParameterList<'_>, key: u32, name: &str) -> Option<Type> {
+    ///
+    /// Its own docblock's `@param` comes first (with its `@template`s).
+    fn function_parameter(
+        &self,
+        list: &FunctionLikeParameterList<'_>,
+        frames: &[Frame<'a>],
+        name: &str,
+    ) -> Option<Type> {
+        let (frame, outer) = frames.split_last()?;
+        let key = frame.key();
         let declared = self.ast_parameter(list, name)?;
         let position = list.parameters.iter().position(|parameter| {
             parameter.variable.name.strip_prefix(b"$").unwrap_or(parameter.variable.name) == name.as_bytes()
         })?;
         let parameter = list.parameters.get(position)?;
+        if let Some(doc) = self.closure_doc(key, outer)
+            && let Some(ty) = doc.doc.param_type(name)
+        {
+            let ty = doc.ty(ty, self.resolver);
+            return Some(if parameter.ellipsis.is_some() { Type::list_of(ty) } else { ty });
+        }
         if parameter.hint.is_some() || parameter.ellipsis.is_some() {
             return Some(declared);
         }
@@ -678,11 +729,19 @@ impl<'a, 'r> ExprTypes<'a, 'r> {
 
     // ----------------------------------------------------------- closures
 
+    /// A closure's type, `Closure(…): …`. A docblock's `@param` and
+    /// `@return` types come before native hints and the inferred return; its
+    /// `@template`s stay templates in the signature, bound when the closure
+    /// is called or passed (`Resolver::infer_args`).
     fn closure(&self, closure: &'a Closure<'a>, frames: &[Frame<'a>]) -> Type {
         let inner = with(frames, Frame::Closure(closure));
-        let return_type = match &closure.return_type_hint {
-            Some(hint) => Type::from_hint(&type_hint(self.scope(closure.span().start.offset), &hint.hint)),
-            None => {
+        let start = closure.span().start.offset;
+        let doc = self.closure_doc(start, frames);
+        let documented = doc.as_ref().and_then(|doc| Some(doc.ty(doc.doc.return_type.as_ref()?, self.resolver)));
+        let return_type = match (documented, &closure.return_type_hint) {
+            (Some(ty), _) => ty,
+            (None, Some(hint)) => Type::from_hint(&type_hint(self.scope(start), &hint.hint)),
+            (None, None) => {
                 let mut returns = Returns::default();
                 ReturnWalker.walk_block(&closure.body, &mut returns);
                 if returns.generator {
@@ -699,34 +758,51 @@ impl<'a, 'r> ExprTypes<'a, 'r> {
                 }
             }
         };
-        Type::Closure(Some(Box::new(self.signature(&closure.parameter_list, closure.span().start.offset, return_type))))
+        Type::Closure(Some(Box::new(self.signature(&closure.parameter_list, start, doc.as_ref(), return_type))))
     }
 
     fn arrow(&self, arrow: &'a ArrowFunction<'a>, frames: &[Frame<'a>]) -> Type {
         let inner = with(frames, Frame::Arrow(arrow));
-        let return_type = match &arrow.return_type_hint {
-            Some(hint) => Type::from_hint(&type_hint(self.scope(arrow.span().start.offset), &hint.hint)),
-            None => self.expr(arrow.expression, &inner).widen(),
+        let start = arrow.span().start.offset;
+        let doc = self.closure_doc(start, frames);
+        let documented = doc.as_ref().and_then(|doc| Some(doc.ty(doc.doc.return_type.as_ref()?, self.resolver)));
+        let return_type = match (documented, &arrow.return_type_hint) {
+            (Some(ty), _) => ty,
+            (None, Some(hint)) => Type::from_hint(&type_hint(self.scope(start), &hint.hint)),
+            (None, None) => self.expr(arrow.expression, &inner).widen(),
         };
-        Type::Closure(Some(Box::new(self.signature(&arrow.parameter_list, arrow.span().start.offset, return_type))))
+        Type::Closure(Some(Box::new(self.signature(&arrow.parameter_list, start, doc.as_ref(), return_type))))
     }
 
-    fn signature(&self, list: &FunctionLikeParameterList<'_>, at: u32, return_type: Type) -> Signature {
+    fn signature(
+        &self,
+        list: &FunctionLikeParameterList<'_>,
+        at: u32,
+        doc: Option<&ClosureDoc<'_>>,
+        return_type: Type,
+    ) -> Signature {
         let scope = self.scope(at);
         let params = list
             .parameters
             .iter()
-            .map(|parameter| SignatureParam {
-                ty: parameter.hint.as_ref().map_or(Type::Mixed, |hint| Type::from_hint(&type_hint(scope, hint))),
-                name: Some(
-                    String::from_utf8_lossy(
-                        parameter.variable.name.strip_prefix(b"$").unwrap_or(parameter.variable.name),
-                    )
-                    .into_owned(),
-                ),
-                by_ref: parameter.ampersand.is_some(),
-                optional: parameter.default_value.is_some(),
-                variadic: parameter.ellipsis.is_some(),
+            .map(|parameter| {
+                let name = String::from_utf8_lossy(
+                    parameter.variable.name.strip_prefix(b"$").unwrap_or(parameter.variable.name),
+                )
+                .into_owned();
+                let documented = doc.and_then(|doc| Some(doc.ty(doc.doc.param_type(&name)?, self.resolver)));
+                let ty = match (documented, &parameter.hint) {
+                    (Some(ty), _) => ty,
+                    (None, Some(hint)) => Type::from_hint(&type_hint(scope, hint)),
+                    (None, None) => Type::Mixed,
+                };
+                SignatureParam {
+                    ty,
+                    name: Some(name),
+                    by_ref: parameter.ampersand.is_some(),
+                    optional: parameter.default_value.is_some(),
+                    variadic: parameter.ellipsis.is_some(),
+                }
             })
             .collect();
         Signature { params, return_type: Some(return_type) }
@@ -780,7 +856,8 @@ impl<'a, 'r> ExprTypes<'a, 'r> {
                 }
                 callee => {
                     let callable = self.expr(callee, frames);
-                    self.invoke(&callable, frames)
+                    let args = || self.call_args(&call.argument_list, frames);
+                    self.invoke(&callable, &args, frames)
                 }
             },
             Call::Method(call) => match &call.method {
@@ -872,15 +949,25 @@ impl<'a, 'r> ExprTypes<'a, 'r> {
             .collect()
     }
 
-    /// What calling a value of type `callable` returns: a closure's or
-    /// callable's declared return, an object's `__invoke()`.
-    fn invoke(&self, callable: &Type, frames: &[Frame<'a>]) -> Type {
+    /// What calling a value of type `callable` with `args` returns: a
+    /// closure's or callable's declared return (the templates of a generic
+    /// closure, `Closure(T $x): T`, inferred from the arguments), an
+    /// object's `__invoke()`.
+    fn invoke(&self, callable: &Type, args: &dyn Fn() -> Vec<CallArg>, frames: &[Frame<'a>]) -> Type {
         let context = self.context(frames);
         let mut answers = Vec::new();
         for member in callable.members() {
             match member {
                 Type::Closure(Some(signature)) | Type::Callable(Some(signature)) => {
-                    answers.push(signature.return_type.clone().unwrap_or(Type::Mixed));
+                    let ty = signature.return_type.clone().unwrap_or(Type::Mixed);
+                    let names = super::resolve::signature_templates(signature);
+                    if names.is_empty() {
+                        answers.push(ty);
+                        continue;
+                    }
+                    let mut bindings = Bindings::new();
+                    self.resolver.infer_args(&signature.params, &args(), &names, &mut bindings);
+                    answers.push(self.resolver.finish(&super::resolve::substitute(&ty, &bindings), &context));
                 }
                 Type::Named { .. } | Type::Relative(_) => {
                     answers.push(self.resolver.method_return(member, "__invoke", &context));
@@ -1127,6 +1214,48 @@ fn with<'a>(frames: &[Frame<'a>], frame: Frame<'a>) -> Vec<Frame<'a>> {
 
 fn class_templates(class: &ClassLike) -> Vec<&str> {
     class.doc.iter().flat_map(|doc| doc.local_type_names()).collect()
+}
+
+/// A closure's or arrow function's own docblock ([`ExprTypes::closure_doc`]).
+struct ClosureDoc<'a> {
+    doc: Box<DocBlock>,
+    /// The names its types use as templates or aliases: its own and the
+    /// enclosing class's.
+    names: Vec<String>,
+    /// The named class it is in, whose type aliases it sees.
+    class: Option<&'a ClassLike>,
+    context: Context,
+}
+
+impl ClosureDoc<'_> {
+    /// A type written in the docblock.
+    fn ty(&self, ty: &DocType, resolver: &Resolver<'_>) -> Type {
+        let names: Vec<&str> = self.names.iter().map(String::as_str).collect();
+        let mut ty = Type::from_doc(ty, &names);
+        if let Some(class) = self.class {
+            ty = resolver.expand_aliases(&ty, class);
+        }
+        resolver.finish(&ty, &self.context)
+    }
+}
+
+/// Where the statement holding the closure starting at byte `start` of
+/// `text` starts, when it is `$name = <closure>` or `return <closure>`.
+fn statement_start(text: &str, start: usize) -> Option<usize> {
+    let before = text.get(..start)?.trim_end();
+    let is_word = |c: char| c.is_ascii_alphanumeric() || c == '_' || !c.is_ascii();
+    if let Some(rest) = before.strip_suffix("return")
+        && !rest.ends_with(is_word)
+        && !rest.ends_with(['$', '>', ':'])
+    {
+        return Some(rest.len());
+    }
+    let rest = before.strip_suffix('=')?.trim_end();
+    let name = rest.trim_end_matches(is_word);
+    if name.len() == rest.len() || !name.ends_with('$') {
+        return None;
+    }
+    Some(name.len() - 1)
 }
 
 /// `(...)`: the only argument is the variadic placeholder.

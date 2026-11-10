@@ -296,11 +296,11 @@ impl<'t, 'a, 'r> Builder<'t, 'a, 'r> {
         };
         match frame {
             Frame::Function(function) => {
-                self.parameters(&function.parameter_list, frame);
+                self.parameters(&function.parameter_list);
                 self.statements(function.body.statements.iter());
             }
             Frame::Method(method) => {
-                self.parameters(&method.parameter_list, frame);
+                self.parameters(&method.parameter_list);
                 if let MethodBody::Concrete(body) = &method.body {
                     self.statements(body.statements.iter());
                 }
@@ -314,7 +314,7 @@ impl<'t, 'a, 'r> Builder<'t, 'a, 'r> {
                     let state = state.map_or_else(|| VarState::defined(Type::Mixed), |s| VarState::defined(s.ty));
                     self.env.vars.insert(name_of(&variable.variable).to_vec(), state);
                 }
-                self.parameters(&closure.parameter_list, frame);
+                self.parameters(&closure.parameter_list);
                 self.statements(closure.body.statements.iter());
             }
             Frame::Arrow(arrow) => {
@@ -322,17 +322,17 @@ impl<'t, 'a, 'r> Builder<'t, 'a, 'r> {
                 if let Some(vars) = outer.borrow().captures.get(&arrow.span().start.offset) {
                     self.env.vars = vars.clone();
                 }
-                self.parameters(&arrow.parameter_list, frame);
+                self.parameters(&arrow.parameter_list);
                 self.expr(arrow.expression);
             }
             Frame::Class(_) => {}
         }
     }
 
-    fn parameters(&mut self, list: &'a FunctionLikeParameterList<'a>, frame: &Frame<'a>) {
+    fn parameters(&mut self, list: &'a FunctionLikeParameterList<'a>) {
         for parameter in list.parameters.iter() {
             let name = name_of(&parameter.variable);
-            let ty = self.types.parameter(frame, name).unwrap_or(Type::Mixed);
+            let ty = self.types.parameter(self.frames, name).unwrap_or(Type::Mixed);
             self.write(&parameter.variable, ty);
         }
     }
@@ -415,7 +415,14 @@ impl<'t, 'a, 'r> Builder<'t, 'a, 'r> {
     /// the documented types in force before, to restore after the statement.
     fn document(&mut self, statement: &'a Statement<'a>) -> Vec<(Vec<u8>, Type)> {
         let start = statement.span().start.offset;
-        let vars = crate::summary::inline_vars(self.types.file, self.types.scope(start), start);
+        // The enclosing class's type aliases (`@phpstan-type Row …` read by
+        // `/** @var Row $row */` in its methods).
+        let class = self.types.frame_class(self.frames);
+        let aliases: Vec<String> = class
+            .and_then(|class| class.doc.as_deref())
+            .map(|doc| doc.type_aliases.iter().map(|alias| alias.name.clone()).collect())
+            .unwrap_or_default();
+        let vars = crate::summary::inline_vars(self.types.file, self.types.scope(start), start, &aliases);
         if vars.is_empty() {
             return std::mem::take(&mut self.documented);
         }
@@ -435,7 +442,12 @@ impl<'t, 'a, 'r> Builder<'t, 'a, 'r> {
             let Some(name) = name.map(String::into_bytes).or_else(|| assigned.map(|v| name_of(v).to_vec())) else {
                 continue;
             };
-            let ty = Type::from_doc(&ty, &[]).settle();
+            let names: Vec<&str> = aliases.iter().map(String::as_str).collect();
+            let mut ty = Type::from_doc(&ty, &names);
+            if let Some(class) = class {
+                ty = self.types.resolver.expand_aliases(&ty, class);
+            }
+            let ty = ty.settle();
             if let Some(state) = self.env.vars.get_mut(&name) {
                 state.ty = ty.clone();
             }

@@ -109,6 +109,20 @@ fn run(body: &str) -> String {
 }
 
 #[test]
+fn object_shape_properties_after_arrow() {
+    let shaped = "<?php\nnamespace App;\n\n/** @return object{id: int, title?: string} */\nfunction record(): object { return new \\stdClass(); }\n";
+    let mut project = Project::new(&[("src/shaped.php", shaped)]);
+    let found = project.complete("src/run.php", "<?php\nnamespace App;\n\necho record()->/*|*/;\n");
+    let id = item(&found, "id");
+    assert_eq!(id.kind, CompletionKind::Property);
+    assert_eq!(id.detail.as_deref(), Some("int"));
+    assert_eq!(item(&found, "title").detail.as_deref(), Some("string"));
+    // A prefix filters them.
+    let found = project.complete("src/run.php", "<?php\nnamespace App;\n\necho record()->ti/*|*/;\n");
+    assert!(has(&found, "title") && !has(&found, "id"), "{:?}", labels(&found));
+}
+
+#[test]
 fn members_after_arrow_follow_the_receiver_and_visibility() {
     let mut project = shop();
     let found = project.complete("src/run.php", &run("    $book->/*|*/\n    return;"));

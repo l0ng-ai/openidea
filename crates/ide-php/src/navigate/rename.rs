@@ -151,7 +151,7 @@ impl RenameKind {
             Decl::Parameter { .. } => RenameKind::Variable,
             // Refused before the kind matters.
             Decl::Magic(magic) if magic.member.is_method() => RenameKind::Member(MemberKind::Method),
-            Decl::Magic(_) => RenameKind::Member(MemberKind::Property),
+            Decl::Magic(_) | Decl::ShapeProperty { .. } => RenameKind::Member(MemberKind::Property),
         }
     }
 
@@ -350,7 +350,8 @@ impl PhpEngine {
             }
             Subject::Decls(decls) => {
                 // Members only magic methods have are declared nowhere.
-                if decls.iter().any(|decl| matches!(decl, Decl::Magic(_))) {
+                // So are the properties of object shapes.
+                if decls.iter().any(|decl| matches!(decl, Decl::Magic(_) | Decl::ShapeProperty { .. })) {
                     return None;
                 }
                 let first = decls.first()?;
@@ -363,7 +364,7 @@ impl PhpEngine {
                         Decl::ClassLike(fqn) | Decl::Function(fqn) | Decl::Constant(fqn) => short_name(fqn),
                         Decl::Member(member) => member.name.as_str(),
                         Decl::Parameter { name, .. } => name.as_str(),
-                        Decl::Magic(_) => return None,
+                        Decl::Magic(_) | Decl::ShapeProperty { .. } => return None,
                     };
                     // `self`, an alias, or a name the caret isn't on.
                     if !bare.eq_ignore_ascii_case(declared.trim_start_matches('$')) {

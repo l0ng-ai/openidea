@@ -458,3 +458,108 @@ fn mixin_arguments_bind_the_mixin_templates() {
         ("(new Relation)->first()/*|*/;", "mixed"),
     ]);
 }
+
+/// A generic identity closure, documented in front of its statement.
+const IDENTITY: &str = "/**
+ * @template T
+ * @param T $x
+ * @return T
+ */
+$id = function ($x) { return $x; };
+";
+
+/// A function taking a callable and its argument.
+const APPLY: &str = r"/**
+ * @template A
+ * @template B
+ * @param \Closure(A): B $f
+ * @param A $a
+ * @return B
+ */
+function apply(\Closure $f, $a) { return $f($a); }
+";
+
+#[test]
+fn closure_templates_bind_where_it_is_called() {
+    let call = |body: &str| format!("{IDENTITY}{body}");
+    check(&[
+        (call("$id/*|*/;").as_str(), "Closure(T $x): T"),
+        (call("$id(1)/*|*/;").as_str(), "int"),
+        (call("$id(new Book)/*|*/;").as_str(), r"Lib\Book"),
+        (call("$id(x: 'a')/*|*/;").as_str(), "string"),
+        // Inside, the parameter is the template.
+        ("/**\n * @template T\n * @param T $x\n */\n$f = function ($x) { return $x/*|*/; };", "T"),
+        // Directly in front of an arrow function, with a generic return.
+        (
+            "$wrap = /**\n * @template T\n * @param T $x\n * @return list<T>\n */\nfn ($x) => [$x];\n$wrap(new Book)/*|*/;",
+            r"list<Lib\Book>",
+        ),
+        // In front of `return fn …`.
+        ("function maker() {\n/**\n * @template T\n * @param T $x\n */\nreturn fn ($x) => $x/*|*/;\n}", "T"),
+        // Through the pipe operator.
+        (call("$r = new Book |> $id;\n$r/*|*/;").as_str(), r"Lib\Book"),
+        // A docblock without templates still types the closure.
+        ("$f = /** @return Book */ function () { return untyped(); };\n$f()/*|*/;", r"Lib\Book"),
+    ]);
+}
+
+#[test]
+fn closure_templates_bind_where_it_is_passed() {
+    let body = |body: &str| format!("{APPLY}{IDENTITY}{body}");
+    check(&[
+        (body("apply($id, new Book)/*|*/;").as_str(), r"Lib\Book"),
+        (body("apply($id, 3)/*|*/;").as_str(), "int"),
+        (
+            body(
+                "apply(/**\n * @template T\n * @param T $x\n * @return list<T>\n */\nfn ($x) => [$x], new Book)/*|*/;",
+            )
+            .as_str(),
+            r"list<Lib\Book>",
+        ),
+        // A plain closure as before.
+        (body("apply(fn (int $x): string => 'a', 3)/*|*/;").as_str(), "string"),
+    ]);
+}
+
+#[test]
+fn type_aliases_in_inline_var_tags() {
+    check_operators(&[
+        (
+            "/** @phpstan-type Row array{id: int, book: Book} */
+class T3 { public function m($x) {
+    /** @var Row $row */
+    $row = $x;
+    $row/*|*/;
+} }",
+            r"array{id: int, book: Lib\Book}",
+        ),
+        // Without a name, on an assignment; an element of it.
+        (
+            "/** @psalm-type Row = array{id: int, book: Book} */
+class T4 { public function m($x) {
+    /** @var Row */
+    $row = $x;
+    $row['book']/*|*/;
+} }",
+            r"Lib\Book",
+        ),
+        // On `foreach`, through an imported alias.
+        (
+            "/** @phpstan-import-type Row from Table */
+class T5 { public function m(array $rows) {
+    /** @var Row $r */
+    foreach ($rows as $r) { $r['id']/*|*/; }
+} }",
+            "int",
+        ),
+        // Outside the class, the name is a class again.
+        (
+            "/** @phpstan-type Row array{id: int} */
+class T6 {}
+/** @var Row $row */
+$row = untyped();
+$row/*|*/;",
+            r"App\Row",
+        ),
+    ]);
+}

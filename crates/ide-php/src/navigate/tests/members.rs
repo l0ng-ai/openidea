@@ -221,6 +221,31 @@ fn doc_text_renders_phpdoc_as_markdown() {
     assert_eq!(hover::doc_comment_before(text, text.find("function g").unwrap() as u32), None);
 }
 
+/// `object{…}` shapes returned by a function, a method and a property.
+const SHAPED: &str = "<?php\nnamespace App;\n\n/**\n * @return object{id: int, title?: string}\n */\nfunction record(): object { return new \\stdClass(); }\n\nclass Repo\n{\n    /** @var object{total: float} */\n    public object $sum;\n\n    /** @return object{count: int} */\n    public function stats(): object { return new \\stdClass(); }\n}\n";
+
+#[test]
+fn object_shape_properties_answer_goto_and_hover() {
+    let file = "src/shaped.php";
+    let mut project = Project::new(&[(file, SHAPED)]);
+    let cases = [
+        ("echo record()->ti/*|*/tle;", target(file, 4, "title"), "string $title"),
+        ("echo record()->i/*|*/d;", target(file, 4, "id"), "int $id"),
+        ("function f(Repo $r): void { echo $r->stats()->cou/*|*/nt; }", target(file, 13, "count"), "int $count"),
+        ("function f(Repo $r): void { echo $r->sum->to/*|*/tal; }", target(file, 10, "total"), "float $total"),
+    ];
+    for (body, wanted, hover) in cases {
+        let source = format!("<?php\nnamespace App;\n\n{body}\n");
+        assert_eq!(project.definition("bin/run.php", &source), Some(vec![wanted]), "goto: {body}");
+        let text = project.hover("bin/run.php", &source).expect("a hover");
+        assert!(text.contains(hover), "hover: {body}: {text}");
+    }
+    // A shape held by a variable has no declaration to go to, but a hover.
+    let source = "<?php\nnamespace App;\n\n$r = record();\necho $r->i/*|*/d;\n";
+    assert_eq!(project.definition("bin/run.php", source), Some(Vec::new()));
+    assert!(project.hover("bin/run.php", source).expect("a hover").contains("int $id"));
+}
+
 /// Symfony's `File` constraint: a protected property with a `@property`
 /// tag of the same name, served by `__get` to code outside the class.
 const SIZED: &str = "<?php\nnamespace App;\n\n/**\n * @property int $maxSize\n */\nclass Sized\n{\n    /** In bytes or with a suffix. */\n    protected int|string|null $maxSize = null;\n\n    public function __get(string $name) { return 0; }\n\n    public function own(): void { echo $this->maxSize; }\n}\n\nclass Sub extends Sized\n{\n    public function sub(): void { echo $this->maxSize; }\n}\n";

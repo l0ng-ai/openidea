@@ -65,7 +65,10 @@ mod generics;
 mod operators;
 
 pub(crate) use generics::declared_params;
-pub use generics::{Bindings, CallArg, TemplateParam, bind_args, class_template_params, substitute, template_params};
+pub use generics::{
+    Bindings, CallArg, TemplateParam, bind_args, class_template_params, signature_templates, substitute,
+    template_params,
+};
 use generics::{is_generic, with_args};
 
 /// The arguments of a call, computed only when a template needs them.

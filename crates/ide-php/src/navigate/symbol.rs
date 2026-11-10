@@ -61,6 +61,14 @@ pub(crate) enum Decl {
     },
     /// A member a type provider knows of ([`MagicMember`]).
     Magic(Magic),
+    /// A property of an object shape (`object{id: int}`) and its type there.
+    /// `origin` is the declaration the receiver comes from (the function,
+    /// method or property whose docblock wrote the shape), when known.
+    ShapeProperty {
+        name: String,
+        ty: Type,
+        origin: Option<Box<Decl>>,
+    },
 }
 
 /// A member reached through magic methods.
@@ -244,7 +252,31 @@ impl PhpEngine {
                     None => Vec::new(),
                 }
             }
+            Decl::ShapeProperty { name, origin, .. } => origin
+                .as_deref()
+                .and_then(|origin| self.shape_field_target(origin, name, here, summary))
+                .into_iter()
+                .collect(),
         }
+    }
+
+    /// Field `name` of an `object{…}` shape in the docblock of `origin`
+    /// (its declaration's), falling back to the declaration itself.
+    fn shape_field_target(&self, origin: &Decl, name: &str, here: &Path, summary: &FileSummary) -> Option<Target> {
+        let (path, name_start) = match origin {
+            Decl::Function(fqn) => {
+                let (path, function) = self.function_source(fqn, here, summary)?;
+                (path, function.name_loc.start)
+            }
+            Decl::Member(member) => (self.class_path(&member.info()?.declaring, here, summary)?, member.loc()?.start),
+            _ => return None,
+        };
+        let declaration = self.decl_targets(origin, here, summary).into_iter().next();
+        let field = file_text(self, &path).and_then(|text| {
+            let (start, end) = shape_field_in_doc(&text, name_start as usize, name)?;
+            Some(Target { path: path.clone(), range: crate::syntax::LineIndex::new(&text).range(start, end) })
+        });
+        field.or(declaration)
     }
 
     fn parameter_target(&self, owner: &Decl, name: &str, here: &Path, summary: &FileSummary) -> Option<Target> {
@@ -368,6 +400,37 @@ fn constant_string_at(parsed: &ParsedFile, here: &FileSummary, offset: u32) -> O
     let range = parsed.line_index().range(span.start.offset + 1, span.end.offset - 1);
     let context = enclosing_class(here, offset).map(|class| Context::in_class(&class.fqn)).unwrap_or_default();
     Some(AtCaret { range, subject: Subject::Decls(vec![Decl::Constant(name)]), context })
+}
+
+/// The byte range of field `name` of an `object{…}` shape in the docblock
+/// in front of the declaration whose name starts at byte `name_start` of
+/// `text` (only modifiers, a `function` keyword, a type or `&` between).
+fn shape_field_in_doc(text: &str, name_start: usize, name: &str) -> Option<(u32, u32)> {
+    let before = text.get(..name_start)?;
+    let close = before.rfind("*/")?;
+    if before[close + 2..].contains([';', '{', '}', '(', ')', '=']) {
+        return None;
+    }
+    let open = before[..close].rfind("/**")?;
+    let doc = &before[open..close];
+    let is_word = |c: char| c.is_ascii_alphanumeric() || c == '_' || !c.is_ascii();
+    let mut from = 0;
+    while let Some(at) = doc[from..].find("object{") {
+        let body = from + at + "object{".len();
+        let mut search = body;
+        while let Some(found) = doc[search..].find(name) {
+            let start = search + found;
+            let end = start + name.len();
+            let rest = doc[end..].trim_start_matches([' ', '?']);
+            let preceded = doc[..start].ends_with(|c: char| c == '{' || c == ',' || c.is_whitespace() || c == '*');
+            if preceded && !doc[end..].starts_with(is_word) && rest.starts_with(':') {
+                return Some(((open + start) as u32, (open + end) as u32));
+            }
+            search = end;
+        }
+        from = body;
+    }
+    None
 }
 
 /// The text of a file: its open buffer, else the file on disk.
@@ -544,6 +607,53 @@ impl<'a> Lookup<'a, '_> {
             .collect()
     }
 
+    /// `$o->name`: the property of the receiver's classes, else a property
+    /// of an object shape (`object{name: T}`) the receiver is.
+    fn property_access(
+        &self,
+        receiver: Type,
+        object: &'a Expression<'a>,
+        context: Context,
+        name: &str,
+        range: ide_core::Range,
+        ty: Option<Type>,
+    ) -> AtCaret {
+        let shape = receiver.members().iter().any(|member| {
+            matches!(member, Type::ObjectShape(fields)
+                if fields.iter().any(|field| field.key == crate::types::ShapeKey::String(name.to_owned())))
+        });
+        let found = self.member(MemberKind::Property, receiver, context, name, range, ty.clone());
+        if !shape || !matches!(&found.subject, Subject::Decls(decls) if decls.is_empty()) {
+            return found;
+        }
+        let origin = self.origin(object).map(Box::new);
+        let decl = Decl::ShapeProperty { name: name.to_owned(), ty: ty.unwrap_or(Type::Mixed), origin };
+        AtCaret { subject: Subject::Decls(vec![decl]), ..found }
+    }
+
+    /// The declaration the value of `object` comes from: the function,
+    /// method or property it calls or reads.
+    fn origin(&self, object: &'a Expression<'a>) -> Option<Decl> {
+        let offset = match object {
+            Expression::Parenthesized(inner) => return self.origin(inner.expression),
+            Expression::Call(Call::Function(call)) => call.function.span().start.offset,
+            Expression::Call(Call::Method(call)) => call.method.span().start.offset,
+            Expression::Call(Call::NullSafeMethod(call)) => call.method.span().start.offset,
+            Expression::Call(Call::StaticMethod(call)) => call.method.span().start.offset,
+            Expression::Access(Access::Property(access)) => access.property.span().start.offset,
+            Expression::Access(Access::NullSafeProperty(access)) => access.property.span().start.offset,
+            _ => return None,
+        };
+        let found = match self.names.at_offset(offset).filter(|name| name.kind != NameKind::Namespace) {
+            Some(name) => self.name(name),
+            None => self.syntax(offset),
+        }?;
+        match found.subject {
+            Subject::Decls(decls) => decls.into_iter().next(),
+            Subject::Variable { .. } => None,
+        }
+    }
+
     fn member(
         &self,
         kind: MemberKind,
@@ -633,12 +743,12 @@ impl<'a> Lookup<'a, '_> {
             Expression::Access(Access::Property(access)) => {
                 let (name, span) = selector(&access.property)?;
                 let receiver = self.types.type_of(access.object, frames);
-                Some(self.member(MemberKind::Property, receiver, context, &name, self.range(span), shown()))
+                Some(self.property_access(receiver, access.object, context, &name, self.range(span), shown()))
             }
             Expression::Access(Access::NullSafeProperty(access)) => {
                 let (name, span) = selector(&access.property)?;
                 let receiver = self.types.type_of(access.object, frames).without_null();
-                Some(self.member(MemberKind::Property, receiver, context, &name, self.range(span), shown()))
+                Some(self.property_access(receiver, access.object, context, &name, self.range(span), shown()))
             }
             Expression::Access(Access::StaticProperty(access)) => {
                 let Variable::Direct(variable) = &access.property else { return None };

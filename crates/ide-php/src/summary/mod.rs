@@ -38,7 +38,7 @@ mod laravel;
 mod render;
 mod symfony;
 
-pub(crate) use extract::{inline_vars, type_hint};
+pub(crate) use extract::{doc_before, inline_vars, type_hint};
 pub use laravel::{
     Binding, Cast, Column, CountedRelation, LaravelFacts, ModelCasts, RenamedColumn, RequestRules, RouteFileKind,
     RoutePath, RouteRegistration, RuleEntry, RuleMethod, Table,

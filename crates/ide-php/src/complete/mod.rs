@@ -761,6 +761,9 @@ impl<'e, 'r> Collector<'e, 'r> {
             }
         }
         self.magic_members(&receiver, &context, is_static, dollar, call_follows);
+        if !is_static {
+            self.shape_properties(&receiver);
+        }
         if !is_static && !dollar && !call_follows {
             // The innermost function-like's start.
             let scope = frames.iter().rev().find_map(|frame| match frame {
@@ -776,6 +779,20 @@ impl<'e, 'r> Collector<'e, 'r> {
         }
         if is_static && !dollar {
             self.push(Self::item("class", CompletionKind::Keyword), 3);
+        }
+    }
+
+    /// The properties of the object shapes (`object{id: int}`) among the
+    /// members of `receiver`, after `->`.
+    fn shape_properties(&mut self, receiver: &Type) {
+        for member in receiver.members() {
+            let Type::ObjectShape(fields) = member else { continue };
+            for field in fields {
+                let crate::types::ShapeKey::String(name) = &field.key else { continue };
+                let mut item = Self::item(name, CompletionKind::Property);
+                item.detail = Some(field.ty.widen().to_string());
+                self.push(item, 1);
+            }
         }
     }
 

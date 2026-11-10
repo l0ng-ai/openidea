@@ -124,6 +124,32 @@ pub fn is_generic(ty: &Type) -> bool {
     ty.any(&|ty| matches!(ty, Type::Template(_) | Type::GenericRelative { .. } | Type::Operator(_)))
 }
 
+/// The templates a callable's parameters mention, in order: a generic
+/// closure's own (`@template T` on it, `Closure(T $x): T`), which a call or
+/// the callable it is passed for binds.
+pub fn signature_templates(signature: &Signature) -> Vec<String> {
+    let mut names: Vec<String> = Vec::new();
+    for param in &signature.params {
+        param.ty.map(&mut |ty| {
+            if let Type::Template(name) = ty
+                && !names.contains(name)
+            {
+                names.push(name.clone());
+            }
+            None
+        });
+    }
+    names
+}
+
+/// True when `ty` is a callable whose parameters mention templates.
+fn is_generic_callable(ty: &Type) -> bool {
+    ty.members().iter().any(|member| {
+        matches!(member, Type::Closure(Some(signature)) | Type::Callable(Some(signature))
+            if !signature_templates(signature).is_empty())
+    })
+}
+
 /// True when `ty` mentions one of the templates `names`.
 fn mentions(ty: &Type, names: &[String]) -> bool {
     let mut found = false;
@@ -385,9 +411,13 @@ impl Resolver<'_> {
         }
     }
 
-    /// Infers the templates `names` from the arguments of a call.
+    /// Infers the templates `names` from the arguments of a call. Generic
+    /// callables (a closure with its own `@template`s) go last, so the other
+    /// arguments bind what they are instantiated with.
     pub fn infer_args(&self, params: &[SignatureParam], args: &[CallArg], names: &[String], out: &mut Bindings) {
-        for (position, arg) in args.iter().enumerate() {
+        let (generic, plain): (Vec<_>, Vec<_>) =
+            args.iter().enumerate().partition(|(_, arg)| is_generic_callable(&arg.ty));
+        for (position, arg) in plain.into_iter().chain(generic) {
             let param = match &arg.name {
                 Some(name) => params.iter().find(|param| param.name.as_deref() == Some(name.as_str())),
                 None => params
@@ -496,6 +526,8 @@ impl Resolver<'_> {
     /// parameter types (when the closure declares them) only fill templates
     /// nothing else bound.
     fn infer_signature(&self, param: &Signature, arg: &Signature, names: &[String], out: &mut Bindings) {
+        let instantiated = self.instantiate_callable(arg, param, names, out);
+        let arg = instantiated.as_ref().unwrap_or(arg);
         if let (Some(param), Some(arg)) = (&param.return_type, &arg.return_type) {
             self.infer(param, arg, names, out);
         }
@@ -508,6 +540,41 @@ impl Resolver<'_> {
         for (name, ty) in from_params {
             out.entry(name).or_insert(ty);
         }
+    }
+
+    /// A generic callable argument (`Closure(T $x): T`) instantiated for the
+    /// callable `expected` stands for: its own templates bound from the
+    /// expected parameter types the call already knows (`known`, the call's
+    /// templates `names` substituted). `None` when it isn't generic.
+    fn instantiate_callable(
+        &self,
+        arg: &Signature,
+        expected: &Signature,
+        names: &[String],
+        known: &Bindings,
+    ) -> Option<Signature> {
+        let own = signature_templates(arg);
+        if own.is_empty() {
+            return None;
+        }
+        let mut bound = Bindings::new();
+        for (param, expected) in arg.params.iter().zip(&expected.params) {
+            let expected = substitute(&expected.ty, known);
+            if expected != Type::Mixed && !mentions(&expected, names) {
+                self.infer(&param.ty, &expected, &own, &mut bound);
+            }
+        }
+        if bound.is_empty() {
+            return None;
+        }
+        Some(Signature {
+            params: arg
+                .params
+                .iter()
+                .map(|param| SignatureParam { ty: substitute(&param.ty, &bound), ..param.clone() })
+                .collect(),
+            return_type: arg.return_type.as_ref().map(|ty| substitute(ty, &bound)),
+        })
     }
 
     /// The key and value types of an iterable value.
