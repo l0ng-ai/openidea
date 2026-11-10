@@ -739,6 +739,8 @@ mod tests {
         assert_eq!(names, ["intelephense", "phpactor", "laravel-lsp"]);
         let lsp = cfg.language_servers.iter().find(|s| s.name == "laravel-lsp").unwrap();
         assert_eq!(lsp.command.as_str(), "laravel-lsp");
+        // Its `lsp` command takes no options and speaks over stdio; `--stdio` stops it at startup.
+        assert!(lsp.args.is_empty(), "{:?}", lsp.args);
         assert!(lsp.require_root_marker && !lsp.fallback);
         let tmp = tempfile::tempdir().unwrap();
         let root = tmp.path();
