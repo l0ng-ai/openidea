@@ -1,0 +1,332 @@
+/**
+ * Semantic highlighting: `lsp_semantic_tokens` → mark decorations with
+ * `cm-sem-*` classes (styled with the --syn-* tokens) layered over the Lezer
+ * highlighting. Refreshed after edits (debounced); in between, existing marks
+ * are mapped through the changes.
+ *
+ * Semantic highlighting (Color Scheme › Language Defaults, IDEA's rainbow
+ * identifiers): local variables and parameters additionally get
+ * `cm-sem-rainbow-<n>`, `n` derived from the name, so one name keeps one
+ * colour (`--syn-rainbow-<n>`) throughout the file.
+ *
+ * Language-specific behaviour lives in the `python/` and `php/` folders,
+ * registered into `languages.ts`; everything here is language-agnostic.
+ */
+import { syntaxTree } from "@codemirror/language";
+import type { Tree } from "@lezer/common";
+import { Prec, StateEffect, StateField, type Extension, type Text } from "@codemirror/state";
+import { Decoration, EditorView, ViewPlugin, type DecorationSet, type ViewUpdate } from "@codemirror/view";
+import { commands, type SemanticTokens } from "@/platform/ipc";
+import { editorPrefs } from "@/platform/editorSettings";
+import { debounce, docOf, isUnavailable, lspRequest } from "../lsp";
+import { featureBackoff, onLspRefresh } from "../availability";
+import { languageSemantics, type SemanticRange } from "./languages";
+
+// Language folders register their semantics by importing this module; lookups
+// elsewhere go through the re-exported `languageSemantics`.
+export { languageSemantics } from "./languages";
+// Registers each language's semantics (highlighting hooks, construct docs).
+import "./kotlin";
+import "./python";
+import "./php";
+import "./go";
+
+const semanticBackoff = featureBackoff();
+
+const TYPE_CLASS: Record<string, string> = {
+  type: "type",
+  class: "type",
+  enum: "type",
+  interface: "type",
+  struct: "type",
+  typeAlias: "type",
+  builtinType: "type",
+  selfTypeKeyword: "keyword",
+  typeParameter: "typeParameter",
+  function: "function",
+  method: "function",
+  macro: "macro",
+  decorator: "annotation",
+  // jdtls extensions
+  annotation: "annotation",
+  annotationMember: "function",
+  record: "type",
+  recordComponent: "property",
+  attribute: "annotation",
+  enumMember: "constant",
+  property: "property",
+  parameter: "parameter",
+  variable: "variable",
+  namespace: "namespace",
+  lifetime: "annotation",
+  selfParameter: "self",
+  clsParameter: "self",
+  selfKeyword: "self",
+};
+
+const MODIFIER_CLASS: Record<string, string> = {
+  deprecated: "deprecated",
+  static: "static",
+  mutable: "mutable",
+  declaration: "declaration",
+  definition: "declaration",
+  defaultLibrary: "builtin",
+  global: "global",
+  selfParameter: "self",
+  byteString: "python-bytes",
+  escapeSequence: "python-escape",
+  formatSpecifier: "python-format",
+  formatPlaceholder: "python-format",
+};
+
+/** Number of `--syn-rainbow-<n>` colours (IDEA's five semantic highlighting colours). */
+export const RAINBOW_COLORS = 5;
+
+/** Stable 1-based palette index of an identifier (FNV-1a over its UTF-16 units). */
+export function rainbowIndex(name: string): number {
+  let h = 0x811c9dc5;
+  for (let i = 0; i < name.length; i++) {
+    h ^= name.charCodeAt(i);
+    h = Math.imul(h, 0x01000193);
+  }
+  return ((h >>> 0) % RAINBOW_COLORS) + 1;
+}
+
+/** Locals and parameters only: no fields, statics, constants, library or `self` names. */
+const RAINBOW_TYPES = new Set(["variable", "parameter"]);
+const NOT_LOCAL = new Set(["static", "constant", "defaultLibrary", "global", "classScope", "fileScope"]);
+
+function rangeCoverage(ranges: Array<{ from: number; to: number }>) {
+  ranges.sort((a, b) => a.from - b.from || a.to - b.to);
+  const ends: number[] = [];
+  for (const r of ranges) ends.push(Math.max(ends.at(-1) ?? 0, r.to));
+  return (from: number, to: number) => {
+    let low = 0,
+      high = ranges.length;
+    while (low < high) {
+      const mid = (low + high) >>> 1;
+      if (ranges[mid]!.from <= from) low = mid + 1;
+      else high = mid;
+    }
+    return low > 0 && ends[low - 1]! >= to;
+  };
+}
+
+/** Decodes absolute `[line, col, len, type, modifiers]` quintuples into styled ranges. */
+export function semanticRanges(
+  doc: Text,
+  tokens: SemanticTokens,
+  rainbow = false,
+  language?: string,
+  tree?: Tree,
+): SemanticRange[] {
+  const semantics = languageSemantics(language);
+  const symbols = semantics?.symbolKinds && tree ? semantics.symbolKinds(tree, doc) : undefined;
+  const format = editorPrefs().docstringFormat;
+  const syntax = semantics?.syntaxRanges && tree ? semantics.syntaxRanges(tree, doc, symbols ?? new Map(), format) : [];
+  const covered = rangeCoverage(syntax);
+  const serverRanges: Array<{ from: number; to: number }> = [];
+  const out: SemanticRange[] = [];
+  const { data, tokenTypes, tokenModifiers } = tokens;
+  // Servers with a `local` modifier (TypeScript) tell module-level variables apart.
+  const marksLocals = tokenModifiers.includes("local");
+  for (let i = 0; i + 4 < data.length; i += 5) {
+    const line = data[i]!,
+      col = data[i + 1]!,
+      len = data[i + 2]!,
+      typeIdx = data[i + 3]!,
+      mods = data[i + 4]!;
+    if (line >= doc.lines || len <= 0) continue;
+    const l = doc.line(line + 1);
+    const from = l.from + Math.min(col, l.length);
+    const to = Math.min(from + len, l.to);
+    if (from >= to) continue;
+    const type = tokenTypes[typeIdx] ?? "";
+    const kind = symbols?.get(`${from}:${to}`);
+    const names: string[] = [];
+    for (let b = 0; b < tokenModifiers.length; b++) if (mods & (1 << b)) names.push(tokenModifiers[b]!);
+    const classes: string[] = [];
+    let base = Object.hasOwn(TYPE_CLASS, type) ? TYPE_CLASS[type] : undefined;
+    // jdtls marks constructors as a class with a `constructor` modifier; IDEA colours them as methods.
+    if (names.includes("constructor")) base = "function";
+    const constant =
+      names.includes("constant") || (type === "variable" && names.includes("readonly") && names.includes("static"));
+    if (constant && (type === "variable" || type === "property")) base = "constant";
+    if (base && base !== "variable") classes.push(`cm-sem-${base}`);
+    // `hasOwn`: servers send names like `constructor` (jdtls) that `Object.prototype` also has.
+    for (const n of names) if (Object.hasOwn(MODIFIER_CLASS, n)) classes.push(`cm-sem-${MODIFIER_CLASS[n]}`);
+    semantics?.tokenClasses?.({ type, modifiers: names, kind, classes });
+    const local =
+      rainbow &&
+      !constant &&
+      !names.includes("selfParameter") &&
+      !names.some((n) => NOT_LOCAL.has(n)) &&
+      (semantics?.isLocal
+        ? semantics.isLocal({ type, modifiers: names, kind })
+        : RAINBOW_TYPES.has(type) && (type === "parameter" || !marksLocals || names.includes("local")));
+    serverRanges.push({ from, to });
+    if (!classes.length && !local) continue;
+    if (covered(from, to)) continue;
+    if (local) classes.push(`cm-sem-rainbow-${rainbowIndex(doc.sliceString(from, to))}`);
+    out.push({ from, to, className: classes.join(" ") });
+  }
+  if (semantics?.fallbackRanges && tree) {
+    const serverCovered = rangeCoverage(serverRanges);
+    out.push(
+      ...semantics
+        .fallbackRanges(
+          tree,
+          doc,
+          rainbow ? (name) => `cm-sem-rainbow-${rainbowIndex(name)}` : undefined,
+          symbols ?? new Map(),
+        )
+        .filter((r) => !covered(r.from, r.to) && !serverCovered(r.from, r.to)),
+    );
+  }
+  out.push(...syntax);
+  return out.sort((a, b) => a.from - b.from || a.to - b.to);
+}
+
+const markCache = new Map<string, Decoration>();
+const markFor = (cls: string, source?: SemanticRange["source"], symbol?: string) => {
+  if (symbol !== undefined) return Decoration.mark({ class: cls, symbol });
+  const key = `${source ?? "semantic"}:${cls}`;
+  let m = markCache.get(key);
+  if (!m) markCache.set(key, (m = Decoration.mark({ class: cls, languageSyntax: source !== undefined })));
+  return m;
+};
+
+const setSemantic = StateEffect.define<DecorationSet>();
+
+const semanticField = StateField.define<DecorationSet>({
+  create: () => Decoration.none,
+  update(deco, tr) {
+    for (const e of tr.effects) if (e.is(setSemantic)) return e.value;
+    return tr.docChanged ? deco.map(tr.changes) : deco;
+  },
+});
+
+const semanticPlugin = ViewPlugin.fromClass(
+  class {
+    private refresh = debounce(() => void this.run(), 600);
+    private offReady: () => void;
+    private rainbow = editorPrefs().semanticHighlighting;
+    private docstringFormat = editorPrefs().docstringFormat;
+    /** Last answer, re-decorated without a request when Semantic highlighting is toggled. */
+    private last: { doc: Text; tokens: SemanticTokens | null } | null = null;
+    private destroyed = false;
+    private tree: Tree | null = null;
+    constructor(private view: EditorView) {
+      queueMicrotask(() => {
+        if (!this.destroyed) this.decorate(this.view.state.doc, null);
+      });
+      this.refresh();
+      this.offReady = onLspRefresh("semanticTokens", () => this.refresh());
+    }
+    update(u: ViewUpdate) {
+      const tree = syntaxTree(u.state);
+      if (u.docChanged || tree !== this.tree) {
+        this.tree = tree;
+        this.refresh();
+        const doc = u.state.doc;
+        queueMicrotask(() => {
+          if (!this.destroyed && this.view.state.doc === doc) this.refreshSyntax(doc);
+        });
+      }
+      const rainbow = editorPrefs().semanticHighlighting;
+      const docstringFormat = editorPrefs().docstringFormat;
+      if (rainbow === this.rainbow && docstringFormat === this.docstringFormat) return;
+      this.rainbow = rainbow;
+      this.docstringFormat = docstringFormat;
+      const last = this.last;
+      // Settings arrive as a compartment reconfiguration; no dispatching inside an update.
+      if (last && last.doc === u.state.doc)
+        queueMicrotask(() => {
+          if (!this.destroyed && this.view.state.doc === last.doc) this.decorate(last.doc, last.tokens);
+        });
+      else this.refresh();
+    }
+    refreshSyntax(doc: Text) {
+      const tree = syntaxTree(this.view.state);
+      const semantics = languageSemantics(docOf(this.view)?.language);
+      const symbols = semantics?.symbolKinds ? semantics.symbolKinds(tree, doc) : undefined;
+      const syntax = semantics?.syntaxRanges
+        ? semantics.syntaxRanges(tree, doc, symbols ?? new Map(), editorPrefs().docstringFormat)
+        : [];
+      const covered = rangeCoverage(syntax);
+      const retained: Array<{ from: number; to: number }> = [];
+      const marks = syntax.map((r) => markFor(r.className, r.source).range(r.from, r.to));
+      this.view.state.field(semanticField).between(0, doc.length, (from, to, decoration) => {
+        if (
+          !decoration.spec.languageSyntax &&
+          !covered(from, to) &&
+          decoration.spec.symbol === doc.sliceString(from, to)
+        ) {
+          marks.push(decoration.range(from, to));
+          retained.push({ from, to });
+        }
+      });
+      if (semantics?.fallbackRanges) {
+        const retainedCovered = rangeCoverage(retained);
+        for (const r of semantics.fallbackRanges(
+          tree,
+          doc,
+          this.rainbow ? (name) => `cm-sem-rainbow-${rainbowIndex(name)}` : undefined,
+          symbols ?? new Map(),
+        ))
+          if (!covered(r.from, r.to) && !retainedCovered(r.from, r.to))
+            marks.push(markFor(r.className, r.source).range(r.from, r.to));
+      }
+      this.view.dispatch({ effects: setSemantic.of(Decoration.set(marks, true)) });
+    }
+    decorate(doc: Text, tokens: SemanticTokens | null) {
+      this.last = { doc, tokens };
+      const ranges = semanticRanges(
+        doc,
+        tokens ?? { data: [], tokenTypes: [], tokenModifiers: [] },
+        this.rainbow,
+        docOf(this.view)?.language,
+        syntaxTree(this.view.state),
+      );
+      this.view.dispatch({
+        effects: setSemantic.of(
+          Decoration.set(
+            ranges.map((r) =>
+              markFor(r.className, r.source, r.source ? undefined : doc.sliceString(r.from, r.to)).range(r.from, r.to),
+            ),
+            true,
+          ),
+        ),
+      });
+    }
+    async run() {
+      const view = this.view;
+      const doc = docOf(view);
+      if (!doc || semanticBackoff.active(doc.doc) || !view.dom.isConnected) return;
+      const state = view.state;
+      try {
+        const tokens = await lspRequest(() => commands.lspSemanticTokens(doc.doc));
+        if (view.state.doc !== state.doc) return this.refresh();
+        this.decorate(state.doc, tokens);
+      } catch (e) {
+        if (isUnavailable(e)) semanticBackoff.mark(doc.doc);
+      }
+    }
+    destroy() {
+      this.destroyed = true;
+      this.refresh.cancel();
+      this.offReady();
+    }
+  },
+);
+
+export function semanticExtension(): Extension {
+  // Higher-precedence decoration sources create the *inner* DOM nodes, so this
+  // must outrank Lezer's highlighter for Color Scheme attributes to win.
+  // `Prec.highest`, not `Prec.high`: the
+  // highlighter (`treeHighlighter` in @codemirror/language) is itself
+  // `Prec.high`, and at equal precedence the later source ends up outside —
+  // its inner span then re-set the colour (a field's `variableName` grey hid
+  // `cm-sem-property`).
+  return [semanticField, semanticPlugin, Prec.highest(EditorView.decorations.from(semanticField))];
+}

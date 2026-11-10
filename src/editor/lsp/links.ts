@@ -87,14 +87,19 @@ export function textReference(text: Text, offset: number): Reference | null {
       return { kind: "url", from: line.from + m.index, to: line.from + m.index + m[0].length, url: m[0] };
   }
   const strings = [
-    ...[...line.text.matchAll(QUOTED_RE)].map((m) => ({ value: m[1] ?? m[2] ?? m[3] ?? "", from: m.index + 1 })),
+    ...[...line.text.matchAll(QUOTED_RE)].map((m) => ({
+      value: m[1] ?? m[2] ?? m[3] ?? "",
+      from: m.index + 1,
+      fragment: /\bhref\s*=\s*$/i.test(line.text.slice(0, m.index)),
+    })),
     ...[...line.text.matchAll(BARE_RE)].map((m) => {
       const value = m[1] ?? m[2] ?? "";
-      return { value, from: m.index + m[0].indexOf(value) };
+      return { value, from: m.index + m[0].indexOf(value), fragment: m[1] !== undefined };
     }),
   ];
-  for (const { value, from } of strings) {
-    if (col < from || col > from + value.length || !looksLikePath(value)) continue;
+  for (const { value, from, fragment } of strings) {
+    if (col < from || col > from + value.length || (!looksLikePath(value) && !(fragment && /^#[^\s]+$/.test(value))))
+      continue;
     return { kind: "path", from: line.from + from, to: line.from + from + value.length, value };
   }
   return null;
@@ -113,6 +118,13 @@ async function isFile(path: string): Promise<boolean> {
 /** Resolves a `path` reference (in the backend, like IDEA's file references); null when nothing exists there. */
 export async function resolvePath(ref: Reference, from: string): Promise<Reference | null> {
   if (ref.kind !== "path") return ref;
+  if (ref.value.startsWith("#")) {
+    try {
+      return { kind: "file", from: ref.from, to: ref.to, path: from, fragment: decodeURIComponent(ref.value.slice(1)) };
+    } catch {
+      return null;
+    }
+  }
   if (!isTauri()) return null;
   const path = await call(commands.fsResolveReference(from, ref.value)).catch(() => null);
   if (!path) return null;
@@ -142,7 +154,6 @@ export function fragmentOffset(text: string, path: string, fragment: string): nu
       if (h && slug(h[1]!) === fragment.toLowerCase()) return offset;
       offset += l.length + 1;
     }
-    return null;
   }
   const m = new RegExp(`\\b(?:id|name)\\s*=\\s*["']?${esc}(?=["'\\s>])`).exec(text);
   return m ? m.index : null;

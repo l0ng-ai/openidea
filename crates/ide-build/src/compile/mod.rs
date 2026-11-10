@@ -10,6 +10,7 @@ pub use fingerprint::{LaunchFingerprint, launch_fingerprint};
 
 use crate::process::{self, Stream};
 use crate::{BuildModel, maven};
+use ide_core::settings::CMakeProfile;
 use ide_core::{CancellationToken, Diagnostic, IdeError, IdeResult, Pos, Range, Severity};
 use parse::{ColUnit, Format, OutputParser, RawMessage};
 use serde::{Deserialize, Serialize};
@@ -41,6 +42,8 @@ pub enum BuildSystem {
     Go,
     #[serde(rename = "typescript")]
     TypeScript,
+    #[serde(rename = "cmake")]
+    CMake,
 }
 
 /// One command of a build.
@@ -62,6 +65,11 @@ impl BuildStep {
             env: BTreeMap::new(),
             format,
         }
+    }
+
+    /// A CMake configure/build invocation, parsed as compiler output in the Build view.
+    pub fn cmake(program: &str, args: Vec<String>, cwd: PathBuf, env: BTreeMap<String, String>) -> Self {
+        Self { program: program.into(), args, cwd, env, format: Format::Gcc }
     }
 
     /// The command line as echoed in the console.
@@ -144,26 +152,30 @@ fn detect_dir(dir: &Path, model: &BuildModel, root: &Path) -> Option<BuildSystem
     let rel = rel_str(root, dir);
     if model.maven.as_ref().is_some_and(|m| m.projects.iter().any(|p| p.dir == rel)) || has(dir, &["pom.xml"]) {
         Some(BuildSystem::Maven)
-    } else if has(dir, &["build.gradle", "build.gradle.kts", "settings.gradle", "settings.gradle.kts"]) {
+    } else if model.gradle_for_module(root, dir).is_some()
+        || has(dir, &["build.gradle", "build.gradle.kts", "settings.gradle", "settings.gradle.kts"])
+    {
         Some(BuildSystem::Gradle)
     } else if has(dir, &["Cargo.toml"]) {
         Some(BuildSystem::Cargo)
-    } else if has(dir, &["go.mod"]) {
+    } else if has(dir, &["go.mod", "go.work"]) {
         Some(BuildSystem::Go)
     } else if has(dir, &["tsconfig.json", "package.json"]) {
         Some(BuildSystem::TypeScript)
+    } else if has(dir, &["CMakeLists.txt"]) {
+        Some(BuildSystem::CMake)
     } else {
         None
     }
 }
 
-/// `root/rel`, without a trailing separator for the root itself.
+/// Resolves a workspace-relative or absolute directory with native path separators.
 fn subdir(root: &Path, rel: &str) -> PathBuf {
-    if rel.is_empty() { root.to_path_buf() } else { root.join(rel) }
+    root.join(rel).components().collect()
 }
 
 fn rel_str(root: &Path, dir: &Path) -> String {
-    dir.strip_prefix(root).map(|r| r.to_string_lossy().replace('\\', "/")).unwrap_or_default()
+    dir.strip_prefix(root).unwrap_or(dir).to_string_lossy().replace('\\', "/")
 }
 
 /// Directories from `file`'s folder up to `root` (inclusive).
@@ -173,11 +185,25 @@ fn ancestors_within<'a>(root: &'a Path, file: &'a Path) -> impl Iterator<Item = 
 }
 
 /// The build of `root`, or of the module containing `file` (Build Module / Recompile).
-pub fn plan(root: &Path, model: &BuildModel, kind: BuildKind, file: Option<&Path>) -> IdeResult<BuildPlan> {
+/// `cmake`: the CMake profiles of the settings (the first one is built), if any.
+pub fn plan(
+    root: &Path,
+    model: &BuildModel,
+    kind: BuildKind,
+    file: Option<&Path>,
+    cmake: Option<&[CMakeProfile]>,
+) -> IdeResult<BuildPlan> {
     let project_name = root.file_name().map_or_else(|| "project".to_owned(), |n| n.to_string_lossy().into_owned());
     let module_dir = match file {
         Some(f) => {
-            let dir = ancestors_within(root, f)
+            let scope = model
+                .gradle
+                .iter()
+                .flat_map(|g| std::iter::once(root.join(&g.dir)).chain(g.projects.iter().map(|p| root.join(&p.dir))))
+                .filter(|dir| f.starts_with(dir))
+                .max_by_key(|dir| dir.components().count())
+                .unwrap_or_else(|| root.to_path_buf());
+            let dir = ancestors_within(&scope, f)
                 .find(|d| detect_dir(d, model, root).is_some())
                 .ok_or_else(|| IdeError::not_found(format!("{} is not in a module", f.display())))?;
             Some(dir.to_path_buf())
@@ -185,9 +211,13 @@ pub fn plan(root: &Path, model: &BuildModel, kind: BuildKind, file: Option<&Path
         None => None,
     };
     let dir = module_dir.clone().unwrap_or_else(|| root.to_path_buf());
+    // A folder of sibling projects has no build file itself; its Maven projects are built one by one.
     let system = detect_dir(&dir, model, root)
-        .or_else(|| if model.gradle.is_some() { Some(BuildSystem::Gradle) } else { None })
-        .ok_or_else(|| IdeError::not_found("no supported build system (Maven, Gradle, Cargo, Go, TypeScript) found"))?;
+        .or((!model.gradle.is_empty()).then_some(BuildSystem::Gradle))
+        .or_else(|| model.maven.as_ref().filter(|m| !m.projects.is_empty()).map(|_| BuildSystem::Maven))
+        .ok_or_else(|| {
+            IdeError::not_found("no supported build system (Maven, Gradle, Cargo, Go, TypeScript, CMake) found")
+        })?;
     let module = module_dir.as_deref().filter(|d| *d != root);
     let title = match module {
         Some(d) => format!(
@@ -202,13 +232,19 @@ pub fn plan(root: &Path, model: &BuildModel, kind: BuildKind, file: Option<&Path
         BuildSystem::Gradle => gradle_steps(root, model, kind, module_dir.as_deref())?,
         BuildSystem::Cargo => cargo_steps(&dir, kind),
         // Go builds the file's package (a module holds many).
-        BuildSystem::Go => go_steps(file.and_then(Path::parent).unwrap_or(&dir), kind),
+        BuildSystem::Go => go_steps(file.and_then(Path::parent).unwrap_or(&dir), kind)?,
         BuildSystem::TypeScript => ts_steps(&dir, kind),
+        BuildSystem::CMake => cmake_steps(&dir, kind, cmake.and_then(<[_]>::first)),
     };
     Ok(BuildPlan { system, title, steps })
 }
 
-fn maven_steps(root: &Path, model: &BuildModel, kind: BuildKind, module: Option<&Path>) -> IdeResult<Vec<BuildStep>> {
+pub(super) fn maven_steps(
+    root: &Path,
+    model: &BuildModel,
+    kind: BuildKind,
+    module: Option<&Path>,
+) -> IdeResult<Vec<BuildStep>> {
     let fallback;
     let m = match &model.maven {
         Some(m) => m,
@@ -250,14 +286,16 @@ fn maven_steps(root: &Path, model: &BuildModel, kind: BuildKind, module: Option<
 }
 
 fn gradle_steps(root: &Path, model: &BuildModel, kind: BuildKind, module: Option<&Path>) -> IdeResult<Vec<BuildStep>> {
-    let fallback;
-    let g = match &model.gradle {
-        Some(g) => g,
-        None => {
-            fallback = crate::gradle::load(root).ok_or_else(|| IdeError::not_found("no Gradle build found"))?;
-            &fallback
-        }
-    };
+    if module.is_none() && !model.gradle.is_empty() {
+        return Ok(model.gradle.iter().flat_map(|g| gradle_step(root, g, kind, None)).collect());
+    }
+    let g = module
+        .and_then(|m| model.gradle_for_module(root, m))
+        .ok_or_else(|| IdeError::not_found("module does not belong to a linked Gradle build"))?;
+    Ok(gradle_step(root, g, kind, module))
+}
+
+fn gradle_step(root: &Path, g: &crate::GradleModel, kind: BuildKind, module: Option<&Path>) -> Vec<BuildStep> {
     let prefix = module
         .and_then(|m| {
             let rel = rel_str(root, m);
@@ -276,7 +314,7 @@ fn gradle_steps(root: &Path, model: &BuildModel, kind: BuildKind, module: Option
     let mut s = BuildStep::new(&g.command, &["--console=plain"], &subdir(root, &g.dir), Format::Gradle);
     s.args.extend(tasks);
     s.env = g.env.clone();
-    Ok(vec![s])
+    vec![s]
 }
 
 fn cargo_steps(dir: &Path, kind: BuildKind) -> Vec<BuildStep> {
@@ -297,7 +335,77 @@ fn cargo_steps(dir: &Path, kind: BuildKind) -> Vec<BuildStep> {
     }
 }
 
-fn go_steps(dir: &Path, kind: BuildKind) -> Vec<BuildStep> {
+/// CLion's Build Project for a CMake project: configures the build directory when it has no
+/// `CMakeCache.txt` yet, then `cmake --build` (`--clean-first` to rebuild). The directory and
+/// options come from the CMake profile; without one, a configured directory of the project
+/// (the first by name), else `build`, as the generated run configurations use.
+fn cmake_steps(dir: &Path, kind: BuildKind, profile: Option<&CMakeProfile>) -> Vec<BuildStep> {
+    let build_dir = match profile {
+        Some(p) if !p.build_dir.trim().is_empty() => p.build_dir.trim().to_owned(),
+        Some(p) => format!("cmake-build-{}", p.build_type.to_lowercase()),
+        None => {
+            let mut configured: Vec<String> = std::fs::read_dir(dir)
+                .into_iter()
+                .flatten()
+                .flatten()
+                .filter(|e| e.path().join("CMakeCache.txt").is_file())
+                .map(|e| e.file_name().to_string_lossy().into_owned())
+                .collect();
+            configured.sort();
+            configured.into_iter().next().unwrap_or_else(|| "build".into())
+        }
+    };
+    let build_type = profile.map_or("Debug", |p| p.build_type.as_str());
+    let env = profile.map(|p| p.env.clone()).unwrap_or_default();
+    let mut steps = Vec::new();
+    if !dir.join(&build_dir).join("CMakeCache.txt").is_file() {
+        let mut configure = BuildStep::new("cmake", &["-S", ".", "-B", &build_dir], dir, Format::Gcc);
+        if let Some(p) = profile.filter(|p| !p.generator.trim().is_empty()) {
+            configure.args.extend(["-G".into(), p.generator.clone()]);
+        }
+        configure.args.push(format!("-DCMAKE_BUILD_TYPE={build_type}"));
+        configure.args.push("-DCMAKE_EXPORT_COMPILE_COMMANDS=ON".into());
+        configure.args.extend(profile.map(|p| p.cmake_args.clone()).unwrap_or_default());
+        configure.env = env.clone();
+        steps.push(configure);
+    }
+    let mut build = BuildStep::new("cmake", &["--build", &build_dir, "--config", build_type], dir, Format::Gcc);
+    if kind == BuildKind::Rebuild {
+        build.args.push("--clean-first".into());
+    }
+    build.args.extend(profile.map(|p| p.build_args.clone()).unwrap_or_default());
+    build.env = env;
+    steps.push(build);
+    steps
+}
+
+fn go_steps(dir: &Path, kind: BuildKind) -> IdeResult<Vec<BuildStep>> {
+    if dir.join("go.work").is_file() {
+        let work_file = dunce::canonicalize(dir.join("go.work"))?;
+        let modules = ide_core::go::work_modules(&std::fs::read_to_string(dir.join("go.work"))?);
+        if modules.is_empty() {
+            return Err(IdeError::invalid("The Go workspace contains no modules"));
+        }
+        let mut steps = Vec::new();
+        for module in modules {
+            let module = dir.join(module);
+            if !module.join("go.mod").is_file() {
+                return Err(IdeError::not_found(format!("Go workspace module has no go.mod: {}", module.display())));
+            }
+            // Go compares workspace membership against cwd paths lexically.
+            let module = dunce::canonicalize(module)?;
+            let mut module_steps = go_module_steps(&module, kind);
+            for step in &mut module_steps {
+                step.env.insert("GOWORK".into(), work_file.to_string_lossy().into_owned());
+            }
+            steps.extend(module_steps);
+        }
+        return Ok(steps);
+    }
+    Ok(go_module_steps(dir, kind))
+}
+
+fn go_module_steps(dir: &Path, kind: BuildKind) -> Vec<BuildStep> {
     let module_root = dir.ancestors().find(|d| d.join("go.mod").is_file()).unwrap_or(dir);
     let target = if module_root == dir { "./...".to_owned() } else { format!("./{}/...", rel_str(module_root, dir)) };
     let mut args = vec!["build"];
@@ -311,18 +419,7 @@ fn go_steps(dir: &Path, kind: BuildKind) -> Vec<BuildStep> {
 
 /// `pnpm` / `yarn` / `bun` / `npm`, from the lock file next to `package.json` or above it.
 fn package_manager(dir: &Path) -> &'static str {
-    for d in dir.ancestors() {
-        if d.join("pnpm-lock.yaml").is_file() {
-            return "pnpm";
-        } else if d.join("yarn.lock").is_file() {
-            return "yarn";
-        } else if d.join("bun.lockb").is_file() || d.join("bun.lock").is_file() {
-            return "bun";
-        } else if d.join("package-lock.json").is_file() {
-            return "npm";
-        }
-    }
-    "npm"
+    ide_core::project_roots::package_manager(dir)
 }
 
 fn has_build_script(dir: &Path) -> bool {
@@ -675,14 +772,8 @@ pub fn launch_has_non_java_sources(root: &Path, model: &BuildModel, module: &Pat
     has_non_java_sources(module)
 }
 
-fn launch_plan(root: &Path, model: &BuildModel, module: &Path, test: bool) -> IdeResult<BuildPlan> {
-    let kind = if model.maven.as_ref().is_some_and(|m| m.projects.iter().any(|p| subdir(root, &p.dir) == module)) {
-        // JDT may have left newer error stubs in Maven's output directories.
-        BuildKind::Rebuild
-    } else {
-        BuildKind::Build
-    };
-    let mut plan = plan(root, model, kind, Some(module))?;
+fn launch_plan(root: &Path, model: &BuildModel, module: &Path, test: bool, kind: BuildKind) -> IdeResult<BuildPlan> {
+    let mut plan = plan(root, model, kind, Some(module), None)?;
     if plan.system == BuildSystem::Maven && !test {
         for step in &mut plan.steps {
             if let Some(goal) = step.args.last_mut() {
@@ -693,6 +784,12 @@ fn launch_plan(root: &Path, model: &BuildModel, module: &Path, test: bool) -> Id
     Ok(plan)
 }
 
+#[derive(Debug)]
+pub struct LaunchBuild {
+    pub class_dirs: Vec<PathBuf>,
+    pub failure: Option<String>,
+}
+
 /// Compiles the module at `module` with its build system before a JVM launch and
 /// returns the class directories it wrote, to put ahead of the jdtls classpath.
 pub fn build_for_launch(
@@ -700,11 +797,12 @@ pub fn build_for_launch(
     model: &BuildModel,
     module: &Path,
     test: bool,
+    kind: BuildKind,
     cancel: &CancellationToken,
-) -> IdeResult<Vec<PathBuf>> {
-    let plan = launch_plan(root, model, module, test)?;
+) -> IdeResult<LaunchBuild> {
+    let plan = launch_plan(root, model, module, test, kind)?;
     let result = run(root, &plan, cancel, &|_| {})?;
-    if !result.success {
+    let failure = if !result.success {
         let errors: Vec<String> = result
             .messages
             .iter()
@@ -715,17 +813,21 @@ pub fn build_for_launch(
                 _ => m.text.clone(),
             })
             .collect();
-        return Err(IdeError::internal(format!("Build failed:\n{}", errors.join("\n"))));
-    }
-    if plan.system == BuildSystem::Maven
+        Some(format!("Build failed:\n{}", errors.join("\n")))
+    } else {
+        None
+    };
+    let class_dirs = if plan.system == BuildSystem::Maven
         && let Some(m) = &model.maven
     {
-        return Ok(maven_launch_projects(root, m, module, test)
+        maven_launch_projects(root, m, module, test)
             .iter()
             .flat_map(|p| launch_class_dirs(plan.system, &subdir(root, &p.dir), test && subdir(root, &p.dir) == module))
-            .collect());
-    }
-    Ok(launch_class_dirs(plan.system, module, test))
+            .collect()
+    } else {
+        launch_class_dirs(plan.system, module, test)
+    };
+    Ok(LaunchBuild { class_dirs, failure })
 }
 
 fn launch_class_dirs(system: BuildSystem, module: &Path, test: bool) -> Vec<PathBuf> {
@@ -735,11 +837,11 @@ fn launch_class_dirs(system: BuildSystem, module: &Path, test: bool) -> Vec<Path
             .iter()
             .flat_map(|s| {
                 ["classes/kotlin", "classes/groovy", "classes/scala", "classes/java", "resources"]
-                    .map(|d| module.join("build").join(d).join(s))
+                    .map(|d| subdir(module, &format!("build/{d}/{s}")))
             })
             .collect(),
-        BuildSystem::Maven if test => vec![module.join("target/test-classes"), module.join("target/classes")],
-        BuildSystem::Maven => vec![module.join("target/classes")],
+        BuildSystem::Maven if test => vec![subdir(module, "target/test-classes"), subdir(module, "target/classes")],
+        BuildSystem::Maven => vec![subdir(module, "target/classes")],
         _ => Vec::new(),
     };
     dirs.into_iter().filter(|d| d.is_dir()).collect()
@@ -747,7 +849,178 @@ fn launch_class_dirs(system: BuildSystem, module: &Path, test: bool) -> Vec<Path
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn go_workspace_build_commands_compile_members_with_local_dependencies() {
+        let Some(go) = ide_core::process::find_executable("go", &ide_core::tool_path::search_path()) else {
+            return;
+        };
+        let tmp = tempfile::tempdir().unwrap();
+        let root = &tmp.path().join("workspace");
+        write(root, "go.work", "go 1.22\nuse (\n ./app\n ./lib\n ../external\n)\n");
+        write(root, "lib/go.mod", "module example.com/lib\ngo 1.22\n");
+        write(root, "lib/lib.go", "package lib\nfunc Value() int { return 1 }\n");
+        write(root, "app/go.mod", "module example.com/app\ngo 1.22\nrequire example.com/lib v0.0.0\n");
+        write(root, "app/main.go", "package main\nimport \"example.com/lib\"\nfunc main(){_ = lib.Value()}\n");
+        write(root, "../external/go.mod", "module example.com/external\ngo 1.22\nrequire example.com/lib v0.0.0\n");
+        write(root, "../external/main.go", "package main\nimport \"example.com/lib\"\nfunc main(){_ = lib.Value()}\n");
+        // std canonicalization also exercises verbatim paths on Windows.
+        for root in [root.to_path_buf(), std::fs::canonicalize(root).unwrap()] {
+            let plan = plan(&root, &BuildModel::default(), BuildKind::Build, None, None).unwrap();
+            for step in plan.steps {
+                let result = std::process::Command::new(&go)
+                    .args(&step.args)
+                    .envs(&step.env)
+                    .env("GOPROXY", "off")
+                    .current_dir(&step.cwd)
+                    .output()
+                    .unwrap();
+                assert!(result.status.success(), "{step:?}: {}", String::from_utf8_lossy(&result.stderr));
+            }
+        }
+    }
+
+    #[test]
+    fn go_workspace_builds_every_use_module() {
+        let tmp = tempfile::tempdir().unwrap();
+        let root = tmp.path().join("workspace");
+        write(&root, "go.work", "go 1.22\nuse (\n  ./api\n  \"./lib with spaces\"\n  ../shared\n)\n");
+        for module in ["api", "lib with spaces", "../shared"] {
+            write(&root.join(module), "go.mod", "module example.com/p\ngo 1.22\n");
+        }
+        // Cover native paths, Windows verbatim paths and non-normalized module paths.
+        let canonical = std::fs::canonicalize(&root).unwrap();
+        for root in [&root, &canonical, &canonical.join("..").join("workspace")] {
+            for kind in [BuildKind::Build, BuildKind::Rebuild, BuildKind::Artifacts] {
+                let p = plan(root, &BuildModel::default(), kind, None, None).unwrap();
+                assert_eq!(p.system, BuildSystem::Go);
+                assert_eq!(p.steps.len(), 3);
+                for (step, module) in p.steps.iter().zip(["api", "lib with spaces", "../shared"]) {
+                    assert_eq!(step.cwd, dunce::canonicalize(root.join(module)).unwrap());
+                    assert_eq!(
+                        step.env["GOWORK"],
+                        dunce::canonicalize(root.join("go.work")).unwrap().to_string_lossy()
+                    );
+                    let expected =
+                        if kind == BuildKind::Rebuild { vec!["build", "-a", "./..."] } else { vec!["build", "./..."] };
+                    assert_eq!(step.args, expected);
+                }
+            }
+        }
+        let member =
+            plan(&root, &BuildModel::default(), BuildKind::Build, Some(&root.join("api/pkg/a.go")), None).unwrap();
+        assert_eq!(member.steps.len(), 1);
+        assert_eq!(member.steps[0].cwd, root.join("api"));
+        assert_eq!(member.steps[0].args, ["build", "./pkg/..."]);
+        write(&root, "go.work", "use ./missing\n");
+        assert!(
+            plan(&root, &BuildModel::default(), BuildKind::Build, None, None)
+                .unwrap_err()
+                .to_string()
+                .contains("go.mod")
+        );
+        write(&root, "go.work", "go 1.22\n");
+        assert!(plan(&root, &BuildModel::default(), BuildKind::Build, None, None).is_err());
+    }
+
+    #[test]
+    fn independent_gradle_builds_keep_their_launchers_and_task_paths() {
+        let wrapper = if cfg!(windows) { "gradlew.bat" } else { "gradlew" };
+        let temp = tempfile::tempdir().unwrap();
+        let root = temp.path();
+        for dir in ["a", "b"] {
+            std::fs::create_dir_all(root.join(dir).join("app/src/main/java")).unwrap();
+            std::fs::write(root.join(dir).join("settings.gradle"), "include 'app'").unwrap();
+            std::fs::write(root.join(dir).join("app/build.gradle"), "plugins { id 'java' }").unwrap();
+            std::fs::write(root.join(dir).join(wrapper), "").unwrap();
+        }
+        let settings = ide_core::settings::GradleSettings {
+            linked_projects: Some(vec!["a".into(), "b".into()]),
+            ..Default::default()
+        };
+        let mut model = crate::load_linked(root, &root.join("cache"), None, &Default::default(), &settings);
+        model.gradle[0].env.insert("JAVA_HOME".into(), "/jdk-a".into());
+        model.gradle[1].env.insert("JAVA_HOME".into(), "/jdk-b".into());
+        let all = super::plan(root, &model, super::BuildKind::Build, None, None).unwrap();
+        assert_eq!(all.steps.len(), 2);
+        assert_eq!(all.steps[0].cwd, root.join("a"));
+        assert_eq!(all.steps[1].cwd, root.join("b"));
+        let module = super::plan(root, &model, super::BuildKind::Rebuild, Some(&root.join("b/app")), None).unwrap();
+        assert_eq!(module.steps.len(), 1);
+        assert_eq!(module.steps[0].program, root.join("b").join(wrapper).to_string_lossy());
+        assert_eq!(module.steps[0].cwd, root.join("b"));
+        assert_eq!(module.steps[0].env["JAVA_HOME"], "/jdk-b");
+        assert_eq!(module.steps[0].args, ["--console=plain", ":app:clean", ":app:classes", ":app:testClasses"]);
+        // A directly linked build owns its module even when another composite reports it too.
+        let direct = model.gradle[1].projects[0].clone();
+        model.gradle[0].projects.push(direct);
+        assert_eq!(model.gradle_for_module(root, &root.join("b")).unwrap().dir, "b");
+        let mut nested = model.gradle[1].projects[1].clone();
+        nested.path = ":b:app".into();
+        model.gradle[0].projects.push(nested);
+        let nested = super::plan(root, &model, super::BuildKind::Build, Some(&root.join("b/app")), None).unwrap();
+        assert_eq!(nested.steps[0].program, root.join("b").join(wrapper).to_string_lossy());
+        assert_eq!(nested.steps[0].args, ["--console=plain", ":app:classes", ":app:testClasses"]);
+        model.gradle.clear();
+        assert!(super::plan(root, &model, super::BuildKind::Build, Some(&root.join("b/app")), None).is_err());
+    }
+
+    #[test]
+    fn absolute_linked_roots_build_the_project_and_external_source_module() {
+        let wrapper = if cfg!(windows) { "gradlew.bat" } else { "gradlew" };
+        let temp = tempfile::tempdir().unwrap();
+        let base = dunce::canonicalize(temp.path()).unwrap();
+        let root = base.join("workspace");
+        let external = base.join("external");
+        std::fs::create_dir(&root).unwrap();
+        std::fs::create_dir_all(external.join("app/src/main/java")).unwrap();
+        std::fs::write(external.join("settings.gradle"), "include 'app'").unwrap();
+        let source = external.join("app/src/main/java/App.java");
+        std::fs::write(&source, "class App {}").unwrap();
+        std::fs::write(external.join(wrapper), "").unwrap();
+        let settings = ide_core::settings::GradleSettings {
+            linked_projects: Some(vec![external.to_string_lossy().into_owned()]),
+            ..Default::default()
+        };
+        let mut model = crate::load_linked(&root, &base.join("cache"), None, &Default::default(), &settings);
+        model.gradle[0].env.insert("JAVA_HOME".into(), "/external-jdk".into());
+        let all = super::plan(&root, &model, super::BuildKind::Build, None, None).unwrap();
+        assert_eq!(all.steps[0].cwd, external);
+        // Linked roots are saved with forward slashes, so on Windows the program mixes separators.
+        assert_eq!(std::path::Path::new(&all.steps[0].program), external.join(wrapper));
+        let module = super::plan(&root, &model, super::BuildKind::Rebuild, Some(&source), None).unwrap();
+        assert_eq!(module.steps[0].cwd, external);
+        assert_eq!(module.steps[0].env["JAVA_HOME"], "/external-jdk");
+        assert_eq!(module.steps[0].args, ["--console=plain", ":app:clean", ":app:classes", ":app:testClasses"]);
+        let other = base.join("unlinked");
+        std::fs::create_dir(&other).unwrap();
+        std::fs::write(other.join("build.gradle"), "").unwrap();
+        assert!(super::plan(&root, &model, super::BuildKind::Build, Some(&other), None).is_err());
+    }
     use super::*;
+
+    /// Launch outputs use the platform separator throughout, so they compare equal to
+    /// the same directories as JDT LS reports them.
+    #[test]
+    fn launch_dirs_use_one_separator() {
+        let root = tempfile::tempdir().unwrap();
+        let module = subdir(root.path(), "parent/app");
+        for dir in ["target/classes", "target/test-classes", "build/classes/java/main", "build/resources/test"] {
+            std::fs::create_dir_all(subdir(&module, dir)).unwrap();
+        }
+        let foreign = if std::path::MAIN_SEPARATOR == '\\' { '/' } else { '\\' };
+        let dirs = [
+            launch_class_dirs(BuildSystem::Maven, &module, true),
+            launch_class_dirs(BuildSystem::Gradle, &module, true),
+        ]
+        .concat();
+        assert_eq!(dirs.len(), 4, "{dirs:?}");
+        for dir in &dirs {
+            let suffix = dir.strip_prefix(root.path()).unwrap().to_string_lossy().into_owned();
+            assert!(!suffix.contains(foreign), "{suffix}");
+        }
+        assert_eq!(subdir(root.path(), ""), root.path());
+        assert_eq!(subdir(root.path(), "a//b/"), root.path().join("a").join("b"));
+    }
 
     fn write(root: &Path, rel: &str, text: &str) {
         let p = root.join(rel);
@@ -767,12 +1040,12 @@ mod tests {
         write(&root, "core/pom.xml", "<project><artifactId>core</artifactId></project>");
         write(&root, "core/src/main/java/A.java", "class A {}");
         let model = crate::load(&root, &tmp.path().join("cache"), None);
-        let p = plan(&root, &model, BuildKind::Build, None).unwrap();
+        let p = plan(&root, &model, BuildKind::Build, None, None).unwrap();
         assert_eq!(p.system, BuildSystem::Maven);
         assert_eq!(p.title, "demo");
         assert_eq!(p.steps.len(), 1);
         assert_eq!(p.steps[0].args, ["-B", "-Dstyle.color=never", "test-compile"]);
-        let p = plan(&root, &model, BuildKind::Rebuild, Some(&root.join("core/src/main/java/A.java"))).unwrap();
+        let p = plan(&root, &model, BuildKind::Rebuild, Some(&root.join("core/src/main/java/A.java")), None).unwrap();
         assert_eq!(p.steps[0].args, ["-B", "-Dstyle.color=never", "-pl", "core", "-am", "clean", "test-compile"]);
         assert_eq!(p.steps[0].cwd, root);
         assert_eq!(p.title, "demo: build module 'core'");
@@ -781,24 +1054,24 @@ mod tests {
         write(&g, "settings.gradle", "include 'app'");
         write(&g, "app/build.gradle", "apply plugin: 'java'");
         let model = crate::load(&g, &tmp.path().join("cache2"), None);
-        let p = plan(&g, &model, BuildKind::Build, Some(&g.join("app/src/A.java"))).unwrap();
+        let p = plan(&g, &model, BuildKind::Build, Some(&g.join("app/src/A.java")), None).unwrap();
         assert_eq!(p.system, BuildSystem::Gradle);
         assert_eq!(p.steps[0].args, ["--console=plain", ":app:classes", ":app:testClasses"]);
         assert_eq!(
-            plan(&g, &model, BuildKind::Artifacts, None).unwrap().steps[0].args,
+            plan(&g, &model, BuildKind::Artifacts, None, None).unwrap().steps[0].args,
             ["--console=plain", "assemble"]
         );
 
         let c = tmp.path().join("c");
         write(&c, "Cargo.toml", "[package]\nname='c'");
-        let p = plan(&c, &BuildModel::default(), BuildKind::Rebuild, None).unwrap();
+        let p = plan(&c, &BuildModel::default(), BuildKind::Rebuild, None, None).unwrap();
         assert_eq!(p.system, BuildSystem::Cargo);
         assert_eq!(p.steps.len(), 2);
         assert_eq!(p.steps[0].args[0], "clean");
 
         let go = tmp.path().join("go");
         write(&go, "go.mod", "module x");
-        let p = plan(&go, &BuildModel::default(), BuildKind::Build, Some(&go.join("pkg/a/a.go"))).unwrap();
+        let p = plan(&go, &BuildModel::default(), BuildKind::Build, Some(&go.join("pkg/a/a.go")), None).unwrap();
         assert_eq!(p.steps[0].args, ["build", "./pkg/a/..."]);
         assert_eq!(p.steps[0].cwd, go);
 
@@ -806,17 +1079,60 @@ mod tests {
         write(&ts, "package.json", r#"{"scripts":{"build":"vite build"}}"#);
         write(&ts, "tsconfig.json", "{}");
         write(&ts, "pnpm-lock.yaml", "");
-        let p = plan(&ts, &BuildModel::default(), BuildKind::Build, None).unwrap();
+        let p = plan(&ts, &BuildModel::default(), BuildKind::Build, None, None).unwrap();
         assert_eq!(p.steps[0].args, ["--noEmit", "--pretty", "false", "-p", "."]);
-        let p = plan(&ts, &BuildModel::default(), BuildKind::Artifacts, None).unwrap();
+        let p = plan(&ts, &BuildModel::default(), BuildKind::Artifacts, None, None).unwrap();
         assert_eq!(
             (p.steps[0].program.as_str(), p.steps[0].args.as_slice()),
             ("pnpm", &["run".to_owned(), "build".to_owned()][..])
         );
 
+        let cm = tmp.path().join("cm");
+        write(&cm, "CMakeLists.txt", "project(app)");
+        let args = |p: &BuildPlan| p.steps.iter().map(|s| s.args.join(" ")).collect::<Vec<_>>();
+        let p = plan(&cm, &BuildModel::default(), BuildKind::Build, None, None).unwrap();
+        assert_eq!(p.system, BuildSystem::CMake);
+        assert_eq!(
+            args(&p),
+            [
+                "-S . -B build -DCMAKE_BUILD_TYPE=Debug -DCMAKE_EXPORT_COMPILE_COMMANDS=ON",
+                "--build build --config Debug"
+            ],
+            "an unconfigured project is configured first"
+        );
+        write(&cm, "cmake-build-release/CMakeCache.txt", "");
+        let p = plan(&cm, &BuildModel::default(), BuildKind::Rebuild, None, None).unwrap();
+        assert_eq!(
+            args(&p),
+            ["--build cmake-build-release --config Debug --clean-first"],
+            "a configured directory is reused"
+        );
+        let profile = CMakeProfile {
+            build_type: "Release".into(),
+            generator: "Ninja".into(),
+            build_args: vec!["-j".into(), "8".into()],
+            ..CMakeProfile::default()
+        };
+        let p =
+            plan(&cm, &BuildModel::default(), BuildKind::Build, None, Some(std::slice::from_ref(&profile))).unwrap();
+        assert_eq!(args(&p), ["--build cmake-build-release --config Release -j 8"]);
+        let p = plan(&cm, &BuildModel::default(), BuildKind::Build, None, Some(&[CMakeProfile::default()])).unwrap();
+        assert_eq!(p.steps[0].args[..4], ["-S", ".", "-B", "cmake-build-debug"]);
+
+        let siblings = tmp.path().join("siblings");
+        write(&siblings, "core/pom.xml", "<project><artifactId>core</artifactId></project>");
+        write(&siblings, "system/pom.xml", "<project><artifactId>system</artifactId></project>");
+        let model = crate::load(&siblings, &tmp.path().join("cache3"), None);
+        let p = plan(&siblings, &model, BuildKind::Build, None, None).unwrap();
+        assert_eq!(p.system, BuildSystem::Maven);
+        assert_eq!(
+            p.steps.iter().map(|s| s.cwd.clone()).collect::<Vec<_>>(),
+            [siblings.join("core"), siblings.join("system")]
+        );
+
         let none = tmp.path().join("none");
         std::fs::create_dir_all(&none).unwrap();
-        assert!(plan(&none, &BuildModel::default(), BuildKind::Build, None).is_err());
+        assert!(plan(&none, &BuildModel::default(), BuildKind::Build, None, None).is_err());
     }
 
     #[test]
@@ -998,13 +1314,17 @@ mod tests {
         write(root, "app/pom.xml", "<project/>");
         let model = reactor_model();
         for (test, goal) in [(false, "compile"), (true, "test-compile")] {
-            let plan = launch_plan(root, &model, &root.join("app"), test).unwrap();
+            // A normal launch is incremental: no `clean` (IDEA's Make, not Rebuild).
+            let plan = launch_plan(root, &model, &root.join("app"), test, BuildKind::Build).unwrap();
             let step = &plan.steps[0];
             assert_eq!(step.cwd, root);
             assert_eq!(step.program, "mvnw");
             assert_eq!(step.env["JAVA_HOME"], "/jdk");
+            assert_eq!(step.args, ["-B", "-Dstyle.color=never", "-s", "settings.xml", "-pl", "app", "-am", goal]);
+            // Rebuild cleans first, as IDEA's Rebuild does.
+            let plan = launch_plan(root, &model, &root.join("app"), test, BuildKind::Rebuild).unwrap();
             assert_eq!(
-                step.args,
+                plan.steps[0].args,
                 ["-B", "-Dstyle.color=never", "-s", "settings.xml", "-pl", "app", "-am", "clean", goal]
             );
         }
@@ -1026,9 +1346,10 @@ mod tests {
         std::fs::set_permissions(&wrapper, std::fs::Permissions::from_mode(0o755)).unwrap();
         let mut model = reactor_model();
         model.maven.as_mut().unwrap().projects[0].command = wrapper.to_string_lossy().into_owned();
-        let dirs = build_for_launch(root, &model, &root.join("app"), true, &CancellationToken::new()).unwrap();
+        let dirs = build_for_launch(root, &model, &root.join("app"), true, BuildKind::Build, &CancellationToken::new())
+            .unwrap();
         assert_eq!(
-            dirs,
+            dirs.class_dirs,
             ["app/target/test-classes", "app/target/classes", "middle/target/classes", "lib/target/classes"]
                 .map(|p| root.join(p))
         );
@@ -1037,12 +1358,16 @@ mod tests {
             "mvnw",
             "#!/bin/sh\necho '[ERROR] Kotlin compilation failed: unresolved reference broken' >&2\nexit 1\n",
         );
-        let error = build_for_launch(root, &model, &root.join("app"), false, &CancellationToken::new()).unwrap_err();
-        assert!(error.message.contains("Kotlin compilation failed"), "{}", error.message);
+        let error =
+            build_for_launch(root, &model, &root.join("app"), false, BuildKind::Build, &CancellationToken::new())
+                .unwrap()
+                .failure
+                .unwrap();
+        assert!(error.contains("Kotlin compilation failed"), "{error}");
         let cancel = CancellationToken::new();
         cancel.cancel();
         assert_eq!(
-            build_for_launch(root, &model, &root.join("app"), false, &cancel).unwrap_err().kind,
+            build_for_launch(root, &model, &root.join("app"), false, BuildKind::Build, &cancel).unwrap_err().kind,
             ide_core::error::ErrorKind::Cancelled
         );
     }

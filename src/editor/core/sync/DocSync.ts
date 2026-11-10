@@ -26,7 +26,7 @@
  */
 import { ChangeSet, Text } from "@codemirror/state";
 import type { TextChange } from "@/platform/ipc";
-import { minimalChange } from "./diff";
+import { minimalChanges } from "./diff";
 
 export interface SyncTransport {
   edit(baseVersion: number, changes: TextChange[]): Promise<number>;
@@ -35,7 +35,7 @@ export interface SyncTransport {
 
 export interface SyncHost {
   /** Apply a change set (in local-text coordinates) to every view, annotated as remote. */
-  applyRemote(changes: ChangeSet): void;
+  applyRemote(changes: ChangeSet, workspaceEdit?: boolean): void;
   /** Called after a hard resync discarded local changes the backend never saw. */
   onDiscarded?(reason: unknown): void;
   /** Non-recoverable transport errors (logged by default). */
@@ -73,6 +73,7 @@ export function toTextChanges(cs: ChangeSet): TextChange[] {
 }
 
 interface RemotePatch {
+  workspaceEdit?: boolean;
   baseVersion: number;
   version: number;
   changes: TextChange[];
@@ -257,9 +258,9 @@ export class DocSync {
     }
     if (gen !== this.generation || this.disposed) return;
     if (snap.version > this.serverVersion) {
-      const change = minimalChange(this.confirmed.toString(), snap.text);
+      const changes = minimalChanges(this.confirmed.toString(), snap.text);
       this.pendingRemote = this.pendingRemote.filter((p) => p.version > snap.version);
-      this.applyRemoteNow({ baseVersion: this.serverVersion, version: snap.version, changes: change ? [change] : [] });
+      this.applyRemoteNow({ baseVersion: this.serverVersion, version: snap.version, changes });
       this.drainRemote();
     }
     this.resend();
@@ -298,7 +299,7 @@ export class DocSync {
     }
     if (p.empty) return;
     this.localText = p.apply(this.localText);
-    this.host.applyRemote(p);
+    this.host.applyRemote(p, patch.workspaceEdit);
   }
 
   /** Last resort: adopt the backend text, dropping unacknowledged local changes. */
@@ -328,9 +329,9 @@ export class DocSync {
     this.pendingRemote = this.pendingRemote.filter((p) => p.version > snap.version);
     this.confirmed = Text.of(snap.text.split("\n"));
     this.serverVersion = snap.version;
-    const change = minimalChange(local, snap.text);
-    if (change) {
-      const cs = ChangeSet.of([change], local.length);
+    const changes = minimalChanges(local, snap.text);
+    if (changes.length) {
+      const cs = ChangeSet.of(changes, local.length);
       this.localText = this.confirmed;
       this.host.applyRemote(cs);
     }

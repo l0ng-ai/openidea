@@ -1,4 +1,6 @@
 import { describe, expect, it } from "vitest";
+import { registerTextEditorWrapper, resolveFileEditor } from "@/workbench/contributions";
+import { activate as activateViewers } from "./index";
 import { binaryInput, formatSize, imageInput, isImagePath, isMarkdownPath, isSvgPath, wantsHexView } from "./fileKinds";
 import {
   BYTES_PER_ROW,
@@ -44,6 +46,22 @@ describe("file kinds", () => {
     expect(formatSize(512)).toBe("512 B");
     expect(formatSize(1536)).toBe("1.5 KB");
     expect(formatSize(300 * 1024 * 1024)).toBe("300 MB");
+  });
+
+  it("lets a text editor wrapper take precedence over the image viewer", async () => {
+    const offViewers = activateViewers();
+    const offWrapper = registerTextEditorWrapper({
+      id: "plugin.acme.diagram.canvas",
+      matches: (p) => p.endsWith(".diagram.svg"),
+      component: () => null,
+    });
+    try {
+      expect((await resolveFileEditor("/p/icon.svg"))?.input.kind).toBe("image");
+      expect(await resolveFileEditor("/p/arch.diagram.svg")).toBeNull();
+    } finally {
+      offWrapper();
+      offViewers();
+    }
   });
 });
 

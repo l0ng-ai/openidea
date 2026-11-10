@@ -21,7 +21,8 @@ pub enum ArchiveKind {
 impl ArchiveKind {
     pub fn from_name(name: &str) -> Self {
         let n = name.to_ascii_lowercase();
-        if n.ends_with(".zip") || n.ends_with(".vsix") {
+        // JetBrains' macOS .sit distributions are zip archives.
+        if n.ends_with(".zip") || n.ends_with(".vsix") || n.ends_with(".sit") {
             Self::Zip
         } else if n.ends_with(".tar.gz") || n.ends_with(".tgz") {
             Self::TarGz
@@ -393,6 +394,7 @@ mod tests {
     fn kinds() {
         assert_eq!(ArchiveKind::from_name("a.vsix"), ArchiveKind::Zip);
         assert_eq!(ArchiveKind::from_name("a.ZIP"), ArchiveKind::Zip);
+        assert_eq!(ArchiveKind::from_name("kotlin-server-263.7084.0-aarch64.sit"), ArchiveKind::Zip);
         assert_eq!(ArchiveKind::from_name("a.tar.gz"), ArchiveKind::TarGz);
         assert_eq!(ArchiveKind::from_name("a.tgz"), ArchiveKind::TarGz);
         assert_eq!(ArchiveKind::from_name("zls.tar.xz"), ArchiveKind::TarXz);
@@ -438,6 +440,24 @@ mod tests {
         {
             use std::os::unix::fs::PermissionsExt;
             assert_ne!(fs::metadata(&found).unwrap().permissions().mode() & 0o111, 0);
+        }
+    }
+
+    #[test]
+    fn extracts_zip_with_multibyte_path_components() {
+        let tmp = tempfile::tempdir().unwrap();
+        let archive = tmp.path().join("tool.zip");
+        let entries: &[(&str, &[u8], u32)] = &[
+            ("bdms300-front/dist/img/ZC机柜.jpg", b"reported case", 0o644),
+            ("A机柜/file", b"directory", 0o644),
+            ("abé.txt", b"two-byte character", 0o644),
+            ("😀.txt", b"four-byte character", 0o644),
+        ];
+        zip_file(&archive, entries);
+        let dest = tmp.path().join("out");
+        extract(&archive, ArchiveKind::Zip, &dest, "x", &CancellationToken::new()).unwrap();
+        for (name, data, _) in entries {
+            assert_eq!(fs::read(dest.join(name)).unwrap(), *data, "{name}");
         }
     }
 

@@ -3,7 +3,7 @@
  * config directory). An IDEA keymap lists only the actions it changes over its
  * parent; each listed action's shortcuts replace the parent's.
  */
-import { IDEA_ACTIONS } from "@/features/vim/rc";
+import { IDEA_ACTIONS } from "@/platform/ideaActions";
 import { defaultPreset, isValidBinding, normalizeBinding, type Keymap } from "@/platform/keymap";
 import { withBindings } from "./model";
 

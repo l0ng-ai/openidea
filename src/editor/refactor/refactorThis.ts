@@ -20,6 +20,7 @@ import { caretAnchor, openPopup, type ListPopupItem } from "@/editor/lsp/popupSt
 import { applyCodeAction } from "@/editor/lsp/intentions";
 import { planLocalRename } from "@/editor/lsp/syntaxFallback";
 import {
+  HIERARCHY_REFACTORINGS,
   REFACTORINGS,
   cannotPerform,
   classifyAction,
@@ -38,6 +39,10 @@ import {
   introducesName,
 } from "./serverIntroduce";
 import { safeDelete } from "./safeDelete";
+import { startHierarchyRefactoring } from "./hierarchy";
+
+/** Languages whose server runs the class-hierarchy refactorings (the app-owned JDT extension). */
+const HIERARCHY_LANGUAGES = new Set(["java"]);
 
 /** Outcome of the server query: its answer, or why there is none. */
 export type ServerAnswer =
@@ -214,8 +219,12 @@ async function expressionAtCaret(view: EditorView, signal: AbortSignal): Promise
 export function refactorThisItems(
   view: EditorView,
   answer: ServerAnswer,
-  facts: { symbol: boolean; expression: boolean },
-  run: { rename: (view: EditorView) => unknown; safeDelete: (view: EditorView) => unknown },
+  facts: { symbol: boolean; expression: boolean; hierarchy?: boolean },
+  run: {
+    rename: (view: EditorView) => unknown;
+    safeDelete: (view: EditorView) => unknown;
+    hierarchy?: (view: EditorView, kind: "pullUp" | "pushDown") => unknown;
+  },
 ): ListPopupItem[] {
   const { mapped, other } = groupActions(answer.status === "ok" ? answer.query.actions : []);
   const serverUsable = answer.status === "ok";
@@ -231,6 +240,8 @@ export function refactorThisItems(
     else if (actions.length) go = () => runActions(view, r.label.replace(/…$/, ""), actions, r.id);
     else if (r.id === "rename" && facts.symbol) go = () => run.rename(view);
     else if (r.id === "safeDelete" && facts.symbol && !docOf(view)?.readOnly) go = () => run.safeDelete(view);
+    else if (HIERARCHY_REFACTORINGS.has(r.id) && facts.hierarchy && serverUsable && run.hierarchy)
+      go = () => run.hierarchy!(view, r.id === "pullMembersUp" ? "pullUp" : "pushDown");
     else if (INTRODUCE[r.id] && facts.expression && !serverUsable)
       go = () => introduceFallback(view, INTRODUCE[r.id]!, answer.status === "notReady" ? "notReady" : "error");
     if (!go) continue;
@@ -266,7 +277,13 @@ export async function refactorThis(view: EditorView, rename: (view: EditorView) 
       symbolAtCaret(view, answer.status !== "notReady"),
       expressionAtCaret(view, run.signal),
     ]);
-    items = refactorThisItems(view, answer, { symbol, expression }, { rename, safeDelete });
+    const hierarchy = HIERARCHY_LANGUAGES.has(ctx.language) && !ctx.readOnly;
+    items = refactorThisItems(
+      view,
+      answer,
+      { symbol, expression, hierarchy },
+      { rename, safeDelete, hierarchy: startHierarchyRefactoring },
+    );
   } catch (e) {
     if (isCancelled(e)) return;
     throw e;

@@ -1,5 +1,6 @@
 /** Pure helpers of the deployment feature: target paths, sync defaults, reports, remote paths. */
-import type { SyncAction, SyncEntry, SyncStatus, TransferReport } from "@/platform/ipc";
+import { tx } from "@/platform/i18n";
+import type { ResolvedMapping, SyncAction, SyncEntry, SyncStatus, TransferReport } from "@/platform/ipc";
 import type { DeploymentServerValid, DeploymentSettingsValid, SshAuthValid } from "@/platform/remoteSettings";
 
 /** Which part had focus last: the project view's selection or the editor's file is the target. */
@@ -87,6 +88,24 @@ export function resolveServer(settings: DeploymentSettingsValid, id: string | nu
 
 export const serverLabel = (s: Pick<DeploymentServerValid, "id" | "name">) => s.name.trim() || s.id;
 
+/** Transfer entries of the Deployment menu: named after the default server, choosers when there are several. */
+export function transferMenuEntries(settings: DeploymentSettingsValid): { action: string; label?: string }[] {
+  const target = resolveServer(settings, null);
+  const name = target && serverLabel(target);
+  const named = target
+    ? [
+        { action: "deployment.uploadToDefault", label: tx`Upload to ${name}` },
+        { action: "deployment.downloadFromDefault", label: tx`Download from ${name}` },
+        { action: "deployment.syncWithDefault", label: tx`Sync with Deployed to ${name}…` },
+      ]
+    : [];
+  const choosers =
+    settings.servers.length > 1 || !target
+      ? [{ action: "deployment.uploadTo" }, { action: "deployment.downloadFrom" }, { action: "deployment.syncWith" }]
+      : [];
+  return [...named, ...choosers];
+}
+
 export interface ReportSummary {
   level: "info" | "warning" | "error";
   /** English source text with `{n}` / `{server}` placeholders (translated by the caller). */
@@ -129,28 +148,17 @@ export function remoteName(path: string): string {
   return trimmed.slice(trimmed.lastIndexOf("/") + 1) || "/";
 }
 
-/**
- * The local project path a remote path is deployed from, through the server's
- * mappings (the most specific deployment path wins); null when not mapped.
- * `root` is the server's root path as resolved on the host.
- */
-export function localPathForRemote(
-  remotePath: string,
-  root: string,
-  mappings: DeploymentServerValid["mappings"],
-  projectRoot: string,
-): string | null {
+/** The most specific backend-resolved mapping of a remote path; null when unmapped. */
+export function localPathForRemote(remotePath: string, mappings: readonly ResolvedMapping[]): string | null {
   let best: { len: number; local: string } | null = null;
   for (const m of mappings) {
-    const deployed = m.deployment.startsWith("/")
-      ? m.deployment.replace(/\/+$/, "") || "/"
-      : joinRemote(root, m.deployment);
+    const deployed = m.deployment;
     const within =
       remotePath === deployed || remotePath.startsWith(deployed === "/" ? "/" : `${deployed}/`) ? deployed : null;
     if (within === null || (best && best.len >= deployed.length)) continue;
     const rest = remotePath.slice(deployed.length).replace(/^\/+/, "");
-    const base = joinRemote(projectRoot, m.local);
-    best = { len: deployed.length, local: joinRemote(base, rest) };
+    if (rest.split("/").some((part) => part === "." || part === "..")) return null;
+    best = { len: deployed.length, local: joinRemote(m.local, rest) };
   }
   return best?.local ?? null;
 }

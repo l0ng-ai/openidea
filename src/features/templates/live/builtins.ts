@@ -264,6 +264,45 @@ const kotlin = group(
   ],
 );
 
+const method = (abbrev: string, modifiers: string): Def => ({
+  abbrev,
+  description: `${modifiers} function`,
+  body: `${modifiers} function $NAME$($PARAMETERS$)\n{\n\t$END$\n}`,
+});
+
+/** PHP's `$` is written `$$` in a template body. */
+const php = group(
+  "PHP",
+  "php",
+  ["php"],
+  [
+    {
+      abbrev: "fore",
+      description: "foreach (iterable as value)",
+      body: "foreach ($ITERABLE$ as $$$VALUE$) {\n\t$END$\n}",
+      variables: [v("ITERABLE"), v("VALUE", undefined, '"value"')],
+    },
+    {
+      abbrev: "forek",
+      description: "foreach (iterable as key => value)",
+      body: "foreach ($ITERABLE$ as $$$KEY$ => $$$VALUE$) {\n\t$END$\n}",
+      variables: [v("ITERABLE"), v("KEY", undefined, '"key"'), v("VALUE", undefined, '"value"')],
+    },
+    method("pubf", "public"),
+    method("prof", "protected"),
+    method("prif", "private"),
+    method("pubsf", "public static"),
+    method("prosf", "protected static"),
+    method("prisf", "private static"),
+    { abbrev: "thr", description: "throw new", body: "throw new $END$;" },
+    { abbrev: "eco", description: "echo", body: 'echo "$END$";' },
+    { abbrev: "inc", description: "include", body: "include '$END$';" },
+    { abbrev: "inco", description: "include_once", body: "include_once '$END$';" },
+    { abbrev: "rqr", description: "require", body: "require '$END$';" },
+    { abbrev: "rqro", description: "require_once", body: "require_once '$END$';" },
+  ],
+);
+
 const general = group(
   "General",
   "any",
@@ -458,6 +497,7 @@ export const BUILTIN_TEMPLATES: readonly LiveTemplate[] = [
   ...go,
   ...java,
   ...kotlin,
+  ...php,
   ...sqlQuery,
   ...sqlStatement,
   ...sqlCode,

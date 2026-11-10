@@ -1,0 +1,69 @@
+---
+title: "单元测试与 E2E"
+description: "用 cargo nextest 运行和编写 Rust 测试，用 Vitest 测前端，用 Playwright 测 UI 流程。"
+---
+
+| 层次                             | 运行器                                | 命令                                       |
+| -------------------------------- | ------------------------------------- | ------------------------------------------ |
+| Rust crate                       | cargo-nextest（或 `cargo test`）      | `cargo nextest run --workspace`            |
+| 前端模块与组件                   | Vitest + jsdom + Testing Library      | `pnpm test`，或 `pnpm vitest run <path>`   |
+| UI 流程                          | Playwright（Chromium）                | `pnpm e2e`                                 |
+| 真实的语言服务器、工具链、调试器 | 被 ignore 的 Rust 测试和 `pnpm smoke` | 见[冒烟测试](/zh/contribute/testing/smoke) |
+
+## Rust
+
+```sh
+cargo nextest run --workspace              # 全部，与 CI 相同
+cargo nextest run -p ide-text              # 单个 crate
+cargo nextest run -p ide-host --test vcs_flow   # 单个集成测试文件
+```
+
+- 单元测试放在代码旁边（`#[cfg(test)]` 模块或 `tests.rs`）；集成测试放在 `crates/<crate>/tests/`。`ide-host` 的集成测试最多：打开项目、信任、VCS 流程、运行配置、插件、远程协议。
+- 需要真实外部工具（语言服务器、Docker、构建工具）的测试用 `#[ignore]` 标注并写明原因，通过 `-- --ignored` 显式运行。
+- crate 需要 `EventSink` 而测试不关心事件时，用 `NullSink`。
+- CI 在 macOS、Ubuntu 22.04 和 Windows 上用 `--no-fail-fast` 运行整套测试。测试夹具写出的是 LF 文件，所以 CI 会设置 `git config --global core.autocrlf false`；在 Windows 上如果夹具比较失败，请同样设置。
+- CI 跑测试时还会重新生成 `src/bindings.ts`（`export_bindings` 测试），与提交的文件不同就失败。
+
+插件有自己的 workspace，见[插件宿主 › 测试宿主](/zh/contribute/architecture/plugin-host)。
+
+## 前端单元测试
+
+`pnpm test` 在 jsdom 中对 `src/**/*.test.{ts,tsx}`、`perf/**/*.test.ts` 和 `scripts/**/*.test.ts` 运行 `vitest run`。完整套件要跑好几分钟，开发时只跑一部分：
+
+```sh
+pnpm vitest run src/platform/keymap.test.ts
+pnpm vitest run src/features/search
+pnpm test:watch                            # 监听模式
+```
+
+<Warning>
+`pnpm test -- <path>` 会忽略路径，跑完整个套件。请用 `pnpm vitest run <path>`。
+</Warning>
+
+编写时需要知道：
+
+- 测试放在模块旁边（`foo.test.ts`），或功能目录下的 `__tests__/`。
+- `src/test/setup.ts` 让 jsdom 看起来像 macOS（因此使用 ⌘ keymap；需要 Windows 时显式切换），并给元素设置尺寸，让虚拟列表能渲染出行。
+- 不在 Tauri 中时 `isTauri()` 为 false，各功能使用内存版后端。要模拟后端事件，用 `@/platform/ipc` 中的 `emitLocalIdeEvent`。
+- 有些测试其实是仓库级检查：文本目录（`src/platform/locales/*.test.ts`）、WebKit 兼容性（`src/platform/webkitCompatibility.test.ts`）、主题 token 参考（`scripts/theme/theme.test.ts`）。它们也包含在 `pnpm test` 里。
+
+## 端到端测试
+
+`pnpm e2e` 在**普通浏览器模式**下对 UI 运行 Playwright：Vite 提供前端（端口 1450，或 `OPENIDEA_E2E_PORT`），外壳注入一个示例项目，各功能退回到内存版后端——不需要 Tauri、不需要构建 Rust、不访问网络。
+
+```sh
+pnpm exec playwright install chromium      # 只需一次
+pnpm e2e                                   # 全部 spec
+pnpm e2e e2e/editor.spec.ts                # 单个文件
+pnpm e2e -g "opens a file"                 # 按测试名
+```
+
+- spec 文件是 `e2e/*.spec.ts`。从 `e2e/fixtures.ts` 导入 `test` 和 `expect`；其中的 `workbench` fixture 会打开示例项目（`acme-api`），`openFromTree`、`doubleShift` 等辅助函数覆盖常见步骤。
+- 所有平台上的 spec 都使用 macOS keymap（`Meta+…`），由 fixture 强制设定。
+- 需要走桌面后端代码路径时，`stubDesktop(page)` 会把页面切换到基于桩的桌面模式：按命令名注册处理函数（`window.__ipc.handlers.lsp_goto = …`），用 `send` 往 `Channel` 推值，用 `emit` 发出 `IdeEvent`。没有处理函数的命令以 `unavailable` 失败。`ipcCalls(page, cmd)` 返回已发生的调用。
+- 针对单个组件的独立页面是 `e2e/*.html` + `e2e/*.fixture.ts`。
+- CI 中 E2E 运行在与 `@playwright/test` 版本对应的 `mcr.microsoft.com/playwright` 容器里，失败重试一次；失败时会把 HTML 报告和 trace（`trace: "retain-on-failure"`）作为 artifact 上传。
+
+## 在真实应用中验证
+
+单元测试和 E2E 都不会在 webview 里运行 Rust 后端。UI 或运行时行为的改动，请运行 `pnpm tauri dev` 在应用里检查。debug 构建包含 Tauri MCP bridge，可以用脚本驱动检查；端口用 `pnpm dev:status` 查（见[开发环境](/zh/contribute/setup)）。仓库里的 agent skill `.agents/skills/verify` 描述了这种驱动应用并截图的方式。

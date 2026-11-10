@@ -1,4 +1,7 @@
 /** Registers the built-in pages as ordinary settings-page contributions and indexes their labels. */
+import { commands } from "@/platform/ipc";
+import { UPDATES_PAGE } from "./updates";
+import { onLanguageListChanged } from "@/platform/languageList";
 import { registerSettingsPage, type SettingsPageContribution } from "@/workbench/contributions";
 import { BEHAVIOR_PAGES } from "./behavior";
 import { BUILTIN_PAGES as CORE_PAGES } from "./builtins";
@@ -15,6 +18,7 @@ import { VCS_PAGES } from "./vcs";
 
 const BUILTIN_PAGES = [
   ...BEHAVIOR_PAGES,
+  UPDATES_PAGE,
   ...CORE_PAGES,
   ...EDITOR_PAGES,
   ...VCS_PAGES,
@@ -54,20 +58,38 @@ function toContribution(spec: PageSpec): SettingsPageContribution {
 }
 
 export function registerBuiltinPages(): () => void {
-  const disposers = BUILTIN_PAGES.map((spec) => registerSettingsPage(toContribution(spec)));
-  // Code Style › <Language> pages come from the backend's language list.
+  const disposers = BUILTIN_PAGES.filter((spec) => spec !== UPDATES_PAGE).map((spec) =>
+    registerSettingsPage(toContribution(spec)),
+  );
+  // Code Style › <Language> pages come from the backend's language list, which plugins change.
   let live = true;
-  void codeStyleLanguagePages()
-    .then((pages) => {
-      if (!live) return;
-      for (const spec of pages) {
-        specs.set(spec.id, spec);
-        disposers.push(registerSettingsPage(toContribution(spec)));
-      }
+  void commands
+    .appBuildInfo()
+    .then((info) => {
+      if (live && info.updates) disposers.push(registerSettingsPage(toContribution(UPDATES_PAGE)));
     })
     .catch(() => {});
+  let languagePages: (() => void)[] = [];
+  let generation = 0;
+  const loadLanguagePages = () => {
+    const mine = ++generation;
+    void codeStyleLanguagePages()
+      .then((pages) => {
+        if (!live || mine !== generation) return;
+        languagePages.forEach((d) => d());
+        languagePages = pages.map((spec) => {
+          specs.set(spec.id, spec);
+          return registerSettingsPage(toContribution(spec));
+        });
+      })
+      .catch(() => {});
+  };
+  loadLanguagePages();
+  const unsubscribe = onLanguageListChanged(loadLanguagePages);
   return () => {
     live = false;
+    unsubscribe();
+    languagePages.forEach((d) => d());
     disposers.forEach((d) => d());
   };
 }

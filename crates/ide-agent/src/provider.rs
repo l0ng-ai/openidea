@@ -2,8 +2,10 @@
 //! `<config>/agents/<id>.toml` (written by hand, or by installing one from the ACP
 //! Registry, see `registry`).
 
-use crate::AgentSource;
+use crate::{AgentCommandReadOnlyReason, AgentProvider, AgentSource};
+use ide_core::{IdeError, IdeResult};
 use serde::{Deserialize, Serialize};
+use serde_json::Value;
 use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
 
@@ -62,6 +64,7 @@ const BUILTIN: &[(&str, &str, Driver, &[&str], &str)] = &[
     ("auggie", "Auggie", Driver::Acp, &["auggie", "--acp"], "Run `auggie login` in a terminal."),
     ("kiro", "Kiro", Driver::Acp, &["kiro-cli", "acp"], "Run `kiro-cli login` in a terminal."),
     ("vibe", "Mistral Vibe", Driver::Acp, &["vibe-acp"], "Run `vibe` in a terminal and sign in."),
+    ("omp", "OMP", Driver::Acp, &["omp", "acp"], "Run `omp` in a terminal and sign in."),
 ];
 
 fn builtins() -> Vec<ProviderSpec> {
@@ -80,9 +83,189 @@ fn builtins() -> Vec<ProviderSpec> {
         .collect()
 }
 
-/// Whether `id` names a built-in agent.
+impl ProviderSpec {
+    pub(crate) fn login_hint(&self, program: &Path) -> String {
+        if !program.is_absolute() {
+            return self.login_hint.clone();
+        }
+        let search = ide_core::process::host_var_os("PATH").unwrap_or_default();
+        let builtin = builtin_spec(&self.id);
+        let on_path = builtin.as_ref().and_then(|b| ide_core::process::find_executable(&b.command, &search));
+        render_login_hint(self, program, on_path.as_deref(), cfg!(windows))
+    }
+
+    pub(crate) fn sign_in_message(&self, auth_methods: &[Value]) -> String {
+        let name = &self.name;
+        let program = Path::new(&self.command);
+        let terminal_args = matches!(self.source, AgentSource::Registry { .. })
+            .then(|| {
+                auth_methods.iter().find_map(|method| {
+                    if method.get("type").and_then(Value::as_str) != Some("terminal") {
+                        return None;
+                    }
+                    method.get("args")?.as_array()?.iter().map(Value::as_str).collect::<Option<Vec<_>>>()
+                })
+            })
+            .flatten();
+        let hint = match terminal_args {
+            Some(args) => {
+                let command = render_login_command(program, args, cfg!(windows));
+                format!("Run `{command}` in a terminal.")
+            }
+            None => self.login_hint(program),
+        };
+        format!("{name} needs you to sign in. {hint}")
+    }
+
+    /// Resolve once before connecting, so authentication guidance names that same install.
+    pub(crate) fn resolve_for_launch(mut self, cwd: &Path) -> Self {
+        if self.driver != Driver::Acp {
+            self.command = crate::native::newest_install(&self.command);
+        }
+        let program = ide_jsonrpc::resolve_spawn_program(&self.command, &self.env);
+        self.command =
+            if program.components().count() > 1 && !program.is_absolute() { cwd.join(program) } else { program }
+                .to_string_lossy()
+                .into_owned();
+        self
+    }
+}
+
+fn render_login_hint(spec: &ProviderSpec, program: &Path, on_path: Option<&Path>, windows: bool) -> String {
+    let Some(builtin) = builtin_spec(&spec.id) else { return spec.login_hint.clone() };
+    let prefix = format!("Run `{}", builtin.command);
+    let Some(rest) = spec.login_hint.strip_prefix(&prefix).filter(|rest| rest.starts_with([' ', '`'])) else {
+        return spec.login_hint.clone();
+    };
+    let same_path = |a: &Path, b: &Path| {
+        a == b || dunce::canonicalize(a).ok().zip(dunce::canonicalize(b).ok()).is_some_and(|(a, b)| a == b)
+    };
+    if on_path.is_some_and(|path| same_path(path, program)) {
+        return spec.login_hint.clone();
+    }
+    let (args, suffix) = rest.split_once('`').expect("built-in login hints delimit their command");
+    let command = render_login_command(program, args.split_whitespace(), windows);
+    match suffix {
+        " in a terminal." => format!("Run `{command}` in a terminal."),
+        " in a terminal and sign in." => format!("Run `{command}` in a terminal and sign in."),
+        _ => spec.login_hint.clone(),
+    }
+}
+
+fn render_login_command<'a>(program: &Path, args: impl IntoIterator<Item = &'a str>, windows: bool) -> String {
+    let quote = |word: &str| {
+        if windows { format!("'{}'", word.replace('\'', "''")) } else { format!("'{}'", word.replace('\'', "'\\''")) }
+    };
+    let mut command = format!("{}{}", if windows { "& " } else { "" }, quote(&program.to_string_lossy()));
+    for arg in args {
+        command.push(' ');
+        if !arg.is_empty() && arg.chars().all(|c| c.is_ascii_alphanumeric() || "-_=./".contains(c)) {
+            command.push_str(arg);
+        } else {
+            command.push_str(&quote(arg));
+        }
+    }
+    command
+}
+
+/// Whether `id` names a built-in agent that needs no registry install (native drivers
+/// and `npx -y` adapters). CLI built-ins (`copilot`, `gemini`, …) can be installed and
+/// updated from the ACP Registry into `<config>/agents/<id>.toml`.
 pub(crate) fn is_builtin(id: &str) -> bool {
-    BUILTIN.iter().any(|b| b.0 == id)
+    BUILTIN.iter().any(|&(bid, _, driver, cmd, _)| bid == id && (driver != Driver::Acp || cmd.first() == Some(&"npx")))
+}
+
+/// Display name of a built-in agent, when `id` is one.
+pub(crate) fn builtin_name(id: &str) -> Option<&'static str> {
+    BUILTIN.iter().find(|&&(bid, _, _, _, _)| bid == id).map(|&(_, name, _, _, _)| name)
+}
+
+/// The built-in spec of `id`.
+pub(crate) fn builtin_spec(id: &str) -> Option<ProviderSpec> {
+    builtins().into_iter().find(|s| s.id == id)
+}
+
+/// Public launch metadata, keeping the built-in defaults separate from agent-file overrides.
+pub(crate) fn describe(spec: &ProviderSpec) -> AgentProvider {
+    let builtin = builtin_spec(&spec.id);
+    let reason = if matches!(spec.source, AgentSource::Registry { .. }) {
+        Some(AgentCommandReadOnlyReason::Registry)
+    } else if let Some(default) = &builtin {
+        matches!(default.command.as_str(), "npx" | "bunx" | "uvx").then_some(AgentCommandReadOnlyReason::PackageRunner)
+    } else {
+        Some(AgentCommandReadOnlyReason::CustomAgent)
+    };
+    AgentProvider {
+        id: spec.id.clone(),
+        name: spec.name.clone(),
+        command: std::iter::once(spec.command.as_str())
+            .chain(spec.args.iter().map(String::as_str))
+            .collect::<Vec<_>>()
+            .join(" "),
+        program: spec.command.clone(),
+        args: spec.args.clone(),
+        default_program: builtin.as_ref().map(|b| b.command.clone()),
+        default_args: builtin.as_ref().map(|b| b.args.clone()).unwrap_or_default(),
+        login_hint: Some(spec.login_hint(&ide_jsonrpc::resolve_spawn_program(&spec.command, &spec.env))),
+        command_overridden: builtin.as_ref().is_some_and(|b| b.command != spec.command),
+        command_editable: reason.is_none(),
+        command_read_only_reason: reason,
+        installed: installed(&spec.command),
+        env: spec.env.iter().cloned().collect(),
+        config: vec![],
+        thought_levels: BTreeMap::new(),
+        commands: vec![],
+        source: spec.source.clone(),
+    }
+}
+
+/// Overrides built-in `id`'s command through its agent file, preserving other
+/// customizations. `None` restores the built-in command and removes a redundant file.
+pub(crate) fn set_builtin_command(custom_dir: &Path, id: &str, command: Option<&str>) -> IdeResult<()> {
+    update_builtin(custom_dir, id, |agent, builtin| agent.command = command.unwrap_or(&builtin.command).to_owned())
+}
+
+/// The environment built-in `id` starts with, through its agent file (empty clears it).
+pub(crate) fn set_builtin_env(custom_dir: &Path, id: &str, env: BTreeMap<String, String>) -> IdeResult<()> {
+    update_builtin(custom_dir, id, |agent, _| agent.env = env)
+}
+
+/// Changes built-in `id`'s agent file; a file left with only the built-in's values is removed.
+fn update_builtin(custom_dir: &Path, id: &str, change: impl FnOnce(&mut CustomAgent, &ProviderSpec)) -> IdeResult<()> {
+    let Some(builtin) = builtin_spec(id) else {
+        return Err(IdeError::invalid(format!("{id} is not a built-in agent")));
+    };
+    let file = custom_dir.join(format!("{id}.toml"));
+    let mut agent = if file.try_exists()? {
+        CustomAgent::read(&file).map_err(IdeError::invalid)?
+    } else {
+        CustomAgent {
+            name: Some(builtin.name.clone()),
+            driver: builtin.driver,
+            command: builtin.command.clone(),
+            args: builtin.args.clone(),
+            env: BTreeMap::new(),
+            registry: None,
+        }
+    };
+    if agent.registry.is_some() {
+        return Err(IdeError::invalid(format!("{id} is installed from the ACP Registry")));
+    }
+    change(&mut agent, &builtin);
+    if agent.command == builtin.command
+        && agent.name.as_deref() == Some(builtin.name.as_str())
+        && agent.driver == builtin.driver
+        && agent.args == builtin.args
+        && agent.env.is_empty()
+    {
+        match std::fs::remove_file(&file) {
+            Err(e) if e.kind() != std::io::ErrorKind::NotFound => return Err(e.into()),
+            _ => {}
+        }
+        return Ok(());
+    }
+    agent.write(&file)?;
+    Ok(())
 }
 
 /// An agent file, `<config>/agents/<id>.toml`.
@@ -162,7 +345,7 @@ pub(crate) fn load(custom_dir: Option<&Path>) -> Vec<ProviderSpec> {
             Some(r) => AgentSource::Registry { version: r.version, update: None },
             None => AgentSource::Custom,
         };
-        let spec = ProviderSpec {
+        let mut spec = ProviderSpec {
             name: agent.name.unwrap_or_else(|| id.clone()),
             driver: agent.driver,
             command: agent.command,
@@ -173,7 +356,13 @@ pub(crate) fn load(custom_dir: Option<&Path>) -> Vec<ProviderSpec> {
             id,
         };
         match specs.iter_mut().find(|s| s.id == spec.id) {
-            Some(existing) => *existing = spec,
+            Some(existing) => {
+                spec.login_hint = existing.login_hint.clone();
+                if spec.source == AgentSource::Custom {
+                    spec.source = AgentSource::Builtin;
+                }
+                *existing = spec;
+            }
             None => specs.push(spec),
         }
     }
@@ -210,6 +399,161 @@ fn is_executable(p: &Path) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use serde_json::json;
+
+    #[test]
+    fn login_hints_cover_all_builtin_commands_and_preserve_separate_login_tools() {
+        for spec in builtins() {
+            let separate = matches!(spec.id.as_str(), "claude-acp" | "codex-acp" | "vibe");
+            for windows in [false, true] {
+                let program =
+                    if windows { Path::new(r"C:\Agent Tools\renamed.cmd") } else { Path::new("/agent tools/renamed") };
+                let hint = render_login_hint(&spec, program, None, windows);
+                if separate {
+                    assert_eq!(hint, spec.login_hint, "{}", spec.id);
+                } else {
+                    let prefix =
+                        if windows { "Run `& 'C:\\Agent Tools\\renamed.cmd'" } else { "Run `'/agent tools/renamed'" };
+                    assert!(hint.starts_with(prefix), "{}: {hint}", spec.id);
+                    assert_eq!(
+                        render_login_hint(&spec, program, Some(program), windows),
+                        spec.login_hint,
+                        "a PATH-resolved command stays bare: {}",
+                        spec.id
+                    );
+                    assert_eq!(render_login_hint(&spec, program, Some(Path::new("/other/install")), windows), hint);
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn login_commands_quote_shell_metacharacters_and_keep_arguments() {
+        let cursor = builtin_spec("cursor").unwrap();
+        assert_eq!(
+            render_login_hint(&cursor, Path::new("/agent's tools/$cli"), None, false),
+            "Run `'/agent'\\''s tools/$cli' login` in a terminal."
+        );
+        assert_eq!(
+            render_login_hint(&cursor, Path::new(r"C:\agent's tools\$cli.cmd"), None, true),
+            r"Run `& 'C:\agent''s tools\$cli.cmd' login` in a terminal."
+        );
+        let opencode = builtin_spec("opencode").unwrap();
+        assert_eq!(
+            render_login_hint(&opencode, Path::new("/registry/opencode"), None, false),
+            "Run `'/registry/opencode' auth login` in a terminal."
+        );
+        let mut custom = cursor;
+        custom.id = "custom".into();
+        custom.login_hint = "Sign in with the agent's own command line first.".into();
+        assert_eq!(render_login_hint(&custom, Path::new("/custom"), None, false), custom.login_hint);
+    }
+
+    #[test]
+    fn launch_resolution_uses_the_child_path_and_absolutizes_relative_overrides() {
+        let dir = tempfile::tempdir().unwrap();
+        let mut cursor = builtin_spec("cursor").unwrap();
+        let command = if cfg!(windows) { "cursor-agent.cmd" } else { "cursor-agent" };
+        let program = dir.path().join(command);
+        std::fs::write(&program, "").unwrap();
+        cursor.env.push(("PATH".into(), dir.path().to_string_lossy().into_owned()));
+        let resolved = cursor.clone().resolve_for_launch(dir.path());
+        assert_eq!(Path::new(&resolved.command), program);
+        assert!(resolved.sign_in_message(&[]).contains(&*program.to_string_lossy()));
+        cursor.command = format!("tools/{command}");
+        let resolved = cursor.resolve_for_launch(dir.path());
+        assert_eq!(Path::new(&resolved.command), dir.path().join("tools").join(command));
+    }
+
+    #[test]
+    fn terminal_login_commands_quote_the_binary_and_each_argument() {
+        for (windows, expected) in [
+            (false, "'/agent'\\''s tools/$cli' auth login --account 'user name' 'a'\\''b' '$token' ''"),
+            (true, "& '/agent''s tools/$cli' auth login --account 'user name' 'a''b' '$token' ''"),
+        ] {
+            assert_eq!(
+                render_login_command(
+                    Path::new("/agent's tools/$cli"),
+                    ["auth", "login", "--account", "user name", "a'b", "$token", ""],
+                    windows
+                ),
+                expected
+            );
+        }
+        let mut spec = builtin_spec("cursor").unwrap();
+        spec.id = "custom".into();
+        spec.source = AgentSource::Registry { version: "1.4.5".into(), update: None };
+        spec.login_hint = "Sign in with the agent's own command line first.".into();
+        for method in [
+            json!({"type": "terminal"}),
+            json!({"type": "terminal", "args": ["login", null]}),
+            json!({"type": "agent", "args": ["login"]}),
+        ] {
+            assert_eq!(
+                spec.sign_in_message(&[method]),
+                "Cursor needs you to sign in. Sign in with the agent's own command line first."
+            );
+        }
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn registry_login_hint_names_the_installed_executable() {
+        let mut spec = builtin_spec("cursor").unwrap();
+        spec.command = "/registry path/dist-package/cursor-agent".into();
+        assert_eq!(
+            describe(&spec).login_hint.as_deref(),
+            Some("Run `'/registry path/dist-package/cursor-agent' login` in a terminal.")
+        );
+    }
+
+    #[test]
+    fn launch_metadata_distinguishes_defaults_overrides_and_read_only_agents() {
+        let dir = tempfile::tempdir().unwrap();
+        let list = || load(Some(dir.path())).iter().map(describe).collect::<Vec<_>>();
+        let defaults = list();
+        let codex = defaults.iter().find(|p| p.id == "codex").unwrap();
+        assert_eq!(codex.program, "codex");
+        assert_eq!(codex.default_program.as_deref(), Some("codex"));
+        assert_eq!(codex.args, ["app-server"]);
+        assert_eq!(codex.default_args, codex.args);
+        assert_eq!(codex.command, "codex app-server");
+        assert_eq!(codex.login_hint.as_deref(), Some("Run `codex login` in a terminal."));
+        assert!(!codex.command_overridden);
+        assert!(codex.command_editable);
+        for p in &defaults {
+            assert_eq!(p.source, AgentSource::Builtin);
+            assert!(p.default_program.is_some());
+            assert_eq!(p.command_editable, !p.id.ends_with("-acp"));
+            assert_eq!(
+                p.command_read_only_reason,
+                p.id.ends_with("-acp").then_some(AgentCommandReadOnlyReason::PackageRunner)
+            );
+        }
+        set_builtin_command(dir.path(), "codex", Some("/path with spaces/codex")).unwrap();
+        let overridden = list().into_iter().find(|p| p.id == "codex").unwrap();
+        assert_eq!(overridden.program, "/path with spaces/codex");
+        assert_eq!(overridden.args, codex.args);
+        assert_eq!(overridden.default_program, codex.default_program);
+        assert!(overridden.command_overridden && overridden.command_editable);
+        assert_eq!(overridden.source, AgentSource::Builtin);
+        set_builtin_command(dir.path(), "codex", Some("codex")).unwrap();
+        assert!(!list().iter().find(|p| p.id == "codex").unwrap().command_overridden);
+        std::fs::write(
+            dir.path().join("gemini.toml"),
+            "command = \"/registry/gemini\"\n[registry]\nid = \"gemini\"\nversion = \"1.0\"\n",
+        )
+        .unwrap();
+        let registry = list().into_iter().find(|p| p.id == "gemini").unwrap();
+        assert_eq!(registry.default_program.as_deref(), Some("gemini"));
+        assert!(!registry.command_editable);
+        assert_eq!(registry.command_read_only_reason, Some(AgentCommandReadOnlyReason::Registry));
+        assert!(matches!(registry.source, AgentSource::Registry { .. }));
+        std::fs::write(dir.path().join("mine.toml"), "command = \"mine\"\n").unwrap();
+        let custom = list().into_iter().find(|p| p.id == "mine").unwrap();
+        assert_eq!(custom.default_program, None);
+        assert_eq!(custom.command_read_only_reason, Some(AgentCommandReadOnlyReason::CustomAgent));
+    }
 
     #[test]
     fn custom_agents_extend_and_override_the_builtins() {
@@ -228,6 +572,107 @@ mod tests {
         assert_eq!(specs.iter().filter(|s| s.id == "claude").count(), 1);
         assert!(!installed("/definitely/not/here"));
         assert!(installed("sh"));
+    }
+
+    #[test]
+    fn set_builtin_env_writes_and_clears_the_environment() {
+        let dir = tempfile::tempdir().unwrap();
+        let env = BTreeMap::from([("CLAUDE_CODE_ENTRYPOINT".to_owned(), "openidea".to_owned())]);
+        set_builtin_env(dir.path(), "claude", env.clone()).unwrap();
+        let claude = load(Some(dir.path())).into_iter().find(|s| s.id == "claude").unwrap();
+        assert_eq!(claude.env, vec![("CLAUDE_CODE_ENTRYPOINT".to_owned(), "openidea".to_owned())]);
+        assert_eq!(describe(&claude).env, env);
+        // The command override and the environment are kept independently.
+        set_builtin_command(dir.path(), "claude", Some("/opt/claude")).unwrap();
+        set_builtin_command(dir.path(), "claude", None).unwrap();
+        assert!(dir.path().join("claude.toml").is_file());
+        set_builtin_env(dir.path(), "claude", BTreeMap::new()).unwrap();
+        assert!(!dir.path().join("claude.toml").exists());
+        set_builtin_env(dir.path(), "not-a-builtin", env).unwrap_err();
+    }
+
+    #[test]
+    fn set_builtin_command_overrides_and_clears_a_builtin() {
+        let dir = tempfile::tempdir().unwrap();
+        set_builtin_command(dir.path(), "not-a-builtin", Some("/x")).unwrap_err();
+        set_builtin_command(dir.path(), "claude", Some("/opt/claude")).unwrap();
+        let claude = load(Some(dir.path())).into_iter().find(|s| s.id == "claude").unwrap();
+        assert_eq!((claude.command.as_str(), claude.driver), ("/opt/claude", Driver::Claude));
+        assert!(claude.args.is_empty());
+        // A registry install is neither overwritten nor removed by a command override.
+        let path = dir.path().join("codex.toml");
+        CustomAgent {
+            name: None,
+            driver: Driver::Acp,
+            command: "amp".into(),
+            args: vec![],
+            env: BTreeMap::new(),
+            registry: Some(RegistryRef { id: "amp-acp".into(), version: "1.0.0".into() }),
+        }
+        .write(&path)
+        .unwrap();
+        set_builtin_command(dir.path(), "codex", Some("/x")).unwrap_err();
+        set_builtin_command(dir.path(), "codex", None).unwrap_err();
+        assert!(path.exists());
+        // Clearing (twice) returns the built-in to auto-detection.
+        set_builtin_command(dir.path(), "claude", None).unwrap();
+        set_builtin_command(dir.path(), "claude", None).unwrap();
+        assert!(!dir.path().join("claude.toml").exists());
+        assert_eq!(load(Some(dir.path())).iter().find(|s| s.id == "claude").unwrap().command, "claude");
+    }
+
+    #[test]
+    fn set_builtin_command_preserves_other_customizations_on_save_and_reset() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("claude.toml");
+        for field in ["name", "driver", "args", "env", "unnamed"] {
+            let mut agent = CustomAgent {
+                name: Some("Claude Code".into()),
+                driver: Driver::Claude,
+                command: "/old/claude".into(),
+                args: vec![],
+                env: BTreeMap::new(),
+                registry: None,
+            };
+            match field {
+                "name" => agent.name = Some("My Claude".into()),
+                "driver" => agent.driver = Driver::Acp,
+                "args" => agent.args.push("--verbose".into()),
+                "env" => {
+                    agent.env.insert("K".into(), "v".into());
+                }
+                "unnamed" => agent.name = None,
+                _ => unreachable!(),
+            }
+            agent.write(&path).unwrap();
+
+            set_builtin_command(dir.path(), "claude", Some("/new/claude")).unwrap();
+            agent.command = "/new/claude".into();
+            assert_eq!(CustomAgent::read(&path).unwrap(), agent, "{field}");
+
+            set_builtin_command(dir.path(), "claude", None).unwrap();
+            agent.command = "claude".into();
+            assert_eq!(CustomAgent::read(&path).unwrap(), agent, "{field}");
+        }
+    }
+
+    #[test]
+    fn resetting_a_command_only_override_removes_the_file() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("codex.toml");
+        std::fs::write(
+            &path,
+            "name = \"Codex\"\ndriver = \"codex\"\ncommand = \"/custom/codex\"\nargs = [\"app-server\"]\n",
+        )
+        .unwrap();
+
+        set_builtin_command(dir.path(), "codex", None).unwrap();
+
+        assert!(!path.exists());
+        assert_eq!(
+            load(Some(dir.path())).into_iter().find(|s| s.id == "codex").unwrap(),
+            builtin_spec("codex").unwrap()
+        );
     }
 
     #[test]

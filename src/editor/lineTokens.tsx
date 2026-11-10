@@ -3,12 +3,13 @@
  * `ChunkExtractor`: each file is parsed whole once, so a line inside a block
  * comment or a multi-line string is coloured as such.
  */
-import { useEffect, useState, type ReactNode } from "react";
+import { useEffect, useState } from "react";
 import { Text } from "@codemirror/state";
 import { editorsFor } from "@/editor/api";
 import { codeHighlighter, highlightTokens, languageForPath, type CodeToken } from "@/editor/lsp/markdown";
 import { call, commands } from "@/platform/ipc";
 import { isVirtualUri, virtualDocument } from "@/platform/virtualDocs";
+import type { SourceColorizer } from "@/ui/SourcePreview";
 
 export type { CodeToken };
 
@@ -135,33 +136,7 @@ export function useLineTokens(source: LineSource | undefined, text: string): Cod
   return loaded?.key === key ? loaded.tokens : peekLineTokens({ path, line, col }, text);
 }
 
-/**
- * `text` between `from` and `to` as spans with the tokens' `tok-*` classes
- * (styled by the caller); `key` prefixes the React keys.
- */
-export function tokenSpans(
-  text: string,
-  from: number,
-  to: number,
-  tokens: readonly CodeToken[] | null,
-  key = "",
-): ReactNode[] {
-  if (!tokens?.length) return [text.slice(from, to)];
-  const out: ReactNode[] = [];
-  let pos = from;
-  for (const t of tokens) {
-    if (t.to <= pos) continue;
-    if (t.from >= to) break;
-    const s = Math.max(t.from, pos);
-    const e = Math.min(t.to, to);
-    if (s > pos) out.push(text.slice(pos, s));
-    out.push(
-      <span key={`${key}${s}`} className={t.cls}>
-        {text.slice(s, e)}
-      </span>,
-    );
-    pos = e;
-  }
-  if (pos < to) out.push(text.slice(pos, to));
-  return out;
-}
+export { tokenSpans } from "@/ui/tokenSpans";
+
+/** Whole-file syntax colours for `SourcePreview` (its `colorize` prop). */
+export const previewColors: SourceColorizer = (text, path) => codeHighlighter(text, languageForPath(path));

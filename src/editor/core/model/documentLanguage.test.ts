@@ -9,7 +9,7 @@ const loading = vi.hoisted(() => {
   const ready = new Promise<void>((resolve) => {
     finish = resolve;
   });
-  return { ready, finish, started: false };
+  return { ready, finish, started: false, modes: [] as string[] };
 });
 
 vi.mock("../cm/languages", async (importOriginal) => {
@@ -18,6 +18,7 @@ vi.mock("../cm/languages", async (importOriginal) => {
     ...actual,
     loadSupport: async (...args: Parameters<typeof actual.loadSupport>) => {
       loading.started = true;
+      loading.modes.push(args[0].name);
       await loading.ready;
       return actual.loadSupport(...args);
     },
@@ -49,6 +50,7 @@ it("waits for the lazy mode before exposing an Angular document to its first slo
     onContextMenu() {},
   });
   expect(slot.currentState().facet(languageFacet)?.name).toBe("angular");
+  expect(loading.modes).toEqual(expect.arrayContaining(["HTML", "Angular Template"]));
   slot.dispose();
   manager.stop();
 });

@@ -40,7 +40,8 @@ pub fn spawn(
         .ok()
         .filter(|p| p.is_trusted())
         .and_then(|p| ide_sdk::apply::terminal_activation(&p.root, &p.settings.effective(), &shell));
-    let info = host.terminals.spawn(options, host.window_sink(window), Box::new(move |chunk| on_output(chunk)))?;
+    let key = host.owner_window(window).to_owned();
+    let info = host.terminals.spawn(options, key, host.window_sink(window), Box::new(move |chunk| on_output(chunk)))?;
     if let Some(line) = activation {
         let _ = host.terminals.write(info.id, &format!(" {line}\r"));
     }

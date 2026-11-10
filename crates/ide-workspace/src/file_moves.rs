@@ -89,7 +89,7 @@ fn write_text(documents: &Documents, path: &Path, text: &str) -> IdeResult<()> {
 fn edited_paths(edit: &WorkspaceEdit) -> Vec<PathBuf> {
     let mut out: Vec<PathBuf> = Vec::new();
     for f in &edit.files {
-        if let FileEdit::Edit { path, edits } = f
+        if let FileEdit::Edit { path, edits, .. } = f
             && !edits.is_empty()
             && !out.iter().any(|p| p == path)
         {
@@ -120,6 +120,8 @@ impl FileMoves {
         if moves.is_empty() {
             return Err(IdeError::invalid("nothing to move"));
         }
+        let expanded = crate::file_ops::expand_moves(moves)?;
+        let moves = expanded.as_slice();
         for m in moves {
             if !m.from.exists() {
                 return Err(IdeError::not_found(format!("{} does not exist", m.from.display())));
@@ -145,16 +147,9 @@ impl FileMoves {
             restore(documents, &paths, &before);
             return Err(e);
         }
-        let mut done: Vec<&FileMove> = Vec::new();
-        for m in moves {
-            if let Err(e) = ide_vfs::rename(&m.from, &m.to) {
-                for d in done.iter().rev() {
-                    let _ = ide_vfs::rename(&d.to, &d.from);
-                }
-                restore(documents, &paths, &before);
-                return Err(e);
-            }
-            done.push(m);
+        if let Err(e) = crate::file_ops::move_files(moves) {
+            restore(documents, &paths, &before);
+            return Err(e);
         }
         let mut edited = Vec::with_capacity(paths.len());
         for (p, before) in paths.iter().zip(before) {
@@ -196,27 +191,21 @@ impl FileMoves {
                 .ok_or_else(|| IdeError::not_found("the refactoring can no longer be undone"))?;
             records.remove(i)
         };
-        for m in &record.moves {
-            if !m.to.exists() {
-                return Err(IdeError::not_found(format!("{} no longer exists", m.to.display())));
-            }
-            if m.from.exists() {
-                return Err(IdeError::new(
-                    ide_core::error::ErrorKind::AlreadyExists,
-                    format!("{} exists again", m.from.display()),
-                ));
-            }
+        let back: Vec<_> =
+            record.moves.iter().rev().map(|m| FileMove { from: m.to.clone(), to: m.from.clone() }).collect();
+        if let Err(e) = crate::file_ops::move_files(&back) {
+            self.records.lock().push(record);
+            return Err(e);
         }
-        let mut outcome = UndoOutcome::default();
-        for m in record.moves.iter().rev() {
-            ide_vfs::rename(&m.to, &m.from)?;
-            outcome.moves.push(FileMove { from: m.to.clone(), to: m.from.clone() });
-        }
-        let back: Vec<FileMove> = outcome.moves.clone();
+        let mut outcome = UndoOutcome { moves: back.clone(), conflicts: Vec::new() };
         for f in &record.edited {
             let path = moved_path(&f.path, &back);
             match read_text(documents, &path) {
-                Ok(now) if now == f.after => write_text(documents, &path, &f.before)?,
+                Ok(now) if now == f.after => {
+                    if write_text(documents, &path, &f.before).is_err() {
+                        outcome.conflicts.push(path.into());
+                    }
+                }
                 Ok(now) if now == f.before => {}
                 _ => outcome.conflicts.push(path.into()),
             }
@@ -245,17 +234,7 @@ mod tests {
     }
 
     fn apply(documents: &Documents) -> impl Fn(&WorkspaceEdit) -> IdeResult<()> + '_ {
-        move |edit| {
-            for f in &edit.files {
-                if let FileEdit::Edit { path, edits } = f {
-                    let doc = documents.open(path)?.id;
-                    documents.apply_edits(doc, edits)?;
-                    documents.save(doc)?;
-                    documents.close(doc);
-                }
-            }
-            Ok(())
-        }
+        move |edit| documents.apply_file_move_edits(edit)
     }
 
     #[test]
@@ -272,8 +251,10 @@ mod tests {
         let edit = WorkspaceEdit {
             files: vec![FileEdit::Edit {
                 path: root.join("main.ts").into(),
+                version: None,
                 edits: vec![TextEdit { range: Range::new(Pos::new(0, 21), Pos::new(0, 22)), new_text: "b".into() }],
             }],
+            ..Default::default()
         };
         let id = moves.perform(&docs, Some(&history), &mv, &edit, "Move", &apply(&docs)).unwrap();
         assert!(root.join("b/util.ts").exists() && !root.join("a").exists());
@@ -303,13 +284,16 @@ mod tests {
             files: vec![
                 FileEdit::Edit {
                     path: root.join("Foo.java").into(),
+                    version: None,
                     edits: vec![TextEdit { range: Range::new(Pos::new(0, 6), Pos::new(0, 9)), new_text: "Bar".into() }],
                 },
                 FileEdit::Edit {
                     path: root.join("Use.java").into(),
+                    version: None,
                     edits: vec![TextEdit { range: Range::new(Pos::new(0, 0), Pos::new(0, 3)), new_text: "Bar".into() }],
                 },
             ],
+            ..Default::default()
         };
         let mv = vec![FileMove { from: root.join("Foo.java").into(), to: root.join("Bar.java").into() }];
         let id = moves.perform(&docs, None, &mv, &edit, "Rename", &apply(&docs)).unwrap();

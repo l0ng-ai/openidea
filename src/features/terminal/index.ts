@@ -1,6 +1,6 @@
 /**
  * Integrated terminal: xterm.js sessions on backend PTYs in the bottom
- * "Terminal" tool window (tabs, splits, links, IDEA-style shortcuts).
+ * "Terminal" tool window (tabs, split tab groups, links, IDEA-style shortcuts).
  */
 import { registerActions } from "@/platform/actions";
 import { onIdeEvent } from "@/platform/ipc";
@@ -10,6 +10,7 @@ import { provideEmbeddedTerminal, registerToolWindow, toolWindowService } from "
 import { lazyComponent } from "@/ui";
 import { installTerminalKeys } from "./keys";
 import { loadTerminalRuntime, terminalRuntime } from "./loader";
+import { SAMPLE_TUI_END, SAMPLE_TUI_START, sampleTuiFrame } from "./sampleTui";
 
 const WINDOW = "terminal";
 
@@ -42,8 +43,57 @@ async function openNewTab(dir?: string) {
   focusActiveSoon();
 }
 
+/** Split Right / Split Down of tab `arg` (from its context menu), else of the active tab. */
+async function split(arg: unknown, orientation: "horizontal" | "vertical", move = false) {
+  const rt = await loadTerminalRuntime();
+  const id = typeof arg === "string" && arg ? arg : rt.useTerminals.getState().activeTab;
+  if (!id) return move ? undefined : openNewTab();
+  rt.splitTab(id, orientation, move);
+  toolWindowService().show(WINDOW, true);
+  focusActiveSoon();
+}
+
+/**
+ * The performance harness (`perf/`): a full-screen TUI repainting the active terminal
+ * `frames` times at `fps`, opening a tab first when there is none.
+ */
+async function streamSampleTui(frames: number, fps: number) {
+  const rt = await loadTerminalRuntime();
+  if (!rt.activeSession()) rt.newTab(rt.startDirectory(projectRoot() ?? "/"));
+  toolWindowService().show(WINDOW, true);
+  const deadline = performance.now() + 5_000;
+  let term = rt.activeSession()?.term;
+  while (!term?.element && performance.now() < deadline) {
+    await new Promise((r) => requestAnimationFrame(r));
+    term = rt.activeSession()?.term;
+  }
+  if (!term?.element) throw new Error("terminal did not open");
+  const write = (data: string) => new Promise<void>((resolve) => term.write(data, resolve));
+  await write(SAMPLE_TUI_START);
+  for (let n = 0; n < frames; n++) {
+    const next = performance.now() + 1000 / fps;
+    await write(sampleTuiFrame(n, term.cols, term.rows));
+    await new Promise((r) => setTimeout(r, Math.max(0, next - performance.now())));
+  }
+  await write(SAMPLE_TUI_END);
+}
+
 export function activate(): () => void {
   const disposers: Array<() => void> = [
+    import.meta.env.DEV || import.meta.env.MODE === "perf"
+      ? registerActions([
+          {
+            id: "terminal.sampleTui",
+            title: "Stream Sample TUI",
+            category: "Terminal",
+            hidden: true,
+            run: async ({ arg }) => {
+              const { frames = 40, fps = 10 } = (arg ?? {}) as { frames?: number; fps?: number };
+              await streamSampleTui(frames, fps);
+            },
+          },
+        ])
+      : () => {},
     registerToolWindow({
       id: WINDOW,
       title: "Terminal",
@@ -92,6 +142,19 @@ export function activate(): () => void {
         run: ({ arg }) => openNewTab(typeof arg === "string" && arg ? arg : undefined),
       },
       {
+        id: "terminal.pluginSession",
+        title: "Open Plugin Terminal Session",
+        category: "Terminal",
+        hidden: true,
+        when: "projectOpen",
+        run: async ({ arg }) => {
+          const rt = await loadTerminalRuntime();
+          await rt.pluginSession(arg as Parameters<typeof rt.pluginSession>[0]);
+          toolWindowService().show(WINDOW, true);
+          focusActiveSoon();
+        },
+      },
+      {
         id: "terminal.runCommand",
         title: "Run Command in Terminal",
         description: "Opens a terminal tab running `{ program, args, name?, cwd? }` instead of the shell.",
@@ -117,12 +180,7 @@ export function activate(): () => void {
         category: "Terminal",
         icon: "split",
         when: "projectOpen",
-        run: async () => {
-          const rt = await loadTerminalRuntime();
-          if (!rt.useTerminals.getState().activeTab) return openNewTab();
-          rt.splitActive("horizontal");
-          focusActiveSoon();
-        },
+        run: ({ arg }) => split(arg, "horizontal"),
       },
       {
         id: "terminal.splitDown",
@@ -130,10 +188,34 @@ export function activate(): () => void {
         category: "Terminal",
         icon: "split-horizontal",
         when: "projectOpen",
-        run: async () => {
+        run: ({ arg }) => split(arg, "vertical"),
+      },
+      {
+        id: "terminal.splitAndMoveRight",
+        title: "Split and Move Right",
+        category: "Terminal",
+        when: "projectOpen",
+        run: ({ arg }) => split(arg, "horizontal", true),
+      },
+      {
+        id: "terminal.splitAndMoveDown",
+        title: "Split and Move Down",
+        category: "Terminal",
+        when: "projectOpen",
+        run: ({ arg }) => split(arg, "vertical", true),
+      },
+      {
+        id: "terminal.unsplit",
+        title: "Unsplit",
+        category: "Terminal",
+        when: "projectOpen",
+        run: async ({ arg }) => {
           const rt = await loadTerminalRuntime();
-          if (!rt.useTerminals.getState().activeTab) return openNewTab();
-          rt.splitActive("vertical");
+          const { tabs, activeTab } = rt.useTerminals.getState();
+          const group = typeof arg === "string" ? arg : tabs.find((t) => t.id === activeTab)?.group;
+          if (!group) return;
+          rt.unsplit(group);
+          toolWindowService().show(WINDOW, true);
           focusActiveSoon();
         },
       },
@@ -167,7 +249,7 @@ export function activate(): () => void {
           const rt = terminalRuntime();
           const s = rt?.activeSession();
           if (!rt || !s) return;
-          void rt.requestClosePane(s.key).then((closed) => {
+          void rt.requestCloseSession(s.key).then((closed) => {
             if (!closed) return;
             if (rt.useTerminals.getState().tabs.length === 0) toolWindowService().hide(WINDOW);
             else focusActiveSoon();
@@ -185,12 +267,12 @@ export function activate(): () => void {
       if (s.settings?.editor !== prev.settings?.editor) terminalRuntime()?.applySettingsToAll();
     }),
     onIdeEvent("terminalExited", (e) => terminalRuntime()?.sessionForTerminalId(e.terminal)?.exited(e.code)),
-    // Sessions belong to the project; closing / switching it ends them.
+    // Sessions belong to the project. Remember this project's tabs, then open the next one's.
     useProject.subscribe((s, prev) => {
       const rt = terminalRuntime();
       if (rt && s.project?.root !== prev.project?.root) {
         if (rt.useTerminalFind.getState().open) rt.closeTerminalFind();
-        rt.closeAll();
+        rt.syncTerminalProject(s.project?.root ?? null);
       }
     }),
   ];
@@ -213,6 +295,6 @@ export function activate(): () => void {
 
   return () => {
     disposers.reverse().forEach((d) => d());
-    terminalRuntime()?.closeAll();
+    terminalRuntime()?.unbindTerminals();
   };
 }

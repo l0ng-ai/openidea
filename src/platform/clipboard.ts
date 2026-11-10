@@ -1,6 +1,12 @@
 import { call, commands, isTauri } from "./ipc";
 import { ipcPath } from "./paths";
 
+/** Native menu actions and async work can outlive WebKit's user activation. */
+export async function writeClipboardText(text: string): Promise<void> {
+  if (isTauri()) await call(commands.clipboardWriteText(text));
+  else await navigator.clipboard.writeText(text);
+}
+
 type FormatFiles = (paths: string[]) => string;
 const rawPaths: FormatFiles = (paths) => paths.join("\n");
 
@@ -9,16 +15,19 @@ export async function readClipboardText(
   transfer?: DataTransfer | null,
   formatFiles: FormatFiles = rawPaths,
 ): Promise<string> {
-  const text = transfer ? transfer.getData("text/plain") : ((await navigator.clipboard?.readText()) ?? "");
+  const text = transfer
+    ? transfer.getData("text/plain")
+    : ((await navigator.clipboard?.readText().catch(() => "")) ?? "");
   if ((text && formatFiles === rawPaths) || (transfer && !hasClipboardFiles(transfer)) || !isTauri()) return text;
+  let paths: string[];
   try {
-    const paths = await call(commands.clipboardFileList());
-    // Windows also supplies the file list as text; unrelated text still wins.
-    if (text && text.replace(/\r\n/g, "\n").split("\n").map(ipcPath).join("\n") !== paths.join("\n")) return text;
-    return formatFiles(paths);
+    paths = await call(commands.clipboardFileList());
   } catch {
     return text;
   }
+  // Windows also supplies the file list as text; unrelated text still wins.
+  if (text && text.replace(/\r\n/g, "\n").split("\n").map(ipcPath).join("\n") !== paths.join("\n")) return text;
+  return formatFiles(paths);
 }
 
 function hasClipboardFiles(transfer: DataTransfer): boolean {

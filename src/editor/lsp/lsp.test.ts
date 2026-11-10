@@ -3,13 +3,15 @@ import { EditorState } from "@codemirror/state";
 import { EditorView } from "@codemirror/view";
 import { _addEditor, _removeEditor, documentSynced, type EditorDocContext } from "@/editor/api";
 
+let tauri = true;
 vi.mock("@/platform/ipc", async (orig) => {
   const actual = await orig<typeof import("@/platform/ipc")>();
-  return { ...actual, isTauri: () => true };
+  return { ...actual, isTauri: () => tauri };
 });
 
 const { lspRequest, reportLspError } = await import("./lsp");
 const { IpcError } = await import("@/platform/ipc");
+const { setInvokeRoute } = await import("@/platform/tauriCore");
 
 describe("lspRequest", () => {
   it("waits until open editors' edits reached the backend", async () => {
@@ -26,6 +28,20 @@ describe("lspRequest", () => {
     expect(await result).toBe(1);
     _removeEditor(handle);
     view.destroy();
+  });
+
+  it("outside Tauri, goes through an installed command route only", async () => {
+    tauri = false;
+    try {
+      const run = vi.fn(async () => ({ status: "ok" as const, data: 2 }));
+      await expect(lspRequest(run)).rejects.toMatchObject({ kind: "unavailable" });
+      expect(run).not.toHaveBeenCalled();
+      setInvokeRoute(() => null);
+      expect(await lspRequest(run)).toBe(2);
+    } finally {
+      setInvokeRoute(null);
+      tauri = true;
+    }
   });
 });
 

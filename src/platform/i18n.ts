@@ -24,7 +24,7 @@
  *   - `{n, number}`.
  *   Branches nest. Unknown parameters are left as written.
  */
-import { useCallback, useMemo } from "react";
+import { createContext, useCallback, useContext, useMemo } from "react";
 import { create } from "zustand";
 import en from "./locales/en.json";
 
@@ -33,8 +33,22 @@ export type MessageParams = Record<string, string | number | boolean | null | un
 export type Translate = (key: string, params?: MessageParams) => string;
 
 export const DEFAULT_LOCALE = "en";
-export const SUPPORTED_LOCALES = ["en", "zh"] as const;
-export type Locale = (typeof SUPPORTED_LOCALES)[number];
+/**
+ * The UI languages: `name` is written in the language itself, `tag` is its BCP 47
+ * tag for `<html lang>`. Adding one here offers it in the settings. Its catalogs are
+ * `locales/<locale>.json` and `locales/text/<locale>.json`; text they lack shows in English.
+ */
+export const LOCALES = {
+  en: { name: "English", tag: "en" },
+  zh: { name: "简体中文 (Chinese, Simplified)", tag: "zh-CN" },
+  ko: { name: "한국어 (Korean)", tag: "ko" },
+  fr: { name: "Français (French)", tag: "fr" },
+  pl: { name: "Polski (Polish)", tag: "pl" },
+  pt: { name: "Português (Portuguese)", tag: "pt-BR" },
+  es: { name: "Español (Spanish)", tag: "es-MX" },
+} as const;
+export type Locale = keyof typeof LOCALES;
+export const SUPPORTED_LOCALES = Object.keys(LOCALES) as Locale[];
 
 const loaders = import.meta.glob<Catalog>(["./locales/*.json", "!./locales/en.json"], { import: "default" });
 const textLoaders = import.meta.glob<Catalog>("./locales/text/*.json", { import: "default" });
@@ -54,7 +68,7 @@ interface I18nState {
 
 export const useI18n = create<I18nState>(() => ({ locale: DEFAULT_LOCALE, messages: en as Catalog, texts: {} }));
 
-/** Maps settings values / BCP 47 tags to a supported locale (`zh-CN` → `zh`, `system` → browser). */
+/** Maps settings values / BCP 47 tags to a supported locale (`zh-CN` → `zh`, `ko-KR` → `ko`, `system` → browser). */
 export function resolveLocale(input: string | null | undefined): Locale {
   let tag = (input ?? "").trim();
   if (!tag || tag === "system" || tag === "auto")
@@ -106,7 +120,7 @@ export async function setLocale(input: string | null | undefined): Promise<Local
   }
   if (token === switchToken) {
     useI18n.setState({ locale, messages: merged(locale), texts: textCatalogs.get(locale) ?? {} });
-    if (typeof document !== "undefined") document.documentElement.lang = locale;
+    if (typeof document !== "undefined") document.documentElement.lang = LOCALES[locale].tag;
   }
   return locale;
 }
@@ -180,6 +194,28 @@ export function useTx(): typeof tx {
     }
     return bound;
   }, [texts]);
+}
+
+/**
+ * True below UI that shows text from outside the IDE as written: a plugin's
+ * titles, labels and messages. Its own translations come from its package; the
+ * IDE's catalog would turn a plugin's "Pick" or "Log" into the IDE's meaning.
+ */
+export const VerbatimTextContext = createContext(false);
+
+const asWritten = ((text: string | TemplateStringsArray | undefined, ...values: unknown[]) =>
+  text === undefined || typeof text === "string"
+    ? text
+    : text.reduce((out, s, i) => out + String(values[i - 1]) + s)) as typeof tx;
+
+/**
+ * `useTx` for text a component was given (labels, titles, options): as written
+ * below a {@link VerbatimTextContext}, translated elsewhere. A component's own
+ * words keep `tx`.
+ */
+export function useGivenTx(): typeof tx {
+  const bound = useTx();
+  return useContext(VerbatimTextContext) ? asWritten : bound;
 }
 
 function translateSource(texts: Catalog, text: string | TemplateStringsArray | undefined, values: unknown[]) {

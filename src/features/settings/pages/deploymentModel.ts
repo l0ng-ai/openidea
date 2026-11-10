@@ -79,3 +79,12 @@ export function remoteParent(path: string): string {
   const i = trimmed.lastIndexOf("/");
   return i <= 0 ? "/" : trimmed.slice(0, i);
 }
+
+/** `path` relative to the folder `root` ("" for `root` itself), for a chosen mapping folder; null outside it. */
+export function folderWithin(root: string, path: string): string | null {
+  const r = root.replace(/\/+$/, "");
+  const p = path.replace(/\/+$/, "");
+  if (!r) return null;
+  if (p === r) return "";
+  return p.startsWith(`${r}/`) ? p.slice(r.length + 1) : null;
+}

@@ -1,7 +1,7 @@
 import { describe, expect, it } from "vitest";
 import { EditorState, type Extension } from "@codemirror/state";
 import { EditorView } from "@codemirror/view";
-import { ensureSyntaxTree } from "@codemirror/language";
+import { completedSyntaxState } from "@/test/syntax";
 import { languages } from "@codemirror/language-data";
 import { BracketScanner, bracketClass } from "./rainbowBrackets";
 import { heavyExtension } from "./setup";
@@ -13,8 +13,7 @@ const cStyle = EditorState.languageData.of(() => [
 
 /** `char@depth` of every coloured bracket (`!` for unmatched). */
 function marks(doc: string, ext: Extension = [], from = 0, to = doc.length, scanner = new BracketScanner()) {
-  const state = EditorState.create({ doc, extensions: ext });
-  ensureSyntaxTree(state, doc.length, 5000);
+  const state = completedSyntaxState(EditorState.create({ doc, extensions: ext }));
   return scanner.marks(state, from, to).map((m) => `${doc[m.from]}${m.depth < 0 ? "!" : m.depth}`);
 }
 

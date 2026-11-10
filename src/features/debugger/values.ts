@@ -33,9 +33,14 @@ export function classifyValue(value: string, typeName?: string | null): ValueKin
   return "plain";
 }
 
+/** The value on one line: a multi-line rendering (a pandas Series, a pretty-printed object) joined with spaces. */
+export function oneLine(value: string): string {
+  return value.replace(/\s*\n\s*/g, " ");
+}
+
 /** Single-line, length-limited value for inline display. */
 export function inlineValue(value: string, max = 60): string {
-  const flat = value.replace(/\s*\n\s*/g, " ");
+  const flat = oneLine(value);
   return flat.length > max ? flat.slice(0, max - 1) + "…" : flat;
 }
 

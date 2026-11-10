@@ -1,7 +1,9 @@
+import { writeClipboardText } from "@/platform/clipboard";
 import { commitRepo } from "./multiRoot";
 /** Create Patch… (from local changes or commits) and Apply Patch… (file or clipboard, with a preview). */
 import { useEffect, useState } from "react";
 import type { Commit, FileStatus, PatchFile, PatchSource, ShelvedChangeList } from "@/bindings";
+import { canRevealInFileManager, fileManagerName, revealInFileManager } from "@/platform/fileManager";
 import { call, commands } from "@/platform/ipc";
 import { Button, Checkbox, Dialog, Icon, Input, List, Spinner, fileIconName, T } from "@/ui";
 import { workflowSettings } from "@/platform/workflowSettings";
@@ -48,6 +50,21 @@ export function showCreatePatchForChanges(paths?: readonly string[]) {
   openDialog((close) => <CreatePatchDialog origin={{ kind: "changes", files }} onClose={close} />);
 }
 
+/** Copy as Patch to Clipboard: the selected local changes, without a dialog. */
+export async function copyChangesAsPatch(paths: readonly string[]) {
+  const files = defaultChangeFiles(paths);
+  if (!files.length) return;
+  await saveAll();
+  await runOp(
+    tx("Create patch"),
+    async () => {
+      const source: PatchSource = { from: "changes", paths: files.map((f) => stripSlash(f.path)), reverse: false };
+      await writeClipboardText(await call(commands.vcsCreatePatch(currentRepoRoot(), source)));
+    },
+    { success: "Patch copied to the clipboard", refresh: false },
+  );
+}
+
 export function showCreatePatchForCommits(commits: Commit[]) {
   if (!commits.length) return;
   openDialog((close) => <CreatePatchDialog origin={{ kind: "commits", commits }} onClose={close} />);
@@ -66,14 +83,24 @@ async function browseSave(current: string): Promise<string | null> {
   }
 }
 
-/** Settings › Version Control › Confirmation › When patch is created: ask / no / show in Finder. */
+/** Whole sentences let each locale translate the patch question. */
+export function patchSavedBody(): string {
+  const name = fileManagerName();
+  return name === "Finder"
+    ? "Patch file created successfully. Show it in Finder?"
+    : name === "Explorer"
+      ? "Patch file created successfully. Show it in Explorer?"
+      : "Patch file created successfully. Show it in Files?";
+}
+
+/** Settings › Version Control › Confirmation › When patch is created: ask / no / show in the file manager. */
 async function afterPatchSaved(path: string) {
   const mode = workflowSettings().vcs.confirmation.onPatchCreated;
-  if (mode === "no") return;
+  if (mode === "no" || !canRevealInFileManager()) return;
   if (mode === "ask") {
     const r = await ask({
       title: "Create Patch",
-      body: tx("Patch file created successfully. Show it in Finder?"),
+      body: tx(patchSavedBody()),
       checkbox: "Don't ask again",
       buttons: [{ id: "show", label: "Show", primary: true }],
     });
@@ -81,7 +108,7 @@ async function afterPatchSaved(path: string) {
     if (r.checked) await rememberSetting("vcs.confirmation.onPatchCreated", show ? "reveal" : "no");
     if (!show) return;
   }
-  void import("@tauri-apps/plugin-opener").then((m) => m.revealItemInDir(path)).catch(() => undefined);
+  void revealInFileManager(path).catch(() => undefined);
 }
 
 function CreatePatchDialog({ origin, onClose }: { origin: PatchOrigin; onClose: () => void }) {
@@ -116,14 +143,14 @@ function CreatePatchDialog({ origin, onClose }: { origin: PatchOrigin; onClose: 
               reverse,
             };
     const done = await runOp(
-      "Create patch",
+      tx("Create patch"),
       async () => {
         const patch =
           origin.kind === "shelf"
             ? await call(commands.vcsShelfPatch(origin.entry.id, origin.path ?? null))
             : await call(commands.vcsCreatePatch(repo, source!));
         if (toFile) await call(commands.vcsWritePatch(file.trim(), patch));
-        else await navigator.clipboard.writeText(patch);
+        else await writeClipboardText(patch);
         return true;
       },
       { success: toFile ? `Patch saved to ${baseName(file.trim())}` : "Patch copied to the clipboard", refresh: false },
@@ -250,7 +277,7 @@ function ApplyPatchDialog({ patch, source, onClose }: { patch: string; source: s
   const run = async () => {
     onClose();
     await saveAll();
-    const outcome = await runOp(`Apply patch (${source})`, () => call(commands.vcsApplyPatch(repo, patch)), {
+    const outcome = await runOp(tx`Apply patch (${source})`, () => call(commands.vcsApplyPatch(repo, patch)), {
       refresh: false,
     });
     if (outcome) await reportApply(outcome, "Patch applied");
@@ -305,7 +332,7 @@ function ApplyPatchDialog({ patch, source, onClose }: { patch: string; source: s
                   f.applies ? tx("Applies cleanly") : tx("Does not apply cleanly: a 3-way merge will be attempted")
                 }
               >
-                <Icon name={fileIconName(baseName(f.path))} size={14} />
+                <Icon name={fileIconName(baseName(f.path), f.path)} size={14} />
                 <span
                   className={styles.fileName}
                   style={{

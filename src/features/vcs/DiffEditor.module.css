@@ -1,5 +1,6 @@
 .root {
   position: relative;
+  container: diff-editor / inline-size;
   flex: 1;
   height: 100%;
   min-height: 0;
@@ -16,18 +17,36 @@
   padding: 0 6px;
   border-bottom: 1px solid var(--border);
 }
+.toolbar > * {
+  flex-shrink: 0;
+}
 .sep {
   width: 1px;
   height: 14px;
   margin: 0 4px;
   background: var(--border-strong);
 }
-.count {
+.toolbar > .count {
+  flex-shrink: 1;
+  min-width: 0;
   margin-left: auto;
   padding: 0 6px;
+  overflow: hidden;
+  text-overflow: ellipsis;
   color: var(--fg-subtle);
   font-size: var(--fs-small);
   white-space: nowrap;
+}
+/* Narrow (a side-docked preview): the whitespace / highlighting pickers stay in the gear menu. */
+@container diff-editor (max-width: 640px) {
+  .select {
+    display: none;
+  }
+}
+@container diff-editor (max-width: 380px) {
+  .toolbar > .sep {
+    display: none;
+  }
 }
 .labels {
   flex: none;
@@ -99,6 +118,9 @@
   flex-direction: column;
   overflow: hidden;
 }
+.host:not([hidden]) {
+  animation: diff-enter var(--dur) var(--ease) both;
+}
 .host[hidden] {
   display: none;
 }
@@ -116,6 +138,9 @@
 }
 .host :global(.cm-mergeViewEditor) {
   min-width: 0;
+  /* Clips like the library's `hidden` without becoming a scroll container, so the aligned view's
+     overview lane sticks to the MergeView's viewport (cm/lanes.ts `overviewLaneIn`). */
+  overflow: clip;
 }
 .host :global(.cm-merge-revert) {
   width: 22px;
@@ -132,7 +157,7 @@
 }
 .host :global(.cm-merge-revert button:hover) {
   color: var(--fg-strong);
-  background: var(--bg-hover);
+  background: transparent;
 }
 .select {
   height: var(--h-control-small);
@@ -159,11 +184,12 @@
 .host :global(.cm-diffHoverRevert) {
   position: absolute;
   right: 8px;
-  top: 0;
+  /* Centre on the first row, including when the editor's line height changes. */
+  top: calc((var(--openidea-editor-line-height, var(--lh-code)) - var(--space-4)) / 2);
   display: inline-flex;
   align-items: center;
   gap: 3px;
-  height: 16px;
+  height: var(--space-4);
   padding: 0 6px;
   border: 1px solid var(--border-strong);
   border-radius: var(--radius-small);
@@ -213,8 +239,18 @@
   background: var(--bg-app);
   border-left: 1px solid var(--border);
   border-right: 1px solid var(--border);
+  cursor: ew-resize;
+  touch-action: none;
 }
-.host :global(.cm-diffDivider svg) {
+.host :global(.cm-diffDivider:hover) {
+  background: var(--bg-hover);
+}
+.host :global(.cm-diffDivider:focus-visible) {
+  outline: 1px solid var(--accent);
+  outline-offset: -1px;
+}
+/* Only the band layer: the chevrons inside the arrow buttons are centred by the button's flex box. */
+.host :global(.cm-diffDivider > svg) {
   position: absolute;
   inset: 0;
 }
@@ -251,14 +287,20 @@
   cursor: pointer;
 }
 .host :global(.cm-diffDivider button.cm-diffArrow-a-to-b) {
-  left: 1px;
+  left: 0;
 }
 .host :global(.cm-diffDivider button.cm-diffArrow-b-to-a) {
-  right: 1px;
+  right: 0;
+}
+/* With one direction there is no pair to keep apart: the arrow sits in the middle of the divider. */
+.host :global(.cm-diffDivider-lone button.cm-diffArrow) {
+  left: 50%;
+  right: auto;
+  transform: translateX(-50%);
 }
 .host :global(.cm-diffDivider button.cm-diffArrow:hover) {
   color: var(--fg-strong);
-  background: var(--bg-hover);
+  background: transparent;
 }
 /* Where the other pane has lines this one lacks. */
 .host :global(.cm-diffGap-inserted) {
@@ -323,4 +365,19 @@
   box-shadow: var(--shadow-tooltip);
   font-size: var(--fs-small);
   pointer-events: none;
+}
+
+@keyframes diff-enter {
+  from {
+    opacity: 0;
+  }
+  to {
+    opacity: 1;
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .host:not([hidden]) {
+    animation: none;
+  }
 }

@@ -1,0 +1,27 @@
+id = "openidea.git-toolbox"
+name = "Git Toolbox"
+version = "0.1.0"
+description = "Fetches your repositories in the background and shows the branch with how far it is ahead of and behind its upstream in the status bar."
+authors = ["OpenIDEA contributors"]
+license = "Apache-2.0"
+change-notes = "0.1.0 — first release: auto-fetch every 5 minutes, ahead/behind in the status bar, Fetch Now."
+categories = ["vcs"]
+engines.openidea = "^1.0"
+wasm = "dist/plugin.wasm"
+# Fetches on schedule (also after being reclaimed while idle) and refreshes
+# the status bar when the focused editor or a repository changes.
+activation = ["on-schedule:300", "on-event:editor-focused", "on-event:vcs-changed", "on-command:*"]
+
+[capabilities]
+# `vcs.write` runs `git fetch` (only in trusted projects).
+required = ["project.read", "vcs.read", "vcs.write", "events", "storage"]
+
+[[contributes.commands]]
+id = "fetch"
+title = "Git Toolbox: Fetch Now"
+category = "Git Toolbox"
+
+[[contributes.commands]]
+id = "refresh"
+title = "Git Toolbox: Refresh Status"
+category = "Git Toolbox"

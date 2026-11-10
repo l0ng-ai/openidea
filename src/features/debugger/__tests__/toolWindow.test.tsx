@@ -1,6 +1,13 @@
 import { describe, expect, it, vi } from "vitest";
 import { act, fireEvent, render, screen } from "@testing-library/react";
 
+const debugEvaluateIn = vi.hoisted(() =>
+  vi.fn(async () => ({
+    status: "ok" as const,
+    data: { name: "result", value: "4", typeName: "int", variablesReference: 0, evaluateName: null },
+  })),
+);
+
 vi.mock("@/platform/ipc", async (importOriginal) => {
   const real = await importOriginal<typeof import("@/platform/ipc")>();
   const ok = <T,>(data: T) => Promise.resolve({ status: "ok" as const, data });
@@ -8,18 +15,32 @@ vi.mock("@/platform/ipc", async (importOriginal) => {
     ...real,
     commands: {
       ...real.commands,
+      debugEvaluateIn,
       debugScopes: () => ok([{ name: "Locals", variablesReference: 1, expensive: false }]),
       debugVariables: () =>
         ok([
           { name: "count", value: "3", typeName: "int", variablesReference: 0, evaluateName: "count" },
           { name: "label", value: "'hi'", typeName: "str", variablesReference: 0, evaluateName: "label" },
+          {
+            name: "bar",
+            value: "high    7.86\nlow     7.66\nName: 772, dtype: object",
+            typeName: "Series",
+            variablesReference: 0,
+            evaluateName: "bar",
+          },
         ]),
     },
   };
 });
 
+const confirmTerminate = vi.hoisted(() => vi.fn(async () => false));
+vi.mock("@/workbench/confirmTerminate", () => ({ confirmTerminate }));
+
+import type { RunConfig } from "@/platform/ipc";
 import { useDebug, type DebugSession } from "../state";
 import { DebugTabs, DebugToolWindow } from "../ui/DebugToolWindow";
+import { DebuggerOverlays } from "../ui/Overlays";
+import { useOverlays } from "../ui/popoverStore";
 
 const session: DebugSession = {
   id: 1,
@@ -42,6 +63,64 @@ const session: DebugSession = {
 };
 
 describe("debug tool window", () => {
+  it.each(["gdb", "debugpy"])("evaluates expressions in the variable field and dialog under %s", async (adapter) => {
+    debugEvaluateIn.mockClear();
+    useDebug.setState({ sessions: { 1: { ...session, adapter } }, active: 1 });
+    const { unmount } = render(<DebugToolWindow />);
+    fireEvent.click(screen.getByRole("tab", { name: "Threads & Variables" }));
+    const field = screen.getByPlaceholderText(/Evaluate expression/);
+    fireEvent.change(field, { target: { value: "count + 1" } });
+    fireEvent.keyDown(field, { key: "Enter" });
+    const context = adapter === "gdb" ? "watch" : "repl";
+    await vi.waitFor(() => expect(debugEvaluateIn).toHaveBeenCalledWith(1, 7, "count + 1", context));
+    unmount();
+    debugEvaluateIn.mockClear();
+    useOverlays.setState({ evaluate: { expression: "count + 1" } });
+    const dialog = render(<DebuggerOverlays />);
+    fireEvent.click(screen.getByRole("button", { name: "Evaluate" }));
+    await vi.waitFor(() => expect(debugEvaluateIn).toHaveBeenCalledWith(1, 7, "count + 1", context));
+    dialog.unmount();
+    useOverlays.setState({ evaluate: null });
+  });
+
+  it("offers Hot Reload and Hot Restart for Dart and Flutter sessions only", () => {
+    const hot = () => ["debug.hotReload", "debug.hotRestart"].map((name) => !!screen.queryByRole("button", { name }));
+    useDebug.setState({ sessions: { 1: { ...session, status: "running" } }, active: 1 });
+    const { unmount } = render(<DebugToolWindow />);
+    expect(hot()).toEqual([false, false]);
+    unmount();
+    useDebug.setState({ sessions: { 1: { ...session, adapter: "dart", status: "running" } }, active: 1 });
+    render(<DebugToolWindow />);
+    expect(hot()).toEqual([true, true]);
+  });
+
+  it("says a PHP Remote Debug session listens for Xdebug while nothing is suspended", () => {
+    const runConfig = {
+      id: "php-remote:web",
+      name: "web",
+      kind: "php-remote",
+      command: "",
+      args: [],
+      cwd: null,
+      env: {},
+      detected: false,
+      isTest: false,
+      debugAdapter: "php-debug",
+      params: { port: "9010" },
+    } as RunConfig;
+    const waiting = { ...session, adapter: "php-debug", status: "running" as const, threads: [], frames: [] };
+    useDebug.setState({ sessions: { 1: { ...waiting, runConfig } }, active: 1 });
+    const { unmount } = render(<DebugToolWindow />);
+    fireEvent.click(screen.getByRole("tab", { name: "Threads & Variables" }));
+    expect(screen.getByText("Listening for Xdebug on port 9010")).toBeTruthy();
+    expect(screen.queryByText("Running…")).toBeNull();
+    unmount();
+    useDebug.setState({ sessions: { 1: waiting }, active: 1 });
+    render(<DebugToolWindow />);
+    fireEvent.click(screen.getByRole("tab", { name: "Threads & Variables" }));
+    expect(screen.getByText("Running…")).toBeTruthy();
+  });
+
   it("shows preparation output, preserves a chosen tab and opens variables on pause", () => {
     useDebug.setState({ sessions: { 1: { ...session, status: "starting" } }, active: 1 });
     render(<DebugToolWindow />);
@@ -55,6 +134,11 @@ describe("debug tool window", () => {
     expect(console.getAttribute("aria-selected")).toBe("true");
     act(() => useDebug.setState({ sessions: { 1: session } }));
     expect(variables.getAttribute("aria-selected")).toBe("true");
+    // Stepping from the Console keeps it in front.
+    fireEvent.click(console);
+    act(() => useDebug.setState({ sessions: { 1: { ...session, status: "running" } } }));
+    act(() => useDebug.setState({ sessions: { 1: { ...session, stopReason: "step" } } }));
+    expect(console.getAttribute("aria-selected")).toBe("true");
   });
 
   it("renders session tabs, views, frames and typed variables", async () => {
@@ -72,5 +156,52 @@ describe("debug tool window", () => {
     expect(screen.getByPlaceholderText("Evaluate expression (↩) or add a watch (⇧⌘↩)")).toBeTruthy();
     expect(await screen.findByText("{int}")).toBeTruthy();
     expect(screen.getByText("'hi'")).toBeTruthy();
+    // A multi-line rendering stays on its row.
+    expect(screen.getByText(/dtype: object/).textContent).toBe("high    7.86 low     7.66 Name: 772, dtype: object");
+  });
+
+  it("closes a session tab and moves the selection to the one left", async () => {
+    useDebug.setState({
+      sessions: {
+        1: { ...session, status: "terminated" },
+        2: { ...session, id: 2, name: "app", status: "terminated" },
+      },
+      active: 1,
+    });
+    render(<DebugTabs />);
+    await act(async () => fireEvent.click(screen.getAllByRole("button", { name: "Close Tab" })[0]!));
+    expect(screen.getAllByRole("tab").map((tab) => tab.textContent)).toEqual(["app"]);
+    expect(useDebug.getState().active).toBe(2);
+    expect(useDebug.getState().sessions).not.toHaveProperty("1");
+  });
+
+  it("passes the selection of a closed tab to the tab on its left", async () => {
+    useDebug.setState({
+      sessions: {
+        4: { ...session, id: 4, name: "a", status: "terminated" },
+        5: { ...session, id: 5, name: "b", status: "terminated" },
+        6: { ...session, id: 6, name: "c", status: "terminated" },
+      },
+      active: 5,
+    });
+    render(<DebugTabs />);
+    await act(async () => fireEvent.click(screen.getAllByRole("button", { name: "Close Tab" })[1]!));
+    expect(useDebug.getState().active).toBe(4);
+  });
+
+  it("keeps a live session when the user doesn't terminate it", async () => {
+    useDebug.setState({ sessions: { 8: { ...session, id: 8, name: "server" } }, active: 8 });
+    render(<DebugTabs />);
+    await act(async () => fireEvent.click(screen.getAllByRole("button", { name: "Close Tab" })[0]!));
+    expect(confirmTerminate).toHaveBeenCalledWith("server");
+    expect(useDebug.getState().sessions).toHaveProperty("8");
+  });
+
+  it("leaves nothing selected once the last tab is closed", async () => {
+    useDebug.setState({ sessions: { 3: { ...session, id: 3, status: "terminated" } }, active: 3 });
+    render(<DebugTabs />);
+    await act(async () => fireEvent.click(screen.getAllByRole("button", { name: "Close Tab" })[0]!));
+    expect(useDebug.getState().active).toBeNull();
+    expect(useDebug.getState().sessions).toEqual({});
   });
 });

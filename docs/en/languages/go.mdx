@@ -1,0 +1,74 @@
+---
+title: "Go"
+description: "Go code intelligence with gopls, GOROOT and build tag settings, go run and go test configurations, and debugging with Delve."
+---
+
+OpenIDEA uses gopls for Go code intelligence, runs and tests modules with the `go` command, and debugs with Delve. `go.mod` and `go.work` files are highlighted and served by gopls too. For other languages, see the [support matrix](/en/languages/index).
+
+## Language server
+
+gopls serves `.go`, `go.mod` and `go.work` files. A workspace starts at the nearest `go.work`, else the nearest `go.mod`. Semantic highlighting from gopls is turned on.
+
+If gopls is missing, OpenIDEA shows a **gopls is not installed** notification with an **Install** button. You can also install it in **Settings › Languages & Frameworks › Language Servers**, or select your own `gopls` there. The IDE installs it with `go install golang.org/x/tools/gopls@latest` into its own tools folder, so Go must be on `PATH`. A `gopls` already on `PATH` is used as is.
+
+## Setup
+
+### Go SDK
+
+**Settings › Languages & Frameworks › Go** has two settings:
+
+- **GOROOT**: the Go SDK used by gopls and the go run and test configurations. **Default** uses `go` on `PATH`; if the project pins a Go version for mise or asdf, that install is used instead.
+- **Project GOPATH**: empty uses `go env GOPATH`.
+
+The GOROOT list shows the SDKs the IDE finds: the `go` on `PATH`, `/usr/local/go`, Homebrew and `/usr/lib/go` installs, SDKs in `~/sdk` (installed with `golang.org/dl`), toolchains Go downloaded itself (`~/go/pkg/mod/golang.org/toolchain@…`), and mise and asdf installs.
+
+### Build tags
+
+**Settings › Languages & Frameworks › Build Tags** sets the build constraints for the project: **Operating System**, **Architecture**, **Go Version**, **Compiler** (`gc` or `gccgo`), **CGO**, **Custom Tags** and **Experiments**. They are sent to gopls (as build flags and environment) and apply to the go run and test configurations and to debugging. Go configurations can turn on **Use all custom build tags**.
+
+### Go modules
+
+**Settings › Languages & Frameworks › Go Modules** has **Enable vendoring support automatically** and fields for `GOPROXY`, `GOPRIVATE`, `GOFLAGS`, `GONOPROXY`, `GONOSUMDB`, `GOSUMDB`, `GOMODCACHE`, `GOTOOLCHAIN` and `GOWORK`. Empty fields inherit the environment. The values are passed to gopls and to `go` commands.
+
+Right-click a `go.mod` (in the Project view, an editor tab or the editor) for **Go Mod Tidy** and **Download Go Modules**; right-click a `go.work` for **Sync Go Workspace** and **Add Directory to Go Workspace…**. A `.go` file offers **Go Generate File** and **Go Generate Package**.
+
+GOROOT and the module cache appear under **External Libraries** in the Project view.
+
+## Run and test
+
+OpenIDEA detects run configurations for each module (every `go.mod` in the project, or the modules listed in `go.work`):
+
+| Configuration         | When                                |
+| --------------------- | ----------------------------------- |
+| `go run .`            | The module root is a `main` package |
+| `go run ./cmd/<name>` | `cmd/<name>` is a `main` package    |
+| `go test ./...`       | Always                              |
+
+In the editor, gutter icons run or debug `func main` of a `main` package, `Test…`, `Benchmark…`, `Example…` and `Fuzz…` functions, and subtests declared with `t.Run` or `b.Run`. A `//go:generate` line gets its own icon. Test output (plain and `-v`) appears in the test tree, grouped by package; **Rerun Failed Tests** runs only the failures.
+
+The **Go Build** and **Go Test** configuration types in **Run › Edit Configurations…** let you set the **Run kind** (directory, file or package), the target, a test **Pattern**, **Go tool arguments**, **Program arguments**, and for builds an **Output directory** and **Run after build**. See [Run configurations](/en/guide/run) and [Testing](/en/guide/testing).
+
+| Action                      | macOS | Windows / Linux  |
+| --------------------------- | ----- | ---------------- |
+| Run Context Configuration   | `⌃⇧R` | `Ctrl+Shift+F10` |
+| Debug Context Configuration | `⌃⇧D` | none             |
+| Build Project               | `⌘F9` | `Ctrl+F9`        |
+
+**Build Project** runs `go build ./...` in each module (each module of a `go.work`); **Rebuild Project** adds `-a`. Compiler errors go to the Build tool window and the editor. **Run with Coverage** on `go test` uses Go's own `-coverprofile`; see [Coverage](/en/guide/coverage).
+
+## Debugging
+
+Go debugging uses Delve (`dlv dap`). If it is missing when you start a debug session, OpenIDEA offers to install it with `go install github.com/go-delve/delve/cmd/dlv@latest` into its tools folder. The detected `go run` and `go test` configurations and the gutter icons can all be debugged.
+
+- **Attach to Process…** (`⌥⇧F5` / `Ctrl+Alt+F5`) lists local Go processes under **Go (Delve)**.
+- The **Go Remote** configuration attaches to a Delve server (`dlv --headless`, Delve 1.7.3 or later) on this or another machine, with local and remote root mapping. The form shows the command to start the remote side.
+
+<Tip>On macOS, Delve may need Developer Mode before it can debug: run `sudo DevToolsSecurity -enable` once.</Tip>
+
+See [Debugging](/en/guide/debugging) for breakpoints and stepping.
+
+## Limitations
+
+- gopls and Delve are installed with `go install`, which needs Go on `PATH`. Without Go, install them yourself and select them in **Settings › Languages & Frameworks › Language Servers**.
+- The profiler does not support Go programs.
+- Gutter icons come from a lightweight scan of the file, not from gopls; tests built in unusual ways may not get an icon, but still run with `go test`.

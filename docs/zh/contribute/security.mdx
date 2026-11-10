@@ -1,0 +1,63 @@
+---
+title: "安全"
+description: "如何报告漏洞，以及贡献者需要维护的安全模型：项目信任、插件沙箱和本地服务。"
+---
+
+## 报告漏洞
+
+请通过 GitHub 的私密漏洞报告（private vulnerability reporting）提交，本仓库已开启该功能：
+
+<Card title="报告漏洞" icon="shield" href="https://github.com/l0ng-ai/openidea/security/advisories/new">
+  新建一份私密安全公告草稿，只有你和维护者可见。
+</Card>
+
+漏洞修复之前，请不要为它开公开的 issue、讨论或 PR。报告中请写明版本（或提交）、平台、复现步骤以及攻击者能获得什么。
+
+<Note>仓库目前没有 `SECURITY.md`，也没有承诺的响应时间或受支持版本策略。修复随常规版本发布。</Note>
+
+插件市场中发现恶意插件，也走同一个私密渠道。
+
+## 安全模型
+
+修改下面这些部分时，要保持这些性质不变，评审时会检查。
+
+### 项目信任与受限模式
+
+打开一个项目文件夹，就可能运行由项目控制的代码：会执行构建脚本的语言服务器、运行配置、构建工具、git 钩子、项目插件。所以执行类操作需要用户信任。
+
+- 打开一个尚未做过决定的项目时，会弹出 **信任并打开项目？** 对话框，提供 **信任项目**、**以受限模式预览** 和 **不打开**。已有决定和受信任的位置在设置的 **项目信任** 页面（**安全** 分组）里管理，**撤销信任** 是一个 action。
+- 信任是用户自己的状态（`crates/ide-host/src/trust.rs`）。**项目设置永远不能授予信任。**
+- 拦截在后端而不是 UI：每个 IPC 命令执行前，都要在 Tauri 的 invoke handler（`src-tauri/src/lib.rs`）里经过 `Host::authorize_command`。未受信任的项目里，只有显式白名单（`restricted_command_allowed`）中的命令能运行：读写文件和文档、语法、搜索、导航、本地历史、拼写、分析、重构、设置等。
+- 这份白名单是默认拒绝的：**新增的任何会执行东西的命令，在你有意识地把它归类之前，受限模式下一律拒绝。** 不要为了让某个功能在受限模式下“能用”就把执行类命令加进白名单。
+- 在命令层之下，项目受信任之前语言服务器不会启动（`LspManager` 的执行开关），git 以禁止执行的方式运行，也不使用项目里配置的 `git` 可执行文件。项目插件（`.openidea/plugins/`）只在受信任的项目中加载。
+- 远程窗口中，桌面端在转发命令前会先确认远程项目是否受信任，`openidea-server` 对每个 `invoke` 还会再校验一次。
+
+相关测试：`crates/ide-host/tests/trust.rs`、`trust_git_binary.rs`。
+
+### 插件沙箱
+
+插件是由 wasmtime 运行的 WebAssembly 组件（`crates/ide-plugin`），内部实现见[插件宿主](/zh/contribute/architecture/plugin-host)。
+
+- 每个插件有自己的 `Store`：没有预打开的目录、没有环境变量、没有网络、不继承标准输入输出，只有 WASI 的时钟和随机数，加上宿主函数。
+- 凡是涉及文件、进程、网络、VCS 写入等的宿主函数，都受 `plugin.toml` 中声明的 **capability** 约束，由用户在安装时（或更新要求更多权限时）授予。每个 capability 都有风险等级，在授权对话框里展示。未授予时调用返回 `denied`，插件继续运行。
+- `process:<program>` 授权会固定程序的绝对路径和内容哈希，文件被替换后要重新批准才能运行。`fs.read:` / `fs.write:` 路径在比较前解析成真实路径，软链接无法越过授权范围。
+- 每次调用都受 fuel、墙钟时限和内存上限约束。trap 只会丢弃该实例，不会拖垮 IDE。
+- 插件 Web 视图运行在沙箱 frame 中：不透明源、无网络、除 frame bridge 外没有 IDE API；文件带严格的 CSP 返回。
+- 插件包使用 Ed25519 签名。市场索引是发布者的信任根，并携带吊销信息；已安装插件只会静默更新到同一密钥（或它背书过的密钥）签名的包。
+
+面向插件作者的 capability 列表和限制见[权限](/zh/plugins/capabilities)。
+
+### 本地服务
+
+- **MCP 服务**（`crates/ide-mcp`）：监听 `127.0.0.1` 的随机端口，要求每次运行随机生成的 bearer token，`Origin` 或 `Host` 不匹配的请求一律拒绝（防 DNS rebinding）。
+- **内置 Web 服务**（`crates/ide-web`）：在 `127.0.0.1` 上只读提供项目文件；每个 URL 都以每次运行随机生成的 token 开头，`Host` 不对的请求会被拒绝。
+- **Tauri MCP bridge**（`tauri-plugin-mcp-bridge`）：只编译进 debug 构建，绑定 `127.0.0.1`。
+
+### 远程开发与子进程
+
+- `openidea-server` 通过 SSH、`wsl.exe --exec` 或 `docker exec` 启动。WSL 和 dev container 两种方式把所有变量值（路径、版本、id）作为独立参数传递，只有固定脚本才会交给 `sh -c`。请保持这一点：永远不要把值拼进 shell 字符串。
+- 远程插件用到的密钥留在桌面端的钥匙串里，服务端在请求需要时才向桌面端索取。
+
+### 依赖
+
+每次 Rust 改动，CI 都会运行 `cargo deny check`（`deny.toml`）：安全公告、许可证、禁用的 crate 和允许的来源。

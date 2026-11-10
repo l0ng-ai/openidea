@@ -2,6 +2,7 @@
  * IDEA's Export Data dialog: extractor (format) and its options on the left,
  * a live preview on the right; copies to the clipboard or writes a file.
  */
+import { writeClipboardText } from "@/platform/clipboard";
 import { useEffect, useMemo, useState } from "react";
 import { call, commands } from "@/platform/ipc";
 import { Checkbox, Dialog, IconButton, Input, Select, T } from "@/ui";
@@ -17,6 +18,7 @@ import {
 import { CodePreview } from "./CodePreview";
 import { closeDialog } from "./store";
 import styles from "./Database.module.css";
+import { cellPreview } from "./cellPreview";
 
 const PREVIEW_ROWS = 100;
 /** Formats with a tabular layout (the options apply). */
@@ -59,7 +61,15 @@ export function ExportDialog({
   const tabular = TABULAR.has(format);
   const effective = tabular ? options : DEFAULT_EXPORT_OPTIONS;
   const preview = useMemo(
-    () => exportData(format, { ...data, rows: data.rows.slice(0, PREVIEW_ROWS) }, effective),
+    () =>
+      exportData(
+        format,
+        {
+          ...data,
+          rows: data.rows.slice(0, PREVIEW_ROWS).map((row) => row.map((v) => (v === null ? null : cellPreview(v)))),
+        },
+        effective,
+      ),
     [format, data, effective],
   );
   const text = () => exportData(format, data, effective);
@@ -109,7 +119,7 @@ export function ExportDialog({
         {
           label: "Copy to Clipboard",
           onClick: () => {
-            void navigator.clipboard?.writeText(text());
+            void writeClipboardText(text());
             closeDialog();
           },
         },

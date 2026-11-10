@@ -29,6 +29,14 @@ export const VENDORS: readonly DbVendor[] = [
     ssl: "require",
   },
   {
+    id: "clickhouse",
+    label: "ClickHouse",
+    driver: "clickhouse",
+    port: 8123,
+    icon: "db-clickhouse",
+    scheme: "clickhouse",
+  },
+  {
     id: "cockroachdb",
     label: "CockroachDB",
     driver: "postgres",
@@ -56,6 +64,7 @@ export const VENDORS: readonly DbVendor[] = [
     icon: "db-oceanbase",
     scheme: "oceanbase",
   },
+  { id: "oracle", label: "Oracle", driver: "oracle", port: 1521, icon: "db-oracle", scheme: "oracle" },
   { id: "postgres", label: "PostgreSQL", driver: "postgres", port: 5432, icon: "db-postgres", scheme: "postgresql" },
   {
     id: "singlestore",
@@ -66,6 +75,15 @@ export const VENDORS: readonly DbVendor[] = [
     scheme: "singlestore",
   },
   { id: "sqlite", label: "SQLite", driver: "sqlite", port: null, icon: "db-sqlite", scheme: "sqlite" },
+  {
+    id: "starrocks",
+    label: "StarRocks",
+    driver: "mysql",
+    port: 9030,
+    // No dedicated glyph yet: StarRocks speaks the MySQL protocol, so reuse its icon.
+    icon: "db-mysql",
+    scheme: "starrocks",
+  },
   {
     id: "supabase",
     label: "Supabase",
@@ -101,11 +119,19 @@ export const vendorById = (id: string): DbVendor | undefined => BY_ID.get(id);
 export function vendorPreset(v: DbVendor): Partial<DataSource> {
   const preset: Partial<DataSource> = { driver: v.driver, vendor: v.id === v.driver ? "" : v.id, port: v.port };
   if (v.ssl) preset.ssl = v.ssl;
+  if (v.driver === "clickhouse") {
+    preset.user = "default";
+    preset.database = "default";
+    preset.ssl = "disable";
+  }
   return preset;
 }
 
 /** URL schemes (besides the JDBC ones) that name a type. */
 const SCHEMES: Record<string, string> = {
+  clickhouse: "clickhouse",
+  http: "clickhouse",
+  https: "clickhouse",
   postgres: "postgres",
   postgresql: "postgres",
   pgsql: "postgres",
@@ -121,6 +147,9 @@ const SCHEMES: Record<string, string> = {
   singlestore: "singlestore",
   memsql: "singlestore",
   oceanbase: "oceanbase",
+  starrocks: "starrocks",
+  oracle: "oracle",
+  oracledb: "oracle",
   sqlserver: "sqlServer",
   mssql: "sqlServer",
 };
@@ -136,5 +165,9 @@ export function sourceUrl(s: DataSource): string {
   const host = bracketed(s.host?.trim() || "localhost");
   const port = s.port ?? v.port;
   const db = s.database ? `/${encodeURIComponent(s.database)}` : "";
+  if (v.driver === "clickhouse") {
+    const secure = s.ssl != null && s.ssl !== "disable" && s.ssl !== "prefer";
+    return `${secure ? "https" : "http"}://${host}:${s.port ?? (secure ? 8443 : 8123)}${db}`;
+  }
   return `jdbc:${v.scheme}://${host}${port ? `:${port}` : ""}${db}`;
 }

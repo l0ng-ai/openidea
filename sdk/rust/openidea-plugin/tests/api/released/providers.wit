@@ -1,0 +1,84 @@
+package openidea:plugin@1.4.0;
+
+/// Editor features a plugin provides for the languages it declares under
+/// `[[contributes.providers]]` (the host calls only declared kinds). They run
+/// on the editing path: a result later than ~50 ms is dropped, a call still
+/// running at 500 ms is interrupted.
+interface providers {
+    use types.{error, position, range, text-edit, location};
+
+    /// The document a request is about.
+    record document {
+        path: string,
+        language: string,
+        version: u64,
+        text: string,
+    }
+
+    record completion-item {
+        label: string,
+        detail: option<string>,
+        /// Icon and sort group: text, method, function, constructor, field,
+        /// variable, class, interface, module, property, unit, value, enum,
+        /// keyword, snippet, color, file, reference, folder, enum-member,
+        /// constant, struct, event, operator or type-parameter. Unknown kinds
+        /// show no icon.
+        kind: option<string>,
+        /// With `snippet`, tab stops and placeholders (`$1`, `${1:name}`, `$0`).
+        insert-text: string,
+        snippet: bool,
+        /// Replaced on accept; `none`: the word at the caret.
+        replace: option<range>,
+        sort-text: option<string>,
+        /// Matched against what was typed instead of `label`.
+        filter-text: option<string>,
+        documentation: option<string>,
+        /// Applied with the item elsewhere in the document (an import).
+        additional-edits: list<text-edit>,
+    }
+
+    record inline-suggestion {
+        insert-text: string,
+        /// Replaced range; `none` inserts at the caret.
+        replace: option<range>,
+    }
+
+    record file-edit {
+        path: string,
+        edits: list<text-edit>,
+    }
+
+    record code-action {
+        title: string,
+        /// `quickfix`, `refactor`, …
+        kind: option<string>,
+        preferred: bool,
+        edits: list<file-edit>,
+        /// The plugin's own reference: with it and no `edits`, the edits are
+        /// computed by `resolve-code-action` once the user picks the action.
+        data: option<string>,
+    }
+
+    record line-marker {
+        line: u32,
+        /// Gutter icon: `navigate` (default), `implemented`, `implementing`, `run`.
+        icon: option<string>,
+        tooltip: string,
+        /// Opened on click.
+        target: option<location>,
+    }
+
+    completion: func(doc: document, at: position, trigger: option<string>) -> list<completion-item>;
+    /// Ghost text at the caret (typing replaces an older request: it is cancelled).
+    inline-completion: func(doc: document, at: position) -> option<inline-suggestion>;
+    /// Actions for `selection` (quick fixes for the plugin's own diagnostics).
+    code-actions: func(doc: document, selection: range) -> list<code-action>;
+    /// The edits of an action `code-actions` returned with `data`, when the
+    /// user picks it (the command budget applies, not the editor's 50 ms).
+    /// `ui.pick`, `pick-many`, `input` and `confirm` ask in the editor's window;
+    /// waiting is excluded from the budget. Other command/event-only APIs
+    /// remain unavailable.
+    resolve-code-action: func(doc: document, action: code-action) -> result<code-action, error>;
+    definition: func(doc: document, at: position) -> list<location>;
+    line-markers: func(doc: document) -> list<line-marker>;
+}

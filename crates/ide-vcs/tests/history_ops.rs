@@ -150,6 +150,21 @@ fn merge_versions_put_the_users_work_on_the_left() {
 }
 
 #[test]
+fn rebase_conflict_names_the_remote_branch_without_its_symbolic_aliases() {
+    let fx = diverged();
+    let main = fx.git(&["rev-parse", "main"]);
+    fx.git(&["update-ref", "refs/remotes/origin/main", &main]);
+    fx.git(&["symbolic-ref", "refs/remotes/origin/HEAD", "refs/remotes/origin/main"]);
+    fx.git(&["symbolic-ref", "refs/remotes/origin/alias", "refs/remotes/origin/main"]);
+    fx.git(&["branch", "-D", "main"]);
+    let repo = fx.repo();
+    assert!(repo.rebase("origin/main").is_err());
+    assert_eq!(repo.merge_sides().unwrap().other_branch.as_deref(), Some("origin/main"));
+    let (cancel, out) = quiet();
+    repo.abort_operation(&cancel, &out).unwrap();
+}
+
+#[test]
 fn rebase_conflict_then_abort_and_skip() {
     let fx = diverged();
     let repo = fx.repo();
@@ -614,7 +629,7 @@ fn shelf_diff_and_scoped_operations_preserve_siblings() {
     assert!(!shelf::list(&shelf).unwrap()[0].files.iter().any(|f| f.path == "b.txt"));
     shelf::delete_path(&shelf, &entry.id, Some(QUOTED)).unwrap();
     assert!(shelf::selected_patch(&shelf, &entry.id, Some("a.txt")).is_ok());
-    shelf::import_patch(&shelf, "imported", &patch).unwrap();
+    shelf::import_patch(&shelf, "imported", &patch, None).unwrap();
     assert_eq!(shelf::list(&shelf).unwrap().len(), 2);
     assert_eq!(fx.read("a.txt"), "local edits\n");
 }
@@ -629,7 +644,7 @@ fn shelf_imported_rename_diff_and_last_file_delete() {
     fx.git(&["reset", "--hard", "HEAD"]);
     let repo = fx.repo();
     let shelf = fx._tmp.path().join("shelf");
-    shelf::import_patch(&shelf, "rename", &patch).unwrap();
+    shelf::import_patch(&shelf, "rename", &patch, None).unwrap();
     let id = &shelf::list(&shelf).unwrap()[0].id;
     let diffs = shelf::diff_files(&repo, &shelf, id).unwrap();
     assert_eq!(diffs.len(), 1);
@@ -655,10 +670,52 @@ fn shelf_new_renames_keep_self_contained_sides_and_plain_imports_keep_scope() {
     assert_eq!(diffs.iter().find(|f| f.path == "old.txt").unwrap().before.as_deref(), Some("renamed content\n"));
     assert_eq!(diffs.iter().find(|f| f.path == "new.txt").unwrap().after.as_deref(), Some("renamed content\n"));
     let plain = "--- a/one.txt\n+++ b/one.txt\n@@ -1 +1 @@\n--- removed\n+++ added\n--- a/two.txt\n+++ b/two.txt\n@@ -1 +1 @@\n-old\n+new\n";
-    shelf::import_patch(&shelf, "plain", plain).unwrap();
+    shelf::import_patch(&shelf, "plain", plain, None).unwrap();
     let selected = shelf::selected_patch(&shelf, "plain", Some("one.txt")).unwrap();
     assert!(selected.contains("--- removed\n+++ added"));
     assert!(!selected.contains("two.txt"));
     shelf::delete_path(&shelf, "plain", Some("one.txt")).unwrap();
     assert_eq!(shelf::list(&shelf).unwrap().iter().find(|s| s.id == "plain").unwrap().files[0].path, "two.txt");
+}
+
+#[test]
+fn cherry_pick_skips_commits_already_applied() {
+    let fx = Fixture::new();
+    fx.write("a.txt", "1\n");
+    fx.commit_all("base");
+    fx.git(&["checkout", "-q", "-b", "side"]);
+    fx.write("a.txt", "2\n");
+    let same = fx.commit_all("same change");
+    fx.write("b.txt", "b\n");
+    let other = fx.commit_all("other change");
+    fx.git(&["checkout", "-q", "main"]);
+    // main already has the first change.
+    fx.write("a.txt", "2\n");
+    fx.commit_all("same change, made on main");
+    let repo = fx.repo();
+    let cancel = CancellationToken::new();
+    let lines = std::sync::Mutex::new(Vec::new());
+    let out = |l: String| lines.lock().unwrap().push(l);
+
+    repo.cherry_pick_with(&[same.clone(), other], true, &cancel, &out).unwrap();
+    assert_eq!(repo.branch_info().unwrap().operation, None, "nothing left in progress");
+    assert_eq!(fx.git(&["log", "--format=%s", "-2"]), "other change\nsame change, made on main");
+    assert!(fx.git(&["log", "-1", "--format=%B"]).contains("(cherry picked from commit"));
+    assert!(lines.lock().unwrap().iter().any(|l| l.starts_with(&same[..8]) && l.contains("skipped")));
+}
+
+#[test]
+fn revert_of_a_commit_already_reverted_is_skipped() {
+    let fx = Fixture::new();
+    fx.write("a.txt", "1\n");
+    fx.commit_all("one");
+    fx.write("a.txt", "2\n");
+    let two = fx.commit_all("two");
+    fx.write("a.txt", "1\n");
+    fx.commit_all("undo two by hand");
+    let repo = fx.repo();
+    let (cancel, out) = quiet();
+    repo.revert(&[two], &cancel, &out).unwrap();
+    assert_eq!(repo.branch_info().unwrap().operation, None);
+    assert_eq!(fx.git(&["rev-list", "--count", "HEAD"]), "3", "no empty revert commit");
 }

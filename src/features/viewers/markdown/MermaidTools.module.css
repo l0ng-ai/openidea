@@ -1,0 +1,81 @@
+/* Tools on a drawn Mermaid diagram: a sibling of the drawing (not inside the
+   pan/zoom content, so they stay put while the diagram moves). */
+.tools {
+  position: absolute;
+  top: 4px;
+  right: 4px;
+  z-index: 1;
+  display: flex;
+  gap: 2px;
+  opacity: 0.72;
+  transition: opacity var(--dur-fast) var(--ease);
+}
+.tools:hover,
+.tools:focus-within,
+:global([data-mermaid]:hover) .tools {
+  opacity: 1;
+}
+
+.tool {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 22px;
+  height: 22px;
+  padding: 0;
+  border: none;
+  border-radius: var(--radius-small);
+  background: var(--bg-elev);
+  color: var(--fg-secondary);
+  cursor: pointer;
+  user-select: none;
+}
+.tool:hover {
+  background: var(--bg-hover);
+  color: var(--fg);
+}
+.tool:focus-visible {
+  outline: 2px solid var(--focus-ring);
+  outline-offset: 1px;
+}
+
+/* Full-screen preview: covers the window; the fitted diagram is centred, dragged
+   from anywhere, zoomed with ⌘/Ctrl+wheel, and reset by double-click. */
+.overlay {
+  position: fixed;
+  inset: 0;
+  z-index: var(--z-dialog);
+  padding: 24px;
+  background: var(--bg-editor, var(--bg-app));
+}
+/* Fills the window so zoomed content is clipped at its edges, and dragging
+   works anywhere over the drawing (not only over a content-sized box). */
+.canvas {
+  position: relative;
+  width: 100%;
+  height: 100%;
+  overflow: hidden;
+}
+.canvas :global(svg) {
+  display: block;
+}
+.canvas[data-zoomed="true"] {
+  cursor: grab;
+  touch-action: none;
+  user-select: none;
+}
+.canvas[data-dragging="true"] {
+  cursor: grabbing;
+}
+.previewTools {
+  position: fixed;
+  top: 12px;
+  right: 12px;
+  display: flex;
+  gap: 4px;
+}
+.previewTools .tool {
+  width: 28px;
+  height: 28px;
+  box-shadow: var(--shadow-popup);
+}

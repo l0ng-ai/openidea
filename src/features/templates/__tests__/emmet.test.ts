@@ -1,5 +1,7 @@
-import { describe, expect, it } from "vitest";
-import { enclosingTag, expandAt, syntaxAt, updateTagEdits, type TextEdit } from "../emmet/model";
+import { beforeAll, describe, expect, it } from "vitest";
+import { enclosingTag, expandAt, loadEmmet, syntaxAt, updateTagEdits, type TextEdit } from "../emmet/model";
+
+beforeAll(() => loadEmmet());
 
 const apply = (text: string, edits: TextEdit[]) =>
   [...edits].sort((a, b) => b.from - a.from).reduce((t, e) => t.slice(0, e.from) + e.insert + t.slice(e.to), text);

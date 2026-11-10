@@ -1,6 +1,7 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { act, fireEvent, render, screen, waitFor, within } from "@testing-library/react";
 import type { FileMove, WorkspaceEdit } from "@/bindings";
+import { onFilesMoved } from "@/platform/fileOps";
 import { provideNotificationService } from "@/workbench/contributions";
 import {
   lastFileRefactoring,
@@ -22,6 +23,16 @@ const edit = (path: string, ...ranges: [number, number, number, string][]): Work
 });
 
 describe("file refactoring edits", () => {
+  it("retains version guards and both sources' preview fingerprints", () => {
+    const lsp: WorkspaceEdit = {
+      files: [{ kind: "edit", path: "/p/main.ts", edits: [{ range: r(0, 0, 3), new_text: "new" }], version: 7 }],
+      preconditions: [{ path: "/p/main.ts", hash: "source" }],
+    };
+    const text: WorkspaceEdit = { files: [], preconditions: [{ path: "/p/README.md", hash: "text" }] };
+    const merged = mergeEdits(lsp, text);
+    expect(merged.files[0]).toMatchObject({ version: 7 });
+    expect(merged.preconditions).toEqual([...lsp.preconditions!, ...text.preconditions!]);
+  });
   it("merges text occurrences that no server edit covers and drops file operations", () => {
     const lsp: WorkspaceEdit = {
       files: [edit("/p/main.ts", [0, 20, 26, "./b/util"]), { kind: "rename", from: "/p/a", to: "/p/b" }],
@@ -58,7 +69,10 @@ describe("runFileRefactoring", () => {
     backend = {
       calls: [],
       edits: vi.fn(async () => ({
-        edit: { files: [edit("/p/main.ts", [0, 20, 26, "./b/util"])] },
+        edit: {
+          files: [edit("/p/main.ts", [0, 20, 26, "./b/util"])],
+          preconditions: [{ path: "/p/main.ts", hash: "preview" }],
+        },
         errors: ["tsserver: busy"],
       })),
       move: vi.fn(async (moves: FileMove[], e: WorkspaceEdit) => {
@@ -74,6 +88,29 @@ describe("runFileRefactoring", () => {
 
   const moves: FileMove[] = [{ from: "/p/a/util.ts", to: "/p/b/util.ts" }];
 
+  it("awaits move listeners and notifies them of Undo", async () => {
+    let finish!: () => void;
+    const gate = new Promise<void>((resolve) => {
+      finish = resolve;
+    });
+    const listener = vi.fn(async () => {
+      await gate;
+    });
+    const stop = onFilesMoved(listener);
+    try {
+      const pending = runFileRefactoring(moves, { references: false, textOccurrences: false }, "Rename");
+      await waitFor(() => expect(listener).toHaveBeenCalledWith(moves));
+      expect(notify).not.toHaveBeenCalled();
+      finish();
+      expect(await pending).toBe("done");
+      await undoFileRefactoring();
+      expect(listener).toHaveBeenLastCalledWith([{ from: "/p/b/util.ts", to: "/p/a/util.ts" }]);
+    } finally {
+      finish();
+      stop();
+    }
+  });
+
   it("previews edits in other files, applies the move and offers Undo", async () => {
     render(<RefactoringPreviewHost />);
     let status: Promise<string> = Promise.resolve("");
@@ -86,6 +123,11 @@ describe("runFileRefactoring", () => {
     fireEvent.click(within(dialog).getByRole("button", { name: "Do Refactor" }));
     expect(await status).toBe("done");
     expect(backend.calls).toEqual(["move 1 1"]);
+    expect(backend.move).toHaveBeenCalledWith(
+      moves,
+      expect.objectContaining({ preconditions: [{ path: "/p/main.ts", hash: "preview" }] }),
+      "Move",
+    );
     expect(lastFileRefactoring()?.id).toBe(7);
     // Server failures are reported; the result offers Undo.
     expect(notify).toHaveBeenCalledWith(expect.objectContaining({ level: "warning", body: "tsserver: busy" }));

@@ -1,0 +1,132 @@
+// JSP pages: the JSP layer of a page, as IntelliJ's JSP view provider sees it.
+// Comments, directives, scripting elements and EL expressions are parsed here;
+// the template text between them is HTML and the scripting elements' code is
+// Java, both mounted by `./index.ts`. EL expressions (`${…}`, `#{…}`) are their
+// own top. Regenerate with `pnpm gen:jsp-grammar`.
+
+@top Document { Template }
+
+// The page's content, a node of its own: the HTML overlay is mounted on the
+// document and the scriptlets' Java overlay on this.
+Template {
+  (Text | JspComment | Directive | Declaration | JspExpression | Scriptlet | ELExpression)*
+}
+
+Scriptlet { "<%" JavaCode? "%>" }
+
+JspExpression { "<%=" JavaCode? "%>" }
+
+Declaration { "<%!" JavaCode? "%>" }
+
+ELExpression { ("${" | "#{") ELContent? ELEnd { "}" } }
+
+@skip { space } {
+  Directive { "<%@" DirectiveName { name } Attribute* "%>" }
+
+  Attribute { AttributeName { name } (Is AttributeValue)? }
+
+  @top EL { expression? (";" expression?)* }
+
+  expression[@isGroup=Expression] {
+    literal |
+    VariableName |
+    ParenthesizedExpression { "(" (expression ("," expression)*)? ")" } |
+    ListLiteral { "[" (expression ("," expression)*)? "]" } |
+    SetOrMapLiteral { "{" (entry ("," entry)*)? "}" } |
+    MemberExpression { expression !member ("." PropertyName | "[" expression "]") } |
+    CallExpression { expression !call ArgList } |
+    FunctionCall { Namespace ":" FunctionName ArgList } |
+    UnaryExpression { (kw<"not"> | kw<"empty"> | LogicOp<"!"> | ArithOp<"-">) !prefix expression } |
+    BinaryExpression {
+      expression !mult (ArithOp<"*" | "/" | "%"> | kw<"div"> | kw<"mod">) expression |
+      expression !add ArithOp<"+" | "-"> expression |
+      expression !concat ArithOp<"+="> expression |
+      expression !rel (CompareOp<"<" | ">" | "<=" | ">="> | kw<"lt"> | kw<"gt"> | kw<"le"> | kw<"ge"> | kw<"instanceof">) expression |
+      expression !equal (CompareOp<"==" | "!="> | kw<"eq"> | kw<"ne">) expression |
+      expression !and (LogicOp<"&&"> | kw<"and">) expression |
+      expression !or (LogicOp<"||"> | kw<"or">) expression
+    } |
+    ConditionalExpression { expression !ternary LogicOp<"?"> expression LogicOp<":"> expression } |
+    LambdaExpression { expression !lambda "->" expression } |
+    AssignmentExpression { expression !assign Is expression }
+  }
+
+  entry { expression (":" expression)? }
+
+  ArgList { "(" (expression ("," expression)*)? ")" }
+}
+
+@precedence {
+  member,
+  call,
+  prefix @right,
+  mult @left,
+  add @left,
+  concat @left,
+  rel @left,
+  equal @left,
+  and @left,
+  or @left,
+  ternary @right,
+  lambda @right,
+  assign @right
+}
+
+literal {
+  Number |
+  String |
+  @specialize[@name=BooleanLiteral]<identifier, "true" | "false"> |
+  kw<"null">
+}
+
+VariableName { identifier }
+
+PropertyName { identifier }
+
+FunctionName { identifier }
+
+Is { "=" }
+
+kw<term> { @specialize[@name={term}]<identifier, term> }
+
+ArithOp<expr> { expr }
+CompareOp<expr> { expr }
+LogicOp<expr> { expr }
+
+// Tried in this order, before the tokens below: a comment before `<%`.
+@external tokens jspComment from "./tokens" { JspComment }
+@external tokens text from "./tokens" { Text }
+@external tokens javaCode from "./tokens" { JavaCode }
+@external tokens elContent from "./tokens" { ELContent }
+// `fn` of `fn:join(…)`, so that an identifier before a `:` stays a ternary's.
+@external tokens namespace from "./tokens" { Namespace }
+
+@tokens {
+  space { $[ \t\n\r]+ }
+
+  identifier { $[a-zA-Z_$\u{a1}-\u{10ffff}] $[a-zA-Z0-9_$\u{a1}-\u{10ffff}]* }
+
+  // Directive and attribute names: `include`, `pageEncoding`, `name-given`.
+  name { $[a-zA-Z_] $[a-zA-Z0-9_\-]* }
+
+  Number {
+    (@digit+ ("." @digit*)? | "." @digit+) ($[eE] $[+\-]? @digit+)?
+  }
+
+  String {
+    '"' (!["\\] | "\\" _)* '"'? |
+    "'" (!['\\] | "\\" _)* "'"?
+  }
+
+  AttributeValue {
+    '"' !["]* '"'? |
+    "'" ![']* "'"?
+  }
+
+  @precedence { Number, "." }
+
+  "<%" "<%=" "<%!" "<%@" "%>" "${" "#{"
+  "(" ")" "[" "]" "{" "}" "." "," ";" ":" "->"
+}
+
+@detectDelim

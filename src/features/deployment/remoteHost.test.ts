@@ -1,9 +1,16 @@
 import { beforeEach, expect, it, vi } from "vitest";
 import { DEFAULT_DEPLOYMENT_SERVER } from "@/platform/remoteSettings";
-import { ensureRoot } from "./remoteHost";
+import { downloadToProject, ensureRoot } from "./remoteHost";
 import { useDeployment } from "./store";
 
-const ipc = vi.hoisted(() => ({ root: vi.fn(), list: vi.fn() }));
+const ipc = vi.hoisted(() => ({ root: vi.fn(), list: vi.fn(), download: vi.fn(), notify: vi.fn() }));
+vi.mock("./actions", () => ({ downloadPaths: ipc.download }));
+vi.mock("./ssh", () => ({ withSsh: (_: string, run: () => unknown) => run() }));
+vi.mock("@/ui", () => ({ copyText: vi.fn() }));
+vi.mock("@/workbench/inputDialogs", () => ({ promptInput: vi.fn() }));
+vi.mock("@/workbench/messages", () => ({ confirm: vi.fn() }));
+vi.mock("@/platform/project", () => ({ useProject: { getState: () => ({ project: { root: "/project" } }) } }));
+vi.mock("@/workbench/contributions", () => ({ notifications: () => ({ notify: ipc.notify }) }));
 vi.mock("@/platform/ipc", async (original) => ({
   ...(await original<typeof import("@/platform/ipc")>()),
   commands: { deployServerRoot: ipc.root, remoteList: ipc.list },
@@ -12,7 +19,7 @@ vi.mock("@/platform/ipc", async (original) => ({
 beforeEach(() => {
   useDeployment.setState({ trees: {} });
   vi.clearAllMocks();
-  ipc.root.mockResolvedValue({ status: "ok", data: "/srv" });
+  ipc.root.mockResolvedValue({ status: "ok", data: { root: "/srv", mappings: [] } });
   ipc.list.mockResolvedValue({ status: "ok", data: [] });
 });
 
@@ -25,8 +32,45 @@ it("reloads a server's tree when changing its filesystem type or root", async ()
   const local = { ...server, kind: "local" as const };
   await ensureRoot(local);
   expect(ipc.list).toHaveBeenLastCalledWith({ kind: "local" }, "/srv");
-  ipc.root.mockResolvedValue({ status: "ok", data: "/mounted" });
+  ipc.root.mockResolvedValue({ status: "ok", data: { root: "/mounted", mappings: [] } });
   await ensureRoot({ ...local, rootPath: "/mounted" });
   expect(ipc.list).toHaveBeenLastCalledWith({ kind: "local" }, "/mounted");
   expect(useDeployment.getState().trees.existing?.root).toBe("/mounted");
+});
+
+it("refreshes resolved mappings when the local mapping changes", async () => {
+  const server = { ...DEFAULT_DEPLOYMENT_SERVER, id: "local", kind: "local" as const };
+  await ensureRoot(server);
+  const mappings = [{ local: "/project/src", deployment: "/srv" }];
+  ipc.root.mockResolvedValue({ status: "ok", data: { root: "/srv", mappings } });
+  await ensureRoot({ ...server, mappings: [{ local: "/alias", deployment: "/", web: "" }] });
+  expect(ipc.root).toHaveBeenCalledTimes(2);
+  expect(useDeployment.getState().trees.local?.mappings).toEqual(mappings);
+});
+
+it("downloads using backend-resolved folders instead of the configured alias", async () => {
+  const server = {
+    ...DEFAULT_DEPLOYMENT_SERVER,
+    id: "local",
+    kind: "local" as const,
+    mappings: [{ local: "/alias", deployment: ".", web: "" }],
+  };
+  const mappings = [{ local: "/project/src", deployment: "/srv" }];
+  ipc.root.mockResolvedValue({ status: "ok", data: { root: "/srv", mappings } });
+  const entry = {
+    path: "/srv/a.txt",
+    name: "a.txt",
+    isDir: false,
+    isSymlink: false,
+    size: 5,
+    mtime: null,
+    permissions: "rw-r--r--",
+  };
+  await downloadToProject(server, [entry]);
+  expect(ipc.download).toHaveBeenCalledWith(server, ["/project/src/a.txt"]);
+  ipc.download.mockClear();
+  ipc.root.mockResolvedValue({ status: "ok", data: { root: "/srv", mappings: [] } });
+  await downloadToProject(server, [entry]);
+  expect(ipc.download).not.toHaveBeenCalled();
+  expect(ipc.notify).toHaveBeenCalledWith(expect.objectContaining({ title: "Not mapped to a project path" }));
 });

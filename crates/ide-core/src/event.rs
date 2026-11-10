@@ -12,9 +12,27 @@ use std::sync::Arc;
 
 #[derive(Clone, Debug, Serialize, Deserialize, Type)]
 #[serde(tag = "type", rename_all = "camelCase", rename_all_fields = "camelCase")]
+pub enum McpUiRequest {
+    Confirm { client: String, tool: String, subject: String, project: String, detail: Option<String> },
+    OpenFile { path: crate::IpcPath, line: Option<u32>, column: Option<u32> },
+}
+
+#[derive(Clone, Debug, Serialize, Deserialize, Type)]
+#[serde(tag = "type", rename_all = "camelCase", rename_all_fields = "camelCase")]
 pub enum IdeEvent {
+    /// Project data source settings changed; reload the Database tree.
+    DbSourcesChanged,
+    McpRequest {
+        id: u32,
+        request: McpUiRequest,
+    },
+    McpRequestClosed {
+        id: u32,
+    },
     /// Project window membership or selection changed.
     WindowGroupsChanged,
+    /// A window entered or left full screen, itself or as a member of a full-screen window group.
+    WindowFullscreenChanged,
     ProjectTrustChanged {
         root: crate::IpcPath,
         trusted: bool,
@@ -24,6 +42,10 @@ pub enum IdeEvent {
         created: Vec<crate::IpcPath>,
         modified: Vec<crate::IpcPath>,
         removed: Vec<crate::IpcPath>,
+        /// Subtrees whose ignore rules changed, after the matchers were rebuilt.
+        #[serde(default)]
+        #[specta(optional)]
+        ignore_rules: Vec<crate::IpcPath>,
     },
     /// Excluded or ignored folders whose contents changed; they stay out of `FsChanged`.
     ExcludedDirsChanged {
@@ -36,11 +58,20 @@ pub enum IdeEvent {
         base_version: u32,
         version: u32,
         changes: Vec<TextChange>,
+        /// Part of a grouped transaction; the editor must not record a file-local undo.
+        #[serde(default)]
+        #[specta(optional)]
+        workspace_edit: bool,
     },
     /// A document's dirty flag changed (saved / modified externally).
     DocDirty {
         doc: DocId,
         dirty: bool,
+    },
+    /// A complete workspace edit can be undone as one operation.
+    WorkspaceEditApplied {
+        id: u32,
+        paths: Vec<crate::IpcPath>,
     },
     /// An open document's language changed (Settings › File Types, Override File
     /// Type), or its UI mode (a framework's root marker appeared or went).
@@ -82,6 +113,12 @@ pub enum IdeEvent {
         status: ServerStatus,
         message: Option<String>,
     },
+    /// A running server lacks a capability; the UI offers the managed tool as a replacement.
+    LanguageServerWarning {
+        name: String,
+        message: String,
+        install_tool: String,
+    },
     /// A stopped language server left the project's list (disabled in settings, or a
     /// fallback that a preferred server took over from again).
     LanguageServerRemoved {
@@ -114,6 +151,12 @@ pub enum IdeEvent {
     /// global value, the project's for a project value) re-read their effective settings.
     SettingsChanged {
         key: String,
+    },
+    UpdateStatusChanged {
+        status: crate::updates::UpdateStatus,
+    },
+    UpdateAvailable {
+        update: crate::updates::UpdateInfo,
     },
     /// The project's source / test / resource / excluded roots changed (build files
     /// changed or folders were marked); the UI re-reads them with `project_roots`.
@@ -214,6 +257,9 @@ pub enum DebugEvent {
         thread_id: i64,
         started: bool,
     },
+    /// The program runs in a terminal the IDE gave it (`runInTerminal`): what is typed for it
+    /// in the debug console reaches its input.
+    ProgramInput,
     BreakpointsChanged {
         path: crate::IpcPath,
     },

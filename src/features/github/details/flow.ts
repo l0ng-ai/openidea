@@ -4,6 +4,7 @@
  * request (`isBusy` disables the others), mutations go through `data/operations.ts`, local
  * git through `data/local.ts` and the vcs feature. Failures are reported as notifications.
  */
+import { writeClipboardText } from "@/platform/clipboard";
 import { create } from "zustand";
 import type { DiffData } from "@/features/vcs/diffInput";
 import { mergeIntoCurrent } from "@/features/vcs/branchOps";
@@ -17,6 +18,7 @@ import { mergeCommitMessage, splitCommitMessage, type ReviewerWithState } from "
 import { checkoutPullRequest, fileDiffData, prepareDiff } from "../data/local";
 import * as ops from "../data/operations";
 import { loadPullRequestData } from "../data/pullRequest";
+import { connectedRoot } from "../data/repository";
 import { mergeCommitMessageDialog } from "../ui/dialogs";
 import { reviewersDelta, type MergeMethod } from "./model";
 
@@ -97,14 +99,14 @@ export async function showInGitLog(pr: GHPullRequest, headRemote: string | null)
   const revs = await prepareDiff(pr);
   if (!revs) return;
   const tracked = headRemote ? `${headRemote}/${pr.headRefName}` : null;
-  const branches = tracked ? await call(commands.vcsBranches(null)).catch(() => []) : [];
+  const branches = tracked ? await call(commands.vcsBranches(connectedRoot())).catch(() => []) : [];
   const ref = tracked && branches.some((b) => b.remote && b.name === tracked) ? tracked : revs.head;
   await executeAction("vcs.showLog", { branch: ref });
 }
 
 /** "Copy Branch Name". */
 export async function copyBranchName(name: string) {
-  await navigator.clipboard?.writeText(name);
+  await writeClipboardText(name);
 }
 
 /**
@@ -121,7 +123,7 @@ export function resolveConflictsLocally(
     // Fetches the base branch as well (updating `<remote>/<base>`).
     if (!(await prepareDiff(pr))) return;
     if (!isCheckedOut && !(await checkoutPullRequest(number))) return;
-    await mergeIntoCurrent(`${target.baseRemote}/${target.baseRefName}`);
+    await mergeIntoCurrent(`${target.baseRemote}/${target.baseRefName}`, connectedRoot());
   });
 }
 
@@ -129,7 +131,7 @@ export function resolveConflictsLocally(
 export async function isInCurrentHistory(oid: string): Promise<boolean> {
   try {
     const commits = await call(
-      commands.vcsLog(null, {
+      commands.vcsLog(connectedRoot(), {
         branch: null,
         path: null,
         author: null,

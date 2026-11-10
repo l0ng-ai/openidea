@@ -80,6 +80,23 @@ pub async fn lsp_goto(
     ide_host::ops::lsp::lsp_goto(&state.host, window.label(), doc, pos, kind).await
 }
 
+/// Go to Implementation of the symbol at `pos`. Implementations found before a
+/// slower search for the rest arrive on `on_partial`; the result has them all.
+/// Cancel with `cancel_request(request)`.
+#[tauri::command]
+#[specta::specta]
+pub async fn lsp_goto_implementation(
+    window: Window,
+    state: State<'_, AppState>,
+    request: RequestId,
+    doc: DocId,
+    pos: Pos,
+    on_partial: tauri::ipc::Channel<Vec<Location>>,
+) -> IdeResult<Vec<Location>> {
+    let on_partial = super::sender(on_partial);
+    ide_host::ops::lsp::lsp_goto_implementation(&state.host, window.label(), request, doc, pos, on_partial).await
+}
+
 /// Implementations of the symbols at `positions`, one list per position (the
 /// editor's "is implemented / overridden" gutter markers). Cancel with
 /// `cancel_request(request)`.
@@ -109,6 +126,25 @@ pub async fn lsp_virtual_document(
 
 #[tauri::command]
 #[specta::specta]
+pub async fn lsp_can_download_sources(window: Window, state: State<'_, AppState>, uri: String) -> IdeResult<bool> {
+    ide_host::ops::lsp::lsp_can_download_sources(&state.host, window.label(), uri).await
+}
+
+#[tauri::command]
+#[specta::specta]
+pub async fn lsp_library_sources(
+    window: Window,
+    state: State<'_, AppState>,
+    request: RequestId,
+    uri: String,
+    pos: Pos,
+    sources: Option<std::path::PathBuf>,
+) -> IdeResult<Option<Location>> {
+    ide_host::ops::lsp::lsp_library_sources(&state.host, window.label(), request, uri, pos, sources).await
+}
+
+#[tauri::command]
+#[specta::specta]
 pub async fn lsp_resolve_class_file(
     window: Window,
     state: State<'_, AppState>,
@@ -119,9 +155,13 @@ pub async fn lsp_resolve_class_file(
 
 /// References of the symbol at `pos`. `project_wide` also searches project files
 /// outside the language server's analysis scope; bulk scans over many symbols
-/// leave it off. Cancel with `cancel_request(request)`.
+/// leave it off. Java, `project_wide`: without `libraries`, the dependencies and the JDK
+/// are not searched; with it, those found in the sources arrive on `on_partial` before
+/// the slower search for the rest, and the result has them all. Cancel with
+/// `cancel_request(request)`.
 #[tauri::command]
 #[specta::specta]
+#[allow(clippy::too_many_arguments)]
 pub async fn lsp_references(
     window: Window,
     state: State<'_, AppState>,
@@ -130,7 +170,10 @@ pub async fn lsp_references(
     pos: Pos,
     include_declaration: bool,
     project_wide: bool,
+    libraries: bool,
+    on_partial: tauri::ipc::Channel<References>,
 ) -> IdeResult<References> {
+    let on_partial = super::sender(on_partial);
     ide_host::ops::lsp::lsp_references(
         &state.host,
         window.label(),
@@ -139,6 +182,8 @@ pub async fn lsp_references(
         pos,
         include_declaration,
         project_wide,
+        libraries,
+        on_partial,
     )
     .await
 }
@@ -240,6 +285,38 @@ pub async fn lsp_rename(
     ide_host::ops::lsp::lsp_rename(&state.host, window.label(), request, doc, pos, new_name).await
 }
 
+/// The class at `pos` and the members Pull Members Up / Push Members Down can move.
+#[tauri::command]
+#[specta::specta]
+pub async fn lsp_hierarchy_members(
+    window: Window,
+    state: State<'_, AppState>,
+    request: RequestId,
+    doc: DocId,
+    pos: Pos,
+    kind: HierarchyRefactoring,
+) -> IdeResult<HierarchyMembers> {
+    ide_host::ops::lsp::lsp_hierarchy_members(&state.host, window.label(), request, doc, pos, kind).await
+}
+
+/// Checks Pull Members Up / Push Members Down and computes the edit without applying it.
+#[tauri::command]
+#[specta::specta]
+#[allow(clippy::too_many_arguments)]
+pub async fn lsp_hierarchy_refactor(
+    window: Window,
+    state: State<'_, AppState>,
+    request: RequestId,
+    doc: DocId,
+    pos: Pos,
+    kind: HierarchyRefactoring,
+    target: Option<String>,
+    choices: Vec<HierarchyChoice>,
+) -> IdeResult<HierarchyRefactored> {
+    ide_host::ops::lsp::lsp_hierarchy_refactor(&state.host, window.label(), request, doc, pos, kind, target, choices)
+        .await
+}
+
 #[tauri::command]
 #[specta::specta]
 pub async fn lsp_format(
@@ -337,8 +414,30 @@ pub async fn lsp_restart(window: Window, state: State<'_, AppState>, server: Ser
 /// Applies a (previewed) workspace edit, e.g. after rename confirmation.
 #[tauri::command]
 #[specta::specta]
-pub fn apply_workspace_edit(window: Window, state: State<'_, AppState>, edit: WorkspaceEdit) -> IdeResult<()> {
-    ide_host::ops::lsp::apply_workspace_edit(&state.host, window.label(), edit)
+pub async fn apply_workspace_edit(window: Window, state: State<'_, AppState>, edit: WorkspaceEdit) -> IdeResult<()> {
+    ide_host::ops::lsp::apply_workspace_edit(&state.host, window.label(), edit).await
+}
+
+#[tauri::command]
+#[specta::specta]
+pub async fn prepare_workspace_edit(
+    window: Window,
+    state: State<'_, AppState>,
+    edit: WorkspaceEdit,
+) -> IdeResult<WorkspaceEdit> {
+    ide_host::ops::lsp::prepare_workspace_edit(&state.host, window.label(), edit).await
+}
+
+#[tauri::command]
+#[specta::specta]
+pub async fn undo_workspace_edit(window: Window, state: State<'_, AppState>, id: u32) -> IdeResult<()> {
+    ide_host::ops::lsp::undo_workspace_edit(&state.host, window.label(), id).await
+}
+
+#[tauri::command]
+#[specta::specta]
+pub async fn redo_workspace_edit(window: Window, state: State<'_, AppState>, id: u32) -> IdeResult<()> {
+    ide_host::ops::lsp::redo_workspace_edit(&state.host, window.label(), id).await
 }
 
 /// Runs a server command (`workspace/executeCommand`), e.g. a completion item's
@@ -379,4 +478,30 @@ pub async fn lsp_execute_code_action(
     answers: Vec<FormAnswer>,
 ) -> IdeResult<Vec<ide_core::IpcPath>> {
     ide_host::ops::lsp::lsp_execute_code_action(&state.host, window.label(), request, doc, action, answers).await
+}
+
+#[tauri::command]
+#[specta::specta]
+pub async fn plugin_language_visuals(
+    window: Window,
+    state: State<'_, AppState>,
+    doc: DocId,
+) -> IdeResult<ide_host::ops::lsp::PluginLanguageVisuals> {
+    ide_host::ops::lsp::plugin_language_visuals(&state.host, window.label(), doc).await
+}
+#[tauri::command]
+#[specta::specta]
+pub async fn plugin_color_presentations(
+    window: Window,
+    state: State<'_, AppState>,
+    doc: DocId,
+    plugin: String,
+    color: ide_plugin::language_features::ColorInfo,
+) -> IdeResult<Vec<String>> {
+    ide_host::ops::lsp::plugin_color_presentations(&state.host, window.label(), doc, plugin, color).await
+}
+#[tauri::command]
+#[specta::specta]
+pub fn plugin_formatters() -> IdeResult<Vec<ide_host::plugins::language_features::FormatterChoice>> {
+    Ok(ide_host::ops::lsp::plugin_formatters())
 }

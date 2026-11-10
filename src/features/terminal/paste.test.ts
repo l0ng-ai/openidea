@@ -1,7 +1,7 @@
 import { afterEach, beforeEach, expect, it, vi } from "vitest";
 import { Terminal } from "@xterm/xterm";
 import { commands } from "@/platform/ipc";
-import { installTerminalPaste, pasteTerminalClipboard, type RemotePasteTarget } from "./paste";
+import { installTerminalPaste, pasteTerminalClipboard, type TerminalPasteTarget } from "./paste";
 
 const notify = vi.hoisted(() => vi.fn());
 vi.mock("@/workbench/contributions", () => ({ notifications: () => ({ notify }) }));
@@ -98,8 +98,8 @@ function imageEvent(blob: Blob, text = "") {
   return event;
 }
 
-function remoteTarget(current = () => true): RemotePasteTarget {
-  return { id: 42 as RemotePasteTarget["id"], supported: true, current };
+function remoteTarget(current = () => true): TerminalPasteTarget {
+  return { id: 42 as TerminalPasteTarget["id"], supported: true, remote: true, shell: "sh", current };
 }
 
 it.each(["event", "menu"])("rejects oversized %s images before reading or uploading", async (route) => {
@@ -123,8 +123,8 @@ it.each(["event", "menu"])("rejects oversized %s images before reading or upload
   await vi.waitFor(() =>
     expect(notify).toHaveBeenCalledWith({
       level: "error",
-      title: "Cannot paste image",
-      body: "Image is too large to paste (limit 20 MB).",
+      title: "Cannot paste clipboard media",
+      body: "Clipboard media is too large to paste (limit 20 MB).",
     }),
   );
   expect(read).not.toHaveBeenCalled();
@@ -361,4 +361,167 @@ it("leaves local image and remote text events to existing paste handlers", () =>
   expect(text.defaultPrevented).toBe(false);
   expect(store).not.toHaveBeenCalled();
   local();
+});
+
+function localTarget(shell = "sh", current = () => true): TerminalPasteTarget {
+  return { ...remoteTarget(current), remote: false, shell };
+}
+
+it.each(["event", "menu"])("stores raw local clipboard media through %s paste", async (route) => {
+  const store = vi.spyOn(commands, "termStoreImage").mockResolvedValue({ status: "ok", data: "/tmp/a'b c.png" });
+  const host = document.createElement("div");
+  const paste = vi.fn();
+  const remove = installTerminalPaste(host, paste, () => localTarget());
+  if (route === "event") {
+    host.addEventListener("paste", () => paste("xterm"));
+    const event = imageEvent(image());
+    host.dispatchEvent(event);
+    expect(event.defaultPrevented).toBe(true);
+  } else {
+    Object.defineProperty(navigator, "clipboard", {
+      configurable: true,
+      value: { readText: async () => "", read: async () => [{ types: ["image/png"], getType: async () => image() }] },
+    });
+    await pasteTerminalClipboard(paste, () => localTarget());
+  }
+  await vi.waitFor(() => expect(paste).toHaveBeenCalledExactlyOnceWith("'/tmp/a'\\''b c.png'"));
+  expect(store).toHaveBeenCalledWith(42, [1, 2], "image/png");
+  expect(notify).not.toHaveBeenCalled();
+  remove();
+});
+
+it.each(["event", "menu"])(
+  "keeps existing copied files on their original quoted paths during %s paste",
+  async (route) => {
+    const paths = ["/a b/photo.png", "/it's here/clip.mp4"];
+    vi.spyOn(commands, "clipboardFileList").mockResolvedValue({ status: "ok", data: paths });
+    const store = vi.spyOn(commands, "termStoreImage");
+    const host = document.createElement("div");
+    const paste = vi.fn();
+    const remove = installTerminalPaste(host, paste, () => localTarget());
+    if (route === "event") host.dispatchEvent(imageEvent(image(), paths.join("\n")));
+    else {
+      Object.defineProperty(navigator, "clipboard", {
+        configurable: true,
+        value: {
+          readText: async () => paths.join("\r\n"),
+          read: async () => [{ types: ["image/png"], getType: async () => image() }],
+        },
+      });
+      await pasteTerminalClipboard(paste, () => localTarget());
+    }
+    await vi.waitFor(() => expect(paste).toHaveBeenCalledExactlyOnceWith("'/a b/photo.png' '/it'\\''s here/clip.mp4'"));
+    expect(store).not.toHaveBeenCalled();
+    remove();
+  },
+);
+
+it("reads file URI lists without relying on a native file-list backend", async () => {
+  const store = vi.spyOn(commands, "termStoreImage");
+  const host = document.createElement("div");
+  const paste = vi.fn();
+  const remove = installTerminalPaste(host, paste, () => localTarget());
+  const event = new Event("paste", { bubbles: true, cancelable: true });
+  Object.defineProperty(event, "clipboardData", {
+    value: {
+      files: [],
+      types: ["text/uri-list"],
+      getData: (type: string) =>
+        type === "text/uri-list"
+          ? "# files\r\nfile:///tmp/a%20b.png\r\nhttps://example.com\r\nfile:///tmp/%E4%B8%AD%E6%96%87.mp4"
+          : "",
+    },
+  });
+  host.dispatchEvent(event);
+  await vi.waitFor(() => expect(paste).toHaveBeenCalledExactlyOnceWith("'/tmp/a b.png' '/tmp/中文.mp4'"));
+  expect(store).not.toHaveBeenCalled();
+  remove();
+});
+
+it.each([
+  { shell: "pwsh", path: "C:\\Users\\a'b $c\\image.png", expected: "'C:\\Users\\a''b $c\\image.png'" },
+  { shell: "powershell", path: "C:\\a b\\image.png", expected: "'C:\\a b\\image.png'" },
+  { shell: "zsh", path: "/tmp/a'b $中文.png", expected: "'/tmp/a'\\''b $中文.png'" },
+  { shell: "bash", path: "/tmp/a'b $中文.png", expected: "'/tmp/a'\\''b $中文.png'" },
+  { shell: "fish", path: "/tmp/a'b $中文.png", expected: "'/tmp/a\\'b $中文.png'" },
+  { shell: "fish", path: "/tmp/a\\\\b\\'中文.png", expected: "'/tmp/a\\\\\\\\b\\\\\\'中文.png'" },
+  { shell: "cmd", path: "C:\\a&b\\image.png", expected: '"C:\\a&b\\image.png"' },
+  { shell: "cmd.exe", path: "C:\\a b $中文\\image.png", expected: '"C:\\a b $中文\\image.png"' },
+])("quotes a stored path for $shell", async ({ shell, path, expected }) => {
+  vi.spyOn(commands, "termStoreImage").mockResolvedValue({ status: "ok", data: path });
+  const host = document.createElement("div");
+  const paste = vi.fn();
+  const remove = installTerminalPaste(host, paste, () => localTarget(shell));
+  host.dispatchEvent(imageEvent(image()));
+  await vi.waitFor(() => expect(paste).toHaveBeenCalledExactlyOnceWith(expected));
+  remove();
+});
+
+it.each(["audio/wav", "video/mp4"])("stores raw %s clipboard data", async (type) => {
+  const store = vi.spyOn(commands, "termStoreImage").mockResolvedValue({ status: "ok", data: "/tmp/media" });
+  const host = document.createElement("div");
+  const paste = vi.fn();
+  const remove = installTerminalPaste(host, paste, () => localTarget());
+  const event = imageEvent({ ...image(), type } as Blob);
+  host.dispatchEvent(event);
+  await vi.waitFor(() => expect(paste).toHaveBeenCalledExactlyOnceWith("'/tmp/media'"));
+  expect(store).toHaveBeenCalledWith(42, [1, 2], type);
+  remove();
+});
+
+it("ignores local media when its terminal is replaced during file recovery", async () => {
+  let current = true;
+  let finish!: (value: { status: "ok"; data: string[] }) => void;
+  vi.spyOn(commands, "clipboardFileList").mockImplementation(() => new Promise((resolve) => (finish = resolve)));
+  const store = vi.spyOn(commands, "termStoreImage");
+  const host = document.createElement("div");
+  const paste = vi.fn();
+  const remove = installTerminalPaste(host, paste, () => localTarget("sh", () => current));
+  host.dispatchEvent(imageEvent(image()));
+  await vi.waitFor(() => expect(finish).toBeDefined());
+  current = false;
+  finish({ status: "ok", data: [] });
+  await new Promise((resolve) => setTimeout(resolve, 0));
+  expect(store).not.toHaveBeenCalled();
+  expect(paste).not.toHaveBeenCalled();
+  remove();
+});
+
+it.each(["event", "menu"])("rejects cmd expansion in copied file paths through %s paste", async (route) => {
+  vi.spyOn(commands, "clipboardFileList").mockResolvedValue({ status: "ok", data: ["C:\\clips\\%OS%!clip!.png"] });
+  const store = vi.spyOn(commands, "termStoreImage");
+  const host = document.createElement("div");
+  const paste = vi.fn();
+  const remove = installTerminalPaste(host, paste, () => localTarget("cmd"));
+  if (route === "event") host.dispatchEvent(imageEvent(image()));
+  else {
+    Object.defineProperty(navigator, "clipboard", { configurable: true, value: { readText: async () => "" } });
+    await pasteTerminalClipboard(paste, () => localTarget("cmd"));
+  }
+  await vi.waitFor(() =>
+    expect(notify).toHaveBeenCalledWith({
+      level: "error",
+      title: "Cannot paste clipboard media",
+      body: "Cannot paste this path safely in cmd.exe. Use PowerShell or a POSIX shell.",
+    }),
+  );
+  expect(paste).not.toHaveBeenCalled();
+  expect(store).not.toHaveBeenCalled();
+  remove();
+});
+
+it("recovers quoted local file paths when clipboard text permission is denied", async () => {
+  vi.spyOn(commands, "clipboardFileList").mockResolvedValue({ status: "ok", data: ["C:\\a b\\image.png"] });
+  Object.defineProperty(navigator, "clipboard", {
+    configurable: true,
+    value: {
+      readText: async () => {
+        throw new Error("denied");
+      },
+    },
+  });
+  const paste = vi.fn();
+  await pasteTerminalClipboard(paste, () => localTarget("pwsh"));
+  expect(paste).toHaveBeenCalledExactlyOnceWith("'C:\\a b\\image.png'");
+  expect(notify).not.toHaveBeenCalled();
 });

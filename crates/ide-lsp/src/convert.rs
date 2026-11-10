@@ -17,15 +17,30 @@ pub type Lookup<'a> = Box<dyn Fn(&Path) -> Option<Arc<DocText>> + Send + Sync + 
 
 /// Converts server positions to IDE coordinates. For UTF-16 servers this is
 /// the identity; otherwise line text comes from open documents or disk.
+type MapLocation<'a> = Box<dyn Fn(Location) -> Option<Location> + Send + Sync + 'a>;
+type MapEdit<'a> = Box<dyn Fn(&mut WorkspaceEdit) + Send + Sync + 'a>;
+
 pub struct Conv<'a> {
     pub enc: Encoding,
+    map_location: Option<MapLocation<'a>>,
+    map_edit: Option<MapEdit<'a>>,
     lookup: Lookup<'a>,
     cache: Mutex<HashMap<PathBuf, Option<Arc<DocText>>>>,
 }
 
 impl<'a> Conv<'a> {
     pub fn new(enc: Encoding, lookup: impl Fn(&Path) -> Option<Arc<DocText>> + Send + Sync + 'a) -> Self {
-        Self { enc, lookup: Box::new(lookup), cache: Mutex::new(HashMap::new()) }
+        Self { enc, lookup: Box::new(lookup), cache: Mutex::new(HashMap::new()), map_location: None, map_edit: None }
+    }
+
+    pub fn with_injections(
+        mut self,
+        location: impl Fn(Location) -> Option<Location> + Send + Sync + 'a,
+        edit: impl Fn(&mut WorkspaceEdit) + Send + Sync + 'a,
+    ) -> Self {
+        self.map_location = Some(Box::new(location));
+        self.map_edit = Some(Box::new(edit));
+        self
     }
 
     #[cfg(test)]
@@ -62,7 +77,11 @@ impl<'a> Conv<'a> {
     pub fn location(&self, loc: &lsp::Location) -> Option<Location> {
         let (path, uri) = uri_target(loc.uri.as_str());
         let range = self.range(&path, loc.range);
-        Some(Location { path: path.into(), range, uri })
+        let loc = Location { path: path.into(), range, uri };
+        match &self.map_location {
+            Some(map) => map(loc),
+            None => Some(loc),
+        }
     }
 
     pub fn text_edit(&self, path: &Path, e: lsp::TextEdit) -> TextEdit {
@@ -282,6 +301,7 @@ pub fn completion_item(conv: &Conv, path: &Path, item: lsp::CompletionItem, serv
     let mut out = CompletionItem {
         label: item.label.clone(),
         label_detail: None,
+        label_description: None,
         detail: None,
         kind: None,
         documentation: None,
@@ -329,6 +349,9 @@ pub fn overlay_completion(conv: &Conv, path: &Path, out: &mut CompletionItem, it
     let description = label_details.as_ref().and_then(|d| d.description.clone());
     if let Some(d) = label_details.and_then(|d| d.detail) {
         out.label_detail = Some(d);
+    }
+    if let Some(d) = description.clone() {
+        out.label_description = Some(d);
     }
     if let Some(d) = detail.or(description) {
         out.detail = Some(d);
@@ -406,10 +429,12 @@ pub fn lsp_completion_item(text: &DocText, enc: Encoding, item: &CompletionItem)
     });
     lsp::CompletionItem {
         label: item.label.clone(),
-        label_details: item
-            .label_detail
-            .clone()
-            .map(|detail| lsp::CompletionItemLabelDetails { detail: Some(detail), description: None }),
+        label_details: (item.label_detail.is_some() || item.label_description.is_some()).then(|| {
+            lsp::CompletionItemLabelDetails {
+                detail: item.label_detail.clone(),
+                description: item.label_description.clone(),
+            }
+        }),
         kind: item.kind.map(lsp_completion_kind),
         detail: item.detail.clone(),
         documentation: item.documentation.as_ref().map(lsp_documentation),
@@ -543,10 +568,18 @@ pub fn lsp_command(c: &Command) -> lsp::Command {
     }
 }
 
-pub fn code_action(conv: &Conv, a: lsp::CodeActionOrCommand, server: ServerId) -> CodeAction {
+pub fn code_action(
+    conv: &Conv,
+    path: &Path,
+    a: lsp::CodeActionOrCommand,
+    server: ServerId,
+    server_name: &str,
+) -> CodeAction {
     match a {
         lsp::CodeActionOrCommand::Command(c) => CodeAction {
             title: c.title.clone(),
+            diagnostics: Vec::new(),
+            original_diagnostics: None,
             kind: None,
             is_preferred: false,
             disabled_reason: None,
@@ -557,6 +590,13 @@ pub fn code_action(conv: &Conv, a: lsp::CodeActionOrCommand, server: ServerId) -
         },
         lsp::CodeActionOrCommand::CodeAction(a) => CodeAction {
             title: a.title,
+            original_diagnostics: a.diagnostics.as_ref().and_then(|d| serde_json::to_string(d).ok()),
+            diagnostics: a
+                .diagnostics
+                .unwrap_or_default()
+                .into_iter()
+                .map(|d| diagnostic(conv, path, d, server_name))
+                .collect(),
             kind: a.kind.map(|k| k.as_str().to_owned()),
             is_preferred: a.is_preferred.unwrap_or(false),
             disabled_reason: a.disabled.map(|d| d.reason),
@@ -572,7 +612,7 @@ pub fn lsp_code_action(a: &CodeAction) -> lsp::CodeAction {
     lsp::CodeAction {
         title: a.title.clone(),
         kind: a.kind.clone().map(lsp::CodeActionKind::from),
-        diagnostics: None,
+        diagnostics: a.original_diagnostics.as_deref().and_then(|d| serde_json::from_str(d).ok()),
         edit: None,
         command: a.command.as_ref().map(lsp_command),
         is_preferred: a.is_preferred.then_some(true),
@@ -621,7 +661,7 @@ pub fn workspace_edit(conv: &Conv, e: lsp::WorkspaceEdit) -> WorkspaceEdit {
             })
             .map(|e| conv.text_edit(&path, e))
             .collect();
-        files.push(FileEdit::Edit { path: path.into(), edits });
+        files.push(FileEdit::Edit { path: path.into(), edits, version: e.text_document.version });
     };
     if let Some(changes) = e.document_changes {
         match changes {
@@ -657,11 +697,14 @@ pub fn workspace_edit(conv: &Conv, e: lsp::WorkspaceEdit) -> WorkspaceEdit {
         for (uri, edits) in changes {
             if let Some(path) = uri_path(&uri) {
                 let edits = conv.text_edits(&path, edits);
-                files.push(FileEdit::Edit { path: path.into(), edits });
+                files.push(FileEdit::Edit { path: path.into(), edits, version: None });
             }
         }
     }
-    let mut edit = WorkspaceEdit { files };
+    let mut edit = WorkspaceEdit { files, ..Default::default() };
+    if let Some(map) = &conv.map_edit {
+        map(&mut edit);
+    }
     edit.deduplicate();
     edit
 }
@@ -670,28 +713,36 @@ pub fn workspace_edit(conv: &Conv, e: lsp::WorkspaceEdit) -> WorkspaceEdit {
 /// `edit` where they leave its own alone: what only the other server sees
 /// (Angular templates next to vtsls's TypeScript).
 pub fn merge_workspace_edit(edit: &mut WorkspaceEdit, extra: WorkspaceEdit) {
+    edit.preconditions.extend(extra.preconditions);
     let overlap =
         |a: &TextEdit, b: &TextEdit| a.range == b.range || (a.range.start < b.range.end && b.range.start < a.range.end);
     for file in extra.files {
-        let FileEdit::Edit { path, edits } = file else {
+        let FileEdit::Edit { path, edits, version } = file else {
             if !edit.files.contains(&file) {
                 edit.files.push(file);
             }
             continue;
         };
         let own = edit.files.iter_mut().find_map(|f| match f {
-            FileEdit::Edit { path: p, edits } if *p == path => Some(edits),
+            FileEdit::Edit { path: p, edits, version } if *p == path => Some((edits, version)),
             _ => None,
         });
         match own {
-            Some(own) => {
+            Some((own, own_version)) => {
+                // Conflicting versions cannot describe one consistent edit. Keep both
+                // operations so transaction preflight rejects them instead of dropping a guard.
+                if own_version.is_some() && version.is_some() && *own_version != version {
+                    edit.files.push(FileEdit::Edit { path, edits, version });
+                    continue;
+                }
+                *own_version = own_version.or(version);
                 let added: Vec<TextEdit> = edits.into_iter().filter(|e| !own.iter().any(|o| overlap(o, e))).collect();
                 if !added.is_empty() {
                     own.extend(added);
                     own.sort_by_key(|e| e.range.start);
                 }
             }
-            None => edit.files.push(FileEdit::Edit { path, edits }),
+            None => edit.files.push(FileEdit::Edit { path, edits, version }),
         }
     }
 }
@@ -821,7 +872,13 @@ pub fn workspace_symbols(conv: &Conv, r: lsp::WorkspaceSymbolResponse) -> Vec<Wo
                     lsp::OneOf::Left(l) => conv.location(&l)?,
                     lsp::OneOf::Right(w) => {
                         let (path, uri) = uri_target(w.uri.as_str());
-                        Location { path: path.into(), range: Range::default(), uri }
+                        {
+                            let loc = Location { path: path.into(), range: Range::default(), uri };
+                            match &conv.map_location {
+                                Some(map) => map(loc)?,
+                                None => loc,
+                            }
+                        }
                     }
                 };
                 Some(WorkspaceSymbol { name: s.name, kind: symbol_kind(s.kind), container: s.container_name, location })
@@ -1031,21 +1088,85 @@ mod tests {
     use serde_json::json;
 
     #[test]
+    fn code_action_diagnostics_use_ide_coordinates_and_round_trip_for_resolve() {
+        let path = Path::new("/go.mod");
+        let conv = Conv::new(Encoding::Utf8, |_| Some(Arc::new(DocText::new("😀 dependency"))));
+        let raw: lsp::Diagnostic = serde_json::from_value(json!({
+            "range": { "start": { "line": 0, "character": 5 }, "end": { "line": 0, "character": 15 } },
+            "message": "github.com/sergi/go-diff is not used in this module",
+            "severity": 2,
+            "code": 123,
+            "source": "go mod tidy",
+            "data": { "fix": "remove" }
+        }))
+        .unwrap();
+        let incoming = lsp::CodeAction {
+            title: "Remove dependency: github.com/sergi/go-diff".into(),
+            diagnostics: Some(vec![raw.clone()]),
+            ..Default::default()
+        };
+        let action = code_action(&conv, path, lsp::CodeActionOrCommand::CodeAction(incoming), ServerId(1), "gopls");
+        assert_eq!(action.diagnostics, vec![diagnostic(&conv, path, raw.clone(), "gopls")]);
+        assert_eq!(action.diagnostics[0].range, Range::new(Pos::new(0, 3), Pos::new(0, 13)));
+        assert_eq!(action.diagnostics[0].code.as_deref(), Some("123"));
+        let action: CodeAction = serde_json::from_value(serde_json::to_value(action).unwrap()).unwrap();
+        assert_eq!(lsp_code_action(&action).diagnostics, Some(vec![raw.clone()]));
+        let resolved = merge_code_action(&conv, action, lsp::CodeAction::default());
+        assert_eq!(lsp_code_action(&resolved).diagnostics, Some(vec![raw]));
+        assert_eq!(resolved.diagnostics.len(), 1);
+    }
+
+    #[test]
+    fn code_actions_without_diagnostics_keep_them_absent_for_resolve() {
+        let conv = Conv::utf16();
+        for incoming in [
+            lsp::CodeActionOrCommand::CodeAction(lsp::CodeAction { title: "Fix".into(), ..Default::default() }),
+            lsp::CodeActionOrCommand::Command(lsp::Command {
+                title: "Fix".into(),
+                command: "fix".into(),
+                arguments: None,
+            }),
+        ] {
+            let action = code_action(&conv, Path::new("/a"), incoming, ServerId(1), "srv");
+            assert!(action.diagnostics.is_empty());
+            assert!(lsp_code_action(&action).diagnostics.is_none());
+        }
+        let raw = lsp::Diagnostic::new_simple(lsp::Range::default(), "problem".into());
+        let expected = diagnostic(&conv, Path::new("/a"), raw.clone(), "srv");
+        let action = code_action(
+            &conv,
+            Path::new("/a"),
+            lsp::CodeActionOrCommand::CodeAction(lsp::CodeAction {
+                diagnostics: Some(vec![raw]),
+                ..Default::default()
+            }),
+            ServerId(1),
+            "srv",
+        );
+        assert_eq!(action.diagnostics, vec![expected]);
+        assert_eq!(action.diagnostics[0].source.as_deref(), Some("srv"));
+    }
+
+    #[test]
     fn merged_rename_edits_keep_the_first_servers_ones() {
         let edit = |l: u32, c: u32, text: &str| TextEdit {
             range: Range::new(Pos::new(l, c), Pos::new(l, c + 5)),
             new_text: text.into(),
         };
-        let file = |p: &str, edits: Vec<TextEdit>| FileEdit::Edit { path: PathBuf::from(p).into(), edits };
+        let file =
+            |p: &str, edits: Vec<TextEdit>| FileEdit::Edit { path: PathBuf::from(p).into(), edits, version: None };
         // vtsls renames a shorthand property with an alias; the Angular server
         // renames it plainly and adds the template.
-        let mut merged =
-            WorkspaceEdit { files: vec![file("/a.ts", vec![edit(3, 2, "items: entries"), edit(9, 4, "entries")])] };
+        let mut merged = WorkspaceEdit {
+            files: vec![file("/a.ts", vec![edit(3, 2, "items: entries"), edit(9, 4, "entries")])],
+            ..Default::default()
+        };
         let angular = WorkspaceEdit {
             files: vec![
                 file("/a.ts", vec![edit(9, 4, "entries"), edit(3, 2, "entries"), edit(1, 14, "entries")]),
                 file("/a.html", vec![edit(0, 7, "entries")]),
             ],
+            ..Default::default()
         };
         merge_workspace_edit(&mut merged, angular);
         assert_eq!(
@@ -1168,7 +1289,8 @@ mod tests {
         assert_eq!(a.insert_text, "println!($0)");
         assert!(a.is_snippet);
         assert_eq!(a.label_detail.as_deref(), Some("(…)"));
-        assert_eq!(a.detail.as_deref(), Some("std"));
+        assert_eq!(a.label_description.as_deref(), Some("std"));
+        assert_eq!(a.detail.as_deref(), Some("std"), "no `detail` from the server: the description stands in");
         assert_eq!(a.kind, Some(CompletionKind::Function));
         assert_eq!(a.replace_range, Some(Range::new(p(0, 4), p(0, 6))));
         assert_eq!(a.replace_range_tab, Some(Range::new(p(0, 4), p(0, 9))));
@@ -1184,6 +1306,9 @@ mod tests {
         let back = lsp_completion_item(&text, Encoding::Utf16, &a);
         assert_eq!(back.data, Some(json!({"k": 1})));
         assert!(matches!(back.text_edit, Some(lsp::CompletionTextEdit::InsertAndReplace(_))));
+        let details = back.label_details.expect("label details survive the resolve round trip");
+        assert_eq!(details.detail.as_deref(), Some("(…)"));
+        assert_eq!(details.description.as_deref(), Some("std"));
     }
 
     #[test]
@@ -1214,6 +1339,10 @@ mod tests {
             let item = completion_item(&Conv::utf16(), Path::new("/Main.java"), items[0].clone(), ServerId(1));
             assert_eq!(item.replace_range, Some(Range::new(p(2, 19), p(2, end))));
             assert_eq!(item.replace_range_tab, None);
+            // The list shows `print (Object obj)` and `void`; the long signature is only for the docs panel.
+            assert_eq!(item.label_detail.as_deref(), Some("(Object obj)"));
+            assert_eq!(item.label_description.as_deref(), Some("void"));
+            assert_eq!(item.detail.as_deref(), Some("PrintStream.print(Object obj) : void"));
             assert_eq!(item.filter_text.as_deref(), Some("print(Object obj) : void"));
             assert_eq!(item.insert_text, "print(${0});");
             assert!(item.is_snippet);
@@ -1306,7 +1435,7 @@ mod tests {
         assert_eq!(w.files.len(), 4);
         assert_eq!(w.files[0], FileEdit::Create { path: "/n.rs".into(), overwrite: true });
         match &w.files[1] {
-            FileEdit::Edit { path, edits } => {
+            FileEdit::Edit { path, edits, .. } => {
                 assert_eq!(path, Path::new("/n.rs"));
                 assert_eq!(edits.len(), 2);
                 assert_eq!(edits[1].new_text, "y");
@@ -1320,6 +1449,26 @@ mod tests {
             { "range": {"start": {"line":0,"character":0}, "end": {"line":0,"character":1}}, "newText": "q" } ] } }))
         .unwrap();
         assert!(matches!(&workspace_edit(&conv, e).files[0], FileEdit::Edit { edits, .. } if edits[0].new_text == "q"));
+    }
+
+    #[test]
+    fn workspace_edits_preserve_document_versions_and_merge_guards() {
+        let conv = Conv::utf16();
+        let incoming = |version| {
+            serde_json::from_value(json!({
+            "documentChanges": [{
+                "textDocument": { "uri": "file:///a.rs", "version": version },
+                "edits": [{ "range": { "start": { "line": 0, "character": 0 }, "end": { "line": 0, "character": 1 } }, "newText": "x" }]
+            }]
+        })).unwrap()
+        };
+        let mut edit = workspace_edit(&conv, incoming(Some(7)));
+        assert!(matches!(edit.files[0], FileEdit::Edit { version: Some(7), .. }));
+        merge_workspace_edit(&mut edit, workspace_edit(&conv, incoming(None::<i32>)));
+        assert!(matches!(edit.files[0], FileEdit::Edit { version: Some(7), .. }));
+        merge_workspace_edit(&mut edit, workspace_edit(&conv, incoming(Some(8))));
+        assert_eq!(edit.files.len(), 2, "inconsistent version guards must not be discarded");
+        assert!(matches!(edit.files[1], FileEdit::Edit { version: Some(8), .. }));
     }
 
     #[test]

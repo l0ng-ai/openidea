@@ -15,11 +15,14 @@ pub struct AppState {
     pub app: AppHandle,
     pub host: Arc<Host>,
     pub startup: Startup,
+    pub updates: crate::updates::Updates,
     pub recent: RecentProjects,
-    /// WASM plugins (`ide-plugin`), shared by all windows.
-    pub plugins: Arc<ide_plugin::PluginHost>,
+    /// Plugins (`ide_host::plugins`), shared by all windows.
+    pub plugins: Arc<ide_host::plugins::PluginHost>,
     /// The built-in web server (Open In › Browser, the editor's browser bar).
     pub web: ide_web::WebServer,
+    /// Agents › MCP Server: built-in IDE tools for agents.
+    pub mcp: crate::commands::mcp::McpService,
     /// Credential prompts of `ssh` / `git` child processes (`None` if it failed to start).
     pub askpass: Option<ide_ssh::askpass::AskpassServer>,
     /// Remote development connections, by window label.
@@ -49,7 +52,7 @@ pub struct Startup {
 }
 
 impl AppState {
-    pub fn new(app: AppHandle) -> Result<Self, Box<dyn std::error::Error>> {
+    pub fn new(app: AppHandle, local_data_dir: std::path::PathBuf) -> Result<Self, Box<dyn std::error::Error>> {
         ide_workspace::process::mark_start();
         let process_to_main = ide_workspace::process::before_main();
         let process_to_setup = ide_workspace::process::process_age();
@@ -64,7 +67,6 @@ impl AppState {
         }
         let config_dir = app.path().app_config_dir()?;
         let data_dir = app.path().app_data_dir()?;
-        let local_data_dir = app.path().app_local_data_dir()?;
         std::fs::create_dir_all(&config_dir)?;
         std::fs::create_dir_all(&data_dir)?;
         if let Err(error) = std::fs::create_dir_all(&local_data_dir) {
@@ -97,10 +99,12 @@ impl AppState {
         }));
         Ok(Self {
             recent: RecentProjects::load(&config_dir),
+            updates: Default::default(),
             askpass: start_askpass(&app),
             sink: global_sink,
             plugins: crate::commands::plugin::create_host(&app, &data_dir, &host)?,
             web: ide_web::WebServer::new(),
+            mcp: Default::default(),
             remote_dev: crate::remote_dev::Connections::default(),
             host,
             startup: Startup {
@@ -131,7 +135,7 @@ impl AppState {
 
     /// The window that owns what `window` starts: a settings window's parent, else `window`.
     pub fn owner_window(window: &str) -> &str {
-        crate::windows::settings_parent(window).unwrap_or(window)
+        crate::windows::auxiliary_parent(window).unwrap_or(window)
     }
 
     /// Opens `root` in `window` and records it in the recent projects.
@@ -139,13 +143,22 @@ impl AppState {
         // A local project replaces a remote one in this window.
         self.remote_dev.disconnect(window);
         let project = self.host.open_project(window, root)?;
-        let branch = project.repos.read().primary().and_then(|r| r.branch_info().ok()).and_then(|b| b.head);
-        self.recent.touch(&project.root, branch)?;
-        let display_name = project.settings.effective().general.project_name;
-        if !display_name.trim().is_empty() {
-            self.recent.rename(&project.root, Some(display_name.trim()))?;
-        }
+        self.record_project(&project)?;
         Ok(project)
+    }
+
+    pub fn record_project(&self, project: &Project) -> IdeResult<()> {
+        let info = ide_host::ops::project::info(project);
+        let attached = info.workspace.as_ref().is_some_and(|w| !w.is_container(&project.root));
+        let branch = if attached {
+            None
+        } else {
+            project.repos.read().primary().and_then(|r| r.branch_info().ok()).and_then(|b| b.head)
+        };
+        self.recent.touch(&project.root, branch)?;
+        self.recent.rename(&project.root, Some(&info.display_name))?;
+        crate::jump_list::refresh(&self.app, self.recent.list());
+        Ok(())
     }
 
     /// Opens `window` for editing the loose file `file` (LightEdit); not a recent project.
@@ -154,9 +167,11 @@ impl AppState {
         self.host.open_light(window, file)
     }
 
+    /// Called on the event-loop thread (window destruction, the `close_project`
+    /// command), so it must not wait for the project's workers to shut down.
     pub fn close_project(&self, window: &str) {
         self.remote_dev.disconnect(window);
-        self.host.close_project(window);
+        self.host.close_project_detached(window);
     }
 }
 

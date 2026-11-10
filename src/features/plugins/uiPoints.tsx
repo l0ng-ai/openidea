@@ -1,0 +1,597 @@
+/**
+ * Client side of the plugin UI points: declarations the
+ * backend validated, projected onto the workbench's own registries.
+ *
+ * - `menus`: editor / project view / editor tab context menus, Tools in the main menu, and the
+ *   toolbar above the commit message;
+ * - `keymaps`: default shortcuts below the IDE's (a taken keystroke is dropped);
+ * - `statusBar`: items shown before the code runs (its `set-status-item` with the same id updates them);
+ * - `settings`: a page under Settings › Plugins generated from the schema;
+ * - `views`: tool windows the plugin renders, or a web page of its package;
+ * - `customEditors`: files opening in a plugin editor sharing the text document, in its own tab or
+ *   beside the text editor;
+ * - `fileIcons`: icons for the files a plugin knows, whatever icon theme is in use;
+ * - `fileTemplates`: entries of the New menu;
+ * - `commitChecks`: before-commit checks listed in Commit Options, run by the plugin's code.
+ */
+import type { PluginInfo } from "@/bindings";
+import { getAction } from "@/platform/actions";
+import { evaluateWhen, getContext, useContextKeys } from "@/platform/context";
+import { tx } from "@/platform/i18n";
+import { isMacHost, registerExtensionBindings } from "@/platform/keymap";
+import { addFileIconProvider, fileIconName, registerExternalIcons, type MenuItem } from "@/ui";
+import { addContributedFileTemplate } from "@/workbench/contributions";
+import {
+  addContributedSnippets,
+  registerEditorKind,
+  registerFileEditorProvider,
+  registerCommitCheckProvider,
+  registerMenuGroup,
+  registerMenuSlotItem,
+  registerServiceProvider,
+  registerTextEditorWrapper,
+  type ContextMenuId,
+  type ContributedCommitProblem,
+  type ToolWindowAnchor,
+} from "@/workbench/contributions";
+import { pluginsBackend } from "./backend";
+import { pluginIconName } from "./pluginIcon";
+import { projectMarkerIcon, type MarkerIconDecl } from "./markerIcons";
+import { usePlugins } from "./store";
+import { pluginActionId } from "./points";
+import { defineUiPoint } from "./projection";
+import { declareStatusItem } from "./runtimeUi";
+import { registerWindowView } from "./views/viewWindows";
+import {
+  CUSTOM_EDITOR_KIND,
+  CustomEditor,
+  basename,
+  customEditorDocument,
+  customEditorInput,
+  matchesPattern,
+  type CustomEditorDecl,
+} from "./views/customEditor";
+import { layoutActions, layoutWrapper } from "./views/editorLayout";
+import { registerContentActions } from "./views/contentActions";
+import {
+  PluginContentEditor,
+  pluginContentEditorDocument,
+  pluginContentEditorIcon,
+  pluginContentEditorTitle,
+} from "./views/contentEditor";
+import { PLUGIN_CONTENT_EDITOR_KIND } from "./views/contentTab";
+import { PLUGIN_LOG_EDITOR_KIND, PluginLogEditor, pluginLogEditorTitle } from "./views/logEditor";
+import { PluginView } from "./views/PluginView";
+import { pluginServiceProvider } from "./views/serviceProvider";
+import { WebView } from "./views/WebView";
+import { registerLogActions } from "./views/logActions";
+import { projectSettings, type SettingsDecl } from "./settings";
+
+// --- menus ------------------------------------------------------------------------
+
+interface MenuDecl {
+  menu:
+    | "editor.title"
+    | "mainToolbar"
+    | "problems.context"
+    | "searchResults.context"
+    | "editor.context"
+    | "projectView.context"
+    | "editorTab.context"
+    | "viewItem.context"
+    | "tools"
+    | "commit.message";
+  view?: string | null;
+  command: string;
+  when?: string | null;
+  /** Groups the plugin's entries of one context menu under this label. */
+  submenu?: string | null;
+  /** The command's title in the plugin's language, when it ships one. */
+  commandTitle?: string;
+}
+
+const CONTEXT_MENUS: Record<string, ContextMenuId> = {
+  "editor.context": "editor",
+  "problems.context": "problems",
+  "searchResults.context": "searchResults",
+  "projectView.context": "projectView",
+  "editorTab.context": "editorTab",
+};
+
+const contextItems = new Map<string, { pluginId: string; decl: MenuDecl }>();
+let menuSeq = 0;
+
+/**
+ * Adds `item` to `out`; the entries of one plugin that name the same
+ * `submenu` are collected under it.
+ */
+function addGrouped(
+  out: MenuItem[],
+  groups: Map<string, MenuItem[]>,
+  pluginId: string,
+  submenu: string | null | undefined,
+  item: MenuItem,
+): void {
+  if (!submenu) {
+    out.push(item);
+    return;
+  }
+  const key = `${pluginId}\u0000${submenu}`;
+  let group = groups.get(key);
+  if (!group) {
+    group = [];
+    groups.set(key, group);
+    out.push({ kind: "item", label: submenu, verbatim: true, submenu: group });
+  }
+  group.push(item);
+}
+
+/** A submenu holding one visible entry gains nothing from nesting. */
+function flattenSingleGroups(items: MenuItem[]): MenuItem[] {
+  return items.map((item) =>
+    item.kind !== "action" && "submenu" in item && item.submenu?.length === 1 ? item.submenu[0]! : item,
+  );
+}
+
+/** Plugin items of a context menu: their command's action with the menu's file as argument. */
+export function pluginMenuItems(
+  menu: ContextMenuId,
+  paths: readonly string[],
+  position?: { line: number; column: number },
+): MenuItem[] {
+  const out: MenuItem[] = [];
+  const groups = new Map<string, MenuItem[]>();
+  for (const { pluginId, decl } of contextItems.values()) {
+    if (CONTEXT_MENUS[decl.menu] !== menu || !evaluateWhen(decl.when ?? undefined)) continue;
+    const action = pluginActionId(pluginId, decl.command);
+    if (!getAction(action)) continue;
+    // The editor menu runs with the focused editor; the others name their file.
+    addGrouped(out, groups, pluginId, decl.submenu, {
+      kind: "action",
+      action,
+      arg: menu === "editor" ? undefined : { path: paths[0], paths: [...paths], ...(position ?? {}) },
+    });
+  }
+  return flattenSingleGroups(out);
+}
+
+/** Plugin entries of a view item's context menu, with the item key as argument. */
+export function pluginViewItemMenuItems(pluginId: string, view: string, key: string): MenuItem[] {
+  const ctx = { ...getContext(), viewItem: key, viewItemKind: key.split(":")[0] };
+  const out: MenuItem[] = [];
+  const groups = new Map<string, MenuItem[]>();
+  for (const { pluginId: owner, decl } of contextItems.values()) {
+    if (owner !== pluginId || decl.menu !== "viewItem.context" || decl.view !== view) continue;
+    if (!evaluateWhen(decl.when ?? undefined, ctx)) continue;
+    const action = pluginActionId(pluginId, decl.command);
+    if (!getAction(action)) continue;
+    addGrouped(out, groups, pluginId, decl.submenu, { kind: "action", action, arg: key });
+  }
+  return flattenSingleGroups(out);
+}
+
+function projectMenu(pluginId: string, decl: MenuDecl, plugin: PluginInfo): () => void {
+  if (decl.menu === "tools") {
+    const action = pluginActionId(pluginId, decl.command);
+    const title = decl.commandTitle ?? getAction(action)?.title ?? `${plugin.name}: ${decl.command}`;
+    return registerMenuSlotItem("pluginTools", { action, label: title, verbatim: true });
+  }
+  if (decl.menu === "commit.message" || decl.menu === "editor.title" || decl.menu === "mainToolbar") {
+    const action = pluginActionId(pluginId, decl.command);
+    const label = getAction(action)?.title ?? `${plugin.name}: ${decl.command}`;
+    return registerMenuSlotItem(decl.menu === "commit.message" ? "commitMessage" : decl.menu, {
+      action,
+      label,
+      verbatim: true,
+      icon: getAction(action)?.icon ?? pluginIconName(pluginId, plugin.icon),
+      when: decl.when ?? null,
+    });
+  }
+  const key = `${++menuSeq}`;
+  contextItems.set(key, { pluginId, decl });
+  return () => void contextItems.delete(key);
+}
+
+// --- commit checks ----------------------------------------------------------------
+
+interface CommitCheckDecl {
+  id: string;
+  title: string;
+}
+
+/** Declared before-commit checks by `<plugin id>/<check id>`. */
+const commitChecks = new Map<string, { pluginId: string; check: string; title: string }>();
+let unregisterCommitChecks: (() => void) | null = null;
+
+/** (Re)publishes the checks, so Commit Options sees the change. */
+function publishCommitChecks() {
+  unregisterCommitChecks?.();
+  unregisterCommitChecks = null;
+  if (!commitChecks.size) return;
+  const snapshot = [...commitChecks.entries()];
+  unregisterCommitChecks = registerCommitCheckProvider({
+    checks: () => snapshot.map(([key, c]) => ({ key, title: c.title })),
+    run: async (selection, keys) => {
+      const refs = keys.flatMap((k) => {
+        const c = commitChecks.get(k);
+        return c ? [{ pluginId: c.pluginId, check: c.check }] : [];
+      });
+      const results = await pluginsBackend()
+        .commitChecks(selection, refs)
+        .catch((e: unknown) =>
+          refs.map((r) => ({
+            ...r,
+            title: commitChecks.get(`${r.pluginId}/${r.check}`)?.title ?? r.check,
+            problems: [],
+            error: e instanceof Error ? e.message : String(e),
+          })),
+        );
+      return results.flatMap((r): ContributedCommitProblem[] =>
+        r.error !== null
+          ? [{ title: r.title, message: couldNotRun(r.error) }]
+          : r.problems.map((p) => ({
+              title: r.title,
+              message: p.message,
+              path: p.path ?? undefined,
+              line: p.range?.start.line,
+            })),
+      );
+    },
+  });
+}
+
+const couldNotRun = (reason: string) => tx`The check could not run: ${reason}`;
+
+function projectCommitCheck(pluginId: string, decl: CommitCheckDecl): () => void {
+  const key = `${pluginId}/${decl.id}`;
+  commitChecks.set(key, { pluginId, check: decl.id, title: decl.title });
+  publishCommitChecks();
+  return () => {
+    commitChecks.delete(key);
+    publishCommitChecks();
+  };
+}
+
+// --- keymaps ----------------------------------------------------------------------
+
+interface KeymapDecl {
+  command: string;
+  key: string;
+  mac?: string | null;
+}
+
+// --- status bar -------------------------------------------------------------------
+
+interface StatusDecl {
+  id: string;
+  text: string;
+  tooltip?: string | null;
+  command?: string | null;
+  align: "left" | "right";
+  priority: number;
+}
+
+// --- settings ---------------------------------------------------------------------
+
+export { withPluginSetting, pluginSettingsPageId } from "./settings";
+
+// --- views and custom editors -----------------------------------------------------
+
+interface ViewDecl {
+  id: string;
+  title: string;
+  icon?: string | null;
+  location: ToolWindowAnchor | "services";
+  detail?: boolean;
+  header?: "default" | "none" | null;
+  web?: string;
+  group?: string | null;
+  when?: string | null;
+}
+
+interface FileIconDecl {
+  id: string;
+  patterns: string[];
+  /** A dark-theme variant was given. */
+  dark: boolean;
+}
+
+interface FileTemplateDecl {
+  fileName?: string | null;
+  variables?: { name: string; prompt: string }[];
+  id: string;
+  name: string;
+  extension: string;
+  body: string;
+}
+
+/** A new file's icon: the plugin's own file icon for it, else the built-in one. */
+function templateIcon(pluginId: string, extension: string, fileName?: string | null): string {
+  const file = fileName ?? `untitled.${extension}`;
+  const own = usePlugins
+    .getState()
+    .ui.find(
+      (c) =>
+        c.pluginId === pluginId &&
+        c.point === "fileIcons" &&
+        (c.decl as FileIconDecl).patterns.some((p) => matchesPattern(p, file)),
+    );
+  return own ? `ext:fileIcon/${pluginId}/${(own.decl as FileIconDecl).id}` : fileIconName(file);
+}
+
+/** Registers a plugin's file icon (fetched first) and resolves matching files to it. */
+function projectFileIcon(pluginId: string, decl: FileIconDecl): () => void {
+  let disposed = false;
+  let undo = () => {};
+  const name = `ext:fileIcon/${pluginId}/${decl.id}`;
+  void pluginsBackend()
+    .assets(pluginId, `fileIcon/${decl.id}/`)
+    .then((assets) => {
+      if (disposed) return;
+      const svg = (variant: string) => assets.find(([id]) => id === `fileIcon/${decl.id}/${variant}`)?.[1];
+      const light = svg("light");
+      if (!light) return;
+      const dark = svg("dark");
+      const unregister = registerExternalIcons(
+        dark
+          ? [
+              [name, light],
+              [`${name}_dark`, dark],
+            ]
+          : [[name, light]],
+      );
+      const remove = addFileIconProvider((file) => (decl.patterns.some((p) => matchesPattern(p, file)) ? name : null));
+      undo = () => {
+        remove();
+        unregister();
+      };
+    })
+    .catch((e: unknown) => console.warn(`plugin ${pluginId}: file icon ${decl.id}`, e));
+  return () => {
+    disposed = true;
+    undo();
+  };
+}
+
+function projectView(pluginId: string, decl: ViewDecl, index: number): () => void {
+  const initialIcon = decl.icon?.endsWith(".svg") ? "plugin" : (decl.icon ?? "plugin");
+  let disposed = false;
+  let unregisterIcon = () => {};
+  const itemMenu = (key: string) => pluginViewItemMenuItems(pluginId, decl.id, key);
+  let setIcon: (icon: string) => void;
+  let undo: () => void;
+  if (decl.location === "services") {
+    let icon = initialIcon;
+    let remove = () => {};
+    let visible = false;
+    const refresh = () => {
+      const next = evaluateWhen(decl.when ?? undefined);
+      if (next === visible) return;
+      remove();
+      visible = next;
+      remove = next ? registerServiceProvider(pluginServiceProvider(pluginId, decl, icon, itemMenu)) : () => {};
+    };
+    const unsubscribe = useContextKeys.subscribe(refresh);
+    refresh();
+    setIcon = (next) => {
+      icon = next;
+      if (visible) {
+        remove();
+        visible = false;
+        refresh();
+      }
+    };
+    undo = () => {
+      unsubscribe();
+      remove();
+    };
+  } else {
+    const registration = registerWindowView(
+      pluginId,
+      { ...decl, location: decl.location },
+      initialIcon,
+      () =>
+        decl.web ? (
+          <WebView
+            pluginId={pluginId}
+            view={decl.id}
+            label={decl.title}
+            header={decl.header === "none" ? "none" : "default"}
+          />
+        ) : (
+          <PluginView pluginId={pluginId} view={decl.id} detail={decl.detail} label={decl.title} itemMenu={itemMenu} />
+        ),
+      index,
+    );
+    setIcon = registration.setIcon;
+    undo = registration.dispose;
+  }
+  if (decl.icon?.endsWith(".svg")) {
+    void pluginsBackend()
+      .assets(pluginId, `viewIcon/${decl.id}`)
+      .then((assets) => {
+        if (disposed) return;
+        const svg = assets.find(([id]) => id === `viewIcon/${decl.id}`)?.[1];
+        if (!svg) return;
+        const name = `ext:${pluginId}/view-${decl.id}`;
+        unregisterIcon = registerExternalIcons([[name, svg]]);
+        setIcon(name);
+      })
+      .catch((e: unknown) => console.warn(`plugin ${pluginId}: view icon ${decl.id}`, e));
+  }
+  return () => {
+    disposed = true;
+    undo();
+    unregisterIcon();
+  };
+}
+
+/** Registers the client side of the P7 points; returns their disposer. */
+export function defineViewUiPoints(): () => void {
+  const disposers = [
+    defineUiPoint<MenuDecl>("menus", {
+      title: "Menus",
+      project: ({ pluginId, decl }, { plugin }) => projectMenu(pluginId, decl, plugin),
+    }),
+    defineUiPoint<KeymapDecl>("keymaps", {
+      title: "Shortcuts",
+      project: ({ pluginId, decl }) =>
+        registerExtensionBindings(pluginActionId(pluginId, decl.command), [
+          isMacHost() ? (decl.mac ?? decl.key) : decl.key,
+        ]),
+    }),
+    defineUiPoint<StatusDecl>("statusBar", {
+      title: "Status Bar Items",
+      project: ({ pluginId, decl }) =>
+        declareStatusItem(pluginId, decl.id, {
+          item: { text: decl.text, tooltip: decl.tooltip ?? null, command: decl.command ?? null },
+          align: decl.align,
+          priority: decl.priority,
+        }),
+    }),
+    defineUiPoint<SettingsDecl>("settings", {
+      title: "Settings",
+      project: ({ pluginId, decl }) => projectSettings(pluginId, decl),
+    }),
+    defineUiPoint<ViewDecl>("views", {
+      orderSensitive: true,
+      title: "Tool Windows",
+      project: ({ pluginId, decl }, { index }) => projectView(pluginId, decl, index),
+    }),
+    defineUiPoint<CustomEditorDecl>("customEditors", {
+      title: "Editors",
+      project: ({ pluginId, decl }) => {
+        const matches = (path: string) => decl.patterns.some((p) => matchesPattern(p, basename(path)));
+        const beside = decl.layout === "split" || decl.layout === "preview";
+        // A side-by-side editor wraps the text editor the file opens in; the others open their own tab.
+        const provider =
+          decl.priority !== "default"
+            ? () => {}
+            : beside
+              ? registerTextEditorWrapper({
+                  id: `plugin.${pluginId}.${decl.id}`,
+                  matches,
+                  component: layoutWrapper(pluginId, decl),
+                  tabActions: layoutActions(pluginId, decl),
+                })
+              : registerFileEditorProvider({
+                  id: `plugin.${pluginId}.${decl.id}`,
+                  order: 40,
+                  resolve: (path) => (matches(path) ? customEditorInput(pluginId, decl, path) : null),
+                });
+        openWith.set(`${pluginId}/${decl.id}`, { pluginId, decl, matches });
+        return () => {
+          provider();
+          openWith.delete(`${pluginId}/${decl.id}`);
+        };
+      },
+    }),
+    defineUiPoint<MarkerIconDecl>("markerIcons", {
+      title: "Marker Icons",
+      project: ({ pluginId, decl }) => projectMarkerIcon(pluginId, decl),
+    }),
+    defineUiPoint<FileIconDecl>("fileIcons", {
+      title: "File Icons",
+      project: ({ pluginId, decl }) => projectFileIcon(pluginId, decl),
+    }),
+    defineUiPoint<CommitCheckDecl>("commitChecks", {
+      title: "Commit Checks",
+      project: ({ pluginId, decl }) => projectCommitCheck(pluginId, decl),
+    }),
+    defineUiPoint<{
+      source: string;
+      language: string;
+      entries: { name: string; prefixes: string[]; body: string; description: string }[];
+    }>("snippets", {
+      title: "Snippets",
+      project: ({ pluginId, decl }, { plugin }) =>
+        addContributedSnippets(
+          decl.entries.map((s, i) => ({
+            id: `plugin-snippet:${pluginId}:${decl.source}:${i}`,
+            pluginName: plugin.name,
+            language: decl.language,
+            prefixes: s.prefixes,
+            body: s.body,
+            description: s.description,
+          })),
+        ),
+    }),
+    defineUiPoint<FileTemplateDecl>("fileTemplates", {
+      title: "File Templates",
+      project: ({ pluginId, decl }) =>
+        addContributedFileTemplate({
+          id: `plugin.${pluginId}.${decl.id}`,
+          name: decl.name,
+          icon: templateIcon(pluginId, decl.extension, decl.fileName),
+          extension: decl.extension,
+          nameStyle: "asis",
+          fileName: decl.fileName ?? undefined,
+          variables: decl.variables,
+          inferPackage: true,
+          kinds: [{ id: "file", label: decl.name, body: decl.body }],
+        }),
+    }),
+  ];
+  return () => disposers.reverse().forEach((d) => d());
+}
+
+/** Custom editors by `plugin/id`, for Open With. */
+const openWith = new Map<string, { pluginId: string; decl: CustomEditorDecl; matches: (path: string) => boolean }>();
+
+/** One-time registrations behind the points: the editor kind and the context menu group. */
+export function startViewUi(openInput: (input: ReturnType<typeof customEditorInput>) => void): () => void {
+  const disposers = [
+    registerLogActions(),
+    registerContentActions(),
+    registerEditorKind({
+      kind: CUSTOM_EDITOR_KIND,
+      component: CustomEditor,
+      title: (input) => basename(input.path ?? input.key),
+      icon: () => "db-table",
+      restorable: true,
+      document: customEditorDocument,
+    }),
+    registerEditorKind({
+      kind: PLUGIN_LOG_EDITOR_KIND,
+      component: PluginLogEditor,
+      keepAlive: true,
+      title: pluginLogEditorTitle,
+      icon: () => "file-log",
+    }),
+    registerEditorKind({
+      kind: PLUGIN_CONTENT_EDITOR_KIND,
+      component: PluginContentEditor,
+      keepAlive: true,
+      title: pluginContentEditorTitle,
+      icon: pluginContentEditorIcon,
+      document: pluginContentEditorDocument,
+    }),
+    registerMenuGroup({
+      id: "plugins",
+      menus: ["editor", "projectView", "editorTab", "problems", "searchResults"],
+      order: 90,
+      items: (menu, ctx) => {
+        const items = pluginMenuItems(
+          menu,
+          ctx.paths,
+          ctx.line === undefined ? undefined : { line: ctx.line, column: ctx.column ?? 0 },
+        );
+        const path = ctx.paths[0];
+        if ((menu === "projectView" || menu === "editorTab") && path && !ctx.dirs?.[0]) {
+          const editors = [...openWith.values()].filter((e) => e.matches(path));
+          if (editors.length)
+            items.push({
+              label: tx("Open With"),
+              submenu: editors.map((e) => ({
+                label: e.decl.title,
+                verbatim: true,
+                run: () => openInput(customEditorInput(e.pluginId, e.decl, path)),
+              })),
+            });
+        }
+        return items;
+      },
+    }),
+  ];
+  return () => disposers.reverse().forEach((d) => d());
+}

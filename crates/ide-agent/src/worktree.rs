@@ -5,7 +5,7 @@ use ide_core::{IdeError, IdeResult, IpcPath};
 use ide_vcs::{ChangeKind, Repo};
 use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
-use std::time::UNIX_EPOCH;
+use std::time::{Duration, UNIX_EPOCH};
 
 pub(crate) struct Created {
     pub path: PathBuf,
@@ -48,8 +48,44 @@ pub(crate) fn create(project_root: &Path, worktrees_dir: &Path, title: &str, bas
     Ok(Created { path, branch, base, base_commit })
 }
 
-pub(crate) fn remove(project_root: &Path, path: &Path) -> IdeResult<()> {
-    repo_at(project_root)?.remove_worktree(path, true)
+/// `git worktree remove --force -- <path>`. When git no longer recognizes the
+/// worktree (a pruned registration, a moved repository, a deleted `.git` file)
+/// it fails with "is not a working tree". A folder under `worktrees_dir` is still
+/// ours, so it is removed directly to keep the task deletable (a stale
+/// registration prunes later); anything else keeps git's error.
+pub(crate) fn remove(project_root: &Path, worktrees_dir: &Path, path: &Path) -> IdeResult<()> {
+    let repo = repo_at(project_root)?;
+    let err = match repo.remove_worktree(path, true) {
+        Ok(()) => return Ok(()),
+        Err(e) => e,
+    };
+    if !path.exists() {
+        return Ok(());
+    }
+    if !path.starts_with(worktrees_dir) || path == worktrees_dir {
+        return Err(err);
+    }
+    retrying(REMOVE_ATTEMPTS, REMOVE_PAUSE, || std::fs::remove_dir_all(path))
+        .map_err(|e| IdeError::internal(format!("{}: {e}", path.display())))
+}
+
+/// On Windows a folder can't be deleted while a process still has a file in it open
+/// (os error 32): an agent's helper that outlived it, an antivirus scan, the search indexer.
+/// Those let go within moments, so removing is retried for a few seconds.
+const REMOVE_ATTEMPTS: u32 = 10;
+const REMOVE_PAUSE: Duration = Duration::from_millis(300);
+
+fn retrying(attempts: u32, pause: Duration, mut op: impl FnMut() -> std::io::Result<()>) -> std::io::Result<()> {
+    for _ in 1..attempts {
+        match op() {
+            Err(e) if e.kind() != std::io::ErrorKind::NotFound => std::thread::sleep(pause),
+            _ => return Ok(()),
+        }
+    }
+    match op() {
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(()),
+        r => r,
+    }
 }
 
 /// Files under `cwd` that differ from `base` (untracked files included), with line counts.
@@ -134,6 +170,54 @@ mod tests {
     use super::*;
 
     #[test]
+    fn removing_is_retried_while_a_file_is_still_in_use() {
+        use std::io::{Error, ErrorKind};
+        // A sharing violation as Windows reports it (os error 32), a vanished folder, other errors.
+        let in_use = || Error::from_raw_os_error(32);
+        for (fails, outcome) in [(0, true), (3, true), (REMOVE_ATTEMPTS - 1, true), (REMOVE_ATTEMPTS, false)] {
+            let mut calls = 0;
+            let r = retrying(REMOVE_ATTEMPTS, Duration::ZERO, || {
+                calls += 1;
+                if calls <= fails { Err(in_use()) } else { Ok(()) }
+            });
+            assert_eq!(r.is_ok(), outcome, "{fails} failures");
+            assert_eq!(calls, (fails + 1).min(REMOVE_ATTEMPTS));
+        }
+        let mut calls = 0;
+        let gone = retrying(REMOVE_ATTEMPTS, Duration::ZERO, || {
+            calls += 1;
+            if calls == 1 { Err(in_use()) } else { Err(Error::from(ErrorKind::NotFound)) }
+        });
+        assert!(gone.is_ok(), "deleted meanwhile: done");
+        assert_eq!(calls, 2);
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn removing_waits_for_a_windows_file_lock_to_be_released() {
+        use std::os::windows::fs::OpenOptionsExt;
+        let tmp = tempfile::tempdir().unwrap();
+        let repo = tmp.path().join("repo");
+        std::fs::create_dir(&repo).unwrap();
+        git(&repo, &["init", "-q", "-b", "main"]);
+        std::fs::write(repo.join("a.txt"), "one\n").unwrap();
+        git(&repo, &["add", "."]);
+        git(&repo, &["commit", "-q", "-m", "init"]);
+        let worktrees = tmp.path().join("wt");
+        let created = create(&repo, &worktrees, "Locked file", None).unwrap();
+        let file = std::fs::OpenOptions::new().read(true).share_mode(0).open(created.path.join("a.txt")).unwrap();
+        assert_eq!(std::fs::remove_file(created.path.join("a.txt")).unwrap_err().raw_os_error(), Some(32));
+        let release = std::thread::spawn(move || {
+            std::thread::sleep(Duration::from_millis(800));
+            drop(file);
+        });
+        let result = remove(&repo, &worktrees, &created.path);
+        release.join().unwrap();
+        result.unwrap();
+        assert!(!created.path.exists());
+    }
+
+    #[test]
     fn slugs_are_branch_safe() {
         assert_eq!(slugify("Fix lexer UTF-16 columns!"), "fix-lexer-utf-16-columns");
         assert_eq!(slugify("修复 lexer 越界"), "lexer");
@@ -153,7 +237,7 @@ mod tests {
         assert!(snapshot(&dir).unwrap().is_empty());
         assert_eq!(file_at(&dir, &dir.join("a.txt"), "HEAD").unwrap(), None);
         assert!(create(&dir, &tmp.path().join("wt"), "Edit A", None).is_err());
-        assert!(remove(&dir, &dir).is_err());
+        assert!(remove(&dir, tmp.path(), &dir).is_err());
     }
 
     fn git(dir: &Path, args: &[&str]) {
@@ -202,7 +286,38 @@ mod tests {
 
         // A second task with the same title gets its own worktree.
         assert_eq!(create(&repo, &tmp.path().join("wt"), "Edit A", None).unwrap().branch, "agent/edit-a-2");
-        remove(&repo, &created.path).unwrap();
+        remove(&repo, &tmp.path().join("wt"), &created.path).unwrap();
         assert!(!created.path.exists());
+    }
+
+    #[test]
+    fn a_broken_worktree_registration_still_leaves_a_deletable_folder() {
+        let tmp = tempfile::tempdir().unwrap();
+        let repo = tmp.path().join("repo");
+        std::fs::create_dir(&repo).unwrap();
+        git(&repo, &["init", "-q", "-b", "main"]);
+        std::fs::write(repo.join("a.txt"), "one\n").unwrap();
+        git(&repo, &["add", "."]);
+        git(&repo, &["commit", "-q", "-m", "init"]);
+
+        // A pruned registration (the repository moved, `git worktree prune` ran).
+        let created = create(&repo, &tmp.path().join("wt"), "Edit A", None).unwrap();
+        let registration = repo.join(".git/worktrees").join(created.path.file_name().unwrap());
+        std::fs::remove_dir_all(registration).unwrap();
+        remove(&repo, &tmp.path().join("wt"), &created.path).unwrap();
+        assert!(!created.path.exists());
+
+        // A deleted `.git` file in the worktree itself.
+        let created = create(&repo, &tmp.path().join("wt"), "Edit B", None).unwrap();
+        std::fs::remove_file(created.path.join(".git")).unwrap();
+        remove(&repo, &tmp.path().join("wt"), &created.path).unwrap();
+        assert!(!created.path.exists());
+
+        // A folder outside the worktrees directory is never deleted by hand.
+        let elsewhere = tmp.path().join("elsewhere");
+        std::fs::create_dir(&elsewhere).unwrap();
+        std::fs::write(elsewhere.join("keep.txt"), "x\n").unwrap();
+        assert!(remove(&repo, &tmp.path().join("wt"), &elsewhere).is_err());
+        assert!(elsewhere.join("keep.txt").exists());
     }
 }

@@ -6,7 +6,7 @@
  */
 import type { Location, OutlineItem, SymbolKind } from "@/platform/ipc";
 import { tx } from "@/platform/i18n";
-import { identifierAt } from "@/editor/lsp/files";
+import { targetLabel } from "@/editor/lsp/files";
 import { baseName, type SuperMethod } from "./structureNav";
 
 export type MarkerKind = "implemented" | "overridden" | "implementing" | "overriding";
@@ -151,7 +151,7 @@ export function enclosingTypeName(lines: readonly string[] | null | undefined, t
 /** Display name of a target: the type itself for type markers, the type around it for methods. */
 export function targetName(lines: readonly string[] | null | undefined, target: Location, method: boolean): string {
   if (!method) {
-    const name = identifierAt(lines?.[target.range.start.line] ?? "", target.range.start.col);
+    const name = targetLabel(lines?.[target.range.start.line] ?? "", target.range.start.col);
     if (name) return name;
   }
   return enclosingTypeName(lines, target);

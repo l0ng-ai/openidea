@@ -24,6 +24,9 @@ function flag(root: HTMLElement, name: string, on: boolean, value = "") {
   else delete root.dataset[name];
 }
 
+/** The per-level indent `ui/Tree` reads when "Use smaller indents in trees" is on (IDEA parity). */
+export const SMALL_TREE_INDENT = "12px";
+
 /** Root attributes and CSS variables for the Appearance options. */
 export function applyAppearanceOptions(s: ValidSettings, root: HTMLElement = document.documentElement): void {
   const a = s.appearance;
@@ -42,6 +45,9 @@ export function applyAppearanceOptions(s: ValidSettings, root: HTMLElement = doc
   flag(root, "toolWindowBg", a.differentToolWindowBackground, "different");
   flag(root, "projectColors", !a.projectColorsInToolbar, "off");
   flag(root, "menuIcons", !a.menuIcons, "off");
+  // "Use smaller indents in trees": `ui/Tree` reads the variable as its per-level indent.
+  if (a.smallTreeIndents) root.style.setProperty("--tree-indent", SMALL_TREE_INDENT);
+  else root.style.removeProperty("--tree-indent");
   root.dataset.aaIde = a.ideAntialiasing;
   root.dataset.aaEditor = a.editorAntialiasing;
   applyZoom(a.zoom, root);
@@ -108,21 +114,75 @@ export function zoomActions(): Action[] {
       keywords: ["zoom", "scale", "100%", "accessibility"],
       run: () => setZoom(100),
     },
-    {
-      // View › Appearance › Compact Mode (Settings › Appearance › "Compact mode").
-      id: "view.toggleCompactMode",
-      title: "Compact Mode",
-      category: "View",
-      keywords: ["appearance", "density", "smaller"],
-      toggled: () => validateSettings(useProject.getState().settings).appearance.compactMode,
-      run: async () => {
-        if (!isTauri()) return;
-        const next = !validateSettings(useProject.getState().settings).appearance.compactMode;
-        useProject.setState({
-          settings: await call(commands.settingsSet("global", "appearance.compactMode", JSON.stringify(next))),
-        });
-      },
+  ];
+}
+
+// ---------------------------------------------------------------------------
+// View › Appearance toggles over boolean appearance settings (IDEA's ToggleActions)
+
+type AppearanceFlag = "compactMode" | "showMainToolbar" | "showToolWindowBars" | "showStatusBar";
+
+const appearanceFlag = (key: AppearanceFlag) => validateSettings(useProject.getState().settings).appearance[key];
+
+const navigationBarPosition = (): NavigationBarPosition =>
+  validateSettings(useProject.getState().settings).appearance.navigationBar;
+
+function appearanceToggle(id: string, title: string, key: AppearanceFlag, keywords: string[]): Action {
+  return {
+    id,
+    title,
+    category: "View",
+    keywords: ["appearance", ...keywords],
+    toggled: () => appearanceFlag(key),
+    run: async () => {
+      if (!isTauri()) return;
+      const next = !appearanceFlag(key);
+      useProject.setState({
+        settings: await call(commands.settingsSet("global", `appearance.${key}`, JSON.stringify(next))),
+      });
     },
+  };
+}
+
+export function appearanceToggleActions(): Action[] {
+  return [
+    appearanceToggle("view.toggleCompactMode", "Compact Mode", "compactMode", ["density", "smaller"]),
+    appearanceToggle("view.toggleToolbar", "Toolbar", "showMainToolbar", ["main toolbar", "header", "hide"]),
+    appearanceToggle("view.toggleToolWindowBars", "Tool Window Bars", "showToolWindowBars", [
+      "stripes",
+      "tool window buttons",
+      "hide",
+    ]),
+    appearanceToggle("view.toggleStatusBar", "Status Bar", "showStatusBar", ["hide"]),
+  ];
+}
+
+// ---------------------------------------------------------------------------
+// View › Appearance › Navigation Bar: a radio choice (Top / Status Bar / hidden)
+
+type NavigationBarPosition = "top" | "statusBar" | "hidden";
+
+function navigationBarAction(id: string, title: string, position: NavigationBarPosition, keywords: string[]): Action {
+  return {
+    id,
+    title,
+    category: "View",
+    keywords: ["appearance", "navigation bar", ...keywords],
+    toggled: () => navigationBarPosition() === position,
+    run: async () => {
+      if (!isTauri()) return;
+      useProject.setState({
+        settings: await call(commands.settingsSet("global", "appearance.navigationBar", JSON.stringify(position))),
+      });
+    },
+  };
+}
+
+export function navigationBarActions(): [Action, Action, Action] {
+  return [
+    navigationBarAction("view.navigationBarTop", "Top", "top", ["above editor", "menu bar"]),
+    navigationBarAction("view.navigationBarStatusBar", "Status Bar", "statusBar", ["footer", "bottom"]),
+    navigationBarAction("view.navigationBarHidden", "Don't Show", "hidden", ["hide", "breadcrumbs", "file path"]),
   ];
 }
 

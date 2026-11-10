@@ -2,13 +2,13 @@
 //! updates queued by the watcher.
 
 use crate::data::{FileEntry, FileRecord, IndexData, StoredSymbol};
-use crate::filter::{Found, PathFilter, mtime_of};
+use crate::filter::{Found, PathFilter};
 use crate::store::Store;
 use ide_core::{IdeEvent, SharedSink, TaskId};
 use ide_language::{LanguageRegistry, Syntax};
 use parking_lot::{Condvar, Mutex, RwLock};
 use rayon::prelude::*;
-use std::collections::{HashSet, VecDeque};
+use std::collections::{HashMap, HashSet, VecDeque};
 use std::io::Read;
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicBool, Ordering};
@@ -26,6 +26,7 @@ pub(crate) enum Job {
     SaveRecent,
     /// The roots or excludes changed: scan again (unchanged files are kept).
     Rescan,
+    IgnoreRules(Vec<PathBuf>),
     /// File types changed: re-parse the indexed files whose language under the
     /// previous registry differs from the current one.
     Reparse(std::sync::Arc<LanguageRegistry>),
@@ -174,7 +175,10 @@ impl Shared {
             Ok(records) => {
                 let entries: Vec<FileEntry> = records
                     .into_par_iter()
-                    .filter(|(rel, _)| !filter.is_excluded(&root.join(rel), false))
+                    .filter(|(rel, _)| {
+                        let path = root.join(rel);
+                        !filter.is_excluded(&path, false) && dunce::canonicalize(&path).is_ok_and(|real| real == path)
+                    })
                     .map(|(rel, rec)| FileEntry::new(root.join(&rel), rel, rec))
                     .collect();
                 let mut d = self.data.write();
@@ -209,6 +213,10 @@ impl Shared {
     }
 
     fn full_scan(&self) {
+        self.scan(None);
+    }
+
+    fn scan(&self, dirs: Option<&[PathBuf]>) {
         let started = Instant::now();
         self.indexing.store(true, Ordering::SeqCst);
         self.emit_state();
@@ -224,7 +232,11 @@ impl Shared {
 
         let filter = self.filter();
         let mut found = Vec::new();
-        for root in filter.roots() {
+        let roots: Vec<&Path> = match dirs {
+            Some(dirs) => dirs.iter().map(PathBuf::as_path).collect(),
+            None => filter.roots().collect(),
+        };
+        for root in roots {
             found.extend(filter.walk(root, &self.cancelled));
         }
         if self.is_cancelled() {
@@ -233,11 +245,13 @@ impl Shared {
         let seen: HashSet<&Path> = found.iter().map(|f| f.path.as_path()).collect();
         let (todo, stale): (Vec<&Found>, Vec<PathBuf>) = {
             let d = self.data.read();
-            let todo = found
-                .iter()
-                .filter(|f| d.get(&f.path).is_none_or(|e| e.mtime != f.mtime || e.size != f.size))
+            let todo = found.iter().filter(|f| d.get(&f.path).is_none_or(|e| e.stale_for(f))).collect();
+            let stale = d
+                .paths()
+                .filter(|p| dirs.is_none_or(|dirs| dirs.iter().any(|dir| p.starts_with(dir))))
+                .filter(|p| !seen.contains(p.as_path()))
+                .cloned()
                 .collect();
-            let stale = d.paths().filter(|p| !seen.contains(p.as_path())).cloned().collect();
             (todo, stale)
         };
         if !stale.is_empty() {
@@ -311,6 +325,7 @@ impl Shared {
                         let mut rec = d.get(&f.path)?.record();
                         rec.mtime = f.mtime;
                         rec.size = f.size;
+                        rec.ignored = f.ignored;
                         Some((rel, rec, f.path.clone()))
                     }
                     Extracted::New(rec) => Some((rel, rec, f.path.clone())),
@@ -342,8 +357,8 @@ impl Shared {
     }
 
     fn extract(&self, f: &Found, prev_hash: Option<[u8; 32]>) -> Extracted {
-        let mut rec = FileRecord { mtime: f.mtime, size: f.size, ..Default::default() };
-        if f.size > MAX_SYMBOL_FILE {
+        let mut rec = FileRecord { mtime: f.mtime, size: f.size, ignored: f.ignored, ..Default::default() };
+        if f.ignored || f.size > MAX_SYMBOL_FILE {
             return Extracted::New(rec);
         }
         let mut bytes = Vec::with_capacity(f.size as usize);
@@ -380,6 +395,7 @@ impl Shared {
         let mut removed: Vec<PathBuf> = Vec::new();
         let mut save_recent = false;
         let mut rescan = false;
+        let mut rule_dirs = Vec::new();
         let mut reparse: Vec<std::sync::Arc<LanguageRegistry>> = Vec::new();
         for job in jobs {
             match job {
@@ -387,7 +403,27 @@ impl Shared {
                 Job::Removed(p) => removed.extend(p),
                 Job::SaveRecent => save_recent = true,
                 Job::Rescan => rescan = true,
+                Job::IgnoreRules(dirs) => rule_dirs.extend(dirs),
                 Job::Reparse(before) => reparse.push(before),
+            }
+        }
+        if !rule_dirs.is_empty() {
+            {
+                let mut filter = self.filter.write();
+                *filter = std::sync::Arc::new(filter.reload());
+            }
+            rule_dirs.sort();
+            rule_dirs.dedup();
+            let mut roots: Vec<PathBuf> = Vec::new();
+            for dir in rule_dirs {
+                if !roots.iter().any(|root| dir.starts_with(root)) {
+                    roots.push(dir);
+                }
+            }
+            if !rescan {
+                self.scan(Some(&roots));
+                changed.retain(|p| !roots.iter().any(|root| p.starts_with(root)));
+                removed.retain(|p| !roots.iter().any(|root| p.starts_with(root)));
             }
         }
         if rescan {
@@ -420,8 +456,12 @@ impl Shared {
 
         let mut files: Vec<Found> = Vec::new();
         let mut seen = HashSet::new();
+        let mut by_dir: HashMap<PathBuf, HashSet<PathBuf>> = HashMap::new();
         for path in changed {
-            if !seen.insert(path.clone()) {
+            // A watcher path may have a symlink ancestor even when its spelling
+            // is inside the root. Resolve it on the worker before reading it.
+            let Ok(path) = dunce::canonicalize(&path) else { continue };
+            if !filter.contains(&path) || !seen.insert(path.clone()) {
                 continue;
             }
             let Ok(meta) = std::fs::symlink_metadata(&path) else { continue };
@@ -430,16 +470,19 @@ impl Shared {
             }
             if meta.is_dir() {
                 files.extend(filter.walk(&path, &self.cancelled));
-            } else if meta.is_file() {
-                files.push(Found { mtime: mtime_of(&meta), size: meta.len(), path });
+            } else if meta.is_file()
+                && let Some(dir) = path.parent()
+            {
+                by_dir.entry(dir.to_owned()).or_default().insert(path);
             }
+        }
+        // Listing the folder applies every ignore file (nested, global) to tell ignored files apart.
+        for (dir, wanted) in by_dir {
+            files.extend(filter.list_dir(&dir).into_iter().filter(|f| wanted.contains(&f.path)));
         }
         let files: Vec<Found> = {
             let d = self.data.read();
-            files
-                .into_iter()
-                .filter(|f| d.get(&f.path).is_none_or(|e| e.mtime != f.mtime || e.size != f.size))
-                .collect()
+            files.into_iter().filter(|f| d.get(&f.path).is_none_or(|e| e.stale_for(f))).collect()
         };
         if !files.is_empty() {
             touched = true;
@@ -457,7 +500,7 @@ impl Shared {
                     .filter(|p| before.detect(p, None) != self.languages.detect(p, None))
                     .filter_map(|p| {
                         let e = d.get(p)?;
-                        Some(Found { path: p.clone(), mtime: e.mtime, size: e.size })
+                        Some(Found { path: p.clone(), mtime: e.mtime, size: e.size, ignored: e.ignored })
                     })
                     .collect()
             };

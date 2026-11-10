@@ -16,7 +16,13 @@ pub struct TrustDecisions {
 pub struct TrustStore {
     file: PathBuf,
     state: Mutex<IdeResult<TrustDecisions>>,
+    /// Folders trusted for this process only, by the client that started it ([`TRUSTED_ROOT_ENV`]).
+    inherited: Mutex<Vec<PathBuf>>,
 }
+
+/// Set by the desktop when it starts the server in a dev container of a folder the user trusts
+/// there: the project folder in the container, trusted without asking again. Never persisted.
+pub const TRUSTED_ROOT_ENV: &str = "OPENIDEA_TRUSTED_ROOT";
 
 impl TrustStore {
     pub fn load(config: &Path, data: &Path) -> Self {
@@ -34,7 +40,7 @@ impl TrustStore {
             }
             Err(e) => Err(e.into()),
         };
-        Self { file, state: Mutex::new(state) }
+        Self { file, state: Mutex::new(state), inherited: Mutex::default() }
     }
 
     pub fn decisions(&self) -> IdeResult<TrustDecisions> {
@@ -45,7 +51,35 @@ impl TrustStore {
         let root = dunce::canonicalize(path)?;
         let decisions = self.decisions()?;
         Ok(!decisions.restricted.contains(&root)
-            && (decisions.projects.contains(&root) || decisions.locations.iter().any(|p| root.starts_with(p))))
+            && (decisions.projects.contains(&root)
+                || decisions.locations.iter().any(|p| root.starts_with(p))
+                || self.inherited.lock().contains(&root)))
+    }
+
+    pub fn window_trusted(&self, root: &Path) -> IdeResult<bool> {
+        if !self.trusted(root)? {
+            return Ok(false);
+        }
+        if let Some(workspace) = ide_workspace::workspace::Workspace::load(root)?
+            && !workspace.is_container(root)
+        {
+            for member in workspace.projects.iter().filter(|p| *p != root && p.exists()) {
+                if !self.trusted(member)? {
+                    return Ok(false);
+                }
+            }
+        }
+        Ok(true)
+    }
+
+    /// Trusts `path` for this process without recording a decision (see [`TRUSTED_ROOT_ENV`]).
+    pub fn inherit(&self, path: &Path) -> IdeResult<()> {
+        let root = dunce::canonicalize(path)?;
+        let mut inherited = self.inherited.lock();
+        if !inherited.contains(&root) {
+            inherited.push(root);
+        }
+        Ok(())
     }
 
     pub fn decide(&self, path: &Path, trusted: bool, folder: bool) -> IdeResult<()> {
@@ -71,6 +105,21 @@ impl TrustStore {
         }
         persist(&self.file, &next)?;
         *state = Ok(next);
+        Ok(())
+    }
+
+    pub fn add_location(&self, path: &Path) -> IdeResult<()> {
+        let root = dunce::canonicalize(path)?;
+        if !root.is_dir() {
+            return Err(IdeError::invalid("trusted location must be an existing directory"));
+        }
+        let mut state = self.state.lock();
+        let mut next = state.clone()?;
+        if !next.locations.contains(&root) {
+            next.locations.push(root);
+            persist(&self.file, &next)?;
+            *state = Ok(next);
+        }
         Ok(())
     }
 
@@ -101,7 +150,7 @@ impl crate::Host {
 
     pub async fn refresh_project_trust(&self) -> IdeResult<()> {
         for project in self.projects().into_iter().filter(|p| !p.light) {
-            let trusted = self.trust.trusted(&project.root).unwrap_or(false);
+            let trusted = self.trust.window_trusted(&project.root).unwrap_or(false);
             let previous = project.trusted.swap(trusted, std::sync::atomic::Ordering::AcqRel);
             if previous == trusted {
                 continue;
@@ -109,7 +158,13 @@ impl crate::Host {
             if let Some(bridge) = &project.kotlin_bridge {
                 bridge.schedule();
             }
+            if let Some(phpstan) = &project.phpstan {
+                phpstan.interrupt();
+            }
             if !trusted {
+                if let Some(plugins) = self.plugin_host() {
+                    plugins.withdraw_project_run_targets(&project.root);
+                }
                 project.lsp.set_execution_allowed(false);
             }
             project.repos();
@@ -118,6 +173,7 @@ impl crate::Host {
                     self.environment.spawn_post_start(cmd, project.root.clone(), project.sink.clone());
                 }
                 project.lsp.set_execution_allowed(true);
+                project.lsp.prewarm_java_configuration();
             } else {
                 self.environment.project_closed();
                 project.agents.shutdown();
@@ -135,9 +191,7 @@ impl crate::Host {
                     for request in requests {
                         self.cancel_request(request);
                     }
-                    for session in self.debugger.sessions(Some(&window)) {
-                        let _ = self.debugger.stop(session.id).await;
-                    }
+                    self.debugger.stop_key(&window).await;
                 }
             }
             project.lsp.reconfigure().await;
@@ -179,15 +233,21 @@ pub fn restricted_command_allowed(cmd: &str) -> bool {
         cmd,
         "app_info"
             | "app_build_info"
+            | "app_cli_install"
+            | "app_cli_uninstall"
             | "app_log_location"
             | "app_check_update"
-            | "app_startup_update_check"
+            | "app_update_window_ready"
+            | "app_update_status"
+            | "app_update_announcement"
             | "app_install_update"
             | "caches_schedule_invalidation"
             | "clear_caches"
             | "clipboard_file_list"
             | "clipboard_has_files"
+            | "clipboard_image"
             | "clipboard_set_file_list"
+            | "clipboard_write_text"
             | "jdk_download_vendors"
             | "jdk_download_releases"
             | "jdk_download_location"
@@ -211,19 +271,28 @@ pub fn restricted_command_allowed(cmd: &str) -> bool {
             | "menu_model"
             | "menu_configure"
             | "menu_set_disabled"
+            | "prepare_workspace_edit"
+            | "apply_workspace_edit"
+            | "undo_workspace_edit"
+            | "redo_workspace_edit"
             | "lsp_servers"
             | "lsp_resend_diagnostics"
             | "recent_projects"
             | "remove_recent_project"
+            | "recent_project_groups"
+            | "set_recent_project_groups"
             | "open_project"
             | "close_project"
             | "project_current"
             | "project_roots"
             | "index_status"
+            | "index_file_extensions"
             | "jvm_file_presentations"
             | "deploy_coverage"
             | "deploy_test_connection"
             | "find_files"
+            | "find_files_named"
+            | "find_dirs"
             | "find_symbols"
             | "mark_recent"
             | "remove_recent"
@@ -234,6 +303,7 @@ pub fn restricted_command_allowed(cmd: &str) -> bool {
             | "project_rename"
             | "light_edit_open"
             | "workspace_create"
+            | "workspace_discover_projects"
             | "workspace_update"
             | "workspace_attach"
             | "cancel_request"
@@ -245,6 +315,8 @@ pub fn restricted_command_allowed(cmd: &str) -> bool {
             | "remote_disconnect"
             | "remote_connect"
             | "remote_bootstrap_list"
+            | "wsl_distros"
+            | "wsl_resolve"
             | "remote_list"
             | "remote_open"
             | "remote_of"
@@ -257,6 +329,7 @@ pub fn restricted_command_allowed(cmd: &str) -> bool {
             | "agent_commands"
             | "agent_unqueue"
             | "agent_cancel"
+            | "agent_stop_background"
             | "agent_archive"
             | "agent_unarchive"
             | "agent_registry_list"
@@ -271,6 +344,17 @@ pub fn restricted_command_allowed(cmd: &str) -> bool {
             | "plugin_set_theme"
             | "plugin_set_theme_frame"
             | "plugin_catalog"
+            | "plugin_assets"
+            | "plugin_set_ui_locale"
+            | "plugin_market"
+            | "plugin_market_url"
+            | "plugin_set_market_url"
+            | "plugin_market_download"
+            | "plugin_unpack_package"
+            | "plugin_stage_package"
+            | "plugin_preview_install"
+            | "plugin_read_intellij_theme"
+            | "plugin_installed_intellij_themes"
             | "notebook_open"
             | "notebook_get"
             | "notebook_edit"
@@ -292,7 +376,15 @@ pub fn restricted_command_allowed(cmd: &str) -> bool {
             | "vcs_line_hunks"
             | "vcs_file_at"
             | "vcs_blame"
+            | "vcs_block_history"
             | "vcs_log"
+            | "vcs_log_refs"
+            | "vcs_log_users"
+            | "vcs_log_details"
+            | "vcs_log_details_batch"
+            | "vcs_revision_children"
+            | "vcs_revision_files"
+            | "vcs_open_external_log"
             | "vcs_commit_files"
             | "vcs_commits_changes"
             | "vcs_branches"
@@ -309,11 +401,31 @@ pub fn restricted_command_allowed(cmd: &str) -> bool {
             | "vcs_compare_scope"
             | "vcs_compare_paths"
             | "vcs_diff_revisions"
+            | "vcs_diff_numstat"
             | "vcs_merge_base"
+            | "vcs_has_hook"
             | "vcs_shelves"
             | "vcs_shelf_patch"
             | "vcs_changelists_load"
     ) || cmd.starts_with("plugin:")
+}
+
+/// Commands that change which plugin code runs: allowed where no project is open (the
+/// welcome screen), otherwise only in a trusted project.
+pub fn projectless_command_allowed(cmd: &str) -> bool {
+    matches!(
+        cmd,
+        "plugin_install_dir"
+            | "plugin_uninstall"
+            | "plugin_set_enabled"
+            | "plugin_grant"
+            | "plugin_set_capability"
+            | "plugin_revoke_net_host"
+            | "plugin_choose_program"
+            | "plugin_program"
+            | "plugin_roll_back"
+            | "plugin_reload"
+    )
 }
 
 impl crate::Host {
@@ -321,7 +433,11 @@ impl crate::Host {
         if restricted_command_allowed(command) {
             return Ok(());
         }
-        self.project(window)?.require_trust()
+        match self.project(window) {
+            Ok(project) => project.require_trust(),
+            Err(_) if projectless_command_allowed(command) => Ok(()),
+            Err(error) => Err(error),
+        }
     }
 }
 
@@ -338,5 +454,13 @@ impl TrustStore {
         let trusted = self.trusted(&root)?;
         let state = self.decisions()?;
         Ok(TrustStatus { decided: trusted || state.restricted.contains(&root), root: root.into(), trusted })
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    #[test]
+    fn restricted_mode_allows_clipboard_write_text() {
+        assert!(super::restricted_command_allowed("clipboard_write_text"));
     }
 }

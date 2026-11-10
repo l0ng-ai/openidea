@@ -2,7 +2,7 @@
  * The base extension set of every text editor, with compartments for the
  * parts that change at runtime (language, settings, contributions).
  */
-import { Compartment, EditorState, Prec, type Extension, type Range } from "@codemirror/state";
+import { Compartment, EditorState, Facet, Prec, type Extension, type Range } from "@codemirror/state";
 import {
   Decoration,
   EditorView,
@@ -28,15 +28,16 @@ import type { EditorConfigProps } from "@/bindings";
 import type { EditorSettings } from "@/platform/ipc";
 import { editorPrefs, lineCommentStyleFor, type EditorExtras } from "@/platform/editorSettings";
 import { BUNDLED_MONO_FAMILY, monoFontFamily } from "@/platform/fonts";
-import { editorContributions, type EditorDocContext } from "@/editor/api";
+import { editorContributions, HEAVY_LIMIT, type EditorDocContext } from "@/editor/api";
 import { distractionFreeWidth, isDistractionFree } from "@/workbench/distractionFree";
 import { openideaHighlightStyle } from "./highlight";
 import { openideaTheme } from "./theme";
 import { caretRowHighlight } from "./caretRow";
 import { changeLane, overviewLane } from "./lanes";
+import { cornerInset } from "./cornerInset";
 import { foldingExtension } from "./folding";
 import { syntaxHighlightField } from "./syntaxHighlight";
-import { indentGuides } from "./indentGuides";
+import { indentGuides, rainbowIndentGuides } from "./indentGuides";
 import { rainbowBrackets } from "./rainbowBrackets";
 import { stickyMaxLines, stickyScroll } from "./stickyScroll";
 import { findExtension } from "./find";
@@ -78,8 +79,7 @@ export function prefsOf(settings: EditorSettings | undefined): EditorExtras {
   return editorPrefs({ editor: settings });
 }
 
-/** Documents above this size (UTF-16 units) skip per-line decorations. */
-export const HEAVY_LIMIT = 8_000_000;
+export { HEAVY_LIMIT } from "@/editor/api";
 
 export interface EffectiveIndent {
   tabSize: number;
@@ -155,12 +155,24 @@ export function hardWrapAt(settings: EditorSettings | undefined, info: LanguageI
   return (info && style.languages[info.id]?.hardWrapAt) || style.hardWrapAt;
 }
 
-export function indentExtension(indent: EffectiveIndent): Extension {
+/** `format`: the indent Reformat Code asks for (see `formatIndentFacet`); `null` keeps the editor's. */
+export function indentExtension(indent: EffectiveIndent, format: EffectiveIndent | null = null): Extension {
   return [
+    formatIndentFacet.of(format),
     EditorState.tabSize.of(indent.tabSize),
     indentUnit.of(indent.insertSpaces ? " ".repeat(Math.max(1, indent.indentSize ?? indent.tabSize)) : "\t"),
   ];
 }
+
+/**
+ * Indentation explicit reformat requests use: the Code Style without the file's
+ * detected indents (detection affects editing, reformatting uses the configured
+ * style, as in IDEA), or the indent chosen for the file in the status bar.
+ * Unset (editors outside a document model), formatting keeps the editor's indent.
+ */
+export const formatIndentFacet = Facet.define<EffectiveIndent | null>({
+  combine: (values) => [values.find((v) => v !== null) ?? null],
+});
 
 export function fontExtension(settings: EditorSettings | undefined): Extension {
   const vars: string[] = [];
@@ -223,7 +235,7 @@ export function heavyExtension(docLength: number, settings?: EditorSettings): Ex
   const prefs = prefsOf(settings);
   return [
     prefs.codeEditing.highlightBraces ? bracketMatching({ renderMatch }) : [],
-    prefs.appearance.indentGuides ? indentGuides : [],
+    prefs.appearance.indentGuides ? (prefs.appearance.rainbowIndentGuides ? rainbowIndentGuides : indentGuides) : [],
     prefs.rainbowBrackets ? rainbowBrackets() : [],
     prefs.codeEditing.highlightSelection ? highlightSelectionMatches({ minSelectionLength: 2, maxMatches: 500 }) : [],
   ];
@@ -298,21 +310,43 @@ export interface SetupOptions {
   docLength: number;
   /** Effective indentation of the document (detected / overridden); computed when absent. */
   indent?: EffectiveIndent;
+  /** Indentation for Reformat Code (`formatIndentFacet`); the editor's when absent. */
+  formatIndent?: EffectiveIndent | null;
   /** Soft wraps toggled for this file (View › Active Editor › Soft-Wrap). */
   wrapOverride?: boolean | null;
   /** Extra extensions owned by the slot (update listeners, focus handlers). */
   extra?: Extension;
+  /** Standalone value editors supply their own extensions without file-backed contributions. */
+  contributions?: Extension;
 }
 
 /**
- * Tooltips (hints, docs, completion) stay below the editor's top edge: one
- * above the first lines flips below them instead of hiding under the tabs.
+ * Tooltips (hints, docs, completion) stay inside the editor horizontally and
+ * below its top edge. WebKit positions them `absolute` within `.cm-editor`, so
+ * a window-wide right bound makes CodeMirror skip the shift left and the
+ * browser squeezes the box into the space left of the editor's edge.
+ *
+ * They are parented to the body (#2310): tooltips are `position: fixed` but
+ * appended inside the editor by default, whose `.content{isolation:isolate}`
+ * stacking context paints as one unit below the later bottom toolwindow — so
+ * completion popups got covered where they overflowed the editor's bottom
+ * edge. At the body level their z-index (500) sits above panels
+ * (`--z-panel: 10`) while staying below dialogs (`--z-dialog: 900`).
  */
+export function tooltipBounds(view: { scrollDOM: Element; dom: Element }) {
+  const { top } = view.scrollDOM.getBoundingClientRect();
+  const { left, right } = view.dom.getBoundingClientRect();
+  return {
+    top,
+    left: Math.max(0, left),
+    right: Math.min(window.innerWidth, right),
+    bottom: window.innerHeight,
+  };
+}
+
 const tooltipSpace = tooltips({
-  tooltipSpace: (view) => {
-    const top = view.scrollDOM.getBoundingClientRect().top;
-    return { top, left: 0, right: window.innerWidth, bottom: window.innerHeight };
-  },
+  parent: typeof document === "undefined" ? undefined : document.body,
+  tooltipSpace: tooltipBounds,
 });
 
 export function baseExtensions(o: SetupOptions): Extension {
@@ -340,14 +374,15 @@ export function baseExtensions(o: SetupOptions): Extension {
     clipboardDocumentPath.of(o.ctx.path),
     clipboardFilesExtension,
     indentOnInput(),
-    syntaxHighlighting(openideaHighlightStyle),
     syntaxHighlightField,
+    syntaxHighlighting(openideaHighlightStyle),
     closeBrackets(),
     caretRowHighlight,
     fontZoom,
     methodLinesField,
     findExtension(),
     overviewLane,
+    cornerInset,
     codeLensExtension,
     EditorView.contentAttributes.of({
       spellcheck: "false",
@@ -359,7 +394,7 @@ export function baseExtensions(o: SetupOptions): Extension {
     keymap.of([...closeBracketsKeymap, ...editorBaseKeymap, indentWithTab]),
     compartments.language.of(o.language ?? []),
     compartments.comments.of(commentTokens(o.info, o.ctx.language)),
-    compartments.indent.of(indentExtension(o.indent ?? effectiveIndent(o.settings, o.info))),
+    compartments.indent.of(indentExtension(o.indent ?? effectiveIndent(o.settings, o.info), o.formatIndent)),
     compartments.readOnly.of(readOnlyExtension(o.ctx.readOnly)),
     compartments.wrap.of(wrapExtension(o.settings, o.ctx.path, o.wrapOverride)),
     compartments.sticky.of(stickyExtension(o.settings)),
@@ -373,7 +408,7 @@ export function baseExtensions(o: SetupOptions): Extension {
         wrapOverride: o.wrapOverride,
       }),
     ),
-    compartments.contributions.of(contributionExtensions(o.ctx)),
+    compartments.contributions.of(o.contributions ?? contributionExtensions(o.ctx)),
     compartments.distractionFree.of(distractionFreeExtension(o.settings)),
     o.extra ?? [],
   ];

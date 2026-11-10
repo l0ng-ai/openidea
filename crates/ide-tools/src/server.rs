@@ -1,5 +1,5 @@
 //! `openidea-server` builds for remote development: the release of this
-//! version publishes one per supported host platform (see `release.yml`).
+//! version publishes one per supported host platform (see `release-build.yml`).
 
 use crate::process::Http;
 use crate::{InstallEvent, fetch_verified, sources};

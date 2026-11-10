@@ -22,6 +22,10 @@ use std::time::Duration;
 
 type Changes = Vec<(OsString, Option<OsString>)>;
 
+/// Set by the desktop when the Dev Containers CLI already ran the lifecycle commands
+/// (`devcontainer up`): the server then doesn't run `postStartCommand` again.
+pub const LIFECYCLE_DONE_ENV: &str = "OPENIDEA_LIFECYCLE_DONE";
+
 /// What Reload Environment changed.
 #[derive(Debug, Clone, Serialize, Deserialize, Type)]
 #[serde(rename_all = "camelCase")]
@@ -72,7 +76,7 @@ impl Environment {
             return None;
         }
         let config = self.load_project(root, sink);
-        let post_start = config.and_then(|c| c.post_start);
+        let post_start = config.and_then(|c| c.post_start).filter(|_| std::env::var_os(LIFECYCLE_DONE_ENV).is_none());
         let first = self.state.lock().post_started.insert(root.to_path_buf());
         post_start.filter(|_| first)
     }

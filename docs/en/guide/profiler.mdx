@@ -1,0 +1,46 @@
+---
+title: "Profiler"
+description: "Profile a run configuration with a sampling profiler and explore the result as a flame graph, call tree or method list."
+---
+
+**Profile** runs a [run configuration](/en/guide/run) under an external sampling profiler. When the program exits (or you stop it), the IDE reads the samples and opens them in the Profiler tool window.
+
+## Profile a run
+
+- Use **Run › Profile** to profile the selected configuration.
+- Choose **Profile '…'** from the gutter run icon menu or from the run widget's **More Actions** menu.
+- **Profile Context Configuration** (in **Find Action…**, `⌘⇧A` / `Ctrl+Shift+A`) profiles the program or test at the caret.
+
+The program runs in the Run tool window as usual. If the profiler is missing, a notification names it and offers **Install** (when there is an install command) or **Download…** (the profiler's download page).
+
+## Supported runtimes
+
+| Runtime         | Configurations                                                            | Profiler                                                                                        | Platforms    |
+| --------------- | ------------------------------------------------------------------------- | ----------------------------------------------------------------------------------------------- | ------------ |
+| Node.js         | `node`, `npx`, `tsx`, `ts-node` programs and npm, pnpm or yarn scripts    | `node --cpu-prof` (set through `NODE_OPTIONS`, so every Node.js process of the run is profiled) | All          |
+| Python          | scripts, modules, pytest                                                  | `py-spy record` (subprocesses included)                                                         | All          |
+| JVM             | configurations that start `java`, such as Application and JAR Application | async-profiler agent (set through `JAVA_TOOL_OPTIONS`)                                          | macOS, Linux |
+| Rust            | `cargo run`                                                               | `perf record -g`                                                                                | Linux        |
+| Native programs | native configurations                                                     | `perf record -g`                                                                                | Linux        |
+
+Setting up the profilers:
+
+- **py-spy**: the IDE looks next to the project's interpreter first, then on the search path. Without a package manager it offers `python -m pip install py-spy`.
+- **async-profiler**: unpack a release from [async-profiler releases](https://github.com/async-profiler/async-profiler/releases) and put its `bin/asprof` on the `PATH`, or set `ASYNC_PROFILER_HOME` to the unpacked folder. The IDE cannot install it for you.
+- **perf**: install your distribution's `linux-tools` / `linux-perf` package.
+
+Not supported: Bun and Deno programs, JVM programs on Windows, native programs and `cargo run` on macOS and Windows, and Maven or Gradle configurations.
+
+## Read the results
+
+Each profiled run becomes a snapshot. The last five snapshots stay available as tabs in the Profiler tool window header. Each snapshot has three views:
+
+| View            | What it shows                                                                                                                                                                   |
+| --------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| **Flame Graph** | Call stacks stacked from the root down; wider frames took more time. Click a frame to zoom into it, use **Reset Zoom** to go back. Hover a frame for its total and self weight. |
+| **Call Tree**   | The same stacks as an expandable tree, heaviest calls first.                                                                                                                    |
+| **Method List** | One row per function with its self and total weight. Click the **Self**, **Total** or **Method** column header to sort.                                                         |
+
+Double-click a frame or a row to open its source location. Type in **Search frames** in the header to highlight matching frames in the flame graph and filter the method list.
+
+Snapshots are kept only for the current session; they are cleared when you switch projects or close the window.

@@ -4,7 +4,7 @@
  * one workspace edit.
  */
 import { Channel } from "@tauri-apps/api/core";
-import { activeEditor } from "@/editor/api";
+import { activeEditor, whenAllSynced } from "@/editor/api";
 import { executeAction } from "@/platform/actions";
 import {
   call,
@@ -160,6 +160,7 @@ export async function showStructuralResults(
 
 export async function applyStructuralReplace(edit: WorkspaceEdit): Promise<void> {
   try {
+    await whenAllSynced();
     await call(commands.applyWorkspaceEdit(edit));
   } catch (e) {
     notifications().notify({

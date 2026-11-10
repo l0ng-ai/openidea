@@ -12,14 +12,17 @@ use ide_core::{CancellationToken, IdeError, IdeResult, error::ErrorKind};
 use serde::{Deserialize, Serialize};
 use specta::Type;
 use sqlx::{
-    Column, ColumnIndex, Connection, Decode, Executor, MySql, Postgres, Row, SqlSafeStr, Sqlite, TypeInfo, ValueRef,
-    mysql::{MySqlConnectOptions, MySqlPool, MySqlPoolOptions, MySqlSslMode},
+    Column, ColumnIndex, Connection, Decode, Executor, Row, SqlSafeStr, Sqlite, TypeInfo, ValueRef,
+    mysql::{MySqlConnectOptions, MySqlConnection, MySqlSslMode},
     pool::PoolConnection,
-    postgres::{PgConnectOptions, PgPool, PgPoolOptions, PgSslMode},
+    postgres::{PgConnectOptions, PgConnection, PgSslMode},
     sqlite::{SqliteConnectOptions, SqlitePool, SqlitePoolOptions},
 };
 use std::path::{Path, PathBuf};
-use std::sync::Arc;
+use std::sync::{
+    Arc,
+    atomic::{AtomicBool, Ordering},
+};
 use std::time::{Duration, Instant};
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, Type)]
@@ -47,12 +50,135 @@ pub struct QueryResult {
     pub execution_ms: f64,
 }
 
+/// Session context belongs to the physical connection, including across pool checkouts.
+#[derive(Debug, Clone)]
+pub struct Context {
+    default: Option<String>,
+    current: Option<String>,
+    known: bool,
+}
+
+impl Context {
+    pub(crate) fn new(default: Option<String>) -> Self {
+        Self { current: default.clone(), default, known: true }
+    }
+
+    pub(crate) fn set_current(&mut self, current: Option<String>) {
+        self.current = current;
+    }
+
+    fn wanted(&self, driver: DbDriver, schema: Option<&str>) -> Option<String> {
+        schema
+            .filter(|s| !s.is_empty())
+            .and_then(|s| crate::sql::use_schema(driver, s))
+            .or_else(|| self.default.clone())
+    }
+}
+
+macro_rules! sqlx_pool {
+    ($manager:ident, $handle:ident, $options:ty, $connection:ty, $driver:expr, $query:expr) => {
+        pub struct $manager {
+            options: $options,
+            init: Arc<Vec<String>>,
+            timeout: Duration,
+        }
+
+        pub struct $handle {
+            conn: Option<$connection>,
+            context: Context,
+            options: $options,
+            init: Arc<Vec<String>>,
+            timeout: Duration,
+            in_transaction: bool,
+        }
+
+        impl std::ops::Deref for $handle {
+            type Target = $connection;
+            fn deref(&self) -> &Self::Target {
+                self.conn.as_ref().expect("live connection")
+            }
+        }
+
+        impl std::ops::DerefMut for $handle {
+            fn deref_mut(&mut self) -> &mut Self::Target {
+                self.conn.as_mut().expect("live connection")
+            }
+        }
+
+        impl ManageConnection for $manager {
+            type Connection = $handle;
+            type Error = sqlx::Error;
+
+            async fn connect(&self) -> Result<Self::Connection, Self::Error> {
+                tokio::time::timeout(self.timeout, async {
+                    let mut conn = <$connection>::connect_with(&self.options).await?;
+                    let context_sql = |value: Option<String>| {
+                        value.map(|v| {
+                            if $driver == DbDriver::Postgres {
+                                format!("SET search_path TO {v}")
+                            } else {
+                                crate::sql::use_schema($driver, &v).expect("switchable driver")
+                            }
+                        })
+                    };
+                    for sql in self.init.iter() {
+                        sqlx::raw_sql(sqlx::AssertSqlSafe(sql.clone())).execute(&mut conn).await?;
+                    }
+                    let row = sqlx::raw_sql(sqlx::AssertSqlSafe($query.to_owned())).fetch_one(&mut conn).await?;
+                    let context = Context::new(context_sql(row.try_get(0)?));
+                    Ok($handle {
+                        conn: Some(conn),
+                        context,
+                        options: self.options.clone(),
+                        init: self.init.clone(),
+                        timeout: self.timeout,
+                        in_transaction: false,
+                    })
+                })
+                .await
+                .map_err(|_| sqlx::Error::PoolTimedOut)?
+            }
+
+            async fn is_valid(&self, conn: &mut Self::Connection) -> Result<(), Self::Error> {
+                conn.ping().await
+            }
+
+            fn has_broken(&self, conn: &mut Self::Connection) -> bool {
+                conn.conn.is_none()
+            }
+        }
+    };
+}
+
+sqlx_pool!(PgManager, PgHandle, PgConnectOptions, PgConnection, DbDriver::Postgres, "SHOW search_path");
+sqlx_pool!(MysqlManager, MysqlHandle, MySqlConnectOptions, MySqlConnection, DbDriver::Mysql, "SELECT DATABASE()");
+
+pub struct ServerPool<M: ManageConnection> {
+    inner: Bb8Pool<M>,
+    closed: AtomicBool,
+}
+
+impl<M: ManageConnection> ServerPool<M> {
+    async fn get(&self) -> IdeResult<bb8::PooledConnection<'static, M>>
+    where
+        M::Error: std::fmt::Display,
+    {
+        if self.closed.load(Ordering::Relaxed) {
+            return Err(IdeError::new(ErrorKind::Io, "database connection is closed"));
+        }
+        self.inner.get_owned().await.map_err(|e| match e {
+            bb8::RunError::User(e) => IdeError::new(ErrorKind::Io, e.to_string()),
+            bb8::RunError::TimedOut => IdeError::new(ErrorKind::Io, "timed out connecting to the database"),
+        })
+    }
+}
+
 // Keep an empty slot when a connection is discarded after cancellation or rollback failure.
 pub struct MssqlConnectionManager(tiberius::Config);
 
 type MssqlClient = tiberius::Client<tokio_util::compat::Compat<tokio::net::TcpStream>>;
 
-pub struct MssqlConnection(Option<MssqlClient>);
+pub struct MssqlConnection(Option<MssqlClient>, Context);
 
 impl std::ops::Deref for MssqlConnection {
     type Target = MssqlClient;
@@ -76,7 +202,7 @@ impl ManageConnection for MssqlConnectionManager {
 
         let tcp = tokio::net::TcpStream::connect(self.0.get_addr()).await?;
         tcp.set_nodelay(true)?;
-        let client = match MssqlClient::connect(self.0.clone(), tcp.compat_write()).await {
+        let mut client = match MssqlClient::connect(self.0.clone(), tcp.compat_write()).await {
             // Preserve the single redirect supported by the previous pool adapter.
             Err(tiberius::error::Error::Routing { host, port }) => {
                 let mut config = self.0.clone();
@@ -88,7 +214,11 @@ impl ManageConnection for MssqlConnectionManager {
             }
             result => result?,
         };
-        Ok(MssqlConnection(Some(client)))
+        let row = client.simple_query("SELECT DB_NAME()").await?.into_row().await?;
+        let default = row
+            .and_then(|r| r.get::<&str, _>(0).map(str::to_owned))
+            .and_then(|db| crate::sql::use_schema(DbDriver::SqlServer, &db));
+        Ok(MssqlConnection(Some(client), Context::new(default)))
     }
 
     async fn is_valid(&self, conn: &mut Self::Connection) -> Result<(), Self::Error> {
@@ -103,21 +233,11 @@ impl ManageConnection for MssqlConnectionManager {
 
 pub enum Pool {
     Sqlite(SqlitePool),
-    Postgres(PgPool),
-    Mysql(MySqlPool),
+    Postgres(ServerPool<PgManager>),
+    Mysql(ServerPool<MysqlManager>),
     SqlServer(Bb8Pool<MssqlConnectionManager>),
-}
-
-/// Runs `$body` with `$p` bound to the concrete pool of each driver.
-macro_rules! with_pool {
-    ($pool:expr, $p:ident => $body:expr) => {
-        match $pool {
-            Pool::Sqlite($p) => $body,
-            Pool::Postgres($p) => $body,
-            Pool::Mysql($p) => $body,
-            Pool::SqlServer(_) => unreachable!(),
-        }
-    };
+    Clickhouse(crate::clickhouse::ClickhousePool),
+    Oracle(crate::oracle::OraclePool),
 }
 
 pub(crate) fn db_err(e: sqlx::Error) -> IdeError {
@@ -261,7 +381,7 @@ fn tiberius_cell(cell: &tiberius::ColumnData<'_>, ty: tiberius::ColumnType) -> O
     }
 }
 
-fn hex(bytes: &[u8]) -> String {
+pub(crate) fn hex(bytes: &[u8]) -> String {
     let mut s = String::with_capacity(2 + bytes.len() * 2);
     s.push_str("0x");
     for b in bytes {
@@ -336,10 +456,13 @@ fn result_columns<R: Row>(row: &R) -> Vec<ResultColumn> {
         .collect()
 }
 
-/// Streams the results of `$sql` on executor `$exec`, keeping at most `$max` rows
-/// with their cells read as `$mode`.
+/// Streams the results of `$sql` on executor `$exec`, reading past the first `$skip`
+/// rows without decoding them, then keeping at most `$max` rows with their cells read as `$mode`.
 macro_rules! fetch {
-    ($exec:expr, $sql:expr, $max:expr, $mode:expr) => {{
+    ($exec:expr, $sql:expr, $max:expr, $mode:expr) => {
+        fetch!($exec, $sql, 0usize, $max, $mode)
+    };
+    ($exec:expr, $sql:expr, $skip:expr, $max:expr, $mode:expr) => {{
         use futures::StreamExt;
         let mut stream = sqlx::raw_sql(sqlx::AssertSqlSafe($sql.to_owned())).fetch_many($exec);
         let mut columns: Vec<ResultColumn> = Vec::new();
@@ -348,6 +471,7 @@ macro_rules! fetch {
         let mut has_more = false;
         let mut failure = None;
         let mut first: Option<Instant> = None;
+        let mut to_skip: usize = $skip;
         while let Some(item) = stream.next().await {
             first.get_or_insert_with(Instant::now);
             match item {
@@ -355,6 +479,10 @@ macro_rules! fetch {
                 Ok(sqlx::Either::Right(row)) => {
                     if columns.is_empty() {
                         columns = result_columns(&row);
+                    }
+                    if to_skip > 0 {
+                        to_skip -= 1;
+                        continue;
                     }
                     if rows.len() >= $max {
                         has_more = true;
@@ -377,7 +505,7 @@ macro_rules! fetch {
 }
 
 /// Columns, rows, rows affected, more rows beyond the limit, time of the first answer.
-type Fetched = (Vec<ResultColumn>, Vec<Vec<Option<String>>>, Option<u64>, bool, Option<Instant>);
+pub(crate) type Fetched = (Vec<ResultColumn>, Vec<Vec<Option<String>>>, Option<u64>, bool, Option<Instant>);
 
 async fn mssql_command(conn: &mut MssqlClient, sql: &str) -> IdeResult<()> {
     // Transaction control must be a batch: sp_executesql rejects a changed transaction count.
@@ -385,7 +513,8 @@ async fn mssql_command(conn: &mut MssqlClient, sql: &str) -> IdeResult<()> {
     Ok(())
 }
 
-async fn mssql_fetch(conn: &mut MssqlClient, sql: &str, max: usize) -> IdeResult<Fetched> {
+/// Like [`fetch!`] for SQL Server: the first `skip` rows are read past without decoding.
+async fn mssql_fetch(conn: &mut MssqlClient, sql: &str, skip: usize, max: usize) -> IdeResult<Fetched> {
     let mut stream = conn.simple_query(sql).await.map_err(mssql_err)?;
     let first = Some(Instant::now());
     let columns = stream
@@ -398,8 +527,13 @@ async fn mssql_fetch(conn: &mut MssqlClient, sql: &str, max: usize) -> IdeResult
         .collect();
     let mut rows = Vec::new();
     let mut has_more = false;
+    let mut to_skip = skip;
     while let Some(item) = stream.next().await {
         if let tiberius::QueryItem::Row(row) = item.map_err(mssql_err)? {
+            if to_skip > 0 {
+                to_skip -= 1;
+                continue;
+            }
             if rows.len() >= max {
                 has_more = true;
                 break;
@@ -420,6 +554,19 @@ macro_rules! backend_id {
             .and_then(|r| r.into_iter().next().flatten())
             .filter(|id| id.chars().all(|c| c.is_ascii_digit()))
     }};
+}
+
+// Session control, scripts and PostgreSQL set_config can invalidate the tracked context.
+fn context_may_change(sql: &str) -> bool {
+    let text = sql.trim().trim_end_matches(';');
+    text.contains(';')
+        || text.to_ascii_lowercase().contains("set_config")
+        || !text.split_whitespace().next().is_some_and(|s| {
+            matches!(
+                s.to_ascii_uppercase().as_str(),
+                "SELECT" | "INSERT" | "UPDATE" | "DELETE" | "CREATE" | "DROP" | "TRUNCATE" | "SHOW" | "EXPLAIN"
+            )
+        })
 }
 
 fn looks_like_query(sql: &str) -> bool {
@@ -445,6 +592,13 @@ fn is_identifier(name: &str) -> bool {
     let mut chars = name.chars();
     chars.next().is_some_and(|c| c.is_ascii_alphabetic() || c == '_')
         && chars.all(|c| c.is_ascii_alphanumeric() || c == '_' || c == '.')
+}
+
+/// sqlx's handshake flags for `sql_mode`: with either enabled it sends
+/// `SET sql_mode=(SELECT CONCAT(...))`, a non-constant subquery that MySQL-protocol
+/// servers like StarRocks reject (#2452), so the StarRocks preset turns both off.
+fn mysql_mode_flags(vendor: &str) -> (bool, bool) {
+    if vendor == "starrocks" { (false, false) } else { (true, true) }
 }
 
 /// A MySQL `SET` value: numbers and keywords as they are, anything else quoted.
@@ -488,6 +642,18 @@ impl Setup {
                 }
             }
             DbDriver::Mysql if source.read_only => s.statements.push("SET SESSION TRANSACTION READ ONLY".into()),
+            DbDriver::Oracle => {
+                let schema = o.default_schema.trim();
+                if !schema.is_empty() {
+                    if !is_identifier(schema) {
+                        return Err(IdeError::invalid(format!("invalid schema name: {schema}")));
+                    }
+                    s.statements.push(format!("ALTER SESSION SET CURRENT_SCHEMA = {schema}"));
+                }
+                if !o.time_zone.trim().is_empty() {
+                    s.statements.push(format!("ALTER SESSION SET TIME_ZONE = {}", mysql_value(o.time_zone.trim())));
+                }
+            }
             _ => {}
         }
         for p in &source.properties {
@@ -503,14 +669,29 @@ impl Setup {
                 value.parse::<u64>().map_err(|_| IdeError::invalid(format!("{what} must be a whole number: {value}")))
             };
             match (source.driver, name.to_ascii_lowercase().as_str()) {
+                (DbDriver::Clickhouse, "statement_cache_capacity") => {
+                    return Err(IdeError::invalid("ClickHouse HTTP does not support statement caching"));
+                }
                 (_, "statement_cache_capacity") => s.statement_cache = Some(number(&name)? as usize),
-                (_, "connect_timeout") => s.connect_timeout = Some(Duration::from_secs(number(&name)?)),
+                (_, "connect_timeout") => {
+                    let seconds = number(&name)?;
+                    if seconds == 0 {
+                        return Err(IdeError::invalid("connect_timeout must be greater than zero"));
+                    }
+                    s.connect_timeout = Some(Duration::from_secs(seconds));
+                }
                 (DbDriver::Postgres, "application_name") => s.application_name = Some(value.to_owned()),
                 (DbDriver::Mysql, "charset") => s.charset = Some(value.to_owned()),
                 (DbDriver::Mysql, "collation") => s.collation = Some(value.to_owned()),
                 (DbDriver::Mysql, _) => s.statements.push(format!("SET SESSION {name} = {}", mysql_value(value))),
+                (DbDriver::Oracle, _) => {
+                    s.statements.push(format!("ALTER SESSION SET {name} = {}", mysql_value(value)))
+                }
                 _ => s.params.push((name, value.to_owned())),
             }
+        }
+        if source.driver == DbDriver::Clickhouse && !o.time_zone.trim().is_empty() {
+            s.params.push(("session_timezone".into(), o.time_zone.trim().into()));
         }
         let script = o.startup_script.trim();
         if !script.is_empty() {
@@ -527,6 +708,16 @@ impl Pool {
             Pool::Postgres(_) => DbDriver::Postgres,
             Pool::Mysql(_) => DbDriver::Mysql,
             Pool::SqlServer(_) => DbDriver::SqlServer,
+            Pool::Clickhouse(_) => DbDriver::Clickhouse,
+            Pool::Oracle(_) => DbDriver::Oracle,
+        }
+    }
+
+    /// The keep-alive ping (Oracle needs a FROM clause).
+    pub fn ping_sql(&self) -> &'static str {
+        match self {
+            Pool::Oracle(_) => "SELECT 1 FROM DUAL",
+            _ => "SELECT 1",
         }
     }
 
@@ -534,6 +725,12 @@ impl Pool {
     pub async fn connect(source: &DataSource, password: Option<&str>, root: Option<&Path>) -> IdeResult<Self> {
         const MAX: u32 = 4;
         let setup = Setup::of(source)?;
+        if source.driver == DbDriver::Clickhouse {
+            return crate::clickhouse::ClickhousePool::connect(source, password, setup).await.map(Pool::Clickhouse);
+        }
+        if source.driver == DbDriver::Oracle {
+            return crate::oracle::OraclePool::connect(source, password, &setup).await.map(Pool::Oracle);
+        }
         let timeout = setup.connect_timeout.unwrap_or(Duration::from_secs(30));
         let init = Arc::new(setup.statements);
         // Runs the session statements (startup script…) on every new connection.
@@ -609,14 +806,12 @@ impl Pool {
                 if let Some(n) = setup.statement_cache {
                     opts = opts.statement_cache_capacity(n);
                 }
-                let pool = PgPoolOptions::new()
-                    .max_connections(MAX)
-                    .acquire_timeout(timeout)
-                    .after_connect(after_connect!())
-                    .connect_with(opts)
-                    .await
-                    .map_err(db_err)?;
-                Ok(Pool::Postgres(pool))
+                let manager = PgManager { options: opts, init: init.clone(), timeout };
+                // Open once directly so authentication failures retain their database error.
+                let first = manager.connect().await.map_err(db_err)?;
+                let pool = Bb8Pool::builder().max_size(MAX).connection_timeout(timeout).build_unchecked(manager);
+                let _ = pool.add(first);
+                Ok(Pool::Postgres(ServerPool { inner: pool, closed: AtomicBool::new(false) }))
             }
             DbDriver::Mysql => {
                 let mut opts = MySqlConnectOptions::new()
@@ -651,6 +846,8 @@ impl Pool {
                 if let Some(c) = &setup.collation {
                     opts = opts.collation(c);
                 }
+                let (pipes_as_concat, no_engine_substitution) = mysql_mode_flags(&source.vendor);
+                opts = opts.pipes_as_concat(pipes_as_concat).no_engine_substitution(no_engine_substitution);
                 if let Some(n) = setup.statement_cache {
                     opts = opts.statement_cache_capacity(n);
                 }
@@ -658,14 +855,12 @@ impl Pool {
                 if !tz.is_empty() {
                     opts = opts.timezone(Some(tz.to_owned()));
                 }
-                let pool = MySqlPoolOptions::new()
-                    .max_connections(MAX)
-                    .acquire_timeout(timeout)
-                    .after_connect(after_connect!())
-                    .connect_with(opts)
-                    .await
-                    .map_err(db_err)?;
-                Ok(Pool::Mysql(pool))
+                let manager = MysqlManager { options: opts, init: init.clone(), timeout };
+                // Open once directly so authentication failures retain their database error.
+                let first = manager.connect().await.map_err(db_err)?;
+                let pool = Bb8Pool::builder().max_size(MAX).connection_timeout(timeout).build_unchecked(manager);
+                let _ = pool.add(first);
+                Ok(Pool::Mysql(ServerPool { inner: pool, closed: AtomicBool::new(false) }))
             }
             DbDriver::SqlServer => {
                 use tiberius::Config;
@@ -695,40 +890,66 @@ impl Pool {
                 conn.query("SELECT 1", &[]).await.map_err(mssql_err)?.into_results().await.map_err(mssql_err)?;
                 Ok(Pool::SqlServer(pool))
             }
+            DbDriver::Clickhouse => unreachable!(),
+            DbDriver::Oracle => unreachable!(),
         }
     }
 
     pub async fn close(&self) {
         match self {
-            Pool::SqlServer(_) => {}
-            _ => with_pool!(self, p => p.close().await),
+            Pool::SqlServer(_) | Pool::Oracle(_) => {}
+            Pool::Clickhouse(p) => p.close(),
+            Pool::Sqlite(p) => p.close().await,
+            Pool::Postgres(p) => p.closed.store(true, Ordering::Relaxed),
+            Pool::Mysql(p) => p.closed.store(true, Ordering::Relaxed),
         }
     }
 
     pub fn is_closed(&self) -> bool {
         match self {
             Pool::SqlServer(_) => false,
-            _ => with_pool!(self, p => p.is_closed()),
+            Pool::Oracle(p) => p.is_closed(),
+            Pool::Clickhouse(p) => p.is_closed(),
+            Pool::Sqlite(p) => p.is_closed(),
+            Pool::Postgres(p) => p.closed.load(Ordering::Relaxed),
+            Pool::Mysql(p) => p.closed.load(Ordering::Relaxed),
         }
     }
 
     /// Runs `sql` (no row limit beyond `max`), for introspection: cells are text (see [`Cells::Text`]).
     pub async fn rows(&self, sql: &str, max: usize) -> IdeResult<Vec<Vec<Option<String>>>> {
-        let fetched: IdeResult<Fetched> = match self {
-            Pool::SqlServer(p) => {
-                let mut conn = p.get_owned().await.map_err(mssql_pool_err)?;
-                mssql_fetch(&mut conn, sql, max).await
-            }
-            _ => with_pool!(self, p => fetch!(p, sql, max, Cells::Text)),
-        };
+        if let Pool::Clickhouse(p) = self {
+            return Ok(p.execute(sql, max, &CancellationToken::new()).await?.rows);
+        }
+        let mut conn = Held::acquire(self).await?;
+        conn.apply_context(None).await?;
+        let fetched = conn.fetch_rows(sql, max).await;
         Ok(fetched?.1)
     }
 
     /// Runs one statement and keeps at most `max_rows` rows. Cancelling stops
     /// the statement on the server (PostgreSQL, MySQL) and drops the connection.
     pub async fn execute(&self, sql: &str, max_rows: usize, cancel: &CancellationToken) -> IdeResult<QueryResult> {
+        self.execute_from(sql, 0, max_rows, cancel).await
+    }
+
+    /// [`execute`](Self::execute), reading past the first `skip` rows without keeping them
+    /// (a later page of a result: only that page is decoded and returned).
+    pub async fn execute_from(
+        &self,
+        sql: &str,
+        skip: usize,
+        max_rows: usize,
+        cancel: &CancellationToken,
+    ) -> IdeResult<QueryResult> {
+        if let Pool::Clickhouse(p) = self {
+            return p.execute_from(sql, skip, max_rows, cancel).await;
+        }
         let mut conn = Held::acquire(self).await?;
-        let r = conn.execute(self, sql, max_rows, cancel).await;
+        let r = match conn.apply_context(None).await {
+            Ok(()) => conn.execute_from(self, sql, skip, max_rows, cancel).await,
+            Err(e) => Err(e),
+        };
         if cancel.is_cancelled() {
             conn.discard().await;
             return Err(IdeError::cancelled());
@@ -740,8 +961,11 @@ impl Pool {
     /// row when flagged (table editor submits).
     pub async fn transaction(&self, statements: &[(String, bool)]) -> IdeResult<u64> {
         match self {
-            Pool::SqlServer(p) => {
-                let mut conn = p.get_owned().await.map_err(mssql_pool_err)?;
+            Pool::Clickhouse(_) => Err(crate::clickhouse::transaction_error()),
+            Pool::SqlServer(_) => {
+                let mut held = Held::acquire(self).await?;
+                held.apply_context(None).await?;
+                let Held::SqlServer(mut conn) = held else { unreachable!() };
                 let result = async {
                     mssql_command(&mut conn, "BEGIN TRAN").await?;
                     let mut total = 0;
@@ -764,21 +988,48 @@ impl Pool {
                 }
                 result
             }
-            _ => with_pool!(self, p => {
-                let mut tx = p.begin().await.map_err(db_err)?;
-                let mut total = 0;
-                for (sql, expect_one) in statements {
-                    let done = sqlx::raw_sql(sqlx::AssertSqlSafe(sql.clone())).execute(&mut *tx).await.map_err(db_err)?;
-                    let n = done.rows_affected();
-                    // MySQL reports 0 for an UPDATE that leaves the row unchanged.
-                    if *expect_one && (n > 1 || (n == 0 && !matches!(self, Pool::Mysql(_)))) {
-                        return Err(IdeError::invalid(format!("{sql}: expected to change 1 row, changed {n}; nothing was saved")));
-                    }
-                    total += n;
+            Pool::Oracle(_) => {
+                let mut held = Held::acquire(self).await?;
+                held.apply_context(None).await?;
+                let Held::Oracle(mut conn) = held else { unreachable!() };
+                let result = crate::oracle::transaction(&mut conn, statements).await;
+                if result.is_err() {
+                    // An open transaction must never return to the pool with the connection.
+                    conn.discard_inner();
                 }
-                tx.commit().await.map_err(db_err)?;
-                Ok(total)
-            }),
+                result
+            }
+            _ => {
+                let mut conn = Held::acquire(self).await?;
+                conn.apply_context(None).await?;
+                macro_rules! transaction {
+                    ($c:expr) => {{
+                        let mut tx = (&mut **$c).begin().await.map_err(db_err)?;
+                        let mut total = 0;
+                        for (sql, expect_one) in statements {
+                            let done = sqlx::raw_sql(sqlx::AssertSqlSafe(sql.clone()))
+                                .execute(&mut *tx)
+                                .await
+                                .map_err(db_err)?;
+                            let n = done.rows_affected();
+                            if *expect_one && (n > 1 || (n == 0 && !matches!(self, Pool::Mysql(_)))) {
+                                return Err(IdeError::invalid(format!(
+                                    "{sql}: expected to change 1 row, changed {n}; nothing was saved"
+                                )));
+                            }
+                            total += n;
+                        }
+                        tx.commit().await.map_err(db_err)?;
+                        Ok(total)
+                    }};
+                }
+                match &mut conn {
+                    Held::Sqlite(c) => transaction!(c),
+                    Held::Postgres(c) => transaction!(&mut ***c),
+                    Held::Mysql(c) => transaction!(&mut ***c),
+                    _ => unreachable!(),
+                }
+            }
         }
     }
 }
@@ -787,32 +1038,162 @@ impl Pool {
 /// manual-commit console across statements with its transaction open.
 pub enum Held {
     Sqlite(PoolConnection<Sqlite>),
-    Postgres(PoolConnection<Postgres>),
-    Mysql(PoolConnection<MySql>),
+    Postgres(Box<bb8::PooledConnection<'static, PgManager>>),
+    Mysql(Box<bb8::PooledConnection<'static, MysqlManager>>),
     SqlServer(Box<bb8::PooledConnection<'static, MssqlConnectionManager>>),
+    Clickhouse(crate::clickhouse::ClickhousePool),
+    Oracle(crate::oracle::OracleConnection),
 }
 
 impl Held {
     pub async fn acquire(pool: &Pool) -> IdeResult<Self> {
         Ok(match pool {
             Pool::Sqlite(p) => Held::Sqlite(p.acquire().await.map_err(db_err)?),
-            Pool::Postgres(p) => Held::Postgres(p.acquire().await.map_err(db_err)?),
-            Pool::Mysql(p) => Held::Mysql(p.acquire().await.map_err(db_err)?),
+            Pool::Postgres(p) => Held::Postgres(Box::new(p.get().await?)),
+            Pool::Mysql(p) => Held::Mysql(Box::new(p.get().await?)),
             Pool::SqlServer(p) => Held::SqlServer(Box::new(p.get_owned().await.map_err(mssql_pool_err)?)),
+            Pool::Clickhouse(p) => {
+                if p.is_closed() {
+                    return Err(IdeError::new(ErrorKind::Io, "ClickHouse connection is closed"));
+                }
+                Held::Clickhouse(p.clone())
+            }
+            Pool::Oracle(p) => Held::Oracle(p.get().await?),
         })
+    }
+
+    fn context(&mut self) -> Option<&mut Context> {
+        match self {
+            Held::Postgres(c) => Some(&mut c.context),
+            Held::Mysql(c) => Some(&mut c.context),
+            Held::SqlServer(c) => Some(&mut c.1),
+            Held::Oracle(c) => Some(c.context()),
+            _ => None,
+        }
+    }
+
+    fn invalidate_context(&mut self) {
+        if let Some(context) = self.context() {
+            context.known = false;
+        }
+    }
+
+    fn before_statement(&mut self, sql: &str) {
+        let control = sql.trim().trim_end_matches(';').trim().to_ascii_uppercase();
+        if let Held::Mysql(c) = self {
+            if matches!(control.as_str(), "BEGIN" | "START TRANSACTION") {
+                c.in_transaction = true;
+                return;
+            }
+            if matches!(control.as_str(), "COMMIT" | "ROLLBACK") {
+                return;
+            }
+        }
+        if context_may_change(sql) {
+            self.invalidate_context();
+        }
+    }
+
+    fn after_statement(&mut self, sql: &str) {
+        if let Held::Mysql(c) = self
+            && matches!(sql.trim().trim_end_matches(';').trim().to_ascii_uppercase().as_str(), "COMMIT" | "ROLLBACK")
+        {
+            c.in_transaction = false;
+        }
+    }
+
+    pub async fn apply_context(&mut self, schema: Option<&str>) -> IdeResult<()> {
+        let driver = match self {
+            Held::Postgres(_) => DbDriver::Postgres,
+            Held::Mysql(_) => DbDriver::Mysql,
+            Held::SqlServer(_) => DbDriver::SqlServer,
+            Held::Oracle(_) => DbDriver::Oracle,
+            _ => return Ok(()),
+        };
+        let context = self.context().expect("switchable connection");
+        let wanted = context.wanted(driver, schema);
+        if context.known && context.current == wanted {
+            return Ok(());
+        }
+        context.known = false;
+        if let Some(sql) = &wanted {
+            self.raw_command(sql).await?;
+        } else {
+            // MySQL cannot USE an absent database. Re-open with the original options.
+            macro_rules! reopen {
+                ($c:expr, $manager:ident) => {{
+                    let manager = $manager { options: $c.options.clone(), init: $c.init.clone(), timeout: $c.timeout };
+                    if $c.in_transaction {
+                        return Err(IdeError::invalid("commit or roll back before clearing the selected database"));
+                    }
+                    let fresh = manager.connect().await.map_err(db_err)?;
+                    if let Some(raw) = $c.conn.take() {
+                        let _ = raw.close().await;
+                    }
+                    ***$c = fresh;
+                }};
+            }
+            match self {
+                Held::Mysql(c) => reopen!(c, MysqlManager),
+                Held::Postgres(c) => reopen!(c, PgManager),
+                _ => unreachable!("server context has a default"),
+            }
+        }
+        let context = self.context().expect("switchable connection");
+        context.current = wanted;
+        context.known = true;
+        Ok(())
+    }
+
+    /// Restore before a manual session returns its physical connection to the pool.
+    pub async fn restore_default(&mut self) -> IdeResult<()> {
+        self.apply_context(None).await
+    }
+
+    async fn fetch_rows(&mut self, sql: &str, max: usize) -> IdeResult<Fetched> {
+        self.before_statement(sql);
+        let result = match self {
+            Held::Sqlite(c) => fetch!(&mut **c, sql, max, Cells::Text),
+            Held::Postgres(c) => fetch!(&mut ****c, sql, max, Cells::Text),
+            Held::Mysql(c) => fetch!(&mut ****c, sql, max, Cells::Text),
+            Held::SqlServer(c) => mssql_fetch(c, sql, 0, max).await,
+            Held::Oracle(c) => crate::oracle::run(c, sql, 0, max, Cells::Text, &CancellationToken::new()).await,
+            Held::Clickhouse(_) => unreachable!(),
+        };
+        if result.is_ok() {
+            self.after_statement(sql);
+        }
+        result
     }
 
     /// Runs a statement without results (`BEGIN`, `COMMIT`, `ROLLBACK`).
     pub async fn command(&mut self, sql: &str) -> IdeResult<()> {
+        self.before_statement(sql);
+        let result = self.raw_command(sql).await;
+        if result.is_ok() {
+            self.after_statement(sql);
+        }
+        result
+    }
+
+    async fn raw_command(&mut self, sql: &str) -> IdeResult<()> {
         match self {
             Held::SqlServer(c) => mssql_command(c, sql).await,
+            Held::Clickhouse(_) => Err(crate::clickhouse::transaction_error()),
+            Held::Oracle(c) => {
+                let sql = sql.trim();
+                if sql.is_empty() {
+                    return Ok(()); // Oracle transactions open implicitly.
+                }
+                crate::oracle::run(c, sql, 0, 0, Cells::Text, &CancellationToken::new()).await.map(drop)
+            }
             other => {
                 let sql = sqlx::AssertSqlSafe(sql.to_owned());
                 match other {
                     Held::Sqlite(c) => sqlx::raw_sql(sql).execute(&mut **c).await.map(drop),
-                    Held::Postgres(c) => sqlx::raw_sql(sql).execute(&mut **c).await.map(drop),
-                    Held::Mysql(c) => sqlx::raw_sql(sql).execute(&mut **c).await.map(drop),
-                    Held::SqlServer(_) => unreachable!(),
+                    Held::Postgres(c) => sqlx::raw_sql(sql).execute(&mut ****c).await.map(drop),
+                    Held::Mysql(c) => sqlx::raw_sql(sql).execute(&mut ****c).await.map(drop),
+                    Held::SqlServer(_) | Held::Clickhouse(_) | Held::Oracle(_) => unreachable!(),
                 }
                 .map_err(db_err)
             }
@@ -824,15 +1205,21 @@ impl Held {
     pub async fn discard(self) {
         match self {
             Held::Sqlite(c) => drop(c.detach()),
-            Held::Postgres(c) => {
-                let _ = c.detach().close().await;
+            Held::Postgres(mut c) => {
+                if let Some(raw) = c.conn.take() {
+                    let _ = raw.close().await;
+                }
             }
-            Held::Mysql(c) => {
-                let _ = c.detach().close().await;
+            Held::Mysql(mut c) => {
+                if let Some(raw) = c.conn.take() {
+                    let _ = raw.close().await;
+                }
             }
             Held::SqlServer(mut c) => {
                 c.0.take();
             }
+            Held::Clickhouse(_) => {}
+            Held::Oracle(mut c) => c.discard_inner(),
         }
     }
 
@@ -845,6 +1232,23 @@ impl Held {
         max_rows: usize,
         cancel: &CancellationToken,
     ) -> IdeResult<QueryResult> {
+        self.execute_from(pool, sql, 0, max_rows, cancel).await
+    }
+
+    /// [`execute`](Self::execute), reading past the first `skip` rows without keeping them
+    /// (see [`Pool::execute_from`]).
+    pub async fn execute_from(
+        &mut self,
+        pool: &Pool,
+        sql: &str,
+        skip: usize,
+        max_rows: usize,
+        cancel: &CancellationToken,
+    ) -> IdeResult<QueryResult> {
+        if let Held::Clickhouse(c) = self {
+            return c.execute_from(sql, skip, max_rows, cancel).await;
+        }
+        self.before_statement(sql);
         let started = Instant::now();
         // `$id`: the query naming the server process, `$kill`: how another connection stops it.
         macro_rules! run {
@@ -854,7 +1258,7 @@ impl Held {
                     None => None,
                 };
                 let r = tokio::select! {
-                    r = async { fetch!(&mut **$conn, sql, max_rows, Cells::Display) } => r,
+                    r = async { fetch!(&mut **$conn, sql, skip, max_rows, Cells::Display) } => r,
                     () = cancel.cancelled() => Err(IdeError::cancelled()),
                 };
                 if cancel.is_cancelled() {
@@ -877,17 +1281,20 @@ impl Held {
         let fetched: Fetched = match self {
             Held::Sqlite(c) => run!(c, None::<&str>, |_: String| String::new()),
             Held::Postgres(c) => {
-                run!(c, Some("SELECT pg_backend_pid()"), |b: String| format!("SELECT pg_cancel_backend({b})"))
+                run!(&mut ***c, Some("SELECT pg_backend_pid()"), |b: String| format!("SELECT pg_cancel_backend({b})"))
             }
-            Held::Mysql(c) => run!(c, Some("SELECT CONNECTION_ID()"), |b: String| format!("KILL QUERY {b}")),
+            Held::Mysql(c) => run!(&mut ***c, Some("SELECT CONNECTION_ID()"), |b: String| format!("KILL QUERY {b}")),
             Held::SqlServer(c) => {
                 // Tiberius has no attention/cancel API; stop reading and discard the connection.
                 tokio::select! {
-                    r = mssql_fetch(c, sql, max_rows) => r?,
+                    r = mssql_fetch(c, sql, skip, max_rows) => r?,
                     () = cancel.cancelled() => return Err(IdeError::cancelled()),
                 }
             }
+            Held::Oracle(c) => crate::oracle::run(c, sql, skip, max_rows, Cells::Display, cancel).await?,
+            Held::Clickhouse(_) => unreachable!(),
         };
+        self.after_statement(sql);
         let (columns, rows, affected, has_more, first) = fetched;
         let elapsed_ms = started.elapsed().as_secs_f64() * 1000.0;
         Ok(QueryResult {
@@ -907,7 +1314,8 @@ pub fn begin_statement(driver: DbDriver) -> &'static str {
     match driver {
         DbDriver::Mysql => "START TRANSACTION",
         DbDriver::SqlServer => "BEGIN TRAN",
-        DbDriver::Sqlite | DbDriver::Postgres => "BEGIN",
+        DbDriver::Oracle => "", // opens implicitly with autocommit off
+        DbDriver::Sqlite | DbDriver::Postgres | DbDriver::Clickhouse => "BEGIN",
     }
 }
 
@@ -926,7 +1334,7 @@ mod tests {
     #[test]
     fn discarded_sqlserver_connections_are_broken() {
         let manager = MssqlConnectionManager(tiberius::Config::new());
-        assert!(manager.has_broken(&mut MssqlConnection(None)));
+        assert!(manager.has_broken(&mut MssqlConnection(None, Context::new(None))));
     }
 
     #[tokio::test]
@@ -1062,7 +1470,17 @@ mod tests {
         assert_eq!(setup.charset.as_deref(), Some("utf8mb4"));
         assert_eq!(setup.connect_timeout, Some(Duration::from_secs(5)));
         assert!(Setup::of(&DataSource { properties: vec![prop("a; drop", "1")], ..s.clone() }).is_err());
+        assert!(Setup::of(&DataSource { properties: vec![prop("connect_timeout", "0")], ..s.clone() }).is_err());
         assert!(Setup::of(&DataSource { properties: vec![prop("connect_timeout", "soon")], ..s }).is_err());
+    }
+
+    #[test]
+    fn starrocks_disables_the_non_constant_sql_mode_handshake() {
+        // MySQL and its other wire-compatible presets keep sqlx's defaults.
+        for vendor in ["", "mysql", "mariadb", "tidb"] {
+            assert_eq!(mysql_mode_flags(vendor), (true, true), "{vendor}");
+        }
+        assert_eq!(mysql_mode_flags("starrocks"), (false, false));
     }
 
     #[test]

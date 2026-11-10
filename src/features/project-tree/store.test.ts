@@ -68,6 +68,14 @@ describe("lazy loading", () => {
     expect([...useProjectTree.getState().expanded].sort()).toEqual(["/p", "/p/docs"]);
   });
 
+  it("keeps a collapsed project root collapsed and an expanded node outside it open", async () => {
+    setExpanded(new Set(["/other/lib"]));
+    await new Promise((r) => setTimeout(r, 350));
+    initProjectTree(null);
+    initProjectTree(ROOT, "proj");
+    expect([...useProjectTree.getState().expanded]).toEqual(["/other/lib"]);
+  });
+
   it("drops a folder that vanished and collapses it", async () => {
     await loadDir(ROOT);
     setExpanded(new Set([ROOT, "/p/gone"]));
@@ -86,6 +94,46 @@ describe("refresh of excluded folders", () => {
 
     expect(spy).toHaveBeenCalledTimes(1);
     expect(spy).toHaveBeenCalledWith("/p/docs");
+    spy.mockRestore();
+  });
+});
+
+describe("refresh on ignore-rule changes", () => {
+  it("refreshes loaded descendants once, preserving selection and unrelated folders", async () => {
+    await fs.createFile("/p/docs/sub/note.md");
+    await expandAll();
+    setSelection(new Set(["/p/docs/guide.md"]), "/p/docs/guide.md");
+    const spy = vi.spyOn(fs, "readDir");
+    fs.ignored.add("/p/docs/sub");
+    const event = {
+      created: [],
+      modified: ["/p/docs/.gitignore"],
+      removed: [],
+      ignoreRules: ["/p/docs", "/p/docs/nested"],
+    };
+
+    await applyFsChange(event);
+
+    expect(spy.mock.calls.map(([dir]) => dir).sort()).toEqual(["/p/docs", "/p/docs/sub"]);
+    expect(
+      useProjectTree
+        .getState()
+        .listings.get("/p/docs")
+        ?.find((e) => e.name === "sub")?.ignored,
+    ).toBe(true);
+    expect(useProjectTree.getState().listings.get("/p/docs/sub")?.[0]?.ignored).toBe(true);
+    expect([...useProjectTree.getState().selected]).toEqual(["/p/docs/guide.md"]);
+    spy.mockClear();
+    fs.ignored.clear();
+    await applyFsChange({ ...event, modified: [], ignoreRules: [ROOT, "/p/docs"] });
+    expect(spy.mock.calls.map(([dir]) => dir).sort()).toEqual([...useProjectTree.getState().listings.keys()].sort());
+    expect(
+      useProjectTree
+        .getState()
+        .listings.get("/p/docs")
+        ?.find((e) => e.name === "sub")?.ignored,
+    ).toBe(false);
+    expect(useProjectTree.getState().listings.get("/p/docs/sub")?.[0]?.ignored).toBe(false);
     spy.mockRestore();
   });
 });
@@ -136,6 +184,17 @@ describe("reveal and expand", () => {
     expect(s.expanded.has("/p/docs")).toBe(true);
     expect(s.revealRequest?.path).toBe("/p/docs/guide.md");
     expect(visibleInfo(currentModel(), s.expanded).visible.has("/p/docs/guide.md")).toBe(true);
+  });
+
+  it("reveals files of linked workspace projects outside the workspace directory", async () => {
+    fs = new MemoryFs({ "/ws/.openidea/workspace.json": "x", "/a/src/app.ts": "x", "/b/lib/util.ts": "x" }, "/");
+    setProjectFsForTests(fs, "/ws");
+    initProjectTree("/ws", "ws", ["/a", "/b"]);
+    expect(revealPath("/b/lib/util.ts")).toBe(true);
+    await vi.waitFor(() => expect(childLabels("/b/lib")).toEqual(["util.ts"]));
+    const s = useProjectTree.getState();
+    expect(s.revealRequest?.path).toBe("/b/lib/util.ts");
+    expect(visibleInfo(currentModel(), s.expanded).visible.has("/b/lib/util.ts")).toBe(true);
   });
 
   it("expands everything below a folder", async () => {
@@ -213,4 +272,11 @@ describe("single-click expansion", () => {
     expect(fresh.useProjectTree.getState().options.singleClickExpand).toBe(true);
     setViewOption("singleClickExpand", false);
   });
+});
+
+it("keeps the primary first and sorts attachments by name", () => {
+  initProjectTree("/z", "Z", ["/z", "/c", "/a"]);
+  expect(currentModel().roots.map((n) => n.path)).toEqual(["/z", "/a", "/c"]);
+  initProjectTree("/ws", "Workspace", ["/z", "/c", "/a"]);
+  expect(currentModel().roots.map((n) => n.path)).toEqual(["/a", "/c", "/z"]);
 });

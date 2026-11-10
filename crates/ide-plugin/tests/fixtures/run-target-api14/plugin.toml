@@ -1,0 +1,12 @@
+id = "run-target-api14"
+name = "Frozen API 1.4 run target"
+version = "0.1.0"
+engines.openidea = "^1.4"
+wasm = "dist/plugin.wasm"
+activation = ["on-command:*"]
+[capabilities]
+required = ["project.read"]
+optional = ["process:execution-tool"]
+[[contributes.commands]]
+id = "target"
+title = "target"

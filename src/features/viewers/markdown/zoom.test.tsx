@@ -1,9 +1,10 @@
+import { registerFontZoomSurface } from "@/workbench/contributions";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { act, cleanup, render, screen } from "@testing-library/react";
 import { EditorState } from "@codemirror/state";
 import { EditorView } from "@codemirror/view";
 import { _addEditor, _removeEditor, editorContributions, type EditorDocContext } from "@/editor/api";
-import { fontZoom, setFontZoom } from "@/editor/core/cm/prefs";
+import { fontZoom, resetAllEditorsFontZoom, setFontZoom } from "@/editor/core/cm/prefs";
 import { fontExtension } from "@/editor/core/cm/setup";
 import type { EditorSlot } from "@/editor/core/model/slot";
 import { executeAction } from "@/platform/actions";
@@ -11,6 +12,8 @@ import { useContextKeys } from "@/platform/context";
 import { intellijMacos } from "@/platform/keymaps/intellij-macos";
 import { intellijWindows } from "@/platform/keymaps/intellij-windows";
 import { vscodeMacos } from "@/platform/keymaps/vscode-macos";
+import { markdownPreviewFontSize } from "@/platform/languageSettings";
+import { useProject } from "@/platform/project";
 
 let activeSlot: Partial<EditorSlot> | null = null;
 vi.mock("@/editor/core/controller", async (importOriginal) => ({
@@ -48,6 +51,7 @@ describe("editor font size actions", () => {
   const zoom = (view: EditorView) => view.state.field(fontZoom);
 
   beforeEach(() => {
+    resetAllEditorsFontZoom();
     disposers.push(registerEditorActions(), registerMarkdownLiveSource());
     useContextKeys.setState({ projectOpen: true, textEditorActive: true, editorFocus: true, popupOpen: true });
   });
@@ -60,26 +64,30 @@ describe("editor font size actions", () => {
     useContextKeys.setState({}, true);
   });
 
-  it("zooms only the active editor, clamped to -6..36", async () => {
+  it("zooms all open editors together, clamped to -6..36", async () => {
     const md = open(mdCtx);
     const ts = open(tsCtx);
     activate(md);
     await executeAction("editor.increaseFontSize");
     await executeAction("editor.increaseFontSize");
     expect(zoom(md)).toBe(2);
-    expect(zoom(ts)).toBe(0);
+    expect(zoom(ts)).toBe(2);
 
     activate(ts);
     await executeAction("editor.decreaseFontSize");
-    expect(zoom(ts)).toBe(-1);
-    expect(zoom(md)).toBe(2);
+    expect(zoom(ts)).toBe(1);
+    expect(zoom(md)).toBe(1);
 
+    md.dispatch({ effects: setFontZoom.of(36) });
     ts.dispatch({ effects: setFontZoom.of(36) });
     await executeAction("editor.increaseFontSize");
     expect(zoom(ts)).toBe(36);
+    expect(zoom(md)).toBe(36);
+    md.dispatch({ effects: setFontZoom.of(-6) });
     ts.dispatch({ effects: setFontZoom.of(-6) });
     await executeAction("editor.decreaseFontSize");
     expect(zoom(ts)).toBe(-6);
+    expect(zoom(md)).toBe(-6);
   });
 
   it("scales the Markdown preview with its editor and resets with it", async () => {
@@ -112,6 +120,67 @@ describe("editor font size actions", () => {
     expect(view.dom.style.getPropertyValue("--openidea-editor-font-size")).toContain("+ 2px");
   });
 
+  it("routes font size actions by focus even when another surface is hovered", async () => {
+    const md = open(mdCtx);
+    activate(md);
+    // Works even when editorFocus is false (e.g. a tool window has focus).
+    useContextKeys.setState({ projectOpen: true, textEditorActive: false, editorFocus: false, popupOpen: false });
+
+    const termHost = document.createElement("div");
+    termHost.setAttribute("data-terminal-session", "s1");
+    const termInput = document.createElement("textarea");
+    termHost.appendChild(termInput);
+    document.body.appendChild(termHost);
+    const termZooms: number[] = [];
+    const releaseTerminal = registerFontZoomSurface(termHost, (delta) => termZooms.push(delta));
+
+    const iframe = document.createElement("iframe");
+    iframe.setAttribute("data-plugin-webview", "dengliu.kubernetes");
+    document.body.appendChild(iframe);
+    const posted: unknown[] = [];
+    Object.defineProperty(iframe, "contentWindow", {
+      value: { postMessage: (msg: unknown) => posted.push(msg) },
+      configurable: true,
+    });
+
+    const releaseFrame = registerFontZoomSurface(iframe, (delta) =>
+      iframe.contentWindow?.postMessage({ tag: "openidea-view", fontZoomDelta: delta }, "*"),
+    );
+
+    try {
+      termInput.focus();
+      await executeAction("editor.increaseFontSize");
+      await executeAction("editor.decreaseFontSize");
+      expect(termZooms).toEqual([1, -1]);
+      expect(zoom(md)).toBe(0);
+
+      // The pointer must not redirect a keyboard action away from terminal focus.
+      const qsa = vi.spyOn(document, "querySelectorAll").mockImplementation(((sel: string) => {
+        if (sel === ":hover") return [iframe] as unknown as NodeListOf<Element>;
+        return Document.prototype.querySelectorAll.call(document, sel);
+      }) as typeof document.querySelectorAll);
+      await executeAction("editor.increaseFontSize");
+      expect(posted).toEqual([]);
+      expect(termZooms).toEqual([1, -1, 1]);
+      iframe.focus();
+      await executeAction("editor.increaseFontSize");
+      expect(posted).toEqual([{ tag: "openidea-view", fontZoomDelta: 1 }]);
+      qsa.mockRestore();
+
+      await executeAction("editor.resetFontSize");
+      expect(termZooms).toEqual([1, -1, 1, 0]);
+      expect(posted).toEqual([
+        { tag: "openidea-view", fontZoomDelta: 1 },
+        { tag: "openidea-view", fontZoomDelta: 0 },
+      ]);
+    } finally {
+      releaseTerminal();
+      releaseFrame();
+      termHost.remove();
+      iframe.remove();
+    }
+  });
+
   it("leaves ⌘= / ⌘- to fold and unfold", () => {
     for (const km of [intellijMacos, intellijWindows]) {
       expect(km["editor.increaseFontSize"]).toEqual(["Alt+Shift+."]);
@@ -126,5 +195,49 @@ describe("editor font size actions", () => {
       expect(keys.filter((k) => /^(Meta|Ctrl)\+(Shift\+)?[=-]$/.test(k))).toEqual([]);
       expect(Object.keys(km).filter((id) => id.startsWith("markdown.zoom"))).toEqual([]);
     }
+  });
+});
+
+describe("Markdown preview font size", () => {
+  const preview = () => {
+    act(() => useMarkdownModes.setState((s) => ({ byPath: { ...s.byPath, [mdCtx.path]: "preview" } })));
+    render(
+      <MarkdownEditor path={mdCtx.path} tabId="t">
+        <div />
+      </MarkdownEditor>,
+    );
+    return screen.getByRole("document", { name: "Markdown preview" });
+  };
+  afterEach(() => {
+    cleanup();
+    useProject.setState({ settings: null });
+  });
+
+  it("follows the editor font size until Markdown › Preview font size is set, never the UI font", () => {
+    expect(preview().style.getPropertyValue("--markdown-preview-font-size")).toBe("13px");
+    cleanup();
+    act(() => useProject.setState({ settings: { appearance: { uiFontSize: 11 }, editor: { fontSize: 15 } } } as never));
+    expect(preview().style.getPropertyValue("--markdown-preview-font-size")).toBe("15px");
+    cleanup();
+    act(() =>
+      useProject.setState({
+        settings: {
+          appearance: { uiFontSize: 11 },
+          editor: { fontSize: 15 },
+          languages: { markdown: { previewFontSize: 20 } },
+        },
+      } as never),
+    );
+    expect(preview().style.getPropertyValue("--markdown-preview-font-size")).toBe("20px");
+  });
+
+  it("keeps a set size within IDEA's 8..72", () => {
+    const size = (v: unknown) =>
+      markdownPreviewFontSize({ editor: { fontSize: 14 }, languages: { markdown: { previewFontSize: v } } });
+    expect(size(3)).toBe(8);
+    expect(size(200)).toBe(72);
+    expect(size(15.6)).toBe(16);
+    expect(size(null)).toBe(14);
+    expect(size("big")).toBe(14);
   });
 });

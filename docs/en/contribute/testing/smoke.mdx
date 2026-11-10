@@ -1,0 +1,77 @@
+---
+title: "Smoke tests"
+description: "Language smoke tests with real language servers, and run and debug smoke tests through a real openidea-server, on the fixtures projects."
+---
+
+Smoke tests check each language end to end with the real tools the IDE uses: language servers, build tools, test runners and debuggers. They run on the sample projects in [`fixtures/`](https://github.com/l0ng-ai/openidea/tree/main/fixtures), which each have a few sources, passing tests, an opt-in failing test and an intentional warning.
+
+They are not part of `cargo nextest run` or `pnpm test`, because they need the tools installed. CI runs them in the **Language smoke** workflow with pinned versions.
+
+| Suite                                     | What it checks                                                                 | Languages                                               |
+| ----------------------------------------- | ------------------------------------------------------------------------------ | ------------------------------------------------------- |
+| `crates/ide-host/tests/language_smoke.rs` | Code intelligence through the `ops` the app's commands call                    | typescript, python, rust, go, java, kotlin, php         |
+| `crates/ide-host/tests/project_smoke.rs`  | Opening a fixture with its build tool and SDK                                  | `maven_sync`, `jdk`, `gradle_sync`, `python_venv`       |
+| `smoke/run.test.ts`                       | Run and test configurations through the run store and a real `openidea-server` | typescript, python, rust, go, java, kotlin, php         |
+| `smoke/debug.test.ts`                     | Debugging the entry point with the debugger the IDE installs                   | typescript, python, rust, go, java, kotlin, c, cpp, php |
+
+## Language smoke
+
+For each language, the everyday checklist on its fixture against the language server the app starts by default: completion, go to definition, Find Usages, hover, diagnostics with a quick fix, an intention, rename, formatting, parameter info, the Structure view, auto-import, Optimize Imports and moving a file. Every check names what it looks for, so a failure says which operation broke.
+
+```sh
+cargo test -p ide-host --test language_smoke -- --ignored --exact rust
+```
+
+The tests are `#[ignore]`d with the server they need (`#[ignore = "language smoke: needs vtsls"]`). Install that server first; the CI workflow shows how for each language.
+
+The project smoke tests open fixtures the way the app does (source and test roots from the build file, the index, Go to Class / Symbol, the Maven / Gradle model). The ignored ones run Maven, Gradle, python3 and a JDK 21:
+
+```sh
+cargo test -p ide-host --test project_smoke -- --ignored --exact gradle_sync
+```
+
+## Run and debug smoke
+
+These are Vitest suites (`pnpm smoke`, config in `smoke/vitest.config.ts`) that drive the **frontend's own modules** — the run store, test reporting, the debugger state — against a real backend. `smoke/server.ts` starts `openidea-server --stdio`, and `smoke/desktop.ts` provides an in-process Tauri runtime whose commands go to that server through the same route remote development uses.
+
+Build the server first, then run one language:
+
+```sh
+cargo build -p ide-host --bin openidea-server
+pnpm smoke smoke/run.test.ts -t '^rust$'
+pnpm smoke smoke/debug.test.ts -t '^rust$'
+```
+
+`-t` is a pattern on the test name; anchor it (`'^c$'`) so `c` doesn't also select `cpp`.
+
+- **run** detects the fixture's configurations, starts them, parses the output into the test tree, switches on the intentionally failing test, and reruns the failed tests.
+- **debug** sets a breakpoint on the entry point's "Set a breakpoint here" line, starts Debug from the file's context (or a saved configuration when the debugger is an explicit choice), then checks the paused frame, its variables, evaluation, Step Over and Resume. C and C++ use GDB's own DAP interpreter (GDB 14+); the other languages use the debugger the IDE installs.
+
+Each test file starts its own server and toolchains, so files run one at a time with a 10-minute test timeout.
+
+<Note>
+  On macOS, CodeLLDB and Delve may need Developer Mode: `sudo DevToolsSecurity -enable`. The IDE downloads some
+  debuggers from GitHub releases; set `GITHUB_TOKEN` if you hit rate limits (CI does).
+</Note>
+
+## In CI
+
+`.github/workflows/language-smoke.yml` runs one job per language (typescript, python, rust, go, java, kotlin, php, c, cpp) on pushes to `main` and on PRs that touch `crates/`, `languages/`, `fixtures/`, `Cargo.toml`/`Cargo.lock`, `src/features/run/`, `src/features/debugger/`, `src/platform/`, `smoke/`, `package.json`/`pnpm-lock.yaml` or the workflow itself. Each job runs the language smoke test, the relevant project smoke tests, then the run and debug smoke tests.
+
+Server versions are pinned in the workflow's `env` so a server release can't fail an unrelated PR; bump them deliberately:
+
+| Variable       | Pinned to           |
+| -------------- | ------------------- |
+| `VTSLS`        | 0.3.0               |
+| `TYPESCRIPT`   | 6.0.3               |
+| `BASEDPYRIGHT` | 1.40.2              |
+| `RUFF`         | 0.17.3              |
+| `GOPLS`        | v0.24.0             |
+| `JDTLS`        | 1.63.0-202610191322 |
+| `KOTLIN_LSP`   | 263.7084.0          |
+| `GRADLE`       | 8.14.3              |
+| `INTELEPHENSE` | 1.18.5              |
+
+## When to run them
+
+When you change a fixture, a language definition in `languages/`, `ide-lsp`, `ide-dap`, the run or debugger features, or how a language's tools are installed, run the smoke tests for the affected languages and put the commands and results in the PR's **How it was verified**.

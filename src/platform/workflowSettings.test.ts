@@ -3,6 +3,12 @@ import { splitCommandLine } from "./commandLine";
 import { DEFAULT_WORKFLOW, validateWorkflow } from "./workflowSettings";
 
 describe("validateWorkflow", () => {
+  it("defaults inline blame off and accepts only boolean values", () => {
+    expect(DEFAULT_WORKFLOW.vcs.git.inlineBlame).toBe(false);
+    expect(validateWorkflow({ vcs: { git: { inlineBlame: true } } }).vcs.git.inlineBlame).toBe(true);
+    expect(validateWorkflow({ vcs: { git: { inlineBlame: "true" } } }).vcs.git.inlineBlame).toBe(false);
+  });
+
   it("falls back to defaults for missing or malformed values", () => {
     expect(validateWorkflow(undefined)).toEqual(DEFAULT_WORKFLOW);
     const v = validateWorkflow({

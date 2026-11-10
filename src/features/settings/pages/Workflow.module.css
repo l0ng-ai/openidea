@@ -25,11 +25,13 @@
 /* "[x] Limit history to: [1000] rows" */
 .fontFamily {
   display: flex;
+  flex-wrap: wrap;
   align-items: center;
   gap: 8px;
 }
 .inlineRow {
   display: flex;
+  flex-wrap: wrap;
   align-items: center;
   gap: 8px;
   min-height: 28px;
@@ -166,6 +168,21 @@
   padding: 0 8px;
   cursor: default;
 }
+.toolRow > span {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.toolName {
+  flex: 1;
+}
+.toolRow.empty {
+  height: auto;
+  min-height: var(--h-list-row);
+  padding-block: 4px;
+  overflow-wrap: anywhere;
+}
 .toolRow:hover {
   background: var(--bg-tree-hover);
 }
@@ -174,6 +191,7 @@
   background: var(--bg-tree-selected);
 }
 .toolGroup {
+  max-width: 45%;
   color: var(--fg-subtle);
   margin-left: auto;
 }
@@ -213,6 +231,16 @@
   vertical-align: -3px;
   margin-right: 6px;
 }
+/* The aligned rows of a section share one label column, as wide as its widest label. */
+.toolsLayout *:has(> .alignedRow) {
+  display: grid;
+  grid-template-columns: minmax(130px, max-content) minmax(0, 1fr);
+  column-gap: 8px;
+  align-content: start;
+}
+.toolsLayout *:has(> .alignedRow) > * {
+  grid-column: 1 / -1;
+}
 .toolsLayout .alignedRow {
-  grid-template-columns: 130px minmax(0, 1fr);
+  grid-template-columns: subgrid;
 }

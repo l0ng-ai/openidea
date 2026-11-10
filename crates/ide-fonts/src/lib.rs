@@ -21,6 +21,18 @@ pub struct FontFamily {
     pub monospaced: bool,
 }
 
+/// PANOSE bProportion value 9 means "Monospaced"; DirectWrite's
+/// `IsMonospacedFont` alone misses fonts that only carry this classification.
+const PANOSE_MONOSPACED: u8 = 9;
+
+/// One face counts as monospaced when the font system flags it fixed pitch, its
+/// PANOSE proportion is "Monospaced", or its glyph advances are uniform
+/// (fonts with wrong/missing metadata, e.g. bitmap-style TTFs).
+#[cfg_attr(not(windows), allow(dead_code))]
+fn face_is_mono(is_monospaced_font: bool, panose_proportion: u8, advances_equal: bool) -> bool {
+    is_monospaced_font || panose_proportion == PANOSE_MONOSPACED || advances_equal
+}
+
 type Cache = Mutex<Option<Arc<[FontFamily]>>>;
 
 /// The installed families, sorted case-insensitively, read on first use and
@@ -195,7 +207,9 @@ mod imp {
         // SAFETY: CoreText descriptors carry documented CFString, CFURL and trait dictionary values.
         unsafe {
             let collection = CTFontCollection::from_available_fonts(None);
-            let Some(descriptors) = collection.matching_font_descriptors() else { return Vec::new() };
+            let Some(descriptors) = collection.matching_font_descriptors() else {
+                return Vec::new();
+            };
             let mut seen = std::collections::BTreeSet::new();
             descriptors
                 .cast_unchecked::<CTFontDescriptor>()
@@ -271,14 +285,16 @@ mod imp {
 
 #[cfg(windows)]
 mod imp {
+    use std::os::windows::ffi::OsStrExt;
+    use windows::Win32::Graphics::DirectWrite::IDWriteFontFace1;
     use windows::Win32::Graphics::DirectWrite::{
-        DWRITE_FACTORY_TYPE_SHARED, DWRITE_FONT_STRETCH_NORMAL, DWRITE_FONT_STYLE_NORMAL, DWRITE_FONT_WEIGHT_NORMAL,
-        DWriteCreateFactory, IDWriteFactory, IDWriteFont1, IDWriteLocalizedStrings,
+        DWRITE_FACTORY_TYPE_SHARED, DWriteCreateFactory, IDWriteFactory, IDWriteFactory3, IDWriteFactory5, IDWriteFont,
+        IDWriteFont1, IDWriteFontCollection, IDWriteFontFamily, IDWriteLocalizedStrings,
     };
-    use windows::core::{BOOL, Interface, w};
+    use windows::core::{BOOL, Interface, PCWSTR, w};
 
-    /// The system font collection's families, named in English when the
-    /// family has an English name (what CSS matches), else its first name.
+    /// The installed families, named in English when the family has an
+    /// English name (what CSS matches), else its first name.
     pub(crate) fn list(refresh: bool) -> Vec<(String, bool)> {
         // SAFETY: plain DirectWrite COM calls on interfaces we own.
         unsafe { read(refresh) }.unwrap_or_default()
@@ -286,11 +302,85 @@ mod imp {
 
     unsafe fn read(refresh: bool) -> windows::core::Result<Vec<(String, bool)>> {
         let factory: IDWriteFactory = unsafe { DWriteCreateFactory(DWRITE_FACTORY_TYPE_SHARED) }?;
+        let mut faces = Vec::new();
+        // Windows 10+: the newer collection covers registered per-user fonts.
+        // Exclude downloadable fonts that are not installed on this machine.
+        // Bitmap .FON fonts (e.g. the stock raster Fixedsys) are invisible to
+        // DirectWrite either way: it only reads TrueType/OpenType files.
         let mut collection = None;
-        unsafe { factory.GetSystemFontCollection(&mut collection, refresh) }?;
-        let Some(collection) = collection else {
-            return Ok(Vec::new());
+        if let Ok(factory3) = factory.cast::<IDWriteFactory3>() {
+            let mut local = None;
+            if unsafe { factory3.GetSystemFontCollection(false, &mut local, refresh) }.is_ok() {
+                collection = local.map(Into::into);
+            }
+        }
+        if collection.is_none() {
+            unsafe { factory.GetSystemFontCollection(&mut collection, refresh) }?;
+        }
+        if let Some(collection) = collection {
+            faces.extend(collect(&collection));
+        }
+        // DirectWrite enumerates via the font registry, so font files copied
+        // into the per-user directory without registering (no HKCU entry)
+        // are invisible to the calls above; scan the directory directly.
+        faces.extend(unsafe { user_dir_faces(&factory) });
+        Ok(faces)
+    }
+
+    /// Families from `%LOCALAPPDATA%\Microsoft\Windows\Fonts` files, registered
+    /// or not, via a font set built from the files on disk.
+    unsafe fn user_dir_faces(factory: &IDWriteFactory) -> Vec<(String, bool)> {
+        let Some(local_app_data) = std::env::var_os("LOCALAPPDATA") else {
+            return Vec::new();
         };
+        let dir = std::path::Path::new(&local_app_data).join(r"Microsoft\Windows\Fonts");
+        let Ok(entries) = std::fs::read_dir(&dir) else {
+            return Vec::new();
+        };
+        let files: Vec<_> = entries
+            .filter_map(|e| e.ok())
+            .map(|e| e.path())
+            .filter(|p| {
+                matches!(
+                    p.extension().and_then(|e| e.to_str()).map(|e| e.to_ascii_lowercase()).as_deref(),
+                    Some("ttf" | "otf" | "ttc" | "otc")
+                )
+            })
+            .collect();
+        unsafe { file_faces(factory, &files) }
+    }
+
+    unsafe fn file_faces(factory: &IDWriteFactory, files: &[std::path::PathBuf]) -> Vec<(String, bool)> {
+        if files.is_empty() {
+            return Vec::new();
+        }
+        let Ok(factory3) = factory.cast::<IDWriteFactory3>() else {
+            return Vec::new();
+        };
+        let Ok(factory5) = factory.cast::<IDWriteFactory5>() else {
+            return Vec::new();
+        };
+        let Ok(builder) = (unsafe { factory5.CreateFontSetBuilder() }) else {
+            return Vec::new();
+        };
+        for path in files {
+            let wide: Vec<u16> = path.as_os_str().encode_wide().chain(Some(0)).collect();
+            // SAFETY: wide is a valid NUL-terminated string for the calls.
+            let Ok(file) = (unsafe { factory.CreateFontFileReference(PCWSTR(wide.as_ptr()), None) }) else {
+                continue;
+            };
+            let _ = unsafe { builder.AddFontFile(&file) };
+        }
+        let Ok(set) = (unsafe { builder.CreateFontSet() }) else {
+            return Vec::new();
+        };
+        let Ok(collection) = (unsafe { factory3.CreateFontCollectionFromFontSet(&set) }) else {
+            return Vec::new();
+        };
+        collect(&collection)
+    }
+
+    fn collect(collection: &IDWriteFontCollection) -> Vec<(String, bool)> {
         let mut out = Vec::new();
         for i in 0..unsafe { collection.GetFontFamilyCount() } {
             let Ok(family) = (unsafe { collection.GetFontFamily(i) }) else {
@@ -299,19 +389,120 @@ mod imp {
             let Some(name) = unsafe { family.GetFamilyNames() }.ok().and_then(|n| unsafe { english(&n) }) else {
                 continue;
             };
-            let mono = unsafe {
-                family.GetFirstMatchingFont(
-                    DWRITE_FONT_WEIGHT_NORMAL,
-                    DWRITE_FONT_STRETCH_NORMAL,
-                    DWRITE_FONT_STYLE_NORMAL,
-                )
-            }
-            .ok()
-            .and_then(|f| f.cast::<IDWriteFont1>().ok())
-            .is_some_and(|f| unsafe { f.IsMonospacedFont() }.as_bool());
-            out.push((name, mono));
+            out.push((name, unsafe { family_is_mono(&family) }));
         }
-        Ok(out)
+        out
+    }
+
+    /// A family is monospaced when any face reports fixed pitch, PANOSE
+    /// proportion 9, or uniform glyph advances; probing every face matches
+    /// `normalize`'s any-face merge (macOS and Linux already flag every face,
+    /// not just the regular one).
+    unsafe fn family_is_mono(family: &IDWriteFontFamily) -> bool {
+        (0..unsafe { family.GetFontCount() }).any(|i| {
+            let Ok(font) = (unsafe { family.GetFont(i) }) else {
+                return false;
+            };
+            if let Ok(font1) = font.cast::<IDWriteFont1>() {
+                let is_monospaced = unsafe { font1.IsMonospacedFont() }.as_bool();
+                // The proportion byte is defined for text/display fonts only.
+                let panose = unsafe { font1.GetPanose().values };
+                let panose_proportion = if panose[0] == 2 { panose[3] } else { 0 };
+                if super::face_is_mono(is_monospaced, panose_proportion, false) {
+                    return true;
+                }
+            }
+            unsafe { advances_equal(&font) }
+        })
+    }
+
+    /// Some monospaced fonts carry no fixed-pitch metadata at all (bitmap-style
+    /// TTFs like Fixedsys Excelsior): compare the advance widths of 'i' and
+    /// 'W'. Dual-width CJK monospace fonts pass too (both half-width).
+    unsafe fn advances_equal(font: &IDWriteFont) -> bool {
+        let Ok(face) = (unsafe { font.CreateFontFace() }) else {
+            return false;
+        };
+        let Ok(face1) = face.cast::<IDWriteFontFace1>() else {
+            return false;
+        };
+        let codepoints = ['i' as u32, 'W' as u32];
+        let mut indices = [0u16; 2];
+        if unsafe { face.GetGlyphIndices(codepoints.as_ptr(), 2, indices.as_mut_ptr()) }.is_err()
+            || indices.contains(&0)
+        {
+            return false;
+        }
+        let mut advances = [0i32; 2];
+        unsafe { face1.GetDesignGlyphAdvances(2, indices.as_ptr(), advances.as_mut_ptr(), false) }.is_ok()
+            && advances[0] > 0
+            && advances[0] == advances[1]
+    }
+
+    #[test]
+    fn glyph_probe_distinguishes_monospace_proportional_and_symbol_fonts() {
+        unsafe {
+            let factory: IDWriteFactory = DWriteCreateFactory(DWRITE_FACTORY_TYPE_SHARED).unwrap();
+            let mut collection = None;
+            factory.GetSystemFontCollection(&mut collection, false).unwrap();
+            let collection = collection.unwrap();
+            for (name, expected) in [
+                ("Consolas", true),
+                ("Arial", false),
+                ("Times New Roman", false),
+                ("Wingdings", false),
+                ("Webdings", false),
+                ("Segoe MDL2 Assets", false),
+            ] {
+                let wide: Vec<_> = name.encode_utf16().chain(Some(0)).collect();
+                let mut index = 0;
+                let mut exists = BOOL(0);
+                collection.FindFamilyName(PCWSTR(wide.as_ptr()), &mut index, &mut exists).unwrap();
+                assert!(exists.as_bool(), "{name} ships with Windows");
+                let family = collection.GetFontFamily(index).unwrap();
+                for i in 0..family.GetFontCount() {
+                    let font = family.GetFont(i).unwrap();
+                    assert_eq!(advances_equal(&font), expected, "{name} face {i}");
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn font_files_include_every_family_in_a_collection() {
+        let path = std::path::PathBuf::from(std::env::var_os("WINDIR").unwrap()).join(r"Fonts\cambria.ttc");
+        unsafe {
+            let factory: IDWriteFactory = DWriteCreateFactory(DWRITE_FACTORY_TYPE_SHARED).unwrap();
+            let faces = file_faces(&factory, &[path]);
+            for name in ["Cambria", "Cambria Math"] {
+                assert!(faces.iter().any(|(family, _)| family == name), "missing {name}: {faces:?}");
+            }
+        }
+    }
+
+    #[test]
+    fn excludes_families_available_only_as_downloads() {
+        use windows::Win32::Graphics::DirectWrite::{DWRITE_E_REMOTEFONT, DWRITE_LOCALITY_LOCAL, IDWriteFont3};
+
+        unsafe {
+            let factory: IDWriteFactory = DWriteCreateFactory(DWRITE_FACTORY_TYPE_SHARED).unwrap();
+            let factory3: IDWriteFactory3 = factory.cast().unwrap();
+            let set = factory3.GetSystemFontSet().unwrap();
+            let collection = factory3.CreateFontCollectionFromFontSet(&set).unwrap();
+            let listed = super::normalize(read(false).unwrap());
+            let user = super::normalize(user_dir_faces(&factory));
+            for i in 0..collection.GetFontFamilyCount() {
+                let family = collection.GetFontFamily(i).unwrap();
+                let name = english(&family.GetFamilyNames().unwrap()).unwrap();
+                let remote_only = (0..family.GetFontCount()).all(|j| match family.GetFont(j) {
+                    Ok(font) => font.cast::<IDWriteFont3>().unwrap().GetLocality() != DWRITE_LOCALITY_LOCAL,
+                    Err(error) => error.code() == DWRITE_E_REMOTEFONT,
+                });
+                if remote_only && !user.iter().any(|f| f.name == name) {
+                    assert!(!listed.iter().any(|f| f.name == name), "{name} is not installed locally");
+                }
+            }
+        }
     }
 
     unsafe fn english(names: &IDWriteLocalizedStrings) -> Option<String> {
@@ -474,6 +665,15 @@ mod tests {
                 fam("PingFang SC", false),
             ]
         );
+    }
+
+    #[test]
+    fn panose_monospaced_proportion_counts_as_mono() {
+        assert!(face_is_mono(true, 0, false));
+        assert!(face_is_mono(false, PANOSE_MONOSPACED, false));
+        assert!(face_is_mono(false, 0, true));
+        assert!(!face_is_mono(false, 0, false));
+        assert!(!face_is_mono(false, 3, false));
     }
 
     #[test]

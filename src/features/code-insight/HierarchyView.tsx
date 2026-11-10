@@ -17,11 +17,13 @@ import {
 } from "@/ui";
 import { openLocation } from "./ipc";
 import {
+  closeHierarchy,
   ROOT_ID,
   directionLabel,
   hierarchyTitle,
   hierarchyTarget,
   loadChildren,
+  prefetchLevels,
   refreshHierarchy,
   noneFoundLabel,
   setDirection,
@@ -64,9 +66,10 @@ export function HierarchyTabs() {
       variant="compact"
       className={styles.tabs}
       aria-label="Hierarchies"
-      items={[{ id: "current", label }]}
+      items={[{ id: "current", label, closable: true }]}
       activeId="current"
       onSelect={() => undefined}
+      onClose={closeHierarchy}
     />
   );
 }
@@ -183,6 +186,11 @@ export function HierarchyView() {
           {basename(item.path)}:{item.selectionRange.start.line + 1}
         </span>
         {calls > 1 && <span className={styles.muted}>{tx`(${calls} calls)`}</span>}
+        {n.node.recursion && (
+          <span className={styles.muted}>
+            <T>recursive</T>
+          </span>
+        )}
         {notes.has(n.id) && (
           <span className={styles.muted} title={notes.get(n.id)}>
             {notes.get(n.id)}
@@ -215,6 +223,10 @@ export function HierarchyView() {
           getChildren={getChildren}
           isExpandable={isExpandable}
           loadChildren={(n) => (n.kind === "item" ? loadChildren(n.node) : undefined)}
+          onExpandedChange={(_expanded, n, open) => {
+            const shown = open ? children.get(n.id) : undefined;
+            if (shown) prefetchLevels(shown);
+          }}
           defaultExpanded={[ROOT_ID]}
           handleRef={tree}
           isOccurrence={() => true}

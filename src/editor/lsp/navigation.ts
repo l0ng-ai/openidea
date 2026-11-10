@@ -1,3 +1,9 @@
+import {
+  contributedNavigation,
+  navigationEpoch,
+  onNavigationProvidersChanged,
+  type NavigationMatch,
+} from "../navigationProviders";
 /**
  * Go to declaration / implementation / type declaration (⌘B, ⌥⌘B, ⇧⌘B,
  * ⌘-click with a link underline while ⌘ is held, and a plain middle-button
@@ -15,13 +21,17 @@ import {
   type Tooltip,
   type ViewUpdate,
 } from "@codemirror/view";
+import { Channel } from "@tauri-apps/api/core";
 import {
   commands,
   isCancelled,
+  nextRequestId,
+  type DocId,
   type GotoKind,
   type Highlight,
   type Location,
   type Pos,
+  type RequestId,
   type WebReferenceKind,
 } from "@/platform/ipc";
 import {
@@ -47,18 +57,37 @@ import {
   type DeclarationTarget,
 } from "./syntaxFallback";
 import { showHint, showPendingHint } from "./hint";
-import { caretAnchor, openPopup, type ListPopupItem } from "./popupStore";
-import { identifierAt, readManyFileLines } from "./files";
-import { documentLinks, followReference, knownLinks, linkReference, referenceAt, textReference } from "./links";
+import { outsideProjectReason } from "./outsideProject";
+import { caretAnchor, openPopup, updatePopup, type ListPopupItem } from "./popupStore";
+import { readManyFileLines, targetLabel } from "./files";
+import {
+  documentLinks,
+  followReference,
+  fragmentOffset,
+  knownLinks,
+  linkReference,
+  referenceAt,
+  textReference,
+} from "./links";
 import { featureBackoff } from "./availability";
 import { requestHover, showPhpConstructDocumentation } from "./hover";
 import { declarationSummary, renderCode } from "./markdown";
 import { editorPrefs } from "@/platform/editorSettings";
 import { isVirtualUri, virtualContainer } from "@/platform/virtualDocs";
+import { isAddCaretGesture } from "@/editor/core/cm/multiCaret";
 import { dispatchMouseShortcut, shortcutLabel } from "@/platform/keymap";
-import { isNavigationGesture, onNavigationModifier } from "@/platform/navigationModifier";
+import { isNavigationGesture, onNavigationModifier, navigationModifierHeld } from "@/platform/navigationModifier";
 import { create } from "zustand";
 import { tx } from "@/platform/i18n";
+import {
+  CONFIGURATION_NAVIGATION_MAX_AGE,
+  configurationNavigationRevision,
+  navigationWord,
+  hasConfigurationNavigation,
+  invalidateConfigurationNavigation,
+  isConfigurationDocument,
+  requestNavigation,
+} from "./configurationNavigation";
 
 const highlightsBackoff = featureBackoff();
 
@@ -111,13 +140,13 @@ export async function locationItems(locs: readonly DeclarationTarget[]): Promise
         run: () => navigateTo(l),
       };
     // Server targets: the declared name (speed search matches it), file and line after it.
-    const name = identifierAt(files.get(l.path)?.[l.range.start.line] ?? "", l.range.start.col);
+    const name = targetLabel(files.get(l.path)?.[l.range.start.line] ?? "", l.range.start.col);
     return {
       id: `${i}`,
       label: name ?? basename(l.path),
       detail: name ? `${basename(l.path)} · ${where}` : where,
       preview,
-      icon: fileIconName(basename(l.path)),
+      icon: fileIconName(basename(l.path), l.path),
       run: () => navigateTo(l),
     };
   });
@@ -125,7 +154,87 @@ export async function locationItems(locs: readonly DeclarationTarget[]): Promise
 
 /** "Choose Implementation of foo (3 found)". */
 export function chooserTitle(kind: GotoKind, name: string | null, count: number, fromSyntax = false): string {
+  if (kind === "implementation" && !fromSyntax)
+    return name ? tx`Choose Implementation of ${name} (${count} found)` : tx`Choose Implementation (${count} found)`;
   return `${TITLES[kind]}${name ? ` of ${name}` : ""} (${count} found${fromSyntax ? ", based on syntax" : ""})`;
+}
+
+/** The chooser's title while the server is still searching for more. */
+function searchingTitle(name: string | null, count: number): string {
+  return name
+    ? tx`Choose Implementation of ${name} (${count} found, searching…)`
+    : tx`Choose Implementation (${count} found, searching…)`;
+}
+
+function nameAt(view: EditorView, offset: number): string | null {
+  const word = navigationWord(view, offset);
+  return word ? view.state.sliceDoc(word.from, word.to) : null;
+}
+
+/**
+ * Go to Implementation whose chooser opens with the implementations the server finds first
+ * (Java: the project's) while it searches on (the dependencies'), and fills in when it ends.
+ * Closing the chooser cancels the search.
+ */
+function streamedImplementations(view: EditorView, offset: number, onOpen: () => void, superseded: () => boolean) {
+  const name = nameAt(view, offset);
+  let current: RequestId | null = null;
+  let finished = false;
+  let opened = false;
+  let closed = false;
+  let first: DeclarationTarget[] = [];
+  let showing: Promise<void> = Promise.resolve();
+  return {
+    request(doc: DocId, pos: Pos): Promise<DeclarationTarget[]> {
+      const request = (current = nextRequestId());
+      finished = false;
+      const channel = new Channel<Location[]>();
+      channel.onmessage = (locs) => {
+        if (finished || opened || current !== request || !locs.length || superseded()) return;
+        opened = true;
+        onOpen();
+        first = dedupeLocations(locs);
+        showing = locationItems(first).then((items) => {
+          // All of them arrived meanwhile: shown as usual.
+          if (finished || superseded()) {
+            opened = false;
+            return;
+          }
+          openPopup({
+            kind: "list",
+            anchor: caretAnchor(view, offset),
+            title: searchingTitle(name, first.length),
+            items,
+            pin: pinToFind(name ?? "", first),
+            onClose: () => {
+              closed = true;
+              if (!finished) void commands.cancelRequest(request).catch(() => {});
+            },
+          });
+        });
+      };
+      return lspRequest(() => commands.lspGotoImplementation(request, doc, pos, channel)).finally(() => {
+        finished = true;
+      });
+    },
+    /** Whether the chooser opened with the first ones (and so the search's result goes there). */
+    async opened(): Promise<boolean> {
+      await showing;
+      return opened;
+    },
+    /** Fills the opened chooser with all of them, after those it shows. */
+    async complete(locs: readonly DeclarationTarget[]) {
+      if (closed || superseded()) return;
+      const all = dedupeLocations([...first, ...locs]);
+      const items = await locationItems(all);
+      if (closed || superseded()) return;
+      updatePopup("list", {
+        title: chooserTitle("implementation", name, all.length),
+        items,
+        pin: pinToFind(name ?? "", all),
+      });
+    },
+  };
 }
 
 /** Pin button of the targets chooser: the targets as a Find tool window tab (code-insight). */
@@ -144,20 +253,60 @@ const editedAt = new WeakMap<EditorView, number>();
  * version meanwhile (kotlin-language-server: nothing for ~300 ms after typing).
  * An empty answer right after an edit is asked again a few times.
  */
-async function gotoAfterEdits(view: EditorView, request: () => Promise<DeclarationTarget[]>) {
+async function gotoAfterEdits(
+  view: EditorView,
+  request: () => Promise<DeclarationTarget[]>,
+  superseded: () => boolean,
+) {
   for (let attempt = 0; ; attempt++) {
     const locs = await request();
-    if (locs.length || attempt >= 3 || performance.now() - (editedAt.get(view) ?? -Infinity) > 1500) return locs;
+    if (locs.length || attempt >= 3 || superseded() || performance.now() - (editedAt.get(view) ?? -Infinity) > 1500)
+      return locs;
     await new Promise((r) => setTimeout(r, 250));
+    if (superseded()) return [];
   }
 }
 
+/** The latest go-to gesture per editor; an older one answered later must not navigate or show anything. */
+const latestGesture = new WeakMap<EditorView, number>();
+const pendingGestureHints = new WeakMap<EditorView, () => void>();
+let gestures = 0;
+
 export async function gotoTargets(view: EditorView, kind: GotoKind, at?: number) {
+  const gesture = ++gestures;
+  latestGesture.set(view, gesture);
+  pendingGestureHints.get(view)?.();
+  pendingGestureHints.delete(view);
+  const source = view.state.doc;
+  const context = docOf(view);
+  const superseded = () =>
+    latestGesture.get(view) !== gesture ||
+    !view.dom.isConnected ||
+    view.state.doc !== source ||
+    docOf(view) !== context;
   const offset = at ?? view.state.selection.main.head;
   if (kind === "definition" || kind === "declaration") {
     const own = contributedAt<ContributedDefinition>(view.state, CONTRIBUTED_DEFINITION, offset);
     if (own?.(view, offset)) return;
     if (showPhpConstructDocumentation(view, offset)) return;
+    const before = view.state.doc;
+    const plugin = await contributedNavigation(view, offset).catch(() => null);
+    if (view.state.doc !== before || superseded()) return;
+    if (plugin) {
+      if (plugin.targets.length === 1) await navigateTo(plugin.targets[0]!);
+      else {
+        const items = await locationItems(plugin.targets);
+        if (superseded()) return;
+        openPopup({
+          kind: "list",
+          anchor: caretAnchor(view, offset),
+          title: tx`Choose Declaration`,
+          items,
+          pin: pinToFind(view.state.sliceDoc(plugin.from, plugin.to), plugin.targets),
+        });
+      }
+      return;
+    }
   }
   const doc = docOf(view);
   if (!doc) return;
@@ -166,23 +315,40 @@ export async function gotoTargets(view: EditorView, kind: GotoKind, at?: number)
   let fromSyntax = false;
   const declaration = kind === "definition" || kind === "declaration";
   let serverDown = false;
+  let streamed: ReturnType<typeof streamedImplementations> | null = null;
   try {
     const done = showPendingHint(view, tx`Finding navigation target…`);
+    pendingGestureHints.set(view, done);
+    const stream = kind === "implementation" ? streamedImplementations(view, offset, done, superseded) : null;
+    streamed = stream;
+    const request = stream ? () => stream.request(doc.doc, pos) : () => requestNavigation(view, offset, kind);
     try {
-      locs = dedupeLocations(await gotoAfterEdits(view, () => lspRequest(() => commands.lspGoto(doc.doc, pos, kind))));
+      locs = dedupeLocations(await gotoAfterEdits(view, request, superseded));
     } finally {
       done();
+      if (pendingGestureHints.get(view) === done) pendingGestureHints.delete(view);
     }
   } catch (e) {
+    // The chooser shows the first ones: closing it cancelled the search, or the rest failed.
+    if (streamed && (await streamed.opened())) {
+      await streamed.complete([]);
+      return;
+    }
+    if (superseded()) return;
     if (isCancelled(e) || !declaration) {
       reportLspError(view, e, true);
       return;
     }
     // Web references and links need no server.
-    if ((await gotoWebReference(view, doc, pos, offset)) || (await followReferenceAt(view, doc, offset))) return;
+    if (
+      (await gotoWebReference(view, doc, pos, offset, superseded)) ||
+      (await followReferenceAt(view, doc, offset, superseded))
+    )
+      return;
     serverDown = isUnavailable(e);
     // Dumb mode: the server is not ready / failing — answer from the syntax tree.
     const fb = await gotoFallback(view, doc, pos);
+    if (superseded()) return;
     if (!fb) {
       reportLspError(view, e, true);
       return;
@@ -190,20 +356,36 @@ export async function gotoTargets(view: EditorView, kind: GotoKind, at?: number)
     locs = fb;
     fromSyntax = true;
   }
+  if (streamed && (await streamed.opened())) {
+    await streamed.complete(locs);
+    return;
+  }
+  if (superseded()) return;
   if (!locs.length) {
     // The server has no definition here: a link (`href`, `#include`, Markdown) or a file path.
     if (
       declaration &&
       !fromSyntax &&
-      ((await gotoWebReference(view, doc, pos, offset)) || (await followReferenceAt(view, doc, offset)))
+      ((await gotoWebReference(view, doc, pos, offset, superseded)) ||
+        (await followReferenceAt(view, doc, offset, superseded)))
     )
       return;
-    showHint(view, serverDown ? `${NOT_FOUND[kind]}: no language server is running for this file` : NOT_FOUND[kind]);
+    if (superseded()) return;
+    // The server only checks this file's syntax: say why instead of just "not found".
+    const reason = serverDown ? null : outsideProjectReason(doc.path);
+    showHint(
+      view,
+      serverDown
+        ? `${NOT_FOUND[kind]}: no language server is running for this file`
+        : reason
+          ? `${tx(NOT_FOUND[kind])}. ${tx(reason)}`
+          : NOT_FOUND[kind],
+    );
     return;
   }
   // IDEA: ⌘B on a declaration shows its usages.
   if (kind === "definition" && isSelfTarget(locs, doc.path, pos)) {
-    if (!(await executeAction("find.showUsages"))) showHint(view, "No usages found");
+    if (!(await executeAction("find.showUsages")) && !superseded()) showHint(view, "No usages found");
     return;
   }
   if (locs.length === 1) {
@@ -211,18 +393,20 @@ export async function gotoTargets(view: EditorView, kind: GotoKind, at?: number)
     // After the editor applied the navigation's selection (which dismisses hints).
     if (fromSyntax)
       setTimeout(() => {
+        if (superseded()) return;
         const target = activeEditor()?.view;
         if (target) showHint(target, SYNTAX_NOTE, { timeout: 2500 });
       }, 150);
     return;
   }
-  const word = view.state.wordAt(offset);
-  const name = word ? view.state.sliceDoc(word.from, word.to) : null;
+  const name = nameAt(view, offset);
+  const items = await locationItems(locs);
+  if (superseded()) return;
   openPopup({
     kind: "list",
     anchor: caretAnchor(view, offset),
     title: chooserTitle(kind, name, locs.length, fromSyntax),
-    items: await locationItems(locs),
+    items,
     pin: pinToFind(name ?? "", locs),
   });
 }
@@ -236,7 +420,13 @@ const WEB_SIGIL: Record<WebReferenceKind, string> = { class: ".", id: "#", ancho
  * `var(--x)` to its declarations (no language server resolves these); false
  * when there is no such reference at `pos`.
  */
-async function gotoWebReference(view: EditorView, doc: EditorDocContext, pos: Pos, offset: number): Promise<boolean> {
+async function gotoWebReference(
+  view: EditorView,
+  doc: EditorDocContext,
+  pos: Pos,
+  offset: number,
+  superseded: () => boolean,
+): Promise<boolean> {
   if (!WEB_LANGUAGES.has(doc.language) || doc.virtual) return false;
   let found;
   try {
@@ -246,30 +436,48 @@ async function gotoWebReference(view: EditorView, doc: EditorDocContext, pos: Po
     console.debug("[web] goto", e);
     return false;
   }
+  if (superseded()) return true;
   if (!found) return false;
   const { reference, targets } = found;
   const label = `${WEB_SIGIL[reference.kind]}${reference.name}`;
   if (!targets.length) showHint(view, `Cannot find declaration of '${label}'`);
   else if (targets.length === 1) await navigateTo(targets[0]!);
-  else
+  else {
+    const items = await locationItems(targets);
+    if (superseded()) return true;
     openPopup({
       kind: "list",
       anchor: caretAnchor(view, offset),
       title: tx`Choose Declaration of '${label}' (${targets.length} found)`,
-      items: await locationItems(targets),
+      items,
       pin: pinToFind(label, targets),
     });
+  }
   return true;
 }
 
 /** Follows the link, URL or file path at `offset`; false when there is none. */
-async function followReferenceAt(view: EditorView, doc: EditorDocContext, offset: number): Promise<boolean> {
+async function followReferenceAt(
+  view: EditorView,
+  doc: EditorDocContext,
+  offset: number,
+  superseded: () => boolean,
+): Promise<boolean> {
   const ref = await referenceAt(view, doc, offset);
+  if (superseded()) return true;
   if (!ref) return false;
   try {
+    if (ref.kind === "file" && ref.path === doc.path && ref.fragment) {
+      const target = fragmentOffset(view.state.doc.toString(), doc.path, ref.fragment);
+      if (target !== null) {
+        view.dispatch({ selection: EditorSelection.cursor(target), effects: EditorView.scrollIntoView(target) });
+        view.focus();
+        return true;
+      }
+    }
     await followReference(ref);
   } catch (e) {
-    showHint(view, e instanceof Error ? e.message : String(e), { tone: "error" });
+    if (!superseded()) showHint(view, e instanceof Error ? e.message : String(e), { tone: "error" });
   }
   return true;
 }
@@ -336,7 +544,7 @@ function linkAt(view: EditorView, x: number, y: number): { from: number; to: num
   const links = knownLinks(view);
   const ref = (links && linkReference(view.state.doc, links, pos)) ?? textReference(view.state.doc, pos);
   if (ref) return { from: ref.from, to: ref.to, link: true };
-  const word = view.state.wordAt(pos);
+  const word = navigationWord(view, pos);
   return word && word.from < word.to ? { from: word.from, to: word.to, link: false } : null;
 }
 
@@ -344,13 +552,18 @@ function linkAt(view: EditorView, x: number, y: number): { from: number; to: num
  * Whether ⌘-click at `offset` would navigate somewhere, with the declaration
  * info to show; null when there is no target (no underline then, as in IDEA).
  */
-async function probeNavigation(view: EditorView, offset: number): Promise<{ info: NavInfo | null } | null> {
+async function probeNavigation(
+  view: EditorView,
+  offset: number,
+): Promise<{ info: NavInfo | null; plugin?: NavigationMatch } | null> {
+  const plugin = await contributedNavigation(view, offset).catch(() => null);
+  if (plugin) return { info: null, plugin };
   const doc = docOf(view);
   let navigable = !!contributedAt<ContributedDefinition>(view.state, CONTRIBUTED_DEFINITION, offset);
   if (!navigable && doc) {
     const pos = offsetToPos(view.state.doc, offset);
     try {
-      navigable = (await lspRequest(() => commands.lspGoto(doc.doc, pos, "definition"))).length > 0;
+      navigable = (await requestNavigation(view, offset, "definition")).length > 0;
     } catch (e) {
       if (!isUnavailable(e)) throw e;
       navigable = !!(await gotoFallback(view, doc, pos))?.length;
@@ -366,22 +579,50 @@ const linkPlugin = ViewPlugin.fromClass(
   class {
     last: { x: number; y: number } | null = null;
     /** Probe results per word (`from:to`) for the current document. */
-    private probed = new Map<string, { info: NavInfo | null } | null>();
+    private probed = new Map<
+      string,
+      { result: { info: NavInfo | null; plugin?: NavigationMatch } | null; at: number }
+    >();
+    private revision = configurationNavigationRevision();
     private probedDoc: Text | null = null;
+    private providerEpoch = -1;
     private probing: string | null = null;
     private off: () => void;
+    private offProviders: () => void;
     private disposed = false;
     private hovered: string | null = null;
     private probeVersion = 0;
     private probeTimer: ReturnType<typeof setTimeout> | undefined;
     constructor(readonly view: EditorView) {
       // Window-wide, so ⌘/Ctrl over an unfocused editor underlines too; released anywhere clears it.
-      this.off = onNavigationModifier((held) => {
+      const offModifier = onNavigationModifier((held) => {
         if (!held || this.last) this.show(held);
       });
+      this.offProviders = onNavigationProvidersChanged(() => {
+        if (this.disposed) return;
+        this.probeVersion++;
+        clearTimeout(this.probeTimer);
+        this.probing = null;
+        this.probed.clear();
+        this.set(null);
+        if (this.last) this.show(navigationModifierHeld());
+      });
+      // IDEA's macOS "Force touch" shortcut: a force click navigates like ⌘-click
+      // (the keyboard dispatcher keeps the system Look Up popover away).
+      const onForceDown = (e: Event) => {
+        const m = e as MouseEvent;
+        if (m.metaKey || m.ctrlKey || m.altKey || m.shiftKey) return;
+        if (navigateFromPointer(view, m)) m.preventDefault();
+      };
+      view.contentDOM.addEventListener("webkitmouseforcedown", onForceDown);
+      this.off = () => {
+        offModifier();
+        view.contentDOM.removeEventListener("webkitmouseforcedown", onForceDown);
+      };
     }
     destroy() {
       this.off();
+      this.offProviders();
       this.disposed = true;
       this.probeVersion++;
       clearTimeout(this.probeTimer);
@@ -424,14 +665,35 @@ const linkPlugin = ViewPlugin.fromClass(
         this.set({ from: target.from, to: target.to, info: null });
         return;
       }
-      if (this.probedDoc !== view.state.doc) {
+      if (
+        this.probedDoc !== view.state.doc ||
+        this.providerEpoch !== navigationEpoch() ||
+        this.revision !== configurationNavigationRevision()
+      ) {
+        this.providerEpoch = navigationEpoch();
+        this.revision = configurationNavigationRevision();
+        this.probeVersion++;
+        clearTimeout(this.probeTimer);
+        this.probing = null;
         this.probed.clear();
         this.probedDoc = view.state.doc;
       }
       const key = `${target.from}:${target.to}`;
-      if (this.probed.has(key)) {
-        const hit = this.probed.get(key);
-        this.set(hit ? { from: target.from, to: target.to, info: hit.info } : null);
+      const hit = this.probed.get(key);
+      // Configuration targets appear as the Java import progresses: they expire, and a
+      // remembered target must still be in the shared results. Other results last until an edit.
+      const config = isConfigurationDocument(view);
+      if (
+        hit &&
+        (!config || Date.now() - hit.at < (hit.result ? CONFIGURATION_NAVIGATION_MAX_AGE : 1000)) &&
+        (!hit.result || !config || hasConfigurationNavigation(view, target.from))
+      ) {
+        const found = hit.result;
+        this.set(
+          found
+            ? { from: found.plugin?.from ?? target.from, to: found.plugin?.to ?? target.to, info: found.info }
+            : null,
+        );
         return;
       }
       const current = view.state.field(linkField);
@@ -448,21 +710,35 @@ const linkPlugin = ViewPlugin.fromClass(
         }
       }, 3000);
       const docAt = view.state.doc;
+      const epochAt = navigationEpoch();
+      const revision = this.revision;
       void probeNavigation(view, target.from)
         .then((result) => {
-          if (this.disposed || view.state.doc !== docAt || this.probeVersion !== version) return;
+          if (
+            this.disposed ||
+            view.state.doc !== docAt ||
+            this.probeVersion !== version ||
+            epochAt !== navigationEpoch() ||
+            revision !== configurationNavigationRevision()
+          )
+            return;
           clearTimeout(this.probeTimer);
-          this.probed.set(key, result);
+          if (this.probed.size >= 128) this.probed.delete(this.probed.keys().next().value!);
+          this.probed.set(key, { result, at: Date.now() });
           if (this.probing !== key) return;
           this.probing = null;
+          if (!result) this.set(null);
           if (result) {
-            this.set({ from: target.from, to: target.to, info: null });
+            this.set({ from: result.plugin?.from ?? target.from, to: result.plugin?.to ?? target.to, info: null });
+            // Configuration navigation is a link gesture. Plain hover still
+            // shows schema/type documentation; do not cover the key with it here.
+            if (result.plugin || isConfigurationDocument(view)) return;
             // Documentation must never delay the link cursor or underline.
             void requestHover(view, target.from)
               .then((hover) => {
                 if (this.disposed || view.state.doc !== docAt || this.probeVersion !== version || !hover) return;
                 const info = declarationSummary(hover.contents);
-                this.probed.set(key, { info });
+                this.probed.set(key, { result: { info }, at: Date.now() });
                 this.set({ from: target.from, to: target.to, info });
               })
               .catch(() => {});
@@ -490,6 +766,7 @@ const linkPlugin = ViewPlugin.fromClass(
       },
       mousedown(e, view) {
         if (e.button !== 0 && e.button !== 1) return false;
+        if (isAddCaretGesture(e)) return false;
         if (
           dispatchMouseShortcut(e, () => {
             const pos = view.posAtCoords({ x: e.clientX, y: e.clientY }, false);
@@ -504,17 +781,23 @@ const linkPlugin = ViewPlugin.fromClass(
         }
         // IDEA parity: middle button navigates on a plain click, without the modifier.
         if (e.button === 1 ? e.metaKey || e.ctrlKey || e.altKey || e.shiftKey : !isNavigationGesture(e)) return false;
-        const pos = view.posAtCoords({ x: e.clientX, y: e.clientY }, false);
-        if (pos == null) return false;
+        if (!navigateFromPointer(view, e)) return false;
         e.preventDefault();
-        view.dispatch({ selection: EditorSelection.cursor(pos), effects: setLink.of(null) });
-        view.focus();
-        void gotoTargets(view, "definition", pos);
         return true;
       },
     },
   },
 );
+
+/** Puts the caret under the pointer and goes to the declaration there, like a ⌘/Ctrl-click. */
+function navigateFromPointer(view: EditorView, e: MouseEvent): boolean {
+  const pos = view.posAtCoords({ x: e.clientX, y: e.clientY }, false);
+  if (pos == null) return false;
+  view.dispatch({ selection: EditorSelection.cursor(pos), effects: setLink.of(null) });
+  view.focus();
+  void gotoTargets(view, "definition", pos);
+  return true;
+}
 
 // ---------------------------------------------------------------------------
 // Document highlights
@@ -700,7 +983,10 @@ const highlightPlugin = ViewPlugin.fromClass(
 export function navigationExtension(): Extension {
   return [
     EditorView.updateListener.of((u) => {
-      if (u.docChanged) editedAt.set(u.view, performance.now());
+      if (u.docChanged) {
+        editedAt.set(u.view, performance.now());
+        invalidateConfigurationNavigation();
+      }
     }),
     linkField,
     linkPlugin,

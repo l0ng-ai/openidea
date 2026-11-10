@@ -1,3 +1,4 @@
+import { writeClipboardText } from "@/platform/clipboard";
 import { useEffect, useState } from "react";
 import clsx from "clsx";
 import { commands, isTauri, type RunConfig } from "@/platform/ipc";
@@ -42,7 +43,7 @@ export function pasteRows(rows: readonly EnvRow[], text: string): EnvRow[] {
 
 async function writeClipboard(text: string) {
   try {
-    await navigator.clipboard.writeText(text);
+    await writeClipboardText(text);
   } catch {
     /* clipboard unavailable */
   }

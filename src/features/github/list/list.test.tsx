@@ -185,7 +185,7 @@ describe("ListPanel", () => {
     localStorage.clear();
     useProject.setState({ project: { root: "/p", name: "p" } as never });
     queries = [];
-    vi.spyOn(ipc.commands, "ghApi").mockImplementation(async (req) => {
+    vi.spyOn(ipc.commands, "ghApi").mockImplementation(async (_repo, req) => {
       const body = JSON.parse(req.body!) as { variables: { query: string } };
       queries.push(body.variables.query);
       const page = pages.shift() ?? [];
@@ -205,7 +205,7 @@ describe("ListPanel", () => {
     useGhRepository.setState({
       availability: { kind: "ready", repo: {} as never, login: "me" },
       remotes: [{ owner: "org", name: "app", remote: "origin", url: "" }],
-      connection: { coordinates: { owner: "org", name: "app" }, repository, currentUser: me },
+      connection: { coordinates: { owner: "org", name: "app" }, repository, currentUser: me, root: null, remotes: [] },
     });
   });
   afterEach(() => {

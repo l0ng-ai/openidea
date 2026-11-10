@@ -3,6 +3,7 @@
 use ide_core::IpcPath;
 use serde::{Deserialize, Serialize};
 use specta::Type;
+use std::collections::BTreeMap;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize, Type)]
 #[serde(rename_all = "camelCase")]
@@ -33,6 +34,8 @@ pub struct AgentCapabilities {
     pub rollback: bool,
     /// A message can join the running turn instead of waiting for it.
     pub steer: bool,
+    /// It reports its background tasks and stops them one by one.
+    pub background_tasks: bool,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize, Type)]
@@ -88,6 +91,22 @@ pub struct AgentTask {
     /// by its next output or any status change.
     #[serde(default)]
     pub retry: Option<AgentRetry>,
+    /// What the agent runs in the background (shells, subagents, monitors), oldest first.
+    // Boxed so that `AgentEvent::Task` stays within clippy's `large_enum_variant` bound on Windows.
+    #[serde(default)]
+    pub background: Box<Vec<AgentBackgroundTask>>,
+}
+
+/// A task the agent runs in the background while the conversation goes on.
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize, Type)]
+#[serde(rename_all = "camelCase")]
+pub struct AgentBackgroundTask {
+    pub id: String,
+    /// What it is, as the agent names it (`local_bash`, `local_agent`, `monitor`…).
+    pub kind: String,
+    pub description: String,
+    /// When the client first saw it (ms since the epoch).
+    pub started_ms: f64,
 }
 
 /// An API request the agent is about to retry.
@@ -137,6 +156,14 @@ pub struct AgentConfigOption {
     pub via: AgentConfigVia,
 }
 
+#[derive(Clone, Copy, Debug, Default, PartialEq, Serialize, Deserialize, Type)]
+#[serde(rename_all = "camelCase")]
+pub enum AgentCommandSource {
+    #[default]
+    Command,
+    Skill,
+}
+
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize, Type)]
 #[serde(rename_all = "camelCase")]
 pub struct AgentCommand {
@@ -145,6 +172,8 @@ pub struct AgentCommand {
     pub description: String,
     /// What to type after the command, when it takes input.
     pub hint: Option<String>,
+    #[serde(default)]
+    pub source: AgentCommandSource,
 }
 
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize, Type)]
@@ -154,6 +183,30 @@ pub struct AgentUsage {
     pub used: u32,
     /// Size of the context window.
     pub size: u32,
+    /// What the session has cost so far (ACP `usage_update.cost`), when the agent reports it.
+    // Boxed so that `AgentEvent::Task` stays within clippy's `large_enum_variant` bound on Windows.
+    #[serde(default)]
+    pub cost: Option<Box<AgentCost>>,
+}
+
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize, Type)]
+#[serde(rename_all = "camelCase")]
+pub struct AgentCost {
+    pub amount: f64,
+    /// ISO 4217 code, e.g. `USD`.
+    pub currency: String,
+}
+
+/// One usage-limit window of an agent's account.
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize, Type)]
+#[serde(rename_all = "camelCase")]
+pub struct AgentLimit {
+    /// The window as the agent names it: `five_hour`, `seven_day`, `seven_day_opus`…
+    pub window: String,
+    /// Share of the window used, 0–100.
+    pub used_percent: f64,
+    /// When the window resets (ms since the epoch), if the agent said.
+    pub resets_ms: Option<f64>,
 }
 
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize, Type)]
@@ -235,6 +288,31 @@ pub struct AgentPermissionOption {
     pub kind: String,
 }
 
+/// A question the agent asks with `AskUserQuestion`, answered by picking options or typing.
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize, Type)]
+#[serde(rename_all = "camelCase")]
+pub struct AgentQuestion {
+    /// Stable answer identity when the provider supplies question ids.
+    #[serde(default)]
+    pub answer_key: Option<String>,
+    #[serde(default)]
+    pub header: String,
+    pub question: String,
+    #[serde(default)]
+    pub multi_select: bool,
+    pub options: Vec<AgentQuestionOption>,
+}
+
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize, Type)]
+#[serde(rename_all = "camelCase")]
+pub struct AgentQuestionOption {
+    pub label: String,
+    #[serde(default)]
+    pub description: String,
+    #[serde(default)]
+    pub preview: Option<String>,
+}
+
 /// One item of a task's conversation.
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize, Type)]
 #[serde(tag = "type", rename_all = "camelCase", rename_all_fields = "camelCase")]
@@ -307,6 +385,10 @@ pub enum AgentEntry {
         id: u32,
         title: String,
         options: Vec<AgentPermissionOption>,
+        /// Set when the request asks `AskUserQuestion`'s questions; answered with a JSON object
+        /// of question to answer instead of an option.
+        #[serde(default)]
+        questions: Vec<AgentQuestion>,
         /// Name of the chosen option, or `None` while pending. Cancelled requests read "Cancelled".
         chosen: Option<String>,
     },
@@ -322,13 +404,36 @@ pub struct AgentProvider {
     pub name: String,
     /// The command line that starts its ACP server.
     pub command: String,
+    /// Executable and arguments actually launched, without flattening paths containing spaces.
+    pub program: String,
+    pub args: Vec<String>,
+    pub default_program: Option<String>,
+    pub default_args: Vec<String>,
+    pub login_hint: Option<String>,
+    pub command_overridden: bool,
+    pub command_editable: bool,
+    pub command_read_only_reason: Option<AgentCommandReadOnlyReason>,
     /// Whether the command was found (on `PATH`).
     pub installed: bool,
+    /// Environment variables it starts with (from its agent file).
+    pub env: BTreeMap<String, String>,
     /// Settings (models, modes…) the agent offered last time it ran; empty before its first session.
     pub config: Vec<AgentConfigOption>,
+    /// Thinking-level options by model value; absent models have not reported their levels.
+    #[serde(default)]
+    pub thought_levels: BTreeMap<String, Vec<AgentConfigOption>>,
     /// Slash commands it offered last time.
     pub commands: Vec<AgentCommand>,
     pub source: AgentSource,
+}
+
+/// Why the executable cannot be changed in built-in agent settings.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, Type)]
+#[serde(rename_all = "camelCase")]
+pub enum AgentCommandReadOnlyReason {
+    PackageRunner,
+    Registry,
+    CustomAgent,
 }
 
 /// Where an agent comes from.
@@ -413,4 +518,20 @@ pub enum AgentEvent {
         index: u32,
         entry: AgentEntry,
     },
+    /// Text was appended to entry `index` (an agent message or a thought): it read the first
+    /// `from` UTF-16 units of its text when the previous event for it was sent.
+    Append {
+        task: String,
+        subagent: Option<String>,
+        index: u32,
+        from: u32,
+        text: String,
+    },
+    /// An agent reported the usage limits of its account (shared by every task of `provider`).
+    Limits {
+        provider: String,
+        limits: Vec<AgentLimit>,
+    },
+    /// The installed or configured agent providers changed.
+    Providers,
 }

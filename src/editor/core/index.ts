@@ -16,20 +16,25 @@ import { editorController } from "./controller";
 import { attachDocument } from "./model/attachment";
 import { previewExtensions } from "./cm/preview";
 import { registerEditorActions } from "./actions";
+import { registerLibrarySourcesActions } from "./librarySources";
 import { installColorScheme } from "./colorSchemeRuntime";
 import { documentBanner } from "./view/Banner";
 import { EditorAreaView } from "./view/EditorArea";
 import { GotoLineDialog } from "./view/GotoLineDialog";
+import { PasteHistoryDialogHost, registerPasteHistoryActions } from "./view/PasteHistoryDialog";
 import { NavBarPopup } from "./view/NavBarPopup";
 import { installClipboardTracking } from "./clipboardHistory";
 import {
-  Breadcrumbs,
   CaretStatus,
   EncodingStatus,
   IndentStatus,
   LineEndingStatus,
   ReadOnlyStatus,
+  StatusBarBreadcrumbs,
 } from "./view/StatusItems";
+
+/** The workbench navigation bar (View › Appearance › Navigation Bar). */
+export { Breadcrumbs } from "./view/StatusItems";
 
 export function activate(): void | (() => void) {
   const ctrl = editorController();
@@ -51,27 +56,34 @@ export function activate(): void | (() => void) {
     closeInput: (key) => ctrl.closeInput(key),
     prepareClose: () => ctrl.prepareClose(),
     cancelClose: () => ctrl.cancelClose(),
+    forgetSavedTabs: () => ctrl.forgetSavedTabs(),
+    keepSavedTabs: () => ctrl.keepSavedTabs(),
     documentHistory: (command) => ctrl.documentHistory(command),
     reformat: async (path) => {
       const handle = editorsFor(path)[0];
       return !!handle && (await formatDocument(handle.view, { explicit: false, selectionOnly: false })).applied;
     },
   });
-  _provideDocumentAttacher((path) => attachDocument(ctrl.manager, path));
-  _provideCodePreview((path) => previewExtensions(path, ctrl.manager.settings()?.editor, ctrl.manager.backend));
+  _provideDocumentAttacher((path, options) => attachDocument(ctrl.manager, path, options));
+  _provideCodePreview((path, editable) =>
+    previewExtensions(path, ctrl.manager.settings()?.editor, ctrl.manager.backend, editable),
+  );
   const disposers = [
     installColorScheme(),
     provideEditorArea(EditorAreaView),
     registerEditorActions(),
+    registerLibrarySourcesActions(),
+    registerPasteHistoryActions(),
     registerEditorBanner(documentBanner),
     registerOverlay({ id: "editor.gotoLine", component: GotoLineDialog }),
+    registerOverlay({ id: "editor.pasteHistory", component: PasteHistoryDialogHost }),
     registerOverlay({ id: "editor.navigationBar", component: NavBarPopup }),
     installClipboardTracking(),
     registerStatusItem({
       id: "editor.breadcrumbs",
       align: "left",
       priority: 0,
-      component: Breadcrumbs,
+      component: StatusBarBreadcrumbs,
       title: "Navigation Bar",
     }),
     registerStatusItem({

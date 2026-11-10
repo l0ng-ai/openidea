@@ -6,6 +6,14 @@ block-comment = ["/*", "*/"]
 indent = { tab-size = 4, insert-spaces = true }
 ui-mode = "C++"
 tree-sitter = "cpp"
+scratch-template = '''
+#include <iostream>
+
+int main() {
+    $END$
+    return 0;
+}
+'''
 
 [[language-servers]]
 name = "clangd"

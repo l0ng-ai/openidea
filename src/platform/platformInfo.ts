@@ -5,10 +5,13 @@ interface PlatformInfo {
   /** `macos` | `windows` | `linux` | `web`. */
   os: string;
   version: string | null;
+  windowsBuildNumber: number | null;
   /** Native traffic lights overlay the title bar (Tauri, macOS, Overlay style). */
   overlayTitleBar: boolean;
   /** Frameless window: the title bar draws the main menu and caption buttons (Tauri, Windows and Linux). */
   framelessTitleBar: boolean;
+  /** Linux on a Wayland display: GTK draws the frameless windows' shadow and resize edges. */
+  wayland: boolean;
 }
 
 /** OS from the user agent (before the backend answers, or in a browser). "darwin" must not read as Windows. */
@@ -26,8 +29,10 @@ export const usePlatform = create<PlatformInfo>(() => {
   return {
     os,
     version: null,
+    windowsBuildNumber: null,
     overlayTitleBar: isTauri() && os === "macos",
     framelessTitleBar: isTauri() && (os === "windows" || os === "linux"),
+    wayland: false,
   };
 });
 
@@ -38,8 +43,10 @@ export async function loadPlatformInfo() {
     usePlatform.setState({
       os: info.platform,
       version: info.version,
+      windowsBuildNumber: info.windowsBuildNumber,
       overlayTitleBar: info.platform === "macos",
       framelessTitleBar: info.platform === "windows" || info.platform === "linux",
+      wayland: info.wayland,
     });
   } catch {
     /* keep the user-agent guess */

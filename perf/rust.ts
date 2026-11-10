@@ -16,7 +16,7 @@ import { evaluate, loadBudgets, printReport, type ScenarioResult } from "./lib/r
 const ROOT = resolve(import.meta.dirname, "..");
 const TARGET = resolve(ROOT, process.env.CARGO_TARGET_DIR ?? "target");
 const OUT = join(ROOT, "target", "perf");
-const PACKAGES = ["ide-text", "ide-language", "ide-index", "ide-search"];
+const PACKAGES = ["ide-text", "ide-language", "ide-index", "ide-search", "ide-host"];
 
 const { values: args } = parseArgs({
   options: {

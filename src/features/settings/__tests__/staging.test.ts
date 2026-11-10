@@ -1,6 +1,7 @@
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import type { Settings } from "@/platform/ipc";
 import { DEFAULT_SSH_CONFIG } from "@/platform/remoteSettings";
+import { SUPPORTED_LOCALES } from "@/platform/i18n";
 import { useProject } from "@/platform/project";
 import { DEFAULT_SETTINGS, getAt, setAt, validateSettings } from "../model/schema";
 import {
@@ -12,6 +13,7 @@ import {
   resetPage,
   stage,
   stageSshSecret,
+  stageMapEntry,
   SSH_SETTINGS_PAGE,
   stagedValue,
   useSettingsDialog,
@@ -267,7 +269,7 @@ describe("validateSettings", () => {
     expect(validateSettings(undefined)).toEqual(DEFAULT_SETTINGS);
     expect(validateSettings("garbage")).toEqual(DEFAULT_SETTINGS);
     const v = validateSettings({
-      appearance: { theme: "neon", accent: "red", uiFontSize: 400, locale: "fr" },
+      appearance: { theme: "neon", accent: "red", uiFontSize: 400, locale: "xx" },
       editor: { fontSize: "big", tabSize: 2.6, lineHeight: -1, softWrap: "yes", fontFamily: "  " },
       files: { exclude: ["**/a", 3, "", null] },
       keymap: 12,
@@ -291,6 +293,8 @@ describe("validateSettings", () => {
   it("keeps valid values, including dark-hc", () => {
     const v = validateSettings({ appearance: { theme: "dark-hc", accent: "#C9A080", locale: "zh" } });
     expect(v.appearance).toMatchObject({ theme: "dark-hc", accent: "#c9a080", locale: "zh" });
+    for (const locale of SUPPORTED_LOCALES)
+      expect(validateSettings({ appearance: { locale } }).appearance.locale).toBe(locale);
   });
 
   it("reads and writes dotted keys immutably", () => {
@@ -299,5 +303,39 @@ describe("validateSettings", () => {
     expect(src.editor.fontSize).toBe(13);
     expect(getAt(out, "editor.fontSize")).toBe(14);
     expect(getAt(out, "editor.nope.deeper")).toBeUndefined();
+  });
+});
+
+describe("literal map entry staging", () => {
+  beforeEach(() => {
+    useProject.setState({ settings: structuredClone(DEFAULT_SETTINGS) as Settings, project: null });
+    openSettings();
+  });
+  it("preserves literal dots, per-page ownership, and merges one write per scope", async () => {
+    stageMapEntry("templates", "global", "plugins", ["example.helper", "prompt.with.dots"], ["one"]);
+    stageMapEntry("llm", "global", "plugins", ["example.helper", "profiles"], [{ name: "Local" }]);
+    stageMapEntry("other", "project", "plugins", ["other.plugin", "enabled"], true);
+    expect(pendingChanges(useSettingsDialog.getState())).toHaveLength(2);
+    resetPage("llm");
+    expect(stagedValue(useSettingsDialog.getState(), "global", "plugins")).toEqual({
+      "example.helper": { "prompt.with.dots": ["one"] },
+    });
+    const backend = fakeBackend();
+    expect(await applySettings(backend.deps)).toBe(true);
+    expect(backend.set.mock.calls.map((c) => [c[0], c[1], JSON.parse(c[2])])).toEqual([
+      ["global", "plugins", { "example.helper": { "prompt.with.dots": ["one"] } }],
+      ["project", "plugins", { "other.plugin": { enabled: true } }],
+    ]);
+    expect(useSettingsDialog.getState().staged).toEqual({});
+  });
+  it("removes only its own override and clears a reverted edit", () => {
+    const base = validateSettings({ plugins: { "example.helper": { "a.b": 1, keep: true } } });
+    useSettingsDialog.setState({ base, globalBase: base });
+    stageMapEntry("a", "global", "plugins", ["example.helper", "a.b"], null);
+    expect(stagedValue(useSettingsDialog.getState(), "global", "plugins")).toEqual({
+      "example.helper": { keep: true },
+    });
+    stageMapEntry("a", "global", "plugins", ["example.helper", "a.b"], 1);
+    expect(useSettingsDialog.getState().staged).toEqual({});
   });
 });

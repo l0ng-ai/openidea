@@ -20,8 +20,8 @@ zip.workspace = true
 sha2 = "0.10"
 hex = "0.4"
 
-[target.'cfg(unix)'.dependencies]
-libc = "0.2"
-
 [dev-dependencies]
 tempfile.workspace = true
+
+[target.'cfg(unix)'.dev-dependencies]
+libc = "0.2"

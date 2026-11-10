@@ -41,7 +41,7 @@ function FragmentPane({ fragment }: { fragment: Fragment }) {
         onClick={() => openFragment(fragment)}
         title={tx("Open in editor")}
       >
-        <Icon name={fileIconName(basename(fragment.path))} size={16} className={styles.fileIcon} />
+        <Icon name={fileIconName(basename(fragment.path), fragment.path)} size={16} className={styles.fileIcon} />
         <span className={styles.strong}>{basename(fragment.path)}</span>
         <span className={styles.muted}>
           {fragment.range.start.line + 1}–{fragment.range.end.line + 1}
@@ -111,7 +111,11 @@ export function DuplicatesView() {
                 </span>
               ) : (
                 <span className={styles.row}>
-                  <Icon name={fileIconName(basename(n.fragment.path))} size={16} className={styles.fileIcon} />
+                  <Icon
+                    name={fileIconName(basename(n.fragment.path), n.fragment.path)}
+                    size={16}
+                    className={styles.fileIcon}
+                  />
                   <span>{basename(n.fragment.path)}</span>
                   <span className={styles.muted}>
                     :{n.fragment.range.start.line + 1}–{n.fragment.range.end.line + 1}

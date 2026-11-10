@@ -1,0 +1,25 @@
+.sync {
+  flex: none;
+  display: inline-flex;
+  align-items: center;
+  gap: 3px;
+  font-family: var(--font-mono);
+  font-size: var(--fs-small);
+  line-height: 1;
+  vertical-align: middle;
+}
+
+.item {
+  flex: none;
+  display: inline-flex;
+  align-items: center;
+  gap: 1px;
+}
+
+.incoming {
+  color: var(--accent);
+}
+
+.outgoing {
+  color: var(--success);
+}

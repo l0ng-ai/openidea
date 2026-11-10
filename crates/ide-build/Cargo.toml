@@ -6,16 +6,17 @@ edition.workspace = true
 license.workspace = true
 
 [dependencies]
+blake3.workspace = true
+chardetng.workspace = true
 dunce.workspace = true
+encoding_rs.workspace = true
 ide-core.workspace = true
+zip.workspace = true
 serde.workspace = true
 serde_json.workspace = true
 specta.workspace = true
 tracing.workspace = true
 dirs.workspace = true
-
-[target.'cfg(unix)'.dependencies]
-libc = "0.2"
 
 [dev-dependencies]
 tempfile.workspace = true

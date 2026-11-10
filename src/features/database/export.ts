@@ -1,14 +1,15 @@
 /**
  * Result-set export formats (IDEA's data extractors): CSV, TSV, JSON, SQL
- * INSERT statements and a Markdown table. Values arrive as text; numeric
- * columns are written unquoted where the format distinguishes them.
+ * INSERT statements, a Markdown table and One-Row (all values on one `, ` list).
+ * Values arrive as text; numeric columns are written unquoted where the format
+ * distinguishes them.
  */
 import type { DbDriver } from "@/platform/ipc";
 import { isNumericColumn } from "./Grid";
-import { toCsv, toTsv, type Cell } from "./model";
+import { toCsv, toOneRow, toTsv, type Cell } from "./model";
 import { quoteIdent } from "./sql/complete";
 
-export type ExportFormat = "csv" | "tsv" | "json" | "sql" | "markdown";
+export type ExportFormat = "csv" | "tsv" | "json" | "sql" | "markdown" | "onerow";
 
 export const EXPORT_FORMATS: ReadonlyArray<{ id: ExportFormat; label: string; extension: string }> = [
   { id: "csv", label: "CSV", extension: "csv" },
@@ -16,6 +17,7 @@ export const EXPORT_FORMATS: ReadonlyArray<{ id: ExportFormat; label: string; ex
   { id: "json", label: "JSON", extension: "json" },
   { id: "sql", label: "SQL Inserts", extension: "sql" },
   { id: "markdown", label: "Markdown", extension: "md" },
+  { id: "onerow", label: "One-Row", extension: "txt" },
 ];
 
 export interface ExportData {
@@ -79,7 +81,11 @@ export function exportData(
     }
     case "sql": {
       const literal = (v: Cell, i: number) =>
-        v === null ? "NULL" : numeric[i] && Number.isFinite(Number(v)) ? v : `'${v.replace(/'/g, "''")}'`;
+        v === null
+          ? "NULL"
+          : numeric[i] && Number.isFinite(Number(v))
+            ? v
+            : `'${(d.driver === "clickhouse" ? v.replace(/\\/g, "\\\\") : v).replace(/'/g, "''")}'`;
       const head = `INSERT INTO ${quoteIdent(d.table, d.driver)} (${names.map((n) => quoteIdent(n, d.driver)).join(", ")}) VALUES`;
       return d.rows.map((r) => `${head} (${r.map(literal).join(", ")});`).join("\n");
     }
@@ -95,5 +101,7 @@ export function exportData(
           : [...(options.rowHeader ? ["--:"] : []), ...numeric.map((n) => (n ? "--:" : "---"))];
       return [head.map(cell), align, ...t.rows.map((r) => r.map(cell))].map((r) => `| ${r.join(" | ")} |`).join("\n");
     }
+    case "onerow":
+      return toOneRow(d.rows, (c) => numeric[c]!);
   }
 }

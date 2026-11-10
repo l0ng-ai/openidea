@@ -22,5 +22,5 @@ export async function addToIgnore(paths: string[], destination: IgnoreDestinatio
   }
   // Show the rule where it was written: the nearest .gitignore may be a nested one.
   const file = changed?.[0];
-  if (destination === "gitignore" && file) await editorService().openFile(file, { focus: true });
+  if (file) await editorService().openFile(file, { focus: true });
 }

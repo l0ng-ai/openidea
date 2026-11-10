@@ -52,6 +52,7 @@ export function activate(): () => void {
     const gen = ++generation;
     setContext("vimMode", enabled);
     if (!enabled) {
+      setContext("vim.mode", "");
       contribution?.();
       contribution = null;
       return;
@@ -63,7 +64,7 @@ export function activate(): () => void {
       id: "vim",
       order: 0,
       embedded: true,
-      extensions: () => e.vimExtension(),
+      extensions: (ctx) => e.vimExtension(ctx),
     });
   };
 
@@ -117,6 +118,7 @@ export function activate(): () => void {
     contribution?.();
     contribution = null;
     setContext("vimMode", false);
+    setContext("vim.mode", "");
     disposers.reverse().forEach((d) => d());
   };
 }

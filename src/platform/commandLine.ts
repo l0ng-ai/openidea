@@ -67,6 +67,28 @@ export function parseArgs(input: string, windowsPaths = false): string[] {
   return out;
 }
 
+/**
+ * The program and arguments of a shell command line (Settings › Terminal › Shell path). On
+ * Windows a backslash is a path separator, and an unquoted path up to its `.exe` / `.cmd` /
+ * `.bat` / `.com` is the program even with spaces in it (`C:\Program Files\…\pwsh.exe -NoLogo`).
+ */
+export function parseShellCommand(line: string, windows: boolean): string[] {
+  const text = line.trim();
+  if (windows && !/["']/.test(text)) {
+    const end = /\.(?:exe|cmd|bat|com)(?=\s|$)/i.exec(text);
+    if (end) {
+      const stop = end.index + end[0].length;
+      return [text.slice(0, stop), ...parseArgs(text.slice(stop), true)];
+    }
+  }
+  return parseArgs(text, windows);
+}
+
+/** `path` as one word of a command line: quoted when it has whitespace. */
+export function quotePath(path: string): string {
+  return /\s/.test(path) ? `"${path}"` : path;
+}
+
 /** Inverse of `parseArgs` (quotes only when needed). */
 export function formatArgs(args: readonly string[]): string {
   return args.map((a) => (a === "" ? "''" : /[\s'"\\$`]/.test(a) ? `'${a.replace(/'/g, `'\\''`)}'` : a)).join(" ");

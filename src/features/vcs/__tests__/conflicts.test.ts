@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { blockAt, initialResult, mergeTitles, parseConflicts, resolveAll, resolutionText } from "../conflicts";
+import { blockAt, mergeTitles, parseConflicts, resolveAll, resolutionText } from "../conflicts";
 
 const text = [
   "keep\n",
@@ -34,6 +34,19 @@ describe("parseConflicts", () => {
     expect(b).toMatchObject({ ours: "", base: null, theirs: "only theirs\n" });
     expect(blockAt(blocks, text.indexOf("theirs\n"))).toBe(a);
     expect(blockAt(blocks, 0)).toBeUndefined();
+  });
+
+  it("locates the marker lines, without their terminators", () => {
+    const [a, b] = parseConflicts(text);
+    const lines = (block: typeof a) => block!.markers.map((m) => text.slice(m.from, m.to));
+    expect(lines(a)).toEqual(["<<<<<<< HEAD", "||||||| base", "=======", ">>>>>>> feature"]);
+    expect(lines(b)).toEqual(["<<<<<<< HEAD", "=======", ">>>>>>> feature"]);
+    const crlf = "<<<<<<< a\r\nx\r\n=======\r\ny\r\n>>>>>>> b\r\n";
+    expect(parseConflicts(crlf)[0]!.markers.map((m) => crlf.slice(m.from, m.to))).toEqual([
+      "<<<<<<< a",
+      "=======",
+      ">>>>>>> b",
+    ]);
   });
 
   it("ignores unterminated markers", () => {
@@ -82,25 +95,5 @@ describe("mergeTitles", () => {
       theirs: "Changes from feature",
     });
     expect(mergeTitles(null)).toEqual({ yours: "Your version", theirs: "Theirs (incoming)" });
-  });
-});
-
-describe("initialResult", () => {
-  const merged = "a\n<<<<<<< yours\nmine\n||||||| base\nold\n=======\nhers\n>>>>>>> theirs\nz\n";
-
-  it("replaces each conflict with its base text, without markers", () => {
-    const { text, conflicts } = initialResult(merged);
-    expect(text).toBe("a\nold\nz\n");
-    expect(conflicts).toEqual([{ from: 2, to: 6, ours: "mine\n", base: "old\n", theirs: "hers\n" }]);
-    expect(resolutionText(conflicts[0]!, "ours")).toBe("mine\n");
-  });
-
-  it("swaps marker sides written in git's order during a rebase", () => {
-    const { conflicts } = initialResult(merged, true);
-    expect(conflicts[0]).toMatchObject({ ours: "hers\n", theirs: "mine\n" });
-  });
-
-  it("keeps text without conflicts as is", () => {
-    expect(initialResult("x\n")).toEqual({ text: "x\n", conflicts: [] });
   });
 });

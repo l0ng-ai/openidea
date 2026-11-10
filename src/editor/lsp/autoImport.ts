@@ -11,7 +11,7 @@ import { commands, type CodeAction, type Diagnostic } from "@/platform/ipc";
 import { editorPrefs } from "@/platform/editorSettings";
 import { docOf, isUnavailable, lspRequest } from "./lsp";
 import { diagnosticsFor, subscribeDiagnostics } from "./diagnostics";
-import { applyCodeAction } from "./intentions";
+import { actionsForDiagnostic, applyCodeAction } from "./intentions";
 import { offsetsToRange, rangeToOffsets } from "./positions";
 import { featureBackoff } from "./availability";
 
@@ -92,7 +92,7 @@ const autoImportPlugin = ViewPlugin.fromClass(
         if (this.tried.has(key)) continue;
         this.tried.add(key);
         const actions = await lspRequest(() => commands.lspCodeActions(doc.doc, d.range, ["quickfix"]));
-        const fix = unambiguousImport(actions);
+        const fix = unambiguousImport(actionsForDiagnostic(actions, d));
         if (fix && !editTouchesLine(fix, doc.path, caretLine)) {
           await applyCodeAction(this.view, fix);
           return;

@@ -7,6 +7,7 @@ import {
   type DuplicateOptions,
   type StructuralFile,
   type StructuralLanguage,
+  type WorkspaceEdit,
 } from "@/platform/ipc";
 import { executeAction } from "@/platform/actions";
 import { activeProfileId, listProfiles, validateInspections, type ProfileId } from "@/platform/inspections";
@@ -29,6 +30,7 @@ import {
 } from "./structural";
 import styles from "./Analysis.module.css";
 import { tx } from "@/platform/i18n";
+import { notifications } from "@/workbench/contributions";
 
 function InspectCodeDialog({ onClose }: { onClose: () => void }) {
   const [scope, setScope] = useState<ScopeChoice>(() => defaultScope());
@@ -254,7 +256,7 @@ function StructuralDialog({ replace, onClose }: { replace: boolean; onClose: () 
     } else if (!result.files.length) {
       await showStructuralResults(form.pattern, result.files, result.summary);
     } else {
-      showReplacePreview(result.files);
+      await showReplacePreview(result.files);
     }
   };
 
@@ -322,7 +324,15 @@ function StructuralDialog({ replace, onClose }: { replace: boolean; onClose: () 
   );
 }
 
-function ReplacePreviewDialog({ files, onClose }: { files: StructuralFile[]; onClose: () => void }) {
+function ReplacePreviewDialog({
+  files,
+  preconditions,
+  onClose,
+}: {
+  files: StructuralFile[];
+  preconditions: WorkspaceEdit["preconditions"];
+  onClose: () => void;
+}) {
   const [excluded, setExcluded] = useState<Set<string>>(() => new Set());
   const edit = useMemo(() => buildReplaceEdit(files, excluded), [files, excluded]);
   const count = edit.files.reduce((n, f) => n + (f.kind === "edit" ? f.edits.length : 0), 0);
@@ -351,7 +361,7 @@ function ReplacePreviewDialog({ files, onClose }: { files: StructuralFile[]; onC
           disabled: count === 0,
           onClick: () => {
             onClose();
-            void applyStructuralReplace(edit);
+            void applyStructuralReplace({ ...edit, preconditions });
           },
         },
         { label: "Cancel", role: "cancel" },
@@ -389,5 +399,18 @@ export const showDuplicatesDialog = () => openDialog((close) => <DuplicatesDialo
 export const showCodeCleanupDialog = () => openDialog((close) => <CodeCleanupDialog onClose={close} />);
 export const showStructuralDialog = (replace: boolean) =>
   openDialog((close) => <StructuralDialog replace={replace} onClose={close} />);
-export const showReplacePreview = (files: StructuralFile[]) =>
-  openDialog((close) => <ReplacePreviewDialog files={files} onClose={close} />);
+export const showReplacePreview = async (files: StructuralFile[]) => {
+  try {
+    const edit = buildReplaceEdit(files, new Set());
+    const prepared = isTauri() ? await call(commands.prepareWorkspaceEdit(edit)) : edit;
+    openDialog((close) => (
+      <ReplacePreviewDialog files={files} preconditions={prepared.preconditions} onClose={close} />
+    ));
+  } catch (error) {
+    notifications().notify({
+      level: "error",
+      title: "Cannot preview replacements",
+      body: error instanceof Error ? error.message : String(error),
+    });
+  }
+};

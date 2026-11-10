@@ -104,12 +104,13 @@ describe("creating packages", () => {
   });
 });
 
-it("uses only manifest members in order in workspace Project and Project Files views", () => {
+it("shows manifest members in name order in workspace Project and Project Files views", () => {
   for (const mode of ["project", "projectFiles"] as const) {
     initProjectTree("/workspace", "Workspace", ["/z", "/a"]);
     useProjectTree.setState({ mode });
     const model = selectModel(useProjectTree.getState());
-    expect(model.roots.map((r) => r.path)).toEqual(["/z", "/a"]);
+    expect(model.roots.map((r) => r.path)).toEqual(["/a", "/z"]);
+    expect(useProjectTree.getState().members).toEqual(["/z", "/a"]);
     expect(model.byKey.has("/workspace")).toBe(false);
     initProjectTree("/workspace", "Workspace", ["/a"]);
     expect(selectModel(useProjectTree.getState()).roots.map((r) => r.path)).toEqual(["/a"]);

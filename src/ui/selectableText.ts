@@ -4,6 +4,8 @@
  * (chrome); content opts back in with `selectableText`. A right-click on a
  * selection, or anywhere in such content, offers Copy (`copyMenuFor`).
  */
+import { writeClipboardText } from "@/platform/clipboard";
+import { isTauri } from "@/platform/ipc";
 import type { KeyboardEvent } from "react";
 import { hasPrimaryModifier, formatBinding } from "@/platform/keymap";
 import type { MenuItem } from "./Menu";
@@ -44,8 +46,8 @@ export function copyMenuFor(target: EventTarget | null): MenuItem[] | null {
 /** Writes `text` to the clipboard; falls back to copying the live selection. */
 export async function copyText(text: string): Promise<void> {
   try {
-    if (navigator.clipboard?.writeText) {
-      await navigator.clipboard.writeText(text);
+    if (isTauri() || typeof navigator.clipboard?.writeText === "function") {
+      await writeClipboardText(text);
       return;
     }
   } catch {
@@ -70,6 +72,8 @@ export function copySelectionOnKeyDown(
     | "preventDefault"
     | "stopPropagation"
   >,
+  /** Text to copy instead of `selection.toString()`, for views that do not mount all their text. */
+  textOf: (selection: Selection) => string = (selection) => selection.toString(),
 ): boolean {
   if (e.defaultPrevented || e.nativeEvent.isComposing || e.altKey || e.shiftKey) return false;
   const copy =
@@ -87,6 +91,6 @@ export function copySelectionOnKeyDown(
     return false;
   e.preventDefault();
   e.stopPropagation();
-  void copyText(selection.toString());
+  void copyText(textOf(selection));
   return true;
 }

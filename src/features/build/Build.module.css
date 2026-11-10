@@ -42,7 +42,9 @@
   color: var(--fg-muted);
 }
 .fileError {
-  text-decoration: underline wavy var(--danger);
+  text-decoration-line: underline;
+  text-decoration-style: wavy;
+  text-decoration-color: var(--danger);
   text-decoration-skip-ink: none;
   text-underline-offset: 3px;
 }
@@ -79,7 +81,7 @@
   color: var(--fg);
   background: var(--bg-app);
   -webkit-user-select: text;
-  cursor: text;
+  cursor: default;
   -webkit-user-select: text;
   user-select: text;
   outline: none;
@@ -89,6 +91,7 @@
   position: relative;
   width: 100%;
   min-width: max-content;
+  cursor: text;
 }
 .line {
   position: absolute;
@@ -109,6 +112,17 @@
 .system {
   color: var(--fg-subtle);
   font-style: italic;
+}
+.link {
+  color: var(--link);
+  text-decoration: underline;
+  text-decoration-color: color-mix(in srgb, var(--link) 45%, transparent);
+  text-underline-offset: 2px;
+  cursor: pointer;
+}
+.link:hover {
+  color: var(--link-hover);
+  text-decoration-color: currentColor;
 }
 .titleButton {
   width: 30px;

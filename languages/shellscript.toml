@@ -17,4 +17,4 @@ install-hint = "npm i -g bash-language-server (optionally install shellcheck and
 [debugger]
 adapter = "bash-debug"
 command = "bash-debug-adapter"
-install-hint = "Install https://github.com/rogalmic/vscode-bash-debug as `bash-debug-adapter` (e.g. via mason.nvim)"
+install-hint = "Install Bash Debug in Settings › Languages & Frameworks › Language Servers"

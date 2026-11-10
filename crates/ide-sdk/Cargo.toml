@@ -12,12 +12,11 @@ ide-core.workspace = true
 ide-language.workspace = true
 ide-run.workspace = true
 ide-vfs.workspace = true
+quick-xml = "0.42"
 serde.workspace = true
 serde_json.workspace = true
 specta.workspace = true
+tempfile.workspace = true
 toml.workspace = true
 tracing.workspace = true
 zip.workspace = true
-
-[dev-dependencies]
-tempfile.workspace = true

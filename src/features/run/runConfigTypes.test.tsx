@@ -1,3 +1,5 @@
+import { useBuildModel } from "@/platform/buildModel";
+import { useBuildPresentation } from "@/platform/projectPresentation";
 import { useProject } from "@/platform/project";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { fireEvent, render, screen } from "@testing-library/react";
@@ -21,7 +23,17 @@ import { compoundChildren, compoundCycle, formatEnv, parseEnv, validateConfig } 
 import { contextConfig } from "./context";
 import { EditConfigsOverlay, moveConfig, treeRows } from "./EditConfigsDialog";
 import { pasteRows } from "./EnvDialog";
-import { CURRENT_FILE, resetRuns, selectConfig, sessionsOf, startCompound, startRun, useRun } from "./store";
+import {
+  CURRENT_FILE,
+  prepareLaunch,
+  resetRuns,
+  selectConfig,
+  sessionsOf,
+  setBeforeLaunchRunner,
+  startCompound,
+  startRun,
+  useRun,
+} from "./store";
 import {
   BUILTIN_TYPES,
   blankTemplate,
@@ -69,12 +81,90 @@ beforeEach(() => {
 
 afterEach(() => disposeTypes());
 
+it.each([undefined, false])(
+  "respects the launch origin when a configuration requests focus (%s)",
+  async (showOption) => {
+    await startRun(cfg("focused", { focusToolWindow: true }), undefined, undefined, { show: showOption });
+    if (showOption === false) expect(show).not.toHaveBeenCalled();
+    else expect(show).toHaveBeenCalledWith("run", true);
+  },
+);
+
 describe("configuration types", () => {
+  it("shows the JAR fields, validates the path and edits shared working directory and environment", () => {
+    const type = typeFor("jar-application")!;
+    const config = newConfigOfType(type, []);
+    expect(missingParams(config)).toEqual({ jarPath: "Path to JAR is required" });
+    const edited = withParams(config, { jarPath: "app.jar", vmOptions: "-Xmx1g", programArgs: "hello" });
+    const change = vi.fn();
+    render(
+      <ConfigForm
+        config={{ ...edited, cwd: "server", env: { MODE: "test" } }}
+        all={[]}
+        type={type}
+        errors={{}}
+        onChange={change}
+        modifyRequest={0}
+      />,
+    );
+    expect(screen.getByLabelText("Path to JAR")).toHaveValue("app.jar");
+    expect(screen.getByLabelText("VM options")).toHaveValue("-Xmx1g");
+    expect(screen.getByLabelText("Program arguments")).toHaveValue("hello");
+    expect(screen.getByLabelText("Working directory")).toHaveValue("server");
+    expect(screen.getByLabelText("Environment variables")).toHaveValue("MODE=test");
+    fireEvent.change(screen.getByLabelText("Path to JAR"), { target: { value: "new.jar" } });
+    expect(change.mock.calls.at(-1)?.[0]).toMatchObject({ args: ["-Xmx1g", "-jar", "new.jar", "hello"] });
+  });
+
+  it("runs an Application with the chosen JRE and the classpath of the chosen module", () => {
+    const type = typeFor("application")!;
+    const base = withParams(newConfigOfType(type, []), { ...newConfigOfType(type, []).params, mainClass: "a.Main" });
+    expect(base.command).toBe("java");
+    expect(base.module).toBeUndefined();
+
+    const chosen = withParams(base, { ...base.params, jre: "/jdks/temurin-8", module: "server" });
+    expect(chosen.command).toBe("/jdks/temurin-8/bin/java");
+    expect(chosen.module).toBe("server");
+    // The project root is a module too.
+    expect(withParams(chosen, { ...chosen.params, module: "." }).module).toBe("");
+    // Back to the defaults: the module's JDK, and the module found again for another main class.
+    const auto = withParams(chosen, { ...chosen.params, jre: "", module: "", mainClass: "b.Main" });
+    expect(auto.command).toBe("java");
+    expect(auto.module).toBeUndefined();
+
+    // A configuration saved with its module shows it in the form.
+    const saved = cfg("saved", {
+      kind: "application",
+      command: "java",
+      args: ["-cp", "${classpath}", "a.Main"],
+      module: "",
+    });
+    expect(formParams(saved)).toMatchObject({ mainClass: "a.Main", module: "." });
+  });
+
+  it("sets the before launch build policy of a Java configuration", async () => {
+    const type = typeFor("application")!;
+    const config = withParams(newConfigOfType(type, []), {
+      ...newConfigOfType(type, []).params,
+      mainClass: "a.Main",
+    });
+    const changed = vi.fn();
+    render(<ConfigForm config={config} all={[config]} type={type} errors={{}} onChange={changed} modifyRequest={0} />);
+    fireEvent.click(screen.getByRole("button", { name: /Modify options/ }));
+    fireEvent.click(await screen.findByText("Build"));
+    expect(screen.getByRole("button", { name: "Build" }).textContent).toContain("Automatic");
+    fireEvent.click(screen.getByRole("button", { name: "Build" }));
+    fireEvent.click(await screen.findByRole("option", { name: "Rebuild" }));
+    expect(changed).toHaveBeenCalledWith(expect.objectContaining({ buildPolicy: "rebuild" }));
+  });
+
   it.each(["spring-boot", "tomcat"])("edits shared update policies in the %s form", async (kind) => {
     const type = typeFor(kind)!;
     const original = newConfigOfType(type, []);
     const config =
-      kind === "spring-boot" ? withParams(original, { ...original.params, mainClass: "a.Main" }) : original;
+      kind === "spring-boot"
+        ? withParams(original, { ...original.params, mainClass: "a.Main" })
+        : withParams(original, { ...original.params, deploymentMode: "artifact", artifact: "web" });
     const changed = vi.fn();
     render(<ConfigForm config={config} all={[config]} type={type} errors={{}} onChange={changed} modifyRequest={0} />);
     expect(screen.getByRole("button", { name: "On 'Update' action" }).textContent).toContain("Show chooser");
@@ -103,6 +193,12 @@ describe("configuration types", () => {
     ["pytest", "pytest.exe", ["tests/test_app.py", "-q"]],
     ["pytest", String.raw`C:\project\.venv\Scripts\PYTEST.EXE`, ["-q"]],
     ["pytest", "PYTHON.EXE", ["-m", "pytest", "tests"]],
+    ["ruby", String.raw`C:\Ruby33\bin\ruby.exe`, ["-Ilib", "bin/app", "--port", "3000"]],
+    ["rake", "bundle", ["exec", "rake", "--trace", "db:migrate"]],
+    ["rspec", "/home/me/.rbenv/versions/3.3.1/bin/rspec", ["--fail-fast", "spec/a_spec.rb:12"]],
+    ["rspec", "bundle", ["exec", "rspec", "--format", "documentation", "--fail-fast", "spec/foo_spec.rb"]],
+    ["ruby", "ruby", ["-I", "lib", "-w", "bin/app", "--port", "3000"]],
+    ["rake", "bundle", ["exec", "rake", "-f", "lib/tasks.rake", "--trace", "db:migrate"]],
     ["npm", String.raw`C:\Program Files\nodejs\NPM.CMD`, ["run", "test", "--", "two words"]],
     ["npm", "pnpm.COM", ["test"]],
     ["application", String.raw`C:\jdk\bin\JAVA.EXE`, ["-cp", "lib/*", "a.Main"]],
@@ -170,6 +266,147 @@ describe("configuration types", () => {
       executable: detected.command,
     });
     expect(godot.paramsFrom!(cfg("x", { command: "cargo" }))).toBeNull();
+  });
+
+  it("ruby types default to Bundler for rake and rspec and mark rspec as tests", () => {
+    expect(newConfigOfType(typeFor("rake")!, [])).toMatchObject({ command: "bundle", args: ["exec", "rake"] });
+    const ruby = newConfigOfType(typeFor("ruby")!, []);
+    expect(ruby).toMatchObject({ command: "ruby", args: [] });
+    expect(formParams(ruby)).toEqual({ command: "", bundler: "", rubyArgs: "", script: "", scriptArgs: "" });
+    const rspec = newConfigOfType(typeFor("rspec")!, []);
+    expect(rspec).toMatchObject({ command: "bundle", args: ["exec", "rspec"], isTest: true });
+    expect(withParams(rspec, { bundler: "", target: "spec/a_spec.rb", options: "-fd" })).toMatchObject({
+      command: "rspec",
+      args: ["-fd", "spec/a_spec.rb"],
+      isTest: true,
+    });
+    expect(formParams(cfg("r", { kind: "ruby", command: "ruby", args: ["app.rb", "-v"] }))).toEqual({
+      command: "",
+      bundler: "",
+      rubyArgs: "",
+      script: "app.rb",
+      scriptArgs: "-v",
+    });
+  });
+
+  it("ticking Bundler swaps the interpreter launcher for its bundle sibling, and back", () => {
+    const abs = "/v/ruby/bin/ruby";
+    const run = cfg("r", { kind: "ruby", command: abs, args: ["-Ilib", "test/a_test.rb"] });
+    expect(withParams(run, { ...formParams(run)!, bundler: "true" })).toMatchObject({
+      command: "/v/ruby/bin/bundle",
+      args: ["exec", "ruby", "-Ilib", "test/a_test.rb"],
+    });
+    const bundled = cfg("r", { kind: "ruby", command: "/v/ruby/bin/bundle", args: ["exec", "ruby", "a.rb"] });
+    expect(withParams(bundled, { ...formParams(bundled)!, bundler: "" })).toMatchObject({
+      command: "/v/ruby/bin/ruby",
+      args: ["a.rb"],
+    });
+    // A launcher of the user's own (binstub, spring) is kept.
+    expect(withParams(run, { ...formParams(run)!, bundler: "true", command: "bin/spring" })).toMatchObject({
+      command: "bin/spring",
+    });
+  });
+
+  it("ruby types keep option values with their options and the argument order as written", () => {
+    const ruby = (args: string[]) => formParams(cfg("r", { kind: "ruby", command: "ruby", args }));
+    expect(ruby(["-I", "lib", "-w", "bin/app", "--port", "3000"])).toEqual({
+      command: "",
+      bundler: "",
+      rubyArgs: "-I lib -w",
+      script: "bin/app",
+      scriptArgs: "--port 3000",
+    });
+    expect(ruby(["-W0", "--", "-weird.rb", "x"])).toMatchObject({
+      rubyArgs: "-W0 --",
+      script: "-weird.rb",
+      scriptArgs: "x",
+    });
+    expect(ruby(["-e", "puts 1"])).toBeNull();
+    expect(ruby(["-v"])).toBeNull();
+
+    const rspec = (args: string[]) =>
+      formParams(cfg("s", { kind: "rspec", command: "bundle", args: ["exec", "rspec", ...args] }));
+    expect(rspec(["--format", "documentation", "--fail-fast", "spec/foo_spec.rb"])).toEqual({
+      command: "",
+      bundler: "true",
+      options: "--format documentation --fail-fast",
+      target: "spec/foo_spec.rb",
+    });
+    expect(rspec(["--tag", "~slow", "-fd", "spec/a_spec.rb:12", "spec/b_spec.rb"])).toMatchObject({
+      options: "--tag ~slow -fd",
+      target: "spec/a_spec.rb:12 spec/b_spec.rb",
+    });
+    expect(rspec(["--format", "documentation"])).toMatchObject({ options: "--format documentation", target: "" });
+    expect(rspec(["--new-option", "value", "spec"])).toMatchObject({ options: "--new-option value", target: "spec" });
+    expect(rspec([])).toMatchObject({ options: "", target: "" });
+
+    const rake = (args: string[]) =>
+      formParams(cfg("k", { kind: "rake", command: "bundle", args: ["exec", "rake", ...args] }));
+    expect(rake(["-f", "lib/tasks.rake", "--trace", "db:migrate"])).toEqual({
+      command: "",
+      bundler: "true",
+      options: "-f lib/tasks.rake --trace",
+      task: "db:migrate",
+    });
+    expect(rake(["--trace", "test", "TEST=test/a_test.rb"])).toMatchObject({
+      options: "--trace",
+      task: "test TEST=test/a_test.rb",
+    });
+    expect(rake(["-T"])).toMatchObject({ options: "-T", task: "" });
+  });
+
+  it("Django tests round-trip commandLine / paramsFrom and always report to the test tree", () => {
+    const django = typeFor("django-test")!;
+    expect(django.debugAdapter).toBe("debugpy");
+    expect(newConfigOfType(django, [])).toMatchObject({
+      kind: "django-test",
+      command: "python3",
+      args: ["manage.py", "test"],
+      env: {},
+      isTest: true,
+      debugAdapter: "debugpy",
+    });
+    // No settings module: neither `--settings` nor DJANGO_SETTINGS_MODULE, manage.py's default applies.
+    expect(django.commandLine({ command: "python3", settings: " " })).toEqual({
+      command: "python3",
+      args: ["manage.py", "test"],
+    });
+
+    const cases: Array<{ command: string; args: string[]; params: Record<string, string> }> = [
+      {
+        command: ".venv/bin/python",
+        args: ["manage.py", "test"],
+        params: { command: ".venv/bin/python", runnerArgs: "", target: "", settings: "", options: "" },
+      },
+      {
+        command: "uv",
+        args: ["run", "python", "manage.py", "test", "polls", "blog.tests.PostTests", "--settings", "mysite.test"],
+        params: {
+          command: "uv",
+          runnerArgs: "run python",
+          target: "polls blog.tests.PostTests",
+          settings: "mysite.test",
+          options: "",
+        },
+      },
+      {
+        command: "python3",
+        args: ["manage.py", "test", "--keepdb", "--parallel", "4"],
+        params: { command: "python3", runnerArgs: "", target: "", settings: "", options: "--keepdb --parallel 4" },
+      },
+    ];
+    for (const { command, args, params } of cases) {
+      const c = cfg("django:test", { kind: "django-test", command, args, detected: true });
+      expect(django.paramsFrom!(c)).toEqual(params);
+      expect(formParams(c)).toEqual(params);
+      expect(django.commandLine(params)).toEqual({ command, args });
+    }
+    // Saved from the form, a plain command line becomes a test configuration.
+    expect(withParams(cfg("d", { kind: "django-test" }), cases[1]!.params).isTest).toBe(true);
+    // Not `manage.py test`: edited as a plain command.
+    expect(
+      django.paramsFrom!(cfg("d", { kind: "django-test", command: "python3", args: ["manage.py", "check"] })),
+    ).toBeNull();
   });
 
   it("pytest round-trips commandLine / paramsFrom and opens implicit context configs in the form", () => {
@@ -412,6 +649,109 @@ describe("before launch tasks", () => {
     dispose();
     disposeBuild();
   });
+
+  it("forwards the tool-window visibility choice to the before launch runner", async () => {
+    const runner = vi.fn(async () => true);
+    setBeforeLaunchRunner(runner);
+    try {
+      const app = cfg("app", { beforeLaunch: [{ kind: "run", target: "other" }] });
+      expect(await prepareLaunch(app, [], false)).toBe(true);
+      expect(runner).toHaveBeenCalledWith(app, ["app"], false);
+    } finally {
+      setBeforeLaunchRunner(null);
+    }
+  });
+
+  it.each([undefined, "", "core"])("validates saved build tasks and module selection (%s)", (module) => {
+    const app = cfg("app", {
+      module,
+      beforeLaunch: [
+        { kind: "buildArtifacts", target: "" },
+        { kind: "buildModule", target: module ?? "" },
+      ],
+    });
+    expect(validateConfig(app).beforeLaunch).toBe(
+      module == null ? "Select a module for the Build Module task" : undefined,
+    );
+    if (module != null) {
+      expect(validateConfig({ ...app, module: "other" }).beforeLaunch).toContain("different module");
+    }
+  });
+
+  it.each([undefined, "", "core"])("offers Build Module only with a selected module (%s)", (module) => {
+    const config = cfg("app", { module, beforeLaunch: [{ kind: "buildArtifacts", target: "" }] });
+    const changed = vi.fn();
+    render(
+      <ConfigForm config={config} all={[config]} type={undefined} errors={{}} onChange={changed} modifyRequest={0} />,
+    );
+    fireEvent.click(screen.getByRole("button", { name: "Add task" }));
+    const item = screen.getByRole("menuitem", { name: "Build Module" });
+    expect(item.getAttribute("aria-disabled")).toBe(module == null ? "true" : null);
+    if (module != null) {
+      fireEvent.click(item);
+      expect(changed).toHaveBeenCalledWith(
+        expect.objectContaining({
+          beforeLaunch: [...config.beforeLaunch!, { kind: "buildModule", target: module }],
+        }),
+      );
+    }
+  });
+
+  it("refuses a removed module before dispatching its build", async () => {
+    const run = vi.fn();
+    const dispose = registerActions([{ id: "build.buildModule", title: "Build Module", run }]);
+    useProject.setState({ project: { root: "/p" } as never });
+    useBuildPresentation.setState({ modules: new Map() });
+    try {
+      const app = cfg("app", { module: "removed", beforeLaunch: [{ kind: "buildModule", target: "removed" }] });
+      expect(await runBeforeLaunch(app, [app.id])).toBe(false);
+      expect(run).not.toHaveBeenCalled();
+      expect(notify).toHaveBeenCalledWith(
+        expect.objectContaining({ body: expect.stringContaining("no longer exists") }),
+      );
+    } finally {
+      dispose();
+      useProject.setState({ project: null });
+    }
+  });
+
+  it("runs Build Module and Build Artifacts before launch", async () => {
+    const buildModule = vi.fn(async () => setContext("build.lastStatus", "success"));
+    const artifacts = vi.fn(async () => setContext("build.lastStatus", "success"));
+    const disposeBuild = registerActions([
+      { id: "build.buildModule", title: "Build Module", run: buildModule },
+      { id: "build.buildArtifacts", title: "Build Artifacts", run: artifacts },
+    ]);
+    useProject.setState({ project: { root: "/p" } as never });
+    useBuildPresentation.setState({ modules: new Map([["core", "maven"]]) });
+    const app = cfg("app", {
+      module: "core",
+      beforeLaunch: [
+        { kind: "buildModule", target: "core" },
+        { kind: "buildArtifacts", target: "" },
+      ],
+    });
+    expect(await runBeforeLaunch(app, [app.id])).toBe(true);
+    expect(buildModule).toHaveBeenCalledExactlyOnceWith(
+      expect.objectContaining({ arg: { target: "/p/core", activate: false, wait: true } }),
+    );
+    expect(artifacts).toHaveBeenCalledExactlyOnceWith(
+      expect.objectContaining({ arg: { activate: false, wait: true } }),
+    );
+    useProject.setState({ project: null });
+    useBuildPresentation.setState({ modules: new Map() });
+    disposeBuild();
+  });
+
+  it("shows the build policy for a Maven configuration", async () => {
+    const type = typeFor("maven")!;
+    const config = newConfigOfType(type, []);
+    const changed = vi.fn();
+    render(<ConfigForm config={config} all={[config]} type={type} errors={{}} onChange={changed} modifyRequest={0} />);
+    fireEvent.click(screen.getByRole("button", { name: /Modify options/ }));
+    fireEvent.click(await screen.findByText("Build"));
+    expect(screen.getByRole("button", { name: "Build" })).toBeTruthy();
+  });
 });
 
 describe("environment variables", () => {
@@ -503,7 +843,12 @@ describe("debug-only types (Remote JVM Debug)", () => {
     debugOnly: true,
     debugAdapter: "java-debug",
     fields: [
-      { key: "port", label: "Port", validate: (v) => (/^\d+$/.test(v) ? null : "Port must be a number") },
+      {
+        key: "port",
+        label: "Port",
+        required: true,
+        validate: (v) => (/^\d+$/.test(v) ? null : "Port must be a number"),
+      },
       { key: "agent", label: "Agent", control: "output", value: (p) => `address=*:${p.port ?? ""}` },
     ],
     commandLine: () => null,
@@ -530,6 +875,10 @@ describe("debug-only types (Remote JVM Debug)", () => {
     expect(screen.queryByText("Command line")).toBeNull();
     fireEvent.change(screen.getByLabelText("Port"), { target: { value: "x" } });
     expect(screen.getByRole("alert").textContent).toBe("Port must be a number");
+    // Emptying the only field keeps the form: there is no command line to edit instead.
+    fireEvent.change(screen.getByLabelText("Port"), { target: { value: "" } });
+    expect(screen.getByRole("alert").textContent).toBe("Port is required");
+    expect(screen.queryByLabelText("Command")).toBeNull();
   });
 
   it("are valid without a command, get the type's adapter and are not run", async () => {
@@ -569,3 +918,37 @@ describe("new Gradle wrapper default", () => {
     },
   );
 });
+
+it.each(["maven", "gradle", "delegated", "absolute", "legacy"])(
+  "offers only supported build policies for %s",
+  (tool) => {
+    const kind = tool === "maven" || tool === "gradle" ? tool : "application";
+    const config = cfg("main", { kind, module: tool === "legacy" ? null : "app", buildPolicy: "make" });
+    const previous = useProject.getState();
+    if (kind === "application") {
+      useProject.setState({ project: { root: "/work" } as never, settings: null });
+      useBuildModel.setState({
+        model: { gradle: [{ projects: [{ dir: tool === "absolute" ? "/work/app" : "app" }] }] } as never,
+      });
+    }
+    try {
+      render(
+        <ConfigForm
+          config={config}
+          all={[config]}
+          type={typeFor(kind)}
+          errors={{}}
+          onChange={vi.fn()}
+          modifyRequest={0}
+        />,
+      );
+      fireEvent.click(screen.getByRole("button", { name: "Build" }));
+      expect(screen.queryByRole("option", { name: "No build" })).toBeNull();
+      expect(screen.queryByRole("option", { name: "Build, no error check" }) !== null).toBe(tool === "maven");
+      expect(screen.getByRole("option", { name: "Rebuild" })).toBeTruthy();
+    } finally {
+      useBuildModel.setState({ model: null });
+      useProject.setState(previous);
+    }
+  },
+);

@@ -2,6 +2,8 @@ import { describe, expect, it } from "vitest";
 import type { DbColumnInfo } from "@/platform/ipc";
 import {
   alterTableSql,
+  canDrop,
+  canModifyTable,
   createTableSql,
   draftOf,
   dropSql,
@@ -10,6 +12,7 @@ import {
   renameSql,
   scriptSql,
   truncateSql,
+  quoteIdent,
   type ColumnDraft,
 } from "./objects";
 
@@ -29,6 +32,51 @@ const users = [
 ];
 
 describe("database object SQL", () => {
+  it("uses ClickHouse object syntax and escapes identifiers", () => {
+    expect(quoteIdent("clickhouse", 'a\\b"c')).toBe('"a\\\\b\\"c"');
+    expect(ident("clickhouse", "price$usd")).toBe('"price$usd"');
+    expect(renameSql("clickhouse", { kind: "table", schema: "default", name: "users" }, "people")).toBe(
+      'rename table "default".users to "default".people;',
+    );
+    expect(
+      dropSql("clickhouse", { kind: "schema", schema: "", name: "analytics" }, { ifExists: true, cascade: true }),
+    ).toBe("drop database if exists analytics;");
+    expect(
+      dropSql(
+        "clickhouse",
+        { kind: "materializedView", schema: "default", name: "totals" },
+        { ifExists: true, cascade: true },
+      ),
+    ).toBe('drop table if exists "default".totals;');
+    expect(truncateSql("clickhouse", "default", "users", { restartIdentity: true, cascade: true })).toBe(
+      'truncate table "default".users;',
+    );
+    expect(canDrop("clickhouse", { kind: "index", schema: "default", name: "ix" })).toBe(false);
+    expect(canModifyTable("clickhouse")).toBe(false);
+    expect(alterTableSql("clickhouse", "default", "users", "people", users.map(draftOf))).toEqual([]);
+  });
+
+  it("creates ClickHouse MergeTree tables without a relational primary key", () => {
+    const drafts = [col("id", "UInt64", { primaryKey: true, nullable: false }), col("name", "Nullable(String)")].map(
+      draftOf,
+    );
+    expect(createTableSql("clickhouse", "default", "people", drafts)).toBe(
+      'create table "default".people\n(\n    id UInt64,\n    name Nullable(String)\n)\nengine = MergeTree\norder by tuple();\n',
+    );
+  });
+
+  it("writes guarded ClickHouse mutation templates without unique key assumptions", () => {
+    expect(scriptSql("clickhouse", "update", "default", "users", users)).toBe(
+      'alter table "default".users\nupdate email = ?,\n       name = ?\nwhere 1 = 0;\n',
+    );
+    expect(scriptSql("clickhouse", "delete", "default", "users", users)).toBe(
+      'alter table "default".users\ndelete\nwhere 1 = 0;\n',
+    );
+    expect(() => scriptSql("clickhouse", "update", "default", "users", users.slice(0, 1))).toThrow(
+      "ClickHouse sorting key columns cannot be updated.",
+    );
+  });
+
   it("quotes only when needed", () => {
     expect(ident("postgres", "users")).toBe("users");
     expect(ident("postgres", "Users")).toBe('"Users"');
@@ -131,6 +179,56 @@ describe("database object SQL", () => {
     ]);
     expect(alterTableSql("mysql", "app", "users", "users", p)).toEqual([
       "alter table app.users change column name name varchar(40) default '' not null;",
+    ]);
+  });
+});
+
+describe("oracle object SQL", () => {
+  const emp = [col("ID", "NUMBER", { primaryKey: true, nullable: false }), col("NAME", "VARCHAR2(40)")];
+  const d = emp.map(draftOf);
+
+  it("keeps unquoted names that the server folds to upper case", () => {
+    expect(ident("oracle", "EMPLOYEES")).toBe("EMPLOYEES");
+    expect(ident("oracle", "employees")).toBe('"employees"');
+    expect(reference("oracle", { kind: "table", schema: "HR", name: "EMPLOYEES" })).toBe("HR.EMPLOYEES");
+  });
+
+  it("generates Oracle DDL and DML", () => {
+    expect(truncateSql("oracle", "HR", "EMPLOYEES", { restartIdentity: true, cascade: true })).toBe(
+      "truncate table HR.EMPLOYEES;",
+    );
+    expect(scriptSql("oracle", "selectFirst", "HR", "EMPLOYEES", emp)).toContain("fetch first 10 rows only;");
+    expect(scriptSql("oracle", "selectFirst", "HR", "EMPLOYEES", emp)).not.toContain("limit");
+    expect(dropSql("oracle", { kind: "index", schema: "HR", name: "E_IDX" }, { ifExists: true, cascade: false })).toBe(
+      "drop index HR.E_IDX;",
+    );
+    expect(dropSql("oracle", { kind: "schema", schema: "", name: "APP" }, { ifExists: false, cascade: false })).toBe(
+      "drop user APP cascade;",
+    );
+    expect(renameSql("oracle", { kind: "view", schema: "HR", name: "V_EMP" }, "V_STAFF")).toBe(
+      "rename HR.V_EMP to V_STAFF;",
+    );
+    expect(createTableSql("oracle", "HR", "T", d)).toContain("primary key (ID)");
+  });
+
+  it("alters columns with MODIFY and parenthesised ADD", () => {
+    const p = emp.map(draftOf);
+    p[1] = { ...p[1]!, dataType: "VARCHAR2(80)", notNull: true, name: "FULL_NAME" };
+    p.push({
+      key: 99,
+      original: null,
+      name: "HIRED",
+      dataType: "DATE",
+      notNull: false,
+      default: "SYSDATE",
+      primaryKey: false,
+      dropped: false,
+    } satisfies ColumnDraft);
+    expect(alterTableSql("oracle", "HR", "EMPLOYEES", "EMPLOYEES", p)).toEqual([
+      "alter table HR.EMPLOYEES modify (NAME VARCHAR2(80) not null);",
+      "alter table HR.EMPLOYEES modify (NAME not null);",
+      "alter table HR.EMPLOYEES rename column NAME to FULL_NAME;",
+      "alter table HR.EMPLOYEES add (HIRED DATE default SYSDATE);",
     ]);
   });
 });
