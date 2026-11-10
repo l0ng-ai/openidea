@@ -155,14 +155,16 @@ export function enclosingType(lines: readonly string[] | null | undefined, targe
       if ((line.split(fence).length - 1) % 2 === 1) fence = null;
       continue;
     }
-    const opened = FENCES.find((f) => (line.split(f).length - 1) % 2 === 1);
+    // Comments first: a `#`/`//` line cannot open a docstring fence either.
+    const code = line.replace(/(^|\s)(#|\/\/).*$/, "$1");
+    if (!code.trim()) continue;
+    const opened = FENCES.find((f) => (code.split(f).length - 1) % 2 === 1);
     if (opened) {
       fence = opened;
       continue;
     }
     // A single-line docstring (fences open and close on the line) is text too.
-    if (FENCES.some((f) => line.includes(f))) continue;
-    const code = line.replace(/(^|\s)(#|\/\/).*$/, "$1");
+    if (FENCES.some((f) => code.includes(f))) continue;
     const m = TYPE_DECLARATION.exec(code);
     if (m && !/^\s*(\*|\/\*)/.test(line)) container = m[1]!;
   }

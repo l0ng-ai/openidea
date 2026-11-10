@@ -140,22 +140,24 @@ function chooserWhere(root: string, path: string, line: number, fullPaths: boole
 /**
  * The index's container for each server target (exact path+range match), keyed by
  * target index; misses (fresh edits, excluded folders, outside the project) fall
- * back to the enclosing-type heuristic. One query per distinct target name.
+ * back to the enclosing-type heuristic. One query per distinct target name; index
+ * symbols carry their container already and are not queried.
  */
 async function indexContainers(
   locs: readonly DeclarationTarget[],
-  files: ReadonlyMap<string, string[] | null>,
+  names: readonly (string | null)[],
 ): Promise<Map<number, string>> {
   const out = new Map<number, string>();
   const byName = new Map<string, number[]>();
   locs.forEach((l, i) => {
-    const name = targetLabel(files.get(l.path)?.[l.range.start.line] ?? "", l.range.start.col) ?? "";
+    if (l.kind && l.name) return;
+    const name = names[i];
     if (name) byName.set(name, (byName.get(name) ?? []).concat(i));
   });
   await Promise.all(
     [...byName].map(async ([name, at]) => {
       try {
-        const matches = await call(commands.findSymbols(name, "all", 100));
+        const matches = await call(commands.findSymbols(name, "all", SYMBOL_LIMIT));
         for (const i of at) {
           const l = locs[i]!;
           const hit = matches.find(
@@ -172,12 +174,15 @@ async function indexContainers(
   return out;
 }
 
+const SYMBOL_LIMIT = 500;
+
 /** Popup items for locations, lean rows like IDEA's chooser (extras per Settings › Editor › Location Choosers). */
 export async function locationItems(locs: readonly DeclarationTarget[]): Promise<ListPopupItem[]> {
   const files = await readManyFileLines(locs.map((l) => l.path));
   const root = useProject.getState().project?.root ?? "";
   const extras = editorPrefs().chooser;
-  const indexed = extras.container ? await indexContainers(locs, files) : new Map<number, string>();
+  const names = locs.map((l) => targetLabel(files.get(l.path)?.[l.range.start.line] ?? "", l.range.start.col));
+  const indexed = extras.container ? await indexContainers(locs, names) : new Map<number, string>();
   return locs.map((l, i) => {
     const where = extras.path ? chooserWhere(root, l.path, l.range.start.line + 1, extras.fullPath) : "";
     const preview = extras.signature ? files.get(l.path)?.[l.range.start.line]?.trim() : undefined;
@@ -191,15 +196,13 @@ export async function locationItems(locs: readonly DeclarationTarget[]): Promise
         symbol: l.kind,
         run: () => navigateTo(l),
       };
-    // Server targets: the declared name (speed search matches it), position after it.
-    const name = targetLabel(files.get(l.path)?.[l.range.start.line] ?? "", l.range.start.col);
     // The index knows the container precisely; the enclosing-type scan covers what it misses.
     const container = extras.container ? (indexed.get(i) ?? enclosingType(files.get(l.path), l)) : null;
     return {
       id: `${i}`,
-      label: name ?? basename(l.path),
+      label: names[i] ?? basename(l.path),
       // The file name only duplicates the label when the name itself was found.
-      detail: [container, name && extras.fileName ? basename(l.path) : "", where].filter(Boolean).join(" · "),
+      detail: [container, names[i] && extras.fileName ? basename(l.path) : "", where].filter(Boolean).join(" · "),
       preview,
       icon: fileIconName(basename(l.path), l.path),
       run: () => navigateTo(l),

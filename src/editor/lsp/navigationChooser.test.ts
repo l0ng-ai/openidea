@@ -279,6 +279,47 @@ describe("locationItems", () => {
     expect(item.detail).toContain("_StatefulDataset");
   });
 
+  it("does not query the index for index symbols, which carry their container", async () => {
+    readManyFileLines.mockResolvedValue(new Map());
+    project({});
+    await locationItems([
+      {
+        path: "/p/src/mod.py",
+        uri: null,
+        range: { start: { line: 0, col: 0 }, end: { line: 0, col: 3 } },
+        name: "Configurable",
+        kind: "class" as never,
+        container: "config",
+      },
+    ]);
+    expect(findSymbols).not.toHaveBeenCalled();
+  });
+
+  it("does not open a docstring fence inside a comment", async () => {
+    const lines = [
+      "",
+      "class _StatefulDataset(Base):",
+      "",
+      '    # mentions """ below, which must not open a docstring',
+      "    # (unterminated-fence paranoia)",
+      "    def refresh(self) -> None:",
+    ];
+    readManyFileLines.mockResolvedValue(new Map([["/p/src/mod.py", lines]]));
+    findSymbols.mockResolvedValue([]);
+    project({});
+    const item = (
+      await locationItems([
+        {
+          path: "/p/src/mod.py",
+          uri: null,
+          range: { start: { line: 5, col: 8 }, end: { line: 5, col: 15 } },
+        },
+      ])
+    )[0]!;
+    // The scan must still reach the class declaration above the comment lines.
+    expect(item.detail).toContain("_StatefulDataset");
+  });
+
   it("keeps index symbols' container detail", async () => {
     readManyFileLines.mockResolvedValue(new Map());
     project({});
