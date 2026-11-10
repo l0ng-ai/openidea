@@ -524,6 +524,8 @@ pub(super) struct Shared {
     /// The grant ledger, shared with the [`super::PluginHost`]: `net:ask`
     /// looks up and records "always allow" hosts right where a request runs.
     pub ledger: Arc<Mutex<Ledger>>,
+    /// Only the desktop can list and revoke remembered network hosts.
+    pub remember_net_hosts: bool,
     pub project_pins: ProjectPins,
     pub event_editors: RwLock<HashMap<String, ide_plugin::EditorContext>>,
     /// Validated UI declarations (settings schemas, declared views).
@@ -549,6 +551,7 @@ impl Shared {
         pins: Arc<RwLock<HashMap<(String, String), ProgramPin>>>,
         ui: Arc<ide_extension::UiStore>,
         ledger: Arc<Mutex<Ledger>>,
+        remember_net_hosts: bool,
     ) -> Arc<Self> {
         Arc::new(Self {
             ui,
@@ -558,6 +561,7 @@ impl Shared {
             secrets: RwLock::new(Arc::new(FileSecretStore { dir: data_dir.clone() })),
             pins,
             ledger,
+            remember_net_hosts,
             project_pins: Arc::default(),
             event_editors: RwLock::default(),
             data_dir,
@@ -2249,6 +2253,7 @@ impl HostApi for PluginApi {
             if let Some(grant) = ledger.get(subject)
                 && grant.confirmed
                 && grant.has(&Capability::NetAsk)
+                && self.shared.remember_net_hosts
                 && grant.net_hosts.contains(&host)
             {
                 return Ok(Some(true));
@@ -2271,8 +2276,13 @@ impl HostApi for PluginApi {
             }
             prompts.insert(self.id().to_owned(), None);
         }
-        let answer = self.ask(Some(client), Prompt::NetPermission { host: host.clone() }, cancel);
+        let answer = self.ask(
+            Some(client),
+            Prompt::NetPermission { host: host.clone(), allow_always: self.shared.remember_net_hosts },
+            cancel,
+        );
         let result = match answer {
+            Ok(Some(keys)) if keys == ["always"] && !self.shared.remember_net_hosts => Ok(Some(false)),
             Ok(Some(keys)) if keys == ["always"] => {
                 let mut ledger = self.shared.ledger.lock();
                 if cancel.is_cancelled() {
@@ -3204,8 +3214,64 @@ mod tests {
         )
         .unwrap();
         let sink: Arc<dyn PluginEventSink> = Arc::new(|_: Option<&str>, _: PluginEvent| {});
-        let shared = Shared::new(sink, dir.join(".data"), pins, ide_extension::UiStore::new(), Arc::default());
+        let shared = Shared::new(sink, dir.join(".data"), pins, ide_extension::UiStore::new(), Arc::default(), true);
         PluginApi { pkg: Package::new(manifest, dir.to_path_buf()), shared }
+    }
+
+    #[test]
+    fn remote_net_questions_never_remember_always_answers() {
+        let dir = tempfile::tempdir().unwrap();
+        let (tx, rx) = std::sync::mpsc::channel();
+        let sink = Arc::new(move |_: Option<&str>, event| {
+            if let PluginEvent::PromptRequested { prompt_id, prompt, .. } = event {
+                tx.send((prompt_id, prompt)).unwrap();
+            }
+        });
+        let host = super::super::PluginHost::with_net_host_persistence(
+            dir.path().join("plugins"),
+            sink,
+            ide_plugin::Limits::default(),
+            false,
+        )
+        .unwrap();
+        let manifest = ide_extension::Manifest::parse(
+            r#"id = "acme.relay"
+name = "Relay"
+version = "1.0.0"
+engines.openidea = "^1.5"
+[capabilities]
+required = ["net:ask"]
+"#,
+        )
+        .unwrap();
+        let api = PluginApi { pkg: Package::new(manifest, dir.path().into()), shared: host.shared.clone() };
+        let subject = Subject::Installed(api.id().into());
+        api.shared.ledger.lock().confirm(
+            &ide_extension::ledger::Request {
+                subject: subject.clone(),
+                plugin_id: api.id(),
+                version: "1.0.0",
+                package_hash: "h",
+                required: vec![Capability::NetAsk],
+                optional: vec![],
+            },
+            &[],
+            BTreeMap::new(),
+        );
+        api.shared.ledger.lock().save().unwrap();
+        let cancel = CancellationToken::new();
+        for answer in ["always", "once", "always"] {
+            std::thread::scope(|scope| {
+                let run = scope.spawn(|| api.net_ask(&subject, Some("main"), "example.com", &cancel));
+                let (id, prompt) = rx.recv_timeout(Duration::from_secs(5)).unwrap();
+                assert_eq!(prompt, Prompt::NetPermission { host: "example.com".into(), allow_always: false });
+                assert!(host.answer_prompt(&id, Some(vec![answer.into()])));
+                assert_eq!(run.join().unwrap().unwrap(), Some(false));
+            });
+            assert!(api.shared.ledger.lock().get(&subject).unwrap().net_hosts.is_empty());
+            assert!(Ledger::load(&dir.path().join("plugins")).get(&subject).unwrap().net_hosts.is_empty());
+            assert_eq!(api.net_ask(&subject, None, "example.com", &cancel).unwrap(), None);
+        }
     }
 
     #[test]
@@ -3939,6 +4005,7 @@ mod workbench_tests {
             Arc::default(),
             ide_extension::UiStore::new(),
             Arc::default(),
+            true,
         );
         *shared.workspace.write() =
             Some(Arc::new(Workspace { root: root.into(), trusted, text: text.map(str::to_owned) }));

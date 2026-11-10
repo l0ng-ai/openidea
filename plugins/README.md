@@ -1235,7 +1235,9 @@ plugin may be pending; a refusal or dismissal suppresses further questions
 for 30 seconds, even for other hosts. Hidden windows refuse new questions and
 close pending ones. Automatic event handlers and providers do not ask.
 Removing `net:ask` during an update or revoking it clears remembered hosts;
-uninstalling removes the plugin's ledger entry.
+uninstalling removes the plugin's ledger entry. Plugins running on a remote
+project server offer only **Allow once** and **Deny**; the server never remembers
+hosts. The desktop plugin permissions page lists all remembered hosts.
 
 `ipc:<path>` grants a local byte stream: an absolute Unix socket path (the host
 expands `~/`, `$TMPDIR/` and `$XDG_RUNTIME_DIR/`) or `\\.\pipe\<name>` on Windows.

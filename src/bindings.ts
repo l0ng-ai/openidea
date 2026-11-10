@@ -7124,7 +7124,7 @@ export type Prompt = { kind: "quickPick"; title: string; items: PickItem[]; mult
  *  The host's own question under `net:ask` (never plugin-initiated): the
  *  plugin reached an HTTPS host its manifest does not list.
  */
-{ kind: "netPermission"; host: string };
+{ kind: "netPermission"; host: string; allowAlways: boolean };
 
 export type ProxyKind = "http" | "socks";
 

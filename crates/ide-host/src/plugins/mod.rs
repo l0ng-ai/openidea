@@ -429,6 +429,15 @@ impl PluginHost {
 
     /// Creates the host; call [`load_all`](Self::load_all) to load installed plugins.
     pub fn new(plugins_dir: PathBuf, sink: Arc<dyn PluginEventSink>, limits: Limits) -> IdeResult<Self> {
+        Self::with_net_host_persistence(plugins_dir, sink, limits, true)
+    }
+
+    fn with_net_host_persistence(
+        plugins_dir: PathBuf,
+        sink: Arc<dyn PluginEventSink>,
+        limits: Limits,
+        remember_net_hosts: bool,
+    ) -> IdeResult<Self> {
         std::fs::create_dir_all(&plugins_dir)?;
         install::recover(&plugins_dir);
         let state = std::fs::read_to_string(plugins_dir.join(STATE_FILE))
@@ -453,8 +462,14 @@ impl PluginHost {
             policy_pins.read().get(&(plugin.to_owned(), cap.to_string())).cloned()
         }));
         let ledger = Arc::new(Mutex::new(Ledger::load(&plugins_dir)));
-        let shared =
-            api::Shared::new(sink.clone(), plugins_dir.join(".data"), pins.clone(), ui.clone(), ledger.clone());
+        let shared = api::Shared::new(
+            sink.clone(),
+            plugins_dir.join(".data"),
+            pins.clone(),
+            ui.clone(),
+            ledger.clone(),
+            remember_net_hosts,
+        );
         let official_keys = market::built_in_official_keys();
         let market = RwLock::new(Self::load_market_index(&plugins_dir, &official_keys));
         let host = Self {

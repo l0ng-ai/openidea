@@ -9,7 +9,12 @@ import { ask } from "@/workbench/messages";
 import { usePlugins } from "./store";
 
 /** Asks about `host`; resolves with the answer keys the host understands (`once` allows one request, `always` remembers the host), or null when refused. */
-export async function askNetPermission(pluginId: string, host: string, signal: AbortSignal): Promise<string[] | null> {
+export async function askNetPermission(
+  pluginId: string,
+  host: string,
+  allowAlways: boolean,
+  signal: AbortSignal,
+): Promise<string[] | null> {
   if (document.visibilityState === "hidden") return null;
   const controller = new AbortController();
   const abort = () => controller.abort();
@@ -27,19 +32,20 @@ export async function askNetPermission(pluginId: string, host: string, signal: A
         tx("The host is not in the plugin's declared permissions."),
         " ",
         tx("This allows this exact host on any port; subdomains need separate permission."),
-        " ",
-        tx`"Always allow" remembers ${host}; revoke it any time in the plugin's permissions.`,
+        ...(allowAlways
+          ? [" ", tx`"Always allow" remembers ${host}; revoke it any time in the plugin's permissions.`]
+          : []),
       ],
       buttons: [
         { id: "once", label: tx("Allow once") },
-        { id: "always", label: tx("Always allow") },
+        ...(allowAlways ? [{ id: "always", label: tx("Always allow") }] : []),
         { id: "deny", label: tx("Deny"), primary: true },
       ],
       cancel: false,
       icon: "question",
       signal: controller.signal,
     });
-    return r.button === "once" || r.button === "always" ? [r.button] : null;
+    return r.button === "once" || (allowAlways && r.button === "always") ? [r.button] : null;
   } finally {
     signal.removeEventListener("abort", abort);
     document.removeEventListener("visibilitychange", visibilityChanged);

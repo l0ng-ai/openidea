@@ -5787,14 +5787,14 @@ fn net_ask_asks_once_remembers_always_and_revokes() {
     // this request through and remembers nothing.
     let (result, prompt) = net_ask_run_and_answer(&f, &url, Some(&["once"]));
     assert_eq!(result.unwrap().as_deref(), Some("relay ok"));
-    assert_eq!(prompt, Prompt::NetPermission { host: "127.0.0.1".into() });
+    assert_eq!(prompt, Prompt::NetPermission { host: "127.0.0.1".into(), allow_always: true });
     assert_eq!(f.host.info_of("api14").unwrap().net_hosts, Vec::<String>::new());
     assert_eq!(seen.lock().len(), 1);
 
     // The next request asks again; "Always allow" remembers the host.
     let (result, prompt) = net_ask_run_and_answer(&f, &url, Some(&["always"]));
     assert_eq!(result.unwrap().as_deref(), Some("relay ok"));
-    assert_eq!(prompt, Prompt::NetPermission { host: "127.0.0.1".into() });
+    assert_eq!(prompt, Prompt::NetPermission { host: "127.0.0.1".into(), allow_always: true });
     assert_eq!(f.host.info_of("api14").unwrap().net_hosts, ["127.0.0.1".to_owned()]);
 
     // Remembered: connecting without a dialog from a window and in the background.
@@ -5810,7 +5810,7 @@ fn net_ask_asks_once_remembers_always_and_revokes() {
     f.host.revoke_net_host("api14", "127.0.0.1").unwrap();
     assert_eq!(f.host.info_of("api14").unwrap().net_hosts, Vec::<String>::new());
     let (result, prompt) = net_ask_run_and_answer(&f, &url, None);
-    assert_eq!(prompt, Prompt::NetPermission { host: "127.0.0.1".into() });
+    assert_eq!(prompt, Prompt::NetPermission { host: "127.0.0.1".into(), allow_always: true });
     let err = result.unwrap_err();
     assert!(err.contains("not granted"), "{err}");
     // Refusal throttles even a different host, without making any connection.

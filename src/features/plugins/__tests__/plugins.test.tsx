@@ -655,7 +655,7 @@ describe("plugin prompts", () => {
           type: "promptRequested",
           pluginId: "p",
           promptId,
-          prompt: { kind: "netPermission", host: "api.example.com" },
+          prompt: { kind: "netPermission", host: "api.example.com", allowAlways: true },
         });
       });
     ask("9");
@@ -674,6 +674,37 @@ describe("plugin prompts", () => {
     await waitFor(() => expect(answerPrompt).toHaveBeenCalledWith("11", null));
   });
 
+  it("offers only allow once and deny when a network host cannot be remembered", async () => {
+    const user = userEvent.setup();
+    const answerPrompt = vi.fn().mockResolvedValue(undefined);
+    setPluginsBackend({ ...createMemoryPluginsBackend(), answerPrompt });
+    render(<MessagesHost />);
+    const ask = (promptId: string) =>
+      act(() => {
+        handlePluginEvent({
+          type: "promptRequested",
+          pluginId: "remote",
+          promptId,
+          prompt: { kind: "netPermission", host: "api.example.com", allowAlways: false },
+        });
+      });
+    ask("remote-once");
+    const dialog = screen.getByRole("dialog");
+    expect(
+      within(dialog)
+        .getAllByRole("button")
+        .map((button) => button.textContent),
+    ).toEqual(["Allow once", "Deny"]);
+    expect(within(dialog).getByRole("button", { name: "Deny" })).toHaveFocus();
+    expect(within(dialog).queryByText(/remembers/)).toBeNull();
+    await user.click(within(dialog).getByRole("button", { name: "Allow once" }));
+    await waitFor(() => expect(answerPrompt).toHaveBeenCalledWith("remote-once", ["once"]));
+
+    ask("remote-deny");
+    await user.click(await screen.findByRole("button", { name: "Deny" }));
+    await waitFor(() => expect(answerPrompt).toHaveBeenCalledWith("remote-deny", null));
+  });
+
   it("refuses network prompts in a hidden window and closes them when hidden", async () => {
     const answerPrompt = vi.fn().mockResolvedValue(undefined);
     setPluginsBackend({ ...createMemoryPluginsBackend(), answerPrompt });
@@ -685,7 +716,7 @@ describe("plugin prompts", () => {
           type: "promptRequested",
           pluginId: "p",
           promptId,
-          prompt: { kind: "netPermission", host: "api.example.com" },
+          prompt: { kind: "netPermission", host: "api.example.com", allowAlways: true },
         });
       });
     try {
@@ -715,7 +746,7 @@ describe("plugin prompts", () => {
         type: "promptRequested",
         pluginId: "p",
         promptId: "dismissed-net",
-        prompt: { kind: "netPermission", host: "api.example.com" },
+        prompt: { kind: "netPermission", host: "api.example.com", allowAlways: true },
       });
     });
     await user.keyboard("{Escape}");

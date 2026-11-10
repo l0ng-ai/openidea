@@ -291,7 +291,12 @@ impl RemotePlugins {
                 let _ = p.notify(EVENT_NOTIFICATION, PluginEventMessage { window: client.map(str::to_owned), event });
             }
         };
-        let host = Arc::new(PluginHost::new(data_dir.join(PLUGINS_DIR), Arc::new(sink), Limits::default())?);
+        let host = Arc::new(PluginHost::with_net_host_persistence(
+            data_dir.join(PLUGINS_DIR),
+            Arc::new(sink),
+            Limits::default(),
+            false,
+        )?);
         projects.set_plugin_host(&host);
         host.set_workspace(Some(Arc::new(HostWorkspace(Arc::downgrade(projects)))));
         host.set_secret_store(Arc::new(ClientSecrets { peer: peer.clone(), runtime: projects.runtime.clone() }));
