@@ -41,6 +41,25 @@ pub struct MapperXml {
     pub include_refs: Vec<Named>,
 }
 
+/// A method parameter: its effective name (`@Param("…")` wins) and where that
+/// name is written (the `@Param("…")` string, or the parameter itself).
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct Param {
+    pub name: String,
+    pub range: Range,
+}
+
+/// `#{…}` / `${…}` inside one method's `@Select`/`@Insert`/`@Update`/`@Delete`
+/// SQL strings: `method` indexes `MapperJava::methods`, `strings` covers the
+/// SQL string literals, each `Named` in `params` covers one whole `#{…}` /
+/// `${…}` match.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct AnnotationSql {
+    pub method: usize,
+    pub strings: Vec<Range>,
+    pub params: Vec<Named>,
+}
+
 /// A Java interface.
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub struct MapperJava {
@@ -48,7 +67,8 @@ pub struct MapperJava {
     pub name: Option<String>,
     /// The interface's own name (for `<mapper namespace>` targets).
     pub decl: Option<Named>,
-    pub methods: Vec<(Named, Vec<String>)>,
+    pub methods: Vec<(Named, Vec<Param>)>,
+    pub annotation_sql: Vec<AnnotationSql>,
 }
 
 fn range_of(text: &str, start: usize, end: usize) -> Range {
@@ -221,11 +241,32 @@ fn scan_declaration(stmt: &str) -> Option<Declaration> {
     None
 }
 
-/// The parameter names in a declaration's parameter list: `@Param("…")` wins,
-/// otherwise the parameter's last identifier. Split at commas outside nested
-/// parens, braces, brackets and strings, so `@Size(min = 1, max = 5) String n`
-/// stays one parameter and a `@Param("a,b")` keeps its whole name.
-fn params_of(list: &str) -> Vec<String> {
+/// The trailing identifier in `part` (byte offsets in `part`), or `None`.
+/// Char-based so a multibyte identifier never splits a code point.
+fn last_ident(part: &str) -> Option<(String, usize, usize)> {
+    let chars: Vec<(usize, char)> = part.char_indices().collect();
+    let mut end = chars.len();
+    while end > 0 && !ident(chars[end - 1].1) {
+        end -= 1;
+    }
+    if end == 0 {
+        return None;
+    }
+    let mut start = end;
+    while start > 0 && ident(chars[start - 1].1) {
+        start -= 1;
+    }
+    let (s, _) = chars[start];
+    let (e, c) = chars[end - 1];
+    Some((part[s..e + c.len_utf8()].to_owned(), s, e + c.len_utf8()))
+}
+
+/// The parameter names in a declaration's parameter list, with byte offsets in
+/// `list`: `@Param("…")` wins (its string, quotes excluded), otherwise the
+/// parameter's last identifier. Split at commas outside nested parens, braces,
+/// brackets and strings, so `@Size(min = 1, max = 5) String n` stays one
+/// parameter and a `@Param("a,b")` keeps its whole name.
+fn params_of(list: &str) -> Vec<(String, usize, usize)> {
     let bytes = list.as_bytes();
     let mut parts = Vec::new();
     let (mut depth, mut start) = (0usize, 0usize);
@@ -243,25 +284,144 @@ fn params_of(list: &str) -> Vec<String> {
                 i += 1;
             }
             b',' if depth == 0 => {
-                parts.push(&list[start..i]);
+                parts.push((start, i));
                 start = i + 1;
                 i += 1;
             }
             _ => i += 1,
         }
     }
-    parts.push(&list[start..]);
+    parts.push((start, list.len()));
     parts
         .into_iter()
-        .filter_map(|p| {
+        .filter_map(|(s, e)| {
+            let p = &list[s..e];
             // `@Param("id") long id` → the @Param name wins.
             if let Some(q) = p.find("@Param(\"") {
-                return p[q + 8..].split('"').next().map(str::to_owned);
+                let name_start = q + 8;
+                let name: String = p[name_start..].chars().take_while(|&c| c != '"').collect();
+                if !name.is_empty() {
+                    return Some((name.clone(), s + name_start, s + name_start + name.len()));
+                }
+                return None;
             }
-            p.split_whitespace().last().map(|n| n.trim_matches(|c: char| !ident(c)).to_owned())
+            last_ident(p).map(|(name, ps, pe)| (name, s + ps, s + pe))
         })
-        .filter(|n| !n.is_empty())
         .collect()
+}
+
+/// `(name, match start, match end)` of each `#{…}` / `${…}` in SQL text
+/// (offsets in `sql`); the name stops at `,`, `}` or whitespace, so
+/// `#{id, jdbcType=INTEGER}` names `id`. The match covers the closing `}`
+/// when present.
+fn sql_params(sql: &str) -> Vec<(String, usize, usize)> {
+    let bytes = sql.as_bytes();
+    let mut out = Vec::new();
+    let mut i = 0;
+    while i + 1 < bytes.len() {
+        if (bytes[i] == b'#' || bytes[i] == b'$') && bytes[i + 1] == b'{' {
+            let mut j = i + 2;
+            while j < bytes.len() && bytes[j] != b'}' && bytes[j] != b',' && !bytes[j].is_ascii_whitespace() {
+                j += 1;
+            }
+            if j > i + 2 {
+                let end = if bytes.get(j) == Some(&b'}') { j + 1 } else { j };
+                out.push((sql[i + 2..j].to_owned(), i, end));
+            }
+            i = j.max(i + 2);
+        } else {
+            i += 1;
+        }
+    }
+    out
+}
+
+const SQL_ANNOTATIONS: [&str; 4] = ["Select", "Insert", "Update", "Delete"];
+
+/// A string literal's value with its byte offsets (quotes excluded).
+type LitSpan = (String, usize, usize);
+
+/// The `#{…}` / `${…}` matches in one method's `@Select`/`@Insert`/`@Update`/
+/// `@Delete` SQL string literals: `(string start, string end, params)` with
+/// offsets in `head` (the declaration's annotations and signature). Array
+/// values (`@Select({…})`) and nested annotations in other arguments are
+/// skipped over, never read as SQL.
+fn annotation_sql_of(head: &str) -> Vec<(usize, usize, Vec<LitSpan>)> {
+    let bytes = head.as_bytes();
+    let mut out = Vec::new();
+    let mut i = 0;
+    while i < bytes.len() {
+        match bytes[i] {
+            b'"' | b'\'' => i = skip_string(bytes, i),
+            b'/' if matches!(bytes.get(i + 1), Some(b'/' | b'*')) => i = skip_comment(bytes, i),
+            b'@' => {
+                let mut j = i + 1;
+                while j < bytes.len() && (ident(bytes[j] as char) || bytes[j] == b'.') {
+                    j += 1;
+                }
+                while !head.is_char_boundary(j) {
+                    j -= 1;
+                }
+                let simple = head[i + 1..j].rsplit('.').next().unwrap_or("");
+                let mut k = j;
+                while k < bytes.len() && bytes[k].is_ascii_whitespace() {
+                    k += 1;
+                }
+                if SQL_ANNOTATIONS.contains(&simple) && bytes.get(k) == Some(&b'(') {
+                    // The annotation's arguments, minding nesting and strings.
+                    let (mut close, mut depth) = (k + 1, 1usize);
+                    while close < bytes.len() {
+                        match bytes[close] {
+                            b'"' | b'\'' => close = skip_string(bytes, close),
+                            b'/' if matches!(bytes.get(close + 1), Some(b'/' | b'*')) => {
+                                close = skip_comment(bytes, close)
+                            }
+                            b'(' | b'{' | b'[' => {
+                                depth += 1;
+                                close += 1;
+                            }
+                            b')' | b'}' | b']' => {
+                                depth -= 1;
+                                if depth == 0 {
+                                    break;
+                                }
+                                close += 1;
+                            }
+                            _ => close += 1,
+                        }
+                    }
+                    if depth == 0 {
+                        let args = &head[k + 1..close];
+                        let mut s = 0;
+                        while s < args.len() {
+                            if args.as_bytes()[s] == b'"' {
+                                let e = skip_string(args.as_bytes(), s);
+                                // Without the quotes; skip_string stops just past `"`.
+                                if e > s + 1 && args.as_bytes()[e - 1] == b'"' {
+                                    let (cs, ce) = (s + 1, e - 1);
+                                    let params = sql_params(&args[cs..ce])
+                                        .into_iter()
+                                        .map(|(n, ps, pe)| (n, k + 1 + cs + ps, k + 1 + cs + pe))
+                                        .collect();
+                                    out.push((k + 1 + cs, k + 1 + ce, params));
+                                    s = e;
+                                } else {
+                                    s += 1; // unterminated: not a SQL string
+                                }
+                            } else {
+                                s += 1;
+                            }
+                        }
+                    }
+                    i = close + 1;
+                } else {
+                    i = j;
+                }
+            }
+            _ => i += 1,
+        }
+    }
+    out
 }
 
 /// The interface's name and methods (with their parameter names).
@@ -280,34 +440,66 @@ pub fn parse_java(text: &str) -> MapperJava {
         Some(Named { name: simple.clone(), range: range_of(text, i + 10 + indent, i + 10 + indent + simple.len()) });
     let body_start = text[i..].find('{').map_or(text.len(), |b| i + b + 1);
     let mut methods = Vec::new();
+    let mut annotation_sql = Vec::new();
     let mut depth = 0;
     let mut stmt_start = body_start;
-    let bytes: Vec<(usize, char)> = text[body_start..].char_indices().map(|(k, c)| (body_start + k, c)).collect();
-    for (k, c) in bytes {
-        match c {
-            '{' => depth += 1,
-            '}' if depth == 0 => break,
-            '}' => {
+    // Strings and comments may hold `{`, `}` or `;` (notably the `#{…}`
+    // braces in annotation SQL), so skip them: only structural braces and
+    // semicolons split statements.
+    let body = &text[body_start..];
+    let body_bytes = body.as_bytes();
+    let mut i = 0;
+    while i < body.len() {
+        let k = body_start + i;
+        match body_bytes[i] {
+            b'"' | b'\'' => i = skip_string(body_bytes, i),
+            b'/' if matches!(body_bytes.get(i + 1), Some(b'/' | b'*')) => i = skip_comment(body_bytes, i),
+            b'{' => {
+                depth += 1;
+                i += 1;
+            }
+            b'}' if depth == 0 => break,
+            b'}' => {
                 depth -= 1;
                 stmt_start = k + 1;
+                i += 1;
             }
-            ';' if depth == 0 => {
+            b';' if depth == 0 => {
                 let stmt = &text[stmt_start..k];
                 if let Some(decl) = scan_declaration(stmt)
                     && !stmt[..decl.parens.0].contains(" default ")
                 {
                     let (s, e) = (stmt_start + decl.name.0, stmt_start + decl.name.1);
+                    let list_base = stmt_start + decl.parens.0 + 1;
+                    let params = params_of(&stmt[decl.parens.0 + 1..decl.parens.1])
+                        .into_iter()
+                        .map(|(name, ps, pe)| Param { name, range: range_of(text, list_base + ps, list_base + pe) })
+                        .collect();
+                    let method = methods.len();
                     methods.push((
                         Named { name: stmt[decl.name.0..decl.name.1].to_owned(), range: range_of(text, s, e) },
-                        params_of(&stmt[decl.parens.0 + 1..decl.parens.1]),
+                        params,
                     ));
+                    let mut strings = Vec::new();
+                    let mut sql_params = Vec::new();
+                    for (ss, se, ps) in annotation_sql_of(&stmt[..decl.parens.0]) {
+                        strings.push(range_of(text, stmt_start + ss, stmt_start + se));
+                        sql_params.extend(ps.into_iter().map(|(n, ms, me)| Named {
+                            name: n,
+                            range: range_of(text, stmt_start + ms, stmt_start + me),
+                        }));
+                    }
+                    if !strings.is_empty() {
+                        annotation_sql.push(AnnotationSql { method, strings, params: sql_params });
+                    }
                 }
                 stmt_start = k + 1;
+                i += 1;
             }
-            _ => {}
+            _ => i += 1,
         }
     }
-    MapperJava { name, decl, methods }
+    MapperJava { name, decl, methods, annotation_sql }
 }
 
 fn project_of(path: &str) -> Option<Project> {
@@ -463,10 +655,32 @@ impl Providers for Navigator {
     }
 
     fn definition(&mut self, doc: &Document, at: Position) -> Vec<Location> {
-        self.links(doc).into_iter().filter(|(n, ..)| contains(n.range, at)).map(|(_, l, _)| l).collect()
+        let mut out: Vec<Location> =
+            self.links(doc).into_iter().filter(|(n, ..)| contains(n.range, at)).map(|(_, l, _)| l).collect();
+        // `#{…}` / `${…}` in an annotation's SQL: the method's `@Param` or
+        // parameter. Needs no XML: pure-annotation mappers work too. A dotted
+        // path (`#{user.name}`) resolves by its first segment.
+        if doc.language == "java" {
+            let java = parse_java(&doc.text);
+            for sql in &java.annotation_sql {
+                let (_, params) = &java.methods[sql.method];
+                for occ in &sql.params {
+                    let first = occ.name.split('.').next().unwrap_or("");
+                    if let Some(target) = params.iter().find(|p| p.name == first)
+                        && contains(occ.range, at)
+                    {
+                        out.push(Location { path: doc.path.clone(), range: target.range });
+                    }
+                }
+            }
+        }
+        out
     }
 
     fn completion(&mut self, doc: &Document, at: Position, _trigger: Option<&str>) -> Vec<CompletionItem> {
+        if doc.language == "java" {
+            return annotation_param_completion(doc, at);
+        }
         if doc.language != "xml" {
             return Vec::new();
         }
@@ -527,15 +741,54 @@ impl Providers for Navigator {
             let start = Position::new(at.line, at.character - typed.encode_utf16().count() as u32);
             return params
                 .iter()
-                .filter(|p| p.starts_with(typed))
+                .filter(|p| p.name.starts_with(typed))
                 .map(|p| CompletionItem {
                     replace: Some(Range::new(start, at)),
-                    ..CompletionItem::new(p, CompletionKind::Variable)
+                    ..CompletionItem::new(&p.name, CompletionKind::Variable)
                 })
                 .collect();
         }
         Vec::new()
     }
+}
+
+/// After `#{` / `${` inside an annotation SQL string: the method's parameters.
+fn annotation_param_completion(doc: &Document, at: Position) -> Vec<CompletionItem> {
+    let Some(cursor) = offset(&doc.text, at) else { return Vec::new() };
+    let java = parse_java(&doc.text);
+    for sql in &java.annotation_sql {
+        let (_, params) = &java.methods[sql.method];
+        for s in &sql.strings {
+            let (Some(start), Some(end)) = (offset(&doc.text, s.start), offset(&doc.text, s.end)) else {
+                continue;
+            };
+            if !(start <= cursor && cursor <= end) {
+                continue;
+            }
+            let seg = &doc.text[start..cursor];
+            let mut token: Option<usize> = None;
+            for t in ["#{", "${"] {
+                if let Some(i) = seg.rfind(t) {
+                    token = Some(token.map_or(i, |prev: usize| prev.max(i)));
+                }
+            }
+            let Some(i) = token else { continue };
+            let typed = &seg[i + 2..];
+            if typed.contains('}') || !typed.chars().all(|c| ident(c) || c == '.') {
+                continue;
+            }
+            let start = Position::new(at.line, at.character - typed.encode_utf16().count() as u32);
+            return params
+                .iter()
+                .filter(|p| p.name.starts_with(typed))
+                .map(|p| CompletionItem {
+                    replace: Some(Range::new(start, at)),
+                    ..CompletionItem::new(&p.name, CompletionKind::Variable)
+                })
+                .collect();
+        }
+    }
+    Vec::new()
 }
 
 impl Plugin for Navigator {
@@ -558,7 +811,11 @@ mod tests {
     fn parses_both_sides() {
         let java = parse_java(JAVA);
         assert_eq!(java.name.as_deref(), Some("com.acme.UserMapper"));
-        let names: Vec<_> = java.methods.iter().map(|(m, p)| (m.name.as_str(), p.clone())).collect();
+        let names: Vec<_> = java
+            .methods
+            .iter()
+            .map(|(m, p)| (m.name.as_str(), p.iter().map(|x| x.name.clone()).collect::<Vec<_>>()))
+            .collect();
         assert_eq!(
             names,
             [
@@ -612,7 +869,11 @@ mod tests {
     #[test]
     fn parses_methods_with_annotations() {
         let java = parse_java(ANNOTATED);
-        let names: Vec<_> = java.methods.iter().map(|(m, p)| (m.name.as_str(), p.clone())).collect();
+        let names: Vec<_> = java
+            .methods
+            .iter()
+            .map(|(m, p)| (m.name.as_str(), p.iter().map(|x| x.name.clone()).collect::<Vec<_>>()))
+            .collect();
         assert_eq!(
             names,
             [
@@ -637,7 +898,7 @@ mod tests {
         assert_eq!(java.methods[0].0.name, "find");
         // `"中文 😀 注释"` costs 10 UTF-16 units (😀 two); `find` starts at 4 + 8 + 1 + 10 + 1 + 11 = 35.
         assert_eq!(java.methods[0].0.range, Range::new(Position::new(3, 35), Position::new(3, 39)));
-        assert_eq!(java.methods[0].1, ["id".to_owned()]);
+        assert_eq!(java.methods[0].1.iter().map(|x| x.name.as_str()).collect::<Vec<_>>(), ["id"]);
     }
 
     /// Annotated methods still get both directions of navigation.
@@ -695,7 +956,11 @@ mod tests {
         let java = parse_java(
             "package com.acme;\n\npublic interface SecuredMapper {\n    @DataPermission(column = \"id\", scope = (@Scope(\"self\")))\n    List<User> findAll(@Param(\"org\") String org);\n\n    @org.acme.Check(value = \"(nested)\")\n    int count();\n}\n",
         );
-        let names: Vec<_> = java.methods.iter().map(|(m, p)| (m.name.as_str(), p.clone())).collect();
+        let names: Vec<_> = java
+            .methods
+            .iter()
+            .map(|(m, p)| (m.name.as_str(), p.iter().map(|x| x.name.clone()).collect::<Vec<_>>()))
+            .collect();
         assert_eq!(names, [("findAll", vec!["org".to_owned()]), ("count", Vec::<String>::new())]);
     }
 
@@ -785,5 +1050,61 @@ mod tests {
         let xml = doc("/project/src/main/resources/mapper/UserMapper.xml", "xml", &text);
         let params = n.completion(&xml, Position::new(3, 38), None);
         assert_eq!(params.iter().map(|c| c.label.as_str()).collect::<Vec<_>>(), ["id"]);
+    }
+
+    const ANNOTATED_SQL: &str = concat!(
+        "package com.acme;\n",
+        "import org.apache.ibatis.annotations.Param;\n",
+        "import org.apache.ibatis.annotations.Select;\n",
+        "public interface UserMapper {\n",
+        "    @Select(\"SELECT * FROM users WHERE id = #{id} AND name = #{name}\")\n",
+        "    User find(@Param(\"id\") Long id, String name);\n",
+        "}\n"
+    );
+
+    fn annotation_setup() -> MockHost {
+        let host = MockHost::install();
+        host.add_file("src/main/java/com/acme/UserMapper.java", ANNOTATED_SQL);
+        host.add_file("src/main/resources/mapper/UserMapper.xml", ANNOTATED_XML);
+        host.add_file("pom.xml", "<project/>");
+        host
+    }
+
+    /// `#{…}` inside an annotation's SQL jumps to the `@Param`/parameter, with
+    /// no XML statement involved (pure-annotation mappers work too).
+    #[test]
+    fn navigates_annotation_sql_params_to_params() {
+        let _host = annotation_setup();
+        let java = parse_java(ANNOTATED_SQL);
+        assert_eq!(java.annotation_sql.len(), 1);
+        assert_eq!(java.annotation_sql[0].params.iter().map(|o| o.name.as_str()).collect::<Vec<_>>(), ["id", "name"]);
+        let doc = doc("/project/src/main/java/com/acme/UserMapper.java", "java", ANNOTATED_SQL);
+        let mut n = Navigator::default();
+        let line = ANNOTATED_SQL.lines().nth(4).unwrap();
+        let col = line.find("#{id}").unwrap() + 3;
+        let got = n.definition(&doc, Position::new(4, col as u32));
+        let want = java.methods[0].1.iter().find(|p| p.name == "id").unwrap().range;
+        assert_eq!(got, vec![Location { path: doc.path.clone(), range: want }]);
+        // The second parameter resolves too.
+        let col = line.find("#{name}").unwrap() + 3;
+        let got = n.definition(&doc, Position::new(4, col as u32));
+        let want = java.methods[0].1.iter().find(|p| p.name == "name").unwrap().range;
+        assert_eq!(got, vec![Location { path: doc.path.clone(), range: want }]);
+    }
+
+    /// After `#{` inside an annotation's SQL string: the method's parameters.
+    #[test]
+    fn completes_annotation_sql_params() {
+        let _host = annotation_setup();
+        let mut n = Navigator::default();
+        let text = ANNOTATED_SQL.replacen("#{id}", "#{", 1);
+        let doc = doc("/project/src/main/java/com/acme/UserMapper.java", "java", &text);
+        let line = text.lines().nth(4).unwrap();
+        let col = line.find("#{").unwrap() + 2;
+        let items = n.completion(&doc, Position::new(4, col as u32), None);
+        assert_eq!(items.iter().map(|c| c.label.as_str()).collect::<Vec<_>>(), ["id", "name"]);
+        // Outside a SQL string there is nothing to complete.
+        let plain = n.completion(&doc, Position::new(5, 10), None);
+        assert!(plain.is_empty());
     }
 }
