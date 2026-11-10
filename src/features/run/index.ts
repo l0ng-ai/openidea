@@ -17,6 +17,7 @@ import {
   registerMenuGroup,
   registerOverlay,
   registerRunAnythingProvider,
+  registerRunConfigType,
   registerRunningProcessesProvider,
   registerServiceProvider,
   registerTitleItem,
@@ -52,6 +53,7 @@ import { compoundChildren } from "./configs";
 import { containerDebuggable, remoteDebugBlocked } from "./remote";
 import { debugInContainer } from "./containerDebug";
 import { isDebugOnly, registerBuiltinTypes } from "./types";
+import { junitType } from "./junitType";
 import { listenForApplicationDeactivation, showApplicationUpdate, updatableSessions } from "./applicationUpdate";
 import { npmGutter } from "./npmGutter";
 import { runGutter } from "./runGutter";
@@ -382,6 +384,7 @@ export function activate(): () => void {
     registerTitleItem({ id: "run.widget", title: "Run Widget", align: "right", priority: 0, component: RunWidget }),
     registerRunAnythingProvider(runConfigsRunAnything),
     registerBuiltinTypes(),
+    registerRunConfigType(junitType),
     registerGoActions(),
     registerComposerInstall(),
     registerOverlay({ id: "run.chooser", component: ConfigChooserOverlay }),
