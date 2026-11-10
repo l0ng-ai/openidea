@@ -1,4 +1,8 @@
 {
+  "Move Worktree": "Move Worktree",
+  "Move Worktree…": "Move Worktree…",
+  "Move the worktree at {path} to {to}?": "Move the worktree at {path} to {to}?",
+  "Cannot move a worktree containing the open project.": "Cannot move a worktree containing the open project.",
   "Add Environment File": "Add Environment File",
   "Convert to cURL and Copy": "Convert to cURL and Copy",
   "Add Environment to Public File": "Add Environment to Public File",

@@ -649,6 +649,18 @@ pub async fn vcs_add_worktree(
 
 #[tauri::command]
 #[specta::specta]
+pub async fn vcs_move_worktree(
+    window: Window,
+    state: State<'_, AppState>,
+    repo: Option<PathBuf>,
+    path: PathBuf,
+    to: PathBuf,
+) -> IdeResult<()> {
+    ide_host::ops::vcs::vcs_move_worktree(&state.host, window.label(), repo, path, to).await
+}
+
+#[tauri::command]
+#[specta::specta]
 pub async fn vcs_remove_worktree(
     window: Window,
     state: State<'_, AppState>,
