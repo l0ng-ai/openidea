@@ -397,6 +397,25 @@ describe("navigation wiring", () => {
     });
   });
 
+  it("shows usages on a declaration even when a plugin adds another target", async () => {
+    // A MyBatis mapper method: the server answers the method itself, the plugin its XML statement.
+    cmd.lspGoto.mockReturnValueOnce(
+      ok([
+        { path: "/p/UserMapper.xml", range: r(3, 16, 24) },
+        { path: "/p/UserMapper.java", range: r(3, 11, 19) },
+      ]),
+    );
+    const view = editor(
+      "package demo;\n\npublic interface UserMapper {\n    String findName(Long id);\n}\n",
+      "java",
+      58,
+      "/p/UserMapper.java",
+    );
+    await gotoTargets(view, "definition");
+    expect(executeAction).toHaveBeenCalledWith("find.showUsages");
+    expect(openFile).not.toHaveBeenCalled();
+  });
+
   it("looks past a server answer that points at the import itself", async () => {
     cmd.lspGoto.mockReturnValueOnce(ok([{ path: "/p/a.py", range: r(0, 37, 43) }]));
     cmd.navIndexDefinitions.mockReturnValueOnce(ok([sym("logger", "variable", "/deps/torchtitan/tools/logging.py")]));
