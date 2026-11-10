@@ -2,11 +2,13 @@ name: Kylin build
 
 # Builds OpenIDEA for Kylin / domestic Linux desktops (x86_64 and arm64).
 #
-# Runtime requirements of the produced packages:
-#   - glibc >= 2.35 (built on Ubuntu 22.04, the oldest base Tauri 2 supports)
-#   - webkit2gtk-4.1 (Tauri 2 cannot link against the 4.0 series)
-# Kylin V10 SP1 ships glibc 2.31 and webkit2gtk 4.0, so install webkit2gtk-4.1
-# there first; otherwise use a Kylin release that already provides it.
+# The produced packages are self-contained: they carry the glibc, GTK and
+# WebKitGTK 4.1 runtime the app was built against and start through the bundled
+# loader. Kylin V10 SP1 (glibc 2.31, webkit2gtk 4.0 only) therefore needs
+# nothing beyond a working X11 or Wayland desktop.
+#
+# The Java support jars (java-usages, kotlin-bridge, lombok) are compiled into
+# the binary, so they ship with every package automatically.
 #
 # Triggers:
 #   - manual run (Actions -> Kylin build -> Run workflow)
@@ -58,7 +60,7 @@ jobs:
     name: Kylin ${{ matrix.arch }}
     needs: version
     runs-on: ${{ matrix.runner }}
-    timeout-minutes: 120
+    timeout-minutes: 180
     strategy:
       fail-fast: false
       matrix:
@@ -66,9 +68,11 @@ jobs:
           - arch: amd64
             runner: ubuntu-22.04
             target: x86_64-unknown-linux-gnu
+            appimage_arch: x86_64
           - arch: arm64
             runner: ubuntu-22.04-arm
             target: aarch64-unknown-linux-gnu
+            appimage_arch: aarch64
     steps:
       - uses: actions/checkout@v5
         with:
@@ -100,39 +104,137 @@ jobs:
             librsvg2-dev \
             libxdo-dev \
             libssl-dev \
-            patchelf
+            patchelf \
+            libgbm1 \
+            libgl1 \
+            libegl1 \
+            libgl1-mesa-dri \
+            fonts-dejavu-core \
+            dbus-x11 \
+            xauth \
+            xvfb
 
       - name: Install frontend dependencies
         run: pnpm install --frozen-lockfile
 
+      # Only the .deb is built here: the bundler below rewrites it into the
+      # self-contained package and produces the AppDir for appimagetool.
       # Kylin packages are distributed outside the upstream updater, so the
       # build skips updater artifacts (which would otherwise need a signing key).
       - name: Build
         run: |
           pnpm tauri build \
             --target ${{ matrix.target }} \
-            --bundles deb,appimage \
+            --bundles deb \
             --config '{"bundle":{"createUpdaterArtifacts":false}}'
 
-      - name: Collect packages
+      - name: Bundle the runtime
         run: |
           version='${{ needs.version.outputs.version }}'
           arch='${{ matrix.arch }}'
-          bundle="target/${{ matrix.target }}/release/bundle"
-          # Not "dist": that is Vite's frontend output directory.
-          out="kylin-dist"
-          rm -rf "$out"
-          mkdir -p "$out"
+          deb=$(find "target/${{ matrix.target }}/release/bundle/deb" -name '*.deb' -print -quit)
+          test -n "$deb"
+          rm -rf kylin-dist
+          mkdir -p kylin-dist
+          bash scripts/kylin/bundle-runtime.sh "$arch" "$deb" kylin-dist
+          test -f "kylin-dist/openidea_${version}_kylin_${arch}.deb"
+          test -d "kylin-dist/AppDir-${arch}"
 
-          shopt -s nullglob
-          for f in "$bundle"/deb/*.deb; do
-            cp "$f" "$out/openidea_${version}_kylin_${arch}.deb"
-          done
-          for f in "$bundle"/appimage/*.AppImage; do
-            cp "$f" "$out/OpenIDEA_${version}_kylin_${arch}.AppImage"
+      - name: Build AppImage
+        run: |
+          version='${{ needs.version.outputs.version }}'
+          arch='${{ matrix.arch }}'
+          appimage_arch='${{ matrix.appimage_arch }}'
+          tools=$(mktemp -d)
+          curl -fsSL -o "$tools/appimagetool" \
+            "https://github.com/AppImage/appimagetool/releases/download/continuous/appimagetool-${appimage_arch}.AppImage"
+          curl -fsSL -o "$tools/runtime" \
+            "https://github.com/AppImage/type2-runtime/releases/download/continuous/runtime-${appimage_arch}"
+          chmod +x "$tools/appimagetool"
+          ARCH="$appimage_arch" "$tools/appimagetool" --appimage-extract-and-run --no-appstream \
+            --runtime-file "$tools/runtime" \
+            "kylin-dist/AppDir-${arch}" "kylin-dist/OpenIDEA_${version}_kylin_${arch}.AppImage"
+          rm -rf "kylin-dist/AppDir-${arch}"
+          test -s "kylin-dist/OpenIDEA_${version}_kylin_${arch}.AppImage"
+
+      - name: Verify packages
+        run: |
+          set -euo pipefail
+          version='${{ needs.version.outputs.version }}'
+          arch='${{ matrix.arch }}'
+          deb="kylin-dist/openidea_${version}_kylin_${arch}.deb"
+          appimage="kylin-dist/OpenIDEA_${version}_kylin_${arch}.AppImage"
+          root=$(mktemp -d)
+          dpkg-deb -R "$deb" "$root"
+          app="$root/usr/lib/openidea"
+
+          echo "== control =="
+          cat "$root/DEBIAN/control"
+
+          # The whole point of the bundle: no webkit2gtk-4.1 dependency.
+          if grep -q 'libwebkit2gtk-4.1' "$root/DEBIAN/control"; then
+            echo "::error::the package still depends on libwebkit2gtk-4.1"
+            exit 1
+          fi
+
+          test -x "$root/usr/bin/openidea"
+          test -x "$app/openidea"
+          test -f "$app/runtime/lib/libwebkit2gtk-4.1.so.0"
+          test -f "$app/runtime/lib/libjavascriptcoregtk-4.1.so.0"
+          test -x "$app/runtime/libexec/webkit2gtk-4.1/WebKitWebProcess"
+          test -x "$app/runtime/libexec/webkit2gtk-4.1/WebKitNetworkProcess"
+          test -f "$app/runtime/libexec/webkit2gtk-4.1/injected-bundle/libwebkit2gtkinjectedbundle.so"
+
+          echo "== embedded Java plugins =="
+          for jar in java-usages-1.12.0.jar kotlin-bridge-1.0.0.jar lombok-1.18.48-openidea.3.jar; do
+            if ! grep -qa "$jar" "$app/openidea"; then
+              echo "::error::$jar is not embedded in the binary"
+              exit 1
+            fi
+            echo "  $jar"
           done
 
-          test -n "$(ls -A "$out")" || { echo "::error::no deb or AppImage was produced"; exit 1; }
+          echo "== runtime closure =="
+          loader=$(find "$app/runtime/lib" -maxdepth 1 -name 'ld-linux-*.so.*' | head -1)
+          test -n "$loader"
+          "$loader" --library-path "$app/runtime/lib" --list "$app/openidea" > /tmp/ldd.txt
+          if grep -q 'not found' /tmp/ldd.txt; then
+            echo "::error::the bundled runtime does not resolve every library"
+            grep 'not found' /tmp/ldd.txt
+            exit 1
+          fi
+          grep -c . /tmp/ldd.txt | sed 's/^/  resolved libraries: /'
+
+          echo "== AppImage =="
+          "$appimage" --appimage-offset > /dev/null
+          ls -lh kylin-dist
+
+      # Starts the real app against the bundled runtime with no system
+      # webkit2gtk-4.1 present. A machine without a GPU uses Mesa's software
+      # renderer, which is what the runner and Kylin VMs do.
+      - name: Smoke test
+        run: |
+          version='${{ needs.version.outputs.version }}'
+          arch='${{ matrix.arch }}'
+          root=$(mktemp -d)
+          dpkg-deb -R "kylin-dist/openidea_${version}_kylin_${arch}.deb" "$root"
+          export HOME=$(mktemp -d)
+          set +e
+          timeout 60 xvfb-run -a dbus-run-session -- "$root/usr/bin/openidea" > /tmp/smoke.log 2>&1
+          rc=$?
+          set -e
+          sed -n '1,80p' /tmp/smoke.log
+          # 124 means it was still running when the timeout fired: that is a pass.
+          if grep -q 'application data directories' /tmp/smoke.log; then
+            echo "::notice::the app started with the bundled runtime (exit $rc)"
+          else
+            echo "::error::the app did not start"
+            exit 1
+          fi
+
+      - name: Collect packages
+        run: |
+          out=kylin-dist
           (cd "$out" && sha256sum -- *.deb *.AppImage > SHA256SUMS)
           ls -lh "$out"
 
@@ -159,12 +261,29 @@ jobs:
           tag_name: ${{ startsWith(github.ref, 'refs/tags/') && github.ref_name || format('kylin-v{0}', needs.version.outputs.version) }}
           name: OpenIDEA ${{ needs.version.outputs.version }} for Kylin
           body: |
-            OpenIDEA ${{ needs.version.outputs.version }} built for Kylin / domestic Linux.
+            OpenIDEA ${{ needs.version.outputs.version }} for Kylin / domestic Linux.
 
             - `amd64` (x86_64) and `arm64` (aarch64) .deb packages
             - AppImage for both architectures
             - `SHA256SUMS` for integrity checks
 
-            Requires glibc >= 2.35 and webkit2gtk-4.1 on the target system.
+            **Self-contained runtime.** The packages carry the glibc, GTK and
+            WebKitGTK 4.1 runtime they were built against and start through the
+            bundled loader. Kylin V10 SP1 (glibc 2.31, webkit2gtk 4.0 only)
+            needs no extra packages: install the .deb or run the AppImage on a
+            machine with a working X11 or Wayland desktop.
+
+            **Java support included.** The java-usages, kotlin-bridge and
+            lombok jars are compiled into the binary; no separate download is
+            needed.
+
+            Notes:
+
+            - The WebKit sandbox is disabled by default because it cannot see
+              an AppImage mount. Set `OPENIDEA_WEBKIT_SANDBOX=1` to keep it in
+              a regular installation.
+            - GPU drivers still come from the host. Without a GPU the app falls
+              back to Mesa's software renderer, so `libgl1-mesa-dri` should be
+              installed on machines without one.
           files: dist/*
           fail_on_unmatched_files: true
