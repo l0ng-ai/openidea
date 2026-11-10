@@ -79,6 +79,7 @@ describe("build tools feature", () => {
       "maven.addProjects",
       "maven.analyzeDependencies",
       "maven.executeGoal",
+      "maven.generateSources",
       "maven.reload",
       "maven.settings",
       "maven.toggleOffline",
