@@ -1295,7 +1295,7 @@ fn navigation_roots_uncached(project: &Project, from: &Path) -> Vec<PathBuf> {
     if let Some(deps) = member_dependencies_for(&settings.project_structure.member_dependencies, &own_key) {
         for dep in deps {
             let dep = PathBuf::from(dep.trim());
-            if dep.is_dir() && !roots.contains(&dep) {
+            if dep.is_absolute() && dep.is_dir() && !roots.contains(&dep) {
                 roots.push(dep);
             }
         }
