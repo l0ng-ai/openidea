@@ -875,14 +875,12 @@
   }
 }
 
-/* Editor gutter ▶ run icons */
-.runGutter {
-  width: 14px;
-}
+/* Editor gutter ▶ run icons (the column collapses when the file has none) */
 .runGutter :global(.cm-gutterElement) {
   display: flex;
   align-items: center;
-  justify-content: center;
+  /* Spare width stays left of the icons, which sit next to the code. */
+  justify-content: flex-end;
 }
 .runMarker {
   width: 14px;
