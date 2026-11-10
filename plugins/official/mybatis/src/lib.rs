@@ -6,13 +6,16 @@
 
 use openidea_plugin::providers::{CompletionItem, CompletionKind, Document, LineMarker, Providers};
 use openidea_plugin::text::{offset, position};
-use openidea_plugin::{Error, Invocation, Location, Plugin, Position, Project, Range, host, register_plugin};
+use openidea_plugin::{
+    Error, Invocation, Location, Plugin, Position, Project, Range, TextQuery, host, register_plugin,
+};
 use std::collections::BTreeMap;
 use std::time::{Duration, Instant};
 
-/// How long the namespace → XML file index is trusted.
+/// How long a namespace → XML file lookup is trusted.
 const INDEX_TTL: Duration = Duration::from_secs(30);
-const MAX_XML: u32 = 5000;
+/// Files declaring one namespace that are tried (normally one).
+const MAX_MAPPERS: u32 = 64;
 const STATEMENTS: [&str; 4] = ["select", "insert", "update", "delete"];
 
 /// A named thing and where its name is.
@@ -636,6 +639,19 @@ pub fn parse_java(text: &str) -> MapperJava {
     MapperJava { name, decl, methods, annotation_sql, result_refs, result_ids }
 }
 
+/// `namespace="com.acme.UserMapper"` in an XML file, either quote.
+fn namespace_query(namespace: &str) -> TextQuery {
+    let escaped: String =
+        namespace.chars().flat_map(|c| matches!(c, '.' | '$').then_some('\\').into_iter().chain([c])).collect();
+    TextQuery {
+        pattern: format!(r#"namespace\s*=\s*["']{escaped}["']"#),
+        regex: true,
+        case_sensitive: true,
+        include: vec!["**/*.xml".into()],
+        ..Default::default()
+    }
+}
+
 fn project_of(path: &str) -> Option<Project> {
     host::projects()
         .ok()?
@@ -646,43 +662,36 @@ fn project_of(path: &str) -> Option<Project> {
 
 #[derive(Default)]
 pub struct Navigator {
-    /// project root → (namespace → XML path), with when it was built.
-    xml_index: BTreeMap<String, (Instant, BTreeMap<String, String>)>,
+    /// project root → namespace → (when it was looked up, the XML mapping it, if any).
+    xml_index: BTreeMap<String, BTreeMap<String, (Instant, Option<String>)>>,
 }
 
 impl Navigator {
-    /// The XML mapping `namespace`, (re)indexing the project when needed.
+    /// The XML mapping `namespace`: the cached path while it still maps it, else a
+    /// search for its `namespace="…"`, so the cost doesn't grow with the project's XML files.
     fn xml_for(&mut self, project: &Project, namespace: &str) -> Option<(String, MapperXml)> {
         let root = project.root().ok()?;
-        for attempt in 0..2 {
-            let fresh = self.xml_index.get(&root).is_some_and(|(at, _)| at.elapsed() < INDEX_TTL);
-            if !fresh || attempt == 1 {
-                let mut map = BTreeMap::new();
-                for path in project.find_files("**/*.xml", MAX_XML).ok()? {
-                    let Ok(text) = project.read_file(&path) else { continue };
-                    if !text.contains("<mapper") {
-                        continue;
-                    }
-                    if let Some(ns) = parse_xml(&text).namespace {
-                        map.insert(ns.name, path);
-                    }
-                }
-                self.xml_index.insert(root.clone(), (Instant::now(), map));
-            }
-            let path = self.xml_index.get(&root).and_then(|(_, m)| m.get(namespace)).cloned();
-            if let Some(path) = path
-                && let Ok(text) = project.read_file(&path)
-            {
-                let xml = parse_xml(&text);
-                if xml.namespace.as_ref().is_some_and(|n| n.name == namespace) {
-                    return Some((path, xml));
-                }
-            }
-            if !fresh {
-                break; // just rebuilt
+        let read = |path: &str| {
+            let xml = parse_xml(&project.read_file(path).ok()?);
+            xml.namespace.as_ref().is_some_and(|n| n.name == namespace).then_some(xml)
+        };
+        if let Some((at, path)) = self.xml_index.get(&root).and_then(|m| m.get(namespace))
+            && at.elapsed() < INDEX_TTL
+        {
+            let path = path.as_ref()?;
+            if let Some(xml) = read(path) {
+                return Some((path.clone(), xml));
             }
         }
-        None
+        let found = project.search_text(&namespace_query(namespace), MAX_MAPPERS).ok()?;
+        let mut paths: Vec<&str> = found.matches.iter().map(|m| m.location.path.as_str()).collect();
+        paths.dedup();
+        let hit = paths.into_iter().find_map(|path| Some((path.to_owned(), read(path)?)));
+        self.xml_index
+            .entry(root)
+            .or_default()
+            .insert(namespace.to_owned(), (Instant::now(), hit.as_ref().map(|(path, _)| path.clone())));
+        hit
     }
 
     /// The interface `namespace` names (`com.acme.UserMapper` → `**/com/acme/UserMapper.java`).
@@ -1010,6 +1019,7 @@ register_plugin!(Navigator, providers);
 mod tests {
     use super::*;
     use openidea_plugin::mock::MockHost;
+    use openidea_plugin::{TextMatch, TextSearch};
 
     const JAVA: &str = "package com.acme;\n\nimport org.apache.ibatis.annotations.Param;\n\npublic interface UserMapper {\n    User findById(@Param(\"id\") long id);\n\n    int insert(User user);\n\n    default void helper() {}\n\n    List<User> search(String name, int limit);\n}\n";
     const XML: &str = "<?xml version=\"1.0\"?>\n<mapper namespace=\"com.acme.UserMapper\">\n  <select id=\"findById\" resultType=\"User\">\n    select * from users where id = #{id}\n  </select>\n  <insert id=\"insert\">\n    insert into users values (#{user})\n  </insert>\n  <select id=\"\">\n  </select>\n</mapper>\n";
@@ -1054,10 +1064,31 @@ mod tests {
 
     const ANNOTATED_XML: &str = "<?xml version=\"1.0\"?>\n<mapper namespace=\"com.acme.UserMapper\">\n  <select id=\"selectAnnotated\" resultType=\"User\">SELECT (a, b) FROM users</select>\n  <select id=\"findAnnotated\">SELECT 1</select>\n</mapper>\n";
 
+    /// A mapper XML, found by the namespace search like the host's Find in Files would.
+    fn add_mapper(host: &MockHost, path: &'static str, text: &'static str) {
+        host.add_file(path, text);
+        host.on_search(move |query, _| {
+            assert!(query.regex && query.include == ["**/*.xml"], "{query:?}");
+            let namespace = query.pattern.split(r#"["']"#).nth(1).unwrap_or_default().replace('\\', "");
+            let line = text.lines().position(|l| l.contains(&format!("namespace=\"{namespace}\"")));
+            let matches = line
+                .map(|line| TextMatch {
+                    location: Location {
+                        path: format!("/project/{path}"),
+                        range: Range::new(Position::new(line as u32, 0), Position::new(line as u32, 0)),
+                    },
+                    line: String::new(),
+                })
+                .into_iter()
+                .collect();
+            Ok(TextSearch { matches, limit_hit: false })
+        });
+    }
+
     fn setup() -> MockHost {
         let host = MockHost::install();
         host.add_file("src/main/java/com/acme/UserMapper.java", JAVA);
-        host.add_file("src/main/resources/mapper/UserMapper.xml", XML);
+        add_mapper(&host, "src/main/resources/mapper/UserMapper.xml", XML);
         host.add_file("pom.xml", "<project/>");
         host
     }
@@ -1065,7 +1096,7 @@ mod tests {
     fn annotated_setup() -> MockHost {
         let host = MockHost::install();
         host.add_file("src/main/java/com/acme/UserMapper.java", ANNOTATED);
-        host.add_file("src/main/resources/mapper/UserMapper.xml", ANNOTATED_XML);
+        add_mapper(&host, "src/main/resources/mapper/UserMapper.xml", ANNOTATED_XML);
         host.add_file("pom.xml", "<project/>");
         host
     }
@@ -1214,7 +1245,7 @@ mod tests {
             "src/main/java/com/acme/OrderMapper.java",
             "package com.acme;\npublic interface OrderMapper {\n}\n",
         );
-        host.add_file("src/main/resources/mapper/OrderMapper.xml", REFS_XML);
+        add_mapper(&host, "src/main/resources/mapper/OrderMapper.xml", REFS_XML);
         host.add_file("pom.xml", "<project/>");
         let mut n = Navigator::default();
         let xml = doc("/project/src/main/resources/mapper/OrderMapper.xml", "xml", REFS_XML);
@@ -1272,7 +1303,7 @@ mod tests {
     fn annotation_setup() -> MockHost {
         let host = MockHost::install();
         host.add_file("src/main/java/com/acme/UserMapper.java", ANNOTATED_SQL);
-        host.add_file("src/main/resources/mapper/UserMapper.xml", ANNOTATED_XML);
+        add_mapper(&host, "src/main/resources/mapper/UserMapper.xml", ANNOTATED_XML);
         host.add_file("pom.xml", "<project/>");
         host
     }
@@ -1351,7 +1382,7 @@ mod tests {
     fn result_setup() -> MockHost {
         let host = MockHost::install();
         host.add_file("src/main/java/com/acme/UserMapper.java", RESULT_JAVA);
-        host.add_file("src/main/resources/mapper/UserMapper.xml", RESULT_XML);
+        add_mapper(&host, "src/main/resources/mapper/UserMapper.xml", RESULT_XML);
         host.add_file("pom.xml", "<project/>");
         host
     }
