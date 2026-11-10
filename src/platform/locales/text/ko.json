@@ -1518,7 +1518,6 @@
   "Package manager": "패키지 관리자",
   "Package to install": "설치할 패키지",
   "Packages": "패키지",
-  "Packages the project (mvn package, gradle assemble, cargo build --release, npm run build)": "프로젝트를 패키징합니다(mvn package, gradle assemble, cargo build --release, npm run build)",
   "Page size": "페이지 크기",
   "Parameter Info": "매개변수 정보",
   "Parameter names": "매개변수 이름",

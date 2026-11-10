@@ -1670,7 +1670,7 @@
   "Package manager": "软件包管理器",
   "Package to install": "要安装的软件包",
   "Packages": "软件包",
-  "Packages the project (mvn package, gradle assemble, cargo build --release, npm run build)": "打包项目（mvn package、gradle assemble、cargo build --release、npm run build）",
+  "Packages the current module's artifacts, or the whole project when no file is active": "打包当前模块的产物，无活动文件时则打包整个项目",
   "Page size": "页面大小",
   "Parameter Info": "形参信息",
   "Parameter names": "形参名称",
