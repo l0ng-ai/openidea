@@ -213,7 +213,7 @@ impl Declared<'_> {
     /// The documented, else declared, else inferred return type.
     fn return_type(&self, engine: &PhpEngine) -> Option<Type> {
         if let Some(ty) = self.doc.and_then(|doc| doc.return_type.as_ref()) {
-            return Some(Type::from_doc(ty, &self.templates()));
+            return Some(Type::from_doc(ty, &self.templates()).settle());
         }
         let lazy = self.inferred?;
         Some(engine.resolver().resolve(lazy, &self.context()).widen())
@@ -224,7 +224,7 @@ impl Declared<'_> {
         let documented = self
             .doc
             .and_then(|doc| doc.params.iter().find(|p| p.name == param.name))
-            .map(|p| Type::from_doc(&p.ty, &self.templates()));
+            .map(|p| Type::from_doc(&p.ty, &self.templates()).settle());
         let ty = match (documented, &param.default) {
             (Some(ty), _) => ty,
             (None, Some(Type::Null) | None) => return None,

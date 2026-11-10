@@ -41,8 +41,9 @@ pub(super) struct Infer<'s> {
     /// Local variables (name without `$`) only written by plain
     /// assignments, and the union of the assigned values.
     pub locals: Vec<(String, LazyType)>,
-    /// Infer array literals as shapes ([`Self::array_shape`]); only for
-    /// returned values, not for property defaults or constants.
+    /// Infer array literals as shapes ([`Self::array_shape`]); for returned
+    /// values and constants (whose shapes keep literal values, for
+    /// `key-of<Foo::MAP>`), not for property defaults.
     pub shapes: bool,
 }
 
@@ -156,7 +157,6 @@ impl Infer<'_> {
     fn array<'a, 'b: 'a>(&self, elements: impl Iterator<Item = &'a ArrayElement<'b>>) -> LazyType {
         let elements: Vec<&'a ArrayElement<'b>> = elements.collect();
         if self.shapes
-            && !self.literals
             && let Some(shape) = self.array_shape(&elements)
         {
             return known(shape);
@@ -224,6 +224,7 @@ impl Infer<'_> {
                 next = next.max(int.saturating_add(1));
             }
             let ty = match self.expr_inner(value) {
+                LazyType::Known(ty) if self.literals => ty,
                 LazyType::Known(ty) => ty.widen(),
                 _ => Type::Mixed,
             };
@@ -418,7 +419,8 @@ pub(super) fn body_return(infer: &Infer<'_>, body: &Block<'_>) -> LazyType {
         params: infer.params.clone(),
         literals: infer.literals,
         locals: Vec::new(),
-        shapes: true,
+        // An accessor's literals aren't a constant's value.
+        shapes: !infer.literals,
     };
     // Two rounds, so `$a = new A; $b = $a; return $b;` sees `$a` in `$b`.
     for _ in 0..2 {

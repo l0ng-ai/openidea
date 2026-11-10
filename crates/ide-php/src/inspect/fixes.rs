@@ -215,7 +215,13 @@ fn native_parts(ty: &Type, scope: &NameScope, at_least: &dyn Fn(u8, u8) -> bool)
         Type::Callable(_) => one("callable"),
         Type::Closure(_) => Some(vec![class_name("Closure", scope)]),
         Type::Named { fqn, .. } => Some(vec![class_name(fqn, scope)]),
-        Type::ClassConstant { class, .. } => Some(vec![class_name(class, scope)]),
+        // An enum case; not a wildcard (`Foo::A_*`) or `self::X`, which may
+        // be any constant's value.
+        Type::ClassConstant { class, name }
+            if !name.contains('*') && !["self", "static"].contains(&class.to_ascii_lowercase().as_str()) =>
+        {
+            Some(vec![class_name(class, scope)])
+        }
         Type::Relative(relative) | Type::GenericRelative { relative, .. } => match relative {
             Relative::Static | Relative::This => at_least(8, 0).then(|| vec!["static".to_owned()]),
             other => one(other.as_str()),

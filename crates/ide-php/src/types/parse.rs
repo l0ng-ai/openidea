@@ -12,11 +12,14 @@ use std::fmt;
 use mago_allocator::LocalArena;
 use mago_phpdoc_syntax::cst::r#type::{
     CallableType, CallableTypeKind, GenericParameters, IntOrKeyword, MemberReferenceSelector, ReferenceKind,
-    ShapeKey as DocShapeKey, ShapeType, ShapeTypeKind, SingleGenericParameter, Type as DocNode,
+    ShapeField as DocShapeField, ShapeKey as DocShapeKey, ShapeType, ShapeTypeKind, SingleGenericParameter,
+    Type as DocNode,
 };
 use mago_span::{HasSpan, Span};
 
-use super::{Relative, Shape, ShapeField, ShapeKey, Signature, SignatureParam, StringKind, Type};
+use super::{
+    Conditional, Operator, Relative, Shape, ShapeField, ShapeKey, Signature, SignatureParam, StringKind, Subject, Type,
+};
 use crate::summary::{DocType, TypeHint};
 
 /// A PHPDoc type expression that does not parse.
@@ -163,15 +166,23 @@ impl Converter<'_> {
                     ReferenceKind::Parent(_) => Type::Relative(Relative::Parent),
                 }
             }
-            DocNode::MemberReference(ty) => match (&ty.kind, &ty.member) {
-                (ReferenceKind::Identifier(class), MemberReferenceSelector::Identifier(member)) => {
-                    Type::ClassConstant {
-                        class: lossy(class.value).trim_start_matches('\\').to_owned(),
-                        name: lossy(member.value),
-                    }
-                }
-                _ => Type::Mixed,
-            },
+            DocNode::MemberReference(ty) => {
+                let class = match &ty.kind {
+                    ReferenceKind::Identifier(class) => lossy(class.value).trim_start_matches('\\').to_owned(),
+                    ReferenceKind::Self_(_) => "self".to_owned(),
+                    ReferenceKind::Static(_) => "static".to_owned(),
+                    ReferenceKind::Parent(_) => return Type::Mixed,
+                };
+                // `Foo::*`, `Foo::A_*` and `Foo::*_A` name every matching
+                // constant.
+                let name = match &ty.member {
+                    MemberReferenceSelector::Identifier(member) => lossy(member.value),
+                    MemberReferenceSelector::Wildcard(_) => "*".to_owned(),
+                    MemberReferenceSelector::StartsWith(prefix, _) => format!("{}*", lossy(prefix.value)),
+                    MemberReferenceSelector::EndsWith(_, suffix) => format!("*{}", lossy(suffix.value)),
+                };
+                Type::ClassConstant { class, name }
+            }
             // `!Foo::Alias`: a type alias of another class.
             DocNode::AliasReference(_) => Type::Mixed,
             DocNode::Callable(ty) => self.callable(ty),
@@ -188,7 +199,8 @@ impl Converter<'_> {
             DocNode::Bool(_) => Type::Bool,
             DocNode::Float(_) | DocNode::UnspecifiedLiteralFloat(_) => Type::Float,
             DocNode::Int(_) | DocNode::UnspecifiedLiteralInt(_) | DocNode::NonZeroInt(_) => Type::Int,
-            DocNode::IntMask(_) | DocNode::IntMaskOf(_) => Type::Int,
+            DocNode::IntMask(ty) => Type::operator(Operator::IntMask(self.generics(Some(&ty.parameters)))),
+            DocNode::IntMaskOf(ty) => Type::operator(Operator::IntMaskOf(self.convert(&ty.parameter.entry.inner))),
             DocNode::PositiveInt(_) => Type::int_range(Some(1), None),
             DocNode::NegativeInt(_) => Type::int_range(None, Some(-1)),
             DocNode::NonPositiveInt(_) => Type::int_range(None, Some(0)),
@@ -210,7 +222,11 @@ impl Converter<'_> {
             DocNode::ArrayKey(_) => Type::ArrayKey,
             DocNode::Numeric(_) => Type::Numeric,
             DocNode::Scalar(_) | DocNode::EmptyScalar(_) => Type::Scalar,
-            DocNode::Object(_) | DocNode::StringableObject(_) => Type::Object,
+            DocNode::Object(ty) => match &ty.properties {
+                Some(properties) => Type::ObjectShape(self.fields(properties.fields.iter(), false)),
+                None => Type::Object,
+            },
+            DocNode::StringableObject(_) => Type::Object,
             DocNode::LiteralInt(ty) => Type::LiteralInt(i64::try_from(ty.value).unwrap_or(i64::MAX)),
             DocNode::LiteralFloat(ty) => Type::LiteralFloat(lossy(ty.raw)),
             DocNode::LiteralString(ty) => Type::LiteralString(unescape(ty.value)),
@@ -221,8 +237,19 @@ impl Converter<'_> {
                 _ => Type::Int,
             },
             DocNode::Posited(ty) => self.convert(ty.operand),
-            // `(T is X ? A : B)`: either branch.
-            DocNode::Conditional(ty) => Type::union([self.convert(ty.then), self.convert(ty.r#else)]),
+            // `(T is X ? A : B)`, `($param is X ? A : B)`.
+            DocNode::Conditional(ty) => Type::operator(Operator::Conditional(Box::new(Conditional {
+                subject: match ty.subject {
+                    DocNode::Variable(variable) => {
+                        Subject::Param(lossy(variable.value).trim_start_matches('$').to_owned())
+                    }
+                    subject => Subject::Type(self.convert(subject)),
+                },
+                target: self.convert(ty.target),
+                negated: ty.is_negated(),
+                then: self.convert(ty.then),
+                otherwise: self.convert(ty.r#else),
+            }))),
             // `new<class-string<T>>` is a `T`.
             DocNode::New(ty) => match self.convert(&ty.parameter.entry.inner) {
                 Type::ClassString(Some(inner)) => *inner,
@@ -230,12 +257,12 @@ impl Converter<'_> {
                 _ => Type::Object,
             },
             DocNode::PropertiesOf(_) => Type::array_of(Type::string(), Type::Mixed),
-            DocNode::KeyOf(_) => Type::ArrayKey,
-            DocNode::ValueOf(_)
-            | DocNode::TemplateType(_)
-            | DocNode::IndexAccess(_)
-            | DocNode::Wildcard(_)
-            | DocNode::GlobalWildcardReference(_) => Type::Mixed,
+            DocNode::KeyOf(ty) => Type::operator(Operator::KeyOf(self.convert(&ty.parameter.entry.inner))),
+            DocNode::ValueOf(ty) => Type::operator(Operator::ValueOf(self.convert(&ty.parameter.entry.inner))),
+            DocNode::IndexAccess(ty) => {
+                Type::operator(Operator::Index { base: self.convert(ty.target), index: self.convert(ty.index) })
+            }
+            DocNode::TemplateType(_) | DocNode::Wildcard(_) | DocNode::GlobalWildcardReference(_) => Type::Mixed,
             _ => Type::Mixed,
         }
     }
@@ -291,8 +318,23 @@ impl Converter<'_> {
 
     fn shape(&self, shape: &ShapeType<'_>) -> Type {
         let list = matches!(shape.kind, ShapeTypeKind::List | ShapeTypeKind::NonEmptyList);
+        let fields = self.fields(shape.fields.iter(), true);
+        let rest = shape.additional_fields.as_ref().map(|additional| {
+            let implied_key = if list { Type::int_range(Some(0), None) } else { Type::ArrayKey };
+            match self.generics(additional.parameters.as_ref()).as_slice() {
+                [value] => (implied_key, value.clone()),
+                [key, value, ..] => (key.clone(), value.clone()),
+                [] => (implied_key, Type::Mixed),
+            }
+        });
+        Type::Shape(Box::new(Shape { list, fields, rest }))
+    }
+
+    /// The fields of an array shape, or (not `positional`) the properties of
+    /// an object shape, whose keys are names.
+    fn fields<'n>(&self, nodes: impl Iterator<Item = &'n DocShapeField<'n>>, positional: bool) -> Vec<ShapeField> {
         let mut fields: Vec<ShapeField> = Vec::new();
-        for field in shape.fields.iter() {
+        for field in nodes {
             let ty = self.convert(field.value);
             let (key, optional) = match &field.key {
                 Some(key) => {
@@ -320,17 +362,13 @@ impl Converter<'_> {
                     (ShapeKey::Int(next), false)
                 }
             };
+            let key = match key {
+                ShapeKey::Int(value) if !positional => ShapeKey::String(value.to_string()),
+                key => key,
+            };
             fields.push(ShapeField { key, ty, optional });
         }
-        let rest = shape.additional_fields.as_ref().map(|additional| {
-            let implied_key = if list { Type::int_range(Some(0), None) } else { Type::ArrayKey };
-            match self.generics(additional.parameters.as_ref()).as_slice() {
-                [value] => (implied_key, value.clone()),
-                [key, value, ..] => (key.clone(), value.clone()),
-                [] => (implied_key, Type::Mixed),
-            }
-        });
-        Type::Shape(Box::new(Shape { list, fields, rest }))
+        fields
     }
 
     fn callable(&self, ty: &CallableType<'_>) -> Type {

@@ -882,7 +882,7 @@ The gaps that the follow-ups in `PROGRESS.md`, the review in `differential.md` a
 
   Tests: caret fixtures for goto and hover on a protected property with a `@property` tag, from outside and inside the class.
 
-- [ ] Phase 9.3: Type operators and mixins
+- [x] Phase 9.3: Type operators and mixins
       The type model approximates (`PROGRESS.md` 2.1/2.6):
   - `key-of`/`value-of`
   - indexed access `T[K]`
@@ -894,6 +894,14 @@ The gaps that the follow-ups in `PROGRESS.md`, the review in `differential.md` a
   - `@template` on closures
 
   Evaluate them where their arguments are known. Keep the current widening when they aren't. Check against the corpora as in 9.2 and record the change. Tests: type unit tests and caret fixtures.
+
+- [ ] Phase 9.3.b: Closure templates and alias leftovers
+      What 9.3 left (it did `key-of`/`value-of`, `T[K]`, `int-mask`, object shapes, conditional return types, type aliases in member types and parameters, and `@mixin Foo<T>` arguments):
+  - **`@template` on closures:** a closure's own docblock (`@template T`, `@param T $x`, `@return T`) gives its `Closure` type template parameters, bound when it is called (`$f(1)` is `int`) or passed where a callable is expected.
+  - **Type aliases in inline `@var` tags** inside a class's methods (`/** @var Row $row */`), which still read the alias name as a class.
+  - **Object shape completion:** `obj()->` lists an `object{…}` type's properties, and goto/hover on them answer.
+
+  Tests: caret fixtures per case.
 
 - [ ] Phase 9.4: Speed: cold model and Inspect Code
       Two speed items:

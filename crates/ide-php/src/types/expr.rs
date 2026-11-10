@@ -495,7 +495,8 @@ impl<'a, 'r> ExprTypes<'a, 'r> {
             Frame::Function(function) => {
                 let decl = self.function_decl(function)?;
                 let doc = decl.doc.as_deref();
-                declared(&decl.params, doc, doc.iter().flat_map(|doc| doc.local_type_names()).collect())
+                let ty = declared(&decl.params, doc, doc.iter().flat_map(|doc| doc.local_type_names()).collect())?;
+                Some(self.resolver.finish(&ty, &Context::default()))
             }
             Frame::Method(method) => {
                 let start = method.name.span.start.offset;
@@ -517,6 +518,8 @@ impl<'a, 'r> ExprTypes<'a, 'r> {
                 let mut templates: Vec<&str> = class_templates(class);
                 templates.extend(doc.iter().flat_map(|doc| doc.local_type_names()));
                 let ty = declared(&decl.params, doc, templates)?;
+                let ty = self.resolver.expand_aliases(&ty, class);
+                let ty = self.resolver.finish(&ty, &Context::in_class(&class.fqn));
                 let index = decl.params.iter().position(|param| param.name == name)?;
                 let site = ParameterSite { class: &class.fqn, method: decl, index, declared: &ty };
                 Some(self.resolver.providers().parameter(&site, self.resolver).unwrap_or(ty))

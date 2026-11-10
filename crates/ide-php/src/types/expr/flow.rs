@@ -435,7 +435,7 @@ impl<'t, 'a, 'r> Builder<'t, 'a, 'r> {
             let Some(name) = name.map(String::into_bytes).or_else(|| assigned.map(|v| name_of(v).to_vec())) else {
                 continue;
             };
-            let ty = Type::from_doc(&ty, &[]);
+            let ty = Type::from_doc(&ty, &[]).settle();
             if let Some(state) = self.env.vars.get_mut(&name) {
                 state.ty = ty.clone();
             }
@@ -1679,7 +1679,7 @@ impl<'t, 'a, 'r> Builder<'t, 'a, 'r> {
                 _ => None,
             });
             let Some(variable) = argument.and_then(direct) else { continue };
-            let ty = Type::from_doc(&assert.ty, &templates);
+            let ty = Type::from_doc(&assert.ty, &templates).settle();
             let mut generic = false;
             ty.map(&mut |member| {
                 generic |= matches!(member, Type::Template(_));

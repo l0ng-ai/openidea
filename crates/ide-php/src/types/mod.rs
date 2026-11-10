@@ -38,15 +38,18 @@
 //! (`mago_phpdoc_syntax::parse_type`). The subtyping rules follow the public
 //! PHPStan and Psalm documentation of these types.
 //!
-//! A few PHPDoc forms are kept only approximately, since nothing later needs
-//! more: `key-of`, `value-of`, `properties-of`, index access, `int-mask` and
-//! object shapes widen to their base type (`mixed`, `int`, `object`), and a
-//! conditional return type `(T is X ? A : B)` becomes `A|B`.
+//! Type operators (`key-of`, `value-of`, index access, `int-mask`,
+//! conditional types) are evaluated where their arguments are known
+//! ([`operator`]); while they aren't, they widen to their base type
+//! (`array-key`, `mixed`, `int`, both branches). `properties-of` still
+//! widens to `array<string, mixed>`. Object shapes (`object{a: int}`) are
+//! [`Type::ObjectShape`].
 
 mod display;
 pub mod expr;
 mod lazy;
 pub mod model;
+pub mod operator;
 pub(crate) mod ops;
 mod parse;
 pub mod provider;
@@ -58,6 +61,7 @@ use serde::{Deserialize, Serialize};
 pub use expr::{Defined, ExprTypes, Flow, Frame, Located, PROBE_VARIABLE, VarState, type_at};
 pub use lazy::LazyType;
 pub use model::ClassModel;
+pub use operator::{Conditional, Operator, Subject};
 pub use parse::{TypeParseError, parse_doc_type};
 pub use provider::{TypeProvider, TypeProviders};
 pub use resolve::{CallArg, Context, Declarations, Resolver, SummarySet, TemplateParam, TypeCache};
@@ -145,6 +149,11 @@ pub enum Type {
     Union(Vec<Type>),
     /// Flat, at least two members ([`Type::intersection`]).
     Intersection(Vec<Type>),
+    /// A type operator whose arguments aren't known yet ([`operator`]).
+    Operator(Box<Operator>),
+    /// `object{a: int, b?: string}`: an object with these public
+    /// properties (string keys).
+    ObjectShape(Vec<ShapeField>),
 }
 
 /// Refinements of `string`.
@@ -510,6 +519,10 @@ impl Type {
             Self::Closure(Some(signature)) => Self::Closure(Some(Box::new(signature.map(replace)))),
             Self::Union(members) => Self::union(members.iter().map(|member| member.map(replace))),
             Self::Intersection(members) => Self::intersection(members.iter().map(|member| member.map(replace))),
+            Self::Operator(operator) => Self::operator(operator.map_children(&mut |ty| ty.map(replace))),
+            Self::ObjectShape(fields) => Self::ObjectShape(
+                fields.iter().map(|field| ShapeField { ty: field.ty.map(replace), ..field.clone() }).collect(),
+            ),
             other => other.clone(),
         }
     }

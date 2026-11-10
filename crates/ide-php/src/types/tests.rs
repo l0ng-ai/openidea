@@ -124,11 +124,32 @@ fn parse_and_display_table() {
         (r"\Closure", "Closure"),
         ("Closure(T): bool", "Closure(T): bool"),
         ("(callable(int): void)|null", "(callable(int): void)|null"),
-        // Approximated forms.
-        ("(T is int ? string : bool)", "string|bool"),
-        ("key-of<T>", "array-key"),
-        ("value-of<T>", "mixed"),
-        ("int-mask<1, 2, 4>", "int"),
+        // Type operators: kept while they mention a template or parameter,
+        // evaluated when their arguments are known.
+        ("(T is int ? string : bool)", "(T is int ? string : bool)"),
+        ("($x is not null ? string : bool)", "($x is not null ? string : bool)"),
+        ("key-of<T>", "key-of<T>"),
+        ("value-of<T>", "value-of<T>"),
+        ("T['k']", "T['k']"),
+        ("int-mask-of<T>", "int-mask-of<T>"),
+        (r"key-of<\Foo::MAP>", r"key-of<Foo::MAP>"),
+        (r"int-mask-of<\Foo::FLAG_*>", r"int-mask-of<Foo::FLAG_*>"),
+        ("int-mask<1, 2, 4>", "0|1|2|3|4|5|6|7"),
+        ("int-mask<1, 2, 4, 8, 16, 32, 64>", "int<0, 127>"),
+        ("key-of<array{a: int, b: string}>", "'a'|'b'"),
+        ("value-of<array{a: int, b: string}>", "int|string"),
+        ("key-of<list<string>>", "non-negative-int"),
+        ("value-of<array<string, bool>>", "bool"),
+        ("array{a: int, b: string}['b']", "string"),
+        ("array{a: int, 1: string}['1']", "string"),
+        ("array<string, int>['x']", "int"),
+        ("(int is int ? string : bool)", "string"),
+        ("('a' is int ? string : bool)", "bool"),
+        ("(int|string is int ? string : bool)", "string|bool"),
+        ("(null is not null ? string : bool)", "bool"),
+        // Object shapes.
+        (r"object{id: int, book?: \Lib\Book}", r"object{id: int, book?: Lib\Book}"),
+        ("object{'a b': int}", "object{'a b': int}"),
     ];
     let mut failures = Vec::new();
     for (input, expected) in table {
@@ -139,6 +160,52 @@ fn parse_and_display_table() {
         }
     }
     assert!(failures.is_empty(), "\n{}", failures.join("\n"));
+}
+
+/// Open operators widen to what they can be at most; substituting their
+/// templates evaluates them.
+#[test]
+fn type_operators_settle_and_substitute() {
+    let table: &[(&str, &str)] = &[
+        ("key-of<T>", "array-key"),
+        ("value-of<T>", "mixed"),
+        ("T['k']", "mixed"),
+        ("int-mask-of<T>", "int"),
+        ("(T is int ? string : bool)", "string|bool"),
+        ("($x is int ? string : bool)", "string|bool"),
+        ("list<key-of<T>>", "list<array-key>"),
+        ("int", "int"),
+    ];
+    for (input, expected) in table {
+        assert_eq!(parse(input).settle().to_string(), *expected, "{input}");
+    }
+    let bindings: resolve::Bindings = [("T".to_owned(), parse("array{x: int, y: string}"))].into_iter().collect();
+    let substituted = |text: &str| resolve::substitute(&parse(text), &bindings).to_string();
+    assert_eq!(substituted("key-of<T>"), "'x'|'y'");
+    assert_eq!(substituted("value-of<T>"), "int|string");
+    assert_eq!(substituted("T['y']"), "string");
+    assert_eq!(substituted("list<T['x']>"), "list<int>");
+    assert_eq!(substituted("(T is array ? int : string)"), "int");
+    // A class subject needs the hierarchy: open until the resolver.
+    let class = parse(r"(\Foo is \Bar ? int : string)");
+    assert!(matches!(class, Type::Operator(_)), "{class}");
+    assert!(class.has_operator());
+    assert!(!parse("int").has_operator());
+}
+
+#[test]
+fn object_shape_subtyping() {
+    let sub = |a: &str, b: &str| parse(a).is_subtype_of(&parse(b), &NoHierarchy);
+    assert!(sub("object{a: int, b: string}", "object{a: int}"));
+    assert!(sub("object{a: int}", "object{a: int, b?: string}"));
+    assert!(sub("object{a: positive-int}", "object{a: int}"));
+    assert!(sub("object{a: int}", "object"));
+    assert!(!sub("object{a?: int}", "object{a: int}"));
+    assert!(!sub("object{a: string}", "object{a: int}"));
+    assert!(!sub("object{b: int}", "object{a: int}"));
+    // An open operator is within its widened type, nothing within it.
+    assert!(sub("key-of<T>", "array-key"));
+    assert!(!sub("int", "key-of<T>"));
 }
 
 /// The displayed type parses back to the same type.
@@ -156,6 +223,10 @@ fn display_round_trips() {
         "list{int, string}",
         "array{0: int, 1?: string}",
         "-3|1.5|true",
+        "key-of<T>",
+        "(T is not int ? list<T> : T['k'])",
+        "($id is int ? string : null)",
+        "object{a: int, b?: list<string>}",
     ] {
         let ty = parse(input);
         let again = parse(&ty.to_string());

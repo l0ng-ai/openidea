@@ -306,7 +306,14 @@ fn may_be_numeric(value: &str) -> bool {
 fn has_templates(ty: &Type) -> bool {
     let mut found = false;
     ty.map(&mut |ty| {
-        found |= matches!(ty, Type::Template(_) | Type::GenericRelative { .. } | Type::ClassConstant { .. });
+        found |= matches!(
+            ty,
+            Type::Template(_)
+                | Type::GenericRelative { .. }
+                | Type::ClassConstant { .. }
+                | Type::Operator(_)
+                | Type::ObjectShape(_)
+        );
         None
     });
     found
@@ -883,7 +890,7 @@ impl<'a> Scan<'a, '_> {
         let declared = doc
             .and_then(|(doc, templates)| {
                 let templates: Vec<&str> = templates.iter().map(String::as_str).collect();
-                doc.return_type.as_ref().map(|ty| Type::from_doc(ty, &templates))
+                doc.return_type.as_ref().map(|ty| Type::from_doc(ty, &templates).settle())
             })
             .map(|ty| bind(&ty, &classes))
             .unwrap_or_else(|| native.clone());

@@ -44,6 +44,19 @@ Raw agreement is what the harness computes. "Matches or beats" adds the differen
 
 The corpora rows are phase 9.2.b's rerun (2026-11-10, same seed, corpus tags and Intelephense version); the php-app rows are phase 6.2.b's. Both stay above the bars the roadmap sets (definition 98.5%, hover 98.1%). The sampled positions are not all phase 6.2.b's, because a corpus's candidate positions depend on the harness and engine of the day. Some gaps listed there were not sampled this time (Symfony's `FileValidator` `$maxSize`, SimplePie's `$scheme`, Laravel's `AuthGuardTest` destructuring and `EloquentCursorPaginateTest` closure parameter); caret fixtures cover them instead. Raw agreement is lower on Laravel because the engine now answers more positions Intelephense leaves empty (cast attributes, forwarded builder calls); each is checked by hand below.
 
+Phase 9.3 (type operators, conditional return types, object shapes, type aliases, `@mixin Foo<T>` arguments) reran the three corpora on 2026-11-10 with the same seed, tags and Intelephense version. Every count in the table is unchanged: none of the 600 sampled positions has a type that goes through one of these forms. The forms do appear in the corpora's PHPDoc (`grep` over `*.php`). Before 9.3 they all widened; now they are evaluated wherever their arguments are known:
+
+| Form                                          | laravel-framework | symfony | wordpress |
+| --------------------------------------------- | ----------------: | ------: | --------: |
+| conditional returns (`@return ($x is …`)      |               175 |      38 |         4 |
+| `object{…}`                                   |                96 |      10 |         4 |
+| `int-mask` / `int-mask-of`                    |                21 |      31 |        13 |
+| `@phpstan-type` / `@psalm-type`               |                 4 |      72 |        46 |
+| `@phpstan-import-type` / `@psalm-import-type` |                 1 |      19 |        26 |
+| `value-of<…>`                                 |                 0 |      13 |         8 |
+| `key-of<…>`                                   |                 0 |       4 |         5 |
+| `@mixin Foo<…>`                               |                 3 |       0 |         0 |
+
 Phase 6.2 left hover at 96.8%; phase 6.2.b closed seven of its gaps, and phases 9.2 and 9.2.b closed more (the fixes are listed below). The remaining gaps are listed under Follow-ups.
 
 Before phase 6.2 the hover comparison was a text comparison, so nothing could agree. The first run with the structural comparison gave 92.6%, 93.5% and 77.6% hover agreement on laravel, symfony and WordPress. The engine fixes of phase 6.2 brought those to 95.7%, 96.4% and 92.9%, and those of phase 6.2.b to 96.9%, 96.4% and 95.4%.

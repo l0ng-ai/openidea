@@ -62,6 +62,7 @@ use crate::summary::{ClassLike, ConstantDecl, FileSummary, FunctionDecl, Laravel
 use crate::symfony::{SymfonyConfig, SymfonyProject};
 
 mod generics;
+mod operators;
 
 pub(crate) use generics::declared_params;
 pub use generics::{Bindings, CallArg, TemplateParam, bind_args, class_template_params, substitute, template_params};
@@ -404,14 +405,14 @@ impl<'a> Resolver<'a> {
     /// `$this` when the context knows them) bound by `context`.
     pub fn resolve(&self, lazy: &LazyType, context: &Context) -> Type {
         let ty = self.lazy(lazy, context, 0);
-        self.bind(&ty, context)
+        self.finish(&ty, context)
     }
 
     /// What calling function `fqn` returns; `None` when it doesn't exist.
     /// Its templates take their fallbacks.
     pub fn function_return(&self, fqn: &str) -> Option<Type> {
         let ty = self.function_at(fqn, 0)?;
-        Some(self.function_generics(fqn, ty, None))
+        Some(self.finish(&self.function_generics(fqn, ty, None), &Context::default()))
     }
 
     /// What calling function `fqn` with `args` returns, its templates
@@ -421,7 +422,7 @@ impl<'a> Resolver<'a> {
         if let Some(ty) = element_call(fqn, args) {
             return Some(ty);
         }
-        Some(self.function_generics(fqn, ty, Some(args)))
+        Some(self.finish(&self.function_generics(fqn, ty, Some(args)), &Context::default()))
     }
 
     /// The type of global constant `fqn`; `None` when it doesn't exist.
@@ -432,14 +433,14 @@ impl<'a> Resolver<'a> {
     /// What `$receiver->name()` returns (per member of a union receiver).
     pub fn method_return(&self, receiver: &Type, name: &str, context: &Context) -> Type {
         let ty = self.on_members(receiver, context, &mut |receiver| self.method_at(receiver, name, None, 0));
-        self.bind(&ty, context)
+        self.finish(&ty, context)
     }
 
     /// What `$receiver->name(…args)` returns, the method's templates
     /// inferred from the arguments.
     pub fn method_call(&self, receiver: &Type, name: &str, args: Args<'_>, context: &Context) -> Type {
         let ty = self.on_members(receiver, context, &mut |receiver| self.method_at(receiver, name, Some(args), 0));
-        self.bind(&ty, context)
+        self.finish(&ty, context)
     }
 
     /// The parameters of method `name` on the first class among the members
@@ -497,15 +498,15 @@ impl<'a> Resolver<'a> {
 
     /// The type of `$receiver->name` / `Receiver::$name` (name without `$`).
     pub fn property_type(&self, receiver: &Type, name: &str, context: &Context) -> Type {
-        let ty = self.on_members(receiver, context, &mut |receiver| self.property_at(receiver, name, context, 0));
-        self.bind(&ty, context)
+        let ty = self.property_on(receiver, name, context, 0);
+        self.finish(&ty, context)
     }
 
     /// The type of `Class::NAME`: the constant's value, or the enum of a
     /// case.
     pub fn class_constant_type(&self, class: &Type, name: &str, context: &Context) -> Type {
         let ty = self.on_members(class, context, &mut |receiver| self.class_constant_at(receiver, name, 0));
-        self.bind(&ty, context)
+        self.finish(&ty, context)
     }
 
     /// The model of class-like `fqn`: all its members, inherited ones
@@ -617,7 +618,7 @@ impl<'a> Resolver<'a> {
             }
             LazyType::Property { receiver, name } => {
                 let receiver = self.lazy(receiver, context, next);
-                self.on_members(&receiver, context, &mut |receiver| self.property_at(receiver, name, context, next))
+                self.property_on(&receiver, name, context, next)
             }
             LazyType::ClassConstant { class, name } => {
                 let class = self.lazy(class, context, next);
@@ -632,6 +633,20 @@ impl<'a> Resolver<'a> {
             }
             LazyType::Union(members) => Type::union(members.iter().map(|member| self.lazy(member, context, next))),
         }
+    }
+
+    /// Property `name` on each member of `receiver`: a class's, or an object
+    /// shape's; `mixed` when none has it.
+    fn property_on(&self, receiver: &Type, name: &str, context: &Context, depth: usize) -> Type {
+        let mut answers = Vec::new();
+        for ty in receiver.members() {
+            let answer = match ty {
+                Type::ObjectShape(fields) => operators::shape_property(fields, name),
+                ty => self.on_member(ty, context, &mut |receiver| self.property_at(receiver, name, context, depth)),
+            };
+            answers.extend(answer);
+        }
+        if answers.is_empty() { Type::Mixed } else { Type::union(answers) }
     }
 
     /// Asks `member` for each class among the members of `receiver`,
@@ -787,6 +802,10 @@ impl<'a> Resolver<'a> {
                 self.bind_call(&own, &params, args, &mut bindings);
             }
             ty = substitute(&ty, &bindings);
+            if let Some(args) = args {
+                let params = self.method_params(method, &bindings);
+                ty = self.apply_args(&ty, &params, args);
+            }
             // `static<K, V>` on a receiver whose class doesn't take those
             // arguments (a non-generic subclass) is the declaring class
             // with them.
@@ -794,6 +813,20 @@ impl<'a> Resolver<'a> {
             ty = ty.map(&mut |ty| match ty {
                 Type::GenericRelative { relative: Relative::Static | Relative::This, args } if args.len() != arity => {
                     Some(Type::generic(&method.declaring.fqn, args.clone()))
+                }
+                _ => None,
+            });
+        }
+        // `static`/`$this` in a member lent by `@mixin Foo<T>` are the mixin
+        // with its arguments (the raw type has the bare mixin class).
+        if let Start::Args(class, args) = receiver.start
+            && let Some(model) = self.class_model(receiver.class)
+            && let Some(mixin) = model.method(name).and_then(|method| method.mixin.clone())
+            && let Some(this) = self.mixin_this(class, args, &mixin)
+        {
+            ty = ty.map(&mut |ty| match ty {
+                Type::Named { fqn, args } if args.is_empty() && operators::same_class(fqn, &mixin) => {
+                    Some(this.clone())
                 }
                 _ => None,
             });
@@ -836,6 +869,7 @@ impl<'a> Resolver<'a> {
                     _ => Type::Mixed,
                 }
             };
+            let ty = self.expand_aliases(&ty, &method.declaring);
             Some(self.bind_member(&ty, &context, method.mixin.as_deref()))
         })
     }
@@ -918,6 +952,7 @@ impl<'a> Resolver<'a> {
                     _ => Type::Mixed,
                 }
             };
+            let ty = self.expand_aliases(&ty, &property.declaring);
             Some(self.bind_member(&ty, &context, property.mixin.as_deref()))
         })?;
         if is_generic(&ty) {
@@ -960,6 +995,7 @@ impl<'a> Resolver<'a> {
                     None => Type::Mixed,
                 },
             };
+            let ty = self.expand_aliases(&ty, &constant.declaring);
             Some(self.bind(&ty, &context))
         })?;
         Some(bind_static(&ty, receiver.this))
@@ -1006,6 +1042,12 @@ impl<'a> Resolver<'a> {
                 parent.as_deref().map(Type::named)
             }
             Type::Relative(Relative::Static | Relative::This) => context.static_type.clone(),
+            // `self::FLAGS` in an operator.
+            Type::ClassConstant { class, name }
+                if ["self", "static"].contains(&class.to_ascii_lowercase().as_str()) =>
+            {
+                Some(Type::ClassConstant { class: self_class.to_owned(), name: name.clone() })
+            }
             _ => None,
         })
     }

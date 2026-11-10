@@ -1033,7 +1033,7 @@ impl LaravelProvider {
             .and_then(|cast| cast_type(resolver, &cast.cast));
         let ty = match (cast, &column) {
             (Some(ty), _) => ty,
-            (None, Some(column)) => Type::from_doc(&column.ty, &[]),
+            (None, Some(column)) => Type::from_doc(&column.ty, &[]).settle(),
             (None, None) => return None,
         };
         Some(if column.is_some_and(|column| column.nullable) { ty.nullable() } else { ty })

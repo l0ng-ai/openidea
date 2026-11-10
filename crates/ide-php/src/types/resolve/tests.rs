@@ -280,3 +280,58 @@ fn element_functions_return_an_element_of_their_argument() {
     assert_eq!(call("reset", Type::Mixed), Some(Type::Mixed));
     assert_eq!(call("count", books), Some(Type::Int));
 }
+
+#[test]
+fn type_operators_on_class_constants_and_enums() {
+    let decls = summaries(&[r#"<?php
+namespace App;
+enum Suit: string { case Hearts = 'H'; case Spades = 'S'; }
+enum Plain { case A; }
+class Opts {
+    const MAP = ['a' => 1, 'b' => 2];
+    const FLAG_A = 1;
+    const FLAG_B = 2;
+    const FLAG_C = 4;
+    const OTHER = 64;
+    /** @return key-of<self::MAP> */
+    public function key() {}
+    /** @return value-of<self::MAP> */
+    public function value() {}
+    /** @return int-mask-of<self::FLAG_*> */
+    public function flags() {}
+    /** @return int-mask<self::FLAG_A, self::OTHER> */
+    public function mask() {}
+    /** @return value-of<Suit> */
+    public function suit() {}
+    /** @return value-of<Plain> */
+    public function plain() {}
+    /** @return key-of<Opts::MISSING> */
+    public function missing() {}
+    /** @return ($x is Opts ? int : string) */
+    public function cls(object $x) {}
+}
+class Sub extends Opts {}
+"#]);
+    let cache = TypeCache::new();
+    let r = Resolver::new(&decls, &cache, 1);
+    let cx = Context::default();
+    let opts = named(r"App\Opts");
+    let ret = |name: &str| r.method_return(&opts, name, &cx).to_string();
+    assert_eq!(ret("key"), "'a'|'b'");
+    assert_eq!(ret("value"), "1|2");
+    assert_eq!(ret("flags"), "0|1|2|3|4|5|6|7");
+    assert_eq!(ret("mask"), "0|1|64|65");
+    assert_eq!(ret("suit"), "'H'|'S'");
+    // Not backed, or not a constant: widened.
+    assert_eq!(ret("plain"), "mixed");
+    assert_eq!(ret("missing"), "array-key");
+    // A class subject is decided through the hierarchy.
+    let call = |arg: Type| {
+        let args = move || vec![CallArg::positional(arg.clone())];
+        r.method_call(&opts, "cls", &args, &cx).to_string()
+    };
+    assert_eq!(call(named(r"App\Sub")), "int");
+    assert_eq!(call(named(r"App\Suit")), "string");
+    assert_eq!(call(Type::Object), "int|string");
+    assert_eq!(ret("cls"), "int|string");
+}

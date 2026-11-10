@@ -370,7 +370,7 @@ fn type_of_text(text: &str) -> Option<Type> {
     let text = text.trim();
     match class_name_of(text) {
         Some(class) => Some(Type::named(class)),
-        None => parse_doc_type(text, &[]).ok(),
+        None => parse_doc_type(text, &[]).ok().map(|ty| ty.settle()),
     }
 }
 

@@ -29,7 +29,7 @@ use crate::types::model::ModelMethod;
 use crate::types::{Relative, Signature, SignatureParam, Type};
 
 /// How deep a walk up `@extends`/`@implements`/`@use` goes.
-const MAX_EDGE_DEPTH: usize = 16;
+pub(super) const MAX_EDGE_DEPTH: usize = 16;
 
 /// Template parameter name → its type.
 pub type Bindings = HashMap<String, Type>;
@@ -118,14 +118,10 @@ pub fn substitute(ty: &Type, bindings: &Bindings) -> Type {
     })
 }
 
-/// True when `ty` mentions a template parameter or `static<…>`/`self<…>`.
+/// True when `ty` mentions a template parameter, `static<…>`/`self<…>` or
+/// an open type operator.
 pub fn is_generic(ty: &Type) -> bool {
-    let mut found = false;
-    ty.map(&mut |ty| {
-        found |= matches!(ty, Type::Template(_) | Type::GenericRelative { .. });
-        None
-    });
-    found
+    ty.any(&|ty| matches!(ty, Type::Template(_) | Type::GenericRelative { .. } | Type::Operator(_)))
 }
 
 /// True when `ty` mentions one of the templates `names`.
@@ -176,7 +172,7 @@ pub fn with_args(ty: &Type, args: &[Type]) -> Type {
 /// The class-likes a class-like extends, implements or uses directly, with
 /// the generic arguments its `@extends`/`@implements`/`@use` tags pass
 /// (none when no tag names it).
-fn edges(class: &ClassLike) -> Vec<(String, Vec<Type>)> {
+pub(super) fn edges(class: &ClassLike) -> Vec<(String, Vec<Type>)> {
     let scope = class_scope(class);
     let tagged: Vec<Type> = class
         .doc
@@ -235,8 +231,8 @@ impl Resolver<'_> {
         if params.is_empty() {
             return Bindings::new();
         }
-        let args = match receiver.start {
-            Start::Args(class, args) => self.ancestor_args(class, args, &declaring.fqn),
+        let (class, args) = match receiver.start {
+            Start::Args(class, args) => (class, args.to_vec()),
             Start::Own(class) => {
                 let own: Vec<Type> = self
                     .class_model(class)
@@ -247,9 +243,12 @@ impl Resolver<'_> {
                             .collect()
                     })
                     .unwrap_or_default();
-                self.ancestor_args(class, &own, &declaring.fqn)
+                (class, own)
             }
         };
+        // A member lent by a `@mixin Foo<…>` takes the mixin's arguments.
+        let args =
+            self.ancestor_args(class, &args, &declaring.fqn).or_else(|| self.mixin_args(class, &args, &declaring.fqn));
         bind_args(&params, args.as_deref().unwrap_or_default())
     }
 
@@ -290,7 +289,7 @@ impl Resolver<'_> {
         let ty = match doc.and_then(|doc| doc.param_type(&theirs.name)) {
             Some(ty) => {
                 let scope = super::templates(&overridden.declaring, doc.into_iter().flat_map(|d| d.local_type_names()));
-                Type::from_doc(ty, &scope)
+                self.expand_aliases(&Type::from_doc(ty, &scope), &overridden.declaring)
             }
             None => self.inherited_param_at(&overridden.declaring.fqn, name, &theirs.name, depth + 1)?,
         };
@@ -336,7 +335,10 @@ impl Resolver<'_> {
         };
         params
             .into_iter()
-            .map(|param| SignatureParam { ty: substitute(&self.bind(&param.ty, &context), bindings), ..param })
+            .map(|param| {
+                let ty = self.expand_aliases(&param.ty, &method.declaring);
+                SignatureParam { ty: self.finish(&substitute(&ty, bindings), &context), ..param }
+            })
             .collect()
     }
 
@@ -580,7 +582,11 @@ impl Resolver<'_> {
         let params = declared_params(&function.params, doc, &scope);
         let mut bindings = Bindings::new();
         self.bind_call(&own, &params, args, &mut bindings);
-        substitute(&ty, &bindings)
+        let ty = substitute(&ty, &bindings);
+        match args {
+            Some(args) => self.apply_args(&ty, &params, args),
+            None => ty,
+        }
     }
 }
 

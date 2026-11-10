@@ -325,7 +325,7 @@ impl Extractor<'_> {
             .iter()
             .map(|param| {
                 let ty = match (doc.as_ref().and_then(|doc| doc.param_type(&param.name)), &param.type_hint) {
-                    (Some(ty), _) => Type::from_doc(ty, &templates),
+                    (Some(ty), _) => Type::from_doc(ty, &templates).settle(),
                     (None, Some(hint)) => Type::from_hint(hint),
                     // Untyped: still a parameter, not a local variable.
                     (None, None) => Type::Mixed,
@@ -339,7 +339,7 @@ impl Extractor<'_> {
 
     /// The type of a constant value or property default.
     fn value_type(&self, value: &Expression<'_>, literals: bool) -> LazyType {
-        Infer { scope: &self.scope, params: Vec::new(), literals, locals: Vec::new(), shapes: false }.expr(value)
+        Infer { scope: &self.scope, params: Vec::new(), literals, locals: Vec::new(), shapes: literals }.expr(value)
     }
 
     fn class_like(

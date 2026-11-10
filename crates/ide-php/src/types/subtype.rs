@@ -58,6 +58,11 @@ fn sub(a: &Type, b: &Type, h: &dyn Hierarchy) -> bool {
     if let Type::GenericRelative { relative, .. } = b {
         return sub(a, &Type::Relative(*relative), h);
     }
+    // An open operator is at most its widened type; nothing is known to be
+    // within one.
+    if let Type::Operator(operator) = a {
+        return sub(&operator.widened(), b, h);
+    }
     match (a, b) {
         (_, Type::Mixed) | (Type::Never, _) => true,
         (Type::Union(members), _) => members.iter().all(|member| sub(member, b, h)),
@@ -125,9 +130,25 @@ fn atomic(a: &Type, b: &Type, h: &dyn Hierarchy) -> bool {
         Type::Object => {
             matches!(
                 a,
-                Type::Named { .. } | Type::Relative(_) | Type::Closure(_) | Type::Object | Type::GenericRelative { .. }
+                Type::Named { .. }
+                    | Type::Relative(_)
+                    | Type::Closure(_)
+                    | Type::Object
+                    | Type::GenericRelative { .. }
+                    | Type::ObjectShape(_)
             )
         }
+        // Each property of `b` is in `a` (required where `b` requires it),
+        // with a subtype.
+        Type::ObjectShape(fields) => match a {
+            Type::ObjectShape(inner) => {
+                fields.iter().all(|field| match inner.iter().find(|other| other.key == field.key) {
+                    Some(other) => sub(&other.ty, &field.ty, h) && (field.optional || !other.optional),
+                    None => field.optional,
+                })
+            }
+            _ => false,
+        },
         Type::Named { fqn, args } => match a {
             Type::Named { fqn: sub_fqn, args: sub_args } => {
                 let covariant = |inner: &[Type]| {
@@ -207,6 +228,7 @@ fn atomic(a: &Type, b: &Type, h: &dyn Hierarchy) -> bool {
         Type::Void | Type::Null | Type::LiteralBool(_) | Type::LiteralInt(_) => false,
         Type::LiteralFloat(_) | Type::LiteralString(_) | Type::Resource | Type::Template(_) => false,
         Type::ClassConstant { .. } | Type::Never | Type::Mixed | Type::Union(_) | Type::Intersection(_) => false,
+        Type::Operator(_) => false,
         // Handled in `sub`.
         Type::GenericRelative { .. } => false,
     }

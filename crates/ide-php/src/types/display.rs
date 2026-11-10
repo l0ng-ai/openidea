@@ -7,7 +7,7 @@
 
 use std::fmt::{self, Display, Formatter, Write};
 
-use super::{Relative, Shape, ShapeKey, Signature, Type};
+use super::{Operator, Relative, Shape, ShapeField, ShapeKey, Signature, Subject, Type};
 
 impl Display for Type {
     fn fmt(&self, f: &mut Formatter<'_>) -> fmt::Result {
@@ -121,6 +121,38 @@ impl Display for Type {
                 }
                 Ok(())
             }
+            Self::Operator(operator) => operator.fmt(f),
+            Self::ObjectShape(fields) => {
+                f.write_str("object{")?;
+                shape_fields(f, fields, false)?;
+                f.write_char('}')
+            }
+        }
+    }
+}
+
+impl Display for Operator {
+    fn fmt(&self, f: &mut Formatter<'_>) -> fmt::Result {
+        match self {
+            Self::KeyOf(ty) => write!(f, "key-of<{ty}>"),
+            Self::ValueOf(ty) => write!(f, "value-of<{ty}>"),
+            Self::Index { base, index } if is_simple(base) => write!(f, "{base}[{index}]"),
+            Self::Index { base, index } => write!(f, "({base})[{index}]"),
+            Self::IntMask(values) => {
+                f.write_str("int-mask<")?;
+                list(f, values)?;
+                f.write_char('>')
+            }
+            Self::IntMaskOf(ty) => write!(f, "int-mask-of<{ty}>"),
+            Self::Conditional(conditional) => {
+                f.write_char('(')?;
+                match &conditional.subject {
+                    Subject::Type(ty) => write!(f, "{ty}")?,
+                    Subject::Param(name) => write!(f, "${name}")?,
+                }
+                let not = if conditional.negated { " not" } else { "" };
+                write!(f, " is{not} {} ? {} : {})", conditional.target, conditional.then, conditional.otherwise)
+            }
         }
     }
 }
@@ -203,20 +235,7 @@ impl Display for Shape {
         f.write_str(if self.list { "list{" } else { "array{" })?;
         let positional =
             self.fields.iter().enumerate().all(|(i, field)| !field.optional && field.key == ShapeKey::Int(i as i64));
-        for (i, field) in self.fields.iter().enumerate() {
-            if i > 0 {
-                f.write_str(", ")?;
-            }
-            if !positional {
-                match &field.key {
-                    ShapeKey::Int(value) => write!(f, "{value}")?,
-                    ShapeKey::String(value) if is_identifier(value) => f.write_str(value)?,
-                    ShapeKey::String(value) => quoted(f, value)?,
-                }
-                f.write_str(if field.optional { "?: " } else { ": " })?;
-            }
-            write!(f, "{}", field.ty)?;
-        }
+        shape_fields(f, &self.fields, positional)?;
         if let Some((key, value)) = &self.rest {
             if !self.fields.is_empty() {
                 f.write_str(", ")?;
@@ -232,6 +251,26 @@ impl Display for Shape {
         }
         f.write_char('}')
     }
+}
+
+/// The fields of an array or object shape, without their keys when
+/// `positional`.
+fn shape_fields(f: &mut Formatter<'_>, fields: &[ShapeField], positional: bool) -> fmt::Result {
+    for (i, field) in fields.iter().enumerate() {
+        if i > 0 {
+            f.write_str(", ")?;
+        }
+        if !positional {
+            match &field.key {
+                ShapeKey::Int(value) => write!(f, "{value}")?,
+                ShapeKey::String(value) if is_identifier(value) => f.write_str(value)?,
+                ShapeKey::String(value) => quoted(f, value)?,
+            }
+            f.write_str(if field.optional { "?: " } else { ": " })?;
+        }
+        write!(f, "{}", field.ty)?;
+    }
+    Ok(())
 }
 
 /// A key that prints without quotes (and does not read as an integer).

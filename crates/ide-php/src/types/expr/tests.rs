@@ -285,3 +285,176 @@ fn self_referencing_assignments_end() {
     // Each read looks only at earlier assignments, so this terminates.
     check(&[("$x = 1;\n$x = $x;\n$x = [$x];\n$x/*|*/;", "list{int}")]);
 }
+
+/// Declarations for the type operator, alias and mixin fixtures (phase 9.3).
+const OPERATORS: &str = r#"
+class Opts {
+    const MAP = ['a' => 1, 'b' => 2];
+    const FLAG_A = 1;
+    const FLAG_B = 2;
+    const FLAG_C = 4;
+    const OTHER = 64;
+    /** @return key-of<self::MAP> */
+    public function key() {}
+    /** @return value-of<self::MAP> */
+    public function value() {}
+    /** @return int-mask-of<self::FLAG_*> */
+    public function flags() {}
+    /** @return int-mask<1, 2> */
+    public function mask() {}
+    /** @return value-of<Suit> */
+    public function suit() {}
+    /** @return array{id: int, name: string}['name'] */
+    public function name() {}
+}
+/** @template T of array */
+class Bag {
+    /** @return key-of<T> */
+    public function firstKey() {}
+    /** @return value-of<T> */
+    public function firstValue() {}
+    /** @return T['x'] */
+    public function x() {}
+}
+/** @return Bag<array{x: Book, y: Author}> */
+function bag() {}
+class Repo {
+    /** @return ($id is int ? Book : list<Book>) */
+    public function find(int|array $id) {}
+    /**
+     * @template T of int|string
+     * @param T $key
+     * @return (T is int ? Book : Author)
+     */
+    public function get(int|string $key) {}
+    /** @return ($id is not int ? Author : Book) */
+    public function negated(int|string $id) {}
+}
+/** @return ($many is true ? list<Book> : Book) */
+function load(bool $many = false) {}
+/** @return object{id: int, book?: Book} */
+function obj() {}
+/**
+ * @phpstan-type Row array{id: int, book: Book}
+ * @psalm-type Rows = list<Row>
+ */
+class Table {
+    /** @return Row */
+    public function row() {}
+    /** @return Rows */
+    public function rows() {}
+    /** @param Row $r */
+    public function take(array $r) {}
+}
+/** @phpstan-import-type Row from Table as TableRow */
+class Other {
+    /** @var TableRow */
+    public $row;
+    /** @return TableRow */
+    public function row() {}
+}
+/** @template TModel */
+class Query {
+    /** @return TModel|null */
+    public function first() {}
+    /** @return $this */
+    public function where() { return $this; }
+}
+/**
+ * @template TRelated
+ * @mixin Query<TRelated>
+ */
+class Relation {}
+/** @extends Relation<Author> */
+class AuthorRelation extends Relation {}
+/** @return Relation<Book> */
+function relation() {}
+"#;
+
+fn check_operators(table: &[(&str, &str)]) {
+    let table: Vec<(String, &str)> =
+        table.iter().map(|(body, expected)| (format!("{OPERATORS}{body}"), *expected)).collect();
+    let table: Vec<(&str, &str)> = table.iter().map(|(body, expected)| (body.as_str(), *expected)).collect();
+    check(&table);
+}
+
+#[test]
+fn type_operators_are_evaluated_where_their_arguments_are_known() {
+    check_operators(&[
+        // Class constants, wildcards and enums as arguments (the caret
+        // shows literals widened; `resolve::tests` checks the literals).
+        ("(new Opts)->key()/*|*/;", "string"),
+        ("(new Opts)->value()/*|*/;", "int"),
+        ("(new Opts)->flags()/*|*/;", "int"),
+        ("(new Opts)->suit()/*|*/;", "string"),
+        ("(new Opts)->name()/*|*/;", "string"),
+        // Template arguments, once the receiver binds them.
+        ("bag()->firstKey()/*|*/;", "string"),
+        ("bag()->firstValue()/*|*/;", r"Lib\Book|Lib\Author"),
+        ("bag()->x()/*|*/;", r"Lib\Book"),
+        // A raw `Bag`: the bound `array`, so the widened types.
+        ("(new Bag)->firstKey()/*|*/;", "array-key"),
+        ("(new Bag)->firstValue()/*|*/;", "mixed"),
+    ]);
+}
+
+#[test]
+fn conditional_return_types_follow_the_arguments() {
+    check_operators(&[
+        ("(new Repo)->find(1)/*|*/;", r"Lib\Book"),
+        ("(new Repo)->find([1, 2])/*|*/;", r"list<Lib\Book>"),
+        ("(new Repo)->find(id: 5)/*|*/;", r"Lib\Book"),
+        // Unknown: either branch.
+        ("function f($x) { return (new Repo)->find($x)/*|*/; }", r"Lib\Book|list<Lib\Book>"),
+        ("(new Repo)->find(...)/*|*/;", r"Closure(int|array $id): (Lib\Book|list<Lib\Book>)"),
+        // On a template inferred from the argument.
+        ("(new Repo)->get(1)/*|*/;", r"Lib\Book"),
+        ("(new Repo)->get('k')/*|*/;", r"Lib\Author"),
+        ("(new Repo)->negated('k')/*|*/;", r"Lib\Author"),
+        ("(new Repo)->negated(3)/*|*/;", r"Lib\Book"),
+        // A function's; a left-out argument leaves both branches.
+        ("load(true)/*|*/;", r"list<Lib\Book>"),
+        ("load(false)/*|*/;", r"Lib\Book"),
+        ("load()/*|*/;", r"list<Lib\Book>|Lib\Book"),
+    ]);
+}
+
+#[test]
+fn object_shapes_type_their_properties() {
+    check_operators(&[
+        ("obj()/*|*/;", r"object{id: int, book?: Lib\Book}"),
+        ("obj()->id/*|*/;", "int"),
+        ("obj()->book/*|*/;", r"Lib\Book"),
+        ("obj()->missing/*|*/;", "mixed"),
+    ]);
+}
+
+#[test]
+fn type_aliases_expand_in_members() {
+    check_operators(&[
+        ("(new Table)->row()/*|*/;", r"array{id: int, book: Lib\Book}"),
+        ("(new Table)->rows()/*|*/;", r"list<array{id: int, book: Lib\Book}>"),
+        ("(new Table)->row()['book']/*|*/;", r"Lib\Book"),
+        ("(new Other)->row()/*|*/;", r"array{id: int, book: Lib\Book}"),
+        ("(new Other)->row/*|*/;", r"array{id: int, book: Lib\Book}"),
+        // A parameter inside the method.
+        (
+            "/** @phpstan-type Pair array{a: Book} */
+class T2 { /** @param Pair $p */ public function m(array $p) { $p/*|*/; } }",
+            r"array{a: Lib\Book}",
+        ),
+    ]);
+}
+
+#[test]
+fn mixin_arguments_bind_the_mixin_templates() {
+    check_operators(&[
+        ("relation()->first()/*|*/;", r"?Lib\Book"),
+        ("relation()->where()/*|*/;", r"App\Query<Lib\Book>"),
+        ("relation()->where()->first()/*|*/;", r"?Lib\Book"),
+        // Through `@extends` of the class with the `@mixin`.
+        ("(new AuthorRelation)->first()/*|*/;", r"?Lib\Author"),
+        // Raw: the template's fallback.
+        ("(new Relation)->first()/*|*/;", "mixed"),
+    ]);
+}
