@@ -6,6 +6,7 @@
  * `LineProgress`) and binary/SI unit & system-local timezone formatters
  * proven in `openidea-kubernetes` (`ResourceDetails.tsx`).
  */
+import { writeClipboardText } from "@/platform/clipboard";
 import { useCallback, useEffect, useMemo, useState, type ReactNode } from "react";
 import clsx from "clsx";
 import type {
@@ -520,7 +521,7 @@ export function parseNetworkInspect(raw: string | null): ParsedNetworkInspect | 
 // ---------------------------------------------------------------------------
 // Shared UI primitives (adapted from openidea-kubernetes ResourceDetails.tsx)
 
-const copyText = (text: string) => void navigator.clipboard?.writeText(text);
+const copyText = (text: string) => void writeClipboardText(text);
 
 async function openExternalUrl(url: string): Promise<void> {
   try {

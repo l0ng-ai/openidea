@@ -224,6 +224,7 @@ const ICONS = {
   // General UI
   "chevron-right": "general/chevronRight",
   "chevron-down": "general/chevronDown",
+  "toolbar-expand": "general/chevronDownLarge",
   "chevron-up": "general/chevronUp",
   "chevron-left": "general/chevronLeft",
   close: "general/close",
@@ -292,6 +293,7 @@ const ICONS = {
   "arrow-right": "general/right",
   "arrow-up": "general/up",
   "arrow-down": "general/down",
+  "scroll-to-end": "general/scrollDown",
   undo: "general/undo",
   redo: "general/redo",
   sun: "meetNewUi/lightTheme",
@@ -445,6 +447,8 @@ const ICONS = {
   diff: "vcs/diff",
   revert: "vcs/revert",
   // The merge tool's own controls (IntelliJ's AllIcons.Diff)
+  "diff-side-by-side": "diff/sideBySide",
+  "diff-unified": "diff/unified",
   "diff-apply-left": "diff/applyNotConflictsLeft",
   "diff-apply-all": "diff/applyNotConflicts",
   "diff-apply-right": "diff/applyNotConflictsRight",

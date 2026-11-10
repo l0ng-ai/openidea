@@ -26,20 +26,9 @@ const PRINT_ALIASES: &str = "const c = require(process.argv[1]); const a = (c.re
 type Paths = BTreeMap<String, Vec<String>>;
 static CLI_PATHS: LazyLock<Mutex<HashMap<PathBuf, (Stamp, Paths)>>> = LazyLock::new(Default::default);
 
-/// The TypeScript `lib` directory has the language-service API (`typescript.js`).
-/// TypeScript 7, the native port, ships only `tsc`.
-pub(crate) fn has_ts_api(lib: &Path) -> bool {
-    lib.join("typescript.js").is_file()
-}
-
 /// `@vue/language-server`'s directory for the `vue-language-server` command.
 pub(crate) fn server_package(command: &str, path: &OsStr) -> Option<PathBuf> {
     package_dir(&find_command(command, path)?, PACKAGE)
-}
-
-/// The TypeScript `require('typescript')` resolves to from `package`, when usable.
-pub(crate) fn own_typescript(package: &Path) -> Option<PathBuf> {
-    package.ancestors().map(|a| a.join("node_modules").join("typescript").join("lib")).find(|l| has_ts_api(l))
 }
 
 /// vtsls `globalPlugins` entry loading the Vue plugin shipped with `package`.
@@ -138,6 +127,7 @@ pub(crate) fn missing_typescript_message() -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::npm::own_typescript;
 
     fn touch(p: &Path) {
         std::fs::create_dir_all(p.parent().unwrap()).unwrap();

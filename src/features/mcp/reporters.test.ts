@@ -2,6 +2,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 const state = vi.hoisted(() => ({
   paths: ["/p/a.txt"],
+  selection: { from: 3, to: 5 },
   remote: false,
   root: "/p",
   registryChanged: () => {},
@@ -17,7 +18,7 @@ vi.mock("@/editor/api", () => ({
     ctx: { path: "/p/a.txt" },
     view: {
       state: {
-        selection: { main: { from: 3, to: 5 } },
+        selection: { main: state.selection },
         doc: {
           lineAt: () => ({ number: 1, from: 0 }),
           sliceString: () => "hi",
@@ -74,6 +75,7 @@ describe("MCP editor reports", () => {
     vi.useFakeTimers();
     vi.clearAllMocks();
     state.paths = ["/p/a.txt"];
+    state.selection = { from: 3, to: 5 };
     state.remote = false;
     state.root = "/p";
     vi.spyOn(document, "hasFocus").mockReturnValue(true);
@@ -107,6 +109,33 @@ describe("MCP editor reports", () => {
     await vi.advanceTimersByTimeAsync(300);
     expect(state.reportOpen).toHaveBeenCalledTimes(1);
     expect(state.reportFocused).toHaveBeenCalledTimes(1);
+  });
+  it.each([true, false])("reports window focus %s immediately during continuous editing", async (focused) => {
+    vi.mocked(document.hasFocus).mockReturnValue(!focused);
+    await vi.advanceTimersByTimeAsync(300);
+    state.reportFocused.mockClear();
+    state.editorChanged();
+    await vi.advanceTimersByTimeAsync(100);
+
+    vi.mocked(document.hasFocus).mockReturnValue(focused);
+    window.dispatchEvent(new Event(focused ? "focus" : "blur"));
+    expect(state.reportFocused).toHaveBeenCalledExactlyOnceWith(expect.objectContaining({ path: "/p/a.txt" }), focused);
+
+    for (let from = 4; from < 9; from++) {
+      state.selection = { from, to: from + 2 };
+      state.editorChanged();
+      await vi.advanceTimersByTimeAsync(100);
+      expect(state.reportFocused).toHaveBeenCalledTimes(1);
+    }
+    await vi.advanceTimersByTimeAsync(200);
+    expect(state.reportFocused).toHaveBeenCalledTimes(2);
+    expect(state.reportFocused).toHaveBeenLastCalledWith(
+      expect.objectContaining({
+        selection: { start: { line: 0, col: 8 }, end: { line: 0, col: 10 } },
+      }),
+      focused,
+    );
+    expect(state.reportOpen).toHaveBeenCalledTimes(1);
   });
   it("reports again after reopening the same project", async () => {
     await vi.advanceTimersByTimeAsync(300);

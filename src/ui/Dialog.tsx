@@ -271,7 +271,7 @@ function DialogInner({
 
   useEffect(() => {
     const layer = openLayer(() => ref.current);
-    const previous = document.activeElement as HTMLElement | null;
+    let previous = document.activeElement as HTMLElement | null;
     const el = ref.current;
     // Content first (an alert's checkbox is not content), then the default button; never the title bar's close button.
     const target =
@@ -282,6 +282,22 @@ function DialogInner({
       el?.querySelector<HTMLElement>("[data-dialog-footer] [data-dialog-default]:not([disabled])") ??
       el?.querySelector<HTMLElement>(`[data-dialog-footer] :is(${FOCUSABLE})`) ??
       el;
+    let lastFocused = target;
+    const onFocusIn = (e: FocusEvent) => {
+      const focused = e.target;
+      if (!(focused instanceof HTMLElement)) return;
+      if (el?.contains(focused)) lastFocused = focused;
+      else if (!layer.containsFromHere(focused) && layer.isTop()) {
+        // A newly mounted portal can focus before its layer's effect registers it.
+        const overlay = focused.closest('[data-popup], [role="dialog"]');
+        if (overlay && el && el.compareDocumentPosition(overlay) & Node.DOCUMENT_POSITION_FOLLOWING) return;
+        // An editor opened behind this dialog may finish mounting on a later frame.
+        previous = focused;
+        (lastFocused?.isConnected ? lastFocused : target)?.focus({ preventScroll: true });
+        if (el && !el.contains(document.activeElement)) el.focus({ preventScroll: true });
+      }
+    };
+    document.addEventListener("focusin", onFocusIn);
     target?.focus({ preventScroll: true });
     const onKey = (e: KeyboardEvent) => {
       if (!layer.isTop() || !ref.current) return;
@@ -306,6 +322,7 @@ function DialogInner({
     document.addEventListener("keydown", onKey);
     return () => {
       document.removeEventListener("keydown", onKey);
+      document.removeEventListener("focusin", onFocusIn);
       layer.release();
       if (previous?.isConnected && restoreFocusRef.current?.() !== false) previous.focus({ preventScroll: true });
     };

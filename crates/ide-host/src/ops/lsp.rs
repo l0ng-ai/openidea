@@ -197,6 +197,7 @@ fn plugin_completion(item: ide_plugin::CompletionItem) -> CompletionItem {
     CompletionItem {
         label: item.label,
         label_detail: None,
+        label_description: None,
         detail: item.detail,
         kind,
         documentation: item.documentation.map(|value| Markup { kind: "markdown".into(), value }),
@@ -584,6 +585,82 @@ pub async fn lsp_virtual_document(host: &Host, window: &str, uri: String) -> Ide
     host.project(window)?.lsp.virtual_document(&uri).await
 }
 
+/// Whether this class belongs to the project's Maven local repository.
+pub async fn lsp_can_download_sources(host: &Host, window: &str, uri: String) -> IdeResult<bool> {
+    let project = host.project(window)?;
+    if !project.is_trusted() {
+        return Ok(false);
+    }
+    let Some(jar) = ide_lsp::LspManager::library_archive(&uri) else { return Ok(false) };
+    host.blocking(move || {
+        let settings = project.settings.effective();
+        let repository = ide_sdk::apply::maven_local_repository(&project.root, &settings)
+            .or_else(ide_build::maven::default_local_repo);
+        Ok(repository.is_some_and(|repo| ide_build::maven::sources::artifact(&jar, &repo).is_some())
+            && ide_build::maven::has_projects(&project.root, &settings.languages.java.maven))
+    })
+    .await
+}
+
+/// Download with the project's Maven configuration, or attach an archive selected by the user.
+pub async fn lsp_library_sources(
+    host: &Host,
+    window: &str,
+    request: RequestId,
+    uri: String,
+    pos: Pos,
+    sources: Option<std::path::PathBuf>,
+) -> IdeResult<Option<Location>> {
+    host.require_trust(window)?;
+    let project = host.project(window)?;
+    let cancel = host.begin_project_request(window, request);
+    let result = async {
+        let sources = match sources {
+            Some(sources) => Some(sources),
+            None => {
+                let jar = ide_lsp::LspManager::library_archive(&uri)
+                    .ok_or_else(|| IdeError::invalid("not a library class"))?;
+                let project = project.clone();
+                let cancel = cancel.clone();
+                host.blocking(move || {
+                    let settings = project.settings.effective();
+                    let repository = ide_sdk::apply::maven_local_repository(&project.root, &settings)
+                        .or_else(ide_build::maven::default_local_repo)
+                        .ok_or_else(|| IdeError::unavailable("Maven local repository is unavailable"))?;
+                    let artifact = ide_build::maven::sources::artifact(&jar, &repository)
+                        .ok_or_else(|| IdeError::invalid("not an artifact in the Maven local repository"))?;
+                    let model = super::build::load(&project.root, &project.build_cache_dir(), &settings);
+                    let maven = model.maven.ok_or_else(|| IdeError::unavailable("no Maven project"))?;
+                    let owns = |p: &&ide_build::maven::MavenProject| {
+                        p.dependencies.iter().any(|d| d.group_id == artifact.group && d.artifact_id == artifact.name)
+                    };
+                    let mut owner = maven
+                        .projects
+                        .iter()
+                        .find(owns)
+                        .or_else(|| maven.projects.first())
+                        .cloned()
+                        .ok_or_else(|| IdeError::unavailable("no Maven project"))?;
+                    let profiles =
+                        settings.languages.java.maven.profiles(&ide_build::maven_profiles(&project.build_cache_dir()));
+                    if !profiles.is_empty() {
+                        owner.options.push(format!("-P{}", profiles.join(",")));
+                    }
+                    ide_build::maven::sources::download(&project.root, &owner, &artifact, &repository, &cancel)
+                })
+                .await?
+            }
+        };
+        match sources {
+            Some(sources) => project.lsp.library_source_location(&uri, sources, pos, &cancel).await,
+            None => Ok(None),
+        }
+    }
+    .await;
+    host.end_request(request);
+    result
+}
+
 /// Opens compiled classes through JDT, with project source taking priority on disk.
 pub async fn lsp_resolve_class_file(host: &Host, window: &str, path: std::path::PathBuf) -> IdeResult<String> {
     let archive = ide_vfs::split_archive_path(&path);
@@ -822,6 +899,8 @@ fn plugin_code_action(plugin: &str, root: &Path, a: ide_plugin::CodeAction) -> C
         .and_then(|r| serde_json::to_value(r).ok());
     CodeAction {
         title: a.title,
+        diagnostics: Vec::new(),
+        original_diagnostics: None,
         kind: a.kind,
         is_preferred: a.preferred,
         disabled_reason,
@@ -1646,6 +1725,14 @@ pub(crate) fn register(d: &mut Dispatcher) {
         |c| async move { lsp_resolve_class_file(&c.host, &c.window, c.arg("path")?).await },
     );
     d.add("lsp_virtual_document", |c| async move { lsp_virtual_document(&c.host, &c.window, c.arg("uri")?).await });
+    d.add(
+        "lsp_can_download_sources",
+        |c| async move { lsp_can_download_sources(&c.host, &c.window, c.arg("uri")?).await },
+    );
+    d.add("lsp_library_sources", |c| async move {
+        lsp_library_sources(&c.host, &c.window, c.arg("request")?, c.arg("uri")?, c.arg("pos")?, c.arg("sources")?)
+            .await
+    });
     d.add("lsp_references", |c| async move {
         let on_partial = c.sender("onPartial")?;
         lsp_references(

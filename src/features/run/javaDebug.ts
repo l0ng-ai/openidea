@@ -45,6 +45,7 @@ export function jdwpLaunch(config: RunConfig, jdwpPort?: number): RunConfig | nu
   config = applyBuildPolicyToCommand(config);
   if (config.kind === "tomcat") return { ...config, params: { ...config.params, tomcatDebug: "true" } };
   const args = config.args;
+  if (config.kind === "jar-application") return { ...config, args: [JDWP_AGENT, ...args] };
   // A single source file (`java Hi.java`): the agent goes before the file. Compiled first
   // (`javac … && java -cp …`): through `JDK_JAVA_OPTIONS`, which only the `java` launcher reads.
   if (config.kind === "java-file")

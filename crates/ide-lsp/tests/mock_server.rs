@@ -1301,7 +1301,7 @@ async fn completion_mapping_merge_and_resolve() {
             "isIncomplete": false,
             "itemDefaults": { "data": { "from": "defaults" } },
             "items": [{
-                "label": "bar", "kind": 2, "detail": "fn() -> u8", "labelDetails": { "detail": "()" },
+                "label": "bar", "kind": 2, "detail": "fn() -> u8", "labelDetails": { "detail": "()", "description": "u8" },
                 "textEdit": { "newText": "bar()$0", "insert": {"start":{"line":0,"character":12},"end":{"line":0,"character":14}},
                               "replace": {"start":{"line":0,"character":12},"end":{"line":0,"character":15}} },
                 "insertTextFormat": 2, "sortText": "0001"
@@ -1322,6 +1322,7 @@ async fn completion_mapping_merge_and_resolve() {
     assert_eq!(bar.insert_text, "bar()$0");
     assert!(bar.is_snippet);
     assert_eq!(bar.label_detail.as_deref(), Some("()"));
+    assert_eq!(bar.label_description.as_deref(), Some("u8"));
     assert_eq!(bar.replace_range, Some(rng(0, 12, 0, 14)));
     assert_eq!(bar.replace_range_tab, Some(rng(0, 12, 0, 15)));
     assert_eq!(bar.data, Some(json!({ "from": "defaults" })));
@@ -1337,9 +1338,13 @@ async fn completion_mapping_merge_and_resolve() {
     assert_eq!(resolved.documentation.as_ref().unwrap().value, "**docs**");
     assert_eq!(resolved.additional_edits[0].new_text, "use foo;\n");
     assert_eq!(resolved.insert_text, "bar()$0", "fields absent from the resolve reply are kept");
+    assert_eq!(resolved.label_detail.as_deref(), Some("()"));
+    assert_eq!(resolved.label_description.as_deref(), Some("u8"));
+    assert_eq!(resolved.detail.as_deref(), Some("fn() -> u8"));
     assert_eq!(resolved.replace_range_tab, Some(rng(0, 12, 0, 15)));
     let sent = &a.requested("completionItem/resolve")[0];
     assert_eq!(sent["data"], json!({ "from": "defaults" }));
+    assert_eq!(sent["labelDetails"], json!({ "detail": "()", "description": "u8" }));
     assert_eq!(sent["textEdit"]["replace"]["end"]["character"], 15);
 
     // Server b has no resolve support: the item comes back unchanged.
@@ -1444,7 +1449,7 @@ async fn diagnostics_become_events_and_feed_code_actions() {
     s.respond(
         "textDocument/codeAction",
         json!([
-            { "title": "Remove", "kind": "quickfix", "isPreferred": true, "data": { "id": 7 } },
+            { "title": "Remove", "kind": "quickfix", "isPreferred": true, "data": { "id": 7 }, "diagnostics": [diag(0)] },
             { "title": "Run", "command": "mock.run", "arguments": [1] }
         ]),
     );
@@ -1459,6 +1464,9 @@ async fn diagnostics_become_events_and_feed_code_actions() {
     assert_eq!(actions.len(), 2);
     assert_eq!(actions[0].kind.as_deref(), Some("quickfix"));
     assert!(actions[0].is_preferred);
+    assert_eq!(actions[0].diagnostics[0].range, rng(0, 4, 0, 10));
+    assert_eq!(actions[0].diagnostics[0].message, "unused variable");
+    assert!(actions[1].diagnostics.is_empty());
     assert_eq!(actions[1].command.as_ref().unwrap().command, "mock.run");
     let req = &s.requested("textDocument/codeAction")[0];
     assert_eq!(req["context"]["only"], json!(["quickfix"]));
@@ -1468,6 +1476,8 @@ async fn diagnostics_become_events_and_feed_code_actions() {
 
     let resolved = h.mgr.resolve_code_action(doc, actions[0].clone()).await.unwrap();
     assert_eq!(s.requested("codeAction/resolve")[0]["data"], json!({ "id": 7 }));
+    assert_eq!(s.requested("codeAction/resolve")[0]["diagnostics"], json!([diag(0)]));
+    assert_eq!(resolved.diagnostics, actions[0].diagnostics);
     let edit = resolved.edit.unwrap();
     assert!(
         matches!(&edit.files[0], FileEdit::Edit { path: p, edits, .. } if p == &path && edits[0].range == rng(0, 0, 1, 0))

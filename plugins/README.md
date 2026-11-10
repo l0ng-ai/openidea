@@ -2463,6 +2463,28 @@ DDEV, for example: `program = "ddev"`, `args = ["exec"]`,
 `commands = [("composer", ["composer"])]` runs `php x.php` as
 `ddev exec php x.php` and `composer install` as `ddev composer install`.
 
+API 1.5 adds `host::register_run_target_with_overrides(project, target)` and
+`PluginRunTargetWithOverrides`. Its `commands` are `PluginCommandOverride` records
+with `name`, replacement `args`, and optional `workdir_args`. `None` inherits the
+shared list; `Some(vec![])` omits it; `Some(args)` replaces it for that command.
+The original `PluginRunTarget` and registration function keep their API 1.4 behavior.
+
+For a target with `program = "ddev"`, `args = ["exec", "--raw"]`,
+`workdir_args = ["--dir={cwd}", "--"]` and `container_root = "/var/www/html"`, use:
+
+```rust
+PluginCommandOverride {
+    name: "composer".into(),
+    args: vec!["composer".into()],
+    workdir_args: Some(vec![]),
+}
+```
+
+With working directory `public`, `composer install` becomes `ddev composer install`,
+while `php x.php` becomes `ddev exec --raw --dir=/var/www/html/public -- php x.php`.
+Replacement lists have the same argument limits, placeholder substitution and
+working-directory restrictions as the shared list.
+
 Local absolute tool paths outside the project use the tool basename.
 When `container_root` is set, project paths in argv map under that root. Each
 `workdir_args` element may contain `{cwd}`; for example `["--dir", "{cwd}"]`.
@@ -2516,6 +2538,39 @@ The virtual URI identifies its originating server, including for document links
 and diagnostic-related locations. Navigation inside these documents returns to
 that server; editing and saving
 are disabled. No WIT signature change is needed for this opt-in host setting.
+
+### Validating run targets (API 1.5)
+
+A plugin can export `run-target-validation.validate` to check current project
+runtime state immediately before Run, Test or Debug. In the Rust SDK implement
+`RunTargetValidation` and add `run_target_validation` to `register_plugin!`:
+
+```rust
+impl RunTargetValidation for MyPlugin {
+    fn validate(&mut self, project: &str, target_id: &str, launch: &RunTargetLaunch) -> Result<(), String> {
+        // Inspect runtime state through the plugin's granted APIs.
+        if runtime_is_running(project) { Ok(()) } else { Err("Project runtime is stopped".into()) }
+    }
+}
+register_plugin!(MyPlugin, run_target_validation);
+```
+
+The callback receives the project root, the plugin's own target id and
+`RunTargetLaunch { operation, program, cwd }`. `operation` is Run, Debug or Test;
+`program` is the bare program being wrapped, and `cwd` is the absolute local
+working directory on the plugin's machine. Arguments and environment are omitted.
+Trust, target ownership, process grants and executable pins are checked first.
+No extra manifest contribution or capability is required; plugins without the
+export retain their existing behavior. Language server startup and target document
+reads do not invoke this user-launch gate.
+
+`Err(message)` refuses startup through the normal launch error path, prefixed
+with the plugin name and bounded to 4096 bytes. The registration and selected
+target remain unchanged. A trap or timeout also refuses startup; cancellation
+interrupts the callback. Calls wake idle-reclaimed instances and use the host's
+normal call timeout (five seconds by default). For remote projects validation
+runs on the server, alongside the plugin and wrapper. Native SDK tests can use
+`MockHost::validate_run_target` to invoke their validator.
 
 ### Debugging run targets
 

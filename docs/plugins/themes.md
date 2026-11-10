@@ -329,7 +329,7 @@ a token.
 
 <!-- BEGIN GENERATED TOKEN REFERENCE: pnpm gen:theme-docs -->
 
-252 themeable tokens: 125 in the UI theme file, 127 in the editor colour scheme file.
+255 themeable tokens: 125 in the UI theme file, 130 in the editor colour scheme file.
 
 ### Surfaces (UI theme)
 
@@ -457,6 +457,9 @@ a token.
 | `--syn-python-predefined-usage` | `var(--syn-predefined)` | `var(--syn-predefined)` |
 | `--syn-python-fstring` | `#a5c261` | `var(--syn-string)` |
 | `--syn-python-bytes` | `#a5c261` | `var(--syn-string)` |
+| `--syn-python-docstring-tag` | `var(--syn-doc-comment-tag)` | `var(--syn-doc-comment-tag)` |
+| `--syn-python-docstring-tag-effect` | `var(--syn-doc-comment-tag-effect)` | `var(--syn-doc-comment-tag-effect)` |
+| `--syn-python-docstring-keyword` | `var(--syn-doc-comment-tag-value)` | `var(--syn-doc-comment-tag-value)` |
 | `--syn-php-variable` | `var(--syn-property)` | `var(--syn-property)` |
 | `--syn-php-function-call` | `var(--syn-function)` | `var(--syn-function)` |
 | `--syn-builtin` | `#8888c6` | `#000080` |

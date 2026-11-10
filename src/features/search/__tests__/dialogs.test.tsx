@@ -53,7 +53,7 @@ vi.mock("../find/windowStore", async (orig) => ({
 }));
 
 const contributions = await import("@/workbench/contributions");
-const { commands } = await import("@/platform/ipc");
+const { commands, emitLocalIdeEvent } = await import("@/platform/ipc");
 const { RecentPopupsOverlay } = await import("../recent/RecentPopups");
 const { cycleSwitcher, showRecentPopup, hideRecentPopup, useRecentPopup } = await import("../recent/store");
 const { openLocation } = await import("../common/open");
@@ -108,6 +108,17 @@ describe("Search Everywhere dialog", () => {
     expect(useSearchEverywhere.getState().open).toBe(false);
     expect(run).toHaveBeenCalled();
     dispose();
+  });
+
+  it("refreshes the current file query after index invalidation finishes", async () => {
+    render(<SearchEverywhereOverlay />);
+    act(() => showSearchEverywhere("files", { query: "order" }));
+    await tick();
+    expect(document.getElementById("se-results")!.textContent).toContain("OrderController");
+    findFiles = async () => [];
+    act(() => emitLocalIdeEvent({ type: "indexState", indexing: false, files: 0, symbols: 0 }));
+    await tick();
+    expect(document.getElementById("se-results")!.textContent).not.toContain("OrderController");
   });
 
   it("the preview toggle is remembered", async () => {

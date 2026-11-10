@@ -401,27 +401,14 @@ export function DebugConsole({ session, interactive = true }: { session: DebugSe
       >
         <IconButton
           icon="search"
-          iconSize={14}
           title="Find…"
           shortcut={formatBinding(hostBinding("Meta+F"))}
           pressed={findOpen}
           onClick={() => (findOpen ? closeFind() : openFind())}
         />
-        <IconButton
-          icon="arrow-down"
-          iconSize={14}
-          title="Scroll to End"
-          pressed={follow}
-          onClick={() => setFollow((v) => !v)}
-        />
-        <IconButton
-          icon="soft-wrap"
-          iconSize={14}
-          title="Soft-Wrap"
-          pressed={softWrap}
-          onClick={() => setWrapOverride(!softWrap)}
-        />
-        <IconButton icon="trash" iconSize={14} title="Clear Console" onClick={() => clearConsole(session.id)} />
+        <IconButton icon="scroll-to-end" title="Scroll to End" pressed={follow} onClick={() => setFollow((v) => !v)} />
+        <IconButton icon="soft-wrap" title="Soft-Wrap" pressed={softWrap} onClick={() => setWrapOverride(!softWrap)} />
+        <IconButton icon="trash" title="Clear Console" onClick={() => clearConsole(session.id)} />
       </div>
       <div className={styles.console}>
         {findOpen && (
