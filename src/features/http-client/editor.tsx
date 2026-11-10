@@ -11,11 +11,13 @@ import type { EditorDocContext } from "@/editor/api";
 import { shortcutLabel } from "@/platform/keymap";
 import { isVirtualUri } from "@/platform/virtualDocs";
 import type { HttpRequestBlock } from "@/platform/ipc";
-import { IconButton, Select, gutterIconMarkup, T } from "@/ui";
+import { executeAction } from "@/platform/actions";
+import { IconButton, Select, gutterIconMarkup, showContextMenu, T } from "@/ui";
 import {
   cancelRunning,
   loadEnvironments,
   parseRequests,
+  requestFromCurl,
   runAll,
   runRequest,
   setEnvironment,
@@ -129,6 +131,27 @@ function Toolbar({ path, view }: { path: string | null; view: EditorView }) {
         disabled={!path}
         onClick={() => path && void loadEnvironments(path)}
       />
+      <IconButton
+        icon="plus"
+        title="Add Environment File"
+        disabled={!path}
+        onClick={(e) => {
+          const r = e.currentTarget.getBoundingClientRect();
+          showContextMenu({ x: r.left, y: r.bottom }, [
+            { kind: "action", action: "http.addPublicEnvironment" },
+            { kind: "action", action: "http.addPrivateEnvironment" },
+          ]);
+        }}
+      />
+      <IconButton
+        icon="copy"
+        title="Convert to cURL and Copy"
+        shortcut={shortcutLabel("http.copyAsCurl")}
+        onClick={() => {
+          view.focus();
+          void executeAction("http.copyAsCurl");
+        }}
+      />
     </div>
   );
 }
@@ -143,6 +166,25 @@ function toolbarPanel(path: string | null) {
 }
 
 const DEBOUNCE = 300;
+
+const CURL = /^\s*curl\s/;
+
+/** A pasted `curl …` command becomes the request it sends. */
+const curlPaste = EditorView.domEventHandlers({
+  paste(event, view) {
+    const text = event.clipboardData?.getData("text/plain");
+    if (!text || !CURL.test(text) || view.state.readOnly) return false;
+    event.preventDefault();
+    const { doc } = view.state;
+    void requestFromCurl(text)
+      .catch(() => null)
+      .then((request) => {
+        if (view.state.doc !== doc) return;
+        view.dispatch(view.state.replaceSelection(request ?? text), { scrollIntoView: true, userEvent: "input.paste" });
+      });
+    return true;
+  },
+});
 
 export function httpEditorExtension(ctx: EditorDocContext): Extension {
   if (ctx.language !== HTTP_LANGUAGE) return [];
@@ -170,6 +212,7 @@ export function httpEditorExtension(ctx: EditorDocContext): Extension {
   return [
     requestsField,
     detector,
+    curlPaste,
     showPanel.of(toolbarPanel(path)),
     gutter({
       class: `${styles.runGutter} cm-openidea-gutter-http`,
