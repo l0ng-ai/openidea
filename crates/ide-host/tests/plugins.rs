@@ -671,6 +671,11 @@ fn plugin_processes_end_with_their_owner() {
             String::from_utf8_lossy(&ps.stdout).lines().any(|line| line.contains(&marker))
         };
         f.run("misbehave", "childkeep", marker.strip_prefix("--path=")).unwrap();
+        // fork+exec is not atomic: `ps` can still report the owner until the child execs.
+        let started = Instant::now() + Duration::from_secs(5);
+        while !alive() && Instant::now() < started {
+            std::thread::sleep(Duration::from_millis(10));
+        }
         assert!(alive(), "{mode}: the process started");
         match mode {
             "disable" => f.host.set_enabled("misbehave", false).unwrap(),
