@@ -261,6 +261,57 @@ is required: the existing `project.read` declaration and trusted-project checks
 still apply. Use `engines.openidea = "^1.3"` when relying on this behavior. The
 [indexer fixture](../crates/ide-plugin/tests/fixtures/indexer) exercises both flows.
 
+### Depending on other plugins and extension points (API 1.5)
+
+A plugin can need another plugin, and can offer its own extension points for
+other plugins to contribute to. Both need `engines.openidea = "^1.5"`.
+
+```toml
+[[depends]]
+id = "acme.base"          # a plugin id
+version = "^1.0"          # optional semver requirement on its version
+optional = false          # optional: true starts this plugin without it
+
+[[extension-points]]
+id = "acme.base.completions"          # must be "<this plugin's id>.<name>"
+description = "Extra completion items"
+required = ["label"]                  # fields a contribution must have
+fields = { label = "string", detail = "string", weight = "integer" }
+
+# In a plugin that lists acme.base in [[depends]]:
+[[contributes."acme.base.completions"]]
+label = "ew.customSqlSegment"
+```
+
+Field types are `string`, `boolean`, `integer`, `number` and `string-list`. A
+contribution is checked when the plugin is installed or starts: a field the
+point does not declare, a missing required field or a value of another type
+refuses the package, with the plugin and point named. A plugin may only
+contribute to points of plugins it lists in `[[depends]]` (and to its own).
+
+**Order and reasons.** The IDE starts plugins after the plugins they need. A
+plugin whose required plugin is not installed, is disabled, has a version the
+requirement does not accept, cannot run itself, or is part of a dependency
+cycle does not start: Settings › Plugins shows it as _Blocked_ with the reason
+(`Requires acme.base ^1.0, but version 0.9.0 is installed`) and starts it when
+that is resolved. Disabling or uninstalling a plugin blocks the plugins that
+need it (the IDE asks before disabling); enabling it brings them back. Updating
+or reloading a plugin checks its dependents' contributions again. An optional
+dependency never blocks; when present it starts first. A plugin that lists a
+plugin as optional and contributes to its points has those contributions
+applied when that plugin is installed or enabled later, without a restart.
+
+**Reading contributions.** The plugin that declares a point reads what others
+contributed with `host::extension_contributions(point)` (see _API 1.5_), and
+hears `EventKind::ExtensionsChanged` when that changes. A contribution is data:
+a plugin that only contributes needs no code, just a `plugin.toml`. The
+[ext-owner fixture](../crates/ide-plugin/tests/fixtures/ext-owner) shows the
+declaring side: it declares a point and reads what others contributed.
+Contributions of a plugin that is stopped or blocked are withdrawn with it.
+Only the declaring plugin can read a point. Contributions arrive in the order their plugins started; unlike
+IntelliJ's `order="first|last|before X"` there is no ordering attribute, and the
+declaring plugin is told that a point changed, not which contribution.
+
 ### Activation
 
 Code is instantiated lazily: when one of the plugin's commands runs, or when
@@ -381,6 +432,19 @@ working. New in 1.5:
   inside the project as its exact bytes (PDF, images, archives), with the same
   rules as `read_file`, and `document.bytes()` gives a web custom editor the
   bytes of the file it was opened on, without plugin-side code.
+- [`[[depends]]` and `[[extension-points]]`](#depending-on-other-plugins-and-extension-points-api-15)
+  in `plugin.toml`.
+- `host::extension_contributions(point)` → `Vec<Contribution>`
+  (`extensions.contributions`): what other plugins contributed to a point this
+  plugin declares, in the order they started. Each `Contribution` has the
+  contributing `plugin` id and its `data` as JSON; `parse::<T>()` decodes it.
+  `Error::Denied` for another plugin's point, `Error::NotFound` while no running
+  plugin declares it. Needs no capability.
+- `EventKind::ExtensionsChanged` (`extensions-changed`, `Event::Other`): JSON
+  array of this plugin's points whose contributions changed. Subscribe with
+  `host::subscribe` or `activation = ["on-event:extensions-changed"]`; only the
+  declaring plugin receives it. In native tests,
+  `MockHost::set_extension_contributions(point, [(plugin, json)])` provides them.
 
 ### API 1.4
 
@@ -795,6 +859,7 @@ log/blame return empty lists and diff returns `None`.
 | `file-opened`        | `events`       | a file opens in an editor                                                                                                                  |
 | `file-closed`        | `events`       | API 1.4, `Event::Other`: JSON path string                                                                                                  |
 | `settings-changed`   | `events`       | API 1.4, `Event::Other`: JSON array of this plugin's changed setting keys (effective values)                                               |
+| `extensions-changed` | —              | API 1.5, `Event::Other`: JSON array of this plugin's extension points whose contributions changed                                          |
 | `input-mode-changed` | `events.input` | API 1.4, `Event::Other`: JSON `{path, mode, sub}` on focused Vim mode changes; `ctx.editor()` includes the document and current selections |
 | `files-changed`      | `events`       | debounced created, modified and removed paths in open projects (API 1.3)                                                                   |
 | `file-saved`         | `events`       | after the file is written                                                                                                                  |
@@ -2288,8 +2353,12 @@ rather than feature plugins. Their fake executables and protocols are for adapti
 the examples to a real tool.
 
 Pull requests that add a plugin to this repository are for official plugins.
-A plugin that needs a new extension point brings the extension point here, as
-its own pull request, and the plugin to the registry.
+A plugin that needs a new extension point of the IDE itself (a new
+`contributes.<point>` kind) brings the extension point here, as its own pull
+request, and the plugin to the registry. An extension point between plugins
+needs none of that: the plugin declares it in `[[extension-points]]` and the
+plugins that extend it depend on it
+([Depending on other plugins](#depending-on-other-plugins-and-extension-points-api-15)).
 
 ## 9. Testing the host
 

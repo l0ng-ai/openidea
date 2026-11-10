@@ -7225,5 +7225,20 @@
   "The root depends on {name}": "该根依赖于 {name}",
   "No other roots.": "没有其他根。",
   "Add Project Dependency": "添加项目依赖",
-  "Every root is equal: pick a root on the left, then check the roots it depends on. Go to Declaration in it resolves only into its own code and its dependencies.": "所有根地位相同：先在左侧选择一个根，再勾选它依赖的根。该根中的“转到声明”只会解析它自身及其依赖中的代码。"
+  "Every root is equal: pick a root on the left, then check the roots it depends on. Go to Declaration in it resolves only into its own code and its dependencies.": "所有根地位相同：先在左侧选择一个根，再勾选它依赖的根。该根中的“转到声明”只会解析它自身及其依赖中的代码。",
+  "Blocked": "受阻",
+  "Wrong version": "版本不符",
+  "Cannot run": "无法运行",
+  "Requires": "依赖",
+  "Required plugins": "所需插件",
+  "(optional)": "（可选）",
+  "Required by": "被以下插件依赖",
+  "Plugins that require this one": "依赖此插件的插件",
+  "Extension points": "扩展点",
+  "Extension points this plugin offers": "此插件提供的扩展点",
+  "Contributed by {join}": "由 {join} 贡献",
+  "No contributions": "暂无贡献",
+  "Disable plugin": "禁用插件",
+  "{names} need {name} and stop while it is disabled. Disable it anyway?": "{names} 依赖 {name}，在其被禁用期间将停止运行。仍要禁用吗？",
+  "{names} needs {name} and stops while it is disabled. Disable it anyway?": "{names} 依赖 {name}，在其被禁用期间将停止运行。仍要禁用吗？"
 }

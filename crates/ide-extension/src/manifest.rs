@@ -26,6 +26,8 @@
 //! activated at start-up, as before.
 
 use crate::capability::Capability;
+use crate::plugin_point::PointDecl;
+use crate::resolve::Dependency;
 use serde::Deserialize;
 use std::collections::BTreeSet;
 use std::path::{Component, Path, PathBuf};
@@ -66,6 +68,10 @@ pub struct Manifest {
     pub wasm: Option<PathBuf>,
     pub activation: Vec<ActivationEvent>,
     pub capabilities: Capabilities,
+    /// `[[depends]]`: plugins this one needs (API 1.5).
+    pub depends: Vec<Dependency>,
+    /// `[[extension-points]]`: what other plugins may contribute to this one (API 1.5).
+    pub extension_points: Vec<PointDecl>,
     /// `contributes.<point>` → its declarations, validated by the extension points.
     pub contributes: toml::Table,
 }
@@ -151,6 +157,7 @@ pub const EVENT_KINDS: &[&str] = &[
     "file-closed",
     "settings-changed",
     "input-mode-changed",
+    "extensions-changed",
     "file-opened",
     "file-saved",
     "files-changed",
@@ -209,6 +216,10 @@ struct Raw {
     /// 0.1 format.
     #[serde(default)]
     permissions: Option<Vec<String>>,
+    #[serde(default)]
+    depends: Vec<Dependency>,
+    #[serde(default)]
+    extension_points: Vec<PointDecl>,
     #[serde(default)]
     contributes: toml::Table,
 }
@@ -281,6 +292,8 @@ impl Manifest {
             wasm: raw.wasm,
             activation,
             capabilities,
+            depends: raw.depends,
+            extension_points: raw.extension_points,
             contributes: raw.contributes,
         };
         m.validate()?;
@@ -357,6 +370,9 @@ impl Manifest {
             {
                 self.needs_api(&format!("`{event}`"), 4)?;
             }
+            if matches!(event, ActivationEvent::Event(kind) if kind == "extensions-changed") {
+                self.needs_api("`on-event:extensions-changed`", 5)?;
+            }
             if matches!(event, ActivationEvent::Event(kind) if kind == "files-changed") {
                 self.needs_api("`on-event:files-changed`", 3)?;
             }
@@ -367,10 +383,47 @@ impl Manifest {
         for c in &self.declared_categories {
             validate_item_id(c, "category")?;
         }
+        self.validate_relations()?;
         for (point, decls) in &self.contributes {
             validate_point_id(point)?;
             if !matches!(decls, toml::Value::Array(_) | toml::Value::Table(_)) {
                 return Err(format!("`contributes.{point}` must be a table or an array of tables"));
+            }
+        }
+        Ok(())
+    }
+
+    /// `[[depends]]` and `[[extension-points]]`.
+    fn validate_relations(&self) -> Result<(), String> {
+        if !self.depends.is_empty() {
+            self.needs_api("`[[depends]]`", 5)?;
+        }
+        if !self.extension_points.is_empty() {
+            self.needs_api("`[[extension-points]]`", 5)?;
+        }
+        let mut required = BTreeSet::new();
+        for dep in &self.depends {
+            validate_plugin_id(&dep.id)?;
+            if dep.id == self.id {
+                return Err(format!("`depends`: {} cannot depend on itself", self.id));
+            }
+            if let Some(req) = &dep.version
+                && semver::VersionReq::parse(req).is_err()
+            {
+                return Err(format!(
+                    "`depends`: {:?} is not a version requirement like \"^1.2\" (plugin {})",
+                    req, dep.id
+                ));
+            }
+            if !required.insert(&dep.id) {
+                return Err(format!("`depends`: {} is listed twice", dep.id));
+            }
+        }
+        let mut declared = BTreeSet::new();
+        for point in &self.extension_points {
+            point.validate(&self.id)?;
+            if !declared.insert(&point.id) {
+                return Err(format!("extension point {} is declared twice", point.id));
             }
         }
         Ok(())
@@ -472,11 +525,12 @@ pub fn validate_item_id(id: &str, what: &str) -> Result<(), String> {
 }
 
 /// Extension point ids: `camelCase` or `kebab-case` words, dots allowed (`iconThemes`, `menus`).
+/// Points declared by plugins are `<plugin id>.<name>`, which may be longer and contain `_`.
 pub fn validate_point_id(id: &str) -> Result<(), String> {
     let ok = !id.is_empty()
-        && id.len() <= 64
+        && id.len() <= 128
         && id.starts_with(|c: char| c.is_ascii_lowercase())
-        && id.chars().all(|c| c.is_ascii_alphanumeric() || matches!(c, '-' | '.'));
+        && id.chars().all(|c| c.is_ascii_alphanumeric() || matches!(c, '-' | '.' | '_'));
     if ok { Ok(()) } else { Err(format!("invalid contribution point {id:?}")) }
 }
 
@@ -708,6 +762,86 @@ mod api14_tests {
                 }
             }
         }
+    }
+}
+
+#[cfg(test)]
+mod relations_tests {
+    use super::*;
+
+    const HEAD: &str = "id = \"acme.app\"\nname = \"App\"\nversion = \"1.0.0\"\nengines.openidea = \"^1.5\"\n";
+
+    fn parse(rest: &str) -> Result<Manifest, String> {
+        Manifest::parse(&format!("{HEAD}{rest}"))
+    }
+
+    #[test]
+    fn parses_depends_and_extension_points() {
+        let m = parse(
+            r#"
+            [[depends]]
+            id = "acme.base"
+            version = "^0.2"
+
+            [[depends]]
+            id = "acme.extra"
+            optional = true
+
+            [[extension-points]]
+            id = "acme.app.hooks"
+            required = ["name"]
+            fields = { name = "string" }
+
+            [[contributes."acme.base.things"]]
+            name = "x"
+            "#,
+        )
+        .unwrap();
+        assert_eq!(m.depends.len(), 2);
+        assert_eq!(m.depends[0].version.as_deref(), Some("^0.2"));
+        assert!(m.depends[1].optional);
+        assert_eq!(m.extension_points[0].id, "acme.app.hooks");
+        assert_eq!(m.declarations("acme.base.things").len(), 1);
+    }
+
+    #[test]
+    fn the_new_keys_need_api_1_5() {
+        let older =
+            "id = \"acme.app\"\nname = \"App\"\nversion = \"1.0.0\"\nwasm = \"p.wasm\"\nengines.openidea = \"^1.4\"\n";
+        let err = Manifest::parse(&format!("{older}[[depends]]\nid = \"acme.base\"\n")).unwrap_err();
+        assert!(err.contains("new in plugin API 1.5"), "{err}");
+        let err = Manifest::parse(&format!("{older}[[extension-points]]\nid = \"acme.app.x\"\n")).unwrap_err();
+        assert!(err.contains("new in plugin API 1.5"), "{err}");
+        let err = Manifest::parse(&format!("{older}activation = [\"on-event:extensions-changed\"]\n")).unwrap_err();
+        assert!(err.contains("new in plugin API 1.5"), "{err}");
+        let current = older.replace("^1.4", "^1.5");
+        assert!(Manifest::parse(&format!("{current}activation = [\"on-event:extensions-changed\"]\n")).is_ok());
+    }
+
+    #[test]
+    fn refuses_bad_dependencies() {
+        assert!(parse("[[depends]]\nid = \"acme.app\"\n").unwrap_err().contains("itself"));
+        assert!(parse("[[depends]]\nid = \"Bad Id\"\n").unwrap_err().contains("invalid plugin id"));
+        assert!(
+            parse("[[depends]]\nid = \"acme.base\"\nversion = \"one\"\n").unwrap_err().contains("version requirement")
+        );
+        let twice = "[[depends]]\nid = \"acme.base\"\n[[depends]]\nid = \"acme.base\"\n";
+        assert!(parse(twice).unwrap_err().contains("listed twice"));
+        assert!(parse("[[depends]]\nid = \"acme.base\"\nunknown = 1\n").is_err());
+    }
+
+    #[test]
+    fn refuses_points_outside_the_plugins_namespace() {
+        let err = parse("[[extension-points]]\nid = \"other.thing\"\n").unwrap_err();
+        assert!(err.contains("acme.app.<name>"), "{err}");
+        let twice = "[[extension-points]]\nid = \"acme.app.x\"\n[[extension-points]]\nid = \"acme.app.x\"\n";
+        assert!(parse(twice).unwrap_err().contains("declared twice"));
+    }
+
+    #[test]
+    fn plugin_ids_with_underscores_work_as_contribution_keys() {
+        assert!(validate_point_id("my_tools.base.things").is_ok());
+        assert!(validate_point_id("Bad").is_err());
     }
 }
 

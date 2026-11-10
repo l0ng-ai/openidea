@@ -891,5 +891,20 @@
   "No other roots.": "No other roots.",
   "Add Project…": "Add Project…",
   "Add Project Dependency": "Add Project Dependency",
-  "Every root is equal: pick a root on the left, then check the roots it depends on. Go to Declaration in it resolves only into its own code and its dependencies.": "Every root is equal: pick a root on the left, then check the roots it depends on. Go to Declaration in it resolves only into its own code and its dependencies."
+  "Every root is equal: pick a root on the left, then check the roots it depends on. Go to Declaration in it resolves only into its own code and its dependencies.": "Every root is equal: pick a root on the left, then check the roots it depends on. Go to Declaration in it resolves only into its own code and its dependencies.",
+  "Blocked": "Blocked",
+  "Wrong version": "Wrong version",
+  "Cannot run": "Cannot run",
+  "Requires": "Requires",
+  "Required plugins": "Required plugins",
+  "(optional)": "(optional)",
+  "Required by": "Required by",
+  "Plugins that require this one": "Plugins that require this one",
+  "Extension points": "Extension points",
+  "Extension points this plugin offers": "Extension points this plugin offers",
+  "Contributed by {join}": "Contributed by {join}",
+  "No contributions": "No contributions",
+  "Disable plugin": "Disable plugin",
+  "{names} need {name} and stop while it is disabled. Disable it anyway?": "{names} need {name} and stop while it is disabled. Disable it anyway?",
+  "{names} needs {name} and stops while it is disabled. Disable it anyway?": "{names} needs {name} and stops while it is disabled. Disable it anyway?"
 }

@@ -157,6 +157,7 @@ struct State {
     database_credentials: BTreeSet<(String, String)>,
     database_connections: Vec<(String, String)>,
     mcp_stdio: Option<Vec<String>>,
+    extension_points: BTreeMap<String, Vec<crate::Contribution>>,
     run_targets: BTreeMap<(String, String), crate::PluginRunTargetWithOverrides>,
     run_configurations: BTreeMap<String, crate::PluginRunConfiguration>,
     configuration_runs: Vec<(String, String, Vec<String>, bool)>,
@@ -551,6 +552,15 @@ impl MockHost {
     /// Configures only argv discovery; the mock has no token or URL.
     pub fn set_mcp_stdio_command(&self, command: Option<Vec<String>>) {
         self.state.borrow_mut().mcp_stdio = command;
+    }
+    /// Declares the extension point `point` for this plugin with the contributions
+    /// other plugins made to it (as (plugin id, JSON) pairs).
+    pub fn set_extension_contributions(&self, point: &str, contributions: Vec<(&str, &str)>) {
+        let list = contributions
+            .into_iter()
+            .map(|(plugin, data)| crate::Contribution { plugin: plugin.into(), data: data.into() })
+            .collect();
+        self.state.borrow_mut().extension_points.insert(point.into(), list);
     }
     pub fn set_run_configurations(&self, configs: Vec<crate::PluginRunConfiguration>) {
         self.state.borrow_mut().run_configurations = configs.into_iter().map(|c| (c.id.clone(), c)).collect();
@@ -1931,6 +1941,14 @@ pub mod current {
     }
     pub fn mcp_stdio_command() -> Option<Vec<String>> {
         with(|s| s.mcp_stdio.clone())
+    }
+    pub fn extension_contributions(point: &str) -> Result<Vec<crate::Contribution>, Error> {
+        with(|s| {
+            s.extension_points
+                .get(point)
+                .cloned()
+                .ok_or_else(|| Error::NotFound(format!("no running plugin declares {point}")))
+        })
     }
 
     pub fn register_run_target(project: &ProjectRes, target: &crate::PluginRunTarget) -> Result<(), Error> {

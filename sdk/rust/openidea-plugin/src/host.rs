@@ -835,6 +835,11 @@ mod imp {
         wit::settings::get(key)
     }
 
+    pub fn extension_contributions(point: &str) -> Result<Vec<crate::Contribution>, Error> {
+        let list = wit::extensions::contributions(point).map_err(error)?;
+        Ok(list.into_iter().map(|c| crate::Contribution { plugin: c.plugin, data: c.data }).collect())
+    }
+
     pub fn run_process(
         program: &str,
         args: &[String],
@@ -1767,4 +1772,14 @@ pub fn unregister_run_target(project: &Project, id: &str) {
 /// Stdio bridge argv for the invoking project, none while the built-in MCP server is off.
 pub fn mcp_stdio_command() -> Option<Vec<String>> {
     imp::mcp_stdio_command()
+}
+
+/// What other plugins contributed to `point`, an extension point this plugin
+/// declares in `[[extension-points]]`, in the order those plugins started.
+/// `Error::Denied` for another plugin's point, `Error::NotFound` while no
+/// running plugin declares it. Contributions change when plugins are enabled,
+/// disabled, updated or reloaded: subscribe to `EventKind::ExtensionsChanged`
+/// to refresh what was derived from them. Needs `engines.openidea = "^1.4"`.
+pub fn extension_contributions(point: &str) -> Result<Vec<crate::Contribution>, Error> {
+    imp::extension_contributions(point)
 }
