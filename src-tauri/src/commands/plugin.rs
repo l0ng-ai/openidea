@@ -112,7 +112,7 @@ pub fn create_host(app: &AppHandle, data_dir: &Path, project_host: &Arc<ide_host
     ide_run::set_external_detection(Some(host.run_detection()));
     host.set_workspace(Some(Arc::new(HostWorkspace(Arc::downgrade(project_host)))));
     // Released builds list the official plugins (published with each release) until the user picks another index.
-    if !cfg!(debug_assertions) {
+    if !cfg!(all(debug_assertions, dev)) {
         host.set_default_market_url(Some(ide_host::plugins::OFFICIAL_MARKET_INDEX.into()));
     }
     #[cfg(target_os = "macos")]
@@ -306,12 +306,12 @@ pub async fn plugin_activation_event(
 }
 
 /// Plugin packages available locally for installation: `<resources>/plugins`
-/// when bundled, plus the repository's official plugins in debug builds.
+/// when bundled, plus the repository's official plugins in development mode.
 #[tauri::command]
 #[specta::specta]
 pub async fn plugin_catalog(app: AppHandle, state: State<'_, AppState>) -> IdeResult<Vec<CatalogPlugin>> {
     let mut dirs: Vec<PathBuf> = app.path().resource_dir().map(|d| vec![d.join("plugins")]).unwrap_or_default();
-    if cfg!(debug_assertions) {
+    if cfg!(all(debug_assertions, dev)) {
         let repo = Path::new(env!("CARGO_MANIFEST_DIR")).join("..");
         dirs.push(repo.join("plugins/official"));
     }
@@ -348,6 +348,7 @@ pub async fn plugin_run_command(
     paths: Option<Vec<PathBuf>>,
     settings_scope: Option<SettingsScope>,
     command_chain: Option<Vec<String>>,
+    request: Option<ide_core::RequestId>,
 ) -> IdeResult<Option<String>> {
     let host = state.plugins.clone();
     let project = state.project(window.label()).ok();
@@ -359,7 +360,7 @@ pub async fn plugin_run_command(
         selected_paths: paths.unwrap_or_default(),
         global_settings: matches!(settings_scope, Some(SettingsScope::Global)),
     };
-    blocking(move || host.run_command(&plugin_id, &command_id, arg.as_deref(), invocation)).await
+    ide_host::plugins::commands::run_command(&state.host, host, plugin_id, command_id, arg, invocation, request).await
 }
 
 /// Workbench events from this window (only the kinds of `plugin_event_kinds`).

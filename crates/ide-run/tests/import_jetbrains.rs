@@ -98,6 +98,7 @@ fn jar_applications_from_every_configuration_location() {
                 "-jar",
                 "../dist/server app.jar",
                 "--config",
+                // Program parameters keep the platform's separators when macros expand.
                 &format!("{}/server config.yml", dir.path().to_string_lossy()),
                 ""
             ])

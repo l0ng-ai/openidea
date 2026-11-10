@@ -1637,8 +1637,8 @@ fn centered(px: f64, py: f64, pw: f64, ph: f64, w: f64, h: f64) -> (f64, f64) {
 }
 
 /// Reproduce WKWebView's user-font restriction before WKWebView creation. The
-/// private selector and environment override are absent from release builds.
-#[cfg(all(debug_assertions, target_os = "macos"))]
+/// private selector and environment override are absent from packaged builds.
+#[cfg(all(debug_assertions, dev, target_os = "macos"))]
 fn dev_font_preferences(
     builder: WebviewWindowBuilder<'_, tauri::Wry, AppHandle>,
 ) -> WebviewWindowBuilder<'_, tauri::Wry, AppHandle> {
@@ -1662,7 +1662,7 @@ fn dev_font_preferences(
     builder
 }
 
-#[cfg(not(all(debug_assertions, target_os = "macos")))]
+#[cfg(not(all(debug_assertions, dev, target_os = "macos")))]
 fn dev_font_preferences(
     builder: WebviewWindowBuilder<'_, tauri::Wry, AppHandle>,
 ) -> WebviewWindowBuilder<'_, tauri::Wry, AppHandle> {

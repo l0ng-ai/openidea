@@ -157,6 +157,7 @@ work), but 0.1 code no longer runs: rebuild it against the 1.0 SDK.
 | `fileIcons`         | `id`, `patterns` (file names), `icon` (SVG), `iconDark?` — whatever icon theme is in use                                                                                                                                               | no            |
 | `fileTemplates`     | `id`, `name`, `extension`, `path`; API 1.3: `fileName`, `variables = [{ name, prompt }]` — New menu                                                                                                                                    | no            |
 | `commitChecks`      | `id`, `title` — a before-commit check in Commit Options (see _Commits_)                                                                                                                                                                | yes           |
+| `editorAnnotations` | `id`, `command` (a declared command), `refreshView` (a declared native view), `protocol` (`1`) — cached line labels and hover cards in the text editor; needs `editor.read`                                                            | yes           |
 
 A `viewItem.context` menu needs `view`, the id of one of the plugin's own
 views. It adds the commands to the right-click menu of the items in that

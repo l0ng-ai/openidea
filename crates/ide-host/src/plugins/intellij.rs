@@ -992,6 +992,7 @@ mod tests {
         let put = |product: &str, file: &str, seconds| {
             let path = root.join(product).join(file);
             write(&path, b"<application/>");
+            // Windows needs a writable handle to update the timestamp.
             std::fs::File::options()
                 .write(true)
                 .open(path)
