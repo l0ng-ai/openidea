@@ -127,6 +127,13 @@ pub fn window_toggle_fullscreen(window: WebviewWindow) -> IdeResult<bool> {
     crate::window_groups::toggle_fullscreen(&window)
 }
 
+/// Fills the work area without the platform zoom animation. Returns whether it is filled now.
+#[tauri::command]
+#[specta::specta]
+pub fn window_toggle_zoom(window: WebviewWindow) -> IdeResult<bool> {
+    crate::window_zoom::toggle(&window)
+}
+
 /// Flash (`true`) or stop flashing (`false`) this window's taskbar button, like IDEA when a
 /// breakpoint is hit while the window is in the background (macOS bounces the dock icon,
 /// Linux sets the urgency hint). A focused window is never flashed: the user is already
