@@ -1,0 +1,66 @@
+---
+title: "Security"
+description: "How to report a vulnerability, and the security model contributors must preserve: project trust, the plugin sandbox and local servers."
+---
+
+## Reporting a vulnerability
+
+Report vulnerabilities privately through GitHub's private vulnerability reporting, which is enabled for the repository:
+
+<Card title="Report a vulnerability" icon="shield" href="https://github.com/l0ng-ai/openidea/security/advisories/new">
+  Opens a private security advisory draft visible only to you and the maintainers.
+</Card>
+
+Please don't open a public issue, discussion or PR for a vulnerability before it is fixed. Include the version (or commit), the platform, steps to reproduce and what an attacker gains.
+
+<Note>
+  The repository has no `SECURITY.md` and no stated response times or supported-version policy. Fixes ship in regular
+  releases.
+</Note>
+
+For a malicious plugin listed in the marketplace, use the same private channel.
+
+## Security model
+
+When you change the areas below, keep these properties intact. Reviewers check them.
+
+### Project trust and restricted mode
+
+Opening a project folder can run code that the project controls: language servers that execute build scripts, run configurations, build tools, git hooks, project plugins. So execution needs the user's trust.
+
+- When a project that hasn't been decided opens, the **Trust and Open Project?** dialog offers **Trust Project**, **Preview in Restricted Mode** and **Don't Open**. Decisions and trusted locations are managed on Settings' **Project Trust** page (group **Security**), and **Revoke Trust** is an action.
+- Trust is user-owned state (`crates/ide-host/src/trust.rs`). **Project settings never grant trust.**
+- Enforcement is in the backend, not the UI: every IPC command passes `Host::authorize_command` in the Tauri invoke handler (`src-tauri/src/lib.rs`) before it runs. In an untrusted project only commands on an explicit allowlist (`restricted_command_allowed`) run: reading and editing files and documents, syntax, search, navigation, local history, spelling, analysis, refactoring, settings and similar.
+- The allowlist is a default-deny list: **a new command that executes anything is denied in restricted mode until you deliberately classify it there.** Don't add an execution command to the allowlist to make a feature "work" in restricted mode.
+- Below the command layer, language servers don't start (`LspManager` execution switch), and git runs with execution disabled and without the project's `git` executable setting until the project is trusted. Project plugins (`.openidea/plugins/`) load only for trusted projects.
+- In a remote window the desktop checks the remote project's trust before forwarding a command, and `openidea-server` authorizes every `invoke` again.
+
+Tests: `crates/ide-host/tests/trust.rs`, `trust_git_binary.rs`.
+
+### Plugin sandbox
+
+Plugins are WebAssembly components run by wasmtime (`crates/ide-plugin`). See [Plugin host](/en/contribute/architecture/plugin-host) for the internals.
+
+- Each plugin gets its own `Store`: no preopened directories, no environment, no network, no inherited stdio — only WASI clocks and randomness plus the host functions.
+- Every host function that reaches files, processes, the network, VCS writes and so on is gated by a **capability** declared in `plugin.toml` and granted by the user at install (or when an update asks for more). Each capability has a risk level shown in the consent dialog. A missing grant returns `denied`; the plugin keeps running.
+- `process:<program>` grants pin the program's absolute path and content hash; a replaced file is refused until approved again. `fs.read:` / `fs.write:` paths are resolved to their real location before comparison, so symlinks can't escape a grant.
+- Calls are bounded by fuel, wall-clock deadlines and a memory cap. A trap drops the instance; it never takes the IDE down.
+- Plugin web views run in a sandboxed frame with an opaque origin, no network and no IDE API except the frame bridge; their files are served with a restrictive CSP.
+- Packages are signed (Ed25519). The marketplace index is the trust root for publishers and carries revocations; an installed plugin updates silently only to a package signed with the same key or a key it endorsed.
+
+The capability table and limits are documented for plugin authors in [Capabilities](/en/plugins/capabilities).
+
+### Local servers
+
+- **MCP server** (`crates/ide-mcp`): listens on `127.0.0.1` on a random port, requires a random per-run bearer token, and refuses requests whose `Origin` or `Host` doesn't match (DNS rebinding).
+- **Built-in web server** (`crates/ide-web`): serves project files read-only on `127.0.0.1`; every URL starts with a random per-run token and requests with a foreign `Host` are refused.
+- **Tauri MCP bridge** (`tauri-plugin-mcp-bridge`): compiled into debug builds only, bound to `127.0.0.1`.
+
+### Remote development and child processes
+
+- `openidea-server` is started over SSH, `wsl.exe --exec` or `docker exec`. The WSL and dev container transports pass every variable value (paths, versions, ids) as separate arguments; only fixed scripts reach `sh -c`. Keep it that way: never splice values into a shell string.
+- Secrets used by remote plugins stay in the desktop's keychain; the server asks for one when a request needs it.
+
+### Dependencies
+
+CI runs `cargo deny check` (`deny.toml`) on every Rust change: security advisories, licences, banned crates and allowed sources.

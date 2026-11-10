@@ -26,6 +26,8 @@ Visual style: dark, low-contrast greys, one cool accent
   Lombok agent, embedded into the app by `ide-sdk` / `ide-tools`.
 - `e2e/` — Playwright UI tests (`pnpm e2e`). `fixtures/` — sample projects per language
   for manual and automated testing.
+- `docs/` — the Mintlify documentation site (`docs.json` navigation, `en/` and `zh/` pages);
+  preview with `npx mint dev` in `docs/`.
 
 ## Rules
 

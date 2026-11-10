@@ -1,0 +1,94 @@
+---
+title: "Live templates and macros"
+description: "Expand abbreviations, surround code, use postfix completion and Emmet, write your own templates, and record editor macros."
+---
+
+## Live templates
+
+A live template is an abbreviation that expands into a code snippet with fields to fill in. Type the abbreviation and press `⇥` / `Tab`, or pick it from the completion list. For example, in Java `sout` becomes `System.out.println();` with the caret inside the parentheses; in Rust `fn` expands into a function skeleton.
+
+| Action                           | macOS | Windows / Linux |
+| -------------------------------- | ----- | --------------- |
+| **Insert Live Template…**        | `⌘J`  | `Ctrl+J`        |
+| **Surround With…**               | `⌥⌘T` | `Ctrl+Alt+T`    |
+| **Surround with Live Template…** | `⌥⌘J` | `Ctrl+Alt+J`    |
+
+After expansion, the caret is in the first field. `⇥` / `Tab` moves to the next field and fields that share a name change together. `Esc` leaves the template.
+
+Built-in templates exist for Rust, JavaScript / TypeScript, Python, Go, Java, Kotlin, PHP and SQL, plus a few general ones (`todo`, `fixme`, `hack`, `date`). **Insert Live Template…** lists the templates that apply at the caret. By default templates expand only in code, not in comments or strings.
+
+### Surround With
+
+Select code and press `⌥⌘T` / `Ctrl+Alt+T`. The list starts with the language's wrappers (`if`, `while`, `try` and so on), followed by live templates that use `$SELECTION$`. **Surround with Live Template…** shows only the latter.
+
+## Postfix completion
+
+Postfix templates rewrite the expression before a dot. Type an expression, a dot and the template key, then press `⇥` / `Tab`:
+
+```java
+user.name.nn      →  if (user.name != null) { … }
+items.for         →  for (var item : items) { … }
+```
+
+Postfix templates are available for JavaScript / TypeScript, Rust, Python, Go, Java and Kotlin. Common keys are `if`, `else`, `not`, `var`, `return`, `for`, `fori`, `nn` (not null), `null`, `par` (wrap in parentheses) and `try`; each language adds its own, such as `match`, `ok` and `some` in Rust, `sout` in Java and Kotlin, `when` in Kotlin, `await` in JavaScript / TypeScript and Python.
+
+Enable or disable postfix completion, individual templates, `Tab` expansion and whether postfix templates appear in the completion list in **Settings › Editor › General › Postfix Completion**.
+
+## Emmet
+
+In HTML, Vue and Svelte files, and in CSS, SCSS, Less and Sass, `⇥` / `Tab` expands Emmet abbreviations, for example `ul>li*3` or `m10`. In markup files, the editor context menu also has **Update Tag with Emmet**, which rewrites the tag at the caret from an abbreviation.
+
+## Write your own templates
+
+Templates are edited in **Settings › Editor › Live Templates**.
+
+<Steps>
+  <Step title="Add a template">
+    Click **Add Template** and enter the **Abbreviation**, **Description** and **Group**.
+  </Step>
+  <Step title="Write the body">
+    Use `$NAME$` for a field (repeated names are linked), `$END$` for the final caret position, `$SELECTION$` for the
+    text being surrounded and `$$` for a literal dollar sign. Leading tabs in the body are indent units.
+  </Step>
+  <Step title="Choose contexts">
+    Pick the languages where the template applies. Check **Also expand in comments and strings** if it should expand
+    there too.
+  </Step>
+  <Step title="Give fields values (optional)">
+    In the variables table, set an **Expression**, a **Default value**, and **Skip if defined** to jump over a field
+    whose expression produced a value.
+  </Step>
+</Steps>
+
+Expressions can be string literals, references to other variables or functions: `className()`, `methodName()`, `fileName()`, `fileNameWithoutExtension()`, `date("yyyy-MM-dd")`, `time()`, `user()`, `clipboard()`, `complete()`, `suggestVariableName()`, `commentStart()`, `capitalize(…)`, `camelCase(…)` and `snakeCase(…)`.
+
+For example, this template logs a variable:
+
+```text
+Abbreviation:  logv
+Body:          console.log("$EXPR$ =", $EXPR$);$END$
+```
+
+The page also has **Expand abbreviations with Tab** and **Show live templates in code completion**. A built-in template you changed can be reset with **Restore Default**. Templates contributed by plugins are shown read-only.
+
+Live templates, postfix settings and macros are stored per user on this machine, not in the project.
+
+For new-file templates (what **File › New…** creates), see **Settings › Editor › File and Code Templates**.
+
+## Macros
+
+A macro records the actions you run, the text you type and the editing keys you press in the editor, so you can replay them. The commands are in **Edit › Macros**:
+
+<Steps>
+  <Step title="Record">Choose **Start Macro Recording**. The status bar shows that a macro is recording.</Step>
+  <Step title="Stop">
+    Choose **Stop Macro Recording** and enter a name, or leave the name empty to keep it only as the last macro.
+  </Step>
+  <Step title="Play back">
+    **Play Back Last Macro** replays the last recording. **Play Saved Macros…** picks a saved one.
+  </Step>
+</Steps>
+
+**Edit Macros…** renames or deletes saved macros. Every saved macro is also an action with the macro's name, so you can find it in Find Action and give it a shortcut in **Settings › Keymap**. None of the macro commands has a default shortcut.
+
+Playback stops with a notification when a recorded step cannot run in the current context. Actions run with an argument that cannot be stored (such as a menu item that acts on a selected tree node) are not recorded.
