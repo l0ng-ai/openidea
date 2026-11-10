@@ -756,6 +756,13 @@ function Stream({ loadError, task, entries, subagent, onOpenSubagent, finding, f
           e.preventDefault();
           showContextMenu(e, items);
         }}
+        // Selecting with the mouse gets that menu at once: the same handler, as a right-click.
+        onMouseUp={(e) => {
+          if (e.button !== 0 || !selectionIn(e.currentTarget).trim()) return;
+          e.currentTarget.dispatchEvent(
+            new MouseEvent("contextmenu", { bubbles: true, cancelable: true, clientX: e.clientX, clientY: e.clientY }),
+          );
+        }}
       >
         {loadError && (
           <div role="alert">

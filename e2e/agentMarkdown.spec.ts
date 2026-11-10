@@ -205,6 +205,28 @@ test("keeps latest reply actions visible and quotes into the draft without shift
   );
 });
 
+test("opens the selection menu when a mouse selection ends, leaving Ctrl+C to copy", async ({ page, context }) => {
+  await context.grantPermissions(["clipboard-read", "clipboard-write"]);
+  const reply = await openReply(page, "Selectable answer");
+  const text = reply.locator("p").first();
+  const box = (await text.boundingBox())!;
+  await page.mouse.move(box.x + 2, box.y + box.height / 2);
+  await page.mouse.down();
+  await page.mouse.move(box.x + box.width - 2, box.y + box.height / 2);
+  await page.mouse.up();
+  const menu = page.getByRole("menu", { name: "Context menu" });
+  await expect(menu).toBeVisible();
+  await expect(menu.getByRole("menuitem", { name: /^Copy/ })).toBeEnabled();
+  // The open menu leaves the keyboard to the document: Ctrl+C still copies the selection.
+  await page.keyboard.press("ControlOrMeta+c");
+  expect(await page.evaluate(() => navigator.clipboard.readText())).toBe("Selectable answer");
+  await menu.getByRole("menuitem", { name: "Quote", exact: true }).click();
+  await expect(menu).toHaveCount(0);
+  const draft = page.getByRole("textbox", { name: "Message", exact: true });
+  await expect(draft).toBeFocused();
+  await expect(draft).toHaveValue("> Selectable answer\n\n");
+});
+
 test("keeps chat history readable and selections free of timestamps and status labels", async ({ page, context }) => {
   await page.setViewportSize({ width: 1800, height: 1000 });
   await context.grantPermissions(["clipboard-read", "clipboard-write"]);

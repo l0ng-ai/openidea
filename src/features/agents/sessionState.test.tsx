@@ -3,6 +3,7 @@ import { act, fireEvent, render, screen, waitFor, within } from "@testing-librar
 import { registerActions } from "@/platform/actions";
 import { useProject } from "@/platform/project";
 import { EditorShownProvider } from "@/workbench/contributions";
+import { hideContextMenu, useContextMenuStore } from "@/ui";
 import type { AgentChange, AgentEntry, AgentTask } from "@/bindings";
 import { AgentsView } from "./AgentsView";
 import { SessionEditor, conversationRows } from "./SessionEditor";
@@ -102,6 +103,7 @@ let disposeActions: () => void;
 const scrollTopDescriptor = Object.getOwnPropertyDescriptor(HTMLElement.prototype, "scrollTop");
 afterEach(() => {
   disposeActions();
+  hideContextMenu();
   vi.restoreAllMocks();
   vi.useRealTimers();
   if (scrollTopDescriptor) Object.defineProperty(HTMLElement.prototype, "scrollTop", scrollTopDescriptor);
@@ -303,6 +305,31 @@ describe("message tags", () => {
     render(<SessionEditor input={input("A")} />);
     expect(await screen.findByText("@src/a.ts")).toHaveClass(tagStyles.tag!);
     expect(screen.getByText("/triage")).toHaveClass(tagStyles.accent!);
+  });
+});
+
+describe("the conversation selection menu", () => {
+  const labels = () =>
+    (useContextMenuStore.getState().menu?.items ?? []).flatMap((item) => ("label" in item ? [item.label] : []));
+
+  it("opens where a mouse selection ends, Copy and Quote included", async () => {
+    render(<SessionEditor input={input("A")} />);
+    const answer = await screen.findByText("Answer A");
+    const range = document.createRange();
+    range.selectNodeContents(answer);
+    const selection = window.getSelection()!;
+    selection.removeAllRanges();
+    selection.addRange(range);
+    fireEvent.mouseUp(stream(), { button: 0, clientX: 120, clientY: 90 });
+    expect(labels()).toEqual(["Copy", "Quote"]);
+  });
+
+  it("offers Copy alone on a right-click without a selection", async () => {
+    render(<SessionEditor input={input("A")} />);
+    await screen.findByText("Answer A");
+    window.getSelection()!.removeAllRanges();
+    fireEvent.contextMenu(stream(), { clientX: 10, clientY: 10 });
+    expect(labels()).toEqual(["Copy"]);
   });
 });
 
