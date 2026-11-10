@@ -7260,7 +7260,7 @@
   "Enable Server": "启用服务器",
   "Copy Server Name": "复制服务器名称",
   "Delete Server": "删除服务器",
-  "MCP Servers": "MCP 服务器",
+  "Model Context Protocol (MCP)": "模型上下文协议 (MCP)",
   "Import MCP servers from .mcp.json and .vscode/mcp.json": "从 .mcp.json 和 .vscode/mcp.json 导入 MCP 服务器",
   "An open standard that lets AI use external tools and services. MCP servers provide tools for file operations, databases, APIs, and more.": "一项允许 AI 使用外部工具和服务的开放标准。MCP 服务器提供用于文件操作、数据库、API 等的工具。",
   "Learn more about MCP servers": "了解有关 MCP 服务器的更多信息",
@@ -7283,6 +7283,6 @@
   "HTTP Headers": "HTTP 请求头",
   "One Header=Value entry per line.": "每行一个 Header=Value 条目。",
   "Leave empty to enable for all agents, or list agent IDs separated by commas.": "留空则为所有代理启用，或用逗号分隔列出代理 ID。",
-  "MCP Servers…": "MCP 服务器…",
-  "Opens Settings › Agents › MCP Servers: configures User and Workspace MCP servers.": "打开 设置 › 代理 › MCP 服务器：配置用户和工作区 MCP 服务器。"
+  "Model Context Protocol (MCP)…": "模型上下文协议 (MCP)…",
+  "Opens Settings › Agents › Model Context Protocol (MCP): configures User and Workspace MCP servers.": "打开“设置 › 智能体 › 模型上下文协议 (MCP)”：配置用户级和工作区级 MCP 服务器。"
 }

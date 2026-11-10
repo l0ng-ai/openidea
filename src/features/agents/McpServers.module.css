@@ -182,50 +182,6 @@
   flex-shrink: 0;
 }
 
-.switch {
-  position: relative;
-  display: inline-flex;
-  align-items: center;
-  width: 32px;
-  height: 18px;
-  padding: 2px;
-  border: 1px solid transparent;
-  border-radius: 999px;
-  background: color-mix(in srgb, var(--fg-muted) 42%, transparent);
-  cursor: pointer;
-  transition: background-color 120ms ease;
-}
-
-.switch:hover:not(:disabled) {
-  background: color-mix(in srgb, var(--fg-muted) 56%, transparent);
-}
-
-.switchOn {
-  background: var(--accent-primary, #3574f0);
-}
-
-.switchOn:hover:not(:disabled) {
-  background: color-mix(in srgb, var(--accent-primary, #3574f0) 88%, white);
-}
-
-.switch:disabled {
-  opacity: 0.5;
-  cursor: default;
-}
-
-.switchThumb {
-  width: 12px;
-  height: 12px;
-  border-radius: 50%;
-  background: #ffffff;
-  transform: translateX(0);
-  transition: transform 120ms ease;
-}
-
-.switchOn .switchThumb {
-  transform: translateX(14px);
-}
-
 .form {
   display: flex;
   flex-direction: column;

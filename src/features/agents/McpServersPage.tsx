@@ -1,15 +1,14 @@
 /**
- * Settings › Agents › MCP Servers: configure, search, toggle, add, edit, remove,
+ * Settings › Agents › Model Context Protocol (MCP): configure, search, toggle, add, edit, remove,
  * and import MCP servers stored in OpenIDEA's User (`settings.toml`) and Workspace
  * (`.openidea/settings.toml`) settings, passed to coding agents over ACP.
  */
-import clsx from "clsx";
 import { useCallback, useEffect, useMemo, useState } from "react";
 import type { McpKeyValue, McpScope, McpServer, McpServerInput, McpTransport } from "@/bindings";
 import { call, commands } from "@/platform/ipc";
 import { useTx } from "@/platform/i18n";
 import { openExternalUrl } from "@/platform/openUrl";
-import { Button, Dialog, Icon, IconButton, Input, Menu, SearchField, Select, T, type MenuItem } from "@/ui";
+import { Button, Checkbox, Dialog, Icon, IconButton, Input, Menu, SearchField, Select, T, type MenuItem } from "@/ui";
 import styles from "./McpServers.module.css";
 
 const MCP_DOCS_URL = "https://modelcontextprotocol.io";
@@ -233,7 +232,7 @@ export function McpServersPage({ backend = defaultMcpBackend }: { backend?: McpB
     <div className={styles.page}>
       <div className={styles.header}>
         <h2 className={styles.title}>
-          <T>MCP Servers</T>
+          <T>Model Context Protocol (MCP)</T>
         </h2>
         <div className={styles.headerActions}>
           <Button
@@ -323,17 +322,12 @@ export function McpServersPage({ backend = defaultMcpBackend }: { backend?: McpB
                           )}
                         </div>
                         <div className={styles.rowActions}>
-                          <button
-                            type="button"
-                            role="switch"
-                            aria-checked={server.enabled}
+                          <Checkbox
+                            checked={server.enabled}
                             aria-label={tx`Enable ${server.name}`}
                             disabled={busyId === server.id}
-                            className={clsx(styles.switch, server.enabled && styles.switchOn)}
-                            onClick={() => void toggleServer(server, !server.enabled)}
-                          >
-                            <span className={styles.switchThumb} />
-                          </button>
+                            onChange={(on) => void toggleServer(server, on)}
+                          />
                           <IconButton
                             icon="more"
                             size="small"

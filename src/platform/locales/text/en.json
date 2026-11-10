@@ -926,7 +926,7 @@
   "Enable Server": "Enable Server",
   "Copy Server Name": "Copy Server Name",
   "Delete Server": "Delete Server",
-  "MCP Servers": "MCP Servers",
+  "Model Context Protocol (MCP)": "Model Context Protocol (MCP)",
   "Import MCP servers from .mcp.json and .vscode/mcp.json": "Import MCP servers from .mcp.json and .vscode/mcp.json",
   "An open standard that lets AI use external tools and services. MCP servers provide tools for file operations, databases, APIs, and more.": "An open standard that lets AI use external tools and services. MCP servers provide tools for file operations, databases, APIs, and more.",
   "Learn more about MCP servers": "Learn more about MCP servers",
@@ -949,6 +949,6 @@
   "HTTP Headers": "HTTP Headers",
   "One Header=Value entry per line.": "One Header=Value entry per line.",
   "Leave empty to enable for all agents, or list agent IDs separated by commas.": "Leave empty to enable for all agents, or list agent IDs separated by commas.",
-  "MCP Servers…": "MCP Servers…",
-  "Opens Settings › Agents › MCP Servers: configures User and Workspace MCP servers.": "Opens Settings › Agents › MCP Servers: configures User and Workspace MCP servers."
+  "Model Context Protocol (MCP)…": "Model Context Protocol (MCP)…",
+  "Opens Settings › Agents › Model Context Protocol (MCP): configures User and Workspace MCP servers.": "Opens Settings › Agents › Model Context Protocol (MCP): configures User and Workspace MCP servers."
 }

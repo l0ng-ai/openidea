@@ -109,17 +109,17 @@ describe("McpServersPage", () => {
     expect(screen.queryByText("slack-official")).not.toBeInTheDocument();
   });
 
-  it("toggles server enabled state via switch", async () => {
+  it("toggles server enabled state via its checkbox", async () => {
     const backend = new FakeMcpBackend();
     render(<McpServersPage backend={backend} />);
 
     await waitFor(() => expect(screen.getByText("slack-official")).toBeInTheDocument());
-    const sw = screen.getByRole("switch", { name: "Enable slack-official" });
-    expect(sw).toHaveAttribute("aria-checked", "true");
+    const box = screen.getByRole("checkbox", { name: "Enable slack-official" });
+    expect(box).toBeChecked();
 
-    fireEvent.click(sw);
+    fireEvent.click(box);
     await waitFor(() => expect(backend.toggled).toEqual([{ id: "user::slack-official", enabled: false }]));
-    expect(screen.getByRole("switch", { name: "Enable slack-official" })).toHaveAttribute("aria-checked", "false");
+    expect(screen.getByRole("checkbox", { name: "Enable slack-official" })).not.toBeChecked();
   });
 
   it("adds a new workspace MCP server with optional agent filter", async () => {
