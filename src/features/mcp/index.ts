@@ -29,6 +29,7 @@ export function activate(): () => void {
   let disposed = false;
   let timer: ReturnType<typeof setTimeout> | null = null;
   const report = () => {
+    if (timer) clearTimeout(timer);
     timer = null;
     if (!useProject.getState().project) return;
     const paths = openEditorPaths();
@@ -92,8 +93,8 @@ export function activate(): () => void {
       schedule();
     }
   });
-  window.addEventListener("focus", schedule);
-  window.addEventListener("blur", schedule);
+  window.addEventListener("focus", report);
+  window.addEventListener("blur", report);
   return () => {
     disposed = true;
     unload();
@@ -105,8 +106,8 @@ export function activate(): () => void {
     offEvents();
     offRemote();
     offProject();
-    window.removeEventListener("focus", schedule);
-    window.removeEventListener("blur", schedule);
+    window.removeEventListener("focus", report);
+    window.removeEventListener("blur", report);
     if (timer) clearTimeout(timer);
   };
 }

@@ -253,7 +253,13 @@ describe("run config → launch config", () => {
   it("delve: debug mode for run, test mode for test", () => {
     const run = launchConfigFor(rc({ kind: "go", command: "go", args: ["run", "."], debugAdapter: "delve" }), "/p")!;
     expect(run.program).toBe("/p");
-    expect(extra(run)).toEqual({ mode: "debug", __goToolArgs: [], __goUseTags: true });
+    expect(extra(run)).toMatchObject({
+      mode: "debug",
+      __goTargets: ["."],
+      __goExecutable: "go",
+      __goToolArgs: [],
+      __goUseTags: true,
+    });
     const sub = launchConfigFor(
       rc({ kind: "go", command: "go", args: ["run", "./cmd/api"], debugAdapter: "delve" }),
       "/p",
@@ -263,8 +269,8 @@ describe("run config → launch config", () => {
       rc({ kind: "go", command: "go", args: ["test", "./..."], debugAdapter: "delve" }),
       "/p",
     )!;
-    expect(extra(test)).toEqual({ mode: "test", __goToolArgs: [], __goUseTags: true });
-    expect(test.program).toBe("/p");
+    expect(extra(test)).toMatchObject({ mode: "test", __goTargets: ["./..."], __goToolArgs: [], __goUseTags: true });
+    expect(test.program).toBe("/p/...");
     // A gutter test / subtest: the package, and `-run` for the test binary.
     const one = launchConfigFor(
       rc({
@@ -417,6 +423,50 @@ it("netcoredbg launches the evaluated DLL with resolved profile arguments, env a
   });
   expect(launchConfigFor({ ...c, params: { ...c.params, programArgs: "" } }, "/repo")?.args).toEqual(["--profile"]);
   expect(launchConfigFor({ ...c, params: {} }, "/repo")).toBeNull();
+});
+
+describe("Go debug target resolution inputs", () => {
+  it("preserves import paths and multiple source files for Go to resolve", () => {
+    const imported = launchConfigFor(
+      rc({ kind: "go", command: "/sdk/bin/go", args: ["test", "example.com/app/calc"], debugAdapter: "delve" }),
+      "/p",
+    )!;
+    expect(imported.program).toBe("example.com/app/calc");
+    expect(extra(imported)).toMatchObject({
+      __goTargets: ["example.com/app/calc"],
+      __goExecutable: "/sdk/bin/go",
+      __goBuildDir: "/p",
+    });
+    const files = launchConfigFor(
+      rc({ kind: "go", command: "go", args: ["run", "main.go", "helper.go", "hello"], debugAdapter: "delve" }),
+      "/p",
+    )!;
+    expect(files.args).toEqual(["hello"]);
+    expect(extra(files).__goTargets).toEqual(["main.go", "helper.go"]);
+    const packages = launchConfigFor(
+      rc({ kind: "go", command: "go", args: ["build", "./a", "./b"], debugAdapter: "delve" }),
+      "/p",
+    )!;
+    expect(extra(packages).__goTargets).toEqual(["./a", "./b"]);
+  });
+
+  it("keeps a typed recursive package target and the module's selected compiler", () => {
+    const launch = launchConfigFor(
+      rc({
+        kind: "go",
+        command: "./sdk/bin/go",
+        args: ["test", "./..."],
+        debugAdapter: "delve",
+        params: { goKind: "test", scope: "package", target: "./...", module: "backend" },
+      }),
+      "/p",
+    )!;
+    expect(extra(launch)).toMatchObject({
+      __goTargets: ["./..."],
+      __goBuildDir: "/p/backend",
+      __goExecutable: "/p/backend/sdk/bin/go",
+    });
+  });
 });
 
 it("raw and typed Go debug configurations inherit custom tags unless explicitly disabled", () => {
