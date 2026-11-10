@@ -93,7 +93,14 @@ class FakeBackend implements RegistryBackend {
   }
 }
 
-const row = (name: string) => screen.getByRole("listitem", { name });
+/** The registry agent's details, selecting it in the list first. */
+const row = (name: string) => {
+  const shown = screen.queryByRole("region", { name });
+  if (shown) return shown;
+  fireEvent.mouseDown(screen.getByRole("option", { name: new RegExp(`^${name}`) }));
+  return screen.getByRole("region", { name });
+};
+const item = (name: string) => screen.getByRole("option", { name: new RegExp(`^${name}`) });
 
 describe("registry helpers", () => {
   it("matches every word of the query against name, id, description and authors", () => {
@@ -183,7 +190,7 @@ describe("Add Agent: the ACP Registry", () => {
     const backend = new FakeBackend();
     backend.registry = { agents: [agent({ id: "copilot", name: "GitHub Copilot" })], warning: null };
     renderRegistry(<RegistryList backend={backend} />);
-    const copilot = await screen.findByRole("listitem", { name: "GitHub Copilot" });
+    const copilot = await screen.findByRole("option", { name: "GitHub Copilot" });
     const expected = document.createElement("div");
     expected.innerHTML = iconMarkup("agent-copilot")!;
     expect(copilot.querySelector("svg")?.innerHTML).toBe(expected.querySelector("svg")?.innerHTML);
@@ -197,13 +204,14 @@ describe("Add Agent: the ACP Registry", () => {
     expect(screen.getByText(/third-party software/)).toBeInTheDocument();
     expect(within(row("Amp")).getByRole("button", { name: "Install" })).toBeEnabled();
     expect(within(row("Amp")).getByRole("button", { name: "Repository" })).toBeInTheDocument();
-    expect(within(row("Cline")).getByText("3.0.74 available")).toBeInTheDocument();
+    expect(within(item("Cline")).getByText("Update")).toBeInTheDocument();
+    expect(within(row("Cline")).getByText(/3.0.70 installed, 3.0.74 available/)).toBeInTheDocument();
     expect(within(row("Cline")).getByRole("button", { name: "Update" })).toBeInTheDocument();
     expect(within(row("fast-agent")).getByRole("button", { name: "Remove" })).toBeInTheDocument();
     expect(within(row("fast-agent")).queryByRole("button", { name: "Update" })).toBeNull();
 
     fireEvent.change(screen.getByRole("textbox", { name: "Search agents" }), { target: { value: "frontier" } });
-    expect(screen.getAllByRole("listitem")).toHaveLength(1);
+    expect(screen.getAllByRole("option")).toHaveLength(1);
     fireEvent.change(screen.getByRole("textbox", { name: "Search agents" }), { target: { value: "nothing" } });
     expect(screen.getByText("No agents match")).toBeInTheDocument();
   });
@@ -223,7 +231,7 @@ describe("Add Agent: the ACP Registry", () => {
 
     await act(async () => backend.finish());
     expect(onChanged).toHaveBeenCalledTimes(1);
-    expect(within(row("Amp")).getByText("Installed")).toBeInTheDocument();
+    expect(within(item("Amp")).getByText("Installed")).toBeInTheDocument();
     expect(within(row("Amp")).getByRole("button", { name: "Remove" })).toBeEnabled();
   });
 
@@ -237,7 +245,7 @@ describe("Add Agent: the ACP Registry", () => {
       </>,
     );
     await waitFor(() => expect(row("Amp")).toBeInTheDocument());
-    expect(within(row("Amp")).getByText("No checksum provided")).toBeInTheDocument();
+    expect(within(row("Amp")).getByText(/No checksum provided/)).toBeInTheDocument();
 
     fireEvent.click(within(row("Amp")).getByRole("button", { name: "Install" }));
     let dialog = await screen.findByRole("dialog");
@@ -303,7 +311,7 @@ describe("Add Agent: the ACP Registry", () => {
     expect(within(row("Cline")).getByRole("button", { name: "Update" })).toBeDisabled();
 
     backend.registry = { agents: [{ ...AMP, installed: AMP.version }, CLINE], warning: null };
-    await waitFor(() => expect(within(row("Amp")).getByText("Installed")).toBeInTheDocument(), { timeout: 4000 });
+    await waitFor(() => expect(within(item("Amp")).getByText("Installed")).toBeInTheDocument(), { timeout: 4000 });
     expect(onChanged).toHaveBeenCalledTimes(1);
     expect(within(row("Cline")).getByRole("button", { name: "Update" })).toBeEnabled();
   });
@@ -717,7 +725,7 @@ describe("the agent list", () => {
     expect(screen.getByRole("button", { name: "Remove" })).toBeDisabled();
     fireEvent.click(screen.getByRole("button", { name: "Add Agent…" }));
     const dialog = await screen.findByRole("dialog", { name: "Add Agent" });
-    await waitFor(() => expect(within(dialog).getByRole("listitem", { name: "Amp" })).toBeInTheDocument());
+    await waitFor(() => expect(within(dialog).getByRole("option", { name: /^Amp/ })).toBeInTheDocument());
   });
 
   it("stages the settings new tasks start with", async () => {

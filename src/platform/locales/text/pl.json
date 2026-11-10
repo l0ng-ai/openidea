@@ -4855,7 +4855,6 @@
   "Website": "Strona internetowa",
   "Removing…": "Usuwanie…",
   "Registry agents": "Agenci z rejestru",
-  "No checksum provided": "Brak sumy kontrolnej",
   "{name} provides no checksum for its download, so the downloaded file cannot be verified. Install it anyway?": "{name} nie dostarcza sumy kontrolnej pobieranego pliku, więc pobrany plik nie może zostać skontrolowany. Zainstalować mimo to?",
   "Usage limit": "Limit użycia",
   "{provider} didn't start: {error}": "Dostawca {provider} nie uruchomił się: {error}",

@@ -4983,7 +4983,6 @@
   "Website": "웹사이트",
   "Removing…": "제거 중…",
   "Registry agents": "레지스트리 에이전트",
-  "No checksum provided": "체크섬이 제공되지 않음",
   "{name} provides no checksum for its download, so the downloaded file cannot be verified. Install it anyway?": "{name}은(는) 다운로드에 대한 체크섬을 제공하지 않으므로 다운로드한 파일을 확인할 수 없습니다. 그래도 설치하시겠습니까?",
   "Usage limit": "사용량 한도",
   "{provider} didn't start: {error}": "{provider}이(가) 시작되지 않았습니다: {error}",

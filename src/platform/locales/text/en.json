@@ -859,5 +859,7 @@
   "Show tool output without opening it": "Show tool output without opening it",
   "Reveal streaming text smoothly": "Reveal streaming text smoothly",
   "Text appears at a steady pace instead of in bursts": "Text appears at a steady pace instead of in bursts",
-  "⌘Enter": "⌘Enter"
+  "⌘Enter": "⌘Enter",
+  "{installed} installed, {version} available": "{installed} installed, {version} available",
+  "No checksum provided: the download can't be verified.": "No checksum provided: the download can't be verified."
 }

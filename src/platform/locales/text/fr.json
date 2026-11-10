@@ -4757,7 +4757,6 @@
   "Website": "Site web",
   "Removing…": "Suppression…",
   "Registry agents": "Agents du registre",
-  "No checksum provided": "Aucune somme de contrôle fournie",
   "{name} provides no checksum for its download, so the downloaded file cannot be verified. Install it anyway?": "{name} ne fournit aucune somme de contrôle pour son téléchargement : le fichier téléchargé ne peut donc pas être vérifié. L'installer quand même ?",
   "Usage limit": "Limite d'utilisation",
   "{provider} didn't start: {error}": "{provider} n'a pas démarré : {error}",

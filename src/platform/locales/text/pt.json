@@ -4869,7 +4869,6 @@
   "Website": "Site",
   "Removing…": "Removendo…",
   "Registry agents": "Agentes do registro",
-  "No checksum provided": "Nenhuma soma de verificação fornecida",
   "{name} provides no checksum for its download, so the downloaded file cannot be verified. Install it anyway?": "{name} não fornece nenhuma soma de verificação para seu download, portanto o arquivo baixado não pode ser verificado. Instalar mesmo assim?",
   "Usage limit": "Limite de uso",
   "{provider} didn't start: {error}": "{provider} não iniciou: {error}",

@@ -4904,7 +4904,6 @@
   "Website": "Sitio web",
   "Removing…": "Eliminando…",
   "Registry agents": "Agentes del registro",
-  "No checksum provided": "No se proporcionó suma de comprobación",
   "{name} provides no checksum for its download, so the downloaded file cannot be verified. Install it anyway?": "{name} no proporciona suma de comprobación para su descarga, por lo que no se puede verificar el archivo descargado. ¿Desea instalarlo de todos modos?",
   "Usage limit": "Límite de uso",
   "{provider} didn't start: {error}": "{provider} no se inició: {error}",
