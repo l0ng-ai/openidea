@@ -13,9 +13,11 @@ use ide_vfs::Watcher;
 use ide_workspace::documents::DocumentObserver;
 use ide_workspace::{DocumentInfo, Documents, FileMoves, LocalHistory, ProjectRoots, SettingsStore, SourceFolder};
 use parking_lot::{Mutex, RwLock};
+use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
+use std::time::{Duration, Instant};
 
 /// Everything bound to one open project folder.
 pub struct Project {
@@ -1256,6 +1258,29 @@ fn content_roots(settings: &ide_core::settings::Settings, root: &Path, build_cac
 /// only on the roots picked per member in Settings › Project Structure › Dependencies —
 /// being attached to the workspace never makes its code navigable by itself.
 pub(crate) fn navigation_roots(project: &Project, from: &Path) -> Vec<PathBuf> {
+    // Hover probes and import-segment clicks repeat these lookups for the same file,
+    // and each uncached call re-reads the workspace file: memoize briefly. The short
+    // TTL keeps settings and workspace edits near-immediate.
+    static CACHE: Mutex<Option<HashMap<(PathBuf, PathBuf), (Instant, Vec<PathBuf>)>>> = Mutex::new(None);
+    const TTL: Duration = Duration::from_secs(1);
+    const CAP: usize = 256;
+    let key = (project.root.clone(), from.to_path_buf());
+    if let Some((at, roots)) = CACHE.lock().as_ref().and_then(|m| m.get(&key)) {
+        if at.elapsed() < TTL {
+            return roots.clone();
+        }
+    }
+    let roots = navigation_roots_uncached(project, from);
+    if let Some(map) = CACHE.lock().as_mut() {
+        if map.len() >= CAP {
+            map.retain(|_, (at, _)| at.elapsed() < TTL);
+        }
+        map.insert(key, (Instant::now(), roots.clone()));
+    }
+    roots
+}
+
+fn navigation_roots_uncached(project: &Project, from: &Path) -> Vec<PathBuf> {
     let settings = project.settings.effective();
     let workspace = ide_workspace::workspace::Workspace::load(&project.root).ok().flatten();
     let own = workspace
