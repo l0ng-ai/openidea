@@ -29,10 +29,11 @@ it("resolves declared package paths within their plugin and uses the dark SVG", 
 it("retains built-in names, legacy aliases and unknown-icon fallback", async () => {
   expect(markerIcon(await resolveMarkerIcon("p", "database"))).toBe("database");
   expect(markerIcon("overriding")).toBe("gutter-overriding");
-  expect(markerIcon("not-an-icon")).toBe("gutter-implementing");
-  expect(markerIcon("__proto__")).toBe("gutter-implementing");
-  expect(markerIcon("constructor")).toBe("gutter-implementing");
-  expect(markerIcon(null)).toBe("gutter-implementing");
+  expect(markerIcon("implementing")).toBe("gutter-implementing");
+  expect(markerIcon("not-an-icon")).toBe("gutter-navigate");
+  expect(markerIcon("__proto__")).toBe("gutter-navigate");
+  expect(markerIcon("constructor")).toBe("gutter-navigate");
+  expect(markerIcon(null)).toBe("gutter-navigate");
   expect(mocks.assets).not.toHaveBeenCalled();
 });
 
@@ -65,7 +66,7 @@ it("falls back when an asset fails to load", async () => {
   mocks.assets.mockRejectedValue(new Error("disabled"));
   const remove = projectMarkerIcon("p", { id: "resource", icon: "icons/resource.svg" });
   try {
-    expect(markerIcon(await resolveMarkerIcon("p", "icons/resource.svg"))).toBe("gutter-implementing");
+    expect(markerIcon(await resolveMarkerIcon("p", "icons/resource.svg"))).toBe("gutter-navigate");
   } finally {
     remove();
     warning.mockRestore();
