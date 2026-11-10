@@ -142,7 +142,7 @@ const TYPE_DECLARATION = /\b(?:class|interface|trait|object|struct|enum|record|i
 export function enclosingType(lines: readonly string[] | null | undefined, target: Location): string | null {
   for (let l = target.range.start.line - 1; lines && l >= 0 && l >= target.range.start.line - 2000; l--) {
     const m = TYPE_DECLARATION.exec(lines[l] ?? "");
-    if (m && !/^\s*(\/\/|\*|\/\*)/.test(lines[l] ?? "")) return m[1]!;
+    if (m && !/^\s*(\/\/|\*|\/\*|#)/.test(lines[l] ?? "")) return m[1]!;
   }
   return null;
 }

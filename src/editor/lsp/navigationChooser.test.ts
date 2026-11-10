@@ -161,6 +161,30 @@ describe("locationItems", () => {
     expect(item.detail).toBe("src/mod.py:4");
   });
 
+  it("does not take the container from a line comment mentioning 'class'", async () => {
+    const lines = [
+      "",
+      "class _StatefulDataset(Base):",
+      "",
+      "    # the base class does all that is needed.",
+      "",
+      "    def refresh(self) -> None:",
+    ];
+    readManyFileLines.mockResolvedValue(new Map([["/p/src/mod.py", lines]]));
+    project({});
+    const item = (
+      await locationItems([
+        {
+          path: "/p/src/mod.py",
+          uri: null,
+          range: { start: { line: 5, col: 8 }, end: { line: 5, col: 15 } },
+        },
+      ])
+    )[0]!;
+    expect(item.detail).not.toContain("does");
+    expect(item.detail).toContain("_StatefulDataset");
+  });
+
   it("keeps index symbols' container detail", async () => {
     readManyFileLines.mockResolvedValue(new Map());
     project({});
