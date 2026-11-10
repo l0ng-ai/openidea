@@ -61,7 +61,13 @@ beforeEach(() => {
   ipc.rollback.mockReset().mockResolvedValue({ status: "ok", data: null });
   ipc.prompt.mockReset().mockResolvedValue({ status: "ok", data: null });
   ipc.cancel.mockReset().mockResolvedValue({ status: "ok", data: null });
-  useAgents.setState({ tasks: new Map([[task.id, task]]), entries: new Map(), composers: new Map(), focus: null });
+  useAgents.setState({
+    loaded: true,
+    tasks: new Map([[task.id, task]]),
+    entries: new Map(),
+    composers: new Map(),
+    focus: null,
+  });
 });
 
 it("keeps the transcript and running session when a fresh-session rerun is cancelled", async () => {
