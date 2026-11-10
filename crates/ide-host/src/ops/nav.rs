@@ -161,11 +161,15 @@ pub async fn nav_index_definitions(
     let project = host.project(window)?;
     blocking(move || {
         let roots = crate::project::navigation_roots(&project, &from);
+        // The index truncates before this filter (sorted by per-root relative path), so a
+        // common name can fill the cap with own-root matches and evict dependency roots:
+        // ask for a larger batch, filter by roots, then cap the answer.
         Ok(project
             .index
-            .symbols_named(&name, None, 500)
+            .symbols_named(&name, None, 20_000)
             .into_iter()
             .filter(|m| roots.iter().any(|root| m.path.starts_with(root)))
+            .take(500)
             .collect())
     })
     .await
