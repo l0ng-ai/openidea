@@ -643,6 +643,77 @@ mod tests {
     }
 
     #[test]
+    fn unset_settings_keep_their_defaults_json_shape() {
+        // `SettingsStore::set` validates a key path against this JSON: a new field that
+        // serializes away when unset (`skip_serializing_if`) cannot be written.
+        let commit = defaults_json()["vcs"]["commit"].clone();
+        assert_eq!(
+            commit,
+            json!({
+                "nonModal": true,
+                "clearInitialMessage": false,
+                "analyzeCode": true,
+                "checkTodo": true,
+                "reformat": false,
+                "optimizeImports": false,
+                "cleanup": false,
+                "blankLineAfterSubject": true,
+                "limitSubject": true,
+                "subjectLimit": 72,
+                "limitBody": false,
+                "bodyLimit": 72,
+                "showRightMargin": true,
+                "wrapAtMargin": false,
+                "disabledPluginChecks": [],
+                "doubleClickOpensDiff": null,
+            })
+        );
+    }
+
+    #[test]
+    fn tri_state_commit_setting_writes_and_clears() {
+        let tmp = tempfile::tempdir().unwrap();
+        let cfg = tmp.path().join("cfg");
+        let store = SettingsStore::load(&cfg, None);
+        assert_eq!(store.effective().vcs.commit.double_click_opens_diff, None);
+        // A layer without the key: the unset state.
+        std::fs::create_dir_all(&cfg).unwrap();
+        std::fs::write(cfg.join("settings.toml"), "[vcs.commit]\nnonModal = false\n").unwrap();
+        assert_eq!(store.reload().vcs.commit.double_click_opens_diff, None);
+
+        for on in [true, false] {
+            let s = store.set(SettingsScope::Global, "vcs.commit.doubleClickOpensDiff", json!(on)).unwrap();
+            assert_eq!(s.vcs.commit.double_click_opens_diff, Some(on));
+            assert!(!store.effective().vcs.commit.non_modal);
+            assert_eq!(
+                std::fs::read_to_string(cfg.join("settings.toml")).unwrap(),
+                format!("[vcs.commit]\nnonModal = false\ndoubleClickOpensDiff = {on}\n")
+            );
+            assert_eq!(SettingsStore::load(&cfg, None).effective().vcs.commit.double_click_opens_diff, Some(on));
+        }
+
+        // `null` removes the key from the layer: back to following the interface.
+        let s = store.set(SettingsScope::Global, "vcs.commit.doubleClickOpensDiff", json!(null)).unwrap();
+        assert_eq!(s.vcs.commit.double_click_opens_diff, None);
+        assert_eq!(std::fs::read_to_string(cfg.join("settings.toml")).unwrap(), "[vcs.commit]\nnonModal = false\n");
+        // A layer already lacking the table keeps its other keys when the key is set.
+        let fresh = tmp.path().join("fresh");
+        let store = SettingsStore::load(&fresh, None);
+        let s = store.set(SettingsScope::Global, "vcs.commit.doubleClickOpensDiff", json!(true)).unwrap();
+        assert_eq!(s.vcs.commit.double_click_opens_diff, Some(true));
+        assert!(s.vcs.commit.non_modal);
+        assert_eq!(
+            std::fs::read_to_string(fresh.join("settings.toml")).unwrap(),
+            "[vcs.commit]\ndoubleClickOpensDiff = true\n"
+        );
+        // Wrong types are still rejected.
+        assert_eq!(
+            store.set(SettingsScope::Global, "vcs.commit.doubleClickOpensDiff", json!("yes")).unwrap_err().kind,
+            ide_core::error::ErrorKind::InvalidInput
+        );
+    }
+
+    #[test]
     fn inspection_profiles_live_in_their_layers() {
         let tmp = tempfile::tempdir().unwrap();
         let cfg = tmp.path().join("cfg");

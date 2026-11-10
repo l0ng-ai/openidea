@@ -11,6 +11,7 @@ import clsx from "clsx";
 import type {
   CapabilityInfo,
   CatalogPlugin,
+  DependencyState,
   MarketPlugin,
   PluginIcon as PluginIconData,
   PluginInfo,
@@ -71,6 +72,15 @@ const STATUS: Record<PluginStatus, { label: string; tone: "success" | "accent" |
   disabled: { label: "Disabled", tone: "neutral" },
   needsConsent: { label: "Needs permission", tone: "warning" },
   failed: { label: "Failed", tone: "danger" },
+  blocked: { label: "Blocked", tone: "warning" },
+};
+
+const DEPENDENCY_STATE: Record<DependencyState, { label: string; tone: "success" | "neutral" | "warning" }> = {
+  satisfied: { label: "Installed", tone: "success" },
+  missing: { label: "Not installed", tone: "warning" },
+  disabled: { label: "Disabled", tone: "neutral" },
+  version: { label: "Wrong version", tone: "warning" },
+  blocked: { label: "Cannot run", tone: "warning" },
 };
 
 /** Human names of the built-in contribution points (others show their id). */
@@ -236,6 +246,80 @@ function Section({ title, children }: { title: string; children: ReactNode }) {
       {children}
     </section>
   );
+}
+
+/** What a plugin needs, who needs it and the extension points it offers; nothing when it has none. */
+function Relations({ plugin }: { plugin: PluginInfo }) {
+  return (
+    <>
+      {plugin.depends.length > 0 && (
+        <Section title="Requires">
+          <ul className={styles.items} aria-label={tx("Required plugins")}>
+            {plugin.depends.map((dep) => (
+              <li key={dep.id} className={styles.item}>
+                <span className={styles.itemMain}>
+                  {dep.name ?? dep.id}
+                  {dep.version ? ` ${dep.version}` : ""}
+                  {dep.optional ? ` ${tx("(optional)")}` : ""}
+                </span>
+                <Badge tone={DEPENDENCY_STATE[dep.state].tone}>{DEPENDENCY_STATE[dep.state].label}</Badge>
+              </li>
+            ))}
+          </ul>
+        </Section>
+      )}
+      {plugin.dependents.length > 0 && (
+        <Section title="Required by">
+          <ul className={styles.items} aria-label={tx("Plugins that require this one")}>
+            {plugin.dependents.map((dependent) => (
+              <li key={dependent.id} className={styles.item}>
+                <span className={styles.itemMain}>{dependent.name}</span>
+                {!dependent.enabled && <Badge tone="neutral">{tx("Disabled")}</Badge>}
+              </li>
+            ))}
+          </ul>
+        </Section>
+      )}
+      {plugin.extensionPoints.length > 0 && (
+        <Section title="Extension points">
+          <ul className={styles.items} aria-label={tx("Extension points this plugin offers")}>
+            {plugin.extensionPoints.map((point) => (
+              <li key={point.id} className={styles.item}>
+                <span className={styles.itemMain} title={point.description || point.id}>
+                  <span className={styles.mono}>{point.id}</span>
+                </span>
+                <span className={styles.muted}>
+                  {point.contributors.length > 0
+                    ? tx`Contributed by ${point.contributors.join(", ")}`
+                    : tx("No contributions")}
+                </span>
+              </li>
+            ))}
+          </ul>
+        </Section>
+      )}
+    </>
+  );
+}
+
+/** Asks before disabling a plugin that enabled plugins need: they stop with it. */
+async function toggleEnabled(plugin: PluginInfo): Promise<void> {
+  const needing = plugin.dependents.filter((d) => d.enabled).map((d) => d.name);
+  if (plugin.enabled && plugin.status !== "failed" && needing.length > 0) {
+    const names = needing.join(", ");
+    const confirmed = await confirm({
+      title: tx("Disable plugin"),
+      message:
+        needing.length === 1
+          ? tx`${names} needs ${plugin.name} and stops while it is disabled. Disable it anyway?`
+          : tx`${names} need ${plugin.name} and stop while it is disabled. Disable it anyway?`,
+      ok: tx("Disable"),
+      icon: "warning",
+    });
+    if (!confirmed) return;
+  }
+  // Enabling an enabled plugin stops and starts it again: that is "Restart".
+  await setPluginEnabled(plugin.id, !plugin.enabled || plugin.status === "failed");
 }
 
 function DetailTabs({ notes, overview }: { notes: string | null; overview: ReactNode }) {
@@ -516,6 +600,8 @@ function InstalledDetails({ plugin }: { plugin: PluginInfo }) {
         </div>
       ))}
 
+      <Relations plugin={plugin} />
+
       <Section title="Permissions">
         <CapabilityList plugin={plugin} busy={busy} />
       </Section>
@@ -564,8 +650,7 @@ function InstalledDetails({ plugin }: { plugin: PluginInfo }) {
             size="small"
             variant={plugin.enabled ? "secondary" : "primary"}
             disabled={busy}
-            // Enabling an enabled plugin stops and starts it again: that is "Restart".
-            onClick={() => void setPluginEnabled(plugin.id, !plugin.enabled || plugin.status === "failed")}
+            onClick={() => void toggleEnabled(plugin)}
           >
             {plugin.enabled ? (plugin.status === "failed" ? "Restart" : "Disable") : "Enable"}
           </Button>

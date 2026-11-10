@@ -43,6 +43,7 @@ function memoryDocument(text: string) {
   };
   const doc: FrameDocument & { external(changes: TextChange[]): void; text(): string } = {
     read: () => ({ version, text, readOnly: false, name: "a.draw" }),
+    bytes: () => Promise.resolve(new Uint8Array([0x25, 0x50, 0x44, 0x46, 0x00])),
     edit: (at, changes) => {
       if (at !== version) throw new Error("stale");
       apply(changes);
@@ -142,6 +143,7 @@ describe("frame bridge", () => {
       const api = (window as unknown as { openidea: Record<string, never> }).openidea as unknown as {
         document: {
           get(): Promise<unknown>;
+          bytes(): Promise<Uint8Array>;
           edit(v: number, e: TextChange[]): Promise<{ version: number }>;
           replace(v: number, t: string): Promise<unknown>;
           onChange(fn: (s: DocumentState) => void): void;
@@ -152,6 +154,11 @@ describe("frame bridge", () => {
       expect(sent.at(-1)).toMatchObject({ op: "document.get" });
       reply({ reply: sent.at(-1)!.call, value: { version: 3, text: "abc", readOnly: false } });
       await expect(got).resolves.toEqual({ version: 3, text: "abc", readOnly: false });
+
+      const bytes = api.document.bytes();
+      expect(sent.at(-1)).toMatchObject({ op: "document.bytes" });
+      reply({ reply: sent.at(-1)!.call, value: new Uint8Array([0x25, 0x50, 0x44, 0x46, 0x00]) });
+      await expect(bytes).resolves.toEqual(new Uint8Array([0x25, 0x50, 0x44, 0x46, 0x00]));
 
       const edited = api.document.edit(3, [{ from: 0, to: 1, insert: "X" }]);
       expect(sent.at(-1)).toMatchObject({ op: "document.edit", args: { version: 3 } });
@@ -227,19 +234,22 @@ describe("WebView", () => {
     send({ call: 1, op: "document.get" });
     expect((await replyTo(1)).value).toEqual({ version: 0, text: "hello world", readOnly: false, name: "a.draw" });
 
-    send({ call: 2, op: "document.edit", args: { version: 0, edits: [{ from: 0, to: 5, insert: "HELLO" }] } });
-    expect((await replyTo(2)).value).toEqual({ version: 1 });
+    send({ call: 2, op: "document.bytes" });
+    expect(await replyTo(2)).toMatchObject({ value: { 0: 0x25, 1: 0x50, 2: 0x44, 3: 0x46, 4: 0, byteLength: 5 } });
+
+    send({ call: 3, op: "document.edit", args: { version: 0, edits: [{ from: 0, to: 5, insert: "HELLO" }] } });
+    expect((await replyTo(3)).value).toEqual({ version: 1 });
     expect(doc.text()).toBe("HELLO world");
 
-    send({ call: 3, op: "document.edit", args: { version: 0, edits: [] } });
-    expect((await replyTo(3)).error).toBe("stale");
+    send({ call: 4, op: "document.edit", args: { version: 0, edits: [] } });
+    expect((await replyTo(4)).error).toBe("stale");
 
-    send({ call: 4, op: "document.replace", args: { version: 1, text: "HELLO there" } });
-    expect((await replyTo(4)).value).toEqual({ version: 2 });
+    send({ call: 5, op: "document.replace", args: { version: 1, text: "HELLO there" } });
+    expect((await replyTo(5)).value).toEqual({ version: 2 });
     expect(doc.text()).toBe("HELLO there");
 
-    send({ call: 5, op: "document.edit", args: { version: 2, edits: [{ from: 0, to: 99, insert: "" }] } });
-    expect(String((await replyTo(5)).error)).toContain("in range");
+    send({ call: 6, op: "document.edit", args: { version: 2, edits: [{ from: 0, to: 99, insert: "" }] } });
+    expect(String((await replyTo(6)).error)).toContain("in range");
 
     // Changes made elsewhere reach the page; its own are not echoed back.
     const before = posted.filter((m) => m.document).length;
@@ -247,8 +257,8 @@ describe("WebView", () => {
     await waitFor(() => expect(posted.filter((m) => m.document)).toHaveLength(before + 1));
     expect(posted.at(-1)).toMatchObject({ document: { version: 3, text: "> HELLO there" } });
 
-    send({ call: 6, op: "nope" });
-    expect(String((await replyTo(6)).error)).toContain("unknown request");
+    send({ call: 7, op: "nope" });
+    expect(String((await replyTo(7)).error)).toContain("unknown request");
   });
 
   it("follows the installed package: a new revision reloads the page, an unchanged one keeps it", async () => {

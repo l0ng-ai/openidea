@@ -718,3 +718,21 @@ it("sorts workspace member roots by the folder names shown in the tree", async (
     ]),
   );
 });
+
+it("hides the path beside workspace roots when Show Root Paths is off, keeping it on hover", async () => {
+  fs = new MemoryFs({
+    "/a/service/one.txt": "",
+    "/b/web/two.txt": "",
+    "/workspace/.openidea/workspace.json": "{}",
+  });
+  setProjectFsForTests(fs, "/workspace");
+  initProjectTree("/workspace", "Workspace", ["/a/service", "/b/web"]);
+  const { rows } = setup();
+  await waitFor(() => expect(rows()).toContain("service/a/service"));
+
+  act(() => setViewOption("showRootPaths", false));
+  await waitFor(() => expect(rows()).toEqual(["service", "one.txt", "web", "two.txt"]));
+  const root = document.querySelector('[data-project-path="/a/service"]');
+  expect(root?.getAttribute("title")).toBe("/a/service");
+  act(() => setViewOption("showRootPaths", true));
+});

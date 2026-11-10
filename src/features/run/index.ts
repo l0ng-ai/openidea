@@ -13,6 +13,7 @@ import {
   menuGroupItems,
   useDebugRunSessions,
   notifications,
+  provideRunOutput,
   registerMenuGroup,
   registerOverlay,
   registerRunAnythingProvider,
@@ -80,6 +81,7 @@ import {
   startRun,
   startSampleOutput,
   stopSession,
+  subscribeOutput,
   trackRecentConfigurations,
   useRun,
   isLive,
@@ -727,6 +729,8 @@ export function activate(): () => void {
 
   setBeforeLaunchRunner(runBeforeLaunch);
   disposers.push(() => setBeforeLaunchRunner(null));
+  provideRunOutput({ subscribe: subscribeOutput });
+  disposers.push(() => provideRunOutput(undefined));
   if (hasProject()) void loadConfigs();
 
   // Reload when run.toml or build files change on disk (cheap; detection is fast).

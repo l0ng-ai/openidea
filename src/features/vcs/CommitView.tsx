@@ -84,6 +84,7 @@ import {
   changeNodeDiffData,
   diffInput,
   openVcsDiff,
+  opensDiffOnActivate,
   vcsDiffInFront,
   workingDiffData,
 } from "./diffInput";
@@ -95,6 +96,7 @@ import { OperationBanner } from "./operations";
 import { runOp } from "./ops";
 import { ShelfPanel, loadShelves, useShelf } from "./shelf";
 import { refreshNow, repoName, selectRepo, useVcs } from "./store";
+import { saveVcsSetting } from "./settingsUi";
 import styles from "./CommitView.module.css";
 
 /** MIME type of files dragged onto a change list (absolute paths, newline-separated). */
@@ -201,14 +203,44 @@ const bottomLeft = (el: HTMLElement) => {
 };
 
 /**
- * Opens a file's diff; F7 continues through the other files of its group, in tree
- * order. Where depends on the commit interface setting (openVcsDiff): a preview editor
- * tab, or under the modal interface the front diff window, as an editor tab would sit
- * behind the modal Commit dialog (#1863).
+ * Activates a change (Enter, double-click, Show Diff); F7 continues through the other
+ * files of its group, in tree order. Enter and double-click follow IDEA's Show on
+ * Double-Click (opensDiffOnActivate): the source file, or the diff where the commit
+ * interface puts it (openVcsDiff: a preview editor tab, or under the modal interface the
+ * front diff window, behind the modal Commit dialog, #1863). `forceDiff` is Show Diff and
+ * the Commit dialog's own activation, which always show the diff in front.
  */
-function openNode(n: ChangeNode, roots: readonly ChangeNode[]) {
+function openNode(n: ChangeNode, roots: readonly ChangeNode[], forceDiff = false) {
   if (n.type !== "file" || !n.path) return;
+  if (!forceDiff && !opensDiffOnActivate()) {
+    void editorService().openFile(n.path, { focus: true });
+    return;
+  }
   void openVcsDiff(changeNodeDiffData(roots, n), { preview: true });
+}
+
+/** The setting behind Show on Double-Click (`None` follows the commit interface). */
+export const DOUBLE_CLICK_KEY = "vcs.commit.doubleClickOpensDiff";
+
+/**
+ * IDEA's Show on Double-Click: the change lists' View Options items. An unset value
+ * (Follow the Interface) is written as `null`, which removes the key from the settings.
+ */
+export function doubleClickMenu(value: boolean | null | undefined): MenuItem[] {
+  const on = value ?? null;
+  const set = (v: boolean | null) => () => void saveVcsSetting(DOUBLE_CLICK_KEY, v);
+  return [
+    { kind: "separator" },
+    {
+      label: tx("Show on Double-Click"),
+      submenu: [
+        { label: tx("Follow the Interface"), checked: on === null, run: set(null) },
+        { kind: "separator" },
+        { label: tx("Diff"), checked: on === true, run: set(true) },
+        { label: tx("Source"), checked: on === false, run: set(false) },
+      ],
+    },
+  ];
 }
 
 /** Context menu of a change list's header: the list's own actions, then the bulk ones on its files. */
@@ -311,7 +343,8 @@ export function nodeMenu(
           label: "Show Diff",
           icon: "diff",
           shortcut: shortcutLabel("vcs.showDiff"),
-          run: () => openNode(first, opts.roots!),
+          // An explicit Show Diff always opens the diff, whatever Show on Double-Click says.
+          run: () => openNode(first, opts.roots!, true),
         }
       : { kind: "action", action: "vcs.showDiff", arg: first?.path },
     {
@@ -516,6 +549,7 @@ export function ChangesTree({ mode }: { mode: "commit" | "local" | "dialog" }) {
   const groupByStaging = useCommit((s) => s.groupByStaging);
   const diffPreview = useCommit((s) => s.diffPreview);
   const commitDiffPreview = useCommit((s) => s.commitDiffPreview);
+  const doubleClickOpensDiff = useWorkflowSettings((s) => s.vcs.commit.doubleClickOpensDiff);
   const lists = useChangelists((s) => s.state);
   const checks = useCommitChecks();
   const checkboxes = mode !== "local";
@@ -644,6 +678,8 @@ export function ChangesTree({ mode }: { mode: "commit" | "local" | "dialog" }) {
                     { label: "Show Diff Preview", checked: diffPreview, run: () => setDiffPreview(!diffPreview) },
                   ]
                 : []),
+              // Not in the Commit dialog, whose files always open as source.
+              ...(mode === "dialog" ? [] : doubleClickMenu(doubleClickOpensDiff)),
             ])
           }
         />
@@ -738,7 +774,7 @@ export function ChangesTree({ mode }: { mode: "commit" | "local" | "dialog" }) {
               selectedList: nodes.find((n) => n.changelist)?.changelist ?? null,
             });
           }}
-          onActivate={(n) => openNode(n, roots)}
+          onActivate={(n) => openNode(n, roots, mode === "dialog")}
           onContextMenu={(node, sel, e: MouseEvent) => {
             if (!node) return;
             if (node.type === "group" && node.changelist) {

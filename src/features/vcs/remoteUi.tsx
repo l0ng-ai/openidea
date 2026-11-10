@@ -4,7 +4,6 @@ import type { BranchInfo, Commit, PushTags, RemoteOp } from "@/bindings";
 import { call, commands } from "@/platform/ipc";
 import { tx } from "@/platform/i18n";
 import { workflowSettings, type UpdateMethod } from "@/platform/workflowSettings";
-import { useProject } from "@/platform/project";
 import { notifications } from "@/workbench/contributions";
 import {
   Button,
@@ -22,6 +21,7 @@ import {
 } from "@/ui";
 import { ask } from "@/workbench/messages";
 import { openDialog } from "./dialogs";
+import { saveVcsSetting } from "./settingsUi";
 import { formatTime } from "./model";
 import { allRepos, lastRemoteFailure, runRemote, saveAll } from "./ops";
 import { PushChanges, pushChangesKey } from "./PushChanges";
@@ -47,13 +47,6 @@ async function updateProject(rebase: boolean) {
         ? `${branch.head} ← ${branch.upstream}`
         : undefined;
   await runRemote({ op: "pull", rebase }, detail, repos);
-}
-
-/** Writes a Version Control setting of the project, as the Settings page would. */
-async function saveVcsSetting(key: string, value: unknown) {
-  const scope = useProject.getState().project ? "project" : "global";
-  const settings = await call(commands.settingsSet(scope, key, JSON.stringify(value))).catch(() => null);
-  if (settings) useProject.setState({ settings });
 }
 
 /** Reset to the Remote Branch: after confirming, drops local commits and takes the tracked branch. */

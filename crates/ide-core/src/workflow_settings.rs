@@ -115,6 +115,13 @@ pub struct CommitSettings {
     pub wrap_at_margin: bool,
     /// Plugin before-commit checks turned off (`<plugin id>/<check id>`); the rest run.
     pub disabled_plugin_checks: Vec<String>,
+    /// Double-click / Enter in the changes view: `None` follows the interface (the
+    /// Commit tool window opens the diff, Local Changes the source file).
+    ///
+    /// No `skip_serializing_if`: an unset value must still appear in
+    /// `Settings::default()`, or `SettingsStore::set` rejects the key as unknown.
+    #[specta(optional)]
+    pub double_click_opens_diff: Option<bool>,
 }
 
 impl Default for CommitSettings {
@@ -135,6 +142,7 @@ impl Default for CommitSettings {
             show_right_margin: true,
             wrap_at_margin: false,
             disabled_plugin_checks: Vec::new(),
+            double_click_opens_diff: None,
         }
     }
 }

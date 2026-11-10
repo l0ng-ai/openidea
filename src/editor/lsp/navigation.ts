@@ -23,6 +23,7 @@ import {
 } from "@codemirror/view";
 import { Channel } from "@tauri-apps/api/core";
 import {
+  call,
   commands,
   isCancelled,
   nextRequestId,
@@ -73,6 +74,7 @@ import {
 import { featureBackoff } from "./availability";
 import { requestHover, showPhpConstructDocumentation } from "./hover";
 import { declarationSummary, renderCode } from "./markdown";
+import { enclosingType } from "@/editor/navigation/lineMarkers";
 import { editorPrefs } from "@/platform/editorSettings";
 import { isVirtualUri, virtualContainer } from "@/platform/virtualDocs";
 import { isAddCaretGesture } from "@/editor/core/cm/multiCaret";
@@ -123,30 +125,79 @@ export function dedupeLocations<T extends Location>(locs: readonly T[]): T[] {
   });
 }
 
-/** Popup items for locations, with a one-line source preview each. */
+/** Last segments of an absolute path, `…`-prefixed (IDEA's Go to File style). */
+function tailPath(path: string, keep = 2): string {
+  const parts = path.split("/");
+  return parts.length <= keep ? path : `…/${parts.slice(-keep).join("/")}`;
+}
+
+/** The `path:line` after a chooser row's name: project-relative, or a `…`-tail outside the project. */
+function chooserWhere(root: string, path: string, line: number): string {
+  if (isVirtualUri(path)) return `${virtualContainer(path)}:${line}`;
+  const p = relativePath(root, path);
+  return `${p === path ? tailPath(p) : p}:${line}`;
+}
+
+/**
+ * The index's container for each server target (exact path+range match), keyed by
+ * target index; misses (fresh edits, excluded folders, outside the project) fall
+ * back to the enclosing-type heuristic. One query per distinct target name; index
+ * symbols carry their container already and are not queried.
+ */
+async function indexContainers(
+  locs: readonly DeclarationTarget[],
+  names: readonly (string | null)[],
+): Promise<Map<number, string>> {
+  const out = new Map<number, string>();
+  const byName = new Map<string, number[]>();
+  locs.forEach((l, i) => {
+    if (l.kind && l.name) return;
+    const name = names[i];
+    if (name) byName.set(name, (byName.get(name) ?? []).concat(i));
+  });
+  await Promise.all(
+    [...byName].map(async ([name, at]) => {
+      try {
+        const matches = await call(commands.findSymbols(name, "all", SYMBOL_LIMIT));
+        for (const i of at) {
+          const l = locs[i]!;
+          const hit = matches.find(
+            (m) =>
+              m.path === l.path && m.range.start.line === l.range.start.line && m.range.start.col === l.range.start.col,
+          );
+          if (hit?.container) out.set(i, hit.container);
+        }
+      } catch {
+        // The index is optional here; the heuristic answers instead.
+      }
+    }),
+  );
+  return out;
+}
+
+const SYMBOL_LIMIT = 500;
+
+/** Popup items for locations: icon + name, the container, and `path:line` (IDEA's chooser rows). */
 export async function locationItems(locs: readonly DeclarationTarget[]): Promise<ListPopupItem[]> {
   const files = await readManyFileLines(locs.map((l) => l.path));
   const root = useProject.getState().project?.root ?? "";
+  const names = locs.map((l) => targetLabel(files.get(l.path)?.[l.range.start.line] ?? "", l.range.start.col));
+  const indexed = await indexContainers(locs, names);
   return locs.map((l, i) => {
-    const where = `${isVirtualUri(l.path) ? virtualContainer(l.path) : relativePath(root, l.path)}:${l.range.start.line + 1}`;
-    const preview = files.get(l.path)?.[l.range.start.line]?.trim();
-    // Index symbols (syntax fallback): "name  container · file:line", like IDEA's chooser.
+    const where = chooserWhere(root, l.path, l.range.start.line + 1);
+    // Index symbols carry their container; server targets take the index's answer or the enclosing type.
     if (l.kind && l.name)
       return {
         id: `${i}`,
         label: l.name,
-        detail: l.container ? `${l.container} · ${where}` : where,
-        preview,
+        detail: [l.container, where].filter(Boolean).join(" · "),
         symbol: l.kind,
         run: () => navigateTo(l),
       };
-    // Server targets: the declared name (speed search matches it), file and line after it.
-    const name = targetLabel(files.get(l.path)?.[l.range.start.line] ?? "", l.range.start.col);
     return {
       id: `${i}`,
-      label: name ?? basename(l.path),
-      detail: name ? `${basename(l.path)} · ${where}` : where,
-      preview,
+      label: names[i] ?? basename(l.path),
+      detail: [indexed.get(i) ?? enclosingType(files.get(l.path), l), where].filter(Boolean).join(" · "),
       icon: fileIconName(basename(l.path), l.path),
       run: () => navigateTo(l),
     };
