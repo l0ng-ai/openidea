@@ -40,6 +40,7 @@ pub fn code_actions(path: &Path, text: &str, range: Range) -> Vec<ImportAction> 
                     .map(|(from, to, new_text)| TextEdit { range: lines.range(from, to), new_text })
                     .collect(),
             ),
+            open: None,
         })
         .collect()
 }

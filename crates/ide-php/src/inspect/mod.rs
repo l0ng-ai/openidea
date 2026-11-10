@@ -73,7 +73,7 @@ use std::sync::{Arc, OnceLock};
 
 use ide_core::inspection_settings::InspectionOverride;
 use ide_core::settings::Settings;
-use ide_core::{CancellationToken, Diagnostic, DocId, Range, Severity, TextEdit, WorkspaceEdit};
+use ide_core::{CancellationToken, Diagnostic, DocId, Location, Range, Severity, TextEdit, WorkspaceEdit};
 
 use crate::engine::PhpEngine;
 use crate::imports::{ImportAction, QUICKFIX, REWRITE, file_edit, wanted};
@@ -252,6 +252,8 @@ pub struct QuickFix {
     pub edit: WorkspaceEdit,
     /// Applied by "fix the problem" shortcuts when it is the obvious fix.
     pub preferred: bool,
+    /// Where the editor opens after applying the edit, if anywhere.
+    pub open: Option<Location>,
 }
 
 /// A problem an inspection found.
@@ -623,6 +625,7 @@ impl PhpEngine {
                     kind: QUICKFIX,
                     preferred: fix.preferred,
                     edit: fix.edit.clone(),
+                    open: fix.open.clone(),
                 });
             }
         }

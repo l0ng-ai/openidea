@@ -69,6 +69,7 @@ impl PhpEngine {
                 kind: REWRITE,
                 preferred: false,
                 edit: creation_edit(vec![file]),
+                open: None,
             });
         }
 
@@ -79,6 +80,7 @@ impl PhpEngine {
                 kind: REWRITE,
                 preferred: false,
                 edit: creation_edit(vec![file]),
+                open: None,
             });
         }
 
@@ -103,6 +105,7 @@ impl PhpEngine {
                     kind: REWRITE,
                     preferred: false,
                     edit: ide_core::WorkspaceEdit { files: vec![edit], preconditions: Vec::new() },
+                    open: None,
                 });
             }
         }

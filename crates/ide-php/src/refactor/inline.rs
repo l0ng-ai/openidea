@@ -365,6 +365,7 @@ fn inline_variable(
         kind: INLINE_VARIABLE,
         preferred: false,
         edit: file_edit(path, edits),
+        open: None,
     })
 }
 
@@ -975,5 +976,6 @@ fn inline_call(
         kind,
         preferred: false,
         edit: file_edit(path, edits),
+        open: None,
     })
 }

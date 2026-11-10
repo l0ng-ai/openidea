@@ -18,7 +18,7 @@ let onApply: (() => void) | null = null;
 const lspResolveCodeAction = vi.fn(async (_doc: number, action: CodeAction) => ok(action));
 const lspExecuteCodeAction = vi.fn(async () => {
   onApply?.();
-  return ok([]);
+  return ok({ created: [], open: null });
 });
 const lspCodeActions = vi.fn(async () => ok([]));
 const cancelRequest = vi.fn(async () => undefined);

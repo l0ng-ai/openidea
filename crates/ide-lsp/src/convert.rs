@@ -554,6 +554,7 @@ pub fn code_action(conv: &Conv, a: lsp::CodeActionOrCommand, server: ServerId) -
             command: Some(command(c)),
             data: None,
             server,
+            open: None,
         },
         lsp::CodeActionOrCommand::CodeAction(a) => CodeAction {
             title: a.title,
@@ -564,6 +565,7 @@ pub fn code_action(conv: &Conv, a: lsp::CodeActionOrCommand, server: ServerId) -
             command: a.command.map(command),
             data: a.data,
             server,
+            open: None,
         },
     }
 }

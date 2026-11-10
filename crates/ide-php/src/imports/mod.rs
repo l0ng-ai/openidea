@@ -39,7 +39,7 @@ mod tests;
 use std::collections::HashSet;
 use std::path::Path;
 
-use ide_core::{DocId, FileEdit, Range, TextEdit, WorkspaceEdit};
+use ide_core::{DocId, FileEdit, Location, Range, TextEdit, WorkspaceEdit};
 use mago_span::HasSpan;
 use mago_syntax::cst::{Program, Statement, TriviaKind, Use, UseItem, UseItems, UseType};
 
@@ -86,6 +86,9 @@ pub struct ImportAction {
     pub kind: &'static str,
     pub preferred: bool,
     pub edit: WorkspaceEdit,
+    /// Where the editor opens after applying the edit (a created class at
+    /// its new method), if anywhere.
+    pub open: Option<Location>,
 }
 
 /// Whether an action of `kind` is asked for: `only` is empty, or names the
@@ -117,6 +120,7 @@ impl PhpEngine {
                     kind: ORGANIZE_IMPORTS,
                     preferred: true,
                     edit: file_edit(&path, edits),
+                    open: None,
                 });
             }
         }
@@ -165,6 +169,7 @@ impl PhpEngine {
                     kind: QUICKFIX,
                     preferred,
                     edit: file_edit(path, vec![TextEdit { range: Range::new(pos, pos), new_text: text }]),
+                    open: None,
                 });
             }
         }

@@ -91,7 +91,8 @@ use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
 use ide_core::{
-    CancellationToken, Diagnostic, DocId, FileEdit, IdeError, IdeResult, Pos, Range, Severity, TextEdit, WorkspaceEdit,
+    CancellationToken, Diagnostic, DocId, FileEdit, IdeError, IdeResult, Location, Pos, Range, Severity, TextEdit,
+    WorkspaceEdit,
 };
 use mago_span::{HasSpan, Span};
 use mago_syntax::cst::{
@@ -1050,8 +1051,29 @@ pub trait ReferenceKind: Send + Sync {
 pub struct Undefined {
     pub message: String,
     pub severity: Severity,
-    /// The quick-fixes, the preferred one first: their titles and edits.
-    pub fixes: Vec<(String, WorkspaceEdit)>,
+    /// The quick-fixes, the preferred one first.
+    pub fixes: Vec<UndefinedFix>,
+}
+
+/// A quick-fix of an [`Undefined`] usage.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct UndefinedFix {
+    pub title: String,
+    pub edit: WorkspaceEdit,
+    /// Where the editor opens after applying it (a created class at its
+    /// new method).
+    pub open: Option<Location>,
+}
+
+impl UndefinedFix {
+    pub fn new(title: impl Into<String>, edit: WorkspaceEdit) -> Self {
+        Self { title: title.into(), edit, open: None }
+    }
+
+    pub fn opening(mut self, open: Option<Location>) -> Self {
+        self.open = open;
+        self
+    }
 }
 
 impl Undefined {
@@ -1059,8 +1081,12 @@ impl Undefined {
         Self { message: message.into(), severity: Severity::Warning, fixes: Vec::new() }
     }
 
-    pub fn with_fix(mut self, title: impl Into<String>, edit: WorkspaceEdit) -> Self {
-        self.fixes.push((title.into(), edit));
+    pub fn with_fix(self, title: impl Into<String>, edit: WorkspaceEdit) -> Self {
+        self.with(UndefinedFix::new(title, edit))
+    }
+
+    pub fn with(mut self, fix: UndefinedFix) -> Self {
+        self.fixes.push(fix);
         self
     }
 }
@@ -1522,7 +1548,7 @@ impl PhpEngine {
                 deprecated: false,
                 server: None,
             };
-            out.push((diagnostic, found.problem.fixes.into_iter().next()));
+            out.push((diagnostic, found.problem.fixes.into_iter().next().map(|fix| (fix.title, fix.edit))));
         }
         out
     }

@@ -94,8 +94,8 @@ impl Inspection for UndefinedReference {
         for found in cx.engine.undefined_references(cx.parsed, cx.path, &[self.kind], cx.cancel) {
             let problem = out.report(found.start, found.end, found.problem.message);
             problem.with_severity(found.problem.severity);
-            for (index, (title, edit)) in found.problem.fixes.into_iter().enumerate() {
-                problem.with_fix(QuickFix { title, edit, preferred: index == 0 });
+            for (index, fix) in found.problem.fixes.into_iter().enumerate() {
+                problem.with_fix(QuickFix { title: fix.title, edit: fix.edit, preferred: index == 0, open: fix.open });
             }
         }
     }

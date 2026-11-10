@@ -263,6 +263,7 @@ impl PhpEngine {
             kind: REWRITE,
             preferred: false,
             edit: Self::byte_edit(parsed, path, edits),
+            open: None,
         }]
     }
 
@@ -437,6 +438,7 @@ impl PhpEngine {
             kind: REWRITE,
             preferred: false,
             edit,
+            open: None,
         }]
     }
 
@@ -614,6 +616,7 @@ impl PhpEngine {
             kind: REWRITE,
             preferred: false,
             edit: Self::byte_edit(parsed, path, edits),
+            open: None,
         }]
     }
 }

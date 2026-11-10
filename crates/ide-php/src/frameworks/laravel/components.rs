@@ -671,7 +671,7 @@ impl PhpEngine {
             if let Some((title, edit)) = fix
                 && touches(diagnostic.range)
             {
-                out.push(ImportAction { title, kind: QUICKFIX, preferred: true, edit });
+                out.push(ImportAction { title, kind: QUICKFIX, preferred: true, edit, open: None });
             }
         }
         let views = self.laravel_views();
@@ -693,6 +693,7 @@ impl PhpEngine {
                 kind: QUICKFIX,
                 preferred: true,
                 edit,
+                open: None,
             });
         }
         let (start, _) = lines.byte_range(range);
@@ -746,6 +747,7 @@ impl PhpEngine {
             kind: QUICKFIX,
             preferred: false,
             edit: file_edit(view, vec![edit]),
+            open: None,
         })
     }
 }

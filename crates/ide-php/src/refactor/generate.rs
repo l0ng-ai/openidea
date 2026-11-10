@@ -373,7 +373,7 @@ impl Gen<'_> {
         }
         let (start, end, new_text) = combine(self.text, &edits.members)?;
         text_edits.push(TextEdit { range: index.range(start, end), new_text });
-        Some(ImportAction { title, kind, preferred: false, edit: file_edit(self.path, text_edits) })
+        Some(ImportAction { title, kind, preferred: false, edit: file_edit(self.path, text_edits), open: None })
     }
 
     // ------------------------------------------------------- implement
@@ -702,6 +702,7 @@ impl Gen<'_> {
             kind: REWRITE,
             preferred: false,
             edit: file_edit(self.path, vec![TextEdit { range: index.range(at, at), new_text }]),
+            open: None,
         })
     }
 }

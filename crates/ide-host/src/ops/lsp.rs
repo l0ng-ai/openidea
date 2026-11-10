@@ -452,6 +452,7 @@ fn plugin_code_action(plugin: &str, a: ide_plugin::CodeAction) -> CodeAction {
         command: None,
         data,
         server: PLUGIN_SERVER,
+        open: None,
     }
 }
 
@@ -840,7 +841,9 @@ pub async fn lsp_resolve_command(
     result
 }
 
-/// Applies an explicitly invoked action after the interactive answers have been validated.
+/// Applies an explicitly invoked action after the interactive answers have
+/// been validated: the files its command created, and the action's
+/// [`CodeAction::open`] for the editor to open.
 pub async fn lsp_execute_code_action(
     host: &Host,
     window: &str,
@@ -848,7 +851,7 @@ pub async fn lsp_execute_code_action(
     doc: DocId,
     action: CodeAction,
     answers: Vec<FormAnswer>,
-) -> IdeResult<Vec<ide_core::IpcPath>> {
+) -> IdeResult<AppliedCodeAction> {
     let project = host.project(window)?;
     let cancel = host.begin_request(request);
     let result = async {
@@ -856,23 +859,27 @@ pub async fn lsp_execute_code_action(
             return Err(ide_core::IdeError::cancelled());
         }
         let edited = action.edit.is_some();
+        let open = action.open;
         if let Some(edit) = action.edit {
             let documents = project.documents.clone();
             tokio::task::spawn_blocking(move || apply_edit(&documents, &edit))
                 .await
                 .map_err(|e| ide_core::IdeError::internal(e.to_string()))??;
         }
-        match action.command {
+        let created = match action.command {
             Some(command) if edited && is_client_follow_up(&project, doc, Some(action.server), &command).await => {
-                Ok(Vec::new())
+                Vec::new()
             }
             Some(command) => project
                 .lsp
                 .execute_action_command(doc, action.server, command, answers, cancel)
-                .await
-                .map(|paths| paths.into_iter().map(ide_core::IpcPath::from).collect()),
-            None => Ok(Vec::new()),
-        }
+                .await?
+                .into_iter()
+                .map(ide_core::IpcPath::from)
+                .collect(),
+            None => Vec::new(),
+        };
+        Ok(AppliedCodeAction { created, open })
     }
     .await;
     host.end_request(request);

@@ -28,8 +28,12 @@ impl Inspection for Todo {
     fn check(&self, cx: &InspectionContext<'_>, out: &mut Problems) {
         for (at, _) in cx.text().match_indices("todo()") {
             let (start, end) = (at as u32, at as u32 + 6);
-            let fix =
-                QuickFix { title: "Replace with done()".into(), edit: cx.edit(start, end, "done()"), preferred: true };
+            let fix = QuickFix {
+                title: "Replace with done()".into(),
+                edit: cx.edit(start, end, "done()"),
+                preferred: true,
+                open: None,
+            };
             out.report(start, end, "A todo() call").with_fix(fix);
         }
     }

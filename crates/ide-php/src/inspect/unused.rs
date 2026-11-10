@@ -82,6 +82,7 @@ impl Inspection for UnusedImport {
                 title: "Remove unused import".into(),
                 edit: cx.edit(unused.remove.0, unused.remove.1, ""),
                 preferred: true,
+                open: None,
             };
             out.report(unused.start, unused.end, format!("Unused import {what} '{}'", unused.fqn))
                 .unnecessary()

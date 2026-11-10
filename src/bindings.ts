@@ -524,7 +524,7 @@ export const commands = {
 	formFields: FormField[],
 	formAnswers: FormAnswer[],
 } | null, IdeError>(__TAURI_INVOKE("lsp_resolve_command", { request, doc, server, command, answers })),
-	lspExecuteCodeAction: (request: RequestId, doc: DocId, action: CodeAction, answers: FormAnswer[]) => typedError<IpcPath[], IdeError>(__TAURI_INVOKE("lsp_execute_code_action", { request, doc, action, answers })),
+	lspExecuteCodeAction: (request: RequestId, doc: DocId, action: CodeAction, answers: FormAnswer[]) => typedError<AppliedCodeAction, IdeError>(__TAURI_INVOKE("lsp_execute_code_action", { request, doc, action, answers })),
 	/**  Changes of every repository of the project. */
 	vcsStatus: () => typedError<FileStatus[], IdeError>(__TAURI_INVOKE("vcs_status")),
 	/**  The project's repositories, the primary one first. */
@@ -1721,6 +1721,15 @@ export type AppearanceSettings = {
 	mainToolbar?: MainToolbarSettings | null,
 };
 
+/**
+ *  What applying a code action did: the files its command reports created,
+ *  and where the editor opens next ([`CodeAction::open`]).
+ */
+export type AppliedCodeAction = {
+	created: IpcPath[],
+	open: Location | null,
+};
+
 export type ApplyOutcome = {
 	/**  Repository-relative paths changed without conflicts. */
 	applied: string[],
@@ -2099,6 +2108,11 @@ export type CodeAction = {
 	command: Command | null,
 	data: string | null,
 	server: ServerId,
+	/**
+	 *  Where the editor opens after applying the action's edit (a created
+	 *  class at its new method); set by the built-in engines.
+	 */
+	open?: Location | null,
 };
 
 /**

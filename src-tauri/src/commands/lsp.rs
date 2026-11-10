@@ -431,6 +431,6 @@ pub async fn lsp_execute_code_action(
     doc: DocId,
     action: CodeAction,
     answers: Vec<FormAnswer>,
-) -> IdeResult<Vec<ide_core::IpcPath>> {
+) -> IdeResult<AppliedCodeAction> {
     ide_host::ops::lsp::lsp_execute_code_action(&state.host, window.label(), request, doc, action, answers).await
 }

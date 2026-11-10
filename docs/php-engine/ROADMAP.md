@@ -832,7 +832,7 @@ Runs after Plan 7. Before any 8.x phase, read [LARAVEL-ROADMAP.md](LARAVEL-ROADM
   - A host test: Alt+Enter code actions on the fixture app's route file list the fixes, and applying one creates the controller.
   - No new diagnostics in `fixtures/laravel-app`, nor in Monica's or Bagisto's routes (`real_app_checklist`).
 
-- [ ] Phase 8.31.b: Open the created controller at its method
+- [x] Phase 8.31.b: Open the created controller at its method
       Phase 8.31's "Create controller …" and "Add method …" quick-fixes return plain `WorkspaceEdit`s, and the front end opens nothing after applying a quick-fix's edit (`runInteractiveCodeAction` only opens files a command reports created). Let a code action name the location to open after its edit (for example an optional `open: Location` on `CodeAction`, filled by the PHP engine's quick-fixes and kept through `lsp_execute_code_action`), and open the new or edited controller with the caret in the new method's body. Run `pnpm gen:bindings` for the changed type. Tests: an engine test that the fixes carry the method's location, a host test that applying one returns it, and a frontend test that `applyCodeAction` opens it.
 
 ## Plan 9: Hardening

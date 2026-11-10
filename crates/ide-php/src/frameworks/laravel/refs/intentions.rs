@@ -237,7 +237,7 @@ impl PhpEngine {
     }
 
     fn rewrite(title: String, parsed: &ParsedFile, path: &Path, edits: Edits) -> ImportAction {
-        ImportAction { title, kind: REWRITE, preferred: false, edit: Self::byte_edit(parsed, path, edits) }
+        ImportAction { title, kind: REWRITE, preferred: false, edit: Self::byte_edit(parsed, path, edits), open: None }
     }
 
     /// The edit importing `fqn` for a name at `at`, unless already added.

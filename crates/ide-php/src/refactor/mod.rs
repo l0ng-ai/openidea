@@ -361,6 +361,7 @@ fn extract_variable(
                 TextEdit { range: index.range(expr_start, expr_end), new_text: format!("${name}") },
             ],
         ),
+        open: None,
     })
 }
 
@@ -461,6 +462,7 @@ fn extract_constant(
             path,
             vec![declaration, TextEdit { range: index.range(expr_start, expr_end), new_text: replacement }],
         ),
+        open: None,
     })
 }
 

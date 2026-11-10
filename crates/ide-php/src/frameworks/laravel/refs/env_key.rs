@@ -15,7 +15,7 @@
 
 use ide_core::Severity;
 
-use super::{CalleePattern, PlacePattern, RefContext, RefItem, ReferenceKind, RenameTarget, Undefined};
+use super::{CalleePattern, PlacePattern, RefContext, RefItem, ReferenceKind, RenameTarget, Undefined, UndefinedFix};
 use crate::frameworks::laravel::env::EnvKeys;
 use crate::navigate::Target;
 
@@ -102,7 +102,7 @@ impl ReferenceKind for EnvKey {
         if !keys.has_files() || keys.in_example(value) {
             return None;
         }
-        let fix = (format!("Add '{value}' to .env.example"), keys.add_to_example(value));
+        let fix = UndefinedFix::new(format!("Add '{value}' to .env.example"), keys.add_to_example(value));
         if keys.contains(value) {
             if !keys.has_example() {
                 return None;

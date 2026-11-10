@@ -193,3 +193,54 @@ fn the_fixture_routes_have_no_undefined_controllers() {
         assert_eq!(problems(&project, doc), [], "{file}");
     }
 }
+
+/// The line of `text` at `open`'s start, and the text of its range.
+fn opened_at(text: &str, open: &ide_core::Location) -> (String, String) {
+    let lines = LineIndex::new(text);
+    let (start, end) = (lines.byte(open.range.start) as usize, lines.byte(open.range.end) as usize);
+    let line = text.lines().nth(open.range.start.line as usize).unwrap_or_default().to_owned();
+    (line, text[start..end].to_owned())
+}
+
+#[test]
+fn the_fixes_open_the_new_method_body() {
+    // A created invokable controller, at its `__invoke`.
+    let (project, doc, text) = routes("Route::get('123', 'dream');");
+    let actions = actions_at(&project, doc, &text, "'dream'");
+    let create = actions.iter().find(|action| action.title.starts_with("Create invokable")).expect("the fix");
+    let (path, controller) = created(&create.edit);
+    let open = create.open.as_ref().expect("a location to open");
+    assert_eq!(PathBuf::from(open.path.clone()), path);
+    assert_eq!(opened_at(&controller, open), ("        //".to_owned(), "//".to_owned()));
+    assert_eq!(open.range.start.line, 10, "{controller}");
+
+    // A created controller with the route's method.
+    let (project, doc, text) = routes("Route::get('/posts/{post}', 'Foo@bar');");
+    let actions = actions_at(&project, doc, &text, "'Foo@bar'");
+    let create = actions.iter().find(|action| action.title.starts_with("Create controller")).expect("the fix");
+    let (path, controller) = created(&create.edit);
+    let open = create.open.as_ref().expect("a location to open");
+    assert_eq!(PathBuf::from(open.path.clone()), path);
+    assert_eq!(opened_at(&controller, open).1, "//");
+    let above: Vec<&str> = controller.lines().take(open.range.start.line as usize).collect();
+    assert_eq!(above[above.len() - 2].trim(), "public function bar(Request $request, $post)", "{controller}");
+
+    // A method added to an existing controller: the location is in the file
+    // as the edit leaves it (after the `Request` import it adds).
+    let (project, doc, text) = routes("Route::get('/posts/{id}/archive', [PostController::class, 'archive']);");
+    let actions = actions_at(&project, doc, &text, "'archive'");
+    let add = actions.iter().find(|action| action.title.starts_with("Add method")).expect("the fix");
+    let path = project.root.join("app/Http/Controllers/PostController.php");
+    let after = applied(&std::fs::read_to_string(&path).unwrap(), &add.edit, &path);
+    let open = add.open.as_ref().expect("a location to open");
+    assert_eq!(PathBuf::from(open.path.clone()), path);
+    assert_eq!(opened_at(&after, open).1, "//");
+    let above: Vec<&str> = after.lines().take(open.range.start.line as usize).collect();
+    assert_eq!(above[above.len() - 2].trim(), "public function archive(Request $request, $id)", "{after}");
+
+    // Other quick-fixes name no location.
+    let convert = actions_at(&project, doc, &text, "'archive'");
+    assert!(
+        convert.iter().filter(|action| !action.title.starts_with("Add method")).all(|action| action.open.is_none())
+    );
+}

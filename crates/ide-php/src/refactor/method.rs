@@ -692,7 +692,7 @@ pub(super) fn extract_method(
             TextEdit { range: index.range(insert_at, insert_at), new_text: declaration },
         ]
     };
-    Some(ImportAction { title: title.into(), kind, preferred: false, edit: file_edit(path, edits) })
+    Some(ImportAction { title: title.into(), kind, preferred: false, edit: file_edit(path, edits), open: None })
 }
 
 /// How the call replaces the selection.

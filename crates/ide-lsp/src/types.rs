@@ -202,6 +202,20 @@ pub struct CodeAction {
     #[specta(type = Option<String>)]
     pub data: Option<serde_json::Value>,
     pub server: ServerId,
+    /// Where the editor opens after applying the action's edit (a created
+    /// class at its new method); set by the built-in engines.
+    #[serde(default)]
+    #[specta(optional)]
+    pub open: Option<Location>,
+}
+
+/// What applying a code action did: the files its command reports created,
+/// and where the editor opens next ([`CodeAction::open`]).
+#[derive(Clone, Debug, Default, Serialize, Deserialize, Type)]
+#[serde(rename_all = "camelCase")]
+pub struct AppliedCodeAction {
+    pub created: Vec<ide_core::IpcPath>,
+    pub open: Option<Location>,
 }
 
 /// Code actions at a range plus the kinds the servers advertise

@@ -487,6 +487,7 @@ impl PhpEngine {
             kind: REWRITE,
             preferred: false,
             edit: edit(vec![text_edit(at)]),
+            open: None,
         }];
         let all: Vec<TextEdit> = convertible.iter().filter(|site| site.2 == at.2).map(text_edit).collect();
         if all.len() > 1 {
@@ -495,6 +496,7 @@ impl PhpEngine {
                 kind: REWRITE,
                 preferred: false,
                 edit: edit(all),
+                open: None,
             });
         }
         out

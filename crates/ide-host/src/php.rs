@@ -594,6 +594,7 @@ impl crate::language_service::LanguageService for PhpService {
                 command: None,
                 data: Some(serde_json::Value::String(data)),
                 server,
+                open: None,
             });
         }
         Some(Ok(CodeActionQuery {
@@ -761,6 +762,7 @@ pub(crate) fn translation_action(
         }),
         data: None,
         server,
+        open: None,
     })
 }
 
@@ -774,6 +776,7 @@ pub(crate) fn code_action(action: ide_php::imports::ImportAction, server: ide_co
         command: None,
         data: None,
         server,
+        open: action.open,
     }
 }
 

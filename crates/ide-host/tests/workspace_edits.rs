@@ -214,6 +214,7 @@ async fn code_actions_skip_a_command_no_server_provides_after_their_edit() {
         }),
         data: None,
         server: ide_core::ServerId(1),
+        open: None,
     };
     let follow_up = action(true).command.unwrap();
     let asked = ops::lsp::lsp_resolve_command(

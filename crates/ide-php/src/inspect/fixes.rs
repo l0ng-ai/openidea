@@ -359,6 +359,7 @@ pub(crate) fn create_member(cx: &InspectionContext<'_>, member: &NewMember) -> O
         title: format!("Create {what} in '{}'", class.name),
         edit: file_edit(&path, vec![TextEdit { range, new_text }]),
         preferred: false,
+        open: None,
     })
 }
 
@@ -504,7 +505,7 @@ pub(crate) fn create_class(cx: &InspectionContext<'_>, fqn: &str, word: &str) ->
         ],
         preconditions: Vec::new(),
     };
-    Some(QuickFix { title: format!("Create {word} '{short}'"), edit, preferred: false })
+    Some(QuickFix { title: format!("Create {word} '{short}'"), edit, preferred: false, open: None })
 }
 
 // ------------------------------------------------------------- variables
@@ -589,6 +590,7 @@ pub(crate) fn initialize_variable(
         title: format!("Initialize variable '${name}'"),
         edit: cx.edit(start, end, new_text),
         preferred: true,
+        open: None,
     })
 }
 
@@ -603,6 +605,7 @@ pub(crate) fn remove_unused_variable(cx: &InspectionContext<'_>, name: &str, at:
         title: format!("Remove unused variable '${name}'"),
         edit: cx.edit(start, end, ""),
         preferred: true,
+        open: None,
     })
 }
 

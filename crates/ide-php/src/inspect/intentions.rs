@@ -286,6 +286,7 @@ pub(crate) fn intentions(
         kind: REWRITE,
         preferred: false,
         edit: file_edit(path, vec![TextEdit { range: index.range(at, to), new_text }]),
+        open: None,
     };
     let mut out = Vec::new();
     let return_type = if is_special(&signature.name) { None } else { declared.return_type(engine) };

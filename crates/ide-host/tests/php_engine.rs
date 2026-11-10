@@ -927,7 +927,8 @@ async fn inspect_code_over_the_laravel_fixture_app() {
 
 /// `PhpUndefinedController` on the fixture app's route file: Alt+Enter on a
 /// plain action naming no class lists "Create invokable controller", and
-/// applying it creates the controller and rewrites the route.
+/// applying it creates the controller and rewrites the route, and returns
+/// the new `__invoke`'s body for the editor to open.
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn laravel_create_controller_quick_fix() {
     use ide_core::{Pos, Range};
@@ -960,12 +961,22 @@ async fn laravel_create_controller_quick_fix() {
         .iter()
         .find(|action| action.title == "Create invokable controller 'DreamController'")
         .unwrap_or_else(|| panic!("{titles:?}"));
-    let edit = create.edit.clone().expect("an edit");
-    ops::lsp::apply_workspace_edit(&host, "main", edit).await.unwrap();
+    assert!(create.edit.is_some(), "an edit");
     let controller = root.join("app/Http/Controllers/DreamController.php");
+    let applied =
+        ops::lsp::lsp_execute_code_action(&host, "main", ide_core::RequestId(9), doc.id, create.clone(), vec![])
+            .await
+            .unwrap();
+    assert!(applied.created.is_empty(), "{applied:?}");
+    let open = applied.open.expect("the location to open");
+    assert_eq!(PathBuf::from(open.path), controller);
     let created = std::fs::read_to_string(&controller).unwrap();
     assert!(created.contains("class DreamController extends Controller"), "{created}");
     assert!(created.contains("public function __invoke(Request $request)"), "{created}");
+    let lines: Vec<&str> = created.lines().collect();
+    let at = open.range.start;
+    assert_eq!(lines[at.line as usize - 2].trim(), "public function __invoke(Request $request)", "{created}");
+    assert_eq!(&lines[at.line as usize][at.col as usize..open.range.end.col as usize], "//", "{created}");
     let routes = project.documents.snapshot(doc.id).unwrap().text;
     assert!(routes.contains("Route::get('123', DreamController::class)"), "{routes}");
     host.close_project("main");

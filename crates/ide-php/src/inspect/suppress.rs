@@ -126,6 +126,7 @@ impl Suppressions {
             title: format!("{SUPPRESS_TITLE}'{id}' for statement"),
             edit: file_edit(path, vec![TextEdit { range: index.range(start, end), new_text }]),
             preferred: false,
+            open: None,
         })
     }
 

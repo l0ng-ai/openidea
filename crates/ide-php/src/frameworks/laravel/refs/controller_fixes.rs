@@ -29,14 +29,17 @@
 //! - "Add method 'bar' to Foo": a public method with a `Request $request`
 //!   parameter and the route's URI parameters (`{id}` → `$id`, `{id?}` →
 //!   `$id = null`), last in the class, `Request` imported.
+//!
+//! Each fix names where the editor opens once it is applied
+//! ([`UndefinedFix::open`]): the new method's body, its `//` selected.
 
 use std::path::Path;
 
-use ide_core::WorkspaceEdit;
+use ide_core::{Location, WorkspaceEdit};
 
 use super::controller_action::{controller_class, invokable};
 use super::validation_actions::class_name;
-use super::{RefContext, Undefined};
+use super::{RefContext, Undefined, UndefinedFix};
 use crate::engine::PhpEngine;
 use crate::frameworks::laravel::RouteAction;
 use crate::frameworks::laravel::generate::{
@@ -76,7 +79,7 @@ pub(super) fn undefined_action(cx: &RefContext<'_>, value: &str) -> Option<Undef
             None => {
                 let problem = Undefined::warning(format!("Controller class '{value}' does not exist"));
                 Some(match create_controller(cx, &class, value, "__invoke", true) {
-                    Some((title, edit)) => problem.with_fix(title, edit),
+                    Some(fix) => problem.with(fix),
                     None => problem,
                 })
             }
@@ -94,7 +97,7 @@ pub(super) fn undefined_action(cx: &RefContext<'_>, value: &str) -> Option<Undef
                 None => {
                     let problem = Undefined::warning(format!("Controller class '{written}' does not exist"));
                     Some(match create_controller(cx, &class, written, method, false) {
-                        Some((title, edit)) => problem.with_fix(title, edit),
+                        Some(fix) => problem.with(fix),
                         None => problem,
                     })
                 }
@@ -138,7 +141,9 @@ fn missing_method(cx: &RefContext<'_>, model: &ClassModel, method: &str) -> Opti
     let short = short_name(&model.class.fqn).to_owned();
     let problem = Undefined::warning(format!("Method '{method}' does not exist in controller '{short}'"));
     Some(match add_method(cx, model, method) {
-        Some(edit) => problem.with_fix(format!("Add method '{method}' to {short}"), edit),
+        Some((edit, open)) => {
+            problem.with(UndefinedFix::new(format!("Add method '{method}' to {short}"), edit).opening(open))
+        }
         None => problem,
     })
 }
@@ -175,6 +180,29 @@ fn method_declaration(method: &str, parameters: &str, indent: &str, unit: &str, 
     format!("public function {method}({parameters}){nl}{indent}{{{nl}{indent}{unit}//{nl}{indent}}}")
 }
 
+/// Where the editor opens once `text` is the content of `path`: the body of
+/// method `method` of class `fqn`, its `//` placeholder selected (else the
+/// caret after the body's `{`).
+fn method_body(path: &Path, text: &str, fqn: &str, method: &str) -> Option<Location> {
+    let parsed = ParsedFile::parse(path.to_string_lossy().as_ref(), text);
+    let summary = FileSummary::extract(&parsed);
+    let fqn = fqn.trim_start_matches('\\');
+    let class =
+        summary.class_likes.iter().find(|class| class.fqn.trim_start_matches('\\').eq_ignore_ascii_case(fqn))?;
+    let found = class.methods.iter().find(|m| m.name.eq_ignore_ascii_case(method))?;
+    let (after_name, end) = (found.name_loc.end as usize, found.loc.end as usize);
+    let open = after_name + text.get(after_name..end)?.find('{')? + 1;
+    let (start, end) = match text[open..end].find("//") {
+        Some(at) => (open + at, open + at + 2),
+        None => (open, open),
+    };
+    Some(Location {
+        path: path.to_path_buf().into(),
+        range: parsed.line_index().range(start as u32, end as u32),
+        uri: None,
+    })
+}
+
 /// "Create controller …": `resolved` is the class Laravel looks for
 /// (`App\Http\Controllers\Foo`, or a global `Foo` without a group
 /// namespace), `written` how the string names it.
@@ -184,7 +212,7 @@ fn create_controller(
     written: &str,
     method: &str,
     invokable: bool,
-) -> Option<(String, WorkspaceEdit)> {
+) -> Option<UndefinedFix> {
     let engine = cx.engine;
     let project = &cx.project;
     let settings = engine.laravel_settings().generation;
@@ -222,6 +250,7 @@ fn create_controller(
         with_method(&rendered, &fqn, |indent, unit, nl| method_declaration(method, &parameters, indent, unit, nl))?;
     let text = if settings.type_hints { text } else { template::strip_return_types(&text) };
 
+    let open = method_body(&path, &text, &fqn, method);
     let mut edit = creation_edit(vec![GeneratedFile { path, text }]);
     if !fqn.eq_ignore_ascii_case(resolved.trim_start_matches('\\')) {
         edit.files.extend(rewrite_action(cx, &namespace, &short, &fqn, method, invokable)?.files);
@@ -231,7 +260,7 @@ fn create_controller(
     } else {
         format!("Create controller '{short}' with method '{method}'")
     };
-    Some((title, edit))
+    Some(UndefinedFix::new(title, edit).opening(open))
 }
 
 /// `text` (a rendered controller template) with a method `declaration`
@@ -295,8 +324,8 @@ fn rewrite_action(
 }
 
 /// "Add method …": the edit adding action `method` to `model`'s class
-/// file; `None` for a class of `vendor/`.
-fn add_method(cx: &RefContext<'_>, model: &ClassModel, method: &str) -> Option<WorkspaceEdit> {
+/// file, and the new method's body; `None` for a class of `vendor/`.
+fn add_method(cx: &RefContext<'_>, model: &ClassModel, method: &str) -> Option<(WorkspaceEdit, Option<Location>)> {
     let engine = cx.engine;
     let path = engine.class_path(&model.class, Path::new(""), &FileSummary::default())?;
     if engine.layout().is_some_and(|layout| path.starts_with(layout.vendor_dir())) {
@@ -317,5 +346,13 @@ fn add_method(cx: &RefContext<'_>, model: &ClassModel, method: &str) -> Option<W
         let (at, line) = import_insertion(&parsed, class.loc.start, NameKind::ClassLike, &import);
         edits.push((at, at, line));
     }
-    Some(PhpEngine::byte_edit(&parsed, &path, edits))
+    // The file as the edit leaves it, for the method's place in it.
+    let mut after = text.to_string();
+    let mut sorted = edits.clone();
+    sorted.sort_by_key(|(start, end, _)| std::cmp::Reverse((*start, *end)));
+    for (start, end, new_text) in &sorted {
+        after.replace_range(*start as usize..*end as usize, new_text);
+    }
+    let open = method_body(&path, &after, &model.class.fqn, method);
+    Some((PhpEngine::byte_edit(&parsed, &path, edits), open))
 }
