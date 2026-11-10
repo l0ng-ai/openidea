@@ -210,7 +210,6 @@ export function taskMenu(tasks: AgentTask[]): MenuItem[] {
   return [
     ...(!multiple
       ? ([
-          { kind: "action", action: "agents.openTask", label: "Open", arg: task.id },
           { kind: "action", action: "agents.renameTask", label: "Rename…", icon: "edit", arg: task.id },
           { kind: "action", action: "terminal.openAt", label: "Terminal", icon: "terminal", arg: task.cwd },
           ...(task.capabilities?.fork && task.status !== "archived"

@@ -311,7 +311,9 @@ describe("Agents task menu", () => {
     const menu = taskMenu([useAgents.getState().tasks.get("one")!]);
     expect(menu).not.toContainEqual(expect.objectContaining({ action: "agents.dockTask" }));
     expect(menu).not.toContainEqual(expect.objectContaining({ action: "agents.undockTask" }));
-    expect(menu).toContainEqual(expect.objectContaining({ action: "agents.openTask" }));
+    // A click opens the task: the menu doesn't repeat it.
+    expect(menu).not.toContainEqual(expect.objectContaining({ action: "agents.openTask" }));
+    expect(menu[0]).toMatchObject({ action: "agents.renameTask" });
   });
 });
 
