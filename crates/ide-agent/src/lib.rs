@@ -345,6 +345,8 @@ struct Task {
     /// Settings already sent this session (`(option, value)`), so a refusal is not retried.
     config_sent: Mutex<HashSet<(String, String)>>,
     dirty: Mutex<BTreeSet<(Session, usize)>>,
+    /// Text last sent of the streaming message of each session, so the next flush sends the rest.
+    streamed: Mutex<HashMap<Session, (usize, String)>>,
     flush_scheduled: AtomicBool,
     stderr: Mutex<VecDeque<String>>,
     /// Set by `delete`; held while saving.
@@ -852,6 +854,7 @@ impl AgentManager {
                 s.task.updated_ms = now_ms();
                 first
             };
+            task.streamed.lock().clear();
             task.persist();
             self.shared.emit(AgentEvent::Truncated { task: id.to_owned(), length: 0 });
             task.emit_task();
@@ -877,6 +880,7 @@ impl AgentManager {
             s.task.updated_ms = now_ms();
             first
         };
+        task.streamed.lock().clear();
         task.persist();
         self.shared.emit(AgentEvent::Truncated { task: id.to_owned(), length: cut as u32 });
         task.emit_task();
@@ -1129,6 +1133,7 @@ impl Task {
             idle_epoch: AtomicU64::new(0),
             config_sent: Mutex::new(HashSet::new()),
             dirty: Mutex::new(BTreeSet::new()),
+            streamed: Mutex::new(HashMap::new()),
             flush_scheduled: AtomicBool::new(false),
             stderr: Mutex::new(VecDeque::new()),
             deleted: Mutex::new(false),
@@ -1250,11 +1255,12 @@ impl Task {
         let indices = std::mem::take(&mut *self.dirty.lock());
         let events: Vec<AgentEvent> = {
             let s = self.state.lock();
+            let mut streamed = self.streamed.lock();
             indices
                 .into_iter()
                 .filter_map(|(subagent, i)| {
-                    let entry = s.conversation.timeline(&subagent)?.entries.get(i)?.clone();
-                    Some(AgentEvent::Entry { task: self.id.clone(), subagent, index: i as u32, entry })
+                    let entry = s.conversation.timeline(&subagent)?.entries.get(i)?;
+                    Some(entry_event(&self.id, &mut streamed, subagent, i, entry))
                 })
                 .collect()
         };
@@ -2315,4 +2321,36 @@ fn stdio_mcp_servers(executable: Option<&std::path::Path>, supported: bool, root
     let Some(executable) = executable.filter(|_| supported) else { return Vec::new() };
     let command = ide_mcp::stdio_command(executable, root);
     vec![json!({ "name": "OpenIDEA", "command": command[0], "args": command[1..], "env": [] })]
+}
+
+/// The event that brings the UI's copy of entry `i` up to date: only the new text when
+/// it extends the message last sent for the session, else the whole entry.
+fn entry_event(
+    task: &str,
+    streamed: &mut HashMap<Session, (usize, String)>,
+    subagent: Session,
+    i: usize,
+    entry: &AgentEntry,
+) -> AgentEvent {
+    let text = match entry {
+        AgentEntry::Agent { text } | AgentEntry::Thought { text } => Some(text),
+        _ => None,
+    };
+    let Some(text) = text else {
+        if streamed.get(&subagent).is_some_and(|(at, _)| *at == i) {
+            streamed.remove(&subagent);
+        }
+        return AgentEvent::Entry { task: task.to_owned(), subagent, index: i as u32, entry: entry.clone() };
+    };
+    let prev = streamed.insert(subagent.clone(), (i, text.clone()));
+    match prev {
+        Some((at, sent)) if at == i && text.len() > sent.len() && text.starts_with(&sent) => AgentEvent::Append {
+            task: task.to_owned(),
+            subagent,
+            index: i as u32,
+            from: sent.encode_utf16().count() as u32,
+            text: text[sent.len()..].to_owned(),
+        },
+        _ => AgentEvent::Entry { task: task.to_owned(), subagent, index: i as u32, entry: entry.clone() },
+    }
 }

@@ -2532,3 +2532,31 @@ async fn session_settings_win_over_discovery_in_memory_and_on_disk() {
         }
     }
 }
+
+#[test]
+fn streamed_text_is_sent_as_appends() {
+    let mut streamed = HashMap::new();
+    let agent = |t: &str| AgentEntry::Agent { text: t.into() };
+    let first = entry_event("t", &mut streamed, None, 3, &agent("Hé"));
+    assert!(matches!(first, AgentEvent::Entry { index: 3, .. }), "the first sight of a message is whole");
+    let next = entry_event("t", &mut streamed, None, 3, &agent("Hé 👋 there"));
+    assert!(
+        matches!(&next, AgentEvent::Append { subagent: None, index: 3, from: 2, text, .. } if text == " 👋 there"),
+        "{next:?}"
+    );
+    let sub = entry_event("t", &mut streamed, Some("s".into()), 3, &agent("Hé 👋 there!"));
+    assert!(matches!(sub, AgentEvent::Entry { .. }), "each session streams on its own");
+    let after = entry_event("t", &mut streamed, None, 3, &agent("Hé 👋 there."));
+    assert!(
+        matches!(&after, AgentEvent::Append { from: 11, text, .. } if text == "."),
+        "from counts UTF-16 units: {after:?}"
+    );
+    let replaced = entry_event("t", &mut streamed, None, 3, &agent("Other"));
+    assert!(matches!(replaced, AgentEvent::Entry { .. }), "text that doesn't extend the sent text is sent whole");
+    let thought = entry_event("t", &mut streamed, None, 4, &AgentEntry::Thought { text: "hmm…".into() });
+    assert!(matches!(thought, AgentEvent::Entry { index: 4, .. }), "a new message starts whole");
+    let tool = AgentEntry::Error { message: "x".into() };
+    entry_event("t", &mut streamed, None, 4, &tool);
+    let again = entry_event("t", &mut streamed, None, 4, &AgentEntry::Thought { text: "hmm… ok".into() });
+    assert!(matches!(again, AgentEvent::Entry { .. }), "an entry replaced by another kind forgets its text");
+}

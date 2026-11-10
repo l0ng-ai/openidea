@@ -72,6 +72,7 @@ import {
 import { ConfigPickers } from "./ConfigPickers";
 import { findRanges, formatDuration, formatSentAt } from "./conversation";
 import { ImagePreview, imageSrc } from "./ImagePreview";
+import { useRevealedText } from "./reveal";
 import { AgentReply, MessageActions, ReplyActions } from "./AgentReply";
 import {
   commandPrefix,
@@ -750,7 +751,12 @@ function Stream({ loadError, task, entries, subagent, onOpenSubagent, finding, f
           const text = selectionIn(e.currentTarget);
           const items = copyMenuFor(e.target) ?? [];
           if (text.trim() && task.status !== "archived") {
-            items.push({ kind: "action", action: "agents.quoteReply", label: "Quote", arg: { task: task.id, text } });
+            items.push({
+              kind: "action",
+              action: "agents.quoteReply",
+              label: "Quote",
+              arg: { task: task.id, text },
+            });
           }
           if (!items.length) return;
           e.preventDefault();
@@ -764,7 +770,10 @@ function Stream({ loadError, task, entries, subagent, onOpenSubagent, finding, f
               actions={
                 <Button
                   onClick={() =>
-                    void executeAction("agents.retryConversation", { task: task.id, subagent: subagent?.id ?? null })
+                    void executeAction("agents.retryConversation", {
+                      task: task.id,
+                      subagent: subagent?.id ?? null,
+                    })
                   }
                 >
                   Retry
@@ -972,7 +981,11 @@ function FindBar({
     };
     update();
     const observer = new MutationObserver(update);
-    observer.observe(stream, { subtree: true, childList: true, characterData: true });
+    observer.observe(stream, {
+      subtree: true,
+      childList: true,
+      characterData: true,
+    });
     return () => {
       cancelAnimationFrame(frame);
       observer.disconnect();
@@ -1076,6 +1089,50 @@ const TOOL_ICONS: Record<string, string> = {
 };
 
 /** Memoized: the earlier entries rendered behind a reopened conversation leave the rest alone. */
+function AgentMessage({
+  task,
+  text,
+  turnCount,
+  reply,
+  time,
+  working,
+  onDiagramDrawn,
+}: {
+  task: AgentTask;
+  text: string;
+  turnCount: number;
+  reply?: ReplyTurn;
+  time?: ReplyTimes | null;
+  /** The reply streams: its text is revealed at a pace. */
+  working: boolean;
+  onDiagramDrawn: () => void;
+}) {
+  const shown = useRevealedText(text, working);
+  // The revealed text grows the conversation between its renders: keep following the end.
+  useLayoutEffect(() => {
+    if (working) onDiagramDrawn();
+  }, [shown, working, onDiagramDrawn]);
+  return (
+    <div className={styles.agentMessage}>
+      <div className={styles.agentCard}>
+        <AgentReply
+          text={shown}
+          cwd={task.cwd}
+          task={task}
+          reply={reply}
+          turnCount={turnCount}
+          onDiagramDrawn={onDiagramDrawn}
+          actions={false}
+        />
+      </div>
+      <div className={styles.messageFooter}>
+        <MessageTime sentMs={time?.sentMs ?? null} doneMs={time?.doneMs ?? null} at="done" />
+        <ReplyActions text={text} task={task} reply={reply} turnCount={turnCount} />
+      </div>
+    </div>
+  );
+}
+
 const Entry = memo(function Entry({
   task,
   entry,
@@ -1104,23 +1161,15 @@ const Entry = memo(function Entry({
       return <UserMessage task={task} entry={entry} turn={turn} turnCount={turnCount} />;
     case "agent":
       return (
-        <div className={styles.agentMessage}>
-          <div className={styles.agentCard}>
-            <AgentReply
-              text={entry.text}
-              cwd={task.cwd}
-              task={task}
-              reply={reply}
-              turnCount={turnCount}
-              onDiagramDrawn={onDiagramDrawn}
-              actions={false}
-            />
-          </div>
-          <div className={styles.messageFooter}>
-            <MessageTime sentMs={time?.sentMs ?? null} doneMs={time?.doneMs ?? null} at="done" />
-            <ReplyActions text={entry.text} task={task} reply={reply} turnCount={turnCount} />
-          </div>
-        </div>
+        <AgentMessage
+          task={task}
+          text={entry.text}
+          turnCount={turnCount}
+          reply={reply}
+          time={time}
+          working={working}
+          onDiagramDrawn={onDiagramDrawn}
+        />
       );
     case "thought":
       return (
@@ -1337,7 +1386,11 @@ function MessageEditor({
       await onSend(text.trim(), images);
     } catch (e) {
       setError(e instanceof Error ? e.message : String(e));
-      notifications().notify({ level: "error", title: "Couldn't send the message", body: String(e) });
+      notifications().notify({
+        level: "error",
+        title: "Couldn't send the message",
+        body: String(e),
+      });
     } finally {
       pending.current = false;
       setSending(false);
@@ -2189,13 +2242,21 @@ function SessionComposer({
     setSending(true);
     sendMessage(task.id, now)
       .catch((e: unknown) =>
-        notifications().notify({ level: "error", title: "Couldn't send the message", body: String(e) }),
+        notifications().notify({
+          level: "error",
+          title: "Couldn't send the message",
+          body: String(e),
+        }),
       )
       .finally(() => setSending(false));
   };
   const setOption = (id: string, value: string) =>
     void setTaskConfig(task.id, id, value).catch((e: unknown) =>
-      notifications().notify({ level: "error", title: "Couldn't change the setting", body: String(e) }),
+      notifications().notify({
+        level: "error",
+        title: "Couldn't change the setting",
+        body: String(e),
+      }),
     );
   return (
     <div className={styles.composerArea}>
@@ -2245,7 +2306,10 @@ function SessionComposer({
 }
 
 /** Messages waiting for the turn to end: send now, edit, or drop. */
-const BACKGROUND_ICON: Record<string, IconName> = { local_bash: "terminal", monitor: "eye" };
+const BACKGROUND_ICON: Record<string, IconName> = {
+  local_bash: "terminal",
+  monitor: "eye",
+};
 
 /** What the agent runs in the background; its subagents show as chips of their own. */
 function BackgroundTasks({ task }: { task: AgentTask }) {
@@ -2253,7 +2317,11 @@ function BackgroundTasks({ task }: { task: AgentTask }) {
   const running = (task.background ?? []).filter((background) => background.kind !== "local_agent");
   if (!running.length) return null;
   const fail = (e: unknown) =>
-    notifications().notify({ level: "error", title: "Couldn't stop the background task", body: String(e) });
+    notifications().notify({
+      level: "error",
+      title: "Couldn't stop the background task",
+      body: String(e),
+    });
   return (
     <div className={styles.background} aria-label={tx("Running in the background")}>
       {running.map((background) => (
@@ -2279,7 +2347,11 @@ function BackgroundTasks({ task }: { task: AgentTask }) {
 
 function Queue({ task }: { task: AgentTask }) {
   const fail = (e: unknown) =>
-    notifications().notify({ level: "error", title: "Couldn't update the queue", body: String(e) });
+    notifications().notify({
+      level: "error",
+      title: "Couldn't update the queue",
+      body: String(e),
+    });
   return (
     <div className={styles.queue} aria-label={tx("Queued messages")}>
       {task.queue.map((q) => (
@@ -2328,7 +2400,10 @@ function useChangesOpen(
   changes: AgentChange[] | null,
   docked: boolean,
 ): [boolean, (open: boolean) => void] {
-  const [state, setState] = useState<{ task: string; open: boolean | undefined }>(() => ({
+  const [state, setState] = useState<{
+    task: string;
+    open: boolean | undefined;
+  }>(() => ({
     task,
     open: docked ? false : loadChangesOpen()[task],
   }));

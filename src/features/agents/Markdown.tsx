@@ -6,7 +6,7 @@
  * the drawn diagram hides the code block, and `onDiagramDrawn` lets the conversation
  * follow the end when a diagram draws after the last streamed chunk.
  */
-import { useLayoutEffect, useMemo, useRef, useSyncExternalStore } from "react";
+import { useLayoutEffect, useRef, useSyncExternalStore } from "react";
 import { Marked } from "marked";
 import DOMPurify from "dompurify";
 import { highlightInto } from "@/editor/lsp/markdown";
@@ -58,6 +58,24 @@ function purify(): ReturnType<typeof DOMPurify> {
   });
   purifier = p;
   return p;
+}
+
+/**
+ * `text` cut into its top-level blocks (a paragraph, a list, a fence…), each with the
+ * blank lines after it, so they join back into `text`. While a reply streams only its
+ * last block changes: the others keep their rendering. Reference links reach across
+ * blocks, so a text that defines one stays whole.
+ */
+export function markdownBlocks(text: string): string[] {
+  const tokens = marked.lexer(text);
+  if (Object.keys(tokens.links).length) return [text];
+  const blocks: string[] = [];
+  for (const t of tokens) {
+    if (t.type === "space" && blocks.length) blocks[blocks.length - 1] += t.raw;
+    else blocks.push(t.raw);
+  }
+  // The lexer can drop what it doesn't keep in a token (trailing whitespace); keep the text whole.
+  return blocks.join("") === text ? blocks : [text];
 }
 
 export function markdownHtml(text: string): string {
@@ -184,6 +202,48 @@ function enhance(root: HTMLElement, cwd: string, images: Map<string, Promise<str
   };
 }
 
+interface PaintedBlock {
+  source: string;
+  nodes: ChildNode[];
+  dispose: () => void;
+}
+
+/** Removes the painted blocks from `from` on. */
+function clearBlocks(painted: PaintedBlock[], from: number) {
+  for (const block of painted.splice(from)) {
+    block.dispose();
+    block.nodes.forEach((n) => n.remove());
+  }
+}
+
+/**
+ * Brings `root` to `sources`: blocks whose source is unchanged keep their nodes (and
+ * whatever was drawn into them); the rest are rendered after them. The nodes go straight
+ * into `root`, as a single rendering would put them, so styles and selections see one
+ * message.
+ */
+function paintBlocks(
+  root: HTMLElement,
+  painted: PaintedBlock[],
+  sources: string[],
+  cwd: string,
+  images: Map<string, Promise<string>>,
+) {
+  let same = 0;
+  while (same < painted.length && same < sources.length && painted[same]!.source === sources[same]) same++;
+  clearBlocks(painted, same);
+  sources.slice(same).forEach((source, i, rest) => {
+    const holder = document.createElement("div");
+    // A streaming reply changes its last block on every frame: kept, those would push
+    // the finished blocks of other messages out of the cache.
+    holder.innerHTML = i === rest.length - 1 && !rendered.has(source) ? renderHtml(source) : markdownHtml(source);
+    const dispose = enhance(holder, cwd, images);
+    const nodes = [...holder.childNodes];
+    root.append(...nodes);
+    painted.push({ source, nodes, dispose });
+  });
+}
+
 export function Markdown({
   text,
   cwd,
@@ -194,14 +254,28 @@ export function Markdown({
   /** A diagram drew after the message rendered: the conversation may follow the end. */
   onDiagramDrawn?: () => void;
 }) {
-  const html = useMemo(() => markdownHtml(text), [text]);
   const ref = useRef<HTMLDivElement>(null);
   const images = useRef(new Map<string, Promise<string>>());
+  /** The blocks on screen, so a streamed chunk repaints only the blocks it changed. */
+  const painted = useRef<PaintedBlock[]>([]);
+  const paintedCwd = useRef(cwd);
   /** The last drawing of each mermaid block, stood in while a changed one renders. */
   const diagrams = useRef<Node[]>([]);
   // Diagrams are drawn in the active theme's colours: a theme change redraws them.
   const theme = useSyncExternalStore(subscribeTheme, themeKey, () => "");
-  useLayoutEffect(() => (ref.current ? enhance(ref.current, cwd, images.current) : undefined), [html, cwd]);
+  useLayoutEffect(() => {
+    const root = ref.current;
+    if (!root) return;
+    if (paintedCwd.current !== cwd) {
+      clearBlocks(painted.current, 0);
+      paintedCwd.current = cwd;
+    }
+    paintBlocks(root, painted.current, markdownBlocks(text), cwd, images.current);
+  }, [text, cwd]);
+  useLayoutEffect(() => {
+    const blocks = painted.current;
+    return () => clearBlocks(blocks, 0);
+  }, []);
   // Mermaid diagrams: before paint, so cached ones don't flash their source. Only a
   // draw that lands after the render needs the follow — cached ones are in place by
   // the time the conversation's own render pass scrolls.
@@ -215,7 +289,7 @@ export function Markdown({
       live = false;
       pass.cancel();
     };
-  }, [html, theme, onDiagramDrawn]);
+  }, [text, theme, onDiagramDrawn]);
   return (
     <div
       ref={ref}
@@ -244,7 +318,6 @@ export function Markdown({
           if (link) openPathLink(link);
         }
       }}
-      dangerouslySetInnerHTML={{ __html: html }}
     />
   );
 }

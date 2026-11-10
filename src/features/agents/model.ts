@@ -95,6 +95,23 @@ export function upsertEntry(entries: AgentEntry[], index: number, entry: AgentEn
   return next;
 }
 
+/**
+ * `entries` with `text` appended to the message at `index`, which read its first `from`
+ * UTF-16 units when the backend last sent it; `null` when the copy here can't take it (a
+ * gap, or another kind of entry), so the conversation is loaded again. A copy loaded while
+ * the text streamed may already hold some of it.
+ */
+export function appendEntry(entries: AgentEntry[], index: number, from: number, text: string): AgentEntry[] | null {
+  const entry = entries[index];
+  if (!entry || (entry.type !== "agent" && entry.type !== "thought")) return null;
+  const have = entry.text.length;
+  if (have < from) return null;
+  if (have >= from + text.length) return entries;
+  const next = entries.slice();
+  next[index] = { ...entry, text: entry.text + text.slice(have - from) };
+  return next;
+}
+
 /** "agent/fix-lexer" → "fix-lexer". */
 export const branchLabel = (branch: string | null) => (branch ?? "").replace(/^agent\//, "");
 
@@ -144,7 +161,10 @@ export function replyTimes(entries: AgentEntry[]): Map<number, ReplyTimes> {
   entries.forEach((entry, i) => {
     if (entry.type === "user" && !entry.steered) current = entry;
     else if (entry.type === "agent" && current)
-      out.set(i, { sentMs: current.sentMs ?? null, doneMs: current.doneMs ?? null });
+      out.set(i, {
+        sentMs: current.sentMs ?? null,
+        doneMs: current.doneMs ?? null,
+      });
   });
   return out;
 }
