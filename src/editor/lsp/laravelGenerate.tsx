@@ -5,7 +5,9 @@
  * generators' dialog is in `laravelGenerateClass.tsx`). Generators
  * run in the native PHP engine (`php_laravel_new_model`), which renders the "Laravel …"
  * code templates of Settings › Editor › File and Code Templates (the user's edited
- * bodies go with the request) and follows Settings › PHP › Laravel › Code generation.
+ * bodies go with the request, and to the engine when they change, for the Generate
+ * actions inside a model class) and follows Settings › PHP › Laravel › Code generation.
+ * The Generate menu groups the class generators in submenus (`GENERATOR_GROUPS`).
  */
 import { useEffect, useState } from "react";
 import { create } from "zustand";
@@ -37,6 +39,19 @@ export const LARAVEL_GENERATORS_CATEGORY = "Laravel Generators";
 /** The action opening a generator's dialog. */
 export const generatorAction = (id: string) => `laravel.generate.${id}`;
 
+/** The submenus of Laravel › Generate grouping the class generators, in menu order. */
+export const GENERATOR_GROUPS = [
+  { id: "http", label: "HTTP Layer" },
+  { id: "database", label: "Database" },
+  { id: "events", label: "Events and Jobs" },
+  { id: "auth", label: "Authorization and Validation" },
+  { id: "views", label: "Views" },
+  { id: "other", label: "Other" },
+  { id: "tests", label: "Tests" },
+] as const;
+
+export type GeneratorGroup = (typeof GENERATOR_GROUPS)[number]["id"];
+
 /** A class generator of the front end: its action and dialog titles and search keywords. */
 export interface ClassGeneratorEntry {
   id: string;
@@ -44,109 +59,221 @@ export interface ClassGeneratorEntry {
   /** The dialog's title. */
   dialog: string;
   keywords: string[];
+  /** Its submenu of Laravel › Generate. */
+  group: GeneratorGroup;
 }
 
 /** The class generators, in menu order (the engine's ids); `laravelGenerateClass.tsx` has their dialog. */
 export const CLASS_GENERATORS: readonly ClassGeneratorEntry[] = [
-  { id: "controller", title: "New Controller…", dialog: "New Controller", keywords: ["make:controller"] },
+  {
+    id: "controller",
+    title: "New Controller…",
+    dialog: "New Controller",
+    keywords: ["make:controller"],
+    group: "http",
+  },
   {
     id: "resource-controller",
     title: "New Resource Controller…",
     dialog: "New Resource Controller",
     keywords: ["make:controller", "resource", "api"],
+    group: "http",
   },
-  { id: "middleware", title: "New Middleware…", dialog: "New Middleware", keywords: ["make:middleware", "http"] },
+  {
+    id: "middleware",
+    title: "New Middleware…",
+    dialog: "New Middleware",
+    keywords: ["make:middleware", "http"],
+    group: "http",
+  },
   {
     id: "request",
     title: "New Form Request…",
     dialog: "New Form Request",
     keywords: ["make:request", "validation", "rules"],
+    group: "http",
   },
   {
     id: "resource",
     title: "New JSON Resource…",
     dialog: "New JSON Resource",
     keywords: ["make:resource", "api", "transformer"],
+    group: "http",
   },
   {
     id: "resource-collection",
     title: "New Resource Collection…",
     dialog: "New Resource Collection",
     keywords: ["make:resource", "collection"],
+    group: "http",
   },
-  { id: "factory", title: "New Factory…", dialog: "New Factory", keywords: ["make:factory", "faker", "testing"] },
-  { id: "seeder", title: "New Seeder…", dialog: "New Seeder", keywords: ["make:seeder", "database"] },
+  {
+    id: "factory",
+    title: "New Factory…",
+    dialog: "New Factory",
+    keywords: ["make:factory", "faker", "testing"],
+    group: "database",
+  },
+  {
+    id: "seeder",
+    title: "New Seeder…",
+    dialog: "New Seeder",
+    keywords: ["make:seeder", "database"],
+    group: "database",
+  },
   {
     id: "migration",
     title: "New Migration…",
     dialog: "New Migration",
     keywords: ["make:migration", "schema", "table", "database"],
+    group: "database",
   },
   {
     id: "pivot-migration",
     title: "New Pivot Table Migration…",
     dialog: "New Pivot Table Migration",
     keywords: ["make:migration", "belongsToMany", "pivot"],
+    group: "database",
   },
-  { id: "event", title: "New Event…", dialog: "New Event", keywords: ["make:event", "broadcast"] },
-  { id: "listener", title: "New Listener…", dialog: "New Listener", keywords: ["make:listener", "event", "queue"] },
-  { id: "job", title: "New Job…", dialog: "New Job", keywords: ["make:job", "queue"] },
-  { id: "mail", title: "New Mailable…", dialog: "New Mailable", keywords: ["make:mail", "email", "mail"] },
-  { id: "notification", title: "New Notification…", dialog: "New Notification", keywords: ["make:notification"] },
-  { id: "observer", title: "New Observer…", dialog: "New Observer", keywords: ["make:observer", "model", "events"] },
-  { id: "policy", title: "New Policy…", dialog: "New Policy", keywords: ["make:policy", "authorization", "gate"] },
-  { id: "rule", title: "New Validation Rule…", dialog: "New Validation Rule", keywords: ["make:rule", "validation"] },
-  { id: "exception", title: "New Exception…", dialog: "New Exception", keywords: ["make:exception", "error"] },
+  {
+    id: "event",
+    title: "New Event…",
+    dialog: "New Event",
+    keywords: ["make:event", "broadcast"],
+    group: "events",
+  },
+  {
+    id: "listener",
+    title: "New Listener…",
+    dialog: "New Listener",
+    keywords: ["make:listener", "event", "queue"],
+    group: "events",
+  },
+  {
+    id: "job",
+    title: "New Job…",
+    dialog: "New Job",
+    keywords: ["make:job", "queue"],
+    group: "events",
+  },
+  {
+    id: "mail",
+    title: "New Mailable…",
+    dialog: "New Mailable",
+    keywords: ["make:mail", "email", "mail"],
+    group: "events",
+  },
+  {
+    id: "notification",
+    title: "New Notification…",
+    dialog: "New Notification",
+    keywords: ["make:notification"],
+    group: "events",
+  },
+  {
+    id: "observer",
+    title: "New Observer…",
+    dialog: "New Observer",
+    keywords: ["make:observer", "model", "events"],
+    group: "events",
+  },
+  {
+    id: "policy",
+    title: "New Policy…",
+    dialog: "New Policy",
+    keywords: ["make:policy", "authorization", "gate"],
+    group: "auth",
+  },
+  {
+    id: "rule",
+    title: "New Validation Rule…",
+    dialog: "New Validation Rule",
+    keywords: ["make:rule", "validation"],
+    group: "auth",
+  },
+  {
+    id: "exception",
+    title: "New Exception…",
+    dialog: "New Exception",
+    keywords: ["make:exception", "error"],
+    group: "other",
+  },
   {
     id: "http-exception",
     title: "New HTTP Exception…",
     dialog: "New HTTP Exception",
     keywords: ["make:exception", "status", "error"],
+    group: "other",
   },
   {
     id: "provider",
     title: "New Service Provider…",
     dialog: "New Service Provider",
     keywords: ["make:provider", "container"],
+    group: "other",
   },
   {
     id: "command",
     title: "New Console Command…",
     dialog: "New Console Command",
     keywords: ["make:command", "artisan", "console"],
+    group: "other",
   },
   {
     id: "component",
     title: "New Blade Component…",
     dialog: "New Blade Component",
     keywords: ["make:component", "blade", "view"],
+    group: "views",
   },
   {
     id: "anonymous-component",
     title: "New Anonymous Blade Component…",
     dialog: "New Anonymous Blade Component",
     keywords: ["make:component", "blade"],
+    group: "views",
   },
-  { id: "view", title: "New Blade View…", dialog: "New Blade View", keywords: ["make:view", "blade", "template"] },
-  { id: "view-composer", title: "New View Composer…", dialog: "New View Composer", keywords: ["composer", "view"] },
+  {
+    id: "view",
+    title: "New Blade View…",
+    dialog: "New Blade View",
+    keywords: ["make:view", "blade", "template"],
+    group: "views",
+  },
+  {
+    id: "view-composer",
+    title: "New View Composer…",
+    dialog: "New View Composer",
+    keywords: ["composer", "view"],
+    group: "views",
+  },
   {
     id: "channel",
     title: "New Broadcasting Channel…",
     dialog: "New Broadcasting Channel",
     keywords: ["make:channel", "broadcast"],
+    group: "events",
   },
-  { id: "enum", title: "New Enum…", dialog: "New Enum", keywords: ["make:enum", "backed"] },
+  {
+    id: "enum",
+    title: "New Enum…",
+    dialog: "New Enum",
+    keywords: ["make:enum", "backed"],
+    group: "other",
+  },
   {
     id: "feature-test",
     title: "New Feature Test…",
     dialog: "New Feature Test",
     keywords: ["make:test", "phpunit", "pest"],
+    group: "tests",
   },
   {
     id: "unit-test",
     title: "New Unit Test…",
     dialog: "New Unit Test",
     keywords: ["make:test", "phpunit", "pest", "unit"],
+    group: "tests",
   },
   // Listed by the engine (and so in the Generate menu) only when Livewire is installed.
   {
@@ -154,11 +281,17 @@ export const CLASS_GENERATORS: readonly ClassGeneratorEntry[] = [
     title: "New Livewire Component…",
     dialog: "New Livewire Component",
     keywords: ["make:livewire", "livewire", "component"],
+    group: "views",
   },
 ];
 
 /** The generators known to the front end, with their dialogs. */
-export const GENERATORS: ReadonlyArray<{ id: string; title: string; keywords: string[]; open(): void }> = [
+export const GENERATORS: ReadonlyArray<{
+  id: string;
+  title: string;
+  keywords: string[];
+  open(): void;
+}> = [
   {
     id: "model",
     title: "New Eloquent Model…",
@@ -208,7 +341,11 @@ export const emptyField = (): LaravelNewModelField => ({
   default: "",
 });
 
-export const emptyRelation = (): LaravelNewModelRelation => ({ kind: "belongsTo", model: "", name: "" });
+export const emptyRelation = (): LaravelNewModelRelation => ({
+  kind: "belongsTo",
+  model: "",
+  name: "",
+});
 
 export function emptyForm(module = ""): NewModelForm {
   return {
@@ -299,7 +436,10 @@ export async function createModel(form: NewModelForm, now = new Date()): Promise
 // ---------------------------------------------------------------------------
 // The generation context: whether the project is a Laravel one, its modules and models.
 
-let context: { root: string | null; value: LaravelGenerationContext | null } | null = null;
+let context: {
+  root: string | null;
+  value: LaravelGenerationContext | null;
+} | null = null;
 
 /** The engine's generation context, cached per project (null outside Laravel projects). */
 export async function generationContext(refresh = false): Promise<LaravelGenerationContext | null> {
@@ -308,7 +448,14 @@ export async function generationContext(refresh = false): Promise<LaravelGenerat
   const value = await call(commands.phpLaravelGenerationContext()).catch(() => null);
   context = { root, value };
   syncIdeJsonGenerators(value);
+  if (value) sendTemplates();
   return value;
+}
+
+/** Sends the Laravel code templates to the engine, for the Generate actions inside a
+ * model class (the dialogs send them with each request). */
+function sendTemplates(): void {
+  void call(commands.phpLaravelSetTemplates(laravelTemplates())).catch(() => {});
 }
 
 // The actions of the project's `ide.json` code generations, replaced with each context.
@@ -421,15 +568,25 @@ function NewModelPanel() {
   const kindOptions = RELATION_KINDS.map((k) => ({ value: k, label: k }));
   const moduleOptions: SelectOption[] = [
     { value: "", label: "Application", detail: ctx?.namespace ?? "" },
-    ...(ctx?.modules ?? []).map((m) => ({ value: m, label: m, detail: "module" })),
+    ...(ctx?.modules ?? []).map((m) => ({
+      value: m,
+      label: m,
+      detail: "module",
+    })),
   ];
   const fields = form.fields;
   const setField = (i: number, change: Partial<LaravelNewModelField>) =>
-    update({ fields: fields.map((f, j) => (j === i ? { ...f, ...change } : f)) });
+    update({
+      fields: fields.map((f, j) => (j === i ? { ...f, ...change } : f)),
+    });
   const setRelation = (i: number, change: Partial<LaravelNewModelRelation>) =>
-    update({ relations: form.relations.map((r, j) => (j === i ? { ...r, ...change } : r)) });
+    update({
+      relations: form.relations.map((r, j) => (j === i ? { ...r, ...change } : r)),
+    });
   const setIndex = (i: number, change: Partial<NewModelForm["indexes"][number]>) =>
-    update({ indexes: form.indexes.map((x, j) => (j === i ? { ...x, ...change } : x)) });
+    update({
+      indexes: form.indexes.map((x, j) => (j === i ? { ...x, ...change } : x)),
+    });
   return (
     <Dialog
       open
@@ -540,7 +697,11 @@ function NewModelPanel() {
                 value={r.model}
                 options={[
                   { value: "", label: "Related model…" },
-                  ...(ctx?.models ?? []).map((m) => ({ value: m, label: m.slice(m.lastIndexOf("\\") + 1), detail: m })),
+                  ...(ctx?.models ?? []).map((m) => ({
+                    value: m,
+                    label: m.slice(m.lastIndexOf("\\") + 1),
+                    detail: m,
+                  })),
                 ]}
                 disabled={pending}
                 onChange={(model) => setRelation(i, { model })}
@@ -604,7 +765,11 @@ function NewModelPanel() {
           <Button
             size="small"
             disabled={pending}
-            onClick={() => update({ indexes: [...form.indexes, { columns: "", unique: false }] })}
+            onClick={() =>
+              update({
+                indexes: [...form.indexes, { columns: "", unique: false }],
+              })
+            }
           >
             <T>Add Index</T>
           </Button>
@@ -677,17 +842,32 @@ function NewModelPanel() {
 export function generateMenu(ctx: LaravelGenerationContext | null): MenuItem[] {
   if (!ctx) return [];
   const known = new Set(ctx.generators.map((g) => g.id));
-  const items: MenuItem[] = GENERATORS.filter((g) => known.has(g.id)).map((g) => ({
-    kind: "action",
-    action: generatorAction(g.id),
-  }));
+  const items: MenuItem[] = known.has("model") ? [{ kind: "action", action: generatorAction("model") }] : [];
+  for (const group of GENERATOR_GROUPS) {
+    const members = CLASS_GENERATORS.filter((g) => g.group === group.id && known.has(g.id));
+    if (members.length) {
+      items.push({
+        label: group.label,
+        submenu: members.map((g) => ({
+          kind: "action",
+          action: generatorAction(g.id),
+        })),
+      });
+    }
+  }
   const custom = ideJsonGenerators(ctx);
   if (custom.length) {
     items.push({ kind: "separator" });
     for (const g of custom) items.push({ kind: "action", action: generatorAction(g.id) });
   }
   items.push({ kind: "separator" }, { kind: "action", action: "laravel.generate" });
-  return [{ label: "Laravel", icon: "php", submenu: [{ label: "Generate", submenu: items }] }];
+  return [
+    {
+      label: "Laravel",
+      icon: "php",
+      submenu: [{ label: "Generate", submenu: items }],
+    },
+  ];
 }
 
 export function registerLaravelGenerators(): () => void {
@@ -723,6 +903,10 @@ export function registerLaravelGenerators(): () => void {
       ideJsonActions?.dispose();
       ideJsonActions = null;
     },
+    // Edited templates reach the engine while it shows a Laravel project.
+    useFileTemplates.subscribe((s, prev) => {
+      if (s.codeTemplates !== prev.codeTemplates && knownContext()) sendTemplates();
+    }),
   ];
   return () => disposers.reverse().forEach((d) => d());
 }

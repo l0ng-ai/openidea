@@ -278,7 +278,7 @@ impl PhpEngine {
     }
 
     /// Where class `model` is declared.
-    fn class_location(&self, model: &ClassModel) -> Option<ModelLocation> {
+    pub(crate) fn class_location(&self, model: &ClassModel) -> Option<ModelLocation> {
         let path = self.class_path(&model.class, Path::new(""), &FileSummary::default())?;
         Some(ModelLocation { path, range: model.class.name_loc.range })
     }

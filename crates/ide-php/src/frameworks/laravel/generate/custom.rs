@@ -29,8 +29,10 @@
 //!   else `fallbackBaseClass`;
 //! - each parameter's `variable`.
 //!
-//! `inputFilter` and `regex` are not used: the engine checks the name the
-//! way the other generators do.
+//! The name typed goes through `inputFilter` first: filters of the
+//! `${…|filter}` expressions separated by `|` (`upperCamelCase`), applied
+//! to each segment of the name. Then it must match `regex` as a whole, when
+//! given, and be a valid class name as for the other generators.
 
 use std::path::PathBuf;
 
@@ -81,6 +83,10 @@ pub struct CodeGeneration {
     /// The `ide.json` declaring it.
     pub file: PathBuf,
     pub class_suffix: String,
+    /// `inputFilter`: the filters applied to the name typed.
+    pub input_filter: Vec<String>,
+    /// `regex`: the pattern the (filtered) name must match.
+    pub regex: Option<String>,
     pub fields: Vec<GeneratorField>,
     pub files: Vec<CodeFile>,
 }
@@ -236,6 +242,10 @@ pub fn code_generations(ide: &IdeJson) -> Vec<CodeGeneration> {
             id,
             file: file.clone(),
             class_suffix: text(value.get("classSuffix")).unwrap_or_default(),
+            input_filter: text(value.get("inputFilter"))
+                .map(|filters| filters.split('|').map(str::trim).filter(|f| !f.is_empty()).map(str::to_owned).collect())
+                .unwrap_or_default(),
+            regex: text(value.get("regex")),
             fields,
             files,
         });
@@ -243,10 +253,33 @@ pub fn code_generations(ide: &IdeJson) -> Vec<CodeGeneration> {
     out
 }
 
+impl CodeGeneration {
+    /// The name typed for this generation, through its `inputFilter`, and
+    /// checked against its `regex`.
+    pub fn input_name(&self, typed: &str) -> Result<String, String> {
+        let typed = typed.trim();
+        if typed.is_empty() {
+            return Err("Enter a name".to_owned());
+        }
+        let mut name = typed.replace('/', "\\");
+        for f in &self.input_filter {
+            name = name.split('\\').map(|segment| filter(segment, f)).collect::<Result<Vec<_>, _>>()?.join("\\");
+        }
+        if let Some(pattern) = &self.regex {
+            let regex = regex_lite::Regex::new(&format!("^(?:{pattern})$"))
+                .map_err(|e| format!("The regex of {} is invalid: {e}", self.title))?;
+            if !regex.is_match(&name) {
+                return Err(format!("'{name}' doesn't match {pattern}"));
+            }
+        }
+        Ok(name)
+    }
+}
+
 /// `value` with `filter` applied (`className`, `namespace`, `upperCamelCase`,
 /// `camelCase`, `snakeCase`, `kebabCase`, `lowerCase`, `upperCase`,
 /// `plural`); the case filters work on each segment of a name.
-fn filter(value: &str, filter: &str) -> Result<String, String> {
+pub(crate) fn filter(value: &str, filter: &str) -> Result<String, String> {
     let segments = |f: &dyn Fn(&str) -> String| value.split('\\').map(f).collect::<Vec<_>>().join("\\");
     Ok(match filter {
         "className" => short_name(value).to_owned(),
@@ -329,13 +362,11 @@ impl PhpEngine {
         templates: &TemplateSet,
         spec: &NewClass,
     ) -> Result<Vec<(PathBuf, String)>, String> {
-        if spec.name.trim().is_empty() {
-            return Err("Enter a name".to_owned());
-        }
-        let (sub, class) = class_parts(&spec.name, &generation.class_suffix)?;
+        let name = generation.input_name(&spec.name)?;
+        let (sub, class) = class_parts(&name, &generation.class_suffix)?;
         let app_namespace = target.namespace.trim_end_matches('\\').to_owned();
         let mut base = Vars::new();
-        base.set("INPUT", spec.name.trim().trim_end_matches(".php").replace('/', "\\").trim_matches('\\'))
+        base.set("INPUT", name.trim_end_matches(".php").replace('/', "\\").trim_matches('\\'))
             .set("INPUT_CLASS", class.clone())
             .set("CLASS", class.clone())
             .set("APP_NAMESPACE", app_namespace.clone())
@@ -467,6 +498,28 @@ mod tests {
         // PHP's own `${…}` and unknown variables stay.
         assert_eq!(expand("\"${foo}\" ${MISSING} ${", &vars).unwrap(), "\"${foo}\" ${MISSING} ${");
         assert!(expand("${NAME|shout}", &vars).unwrap_err().contains("shout"));
+    }
+
+    #[test]
+    fn names_go_through_the_input_filter_and_the_regex() {
+        let mut ide = IdeJson::default();
+        let entry = serde_json::json!({
+            "id": "dto",
+            "name": "DTO",
+            "inputFilter": "upperCamelCase",
+            "regex": "[A-Z][A-Za-z]*(\\\\[A-Z][A-Za-z]*)*",
+            "files": [{ "template": { "type": "fileTemplate", "path": "Laravel Model" } }]
+        });
+        ide.code_generations.push((PathBuf::from("/p/ide.json"), entry));
+        let dto = &code_generations(&ide)[0];
+        assert_eq!(dto.input_filter, ["upperCamelCase"]);
+        assert_eq!(dto.input_name("admin/order_line").unwrap(), "Admin\\OrderLine");
+        assert!(dto.input_name("Order2").unwrap_err().contains("doesn't match"));
+        assert_eq!(dto.input_name("  ").unwrap_err(), "Enter a name");
+        let broken = CodeGeneration { regex: Some("(".to_owned()), input_filter: Vec::new(), ..dto.clone() };
+        assert!(broken.input_name("X").unwrap_err().contains("invalid"));
+        let unknown = CodeGeneration { input_filter: vec!["shout".to_owned()], regex: None, ..dto.clone() };
+        assert!(unknown.input_name("x").unwrap_err().contains("shout"));
     }
 
     #[test]

@@ -277,11 +277,11 @@ These are the gaps against the feature list in LARAVEL-ROADMAP.md, gathered from
    - Dropped and renamed columns.
    - Join and alias tables in `DB::table`.
    - Typed `Attribute::make(get: …)` accessors without `@return`.
-7. **Generators.**
+7. **Generators.** Done in 8.28. A listener is registered only where an event service provider has a `$listen` array (Laravel 11 discovers listeners otherwise); a module's provider only in a `nwidart/laravel-modules` `module.json`. `ide.json` `inputFilter` is read as a chain of the `${…|filter}` filters, and `transformers` (the same filters) apply to `staticStrings` and `directoryFiles` rules only; a `dataFile` is read when the `ide.json` is.
    - Register observers (`#[ObservedBy]`), events and listeners, and module service providers.
    - Pivot tables for `belongsToMany` in New Model.
    - Livewire 2 paths.
    - A grouped Generate submenu.
    - Edited templates for the in-model actions.
    - `ide.json` `inputFilter`/`regex`, `transformers` and `dataFile`.
-8. **Livewire.** An unknown-parameter inspection for `@livewire(…, [...])` and `<livewire:…>` attributes.
+8. **Livewire.** Done in 8.28 (`BladeUnknownLivewireParameter`, under Settings › PHP › Inspections › Laravel). An unknown-parameter inspection for `@livewire(…, [...])` and `<livewire:…>` attributes.

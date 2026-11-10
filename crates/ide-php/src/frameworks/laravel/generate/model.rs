@@ -2,7 +2,8 @@
 //! relations and indexes, and the classes ticked in the dialog: a
 //! migration creating its table, a factory, a seeder, a controller (plain,
 //! resource or API), Store/Update Form Requests, a JSON resource and a
-//! policy. The way `php artisan make:model --all` names and places them.
+//! policy; with the migration, the pivot table of each `belongsToMany`
+//! relation the project lacks. The way `php artisan make:model --all` names and places them.
 
 use serde::{Deserialize, Serialize};
 
@@ -127,6 +128,30 @@ impl Relation {
     fn morphs(&self) -> Option<String> {
         (self.kind == "morphTo").then(|| snake(&self.method))
     }
+}
+
+/// The pivot table of models `first` and `second` (short names), the way
+/// Eloquent names it (`post_tag`), and its two keys in that order.
+pub(super) fn pivot_table(first: &str, second: &str) -> (String, [String; 2]) {
+    let mut models = [snake(first), snake(second)];
+    models.sort();
+    let keys = models.clone().map(|model| format!("{model}_id"));
+    (format!("{}_{}", models[0], models[1]), keys)
+}
+
+/// Migration prefix `timestamp` (`2024_05_01_120000`) `seconds` later;
+/// unchanged when it isn't one or the day would roll over.
+pub(super) fn later_timestamp(timestamp: &str, seconds: u32) -> String {
+    let Some((day, time)) = timestamp.rsplit_once('_') else { return timestamp.to_owned() };
+    if time.len() != 6 || !time.bytes().all(|b| b.is_ascii_digit()) {
+        return timestamp.to_owned();
+    }
+    let n = |range: std::ops::Range<usize>| time[range].parse::<u32>().unwrap_or(0);
+    let total = n(0..2) * 3600 + n(2..4) * 60 + n(4..6) + seconds;
+    if total >= 86_400 {
+        return timestamp.to_owned();
+    }
+    format!("{day}_{:02}{:02}{:02}", total / 3600, total / 60 % 60, total % 60)
 }
 
 /// The PHP literal of a default value: kept when it is one already, else
@@ -512,6 +537,30 @@ impl PhpEngine {
             vars.set("TABLE", &table).set("MODEL", &class).set("COLUMNS", lines.join("\n"));
             let path = target.database_dir("migrations").join(format!("{timestamp}_create_{table}_table.php"));
             push(&mut files, path, templates.render(template::MIGRATION, &vars)?)?;
+
+            // The pivot table of each `belongsToMany` relation, unless a
+            // migration or the database has it, one second later so that
+            // it runs after the model's table.
+            let known_tables: Vec<String> =
+                self.resolver().laravel().tables.iter().map(|known| known.name.to_ascii_lowercase()).collect();
+            let mut pivots = 0;
+            for relation in relations.iter().filter(|relation| relation.kind == "belongsToMany") {
+                let (pivot, keys) = pivot_table(&class, short_name(&relation.model));
+                if known_tables.contains(&pivot) || files.iter().any(|file| file.text.contains(&format!("'{pivot}'"))) {
+                    continue;
+                }
+                pivots += 1;
+                let mut lines: Vec<String> = keys
+                    .iter()
+                    .map(|key| format!("$table->foreignId('{key}')->constrained()->cascadeOnDelete();"))
+                    .collect();
+                lines.push(format!("$table->primary(['{}', '{}']);", keys[0], keys[1]));
+                let mut vars = Vars::new();
+                vars.set("TABLE", &pivot).set("COLUMNS", lines.join("\n"));
+                let later = later_timestamp(timestamp, pivots);
+                let path = target.database_dir("migrations").join(format!("{later}_create_{pivot}_table.php"));
+                push(&mut files, path, templates.render(template::MIGRATION, &vars)?)?;
+            }
         }
 
         // The factory.
@@ -678,6 +727,15 @@ mod unit_tests {
 
     fn field(name: &str, ty: &str) -> ModelField {
         ModelField { name: name.to_owned(), ty: ty.to_owned(), ..ModelField::default() }
+    }
+
+    #[test]
+    fn pivot_tables_and_later_migrations() {
+        assert_eq!(pivot_table("Tag", "Post"), ("post_tag".to_owned(), ["post_id".to_owned(), "tag_id".to_owned()]));
+        assert_eq!(pivot_table("BlogPost", "Category").0, "blog_post_category");
+        assert_eq!(later_timestamp("2024_05_01_120059", 1), "2024_05_01_120100");
+        assert_eq!(later_timestamp("2024_05_01_235959", 1), "2024_05_01_235959");
+        assert_eq!(later_timestamp("x", 1), "x");
     }
 
     #[test]

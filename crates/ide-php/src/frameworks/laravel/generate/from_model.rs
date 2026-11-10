@@ -12,8 +12,8 @@
 //!   `$fillable` when it has neither that nor `$guarded`.
 //!
 //! The new classes go to the module the model belongs to, else the
-//! application, and use the default templates (the context actions don't
-//! know the user's edited ones).
+//! application, and use the user's edited templates the front end last
+//! sent ([`PhpEngine::set_laravel_templates`]).
 
 use std::path::Path;
 
@@ -57,7 +57,7 @@ impl PhpEngine {
             .map(|module| module.name.clone())
             .unwrap_or_default();
         let Ok(target) = self.generation_target(&project, &settings, Some(&module)) else { return Vec::new() };
-        let templates = TemplateSet::default();
+        let templates = self.laravel_templates();
         let mut out = Vec::new();
 
         // The JSON resource.

@@ -158,6 +158,11 @@ impl DirectoryFiles {
         for dir in &rule.options.directories {
             collect(dir, dir, rule.options.recursive, &rule.options.suffix_to_clear, &mut out);
         }
+        if !rule.options.transformers.is_empty() {
+            for (name, _) in &mut out {
+                *name = crate::frameworks::laravel::ide_json::transform(name, &rule.options.transformers);
+            }
+        }
         out
     }
 }

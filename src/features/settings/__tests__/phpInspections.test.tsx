@@ -63,7 +63,10 @@ describe("PHP engine inspections", () => {
     });
     const items = [d("PhpUndefinedClass"), d("PhpUnusedAlias")];
     const out = applyProfile(
-      { "lsp:php:PhpUndefinedClass": { enabled: false }, "lsp:php:PhpUnusedAlias": { severity: "error" } },
+      {
+        "lsp:php:PhpUndefinedClass": { enabled: false },
+        "lsp:php:PhpUnusedAlias": { severity: "error" },
+      },
       "php",
       items,
     );
@@ -87,6 +90,7 @@ describe("PHP engine inspections", () => {
       "lsp:blade:BladeUnclosedSection",
       "lsp:blade:BladeUnopenedSection",
       "lsp:blade:BladeUndefinedComponent",
+      "lsp:blade:BladeUnknownLivewireParameter",
     ]);
     expect(phpInspection("lsp:blade:BladeUnclosedSection")?.name).toBe("Unclosed Blade section");
     expect(PHP_INSPECTIONS.find((i) => i.group === "Frameworks")?.code).toBe("PhpUndefinedRoute");
@@ -124,7 +128,14 @@ describe("PHP engine inspections", () => {
   it("shows them in Editor › Inspections under PHP › Built-in engine", () => {
     const tree = buildInspectionTree(
       [{ name: "PHP", servers: ["intelephense"] }],
-      [{ producer: "php", code: "PhpUndefinedClass", source: "php", sample: "" }],
+      [
+        {
+          producer: "php",
+          code: "PhpUndefinedClass",
+          source: "php",
+          sample: "",
+        },
+      ],
     );
     const php = tree.find((g) => g.name === "PHP")!;
     expect(php.children.map((n) => n.id)).toEqual(["lsp:intelephense", "lsp:php"]);
@@ -151,7 +162,9 @@ describe("PHP engine inspections", () => {
 describe("Settings › PHP › Inspections page", () => {
   const mount = () => {
     const base = validateSettings({
-      inspections: { default: { "lsp:php:PhpUnusedAlias": { severity: "error" } } },
+      inspections: {
+        default: { "lsp:php:PhpUnusedAlias": { severity: "error" } },
+      },
     });
     useSettingsDialog.setState({ base, globalBase: base, staged: {} });
     return render(
@@ -175,7 +188,9 @@ describe("Settings › PHP › Inspections page", () => {
     expect(screen.getByLabelText<HTMLInputElement>("Enable Undefined class").checked).toBe(false);
 
     fireEvent.click(screen.getByLabelText("Strict mode for Argument type mismatch"));
-    expect(stagedDefault()).toMatchObject({ "lsp:php:PhpParams": { options: { strict: true } } });
+    expect(stagedDefault()).toMatchObject({
+      "lsp:php:PhpParams": { options: { strict: true } },
+    });
 
     fireEvent.click(screen.getByLabelText("Enable Undefined class"));
     expect(stagedDefault()).toEqual({
@@ -188,7 +203,9 @@ describe("Settings › PHP › Inspections page", () => {
     mount();
     expect(screen.getByRole("region", { name: "Laravel" })).toBeTruthy();
     fireEvent.click(screen.getByLabelText("Enable Unclosed Blade section"));
-    expect(stagedDefault()).toMatchObject({ "lsp:blade:BladeUnclosedSection": { enabled: false } });
+    expect(stagedDefault()).toMatchObject({
+      "lsp:blade:BladeUnclosedSection": { enabled: false },
+    });
     expect(screen.getByLabelText<HTMLInputElement>("Enable Unclosed Blade section").checked).toBe(false);
     expect(screen.getByLabelText<HTMLInputElement>("Enable Undefined config key").checked).toBe(true);
   });

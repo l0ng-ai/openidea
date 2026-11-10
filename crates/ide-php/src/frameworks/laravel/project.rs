@@ -69,6 +69,10 @@ pub struct LaravelProject {
     /// The packages the engine supports that are installed.
     #[serde(default)]
     pub packages: LaravelPackages,
+    /// The major version of `livewire/livewire`: the locked one, else the
+    /// one `composer.json` requires (`^2.0` → 2); `None` when unknown.
+    #[serde(default)]
+    pub livewire_major: Option<u32>,
     /// The service provider files: the ones of `app/Providers` and of the
     /// modules' provider folders, then the ones registered by the
     /// application, Concord and package discovery, and by those providers
@@ -231,6 +235,15 @@ impl LaravelProject {
             || root.join("modules_statuses.json").is_file();
         let ide_json = IdeJson::load(&root, &vendor);
         let packages = LaravelPackages::detect(|name| required(name) || locked(name).is_some(), &ide_json);
+        let livewire_major = locked(LaravelPackages::LIVEWIRE)
+            .or_else(|| {
+                composer.as_ref().and_then(|json| {
+                    ["require", "require-dev"].iter().find_map(|section| {
+                        json.get(section)?.get(LaravelPackages::LIVEWIRE)?.as_str().map(str::to_owned)
+                    })
+                })
+            })
+            .and_then(|version| major_version(&version));
         let mut project = Self {
             root: root.clone(),
             version,
@@ -240,6 +253,7 @@ impl LaravelProject {
             modules: Vec::new(),
             ide_json,
             packages,
+            livewire_major,
             providers: Vec::new(),
         };
         if nwidart {
@@ -513,6 +527,14 @@ fn same_path(a: &Path, b: &Path) -> bool {
 fn read_json(path: &Path) -> Option<Value> {
     let text = std::fs::read_to_string(path).ok()?;
     serde_json::from_str(&text).ok()
+}
+
+/// The major version of a version or constraint (`2.12.6`, `v3.0.1`,
+/// `^2.0`, `~3.4|^4`: the first one).
+fn major_version(version: &str) -> Option<u32> {
+    let start = version.find(|c: char| c.is_ascii_digit())?;
+    let digits: String = version[start..].chars().take_while(char::is_ascii_digit).collect();
+    digits.parse().ok()
 }
 
 /// The version of package `name` in a `composer.lock` (`packages`,

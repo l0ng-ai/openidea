@@ -764,6 +764,7 @@ pub async fn php_laravel_new_model(
     };
     host.blocking(move || {
         let templates = generate::TemplateSet::new(templates.into_iter().map(|t| (t.name, t.body)));
+        engine.set_laravel_templates(templates.clone());
         engine.laravel_new_model(&spec.into(), &templates, &timestamp).map_err(IdeError::invalid)
     })
     .await
@@ -841,7 +842,19 @@ pub async fn php_laravel_generate_class(
     };
     host.blocking(move || {
         let templates = generate::TemplateSet::new(templates.into_iter().map(|t| (t.name, t.body)));
+        engine.set_laravel_templates(templates.clone());
         engine.laravel_generate_class(&spec.into(), &templates, &timestamp).map_err(IdeError::invalid)
     })
     .await
+}
+
+/// Keeps the user's edited Laravel generator templates (`templates`) for the
+/// generators that run without a dialog: the Generate actions inside a model class.
+/// Does nothing while the native PHP engine isn't running.
+pub async fn php_laravel_set_templates(host: &Host, window: &str, templates: Vec<LaravelTemplate>) -> IdeResult<()> {
+    let project = host.project(window)?;
+    if let Some(engine) = project.php.engine() {
+        engine.set_laravel_templates(generate::TemplateSet::new(templates.into_iter().map(|t| (t.name, t.body))));
+    }
+    Ok(())
 }

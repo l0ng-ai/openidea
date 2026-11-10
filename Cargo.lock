@@ -4515,6 +4515,7 @@ dependencies = [
  "postcard",
  "rayon",
  "redb",
+ "regex-lite",
  "self_cell",
  "serde",
  "serde_json",

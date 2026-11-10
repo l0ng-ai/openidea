@@ -99,10 +99,10 @@ fn reads_rules_and_their_conditions() {
 
     let ignored = ide.ignored.join("\n");
     for expected in [
-        "completions[0].transformers: not supported",
+        "completions[0].transformers: 'lower' is not a transformer",
         "completions[0].condition[3]: names no function",
         "completions[0].condition[4].place: 'sideways' is not a place",
-        "completions[1].options.dataFile: not supported",
+        "completions[1].options.dataFile: cannot read",
         "completions[3].complete: 'bladeIcon' is not supported",
         "completions[4]: no usable condition",
         "auth: not supported",
@@ -254,4 +254,60 @@ fn the_bundled_schema_describes_what_is_read() {
     for place in places {
         assert!(Place::parse(place.as_str().unwrap()).is_some(), "{place}");
     }
+}
+
+#[test]
+fn transformers_and_data_files() {
+    let dir = tempfile::tempdir().unwrap();
+    std::fs::write(dir.path().join("sizes.txt"), "ExtraLarge\n\n  small \n").unwrap();
+    std::fs::write(dir.path().join("colors.json"), r#"["DarkRed", "light_blue"]"#).unwrap();
+    std::fs::write(dir.path().join("places.json"), r#"{"home": "routes/web.php:3", "away": 1}"#).unwrap();
+    let mut ide = IdeJson::default();
+    ide.add(
+        &dir.path().join("ide.json"),
+        &json!({
+            "completions": [
+                {
+                    "complete": "staticStrings",
+                    "condition": [{ "functionNames": ["size"] }],
+                    "options": { "dataFile": "sizes.txt", "strings": ["Medium"] },
+                    "transformers": ["snakeCase", "shout"]
+                },
+                {
+                    "complete": "staticStrings",
+                    "condition": [{ "functionNames": ["color"] }],
+                    "options": { "dataFile": "colors.json" },
+                    "transformers": ["kebabCase"]
+                },
+                {
+                    "complete": "staticStrings",
+                    "condition": [{ "functionNames": ["place"] }],
+                    "options": { "dataFile": "places.json" }
+                },
+                {
+                    "complete": "directoryFiles",
+                    "condition": [{ "functionNames": ["icon"] }],
+                    "options": { "directories": ["icons"] },
+                    "transformers": ["upperCase"]
+                },
+                {
+                    "complete": "routeName",
+                    "condition": [{ "functionNames": ["link"] }],
+                    "transformers": ["lowerCase"]
+                }
+            ]
+        }),
+    );
+    let strings = |i: usize| ide.completions[i].options.strings.iter().map(|(s, _)| s.clone()).collect::<Vec<_>>();
+    assert_eq!(strings(0), ["extra_large", "small", "medium"]);
+    assert_eq!(strings(1), ["dark-red", "light-blue"]);
+    assert_eq!(
+        ide.completions[2].options.strings,
+        [("home".to_owned(), Some("routes/web.php:3".to_owned())), ("away".to_owned(), None)]
+    );
+    assert_eq!(ide.completions[3].options.transformers, ["upperCase"]);
+    assert_eq!(super::transform("arrow-left", &ide.completions[3].options.transformers), "ARROW-LEFT");
+    let ignored = ide.ignored.join("\n");
+    assert!(ignored.contains("completions[0].transformers: 'shout' is not a transformer"), "{ignored}");
+    assert!(ignored.contains("completions[4].transformers: not supported for routeName"), "{ignored}");
 }

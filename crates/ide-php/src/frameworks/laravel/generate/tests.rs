@@ -37,12 +37,19 @@ struct App {
 
 impl App {
     fn new() -> Self {
+        Self::new_with(|_| {})
+    }
+
+    /// The fixture app, changed by `change` (given its root) before the
+    /// engine opens it.
+    fn new_with(change: impl FnOnce(&Path)) -> Self {
         let tmp = tempfile::tempdir().unwrap();
         let base = dunce::canonicalize(tmp.path()).unwrap();
         let root = base.join("project");
         let fixtures = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../fixtures");
         copy_dir(&fixtures.join("laravel-app"), &root);
         copy_dir(&fixtures.join("laravel-stubs"), &root.join("vendor"));
+        change(&root);
         let sink: SharedSink = Arc::new(|_: IdeEvent| {});
         let config = EngineConfig {
             cache_dir: base.join("cache").join(CACHE_SUBDIR),
@@ -126,6 +133,7 @@ fn new_model_with_every_companion() {
         [
             "app/Models/Article.php",
             "database/migrations/2024_06_01_120000_create_articles_table.php",
+            "database/migrations/2024_06_01_120001_create_article_tag_table.php",
             "database/factories/ArticleFactory.php",
             "database/seeders/ArticleSeeder.php",
             "app/Http/Requests/StoreArticleRequest.php",
@@ -504,6 +512,114 @@ fn providers_are_registered_and_pest_tests_detected() {
     std::fs::write(app.root.join("tests/Pest.php"), "<?php\n").unwrap();
     let files = app.class(&class_spec("unit-test", "Money")).unwrap();
     assert_eq!(files[0].text, "<?php\n\ntest('example', function () {\n    expect(true)->toBeTrue();\n});\n");
+}
+
+/// The edits of `edit` to existing files: `(path, [new text])`.
+fn registrations(app: &App, edit: &WorkspaceEdit) -> Vec<(String, Vec<String>)> {
+    let created: Vec<String> = edit
+        .files
+        .iter()
+        .filter_map(|file| match file {
+            FileEdit::Create { path, .. } => Some(app.relative(path.as_ref())),
+            _ => None,
+        })
+        .collect();
+    edit.files
+        .iter()
+        .filter_map(|file| match file {
+            FileEdit::Edit { path, edits, .. } if !created.contains(&app.relative(path.as_ref())) => {
+                Some((app.relative(path.as_ref()), edits.iter().map(|e| e.new_text.clone()).collect()))
+            }
+            _ => None,
+        })
+        .collect()
+}
+
+#[test]
+fn generators_register_what_they_create() {
+    let app = App::new_with(|root| {
+        std::fs::write(
+            root.join("app/Providers/EventServiceProvider.php"),
+            "<?php\n\nnamespace App\\Providers;\n\nuse Illuminate\\Foundation\\Support\\Providers\\EventServiceProvider as ServiceProvider;\n\nclass EventServiceProvider extends ServiceProvider\n{\n    protected $listen = [\n    ];\n}\n",
+        )
+        .unwrap();
+    });
+    let generate =
+        |spec: NewClass| app.engine.laravel_generate_class(&spec, &TemplateSet::default(), TIMESTAMP).unwrap();
+
+    // An observer goes on its model.
+    let edit = generate(class_spec("observer", "Comment"));
+    let found = registrations(&app, &edit);
+    assert_eq!(found.len(), 1, "{found:?}");
+    assert_eq!(found[0].0, "app/Models/Comment.php");
+    let texts = found[0].1.join("");
+    assert!(texts.contains("#[ObservedBy([CommentObserver::class])]"), "{texts}");
+    assert!(texts.contains("use App\\Observers\\CommentObserver;"), "{texts}");
+    assert!(texts.contains("use Illuminate\\Database\\Eloquent\\Attributes\\ObservedBy;"), "{texts}");
+    // No model, nothing to register.
+    assert!(registrations(&app, &generate(class_spec("observer", "Audit"))).is_empty());
+
+    // A listener goes under its event in `$listen`.
+    let edit = generate(NewClass { event: "PodcastProcessed".to_owned(), ..class_spec("listener", "SendNotice") });
+    let found = registrations(&app, &edit);
+    assert_eq!(found.len(), 1, "{found:?}");
+    assert_eq!(found[0].0, "app/Providers/EventServiceProvider.php");
+    let texts = found[0].1.join("|");
+    assert!(texts.contains("PodcastProcessed::class => [\n            SendNotice::class,\n        ],"), "{texts}");
+    assert!(texts.contains("use App\\Events\\PodcastProcessed;"), "{texts}");
+    assert!(texts.contains("use App\\Listeners\\SendNotice;"), "{texts}");
+    // Without an event, nothing.
+    assert!(registrations(&app, &generate(class_spec("listener", "Quiet"))).is_empty());
+
+    // A module's provider goes into its `module.json`.
+    let edit =
+        generate(NewClass { module: Some("Billing".to_owned()), ..class_spec("provider", "TaxServiceProvider") });
+    // The fixture's line endings depend on the checkout.
+    let found: Vec<(String, Vec<String>)> = registrations(&app, &edit)
+        .into_iter()
+        .map(|(path, texts)| (path, texts.iter().map(|text| text.replace("\r\n", "\n")).collect()))
+        .collect();
+    assert_eq!(
+        found,
+        [(
+            "Modules/Billing/module.json".to_owned(),
+            vec![",\n        \"Modules\\\\Billing\\\\Providers\\\\TaxServiceProvider\"".to_owned()]
+        )]
+    );
+}
+
+#[test]
+fn livewire_2_components_go_below_http_livewire() {
+    let app = App::new_with(|root| {
+        let path = root.join("composer.json");
+        let text = std::fs::read_to_string(&path).unwrap();
+        let text = text.replacen("\"require\": {", "\"require\": {\n        \"livewire/livewire\": \"^2.12\",", 1);
+        std::fs::write(&path, text).unwrap();
+    });
+    assert_eq!(app.engine.laravel().unwrap().livewire_major, Some(2));
+    let files = app.class(&class_spec("livewire", "posts.create-post")).unwrap();
+    assert_eq!(
+        app.paths(&files),
+        ["app/Http/Livewire/Posts/CreatePost.php", "resources/views/livewire/posts/create-post.blade.php"]
+    );
+    assert!(files[0].text.contains("namespace App\\Http\\Livewire\\Posts;"), "{}", files[0].text);
+    assert_eq!(App::new().engine.laravel().unwrap().livewire_major, None);
+}
+
+#[test]
+fn model_actions_use_the_edited_templates() {
+    let app = App::new();
+    app.engine.set_laravel_templates(TemplateSet::new([(
+        template::JSON_RESOURCE.to_owned(),
+        "<?php\n\nnamespace $NAMESPACE$;\n\n// Edited\nclass $CLASS$ {}\n".to_owned(),
+    )]));
+    let comment = std::fs::read_to_string(app.root.join("app/Models/Comment.php")).unwrap();
+    let source = comment.replacen("    protected $fillable", "    /*|*/protected $fillable", 1);
+    let resource = app.generate_actions("app/Models/Comment.php", &source, "Generate JSON resource");
+    assert_eq!(
+        resource[0].1[0].1[0],
+        "<?php\n\nnamespace App\\Http\\Resources;\n\n// Edited\nclass CommentResource {}\n"
+    );
 }
 
 #[test]

@@ -5,13 +5,24 @@ import type { LaravelGenerationContext, WorkspaceEdit } from "@/bindings";
 const ipc = vi.hoisted(() => ({
   phpLaravelGenerationContext: vi.fn(),
   phpLaravelNewModel: vi.fn(),
-  applyWorkspaceEdit: vi.fn(async () => ({ status: "ok" as const, data: null })),
+  phpLaravelSetTemplates: vi.fn(async () => ({
+    status: "ok" as const,
+    data: null,
+  })),
+  applyWorkspaceEdit: vi.fn(async () => ({
+    status: "ok" as const,
+    data: null,
+  })),
 }));
 const notify = vi.hoisted(() => vi.fn());
 const openFile = vi.hoisted(() => vi.fn(async () => {}));
 vi.mock("@/platform/ipc", async (orig) => {
   const real = await orig<typeof import("@/platform/ipc")>();
-  return { ...real, isTauri: () => true, commands: { ...real.commands, ...ipc } };
+  return {
+    ...real,
+    isTauri: () => true,
+    commands: { ...real.commands, ...ipc },
+  };
 });
 vi.mock("@/editor/api", async (orig) => ({
   ...(await orig<typeof import("@/editor/api")>()),
@@ -44,14 +55,32 @@ const context: LaravelGenerationContext = {
   modules: ["Billing"],
   defaultModule: null,
   models: ["App\\Models\\Post", "App\\Models\\User"],
-  generators: [{ id: "model", title: "Model", description: "", templates: ["Laravel Model"], options: [], fields: [] }],
+  generators: [
+    {
+      id: "model",
+      title: "Model",
+      description: "",
+      templates: ["Laravel Model"],
+      options: [],
+      fields: [],
+    },
+  ],
 };
 
 const edit: WorkspaceEdit = {
   files: [
     { kind: "create", path: "/app/app/Models/Article.php", overwrite: false },
-    { kind: "edit", path: "/app/app/Models/Article.php", edits: [], version: null },
-    { kind: "create", path: "/app/database/migrations/x_create_articles_table.php", overwrite: false },
+    {
+      kind: "edit",
+      path: "/app/app/Models/Article.php",
+      edits: [],
+      version: null,
+    },
+    {
+      kind: "create",
+      path: "/app/database/migrations/x_create_articles_table.php",
+      overwrite: false,
+    },
   ],
   preconditions: [],
 };
@@ -68,8 +97,22 @@ describe("Laravel generators", () => {
       ...emptyForm("Billing"),
       name: " Article ",
       fields: [
-        { name: " title ", ty: "string", nullable: false, unique: true, index: false, default: "" },
-        { name: "", ty: "string", nullable: false, unique: false, index: false, default: "" },
+        {
+          name: " title ",
+          ty: "string",
+          nullable: false,
+          unique: true,
+          index: false,
+          default: "",
+        },
+        {
+          name: "",
+          ty: "string",
+          nullable: false,
+          unique: false,
+          index: false,
+          default: "",
+        },
       ],
       relations: [
         { kind: "belongsTo", model: " App\\Models\\User ", name: " author " },
@@ -84,7 +127,16 @@ describe("Laravel generators", () => {
     expect(newModelRequest(form)).toEqual({
       name: "Article",
       module: "Billing",
-      fields: [{ name: "title", ty: "string", nullable: false, unique: true, index: false, default: "" }],
+      fields: [
+        {
+          name: "title",
+          ty: "string",
+          nullable: false,
+          unique: true,
+          index: false,
+          default: "",
+        },
+      ],
       relations: [
         { kind: "belongsTo", model: "App\\Models\\User", name: "author" },
         { kind: "morphTo", model: "", name: "commentable" },
@@ -110,9 +162,12 @@ describe("Laravel generators", () => {
     const field = (name: string) => ({ ...emptyForm().fields[0]!, name });
     expect(newModelError({ ...named("Post"), fields: [field("a b")] })).toBe("'a b' is not a valid column name");
     expect(newModelError({ ...named("Post"), fields: [field("a"), field("A")] })).toBe("The column 'A' is there twice");
-    expect(newModelError({ ...named("Post"), relations: [{ kind: "morphTo", model: "", name: "" }] })).toBe(
-      "Name the morphTo relation (commentable)",
-    );
+    expect(
+      newModelError({
+        ...named("Post"),
+        relations: [{ kind: "morphTo", model: "", name: "" }],
+      }),
+    ).toBe("Name the morphTo relation (commentable)");
   });
 
   it("sends the Laravel code templates the user may have edited", () => {
@@ -149,7 +204,12 @@ describe("Laravel generators", () => {
         keywords: g.keywords,
         run: () => {},
       })),
-      { id: "other", title: "New Model Thing", category: "File", run: () => {} },
+      {
+        id: "other",
+        title: "New Model Thing",
+        category: "File",
+        run: () => {},
+      },
     ];
     const opts = { isEnabled: () => true, recent: [] };
     const all = matchGenerators(actions, "", opts).map((i) => i.id);
@@ -162,27 +222,48 @@ describe("Laravel generators", () => {
   });
 
   it("creates the model from the New Model dialog", async () => {
-    ipc.phpLaravelGenerationContext.mockResolvedValue({ status: "ok", data: context });
+    ipc.phpLaravelGenerationContext.mockResolvedValue({
+      status: "ok",
+      data: context,
+    });
     ipc.phpLaravelNewModel.mockResolvedValue({ status: "ok", data: edit });
     render(<NewModelDialog />);
     act(() => openNewModel());
-    const form = await screen.findByRole("form", { name: "New Eloquent Model" });
+    const form = await screen.findByRole("form", {
+      name: "New Eloquent Model",
+    });
     await waitFor(() => expect(ipc.phpLaravelGenerationContext).toHaveBeenCalled());
-    const create = screen.getByRole<HTMLButtonElement>("button", { name: "Create" });
+    // The engine gets the templates too, for the Generate actions inside a model.
+    await waitFor(() => expect(ipc.phpLaravelSetTemplates).toHaveBeenCalledWith(laravelTemplates()));
+    const create = screen.getByRole<HTMLButtonElement>("button", {
+      name: "Create",
+    });
     expect(create.disabled).toBe(true);
-    fireEvent.change(within(form).getByLabelText("Class name"), { target: { value: "Article" } });
-    fireEvent.change(within(form).getByLabelText("Field name 1"), { target: { value: "title" } });
+    fireEvent.change(within(form).getByLabelText("Class name"), {
+      target: { value: "Article" },
+    });
+    fireEvent.change(within(form).getByLabelText("Field name 1"), {
+      target: { value: "title" },
+    });
     fireEvent.click(within(form).getByRole("button", { name: "Add Field" }));
-    fireEvent.change(within(form).getByLabelText("Field name 2"), { target: { value: "Title" } });
+    fireEvent.change(within(form).getByLabelText("Field name 2"), {
+      target: { value: "Title" },
+    });
     expect(within(form).getByText("The column 'Title' is there twice")).toBeTruthy();
     expect(create.disabled).toBe(true);
-    fireEvent.change(within(form).getByLabelText("Field name 2"), { target: { value: "views" } });
-    fireEvent.change(within(form).getByLabelText("Default value 2"), { target: { value: "0" } });
+    fireEvent.change(within(form).getByLabelText("Field name 2"), {
+      target: { value: "views" },
+    });
+    fireEvent.change(within(form).getByLabelText("Default value 2"), {
+      target: { value: "0" },
+    });
     fireEvent.click(within(form).getAllByLabelText("Unique")[0]!);
     fireEvent.click(within(form).getByLabelText("Soft deletes"));
     fireEvent.click(within(form).getByLabelText("Policy"));
     fireEvent.click(within(form).getByRole("button", { name: "Add Index" }));
-    fireEvent.change(within(form).getByLabelText("Index columns 1"), { target: { value: "views, title" } });
+    fireEvent.change(within(form).getByLabelText("Index columns 1"), {
+      target: { value: "views, title" },
+    });
     expect(create.disabled).toBe(false);
     fireEvent.click(create);
     await waitFor(() => expect(ipc.applyWorkspaceEdit).toHaveBeenCalledWith(edit));
@@ -205,20 +286,32 @@ describe("Laravel generators", () => {
     await waitFor(() =>
       expect(notify).toHaveBeenCalledWith(expect.objectContaining({ title: "Created 2 files for Article" })),
     );
-    expect(openFile).toHaveBeenCalledWith("/app/app/Models/Article.php", { focus: true });
+    expect(openFile).toHaveBeenCalledWith("/app/app/Models/Article.php", {
+      focus: true,
+    });
     expect(useNewModel.getState().open).toBeNull();
   });
 
   it("shows the engine's failure and keeps the dialog open", async () => {
-    ipc.phpLaravelGenerationContext.mockResolvedValue({ status: "ok", data: context });
+    ipc.phpLaravelGenerationContext.mockResolvedValue({
+      status: "ok",
+      data: context,
+    });
     ipc.phpLaravelNewModel.mockResolvedValue({
       status: "error",
-      error: { kind: "invalid", message: "The class 'App\\Models\\Post' exists already" },
+      error: {
+        kind: "invalid",
+        message: "The class 'App\\Models\\Post' exists already",
+      },
     });
     render(<NewModelDialog />);
     act(() => openNewModel());
-    const form = await screen.findByRole("form", { name: "New Eloquent Model" });
-    fireEvent.change(within(form).getByLabelText("Class name"), { target: { value: "Post" } });
+    const form = await screen.findByRole("form", {
+      name: "New Eloquent Model",
+    });
+    fireEvent.change(within(form).getByLabelText("Class name"), {
+      target: { value: "Post" },
+    });
     await waitFor(() => expect(screen.getByRole<HTMLButtonElement>("button", { name: "Create" }).disabled).toBe(false));
     fireEvent.click(screen.getByRole("button", { name: "Create" }));
     expect(await within(form).findByText("The class 'App\\Models\\Post' exists already")).toBeTruthy();
@@ -227,7 +320,10 @@ describe("Laravel generators", () => {
   });
 
   it("explains when the project isn't a Laravel one", async () => {
-    ipc.phpLaravelGenerationContext.mockResolvedValue({ status: "ok", data: null });
+    ipc.phpLaravelGenerationContext.mockResolvedValue({
+      status: "ok",
+      data: null,
+    });
     render(<NewModelDialog />);
     act(() => openNewModel());
     expect(await screen.findByText("Not a Laravel project, or the built-in PHP engine isn't running.")).toBeTruthy();

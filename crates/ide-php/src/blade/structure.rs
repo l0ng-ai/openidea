@@ -23,8 +23,10 @@ pub const DIAGNOSTIC_SOURCE: &str = "blade";
 /// The codes of the template's own problems: a block never closed, and a
 /// closing directive with nothing open ([`inspect`]), and, in a Laravel
 /// project, a component tag no component has
-/// (`crate::frameworks::laravel::components`).
-pub const INSPECTIONS: [&str; 3] = ["BladeUnclosedSection", "BladeUnopenedSection", "BladeUndefinedComponent"];
+/// (`crate::frameworks::laravel::components`), and a parameter a Livewire
+/// component doesn't take (`crate::frameworks::laravel::livewire_params`).
+pub const INSPECTIONS: [&str; 4] =
+    ["BladeUnclosedSection", "BladeUnopenedSection", "BladeUndefinedComponent", "BladeUnknownLivewireParameter"];
 
 /// What a [`Name`] names.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]

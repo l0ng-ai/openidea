@@ -784,7 +784,7 @@ Runs after Plan 7. Before any 8.x phase, read [LARAVEL-ROADMAP.md](LARAVEL-ROADM
 
   Check the model view and the unknown-column inspection against Monica's 70 models and Bagisto's 127, and fix any false positives. Tests: caret fixtures, plus an ignored real-application inspection count recorded in `laravel.md`.
 
-- [ ] Phase 8.28: Generators and Livewire, complete
+- [x] Phase 8.28: Generators and Livewire, complete
       **Generators:**
   - register what they create: observers (`#[ObservedBy]`), events and listeners, module service providers
   - pivot tables for `belongsToMany` in New Model

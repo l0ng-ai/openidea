@@ -149,6 +149,18 @@ pub async fn php_laravel_generate_class(
     ide_host::ops::laravel::php_laravel_generate_class(&state.host, window.label(), spec, templates, timestamp).await
 }
 
+/// Keeps the user's edited Laravel generator templates for the Generate actions inside
+/// a model class.
+#[tauri::command]
+#[specta::specta]
+pub async fn php_laravel_set_templates(
+    window: Window,
+    state: State<'_, AppState>,
+    templates: Vec<ide_host::ops::laravel::LaravelTemplate>,
+) -> IdeResult<()> {
+    ide_host::ops::laravel::php_laravel_set_templates(&state.host, window.label(), templates).await
+}
+
 /// Reads the schema of the data source chosen in Settings › PHP › Laravel again for the
 /// native PHP engine (`None`: none chosen).
 #[tauri::command]

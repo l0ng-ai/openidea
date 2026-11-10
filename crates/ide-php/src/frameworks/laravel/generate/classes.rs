@@ -7,12 +7,16 @@
 //!   JSON resource and resource collection, factory, seeder, migration
 //!   (create or update a table), pivot table migration, event, listener,
 //!   job, mail, notification, observer, policy, validation rule, exception,
-//!   HTTP exception, service provider (registered in
-//!   `bootstrap/providers.php`), console command, Blade component (class and
+//!   HTTP exception, service provider, console command, Blade component (class and
 //!   anonymous), view, view composer, broadcasting channel and enum.
-//! - **Livewire:** a Livewire 3 component (class below `Livewire\`, view
-//!   below `livewire/`, as `php artisan make:livewire` lays them out),
-//!   listed only when Livewire is installed ([`LIVEWIRE_GENERATOR`]).
+//! - **Livewire:** a Livewire component (class below `Livewire\`, or
+//!   `Http\Livewire\` with Livewire 2, view below `livewire/`, as
+//!   `php artisan make:livewire` lays them out), listed only when Livewire
+//!   is installed ([`LIVEWIRE_GENERATOR`]).
+//! - **Registration** ([`super::register`]): an observer is added to its
+//!   model's `#[ObservedBy]`, a listener to the `$listen` array of the
+//!   event service provider (when the project has one), a service provider
+//!   to `bootstrap/providers.php` or its module's `module.json`.
 //! - **Tests:** feature and unit tests, in Pest's syntax when the project
 //!   has a `tests/Pest.php`; unit tests extend PHPUnit's `TestCase`, as
 //!   Laravel's do.
@@ -25,6 +29,7 @@ use ide_core::{FileEdit, Range, TextEdit, WorkspaceEdit};
 use serde::{Deserialize, Serialize};
 
 use super::model::fake_value;
+use super::register;
 use super::template::{self, TemplateSet, Vars};
 use super::{GeneratedFile, Imports, ModelField, Target, camel, creation_edit, is_identifier, short_name};
 use crate::engine::PhpEngine;
@@ -306,6 +311,32 @@ fn model_fqn(engine: &PhpEngine, target: &Target<'_>, model: &str) -> Result<Str
     Ok(if qualified { model } else { format!("{}\\{model}", target.class_namespace("Models")) })
 }
 
+/// The event a listener handles (`event`: an FQN, or a name of the events
+/// namespace); `None` when not given.
+fn event_fqn(target: &Target<'_>, event: &str) -> Result<Option<String>, String> {
+    let event = event.trim().trim_start_matches('\\').replace('/', "\\");
+    if event.is_empty() {
+        return Ok(None);
+    }
+    if !event.split('\\').all(is_identifier) {
+        return Err(format!("'{event}' is not a class name"));
+    }
+    Ok(Some(if event.contains('\\') { event } else { format!("{}\\{event}", target.class_namespace("Events")) }))
+}
+
+/// The FQN of the class of the first generated file (its `namespace` and
+/// `class` lines).
+fn generated_fqn(files: &[GeneratedFile]) -> Option<String> {
+    let text = &files.first()?.text;
+    let namespace = text.lines().find_map(|line| line.strip_prefix("namespace "))?.trim_end_matches(';');
+    let class = text
+        .lines()
+        .find_map(|line| line.strip_prefix("class ").or_else(|| line.strip_prefix("final class ")))?
+        .split_whitespace()
+        .next()?;
+    Some(format!("{namespace}\\{class}"))
+}
+
 /// The `bootstrap/providers.php` edit registering provider `fqn`, when
 /// the file lists providers and lacks it.
 fn provider_registration(text: &str, path: &std::path::Path, fqn: &str) -> Option<FileEdit> {
@@ -449,27 +480,77 @@ impl PhpEngine {
     ) -> Result<WorkspaceEdit, String> {
         let files = self.laravel_generate_class_files(spec, templates, timestamp)?;
         let mut edit = creation_edit(files.clone());
-        if spec.generator == "provider" {
-            edit.files.extend(self.provider_registration_edit(spec, &files));
-        }
+        // What the new class needs registered ([`super::register`]).
+        let registration = match spec.generator.as_str() {
+            "provider" => self.provider_registration_edit(spec, &files),
+            "observer" => self.observer_registration_edit(spec, &files),
+            "listener" => self.listener_registration_edit(spec, &files),
+            _ => None,
+        };
+        edit.files.extend(registration);
         Ok(edit)
     }
 
-    /// Registers the provider of `files` in `bootstrap/providers.php` (an
-    /// application's provider only).
+    /// Registers the provider of `files`: an application's in
+    /// `bootstrap/providers.php`, a `nwidart/laravel-modules` module's in
+    /// its `module.json`.
     fn provider_registration_edit(&self, spec: &NewClass, files: &[GeneratedFile]) -> Option<FileEdit> {
         let project = self.laravel()?;
         let settings = self.laravel_settings().generation;
         let target = self.generation_target(&project, &settings, spec.module.as_deref()).ok()?;
-        if target.module.is_some() {
+        let fqn = generated_fqn(files)?;
+        match target.module {
+            Some(module) if module.kind == crate::frameworks::laravel::ModuleKind::Nwidart => {
+                let path = module.path.join("module.json");
+                let current = self.text_of(&path)?;
+                register::module_provider_registration(&current, &path, &fqn)
+            }
+            Some(_) => None,
+            None => {
+                let path = project.paths.bootstrap.join("providers.php");
+                let current = self.text_of(&path)?;
+                provider_registration(&current, &path, &fqn)
+            }
+        }
+    }
+
+    /// Adds the observer of `files` to its model's `#[ObservedBy]`.
+    fn observer_registration_edit(&self, spec: &NewClass, files: &[GeneratedFile]) -> Option<FileEdit> {
+        let project = self.laravel()?;
+        let settings = self.laravel_settings().generation;
+        let target = self.generation_target(&project, &settings, spec.module.as_deref()).ok()?;
+        let observer = generated_fqn(files)?;
+        let templates = TemplateSet::default();
+        let job = Generation { engine: self, target: &target, settings: &settings, templates: &templates, spec };
+        let model = job.model(&spec.model, short_name(&observer), "Observer").ok()??;
+        let model = self.eloquent_model(&model)?;
+        let location = self.class_location(&model)?;
+        if location.path.to_string_lossy().replace('\\', "/").contains("/vendor/") {
             return None;
         }
-        let text = &files.first()?.text;
-        let namespace = text.lines().find_map(|line| line.strip_prefix("namespace "))?.trim_end_matches(';');
-        let class = text.lines().find_map(|line| line.strip_prefix("class "))?.split_whitespace().next()?;
-        let path = project.paths.bootstrap.join("providers.php");
-        let current = self.text_of(&path)?;
-        provider_registration(&current, &path, &format!("{namespace}\\{class}"))
+        let current = self.text_of(&location.path)?;
+        register::observer_registration(&current, &location.path, model.fqn(), &observer)
+    }
+
+    /// Adds the listener of `files` under its event in the `$listen` array
+    /// of the target's event service provider, when it has one.
+    fn listener_registration_edit(&self, spec: &NewClass, files: &[GeneratedFile]) -> Option<FileEdit> {
+        let project = self.laravel()?;
+        let settings = self.laravel_settings().generation;
+        let target = self.generation_target(&project, &settings, spec.module.as_deref()).ok()?;
+        let event = event_fqn(&target, &spec.event).ok()??;
+        let listener = generated_fqn(files)?;
+        let root = target.module.map_or(&project.paths.app, |module| &module.path);
+        let mut candidates: Vec<PathBuf> =
+            project.providers.iter().filter(|path| path.starts_with(root)).cloned().collect();
+        candidates.push(project.paths.app.join("Providers").join("EventServiceProvider.php"));
+        candidates.into_iter().find_map(|path| {
+            let text = self.text_of(&path)?;
+            if !text.contains("$listen") {
+                return None;
+            }
+            register::listener_registration(&text, &path, &event, &listener)
+        })
     }
 
     /// The files of [`PhpEngine::laravel_generate_class`].
@@ -685,6 +766,10 @@ impl Generation<'_> {
             "view-composer" => ("View\\Composers", "Composer", false),
             "channel" => ("Broadcasting", "Channel", false),
             "enum" => ("Enums", "", false),
+            // Livewire 2 kept components below `Http\Livewire`.
+            "livewire" if self.target.project.livewire_major.is_some_and(|major| major < 3) => {
+                ("Http\\Livewire", "", false)
+            }
             "livewire" => ("Livewire", "", false),
             other => return Err(format!("There is no generator '{other}'")),
         };
@@ -811,16 +896,7 @@ impl Generation<'_> {
                     imports.add("Illuminate\\Contracts\\Queue\\ShouldQueue");
                     imports.add("Illuminate\\Queue\\InteractsWithQueue");
                 }
-                let event = self.spec.event.trim().trim_start_matches('\\').replace('/', "\\");
-                if !event.is_empty() {
-                    if !event.split('\\').all(is_identifier) {
-                        return Err(format!("'{event}' is not a class name"));
-                    }
-                    let fqn = if event.contains('\\') {
-                        event
-                    } else {
-                        format!("{}\\{event}", self.target.class_namespace("Events"))
-                    };
+                if let Some(fqn) = event_fqn(self.target, &self.spec.event)? {
                     vars.set("EVENT", imports.add(&fqn));
                 }
                 vars.flag("QUEUED", self.spec.queued);

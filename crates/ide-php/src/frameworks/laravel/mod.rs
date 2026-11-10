@@ -32,6 +32,7 @@ pub mod ide_json;
 pub mod inertia;
 pub mod lang;
 pub mod livewire;
+pub mod livewire_params;
 pub mod model_summary;
 pub mod model_view;
 pub mod parts;

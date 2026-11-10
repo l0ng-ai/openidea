@@ -5,13 +5,24 @@ import type { LaravelGenerationContext, WorkspaceEdit } from "@/bindings";
 const ipc = vi.hoisted(() => ({
   phpLaravelGenerationContext: vi.fn(),
   phpLaravelGenerateClass: vi.fn(),
-  applyWorkspaceEdit: vi.fn(async () => ({ status: "ok" as const, data: null })),
+  phpLaravelSetTemplates: vi.fn(async () => ({
+    status: "ok" as const,
+    data: null,
+  })),
+  applyWorkspaceEdit: vi.fn(async () => ({
+    status: "ok" as const,
+    data: null,
+  })),
 }));
 const notify = vi.hoisted(() => vi.fn());
 const openFile = vi.hoisted(() => vi.fn(async () => {}));
 vi.mock("@/platform/ipc", async (orig) => {
   const real = await orig<typeof import("@/platform/ipc")>();
-  return { ...real, isTauri: () => true, commands: { ...real.commands, ...ipc } };
+  return {
+    ...real,
+    isTauri: () => true,
+    commands: { ...real.commands, ...ipc },
+  };
 });
 vi.mock("@/editor/api", async (orig) => ({
   ...(await orig<typeof import("@/editor/api")>()),
@@ -25,7 +36,8 @@ vi.mock("@/workbench/contributions", async (orig) => ({
 
 const { NewClassDialog, emptyClassForm, nameKind, newClassError, newClassRequest, openNewClass, useNewClass } =
   await import("./laravelGenerateClass");
-const { CLASS_GENERATORS, GENERATORS, generateMenu, generatorAction } = await import("./laravelGenerate");
+const { CLASS_GENERATORS, GENERATORS, GENERATOR_GROUPS, generateMenu, generatorAction } =
+  await import("./laravelGenerate");
 const { isGenerateAction } = await import("./generate");
 
 const generator = (id: string, options: string[]) => ({
@@ -63,7 +75,15 @@ const dto = {
         { value: "model", label: "Model" },
       ],
     },
-    { id: "summary", title: "Summary", kind: "text", variable: "SUMMARY", optional: false, default: "", options: [] },
+    {
+      id: "summary",
+      title: "Summary",
+      kind: "text",
+      variable: "SUMMARY",
+      optional: false,
+      default: "",
+      options: [],
+    },
   ],
 };
 
@@ -84,8 +104,17 @@ const context: LaravelGenerationContext = {
 
 const edit: WorkspaceEdit = {
   files: [
-    { kind: "create", path: "/app/app/Listeners/SendReceipt.php", overwrite: false },
-    { kind: "edit", path: "/app/app/Listeners/SendReceipt.php", edits: [], version: null },
+    {
+      kind: "create",
+      path: "/app/app/Listeners/SendReceipt.php",
+      overwrite: false,
+    },
+    {
+      kind: "edit",
+      path: "/app/app/Listeners/SendReceipt.php",
+      edits: [],
+      version: null,
+    },
   ],
   preconditions: [],
 };
@@ -100,13 +129,29 @@ describe("Laravel class generators", () => {
   it("has an action per generator, listed in the Generate menu when the engine knows it", () => {
     expect(GENERATORS.map((g) => g.id)).toEqual(["model", ...CLASS_GENERATORS.map((g) => g.id)]);
     expect(new Set(GENERATORS.map((g) => g.id)).size).toBe(GENERATORS.length);
-    const [laravel] = generateMenu(context) as Array<{ submenu: Array<{ submenu: unknown[] }> }>;
+    for (const g of CLASS_GENERATORS) expect(GENERATOR_GROUPS.map((group) => group.id)).toContain(g.group);
+    const [laravel] = generateMenu(context) as Array<{
+      submenu: Array<{ submenu: unknown[] }>;
+    }>;
+    // Grouped in submenus, the empty groups left out.
     expect(laravel!.submenu[0]!.submenu).toEqual([
       { kind: "action", action: generatorAction("model") },
-      { kind: "action", action: generatorAction("pivot-migration") },
-      { kind: "action", action: generatorAction("listener") },
-      { kind: "action", action: generatorAction("http-exception") },
-      { kind: "action", action: generatorAction("view") },
+      {
+        label: "Database",
+        submenu: [{ kind: "action", action: generatorAction("pivot-migration") }],
+      },
+      {
+        label: "Events and Jobs",
+        submenu: [{ kind: "action", action: generatorAction("listener") }],
+      },
+      {
+        label: "Views",
+        submenu: [{ kind: "action", action: generatorAction("view") }],
+      },
+      {
+        label: "Other",
+        submenu: [{ kind: "action", action: generatorAction("http-exception") }],
+      },
       { kind: "separator" },
       { kind: "action", action: generatorAction("ide-json:acme.dto") },
       { kind: "separator" },
@@ -115,7 +160,12 @@ describe("Laravel class generators", () => {
   });
 
   it("turns the form into the engine's request and validates it", () => {
-    const form = { ...emptyClassForm("Billing"), name: " SendReceipt ", event: " OrderShipped ", status: "418" };
+    const form = {
+      ...emptyClassForm("Billing"),
+      name: " SendReceipt ",
+      event: " OrderShipped ",
+      status: "418",
+    };
     expect(newClassRequest("listener", form)).toEqual({
       generator: "listener",
       name: "SendReceipt",
@@ -145,7 +195,13 @@ describe("Laravel class generators", () => {
     expect(newClassError("migration", named("add votes to users"))).toBeNull();
     expect(newClassError("migration", named("add;drop"))).toBe("'add;drop' is not a valid migration name");
     expect(newClassError("pivot-migration", emptyClassForm())).toBe("Pick the two models of the pivot table");
-    expect(newClassError("pivot-migration", { ...emptyClassForm(), model: "Post", related: "Tag" })).toBeNull();
+    expect(
+      newClassError("pivot-migration", {
+        ...emptyClassForm(),
+        model: "Post",
+        related: "Tag",
+      }),
+    ).toBeNull();
     expect(newClassError("http-exception", { ...named("Teapot"), status: "4180" })).toBe(
       "The status is a three-digit HTTP status",
     );
@@ -160,7 +216,10 @@ describe("Laravel class generators", () => {
   });
 
   it("generates a listener with the options the engine lists", async () => {
-    ipc.phpLaravelGenerationContext.mockResolvedValue({ status: "ok", data: context });
+    ipc.phpLaravelGenerationContext.mockResolvedValue({
+      status: "ok",
+      data: context,
+    });
     ipc.phpLaravelGenerateClass.mockResolvedValue({ status: "ok", data: edit });
     render(<NewClassDialog />);
     act(() => openNewClass("listener"));
@@ -168,16 +227,27 @@ describe("Laravel class generators", () => {
     await waitFor(() => expect(within(form).getByLabelText("Event")).toBeTruthy());
     expect(within(form).queryByLabelText("Table")).toBeNull();
     expect(within(form).queryByLabelText("HTTP status")).toBeNull();
-    const create = screen.getByRole<HTMLButtonElement>("button", { name: "Create" });
+    const create = screen.getByRole<HTMLButtonElement>("button", {
+      name: "Create",
+    });
     expect(create.disabled).toBe(true);
-    fireEvent.change(within(form).getByLabelText("Name"), { target: { value: "SendReceipt" } });
-    fireEvent.change(within(form).getByLabelText("Event"), { target: { value: "OrderShipped" } });
+    fireEvent.change(within(form).getByLabelText("Name"), {
+      target: { value: "SendReceipt" },
+    });
+    fireEvent.change(within(form).getByLabelText("Event"), {
+      target: { value: "OrderShipped" },
+    });
     fireEvent.click(within(form).getByLabelText("Queued"));
     expect(create.disabled).toBe(false);
     fireEvent.click(create);
     await waitFor(() => expect(ipc.applyWorkspaceEdit).toHaveBeenCalledWith(edit));
     const [spec, templates, timestamp] = ipc.phpLaravelGenerateClass.mock.calls[0]!;
-    expect(spec).toMatchObject({ generator: "listener", name: "SendReceipt", event: "OrderShipped", queued: false });
+    expect(spec).toMatchObject({
+      generator: "listener",
+      name: "SendReceipt",
+      event: "OrderShipped",
+      queued: false,
+    });
     expect((templates as Array<{ name: string }>).some((t) => t.name === "Laravel Listener")).toBe(true);
     expect(timestamp).toMatch(/^\d{4}_\d{2}_\d{2}_\d{6}$/);
     await waitFor(() =>
@@ -188,20 +258,31 @@ describe("Laravel class generators", () => {
   });
 
   it("shows the input fields of an ide.json code generation and sends their values", async () => {
-    ipc.phpLaravelGenerationContext.mockResolvedValue({ status: "ok", data: context });
+    ipc.phpLaravelGenerationContext.mockResolvedValue({
+      status: "ok",
+      data: context,
+    });
     ipc.phpLaravelGenerateClass.mockResolvedValue({ status: "ok", data: edit });
     render(<NewClassDialog />);
     act(() => openNewClass("ide-json:acme.dto"));
-    const form = await screen.findByRole("form", { name: "Data Transfer Object" });
+    const form = await screen.findByRole("form", {
+      name: "Data Transfer Object",
+    });
     await waitFor(() => expect(within(form).getByLabelText("Summary")).toBeTruthy());
     expect(within(form).getByLabelText("Source")).toBeTruthy();
     const readonly = within(form).getByLabelText<HTMLInputElement>("Read-only");
     expect(readonly.checked).toBe(true);
-    fireEvent.change(within(form).getByLabelText("Name"), { target: { value: "Invoice" } });
-    const create = screen.getByRole<HTMLButtonElement>("button", { name: "Create" });
+    fireEvent.change(within(form).getByLabelText("Name"), {
+      target: { value: "Invoice" },
+    });
+    const create = screen.getByRole<HTMLButtonElement>("button", {
+      name: "Create",
+    });
     expect(within(form).getByText("Enter Summary")).toBeTruthy();
     expect(create.disabled).toBe(true);
-    fireEvent.change(within(form).getByLabelText("Summary"), { target: { value: "Totals" } });
+    fireEvent.change(within(form).getByLabelText("Summary"), {
+      target: { value: "Totals" },
+    });
     fireEvent.click(readonly);
     expect(create.disabled).toBe(false);
     fireEvent.click(create);
@@ -221,7 +302,10 @@ describe("Laravel class generators", () => {
     const menu = (ctx: LaravelGenerationContext) =>
       JSON.stringify(generateMenu(ctx)).includes(generatorAction("livewire"));
     expect(menu(context)).toBe(false);
-    const withLivewire = { ...context, generators: [...context.generators, generator("livewire", [])] };
+    const withLivewire = {
+      ...context,
+      generators: [...context.generators, generator("livewire", [])],
+    };
     expect(menu(withLivewire)).toBe(true);
     expect(nameKind("livewire")).toBe("livewire");
     const named = (name: string) => ({ ...emptyClassForm(), name });
@@ -229,44 +313,67 @@ describe("Laravel class generators", () => {
     expect(newClassError("livewire", named("Posts/CreatePost"))).toBeNull();
     expect(newClassError("livewire", named("posts..x"))).toBe("'posts..x' is not a valid component name");
 
-    ipc.phpLaravelGenerationContext.mockResolvedValue({ status: "ok", data: withLivewire });
+    ipc.phpLaravelGenerationContext.mockResolvedValue({
+      status: "ok",
+      data: withLivewire,
+    });
     ipc.phpLaravelGenerateClass.mockResolvedValue({ status: "ok", data: edit });
     render(<NewClassDialog />);
     act(() => openNewClass("livewire"));
-    const form = await screen.findByRole("form", { name: "New Livewire Component" });
+    const form = await screen.findByRole("form", {
+      name: "New Livewire Component",
+    });
     const name = within(form).getByLabelText<HTMLInputElement>("Name");
     expect(name.placeholder).toBe("Component name, e.g. posts.create-post");
     fireEvent.change(name, { target: { value: "posts.create-post" } });
-    const create = screen.getByRole<HTMLButtonElement>("button", { name: "Create" });
+    const create = screen.getByRole<HTMLButtonElement>("button", {
+      name: "Create",
+    });
     await waitFor(() => expect(create.disabled).toBe(false));
     fireEvent.click(create);
     await waitFor(() => expect(ipc.applyWorkspaceEdit).toHaveBeenCalledWith(edit));
     const [spec, templates] = ipc.phpLaravelGenerateClass.mock.calls[0]!;
-    expect(spec).toMatchObject({ generator: "livewire", name: "posts.create-post" });
+    expect(spec).toMatchObject({
+      generator: "livewire",
+      name: "posts.create-post",
+    });
     const names = (templates as Array<{ name: string }>).map((t) => t.name);
     expect(names).toEqual(expect.arrayContaining(["Laravel Livewire Component", "Laravel Livewire View"]));
   });
 
   it("asks a pivot table for two models and no name", async () => {
-    ipc.phpLaravelGenerationContext.mockResolvedValue({ status: "ok", data: context });
+    ipc.phpLaravelGenerationContext.mockResolvedValue({
+      status: "ok",
+      data: context,
+    });
     render(<NewClassDialog />);
     act(() => openNewClass("pivot-migration"));
-    const form = await screen.findByRole("form", { name: "New Pivot Table Migration" });
+    const form = await screen.findByRole("form", {
+      name: "New Pivot Table Migration",
+    });
     await waitFor(() => expect(within(form).getByLabelText("Related model")).toBeTruthy());
     expect(within(form).queryByLabelText("Name")).toBeNull();
     expect(within(form).getByText("Pick the two models of the pivot table")).toBeTruthy();
   });
 
   it("shows the engine's failure and keeps the dialog open", async () => {
-    ipc.phpLaravelGenerationContext.mockResolvedValue({ status: "ok", data: context });
+    ipc.phpLaravelGenerationContext.mockResolvedValue({
+      status: "ok",
+      data: context,
+    });
     ipc.phpLaravelGenerateClass.mockResolvedValue({
       status: "error",
-      error: { kind: "invalid", message: "The class 'App\\Http\\Middleware\\Auth' exists already" },
+      error: {
+        kind: "invalid",
+        message: "The class 'App\\Http\\Middleware\\Auth' exists already",
+      },
     });
     render(<NewClassDialog />);
     act(() => openNewClass("view"));
     const form = await screen.findByRole("form", { name: "New Blade View" });
-    fireEvent.change(within(form).getByLabelText("Name"), { target: { value: "posts.edit" } });
+    fireEvent.change(within(form).getByLabelText("Name"), {
+      target: { value: "posts.edit" },
+    });
     await waitFor(() => expect(screen.getByRole<HTMLButtonElement>("button", { name: "Create" }).disabled).toBe(false));
     fireEvent.click(screen.getByRole("button", { name: "Create" }));
     expect(await within(form).findByText("The class 'App\\Http\\Middleware\\Auth' exists already")).toBeTruthy();

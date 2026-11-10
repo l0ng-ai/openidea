@@ -490,6 +490,37 @@ fn livewire_parameter_keys() {
 }
 
 #[test]
+fn reports_unknown_livewire_parameters() {
+    let project = Project::with_packages();
+    let text = "<div>\n\
+        @livewire('counter', ['start' => 1, 'label' => 'x', 'stepp' => 2])\n\
+        @livewire(\\App\\Livewire\\Counter::class, ['nope' => 1])\n\
+        @livewire('nothing', ['nope' => 1])\n\
+        <livewire:counter :start=\"1\" :$count wire:key=\"k\" lazy class=\"x\" colour=\"red\" />\n\
+        <livewire:posts.create-post :form=\"$f\" />\n\
+        </div>\n";
+    let found: Vec<(String, String)> = project
+        .engine
+        .blade_problems(text)
+        .into_iter()
+        .filter(|d| d.code.as_deref() == Some("BladeUnknownLivewireParameter"))
+        .map(|d| {
+            let lines = crate::syntax::LineIndex::new(text);
+            let (start, end) = lines.byte_range(d.range);
+            (text[start as usize..end as usize].to_owned(), d.message)
+        })
+        .collect();
+    assert_eq!(
+        found,
+        [
+            ("stepp".to_owned(), "Livewire component 'counter' has no parameter 'stepp'".to_owned()),
+            ("nope".to_owned(), "Livewire component 'counter' has no parameter 'nope'".to_owned()),
+            ("colour".to_owned(), "Livewire component 'counter' has no parameter 'colour'".to_owned()),
+        ]
+    );
+}
+
+#[test]
 fn the_livewire_generator_is_listed_when_livewire_is_installed() {
     let project = Project::with_packages();
     let context = project.engine.laravel_generation_context().unwrap();

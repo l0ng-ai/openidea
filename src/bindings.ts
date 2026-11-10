@@ -379,6 +379,11 @@ export const commands = {
 	 */
 	phpLaravelGenerateClass: (spec: LaravelNewClass, templates: LaravelTemplate[], timestamp: string) => typedError<WorkspaceEdit, IdeError>(__TAURI_INVOKE("php_laravel_generate_class", { spec, templates, timestamp })),
 	/**
+	 *  Keeps the user's edited Laravel generator templates for the Generate actions inside
+	 *  a model class.
+	 */
+	phpLaravelSetTemplates: (templates: LaravelTemplate[]) => typedError<null, IdeError>(__TAURI_INVOKE("php_laravel_set_templates", { templates })),
+	/**
 	 *  Reads the schema of the data source chosen in Settings › PHP › Laravel again for the
 	 *  native PHP engine (`None`: none chosen).
 	 */

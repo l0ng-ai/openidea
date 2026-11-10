@@ -228,6 +228,9 @@ struct Shared {
     laravel_settings: Mutex<LaravelSettings>,
     /// The tables of the data source chosen in Settings › PHP › Laravel.
     live_schema: RwLock<Option<Arc<LiveSchema>>>,
+    /// The user's edited Laravel generator templates, for the generators
+    /// that aren't given them with the request (the in-model actions).
+    laravel_templates: Mutex<crate::frameworks::laravel::generate::TemplateSet>,
 }
 
 /// The engine keeps the parts of the Laravel model read from single files
@@ -370,6 +373,7 @@ impl PhpEngine {
             laravel_blade: Mutex::new(None),
             laravel_settings: Mutex::new(LaravelSettings::default()),
             live_schema: RwLock::new(None),
+            laravel_templates: Mutex::new(Default::default()),
         });
         let worker = shared.clone();
         let thread = std::thread::Builder::new()
@@ -919,6 +923,18 @@ impl PhpEngine {
     /// What Laravel support shows.
     pub fn laravel_settings(&self) -> LaravelSettings {
         self.shared.laravel_settings.lock().clone()
+    }
+
+    /// The user's edited Laravel generator templates
+    /// ([`PhpEngine::set_laravel_templates`]).
+    pub fn laravel_templates(&self) -> crate::frameworks::laravel::generate::TemplateSet {
+        self.shared.laravel_templates.lock().clone()
+    }
+
+    /// Keeps the user's edited Laravel generator templates (the front end
+    /// sends them when they change, and with each generator request).
+    pub fn set_laravel_templates(&self, templates: crate::frameworks::laravel::generate::TemplateSet) {
+        *self.shared.laravel_templates.lock() = templates;
     }
 
     /// Changes what Laravel support shows (the front end's settings). When

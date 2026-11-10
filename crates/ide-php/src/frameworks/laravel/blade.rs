@@ -399,11 +399,13 @@ impl PhpEngine {
 
     /// The template's own problems (unclosed sections and pushes), its
     /// undefined configuration keys, environment keys, translations, Vite
-    /// assets and views, and its undefined component tags.
+    /// assets and views, its undefined component tags, and the parameters
+    /// it passes to Livewire components that don't take them.
     pub fn blade_problems(&self, text: &str) -> Vec<Diagnostic> {
         let mut out = structure::inspect(text, &self.custom_directives());
         out.extend(self.blade_reference_problems(text));
         out.extend(self.undefined_components(text));
+        out.extend(self.unknown_livewire_parameters(text));
         out.sort_by_key(|diagnostic| diagnostic.range.start);
         out
     }

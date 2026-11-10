@@ -22,6 +22,7 @@ pub mod classes;
 pub mod custom;
 mod from_model;
 pub mod model;
+pub mod register;
 pub mod template;
 
 #[cfg(test)]

@@ -19,6 +19,8 @@ redb.workspace = true
 rayon.workspace = true
 blake3.workspace = true
 tracing.workspace = true
+# The `regex` of `ide.json` code generations.
+regex-lite = "0.1"
 # Fuzzy workspace symbols, ranked as ide-index ranks its symbols.
 nucleo-matcher.workspace = true
 # Reads the embedded phpstorm-stubs archive (stubs/phpstorm-stubs.zip).

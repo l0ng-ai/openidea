@@ -196,6 +196,7 @@ pub fn builder() -> tauri_specta::Builder<tauri::Wry> {
         nav::php_laravel_artisan_commands,
         nav::php_laravel_new_model,
         nav::php_laravel_generate_class,
+        nav::php_laravel_set_templates,
         nav::php_laravel_refresh_schema,
         nav::find_files,
         nav::find_dirs,

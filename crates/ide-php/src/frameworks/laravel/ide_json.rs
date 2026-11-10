@@ -87,6 +87,10 @@ pub struct RuleOptions {
     pub recursive: bool,
     /// `directoryFiles`: cut from the end of a file's name (`.blade.php`).
     pub suffix_to_clear: String,
+    /// `directoryFiles`: the rule's `transformers`, applied to each name
+    /// (`staticStrings` have them applied to their strings when read).
+    #[serde(default)]
+    pub transformers: Vec<String>,
 }
 
 /// Where a rule's strings sit: every list given must hold.
@@ -438,6 +442,14 @@ struct Reader {
     ignored: Vec<String>,
 }
 
+/// `value` with the filters `transformers` applied in turn (unknown ones
+/// are left out when the rule is read).
+pub fn transform(value: &str, transformers: &[String]) -> String {
+    transformers
+        .iter()
+        .fold(value.to_owned(), |value, name| super::generate::custom::filter(&value, name).unwrap_or(value))
+}
+
 impl Reader {
     fn ignore(&mut self, at: &str, why: &str) {
         let line = format!("{}: {at}: {why}", self.file.display());
@@ -467,9 +479,6 @@ impl Reader {
             self.ignore(&format!("{at}.complete"), &format!("'{complete}' is not supported"));
             return None;
         };
-        if object.get("transformers").is_some_and(|value| !array(value).is_empty()) {
-            self.ignore(&format!("{at}.transformers"), "not supported");
-        }
         let mut conditions = Vec::new();
         let list = match object.get("condition") {
             Some(Value::Object(_)) => std::slice::from_ref(object.get("condition").unwrap()),
@@ -485,7 +494,8 @@ impl Reader {
             self.ignore(at, "no usable condition");
             return None;
         }
-        let options = self.options(&format!("{at}.options"), kind, object.get("options"));
+        let mut options = self.options(&format!("{at}.options"), kind, object.get("options"));
+        self.transformers(at, kind, object.get("transformers"), &mut options);
         Some(CompletionRule { complete, kind: kind.to_owned(), conditions, options, file: self.file.clone() })
     }
 
@@ -551,6 +561,53 @@ impl Reader {
         Some(condition)
     }
 
+    /// A rule's `transformers`: filters of the code generations' `${…|filter}`
+    /// expressions (`lowerCase`, `kebabCase`, `plural`…) applied in turn to
+    /// the strings it completes. Only the rule-only kinds use them.
+    fn transformers(&mut self, at: &str, kind: &str, value: Option<&Value>, options: &mut RuleOptions) {
+        let at = format!("{at}.transformers");
+        let mut known = Vec::new();
+        for name in value.map(array).unwrap_or_default().iter().filter_map(Value::as_str) {
+            match super::generate::custom::filter("x", name) {
+                Ok(_) => known.push(name.to_owned()),
+                Err(_) => self.ignore(&at, &format!("'{name}' is not a transformer")),
+            }
+        }
+        if known.is_empty() {
+            return;
+        }
+        match kind {
+            "staticStrings" => {
+                for (string, _) in &mut options.strings {
+                    *string = transform(string, &known);
+                }
+            }
+            "directoryFiles" => options.transformers = known,
+            other => self.ignore(&at, &format!("not supported for {other}")),
+        }
+    }
+
+    /// The strings of a `dataFile` (a path relative to the `ide.json`): a
+    /// JSON array of strings, the keys of a JSON object (its string values
+    /// are their places, as in `stringsWithLocation`), else one string per
+    /// non-empty line.
+    fn data_file(&mut self, at: &str, value: &Value, out: &mut Vec<(String, Option<String>)>) {
+        let Some(rel) = value.as_str() else { return self.ignore(at, "not a path") };
+        let path = self.path(rel);
+        let Ok(text) = std::fs::read_to_string(&path) else {
+            return self.ignore(at, &format!("cannot read {}", path.display()));
+        };
+        match serde_json::from_str::<Value>(&text) {
+            Ok(Value::Array(items)) => out.extend(items.iter().filter_map(Value::as_str).map(|s| (s.to_owned(), None))),
+            Ok(Value::Object(map)) => {
+                out.extend(map.iter().map(|(key, place)| (key.clone(), place.as_str().map(str::to_owned))))
+            }
+            _ => out.extend(
+                text.lines().map(str::trim).filter(|line| !line.is_empty()).map(|line| (line.to_owned(), None)),
+            ),
+        }
+    }
+
     fn options(&mut self, at: &str, kind: &str, value: Option<&Value>) -> RuleOptions {
         let mut options = RuleOptions::default();
         let Some(object) = value.and_then(Value::as_object) else { return options };
@@ -566,6 +623,9 @@ impl Reader {
                             options.strings.push((string.clone(), location.as_str().map(str::to_owned)));
                         }
                     }
+                }
+                "dataFile" if kind == "staticStrings" => {
+                    self.data_file(&format!("{at}.dataFile"), value, &mut options.strings);
                 }
                 "directory" | "directories" if kind == "directoryFiles" => {
                     options.directories.extend(strings(Some(value)).iter().map(|dir| self.path(dir)));

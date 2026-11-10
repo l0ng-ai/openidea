@@ -315,6 +315,14 @@ export const PHP_INSPECTIONS: readonly PhpInspection[] = [
     description:
       "Reports <x-…> tags in a Blade template that no class component, anonymous component or Blade::component() registration defines. The quick-fix creates the component's view.",
   },
+  {
+    code: "BladeUnknownLivewireParameter",
+    producer: BLADE_PRODUCER,
+    name: "Unknown Livewire component parameter",
+    group: "Laravel",
+    description:
+      "Reports keys of @livewire('…', [...]) and attributes of <livewire:…> tags that the component takes neither as a mount() parameter nor as a public property.",
+  },
 ];
 
 const BY_ID = new Map(PHP_INSPECTIONS.map((i) => [phpInspectionProfileId(i), i]));
