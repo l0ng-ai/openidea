@@ -9,7 +9,7 @@ on:
       release_id: { type: string, required: true }
 
 permissions:
-  contents: write
+  contents: read
 
 env:
   CARGO_TERM_COLOR: always
@@ -18,6 +18,7 @@ env:
 
 jobs:
   plugin-keys:
+    permissions: {}
     runs-on: ubuntu-latest
     outputs:
       keys: ${{ steps.keys.outputs.keys }}
@@ -38,6 +39,8 @@ jobs:
           fi
 
   build:
+    permissions:
+      contents: write
     needs: plugin-keys
     name: Build (${{ matrix.name }})
     env:
@@ -87,12 +90,12 @@ jobs:
       - name: Signing env
         shell: bash
         env:
-          APPLE_CERTIFICATE: ${{ secrets.APPLE_CERTIFICATE }}
-          APPLE_CERTIFICATE_PASSWORD: ${{ secrets.APPLE_CERTIFICATE_PASSWORD }}
-          APPLE_SIGNING_IDENTITY: ${{ secrets.APPLE_SIGNING_IDENTITY }}
-          APPLE_ID: ${{ secrets.APPLE_ID }}
-          APPLE_PASSWORD: ${{ secrets.APPLE_PASSWORD }}
-          APPLE_TEAM_ID: ${{ secrets.APPLE_TEAM_ID }}
+          APPLE_CERTIFICATE: ${{ runner.os == 'macOS' && secrets.APPLE_CERTIFICATE || '' }}
+          APPLE_CERTIFICATE_PASSWORD: ${{ runner.os == 'macOS' && secrets.APPLE_CERTIFICATE_PASSWORD || '' }}
+          APPLE_SIGNING_IDENTITY: ${{ runner.os == 'macOS' && secrets.APPLE_SIGNING_IDENTITY || '' }}
+          APPLE_ID: ${{ runner.os == 'macOS' && secrets.APPLE_ID || '' }}
+          APPLE_PASSWORD: ${{ runner.os == 'macOS' && secrets.APPLE_PASSWORD || '' }}
+          APPLE_TEAM_ID: ${{ runner.os == 'macOS' && secrets.APPLE_TEAM_ID || '' }}
           TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
           TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY_PASSWORD }}
         run: |
@@ -153,6 +156,8 @@ jobs:
   # app downloads the one for the host (ide-tools `server`) and installs it over SSH.
   # Linux builds are static (musl), so they run whatever the host's glibc.
   server:
+    permissions:
+      contents: write
     name: Server (${{ matrix.os }}-${{ matrix.arch }})
     strategy:
       fail-fast: false
@@ -192,6 +197,8 @@ jobs:
   # The updater manifest (latest.json), built once from the signed bundles every build uploaded.
   # Fails when a platform is missing, so a release never ships a manifest without it.
   updater-manifest:
+    permissions:
+      contents: write
     needs: build
     runs-on: ubuntu-latest
     steps:

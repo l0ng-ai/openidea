@@ -15,7 +15,7 @@ on:
         default: false
 
 permissions:
-  contents: write
+  contents: read
 
 concurrency:
   group: nightly
@@ -26,6 +26,9 @@ env:
 
 jobs:
   prepare:
+    permissions:
+      actions: read
+      contents: write
     if: github.repository == 'l0ng-ai/openidea'
     runs-on: ubuntu-latest
     outputs:
@@ -76,6 +79,8 @@ jobs:
           echo "id=$id" >> "$GITHUB_OUTPUT"
 
   binaries:
+    permissions:
+      contents: write
     needs: prepare
     if: needs.prepare.outputs.tag != ''
     uses: ./.github/workflows/release-build.yml
@@ -85,6 +90,8 @@ jobs:
     secrets: inherit
 
   publish:
+    permissions:
+      contents: write
     needs: [prepare, binaries]
     runs-on: ubuntu-latest
     env:

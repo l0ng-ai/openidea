@@ -9,7 +9,7 @@ on:
         required: true
 
 permissions:
-  contents: write
+  contents: read
 
 concurrency:
   group: release-${{ github.event.inputs.tag || github.ref_name }}
@@ -23,6 +23,9 @@ env:
 jobs:
   # Creates (or reuses) one draft release that every platform build uploads into.
   create-release:
+    if: ${{ !contains(github.event.inputs.tag || github.ref_name, '-nightly.') }}
+    permissions:
+      contents: write
     runs-on: ubuntu-latest
     outputs:
       release_id: ${{ steps.release.outputs.id }}
@@ -71,6 +74,8 @@ jobs:
             core.setOutput("id", data.id);
 
   binaries:
+    permissions:
+      contents: write
     needs: create-release
     uses: ./.github/workflows/release-build.yml
     with:
@@ -88,6 +93,8 @@ jobs:
   # openidea-plugin tool for Linux x64, which that workflow and the registry's
   # checks run.
   plugins:
+    permissions:
+      contents: write
     needs: create-release
     name: Official plugins
     runs-on: ubuntu-22.04
@@ -152,6 +159,8 @@ jobs:
             "$out/openidea-plugin-linux-x86_64.gz" --clobber
 
   publish:
+    permissions:
+      contents: write
     needs: [create-release, binaries, plugins]
     runs-on: ubuntu-latest
     steps:
