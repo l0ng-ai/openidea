@@ -811,3 +811,23 @@ Runs after Plan 7. Before any 8.x phase, read [LARAVEL-ROADMAP.md](LARAVEL-ROADM
 
 - [x] Phase 8.30: Documentation
       Add a user guide, `docs/php-engine/laravel.md`, finishing the file started in 8.21 and extended up to 8.29. It covers each feature with a short example, the settings, `ide.json` support, and known limits. Update `THIRD_PARTY_LICENSES.md` if a phase bundled anything new (for example Laravel stubs). Tests: none beyond the usual gate.
+
+- [ ] Phase 8.31: Undefined controller actions and "Create controller"
+      Reported from the running app: in `Route::get('123', 'dream')->name('dream.come.true')`, Alt+Enter on `'dream'` offers nothing. The `controllerAction` kind (`refs/controller_action.rs`) has completion, goto and usages, but no `undefined()` hook, so there is no inspection and no quick-fix. Add `PhpUndefinedController`, in the Laravel inspection group with en/zh text, through `ReferenceKind::undefined` like `PhpUndefinedView`. It reports:
+  - **a missing class:** in `'Foo@bar'`, `[Foo::class, 'bar']` (only when the undefined-class inspection doesn't already report the same range) and a plain `'Foo'` action, which Laravel resolves as an invokable controller class under the group's namespace. A plain string that is no class at all, like `'dream'`, gets "Controller class 'dream' does not exist".
+  - **a missing method:** in `'Foo@bar'` and `[Foo::class, 'bar']`. A plain `'Foo'` action needs `__invoke`.
+
+  Quick-fixes, all through the code generation framework of 8.13/8.14:
+  - Their output respects the app namespace, controller suffix, modules and the user's edited `controller.php.ft` template.
+  - Each returns a `WorkspaceEdit` that creates the file and rewrites the route string when the class name changes. Each opens the new class at the method.
+
+  The fixes:
+  - **"Create controller 'FooController' with method 'bar'".**
+  - **For a plain action:** "Create invokable controller …". For a lowercase non-class string like `'dream'`, it proposes `DreamController` and rewrites the action to `DreamController::class`.
+  - **"Add method 'bar' to Foo"** for a missing method: public, with a `Request $request` parameter and route parameters from the URI (`{id}` becomes `$id`).
+  - **"Convert to [Controller::class, 'method']"** on string actions whose class exists. It reuses the 8.15 intention.
+
+  Tests:
+  - Caret fixtures for each case, with the generated file compared as a snapshot.
+  - A host test: Alt+Enter code actions on the fixture app's route file list the fixes, and applying one creates the controller.
+  - No new diagnostics in `fixtures/laravel-app`, nor in Monica's or Bagisto's routes (`real_app_checklist`).
