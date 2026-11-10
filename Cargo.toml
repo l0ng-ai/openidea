@@ -82,7 +82,7 @@ trash = "5"
 blake3 = "1"
 dunce = "1"
 dirs = "6"
-zip = { version = "9", default-features = false, features = ["deflate"] }
+zip = { version = "9.2.3", default-features = false, features = ["deflate"] }
 
 # search, index, language
 grep-searcher = "0.1"
