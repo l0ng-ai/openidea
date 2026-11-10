@@ -11,7 +11,6 @@ import { useSettingsFormFor } from "@/features/settings/components/context";
 import { closeSettings, openSettings, selectPage } from "@/features/settings/model/staging";
 import { SettingsDialog } from "@/features/settings/dialog/SettingsDialog";
 import { REGISTRY_PAGE } from "./model";
-import { RegistryList } from "./RegistryList";
 import type { ComponentProps } from "react";
 
 function AgentRegistryPage(props: ComponentProps<typeof RegistryPage>) {
@@ -24,6 +23,7 @@ function AgentRegistryPage(props: ComponentProps<typeof RegistryPage>) {
 }
 import { ADD_AGENT, providerOptions } from "./providerOptions";
 import {
+  afterInstall,
   afterRemove,
   matchesQuery,
   rowActions,
@@ -81,12 +81,16 @@ class FakeBackend implements RegistryBackend {
     this.installRequests.push(request);
     this.emit = onEvent;
     return new Promise<void>((resolve, reject) => {
-      this.finish = resolve;
+      this.finish = () => {
+        this.registry = { ...this.registry, agents: afterInstall(this.registry.agents, id) };
+        resolve();
+      };
       this.fail = reject;
     });
   }
   async remove(id: string) {
     this.removed.push(id);
+    this.registry = { ...this.registry, agents: afterRemove(this.registry.agents, id) };
   }
   cancel(request: RequestId) {
     this.cancelled.push(request);
@@ -184,12 +188,34 @@ describe("agent picker", () => {
   });
 });
 
-describe("Add Agent: the ACP Registry", () => {
-  const renderRegistry = render;
+describe("the ACP Registry in the agent list", () => {
+  /** The page, with the registry's installed agents as the machine's agents. */
+  const renderRegistry = (backend: FakeBackend, onChanged?: () => void) => {
+    const commands = new FakeCommands();
+    commands.providers.mockImplementation(async () =>
+      backend.registry.agents
+        .filter((a) => a.installed != null)
+        .map((a) => ({
+          ...claudeProvider("x"),
+          id: a.id,
+          name: a.name,
+          loginHint: null,
+          commandEditable: false,
+          commandReadOnlyReason: "registry" as const,
+          source: { kind: "registry" as const, version: a.installed!, update: a.update ? a.version : null },
+        })),
+    );
+    return render(
+      <>
+        <AgentRegistryPage backend={backend} commandBackend={commands} onChanged={onChanged} />
+        <MessagesHost />
+      </>,
+    );
+  };
   it("shows the built-in Copilot name and icon in its registry row", async () => {
     const backend = new FakeBackend();
     backend.registry = { agents: [agent({ id: "copilot", name: "GitHub Copilot" })], warning: null };
-    renderRegistry(<RegistryList backend={backend} />);
+    renderRegistry(backend);
     const copilot = await screen.findByRole("option", { name: "GitHub Copilot" });
     const expected = document.createElement("div");
     expected.innerHTML = iconMarkup("agent-copilot")!;
@@ -199,13 +225,14 @@ describe("Add Agent: the ACP Registry", () => {
 
   it("lists registry agents, says they are third-party, and searches them", async () => {
     const backend = new FakeBackend();
-    renderRegistry(<RegistryList backend={backend} />);
+    renderRegistry(backend);
     await waitFor(() => expect(row("Amp")).toBeInTheDocument());
     expect(screen.getByText(/third-party software/)).toBeInTheDocument();
     expect(within(row("Amp")).getByRole("button", { name: "Install" })).toBeEnabled();
     expect(within(row("Amp")).getByRole("button", { name: "Repository" })).toBeInTheDocument();
     expect(within(item("Cline")).getByText("Update")).toBeInTheDocument();
-    expect(within(row("Cline")).getByText(/3.0.70 installed, 3.0.74 available/)).toBeInTheDocument();
+    expect(within(row("Cline")).getByText("ACP Registry · 3.0.70")).toBeInTheDocument();
+    expect(within(row("Cline")).getByText("3.0.74 is available")).toBeInTheDocument();
     expect(within(row("Cline")).getByRole("button", { name: "Update" })).toBeInTheDocument();
     expect(within(row("fast-agent")).getByRole("button", { name: "Remove" })).toBeInTheDocument();
     expect(within(row("fast-agent")).queryByRole("button", { name: "Update" })).toBeNull();
@@ -219,7 +246,7 @@ describe("Add Agent: the ACP Registry", () => {
   it("installs with progress, then reports the change", async () => {
     const backend = new FakeBackend();
     const onChanged = vi.fn();
-    renderRegistry(<RegistryList onChanged={onChanged} backend={backend} />);
+    renderRegistry(backend, onChanged);
     await waitFor(() => expect(row("Amp")).toBeInTheDocument());
     fireEvent.click(within(row("Amp")).getByRole("button", { name: "Install" }));
     expect(backend.installs).toEqual(["amp-acp"]);
@@ -231,19 +258,14 @@ describe("Add Agent: the ACP Registry", () => {
 
     await act(async () => backend.finish());
     expect(onChanged).toHaveBeenCalledTimes(1);
-    expect(within(item("Amp")).getByText("Installed")).toBeInTheDocument();
-    expect(within(row("Amp")).getByRole("button", { name: "Remove" })).toBeEnabled();
+    await waitFor(() => expect(within(row("Amp")).getByRole("button", { name: "Remove" })).toBeEnabled());
+    expect(within(row("Amp")).getByText("ACP Registry · 0.10.0")).toBeInTheDocument();
   });
 
   it("asks before installing an agent whose download has no checksum", async () => {
     const backend = new FakeBackend();
     backend.registry = { agents: [{ ...AMP, noChecksum: true }], warning: null };
-    renderRegistry(
-      <>
-        <RegistryList backend={backend} />
-        <MessagesHost />
-      </>,
-    );
+    renderRegistry(backend);
     await waitFor(() => expect(row("Amp")).toBeInTheDocument());
     expect(within(row("Amp")).getByText(/No checksum provided/)).toBeInTheDocument();
 
@@ -262,12 +284,7 @@ describe("Add Agent: the ACP Registry", () => {
 
   it("installs an agent with a checksum without asking", async () => {
     const backend = new FakeBackend();
-    renderRegistry(
-      <>
-        <RegistryList backend={backend} />
-        <MessagesHost />
-      </>,
-    );
+    renderRegistry(backend);
     await waitFor(() => expect(row("Amp")).toBeInTheDocument());
     expect(screen.queryByText("No checksum provided")).toBeNull();
     fireEvent.click(within(row("Amp")).getByRole("button", { name: "Install" }));
@@ -277,7 +294,7 @@ describe("Add Agent: the ACP Registry", () => {
 
   it("shows why an install failed, cancels one on Cancel, and leaves it running when the page closes", async () => {
     const backend = new FakeBackend();
-    const { unmount } = renderRegistry(<RegistryList backend={backend} />);
+    const { unmount } = renderRegistry(backend);
     await waitFor(() => expect(row("Cline")).toBeInTheDocument());
     fireEvent.click(within(row("Cline")).getByRole("button", { name: "Update" }));
     await act(async () => backend.fail(new IpcError({ kind: "unavailable", message: "npm is required" })));
@@ -301,7 +318,7 @@ describe("Add Agent: the ACP Registry", () => {
     const backend = new FakeBackend();
     const onChanged = vi.fn();
     backend.registry = { agents: [{ ...AMP, installing: true }, CLINE], warning: null };
-    renderRegistry(<RegistryList onChanged={onChanged} backend={backend} />);
+    renderRegistry(backend, onChanged);
     await waitFor(() => expect(row("Amp")).toBeInTheDocument());
     expect(within(row("Amp")).getByText("Installing Amp in the background…")).toBeInTheDocument();
     // It is stopped from the background tasks, and nothing else starts meanwhile.
@@ -311,7 +328,9 @@ describe("Add Agent: the ACP Registry", () => {
     expect(within(row("Cline")).getByRole("button", { name: "Update" })).toBeDisabled();
 
     backend.registry = { agents: [{ ...AMP, installed: AMP.version }, CLINE], warning: null };
-    await waitFor(() => expect(within(item("Amp")).getByText("Installed")).toBeInTheDocument(), { timeout: 4000 });
+    await waitFor(() => expect(within(row("Amp")).getByRole("button", { name: "Remove" })).toBeInTheDocument(), {
+      timeout: 4000,
+    });
     expect(onChanged).toHaveBeenCalledTimes(1);
     expect(within(row("Cline")).getByRole("button", { name: "Update" })).toBeEnabled();
   });
@@ -319,9 +338,11 @@ describe("Add Agent: the ACP Registry", () => {
   it("removes an installed agent", async () => {
     const backend = new FakeBackend();
     const onChanged = vi.fn();
-    renderRegistry(<RegistryList onChanged={onChanged} backend={backend} />);
+    renderRegistry(backend, onChanged);
     await waitFor(() => expect(row("fast-agent")).toBeInTheDocument());
     fireEvent.click(within(row("fast-agent")).getByRole("button", { name: "Remove" }));
+    const dialog = await screen.findByRole("dialog", { name: "Remove fast-agent" });
+    fireEvent.click(within(dialog).getByRole("button", { name: "Remove" }));
     await waitFor(() => expect(within(row("fast-agent")).getByRole("button", { name: "Install" })).toBeEnabled());
     expect(backend.removed).toEqual(["fast-agent"]);
     expect(onChanged).toHaveBeenCalledTimes(1);
@@ -330,12 +351,12 @@ describe("Add Agent: the ACP Registry", () => {
   it("falls back to the saved list with a warning, and reports a registry it cannot load", async () => {
     const backend = new FakeBackend();
     backend.registry = { agents: AGENTS, warning: "Could not reach the ACP Registry" };
-    const { unmount } = renderRegistry(<RegistryList backend={backend} />);
+    const { unmount } = renderRegistry(backend);
     await waitFor(() => expect(screen.getByRole("status")).toHaveTextContent("Could not reach the ACP Registry"));
     unmount();
 
     backend.list.mockRejectedValueOnce(new IpcError({ kind: "io", message: "offline" }));
-    renderRegistry(<RegistryList backend={backend} />);
+    renderRegistry(backend);
     await waitFor(() => expect(screen.getByRole("alert")).toHaveTextContent("Cannot load the ACP Registry: offline"));
   });
 });
@@ -429,12 +450,10 @@ describe("Built-in executable overrides", () => {
         await setLocale("zh");
       });
       expect(screen.getByRole("option", { name: "Codex 未找到" })).toBeInTheDocument();
-      expect(screen.getByRole("button", { name: "添加 Agent…" })).toBeInTheDocument();
       await act(async () => {
         await setLocale("en");
       });
       expect(screen.getByRole("option", { name: "Codex Not found" })).toBeInTheDocument();
-      expect(screen.getByRole("button", { name: "Add Agent…" })).toBeInTheDocument();
     } finally {
       await act(async () => {
         await setLocale("en");
@@ -712,20 +731,38 @@ describe("the agent list", () => {
     fireEvent.click(within(details).getByRole("button", { name: "Update" }));
     expect(backend.installs).toEqual(["cline"]);
     await act(async () => backend.finish());
-    fireEvent.click(screen.getByRole("button", { name: "Remove" }));
+    fireEvent.click(within(screen.getByRole("region", { name: "Cline" })).getByRole("button", { name: "Remove" }));
     const dialog = await screen.findByRole("dialog", { name: "Remove Cline" });
     fireEvent.click(within(dialog).getByRole("button", { name: "Remove" }));
     await waitFor(() => expect(backend.removed).toEqual(["cline"]));
   });
 
-  it("adds agents from the ACP Registry in a dialog", async () => {
+  it("lists every agent, installed first, and filters them", async () => {
     const commands = new FakeCommands();
-    commands.list = [claudeProvider("claude")];
+    commands.list = [
+      claudeProvider("claude"),
+      {
+        ...claudeProvider("codex"),
+        id: "codex",
+        name: "Codex",
+        defaultProgram: "codex",
+        commandOverridden: false,
+        installed: false,
+      },
+    ];
     await open(commands);
-    expect(screen.getByRole("button", { name: "Remove" })).toBeDisabled();
-    fireEvent.click(screen.getByRole("button", { name: "Add Agent…" }));
-    const dialog = await screen.findByRole("dialog", { name: "Add Agent" });
-    await waitFor(() => expect(within(dialog).getByRole("option", { name: /^Amp/ })).toBeInTheDocument());
+    await waitFor(() => expect(screen.getByRole("option", { name: /^Amp/ })).toBeInTheDocument());
+    const names = screen.getAllByRole("option").map((o) => o.textContent?.trim());
+    expect(names).toEqual(["Claude Code", "Cline Update", "fast-agent", "Codex Not found", "Amp"]);
+    expect(screen.getByText("Installed")).toBeInTheDocument();
+    expect(screen.getByText("Available")).toBeInTheDocument();
+    fireEvent.mouseDown(screen.getByRole("option", { name: /^Amp/ }));
+    const amp = screen.getByRole("region", { name: "Amp" });
+    expect(within(amp).getByRole("button", { name: "Install" })).toBeEnabled();
+    expect(within(amp).queryByRole("region", { name: "Launch" })).toBeNull();
+    fireEvent.change(screen.getByRole("textbox", { name: "Search agents" }), { target: { value: "codex" } });
+    expect(screen.getAllByRole("option").map((o) => o.textContent?.trim())).toEqual(["Codex Not found"]);
+    expect(screen.queryByText("Installed")).toBeNull();
   });
 
   it("stages the settings new tasks start with", async () => {

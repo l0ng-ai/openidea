@@ -829,11 +829,8 @@
   "Send into the agent's turn": "Send into the agent's turn",
   "Queue a message for when the agent is done (⌘⇧↵ sends it now)": "Queue a message for when the agent is done (⌘⇧↵ sends it now)",
   "Remove {name} from this computer? Its tasks stay, but can't continue until it is installed again.": "Remove {name} from this computer? Its tasks stay, but can't continue until it is installed again.",
-  "Add Agent…": "Add Agent…",
-  "Add Agent": "Add Agent",
   "ACP Registry · {version}": "ACP Registry · {version}",
   "Agent file": "Agent file",
-  "New tasks start with": "New tasks start with",
   "Launch": "Launch",
   "This agent is installed from the ACP Registry, which launches it.": "This agent is installed from the ACP Registry, which launches it.",
   "{version} is available": "{version} is available",
@@ -860,6 +857,7 @@
   "Reveal streaming text smoothly": "Reveal streaming text smoothly",
   "Text appears at a steady pace instead of in bursts": "Text appears at a steady pace instead of in bursts",
   "⌘Enter": "⌘Enter",
-  "{installed} installed, {version} available": "{installed} installed, {version} available",
-  "No checksum provided: the download can't be verified.": "No checksum provided: the download can't be verified."
+  "No checksum provided: the download can't be verified.": "No checksum provided: the download can't be verified.",
+  "Sign In": "Sign In",
+  "New Tasks": "New Tasks"
 }
