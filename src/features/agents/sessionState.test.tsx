@@ -957,6 +957,25 @@ describe("conversation loading", () => {
     expect(screen.getByText("Answer A")).toBeInTheDocument();
   });
 
+  it("reads a restored tab's conversation once the project's agents are connected", async () => {
+    // The tab is restored with the project while connecting is still under way.
+    backend.fetched = [];
+    act(() => disconnect());
+    render(<SessionEditor input={input("A")} />);
+    await act(async () => {});
+    // Connecting finishes and starts from empty caches, as connect() does.
+    act(() =>
+      useAgents.setState({
+        loaded: true,
+        tasks: new Map([task("A")].map((t) => [t.id, t])),
+        entries: new Map(),
+        entryLoads: new Map(),
+      }),
+    );
+    expect(await screen.findByText("Answer A")).toBeInTheDocument();
+    expect(backend.fetched.filter((k) => k === "A")).toHaveLength(1);
+  });
+
   it("does not apply entries after disconnecting the project", async () => {
     let finish!: () => void;
     backend.entryWait = new Promise<void>((resolve) => {

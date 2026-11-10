@@ -148,21 +148,25 @@ function TaskSession({ id, docked }: { id: string; docked: boolean }) {
   const cards = useAgents(
     useShallow((s) => path.map((sub, i) => findSubagent(s.entries.get(entriesKey(id, path[i - 1] ?? null)), sub))),
   );
+  // Connecting to the project's agents clears what was loaded before: a tab restored with the
+  // project reads its conversation once that is done, not before (#2414).
+  const connected = useAgents((s) => s.loaded);
   useEffect(() => {
+    if (!connected) return;
     // Loaded entries are kept current by the task's events: reopening the tab needn't fetch them again.
     if (!useAgents.getState().entries.has(id)) void loadEntries(id).catch(() => undefined);
     void refreshChanges(id);
-  }, [id]);
+  }, [id, connected]);
   // A kept-alive tab stays mounted behind the shown one: it isn't read there, nor searched.
   const shown = useEditorShown();
   useEffect(() => {
     if (shown && (!docked || !changesOpen)) return markVisible(id);
   }, [id, docked, changesOpen, shown]);
   useEffect(() => {
-    if (view && !useAgents.getState().entries.has(entriesKey(id, view))) {
+    if (connected && view && !useAgents.getState().entries.has(entriesKey(id, view))) {
       void loadEntries(id, view).catch(() => undefined);
     }
-  }, [id, view]);
+  }, [id, view, connected]);
   const openSubagent = useCallback((sub: string) => setPath((p) => [...p, sub]), []);
   const [finding, setFinding] = useState(false);
   const [findFocus, setFindFocus] = useState(0);
