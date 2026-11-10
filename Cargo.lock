@@ -4232,8 +4232,10 @@ name = "ide-build"
 version = "0.1.40"
 dependencies = [
  "blake3",
+ "chardetng",
  "dirs 6.0.0",
  "dunce",
+ "encoding_rs",
  "ide-core",
  "serde",
  "serde_json",
