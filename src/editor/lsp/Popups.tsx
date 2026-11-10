@@ -532,15 +532,42 @@ function DefinitionPopup({ popup }: { popup: Extract<LspPopup, { kind: "definiti
   );
 }
 
+const PREVIEW_SIZE_KEY = "openidea.refactor.previewSize";
+
+function loadPreviewSize(): { w: number; h: number } | null {
+  try {
+    const v = JSON.parse(localStorage.getItem(PREVIEW_SIZE_KEY) ?? "null") as { w?: unknown; h?: unknown } | null;
+    return typeof v?.w === "number" && typeof v.h === "number" ? { w: v.w, h: v.h } : null;
+  } catch {
+    return null;
+  }
+}
+
+function savePreviewSize(size: { w: number; h: number }) {
+  try {
+    localStorage.setItem(PREVIEW_SIZE_KEY, JSON.stringify(size));
+  } catch {
+    // Private mode etc. — the size just isn't remembered.
+  }
+}
+
 function PreviewDialog({ popup }: { popup: Extract<LspPopup, { kind: "preview" }> }) {
   const root = useProject((s) => s.project?.root ?? "");
   const { summary } = popup;
+  const [initialSize] = useState(loadPreviewSize);
   return (
     <Dialog
       open
       onClose={closePopup}
       title={popup.title}
+      className={styles.previewDialog}
       width={560}
+      minWidth={400}
+      minHeight={220}
+      maxHeight={480}
+      resizable="both"
+      initialSize={initialSize}
+      onResized={savePreviewSize}
       buttons={[
         {
           label: popup.confirmLabel,
@@ -586,7 +613,9 @@ function PreviewDialog({ popup }: { popup: Extract<LspPopup, { kind: "preview" }
             <li key={e.path} className={styles.previewRow}>
               <Icon name={fileIconName(basename(e.path), e.path)} size={14} className={styles.itemIcon} />
               <span className={styles.previewName}>{basename(e.path)}</span>
-              <span className={styles.previewPath}>{relativePath(root, e.path)}</span>
+              <span className={styles.previewPath} title={relativePath(root, e.path)}>
+                {relativePath(root, e.path)}
+              </span>
               <span className={styles.spacer} />
               {e.operation === "rename" && e.to && <span className={styles.previewOp}>→ {basename(e.to)}</span>}
               {e.operation && e.operation !== "rename" && <span className={styles.previewOp}>{e.operation}</span>}
