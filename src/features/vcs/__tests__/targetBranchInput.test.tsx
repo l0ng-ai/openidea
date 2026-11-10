@@ -39,7 +39,10 @@ describe("suggestRemoteBranches", () => {
     expect(suggestRemoteBranches(branches, "   ", "origin")).toEqual([]);
   });
 
-  it("fuzzy-matches branch names, keeping their order", () => {
+  it("fuzzy-matches branch names, prefix matches first, then in their order", () => {
+    expect(
+      suggestRemoteBranches(["fix/very-old", "dev/fe-ui", "feature/a", "feature/b"], "fe", null).map((s) => s.name),
+    ).toEqual(["feature/a", "feature/b", "dev/fe-ui", "fix/very-old"]);
     expect(suggestRemoteBranches(branches, "fea", "origin").map((s) => s.name)).toEqual([
       "feature/login",
       "fix/error-auth",

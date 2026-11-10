@@ -33,10 +33,17 @@ export function stripRemotePrefix(name: string, remote: string | null): string {
   return name.toLowerCase().startsWith(prefix.toLowerCase()) ? name.slice(prefix.length) : name;
 }
 
+/** How closely `match` fits: a prefix, then a contiguous run, then anything looser. */
+function tier(match: number[]): number {
+  const contiguous = match.every((at, i) => i === 0 || at === match[i - 1]! + 1);
+  return contiguous ? (match[0] === 0 ? 0 : 1) : 2;
+}
+
 /**
- * Branches of `remote` that fuzzy-match `query`, most recently used first (the order
- * of the store's branches). The remote prefix may be typed along with the name
- * (`origin/feat`), as git prints refs that way.
+ * Branches of `remote` that fuzzy-match `query`: names starting with it first, then the other
+ * contiguous matches, then the looser ones, each group in the store's order (most recently used
+ * first). The remote prefix may be typed along with the name (`origin/feat`), as git prints refs
+ * that way.
  */
 export function suggestRemoteBranches(
   names: readonly string[],
@@ -47,13 +54,12 @@ export function suggestRemoteBranches(
   if (!q) return [];
   const prefix = remote ? `${remote}/` : null;
   const withoutPrefix = prefix && q.toLowerCase().startsWith(prefix.toLowerCase()) ? q.slice(prefix.length) : null;
-  const out: RemoteBranchSuggestion[] = [];
+  const out: Array<RemoteBranchSuggestion & { tier: number }> = [];
   for (const name of names) {
-    const match =
-      (withoutPrefix ? null : fuzzyMatch(name, q)) ?? (withoutPrefix ? fuzzyMatch(name, withoutPrefix) : null);
-    if (match) out.push({ name, match });
+    const match = fuzzyMatch(name, withoutPrefix ?? q);
+    if (match) out.push({ name, match, tier: tier(match) });
   }
-  return out;
+  return out.sort((a, b) => a.tier - b.tier).map(({ name, match }) => ({ name, match }));
 }
 
 export function TargetBranchInput({

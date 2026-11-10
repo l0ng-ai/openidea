@@ -787,7 +787,7 @@ function PushDialog({ target: pushTarget, onClose }: { target: PushTarget; onClo
         {head && (
           <TargetBranchInput value={targetName} onChange={setTargetName} branches={remoteBranchNames} remote={remote} />
         )}
-        {retarget && <span className={styles.hint}> {tx("New")}</span>}
+        {retarget && !remoteBranchNames.includes(edited) && <span className={styles.hint}> {tx("New")}</span>}
       </div>
       {commits?.length && !error ? (
         <SplitGroup
