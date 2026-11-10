@@ -2618,6 +2618,14 @@ export type CommitSettings = {
 	wrapAtMargin?: boolean,
 	/**  Plugin before-commit checks turned off (`<plugin id>/<check id>`); the rest run. */
 	disabledPluginChecks?: string[],
+	/**
+	 *  Double-click / Enter in the changes view: `None` follows the interface (the
+	 *  Commit tool window opens the diff, Local Changes the source file).
+	 * 
+	 *  No `skip_serializing_if`: an unset value must still appear in
+	 *  `Settings::default()`, or `SettingsStore::set` rejects the key as unknown.
+	 */
+	doubleClickOpensDiff?: boolean | null,
 };
 
 export type Commit_Deserialize = {

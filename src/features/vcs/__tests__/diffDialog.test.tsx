@@ -35,7 +35,9 @@ const modified = (path: string) => ({
 
 /** Editor tabs: none may open behind the modal Commit dialog. */
 const openDiff = vi.fn(async () => undefined);
-provideEditorService({ openInput: openDiff } as never);
+/** Double-click opens the source file, as the modal interface does (Show on Double-Click). */
+const openSource = vi.fn(async () => undefined);
+provideEditorService({ openInput: openDiff, openFile: openSource } as never);
 
 /** Activates (double-clicks) the file row the way a user does. */
 function activateFile(name: string) {
@@ -48,8 +50,11 @@ const diffDialogs = async () => (await screen.findAllByRole("dialog", { name: /\
 
 describe("Commit dialog diff window (#1863)", () => {
   beforeEach(() => {
-    // The Commit dialog exists with "Use non-modal commit interface" unticked.
-    useProject.setState({ settings: { vcs: { commit: { nonModal: false } } } as Settings });
+    // The Commit dialog exists with "Use non-modal commit interface" unticked, and Show on
+    // Double-Click on the diff so a double-click opens the file's diff window.
+    useProject.setState({
+      settings: { vcs: { commit: { nonModal: false, doubleClickOpensDiff: true } } } as Settings,
+    });
     // The dialog stack is module state: close whatever a previous test left open.
     for (const close of screen.queryAllByRole("button", { name: "Close" })) act(() => fireEvent.click(close));
     useVcs.setState({ available: true, root: "/p", repo: "/p", roots: ["/p"], status: [modified("/p/a.ts")] });

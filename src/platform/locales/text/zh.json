@@ -2882,6 +2882,8 @@
   "Stash": "贮藏",
   "Remove Recent Project": "移除最近项目",
   "Group By": "分组依据",
+  "Show on Double-Click": "双击时显示",
+  "Follow the Interface": "跟随界面",
   "The search hit its limit; only usages found so far are replaced.": "搜索已达上限，只替换目前找到的用法。",
   "Review": "审查",
   "Commit and Push…": "提交并推送…",
