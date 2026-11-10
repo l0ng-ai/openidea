@@ -345,8 +345,8 @@ struct Task {
     /// Settings already sent this session (`(option, value)`), so a refusal is not retried.
     config_sent: Mutex<HashSet<(String, String)>>,
     dirty: Mutex<BTreeSet<(Session, usize)>>,
-    /// Text last sent of the streaming message of each session, so the next flush sends the rest.
-    streamed: Mutex<HashMap<Session, (usize, String)>>,
+    /// How much of each session's streaming message was last sent, so the next flush sends the rest.
+    streamed: Mutex<HashMap<Session, Sent>>,
     flush_scheduled: AtomicBool,
     stderr: Mutex<VecDeque<String>>,
     /// Set by `delete`; held while saving.
@@ -2323,11 +2323,47 @@ fn stdio_mcp_servers(executable: Option<&std::path::Path>, supported: bool, root
     vec![json!({ "name": "OpenIDEA", "command": command[0], "args": command[1..], "env": [] })]
 }
 
+/// What was sent of a streaming message: its first `bytes` (`utf16` UTF-16 units), which
+/// ended with `tail`. A message only grows while it streams, so its tail tells a message
+/// that went on from one that was replaced without comparing (or keeping) all of it.
+struct Sent {
+    index: usize,
+    bytes: usize,
+    utf16: usize,
+    tail: String,
+}
+
+const SENT_TAIL: usize = 64;
+
+impl Sent {
+    fn new(index: usize, text: &str) -> Self {
+        Self::after(index, text, 0, 0)
+    }
+
+    /// `text` as sent, of which the first `bytes` (`utf16` units) were sent before.
+    fn after(index: usize, text: &str, bytes: usize, utf16: usize) -> Self {
+        let mut start = text.len().saturating_sub(SENT_TAIL);
+        while !text.is_char_boundary(start) {
+            start -= 1;
+        }
+        let utf16 = utf16 + text[bytes..].encode_utf16().count();
+        Self { index, bytes: text.len(), utf16, tail: text[start..].to_owned() }
+    }
+
+    /// Whether `text` at `index` is this message, gone on.
+    fn extended_by(&self, index: usize, text: &str) -> bool {
+        self.index == index
+            && text.len() > self.bytes
+            && text.is_char_boundary(self.bytes)
+            && text[..self.bytes].ends_with(&self.tail)
+    }
+}
+
 /// The event that brings the UI's copy of entry `i` up to date: only the new text when
 /// it extends the message last sent for the session, else the whole entry.
 fn entry_event(
     task: &str,
-    streamed: &mut HashMap<Session, (usize, String)>,
+    streamed: &mut HashMap<Session, Sent>,
     subagent: Session,
     i: usize,
     entry: &AgentEntry,
@@ -2337,20 +2373,26 @@ fn entry_event(
         _ => None,
     };
     let Some(text) = text else {
-        if streamed.get(&subagent).is_some_and(|(at, _)| *at == i) {
+        if streamed.get(&subagent).is_some_and(|sent| sent.index == i) {
             streamed.remove(&subagent);
         }
         return AgentEvent::Entry { task: task.to_owned(), subagent, index: i as u32, entry: entry.clone() };
     };
-    let prev = streamed.insert(subagent.clone(), (i, text.clone()));
-    match prev {
-        Some((at, sent)) if at == i && text.len() > sent.len() && text.starts_with(&sent) => AgentEvent::Append {
-            task: task.to_owned(),
-            subagent,
-            index: i as u32,
-            from: sent.encode_utf16().count() as u32,
-            text: text[sent.len()..].to_owned(),
-        },
-        _ => AgentEvent::Entry { task: task.to_owned(), subagent, index: i as u32, entry: entry.clone() },
+    match streamed.get(&subagent).filter(|sent| sent.extended_by(i, text)) {
+        Some(sent) => {
+            let (bytes, from) = (sent.bytes, sent.utf16);
+            streamed.insert(subagent.clone(), Sent::after(i, text, bytes, from));
+            AgentEvent::Append {
+                task: task.to_owned(),
+                subagent,
+                index: i as u32,
+                from: from as u32,
+                text: text[bytes..].to_owned(),
+            }
+        }
+        None => {
+            streamed.insert(subagent.clone(), Sent::new(i, text));
+            AgentEvent::Entry { task: task.to_owned(), subagent, index: i as u32, entry: entry.clone() }
+        }
     }
 }

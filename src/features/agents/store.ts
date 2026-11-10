@@ -307,8 +307,46 @@ export async function connect(): Promise<void> {
   }
 }
 
+type EntryEvent = Extract<AgentEvent, { type: "entry" | "append" }>;
+
+/** Entry events that arrived while their conversation loaded, applied on top of the copy it loads. */
+const arrivedWhileLoading = new Map<string, EntryEvent[]>();
+/** Whether the message each task streams now is the agent's reply, known without its conversation. */
+const streamingReply = new Map<string, { index: number; reply: boolean }>();
+
+/** `entries` with the event applied; `null` when the copy can't take it. */
+function applyEntryEvent(entries: AgentEntry[], e: EntryEvent): AgentEntry[] | null {
+  if (e.type === "append") return appendEntry(entries, e.index, e.from, e.text);
+  const have = entries[e.index];
+  // Sent before the loaded copy was read: that copy already holds more of the message.
+  if (
+    have &&
+    (have.type === "agent" || have.type === "thought") &&
+    e.entry.type === have.type &&
+    have.text.length > e.entry.text.length &&
+    have.text.startsWith(e.entry.text)
+  )
+    return entries;
+  return upsertEntry(entries, e.index, e.entry);
+}
+
+function onEntryEvent(s: AgentsState, e: EntryEvent) {
+  const key = entriesKey(e.task, e.subagent);
+  if (s.entryLoads.get(key)?.error === null) {
+    arrivedWhileLoading.set(key, [...(arrivedWhileLoading.get(key) ?? []), e]);
+    return;
+  }
+  const current = s.entries.get(key);
+  if (!current) return;
+  const next = applyEntryEvent(current, e);
+  if (!next) void loadEntries(e.task, e.subagent);
+  else if (next !== current) useAgents.setState({ entries: new Map(s.entries).set(key, next) });
+}
+
 export function disconnect() {
   generation++;
+  arrivedWhileLoading.clear();
+  streamingReply.clear();
   useAgents.setState({
     loaded: false,
     error: null,
@@ -384,25 +422,20 @@ function onEvent(e: AgentEvent) {
       ) {
         markUnread(e.task);
       }
-      const key = entriesKey(e.task, e.subagent);
-      const current = s.entries.get(key);
-      if (!current) return;
-      const next = upsertEntry(current, e.index, e.entry);
-      if (next) useAgents.setState({ entries: new Map(s.entries).set(key, next) });
-      else void loadEntries(e.task, e.subagent);
+      if (!e.subagent) streamingReply.set(e.task, { index: e.index, reply: e.entry.type === "agent" });
+      onEntryEvent(s, e);
       if (e.entry.type === "tool" && e.entry.status === "completed" && e.entry.diffs.length) {
         scheduleChanges(e.task);
       }
       break;
     }
     case "append": {
-      const key = entriesKey(e.task, e.subagent);
-      const current = s.entries.get(key);
-      if (!current) return;
-      const next = appendEntry(current, e.index, e.from, e.text);
-      if (!e.subagent && next?.[e.index]?.type === "agent" && e.text.trim()) markUnread(e.task);
-      if (!next) void loadEntries(e.task, e.subagent);
-      else if (next !== current) useAgents.setState({ entries: new Map(s.entries).set(key, next) });
+      if (!e.subagent && e.text.trim()) {
+        const shown = s.entries.get(entriesKey(e.task, null))?.[e.index];
+        const streaming = streamingReply.get(e.task);
+        if (shown ? shown.type === "agent" : streaming?.index === e.index && streaming.reply) markUnread(e.task);
+      }
+      onEntryEvent(s, e);
       break;
     }
   }
@@ -451,13 +484,17 @@ export async function loadEntries(task: string, subagent: string | null = null):
       }),
     ]);
     if (useAgents.getState().entryLoads.get(key) !== load) return;
+    let loaded = entries;
+    for (const event of arrivedWhileLoading.get(key) ?? []) loaded = applyEntryEvent(loaded, event) ?? loaded;
+    arrivedWhileLoading.delete(key);
     useAgents.setState((s) => {
       const entryLoads = new Map(s.entryLoads);
       entryLoads.delete(key);
-      return { entries: new Map(s.entries).set(key, entries), entryLoads };
+      return { entries: new Map(s.entries).set(key, loaded), entryLoads };
     });
   } catch (e) {
     if (useAgents.getState().entryLoads.get(key) !== load) return;
+    arrivedWhileLoading.delete(key);
     const error = (e instanceof Error ? e.message : String(e)).trim() || tx("Unknown error");
     useAgents.setState((s) => ({
       entryLoads: new Map(s.entryLoads).set(key, { error }),

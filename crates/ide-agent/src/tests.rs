@@ -2559,4 +2559,12 @@ fn streamed_text_is_sent_as_appends() {
     entry_event("t", &mut streamed, None, 4, &tool);
     let again = entry_event("t", &mut streamed, None, 4, &AgentEntry::Thought { text: "hmm… ok".into() });
     assert!(matches!(again, AgentEvent::Entry { .. }), "an entry replaced by another kind forgets its text");
+
+    let long = "é".repeat(5000);
+    entry_event("t", &mut streamed, None, 5, &agent(&long));
+    assert!(streamed[&None].tail.len() <= 64, "only the end of what was sent is kept");
+    let on = entry_event("t", &mut streamed, None, 5, &agent(&format!("{long}!")));
+    assert!(matches!(&on, AgentEvent::Append { from: 5000, text, .. } if text == "!"), "{on:?}");
+    let rewritten = entry_event("t", &mut streamed, None, 5, &agent(&format!("{}x!??", "é".repeat(4999))));
+    assert!(matches!(rewritten, AgentEvent::Entry { .. }), "a rewritten end is sent whole");
 }
