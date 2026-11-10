@@ -691,7 +691,11 @@ describe("Settings dialog", () => {
     expect(within(nav).getByRole("button", { name: "Modules" })).toHaveAttribute("aria-current", "page");
     expect(within(psDialog).getByRole("tab", { name: "Sources" })).toBeInTheDocument();
     expect(within(psDialog).getByRole("tab", { name: "Paths" })).toBeInTheDocument();
-    expect(within(psDialog).getByRole("tab", { name: "Dependencies" })).toBeInTheDocument();
+    await act(async () => {
+      fireEvent.click(within(nav).getByRole("button", { name: "Dependencies" }));
+    });
+    expect(within(nav).getByRole("button", { name: "Dependencies" })).toHaveAttribute("aria-current", "page");
+    expect(within(psDialog).getByRole("group", { name: "The project depends on these projects" })).toBeInTheDocument();
   });
 
   it("preserves pending Project Structure edits when its shortcut is invoked again", async () => {
@@ -711,7 +715,7 @@ describe("Settings dialog", () => {
     await act(async () => executeAction("file.projectStructure", "modules"));
     fireEvent.click(screen.getByRole("tab", { name: "Paths" }));
     expect(screen.getByLabelText("Test output path")).toBeDisabled();
-    fireEvent.click(screen.getByRole("tab", { name: "Dependencies" }));
+    fireEvent.click(screen.getByRole("button", { name: "Dependencies" }));
     // Project dependencies are supported: the checklist is live, no disabled placeholder.
     expect(screen.getByRole("group", { name: "The project depends on these projects" })).toBeInTheDocument();
     expect(screen.getByRole("button", { name: "Add Project…" })).toBeEnabled();

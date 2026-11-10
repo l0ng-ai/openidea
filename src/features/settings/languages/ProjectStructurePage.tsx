@@ -66,7 +66,14 @@ import { SdkField, tildify, useDetected, useProjectSetting } from "./components"
 import styles from "./Sdk.module.css";
 import { tx } from "@/platform/i18n";
 
-export type ProjectStructureSectionId = "project" | "modules" | "libraries" | "facets" | "artifacts" | "sdks";
+export type ProjectStructureSectionId =
+  | "project"
+  | "modules"
+  | "dependencies"
+  | "libraries"
+  | "facets"
+  | "artifacts"
+  | "sdks";
 
 interface DirNode {
   path: string;
@@ -96,6 +103,7 @@ const ROLES: Array<{ role: FolderRole; label: string; title: string; kind: Folde
 const SECTION_TABS: Array<{ id: ProjectStructureSectionId; label: string; icon: IconName }> = [
   { id: "project", label: "Project", icon: "folder" },
   { id: "modules", label: "Modules", icon: "module" },
+  { id: "dependencies", label: "Dependencies", icon: "build-dependencies" },
   { id: "libraries", label: "Libraries", icon: "folder-library" },
   { id: "facets", label: "Facets", icon: "file-config" },
   { id: "artifacts", label: "Artifacts", icon: "file-archive" },
@@ -752,10 +760,10 @@ function MemberDependencies({ members }: { members: readonly string[] }) {
                 aria-selected={m.path === active}
                 className={clsx(styles.sideItem, m.path === active && styles.sideItemActive)}
                 onClick={() => setSelected(i)}
+                title={m.path}
               >
                 <Icon name="module" size={14} />
                 <span className={styles.sideItemLabel}>{m.name}</span>
-                <span className={styles.sideItemMeta}>{tildify(m.path)}</span>
               </button>
             ))}
           </div>
@@ -802,7 +810,7 @@ function ModulesSection() {
     "projectStructure.modules",
   );
   const [selectedModule, setSelectedModule] = useState<string>(".");
-  const [subTab, setSubTab] = useState<"sources" | "paths" | "dependencies">("sources");
+  const [subTab, setSubTab] = useState<"sources" | "paths">("sources");
   const [moduleError, setModuleError] = useState(false);
   const outId = useId();
   const testOutId = useId();
@@ -941,15 +949,6 @@ function ModulesSection() {
             >
               <T>Paths</T>
             </button>
-            <button
-              type="button"
-              role="tab"
-              className={styles.sectionTab}
-              aria-selected={subTab === "dependencies"}
-              onClick={() => setSubTab("dependencies")}
-            >
-              <T>Dependencies</T>
-            </button>
           </div>
 
           {subTab === "sources" && <ModuleSourcesTab key={activeKey} moduleKey={activeKey} />}
@@ -1058,8 +1057,6 @@ function ModulesSection() {
               </Row>
             </Section>
           )}
-
-          {subTab === "dependencies" && <ModuleDependenciesTab />}
         </div>
       </div>
     </div>
@@ -1947,6 +1944,7 @@ const NAV_GROUPS: Array<{
     items: [
       { id: "project", label: "Project", icon: "folder" },
       { id: "modules", label: "Modules", icon: "module" },
+      { id: "dependencies", label: "Dependencies", icon: "build-dependencies" },
       { id: "libraries", label: "Libraries", icon: "folder-library" },
       { id: "facets", label: "Facets", icon: "file-config" },
       { id: "artifacts", label: "Artifacts", icon: "file-archive" },
@@ -2069,6 +2067,7 @@ function ProjectStructureDialogInner() {
               <div className={styles.psDialogBody}>
                 {section === "project" && <ProjectSection />}
                 {section === "modules" && <ModulesSection />}
+                {section === "dependencies" && <ModuleDependenciesTab />}
                 {section === "libraries" && <LibrariesSection />}
                 {section === "facets" && <FacetsSection />}
                 {section === "artifacts" && <ArtifactsSection />}
@@ -2104,6 +2103,7 @@ export function ProjectStructurePage({ initialSection = "modules" }: { initialSe
       </div>
       {section === "project" && <ProjectSection />}
       {section === "modules" && <ModulesSection />}
+      {section === "dependencies" && <ModuleDependenciesTab />}
       {section === "libraries" && <LibrariesSection />}
       {section === "facets" && <FacetsSection />}
       {section === "artifacts" && <ArtifactsSection />}
