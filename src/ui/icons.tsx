@@ -373,6 +373,12 @@ const ICONS = {
   success: "status/success",
   // Run / debug
   run: "run/run",
+  "test-passed": "run/testPassed",
+  "test-failed": "run/testFailed",
+  "test-ignored": "run/testIgnored",
+  "test-pending": "run/testNotRunYet",
+  "test-show-passed": "run/showPassed",
+  "test-show-ignored": "run/showIgnored",
   debug: "run/debug",
   "run-coverage": "run/runWithCoverage",
   profile: "run/profile",

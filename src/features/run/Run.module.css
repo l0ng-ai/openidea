@@ -222,6 +222,10 @@
   min-width: 0;
   flex: 1;
 }
+.testRow .testStatus {
+  width: var(--oi-tree-icon-size, 16px);
+  height: var(--oi-tree-icon-size, 16px);
+}
 .testName {
   flex: 1;
   min-width: 0;
@@ -242,9 +246,6 @@
   font-size: var(--fs-ui);
 }
 
-.passed {
-  color: var(--success);
-}
 .failed {
   color: var(--danger);
 }
