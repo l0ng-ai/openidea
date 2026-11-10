@@ -84,3 +84,54 @@ pub fn http_history_clear(window: Window, state: State<'_, AppState>) -> IdeResu
 pub async fn proxy_check_connection(proxy: ide_core::settings::ProxySettings, url: String) -> IdeResult<String> {
     ide_http::client::check_connection(&proxy, &url, &ide_core::CancellationToken::new()).await
 }
+
+/// Convert to cURL and Copy: request `index` of `text` (the editor buffer of `path`), with
+/// the variables of `env` substituted, as a cURL command.
+#[tauri::command]
+#[specta::specta]
+pub async fn http_curl(
+    window: Window,
+    state: State<'_, AppState>,
+    path: Option<IpcPath>,
+    text: String,
+    index: u32,
+    env: Option<String>,
+) -> IdeResult<String> {
+    let root = state.project(window.label()).ok().map(|p| p.root.clone());
+    tauri::async_runtime::spawn_blocking(move || {
+        ide_http::curl(&ide_http::RunInput {
+            text: &text,
+            index,
+            file: path.as_deref(),
+            root: root.as_deref(),
+            env: env.as_deref(),
+        })
+    })
+    .await
+    .map_err(|e| IdeError::internal(e.to_string()))?
+}
+
+/// A pasted `curl …` command as `.http` request text; `None` when it isn't one.
+#[tauri::command]
+#[specta::specta]
+pub fn http_from_curl(command: String) -> Option<String> {
+    ide_http::curl::from_curl(&command)
+}
+
+/// The environment file for the request file `path` (`is_private`: the private one): the nearest
+/// existing one, else a new one next to it.
+#[tauri::command]
+#[specta::specta]
+pub async fn http_environment_file(
+    window: Window,
+    state: State<'_, AppState>,
+    path: IpcPath,
+    is_private: bool,
+) -> IdeResult<IpcPath> {
+    let root = state.project(window.label()).ok().map(|p| p.root.clone());
+    tauri::async_runtime::spawn_blocking(move || {
+        ide_http::env::environment_file(&path, root.as_deref(), is_private).map(IpcPath::from)
+    })
+    .await
+    .map_err(|e| IdeError::internal(e.to_string()))?
+}
