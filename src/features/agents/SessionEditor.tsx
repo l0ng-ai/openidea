@@ -543,6 +543,15 @@ interface StreamProps {
 /** Entries rendered at a time when a conversation opens at its end. */
 const ENTRY_BATCH = 40;
 
+function scrollsInside(target: EventTarget | null, root: HTMLElement): boolean {
+  for (let el = target instanceof Element ? target : null; el && el !== root; el = el.parentElement) {
+    if (el.scrollTop <= 0) continue;
+    const overflow = getComputedStyle(el).overflowY;
+    if (overflow === "auto" || overflow === "scroll") return true;
+  }
+  return false;
+}
+
 function Stream({ loadError, task, entries, subagent, onOpenSubagent, finding, findFocus, onCloseFind }: StreamProps) {
   const ref = useRef<HTMLDivElement>(null);
   useSelectionBoundary(ref);
@@ -569,6 +578,21 @@ function Stream({ loadError, task, entries, subagent, onOpenSubagent, finding, f
   const markUserScroll = useCallback(() => {
     userScrolled.current = performance.now();
   }, []);
+  const touchY = useRef<number | null>(null);
+  const scrollingUp = useRef(false);
+  // Release before the browser scrolls: a streamed chunk can arrive before its scroll event.
+  const stopFollowing = useCallback(
+    (target: EventTarget | null) => {
+      const el = ref.current;
+      if (!el || el.scrollHeight <= el.clientHeight || scrollsInside(target, el)) return;
+      scrollingUp.current = true;
+      if (!position.current.stick) return;
+      position.current = { top: el.scrollTop, stick: false };
+      positions.set(key, position.current);
+      setAway(true);
+    },
+    [key, positions],
+  );
   // Earlier entries are prepended above the view: remember where the first painted row is
   // so the content stays put and the scrollbar doesn't jump under the pointer.
   const anchor = useRef<{ el: Element; top: number } | null>(null);
@@ -624,7 +648,7 @@ function Stream({ loadError, task, entries, subagent, onOpenSubagent, finding, f
   /** A diagram that drew after the last streamed chunk grows the conversation: keep following. */
   const onDiagramDrawn = useCallback(() => {
     const el = ref.current;
-    if (el && position.current.stick) el.scrollTop = el.scrollHeight;
+    if (el && position.current.stick && !dragging.current) el.scrollTop = el.scrollHeight;
   }, []);
   useLayoutEffect(() => {
     const el = ref.current;
@@ -632,6 +656,7 @@ function Stream({ loadError, task, entries, subagent, onOpenSubagent, finding, f
     const truncated = entries.length < previousLength.current;
     previousLength.current = entries.length;
     if ((truncated || entries.length === 0) && el.scrollHeight - el.scrollTop - el.clientHeight < 40) {
+      scrollingUp.current = false;
       position.current = { top: el.scrollTop, stick: true };
       positions.set(key, position.current);
       setAway(false);
@@ -640,8 +665,9 @@ function Stream({ loadError, task, entries, subagent, onOpenSubagent, finding, f
   useLayoutEffect(() => {
     const el = ref.current;
     if (!el || entries === null || !visible) return;
-    if (position.current.stick) el.scrollTop = el.scrollHeight;
-    else if (!restored.current) el.scrollTop = position.current.top;
+    if (position.current.stick) {
+      if (!dragging.current) el.scrollTop = el.scrollHeight;
+    } else if (!restored.current) el.scrollTop = position.current.top;
     restored.current = true;
   });
   useLayoutEffect(() => {
@@ -658,7 +684,7 @@ function Stream({ loadError, task, entries, subagent, onOpenSubagent, finding, f
     const el = ref.current;
     if (!el) return;
     const observer = new ResizeObserver(() => {
-      if (position.current.stick) el.scrollTop = el.scrollHeight;
+      if (position.current.stick && !dragging.current) el.scrollTop = el.scrollHeight;
     });
     observer.observe(el);
     return () => {
@@ -670,7 +696,8 @@ function Stream({ loadError, task, entries, subagent, onOpenSubagent, finding, f
   const jumpToLatest = useCallback(() => {
     const el = ref.current;
     if (!el) return;
-    position.current = { top: el.scrollHeight, stick: true };
+    scrollingUp.current = false;
+    position.current = { top: el.scrollTop, stick: true };
     if (typeof el.scrollTo === "function") el.scrollTo({ top: el.scrollHeight, behavior: "smooth" });
     else el.scrollTop = el.scrollHeight;
     setAway(false);
@@ -734,28 +761,52 @@ function Stream({ loadError, task, entries, subagent, onOpenSubagent, finding, f
       renderRow(row)
     );
   return (
-    <div
-      className={styles.streamArea}
-      onWheel={markUserScroll}
-      onTouchMove={markUserScroll}
-      onKeyDown={markUserScroll}
-      onPointerDown={markUserScroll}
-    >
+    <div className={styles.streamArea}>
       {finding && <FindBar streamRef={ref} focus={findFocus} onClose={onCloseFind} />}
       <div
         ref={ref}
         // The conversation is read and copied like a document; focusable so ⌘F reaches it.
         className={clsx(styles.stream, selectableText)}
         tabIndex={-1}
+        onWheel={(e) => {
+          markUserScroll();
+          if (e.deltaY < 0 && !e.ctrlKey && !e.defaultPrevented) stopFollowing(e.target);
+          else if (e.deltaY > 0 && !e.ctrlKey && !e.defaultPrevented) scrollingUp.current = false;
+        }}
+        onTouchStart={(e) => {
+          touchY.current = e.touches.length === 1 ? e.touches[0]!.clientY : null;
+        }}
+        onTouchMove={(e) => {
+          markUserScroll();
+          const y = e.touches.length === 1 ? e.touches[0]!.clientY : null;
+          if (y !== null && touchY.current !== null && y > touchY.current) stopFollowing(e.target);
+          else if (y !== null && touchY.current !== null && y < touchY.current) scrollingUp.current = false;
+          touchY.current = y;
+        }}
+        onKeyDown={(e) => {
+          markUserScroll();
+          if (e.defaultPrevented || (e.target as Element).closest("input, textarea, [contenteditable]")) return;
+          if (e.key === "ArrowUp" || e.key === "PageUp" || e.key === "Home" || (e.key === " " && e.shiftKey))
+            stopFollowing(e.target);
+          else if (e.key === "ArrowDown" || e.key === "PageDown" || e.key === "End" || (e.key === " " && !e.shiftKey))
+            scrollingUp.current = false;
+        }}
+        onPointerDown={() => {
+          markUserScroll();
+          scrollingUp.current = false;
+        }}
         onScroll={(e) => {
           const el = e.currentTarget;
           const atEnd = el.scrollHeight - el.scrollTop - el.clientHeight < 40;
           const laidOut = el.scrollHeight !== seenHeight.current;
           seenHeight.current = el.scrollHeight;
           const byUser = dragging.current || performance.now() - userScrolled.current < 500 || !laidOut;
-          const stick = atEnd || (position.current.stick && !byUser);
+          const movedDown = el.scrollTop > position.current.top;
+          const stayedAtEnd = position.current.stick && el.scrollTop === position.current.top;
+          const stick =
+            (atEnd && !scrollingUp.current && (movedDown || stayedAtEnd)) || (position.current.stick && !byUser);
           // Still following: back to the end the offset was moved away from.
-          if (stick && !atEnd) el.scrollTop = el.scrollHeight;
+          if (stick && !atEnd && !dragging.current) el.scrollTop = el.scrollHeight;
           position.current = { top: el.scrollTop, stick };
           positions.set(key, position.current);
           setAway(!position.current.stick);
