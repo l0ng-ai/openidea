@@ -251,7 +251,7 @@ its component with `plugins/build.sh crates/ide-plugin/tests/fixtures/file-templ
 `[[contributes.documentIndexers]]` declares file `extensions` and requires the optional
 `document-indexer` export. It publishes cross-file associations (definitions, references,
 aliases and gutter markers) in background batches, not on the editing path. See
-[Background document indexers](../docs/plugins/indexing.md).
+[Background document indexers](indexing.md).
 
 API 1.3 also uses this graph for Find Usages and Rename on published definitions
 and references, alongside language-server results. Name anchors must cover exactly
@@ -1957,7 +1957,7 @@ colours, merged over the theme). Pick a theme in Settings › Plugins › _Apply
 Start with `openidea-plugin new <dir> --template theme` (or a copy of
 [`official/harbor-night`](official/harbor-night)); the full guide, token
 reference and IntelliJ / VS Code porting tables are in
-[`docs/plugins/themes.md`](../docs/plugins/themes.md).
+[`plugins/themes.md`](themes.md).
 
 ## 5. File icon themes
 
@@ -2134,7 +2134,7 @@ granted, and starts the approved program.
   the package at its root or in its only folder, or a folder's `plugin.toml`;
   a zip without a `plugin.toml` there, such as an IntelliJ plugin, is refused; IntelliJ
   theme plugins are imported instead: _Import IntelliJ Theme from File…_ and _Import Theme
-  from JetBrains IDE…_, see [`docs/plugins/themes.md`](../docs/plugins/themes.md)). The install
+  from JetBrains IDE…_, see [`plugins/themes.md`](themes.md)). The install
   page lists every capability and whether the package is signed by a publisher
   the marketplace trusts; nothing is copied until you accept.
 - **Versions:** installed plugins live in `<app-data>/plugins/<id>/<version>/`

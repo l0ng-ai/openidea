@@ -18,7 +18,7 @@ my-theme/
 ```
 
 The quickest way to start is `openidea-plugin new --template theme`, or a copy of
-[`plugins/official/harbor-night`](../../plugins/official/harbor-night).
+[`plugins/official/harbor-night`](official/harbor-night).
 It contains *Harbor Night*, a complete example dark theme that sets every
 themeable token. The rest of this page covers the file format, the token
 reference, porting themes from IntelliJ IDEA and VS Code, and testing.
@@ -39,7 +39,7 @@ editor-scheme = "themes/harbor-night.scheme.json"   # optional
 ```
 
 Paths are relative to the package directory and may not leave it. The other
-manifest fields are described in [`plugins/README.md`](../../plugins/README.md).
+manifest fields are described in [`plugins/README.md`](README.md).
 
 ## The theme file
 
@@ -55,7 +55,7 @@ manifest fields are described in [`plugins/README.md`](../../plugins/README.md).
 }
 ```
 
-- **`tokens`** are the CSS variables of [`src/styles/tokens.css`](../../src/styles/tokens.css),
+- **`tokens`** are the CSS variables of [`src/styles/tokens.css`](../src/styles/tokens.css),
   the IDE's single source of colours. Components never use colour literals, so
   every surface, border, text colour, syntax colour and status colour can be
   themed through them. The [reference](#token-reference) lists them all.
@@ -206,7 +206,7 @@ ship no `.icls` at all keep the built-in syntax colours.
 | `--bg-toggle-*` | `ToggleButton.onBackground`, `.offBackground`, `.buttonColor` |
 | `--bg-feedback-*`, `--border-feedback-*` | `Banner.infoBackground`, `Banner.errorBorderColor`, … |
 
-The full table is `UI_KEYS` in [`src/features/plugins/intellijTheme.ts`](../../src/features/plugins/intellijTheme.ts).
+The full table is `UI_KEYS` in [`src/features/plugins/intellijTheme.ts`](../src/features/plugins/intellijTheme.ts).
 
 #### `.icls` → editor scheme
 

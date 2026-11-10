@@ -40,8 +40,8 @@ describe("theme token reference", () => {
     expect(() => themeTokenGroups(bad)).toThrow(/--b .*section comment/);
   });
 
-  it("is current in docs/plugins/themes.md (run pnpm gen:theme-docs)", () => {
-    const doc = read("docs/plugins/themes.md");
+  it("is current in plugins/themes.md (run pnpm gen:theme-docs)", () => {
+    const doc = read("plugins/themes.md");
     expect(withReference(doc, referenceMarkdown(groups))).toBe(doc);
   });
 });
