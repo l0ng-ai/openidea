@@ -1,7 +1,8 @@
 //! MyBatis Navigator for OpenIDEA: a mapper interface (`com.acme.UserMapper`)
 //! and the XML with `<mapper namespace="com.acme.UserMapper">` point at each
-//! other: gutter arrows and Go to Definition on methods and statement ids,
-//! completion of statement ids and `#{parameters}`.
+//! other: gutter arrows and Go to Definition on the namespace, methods and
+//! statement ids, plus `resultMap` / `extends` / `<include refid>` targets,
+//! completion of statement ids, `<sql>` ids and `#{parameters}`.
 
 use openidea_plugin::providers::{CompletionItem, CompletionKind, Document, LineMarker, Providers};
 use openidea_plugin::text::{offset, position};
@@ -24,9 +25,20 @@ pub struct Named {
 /// A mapper XML file.
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub struct MapperXml {
-    pub namespace: Option<String>,
+    /// `<mapper namespace="…">` (the value's range).
+    pub namespace: Option<Named>,
     /// `<select|insert|update|delete id="…">` (the id value's range).
     pub statements: Vec<Named>,
+    /// `<resultMap id="…">` (the id value's range).
+    pub result_maps: Vec<Named>,
+    /// `<sql id="…">` (the id value's range).
+    pub sql_fragments: Vec<Named>,
+    /// `resultMap="…"` values (on statements, associations, collections…).
+    pub result_map_refs: Vec<Named>,
+    /// `extends="…"` values on `<resultMap>`.
+    pub extends_refs: Vec<Named>,
+    /// `<include refid="…">` values.
+    pub include_refs: Vec<Named>,
 }
 
 /// A Java interface.
@@ -34,6 +46,8 @@ pub struct MapperXml {
 pub struct MapperJava {
     /// Fully qualified name.
     pub name: Option<String>,
+    /// The interface's own name (for `<mapper namespace>` targets).
+    pub decl: Option<Named>,
     pub methods: Vec<(Named, Vec<String>)>,
 }
 
@@ -55,12 +69,42 @@ pub fn parse_xml(text: &str) -> MapperXml {
         let start = at + i + 1;
         at = start;
         let name: String = text[start..].chars().take_while(|c| c.is_ascii_alphanumeric() || *c == '_').collect();
+        let named = |attr_name: &str| -> Option<Named> {
+            let (v, s, e) = attr(start, attr_name)?;
+            Some(Named { name: v, range: range_of(text, s, e) })
+        };
         if name == "mapper" {
-            out.namespace = attr(start, "namespace").map(|(v, ..)| v);
-        } else if STATEMENTS.contains(&name.as_str())
-            && let Some((id, s, e)) = attr(start, "id")
+            out.namespace = named("namespace");
+        } else if STATEMENTS.contains(&name.as_str()) {
+            if let Some(id) = named("id") {
+                out.statements.push(id);
+            }
+            if let Some(r) = named("resultMap") {
+                out.result_map_refs.push(r);
+            }
+        } else if name == "resultMap" {
+            if let Some(id) = named("id") {
+                out.result_maps.push(id);
+            }
+            if let Some(r) = named("extends") {
+                out.extends_refs.push(r);
+            }
+            if let Some(r) = named("resultMap") {
+                // `<association resultMap="…">` and friends nest inside resultMaps.
+                out.result_map_refs.push(r);
+            }
+        } else if name == "association" || name == "collection" || name == "case" {
+            if let Some(r) = named("resultMap") {
+                out.result_map_refs.push(r);
+            }
+        } else if name == "sql" {
+            if let Some(id) = named("id") {
+                out.sql_fragments.push(id);
+            }
+        } else if name == "include"
+            && let Some(r) = named("refid")
         {
-            out.statements.push(Named { name: id, range: range_of(text, s, e) });
+            out.include_refs.push(r);
         }
     }
     out
@@ -225,11 +269,15 @@ pub fn parse_java(text: &str) -> MapperJava {
     let package =
         text.lines().find_map(|l| l.trim().strip_prefix("package ").map(|p| p.trim_end_matches(';').trim().to_owned()));
     let Some(i) = text.find("interface ") else { return MapperJava::default() };
-    let simple: String = text[i + 10..].trim_start().chars().take_while(|c| ident(*c)).collect();
+    let rest = &text[i + 10..];
+    let indent = rest.len() - rest.trim_start().len();
+    let simple: String = rest[indent..].chars().take_while(|c| ident(*c)).collect();
     let name = Some(match package {
         Some(p) => format!("{p}.{simple}"),
-        None => simple,
+        None => simple.clone(),
     });
+    let decl =
+        Some(Named { name: simple.clone(), range: range_of(text, i + 10 + indent, i + 10 + indent + simple.len()) });
     let body_start = text[i..].find('{').map_or(text.len(), |b| i + b + 1);
     let mut methods = Vec::new();
     let mut depth = 0;
@@ -259,7 +307,7 @@ pub fn parse_java(text: &str) -> MapperJava {
             _ => {}
         }
     }
-    MapperJava { name, methods }
+    MapperJava { name, decl, methods }
 }
 
 fn project_of(path: &str) -> Option<Project> {
@@ -290,7 +338,7 @@ impl Navigator {
                         continue;
                     }
                     if let Some(ns) = parse_xml(&text).namespace {
-                        map.insert(ns, path);
+                        map.insert(ns.name, path);
                     }
                 }
                 self.xml_index.insert(root.clone(), (Instant::now(), map));
@@ -300,7 +348,7 @@ impl Navigator {
                 && let Ok(text) = project.read_file(&path)
             {
                 let xml = parse_xml(&text);
-                if xml.namespace.as_deref() == Some(namespace) {
+                if xml.namespace.as_ref().is_some_and(|n| n.name == namespace) {
                     return Some((path, xml));
                 }
             }
@@ -319,22 +367,67 @@ impl Navigator {
         (java.name.as_deref() == Some(namespace)).then_some((path, java))
     }
 
+    /// Where `resultMap="…"` / `<include refid="…">` points: a `<resultMap id>` /
+    /// `<sql id>` in this file, or in the mapper a `namespace.id` prefix names
+    /// (ids never hold dots, so the last segment is the id).
+    fn anchor_target(
+        &mut self,
+        project: &Project,
+        doc: &Document,
+        xml: &MapperXml,
+        here_ns: &str,
+        name: &str,
+        sql: bool,
+    ) -> Option<Location> {
+        let (ns, id) = name.rsplit_once('.').map_or((here_ns, name), |(ns, id)| (ns, id));
+        let pick = |xml: &MapperXml, path: String| {
+            let ids = if sql { &xml.sql_fragments } else { &xml.result_maps };
+            ids.iter().find(|n| n.name == id).map(|n| Location { path, range: n.range })
+        };
+        if ns == here_ns {
+            return pick(xml, doc.path.clone());
+        }
+        let (path, other) = self.xml_for(project, ns)?;
+        pick(&other, path)
+    }
+
     /// Pairs of (name in this document, target location) for `doc`.
     fn links(&mut self, doc: &Document) -> Vec<(Named, Location, String)> {
         let Some(project) = project_of(&doc.path) else { return Vec::new() };
         if doc.language == "xml" {
             let xml = parse_xml(&doc.text);
-            let Some(ns) = xml.namespace else { return Vec::new() };
-            let Some((path, java)) = Self::java_for(&project, &ns) else { return Vec::new() };
-            let simple = ns.rsplit('.').next().unwrap_or(&ns).to_owned();
-            xml.statements
-                .into_iter()
-                .filter_map(|s| {
+            let Some(ns) = xml.namespace.clone() else { return Vec::new() };
+            let mut out = Vec::new();
+            // `<mapper namespace>` → the interface; statement ids → methods.
+            if let Some((path, java)) = Self::java_for(&project, &ns.name) {
+                let simple = ns.name.rsplit('.').next().unwrap_or(&ns.name).to_owned();
+                if let Some(decl) = java.decl {
+                    out.push((
+                        ns.clone(),
+                        Location { path: path.clone(), range: decl.range },
+                        format!("interface {simple}"),
+                    ));
+                }
+                out.extend(xml.statements.iter().filter_map(|s| {
                     let (m, _) = java.methods.iter().find(|(m, _)| m.name == s.name)?;
                     let tip = format!("{simple}.{}()", m.name);
-                    Some((s, Location { path: path.clone(), range: m.range }, tip))
-                })
-                .collect()
+                    Some((s.clone(), Location { path: path.clone(), range: m.range }, tip))
+                }));
+            }
+            // resultMap / sql references resolve even when the interface is missing.
+            for r in xml.result_map_refs.iter().chain(xml.extends_refs.iter()) {
+                if let Some(target) = self.anchor_target(&project, doc, &xml, &ns.name, &r.name, false) {
+                    out.push((r.clone(), target, format!("resultMap {}", r.name)));
+                }
+            }
+            for r in &xml.include_refs {
+                if let Some(target) = self.anchor_target(&project, doc, &xml, &ns.name, &r.name, true) {
+                    out.push((r.clone(), target, format!("sql {}", r.name)));
+                }
+            }
+            // Gutter arrows read top-down: the namespace marker precedes the statements'.
+            out.sort_by_key(|a| a.0.range.start);
+            out
         } else {
             let java = parse_java(&doc.text);
             let Some(name) = java.name else { return Vec::new() };
@@ -380,7 +473,7 @@ impl Providers for Navigator {
         let Some(cursor) = offset(&doc.text, at) else { return Vec::new() };
         let before = &doc.text[..cursor];
         let xml = parse_xml(&doc.text);
-        let Some(ns) = xml.namespace.clone() else { return Vec::new() };
+        let Some(ns) = xml.namespace.clone().map(|n| n.name) else { return Vec::new() };
         let Some(project) = project_of(&doc.path) else { return Vec::new() };
         let Some((_, java)) = Self::java_for(&project, &ns) else { return Vec::new() };
         let line_start = before.rfind('\n').map_or(0, |i| i + 1);
@@ -400,6 +493,24 @@ impl Providers for Navigator {
                     replace: Some(Range::new(start, at)),
                     detail: Some(ns.rsplit('.').next().unwrap_or(&ns).into()),
                     ..CompletionItem::new(&m.name, CompletionKind::Method)
+                })
+                .collect();
+        }
+        // Inside `refid="…` of an `<include>`: this file's `<sql>` ids.
+        if let Some(i) = line.rfind("refid=\"")
+            && !line[i + 7..].contains('"')
+            && line.contains("<include")
+        {
+            let typed = &line[i + 7..];
+            let start = Position::new(at.line, at.character - typed.encode_utf16().count() as u32);
+            return xml
+                .sql_fragments
+                .iter()
+                .filter(|s| s.name.starts_with(typed))
+                .map(|s| CompletionItem {
+                    replace: Some(Range::new(start, at)),
+                    detail: Some("sql".into()),
+                    ..CompletionItem::new(&s.name, CompletionKind::Variable)
                 })
                 .collect();
         }
@@ -458,7 +569,7 @@ mod tests {
         );
         assert_eq!(java.methods[0].0.range, Range::new(Position::new(5, 9), Position::new(5, 17)));
         let xml = parse_xml(XML);
-        assert_eq!(xml.namespace.as_deref(), Some("com.acme.UserMapper"));
+        assert_eq!(xml.namespace.as_ref().map(|n| n.name.as_str()), Some("com.acme.UserMapper"));
         assert_eq!(xml.statements.iter().map(|s| s.name.as_str()).collect::<Vec<_>>(), ["findById", "insert", ""]);
         assert_eq!(xml.statements[0].range, Range::new(Position::new(2, 14), Position::new(2, 22)));
     }
@@ -572,7 +683,9 @@ mod tests {
         assert_eq!(to_java.len(), 1);
         assert_eq!((to_java[0].path.ends_with("UserMapper.java"), to_java[0].range.start), (true, Position::new(7, 8)));
         assert!(n.definition(&xml, Position::new(3, 5)).is_empty(), "not on an id");
-        assert_eq!(n.line_markers(&xml)[0].tooltip, "Go to UserMapper.findById()");
+        let markers = n.line_markers(&xml);
+        assert_eq!(markers[0].tooltip, "Go to interface UserMapper");
+        assert_eq!(markers[1].tooltip, "Go to UserMapper.findById()");
     }
 
     #[test]
@@ -584,6 +697,81 @@ mod tests {
         );
         let names: Vec<_> = java.methods.iter().map(|(m, p)| (m.name.as_str(), p.clone())).collect();
         assert_eq!(names, [("findAll", vec!["org".to_owned()]), ("count", Vec::<String>::new())]);
+    }
+
+    const REFS_XML: &str = concat!(
+        "<?xml version=\"1.0\"?>\n",
+        "<mapper namespace=\"com.acme.OrderMapper\">\n",
+        "  <resultMap id=\"orderMap\" type=\"Order\">\n",
+        "    <association property=\"user\" resultMap=\"userMap\"/>\n",
+        "  </resultMap>\n",
+        "  <resultMap id=\"fullMap\" extends=\"orderMap\"/>\n",
+        "  <sql id=\"baseColumns\">id, total</sql>\n",
+        "  <select id=\"find\" resultMap=\"com.acme.OrderMapper.fullMap\">\n",
+        "    select <include refid=\"baseColumns\"/> from orders\n",
+        "  </select>\n",
+        "</mapper>\n"
+    );
+
+    #[test]
+    fn parses_result_maps_sql_and_refs() {
+        let xml = parse_xml(REFS_XML);
+        assert_eq!(xml.namespace.as_ref().map(|n| n.name.as_str()), Some("com.acme.OrderMapper"));
+        fn names(v: &[Named]) -> Vec<&str> {
+            v.iter().map(|n| n.name.as_str()).collect()
+        }
+        assert_eq!(names(&xml.result_maps), ["orderMap", "fullMap"]);
+        assert_eq!(names(&xml.sql_fragments), ["baseColumns"]);
+        assert_eq!(names(&xml.result_map_refs), ["userMap", "com.acme.OrderMapper.fullMap"]);
+        assert_eq!(names(&xml.extends_refs), ["orderMap"]);
+        assert_eq!(names(&xml.include_refs), ["baseColumns"]);
+        // `resultMap="userMap"` value on line 3 (0-based).
+        assert_eq!(xml.result_map_refs[0].range, Range::new(Position::new(3, 44), Position::new(3, 51)));
+        let java = parse_java("package com.acme;\npublic interface OrderMapper {\n}\n");
+        assert_eq!(java.name.as_deref(), Some("com.acme.OrderMapper"));
+        assert_eq!(
+            java.decl.map(|d| (d.name, d.range)),
+            Some(("OrderMapper".to_owned(), Range::new(Position::new(1, 17), Position::new(1, 28))))
+        );
+    }
+
+    #[test]
+    fn navigates_namespace_result_maps_and_includes() {
+        let host = MockHost::install();
+        host.add_file(
+            "src/main/java/com/acme/OrderMapper.java",
+            "package com.acme;\npublic interface OrderMapper {\n}\n",
+        );
+        host.add_file("src/main/resources/mapper/OrderMapper.xml", REFS_XML);
+        host.add_file("pom.xml", "<project/>");
+        let mut n = Navigator::default();
+        let xml = doc("/project/src/main/resources/mapper/OrderMapper.xml", "xml", REFS_XML);
+
+        // `<mapper namespace>` → the interface; unresolvable refs link nowhere.
+        let to_iface = n.definition(&xml, Position::new(1, 25));
+        assert_eq!(to_iface.len(), 1);
+        assert_eq!(
+            (to_iface[0].path.ends_with("OrderMapper.java"), to_iface[0].range.start),
+            (true, Position::new(1, 17))
+        );
+        assert!(n.definition(&xml, Position::new(3, 40)).is_empty(), "userMap lives in no indexed file");
+
+        // `extends="orderMap"` → the parent resultMap; `refid` → the `<sql>` id.
+        let to_parent = n.definition(&xml, Position::new(5, 37));
+        assert_eq!(to_parent.len(), 1);
+        assert_eq!(to_parent[0].range.start, Position::new(2, 17));
+        let to_sql = n.definition(&xml, Position::new(8, 30));
+        assert_eq!(to_sql.len(), 1);
+        assert_eq!(to_sql[0].range.start, Position::new(6, 11));
+
+        // `namespace.id` form resolves within the same file.
+        let to_full = n.definition(&xml, Position::new(7, 45));
+        assert_eq!(to_full.len(), 1);
+        assert_eq!(to_full[0].range.start, Position::new(5, 17));
+
+        // `<include refid="` completes this file's `<sql>` ids.
+        let items = n.completion(&xml, Position::new(8, 29), None);
+        assert_eq!(items.iter().map(|c| c.label.as_str()).collect::<Vec<_>>(), ["baseColumns"]);
     }
 
     #[test]

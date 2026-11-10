@@ -1,10 +1,10 @@
 id = "openidea.mybatis"
 name = "MyBatis Navigator"
-version = "0.1.0"
-description = "Jumps between MyBatis mapper interfaces and their XML statements (gutter arrows and Go to Definition), completes statement ids and #{parameters}."
+version = "0.2.0"
+description = "Jumps between MyBatis mapper interfaces and their XML statements, resultMaps, sql/include fragments and namespaces (gutter arrows and Go to Definition), completes statement and sql ids and #{parameters}."
 authors = ["OpenIDEA contributors"]
 license = "Apache-2.0"
-change-notes = "0.1.0 — first release: navigation both ways, line markers, id and parameter completion."
+change-notes = "0.2.0 — namespace, resultMap/extends and sql/include navigation, refid completion; 0.1.0 — first release: navigation both ways, line markers, id and parameter completion."
 categories = ["frameworks"]
 engines.openidea = "^1.0"
 wasm = "dist/plugin.wasm"
