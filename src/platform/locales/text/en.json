@@ -841,7 +841,6 @@
   "Agent's default ({fallback})": "Agent's default ({fallback})",
   "Agent's default": "Agent's default",
   "What you pick on the New Task page wins; these apply until then and after switching agents.": "What you pick on the New Task page wins; these apply until then and after switching agents.",
-  "⌘Enter": "⌘Enter",
   "Queues the message for after the turn": "Queues the message for after the turn",
   "Sends it into the turn": "Sends it into the turn",
   "Grouped by what they did": "Grouped by what they did",
@@ -859,5 +858,6 @@
   "Tool calls": "Tool calls",
   "Show tool output without opening it": "Show tool output without opening it",
   "Reveal streaming text smoothly": "Reveal streaming text smoothly",
-  "Text appears at a steady pace instead of in bursts": "Text appears at a steady pace instead of in bursts"
+  "Text appears at a steady pace instead of in bursts": "Text appears at a steady pace instead of in bursts",
+  "⌘Enter": "⌘Enter"
 }
