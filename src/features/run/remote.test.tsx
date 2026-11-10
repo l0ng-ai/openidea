@@ -41,6 +41,7 @@ import { executeAction, registerActions } from "@/platform/actions";
 import { setContext } from "@/platform/context";
 import { IpcError, type RunConfig } from "@/platform/ipc";
 import { useProject } from "@/platform/project";
+import { usePluginRunTargets } from "@/platform/pluginRunTargets";
 import { DEFAULT_RUN_TARGET, type RunTargetValid } from "@/platform/remoteSettings";
 import {
   provideNotificationService,
@@ -96,6 +97,7 @@ const fail = (message: string, kind = "permissionDenied") => ({ status: "error" 
 const notify = vi.fn();
 
 beforeEach(() => {
+  usePluginRunTargets.setState({ targets: [] });
   resetRuns();
   for (const f of Object.values(ipc)) f.mockClear();
   confirm.mockClear();
@@ -148,12 +150,45 @@ describe("run targets", () => {
       <ConfigForm config={cfg("app")} all={[]} type={undefined} errors={{}} onChange={onChange} modifyRequest={0} />,
     );
     const select = screen.getByRole("button", { name: "Run on" });
-    expect(select.textContent).toContain("Local machine");
+    expect(select.textContent).toContain("Default run target");
     fireEvent.click(select);
     const popup = document.querySelector("[data-autofocus]")!;
     fireEvent.keyDown(popup, { key: "ArrowDown" });
+    fireEvent.keyDown(popup, { key: "ArrowDown" });
     fireEvent.keyDown(popup, { key: "Enter" });
     expect(onChange).toHaveBeenCalledWith(expect.objectContaining({ target: "box" }));
+  });
+  it("includes plugin targets labelled with their owner in the target selector", () => {
+    const id = "plugin-target:9:executionwrapper";
+    usePluginRunTargets.setState({
+      targets: [
+        {
+          id,
+          pluginId: "execution",
+          pluginName: "Fixture",
+          prompt: false,
+          target: {
+            id: "wrapper",
+            name: "Execution",
+            program: "wrapper",
+            args: [],
+            workdirArgs: [],
+            containerRoot: null,
+            commands: [],
+          },
+        },
+      ],
+    });
+    const onChange = vi.fn();
+    render(
+      <ConfigForm config={cfg("app")} all={[]} type={undefined} errors={{}} onChange={onChange} modifyRequest={0} />,
+    );
+    fireEvent.click(screen.getByRole("button", { name: "Run on" }));
+    const popup = document.querySelector("[data-autofocus]")!;
+    expect(popup.textContent).toContain("Execution (Fixture)");
+    fireEvent.keyDown(popup, { key: "End" });
+    fireEvent.keyDown(popup, { key: "Enter" });
+    expect(onChange).toHaveBeenCalledWith(expect.objectContaining({ target: id }));
   });
 });
 
@@ -180,6 +215,14 @@ describe("remote debugging", () => {
     expect(notify).toHaveBeenCalledWith(
       expect.objectContaining({ title: "Debugging on run targets is not supported", level: "warning" }),
     );
+  });
+
+  it("dispatches plugin targets to the target-aware debugger", async () => {
+    const config = cfg("app", { target: "plugin-target:4:wrapper", debugAdapter: "debugpy" });
+    useRun.setState({ configs: [config], loaded: true });
+    await executeAction("run.debugConfig", config.id);
+    expect(startConfig).toHaveBeenCalledWith(config);
+    expect(remoteDebugBlocked(config)).toBe(false);
   });
 
   describe("in containers", () => {
@@ -279,6 +322,7 @@ describe("remote debugging", () => {
       expect(ipc.runStart).toHaveBeenCalledWith(
         expect.objectContaining({ id: "app", params: { containerDebug: "true" } }),
         expect.anything(),
+        expect.any(Number),
       );
       const channel = ipc.runStart.mock.calls.at(-1)![1] as { onmessage: (m: unknown) => void };
       channel.onmessage({

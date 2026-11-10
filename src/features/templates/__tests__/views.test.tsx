@@ -1,3 +1,4 @@
+import { addContributedSnippets } from "@/workbench/contributions";
 import { describe, expect, it } from "vitest";
 import { act, fireEvent, render, screen } from "@testing-library/react";
 import { LiveTemplatesPage, groupTemplates } from "../settings/LiveTemplatesPage";
@@ -171,4 +172,25 @@ describe("dialogs", () => {
     fireEvent.keyDown(screen.getByRole("dialog").querySelector("[tabindex='0']")!, { key: "t" });
     expect(picked).toBe("t");
   });
+});
+
+it("shows plugin snippets as read-only live templates and withdraws them with the plugin", () => {
+  const off = addContributedSnippets([
+    {
+      id: "plugin-snippet:test:file:0",
+      pluginName: "SQL plugin",
+      language: "sql",
+      prefixes: ["selectrows"],
+      body: "SELECT ${1:column}$0",
+      description: "Select rows",
+    },
+  ]);
+  const view = render(<LiveTemplatesPage />);
+  fireEvent.click(screen.getByText("selectrows"));
+  expect(screen.getByLabelText("Description")).toBeDisabled();
+  expect(screen.getByRole("button", { name: "Remove Template" })).toBeDisabled();
+  expect(screen.getByLabelText("Enable selectrows")).toBeDisabled();
+  act(() => off());
+  expect(screen.queryByText("selectrows")).toBeNull();
+  view.unmount();
 });

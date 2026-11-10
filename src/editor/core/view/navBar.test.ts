@@ -32,6 +32,15 @@ describe("navigation bar popup model", () => {
     ]);
   });
 
+  it("navigates folders and the project root without adding a file segment", () => {
+    const project = { root: "/p", name: "proj" };
+    expect(navSegments(project, "/p", [], true).map((s) => s.label)).toEqual(["proj"]);
+    expect(navSegments(project, "/p/src/lib", [], true).map((s) => s.label)).toEqual(["proj", "src", "lib"]);
+    expect(navSegments(project, "/external/lib", [], true)).toEqual([
+      { kind: "dir", path: "/external/lib", label: "lib" },
+    ]);
+  });
+
   it("lists folder children without IDE-hidden names, and symbol children", () => {
     const e = (name: string, kind: FileEntry["kind"]) =>
       ({

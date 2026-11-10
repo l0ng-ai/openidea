@@ -50,9 +50,21 @@ export function Section({ title, children, className }: { title?: string; childr
           <span className={styles.sectionRule} aria-hidden />
         </div>
       )}
-      <div className={styles.sectionBody}>{children}</div>
+      <FormGroup className={styles.sectionBody}>{children}</FormGroup>
     </section>
   );
+}
+
+export function FormGroup({
+  children,
+  indented,
+  className,
+}: {
+  children: ReactNode;
+  indented?: boolean;
+  className?: string;
+}) {
+  return <div className={clsx(styles.formGroup, indented && styles.indented, className)}>{children}</div>;
 }
 
 export interface RowProps {

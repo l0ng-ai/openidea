@@ -1,4 +1,5 @@
 /** Inline change popup shown when clicking a gutter change marker. */
+import { writeClipboardText } from "@/platform/clipboard";
 import { useState } from "react";
 import { createRoot, type Root } from "react-dom/client";
 import type { EditorView } from "@codemirror/view";
@@ -142,7 +143,7 @@ function HunkPopupView({ state }: { state: PopupState }) {
           size="small"
           disabled={!hunk.oldText}
           onClick={() => {
-            void navigator.clipboard?.writeText(hunk.oldText).then(() => setCopied(true));
+            void writeClipboardText(hunk.oldText).then(() => setCopied(true));
           }}
         />
         <span className={styles.title}>

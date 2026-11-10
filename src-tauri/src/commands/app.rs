@@ -14,6 +14,7 @@ use tauri::{Manager, State, Window};
 pub struct AppInfo {
     pub version: String,
     pub platform: String,
+    pub windows_build_number: Option<u32>,
     pub config_dir: ide_core::IpcPath,
     /// Linux on a Wayland display: GTK draws the frameless windows' shadow and resize edges.
     pub wayland: bool,
@@ -28,6 +29,7 @@ pub fn app_info(state: State<'_, AppState>) -> AppInfo {
     AppInfo {
         version: env!("CARGO_PKG_VERSION").into(),
         platform: std::env::consts::OS.into(),
+        windows_build_number: ide_core::platform::windows_build_number(),
         config_dir: state.config_dir.clone().into(),
         #[cfg(target_os = "linux")]
         wayland: crate::linux_window_state::is_wayland(),
@@ -83,7 +85,7 @@ pub async fn open_project(window: Window, path: PathBuf) -> IdeResult<ProjectInf
         .await
         .map_err(|e| IdeError::internal(e.to_string()))??;
     let info = project_info(&project);
-    let _ = window.set_title(&info.name);
+    let _ = window.set_title(&info.display_name);
     window.state::<AppState>().sink.emit(ide_core::IdeEvent::WindowGroupsChanged);
     // Every project window is part of the session reopened at the next start.
     crate::window_groups::persist(window.app_handle()).await?;
@@ -119,14 +121,19 @@ fn project_info(project: &crate::state::Project) -> ProjectInfo {
 pub fn project_rename(window: Window, state: State<'_, AppState>, name: String) -> IdeResult<ProjectInfo> {
     let project = state.project(window.label())?;
     let name = name.trim();
-    if let Some(workspace) = ide_workspace::workspace::Workspace::load(&project.root)? {
-        return ide_host::ops::project::save_workspace(&state.host, window.label(), name, workspace.projects);
+    if let Some(workspace) = ide_workspace::workspace::Workspace::load(&project.root)?
+        && workspace.is_container(&project.root)
+    {
+        ide_host::ops::project::save_workspace(&state.host, window.label(), name, workspace.projects)?;
+    } else {
+        let value = if name.is_empty() { serde_json::Value::Null } else { serde_json::Value::String(name.to_owned()) };
+        project.settings.set(SettingsScope::Project, "general.projectName", value)?;
     }
-    let value = if name.is_empty() { serde_json::Value::Null } else { serde_json::Value::String(name.to_owned()) };
-    project.settings.set(SettingsScope::Project, "general.projectName", value)?;
-    state.recent.rename(&project.root, (!name.is_empty()).then_some(name))?;
-    crate::jump_list::refresh(&state.app, state.recent.list());
-    Ok(project_info(&project))
+    let info = project_info(&project);
+    state.record_project(&project)?;
+    let _ = window.set_title(&info.display_name);
+    state.sink.emit(ide_core::IdeEvent::WindowGroupsChanged);
+    Ok(info)
 }
 
 // Not on the main thread: closing stops the project's language servers, runs and file watcher.
@@ -182,6 +189,9 @@ pub fn settings_set(
     if key == "mcpServer" || key.starts_with("mcpServer.") {
         crate::commands::mcp::apply(&state);
     }
+    if !applied.project_scope {
+        state.updates.wake.notify_one();
+    }
     // A project value concerns only that project's window (and its settings window).
     let event = ide_core::IdeEvent::SettingsChanged { key };
     if applied.project_scope {
@@ -236,16 +246,27 @@ pub async fn settings_import(window: Window, state: State<'_, AppState>, path: P
     crate::commands::ssh::apply_ssh_settings(&state);
     crate::commands::mcp::apply(&state);
     state.host.apply_proxy();
+    state.updates.wake.notify_one();
     state.sink.emit(ide_core::IdeEvent::SettingsChanged { key: String::new() });
     let settings = ide_host::ops::project::settings(&state.host, window.label());
     Ok(SettingsImport { settings, storage })
 }
 
-/// Import Settings… with a JetBrains `settings.zip`: reads it; the frontend maps and applies it.
+/// Import Settings… with a JetBrains `settings.zip` or an IDE's settings folder: reads it; the
+/// frontend maps and applies it.
 #[tauri::command]
 #[specta::specta]
 pub async fn settings_read_jetbrains(path: PathBuf) -> IdeResult<ide_workspace::settings::JetBrainsSettings> {
     tauri::async_runtime::spawn_blocking(move || ide_workspace::settings::read_jetbrains_settings(&path))
+        .await
+        .map_err(|e| IdeError::internal(e.to_string()))?
+}
+
+/// The settings folders of the JetBrains IDEs installed for this user, to import from.
+#[tauri::command]
+#[specta::specta]
+pub async fn settings_list_jetbrains_ides() -> IdeResult<Vec<ide_host::plugins::intellij::InstalledIdeSettings>> {
+    tauri::async_runtime::spawn_blocking(|| Ok(ide_host::plugins::intellij::installed_ide_settings()))
         .await
         .map_err(|e| IdeError::internal(e.to_string()))?
 }

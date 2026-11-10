@@ -1,6 +1,7 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { act, fireEvent, render, screen, waitFor, within } from "@testing-library/react";
 import type { FileMove, WorkspaceEdit } from "@/bindings";
+import { onFilesMoved } from "@/platform/fileOps";
 import { provideNotificationService } from "@/workbench/contributions";
 import {
   lastFileRefactoring,
@@ -86,6 +87,29 @@ describe("runFileRefactoring", () => {
   afterEach(() => setRefactorBackendForTests(null));
 
   const moves: FileMove[] = [{ from: "/p/a/util.ts", to: "/p/b/util.ts" }];
+
+  it("awaits move listeners and notifies them of Undo", async () => {
+    let finish!: () => void;
+    const gate = new Promise<void>((resolve) => {
+      finish = resolve;
+    });
+    const listener = vi.fn(async () => {
+      await gate;
+    });
+    const stop = onFilesMoved(listener);
+    try {
+      const pending = runFileRefactoring(moves, { references: false, textOccurrences: false }, "Rename");
+      await waitFor(() => expect(listener).toHaveBeenCalledWith(moves));
+      expect(notify).not.toHaveBeenCalled();
+      finish();
+      expect(await pending).toBe("done");
+      await undoFileRefactoring();
+      expect(listener).toHaveBeenLastCalledWith([{ from: "/p/b/util.ts", to: "/p/a/util.ts" }]);
+    } finally {
+      finish();
+      stop();
+    }
+  });
 
   it("previews edits in other files, applies the move and offers Undo", async () => {
     render(<RefactoringPreviewHost />);

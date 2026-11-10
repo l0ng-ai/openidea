@@ -7,6 +7,7 @@ pub mod conn;
 pub mod history;
 mod oracle;
 pub mod plan;
+pub mod plugin;
 pub mod secrets;
 pub mod source;
 pub mod split;
@@ -91,7 +92,7 @@ pub struct SequenceInfo {
     pub data_type: String,
 }
 
-/// A schema's routines and sequences (the tree's `routines` / `sequences` folders).
+/// A schema's routines (procedures and functions) and sequences.
 #[derive(Debug, Clone, PartialEq, Eq, Default, Serialize, Deserialize, Type)]
 #[serde(rename_all = "camelCase")]
 #[serde(rename = "DbSchemaObjects")]
@@ -381,7 +382,9 @@ impl DbManager {
     /// Where the saved passwords of data source `id` live: app-wide for a global one.
     fn saved_for(&self, id: &str) -> &SecretStore {
         match &self.global {
-            Some((_, store)) if self.global_sources().iter().any(|s| s.id == id) => store,
+            Some((_, store)) if self.sources().is_ok_and(|sources| sources.iter().any(|s| s.id == id && s.global)) => {
+                store
+            }
             _ => &self.saved_passwords,
         }
     }
@@ -412,19 +415,28 @@ impl DbManager {
     /// Saves the data source list; connections of removed or changed sources are closed.
     /// Global ones (`global`) go to the app-wide list, the others to the project's.
     pub async fn save_sources(&self, sources: Vec<DataSource>) -> IdeResult<()> {
-        let old = self.sources().unwrap_or_default();
-        let (global, project): (Vec<_>, Vec<_>) = sources.iter().cloned().partition(|s| s.global);
-        match &self.global {
-            // Rewritten only when it changes: other projects' windows edit the same file.
-            Some((dir, _)) => {
-                if global != old.iter().filter(|s| s.global).cloned().collect::<Vec<_>>() {
-                    source::save_global(dir, &global)?;
-                }
-            }
-            None if !global.is_empty() => return Err(IdeError::invalid("global data sources are not available here")),
-            None => {}
+        if sources.iter().any(|s| s.global && s.plugin_owner.is_some()) {
+            return Err(IdeError::invalid("plugin-owned data sources must stay project-scoped"));
         }
-        source::save(&self.root, &project)?;
+        let old = {
+            let _guard = plugin::EDIT.lock();
+            let old = self.sources().unwrap_or_default();
+            let (global, project): (Vec<_>, Vec<_>) = sources.iter().cloned().partition(|s| s.global);
+            match &self.global {
+                // Rewritten only when it changes: other projects' windows edit the same file.
+                Some((dir, _)) => {
+                    if global != old.iter().filter(|s| s.global).cloned().collect::<Vec<_>>() {
+                        source::save_global(dir, &global)?;
+                    }
+                }
+                None if !global.is_empty() => {
+                    return Err(IdeError::invalid("global data sources are not available here"));
+                }
+                None => {}
+            }
+            source::save(&self.root, &project)?;
+            old
+        };
         for o in old {
             match sources.iter().find(|s| s.id == o.id) {
                 Some(n) if *n == o => {}

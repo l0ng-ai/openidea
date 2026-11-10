@@ -79,6 +79,27 @@ pub(crate) fn class_source(uri: &str) -> Option<(String, String)> {
     None
 }
 
+pub(crate) fn source_in_archive(uri: &str, sources: &Path) -> Option<(String, String)> {
+    let jar = if uri.starts_with("jdt://contents/") {
+        let path = uri.split('?').next()?.strip_prefix("jdt://contents/")?;
+        let parts: Vec<_> = path.split('/').collect();
+        let [_, package, file] = parts.as_slice() else { return None };
+        let file = percent_decode_str(file).decode_utf8().ok()?;
+        let name = file.strip_suffix(".class").or_else(|| file.strip_suffix(".java"))?;
+        let package = percent_decode_str(package).decode_utf8().ok()?.replace('.', "/");
+        JarEntry {
+            prefix: "jar:file://".into(),
+            jar: sources.to_owned(),
+            entry: if package.is_empty() { format!("{name}.class") } else { format!("{package}/{name}.class") },
+        }
+    } else {
+        parse(uri)?
+    };
+    let class = jar.entry.strip_suffix(".class")?;
+    let (entry, text) = source_entry(sources, class)?;
+    Some((jar.uri_of(sources, &entry), text))
+}
+
 /// Sources jars of the artifact `jar`: `<name>-sources.jar` next to it (Maven
 /// repository), or in a sibling hash folder (Gradle `files-2.1/<g>/<a>/<v>/<hash>/`).
 fn sources_jars(jar: &Path) -> Vec<PathBuf> {
@@ -139,7 +160,20 @@ pub(crate) fn declaration_range(text: &str, name: &str) -> Range {
     const KEYWORDS: [&str; 9] = ["fun", "class", "interface", "object", "val", "var", "typealias", "enum", "record"];
     let is_ident = |c: char| c.is_alphanumeric() || c == '_' || c == '$';
     let mut fallback = None;
+    let mut block_comment = false;
     for (line_no, line) in text.lines().enumerate() {
+        let trimmed = line.trim_start();
+        if block_comment {
+            block_comment = !trimmed.contains("*/");
+            continue;
+        }
+        if trimmed.starts_with("/*") {
+            block_comment = !trimmed.contains("*/");
+            continue;
+        }
+        if trimmed.starts_with("//") || trimmed.starts_with('*') {
+            continue;
+        }
         let mut from = 0;
         while let Some(i) = line[from..].find(name) {
             let start = from + i;
@@ -161,8 +195,11 @@ pub(crate) fn declaration_range(text: &str, name: &str) -> Range {
             if words.iter().any(|w| KEYWORDS.contains(w)) {
                 return range;
             }
-            let java_member =
-                after == Some('(') && !head.trim_end().ends_with('.') && !head.trim().is_empty() && !head.contains('=');
+            let java_member = after == Some('(')
+                && !head.trim_end().ends_with('.')
+                && !head.trim().is_empty()
+                && !head.contains(['=', '('])
+                && !words.iter().any(|w| matches!(*w, "return" | "throw" | "new" | "yield" | "assert"));
             if java_member && fallback.is_none() {
                 fallback = Some(range);
             }
@@ -228,6 +265,24 @@ mod tests {
     }
 
     #[test]
+    fn opens_selected_archives_for_jdt_and_jar_classes() {
+        let tmp = tempfile::tempdir().unwrap();
+        let sources = tmp.path().join("library sources.zip");
+        jar(&sources, &[("p/Lib.java", "package p; public class Lib { class Inner {} }")]);
+        for uri in [
+            "jdt://contents/lib-1.jar/p/Lib.class?=project/escaped-jar-path",
+            "jdt://contents/lib-1.jar/p/Lib.java?=project/escaped-jar-path",
+            "jar:file:///m2/g/lib/1/lib-1.jar!/p/Lib$Inner.class",
+        ] {
+            let (uri, text) = source_in_archive(uri, &sources).unwrap();
+            assert!(uri.ends_with("library%20sources.zip!/p/Lib.java"), "{uri}");
+            assert!(text.contains("class Lib"));
+        }
+        assert!(source_in_archive("jdt://contents/lib.jar/p/Missing.class", &sources).is_none());
+        assert!(source_in_archive("csharp:/p/App.csproj/decompiled/Lib.cs", &sources).is_none());
+    }
+
+    #[test]
     fn finds_the_source_of_each_kind_of_class_in_maven_and_gradle_caches() {
         let tmp = tempfile::tempdir().unwrap();
         let m2 = tmp.path().join("m2/org/springframework/boot/spring-boot/3.5.16");
@@ -285,6 +340,8 @@ mod tests {
         assert_eq!(at(java, "run"), (3, 49, 52), "the member, not the call in its body");
         assert_eq!(at("val x = 1", "missing"), (0, 0, 0));
         assert_eq!(at("// é\nfun ü() {}", "ü"), (1, 4, 5), "UTF-16 columns");
+        let java = "class Lib {\n    boolean caller(String s) { return isBlank(s); }\n    /**\n     * Changed signature from isBlank(String) to isBlank(CharSequence).\n     */\n    public static boolean isBlank(CharSequence cs) { return false; }\n}\n";
+        assert_eq!(at(java, "isBlank"), (5, 26, 33), "the declaration, not a call or Javadoc signature");
     }
 
     #[test]

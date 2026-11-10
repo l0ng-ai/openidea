@@ -281,7 +281,7 @@ mod tests {
     #[test]
     fn validates_entire_rooted_batch_with_utf16_positions() {
         let tmp = tempfile::tempdir().unwrap();
-        let root = tmp.path().canonicalize().unwrap();
+        let root = dunce::canonicalize(tmp.path()).unwrap();
         let file = root.join("routes.rb");
         std::fs::write(&file, "😀x\n").unwrap();
         let good = endpoint(file.clone());

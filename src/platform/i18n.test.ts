@@ -162,6 +162,16 @@ describe("t / locales", () => {
     expect(txTemplate("Retry failed")).toBe(`${tx("Retry")}失败`);
     expect(txTemplate("Sync with OS")).toBe("与操作系统同步");
     expect(txTemplate("Something else entirely")).toBe("Something else entirely");
+    expect(
+      txTemplate(
+        "The PHP language server can't rename this symbol; renaming only the plugin's indexed names would leave it half renamed",
+      ),
+    ).toBe("语言服务器无法重命名此符号（PHP）；仅重命名插件索引的名称会导致重命名不完整");
+    expect(
+      txTemplate(
+        "The Ruby language server can't rename this symbol; renaming only the plugin's indexed names would leave it half renamed",
+      ),
+    ).toBe("语言服务器无法重命名此符号（Ruby 语言）；仅重命名插件索引的名称会导致重命名不完整");
   });
 
   it("translates text built by the tx tag, again after the locale changes", async () => {

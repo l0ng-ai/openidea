@@ -41,6 +41,10 @@ describe("remote invoke", () => {
     expect(remoteRouting("settings_set", { scope: "global", key: "k", value: "1" }, served)).toBe("both");
   });
 
+  it.each(["agent_subscribe", "agent_entries", "agent_prompt"])("routes %s to the agent's host", (cmd) => {
+    expect(remoteRouting(cmd, { task: "saved-codex-task", subagent: null }, new Set([cmd]))).toBe("remote");
+  });
+
   it("encodes no arguments as an empty object", () => {
     expect(encodeArgs(undefined).json).toBe("{}");
   });

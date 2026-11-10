@@ -237,7 +237,9 @@ impl Handler for ClientHandler {
     }
 
     fn on_request(&self, method: &str, params: Value) -> Result<Value, (i64, String)> {
-        use ide_host::plugins::remote_host::{SECRET_REQUEST, SecretRequest};
+        use ide_host::plugins::remote_host::{
+            AUTH_REQUEST, AuthRequest, SECRET_REQUEST, SECRET_WRITE, SecretRequest, SecretWrite,
+        };
         match method {
             // A remote plugin's request header needs a secret from this machine's keychain.
             SECRET_REQUEST => {
@@ -245,6 +247,18 @@ impl Handler for ClientHandler {
                     serde_json::from_value(params).map_err(|e| (ide_jsonrpc::codes::INVALID_PARAMS, e.to_string()))?;
                 let state = self.app.state::<AppState>();
                 Ok(serde_json::to_value(state.plugins.declared_secret(&r.plugin, &r.name)).unwrap_or(Value::Null))
+            }
+            SECRET_WRITE => {
+                let request: SecretWrite =
+                    serde_json::from_value(params).map_err(|e| (ide_jsonrpc::codes::INVALID_PARAMS, e.to_string()))?;
+                Ok(serde_json::to_value(self.app.state::<AppState>().plugins.remote_secret_write(request))
+                    .unwrap_or(Value::Null))
+            }
+            AUTH_REQUEST => {
+                let request: AuthRequest =
+                    serde_json::from_value(params).map_err(|e| (ide_jsonrpc::codes::INVALID_PARAMS, e.to_string()))?;
+                Ok(serde_json::to_value(self.app.state::<AppState>().plugins.remote_auth(&self.window, request))
+                    .unwrap_or(Value::Null))
             }
             _ => Err((ide_jsonrpc::codes::METHOD_NOT_FOUND, format!("unhandled method {method}"))),
         }
@@ -514,7 +528,7 @@ pub async fn remote_connect(
         peer.request("invoke", call, None).await.map_err(ide_host::rpc::error_from_reply)?;
     // As the server resolved it (symlinks, a trailing `/`): the frontend compares it with the project's.
     let root = serde_json::to_value(&project.root).ok().and_then(|v| v.as_str().map(str::to_owned)).unwrap_or(root);
-    let _ = window.set_title(&format!("{} [{title_tag}]", project.name));
+    let _ = window.set_title(&format!("{} [{title_tag}]", project.display_name));
     let connection = Arc::new(Connection {
         peer,
         target: target.clone(),
@@ -537,8 +551,11 @@ pub async fn remote_connect(
     state.remote_dev.0.lock().insert(label.clone(), connection.clone());
     let weak = Arc::downgrade(&connection);
     let peer = connection.peer.clone();
+    let auth_plugins = state.plugins.clone();
+    let auth_window = label.clone();
     tauri::async_runtime::spawn(async move {
         peer.closed().await;
+        auth_plugins.forget_remote_loopbacks(&auth_window);
         if let Some(connection) = weak.upgrade() {
             connection.forwards.lock().clear();
         }
@@ -814,7 +831,7 @@ pub async fn remote_invoke(
         None
     };
     let call = Invoke { window: label, cmd, args };
-    let result: Value = c.peer.request("invoke", call, None).await.map_err(ide_host::rpc::error_from_reply)?;
+    let result = invoke_reply(&c.peer, call, std::time::Duration::from_secs(30)).await?;
     if let (Some((peers, edit)), Some(version)) =
         (mirrored, result.as_u64().and_then(|version| u32::try_from(version).ok()))
     {
@@ -858,9 +875,38 @@ pub async fn remote_import_local(
     result
 }
 
+// Conversation reads are snapshots; a silent host must not leave them pending forever.
+async fn invoke_reply(peer: &Peer, call: Invoke, entries_timeout: std::time::Duration) -> IdeResult<Value> {
+    let reply = peer.request("invoke", &call, None);
+    if call.cmd == "agent_entries" {
+        tokio::time::timeout(entries_timeout, reply)
+            .await
+            .map_err(|_| IdeError::unavailable("Loading the conversation timed out. Try again."))?
+            .map_err(ide_host::rpc::error_from_reply)
+    } else {
+        reply.await.map_err(ide_host::rpc::error_from_reply)
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[tokio::test]
+    async fn conversation_read_times_out_when_the_host_never_replies() {
+        let (client, _silent_host) = tokio::io::duplex(4096);
+        let (reader, writer) = tokio::io::split(client);
+        let peer = Peer::connect(reader, writer, Arc::new(ide_jsonrpc::NoopHandler));
+        let call = Invoke {
+            window: "main".into(),
+            cmd: "agent_entries".into(),
+            args: serde_json::json!({"task": "saved-codex-task", "subagent": null}),
+        };
+        let error = invoke_reply(&peer, call, std::time::Duration::from_millis(10)).await.unwrap_err();
+        assert_eq!(error.kind, ide_core::error::ErrorKind::Unavailable);
+        assert_eq!(error.message, "Loading the conversation timed out. Try again.");
+        peer.kill();
+    }
 
     #[test]
     fn maps_uname_to_rust_platform_names() {

@@ -175,6 +175,8 @@ export class UnalignedPanes {
     this.sync = opts.sync;
     this.extension = [gapMarks, changedLineGutters, EditorView.updateListener.of(() => this.schedule())];
     this.divider.className = "cm-diffDivider";
+    // A lone arrow is centred in the divider; a pair keeps to the two edges.
+    this.divider.classList.toggle("cm-diffDivider-lone", !!opts.arrows && opts.arrows.toA !== opts.arrows.toB);
     this.divider.setAttribute("data-wheel-scroll", "");
     this.svg.setAttribute("aria-hidden", "true");
     this.svg.appendChild(this.bandLayer);
@@ -230,7 +232,7 @@ export class UnalignedPanes {
 
   scrollTo(side: Side, options: ScrollToOptions) {
     this.interruptScroll();
-    this.scrolling = this.sync && options.behavior === "smooth" ? side : null;
+    this.scrolling = this.sync ? side : null;
     this.releaseScroll();
     this.view(side).scrollDOM.scrollTo(options);
   }
@@ -265,7 +267,7 @@ export class UnalignedPanes {
 
   private scrolled(side: Side) {
     if (this.scrolling) {
-      // A follower's delayed layout scroll must not cancel the leader's animation.
+      // A follower's delayed layout scroll must not pull back the navigation source.
       this.follow(this.scrolling);
       this.releaseScroll();
       this.schedule();

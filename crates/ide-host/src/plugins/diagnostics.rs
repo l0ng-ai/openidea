@@ -79,7 +79,9 @@ impl Diagnostics {
         doc.cancel.cancel();
         doc.cancel = CancellationToken::new();
         let Some(host) = editor_plugin_host() else { return };
-        if host.providers.plugins_for(ProviderKind::Diagnostics, &doc.snapshot.language).is_empty() {
+        if host.providers.plugins_for(ProviderKind::Diagnostics, &doc.snapshot.language).is_empty()
+            && !host.providers.any(ProviderKind::Injections)
+        {
             return;
         }
         // Register only once per project incarnation; no project is retained by the host.
@@ -113,6 +115,7 @@ impl Diagnostics {
                 snapshot.text = current.text;
                 drop(documents);
 
+                let injections = host.providers.injection_generations(&snapshot.language);
                 let generations = host.providers.diagnostic_generations(&snapshot.language);
                 let results = if snapshot.text.len() <= super::navigation::MAX_DOCUMENT_BYTES {
                     host.provide_project_diagnostics(Some(&root), &snapshot, &cancel)
@@ -122,6 +125,11 @@ impl Diagnostics {
                 let Some(state) = weak.upgrade() else { return };
                 let mut state = state.lock();
                 if state.closed || cancel.is_cancelled() {
+                    return;
+                }
+                if injections != host.providers.injection_generations(&snapshot.language)
+                    || injections.keys().any(|id| lifecycle_generations.get(id) != state.generations.get(id))
+                {
                     return;
                 }
                 let matching: HashSet<_> = host
@@ -224,6 +232,13 @@ pub(super) type ProjectState = (Weak<Mutex<State>>, SharedSink);
 impl PluginHost {
     pub(super) fn clear_provider_diagnostics(&self, plugin: &str) {
         // Clone before taking a project's state lock (edits register in the other order).
+        let injector = self.get(plugin).is_ok_and(|p| {
+            p.manifest().declarations("providers").iter().any(|d| {
+                d.get("kinds")
+                    .and_then(|v| v.as_array())
+                    .is_some_and(|v| v.iter().any(|k| k.as_str() == Some("injections")))
+            })
+        });
         let projects = self.diagnostic_projects.lock().clone();
         for (state, sink) in projects {
             if let Some(state) = state.upgrade() {
@@ -231,7 +246,15 @@ impl PluginHost {
                 // A completed answer can still be waiting for another provider.
                 *state.generations.entry(plugin.to_owned()).or_default() += 1;
                 for doc in state.documents.values_mut() {
-                    if doc.sources.remove(plugin) {
+                    if injector {
+                        for source in doc.sources.drain() {
+                            sink.emit(IdeEvent::Diagnostics {
+                                path: doc.snapshot.path.clone().into(),
+                                source: format!("plugin-provider:{source}"),
+                                items: vec![],
+                            });
+                        }
+                    } else if doc.sources.remove(plugin) {
                         sink.emit(IdeEvent::Diagnostics {
                             path: doc.snapshot.path.clone().into(),
                             source: format!("plugin-provider:{plugin}"),

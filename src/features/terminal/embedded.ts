@@ -4,7 +4,9 @@
  * and size go to the owner instead of a terminal PTY (a Run console emulating
  * a terminal feeds its process).
  */
+import { writeClipboardText } from "@/platform/clipboard";
 import { installTerminalDrop } from "./drop";
+import { installDomRowCache } from "./domRowCache";
 import { installTerminalPaste } from "./paste";
 import { ownTerminalInput } from "./imeInput";
 import { Terminal, type IDisposable } from "@xterm/xterm";
@@ -17,6 +19,7 @@ import { useProject } from "@/platform/project";
 import { usePlatform } from "@/platform/platformInfo";
 import { workflowSettings } from "@/platform/workflowSettings";
 import { fitScheduler, settledResize } from "./fit";
+import { watchWindowsPty, windowsPty } from "./windowsPty";
 import { findTerminalLinks } from "./links";
 import { LINK_HANDLER, fontFor, openExternal, openFileLink } from "./session";
 import { MIN_CONTRAST_RATIO, readTerminalTheme, remeasureWhenFontsLoad } from "./theme";
@@ -33,6 +36,7 @@ export function createEmbeddedTerminal(host: HTMLElement, opts: EmbeddedTerminal
   const settings = workflowSettings().terminal;
   const font = fontFor(settings);
   const term = new Terminal({
+    windowsPty: windowsPty(),
     linkHandler: LINK_HANDLER,
     fontFamily: font.family,
     fontSize: font.size,
@@ -59,7 +63,7 @@ export function createEmbeddedTerminal(host: HTMLElement, opts: EmbeddedTerminal
     if (action.kind === "send" && e.key === "Enter") {
       if (e.type === "keydown") term.input(action.data);
     } else if (action.kind === "copy") {
-      if (e.type === "keydown") void navigator.clipboard?.writeText(term.getSelection()).catch(() => undefined);
+      if (e.type === "keydown") void writeClipboardText(term.getSelection()).catch(() => undefined);
     } else {
       return true;
     }
@@ -76,6 +80,7 @@ export function createEmbeddedTerminal(host: HTMLElement, opts: EmbeddedTerminal
     opts.onResize(cols, rows);
   });
   const disposables: IDisposable[] = [
+    watchWindowsPty(term),
     term.onData((d) => opts.onData(d)),
     term.onBinary((d) => opts.onData(d)),
     term.registerLinkProvider({
@@ -101,6 +106,7 @@ export function createEmbeddedTerminal(host: HTMLElement, opts: EmbeddedTerminal
   const removePaste = installTerminalPaste(host, (text) => term.paste(text));
   const removeDrop = installTerminalDrop(host, (text) => term.paste(text));
   term.open(host);
+  installDomRowCache(term);
   if (opts["aria-label"]) term.textarea?.setAttribute("aria-label", opts["aria-label"]);
   // The same WKWebView input-method fixes as the terminal sessions.
   if (term.textarea && usePlatform.getState().os === "macos") {

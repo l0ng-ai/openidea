@@ -190,6 +190,12 @@ pub struct DataSource {
     /// Stored app-wide and listed in every project. Implied by the file it is read from,
     /// so not written to it.
     pub global: bool,
+    /// Plugin id owning this source; absent for user-managed sources.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub plugin_owner: Option<String>,
+    /// Id private to the owner, never used as a connection target.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub plugin_source_id: Option<String>,
 }
 
 impl Default for DataSource {
@@ -219,6 +225,8 @@ impl Default for DataSource {
             introspection: DbIntrospection::default(),
             properties: Vec::new(),
             global: false,
+            plugin_owner: None,
+            plugin_source_id: None,
         }
     }
 }

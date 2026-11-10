@@ -352,6 +352,12 @@ export const intellijWindows: Record<string, string[]> = {
   "http.runRequest": ["Ctrl+Enter"],
   "graphql.runQuery": ["Ctrl+Enter"],
   "http.runAll": [],
+  "db.toggleBooleanCell": ["Space"],
+  "db.setCellNull": ["Ctrl+Backspace"],
+  "db.setCellDefault": ["Ctrl+Shift+Backspace"],
+  "db.reformatValue": ["Ctrl+Alt+L"],
+  "db.openValueWindow": [],
+  "db.findInValue": ["Ctrl+F"],
   "db.execute": ["Ctrl+Enter"],
   // Table editor with pending changes (after `vcs.rollback`, so Ctrl+Alt+Z reverts the table's edits there).
   "db.goToColumn": ["Ctrl+F12"],

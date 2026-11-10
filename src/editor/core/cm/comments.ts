@@ -29,6 +29,10 @@ function lineToken(state: EditorState, pos: number): string | undefined {
   return state.languageDataAt<{ line?: string }>("commentTokens", pos)[0]?.line;
 }
 
+function startsLineComment(text: string, token: string): boolean {
+  return text.startsWith(token) && (token !== ".." || text.length === 2 || /^[ \t]/.test(text.slice(2)));
+}
+
 const leadingWs = (text: string) => /^[ \t]*/.exec(text)![0].length;
 
 interface Block {
@@ -86,7 +90,7 @@ export const commentLine: Command = (view) => {
     const single = b.startLine === b.endLine;
     for (let n = b.startLine; n <= b.endLine; n++) {
       const text = doc.line(n).text;
-      const commented = text.slice(leadingWs(text)).startsWith(token);
+      const commented = startsLineComment(text.slice(leadingWs(text)), token);
       const empty = !text.trim();
       if (commented && !empty) commentedNonEmpty = true;
       if (!commented && (single || !empty)) allCommented = false;
@@ -97,13 +101,13 @@ export const commentLine: Command = (view) => {
   const changes: ChangeSpec[] = [];
   blocks.forEach((b, bi) => {
     const token = tokens[bi]!;
-    // A word token (Batch `@REM`) needs a separator even when comment spacing is off.
-    const addSpace = style.addSpace || /\w$/.test(token);
+    // A word token (Batch `@REM`) and reStructuredText's `..` need a separator even when comment spacing is off.
+    const addSpace = style.addSpace || /\w$|^\.\.$/.test(token);
     if (allCommented) {
       for (let n = b.startLine; n <= b.endLine; n++) {
         const line = doc.line(n);
         const start = line.from + leadingWs(line.text);
-        if (!doc.sliceString(start, line.to).startsWith(token) || !line.text.trim()) continue;
+        if (!startsLineComment(doc.sliceString(start, line.to), token) || !line.text.trim()) continue;
         let end = start + token.length;
         if (addSpace && doc.sliceString(end, end + 1) === " ") end++;
         // Nothing but whitespace left: the line is emptied.
@@ -191,7 +195,7 @@ function minIndent(state: EditorState, startLine: number, endLine: number, token
   if (min === null && startLine === endLine && startLine < doc.lines) scan(startLine + 1, startLine + 1);
   if (startLine > 1) {
     const above = doc.line(startLine - 1).text;
-    if (above.slice(leadingWs(above)).startsWith(token)) min = Math.min(min ?? Infinity, indentOf(above));
+    if (startsLineComment(above.slice(leadingWs(above)), token)) min = Math.min(min ?? Infinity, indentOf(above));
   }
   return min ?? 0;
 }

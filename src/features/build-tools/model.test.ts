@@ -12,6 +12,7 @@ import {
   mavenChildren,
   mavenGoalConfig,
   mavenRoots,
+  mavenPomAtPath,
   nodeIcon,
   nodeLabel,
   parseGoalLine,
@@ -394,4 +395,15 @@ describe("Gradle tree and runs", () => {
     expect(labelsOf).toEqual([":app:run"]);
     expect(taskCompletions("clean wr", gradle).map((c) => c.line)).toEqual(["clean wrapper"]);
   });
+});
+
+it.each([
+  ["pom.xml", "/workspace/pom.xml"],
+  ["module/pom.xml", "/workspace/module/pom.xml"],
+  ["/linked/pom.xml", "/linked/pom.xml"],
+  ["/workspace/member/pom.xml", "/workspace/member/pom.xml"],
+])("resolves the Maven model POM %s at %s", (pom, path) => {
+  const projects = [project({ pom })];
+  expect(mavenPomAtPath(projects, "/workspace", path)).toBe(pom);
+  expect(mavenPomAtPath(projects, "/workspace", "/other/pom.xml")).toBeNull();
 });

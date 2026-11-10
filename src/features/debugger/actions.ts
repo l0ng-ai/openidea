@@ -1,4 +1,5 @@
 /** Debugger actions (ids match `keymaps/intellij-macos.ts`). */
+import { withRunTarget } from "@/platform/runTargetSelection";
 import { executeAction, getAction, registerActions, type Action } from "@/platform/actions";
 import {
   call,
@@ -315,14 +316,16 @@ async function startConfig(arg: unknown) {
       return;
     }
   }
-  if (isRemoteConfig(config)) {
+  config = withRunTarget(config);
+  if (!config.target?.startsWith("plugin-target:") && isRemoteConfig(config)) {
     await startRemote(config, root, show);
     return;
   }
-  if (isJavaDebuggable(config)) {
+  if (!config.target?.startsWith("plugin-target:") && isJavaDebuggable(config)) {
     await startJavaConfig(config, root, origin ?? config, show);
     return;
   }
+  if (config.kind === "plugin") config = await call(commands.pluginPrepareDebugRun(config));
   const dotnet = config.kind === "dotnet" && config.debugAdapter === "netcoredbg";
   const prepared = dotnet ? await call(commands.runDotnetResolve(config, true)) : config;
   // php-debug starts the PHP chosen in Settings unless the command names one.
@@ -338,11 +341,27 @@ async function startConfig(arg: unknown) {
     });
     return;
   }
-  const xdebugCheck = config.debugAdapter === "php-debug" && isTauri() ? warnWithoutXdebug(launch) : null;
+  const pluginTarget = config.target?.startsWith("plugin-target:");
+  if (pluginTarget) {
+    const extra = JSON.parse(launch.extraJson ?? "{}");
+    extra.__runTarget = config.target;
+    extra.__runTargetProgram = config.command;
+    launch.extraJson = JSON.stringify(extra);
+  }
+  const xdebugCheck =
+    !pluginTarget && config.debugAdapter === "php-debug" && isTauri() ? warnWithoutXdebug(launch) : null;
   await maybeEditorService()
     ?.saveAll()
     .catch(() => undefined);
-  await startSession(launch, { runConfig: origin ?? config, show });
+  const started = pluginTarget
+    ? await startPreparedSession(origin ?? config, async () => launch, { show })
+    : await startSession(launch, { runConfig: origin ?? config, show });
+  if (started && pluginTarget && config.debugAdapter === "php-debug") {
+    await executeAction("run.runConfig", {
+      ...config,
+      params: { ...config.params, "plugin.targetOperation": "debug" },
+    });
+  }
   await xdebugCheck;
 }
 
@@ -387,6 +406,45 @@ export function registerDebugActions(): () => void {
   });
 
   return registerActions([
+    {
+      id: "debug.pluginStart",
+      title: "Debug Plugin Configuration",
+      category: "Debug",
+      hidden: true,
+      when: "projectOpen",
+      run: async ({ arg }) => {
+        const a = arg as { config: RunConfig; onExit: (code: number | null, stopped: boolean) => void };
+        const config = await call(commands.pluginPrepareDebugRun(a.config));
+        const root = useProject.getState().project?.root;
+        if (!root) throw new Error("No project");
+        const launch = launchConfigFor(config, root);
+        if (!launch) throw new Error("This configuration has no debugger");
+        let id: number | null = null;
+        let stopped = false;
+        const observe = () => {
+          if (id === null) return;
+          const session = useDebug.getState().sessions[id];
+          if (session?.status === "stopping") stopped = true;
+          if (!session || session.status === "terminated") {
+            off();
+            a.onExit(session?.exitCode ?? null, stopped);
+          }
+        };
+        const off = useDebug.subscribe(observe);
+        try {
+          await maybeEditorService()?.saveAll();
+          id = await startSession(launch, { runConfig: config });
+          if (id === null) {
+            off();
+            throw new Error("Debug session did not start");
+          }
+          observe();
+        } catch (error) {
+          off();
+          throw error;
+        }
+      },
+    },
     {
       id: "debug.startConfig",
       title: "Debug…",

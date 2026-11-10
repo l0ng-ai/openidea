@@ -169,7 +169,12 @@ pub fn sources(host: &Host, window: &str) -> IdeResult<Vec<DataSource>> {
 /// Replaces the project's data sources with `sources`.
 pub async fn save_sources(host: &Host, window: &str, sources: Vec<DataSource>) -> IdeResult<()> {
     let db = host.project(window)?.db.clone();
-    db.save_sources(sources).await
+    db.save_sources(sources).await?;
+    let root = host.project(window)?.root.clone();
+    for project in host.projects().into_iter().filter(|p| p.root == root) {
+        project.sink.emit(ide_core::IdeEvent::DbSourcesChanged);
+    }
+    Ok(())
 }
 
 /// Remembers the password of data source `id` for the session, and in the OS

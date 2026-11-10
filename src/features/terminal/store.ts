@@ -631,3 +631,44 @@ export function unbindTerminals() {
     restoring = false;
   }
 }
+
+const pluginSessions = new Map<string, string>();
+
+/** Host-authorized plugin sessions use the same tabs and PTY controls as user terminals. */
+export async function pluginSession(a: {
+  kind: "terminal";
+  operation: string;
+  title?: string;
+  program?: string;
+  args?: string[];
+  cwd?: string;
+  env?: Record<string, string>;
+  spawn?: NonNullable<SessionOptions["command"]>["spawn"];
+  onExit: (code: number | null, closed: boolean) => void;
+}) {
+  const tab = useTerminals.getState().tabs.find((t) => t.id === pluginSessions.get(a.operation));
+  const session = tab && getSession(tab.session);
+  if (session && session.state.status === "running") {
+    selectTab(tab.id);
+    return;
+  }
+  if (!a.cwd || !a.program) throw new Error("Invalid terminal request");
+  const created = newTab(a.cwd, a.title, {
+    program: a.program,
+    args: a.args ?? [],
+    env: a.env,
+    spawn: a.spawn,
+    onExit: (code, closed) => {
+      pluginSessions.delete(a.operation);
+      a.onExit(code, closed);
+    },
+  });
+  pluginSessions.set(a.operation, created.id);
+  const started = getSession(created.session)!;
+  await started.start();
+  if (started.state.status === "error") {
+    closeTab(created.id);
+    pluginSessions.delete(a.operation);
+    throw new Error("Terminal did not start");
+  }
+}

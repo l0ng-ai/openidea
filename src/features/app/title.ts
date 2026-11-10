@@ -35,7 +35,12 @@ export function installWindowTitle(): () => void {
     const { project, settings } = useProject.getState();
     const fullPath = settings?.appearance?.fullPathInTitle === true;
     const host = useRemote.getState().session?.host ?? null;
-    const title = windowTitle(project?.name, useEditorRegistry.getState().active?.ctx.path, fullPath, host);
+    const title = windowTitle(
+      project?.displayName || project?.name,
+      useEditorRegistry.getState().active?.ctx.path,
+      fullPath,
+      host,
+    );
     if (title === last) return;
     last = title;
     if (typeof document !== "undefined") document.title = title;

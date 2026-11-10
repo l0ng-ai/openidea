@@ -243,7 +243,7 @@ let seq = 0;
 export const newRemoteId = (prefix: string) => `${prefix}-${Date.now().toString(36)}-${++seq}`;
 
 /** Whether `target` runs configurations in a container (Docker, Compose) rather than over SSH. */
-export const inContainer = (target: Pick<RunTargetValid, "kind">) => target.kind !== "ssh";
+export const inContainer = (target: { kind: string }) => target.kind === "docker" || target.kind === "compose";
 
 /** Backend connection descriptor for deployment and folder browsing. */
 export function deploymentConnection(server: DeploymentServerValid): { kind: "local" } | { kind: "sftp"; ssh: string } {

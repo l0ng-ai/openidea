@@ -1,4 +1,5 @@
 mod output;
+mod target;
 
 use crate::Host;
 use crate::rpc::Dispatcher;
@@ -8,7 +9,42 @@ use std::path::PathBuf;
 
 /// Starts a session owned by this window: its events (and those of child sessions) go here only.
 pub async fn debug_start(host: &Host, window: &str, config: LaunchConfig) -> IdeResult<DebugSessionId> {
+    debug_start_request(host, window, config, None).await
+}
+
+pub async fn debug_start_request(
+    host: &Host,
+    window: &str,
+    config: LaunchConfig,
+    request: Option<ide_core::RequestId>,
+) -> IdeResult<DebugSessionId> {
+    let cancel = request.map(|id| host.begin_request(id)).unwrap_or_default();
+    let result = debug_start_inner(host, window, config, &cancel).await;
+    if let Some(id) = request {
+        host.end_request(id);
+    }
+    result
+}
+
+async fn debug_start_inner(
+    host: &Host,
+    window: &str,
+    config: LaunchConfig,
+    cancel: &ide_core::CancellationToken,
+) -> IdeResult<DebugSessionId> {
+    if cancel.is_cancelled() {
+        return Err(ide_core::IdeError::cancelled());
+    }
     host.require_trust(window)?;
+    let target_id = config
+        .extra_json
+        .as_deref()
+        .and_then(|s| serde_json::from_str::<serde_json::Value>(s).ok())
+        .and_then(|v| v.get("__runTarget").and_then(|v| v.as_str()).map(str::to_owned));
+    if let Some(id) = target_id {
+        let owner = SessionOwner::new(host.owner_window(window), host.window_sink(window));
+        return target::start(host, window, config, owner, id, cancel).await;
+    }
     let mut config = match_java_debug_encoding(config, cfg!(windows));
     if config.adapter == "debugpy"
         && config.request == "launch"
@@ -28,6 +64,7 @@ pub async fn debug_start(host: &Host, window: &str, config: LaunchConfig) -> Ide
         let settings = settings.clone();
         config = host
             .blocking(move || {
+                ide_sdk::go::prepare_debug_compiler(&mut config.env, &config.extra_json)?;
                 ide_sdk::go::configure_environment(&root, &settings, &mut config.env);
                 ide_sdk::go::apply_to_debug(
                     &mut config.env,
@@ -351,6 +388,14 @@ pub async fn debug_attachable_processes(_host: &Host, _window: &str) -> IdeResul
         .map_err(|e| ide_core::IdeError::internal(format!("listing processes failed: {e}")))?
 }
 
+/// A loopback port that is free right now, for a debug agent the launch line starts
+/// (`address=127.0.0.1:<port>`) — used when its "Listening for transport" line never reaches
+/// the console (a Surefire fork holds it until the tests run, which `suspend=y` prevents).
+pub async fn debug_free_port(host: &Host, window: &str) -> IdeResult<u16> {
+    host.require_trust(window)?;
+    ide_dap::adapter::free_port().map_err(ide_core::IdeError::from)
+}
+
 /// Remote JVM Debug in listen mode: waits (cancellable through `request`) for the remote
 /// JVM to connect to `host:port`; returns the loopback port java-debug attaches to.
 pub async fn debug_listen_for_jvm(
@@ -374,7 +419,9 @@ pub async fn debug_redefine_classes(host: &Host, _window: &str, session: DebugSe
 
 /// Commands of this module the remote server answers.
 pub(crate) fn register(d: &mut Dispatcher) {
-    d.add("debug_start", |c| async move { debug_start(&c.host, &c.window, c.arg("config")?).await });
+    d.add("debug_start", |c| async move {
+        debug_start_request(&c.host, &c.window, c.arg("config")?, c.arg("request")?).await
+    });
     d.add("debug_set_breakpoints", |c| async move {
         debug_set_breakpoints(&c.host, &c.window, c.arg("path")?, c.arg("breakpoints")?).await
     });
@@ -492,6 +539,7 @@ pub(crate) fn register(d: &mut Dispatcher) {
         .await
     });
     d.add("debug_attachable_processes", |c| async move { debug_attachable_processes(&c.host, &c.window).await });
+    d.add("debug_free_port", |c| async move { debug_free_port(&c.host, &c.window).await });
     d.add("debug_listen_for_jvm", |c| async move {
         debug_listen_for_jvm(&c.host, &c.window, c.arg("request")?, c.arg("host")?, c.arg("port")?).await
     });

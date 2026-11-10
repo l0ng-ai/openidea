@@ -1,3 +1,4 @@
+import { menuGroupItems } from "@/workbench/contributions";
 import { useMemo, useRef, useState, type KeyboardEvent } from "react";
 import clsx from "clsx";
 import { create } from "zustand";
@@ -459,6 +460,9 @@ function FindTabView({ tab }: { tab: FindTab }) {
               const groups = [...sel].flatMap((k) => (byKey.get(k) ? nodeGroups(byKey.get(k)!) : []));
               const excludedAll = groups.length > 0 && groups.every((g) => groupState(g, marks) === "excluded");
               showContextMenu(e, [
+                ...(_n?.kind === "match"
+                  ? menuGroupItems("searchResults", { paths: [_n.path], line: _n.line, column: _n.col })
+                  : []),
                 {
                   id: "exclude",
                   label: excludedAll ? "Include" : "Exclude",

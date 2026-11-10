@@ -4,17 +4,22 @@ import { installTerminalKeys } from "./keys";
 import { installKeyboardDispatcher, useKeymap } from "@/platform/keymap";
 import { registerAction } from "@/platform/actions";
 import { usePlatform } from "@/platform/platformInfo";
+import type { ITerminalOptions } from "@xterm/xterm";
 
 const terminal = vi.hoisted(() => ({
   selection: "selected run output",
   handler: (_e: KeyboardEvent): boolean => true,
   input: vi.fn(),
+  options: {} as ITerminalOptions,
 }));
 vi.mock("@xterm/xterm", () => ({
   Terminal: class {
     cols = 80;
     rows = 24;
     options = {};
+    constructor(options: ITerminalOptions) {
+      terminal.options = options;
+    }
     textarea?: HTMLTextAreaElement;
     hasSelection() {
       return !!terminal.selection;
@@ -56,11 +61,27 @@ vi.mock("./fit", () => ({
   settledResize: () => ({ resized() {}, cancel() {} }),
 }));
 
-beforeEach(() => usePlatform.setState({ os: "windows" }));
-afterEach(() => usePlatform.setState({ os: "macos" }));
+beforeEach(() => usePlatform.setState({ os: "windows", windowsBuildNumber: null }));
+afterEach(() => usePlatform.setState({ os: "macos", windowsBuildNumber: null }));
 afterEach(() => {
   document.body.replaceChildren();
   vi.restoreAllMocks();
+});
+
+it.each([
+  ["windows", 19045, { backend: "conpty", buildNumber: 19045 }],
+  ["windows", 22631, { backend: "conpty", buildNumber: 22631 }],
+  ["windows", null, { backend: "conpty", buildNumber: undefined }],
+  ["macos", null, undefined],
+  ["linux", null, undefined],
+] as const)("configures embedded terminals for %s build %s", (os, windowsBuildNumber, expected) => {
+  usePlatform.setState({ os, windowsBuildNumber });
+  const term = createEmbeddedTerminal(document.createElement("div"), { onData() {}, onResize() {} });
+  try {
+    expect(terminal.options.windowsPty).toEqual(expected);
+  } finally {
+    term.dispose();
+  }
 });
 
 it("copies embedded Run terminal selections before xterm can send Ctrl+C", () => {

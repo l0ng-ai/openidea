@@ -341,6 +341,17 @@ pub static TOOLS: &[ToolSpec] = &[
         needs: &[],
     },
     ToolSpec {
+        name: "astro-ls",
+        display: "Astro Language Server",
+        kind: LanguageServer,
+        commands: &["astro-ls"],
+        method: Method::Npm { packages: &["@astrojs/language-server", TYPESCRIPT] },
+        fallback: None,
+        version: V,
+        homepage: "https://github.com/withastro/astro/tree/main/packages/language-tools",
+        needs: NODE,
+    },
+    ToolSpec {
         name: "svelte-language-server",
         display: "Svelte Language Server",
         kind: LanguageServer,

@@ -16,7 +16,7 @@ import { SCHEMES as EDITOR_SCHEMES, listSchemes, customSchemes } from "@/platfor
 import { formatTimestamp } from "@/platform/dateFormat";
 import { Checkbox, IconButton, Input, Popup, type SelectOption, T } from "@/ui";
 import { NOTIFICATION_GROUPS } from "@/workbench/notificationStore";
-import { ColorSwatches, NumberInput, Row, SearchLabel, Select, Toggle } from "../components/Form";
+import { ColorSwatches, FormGroup, NumberInput, Row, SearchLabel, Select, Toggle } from "../components/Form";
 import { useLabelMatch, useSetting } from "../components/context";
 import {
   IDLE_LIMITS,
@@ -25,8 +25,8 @@ import {
   type DateFormatValid,
   type NotificationDisplay,
   type NotificationGroupValid,
+  type NavigationBarPosition,
   type OpenProjectIn,
-  type UpdateSourceSetting,
 } from "../model/behaviorSchema";
 import { ACCENT_PRESETS, LIMITS, type ThemeId } from "../model/schema";
 import type { PageSpec } from "./spec";
@@ -48,11 +48,14 @@ function BoundToggle({ k, label, hint, disabled }: { k: string; label: string; h
 }
 
 function Indented({ children }: { children: ReactNode }) {
-  return <div className={styles.indented}>{children}</div>;
+  return <FormGroup indented>{children}</FormGroup>;
 }
 
 // ---------------------------------------------------------------------------
 // Appearance
+
+/** Shows the theme picked in Settings in this window until Apply, or the selected one again. */
+const showPicked = (id: ConcreteTheme) => previewTheme(id !== currentThemeChoice() ? id : null);
 
 function ThemeRow() {
   const [theme, setTheme] = useSetting<ThemeId>("appearance.theme");
@@ -73,11 +76,16 @@ function ThemeRow() {
     },
     [],
   );
+  // The staged theme can also change without the list, e.g. by Reset.
+  useEffect(() => {
+    if (previewed.current) showPicked(shown);
+  }, [shown]);
   const preview = (id: ConcreteTheme | null) => {
     previewed.current = true;
     if (id !== null) return picker.preview(id);
+    // The picker takes back only its own hover preview, not a theme picked here earlier.
     picker.restore();
-    if (shown !== currentThemeChoice()) previewTheme(shown);
+    showPicked(shown);
   };
   return (
     <Row label="Theme">
@@ -87,6 +95,7 @@ function ThemeRow() {
         onChange={setTheme}
         onPreview={preview}
         aria-label="Theme"
+        className={styles.themeSelect}
         disabled={sync}
       />
       <span className={clsx(styles.inline, matched && styles.matched)}>
@@ -99,17 +108,17 @@ function ThemeRow() {
           }}
           label={<SearchLabel text="Sync with OS" />}
         />
+        <IconButton
+          ref={gear}
+          icon="settings"
+          size="small"
+          title="Preferred themes for light and dark OS mode"
+          aria-label="Preferred themes"
+          disabled={!sync}
+          aria-expanded={open}
+          onClick={() => setOpen((v) => !v)}
+        />
       </span>
-      <IconButton
-        ref={gear}
-        icon="settings"
-        size="small"
-        title="Preferred themes for light and dark OS mode"
-        aria-label="Preferred themes"
-        disabled={!sync}
-        aria-expanded={open}
-        onClick={() => setOpen((v) => !v)}
-      />
       <Popup
         open={open}
         onClose={() => setOpen(false)}
@@ -361,6 +370,12 @@ const AA_OPTIONS: SelectOption<Antialiasing>[] = [
   { value: "none", label: "No antialiasing" },
 ];
 
+const NAV_BAR_OPTIONS: SelectOption<NavigationBarPosition>[] = [
+  { value: "top", label: "Top" },
+  { value: "statusBar", label: "Status Bar" },
+  { value: "hidden", label: "Don't show" },
+];
+
 function ToolWindowsGrid() {
   return (
     <Grid
@@ -391,15 +406,8 @@ function ToolWindowsGrid() {
 
 const OPEN_IN: Array<{ value: OpenProjectIn; label: string }> = [
   { value: "new", label: "New window" },
-  { value: "attach", label: "Attach" },
   { value: "same", label: "Current window" },
   { value: "ask", label: "Ask" },
-];
-
-const UPDATE_SOURCES: SelectOption<UpdateSourceSetting>[] = [
-  { value: "auto", label: "Automatic" },
-  { value: "github", label: "GitHub" },
-  { value: "cnb", label: "CNB (China mirror)" },
 ];
 
 function OpenProjectInRow() {
@@ -642,6 +650,9 @@ export const BEHAVIOR_PAGES: PageSpec[] = [
       {
         title: "UI Options",
         options: [
+          { kind: "toggle", key: "appearance.showMainToolbar", label: "Show main toolbar" },
+          { kind: "toggle", key: "appearance.showStatusBar", label: "Show status bar" },
+          { kind: "select", key: "appearance.navigationBar", label: "Navigation bar", options: NAV_BAR_OPTIONS },
           {
             kind: "custom",
             label: "Main menu",
@@ -688,7 +699,7 @@ export const BEHAVIOR_PAGES: PageSpec[] = [
     title: "System Settings",
     group: APPEARANCE_GROUP,
     order: 1,
-    keywords: ["general", "startup", "exit", "quit", "autosave", "save", "local history"],
+    keywords: ["general", "startup", "exit", "quit", "autosave", "save", "local history", "welcome", "editor tabs"],
     sections: [
       {
         title: "Project",
@@ -697,7 +708,7 @@ export const BEHAVIOR_PAGES: PageSpec[] = [
           {
             kind: "custom",
             label: "Open project in",
-            keywords: ["New window", "Current window", "Attach", "Ask"],
+            keywords: ["New window", "Current window", "Ask"],
             component: OpenProjectInRow,
           },
           { kind: "custom", label: "Default directory", component: DefaultDirectoryRow },
@@ -748,20 +759,22 @@ export const BEHAVIOR_PAGES: PageSpec[] = [
         ],
       },
       {
-        title: "Updates",
+        title: "Exit",
         options: [
+          { kind: "toggle", key: "general.confirmExit", label: "Confirm before exiting the IDE" },
           {
-            kind: "select",
-            key: "general.updateSource",
-            label: "Update source",
-            hint: "Where updates are downloaded from. If it can't be reached, the other source is tried.",
-            options: UPDATE_SOURCES,
+            kind: "toggle",
+            key: "general.closeWithoutWelcome",
+            label: "Close the window instead of showing the Welcome screen",
+            hint: "When this is the only window, closing a project or a file closes the window. On macOS, the app stays in the Dock.",
+          },
+          {
+            kind: "toggle",
+            key: "general.closeTabsWithWindow",
+            label: "Close all editor tabs when the window closes",
+            hint: "Files left open are not restored the next time that project or a standalone file is opened.",
           },
         ],
-      },
-      {
-        title: "Exit",
-        options: [{ kind: "toggle", key: "general.confirmExit", label: "Confirm before exiting the IDE" }],
       },
     ],
   },

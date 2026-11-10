@@ -113,6 +113,7 @@ pub async fn plugin_navigation_index(
                 &project.root,
                 crate::plugins::navigation::Snapshot { path: &path, version, text: &text, symbols: &symbols, scope },
                 Invocation {
+                    command_chain: Vec::new(),
                     client: Some(client.clone()),
                     workspace_root: Some(project.root.clone()),
                     editor: None,

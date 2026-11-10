@@ -117,6 +117,8 @@ export interface EditorKindContribution {
   component: ComponentType<{ input: EditorInput }>;
   title: (input: EditorInput) => string;
   icon?: (input: EditorInput) => string;
+  /** Small marker rendered in the tab's trailing slot (a status dot for live state). */
+  trailing?: (input: EditorInput) => ReactNode;
   /**
    * Its tabs are saved with the editor session and reopened with the project (their
    * `data` must be plain JSON). The editor closes tabs whose target is gone itself.
@@ -593,6 +595,10 @@ export interface EditorService {
   prepareClose?(): Promise<EditorCloseSession>;
   /** Backend project/window transition failed after authorization: resume its prepared documents. */
   cancelClose?(): void;
+  /** Drops this window's saved editor tabs so the next open does not restore them. */
+  forgetSavedTabs?(): void;
+  /** Writes them again when a close is cancelled after {@link forgetSavedTabs}. */
+  keepSavedTabs?(): void;
   /** Edit › Undo / Redo for a focused custom editor that has its own history; false when none takes it. */
   documentHistory?(command: "undo" | "redo"): boolean;
 }
@@ -1043,6 +1049,8 @@ export type ContextMenuId =
   | "editor"
   | "projectView"
   | "editorTab"
+  | "problems"
+  | "searchResults"
   | "editorGutter"
   | "openIn"
   | "stopProcess"
@@ -1085,6 +1093,8 @@ export interface MenuGroupContext {
   text?: string;
   /** Editor menu: 0-based caret line; gutter menu: the clicked line. */
   line?: number;
+  /** Zero-based UTF-16 column for problem/search result commands. */
+  column?: number;
   /** The tab's input, when the menu is for an editor tab without a path. */
   input?: EditorInput;
 }
@@ -1143,6 +1153,30 @@ export function provideProjectViewSelection(get: () => string[]): () => void {
 
 /** Selected project view paths (absolute); empty without a project view. */
 export const projectViewSelection = (): string[] => projectSelection?.() ?? [];
+
+/** The project view node the user last selected; `dir` decides the icon and popup of the last crumb. */
+export interface ProjectViewLead {
+  path: string;
+  dir: boolean;
+}
+
+/**
+ * The project view's current node, for the navigation bar: IDEA's bar shows the
+ * tree while that is the user's context and returns to the editor's file once the
+ * editor takes over (focus, tab switch). `null` = the editor is the context.
+ */
+export const useProjectViewLead = create<{ lead: ProjectViewLead | null }>(() => ({ lead: null }));
+
+export function setProjectViewLead(lead: ProjectViewLead | null) {
+  const prev = useProjectViewLead.getState().lead;
+  if (prev?.path === lead?.path && prev?.dir === lead?.dir) return;
+  useProjectViewLead.setState({ lead });
+}
+
+/** Hands the context back to the editor. */
+export function clearProjectViewLead() {
+  if (useProjectViewLead.getState().lead) useProjectViewLead.setState({ lead: null });
+}
 
 /** Runs the groups' `prepare` hooks, giving up after `timeoutMs` so the menu never waits long. */
 export async function prepareMenuGroups(menu: ContextMenuId, ctx: MenuGroupContext, timeoutMs = 200): Promise<void> {
@@ -1730,4 +1764,45 @@ export function stepFocusedSurfaceFontZoom(delta: number): boolean {
 
 export function resetSurfaceFontZoom(): void {
   for (const step of fontZoomSurfaces.values()) step(0);
+}
+
+/** Optional plugin test parser; the Run feature keeps the existing test tree. */
+type PluginTestParser = (config: string, chunk: string) => Promise<import("@/bindings").PluginTestEvent[] | null>;
+let pluginTestParser: PluginTestParser | null = null;
+export function providePluginTestParser(parser: PluginTestParser): () => void {
+  pluginTestParser = parser;
+  return () => {
+    if (pluginTestParser === parser) pluginTestParser = null;
+  };
+}
+export function parsePluginTests(config: string, chunk: string) {
+  return pluginTestParser?.(config, chunk) ?? Promise.resolve(null);
+}
+
+/** Optional selection support owned by the same host as the plugin test parser. */
+type PluginTestSelector = (config: string, tests: string[][]) => Promise<string[] | null>;
+let pluginTestSelector: PluginTestSelector | null = null;
+export function providePluginTestSelector(selector: PluginTestSelector): () => void {
+  pluginTestSelector = selector;
+  return () => {
+    if (pluginTestSelector === selector) pluginTestSelector = null;
+  };
+}
+export function selectPluginTests(config: string, tests: string[][]) {
+  return pluginTestSelector?.(config, tests) ?? Promise.resolve(null);
+}
+
+/** Read-only named snippets supplied by plugins. */
+export interface ContributedSnippet {
+  id: string;
+  pluginName: string;
+  language: string;
+  prefixes: string[];
+  body: string;
+  description: string;
+}
+export const useContributedSnippets = create<{ snippets: ContributedSnippet[] }>(() => ({ snippets: [] }));
+export function addContributedSnippets(snippets: ContributedSnippet[]): () => void {
+  useContributedSnippets.setState((s) => ({ snippets: [...s.snippets, ...snippets] }));
+  return () => useContributedSnippets.setState((s) => ({ snippets: s.snippets.filter((x) => !snippets.includes(x)) }));
 }

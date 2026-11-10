@@ -1,4 +1,5 @@
 /** Editor actions (ids from keymaps/intellij-macos.ts). */
+import { writeClipboardText } from "@/platform/clipboard";
 import { EditorSelection, type EditorState } from "@codemirror/state";
 import { EditorView } from "@codemirror/view";
 import { indentSelection, moveLineDown, moveLineUp } from "@codemirror/commands";
@@ -6,6 +7,7 @@ import { foldEffect, syntaxTree, toggleFold } from "@codemirror/language";
 import { acceptCompletion, completionStatus } from "@codemirror/autocomplete";
 import { executeAction, registerActions, type Action } from "@/platform/actions";
 import { getContext } from "@/platform/context";
+import { focusedSoftWrapSurface } from "@/workbench/softWrap";
 import { resetSurfaceFontZoom, stepFocusedSurfaceFontZoom } from "@/workbench/contributions";
 import { editorController, useGotoLine, useTabs } from "./controller";
 import {
@@ -592,8 +594,7 @@ function copyPathReferencePopup(view: EditorView, slot: EditorSlot) {
 }
 
 function copyEditorPath(text: string) {
-  void navigator.clipboard
-    .writeText(text)
+  void writeClipboardText(text)
     .then(() => {
       recordClipboard(text);
       void executeAction("editor.showHint", { text: tx`Copied ${text}` });
@@ -738,9 +739,13 @@ export function registerEditorActions(): () => void {
       category: "View",
       icon: "soft-wrap",
       keywords: ["word wrap", "line wrap"],
-      when: "textEditorActive",
-      toggled: () => activeSlot()?.model.softWrapOn() ?? false,
-      run: () => activeSlot()?.model.toggleSoftWrap(),
+      when: "textEditorActive || softWrapSurfaceFocus",
+      toggled: () => focusedSoftWrapSurface()?.enabled() ?? activeSlot()?.model.softWrapOn() ?? false,
+      run: () => {
+        const surface = focusedSoftWrapSurface();
+        if (surface) surface.toggle();
+        else activeSlot()?.model.toggleSoftWrap();
+      },
     },
     text("code.foldAll", "Collapse All", (v) => collapseAll(v), { category: "Folding", icon: "collapse-all" }),
     text("code.unfoldAll", "Expand All", (v) => expandAll(v), { category: "Folding", icon: "expand-all" }),
@@ -806,6 +811,7 @@ export function registerEditorActions(): () => void {
       title: "Add or Remove Caret",
       category: "Editor Actions",
       when: "textEditorActive",
+      hidden: true,
       // The mouse selection style handles the pointer position and dragging.
       run: () => {},
     },
@@ -1003,12 +1009,7 @@ export function registerEditorActions(): () => void {
       when: "projectOpen",
       // ⌘↑ / ⌘↓ inside a popup (Search Everywhere's previous / next group) stay with it.
       keyWhen: "!popupOpen",
-      run: () => {
-        if (activeSlot()) return openNavBarPopup();
-        // No editor: the status bar breadcrumbs (StatusItems › Breadcrumbs) take focus.
-        const crumbs = document.querySelectorAll<HTMLButtonElement>('nav[aria-label="Breadcrumbs"] button');
-        crumbs[crumbs.length - 1]?.focus();
-      },
+      run: () => openNavBarPopup(),
     },
     {
       id: "navigate.lastEditLocation",

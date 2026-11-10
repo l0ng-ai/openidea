@@ -25,12 +25,17 @@ use std::time::Duration;
 
 /// Files opened for one search at most.
 pub const MAX_CANDIDATES: usize = 300;
+/// Candidates checked against a server's analysis scope ([`COVERED_FILES`]) at most: most
+/// are usually covered, so a common name only exceeds [`MAX_CANDIDATES`] after that check.
+const MAX_SCOPE_CANDIDATES: usize = 5000;
 /// Larger files (generated code, bundles) are not opened.
 const MAX_CANDIDATE_BYTES: u64 = 1 << 20;
 /// How long a search that found nothing waits for a server to finish indexing.
 const INDEX_WAIT: Duration = Duration::from_secs(10);
 /// Optional server command: candidate URIs in, already analysed candidate URIs out.
 const COVERED_FILES: &str = "openidea.workspace.coveredFiles";
+/// Optional server command: directories whose files of its languages it all analyses.
+const COVERED_ROOTS: &str = "openidea.workspace.coveredRoots";
 
 /// Project files that may mention a symbol.
 #[derive(Clone, Debug)]
@@ -42,6 +47,8 @@ pub struct CandidateQuery {
     /// Only files of these languages.
     pub languages: Vec<LanguageId>,
     pub limit: usize,
+    /// Directories not to look in: the server already analyses every file there.
+    pub skip: Vec<PathBuf>,
 }
 
 #[derive(Clone, Debug, Default)]
@@ -92,14 +99,16 @@ impl LspManager {
         *self.candidates_hook.write() = Some(Arc::from(hook));
     }
 
-    async fn candidates(&self, t: &Target, word: String, cancel: &CancellationToken) -> Option<CandidateFiles> {
+    async fn candidates(
+        &self,
+        t: &Target,
+        word: String,
+        limit: usize,
+        skip: Vec<PathBuf>,
+        cancel: &CancellationToken,
+    ) -> Option<CandidateFiles> {
         let hook = self.candidates_hook.read().clone()?;
-        let query = CandidateQuery {
-            word,
-            root: t.server.root.clone(),
-            languages: t.server.languages(),
-            limit: MAX_CANDIDATES,
-        };
+        let query = CandidateQuery { word, root: t.server.root.clone(), languages: t.server.languages(), limit, skip };
         let cancel = cancel.clone();
         tokio::task::spawn_blocking(move || hook(&query, &cancel)).await.ok()
     }
@@ -125,11 +134,12 @@ impl LspManager {
         // gopls searches the view of the file asked about; files opened for it only get views of
         // their own (see `go_scope`).
         let word = search_word(snap, pos).filter(|_| t.caps().open_close && snap.language.as_str() != "go");
+        let reports_scope = has_command(t, COVERED_FILES);
+        let limit = if reports_scope { MAX_SCOPE_CANDIDATES } else { MAX_CANDIDATES };
         let candidates = async {
-            match word {
-                Some(w) => self.candidates(t, w, cancel).await,
-                None => None,
-            }
+            let w = word?;
+            let skip = if reports_scope { self.covered_roots(t, cancel).await } else { Vec::new() };
+            self.candidates(t, w, limit, skip, cancel).await
         };
         let (first, candidates) = futures::join!(query(), candidates);
         let mut first = first?;
@@ -148,9 +158,13 @@ impl LspManager {
         }
         let known: HashSet<PathBuf> = covered(&first).into_iter().chain([snap.path.clone()]).collect();
         let files: Vec<PathBuf> = candidates.files.into_iter().filter(|f| !known.contains(f)).collect();
-        let files = self.files_beyond_scope(t, files, cancel).await;
+        let mut files = self.files_beyond_scope(t, files, cancel).await;
         if cancel.is_cancelled() {
             return Err(IdeError::cancelled());
+        }
+        if files.len() > MAX_CANDIDATES {
+            files.truncate(MAX_CANDIDATES);
+            incomplete = incomplete.or(Some(ReferencesIncomplete::TooManyFiles));
         }
         if files.is_empty() {
             return Ok(Widened { first, second: None, incomplete });
@@ -180,8 +194,25 @@ impl LspManager {
         }
     }
 
+    /// Directories whose files `t` analyses all ([`COVERED_ROOTS`]); none when it can't say.
+    async fn covered_roots(&self, t: &Target, cancel: &CancellationToken) -> Vec<PathBuf> {
+        if !has_command(t, COVERED_ROOTS) {
+            return Vec::new();
+        }
+        let params = json!({ "command": COVERED_ROOTS, "arguments": [] });
+        let roots: IdeResult<Vec<String>> =
+            self.call(t, "workspace/executeCommand", params, Some(cancel), crate::DEFAULT_TIMEOUT).await;
+        match roots {
+            Ok(roots) => roots.iter().filter_map(|uri| crate::uri::uri_to_path(uri)).collect(),
+            Err(e) => {
+                tracing::debug!("{}: covered roots unavailable: {}", t.server.name, e.message);
+                Vec::new()
+            }
+        }
+    }
+
     async fn files_beyond_scope(&self, t: &Target, files: Vec<PathBuf>, cancel: &CancellationToken) -> Vec<PathBuf> {
-        if files.is_empty() || !t.caps().commands().iter().any(|c| c == COVERED_FILES) {
+        if files.is_empty() || !has_command(t, COVERED_FILES) {
             return files;
         }
         let uris: Vec<String> = files.iter().map(|p| crate::uri::path_to_uri_string(p)).collect();
@@ -224,7 +255,9 @@ impl LspManager {
             .filter(|l| l.uri.is_none())
             .collect();
         let Some(declaration) = declarations.first() else { return GoMentions::default() };
-        let Some(candidates) = self.candidates(t, word.clone(), cancel).await else { return GoMentions::default() };
+        let Some(candidates) = self.candidates(t, word.clone(), MAX_CANDIDATES, Vec::new(), cancel).await else {
+            return GoMentions::default();
+        };
         let (origin, declared) = (snap.path.clone(), declaration.path.to_path_buf());
         let files = tokio::task::spawn_blocking(move || {
             crate::go_scope::files_beyond_search(&origin, &declared, candidates.files)
@@ -477,4 +510,8 @@ impl Drop for TransientFiles<'_> {
             }
         }
     }
+}
+
+fn has_command(t: &Target, command: &str) -> bool {
+    t.caps().commands().iter().any(|c| c == command)
 }

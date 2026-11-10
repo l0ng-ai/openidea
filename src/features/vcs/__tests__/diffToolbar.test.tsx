@@ -1,4 +1,4 @@
-import { beforeEach, describe, expect, it, vi } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { fireEvent, render, screen, waitFor, within } from "@testing-library/react";
 import type { EditorInput } from "@/workbench/contributions";
 import { Chunk, getChunks } from "@codemirror/merge";
@@ -49,6 +49,10 @@ import { DiffEditor, mapLine } from "../DiffEditor";
 import { DiffEditorTab } from "../diff-editor-tab";
 import { diffInput, withChain, type DiffData } from "../diffInput";
 import { useToolWindowLayout } from "@/workbench/toolwindows/store";
+import { useProject } from "@/platform/project";
+import { applyKeymapSettings, installKeyboardDispatcher, useKeymap } from "@/platform/keymap";
+import { setContext } from "@/platform/context";
+import { registerCompareActions } from "../compare";
 
 /** Git Log opens a commit's file: both sides are revisions. */
 const input = {
@@ -200,6 +204,105 @@ describe("Diff toolbar", () => {
       syncScroll: false,
     });
     localStorage.clear();
+  });
+
+  describe("soft wraps", () => {
+    const wrapped = () =>
+      [...document.querySelectorAll(".cm-editor .cm-content")].map((c) => c.classList.contains("cm-lineWrapping"));
+    const editorSettings = (softWrap: boolean, softWrapFiles?: string) =>
+      useProject.setState({
+        settings: { editor: { softWrap, ...(softWrapFiles ? { general: { softWrapFiles } } : {}) } } as never,
+      });
+
+    beforeEach(() => {
+      localStorage.clear();
+      texts.HEAD = "a\nb\n";
+      texts.abc123 = "a\nnew\nb\n";
+    });
+
+    it.each([
+      { name: "the file matches Soft-wrap files", softWrap: true, files: "*.ts", mode: "split", expected: true },
+      { name: "the file matches, unified viewer", softWrap: true, files: "*.ts", mode: "unified", expected: true },
+      { name: "the file is not in Soft-wrap files", softWrap: true, files: undefined, mode: "split", expected: false },
+      { name: "soft wraps are off in the editor", softWrap: false, files: "*.ts", mode: "split", expected: false },
+    ] as const)("follow the editor's setting when $name", async ({ softWrap, files, mode, expected }) => {
+      editorSettings(softWrap, files);
+      localStorage.setItem("openidea.vcs.diffOptions", JSON.stringify({ mode }));
+      render(<DiffEditor input={input} />);
+      const panes = mode === "split" ? 2 : 1;
+      await waitFor(() => expect(document.querySelectorAll(".cm-editor")).toHaveLength(panes));
+      expect(wrapped()).toEqual(Array(panes).fill(expected));
+      useProject.setState({ settings: null as never });
+    });
+
+    it.each([
+      { mode: "split", alignChanges: false },
+      { mode: "split", alignChanges: true },
+      { mode: "unified", alignChanges: false },
+    ])("reconfigures $mode (aligned: $alignChanges) without losing selection", async ({ mode, alignChanges }) => {
+      editorSettings(true, "*.ts");
+      localStorage.setItem("openidea.vcs.diffOptions", JSON.stringify({ mode, alignChanges }));
+      const mounted = render(
+        <>
+          <DiffEditor input={input} />
+          <ContextMenuHost />
+        </>,
+      );
+      const count = mode === "split" ? 2 : 1;
+      await waitFor(() => expect(document.querySelectorAll(".cm-editor")).toHaveLength(count));
+      const views = [...document.querySelectorAll<HTMLElement>(".cm-editor")].map((dom) =>
+        EditorView.findFromDOM(dom)!,
+      );
+      for (const view of views) view.dispatch({ selection: { anchor: 1 } });
+      expect(wrapped()).toEqual(Array(count).fill(true));
+      // Settings changes still apply until an explicit viewer override is made.
+      editorSettings(false);
+      await waitFor(() => expect(wrapped()).toEqual(Array(count).fill(false)));
+      editorSettings(true, "*.ts");
+      await waitFor(() => expect(wrapped()).toEqual(Array(count).fill(true)));
+      fireEvent.click(screen.getByRole("button", { name: "Settings" }));
+      fireEvent.click(await screen.findByRole("menuitemcheckbox", { name: "Use Soft Wraps" }));
+      await waitFor(() => expect(wrapped()).toEqual(Array(count).fill(false)));
+      expect(JSON.parse(localStorage.getItem("openidea.vcs.diffOptions")!).softWrap).toBe(false);
+      editorSettings(true, "*");
+      await waitFor(() => expect(wrapped()).toEqual(Array(count).fill(false)));
+      for (const view of views) {
+        expect(view.dom.isConnected).toBe(true);
+        expect(EditorView.findFromDOM(view.dom)).toBe(view);
+        expect(view.state.selection.main.head).toBe(1);
+      }
+      mounted.unmount();
+      render(<DiffEditor input={input} />);
+      await waitFor(() => expect(document.querySelectorAll(".cm-editor")).toHaveLength(count));
+      expect(wrapped()).toEqual(Array(count).fill(false));
+      useProject.setState({ settings: null as never });
+      localStorage.clear();
+    });
+
+    it("turn on from the settings menu and stay on", async () => {
+      editorSettings(true);
+      const mounted = render(
+        <>
+          <DiffEditor input={input} />
+          <ContextMenuHost />
+        </>,
+      );
+      await waitFor(() => expect(document.querySelectorAll(".cm-mergeViewEditor .cm-editor")).toHaveLength(2));
+      expect(wrapped()).toEqual([false, false]);
+      (await screen.findByRole("button", { name: "Settings" })).click();
+      const item = await screen.findByRole("menuitemcheckbox", { name: "Use Soft Wraps" });
+      expect(item.getAttribute("aria-checked")).toBe("false");
+      item.click();
+      await waitFor(() => expect(wrapped()).toEqual([true, true]));
+      expect(JSON.parse(localStorage.getItem("openidea.vcs.diffOptions")!).softWrap).toBe(true);
+      // The next diff opens wrapped although the editor would not wrap this file.
+      mounted.unmount();
+      render(<DiffEditor input={input} />);
+      await waitFor(() => expect(document.querySelectorAll(".cm-mergeViewEditor .cm-editor")).toHaveLength(2));
+      expect(wrapped()).toEqual([true, true]);
+      useProject.setState({ settings: null as never });
+      localStorage.clear();
+    });
   });
 
   it("has no Jump to Source when the file is gone from the working tree", async () => {
@@ -356,6 +459,44 @@ describe("Jump to Source of a revision diff", () => {
     render(<DiffEditor input={input} />);
     expect(await jumpFrom(0, 2)).toEqual(["/p/a.ts", { selection: { line: 5, col: 1 }, focus: true }]);
   });
+
+  it("jumps on ⌘↓ in the IntelliJ macOS keymap only while a diff pane has focus", async () => {
+    setUp();
+    const keymap = useKeymap.getState();
+    applyKeymapSettings("intellij-macos", {});
+    const unregister = registerCompareActions();
+    const uninstall = installKeyboardDispatcher(window);
+    const cmdDown = (target: EventTarget) => {
+      const e = new KeyboardEvent("keydown", {
+        key: "ArrowDown",
+        code: "ArrowDown",
+        metaKey: true,
+        bubbles: true,
+        cancelable: true,
+      });
+      target.dispatchEvent(e);
+      return e;
+    };
+    try {
+      render(<DiffEditor input={input} />);
+      const v = await pane(1);
+      v.dispatch({ selection: { anchor: v.state.doc.line(3).from + 1 } });
+      v.contentDOM.dispatchEvent(new FocusEvent("focus"));
+      v.contentDOM.dispatchEvent(new FocusEvent("focusin", { bubbles: true }));
+      expect(cmdDown(v.contentDOM).defaultPrevented).toBe(true);
+      await waitFor(() => expect(openFile).toHaveBeenCalled());
+      expect(openFile.mock.calls[0]).toEqual(["/p/a.ts", { selection: { line: 3, col: 1 }, focus: true }]);
+
+      setContext("diffEditorFocus", false);
+      const plain = document.body.appendChild(document.createElement("div"));
+      expect(cmdDown(plain).defaultPrevented).toBe(false);
+      plain.remove();
+    } finally {
+      uninstall();
+      unregister();
+      useKeymap.setState(keymap);
+    }
+  });
 });
 
 describe("Unified Revert", () => {
@@ -401,4 +542,73 @@ describe("Unified Revert", () => {
       }
     });
   }
+});
+
+describe("Diff navigation caret", () => {
+  // @codemirror/view hides `.cm-cursor` unless its editor carries `.cm-focused`, and that class
+  // follows `view.hasFocus`, false while the document itself is unfocused. jsdom reports a
+  // focused document only when told to, so the caret these tests are about is asserted the same way.
+  let documentFocused: ReturnType<typeof vi.spyOn>;
+  beforeEach(() => {
+    localStorage.clear();
+    documentFocused = vi.spyOn(document, "hasFocus").mockReturnValue(true);
+  });
+  afterEach(() => {
+    documentFocused.mockRestore();
+    localStorage.clear();
+  });
+
+  /** One change on line 2 of the right (or only) pane. */
+  const reveal = async (mode: "split" | "unified") => {
+    localStorage.setItem("openidea.vcs.diffOptions", JSON.stringify({ mode }));
+    texts.HEAD = "a\nb\nc\n";
+    texts.abc123 = "a\nB\nc\n";
+    const mounted = render(<DiffEditor input={input} />);
+    const panes = mode === "split" ? 2 : 1;
+    await waitFor(() => expect(document.querySelectorAll(".cm-editor")).toHaveLength(panes));
+    const view = () => EditorView.findFromDOM([...document.querySelectorAll<HTMLElement>(".cm-editor")][panes - 1]!)!;
+    return { mounted, view };
+  };
+
+  it.each([
+    ["Next Difference", "split", false],
+    ["Previous Difference", "split", true],
+    ["Next Difference", "unified", false],
+    ["Previous Difference", "unified", true],
+  ] as const)("keeps the caret visible for %s in the %s viewer", async (label, mode, fromEnd) => {
+    const { mounted, view } = await reveal(mode);
+    try {
+      const button = await screen.findByRole("button", { name: label });
+      if (fromEnd) view().dispatch({ selection: { anchor: view().state.doc.length } });
+      // A click leaves focus on the button, outside the panes.
+      button.focus();
+      expect(view().hasFocus).toBe(false);
+      fireEvent.click(button);
+      expect(view().state.doc.lineAt(view().state.selection.main.head).number).toBe(2);
+      expect(view().hasFocus).toBe(true);
+    } finally {
+      mounted.unmount();
+    }
+  });
+
+  it("keeps the caret visible when F7 runs while focus is outside the panes", async () => {
+    const keymap = useKeymap.getState();
+    applyKeymapSettings("intellij-macos", {});
+    const unregister = registerCompareActions();
+    const uninstall = installKeyboardDispatcher(window);
+    const { mounted, view } = await reveal("split");
+    try {
+      const next = await screen.findByRole("button", { name: "Next Difference" });
+      next.focus();
+      expect(view().hasFocus).toBe(false);
+      next.dispatchEvent(new KeyboardEvent("keydown", { key: "F7", code: "F7", bubbles: true, cancelable: true }));
+      await waitFor(() => expect(view().state.doc.lineAt(view().state.selection.main.head).number).toBe(2));
+      expect(view().hasFocus).toBe(true);
+    } finally {
+      mounted.unmount();
+      uninstall();
+      unregister();
+      useKeymap.setState(keymap);
+    }
+  });
 });

@@ -11,7 +11,7 @@ use std::collections::{BTreeMap, HashMap};
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, Weak};
 
-pub const MAX_DOCUMENT_BYTES: usize = 2 << 20;
+pub const MAX_DOCUMENT_BYTES: usize = ide_lsp::MAX_INJECTED_DOCUMENT_BYTES;
 const MAX_FILES: usize = 20_000;
 const MAX_EDGES: usize = 4096;
 
@@ -197,6 +197,7 @@ impl PluginHost {
     /// navigation_at. Call off the UI thread, in small cancellable batches.
     pub fn index_navigation(&self, root: &Path, snapshot: Snapshot<'_>, invocation: Invocation) -> IdeResult<()> {
         let Snapshot { path, version, text, symbols, scope } = snapshot;
+        let path = dunce::simplified(path);
         if !(self.project_policy.read())(root) {
             return Err(IdeError::unavailable("project is not trusted"));
         }
@@ -452,6 +453,7 @@ impl PluginHost {
             return vec![];
         };
         let mut result = vec![];
+        let mut icons = HashMap::new();
         for path in paths {
             for (id, graph) in graphs {
                 let Some(plugin) = plugins.get(id) else { continue };
@@ -462,6 +464,7 @@ impl PluginHost {
                 if version_of(path).is_some_and(|v| file.version != Some(v)) {
                     continue;
                 }
+                let prefixes = icons.entry(id).or_insert_with(|| marker_icons(plugin));
                 let mut markers = vec![];
                 for anchor in &file.edges.markers {
                     let candidates = graph.targets(&anchor.key);
@@ -481,7 +484,15 @@ impl PluginHost {
                         }
                     }
                     if !targets.is_empty() {
-                        markers.push(NavigationResult { range: anchor.range, targets });
+                        markers.push(IndexedMarker {
+                            range: anchor.range,
+                            targets,
+                            plugin_id: id.clone(),
+                            icon: prefixes
+                                .iter()
+                                .find(|(prefix, _)| anchor.key.starts_with(prefix.as_str()))
+                                .map(|(_, icon)| icon.clone()),
+                        });
                     }
                 }
                 if !markers.is_empty() {
@@ -515,6 +526,23 @@ pub(crate) fn snapshot_hash(text: &str) -> blake3::Hash {
 #[serde(deny_unknown_fields)]
 struct Decl {
     extensions: Vec<String>,
+}
+#[derive(Deserialize)]
+struct MarkerIconPrefixes {
+    id: String,
+    #[serde(default)]
+    markers: Vec<String>,
+}
+fn marker_icons(p: &super::LoadedPlugin) -> Vec<(String, String)> {
+    let mut prefixes: Vec<_> = p
+        .manifest()
+        .declarations(super::ui_points::MARKER_ICONS)
+        .into_iter()
+        .filter_map(|d| decode::<MarkerIconPrefixes>(super::ui_points::MARKER_ICONS, d).ok())
+        .flat_map(|d| d.markers.into_iter().map(move |prefix| (prefix, d.id.clone())))
+        .collect();
+    prefixes.sort_by_key(|(prefix, _)| std::cmp::Reverse(prefix.len()));
+    prefixes
 }
 fn declaration(p: &super::LoadedPlugin) -> Option<Decl> {
     p.manifest()

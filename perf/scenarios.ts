@@ -4,6 +4,7 @@
  */
 import { Harness, type Metrics, type Scenario } from "./lib/harness.ts";
 import { frameSummary, keySummary, latencySummary, totalBlockingTime } from "./lib/stats.ts";
+import { startTuiRowObserver, stopTuiRowObserver } from "./lib/tuiRows.ts";
 
 const ROOT = "/dev/acme-api";
 const SAMPLE = `${ROOT}/src/main/kotlin/com/acme/orders/service/OrderService.kt`;
@@ -185,6 +186,65 @@ const consoleOutput: Scenario = {
     return {
       // 250 frames of output at the display rate is the floor.
       streamMs: total,
+      ...frameSummary(frames, refresh),
+      ...keySummary(keys, refresh, "key"),
+      tbtMs: totalBlockingTime(await h.longTasksSince(t0)),
+    };
+  },
+};
+
+/**
+ * A full-screen agent TUI (Claude Code, Grok) repainting the terminal 10 times a second
+ * for 6 s — every row rewritten, only the spinner row changed — while the user types in
+ * an editor. Guards the terminal's unchanged-row skip: without it every frame restyles
+ * and lays out the whole screen.
+ */
+const TUI_FRAMES = 60;
+const terminalTui: Scenario = {
+  id: "terminalTui",
+  title: "Type while a full-screen TUI repaints the terminal",
+  async run(h) {
+    await h.openFile(SAMPLE);
+    const st = await h.editorState();
+    await h.setCursor(Math.floor((st?.length ?? 0) / 2));
+    // Open the terminal and let it settle before measuring.
+    const opened = await h.page.evaluate(() =>
+      (
+        window as never as { __openideaPerf: { runAction(id: string, arg?: unknown): Promise<boolean> } }
+      ).__openideaPerf.runAction("terminal.sampleTui", { frames: 1, fps: 10 }),
+    );
+    if (!opened) throw new Error("terminal.sampleTui is unavailable");
+    await h.page.waitForTimeout(300);
+    await h.setCursor((await h.editorState())?.head ?? 0);
+    const refresh = await h.refreshMs();
+    const t0 = await h.now();
+    const before = await h.counters();
+    await h.page.evaluate(startTuiRowObserver);
+    await h.inPage((p) => p.startFrames());
+    const stream = h.page.evaluate(
+      (frames) =>
+        (
+          window as never as { __openideaPerf: { runAction(id: string, arg?: unknown): Promise<boolean> } }
+        ).__openideaPerf.runAction("terminal.sampleTui", { frames, fps: 10 }),
+      TUI_FRAMES,
+    );
+    let keys: number[];
+    let rebuilt: number;
+    try {
+      await h.page.waitForTimeout(200);
+      await h.setCursor((await h.editorState())?.head ?? 0);
+      keys = await h.typeMeasured(TYPED.slice(0, 40), 70);
+      if (!(await stream)) throw new Error("terminal.sampleTui is unavailable");
+    } finally {
+      rebuilt = await h.page.evaluate(stopTuiRowObserver);
+    }
+    const frames = await h.inPage((p) => p.stopFrames());
+    const work = Harness.delta(before, await h.counters());
+    return {
+      // ~1 with unchanged rows left in place (only the spinner row changes), the screen height without.
+      rowsRebuiltPerTuiFrame: rebuilt / TUI_FRAMES,
+      styleLayoutMsPerTuiFrame: work.styleLayoutMs / TUI_FRAMES,
+      scriptMsPerTuiFrame: work.scriptMs / TUI_FRAMES,
       ...frameSummary(frames, refresh),
       ...keySummary(keys, refresh, "key"),
       tbtMs: totalBlockingTime(await h.longTasksSince(t0)),
@@ -449,13 +509,153 @@ const tabs: Scenario = {
       await h.openFile(`${ROOT}/src/tabs/${name}`, tsSource(2_000, `tab-${i}`));
     }
     const switches: number[] = [];
+    // Recently shown tabs keep their editor view: showing one again must not build a new one.
+    let viewsRebuilt = 0;
+    let switchWork = await h.counters();
     for (let round = 0; round < 3; round++) {
+      if (round === 1) switchWork = await h.counters();
       for (let i = 0; i < names.length; i++) {
         const tab = h.page.getByRole("tab", { name: names[i], exact: true });
         switches.push(await h.measure(() => tab.click(), ".cm-content", `// tab-${i}`));
+        const fresh = await h.page.evaluate(() => {
+          const view = document.querySelector("[data-editor-host] .cm-editor") as { perfSeen?: boolean } | null;
+          if (!view || view.perfSeen) return false;
+          view.perfSeen = true;
+          return true;
+        });
+        if (round > 0 && fresh) viewsRebuilt++;
       }
     }
-    return { openSmallMs, ...latencySummary(switches, "switch") };
+    const work = Harness.delta(switchWork, await h.counters());
+    // The Switcher (Ctrl+Tab) back and forth between the two most recent tabs.
+    const before = await h.counters();
+    const switcher: number[] = [];
+    for (let i = 0; i < 10; i++) {
+      const tag = i % 2 ? names.length - 1 : names.length - 2;
+      switcher.push(await h.measure(() => h.pressAction("navigate.switcher"), ".cm-content", `// tab-${tag}`));
+      await h.page.waitForTimeout(150);
+    }
+    const switcherWork = Harness.delta(before, await h.counters());
+    return {
+      openSmallMs,
+      ...latencySummary(switches, "switch"),
+      switchMainThreadMs: work.taskMs / (names.length * 2),
+      viewsRebuilt,
+      ...latencySummary(switcher, "switcher"),
+      switcherMainThreadMs: switcherWork.taskMs / switcher.length,
+    };
+  },
+};
+
+/**
+ * Two agent tasks with long conversations (150 turns, 2,100 entries) in editor tabs:
+ * switching between them with the Switcher (Ctrl+Tab) shows a kept-alive conversation
+ * again, which must not restyle its whole history; then scrolling up through one.
+ * Chromium anchors scrolling on its own (WebKit doesn't), so anchoring is turned off
+ * here: rows that take their real height only once scrolled into view would jump.
+ */
+const agentTabs: Scenario = {
+  id: "agentTabs",
+  title: "Switch between and scroll long agent conversations",
+  async run(h) {
+    await h.page.addStyleTag({ content: "* { overflow-anchor: none !important; }" });
+    await h.page.evaluate(() =>
+      (
+        window as never as { __openideaPerf: { runAction(id: string, arg?: unknown): Promise<boolean> } }
+      ).__openideaPerf.runAction("agents.openSampleConversations", { tasks: 2, turns: 150 }),
+    );
+    const shown = (n: number) => `[data-editor-focus] span[title="Sample task ${n}"]`;
+    // Both conversations get their earlier entries painted in background batches, also the
+    // first one, hidden behind the second as soon as it opened.
+    await h.page.waitForFunction(
+      () =>
+        [...document.querySelectorAll("[data-message]")]
+          .map((m) => m.parentElement!)
+          .filter((stream, i, all) => all.indexOf(stream) === i && stream.textContent!.includes("Turn 0:")).length ===
+        2,
+      undefined,
+      { timeout: 30_000, polling: 200 },
+    );
+    // Rows painted while hidden are laid out the first time their conversation shows.
+    for (const n of [1, 2]) {
+      await h.page.getByRole("tab", { name: `Sample task ${n}` }).click();
+      await h.page.locator(shown(n)).waitFor();
+      await h.page.waitForTimeout(300);
+    }
+    // WebKit restyles a hidden conversation in full when it is shown again (Chromium keeps its
+    // style): what bounds that there is the history's DOM, and rows skipping rendering off screen.
+    const { conversationNodes, rowsAlwaysRendered } = await h.page.evaluate((selector) => {
+      const conversation = document.querySelector(selector)!.closest("[data-editor-focus]")!;
+      const rows = [...conversation.querySelector("[data-message]")!.parentElement!.children];
+      return {
+        conversationNodes: conversation.querySelectorAll("*").length,
+        rowsAlwaysRendered: rows.filter((r) => getComputedStyle(r).contentVisibility !== "auto").length,
+      };
+    }, shown(2));
+
+    const t0 = await h.now();
+    const before = await h.counters();
+    const switches: number[] = [];
+    for (let i = 0; i < 10; i++) {
+      switches.push(await h.measure(() => h.pressAction("navigate.switcher"), shown(i % 2 ? 2 : 1)));
+      await h.page.waitForTimeout(150);
+    }
+    const work = Harness.delta(before, await h.counters());
+    const switchTbtMs = totalBlockingTime(await h.longTasksSince(t0));
+
+    // Scrolling up from the end, a step at a time: how far the text under the pointer moves
+    // beyond the scroll itself.
+    const scrollJumps = await h.page.evaluate(async (selector) => {
+      const stream = document
+        .querySelector(selector)!
+        .closest("[data-editor-focus]")!
+        .querySelector("[data-message]")!.parentElement!;
+      const frame = () => new Promise(requestAnimationFrame);
+      stream.scrollTop = stream.scrollHeight;
+      await frame();
+      await frame();
+      const top = stream.getBoundingClientRect().top;
+      let jumps = 0;
+      for (let i = 0; i < 100 && stream.scrollTop > 0; i++) {
+        const row = [...stream.children].find((r) => r.getBoundingClientRect().bottom > top + 200)!;
+        const from = row.getBoundingClientRect().top;
+        const scrolled = stream.scrollTop;
+        // A wheel step: the user scrolls, so the conversation stops following its end.
+        stream.dispatchEvent(new WheelEvent("wheel", { bubbles: true, deltaY: -120 }));
+        stream.scrollTop -= 120;
+        const by = scrolled - stream.scrollTop;
+        await frame();
+        await frame();
+        if (Math.abs(row.getBoundingClientRect().top - from - by) > 2) jumps++;
+      }
+      stream.scrollTop = stream.scrollHeight;
+      return jumps;
+    }, shown(2));
+
+    const refresh = await h.refreshMs();
+    const box = (await h.page.locator("[data-editor-focus]").boundingBox())!;
+    await h.page.mouse.move(box.x + box.width / 2, box.y + box.height / 2);
+    await h.page.waitForTimeout(200);
+    const t1 = await h.now();
+    await h.inPage((p) => p.startFrames());
+    for (let i = 0; i < 120; i++) {
+      await h.page.mouse.wheel(0, -120);
+      await h.page.waitForTimeout(16);
+    }
+    await h.page.waitForTimeout(200);
+    const scroll = frameSummary(await h.inPage((p) => p.stopFrames()), refresh);
+    return {
+      conversationNodes,
+      rowsAlwaysRendered,
+      ...latencySummary(switches, "switch"),
+      switchMainThreadMs: work.taskMs / switches.length,
+      switchStyleLayoutMs: work.styleLayoutMs / switches.length,
+      switchTbtMs,
+      scrollJumps,
+      scrollFrameP95Ms: scroll.frameP95Ms,
+      scrollDroppedFramesPct: scroll.droppedFramesPct,
+      scrollTbtMs: totalBlockingTime(await h.longTasksSince(t1)),
+    };
   },
 };
 
@@ -600,12 +800,14 @@ export const SCENARIOS: Scenario[] = [
   typingAngular,
   completion,
   consoleOutput,
+  terminalTui,
   gitLog,
   gitLogScrollbar,
   resizePanels,
   keyRepeat,
   scroll,
   tabs,
+  agentTabs,
   popups,
   toolWindows,
   projectTree,

@@ -36,6 +36,7 @@ import { defineBuiltinUiPoints } from "./points";
 import { localizeContributions, loadPluginCatalogs, usePluginCatalogs } from "./pluginText";
 import { clearUiContributions, syncUiContributions } from "./projection";
 import { handleRuntimeEvent, refreshEventKinds, startRuntimeUi } from "./runtimeUi";
+import { refreshRunTargets } from "./runTargets";
 import {
   grantPlugin,
   runPluginCommand,
@@ -330,6 +331,7 @@ export function handlePluginEvent(e: PluginEvent) {
  */
 export function followPluginChanges(): () => void {
   return pluginsBackend().onEvent((e) => {
+    if (e.type === "runTargetsChanged") void refreshRunTargets(false).catch(() => {});
     if (e.type === "commandsChanged" || e.type === "themeChanged" || e.type === "languagesChanged")
       handlePluginEvent(e);
   });

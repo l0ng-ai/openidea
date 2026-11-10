@@ -24,6 +24,7 @@ import { usePlugins } from "../store";
 import { bindLogControls } from "./logActions";
 import { boundedLog, type PluginLogEditorData } from "./logTab";
 import { logTabPtyBackend, webPtyBackend } from "./ptyBackend";
+import { outputKey, usePluginOutput } from "./outputStore";
 import { ptyBridge } from "./ptyBridge";
 
 export const PLUGIN_LOG_EDITOR_KIND = "pluginLog";
@@ -50,7 +51,7 @@ const wheelZoom = EditorView.domEventHandlers({
 
 export function PluginLogEditor({ input }: { input: EditorInput }) {
   const data = input.data as PluginLogEditorData | undefined;
-  if (!data || !data.program) {
+  if (!data || (!data.program && data.origin !== "output")) {
     return <EmptyState title={tx("Invalid log stream configuration")} />;
   }
   return <PluginLogEditorBody input={input} data={data} />;
@@ -336,6 +337,16 @@ function PluginLogEditorBody({ input, data }: { input: EditorInput; data: Plugin
   useEffect(() => {
     const view = viewRef.current;
     if (!view) return;
+    if (data.origin === "output") {
+      const key = outputKey(data.pluginId, data.key ?? "");
+      const update = () => {
+        const text = usePluginOutput.getState().channels.get(key) ?? "";
+        view.dispatch({ changes: { from: 0, to: view.state.doc.length, insert: text } });
+        if (stickRef.current) view.scrollDOM.scrollTop = view.scrollDOM.scrollHeight;
+      };
+      update();
+      return usePluginOutput.subscribe(update);
+    }
     receivedRef.current = false;
     view.dispatch({ changes: { from: 0, to: view.state.doc.length, insert: tx("Waiting for output…") } });
     stickRef.current = true;

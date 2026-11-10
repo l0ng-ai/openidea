@@ -22,7 +22,7 @@ use serde::{Deserialize, Serialize};
 use specta::Type;
 use std::collections::{HashMap, HashSet};
 use std::path::Path;
-use tauri::menu::{IsMenuItem, Menu, MenuItem, MenuItemKind, PredefinedMenuItem, Submenu};
+use tauri::menu::{CheckMenuItem, IsMenuItem, Menu, MenuItem, MenuItemKind, PredefinedMenuItem, Submenu};
 use tauri::{AppHandle, Runtime};
 
 /// Event emitted to the focused window when an IDE menu item is clicked.
@@ -143,6 +143,9 @@ pub enum Entry {
         accel: Option<&'static str>,
         /// Shortcut text after the label, for the Windows/Linux edit items without a keymap binding.
         hint: Option<&'static str>,
+        /// A toggle (IDEA's ToggleAction) drawn with a check mark; on when its id is in
+        /// [`MenuConfig::checked`].
+        check: bool,
     },
     Native(Native),
     Separator,
@@ -157,19 +160,24 @@ fn sub(id: &'static str, label: &'static str, children: Vec<Entry>) -> Entry {
     Entry::Submenu { id, label, children }
 }
 fn act(id: &'static str, label: &'static str) -> Entry {
-    Entry::Action { id, label, accel: None, hint: None }
+    Entry::Action { id, label, accel: None, hint: None, check: false }
 }
 fn accel(id: &'static str, label: &'static str, accel: &'static str) -> Entry {
-    Entry::Action { id, label, accel: Some(accel), hint: None }
+    Entry::Action { id, label, accel: Some(accel), hint: None, check: false }
 }
 fn hinted(id: &'static str, label: &'static str, hint: &'static str) -> Entry {
-    Entry::Action { id, label, accel: None, hint: Some(hint) }
+    Entry::Action { id, label, accel: None, hint: Some(hint), check: false }
+}
+fn toggle(id: &'static str, label: &'static str) -> Entry {
+    Entry::Action { id, label, accel: None, hint: None, check: true }
 }
 const SEP: Entry = Entry::Separator;
 
 /// [`Entry::Dynamic`] slots the frontend fills.
 pub const DYNAMIC_TOOL_WINDOWS: &str = "toolWindows";
 pub const DYNAMIC_LAYOUTS: &str = "toolWindowLayouts";
+/// View › Appearance › Status Bar Widgets: every titled widget with its check mark.
+pub const DYNAMIC_STATUS_BAR_WIDGETS: &str = "statusBarWidgets";
 /// Tools › entries of plugins (`[[contributes.menus]] menu = "tools"`).
 pub const DYNAMIC_PLUGIN_TOOLS: &str = "pluginTools";
 
@@ -216,6 +224,7 @@ pub fn spec(os: Os) -> Vec<Entry> {
         act("file.new", "New…"),
         act("file.newScratchFile", "New Scratch File…"),
         act("file.openProject", "Open…"),
+        act("project.attach", "Attach Project…"),
         act("file.openFile", "Open File…"),
         act("file.openInNewWindow", "Open in New Window…"),
         sub(
@@ -242,7 +251,11 @@ pub fn spec(os: Os) -> Vec<Entry> {
         sub(
             "manageIdeSettings",
             "Manage IDE Settings",
-            vec![act("file.exportSettings", "Export Settings…"), act("file.importSettings", "Import Settings…")],
+            vec![
+                act("file.exportSettings", "Export Settings…"),
+                act("file.importSettings", "Import Settings…"),
+                act("file.importJetBrainsSettings", "Import Settings from JetBrains IDE…"),
+            ],
         ),
         sub(
             "newProjectsSetup",
@@ -372,7 +385,7 @@ pub fn spec(os: Os) -> Vec<Entry> {
                 vec![
                     act("editor.toggleZen", "Enter Distraction Free Mode"),
                     act("window.toggleFullScreen", "Toggle Full Screen"),
-                    act("view.toggleCompactMode", "Compact Mode"),
+                    toggle("view.toggleCompactMode", "Compact Mode"),
                     SEP,
                     act("view.zoomIn", "Zoom In IDE"),
                     act("view.zoomOut", "Zoom Out IDE"),
@@ -380,8 +393,23 @@ pub fn spec(os: Os) -> Vec<Entry> {
                     SEP,
                     act("view.toggleTheme", "Toggle Light/Dark Theme"),
                     act("toolbar.customize", "Customize Main Toolbar…"),
+                    SEP,
+                    toggle("view.toggleToolbar", "Toolbar"),
+                    toggle("view.toggleToolWindowBars", "Tool Window Bars"),
+                    sub(
+                        "navigationBar",
+                        "Navigation Bar",
+                        vec![
+                            toggle("view.navigationBarTop", "Top"),
+                            toggle("view.navigationBarStatusBar", "Status Bar"),
+                            toggle("view.navigationBarHidden", "Don't Show"),
+                        ],
+                    ),
+                    toggle("view.toggleStatusBar", "Status Bar"),
+                    sub("statusBarWidgets", "Status Bar Widgets", vec![Entry::Dynamic(DYNAMIC_STATUS_BAR_WIDGETS)]),
                 ],
             ),
+            sub("activeEditor", "Active Editor", vec![act("editor.toggleSoftWrap", "Soft-Wrap")]),
             SEP,
             act("code.quickDefinition", "Quick Definition"),
             act("code.quickTypeDefinition", "Quick Type Definition"),
@@ -918,6 +946,9 @@ pub struct MenuConfig {
     /// [`Entry::Dynamic`] slot → its items, already localised.
     #[serde(default)]
     pub dynamic: HashMap<String, Vec<DynamicItem>>,
+    /// Ids of the toggle actions currently on.
+    #[serde(default)]
+    pub checked: Vec<String>,
 }
 
 /// An item of a frontend-listed menu slot.
@@ -927,6 +958,9 @@ pub struct DynamicItem {
     pub action: String,
     pub arg: Option<String>,
     pub label: String,
+    /// Drawn with a check mark in this state; `None` for a plain item.
+    #[serde(default)]
+    pub checked: Option<bool>,
 }
 
 impl DynamicItem {
@@ -1025,6 +1059,12 @@ pub fn apply_disabled<R: Runtime>(app: &AppHandle<R>, disabled: &HashSet<String>
                         let _ = i.set_enabled(enabled);
                     }
                 }
+                MenuItemKind::Check(i) => {
+                    let enabled = item_enabled(i.id().as_ref(), disabled);
+                    if i.is_enabled().is_ok_and(|e| e != enabled) {
+                        let _ = i.set_enabled(enabled);
+                    }
+                }
                 MenuItemKind::Submenu(s) => {
                     if let Ok(children) = s.items() {
                         walk(children, disabled)
@@ -1077,10 +1117,12 @@ enum RenderedItem {
         items: Vec<RenderedItem>,
     },
     /// `accel` is the spec's accelerator, or else the keymap's from [`MenuConfig::accelerators`].
+    /// `checked` is set for a toggle, drawn as a check item.
     Action {
         id: String,
         text: String,
         accel: Option<String>,
+        checked: Option<bool>,
     },
     /// Always disabled (`No Recent Projects`).
     Placeholder {
@@ -1124,10 +1166,11 @@ fn render_items(entries: &[Entry], config: &MenuConfig, recent: &[RecentItem]) -
                 title: config.label(id, label),
                 items: render_items(children, config, recent),
             }),
-            Entry::Action { id, label, accel, hint } => out.push(RenderedItem::Action {
+            Entry::Action { id, label, accel, hint, check } => out.push(RenderedItem::Action {
                 id: (*id).into(),
                 text: config.item_text(id, label, *hint),
                 accel: accel.or_else(|| config.accelerator(id)).map(Into::into),
+                checked: check.then(|| config.checked.iter().any(|c| c == id)),
             }),
             Entry::Dynamic(slot) => {
                 for item in config.dynamic_items(slot) {
@@ -1135,6 +1178,7 @@ fn render_items(entries: &[Entry], config: &MenuConfig, recent: &[RecentItem]) -
                         id: item.item_id(),
                         text: item.label.clone(),
                         accel: config.dynamic_accelerator(item).map(Into::into),
+                        checked: item.checked,
                     });
                 }
             }
@@ -1152,6 +1196,7 @@ fn render_items(entries: &[Entry], config: &MenuConfig, recent: &[RecentItem]) -
                         id: format!("{RECENT_PREFIX}{}", item.path),
                         text: item.label.clone(),
                         accel: None,
+                        checked: None,
                     });
                 }
             }
@@ -1163,7 +1208,8 @@ fn render_items(entries: &[Entry], config: &MenuConfig, recent: &[RecentItem]) -
 fn structure_key(item: &RenderedItem) -> (u8, &str) {
     match item {
         RenderedItem::Submenu { id, .. } => (0, *id),
-        RenderedItem::Action { id, .. } => (1, id.as_str()),
+        RenderedItem::Action { id, checked: None, .. } => (1, id.as_str()),
+        RenderedItem::Action { id, checked: Some(_), .. } => (5, id.as_str()),
         RenderedItem::Placeholder { id, .. } => (2, id.as_str()),
         RenderedItem::Native { kind, .. } => (3, kind.key()),
         RenderedItem::Separator => (4, ""),
@@ -1223,9 +1269,13 @@ fn append_rendered<R: Runtime>(
                 append_rendered(app, &child, items, disabled)?;
                 parent.append(&child)?;
             }
-            RenderedItem::Action { id, text, accel } => {
+            RenderedItem::Action { id, text, accel, checked: None } => {
                 let enabled = item_enabled(id, disabled);
                 parent.append(&MenuItem::with_id(app, id, text, enabled, accel.as_deref())?)?;
+            }
+            RenderedItem::Action { id, text, accel, checked: Some(checked) } => {
+                let enabled = item_enabled(id, disabled);
+                parent.append(&CheckMenuItem::with_id(app, id, text, enabled, *checked, accel.as_deref())?)?;
             }
             RenderedItem::Placeholder { id, text } => {
                 parent.append(&MenuItem::with_id(app, id, text, false, None::<&str>)?)?;
@@ -1270,7 +1320,11 @@ fn existing_matches<R: Runtime>(existing: &MenuItemKind<R>, desired: &RenderedIt
         (MenuItemKind::Submenu(submenu), RenderedItem::Submenu { id, .. }) => {
             submenu.id().as_ref() == format!("submenu:{id}").as_str()
         }
-        (MenuItemKind::MenuItem(item), RenderedItem::Action { id, .. } | RenderedItem::Placeholder { id, .. }) => {
+        (
+            MenuItemKind::MenuItem(item),
+            RenderedItem::Action { id, checked: None, .. } | RenderedItem::Placeholder { id, .. },
+        ) => item.id().as_ref() == id.as_str(),
+        (MenuItemKind::Check(item), RenderedItem::Action { id, checked: Some(_), .. }) => {
             item.id().as_ref() == id.as_str()
         }
         (MenuItemKind::Predefined(_), RenderedItem::Native { .. } | RenderedItem::Separator) => true,
@@ -1346,6 +1400,16 @@ fn sync_item<R: Runtime>(
                 && (previous_text == text || item.set_text(text).is_ok())
                 && (previous_accel == accel || item.set_accelerator(accel.as_deref()).is_ok())
         }
+        (
+            MenuItemKind::Check(item),
+            RenderedItem::Action { text: previous_text, accel: previous_accel, checked: previous_checked, .. },
+            RenderedItem::Action { text, accel, checked: Some(checked), .. },
+        ) => {
+            accelerator_patchable(previous_accel.as_deref(), accel.as_deref())
+                && (previous_text == text || item.set_text(text).is_ok())
+                && (previous_accel == accel || item.set_accelerator(accel.as_deref()).is_ok())
+                && (*previous_checked == Some(*checked) || item.set_checked(*checked).is_ok())
+        }
         (MenuItemKind::MenuItem(item), _, RenderedItem::Placeholder { text, .. }) => item.set_text(text).is_ok(),
         (MenuItemKind::Predefined(item), _, RenderedItem::Native { text, .. }) => item.set_text(text).is_ok(),
         _ => false,
@@ -1398,11 +1462,15 @@ pub enum MenuNode {
         children: Vec<MenuNode>,
     },
     /// Runs `id` with `arg`. Items with an `arg` (Open Recent) carry their final label.
+    /// `checked` is the state of a frontend-listed toggle (Status Bar Widgets). Spec toggles
+    /// leave it unset: the frontend menu reads their state from the action (`toggled`), the
+    /// source [`MenuConfig::checked`] is built from for the native menu.
     Action {
         id: String,
         label: String,
         hint: Option<String>,
         arg: Option<String>,
+        checked: Option<bool>,
     },
     /// A disabled placeholder such as "No Recent Projects".
     Placeholder {
@@ -1427,12 +1495,14 @@ pub fn model(spec: &[Entry], recent: &[RecentItem], config: &MenuConfig) -> Vec<
                 label: d.label.clone(),
                 hint: None,
                 arg: d.arg.clone(),
+                checked: d.checked,
             })),
             Entry::Action { id, label, hint, .. } => out.push(MenuNode::Action {
                 id: (*id).into(),
                 label: (*label).into(),
                 hint: hint.map(Into::into),
                 arg: None,
+                checked: None,
             }),
             Entry::Native(_) => {}
             Entry::Separator => out.push(MenuNode::Separator),
@@ -1444,6 +1514,7 @@ pub fn model(spec: &[Entry], recent: &[RecentItem], config: &MenuConfig) -> Vec<
                 label: r.label.clone(),
                 hint: None,
                 arg: Some(r.path.clone()),
+                checked: None,
             })),
         }
     }
@@ -1454,6 +1525,45 @@ pub fn model(spec: &[Entry], recent: &[RecentItem], config: &MenuConfig) -> Vec<
 /// frameless and draw IDEA's hamburger menu in their own title bar instead.
 pub fn native_menu_bar() -> bool {
     cfg!(target_os = "macos")
+}
+
+/// The check state item `id` was last drawn with; `None` for a plain item.
+fn rendered_check(menus: &[RenderedMenu], id: &str) -> Option<bool> {
+    fn find(items: &[RenderedItem], id: &str) -> Option<bool> {
+        items.iter().find_map(|item| match item {
+            RenderedItem::Submenu { items, .. } => find(items, id),
+            RenderedItem::Action { id: item_id, checked, .. } if item_id == id => *checked,
+            _ => None,
+        })
+    }
+    menus.iter().find_map(|menu| find(&menu.items, id))
+}
+
+/// Puts a clicked check item back to the state it was drawn with. muda flips it before the
+/// event arrives, but the frontend owns the state: a click it ignores (a modal Settings
+/// window, a failed save) must not leave a stale mark, and one it accepts comes back as a new
+/// config that sets the mark through [`sync_item`].
+pub fn restore_check<R: Runtime>(app: &AppHandle<R>, menu_state: &MenuState, id: &str) {
+    fn walk<R: Runtime>(items: Vec<MenuItemKind<R>>, id: &str, checked: bool) -> bool {
+        items.into_iter().any(|item| match item {
+            MenuItemKind::Check(i) if i.id().as_ref() == id => {
+                if i.is_checked().is_ok_and(|c| c != checked) {
+                    let _ = i.set_checked(checked);
+                }
+                true
+            }
+            MenuItemKind::Submenu(s) => s.items().is_ok_and(|children| walk(children, id, checked)),
+            _ => false,
+        })
+    }
+    let Some(checked) = menu_state.rendered.lock().as_deref().and_then(|menus| rendered_check(menus, id)) else {
+        return;
+    };
+    if let Some(menu) = app.menu()
+        && let Ok(items) = menu.items()
+    {
+        walk(items, id, checked);
+    }
 }
 
 /// Installs the app menu from the current config and recent list.
@@ -1554,6 +1664,24 @@ mod tests {
             for id in action_ids(&spec) {
                 assert_eq!(route(&spec, id), Some(MenuRoute { action: id.into(), arg: None }), "{id} on {os:?}");
             }
+        }
+    }
+
+    #[test]
+    fn soft_wrap_is_available_under_view_active_editor_on_every_os() {
+        for os in ALL_OS {
+            let menus = spec(os);
+            let Entry::Submenu { children: view, .. } =
+                menus.iter().find(|e| matches!(e, Entry::Submenu { id: "view", .. })).unwrap()
+            else {
+                panic!("View menu missing")
+            };
+            let Entry::Submenu { children: active, .. } =
+                view.iter().find(|e| matches!(e, Entry::Submenu { id: "activeEditor", .. })).unwrap()
+            else {
+                panic!("Active Editor menu missing")
+            };
+            assert!(action_ids(active).contains(&"editor.toggleSoftWrap"), "{os:?}");
         }
     }
 
@@ -1682,6 +1810,9 @@ mod tests {
                 "window.toggleFullScreen",
                 "view.toggleTheme",
                 "editor.toggleZen",
+                "view.toggleToolbar",
+                "view.toggleToolWindowBars",
+                "view.toggleStatusBar",
                 "help.keymapReference",
                 "help.showLog",
                 "find.inFile",
@@ -1761,7 +1892,8 @@ mod tests {
             Some(RenderedItem::Action {
                 id: "file.save".into(),
                 text: "Save All".into(),
-                accel: Some("Meta+S".into())
+                accel: Some("Meta+S".into()),
+                checked: None,
             })
         );
         assert!(matches!(item("app.quit"), Some(RenderedItem::Action { accel: Some(a), .. }) if a == "CmdOrCtrl+Q"));
@@ -1869,7 +2001,83 @@ mod tests {
     }
 
     fn dynamic_item(action: &str, arg: Option<&str>, label: &str) -> DynamicItem {
-        DynamicItem { action: action.into(), arg: arg.map(Into::into), label: label.into() }
+        DynamicItem { action: action.into(), arg: arg.map(Into::into), label: label.into(), checked: None }
+    }
+
+    #[test]
+    fn appearance_toggles_are_checks_that_change_only_the_view_menu() {
+        let entries = spec(Os::Mac);
+        let base = MenuConfig::default();
+        let checked = |config: &MenuConfig, id: &str| {
+            let items: Vec<RenderedItem> =
+                render_bar(&entries, config, &[]).into_iter().flat_map(|menu| menu.items).collect();
+            match rendered_action(&items, id) {
+                Some(RenderedItem::Action { checked, .. }) => *checked,
+                other => panic!("{id}: {other:?}"),
+            }
+        };
+        for id in ["view.toggleCompactMode", "view.toggleToolbar", "view.toggleToolWindowBars", "view.toggleStatusBar"]
+        {
+            assert_eq!(checked(&base, id), Some(false), "{id}");
+        }
+        assert_eq!(checked(&base, "view.zoomIn"), None);
+
+        let mut on = base.clone();
+        on.checked = vec!["view.toggleToolbar".into(), "view.zoomIn".into()];
+        assert_eq!(checked(&on, "view.toggleToolbar"), Some(true));
+        assert_eq!(checked(&on, "view.toggleStatusBar"), Some(false));
+        assert_eq!(checked(&on, "view.zoomIn"), None, "plain items stay plain");
+        assert_eq!(changed_menus(&render_bar(&entries, &base, &[]), &render_bar(&entries, &on, &[])), ["view"]);
+    }
+
+    #[test]
+    fn a_clicked_check_returns_to_its_rendered_state() {
+        let mut config = MenuConfig { checked: vec!["view.toggleToolbar".into()], ..MenuConfig::default() };
+        config.dynamic.insert(
+            DYNAMIC_STATUS_BAR_WIDGETS.into(),
+            vec![DynamicItem {
+                action: "view.toggleStatusBarWidget".into(),
+                arg: Some("perf.memory".into()),
+                label: "Memory Indicator".into(),
+                checked: Some(false),
+            }],
+        );
+        let menus = render_bar(&spec(Os::Mac), &config, &[]);
+        assert_eq!(rendered_check(&menus, "view.toggleToolbar"), Some(true));
+        assert_eq!(rendered_check(&menus, "view.toggleStatusBar"), Some(false));
+        let widget = config.dynamic[DYNAMIC_STATUS_BAR_WIDGETS][0].item_id();
+        assert_eq!(rendered_check(&menus, &widget), Some(false));
+        assert_eq!(rendered_check(&menus, "view.zoomIn"), None, "plain items have no state");
+        assert_eq!(rendered_check(&menus, "missing"), None);
+    }
+
+    #[test]
+    fn status_bar_widgets_are_listed_with_their_state() {
+        let mut config = MenuConfig::default();
+        config.dynamic.insert(
+            DYNAMIC_STATUS_BAR_WIDGETS.into(),
+            vec![DynamicItem {
+                action: "view.toggleStatusBarWidget".into(),
+                arg: Some("perf.memory".into()),
+                label: "Memory Indicator".into(),
+                checked: Some(true),
+            }],
+        );
+        let id = config.dynamic[DYNAMIC_STATUS_BAR_WIDGETS][0].item_id();
+        let items: Vec<RenderedItem> =
+            render_bar(&spec(Os::Mac), &config, &[]).into_iter().flat_map(|menu| menu.items).collect();
+        assert!(matches!(rendered_action(&items, &id), Some(RenderedItem::Action { checked: Some(true), .. })));
+        assert_eq!(
+            route(&spec(Os::Mac), &id),
+            Some(MenuRoute { action: "view.toggleStatusBarWidget".into(), arg: Some("perf.memory".into()) })
+        );
+
+        let spec =
+            vec![sub("statusBarWidgets", "Status Bar Widgets", vec![Entry::Dynamic(DYNAMIC_STATUS_BAR_WIDGETS)])];
+        let MenuNode::Submenu { children, .. } = &model(&spec, &[], &config)[0] else { panic!("not a submenu") };
+        assert!(
+            matches!(&children[0], MenuNode::Action { checked: Some(true), arg: Some(a), .. } if a == "perf.memory")
+        );
     }
 
     #[test]
@@ -1900,7 +2108,11 @@ mod tests {
             let spec = spec(os);
             let mut found = Vec::new();
             slots(&spec, &mut found);
-            assert_eq!(found, [DYNAMIC_TOOL_WINDOWS, DYNAMIC_PLUGIN_TOOLS, DYNAMIC_LAYOUTS], "{os:?}");
+            assert_eq!(
+                found,
+                [DYNAMIC_TOOL_WINDOWS, DYNAMIC_STATUS_BAR_WIDGETS, DYNAMIC_PLUGIN_TOOLS, DYNAMIC_LAYOUTS],
+                "{os:?}"
+            );
             assert!(!action_ids(&spec).iter().any(|id| {
                 id.starts_with("toolwindow.")
                     && *id != "toolwindow.hideAll"
@@ -2021,6 +2233,7 @@ mod tests {
                 "file.reloadAllFromDisk",
                 "file.exportSettings",
                 "file.importSettings",
+                "file.importJetBrainsSettings",
                 "file.togglePowerSave",
                 "macro.startRecording",
                 "macro.stopRecording",

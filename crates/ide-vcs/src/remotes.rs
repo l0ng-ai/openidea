@@ -13,6 +13,9 @@ pub struct Remote {
     pub name: String,
     /// Fetch URL.
     pub url: String,
+    /// Fetch URL with any `~/.ssh/config` host alias resolved, when different from `url`.
+    #[serde(default)]
+    pub resolved_url: Option<String>,
 }
 
 fn check_rev(rev: &str) -> IdeResult<()> {
@@ -32,7 +35,7 @@ pub(crate) fn parse_remotes(text: &str) -> Vec<Remote> {
         if kind.is_some_and(|k| k != "(fetch)") || out.iter().any(|r| r.name == name) {
             continue;
         }
-        out.push(Remote { name: name.to_owned(), url: url.to_owned() });
+        out.push(Remote { name: name.to_owned(), url: url.to_owned(), resolved_url: None });
     }
     out
 }
@@ -106,8 +109,8 @@ mod tests {
         assert_eq!(
             parse_remotes(text),
             [
-                Remote { name: "origin".into(), url: "git@github.com:me/app.git".into() },
-                Remote { name: "upstream".into(), url: "https://github.com/org/app".into() },
+                Remote { name: "origin".into(), url: "git@github.com:me/app.git".into(), resolved_url: None },
+                Remote { name: "upstream".into(), url: "https://github.com/org/app".into(), resolved_url: None },
             ]
         );
     }

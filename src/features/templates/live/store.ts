@@ -1,3 +1,5 @@
+import { useContributedSnippets } from "@/workbench/contributions";
+import { snippetTemplates } from "./snippets";
 /**
  * Effective live templates: built-ins with the user's edits applied plus
  * user-defined templates, persisted globally in localStorage.
@@ -21,7 +23,10 @@ export function mergeTemplates(builtins: readonly LiveTemplate[], c: LiveTemplat
   const deleted = new Set(c.deleted);
   const out = builtins.filter((t) => !deleted.has(t.id)).map((t) => c.templates[t.id] ?? t);
   for (const t of Object.values(c.templates)) if (!BUILTIN_IDS.has(t.id) && !deleted.has(t.id)) out.push(t);
-  return out;
+  return [
+    ...out.filter((t) => !t.id.startsWith("plugin-snippet:")),
+    ...useContributedSnippets.getState().snippets.flatMap(snippetTemplates),
+  ];
 }
 
 interface State {
@@ -46,11 +51,13 @@ export function liveTemplates(): LiveTemplate[] {
 }
 
 export function saveTemplate(t: LiveTemplate) {
+  if (t.pluginOrigin) return;
   const c = useLiveTemplates.getState().custom;
   commit({ ...c, templates: { ...c.templates, [t.id]: t }, deleted: c.deleted.filter((d) => d !== t.id) });
 }
 
 export function removeTemplate(id: string) {
+  if (id.startsWith("plugin-snippet:")) return;
   const c = useLiveTemplates.getState().custom;
   const templates = { ...c.templates };
   delete templates[id];
@@ -102,3 +109,7 @@ export function reloadLiveTemplates() {
   useLiveTemplates.setState({ custom, templates: mergeTemplates(BUILTIN_TEMPLATES, custom) });
   useLiveTemplateOptions.setState(loadJson(OPTIONS_KEY, { expandWithTab: true, showInCompletion: true }));
 }
+
+useContributedSnippets.subscribe(() =>
+  useLiveTemplates.setState((s) => ({ templates: mergeTemplates(BUILTIN_TEMPLATES, s.custom) })),
+);

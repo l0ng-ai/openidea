@@ -3,7 +3,9 @@
  * common ones, the options added through "Modify options" (⌥M) and the
  * Before launch list.
  */
+import { writeClipboardText } from "@/platform/clipboard";
 import { isJvmApplication, parseJavaArgs } from "@/platform/javaLaunch";
+import { useRunTargets } from "@/platform/pluginRunTargets";
 import { useEffect, useMemo, useRef, useState, type KeyboardEvent, type ReactNode, type RefObject } from "react";
 import clsx from "clsx";
 import { isTauri, type BeforeLaunchTask, type BuildPolicy, type RunConfig } from "@/platform/ipc";
@@ -45,7 +47,6 @@ import {
 import { gradleContainsModule } from "./gradleRun";
 import { EnvDialog } from "./EnvDialog";
 import { useBuildModel } from "@/platform/buildModel";
-import { withTarget } from "./remote";
 import { COMPOUND, formParams, terminalApplies, withParams } from "./types";
 import { TomcatSettings } from "./TomcatSettings";
 import styles from "./Run.module.css";
@@ -243,7 +244,7 @@ function BrowseButton({
 export function ConfigForm({ config, all, type, errors, template, onChange, modifyRequest }: ConfigFormProps) {
   const openByDefault = useWorkflowSettings((s) => s.run.showOnStart);
   const externalTools = useWorkflowSettings((s) => s.externalTools);
-  const runTargets = useWorkflowSettings((s) => s.runTargets);
+  const runTargets = useRunTargets();
   const toolWindows = useContributions((s) => s.toolWindows);
   const tx = useTx();
   const txTemplate = useTxTemplate();
@@ -383,6 +384,7 @@ export function ConfigForm({ config, all, type, errors, template, onChange, modi
     });
 
   const targetOptions: SelectOption[] = [
+    { value: "__default", label: "Default run target" },
     { value: "", label: "Local machine" },
     ...runTargets.map((t) => ({ value: t.id, label: t.name.trim() || t.id })),
   ];
@@ -446,9 +448,14 @@ export function ConfigForm({ config, all, type, errors, template, onChange, modi
               }
             >
               <Select
-                value={config.target ?? ""}
+                value={config.target ?? "__default"}
                 options={targetOptions}
-                onChange={(target) => onChange(withTarget(config, target))}
+                onChange={(target) => {
+                  if (target === "__default") {
+                    const { target: _target, ...rest } = config;
+                    onChange(rest);
+                  } else onChange({ ...config, target });
+                }}
                 aria-label="Run on"
               />
             </Field>
@@ -881,8 +888,7 @@ function OutputField({ label, text }: { label: string; text: string }) {
   const tx = useTx();
   const [copied, setCopied] = useState(false);
   const copy = () => {
-    void navigator.clipboard
-      ?.writeText(text)
+    void writeClipboardText(text)
       .then(() => setCopied(true))
       .catch(() => undefined);
   };

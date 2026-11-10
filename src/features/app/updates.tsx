@@ -13,6 +13,8 @@ import {
   commands,
   isCancelled,
   isTauri,
+  ideEventsReady,
+  onIdeEvent,
   nextRequestId,
   type UpdateInfo,
   type UpdateProgress,
@@ -110,7 +112,7 @@ async function runCheck() {
         userInitiated: true,
       });
     } else if (!installing) {
-      notifyUpdate(r.update, true);
+      await notifyUpdate(r.update, true);
     }
   } catch (e) {
     notifications().notify({
@@ -125,15 +127,33 @@ async function runCheck() {
   }
 }
 
-/** Silent check once per app start; only an available update is shown. */
-export async function checkForUpdatesOnStartup(): Promise<void> {
-  if (!isTauri()) return;
-  const update = await commands.appStartupUpdateCheck(updateSource()).catch(() => null);
-  if (update) notifyUpdate(update);
+/** Start one backend schedule after this window can receive its notifications. */
+export function installUpdateChecks(): () => void {
+  let disposed = false;
+  const off = onIdeEvent("updateAvailable", ({ update }) => {
+    if (!installing) void notifyUpdate(update);
+  });
+  void ideEventsReady().then(() => {
+    if (!disposed && isTauri())
+      void call(commands.appUpdateWindowReady(true, navigator.language)).catch((e) =>
+        console.warn("cannot start update checks", e),
+      );
+  });
+  return () => {
+    disposed = true;
+    off();
+    if (isTauri()) void call(commands.appUpdateWindowReady(false, navigator.language)).catch(() => {});
+  };
 }
 
 /** `userInitiated`: the update came from a manual check, so it pops up regardless of the balloon settings. */
-export function notifyUpdate(update: UpdateInfo, userInitiated = false) {
+export async function notifyUpdate(update: UpdateInfo, userInitiated = false): Promise<void> {
+  if (isTauri()) {
+    const claimed = await call(commands.appUpdateAnnouncement(update.version, !userInitiated)).catch(
+      () => userInitiated,
+    );
+    if (!claimed) return;
+  }
   notifications().notify({
     level: "info",
     title: t("app.update.available", { version: update.version }),

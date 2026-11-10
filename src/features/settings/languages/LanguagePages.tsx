@@ -3,13 +3,17 @@
  * Build Tools › Maven: the toolchain each language's server and run configurations
  * use (applied by `ide-sdk` when language servers start and when run configurations load).
  */
+import { LanguageServerTargetRows, LanguageServerTargetsPage } from "./LanguageServerTarget";
+import { useProject } from "@/platform/project";
+import { useRunTargets } from "@/platform/pluginRunTargets";
+import { tx } from "@/platform/i18n";
 import { useEffect, useId, useMemo, useState } from "react";
-import { call, commands, type Sdk } from "@/platform/ipc";
+import { call, commands, type LanguageServerTarget, type Sdk } from "@/platform/ipc";
 import { IconButton, Input, type SelectOption, T } from "@/ui";
 import { JAVA_LANGUAGE_LEVELS, PHP_LANGUAGE_LEVELS } from "@/platform/languageSettings";
 import { GlobListEditor, Row, Section, Select, Toggle } from "../components/Form";
 import { choosePath } from "./api";
-import { useSetting } from "../components/context";
+import { usePageContext, useSetting } from "../components/context";
 import { SdkField, tildify, useDetected } from "./components";
 import styles from "./Sdk.module.css";
 
@@ -73,6 +77,23 @@ function SdkRow({
 // ---------------------------------------------------------------------------
 // Node.js
 
+function RunTargetRow({ language }: { language: "php" | "node" }) {
+  const [target, setTarget] = useSetting<string>(`languages.${language}.runTarget`);
+  const targets = useRunTargets();
+  const options = [
+    { value: "", label: "Default run target" },
+    { value: "local", label: "Local machine" },
+    ...targets.map((t) => ({ value: t.id, label: tx`Run in target ${t.name}` })),
+  ];
+  if (target && target !== "local" && !targets.some((t) => t.id === target))
+    options.push({ value: target, label: tx`Run in target ${target}` });
+  return (
+    <Row label="Run in target">
+      <Select value={target ?? ""} options={options} onChange={setTarget} aria-label="Run in target" />
+    </Row>
+  );
+}
+
 export function NodePage() {
   const [pm, setPm] = useSetting<string>("languages.node.packageManager");
   const { list } = useDetected("packageManager");
@@ -103,6 +124,8 @@ export function NodePage() {
           aria-label="Node interpreter"
           hint="Runs npm scripts and Node-based language servers (vtsls, eslint, pyright…)."
         />
+        <RunTargetRow language="node" />
+        <LanguageServerTargetsPage ids={["javascript", "javascriptreact", "typescript", "typescriptreact"]} />
         <Row label="Package manager" hint="Used by the npm run configurations detected from package.json scripts.">
           <Select value={pm} options={pmOptions} onChange={setPm} aria-label="Package manager" />
         </Row>
@@ -212,6 +235,8 @@ export function PhpPage() {
         />
       </Section>
       <Section title="CLI Interpreter">
+        <RunTargetRow language="php" />
+        <LanguageServerTargetRows language="php" />
         <SdkRow
           k="languages.php.interpreter"
           label="PHP interpreter"
@@ -363,6 +388,11 @@ export const JAVA_LEVEL_OPTIONS: SelectOption[] = JAVA_LANGUAGE_LEVELS.map((leve
 );
 
 export function JavaPage() {
+  const [shared, setShared] = useSetting<boolean>("languages.java.jdtlsShared");
+  const [serverTargets] = useSetting<Record<string, LanguageServerTarget>>("languageServerTargets", "project");
+  const { scope } = usePageContext();
+  const workspace = useProject((s) => !!s.project?.workspace);
+  const sharedDisabled = scope === "project" && (workspace || !!serverTargets?.java?.target);
   const [vmArgs, setVmArgs] = useSetting<string>("languages.java.jdtlsVmArgs");
   const [languageLevel, setLanguageLevel] = useSetting<string>("languages.java.languageLevel");
   const id = useId();
@@ -393,6 +423,19 @@ export function JavaPage() {
         </Row>
       </Section>
       <Section title="Language Server">
+        <Toggle
+          label="Share JDT LS across builds"
+          checked={shared}
+          onChange={setShared}
+          disabled={sharedDisabled}
+          hint={
+            sharedDisabled
+              ? workspace
+                ? "Shared JDT LS is available only in local ordinary project windows. Open a workspace member as a project to change this setting for it."
+                : "Shared JDT LS is available only in local ordinary project windows. Select Local machine for the Java language server to use it."
+              : "Uses one JDT LS process for linked builds in each local ordinary project window. Other project windows use separate processes."
+          }
+        />
         <SdkRow
           k="languages.java.jdtlsJdk"
           label="JDK"

@@ -366,12 +366,41 @@ fn manager_at(dir: &Path, models_file: &Path, agent: Arc<FakeAgent>) -> AgentMan
     )
 }
 
+#[tokio::test(flavor = "multi_thread")]
+async fn saved_conversation_reads_do_not_start_or_load_the_agent() {
+    let tmp = tempfile::tempdir().unwrap();
+    let agent = Arc::new(FakeAgent::default());
+    let mgr = manager(tmp.path(), agent.clone());
+    let task = mgr
+        .create(NewAgentTask {
+            project_root: None,
+            prompt: text("Review the saved conversation"),
+            provider: "claude".into(),
+            config: Vec::new(),
+            isolation: Isolation::Local,
+            base: None,
+        })
+        .await
+        .unwrap();
+    wait_for(&mgr, &task.id, AgentStatus::NeedsInput).await;
+    mgr.shutdown();
+    let restored_agent = Arc::new(FakeAgent::default());
+    let restored = manager(tmp.path(), restored_agent.clone());
+    assert!(!restored.entries(&task.id, None).unwrap().is_empty());
+    assert!(restored_agent.calls.lock().is_empty());
+    assert!(restored.entries("missing-task", None).is_err());
+    assert!(restored.entries(&task.id, Some("missing-subagent".into())).is_err());
+    restored.task(&task.id).unwrap().state.lock().conversation = Conversation::default();
+    assert!(restored.entries(&task.id, None).unwrap().is_empty());
+    restored.shutdown();
+}
+
 #[cfg(unix)]
 #[tokio::test(flavor = "multi_thread")]
 async fn claude_commands_before_session_are_fetched_once_and_saved() {
     use std::os::unix::fs::PermissionsExt;
 
-    for outcome in ["success", "error", "exit", "timeout", "missing"] {
+    for outcome in ["success", "session_report", "empty", "settings_timeout", "error", "exit", "timeout", "missing"] {
         let tmp = tempfile::tempdir().unwrap();
         let root = tmp.path();
         let script = root.join("fake-claude");
@@ -380,6 +409,7 @@ async fn claude_commands_before_session_are_fetched_once_and_saved() {
             r#"#!/usr/bin/env python3
 import json, os, pathlib, sys, time
 root = pathlib.Path.cwd()
+(root / 'pid').write_text(str(os.getpid()))
 with (root / 'launches').open('a') as f:
     f.write(json.dumps(sys.argv[1:]) + '\n')
 request = json.loads(sys.stdin.readline())
@@ -391,16 +421,34 @@ if outcome == 'exit':
 if outcome == 'timeout':
     time.sleep(60)
 response = {'subtype': outcome, 'request_id': request['request_id']}
-if outcome == 'success':
+if outcome in ('success', 'session_report', 'empty', 'settings_timeout'):
+    response['subtype'] = 'success'
     response['response'] = {'commands': [
         {'name': 'compact', 'description': 'Free up context', 'argumentHint': '[instructions]'},
-        {'name': 'clear'}, {'name': 'model'}, {'name': 'context'}]}
+        {'name': 'clear'}, {'name': 'model'}, {'name': 'context'}],
+        'models': [
+            {'value': 'default', 'displayName': 'Default (recommended)', 'description': 'Use the default model',
+             'supportsEffort': True, 'supportedEffortLevels': ['low', 'high']},
+            {'value': 'custom-opus', 'displayName': 'custom-opus', 'description': 'Custom Opus model'}]}
+    if outcome == 'empty':
+        response['response'] = {}
 else:
     response['error'] = 'Authentication required'
+if outcome == 'session_report':
+    (root / 'initialized').touch()
+    while not (root / 'continue').exists():
+        time.sleep(0.01)
 print(json.dumps({'type': 'control_response', 'response': response}), flush=True)
 for line in sys.stdin:
     with (root / 'requests').open('a') as f:
         f.write(line)
+    request = json.loads(line)
+    if request['request']['subtype'] == 'get_settings':
+        if outcome == 'settings_timeout':
+            time.sleep(60)
+        reply = {'subtype': 'success', 'request_id': request['request_id'],
+                 'response': {'applied': {'effort': 'high'}, 'effective': {}}}
+        print(json.dumps({'type': 'control_response', 'response': reply}), flush=True)
 "#,
         )
         .unwrap();
@@ -417,19 +465,59 @@ for line in sys.stdin:
             }
             spec.env = vec![("OUTCOME".into(), outcome.into())];
         }
-        let (first, concurrent) = tokio::join!(mgr.commands("claude", None), mgr.commands("claude", None));
+        let concurrent = async {
+            if outcome == "session_report" {
+                tokio::time::timeout(Duration::from_secs(2), async {
+                    while !root.join("initialized").exists() {
+                        tokio::time::sleep(Duration::from_millis(10)).await;
+                    }
+                })
+                .await
+                .unwrap();
+                let reported = config::options_of(&json!({ "configOptions": [
+                    { "id": "model", "category": "model", "type": "select", "currentValue": "default",
+                      "options": [{ "value": "default" }, { "value": "custom-opus" }] },
+                    { "id": "effort", "category": "thought_level", "type": "select", "currentValue": "low",
+                      "options": [{ "value": "default" }, { "value": "low" }, { "value": "high" }] }
+                ] }));
+                mgr.shared.remember("claude", Some(&reported), None, Some("default"));
+                std::fs::write(root.join("continue"), "").unwrap();
+            }
+            mgr.commands("claude", None).await
+        };
+        let (first, concurrent) = tokio::join!(mgr.commands("claude", None), concurrent);
         let first = first.unwrap();
         assert_eq!(first, concurrent.unwrap());
         assert_eq!(first, mgr.commands("claude", None).await.unwrap());
         let names: Vec<_> = first.iter().map(|c| c.name.as_str()).collect();
-        if outcome == "success" {
+        if matches!(outcome, "success" | "session_report" | "settings_timeout") {
             assert_eq!(names, ["compact", "clear", "model", "context", "triage"]);
             assert_eq!(first[0].hint.as_deref(), Some("[instructions]"));
             let restored = manager(root, Arc::new(FakeAgent::default()));
             assert_eq!(first, restored.commands("claude", None).await.unwrap());
+            // The same handshake lists the models, so the composer has them before any task.
+            for mgr in [&mgr, &restored] {
+                let claude = mgr.providers().into_iter().find(|p| p.id == "claude").unwrap();
+                let model = claude.config.iter().find(|o| o.category.as_deref() == Some("model")).unwrap();
+                assert_eq!(model.current.as_deref(), Some("default"));
+                let values: Vec<_> = model.values.iter().map(|v| v.value.as_str()).collect();
+                assert_eq!(values, ["default", "custom-opus"]);
+                let effort =
+                    claude.thought_levels["default"].iter().find(|o| o.category.as_deref() == Some("thought_level"));
+                assert_eq!(
+                    effort.unwrap().current.as_deref(),
+                    Some(match outcome {
+                        "settings_timeout" => "default",
+                        "session_report" => "low",
+                        _ => "high",
+                    })
+                );
+            }
         } else {
             assert_eq!(names, ["triage"], "{outcome}");
-            assert!(!root.join("models.json").exists());
+            assert_eq!(root.join("models.json").exists(), outcome == "empty");
+            let claude = mgr.providers().into_iter().find(|p| p.id == "claude").unwrap();
+            assert!(!claude.config.iter().any(|o| o.category.as_deref() == Some("model")), "{outcome}");
         }
         assert!(mgr.tasks.read().is_empty());
         assert!(!root.join("store").exists());
@@ -439,10 +527,25 @@ for line in sys.stdin:
             let args: Vec<String> = serde_json::from_str(launches.trim()).unwrap();
             assert!(args.windows(2).any(|a| a == ["--input-format", "stream-json"]));
             let requests = std::fs::read_to_string(root.join("requests")).unwrap();
-            assert_eq!(requests.lines().count(), 1, "only initialize, no prompt or other control request");
-            let request: Value = serde_json::from_str(requests.trim()).unwrap();
-            assert_eq!(request["type"], "control_request");
-            assert_eq!(request["request"]["subtype"], "initialize");
+            let subtypes: Vec<String> = requests
+                .lines()
+                .map(|l| serde_json::from_str::<Value>(l).unwrap()["request"]["subtype"].as_str().unwrap().to_owned())
+                .collect();
+            // The handshake and the settings read: no prompt or other control request.
+            let expected: &[&str] = if matches!(outcome, "success" | "session_report" | "empty" | "settings_timeout") {
+                &["initialize", "get_settings"]
+            } else {
+                &["initialize"]
+            };
+            assert_eq!(subtypes, expected, "{outcome}");
+            let pid = std::fs::read_to_string(root.join("pid")).unwrap();
+            tokio::time::timeout(Duration::from_secs(2), async {
+                while std::process::Command::new("kill").args(["-0", pid.trim()]).output().unwrap().status.success() {
+                    tokio::time::sleep(Duration::from_millis(10)).await;
+                }
+            })
+            .await
+            .expect("discovery process must exit");
         }
     }
 }
@@ -2072,6 +2175,49 @@ async fn reload_providers_updates_registry_install_clears_stale_probes_and_notif
     assert!(probe.error.is_none());
 }
 
+/// A session report that changes the cached provider config notifies subscribers,
+/// so the composer re-lists models without waiting for the next task (#1490).
+/// Reports that change nothing stay silent.
+#[tokio::test(flavor = "multi_thread")]
+async fn remembered_config_changes_notify_subscribers_once() {
+    let tmp = tempfile::tempdir().unwrap();
+    let mgr = manager(tmp.path(), Arc::new(FakeAgent::default()));
+    let events = Arc::new(Mutex::new(Vec::new()));
+    let sink = events.clone();
+    mgr.subscribe(Arc::new(move |e| sink.lock().push(e)));
+    events.lock().clear();
+
+    let reported = config::options_of(&json!({ "configOptions": [
+        { "id": "model", "category": "model", "type": "select", "currentValue": "default",
+          "options": [{ "value": "default" }, { "value": "custom-opus" }] },
+    ] }));
+    mgr.shared.remember("claude", Some(&reported), None, Some("default"));
+    assert!(
+        events.lock().iter().any(|ev| matches!(ev, AgentEvent::Providers)),
+        "a first report changing the cache notifies subscribers"
+    );
+    events.lock().clear();
+
+    // The same report again: the cache is unchanged, so subscribers hear nothing.
+    mgr.shared.remember("claude", Some(&reported), None, Some("default"));
+    assert!(events.lock().is_empty(), "an unchanged report must stay silent");
+
+    // A changed model list notifies again, and providers() serves the new list.
+    let updated = config::options_of(&json!({ "configOptions": [
+        { "id": "model", "category": "model", "type": "select", "currentValue": "default",
+          "options": [{ "value": "default" }, { "value": "custom-opus" }, { "value": "custom-sonnet" }] },
+    ] }));
+    mgr.shared.remember("claude", Some(&updated), None, Some("default"));
+    assert!(
+        events.lock().iter().any(|ev| matches!(ev, AgentEvent::Providers)),
+        "a changed model list notifies subscribers"
+    );
+    let claude = mgr.providers().into_iter().find(|p| p.id == "claude").unwrap();
+    let model = claude.config.iter().find(|o| o.category.as_deref() == Some("model")).unwrap();
+    let values: Vec<_> = model.values.iter().map(|v| v.value.as_str()).collect();
+    assert_eq!(values, ["default", "custom-opus", "custom-sonnet"]);
+}
+
 #[tokio::test(flavor = "multi_thread")]
 async fn idle_agents_stop_and_resume_their_session_on_the_next_message() {
     let new = || NewAgentTask {
@@ -2357,4 +2503,32 @@ fn mcp_servers_follow_server_state_and_agent_capabilities() {
         vec![json!({"name":"OpenIDEA","command":"/app/openidea",
         "args":["--mcp-stdio","--project","/project"],"env":[]})]
     );
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn session_settings_win_over_discovery_in_memory_and_on_disk() {
+    for discovery_first in [false, true] {
+        let tmp = tempfile::tempdir().unwrap();
+        let mgr = manager(tmp.path(), Arc::new(FakeAgent::default()));
+        let options = |model: &str, effort: &str| {
+            config::options_of(&json!({ "configOptions": [
+                { "id": "model", "category": "model", "type": "select", "currentValue": model,
+                  "options": [{ "value": "saved" }, { "value": "discovered" }] },
+                { "id": "effort", "category": "thought_level", "type": "select", "currentValue": effort,
+                  "options": [{ "value": "low" }, { "value": "high" }] }
+            ] }))
+        };
+        let saved = options("saved", "low");
+        let discovered = options("discovered", "high");
+        if discovery_first {
+            mgr.shared.remember_discovered("claude", &discovered, &[]);
+        }
+        mgr.shared.remember("claude", Some(&saved), None, Some("saved"));
+        mgr.shared.remember_discovered("claude", &discovered, &[]);
+        let restored = manager(tmp.path(), Arc::new(FakeAgent::default()));
+        for mgr in [&mgr, &restored] {
+            assert_eq!(model_of(&mgr.shared.known_config("claude")).as_deref(), Some("saved"));
+            assert_eq!(mgr.shared.known.lock()["claude"].thought_levels["saved"], saved[1..]);
+        }
+    }
 }

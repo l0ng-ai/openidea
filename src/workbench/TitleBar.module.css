@@ -30,6 +30,26 @@
   background: var(--bg-dialog, var(--bg-elev));
   box-shadow: none;
 }
+/* IDEA's compact header (Distraction Free, toolbar hidden): the window title, centred. */
+.compactHeader {
+  --h-titlebar: var(--h-compact-header);
+}
+.overlay.compactHeader {
+  padding-right: max(82px, calc(82px / var(--titlebar-zoom, 1)));
+}
+.overlayFullscreen.compactHeader {
+  padding-right: 10px;
+}
+.compactTitle {
+  flex: 1;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  text-align: center;
+  font-size: var(--fs-ui);
+  color: var(--fg-secondary);
+  cursor: default;
+}
 .windowTitle {
   min-width: 0;
   overflow: hidden;
