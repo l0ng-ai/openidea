@@ -1,4 +1,5 @@
 /** Debug tool window: toolbar, Threads & Variables (frames + variables), Console. */
+import { writeClipboardText } from "@/platform/clipboard";
 import { useEffect, useMemo, useRef, useState, type KeyboardEvent } from "react";
 import clsx from "clsx";
 import { executeAction, getAction } from "@/platform/actions";
@@ -358,7 +359,7 @@ function FramesPane({ session }: { session: DebugSession }) {
                     label: "Copy Stack",
                     icon: "copy",
                     run: () =>
-                      void navigator.clipboard?.writeText(
+                      void writeClipboardText(
                         session.frames
                           .map((f) => `${frameLabel(f)}${f.path ? `, ${basename(f.path)}` : ""}`)
                           .join("\n"),

@@ -630,9 +630,10 @@ async fn spawn_adapter(
         cmd.env("PATH", path);
     }
     ide_core::process::prepare(cmd.as_std_mut());
-    if spec.adapter == "rdbg" {
-        ide_core::process::own_group(cmd.as_std_mut());
-    }
+    // Every adapter leads its own process group: the program an adapter launches itself
+    // (java-debug's JVM) joins the group, so a forced stop reaches the whole tree with
+    // one `kill(-pgid)`. On Windows the same coverage comes from the session's job object.
+    ide_core::process::own_group(cmd.as_std_mut());
     cmd.args(args)
         .envs(spec.env.iter().map(|(k, v)| (k, v)))
         .current_dir(&spec.cwd)

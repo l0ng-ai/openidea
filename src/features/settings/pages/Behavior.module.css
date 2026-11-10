@@ -1,22 +1,23 @@
-/* Rows under the Theme row (IDEA indents them under the label column). */
-.indented {
-  display: flex;
-  flex-direction: column;
-  padding-left: 20px;
-}
 .inline {
   display: inline-flex;
   align-items: center;
+  gap: var(--space-2);
   margin-left: 8px;
   padding: 0 4px;
   border-radius: var(--radius-row);
+}
+.themeSelect {
+  flex: 1 1 120px;
+  min-width: min(120px, 100%);
+  max-width: 180px;
 }
 .matched {
   background: color-mix(in srgb, var(--warning) 8%, transparent);
 }
 .note {
+  flex: 1 1 220px;
   color: var(--fg-subtle);
-  white-space: nowrap;
+  overflow-wrap: anywhere;
 }
 .popupBody {
   display: flex;
@@ -90,6 +91,12 @@
   display: flex;
   flex-direction: column;
   min-width: 0;
+}
+
+@container settings-content (max-width: 580px) {
+  .grid {
+    grid-template-columns: minmax(0, 1fr);
+  }
 }
 
 .radios {

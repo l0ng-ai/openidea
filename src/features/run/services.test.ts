@@ -376,6 +376,19 @@ describe("hidden configurations", () => {
     expect(readHidden("/q")).toEqual({});
     expect(readHidden(null)).toEqual({});
   });
+
+  it("does not duplicate docker-compose, docker-dockerfile or docker-image runs in the run configurations provider", () => {
+    const compose = config("docker:compose:docker/playground-compose.yml:postgres", "docker-compose");
+    const dockerfile = config("docker:dockerfile:Dockerfile", "docker-dockerfile");
+    const image = config("docker:image:postgres", "docker-image");
+    const items = runServiceItems(
+      [compose, dockerfile, image],
+      [session("s1", compose, "running", 1), session("s2", dockerfile, "finished", 2)],
+      [...DEFAULT_TYPES, "docker-compose", "docker-dockerfile", "docker-image"],
+      [compose.id, dockerfile.id, image.id],
+    );
+    expect(items).toEqual([]);
+  });
 });
 
 describe("add service categories", () => {
@@ -403,6 +416,7 @@ describe("add service categories", () => {
       program: "Shell",
       compound: "Others",
       application: "Java",
+      "jar-application": "Java",
       "spring-boot": "Java",
       native: "Java",
       "java-file": "Java",

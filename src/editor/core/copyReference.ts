@@ -3,6 +3,7 @@
  * fully qualified name, built from the file's outline and the language's module
  * conventions; anywhere else `path:line`, as in IDEA.
  */
+import { writeClipboardText } from "@/platform/clipboard";
 
 export interface ReferenceInput {
   /** Backend language id (`java`, `rust`…). */
@@ -17,19 +18,8 @@ export interface ReferenceInput {
   line: number;
 }
 
-/**
- * Start the write during the user gesture, while the reference is still being resolved.
- * Without `ClipboardItem`, the text is written once it is known.
- */
-export function copyReferenceToClipboard(
-  reference: Promise<string>,
-  clipboard: Clipboard = navigator.clipboard,
-  Item: typeof ClipboardItem | null = globalThis.ClipboardItem ?? null,
-): Promise<void> {
-  if (!Item || typeof clipboard.write !== "function") return reference.then((text) => clipboard.writeText(text));
-  return clipboard.write([
-    new Item({ "text/plain": reference.then((text) => new Blob([text], { type: "text/plain" })) }),
-  ]);
+export function copyReferenceToClipboard(reference: Promise<string>): Promise<void> {
+  return reference.then(writeClipboardText);
 }
 
 /** Position inside a selected identifier or the identifier under the caret. */

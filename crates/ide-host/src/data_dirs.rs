@@ -26,10 +26,8 @@ fn resolve_local(var: Option<OsString>, os: Option<PathBuf>, identifier: &str) -
         return Err(format!("{LOCAL_DATA_ENV} must be an absolute path: {}", root.display()));
     }
     let dir = root.join(identifier);
-    let probe = dir.join(".openidea-write-check");
     fs::create_dir_all(&dir)
-        .and_then(|()| fs::write(&probe, b""))
-        .and_then(|()| fs::remove_file(&probe))
+        .and_then(|()| tempfile::NamedTempFile::new_in(&dir).map(drop))
         .map_err(|error| format!("{LOCAL_DATA_ENV}: cannot write to {}: {error}", dir.display()))?;
     Ok(dir)
 }
@@ -325,6 +323,53 @@ mod tests {
         assert_eq!(fs::read_dir(&dir).unwrap().count(), 0);
         // Debug worktrees have their own identifiers and stay apart under one root.
         assert_ne!(resolve_local(Some(root.clone().into()), None, "dev-a").unwrap(), dir);
+    }
+
+    #[test]
+    fn local_dir_preserves_an_existing_probe_file() {
+        let tmp = tempfile::tempdir().unwrap();
+        let dir = tmp.path().join("id");
+        fs::create_dir(&dir).unwrap();
+        let probe = dir.join(".openidea-write-check");
+        fs::write(&probe, "keep").unwrap();
+        assert_eq!(resolve_local(Some(tmp.path().into()), None, "id").unwrap(), dir);
+        assert_eq!(fs::read_to_string(probe).unwrap(), "keep");
+        assert_eq!(fs::read_dir(dir).unwrap().count(), 1);
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn local_dir_preserves_an_existing_probe_symlink_and_its_target() {
+        let tmp = tempfile::tempdir().unwrap();
+        let dir = tmp.path().join("id");
+        fs::create_dir(&dir).unwrap();
+        let target = tmp.path().join("target");
+        fs::write(&target, "keep").unwrap();
+        let probe = dir.join(".openidea-write-check");
+        std::os::unix::fs::symlink(&target, &probe).unwrap();
+        assert_eq!(resolve_local(Some(tmp.path().into()), None, "id").unwrap(), dir);
+        assert_eq!(fs::read_to_string(target).unwrap(), "keep");
+        assert!(fs::symlink_metadata(probe).unwrap().file_type().is_symlink());
+        assert_eq!(fs::read_dir(dir).unwrap().count(), 1);
+    }
+
+    #[test]
+    fn local_dir_allows_concurrent_probes_for_the_same_identifier() {
+        let tmp = tempfile::tempdir().unwrap();
+        let barrier = std::sync::Barrier::new(8);
+        std::thread::scope(|scope| {
+            for _ in 0..8 {
+                let barrier = &barrier;
+                let root = tmp.path();
+                scope.spawn(move || {
+                    barrier.wait();
+                    for _ in 0..16 {
+                        assert_eq!(resolve_local(Some(root.into()), None, "id").unwrap(), root.join("id"));
+                    }
+                });
+            }
+        });
+        assert_eq!(fs::read_dir(tmp.path().join("id")).unwrap().count(), 0);
     }
 
     #[test]

@@ -117,6 +117,45 @@ pub fn resolve_new_in_root(root: &Path, path: &str) -> Result<PathBuf, String> {
     Ok(real)
 }
 
+/// Resolves a content write's destination, including existing and dangling
+/// symlinks in the final component. Entry operations use [`resolve_new_in_root`].
+pub fn resolve_writable_in_root(root: &Path, path: &str) -> Result<PathBuf, String> {
+    let (root, joined) = joined_path(root, path)?;
+    let real = resolve_write_target(&joined, 40).map_err(|e| format!("{path}: {e}"))?;
+    if !real.starts_with(&root) {
+        return Err(format!("{path}: access outside the project root is not allowed"));
+    }
+    Ok(real)
+}
+
+fn resolve_write_target(path: &Path, links_left: usize) -> Result<PathBuf, std::io::Error> {
+    match dunce::canonicalize(path) {
+        Ok(real) => return Ok(real),
+        Err(error) => match std::fs::symlink_metadata(path) {
+            Ok(meta) if meta.is_symlink() => {
+                if links_left == 0 {
+                    return Err(std::io::Error::other("too many symbolic links"));
+                }
+                let target = std::fs::read_link(path)?;
+                let target = if target.is_absolute() { target } else { path.parent().unwrap().join(target) };
+                return resolve_write_target(&target, links_left - 1);
+            }
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => {}
+            _ => return Err(error),
+        },
+    }
+    let parent = path.parent().ok_or_else(|| std::io::Error::other("no directory to put it in"))?;
+    let mut real = resolve_write_target(parent, links_left)?;
+    match path.components().next_back() {
+        Some(std::path::Component::ParentDir) => {
+            real.pop();
+        }
+        Some(std::path::Component::Normal(name)) => real.push(name),
+        _ => {}
+    }
+    if real != path { resolve_write_target(&real, links_left) } else { Ok(real) }
+}
+
 /// Reads a UTF-8 file that `resolve_in_root` already approved.
 pub fn read_text(real: &Path) -> Result<String, String> {
     let meta = std::fs::metadata(real).map_err(|e| e.to_string())?;
@@ -194,9 +233,9 @@ pub fn resolve_granted(granted: &[Capability], path: &str) -> Result<PathBuf, Re
 /// The real path `path` would be written to, when an `fs.write:<path>` grant
 /// covers it.
 ///
-/// A file that does not exist yet cannot be canonicalized, so its directory is
-/// canonicalized instead and the name appended; an existing file (or link) is
-/// followed first, so a link cannot be used to write outside the grant.
+/// Missing paths and dangling links are resolved to their target location;
+/// an existing file (or link) is followed first. The destination's directory
+/// must exist.
 pub fn resolve_writable(granted: &[Capability], path: &str) -> Result<PathBuf, Refusal> {
     resolve(granted, path, Wanted::Write)
 }
@@ -241,12 +280,14 @@ fn resolve(granted: &[Capability], path: &str, wanted: Wanted) -> Result<PathBuf
     if covered { Ok(real) } else { Err(Refusal::Denied(cap.to_string())) }
 }
 
-/// Where `asked` would be created: its directory, resolved, plus its name.
+/// Where `asked` would be created, including a dangling link's target.
 fn resolve_unsaved(asked: &Path) -> Result<PathBuf, String> {
-    let name = asked.file_name().ok_or_else(|| "not a file name".to_string())?;
-    let parent = asked.parent().ok_or_else(|| "no directory to put it in".to_string())?;
-    let dir = dunce::canonicalize(parent).map_err(|_| "its directory does not exist".to_string())?;
-    Ok(dir.join(name))
+    let real = resolve_write_target(asked, 40).map_err(|e| e.to_string())?;
+    let parent = real.parent().ok_or_else(|| "no directory to put it in".to_string())?;
+    if !parent.is_dir() {
+        return Err("its directory does not exist".into());
+    }
+    Ok(real)
 }
 
 /// Simplifies Windows drive paths only when the plain form preserves their meaning.
@@ -385,6 +426,82 @@ mod tests {
 
         assert_eq!(resolve_new_in_root(&root, "link.txt").unwrap(), root_real.join("link.txt"));
         assert!(resolve_new_in_root(&root, "out/x.txt").unwrap_err().contains("outside"));
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn writable_paths_follow_existing_and_dangling_symlinks() {
+        use std::os::unix::fs::symlink;
+        let tmp = tempfile::tempdir().unwrap();
+        let root = tmp.path().join("proj");
+        std::fs::create_dir(&root).unwrap();
+        let root = dunce::canonicalize(root).unwrap();
+        let outside = tmp.path().join("outside.txt");
+        std::fs::write(&outside, "unchanged").unwrap();
+        std::fs::write(root.join("inside.txt"), "before").unwrap();
+        for (name, target) in [
+            ("outside", outside.clone()),
+            ("dangling-outside", tmp.path().join("missing.txt")),
+            ("inside", PathBuf::from("inside.txt")),
+            ("dangling-inside", PathBuf::from("new/deep.txt")),
+            ("chain", PathBuf::from("dangling-outside")),
+            ("cycle", PathBuf::from("cycle")),
+        ] {
+            symlink(target, root.join(name)).unwrap();
+        }
+        for name in ["outside", "dangling-outside", "chain"] {
+            assert!(resolve_writable_in_root(&root, name).unwrap_err().contains("outside the project root"));
+            assert!(
+                resolve_writable_in_root(&root, &format!("missing/../{name}"))
+                    .unwrap_err()
+                    .contains("outside the project root")
+            );
+        }
+        assert!(resolve_writable_in_root(&root, "cycle").is_err());
+        let inside = resolve_writable_in_root(&root, "inside").unwrap();
+        assert_eq!(inside, root.join("inside.txt"));
+        std::fs::write(inside, "after").unwrap();
+        assert_eq!(std::fs::read_to_string(root.join("inside.txt")).unwrap(), "after");
+        assert_eq!(resolve_writable_in_root(&root, "dangling-inside").unwrap(), root.join("new/deep.txt"));
+        assert_eq!(std::fs::read_to_string(outside).unwrap(), "unchanged");
+        assert!(!tmp.path().join("missing.txt").exists());
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn writable_grants_confine_dangling_symlink_targets() {
+        use std::os::unix::fs::symlink;
+        let tmp = tempfile::tempdir().unwrap();
+        let root = tmp.path().join("granted");
+        std::fs::create_dir(&root).unwrap();
+        let root = dunce::canonicalize(root).unwrap();
+        let grant = Capability::FsWrite(strip_verbatim(&root));
+        symlink("../missing.txt", root.join("outside")).unwrap();
+        symlink("new.txt", root.join("inside")).unwrap();
+        assert!(matches!(
+            resolve_writable(std::slice::from_ref(&grant), root.join("outside").to_str().unwrap()),
+            Err(Refusal::Denied(_))
+        ));
+        assert_eq!(resolve_writable(&[grant], root.join("inside").to_str().unwrap()).unwrap(), root.join("new.txt"));
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn entry_operations_do_not_follow_outside_symlinks() {
+        let tmp = tempfile::tempdir().unwrap();
+        let root = tmp.path().join("proj");
+        std::fs::create_dir(&root).unwrap();
+        let outside = tmp.path().join("outside.txt");
+        std::fs::write(&outside, "unchanged").unwrap();
+        std::os::unix::fs::symlink(&outside, root.join("link")).unwrap();
+        let from = resolve_new_in_root(&root, "link").unwrap();
+        let to = resolve_new_in_root(&root, "renamed").unwrap();
+        std::fs::rename(&from, &to).unwrap();
+        assert!(!from.try_exists().unwrap());
+        assert!(std::fs::symlink_metadata(&to).unwrap().is_symlink());
+        std::fs::remove_file(resolve_new_in_root(&root, "renamed").unwrap()).unwrap();
+        assert!(std::fs::symlink_metadata(&to).is_err());
+        assert_eq!(std::fs::read_to_string(outside).unwrap(), "unchanged");
     }
 
     #[cfg(unix)]

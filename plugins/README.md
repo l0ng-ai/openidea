@@ -29,7 +29,6 @@ plugins/
    ├─ ai-completion/          # inline completion over the network, secrets
    ├─ mybatis/                # navigation, gutter markers, completion across files
    ├─ csv-editor/             # custom editor sharing the text document
-   ├─ excalidraw/             # web view custom editor, file icons, a template
    ├─ graphviz/               # web view with code: live preview, problems from the page, a language
    ├─ regex-tester/           # html view talking to its code, settings, the editor's selection
    └─ license-header/         # file-opened events, quick fix, project scan in a task
@@ -307,6 +306,7 @@ machine. Users can revoke optional capabilities in Settings › Plugins.
 | `events.input`      | medium | `action-performed` and `input-mode-changed` events                                                                                                                 |
 | `process:<program>` | high   | `Project::run_process`, language servers, debug adapters, runs                                                                                                     |
 | `net:<host>`        | medium | `host::fetch` over HTTPS (also loopback HTTP); `*.example.com` matches subdomains                                                                                  |
+| `net:ask`           | medium | Ask the user at the first request to an HTTPS (or loopback) host that is not declared; one answer per host, revocable; API 1.5                                     |
 | `net.http:<host>`   | medium | Unencrypted HTTP to that host; API 1.4, same wildcard rules as `net:`                                                                                              |
 | `ipc:<path>`        | high   | Local Unix sockets or Windows named pipes on the project machine; API 1.4                                                                                          |
 | `secrets`           | medium | `{{secret:<name>}}` in request headers, `host::secret_is_set`, `secret_set`, `secret_delete`                                                                       |
@@ -374,6 +374,9 @@ working. New in 1.5:
 - [Notifications for a project](#notifications-with-commands):
   `Project::notify` shows a notification in a window of that project only,
   also from scheduled or background work.
+- [Permissions](#capabilities): `net:ask` lets a plugin connect to HTTPS hosts
+  one at a time, asking at first use instead of listing every host
+  (see _[Network and secrets](#network-and-secrets)_).
 
 ### API 1.4
 
@@ -1212,6 +1215,29 @@ connecting to the destination; HTTPS → HTTP also requires `net.http:<host>`,
 even on loopback. Responses are limited to 8 MiB. Requests run on the project
 machine. A manifest using `net.http:` or `ipc:` declares `engines.openidea = "^1.4"`.
 
+A plugin with `net:ask` (API 1.5) may reach an HTTPS (or loopback) host that is
+not in the manifest: the first request asks the user, naming the plugin and the
+full host, with **Allow once**, **Always allow** and **Deny**. "Always" is
+remembered per exact, normalized host in the grant ledger and never asks again; the allowed
+hosts are listed in the plugin's permissions (Settings › Plugins), where each
+can be removed to ask again. Remote sessions offer **Allow for this session**
+and **Deny** instead: approval is kept only in memory until the remote connection ends.
+Unattended calls to a host that is not yet allowed return `denied` without a dialog,
+so the plugin should tell the user to run the action once interactively. Plain HTTP
+to other hosts never goes through this flow: declare `net.http:<host>`. A
+manifest using `net:ask` declares `engines.openidea = "^1.5"`.
+
+A host answer covers all ports of that host, like `net:<host>`, and never
+covers subdomains or wildcard patterns. IDNs are shown in ASCII (punycode);
+IP literals use their canonical form. Redirects are checked against the
+request's grants and cannot open another permission dialog. Deny is the
+default button; dismissal refuses the request. Only one network question per
+plugin may be pending; a refusal or dismissal suppresses further questions
+for 30 seconds, even for other hosts. Hidden windows refuse new questions and
+close pending ones. Automatic event handlers and providers do not ask.
+Removing `net:ask` during an update or revoking it clears remembered hosts;
+uninstalling removes the plugin's ledger entry.
+
 `ipc:<path>` grants a local byte stream: an absolute Unix socket path (the host
 expands `~/`, `$TMPDIR/` and `$XDG_RUNTIME_DIR/`) or `\\.\pipe\<name>` on Windows.
 Only a grant's last path segment may contain `*`, for example
@@ -1513,11 +1539,10 @@ For example, a page can reserve the corner in its own toolbar:
 }
 ```
 
-`plugins/official/excalidraw` is a complete example: a Vite + React page in
-`web-src/`, built into `web/` by `plugins/build.sh`. `plugins/official/graphviz`
-pairs a page with code: the page renders (Graphviz compiled to WebAssembly) and
+`plugins/official/graphviz` is a complete example: a Vite + React page in
+`web-src/`, built into `web/` by `plugins/build.sh`, paired with code — the page renders (Graphviz compiled to WebAssembly) and
 sends what Graphviz reports to the plugin, which publishes it as problems. The built page is not
-checked in (it is tens of MB): run `plugins/build.sh official/excalidraw`
+checked in (it is tens of MB): run `plugins/build.sh official/graphviz`
 before installing the plugin from the repository.
 
 ### Web frame PTYs (API 1.3)
@@ -2465,6 +2490,28 @@ DDEV, for example: `program = "ddev"`, `args = ["exec"]`,
 `commands = [("composer", ["composer"])]` runs `php x.php` as
 `ddev exec php x.php` and `composer install` as `ddev composer install`.
 
+API 1.5 adds `host::register_run_target_with_overrides(project, target)` and
+`PluginRunTargetWithOverrides`. Its `commands` are `PluginCommandOverride` records
+with `name`, replacement `args`, and optional `workdir_args`. `None` inherits the
+shared list; `Some(vec![])` omits it; `Some(args)` replaces it for that command.
+The original `PluginRunTarget` and registration function keep their API 1.4 behavior.
+
+For a target with `program = "ddev"`, `args = ["exec", "--raw"]`,
+`workdir_args = ["--dir={cwd}", "--"]` and `container_root = "/var/www/html"`, use:
+
+```rust
+PluginCommandOverride {
+    name: "composer".into(),
+    args: vec!["composer".into()],
+    workdir_args: Some(vec![]),
+}
+```
+
+With working directory `public`, `composer install` becomes `ddev composer install`,
+while `php x.php` becomes `ddev exec --raw --dir=/var/www/html/public -- php x.php`.
+Replacement lists have the same argument limits, placeholder substitution and
+working-directory restrictions as the shared list.
+
 Local absolute tool paths outside the project use the tool basename.
 When `container_root` is set, project paths in argv map under that root. Each
 `workdir_args` element may contain `{cwd}`; for example `["--dir", "{cwd}"]`.
@@ -2518,6 +2565,39 @@ The virtual URI identifies its originating server, including for document links
 and diagnostic-related locations. Navigation inside these documents returns to
 that server; editing and saving
 are disabled. No WIT signature change is needed for this opt-in host setting.
+
+### Validating run targets (API 1.5)
+
+A plugin can export `run-target-validation.validate` to check current project
+runtime state immediately before Run, Test or Debug. In the Rust SDK implement
+`RunTargetValidation` and add `run_target_validation` to `register_plugin!`:
+
+```rust
+impl RunTargetValidation for MyPlugin {
+    fn validate(&mut self, project: &str, target_id: &str, launch: &RunTargetLaunch) -> Result<(), String> {
+        // Inspect runtime state through the plugin's granted APIs.
+        if runtime_is_running(project) { Ok(()) } else { Err("Project runtime is stopped".into()) }
+    }
+}
+register_plugin!(MyPlugin, run_target_validation);
+```
+
+The callback receives the project root, the plugin's own target id and
+`RunTargetLaunch { operation, program, cwd }`. `operation` is Run, Debug or Test;
+`program` is the bare program being wrapped, and `cwd` is the absolute local
+working directory on the plugin's machine. Arguments and environment are omitted.
+Trust, target ownership, process grants and executable pins are checked first.
+No extra manifest contribution or capability is required; plugins without the
+export retain their existing behavior. Language server startup and target document
+reads do not invoke this user-launch gate.
+
+`Err(message)` refuses startup through the normal launch error path, prefixed
+with the plugin name and bounded to 4096 bytes. The registration and selected
+target remain unchanged. A trap or timeout also refuses startup; cancellation
+interrupts the callback. Calls wake idle-reclaimed instances and use the host's
+normal call timeout (five seconds by default). For remote projects validation
+runs on the server, alongside the plugin and wrapper. Native SDK tests can use
+`MockHost::validate_run_target` to invoke their validator.
 
 ### Debugging run targets
 

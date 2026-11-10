@@ -746,6 +746,10 @@ impl DebugManager {
         {
             spec.env.push(("JAVA_HOME".into(), home));
         }
+        // Delve looks up Go before applying the debuggee's launch environment.
+        if config.adapter == "delve" {
+            spec.env.extend(config.env.iter().map(|(key, value)| (key.clone(), value.clone())));
+        }
         if config.adapter == "rdbg" {
             rdbg_command_line(&mut spec, &config, &cwd)?;
         }
@@ -1194,7 +1198,7 @@ impl DebugManager {
         if own_terminate && !graceful {
             // Signal before anything else: waiting on a request the adapter may not answer
             // would delay the shutdown the console is supposed to show.
-            crate::session::signal_debuggee(s, false);
+            crate::session::signal_debuggee(s, false).await;
         }
         if graceful {
             // java-debug sends `terminated` only after it has drained the program's console

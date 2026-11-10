@@ -99,11 +99,12 @@ pub async fn run_start(
     state: State<'_, AppState>,
     config: RunConfig,
     on_output: Channel<OutputChunk>,
+    request: Option<ide_core::RequestId>,
 ) -> IdeResult<RunInfo> {
     let emit = std::sync::Arc::new(move |chunk| {
         let _ = on_output.send(chunk);
     });
-    ide_host::ops::run::start(&state.host, window.label(), config, emit).await
+    ide_host::ops::run::start_request(&state.host, window.label(), config, emit, request).await
 }
 
 #[tauri::command]

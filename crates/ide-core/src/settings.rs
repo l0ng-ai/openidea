@@ -545,6 +545,9 @@ pub struct EditorSettings {
     /// Color Scheme › Language Defaults › Semantic highlighting: local variables and
     /// parameters get a colour derived from their name (IDEA's rainbow identifiers).
     pub semantic_highlighting: bool,
+    /// Docstring markup format whose tags and keywords the Python editor highlights
+    /// (`plain`, `rest`, `epytext`, `google`, `numpy`).
+    pub docstring_format: String,
     /// Color Scheme › Language Defaults › Rainbow brackets: `()`, `[]`, `{}` coloured by depth.
     pub rainbow_brackets: bool,
     pub ligatures: bool,
@@ -589,6 +592,7 @@ impl Default for EditorSettings {
             color_overrides: BTreeMap::new(),
             custom_schemes: BTreeMap::new(),
             semantic_highlighting: false,
+            docstring_format: "rest".into(),
             rainbow_brackets: false,
             ligatures: false,
             fallback_font: String::new(),
@@ -633,6 +637,15 @@ pub struct FileSettings {
     pub file_types: BTreeMap<String, FileTypeAssociation>,
     /// Override File Type: file (project-relative and `/`-separated, or absolute) → language id.
     pub file_type_overrides: BTreeMap<String, String>,
+    /// Compose detection choices, keyed by project-relative file path.
+    pub compose_file_overrides: BTreeMap<String, ComposeFileOverride>,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, Type)]
+#[serde(rename_all = "camelCase")]
+pub enum ComposeFileOverride {
+    Kept,
+    Excluded,
 }
 
 /// One language's file name and hashbang patterns on top of its definition.
@@ -660,6 +673,7 @@ impl Default for FileSettings {
             local_history_max_mb: 512,
             file_types: BTreeMap::new(),
             file_type_overrides: BTreeMap::new(),
+            compose_file_overrides: BTreeMap::new(),
         }
     }
 }
@@ -1300,6 +1314,21 @@ mod tests {
             assert_eq!(json["appearance"]["uiFontFallback"], family);
             let restored: Settings = serde_json::from_value(json).unwrap();
             assert_eq!(restored.appearance.ui_font_fallback, family);
+        }
+    }
+
+    #[test]
+    fn docstring_format_defaults_and_round_trips() {
+        let old: Settings = serde_json::from_str(r#"{"editor":{"semanticHighlighting":true}}"#).unwrap();
+        assert_eq!(old.editor.docstring_format, "rest");
+        assert_eq!(Settings::default().editor.docstring_format, "rest");
+        for format in ["plain", "rest", "epytext", "google", "numpy"] {
+            let mut settings = Settings::default();
+            settings.editor.docstring_format = format.into();
+            let json = serde_json::to_value(&settings).unwrap();
+            assert_eq!(json["editor"]["docstringFormat"], format);
+            let restored: Settings = serde_json::from_value(json).unwrap();
+            assert_eq!(restored.editor.docstring_format, format);
         }
     }
 

@@ -64,6 +64,8 @@ const ATTRIBUTE_NAMES: Record<string, string> = {
   PY_SELF_PARAMETER: "pySelf",
   PY_KEYWORD_ARGUMENT: "pyKeywordArg",
   PY_DOC_STRING: "pyDocstring",
+  "PY.DOC_COMMENT_TAG": "pyDocstringTag",
+  OPENIDEA_pyDocstringKeyword: "pyDocstringKeyword",
   PY_BUILTIN_NAME: "pyBuiltin",
   PY_DECORATOR: "pyDecorator",
   MARKDOWN_HEADER_LEVEL_1: "mdHeading",

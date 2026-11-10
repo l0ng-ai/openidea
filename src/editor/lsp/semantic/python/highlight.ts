@@ -472,8 +472,10 @@ export function pythonSyntaxRanges(
   tree: Tree,
   doc: Text,
   symbols: Map<string, PythonSymbolKind> = pythonSymbolKinds(tree, doc),
+  format = "rest",
 ): SemanticRange[] {
   const ranges: SemanticRange[] = [];
+  const firstStatements = new Map<number, number>();
   tree.iterate({
     enter(cursor) {
       const node = cursor.node;
@@ -535,22 +537,30 @@ export function pythonSyntaxRanges(
       else if (node.name === "String") {
         const statement = node.parent;
         const body = statement?.parent;
-        let first = body?.firstChild;
-        while (first && (first.name === ":" || first.name === "Comment")) first = first.nextSibling;
+        let first = body ? firstStatements.get(body.from) : undefined;
+        if (body && first === undefined) {
+          let child = body.firstChild;
+          while (child && (child.name === ":" || child.name === "Comment")) child = child.nextSibling;
+          first = child?.from ?? -1;
+          firstStatements.set(body.from, first);
+        }
         const docstring =
           statement?.name === "ExpressionStatement" &&
           statement.firstChild?.from === node.from &&
           statement.firstChild?.to === node.to &&
-          first?.from === statement.from &&
+          first === statement.from &&
           (body?.name === "Script" ||
             (body?.name === "Body" && ["FunctionDefinition", "ClassDefinition"].includes(body.parent?.name ?? "")));
-        if (docstring && !/^[bf]/i.test(text)) style = "python-docstring";
+        if (docstring && !/^[rubf]*[bf][rubf]*['"]/i.test(text)) style = "python-docstring";
         else if (/^[rub]*b[rub]*['"]/i.test(text)) style = "python-bytes";
       } else if (node.name === "Escape") style = "python-escape";
       else if (node.name === "type" && node.parent?.name === "TypeDefinition") style = "keyword";
       if (style) className = `cm-sem-${style}`;
       if (className) ranges.push({ from: node.from, to: node.to, className, source: "syntax" });
-      if (style === "python-docstring") return false;
+      if (style === "python-docstring") {
+        docstringMarkup(node, doc, format, ranges);
+        return false;
+      }
     },
   });
   return ranges;
@@ -561,6 +571,189 @@ const BUILTIN_NAMES = new Set(
     " ",
   ),
 );
+
+/** Docstring tag (`:param:`, `Args:`, `@return`) and the name it introduces (`x` in `:param x:`). */
+const DOCSTRING_TAG = "cm-sem-python-docstring-tag";
+const DOCSTRING_KEYWORD = "cm-sem-python-docstring-keyword";
+
+type DocstringPush = (from: number, to: number, className: string) => void;
+
+function scanLines(text: string, base: number, visit: (line: string, at: number) => void) {
+  let pos = 0;
+  for (;;) {
+    const nl = text.indexOf("\n", pos);
+    const end = nl === -1 ? text.length : nl;
+    visit(text.slice(pos, end), base + pos);
+    if (nl === -1) return;
+    pos = nl + 1;
+  }
+}
+
+/** Tagged field line, reST `:param x:` / Epytext `@param x:` (marker `:` or `@`). */
+const REST_FIELD = /^(\s*):([a-zA-Z][\w.]*)(\s+([^:\s][^:]*))?:(\s|$)/;
+const EPYTEXT_FIELD = /^(\s*)@([a-zA-Z][\w.]*)(\s+([^:\s][^:]*))?:(\s|$)/;
+
+function restDocstring(text: string, base: number, push: DocstringPush) {
+  scanLines(text, base, (line, at) => {
+    const directive = /^(\s*\.\.\s+)([\w][\w.-]*)::/.exec(line);
+    if (directive) {
+      const from = at + directive[1]!.length;
+      push(from, from + directive[2]!.length + 2, DOCSTRING_TAG);
+      return;
+    }
+    const field = REST_FIELD.exec(line);
+    if (field) pushField(field, at, push);
+  });
+}
+
+function epytextDocstring(text: string, base: number, push: DocstringPush) {
+  scanLines(text, base, (line, at) => {
+    const field = EPYTEXT_FIELD.exec(line);
+    if (field) pushField(field, at, push);
+  });
+}
+
+/** `:param x:` / `@param x:` — the tag (`param`) and the name it introduces (`x`). */
+function pushField(field: RegExpExecArray, at: number, push: DocstringPush) {
+  const indent = field[1]!.length;
+  const nameFrom = at + indent + 1;
+  push(nameFrom, nameFrom + field[2]!.length, DOCSTRING_TAG);
+  if (field[3]) {
+    const from = nameFrom + field[2]!.length + field[3]!.length - field[3]!.trimStart().length;
+    push(from, from + field[3]!.trim().length, DOCSTRING_KEYWORD);
+  }
+}
+
+const GOOGLE_LISTS = new Set([
+  "args",
+  "arguments",
+  "params",
+  "parameters",
+  "keyword args",
+  "other params",
+  "attributes",
+]);
+const GOOGLE_SECTIONS = new Set([
+  ...GOOGLE_LISTS,
+  "returns",
+  "yields",
+  "receives",
+  "raises",
+  "exceptions",
+  "warns",
+  "warnings",
+  "examples",
+  "example",
+  "notes",
+  "note",
+  "see also",
+]);
+
+function googleDocstring(text: string, base: number, push: DocstringPush) {
+  const lines: Array<{ text: string; at: number }> = [];
+  scanLines(text, base, (line, at) => lines.push({ text: line, at }));
+  let section: { indent: number; entry: number | null } | null = null;
+  for (let i = 0; i < lines.length; i++) {
+    const { text: line, at } = lines[i]!;
+    const header = /^(\s*)([A-Z][\w ]*?):\s*$/.exec(line);
+    let next = i + 1;
+    if (header) while (next < lines.length && !lines[next]!.text.trim()) next++;
+    const following = lines[next]?.text ?? "";
+    if (
+      header &&
+      GOOGLE_SECTIONS.has(header[2]!.trim().toLowerCase()) &&
+      following.length - following.trimStart().length > header[1]!.length
+    ) {
+      push(at + header[1]!.length, at + header[1]!.length + header[2]!.length, DOCSTRING_TAG);
+      section = GOOGLE_LISTS.has(header[2]!.trim().toLowerCase()) ? { indent: header[1]!.length, entry: null } : null;
+      continue;
+    }
+    if (!section) continue;
+    if (!line.trim()) continue;
+    const indent = line.length - line.trimStart().length;
+    if (indent <= section.indent) {
+      section = null;
+      continue;
+    }
+    if (section.entry === null) section.entry = indent;
+    if (indent !== section.entry) continue;
+    const content = line.slice(indent);
+    const colon = content.indexOf(":");
+    if (colon < 1 || (colon + 1 < content.length && !/\s/.test(content[colon + 1]!))) continue;
+    const entry = content.slice(0, colon).trimEnd();
+    const type = entry.indexOf("(");
+    const name = (type < 0 ? entry : entry.slice(0, type)).trimEnd();
+    if (!/^[\p{ID_Continue}*,. [\]]+$/u.test(name)) continue;
+    const from = at + indent;
+    push(from, from + name.length, DOCSTRING_KEYWORD);
+  }
+}
+
+const NUMPY_LISTS = new Set([
+  "parameters",
+  "other parameters",
+  "attributes",
+  "returns",
+  "yields",
+  "receives",
+  "raises",
+  "warns",
+]);
+const NUMPY_SECTIONS = new Set([...NUMPY_LISTS, "notes", "see also", "examples", "warnings"]);
+
+function numpyDocstring(text: string, base: number, push: DocstringPush) {
+  const lines: Array<{ text: string; at: number }> = [];
+  scanLines(text, base, (l, at) => lines.push({ text: l, at }));
+  let section: { indent: number; entry: number | null } | null = null;
+  for (let i = 0; i < lines.length; i++) {
+    const { text: line, at } = lines[i]!;
+    const header = /^(\s*)([A-Z][\w ]*[a-zA-Z])(\s*)$/.exec(line);
+    if (
+      header &&
+      NUMPY_SECTIONS.has(header[2]!.trim().toLowerCase()) &&
+      /^\s*-{3,}\s*$/.test(lines[i + 1]?.text ?? "")
+    ) {
+      push(at + header[1]!.length, at + header[1]!.length + header[2]!.length, DOCSTRING_TAG);
+      section = NUMPY_LISTS.has(header[2]!.trim().toLowerCase()) ? { indent: header[1]!.length, entry: null } : null;
+      i++;
+      continue;
+    }
+    if (!section) continue;
+    if (!line.trim()) continue;
+    const indent = line.length - line.trimStart().length;
+    if (indent < section.indent) {
+      section = null;
+      continue;
+    }
+    if (section.entry === null) section.entry = indent;
+    if (indent !== section.entry) continue;
+    const content = line.slice(indent);
+    const colon = content.indexOf(":");
+    if (colon < 1 || !/\s/.test(content[colon + 1] ?? "")) continue;
+    const name = content.slice(0, colon).trimEnd();
+    if (!/^[\p{ID_Continue}*,. ]+$/u.test(name)) continue;
+    const from = at + indent;
+    push(from, from + name.length, DOCSTRING_KEYWORD);
+  }
+}
+
+/** Marks tags and keywords inside a docstring per the configured markup format. */
+export function docstringMarkup(node: SyntaxNode, doc: Text, format: string, ranges: SemanticRange[]): void {
+  if (format === "plain") return;
+  const literal = doc.sliceString(node.from, node.to);
+  const opening = /^[ru]?("""|'''|"|')/i.exec(literal);
+  if (!opening) return;
+  const base = node.from + opening[0].length;
+  const end = literal.endsWith(opening[1]!) ? literal.length - opening[1]!.length : literal.length;
+  const text = literal.slice(opening[0].length, Math.max(opening[0].length, end));
+  const push: DocstringPush = (from, to, className) => {
+    if (to > from) ranges.push({ from, to, className, source: "syntax" });
+  };
+  if (format === "epytext") epytextDocstring(text, base, push);
+  else if (format === "google") googleDocstring(text, base, push);
+  else if (format === "numpy") numpyDocstring(text, base, push);
+  else restDocstring(text, base, push);
+}
 
 /** Fast local guesses while LSP is pending. Server tokens take precedence over these. */
 export function pythonFallbackRanges(

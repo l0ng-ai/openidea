@@ -252,11 +252,21 @@ pub async fn settings_import(window: Window, state: State<'_, AppState>, path: P
     Ok(SettingsImport { settings, storage })
 }
 
-/// Import Settings… with a JetBrains `settings.zip`: reads it; the frontend maps and applies it.
+/// Import Settings… with a JetBrains `settings.zip` or an IDE's settings folder: reads it; the
+/// frontend maps and applies it.
 #[tauri::command]
 #[specta::specta]
 pub async fn settings_read_jetbrains(path: PathBuf) -> IdeResult<ide_workspace::settings::JetBrainsSettings> {
     tauri::async_runtime::spawn_blocking(move || ide_workspace::settings::read_jetbrains_settings(&path))
+        .await
+        .map_err(|e| IdeError::internal(e.to_string()))?
+}
+
+/// The settings folders of the JetBrains IDEs installed for this user, to import from.
+#[tauri::command]
+#[specta::specta]
+pub async fn settings_list_jetbrains_ides() -> IdeResult<Vec<ide_host::plugins::intellij::InstalledIdeSettings>> {
+    tauri::async_runtime::spawn_blocking(|| Ok(ide_host::plugins::intellij::installed_ide_settings()))
         .await
         .map_err(|e| IdeError::internal(e.to_string()))?
 }

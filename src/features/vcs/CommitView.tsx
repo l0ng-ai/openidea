@@ -2,6 +2,7 @@
  * Commit tool window: change list with inclusion checkboxes, message, stashes. Its
  * parts also make the Git window's Local Changes / Stash tabs and the Commit dialog.
  */
+import { writeClipboardText } from "@/platform/clipboard";
 import { useWorkflowSettings } from "@/platform/workflowSettings";
 import { formatBinding, isMacHost, macStroke, normalizeBinding, shortcutLabel, strokeOf } from "@/platform/keymap";
 import {
@@ -268,7 +269,7 @@ export function copyChangePaths(nodes: ChangeNode[], kind: "absolute" | "name") 
   const text = filesOf(nodes)
     .map((f) => (kind === "name" ? basename(f.path) : f.path))
     .join("\n");
-  if (text) void navigator.clipboard?.writeText(text);
+  if (text) void writeClipboardText(text);
 }
 
 export function nodeMenu(

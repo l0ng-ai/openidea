@@ -10,6 +10,7 @@
 import { RangeSetBuilder, type EditorState, type Extension } from "@codemirror/state";
 import { Decoration, EditorView, ViewPlugin, type DecorationSet, type ViewUpdate } from "@codemirror/view";
 import { getIndentUnit } from "@codemirror/language";
+import { LINE_INSET } from "./lineInset";
 
 /**
  * Values of `--openidea-guide-images` / `--openidea-guide-positions` for an
@@ -23,7 +24,7 @@ export function guideVars(levels: number, step: number): { images: string; posit
   const positions: string[] = [];
   for (let level = 1; level < levels; level++) {
     images.push("var(--openidea-guide)");
-    positions.push(`calc(6px + ${level * step}ch) 0`);
+    positions.push(`calc(${LINE_INSET}px + ${level * step}ch) 0`);
   }
   return { images: images.join(", "), positions: positions.join(", ") };
 }

@@ -63,6 +63,7 @@ interface AgentsState {
   unread: Set<string>;
   /** Entries of the tasks (and subagents) opened in this window, by `entriesKey`. */
   entries: Map<string, AgentEntry[]>;
+  entryLoads: Map<string, { error: string | null }>;
   changes: Map<string, AgentChange[]>;
   /** Scroll position and follow-output preference by conversation, shared by both hosts. */
   scrollPositions: Map<string, { top: number; stick: boolean }>;
@@ -123,6 +124,7 @@ export const useAgents = create<AgentsState>(() => ({
   tasks: new Map(),
   unread: new Set(),
   entries: new Map(),
+  entryLoads: new Map(),
   changes: new Map(),
   providers: [],
   limits: new Map(),
@@ -258,6 +260,7 @@ export async function connect(): Promise<void> {
     error: null,
     tasks: new Map(tasks.map((t) => [t.id, t])),
     entries: new Map(),
+    entryLoads: new Map(),
     changes: new Map(),
     providers,
   });
@@ -279,6 +282,7 @@ export function disconnect() {
     tasks: new Map(),
     unread: new Set(),
     entries: new Map(),
+    entryLoads: new Map(),
     changes: new Map(),
     docked: null,
     lastTask: null,
@@ -293,7 +297,7 @@ function onEvent(e: AgentEvent) {
     case "task": {
       const prev = s.tasks.get(e.task.id);
       useAgents.setState({ tasks: new Map(s.tasks).set(e.task.id, e.task) });
-      if (prev && prev.title !== e.task.title) notifyTabTitlesChanged();
+      if (prev && (prev.title !== e.task.title || prev.status !== e.task.status)) notifyTabTitlesChanged();
       if (e.task.status === "archived") setUnread(e.task.id, false);
       else if (attentionChange(prev?.status, e.task.status)) markUnread(e.task.id);
       notifyChange(prev, e.task);
@@ -374,8 +378,31 @@ function notifyChange(prev: AgentTask | undefined, task: AgentTask) {
 
 /** Loads the entries of the task's conversation, or of its subagent `subagent`'s. */
 export async function loadEntries(task: string, subagent: string | null = null): Promise<void> {
-  const entries = await call(commands.agentEntries(task, subagent));
-  useAgents.setState((s) => ({ entries: new Map(s.entries).set(entriesKey(task, subagent), entries) }));
+  const key = entriesKey(task, subagent);
+  if (useAgents.getState().entryLoads.get(key)?.error === null) return;
+  const load = { error: null };
+  useAgents.setState((s) => ({ entryLoads: new Map(s.entryLoads).set(key, load) }));
+  let timer: ReturnType<typeof setTimeout> | undefined;
+  try {
+    const entries = await Promise.race([
+      call(commands.agentEntries(task, subagent)),
+      new Promise<never>((_, reject) => {
+        timer = setTimeout(() => reject(new Error(tx("Loading the conversation timed out. Try again."))), 35_000);
+      }),
+    ]);
+    if (useAgents.getState().entryLoads.get(key) !== load) return;
+    useAgents.setState((s) => {
+      const entryLoads = new Map(s.entryLoads);
+      entryLoads.delete(key);
+      return { entries: new Map(s.entries).set(key, entries), entryLoads };
+    });
+  } catch (e) {
+    if (useAgents.getState().entryLoads.get(key) !== load) return;
+    const error = (e instanceof Error ? e.message : String(e)).trim() || tx("Unknown error");
+    useAgents.setState((s) => ({ entryLoads: new Map(s.entryLoads).set(key, { error }) }));
+  } finally {
+    clearTimeout(timer);
+  }
 }
 
 export async function refreshChanges(task: string): Promise<void> {

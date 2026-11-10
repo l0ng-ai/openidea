@@ -16,7 +16,7 @@ import { SCHEMES as EDITOR_SCHEMES, listSchemes, customSchemes } from "@/platfor
 import { formatTimestamp } from "@/platform/dateFormat";
 import { Checkbox, IconButton, Input, Popup, type SelectOption, T } from "@/ui";
 import { NOTIFICATION_GROUPS } from "@/workbench/notificationStore";
-import { ColorSwatches, NumberInput, Row, SearchLabel, Select, Toggle } from "../components/Form";
+import { ColorSwatches, FormGroup, NumberInput, Row, SearchLabel, Select, Toggle } from "../components/Form";
 import { useLabelMatch, useSetting } from "../components/context";
 import {
   IDLE_LIMITS,
@@ -48,7 +48,7 @@ function BoundToggle({ k, label, hint, disabled }: { k: string; label: string; h
 }
 
 function Indented({ children }: { children: ReactNode }) {
-  return <div className={styles.indented}>{children}</div>;
+  return <FormGroup indented>{children}</FormGroup>;
 }
 
 // ---------------------------------------------------------------------------
@@ -95,6 +95,7 @@ function ThemeRow() {
         onChange={setTheme}
         onPreview={preview}
         aria-label="Theme"
+        className={styles.themeSelect}
         disabled={sync}
       />
       <span className={clsx(styles.inline, matched && styles.matched)}>
@@ -107,17 +108,17 @@ function ThemeRow() {
           }}
           label={<SearchLabel text="Sync with OS" />}
         />
+        <IconButton
+          ref={gear}
+          icon="settings"
+          size="small"
+          title="Preferred themes for light and dark OS mode"
+          aria-label="Preferred themes"
+          disabled={!sync}
+          aria-expanded={open}
+          onClick={() => setOpen((v) => !v)}
+        />
       </span>
-      <IconButton
-        ref={gear}
-        icon="settings"
-        size="small"
-        title="Preferred themes for light and dark OS mode"
-        aria-label="Preferred themes"
-        disabled={!sync}
-        aria-expanded={open}
-        onClick={() => setOpen((v) => !v)}
-      />
       <Popup
         open={open}
         onClose={() => setOpen(false)}

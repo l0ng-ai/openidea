@@ -317,6 +317,8 @@ export interface SetupOptions {
   wrapOverride?: boolean | null;
   /** Extra extensions owned by the slot (update listeners, focus handlers). */
   extra?: Extension;
+  /** Standalone value editors supply their own extensions without file-backed contributions. */
+  contributions?: Extension;
 }
 
 /**
@@ -407,7 +409,7 @@ export function baseExtensions(o: SetupOptions): Extension {
         wrapOverride: o.wrapOverride,
       }),
     ),
-    compartments.contributions.of(contributionExtensions(o.ctx)),
+    compartments.contributions.of(o.contributions ?? contributionExtensions(o.ctx)),
     compartments.distractionFree.of(distractionFreeExtension(o.settings)),
     o.extra ?? [],
   ];

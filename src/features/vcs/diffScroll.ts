@@ -232,7 +232,7 @@ export class UnalignedPanes {
 
   scrollTo(side: Side, options: ScrollToOptions) {
     this.interruptScroll();
-    this.scrolling = this.sync && options.behavior === "smooth" ? side : null;
+    this.scrolling = this.sync ? side : null;
     this.releaseScroll();
     this.view(side).scrollDOM.scrollTo(options);
   }
@@ -267,7 +267,7 @@ export class UnalignedPanes {
 
   private scrolled(side: Side) {
     if (this.scrolling) {
-      // A follower's delayed layout scroll must not cancel the leader's animation.
+      // A follower's delayed layout scroll must not pull back the navigation source.
       this.follow(this.scrolling);
       this.releaseScroll();
       this.schedule();

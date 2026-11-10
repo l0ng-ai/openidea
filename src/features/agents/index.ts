@@ -3,6 +3,7 @@
  * Agents tool window lists tasks by what they need from the user, a task opens as an
  * editor tab (conversation + changed files), and New Task is an editor page.
  */
+import { createElement } from "react";
 import { registerActions } from "@/platform/actions";
 import { useProject } from "@/platform/project";
 import { executeAction } from "@/platform/actions";
@@ -22,6 +23,7 @@ import { HOME_KIND, REGISTRY_PAGE, SESSION_KIND, TASK_DRAG, TOOL_WINDOW } from "
 import { sendPaths, sendSelection } from "./references";
 import { focusedSession } from "./sessionFocus";
 import { connect, disconnect, openHome, useAgents } from "./store";
+import { TaskStatusMark } from "./TaskStatusMark";
 import { taskActions } from "./taskActions";
 import { replyActions } from "./replyActions";
 
@@ -88,6 +90,8 @@ export function activate(): () => void {
         return useAgents.getState().tasks.get(data.task)?.title ?? data.title ?? "Agent Task";
       },
       icon: () => "toolwindow-agents",
+      // Busy / done marker in the tab's trailing slot (#2233).
+      trailing: (input) => createElement(TaskStatusMark, { task: (input.data as { task: string }).task }),
       // Tabs of tasks deleted meanwhile are closed when the tasks load (`connect`).
       restorable: true,
       // Rebuilding a long conversation on every switch back is slow.

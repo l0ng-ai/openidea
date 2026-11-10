@@ -98,6 +98,46 @@ describe("refresh of excluded folders", () => {
   });
 });
 
+describe("refresh on ignore-rule changes", () => {
+  it("refreshes loaded descendants once, preserving selection and unrelated folders", async () => {
+    await fs.createFile("/p/docs/sub/note.md");
+    await expandAll();
+    setSelection(new Set(["/p/docs/guide.md"]), "/p/docs/guide.md");
+    const spy = vi.spyOn(fs, "readDir");
+    fs.ignored.add("/p/docs/sub");
+    const event = {
+      created: [],
+      modified: ["/p/docs/.gitignore"],
+      removed: [],
+      ignoreRules: ["/p/docs", "/p/docs/nested"],
+    };
+
+    await applyFsChange(event);
+
+    expect(spy.mock.calls.map(([dir]) => dir).sort()).toEqual(["/p/docs", "/p/docs/sub"]);
+    expect(
+      useProjectTree
+        .getState()
+        .listings.get("/p/docs")
+        ?.find((e) => e.name === "sub")?.ignored,
+    ).toBe(true);
+    expect(useProjectTree.getState().listings.get("/p/docs/sub")?.[0]?.ignored).toBe(true);
+    expect([...useProjectTree.getState().selected]).toEqual(["/p/docs/guide.md"]);
+    spy.mockClear();
+    fs.ignored.clear();
+    await applyFsChange({ ...event, modified: [], ignoreRules: [ROOT, "/p/docs"] });
+    expect(spy.mock.calls.map(([dir]) => dir).sort()).toEqual([...useProjectTree.getState().listings.keys()].sort());
+    expect(
+      useProjectTree
+        .getState()
+        .listings.get("/p/docs")
+        ?.find((e) => e.name === "sub")?.ignored,
+    ).toBe(false);
+    expect(useProjectTree.getState().listings.get("/p/docs/sub")?.[0]?.ignored).toBe(false);
+    spy.mockRestore();
+  });
+});
+
 describe("refresh on fsChanged", () => {
   it("reloads affected loaded folders and keeps expansion and selection", async () => {
     await loadDir(ROOT);

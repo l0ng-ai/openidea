@@ -45,6 +45,13 @@ pub(crate) struct Session {
     pub debuggees: Mutex<Vec<Child>>,
     /// The terminal a `runInTerminal` program runs in: typed input goes to it.
     pub program: Mutex<Option<ProgramTerminal>>,
+    /// The job object over the adapter and everything it started: the program an adapter
+    /// like java-debug launches is its child, so a forced stop (and the session's
+    /// cleanup) ends the whole tree even when the adapter exited first and the reported
+    /// pid no longer names it. `None` when the assignment failed; the kill then falls
+    /// back to the captured process tree.
+    #[cfg(windows)]
+    pub job: Mutex<Option<ide_core::process::Job>>,
     /// Set once `configurationDone` was sent; breakpoint updates go out live after that.
     pub configured: AtomicBool,
     pub initialized: watch::Sender<bool>,
@@ -91,6 +98,10 @@ impl Session {
         port: Option<u16>,
         child: Option<Child>,
     ) -> Self {
+        // Before `child` moves into the session: the adapter is the root of the job, so
+        // everything it starts (java-debug's JVM) is in there by inheritance.
+        #[cfg(windows)]
+        let job = child.as_ref().and_then(tokio::process::Child::id).and_then(ide_core::process::Job::for_pid);
         Self {
             id,
             owner,
@@ -105,6 +116,8 @@ impl Session {
             adapter_process: Mutex::new(child),
             debuggees: Mutex::new(Vec::new()),
             program: Mutex::new(None),
+            #[cfg(windows)]
+            job: Mutex::new(job),
             configured: AtomicBool::new(false),
             initialized: watch::channel(false).0,
             startup_cancel: ide_core::CancellationToken::new(),
@@ -282,6 +295,24 @@ impl Session {
     /// Kills the adapter and every debuggee we started.
     pub fn kill_processes(&self) {
         self.kotlin_relay.lock().take();
+        #[cfg(unix)]
+        if self.request == "launch" {
+            for group in launch_groups(self) {
+                ide_core::process::kill_tree_of(group as u32);
+            }
+        }
+        // The job first: it ends the adapter and everything it started (the program
+        // java-debug launched is its child), members included that the stop's captured
+        // tree never saw. An empty job is unaffected, and whatever survives this session
+        // dies when the handle closes (`KILL_ON_JOB_CLOSE`).
+        #[cfg(windows)]
+        if let Some(job) = self.job.lock().as_ref() {
+            job.terminate();
+        }
+        #[cfg(windows)]
+        if let Some(tree) = self.stop_tree.lock().as_ref() {
+            tree.terminate();
+        }
         if let Some(mut c) = self.adapter_process.lock().take() {
             if self.adapter == "rdbg"
                 && let Some(pid) = c.id()
@@ -295,6 +326,9 @@ impl Session {
         }
         if let Some(mut program) = self.program.lock().take() {
             let _ = program.child.kill();
+            let _ = std::thread::Builder::new().name("openidea-debug-reap".into()).spawn(move || {
+                let _ = program.child.wait();
+            });
         }
     }
 }
@@ -346,18 +380,36 @@ fn process_tree(pid: i32) -> Vec<i32> {
 /// Asks the program itself to exit (`force` = SIGKILL) without ending the adapter session:
 /// its output keeps flowing over DAP while it shuts down. The first call remembers the pid
 /// tree, because the reported pid may die before its program does.
-pub(crate) fn signal_debuggee(s: &Arc<Session>, force: bool) {
-    let pid = s.debuggee_pid.load(Ordering::Acquire);
-    if pid <= 0 {
+pub(crate) async fn signal_debuggee(s: &Arc<Session>, force: bool) {
+    if s.request != "launch" {
         return;
     }
+    #[cfg(not(windows))]
+    let pid = s.debuggee_pid.load(Ordering::Acquire);
     #[cfg(unix)]
     {
-        let mut known = s.stop_pids.lock();
-        if known.is_empty() {
-            *known = process_tree(pid as i32);
+        let needs_tree = pid > 0 && s.stop_pids.lock().is_empty();
+        if needs_tree {
+            let tree = tokio::task::spawn_blocking(move || process_tree(pid as i32)).await.unwrap_or_default();
+            *s.stop_pids.lock() = tree;
         }
+        let known = s.stop_pids.lock();
         let signal = if force { libc::SIGKILL } else { libc::SIGTERM };
+        if force {
+            // A forced stop kills the launch: every root the session spawned leads its own
+            // process group (`own_group` at spawn), so one signal reaches the program and
+            // everything it started, even processes born after the snapshot below was
+            // taken — the adapter's program is in the adapter's group. The session's own
+            // JVM roots (Kotlin) and `runInTerminal` programs lead groups of their own.
+            // The roots are unreaped until the session drops them, so their ids (and the
+            // groups named by them) cannot have been reused yet.
+            for group in launch_groups(s) {
+                // SAFETY: plain syscalls on the processes this session started.
+                if unsafe { libc::kill(-group, libc::SIGKILL) } != 0 {
+                    unsafe { libc::kill(group, libc::SIGKILL) };
+                }
+            }
+        }
         // Children first: the shell that started the program would otherwise reparent it.
         for p in known.iter().rev() {
             // SAFETY: plain syscall on the processes this session started.
@@ -368,13 +420,51 @@ pub(crate) fn signal_debuggee(s: &Arc<Session>, force: bool) {
     }
     #[cfg(windows)]
     {
-        // Console programs have no external graceful signal; the adapter gets its chance first.
-        if force && let Some(tree) = s.stop_tree.lock().as_ref() {
-            tree.terminate();
+        // Console programs have no external graceful signal; the adapter gets its chance
+        // first. The job ends the program and everything it started, members included
+        // that the captured tree never saw.
+        if force {
+            if let Some(job) = s.job.lock().as_ref() {
+                job.terminate();
+            }
+            // A separately spawned program may have rejected assignment to the adapter's job.
+            if let Some(tree) = s.stop_tree.lock().as_ref() {
+                tree.terminate();
+            }
         }
     }
     #[cfg(not(any(unix, windows)))]
     let _ = (pid, force);
+}
+
+/// The process groups the session spawned roots for: the adapter's (the program it
+/// launched is in it), the JVMs the session started itself, the `runInTerminal` program.
+#[cfg(unix)]
+fn launch_groups(s: &Session) -> Vec<libc::pid_t> {
+    let mut groups = Vec::new();
+    let mut push = |id: Option<u32>| {
+        if let Ok(pid) = libc::pid_t::try_from(id.unwrap_or(0)) {
+            groups.push(pid);
+        }
+    };
+    push(s.adapter_process.lock().as_ref().and_then(tokio::process::Child::id));
+    for child in s.debuggees.lock().iter() {
+        push(child.id());
+    }
+    push(s.program.lock().as_ref().and_then(|p| p.child.process_id()));
+    groups.retain(|g| *g > 0);
+    groups
+}
+
+/// Whether the launch is still running: the stop's captured tree when there is one,
+/// otherwise the session's job (the adapter and everything it started).
+#[cfg(windows)]
+fn launch_running(s: &Arc<Session>) -> bool {
+    if let Some(tree) = s.stop_tree.lock().as_ref() {
+        tree.is_running()
+    } else {
+        s.job.lock().as_ref().is_some_and(|job| job.is_running())
+    }
 }
 
 /// Waits until the program a `launch` session started is gone; a second Stop kills it.
@@ -390,19 +480,19 @@ pub(crate) async fn wait_for_debuggee(s: &Arc<Session>, terminate: bool) {
     #[cfg(unix)]
     {
         use std::time::Instant;
-        let targets = {
-            let known = s.stop_pids.lock();
-            if known.is_empty() { process_tree(pid as i32) } else { known.clone() }
-        };
+        let mut targets = s.stop_pids.lock().clone();
+        if targets.is_empty() {
+            targets = tokio::task::spawn_blocking(move || process_tree(pid as i32)).await.unwrap_or_default();
+        }
         let alive = || targets.iter().any(|p| unsafe { libc::kill(*p, 0) } == 0);
         let deadline = Instant::now() + DEBUGGEE_EXIT_WAIT;
         while alive() {
             if s.stop_force.swap(false, Ordering::AcqRel) {
-                signal_debuggee(s, true);
+                signal_debuggee(s, true).await;
             }
             if Instant::now() >= deadline {
                 // The program ignored the terminate: do not leave it running.
-                signal_debuggee(s, true);
+                signal_debuggee(s, true).await;
                 break;
             }
             tokio::time::sleep(Duration::from_millis(50)).await;
@@ -412,9 +502,12 @@ pub(crate) async fn wait_for_debuggee(s: &Arc<Session>, terminate: bool) {
     {
         remember_debuggee(s).await;
         let deadline = std::time::Instant::now() + DEBUGGEE_EXIT_WAIT;
-        while s.stop_tree.lock().as_ref().is_some_and(|tree| tree.is_running()) {
+        // The captured tree is the oracle when it was captured; otherwise the job (every
+        // process the launch started) is, so a failed capture can no longer end the wait
+        // while the program still holds its port.
+        while launch_running(s) {
             if s.stop_force.swap(false, Ordering::AcqRel) || std::time::Instant::now() >= deadline {
-                signal_debuggee(s, true);
+                signal_debuggee(s, true).await;
             }
             tokio::time::sleep(Duration::from_millis(50)).await;
         }
@@ -697,6 +790,14 @@ pub(crate) fn run_in_terminal(s: &Arc<Session>, args: &Value) -> Result<Value, S
         }
     }
     let mut child = pair.slave.spawn_command(cmd).map_err(|e| format!("failed to start {program}: {e}"))?;
+    // The program joins the session's job, so Stop reaches what it starts (its children),
+    // though only the program itself is the session's child.
+    #[cfg(windows)]
+    if let Some(pid) = child.process_id()
+        && let Some(job) = s.job.lock().as_ref()
+    {
+        job.assign_pid(pid);
+    }
     drop(pair.slave);
     let reader = pair.master.try_clone_reader().map_err(|e| format!("terminal of {program}: {e}"))?;
     let writer = pair.master.take_writer().map_err(|e| format!("terminal of {program}: {e}"))?;
@@ -864,7 +965,16 @@ pub(crate) async fn start_kotlin_debuggee(s: &Arc<Session>, args: &mut Value) ->
             }
         }
     }
+    // A root the session spawns itself: its own process group on Unix (`kill(-pgid)` in a
+    // forced stop), the session's job on Windows, so a stop reaches what it forks.
+    ide_core::process::own_group(cmd.as_std_mut());
     let mut child = cmd.spawn()?;
+    #[cfg(windows)]
+    if let Some(pid) = child.id()
+        && let Some(job) = s.job.lock().as_ref()
+    {
+        job.assign_pid(pid);
+    }
     if let Some(err) = child.stderr.take() {
         forward_output(s, err, "stderr");
     }

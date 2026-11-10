@@ -19,6 +19,8 @@ const backend = vi.hoisted(() => ({
   changes: [] as AgentChange[],
   answers: [] as Array<[string, number, string | null]>,
   fetched: [] as string[],
+  entryError: null as string | null,
+  entryWait: null as Promise<void> | null,
 }));
 vi.mock("@/platform/ipc", async (original) => ({
   ...(await original<typeof import("@/platform/ipc")>()),
@@ -26,6 +28,9 @@ vi.mock("@/platform/ipc", async (original) => ({
     agentEntries: async (id: string, sub: string | null) => {
       const key = sub ? `${id}/${sub}` : id;
       backend.fetched.push(key);
+      await backend.entryWait;
+      if (backend.entryError !== null)
+        return { status: "error", error: { kind: "unavailable", message: backend.entryError } };
       return { status: "ok", data: backend.entries.get(key) ?? [] };
     },
     agentChanges: async () => ({ status: "ok", data: backend.changes }),
@@ -98,12 +103,15 @@ const scrollTopDescriptor = Object.getOwnPropertyDescriptor(HTMLElement.prototyp
 afterEach(() => {
   disposeActions();
   vi.restoreAllMocks();
+  vi.useRealTimers();
   if (scrollTopDescriptor) Object.defineProperty(HTMLElement.prototype, "scrollTop", scrollTopDescriptor);
   else Reflect.deleteProperty(HTMLElement.prototype, "scrollTop");
 });
 
 beforeEach(() => {
-  disposeActions = registerActions(replyActions);
+  disposeActions = registerActions([...replyActions, ...taskActions]);
+  backend.entryError = null;
+  backend.entryWait = null;
   disconnect();
   localStorage.clear();
   backend.changes = [];
@@ -730,6 +738,80 @@ describe("a pending permission request in the conversation", () => {
         ["B", 4, null],
       ]),
     );
+  });
+});
+
+describe("conversation loading", () => {
+  beforeEach(() => useAgents.setState({ entries: new Map() }));
+
+  it.each(["Remote host disconnected", ""])(
+    "shows load errors (%s) in the conversation and retries the same task",
+    async (reason) => {
+      backend.entryError = reason;
+      render(<SessionEditor input={input("A")} />);
+      expect(
+        await screen.findByText(`Couldn't load the conversation: ${reason || "Unknown error"}`),
+      ).toBeInTheDocument();
+      expect(within(stream()).queryByRole("status", { name: "Loading" })).toBeNull();
+      backend.entryError = null;
+      fireEvent.click(screen.getByRole("button", { name: "Retry" }));
+      expect(await screen.findByText("Answer A")).toBeInTheDocument();
+      expect(screen.queryByText(/Couldn't load the conversation/)).toBeNull();
+    },
+  );
+
+  it("shows an empty state when no history was saved", async () => {
+    backend.entries.set("A", []);
+    render(<SessionEditor input={input("A")} />);
+    expect(await screen.findByText("No conversation history")).toBeInTheDocument();
+    expect(within(stream()).queryByRole("status", { name: "Loading" })).toBeNull();
+  });
+
+  it("bounds a request that never answers, then permits retry without applying its late result", async () => {
+    vi.useFakeTimers();
+    let finish!: () => void;
+    backend.entryWait = new Promise<void>((resolve) => {
+      finish = resolve;
+    });
+    render(<SessionEditor input={input("A")} />);
+    expect(within(stream()).getByRole("status", { name: "Loading" })).toBeInTheDocument();
+    await act(() => vi.advanceTimersByTimeAsync(35_000));
+    expect(
+      screen.getByText("Couldn't load the conversation: Loading the conversation timed out. Try again."),
+    ).toBeInTheDocument();
+    expect(within(stream()).queryByRole("status", { name: "Loading" })).toBeNull();
+    backend.entryWait = null;
+    backend.entries.set("A", [{ type: "agent", text: "Retried history" }]);
+    fireEvent.click(screen.getByRole("button", { name: "Retry" }));
+    await act(async () => {});
+    expect(screen.getByText("Retried history")).toBeInTheDocument();
+    backend.entries.set("A", [{ type: "agent", text: "Stale history" }]);
+    await act(async () => finish());
+    expect(screen.queryByText("Stale history")).toBeNull();
+  });
+
+  it("keeps subagent failures separate and retries that subagent", async () => {
+    useAgents.setState({ entries: new Map([["A", backend.entries.get("A")!]]) });
+    backend.entryError = "No such subagent";
+    render(<SessionEditor input={input("A")} />);
+    fireEvent.click(screen.getByRole("button", { name: /Explore task A/ }));
+    expect(await screen.findByText("Couldn't load the conversation: No such subagent")).toBeInTheDocument();
+    backend.entryError = null;
+    fireEvent.click(screen.getByRole("button", { name: "Retry" }));
+    expect(await screen.findByText("Child answer")).toBeInTheDocument();
+    fireEvent.click(screen.getByRole("button", { name: "Back" }));
+    expect(screen.getByText("Answer A")).toBeInTheDocument();
+  });
+
+  it("does not apply entries after disconnecting the project", async () => {
+    let finish!: () => void;
+    backend.entryWait = new Promise<void>((resolve) => {
+      finish = resolve;
+    });
+    render(<SessionEditor input={input("A")} />);
+    act(() => disconnect());
+    await act(async () => finish());
+    expect(useAgents.getState().entries.size).toBe(0);
   });
 });
 

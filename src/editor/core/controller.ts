@@ -3,7 +3,9 @@
  * status, navigation history, autosave. The React views and actions talk to
  * this singleton; other features use the EditorService and editor/api.
  */
+import { writeClipboardText } from "@/platform/clipboard";
 import { pasteEditorClipboard } from "./cm/clipboard";
+import type { ReactNode } from "react";
 import { EditorSelection } from "@codemirror/state";
 import { create } from "zustand";
 import { setContext } from "@/platform/context";
@@ -207,6 +209,16 @@ export function tabIcon(input: EditorInput, kinds: EditorKinds): string {
     return kind?.icon?.(input) ?? "file";
   } catch {
     return "file";
+  }
+}
+
+/** A kind's trailing marker (status dot …); `null` when it has none. */
+export function tabTrailing(input: EditorInput, kinds: EditorKinds): ReactNode {
+  const kind = kinds.get(input.kind);
+  try {
+    return kind?.trailing?.(input) ?? null;
+  } catch {
+    return null;
   }
 }
 
@@ -862,7 +874,7 @@ export class EditorController implements SlotHost {
       ...(slot.model.virtual
         ? ([
             { kind: "separator" },
-            { label: "Copy Reference", run: () => void navigator.clipboard?.writeText(slot.model.path) },
+            { label: "Copy Reference", run: () => void writeClipboardText(slot.model.path) },
           ] as MenuItem[])
         : ([
             { kind: "separator" },
@@ -1979,7 +1991,9 @@ function gitMenu(path: string): MenuItem {
       { kind: "action", action: "vcs.annotate", arg: path, label: "Annotate with Git Blame" },
       { kind: "action", action: "vcs.showDiff", arg: [path], label: "Show Diff" },
       { kind: "action", action: "vcs.compareWithBranch", arg: { path } },
+      { kind: "action", action: "vcs.compareWithRevision", arg: { path } },
       { kind: "action", action: "vcs.showHistory", arg: [path], label: "Show History" },
+      { kind: "action", action: "vcs.showCurrentRevision", arg: { path } },
       { kind: "action", action: "vcs.showHistoryForSelection", label: "Show History for Selection" },
       { kind: "action", action: "vcs.rollback", arg: [path], label: "Rollback…" },
       { kind: "separator" },
