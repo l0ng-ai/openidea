@@ -281,8 +281,6 @@
   --target-row-inset: calc(6px + 8px);
   --target-row-leading: calc(14px + 6px);
   min-width: 260px;
-  /* As wide as the longest branch name, unless the window is narrower. */
-  max-width: min(640px, 70vw);
   display: flex;
   flex-direction: column;
   overflow: hidden;
@@ -290,6 +288,9 @@
 /* Rows are out of flow inside the virtual list: this hidden column gives the popup their width. */
 .targetSizer {
   width: max-content;
+  /* As wide as the longest branch name, up to a cap (Popup limits it to the window). */
+  max-width: min(640px, 70vw);
+  box-sizing: border-box;
   height: 0;
   padding-inline: var(--target-row-inset);
   overflow: hidden;

@@ -62,10 +62,11 @@ test("typing part of a remote branch name lists the matching branches", async ({
   await input.fill("fo");
   const list = page.getByRole("listbox", { name: "Remote branches" });
   await expect(list).toBeVisible();
+  // A contiguous match ("platFOrm") first, then the looser ones in their order.
   await expect(list.getByRole("option")).toHaveText([
+    "feature/PLATFORM-12345-order-history-export",
     "feature/login",
     "fix/error-auth",
-    "feature/PLATFORM-12345-order-history-export",
   ]);
 });
 
