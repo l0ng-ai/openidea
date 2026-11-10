@@ -1,4 +1,4 @@
-﻿/**
+/**
  * Chooser rows (`locationItems`): lean `name  path:line` by default, like IDEA's
  * chooser; the signature preview, file name and full paths outside the project
  * come from Settings › Editor › Location Choosers.
