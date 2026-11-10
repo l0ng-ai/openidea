@@ -303,6 +303,7 @@ impl Handler for ClientHandler {
                 self.progress(&mgr, json!({ "token": ANGULAR_LOADING, "value": { "kind": "end" } }))
             }
             "telemetry/event" | "$/logTrace" | "$/cancelRequest" => {}
+            "eslint/status" | "eslint/probeFailed" | "eslint/exitCalled" => {}
             other => tracing::trace!("[{}] unhandled notification {other}", self.server.name),
         }
     }
@@ -343,6 +344,10 @@ impl Handler for ClientHandler {
                 Ok(Value::Null)
             }
             "workspace/inlineValue/refresh" => Ok(Value::Null),
+            // vscode-eslint asks its client before using the project's eslint (approved: 4) and
+            // reports a missing library or configuration; diagnostics already say what's wrong.
+            "eslint/confirmESLintExecution" => Ok(json!(4)),
+            "eslint/noLibrary" | "eslint/noConfig" | "eslint/openDoc" => Ok(json!({})),
             other => Err((codes::METHOD_NOT_FOUND, format!("unsupported method {other}"))),
         }
     }

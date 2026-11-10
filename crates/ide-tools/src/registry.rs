@@ -176,6 +176,17 @@ pub static TOOLS: &[ToolSpec] = &[
         homepage: "https://oxc.rs/docs/guide/usage/linter",
     },
     ToolSpec {
+        name: "eslint",
+        display: "ESLint Language Server",
+        kind: LanguageServer,
+        commands: &["vscode-eslint-language-server"],
+        method: Method::Npm { packages: &["vscode-langservers-extracted"] },
+        fallback: None,
+        version: V,
+        homepage: "https://github.com/hrsh7th/vscode-langservers-extracted",
+        needs: NODE,
+    },
+    ToolSpec {
         name: "rust-analyzer",
         display: "rust-analyzer",
         kind: LanguageServer,
