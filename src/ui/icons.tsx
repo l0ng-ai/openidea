@@ -961,7 +961,7 @@ const FILE_NAMES = table({
 /** Name patterns, tried in order (lower-case names). */
 const NAME_PATTERNS: readonly (readonly [RegExp, IconName])[] = [
   [/^(dockerfile|containerfile)[.-]/, "file-docker"],
-  [/^(docker-)?compose([.-][\w-]+)?\.ya?ml$/, "file-docker"],
+  [/^.*compose.*\.ya?ml$/, "file-docker"],
   [/^\.env(\.|$)/, "file-dotenv"],
   [/^(licen[cs]e|copying)(-[\w.-]+|\.(md|txt|rst))?$/, "file-license"],
   [/^requirements([.-][\w.-]*)?\.(txt|in)$/, "file-requirements"],
@@ -1075,15 +1075,20 @@ export function setFileIconOverride(resolve: ((fileName: string) => IconName | n
 }
 
 /** Icons for particular files (plugin `fileIcons`), newest first: after the user's, before the icon theme's. */
-let fileIconProviders: ReadonlyArray<(fileName: string) => string | null> = [];
+let fileIconProviders: ReadonlyArray<(fileName: string, path: string | null) => string | null> = [];
 
-/** Adds a file icon provider (an `ext:` icon name or null); the returned function removes it. */
-export function addFileIconProvider(resolve: (fileName: string) => string | null): () => void {
-  fileIconProviders = [resolve, ...fileIconProviders];
+/** Bumps the file-icon revision so mounted trees and editor tabs re-resolve icons. */
+export function bumpFileIconRevision() {
   useFileIconRevision.setState((n) => n + 1, true);
+}
+
+/** Adds a file icon provider (an `ext:` or built-in icon name or null); the returned function removes it. */
+export function addFileIconProvider(resolve: (fileName: string, path: string | null) => string | null): () => void {
+  fileIconProviders = [resolve, ...fileIconProviders];
+  bumpFileIconRevision();
   return () => {
     fileIconProviders = fileIconProviders.filter((p) => p !== resolve);
-    useFileIconRevision.setState((n) => n + 1, true);
+    bumpFileIconRevision();
   };
 }
 
@@ -1092,7 +1097,7 @@ export function fileIconName(fileName: string, path: string | null = null): Icon
   const custom = iconOverride?.(fileName);
   if (custom) return custom;
   for (const provide of fileIconProviders) {
-    const icon = provide(fileName);
+    const icon = provide(fileName, path);
     if (icon && iconPath(icon)) return icon as IconName;
   }
   const themed = fileIconTheme?.file(fileName, path);

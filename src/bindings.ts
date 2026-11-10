@@ -2771,6 +2771,8 @@ export type CompletionSettings = {
 	parameterInfoDelay?: number,
 };
 
+export type ComposeFileOverride = "kept" | "excluded";
+
 export type ComposeOp = "start" | "stop" | "restart" | 
 /**  Stops and removes the project's containers and networks. */
 "down";
@@ -4307,6 +4309,8 @@ export type FileSettings = {
 	fileTypes?: { [key in string]: FileTypeAssociation },
 	/**  Override File Type: file (project-relative and `/`-separated, or absolute) → language id. */
 	fileTypeOverrides?: { [key in string]: string },
+	/**  Compose detection choices, keyed by project-relative file path. */
+	composeFileOverrides?: { [key in string]: ComposeFileOverride },
 };
 
 export type FileStamp = {

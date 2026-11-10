@@ -1,6 +1,19 @@
 import { describe, expect, it } from "vitest";
 import type { DockerContainer, DockerSnapshot } from "@/platform/ipc";
-import { composeTargets, dockerfileTargets, fileTargets, imageTag, isComposeFile, isDockerfile } from "./compose";
+import { fileIconName } from "@/ui/icons";
+import {
+  composeFileIcon,
+  composeTargetAtLine,
+  composeTargets,
+  dockerfileTargets,
+  fileTargets,
+  imageTag,
+  isAutoDetectedComposeFile,
+  isComposeContent,
+  isComposeFile,
+  isDockerfile,
+  useComposeFiles,
+} from "./compose";
 import {
   DOCKERFILE,
   DOCKER_COMPOSE,
@@ -515,5 +528,139 @@ describe("phase 1: filters, cross-references and dashboard parsers", () => {
     )!;
     expect(nInspect.ipamConfigs[0]!.subnet).toBe("172.18.0.0/16");
     expect(nInspect.containers[0]!.name).toBe("shop-db-1");
+  });
+});
+
+describe("docker compose detection and targets", () => {
+  const playgroundCompose = [
+    "# StarRocks local development environment",
+    'version: "3.9"',
+    "",
+    "networks:",
+    "  playground-network:",
+    "    driver: bridge",
+    "",
+    "services:",
+    "  starrocks:",
+    "    container_name: starrocks",
+    "    hostname: starrocks.local.com",
+    "    po",
+    "    image: starrocks/allin1-ubuntu:3.3.10",
+    "    restart: unless-stopped",
+    "    ports:",
+    '      - "8030:8030"',
+    "    healthcheck:",
+    "      test: 'mysql -uroot'",
+    "      interval: 10s",
+    "      timeout: 5s",
+    "      retries: 3",
+    "    networks:",
+    "      playground-network:",
+    "",
+    "  minio:",
+    "    container_name: minio",
+    "    image: minio/minio:latest",
+    "    depends_on:",
+    "      - starrocks",
+  ].join("\n");
+
+  it.each(["composeprod.yml", "mycompose.yaml", "team compose-dev.yml", "docker-compose.override.yaml"])(
+    "recognises the Compose filename %s in detection and icons",
+    (name) => {
+      expect(isComposeFile(`/p/${name}`)).toBe(true);
+      expect(fileIconName(name, `/p/${name}`)).toBe("file-docker");
+    },
+  );
+
+  it.each([
+    ["Kubernetes", "apiVersion: v1\nkind: Service\nservices:\n  web:\n    image: nginx\n"],
+    ["OpenAPI", "openapi: 3.0.0\nservices:\n  web:\n    image: nginx\n"],
+    ["Swagger", "swagger: '2.0'\nservices:\n  web:\n    image: nginx\n"],
+    ["GitHub Actions", "on: push\njobs:\n  build:\n    services:\n      db:\n        image: postgres\n"],
+    [
+      "Ansible",
+      "- hosts: all\n  tasks:\n    - name: Start services\n      services:\n        web:\n          image: nginx\n",
+    ],
+    ["Helm values", "name: shop\nreplicaCount: 1\nservices:\n  web:\n    image: nginx\n"],
+    ["mkdocs", "site_name: Docs\nservices:\n  search:\n    image: example\n"],
+    ["unrelated service list", "name: catalog\nservices:\n  web:\n    url: https://example.test\n"],
+    ["embedded Compose example", "example: |\n  services:\n    web:\n      image: nginx\n"],
+  ])("does not content-detect %s as Compose", (_name, content) => {
+    expect(isComposeContent(content)).toBe(false);
+    expect(fileTargets("/p/stack.yaml", content)).toEqual([]);
+  });
+
+  it("bounds content scanning by characters and lines", () => {
+    expect(isComposeContent(`#${" ".repeat(70_000)}\nservices:\n  web:\n    image: nginx\n`)).toBe(false);
+    expect(isComposeContent(`${"# comment\n".repeat(600)}services:\n  web:\n    image: nginx\n`)).toBe(false);
+  });
+
+  it("does not add run markers to extension or merge keys", () => {
+    expect(
+      composeTargets("services:\n  x-defaults:\n    image: nginx\n  <<: *services\n  web:\n    image: nginx\n"),
+    ).toEqual([
+      { kind: "composeAll", line: 0 },
+      { kind: "composeService", line: 4, service: "web" },
+    ]);
+  });
+
+  it("adds markers for services using aliases and inline mappings", () => {
+    expect(composeTargets("services:\n  api: *defaults\n  db: {image: postgres}\n")).toEqual([
+      { kind: "composeAll", line: 0 },
+      { kind: "composeService", line: 1, service: "api" },
+      { kind: "composeService", line: 2, service: "db" },
+    ]);
+  });
+
+  it("recognises service names beginning with an underscore", () => {
+    const content = "services:\n  _worker:\n    image: busybox\n";
+    expect(isComposeContent(content)).toBe(true);
+    expect(fileTargets("/p/stack.yml", content)).toEqual([
+      { kind: "composeAll", line: 0 },
+      { kind: "composeService", line: 1, service: "_worker" },
+    ]);
+  });
+
+  it("detects compose files by name and content, and respects Keep / Not a Compose file overrides", () => {
+    expect(isComposeFile("/git/gocommon/docker/playground-compose.yml")).toBe(true);
+    expect(fileIconName("playground-compose.yml", "/git/gocommon/docker/playground-compose.yml")).toBe("file-docker");
+    expect(isComposeContent(playgroundCompose)).toBe(true);
+    expect(isComposeFile("/git/gocommon/docker/custom-stack.yml", playgroundCompose)).toBe(true);
+    expect(isComposeContent("apiVersion: v1\nkind: Service\nmetadata:\n  name: my-svc\n")).toBe(false);
+
+    const path = "/git/gocommon/docker/playground-compose.yml";
+    expect(isAutoDetectedComposeFile(path, playgroundCompose)).toBe(false);
+    expect(isAutoDetectedComposeFile("/p/stack.yml", playgroundCompose)).toBe(true);
+
+    useComposeFiles.setState({ overrides: { [path]: "excluded" } });
+    expect(isComposeFile(path, playgroundCompose)).toBe(false);
+    expect(composeFileIcon("playground-compose.yml", path)).toBe("file-yaml");
+    expect(fileTargets(path, playgroundCompose)).toEqual([]);
+
+    useComposeFiles.setState({ overrides: { [path]: "kept" } });
+    expect(isComposeFile(path)).toBe(true);
+    expect(isAutoDetectedComposeFile(path, playgroundCompose)).toBe(false);
+    expect(composeFileIcon("playground-compose.yml", path)).toBe("file-docker");
+    useComposeFiles.setState({ overrides: {} });
+  });
+
+  it("locates compose targets per line and enclosing service at caret", () => {
+    const targets = fileTargets("/git/gocommon/docker/playground-compose.yml", playgroundCompose);
+    expect(targets).toEqual([
+      { kind: "composeAll", line: 7 },
+      { kind: "composeService", line: 8, service: "starrocks" },
+      { kind: "composeService", line: 24, service: "minio" },
+    ]);
+    expect(composeTargetAtLine(playgroundCompose, 7)).toEqual({ kind: "composeAll", line: 7 });
+    expect(composeTargetAtLine(playgroundCompose, 11)).toEqual({
+      kind: "composeService",
+      line: 8,
+      service: "starrocks",
+    });
+    expect(composeTargetAtLine(playgroundCompose, 26)).toEqual({
+      kind: "composeService",
+      line: 24,
+      service: "minio",
+    });
   });
 });
