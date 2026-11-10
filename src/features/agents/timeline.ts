@@ -112,7 +112,7 @@ export interface FoldedTurn {
 /**
  * The finished turns whose work before their last reply folds into one line. A turn
  * folds when it has ended, ended with a reply, and did something before that reply (and
- * the user sent nothing into it meanwhile); the
+ * neither the user sent anything into it nor it ran into an error meanwhile); the
  * latest turn stays open while the agent works. Turns asked before `from` aren't shown
  * and so don't fold.
  */
@@ -138,8 +138,8 @@ export function foldedTurns(entries: readonly AgentEntry[], from: number, busy: 
       if (e.type === "error" || (e.type === "permission" && e.chosen === null)) return;
     }
     if (reply < 0 || reply === user + 1) return;
-    // What the user sent into the turn stays in view.
-    if (entries.slice(user + 1, reply).some((e) => e.type === "user")) return;
+    // What the user sent into the turn, and an error it ran into, stay in view.
+    if (entries.slice(user + 1, reply).some((e) => e.type === "user" || e.type === "error")) return;
     turns.set(user, { user, reply, sentMs: asked.sentMs ?? null, doneMs: asked.doneMs ?? null });
   });
   return turns;

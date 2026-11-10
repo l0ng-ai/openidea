@@ -7143,6 +7143,7 @@
   "{count} changed files": "改动 {count} 个文件",
   "Send into the agent's turn": "发送到当前回合",
   "Queue a message for when the agent is done (⌘⇧↵ sends it now)": "排队一条消息，agent 做完后发送（⌘⇧↵ 立即发送）",
+  "Queue a message for when the agent is done": "排队一条消息，agent 做完后发送",
   "Remove {name} from this computer? Its tasks stay, but can't continue until it is installed again.": "从这台电脑移除 {name}？它的任务会保留，但在重新安装前无法继续。",
   "ACP Registry · {version}": "ACP 注册表 · {version}",
   "Agent file": "Agent 文件",

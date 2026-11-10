@@ -65,6 +65,7 @@ describe("foldedTurns", () => {
     expect(foldedTurns([user("q"), agent("a")], 0, false).size).toBe(0);
     expect(foldedTurns([user("q"), tool("read")], 0, false).size).toBe(0);
     expect(foldedTurns([user("q"), tool("read"), agent("a"), { type: "error", message: "x" }], 0, false).size).toBe(0);
+    expect(foldedTurns([user("q"), { type: "error", message: "x" }, tool("read"), agent("a")], 0, false).size).toBe(0);
     expect(foldedTurns([user("q"), tool("read"), user("more", { steered: true }), agent("a")], 0, false).size).toBe(0);
     expect(foldedTurns([user("q"), tool("read"), agent("a")], 1, false).size).toBe(0);
   });

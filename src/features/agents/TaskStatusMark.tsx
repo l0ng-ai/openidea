@@ -10,7 +10,8 @@ export function TaskStatusMark({ task }: { task: string }) {
   const status = useAgents((s) => s.tasks.get(task)?.status);
   const unread = useAgents((s) => s.unread.has(task));
   if (!status) return null;
-  const busy = isBusy(status);
+  // Waiting for you is a dot, not a spinner: the task stops until you answer.
+  const busy = isBusy(status) && status !== "needsInput";
   const tone =
     status === "failed" || status === "limited"
       ? "danger"

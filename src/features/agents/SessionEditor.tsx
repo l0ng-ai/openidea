@@ -2414,9 +2414,11 @@ function PendingPermission({ task, entry }: { task: AgentTask; entry: Permission
     if (!shown) return;
     const onKey = (e: KeyboardEvent) => {
       const el = ref.current;
-      if (!el || e.metaKey || e.ctrlKey || e.altKey) return;
+      if (!el || e.defaultPrevented || e.metaKey || e.ctrlKey || e.altKey) return;
       const target = e.target as HTMLElement | null;
-      if (target?.closest("input, textarea, [contenteditable='true'], .cm-editor")) return;
+      // Only while this session holds the focus: keys typed elsewhere never answer for it.
+      if (!target || !el.closest(`.${styles.session}`)?.contains(target)) return;
+      if (target.closest("input, textarea, [contenteditable='true'], .cm-editor")) return;
       const n = Number(e.key);
       if (!Number.isInteger(n) || n < 1) return;
       const button = el.querySelectorAll<HTMLButtonElement>(`.${styles.permissionOption}`)[n - 1];
@@ -2474,10 +2476,17 @@ function SessionComposer({
     () => (entries ?? []).flatMap((e) => (e.type === "user" && e.text ? [e.text] : [])).reverse(),
     [entries],
   );
+  // Only a running turn of an agent that takes messages mid-turn can be steered: otherwise
+  // "now" would cancel the turn, so the message waits for it instead.
+  const steers =
+    whileRunning === "steer" &&
+    !!task.capabilities?.steer &&
+    task.status === "running" &&
+    (composer.images.length === 0 || !!task.capabilities.images);
   const send = (now: boolean) => {
     if (!canSend(composer) || sending || task.status === "archived") return;
     setSending(true);
-    sendMessage(task.id, now)
+    sendMessage(task.id, now && (whileRunning !== "steer" || steers))
       .catch((e: unknown) =>
         notifications().notify({
           level: "error",
@@ -2527,11 +2536,13 @@ function SessionComposer({
         placeholder={
           !busy
             ? "Reply to the agent"
-            : whileRunning === "steer"
+            : steers
               ? "Send into the agent's turn"
-              : sendWith === "enter"
-                ? "Queue a message for when the agent is done (⌘↵ sends it now)"
-                : "Queue a message for when the agent is done (⌘⇧↵ sends it now)"
+              : whileRunning === "steer"
+                ? "Queue a message for when the agent is done"
+                : sendWith === "enter"
+                  ? "Queue a message for when the agent is done (⌘↵ sends it now)"
+                  : "Queue a message for when the agent is done (⌘⇧↵ sends it now)"
         }
         root={task.cwd}
         projectRoot={project?.root ?? task.cwd}

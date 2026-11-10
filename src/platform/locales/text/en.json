@@ -827,6 +827,7 @@
   "{count} changed files": "{count} changed files",
   "Send into the agent's turn": "Send into the agent's turn",
   "Queue a message for when the agent is done (⌘⇧↵ sends it now)": "Queue a message for when the agent is done (⌘⇧↵ sends it now)",
+  "Queue a message for when the agent is done": "Queue a message for when the agent is done",
   "Remove {name} from this computer? Its tasks stay, but can't continue until it is installed again.": "Remove {name} from this computer? Its tasks stay, but can't continue until it is installed again.",
   "ACP Registry · {version}": "ACP Registry · {version}",
   "Agent file": "Agent file",

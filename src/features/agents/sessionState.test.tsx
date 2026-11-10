@@ -765,6 +765,11 @@ describe("a pending permission request above the composer", () => {
     await screen.findByRole("region", { name: "codex wants to run a command" });
     fireEvent.keyDown(document.querySelector("textarea")!, { key: "1" });
     expect(backend.answers).toEqual([]);
+    const elsewhere = document.body.appendChild(document.createElement("div"));
+    fireEvent.keyDown(elsewhere, { key: "1" });
+    fireEvent.keyDown(document.body, { key: "2" });
+    elsewhere.remove();
+    expect(backend.answers).toEqual([]);
     fireEvent.keyDown(stream(), { key: "3" });
     await waitFor(() => expect(backend.answers).toEqual([["A", 12, "opaque-no"]]));
   });
