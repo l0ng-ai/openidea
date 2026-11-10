@@ -146,14 +146,21 @@
   color: var(--fg-secondary);
 }
 .defaults {
-  display: grid;
-  grid-template-columns: max-content minmax(180px, 280px);
-  align-items: center;
-  gap: 6px 12px;
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
 }
-.defaults > .hint {
-  grid-column: 1 / -1;
+.defaultRow {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+}
+.defaultRow > :last-child {
+  flex: 0 1 260px;
+  min-width: 0;
 }
 .defaultLabel {
+  flex: none;
+  width: 110px;
   color: var(--fg);
 }

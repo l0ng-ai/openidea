@@ -1511,10 +1511,7 @@
   display: none;
 }
 .trayAsk {
-  border: 1px solid var(--border-strong);
-  border-radius: var(--radius-small);
-  background: var(--bg-elev);
-  padding: 4px var(--space-2);
+  min-width: 0;
 }
 .trayStrip {
   display: flex;

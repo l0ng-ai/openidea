@@ -433,20 +433,22 @@ function AgentDefaults({ agent }: { agent: AgentProvider }) {
             <label className={styles.defaultLabel} htmlFor={`agent-default-${agent.id}-${o.id}`}>
               {o.name}
             </label>
-            <Select
-              id={`agent-default-${agent.id}-${o.id}`}
-              value={chosen[o.id] ?? ""}
-              options={[
-                { value: "", label: fallback ? tx`Agent's default (${fallback})` : tx("Agent's default") },
-                ...o.values.map((v) => ({
-                  value: v.value,
-                  label: v.name,
-                  verbatim: true,
-                  detail: v.description ?? undefined,
-                })),
-              ]}
-              onChange={(value) => choose(o.id, value)}
-            />
+            <div>
+              <Select
+                id={`agent-default-${agent.id}-${o.id}`}
+                value={chosen[o.id] ?? ""}
+                options={[
+                  { value: "", label: fallback ? tx`Agent's default (${fallback})` : tx("Agent's default") },
+                  ...o.values.map((v) => ({
+                    value: v.value,
+                    label: v.name,
+                    verbatim: true,
+                    detail: v.description ?? undefined,
+                  })),
+                ]}
+                onChange={(value) => choose(o.id, value)}
+              />
+            </div>
           </div>
         );
       })}

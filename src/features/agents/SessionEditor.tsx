@@ -1579,11 +1579,11 @@ export function foldTurnRows(rows: ConversationRow[], turns: ReadonlyMap<number,
   return out;
 }
 
-/** "Edited 2 files · Read 4 files", or "Reasoning" for a run without tool calls. */
+/** "Reasoning · Edited 2 files · Read 4 files": what a run of work did. */
 function workSummaryText(work: WorkSummary, tx: ReturnType<typeof useTx>, toolCalls: number): string[] {
   const parts = workParts(work).map((p) => tx(p.text).replace("{count}", String(p.count)));
   if (!parts.length && toolCalls) parts.push(`${toolCalls} ${tx(toolCalls === 1 ? "tool call" : "tool calls")}`);
-  if (!parts.length && work.thoughts) parts.push(tx("Reasoning"));
+  if (work.thoughts) parts.unshift(tx("Reasoning"));
   return parts;
 }
 
@@ -1601,7 +1601,6 @@ function TurnFold({
   const { turn } = row;
   const work = summarizeWork(entries.slice(turn.user + 1, turn.reply));
   const parts = workSummaryText(work, tx, 0);
-  if (work.thoughts && !parts.includes(tx("Reasoning"))) parts.unshift(tx("Reasoning"));
   const messages = entries.slice(turn.user + 1, turn.reply).filter((e) => e.type === "agent").length;
   if (messages) parts.push(tx(messages === 1 ? "1 message" : "{count} messages").replace("{count}", String(messages)));
   const took = turn.sentMs != null && turn.doneMs != null ? formatDuration(turn.doneMs - turn.sentMs) : null;
