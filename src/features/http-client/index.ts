@@ -20,7 +20,7 @@ import {
 import { HTTP_LANGUAGE, httpEditorExtension, refreshRequests, requestAtCaret } from "./editor";
 import { HttpClientHeaderActions, HttpClientView } from "./HttpClientView";
 import { httpLanguageDescription } from "./language";
-import { SERVICE_VIEW, resetHttpClient, runAll, runRequest } from "./store";
+import { SERVICE_VIEW, copyAsCurl, openEnvironmentFile, resetHttpClient, runAll, runRequest } from "./store";
 import {
   GENERATE_CONTROLLER_REQUESTS,
   GENERATE_REQUEST,
@@ -65,6 +65,24 @@ async function runAtCaret() {
 }
 
 /** New › HTTP Request in `directory`: the name prompt of the file templates (features/templates), with the example body. */
+async function copyAtCaret() {
+  const e = activeHttpEditor();
+  if (!e) return;
+  await refreshRequests(e.view);
+  const r = requestAtCaret(e.view);
+  if (!r) {
+    notifications().notify({ level: "info", title: "No HTTP request at the caret", key: "http-run" });
+    return;
+  }
+  await copyAsCurl(filePath(e.ctx.path, e.ctx.virtual), e.view.state.doc.toString(), r.index);
+}
+
+function addEnvironment(isPrivate: boolean) {
+  const e = activeHttpEditor();
+  const path = e && filePath(e.ctx.path, e.ctx.virtual);
+  if (path) void openEnvironmentFile(path, isPrivate);
+}
+
 function newRequestArg(directory: string) {
   return {
     directory,
@@ -157,6 +175,33 @@ export function activate(): () => void {
         icon: "run",
         when: "editorTextFocus && editorLangId == http",
         run: () => runAtCaret(),
+      },
+      {
+        id: "http.copyAsCurl",
+        title: "Convert to cURL and Copy",
+        category: "Tools",
+        icon: "copy",
+        keywords: ["curl", "http client", "copy"],
+        when: "editorLangId == http",
+        run: () => copyAtCaret(),
+      },
+      {
+        id: "http.addPublicEnvironment",
+        title: "Add Environment to Public File",
+        description: "Opens http-client.env.json for this request file, creating it if missing",
+        category: "Tools",
+        keywords: ["http client", "environment", "env.json"],
+        when: "editorLangId == http",
+        run: () => addEnvironment(false),
+      },
+      {
+        id: "http.addPrivateEnvironment",
+        title: "Add Environment to Private File",
+        description: "Opens http-client.private.env.json for this request file, creating it if missing",
+        category: "Tools",
+        keywords: ["http client", "environment", "env.json", "secrets"],
+        when: "editorLangId == http",
+        run: () => addEnvironment(true),
       },
       {
         id: "http.runAll",
