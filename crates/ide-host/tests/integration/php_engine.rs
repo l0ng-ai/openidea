@@ -232,16 +232,22 @@ async fn inspect_code(
     .unwrap();
     let mut files = std::collections::BTreeMap::new();
     let (mut summary, mut total) = (None, 0);
+    let mut progress = Vec::new();
     for event in events.lock().drain(..) {
         match event {
             ops::analysis::InspectEvent::Started { total: t } => total = t,
-            ops::analysis::InspectEvent::File { file, .. } => {
+            ops::analysis::InspectEvent::File { file, done } => {
+                progress.push(done);
                 let codes = file.diagnostics.into_iter().map(|d| d.code.unwrap_or_else(|| "syntax".into())).collect();
                 files.insert(file.rel_path.replace('\\', "/"), codes);
             }
             ops::analysis::InspectEvent::Done { summary: s } => summary = Some(s),
         }
     }
+    // The files are inspected in parallel (phase 9.4): each reports its
+    // progress once, counting up to the total.
+    progress.sort_unstable();
+    assert_eq!(progress, (1..=progress.len() as u32).collect::<Vec<_>>(), "progress");
     (files, summary.expect("done"), total)
 }
 

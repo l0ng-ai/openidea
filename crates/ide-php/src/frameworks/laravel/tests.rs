@@ -707,6 +707,135 @@ fn an_edit_reads_again_only_the_files_it_touched() {
     assert_eq!(reads_since(&engine, at).len(), 3, "the three configuration files");
 }
 
+/// The parts taken from the index database after the first `from`.
+fn loads_since(engine: &PhpEngine, from: usize) -> Vec<(&'static str, String)> {
+    let loads = engine.laravel_part_loads();
+    loads[from..].iter().map(|(kind, path)| (*kind, path.file_name().unwrap().to_string_lossy().into_owned())).collect()
+}
+
+#[test]
+fn a_new_session_takes_the_parts_an_earlier_one_stored() {
+    let dir = Dir::new();
+    dir.write("composer.json", LARAVEL);
+    dir.write("config/app.php", "<?php\nreturn ['name' => 'Blog'];\n");
+    let mail = dir.write("config/mail.php", "<?php\nreturn ['from' => 'blog@example.com'];\n");
+    let messages = dir.write("lang/en/messages.php", "<?php\nreturn ['welcome' => 'Welcome'];\n");
+    dir.write("lang/de.json", "{\n    \"Read more\": \"Mehr\"\n}\n");
+    dir.write("routes/web.php", "<?php\nRoute::get('/', fn () => 1)->name('home');\n");
+    let engine = open_engine(&dir);
+    let summary = engine.laravel_model().unwrap();
+    assert!(engine.laravel_part_loads().is_empty(), "nothing stored yet");
+    // The worker stores what the build read.
+    assert!(engine.wait_idle(Duration::from_secs(60)));
+    let stored = engine.laravel_stored_parts();
+    assert!(stored >= 5, "the configuration, language and route files: {stored}");
+    engine.shutdown();
+    drop(engine);
+
+    // Between the sessions one file changes, and another is written again
+    // with the same text (a new modification time).
+    dir.write("config/mail.php", "<?php\nreturn ['from' => 'blog@example.com', 'reply_to' => 'x'];\n");
+    std::fs::write(&messages, "<?php\nreturn ['welcome' => 'Welcome'];\n").unwrap();
+    let later = std::time::SystemTime::now() + Duration::from_secs(5);
+    std::fs::File::options().write(true).open(&messages).unwrap().set_modified(later).unwrap();
+
+    let engine = open_engine(&dir);
+    let again = engine.laravel_model().unwrap();
+    assert_eq!(
+        (again.config_keys, again.translations, again.routes),
+        (summary.config_keys + 1, summary.translations, 1)
+    );
+    assert!(engine.laravel_config().unwrap().get("mail.reply_to").is_some(), "the changed file is read");
+    assert!(engine.laravel_translations().unwrap().contains("Read more"));
+    assert_eq!(reads_since(&engine, 0), [("config", "mail.php".to_owned())], "only the changed file is read");
+    let loads = loads_since(&engine, 0);
+    for file in ["app.php", "messages.php", "de.json", "web.php"] {
+        assert!(loads.iter().any(|(_, name)| name == file), "{file} taken from the store: {loads:?}");
+    }
+
+    // The touched file is stored again with its new stamp, the changed one
+    // with its new text: a third session reads nothing.
+    assert!(engine.wait_idle(Duration::from_secs(60)));
+    engine.shutdown();
+    drop(engine);
+    let engine = open_engine(&dir);
+    assert_eq!(engine.laravel_model().unwrap(), again);
+    assert!(reads_since(&engine, 0).is_empty(), "{:?}", reads_since(&engine, 0));
+    assert!(engine.laravel_config().unwrap().get("mail.reply_to").is_some());
+
+    // An open buffer's text wins over the stored part of its file.
+    engine.document_opened(ide_core::DocId(1), &mail, 1, "<?php\nreturn ['bcc' => 'y'];\n");
+    let keys = engine.laravel_config().unwrap();
+    assert!(keys.get("mail.bcc").is_some() && keys.get("mail.reply_to").is_none());
+
+    // A cold model drops the stored parts too.
+    engine.forget_laravel_model();
+    assert_eq!(engine.laravel_stored_parts(), 0);
+}
+
+#[test]
+fn inspect_files_runs_in_parallel_like_inspect_file_one_by_one() {
+    let dir = Dir::new();
+    dir.write("composer.json", LARAVEL);
+    dir.write("config/app.php", "<?php\nreturn ['name' => 'Blog'];\n");
+    let mut files = Vec::new();
+    for n in 0..12 {
+        let text = format!(
+            "<?php\nnamespace App;\n\nclass Thing{n}\n{{\n    public function run(int $unused): string\n    {{\n        $local = config('app.missing{n}');\n        return undefined_function{n}();\n    }}\n}}\n"
+        );
+        files.push(dir.write(&format!("app/Thing{n}.php"), &text));
+    }
+    files.push(dir.write("resources/views/home.blade.php", "@if(true)\n<p>{{ $title }}</p>\n"));
+    // A file that can't be read is reported without diagnostics.
+    files.push(dir.path("app/Missing.php"));
+    let engine = open_engine(&dir);
+
+    let batch = parking_lot::Mutex::new(Vec::new());
+    let cancel = ide_core::CancellationToken::new();
+    let done = engine.inspect_files(
+        &files,
+        |path| path.as_path(),
+        |path| std::fs::read_to_string(path).ok(),
+        &cancel,
+        |path, diagnostics| batch.lock().push((path.clone(), diagnostics)),
+    );
+    assert!(done);
+    let mut batch = batch.into_inner();
+    batch.sort_by(|a, b| a.0.cmp(&b.0));
+    let mut one_by_one: Vec<(PathBuf, Option<Vec<ide_core::Diagnostic>>)> = files
+        .iter()
+        .map(|path| {
+            let found =
+                std::fs::read_to_string(path).ok().map(|text| engine.inspect_file(path, &text, &cancel).unwrap());
+            (path.clone(), found)
+        })
+        .collect();
+    one_by_one.sort_by(|a, b| a.0.cmp(&b.0));
+    assert_eq!(batch, one_by_one);
+    let problems = batch.iter().filter_map(|(_, found)| found.as_ref()).map(Vec::len).sum::<usize>();
+    assert!(problems >= 24, "an unknown key and an undefined function per class: {batch:?}");
+    assert_eq!(
+        batch.last().map(|(path, found)| (path.ends_with("home.blade.php"), found.is_some())),
+        Some((true, true))
+    );
+    assert!(batch.iter().any(|(path, found)| path.ends_with("Missing.php") && found.is_none()));
+
+    // Cancelled: it stops and says so.
+    cancel.cancel();
+    let reported = std::sync::atomic::AtomicUsize::new(0);
+    let done = engine.inspect_files(
+        &files,
+        |path| path.as_path(),
+        |path| std::fs::read_to_string(path).ok(),
+        &cancel,
+        |_, _| {
+            reported.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+        },
+    );
+    assert!(!done);
+    assert_eq!(reported.into_inner(), 0);
+}
+
 #[test]
 fn deleting_a_language_file_removes_its_keys() {
     let dir = Dir::new();

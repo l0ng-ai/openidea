@@ -18,6 +18,7 @@
 //! Each value gets a type read from its source ([`value_type`]): literals,
 //! casts and `env('…', default)` (the default's type).
 
+use serde::{Deserialize, Serialize};
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
@@ -42,7 +43,7 @@ pub struct ConfigKeys {
 }
 
 /// One configuration key.
-#[derive(Clone, Debug, PartialEq, Eq)]
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub struct ConfigEntry {
     /// The full dotted key (`app.name`); a file's entry is its name
     /// (`app`, `services.mail`).
@@ -106,14 +107,17 @@ impl ConfigKeys {
         config_files(dir, dir, &mut files);
         files.sort();
         files.extend(packages.iter().cloned());
-        let mut found = Vec::new();
-        for (prefix, path) in files {
-            let part = parts.part("config", &path, &prefix, &|text| {
+        // Each file's prefix is its part's context too.
+        let jobs: Vec<(PathBuf, String)> = files.into_iter().map(|(prefix, path)| (path, prefix)).collect();
+        let found: Vec<_> = parts
+            .parts_of("config", &jobs, &|at, text| {
+                let (path, prefix) = &jobs[at];
                 let parsed = ParsedFile::parse("config.php", text.to_owned());
-                Self::file_entries(&prefix, &path, &parsed)
-            });
-            found.extend(part);
-        }
+                Self::file_entries(prefix, path, &parsed)
+            })
+            .into_iter()
+            .flatten()
+            .collect();
         Self { entries: Merged::new(found, by_key, previous.map(|previous| &previous.entries)) }
     }
 
@@ -355,8 +359,9 @@ pub fn package_configs_with(project: &LaravelProject, parts: &impl PartReader) -
     providers.extend(installed.iter().flat_map(|found| found.iter().cloned()));
     // The files a provider names are relative to the project's folders.
     let context = format!("{:?}", project.paths);
-    for provider in providers {
-        let found = parts.part("merged-config", &provider, &context, &|text| merged_configs(project, &provider, text));
+    let jobs: Vec<(PathBuf, String)> = providers.into_iter().map(|provider| (provider, context.clone())).collect();
+    let found = parts.parts_of("merged-config", &jobs, &|at, text| merged_configs(project, &jobs[at].0, text));
+    for found in found {
         for (key, file) in found.iter().flat_map(|found| found.iter()) {
             if !out.iter().any(|(known, path)| known == key && path == file) {
                 out.push((key.clone(), file.clone()));

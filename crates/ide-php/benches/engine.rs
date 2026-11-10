@@ -23,13 +23,21 @@
 //!
 //! - `model_cold`: the whole project model (`PhpEngine::laravel_model`)
 //!   after `PhpEngine::forget_laravel_model`, so `composer.json`, `ide.json`
-//!   and the module manifests are read again, under 2 s,
+//!   and the module manifests are read again and no part is stored, under
+//!   2 s (400 ms on the real application, phase 9.4),
+//! - `model_warm_start`: the same in a new session on the cache of an
+//!   earlier one, which stored the parts read from single files (phase 9.4),
+//!   under 150 ms on the real application,
 //! - `model_warm`: the same right after a keystroke in a route file, under
 //!   200 ms,
 //! - `string_completion`: completion in `route('…')` right after a
 //!   keystroke, under 50 ms,
 //! - `route_hints`: the route hints of the whole route file right after a
-//!   keystroke, under 100 ms.
+//!   keystroke, under 100 ms,
+//! - `inspect_code`: batch Inspect Code (`PhpEngine::inspect_files`, in
+//!   parallel since phase 9.4) over the application's own PHP files and
+//!   Blade templates (not `vendor/`), every built-in inspection on, under
+//!   20 s on the real application.
 //!
 //! These run with no inspections, so nothing builds the model in the
 //! background: each timed request pays for what it rebuilds.
@@ -282,8 +290,92 @@ fn bench_laravel_app(c: &mut Criterion, app: &LaravelApp) {
         })
     });
 
-    g.finish();
+    // Inspect Code over the application's own code, every built-in
+    // inspection on. Seconds per run on a real application: single runs.
+    let files = own_code(&app.root);
+    eprintln!("{}: Inspect Code over {} files", app.group, files.len());
+    engine.set_inspections(Inspections::builtin());
+    g.sample_size(10).sampling_mode(SamplingMode::Flat).warm_up_time(Duration::from_millis(1));
+    g.measurement_time(Duration::from_secs(1));
+    g.bench_function("inspect_code", |b| {
+        b.iter_custom(|iters| {
+            let mut total = Duration::ZERO;
+            for _ in 0..iters {
+                let problems = std::sync::atomic::AtomicUsize::new(0);
+                let started = Instant::now();
+                let done = engine.inspect_files(
+                    &files,
+                    |path| path.as_path(),
+                    |path| std::fs::read_to_string(path).ok(),
+                    &CancellationToken::new(),
+                    |_, found| {
+                        let found = found.map_or(0, |found| found.len());
+                        problems.fetch_add(found, std::sync::atomic::Ordering::Relaxed);
+                    },
+                );
+                total += started.elapsed();
+                assert!(done);
+                black_box(problems.into_inner());
+            }
+            total
+        })
+    });
+    engine.set_inspections(Inspections::default());
+
+    // A new session on this cache: the parts read from single files are
+    // stored (written by the worker after the builds above), so the build
+    // takes them from the index database. Each run opens the engine (not
+    // timed) and builds the model.
+    assert!(engine.laravel_model().is_some());
+    assert!(engine.wait_idle(WAIT));
+    assert!(engine.laravel_stored_parts() > 0, "{}: no part stored", app.group);
     engine.shutdown();
+    drop(engine);
+    g.bench_function("model_warm_start", |b| {
+        b.iter_custom(|iters| {
+            let mut total = Duration::ZERO;
+            for _ in 0..iters {
+                let engine = open_engine(&app.root, cache.path());
+                engine.set_inspections(Inspections::default());
+                let started = Instant::now();
+                let built = engine.laravel_model();
+                total += started.elapsed();
+                assert!(black_box(built).is_some());
+                assert!(!engine.laravel_part_loads().is_empty(), "{}: nothing taken from the store", app.group);
+                engine.shutdown();
+            }
+            total
+        })
+    });
+
+    g.finish();
+}
+
+/// The application's own PHP files and Blade templates: `app/`,
+/// `packages/`, `database/`, `routes/` and the templates of `resources/`,
+/// never `vendor/` or `node_modules/`.
+fn own_code(root: &Path) -> Vec<PathBuf> {
+    fn walk(dir: &Path, php: bool, out: &mut Vec<PathBuf>) {
+        let Ok(entries) = std::fs::read_dir(dir) else { return };
+        let mut entries: Vec<_> = entries.flatten().map(|entry| entry.path()).collect();
+        entries.sort();
+        for path in entries {
+            let name = path.file_name().and_then(|n| n.to_str()).unwrap_or_default();
+            if path.is_dir() {
+                if name != "vendor" && name != "node_modules" && !name.starts_with('.') {
+                    walk(&path, php, out);
+                }
+            } else if name.ends_with(".blade.php") || (php && name.ends_with(".php")) {
+                out.push(path);
+            }
+        }
+    }
+    let mut out = Vec::new();
+    for dir in ["app", "packages", "database", "routes"] {
+        walk(&root.join(dir), true, &mut out);
+    }
+    walk(&root.join("resources"), false, &mut out);
+    out
 }
 
 fn bench_workload(c: &mut Criterion, w: &Workload) {

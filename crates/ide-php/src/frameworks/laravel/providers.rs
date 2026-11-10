@@ -25,6 +25,7 @@
 //! Only Laravel's documentation and source (MIT) and konekt/concord's
 //! documentation (MIT) are design inputs.
 
+use serde::{Deserialize, Serialize};
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
@@ -94,23 +95,27 @@ pub(crate) fn discover(root: &Path, vendor: &Path, manifest: Option<&RootManifes
             out.providers.push(file);
         }
     }
-    // `$this->app->register(Other::class)`, breadth first.
-    let mut next = 0;
-    while next < queue.len() && seen.len() < MAX_PROVIDERS {
-        let Some(parsed) = read(&queue[next]) else {
-            next += 1;
-            continue;
-        };
-        next += 1;
-        for class in registered_by(&parsed) {
+    // `$this->app->register(Other::class)`, breadth first: each level's
+    // files are read and parsed in parallel (roadmap phase 9.4), and only
+    // the ones whose text calls a `register` method are parsed at all.
+    let mut level = queue;
+    while !level.is_empty() && seen.len() < MAX_PROVIDERS {
+        use rayon::prelude::*;
+        let found: Vec<Vec<String>> = level.par_iter().map(|file| registered_in(file)).collect();
+        let mut next = Vec::new();
+        for class in found.into_iter().flatten() {
+            if seen.len() >= MAX_PROVIDERS {
+                break;
+            }
             if let Some(file) = classes.file(&class)
                 && !seen.contains(&file)
             {
                 seen.push(file.clone());
-                queue.push(file.clone());
+                next.push(file.clone());
                 out.providers.push(file);
             }
         }
+        level = next;
     }
     out.concord.sort_by(|a, b| a.path.cmp(&b.path));
     out.concord.dedup_by(|later, earlier| later.path == earlier.path);
@@ -290,6 +295,33 @@ fn class_constants(parsed: &ParsedFile, key: Option<&str>) -> Vec<String> {
     collect.classes
 }
 
+/// The classes the provider in `file` registers (`->register(Foo::class)`);
+/// the file is parsed only when its text calls a `register` method.
+fn registered_in(file: &Path) -> Vec<String> {
+    let Ok(text) = std::fs::read_to_string(file) else { return Vec::new() };
+    if !calls_register(&text) {
+        return Vec::new();
+    }
+    registered_by(&ParsedFile::parse("providers.php", text))
+}
+
+/// Whether `text` may call a method named `register` (case-insensitively):
+/// `register` after `->`, `?->` or `::` and before `(`, whitespace allowed
+/// between them. The declaration `function register()` doesn't count.
+fn calls_register(text: &str) -> bool {
+    let bytes = text.as_bytes();
+    let word = b"register";
+    (0..bytes.len().saturating_sub(word.len() - 1)).any(|at| {
+        if !bytes[at..at + word.len()].eq_ignore_ascii_case(word) {
+            return false;
+        }
+        let before = bytes[..at].iter().rposition(|b| !b.is_ascii_whitespace());
+        let after = bytes[at + word.len()..].iter().position(|b| !b.is_ascii_whitespace());
+        let accessed = before.is_some_and(|end| end >= 1 && matches!(&bytes[end - 1..=end], b"->" | b"::"));
+        accessed && after.is_some_and(|start| bytes[at + word.len() + start] == b'(')
+    })
+}
+
 /// The classes a provider registers: `->register(Foo::class)`.
 fn registered_by(parsed: &ParsedFile) -> Vec<String> {
     let mut collect = Registered { names: FileNames::resolve(parsed), classes: Vec::new() };
@@ -414,7 +446,7 @@ impl<'a> Walker<'a, 'a, Registered> for RegisterWalker {
 
 /// What one service provider registers besides views, configuration,
 /// routes and middleware; see the module documentation.
-#[derive(Clone, Debug, Default, PartialEq, Eq)]
+#[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
 pub struct PackageRegistrations {
     /// `loadTranslationsFrom(path, 'ns')`: the namespace (`None` without
     /// one) and the folder.
@@ -428,7 +460,7 @@ pub struct PackageRegistrations {
 }
 
 /// One file or folder a provider publishes.
-#[derive(Clone, Debug, PartialEq, Eq)]
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub struct Published {
     pub from: PathBuf,
     pub to: PathBuf,
@@ -493,15 +525,11 @@ pub fn package_registrations(
 ) -> Vec<(PathBuf, Arc<PackageRegistrations>)> {
     // The folders a provider names are relative to the project's.
     let context = format!("{:?}", project.paths);
-    provider_files(project)
-        .into_iter()
-        .filter_map(|provider| {
-            let part = parts.part("provider-registrations", &provider, &context, &|text| {
-                PackageRegistrations::read(project, &provider, text)
-            })?;
-            Some((provider, part))
-        })
-        .collect()
+    let jobs: Vec<(PathBuf, String)> =
+        provider_files(project).into_iter().map(|provider| (provider, context.clone())).collect();
+    let found = parts
+        .parts_of("provider-registrations", &jobs, &|at, text| PackageRegistrations::read(project, &jobs[at].0, text));
+    jobs.iter().zip(found).filter_map(|((provider, _), part)| Some((provider.clone(), part?))).collect()
 }
 
 /// The `(` of each call of a method in `names` (as `name(`), with its name.
@@ -554,6 +582,24 @@ pub(super) fn split_arrow(pair: &str) -> Option<(&str, &str)> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn only_files_calling_register_are_parsed() {
+        assert!(calls_register("$this->app->register(Foo::class);"));
+        assert!(calls_register(
+            "$this->app?->Register (
+ Foo::class);"
+        ));
+        assert!(calls_register("App::register(Foo::class);"));
+        assert!(calls_register(
+            "$app
+    ->register(Foo::class)"
+        ));
+        assert!(!calls_register("public function register(): void {}"));
+        assert!(!calls_register("$this->registerPolicies();"));
+        assert!(!calls_register("// registers nothing"));
+        assert!(!calls_register("register"));
+    }
 
     #[test]
     fn arrows_and_calls() {

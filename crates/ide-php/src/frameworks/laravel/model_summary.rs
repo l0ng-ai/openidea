@@ -44,19 +44,47 @@ pub struct LaravelModelSummary {
 impl PhpEngine {
     /// Builds every part of the Laravel project model that isn't built for
     /// the current modification count yet; `None` outside Laravel projects.
+    ///
+    /// Once the project itself is loaded, the parts that don't need each
+    /// other are built at the same time (roadmap phase 9.4).
     pub fn laravel_model(&self) -> Option<LaravelModelSummary> {
         let project = self.laravel()?;
-        let routes = self.laravel_routes()?;
-        let views = self.laravel_views()?;
+        let mut routes = None;
+        let mut views = None;
+        let mut config = None;
+        let mut translations = None;
+        let mut env = None;
+        let mut auth = None;
+        let mut artisan = None;
+        let mut inertia = None;
+        let mut models = 0;
+        rayon::scope(|scope| {
+            scope.spawn(|_| translations = self.laravel_translations());
+            scope.spawn(|_| artisan = self.laravel_artisan());
+            scope.spawn(|_| models = self.laravel_models().len());
+            scope.spawn(|_| {
+                // Blade components and Livewire need the views.
+                views = self.laravel_views();
+                drop(self.laravel_blade());
+                drop(self.laravel_livewire());
+            });
+            scope.spawn(|_| {
+                env = self.laravel_env();
+                drop(self.laravel_assets());
+                inertia = self.laravel_inertia();
+            });
+            scope.spawn(|_| {
+                routes = self.laravel_routes();
+                config = self.laravel_config();
+                auth = self.laravel_auth();
+            });
+        });
+        let (routes, views, config, translations) = (routes?, views?, config?, translations?);
+        let (env, auth, artisan, inertia) = (env?, auth?, artisan?, inertia?);
+        // Built above: these take the cached ones.
         let blade = self.laravel_blade()?;
-        let config = self.laravel_config()?;
-        let translations = self.laravel_translations()?;
-        let env = self.laravel_env()?;
-        let assets = self.laravel_assets()?;
-        let auth = self.laravel_auth()?;
-        let artisan = self.laravel_artisan()?;
         let livewire = self.laravel_livewire()?;
-        let inertia = self.laravel_inertia()?;
+        let assets = self.laravel_assets()?;
         let registrations = super::providers::package_registrations(&project, self);
         Some(LaravelModelSummary {
             route_files: project.route_files.len(),
@@ -77,7 +105,7 @@ impl PhpEngine {
             artisan_commands: artisan.commands.len(),
             livewire_components: livewire.components.len(),
             inertia_pages: inertia.pages.len(),
-            models: self.laravel_models().len(),
+            models,
         })
     }
 

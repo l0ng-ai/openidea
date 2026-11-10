@@ -28,6 +28,7 @@
 //!   component or view, and add an attribute an anonymous component doesn't
 //!   declare to its `@props`.
 
+use serde::{Deserialize, Serialize};
 use std::collections::HashSet;
 use std::ops::Range as Span;
 use std::path::{Path, PathBuf};
@@ -59,7 +60,7 @@ use crate::syntax::{LineIndex, ParsedFile};
 use crate::types::{Context, ExprTypes, Type};
 
 /// What one service provider registers with the `Blade` facade.
-#[derive(Clone, Debug, Default, PartialEq, Eq)]
+#[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
 pub struct ComponentRegistrations {
     /// `Blade::component(…)` and `Blade::components([...])`: `(tag, class)`.
     pub aliases: Vec<(String, String)>,
@@ -185,12 +186,12 @@ impl BladeCatalog {
                 components.push(found);
             }
         };
-        for provider in provider_files(project) {
-            let Some(part) = parts.part("blade-components", &provider, &context, &|text| {
-                ComponentRegistrations::read(project, &provider, text)
-            }) else {
-                continue;
-            };
+        let jobs: Vec<(PathBuf, String)> =
+            provider_files(project).into_iter().map(|provider| (provider, context.clone())).collect();
+        let found = parts
+            .parts_of("blade-components", &jobs, &|at, text| ComponentRegistrations::read(project, &jobs[at].0, text));
+        for part in found {
+            let Some(part) = part else { continue };
             for (tag, class) in &part.aliases {
                 let file = class_file(class).unwrap_or_default();
                 let found = BladeComponent { tag: tag.clone(), class: Some((class.clone(), file)), view: None };
@@ -230,14 +231,21 @@ impl BladeCatalog {
     /// Gives each class component without a view the one its `render()`
     /// names.
     pub(super) fn rendered_views(&mut self, views: &ViewTable, parts: &impl PartReader) {
-        for component in self.components.iter_mut().filter(|component| component.view.is_none()) {
+        let mut targets: Vec<usize> = Vec::new();
+        let mut jobs: Vec<(PathBuf, String)> = Vec::new();
+        for (at, component) in self.components.iter().enumerate() {
             let Some((_, file)) = &component.class else { continue };
-            if file.as_os_str().is_empty() {
+            if component.view.is_some() || file.as_os_str().is_empty() {
                 continue;
             }
-            let Some(name) = parts.part("component-render", file, "", &|text| rendered_view(text)) else { continue };
+            targets.push(at);
+            jobs.push((file.clone(), String::new()));
+        }
+        let found = parts.parts_of("component-render", &jobs, &|_, text| rendered_view(text));
+        for (at, name) in targets.into_iter().zip(found) {
+            let Some(name) = name else { continue };
             if let Some(view) = name.as_deref().and_then(|name| views.get(name)) {
-                component.view = Some(view.path.clone());
+                self.components[at].view = Some(view.path.clone());
             }
         }
     }

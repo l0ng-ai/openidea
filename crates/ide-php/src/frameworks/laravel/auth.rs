@@ -11,6 +11,7 @@
 //! `App\Models\Post` is looked up as `App\Models\Policies\PostPolicy`, then
 //! `App\Policies\PostPolicy` ([`guessed_policies`]).
 
+use serde::{Deserialize, Serialize};
 use std::path::{Path, PathBuf};
 
 use ide_core::Range;
@@ -27,7 +28,7 @@ use crate::syntax::{LineIndex, ParsedFile};
 pub const RESOURCE_ABILITIES: &[&str] = &["viewAny", "view", "create", "update", "delete"];
 
 /// A gate a service provider defines.
-#[derive(Clone, Debug, PartialEq, Eq)]
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub struct GateDef {
     pub name: String,
     /// The provider, and the range of the name's string in it.
@@ -42,7 +43,7 @@ pub struct GateDef {
 }
 
 /// A policy registered for a model.
-#[derive(Clone, Debug, PartialEq, Eq)]
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub struct PolicyDef {
     /// FQNs without the leading `\`.
     pub model: String,
@@ -53,7 +54,7 @@ pub struct PolicyDef {
 }
 
 /// See the module documentation.
-#[derive(Clone, Debug, Default, PartialEq, Eq)]
+#[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
 pub struct AuthFacts {
     pub gates: Vec<GateDef>,
     pub policies: Vec<PolicyDef>,
@@ -71,7 +72,7 @@ pub struct AuthFacts {
 /// - `str_replace('Models', 'Policies', $model).'Policy'` (and
 ///   `Str::replace`): the model's name with `from` replaced by `to`, then
 ///   `suffix`.
-#[derive(Clone, Debug, PartialEq, Eq)]
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub enum PolicyGuess {
     Basename { prefix: String, suffix: String },
     Replace { from: String, to: String, suffix: String },
@@ -176,18 +177,18 @@ impl AuthFacts {
     /// `parts`: only the providers that changed are read again.
     pub fn read_parts(project: &LaravelProject, parts: &impl PartReader) -> Self {
         let mut facts = Self::default();
-        for path in provider_files(project) {
-            let part = parts.part("auth", &path, "", &|text| {
-                let mut found = Self::default();
-                found.read_provider(&path, text);
-                found
-            });
-            if let Some(part) = part {
-                facts.gates.extend(part.gates.iter().cloned());
-                facts.policies.extend(part.policies.iter().cloned());
-                if part.policy_guess.is_some() {
-                    facts.policy_guess.clone_from(&part.policy_guess);
-                }
+        let jobs: Vec<(PathBuf, String)> =
+            provider_files(project).into_iter().map(|path| (path, String::new())).collect();
+        let found = parts.parts_of("auth", &jobs, &|at, text| {
+            let mut found = Self::default();
+            found.read_provider(&jobs[at].0, text);
+            found
+        });
+        for part in found.into_iter().flatten() {
+            facts.gates.extend(part.gates.iter().cloned());
+            facts.policies.extend(part.policies.iter().cloned());
+            if part.policy_guess.is_some() {
+                facts.policy_guess.clone_from(&part.policy_guess);
             }
         }
         let mut dirs = vec![

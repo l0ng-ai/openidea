@@ -194,7 +194,24 @@ impl BundledStubs {
     /// The embedded stubs, loaded on first use.
     pub fn get() -> &'static Self {
         static STUBS: OnceLock<BundledStubs> = OnceLock::new();
-        STUBS.get_or_init(|| Self::load(ARCHIVE).expect("the embedded phpstorm-stubs archive is valid"))
+        // Parsed in parallel on a pool of its own, from a thread of its own
+        // (roadmap phase 9.4): the first caller may be a worker of the
+        // global pool (Inspect Code, the Laravel model's parts), and a
+        // global worker waiting here while the global pool parses (or
+        // stealing a task that asks for the stubs again) would wait for
+        // itself.
+        STUBS.get_or_init(|| {
+            std::thread::scope(|scope| {
+                scope
+                    .spawn(|| {
+                        let pool = rayon::ThreadPoolBuilder::new().build().expect("a thread pool for the stubs");
+                        pool.install(|| Self::load(ARCHIVE))
+                    })
+                    .join()
+                    .expect("loading the stubs")
+            })
+            .expect("the embedded phpstorm-stubs archive is valid")
+        })
     }
 
     /// Unpacks an archive laid out like `stubs/phpstorm-stubs.zip` and

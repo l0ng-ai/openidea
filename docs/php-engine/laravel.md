@@ -441,7 +441,7 @@ A part is kept with the stamp of the text it was read from. For an open buffer, 
 
 A build after an edit reads and parses only the files whose stamp moved. The configuration keys and translations keep each file's part as the same `Arc` the cache holds (`frameworks::laravel::Merged`), plus a sorted index of their own. When no part changed, that index is reused as well, so the 57,507 translations aren't copied or sorted again. JSON language files are also read in one pass now. Before, finding each key's literal searched the file from the start, which was quadratic and most of the old 1.15 s.
 
-The parts live in memory, not in the index database. A new session builds them once, which the cold numbers below measure. `forget_laravel_model()` drops them too, so `model_cold` is a real cold build.
+The parts lived in memory only, so a new session built them once, which the cold numbers below measure. Since phase 9.4 they are stored in the index database too (see "Cold model, stored parts and Inspect Code" below). `forget_laravel_model()` drops them too, so `model_cold` is a real cold build.
 
 | Bench                                | Budget | Monica before | Monica after |
 | ------------------------------------ | ------ | ------------- | ------------ |
@@ -602,3 +602,47 @@ To run them:
 LARAVEL_APP_DIR=../php-corpus/apps/bagisto cargo test -p ide-php --test laravel_parity -- --ignored real_app_checklist real_app_inspect_code --nocapture
 LARAVEL_APP_DIR=../php-corpus/apps/bagisto cargo bench -p ide-php --bench engine -- php_laravel_real
 ```
+
+#### Cold model, stored parts and Inspect Code (phase 9.4, 2026-11-11)
+
+Monica's cold model had grown from 358 ms (8.23) to 542 ms (8.29). The new `crates/ide-php/examples/model_profile.rs` times each part of the model on a real application (`cargo run --release -p ide-php --example model_profile -- ../php-corpus/apps/monica`). On Monica, before the changes below, the cold build spent its time like this:
+
+| Part                      | Time   | Why                                                                                                                                                                                                |
+| ------------------------- | ------ | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| translations              | 282 ms | 210 PHP language files parsed one after another, then 57,511 entries sorted                                                                                                                        |
+| project                   | 141 ms | provider discovery parsed every provider file in turn (48 ms); Jetstream's `config('jetstream.stack')` route path read every configuration file (8.29.b), which `laravel_config` then merged again |
+| routes and middleware     | 53 ms  | every provider file parsed again for middleware, one after another                                                                                                                                 |
+| Artisan, models, the rest | 160 ms | built from PHP classes                                                                                                                                                                             |
+
+What regressed was the work that phases 8.23–8.29.b added per provider file and the second configuration read, all of it sequential. The fixes:
+
+- **Batches.** `PartReader::parts_of` reads the parts of many files at once, in parallel in the engine (rayon). Translations, configuration files, route files (level by level of `require`), middleware sources and every per-provider part (view namespaces, `mergeConfigFrom`, Blade components and directives, Livewire, gates, package registrations) use it.
+- **Provider discovery** parses each level of `$this->app->register(…)` in parallel, and only the files whose text calls a `register` method.
+- **The configuration** read for computed route paths is kept as `laravel_config`'s when the project names the same package files, and `laravel()` uses the resolver's cached Laravel facts instead of building them a second time.
+- **`laravel_model()`** builds the parts that don't need each other at the same time once the project is loaded, and a large `Merged` table (over 4,096 entries) is sorted in parallel.
+
+**Stored parts.** The per-file parts of 8.22 are now stored in the index database too (`model_parts` table, `index::StoredPart`): the part in postcard, with the content hash and the size and modification time of the text it was read from, one entry per kind and file. A new session takes a part from there when the file's size and modification time are unchanged, without reading the file, or when its content hash is unchanged, without parsing it. Only parts of files on disk are stored; open buffers are always read. The engine's worker writes the parts a build read in one transaction, off the request. `forget_laravel_model()` drops the stored parts too, so `model_cold` stays cold. `MODEL_PARTS_SCHEMA` versions the parts' encoding.
+
+Monica, release build, 2026-11-11 (`model_profile`, mean of 5 cold builds and 3 new sessions):
+
+| Build                                         | Budget | Before (8.29) | After  |
+| --------------------------------------------- | ------ | ------------- | ------ |
+| cold (`forget_laravel_model`, nothing stored) | 400 ms | 542 ms        | 230 ms |
+| warm start (a new session, 748 parts stored)  | 150 ms | —             | 129 ms |
+
+The benches `php_laravel_real/model_cold` (budget now 400 ms) and the new `php_laravel_real/model_warm_start` (150 ms: a new engine on the cache of an earlier one, with nothing read from the files that didn't change) measure the same.
+
+**Inspect Code** (4.10) checked the engine's files one after another on one blocking thread. `PhpEngine::inspect_files` now runs them in parallel (rayon): it builds what every file shares first (the Laravel model, the resolver's facts), then reports each file as it finishes, so the progress (`InspectEvent::File`'s `done`) moves as before, and stops when the request is cancelled. The new bench `php_laravel_real/inspect_code` runs it over the application's own PHP files and Blade templates (`app/`, `packages/`, `database/`, `routes/`, the templates of `resources/`), budget 20 s, and `real_app_inspect_code` checks that the parallel batch finds exactly what the files inspected one by one find, and prints the times and the five slowest files.
+
+Monica's own code, 896 files, release build, 16 threads (`real_app_inspect_code`, 2026-11-11):
+
+| Run                                                | Time         |
+| -------------------------------------------------- | ------------ |
+| one file after another (the type cache warm)       | 74 s         |
+| in parallel, first run (the model and caches cold) | 29.7 s       |
+| in parallel, again                                 | **24.3 s ✗** |
+| in parallel, again, 4 threads                      | 29.7 s       |
+
+Both find the same 202 diagnostics. The slowest file takes 0.7 s, so there is no long tail; the work scales only about 3× on 16 threads, which points to contention somewhere shared (a lock, the index database's read transactions or the allocator). Switching the type cache from one mutex to a read-write lock didn't change it. Phase 9.4.b profiles it to get under the 20 s budget.
+
+Making the batch parallel exposed a deadlock: the bundled stubs are loaded once per process inside a `OnceLock` with a parallel parse, and a worker of the global rayon pool could be the first to ask for them, then wait for itself. They are now parsed on a pool of their own, from a thread of its own (`BundledStubs::get`).

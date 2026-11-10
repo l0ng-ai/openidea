@@ -24,6 +24,7 @@
 //!
 //! Only Laravel's documentation and source (MIT) are design inputs.
 
+use serde::{Deserialize, Serialize};
 use std::collections::HashSet;
 use std::path::{Path, PathBuf};
 
@@ -46,7 +47,7 @@ use crate::summary::FileSummary;
 use crate::syntax::LineIndex;
 
 /// A directive a service provider registers.
-#[derive(Clone, Debug, PartialEq, Eq)]
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub struct CustomDirective {
     pub name: String,
     /// The provider, and the range of the name's string in it.
@@ -162,8 +163,10 @@ impl BladeCatalog {
         components.dedup_by(|later, first| later.tag == first.tag);
 
         let mut directives = Vec::new();
-        for path in provider_files(project) {
-            let part = parts.part("blade-directives", &path, "", &|text| registered_directives(&path, text));
+        let jobs: Vec<(PathBuf, String)> =
+            provider_files(project).into_iter().map(|path| (path, String::new())).collect();
+        let found = parts.parts_of("blade-directives", &jobs, &|at, text| registered_directives(&jobs[at].0, text));
+        for part in found {
             directives.extend(part.iter().flat_map(|part| part.iter().cloned()));
         }
         let mut catalog = Self { components, directives };

@@ -478,6 +478,58 @@ impl PhpIndex {
         Ok(self.multimap(META_FILES, SYMFONY_FILES_KEY)?.iter().map(Decl::path).collect())
     }
 
+    // ------------------------------------------------- Laravel model parts
+
+    /// The stored part of the Laravel project model of `kind` for `path`
+    /// ([`StoredPart`]), if any.
+    pub fn model_part(&self, kind: &str, path: &Path) -> IdeResult<Option<StoredPart>> {
+        let txn = self.db.begin_read().map_err(internal)?;
+        let table = match txn.open_table(MODEL_PARTS) {
+            Ok(t) => t,
+            Err(TableError::TableDoesNotExist(_)) => return Ok(None),
+            Err(e) => return Err(internal(e)),
+        };
+        let Some(bytes) = table.get(part_key(kind, path).as_str()).map_err(internal)? else { return Ok(None) };
+        Ok(postcard::from_bytes::<StoredPart>(bytes.value()).ok().filter(|part| part.schema == MODEL_PARTS_SCHEMA))
+    }
+
+    /// Stores parts of the Laravel project model, each replacing the part
+    /// stored before for its kind and file, in one transaction.
+    pub fn store_model_parts<K: AsRef<str>, P: AsRef<Path>>(&self, parts: &[(K, P, StoredPart)]) -> IdeResult<()> {
+        if parts.is_empty() {
+            return Ok(());
+        }
+        let txn = self.db.begin_write().map_err(internal)?;
+        {
+            let mut table = txn.open_table(MODEL_PARTS).map_err(internal)?;
+            for (kind, path, part) in parts {
+                let bytes = postcard::to_allocvec(part).map_err(internal)?;
+                table.insert(part_key(kind.as_ref(), path.as_ref()).as_str(), bytes.as_slice()).map_err(internal)?;
+            }
+        }
+        txn.commit().map_err(internal)
+    }
+
+    /// Drops every stored part of the Laravel project model.
+    pub fn clear_model_parts(&self) -> IdeResult<()> {
+        let txn = self.db.begin_write().map_err(internal)?;
+        match txn.delete_table(MODEL_PARTS) {
+            Ok(_) | Err(TableError::TableDoesNotExist(_)) => {}
+            Err(e) => return Err(internal(e)),
+        }
+        txn.commit().map_err(internal)
+    }
+
+    /// How many parts of the Laravel project model are stored.
+    pub fn model_part_count(&self) -> IdeResult<u64> {
+        let txn = self.db.begin_read().map_err(internal)?;
+        match txn.open_table(MODEL_PARTS) {
+            Ok(t) => t.len().map_err(internal),
+            Err(TableError::TableDoesNotExist(_)) => Ok(0),
+            Err(e) => Err(internal(e)),
+        }
+    }
+
     fn multimap(&self, def: MultiDef, key: &str) -> IdeResult<Vec<Decl>> {
         let txn = self.db.begin_read().map_err(internal)?;
         let table = match txn.open_multimap_table(def) {
@@ -494,6 +546,36 @@ impl PhpIndex {
         out.sort_by(|a, b| (&a.file, a.kind, a.index, &a.fqn).cmp(&(&b.file, b.kind, b.index, &b.fqn)));
         Ok(out)
     }
+}
+
+/// Bump whenever a stored part of the Laravel project model changes its
+/// encoding (a field of a part type in `frameworks::laravel`): parts stored
+/// under another number are read again from their files.
+pub const MODEL_PARTS_SCHEMA: u32 = 1;
+
+/// A part of the Laravel project model read from one file
+/// (`crate::engine::parts`), stored so that a new session doesn't read and
+/// parse the file again (roadmap phase 9.4). It is used when the file's
+/// content hash, or its size and modification time, are still the ones it
+/// was read from, and it was read in the same context.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct StoredPart {
+    /// [`MODEL_PARTS_SCHEMA`] when it was stored.
+    pub schema: u32,
+    /// blake3 of the text it was read from.
+    pub hash: [u8; 32],
+    /// The file's size and modification time (nanoseconds since the Unix
+    /// epoch) when it was read, so a file that didn't change isn't even read
+    /// to be hashed.
+    pub len: u64,
+    pub mtime: Option<u64>,
+    pub context: String,
+    /// The part, in postcard.
+    pub part: Vec<u8>,
+}
+
+fn part_key(kind: &str, path: &Path) -> String {
+    format!("{kind}\0{}", path_key(path))
 }
 
 /// The result of reading one file.

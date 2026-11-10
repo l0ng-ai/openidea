@@ -37,6 +37,7 @@
 //! `$middlewareGroups`) and the service providers (`$router->aliasMiddleware`,
 //! `middlewareGroup`, a `$middlewareAliases` property) declare.
 
+use serde::{Deserialize, Serialize};
 use std::path::{Path, PathBuf};
 
 use ide_core::Range;
@@ -72,7 +73,7 @@ pub struct RouteTable {
 }
 
 /// One route.
-#[derive(Clone, Debug, PartialEq, Eq)]
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub struct RouteDef {
     /// The full name, with the group name prefixes (`dashboard.posts.create`).
     pub name: Option<String>,
@@ -99,7 +100,7 @@ pub struct RouteDef {
 }
 
 /// What a route runs.
-#[derive(Clone, Debug, PartialEq, Eq)]
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub enum RouteAction {
     /// A controller method (`__invoke` for an invokable controller), and
     /// where the action names it: the method's string (bytes and range), or
@@ -128,7 +129,7 @@ impl RouteAction {
 }
 
 /// The string literal a route name is written in.
-#[derive(Clone, Debug, PartialEq, Eq)]
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub struct NameDecl {
     /// The byte range of the content (inside the quotes).
     pub start: u32,
@@ -142,7 +143,7 @@ pub struct NameDecl {
 }
 
 /// A middleware alias or group.
-#[derive(Clone, Debug, PartialEq, Eq)]
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub struct MiddlewareDef {
     pub name: String,
     /// The class of an alias.
@@ -189,20 +190,31 @@ impl RouteTable {
         let mut queue: Vec<(RouteFile, Vec<PathBuf>)> =
             project.http_route_files().map(|file| (file.clone(), Vec::new())).collect();
         let mut read: Vec<(PathBuf, String, String)> = Vec::new();
-        let mut next = 0;
-        while next < queue.len() && next < MAX_INCLUDED {
-            let (file, mut chain) = queue[next].clone();
-            next += 1;
-            let key = (file.path.clone(), file.prefix.clone(), file.name_prefix.clone());
-            if read.contains(&key) {
-                continue;
+        // Level by level (the files of the application, then the files they
+        // include, …), each level's files read as one batch (in parallel in
+        // the engine); the routes keep the order of a queue.
+        let mut taken = 0;
+        while !queue.is_empty() && taken < MAX_INCLUDED {
+            let mut level: Vec<(RouteFile, Vec<PathBuf>)> = Vec::new();
+            for (file, chain) in std::mem::take(&mut queue) {
+                if taken >= MAX_INCLUDED {
+                    break;
+                }
+                taken += 1;
+                let key = (file.path.clone(), file.prefix.clone(), file.name_prefix.clone());
+                if read.contains(&key) {
+                    continue;
+                }
+                read.push(key);
+                level.push((file, chain));
             }
-            read.push(key);
             // The group the file is loaded in shapes its routes.
-            let context = format!("{file:?}");
-            let part = parts.part("routes", &file.path, &context, &|text| {
+            let jobs: Vec<(PathBuf, String)> =
+                level.iter().map(|(file, _)| (file.path.clone(), format!("{file:?}"))).collect();
+            let found = parts.parts_of("routes", &jobs, &|at, text| {
+                let file = &level[at].0;
                 let parsed = ParsedFile::parse("routes.php", text.to_owned());
-                let (routes, includes) = read_route_file(&parsed, &file);
+                let (routes, includes) = read_route_file(&parsed, file);
                 let includes = includes
                     .into_iter()
                     .filter_map(|(written, group, range)| {
@@ -222,7 +234,8 @@ impl RouteTable {
                     .collect();
                 FileRoutes { routes, includes }
             });
-            if let Some(part) = part {
+            for ((file, mut chain), part) in level.into_iter().zip(found) {
+                let Some(part) = part else { continue };
                 routes.extend(part.routes.iter().cloned());
                 chain.push(file.path.clone());
                 for include in part.includes.iter() {
@@ -250,10 +263,11 @@ impl RouteTable {
         let mut sources =
             vec![project.paths.bootstrap.join("app.php"), project.paths.app.join("Http").join("Kernel.php")];
         sources.extend(provider_files(project));
-        for path in sources {
-            let part = parts.part("middleware", &path, "", &|text| {
-                declared_middleware(&ParsedFile::parse("middleware.php", text.to_owned()), &path)
-            });
+        let jobs: Vec<(PathBuf, String)> = sources.into_iter().map(|path| (path, String::new())).collect();
+        let found = parts.parts_of("middleware", &jobs, &|at, text| {
+            declared_middleware(&ParsedFile::parse("middleware.php", text.to_owned()), &jobs[at].0)
+        });
+        for part in found {
             let Some(part) = part else { continue };
             for found in part.iter().cloned() {
                 match middleware.iter_mut().find(|known| known.name == found.name && known.group == found.group) {
@@ -533,6 +547,7 @@ struct Reader<'a> {
 type Include = (String, Group, Range);
 
 /// The routes of a route file, and the files it includes.
+#[derive(Serialize, Deserialize)]
 struct FileRoutes {
     routes: Vec<RouteDef>,
     /// The included files, loaded in the group around the `require`.

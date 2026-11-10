@@ -229,34 +229,30 @@ pub async fn inspect_code(
 
 /// Inspects PHP files with the native engine, once it finished indexing (the
 /// checks that need other files stay quiet before), reporting each through
-/// `on_file`: its diagnostics, or `None` when it can't be read as text (binary
-/// or too large). The text is the unsaved buffer of an open file. Stops when
-/// cancelled.
+/// `on_file` as it finishes: its diagnostics, or `None` when it can't be read
+/// as text (binary or too large). The text is the unsaved buffer of an open
+/// file. The files are inspected in parallel
+/// (`PhpEngine::inspect_files`, roadmap phase 9.4), so they finish in no
+/// particular order. Stops when cancelled.
 fn inspect_with_engine(
     project: &Project,
     engine: &ide_php::engine::PhpEngine,
     files: Vec<SourceFile>,
     cancel: &CancellationToken,
-    on_file: &dyn Fn(SourceFile, Option<Vec<Diagnostic>>),
+    on_file: &(dyn Fn(SourceFile, Option<Vec<Diagnostic>>) + Sync),
 ) {
     while !engine.wait_idle(std::time::Duration::from_millis(200)) {
         if cancel.is_cancelled() {
             return;
         }
     }
-    for file in files {
-        if cancel.is_cancelled() {
-            return;
-        }
-        let diagnostics = match load(project, &project.languages, &file.path) {
-            Some((_, text)) => match engine.inspect_file(&file.path, &text, cancel) {
-                Some(items) => Some(items),
-                None => return,
-            },
-            None => None,
-        };
-        on_file(file, diagnostics);
-    }
+    engine.inspect_files(
+        &files,
+        |file| file.path.as_path(),
+        |file| load(project, &project.languages, &file.path).map(|(_, text)| text),
+        cancel,
+        |file, diagnostics| on_file(file.clone(), diagnostics),
+    );
 }
 
 /// Locate Duplicates over the files of `scope`.

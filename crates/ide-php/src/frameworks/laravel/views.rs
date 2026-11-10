@@ -136,9 +136,11 @@ impl ViewTable {
         }
         // The folders a provider names are relative to the project's.
         let context = format!("{:?}", project.paths);
-        for path in provider_files(project) {
-            let part =
-                parts.part("view-namespaces", &path, &context, &|text| registered_namespaces(project, &path, text));
+        let jobs: Vec<(PathBuf, String)> =
+            provider_files(project).into_iter().map(|path| (path, context.clone())).collect();
+        let found =
+            parts.parts_of("view-namespaces", &jobs, &|at, text| registered_namespaces(project, &jobs[at].0, text));
+        for part in found {
             for (name, dir) in part.iter().flat_map(|part| part.iter()) {
                 // `loadViewsFrom` looks in `resources/views/vendor/<ns>`
                 // first, where `vendor:publish` puts the package's views.

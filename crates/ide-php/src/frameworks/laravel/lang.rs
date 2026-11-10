@@ -19,6 +19,7 @@
 //! of some locales: into the right nested array of a group file (created
 //! when missing), or into the JSON file.
 
+use serde::{Deserialize, Serialize};
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
@@ -47,7 +48,7 @@ pub struct Translations {
 }
 
 /// One key in one locale.
-#[derive(Clone, Debug, PartialEq, Eq)]
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub struct TransEntry {
     /// The full key (`messages.status.draft`, `billing::invoices.title`,
     /// `Read more`); a group file's entry is the group (`messages`).
@@ -82,6 +83,13 @@ pub fn is_group_key(key: &str) -> bool {
         && local
             .split('.')
             .all(|segment| !segment.is_empty() && segment.chars().all(|c| c.is_alphanumeric() || "_-/".contains(c)))
+}
+
+/// A language file to read: a PHP group file of a locale folder, or a JSON
+/// file of a locale.
+enum LangFile {
+    Php { path: PathBuf, group: String, locale: String },
+    Json { path: PathBuf, locale: String },
 }
 
 impl Translations {
@@ -122,16 +130,17 @@ impl Translations {
             json_dirs.extend(part.json_translations.iter().filter(|dir| dir.is_dir()).cloned());
         }
         let mut out = Self { dirs: Vec::new(), ..Self::default() };
-        let mut files = Vec::new();
+        let mut jobs = Vec::new();
         for (namespace, dir) in dirs {
             let dir = crate::project::normalize(&dir);
-            out.read_dir(namespace.as_deref(), &dir, false, parts, &mut files);
+            out.list_dir(namespace.as_deref(), &dir, false, parts, &mut jobs);
             out.dirs.push((namespace, dir));
         }
         json_dirs.dedup();
         for dir in json_dirs {
-            out.read_dir(None, &crate::project::normalize(&dir), true, parts, &mut files);
+            out.list_dir(None, &crate::project::normalize(&dir), true, parts, &mut jobs);
         }
+        let files = out.read_files(&jobs, parts);
         let by_key = |a: &TransEntry, b: &TransEntry| (&a.key, &a.locale).cmp(&(&b.key, &b.locale));
         out.entries = Merged::new(files, by_key, previous.map(|previous| &previous.entries));
         out.locales.sort();
@@ -139,15 +148,15 @@ impl Translations {
         out
     }
 
-    /// The keys of the locale folders and JSON files in `dir` (`json`: the
-    /// JSON files only).
-    fn read_dir(
+    /// The language files of the locale folders and JSON files in `dir`
+    /// (`json`: the JSON files only), in order, added to `jobs`.
+    fn list_dir(
         &mut self,
         namespace: Option<&str>,
         dir: &Path,
         json: bool,
         parts: &impl PartReader,
-        out: &mut Vec<Arc<Vec<TransEntry>>>,
+        jobs: &mut Vec<LangFile>,
     ) {
         // Listed again only when files were created or removed.
         let found = parts.listing("lang", dir, &|| language_files(dir));
@@ -170,41 +179,76 @@ impl Translations {
                 self.locales.push(name.clone());
                 for (group, file) in files {
                     let file = crate::project::normalize(&file);
-                    let group = prefix(&group);
-                    let context = format!(
-                        "{group}
-{name}"
-                    );
-                    let part = parts.part("lang", &file, &context, &|text| {
-                        let parsed = ParsedFile::parse("lang.php", text.to_owned());
-                        ConfigKeys::file_entries(&group, &file, &parsed)
-                            .into_iter()
-                            .map(|entry| TransEntry {
-                                text: entry.value.as_deref().and_then(unquote),
-                                key: entry.key,
-                                locale: name.clone(),
-                                path: entry.path,
-                                range: entry.range,
-                                is_group: entry.is_array,
-                                is_file: entry.is_file,
-                                json: false,
-                            })
-                            .collect()
-                    });
-                    out.extend(part);
+                    jobs.push(LangFile::Php { path: file, group: prefix(&group), locale: name.clone() });
                 }
             } else if namespace.is_none()
                 && let Some(locale) = entry.strip_suffix(".json")
             {
-                let path = crate::project::normalize(path);
-                let Some(part) = parts.part("lang-json", &path, locale, &|text| json_entries(locale, &path, text))
-                else {
-                    continue;
-                };
-                self.locales.push(locale.to_owned());
-                out.push(part);
+                jobs.push(LangFile::Json { path: crate::project::normalize(path), locale: locale.to_owned() });
             }
         }
+    }
+
+    /// The keys of each of `jobs`, in order: the PHP files' and the JSON
+    /// files' each read as one batch (in parallel in the engine). A JSON
+    /// file that can be read adds its locale.
+    fn read_files(&mut self, jobs: &[LangFile], parts: &impl PartReader) -> Vec<Arc<Vec<TransEntry>>> {
+        let php: Vec<(&Path, &str, &str)> = jobs
+            .iter()
+            .filter_map(|job| match job {
+                LangFile::Php { path, group, locale } => Some((path.as_path(), group.as_str(), locale.as_str())),
+                LangFile::Json { .. } => None,
+            })
+            .collect();
+        let json: Vec<(&Path, &str)> = jobs
+            .iter()
+            .filter_map(|job| match job {
+                LangFile::Json { path, locale } => Some((path.as_path(), locale.as_str())),
+                LangFile::Php { .. } => None,
+            })
+            .collect();
+        let php_files: Vec<(PathBuf, String)> =
+            php.iter().map(|(path, group, locale)| (path.to_path_buf(), format!("{group}\n{locale}"))).collect();
+        let mut php_parts = parts
+            .parts_of("lang", &php_files, &|at, text| {
+                let (file, group, locale) = php[at];
+                let parsed = ParsedFile::parse("lang.php", text.to_owned());
+                ConfigKeys::file_entries(group, file, &parsed)
+                    .into_iter()
+                    .map(|entry| TransEntry {
+                        text: entry.value.as_deref().and_then(unquote),
+                        key: entry.key,
+                        locale: locale.to_owned(),
+                        path: entry.path,
+                        range: entry.range,
+                        is_group: entry.is_array,
+                        is_file: entry.is_file,
+                        json: false,
+                    })
+                    .collect()
+            })
+            .into_iter();
+        let json_files: Vec<(PathBuf, String)> =
+            json.iter().map(|(path, locale)| (path.to_path_buf(), (*locale).to_owned())).collect();
+        let mut json_parts = parts
+            .parts_of("lang-json", &json_files, &|at, text| {
+                let (path, locale) = json[at];
+                json_entries(locale, path, text)
+            })
+            .into_iter();
+        let mut out = Vec::new();
+        for job in jobs {
+            match job {
+                LangFile::Php { .. } => out.extend(php_parts.next().flatten()),
+                LangFile::Json { locale, .. } => {
+                    if let Some(part) = json_parts.next().flatten() {
+                        self.locales.push(locale.clone());
+                        out.push(part);
+                    }
+                }
+            }
+        }
+        out
     }
 
     /// Every entry, sorted by key, then locale.

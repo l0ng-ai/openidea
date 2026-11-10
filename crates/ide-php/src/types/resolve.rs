@@ -49,7 +49,7 @@ use std::cell::{Cell, RefCell};
 use std::collections::HashMap;
 use std::sync::Arc;
 
-use parking_lot::Mutex;
+use parking_lot::RwLock;
 
 use super::model::{
     self, ClassModel, EnumMethod, EnumProperty, MethodSource, ModelMethod, ModelProperty, Origin, PropertySource,
@@ -195,7 +195,9 @@ enum Key {
 /// counter. `None` entries record declarations that don't exist.
 #[derive(Default)]
 pub struct TypeCache {
-    state: Mutex<CacheState>,
+    /// Read by every lookup of every thread (Inspect Code runs files in
+    /// parallel, phase 9.4); written only on a miss.
+    state: RwLock<CacheState>,
 }
 
 #[derive(Default)]
@@ -234,7 +236,7 @@ impl TypeCache {
 
     /// Entries cached for `generation` (0 once the counter moved on).
     pub fn len(&self, generation: u64) -> usize {
-        let state = self.state.lock();
+        let state = self.state.read();
         if state.generation == generation { state.entries.len() } else { 0 }
     }
 
@@ -243,7 +245,7 @@ impl TypeCache {
     }
 
     fn get(&self, generation: u64, key: &Key) -> Option<Option<Type>> {
-        let state = self.state.lock();
+        let state = self.state.read();
         if state.generation != generation {
             return None;
         }
@@ -251,11 +253,11 @@ impl TypeCache {
     }
 
     fn insert(&self, generation: u64, key: Key, value: Option<Type>) {
-        self.state.lock().at(generation).entries.insert(key, value);
+        self.state.write().at(generation).entries.insert(key, value);
     }
 
     fn model(&self, generation: u64, key: &str) -> Option<Option<Arc<ClassModel>>> {
-        let state = self.state.lock();
+        let state = self.state.read();
         if state.generation != generation {
             return None;
         }
@@ -263,11 +265,11 @@ impl TypeCache {
     }
 
     fn insert_model(&self, generation: u64, key: String, value: Option<Arc<ClassModel>>) {
-        self.state.lock().at(generation).models.insert(key, value);
+        self.state.write().at(generation).models.insert(key, value);
     }
 
     fn meta(&self, generation: u64) -> Option<Arc<PhpStormMeta>> {
-        let state = self.state.lock();
+        let state = self.state.read();
         if state.generation != generation {
             return None;
         }
@@ -275,11 +277,11 @@ impl TypeCache {
     }
 
     fn insert_meta(&self, generation: u64, meta: Arc<PhpStormMeta>) {
-        self.state.lock().at(generation).meta = Some(meta);
+        self.state.write().at(generation).meta = Some(meta);
     }
 
     fn laravel(&self, generation: u64) -> Option<Arc<LaravelFacts>> {
-        let state = self.state.lock();
+        let state = self.state.read();
         if state.generation != generation {
             return None;
         }
@@ -287,11 +289,11 @@ impl TypeCache {
     }
 
     fn insert_laravel(&self, generation: u64, facts: Arc<LaravelFacts>) {
-        self.state.lock().at(generation).laravel = Some(facts);
+        self.state.write().at(generation).laravel = Some(facts);
     }
 
     fn symfony(&self, generation: u64) -> Option<Arc<SymfonyProject>> {
-        let state = self.state.lock();
+        let state = self.state.read();
         if state.generation != generation {
             return None;
         }
@@ -299,7 +301,7 @@ impl TypeCache {
     }
 
     fn insert_symfony(&self, generation: u64, project: Arc<SymfonyProject>) {
-        self.state.lock().at(generation).symfony = Some(project);
+        self.state.write().at(generation).symfony = Some(project);
     }
 }
 

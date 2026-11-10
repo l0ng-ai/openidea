@@ -32,6 +32,9 @@ pub(super) const FILE_IDS: TableDefinition<u64, &str> = TableDefinition::new("fi
 /// content hash → postcard list of the content's words (shared like the
 /// summaries, so a file's [`WORDS`] entries can be removed exactly).
 pub(super) const WORD_LISTS: TableDefinition<[u8; 32], &[u8]> = TableDefinition::new("word_lists");
+/// `kind` NUL path key → a stored part of the Laravel project model
+/// ([`super::StoredPart`], roadmap phase 9.4), one per kind and file.
+pub(super) const MODEL_PARTS: TableDefinition<&str, &[u8]> = TableDefinition::new("model_parts");
 
 /// The only key of [`META_FILES`].
 pub const META_FILES_KEY: &str = "phpstorm_meta";
@@ -69,6 +72,7 @@ pub(super) fn clear(txn: &WriteTransaction) -> Result<()> {
     ok(txn.delete_table(FILE_IDS))?;
     ok(txn.delete_table(WORD_LISTS))?;
     ok(txn.delete_multimap_table(WORDS))?;
+    ok(txn.delete_table(MODEL_PARTS))?;
     for def in MULTIMAPS {
         ok(txn.delete_multimap_table(def))?;
     }

@@ -33,6 +33,22 @@ Diagnostics after an edit on `Eloquent/Builder.php` took 2.75 s at first. Timing
 
 After these changes the inspections on `Builder.php` take about 80 ms.
 
+## Laravel model and Inspect Code (phase 9.4)
+
+The Laravel benches (`php_laravel_app/*` on the fixture app, `php_laravel_real/*` on the application in `LARAVEL_APP_DIR`) are described in [laravel.md](laravel.md#performance-phase-821). Phase 9.4 tightened and added these budgets for the real application (Monica):
+
+| Bench                               | Budget | Monica (2026-11-11)                               |
+| ----------------------------------- | ------ | ------------------------------------------------- |
+| `php_laravel_real/model_cold`       | 400 ms | 230 ms (542 ms in 8.29)                           |
+| `php_laravel_real/model_warm_start` | 150 ms | 129 ms                                            |
+| `php_laravel_real/inspect_code`     | 20 s   | **24.3 s ✗** (74 s one file after another; 9.4.b) |
+
+- **Cold model:** `laravel_model()` after `forget_laravel_model()`, which also drops the parts stored in the index database. The regression since 8.23 was per-provider work (every provider file parsed again by each part, one after another) and a second read of the configuration for Jetstream's computed route path. The parts of many files are now read in parallel (`PartReader::parts_of`), independent parts of the model are built at the same time, and the configuration is read once.
+- **Warm start:** a new engine on the cache of an earlier session. The per-file parts (configuration keys, translations, routes, provider registrations) are stored in the index database with the content hash, size and modification time of their text, so the new session neither reads nor parses the files that didn't change.
+- **Inspect Code:** `PhpEngine::inspect_files` inspects the scope's files in parallel (rayon) after building what they share, reports each as it finishes and stops on cancellation. The host's Inspect Code (`ops::analysis::inspect_code`) uses it. The bench runs every built-in inspection over the application's own PHP files and Blade templates (not `vendor/`).
+
+`cargo run --release -p ide-php --example model_profile -- <app>` prints the time of each part of the model, cold and in a new session.
+
 ## Memory against Intelephense
 
 `cargo test -p ide-php --release --test memory -- --ignored --nocapture` (needs the corpora and `npm i -g intelephense`) indexes laravel/framework from an empty cache with both:

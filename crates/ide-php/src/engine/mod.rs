@@ -56,6 +56,8 @@ use ide_core::event::ServerStatus;
 use ide_core::settings::{LaravelDetection, LaravelSettings};
 use ide_core::{CancellationToken, DocId, IdeError, IdeEvent, IdeResult, Pos, ServerId, SharedSink};
 use parking_lot::{Condvar, Mutex, RwLock};
+use serde::Serialize;
+use serde::de::DeserializeOwned;
 
 use crate::frameworks::laravel::{
     ArtisanCommands, AuthFacts, BladeCatalog, ConfigKeys, EnvKeys, InertiaPages, LaravelProject, LiveSchema,
@@ -148,6 +150,9 @@ struct Queue {
     rescan: bool,
     changed: BTreeSet<PathBuf>,
     removed: BTreeSet<PathBuf>,
+    /// Parts of the Laravel model are queued to be stored in the index
+    /// database ([`parts`]).
+    store_parts: bool,
     /// The worker is running a job (or hasn't looked at the queue yet).
     busy: bool,
     shutdown: bool,
@@ -155,7 +160,7 @@ struct Queue {
 
 impl Queue {
     fn has_work(&self) -> bool {
-        self.rescan || !self.changed.is_empty() || !self.removed.is_empty()
+        self.rescan || self.store_parts || !self.changed.is_empty() || !self.removed.is_empty()
     }
 }
 
@@ -235,9 +240,10 @@ struct Shared {
 
 /// The engine keeps the parts of the Laravel model read from single files
 /// ([`parts`]): by the stamp of an open buffer's text (its hash) or of the
-/// file on disk (its size and modification time).
+/// file on disk (its size and modification time). Parts read from files on
+/// disk are stored in the index database too, for the next session.
 impl PartReader for PhpEngine {
-    fn part<T: Send + Sync + 'static>(
+    fn part<T: Serialize + DeserializeOwned + Send + Sync + 'static>(
         &self,
         kind: &'static str,
         path: &Path,
@@ -263,13 +269,78 @@ impl PartReader for PhpEngine {
         if let Some(found) = parts.get::<T>(kind, &path, &stamp, context) {
             return Some(found);
         }
+        // Stored by an earlier session: used when the file's size and
+        // modification time are unchanged (without reading it), or its
+        // content hash.
+        let index = self.shared.index.read().clone().filter(|index| index.is_persistent());
+        let stored = index
+            .as_ref()
+            .and_then(|index| index.model_part(kind, &path).ok().flatten())
+            .filter(|stored| stored.context == context);
+        let disk = match &stamp {
+            parts::Stamp::Disk { len, modified } => Some((*len, modified.and_then(parts::nanos))),
+            parts::Stamp::Buffer(_) => None,
+        };
+        if let (Some(stored), Some((len, mtime @ Some(_)))) = (&stored, disk)
+            && stored.len == len
+            && stored.mtime == mtime
+            && let Ok(part) = postcard::from_bytes::<T>(&stored.part)
+        {
+            let part = Arc::new(part);
+            parts.insert_loaded(kind, &path, stamp, context, part.clone());
+            return Some(part);
+        }
         let text: Arc<str> = match text {
             Some(text) => text,
             None => Arc::from(std::fs::read_to_string(&path).ok()?),
         };
+        let hash = *blake3::hash(text.as_bytes()).as_bytes();
+        if let Some(stored) = &stored
+            && stored.hash == hash
+            && let Ok(part) = postcard::from_bytes::<T>(&stored.part)
+        {
+            let part = Arc::new(part);
+            if let Some((len, mtime)) = disk {
+                // Same text, touched: stored again with the new stamp.
+                parts.queue(kind, &path, crate::index::StoredPart { len, mtime, ..stored.clone() });
+                self.shared.request_store();
+            }
+            parts.insert_loaded(kind, &path, stamp, context, part.clone());
+            return Some(part);
+        }
         let part = Arc::new(build(&text));
+        if let (Some(_), Some((len, mtime))) = (&index, disk)
+            && let Ok(bytes) = postcard::to_allocvec(&*part)
+        {
+            let stored = crate::index::StoredPart {
+                schema: crate::index::MODEL_PARTS_SCHEMA,
+                hash,
+                len,
+                mtime,
+                context: context.to_owned(),
+                part: bytes,
+            };
+            parts.queue(kind, &path, stored);
+            self.shared.request_store();
+        }
         parts.insert(kind, &path, stamp, context, part.clone());
         Some(part)
+    }
+
+    /// The files' parts in parallel: reading, parsing and (in a new session)
+    /// taking them from the index database are independent per file.
+    fn parts_of<T: Serialize + DeserializeOwned + Send + Sync + 'static>(
+        &self,
+        kind: &'static str,
+        files: &[(PathBuf, String)],
+        build: &(dyn Fn(usize, &str) -> T + Sync),
+    ) -> Vec<Option<Arc<T>>> {
+        use rayon::prelude::*;
+        files
+            .par_iter()
+            .enumerate()
+            .map(|(at, (path, context))| self.part(kind, path, context, &|text| build(at, text)))
+            .collect()
     }
 
     fn views_below(
@@ -704,16 +775,32 @@ impl PhpEngine {
             }
         };
         let project = loaded.map(|loaded| {
-            let facts = Declarations::laravel(self);
+            // The resolver's facts for this modification count: the type
+            // providers read the same ones.
+            let facts = self.resolver().laravel();
             // Route files at `config('…')`-computed paths (Jetstream) need the
             // configuration, read here from the project as loaded:
             // `laravel_config` needs this project.
             let config = facts.routes.iter().any(|route| route.path.has_config()).then(|| {
                 let packages = crate::frameworks::laravel::config::package_configs_with(&loaded, self);
                 let previous = self.shared.laravel_config.lock().as_ref().map(|(_, keys)| keys.clone());
-                ConfigKeys::read_parts(&loaded.paths.config, &packages, self, previous.as_deref())
+                let keys = ConfigKeys::read_parts(&loaded.paths.config, &packages, self, previous.as_deref());
+                (packages, Arc::new(keys))
             });
-            Arc::new(loaded.with_routes_config(&facts, config.as_ref()).with_module_system(settings.modules))
+            let project = Arc::new(
+                loaded
+                    .with_routes_config(&facts, config.as_ref().map(|(_, keys)| &**keys))
+                    .with_module_system(settings.modules),
+            );
+            // The same configuration is `laravel_config`'s when the project
+            // names the same package files (roadmap phase 9.4: it was read
+            // twice).
+            if let Some((packages, keys)) = config
+                && crate::frameworks::laravel::config::package_configs_with(&project, self) == packages
+            {
+                *self.shared.laravel_config.lock() = Some((modification, keys));
+            }
+            project
         });
         let mut cache = self.shared.laravel.lock();
         if cache.loaded.is_some() {
@@ -749,7 +836,15 @@ impl PhpEngine {
     /// [`reset_laravel_cache`](Self::reset_laravel_cache), and drops the
     /// parts read from single files too: everything is read again.
     pub(crate) fn forget_laravel_parts(&self) {
-        self.shared.parts.clear();
+        {
+            let _storing = self.shared.parts.store_lock.lock();
+            self.shared.parts.clear();
+            if let Some(index) = self.shared.index.read().clone()
+                && let Err(e) = index.clear_model_parts()
+            {
+                tracing::warn!("php engine: dropping the stored Laravel model: {e}");
+            }
+        }
         self.shared.view_listings.lock().clear();
         self.shared.file_listings.lock().clear();
         self.reset_laravel_cache();
@@ -764,6 +859,19 @@ impl PhpEngine {
     /// path)`, in order: tests check that a build reads only what changed.
     pub fn laravel_part_reads(&self) -> Vec<(&'static str, PathBuf)> {
         self.shared.parts.reads()
+    }
+
+    /// The parts of the Laravel model taken from the index database so far
+    /// (stored by an earlier session), as `(kind, path)`, in order.
+    pub fn laravel_part_loads(&self) -> Vec<(&'static str, PathBuf)> {
+        self.shared.parts.loads()
+    }
+
+    /// How many parts of the Laravel model the index database holds (0
+    /// without one).
+    pub fn laravel_stored_parts(&self) -> u64 {
+        let index = self.shared.index.read().clone();
+        index.and_then(|index| index.model_part_count().ok()).unwrap_or(0)
     }
 
     /// The configuration keys of the Laravel project (`config/*.php`, open
@@ -1327,6 +1435,7 @@ fn is_manifest_name(path: &Path) -> bool {
 
 struct Job {
     rescan: bool,
+    store_parts: bool,
     changed: Vec<PathBuf>,
     removed: Vec<PathBuf>,
 }
@@ -1334,6 +1443,12 @@ struct Job {
 impl Shared {
     fn run(self: Arc<Self>) {
         while let Some(job) = self.next_job() {
+            if job.store_parts {
+                self.store_parts();
+            }
+            if !job.rescan && job.changed.is_empty() && job.removed.is_empty() {
+                continue;
+            }
             let result = if job.rescan { self.scan() } else { self.apply(job.changed, job.removed) };
             match result {
                 Ok(()) => {}
@@ -1365,10 +1480,31 @@ impl Shared {
         q.busy = true;
         let job = Job {
             rescan: std::mem::take(&mut q.rescan),
+            store_parts: std::mem::take(&mut q.store_parts),
             changed: std::mem::take(&mut q.changed).into_iter().collect(),
             removed: std::mem::take(&mut q.removed).into_iter().collect(),
         };
         Some(job)
+    }
+
+    /// Asks the worker to store the queued parts of the Laravel model.
+    fn request_store(&self) {
+        let mut q = self.queue.lock();
+        if !q.store_parts && !q.shutdown {
+            q.store_parts = true;
+            self.wake.notify_all();
+        }
+    }
+
+    /// Stores the queued parts of the Laravel model in the index database,
+    /// in one transaction.
+    fn store_parts(&self) {
+        let _storing = self.parts.store_lock.lock();
+        let pending = self.parts.take_pending();
+        let Some(index) = self.index.read().clone() else { return };
+        if let Err(e) = index.store_model_parts(&pending) {
+            tracing::warn!("php engine: storing the Laravel model: {e}");
+        }
     }
 
     /// Loads the layout and makes the index match its files.

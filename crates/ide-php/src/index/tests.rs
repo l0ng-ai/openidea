@@ -415,3 +415,37 @@ fn the_word_index_follows_changes_and_removals() {
     assert!(word_files(&index, "article").is_empty());
     assert_eq!(tables::word_table_sizes(&index.db), [0, 0, 0]);
 }
+
+#[test]
+fn model_parts_are_stored_replaced_and_dropped() {
+    let dir = tempfile::tempdir().unwrap();
+    let part = |hash: u8, bytes: &[u8]| StoredPart {
+        schema: MODEL_PARTS_SCHEMA,
+        hash: [hash; 32],
+        len: 10,
+        mtime: Some(42),
+        context: "ctx".to_owned(),
+        part: bytes.to_vec(),
+    };
+    let config = Path::new("/app/config/app.php");
+    {
+        let index = PhpIndex::open(dir.path()).unwrap();
+        assert_eq!(index.model_part("config", config).unwrap(), None);
+        index.store_model_parts(&[("config", config, part(1, b"one")), ("lang", config, part(2, b"two"))]).unwrap();
+        // One part per kind and file: storing again replaces it.
+        index.store_model_parts(&[("config", config, part(3, b"three"))]).unwrap();
+        assert_eq!(index.model_part_count().unwrap(), 2);
+    }
+    // Kept across sessions.
+    let index = PhpIndex::open(dir.path()).unwrap();
+    assert_eq!(index.model_part("config", config).unwrap(), Some(part(3, b"three")));
+    assert_eq!(index.model_part("lang", config).unwrap().map(|p| p.part), Some(b"two".to_vec()));
+    assert_eq!(index.model_part("routes", config).unwrap(), None);
+    // Another encoding of the parts isn't read.
+    let old = StoredPart { schema: MODEL_PARTS_SCHEMA + 1, ..part(4, b"old") };
+    index.store_model_parts(&[("routes", config, old)]).unwrap();
+    assert_eq!(index.model_part("routes", config).unwrap(), None);
+    index.clear_model_parts().unwrap();
+    assert_eq!(index.model_part_count().unwrap(), 0);
+    assert_eq!(index.model_part("config", config).unwrap(), None);
+}

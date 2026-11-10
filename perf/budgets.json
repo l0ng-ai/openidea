@@ -108,10 +108,14 @@
     "php_laravel_app/model_warm": 200000,
     "php_laravel_app/string_completion": 50000,
     "php_laravel_app/route_hints": 100000,
+    "php_laravel_app/model_warm_start": 150000,
+    "php_laravel_app/inspect_code": 5000000,
 
-    "php_laravel_real/model_cold": 2000000,
+    "php_laravel_real/model_cold": 400000,
+    "php_laravel_real/model_warm_start": 150000,
     "php_laravel_real/model_warm": 200000,
     "php_laravel_real/string_completion": 50000,
-    "php_laravel_real/route_hints": 100000
+    "php_laravel_real/route_hints": 100000,
+    "php_laravel_real/inspect_code": 20000000
   }
 }

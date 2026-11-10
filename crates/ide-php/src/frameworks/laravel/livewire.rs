@@ -128,10 +128,11 @@ impl LivewireComponents {
         }
         let mut out: Vec<LivewireComponent> = Vec::new();
         let resolver = engine.resolver();
-        for provider in provider_files(project) {
-            let Some(found) = engine.part("livewire-registrations", &provider, "", &|text| registrations(text)) else {
-                continue;
-            };
+        let jobs: Vec<(PathBuf, String)> =
+            provider_files(project).into_iter().map(|provider| (provider, String::new())).collect();
+        let found = engine.parts_of("livewire-registrations", &jobs, &|_, text| registrations(text));
+        for ((provider, _), found) in jobs.iter().zip(found) {
+            let Some(found) = found else { continue };
             for (alias, class, at) in found.iter().cloned() {
                 let Some(model) = resolver.class_model(&class) else { continue };
                 if out.iter().any(|known| known.name == alias) || !model.is_subclass_of(COMPONENT) {
@@ -143,7 +144,7 @@ impl LivewireComponents {
                 let text = engine.text_of(&path).unwrap_or_default();
                 let view = rendered_view(&text).and_then(|view| views.get(&view).map(|view| view.path.clone()));
                 let range = model.class.name_loc.range;
-                let alias_at = Some((crate::project::normalize(&provider), at));
+                let alias_at = Some((crate::project::normalize(provider), at));
                 out.push(LivewireComponent { name: alias, class, path, range, view, alias: alias_at });
             }
         }

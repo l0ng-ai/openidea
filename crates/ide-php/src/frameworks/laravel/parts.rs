@@ -18,20 +18,41 @@ use std::cmp::Ordering;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
+use serde::Serialize;
+use serde::de::DeserializeOwned;
+
 use super::ViewEntry;
 
 /// Where a reader gets the parts of single files.
 pub trait PartReader {
     /// The part of `kind` for `path`: `build` applied to its text (an open
     /// buffer first), or what it built before from the same text in the
-    /// same `context`. `None` when the file can't be read.
-    fn part<T: Send + Sync + 'static>(
+    /// same `context`. `None` when the file can't be read. Parts are
+    /// serializable so the engine can store them for the next session.
+    fn part<T: Serialize + DeserializeOwned + Send + Sync + 'static>(
         &self,
         kind: &'static str,
         path: &Path,
         context: &str,
         build: &dyn Fn(&str) -> T,
     ) -> Option<Arc<T>>;
+
+    /// [`part`](Self::part) of `kind` for each of `files` (a path and its
+    /// context), in order: `build` gets the file's position in `files` and
+    /// its text. One after another here; the engine builds them in parallel
+    /// (roadmap phase 9.4).
+    fn parts_of<T: Serialize + DeserializeOwned + Send + Sync + 'static>(
+        &self,
+        kind: &'static str,
+        files: &[(PathBuf, String)],
+        build: &(dyn Fn(usize, &str) -> T + Sync),
+    ) -> Vec<Option<Arc<T>>> {
+        files
+            .iter()
+            .enumerate()
+            .map(|(at, (path, context))| self.part(kind, path, context, &|text| build(at, text)))
+            .collect()
+    }
 
     /// The views below the folder `base` (named in `namespace`): `list`, or
     /// what it listed before when no file was created or removed since.
@@ -58,7 +79,7 @@ pub trait PartReader {
 pub struct TextParts<F>(pub F);
 
 impl<F: Fn(&Path) -> Option<String>> PartReader for TextParts<F> {
-    fn part<T: Send + Sync + 'static>(
+    fn part<T: Serialize + DeserializeOwned + Send + Sync + 'static>(
         &self,
         _kind: &'static str,
         path: &Path,
@@ -86,6 +107,9 @@ impl<F: Fn(&Path) -> Option<String>> PartReader for TextParts<F> {
         Arc::new(list())
     }
 }
+
+/// Above this many entries, [`Merged::new`] sorts in parallel.
+const PARALLEL_SORT: usize = 4096;
 
 /// Entries kept per file, as the files' parts came, and read in one sorted
 /// order through an index of their own.
@@ -115,7 +139,10 @@ impl<E> Merged<E> {
     /// The entries of `files` sorted by `cmp`, keeping the first of entries
     /// that compare equal. When `previous` was built from the very same
     /// parts, its order is reused rather than sorted again.
-    pub fn new(files: Vec<Arc<Vec<E>>>, cmp: impl Fn(&E, &E) -> Ordering, previous: Option<&Self>) -> Self {
+    pub fn new(files: Vec<Arc<Vec<E>>>, cmp: impl Fn(&E, &E) -> Ordering + Sync, previous: Option<&Self>) -> Self
+    where
+        E: Send + Sync,
+    {
         if let Some(previous) = previous
             && previous.files.len() == files.len()
             && previous.files.iter().zip(&files).all(|(a, b)| Arc::ptr_eq(a, b))
@@ -128,8 +155,14 @@ impl<E> Merged<E> {
             .flat_map(|(file, entries)| (0..entries.len()).map(move |entry| (file as u32, entry as u32)))
             .collect();
         let at = |(file, entry): (u32, u32)| &files[file as usize][entry as usize];
-        // Stable: entries comparing equal stay in file order.
-        order.sort_by(|a, b| cmp(at(*a), at(*b)));
+        // Stable: entries comparing equal stay in file order. A large table
+        // (Monica's 57,511 translations) is sorted in parallel.
+        if order.len() > PARALLEL_SORT {
+            use rayon::slice::ParallelSliceMut;
+            order.par_sort_by(|a, b| cmp(at(*a), at(*b)));
+        } else {
+            order.sort_by(|a, b| cmp(at(*a), at(*b)));
+        }
         order.dedup_by(|later, earlier| cmp(at(*later), at(*earlier)) == Ordering::Equal);
         Self { files, order: order.into() }
     }
@@ -188,6 +221,16 @@ mod tests {
         assert!(Arc::ptr_eq(&again.files()[0], &a), "the parts are shared, not copied");
 
         let changed = Arc::new(vec![("d", 3)]);
+        // A large table is sorted in parallel, as stably.
+        let many: Vec<Arc<Vec<(u32, u32)>>> =
+            (0..4).map(|file| Arc::new((0..3000).map(|n| ((n * 7919) % 1000, file)).collect())).collect();
+        let sorted = Merged::new(many.clone(), |x, y| x.0.cmp(&y.0), None);
+        let mut expected: Vec<(u32, u32)> = many.iter().flat_map(|file| file.iter().copied()).collect();
+        expected.sort_by_key(|entry| entry.0);
+        expected.dedup_by_key(|entry| entry.0);
+        assert!(many.iter().map(|file| file.len()).sum::<usize>() > PARALLEL_SORT);
+        assert_eq!(sorted.iter().copied().collect::<Vec<_>>(), expected, "the first file's entry of each key");
+
         let other = Merged::new(vec![a, changed], |x, y| x.0.cmp(y.0), Some(&merged));
         assert_eq!(other.iter().map(|e| e.0).collect::<Vec<_>>(), ["a", "b", "d"]);
     }

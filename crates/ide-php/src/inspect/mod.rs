@@ -530,11 +530,64 @@ impl PhpEngine {
             return (!cancel.is_cancelled()).then_some(problems);
         }
         if let Some(document) = self.open_document(path) {
-            return self.inspected(document.doc).map(|inspected| inspected.diagnostics.clone());
+            // The background result, or a run of its own when the background
+            // run hasn't got to the document yet.
+            return match self.inspected(document.doc) {
+                Some(inspected) => Some(inspected.diagnostics.clone()),
+                None => self.inspect(document.doc, cancel).map(|inspected| inspected.diagnostics),
+            };
         }
         let path = crate::project::normalize(path);
         let parsed = ParsedFile::parse(&path.to_string_lossy(), text);
         self.run_inspections(&parsed, &path, cancel).map(|(diagnostics, _)| diagnostics)
+    }
+
+    /// Batch Inspect Code over `files` in parallel (rayon, roadmap phase
+    /// 9.4): each file's text comes from `text_of` (`None`: it can't be read
+    /// as text), and each file is reported through `on_file` as it finishes,
+    /// in no particular order, with its diagnostics or `None` when it had no
+    /// text. What every file shares (the Laravel project model, the type
+    /// resolver's framework facts) is built once before the files are
+    /// spread over the threads, so no two threads build it at once. Stops
+    /// when `cancel` fires; returns whether every file was inspected.
+    pub fn inspect_files<F: Sync>(
+        &self,
+        files: &[F],
+        path_of: impl Fn(&F) -> &Path + Sync,
+        text_of: impl Fn(&F) -> Option<String> + Sync,
+        cancel: &CancellationToken,
+        on_file: impl Fn(&F, Option<Vec<Diagnostic>>) + Sync,
+    ) -> bool {
+        use rayon::prelude::*;
+
+        if files.is_empty() {
+            return !cancel.is_cancelled();
+        }
+        self.prepare_batch();
+        files
+            .par_iter()
+            .try_for_each(|file| {
+                if cancel.is_cancelled() {
+                    return Err(());
+                }
+                let diagnostics = match text_of(file) {
+                    Some(text) => Some(self.inspect_file(path_of(file), &text, cancel).ok_or(())?),
+                    None => None,
+                };
+                on_file(file, diagnostics);
+                Ok(())
+            })
+            .is_ok()
+    }
+
+    /// Builds what every file of a batch shares, before the batch is spread
+    /// over threads: the Laravel project model (in a Laravel project) and
+    /// the resolver's framework facts.
+    fn prepare_batch(&self) {
+        let resolver = self.resolver();
+        drop(resolver.laravel());
+        drop(resolver.meta());
+        let _ = self.laravel_model();
     }
 
     /// The parser's syntax errors and the problems of every inspection, the

@@ -756,12 +756,42 @@ fn real_app_inspect_code() {
     let engine = open_engine(&root, tmp.path());
     let mut files = app_php_files(&root);
     files.extend(app_blade_files(&root));
+    // Batch Inspect Code as the host runs it, in parallel (phase 9.4),
+    // timed, then file by file: both find the same.
+    let started = std::time::Instant::now();
+    let batch = parking_lot::Mutex::new(std::collections::BTreeMap::new());
+    let done = engine.inspect_files(
+        &files,
+        |path| path.as_path(),
+        |path| std::fs::read_to_string(path).ok(),
+        &CancellationToken::new(),
+        |path, diagnostics| drop(batch.lock().insert(path.clone(), diagnostics.unwrap_or_default())),
+    );
+    assert!(done, "the batch ran to the end");
+    let parallel = started.elapsed();
+    let batch = batch.into_inner();
+    // Again, with the type cache the first run filled.
+    let started = std::time::Instant::now();
+    assert!(engine.inspect_files(
+        &files,
+        |path| path.as_path(),
+        |path| std::fs::read_to_string(path).ok(),
+        &CancellationToken::new(),
+        |_, _| {}
+    ));
+    let parallel_warm = started.elapsed();
+    let started = std::time::Instant::now();
+    let mut slowest = Vec::new();
     let mut found = Vec::new();
     let mut counts = std::collections::BTreeMap::<String, usize>::new();
     for path in &files {
         let Ok(text) = std::fs::read_to_string(path) else { continue };
         let lines: Vec<&str> = text.lines().collect();
-        for diagnostic in engine.inspect_file(path, &text, &CancellationToken::new()).unwrap_or_default() {
+        let at = std::time::Instant::now();
+        let diagnostics = engine.inspect_file(path, &text, &CancellationToken::new()).unwrap_or_default();
+        slowest.push((at.elapsed(), path.clone()));
+        assert_eq!(batch.get(path), Some(&diagnostics), "{}: the batch differs", path.display());
+        for diagnostic in diagnostics {
             let code = diagnostic.code.clone().unwrap_or_else(|| "syntax".to_owned());
             *counts.entry(code.clone()).or_default() += 1;
             let rel = slashes(path.strip_prefix(&root).unwrap_or(path));
@@ -771,7 +801,18 @@ fn real_app_inspect_code() {
             found.push(format!("{rel}:{}: [{code}] {}\n      {source}", line + 1, diagnostic.message));
         }
     }
-    eprintln!("{} files inspected, {} diagnostics", files.len(), found.len());
+    eprintln!(
+        "{} files inspected, {} diagnostics; in parallel {:.2} s (again {:.2} s), one by one {:.2} s",
+        files.len(),
+        found.len(),
+        parallel.as_secs_f64(),
+        parallel_warm.as_secs_f64(),
+        started.elapsed().as_secs_f64()
+    );
+    slowest.sort_by_key(|entry| std::cmp::Reverse(entry.0));
+    for (took, path) in slowest.iter().take(5) {
+        eprintln!("slowest: {:>8.2} s {}", took.as_secs_f64(), slashes(path.strip_prefix(&root).unwrap_or(path)));
+    }
     for (code, count) in &counts {
         eprintln!("{count:>6} {code}");
     }

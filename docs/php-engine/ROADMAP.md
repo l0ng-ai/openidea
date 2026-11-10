@@ -903,7 +903,7 @@ The gaps that the follow-ups in `PROGRESS.md`, the review in `differential.md` a
 
   Tests: caret fixtures per case.
 
-- [ ] Phase 9.4: Speed: cold model and Inspect Code
+- [x] Phase 9.4: Speed: cold model and Inspect Code
       Two speed items:
   - **Monica's cold model build** rose from 358 ms (8.23) to 542 ms (8.29), and nobody looked into why. Profile it, fix what regressed, and store the per-file Laravel model parts of 8.22 in the index database (keyed by content hash), so a new session doesn't rebuild them.
   - **Inspect Code** checks engine files one after another on a single blocking thread (4.10). Run it in parallel (rayon, respecting `CancellationToken`), with progress.
@@ -914,6 +914,9 @@ The gaps that the follow-ups in `PROGRESS.md`, the review in `differential.md` a
   - Inspect Code over Monica's own code under 20 s in a release build
 
   Record the numbers in `laravel.md` and `performance.md`.
+
+- [ ] Phase 9.4.b: Inspect Code scaling
+      What 9.4 left (it fixed the cold model, stored the model's parts in the index database and made Inspect Code parallel): Inspect Code over Monica's own code takes 24.3 s in a release build (74 s one file after another), over the 20 s budget. The work has no long tail (the slowest file takes 0.7 s) but scales only about 3× on 16 threads (2.4× on 4), so something shared serializes it: find it with a profiler (candidates: the index database's read transaction per declaration lookup, `FileSummary` decoding of the same summaries in every thread, the allocator, the locks on open documents and stubs), fix it, and record the numbers in `laravel.md` and `performance.md`. Tests: `real_app_inspect_code` still finds the same diagnostics in parallel and one by one; `php_laravel_real/inspect_code` within its budget.
 
 - [ ] Phase 9.5: Laravel gaps
       From "Known limits" in `laravel.md`:

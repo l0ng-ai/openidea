@@ -20,6 +20,16 @@
 //! Folder listings (the views below a folder) have no stamp of their own:
 //! they are kept for a [disk generation](super::PhpEngine::disk_generation),
 //! which every watcher batch moves.
+//!
+//! Parts read from files on disk are also stored in the index database
+//! (roadmap phase 9.4, [`crate::index::StoredPart`]), with the content hash
+//! and the size and modification time of the text they were read from, so a
+//! new session takes them from there instead of reading and parsing the
+//! files again: a file whose size and modification time are unchanged isn't
+//! read at all, and one whose content hash is unchanged isn't parsed. The
+//! parts are queued here as they are built ([`FileParts::queue`]) and
+//! written by the engine's worker thread in one transaction, off the
+//! request that built them.
 
 use std::any::Any;
 use std::collections::HashMap;
@@ -28,6 +38,8 @@ use std::sync::Arc;
 use std::time::SystemTime;
 
 use parking_lot::Mutex;
+
+use crate::index::StoredPart;
 
 /// What a part was read from.
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -53,6 +65,14 @@ pub(crate) struct FileParts {
     /// The files read into parts, ever: tests check that a build reads only
     /// what changed.
     reads: Mutex<Vec<(&'static str, PathBuf)>>,
+    /// The parts taken from the index database rather than read, ever.
+    loads: Mutex<Vec<(&'static str, PathBuf)>>,
+    /// The parts to store in the index database.
+    pending: Mutex<Vec<(&'static str, PathBuf, StoredPart)>>,
+    /// Held while the pending parts are written and while the stored parts
+    /// are dropped, so a write running late can't store parts after they
+    /// were dropped.
+    pub(crate) store_lock: Mutex<()>,
 }
 
 impl FileParts {
@@ -86,6 +106,31 @@ impl FileParts {
         self.entries.lock().insert((kind, path.to_path_buf()), entry);
     }
 
+    /// Keeps `part`, taken from the index database (an earlier session read
+    /// it from the same text).
+    pub(crate) fn insert_loaded<T: Send + Sync + 'static>(
+        &self,
+        kind: &'static str,
+        path: &Path,
+        stamp: Stamp,
+        context: &str,
+        part: Arc<T>,
+    ) {
+        self.loads.lock().push((kind, path.to_path_buf()));
+        let entry = Entry { stamp, context: context.to_owned(), part };
+        self.entries.lock().insert((kind, path.to_path_buf()), entry);
+    }
+
+    /// Queues a part to be stored in the index database.
+    pub(crate) fn queue(&self, kind: &'static str, path: &Path, part: StoredPart) {
+        self.pending.lock().push((kind, path.to_path_buf(), part));
+    }
+
+    /// The parts queued to be stored, taken.
+    pub(crate) fn take_pending(&self) -> Vec<(&'static str, PathBuf, StoredPart)> {
+        std::mem::take(&mut *self.pending.lock())
+    }
+
     /// Drops the parts of `path`.
     pub(crate) fn remove(&self, path: &Path) {
         self.entries.lock().retain(|(_, known), _| known != path);
@@ -100,14 +145,28 @@ impl FileParts {
         self.entries.lock().retain(|(_, known), _| !paths.iter().any(|path| known.starts_with(path)));
     }
 
+    /// Drops every part kept in memory and every part queued to be stored.
     pub(crate) fn clear(&self) {
         self.entries.lock().clear();
+        self.pending.lock().clear();
     }
 
     /// Every file read into a part so far, in order.
     pub(crate) fn reads(&self) -> Vec<(&'static str, PathBuf)> {
         self.reads.lock().clone()
     }
+
+    /// Every part taken from the index database so far, in order.
+    pub(crate) fn loads(&self) -> Vec<(&'static str, PathBuf)> {
+        self.loads.lock().clone()
+    }
+}
+
+/// Nanoseconds since the Unix epoch, as the index stores modification
+/// times.
+pub(crate) fn nanos(time: SystemTime) -> Option<u64> {
+    let since = time.duration_since(std::time::UNIX_EPOCH).ok()?;
+    Some(since.as_nanos().min(u64::MAX as u128) as u64)
 }
 
 /// The views found below one folder, kept for a disk generation.
