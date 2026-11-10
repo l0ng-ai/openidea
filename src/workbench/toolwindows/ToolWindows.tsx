@@ -709,7 +709,7 @@ function HeaderRow({
   const own = useHeaderMenu(tw.id);
   const useTitleMenu = tw.titleMenu ?? noTitleMenu;
   const titleMenu = useTitleMenu(tw.id);
-  const titleItems = titleMenu?.items ?? own;
+  const titleItems = titleMenu?.items ?? (tw.plainTitle ? [] : own);
 
   return (
     <header

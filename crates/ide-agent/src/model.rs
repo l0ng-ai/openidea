@@ -518,6 +518,15 @@ pub enum AgentEvent {
         index: u32,
         entry: AgentEntry,
     },
+    /// Text was appended to entry `index` (an agent message or a thought): it read the first
+    /// `from` UTF-16 units of its text when the previous event for it was sent.
+    Append {
+        task: String,
+        subagent: Option<String>,
+        index: u32,
+        from: u32,
+        text: String,
+    },
     /// An agent reported the usage limits of its account (shared by every task of `provider`).
     Limits {
         provider: String,

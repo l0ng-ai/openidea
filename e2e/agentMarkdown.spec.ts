@@ -278,6 +278,8 @@ test("keeps chat history readable and selections free of timestamps and status l
   expect(selected).not.toMatch(/AM|PM|5s|Reasoning|Requesting task context/);
   await page.keyboard.press("ControlOrMeta+c");
   expect(await page.evaluate(() => navigator.clipboard.readText())).toBe(selected);
+  // The finished turn's reasoning is folded with its work.
+  await stream.locator("[class*='_turnFold_'] > summary").click();
   await stream.locator("[class*='_thought_'] > summary").click();
   await expect(stream.getByText("Requesting task context", { exact: true })).toBeVisible();
   await expect(stream.locator("[class*='_thoughtBody_'] strong")).toHaveText("Requesting task context");

@@ -112,19 +112,23 @@ for (const selected of [false, true]) {
   });
 }
 
-test("opens a folded process with the keyboard and jumps back to the latest reply", async ({ page }) => {
+test("opens a folded turn with the keyboard and jumps back to the latest reply", async ({ page }) => {
   const stream = await openHistory(page);
   await stream.evaluate((el) => {
     el.scrollTop = 0;
   });
   const jump = page.getByRole("button", { name: "Jump to Latest" });
   await expect(jump).toBeVisible();
-  const fold = stream.locator("[class*='_processRun_']").first();
+  const fold = stream.locator("[class*='_turnFold_']").first();
   const summary = fold.locator(":scope > summary");
   await summary.focus();
   await page.keyboard.press("Enter");
   await expect(fold).toHaveAttribute("open", "");
+  const run = fold.locator("[class*='_processRun_']").first();
+  await expect(run).toBeVisible();
+  await run.locator(":scope > summary").click();
   await expect(fold.getByText("read src/module-0.ts", { exact: true })).toBeVisible();
+  await summary.focus();
   await page.keyboard.press("Space");
   await expect(fold).not.toHaveAttribute("open", "");
   await jump.focus();
