@@ -3,6 +3,8 @@ import { act } from "react";
 import { fireEvent } from "@testing-library/react";
 import { EditorState } from "@codemirror/state";
 import { EditorView } from "@codemirror/view";
+import { vue } from "@codemirror/lang-vue";
+import { html } from "@codemirror/lang-html";
 import { colorPreviewGutter } from "./gutter";
 import { disposeColorPicker } from "./ColorPicker";
 
@@ -49,6 +51,36 @@ it("samples a screen color and offers it again as a recent color", async () => {
   );
   await act(async () => fireEvent.click(document.querySelector('button[aria-label="Recent color #4C78CEFF"]')!));
   expect(view.state.doc.toString()).toBe("color: #4c78ce;");
+});
+
+it("ignores color-like Vue template text while previewing embedded styles", () => {
+  view = new EditorView({
+    state: EditorState.create({
+      doc: '<template>\n<h1>Issue #1811: ConfigProvider z-index</h1>\n<div style="color: #abc">Text</div>\n</template>\n<style>\nh1 { color: #ff0080; }\n</style>',
+      extensions: [
+        vue(),
+        colorPreviewGutter({ doc: 1, path: "/p/a.vue", language: "vue", uiMode: null, readOnly: false }),
+      ],
+    }),
+    parent: document.body,
+  });
+  const swatches = [...view.dom.querySelectorAll(".cm-openidea-gutter-colors .cm-gutterElement span[title]")];
+  expect(swatches.map((swatch) => swatch.getAttribute("title"))).toEqual(["#abc", "#ff0080"]);
+});
+
+it("ignores color-like HTML text while previewing inline styles", () => {
+  view = new EditorView({
+    state: EditorState.create({
+      doc: '<h1>Issue #1811: ConfigProvider z-index</h1>\n<div style="color: #abc">Text</div>',
+      extensions: [
+        html(),
+        colorPreviewGutter({ doc: 1, path: "/p/a.html", language: "html", uiMode: null, readOnly: false }),
+      ],
+    }),
+    parent: document.body,
+  });
+  const swatches = [...view.dom.querySelectorAll(".cm-openidea-gutter-colors .cm-gutterElement span[title]")];
+  expect(swatches.map((swatch) => swatch.getAttribute("title"))).toEqual(["#abc"]);
 });
 
 it("updates a CSS literal from alpha and hex fields and ignores invalid input", async () => {

@@ -21,6 +21,7 @@ export type Rgba = [number, number, number, number];
 const STYLE_SHEETS = new Set(["css", "scss", "sass", "less", "stylus", "postcss"]);
 /** Markup that embeds style sheets (`<style>`, `style="…"`): unquoted hex values too. */
 const MARKUP = new Set(["html", "vue", "svelte", "astro", "xml", "xhtml"]);
+export const isMarkupLanguage = (language: string): boolean => MARKUP.has(language);
 /** Prose: `#123` is an issue, `#fab` a heading or a tag. */
 const PROSE = new Set(["markdown", "plaintext", "text", "restructuredtext", "asciidoc", "git-commit"]);
 

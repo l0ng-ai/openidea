@@ -4,8 +4,9 @@
  */
 import type { Extension } from "@codemirror/state";
 import { GutterMarker, gutter, type EditorView } from "@codemirror/view";
+import { syntaxTree } from "@codemirror/language";
 import type { EditorDocContext } from "@/editor/api";
-import { findColors, formatColor, parseComputed, type ColorMatch, type Rgba } from "./colors";
+import { findColors, formatColor, isMarkupLanguage, parseComputed, type ColorMatch, type Rgba } from "./colors";
 import { openColorPicker } from "./ColorPicker";
 import styles from "./ColorPreview.module.css";
 
@@ -64,7 +65,16 @@ class Swatch extends GutterMarker {
 function lineColor(view: EditorView, pos: number, language: string): ColorMatch | null {
   const line = view.state.doc.lineAt(pos);
   if (line.length > MAX_LINE) return null;
-  return findColors(line.text, language, isColorName)[0] ?? null;
+  const matches = findColors(line.text, language, isColorName);
+  if (!isMarkupLanguage(language)) return matches[0] ?? null;
+  const tree = syntaxTree(view.state);
+  return (
+    matches.find((color) => {
+      let node: ReturnType<typeof tree.resolveInner> | null = tree.resolveInner(line.from + color.from + 1);
+      for (; node; node = node.parent) if (node.name === "StyleSheet" || node.name === "Styles") return true;
+      return false;
+    }) ?? null
+  );
 }
 
 /** Opens the color picker for `color` at `from`; each valid pick replaces the literal. */
