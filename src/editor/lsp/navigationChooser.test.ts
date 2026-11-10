@@ -185,6 +185,34 @@ describe("locationItems", () => {
     expect(item.detail).toContain("_StatefulDataset");
   });
 
+  it("does not take the container from a docstring mentioning 'class'", async () => {
+    const lines = [
+      "",
+      "class _StatefulDataset(Base):",
+      "",
+      '    """Wrapper around the class factory.',
+      "",
+      "    Use the class helper first.",
+      '    """',
+      "",
+      "    def refresh(self) -> None:",
+    ];
+    readManyFileLines.mockResolvedValue(new Map([["/p/src/mod.py", lines]]));
+    project({});
+    const item = (
+      await locationItems([
+        {
+          path: "/p/src/mod.py",
+          uri: null,
+          range: { start: { line: 8, col: 8 }, end: { line: 8, col: 15 } },
+        },
+      ])
+    )[0]!;
+    expect(item.detail).not.toContain("factory");
+    expect(item.detail).not.toContain("helper");
+    expect(item.detail).toContain("_StatefulDataset");
+  });
+
   it("keeps index symbols' container detail", async () => {
     readManyFileLines.mockResolvedValue(new Map());
     project({});

@@ -138,13 +138,35 @@ export function withoutSelf(path: string, c: MarkerCandidate, targets: readonly 
 
 const TYPE_DECLARATION = /\b(?:class|interface|trait|object|struct|enum|record|impl)\s+([\p{L}_$][\p{L}\p{N}_$]*)/u;
 
-/** Name of the type a target sits in (the nearest type declaration above it); null without one. */
+const FENCES = [`"""`, `'''`];
+
+/**
+ * Name of the type a target sits in (the nearest type declaration above it); null without one.
+ * Text heuristic: docstrings (`"""` / `'''` fences) and line comments (`#`, `//`, `*`…) cannot
+ * declare a type, so "the base class does all that is needed" in a comment is not one.
+ */
 export function enclosingType(lines: readonly string[] | null | undefined, target: Location): string | null {
-  for (let l = target.range.start.line - 1; lines && l >= 0 && l >= target.range.start.line - 2000; l--) {
-    const m = TYPE_DECLARATION.exec(lines[l] ?? "");
-    if (m && !/^\s*(\/\/|\*|\/\*|#)/.test(lines[l] ?? "")) return m[1]!;
+  if (!lines) return null;
+  let container: string | null = null;
+  let fence: string | null = null;
+  for (let l = Math.max(0, target.range.start.line - 2000); l < target.range.start.line; l++) {
+    const line = lines[l] ?? "";
+    if (fence) {
+      if ((line.split(fence).length - 1) % 2 === 1) fence = null;
+      continue;
+    }
+    const opened = FENCES.find((f) => (line.split(f).length - 1) % 2 === 1);
+    if (opened) {
+      fence = opened;
+      continue;
+    }
+    // A single-line docstring (fences open and close on the line) is text too.
+    if (FENCES.some((f) => line.includes(f))) continue;
+    const code = line.replace(/(^|\s)(#|\/\/).*$/, "$1");
+    const m = TYPE_DECLARATION.exec(code);
+    if (m && !/^\s*(\*|\/\*)/.test(line)) container = m[1]!;
   }
-  return null;
+  return container;
 }
 
 /** Name of the type a target sits in: the nearest type declaration above it, else the file name. */
